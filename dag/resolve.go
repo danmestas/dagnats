@@ -22,19 +22,19 @@ func ResolveReady(def WorkflowDef, completed map[string]bool, queued map[string]
 // No deps → nil (first step receives workflow-level input from the caller).
 // Single dep → pass that step's output through unchanged.
 // Fan-in → map of dep ID → raw output, so the task can address each upstream.
-func ResolveInput(step StepDef, steps map[string]StepState) []byte {
+func ResolveInput(step StepDef, steps map[string]StepState) ([]byte, error) {
 	if len(step.DependsOn) == 0 {
-		return nil
+		return nil, nil
 	}
 	if len(step.DependsOn) == 1 {
-		return steps[step.DependsOn[0]].Output
+		return steps[step.DependsOn[0]].Output, nil
 	}
 	collected := make(map[string]json.RawMessage, len(step.DependsOn))
 	for _, dep := range step.DependsOn {
 		collected[dep] = steps[dep].Output
 	}
-	data, _ := json.Marshal(collected)
-	return data
+	data, err := json.Marshal(collected)
+	return data, err
 }
 
 // IsComplete returns true when every step in the definition has been completed.

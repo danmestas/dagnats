@@ -87,7 +87,10 @@ func TestResolveReadyAllCompleted(t *testing.T) {
 func TestResolveInputSingleDep(t *testing.T) {
 	step := StepDef{ID: "b", DependsOn: []string{"a"}}
 	steps := map[string]StepState{"a": {Status: StepStatusCompleted, Output: []byte(`"a-out"`)}}
-	input := ResolveInput(step, steps)
+	input, err := ResolveInput(step, steps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if string(input) != `"a-out"` {
 		t.Fatalf("input = %q, want %q", string(input), `"a-out"`)
 	}
@@ -99,9 +102,12 @@ func TestResolveInputFanIn(t *testing.T) {
 		"a": {Status: StepStatusCompleted, Output: []byte(`"a-out"`)},
 		"b": {Status: StepStatusCompleted, Output: []byte(`"b-out"`)},
 	}
-	input := ResolveInput(step, steps)
+	input, err := ResolveInput(step, steps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	var result map[string]json.RawMessage
-	err := json.Unmarshal(input, &result)
+	err = json.Unmarshal(input, &result)
 	if err != nil {
 		t.Fatalf("fan-in input is not valid JSON map: %v", err)
 	}
@@ -115,7 +121,10 @@ func TestResolveInputFanIn(t *testing.T) {
 
 func TestResolveInputNoDeps(t *testing.T) {
 	step := StepDef{ID: "a", DependsOn: nil}
-	input := ResolveInput(step, map[string]StepState{})
+	input, err := ResolveInput(step, map[string]StepState{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if input != nil {
 		t.Fatalf("input = %q, want nil for step with no deps", string(input))
 	}

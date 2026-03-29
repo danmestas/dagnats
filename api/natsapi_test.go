@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
 )
@@ -16,8 +17,15 @@ import (
 func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
+
+	// The orchestrator owns run state — start it so the snapshot is created
+	// before we query via NATS request/reply.
+	orch := engine.NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch.Start()
+	defer orch.Stop()
+
 	svc := NewService(nc, observe.NewNoopLogger())
-	natsAPI := NewNATSAPI(svc, nc)
+	natsAPI := NewNATSAPI(svc, nc, observe.NewNoopLogger())
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -50,17 +58,27 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 		t.Fatal("response missing run_id")
 	}
 
-	// Get run status via NATS request
-	reply, err = nc.Request("api.runs.get", []byte(startResp["run_id"]), 5*time.Second)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
+	// Poll for snapshot via NATS request — orchestrator processes asynchronously
+	// (bounded to 5s).
+	runID := startResp["run_id"]
+	deadline := time.After(5 * time.Second)
 	var run dag.WorkflowRun
-	if err := json.Unmarshal(reply.Data, &run); err != nil {
-		t.Fatalf("Unmarshal failed: %v", err)
+	for {
+		reply, err = nc.Request("api.runs.get", []byte(runID), 5*time.Second)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		if err = json.Unmarshal(reply.Data, &run); err == nil && run.RunID == runID {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("run snapshot did not appear within 5s")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
-	if run.RunID != startResp["run_id"] {
-		t.Fatalf("RunID = %q, want %q", run.RunID, startResp["run_id"])
+	if run.RunID != runID {
+		t.Fatalf("RunID = %q, want %q", run.RunID, runID)
 	}
 }
 

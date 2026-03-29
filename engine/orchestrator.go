@@ -208,7 +208,10 @@ func (o *Orchestrator) handleStepContinue(evt protocol.Event) error {
 	if err := o.store.Save(run); err != nil {
 		return err
 	}
-	input := dag.ResolveInput(stepDef, run.Steps)
+	input, err := dag.ResolveInput(stepDef, run.Steps)
+	if err != nil {
+		return fmt.Errorf("resolve input for step %q: %w", stepDef.ID, err)
+	}
 	return o.publishIterationTask(run.RunID, stepDef, input, state.Iterations)
 }
 
@@ -250,7 +253,10 @@ func (o *Orchestrator) handleStepFailed(evt protocol.Event) error {
 	if err := o.store.Save(run); err != nil {
 		return err
 	}
-	input := dag.ResolveInput(stepDef, run.Steps)
+	input, err := dag.ResolveInput(stepDef, run.Steps)
+	if err != nil {
+		return fmt.Errorf("resolve input for step %q: %w", stepDef.ID, err)
+	}
 	return o.publishTask(run.RunID, stepDef, input)
 }
 
@@ -265,7 +271,10 @@ func (o *Orchestrator) enqueueReady(wfDef dag.WorkflowDef, run dag.WorkflowRun) 
 	queued := queuedSet(run)
 	ready := dag.ResolveReady(wfDef, completed, queued)
 	for _, step := range ready {
-		input := dag.ResolveInput(step, run.Steps)
+		input, err := dag.ResolveInput(step, run.Steps)
+		if err != nil {
+			return fmt.Errorf("resolve input for step %q: %w", step.ID, err)
+		}
 		if err := o.publishTask(run.RunID, step, input); err != nil {
 			return err
 		}

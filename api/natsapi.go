@@ -7,29 +7,35 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 )
 
 // NATSAPI wires Service methods to NATS request/reply subjects. It owns no
 // business logic — it only translates between wire bytes and typed calls.
 type NATSAPI struct {
-	svc  *Service
-	nc   *nats.Conn
-	subs []*nats.Subscription
+	svc    *Service
+	nc     *nats.Conn
+	logger observe.Logger
+	subs   []*nats.Subscription
 }
 
-// NewNATSAPI constructs a NATSAPI bound to svc and nc.
-// Panics if either argument is nil — callers must pass fully initialised values.
-func NewNATSAPI(svc *Service, nc *nats.Conn) *NATSAPI {
+// NewNATSAPI constructs a NATSAPI bound to svc, nc, and logger.
+// Panics if any argument is nil — callers must pass fully initialised values.
+func NewNATSAPI(svc *Service, nc *nats.Conn, logger observe.Logger) *NATSAPI {
 	if svc == nil {
 		panic("NewNATSAPI: svc must not be nil")
 	}
 	if nc == nil {
 		panic("NewNATSAPI: nc must not be nil")
 	}
-	return &NATSAPI{svc: svc, nc: nc}
+	if logger == nil {
+		panic("NewNATSAPI: logger must not be nil")
+	}
+	return &NATSAPI{svc: svc, nc: nc, logger: logger}
 }
 
 // Start registers subscriptions for all control-plane subjects.
@@ -104,10 +110,14 @@ func (n *NATSAPI) handleGetRun(msg *nats.Msg) {
 	msg.Respond(data) //nolint:errcheck — reply failure is non-fatal
 }
 
-// reply marshals payload to JSON and sends it as a reply. Marshal errors are
-// dropped — a malformed internal response is a programmer error, not a
-// runtime one, and panicking here would kill the subscription goroutine.
+// reply marshals payload to JSON and sends it as a reply. A marshal error is
+// logged — it indicates a programmer error (unexpected payload type), but
+// panicking would kill the subscription goroutine, so we log and return.
 func (n *NATSAPI) reply(msg *nats.Msg, payload interface{}) {
-	data, _ := json.Marshal(payload)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		n.logger.Error("reply: marshal failed", fmt.Errorf("marshal reply payload: %w", err))
+		return
+	}
 	msg.Respond(data) //nolint:errcheck — best-effort reply
 }
