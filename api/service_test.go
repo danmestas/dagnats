@@ -5,8 +5,10 @@ package api
 
 import (
 	"testing"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
 )
@@ -59,14 +61,34 @@ func TestServiceGetRunStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
+
+	// The orchestrator is the sole owner of run state — start it so the
+	// WorkflowStarted event is processed and the snapshot is created.
+	orch := engine.NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch.Start()
+	defer orch.Stop()
+
 	svc := NewService(nc, observe.NewNoopLogger())
 	wfDef, _ := dag.NewWorkflow("test-wf").Task("a", "task-a").Build()
 	svc.RegisterWorkflow(wfDef)
 	runID, _ := svc.StartRun("test-wf", nil)
-	run, err := svc.GetRun(runID)
-	if err != nil {
-		t.Fatalf("GetRun failed: %v", err)
+
+	// Poll for the snapshot to appear; the orchestrator processes the event
+	// asynchronously so a brief wait is required (bounded to 5s).
+	var run dag.WorkflowRun
+	deadline := time.After(5 * time.Second)
+	for {
+		run, err = svc.GetRun(runID)
+		if err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("run snapshot did not appear within 5s: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
+
 	if run.RunID != runID {
 		t.Fatalf("RunID = %q, want %q", run.RunID, runID)
 	}

@@ -60,10 +60,19 @@ func TestE2ELinearWorkflow(t *testing.T) {
 		t.Fatalf("StartRun failed: %v", err)
 	}
 
-	// Poll for workflow completion (bounded timeout)
+	// Poll for workflow completion (bounded timeout). The orchestrator creates the
+	// snapshot asynchronously, so ErrRunNotFound is expected briefly at the start.
 	deadline := time.After(10 * time.Second)
 	for {
 		run, err := svc.GetRun(runID)
+		if err == engine.ErrRunNotFound {
+			select {
+			case <-deadline:
+				t.Fatalf("run snapshot did not appear within 10s")
+			case <-time.After(10 * time.Millisecond):
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatalf("GetRun failed: %v", err)
 		}
@@ -171,6 +180,14 @@ func TestE2EAgentLoop(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for {
 		run, err := svc.GetRun(runID)
+		if err == engine.ErrRunNotFound {
+			select {
+			case <-deadline:
+				t.Fatalf("run snapshot did not appear within 10s")
+			case <-time.After(10 * time.Millisecond):
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatalf("GetRun failed: %v", err)
 		}

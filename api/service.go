@@ -18,8 +18,8 @@ import (
 )
 
 // Service is the control plane for DagNats. It writes workflow definitions to
-// KV, publishes WorkflowStarted events to the history stream, and snapshots
-// initial run state so the engine can pick up immediately after StartRun returns.
+// KV and publishes WorkflowStarted events to the history stream. Run state is
+// owned exclusively by the orchestrator — the service only reads snapshots.
 type Service struct {
 	nc     *nats.Conn
 	js     nats.JetStreamContext
@@ -82,9 +82,11 @@ func (s *Service) GetWorkflow(name string) (dag.WorkflowDef, error) {
 	return def, err
 }
 
-// StartRun creates a new run for the named workflow, publishes a WorkflowStarted
-// event, and snapshots the initial run state. The run ID is a 32-char hex string
-// derived from crypto/rand — collision probability is negligible in practice.
+// StartRun fetches the named workflow definition, generates a run ID, and
+// publishes a WorkflowStarted event. The orchestrator is the sole owner of run
+// state — it creates the initial snapshot when it processes the event.
+// The run ID is a 32-char hex string from crypto/rand; collision probability
+// is negligible in practice.
 func (s *Service) StartRun(workflowName string, input []byte) (string, error) {
 	entry, err := s.defKV.Get(workflowName)
 	if err != nil {
@@ -99,14 +101,6 @@ func (s *Service) StartRun(workflowName string, input []byte) (string, error) {
 	_, err = s.js.Publish(evt.NATSSubject(), data, nats.MsgId(evt.NATSMsgID()))
 	if err != nil {
 		return "", err
-	}
-	var def dag.WorkflowDef
-	if err := json.Unmarshal(entry.Value(), &def); err != nil {
-		return "", fmt.Errorf("unmarshal workflow def: %w", err)
-	}
-	run := dag.NewWorkflowRun(def, runID)
-	if err := s.store.Save(run); err != nil {
-		return "", fmt.Errorf("save run snapshot: %w", err)
 	}
 	s.logger.Info("started run",
 		observe.String("run_id", runID),
