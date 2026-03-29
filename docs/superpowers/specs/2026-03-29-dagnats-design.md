@@ -229,13 +229,14 @@ dagnats/
 ├── dag/          # DAG definition, Graph DSL, topological sort
 │                 # Zero dependencies on NATS
 ├── engine/       # Orchestrator core loop
-│                 # Depends on: dag, natsutil
+│                 # Depends on: dag, natsutil, observe
 ├── worker/       # Worker framework -- TaskContext, handler registration
-│                 # Depends on: natsutil
+│                 # Depends on: natsutil, observe
 ├── api/          # REST + NATS request/reply control plane
-│                 # Depends on: engine, natsutil
+│                 # Depends on: engine, natsutil, observe
 ├── cli/          # CLI client
 │                 # Depends on: api (as HTTP client)
+├── observe/      # Observability interfaces + noop defaults
 ├── natsutil/     # Thin wrapper over nats.go -- only package importing nats.go
 └── cmd/
     ├── dagnats-engine/   # orchestrator binary
@@ -287,6 +288,13 @@ Each E2E test asserts on final KV state AND event history (paired assertions).
 - Slow worker exceeds timeout -> redelivery
 - Duplicate delivery -> dedup via `Nats-Msg-Id`
 
+### Testing Methodology: Red-Green TDD
+
+All implementation follows red-green TDD:
+1. **Red:** Write a failing test that describes the desired behavior
+2. **Green:** Write the minimal code to make it pass
+3. **Refactor:** Clean up while keeping tests green
+
 ### Testing Rules (TigerStyle)
 
 - Minimum 2 assertions per test (positive result + invalid state absence)
@@ -295,3 +303,50 @@ Each E2E test asserts on final KV state AND event history (paired assertions).
 - Each test file opens with methodology comment
 - No shared NATS servers between tests
 - 70-line limit on test functions; split into named helpers
+
+## Observability
+
+All observability is provider-agnostic. Define interfaces in DagNats, implement adapters separately. No vendor imports outside adapter packages.
+
+### Interfaces
+
+```go
+// Error reporting -- Sentry adapter planned, but never imported directly
+type ErrorReporter interface {
+    CaptureError(ctx context.Context, err error, tags map[string]string)
+    CaptureMessage(ctx context.Context, msg string, level Level)
+}
+
+// Structured logging
+type Logger interface {
+    Info(msg string, fields ...Field)
+    Error(msg string, err error, fields ...Field)
+    With(fields ...Field) Logger
+}
+
+// Metrics
+type Metrics interface {
+    Counter(name string, tags map[string]string) Counter
+    Histogram(name string, tags map[string]string) Histogram
+    Gauge(name string, tags map[string]string) Gauge
+}
+```
+
+### Key Metrics
+
+- `workflow.runs.active` (gauge) -- concurrent running workflows
+- `workflow.runs.completed` / `workflow.runs.failed` (counter)
+- `step.duration_ms` (histogram) -- per task type
+- `step.retries` (counter) -- per task type
+- `agent.loop.iterations` (histogram) -- per workflow
+- `nats.consumer.pending` (gauge) -- task queue depth
+
+### Adapter Structure
+
+```
+dagnats/
+├── observe/          # Interfaces: Logger, Metrics, ErrorReporter
+├── observe/noop/     # No-op implementations (default)
+├── observe/sentry/   # Sentry adapter (future)
+├── observe/otel/     # OpenTelemetry adapter (future)
+```

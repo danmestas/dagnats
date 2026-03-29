@@ -35,6 +35,7 @@ Five components: `dag/` (pure DAG logic), `engine/` (orchestrator), `worker/` (t
 
 ## Testing
 
+- **Red-green TDD.** Write a failing test first, then the minimal code to pass it, then refactor.
 - `dag/` package: pure unit tests, no NATS
 - `engine/`, `worker/`: integration tests with real embedded NATS server
 - E2E: full workflow lifecycle with real workers
@@ -42,6 +43,13 @@ Five components: `dag/` (pure DAG logic), `engine/` (orchestrator), `worker/` (t
 - Bounded timeouts on all test waits
 - No shared NATS servers between tests
 - Each test file opens with a methodology comment
+
+## Observability
+
+- All observability interfaces must be **provider-agnostic**. Define interfaces in-house, implement adapters separately.
+- Error reporting: interface now, Sentry adapter later. No direct Sentry imports outside the adapter.
+- Structured logging, tracing, and metrics should follow the same pattern: interface + adapter.
+- Observability is a first-class concern, not an afterthought.
 
 ## NATS-Native Patterns
 
