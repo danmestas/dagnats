@@ -9,7 +9,7 @@ DAG-based workflow engine built on NATS for autonomous LLM coding pipelines.
 
 ## Language & Tools
 
-- Go (module: github.com/dmestas/dagnats)
+- Go (module: github.com/danmestas/dagnats)
 - NATS JetStream for streams, KV, object store
 - `gofmt` for formatting
 - `go vet` + `staticcheck` for linting
