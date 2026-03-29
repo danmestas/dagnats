@@ -101,3 +101,19 @@ func TestNATSMsgID(t *testing.T) {
 		t.Fatalf("NATSMsgID() = %q, want %q", msgID, "run-1.step-a.step.completed")
 	}
 }
+
+func TestNATSMsgIDWorkflowEvent(t *testing.T) {
+	// Workflow events have empty StepID; should not produce double dots.
+	workflowStarted := Event{RunID: "run-1", StepID: "", Type: EventWorkflowStarted}
+	msgID := workflowStarted.NATSMsgID()
+	if msgID != "run-1.workflow.started" {
+		t.Fatalf("NATSMsgID() for workflow.started = %q, want %q", msgID, "run-1.workflow.started")
+	}
+
+	// Verify step events still work correctly with StepID.
+	stepEvent := Event{RunID: "run-1", StepID: "step-b", Type: EventStepStarted}
+	msgID = stepEvent.NATSMsgID()
+	if msgID != "run-1.step-b.step.started" {
+		t.Fatalf("NATSMsgID() for step.started = %q, want %q", msgID, "run-1.step-b.step.started")
+	}
+}

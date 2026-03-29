@@ -86,7 +86,11 @@ func (e Event) NATSSubject() string {
 
 // NATSMsgID returns the deduplication ID for JetStream idempotent publishing.
 // Composed of run, step, and event type so replays are safe.
+// For workflow events (empty StepID), omits the step segment to avoid double dots.
 func (e Event) NATSMsgID() string {
+	if e.StepID == "" {
+		return e.RunID + "." + string(e.Type)
+	}
 	return e.RunID + "." + e.StepID + "." + string(e.Type)
 }
 
