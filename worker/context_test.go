@@ -78,7 +78,9 @@ func TestTaskContextFail(t *testing.T) {
 		t.Fatalf("NextMsg timeout: %v", err)
 	}
 	var evt protocol.Event
-	json.Unmarshal(msg.Data, &evt)
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
 	if evt.Type != protocol.EventStepFailed {
 		t.Fatalf("event type = %q, want %q", evt.Type, protocol.EventStepFailed)
 	}
@@ -108,7 +110,9 @@ func TestTaskContextContinue(t *testing.T) {
 		t.Fatalf("NextMsg timeout: %v", err)
 	}
 	var evt protocol.Event
-	json.Unmarshal(msg.Data, &evt)
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
 	if evt.Type != protocol.EventStepContinue {
 		t.Fatalf("event type = %q, want %q", evt.Type, protocol.EventStepContinue)
 	}

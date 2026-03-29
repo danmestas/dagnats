@@ -2,6 +2,7 @@ package dag
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -65,6 +66,24 @@ func (r RunStatus) String() string {
 	panic("unknown RunStatus")
 }
 
+func (r RunStatus) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.String())
+}
+
+func (r *RunStatus) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	for i, v := range runStatusStrings {
+		if v == str {
+			*r = RunStatus(i)
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown RunStatus string: %q", str)
+}
+
 // StepStatus tracks the lifecycle of a single step within a run. Queued means
 // the step has been dispatched to NATS but not yet claimed by a worker.
 type StepStatus int
@@ -87,6 +106,24 @@ func (s StepStatus) String() string {
 		return stepStatusStrings[s]
 	}
 	panic("unknown StepStatus")
+}
+
+func (s StepStatus) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+func (s *StepStatus) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	for i, v := range stepStatusStrings {
+		if v == str {
+			*s = StepStatus(i)
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown StepStatus string: %q", str)
 }
 
 // AgentLoopConfig bounds the iterative behavior of an agent-loop step.

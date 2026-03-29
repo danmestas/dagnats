@@ -29,7 +29,9 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 	var regResp map[string]string
-	json.Unmarshal(reply.Data, &regResp)
+	if err := json.Unmarshal(reply.Data, &regResp); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
 	if regResp["status"] != "registered" {
 		t.Fatalf("status = %q, want 'registered'", regResp["status"])
 	}
@@ -41,7 +43,9 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 	var startResp map[string]string
-	json.Unmarshal(reply.Data, &startResp)
+	if err := json.Unmarshal(reply.Data, &startResp); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
 	if startResp["run_id"] == "" {
 		t.Fatal("response missing run_id")
 	}
@@ -52,7 +56,9 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 	var run dag.WorkflowRun
-	json.Unmarshal(reply.Data, &run)
+	if err := json.Unmarshal(reply.Data, &run); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
 	if run.RunID != startResp["run_id"] {
 		t.Fatalf("RunID = %q, want %q", run.RunID, startResp["run_id"])
 	}

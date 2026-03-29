@@ -52,7 +52,9 @@ func TestRESTStartRun(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
 	}
 	var result map[string]string
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
 	if result["run_id"] == "" {
 		t.Fatal("response missing run_id")
 	}
@@ -76,7 +78,9 @@ func TestRESTGetRun(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 	var run dag.WorkflowRun
-	json.NewDecoder(resp.Body).Decode(&run)
+	if err := json.NewDecoder(resp.Body).Decode(&run); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
 	if run.RunID != runID {
 		t.Fatalf("RunID = %q, want %q", run.RunID, runID)
 	}

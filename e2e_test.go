@@ -96,7 +96,9 @@ func TestE2ELinearWorkflow(t *testing.T) {
 			break
 		}
 		var evt protocol.Event
-		json.Unmarshal(msg.Data, &evt)
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
 		eventTypes = append(eventTypes, string(evt.Type))
 	}
 
@@ -195,7 +197,9 @@ func TestE2EAgentLoop(t *testing.T) {
 			break
 		}
 		var evt protocol.Event
-		json.Unmarshal(msg.Data, &evt)
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
 		if evt.Type == protocol.EventStepContinue {
 			continueCount++
 		}

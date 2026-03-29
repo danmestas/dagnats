@@ -51,6 +51,50 @@ func TestRunStatusString(t *testing.T) {
 	}
 }
 
+func TestRunStatusJSONRoundTrip(t *testing.T) {
+	original := RunStatusRunning
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	// Verify JSON contains string "running", not integer 1.
+	if string(data) != `"running"` {
+		t.Fatalf("marshaled RunStatus = %s, want %q", data, "running")
+	}
+
+	var got RunStatus
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if got != original {
+		t.Fatalf("roundtrip RunStatus = %v, want %v", got, original)
+	}
+}
+
+func TestStepStatusJSONRoundTrip(t *testing.T) {
+	original := StepStatusCompleted
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	// Verify JSON contains string "completed", not integer 3.
+	if string(data) != `"completed"` {
+		t.Fatalf("marshaled StepStatus = %s, want %q", data, "completed")
+	}
+
+	var got StepStatus
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if got != original {
+		t.Fatalf("roundtrip StepStatus = %v, want %v", got, original)
+	}
+}
+
 func TestWorkflowDefJSONRoundTrip(t *testing.T) {
 	def := WorkflowDef{
 		Name:    "test-workflow",
