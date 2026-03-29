@@ -157,12 +157,14 @@ type WorkflowDef struct {
 // Output is kept as raw bytes to remain payload-agnostic.
 // Iterations tracks how many agent-loop Continue cycles have completed;
 // used to generate unique dedup IDs for each re-enqueue.
+// LoopStartedAt records when the first iteration began, for MaxDuration enforcement.
 type StepState struct {
-	Status     StepStatus `json:"status"`
-	Attempts   int        `json:"attempts"`
-	Iterations int        `json:"iterations,omitempty"`
-	Output     []byte     `json:"output,omitempty"`
-	Error      string     `json:"error,omitempty"`
+	Status        StepStatus `json:"status"`
+	Attempts      int        `json:"attempts"`
+	Iterations    int        `json:"iterations,omitempty"`
+	LoopStartedAt time.Time  `json:"loop_started_at,omitempty"`
+	Output        []byte     `json:"output,omitempty"`
+	Error         string     `json:"error,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

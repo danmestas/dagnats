@@ -8,6 +8,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/observe"
@@ -174,9 +175,9 @@ func (o *Orchestrator) handleStepCompleted(evt protocol.Event) error {
 }
 
 // handleStepContinue re-enqueues an agent-loop step for another iteration.
-// Iterations is incremented in the snapshot before re-publishing so each dispatch
-// carries a unique iteration index — preventing JetStream dedup from swallowing
-// subsequent task messages for the same step.
+// Iterations is incremented before re-publishing so each dispatch carries a
+// unique iteration index — preventing JetStream dedup from swallowing repeats.
+// MaxIterations and MaxDuration are enforced here; violations fail the run.
 func (o *Orchestrator) handleStepContinue(evt protocol.Event) error {
 	if evt.RunID == "" {
 		panic("handleStepContinue: RunID must not be empty")
@@ -200,10 +201,15 @@ func (o *Orchestrator) handleStepContinue(evt protocol.Event) error {
 	if !found {
 		return fmt.Errorf("step %q not found in workflow def", evt.StepID)
 	}
-	// Increment iteration count before re-publishing so the new task message
-	// gets a distinct MsgId from all prior iterations.
 	state := run.Steps[evt.StepID]
 	state.Iterations++
+	// Record the start time on the first iteration for MaxDuration tracking.
+	if state.Iterations == 1 {
+		state.LoopStartedAt = time.Now().UTC()
+	}
+	if exceeded, reason := checkLoopBounds(stepDef, state); exceeded {
+		return o.failLoopStep(run, evt.StepID, state, reason)
+	}
 	run.Steps[evt.StepID] = state
 	if err := o.store.Save(run); err != nil {
 		return err
@@ -213,6 +219,44 @@ func (o *Orchestrator) handleStepContinue(evt protocol.Event) error {
 		return fmt.Errorf("resolve input for step %q: %w", stepDef.ID, err)
 	}
 	return o.publishIterationTask(run.RunID, stepDef, input, state.Iterations)
+}
+
+// checkLoopBounds returns (true, reason) when the step has hit its MaxIterations
+// or MaxDuration ceiling. Both limits are checked; whichever fires first wins.
+// A nil Loop config or zero limits are treated as "unbounded".
+func checkLoopBounds(stepDef dag.StepDef, state dag.StepState) (bool, string) {
+	if stepDef.Loop == nil {
+		return false, ""
+	}
+	if stepDef.Loop.MaxIterations > 0 && state.Iterations >= stepDef.Loop.MaxIterations {
+		return true, fmt.Sprintf("agent loop exceeded max iterations (%d)", stepDef.Loop.MaxIterations)
+	}
+	if stepDef.Loop.MaxDuration > 0 && !state.LoopStartedAt.IsZero() &&
+		time.Since(state.LoopStartedAt) >= stepDef.Loop.MaxDuration {
+		return true, fmt.Sprintf("agent loop exceeded max duration (%s)", stepDef.Loop.MaxDuration)
+	}
+	return false, ""
+}
+
+// failLoopStep marks the step and run as failed, saves state, and publishes a
+// workflow.failed event. Called when MaxIterations or MaxDuration is exceeded.
+func (o *Orchestrator) failLoopStep(
+	run dag.WorkflowRun, stepID string, state dag.StepState, reason string,
+) error {
+	if stepID == "" {
+		panic("failLoopStep: stepID must not be empty")
+	}
+	if reason == "" {
+		panic("failLoopStep: reason must not be empty")
+	}
+	state.Status = dag.StepStatusFailed
+	state.Error = reason
+	run.Steps[stepID] = state
+	run.Status = dag.RunStatusFailed
+	if err := o.store.Save(run); err != nil {
+		return err
+	}
+	return o.publishWorkflowFailed(run.RunID)
 }
 
 // handleStepFailed increments attempt count and fails the workflow if retries
@@ -375,6 +419,21 @@ func (o *Orchestrator) publishWorkflowCompleted(runID string) error {
 	data, err := evt.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal workflow.completed event: %w", err)
+	}
+	_, err = o.js.Publish(evt.NATSSubject(), data, nats.MsgId(evt.NATSMsgID()))
+	return err
+}
+
+// publishWorkflowFailed publishes a workflow.failed event to the history stream.
+// Mirrors publishWorkflowCompleted — same pattern, different event type constant.
+func (o *Orchestrator) publishWorkflowFailed(runID string) error {
+	if runID == "" {
+		panic("publishWorkflowFailed: runID must not be empty")
+	}
+	evt := protocol.NewWorkflowEvent(protocol.EventWorkflowFailed, runID, nil)
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal workflow.failed event: %w", err)
 	}
 	_, err = o.js.Publish(evt.NATSSubject(), data, nats.MsgId(evt.NATSMsgID()))
 	return err
