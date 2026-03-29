@@ -95,7 +95,7 @@ func (w *Worker) handleMessage(taskType string, handler HandlerFunc, msg *nats.M
 		msg.Ack()
 		return
 	}
-	ctx := newTaskContext(w.js, payload.RunID, payload.StepID, payload.Input)
+	ctx := newTaskContext(w.js, payload)
 	w.logger.Info("executing task",
 		observe.String("task_type", taskType),
 		observe.String("run_id", payload.RunID),

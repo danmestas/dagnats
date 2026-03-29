@@ -29,7 +29,7 @@ func TestTaskContextComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, "run-1", "step-a", []byte(`"input"`))
+	ctx := newTaskContext(js, engine.TaskPayload{RunID: "run-1", StepID: "step-a", Input: []byte(`"input"`)})
 	err = ctx.Complete([]byte(`"output"`))
 	if err != nil {
 		t.Fatalf("Complete failed: %v", err)
@@ -68,7 +68,7 @@ func TestTaskContextFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, "run-2", "step-b", nil)
+	ctx := newTaskContext(js, engine.TaskPayload{RunID: "run-2", StepID: "step-b"})
 	err = ctx.Fail(fmt.Errorf("something broke"))
 	if err != nil {
 		t.Fatalf("Fail failed: %v", err)
@@ -98,7 +98,7 @@ func TestTaskContextContinue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, "run-3", "step-c", nil)
+	ctx := newTaskContext(js, engine.TaskPayload{RunID: "run-3", StepID: "step-c"})
 	err = ctx.Continue([]byte(`"next input"`))
 	if err != nil {
 		t.Fatalf("Continue failed: %v", err)
@@ -115,7 +115,7 @@ func TestTaskContextContinue(t *testing.T) {
 }
 
 func TestTaskContextInput(t *testing.T) {
-	ctx := newTaskContext(nil, "run-4", "step-d", []byte(`"hello"`))
+	ctx := newTaskContext(nil, engine.TaskPayload{RunID: "run-4", StepID: "step-d", Input: []byte(`"hello"`)})
 	got := ctx.Input()
 	if string(got) != `"hello"` {
 		t.Fatalf("Input() = %q, want %q", string(got), `"hello"`)

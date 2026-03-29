@@ -118,11 +118,14 @@ type WorkflowDef struct {
 
 // StepState captures mutable runtime state for one step in a run.
 // Output is kept as raw bytes to remain payload-agnostic.
+// Iterations tracks how many agent-loop Continue cycles have completed;
+// used to generate unique dedup IDs for each re-enqueue.
 type StepState struct {
-	Status   StepStatus `json:"status"`
-	Attempts int        `json:"attempts"`
-	Output   []byte     `json:"output,omitempty"`
-	Error    string     `json:"error,omitempty"`
+	Status     StepStatus `json:"status"`
+	Attempts   int        `json:"attempts"`
+	Iterations int        `json:"iterations,omitempty"`
+	Output     []byte     `json:"output,omitempty"`
+	Error      string     `json:"error,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

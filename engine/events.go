@@ -7,10 +7,13 @@ import (
 
 // TaskPayload is the message body published to a task subject when the engine
 // dispatches a step for execution. Workers unmarshal this to build a TaskContext.
+// Iteration is the agent-loop iteration index (0 for the first execution); workers
+// include it in Continue event MsgIds to prevent JetStream deduplication across cycles.
 type TaskPayload struct {
-	RunID  string          `json:"run_id"`
-	StepID string          `json:"step_id"`
-	Input  json.RawMessage `json:"input,omitempty"`
+	RunID     string          `json:"run_id"`
+	StepID    string          `json:"step_id"`
+	Iteration int             `json:"iteration,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
 }
 
 // EventType identifies the kind of workflow lifecycle event.

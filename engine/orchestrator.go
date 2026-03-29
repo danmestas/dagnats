@@ -173,7 +173,9 @@ func (o *Orchestrator) handleStepCompleted(evt Event) error {
 }
 
 // handleStepContinue re-enqueues an agent-loop step for another iteration.
-// The step's Task is looked up from the workflow definition to build the subject.
+// Iterations is incremented in the snapshot before re-publishing so each dispatch
+// carries a unique iteration index — preventing JetStream dedup from swallowing
+// subsequent task messages for the same step.
 func (o *Orchestrator) handleStepContinue(evt Event) error {
 	if evt.RunID == "" {
 		panic("handleStepContinue: RunID must not be empty")
@@ -197,8 +199,16 @@ func (o *Orchestrator) handleStepContinue(evt Event) error {
 	if !found {
 		return fmt.Errorf("step %q not found in workflow def", evt.StepID)
 	}
+	// Increment iteration count before re-publishing so the new task message
+	// gets a distinct MsgId from all prior iterations.
+	state := run.Steps[evt.StepID]
+	state.Iterations++
+	run.Steps[evt.StepID] = state
+	if err := o.store.Save(run); err != nil {
+		return err
+	}
 	input := dag.ResolveInput(stepDef, run.Steps)
-	return o.publishTask(run.RunID, stepDef, input)
+	return o.publishIterationTask(run.RunID, stepDef, input, state.Iterations)
 }
 
 // handleStepFailed increments attempt count and fails the workflow if retries
@@ -288,6 +298,34 @@ func (o *Orchestrator) publishTask(runID string, step dag.StepDef, input []byte)
 	}
 	subject := "task." + step.Task + "." + runID
 	msgID := runID + "." + step.ID + ".queued"
+	_, err = o.js.Publish(subject, data, nats.MsgId(msgID))
+	return err
+}
+
+// publishIterationTask publishes a TaskPayload for an agent-loop re-enqueue.
+// iteration is the new cycle index and is embedded in both the payload and the
+// MsgId, making each iteration's task message distinct for JetStream dedup.
+func (o *Orchestrator) publishIterationTask(
+	runID string, step dag.StepDef, input []byte, iteration int,
+) error {
+	if runID == "" {
+		panic("publishIterationTask: runID must not be empty")
+	}
+	if step.ID == "" {
+		panic("publishIterationTask: step.ID must not be empty")
+	}
+	payload := TaskPayload{
+		RunID:     runID,
+		StepID:    step.ID,
+		Iteration: iteration,
+		Input:     input,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal TaskPayload: %w", err)
+	}
+	subject := "task." + step.Task + "." + runID
+	msgID := fmt.Sprintf("%s.%s.continue.%d", runID, step.ID, iteration)
 	_, err = o.js.Publish(subject, data, nats.MsgId(msgID))
 	return err
 }
