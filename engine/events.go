@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+// TaskPayload is the message body published to a task subject when the engine
+// dispatches a step for execution. Workers unmarshal this to build a TaskContext.
+type TaskPayload struct {
+	RunID  string          `json:"run_id"`
+	StepID string          `json:"step_id"`
+	Input  json.RawMessage `json:"input,omitempty"`
+}
+
 // EventType identifies the kind of workflow lifecycle event.
 // Using string constants makes events self-describing over the wire.
 type EventType string
