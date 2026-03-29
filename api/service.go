@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
@@ -90,7 +91,7 @@ func (s *Service) StartRun(workflowName string, input []byte) (string, error) {
 		return "", fmt.Errorf("workflow %q not found: %w", workflowName, err)
 	}
 	runID := generateRunID()
-	evt := engine.NewWorkflowEvent(engine.EventWorkflowStarted, runID, entry.Value())
+	evt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, runID, entry.Value())
 	data, err := evt.Marshal()
 	if err != nil {
 		return "", err

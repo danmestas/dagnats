@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/engine"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/nats-io/nats.go"
 )
@@ -29,7 +29,7 @@ func TestTaskContextComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, engine.TaskPayload{RunID: "run-1", StepID: "step-a", Input: []byte(`"input"`)})
+	ctx := newTaskContext(js, protocol.TaskPayload{RunID: "run-1", StepID: "step-a", Input: []byte(`"input"`)})
 	err = ctx.Complete([]byte(`"output"`))
 	if err != nil {
 		t.Fatalf("Complete failed: %v", err)
@@ -38,13 +38,13 @@ func TestTaskContextComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextMsg timeout: %v", err)
 	}
-	var evt engine.Event
+	var evt protocol.Event
 	err = json.Unmarshal(msg.Data, &evt)
 	if err != nil {
 		t.Fatalf("Unmarshal event failed: %v", err)
 	}
-	if evt.Type != engine.EventStepCompleted {
-		t.Fatalf("event type = %q, want %q", evt.Type, engine.EventStepCompleted)
+	if evt.Type != protocol.EventStepCompleted {
+		t.Fatalf("event type = %q, want %q", evt.Type, protocol.EventStepCompleted)
 	}
 	if evt.RunID != "run-1" {
 		t.Fatalf("RunID = %q, want %q", evt.RunID, "run-1")
@@ -68,7 +68,7 @@ func TestTaskContextFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, engine.TaskPayload{RunID: "run-2", StepID: "step-b"})
+	ctx := newTaskContext(js, protocol.TaskPayload{RunID: "run-2", StepID: "step-b"})
 	err = ctx.Fail(fmt.Errorf("something broke"))
 	if err != nil {
 		t.Fatalf("Fail failed: %v", err)
@@ -77,10 +77,10 @@ func TestTaskContextFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextMsg timeout: %v", err)
 	}
-	var evt engine.Event
+	var evt protocol.Event
 	json.Unmarshal(msg.Data, &evt)
-	if evt.Type != engine.EventStepFailed {
-		t.Fatalf("event type = %q, want %q", evt.Type, engine.EventStepFailed)
+	if evt.Type != protocol.EventStepFailed {
+		t.Fatalf("event type = %q, want %q", evt.Type, protocol.EventStepFailed)
 	}
 }
 
@@ -98,7 +98,7 @@ func TestTaskContextContinue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, engine.TaskPayload{RunID: "run-3", StepID: "step-c"})
+	ctx := newTaskContext(js, protocol.TaskPayload{RunID: "run-3", StepID: "step-c"})
 	err = ctx.Continue([]byte(`"next input"`))
 	if err != nil {
 		t.Fatalf("Continue failed: %v", err)
@@ -107,15 +107,15 @@ func TestTaskContextContinue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextMsg timeout: %v", err)
 	}
-	var evt engine.Event
+	var evt protocol.Event
 	json.Unmarshal(msg.Data, &evt)
-	if evt.Type != engine.EventStepContinue {
-		t.Fatalf("event type = %q, want %q", evt.Type, engine.EventStepContinue)
+	if evt.Type != protocol.EventStepContinue {
+		t.Fatalf("event type = %q, want %q", evt.Type, protocol.EventStepContinue)
 	}
 }
 
 func TestTaskContextInput(t *testing.T) {
-	ctx := newTaskContext(nil, engine.TaskPayload{RunID: "run-4", StepID: "step-d", Input: []byte(`"hello"`)})
+	ctx := newTaskContext(nil, protocol.TaskPayload{RunID: "run-4", StepID: "step-d", Input: []byte(`"hello"`)})
 	got := ctx.Input()
 	if string(got) != `"hello"` {
 		t.Fatalf("Input() = %q, want %q", string(got), `"hello"`)

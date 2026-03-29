@@ -3,7 +3,7 @@ package worker
 import (
 	"encoding/json"
 
-	"github.com/danmestas/dagnats/engine"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 )
@@ -87,7 +87,7 @@ func (w *Worker) Stop() {
 }
 
 func (w *Worker) handleMessage(taskType string, handler HandlerFunc, msg *nats.Msg) {
-	var payload engine.TaskPayload
+	var payload protocol.TaskPayload
 	err := json.Unmarshal(msg.Data, &payload)
 	if err != nil {
 		w.logger.Error("failed to unmarshal task payload", err,

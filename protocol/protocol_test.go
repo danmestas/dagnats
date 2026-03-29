@@ -3,7 +3,7 @@
 // and event type classification.
 // Methodology: construct events, marshal to JSON, unmarshal back, and verify
 // all fields survive the roundtrip. Check required field validation.
-package engine
+package protocol
 
 import (
 	"encoding/json"

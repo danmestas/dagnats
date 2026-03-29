@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/engine"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
@@ -34,7 +34,7 @@ func TestWorkerHandlesTask(t *testing.T) {
 	})
 	w.Start()
 	defer w.Stop()
-	payload := engine.TaskPayload{RunID: "run-1", StepID: "step-a", Input: json.RawMessage(`"hello"`)}
+	payload := protocol.TaskPayload{RunID: "run-1", StepID: "step-a", Input: json.RawMessage(`"hello"`)}
 	data, _ := json.Marshal(payload)
 	_, err = js.Publish("task.echo.run-1", data)
 	if err != nil {
@@ -53,9 +53,9 @@ func TestWorkerHandlesTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextMsg timeout: %v", err)
 	}
-	var evt engine.Event
+	var evt protocol.Event
 	json.Unmarshal(msg.Data, &evt)
-	if evt.Type != engine.EventStepCompleted {
-		t.Fatalf("event type = %q, want %q", evt.Type, engine.EventStepCompleted)
+	if evt.Type != protocol.EventStepCompleted {
+		t.Fatalf("event type = %q, want %q", evt.Type, protocol.EventStepCompleted)
 	}
 }

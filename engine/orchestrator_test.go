@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
@@ -39,7 +40,7 @@ func TestOrchestratorStartsFirstStep(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	evt := NewWorkflowEvent(EventWorkflowStarted, "run-1", defData)
+	evt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-1", defData)
 	evtData, _ := evt.Marshal()
 	js.Publish(evt.NATSSubject(), evtData, nats.MsgId(evt.NATSMsgID()))
 
@@ -84,7 +85,7 @@ func TestOrchestratorAdvancesAfterStepCompleted(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	startEvt := NewWorkflowEvent(EventWorkflowStarted, "run-2", defData)
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-2", defData)
 	startData, _ := startEvt.Marshal()
 	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
 
@@ -95,7 +96,7 @@ func TestOrchestratorAdvancesAfterStepCompleted(t *testing.T) {
 	}
 	msgsA[0].Ack()
 
-	compEvt := NewStepEvent(EventStepCompleted, "run-2", "a", []byte(`"done"`))
+	compEvt := protocol.NewStepEvent(protocol.EventStepCompleted, "run-2", "a", []byte(`"done"`))
 	compData, _ := compEvt.Marshal()
 	js.Publish(compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()))
 
@@ -128,12 +129,12 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	startEvt := NewWorkflowEvent(EventWorkflowStarted, "run-3", defData)
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-3", defData)
 	startData, _ := startEvt.Marshal()
 	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
 
 	time.Sleep(200 * time.Millisecond)
-	compEvt := NewStepEvent(EventStepCompleted, "run-3", "a", []byte(`"done"`))
+	compEvt := protocol.NewStepEvent(protocol.EventStepCompleted, "run-3", "a", []byte(`"done"`))
 	compData, _ := compEvt.Marshal()
 	js.Publish(compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()))
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
@@ -88,20 +89,20 @@ func (o *Orchestrator) handleEvent(msg *nats.Msg) {
 	if msg == nil {
 		return
 	}
-	evt, err := UnmarshalEvent(msg.Data)
+	evt, err := protocol.UnmarshalEvent(msg.Data)
 	if err != nil {
 		o.logger.Error("handleEvent: unmarshal failed", err)
 		msg.Nak()
 		return
 	}
 	switch evt.Type {
-	case EventWorkflowStarted:
+	case protocol.EventWorkflowStarted:
 		err = o.handleWorkflowStarted(evt)
-	case EventStepCompleted:
+	case protocol.EventStepCompleted:
 		err = o.handleStepCompleted(evt)
-	case EventStepContinue:
+	case protocol.EventStepContinue:
 		err = o.handleStepContinue(evt)
-	case EventStepFailed:
+	case protocol.EventStepFailed:
 		err = o.handleStepFailed(evt)
 	default:
 		msg.Ack()
@@ -121,7 +122,7 @@ func (o *Orchestrator) handleEvent(msg *nats.Msg) {
 // handleWorkflowStarted creates the initial WorkflowRun from the event payload,
 // saves it, then enqueues all steps whose dependencies are already satisfied
 // (entry-point steps with no DependsOn).
-func (o *Orchestrator) handleWorkflowStarted(evt Event) error {
+func (o *Orchestrator) handleWorkflowStarted(evt protocol.Event) error {
 	if evt.RunID == "" {
 		panic("handleWorkflowStarted: RunID must not be empty")
 	}
@@ -142,7 +143,7 @@ func (o *Orchestrator) handleWorkflowStarted(evt Event) error {
 
 // handleStepCompleted marks the step output in the snapshot, then checks whether
 // the workflow is fully complete or whether new steps have become unblocked.
-func (o *Orchestrator) handleStepCompleted(evt Event) error {
+func (o *Orchestrator) handleStepCompleted(evt protocol.Event) error {
 	if evt.RunID == "" {
 		panic("handleStepCompleted: RunID must not be empty")
 	}
@@ -176,7 +177,7 @@ func (o *Orchestrator) handleStepCompleted(evt Event) error {
 // Iterations is incremented in the snapshot before re-publishing so each dispatch
 // carries a unique iteration index — preventing JetStream dedup from swallowing
 // subsequent task messages for the same step.
-func (o *Orchestrator) handleStepContinue(evt Event) error {
+func (o *Orchestrator) handleStepContinue(evt protocol.Event) error {
 	if evt.RunID == "" {
 		panic("handleStepContinue: RunID must not be empty")
 	}
@@ -214,7 +215,7 @@ func (o *Orchestrator) handleStepContinue(evt Event) error {
 // handleStepFailed increments attempt count and fails the workflow if retries
 // are exhausted. The step's Retries field in the def controls how many attempts
 // are allowed before the whole run is marked failed.
-func (o *Orchestrator) handleStepFailed(evt Event) error {
+func (o *Orchestrator) handleStepFailed(evt protocol.Event) error {
 	if evt.RunID == "" {
 		panic("handleStepFailed: RunID must not be empty")
 	}
@@ -287,7 +288,7 @@ func (o *Orchestrator) publishTask(runID string, step dag.StepDef, input []byte)
 	if step.ID == "" {
 		panic("publishTask: step.ID must not be empty")
 	}
-	payload := TaskPayload{
+	payload := protocol.TaskPayload{
 		RunID:  runID,
 		StepID: step.ID,
 		Input:  input,
@@ -314,7 +315,7 @@ func (o *Orchestrator) publishIterationTask(
 	if step.ID == "" {
 		panic("publishIterationTask: step.ID must not be empty")
 	}
-	payload := TaskPayload{
+	payload := protocol.TaskPayload{
 		RunID:     runID,
 		StepID:    step.ID,
 		Iteration: iteration,
@@ -361,7 +362,7 @@ func (o *Orchestrator) publishWorkflowCompleted(runID string) error {
 	if runID == "" {
 		panic("publishWorkflowCompleted: runID must not be empty")
 	}
-	evt := NewWorkflowEvent(EventWorkflowCompleted, runID, nil)
+	evt := protocol.NewWorkflowEvent(protocol.EventWorkflowCompleted, runID, nil)
 	data, err := evt.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal workflow.completed event: %w", err)

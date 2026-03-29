@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
@@ -94,7 +95,7 @@ func TestE2ELinearWorkflow(t *testing.T) {
 		if err != nil {
 			break
 		}
-		var evt engine.Event
+		var evt protocol.Event
 		json.Unmarshal(msg.Data, &evt)
 		eventTypes = append(eventTypes, string(evt.Type))
 	}
@@ -193,9 +194,9 @@ func TestE2EAgentLoop(t *testing.T) {
 		if err != nil {
 			break
 		}
-		var evt engine.Event
+		var evt protocol.Event
 		json.Unmarshal(msg.Data, &evt)
-		if evt.Type == engine.EventStepContinue {
+		if evt.Type == protocol.EventStepContinue {
 			continueCount++
 		}
 	}
