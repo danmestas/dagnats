@@ -53,15 +53,20 @@ func TestBuilderAgentLoop(t *testing.T) {
 	if fix.Loop.MaxIterations != 10 { t.Fatalf("fix.Loop.MaxIterations = %d, want 10", fix.Loop.MaxIterations) }
 }
 
-func TestBuilderWithRetries(t *testing.T) {
-	def, err := NewWorkflow("retries").
-		Task("a", "task-a").WithRetries(5).WithTimeout(30 * time.Second).
+func TestBuilderWithTimeout(t *testing.T) {
+	def, err := NewWorkflow("timeouts").
+		Task("a", "task-a").WithTimeout(30 * time.Second).
 		Build()
-	if err != nil { t.Fatalf("Build failed: %v", err) }
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
 	step := findStep(def, "a")
-	if step.Retries != 5 { t.Fatalf("Retries = %d, want 5", step.Retries) }
-	if step.Timeout != 30*time.Second { t.Fatalf("Timeout = %v, want 30s", step.Timeout) }
-	if step.Loop != nil { t.Fatal("normal step should not have Loop config") }
+	if step.Timeout != 30*time.Second {
+		t.Fatalf("Timeout = %v, want 30s", step.Timeout)
+	}
+	if step.Loop != nil {
+		t.Fatal("normal step should not have Loop config")
+	}
 }
 
 func TestBuilderValidationError(t *testing.T) {

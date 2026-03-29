@@ -2,6 +2,7 @@ package worker
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -41,16 +42,25 @@ func (c *taskContext) Fail(err error) error {
 	return c.publishEvent(protocol.EventStepFailed, payload)
 }
 
-// Continue publishes a step.continue event with a per-iteration MsgId so each
-// loop cycle produces a distinct dedup key — preventing JetStream from swallowing
-// the second and subsequent continue signals.
+// Continue publishes a step.continue event. The MsgId includes a nonce
+// (UnixNano timestamp) so that if a worker crashes after Continue() but
+// before acking the task message, the redelivered task can publish a new
+// continue event without JetStream dedup swallowing it. Duplicate
+// continues are safe because the orchestrator bounds iterations via
+// MaxIterations and serializes events per-run.
 func (c *taskContext) Continue(output []byte) error {
-	evt := protocol.NewStepEvent(protocol.EventStepContinue, c.runID, c.stepID, output)
+	evt := protocol.NewStepEvent(
+		protocol.EventStepContinue, c.runID, c.stepID, output,
+	)
 	data, err := evt.Marshal()
 	if err != nil {
 		return err
 	}
-	msgID := fmt.Sprintf("%s.%s.continue.%d", c.runID, c.stepID, c.iteration)
+	nonce := fmt.Sprintf("%d", time.Now().UnixNano())
+	msgID := fmt.Sprintf(
+		"%s.%s.continue.%d.%s",
+		c.runID, c.stepID, c.iteration, nonce,
+	)
 	_, err = c.js.Publish(evt.NATSSubject(), data, nats.MsgId(msgID))
 	return err
 }

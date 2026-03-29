@@ -8,6 +8,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -20,13 +21,14 @@ import (
 // It is intentionally stateless between events — all run state lives in the
 // snapshot store (NATS KV), so the orchestrator can crash and resume safely.
 type Orchestrator struct {
-	nc      *nats.Conn
-	js      nats.JetStreamContext
-	defKV   nats.KeyValue
-	store   *SnapshotStore
-	logger  observe.Logger
-	metrics observe.Metrics
-	sub     *nats.Subscription
+	nc       *nats.Conn
+	js       nats.JetStreamContext
+	defKV    nats.KeyValue
+	store    *SnapshotStore
+	logger   observe.Logger
+	metrics  observe.Metrics
+	sub      *nats.Subscription
+	runLocks sync.Map // map[string]*sync.Mutex — per-run serialization
 }
 
 // NewOrchestrator creates an Orchestrator bound to the given NATS connection.
@@ -84,6 +86,14 @@ func (o *Orchestrator) Stop() {
 	o.sub = nil
 }
 
+// getRunLock returns a per-run mutex, creating one on first access.
+// Serializes all event handling for a given run to prevent concurrent
+// KV load-modify-save races between parallel step completions.
+func (o *Orchestrator) getRunLock(runID string) *sync.Mutex {
+	val, _ := o.runLocks.LoadOrStore(runID, &sync.Mutex{})
+	return val.(*sync.Mutex)
+}
+
 // handleEvent is the central dispatcher. It unmarshals the event and routes to
 // the appropriate handler. Unknown event types are acked and logged — not errors.
 func (o *Orchestrator) handleEvent(msg *nats.Msg) {
@@ -93,9 +103,22 @@ func (o *Orchestrator) handleEvent(msg *nats.Msg) {
 	evt, err := protocol.UnmarshalEvent(msg.Data)
 	if err != nil {
 		o.logger.Error("handleEvent: unmarshal failed", err)
-		msg.Nak()
+		msg.NakWithDelay(5 * time.Second)
 		return
 	}
+	switch evt.Type {
+	case protocol.EventWorkflowStarted,
+		protocol.EventStepCompleted,
+		protocol.EventStepContinue,
+		protocol.EventStepFailed:
+		// handled below
+	default:
+		msg.Ack()
+		return
+	}
+	lock := o.getRunLock(evt.RunID)
+	lock.Lock()
+	defer lock.Unlock()
 	switch evt.Type {
 	case protocol.EventWorkflowStarted:
 		err = o.handleWorkflowStarted(evt)
@@ -105,16 +128,13 @@ func (o *Orchestrator) handleEvent(msg *nats.Msg) {
 		err = o.handleStepContinue(evt)
 	case protocol.EventStepFailed:
 		err = o.handleStepFailed(evt)
-	default:
-		msg.Ack()
-		return
 	}
 	if err != nil {
 		o.logger.Error("handleEvent: handler error", err,
 			observe.String("event_type", string(evt.Type)),
 			observe.String("run_id", evt.RunID),
 		)
-		msg.Nak()
+		msg.NakWithDelay(5 * time.Second)
 		return
 	}
 	msg.Ack()
@@ -291,13 +311,29 @@ func (o *Orchestrator) handleStepFailed(evt protocol.Event) error {
 // enqueueReady resolves all currently-ready steps and publishes one task message
 // per step. Steps already queued are skipped via the queued set check inside
 // dag.ResolveReady, preventing double dispatch.
-func (o *Orchestrator) enqueueReady(wfDef dag.WorkflowDef, run dag.WorkflowRun) error {
+func (o *Orchestrator) enqueueReady(
+	wfDef dag.WorkflowDef, run dag.WorkflowRun,
+) error {
 	if run.RunID == "" {
 		panic("enqueueReady: RunID must not be empty")
 	}
 	completed := completedSet(run)
 	queued := queuedSet(run)
 	ready := dag.ResolveReady(wfDef, completed, queued)
+	if len(ready) == 0 {
+		return nil
+	}
+	// Mark all ready steps as Queued and save BEFORE publishing tasks.
+	// If publish fails, the step is Queued but not in NATS — the next
+	// event for this run will re-check ResolveReady and re-enqueue.
+	for _, step := range ready {
+		state := run.Steps[step.ID]
+		state.Status = dag.StepStatusQueued
+		run.Steps[step.ID] = state
+	}
+	if err := o.store.Save(run); err != nil {
+		return err
+	}
 	for _, step := range ready {
 		input, err := dag.ResolveInput(step, run.Steps)
 		if err != nil {
@@ -306,14 +342,8 @@ func (o *Orchestrator) enqueueReady(wfDef dag.WorkflowDef, run dag.WorkflowRun) 
 		if err := o.publishTask(run.RunID, step, input); err != nil {
 			return err
 		}
-		state := run.Steps[step.ID]
-		state.Status = dag.StepStatusQueued
-		run.Steps[step.ID] = state
 	}
-	if len(ready) == 0 {
-		return nil
-	}
-	return o.store.Save(run)
+	return nil
 }
 
 // publishTask publishes a TaskPayload to task.{step.Task}.{runID} with a

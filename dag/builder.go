@@ -10,7 +10,7 @@ import "time"
 
 // WorkflowBuilder accumulates step definitions and wires them into a WorkflowDef
 // on Build(). current tracks the most recently added step so that chained
-// modifier calls (DependsOn, WithRetries, etc.) always target the right step.
+// modifier calls (DependsOn, WithTimeout, etc.) always target the right step.
 type WorkflowBuilder struct {
 	name    string
 	version string
@@ -60,15 +60,6 @@ func (b *WorkflowBuilder) DependsOn(ids ...string) *WorkflowBuilder {
 		panic("DependsOn called before adding a step")
 	}
 	b.steps[b.current].DependsOn = append(b.steps[b.current].DependsOn, ids...)
-	return b
-}
-
-// WithRetries sets the retry count on the active step.
-func (b *WorkflowBuilder) WithRetries(n int) *WorkflowBuilder {
-	if b.current < 0 {
-		panic("WithRetries called before adding a step")
-	}
-	b.steps[b.current].Retries = n
 	return b
 }
 

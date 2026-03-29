@@ -139,7 +139,6 @@ type StepDef struct {
 	ID        string           `json:"id"`
 	Task      string           `json:"task"`
 	DependsOn []string         `json:"depends_on,omitempty"`
-	Retries   int              `json:"retries"`
 	Timeout   time.Duration    `json:"timeout"`
 	Type      StepType         `json:"type"`
 	Loop      *AgentLoopConfig `json:"loop,omitempty"`

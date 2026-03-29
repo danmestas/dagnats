@@ -101,18 +101,15 @@ func TestWorkflowDefJSONRoundTrip(t *testing.T) {
 		Version: "1.0.0",
 		Steps: []StepDef{
 			{
-				ID:        "step-a",
-				Task:      "task-a",
-				DependsOn: nil,
-				Retries:   3,
-				Timeout:   30 * time.Second,
-				Type:      StepTypeNormal,
+				ID:      "step-a",
+				Task:    "task-a",
+				Timeout: 30 * time.Second,
+				Type:    StepTypeNormal,
 			},
 			{
 				ID:        "step-b",
 				Task:      "task-b",
 				DependsOn: []string{"step-a"},
-				Retries:   1,
 				Timeout:   60 * time.Second,
 				Type:      StepTypeAgentLoop,
 				Loop:      &AgentLoopConfig{MaxIterations: 10, MaxDuration: 5 * time.Minute},
