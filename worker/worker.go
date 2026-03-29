@@ -2,9 +2,10 @@ package worker
 
 import (
 	"encoding/json"
+	"time"
 
-	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
@@ -103,11 +104,12 @@ func (w *Worker) handleMessage(taskType string, handler HandlerFunc, msg *nats.M
 	)
 	err = handler(ctx)
 	if err != nil {
-		w.logger.Error("task handler returned error", err,
+		w.logger.Error("task handler returned error, will retry", err,
 			observe.String("task_type", taskType),
 			observe.String("run_id", payload.RunID),
 		)
-		ctx.Fail(err)
+		msg.NakWithDelay(5 * time.Second)
+		return
 	}
 	msg.Ack()
 }

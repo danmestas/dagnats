@@ -259,9 +259,10 @@ func (o *Orchestrator) failLoopStep(
 	return o.publishWorkflowFailed(run.RunID)
 }
 
-// handleStepFailed increments attempt count and fails the workflow if retries
-// are exhausted. The step's Retries field in the def controls how many attempts
-// are allowed before the whole run is marked failed.
+// handleStepFailed records the permanent failure reported by a worker calling
+// ctx.Fail(). Transient failures are handled entirely by JetStream NakWithDelay
+// and never reach the orchestrator. step.failed always means permanent failure:
+// mark the step and workflow failed, save, and publish workflow.failed.
 func (o *Orchestrator) handleStepFailed(evt protocol.Event) error {
 	if evt.RunID == "" {
 		panic("handleStepFailed: RunID must not be empty")
@@ -269,39 +270,22 @@ func (o *Orchestrator) handleStepFailed(evt protocol.Event) error {
 	if evt.StepID == "" {
 		panic("handleStepFailed: StepID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	_, run, err := o.loadRunAndDef(evt.RunID)
 	if err != nil {
 		return err
-	}
-	var stepDef dag.StepDef
-	for _, s := range wfDef.Steps {
-		if s.ID == evt.StepID {
-			stepDef = s
-			break
-		}
 	}
 	state := run.Steps[evt.StepID]
 	state.Attempts++
 	if evt.Payload != nil {
 		state.Error = string(evt.Payload)
 	}
-	if state.Attempts > stepDef.Retries {
-		state.Status = dag.StepStatusFailed
-		run.Steps[evt.StepID] = state
-		run.Status = dag.RunStatusFailed
-		return o.store.Save(run)
-	}
-	// Retries remain — re-queue the step. NakWithDelay on the worker side
-	// handles backoff; orchestrator simply re-publishes.
+	state.Status = dag.StepStatusFailed
 	run.Steps[evt.StepID] = state
+	run.Status = dag.RunStatusFailed
 	if err := o.store.Save(run); err != nil {
 		return err
 	}
-	input, err := dag.ResolveInput(stepDef, run.Steps)
-	if err != nil {
-		return fmt.Errorf("resolve input for step %q: %w", stepDef.ID, err)
-	}
-	return o.publishTask(run.RunID, stepDef, input)
+	return o.publishWorkflowFailed(run.RunID)
 }
 
 // enqueueReady resolves all currently-ready steps and publishes one task message
