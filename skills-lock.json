@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "hipp": {
+      "source": "danmestas/agent-skills",
+      "sourceType": "github",
+      "computedHash": "bed15e57559546e6848f0e77a5821681e6a43438af893de848e9055b8f57a250"
+    },
+    "ousterhout": {
+      "source": "danmestas/agent-skills",
+      "sourceType": "github",
+      "computedHash": "ddcd2758d53abebee8386cc2a7649e58ae32b9558d97fe8aa58532522295ed36"
+    }
+  }
+}

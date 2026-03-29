@@ -19,7 +19,7 @@ dagnats/
 ├── dag/
 │   ├── types.go          # WorkflowDef, StepDef, StepType, RunStatus, StepStatus
 │   ├── builder.go        # Graph DSL: NewWorkflow, Task, DependsOn, AgentLoop
-│   ├── resolve.go        # DAG resolution: topological sort, ResolveReady
+│   ├── resolve.go        # DAG resolution: topological sort, ResolveReady, ResolveInput
 │   ├── validate.go       # DAG validation: cycles, missing deps, duplicate IDs
 │   ├── types_test.go     # Type serialization tests
 │   ├── builder_test.go   # DSL construction tests
@@ -177,14 +177,13 @@ func TestWorkflowDefJSONRoundTrip(t *testing.T) {
 				Type:      StepTypeNormal,
 			},
 			{
-				ID:            "step-b",
-				Task:          "task-b",
-				DependsOn:     []string{"step-a"},
-				Retries:       1,
-				Timeout:       60 * time.Second,
-				Type:          StepTypeAgentLoop,
-				MaxIterations: 10,
-				MaxDuration:   5 * time.Minute,
+				ID:        "step-b",
+				Task:      "task-b",
+				DependsOn: []string{"step-a"},
+				Retries:   1,
+				Timeout:   60 * time.Second,
+				Type:      StepTypeAgentLoop,
+				Loop:      &AgentLoopConfig{MaxIterations: 10, MaxDuration: 5 * time.Minute},
 			},
 		},
 	}
@@ -209,8 +208,11 @@ func TestWorkflowDefJSONRoundTrip(t *testing.T) {
 	if got.Steps[1].Type != StepTypeAgentLoop {
 		t.Fatalf("Steps[1].Type = %v, want %v", got.Steps[1].Type, StepTypeAgentLoop)
 	}
-	if got.Steps[1].MaxIterations != 10 {
-		t.Fatalf("Steps[1].MaxIterations = %d, want 10", got.Steps[1].MaxIterations)
+	if got.Steps[1].Loop == nil {
+		t.Fatal("Steps[1].Loop must not be nil for AgentLoop")
+	}
+	if got.Steps[1].Loop.MaxIterations != 10 {
+		t.Fatalf("Steps[1].Loop.MaxIterations = %d, want 10", got.Steps[1].Loop.MaxIterations)
 	}
 }
 ```
@@ -312,16 +314,22 @@ func (s StepStatus) String() string {
 	panic("unknown StepStatus")
 }
 
+// AgentLoopConfig holds bounds for agent loop steps.
+// Only valid on StepTypeAgentLoop — Validate rejects it on other types.
+type AgentLoopConfig struct {
+	MaxIterations int           `json:"max_iterations"`
+	MaxDuration   time.Duration `json:"max_duration,omitempty"`
+}
+
 // StepDef defines a single step in a workflow DAG.
 type StepDef struct {
-	ID            string        `json:"id"`
-	Task          string        `json:"task"`
-	DependsOn     []string      `json:"depends_on,omitempty"`
-	Retries       int           `json:"retries"`
-	Timeout       time.Duration `json:"timeout"`
-	Type          StepType      `json:"type"`
-	MaxIterations int           `json:"max_iterations,omitempty"`
-	MaxDuration   time.Duration `json:"max_duration,omitempty"`
+	ID        string           `json:"id"`
+	Task      string           `json:"task"`
+	DependsOn []string         `json:"depends_on,omitempty"`
+	Retries   int              `json:"retries"`
+	Timeout   time.Duration    `json:"timeout"`
+	Type      StepType         `json:"type"`
+	Loop      *AgentLoopConfig `json:"loop,omitempty"`
 }
 
 // WorkflowDef is the static DAG template for a workflow.
@@ -346,6 +354,25 @@ type WorkflowRun struct {
 	Status     RunStatus            `json:"status"`
 	Steps      map[string]StepState `json:"steps"`
 	CreatedAt  time.Time            `json:"created_at"`
+}
+
+// NewWorkflowRun creates the initial run state from a definition.
+// Single constructor — prevents duplicate init logic across packages.
+func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun {
+	if runID == "" {
+		panic("NewWorkflowRun: runID must not be empty")
+	}
+	steps := make(map[string]StepState, len(def.Steps))
+	for _, step := range def.Steps {
+		steps[step.ID] = StepState{Status: StepStatusPending}
+	}
+	return WorkflowRun{
+		RunID:      runID,
+		WorkflowID: def.Name,
+		Status:     RunStatusPending,
+		Steps:      steps,
+		CreatedAt:  time.Now().UTC(),
+	}
 }
 ```
 
@@ -467,20 +494,37 @@ func TestValidateValidDAG(t *testing.T) {
 	}
 }
 
-func TestValidateAgentLoopRequiresMaxIterations(t *testing.T) {
+func TestValidateAgentLoopRequiresLoopConfig(t *testing.T) {
 	def := WorkflowDef{
-		Name:    "loop-no-max",
+		Name:    "loop-no-config",
 		Version: "1",
 		Steps: []StepDef{
-			{ID: "a", Task: "task-a", Type: StepTypeAgentLoop, MaxIterations: 0},
+			{ID: "a", Task: "task-a", Type: StepTypeAgentLoop, Loop: nil},
 		},
 	}
 	err := Validate(def)
 	if err == nil {
-		t.Fatal("expected error for agent loop without MaxIterations, got nil")
+		t.Fatal("expected error for agent loop without Loop config, got nil")
 	}
-	if !strings.Contains(err.Error(), "MaxIterations") {
-		t.Fatalf("error should mention 'MaxIterations', got: %v", err)
+	if !strings.Contains(err.Error(), "Loop") {
+		t.Fatalf("error should mention 'Loop', got: %v", err)
+	}
+}
+
+func TestValidateNormalStepRejectsLoopConfig(t *testing.T) {
+	def := WorkflowDef{
+		Name:    "normal-with-loop",
+		Version: "1",
+		Steps: []StepDef{
+			{ID: "a", Task: "task-a", Type: StepTypeNormal, Loop: &AgentLoopConfig{MaxIterations: 5}},
+		},
+	}
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for normal step with Loop config, got nil")
+	}
+	if !strings.Contains(err.Error(), "Loop") {
+		t.Fatalf("error should mention 'Loop', got: %v", err)
 	}
 }
 ```
@@ -522,10 +566,22 @@ func Validate(def WorkflowDef) error {
 				)
 			}
 		}
-		if s.Type == StepTypeAgentLoop && s.MaxIterations <= 0 {
+		if s.Type == StepTypeAgentLoop && s.Loop == nil {
+			return fmt.Errorf(
+				"step %q is AgentLoop but Loop config is nil",
+				s.ID,
+			)
+		}
+		if s.Type == StepTypeAgentLoop && s.Loop != nil && s.Loop.MaxIterations <= 0 {
 			return fmt.Errorf(
 				"step %q is AgentLoop but MaxIterations is %d (must be > 0)",
-				s.ID, s.MaxIterations,
+				s.ID, s.Loop.MaxIterations,
+			)
+		}
+		if s.Type != StepTypeAgentLoop && s.Loop != nil {
+			return fmt.Errorf(
+				"step %q has Loop config but is not AgentLoop type",
+				s.ID,
 			)
 		}
 	}
@@ -578,7 +634,7 @@ func detectCycle(steps []StepDef) error {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/dmestas/projects/dagnats && go test ./dag/ -run TestValidate -v`
-Expected: PASS — all six validation tests.
+Expected: PASS — all seven validation tests.
 
 - [ ] **Step 5: Commit**
 
@@ -681,8 +737,11 @@ func TestBuilderAgentLoop(t *testing.T) {
 	if fix.Type != StepTypeAgentLoop {
 		t.Fatalf("fix.Type = %v, want AgentLoop", fix.Type)
 	}
-	if fix.MaxIterations != 10 {
-		t.Fatalf("fix.MaxIterations = %d, want 10", fix.MaxIterations)
+	if fix.Loop == nil {
+		t.Fatal("fix.Loop must not be nil")
+	}
+	if fix.Loop.MaxIterations != 10 {
+		t.Fatalf("fix.Loop.MaxIterations = %d, want 10", fix.Loop.MaxIterations)
 	}
 }
 
@@ -701,6 +760,10 @@ func TestBuilderWithRetries(t *testing.T) {
 	}
 	if step.Timeout != 30*time.Second {
 		t.Fatalf("Timeout = %v, want 30s", step.Timeout)
+	}
+	// Normal step must not have Loop config
+	if step.Loop != nil {
+		t.Fatal("normal step should not have Loop config")
 	}
 }
 
@@ -777,6 +840,7 @@ func (b *WorkflowBuilder) AgentLoop(id, task string) *WorkflowBuilder {
 		ID:   id,
 		Task: task,
 		Type: StepTypeAgentLoop,
+		Loop: &AgentLoopConfig{},
 	})
 	b.current = len(b.steps) - 1
 	return b
@@ -816,7 +880,10 @@ func (b *WorkflowBuilder) WithMaxIterations(n int) *WorkflowBuilder {
 	if b.current < 0 {
 		panic("WithMaxIterations called before adding a step")
 	}
-	b.steps[b.current].MaxIterations = n
+	if b.steps[b.current].Loop == nil {
+		panic("WithMaxIterations called on non-AgentLoop step")
+	}
+	b.steps[b.current].Loop.MaxIterations = n
 	return b
 }
 
@@ -825,7 +892,10 @@ func (b *WorkflowBuilder) WithMaxDuration(d time.Duration) *WorkflowBuilder {
 	if b.current < 0 {
 		panic("WithMaxDuration called before adding a step")
 	}
-	b.steps[b.current].MaxDuration = d
+	if b.steps[b.current].Loop == nil {
+		panic("WithMaxDuration called on non-AgentLoop step")
+	}
+	b.steps[b.current].Loop.MaxDuration = d
 	return b
 }
 
@@ -869,12 +939,14 @@ git commit -m "feat(dag): add Graph DSL builder — fluent API for workflow cons
 // dag/resolve_test.go
 
 // Tests for DAG resolution: given a set of completed steps, determine which
-// steps are ready to execute. Uses topological ordering for deterministic results.
+// steps are ready to execute. Also tests input resolution for single-dep,
+// fan-in, and no-dep cases.
 // Methodology: build DAGs of varying shapes, mark subsets as completed, and
 // verify exactly which steps become ready. Check both inclusion and exclusion.
 package dag
 
 import (
+	"encoding/json"
 	"sort"
 	"testing"
 )
@@ -984,6 +1056,47 @@ func TestResolveReadyAllCompleted(t *testing.T) {
 	}
 }
 
+func TestResolveInputSingleDep(t *testing.T) {
+	step := StepDef{ID: "b", DependsOn: []string{"a"}}
+	steps := map[string]StepState{
+		"a": {Status: StepStatusCompleted, Output: []byte(`"a-out"`)},
+	}
+	input := ResolveInput(step, steps)
+	if string(input) != `"a-out"` {
+		t.Fatalf("input = %q, want %q", string(input), `"a-out"`)
+	}
+}
+
+func TestResolveInputFanIn(t *testing.T) {
+	step := StepDef{ID: "c", DependsOn: []string{"a", "b"}}
+	steps := map[string]StepState{
+		"a": {Status: StepStatusCompleted, Output: []byte(`"a-out"`)},
+		"b": {Status: StepStatusCompleted, Output: []byte(`"b-out"`)},
+	}
+	input := ResolveInput(step, steps)
+
+	// Fan-in: should be a JSON map keyed by step ID
+	var result map[string]json.RawMessage
+	err := json.Unmarshal(input, &result)
+	if err != nil {
+		t.Fatalf("fan-in input is not valid JSON map: %v", err)
+	}
+	if string(result["a"]) != `"a-out"` {
+		t.Fatalf("result[a] = %q, want %q", string(result["a"]), `"a-out"`)
+	}
+	if string(result["b"]) != `"b-out"` {
+		t.Fatalf("result[b] = %q, want %q", string(result["b"]), `"b-out"`)
+	}
+}
+
+func TestResolveInputNoDeps(t *testing.T) {
+	step := StepDef{ID: "a", DependsOn: nil}
+	input := ResolveInput(step, map[string]StepState{})
+	if input != nil {
+		t.Fatalf("input = %q, want nil for step with no deps", string(input))
+	}
+}
+
 func readyIDs(steps []StepDef) []string {
 	ids := make([]string, len(steps))
 	for i, s := range steps {
@@ -1003,6 +1116,8 @@ Expected: FAIL — `ResolveReady` not defined.
 ```go
 // dag/resolve.go
 package dag
+
+import "encoding/json"
 
 // ResolveReady returns steps whose dependencies are all completed,
 // that are not already completed or queued.
@@ -1027,6 +1142,26 @@ func ResolveReady(
 	return ready
 }
 
+// ResolveInput determines the input for a step based on its dependencies.
+// - No deps: nil (workflow-level input is passed separately)
+// - Single dep: that dep's output directly
+// - Multiple deps (fan-in): JSON map keyed by step ID
+func ResolveInput(step StepDef, steps map[string]StepState) []byte {
+	if len(step.DependsOn) == 0 {
+		return nil
+	}
+	if len(step.DependsOn) == 1 {
+		return steps[step.DependsOn[0]].Output
+	}
+	// Fan-in: collect all dep outputs into a map
+	collected := make(map[string]json.RawMessage, len(step.DependsOn))
+	for _, dep := range step.DependsOn {
+		collected[dep] = steps[dep].Output
+	}
+	data, _ := json.Marshal(collected)
+	return data
+}
+
 // IsComplete returns true when every step in the workflow has completed.
 func IsComplete(def WorkflowDef, completed map[string]bool) bool {
 	for _, step := range def.Steps {
@@ -1049,8 +1184,8 @@ func allDepsCompleted(deps []string, completed map[string]bool) bool {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/dmestas/projects/dagnats && go test ./dag/ -run TestResolveReady -v`
-Expected: PASS — all five resolution tests.
+Run: `cd /Users/dmestas/projects/dagnats && go test ./dag/ -run "TestResolve" -v`
+Expected: PASS — all eight resolution tests (five ResolveReady + three ResolveInput).
 
 - [ ] **Step 5: Commit**
 
@@ -2400,16 +2535,8 @@ func (o *Orchestrator) handleWorkflowStarted(evt Event) {
 		return
 	}
 
-	run := dag.WorkflowRun{
-		RunID:      evt.RunID,
-		WorkflowID: wfDef.Name,
-		Status:     dag.RunStatusRunning,
-		Steps:      make(map[string]dag.StepState, len(wfDef.Steps)),
-		CreatedAt:  evt.Timestamp,
-	}
-	for _, step := range wfDef.Steps {
-		run.Steps[step.ID] = dag.StepState{Status: dag.StepStatusPending}
-	}
+	run := dag.NewWorkflowRun(wfDef, evt.RunID)
+	run.Status = dag.RunStatusRunning
 
 	o.store.Save(run)
 	o.enqueueReady(wfDef, run)
@@ -2508,23 +2635,12 @@ func (o *Orchestrator) enqueueReady(wfDef dag.WorkflowDef, run dag.WorkflowRun) 
 
 	for _, step := range ready {
 		subject := "task." + step.Task + "." + run.RunID
+		input := dag.ResolveInput(step, run.Steps)
 
-		// Build task payload with run context
 		payload := TaskPayload{
 			RunID:  run.RunID,
 			StepID: step.ID,
-			Input:  run.Steps[step.ID].Output, // previous step output or nil
-		}
-
-		// For first steps with no deps, use workflow start payload
-		if len(step.DependsOn) == 0 && payload.Input == nil {
-			// Input comes from workflow start event, already in run state
-		}
-
-		// Find input from completed dependencies
-		if len(step.DependsOn) == 1 {
-			depState := run.Steps[step.DependsOn[0]]
-			payload.Input = depState.Output
+			Input:  input,
 		}
 
 		data, _ := json.Marshal(payload)
@@ -3290,16 +3406,7 @@ func (s *Service) StartRun(workflowName string, input []byte) (string, error) {
 	var def dag.WorkflowDef
 	json.Unmarshal(entry.Value(), &def)
 
-	run := dag.WorkflowRun{
-		RunID:      runID,
-		WorkflowID: workflowName,
-		Status:     dag.RunStatusPending,
-		Steps:      make(map[string]dag.StepState, len(def.Steps)),
-		CreatedAt:  evt.Timestamp,
-	}
-	for _, step := range def.Steps {
-		run.Steps[step.ID] = dag.StepState{Status: dag.StepStatusPending}
-	}
+	run := dag.NewWorkflowRun(def, runID)
 	s.store.Save(run)
 
 	s.logger.Info("started run",
@@ -4291,7 +4398,7 @@ func TestE2EAgentLoop(t *testing.T) {
 	defer w.Stop()
 
 	svc := api.NewService(nc, observe.NewNoopLogger())
-	wfDef, _ := dag.NewWorkflow("e2e-loop").
+	wfDef, err := dag.NewWorkflow("e2e-loop").
 		AgentLoop("loop", "looper").WithMaxIterations(10).
 		Build()
 	svc.RegisterWorkflow(wfDef)

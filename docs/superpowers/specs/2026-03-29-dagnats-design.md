@@ -29,14 +29,20 @@ type WorkflowDef struct {
 }
 
 type StepDef struct {
-    ID            string
-    Task          string        // maps to a registered worker handler
-    DependsOn     []string      // step IDs that must complete first
-    Retries       int
-    Timeout       time.Duration
-    Type          StepType      // Normal, AgentLoop, SubWorkflow
-    MaxIterations int           // AgentLoop only
-    MaxDuration   time.Duration // AgentLoop only
+    ID        string
+    Task      string        // maps to a registered worker handler
+    DependsOn []string      // step IDs that must complete first
+    Retries   int
+    Timeout   time.Duration
+    Type      StepType      // Normal, AgentLoop, SubWorkflow
+    Loop      *AgentLoopConfig // non-nil only when Type == StepTypeAgentLoop
+}
+
+// AgentLoopConfig holds bounds for agent loop steps.
+// Only valid on StepTypeAgentLoop — Validate rejects it on other types.
+type AgentLoopConfig struct {
+    MaxIterations int
+    MaxDuration   time.Duration
 }
 ```
 
@@ -57,6 +63,10 @@ type StepState struct {
     Output   []byte
     Error    string
 }
+
+// NewWorkflowRun creates the initial run state from a definition.
+// Single constructor — no duplicate initialization logic.
+func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun { ... }
 ```
 
 ### Event Types (immutable history)
@@ -98,18 +108,29 @@ Zero dependencies on NATS -- pure data structures and algorithms.
 
 ### 2. Orchestrator (`engine/` package)
 
-Thin, stateless event processor. Core loop:
+Thin, stateless event processor. The orchestrator is an I/O shell around a pure decision core.
+
+**Core loop:**
 
 1. Consume events from `WORKFLOW_HISTORY` stream (partitioned by `run_id`)
 2. Load KV snapshot if available, otherwise replay full history
-3. Resolve DAG: find steps where all `dependsOn` are completed and step not yet queued
-4. Publish task messages to `TASK_QUEUES` for ready steps
-5. Update KV snapshot
-6. For agent loop steps returning `Continue`: re-enqueue the same step with new input
+3. Call `dag.Advance(def, run, event)` -- pure function that returns a list of `Action` values
+4. Execute actions: publish task messages, update snapshot, emit workflow events
+5. For agent loop steps returning `Continue`: re-enqueue the same step with new input
+
+**`dag.Advance` (pure, no I/O):**
+
+```go
+// Advance processes an event and returns actions for the orchestrator to execute.
+// Pure function — all decision logic lives here, testable without NATS.
+func Advance(def WorkflowDef, run *WorkflowRun, evt Event) []Action
+```
+
+Action types: `EnqueueTask`, `CompleteWorkflow`, `FailWorkflow`, `ReEnqueueAgentLoop`.
 
 Multiple instances coordinate via JetStream consumer groups. Each `run_id` processed by exactly one instance at a time.
 
-The orchestrator is a pure function: `(events, dag_definition) -> ready_tasks`.
+**Fan-in input resolution:** When a step has multiple dependencies, all dependency outputs are collected into a JSON map keyed by step ID and passed as the input. Workers always receive a single input — for single deps it's the output directly, for fan-in it's the collected map. No silent nil inputs.
 
 ### 3. Workers (`worker/` package)
 
@@ -199,9 +220,11 @@ worker.Handle("llm-fixer", func(ctx dagnats.TaskContext) error {
 })
 ```
 
-Safety bounds (enforced by orchestrator):
+Safety bounds (stored in `StepDef.Loop`, enforced by orchestrator):
 - `MaxIterations` -- hard cap on loop cycles
 - `MaxDuration` -- total wall time across all iterations
+
+Validation rejects `AgentLoopConfig` on non-AgentLoop steps and requires it on AgentLoop steps.
 
 Each iteration appends `agent.loop.iteration` event for observability.
 
@@ -246,7 +269,7 @@ dagnats/
 
 Key boundaries:
 - `dag/` has zero external dependencies -- pure unit testable
-- `natsutil/` is the sole NATS import point -- everything else uses interfaces
+- `natsutil/` owns NATS resource setup (streams, KV, consumers). Other packages may import `nats.go` for runtime operations (publish, subscribe, ack).
 - `worker/` and `engine/` never import each other -- communicate only through NATS subjects
 
 ## Testing Strategy
