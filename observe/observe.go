@@ -27,7 +27,7 @@ func (l Level) String() string {
 // Field is a typed key-value pair for structured log and error report context.
 type Field struct {
 	Key   string
-	Value interface{}
+	Value any
 }
 
 // String constructs a Field with a string value.
