@@ -1,11 +1,12 @@
 // api/rest_test.go
 // Tests for REST API endpoints using net/http/httptest.
-// Methodology: create a test service with real NATS, make HTTP requests via
-// httptest.Server, verify response codes and JSON bodies.
+// Methodology: create a test service with real NATS, make HTTP requests
+// via httptest.Server, verify response codes and JSON bodies.
 package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,14 +26,20 @@ func TestRESTRegisterWorkflow(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	wfDef, _ := dag.NewWorkflow("rest-test").Task("a", "task-a").Build()
+	wfDef, _ := dag.NewWorkflow("rest-test").
+		Task("a", "task-a").Build()
 	body, _ := json.Marshal(wfDef)
-	resp, err := http.Post(server.URL+"/workflows", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(
+		server.URL+"/workflows",
+		"application/json",
+		bytes.NewReader(body),
+	)
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusCreated)
 	}
 }
 
@@ -43,15 +50,21 @@ func TestRESTStartRun(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	wfDef, _ := dag.NewWorkflow("rest-run").Task("a", "task-a").Build()
-	svc.RegisterWorkflow(wfDef)
+	wfDef, _ := dag.NewWorkflow("rest-run").
+		Task("a", "task-a").Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
 	body := []byte(`{"workflow": "rest-run", "input": "test"}`)
-	resp, err := http.Post(server.URL+"/runs", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(
+		server.URL+"/runs",
+		"application/json",
+		bytes.NewReader(body),
+	)
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusCreated)
 	}
 	var result map[string]string
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -65,9 +78,6 @@ func TestRESTStartRun(t *testing.T) {
 func TestRESTGetRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-
-	// The orchestrator owns run state — start it so the snapshot is created
-	// before the REST handler queries it.
 	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
@@ -76,12 +86,14 @@ func TestRESTGetRun(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	wfDef, _ := dag.NewWorkflow("rest-get").Task("a", "task-a").Build()
-	svc.RegisterWorkflow(wfDef)
-	runID, _ := svc.StartRun("rest-get", nil)
+	wfDef, _ := dag.NewWorkflow("rest-get").
+		Task("a", "task-a").Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+	runID, _ := svc.StartRun(
+		context.Background(), "rest-get", nil,
+	)
 
-	// Poll until the snapshot is available (orchestrator processes asynchronously,
-	// bounded to 5s).
+	// Poll until snapshot is available (bounded to 5s).
 	deadline := time.After(5 * time.Second)
 	var run dag.WorkflowRun
 	for {
@@ -119,6 +131,7 @@ func TestRESTGetRunNotFound(t *testing.T) {
 		t.Fatalf("GET failed: %v", err)
 	}
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusNotFound)
 	}
 }
