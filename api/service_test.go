@@ -22,8 +22,9 @@ func TestServiceRegisterWorkflow(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	svc := NewService(nc, observe.NewNoopTelemetry())
-	wfDef, err := dag.NewWorkflow("test-wf").
-		Task("a", "task-a").Build()
+	wb := dag.NewWorkflow("test-wf")
+	wb.Task("a", "task-a")
+	wfDef, err := wb.Build()
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -47,8 +48,9 @@ func TestServiceStartRun(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	svc := NewService(nc, observe.NewNoopTelemetry())
-	wfDef, _ := dag.NewWorkflow("test-wf").
-		Task("a", "task-a").Build()
+	wb := dag.NewWorkflow("test-wf")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
 	svc.RegisterWorkflow(context.Background(), wfDef)
 	runID, err := svc.StartRun(
 		context.Background(), "test-wf", []byte(`"input"`),
@@ -72,8 +74,9 @@ func TestServiceGetRunStatus(t *testing.T) {
 	defer orch.Stop()
 
 	svc := NewService(nc, observe.NewNoopTelemetry())
-	wfDef, _ := dag.NewWorkflow("test-wf").
-		Task("a", "task-a").Build()
+	wb := dag.NewWorkflow("test-wf")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
 	svc.RegisterWorkflow(context.Background(), wfDef)
 	runID, _ := svc.StartRun(context.Background(), "test-wf", nil)
 
