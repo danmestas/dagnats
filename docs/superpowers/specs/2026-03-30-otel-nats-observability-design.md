@@ -68,6 +68,12 @@ This is intentional. Each signal has a different primary query axis. Use
 `telemetry.spans.engine.>` for all engine spans, or `telemetry.>.>.{run_id}` for
 all signals from a specific run.
 
+**Open decision:** If querying by metric name / log level in NATS proves uncommon
+(e.g., Jaeger handles all trace queries), simplify all subjects to
+`telemetry.{signal}.{service}.{run_id}` and filter by name/level after
+subscription. Prototype both during implementation and decide based on actual
+usage patterns.
+
 ### Span Format
 
 ```go
@@ -217,11 +223,16 @@ Pure Go. Only imports: `nats.go`, `protocol/`, stdlib. No OTEL SDK.
 ```go
 type TraceCollector struct {
     js          nats.JetStreamContext
+    metrics     observe.Metrics // for telemetry.spans.dropped counter
     serviceName string
     records     chan SpanRecord // buffered channel, async publish
 }
 
-func NewTraceCollector(js nats.JetStreamContext, serviceName string) *TraceCollector
+func NewTraceCollector(
+    js nats.JetStreamContext,
+    serviceName string,
+    metrics observe.Metrics,
+) *TraceCollector
 
 // Start implements observe.Tracer. Creates a span, extracts parent from
 // context if present, generates trace/span IDs via crypto/rand.
@@ -239,7 +250,9 @@ func (t *TraceCollector) Flush()
 `LiveSpan` implements `observe.Span`. On `End()`, the completed span is
 serialized to a `SpanRecord` and sent to the `records` channel for async
 publish to `telemetry.spans.{service}.{run_id}`. The channel has a bounded
-size (1024). If full, the span is dropped (logged once per minute).
+size (1024). If full, the span is dropped and `telemetry.spans.dropped` counter
+is incremented — making overflow observable via the same metrics pipeline. Also
+logged once per minute to avoid log spam.
 
 #### MetricsCollector (metrics_collector.go, ~60 LOC)
 
@@ -367,9 +380,9 @@ func SetupTelemetry(nc *nats.Conn) (*Telemetry, func()) {
         }, func() {}
     }
 
-    collector := NewTraceCollector(js, serviceName)
+    metrics := NewMetricsCollector(js, serviceName)  // create first
+    collector := NewTraceCollector(js, serviceName, metrics) // needs metrics
     logger := NewLogCollector(js, serviceName)
-    metrics := NewMetricsCollector(js, serviceName)
     errors := NewErrorReporter(collector, logger)
 
     ctx, cancel := context.WithCancel(context.Background())
@@ -408,6 +421,12 @@ collectors. This avoids each collector independently calling `nc.JetStream()`.
 // If no active span, falls back to logger.Error() with the error and tags
 // as fields — ensures errors are always recorded somewhere.
 // CaptureMessage: same pattern, adds message as span event or logs via logger.
+//
+// NOTE: The fallback path (logger.Error) writes to telemetry.logs, NOT to
+// telemetry.spans. These errors will NOT appear in Jaeger (which only
+// subscribes to telemetry.spans.>). They remain queryable in NATS and
+// visible in structured logs. If all errors must reach Jaeger, callers
+// should ensure an active span exists before calling CaptureError.
 func NewErrorReporter(tracer observe.Tracer, logger observe.Logger) observe.ErrorReporter
 ```
 
@@ -424,6 +443,19 @@ engine.NewOrchestrator(nc, telemetry)
 This is a breaking change to component constructors. All call sites in `cmd/`
 binaries and test files must be updated. The migration is mechanical: replace
 separate logger/metrics parameters with a single `*Telemetry` argument.
+
+### Migration Checklist
+
+The following call sites must be updated when introducing `*Telemetry`:
+
+- `engine.NewOrchestrator(nc, logger, metrics)` → `(nc, telemetry)`
+- `worker.NewWorker(nc, logger)` → `(nc, telemetry)`
+- `api.NewService(nc, logger)` → `(nc, telemetry)`
+- `cmd/dagnats-engine/main.go` — call `SetupTelemetry`, pass result
+- `cmd/dagnats-api/main.go` — call `SetupTelemetry`, pass result
+- All test files using `observe.NewNoopLogger()` / `observe.NewNoopMetrics()`
+  — replace with `&simple.Telemetry{...}` using noop implementations
+- `e2e_test.go` — update orchestrator, worker, service construction
 
 ## Instrumentation Points
 
