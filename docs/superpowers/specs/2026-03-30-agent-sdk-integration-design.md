@@ -35,9 +35,9 @@ Three components, one bus.
 
 The existing orchestrator dispatches tasks via event sourcing. Generic additions:
 
-- **Configurable step type routing.** `NewOrchestrator` accepts a `StepRoutes map[dag.StepType]string` mapping step types to stream names. Unregistered types default to `TASK_QUEUES`. The agents package passes `{dag.StepTypeAgent: "AGENT_TASKS"}`. This changes the dispatch path in `buildTaskMsg` from a hardcoded subject to a map lookup — a single conditional.
+- **Configurable step type routing.** `NewOrchestrator` accepts an optional `StepRoutes map[dag.StepType]string` via a functional option `WithStepRoutes(routes)`. When nil or missing, all step types route to `TASK_QUEUES` (fully backwards-compatible — existing callers are unchanged). The agents package passes `WithStepRoutes(map[dag.StepType]string{dag.StepTypeAgent: "AGENT_TASKS"})`. This changes the dispatch path in `buildTaskMsg` from a hardcoded subject to a map lookup — a single conditional.
 - **Child workflow support (implements StepTypeSubWorkflow).** Any step can spawn a nested workflow. `WorkflowRun` gains `ParentRunID` and `ParentStepID` fields. The engine handles `workflow.spawn` events (create child run), orchestrates child workflows independently, and publishes `workflow.child.completed` when the child finishes.
-- **Extensible NATS setup.** `natsutil.SetupAll` accepts optional `[]natsutil.StreamConfig` and `[]natsutil.KVConfig` parameters for additional streams and KV buckets. Downstream packages pass their resource definitions without forking.
+- **Extensible NATS setup.** `natsutil.SetupAll` gains variadic functional options: `WithStreams(configs ...StreamConfig)` and `WithKVBuckets(configs ...KVConfig)`. Callers without extras are unchanged. Downstream packages pass `SetupAll(nc, WithStreams(agentStream), WithKVBuckets(rolesBucket, toolsBucket))`.
 
 ### TypeScript Agent Worker (dagnats-agents package)
 
@@ -200,12 +200,12 @@ The agent calls `spawn_workflow({ name, role, input })`. The agent pauses and wa
 
 ### Under the hood
 
-1. The `spawn_workflow` tool handler publishes a `workflow.spawn` event to `WORKFLOW_HISTORY` with the parent's run ID and step ID.
+1. The `spawn_workflow` tool handler generates a unique child run ID and publishes a `workflow.spawn` event to `WORKFLOW_HISTORY` with the parent's run ID, step ID, and the generated child run ID. The `NATSMsgID` for spawn events uses `{parentRunID}.{stepID}.spawn.{childRunID}` to avoid dedup collisions when a step spawns multiple children.
 2. The Go engine creates a child `WorkflowRun` linked to the parent (`ParentRunID`, `ParentStepID`).
 3. The child workflow runs through normal orchestration — its own steps, events, and snapshots.
-4. On child completion, the engine publishes `workflow.child.completed`.
+4. On child completion, the engine publishes `workflow.child.completed`. On child failure, it publishes `workflow.child.failed`.
 5. The parent agent worker watches the child's run state via NATS KV watch.
-6. The tool handler returns the child's output to the agent.
+6. On `workflow.child.completed`, the tool handler returns the child's output to the agent. On `workflow.child.failed`, the tool handler returns a tool error result with the child's error message — the agent can then decide to retry, try a different approach, or fail.
 
 ### Supporting tools
 
@@ -272,17 +272,26 @@ These are new entries in the `EventType` constants. The orchestrator's `dispatch
 - Add `Role` field to `StepDef` (string, optional — empty for non-agent steps).
 - Add `ParentRunID` and `ParentStepID` fields to `WorkflowRun` (string, optional — empty for top-level runs).
 
+### dag/validate.go
+
+Add validation rules for `StepTypeAgent`:
+
+- `StepTypeAgent` steps must have a non-empty `Role` field.
+- `StepTypeAgent` steps must not have `AgentLoopConfig` (the Agent SDK manages its own loop).
+- Non-agent steps with a `Role` field are rejected (role is agent-specific).
+
 ### engine/orchestrator.go
 
-- **`NewOrchestrator` accepts `StepRoutes map[dag.StepType]string`.** The dispatch function looks up the step type in this map. Missing entries default to `TASK_QUEUES`. This replaces the hardcoded subject construction with a map lookup — a single conditional change in `buildTaskMsg`.
+- **`NewOrchestrator` gains functional options.** `WithStepRoutes(routes map[dag.StepType]string)` configures step type → stream routing. Nil or omitted means all types route to `TASK_QUEUES`. Existing callers are unchanged.
+- **Step type routing.** `buildTaskMsg` looks up the step type in the routes map. Missing entries default to `TASK_QUEUES`.
 - **Child workflow event handlers.** Three new cases in `dispatchEvent`:
   - `workflow.spawn` → validate nesting depth, create child `WorkflowRun`, publish `workflow.started` for child.
-  - `workflow.child.completed` → look up parent run/step, publish result to parent step's waiting mechanism.
-  - `workflow.child.failed` → same as completed but propagates error.
+  - `workflow.child.completed` → look up parent run/step, deliver result to parent's waiting mechanism.
+  - `workflow.child.failed` → propagate error to parent's waiting mechanism.
 
 ### natsutil package
 
-- `SetupAll` accepts optional `[]StreamConfig` and `[]KVConfig` parameters. Downstream packages pass additional resource definitions. Existing callers with no extra resources are unchanged.
+- `SetupAll` gains variadic functional options: `WithStreams(configs ...StreamConfig)` and `WithKVBuckets(configs ...KVConfig)`. Existing callers with no extras are unchanged.
 
 ## Observability
 
