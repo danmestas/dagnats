@@ -27,7 +27,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed to setup NATS resources: %v\n", err)
 		os.Exit(1)
 	}
-	svc := api.NewService(nc, observe.NewNoopLogger())
+	svc := api.NewService(nc, observe.NewNoopTelemetry())
 	handler := api.NewRESTHandler(svc)
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {

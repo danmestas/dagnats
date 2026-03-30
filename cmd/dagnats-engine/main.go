@@ -28,7 +28,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed to setup NATS resources: %v\n", err)
 		os.Exit(1)
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	fmt.Println("dagnats-engine started")
 	sig := make(chan os.Signal, 1)
