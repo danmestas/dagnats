@@ -3,7 +3,6 @@ package worker
 import (
 	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
@@ -24,24 +23,31 @@ type TaskContext interface {
 	PutStream(data []byte) error
 }
 
-// HandlerFunc is the function signature for task handlers registered with a Worker.
+// HandlerFunc is the function signature for task handlers registered
+// with a Worker.
 type HandlerFunc func(ctx TaskContext) error
 
-// Worker subscribes to task subjects and dispatches messages to registered handlers.
-// Each task type gets its own JetStream subscription; messages are ack'd after the
-// handler returns so failures are retried by JetStream's MaxDeliver policy.
+// Worker subscribes to task subjects and dispatches messages to
+// registered handlers. Every handler error publishes step.failed and
+// acks — the orchestrator owns retry decisions via StepDef.Retries.
 type Worker struct {
 	nc       *nats.Conn
 	js       nats.JetStreamContext
-	logger   observe.Logger
+	tel      *observe.Telemetry
 	handlers map[string]HandlerFunc
 	subs     []*nats.Subscription
 }
 
-// NewWorker creates a Worker using the given connection and logger.
-// Panics if JetStream cannot be initialised — a broken connection is a programmer
-// error at startup, not a recoverable runtime condition.
-func NewWorker(nc *nats.Conn, logger observe.Logger) *Worker {
+// NewWorker creates a Worker using the given connection and telemetry
+// bundle. Panics if nc or tel is nil, or if JetStream cannot be
+// initialised — all are programmer errors at startup.
+func NewWorker(nc *nats.Conn, tel *observe.Telemetry) *Worker {
+	if nc == nil {
+		panic("NewWorker: nc must not be nil")
+	}
+	if tel == nil {
+		panic("NewWorker: tel must not be nil")
+	}
 	js, err := nc.JetStream()
 	if err != nil {
 		panic("NewWorker: JetStream init failed: " + err.Error())
@@ -49,13 +55,13 @@ func NewWorker(nc *nats.Conn, logger observe.Logger) *Worker {
 	return &Worker{
 		nc:       nc,
 		js:       js,
-		logger:   logger,
+		tel:      tel,
 		handlers: make(map[string]HandlerFunc),
 	}
 }
 
 // Handle registers a HandlerFunc for the given task type.
-// Panics on empty taskType or nil handler — both are programmer errors.
+// Panics on empty taskType or nil handler — programmer errors.
 func (w *Worker) Handle(taskType string, handler HandlerFunc) {
 	if taskType == "" {
 		panic("Worker.Handle: taskType must not be empty")
@@ -67,7 +73,7 @@ func (w *Worker) Handle(taskType string, handler HandlerFunc) {
 }
 
 // Start creates JetStream subscriptions for all registered task types.
-// Panics if any subscription fails — stream misconfiguration is a startup error.
+// Panics if any subscription fails — startup error.
 func (w *Worker) Start() {
 	for taskType, handler := range w.handlers {
 		subject := "task." + taskType + ".>"
@@ -77,52 +83,63 @@ func (w *Worker) Start() {
 			w.handleMessage(tt, h, msg)
 		}, nats.AckExplicit(), nats.DeliverAll())
 		if err != nil {
-			panic("Worker.Start: Subscribe failed for " + taskType + ": " + err.Error())
+			panic("Worker.Start: Subscribe failed for " +
+				taskType + ": " + err.Error())
 		}
 		w.subs = append(w.subs, sub)
 	}
 }
 
-// Stop unsubscribes all active subscriptions. Safe to call after Start.
+// Stop unsubscribes all active subscriptions.
 func (w *Worker) Stop() {
 	for _, sub := range w.subs {
 		sub.Unsubscribe()
 	}
 }
 
-func (w *Worker) handleMessage(taskType string, handler HandlerFunc, msg *nats.Msg) {
+// handleMessage dispatches a task message to the handler. On any error
+// the worker publishes step.failed and acks — the orchestrator decides
+// whether to retry based on StepDef.Retries. No NakWithDelay: retry
+// ownership lives entirely in the orchestrator.
+func (w *Worker) handleMessage(
+	taskType string, handler HandlerFunc, msg *nats.Msg,
+) {
 	var payload protocol.TaskPayload
-	err := json.Unmarshal(msg.Data, &payload)
-	if err != nil {
-		w.logger.Error("failed to unmarshal task payload", err,
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		w.tel.Logger.Error("unmarshal task payload failed", err,
 			observe.String("task_type", taskType))
 		msg.Ack()
 		return
 	}
 	ctx := newTaskContext(w.nc, w.js, payload)
-	w.logger.Info("executing task",
+	w.tel.Logger.Info("executing task",
 		observe.String("task_type", taskType),
 		observe.String("run_id", payload.RunID),
 		observe.String("step_id", payload.StepID),
 	)
-	err = handler(ctx)
-	if err != nil {
-		var nre *NonRetryableError
-		if errors.As(err, &nre) {
-			w.logger.Error("task failed permanently", nre.Err,
-				observe.String("task_type", taskType),
-				observe.String("run_id", payload.RunID),
-			)
-			ctx.Fail(nre.Err)
-			msg.Ack()
-			return
-		}
-		w.logger.Error("task handler returned error, will retry", err,
-			observe.String("task_type", taskType),
-			observe.String("run_id", payload.RunID),
-		)
-		msg.NakWithDelay(5 * time.Second)
+	if err := handler(ctx); err != nil {
+		w.logHandlerError(taskType, payload, err)
+		ctx.Fail(err)
+		msg.Ack()
 		return
 	}
 	msg.Ack()
+}
+
+func (w *Worker) logHandlerError(
+	taskType string, p protocol.TaskPayload, err error,
+) {
+	var nre *NonRetryableError
+	if errors.As(err, &nre) {
+		w.tel.Logger.Error("task failed permanently", nre.Err,
+			observe.String("task_type", taskType),
+			observe.String("run_id", p.RunID),
+		)
+		return
+	}
+	w.tel.Logger.Error("task failed", err,
+		observe.String("task_type", taskType),
+		observe.String("run_id", p.RunID),
+		observe.Int("attempt", p.Attempt),
+	)
 }

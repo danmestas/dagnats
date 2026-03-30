@@ -7,7 +7,7 @@ import (
 
 	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/natsutil"
-	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/observe/simple"
 	"github.com/nats-io/nats.go"
 )
 
@@ -27,7 +27,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed to setup NATS resources: %v\n", err)
 		os.Exit(1)
 	}
-	svc := api.NewService(nc, observe.NewNoopLogger())
+	tel, shutdown := simple.SetupTelemetry(nc)
+	defer shutdown()
+	svc := api.NewService(nc, tel)
 	handler := api.NewRESTHandler(svc)
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {

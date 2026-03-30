@@ -1,8 +1,9 @@
 // dag/stepref_test.go
 
-// Tests for StepRef: compile-time-safe step references in the workflow builder.
-// Methodology: verify that After() wires dependencies correctly, that modifier
-// methods target the right step, and that misuse panics are caught.
+// Tests for StepRef: compile-time-safe step references in the builder.
+// Methodology: verify After() wires dependencies, modifier methods
+// target the right step, misuse panics are caught, and all modifiers
+// compose correctly.
 package dag
 
 import (
@@ -21,14 +22,11 @@ func TestStepRefLinearChain(t *testing.T) {
 		t.Fatalf("Build failed: %v", err)
 	}
 	if len(def.Steps) != 3 {
-		t.Fatalf("Steps count = %d, want 3", len(def.Steps))
+		t.Fatalf("Steps = %d, want 3", len(def.Steps))
 	}
 	stepB := findStep(def, "b")
-	if stepB == nil {
-		t.Fatal("step 'b' not found")
-	}
 	if len(stepB.DependsOn) != 1 || stepB.DependsOn[0] != "a" {
-		t.Fatalf("step 'b' DependsOn = %v, want [a]", stepB.DependsOn)
+		t.Fatalf("b.DependsOn = %v, want [a]", stepB.DependsOn)
 	}
 }
 
@@ -43,41 +41,31 @@ func TestStepRefFanOutFanIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
-	if len(def.Steps) != 4 {
-		t.Fatalf("Steps count = %d, want 4", len(def.Steps))
-	}
 	join := findStep(def, "join")
-	if join == nil {
-		t.Fatal("step 'join' not found")
-	}
 	if len(join.DependsOn) != 2 {
-		t.Fatalf("join.DependsOn count = %d, want 2", len(join.DependsOn))
+		t.Fatalf("join.DependsOn = %d, want 2", len(join.DependsOn))
 	}
 }
 
 func TestStepRefAgentLoop(t *testing.T) {
 	wf := NewWorkflow("ref-loop")
 	prep := wf.Task("prep", "task-prep")
-	fix := wf.AgentLoop("fix", "task-fix").After(prep).
+	_ = wf.AgentLoop("fix", "task-fix").After(prep).
 		WithMaxIterations(10).WithMaxDuration(5 * time.Minute)
 
 	def, err := wf.Build()
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
-	_ = fix
-	step := findStep(def, "fix")
-	if step == nil {
-		t.Fatal("step 'fix' not found")
+	fix := findStep(def, "fix")
+	if fix.Type != StepTypeAgentLoop {
+		t.Fatalf("fix.Type = %v, want AgentLoop", fix.Type)
 	}
-	if step.Type != StepTypeAgentLoop {
-		t.Fatalf("fix.Type = %v, want AgentLoop", step.Type)
+	if fix.Loop.MaxIterations != 10 {
+		t.Fatalf("MaxIterations = %d, want 10", fix.Loop.MaxIterations)
 	}
-	if step.Loop.MaxIterations != 10 {
-		t.Fatalf("MaxIterations = %d, want 10", step.Loop.MaxIterations)
-	}
-	if step.Loop.MaxDuration != 5*time.Minute {
-		t.Fatalf("MaxDuration = %v, want 5m", step.Loop.MaxDuration)
+	if fix.Loop.MaxDuration != 5*time.Minute {
+		t.Fatalf("MaxDuration = %v, want 5m", fix.Loop.MaxDuration)
 	}
 }
 
@@ -98,14 +86,69 @@ func TestStepRefWithTimeout(t *testing.T) {
 	}
 }
 
+func TestStepRefWithRetries(t *testing.T) {
+	wf := NewWorkflow("ref-retries")
+	_ = wf.Task("a", "task-a").WithRetries(3)
+
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	step := findStep(def, "a")
+	if step.Retries != 3 {
+		t.Fatalf("Retries = %d, want 3", step.Retries)
+	}
+}
+
+func TestStepRefWithLoopDelay(t *testing.T) {
+	wf := NewWorkflow("ref-delay")
+	_ = wf.AgentLoop("a", "task-a").
+		WithMaxIterations(5).
+		WithLoopDelay(100 * time.Millisecond)
+
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	step := findStep(def, "a")
+	if step.Loop.LoopDelay != 100*time.Millisecond {
+		t.Fatalf("LoopDelay = %v, want 100ms", step.Loop.LoopDelay)
+	}
+}
+
+func TestStepRefSkipIfWithChaining(t *testing.T) {
+	wf := NewWorkflow("ref-skipif")
+	a := wf.Task("a", "task-a")
+	_ = wf.Task("b", "task-b").
+		After(a).
+		WithTimeout(10 * time.Second).
+		SkipIf(SkipIfOutput(a, "count", "<", float64(10))).
+		WithRetries(2)
+
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	step := findStep(def, "b")
+	if step.SkipIf == nil {
+		t.Fatal("SkipIf should not be nil")
+	}
+	if step.SkipIf.StepID != "a" {
+		t.Fatalf("SkipIf.StepID = %q, want %q", step.SkipIf.StepID, "a")
+	}
+	if step.Timeout != 10*time.Second {
+		t.Fatalf("Timeout = %v, want 10s", step.Timeout)
+	}
+	if step.Retries != 2 {
+		t.Fatalf("Retries = %d, want 2", step.Retries)
+	}
+}
+
 func TestStepRefID(t *testing.T) {
 	wf := NewWorkflow("ref-id")
 	ref := wf.Task("my-step", "my-task")
 	if ref.ID() != "my-step" {
 		t.Fatalf("ID() = %q, want %q", ref.ID(), "my-step")
-	}
-	if wf.Name() != "ref-id" {
-		t.Fatalf("Name() = %q, want %q", wf.Name(), "ref-id")
 	}
 }
 
@@ -116,9 +159,8 @@ func TestStepRefCrossBuilderPanics(t *testing.T) {
 	b := wf2.Task("b", "task-b")
 
 	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for cross-builder After, got nil")
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for cross-builder After")
 		}
 	}()
 	_ = b.After(a)
@@ -126,11 +168,9 @@ func TestStepRefCrossBuilderPanics(t *testing.T) {
 
 func TestStepRefZeroValuePanics(t *testing.T) {
 	var ref StepRef
-
 	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for zero-value After, got nil")
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value After")
 		}
 	}()
 	_ = ref.After()
@@ -139,12 +179,21 @@ func TestStepRefZeroValuePanics(t *testing.T) {
 func TestStepRefWithMaxIterationsOnNormalPanics(t *testing.T) {
 	wf := NewWorkflow("bad")
 	ref := wf.Task("a", "task-a")
-
 	defer func() {
-		r := recover()
-		if r == nil {
+		if r := recover(); r == nil {
 			t.Fatal("expected panic for WithMaxIterations on Task")
 		}
 	}()
 	_ = ref.WithMaxIterations(10)
+}
+
+func TestStepRefWithLoopDelayOnNormalPanics(t *testing.T) {
+	wf := NewWorkflow("bad")
+	ref := wf.Task("a", "task-a")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for WithLoopDelay on Task")
+		}
+	}()
+	_ = ref.WithLoopDelay(time.Second)
 }

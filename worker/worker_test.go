@@ -28,14 +28,18 @@ func TestWorkerHandlesTask(t *testing.T) {
 		t.Fatalf("JetStream failed: %v", err)
 	}
 	var called atomic.Bool
-	w := NewWorker(nc, observe.NewNoopLogger())
+	w := NewWorker(nc, observe.NewNoopTelemetry())
 	w.Handle("echo", func(ctx TaskContext) error {
 		called.Store(true)
 		return ctx.Complete(ctx.Input())
 	})
 	w.Start()
 	defer w.Stop()
-	payload := protocol.TaskPayload{RunID: "run-1", StepID: "step-a", Input: json.RawMessage(`"hello"`)}
+	payload := protocol.TaskPayload{
+		RunID:  "run-1",
+		StepID: "step-a",
+		Input:  json.RawMessage(`"hello"`),
+	}
 	data, _ := json.Marshal(payload)
 	_, err = js.Publish("task.echo.run-1", data)
 	if err != nil {
@@ -77,7 +81,7 @@ func TestWorkerNaksOnHandlerError(t *testing.T) {
 	}
 
 	var callCount atomic.Int32
-	w := NewWorker(nc, observe.NewNoopLogger())
+	w := NewWorker(nc, observe.NewNoopTelemetry())
 	w.Handle("failing", func(ctx TaskContext) error {
 		n := callCount.Add(1)
 		if n == 1 {
@@ -88,7 +92,11 @@ func TestWorkerNaksOnHandlerError(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	payload := protocol.TaskPayload{RunID: "run-nak", StepID: "step-b", Input: json.RawMessage(`"data"`)}
+	payload := protocol.TaskPayload{
+		RunID:  "run-nak",
+		StepID: "step-b",
+		Input:  json.RawMessage(`"data"`),
+	}
 	data, _ := json.Marshal(payload)
 	if _, err := js.Publish("task.failing.run-nak", data); err != nil {
 		t.Fatalf("Publish failed: %v", err)

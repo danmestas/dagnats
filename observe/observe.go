@@ -82,3 +82,24 @@ type Metrics interface {
 	Histogram(name string, tags map[string]string) Histogram
 	Gauge(name string, tags map[string]string) Gauge
 }
+
+// Telemetry bundles all observability interfaces. Passed as a single
+// argument to component constructors instead of separate parameters.
+// All fields must be non-nil — use Noop constructors for safe defaults.
+type Telemetry struct {
+	Tracer  Tracer
+	Logger  Logger
+	Metrics Metrics
+	Errors  ErrorReporter
+}
+
+// NewNoopTelemetry returns a Telemetry with all noop implementations.
+// Safe default for tests and environments where telemetry is not needed.
+func NewNoopTelemetry() *Telemetry {
+	return &Telemetry{
+		Tracer:  NewNoopTracer(),
+		Logger:  NewNoopLogger(),
+		Metrics: NewNoopMetrics(),
+		Errors:  NewNoopErrorReporter(),
+	}
+}

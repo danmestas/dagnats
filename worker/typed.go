@@ -19,7 +19,7 @@ func Typed[I, O any](fn TypedHandlerFunc[I, O]) HandlerFunc {
 	}
 	return func(ctx TaskContext) error {
 		var input I
-		if ctx.Input() != nil && len(ctx.Input()) > 0 {
+		if len(ctx.Input()) > 0 {
 			if err := json.Unmarshal(ctx.Input(), &input); err != nil {
 				return NewNonRetryableError(
 					fmt.Errorf("unmarshal input: %w", err),

@@ -137,3 +137,104 @@ func readyIDs(steps []StepDef) []string {
 	}
 	return ids
 }
+
+func TestResolveSkippedBasic(t *testing.T) {
+	wf := NewWorkflow("skip-test")
+	a := wf.Task("a", "task-a")
+	wf.Task("b", "task-b").After(a).SkipIf(
+		SkipIfOutput(a, "count", "<", float64(10)),
+	)
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	steps := map[string]StepState{
+		"a": {
+			Status: StepStatusCompleted,
+			Output: []byte(`{"count": 5}`),
+		},
+		"b": {Status: StepStatusPending},
+	}
+	completed := map[string]bool{"a": true}
+	skipped := ResolveSkipped(def, completed, map[string]bool{}, steps)
+	if len(skipped) != 1 || skipped[0].ID != "b" {
+		t.Fatalf("expected [b] skipped, got %v", readyIDs(skipped))
+	}
+}
+
+func TestResolveSkippedConditionFalse(t *testing.T) {
+	wf := NewWorkflow("no-skip")
+	a := wf.Task("a", "task-a")
+	wf.Task("b", "task-b").After(a).SkipIf(
+		SkipIfOutput(a, "count", "<", float64(10)),
+	)
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	steps := map[string]StepState{
+		"a": {
+			Status: StepStatusCompleted,
+			Output: []byte(`{"count": 50}`),
+		},
+		"b": {Status: StepStatusPending},
+	}
+	completed := map[string]bool{"a": true}
+	skipped := ResolveSkipped(def, completed, map[string]bool{}, steps)
+	if len(skipped) != 0 {
+		t.Fatalf("expected 0 skipped, got %d", len(skipped))
+	}
+}
+
+func TestResolveSkippedCascade(t *testing.T) {
+	// A -> B(skip if A.x<10) -> C(skip if B.x<10)
+	// When A outputs x=5, B should be skipped. Then C's deps are
+	// satisfied (B is skipped), but B has no output, so C's SkipIf
+	// evaluates false (missing field). C should become ready, not
+	// skipped. This tests that the orchestrator's cascade loop works.
+	wf := NewWorkflow("cascade")
+	a := wf.Task("a", "task-a")
+	b := wf.Task("b", "task-b").After(a).SkipIf(
+		SkipIfOutput(a, "x", "<", float64(10)),
+	)
+	wf.Task("c", "task-c").After(b).SkipIf(
+		SkipIfOutput(b, "x", "<", float64(10)),
+	)
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	steps := map[string]StepState{
+		"a": {
+			Status: StepStatusCompleted,
+			Output: []byte(`{"x": 5}`),
+		},
+		"b": {Status: StepStatusPending},
+		"c": {Status: StepStatusPending},
+	}
+	completed := map[string]bool{"a": true}
+	queued := map[string]bool{}
+
+	// First round: B gets skipped.
+	skipped := ResolveSkipped(def, completed, queued, steps)
+	if len(skipped) != 1 || skipped[0].ID != "b" {
+		t.Fatalf("round 1: expected [b], got %v", readyIDs(skipped))
+	}
+
+	// Mark B as skipped, then round 2: C is NOT skipped (B has no
+	// output so the condition evaluates false).
+	steps["b"] = StepState{Status: StepStatusSkipped}
+	completed["b"] = true
+	skipped = ResolveSkipped(def, completed, queued, steps)
+	if len(skipped) != 0 {
+		t.Fatalf("round 2: expected 0 skipped, got %v",
+			readyIDs(skipped))
+	}
+
+	// C should be ready now.
+	ready := ResolveReady(def, completed, queued)
+	if len(ready) != 1 || ready[0].ID != "c" {
+		t.Fatalf("expected [c] ready, got %v", readyIDs(ready))
+	}
+}

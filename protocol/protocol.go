@@ -40,7 +40,9 @@ type Event struct {
 	RunID     string          `json:"run_id"`
 	StepID    string          `json:"step_id,omitempty"`
 	Timestamp time.Time       `json:"timestamp"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	TraceParent string          `json:"trace_parent,omitempty"`
+	TraceState  string          `json:"trace_state,omitempty"`
 }
 
 // NewStepEvent constructs an Event for a step lifecycle transition.

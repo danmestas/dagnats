@@ -76,3 +76,52 @@ func TestValidateNormalStepRejectsLoopConfig(t *testing.T) {
 	if err == nil { t.Fatal("expected error for normal step with Loop config, got nil") }
 	if !strings.Contains(err.Error(), "Loop") { t.Fatalf("error should mention 'Loop', got: %v", err) }
 }
+
+func TestValidateNegativeRetries(t *testing.T) {
+	def := WorkflowDef{Name: "neg", Version: "1", Steps: []StepDef{
+		{ID: "a", Task: "t-a", Type: StepTypeNormal, Retries: -1},
+	}}
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for negative Retries")
+	}
+	if !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("error should mention 'negative', got: %v", err)
+	}
+}
+
+func TestValidateSkipIfInvalidOp(t *testing.T) {
+	wf := NewWorkflow("bad-op")
+	a := wf.Task("a", "task-a")
+	wf.Task("b", "task-b").After(a).SkipIf(
+		&ParentCond{StepID: "a", Field: "x", Op: "~=", Value: 1},
+	)
+	_, err := wf.Build()
+	if err == nil {
+		t.Fatal("expected error for invalid SkipIf op")
+	}
+}
+
+func TestValidateSkipIfNonParent(t *testing.T) {
+	wf := NewWorkflow("bad-ref")
+	wf.Task("a", "task-a")
+	wf.Task("b", "task-b").SkipIf(
+		&ParentCond{StepID: "a", Field: "x", Op: "==", Value: 1},
+	)
+	_, err := wf.Build()
+	if err == nil {
+		t.Fatal("expected error for non-parent SkipIf ref")
+	}
+}
+
+func TestValidateSkipIfEmptyField(t *testing.T) {
+	wf := NewWorkflow("empty-field")
+	a := wf.Task("a", "task-a")
+	wf.Task("b", "task-b").After(a).SkipIf(
+		&ParentCond{StepID: "a", Field: "", Op: "==", Value: 1},
+	)
+	_, err := wf.Build()
+	if err == nil {
+		t.Fatal("expected error for empty SkipIf Field")
+	}
+}
