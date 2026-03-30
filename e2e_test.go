@@ -50,10 +50,10 @@ func TestE2ELinearWorkflow(t *testing.T) {
 
 	// Register workflow and start run via service
 	svc := api.NewService(nc, tel)
-	wfDef, err := dag.NewWorkflow("e2e-linear").
-		Task("a", "task-a").
-		Task("b", "task-b").DependsOn("a").
-		Build()
+	wb := dag.NewWorkflow("e2e-linear")
+	a := wb.Task("a", "task-a")
+	wb.Task("b", "task-b").After(a)
+	wfDef, err := wb.Build()
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -184,9 +184,9 @@ func TestE2EAgentLoop(t *testing.T) {
 	defer w.Stop()
 
 	svc := api.NewService(nc, tel)
-	wfDef, err := dag.NewWorkflow("e2e-loop").
-		AgentLoop("loop", "looper").WithMaxIterations(10).
-		Build()
+	wb := dag.NewWorkflow("e2e-loop")
+	wb.AgentLoop("loop", "looper").WithMaxIterations(10)
+	wfDef, err := wb.Build()
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}

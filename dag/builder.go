@@ -24,24 +24,30 @@ func NewWorkflow(name string) *WorkflowBuilder {
 	return &WorkflowBuilder{name: name, version: "1", current: -1}
 }
 
+// Name returns the workflow name. Used by higher-level packages that need
+// to derive task names from the workflow identity.
+func (b *WorkflowBuilder) Name() string { return b.name }
+
 // Version overrides the default workflow version string.
 func (b *WorkflowBuilder) Version(v string) *WorkflowBuilder {
 	b.version = v
 	return b
 }
 
-// Task appends a normal (non-looping) step and makes it the active step for
-// subsequent modifier calls.
-func (b *WorkflowBuilder) Task(id, task string) *WorkflowBuilder {
-	b.steps = append(b.steps, StepDef{ID: id, Task: task, Type: StepTypeNormal})
+// Task appends a normal (non-looping) step and returns a StepRef for
+// compile-time-safe dependency wiring and modifier chaining.
+func (b *WorkflowBuilder) Task(id, task string) StepRef {
+	b.steps = append(b.steps, StepDef{
+		ID: id, Task: task, Type: StepTypeNormal,
+	})
 	b.current = len(b.steps) - 1
-	return b
+	return StepRef{id: id, index: b.current, builder: b}
 }
 
 // AgentLoop appends an agent-loop step with an initialised (but unconfigured)
 // AgentLoopConfig. Callers must configure bounds via WithMaxIterations /
 // WithMaxDuration before Build() — Validate enforces MaxIterations > 0.
-func (b *WorkflowBuilder) AgentLoop(id, task string) *WorkflowBuilder {
+func (b *WorkflowBuilder) AgentLoop(id, task string) StepRef {
 	b.steps = append(b.steps, StepDef{
 		ID:   id,
 		Task: task,
@@ -49,21 +55,24 @@ func (b *WorkflowBuilder) AgentLoop(id, task string) *WorkflowBuilder {
 		Loop: &AgentLoopConfig{},
 	})
 	b.current = len(b.steps) - 1
-	return b
+	return StepRef{id: id, index: b.current, builder: b}
 }
 
 // DependsOn declares that the active step must not start until all listed step
-// IDs have completed. Panics if called before any step is added — this is a
-// programmer error, not a runtime condition.
+// IDs have completed. Kept for backward compatibility — prefer After(StepRef)
+// for new code which provides compile-time safety.
 func (b *WorkflowBuilder) DependsOn(ids ...string) *WorkflowBuilder {
 	if b.current < 0 {
 		panic("DependsOn called before adding a step")
 	}
-	b.steps[b.current].DependsOn = append(b.steps[b.current].DependsOn, ids...)
+	b.steps[b.current].DependsOn = append(
+		b.steps[b.current].DependsOn, ids...,
+	)
 	return b
 }
 
 // WithTimeout sets the per-attempt timeout on the active step.
+// Kept for backward compatibility — prefer StepRef.WithTimeout for new code.
 func (b *WorkflowBuilder) WithTimeout(d time.Duration) *WorkflowBuilder {
 	if b.current < 0 {
 		panic("WithTimeout called before adding a step")
@@ -72,9 +81,8 @@ func (b *WorkflowBuilder) WithTimeout(d time.Duration) *WorkflowBuilder {
 	return b
 }
 
-// WithMaxIterations configures the iteration bound on the active AgentLoop step.
-// Panics if the active step is not an AgentLoop — calling this on a Task step
-// indicates a logic error in the caller.
+// WithMaxIterations configures the iteration bound on the active AgentLoop
+// step. Kept for backward compatibility — prefer StepRef.WithMaxIterations.
 func (b *WorkflowBuilder) WithMaxIterations(n int) *WorkflowBuilder {
 	if b.current < 0 {
 		panic("WithMaxIterations called before adding a step")
@@ -86,7 +94,8 @@ func (b *WorkflowBuilder) WithMaxIterations(n int) *WorkflowBuilder {
 	return b
 }
 
-// WithMaxDuration configures the wall-clock bound on the active AgentLoop step.
+// WithMaxDuration configures the wall-clock bound on the active AgentLoop
+// step. Kept for backward compatibility — prefer StepRef.WithMaxDuration.
 func (b *WorkflowBuilder) WithMaxDuration(d time.Duration) *WorkflowBuilder {
 	if b.current < 0 {
 		panic("WithMaxDuration called before adding a step")

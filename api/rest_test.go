@@ -26,8 +26,9 @@ func TestRESTRegisterWorkflow(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	wfDef, _ := dag.NewWorkflow("rest-test").
-		Task("a", "task-a").Build()
+	wb := dag.NewWorkflow("rest-test")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
 	body, _ := json.Marshal(wfDef)
 	resp, err := http.Post(
 		server.URL+"/workflows",
@@ -50,8 +51,9 @@ func TestRESTStartRun(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	wfDef, _ := dag.NewWorkflow("rest-run").
-		Task("a", "task-a").Build()
+	wb := dag.NewWorkflow("rest-run")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
 	svc.RegisterWorkflow(context.Background(), wfDef)
 	body := []byte(`{"workflow": "rest-run", "input": "test"}`)
 	resp, err := http.Post(
@@ -86,8 +88,9 @@ func TestRESTGetRun(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	wfDef, _ := dag.NewWorkflow("rest-get").
-		Task("a", "task-a").Build()
+	wb := dag.NewWorkflow("rest-get")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
 	svc.RegisterWorkflow(context.Background(), wfDef)
 	runID, _ := svc.StartRun(
 		context.Background(), "rest-get", nil,

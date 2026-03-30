@@ -47,10 +47,10 @@ func TestE2ETelemetryTracePropagation(t *testing.T) {
 	defer w.Stop()
 
 	svc := api.NewService(nc, tel)
-	wfDef, err := dag.NewWorkflow("e2e-telemetry").
-		Task("a", "tel-a").
-		Task("b", "tel-b").DependsOn("a").
-		Build()
+	wb := dag.NewWorkflow("e2e-telemetry")
+	a := wb.Task("a", "tel-a")
+	wb.Task("b", "tel-b").After(a)
+	wfDef, err := wb.Build()
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}

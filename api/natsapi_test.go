@@ -28,8 +28,9 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 	defer natsAPI.Stop()
 
 	// Register workflow via NATS request.
-	wfDef, _ := dag.NewWorkflow("nats-test").
-		Task("a", "task-a").Build()
+	wb := dag.NewWorkflow("nats-test")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
 	reqData, _ := json.Marshal(wfDef)
 	reply, err := nc.Request(
 		"api.workflows.register", reqData, 5*time.Second,
