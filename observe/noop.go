@@ -10,9 +10,9 @@ type noopLogger struct{}
 // NewNoopLogger returns a Logger that discards all output.
 func NewNoopLogger() Logger { return &noopLogger{} }
 
-func (n *noopLogger) Info(msg string, fields ...Field)               {}
-func (n *noopLogger) Error(msg string, err error, fields ...Field)   {}
-func (n *noopLogger) With(fields ...Field) Logger                    { return n }
+func (n *noopLogger) Info(msg string, fields ...Field)             {}
+func (n *noopLogger) Error(msg string, err error, fields ...Field) {}
+func (n *noopLogger) With(fields ...Field) Logger                  { return n }
 
 // noopErrorReporter discards all error captures. Used as the default when no
 // external error-tracking adapter has been configured.
@@ -50,3 +50,23 @@ func (n *noopHistogram) Observe(float64) {}
 func (n *noopGauge) Set(float64)         {}
 func (n *noopGauge) Inc()                {}
 func (n *noopGauge) Dec()                {}
+
+// noopTracer and noopSpan discard all tracing operations. They serve as safe
+// defaults so callers never need to nil-check their Tracer or guard Span calls.
+type noopTracer struct{}
+type noopSpan struct{}
+
+// NewNoopTracer returns a Tracer that produces no-op spans and discards all data.
+func NewNoopTracer() Tracer { return &noopTracer{} }
+
+// Start returns the context unchanged and a no-op span. No allocation is needed
+// for the context because no span is propagated.
+func (n *noopTracer) Start(ctx context.Context, name string, opts ...SpanOption) (context.Context, Span) {
+	return ctx, &noopSpan{}
+}
+
+func (n *noopSpan) End()                                          {}
+func (n *noopSpan) SetStatus(code StatusCode, description string) {}
+func (n *noopSpan) SetAttributes(attrs ...Attribute)              {}
+func (n *noopSpan) RecordError(err error)                         {}
+func (n *noopSpan) AddEvent(name string, attrs ...Attribute)      {}
