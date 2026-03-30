@@ -85,3 +85,53 @@ type Span interface {
 type Tracer interface {
 	Start(ctx context.Context, name string, opts ...SpanOption) (context.Context, Span)
 }
+
+// SpanContext exposes trace/span IDs for cross-process propagation.
+// Span implementations may optionally implement this interface.
+// Callers use type assertion: if sc, ok := span.(SpanContext); ok { ... }
+type SpanContext interface {
+	TraceID() string
+	SpanID() string
+}
+
+// parentInfoKey is the context key for propagated parent span info.
+type parentInfoKey struct{}
+
+// ParentInfo carries trace/span IDs from an extracted traceparent
+// so that Tracer.Start implementations can link child spans to remote
+// parents across process/message boundaries.
+type ParentInfo struct {
+	TraceID string
+	SpanID  string
+}
+
+// ParentInfoFromContext returns any ParentInfo stored in ctx.
+// Returns ok=false when no parent info is present.
+func ParentInfoFromContext(ctx context.Context) (ParentInfo, bool) {
+	if ctx == nil {
+		panic("ParentInfoFromContext: ctx must not be nil")
+	}
+	info, ok := ctx.Value(parentInfoKey{}).(ParentInfo)
+	return info, ok
+}
+
+// ContextWithParentInfo stores remote parent span info in ctx.
+// Used by propagation code to pass trace context from incoming
+// NATS messages to Tracer.Start without importing vendor packages.
+func ContextWithParentInfo(
+	ctx context.Context, traceID, spanID string,
+) context.Context {
+	if ctx == nil {
+		panic("ContextWithParentInfo: ctx must not be nil")
+	}
+	if traceID == "" {
+		panic("ContextWithParentInfo: traceID must not be empty")
+	}
+	if spanID == "" {
+		panic("ContextWithParentInfo: spanID must not be empty")
+	}
+	return context.WithValue(ctx, parentInfoKey{}, ParentInfo{
+		TraceID: traceID,
+		SpanID:  spanID,
+	})
+}

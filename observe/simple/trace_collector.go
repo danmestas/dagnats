@@ -215,7 +215,7 @@ func newLiveSpan(
 	if parent := SpanFromContext(ctx); parent != nil {
 		traceID = parent.traceID
 		parentID = parent.spanID
-	} else if info, ok := ParentInfoFromContext(ctx); ok {
+	} else if info, ok := observe.ParentInfoFromContext(ctx); ok {
 		traceID = info.TraceID
 		parentID = info.SpanID
 	}

@@ -158,7 +158,7 @@ func TestExtractTraceContextRoundTrip(t *testing.T) {
 	injectTraceparent(msg, evt, traceID, spanID)
 
 	ctx := ExtractTraceContext(msg, evt)
-	info, ok := ParentInfoFromContext(ctx)
+	info, ok := observe.ParentInfoFromContext(ctx)
 	if !ok {
 		t.Fatal("ParentInfo not found in context")
 	}
@@ -175,7 +175,7 @@ func TestExtractTraceContextNoTraceparent(t *testing.T) {
 	evt := &protocol.Event{RunID: "r1"}
 
 	ctx := ExtractTraceContext(msg, evt)
-	_, ok := ParentInfoFromContext(ctx)
+	_, ok := observe.ParentInfoFromContext(ctx)
 	// Negative: no parent info when no traceparent.
 	if ok {
 		t.Fatal("should not find ParentInfo without traceparent")

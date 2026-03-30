@@ -11,29 +11,10 @@ import (
 	"encoding/hex"
 	"strings"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
-
-// parentInfoKey is the context key for propagated parent span info.
-type parentInfoKey struct{}
-
-// ParentInfo carries trace/span IDs from an extracted traceparent
-// so that TraceCollector.Start can link child spans to parents
-// across process boundaries.
-type ParentInfo struct {
-	TraceID string
-	SpanID  string
-}
-
-// ParentInfoFromContext returns any ParentInfo stored in ctx.
-func ParentInfoFromContext(ctx context.Context) (ParentInfo, bool) {
-	if ctx == nil {
-		panic("ParentInfoFromContext: ctx must not be nil")
-	}
-	info, ok := ctx.Value(parentInfoKey{}).(ParentInfo)
-	return info, ok
-}
 
 // InjectTraceContext writes W3C traceparent to both NATS headers
 // and event payload. Extracts trace/span IDs from the active span.
@@ -69,8 +50,9 @@ func ExtractTraceContext(
 	if !ok {
 		return context.Background()
 	}
-	info := ParentInfo{TraceID: traceID, SpanID: spanID}
-	return context.WithValue(context.Background(), parentInfoKey{}, info)
+	return observe.ContextWithParentInfo(
+		context.Background(), traceID, spanID,
+	)
 }
 
 // generateTraceID returns a new random 32-char hex trace ID (16 bytes).

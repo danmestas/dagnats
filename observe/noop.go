@@ -72,3 +72,9 @@ func (n *noopSpan) SetStatus(code StatusCode, description string) {}
 func (n *noopSpan) SetAttributes(attrs ...Attribute)              {}
 func (n *noopSpan) RecordError(err error)                         {}
 func (n *noopSpan) AddEvent(name string, attrs ...Attribute)      {}
+
+// TraceID implements SpanContext with an empty trace ID.
+func (n *noopSpan) TraceID() string { return "" }
+
+// SpanID implements SpanContext with an empty span ID.
+func (n *noopSpan) SpanID() string { return "" }

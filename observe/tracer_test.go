@@ -29,6 +29,51 @@ func TestNoopTracerSatisfiesInterface(t *testing.T) {
 	span.End()
 }
 
+func TestNoopSpanImplementsSpanContext(t *testing.T) {
+	tracer := NewNoopTracer()
+	_, span := tracer.Start(context.Background(), "test")
+	sc, ok := span.(SpanContext)
+	if !ok {
+		t.Fatal("noopSpan should implement SpanContext")
+	}
+	// Noop returns empty strings — not nil, not panic.
+	if sc.TraceID() != "" {
+		t.Fatalf("TraceID = %q, want empty", sc.TraceID())
+	}
+	if sc.SpanID() != "" {
+		t.Fatalf("SpanID = %q, want empty", sc.SpanID())
+	}
+}
+
+func TestContextWithParentInfo(t *testing.T) {
+	ctx := ContextWithParentInfo(
+		context.Background(), "trace123", "span456",
+	)
+	info, ok := ParentInfoFromContext(ctx)
+	if !ok {
+		t.Fatal("ParentInfoFromContext returned false")
+	}
+	if info.TraceID != "trace123" {
+		t.Fatalf("TraceID = %q, want trace123", info.TraceID)
+	}
+	if info.SpanID != "span456" {
+		t.Fatalf("SpanID = %q, want span456", info.SpanID)
+	}
+}
+
+func TestParentInfoFromContextEmpty(t *testing.T) {
+	_, ok := ParentInfoFromContext(context.Background())
+	if ok {
+		t.Fatal("should return false for empty context")
+	}
+	// Negative: ensure no default info is injected.
+	ctx := context.WithValue(context.Background(), "other", "val")
+	_, ok = ParentInfoFromContext(ctx)
+	if ok {
+		t.Fatal("should return false for unrelated context")
+	}
+}
+
 func TestAttributeConstructors(t *testing.T) {
 	s := StringAttr("k", "v")
 	if s.Key != "k" || s.Value != "v" {
