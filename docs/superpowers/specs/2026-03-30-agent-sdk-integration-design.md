@@ -114,29 +114,36 @@ Tools and bundles are stored in NATS KV (`tool_registry` bucket).
     },
     "required": ["path"]
   },
-  "subject": "tool.exec.file_read",
-  "bundle": "file-ops"
+  "subject": "tool.exec.file_read"
 }
 ```
 
-### Bundle entry
+### Bundles (registration-time only)
 
-```json
-{
-  "name": "file-ops",
-  "tools": ["file_read", "file_write", "file_edit", "glob", "grep"]
-}
+Bundles are a convenience for defining roles. When `defineRole` lists `"file-ops"`, the bundle expands to individual tool names *before* writing the role to KV. The stored role contains only concrete tool names (`["file_read", "file_write", ...]`), never bundle references. Bundles do not exist at runtime — the resolution path never encounters them.
+
+```typescript
+// Bundle definition — used only during role registration
+defineBundle("file-ops", ["file_read", "file_write", "file_edit", "glob", "grep"]);
+
+// When this role is written to KV, "file-ops" is expanded to the 5 individual tools
+defineRole({
+  name: "coder",
+  tools: ["file-ops", "git-ops", "shell", "spawn-workflow"],
+  // ...
+});
+// Stored in KV as: tools: ["file_read", "file_write", "file_edit", "glob", "grep",
+//                           "git_status", "git_diff", ..., "shell", "spawn_workflow"]
 ```
 
 ### Resolution flow
 
 When the agent worker picks up a task:
 
-1. Read role config from KV (`roles` bucket).
-2. Expand tool bundles into individual tool names (`tool_registry` bucket).
-3. Fetch each tool's schema and NATS subject from KV.
-4. Build Agent SDK `tool()` handlers — each handler does `nats.request(tool.subject, input)` and returns the response.
-5. Start `query()` with the fully resolved configuration.
+1. Read role config from KV (`roles` bucket). The tool list is already expanded — no bundle resolution needed.
+2. Fetch each tool's schema and NATS subject from KV (`tool_registry` bucket).
+3. Build Agent SDK `tool()` handlers — each handler does `nats.request(tool.subject, input)` and returns the response.
+4. Start `query()` with the fully resolved configuration.
 
 Updates to tool schemas, bundle membership, or role config in KV are picked up by the next agent run. No redeploys needed.
 
@@ -186,7 +193,7 @@ await pipeline.register();
 - `wf.agent()` creates a step with `StepTypeAgent` that routes to the TypeScript agent worker.
 - Role binding is declared per step. The role's tools/prompt/skills resolve at runtime from KV.
 - `after` and `skipIf` map to the same DAG primitives as the Go builder. The TypeScript `skipIf` serializes to the existing `ParentCond` JSON schema in `dag/condition.go`.
-- `register()` serializes the workflow definition to JSON conforming to the existing `dag.WorkflowDef` schema and publishes it to NATS KV (`workflow_defs`). Agent steps include a `Role` field on `StepDef` (new field, ignored by existing Go workers).
+- `register()` serializes the workflow definition to JSON conforming to the existing `dag.WorkflowDef` schema and publishes it to NATS KV (`workflow_defs`). Agent steps store `{"role": "coder"}` in `StepDef.Metadata`. The agents package validates that all agent steps have a role before registration.
 
 The Go builder DSL continues to work for non-agent workflows.
 
@@ -225,7 +232,7 @@ For v1, the parent Agent SDK session stays alive while waiting for child workflo
 
 ### Resource bounds
 
-With a max nesting depth of 3, a single workflow tree can hold up to 3 concurrent active Agent SDK sessions (parent + child + grandchild). Each session maintains an active Claude API connection and consumes a worker slot. The agent worker should enforce a configurable `maxConcurrentSessions` limit (default 10) across all workflow trees to prevent resource exhaustion. Sessions beyond the limit queue in NATS until a slot opens.
+With a max nesting depth of 3, a single workflow tree can hold up to 3 concurrent active Agent SDK sessions (parent + child + grandchild). Each session maintains an active Claude API connection and consumes a worker slot. Concurrency is bounded by setting `MaxAckPending` on the `AGENT_TASKS` consumer (default 10). NATS itself won't deliver more tasks than the worker can handle — no application-level session counting needed. This defines the resource limit out of existence: the worker never receives a task it can't run.
 
 ## NATS Resources
 
@@ -240,7 +247,7 @@ With a max nesting depth of 3, a single workflow tree can hold up to 3 concurren
 | Bucket | Purpose |
 |---|---|
 | `roles` | Role definitions (keyed by `role.{name}`) |
-| `tool_registry` | Tool and bundle definitions (keyed by `tool.{name}` or `bundle.{name}`) |
+| `tool_registry` | Tool definitions (keyed by `tool.{name}`) |
 
 ### Subjects (added by agents package)
 
@@ -269,16 +276,13 @@ These are new entries in the `EventType` constants. The orchestrator's `dispatch
 ### dag/types.go
 
 - Add `StepTypeAgent` constant to `StepType` enum.
-- Add `Role` field to `StepDef` (string, optional — empty for non-agent steps).
+- Add `Metadata map[string]string` field to `StepDef` (optional — nil for steps with no extra config). This is a generic extension point. The agents package writes `{"role": "coder"}` into metadata; the core DAG package is ignorant of what metadata means.
 - Add `ParentRunID` and `ParentStepID` fields to `WorkflowRun` (string, optional — empty for top-level runs).
 
 ### dag/validate.go
 
-Add validation rules for `StepTypeAgent`:
-
-- `StepTypeAgent` steps must have a non-empty `Role` field.
 - `StepTypeAgent` steps must not have `AgentLoopConfig` (the Agent SDK manages its own loop).
-- Non-agent steps with a `Role` field are rejected (role is agent-specific).
+- No agent-specific validation in the core package. Role validation (agent steps must have a `role` metadata key) is enforced by the agents package during workflow registration, before the definition reaches the engine.
 
 ### engine/orchestrator.go
 
