@@ -8,7 +8,7 @@ import (
 
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/natsutil"
-	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/observe/simple"
 	"github.com/nats-io/nats.go"
 )
 
@@ -28,7 +28,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed to setup NATS resources: %v\n", err)
 		os.Exit(1)
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	tel, shutdown := simple.SetupTelemetry(nc)
+	defer shutdown()
+	orch := engine.NewOrchestrator(nc, tel)
 	orch.Start()
 	fmt.Println("dagnats-engine started")
 	sig := make(chan os.Signal, 1)
