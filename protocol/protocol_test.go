@@ -6,6 +6,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"time"
@@ -99,6 +100,30 @@ func TestNATSMsgID(t *testing.T) {
 	msgID := evt.NATSMsgID()
 	if msgID != "run-1.step-a.step.completed" {
 		t.Fatalf("NATSMsgID() = %q, want %q", msgID, "run-1.step-a.step.completed")
+	}
+}
+
+func TestEventTraceContextOmitEmpty(t *testing.T) {
+	// Events without trace context should serialize identically to before
+	evt := NewWorkflowEvent(EventWorkflowStarted, "run-1", nil)
+	data, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// trace_parent and trace_state should NOT appear in JSON
+	if bytes.Contains(data, []byte("trace_parent")) {
+		t.Fatal("empty TraceParent should be omitted from JSON")
+	}
+
+	// Events WITH trace context should include both fields
+	evt.TraceParent = "00-abc-def-01"
+	evt.TraceState = "vendor=value"
+	data, err = evt.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal with trace: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"trace_parent"`)) {
+		t.Fatal("non-empty TraceParent should appear in JSON")
 	}
 }
 
