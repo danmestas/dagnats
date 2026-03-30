@@ -53,6 +53,9 @@ type spanKindOption struct{ kind SpanKind }
 
 func (spanKindOption) spanOption() {}
 
+// Kind returns the SpanKind carried by this option.
+func (o spanKindOption) Kind() SpanKind { return o.kind }
+
 // WithSpanKind sets the kind of the span being started.
 func WithSpanKind(kind SpanKind) SpanOption { return spanKindOption{kind: kind} }
 
@@ -60,6 +63,9 @@ func WithSpanKind(kind SpanKind) SpanOption { return spanKindOption{kind: kind} 
 type attrsOption struct{ attrs []Attribute }
 
 func (attrsOption) spanOption() {}
+
+// Attrs returns the Attributes carried by this option.
+func (o attrsOption) Attrs() []Attribute { return o.attrs }
 
 // WithAttributes attaches Attributes to the span at creation time.
 func WithAttributes(attrs ...Attribute) SpanOption { return attrsOption{attrs: attrs} }
