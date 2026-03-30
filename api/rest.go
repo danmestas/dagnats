@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/engine"
+	"github.com/nats-io/nats.go"
 )
 
 // startRunRequest is the JSON body expected by POST /runs.
@@ -20,82 +22,129 @@ type startRunRequest struct {
 	Input    json.RawMessage `json:"input,omitempty"`
 }
 
-// NewRESTHandler returns an http.Handler that routes the DagNats control-plane
-// REST API. Panics if svc is nil — callers must pass a fully initialised Service.
+// NewRESTHandler returns an http.Handler that routes the DagNats
+// control-plane REST API. Panics if svc is nil.
 func NewRESTHandler(svc *Service) http.Handler {
 	if svc == nil {
 		panic("NewRESTHandler: svc must not be nil")
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/workflows", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		handleRegisterWorkflow(svc, w, r)
-	})
-	mux.HandleFunc("/runs", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		handleStartRun(svc, w, r)
-	})
-	mux.HandleFunc("/runs/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		handleGetRun(svc, w, r)
-	})
+	mux.HandleFunc("/workflows", svc.routeWorkflows)
+	mux.HandleFunc("/runs", svc.routeRuns)
+	mux.HandleFunc("/runs/", svc.routeRunByID)
+	mux.HandleFunc("/health", svc.routeHealth)
 	return mux
 }
 
-// handleRegisterWorkflow decodes a WorkflowDef from the request body and
-// persists it via Service.RegisterWorkflow. Returns 201 on success.
-func handleRegisterWorkflow(svc *Service, w http.ResponseWriter, r *http.Request) {
-	var def dag.WorkflowDef
-	if err := json.NewDecoder(r.Body).Decode(&def); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+// routeWorkflows dispatches POST /workflows to handleRegisterWorkflow.
+func (s *Service) routeWorkflows(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if err := svc.RegisterWorkflow(def); err != nil {
+	handleRegisterWorkflow(s, w, r)
+}
+
+// routeRuns dispatches POST /runs to handleStartRun.
+func (s *Service) routeRuns(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	handleStartRun(s, w, r)
+}
+
+// routeRunByID dispatches GET /runs/{id} to handleGetRun.
+func (s *Service) routeRunByID(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	handleGetRun(s, w, r)
+}
+
+// routeHealth dispatches GET /health to handleHealth.
+func (s *Service) routeHealth(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	handleHealth(s, w)
+}
+
+// handleRegisterWorkflow decodes a WorkflowDef from the request body
+// and persists it via Service.RegisterWorkflow. Returns 201 on success.
+func handleRegisterWorkflow(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	var def dag.WorkflowDef
+	if err := json.NewDecoder(r.Body).Decode(&def); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(),
+			http.StatusBadRequest)
+		return
+	}
+	if err := svc.RegisterWorkflow(r.Context(), def); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "registered", "name": def.Name})
+	encErr := json.NewEncoder(w).Encode(
+		map[string]string{"status": "registered", "name": def.Name},
+	)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
 }
 
-// handleStartRun decodes a startRunRequest and calls Service.StartRun.
+// handleStartRun decodes a startRunRequest and calls StartRun.
 // Returns 201 with a JSON body containing the run_id on success.
-func handleStartRun(svc *Service, w http.ResponseWriter, r *http.Request) {
+func handleStartRun(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
 	var req startRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid JSON: "+err.Error(),
+			http.StatusBadRequest)
 		return
 	}
-	runID, err := svc.StartRun(req.Workflow, req.Input)
+	runID, err := svc.StartRun(r.Context(), req.Workflow, req.Input)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"run_id": runID})
+	encErr := json.NewEncoder(w).Encode(
+		map[string]string{"run_id": runID},
+	)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
 }
 
-// handleGetRun extracts the run ID from the URL path and returns the current
-// run snapshot as JSON. Returns 404 when the run does not exist.
-func handleGetRun(svc *Service, w http.ResponseWriter, r *http.Request) {
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/runs/"), "/")
+// handleGetRun extracts the run ID from the URL path and returns the
+// current run snapshot as JSON. Returns 404 when run does not exist.
+func handleGetRun(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	parts := strings.Split(
+		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
+	)
 	if len(parts) == 0 || parts[0] == "" {
 		http.Error(w, "missing run ID", http.StatusBadRequest)
 		return
 	}
 	runID := parts[0]
-	run, err := svc.GetRun(runID)
+	run, err := svc.GetRun(r.Context(), runID)
 	if err != nil {
 		if errors.Is(err, engine.ErrRunNotFound) {
 			http.Error(w, "run not found", http.StatusNotFound)
@@ -105,5 +154,68 @@ func handleGetRun(svc *Service, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(run)
+	encErr := json.NewEncoder(w).Encode(run)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// healthResponse is the JSON body returned by GET /health.
+type healthResponse struct {
+	Status    string         `json:"status"`
+	Telemetry *telemetryInfo `json:"telemetry,omitempty"`
+}
+
+// telemetryInfo carries stream and backend status for health.
+type telemetryInfo struct {
+	Stream *streamInfo `json:"stream,omitempty"`
+	Jaeger string      `json:"jaeger"`
+}
+
+// streamInfo carries TELEMETRY stream usage stats.
+type streamInfo struct {
+	Messages uint64  `json:"messages"`
+	Bytes    uint64  `json:"bytes"`
+	Percent  float64 `json:"percent"`
+}
+
+// handleHealth returns service health and optional telemetry stream
+// status. Never fails the health check -- telemetry is informational.
+func handleHealth(svc *Service, w http.ResponseWriter) {
+	resp := healthResponse{Status: "healthy"}
+	info, err := svc.js.StreamInfo("TELEMETRY")
+	if err == nil && info != nil {
+		resp.Telemetry = buildTelemetryInfo(info)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(resp)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode health response", encErr)
+	}
+}
+
+// buildTelemetryInfo constructs telemetry info from JetStream stream
+// metadata. Calculates usage percent from Bytes/MaxBytes.
+func buildTelemetryInfo(info *nats.StreamInfo) *telemetryInfo {
+	if info == nil {
+		panic("buildTelemetryInfo: info must not be nil")
+	}
+	jaeger := "disabled"
+	if os.Getenv("JAEGER_ENDPOINT") != "" {
+		jaeger = "enabled"
+	}
+	var pct float64
+	maxBytes := info.Config.MaxBytes
+	if maxBytes > 0 {
+		pct = float64(info.State.Bytes) /
+			float64(maxBytes) * 100.0
+	}
+	return &telemetryInfo{
+		Stream: &streamInfo{
+			Messages: info.State.Msgs,
+			Bytes:    info.State.Bytes,
+			Percent:  pct,
+		},
+		Jaeger: jaeger,
+	}
 }

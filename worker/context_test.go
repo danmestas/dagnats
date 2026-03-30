@@ -5,13 +5,15 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
@@ -29,8 +31,18 @@ func TestTaskContextComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, protocol.TaskPayload{RunID: "run-1", StepID: "step-a", Input: []byte(`"input"`)})
-	err = ctx.Complete([]byte(`"output"`))
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		tel, js,
+		protocol.TaskPayload{
+			RunID: "run-1", StepID: "step-a",
+			Input: []byte(`"input"`),
+		},
+		bgCtx, span,
+	)
+	err = tc.Complete([]byte(`"output"`))
 	if err != nil {
 		t.Fatalf("Complete failed: %v", err)
 	}
@@ -68,8 +80,15 @@ func TestTaskContextFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, protocol.TaskPayload{RunID: "run-2", StepID: "step-b"})
-	err = ctx.Fail(fmt.Errorf("something broke"))
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		tel, js,
+		protocol.TaskPayload{RunID: "run-2", StepID: "step-b"},
+		bgCtx, span,
+	)
+	err = tc.Fail(fmt.Errorf("something broke"))
 	if err != nil {
 		t.Fatalf("Fail failed: %v", err)
 	}
@@ -100,8 +119,15 @@ func TestTaskContextContinue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	ctx := newTaskContext(js, protocol.TaskPayload{RunID: "run-3", StepID: "step-c"})
-	err = ctx.Continue([]byte(`"next input"`))
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		tel, js,
+		protocol.TaskPayload{RunID: "run-3", StepID: "step-c"},
+		bgCtx, span,
+	)
+	err = tc.Continue([]byte(`"next input"`))
 	if err != nil {
 		t.Fatalf("Continue failed: %v", err)
 	}
@@ -119,15 +145,31 @@ func TestTaskContextContinue(t *testing.T) {
 }
 
 func TestTaskContextInput(t *testing.T) {
-	ctx := newTaskContext(nil, protocol.TaskPayload{RunID: "run-4", StepID: "step-d", Input: []byte(`"hello"`)})
-	got := ctx.Input()
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		tel, nil,
+		protocol.TaskPayload{
+			RunID: "run-4", StepID: "step-d",
+			Input: []byte(`"hello"`),
+		},
+		bgCtx, span,
+	)
+	got := tc.Input()
 	if string(got) != `"hello"` {
-		t.Fatalf("Input() = %q, want %q", string(got), `"hello"`)
+		t.Fatalf(
+			"Input() = %q, want %q", string(got), `"hello"`,
+		)
 	}
-	if ctx.RunID() != "run-4" {
-		t.Fatalf("RunID() = %q, want %q", ctx.RunID(), "run-4")
+	if tc.RunID() != "run-4" {
+		t.Fatalf(
+			"RunID() = %q, want %q", tc.RunID(), "run-4",
+		)
 	}
-	if ctx.StepID() != "step-d" {
-		t.Fatalf("StepID() = %q, want %q", ctx.StepID(), "step-d")
+	if tc.StepID() != "step-d" {
+		t.Fatalf(
+			"StepID() = %q, want %q", tc.StepID(), "step-d",
+		)
 	}
 }

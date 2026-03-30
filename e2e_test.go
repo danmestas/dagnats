@@ -1,10 +1,12 @@
 // e2e_test.go
-// End-to-end test: register a workflow, start a run, workers execute all steps,
-// verify workflow completes with correct state in KV and event history.
+// End-to-end test: register a workflow, start a run, workers execute all
+// steps, verify workflow completes with correct state in KV and event
+// history.
 // Methodology: real NATS server, real orchestrator, real workers. No mocks.
 package dagnats_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -28,6 +30,7 @@ func TestE2ELinearWorkflow(t *testing.T) {
 	}
 
 	tel := observe.NewNoopTelemetry()
+	ctx := context.Background()
 
 	// Start orchestrator
 	orch := engine.NewOrchestrator(nc, tel)
@@ -36,11 +39,11 @@ func TestE2ELinearWorkflow(t *testing.T) {
 
 	// Register workers
 	w := worker.NewWorker(nc, tel)
-	w.Handle("task-a", func(ctx worker.TaskContext) error {
-		return ctx.Complete([]byte(`"a-output"`))
+	w.Handle("task-a", func(tc worker.TaskContext) error {
+		return tc.Complete([]byte(`"a-output"`))
 	})
-	w.Handle("task-b", func(ctx worker.TaskContext) error {
-		return ctx.Complete([]byte(`"b-output"`))
+	w.Handle("task-b", func(tc worker.TaskContext) error {
+		return tc.Complete([]byte(`"b-output"`))
 	})
 	w.Start()
 	defer w.Stop()
@@ -54,23 +57,24 @@ func TestE2ELinearWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
-	if err := svc.RegisterWorkflow(wfDef); err != nil {
+	if err := svc.RegisterWorkflow(ctx, wfDef); err != nil {
 		t.Fatalf("RegisterWorkflow failed: %v", err)
 	}
-	runID, err := svc.StartRun("e2e-linear", nil)
+	runID, err := svc.StartRun(ctx, "e2e-linear", nil)
 	if err != nil {
 		t.Fatalf("StartRun failed: %v", err)
 	}
 
-	// Poll for workflow completion (bounded timeout). The orchestrator creates the
-	// snapshot asynchronously, so ErrRunNotFound is expected briefly at the start.
+	// Poll for workflow completion (bounded timeout).
 	deadline := time.After(10 * time.Second)
 	for {
-		run, err := svc.GetRun(runID)
+		run, err := svc.GetRun(ctx, runID)
 		if err == engine.ErrRunNotFound {
 			select {
 			case <-deadline:
-				t.Fatalf("run snapshot did not appear within 10s")
+				t.Fatalf(
+					"run snapshot did not appear within 10s",
+				)
 			case <-time.After(10 * time.Millisecond):
 			}
 			continue
@@ -80,10 +84,12 @@ func TestE2ELinearWorkflow(t *testing.T) {
 		}
 		if run.Status == dag.RunStatusCompleted {
 			if run.Steps["a"].Status != dag.StepStatusCompleted {
-				t.Fatalf("step-a status = %v, want Completed", run.Steps["a"].Status)
+				t.Fatalf("step-a status = %v, want Completed",
+					run.Steps["a"].Status)
 			}
 			if run.Steps["b"].Status != dag.StepStatusCompleted {
-				t.Fatalf("step-b status = %v, want Completed", run.Steps["b"].Status)
+				t.Fatalf("step-b status = %v, want Completed",
+					run.Steps["b"].Status)
 			}
 			break
 		}
@@ -92,14 +98,19 @@ func TestE2ELinearWorkflow(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("workflow did not complete within 10s, status: %v", run.Status)
+			t.Fatalf(
+				"workflow did not complete within 10s, "+
+					"status: %v", run.Status,
+			)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
 
 	// Paired assertion: verify history stream has correct events
 	js, _ := nc.JetStream()
-	sub, _ := js.SubscribeSync("history."+runID, nats.DeliverAll())
+	sub, _ := js.SubscribeSync(
+		"history."+runID, nats.DeliverAll(),
+	)
 	var eventTypes []string
 	for {
 		msg, err := sub.NextMsg(1 * time.Second)
@@ -134,7 +145,10 @@ func TestE2ELinearWorkflow(t *testing.T) {
 		t.Fatal("history missing workflow.completed event")
 	}
 	if completedCount < 2 {
-		t.Fatalf("expected at least 2 step.completed events, got %d", completedCount)
+		t.Fatalf(
+			"expected at least 2 step.completed events, got %d",
+			completedCount,
+		)
 	}
 }
 
@@ -146,6 +160,7 @@ func TestE2EAgentLoop(t *testing.T) {
 	}
 
 	js, _ := nc.JetStream()
+	ctx := context.Background()
 
 	tel := observe.NewNoopTelemetry()
 
@@ -156,12 +171,14 @@ func TestE2EAgentLoop(t *testing.T) {
 	// Worker that loops 3 times then completes
 	iteration := 0
 	w := worker.NewWorker(nc, tel)
-	w.Handle("looper", func(ctx worker.TaskContext) error {
+	w.Handle("looper", func(tc worker.TaskContext) error {
 		iteration++
 		if iteration < 3 {
-			return ctx.Continue([]byte(fmt.Sprintf(`"iteration-%d"`, iteration)))
+			return tc.Continue(
+				[]byte(fmt.Sprintf(`"iteration-%d"`, iteration)),
+			)
 		}
-		return ctx.Complete([]byte(`"done after 3"`))
+		return tc.Complete([]byte(`"done after 3"`))
 	})
 	w.Start()
 	defer w.Stop()
@@ -173,21 +190,23 @@ func TestE2EAgentLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
-	if err := svc.RegisterWorkflow(wfDef); err != nil {
+	if err := svc.RegisterWorkflow(ctx, wfDef); err != nil {
 		t.Fatalf("RegisterWorkflow failed: %v", err)
 	}
-	runID, err := svc.StartRun("e2e-loop", nil)
+	runID, err := svc.StartRun(ctx, "e2e-loop", nil)
 	if err != nil {
 		t.Fatalf("StartRun failed: %v", err)
 	}
 
 	deadline := time.After(10 * time.Second)
 	for {
-		run, err := svc.GetRun(runID)
+		run, err := svc.GetRun(ctx, runID)
 		if err == engine.ErrRunNotFound {
 			select {
 			case <-deadline:
-				t.Fatalf("run snapshot did not appear within 10s")
+				t.Fatalf(
+					"run snapshot did not appear within 10s",
+				)
 			case <-time.After(10 * time.Millisecond):
 			}
 			continue
@@ -203,14 +222,19 @@ func TestE2EAgentLoop(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			run, _ := svc.GetRun(runID)
-			t.Fatalf("agent loop did not complete within 10s, status: %v", run.Status)
+			run, _ := svc.GetRun(ctx, runID)
+			t.Fatalf(
+				"agent loop did not complete within 10s, "+
+					"status: %v", run.Status,
+			)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
 
 	// Verify history contains continue events
-	sub, _ := js.SubscribeSync("history."+runID, nats.DeliverAll())
+	sub, _ := js.SubscribeSync(
+		"history."+runID, nats.DeliverAll(),
+	)
 	continueCount := 0
 	for {
 		msg, err := sub.NextMsg(1 * time.Second)
@@ -226,6 +250,9 @@ func TestE2EAgentLoop(t *testing.T) {
 		}
 	}
 	if continueCount < 2 {
-		t.Fatalf("expected at least 2 continue events, got %d", continueCount)
+		t.Fatalf(
+			"expected at least 2 continue events, got %d",
+			continueCount,
+		)
 	}
 }

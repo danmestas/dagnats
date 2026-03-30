@@ -1,9 +1,11 @@
 // api/service_test.go
-// Tests for the control plane service: register workflows, start runs, get status.
+// Tests for the control plane service: register workflows, start runs,
+// get status.
 // Methodology: real embedded NATS. Verify KV state after each operation.
 package api
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -20,11 +22,12 @@ func TestServiceRegisterWorkflow(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	svc := NewService(nc, observe.NewNoopTelemetry())
-	wfDef, err := dag.NewWorkflow("test-wf").Task("a", "task-a").Build()
+	wfDef, err := dag.NewWorkflow("test-wf").
+		Task("a", "task-a").Build()
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
-	err = svc.RegisterWorkflow(wfDef)
+	err = svc.RegisterWorkflow(context.Background(), wfDef)
 	if err != nil {
 		t.Fatalf("RegisterWorkflow failed: %v", err)
 	}
@@ -44,9 +47,12 @@ func TestServiceStartRun(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	svc := NewService(nc, observe.NewNoopTelemetry())
-	wfDef, _ := dag.NewWorkflow("test-wf").Task("a", "task-a").Build()
-	svc.RegisterWorkflow(wfDef)
-	runID, err := svc.StartRun("test-wf", []byte(`"input"`))
+	wfDef, _ := dag.NewWorkflow("test-wf").
+		Task("a", "task-a").Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+	runID, err := svc.StartRun(
+		context.Background(), "test-wf", []byte(`"input"`),
+	)
 	if err != nil {
 		t.Fatalf("StartRun failed: %v", err)
 	}
@@ -61,30 +67,29 @@ func TestServiceGetRunStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-
-	// The orchestrator is the sole owner of run state — start it so the
-	// WorkflowStarted event is processed and the snapshot is created.
 	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 
 	svc := NewService(nc, observe.NewNoopTelemetry())
-	wfDef, _ := dag.NewWorkflow("test-wf").Task("a", "task-a").Build()
-	svc.RegisterWorkflow(wfDef)
-	runID, _ := svc.StartRun("test-wf", nil)
+	wfDef, _ := dag.NewWorkflow("test-wf").
+		Task("a", "task-a").Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+	runID, _ := svc.StartRun(context.Background(), "test-wf", nil)
 
-	// Poll for the snapshot to appear; the orchestrator processes the event
-	// asynchronously so a brief wait is required (bounded to 5s).
+	// Poll for snapshot (orchestrator processes async, bounded 5s).
 	var run dag.WorkflowRun
 	deadline := time.After(5 * time.Second)
 	for {
-		run, err = svc.GetRun(runID)
+		run, err = svc.GetRun(context.Background(), runID)
 		if err == nil {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("run snapshot did not appear within 5s: %v", err)
+			t.Fatalf(
+				"run snapshot did not appear within 5s: %v", err,
+			)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -92,8 +97,11 @@ func TestServiceGetRunStatus(t *testing.T) {
 	if run.RunID != runID {
 		t.Fatalf("RunID = %q, want %q", run.RunID, runID)
 	}
-	if run.Status != dag.RunStatusPending && run.Status != dag.RunStatusRunning {
-		t.Fatalf("Status = %v, want Pending or Running", run.Status)
+	if run.Status != dag.RunStatusPending &&
+		run.Status != dag.RunStatusRunning {
+		t.Fatalf(
+			"Status = %v, want Pending or Running", run.Status,
+		)
 	}
 }
 
@@ -104,7 +112,7 @@ func TestServiceGetRunNotFound(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	svc := NewService(nc, observe.NewNoopTelemetry())
-	_, err = svc.GetRun("nonexistent")
+	_, err = svc.GetRun(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent run")
 	}
