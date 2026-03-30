@@ -5,11 +5,14 @@ package simple
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/nats-io/nats.go"
 )
 
 func TestErrorReporterWithActiveSpan(t *testing.T) {
@@ -46,15 +49,41 @@ func TestErrorReporterWithActiveSpan(t *testing.T) {
 }
 
 func TestErrorReporterWithoutSpanFallsBack(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	if err := natsutil.SetupTelemetryStream(js); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	logger := NewLogCollector(js, "test-svc")
 	reporter := NewErrorReporter(
-		observe.NewNoopTracer(), observe.NewNoopLogger())
-	// Should not panic when no active span
+		observe.NewNoopTracer(), logger)
+
+	sub, err := js.SubscribeSync(
+		"telemetry.logs.>", nats.DeliverAll(),
+	)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
 	reporter.CaptureError(context.Background(),
-		errors.New("no-span"), nil)
-	reporter.CaptureMessage(context.Background(),
-		"test msg", observe.LevelError)
-	// If we get here without panic, the fallback worked
-	if reporter == nil {
-		t.Fatal("reporter should not be nil")
+		errors.New("no-span-error"),
+		map[string]string{"k": "v"})
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("no log received: %v", err)
+	}
+	var rec LogRecord
+	if err := json.Unmarshal(msg.Data, &rec); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if rec.Level != "error" {
+		t.Fatalf("Level = %q, want error", rec.Level)
+	}
+	if rec.Error != "no-span-error" {
+		t.Fatalf("Error = %q, want no-span-error", rec.Error)
 	}
 }

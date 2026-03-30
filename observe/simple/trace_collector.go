@@ -44,17 +44,17 @@ type TraceCollector struct {
 // publisher goroutine. Call Flush() to drain and stop the publisher.
 func NewTraceCollector(
 	js nats.JetStreamContext,
-	metrics observe.Metrics,
 	serviceName string,
+	metrics observe.Metrics,
 ) *TraceCollector {
 	if js == nil {
 		panic("NewTraceCollector: js must not be nil")
 	}
-	if metrics == nil {
-		panic("NewTraceCollector: metrics must not be nil")
-	}
 	if serviceName == "" {
 		panic("NewTraceCollector: serviceName must not be empty")
+	}
+	if metrics == nil {
+		panic("NewTraceCollector: metrics must not be nil")
 	}
 	tc := &TraceCollector{
 		js:          js,
@@ -168,7 +168,9 @@ func statusString(code observe.StatusCode) string {
 
 // LiveSpan implements observe.Span. It accumulates data in memory and
 // publishes a SpanRecord to the shared records channel on End().
+// All mutable fields are guarded by mu for concurrent safety.
 type LiveSpan struct {
+	mu         sync.Mutex
 	traceID    string
 	spanID     string
 	parentID   string
@@ -213,6 +215,9 @@ func newLiveSpan(
 	if parent := SpanFromContext(ctx); parent != nil {
 		traceID = parent.traceID
 		parentID = parent.spanID
+	} else if info, ok := ParentInfoFromContext(ctx); ok {
+		traceID = info.TraceID
+		parentID = info.SpanID
 	}
 	kind := observe.SpanKindInternal
 	attrs := map[string]any{}
@@ -256,17 +261,36 @@ func applySpanOption(
 	}
 }
 
-// End finalizes the span and sends a SpanRecord to the records channel.
-// Double-calls are silently ignored. If the channel is full, the span is
-// dropped and a counter is incremented.
+// End finalizes the span and sends a SpanRecord to the records
+// channel. Double-calls are silently ignored. If the channel is
+// full, the span is dropped and a counter is incremented.
 func (s *LiveSpan) End() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.ended {
 		return
 	}
 	s.ended = true
+	rec := s.buildRecord()
+	select {
+	case s.records <- rec:
+	default:
+		if s.metrics != nil {
+			s.metrics.Counter(
+				"telemetry.spans.dropped", nil,
+			).Inc()
+		}
+		log.Printf(
+			"LiveSpan.End: channel full, dropping %s",
+			s.name)
+	}
+}
+
+// buildRecord constructs a SpanRecord from the current span state.
+// Caller must hold s.mu.
+func (s *LiveSpan) buildRecord() SpanRecord {
 	endTime := time.Now().UTC()
-	durationMS := endTime.Sub(s.startTime).Milliseconds()
-	rec := SpanRecord{
+	return SpanRecord{
 		TraceID:    s.traceID,
 		SpanID:     s.spanID,
 		ParentID:   s.parentID,
@@ -275,47 +299,50 @@ func (s *LiveSpan) End() {
 		Kind:       s.kind,
 		StartTime:  s.startTime,
 		EndTime:    endTime,
-		DurationMS: durationMS,
+		DurationMS: endTime.Sub(s.startTime).Milliseconds(),
 		Status:     statusString(s.statusCode),
 		Attributes: s.attributes,
 		Events:     s.events,
 		Error:      s.errorMsg,
 	}
-	select {
-	case s.records <- rec:
-	default:
-		if s.metrics != nil {
-			s.metrics.Counter("telemetry.spans.dropped", nil).Inc()
-		}
-		log.Printf("LiveSpan.End: records channel full, dropping span %s",
-			s.name)
-	}
 }
 
 // SetStatus sets the status code and description of the span.
-func (s *LiveSpan) SetStatus(code observe.StatusCode, description string) {
+func (s *LiveSpan) SetStatus(
+	code observe.StatusCode, description string,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.statusCode = code
 	s.statusDesc = description
 }
 
 // SetAttributes merges key-value pairs into the span's attributes.
 func (s *LiveSpan) SetAttributes(attrs ...observe.Attribute) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, a := range attrs {
 		s.attributes[a.Key] = a.Value
 	}
 }
 
-// RecordError stores the error message on the span and sets error status.
+// RecordError stores the error message and sets error status.
 func (s *LiveSpan) RecordError(err error) {
 	if err == nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.errorMsg = err.Error()
 	s.statusCode = observe.StatusError
 }
 
 // AddEvent appends a timestamped event to the span.
-func (s *LiveSpan) AddEvent(name string, attrs ...observe.Attribute) {
+func (s *LiveSpan) AddEvent(
+	name string, attrs ...observe.Attribute,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	eventAttrs := make(map[string]any, len(attrs))
 	for _, a := range attrs {
 		eventAttrs[a.Key] = a.Value

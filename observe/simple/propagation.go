@@ -1,10 +1,12 @@
 package simple
 
-// propagation.go implements W3C trace context propagation for NATS messages.
-// Dual-writing to both NATS headers and protocol.Event fields ensures
-// trace context survives both in-flight (header) and at-rest (event store) paths.
+// propagation.go implements W3C trace context propagation for NATS
+// messages. Dual-writing to both NATS headers and protocol.Event
+// fields ensures trace context survives both in-flight (header)
+// and at-rest (event store) paths.
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"strings"
@@ -12,6 +14,64 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
+
+// parentInfoKey is the context key for propagated parent span info.
+type parentInfoKey struct{}
+
+// ParentInfo carries trace/span IDs from an extracted traceparent
+// so that TraceCollector.Start can link child spans to parents
+// across process boundaries.
+type ParentInfo struct {
+	TraceID string
+	SpanID  string
+}
+
+// ParentInfoFromContext returns any ParentInfo stored in ctx.
+func ParentInfoFromContext(ctx context.Context) (ParentInfo, bool) {
+	if ctx == nil {
+		panic("ParentInfoFromContext: ctx must not be nil")
+	}
+	info, ok := ctx.Value(parentInfoKey{}).(ParentInfo)
+	return info, ok
+}
+
+// InjectTraceContext writes W3C traceparent to both NATS headers
+// and event payload. Extracts trace/span IDs from the active span.
+func InjectTraceContext(
+	ctx context.Context, msg *nats.Msg, evt *protocol.Event,
+) {
+	if ctx == nil {
+		panic("InjectTraceContext: ctx must not be nil")
+	}
+	if msg == nil {
+		panic("InjectTraceContext: msg must not be nil")
+	}
+	span := SpanFromContext(ctx)
+	if span == nil {
+		return
+	}
+	injectTraceparent(msg, evt, span.TraceID(), span.SpanID())
+}
+
+// ExtractTraceContext reads traceparent from NATS headers (runtime)
+// or event payload (replay). Returns a context with parent span
+// info that Start() will use for linking.
+func ExtractTraceContext(
+	msg *nats.Msg, evt *protocol.Event,
+) context.Context {
+	if msg == nil {
+		panic("ExtractTraceContext: msg must not be nil")
+	}
+	if evt == nil {
+		panic("ExtractTraceContext: evt must not be nil")
+	}
+	traceID, spanID, ok := extractTraceparent(msg, evt)
+	if !ok {
+		return context.Background()
+	}
+	info := ParentInfo{TraceID: traceID, SpanID: spanID}
+	return context.WithValue(context.Background(), parentInfoKey{}, info)
+}
 
 // generateTraceID returns a new random 32-char hex trace ID (16 bytes).
 // Panics if crypto/rand fails — that is an unrecoverable system error.

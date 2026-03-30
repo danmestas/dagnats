@@ -31,7 +31,7 @@ func SetupTelemetry(nc *nats.Conn) (*observe.Telemetry, func()) {
 	}
 
 	metrics := NewMetricsCollector(js, serviceName)
-	collector := NewTraceCollector(js, metrics, serviceName)
+	collector := NewTraceCollector(js, serviceName, metrics)
 	logger := NewLogCollector(js, serviceName)
 	errors := NewErrorReporter(collector, logger)
 

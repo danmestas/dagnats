@@ -82,7 +82,7 @@ func TestTraceCollectorPublishesToNATS(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	metrics := observe.NewNoopMetrics()
-	tc := NewTraceCollector(js, metrics, "engine")
+	tc := NewTraceCollector(js, "engine", metrics)
 	t.Cleanup(func() { tc.Flush() })
 
 	ctx := context.Background()

@@ -61,7 +61,9 @@ func NewNoopTracer() Tracer { return &noopTracer{} }
 
 // Start returns the context unchanged and a no-op span. No allocation is needed
 // for the context because no span is propagated.
-func (n *noopTracer) Start(ctx context.Context, name string, opts ...SpanOption) (context.Context, Span) {
+func (n *noopTracer) Start(
+	ctx context.Context, name string, opts ...SpanOption,
+) (context.Context, Span) {
 	return ctx, &noopSpan{}
 }
 

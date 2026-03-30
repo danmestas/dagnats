@@ -5,8 +5,11 @@
 package simple
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -97,5 +100,84 @@ func TestExtractFallsBackToEvent(t *testing.T) {
 	}
 	if traceID != "trace1" || spanID != "span1" {
 		t.Fatalf("got %q/%q, want trace1/span1", traceID, spanID)
+	}
+}
+
+func TestInjectTraceContextWithActiveSpan(t *testing.T) {
+	records := make(chan SpanRecord, 8)
+	span := &LiveSpan{
+		traceID:    "aaa111",
+		spanID:     "bbb222",
+		name:       "test",
+		service:    "svc",
+		kind:       "internal",
+		startTime:  time.Now(),
+		attributes: map[string]any{},
+		records:    records,
+		metrics:    observe.NewNoopMetrics(),
+	}
+	ctx := context.WithValue(
+		context.Background(), spanContextKey{}, span,
+	)
+	msg := &nats.Msg{Header: nats.Header{}}
+	evt := &protocol.Event{RunID: "r1"}
+
+	InjectTraceContext(ctx, msg, evt)
+
+	// Positive: header was written.
+	if msg.Header.Get("traceparent") == "" {
+		t.Fatal("traceparent header not set")
+	}
+	// Positive: event field was written.
+	if evt.TraceParent == "" {
+		t.Fatal("TraceParent not set on event")
+	}
+}
+
+func TestInjectTraceContextNoSpan(t *testing.T) {
+	msg := &nats.Msg{Header: nats.Header{}}
+	evt := &protocol.Event{RunID: "r1"}
+
+	// Should not panic when no span in context.
+	InjectTraceContext(context.Background(), msg, evt)
+
+	// Negative: nothing written when no span.
+	if msg.Header.Get("traceparent") != "" {
+		t.Fatal("traceparent should not be set without span")
+	}
+	if evt.TraceParent != "" {
+		t.Fatal("TraceParent should not be set without span")
+	}
+}
+
+func TestExtractTraceContextRoundTrip(t *testing.T) {
+	msg := &nats.Msg{Header: nats.Header{}}
+	evt := &protocol.Event{RunID: "r1"}
+	traceID := generateTraceID()
+	spanID := generateSpanID()
+	injectTraceparent(msg, evt, traceID, spanID)
+
+	ctx := ExtractTraceContext(msg, evt)
+	info, ok := ParentInfoFromContext(ctx)
+	if !ok {
+		t.Fatal("ParentInfo not found in context")
+	}
+	if info.TraceID != traceID {
+		t.Fatalf("TraceID = %q, want %q", info.TraceID, traceID)
+	}
+	if info.SpanID != spanID {
+		t.Fatalf("SpanID = %q, want %q", info.SpanID, spanID)
+	}
+}
+
+func TestExtractTraceContextNoTraceparent(t *testing.T) {
+	msg := &nats.Msg{Header: nats.Header{}}
+	evt := &protocol.Event{RunID: "r1"}
+
+	ctx := ExtractTraceContext(msg, evt)
+	_, ok := ParentInfoFromContext(ctx)
+	// Negative: no parent info when no traceparent.
+	if ok {
+		t.Fatal("should not find ParentInfo without traceparent")
 	}
 }

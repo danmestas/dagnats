@@ -35,7 +35,11 @@ func TestWorkerHandlesTask(t *testing.T) {
 	})
 	w.Start()
 	defer w.Stop()
-	payload := protocol.TaskPayload{RunID: "run-1", StepID: "step-a", Input: json.RawMessage(`"hello"`)}
+	payload := protocol.TaskPayload{
+		RunID:  "run-1",
+		StepID: "step-a",
+		Input:  json.RawMessage(`"hello"`),
+	}
 	data, _ := json.Marshal(payload)
 	_, err = js.Publish("task.echo.run-1", data)
 	if err != nil {
@@ -88,7 +92,11 @@ func TestWorkerNaksOnHandlerError(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	payload := protocol.TaskPayload{RunID: "run-nak", StepID: "step-b", Input: json.RawMessage(`"data"`)}
+	payload := protocol.TaskPayload{
+		RunID:  "run-nak",
+		StepID: "step-b",
+		Input:  json.RawMessage(`"data"`),
+	}
 	data, _ := json.Marshal(payload)
 	if _, err := js.Publish("task.failing.run-nak", data); err != nil {
 		t.Fatalf("Publish failed: %v", err)

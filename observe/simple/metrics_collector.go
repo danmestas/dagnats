@@ -138,28 +138,34 @@ func (g *simpleGauge) Set(value float64) {
 	g.publish()
 }
 
+const gaugeCASRetryMax = 1000
+
 // Inc increments the gauge by 1 and publishes.
 func (g *simpleGauge) Inc() {
-	for {
+	for i := 0; i < gaugeCASRetryMax; i++ {
 		old := g.bits.Load()
-		newVal := math.Float64frombits(old) + 1.0
-		if g.bits.CompareAndSwap(old, math.Float64bits(newVal)) {
-			break
+		next := math.Float64frombits(old) + 1.0
+		if g.bits.CompareAndSwap(old, math.Float64bits(next)) {
+			g.publish()
+			return
 		}
 	}
-	g.publish()
+	log.Printf("simpleGauge.Inc: CAS failed after %d retries",
+		gaugeCASRetryMax)
 }
 
 // Dec decrements the gauge by 1 and publishes.
 func (g *simpleGauge) Dec() {
-	for {
+	for i := 0; i < gaugeCASRetryMax; i++ {
 		old := g.bits.Load()
-		newVal := math.Float64frombits(old) - 1.0
-		if g.bits.CompareAndSwap(old, math.Float64bits(newVal)) {
-			break
+		next := math.Float64frombits(old) - 1.0
+		if g.bits.CompareAndSwap(old, math.Float64bits(next)) {
+			g.publish()
+			return
 		}
 	}
-	g.publish()
+	log.Printf("simpleGauge.Dec: CAS failed after %d retries",
+		gaugeCASRetryMax)
 }
 
 // publish sends the current gauge value to the TELEMETRY stream.
