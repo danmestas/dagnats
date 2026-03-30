@@ -2,6 +2,7 @@ package worker
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
@@ -16,9 +17,11 @@ type TaskContext interface {
 	Input() []byte
 	RunID() string
 	StepID() string
+	RetryCount() int
 	Complete(output []byte) error
 	Fail(err error) error
 	Continue(output []byte) error
+	PutStream(data []byte) error
 }
 
 // HandlerFunc is the function signature for task handlers registered with a Worker.
@@ -96,7 +99,7 @@ func (w *Worker) handleMessage(taskType string, handler HandlerFunc, msg *nats.M
 		msg.Ack()
 		return
 	}
-	ctx := newTaskContext(w.js, payload)
+	ctx := newTaskContext(w.nc, w.js, payload)
 	w.logger.Info("executing task",
 		observe.String("task_type", taskType),
 		observe.String("run_id", payload.RunID),
@@ -104,6 +107,16 @@ func (w *Worker) handleMessage(taskType string, handler HandlerFunc, msg *nats.M
 	)
 	err = handler(ctx)
 	if err != nil {
+		var nre *NonRetryableError
+		if errors.As(err, &nre) {
+			w.logger.Error("task failed permanently", nre.Err,
+				observe.String("task_type", taskType),
+				observe.String("run_id", payload.RunID),
+			)
+			ctx.Fail(nre.Err)
+			msg.Ack()
+			return
+		}
 		w.logger.Error("task handler returned error, will retry", err,
 			observe.String("task_type", taskType),
 			observe.String("run_id", payload.RunID),

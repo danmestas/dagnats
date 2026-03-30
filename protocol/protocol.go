@@ -13,6 +13,7 @@ type TaskPayload struct {
 	RunID     string          `json:"run_id"`
 	StepID    string          `json:"step_id"`
 	Iteration int             `json:"iteration,omitempty"`
+	Attempt   int             `json:"attempt,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 }
 

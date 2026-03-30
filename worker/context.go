@@ -9,29 +9,38 @@ import (
 )
 
 type taskContext struct {
+	nc        *nats.Conn
 	js        nats.JetStreamContext
 	runID     string
 	stepID    string
 	iteration int
+	attempt   int
 	input     []byte
 }
 
 // newTaskContext constructs a taskContext from a dispatched TaskPayload.
 // iteration is the agent-loop cycle index, used to make Continue MsgIds unique
 // across iterations so JetStream deduplication does not swallow subsequent cycles.
-func newTaskContext(js nats.JetStreamContext, payload protocol.TaskPayload) *taskContext {
+func newTaskContext(
+	nc *nats.Conn,
+	js nats.JetStreamContext,
+	payload protocol.TaskPayload,
+) *taskContext {
 	return &taskContext{
+		nc:        nc,
 		js:        js,
 		runID:     payload.RunID,
 		stepID:    payload.StepID,
 		iteration: payload.Iteration,
+		attempt:   payload.Attempt,
 		input:     payload.Input,
 	}
 }
 
-func (c *taskContext) Input() []byte  { return c.input }
-func (c *taskContext) RunID() string  { return c.runID }
-func (c *taskContext) StepID() string { return c.stepID }
+func (c *taskContext) Input() []byte    { return c.input }
+func (c *taskContext) RunID() string    { return c.runID }
+func (c *taskContext) StepID() string   { return c.stepID }
+func (c *taskContext) RetryCount() int  { return c.attempt }
 
 func (c *taskContext) Complete(output []byte) error {
 	return c.publishEvent(protocol.EventStepCompleted, output)
@@ -63,6 +72,14 @@ func (c *taskContext) Continue(output []byte) error {
 	)
 	_, err = c.js.Publish(evt.NATSSubject(), data, nats.MsgId(msgID))
 	return err
+}
+
+// PutStream publishes data to a streaming subject for real-time consumption.
+// Uses core NATS pub/sub (not JetStream) — tokens are ephemeral, fire-and-forget.
+// Clients subscribe to stream.{run_id}.{step_id} for live delivery.
+func (c *taskContext) PutStream(data []byte) error {
+	subject := fmt.Sprintf("stream.%s.%s", c.runID, c.stepID)
+	return c.nc.Publish(subject, data)
 }
 
 func (c *taskContext) publishEvent(eventType protocol.EventType, payload []byte) error {
