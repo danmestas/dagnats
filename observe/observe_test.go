@@ -55,6 +55,17 @@ func TestNoopMetricsSatisfiesInterface(t *testing.T) {
 	gauge.Set(42.0)
 }
 
+func TestNewNoopTelemetry(t *testing.T) {
+	tel := NewNoopTelemetry()
+	if tel == nil {
+		t.Fatal("NewNoopTelemetry returned nil")
+	}
+	if tel.Tracer == nil || tel.Logger == nil ||
+		tel.Metrics == nil || tel.Errors == nil {
+		t.Fatal("NewNoopTelemetry has nil fields")
+	}
+}
+
 func TestLevelString(t *testing.T) {
 	tests := []struct {
 		level    Level

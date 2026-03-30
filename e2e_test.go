@@ -27,13 +27,15 @@ func TestE2ELinearWorkflow(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
+	tel := observe.NewNoopTelemetry()
+
 	// Start orchestrator
-	orch := engine.NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := engine.NewOrchestrator(nc, tel)
 	orch.Start()
 	defer orch.Stop()
 
 	// Register workers
-	w := worker.NewWorker(nc, observe.NewNoopLogger())
+	w := worker.NewWorker(nc, tel)
 	w.Handle("task-a", func(ctx worker.TaskContext) error {
 		return ctx.Complete([]byte(`"a-output"`))
 	})
@@ -44,7 +46,7 @@ func TestE2ELinearWorkflow(t *testing.T) {
 	defer w.Stop()
 
 	// Register workflow and start run via service
-	svc := api.NewService(nc, observe.NewNoopLogger())
+	svc := api.NewService(nc, tel)
 	wfDef, err := dag.NewWorkflow("e2e-linear").
 		Task("a", "task-a").
 		Task("b", "task-b").DependsOn("a").
@@ -145,13 +147,15 @@ func TestE2EAgentLoop(t *testing.T) {
 
 	js, _ := nc.JetStream()
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	tel := observe.NewNoopTelemetry()
+
+	orch := engine.NewOrchestrator(nc, tel)
 	orch.Start()
 	defer orch.Stop()
 
 	// Worker that loops 3 times then completes
 	iteration := 0
-	w := worker.NewWorker(nc, observe.NewNoopLogger())
+	w := worker.NewWorker(nc, tel)
 	w.Handle("looper", func(ctx worker.TaskContext) error {
 		iteration++
 		if iteration < 3 {
@@ -162,7 +166,7 @@ func TestE2EAgentLoop(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	svc := api.NewService(nc, observe.NewNoopLogger())
+	svc := api.NewService(nc, tel)
 	wfDef, err := dag.NewWorkflow("e2e-loop").
 		AgentLoop("loop", "looper").WithMaxIterations(10).
 		Build()

@@ -30,15 +30,21 @@ type HandlerFunc func(ctx TaskContext) error
 type Worker struct {
 	nc       *nats.Conn
 	js       nats.JetStreamContext
-	logger   observe.Logger
+	tel      *observe.Telemetry
 	handlers map[string]HandlerFunc
 	subs     []*nats.Subscription
 }
 
-// NewWorker creates a Worker using the given connection and logger.
-// Panics if JetStream cannot be initialised — a broken connection is a programmer
-// error at startup, not a recoverable runtime condition.
-func NewWorker(nc *nats.Conn, logger observe.Logger) *Worker {
+// NewWorker creates a Worker using the given connection and telemetry bundle.
+// Panics if nc or tel is nil, or if JetStream cannot be initialised — all are
+// programmer errors at startup, not recoverable runtime conditions.
+func NewWorker(nc *nats.Conn, tel *observe.Telemetry) *Worker {
+	if nc == nil {
+		panic("NewWorker: nc must not be nil")
+	}
+	if tel == nil {
+		panic("NewWorker: tel must not be nil")
+	}
 	js, err := nc.JetStream()
 	if err != nil {
 		panic("NewWorker: JetStream init failed: " + err.Error())
@@ -46,7 +52,7 @@ func NewWorker(nc *nats.Conn, logger observe.Logger) *Worker {
 	return &Worker{
 		nc:       nc,
 		js:       js,
-		logger:   logger,
+		tel:      tel,
 		handlers: make(map[string]HandlerFunc),
 	}
 }
@@ -91,20 +97,20 @@ func (w *Worker) handleMessage(taskType string, handler HandlerFunc, msg *nats.M
 	var payload protocol.TaskPayload
 	err := json.Unmarshal(msg.Data, &payload)
 	if err != nil {
-		w.logger.Error("failed to unmarshal task payload", err,
+		w.tel.Logger.Error("failed to unmarshal task payload", err,
 			observe.String("task_type", taskType))
 		msg.Ack()
 		return
 	}
 	ctx := newTaskContext(w.js, payload)
-	w.logger.Info("executing task",
+	w.tel.Logger.Info("executing task",
 		observe.String("task_type", taskType),
 		observe.String("run_id", payload.RunID),
 		observe.String("step_id", payload.StepID),
 	)
 	err = handler(ctx)
 	if err != nil {
-		w.logger.Error("task handler returned error, will retry", err,
+		w.tel.Logger.Error("task handler returned error, will retry", err,
 			observe.String("task_type", taskType),
 			observe.String("run_id", payload.RunID),
 		)

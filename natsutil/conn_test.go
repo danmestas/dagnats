@@ -87,6 +87,28 @@ func TestSetupKVBuckets(t *testing.T) {
 	}
 }
 
+func TestSetupTelemetryStream(t *testing.T) {
+	_, nc := StartTestServer(t)
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	err = SetupTelemetryStream(js)
+	if err != nil {
+		t.Fatalf("SetupTelemetryStream: %v", err)
+	}
+	info, err := js.StreamInfo("TELEMETRY")
+	if err != nil {
+		t.Fatalf("StreamInfo: %v", err)
+	}
+	if info.Config.MaxAge != 7*24*time.Hour {
+		t.Fatalf("MaxAge = %v, want 7d", info.Config.MaxAge)
+	}
+	if info.Config.MaxBytes != 1<<30 {
+		t.Fatalf("MaxBytes = %d, want 1GB", info.Config.MaxBytes)
+	}
+}
+
 func TestSetupAll(t *testing.T) {
 	_, nc := StartTestServer(t)
 	done := make(chan error, 1)

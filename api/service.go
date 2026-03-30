@@ -21,22 +21,22 @@ import (
 // KV and publishes WorkflowStarted events to the history stream. Run state is
 // owned exclusively by the orchestrator — the service only reads snapshots.
 type Service struct {
-	nc     *nats.Conn
-	js     nats.JetStreamContext
-	defKV  nats.KeyValue
-	store  *engine.SnapshotStore
-	logger observe.Logger
+	nc    *nats.Conn
+	js    nats.JetStreamContext
+	defKV nats.KeyValue
+	store *engine.SnapshotStore
+	tel   *observe.Telemetry
 }
 
 // NewService binds the control plane to an active NATS connection.
 // Panics if JetStream init fails or the workflow_defs bucket does not exist —
 // callers must call natsutil.SetupAll before constructing a Service.
-func NewService(nc *nats.Conn, logger observe.Logger) *Service {
+func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 	if nc == nil {
 		panic("NewService: nc must not be nil")
 	}
-	if logger == nil {
-		panic("NewService: logger must not be nil")
+	if tel == nil {
+		panic("NewService: tel must not be nil")
 	}
 	js, err := nc.JetStream()
 	if err != nil {
@@ -47,11 +47,11 @@ func NewService(nc *nats.Conn, logger observe.Logger) *Service {
 		panic("NewService: workflow_defs bucket not found: " + err.Error())
 	}
 	return &Service{
-		nc:     nc,
-		js:     js,
-		defKV:  defKV,
-		store:  engine.NewSnapshotStore(js),
-		logger: logger,
+		nc:    nc,
+		js:    js,
+		defKV: defKV,
+		store: engine.NewSnapshotStore(js),
+		tel:   tel,
 	}
 }
 
@@ -102,7 +102,7 @@ func (s *Service) StartRun(workflowName string, input []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.logger.Info("started run",
+	s.tel.Logger.Info("started run",
 		observe.String("run_id", runID),
 		observe.String("workflow", workflowName),
 	)
