@@ -310,6 +310,27 @@ func (o *Orchestrator) handleStepContinue(
 			"resolve input for step %q: %w", stepDef.ID, err,
 		)
 	}
+	// If LoopDelay is configured, delay re-enqueue via time.AfterFunc.
+	// The timer publishes the iteration task after the delay elapses.
+	if stepDef.Loop != nil && stepDef.Loop.LoopDelay > 0 {
+		delay := stepDef.Loop.LoopDelay
+		runID := run.RunID
+		iter := state.Iterations
+		loopCtx := ctx
+		time.AfterFunc(delay, func() {
+			pubErr := o.publishIterationTask(
+				loopCtx, runID, stepDef, input, iter,
+			)
+			if pubErr != nil {
+				o.tel.Logger.Error(
+					"delayed iteration publish failed", pubErr,
+					observe.String("run_id", runID),
+					observe.String("step_id", stepDef.ID),
+				)
+			}
+		})
+		return nil
+	}
 	return o.publishIterationTask(
 		ctx, run.RunID, stepDef, input, state.Iterations,
 	)
@@ -380,9 +401,10 @@ func (o *Orchestrator) failLoopStep(
 	return o.publishWorkflowFailed(run.RunID)
 }
 
-// handleStepFailed records a permanent failure reported by a worker.
-// Transient failures are handled by JetStream NakWithDelay and never
-// reach the orchestrator.
+// handleStepFailed processes a step failure event. If the step has retries
+// remaining, it stays queued for JetStream redelivery. If retries are
+// exhausted (or the step has zero retries configured), the step and workflow
+// are marked as permanently failed.
 func (o *Orchestrator) handleStepFailed(
 	ctx context.Context, evt protocol.Event,
 ) error {
@@ -392,7 +414,7 @@ func (o *Orchestrator) handleStepFailed(
 	if evt.StepID == "" {
 		panic("handleStepFailed: StepID must not be empty")
 	}
-	_, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -401,6 +423,23 @@ func (o *Orchestrator) handleStepFailed(
 	if evt.Payload != nil {
 		state.Error = string(evt.Payload)
 	}
+
+	// Find step def to check retry policy.
+	maxRetries := 0
+	for _, s := range wfDef.Steps {
+		if s.ID == evt.StepID {
+			maxRetries = s.Retries
+			break
+		}
+	}
+
+	if state.Attempts <= maxRetries {
+		// Retries remaining — keep step queued for JetStream redelivery.
+		run.Steps[evt.StepID] = state
+		return o.saveSnapshot(ctx, run)
+	}
+
+	// Retries exhausted — permanent failure.
 	state.Status = dag.StepStatusFailed
 	run.Steps[evt.StepID] = state
 	run.Status = dag.RunStatusFailed
@@ -413,7 +452,8 @@ func (o *Orchestrator) handleStepFailed(
 }
 
 // enqueueReady resolves all currently-ready steps and publishes one task
-// message per step. Steps already queued are skipped via dag.ResolveReady.
+// message per step. Steps with satisfied SkipIf conditions are marked Skipped
+// instead of enqueued, potentially unblocking further downstream steps.
 func (o *Orchestrator) enqueueReady(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
@@ -431,10 +471,38 @@ func (o *Orchestrator) enqueueReady(
 	defer span.End()
 	completed := completedSet(run)
 	queued := queuedSet(run)
+
+	// Process skipped steps first — they may unblock downstream steps
+	// that would otherwise not appear in ResolveReady.
+	skipped := dag.ResolveSkipped(wfDef, completed, queued, run.Steps)
+	for _, step := range skipped {
+		state := run.Steps[step.ID]
+		state.Status = dag.StepStatusSkipped
+		run.Steps[step.ID] = state
+	}
+	if len(skipped) > 0 {
+		// Recompute completed set after marking skips.
+		completed = completedSet(run)
+		if dag.IsComplete(wfDef, completed) {
+			return o.completeWorkflow(ctx, run)
+		}
+	}
+
 	ready := dag.ResolveReady(wfDef, completed, queued)
+	// Exclude steps that were just marked as skipped.
+	filtered := make([]dag.StepDef, 0, len(ready))
+	for _, step := range ready {
+		if run.Steps[step.ID].Status != dag.StepStatusSkipped {
+			filtered = append(filtered, step)
+		}
+	}
+	ready = filtered
 	span.SetAttributes(
 		observe.Int64Attr("ready_steps_count", int64(len(ready))),
 	)
+	if len(ready) == 0 && len(skipped) == 0 {
+		return nil
+	}
 	if len(ready) == 0 {
 		return nil
 	}
@@ -470,7 +538,10 @@ func (o *Orchestrator) publishReadyTasks(
 				"resolve input for step %q: %w", step.ID, err,
 			)
 		}
-		if err := o.publishTask(ctx, runID, step, input); err != nil {
+		attempt := run.Steps[step.ID].Attempts
+		if err := o.publishTask(
+			ctx, runID, step, input, attempt,
+		); err != nil {
 			return err
 		}
 	}
@@ -484,6 +555,7 @@ func (o *Orchestrator) publishTask(
 	runID string,
 	step dag.StepDef,
 	input []byte,
+	attempt int,
 ) error {
 	if runID == "" {
 		panic("publishTask: runID must not be empty")
@@ -502,9 +574,10 @@ func (o *Orchestrator) publishTask(
 	)
 	defer span.End()
 	payload := protocol.TaskPayload{
-		RunID:  runID,
-		StepID: step.ID,
-		Input:  input,
+		RunID:   runID,
+		StepID:  step.ID,
+		Attempt: attempt,
+		Input:   input,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -733,14 +806,16 @@ func injectTraceCtx(
 	msg.Header.Set("traceparent", tp)
 }
 
-// completedSet returns a set of step IDs with Completed status.
+// completedSet returns a set of step IDs whose status is Completed or Skipped.
+// Skipped steps count as satisfied for downstream dependency resolution.
 func completedSet(run dag.WorkflowRun) map[string]bool {
 	if run.Steps == nil {
 		panic("completedSet: run.Steps must not be nil")
 	}
 	result := make(map[string]bool, len(run.Steps))
 	for id, state := range run.Steps {
-		if state.Status == dag.StepStatusCompleted {
+		if state.Status == dag.StepStatusCompleted ||
+			state.Status == dag.StepStatusSkipped {
 			result[id] = true
 		}
 	}

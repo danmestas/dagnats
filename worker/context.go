@@ -11,11 +11,13 @@ import (
 )
 
 type taskContext struct {
+	nc        *nats.Conn
 	js        nats.JetStreamContext
 	tel       *observe.Telemetry
 	runID     string
 	stepID    string
 	iteration int
+	attempt   int
 	input     []byte
 	ctx       context.Context
 	span      observe.Span
@@ -25,6 +27,7 @@ type taskContext struct {
 // TaskPayload. The ctx and span carry trace context from the
 // parent executeTask span so child spans link correctly.
 func newTaskContext(
+	nc *nats.Conn,
 	tel *observe.Telemetry,
 	js nats.JetStreamContext,
 	payload protocol.TaskPayload,
@@ -38,20 +41,23 @@ func newTaskContext(
 		panic("newTaskContext: ctx must not be nil")
 	}
 	return &taskContext{
+		nc:        nc,
 		js:        js,
 		tel:       tel,
 		runID:     payload.RunID,
 		stepID:    payload.StepID,
 		iteration: payload.Iteration,
+		attempt:   payload.Attempt,
 		input:     payload.Input,
 		ctx:       ctx,
 		span:      span,
 	}
 }
 
-func (c *taskContext) Input() []byte  { return c.input }
-func (c *taskContext) RunID() string  { return c.runID }
-func (c *taskContext) StepID() string { return c.stepID }
+func (c *taskContext) Input() []byte    { return c.input }
+func (c *taskContext) RunID() string    { return c.runID }
+func (c *taskContext) StepID() string   { return c.stepID }
+func (c *taskContext) RetryCount() int  { return c.attempt }
 
 // Complete publishes a step.completed event with trace context.
 func (c *taskContext) Complete(output []byte) error {
@@ -128,6 +134,15 @@ func (c *taskContext) Continue(output []byte) error {
 	injectWorkerTraceCtx(c.span, &evt, msg)
 	_, err = c.js.PublishMsg(msg)
 	return err
+}
+
+// PutStream publishes data to a streaming subject for real-time
+// consumption. Uses core NATS pub/sub (not JetStream) -- tokens are
+// ephemeral, fire-and-forget. Clients subscribe to
+// stream.{run_id}.{step_id} for live delivery.
+func (c *taskContext) PutStream(data []byte) error {
+	subject := fmt.Sprintf("stream.%s.%s", c.runID, c.stepID)
+	return c.nc.Publish(subject, data)
 }
 
 // publishEvent creates, traces, and publishes a step lifecycle

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -18,9 +19,11 @@ type TaskContext interface {
 	Input() []byte
 	RunID() string
 	StepID() string
+	RetryCount() int
 	Complete(output []byte) error
 	Fail(err error) error
 	Continue(output []byte) error
+	PutStream(data []byte) error
 }
 
 // HandlerFunc is the function signature for task handlers
@@ -160,7 +163,7 @@ func (w *Worker) handleMessage(
 		observe.String("run_id", payload.RunID),
 		observe.String("step_id", payload.StepID),
 	)
-	tc := newTaskContext(w.tel, w.js, payload, ctx, span)
+	tc := newTaskContext(w.nc, w.tel, w.js, payload, ctx, span)
 	err = handler(tc)
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Observe(elapsed)
@@ -170,6 +173,17 @@ func (w *Worker) handleMessage(
 		span.SetStatus(
 			observe.StatusError, err.Error(),
 		)
+		var nre *NonRetryableError
+		if errors.As(err, &nre) {
+			w.tel.Logger.Error(
+				"task failed permanently", nre.Err,
+				observe.String("task_type", taskType),
+				observe.String("run_id", payload.RunID),
+			)
+			tc.Fail(nre.Err)
+			msg.Ack()
+			return
+		}
 		w.tel.Logger.Error(
 			"task handler returned error, will retry", err,
 			observe.String("task_type", taskType),

@@ -35,7 +35,7 @@ func TestTaskContextComplete(t *testing.T) {
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
 	tc := newTaskContext(
-		tel, js,
+		nc, tel, js,
 		protocol.TaskPayload{
 			RunID: "run-1", StepID: "step-a",
 			Input: []byte(`"input"`),
@@ -84,7 +84,7 @@ func TestTaskContextFail(t *testing.T) {
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
 	tc := newTaskContext(
-		tel, js,
+		nc, tel, js,
 		protocol.TaskPayload{RunID: "run-2", StepID: "step-b"},
 		bgCtx, span,
 	)
@@ -123,7 +123,7 @@ func TestTaskContextContinue(t *testing.T) {
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
 	tc := newTaskContext(
-		tel, js,
+		nc, tel, js,
 		protocol.TaskPayload{RunID: "run-3", StepID: "step-c"},
 		bgCtx, span,
 	)
@@ -149,7 +149,7 @@ func TestTaskContextInput(t *testing.T) {
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
 	tc := newTaskContext(
-		tel, nil,
+		nil, tel, nil,
 		protocol.TaskPayload{
 			RunID: "run-4", StepID: "step-d",
 			Input: []byte(`"hello"`),

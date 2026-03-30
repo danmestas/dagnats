@@ -131,6 +131,7 @@ func (s *StepStatus) UnmarshalJSON(data []byte) error {
 type AgentLoopConfig struct {
 	MaxIterations int           `json:"max_iterations"`
 	MaxDuration   time.Duration `json:"max_duration,omitempty"`
+	LoopDelay     time.Duration `json:"loop_delay,omitempty"`
 }
 
 // StepDef is the immutable declaration of a single step within a WorkflowDef.
@@ -139,9 +140,11 @@ type StepDef struct {
 	ID        string           `json:"id"`
 	Task      string           `json:"task"`
 	DependsOn []string         `json:"depends_on,omitempty"`
+	Retries   int              `json:"retries,omitempty"`
 	Timeout   time.Duration    `json:"timeout"`
 	Type      StepType         `json:"type"`
 	Loop      *AgentLoopConfig `json:"loop,omitempty"`
+	SkipIf    *ParentCond      `json:"skip_if,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced
