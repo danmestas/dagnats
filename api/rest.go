@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/engine"
+	"github.com/nats-io/nats.go"
 )
 
 // startRunRequest is the JSON body expected by POST /runs.
@@ -30,6 +32,7 @@ func NewRESTHandler(svc *Service) http.Handler {
 	mux.HandleFunc("/workflows", svc.routeWorkflows)
 	mux.HandleFunc("/runs", svc.routeRuns)
 	mux.HandleFunc("/runs/", svc.routeRunByID)
+	mux.HandleFunc("/health", svc.routeHealth)
 	return mux
 }
 
@@ -64,6 +67,17 @@ func (s *Service) routeRunByID(
 		return
 	}
 	handleGetRun(s, w, r)
+}
+
+// routeHealth dispatches GET /health to handleHealth.
+func (s *Service) routeHealth(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	handleHealth(s, w)
 }
 
 // handleRegisterWorkflow decodes a WorkflowDef from the request body
@@ -143,5 +157,65 @@ func handleGetRun(
 	encErr := json.NewEncoder(w).Encode(run)
 	if encErr != nil {
 		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// healthResponse is the JSON body returned by GET /health.
+type healthResponse struct {
+	Status    string         `json:"status"`
+	Telemetry *telemetryInfo `json:"telemetry,omitempty"`
+}
+
+// telemetryInfo carries stream and backend status for health.
+type telemetryInfo struct {
+	Stream *streamInfo `json:"stream,omitempty"`
+	Jaeger string      `json:"jaeger"`
+}
+
+// streamInfo carries TELEMETRY stream usage stats.
+type streamInfo struct {
+	Messages uint64  `json:"messages"`
+	Bytes    uint64  `json:"bytes"`
+	Percent  float64 `json:"percent"`
+}
+
+// handleHealth returns service health and optional telemetry stream
+// status. Never fails the health check -- telemetry is informational.
+func handleHealth(svc *Service, w http.ResponseWriter) {
+	resp := healthResponse{Status: "healthy"}
+	info, err := svc.js.StreamInfo("TELEMETRY")
+	if err == nil && info != nil {
+		resp.Telemetry = buildTelemetryInfo(info)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(resp)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode health response", encErr)
+	}
+}
+
+// buildTelemetryInfo constructs telemetry info from JetStream stream
+// metadata. Calculates usage percent from Bytes/MaxBytes.
+func buildTelemetryInfo(info *nats.StreamInfo) *telemetryInfo {
+	if info == nil {
+		panic("buildTelemetryInfo: info must not be nil")
+	}
+	jaeger := "disabled"
+	if os.Getenv("JAEGER_ENDPOINT") != "" {
+		jaeger = "enabled"
+	}
+	var pct float64
+	maxBytes := info.Config.MaxBytes
+	if maxBytes > 0 {
+		pct = float64(info.State.Bytes) /
+			float64(maxBytes) * 100.0
+	}
+	return &telemetryInfo{
+		Stream: &streamInfo{
+			Messages: info.State.Msgs,
+			Bytes:    info.State.Bytes,
+			Percent:  pct,
+		},
+		Jaeger: jaeger,
 	}
 }

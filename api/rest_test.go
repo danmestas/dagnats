@@ -135,3 +135,36 @@ func TestRESTGetRunNotFound(t *testing.T) {
 			resp.StatusCode, http.StatusNotFound)
 	}
 }
+
+func TestRESTHealthBasic(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	resp, err := http.Get(server.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusOK)
+	}
+	var health healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if health.Status != "healthy" {
+		t.Fatalf("Status = %q, want %q",
+			health.Status, "healthy")
+	}
+	// SetupAll creates the TELEMETRY stream, so telemetry info
+	// should be present with the stream data populated.
+	if health.Telemetry == nil {
+		t.Fatal("expected telemetry info when stream exists")
+	}
+	if health.Telemetry.Stream == nil {
+		t.Fatal("expected stream info when TELEMETRY exists")
+	}
+}
