@@ -19,7 +19,7 @@ func TestServiceRegisterWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	wfDef, err := dag.NewWorkflow("test-wf").Task("a", "task-a").Build()
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
@@ -43,7 +43,7 @@ func TestServiceStartRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	wfDef, _ := dag.NewWorkflow("test-wf").Task("a", "task-a").Build()
 	svc.RegisterWorkflow(wfDef)
 	runID, err := svc.StartRun("test-wf", []byte(`"input"`))
@@ -64,11 +64,11 @@ func TestServiceGetRunStatus(t *testing.T) {
 
 	// The orchestrator is the sole owner of run state — start it so the
 	// WorkflowStarted event is processed and the snapshot is created.
-	orch := engine.NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	wfDef, _ := dag.NewWorkflow("test-wf").Task("a", "task-a").Build()
 	svc.RegisterWorkflow(wfDef)
 	runID, _ := svc.StartRun("test-wf", nil)
@@ -103,7 +103,7 @@ func TestServiceGetRunNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	_, err = svc.GetRun("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent run")

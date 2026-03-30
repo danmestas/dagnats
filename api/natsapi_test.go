@@ -20,11 +20,11 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 
 	// The orchestrator owns run state — start it so the snapshot is created
 	// before we query via NATS request/reply.
-	orch := engine.NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	natsAPI := NewNATSAPI(svc, nc, observe.NewNoopLogger())
 	natsAPI.Start()
 	defer natsAPI.Stop()

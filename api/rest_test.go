@@ -21,7 +21,7 @@ import (
 func TestRESTRegisterWorkflow(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -39,7 +39,7 @@ func TestRESTRegisterWorkflow(t *testing.T) {
 func TestRESTStartRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -68,11 +68,11 @@ func TestRESTGetRun(t *testing.T) {
 
 	// The orchestrator owns run state — start it so the snapshot is created
 	// before the REST handler queries it.
-	orch := engine.NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -110,7 +110,7 @@ func TestRESTGetRun(t *testing.T) {
 func TestRESTGetRunNotFound(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopLogger())
+	svc := NewService(nc, observe.NewNoopTelemetry())
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
