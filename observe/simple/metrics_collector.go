@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 )
 
@@ -36,7 +37,7 @@ func NewMetricsCollector(js nats.JetStreamContext, serviceName string) *MetricsC
 }
 
 // Counter returns a new simpleCounter for the given name and tags.
-func (mc *MetricsCollector) Counter(name string, tags map[string]string) *simpleCounter {
+func (mc *MetricsCollector) Counter(name string, tags map[string]string) observe.Counter {
 	if name == "" {
 		panic("MetricsCollector.Counter: name must not be empty")
 	}
@@ -44,7 +45,7 @@ func (mc *MetricsCollector) Counter(name string, tags map[string]string) *simple
 }
 
 // Histogram returns a new simpleHistogram for the given name and tags.
-func (mc *MetricsCollector) Histogram(name string, tags map[string]string) *simpleHistogram {
+func (mc *MetricsCollector) Histogram(name string, tags map[string]string) observe.Histogram {
 	if name == "" {
 		panic("MetricsCollector.Histogram: name must not be empty")
 	}
@@ -52,7 +53,7 @@ func (mc *MetricsCollector) Histogram(name string, tags map[string]string) *simp
 }
 
 // Gauge returns a new simpleGauge for the given name and tags.
-func (mc *MetricsCollector) Gauge(name string, tags map[string]string) *simpleGauge {
+func (mc *MetricsCollector) Gauge(name string, tags map[string]string) observe.Gauge {
 	if name == "" {
 		panic("MetricsCollector.Gauge: name must not be empty")
 	}
