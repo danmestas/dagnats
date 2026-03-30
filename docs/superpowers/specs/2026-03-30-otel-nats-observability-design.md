@@ -1,23 +1,22 @@
-# OpenTelemetry + NATS Observability Design
+# Observability Design — Hipp-Simple
 
-Full observability for DagNats: distributed tracing, metrics, and structured logging
-backed by OpenTelemetry SDK with NATS JetStream as the buffer layer. Telemetry flows
-from instrumented components through NATS streams to external backends via independent
-consumer processes.
+Minimal, self-contained observability for DagNats. Zero external dependencies beyond
+nats.go. Telemetry flows to a single NATS stream as JSON. Optional embedded Jaeger
+exporter activated by environment variable. Observability failures never break
+workflows.
 
 ## Decisions
 
-- **Approach:** Keep existing `observe` interfaces, add `Tracer`, implement all with
-  OTEL SDK adapters (Approach 2 from brainstorming)
-- **Buffer:** NATS JetStream stores all telemetry (configurable retention, max 30 days)
-- **Export:** Self-contained consumer processes ship telemetry to external backends
-- **Sampling:** None. Store everything. Surface storage pressure via advisories + health
-  endpoint
-- **Emission:** OTEL SDK default async batching (BatchSpanProcessor, PeriodicReader,
-  BatchLogRecordProcessor)
+- **Philosophy:** Hipp — small, fast, reliable, independent, zero-config
+- **Dependencies:** Zero beyond nats.go and stdlib. No OTEL SDK.
+- **Implementation:** ~400 LOC in `observe/simple/`, pure Go
+- **Format:** JSON always (debuggable via `nats sub`)
+- **Stream:** Single `TELEMETRY` stream for all signals
+- **Export:** Embedded Jaeger OTLP/HTTP exporter (~100 LOC, `net/http` only)
+- **Activation:** `JAEGER_ENDPOINT` env var. Unset = telemetry stays in NATS.
+- **Failure mode:** Log and continue. Observability never breaks workflows.
 - **Propagation:** W3C Trace Context in NATS headers + event payloads for replay
-- **Secrets:** NATS account/user permissions restrict access to secrets KV bucket
-- **Failure handling:** Retry with exponential backoff, then dead letter queue
+- **Config:** Zero. Service name from binary name. Retention from stream limits.
 
 ## Architecture Overview
 
@@ -25,78 +24,112 @@ consumer processes.
 Component (engine/worker/api)
     |
     v
-observe.Tracer / Logger / Metrics  (interfaces)
+observe.Tracer / Logger / Metrics  (interfaces — unchanged)
     |
     v
-observe/otel/ adapters  (OTEL SDK)
+observe/simple/  (pure Go, ~400 LOC)
     |
     v
-observe/otel/natsexporter/  (custom OTEL exporters)
+NATS JetStream  (single TELEMETRY stream, JSON, 7-day retention)
     |
-    v
-NATS JetStream streams  (TELEMETRY_TRACES, TELEMETRY_METRICS, TELEMETRY_LOGS)
-    |
-    v
-Consumer processes  (one per export destination)
-    |                       |  (on failure after retries)
-    v                       v
-External backend       TELEMETRY_DLQ + advisory alert
-(Jaeger/Tempo/Prom)
+    v  (only if JAEGER_ENDPOINT is set)
+Embedded goroutine  (subscribes to stream, POSTs to Jaeger)
 ```
 
-**Core Principle:** Engine, worker, and API never import OTEL packages. They depend
-only on `observe` interfaces. OTEL wiring happens in `cmd/` binaries via
-`SetupTelemetry()`.
+**Core Principle:** No separate binaries. No external SDKs. The telemetry
+implementation is embedded in existing engine/worker/api binaries. If Jaeger is
+not configured, telemetry is still queryable in NATS via `nats sub telemetry.>`.
 
 ## Data Model
 
-### NATS Streams
+### Single NATS Stream
 
-#### TELEMETRY_TRACES
+#### TELEMETRY
 
-- Subjects: `telemetry.traces.{service}.{run_id}`
+- Subjects: `telemetry.{signal}.{service}.{run_id}`
+- Signals: `spans`, `metrics`, `logs`
 - Services: `engine`, `worker`, `api`
-- Payload: OTEL span data (protobuf default, JSON for development)
-- Retention: Configurable by message age (default 7 days, max 30 days)
+- Payload: JSON (always)
+- Retention: 7 days by message age (NATS stream limit)
 - Storage: File, limits policy
-- Deduplication: 5s window via `Nats-Msg-Id: {trace_id}.{span_id}`
+- Deduplication: 5s window via `Nats-Msg-Id`
 
-#### TELEMETRY_METRICS
+No DLQ. No consumer config KV. No secrets KV. One stream.
 
-- Subjects: `telemetry.metrics.{service}.{metric_name}`
-- Payload: OTEL metric data points (counter/histogram/gauge values)
-- Retention: Same as traces (configurable, default 7 days)
-- Storage: File, limits policy
-- Published on SDK export interval (default 60s batches)
+### Subject Structure
 
-#### TELEMETRY_LOGS
+The fourth subject segment varies by signal type for optimal filtering:
 
-- Subjects: `telemetry.logs.{service}.{level}.{run_id}`
-- Levels: `debug`, `info`, `warn`, `error`
-- Payload: OTEL log record with trace context and attributes
-- Retention: Same as traces/metrics
-- Deduplication: 5s window via `Nats-Msg-Id: {run_id}.{timestamp_ns}.{hash}`
+- **Spans:** `telemetry.spans.{service}.{run_id}` — enables per-run trace queries
+- **Metrics:** `telemetry.metrics.{service}.{metric_name}` — enables per-metric dashboards
+- **Logs:** `telemetry.logs.{service}.{level}` — enables severity-based filtering
 
-#### TELEMETRY_DLQ
+This is intentional. Each signal has a different primary query axis. Use
+`telemetry.spans.engine.>` for all engine spans, or `telemetry.>.>.{run_id}` for
+all signals from a specific run.
 
-- Subject: `telemetry.dlq.{consumer_name}.{signal}`
-- Payload: Failed export batch + metadata (destination, error, attempts)
-- Retention: 30 days (longer than telemetry streams)
-- Used for manual replay after fixing downstream issues
+### Span Format
 
-### KV Buckets
+```go
+type SpanRecord struct {
+    TraceID     string            `json:"trace_id"`
+    SpanID      string            `json:"span_id"`
+    ParentID    string            `json:"parent_id,omitempty"`
+    Name        string            `json:"name"`
+    Service     string            `json:"service"`
+    Kind        string            `json:"kind"` // internal, server, client
+    StartTime   time.Time         `json:"start_time"`
+    EndTime     time.Time         `json:"end_time"`
+    DurationMS  int64             `json:"duration_ms"`
+    Status      string            `json:"status"` // ok, error
+    Attributes  map[string]any    `json:"attributes,omitempty"`
+    Events      []SpanEvent       `json:"events,omitempty"`
+    Error       string            `json:"error,omitempty"`
+}
 
-#### telemetry_consumers
+type SpanEvent struct {
+    Name       string         `json:"name"`
+    Time       time.Time      `json:"time"`
+    Attributes map[string]any `json:"attributes,omitempty"`
+}
+```
 
-- Key: consumer name (e.g., `jaeger-prod`)
-- Value: JSON config (provider, signals, settings, enabled flag)
-- Permissions: consumers read, admin writes
+`run_id` is extracted from the `run_id` span attribute. If no `run_id` attribute
+is set, the fallback subject is `telemetry.spans.{service}.no-run`.
 
-#### telemetry_secrets
+Published with `Nats-Msg-Id: {trace_id}.{span_id}`.
 
-- Key: `{consumer_name}.{secret_key}` (e.g., `jaeger-prod.auth_token`)
-- Value: secret string
-- Permissions: consumers read own keys only, admin writes
+### Metric Format
+
+```go
+type MetricPoint struct {
+    Name      string         `json:"name"`
+    Type      string         `json:"type"` // counter, gauge, histogram
+    Value     float64        `json:"value"`
+    Tags      map[string]string `json:"tags,omitempty"`
+    Service   string         `json:"service"`
+    Timestamp time.Time      `json:"timestamp"`
+}
+```
+
+Published to `telemetry.metrics.{service}.{metric_name}`.
+
+### Log Format
+
+```go
+type LogRecord struct {
+    Level      string         `json:"level"` // debug, info, warn, error
+    Message    string         `json:"message"`
+    Service    string         `json:"service"`
+    TraceID    string         `json:"trace_id,omitempty"`
+    SpanID     string         `json:"span_id,omitempty"`
+    Fields     map[string]any `json:"fields,omitempty"`
+    Timestamp  time.Time      `json:"timestamp"`
+    Error      string         `json:"error,omitempty"`
+}
+```
+
+Published to `telemetry.logs.{service}.{level}`.
 
 ### Trace Context in Events
 
@@ -105,43 +138,20 @@ Existing `protocol.Event` gains two fields for W3C trace context:
 ```go
 type Event struct {
     // ... existing fields ...
-    TraceParent string // W3C traceparent header value
-    TraceState  string // W3C tracestate header value
+    TraceParent string `json:"trace_parent,omitempty"`
+    TraceState  string `json:"trace_state,omitempty"`
 }
 ```
 
-Stored in the history stream for replay. Propagated in NATS message headers for
-runtime trace continuity.
-
-### Telemetry Configuration
-
-```go
-type TelemetryConfig struct {
-    RetentionDays  int    // Default: 7, max: 30
-    Format         string // "proto" (default) or "json"
-    MaxStreamBytes int64  // Per-stream storage limit (default: 1GB, max: 10GB)
-}
-
-// Validate enforces bounded configuration. Panics on programmer error (invalid
-// defaults), returns error on operator error (bad env var values).
-func (c TelemetryConfig) Validate() error {
-    // RetentionDays: 1 <= n <= 30
-    // Format: must be "proto" or "json"
-    // MaxStreamBytes: 1MB <= n <= 10GB
-}
-```
-
-Configurable via environment variables:
-- `TELEMETRY_RETENTION_DAYS=14`
-- `TELEMETRY_FORMAT=json`
-- `TELEMETRY_MAX_STREAM_BYTES=5368709120`
-
-All values are validated at startup. Out-of-range values produce a clear error
-message and prevent the process from starting.
+Both fields use `omitempty` so existing events without trace context serialize
+identically. Stored in the history stream for replay. Propagated in NATS message
+headers for runtime trace continuity.
 
 ## Observe Interfaces
 
 ### New: Tracer Interface
+
+Added to `observe/` package (stdlib only):
 
 ```go
 // Tracer creates and manages distributed trace spans.
@@ -164,10 +174,9 @@ type SpanOption interface{ /* sealed */ }
 func WithSpanKind(kind SpanKind) SpanOption
 func WithAttributes(attrs ...Attribute) SpanOption
 
-// Attribute is a typed key-value pair for span context.
-// Must be constructed via typed constructors below — direct struct creation is
-// a programmer error. The OTEL adapter panics on unsupported Value types as
-// an assertion contract (TigerStyle).
+// Attribute is a typed key-value pair.
+// Must be constructed via typed constructors — the simple adapter panics on
+// unsupported Value types as an assertion contract (TigerStyle).
 type Attribute struct {
     Key   string
     Value any // string, int64, float64, bool only
@@ -181,17 +190,13 @@ func BoolAttr(key string, val bool) Attribute
 
 ### Existing: Unchanged
 
-- `observe.Logger` -- maps to OTEL logs SDK
-- `observe.Metrics` -- maps to OTEL metrics SDK (Counter/Histogram/Gauge). The existing
-  interface creates instruments with `Counter(name, tags)` where tags are bound at
-  creation time. The OTEL adapter bridges this by pre-binding the tags as OTEL
-  attributes: each `Inc()`/`Add()`/`Observe()` call records with the pre-bound
-  attribute set. One OTEL instrument per unique (name, tags) combination.
-- `observe.ErrorReporter` -- implemented by extracting the active span from
-  `context.Context`. If a span is active: calls `span.RecordError(err)` and
-  `span.SetStatus(StatusError, msg)`. If no active span: creates a new root error
-  span, records the error, and ends it immediately. `CaptureMessage` follows the
-  same pattern but adds the message as a span event instead of an error.
+- `observe.Logger` — the simple adapter writes JSON log records to the TELEMETRY
+  stream with trace context from the current span (if any in context).
+- `observe.Metrics` — the simple adapter publishes metric points to the TELEMETRY
+  stream. Tags are bound at creation time via `Counter(name, tags)` and included
+  in every published point.
+- `observe.ErrorReporter` — records error on the active span from context. If no
+  active span, publishes a standalone error log record.
 
 ### Noop Defaults Extended
 
@@ -201,323 +206,229 @@ func BoolAttr(key string, val bool) Attribute
 func NewNoopTracer() Tracer { return &noopTracer{} }
 ```
 
-## OTEL Adapters
+## Simple Implementation
 
-### observe/otel/ Package
+### observe/simple/ Package (~400 LOC)
 
-Implements all four observe interfaces using OTEL SDK primitives:
+Pure Go. Only imports: `nats.go`, `protocol/`, stdlib. No OTEL SDK.
+
+#### TraceCollector (trace_collector.go, ~80 LOC)
 
 ```go
-func NewTracer(serviceName string, exporter trace.SpanExporter) observe.Tracer
-func NewLogger(serviceName string, exporter logs.Exporter) observe.Logger
-func NewMetrics(serviceName string, exporter metric.Exporter) observe.Metrics
-func NewErrorReporter(tracer observe.Tracer) observe.ErrorReporter
+type TraceCollector struct {
+    js          nats.JetStreamContext
+    serviceName string
+    records     chan SpanRecord // buffered channel, async publish
+}
+
+func NewTraceCollector(js nats.JetStreamContext, serviceName string) *TraceCollector
+
+// Start implements observe.Tracer. Creates a span, extracts parent from
+// context if present, generates trace/span IDs via crypto/rand.
+func (t *TraceCollector) Start(
+    ctx context.Context,
+    name string,
+    opts ...observe.SpanOption,
+) (context.Context, observe.Span)
+
+// Flush drains the buffered span channel, blocking until all pending spans
+// are published or a 5s timeout expires. Called during shutdown.
+func (t *TraceCollector) Flush()
 ```
 
-`NewMetrics` wraps the provided `metric.Exporter` in OTEL's built-in
-`PeriodicReader` (default 60s interval). The adapter does not implement
-`metric.Reader` directly -- it delegates collection to the SDK's periodic
-mechanism.
+`LiveSpan` implements `observe.Span`. On `End()`, the completed span is
+serialized to a `SpanRecord` and sent to the `records` channel for async
+publish to `telemetry.spans.{service}.{run_id}`. The channel has a bounded
+size (1024). If full, the span is dropped (logged once per minute).
 
-### Trace Context Propagation (observe/otel/propagation.go)
-
-- **Inject:** Before publishing to NATS, extract trace context from `context.Context`,
-  write W3C `traceparent` and `tracestate` to NATS message headers and event payload
-- **Extract:** When consuming, read from NATS headers first (runtime), fall back to
-  event payload (replay)
-- W3C format in both locations for standards compliance
-
-### SetupTelemetry Entry Point (observe/otel/setup.go)
-
-Single function called at binary startup:
+#### MetricsCollector (metrics_collector.go, ~60 LOC)
 
 ```go
-func SetupTelemetry(nc *nats.Conn, serviceName string) (
-    tracer observe.Tracer,
+type MetricsCollector struct {
+    js          nats.JetStreamContext
+    serviceName string
+}
+
+func NewMetricsCollector(js nats.JetStreamContext, serviceName string) *MetricsCollector
+```
+
+Implements `observe.Metrics`. Each `Counter`/`Histogram`/`Gauge` call returns
+a lightweight wrapper that publishes a JSON `MetricPoint` to
+`telemetry.metrics.{service}.{metric_name}` on every observation. Counters
+and gauges publish immediately. Histograms publish each observation.
+
+#### LogCollector (log_collector.go, ~50 LOC)
+
+```go
+type LogCollector struct {
+    js          nats.JetStreamContext
+    serviceName string
+}
+
+func NewLogCollector(js nats.JetStreamContext, serviceName string) *LogCollector
+```
+
+Implements `observe.Logger`. Each `Info`/`Error` call publishes a JSON
+`LogRecord` to `telemetry.logs.{service}.{level}`.
+
+**Log-trace correlation:** The existing `observe.Logger` interface does not accept
+a `context.Context`, so automatic trace context extraction is not possible.
+Instead, callers who want log-trace correlation use `logger.With(fields)` to
+create a sub-logger with trace context pre-bound:
+
+```go
+// At span start, create a correlated logger:
+spanLogger := logger.With(
+    observe.String("trace_id", span.TraceID()),
+    observe.String("span_id", span.SpanID()),
+)
+spanLogger.Info("processing step", observe.String("step_id", stepID))
+```
+
+This is explicit but lightweight. A context-aware `Logger` variant can be added
+later if the pattern becomes too verbose. For now, the `With` approach avoids
+changing the existing interface.
+
+#### Trace Context Propagation (propagation.go, ~40 LOC)
+
+Dual-write to NATS headers and event payloads is handled atomically by a single
+function call. It is impossible to forget one location.
+
+```go
+// InjectTraceContext writes W3C traceparent + tracestate to BOTH the NATS
+// message headers AND the event payload fields. Single call, both locations.
+// Makes it impossible to update one without the other.
+func InjectTraceContext(ctx context.Context, msg *nats.Msg, evt *protocol.Event)
+
+// ExtractTraceContext reads W3C traceparent from NATS message headers first
+// (runtime). Falls back to event payload fields (replay). Returns a context
+// with the parent span set.
+func ExtractTraceContext(msg *nats.Msg, evt *protocol.Event) context.Context
+```
+
+W3C `traceparent` format: `00-{32 hex chars trace_id}-{16 hex chars span_id}-{2 hex chars flags}`.
+Generated from crypto/rand (16 bytes = 32 hex chars for trace ID, 8 bytes = 16 hex
+chars for span ID). No external propagator library.
+
+#### Jaeger Exporter (jaeger.go, ~70 LOC)
+
+```go
+// ExportToJaeger subscribes to the TELEMETRY stream and POSTs span batches
+// to a Jaeger OTLP/HTTP endpoint. Runs as an embedded goroutine.
+// On failure: logs error, continues. Observability never breaks workflows.
+func ExportToJaeger(
+    ctx context.Context,
+    js nats.JetStreamContext,
+    endpoint string,
     logger observe.Logger,
-    metrics observe.Metrics,
-    shutdown func(context.Context) error,
-    err error,
 )
 ```
 
-Creates OTEL providers with NATS exporters. Returns an error if JetStream
-initialization or stream validation fails. Returns a shutdown function that flushes
-all providers on graceful exit. Callers must call shutdown during process termination
-to flush buffered telemetry -- Tracer, Logger, and Metrics do not have individual
-Close methods.
+- Subscribes to `telemetry.spans.>` on the TELEMETRY stream
+- Batches spans (up to 100 or 5s, whichever comes first)
+- Converts to OTLP JSON format
+- POSTs to `{endpoint}/v1/traces`
+- On HTTP failure: log error, drop batch, continue
+- On shutdown (ctx cancelled): flush remaining batch, exit
 
-## NATS Exporters
+No retry policy. No DLQ. If Jaeger is down, spans stay in NATS (7-day retention)
+and can be manually replayed or queried via `nats sub`.
 
-### observe/otel/natsexporter/ Package
+### SetupTelemetry Entry Point (setup.go, ~30 LOC)
 
-Three custom OTEL exporters that write batches to JetStream streams.
-
-### TraceExporter
-
-```go
-type TraceExporter struct {
-    js          nats.JetStreamContext
-    serviceName string
-}
-
-func (e *TraceExporter) ExportSpans(
-    ctx context.Context,
-    spans []trace.ReadOnlySpan,
-) error
-```
-
-- Serializes spans to OTLP protobuf (or JSON based on config)
-- Subject: `telemetry.traces.{serviceName}.{runID}`
-- Dedup: `Nats-Msg-Id: {traceID}.{spanID}`
-- Returns error on publish failure (SDK retries the batch)
-
-### MetricExporter
+Returns a single `Telemetry` struct to reduce parameter passing at call sites.
 
 ```go
-type MetricExporter struct {
-    js          nats.JetStreamContext
-    serviceName string
+// Telemetry bundles all observability interfaces. Passed as a single argument
+// to component constructors instead of four separate parameters.
+type Telemetry struct {
+    Tracer   observe.Tracer
+    Logger   observe.Logger
+    Metrics  observe.Metrics
+    Errors   observe.ErrorReporter
 }
 
-func (e *MetricExporter) Export(
-    ctx context.Context,
-    rm *metricdata.ResourceMetrics,
-) error
+// SetupTelemetry creates the simple telemetry stack. Zero-config: service name
+// defaults to binary name, Jaeger export activates only if JAEGER_ENDPOINT is set.
+func SetupTelemetry(nc *nats.Conn) (*Telemetry, func()) {
+    serviceName := filepath.Base(os.Args[0])
 
-func (e *MetricExporter) Temporality(
-    kind metric.InstrumentKind,
-) metricdata.Temporality
+    js, err := nc.JetStream()
+    if err != nil {
+        // JetStream unavailable — return noop telemetry. Log to stderr
+        // since we have no logger yet. This is not fatal: the application
+        // runs without telemetry rather than crashing.
+        log.Printf("SetupTelemetry: JetStream unavailable, using noop: %v", err)
+        return &Telemetry{
+            Tracer:  observe.NewNoopTracer(),
+            Logger:  observe.NewNoopLogger(),
+            Metrics: observe.NewNoopMetrics(),
+            Errors:  observe.NewNoopErrorReporter(),
+        }, func() {}
+    }
 
-func (e *MetricExporter) Aggregation(
-    kind metric.InstrumentKind,
-) metric.Aggregation
+    collector := NewTraceCollector(js, serviceName)
+    logger := NewLogCollector(js, serviceName)
+    metrics := NewMetricsCollector(js, serviceName)
+    errors := NewErrorReporter(collector, logger)
+
+    ctx, cancel := context.WithCancel(context.Background())
+
+    // Optional: embedded Jaeger exporter
+    if endpoint := os.Getenv("JAEGER_ENDPOINT"); endpoint != "" {
+        go ExportToJaeger(ctx, js, endpoint, logger)
+    }
+
+    shutdown := func() {
+        cancel()
+        collector.Flush()
+    }
+
+    return &Telemetry{
+        Tracer:  collector,
+        Logger:  logger,
+        Metrics: metrics,
+        Errors:  errors,
+    }, shutdown
+}
 ```
 
-Implements `metric.Exporter` from the OTEL SDK. Paired with OTEL's built-in
-`PeriodicReader` which drives collection on a configurable interval (default 60s).
-The exporter only handles serialization and publishing -- the SDK owns the
-collection schedule.
+No error return. If JetStream is unavailable, returns noop implementations
+and logs a warning. If individual NATS publishes fail at runtime, the adapter
+logs and continues. Telemetry never prevents the application from starting.
 
-- Subject: `telemetry.metrics.{serviceName}.{metricName}`
-- Serializes metric data points to OTLP or JSON
-- Publishes batch to TELEMETRY_METRICS stream
+Note: `SetupTelemetry` obtains the JetStream context once and passes it to all
+collectors. This avoids each collector independently calling `nc.JetStream()`.
 
-### LogExporter
+#### ErrorReporter (error_reporter.go, ~30 LOC)
 
 ```go
-type LogExporter struct {
-    js          nats.JetStreamContext
-    serviceName string
-}
-
-func (e *LogExporter) Export(ctx context.Context, logs []logs.Record) error
+// NewErrorReporter creates an ErrorReporter backed by a Tracer and Logger.
+// CaptureError: extracts active span from ctx, calls RecordError + SetStatus.
+// If no active span, falls back to logger.Error() with the error and tags
+// as fields — ensures errors are always recorded somewhere.
+// CaptureMessage: same pattern, adds message as span event or logs via logger.
+func NewErrorReporter(tracer observe.Tracer, logger observe.Logger) observe.ErrorReporter
 ```
 
-- Subject: `telemetry.logs.{serviceName}.{level}.{runID}`
-- Includes trace context for log-trace correlation
-- Publishes to TELEMETRY_LOGS stream
-
-### Serialization Format
-
-- Production: OTLP protobuf (compact, standard)
-- Development: JSON (human-readable, debuggable via `nats sub`)
-- Controlled by `TELEMETRY_FORMAT` environment variable
-
-### Backpressure
-
-OTEL SDK owns all queuing and backpressure. Exporters publish synchronously within
-SDK batch callbacks. No additional queuing in the exporter layer.
-
-## Consumer Framework
-
-### consumer/ Package
-
-Core abstractions for building telemetry export consumers.
-
-### Types
+Component constructors accept `*Telemetry` instead of separate interfaces:
 
 ```go
-// Exporter sends telemetry batches to an external destination.
-type Exporter interface {
-    Export(ctx context.Context, batch Batch) error
-    Name() string
-    Signals() []Signal
-}
+// Before:
+engine.NewOrchestrator(nc, logger, metrics)
 
-type Signal string
-
-const (
-    SignalTraces  Signal = "traces"
-    SignalMetrics Signal = "metrics"
-    SignalLogs    Signal = "logs"
-)
-
-type Batch struct {
-    Signal     Signal
-    Data       []byte   // Serialized OTLP or provider-specific format
-    MessageIDs []string // NATS message IDs for ack/nak
-}
-
-type Config struct {
-    Name     string            // Consumer identifier
-    Enabled  bool              // Whether to run
-    Signals  []Signal          // Which telemetry types to export
-    Provider string            // "jaeger", "tempo", "prometheus", "grafanacloud"
-    Settings map[string]string // Provider-specific config
-}
+// After:
+engine.NewOrchestrator(nc, telemetry)
 ```
 
-### Runner
-
-```go
-type Runner struct {
-    exporter Exporter
-    nc       *nats.Conn
-    js       nats.JetStreamContext
-    config   Config
-}
-
-func (r *Runner) Start(ctx context.Context) error
-func (r *Runner) Stop() error
-```
-
-Start subscribes to relevant telemetry streams based on `config.Signals`. For each
-message batch: call `exporter.Export()`, ack on success, retry with backoff on failure,
-publish to DLQ after exhaustion. Watches config KV for changes and reloads.
-
-### Configuration Management
-
-```go
-type ConfigManager struct {
-    configKV  nats.KeyValue // "telemetry_consumers" bucket
-    secretsKV nats.KeyValue // "telemetry_secrets" bucket
-}
-
-func (m *ConfigManager) GetConfig(consumerName string) (Config, error)
-func (m *ConfigManager) Watch(consumerName string) (<-chan Config, error)
-func (m *ConfigManager) UpdateConfig(cfg Config) error
-```
-
-Bootstrap via request/reply on startup. Live updates via KV watch.
-
-### Retry Policy
-
-```go
-type RetryPolicy struct {
-    MaxAttempts  int           // Default: 5
-    InitialDelay time.Duration // Default: 1s
-    MaxDelay     time.Duration // Default: 32s
-    Multiplier   float64       // Default: 2.0
-}
-```
-
-On export failure: 5 attempts with application-level exponential backoff
-(1s, 2s, 4s, 8s, 16s). Application-level retry is used here instead of
-`NakWithDelay` because consumers export to HTTP endpoints, not NATS subjects.
-The retry loop runs inside the Runner between the JetStream fetch and the HTTP
-export — NATS `NakWithDelay` is not applicable since the target is external.
-After exhaustion: publish batch to `TELEMETRY_DLQ`, send advisory to
-`alerts.export.failed`, ack original messages.
-
-### DLQ Entry Format
-
-```go
-type DLQEntry struct {
-    ConsumerName string
-    Signal       Signal
-    Batch        []byte
-    Destination  string
-    Error        string
-    Attempts     int
-    FailedAt     time.Time
-}
-```
-
-### Advisory Messages
-
-Published to `alerts.export.failed` when a DLQ entry is created:
-
-```json
-{
-  "consumer": "jaeger-prod",
-  "signal": "traces",
-  "error": "connection refused",
-  "dlq_subject": "telemetry.dlq.jaeger-prod.traces",
-  "timestamp": "2026-03-30T10:15:30Z"
-}
-```
-
-## Provider Implementations
-
-Each provider implements `consumer.Exporter` with vendor-specific export logic.
-No vendor SDKs -- all providers use standard HTTP with OTLP or provider-native
-wire formats.
-
-### Jaeger (consumer/jaeger/)
-
-- Export: OTLP/HTTP POST to Jaeger endpoint
-- Auth: Optional bearer token from secrets KV
-- Signals: Traces only
-- Config keys: `endpoint`, `auth_token` (secrets)
-
-### Tempo (consumer/tempo/)
-
-- Export: OTLP/HTTP to Grafana Tempo endpoint
-- Auth: Basic auth (instance ID + API token)
-- Signals: Traces only
-- Config keys: `endpoint`, `username`, `api_token` (secrets)
-
-### Prometheus (consumer/prometheus/)
-
-- Export: Prometheus remote write protocol (Snappy-compressed protobuf)
-- Auth: Optional bearer token
-- Signals: Metrics only
-- Config keys: `endpoint`, `auth_token` (secrets)
-
-### Grafana Cloud (consumer/grafanacloud/)
-
-- Export: OTLP/HTTP to Tempo (traces), Mimir (metrics), Loki (logs)
-- Auth: Basic auth (instance ID + API key) for all endpoints
-- Signals: Traces, metrics, and logs
-- Config keys: `instance_id`, `api_token` (secrets), `traces_endpoint`,
-  `metrics_endpoint`, `logs_endpoint`
-
-### Provider Factory
-
-```go
-func NewExporter(
-    config consumer.Config,
-    secrets map[string]string,
-) (consumer.Exporter, error)
-```
-
-Routes to provider-specific constructor based on `config.Provider`.
-
-### Consumer Binary (cmd/dagnats-consumer/)
-
-Single binary for all providers. Provider determined by config.
-
-**Required environment variables:**
-
-| Variable | Description |
-|----------|-------------|
-| `CONSUMER_NAME` | Consumer identifier, matches key in `telemetry_consumers` KV |
-| `NATS_URL` | NATS server URL (e.g., `nats://localhost:4222`) |
-
-All other configuration (provider, signals, endpoints, secrets) is loaded from
-NATS KV at startup and reloaded on change via KV watch.
-
-```bash
-CONSUMER_NAME=jaeger-prod NATS_URL=nats://... ./dagnats-consumer
-CONSUMER_NAME=grafana-cloud NATS_URL=nats://... ./dagnats-consumer
-```
-
-Message acknowledgement is owned by the Runner, not the Exporter. Provider
-implementations must never ack or nak NATS messages -- they only handle HTTP
-export logic.
+This is a breaking change to component constructors. All call sites in `cmd/`
+binaries and test files must be updated. The migration is mechanical: replace
+separate logger/metrics parameters with a single `*Telemetry` argument.
 
 ## Instrumentation Points
+
+Unchanged from previous design. All spans, metrics, and trace propagation
+apply identically.
 
 ### Engine (engine/orchestrator.go)
 
@@ -532,10 +443,10 @@ export logic.
 
 **Metrics:**
 
-- `workflow.runs.active` (gauge) -- inc on WorkflowStarted, dec on Completed/Failed
+- `workflow.runs.active` (gauge) — inc on WorkflowStarted, dec on Completed/Failed
 - `workflow.runs.completed` (counter)
 - `workflow.runs.failed` (counter)
-- `step.enqueue.count` (counter) -- per task type
+- `step.enqueue.count` (counter) — per task type
 - `snapshot.save.duration_ms` (histogram)
 
 ### Worker (worker/worker.go)
@@ -551,11 +462,11 @@ export logic.
 
 **Metrics:**
 
-- `step.duration_ms` (histogram) -- per task type
-- `step.retries` (counter) -- per task type
-- `agent.loop.iterations` (histogram) -- per workflow
-- `worker.tasks.active` (gauge) -- currently executing handlers
-- `nats.consumer.pending` (gauge) -- task queue depth per consumer
+- `step.duration_ms` (histogram) — per task type
+- `step.retries` (counter) — per task type
+- `agent.loop.iterations` (histogram) — per workflow
+- `worker.tasks.active` (gauge) — currently executing handlers
+- `nats.consumer.pending` (gauge) — task queue depth per consumer
 
 ### API (api/rest.go, api/natsapi.go)
 
@@ -569,9 +480,9 @@ export logic.
 
 **Metrics:**
 
-- `api.requests` (counter) -- per endpoint, per transport (REST/NATS)
-- `api.request.duration_ms` (histogram) -- per endpoint
-- `api.errors` (counter) -- per endpoint, per error type
+- `api.requests` (counter) — per endpoint, per transport (REST/NATS)
+- `api.request.duration_ms` (histogram) — per endpoint
+- `api.errors` (counter) — per endpoint, per error type
 
 ### Trace Propagation Flow
 
@@ -591,158 +502,128 @@ api.startRun (root span)
 All spans share the same trace ID, correlated via `run_id` attribute and W3C
 `traceparent` propagation through NATS message headers.
 
-## Security Model
-
-### NATS Account/User Permissions
-
-| User | Publish | Subscribe |
-|------|---------|-----------|
-| Engine/Worker/API | `telemetry.traces.>`, `telemetry.metrics.>`, `telemetry.logs.>` | -- |
-| Consumer | `telemetry.dlq.>`, `alerts.>` | `telemetry.traces.>`, `telemetry.metrics.>`, `telemetry.logs.>` |
-| Admin | `telemetry.>`, `alerts.>` | `telemetry.>`, `alerts.>` |
-
-### KV Bucket Access
-
-| Bucket | Consumer Read | Consumer Write | Admin Read | Admin Write |
-|--------|--------------|----------------|------------|-------------|
-| `telemetry_consumers` | Own key | No | All | All |
-| `telemetry_secrets` | Own keys | No | All | All |
-
-Secrets never leave NATS. Consumers read them at startup and on config reload.
-
 ## Storage Monitoring
 
-### StorageMonitor (observe/monitor/)
+### StorageMonitor (observe/simple/monitor.go, ~40 LOC)
 
-Goroutine that checks stream stats periodically. Exits when context is cancelled.
+Embedded goroutine checking TELEMETRY stream stats periodically:
 
 ```go
 type StorageMonitor struct {
-    js         nats.JetStreamContext
-    nc         *nats.Conn
-    interval   time.Duration // Default: 60s
-    thresholds Thresholds
+    js         nats.JetStreamContext // StreamInfo + Publish for advisories
+    interval   time.Duration        // Default: 60s
+    warnBytes  int64                // Default: 80% of stream MaxBytes
 }
 
-type Thresholds struct {
-    WarnPercent  float64 // Default: 80%
-    AlertPercent float64 // Default: 95%
-}
-
-// Start begins periodic monitoring. Blocks until ctx is cancelled.
-// Publishes advisories to alerts.storage.{stream_name} when thresholds
-// are exceeded. Updates shared state for the health endpoint.
-func (m *StorageMonitor) Start(ctx context.Context) error
-
-// Status returns the current telemetry health for the /health endpoint.
-// Safe for concurrent use — called by HTTP handler while monitor runs.
-func (m *StorageMonitor) Status() TelemetryHealth
+// Start checks stream stats on interval, publishes advisory to
+// alerts.storage.TELEMETRY when threshold exceeded. Exits on ctx cancel.
+func (m *StorageMonitor) Start(ctx context.Context)
 ```
 
-### Advisory Messages
-
-Published to `alerts.storage.{stream_name}`:
+Advisory published to `alerts.storage.TELEMETRY`:
 
 ```json
 {
-  "stream": "TELEMETRY_TRACES",
-  "level": "warn",
+  "stream": "TELEMETRY",
   "usage_bytes": 858993459,
   "max_bytes": 1073741824,
   "usage_percent": 80.0,
-  "message": "TELEMETRY_TRACES at 80% capacity",
+  "message": "TELEMETRY stream at 80% capacity",
   "timestamp": "2026-03-30T12:00:00Z"
 }
 ```
 
-### Health Endpoint
-
-`GET /health` extended with telemetry status:
+Health endpoint (`GET /health`) extended with single stream status:
 
 ```json
 {
   "status": "healthy",
   "telemetry": {
-    "streams": {
-      "TELEMETRY_TRACES": {"messages": 15420, "bytes": 524288000, "percent": 48.8},
-      "TELEMETRY_METRICS": {"messages": 8200, "bytes": 102400000, "percent": 9.5},
-      "TELEMETRY_LOGS": {"messages": 32100, "bytes": 204800000, "percent": 19.1}
-    },
-    "consumers": {
-      "jaeger-prod": {"status": "running", "lag": 12},
-      "grafana-cloud": {"status": "running", "lag": 0}
-    },
-    "dlq": {"messages": 0}
+    "stream": {"messages": 55720, "bytes": 524288000, "percent": 48.8},
+    "jaeger": "exporting"
   }
 }
 ```
 
+`"jaeger"` is `"exporting"`, `"disabled"` (no endpoint), or `"error: ..."`.
+
 ## NATS Resource Setup
 
-`natsutil.SetupAll()` expanded to include telemetry infrastructure:
+`natsutil.SetupAll()` adds one stream:
 
 ```go
-func SetupTelemetryStreams(js nats.JetStreamContext, cfg TelemetryConfig) error
-func SetupTelemetryKV(js nats.JetStreamContext) error
+func SetupTelemetryStream(js nats.JetStreamContext) error {
+    _, err := js.AddStream(&nats.StreamConfig{
+        Name:       "TELEMETRY",
+        Subjects:   []string{"telemetry.>"},
+        Retention:  nats.LimitsPolicy,
+        Storage:    nats.FileStorage,
+        MaxAge:     7 * 24 * time.Hour,     // 7-day retention
+        MaxBytes:   1 << 30,                 // 1 GB
+        Duplicates: 5 * time.Second,           // 5s dedup window
+    })
+    return err
+}
 ```
 
-Called as part of `SetupAll()` alongside existing stream and KV bucket creation.
+One stream. One call. No KV buckets for telemetry config.
+
+## Security Model
+
+Minimal — uses existing NATS account/user permissions:
+
+| User | Publish | Subscribe |
+|------|---------|-----------|
+| Engine/Worker/API | `telemetry.>` | `telemetry.>` (for embedded Jaeger exporter) |
+| Admin | `telemetry.>`, `alerts.>` | `telemetry.>`, `alerts.>` |
+
+No separate consumer user. No secrets KV. Jaeger endpoint is an env var on the
+binary that runs the embedded exporter.
 
 ## Testing Strategy
 
-### Layer 1: Pure Unit Tests (observe/otel/)
+### Layer 1: Pure Unit Tests (observe/simple/)
 
-No NATS, no I/O. Test adapter logic:
+No NATS, no I/O:
 
-- Tracer adapter: Start creates span, End finalizes, attributes propagated
-- Logger adapter: Info/Error produce OTEL log records with correct severity + fields
-- Metrics adapter: Counter.Inc produces data point, Histogram.Observe correct bucket
-- Trace context: W3C traceparent inject/extract round-trips
-- Negative: Invalid attributes rejected, nil span returns safe no-op
+- Span creation: trace/span ID generation, parent linking, attribute setting
+- Span serialization: JSON round-trip, all fields present
+- Metric point serialization: counter/gauge/histogram values correct
+- Log record serialization: level, message, trace context correlation
+- Trace context: W3C traceparent format, inject/extract round-trip
+- Negative: dropped spans on full channel (bounded buffer), invalid attributes panic
 
-### Layer 2: NATS Exporter Integration Tests (observe/otel/natsexporter/)
-
-Real embedded NATS per test:
-
-- Trace exporter: spans arrive on `telemetry.traces.{service}.>` subject
-- Metric exporter: data points arrive on `telemetry.metrics.{service}.>` subject
-- Log exporter: records arrive on `telemetry.logs.{service}.{level}.>` subject
-- Deduplication: same span ID exported twice produces one message
-- Serialization: proto and JSON formats round-trip correctly
-- Backpressure: export when NATS is slow, SDK queue behavior verified
-- Negative: export to nonexistent stream returns error
-
-### Layer 3: Consumer Framework Integration Tests (consumer/)
+### Layer 2: Integration Tests (observe/simple/)
 
 Real embedded NATS per test:
 
-- Happy path: telemetry published, consumer exports via mock exporter, messages acked
-- Retry: mock exporter fails 3x then succeeds, messages eventually exported
-- DLQ: mock exporter fails all attempts, batch in TELEMETRY_DLQ, advisory published
-- Config reload: KV update picked up by consumer within watch interval
-- Multi-signal: consumer subscribed to traces + metrics, both exported
-- Negative: disabled consumer consumes nothing
+- TraceCollector: start span, end span, message arrives on `telemetry.spans.>`
+- MetricsCollector: inc counter, message on `telemetry.metrics.>` with correct value
+- LogCollector: log info, message on `telemetry.logs.>` with trace context
+- Deduplication: same span ID published twice, one message in stream
+- SetupTelemetry: zero-config defaults produce working collectors
+- Negative: NATS publish failure does not panic or propagate error
 
-### Layer 4: Provider Integration Tests (consumer/{provider}/)
+### Layer 3: Jaeger Exporter Tests (observe/simple/)
 
-Real embedded NATS + mock HTTP server simulating provider endpoints:
+Real embedded NATS + mock HTTP server:
 
-- Jaeger: OTLP/HTTP POST to mock, correct headers and body format
-- Tempo: Basic auth included, correct instance ID + token
-- Prometheus: Remote write format, Snappy-compressed protobuf
-- Grafana Cloud: Routes signals to correct endpoints
-- Auth failure: 401 triggers retry then DLQ
-- Negative: invalid endpoint errors surfaced cleanly
+- Happy path: spans in stream, exporter POSTs batch to mock Jaeger endpoint
+- Batching: 100 spans trigger immediate flush, <100 flush after 5s timeout
+- Jaeger down: exporter logs error, does not crash, continues consuming
+- Shutdown: remaining spans flushed before exit
+- Negative: malformed endpoint URL logged, exporter continues
 
-### Layer 5: End-to-End Telemetry Tests
+### Layer 4: End-to-End Telemetry Tests
 
-Full pipeline with real NATS, orchestrator, workers, and telemetry:
+Full pipeline with real NATS, orchestrator, workers:
 
 - Trace propagation: spans for api.startRun, orchestrator.handleEvent,
   worker.executeTask share same trace ID
 - Trace context in history: event payloads contain matching traceparent
 - Storage advisory: tiny stream limits trigger advisory on alerts.storage.>
-- Health endpoint: reflects correct stream usage and consumer status
+- Health endpoint: reflects stream usage and Jaeger exporter status
+- NATS-only mode: no JAEGER_ENDPOINT, telemetry queryable via NATS subscribe
 
 ### Testing Rules
 
@@ -751,7 +632,7 @@ Full pipeline with real NATS, orchestrator, workers, and telemetry:
 - Bounded timeouts on all waits
 - No shared NATS servers between tests
 - 70-line function limit, split into named helpers
-- Mock HTTP servers for provider tests (no real Jaeger/Tempo in CI)
+- Mock HTTP server for Jaeger tests (no real Jaeger in CI)
 
 ## Project Structure
 
@@ -761,37 +642,18 @@ dagnats/
 |   +-- observe.go                  # Logger, Metrics, ErrorReporter (unchanged)
 |   +-- tracer.go                   # NEW: Tracer, Span, SpanOption, Attribute
 |   +-- noop.go                     # MODIFIED: add noopTracer, noopSpan
-|   +-- otel/                       # NEW: OTEL SDK adapters
-|   |   +-- tracer.go               #   observe.Tracer -> OTEL tracer
-|   |   +-- logger.go               #   observe.Logger -> OTEL logs
-|   |   +-- metrics.go              #   observe.Metrics -> OTEL metrics
-|   |   +-- error_reporter.go       #   observe.ErrorReporter -> OTEL spans
-|   |   +-- propagation.go          #   W3C trace context inject/extract
-|   |   +-- setup.go                #   SetupTelemetry() entry point
-|   +-- otel/natsexporter/          # NEW: Custom OTEL exporters -> NATS
-|   |   +-- trace_exporter.go       #   SpanExporter -> TELEMETRY_TRACES
-|   |   +-- metric_exporter.go      #   MetricExporter -> TELEMETRY_METRICS
-|   |   +-- log_exporter.go         #   LogExporter -> TELEMETRY_LOGS
-|   +-- monitor/                    # NEW: Storage pressure monitoring
-|       +-- monitor.go              #   Stream stats -> advisories + /health
-|
-+-- consumer/                       # NEW: Consumer framework
-|   +-- consumer.go                 #   Exporter interface, Batch, Signal
-|   +-- runner.go                   #   Runner: subscribe, export, retry, DLQ
-|   +-- config.go                   #   ConfigManager: KV watch + request/reply
-|   +-- retry.go                    #   RetryPolicy, backoff logic
-|   +-- dlq.go                      #   DLQ entry format, publish, replay
-|   +-- jaeger/                     #   Jaeger provider
-|   |   +-- exporter.go
-|   +-- tempo/                      #   Tempo provider
-|   |   +-- exporter.go
-|   +-- prometheus/                 #   Prometheus provider
-|   |   +-- exporter.go
-|   +-- grafanacloud/               #   Grafana Cloud provider
-|       +-- exporter.go
+|   +-- simple/                     # NEW: pure Go telemetry (~400 LOC)
+|       +-- trace_collector.go      #   TraceCollector (observe.Tracer impl)
+|       +-- metrics_collector.go    #   MetricsCollector (observe.Metrics impl)
+|       +-- log_collector.go        #   LogCollector (observe.Logger impl)
+|       +-- error_reporter.go       #   ErrorReporter (observe.ErrorReporter impl)
+|       +-- propagation.go          #   W3C trace context inject/extract
+|       +-- jaeger.go               #   Embedded Jaeger OTLP/HTTP exporter
+|       +-- monitor.go              #   Storage pressure monitoring
+|       +-- setup.go                #   SetupTelemetry() entry point
 |
 +-- natsutil/
-|   +-- conn.go                     # MODIFIED: SetupAll includes telemetry
+|   +-- conn.go                     # MODIFIED: SetupAll adds TELEMETRY stream
 |
 +-- engine/
 |   +-- orchestrator.go             # MODIFIED: inject tracer, emit spans/metrics
@@ -810,18 +672,49 @@ dagnats/
 +-- cmd/
     +-- dagnats-engine/main.go      # MODIFIED: call SetupTelemetry
     +-- dagnats-api/main.go         # MODIFIED: call SetupTelemetry
-    +-- dagnats-consumer/           # NEW: consumer binary
-        +-- main.go
 ```
+
+No consumer binary. No consumer framework. No provider packages. Everything
+is embedded in existing binaries.
 
 ### Dependency Rules
 
-- `observe/` -- stdlib only (interfaces + noop). This constraint applies to the
-  `observe` Go package (`observe/*.go`), not to sub-packages. Sub-packages like
-  `observe/otel/` are separate Go packages with their own import rules.
-- `observe/otel/` -- depends on OTEL SDK packages
-- `observe/otel/natsexporter/` -- depends on OTEL SDK + nats.go
-- `consumer/` -- depends on nats.go, observe interfaces
-- `consumer/{provider}/` -- depends on consumer, net/http (no vendor SDKs)
-- `engine/`, `worker/`, `api/` -- depend on `observe/` interfaces only (never
-  import `otel/` directly)
+- `observe/` — stdlib only (interfaces + noop). Applies to `observe/*.go` files,
+  not sub-packages.
+- `observe/simple/` — depends on nats.go, `protocol/`, and stdlib. No OTEL SDK.
+  The `protocol/` import is needed for `InjectTraceContext`/`ExtractTraceContext`
+  which read and write `protocol.Event` fields.
+- `engine/`, `worker/`, `api/` — depend on `observe/` interfaces only (never
+  import `simple/` directly)
+- OTEL wiring happens exclusively in `cmd/` binaries via `SetupTelemetry()`
+
+### Complexity Budget
+
+| Component | LOC | Dependencies |
+|-----------|-----|-------------|
+| trace_collector.go | ~80 | nats.go, crypto/rand |
+| metrics_collector.go | ~60 | nats.go |
+| log_collector.go | ~50 | nats.go |
+| error_reporter.go | ~30 | observe interfaces |
+| propagation.go | ~40 | protocol/, stdlib |
+| jaeger.go | ~70 | nats.go, net/http |
+| monitor.go | ~40 | nats.go |
+| setup.go | ~30 | nats.go, os, path/filepath |
+| **Total** | **~400** | **nats.go + protocol/ + stdlib** |
+
+## What This Design Does NOT Include
+
+Deliberately excluded to keep complexity minimal:
+
+- **No OTEL SDK** — pure Go, zero heavy dependencies
+- **No separate consumer binary** — embedded in existing binaries
+- **No consumer framework** — no Runner, no ConfigManager, no DLQ
+- **No multiple providers** — Jaeger only. Add more later if needed.
+- **No protobuf** — JSON always, human-debuggable
+- **No KV config for telemetry** — env vars only (JAEGER_ENDPOINT)
+- **No secrets management** — endpoint is an env var, no auth tokens (yet)
+- **No retry/backoff on export** — log and continue
+- **No configurable retention** — 7 days from stream limits
+
+These can be added incrementally if the need arises. The interfaces are stable
+and the simple implementation can be replaced without changing instrumented code.
