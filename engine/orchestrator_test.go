@@ -36,7 +36,7 @@ func TestOrchestratorStartsFirstStep(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 
@@ -81,7 +81,7 @@ func TestOrchestratorAdvancesAfterStepCompleted(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 
@@ -132,7 +132,7 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 
@@ -214,7 +214,7 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 
@@ -285,7 +285,7 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopLogger(), observe.NewNoopMetrics())
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
 

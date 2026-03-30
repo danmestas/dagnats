@@ -25,8 +25,7 @@ type Orchestrator struct {
 	js       nats.JetStreamContext
 	defKV    nats.KeyValue
 	store    *SnapshotStore
-	logger   observe.Logger
-	metrics  observe.Metrics
+	tel      *observe.Telemetry
 	sub      *nats.Subscription
 	runLocks sync.Map // map[string]*sync.Mutex — per-run serialization
 }
@@ -34,12 +33,12 @@ type Orchestrator struct {
 // NewOrchestrator creates an Orchestrator bound to the given NATS connection.
 // Panics if nc is nil or JetStream cannot be obtained — both are programmer errors.
 // KV buckets must already exist (call natsutil.SetupAll before NewOrchestrator).
-func NewOrchestrator(nc *nats.Conn, logger observe.Logger, metrics observe.Metrics) *Orchestrator {
+func NewOrchestrator(nc *nats.Conn, tel *observe.Telemetry) *Orchestrator {
 	if nc == nil {
 		panic("NewOrchestrator: nc must not be nil")
 	}
-	if logger == nil {
-		panic("NewOrchestrator: logger must not be nil")
+	if tel == nil {
+		panic("NewOrchestrator: tel must not be nil")
 	}
 	js, err := nc.JetStream()
 	if err != nil {
@@ -50,12 +49,11 @@ func NewOrchestrator(nc *nats.Conn, logger observe.Logger, metrics observe.Metri
 		panic("NewOrchestrator: workflow_defs bucket not found: " + err.Error())
 	}
 	return &Orchestrator{
-		nc:      nc,
-		js:      js,
-		defKV:   defKV,
-		store:   NewSnapshotStore(js),
-		logger:  logger,
-		metrics: metrics,
+		nc:    nc,
+		js:    js,
+		defKV: defKV,
+		store: NewSnapshotStore(js),
+		tel:   tel,
 	}
 }
 
@@ -81,7 +79,7 @@ func (o *Orchestrator) Stop() {
 		return
 	}
 	if err := o.sub.Unsubscribe(); err != nil {
-		o.logger.Error("Stop: unsubscribe error", err)
+		o.tel.Logger.Error("Stop: unsubscribe error", err)
 	}
 	o.sub = nil
 }
@@ -102,7 +100,7 @@ func (o *Orchestrator) handleEvent(msg *nats.Msg) {
 	}
 	evt, err := protocol.UnmarshalEvent(msg.Data)
 	if err != nil {
-		o.logger.Error("handleEvent: unmarshal failed", err)
+		o.tel.Logger.Error("handleEvent: unmarshal failed", err)
 		msg.NakWithDelay(5 * time.Second)
 		return
 	}
@@ -130,7 +128,7 @@ func (o *Orchestrator) handleEvent(msg *nats.Msg) {
 		err = o.handleStepFailed(evt)
 	}
 	if err != nil {
-		o.logger.Error("handleEvent: handler error", err,
+		o.tel.Logger.Error("handleEvent: handler error", err,
 			observe.String("event_type", string(evt.Type)),
 			observe.String("run_id", evt.RunID),
 		)
