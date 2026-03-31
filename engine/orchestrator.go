@@ -29,7 +29,8 @@ type Orchestrator struct {
 	store    *SnapshotStore
 	tel      *observe.Telemetry
 	sub      *nats.Subscription
-	runLocks sync.Map // map[string]*sync.Mutex — per-run serialization
+	runLocks   sync.Map // map[string]*sync.Mutex — per-run serialization
+	stepRoutes map[dag.StepType]string // step type → subject prefix
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive       observe.Gauge
@@ -39,11 +40,23 @@ type Orchestrator struct {
 	snapshotDuration observe.Histogram
 }
 
+// OrchestratorOption configures optional orchestrator behavior.
+type OrchestratorOption func(*Orchestrator)
+
+// WithStepRoutes configures step type → subject prefix routing.
+// Steps with types not in the map route to "task" (default).
+func WithStepRoutes(
+	routes map[dag.StepType]string,
+) OrchestratorOption {
+	return func(o *Orchestrator) { o.stepRoutes = routes }
+}
+
 // NewOrchestrator creates an Orchestrator bound to the given NATS connection.
 // Panics if nc is nil or JetStream cannot be obtained — both are programmer
 // errors. KV buckets must already exist (call natsutil.SetupAll first).
 func NewOrchestrator(
 	nc *nats.Conn, tel *observe.Telemetry,
+	opts ...OrchestratorOption,
 ) *Orchestrator {
 	if nc == nil {
 		panic("NewOrchestrator: nc must not be nil")
@@ -62,7 +75,7 @@ func NewOrchestrator(
 				err.Error(),
 		)
 	}
-	return &Orchestrator{
+	o := &Orchestrator{
 		nc:    nc,
 		js:    js,
 		defKV: defKV,
@@ -84,6 +97,10 @@ func NewOrchestrator(
 			"snapshot.save.duration_ms", nil,
 		),
 	}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o
 }
 
 // Start subscribes to history.> on the WORKFLOW_HISTORY stream using
@@ -584,7 +601,8 @@ func (o *Orchestrator) publishTask(
 		return fmt.Errorf("marshal TaskPayload: %w", err)
 	}
 	msgID := runID + "." + step.ID + ".queued"
-	msg := buildTaskMsg(step.Task, runID, data, msgID)
+	subject := o.stepSubject(step, runID)
+	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
 	_, err = o.js.PublishMsg(msg)
 	o.stepEnqueueCount.Inc()
@@ -629,25 +647,40 @@ func (o *Orchestrator) publishIterationTask(
 	msgID := fmt.Sprintf(
 		"%s.%s.continue.%d", runID, step.ID, iteration,
 	)
-	msg := buildTaskMsg(step.Task, runID, data, msgID)
+	subject := o.stepSubject(step, runID)
+	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
 	_, err = o.js.PublishMsg(msg)
 	o.stepEnqueueCount.Inc()
 	return err
 }
 
+// stepSubject resolves the NATS subject for a step based on routing config.
+// Defaults to "task.{task}.{runID}" if no custom route is configured.
+func (o *Orchestrator) stepSubject(
+	step dag.StepDef, runID string,
+) string {
+	prefix := "task"
+	if o.stepRoutes != nil {
+		if p, ok := o.stepRoutes[step.Type]; ok {
+			prefix = p
+		}
+	}
+	return prefix + "." + step.Task + "." + runID
+}
+
 // buildTaskMsg constructs a *nats.Msg with headers for task publishing.
 func buildTaskMsg(
-	task, runID string, data []byte, msgID string,
+	subject string, data []byte, msgID string,
 ) *nats.Msg {
-	if task == "" {
-		panic("buildTaskMsg: task must not be empty")
+	if subject == "" {
+		panic("buildTaskMsg: subject must not be empty")
 	}
 	if msgID == "" {
 		panic("buildTaskMsg: msgID must not be empty")
 	}
 	return &nats.Msg{
-		Subject: "task." + task + "." + runID,
+		Subject: subject,
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}

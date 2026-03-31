@@ -308,3 +308,69 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 		t.Fatalf("Status = %v, want Completed", run.Status)
 	}
 }
+
+func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+
+	err := natsutil.SetupAll(nc,
+		natsutil.WithStreams(natsutil.StreamConfig{
+			Name:     "AGENT_TASKS",
+			Subjects: []string{"agent.task.>"},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	// Register workflow with one agent step
+	wfDef := dag.WorkflowDef{
+		Name:    "routed-wf",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "agent-step", Task: "llm-task",
+				Type:     dag.StepTypeAgent,
+				Metadata: map[string]string{"role": "coder"},
+			},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	if _, err := defKV.Put("routed-wf", defData); err != nil {
+		t.Fatalf("put def: %v", err)
+	}
+
+	// Subscribe to AGENT_TASKS to verify routing
+	agentSub, err := js.SubscribeSync("agent.task.>",
+		nats.AckExplicit(), nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("subscribe agent tasks: %v", err)
+	}
+
+	routes := map[dag.StepType]string{
+		dag.StepTypeAgent: "agent.task",
+	}
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry(),
+		WithStepRoutes(routes))
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish workflow.started event
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-route-1", defData)
+	data, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), data,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Agent task should arrive on AGENT_TASKS, not TASK_QUEUES
+	agentMsg, err := agentSub.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("expected message on AGENT_TASKS: %v", err)
+	}
+	if agentMsg == nil {
+		t.Fatalf("agent message should not be nil")
+	}
+	agentMsg.Ack()
+}
