@@ -5,6 +5,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -29,41 +30,76 @@ func NewRESTHandler(svc *Service) http.Handler {
 		panic("NewRESTHandler: svc must not be nil")
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/workflows", svc.routeWorkflows)
-	mux.HandleFunc("/runs", svc.routeRuns)
-	mux.HandleFunc("/runs/", svc.routeRunByID)
-	mux.HandleFunc("/health", svc.routeHealth)
+	RegisterAPIRoutes(mux, svc)
 	return mux
 }
 
-// routeWorkflows dispatches POST /workflows to handleRegisterWorkflow.
+// RegisterAPIRoutes adds REST API routes to the given ServeMux.
+// Use this when mounting API routes on a shared mux alongside UI.
+func RegisterAPIRoutes(mux *http.ServeMux, svc *Service) {
+	if mux == nil {
+		panic("RegisterAPIRoutes: mux must not be nil")
+	}
+	if svc == nil {
+		panic("RegisterAPIRoutes: svc must not be nil")
+	}
+	mux.HandleFunc("/api/workflows", svc.routeWorkflows)
+	mux.HandleFunc("/api/workflows/", svc.routeWorkflowByName)
+	mux.HandleFunc("/api/runs", svc.routeRuns)
+	mux.HandleFunc("/api/runs/", svc.routeRunByID)
+	mux.HandleFunc("/api/health", svc.routeHealth)
+}
+
+// routeWorkflows dispatches GET and POST /api/workflows.
 func (s *Service) routeWorkflows(
 	w http.ResponseWriter, r *http.Request,
 ) {
-	if r.Method != http.MethodPost {
+	switch r.Method {
+	case http.MethodGet:
+		handleListWorkflows(s, w)
+	case http.MethodPost:
+		handleRegisterWorkflow(s, w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// routeWorkflowByName dispatches GET /api/workflows/{name}.
+func (s *Service) routeWorkflowByName(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	handleRegisterWorkflow(s, w, r)
+	handleGetWorkflow(s, w, r)
 }
 
-// routeRuns dispatches POST /runs to handleStartRun.
+// routeRuns dispatches GET and POST /api/runs.
 func (s *Service) routeRuns(
 	w http.ResponseWriter, r *http.Request,
 ) {
-	if r.Method != http.MethodPost {
+	switch r.Method {
+	case http.MethodGet:
+		handleListRuns(s, w, r)
+	case http.MethodPost:
+		handleStartRun(s, w, r)
+	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
 	}
-	handleStartRun(s, w, r)
 }
 
-// routeRunByID dispatches GET /runs/{id} to handleGetRun.
+// routeRunByID dispatches GET /api/runs/{id} and sub-paths.
 func (s *Service) routeRunByID(
 	w http.ResponseWriter, r *http.Request,
 ) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/runs/")
+	if strings.HasSuffix(path, "/events") {
+		handleGetRunEvents(s, w, r)
 		return
 	}
 	handleGetRun(s, w, r)
@@ -137,7 +173,7 @@ func handleGetRun(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
 	parts := strings.Split(
-		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
+		strings.TrimPrefix(r.URL.Path, "/api/runs/"), "/",
 	)
 	if len(parts) == 0 || parts[0] == "" {
 		http.Error(w, "missing run ID", http.StatusBadRequest)
@@ -191,6 +227,92 @@ func handleHealth(svc *Service, w http.ResponseWriter) {
 	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
 		svc.tel.Logger.Error("encode health response", encErr)
+	}
+}
+
+// handleGetRunEvents returns the event history for a run as JSON.
+func handleGetRunEvents(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/runs/")
+	runID := strings.TrimSuffix(path, "/events")
+	if runID == "" {
+		http.Error(w, "missing run ID", http.StatusBadRequest)
+		return
+	}
+	events, err := svc.GetRunEvents(
+		context.Background(), runID,
+	)
+	if err != nil {
+		http.Error(w, err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(events)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode events", encErr)
+	}
+}
+
+// handleListWorkflows returns all registered workflow definitions
+// as a JSON array. Delegates to Service.ListWorkflows.
+func handleListWorkflows(svc *Service, w http.ResponseWriter) {
+	defs, err := svc.ListWorkflows(context.Background())
+	if err != nil {
+		http.Error(w, err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(defs)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode workflows", encErr)
+	}
+}
+
+// handleGetWorkflow returns a single workflow definition by name.
+func handleGetWorkflow(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	name := strings.TrimPrefix(r.URL.Path, "/api/workflows/")
+	if name == "" {
+		http.Error(w, "missing workflow name",
+			http.StatusBadRequest)
+		return
+	}
+	def, err := svc.GetWorkflow(name)
+	if err != nil {
+		http.Error(w, "workflow not found",
+			http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(def)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode workflow", encErr)
+	}
+}
+
+// handleListRuns returns all workflow run snapshots as a JSON array.
+// Supports optional ?workflow= and ?status= query filters.
+func handleListRuns(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	workflow := r.URL.Query().Get("workflow")
+	status := r.URL.Query().Get("status")
+	runs, err := svc.ListRuns(
+		context.Background(), workflow, status,
+	)
+	if err != nil {
+		http.Error(w, err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(runs)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode runs", encErr)
 	}
 }
 

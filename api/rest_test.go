@@ -31,7 +31,7 @@ func TestRESTRegisterWorkflow(t *testing.T) {
 	wfDef, _ := wb.Build()
 	body, _ := json.Marshal(wfDef)
 	resp, err := http.Post(
-		server.URL+"/workflows",
+		server.URL+"/api/workflows",
 		"application/json",
 		bytes.NewReader(body),
 	)
@@ -57,7 +57,7 @@ func TestRESTStartRun(t *testing.T) {
 	svc.RegisterWorkflow(context.Background(), wfDef)
 	body := []byte(`{"workflow": "rest-run", "input": "test"}`)
 	resp, err := http.Post(
-		server.URL+"/runs",
+		server.URL+"/api/runs",
 		"application/json",
 		bytes.NewReader(body),
 	)
@@ -100,7 +100,7 @@ func TestRESTGetRun(t *testing.T) {
 	deadline := time.After(5 * time.Second)
 	var run dag.WorkflowRun
 	for {
-		resp, err := http.Get(server.URL + "/runs/" + runID)
+		resp, err := http.Get(server.URL + "/api/runs/" + runID)
 		if err != nil {
 			t.Fatalf("GET failed: %v", err)
 		}
@@ -129,7 +129,7 @@ func TestRESTGetRunNotFound(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	resp, err := http.Get(server.URL + "/runs/nonexistent")
+	resp, err := http.Get(server.URL + "/api/runs/nonexistent")
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestRESTHealthBasic(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	resp, err := http.Get(server.URL + "/health")
+	resp, err := http.Get(server.URL + "/api/health")
 	if err != nil {
 		t.Fatalf("GET /health failed: %v", err)
 	}

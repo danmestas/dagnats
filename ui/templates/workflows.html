@@ -1,0 +1,29 @@
+{{template "layout" .}}
+
+{{define "content"}}
+<div class="page-header">
+  <h1 class="page-title">Workflows</h1>
+  <p class="page-subtitle">Registered workflow definitions</p>
+</div>
+
+{{if .Workflows}}
+<div class="workflow-grid">
+  {{range .Workflows}}
+  <a href="/workflows/{{.Name}}" class="workflow-card">
+    <div class="workflow-card-name">{{.Name}}</div>
+    <div class="workflow-card-version">v{{.Version}}</div>
+    <div class="workflow-card-steps">{{len .Steps}} steps</div>
+  </a>
+  {{end}}
+</div>
+{{else}}
+<div class="card">
+  <div class="empty-state">
+    <div class="empty-state-icon">&#9673;</div>
+    <div class="empty-state-text">
+      No workflows registered. Use the API to register one.
+    </div>
+  </div>
+</div>
+{{end}}
+{{end}}

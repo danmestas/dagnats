@@ -1,0 +1,120 @@
+{{template "layout" .}}
+
+{{define "content"}}
+<div data-on:load="@get('/ui/runs/{{.Run.RunID}}/live')">
+  <div class="page-header">
+    <h1 class="page-title">
+      Run <span class="font-mono">{{truncate .Run.RunID 12}}</span>
+      <span id="run-status" class="badge {{statusClass .Run.Status.String}}">
+        {{.Run.Status.String}}
+      </span>
+    </h1>
+    <p class="page-subtitle">
+      Workflow:
+      <a href="/workflows/{{.Run.WorkflowID}}" class="run-link">
+        {{.Run.WorkflowID}}
+      </a>
+      &middot; Created: {{formatTime .Run.CreatedAt}}
+    </p>
+  </div>
+
+  {{/* Tabs navigation */}}
+  <div class="tabs-nav">
+    <a href="/runs/{{.Run.RunID}}?tab=overview"
+      class="tab-btn{{if eq .ActiveTab "overview"}} active{{end}}">
+      Overview
+    </a>
+    <a href="/runs/{{.Run.RunID}}?tab=graph"
+      class="tab-btn{{if eq .ActiveTab "graph"}} active{{end}}">
+      Graph
+    </a>
+    <a href="/runs/{{.Run.RunID}}?tab=timeline"
+      class="tab-btn{{if eq .ActiveTab "timeline"}} active{{end}}">
+      Timeline
+    </a>
+    <a href="/runs/{{.Run.RunID}}?tab=outputs"
+      class="tab-btn{{if eq .ActiveTab "outputs"}} active{{end}}">
+      Outputs
+    </a>
+  </div>
+
+  {{/* Overview Tab */}}
+  <div class="tab-content{{if eq .ActiveTab "overview"}} active{{end}}">
+    <div id="live-steps">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>Task</th>
+            <th>Status</th>
+            <th>Attempts</th>
+            <th>Iterations</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Def.Steps}}
+          {{$st := index $.Run.Steps .ID}}
+          <tr>
+            <td class="font-mono">{{.ID}}</td>
+            <td>{{.Task}}</td>
+            <td>
+              <span class="badge {{statusClass $st.Status.String}}">
+                {{$st.Status.String}}
+              </span>
+            </td>
+            <td class="font-mono">{{$st.Attempts}}</td>
+            <td class="font-mono">{{$st.Iterations}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {{/* Graph Tab */}}
+  <div class="tab-content{{if eq .ActiveTab "graph"}} active{{end}}">
+    <div class="dag-container">
+      <div id="live-dag">
+        {{.DAG}}
+      </div>
+    </div>
+  </div>
+
+  {{/* Timeline Tab */}}
+  <div class="tab-content{{if eq .ActiveTab "timeline"}} active{{end}}">
+    <div class="gantt-container">
+      {{.Gantt}}
+    </div>
+  </div>
+
+  {{/* Outputs Tab */}}
+  <div class="tab-content{{if eq .ActiveTab "outputs"}} active{{end}}">
+    {{range .Def.Steps}}
+    {{$st := index $.Run.Steps .ID}}
+    <div class="step-detail" style="margin-bottom: 12px;">
+      <div class="step-detail-title">
+        {{.ID}}
+        <span class="badge {{statusClass $st.Status.String}}"
+          style="margin-left: 8px;">
+          {{$st.Status.String}}
+        </span>
+      </div>
+      {{if $st.Output}}
+      <div class="output-block">{{json $st.Output}}</div>
+      {{end}}
+      {{if $st.Error}}
+      <div class="output-block"
+        style="border-color: var(--mc-red); color: var(--mc-red);">
+        {{$st.Error}}
+      </div>
+      {{end}}
+      {{if not $st.Output}}{{if not $st.Error}}
+      <div style="color: var(--mc-text-muted); font-size: 0.8rem;">
+        No output yet.
+      </div>
+      {{end}}{{end}}
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

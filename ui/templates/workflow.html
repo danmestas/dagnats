@@ -1,0 +1,92 @@
+{{template "layout" .}}
+
+{{define "content"}}
+<div class="page-header">
+  <h1 class="page-title">{{.Workflow.Name}}</h1>
+  <p class="page-subtitle">Version {{.Workflow.Version}}
+    &middot; {{len .Workflow.Steps}} steps</p>
+</div>
+
+<div class="card" style="margin-bottom: 24px;">
+  <div class="card-header">
+    <div class="card-title">Topology</div>
+  </div>
+  <div class="dag-container">
+    {{.DAG}}
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 24px;">
+  <div class="card-header">
+    <div class="card-title">Steps</div>
+  </div>
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Step ID</th>
+        <th>Task</th>
+        <th>Type</th>
+        <th>Dependencies</th>
+        <th>Retries</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Workflow.Steps}}
+      <tr>
+        <td class="font-mono">{{.ID}}</td>
+        <td>{{.Task}}</td>
+        <td>
+          <span class="badge badge-secondary">{{.Type}}</span>
+        </td>
+        <td class="font-mono">
+          {{if .DependsOn}}
+            {{range $i, $dep := .DependsOn}}{{if $i}}, {{end}}{{$dep}}{{end}}
+          {{else}}
+            <span style="color: var(--mc-text-muted);">none</span>
+          {{end}}
+        </td>
+        <td class="font-mono">{{.Retries}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Recent Runs</div>
+  </div>
+  {{if .RecentRuns}}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Run ID</th>
+        <th>Status</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .RecentRuns}}
+      <tr>
+        <td>
+          <a href="/runs/{{.RunID}}" class="run-link">
+            {{truncate .RunID 12}}
+          </a>
+        </td>
+        <td>
+          <span class="badge {{statusClass .Status.String}}">
+            {{.Status.String}}
+          </span>
+        </td>
+        <td class="font-mono">{{formatTime .CreatedAt}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty-state">
+    <div class="empty-state-text">No runs for this workflow yet.</div>
+  </div>
+  {{end}}
+</div>
+{{end}}

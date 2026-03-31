@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
+
 	"github.com/nats-io/nats.go"
 )
 
@@ -203,6 +204,180 @@ func (s *Service) startRunInner(
 		observe.String("workflow", workflowName),
 	)
 	return runID, nil
+}
+
+// ListWorkflows returns all registered workflow definitions by
+// iterating the workflow_defs KV bucket keys. Returns at most
+// 1000 workflows to stay bounded.
+func (s *Service) ListWorkflows(
+	ctx context.Context,
+) ([]dag.WorkflowDef, error) {
+	if ctx == nil {
+		panic("ListWorkflows: ctx must not be nil")
+	}
+	_, span := s.tel.Tracer.Start(ctx, "api.listWorkflows")
+	defer span.End()
+	s.requestCount.Inc()
+	start := time.Now()
+
+	keys, err := s.defKV.Keys()
+	if err != nil {
+		// Keys returns nats.ErrNoKeysFound when bucket is empty.
+		if err.Error() == "nats: no keys found" {
+			s.requestDuration.Observe(
+				float64(time.Since(start).Milliseconds()),
+			)
+			return []dag.WorkflowDef{}, nil
+		}
+		s.errorCount.Inc()
+		return nil, err
+	}
+	const maxWorkflows = 1000
+	defs := make([]dag.WorkflowDef, 0, len(keys))
+	for i, key := range keys {
+		if i >= maxWorkflows {
+			break
+		}
+		entry, err := s.defKV.Get(key)
+		if err != nil {
+			continue
+		}
+		var def dag.WorkflowDef
+		if err := json.Unmarshal(entry.Value(), &def); err != nil {
+			continue
+		}
+		defs = append(defs, def)
+	}
+	s.requestDuration.Observe(
+		float64(time.Since(start).Milliseconds()),
+	)
+	return defs, nil
+}
+
+// ListRuns returns workflow run snapshots, optionally filtered by
+// workflow name and status. Returns at most 1000 runs.
+func (s *Service) ListRuns(
+	ctx context.Context, workflow string, status string,
+) ([]dag.WorkflowRun, error) {
+	if ctx == nil {
+		panic("ListRuns: ctx must not be nil")
+	}
+	_, span := s.tel.Tracer.Start(ctx, "api.listRuns")
+	defer span.End()
+	s.requestCount.Inc()
+	start := time.Now()
+
+	runs, err := s.listRunsInner(workflow, status)
+	s.requestDuration.Observe(
+		float64(time.Since(start).Milliseconds()),
+	)
+	if err != nil {
+		s.errorCount.Inc()
+	}
+	return runs, err
+}
+
+// listRunsInner holds the core iteration logic.
+func (s *Service) listRunsInner(
+	workflow string, status string,
+) ([]dag.WorkflowRun, error) {
+	keys, err := s.store.Keys()
+	if err != nil {
+		if err.Error() == "nats: no keys found" {
+			return []dag.WorkflowRun{}, nil
+		}
+		return nil, err
+	}
+	const maxRuns = 1000
+	runs := make([]dag.WorkflowRun, 0, len(keys))
+	for i, key := range keys {
+		if i >= maxRuns {
+			break
+		}
+		// Keys are stored as "run.{runID}"
+		runID := key
+		if len(runID) > 4 && runID[:4] == "run." {
+			runID = runID[4:]
+		}
+		run, err := s.store.Load(runID)
+		if err != nil {
+			continue
+		}
+		if workflow != "" && run.WorkflowID != workflow {
+			continue
+		}
+		if status != "" && run.Status.String() != status {
+			continue
+		}
+		runs = append(runs, run)
+	}
+	return runs, nil
+}
+
+// GetRunEvents reads the event history for a run from the
+// WORKFLOW_HISTORY stream. Returns at most 10000 events.
+func (s *Service) GetRunEvents(
+	ctx context.Context, runID string,
+) ([]protocol.Event, error) {
+	if ctx == nil {
+		panic("GetRunEvents: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("GetRunEvents: runID must not be empty")
+	}
+	_, span := s.tel.Tracer.Start(ctx, "api.getRunEvents",
+		observe.WithAttributes(
+			observe.StringAttr("run_id", runID),
+		),
+	)
+	defer span.End()
+	s.requestCount.Inc()
+	start := time.Now()
+
+	events, err := s.getRunEventsInner(runID)
+	s.requestDuration.Observe(
+		float64(time.Since(start).Milliseconds()),
+	)
+	if err != nil {
+		s.errorCount.Inc()
+	}
+	return events, err
+}
+
+// getRunEventsInner reads events from the stream by creating
+// an ephemeral consumer filtered to history.{runID}.
+func (s *Service) getRunEventsInner(
+	runID string,
+) ([]protocol.Event, error) {
+	subject := "history." + runID
+	sub, err := s.js.SubscribeSync(
+		subject,
+		nats.DeliverAll(),
+		nats.AckNone(),
+		nats.BindStream("WORKFLOW_HISTORY"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"subscribe to %s: %w", subject, err,
+		)
+	}
+	defer sub.Unsubscribe()
+
+	const maxEvents = 10000
+	events := make([]protocol.Event, 0, 64)
+	timeout := 200 * time.Millisecond
+	for i := 0; i < maxEvents; i++ {
+		msg, err := sub.NextMsg(timeout)
+		if err != nil {
+			break
+		}
+		evt, err := protocol.UnmarshalEvent(msg.Data)
+		if err != nil {
+			continue
+		}
+		events = append(events, evt)
+	}
+	return events, nil
 }
 
 // GetRun retrieves the current snapshot for the given run ID.

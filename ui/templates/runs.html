@@ -1,0 +1,52 @@
+{{template "layout" .}}
+
+{{define "content"}}
+<div class="page-header">
+  <h1 class="page-title">Runs</h1>
+  <p class="page-subtitle">Workflow execution history</p>
+</div>
+
+<div class="card">
+  {{if .Runs}}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Run ID</th>
+        <th>Workflow</th>
+        <th>Status</th>
+        <th>Steps</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Runs}}
+      <tr>
+        <td>
+          <a href="/runs/{{.RunID}}" class="run-link">
+            {{truncate .RunID 12}}
+          </a>
+        </td>
+        <td>
+          <a href="/workflows/{{.WorkflowID}}" class="run-link">
+            {{.WorkflowID}}
+          </a>
+        </td>
+        <td>
+          <span class="badge {{statusClass .Status.String}}">
+            {{.Status.String}}
+          </span>
+        </td>
+        <td class="font-mono">{{len .Steps}}</td>
+        <td class="font-mono">{{formatTime .CreatedAt}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty-state">
+    <div class="empty-state-icon">&#9673;</div>
+    <div class="empty-state-text">No runs found.</div>
+  </div>
+  {{end}}
+</div>
+{{end}}

@@ -48,6 +48,15 @@ func (s *SnapshotStore) Save(run dag.WorkflowRun) error {
 	return err
 }
 
+// Keys returns all keys in the workflow_runs KV bucket.
+// Callers use this to enumerate stored runs.
+func (s *SnapshotStore) Keys() ([]string, error) {
+	if s.kv == nil {
+		panic("SnapshotStore.Keys: kv bucket must not be nil")
+	}
+	return s.kv.Keys()
+}
+
 // Load retrieves and deserializes the WorkflowRun for the given run ID.
 // Returns ErrRunNotFound when no entry exists, allowing callers to handle
 // missing runs distinctly from NATS infrastructure errors.

@@ -1,0 +1,78 @@
+{{template "layout" .}}
+
+{{define "content"}}
+<div data-on:load="@get('/ui/dashboard/live')"
+     data-on:interval.5s="@get('/ui/dashboard/live')">
+  <div class="page-header">
+    <h1 class="page-title">Mission Control</h1>
+    <p class="page-subtitle">Workflow execution overview</p>
+  </div>
+
+  <div class="metrics-grid">
+    <div class="metric-card mc-total">
+      <div class="metric-label">Total Runs</div>
+      <div id="metric-total" class="metric-value">{{.TotalRuns}}</div>
+    </div>
+    <div class="metric-card mc-active">
+      <div class="metric-label">Active</div>
+      <div id="metric-active"
+        class="metric-value metric-active">{{.ActiveRuns}}</div>
+    </div>
+    <div class="metric-card mc-completed">
+      <div class="metric-label">Completed</div>
+      <div id="metric-completed"
+        class="metric-value metric-completed">{{.CompletedRuns}}</div>
+    </div>
+    <div class="metric-card mc-failed">
+      <div class="metric-label">Failed</div>
+      <div id="metric-failed"
+        class="metric-value metric-failed">{{.FailedRuns}}</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Recent Runs</div>
+    </div>
+    {{if .RecentRuns}}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Run ID</th>
+          <th>Workflow</th>
+          <th>Status</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .RecentRuns}}
+        <tr>
+          <td>
+            <a href="/runs/{{.RunID}}" class="run-link">
+              {{truncate .RunID 12}}
+            </a>
+          </td>
+          <td>
+            <a href="/workflows/{{.WorkflowID}}" class="run-link">
+              {{.WorkflowID}}
+            </a>
+          </td>
+          <td>
+            <span class="badge {{statusClass .Status.String}}">
+              {{.Status.String}}
+            </span>
+          </td>
+          <td class="font-mono">{{formatTime .CreatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty-state">
+      <div class="empty-state-icon">&#9673;</div>
+      <div class="empty-state-text">No runs yet. Start a workflow to see data.</div>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}
