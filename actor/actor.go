@@ -65,22 +65,6 @@ type Lifecycle interface {
 	PostStop(ctx *Context)
 }
 
-// Runtime manages actor lifecycle, supervision, and message delivery.
-// Full implementation in runtime.go.
-type Runtime struct{}
-
-// Send delivers a message to an actor. Stub for forward compatibility.
-func (r *Runtime) Send(to Address, msg Message) error {
-	panic("actor: Runtime.Send not yet implemented")
-}
-
-// spawn creates an actor under a supervisor. Stub for forward compatibility.
-func (r *Runtime) spawn(
-	addr Address, a Actor, parent Address, opts spawnOptions,
-) error {
-	panic("actor: Runtime.spawn not yet implemented")
-}
-
 // Context provides services to a running actor.
 type Context struct {
 	self    Address
