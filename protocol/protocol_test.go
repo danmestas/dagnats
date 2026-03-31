@@ -142,3 +142,29 @@ func TestNATSMsgIDWorkflowEvent(t *testing.T) {
 		t.Fatalf("NATSMsgID() for step.started = %q, want %q", msgID, "run-1.step-b.step.started")
 	}
 }
+
+func TestChildWorkflowEventTypes(t *testing.T) {
+	// Positive: constants have correct string values
+	if EventWorkflowSpawn != "workflow.spawn" {
+		t.Fatalf("EventWorkflowSpawn = %q, want workflow.spawn",
+			EventWorkflowSpawn)
+	}
+	if EventWorkflowChildCompleted != "workflow.child.completed" {
+		t.Fatalf("EventWorkflowChildCompleted = %q",
+			EventWorkflowChildCompleted)
+	}
+	if EventWorkflowChildFailed != "workflow.child.failed" {
+		t.Fatalf("EventWorkflowChildFailed = %q",
+			EventWorkflowChildFailed)
+	}
+
+	// Positive: can create and serialize events with new types
+	evt := NewWorkflowEvent(EventWorkflowSpawn, "run-1",
+		[]byte(`{"child":"c-1"}`))
+	if evt.Type != EventWorkflowSpawn {
+		t.Fatalf("event type = %q, want workflow.spawn", evt.Type)
+	}
+	if msgID := evt.NATSMsgID(); msgID == "" {
+		t.Fatalf("NATSMsgID should not be empty")
+	}
+}

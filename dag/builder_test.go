@@ -120,6 +120,41 @@ func TestBuilderValidationError(t *testing.T) {
 	}
 }
 
+func TestBuilderAgentStep(t *testing.T) {
+	wf := NewWorkflow("agent-wf")
+	plan := wf.Agent("plan", "llm-planner",
+		map[string]string{"role": "planner"})
+	_ = wf.Agent("code", "llm-coder",
+		map[string]string{"role": "coder"}).After(plan)
+
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	if len(def.Steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(def.Steps))
+	}
+
+	// Positive: step type and metadata
+	if def.Steps[0].Type != StepTypeAgent {
+		t.Fatalf("step 0 type = %v, want Agent", def.Steps[0].Type)
+	}
+	if def.Steps[0].Metadata["role"] != "planner" {
+		t.Fatalf("step 0 role = %q, want planner",
+			def.Steps[0].Metadata["role"])
+	}
+
+	// Positive: dependency wiring
+	if len(def.Steps[1].DependsOn) != 1 {
+		t.Fatalf("step 1 deps = %d, want 1",
+			len(def.Steps[1].DependsOn))
+	}
+	if def.Steps[1].DependsOn[0] != "plan" {
+		t.Fatalf("step 1 dep = %q, want plan",
+			def.Steps[1].DependsOn[0])
+	}
+}
+
 func findStep(def WorkflowDef, id string) *StepDef {
 	for i := range def.Steps {
 		if def.Steps[i].ID == id {

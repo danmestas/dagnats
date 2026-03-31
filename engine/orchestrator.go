@@ -29,7 +29,8 @@ type Orchestrator struct {
 	store    *SnapshotStore
 	tel      *observe.Telemetry
 	sub      *nats.Subscription
-	runLocks sync.Map // map[string]*sync.Mutex — per-run serialization
+	runLocks   sync.Map // map[string]*sync.Mutex — per-run serialization
+	stepRoutes map[dag.StepType]string // step type → subject prefix
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive       observe.Gauge
@@ -39,11 +40,23 @@ type Orchestrator struct {
 	snapshotDuration observe.Histogram
 }
 
+// OrchestratorOption configures optional orchestrator behavior.
+type OrchestratorOption func(*Orchestrator)
+
+// WithStepRoutes configures step type → subject prefix routing.
+// Steps with types not in the map route to "task" (default).
+func WithStepRoutes(
+	routes map[dag.StepType]string,
+) OrchestratorOption {
+	return func(o *Orchestrator) { o.stepRoutes = routes }
+}
+
 // NewOrchestrator creates an Orchestrator bound to the given NATS connection.
 // Panics if nc is nil or JetStream cannot be obtained — both are programmer
 // errors. KV buckets must already exist (call natsutil.SetupAll first).
 func NewOrchestrator(
 	nc *nats.Conn, tel *observe.Telemetry,
+	opts ...OrchestratorOption,
 ) *Orchestrator {
 	if nc == nil {
 		panic("NewOrchestrator: nc must not be nil")
@@ -62,7 +75,7 @@ func NewOrchestrator(
 				err.Error(),
 		)
 	}
-	return &Orchestrator{
+	o := &Orchestrator{
 		nc:    nc,
 		js:    js,
 		defKV: defKV,
@@ -84,6 +97,10 @@ func NewOrchestrator(
 			"snapshot.save.duration_ms", nil,
 		),
 	}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o
 }
 
 // Start subscribes to history.> on the WORKFLOW_HISTORY stream using
@@ -171,7 +188,8 @@ func isHandledEventType(t protocol.EventType) bool {
 	case protocol.EventWorkflowStarted,
 		protocol.EventStepCompleted,
 		protocol.EventStepContinue,
-		protocol.EventStepFailed:
+		protocol.EventStepFailed,
+		protocol.EventWorkflowSpawn:
 		return true
 	}
 	return false
@@ -196,6 +214,8 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepContinue(ctx, evt)
 	case protocol.EventStepFailed:
 		return o.handleStepFailed(ctx, evt)
+	case protocol.EventWorkflowSpawn:
+		return o.handleWorkflowSpawn(ctx, evt)
 	default:
 		return nil
 	}
@@ -268,7 +288,10 @@ func (o *Orchestrator) completeWorkflow(
 	}
 	o.runsActive.Dec()
 	o.runsCompleted.Inc()
-	return o.publishWorkflowCompleted(run.RunID)
+	if err := o.publishWorkflowCompleted(run.RunID); err != nil {
+		return err
+	}
+	return o.notifyParentIfChild(run, nil)
 }
 
 // handleStepContinue re-enqueues an agent-loop step for another iteration.
@@ -398,7 +421,10 @@ func (o *Orchestrator) failLoopStep(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
-	return o.publishWorkflowFailed(run.RunID)
+	if err := o.publishWorkflowFailed(run.RunID); err != nil {
+		return err
+	}
+	return o.notifyParentIfChild(run, fmt.Errorf("%s", reason))
 }
 
 // handleStepFailed processes a step failure event. If the step has retries
@@ -448,7 +474,133 @@ func (o *Orchestrator) handleStepFailed(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
-	return o.publishWorkflowFailed(run.RunID)
+	if err := o.publishWorkflowFailed(run.RunID); err != nil {
+		return err
+	}
+	return o.notifyParentIfChild(
+		run, fmt.Errorf("%s", state.Error),
+	)
+}
+
+const maxNestingDepth = 3
+
+// nestingDepth walks the parent chain to compute current depth.
+// Returns 0 for top-level runs, 1 for first child, etc.
+func (o *Orchestrator) nestingDepth(runID string) int {
+	depth := 0
+	currentID := runID
+	for i := 0; i < maxNestingDepth+1; i++ {
+		run, err := o.store.Load(currentID)
+		if err != nil || run.ParentRunID == "" {
+			break
+		}
+		depth++
+		currentID = run.ParentRunID
+	}
+	return depth
+}
+
+// handleWorkflowSpawn creates a child WorkflowRun from a spawn event.
+// The child is linked to the parent via ParentRunID and ParentStepID.
+func (o *Orchestrator) handleWorkflowSpawn(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleWorkflowSpawn: RunID must not be empty")
+	}
+	var payload struct {
+		ChildRunID    string `json:"child_run_id"`
+		ChildWorkflow string `json:"child_workflow"`
+		ParentStepID  string `json:"parent_step_id"`
+	}
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		return fmt.Errorf("unmarshal spawn payload: %w", err)
+	}
+	if payload.ChildRunID == "" {
+		panic("handleWorkflowSpawn: child_run_id must not be empty")
+	}
+
+	// Enforce max nesting depth by walking the parent chain.
+	// The child would be at depth+1, so reject when depth+1 > max.
+	depth := o.nestingDepth(evt.RunID)
+	if depth+1 >= maxNestingDepth {
+		o.tel.Logger.Error(
+			"spawn rejected: max nesting depth exceeded",
+			fmt.Errorf("depth %d >= max %d", depth, maxNestingDepth),
+		)
+		return fmt.Errorf(
+			"max nesting depth %d exceeded", maxNestingDepth,
+		)
+	}
+
+	entry, err := o.defKV.Get(payload.ChildWorkflow)
+	if err != nil {
+		return fmt.Errorf(
+			"load child workflow def %q: %w",
+			payload.ChildWorkflow, err,
+		)
+	}
+	var childDef dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &childDef); err != nil {
+		return fmt.Errorf("unmarshal child def: %w", err)
+	}
+
+	childRun := dag.NewWorkflowRun(childDef, payload.ChildRunID)
+	childRun.ParentRunID = evt.RunID
+	childRun.ParentStepID = payload.ParentStepID
+	childRun.Status = dag.RunStatusRunning
+
+	if err := o.saveSnapshot(ctx, childRun); err != nil {
+		return err
+	}
+
+	o.runsActive.Inc()
+	return o.enqueueReady(ctx, childDef, childRun)
+}
+
+// notifyParentIfChild publishes a child completion or failure event on the
+// parent's history subject when this run has a parent. No-op for top-level.
+func (o *Orchestrator) notifyParentIfChild(
+	run dag.WorkflowRun, childErr error,
+) error {
+	if run.ParentRunID == "" {
+		return nil
+	}
+
+	eventType := protocol.EventWorkflowChildCompleted
+	if childErr != nil {
+		eventType = protocol.EventWorkflowChildFailed
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"child_run_id":   run.RunID,
+		"parent_step_id": run.ParentStepID,
+		"error":          errString(childErr),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal child event payload: %w", err)
+	}
+
+	evt := protocol.NewWorkflowEvent(
+		eventType, run.ParentRunID, payload)
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal child event: %w", err)
+	}
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	_, err = o.js.PublishMsg(msg)
+	return err
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // enqueueReady resolves all currently-ready steps and publishes one task
@@ -584,7 +736,8 @@ func (o *Orchestrator) publishTask(
 		return fmt.Errorf("marshal TaskPayload: %w", err)
 	}
 	msgID := runID + "." + step.ID + ".queued"
-	msg := buildTaskMsg(step.Task, runID, data, msgID)
+	subject := o.stepSubject(step, runID)
+	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
 	_, err = o.js.PublishMsg(msg)
 	o.stepEnqueueCount.Inc()
@@ -629,25 +782,40 @@ func (o *Orchestrator) publishIterationTask(
 	msgID := fmt.Sprintf(
 		"%s.%s.continue.%d", runID, step.ID, iteration,
 	)
-	msg := buildTaskMsg(step.Task, runID, data, msgID)
+	subject := o.stepSubject(step, runID)
+	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
 	_, err = o.js.PublishMsg(msg)
 	o.stepEnqueueCount.Inc()
 	return err
 }
 
+// stepSubject resolves the NATS subject for a step based on routing config.
+// Defaults to "task.{task}.{runID}" if no custom route is configured.
+func (o *Orchestrator) stepSubject(
+	step dag.StepDef, runID string,
+) string {
+	prefix := "task"
+	if o.stepRoutes != nil {
+		if p, ok := o.stepRoutes[step.Type]; ok {
+			prefix = p
+		}
+	}
+	return prefix + "." + step.Task + "." + runID
+}
+
 // buildTaskMsg constructs a *nats.Msg with headers for task publishing.
 func buildTaskMsg(
-	task, runID string, data []byte, msgID string,
+	subject string, data []byte, msgID string,
 ) *nats.Msg {
-	if task == "" {
-		panic("buildTaskMsg: task must not be empty")
+	if subject == "" {
+		panic("buildTaskMsg: subject must not be empty")
 	}
 	if msgID == "" {
 		panic("buildTaskMsg: msgID must not be empty")
 	}
 	return &nats.Msg{
-		Subject: "task." + task + "." + runID,
+		Subject: subject,
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
