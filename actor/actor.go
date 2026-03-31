@@ -65,10 +65,6 @@ type Lifecycle interface {
 	PostStop(ctx *Context)
 }
 
-// SupervisionStrategy decides how to handle actor failures.
-// Defined in supervision.go.
-type SupervisionStrategy interface{}
-
 // Runtime manages actor lifecycle, supervision, and message delivery.
 // Full implementation in runtime.go.
 type Runtime struct{}
