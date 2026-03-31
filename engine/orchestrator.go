@@ -288,7 +288,10 @@ func (o *Orchestrator) completeWorkflow(
 	}
 	o.runsActive.Dec()
 	o.runsCompleted.Inc()
-	return o.publishWorkflowCompleted(run.RunID)
+	if err := o.publishWorkflowCompleted(run.RunID); err != nil {
+		return err
+	}
+	return o.notifyParentIfChild(run, nil)
 }
 
 // handleStepContinue re-enqueues an agent-loop step for another iteration.
@@ -418,7 +421,10 @@ func (o *Orchestrator) failLoopStep(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
-	return o.publishWorkflowFailed(run.RunID)
+	if err := o.publishWorkflowFailed(run.RunID); err != nil {
+		return err
+	}
+	return o.notifyParentIfChild(run, fmt.Errorf("%s", reason))
 }
 
 // handleStepFailed processes a step failure event. If the step has retries
@@ -468,7 +474,12 @@ func (o *Orchestrator) handleStepFailed(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
-	return o.publishWorkflowFailed(run.RunID)
+	if err := o.publishWorkflowFailed(run.RunID); err != nil {
+		return err
+	}
+	return o.notifyParentIfChild(
+		run, fmt.Errorf("%s", state.Error),
+	)
 }
 
 // handleWorkflowSpawn creates a child WorkflowRun from a spawn event.
@@ -514,6 +525,51 @@ func (o *Orchestrator) handleWorkflowSpawn(
 
 	o.runsActive.Inc()
 	return o.enqueueReady(ctx, childDef, childRun)
+}
+
+// notifyParentIfChild publishes a child completion or failure event on the
+// parent's history subject when this run has a parent. No-op for top-level.
+func (o *Orchestrator) notifyParentIfChild(
+	run dag.WorkflowRun, childErr error,
+) error {
+	if run.ParentRunID == "" {
+		return nil
+	}
+
+	eventType := protocol.EventWorkflowChildCompleted
+	if childErr != nil {
+		eventType = protocol.EventWorkflowChildFailed
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"child_run_id":   run.RunID,
+		"parent_step_id": run.ParentStepID,
+		"error":          errString(childErr),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal child event payload: %w", err)
+	}
+
+	evt := protocol.NewWorkflowEvent(
+		eventType, run.ParentRunID, payload)
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal child event: %w", err)
+	}
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	_, err = o.js.PublishMsg(msg)
+	return err
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // enqueueReady resolves all currently-ready steps and publishes one task

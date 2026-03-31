@@ -439,3 +439,75 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 			childRun.ParentStepID)
 	}
 }
+
+func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	// Register a single-step child workflow
+	childDef := dag.WorkflowDef{
+		Name: "notify-child", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "echo-task", Type: dag.StepTypeNormal},
+		},
+	}
+	childDefData, _ := json.Marshal(childDef)
+	defKV.Put("notify-child", childDefData)
+
+	// Subscribe to parent's history for child.completed
+	parentSub, err := js.SubscribeSync("history.parent-run-2",
+		nats.AckExplicit(), nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("subscribe parent history: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Spawn a child workflow
+	spawnPayload, _ := json.Marshal(map[string]string{
+		"child_run_id":   "child-run-2",
+		"child_workflow": "notify-child",
+		"parent_step_id": "parent-step-b",
+	})
+	spawnEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowSpawn, "parent-run-2", spawnPayload)
+	data, _ := spawnEvt.Marshal()
+	js.Publish(spawnEvt.NATSSubject(), data,
+		nats.MsgId(spawnEvt.NATSMsgID()))
+
+	// Wait for child task to appear, then simulate completion
+	time.Sleep(300 * time.Millisecond)
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted,
+		"child-run-2", "s1", []byte(`"child-result"`))
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	// Look for workflow.child.completed on parent's history
+	deadline := time.Now().Add(5 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		m, err := parentSub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		m.Ack()
+		evt, _ := protocol.UnmarshalEvent(m.Data)
+		if evt.Type == protocol.EventWorkflowChildCompleted {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected workflow.child.completed on parent history")
+	}
+}
