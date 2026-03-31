@@ -6,6 +6,7 @@ package actor
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -206,5 +207,92 @@ func TestRuntimeSpawnDuplicateReturnsError(t *testing.T) {
 	err := rt.Spawn(addr, &echoActor{})
 	if !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("expected ErrAlreadyExists, got %v", err)
+	}
+}
+
+// collectorActor stores all received payloads.
+type collectorActor struct {
+	mu       sync.Mutex
+	payloads []interface{}
+}
+
+func (a *collectorActor) Receive(ctx *Context, msg Message) error {
+	a.mu.Lock()
+	a.payloads = append(a.payloads, msg.Payload)
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *collectorActor) count() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.payloads)
+}
+
+func TestRuntimeActorToActorMessaging(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	collector := &collectorActor{}
+	collAddr := Address{Type: "test", ID: "collector"}
+	rt.Spawn(collAddr, collector)
+
+	// forwarder sends to collector on receive
+	forwarder := &forwarderActor{target: collAddr}
+	fwdAddr := Address{Type: "test", ID: "forwarder"}
+	rt.Spawn(fwdAddr, forwarder)
+
+	// Send to forwarder
+	rt.Send(fwdAddr, Message{Payload: "ping"})
+
+	// Wait for forwarding
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if collector.count() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Positive: collector received forwarded message
+	if collector.count() < 1 {
+		t.Fatalf("collector got %d messages, want >= 1",
+			collector.count())
+	}
+}
+
+type forwarderActor struct {
+	target Address
+}
+
+func (a *forwarderActor) Receive(ctx *Context, msg Message) error {
+	return ctx.Send(a.target, msg.Payload)
+}
+
+func TestRuntimeMailboxFull(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	// Actor with tiny mailbox
+	slow := &echoActor{}
+	addr := Address{Type: "test", ID: "slow"}
+	rt.Spawn(addr, slow, WithMailboxSize(1))
+
+	// Fill the mailbox (actor might process some, but eventually full)
+	var fullErr error
+	for i := 0; i < 100; i++ {
+		err := rt.Send(addr, Message{Payload: i})
+		if err != nil {
+			fullErr = err
+			break
+		}
+	}
+
+	// Positive: eventually got mailbox full error
+	if fullErr == nil {
+		t.Fatalf("expected ErrMailboxFull with tiny mailbox")
+	}
+	if !errors.Is(fullErr, ErrMailboxFull) {
+		t.Fatalf("expected ErrMailboxFull, got %v", fullErr)
 	}
 }
