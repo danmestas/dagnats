@@ -7,6 +7,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -509,5 +510,67 @@ func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected workflow.child.completed on parent history")
+	}
+}
+
+func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+	store := NewSnapshotStore(js)
+
+	// Register child workflow def
+	childDef := dag.WorkflowDef{
+		Name: "deep-child", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "t", Type: dag.StepTypeNormal},
+		},
+	}
+	childDefData, _ := json.Marshal(childDef)
+	defKV.Put("deep-child", childDefData)
+
+	// Create a chain: run-0 -> run-1 -> run-2 (depth 3)
+	for i := 0; i < 3; i++ {
+		run := dag.WorkflowRun{
+			RunID: fmt.Sprintf("run-%d", i), WorkflowID: "deep-child",
+			Status:    dag.RunStatusRunning,
+			Steps:     map[string]dag.StepState{"s1": {Status: dag.StepStatusRunning}},
+			CreatedAt: time.Now(),
+		}
+		if i > 0 {
+			run.ParentRunID = fmt.Sprintf("run-%d", i-1)
+			run.ParentStepID = "s1"
+		}
+		store.Save(run)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Try to spawn from run-2 (depth would be 4, exceeds 3)
+	spawnPayload, _ := json.Marshal(map[string]string{
+		"child_run_id":   "run-3",
+		"child_workflow": "deep-child",
+		"parent_step_id": "s1",
+	})
+	spawnEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowSpawn, "run-2", spawnPayload)
+	data, _ := spawnEvt.Marshal()
+	js.Publish(spawnEvt.NATSSubject(), data,
+		nats.MsgId(spawnEvt.NATSMsgID()))
+
+	// Poll briefly — run-3 should never be created
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := store.Load("run-3"); err == nil {
+			t.Fatalf("run-3 should not exist — nesting too deep")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

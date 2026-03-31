@@ -482,6 +482,24 @@ func (o *Orchestrator) handleStepFailed(
 	)
 }
 
+const maxNestingDepth = 3
+
+// nestingDepth walks the parent chain to compute current depth.
+// Returns 0 for top-level runs, 1 for first child, etc.
+func (o *Orchestrator) nestingDepth(runID string) int {
+	depth := 0
+	currentID := runID
+	for i := 0; i < maxNestingDepth+1; i++ {
+		run, err := o.store.Load(currentID)
+		if err != nil || run.ParentRunID == "" {
+			break
+		}
+		depth++
+		currentID = run.ParentRunID
+	}
+	return depth
+}
+
 // handleWorkflowSpawn creates a child WorkflowRun from a spawn event.
 // The child is linked to the parent via ParentRunID and ParentStepID.
 func (o *Orchestrator) handleWorkflowSpawn(
@@ -500,6 +518,19 @@ func (o *Orchestrator) handleWorkflowSpawn(
 	}
 	if payload.ChildRunID == "" {
 		panic("handleWorkflowSpawn: child_run_id must not be empty")
+	}
+
+	// Enforce max nesting depth by walking the parent chain.
+	// The child would be at depth+1, so reject when depth+1 > max.
+	depth := o.nestingDepth(evt.RunID)
+	if depth+1 >= maxNestingDepth {
+		o.tel.Logger.Error(
+			"spawn rejected: max nesting depth exceeded",
+			fmt.Errorf("depth %d >= max %d", depth, maxNestingDepth),
+		)
+		return fmt.Errorf(
+			"max nesting depth %d exceeded", maxNestingDepth,
+		)
 	}
 
 	entry, err := o.defKV.Get(payload.ChildWorkflow)
