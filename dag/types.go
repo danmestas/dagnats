@@ -14,9 +14,12 @@ const (
 	StepTypeNormal      StepType = iota
 	StepTypeAgentLoop
 	StepTypeSubWorkflow
+	StepTypeAgent
 )
 
-var stepTypeStrings = [...]string{"normal", "agent_loop", "sub_workflow"}
+var stepTypeStrings = [...]string{
+	"normal", "agent_loop", "sub_workflow", "agent",
+}
 
 func (s StepType) String() string {
 	if int(s) < len(stepTypeStrings) {
@@ -145,6 +148,7 @@ type StepDef struct {
 	Type      StepType         `json:"type"`
 	Loop      *AgentLoopConfig `json:"loop,omitempty"`
 	SkipIf    *ParentCond      `json:"skip_if,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced
@@ -175,8 +179,10 @@ type WorkflowRun struct {
 	RunID      string               `json:"run_id"`
 	WorkflowID string               `json:"workflow_id"`
 	Status     RunStatus            `json:"status"`
-	Steps      map[string]StepState `json:"steps"`
-	CreatedAt  time.Time            `json:"created_at"`
+	Steps        map[string]StepState `json:"steps"`
+	CreatedAt    time.Time            `json:"created_at"`
+	ParentRunID  string               `json:"parent_run_id,omitempty"`
+	ParentStepID string               `json:"parent_step_id,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.
