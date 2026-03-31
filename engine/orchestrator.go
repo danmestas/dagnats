@@ -188,7 +188,8 @@ func isHandledEventType(t protocol.EventType) bool {
 	case protocol.EventWorkflowStarted,
 		protocol.EventStepCompleted,
 		protocol.EventStepContinue,
-		protocol.EventStepFailed:
+		protocol.EventStepFailed,
+		protocol.EventWorkflowSpawn:
 		return true
 	}
 	return false
@@ -213,6 +214,8 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepContinue(ctx, evt)
 	case protocol.EventStepFailed:
 		return o.handleStepFailed(ctx, evt)
+	case protocol.EventWorkflowSpawn:
+		return o.handleWorkflowSpawn(ctx, evt)
 	default:
 		return nil
 	}
@@ -466,6 +469,51 @@ func (o *Orchestrator) handleStepFailed(
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
 	return o.publishWorkflowFailed(run.RunID)
+}
+
+// handleWorkflowSpawn creates a child WorkflowRun from a spawn event.
+// The child is linked to the parent via ParentRunID and ParentStepID.
+func (o *Orchestrator) handleWorkflowSpawn(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleWorkflowSpawn: RunID must not be empty")
+	}
+	var payload struct {
+		ChildRunID    string `json:"child_run_id"`
+		ChildWorkflow string `json:"child_workflow"`
+		ParentStepID  string `json:"parent_step_id"`
+	}
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		return fmt.Errorf("unmarshal spawn payload: %w", err)
+	}
+	if payload.ChildRunID == "" {
+		panic("handleWorkflowSpawn: child_run_id must not be empty")
+	}
+
+	entry, err := o.defKV.Get(payload.ChildWorkflow)
+	if err != nil {
+		return fmt.Errorf(
+			"load child workflow def %q: %w",
+			payload.ChildWorkflow, err,
+		)
+	}
+	var childDef dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &childDef); err != nil {
+		return fmt.Errorf("unmarshal child def: %w", err)
+	}
+
+	childRun := dag.NewWorkflowRun(childDef, payload.ChildRunID)
+	childRun.ParentRunID = evt.RunID
+	childRun.ParentStepID = payload.ParentStepID
+	childRun.Status = dag.RunStatusRunning
+
+	if err := o.saveSnapshot(ctx, childRun); err != nil {
+		return err
+	}
+
+	o.runsActive.Inc()
+	return o.enqueueReady(ctx, childDef, childRun)
 }
 
 // enqueueReady resolves all currently-ready steps and publishes one task
