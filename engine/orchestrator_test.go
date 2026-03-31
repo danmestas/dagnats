@@ -7,6 +7,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -306,5 +307,270 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	}
 	if run.Status != dag.RunStatusCompleted {
 		t.Fatalf("Status = %v, want Completed", run.Status)
+	}
+}
+
+func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+
+	err := natsutil.SetupAll(nc,
+		natsutil.WithStreams(natsutil.StreamConfig{
+			Name:     "AGENT_TASKS",
+			Subjects: []string{"agent.task.>"},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	// Register workflow with one agent step
+	wfDef := dag.WorkflowDef{
+		Name:    "routed-wf",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "agent-step", Task: "llm-task",
+				Type:     dag.StepTypeAgent,
+				Metadata: map[string]string{"role": "coder"},
+			},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	if _, err := defKV.Put("routed-wf", defData); err != nil {
+		t.Fatalf("put def: %v", err)
+	}
+
+	// Subscribe to AGENT_TASKS to verify routing
+	agentSub, err := js.SubscribeSync("agent.task.>",
+		nats.AckExplicit(), nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("subscribe agent tasks: %v", err)
+	}
+
+	routes := map[dag.StepType]string{
+		dag.StepTypeAgent: "agent.task",
+	}
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry(),
+		WithStepRoutes(routes))
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish workflow.started event
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-route-1", defData)
+	data, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), data,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Agent task should arrive on AGENT_TASKS, not TASK_QUEUES
+	agentMsg, err := agentSub.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("expected message on AGENT_TASKS: %v", err)
+	}
+	if agentMsg == nil {
+		t.Fatalf("agent message should not be nil")
+	}
+	agentMsg.Ack()
+}
+
+func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	// Register a child workflow definition
+	childDef := dag.WorkflowDef{
+		Name:    "child-wf",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "child-step", Task: "child-task",
+				Type: dag.StepTypeNormal},
+		},
+	}
+	childDefData, _ := json.Marshal(childDef)
+	if _, err := defKV.Put("child-wf", childDefData); err != nil {
+		t.Fatalf("put child def: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish spawn event
+	spawnPayload, _ := json.Marshal(map[string]string{
+		"child_run_id":   "child-run-1",
+		"child_workflow": "child-wf",
+		"parent_step_id": "parent-step-a",
+	})
+	spawnEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowSpawn, "parent-run-1", spawnPayload)
+	data, _ := spawnEvt.Marshal()
+	js.Publish(spawnEvt.NATSSubject(), data,
+		nats.MsgId(spawnEvt.NATSMsgID()))
+
+	// Wait for child run to appear in snapshot store
+	store := NewSnapshotStore(js)
+	var childRun dag.WorkflowRun
+	var loadErr error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		childRun, loadErr = store.Load("child-run-1")
+		if loadErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if loadErr != nil {
+		t.Fatalf("child run should exist: %v", loadErr)
+	}
+	if childRun.ParentRunID != "parent-run-1" {
+		t.Fatalf("ParentRunID = %q, want parent-run-1",
+			childRun.ParentRunID)
+	}
+	if childRun.ParentStepID != "parent-step-a" {
+		t.Fatalf("ParentStepID = %q, want parent-step-a",
+			childRun.ParentStepID)
+	}
+}
+
+func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	// Register a single-step child workflow
+	childDef := dag.WorkflowDef{
+		Name: "notify-child", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "echo-task", Type: dag.StepTypeNormal},
+		},
+	}
+	childDefData, _ := json.Marshal(childDef)
+	defKV.Put("notify-child", childDefData)
+
+	// Subscribe to parent's history for child.completed
+	parentSub, err := js.SubscribeSync("history.parent-run-2",
+		nats.AckExplicit(), nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("subscribe parent history: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Spawn a child workflow
+	spawnPayload, _ := json.Marshal(map[string]string{
+		"child_run_id":   "child-run-2",
+		"child_workflow": "notify-child",
+		"parent_step_id": "parent-step-b",
+	})
+	spawnEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowSpawn, "parent-run-2", spawnPayload)
+	data, _ := spawnEvt.Marshal()
+	js.Publish(spawnEvt.NATSSubject(), data,
+		nats.MsgId(spawnEvt.NATSMsgID()))
+
+	// Wait for child task to appear, then simulate completion
+	time.Sleep(300 * time.Millisecond)
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted,
+		"child-run-2", "s1", []byte(`"child-result"`))
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	// Look for workflow.child.completed on parent's history
+	deadline := time.Now().Add(5 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		m, err := parentSub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		m.Ack()
+		evt, _ := protocol.UnmarshalEvent(m.Data)
+		if evt.Type == protocol.EventWorkflowChildCompleted {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected workflow.child.completed on parent history")
+	}
+}
+
+func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+	store := NewSnapshotStore(js)
+
+	// Register child workflow def
+	childDef := dag.WorkflowDef{
+		Name: "deep-child", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "t", Type: dag.StepTypeNormal},
+		},
+	}
+	childDefData, _ := json.Marshal(childDef)
+	defKV.Put("deep-child", childDefData)
+
+	// Create a chain: run-0 -> run-1 -> run-2 (depth 3)
+	for i := 0; i < 3; i++ {
+		run := dag.WorkflowRun{
+			RunID: fmt.Sprintf("run-%d", i), WorkflowID: "deep-child",
+			Status:    dag.RunStatusRunning,
+			Steps:     map[string]dag.StepState{"s1": {Status: dag.StepStatusRunning}},
+			CreatedAt: time.Now(),
+		}
+		if i > 0 {
+			run.ParentRunID = fmt.Sprintf("run-%d", i-1)
+			run.ParentStepID = "s1"
+		}
+		store.Save(run)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Try to spawn from run-2 (depth would be 4, exceeds 3)
+	spawnPayload, _ := json.Marshal(map[string]string{
+		"child_run_id":   "run-3",
+		"child_workflow": "deep-child",
+		"parent_step_id": "s1",
+	})
+	spawnEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowSpawn, "run-2", spawnPayload)
+	data, _ := spawnEvt.Marshal()
+	js.Publish(spawnEvt.NATSSubject(), data,
+		nats.MsgId(spawnEvt.NATSMsgID()))
+
+	// Poll briefly — run-3 should never be created
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := store.Load("run-3"); err == nil {
+			t.Fatalf("run-3 should not exist — nesting too deep")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

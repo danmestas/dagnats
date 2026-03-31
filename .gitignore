@@ -1,3 +1,5 @@
 hatchet-analysis/
 .claude/worktrees/
 refs/
+.worktrees/
+.superpowers/

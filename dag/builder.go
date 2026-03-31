@@ -58,6 +58,27 @@ func (b *WorkflowBuilder) AgentLoop(id, task string) StepRef {
 	return StepRef{id: id, index: b.current, builder: b}
 }
 
+// Agent appends a Claude Agent SDK step. Metadata carries role and other
+// agent-specific config — the core DAG package is ignorant of what it means.
+func (b *WorkflowBuilder) Agent(
+	id, task string, metadata map[string]string,
+) StepRef {
+	if id == "" {
+		panic("dag: step id must not be empty")
+	}
+	if task == "" {
+		panic("dag: step task must not be empty")
+	}
+	b.steps = append(b.steps, StepDef{
+		ID:       id,
+		Task:     task,
+		Type:     StepTypeAgent,
+		Metadata: metadata,
+	})
+	b.current = len(b.steps) - 1
+	return StepRef{id: id, index: b.current, builder: b}
+}
+
 // DependsOn declares that the active step must not start until all listed step
 // IDs have completed. Kept for backward compatibility — prefer After(StepRef)
 // for new code which provides compile-time safety.

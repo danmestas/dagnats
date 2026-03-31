@@ -122,3 +122,45 @@ func TestSetupAll(t *testing.T) {
 		t.Fatal("SetupAll timed out after 5s")
 	}
 }
+
+func TestSetupAllWithExtras(t *testing.T) {
+	_, nc := StartTestServer(t)
+
+	extra := StreamConfig{
+		Name:     "AGENT_TASKS",
+		Subjects: []string{"agent.task.>"},
+	}
+	extraKV := KVConfig{Bucket: "roles"}
+
+	if err := SetupAll(nc,
+		WithStreams(extra),
+		WithKVBuckets(extraKV),
+	); err != nil {
+		t.Fatalf("SetupAll with extras: %v", err)
+	}
+
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	// Positive: default streams still exist
+	if _, err := js.StreamInfo("WORKFLOW_HISTORY"); err != nil {
+		t.Fatalf("WORKFLOW_HISTORY should exist: %v", err)
+	}
+
+	// Positive: extra stream exists
+	if _, err := js.StreamInfo("AGENT_TASKS"); err != nil {
+		t.Fatalf("AGENT_TASKS should exist: %v", err)
+	}
+
+	// Positive: extra KV bucket exists
+	if _, err := js.KeyValue("roles"); err != nil {
+		t.Fatalf("roles KV should exist: %v", err)
+	}
+
+	// Positive: default KV buckets still exist
+	if _, err := js.KeyValue("workflow_defs"); err != nil {
+		t.Fatalf("workflow_defs should exist: %v", err)
+	}
+}

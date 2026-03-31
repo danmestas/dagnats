@@ -7,6 +7,7 @@
 package dag
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"time"
@@ -142,5 +143,94 @@ func TestWorkflowDefJSONRoundTrip(t *testing.T) {
 	}
 	if got.Steps[1].Loop.MaxIterations != 10 {
 		t.Fatalf("Steps[1].Loop.MaxIterations = %d, want 10", got.Steps[1].Loop.MaxIterations)
+	}
+}
+
+func TestStepTypeAgentStringAndJSON(t *testing.T) {
+	// Positive: string representation
+	if got := StepTypeAgent.String(); got != "agent" {
+		t.Fatalf("StepTypeAgent.String() = %q, want %q", got, "agent")
+	}
+
+	// Positive: JSON round-trip
+	data, err := json.Marshal(StepTypeAgent)
+	if err != nil {
+		t.Fatalf("Marshal StepTypeAgent: %v", err)
+	}
+	if string(data) != `"agent"` {
+		t.Fatalf("Marshal StepTypeAgent = %s, want %q", data, "agent")
+	}
+
+	var got StepType
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal StepTypeAgent: %v", err)
+	}
+	if got != StepTypeAgent {
+		t.Fatalf("Unmarshal StepTypeAgent = %v, want %v", got, StepTypeAgent)
+	}
+}
+
+func TestStepDefMetadataJSON(t *testing.T) {
+	step := StepDef{
+		ID:       "code",
+		Task:     "llm-coder",
+		Type:     StepTypeAgent,
+		Metadata: map[string]string{"role": "coder"},
+	}
+
+	data, err := json.Marshal(step)
+	if err != nil {
+		t.Fatalf("Marshal StepDef with metadata: %v", err)
+	}
+
+	var got StepDef
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal StepDef with metadata: %v", err)
+	}
+	if got.Metadata["role"] != "coder" {
+		t.Fatalf("Metadata[role] = %q, want %q", got.Metadata["role"], "coder")
+	}
+
+	// Negative: nil metadata omitted from JSON
+	step2 := StepDef{ID: "plain", Task: "task", Type: StepTypeNormal}
+	data2, _ := json.Marshal(step2)
+	if bytes.Contains(data2, []byte("metadata")) {
+		t.Fatalf("nil Metadata should be omitted from JSON, got %s", data2)
+	}
+}
+
+func TestWorkflowRunParentFieldsJSON(t *testing.T) {
+	run := WorkflowRun{
+		RunID:        "child-1",
+		WorkflowID:   "wf-1",
+		Status:       RunStatusRunning,
+		Steps:        map[string]StepState{},
+		CreatedAt:    time.Now(),
+		ParentRunID:  "parent-1",
+		ParentStepID: "step-a",
+	}
+
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatalf("Marshal WorkflowRun with parent: %v", err)
+	}
+
+	var got WorkflowRun
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal WorkflowRun with parent: %v", err)
+	}
+	if got.ParentRunID != "parent-1" {
+		t.Fatalf("ParentRunID = %q, want %q", got.ParentRunID, "parent-1")
+	}
+	if got.ParentStepID != "step-a" {
+		t.Fatalf("ParentStepID = %q, want %q", got.ParentStepID, "step-a")
+	}
+
+	// Negative: empty parent fields omitted
+	run2 := WorkflowRun{RunID: "top", WorkflowID: "wf", Status: RunStatusPending,
+		Steps: map[string]StepState{}, CreatedAt: time.Now()}
+	data2, _ := json.Marshal(run2)
+	if bytes.Contains(data2, []byte("parent_run_id")) {
+		t.Fatalf("empty ParentRunID should be omitted, got %s", data2)
 	}
 }

@@ -29,8 +29,11 @@ const (
 	EventStepFailed         EventType = "step.failed"
 	EventStepContinue       EventType = "step.continue"
 	EventAgentLoopIteration EventType = "agent.loop.iteration"
-	EventWorkflowCompleted  EventType = "workflow.completed"
-	EventWorkflowFailed     EventType = "workflow.failed"
+	EventWorkflowCompleted      EventType = "workflow.completed"
+	EventWorkflowFailed         EventType = "workflow.failed"
+	EventWorkflowSpawn          EventType = "workflow.spawn"
+	EventWorkflowChildCompleted EventType = "workflow.child.completed"
+	EventWorkflowChildFailed    EventType = "workflow.child.failed"
 )
 
 // Event is the core communication primitive published to the history stream.

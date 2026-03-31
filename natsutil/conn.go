@@ -74,9 +74,52 @@ func SetupTelemetryStream(js nats.JetStreamContext) error {
 	return err
 }
 
+// StreamConfig defines an additional JetStream stream for SetupAll to provision.
+type StreamConfig struct {
+	Name     string
+	Subjects []string
+}
+
+// KVConfig defines an additional KV bucket for SetupAll to provision.
+type KVConfig struct {
+	Bucket string
+}
+
+// SetupOption configures additional NATS resources for SetupAll.
+type SetupOption func(*setupOptions)
+
+type setupOptions struct {
+	streams []StreamConfig
+	kvs     []KVConfig
+}
+
+// WithStreams adds extra JetStream streams to provision.
+func WithStreams(configs ...StreamConfig) SetupOption {
+	return func(o *setupOptions) {
+		o.streams = append(o.streams, configs...)
+	}
+}
+
+// WithKVBuckets adds extra KV buckets to provision.
+func WithKVBuckets(configs ...KVConfig) SetupOption {
+	return func(o *setupOptions) {
+		o.kvs = append(o.kvs, configs...)
+	}
+}
+
 // SetupAll creates all streams and KV buckets on the given connection.
-// This is the single entry point for bootstrapping a DagNats NATS namespace.
-func SetupAll(nc *nats.Conn) error {
+// Optional SetupOption args provision additional streams and KV buckets
+// for downstream packages without forking natsutil.
+func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
+	if nc == nil {
+		panic("natsutil: connection must not be nil")
+	}
+
+	var options setupOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	js, err := nc.JetStream()
 	if err != nil {
 		return err
@@ -87,5 +130,30 @@ func SetupAll(nc *nats.Conn) error {
 	if err := SetupKVBuckets(js); err != nil {
 		return err
 	}
-	return SetupTelemetryStream(js)
+	if err := SetupTelemetryStream(js); err != nil {
+		return err
+	}
+
+	for _, sc := range options.streams {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      sc.Name,
+			Subjects:  sc.Subjects,
+			Retention: nats.WorkQueuePolicy,
+			Storage:   nats.FileStorage,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, kc := range options.kvs {
+		_, err := js.CreateKeyValue(&nats.KeyValueConfig{
+			Bucket: kc.Bucket,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
