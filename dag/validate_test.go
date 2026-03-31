@@ -76,3 +76,27 @@ func TestValidateNormalStepRejectsLoopConfig(t *testing.T) {
 	if err == nil { t.Fatal("expected error for normal step with Loop config, got nil") }
 	if !strings.Contains(err.Error(), "Loop") { t.Fatalf("error should mention 'Loop', got: %v", err) }
 }
+
+func TestValidateAgentStepRejectsLoopConfig(t *testing.T) {
+	def := WorkflowDef{Name: "bad-agent", Version: "1", Steps: []StepDef{
+		{ID: "a", Task: "llm-task", Type: StepTypeAgent,
+			Loop: &AgentLoopConfig{MaxIterations: 5}},
+	}}
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for agent step with loop config, got nil")
+	}
+	if !strings.Contains(err.Error(), "Loop") {
+		t.Fatalf("error should mention Loop, got: %v", err)
+	}
+}
+
+func TestValidateAgentStepValid(t *testing.T) {
+	def := WorkflowDef{Name: "good-agent", Version: "1", Steps: []StepDef{
+		{ID: "a", Task: "llm-task", Type: StepTypeAgent,
+			Metadata: map[string]string{"role": "coder"}},
+	}}
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid agent step should pass, got: %v", err)
+	}
+}
