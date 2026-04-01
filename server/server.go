@@ -69,9 +69,7 @@ func (s *Server) Run() error {
 	httpErrCh := s.startHTTP()
 
 	s.ready.Store(true)
-	fmt.Fprintf(os.Stderr, "\n  DagNats ready\n")
-	fmt.Fprintf(os.Stderr, "  HTTP: %s\n", s.cfg.HTTPAddr)
-	fmt.Fprintf(os.Stderr, "  NATS: %s\n\n", s.ns.ClientURL())
+	printBanner(os.Stderr, s.cfg.HTTPAddr, s.ns.ClientURL())
 
 	return s.waitAndShutdown(httpErrCh)
 }
