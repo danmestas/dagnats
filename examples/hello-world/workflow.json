@@ -1,0 +1,16 @@
+{
+  "name": "hello-world",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "greet",
+      "task": "greet",
+      "depends_on": []
+    },
+    {
+      "id": "uppercase",
+      "task": "uppercase",
+      "depends_on": ["greet"]
+    }
+  ]
+}
