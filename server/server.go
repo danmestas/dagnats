@@ -69,7 +69,7 @@ func (s *Server) Run() error {
 	httpErrCh := s.startHTTP()
 
 	s.ready.Store(true)
-	fmt.Printf("DagNats server listening on %s\n", s.cfg.HTTPAddr)
+	printBanner(os.Stderr, s.cfg.HTTPAddr, s.ns.ClientURL())
 
 	return s.waitAndShutdown(httpErrCh)
 }
@@ -90,12 +90,14 @@ func (s *Server) startComponents() error {
 	if err != nil {
 		return fmt.Errorf("start NATS: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "  nats server started\n")
 
 	s.nc, err = nats.Connect(s.ns.ClientURL())
 	if err != nil {
 		s.ns.Shutdown()
 		return fmt.Errorf("connect to NATS: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "  nats client connected\n")
 
 	err = natsutil.SetupAll(s.nc,
 		natsutil.WithKVBuckets(
@@ -111,11 +113,13 @@ func (s *Server) startComponents() error {
 		s.ns.Shutdown()
 		return fmt.Errorf("setup NATS resources: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "  streams and kv buckets ready\n")
 
 	s.tel, s.telStop = simple.SetupTelemetry(s.nc)
 	s.svc = api.NewService(s.nc, s.tel)
 	s.orch = engine.NewActorOrchestrator(s.nc, s.tel)
 	s.orch.Start()
+	fmt.Fprintf(os.Stderr, "  orchestrator started\n")
 
 	s.trig, err = trigger.NewTriggerService(s.nc)
 	if err != nil {
@@ -134,6 +138,7 @@ func (s *Server) startComponents() error {
 		s.ns.Shutdown()
 		return fmt.Errorf("start trigger service: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "  trigger service started\n")
 
 	return nil
 }
@@ -237,7 +242,7 @@ func (s *Server) shutdown() error {
 	go func() {
 		defer close(doneCh)
 
-		// HTTP shutdown with 5s timeout
+		fmt.Fprintf(os.Stderr, "  shutting down http...\n")
 		httpCtx, httpCancel := context.WithTimeout(
 			context.Background(), 5*time.Second,
 		)
@@ -246,10 +251,11 @@ func (s *Server) shutdown() error {
 			_ = s.httpSrv.Shutdown(httpCtx)
 		}
 
-		// Stop services
+		fmt.Fprintf(os.Stderr, "  stopping triggers...\n")
 		if s.trig != nil {
 			s.trig.Stop()
 		}
+		fmt.Fprintf(os.Stderr, "  stopping orchestrator...\n")
 		if s.orch != nil {
 			s.orch.Stop()
 		}
@@ -257,14 +263,14 @@ func (s *Server) shutdown() error {
 			s.telStop()
 		}
 
-		// Close NATS connection
+		fmt.Fprintf(os.Stderr, "  draining nats...\n")
 		if s.nc != nil {
 			_ = s.nc.Drain()
 		}
 
-		// Shutdown embedded NATS server
 		s.ns.Shutdown()
 		s.ns.WaitForShutdown()
+		fmt.Fprintf(os.Stderr, "  shutdown complete\n")
 	}()
 
 	select {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
 )
 
@@ -197,7 +198,8 @@ func runListCmd(args []string) {
 func runEventsCmd(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run events <run-id> [--full]")
+			"Usage: dagnats run events <run-id>"+
+				" [--full] [--type=TYPE] [--step=STEP]")
 		os.Exit(1)
 	}
 
@@ -206,10 +208,17 @@ func runEventsCmd(args []string) {
 		panic("runEventsCmd: runID must not be empty")
 	}
 
-	fullData := false
+	var fullData bool
+	var typeFilter, stepFilter string
 	for _, arg := range args[1:] {
 		if arg == "--full" {
 			fullData = true
+		}
+		if strings.HasPrefix(arg, "--type=") {
+			typeFilter = strings.TrimPrefix(arg, "--type=")
+		}
+		if strings.HasPrefix(arg, "--step=") {
+			stepFilter = strings.TrimPrefix(arg, "--step=")
 		}
 	}
 
@@ -223,6 +232,8 @@ func runEventsCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "list run events: %v\n", err)
 		os.Exit(1)
 	}
+
+	events = filterRunEvents(events, typeFilter, stepFilter)
 
 	if len(events) == 0 {
 		fmt.Println("No events found.")
@@ -242,23 +253,79 @@ func runEventsCmd(args []string) {
 		if data == "" {
 			data = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", timestamp, evt.Type, step, data)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			timestamp, evt.Type, step, data)
 	}
 
 	w.Flush()
 }
 
-// FormatRunStatus renders a WorkflowRun as a human-readable string. Steps are
-// rendered individually to avoid exposing raw Go map syntax in terminal output.
+// filterRunEvents applies optional type and step filters to a slice
+// of run events, returning only those that match all non-empty filters.
+func filterRunEvents(
+	events []api.RunEvent, typeFilter, stepFilter string,
+) []api.RunEvent {
+	if len(events) > 10000 {
+		panic("filterRunEvents: events exceeds 10000 bound")
+	}
+	if typeFilter == "" && stepFilter == "" {
+		return events
+	}
+
+	filtered := make([]api.RunEvent, 0, len(events))
+	for _, evt := range events {
+		if typeFilter != "" && evt.Type != typeFilter {
+			continue
+		}
+		if stepFilter != "" && evt.StepID != stepFilter {
+			continue
+		}
+		filtered = append(filtered, evt)
+	}
+	return filtered
+}
+
+// FormatRunStatus renders a WorkflowRun as a human-readable string.
+// Steps are rendered individually to avoid exposing raw Go map syntax.
 func FormatRunStatus(run dag.WorkflowRun) string {
+	if run.Steps == nil {
+		panic("FormatRunStatus: Steps must not be nil")
+	}
+	if run.RunID == "" {
+		panic("FormatRunStatus: RunID must not be empty")
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "Run:      %s\n", run.RunID)
 	fmt.Fprintf(&b, "Workflow: %s\n", run.WorkflowID)
 	fmt.Fprintf(&b, "Status:   %s\n", run.Status.String())
-	fmt.Fprintf(&b, "Created:  %s\n", run.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
+	fmt.Fprintf(&b, "Created:  %s\n",
+		run.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
 	fmt.Fprintf(&b, "\nSteps:\n")
 	for id, state := range run.Steps {
-		fmt.Fprintf(&b, "  %-20s %s (attempts: %d)\n", id, state.Status.String(), state.Attempts)
+		fmt.Fprintf(&b, "  %s\n", formatStepLine(id, state))
 	}
 	return b.String()
+}
+
+// formatStepLine renders a single step as a human-readable line,
+// including error and iteration details when present.
+func formatStepLine(id string, state dag.StepState) string {
+	if id == "" {
+		panic("formatStepLine: id must not be empty")
+	}
+	if state.Attempts < 0 {
+		panic("formatStepLine: attempts must not be negative")
+	}
+
+	line := fmt.Sprintf("%-20s %s (attempts: %d)",
+		id, state.Status.String(), state.Attempts)
+
+	if state.Iterations > 0 {
+		line += fmt.Sprintf(" (iterations: %d)", state.Iterations)
+	}
+	if state.Status == dag.StepStatusFailed && state.Error != "" {
+		line += fmt.Sprintf(" error: %s", state.Error)
+	}
+	return line
 }

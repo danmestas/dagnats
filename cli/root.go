@@ -24,6 +24,8 @@ func Run(args []string) {
 		runDLQCmd(args[2:])
 	case "serve":
 		runServeCmd(args[2:])
+	case "status":
+		runSystemStatusCmd(args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[1])
 		printUsage()
@@ -34,9 +36,16 @@ func Run(args []string) {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: dagnats <command> [args]")
 	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  workflow  list, register workflows")
-	fmt.Fprintln(os.Stderr, "  run       start, status, list, events, cancel, signal runs")
-	fmt.Fprintln(os.Stderr, "  trigger   create, list, delete triggers")
-	fmt.Fprintln(os.Stderr, "  dlq       list, replay dead-letter messages")
-	fmt.Fprintln(os.Stderr, "  serve     start embedded server")
+	fmt.Fprintln(os.Stderr,
+		"  workflow  list, register workflows")
+	fmt.Fprintln(os.Stderr,
+		"  run       start, status, list, events, cancel, signal runs")
+	fmt.Fprintln(os.Stderr,
+		"  trigger   create, list, delete, enable, disable triggers")
+	fmt.Fprintln(os.Stderr,
+		"  dlq       list, replay dead-letter messages")
+	fmt.Fprintln(os.Stderr,
+		"  serve     start embedded server")
+	fmt.Fprintln(os.Stderr,
+		"  status    show system health")
 }

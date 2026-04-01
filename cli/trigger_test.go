@@ -201,6 +201,68 @@ func TestTriggerListPrintsTriggers(t *testing.T) {
 	}
 }
 
+func TestTriggerEnableDisableFlipsKV(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+	trigKV, _ := js.KeyValue("triggers")
+
+	// Store a trigger with Enabled: true
+	def := trigger.TriggerDef{
+		ID:         "trig-test",
+		WorkflowID: "wf-test",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "* * * * *",
+		},
+	}
+	data, _ := json.Marshal(def)
+	trigKV.Put("trig-test", data)
+
+	// Positive: disable flips Enabled to false
+	runTriggerDisableCmd([]string{"trig-test"})
+
+	entry, err := trigKV.Get("trig-test")
+	if err != nil {
+		t.Fatalf("Get after disable failed: %v", err)
+	}
+	var disabled trigger.TriggerDef
+	json.Unmarshal(entry.Value(), &disabled)
+	if disabled.Enabled {
+		t.Fatal("expected Enabled=false after disable")
+	}
+
+	// Positive: enable flips Enabled back to true
+	runTriggerEnableCmd([]string{"trig-test"})
+
+	entry, err = trigKV.Get("trig-test")
+	if err != nil {
+		t.Fatalf("Get after enable failed: %v", err)
+	}
+	var enabled trigger.TriggerDef
+	json.Unmarshal(entry.Value(), &enabled)
+	if !enabled.Enabled {
+		t.Fatal("expected Enabled=true after enable")
+	}
+
+	// Negative: no extra keys were created
+	keys, _ := trigKV.Keys()
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(keys))
+	}
+}
+
 func TestTriggerDeleteRemovesFromKV(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc,

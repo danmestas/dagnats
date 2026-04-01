@@ -86,6 +86,163 @@ func TestCancelCommandPublishesEvent(t *testing.T) {
 	}
 }
 
+func TestFormatRunStatusShowsStepErrors(t *testing.T) {
+	run := dag.WorkflowRun{
+		RunID: "err-run", WorkflowID: "wf-err",
+		Status: dag.RunStatusFailed,
+		Steps: map[string]dag.StepState{
+			"ok-step": {
+				Status: dag.StepStatusCompleted, Attempts: 1,
+			},
+			"bad-step": {
+				Status: dag.StepStatusFailed, Attempts: 3,
+				Error: "connection refused",
+			},
+		},
+		CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+	}
+	output := FormatRunStatus(run)
+
+	// Positive: failed step error should be visible
+	if !strings.Contains(output, "connection refused") {
+		t.Fatal("output should contain step error message")
+	}
+
+	// Negative: completed step should not show error text
+	if strings.Contains(output, "ok-step") &&
+		strings.Contains(output, "error:") {
+		// Check the ok-step line doesn't have error
+		for _, line := range strings.Split(output, "\n") {
+			if strings.Contains(line, "ok-step") &&
+				strings.Contains(line, "error:") {
+				t.Fatal("completed step should not show error")
+			}
+		}
+	}
+}
+
+func TestFormatRunStatusShowsIterations(t *testing.T) {
+	run := dag.WorkflowRun{
+		RunID: "loop-run", WorkflowID: "wf-loop",
+		Status: dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"loop-step": {
+				Status: dag.StepStatusRunning, Attempts: 1,
+				Iterations: 5,
+			},
+			"plain-step": {
+				Status: dag.StepStatusCompleted, Attempts: 1,
+			},
+		},
+		CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+	}
+	output := FormatRunStatus(run)
+
+	// Positive: loop step should show iteration count
+	if !strings.Contains(output, "iterations: 5") {
+		t.Fatal("output should contain iteration count")
+	}
+
+	// Negative: plain step should not show iterations
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "plain-step") &&
+			strings.Contains(line, "iterations") {
+			t.Fatal("plain step should not show iterations")
+		}
+	}
+}
+
+func TestRunEventsTypeFilter(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+	publishTestEvent(t, js, "test-filter-1",
+		protocol.EventStepQueued, "step-a")
+	publishTestEvent(t, js, "test-filter-1",
+		protocol.EventStepFailed, "step-a")
+	publishTestEvent(t, js, "test-filter-1",
+		protocol.EventStepCompleted, "step-b")
+
+	output := captureOutput(func() {
+		runEventsCmd([]string{
+			"test-filter-1", "--type=step.failed",
+		})
+	})
+
+	// Positive: should contain the filtered type
+	if !strings.Contains(output, "step.failed") {
+		t.Fatal("output should contain step.failed")
+	}
+	// Negative: should not contain other types
+	if strings.Contains(output, "step.queued") {
+		t.Fatal("output should not contain step.queued")
+	}
+	if strings.Contains(output, "step.completed") {
+		t.Fatal("output should not contain step.completed")
+	}
+}
+
+func TestRunEventsStepFilter(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+	publishTestEvent(t, js, "test-filter-2",
+		protocol.EventStepQueued, "step-a")
+	publishTestEvent(t, js, "test-filter-2",
+		protocol.EventStepQueued, "step-b")
+
+	output := captureOutput(func() {
+		runEventsCmd([]string{
+			"test-filter-2", "--step=step-a",
+		})
+	})
+
+	// Positive: should contain step-a
+	if !strings.Contains(output, "step-a") {
+		t.Fatal("output should contain step-a")
+	}
+	// Negative: should not contain step-b
+	if strings.Contains(output, "step-b") {
+		t.Fatal("output should not contain step-b")
+	}
+}
+
+// publishTestEvent publishes a protocol.Event to the history stream.
+func publishTestEvent(
+	t *testing.T, js nats.JetStreamContext,
+	runID string, evtType protocol.EventType, stepID string,
+) {
+	t.Helper()
+	evt := protocol.Event{
+		Type:      evtType,
+		RunID:     runID,
+		StepID:    stepID,
+		Timestamp: time.Now().UTC(),
+	}
+	data, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	_, err = js.Publish("history."+runID, data)
+	if err != nil {
+		t.Fatalf("publish event: %v", err)
+	}
+}
+
 func TestSignalCommandWritesToKV(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc,

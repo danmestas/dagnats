@@ -17,7 +17,8 @@ import (
 // runTriggerCmd dispatches trigger subcommands.
 func runTriggerCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: dagnats trigger <create|list|delete>")
+		fmt.Println("Usage: dagnats trigger " +
+			"<create|list|delete|enable|disable>")
 		return
 	}
 	switch args[0] {
@@ -27,6 +28,10 @@ func runTriggerCmd(args []string) {
 		runTriggerListCmd(args[1:])
 	case "delete":
 		runTriggerDeleteCmd(args[1:])
+	case "enable":
+		runTriggerEnableCmd(args[1:])
+	case "disable":
+		runTriggerDisableCmd(args[1:])
 	default:
 		fmt.Printf("unknown trigger subcommand: %s\n", args[0])
 	}
@@ -189,6 +194,58 @@ func runTriggerDeleteCmd(args []string) {
 	}
 
 	fmt.Printf("Trigger deleted: %s\n", triggerID)
+}
+
+// runTriggerEnableCmd enables a trigger via api.Service.
+func runTriggerEnableCmd(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats trigger enable <trigger-id>")
+		os.Exit(1)
+	}
+	triggerID := args[0]
+	if triggerID == "" {
+		panic("runTriggerEnableCmd: triggerID must not be empty")
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	err := svc.SetTriggerEnabled(
+		context.Background(), triggerID, true,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "enable trigger: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Trigger enabled: %s\n", triggerID)
+}
+
+// runTriggerDisableCmd disables a trigger via api.Service.
+func runTriggerDisableCmd(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats trigger disable <trigger-id>")
+		os.Exit(1)
+	}
+	triggerID := args[0]
+	if triggerID == "" {
+		panic("runTriggerDisableCmd: triggerID must not be empty")
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	err := svc.SetTriggerEnabled(
+		context.Background(), triggerID, false,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "disable trigger: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Trigger disabled: %s\n", triggerID)
 }
 
 // generateTriggerID creates a unique ID for a new trigger using crypto/rand.
