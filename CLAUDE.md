@@ -16,7 +16,7 @@ DAG-based workflow engine built on NATS for autonomous LLM coding pipelines.
 
 ## Architecture
 
-See `docs/superpowers/specs/2026-03-29-dagnats-design.md` for the full design spec.
+See `docs/architecture/` for condensed architectural decision records.
 
 Five components: `dag/` (pure DAG logic), `engine/` (orchestrator), `worker/` (task framework), `api/` (control plane), `cli/` (CLI client). `natsutil/` owns NATS resource setup; other packages may import `nats.go` for runtime operations.
 
