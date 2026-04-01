@@ -20,6 +20,14 @@ import (
 // runLogsCmd tails telemetry logs from JetStream with optional filters.
 // Blocks until interrupted by SIGINT or SIGTERM.
 func runLogsCmd(args []string) {
+	if args == nil {
+		panic("runLogsCmd: args must not be nil")
+	}
+	const maxArgs = 100
+	if len(args) > maxArgs {
+		panic("runLogsCmd: args exceeds max bound")
+	}
+
 	var levelFilter, serviceFilter string
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--level=") {
@@ -57,6 +65,8 @@ func runLogsCmd(args []string) {
 		case msg := <-msgCh:
 			var rec simple.LogRecord
 			if err := json.Unmarshal(msg.Data, &rec); err != nil {
+				fmt.Fprintf(os.Stderr,
+					"logs: unmarshal: %v\n", err)
 				continue
 			}
 			fmt.Println(formatLogLine(rec))
@@ -72,6 +82,12 @@ func runLogsCmd(args []string) {
 // buildLogSubject constructs the NATS subject filter for log
 // subscriptions based on optional service and level filters.
 func buildLogSubject(service, level string) string {
+	if len(service) > 200 {
+		panic("buildLogSubject: service name unreasonably long")
+	}
+	if len(level) > 20 {
+		panic("buildLogSubject: level string unreasonably long")
+	}
 	if service == "" && level == "" {
 		return "telemetry.logs.>"
 	}
@@ -118,6 +134,9 @@ func formatLogLine(rec simple.LogRecord) string {
 // formatFields sorts field key=value pairs alphabetically.
 // Returns nil when the map is empty to avoid unnecessary allocation.
 func formatFields(fields map[string]any) []string {
+	if fields == nil {
+		return nil
+	}
 	if len(fields) == 0 {
 		return nil
 	}
@@ -143,6 +162,12 @@ func formatFields(fields map[string]any) []string {
 // colorLevel pads the level string to 7 characters and applies
 // Gruvbox color based on severity. Uses shared color utilities.
 func colorLevel(level string) string {
+	if level == "" {
+		panic("colorLevel: level must not be empty")
+	}
+	if len(level) > 20 {
+		panic("colorLevel: level string unreasonably long")
+	}
 	padded := fmt.Sprintf("%-7s", level)
 	switch level {
 	case "ERROR":

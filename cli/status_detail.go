@@ -117,6 +117,11 @@ func countRunsByStatus(
 
 // printRunCounts formats and prints the status breakdown line.
 func printRunCounts(counts [5]int) {
+	for _, c := range counts {
+		if c < 0 {
+			panic("printRunCounts: negative count is impossible")
+		}
+	}
 	total := 0
 	for _, c := range counts {
 		total += c
@@ -150,10 +155,13 @@ func formatBytes(bytes uint64) string {
 	}
 
 	const (
-		kb = 1024
-		mb = 1024 * kb
-		gb = 1024 * mb
+		kb uint64 = 1024
+		mb        = 1024 * kb
+		gb        = 1024 * mb
 	)
+	if kb == 0 || mb == 0 || gb == 0 {
+		panic("formatBytes: unit constants must be non-zero")
+	}
 
 	switch {
 	case bytes == 0:
@@ -171,15 +179,21 @@ func formatBytes(bytes uint64) string {
 
 // formatCount formats an integer with comma separators for readability.
 func formatCount(n uint64) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
 	if n > 1<<50 {
 		panic("formatCount: unreasonably large number")
 	}
+	const maxGroups = 7
+	// Assert the group count can represent the max bounded value.
+	// 1<<50 ~ 1.1e15, which needs 6 groups of 3 digits.
+	if maxGroups < 6 {
+		panic("formatCount: maxGroups too small for bounded range")
+	}
+
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
 
 	// Build digit groups iteratively from least significant.
-	const maxGroups = 7
 	groups := [maxGroups]uint64{}
 	groupIndex := 0
 	remaining := n

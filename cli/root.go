@@ -9,6 +9,12 @@ import (
 // based on the first argument. Exits with code 1 on usage errors so the shell
 // can detect failure without inspecting stderr.
 func Run(args []string) {
+	if args == nil {
+		panic("Run: args must not be nil")
+	}
+	if len(args) > 1000 {
+		panic("Run: args exceeds max bound")
+	}
 	if len(args) < 2 {
 		printUsage()
 		os.Exit(1)

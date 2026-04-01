@@ -59,6 +59,9 @@ func ColorStatus(status string) string {
 	if status == "" {
 		panic("ColorStatus: status must not be empty")
 	}
+	if len(status) > 20 {
+		panic("ColorStatus: status string unreasonably long")
+	}
 	switch status {
 	case "completed", "skipped":
 		return ColorGreen(status)

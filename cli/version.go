@@ -14,6 +14,9 @@ func printVersion() {
 	if Version == "" {
 		panic("printVersion: Version must not be empty")
 	}
+	if len(Version) > 100 {
+		panic("printVersion: Version string unreasonably long")
+	}
 
 	fmt.Printf("dagnats %s\n", Version)
 }

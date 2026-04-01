@@ -13,6 +13,9 @@ import (
 
 // runWorkflowValidateCmd validates a workflow JSON file without NATS.
 func runWorkflowValidateCmd(args []string) {
+	if args == nil {
+		panic("runWorkflowValidateCmd: args must not be nil")
+	}
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats workflow validate <file>")
@@ -39,6 +42,9 @@ func runWorkflowValidateCmd(args []string) {
 func validateWorkflowFile(filePath string) (string, error) {
 	if filePath == "" {
 		panic("validateWorkflowFile: filePath must not be empty")
+	}
+	if len(filePath) > 4096 {
+		panic("validateWorkflowFile: filePath unreasonably long")
 	}
 
 	data, err := os.ReadFile(filePath)

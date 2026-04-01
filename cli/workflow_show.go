@@ -14,6 +14,9 @@ import (
 
 // runWorkflowShowCmd fetches and displays a single workflow definition.
 func runWorkflowShowCmd(args []string) {
+	if args == nil {
+		panic("runWorkflowShowCmd: args must not be nil")
+	}
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats workflow show <name>")
@@ -50,6 +53,9 @@ func runWorkflowShowCmd(args []string) {
 
 // printStepTable renders the step dependency table using tabwriter.
 func printStepTable(def dag.WorkflowDef) {
+	if def.Name == "" {
+		panic("printStepTable: def.Name must not be empty")
+	}
 	if len(def.Steps) == 0 {
 		panic("printStepTable: def must have at least one step")
 	}

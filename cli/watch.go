@@ -85,6 +85,12 @@ func pollRunState(
 // Event type is colored by outcome: green for completed, red for
 // failed, yellow for all other lifecycle events.
 func printWatchEvent(evt api.RunEvent) {
+	if evt.Type == "" {
+		panic("printWatchEvent: evt.Type must not be empty")
+	}
+	if evt.Timestamp.IsZero() {
+		panic("printWatchEvent: evt.Timestamp must not be zero")
+	}
 	step := evt.StepID
 	if step == "" {
 		step = "-"
@@ -99,6 +105,9 @@ func printWatchEvent(evt api.RunEvent) {
 func colorEventType(eventType string) string {
 	if eventType == "" {
 		panic("colorEventType: eventType must not be empty")
+	}
+	if len(eventType) > 100 {
+		panic("colorEventType: eventType unreasonably long")
 	}
 	if !colorEnabled() {
 		return eventType
