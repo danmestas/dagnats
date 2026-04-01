@@ -366,11 +366,121 @@ func (o *Orchestrator) completeWorkflow(
 		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
+		// Auto-start next pending run if available
+		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+			o.tel.Logger.Error(
+				"failed to start next pending run", err,
+				observe.String("workflow_id", run.WorkflowID),
+			)
+		}
 	}
 	if err := o.publishWorkflowCompleted(run.RunID); err != nil {
 		return err
 	}
 	return o.notifyParentIfChild(run, nil)
+}
+
+// startNextPendingRun finds the oldest pending run for a workflow and
+// transitions it to Running. Called after ReleaseRun to enable queue
+// progression. No-op if no pending runs exist.
+func (o *Orchestrator) startNextPendingRun(
+	ctx context.Context, workflowID string,
+) error {
+	if workflowID == "" {
+		panic("startNextPendingRun: workflowID must not be empty")
+	}
+	if o.store == nil {
+		panic("startNextPendingRun: store must not be nil")
+	}
+
+	runID, found, err := o.findOldestPendingRun(workflowID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	return o.transitionPendingToRunning(ctx, runID)
+}
+
+// findOldestPendingRun scans workflow_runs KV for the oldest pending
+// run for the given workflow. Returns (runID, true, nil) when found.
+func (o *Orchestrator) findOldestPendingRun(
+	workflowID string,
+) (string, bool, error) {
+	if workflowID == "" {
+		panic("findOldestPendingRun: workflowID must not be empty")
+	}
+	keys, err := o.store.kv.Keys()
+	if err != nil {
+		return "", false, fmt.Errorf("list run keys: %w", err)
+	}
+
+	var oldestRun dag.WorkflowRun
+	var foundPending bool
+
+	for _, key := range keys {
+		entry, err := o.store.kv.Get(key)
+		if err != nil {
+			continue
+		}
+		var run dag.WorkflowRun
+		if err := json.Unmarshal(entry.Value(), &run); err != nil {
+			continue
+		}
+		if run.WorkflowID != workflowID {
+			continue
+		}
+		if run.Status != dag.RunStatusPending {
+			continue
+		}
+		if !foundPending || run.CreatedAt.Before(oldestRun.CreatedAt) {
+			oldestRun = run
+			foundPending = true
+		}
+	}
+
+	if !foundPending {
+		return "", false, nil
+	}
+	return oldestRun.RunID, true, nil
+}
+
+// transitionPendingToRunning loads a pending run, acquires concurrency,
+// transitions to Running, and enqueues entry steps.
+func (o *Orchestrator) transitionPendingToRunning(
+	ctx context.Context, runID string,
+) error {
+	if runID == "" {
+		panic("transitionPendingToRunning: runID must not be empty")
+	}
+	wfDef, run, err := o.loadRunAndDef(runID)
+	if err != nil {
+		return fmt.Errorf("load pending run %q: %w", runID, err)
+	}
+
+	if wfDef.Concurrency != nil {
+		acquired, err := o.concurrency.AcquireRun(
+			wfDef.Name, wfDef.Concurrency.MaxRuns,
+		)
+		if err != nil {
+			return fmt.Errorf("acquire for pending run: %w", err)
+		}
+		if !acquired {
+			return nil // Slot not available (shouldn't happen)
+		}
+	}
+
+	run.Status = dag.RunStatusRunning
+	if wfDef.Timeout > 0 {
+		deadline := time.Now().Add(wfDef.Timeout)
+		run.Deadline = &deadline
+	}
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return fmt.Errorf("save running run: %w", err)
+	}
+	o.runsActive.Inc()
+	return o.enqueueReady(ctx, wfDef, run)
 }
 
 // handleStepContinue re-enqueues an agent-loop step for another iteration.
@@ -504,6 +614,13 @@ func (o *Orchestrator) failLoopStep(
 		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
+		// Auto-start next pending run if available
+		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+			o.tel.Logger.Error(
+				"failed to start next pending run", err,
+				observe.String("workflow_id", run.WorkflowID),
+			)
+		}
 	}
 	if err := o.publishWorkflowFailed(run.RunID); err != nil {
 		return err
@@ -576,6 +693,13 @@ func (o *Orchestrator) handleStepFailed(
 		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
+		// Auto-start next pending run if available
+		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+			o.tel.Logger.Error(
+				"failed to start next pending run", err,
+				observe.String("workflow_id", run.WorkflowID),
+			)
+		}
 	}
 	if err := o.publishWorkflowFailed(run.RunID); err != nil {
 		return err
@@ -646,6 +770,13 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if o.concurrency != nil {
 		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
+		}
+		// Auto-start next pending run if available
+		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+			o.tel.Logger.Error(
+				"failed to start next pending run", err,
+				observe.String("workflow_id", run.WorkflowID),
+			)
 		}
 	}
 	return o.notifyParentIfChild(run, fmt.Errorf("cancelled"))
