@@ -40,7 +40,7 @@ func TestTaskContextComplete(t *testing.T) {
 			RunID: "run-1", StepID: "step-a",
 			Input: []byte(`"input"`),
 		},
-		bgCtx, span, nil, nil, nil,
+		bgCtx, span, &nats.Msg{}, nil, nil,
 	)
 	err = tc.Complete([]byte(`"output"`))
 	if err != nil {
@@ -86,7 +86,7 @@ func TestTaskContextFail(t *testing.T) {
 	tc := newTaskContext(
 		nc, tel, js,
 		protocol.TaskPayload{RunID: "run-2", StepID: "step-b"},
-		bgCtx, span, nil, nil, nil,
+		bgCtx, span, &nats.Msg{}, nil, nil,
 	)
 	err = tc.Fail(fmt.Errorf("something broke"))
 	if err != nil {
@@ -125,7 +125,7 @@ func TestTaskContextContinue(t *testing.T) {
 	tc := newTaskContext(
 		nc, tel, js,
 		protocol.TaskPayload{RunID: "run-3", StepID: "step-c"},
-		bgCtx, span, nil, nil, nil,
+		bgCtx, span, &nats.Msg{}, nil, nil,
 	)
 	err = tc.Continue([]byte(`"next input"`))
 	if err != nil {
@@ -175,34 +175,26 @@ func TestTaskContextInput(t *testing.T) {
 }
 
 func TestTaskContextHeartbeat(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
-	if err := natsutil.SetupAll(nc,
-		natsutil.WithKVBuckets(
-			natsutil.KVConfig{Bucket: "checkpoints"},
-			natsutil.KVConfig{Bucket: "signals"},
-		),
-	); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	js, _ := nc.JetStream()
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
+
+	// Positive: nil msg panics — catches programmer error
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil msg")
+		}
+	}()
 	tc := newTaskContext(
-		nc, tel, js,
+		nil, tel, nil,
 		protocol.TaskPayload{
 			RunID: "run-hb", StepID: "step-hb",
 		},
 		bgCtx, span, nil, nil, nil,
 	)
-
-	// Positive: heartbeat doesn't error (no msg in unit test)
-	// This verifies method exists and handles nil msg gracefully
-	err := tc.Heartbeat()
-	if err != nil {
-		t.Fatalf("Heartbeat should not error with nil msg: %v", err)
-	}
+	// Negative: calling Heartbeat with nil msg must panic
+	tc.Heartbeat()
 }
 
 func TestTaskContextCheckpoint(t *testing.T) {
@@ -229,6 +221,7 @@ func TestTaskContextCheckpoint(t *testing.T) {
 		tel:          tel,
 		ctx:          bgCtx,
 		span:         span,
+		msg:          &nats.Msg{},
 		checkpointKV: cpKV,
 	}
 

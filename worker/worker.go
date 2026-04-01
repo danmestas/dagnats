@@ -62,6 +62,14 @@ type WorkerOption func(*Worker)
 // worker groups. When provided, the worker subscribes to
 // task.{taskType}.{group}.> instead of task.{taskType}.>.
 func WithGroups(groups ...string) WorkerOption {
+	if len(groups) == 0 {
+		panic("WithGroups: groups must not be empty")
+	}
+	for _, g := range groups {
+		if g == "" {
+			panic("WithGroups: group name must not be empty")
+		}
+	}
 	return func(w *Worker) { w.groups = groups }
 }
 
@@ -123,6 +131,12 @@ func (w *Worker) Handle(
 // for checkpoints and signals (nil if not present). When groups
 // are configured, subscribes to group-specific subjects.
 func (w *Worker) Start() {
+	if len(w.handlers) == 0 {
+		panic("Worker.Start: no handlers registered")
+	}
+	if w.js == nil {
+		panic("Worker.Start: js must not be nil")
+	}
 	// Bind optional KV buckets — no error if missing
 	w.checkpointKV, _ = w.js.KeyValue("checkpoints")
 	w.signalKV, _ = w.js.KeyValue("signals")
@@ -165,6 +179,12 @@ func (w *Worker) Start() {
 // Stop unsubscribes all active subscriptions. Safe to call after
 // Start.
 func (w *Worker) Stop() {
+	if w.handlers == nil {
+		panic("Worker.Stop: worker not initialized")
+	}
+	if w.nc == nil {
+		panic("Worker.Stop: nc must not be nil")
+	}
 	for _, sub := range w.subs {
 		sub.Unsubscribe()
 	}
@@ -222,27 +242,47 @@ func (w *Worker) handleMessage(
 		span.SetStatus(
 			observe.StatusError, err.Error(),
 		)
-		var nre *NonRetryableError
-		if errors.As(err, &nre) {
-			w.tel.Logger.Error(
-				"task failed permanently", nre.Err,
-				observe.String("task_type", taskType),
-				observe.String("run_id", payload.RunID),
-			)
-			tc.Fail(nre.Err)
-			msg.Ack()
-			return
-		}
-		w.tel.Logger.Error(
-			"task handler returned error, will retry", err,
-			observe.String("task_type", taskType),
-			observe.String("run_id", payload.RunID),
+		w.handleTaskError(
+			err, tc, msg, taskType, payload.RunID,
 		)
-		w.stepRetries.Inc()
-		msg.NakWithDelay(5 * time.Second)
 		return
 	}
 	msg.Ack()
+}
+
+// handleTaskError processes a handler error by either failing
+// permanently (NonRetryableError) or scheduling a retry via NAK.
+func (w *Worker) handleTaskError(
+	err error,
+	tc *taskContext,
+	msg *nats.Msg,
+	taskType string,
+	runID string,
+) {
+	if err == nil {
+		panic("handleTaskError: err must not be nil")
+	}
+	if msg == nil {
+		panic("handleTaskError: msg must not be nil")
+	}
+	var nre *NonRetryableError
+	if errors.As(err, &nre) {
+		w.tel.Logger.Error(
+			"task failed permanently", nre.Err,
+			observe.String("task_type", taskType),
+			observe.String("run_id", runID),
+		)
+		tc.Fail(nre.Err)
+		msg.Ack()
+		return
+	}
+	w.tel.Logger.Error(
+		"task handler returned error, will retry", err,
+		observe.String("task_type", taskType),
+		observe.String("run_id", runID),
+	)
+	w.stepRetries.Inc()
+	msg.NakWithDelay(5 * time.Second)
 }
 
 // extractWorkerTraceCtx reads W3C traceparent from the NATS
@@ -250,6 +290,9 @@ func (w *Worker) handleMessage(
 func extractWorkerTraceCtx(msg *nats.Msg) context.Context {
 	if msg == nil {
 		panic("extractWorkerTraceCtx: msg must not be nil")
+	}
+	if msg.Data == nil {
+		panic("extractWorkerTraceCtx: msg.Data must not be nil")
 	}
 	if msg.Header == nil {
 		return context.Background()
@@ -271,6 +314,12 @@ func extractWorkerTraceCtx(msg *nats.Msg) context.Context {
 func splitWorkerTraceparent(
 	tp string,
 ) (traceID, spanID string, ok bool) {
+	if tp == "" {
+		panic("splitWorkerTraceparent: tp must not be empty")
+	}
+	if len(tp) > 256 {
+		panic("splitWorkerTraceparent: tp exceeds max length")
+	}
 	parts := strings.Split(tp, "-")
 	if len(parts) != 4 || parts[0] != "00" {
 		return "", "", false

@@ -17,7 +17,7 @@ func Typed[I, O any](fn TypedHandlerFunc[I, O]) HandlerFunc {
 	if fn == nil {
 		panic("Typed: fn must not be nil")
 	}
-	return func(ctx TaskContext) error {
+	handler := func(ctx TaskContext) error {
 		var input I
 		if ctx.Input() != nil && len(ctx.Input()) > 0 {
 			if err := json.Unmarshal(ctx.Input(), &input); err != nil {
@@ -38,4 +38,8 @@ func Typed[I, O any](fn TypedHandlerFunc[I, O]) HandlerFunc {
 		}
 		return ctx.Complete(data)
 	}
+	if handler == nil {
+		panic("Typed: constructed handler must not be nil")
+	}
+	return handler
 }

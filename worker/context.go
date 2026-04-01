@@ -63,13 +63,19 @@ func newTaskContext(
 	}
 }
 
-func (c *taskContext) Input() []byte    { return c.input }
-func (c *taskContext) RunID() string    { return c.runID }
-func (c *taskContext) StepID() string   { return c.stepID }
-func (c *taskContext) RetryCount() int  { return c.attempt }
+func (c *taskContext) Input() []byte   { return c.input }
+func (c *taskContext) RunID() string   { return c.runID }
+func (c *taskContext) StepID() string  { return c.stepID }
+func (c *taskContext) RetryCount() int { return c.attempt }
 
 // Complete publishes a step.completed event with trace context.
 func (c *taskContext) Complete(output []byte) error {
+	if c.msg == nil {
+		panic("Complete: msg already consumed or nil")
+	}
+	if c.runID == "" {
+		panic("Complete: runID must not be empty")
+	}
 	_, span := c.tel.Tracer.Start(c.ctx,
 		"worker.complete",
 		observe.WithAttributes(
@@ -88,6 +94,12 @@ func (c *taskContext) Complete(output []byte) error {
 
 // Fail publishes a step.failed event with error status.
 func (c *taskContext) Fail(err error) error {
+	if c.msg == nil {
+		panic("Fail: msg already consumed or nil")
+	}
+	if err == nil {
+		panic("Fail: err must not be nil")
+	}
 	_, span := c.tel.Tracer.Start(c.ctx,
 		"worker.fail",
 		observe.WithAttributes(
@@ -111,6 +123,12 @@ func (c *taskContext) Fail(err error) error {
 // task can publish a new continue event without JetStream dedup
 // swallowing it.
 func (c *taskContext) Continue(output []byte) error {
+	if c.msg == nil {
+		panic("Continue: msg already consumed or nil")
+	}
+	if c.runID == "" {
+		panic("Continue: runID must not be empty")
+	}
 	_, span := c.tel.Tracer.Start(c.ctx,
 		"worker.continue",
 		observe.WithAttributes(
@@ -150,7 +168,15 @@ func (c *taskContext) Continue(output []byte) error {
 // ephemeral, fire-and-forget. Clients subscribe to
 // stream.{run_id}.{step_id} for live delivery.
 func (c *taskContext) PutStream(data []byte) error {
-	subject := fmt.Sprintf("stream.%s.%s", c.runID, c.stepID)
+	if c.msg == nil {
+		panic("PutStream: msg already consumed or nil")
+	}
+	if c.nc == nil {
+		panic("PutStream: nc must not be nil")
+	}
+	subject := fmt.Sprintf(
+		"stream.%s.%s", c.runID, c.stepID,
+	)
 	return c.nc.Publish(subject, data)
 }
 
@@ -159,6 +185,12 @@ func (c *taskContext) PutStream(data []byte) error {
 func (c *taskContext) publishEvent(
 	eventType protocol.EventType, payload []byte,
 ) error {
+	if eventType == "" {
+		panic("publishEvent: eventType must not be empty")
+	}
+	if c.runID == "" {
+		panic("publishEvent: runID must not be empty")
+	}
 	evt := protocol.NewStepEvent(
 		eventType, c.runID, c.stepID, payload,
 	)
@@ -180,10 +212,12 @@ func (c *taskContext) publishEvent(
 
 // Heartbeat extends the AckWait timer on the original NATS message
 // to prevent redelivery while long-running work is in progress.
-// Safe to call when msg is nil.
 func (c *taskContext) Heartbeat() error {
 	if c.msg == nil {
-		return nil
+		panic("Heartbeat: msg already consumed or nil")
+	}
+	if c.runID == "" {
+		panic("Heartbeat: runID must not be empty")
 	}
 	return c.msg.InProgress()
 }
@@ -191,6 +225,12 @@ func (c *taskContext) Heartbeat() error {
 // Checkpoint saves arbitrary state to KV at {runID}.{stepID}.
 // Returns error if checkpointKV is not configured.
 func (c *taskContext) Checkpoint(state []byte) error {
+	if c.msg == nil {
+		panic("Checkpoint: msg already consumed or nil")
+	}
+	if c.runID == "" {
+		panic("Checkpoint: runID must not be empty")
+	}
 	if c.checkpointKV == nil {
 		return fmt.Errorf("checkpoint KV not configured")
 	}
@@ -202,6 +242,12 @@ func (c *taskContext) Checkpoint(state []byte) error {
 // LoadCheckpoint retrieves saved state from KV at {runID}.{stepID}.
 // Returns (nil, nil) if checkpoint does not exist or KV not configured.
 func (c *taskContext) LoadCheckpoint() ([]byte, error) {
+	if c.runID == "" {
+		panic("LoadCheckpoint: runID must not be empty")
+	}
+	if c.stepID == "" {
+		panic("LoadCheckpoint: stepID must not be empty")
+	}
 	if c.checkpointKV == nil {
 		return nil, nil
 	}
@@ -221,11 +267,14 @@ func (c *taskContext) LoadCheckpoint() ([]byte, error) {
 func (c *taskContext) WaitForSignal(
 	name string, timeout time.Duration,
 ) ([]byte, error) {
+	if name == "" {
+		panic("WaitForSignal: name must not be empty")
+	}
+	if timeout <= 0 || timeout > 1*time.Hour {
+		panic("WaitForSignal: timeout must be in (0, 1h]")
+	}
 	if c.signalKV == nil {
 		return nil, fmt.Errorf("signal KV not configured")
-	}
-	if timeout > 1*time.Hour {
-		timeout = 1 * time.Hour
 	}
 	key := c.runID + "." + name
 	watcher, err := c.signalKV.Watch(key)
@@ -255,6 +304,12 @@ func (c *taskContext) WaitForSignal(
 func (c *taskContext) SendSignal(
 	runID, name string, data []byte,
 ) error {
+	if runID == "" {
+		panic("SendSignal: runID must not be empty")
+	}
+	if name == "" {
+		panic("SendSignal: name must not be empty")
+	}
 	if c.signalKV == nil {
 		return fmt.Errorf("signal KV not configured")
 	}
