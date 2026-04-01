@@ -17,7 +17,8 @@ import (
 func runRunCmd(args []string) {
 	if len(args) == 0 {
 		fmt.Println(
-			"Usage: dagnats run <start|status|cancel|signal|list|events>",
+			"Usage: dagnats run " +
+				"<start|status|inspect|cancel|signal|list|events>",
 		)
 		return
 	}
@@ -34,6 +35,8 @@ func runRunCmd(args []string) {
 		runListCmd(args[1:])
 	case "events":
 		runEventsCmd(args[1:])
+	case "inspect":
+		runInspectCmd(args[1:])
 	default:
 		fmt.Printf("unknown run subcommand: %s\n", args[0])
 	}
@@ -42,7 +45,8 @@ func runRunCmd(args []string) {
 // runStartCmd starts a new workflow run with optional input.
 func runStartCmd(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: dagnats run start <workflow> [input]")
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run start <workflow> [input] [--watch]")
 		os.Exit(1)
 	}
 	workflowName := args[0]
@@ -51,20 +55,31 @@ func runStartCmd(args []string) {
 	}
 
 	var input []byte
-	if len(args) > 1 {
-		input = []byte(args[1])
+	var watch bool
+	for _, arg := range args[1:] {
+		if arg == "--watch" {
+			watch = true
+		} else if input == nil {
+			input = []byte(arg)
+		}
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
-	runID, err := svc.StartRun(context.Background(), workflowName, input)
+	runID, err := svc.StartRun(
+		context.Background(), workflowName, input,
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "start run: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("Started: %s\n", runID)
+
+	if watch {
+		watchRun(svc, runID)
+	}
 }
 
 // runStatusCmd retrieves and prints the status of a workflow run.

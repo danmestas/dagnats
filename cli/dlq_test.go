@@ -162,6 +162,63 @@ func TestDLQListRespectsLimit(t *testing.T) {
 	}
 }
 
+func TestDLQReplayByRun(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+
+	// Publish 2 dead letters for target run, 1 for other run
+	for _, item := range []struct {
+		runID string
+		task  string
+	}{
+		{"target-run", "task-a"},
+		{"target-run", "task-b"},
+		{"other-run", "task-c"},
+	} {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"run_id":  item.runID,
+			"step_id": "step-1",
+		})
+		js.Publish("dead."+item.task, payload)
+	}
+
+	// Subscribe to task queues to count replayed messages
+	sub, _ := js.SubscribeSync("task.>",
+		nats.AckExplicit(), nats.DeliverAll())
+
+	output := captureOutput(func() {
+		runDLQReplayCmd([]string{"--run=target-run"})
+	})
+
+	// Positive: should replay 2 messages for target run
+	if !strings.Contains(output, "Replayed 2 dead letters") {
+		t.Fatalf("expected 2 replayed, got: %s", output)
+	}
+
+	// Verify 2 messages on task queue
+	for i := 0; i < 2; i++ {
+		_, err := sub.NextMsg(2 * time.Second)
+		if err != nil {
+			t.Fatalf("expected message %d on task queue: %v",
+				i+1, err)
+		}
+	}
+
+	// Negative: third message should not exist (other-run)
+	_, err := sub.NextMsg(500 * time.Millisecond)
+	if err == nil {
+		t.Fatal("should not replay other-run messages")
+	}
+}
+
 // countDataLines counts non-header, non-empty lines in tabwriter output.
 func countDataLines(output string) int {
 	lines := strings.Split(strings.TrimSpace(output), "\n")

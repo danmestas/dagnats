@@ -134,8 +134,9 @@ dagnats serve                                       # Start embedded server
 dagnats status                                      # Check system health
 dagnats workflow list                               # List registered workflows
 dagnats workflow register workflow.json             # Register a workflow
-dagnats run start <workflow> [input]                # Start a run
+dagnats run start <workflow> [input] [--watch]       # Start a run (--watch tails events)
 dagnats run status <run-id>                         # Check run status
+dagnats run inspect <run-id>                        # Status + errors + DLQ in one view
 dagnats run list [--workflow=X] [--status=running]  # List runs with filters
 dagnats run events <id> [--full] [--type=T] [--step=S]  # View event history
 dagnats run cancel <run-id>                         # Cancel a running workflow
@@ -147,6 +148,7 @@ dagnats trigger disable <id>                        # Disable a trigger
 dagnats trigger delete <id>                         # Delete a trigger
 dagnats dlq list [--run=<id>] [--limit=N]           # List dead-letter messages
 dagnats dlq replay <seq>                            # Replay a failed message
+dagnats dlq replay --run=<id>                       # Replay all failures for a run
 ```
 
 ## API
