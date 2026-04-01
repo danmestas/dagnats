@@ -144,8 +144,8 @@ type otlpStatus struct {
 	Message string `json:"message,omitempty"`
 }
 type otlpKeyValue struct {
-	Key   string        `json:"key"`
-	Value otlpAnyValue  `json:"value"`
+	Key   string       `json:"key"`
+	Value otlpAnyValue `json:"value"`
 }
 type otlpAnyValue struct {
 	StringValue string `json:"stringValue"`
@@ -158,6 +158,12 @@ type otlpEvent struct {
 
 // spanToOTLP converts a SpanRecord to the OTLP wire format.
 func spanToOTLP(rec SpanRecord) otlpSpan {
+	if rec.TraceID == "" {
+		panic("spanToOTLP: TraceID must not be empty")
+	}
+	if rec.SpanID == "" {
+		panic("spanToOTLP: SpanID must not be empty")
+	}
 	attrs := make([]otlpKeyValue, 0, len(rec.Attributes))
 	for k, v := range rec.Attributes {
 		attrs = append(attrs, otlpKeyValue{
@@ -221,6 +227,12 @@ func otlpStatusFromString(status string) otlpStatus {
 func buildOTLPPayload(
 	batch []SpanRecord,
 ) otlpPayload {
+	if len(batch) == 0 {
+		panic("buildOTLPPayload: batch must not be empty")
+	}
+	if batch[0].Service == "" {
+		panic("buildOTLPPayload: first span Service must not be empty")
+	}
 	spans := make([]otlpSpan, 0, len(batch))
 	svcName := ""
 	for _, rec := range batch {
@@ -248,6 +260,12 @@ func postBatch(
 	batch []SpanRecord,
 	logger observe.Logger,
 ) {
+	if client == nil {
+		panic("postBatch: client must not be nil")
+	}
+	if url == "" {
+		panic("postBatch: url must not be empty")
+	}
 	payload := buildOTLPPayload(batch)
 	body, err := json.Marshal(payload)
 	if err != nil {

@@ -36,6 +36,9 @@ func (r *errorReporter) CaptureError(
 	err error,
 	tags map[string]string,
 ) {
+	if ctx == nil {
+		panic("errorReporter.CaptureError: ctx must not be nil")
+	}
 	if err == nil {
 		return
 	}
@@ -60,6 +63,12 @@ func (r *errorReporter) CaptureMessage(
 	msg string,
 	level observe.Level,
 ) {
+	if ctx == nil {
+		panic("errorReporter.CaptureMessage: ctx must not be nil")
+	}
+	if msg == "" {
+		panic("errorReporter.CaptureMessage: msg must not be empty")
+	}
 	span := SpanFromContext(ctx)
 	if span != nil {
 		span.AddEvent(msg)

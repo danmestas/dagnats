@@ -62,6 +62,9 @@ func (m *StorageMonitor) Start(ctx context.Context) {
 	if ctx == nil {
 		panic("StorageMonitor.Start: ctx must not be nil")
 	}
+	if m.js == nil {
+		panic("StorageMonitor.Start: js must not be nil")
+	}
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 	for {
@@ -96,6 +99,9 @@ func (m *StorageMonitor) checkAndAlert() {
 func (m *StorageMonitor) publishAdvisory(usageBytes uint64, maxBytes int64, usage float64) {
 	if m.nc == nil {
 		panic("StorageMonitor.publishAdvisory: nc must not be nil")
+	}
+	if maxBytes <= 0 {
+		panic("StorageMonitor.publishAdvisory: maxBytes must be positive")
 	}
 	advisory := storageAdvisory{
 		Stream:       monitoredStream,

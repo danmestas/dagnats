@@ -10,6 +10,9 @@ import (
 // WORKFLOW_HISTORY uses dedup window of 5s to prevent duplicate event writes.
 // TASK_QUEUES uses WorkQueuePolicy so each message is consumed exactly once.
 func SetupStreams(js nats.JetStreamContext) error {
+	if js == nil {
+		panic("SetupStreams: js must not be nil")
+	}
 	streams := []nats.StreamConfig{
 		{
 			Name:       "WORKFLOW_HISTORY",
@@ -37,6 +40,9 @@ func SetupStreams(js nats.JetStreamContext) error {
 			Storage:   nats.FileStorage,
 		},
 	}
+	if len(streams) == 0 {
+		panic("SetupStreams: streams config must not be empty")
+	}
 	for _, cfg := range streams {
 		_, err := js.AddStream(&cfg)
 		if err != nil {
@@ -49,9 +55,15 @@ func SetupStreams(js nats.JetStreamContext) error {
 // SetupKVBuckets creates the KV buckets used to store workflow definitions
 // and runtime state for active workflow runs.
 func SetupKVBuckets(js nats.JetStreamContext) error {
+	if js == nil {
+		panic("SetupKVBuckets: js must not be nil")
+	}
 	buckets := []nats.KeyValueConfig{
 		{Bucket: "workflow_defs"},
 		{Bucket: "workflow_runs"},
+	}
+	if len(buckets) == 0 {
+		panic("SetupKVBuckets: buckets config must not be empty")
 	}
 	for _, cfg := range buckets {
 		_, err := js.CreateKeyValue(&cfg)
@@ -68,7 +80,7 @@ func SetupTelemetryStream(js nats.JetStreamContext) error {
 	if js == nil {
 		panic("SetupTelemetryStream: js must not be nil")
 	}
-	_, err := js.AddStream(&nats.StreamConfig{
+	cfg := &nats.StreamConfig{
 		Name:       "TELEMETRY",
 		Subjects:   []string{"telemetry.>"},
 		Retention:  nats.LimitsPolicy,
@@ -76,7 +88,11 @@ func SetupTelemetryStream(js nats.JetStreamContext) error {
 		MaxAge:     7 * 24 * time.Hour,
 		MaxBytes:   1 << 30,
 		Duplicates: 5 * time.Second,
-	})
+	}
+	if cfg.Name == "" {
+		panic("SetupTelemetryStream: stream name must not be empty")
+	}
+	_, err := js.AddStream(cfg)
 	return err
 }
 
@@ -119,6 +135,9 @@ func WithKVBuckets(configs ...KVConfig) SetupOption {
 func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	if nc == nil {
 		panic("natsutil: connection must not be nil")
+	}
+	if !nc.IsConnected() {
+		panic("natsutil: connection must be connected")
 	}
 
 	var options setupOptions

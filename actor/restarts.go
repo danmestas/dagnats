@@ -17,6 +17,9 @@ func NewRestartTracker(limit int, window time.Duration) *RestartTracker {
 	if limit < 1 {
 		panic("actor: restart limit must be >= 1")
 	}
+	if window <= 0 {
+		panic("actor: restart window must be positive")
+	}
 	return &RestartTracker{
 		limit:    limit,
 		window:   window,

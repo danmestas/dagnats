@@ -41,6 +41,9 @@ func (mc *MetricsCollector) Counter(name string, tags map[string]string) observe
 	if name == "" {
 		panic("MetricsCollector.Counter: name must not be empty")
 	}
+	if mc.js == nil {
+		panic("MetricsCollector.Counter: js must not be nil")
+	}
 	return &simpleCounter{js: mc.js, serviceName: mc.serviceName, name: name, tags: tags}
 }
 
@@ -48,6 +51,9 @@ func (mc *MetricsCollector) Counter(name string, tags map[string]string) observe
 func (mc *MetricsCollector) Histogram(name string, tags map[string]string) observe.Histogram {
 	if name == "" {
 		panic("MetricsCollector.Histogram: name must not be empty")
+	}
+	if mc.js == nil {
+		panic("MetricsCollector.Histogram: js must not be nil")
 	}
 	return &simpleHistogram{js: mc.js, serviceName: mc.serviceName, name: name, tags: tags}
 }
@@ -57,6 +63,9 @@ func (mc *MetricsCollector) Gauge(name string, tags map[string]string) observe.G
 	if name == "" {
 		panic("MetricsCollector.Gauge: name must not be empty")
 	}
+	if mc.js == nil {
+		panic("MetricsCollector.Gauge: js must not be nil")
+	}
 	return &simpleGauge{js: mc.js, serviceName: mc.serviceName, name: name, tags: tags}
 }
 
@@ -65,6 +74,9 @@ func (mc *MetricsCollector) Gauge(name string, tags map[string]string) observe.G
 func publishMetric(js nats.JetStreamContext, pt MetricPoint) {
 	if js == nil {
 		panic("publishMetric: js must not be nil")
+	}
+	if pt.Name == "" {
+		panic("publishMetric: metric name must not be empty")
 	}
 	data, err := json.Marshal(pt)
 	if err != nil {

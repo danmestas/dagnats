@@ -59,9 +59,12 @@ func ExtractTraceContext(
 // Panics if crypto/rand fails — that is an unrecoverable system error.
 func generateTraceID() string {
 	buf := make([]byte, 16)
-	_, err := rand.Read(buf)
+	n, err := rand.Read(buf)
 	if err != nil {
 		panic("generateTraceID: crypto/rand failed: " + err.Error())
+	}
+	if n != 16 {
+		panic("generateTraceID: short read from crypto/rand")
 	}
 	return hex.EncodeToString(buf)
 }
@@ -70,9 +73,12 @@ func generateTraceID() string {
 // Panics if crypto/rand fails — that is an unrecoverable system error.
 func generateSpanID() string {
 	buf := make([]byte, 8)
-	_, err := rand.Read(buf)
+	n, err := rand.Read(buf)
 	if err != nil {
 		panic("generateSpanID: crypto/rand failed: " + err.Error())
+	}
+	if n != 8 {
+		panic("generateSpanID: short read from crypto/rand")
 	}
 	return hex.EncodeToString(buf)
 }
