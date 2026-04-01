@@ -787,9 +787,9 @@ func (s *Service) listRunsInner(
 }
 
 // ListRunEvents retrieves history events for a given run.
-// Returns up to 500 events with Data field truncated to 200 chars.
+// Data field truncated to 200 chars unless fullData is true.
 func (s *Service) ListRunEvents(
-	ctx context.Context, runID string,
+	ctx context.Context, runID string, fullData bool,
 ) ([]RunEvent, error) {
 	if ctx == nil {
 		panic("ListRunEvents: ctx must not be nil")
@@ -807,7 +807,7 @@ func (s *Service) ListRunEvents(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	events, err := s.listRunEventsInner(runID)
+	events, err := s.listRunEventsInner(runID, fullData)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -819,7 +819,9 @@ func (s *Service) ListRunEvents(
 }
 
 // listRunEventsInner subscribes to history stream and reads events.
-func (s *Service) listRunEventsInner(runID string) ([]RunEvent, error) {
+func (s *Service) listRunEventsInner(
+	runID string, fullData bool,
+) ([]RunEvent, error) {
 	const maxEvents = 500
 	const fetchTimeoutMs = 2000
 	const dataTruncateLen = 200
@@ -846,7 +848,7 @@ func (s *Service) listRunEventsInner(runID string) ([]RunEvent, error) {
 			continue
 		}
 		dataStr := string(evt.Payload)
-		if len(dataStr) > dataTruncateLen {
+		if !fullData && len(dataStr) > dataTruncateLen {
 			dataStr = dataStr[:dataTruncateLen]
 		}
 		events = append(events, RunEvent{

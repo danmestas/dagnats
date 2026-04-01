@@ -32,7 +32,7 @@ func NewRESTHandler(svc *Service) http.Handler {
 	mux.HandleFunc("/workflows", svc.routeWorkflows)
 	mux.HandleFunc("/runs", svc.routeRuns)
 	mux.HandleFunc("/runs/", svc.routeRunByID)
-	mux.HandleFunc("/health", svc.routeHealth)
+	mux.HandleFunc("/health/telemetry", svc.routeHealth)
 	return mux
 }
 

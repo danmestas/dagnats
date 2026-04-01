@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/danmestas/dagnats/dag"
 )
@@ -15,7 +16,7 @@ import (
 func runRunCmd(args []string) {
 	if len(args) == 0 {
 		fmt.Println(
-			"Usage: dagnats run <start|status|cancel|signal>",
+			"Usage: dagnats run <start|status|cancel|signal|list|events>",
 		)
 		return
 	}
@@ -28,6 +29,10 @@ func runRunCmd(args []string) {
 		runCancelCmd(args[1:])
 	case "signal":
 		runSignalCmd(args[1:])
+	case "list":
+		runListCmd(args[1:])
+	case "events":
+		runEventsCmd(args[1:])
 	default:
 		fmt.Printf("unknown run subcommand: %s\n", args[0])
 	}
@@ -136,6 +141,111 @@ func runSignalCmd(args []string) {
 	}
 
 	fmt.Printf("Signal sent: %s\n", name)
+}
+
+// runListCmd lists workflow runs with optional filtering.
+func runListCmd(args []string) {
+	var workflowFilter, statusFilter string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--workflow=") {
+			workflowFilter = strings.TrimPrefix(arg, "--workflow=")
+		}
+		if strings.HasPrefix(arg, "--status=") {
+			statusFilter = strings.TrimPrefix(arg, "--status=")
+		}
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	runs, err := svc.ListRuns(context.Background(), workflowFilter)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "list runs: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Client-side status filter
+	if statusFilter != "" {
+		filtered := runs[:0]
+		for _, r := range runs {
+			if strings.EqualFold(r.Status.String(), statusFilter) {
+				filtered = append(filtered, r)
+			}
+		}
+		runs = filtered
+	}
+
+	if len(runs) == 0 {
+		fmt.Println("No runs found.")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "RUN_ID\tWORKFLOW\tSTATUS\tCREATED\tSTEPS")
+
+	for _, run := range runs {
+		created := run.CreatedAt.Format("2006-01-02 15:04:05")
+		stepCount := len(run.Steps)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
+			run.RunID, run.WorkflowID, run.Status.String(), created, stepCount)
+	}
+
+	w.Flush()
+}
+
+// runEventsCmd retrieves and prints the event history for a run.
+func runEventsCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run events <run-id> [--full]")
+		os.Exit(1)
+	}
+
+	runID := args[0]
+	if runID == "" {
+		panic("runEventsCmd: runID must not be empty")
+	}
+
+	fullData := false
+	for _, arg := range args[1:] {
+		if arg == "--full" {
+			fullData = true
+		}
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	events, err := svc.ListRunEvents(
+		context.Background(), runID, fullData,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "list run events: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(events) == 0 {
+		fmt.Println("No events found.")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TIMESTAMP\tTYPE\tSTEP\tDATA")
+
+	for _, evt := range events {
+		timestamp := evt.Timestamp.Format("2006-01-02 15:04:05")
+		step := evt.StepID
+		if step == "" {
+			step = "-"
+		}
+		data := evt.Data
+		if data == "" {
+			data = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", timestamp, evt.Type, step, data)
+	}
+
+	w.Flush()
 }
 
 // FormatRunStatus renders a WorkflowRun as a human-readable string. Steps are

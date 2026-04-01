@@ -149,6 +149,9 @@ func (s *Server) startHTTP() <-chan error {
 	mux.Handle("/", api.NewRESTHandler(s.svc))
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ready", s.handleReady)
+	if s.trig != nil {
+		mux.Handle("/hooks/", s.trig.WebhookHandler())
+	}
 
 	s.httpSrv = &http.Server{
 		Addr:    s.cfg.HTTPAddr,
