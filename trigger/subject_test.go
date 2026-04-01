@@ -11,6 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 )
 
 func TestSubjectTriggerPublishesWorkflowStarted(t *testing.T) {
@@ -25,6 +26,28 @@ func TestSubjectTriggerPublishesWorkflowStarted(t *testing.T) {
 		t.Fatalf("JetStream failed: %v", err)
 	}
 
+	trigger, sub := setupSubjectTrigger(t, nc, js)
+	defer trigger.Close()
+
+	// Publish message to trigger subject
+	testPayload := []byte(`{"user_id": "12345", "email": "test@example.com"}`)
+	err = nc.Publish("events.user.created", testPayload)
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	// Positive: should receive workflow.started event
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("expected workflow.started event, got timeout")
+	}
+
+	verifySubjectTriggerEvent(t, msg, "test-subject-trigger", "12345")
+}
+
+func setupSubjectTrigger(
+	t *testing.T, nc *nats.Conn, js nats.JetStreamContext,
+) (*SubjectTrigger, *nats.Subscription) {
 	def := TriggerDef{
 		ID:         "test-subject-trigger",
 		WorkflowID: "test-workflow",
@@ -38,39 +61,28 @@ func TestSubjectTriggerPublishesWorkflowStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSubjectTrigger failed: %v", err)
 	}
-	defer trigger.Close()
 
-	// Subscribe to workflow events
 	sub, err := js.SubscribeSync("history.>")
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	// Publish message to trigger subject
-	testPayload := []byte(`{"user_id": "12345", "email": "test@example.com"}`)
-	err = nc.Publish("events.user.created", testPayload)
-	if err != nil {
-		t.Fatalf("Publish failed: %v", err)
-	}
+	return trigger, sub
+}
 
-	// Should receive workflow.started event
-	msg, err := sub.NextMsg(2 * time.Second)
-	if err != nil {
-		t.Fatalf("expected workflow.started event, got timeout")
-	}
-
+func verifySubjectTriggerEvent(
+	t *testing.T, msg *nats.Msg, expectedSource, expectedUserID string,
+) {
 	var evt protocol.Event
-	err = json.Unmarshal(msg.Data, &evt)
+	err := json.Unmarshal(msg.Data, &evt)
 	if err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
-	// Verify event type
 	if evt.Type != protocol.EventWorkflowStarted {
 		t.Errorf("expected workflow.started, got %s", evt.Type)
 	}
 
-	// Verify trigger envelope in payload
 	var envelope TriggerEnvelope
 	err = json.Unmarshal(evt.Payload, &envelope)
 	if err != nil {
@@ -80,18 +92,17 @@ func TestSubjectTriggerPublishesWorkflowStarted(t *testing.T) {
 	if envelope.Trigger != "subject" {
 		t.Errorf("expected trigger=subject, got %s", envelope.Trigger)
 	}
-	if envelope.Source != "test-subject-trigger" {
-		t.Errorf("expected source=test-subject-trigger, got %s", envelope.Source)
+	if envelope.Source != expectedSource {
+		t.Errorf("expected source=%s, got %s", expectedSource, envelope.Source)
 	}
 
-	// Verify original payload is embedded
 	var data map[string]interface{}
 	err = json.Unmarshal(envelope.Data, &data)
 	if err != nil {
 		t.Fatalf("unmarshal data failed: %v", err)
 	}
-	if data["user_id"] != "12345" {
-		t.Errorf("expected user_id=12345, got %v", data["user_id"])
+	if data["user_id"] != expectedUserID {
+		t.Errorf("expected user_id=%s, got %v", expectedUserID, data["user_id"])
 	}
 }
 
@@ -152,6 +163,21 @@ func TestSubjectTriggerWildcardSubject(t *testing.T) {
 		t.Fatalf("JetStream failed: %v", err)
 	}
 
+	trigger, sub := setupWildcardSubjectTrigger(t, nc, js)
+	defer trigger.Close()
+
+	// Positive: publish to matching wildcard subject
+	publishAndVerifyWildcard(t, nc, sub, "events.user.created",
+		`{"type": "created"}`)
+
+	// Positive: publish to another matching subject
+	publishAndVerifyWildcard(t, nc, sub, "events.user.deleted",
+		`{"type": "deleted"}`)
+}
+
+func setupWildcardSubjectTrigger(
+	t *testing.T, nc *nats.Conn, js nats.JetStreamContext,
+) (*SubjectTrigger, *nats.Subscription) {
 	def := TriggerDef{
 		ID:         "wildcard-trigger",
 		WorkflowID: "test-workflow",
@@ -165,15 +191,20 @@ func TestSubjectTriggerWildcardSubject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSubjectTrigger failed: %v", err)
 	}
-	defer trigger.Close()
 
 	sub, err := js.SubscribeSync("history.>")
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	// Publish to matching wildcard subject
-	err = nc.Publish("events.user.created", []byte(`{"type": "created"}`))
+	return trigger, sub
+}
+
+func publishAndVerifyWildcard(
+	t *testing.T, nc *nats.Conn, sub *nats.Subscription,
+	subject, payload string,
+) {
+	err := nc.Publish(subject, []byte(payload))
 	if err != nil {
 		t.Fatalf("Publish failed: %v", err)
 	}
@@ -184,26 +215,6 @@ func TestSubjectTriggerWildcardSubject(t *testing.T) {
 	}
 
 	var evt protocol.Event
-	err = json.Unmarshal(msg.Data, &evt)
-	if err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
-
-	if evt.Type != protocol.EventWorkflowStarted {
-		t.Errorf("expected workflow.started, got %s", evt.Type)
-	}
-
-	// Publish to another matching subject
-	err = nc.Publish("events.user.deleted", []byte(`{"type": "deleted"}`))
-	if err != nil {
-		t.Fatalf("Publish failed: %v", err)
-	}
-
-	msg, err = sub.NextMsg(1 * time.Second)
-	if err != nil {
-		t.Fatalf("expected event for second wildcard match")
-	}
-
 	err = json.Unmarshal(msg.Data, &evt)
 	if err != nil {
 		t.Fatalf("unmarshal failed: %v", err)

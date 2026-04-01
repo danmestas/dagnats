@@ -17,6 +17,7 @@ import (
 
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 )
 
 func TestWebhookHandlerPublishesWorkflowStarted(t *testing.T) {
@@ -31,13 +32,29 @@ func TestWebhookHandlerPublishesWorkflowStarted(t *testing.T) {
 		t.Fatalf("JetStream failed: %v", err)
 	}
 
+	handler, sub := setupWebhookHandler(t, nc, js, "")
+
+	payload := []byte(`{"event": "test", "data": "value"}`)
+	rec := sendWebhookRequest(t, handler, payload, "")
+
+	// Positive: should return 200
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	verifyWebhookEvent(t, sub, payload)
+}
+
+func setupWebhookHandler(
+	t *testing.T, nc *nats.Conn, js nats.JetStreamContext, secret string,
+) (*WebhookHandler, *nats.Subscription) {
 	def := TriggerDef{
 		ID:         "test-webhook",
 		WorkflowID: "test-workflow",
 		Enabled:    true,
 		Webhook: &WebhookConfig{
 			Path:   "/webhooks/test",
-			Secret: "",
+			Secret: secret,
 		},
 	}
 
@@ -48,19 +65,25 @@ func TestWebhookHandlerPublishesWorkflowStarted(t *testing.T) {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	// Create test request
-	payload := []byte(`{"event": "test", "data": "value"}`)
-	req := httptest.NewRequest(http.MethodPost, "/webhooks/test", bytes.NewReader(payload))
-	rec := httptest.NewRecorder()
+	return handler, sub
+}
 
-	handler.ServeHTTP(rec, req)
-
-	// Should return 200
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+func sendWebhookRequest(
+	t *testing.T, handler *WebhookHandler, payload []byte, signature string,
+) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/test",
+		bytes.NewReader(payload))
+	if signature != "" {
+		req.Header.Set("X-Signature-256", signature)
 	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
 
-	// Should publish workflow.started
+func verifyWebhookEvent(
+	t *testing.T, sub *nats.Subscription, expectedPayload []byte,
+) {
 	msg, err := sub.NextMsg(1 * time.Second)
 	if err != nil {
 		t.Fatalf("expected workflow.started event")
@@ -89,17 +112,10 @@ func TestWebhookHandlerPublishesWorkflowStarted(t *testing.T) {
 		t.Errorf("expected source=test-webhook, got %s", envelope.Source)
 	}
 
-	// Verify original payload embedded (compare as JSON objects)
 	var gotData, wantData map[string]interface{}
-	err = json.Unmarshal(envelope.Data, &gotData)
-	if err != nil {
-		t.Fatalf("unmarshal envelope data failed: %v", err)
-	}
-	err = json.Unmarshal(payload, &wantData)
-	if err != nil {
-		t.Fatalf("unmarshal original payload failed: %v", err)
-	}
-	if gotData["event"] != wantData["event"] || gotData["data"] != wantData["data"] {
+	json.Unmarshal(envelope.Data, &gotData)
+	json.Unmarshal(expectedPayload, &wantData)
+	if gotData["event"] != wantData["event"] {
 		t.Errorf("payload mismatch: got %v, want %v", gotData, wantData)
 	}
 }

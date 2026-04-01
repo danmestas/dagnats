@@ -11,6 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 )
 
 func TestSchedulerTickFiresMatchingTriggers(t *testing.T) {
@@ -26,12 +27,39 @@ func TestSchedulerTickFiresMatchingTriggers(t *testing.T) {
 		t.Fatalf("JetStream failed: %v", err)
 	}
 
+	scheduler, sub := setupSchedulerWithEveryMinuteTrigger(t, nc, js)
+	testTime := time.Date(2026, 3, 31, 12, 30, 0, 0, time.UTC)
+
+	// Tick at a matching minute
+	err = scheduler.Tick(testTime)
+	if err != nil {
+		t.Fatalf("Tick failed: %v", err)
+	}
+
+	// Positive: should fire one workflow.started event
+	verifyWorkflowStartedEvent(t, sub)
+
+	// Negative: ticking again at same minute should not fire (dedup)
+	err = scheduler.Tick(testTime)
+	if err != nil {
+		t.Fatalf("second Tick failed: %v", err)
+	}
+
+	// Should timeout (no duplicate)
+	_, err = sub.NextMsg(500 * time.Millisecond)
+	if err == nil {
+		t.Errorf("expected timeout on duplicate tick, got message")
+	}
+}
+
+func setupSchedulerWithEveryMinuteTrigger(
+	t *testing.T, nc *nats.Conn, js nats.JetStreamContext,
+) (*Scheduler, *nats.Subscription) {
 	scheduler, err := NewScheduler(nc)
 	if err != nil {
 		t.Fatalf("NewScheduler failed: %v", err)
 	}
 
-	// Every minute trigger
 	triggerDef := TriggerDef{
 		ID:         "test-trigger",
 		WorkflowID: "test-workflow",
@@ -47,20 +75,17 @@ func TestSchedulerTickFiresMatchingTriggers(t *testing.T) {
 		t.Fatalf("AddTrigger failed: %v", err)
 	}
 
-	// Subscribe to workflow events
 	sub, err := js.SubscribeSync("history.>")
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	// Tick at a matching minute
-	testTime := time.Date(2026, 3, 31, 12, 30, 0, 0, time.UTC)
-	err = scheduler.Tick(testTime)
-	if err != nil {
-		t.Fatalf("Tick failed: %v", err)
-	}
+	return scheduler, sub
+}
 
-	// Should fire one workflow.started event
+func verifyWorkflowStartedEvent(
+	t *testing.T, sub *nats.Subscription,
+) {
 	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("expected workflow.started event, got timeout")
@@ -75,22 +100,9 @@ func TestSchedulerTickFiresMatchingTriggers(t *testing.T) {
 		t.Errorf("expected workflow.started, got %s", evt.Type)
 	}
 
-	// Should have dedup msg ID
 	msgID := msg.Header.Get("Nats-Msg-Id")
 	if msgID == "" {
 		t.Errorf("expected Nats-Msg-Id header, got empty")
-	}
-
-	// Ticking again at same minute should not fire (dedup)
-	err = scheduler.Tick(testTime)
-	if err != nil {
-		t.Fatalf("second Tick failed: %v", err)
-	}
-
-	// Should timeout (no duplicate)
-	_, err = sub.NextMsg(500 * time.Millisecond)
-	if err == nil {
-		t.Errorf("expected timeout on duplicate tick, got message")
 	}
 }
 
