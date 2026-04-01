@@ -147,16 +147,19 @@ type ConcurrencyLimit struct {
 // StepDef is the immutable declaration of a single step within a WorkflowDef.
 // DependsOn lists step IDs that must complete before this step is queued.
 type StepDef struct {
-	ID        string            `json:"id"`
-	Task      string            `json:"task"`
-	DependsOn []string          `json:"depends_on,omitempty"`
-	Retries   int               `json:"retries,omitempty"`
-	Timeout   time.Duration     `json:"timeout"`
-	Type      StepType          `json:"type"`
-	Loop      *AgentLoopConfig  `json:"loop,omitempty"`
-	SkipIf    *ParentCond       `json:"skip_if,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	Retry     *RetryPolicy      `json:"retry,omitempty"`
+	ID          string            `json:"id"`
+	Task        string            `json:"task"`
+	DependsOn   []string          `json:"depends_on,omitempty"`
+	Retries     int               `json:"retries,omitempty"`
+	Timeout     time.Duration     `json:"timeout"`
+	Type        StepType          `json:"type"`
+	Loop        *AgentLoopConfig  `json:"loop,omitempty"`
+	SkipIf      *ParentCond       `json:"skip_if,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	Retry       *RetryPolicy      `json:"retry,omitempty"`
+	WorkerGroup string            `json:"worker_group,omitempty"`
+	OnFailure   string            `json:"on_failure,omitempty"`
+	Compensate  string            `json:"compensate,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced
@@ -167,6 +170,9 @@ type WorkflowDef struct {
 	Steps        []StepDef         `json:"steps"`
 	DefaultRetry *RetryPolicy      `json:"default_retry,omitempty"`
 	Concurrency  *ConcurrencyLimit `json:"concurrency,omitempty"`
+	Timeout      time.Duration     `json:"timeout,omitempty"`
+	InputSchema  json.RawMessage   `json:"input_schema,omitempty"`
+	OutputSchema json.RawMessage   `json:"output_schema,omitempty"`
 }
 
 // StepState captures mutable runtime state for one step in a run.
@@ -193,6 +199,7 @@ type WorkflowRun struct {
 	CreatedAt    time.Time            `json:"created_at"`
 	ParentRunID  string               `json:"parent_run_id,omitempty"`
 	ParentStepID string               `json:"parent_step_id,omitempty"`
+	Deadline     *time.Time           `json:"deadline,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.

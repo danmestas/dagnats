@@ -234,3 +234,90 @@ func TestWorkflowRunParentFieldsJSON(t *testing.T) {
 		t.Fatalf("empty ParentRunID should be omitted, got %s", data2)
 	}
 }
+
+func TestStepDefCompensationFieldsJSON(t *testing.T) {
+	step := StepDef{
+		ID:          "deploy",
+		Task:        "deploy-task",
+		Type:        StepTypeNormal,
+		WorkerGroup: "gpu",
+		OnFailure:   "notify",
+		Compensate:  "rollback",
+	}
+	data, err := json.Marshal(step)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got StepDef
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Positive: WorkerGroup round-trips
+	if got.WorkerGroup != "gpu" {
+		t.Fatalf("WorkerGroup = %q, want gpu", got.WorkerGroup)
+	}
+	// Positive: OnFailure round-trips
+	if got.OnFailure != "notify" {
+		t.Fatalf("OnFailure = %q, want notify", got.OnFailure)
+	}
+	// Positive: Compensate round-trips
+	if got.Compensate != "rollback" {
+		t.Fatalf("Compensate = %q, want rollback", got.Compensate)
+	}
+}
+
+func TestWorkflowDefTimeoutAndSchemaJSON(t *testing.T) {
+	wf := WorkflowDef{
+		Name:    "test",
+		Version: "1",
+		Steps:   []StepDef{{ID: "s1", Task: "t", Type: StepTypeNormal}},
+		Timeout: 30 * time.Minute,
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"string"}`),
+	}
+	data, err := json.Marshal(wf)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got WorkflowDef
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Positive: Timeout round-trips
+	if got.Timeout != 30*time.Minute {
+		t.Fatalf("Timeout = %v, want 30m", got.Timeout)
+	}
+	// Positive: InputSchema round-trips
+	if string(got.InputSchema) != `{"type":"object"}` {
+		t.Fatalf("InputSchema = %s", got.InputSchema)
+	}
+}
+
+func TestWorkflowRunDeadlineJSON(t *testing.T) {
+	deadline := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	run := WorkflowRun{
+		RunID: "r1", WorkflowID: "wf", Status: RunStatusRunning,
+		Steps: map[string]StepState{}, CreatedAt: time.Now(),
+		Deadline: &deadline,
+	}
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got WorkflowRun
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Positive: Deadline round-trips
+	if got.Deadline == nil || !got.Deadline.Equal(deadline) {
+		t.Fatalf("Deadline = %v, want %v", got.Deadline, deadline)
+	}
+	// Positive: nil deadline omitted
+	run2 := WorkflowRun{RunID: "r2", WorkflowID: "wf",
+		Status: RunStatusPending, Steps: map[string]StepState{},
+		CreatedAt: time.Now()}
+	data2, _ := json.Marshal(run2)
+	if bytes.Contains(data2, []byte(`"deadline"`)) {
+		t.Fatalf("nil Deadline should be omitted")
+	}
+}
