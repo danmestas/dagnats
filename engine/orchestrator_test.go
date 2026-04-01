@@ -8,6 +8,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -773,3 +774,128 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 	}
 	t.Fatalf("workflow should be failed after exhausting retries")
 }
+
+func TestOrchestratorWorkflowTimeout(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name:    "timeout-test",
+		Version: "1",
+		Timeout: 200 * time.Millisecond,
+		Steps: []dag.StepDef{
+			{ID: "slow", Task: "slow-task", Type: dag.StepTypeNormal},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("timeout-test", defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "timeout-run-1", defData)
+	data, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(), Data: data,
+		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	// Wait for timeout to expire
+	time.Sleep(200 * time.Millisecond)
+
+	// Send a step event after timeout (should trigger cancel)
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed, "timeout-run-1", "slow",
+		[]byte(`"timed out"`))
+	failData, _ := failEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: failEvt.NATSSubject(), Data: failData,
+		Header:  nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
+	})
+
+	// Check that run is cancelled
+	store := NewSnapshotStore(js)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := store.Load("timeout-run-1")
+		if err == nil && run.Status == dag.RunStatusCancelled {
+			return // Positive: timed out → cancelled
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("workflow should be cancelled after timeout")
+}
+
+func TestOrchestratorPublishesDeadLetter(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name:    "dlq-test",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "bad-task", Type: dag.StepTypeNormal},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("dlq-test", defData)
+
+	// Subscribe to DLQ
+	dlqSub, err := js.SubscribeSync("dead.>",
+		nats.AckExplicit(), nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("subscribe DLQ: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "dlq-run-1", defData)
+	data, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(), Data: data,
+		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	// Fail the step permanently (no retries configured)
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed, "dlq-run-1", "s1",
+		[]byte(`"permanent error"`))
+	failData, _ := failEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: failEvt.NATSSubject(), Data: failData,
+		Header:  nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
+	})
+
+	// Positive: DLQ message appears
+	dlqMsg, err := dlqSub.NextMsg(3 * time.Second)
+	if err != nil {
+		t.Fatalf("expected DLQ message: %v", err)
+	}
+	dlqMsg.Ack()
+
+	// Positive: subject contains task name
+	if !strings.HasPrefix(dlqMsg.Subject, "dead.bad-task.") {
+		t.Fatalf("DLQ subject = %q, want prefix dead.bad-task.",
+			dlqMsg.Subject)
+	}
+}
+

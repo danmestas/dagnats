@@ -206,6 +206,15 @@ func (o *Orchestrator) dispatchEvent(
 	lock := o.getRunLock(evt.RunID)
 	lock.Lock()
 	defer lock.Unlock()
+
+	// Check workflow timeout before dispatching any event.
+	run, loadErr := o.store.Load(evt.RunID)
+	if loadErr == nil && run.Deadline != nil &&
+		time.Now().After(*run.Deadline) &&
+		run.Status == dag.RunStatusRunning {
+		return o.handleWorkflowCancelled(ctx, evt)
+	}
+
 	switch evt.Type {
 	case protocol.EventWorkflowStarted:
 		return o.handleWorkflowStarted(ctx, evt)
@@ -241,6 +250,10 @@ func (o *Orchestrator) handleWorkflowStarted(
 	}
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
 	run.Status = dag.RunStatusRunning
+	if wfDef.Timeout > 0 {
+		deadline := time.Now().Add(wfDef.Timeout)
+		run.Deadline = &deadline
+	}
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return fmt.Errorf("save initial run: %w", err)
 	}
@@ -474,9 +487,37 @@ func (o *Orchestrator) handleStepFailed(
 	if err := o.publishWorkflowFailed(run.RunID); err != nil {
 		return err
 	}
+	// Publish to dead-letter queue
+	o.publishDeadLetter(run.RunID, stepDef, state)
+
 	return o.notifyParentIfChild(
 		run, fmt.Errorf("%s", state.Error),
 	)
+}
+
+// publishDeadLetter publishes failed step info to the dead-letter queue.
+func (o *Orchestrator) publishDeadLetter(
+	runID string, stepDef dag.StepDef, state dag.StepState,
+) {
+	if runID == "" {
+		panic("publishDeadLetter: runID must not be empty")
+	}
+	if stepDef.ID == "" {
+		panic("publishDeadLetter: stepDef.ID must not be empty")
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"run_id":   runID,
+		"step_id":  stepDef.ID,
+		"task":     stepDef.Task,
+		"error":    state.Error,
+		"attempts": state.Attempts,
+	})
+	if err != nil {
+		return
+	}
+	subject := fmt.Sprintf("dead.%s.%s.%s",
+		stepDef.Task, runID, stepDef.ID)
+	o.js.Publish(subject, payload)
 }
 
 // handleWorkflowCancelled marks the run and all in-flight steps as

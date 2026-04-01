@@ -30,6 +30,12 @@ func SetupStreams(js nats.JetStreamContext) error {
 			Retention: nats.LimitsPolicy,
 			Storage:   nats.FileStorage,
 		},
+		{
+			Name:      "DEAD_LETTERS",
+			Subjects:  []string{"dead.>"},
+			Retention: nats.LimitsPolicy,
+			Storage:   nats.FileStorage,
+		},
 	}
 	for _, cfg := range streams {
 		_, err := js.AddStream(&cfg)
