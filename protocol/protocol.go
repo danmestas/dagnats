@@ -22,13 +22,13 @@ type TaskPayload struct {
 type EventType string
 
 const (
-	EventWorkflowStarted    EventType = "workflow.started"
-	EventStepQueued         EventType = "step.queued"
-	EventStepStarted        EventType = "step.started"
-	EventStepCompleted      EventType = "step.completed"
-	EventStepFailed         EventType = "step.failed"
-	EventStepContinue       EventType = "step.continue"
-	EventAgentLoopIteration EventType = "agent.loop.iteration"
+	EventWorkflowStarted        EventType = "workflow.started"
+	EventStepQueued             EventType = "step.queued"
+	EventStepStarted            EventType = "step.started"
+	EventStepCompleted          EventType = "step.completed"
+	EventStepFailed             EventType = "step.failed"
+	EventStepContinue           EventType = "step.continue"
+	EventAgentLoopIteration     EventType = "agent.loop.iteration"
 	EventWorkflowCompleted      EventType = "workflow.completed"
 	EventWorkflowFailed         EventType = "workflow.failed"
 	EventWorkflowSpawn          EventType = "workflow.spawn"
@@ -41,10 +41,10 @@ const (
 // Event is the core communication primitive published to the history stream.
 // Payload carries event-specific data as raw JSON to keep the type schema-agnostic.
 type Event struct {
-	Type      EventType       `json:"type"`
-	RunID     string          `json:"run_id"`
-	StepID    string          `json:"step_id,omitempty"`
-	Timestamp time.Time       `json:"timestamp"`
+	Type        EventType       `json:"type"`
+	RunID       string          `json:"run_id"`
+	StepID      string          `json:"step_id,omitempty"`
+	Timestamp   time.Time       `json:"timestamp"`
 	Payload     json.RawMessage `json:"payload,omitempty"`
 	TraceParent string          `json:"trace_parent,omitempty"`
 	TraceState  string          `json:"trace_state,omitempty"`
@@ -74,6 +74,9 @@ func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event {
 	if runID == "" {
 		panic("NewWorkflowEvent: runID must not be empty")
 	}
+	if eventType == "" {
+		panic("NewWorkflowEvent: eventType must not be empty")
+	}
 	return Event{
 		Type:      eventType,
 		RunID:     runID,
@@ -88,6 +91,9 @@ func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event {
 func (e Event) NATSSubject() string {
 	if e.RunID == "" {
 		panic("Event.NATSSubject: RunID must not be empty")
+	}
+	if e.Type == "" {
+		panic("Event.NATSSubject: Type must not be empty")
 	}
 	return "history." + e.RunID
 }

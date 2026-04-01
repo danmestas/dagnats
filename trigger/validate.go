@@ -4,7 +4,13 @@ import "fmt"
 
 // Validate checks a TriggerDef for structural correctness.
 // Returns nil if valid, descriptive error otherwise.
+// Panics if called with a completely uninitialized def (programmer error).
 func Validate(def TriggerDef) error {
+	if def.ID == "" && def.WorkflowID == "" &&
+		def.Cron == nil && def.Subject == nil && def.Webhook == nil {
+		panic("Validate: completely empty TriggerDef is a programmer error")
+	}
+
 	if def.ID == "" {
 		return fmt.Errorf("trigger ID must not be empty")
 	}
@@ -40,6 +46,13 @@ func Validate(def TriggerDef) error {
 }
 
 func countTriggerTypes(def TriggerDef) int {
+	if def.ID == "" {
+		panic("countTriggerTypes: def.ID must not be empty")
+	}
+	if def.WorkflowID == "" {
+		panic("countTriggerTypes: def.WorkflowID must not be empty")
+	}
+
 	count := 0
 	if def.Cron != nil {
 		count++
@@ -54,6 +67,13 @@ func countTriggerTypes(def TriggerDef) int {
 }
 
 func validateCronConfig(id string, c *CronConfig) error {
+	if c == nil {
+		panic("validateCronConfig: CronConfig must not be nil")
+	}
+	if id == "" {
+		panic("validateCronConfig: id must not be empty")
+	}
+
 	if c.Expression == "" {
 		return fmt.Errorf(
 			"trigger %q: cron expression must not be empty", id)
@@ -67,6 +87,13 @@ func validateCronConfig(id string, c *CronConfig) error {
 }
 
 func validateWebhookConfig(id string, w *WebhookConfig) error {
+	if w == nil {
+		panic("validateWebhookConfig: WebhookConfig must not be nil")
+	}
+	if id == "" {
+		panic("validateWebhookConfig: id must not be empty")
+	}
+
 	if w.Path == "" {
 		return fmt.Errorf(
 			"trigger %q: webhook path must not be empty", id)

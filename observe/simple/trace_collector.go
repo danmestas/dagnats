@@ -26,7 +26,14 @@ func SpanFromContext(ctx context.Context) *LiveSpan {
 	if ctx == nil {
 		panic("SpanFromContext: ctx must not be nil")
 	}
-	span, _ := ctx.Value(spanContextKey{}).(*LiveSpan)
+	val := ctx.Value(spanContextKey{})
+	if val == nil {
+		return nil
+	}
+	span, ok := val.(*LiveSpan)
+	if !ok {
+		panic("SpanFromContext: context value is not a *LiveSpan")
+	}
 	return span
 }
 
@@ -81,6 +88,9 @@ func (tc *TraceCollector) publishLoop() {
 func publishSpanRecord(js nats.JetStreamContext, rec SpanRecord) {
 	if js == nil {
 		panic("publishSpanRecord: js must not be nil")
+	}
+	if rec.TraceID == "" {
+		panic("publishSpanRecord: TraceID must not be empty")
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {

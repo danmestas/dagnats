@@ -42,6 +42,9 @@ func (lc *LogCollector) Info(msg string, fields ...observe.Field) {
 	if msg == "" {
 		panic("LogCollector.Info: msg must not be empty")
 	}
+	if lc.js == nil {
+		panic("LogCollector.Info: js must not be nil")
+	}
 	lc.publish("info", msg, nil, fields)
 }
 
@@ -50,6 +53,9 @@ func (lc *LogCollector) Info(msg string, fields ...observe.Field) {
 func (lc *LogCollector) Error(msg string, err error, fields ...observe.Field) {
 	if msg == "" {
 		panic("LogCollector.Error: msg must not be empty")
+	}
+	if lc.js == nil {
+		panic("LogCollector.Error: js must not be nil")
 	}
 	lc.publish("error", msg, err, fields)
 }
@@ -72,6 +78,9 @@ func (lc *LogCollector) With(fields ...observe.Field) observe.Logger {
 func (lc *LogCollector) publish(level, msg string, err error, callFields []observe.Field) {
 	if level == "" {
 		panic("LogCollector.publish: level must not be empty")
+	}
+	if msg == "" {
+		panic("LogCollector.publish: msg must not be empty")
 	}
 	rec := LogRecord{
 		Level:     level,

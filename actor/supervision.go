@@ -16,7 +16,7 @@ type RestartScope int
 
 const (
 	RestartOne RestartScope = iota // Only the failed actor
-	RestartAll                      // All children of the supervisor
+	RestartAll                     // All children of the supervisor
 )
 
 // OneForOne restarts only the failed child. The default strategy.

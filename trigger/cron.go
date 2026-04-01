@@ -19,6 +19,11 @@ type CronExpr struct {
 // ParseCron parses a 5-field cron expression into a CronExpr.
 // Supports *, */N, N-M, and comma-separated values.
 func ParseCron(expr string) (*CronExpr, error) {
+	// Bounded input prevents unbounded parsing work
+	if len(expr) > 256 {
+		panic("ParseCron: expr exceeds maximum length of 256")
+	}
+
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {
 		return nil, fmt.Errorf(
@@ -46,17 +51,32 @@ func ParseCron(expr string) (*CronExpr, error) {
 		return nil, fmt.Errorf("day-of-week field: %w", err)
 	}
 
-	return &CronExpr{
+	result := &CronExpr{
 		Minutes:     minutes,
 		Hours:       hours,
 		DaysOfMonth: dom,
 		Months:      months,
 		DaysOfWeek:  dow,
-	}, nil
+	}
+
+	// Post-condition: all slices must be populated after successful parse
+	if len(result.Minutes) == 0 || len(result.Hours) == 0 {
+		panic("ParseCron: parsed expression has empty time slices")
+	}
+
+	return result, nil
 }
 
 // Matches returns true if the given time matches this cron expression.
+// Panics if time is zero (programmer error: uninitialized time).
 func (c *CronExpr) Matches(t time.Time) bool {
+	if t.IsZero() {
+		panic("Matches: time must not be zero")
+	}
+	if c.Minutes == nil {
+		panic("Matches: Minutes slice must not be nil")
+	}
+
 	return contains(c.Minutes, t.Minute()) &&
 		contains(c.Hours, t.Hour()) &&
 		contains(c.DaysOfMonth, t.Day()) &&
@@ -65,6 +85,10 @@ func (c *CronExpr) Matches(t time.Time) bool {
 }
 
 func contains(vals []int, target int) bool {
+	if vals == nil {
+		panic("contains: vals must not be nil")
+	}
+
 	for _, v := range vals {
 		if v == target {
 			return true
@@ -75,6 +99,13 @@ func contains(vals []int, target int) bool {
 
 // parseField parses one cron field (*, */N, N-M, N, comma-separated).
 func parseField(field string, min, max int) ([]int, error) {
+	if field == "" {
+		panic("parseField: field must not be empty")
+	}
+	if min > max {
+		panic("parseField: min must not exceed max")
+	}
+
 	if field == "*" {
 		return rangeInts(min, max), nil
 	}
@@ -136,6 +167,13 @@ func parseField(field string, min, max int) ([]int, error) {
 }
 
 func rangeInts(min, max int) []int {
+	if min > max {
+		panic("rangeInts: min must not exceed max")
+	}
+	if max > 999 {
+		panic("rangeInts: max exceeds upper bound of 999")
+	}
+
 	result := make([]int, 0, max-min+1)
 	for i := min; i <= max; i++ {
 		result = append(result, i)

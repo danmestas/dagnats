@@ -47,7 +47,17 @@ func NewWebhookHandler(nc *nats.Conn, def TriggerDef) *WebhookHandler {
 }
 
 // ServeHTTP handles incoming webhook requests.
-func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// Panics if writer or request are nil (programmer error).
+func (h *WebhookHandler) ServeHTTP(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if w == nil {
+		panic("ServeHTTP: ResponseWriter must not be nil")
+	}
+	if r == nil {
+		panic("ServeHTTP: Request must not be nil")
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -88,7 +98,16 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateSignature checks X-Signature-256 header against computed HMAC.
-func (h *WebhookHandler) validateSignature(r *http.Request, body []byte) bool {
+func (h *WebhookHandler) validateSignature(
+	r *http.Request, body []byte,
+) bool {
+	if r == nil {
+		panic("validateSignature: request must not be nil")
+	}
+	if body == nil {
+		panic("validateSignature: body must not be nil")
+	}
+
 	signature := r.Header.Get("X-Signature-256")
 	if signature == "" {
 		return false
@@ -109,6 +128,13 @@ func (h *WebhookHandler) validateSignature(r *http.Request, body []byte) bool {
 
 // publishWorkflowEvent builds TriggerEnvelope and publishes workflow.started.
 func (h *WebhookHandler) publishWorkflowEvent(body []byte) error {
+	if body == nil {
+		panic("publishWorkflowEvent: body must not be nil")
+	}
+	if h.js == nil {
+		panic("publishWorkflowEvent: JetStream context must not be nil")
+	}
+
 	now := time.Now().UTC()
 
 	var data json.RawMessage

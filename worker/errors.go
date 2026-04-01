@@ -16,5 +16,8 @@ func NewNonRetryableError(err error) *NonRetryableError {
 	if err == nil {
 		panic("NewNonRetryableError: err must not be nil")
 	}
+	if err.Error() == "" {
+		panic("NewNonRetryableError: err message must not be empty")
+	}
 	return &NonRetryableError{Err: err}
 }

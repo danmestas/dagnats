@@ -107,6 +107,9 @@ func (r *Runtime) spawn(
 // runActor is the main actor goroutine. It calls PreStart (if
 // Lifecycle), then processes messages until the done channel closes.
 func (r *Runtime) runActor(cell *actorCell) {
+	if cell == nil {
+		panic("actor: runActor cell must not be nil")
+	}
 	ctx := &Context{self: cell.addr, runtime: r}
 
 	// Call PreStart if actor implements Lifecycle
@@ -164,6 +167,9 @@ func (r *Runtime) handleFailure(cell *actorCell, err error) {
 
 // restartActor stops and relaunches the actor if within limits.
 func (r *Runtime) restartActor(cell *actorCell) {
+	if cell == nil {
+		panic("actor: restartActor cell must not be nil")
+	}
 	if !cell.restarts.Allow() {
 		// Exhausted restart budget — stop permanently
 		r.stopActor(cell)
@@ -183,6 +189,9 @@ func (r *Runtime) restartActor(cell *actorCell) {
 
 // stopActor terminates an actor and removes it from the runtime.
 func (r *Runtime) stopActor(cell *actorCell) {
+	if cell == nil {
+		panic("actor: stopActor cell must not be nil")
+	}
 	// Signal done (safe to close multiple times via select)
 	select {
 	case <-cell.done:
@@ -227,6 +236,9 @@ func (r *Runtime) stopActor(cell *actorCell) {
 func (r *Runtime) Send(
 	to Address, msg Message,
 ) error {
+	if to.Type == "" || to.ID == "" {
+		panic("actor: Send target Type and ID must not be empty")
+	}
 	r.mu.RLock()
 	cell, ok := r.actors[to.String()]
 	r.mu.RUnlock()
@@ -244,6 +256,9 @@ func (r *Runtime) Send(
 
 // Stop gracefully terminates an actor and its children.
 func (r *Runtime) Stop(addr Address) error {
+	if addr.Type == "" || addr.ID == "" {
+		panic("actor: Stop address must not be empty")
+	}
 	r.mu.RLock()
 	cell, ok := r.actors[addr.String()]
 	r.mu.RUnlock()
@@ -256,6 +271,9 @@ func (r *Runtime) Stop(addr Address) error {
 
 // StopAll terminates all actors. Used in defer for cleanup.
 func (r *Runtime) StopAll() {
+	if r.actors == nil {
+		panic("actor: StopAll called on uninitialized runtime")
+	}
 	r.mu.RLock()
 	addrs := make([]Address, 0, len(r.actors))
 	for _, cell := range r.actors {

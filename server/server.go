@@ -248,7 +248,9 @@ func (s *Server) shutdown() error {
 		)
 		defer httpCancel()
 		if s.httpSrv != nil {
-			_ = s.httpSrv.Shutdown(httpCtx)
+			if err := s.httpSrv.Shutdown(httpCtx); err != nil {
+				printStep(os.Stderr, "http shutdown error: "+err.Error())
+			}
 		}
 
 		printStep(os.Stderr, "stopping triggers...")
@@ -265,7 +267,9 @@ func (s *Server) shutdown() error {
 
 		printStep(os.Stderr, "draining nats...")
 		if s.nc != nil {
-			_ = s.nc.Drain()
+			if err := s.nc.Drain(); err != nil {
+				printStep(os.Stderr, "nats drain error: "+err.Error())
+			}
 		}
 
 		s.ns.Shutdown()
@@ -309,6 +313,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+	// Client may have disconnected; no recovery action.
 	_, _ = w.Write([]byte("ok"))
 }
 
@@ -324,6 +329,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 	if s.ready.Load() {
 		w.WriteHeader(http.StatusOK)
+		// Client may have disconnected; no recovery action.
 		_, _ = w.Write([]byte("ready"))
 	} else {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)

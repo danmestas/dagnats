@@ -22,6 +22,9 @@ func SetupTelemetry(nc *nats.Conn) (*observe.Telemetry, func()) {
 	if nc == nil {
 		panic("SetupTelemetry: nc must not be nil")
 	}
+	if len(os.Args) == 0 {
+		panic("SetupTelemetry: os.Args must not be empty")
+	}
 	serviceName := filepath.Base(os.Args[0])
 
 	js, err := nc.JetStream()

@@ -27,6 +27,10 @@ func NewSubjectTrigger(nc *nats.Conn, def TriggerDef) (*SubjectTrigger, error) {
 	if nc == nil {
 		panic("NewSubjectTrigger: connection must not be nil")
 	}
+	if def.ID == "" {
+		panic("NewSubjectTrigger: def.ID must not be empty")
+	}
+
 	if def.Subject == nil {
 		return nil, fmt.Errorf("trigger %q has no subject config", def.ID)
 	}
@@ -58,7 +62,15 @@ func NewSubjectTrigger(nc *nats.Conn, def TriggerDef) (*SubjectTrigger, error) {
 }
 
 // Close unsubscribes and releases resources.
+// Panics if done channel is nil (uninitialized trigger).
 func (s *SubjectTrigger) Close() error {
+	if s.done == nil {
+		panic("Close: done channel must not be nil")
+	}
+	if s.nc == nil {
+		panic("Close: connection must not be nil")
+	}
+
 	close(s.done)
 	if s.sub != nil {
 		return s.sub.Unsubscribe()
@@ -67,7 +79,15 @@ func (s *SubjectTrigger) Close() error {
 }
 
 // handleMessage processes incoming NATS messages and publishes workflow.started.
+// Panics if msg is nil (NATS library invariant).
 func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
+	if msg == nil {
+		panic("handleMessage: msg must not be nil")
+	}
+	if s.js == nil {
+		panic("handleMessage: JetStream context must not be nil")
+	}
+
 	if !s.def.Enabled {
 		return
 	}

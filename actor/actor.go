@@ -14,6 +14,9 @@ type Address struct {
 
 // String formats the address as "type.id" for logging and map keys.
 func (a Address) String() string {
+	if a.Type == "" || a.ID == "" {
+		panic("actor: Address.String called with empty Type or ID")
+	}
 	return a.Type + "." + a.ID
 }
 
@@ -39,6 +42,9 @@ var directiveStrings = [...]string{
 
 // String returns the lowercase name of the directive.
 func (d Directive) String() string {
+	if d < 0 {
+		panic(fmt.Sprintf("actor: negative Directive %d", d))
+	}
 	if int(d) < len(directiveStrings) {
 		return directiveStrings[d]
 	}
@@ -115,6 +121,9 @@ func WithMailboxSize(size int) SpawnOption {
 		if size < 1 {
 			panic("actor: mailbox size must be >= 1")
 		}
+		if o == nil {
+			panic("actor: spawn options must not be nil")
+		}
 		o.mailboxSize = size
 	}
 }
@@ -124,6 +133,9 @@ func WithSupervision(s SupervisionStrategy) SpawnOption {
 	return func(o *spawnOptions) {
 		if s == nil {
 			panic("actor: supervision strategy must not be nil")
+		}
+		if o == nil {
+			panic("actor: spawn options must not be nil")
 		}
 		o.strategy = s
 	}
