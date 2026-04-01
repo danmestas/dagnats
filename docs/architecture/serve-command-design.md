@@ -60,7 +60,9 @@ leaf_remotes:
 
 - No file required — zero-config starts everything on defaults
 - Fixed path `./dagnats.yaml` — no `--config` flag
-- Invalid YAML → fatal error with line number
+- Simple `key: value` format (one per line, `#` comments, no YAML dep)
+- `leaf_remotes` is comma-separated on one line
+- Invalid syntax → fatal error with line number
 - Unknown keys → logged as warning, not fatal (forward compatibility)
 - LeafRemotes capped at 10 entries
 
