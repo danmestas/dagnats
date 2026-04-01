@@ -40,7 +40,7 @@ func TestTaskContextComplete(t *testing.T) {
 			RunID: "run-1", StepID: "step-a",
 			Input: []byte(`"input"`),
 		},
-		bgCtx, span,
+		bgCtx, span, nil, nil, nil,
 	)
 	err = tc.Complete([]byte(`"output"`))
 	if err != nil {
@@ -86,7 +86,7 @@ func TestTaskContextFail(t *testing.T) {
 	tc := newTaskContext(
 		nc, tel, js,
 		protocol.TaskPayload{RunID: "run-2", StepID: "step-b"},
-		bgCtx, span,
+		bgCtx, span, nil, nil, nil,
 	)
 	err = tc.Fail(fmt.Errorf("something broke"))
 	if err != nil {
@@ -125,7 +125,7 @@ func TestTaskContextContinue(t *testing.T) {
 	tc := newTaskContext(
 		nc, tel, js,
 		protocol.TaskPayload{RunID: "run-3", StepID: "step-c"},
-		bgCtx, span,
+		bgCtx, span, nil, nil, nil,
 	)
 	err = tc.Continue([]byte(`"next input"`))
 	if err != nil {
@@ -154,7 +154,7 @@ func TestTaskContextInput(t *testing.T) {
 			RunID: "run-4", StepID: "step-d",
 			Input: []byte(`"hello"`),
 		},
-		bgCtx, span,
+		bgCtx, span, nil, nil, nil,
 	)
 	got := tc.Input()
 	if string(got) != `"hello"` {
@@ -171,5 +171,123 @@ func TestTaskContextInput(t *testing.T) {
 		t.Fatalf(
 			"StepID() = %q, want %q", tc.StepID(), "step-d",
 		)
+	}
+}
+
+func TestTaskContextHeartbeat(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "checkpoints"},
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nc, tel, js,
+		protocol.TaskPayload{
+			RunID: "run-hb", StepID: "step-hb",
+		},
+		bgCtx, span, nil, nil, nil,
+	)
+
+	// Positive: heartbeat doesn't error (no msg in unit test)
+	// This verifies method exists and handles nil msg gracefully
+	err := tc.Heartbeat()
+	if err != nil {
+		t.Fatalf("Heartbeat should not error with nil msg: %v", err)
+	}
+}
+
+func TestTaskContextCheckpoint(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "checkpoints"},
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	cpKV, _ := js.KeyValue("checkpoints")
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := &taskContext{
+		nc:           nc,
+		js:           js,
+		runID:        "run-cp",
+		stepID:       "step-cp",
+		tel:          tel,
+		ctx:          bgCtx,
+		span:         span,
+		checkpointKV: cpKV,
+	}
+
+	// Positive: checkpoint writes and reads back
+	err := tc.Checkpoint([]byte(`{"progress":50}`))
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+
+	data, err := tc.LoadCheckpoint()
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	// Negative: wrong data fails
+	if string(data) != `{"progress":50}` {
+		t.Fatalf("checkpoint = %q, want progress 50", string(data))
+	}
+}
+
+func TestTaskContextSignal(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "checkpoints"},
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	sigKV, _ := js.KeyValue("signals")
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := &taskContext{
+		nc:       nc,
+		js:       js,
+		runID:    "run-sig",
+		stepID:   "step-sig",
+		tel:      tel,
+		ctx:      bgCtx,
+		span:     span,
+		signalKV: sigKV,
+	}
+
+	// Send signal in background
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		tc.SendSignal("run-sig", "approval", []byte(`"approved"`))
+	}()
+
+	// Positive: WaitForSignal receives it
+	data, err := tc.WaitForSignal("approval", 2*time.Second)
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	// Negative: wrong data fails
+	if string(data) != `"approved"` {
+		t.Fatalf("signal = %q, want approved", string(data))
 	}
 }

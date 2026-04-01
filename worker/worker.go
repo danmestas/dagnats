@@ -24,6 +24,11 @@ type TaskContext interface {
 	Fail(err error) error
 	Continue(output []byte) error
 	PutStream(data []byte) error
+	Heartbeat() error
+	Checkpoint(state []byte) error
+	LoadCheckpoint() ([]byte, error)
+	WaitForSignal(name string, timeout time.Duration) ([]byte, error)
+	SendSignal(runID, name string, data []byte) error
 }
 
 // HandlerFunc is the function signature for task handlers
@@ -35,11 +40,13 @@ type HandlerFunc func(ctx TaskContext) error
 // subscription; messages are ack'd after the handler returns so
 // failures are retried by JetStream's MaxDeliver policy.
 type Worker struct {
-	nc       *nats.Conn
-	js       nats.JetStreamContext
-	tel      *observe.Telemetry
-	handlers map[string]HandlerFunc
-	subs     []*nats.Subscription
+	nc           *nats.Conn
+	js           nats.JetStreamContext
+	tel          *observe.Telemetry
+	handlers     map[string]HandlerFunc
+	subs         []*nats.Subscription
+	checkpointKV nats.KeyValue
+	signalKV     nats.KeyValue
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration observe.Histogram
@@ -97,8 +104,13 @@ func (w *Worker) Handle(
 
 // Start creates JetStream subscriptions for all registered task
 // types. Panics if any subscription fails — stream
-// misconfiguration is a startup error.
+// misconfiguration is a startup error. Binds optional KV buckets
+// for checkpoints and signals (nil if not present).
 func (w *Worker) Start() {
+	// Bind optional KV buckets — no error if missing
+	w.checkpointKV, _ = w.js.KeyValue("checkpoints")
+	w.signalKV, _ = w.js.KeyValue("signals")
+
 	for taskType, handler := range w.handlers {
 		subject := "task." + taskType + ".>"
 		h := handler
@@ -163,7 +175,10 @@ func (w *Worker) handleMessage(
 		observe.String("run_id", payload.RunID),
 		observe.String("step_id", payload.StepID),
 	)
-	tc := newTaskContext(w.nc, w.tel, w.js, payload, ctx, span)
+	tc := newTaskContext(
+		w.nc, w.tel, w.js, payload, ctx, span, msg,
+		w.checkpointKV, w.signalKV,
+	)
 	err = handler(tc)
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Observe(elapsed)
