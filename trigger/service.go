@@ -27,10 +27,13 @@ type TriggerService struct {
 }
 
 // NewTriggerService creates the service. KV buckets must exist.
-// Panics if nc is nil (programmer error).
+// Panics if nc is nil or already closed (programmer error).
 func NewTriggerService(nc *nats.Conn) (*TriggerService, error) {
 	if nc == nil {
 		panic("NewTriggerService: nc must not be nil")
+	}
+	if !nc.IsConnected() {
+		panic("NewTriggerService: nc must be connected")
 	}
 
 	js, err := nc.JetStream()
@@ -60,8 +63,15 @@ func NewTriggerService(nc *nats.Conn) (*TriggerService, error) {
 }
 
 // Start loads triggers from KV, starts all handlers, and begins
-// watching for changes.
+// watching for changes. Panics if prerequisites are not initialized.
 func (ts *TriggerService) Start() error {
+	if ts.scheduler == nil {
+		panic("Start: scheduler must not be nil")
+	}
+	if ts.stopChan == nil {
+		panic("Start: stopChan must not be nil")
+	}
+
 	if err := ts.loadAllTriggers(); err != nil {
 		return fmt.Errorf("loadAllTriggers: %w", err)
 	}
@@ -77,7 +87,15 @@ func (ts *TriggerService) Start() error {
 }
 
 // Stop terminates all triggers and the KV watcher.
+// Panics if called before initialization completes.
 func (ts *TriggerService) Stop() {
+	if ts.stopChan == nil {
+		panic("Stop: stopChan must not be nil")
+	}
+	if ts.subjects == nil {
+		panic("Stop: subjects map must not be nil")
+	}
+
 	close(ts.stopChan)
 
 	ts.mu.Lock()
@@ -96,11 +114,22 @@ func (ts *TriggerService) TickNow() {
 	if ts.scheduler == nil {
 		panic("TickNow: scheduler is nil")
 	}
+	if ts.scheduler.js == nil {
+		panic("TickNow: scheduler JetStream context is nil")
+	}
 	ts.scheduler.Tick(timeNow())
 }
 
 // WebhookHandler returns a unified HTTP handler for all webhook triggers.
+// Panics if service webhooks map is not initialized.
 func (ts *TriggerService) WebhookHandler() http.Handler {
+	if ts.webhooks == nil {
+		panic("WebhookHandler: webhooks map must not be nil")
+	}
+	if ts.subjects == nil {
+		panic("WebhookHandler: service not fully initialized")
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ts.mu.RLock()
 		handler, ok := ts.webhooks[r.URL.Path]
@@ -116,7 +145,15 @@ func (ts *TriggerService) WebhookHandler() http.Handler {
 }
 
 // TriggerCount returns the current number of active triggers.
+// Panics if service or scheduler are not initialized.
 func (ts *TriggerService) TriggerCount() int {
+	if ts.scheduler == nil {
+		panic("TriggerCount: scheduler must not be nil")
+	}
+	if ts.subjects == nil {
+		panic("TriggerCount: subjects map must not be nil")
+	}
+
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 
@@ -130,6 +167,13 @@ func (ts *TriggerService) TriggerCount() int {
 }
 
 func (ts *TriggerService) loadAllTriggers() error {
+	if ts.triggerKV == nil {
+		panic("loadAllTriggers: triggerKV must not be nil")
+	}
+	if ts.scheduler == nil {
+		panic("loadAllTriggers: scheduler must not be nil")
+	}
+
 	keys, err := ts.triggerKV.Keys()
 	if err != nil && err != nats.ErrNoKeysFound {
 		return fmt.Errorf("Keys: %w", err)
@@ -161,6 +205,13 @@ func (ts *TriggerService) loadAllTriggers() error {
 }
 
 func (ts *TriggerService) addTrigger(def TriggerDef) error {
+	if ts.scheduler == nil {
+		panic("addTrigger: scheduler must not be nil")
+	}
+	if ts.nc == nil {
+		panic("addTrigger: nc must not be nil")
+	}
+
 	if err := Validate(def); err != nil {
 		return fmt.Errorf("validate: %w", err)
 	}
@@ -194,6 +245,13 @@ func (ts *TriggerService) addTrigger(def TriggerDef) error {
 }
 
 func (ts *TriggerService) removeTrigger(id string) error {
+	if id == "" {
+		panic("removeTrigger: id must not be empty")
+	}
+	if ts.scheduler == nil {
+		panic("removeTrigger: scheduler must not be nil")
+	}
+
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
@@ -216,6 +274,13 @@ func (ts *TriggerService) removeTrigger(id string) error {
 }
 
 func (ts *TriggerService) startKVWatcher() error {
+	if ts.triggerKV == nil {
+		panic("startKVWatcher: triggerKV must not be nil")
+	}
+	if ts.stopChan == nil {
+		panic("startKVWatcher: stopChan must not be nil")
+	}
+
 	watcher, err := ts.triggerKV.WatchAll()
 	if err != nil {
 		return fmt.Errorf("WatchAll: %w", err)
