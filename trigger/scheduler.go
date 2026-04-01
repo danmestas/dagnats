@@ -132,6 +132,129 @@ func (s *Scheduler) Start(interval time.Duration, stopChan <-chan struct{}) {
 	}
 }
 
+// Backfill replays missed cron schedules from last_run_at to now for
+// triggers with Backfill=true. Caps at 100 fires per trigger to prevent
+// flood after long outage. Uses same fireWorkflow for dedup.
+func (s *Scheduler) Backfill() error {
+	if s.stateKV == nil {
+		panic("Backfill: stateKV is nil")
+	}
+
+	s.mu.RLock()
+	snapshot := make(map[string]TriggerDef, len(s.triggers))
+	for k, v := range s.triggers {
+		snapshot[k] = v
+	}
+	s.mu.RUnlock()
+
+	for _, def := range snapshot {
+		if def.Cron == nil || !def.Cron.Backfill {
+			continue
+		}
+
+		if err := s.backfillTrigger(def); err != nil {
+			return fmt.Errorf("backfill %q: %w", def.ID, err)
+		}
+	}
+	return nil
+}
+
+// backfillTrigger replays missed schedules for a single trigger.
+func (s *Scheduler) backfillTrigger(def TriggerDef) error {
+	if def.ID == "" {
+		panic("backfillTrigger: def.ID is empty")
+	}
+	if def.Cron == nil {
+		panic("backfillTrigger: def.Cron is nil")
+	}
+
+	lastRun, err := s.loadLastRun(def.ID)
+	if err != nil {
+		return fmt.Errorf("loadLastRun: %w", err)
+	}
+	if lastRun.IsZero() {
+		return nil
+	}
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	matches, err := s.findMatches(def, lastRun, now)
+	if err != nil {
+		return fmt.Errorf("findMatches: %w", err)
+	}
+
+	fireCount := len(matches)
+	if fireCount > 100 {
+		fireCount = 100
+	}
+
+	for i := 0; i < fireCount; i++ {
+		if err := s.fireWorkflow(def, matches[i]); err != nil {
+			return fmt.Errorf("fire %v: %w", matches[i], err)
+		}
+	}
+
+	return nil
+}
+
+// loadLastRun retrieves the last_run_at timestamp from trigger_state KV.
+// Returns zero time if key doesn't exist (no previous run).
+func (s *Scheduler) loadLastRun(triggerID string) (time.Time, error) {
+	if triggerID == "" {
+		panic("loadLastRun: triggerID is empty")
+	}
+
+	key := fmt.Sprintf("%s.last_run_at", triggerID)
+	entry, err := s.stateKV.Get(key)
+	if err != nil {
+		if err == nats.ErrKeyNotFound {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("KV Get: %w", err)
+	}
+
+	lastRun, err := time.Parse(time.RFC3339, string(entry.Value()))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse time: %w", err)
+	}
+
+	return lastRun, nil
+}
+
+// findMatches returns all minute timestamps from start (exclusive) to
+// end (inclusive) that match the cron expression. Iterative, no recursion.
+// Bounded by maximum 10000 iterations to prevent unbounded loops.
+func (s *Scheduler) findMatches(
+	def TriggerDef, start, end time.Time,
+) ([]time.Time, error) {
+	if def.Cron == nil {
+		panic("findMatches: def.Cron is nil")
+	}
+
+	expr, err := ParseCron(def.Cron.Expression)
+	if err != nil {
+		return nil, fmt.Errorf("ParseCron: %w", err)
+	}
+
+	loc, err := time.LoadLocation(def.Cron.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("LoadLocation: %w", err)
+	}
+
+	const maxIterations = 10000
+	var matches []time.Time
+	current := start.Add(time.Minute).Truncate(time.Minute)
+
+	for i := 0; i < maxIterations && !current.After(end); i++ {
+		localTime := current.In(loc)
+		if expr.Matches(localTime) {
+			matches = append(matches, current)
+		}
+		current = current.Add(time.Minute)
+	}
+
+	return matches, nil
+}
+
 // shouldFire returns true if the trigger matches the given time in its
 // configured timezone.
 func (s *Scheduler) shouldFire(def TriggerDef, now time.Time) (bool, error) {
