@@ -14,8 +14,17 @@ import (
 // runSystemStatusCmd checks system health and prints a summary. It verifies
 // NATS connectivity, JetStream availability, and counts active workflow runs.
 func runSystemStatusCmd(args []string) {
+	if HasHelpFlag(args) {
+		fmt.Println("Usage: dagnats status")
+		fmt.Println(
+			"Shows system health: NATS, JetStream, active runs.")
+		return
+	}
 	if len(args) > 0 {
-		panic("runSystemStatusCmd: unexpected arguments")
+		fmt.Println("Usage: dagnats status")
+		fmt.Println(
+			"Shows system health: NATS, JetStream, active runs.")
+		return
 	}
 
 	svc, nc := connectService()

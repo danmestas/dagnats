@@ -16,6 +16,16 @@ import (
 
 // runTriggerCmd dispatches trigger subcommands.
 func runTriggerCmd(args []string) {
+	if HasHelpFlag(args) {
+		fmt.Println("Usage: dagnats trigger <command>")
+		fmt.Println("Commands:")
+		fmt.Println("  create   create a new trigger")
+		fmt.Println("  list     list all triggers")
+		fmt.Println("  delete   delete a trigger")
+		fmt.Println("  enable   enable a trigger")
+		fmt.Println("  disable  disable a trigger")
+		return
+	}
 	if len(args) == 0 {
 		fmt.Println("Usage: dagnats trigger " +
 			"<create|list|delete|enable|disable>")

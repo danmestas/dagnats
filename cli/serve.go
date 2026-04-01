@@ -8,6 +8,12 @@ import (
 )
 
 func runServeCmd(args []string) {
+	if HasHelpFlag(args) {
+		fmt.Println("Usage: dagnats serve")
+		fmt.Println("Starts the embedded NATS server with DagNats engine.")
+		return
+	}
+
 	cfg := server.ConfigFromEnv()
 	srv := server.New(cfg)
 	if err := srv.Run(); err != nil {

@@ -9,6 +9,12 @@ func HasHelpFlag(args []string) bool {
 	if args == nil {
 		panic("HasHelpFlag: args must not be nil")
 	}
+
+	const maxArgs = 1000
+	if len(args) > maxArgs {
+		panic("HasHelpFlag: args exceeds max bound")
+	}
+
 	for _, arg := range args {
 		if arg == "--help" || arg == "-h" {
 			return true
