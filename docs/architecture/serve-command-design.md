@@ -167,9 +167,10 @@ Added to the root dispatcher alongside `workflow`, `run`, `trigger`, `dlq`.
 ## HTTP Server
 
 The `server/` package creates its own `http.Server` and mounts:
-- `api.NewRESTHandler(svc)` — existing REST routes (`/workflows`, `/runs`, etc.)
-- `/health` — returns 200 if NATS connected + JetStream available, 503 otherwise
-- `/ready` — returns 200 only after all components have started
+- `api.NewRESTHandler(svc)` — REST routes (`/workflows`, `/runs`, `/health/telemetry`)
+- `/health` — 200 if NATS connected + JetStream available, 503 otherwise
+- `/ready` — 200 only after all components started
+- `/hooks/` — webhook trigger handler (routes by path to registered webhooks)
 
 ## Package Structure
 
