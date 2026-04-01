@@ -1,17 +1,17 @@
 // cli/trigger.go
 // Commands for managing workflow triggers: create, list, delete.
-// Triggers are stored in the NATS KV "triggers" bucket.
 package cli
 
 import (
-	"encoding/json"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"flag"
 	"fmt"
 	"os"
 	"text/tabwriter"
-	"time"
 
 	"github.com/danmestas/dagnats/trigger"
-	"github.com/nats-io/nats.go"
 )
 
 // runTriggerCmd dispatches trigger subcommands.
@@ -32,199 +32,107 @@ func runTriggerCmd(args []string) {
 	}
 }
 
-// TriggerCreateFlags holds parsed flags for trigger create command.
-type TriggerCreateFlags struct {
-	WorkflowID string
-	Cron       string
-	Subject    string
-	Webhook    string
-	Timezone   string
-	Backfill   bool
-	Secret     string
-}
-
 // parseTriggerCreateFlags parses command-line flags for trigger create.
 // Returns nil if parsing fails or required args are missing.
-func parseTriggerCreateFlags(args []string) *TriggerCreateFlags {
+func parseTriggerCreateFlags(args []string) *trigger.TriggerDef {
 	if len(args) < 1 {
 		return nil
 	}
-	flags := &TriggerCreateFlags{
+
+	fs := flag.NewFlagSet("trigger create", flag.ExitOnError)
+	cronExpr := fs.String("cron", "", "Cron expression")
+	subject := fs.String("subject", "", "NATS subject pattern")
+	webhook := fs.String("webhook", "", "Webhook path")
+	timezone := fs.String("tz", "UTC", "Timezone for cron")
+	backfill := fs.Bool("backfill", false, "Enable backfill for cron")
+	secret := fs.String("secret", "", "Webhook secret")
+
+	fs.Parse(args[1:])
+
+	// Validate exactly one trigger type
+	typeCount := 0
+	if *cronExpr != "" {
+		typeCount++
+	}
+	if *subject != "" {
+		typeCount++
+	}
+	if *webhook != "" {
+		typeCount++
+	}
+	if typeCount != 1 {
+		return nil
+	}
+
+	def := &trigger.TriggerDef{
+		ID:         generateTriggerID(),
 		WorkflowID: args[0],
-		Timezone:   "UTC",
+		Enabled:    true,
 	}
-	// Parse flags in format --flag=value or --flag value
-	for i := 1; i < len(args); i++ {
-		arg := args[i]
-		if len(arg) < 3 || arg[0:2] != "--" {
-			continue
-		}
-		var key, value string
-		// Check for --flag=value format
-		for j := 2; j < len(arg); j++ {
-			if arg[j] == '=' {
-				key = arg[2:j]
-				value = arg[j+1:]
-				break
-			}
-		}
-		// --flag value format
-		if key == "" {
-			key = arg[2:]
-			if i+1 < len(args) && args[i+1][0] != '-' {
-				value = args[i+1]
-				i++
-			}
-		}
-		switch key {
-		case "cron":
-			flags.Cron = value
-		case "subject":
-			flags.Subject = value
-		case "webhook":
-			flags.Webhook = value
-		case "tz":
-			flags.Timezone = value
-		case "backfill":
-			flags.Backfill = (value == "true" || value == "")
-		case "secret":
-			flags.Secret = value
+
+	if *cronExpr != "" {
+		def.Cron = &trigger.CronConfig{
+			Expression: *cronExpr,
+			Timezone:   *timezone,
+			Backfill:   *backfill,
 		}
 	}
-	return flags
+	if *subject != "" {
+		def.Subject = &trigger.SubjectConfig{
+			Subject: *subject,
+		}
+	}
+	if *webhook != "" {
+		def.Webhook = &trigger.WebhookConfig{
+			Path:   *webhook,
+			Secret: *secret,
+		}
+	}
+
+	return def
 }
 
-// runTriggerCreateCmd creates a new trigger and stores it in KV.
+// runTriggerCreateCmd creates a new trigger and stores it via api.Service.
 func runTriggerCreateCmd(args []string) {
-	flags := parseTriggerCreateFlags(args)
-	if flags == nil {
+	def := parseTriggerCreateFlags(args)
+	if def == nil {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats trigger create <workflow-id> "+
 				"[--cron=EXPR] [--subject=SUB] [--webhook=PATH] "+
 				"[--tz=TZ] [--backfill] [--secret=SEC]")
-		os.Exit(1)
-	}
-	if flags.WorkflowID == "" {
-		panic("runTriggerCreateCmd: workflowID must not be empty")
-	}
-
-	// Validate exactly one trigger type
-	typeCount := 0
-	if flags.Cron != "" {
-		typeCount++
-	}
-	if flags.Subject != "" {
-		typeCount++
-	}
-	if flags.Webhook != "" {
-		typeCount++
-	}
-	if typeCount != 1 {
 		fmt.Fprintln(os.Stderr,
 			"error: exactly one of --cron, --subject, "+
 				"or --webhook must be specified")
 		os.Exit(1)
 	}
-
-	// Build TriggerDef
-	def := trigger.TriggerDef{
-		ID:         generateTriggerID(),
-		WorkflowID: flags.WorkflowID,
-		Enabled:    true,
-	}
-	if flags.Cron != "" {
-		def.Cron = &trigger.CronConfig{
-			Expression: flags.Cron,
-			Timezone:   flags.Timezone,
-			Backfill:   flags.Backfill,
-		}
-	}
-	if flags.Subject != "" {
-		def.Subject = &trigger.SubjectConfig{
-			Subject: flags.Subject,
-		}
-	}
-	if flags.Webhook != "" {
-		def.Webhook = &trigger.WebhookConfig{
-			Path:   flags.Webhook,
-			Secret: flags.Secret,
-		}
+	if def.WorkflowID == "" {
+		panic("runTriggerCreateCmd: workflowID must not be empty")
 	}
 
-	// Connect to NATS
-	natsURL := os.Getenv("NATS_URL")
-	if natsURL == "" {
-		natsURL = nats.DefaultURL
-	}
-	nc, err := nats.Connect(natsURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect to NATS: %v\n", err)
-		os.Exit(1)
-	}
+	svc, nc := connectService()
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	err := svc.CreateTrigger(context.Background(), *def)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "get JetStream context: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Store in triggers KV bucket
-	trigKV, err := js.KeyValue("triggers")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "get triggers bucket: %v\n", err)
-		os.Exit(1)
-	}
-
-	data, err := json.Marshal(def)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "marshal trigger: %v\n", err)
-		os.Exit(1)
-	}
-
-	_, err = trigKV.Put(def.ID, data)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "store trigger: %v\n", err)
+		fmt.Fprintf(os.Stderr, "create trigger: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("Trigger created: %s\n", def.ID)
 }
 
-// runTriggerListCmd lists all triggers from the KV bucket.
+// runTriggerListCmd lists all triggers via api.Service.
 func runTriggerListCmd(args []string) {
-	// Connect to NATS
-	natsURL := os.Getenv("NATS_URL")
-	if natsURL == "" {
-		natsURL = nats.DefaultURL
-	}
-	nc, err := nats.Connect(natsURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect to NATS: %v\n", err)
-		os.Exit(1)
-	}
+	svc, nc := connectService()
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	defs, err := svc.ListTriggers(context.Background())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "get JetStream context: %v\n", err)
+		fmt.Fprintf(os.Stderr, "list triggers: %v\n", err)
 		os.Exit(1)
 	}
 
-	trigKV, err := js.KeyValue("triggers")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "get triggers bucket: %v\n", err)
-		os.Exit(1)
-	}
-
-	// List all keys
-	keys, err := trigKV.Keys()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "list trigger keys: %v\n", err)
-		os.Exit(1)
-	}
-
-	if len(keys) == 0 {
+	if len(defs) == 0 {
 		fmt.Println("No triggers found.")
 		return
 	}
@@ -233,16 +141,7 @@ func runTriggerListCmd(args []string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tWORKFLOW\tTYPE\tCONFIG\tENABLED")
 
-	for _, key := range keys {
-		entry, err := trigKV.Get(key)
-		if err != nil {
-			continue
-		}
-		var def trigger.TriggerDef
-		if err := json.Unmarshal(entry.Value(), &def); err != nil {
-			continue
-		}
-
+	for _, def := range defs {
 		trigType := "unknown"
 		config := ""
 		if def.Cron != nil {
@@ -268,7 +167,7 @@ func runTriggerListCmd(args []string) {
 	w.Flush()
 }
 
-// runTriggerDeleteCmd deletes a trigger from the KV bucket.
+// runTriggerDeleteCmd deletes a trigger via api.Service.
 func runTriggerDeleteCmd(args []string) {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
@@ -280,31 +179,10 @@ func runTriggerDeleteCmd(args []string) {
 		panic("runTriggerDeleteCmd: triggerID must not be empty")
 	}
 
-	// Connect to NATS
-	natsURL := os.Getenv("NATS_URL")
-	if natsURL == "" {
-		natsURL = nats.DefaultURL
-	}
-	nc, err := nats.Connect(natsURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect to NATS: %v\n", err)
-		os.Exit(1)
-	}
+	svc, nc := connectService()
 	defer nc.Close()
 
-	js, err := nc.JetStream()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "get JetStream context: %v\n", err)
-		os.Exit(1)
-	}
-
-	trigKV, err := js.KeyValue("triggers")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "get triggers bucket: %v\n", err)
-		os.Exit(1)
-	}
-
-	err = trigKV.Delete(triggerID)
+	err := svc.DeleteTrigger(context.Background(), triggerID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "delete trigger: %v\n", err)
 		os.Exit(1)
@@ -313,13 +191,11 @@ func runTriggerDeleteCmd(args []string) {
 	fmt.Printf("Trigger deleted: %s\n", triggerID)
 }
 
-// generateTriggerID creates a unique ID for a new trigger.
-// Uses a simple timestamp-based ID for now.
+// generateTriggerID creates a unique ID for a new trigger using crypto/rand.
 func generateTriggerID() string {
-	return fmt.Sprintf("trig-%d", timeNowUnix())
-}
-
-// timeNowUnix returns current Unix timestamp. Extracted for testing.
-var timeNowUnix = func() int64 {
-	return time.Now().Unix()
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		panic("generateTriggerID: crypto/rand failed: " + err.Error())
+	}
+	return "trig-" + hex.EncodeToString(b)
 }

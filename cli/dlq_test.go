@@ -88,7 +88,7 @@ func TestDLQReplayRepublishes(t *testing.T) {
 
 	// Get sequence number (should be 1 for first message)
 	// Subscribe to task queue to verify replay
-	sub, _ := js.SubscribeSync("task.retry-task.run-456",
+	sub, _ := js.SubscribeSync("task.retry-task.>",
 		nats.AckExplicit(), nats.DeliverAll())
 
 	// Replay the dead letter by sequence number
