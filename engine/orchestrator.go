@@ -189,7 +189,8 @@ func isHandledEventType(t protocol.EventType) bool {
 		protocol.EventStepCompleted,
 		protocol.EventStepContinue,
 		protocol.EventStepFailed,
-		protocol.EventWorkflowSpawn:
+		protocol.EventWorkflowSpawn,
+		protocol.EventWorkflowCancelled:
 		return true
 	}
 	return false
@@ -216,6 +217,8 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepFailed(ctx, evt)
 	case protocol.EventWorkflowSpawn:
 		return o.handleWorkflowSpawn(ctx, evt)
+	case protocol.EventWorkflowCancelled:
+		return o.handleWorkflowCancelled(ctx, evt)
 	default:
 		return nil
 	}
@@ -450,17 +453,11 @@ func (o *Orchestrator) handleStepFailed(
 		state.Error = string(evt.Payload)
 	}
 
-	// Find step def to check retry policy.
-	maxRetries := 0
-	for _, s := range wfDef.Steps {
-		if s.ID == evt.StepID {
-			maxRetries = s.Retries
-			break
-		}
-	}
+	stepDef, _ := findStepDef(wfDef, evt.StepID)
+	policy := dag.ResolveRetryPolicy(wfDef, stepDef)
 
-	if state.Attempts <= maxRetries {
-		// Retries remaining — keep step queued for JetStream redelivery.
+	if policy != nil && state.Attempts <= policy.MaxAttempts {
+		// Retries remaining — save state and let NATS redeliver.
 		run.Steps[evt.StepID] = state
 		return o.saveSnapshot(ctx, run)
 	}
@@ -480,6 +477,39 @@ func (o *Orchestrator) handleStepFailed(
 	return o.notifyParentIfChild(
 		run, fmt.Errorf("%s", state.Error),
 	)
+}
+
+// handleWorkflowCancelled marks the run and all in-flight steps as
+// cancelled, saves state, and adjusts metrics.
+func (o *Orchestrator) handleWorkflowCancelled(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleWorkflowCancelled: RunID must not be empty")
+	}
+	_, run, err := o.loadRunAndDef(evt.RunID)
+	if err != nil {
+		return err
+	}
+	if run.Status != dag.RunStatusRunning {
+		return nil
+	}
+
+	run.Status = dag.RunStatusCancelled
+	for id, state := range run.Steps {
+		if state.Status == dag.StepStatusQueued ||
+			state.Status == dag.StepStatusRunning ||
+			state.Status == dag.StepStatusPending {
+			state.Status = dag.StepStatusCancelled
+			run.Steps[id] = state
+		}
+	}
+
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	o.runsActive.Dec()
+	return o.notifyParentIfChild(run, fmt.Errorf("cancelled"))
 }
 
 const maxNestingDepth = 3
