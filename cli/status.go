@@ -63,6 +63,10 @@ func runSystemStatusCmd(args []string) {
 
 	activeCount := countActiveRuns(runs)
 	fmt.Printf("Active runs: %d\n", activeCount)
+
+	// Detailed stream and run breakdown for richer status output.
+	printStreamDetails(js)
+	printRunBreakdown(svc)
 }
 
 // countActiveRuns counts runs that are pending or running.
