@@ -28,6 +28,9 @@ func NewRESTHandler(svc *Service) http.Handler {
 	if svc == nil {
 		panic("NewRESTHandler: svc must not be nil")
 	}
+	if svc.tel == nil {
+		panic("NewRESTHandler: svc.tel must not be nil")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/workflows", svc.routeWorkflows)
 	mux.HandleFunc("/runs", svc.routeRuns)
@@ -85,6 +88,12 @@ func (s *Service) routeHealth(
 func handleRegisterWorkflow(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
+	if svc == nil {
+		panic("handleRegisterWorkflow: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleRegisterWorkflow: r must not be nil")
+	}
 	var def dag.WorkflowDef
 	if err := json.NewDecoder(r.Body).Decode(&def); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(),
@@ -110,6 +119,12 @@ func handleRegisterWorkflow(
 func handleStartRun(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
+	if svc == nil {
+		panic("handleStartRun: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleStartRun: r must not be nil")
+	}
 	var req startRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(),
@@ -136,6 +151,12 @@ func handleStartRun(
 func handleGetRun(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
+	if svc == nil {
+		panic("handleGetRun: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleGetRun: r must not be nil")
+	}
 	parts := strings.Split(
 		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
 	)
@@ -182,6 +203,12 @@ type streamInfo struct {
 // handleHealth returns service health and optional telemetry stream
 // status. Never fails the health check -- telemetry is informational.
 func handleHealth(svc *Service, w http.ResponseWriter) {
+	if svc == nil {
+		panic("handleHealth: svc must not be nil")
+	}
+	if w == nil {
+		panic("handleHealth: w must not be nil")
+	}
 	resp := healthResponse{Status: "healthy"}
 	info, err := svc.js.StreamInfo("TELEMETRY")
 	if err == nil && info != nil {
@@ -199,6 +226,9 @@ func handleHealth(svc *Service, w http.ResponseWriter) {
 func buildTelemetryInfo(info *nats.StreamInfo) *telemetryInfo {
 	if info == nil {
 		panic("buildTelemetryInfo: info must not be nil")
+	}
+	if info.Config.Name == "" {
+		panic("buildTelemetryInfo: stream name must not be empty")
 	}
 	jaeger := "disabled"
 	if os.Getenv("JAEGER_ENDPOINT") != "" {

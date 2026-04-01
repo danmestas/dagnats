@@ -111,6 +111,9 @@ func (s *Service) RegisterWorkflow(
 	if ctx == nil {
 		panic("RegisterWorkflow: ctx must not be nil")
 	}
+	if def.Name == "" {
+		panic("RegisterWorkflow: def.Name must not be empty")
+	}
 	ctx, span := s.tel.Tracer.Start(ctx,
 		"api.registerWorkflow",
 		observe.WithAttributes(
@@ -137,6 +140,12 @@ func (s *Service) RegisterWorkflow(
 func (s *Service) registerWorkflowInner(
 	def dag.WorkflowDef,
 ) error {
+	if s.defKV == nil {
+		panic("registerWorkflowInner: defKV must not be nil")
+	}
+	if def.Name == "" {
+		panic("registerWorkflowInner: def.Name must not be empty")
+	}
 	if err := dag.Validate(def); err != nil {
 		return fmt.Errorf("invalid workflow: %w", err)
 	}
@@ -151,6 +160,12 @@ func (s *Service) registerWorkflowInner(
 // GetWorkflow retrieves the registered definition for the named
 // workflow. Returns a NATS key-not-found error when not registered.
 func (s *Service) GetWorkflow(name string) (dag.WorkflowDef, error) {
+	if name == "" {
+		panic("GetWorkflow: name must not be empty")
+	}
+	if s.defKV == nil {
+		panic("GetWorkflow: defKV must not be nil")
+	}
 	entry, err := s.defKV.Get(name)
 	if err != nil {
 		return dag.WorkflowDef{}, err
@@ -169,6 +184,9 @@ func (s *Service) StartRun(
 ) (string, error) {
 	if ctx == nil {
 		panic("StartRun: ctx must not be nil")
+	}
+	if workflowName == "" {
+		panic("StartRun: workflowName must not be empty")
 	}
 	ctx, span := s.tel.Tracer.Start(ctx,
 		"api.startRun",
@@ -201,6 +219,14 @@ func (s *Service) startRunInner(
 	workflowName string,
 	input []byte,
 ) (string, error) {
+	if workflowName == "" {
+		panic(
+			"startRunInner: workflowName must not be empty",
+		)
+	}
+	if span == nil {
+		panic("startRunInner: span must not be nil")
+	}
 	entry, err := s.defKV.Get(workflowName)
 	if err != nil {
 		return "", fmt.Errorf(
@@ -240,6 +266,9 @@ func (s *Service) GetRun(
 ) (dag.WorkflowRun, error) {
 	if ctx == nil {
 		panic("GetRun: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("GetRun: runID must not be empty")
 	}
 	_, span := s.tel.Tracer.Start(ctx,
 		"api.getRun",
@@ -333,6 +362,9 @@ func (s *Service) ListWorkflows(
 	if ctx == nil {
 		panic("ListWorkflows: ctx must not be nil")
 	}
+	if s.defKV == nil {
+		panic("ListWorkflows: defKV must not be nil")
+	}
 	_, span := s.tel.Tracer.Start(ctx, "api.listWorkflows")
 	defer span.End()
 	start := time.Now()
@@ -351,6 +383,12 @@ func (s *Service) ListWorkflows(
 
 // listWorkflowsInner holds the KV iteration logic.
 func (s *Service) listWorkflowsInner() ([]dag.WorkflowDef, error) {
+	if s.defKV == nil {
+		panic("listWorkflowsInner: defKV must not be nil")
+	}
+	if s.js == nil {
+		panic("listWorkflowsInner: js must not be nil")
+	}
 	keys, err := s.defKV.Keys()
 	if err != nil {
 		return nil, err
@@ -404,6 +442,12 @@ func (s *Service) CancelRun(
 
 // cancelRunInner publishes the workflow.cancelled event.
 func (s *Service) cancelRunInner(runID string) error {
+	if runID == "" {
+		panic("cancelRunInner: runID must not be empty")
+	}
+	if s.js == nil {
+		panic("cancelRunInner: js must not be nil")
+	}
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowCancelled, runID, nil,
 	)
@@ -459,6 +503,12 @@ func (s *Service) SendSignal(
 func (s *Service) sendSignalInner(
 	runID string, name string, data []byte,
 ) error {
+	if runID == "" {
+		panic("sendSignalInner: runID must not be empty")
+	}
+	if name == "" {
+		panic("sendSignalInner: name must not be empty")
+	}
 	if s.signalKV == nil {
 		return fmt.Errorf("signals KV bucket not available")
 	}
@@ -473,6 +523,9 @@ func (s *Service) CreateTrigger(
 ) error {
 	if ctx == nil {
 		panic("CreateTrigger: ctx must not be nil")
+	}
+	if def.ID == "" {
+		panic("CreateTrigger: def.ID must not be empty")
 	}
 	_, span := s.tel.Tracer.Start(ctx,
 		"api.createTrigger",
@@ -498,6 +551,14 @@ func (s *Service) CreateTrigger(
 
 // createTriggerInner validates and writes the trigger to KV.
 func (s *Service) createTriggerInner(def trigger.TriggerDef) error {
+	if def.ID == "" {
+		panic("createTriggerInner: def.ID must not be empty")
+	}
+	if def.WorkflowID == "" {
+		panic(
+			"createTriggerInner: def.WorkflowID must not be empty",
+		)
+	}
 	if s.triggerKV == nil {
 		return fmt.Errorf("triggers KV bucket not available")
 	}
@@ -519,6 +580,9 @@ func (s *Service) ListTriggers(
 	if ctx == nil {
 		panic("ListTriggers: ctx must not be nil")
 	}
+	if s.js == nil {
+		panic("ListTriggers: js must not be nil")
+	}
 	_, span := s.tel.Tracer.Start(ctx, "api.listTriggers")
 	defer span.End()
 	start := time.Now()
@@ -537,6 +601,9 @@ func (s *Service) ListTriggers(
 
 // listTriggersInner holds the KV iteration logic.
 func (s *Service) listTriggersInner() ([]trigger.TriggerDef, error) {
+	if s.js == nil {
+		panic("listTriggersInner: js must not be nil")
+	}
 	if s.triggerKV == nil {
 		return []trigger.TriggerDef{}, nil
 	}
@@ -593,6 +660,11 @@ func (s *Service) DeleteTrigger(
 
 // deleteTriggerInner deletes the trigger from KV.
 func (s *Service) deleteTriggerInner(triggerID string) error {
+	if triggerID == "" {
+		panic(
+			"deleteTriggerInner: triggerID must not be empty",
+		)
+	}
 	if s.triggerKV == nil {
 		return fmt.Errorf("triggers KV bucket not available")
 	}
@@ -634,11 +706,16 @@ func (s *Service) SetTriggerEnabled(
 func (s *Service) setTriggerEnabledInner(
 	triggerID string, enabled bool,
 ) error {
+	if triggerID == "" {
+		panic(
+			"setTriggerEnabledInner: triggerID must not be empty",
+		)
+	}
+	if s.js == nil {
+		panic("setTriggerEnabledInner: js must not be nil")
+	}
 	if s.triggerKV == nil {
 		return fmt.Errorf("triggers KV bucket not available")
-	}
-	if triggerID == "" {
-		return fmt.Errorf("triggerID must not be empty")
 	}
 	entry, err := s.triggerKV.Get(triggerID)
 	if err != nil {
@@ -689,6 +766,12 @@ func (s *Service) ListDeadLetters(
 func (s *Service) listDeadLettersInner(
 	limit int,
 ) ([]DeadLetter, error) {
+	if limit <= 0 {
+		panic("listDeadLettersInner: limit must be positive")
+	}
+	if s.js == nil {
+		panic("listDeadLettersInner: js must not be nil")
+	}
 	sub, err := s.js.SubscribeSync("dead.>")
 	if err != nil {
 		return nil, err
@@ -763,6 +846,12 @@ func (s *Service) ReplayDeadLetter(
 
 // replayDeadLetterInner fetches by sequence and republishes.
 func (s *Service) replayDeadLetterInner(seq uint64) error {
+	if seq == 0 {
+		panic("replayDeadLetterInner: seq must be positive")
+	}
+	if s.js == nil {
+		panic("replayDeadLetterInner: js must not be nil")
+	}
 	letters, err := s.listDeadLettersInner(100)
 	if err != nil {
 		return err
@@ -806,6 +895,9 @@ func (s *Service) ListRuns(
 	if ctx == nil {
 		panic("ListRuns: ctx must not be nil")
 	}
+	if s.store == nil {
+		panic("ListRuns: store must not be nil")
+	}
 	_, span := s.tel.Tracer.Start(ctx, "api.listRuns")
 	defer span.End()
 	start := time.Now()
@@ -826,6 +918,12 @@ func (s *Service) ListRuns(
 func (s *Service) listRunsInner(
 	workflowFilter string,
 ) ([]dag.WorkflowRun, error) {
+	if s.store == nil {
+		panic("listRunsInner: store must not be nil")
+	}
+	if s.js == nil {
+		panic("listRunsInner: js must not be nil")
+	}
 	const maxRunsLimit = 1000
 	runs, err := s.store.ListAll(maxRunsLimit)
 	if err != nil {
@@ -882,6 +980,12 @@ func (s *Service) ListRunEvents(
 func (s *Service) listRunEventsInner(
 	runID string, fullData bool,
 ) ([]RunEvent, error) {
+	if runID == "" {
+		panic("listRunEventsInner: runID must not be empty")
+	}
+	if s.js == nil {
+		panic("listRunEventsInner: js must not be nil")
+	}
 	const maxEvents = 500
 	const fetchTimeoutMs = 2000
 	const dataTruncateLen = 200

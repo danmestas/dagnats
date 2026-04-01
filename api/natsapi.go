@@ -45,6 +45,12 @@ func NewNATSAPI(
 // Start registers subscriptions for all control-plane subjects.
 // Panics on Subscribe failure -- unrecoverable programmer error.
 func (n *NATSAPI) Start() {
+	if n.nc == nil {
+		panic("NATSAPI.Start: nc must not be nil")
+	}
+	if n.svc == nil {
+		panic("NATSAPI.Start: svc must not be nil")
+	}
 	handlers := map[string]nats.MsgHandler{
 		"api.workflows.register": n.handleRegister,
 		"api.runs.start":         n.handleStartRun,
@@ -65,6 +71,12 @@ func (n *NATSAPI) Start() {
 // Stop drains all active subscriptions. Errors are intentionally
 // ignored -- the connection is typically being torn down.
 func (n *NATSAPI) Stop() {
+	if n.nc == nil {
+		panic("NATSAPI.Stop: nc must not be nil")
+	}
+	if n.subs == nil {
+		panic("NATSAPI.Stop: subs must not be nil")
+	}
 	for _, sub := range n.subs {
 		sub.Unsubscribe() //nolint:errcheck -- best-effort teardown
 	}
@@ -72,6 +84,12 @@ func (n *NATSAPI) Stop() {
 
 // handleRegister unmarshals a WorkflowDef and calls RegisterWorkflow.
 func (n *NATSAPI) handleRegister(msg *nats.Msg) {
+	if msg == nil {
+		panic("handleRegister: msg must not be nil")
+	}
+	if n.svc == nil {
+		panic("handleRegister: svc must not be nil")
+	}
 	var def dag.WorkflowDef
 	if err := json.Unmarshal(msg.Data, &def); err != nil {
 		n.reply(msg, map[string]string{"error": err.Error()})
@@ -90,6 +108,12 @@ func (n *NATSAPI) handleRegister(msg *nats.Msg) {
 
 // handleStartRun unmarshals a startRunRequest and calls StartRun.
 func (n *NATSAPI) handleStartRun(msg *nats.Msg) {
+	if msg == nil {
+		panic("handleStartRun: msg must not be nil")
+	}
+	if n.svc == nil {
+		panic("handleStartRun: svc must not be nil")
+	}
 	var req startRunRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		n.reply(msg, map[string]string{"error": err.Error()})
@@ -108,6 +132,12 @@ func (n *NATSAPI) handleStartRun(msg *nats.Msg) {
 // handleGetRun reads the run ID from the raw message body and returns
 // the current snapshot. The body is plain text (not JSON).
 func (n *NATSAPI) handleGetRun(msg *nats.Msg) {
+	if msg == nil {
+		panic("handleGetRun: msg must not be nil")
+	}
+	if n.svc == nil {
+		panic("handleGetRun: svc must not be nil")
+	}
 	runID := string(msg.Data)
 	run, err := n.svc.GetRun(context.Background(), runID)
 	if err != nil {
@@ -125,6 +155,12 @@ func (n *NATSAPI) handleGetRun(msg *nats.Msg) {
 // reply marshals payload to JSON and sends it as a reply. A marshal
 // error is logged -- panicking would kill the subscription goroutine.
 func (n *NATSAPI) reply(msg *nats.Msg, payload interface{}) {
+	if msg == nil {
+		panic("reply: msg must not be nil")
+	}
+	if n.logger == nil {
+		panic("reply: logger must not be nil")
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		n.logger.Error("reply: marshal failed",
