@@ -6,6 +6,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
+	"github.com/danmestas/dagnats/trigger"
+	"github.com/nats-io/nats.go"
 )
 
 func TestServiceRegisterWorkflow(t *testing.T) {
@@ -118,5 +122,293 @@ func TestServiceGetRunNotFound(t *testing.T) {
 	_, err = svc.GetRun(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent run")
+	}
+}
+
+func TestServiceListWorkflows(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	wb1 := dag.NewWorkflow("wf-a")
+	wb1.Task("a", "task-a")
+	def1, _ := wb1.Build()
+	wb2 := dag.NewWorkflow("wf-b")
+	wb2.Task("b", "task-b")
+	def2, _ := wb2.Build()
+	svc.RegisterWorkflow(context.Background(), def1)
+	svc.RegisterWorkflow(context.Background(), def2)
+	defs, err := svc.ListWorkflows(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkflows failed: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("len(defs) = %d, want 2", len(defs))
+	}
+}
+
+func TestServiceCancelRun(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	wb := dag.NewWorkflow("test-wf")
+	wb.Task("a", "task-a")
+	def, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), def)
+	runID, _ := svc.StartRun(context.Background(), "test-wf", nil)
+	err = svc.CancelRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("CancelRun failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	sub, _ := js.SubscribeSync("history." + runID)
+	defer sub.Unsubscribe()
+	found := false
+	deadline := time.After(2 * time.Second)
+	for {
+		msg, err := sub.NextMsg(10 * time.Millisecond)
+		if err != nil {
+			select {
+			case <-deadline:
+				if !found {
+					t.Fatal("workflow.cancelled event not found")
+				}
+				return
+			case <-time.After(5 * time.Millisecond):
+				continue
+			}
+		}
+		var evt protocol.Event
+		json.Unmarshal(msg.Data, &evt)
+		if evt.Type == protocol.EventWorkflowCancelled {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("workflow.cancelled event not published")
+	}
+}
+
+func TestServiceSendSignal(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "signals"}),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	runID := "test-run-123"
+	data := []byte(`{"value":42}`)
+	err = svc.SendSignal(context.Background(), runID, "sig1", data)
+	if err != nil {
+		t.Fatalf("SendSignal failed: %v", err)
+	}
+	entry, err := svc.signalKV.Get(runID + ".sig1")
+	if err != nil {
+		t.Fatalf("signal not written to KV: %v", err)
+	}
+	if string(entry.Value()) != string(data) {
+		t.Fatalf("data = %q, want %q", entry.Value(), data)
+	}
+}
+
+func TestServiceCreateTrigger(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	def := trigger.TriggerDef{
+		ID:         "trig-1",
+		WorkflowID: "wf-a",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "0 0 * * *",
+			Timezone:   "UTC",
+		},
+	}
+	err = svc.CreateTrigger(context.Background(), def)
+	if err != nil {
+		t.Fatalf("CreateTrigger failed: %v", err)
+	}
+	entry, err := svc.triggerKV.Get("trig-1")
+	if err != nil {
+		t.Fatalf("trigger not written to KV: %v", err)
+	}
+	var stored trigger.TriggerDef
+	json.Unmarshal(entry.Value(), &stored)
+	if stored.ID != "trig-1" {
+		t.Fatalf("ID = %q, want %q", stored.ID, "trig-1")
+	}
+}
+
+func TestServiceCreateTriggerValidation(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	def := trigger.TriggerDef{
+		ID:         "bad-trig",
+		WorkflowID: "wf-a",
+		Enabled:    true,
+	}
+	err = svc.CreateTrigger(context.Background(), def)
+	if err == nil {
+		t.Fatal("expected validation error for trigger with no type")
+	}
+}
+
+func TestServiceListTriggers(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	def1 := trigger.TriggerDef{
+		ID:         "trig-1",
+		WorkflowID: "wf-a",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "0 0 * * *",
+			Timezone:   "UTC",
+		},
+	}
+	def2 := trigger.TriggerDef{
+		ID:         "trig-2",
+		WorkflowID: "wf-b",
+		Enabled:    true,
+		Subject:    &trigger.SubjectConfig{Subject: "test.>"},
+	}
+	svc.CreateTrigger(context.Background(), def1)
+	svc.CreateTrigger(context.Background(), def2)
+	defs, err := svc.ListTriggers(context.Background())
+	if err != nil {
+		t.Fatalf("ListTriggers failed: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("len(defs) = %d, want 2", len(defs))
+	}
+}
+
+func TestServiceDeleteTrigger(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	def := trigger.TriggerDef{
+		ID:         "trig-del",
+		WorkflowID: "wf-a",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "0 0 * * *",
+			Timezone:   "UTC",
+		},
+	}
+	svc.CreateTrigger(context.Background(), def)
+	err = svc.DeleteTrigger(context.Background(), "trig-del")
+	if err != nil {
+		t.Fatalf("DeleteTrigger failed: %v", err)
+	}
+	_, err = svc.triggerKV.Get("trig-del")
+	if err == nil {
+		t.Fatal("trigger should be deleted")
+	}
+}
+
+func TestServiceListDeadLetters(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	js, _ := nc.JetStream()
+	payload := protocol.TaskPayload{
+		RunID:  "run-123",
+		StepID: "step-1",
+	}
+	data, _ := json.Marshal(payload)
+	msg := &nats.Msg{
+		Subject: "dead.task-a",
+		Data:    data,
+		Header:  nats.Header{"Error": {"test error"}},
+	}
+	_, err = js.PublishMsg(msg)
+	if err != nil {
+		t.Fatalf("PublishMsg failed: %v", err)
+	}
+	letters, err := svc.ListDeadLetters(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListDeadLetters failed: %v", err)
+	}
+	if len(letters) == 0 {
+		t.Fatal("expected at least one dead letter")
+	}
+	if letters[0].RunID != "run-123" {
+		t.Fatalf("RunID = %q, want %q", letters[0].RunID, "run-123")
+	}
+}
+
+func TestServiceReplayDeadLetter(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	js, _ := nc.JetStream()
+	payload := protocol.TaskPayload{
+		RunID:  "run-456",
+		StepID: "step-2",
+	}
+	data, _ := json.Marshal(payload)
+	msg := &nats.Msg{
+		Subject: "dead.task-replay",
+		Data:    data,
+		Header:  nats.Header{"Error": {"replay test"}},
+	}
+	ack, err := js.PublishMsg(msg)
+	if err != nil {
+		t.Fatalf("PublishMsg failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	sub, subErr := js.SubscribeSync("task.task-replay")
+	if subErr != nil {
+		t.Fatalf("SubscribeSync failed: %v", subErr)
+	}
+	defer sub.Unsubscribe()
+	err = svc.ReplayDeadLetter(context.Background(), ack.Sequence)
+	if err != nil {
+		t.Fatalf("ReplayDeadLetter failed: %v", err)
+	}
+	replayed, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("replayed message not received: %v", err)
+	}
+	var replayPayload protocol.TaskPayload
+	json.Unmarshal(replayed.Data, &replayPayload)
+	if replayPayload.RunID != "run-456" {
+		t.Fatalf("RunID = %q, want %q", replayPayload.RunID, "run-456")
 	}
 }
