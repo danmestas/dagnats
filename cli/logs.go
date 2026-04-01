@@ -105,7 +105,7 @@ func formatLogLine(rec simple.LogRecord) string {
 
 	fields := formatFields(rec.Fields)
 	if rec.Error != "" {
-		fields = append(fields, colorRed("error="+rec.Error))
+		fields = append(fields, ColorRed("error="+rec.Error))
 	}
 	if len(fields) > 0 {
 		b.WriteString(" [")
@@ -141,30 +141,19 @@ func formatFields(fields map[string]any) []string {
 }
 
 // colorLevel pads the level string to 7 characters and applies
-// ANSI color based on severity. Respects NO_COLOR env var.
+// Gruvbox color based on severity. Uses shared color utilities.
 func colorLevel(level string) string {
 	padded := fmt.Sprintf("%-7s", level)
-	if os.Getenv("NO_COLOR") != "" {
-		return padded
-	}
 	switch level {
 	case "ERROR":
-		return "\033[31m" + padded + "\033[0m"
+		return ColorRed(padded)
 	case "WARN":
-		return "\033[33m" + padded + "\033[0m"
+		return ColorYellow(padded)
 	case "INFO":
-		return "\033[32m" + padded + "\033[0m"
+		return ColorGreen(padded)
 	case "DEBUG":
-		return "\033[90m" + padded + "\033[0m"
+		return ColorGray(padded)
 	default:
 		return padded
 	}
-}
-
-// colorRed wraps text in red ANSI escape codes. Respects NO_COLOR.
-func colorRed(s string) string {
-	if os.Getenv("NO_COLOR") != "" {
-		return s
-	}
-	return "\033[31m" + s + "\033[0m"
 }

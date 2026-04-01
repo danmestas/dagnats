@@ -8,7 +8,7 @@ import "os"
 
 // Gruvbox 24-bit ANSI escape sequences, matching server/banner.go palette.
 const (
-	colorRed    = "\033[38;2;204;36;29m"  // #cc241d
+	colorRed    = "\033[38;2;204;36;29m"   // #cc241d
 	colorGreen  = "\033[38;2;142;192;124m" // #8ec07c
 	colorYellow = "\033[38;2;254;128;25m"  // #fe8019
 	colorGray   = "\033[38;2;146;131;116m" // #928374
