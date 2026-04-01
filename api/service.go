@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -47,6 +48,15 @@ type DeadLetter struct {
 	Task      string    `json:"task"`
 	Error     string    `json:"error"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// RunEvent is a history event for display.
+type RunEvent struct {
+	Type      string    `json:"type"`
+	RunID     string    `json:"run_id"`
+	StepID    string    `json:"step_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Data      string    `json:"data"`
 }
 
 // NewService binds the control plane to an active NATS connection.
@@ -726,4 +736,126 @@ func (s *Service) replayDeadLetterInner(seq uint64) error {
 // isTaskSubject checks if a subject starts with "task.".
 func isTaskSubject(subject string) bool {
 	return len(subject) >= 5 && subject[:5] == "task."
+}
+
+// ListRuns retrieves all workflow runs, optionally filtered by workflow ID.
+// Returns runs sorted by CreatedAt descending (newest first).
+func (s *Service) ListRuns(
+	ctx context.Context, workflowFilter string,
+) ([]dag.WorkflowRun, error) {
+	if ctx == nil {
+		panic("ListRuns: ctx must not be nil")
+	}
+	_, span := s.tel.Tracer.Start(ctx, "api.listRuns")
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	runs, err := s.listRunsInner(workflowFilter)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return runs, err
+}
+
+// listRunsInner retrieves all runs from the store, filters, and sorts.
+func (s *Service) listRunsInner(
+	workflowFilter string,
+) ([]dag.WorkflowRun, error) {
+	const maxRunsLimit = 1000
+	runs, err := s.store.ListAll(maxRunsLimit)
+	if err != nil {
+		return nil, err
+	}
+	if workflowFilter != "" {
+		filtered := make([]dag.WorkflowRun, 0, len(runs))
+		for _, run := range runs {
+			if run.WorkflowID == workflowFilter {
+				filtered = append(filtered, run)
+			}
+		}
+		runs = filtered
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].CreatedAt.After(runs[j].CreatedAt)
+	})
+	return runs, nil
+}
+
+// ListRunEvents retrieves history events for a given run.
+// Returns up to 500 events with Data field truncated to 200 chars.
+func (s *Service) ListRunEvents(
+	ctx context.Context, runID string,
+) ([]RunEvent, error) {
+	if ctx == nil {
+		panic("ListRunEvents: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("ListRunEvents: runID must not be empty")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.listRunEvents",
+		observe.WithAttributes(
+			observe.StringAttr("run_id", runID),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	events, err := s.listRunEventsInner(runID)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return events, err
+}
+
+// listRunEventsInner subscribes to history stream and reads events.
+func (s *Service) listRunEventsInner(runID string) ([]RunEvent, error) {
+	const maxEvents = 500
+	const fetchTimeoutMs = 2000
+	const dataTruncateLen = 200
+
+	sub, err := s.js.SubscribeSync(
+		"history."+runID,
+		nats.DeliverAll(),
+		nats.AckNone(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer sub.Unsubscribe() //nolint:errcheck
+
+	events := make([]RunEvent, 0, maxEvents)
+	for i := 0; i < maxEvents; i++ {
+		msg, err := sub.NextMsg(fetchTimeoutMs * time.Millisecond)
+		if err != nil {
+			break
+		}
+		var evt protocol.Event
+		err = json.Unmarshal(msg.Data, &evt)
+		if err != nil {
+			continue
+		}
+		dataStr := string(evt.Payload)
+		if len(dataStr) > dataTruncateLen {
+			dataStr = dataStr[:dataTruncateLen]
+		}
+		events = append(events, RunEvent{
+			Type:      string(evt.Type),
+			RunID:     evt.RunID,
+			StepID:    evt.StepID,
+			Timestamp: evt.Timestamp,
+			Data:      dataStr,
+		})
+	}
+	return events, nil
 }

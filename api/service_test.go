@@ -412,3 +412,147 @@ func TestServiceReplayDeadLetter(t *testing.T) {
 		t.Fatalf("RunID = %q, want %q", replayPayload.RunID, "run-456")
 	}
 }
+
+func TestServiceListRuns(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	wb := dag.NewWorkflow("list-test-wf")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+
+	runID1, _ := svc.StartRun(context.Background(), "list-test-wf", nil)
+	runID2, _ := svc.StartRun(context.Background(), "list-test-wf", nil)
+
+	deadline := time.After(5 * time.Second)
+	runsFound := 0
+	for {
+		runs, err := svc.ListRuns(context.Background(), "")
+		if err != nil {
+			t.Fatalf("ListRuns failed: %v", err)
+		}
+		foundRun1 := false
+		foundRun2 := false
+		for _, run := range runs {
+			if run.RunID == runID1 {
+				foundRun1 = true
+			}
+			if run.RunID == runID2 {
+				foundRun2 = true
+			}
+		}
+		if foundRun1 && foundRun2 {
+			runsFound = len(runs)
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("runs did not appear in list within 5s")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if runsFound < 2 {
+		t.Fatalf("expected at least 2 runs, got %d", runsFound)
+	}
+}
+
+func TestServiceListRunsFilterByWorkflow(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	wb1 := dag.NewWorkflow("filter-wf-a")
+	wb1.Task("a", "task-a")
+	def1, _ := wb1.Build()
+	wb2 := dag.NewWorkflow("filter-wf-b")
+	wb2.Task("b", "task-b")
+	def2, _ := wb2.Build()
+	svc.RegisterWorkflow(context.Background(), def1)
+	svc.RegisterWorkflow(context.Background(), def2)
+
+	runIDA, _ := svc.StartRun(context.Background(), "filter-wf-a", nil)
+	svc.StartRun(context.Background(), "filter-wf-b", nil)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		runs, err := svc.ListRuns(context.Background(), "filter-wf-a")
+		if err != nil {
+			t.Fatalf("ListRuns failed: %v", err)
+		}
+		foundA := false
+		for _, run := range runs {
+			if run.RunID == runIDA {
+				foundA = true
+			}
+			if run.WorkflowID != "filter-wf-a" {
+				t.Fatalf(
+					"filtered list contains wrong workflow: %s",
+					run.WorkflowID,
+				)
+			}
+		}
+		if foundA {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run did not appear in filtered list within 5s")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestServiceListRunEvents(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	wb := dag.NewWorkflow("events-test-wf")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+	runID, _ := svc.StartRun(context.Background(), "events-test-wf", nil)
+
+	time.Sleep(200 * time.Millisecond)
+
+	events, err := svc.ListRunEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListRunEvents failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected at least one event")
+	}
+	foundStarted := false
+	for _, evt := range events {
+		if evt.RunID != runID {
+			t.Fatalf("event RunID = %q, want %q", evt.RunID, runID)
+		}
+		if evt.Type == string(protocol.EventWorkflowStarted) {
+			foundStarted = true
+		}
+	}
+	if !foundStarted {
+		t.Fatal("workflow.started event not found in history")
+	}
+}

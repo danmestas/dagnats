@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -26,8 +27,15 @@ func runDLQCmd(args []string) {
 	}
 }
 
-// runDLQListCmd lists dead-letter messages via api.Service.
+// runDLQListCmd lists dead-letter messages with optional --run filter.
 func runDLQListCmd(args []string) {
+	var runFilter string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--run=") {
+			runFilter = strings.TrimPrefix(arg, "--run=")
+		}
+	}
+
 	svc, nc := connectService()
 	defer nc.Close()
 
@@ -37,20 +45,31 @@ func runDLQListCmd(args []string) {
 		os.Exit(1)
 	}
 
+	// Apply run filter client-side
+	if runFilter != "" {
+		filtered := letters[:0]
+		for _, l := range letters {
+			if l.RunID == runFilter {
+				filtered = append(filtered, l)
+			}
+		}
+		letters = filtered
+	}
+
 	if len(letters) == 0 {
 		fmt.Println("No dead letters found.")
 		return
 	}
 
-	// Print table header
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SEQ\tSUBJECT\tRUN_ID\tSTEP_ID\tTASK\tERROR\tTIMESTAMP")
+	fmt.Fprintln(w,
+		"SEQ\tSUBJECT\tRUN_ID\tSTEP_ID\tTASK\tERROR\tTIMESTAMP")
 
 	for _, letter := range letters {
-		timestamp := letter.Timestamp.Format("2006-01-02 15:04:05")
+		ts := letter.Timestamp.Format("2006-01-02 15:04:05")
 		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			letter.Sequence, letter.Subject, letter.RunID,
-			letter.StepID, letter.Task, letter.Error, timestamp)
+			letter.StepID, letter.Task, letter.Error, ts)
 	}
 
 	w.Flush()

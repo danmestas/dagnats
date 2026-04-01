@@ -69,3 +69,43 @@ func (s *SnapshotStore) Load(runID string) (dag.WorkflowRun, error) {
 	err = json.Unmarshal(entry.Value(), &run)
 	return run, err
 }
+
+// ListAll returns all workflow runs from the KV bucket.
+// Scans all keys with prefix "run." bounded at maxRuns.
+func (s *SnapshotStore) ListAll(maxRuns int) ([]dag.WorkflowRun, error) {
+	if s.kv == nil {
+		panic("SnapshotStore.ListAll: kv bucket must not be nil")
+	}
+	if maxRuns <= 0 {
+		panic("SnapshotStore.ListAll: maxRuns must be positive")
+	}
+	keys, err := s.kv.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return []dag.WorkflowRun{}, nil
+		}
+		return nil, err
+	}
+	runs := make([]dag.WorkflowRun, 0, len(keys))
+	count := 0
+	for _, key := range keys {
+		if len(key) < 4 || key[:4] != "run." {
+			continue
+		}
+		if count >= maxRuns {
+			break
+		}
+		entry, err := s.kv.Get(key)
+		if err != nil {
+			return nil, err
+		}
+		var run dag.WorkflowRun
+		err = json.Unmarshal(entry.Value(), &run)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+		count++
+	}
+	return runs, nil
+}

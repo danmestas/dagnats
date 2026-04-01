@@ -110,3 +110,58 @@ func TestSnapshotUpdate(t *testing.T) {
 		t.Fatalf("step-a Status = %v, want Completed", got.Steps["a"].Status)
 	}
 }
+
+func TestSnapshotListAll(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	err = natsutil.SetupKVBuckets(js)
+	if err != nil {
+		t.Fatalf("SetupKVBuckets failed: %v", err)
+	}
+	store := NewSnapshotStore(js)
+	run1 := dag.WorkflowRun{
+		RunID:      "run-001",
+		WorkflowID: "wf-a",
+		Status:     dag.RunStatusRunning,
+		Steps:      map[string]dag.StepState{"a": {Status: dag.StepStatusPending}},
+		CreatedAt:  time.Now().UTC().Truncate(time.Millisecond),
+	}
+	run2 := dag.WorkflowRun{
+		RunID:      "run-002",
+		WorkflowID: "wf-b",
+		Status:     dag.RunStatusCompleted,
+		Steps:      map[string]dag.StepState{"b": {Status: dag.StepStatusCompleted}},
+		CreatedAt:  time.Now().UTC().Add(1 * time.Second).Truncate(time.Millisecond),
+	}
+	err = store.Save(run1)
+	if err != nil {
+		t.Fatalf("Save run1 failed: %v", err)
+	}
+	err = store.Save(run2)
+	if err != nil {
+		t.Fatalf("Save run2 failed: %v", err)
+	}
+	runs, err := store.ListAll(100)
+	if err != nil {
+		t.Fatalf("ListAll failed: %v", err)
+	}
+	if len(runs) < 2 {
+		t.Fatalf("expected at least 2 runs, got %d", len(runs))
+	}
+	foundRun1 := false
+	foundRun2 := false
+	for _, run := range runs {
+		if run.RunID == "run-001" {
+			foundRun1 = true
+		}
+		if run.RunID == "run-002" {
+			foundRun2 = true
+		}
+	}
+	if !foundRun1 || !foundRun2 {
+		t.Fatal("ListAll did not return both expected runs")
+	}
+}
