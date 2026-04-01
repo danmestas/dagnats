@@ -29,6 +29,21 @@ func NewConcurrencyManager(
 	return &ConcurrencyManager{runKV: kv}
 }
 
+// NewConcurrencyManagerSafe creates a manager using the
+// concurrency_runs KV bucket. Returns nil if bucket doesn't exist.
+func NewConcurrencyManagerSafe(
+	js nats.JetStreamContext,
+) (*ConcurrencyManager, error) {
+	if js == nil {
+		panic("NewConcurrencyManagerSafe: js must not be nil")
+	}
+	kv, err := js.KeyValue("concurrency_runs")
+	if err != nil {
+		return nil, err
+	}
+	return &ConcurrencyManager{runKV: kv}, nil
+}
+
 // AcquireRun increments the counter for the workflow. Returns false
 // if the limit is reached. Limit 0 means unlimited.
 func (cm *ConcurrencyManager) AcquireRun(

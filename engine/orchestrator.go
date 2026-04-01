@@ -23,14 +23,15 @@ import (
 // It is intentionally stateless between events — all run state lives in the
 // snapshot store (NATS KV), so the orchestrator can crash and resume safely.
 type Orchestrator struct {
-	nc       *nats.Conn
-	js       nats.JetStreamContext
-	defKV    nats.KeyValue
-	store    *SnapshotStore
-	tel      *observe.Telemetry
-	sub      *nats.Subscription
-	runLocks   sync.Map // map[string]*sync.Mutex — per-run serialization
-	stepRoutes map[dag.StepType]string // step type → subject prefix
+	nc          *nats.Conn
+	js          nats.JetStreamContext
+	defKV       nats.KeyValue
+	store       *SnapshotStore
+	tel         *observe.Telemetry
+	sub         *nats.Subscription
+	runLocks    sync.Map // map[string]*sync.Mutex — per-run serialization
+	stepRoutes  map[dag.StepType]string // step type → subject prefix
+	concurrency *ConcurrencyManager     // nil if bucket missing
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive       observe.Gauge
@@ -75,12 +76,14 @@ func NewOrchestrator(
 				err.Error(),
 		)
 	}
+	cm, _ := NewConcurrencyManagerSafe(js)
 	o := &Orchestrator{
-		nc:    nc,
-		js:    js,
-		defKV: defKV,
-		store: NewSnapshotStore(js),
-		tel:   tel,
+		nc:          nc,
+		js:          js,
+		defKV:       defKV,
+		store:       NewSnapshotStore(js),
+		tel:         tel,
+		concurrency: cm,
 		runsActive: tel.Metrics.Gauge(
 			"workflow.runs.active", nil,
 		),
@@ -234,7 +237,8 @@ func (o *Orchestrator) dispatchEvent(
 }
 
 // handleWorkflowStarted creates the initial WorkflowRun from the event
-// payload, saves it, then enqueues all entry-point steps.
+// payload, saves it, then enqueues all entry-point steps. If concurrency
+// limit is configured and reached, the run stays Pending.
 func (o *Orchestrator) handleWorkflowStarted(
 	ctx context.Context, evt protocol.Event,
 ) error {
@@ -249,6 +253,25 @@ func (o *Orchestrator) handleWorkflowStarted(
 		return fmt.Errorf("unmarshal WorkflowDef: %w", err)
 	}
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
+
+	// Check concurrency limit if configured.
+	if wfDef.Concurrency != nil && o.concurrency != nil {
+		acquired, err := o.concurrency.AcquireRun(
+			wfDef.Name, wfDef.Concurrency.MaxRuns,
+		)
+		if err != nil {
+			return fmt.Errorf("acquire run: %w", err)
+		}
+		if !acquired {
+			// Limit reached — save as Pending and return.
+			run.Status = dag.RunStatusPending
+			if err := o.saveSnapshot(ctx, run); err != nil {
+				return fmt.Errorf("save pending run: %w", err)
+			}
+			return nil
+		}
+	}
+
 	run.Status = dag.RunStatusRunning
 	if wfDef.Timeout > 0 {
 		deadline := time.Now().Add(wfDef.Timeout)
@@ -291,7 +314,7 @@ func (o *Orchestrator) handleStepCompleted(
 }
 
 // completeWorkflow marks the run complete, saves, publishes the event,
-// and adjusts metrics.
+// adjusts metrics, and releases concurrency slot.
 func (o *Orchestrator) completeWorkflow(
 	ctx context.Context, run dag.WorkflowRun,
 ) error {
@@ -304,6 +327,11 @@ func (o *Orchestrator) completeWorkflow(
 	}
 	o.runsActive.Dec()
 	o.runsCompleted.Inc()
+	if o.concurrency != nil {
+		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+			return fmt.Errorf("release run: %w", err)
+		}
+	}
 	if err := o.publishWorkflowCompleted(run.RunID); err != nil {
 		return err
 	}
@@ -437,6 +465,11 @@ func (o *Orchestrator) failLoopStep(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
+	if o.concurrency != nil {
+		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+			return fmt.Errorf("release run: %w", err)
+		}
+	}
 	if err := o.publishWorkflowFailed(run.RunID); err != nil {
 		return err
 	}
@@ -504,6 +537,11 @@ func (o *Orchestrator) handleStepFailed(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
+	if o.concurrency != nil {
+		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+			return fmt.Errorf("release run: %w", err)
+		}
+	}
 	if err := o.publishWorkflowFailed(run.RunID); err != nil {
 		return err
 	}
@@ -570,6 +608,11 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		return err
 	}
 	o.runsActive.Dec()
+	if o.concurrency != nil {
+		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+			return fmt.Errorf("release run: %w", err)
+		}
+	}
 	return o.notifyParentIfChild(run, fmt.Errorf("cancelled"))
 }
 
