@@ -47,6 +47,7 @@ type Worker struct {
 	subs         []*nats.Subscription
 	checkpointKV nats.KeyValue
 	signalKV     nats.KeyValue
+	groups       []string
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration observe.Histogram
@@ -54,11 +55,21 @@ type Worker struct {
 	tasksActive  observe.Gauge
 }
 
+// WorkerOption configures optional Worker behavior.
+type WorkerOption func(*Worker)
+
+// WithGroups configures the worker to subscribe only to specific
+// worker groups. When provided, the worker subscribes to
+// task.{taskType}.{group}.> instead of task.{taskType}.>.
+func WithGroups(groups ...string) WorkerOption {
+	return func(w *Worker) { w.groups = groups }
+}
+
 // NewWorker creates a Worker using the given connection and
 // telemetry bundle. Panics if nc or tel is nil, or if JetStream
 // cannot be initialised — all are programmer errors at startup.
 func NewWorker(
-	nc *nats.Conn, tel *observe.Telemetry,
+	nc *nats.Conn, tel *observe.Telemetry, opts ...WorkerOption,
 ) *Worker {
 	if nc == nil {
 		panic("NewWorker: nc must not be nil")
@@ -70,7 +81,7 @@ func NewWorker(
 	if err != nil {
 		panic("NewWorker: JetStream init failed: " + err.Error())
 	}
-	return &Worker{
+	w := &Worker{
 		nc:       nc,
 		js:       js,
 		tel:      tel,
@@ -85,6 +96,10 @@ func NewWorker(
 			"worker.tasks.active", nil,
 		),
 	}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
 }
 
 // Handle registers a HandlerFunc for the given task type.
@@ -105,26 +120,45 @@ func (w *Worker) Handle(
 // Start creates JetStream subscriptions for all registered task
 // types. Panics if any subscription fails — stream
 // misconfiguration is a startup error. Binds optional KV buckets
-// for checkpoints and signals (nil if not present).
+// for checkpoints and signals (nil if not present). When groups
+// are configured, subscribes to group-specific subjects.
 func (w *Worker) Start() {
 	// Bind optional KV buckets — no error if missing
 	w.checkpointKV, _ = w.js.KeyValue("checkpoints")
 	w.signalKV, _ = w.js.KeyValue("signals")
 
 	for taskType, handler := range w.handlers {
-		subject := "task." + taskType + ".>"
 		h := handler
 		tt := taskType
-		sub, err := w.js.Subscribe(subject, func(msg *nats.Msg) {
-			w.handleMessage(tt, h, msg)
-		}, nats.AckExplicit(), nats.DeliverAll())
-		if err != nil {
-			panic(
-				"Worker.Start: Subscribe failed for " +
-					taskType + ": " + err.Error(),
-			)
+		if len(w.groups) == 0 {
+			// No groups — subscribe to all tasks of this type
+			subject := "task." + taskType + ".>"
+			sub, err := w.js.Subscribe(subject, func(msg *nats.Msg) {
+				w.handleMessage(tt, h, msg)
+			}, nats.AckExplicit(), nats.DeliverAll())
+			if err != nil {
+				panic(
+					"Worker.Start: Subscribe failed for " +
+						taskType + ": " + err.Error(),
+				)
+			}
+			w.subs = append(w.subs, sub)
+		} else {
+			// Groups configured — subscribe to each group
+			for _, group := range w.groups {
+				subject := "task." + taskType + "." + group + ".>"
+				sub, err := w.js.Subscribe(subject, func(msg *nats.Msg) {
+					w.handleMessage(tt, h, msg)
+				}, nats.AckExplicit(), nats.DeliverAll())
+				if err != nil {
+					panic(
+						"Worker.Start: Subscribe failed for " +
+							taskType + "." + group + ": " + err.Error(),
+					)
+				}
+				w.subs = append(w.subs, sub)
+			}
 		}
-		w.subs = append(w.subs, sub)
 	}
 }
 

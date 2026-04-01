@@ -974,3 +974,64 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	}
 }
 
+func TestOrchestratorWorkerGroupRouting(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	// Define workflow with a step targeting worker group "gpu"
+	wfDef := dag.WorkflowDef{
+		Name:    "gpu-workflow",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:          "train",
+				Task:        "ml-training",
+				Type:        dag.StepTypeNormal,
+				WorkerGroup: "gpu",
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start the workflow
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "gpu-run-1", defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
+
+	// Positive: task should appear on gpu-specific subject
+	gpuSub, err := js.PullSubscribe(
+		"task.ml-training.gpu.*", "", nats.BindStream("TASK_QUEUES"),
+	)
+	if err != nil {
+		t.Fatalf("PullSubscribe gpu subject failed: %v", err)
+	}
+	msgs, err := gpuSub.Fetch(1, nats.MaxWait(3*time.Second))
+	if err != nil {
+		t.Fatalf("task did not arrive on gpu subject: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 task on gpu subject, got %d", len(msgs))
+	}
+
+	// Negative: task should NOT appear on non-group subject
+	generalSub, _ := js.PullSubscribe(
+		"task.ml-training.gpu-run-1", "", nats.BindStream("TASK_QUEUES"),
+	)
+	generalMsgs, _ := generalSub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	if len(generalMsgs) > 0 {
+		t.Fatal("task should not appear on non-group subject when group is set")
+	}
+}
+
