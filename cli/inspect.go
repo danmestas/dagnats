@@ -80,7 +80,7 @@ func printFailureEvents(
 			step = "-"
 		}
 		ts := evt.Timestamp.Format("15:04:05")
-		fmt.Printf("  %s  %-24s %s\n", ts, evt.Type, step)
+		fmt.Printf("  %s  %-24s %s\n", ts, ColorRed(evt.Type), step)
 		if evt.Data != "" && evt.Data != "-" {
 			fmt.Printf("          %s\n", evt.Data)
 		}
