@@ -127,8 +127,8 @@ func TestOrchestratorEnforcesRunConcurrencyLimit(t *testing.T) {
 		compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()),
 	)
 
-	// Wait for completion to propagate
-	time.Sleep(200 * time.Millisecond)
+	// Wait for completion to propagate and auto-start
+	time.Sleep(300 * time.Millisecond)
 
 	// Verify first run is Completed
 	run1Final, err := orch.store.Load("run-1")
@@ -141,14 +141,20 @@ func TestOrchestratorEnforcesRunConcurrencyLimit(t *testing.T) {
 		)
 	}
 
-	// Second run should still be Pending (no auto-start implemented yet)
+	// Second run should now be Running (auto-started)
 	run2Check, err := orch.store.Load("run-2")
 	if err != nil {
 		t.Fatalf("load run-2 check: %v", err)
 	}
-	if run2Check.Status != dag.RunStatusPending {
+	if run2Check.Status != dag.RunStatusRunning {
 		t.Fatalf(
-			"run-2 should remain Pending, got %s", run2Check.Status,
+			"run-2 should auto-start to Running, got %s", run2Check.Status,
 		)
+	}
+
+	// Verify second task was enqueued after auto-start
+	msgs3, err := taskSub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	if err != nil || len(msgs3) == 0 {
+		t.Fatal("run-2 should have task enqueued after auto-start")
 	}
 }
