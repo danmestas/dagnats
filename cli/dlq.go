@@ -94,21 +94,44 @@ func runDLQListCmd(args []string) {
 	w.Flush()
 }
 
-// runDLQReplayCmd replays a dead-letter message via api.Service.
+// runDLQReplayCmd replays dead-letter messages by sequence or run.
 func runDLQReplayCmd(args []string) {
-	if len(args) != 1 {
+	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats dlq replay <sequence-number>")
+			"Usage: dagnats dlq replay "+
+				"<sequence-number> | --run=<run-id>")
 		os.Exit(1)
 	}
 
-	seqNum, err := strconv.ParseUint(args[0], 10, 64)
+	// Batch replay by run ID
+	var runFilter string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--run=") {
+			runFilter = strings.TrimPrefix(arg, "--run=")
+		}
+	}
+	if runFilter != "" {
+		replayByRun(runFilter)
+		return
+	}
+
+	replayBySequence(args[0])
+}
+
+// replayBySequence replays a single dead letter by sequence number.
+func replayBySequence(seqStr string) {
+	if seqStr == "" {
+		panic("replayBySequence: seqStr must not be empty")
+	}
+
+	seqNum, err := strconv.ParseUint(seqStr, 10, 64)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid sequence number: %v\n", err)
+		fmt.Fprintf(os.Stderr,
+			"invalid sequence number: %v\n", err)
 		os.Exit(1)
 	}
 	if seqNum == 0 {
-		panic("runDLQReplayCmd: sequence number must be > 0")
+		panic("replayBySequence: sequence must be > 0")
 	}
 
 	svc, nc := connectService()
@@ -121,4 +144,44 @@ func runDLQReplayCmd(args []string) {
 	}
 
 	fmt.Printf("Replayed dead letter %d\n", seqNum)
+}
+
+// replayByRun replays all dead letters matching a run ID.
+func replayByRun(runID string) {
+	if runID == "" {
+		panic("replayByRun: runID must not be empty")
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	const maxFetch = 100
+	ctx := context.Background()
+	letters, err := svc.ListDeadLetters(ctx, maxFetch)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "list dead letters: %v\n", err)
+		os.Exit(1)
+	}
+
+	replayed := 0
+	for _, dl := range letters {
+		if dl.RunID != runID {
+			continue
+		}
+		if err := svc.ReplayDeadLetter(ctx, dl.Sequence); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"replay seq %d: %v\n", dl.Sequence, err)
+			continue
+		}
+		replayed++
+		fmt.Printf("Replayed dead letter %d (%s)\n",
+			dl.Sequence, dl.Task)
+	}
+
+	if replayed == 0 {
+		fmt.Println("No dead letters found for run.")
+	} else {
+		fmt.Printf("Replayed %d dead letters for run %s\n",
+			replayed, runID)
+	}
 }
