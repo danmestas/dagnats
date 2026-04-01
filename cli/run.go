@@ -15,11 +15,12 @@ import (
 
 // runRunCmd dispatches run subcommands.
 func runRunCmd(args []string) {
+	if HasHelpFlag(args) {
+		printRunUsage()
+		return
+	}
 	if len(args) == 0 {
-		fmt.Println(
-			"Usage: dagnats run " +
-				"<start|status|inspect|cancel|signal|list|events>",
-		)
+		printRunUsage()
 		return
 	}
 	switch args[0] {
@@ -37,9 +38,25 @@ func runRunCmd(args []string) {
 		runEventsCmd(args[1:])
 	case "inspect":
 		runInspectCmd(args[1:])
+	case "watch":
+		runWatchCmd(args[1:])
 	default:
 		fmt.Printf("unknown run subcommand: %s\n", args[0])
 	}
+}
+
+// printRunUsage prints the run subcommand help text.
+func printRunUsage() {
+	fmt.Println("Usage: dagnats run <command>")
+	fmt.Println("Commands:")
+	fmt.Println("  start    start a workflow run")
+	fmt.Println("  status   show run status")
+	fmt.Println("  inspect  unified debug view for a run")
+	fmt.Println("  cancel   cancel a running workflow")
+	fmt.Println("  signal   send a signal to a run")
+	fmt.Println("  list     list workflow runs")
+	fmt.Println("  events   show run event history")
+	fmt.Println("  watch    watch a run until completion")
 }
 
 // runStartCmd starts a new workflow run with optional input.
