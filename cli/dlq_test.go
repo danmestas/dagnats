@@ -6,6 +6,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -113,6 +114,62 @@ func TestDLQReplayRepublishes(t *testing.T) {
 	if err == nil {
 		t.Fatal("should not receive duplicate replayed message")
 	}
+}
+
+func TestDLQListRespectsLimit(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+
+	// Publish 5 dead letters
+	for i := 0; i < 5; i++ {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"run_id":  fmt.Sprintf("run-%d", i),
+			"step_id": "step-a",
+		})
+		subject := fmt.Sprintf("dead.task-%d", i)
+		_, err := js.Publish(subject, payload)
+		if err != nil {
+			t.Fatalf("publish dead letter %d: %v", i, err)
+		}
+	}
+
+	// With --limit=2, should see exactly 2 data rows
+	output := captureOutput(func() {
+		runDLQListCmd([]string{"--limit=2"})
+	})
+	dataLines := countDataLines(output)
+	if dataLines != 2 {
+		t.Fatalf("expected 2 data lines with --limit=2, got %d",
+			dataLines)
+	}
+
+	// Without limit (default 50), should see all 5
+	outputAll := captureOutput(func() {
+		runDLQListCmd([]string{})
+	})
+	dataLinesAll := countDataLines(outputAll)
+	if dataLinesAll != 5 {
+		t.Fatalf("expected 5 data lines without limit, got %d",
+			dataLinesAll)
+	}
+}
+
+// countDataLines counts non-header, non-empty lines in tabwriter output.
+func countDataLines(output string) int {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) <= 1 {
+		return 0
+	}
+	// First line is header
+	return len(lines) - 1
 }
 
 // captureOutput runs a function and captures its stdout output.

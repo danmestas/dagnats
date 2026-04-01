@@ -88,10 +88,20 @@ func runWorkflowRegisterCmd(args []string) {
 	svc, nc := connectService()
 	defer nc.Close()
 
+	// Check whether this workflow already exists to distinguish
+	// create from update in user feedback.
+	_, getErr := svc.GetWorkflow(def.Name)
+	isUpdate := getErr == nil
+
 	if err := svc.RegisterWorkflow(context.Background(), def); err != nil {
 		fmt.Fprintf(os.Stderr, "register workflow: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Workflow registered: %s\n", def.Name)
+	action := "created"
+	if isUpdate {
+		action = "updated"
+	}
+	fmt.Printf("Workflow %s: %s (%d steps)\n",
+		action, def.Name, len(def.Steps))
 }

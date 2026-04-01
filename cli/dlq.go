@@ -27,19 +27,38 @@ func runDLQCmd(args []string) {
 	}
 }
 
-// runDLQListCmd lists dead-letter messages with optional --run filter.
+// runDLQListCmd lists dead-letter messages with optional filters.
 func runDLQListCmd(args []string) {
 	var runFilter string
+	limit := 50
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--run=") {
 			runFilter = strings.TrimPrefix(arg, "--run=")
+		}
+		if strings.HasPrefix(arg, "--limit=") {
+			val, parseErr := strconv.Atoi(
+				strings.TrimPrefix(arg, "--limit="),
+			)
+			if parseErr != nil {
+				fmt.Fprintf(os.Stderr,
+					"invalid --limit value: %v\n", parseErr)
+				os.Exit(1)
+			}
+			if val <= 0 {
+				fmt.Fprintln(os.Stderr,
+					"--limit must be positive")
+				os.Exit(1)
+			}
+			limit = val
 		}
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
-	letters, err := svc.ListDeadLetters(context.Background(), 50)
+	letters, err := svc.ListDeadLetters(
+		context.Background(), limit,
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list dead letters: %v\n", err)
 		os.Exit(1)

@@ -63,7 +63,7 @@ All state lives in NATS. No external database, no Redis, no Postgres.
 | `trigger/` | Cron, NATS subject, and webhook triggers with live reload |
 | `actor/` | Pure Go actor runtime — supervision, restart tracking, mailboxes |
 | `server/` | Embedded NATS server, full lifecycle, single-binary deployment |
-| `cli/` | CLI client — workflow, run, trigger, dlq, serve commands |
+| `cli/` | CLI client — workflow, run, trigger, dlq, serve, status commands |
 | `observe/` | Provider-agnostic observability interfaces |
 | `natsutil/` | NATS resource setup + embedded test server |
 | `protocol/` | Wire-format types — Event, EventType, TaskPayload |
@@ -131,18 +131,21 @@ Workers always run as separate processes connecting to NATS.
 
 ```bash
 dagnats serve                                       # Start embedded server
+dagnats status                                      # Check system health
 dagnats workflow list                               # List registered workflows
 dagnats workflow register workflow.json             # Register a workflow
 dagnats run start <workflow> [input]                # Start a run
 dagnats run status <run-id>                         # Check run status
 dagnats run list [--workflow=X] [--status=running]  # List runs with filters
-dagnats run events <run-id> [--full]                # View event history
+dagnats run events <id> [--full] [--type=T] [--step=S]  # View event history
 dagnats run cancel <run-id>                         # Cancel a running workflow
 dagnats run signal <run-id> <name> <data>           # Send signal to a run
 dagnats trigger create <wf> --cron="..."            # Create a trigger
 dagnats trigger list                                # List triggers
+dagnats trigger enable <id>                         # Enable a trigger
+dagnats trigger disable <id>                        # Disable a trigger
 dagnats trigger delete <id>                         # Delete a trigger
-dagnats dlq list [--run=<run-id>]                   # List dead-letter messages
+dagnats dlq list [--run=<id>] [--limit=N]           # List dead-letter messages
 dagnats dlq replay <seq>                            # Replay a failed message
 ```
 

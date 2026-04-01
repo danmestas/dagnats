@@ -336,6 +336,83 @@ func TestServiceDeleteTrigger(t *testing.T) {
 	}
 }
 
+func TestServiceSetTriggerEnabled(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Store a trigger directly in KV with Enabled: true
+	js, jsErr := nc.JetStream()
+	if jsErr != nil {
+		t.Fatalf("JetStream failed: %v", jsErr)
+	}
+	trigKV, kvErr := js.KeyValue("triggers")
+	if kvErr != nil {
+		t.Fatalf("KeyValue failed: %v", kvErr)
+	}
+	def := trigger.TriggerDef{
+		ID:         "trig-1",
+		WorkflowID: "wf-1",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "* * * * *",
+			Timezone:   "UTC",
+		},
+	}
+	data, marshalErr := json.Marshal(def)
+	if marshalErr != nil {
+		t.Fatalf("Marshal failed: %v", marshalErr)
+	}
+	_, putErr := trigKV.Put("trig-1", data)
+	if putErr != nil {
+		t.Fatalf("Put failed: %v", putErr)
+	}
+
+	// Positive: disable the trigger
+	ctx := context.Background()
+	err = svc.SetTriggerEnabled(ctx, "trig-1", false)
+	if err != nil {
+		t.Fatalf("SetTriggerEnabled(false) failed: %v", err)
+	}
+	entry, err := trigKV.Get("trig-1")
+	if err != nil {
+		t.Fatalf("Get after disable failed: %v", err)
+	}
+	var disabled trigger.TriggerDef
+	json.Unmarshal(entry.Value(), &disabled)
+	if disabled.Enabled {
+		t.Fatal("expected Enabled=false after disable")
+	}
+
+	// Positive: re-enable the trigger
+	err = svc.SetTriggerEnabled(ctx, "trig-1", true)
+	if err != nil {
+		t.Fatalf("SetTriggerEnabled(true) failed: %v", err)
+	}
+	entry, err = trigKV.Get("trig-1")
+	if err != nil {
+		t.Fatalf("Get after enable failed: %v", err)
+	}
+	var enabled trigger.TriggerDef
+	json.Unmarshal(entry.Value(), &enabled)
+	if !enabled.Enabled {
+		t.Fatal("expected Enabled=true after enable")
+	}
+
+	// Negative: non-existent trigger returns error
+	err = svc.SetTriggerEnabled(ctx, "no-such-trigger", false)
+	if err == nil {
+		t.Fatal("expected error for non-existent trigger")
+	}
+}
+
 func TestServiceListDeadLetters(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc)

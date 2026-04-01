@@ -599,6 +599,66 @@ func (s *Service) deleteTriggerInner(triggerID string) error {
 	return s.triggerKV.Delete(triggerID)
 }
 
+// SetTriggerEnabled updates the enabled state of a trigger.
+func (s *Service) SetTriggerEnabled(
+	ctx context.Context, triggerID string, enabled bool,
+) error {
+	if ctx == nil {
+		panic("SetTriggerEnabled: ctx must not be nil")
+	}
+	if triggerID == "" {
+		panic("SetTriggerEnabled: triggerID must not be empty")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.setTriggerEnabled",
+		observe.WithAttributes(
+			observe.StringAttr("trigger_id", triggerID),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	err := s.setTriggerEnabledInner(triggerID, enabled)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return err
+}
+
+// setTriggerEnabledInner reads, updates, and writes the trigger.
+func (s *Service) setTriggerEnabledInner(
+	triggerID string, enabled bool,
+) error {
+	if s.triggerKV == nil {
+		return fmt.Errorf("triggers KV bucket not available")
+	}
+	if triggerID == "" {
+		return fmt.Errorf("triggerID must not be empty")
+	}
+	entry, err := s.triggerKV.Get(triggerID)
+	if err != nil {
+		return fmt.Errorf(
+			"trigger %q not found: %w", triggerID, err,
+		)
+	}
+	var def trigger.TriggerDef
+	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		return fmt.Errorf("unmarshal trigger: %w", err)
+	}
+	def.Enabled = enabled
+	data, err := json.Marshal(def)
+	if err != nil {
+		return fmt.Errorf("marshal trigger: %w", err)
+	}
+	_, err = s.triggerKV.Put(triggerID, data)
+	return err
+}
+
 // ListDeadLetters retrieves up to limit dead letter messages.
 func (s *Service) ListDeadLetters(
 	ctx context.Context, limit int,
