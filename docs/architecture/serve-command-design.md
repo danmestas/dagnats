@@ -32,10 +32,11 @@ Internal calls use NATS request/reply (micro). External callers use HTTP.
 
 ```go
 type Config struct {
-    DataDir     string   // JetStream storage
-    HTTPAddr    string   // HTTP listen address
-    NATSPort    int      // Embedded NATS port
-    LeafRemotes []string // Hub URLs for leaf node mode
+    DataDir        string   // JetStream storage
+    HTTPAddr       string   // HTTP listen address
+    NATSPort       int      // Embedded NATS port
+    LeafRemotes    []string // Hub URLs for leaf node mode (max 10)
+    MaxStoreBytes  int64    // JetStream storage cap (default 10GB)
 }
 ```
 
@@ -60,7 +61,8 @@ leaf_remotes:
 - No file required — zero-config starts everything on defaults
 - Fixed path `./dagnats.yaml` — no `--config` flag
 - Invalid YAML → fatal error with line number
-- Unknown keys → ignored (forward compatibility)
+- Unknown keys → logged as warning, not fatal (forward compatibility)
+- LeafRemotes capped at 10 entries
 
 ### Platform Defaults
 
@@ -70,19 +72,21 @@ leaf_remotes:
 | HTTPAddr | `:8080` |
 | NATSPort | `4222` |
 | LeafRemotes | empty (standalone mode) |
+| MaxStoreBytes | `10737418240` (10GB) |
 
 ## Server Struct
 
 ```go
 type Server struct {
-    cfg    Config
-    ns     *natsserver.Server
-    nc     *nats.Conn
-    orch   *engine.Orchestrator
-    api    *api.Service
-    trig   *trigger.TriggerService
-    http   *http.Server
-    tel    *observe.Telemetry
+    cfg       Config
+    ns        *natsserver.Server
+    nc        *nats.Conn
+    orch      *engine.ActorOrchestrator // actor-based, per-run in-memory state
+    api       *api.Service
+    trig      *trigger.TriggerService
+    http      *http.Server
+    tel       *observe.Telemetry
+    telStop   func()                    // telemetry shutdown (flushes Jaeger)
 }
 ```
 
@@ -92,9 +96,9 @@ type Server struct {
 2. Start embedded NATS server (standalone or leaf node)
 3. Connect client to `nats://localhost:{port}`
 4. `natsutil.SetupAll(nc)` — streams, KV buckets, telemetry stream
-5. `simple.SetupTelemetry(nc)` — tracing, metrics, logging
+5. `simple.SetupTelemetry(nc)` — tracing, metrics, logging; capture shutdown func
 6. `api.NewService(nc, tel)` — control plane
-7. `engine.NewOrchestrator(nc, tel)` — workflow execution
+7. `engine.NewActorOrchestrator(nc, tel)` — actor-based workflow execution
 8. `trigger.NewTriggerService(nc)` — cron/subject/webhook
 9. `orch.Start()` + `trig.Start()` — subscribe to streams
 10. Start HTTP server (non-blocking)
@@ -104,21 +108,31 @@ type Server struct {
 
 1. HTTP server graceful shutdown (5s timeout)
 2. `trig.Stop()` — unsubscribe triggers, stop scheduler
-3. `orch.Stop()` — unsubscribe from history stream
-4. Telemetry flush
+3. `orch.Stop()` — unsubscribe from history stream, stop all actors
+4. `telStop()` — cancel Jaeger exporter, flush pending spans
 5. `nc.Drain()` — flush pending NATS messages
 6. `ns.Shutdown()` — stop embedded NATS
 
-Sequential, deterministic, bounded. No goroutine leaks.
+Sequential, deterministic, bounded. Hard deadline: 15s total for the entire
+shutdown sequence. If any step hangs, force-exit after the deadline.
+No goroutine leaks.
 
 ## Embedded NATS Setup
 
+Standalone mode binds to `127.0.0.1` (local only). Leaf node mode binds to
+`0.0.0.0` (external connectivity required for hub communication).
+
 ```go
+host := "127.0.0.1"
+if len(cfg.LeafRemotes) > 0 {
+    host = "0.0.0.0"
+}
 opts := &natsserver.Options{
-    Host:      "0.0.0.0",
-    Port:      cfg.NATSPort,
-    JetStream: true,
-    StoreDir:  filepath.Join(cfg.DataDir, "jetstream"),
+    Host:           host,
+    Port:           cfg.NATSPort,
+    JetStream:      true,
+    StoreDir:       filepath.Join(cfg.DataDir, "jetstream"),
+    JetStreamMaxStore: cfg.MaxStoreBytes,
 }
 
 if len(cfg.LeafRemotes) > 0 {
@@ -128,7 +142,8 @@ if len(cfg.LeafRemotes) > 0 {
 }
 ```
 
-`ReadyForConnections(5s)` blocks until the server is accepting clients.
+`ReadyForConnections(5s)` blocks until the server is accepting clients. If it
+returns false (port conflict, disk error, etc.), `Run()` returns an error.
 
 ## CLI Integration
 
@@ -146,6 +161,13 @@ func runServeCmd(args []string) {
 ```
 
 Added to the root dispatcher alongside `workflow`, `run`, `trigger`, `dlq`.
+
+## HTTP Server
+
+The `server/` package creates its own `http.Server` and mounts:
+- `api.NewRESTHandler(svc)` — existing REST routes (`/workflows`, `/runs`, etc.)
+- `/health` — returns 200 if NATS connected + JetStream available, 503 otherwise
+- `/ready` — returns 200 only after all components have started
 
 ## Package Structure
 
