@@ -15,11 +15,12 @@ import (
 
 // runRunCmd dispatches run subcommands.
 func runRunCmd(args []string) {
+	if HasHelpFlag(args) {
+		printRunUsage()
+		return
+	}
 	if len(args) == 0 {
-		fmt.Println(
-			"Usage: dagnats run " +
-				"<start|status|inspect|cancel|signal|list|events>",
-		)
+		printRunUsage()
 		return
 	}
 	switch args[0] {
@@ -37,9 +38,25 @@ func runRunCmd(args []string) {
 		runEventsCmd(args[1:])
 	case "inspect":
 		runInspectCmd(args[1:])
+	case "watch":
+		runWatchCmd(args[1:])
 	default:
 		fmt.Printf("unknown run subcommand: %s\n", args[0])
 	}
+}
+
+// printRunUsage prints the run subcommand help text.
+func printRunUsage() {
+	fmt.Println("Usage: dagnats run <command>")
+	fmt.Println("Commands:")
+	fmt.Println("  start    start a workflow run")
+	fmt.Println("  status   show run status")
+	fmt.Println("  inspect  unified debug view for a run")
+	fmt.Println("  cancel   cancel a running workflow")
+	fmt.Println("  signal   send a signal to a run")
+	fmt.Println("  list     list workflow runs")
+	fmt.Println("  events   show run event history")
+	fmt.Println("  watch    watch a run until completion")
 }
 
 // runStartCmd starts a new workflow run with optional input.
@@ -203,7 +220,8 @@ func runListCmd(args []string) {
 		created := run.CreatedAt.Format("2006-01-02 15:04:05")
 		stepCount := len(run.Steps)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
-			run.RunID, run.WorkflowID, run.Status.String(), created, stepCount)
+			run.RunID, run.WorkflowID,
+			ColorStatus(run.Status.String()), created, stepCount)
 	}
 
 	w.Flush()
@@ -313,7 +331,7 @@ func FormatRunStatus(run dag.WorkflowRun) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Run:      %s\n", run.RunID)
 	fmt.Fprintf(&b, "Workflow: %s\n", run.WorkflowID)
-	fmt.Fprintf(&b, "Status:   %s\n", run.Status.String())
+	fmt.Fprintf(&b, "Status:   %s\n", ColorStatus(run.Status.String()))
 	fmt.Fprintf(&b, "Created:  %s\n",
 		run.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
 	fmt.Fprintf(&b, "\nSteps:\n")
@@ -334,7 +352,7 @@ func formatStepLine(id string, state dag.StepState) string {
 	}
 
 	line := fmt.Sprintf("%-20s %s (attempts: %d)",
-		id, state.Status.String(), state.Attempts)
+		id, ColorStatus(state.Status.String()), state.Attempts)
 
 	if state.Iterations > 0 {
 		line += fmt.Sprintf(" (iterations: %d)", state.Iterations)

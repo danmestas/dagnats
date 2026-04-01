@@ -22,6 +22,7 @@ import (
 )
 
 func TestInspectShowsStatusAndFailures(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	srv, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -97,6 +98,7 @@ func TestInspectShowsStatusAndFailures(t *testing.T) {
 }
 
 func TestInspectCleanRunShowsNoFailures(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	srv, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
