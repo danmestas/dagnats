@@ -30,6 +30,8 @@ func runRunCmd(args []string) {
 		fmt.Println("(run retry not yet implemented)")
 	case "cancel":
 		runCancelCmd(args[1:])
+	case "signal":
+		runSignalCmd(args[1:])
 	default:
 		fmt.Printf("unknown run subcommand: %s\n", args[0])
 	}
@@ -86,6 +88,62 @@ func runCancelCmd(args []string) {
 	}
 
 	fmt.Printf("Cancellation requested for run: %s\n", runID)
+}
+
+// runSignalCmd sends a signal to a running workflow by writing to the
+// signals KV bucket with key {runID}.{name}.
+func runSignalCmd(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run signal <run-id> <name> <payload>")
+		os.Exit(1)
+	}
+
+	runID := args[0]
+	name := args[1]
+	payload := args[2]
+
+	if runID == "" {
+		panic("runSignalCmd: runID must not be empty")
+	}
+	if name == "" {
+		panic("runSignalCmd: name must not be empty")
+	}
+
+	// Connect to NATS using default URL
+	natsURL := os.Getenv("NATS_URL")
+	if natsURL == "" {
+		natsURL = nats.DefaultURL
+	}
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "connect to NATS: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get JetStream context: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get signals KV bucket
+	sigKV, err := js.KeyValue("signals")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get signals bucket: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write signal to KV
+	key := fmt.Sprintf("%s.%s", runID, name)
+	_, err = sigKV.Put(key, []byte(payload))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "write signal: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Signal sent: %s -> %s (payload: %s)\n", runID, name, payload)
 }
 
 // FormatRunStatus renders a WorkflowRun as a human-readable string. Steps are
