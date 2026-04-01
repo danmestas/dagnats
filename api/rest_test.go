@@ -146,9 +146,9 @@ func TestRESTHealthBasic(t *testing.T) {
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	resp, err := http.Get(server.URL + "/health")
+	resp, err := http.Get(server.URL + "/health/telemetry")
 	if err != nil {
-		t.Fatalf("GET /health failed: %v", err)
+		t.Fatalf("GET /health/telemetry failed: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d",
