@@ -189,7 +189,8 @@ func isHandledEventType(t protocol.EventType) bool {
 		protocol.EventStepCompleted,
 		protocol.EventStepContinue,
 		protocol.EventStepFailed,
-		protocol.EventWorkflowSpawn:
+		protocol.EventWorkflowSpawn,
+		protocol.EventWorkflowCancelled:
 		return true
 	}
 	return false
@@ -205,6 +206,15 @@ func (o *Orchestrator) dispatchEvent(
 	lock := o.getRunLock(evt.RunID)
 	lock.Lock()
 	defer lock.Unlock()
+
+	// Check workflow timeout before dispatching any event.
+	run, loadErr := o.store.Load(evt.RunID)
+	if loadErr == nil && run.Deadline != nil &&
+		time.Now().After(*run.Deadline) &&
+		run.Status == dag.RunStatusRunning {
+		return o.handleWorkflowCancelled(ctx, evt)
+	}
+
 	switch evt.Type {
 	case protocol.EventWorkflowStarted:
 		return o.handleWorkflowStarted(ctx, evt)
@@ -216,6 +226,8 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepFailed(ctx, evt)
 	case protocol.EventWorkflowSpawn:
 		return o.handleWorkflowSpawn(ctx, evt)
+	case protocol.EventWorkflowCancelled:
+		return o.handleWorkflowCancelled(ctx, evt)
 	default:
 		return nil
 	}
@@ -238,6 +250,10 @@ func (o *Orchestrator) handleWorkflowStarted(
 	}
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
 	run.Status = dag.RunStatusRunning
+	if wfDef.Timeout > 0 {
+		deadline := time.Now().Add(wfDef.Timeout)
+		run.Deadline = &deadline
+	}
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return fmt.Errorf("save initial run: %w", err)
 	}
@@ -450,17 +466,11 @@ func (o *Orchestrator) handleStepFailed(
 		state.Error = string(evt.Payload)
 	}
 
-	// Find step def to check retry policy.
-	maxRetries := 0
-	for _, s := range wfDef.Steps {
-		if s.ID == evt.StepID {
-			maxRetries = s.Retries
-			break
-		}
-	}
+	stepDef, _ := findStepDef(wfDef, evt.StepID)
+	policy := dag.ResolveRetryPolicy(wfDef, stepDef)
 
-	if state.Attempts <= maxRetries {
-		// Retries remaining — keep step queued for JetStream redelivery.
+	if policy != nil && state.Attempts <= policy.MaxAttempts {
+		// Retries remaining — save state and let NATS redeliver.
 		run.Steps[evt.StepID] = state
 		return o.saveSnapshot(ctx, run)
 	}
@@ -468,6 +478,26 @@ func (o *Orchestrator) handleStepFailed(
 	// Retries exhausted — permanent failure.
 	state.Status = dag.StepStatusFailed
 	run.Steps[evt.StepID] = state
+
+	// Check for on-failure handler before failing the workflow.
+	if stepDef.OnFailure != "" {
+		onFailStep, found := findStepDef(wfDef, stepDef.OnFailure)
+		if found {
+			ofState := run.Steps[onFailStep.ID]
+			ofState.Status = dag.StepStatusQueued
+			run.Steps[onFailStep.ID] = ofState
+			if err := o.saveSnapshot(ctx, run); err != nil {
+				return err
+			}
+			errorInput := []byte(fmt.Sprintf(
+				`{"failed_step":"%s","error":%s}`,
+				evt.StepID, state.Error))
+			return o.publishTask(ctx, run.RunID, onFailStep,
+				errorInput, 0)
+		}
+	}
+
+	// No on-failure handler — fail the workflow
 	run.Status = dag.RunStatusFailed
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
@@ -477,9 +507,70 @@ func (o *Orchestrator) handleStepFailed(
 	if err := o.publishWorkflowFailed(run.RunID); err != nil {
 		return err
 	}
+	// Publish to dead-letter queue
+	o.publishDeadLetter(run.RunID, stepDef, state)
+
 	return o.notifyParentIfChild(
 		run, fmt.Errorf("%s", state.Error),
 	)
+}
+
+// publishDeadLetter publishes failed step info to the dead-letter queue.
+func (o *Orchestrator) publishDeadLetter(
+	runID string, stepDef dag.StepDef, state dag.StepState,
+) {
+	if runID == "" {
+		panic("publishDeadLetter: runID must not be empty")
+	}
+	if stepDef.ID == "" {
+		panic("publishDeadLetter: stepDef.ID must not be empty")
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"run_id":   runID,
+		"step_id":  stepDef.ID,
+		"task":     stepDef.Task,
+		"error":    state.Error,
+		"attempts": state.Attempts,
+	})
+	if err != nil {
+		return
+	}
+	subject := fmt.Sprintf("dead.%s.%s.%s",
+		stepDef.Task, runID, stepDef.ID)
+	o.js.Publish(subject, payload)
+}
+
+// handleWorkflowCancelled marks the run and all in-flight steps as
+// cancelled, saves state, and adjusts metrics.
+func (o *Orchestrator) handleWorkflowCancelled(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleWorkflowCancelled: RunID must not be empty")
+	}
+	_, run, err := o.loadRunAndDef(evt.RunID)
+	if err != nil {
+		return err
+	}
+	if run.Status != dag.RunStatusRunning {
+		return nil
+	}
+
+	run.Status = dag.RunStatusCancelled
+	for id, state := range run.Steps {
+		if state.Status == dag.StepStatusQueued ||
+			state.Status == dag.StepStatusRunning ||
+			state.Status == dag.StepStatusPending {
+			state.Status = dag.StepStatusCancelled
+			run.Steps[id] = state
+		}
+	}
+
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	o.runsActive.Dec()
+	return o.notifyParentIfChild(run, fmt.Errorf("cancelled"))
 }
 
 const maxNestingDepth = 3

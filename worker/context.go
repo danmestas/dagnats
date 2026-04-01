@@ -11,16 +11,19 @@ import (
 )
 
 type taskContext struct {
-	nc        *nats.Conn
-	js        nats.JetStreamContext
-	tel       *observe.Telemetry
-	runID     string
-	stepID    string
-	iteration int
-	attempt   int
-	input     []byte
-	ctx       context.Context
-	span      observe.Span
+	nc           *nats.Conn
+	js           nats.JetStreamContext
+	tel          *observe.Telemetry
+	runID        string
+	stepID       string
+	iteration    int
+	attempt      int
+	input        []byte
+	ctx          context.Context
+	span         observe.Span
+	msg          *nats.Msg
+	checkpointKV nats.KeyValue
+	signalKV     nats.KeyValue
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -33,6 +36,9 @@ func newTaskContext(
 	payload protocol.TaskPayload,
 	ctx context.Context,
 	span observe.Span,
+	msg *nats.Msg,
+	checkpointKV nats.KeyValue,
+	signalKV nats.KeyValue,
 ) *taskContext {
 	if tel == nil {
 		panic("newTaskContext: tel must not be nil")
@@ -41,16 +47,19 @@ func newTaskContext(
 		panic("newTaskContext: ctx must not be nil")
 	}
 	return &taskContext{
-		nc:        nc,
-		js:        js,
-		tel:       tel,
-		runID:     payload.RunID,
-		stepID:    payload.StepID,
-		iteration: payload.Iteration,
-		attempt:   payload.Attempt,
-		input:     payload.Input,
-		ctx:       ctx,
-		span:      span,
+		nc:           nc,
+		js:           js,
+		tel:          tel,
+		runID:        payload.RunID,
+		stepID:       payload.StepID,
+		iteration:    payload.Iteration,
+		attempt:      payload.Attempt,
+		input:        payload.Input,
+		ctx:          ctx,
+		span:         span,
+		msg:          msg,
+		checkpointKV: checkpointKV,
+		signalKV:     signalKV,
 	}
 }
 
@@ -166,5 +175,90 @@ func (c *taskContext) publishEvent(
 	}
 	injectWorkerTraceCtx(c.span, &evt, msg)
 	_, err = c.js.PublishMsg(msg)
+	return err
+}
+
+// Heartbeat extends the AckWait timer on the original NATS message
+// to prevent redelivery while long-running work is in progress.
+// Safe to call when msg is nil.
+func (c *taskContext) Heartbeat() error {
+	if c.msg == nil {
+		return nil
+	}
+	return c.msg.InProgress()
+}
+
+// Checkpoint saves arbitrary state to KV at {runID}.{stepID}.
+// Returns error if checkpointKV is not configured.
+func (c *taskContext) Checkpoint(state []byte) error {
+	if c.checkpointKV == nil {
+		return fmt.Errorf("checkpoint KV not configured")
+	}
+	key := c.runID + "." + c.stepID
+	_, err := c.checkpointKV.Put(key, state)
+	return err
+}
+
+// LoadCheckpoint retrieves saved state from KV at {runID}.{stepID}.
+// Returns (nil, nil) if checkpoint does not exist or KV not configured.
+func (c *taskContext) LoadCheckpoint() ([]byte, error) {
+	if c.checkpointKV == nil {
+		return nil, nil
+	}
+	key := c.runID + "." + c.stepID
+	entry, err := c.checkpointKV.Get(key)
+	if err != nil {
+		if err == nats.ErrKeyNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return entry.Value(), nil
+}
+
+// WaitForSignal watches KV at {runID}.{name} until a value appears
+// or timeout expires. Timeout is capped at 1 hour for safety.
+func (c *taskContext) WaitForSignal(
+	name string, timeout time.Duration,
+) ([]byte, error) {
+	if c.signalKV == nil {
+		return nil, fmt.Errorf("signal KV not configured")
+	}
+	if timeout > 1*time.Hour {
+		timeout = 1 * time.Hour
+	}
+	key := c.runID + "." + name
+	watcher, err := c.signalKV.Watch(key)
+	if err != nil {
+		return nil, err
+	}
+	defer watcher.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case entry := <-watcher.Updates():
+			if entry == nil {
+				continue
+			}
+			return entry.Value(), nil
+		case <-timer.C:
+			return nil, fmt.Errorf(
+				"signal %q timed out after %s", name, timeout,
+			)
+		}
+	}
+}
+
+// SendSignal writes data to KV at {runID}.{name} to wake up a
+// waiting WaitForSignal call (possibly in another step).
+func (c *taskContext) SendSignal(
+	runID, name string, data []byte,
+) error {
+	if c.signalKV == nil {
+		return fmt.Errorf("signal KV not configured")
+	}
+	key := runID + "." + name
+	_, err := c.signalKV.Put(key, data)
 	return err
 }

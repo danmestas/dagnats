@@ -1,0 +1,135 @@
+package engine
+
+// Methodology: integration test with real embedded NATS. Verify the
+// ActorOrchestrator spawns per-run actors and routes events correctly.
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
+)
+
+func TestActorOrchBasicWorkflow(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	// Register workflow
+	wfDef := dag.WorkflowDef{
+		Name:    "actor-test",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("actor-test", defData)
+
+	// Start ActorOrchestrator
+	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish workflow.started
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "arun-1", defData)
+	data, _ := startEvt.Marshal()
+	msg := &nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+	}
+	js.PublishMsg(msg)
+
+	// Wait for actor to process
+	time.Sleep(200 * time.Millisecond)
+
+	// Positive: actor was spawned for this run
+	wa := orch.GetWorkflowActor("arun-1")
+	if wa == nil {
+		t.Fatalf("expected workflow actor for arun-1")
+	}
+
+	// Positive: run is in Running state
+	if wa.RunStatus() != dag.RunStatusRunning {
+		t.Fatalf("status = %v, want Running", wa.RunStatus())
+	}
+}
+
+func TestActorOrchRoutesCompletionToActor(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name:    "actor-test-2",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("actor-test-2", defData)
+
+	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "arun-2", defData)
+	data, _ := startEvt.Marshal()
+	msg := &nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+	}
+	js.PublishMsg(msg)
+	time.Sleep(200 * time.Millisecond)
+
+	// Complete step s1
+	completeEvt := protocol.NewWorkflowEvent(
+		protocol.EventStepCompleted, "arun-2", []byte(`"result"`))
+	completeEvt.StepID = "s1"
+	data2, _ := completeEvt.Marshal()
+	msg2 := &nats.Msg{
+		Subject: completeEvt.NATSSubject(),
+		Data:    data2,
+		Header:  nats.Header{"Nats-Msg-Id": {completeEvt.NATSMsgID()}},
+	}
+	js.PublishMsg(msg2)
+
+	// Wait for completion
+	deadline := time.Now().Add(3 * time.Second)
+	wa := orch.GetWorkflowActor("arun-2")
+	for time.Now().Before(deadline) {
+		if wa != nil && wa.RunStatus() == dag.RunStatusCompleted {
+			break
+		}
+		wa = orch.GetWorkflowActor("arun-2")
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if wa == nil {
+		t.Fatalf("expected workflow actor for arun-2")
+	}
+
+	// Positive: workflow completed
+	if wa.RunStatus() != dag.RunStatusCompleted {
+		t.Fatalf("status = %v, want Completed", wa.RunStatus())
+	}
+}

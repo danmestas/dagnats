@@ -100,3 +100,50 @@ func TestValidateAgentStepValid(t *testing.T) {
 		t.Fatalf("valid agent step should pass, got: %v", err)
 	}
 }
+
+func TestValidateOnFailureRefExists(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "s1", Task: "t", Type: StepTypeNormal,
+				OnFailure: "missing"},
+		},
+	}
+	err := Validate(def)
+	// Positive: error for missing reference
+	if err == nil {
+		t.Fatalf("expected error for OnFailure ref to missing step")
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestValidateCompensateRefExists(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "s1", Task: "t", Type: StepTypeNormal,
+				Compensate: "ghost"},
+		},
+	}
+	err := Validate(def)
+	if err == nil {
+		t.Fatalf("expected error for Compensate ref to missing step")
+	}
+}
+
+func TestValidateOnFailureAndCompensateValid(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "deploy", Task: "t", Type: StepTypeNormal,
+				OnFailure: "notify", Compensate: "rollback"},
+			{ID: "notify", Task: "t", Type: StepTypeNormal},
+			{ID: "rollback", Task: "t", Type: StepTypeNormal},
+		},
+	}
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid def rejected: %v", err)
+	}
+}
