@@ -85,3 +85,38 @@ func TestCancelCommandPublishesEvent(t *testing.T) {
 		t.Fatal("unexpected second event published")
 	}
 }
+
+func TestSignalCommandWritesToKV(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "signals"}))
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	// Set NATS_URL env var for the CLI to use
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+	sigKV, _ := js.KeyValue("signals")
+
+	// Send signal command
+	runSignalCmd([]string{"run-abc", "approval", "approved"})
+
+	// Positive: signal should be written to KV bucket
+	entry, err := sigKV.Get("run-abc.approval")
+	if err != nil {
+		t.Fatalf("signal not written to KV: %v", err)
+	}
+	if string(entry.Value()) != "approved" {
+		t.Fatalf("expected payload 'approved', got %q", entry.Value())
+	}
+
+	// Negative: other keys should not exist
+	_, err = sigKV.Get("run-abc.other")
+	if err == nil {
+		t.Fatal("unexpected signal key found")
+	}
+}
