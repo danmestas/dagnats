@@ -65,6 +65,16 @@ func Validate(def WorkflowDef) error {
 				)
 			}
 		}
+		if s.OnFailure != "" && !ids[s.OnFailure] {
+			return fmt.Errorf(
+				"step %q OnFailure references %q which does not exist",
+				s.ID, s.OnFailure)
+		}
+		if s.Compensate != "" && !ids[s.Compensate] {
+			return fmt.Errorf(
+				"step %q Compensate references %q which does not exist",
+				s.ID, s.Compensate)
+		}
 	}
 	return detectCycle(def.Steps)
 }
