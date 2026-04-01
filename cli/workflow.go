@@ -15,7 +15,9 @@ import (
 // runWorkflowCmd dispatches workflow subcommands.
 func runWorkflowCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: dagnats workflow <list|register>")
+		fmt.Println(
+			"Usage: dagnats workflow <list|register|show|validate>",
+		)
 		return
 	}
 	switch args[0] {
@@ -23,6 +25,10 @@ func runWorkflowCmd(args []string) {
 		runWorkflowListCmd(args[1:])
 	case "register":
 		runWorkflowRegisterCmd(args[1:])
+	case "show":
+		runWorkflowShowCmd(args[1:])
+	case "validate":
+		runWorkflowValidateCmd(args[1:])
 	default:
 		fmt.Printf("unknown workflow subcommand: %s\n", args[0])
 	}
