@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/danmestas/dagnats/trigger"
 	"github.com/nats-io/nats.go"
 )
 
@@ -23,16 +24,29 @@ import (
 // KV and publishes WorkflowStarted events to the history stream. Run state is
 // owned exclusively by the orchestrator -- the service only reads snapshots.
 type Service struct {
-	nc    *nats.Conn
-	js    nats.JetStreamContext
-	defKV nats.KeyValue
-	store *engine.SnapshotStore
-	tel   *observe.Telemetry
+	nc        *nats.Conn
+	js        nats.JetStreamContext
+	defKV     nats.KeyValue
+	store     *engine.SnapshotStore
+	tel       *observe.Telemetry
+	triggerKV nats.KeyValue
+	signalKV  nats.KeyValue
 
 	// Pre-allocated metric instruments -- created once in constructor.
 	requestCount    observe.Counter
 	requestDuration observe.Histogram
 	errorCount      observe.Counter
+}
+
+// DeadLetter represents a message that failed processing.
+type DeadLetter struct {
+	Sequence  uint64    `json:"sequence"`
+	Subject   string    `json:"subject"`
+	RunID     string    `json:"run_id"`
+	StepID    string    `json:"step_id"`
+	Task      string    `json:"task"`
+	Error     string    `json:"error"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // NewService binds the control plane to an active NATS connection.
@@ -56,12 +70,16 @@ func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 				err.Error(),
 		)
 	}
+	triggerKV, _ := js.KeyValue("triggers")
+	signalKV, _ := js.KeyValue("signals")
 	return &Service{
-		nc:    nc,
-		js:    js,
-		defKV: defKV,
-		store: engine.NewSnapshotStore(js),
-		tel:   tel,
+		nc:        nc,
+		js:        js,
+		defKV:     defKV,
+		store:     engine.NewSnapshotStore(js),
+		tel:       tel,
+		triggerKV: triggerKV,
+		signalKV:  signalKV,
 		requestCount: tel.Metrics.Counter(
 			"api.requests", nil,
 		),
@@ -296,4 +314,416 @@ func formatAPITraceparent(span observe.Span) string {
 		return ""
 	}
 	return "00-" + traceID + "-" + spanID + "-01"
+}
+
+// ListWorkflows retrieves all registered workflow definitions from KV.
+func (s *Service) ListWorkflows(
+	ctx context.Context,
+) ([]dag.WorkflowDef, error) {
+	if ctx == nil {
+		panic("ListWorkflows: ctx must not be nil")
+	}
+	_, span := s.tel.Tracer.Start(ctx, "api.listWorkflows")
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	defs, err := s.listWorkflowsInner()
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return defs, err
+}
+
+// listWorkflowsInner holds the KV iteration logic.
+func (s *Service) listWorkflowsInner() ([]dag.WorkflowDef, error) {
+	keys, err := s.defKV.Keys()
+	if err != nil {
+		return nil, err
+	}
+	defs := make([]dag.WorkflowDef, 0, len(keys))
+	for _, key := range keys {
+		entry, err := s.defKV.Get(key)
+		if err != nil {
+			return nil, err
+		}
+		var def dag.WorkflowDef
+		err = json.Unmarshal(entry.Value(), &def)
+		if err != nil {
+			return nil, err
+		}
+		defs = append(defs, def)
+	}
+	return defs, nil
+}
+
+// CancelRun publishes a workflow.cancelled event to the history stream.
+func (s *Service) CancelRun(
+	ctx context.Context, runID string,
+) error {
+	if ctx == nil {
+		panic("CancelRun: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("CancelRun: runID must not be empty")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.cancelRun",
+		observe.WithAttributes(
+			observe.StringAttr("run_id", runID),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	err := s.cancelRunInner(runID)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return err
+}
+
+// cancelRunInner publishes the workflow.cancelled event.
+func (s *Service) cancelRunInner(runID string) error {
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowCancelled, runID, nil,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return err
+	}
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	_, err = s.js.PublishMsg(msg)
+	return err
+}
+
+// SendSignal writes a signal to the signals KV bucket at {runID}.{name}.
+func (s *Service) SendSignal(
+	ctx context.Context, runID string, name string, data []byte,
+) error {
+	if ctx == nil {
+		panic("SendSignal: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("SendSignal: runID must not be empty")
+	}
+	if name == "" {
+		panic("SendSignal: name must not be empty")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.sendSignal",
+		observe.WithAttributes(
+			observe.StringAttr("run_id", runID),
+			observe.StringAttr("signal_name", name),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	err := s.sendSignalInner(runID, name, data)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return err
+}
+
+// sendSignalInner writes to the signals KV bucket.
+func (s *Service) sendSignalInner(
+	runID string, name string, data []byte,
+) error {
+	if s.signalKV == nil {
+		return fmt.Errorf("signals KV bucket not available")
+	}
+	key := runID + "." + name
+	_, err := s.signalKV.Put(key, data)
+	return err
+}
+
+// CreateTrigger validates and stores a trigger definition.
+func (s *Service) CreateTrigger(
+	ctx context.Context, def trigger.TriggerDef,
+) error {
+	if ctx == nil {
+		panic("CreateTrigger: ctx must not be nil")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.createTrigger",
+		observe.WithAttributes(
+			observe.StringAttr("trigger_id", def.ID),
+			observe.StringAttr("workflow_id", def.WorkflowID),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	err := s.createTriggerInner(def)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return err
+}
+
+// createTriggerInner validates and writes the trigger to KV.
+func (s *Service) createTriggerInner(def trigger.TriggerDef) error {
+	if s.triggerKV == nil {
+		return fmt.Errorf("triggers KV bucket not available")
+	}
+	if err := trigger.Validate(def); err != nil {
+		return fmt.Errorf("invalid trigger: %w", err)
+	}
+	data, err := json.Marshal(def)
+	if err != nil {
+		return err
+	}
+	_, err = s.triggerKV.Put(def.ID, data)
+	return err
+}
+
+// ListTriggers retrieves all trigger definitions from KV.
+func (s *Service) ListTriggers(
+	ctx context.Context,
+) ([]trigger.TriggerDef, error) {
+	if ctx == nil {
+		panic("ListTriggers: ctx must not be nil")
+	}
+	_, span := s.tel.Tracer.Start(ctx, "api.listTriggers")
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	defs, err := s.listTriggersInner()
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return defs, err
+}
+
+// listTriggersInner holds the KV iteration logic.
+func (s *Service) listTriggersInner() ([]trigger.TriggerDef, error) {
+	if s.triggerKV == nil {
+		return []trigger.TriggerDef{}, nil
+	}
+	keys, err := s.triggerKV.Keys()
+	if err != nil {
+		return nil, err
+	}
+	defs := make([]trigger.TriggerDef, 0, len(keys))
+	for _, key := range keys {
+		entry, err := s.triggerKV.Get(key)
+		if err != nil {
+			return nil, err
+		}
+		var def trigger.TriggerDef
+		err = json.Unmarshal(entry.Value(), &def)
+		if err != nil {
+			return nil, err
+		}
+		defs = append(defs, def)
+	}
+	return defs, nil
+}
+
+// DeleteTrigger removes a trigger definition from KV.
+func (s *Service) DeleteTrigger(
+	ctx context.Context, triggerID string,
+) error {
+	if ctx == nil {
+		panic("DeleteTrigger: ctx must not be nil")
+	}
+	if triggerID == "" {
+		panic("DeleteTrigger: triggerID must not be empty")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.deleteTrigger",
+		observe.WithAttributes(
+			observe.StringAttr("trigger_id", triggerID),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	err := s.deleteTriggerInner(triggerID)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return err
+}
+
+// deleteTriggerInner deletes the trigger from KV.
+func (s *Service) deleteTriggerInner(triggerID string) error {
+	if s.triggerKV == nil {
+		return fmt.Errorf("triggers KV bucket not available")
+	}
+	return s.triggerKV.Delete(triggerID)
+}
+
+// ListDeadLetters retrieves up to limit dead letter messages.
+func (s *Service) ListDeadLetters(
+	ctx context.Context, limit int,
+) ([]DeadLetter, error) {
+	if ctx == nil {
+		panic("ListDeadLetters: ctx must not be nil")
+	}
+	if limit <= 0 {
+		panic("ListDeadLetters: limit must be positive")
+	}
+	_, span := s.tel.Tracer.Start(ctx, "api.listDeadLetters")
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	letters, err := s.listDeadLettersInner(limit)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return letters, err
+}
+
+// listDeadLettersInner fetches messages from the DEAD_LETTERS stream.
+func (s *Service) listDeadLettersInner(
+	limit int,
+) ([]DeadLetter, error) {
+	sub, err := s.js.SubscribeSync("dead.>")
+	if err != nil {
+		return nil, err
+	}
+	defer sub.Unsubscribe() //nolint:errcheck
+	letters := make([]DeadLetter, 0, limit)
+	for i := 0; i < limit; i++ {
+		msg, err := sub.NextMsg(100 * time.Millisecond)
+		if err != nil {
+			break
+		}
+		meta, metaErr := msg.Metadata()
+		if metaErr != nil {
+			continue
+		}
+		var payload protocol.TaskPayload
+		unmarshalErr := json.Unmarshal(msg.Data, &payload)
+		if unmarshalErr != nil {
+			continue
+		}
+		letters = append(letters, DeadLetter{
+			Sequence:  meta.Sequence.Stream,
+			Subject:   msg.Subject,
+			RunID:     payload.RunID,
+			StepID:    payload.StepID,
+			Task:      extractTaskFromSubject(msg.Subject),
+			Error:     msg.Header.Get("Error"),
+			Timestamp: meta.Timestamp,
+		})
+	}
+	return letters, nil
+}
+
+// extractTaskFromSubject extracts the task name from a subject.
+func extractTaskFromSubject(subject string) string {
+	if len(subject) > 5 && subject[:5] == "dead." {
+		return subject[5:]
+	}
+	return subject
+}
+
+// ReplayDeadLetter fetches a dead letter by sequence and republishes it.
+func (s *Service) ReplayDeadLetter(
+	ctx context.Context, seq uint64,
+) error {
+	if ctx == nil {
+		panic("ReplayDeadLetter: ctx must not be nil")
+	}
+	if seq == 0 {
+		panic("ReplayDeadLetter: seq must be positive")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.replayDeadLetter",
+		observe.WithAttributes(
+			observe.Int64Attr("sequence", int64(seq)),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	err := s.replayDeadLetterInner(seq)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return err
+}
+
+// replayDeadLetterInner fetches by sequence and republishes.
+func (s *Service) replayDeadLetterInner(seq uint64) error {
+	letters, err := s.listDeadLettersInner(100)
+	if err != nil {
+		return err
+	}
+	var target *DeadLetter
+	for i := range letters {
+		if letters[i].Sequence == seq {
+			target = &letters[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("dead letter with sequence %d not found", seq)
+	}
+	payload := protocol.TaskPayload{
+		RunID:  target.RunID,
+		StepID: target.StepID,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	origSubject := target.Task
+	if !isTaskSubject(origSubject) {
+		origSubject = "task." + origSubject
+	}
+	_, err = s.js.Publish(origSubject, data)
+	return err
+}
+
+// isTaskSubject checks if a subject starts with "task.".
+func isTaskSubject(subject string) bool {
+	return len(subject) >= 5 && subject[:5] == "task."
 }

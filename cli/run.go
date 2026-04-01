@@ -1,31 +1,141 @@
+// cli/run.go
+// Commands for managing workflow runs: start, status, cancel, signal.
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/danmestas/dagnats/dag"
 )
 
-// runRunCmd dispatches run subcommands. Stubs are placeholders until HTTP
-// client integration is added in a later task.
+// runRunCmd dispatches run subcommands.
 func runRunCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: dagnats run <start|status|history|retry>")
+		fmt.Println(
+			"Usage: dagnats run <start|status|cancel|signal>",
+		)
 		return
 	}
 	switch args[0] {
 	case "start":
-		fmt.Println("(run start not yet implemented)")
+		runStartCmd(args[1:])
 	case "status":
-		fmt.Println("(run status not yet implemented)")
-	case "history":
-		fmt.Println("(run history not yet implemented)")
-	case "retry":
-		fmt.Println("(run retry not yet implemented)")
+		runStatusCmd(args[1:])
+	case "cancel":
+		runCancelCmd(args[1:])
+	case "signal":
+		runSignalCmd(args[1:])
 	default:
 		fmt.Printf("unknown run subcommand: %s\n", args[0])
 	}
+}
+
+// runStartCmd starts a new workflow run with optional input.
+func runStartCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: dagnats run start <workflow> [input]")
+		os.Exit(1)
+	}
+	workflowName := args[0]
+	if workflowName == "" {
+		panic("runStartCmd: workflowName must not be empty")
+	}
+
+	var input []byte
+	if len(args) > 1 {
+		input = []byte(args[1])
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	runID, err := svc.StartRun(context.Background(), workflowName, input)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start run: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Started: %s\n", runID)
+}
+
+// runStatusCmd retrieves and prints the status of a workflow run.
+func runStatusCmd(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: dagnats run status <run-id>")
+		os.Exit(1)
+	}
+	runID := args[0]
+	if runID == "" {
+		panic("runStatusCmd: runID must not be empty")
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	run, err := svc.GetRun(context.Background(), runID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Print(FormatRunStatus(run))
+}
+
+// runCancelCmd publishes a workflow.cancelled event to cancel a running workflow.
+func runCancelCmd(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: dagnats run cancel <run-id>")
+		os.Exit(1)
+	}
+	runID := args[0]
+	if runID == "" {
+		panic("runCancelCmd: runID must not be empty")
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	err := svc.CancelRun(context.Background(), runID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cancel run: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Cancelled: %s\n", runID)
+}
+
+// runSignalCmd sends a signal to a running workflow.
+func runSignalCmd(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run signal <run-id> <name> <payload>")
+		os.Exit(1)
+	}
+
+	runID := args[0]
+	name := args[1]
+	payload := args[2]
+
+	if runID == "" {
+		panic("runSignalCmd: runID must not be empty")
+	}
+	if name == "" {
+		panic("runSignalCmd: name must not be empty")
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	err := svc.SendSignal(context.Background(), runID, name, []byte(payload))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "send signal: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Signal sent: %s\n", name)
 }
 
 // FormatRunStatus renders a WorkflowRun as a human-readable string. Steps are

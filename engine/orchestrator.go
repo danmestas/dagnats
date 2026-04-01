@@ -23,14 +23,15 @@ import (
 // It is intentionally stateless between events — all run state lives in the
 // snapshot store (NATS KV), so the orchestrator can crash and resume safely.
 type Orchestrator struct {
-	nc       *nats.Conn
-	js       nats.JetStreamContext
-	defKV    nats.KeyValue
-	store    *SnapshotStore
-	tel      *observe.Telemetry
-	sub      *nats.Subscription
-	runLocks   sync.Map // map[string]*sync.Mutex — per-run serialization
-	stepRoutes map[dag.StepType]string // step type → subject prefix
+	nc          *nats.Conn
+	js          nats.JetStreamContext
+	defKV       nats.KeyValue
+	store       *SnapshotStore
+	tel         *observe.Telemetry
+	sub         *nats.Subscription
+	runLocks    sync.Map // map[string]*sync.Mutex — per-run serialization
+	stepRoutes  map[dag.StepType]string // step type → subject prefix
+	concurrency *ConcurrencyManager     // nil if bucket missing
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive       observe.Gauge
@@ -75,12 +76,14 @@ func NewOrchestrator(
 				err.Error(),
 		)
 	}
+	cm, _ := NewConcurrencyManagerSafe(js)
 	o := &Orchestrator{
-		nc:    nc,
-		js:    js,
-		defKV: defKV,
-		store: NewSnapshotStore(js),
-		tel:   tel,
+		nc:          nc,
+		js:          js,
+		defKV:       defKV,
+		store:       NewSnapshotStore(js),
+		tel:         tel,
+		concurrency: cm,
 		runsActive: tel.Metrics.Gauge(
 			"workflow.runs.active", nil,
 		),
@@ -234,7 +237,8 @@ func (o *Orchestrator) dispatchEvent(
 }
 
 // handleWorkflowStarted creates the initial WorkflowRun from the event
-// payload, saves it, then enqueues all entry-point steps.
+// payload, saves it, then enqueues all entry-point steps. If concurrency
+// limit is configured and reached, the run stays Pending.
 func (o *Orchestrator) handleWorkflowStarted(
 	ctx context.Context, evt protocol.Event,
 ) error {
@@ -244,11 +248,65 @@ func (o *Orchestrator) handleWorkflowStarted(
 	if evt.Payload == nil {
 		panic("handleWorkflowStarted: Payload must not be nil")
 	}
-	var wfDef dag.WorkflowDef
-	if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
-		return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+
+	// The payload can be either just the WorkflowDef (backward compat)
+	// or a structure containing both def and input.
+	var startPayload struct {
+		WorkflowDef json.RawMessage `json:"workflow_def"`
+		Input       json.RawMessage `json:"input"`
 	}
+	var wfDef dag.WorkflowDef
+	var input json.RawMessage
+
+	// Try to unmarshal as structured payload first
+	if err := json.Unmarshal(evt.Payload, &startPayload); err == nil &&
+		startPayload.WorkflowDef != nil {
+		// New format with separate workflow_def and input
+		if err := json.Unmarshal(
+			startPayload.WorkflowDef, &wfDef,
+		); err != nil {
+			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+		}
+		input = startPayload.Input
+	} else {
+		// Backward compat: payload is just the WorkflowDef
+		if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
+			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+		}
+		input = nil
+	}
+
+	// Validate input against schema if configured.
+	if wfDef.InputSchema != nil {
+		if err := dag.ValidateSchema(wfDef.InputSchema, input); err != nil {
+			// Create a failed run for visibility
+			run := dag.NewWorkflowRun(wfDef, evt.RunID)
+			run.Status = dag.RunStatusFailed
+			o.saveSnapshot(ctx, run)
+			return fmt.Errorf("input validation: %w", err)
+		}
+	}
+
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
+
+	// Check concurrency limit if configured.
+	if wfDef.Concurrency != nil && o.concurrency != nil {
+		acquired, err := o.concurrency.AcquireRun(
+			wfDef.Name, wfDef.Concurrency.MaxRuns,
+		)
+		if err != nil {
+			return fmt.Errorf("acquire run: %w", err)
+		}
+		if !acquired {
+			// Limit reached — save as Pending and return.
+			run.Status = dag.RunStatusPending
+			if err := o.saveSnapshot(ctx, run); err != nil {
+				return fmt.Errorf("save pending run: %w", err)
+			}
+			return nil
+		}
+	}
+
 	run.Status = dag.RunStatusRunning
 	if wfDef.Timeout > 0 {
 		deadline := time.Now().Add(wfDef.Timeout)
@@ -291,7 +349,7 @@ func (o *Orchestrator) handleStepCompleted(
 }
 
 // completeWorkflow marks the run complete, saves, publishes the event,
-// and adjusts metrics.
+// adjusts metrics, and releases concurrency slot.
 func (o *Orchestrator) completeWorkflow(
 	ctx context.Context, run dag.WorkflowRun,
 ) error {
@@ -304,10 +362,125 @@ func (o *Orchestrator) completeWorkflow(
 	}
 	o.runsActive.Dec()
 	o.runsCompleted.Inc()
+	if o.concurrency != nil {
+		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+			return fmt.Errorf("release run: %w", err)
+		}
+		// Auto-start next pending run if available
+		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+			o.tel.Logger.Error(
+				"failed to start next pending run", err,
+				observe.String("workflow_id", run.WorkflowID),
+			)
+		}
+	}
 	if err := o.publishWorkflowCompleted(run.RunID); err != nil {
 		return err
 	}
 	return o.notifyParentIfChild(run, nil)
+}
+
+// startNextPendingRun finds the oldest pending run for a workflow and
+// transitions it to Running. Called after ReleaseRun to enable queue
+// progression. No-op if no pending runs exist.
+func (o *Orchestrator) startNextPendingRun(
+	ctx context.Context, workflowID string,
+) error {
+	if workflowID == "" {
+		panic("startNextPendingRun: workflowID must not be empty")
+	}
+	if o.store == nil {
+		panic("startNextPendingRun: store must not be nil")
+	}
+
+	runID, found, err := o.findOldestPendingRun(workflowID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	return o.transitionPendingToRunning(ctx, runID)
+}
+
+// findOldestPendingRun scans workflow_runs KV for the oldest pending
+// run for the given workflow. Returns (runID, true, nil) when found.
+func (o *Orchestrator) findOldestPendingRun(
+	workflowID string,
+) (string, bool, error) {
+	if workflowID == "" {
+		panic("findOldestPendingRun: workflowID must not be empty")
+	}
+	keys, err := o.store.kv.Keys()
+	if err != nil {
+		return "", false, fmt.Errorf("list run keys: %w", err)
+	}
+
+	var oldestRun dag.WorkflowRun
+	var foundPending bool
+
+	for _, key := range keys {
+		entry, err := o.store.kv.Get(key)
+		if err != nil {
+			continue
+		}
+		var run dag.WorkflowRun
+		if err := json.Unmarshal(entry.Value(), &run); err != nil {
+			continue
+		}
+		if run.WorkflowID != workflowID {
+			continue
+		}
+		if run.Status != dag.RunStatusPending {
+			continue
+		}
+		if !foundPending || run.CreatedAt.Before(oldestRun.CreatedAt) {
+			oldestRun = run
+			foundPending = true
+		}
+	}
+
+	if !foundPending {
+		return "", false, nil
+	}
+	return oldestRun.RunID, true, nil
+}
+
+// transitionPendingToRunning loads a pending run, acquires concurrency,
+// transitions to Running, and enqueues entry steps.
+func (o *Orchestrator) transitionPendingToRunning(
+	ctx context.Context, runID string,
+) error {
+	if runID == "" {
+		panic("transitionPendingToRunning: runID must not be empty")
+	}
+	wfDef, run, err := o.loadRunAndDef(runID)
+	if err != nil {
+		return fmt.Errorf("load pending run %q: %w", runID, err)
+	}
+
+	if wfDef.Concurrency != nil {
+		acquired, err := o.concurrency.AcquireRun(
+			wfDef.Name, wfDef.Concurrency.MaxRuns,
+		)
+		if err != nil {
+			return fmt.Errorf("acquire for pending run: %w", err)
+		}
+		if !acquired {
+			return nil // Slot not available (shouldn't happen)
+		}
+	}
+
+	run.Status = dag.RunStatusRunning
+	if wfDef.Timeout > 0 {
+		deadline := time.Now().Add(wfDef.Timeout)
+		run.Deadline = &deadline
+	}
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return fmt.Errorf("save running run: %w", err)
+	}
+	o.runsActive.Inc()
+	return o.enqueueReady(ctx, wfDef, run)
 }
 
 // handleStepContinue re-enqueues an agent-loop step for another iteration.
@@ -437,6 +610,18 @@ func (o *Orchestrator) failLoopStep(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
+	if o.concurrency != nil {
+		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+			return fmt.Errorf("release run: %w", err)
+		}
+		// Auto-start next pending run if available
+		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+			o.tel.Logger.Error(
+				"failed to start next pending run", err,
+				observe.String("workflow_id", run.WorkflowID),
+			)
+		}
+	}
 	if err := o.publishWorkflowFailed(run.RunID); err != nil {
 		return err
 	}
@@ -504,6 +689,18 @@ func (o *Orchestrator) handleStepFailed(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
+	if o.concurrency != nil {
+		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+			return fmt.Errorf("release run: %w", err)
+		}
+		// Auto-start next pending run if available
+		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+			o.tel.Logger.Error(
+				"failed to start next pending run", err,
+				observe.String("workflow_id", run.WorkflowID),
+			)
+		}
+	}
 	if err := o.publishWorkflowFailed(run.RunID); err != nil {
 		return err
 	}
@@ -570,6 +767,18 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		return err
 	}
 	o.runsActive.Dec()
+	if o.concurrency != nil {
+		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+			return fmt.Errorf("release run: %w", err)
+		}
+		// Auto-start next pending run if available
+		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+			o.tel.Logger.Error(
+				"failed to start next pending run", err,
+				observe.String("workflow_id", run.WorkflowID),
+			)
+		}
+	}
 	return o.notifyParentIfChild(run, fmt.Errorf("cancelled"))
 }
 
@@ -883,6 +1092,7 @@ func (o *Orchestrator) publishIterationTask(
 
 // stepSubject resolves the NATS subject for a step based on routing config.
 // Defaults to "task.{task}.{runID}" if no custom route is configured.
+// When WorkerGroup is set, routes to "task.{task}.{group}.{runID}".
 func (o *Orchestrator) stepSubject(
 	step dag.StepDef, runID string,
 ) string {
@@ -892,7 +1102,11 @@ func (o *Orchestrator) stepSubject(
 			prefix = p
 		}
 	}
-	return prefix + "." + step.Task + "." + runID
+	subject := prefix + "." + step.Task
+	if step.WorkerGroup != "" {
+		subject += "." + step.WorkerGroup
+	}
+	return subject + "." + runID
 }
 
 // buildTaskMsg constructs a *nats.Msg with headers for task publishing.

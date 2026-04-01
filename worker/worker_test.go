@@ -121,3 +121,65 @@ func TestWorkerNaksOnHandlerError(t *testing.T) {
 		t.Errorf("handler call count = %d, want <= 5 (unexpected loop)", callCount.Load())
 	}
 }
+
+func TestWorkerWithGroupsOnlyHandlesGroupTasks(t *testing.T) {
+	// Methodology: create a worker with groups=["gpu"], publish tasks to both
+	// the gpu-specific subject and a non-group subject. Verify only the gpu
+	// task is handled.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+
+	var gpuCalled atomic.Bool
+	w := NewWorker(nc, observe.NewNoopTelemetry(), WithGroups("gpu"))
+	w.Handle("ml-training", func(ctx TaskContext) error {
+		gpuCalled.Store(true)
+		return ctx.Complete(ctx.Input())
+	})
+	w.Start()
+	defer w.Stop()
+
+	// Publish task to gpu-specific subject
+	gpuPayload := protocol.TaskPayload{
+		RunID:  "run-gpu",
+		StepID: "train",
+		Input:  json.RawMessage(`"gpu-data"`),
+	}
+	gpuData, _ := json.Marshal(gpuPayload)
+	if _, err := js.Publish("task.ml-training.gpu.run-gpu", gpuData); err != nil {
+		t.Fatalf("Publish gpu task failed: %v", err)
+	}
+
+	// Publish task to non-group subject (should be ignored)
+	generalPayload := protocol.TaskPayload{
+		RunID:  "run-general",
+		StepID: "train",
+		Input:  json.RawMessage(`"general-data"`),
+	}
+	generalData, _ := json.Marshal(generalPayload)
+	if _, err := js.Publish("task.ml-training.run-general", generalData); err != nil {
+		t.Fatalf("Publish general task failed: %v", err)
+	}
+
+	// Positive: GPU task should be handled
+	deadline := time.After(5 * time.Second)
+	for !gpuCalled.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("gpu handler not called within 5s")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	// Negative: general task completion should NOT appear in history
+	generalSub, _ := js.SubscribeSync("history.run-general", nats.DeliverAll())
+	_, err = generalSub.NextMsg(1 * time.Second)
+	if err == nil {
+		t.Fatal("general task should not be handled by gpu worker")
+	}
+}
