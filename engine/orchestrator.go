@@ -248,10 +248,45 @@ func (o *Orchestrator) handleWorkflowStarted(
 	if evt.Payload == nil {
 		panic("handleWorkflowStarted: Payload must not be nil")
 	}
-	var wfDef dag.WorkflowDef
-	if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
-		return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+
+	// The payload can be either just the WorkflowDef (backward compat)
+	// or a structure containing both def and input.
+	var startPayload struct {
+		WorkflowDef json.RawMessage `json:"workflow_def"`
+		Input       json.RawMessage `json:"input"`
 	}
+	var wfDef dag.WorkflowDef
+	var input json.RawMessage
+
+	// Try to unmarshal as structured payload first
+	if err := json.Unmarshal(evt.Payload, &startPayload); err == nil &&
+		startPayload.WorkflowDef != nil {
+		// New format with separate workflow_def and input
+		if err := json.Unmarshal(
+			startPayload.WorkflowDef, &wfDef,
+		); err != nil {
+			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+		}
+		input = startPayload.Input
+	} else {
+		// Backward compat: payload is just the WorkflowDef
+		if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
+			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+		}
+		input = nil
+	}
+
+	// Validate input against schema if configured.
+	if wfDef.InputSchema != nil {
+		if err := dag.ValidateSchema(wfDef.InputSchema, input); err != nil {
+			// Create a failed run for visibility
+			run := dag.NewWorkflowRun(wfDef, evt.RunID)
+			run.Status = dag.RunStatusFailed
+			o.saveSnapshot(ctx, run)
+			return fmt.Errorf("input validation: %w", err)
+		}
+	}
+
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
 
 	// Check concurrency limit if configured.
