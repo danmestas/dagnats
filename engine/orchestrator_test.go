@@ -899,3 +899,78 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 	}
 }
 
+
+func TestOrchestratorOnFailureStep(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	// Workflow: deploy fails → notify runs
+	wfDef := dag.WorkflowDef{
+		Name:    "onfail-test",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:        "deploy",
+				Task:      "deploy-task",
+				Type:      dag.StepTypeNormal,
+				OnFailure: "notify",
+			},
+			{
+				ID:   "notify",
+				Task: "notify-task",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("onfail-test", defData)
+
+	// Subscribe to task queue for notify
+	taskSub, _ := js.SubscribeSync("task.notify-task.>",
+		nats.AckExplicit(), nats.DeliverAll())
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "onfail-run-1", defData)
+	data, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(), Data: data,
+		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	// Fail deploy step permanently
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed, "onfail-run-1", "deploy",
+		[]byte(`"deploy crashed"`))
+	failData, _ := failEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: failEvt.NATSSubject(), Data: failData,
+		Header:  nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
+	})
+
+	// Positive: notify task should be enqueued
+	msg, err := taskSub.NextMsg(3 * time.Second)
+	if err != nil {
+		t.Fatalf("expected notify task to be enqueued: %v", err)
+	}
+	msg.Ack()
+
+	// Positive: workflow should NOT be failed yet (on-failure is running)
+	store := NewSnapshotStore(js)
+	time.Sleep(200 * time.Millisecond)
+	run, _ := store.Load("onfail-run-1")
+	if run.Status == dag.RunStatusFailed {
+		t.Fatalf("workflow should not be failed while on-failure step pending")
+	}
+}
+

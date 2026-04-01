@@ -478,6 +478,26 @@ func (o *Orchestrator) handleStepFailed(
 	// Retries exhausted — permanent failure.
 	state.Status = dag.StepStatusFailed
 	run.Steps[evt.StepID] = state
+
+	// Check for on-failure handler before failing the workflow.
+	if stepDef.OnFailure != "" {
+		onFailStep, found := findStepDef(wfDef, stepDef.OnFailure)
+		if found {
+			ofState := run.Steps[onFailStep.ID]
+			ofState.Status = dag.StepStatusQueued
+			run.Steps[onFailStep.ID] = ofState
+			if err := o.saveSnapshot(ctx, run); err != nil {
+				return err
+			}
+			errorInput := []byte(fmt.Sprintf(
+				`{"failed_step":"%s","error":%s}`,
+				evt.StepID, state.Error))
+			return o.publishTask(ctx, run.RunID, onFailStep,
+				errorInput, 0)
+		}
+	}
+
+	// No on-failure handler — fail the workflow
 	run.Status = dag.RunStatusFailed
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
