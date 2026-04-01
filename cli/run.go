@@ -203,7 +203,8 @@ func runListCmd(args []string) {
 		created := run.CreatedAt.Format("2006-01-02 15:04:05")
 		stepCount := len(run.Steps)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
-			run.RunID, run.WorkflowID, run.Status.String(), created, stepCount)
+			run.RunID, run.WorkflowID,
+			ColorStatus(run.Status.String()), created, stepCount)
 	}
 
 	w.Flush()
@@ -313,7 +314,7 @@ func FormatRunStatus(run dag.WorkflowRun) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Run:      %s\n", run.RunID)
 	fmt.Fprintf(&b, "Workflow: %s\n", run.WorkflowID)
-	fmt.Fprintf(&b, "Status:   %s\n", run.Status.String())
+	fmt.Fprintf(&b, "Status:   %s\n", ColorStatus(run.Status.String()))
 	fmt.Fprintf(&b, "Created:  %s\n",
 		run.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
 	fmt.Fprintf(&b, "\nSteps:\n")
@@ -334,7 +335,7 @@ func formatStepLine(id string, state dag.StepState) string {
 	}
 
 	line := fmt.Sprintf("%-20s %s (attempts: %d)",
-		id, state.Status.String(), state.Attempts)
+		id, ColorStatus(state.Status.String()), state.Attempts)
 
 	if state.Iterations > 0 {
 		line += fmt.Sprintf(" (iterations: %d)", state.Iterations)

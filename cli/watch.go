@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/api"
@@ -81,13 +82,35 @@ func pollRunState(
 }
 
 // printWatchEvent prints a single event line to stdout.
+// Event type is colored by outcome: green for completed, red for
+// failed, yellow for all other lifecycle events.
 func printWatchEvent(evt api.RunEvent) {
 	step := evt.StepID
 	if step == "" {
 		step = "-"
 	}
+	coloredType := colorEventType(evt.Type)
 	fmt.Printf("  %s  %-24s %s\n",
-		evt.Timestamp.Format("15:04:05"), evt.Type, step)
+		evt.Timestamp.Format("15:04:05"), coloredType, step)
+}
+
+// colorEventType applies color to an event type string based on its
+// suffix: green for completed, red for failed, yellow otherwise.
+func colorEventType(eventType string) string {
+	if eventType == "" {
+		panic("colorEventType: eventType must not be empty")
+	}
+	if !colorEnabled() {
+		return eventType
+	}
+	switch {
+	case strings.HasSuffix(eventType, ".completed"):
+		return ColorGreen(eventType)
+	case strings.HasSuffix(eventType, ".failed"):
+		return ColorRed(eventType)
+	default:
+		return ColorYellow(eventType)
+	}
 }
 
 // isTerminalStatus returns true for completed, failed, or cancelled.

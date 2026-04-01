@@ -17,6 +17,7 @@ import (
 )
 
 func TestFormatRunStatus(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	run := dag.WorkflowRun{
 		RunID: "abc123", WorkflowID: "test-wf", Status: dag.RunStatusRunning,
 		Steps: map[string]dag.StepState{
@@ -87,6 +88,7 @@ func TestCancelCommandPublishesEvent(t *testing.T) {
 }
 
 func TestFormatRunStatusShowsStepErrors(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	run := dag.WorkflowRun{
 		RunID: "err-run", WorkflowID: "wf-err",
 		Status: dag.RunStatusFailed,
@@ -122,6 +124,7 @@ func TestFormatRunStatusShowsStepErrors(t *testing.T) {
 }
 
 func TestFormatRunStatusShowsIterations(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	run := dag.WorkflowRun{
 		RunID: "loop-run", WorkflowID: "wf-loop",
 		Status: dag.RunStatusRunning,
