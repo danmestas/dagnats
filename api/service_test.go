@@ -536,7 +536,7 @@ func TestServiceListRunEvents(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	events, err := svc.ListRunEvents(context.Background(), runID)
+	events, err := svc.ListRunEvents(context.Background(), runID, false)
 	if err != nil {
 		t.Fatalf("ListRunEvents failed: %v", err)
 	}

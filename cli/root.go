@@ -35,7 +35,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: dagnats <command> [args]")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  workflow  list, register workflows")
-	fmt.Fprintln(os.Stderr, "  run       start, status, history, retry, cancel, signal runs")
+	fmt.Fprintln(os.Stderr, "  run       start, status, list, events, cancel, signal runs")
 	fmt.Fprintln(os.Stderr, "  trigger   create, list, delete triggers")
 	fmt.Fprintln(os.Stderr, "  dlq       list, replay dead-letter messages")
 	fmt.Fprintln(os.Stderr, "  serve     start embedded server")
