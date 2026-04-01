@@ -883,6 +883,7 @@ func (o *Orchestrator) publishIterationTask(
 
 // stepSubject resolves the NATS subject for a step based on routing config.
 // Defaults to "task.{task}.{runID}" if no custom route is configured.
+// When WorkerGroup is set, routes to "task.{task}.{group}.{runID}".
 func (o *Orchestrator) stepSubject(
 	step dag.StepDef, runID string,
 ) string {
@@ -892,7 +893,11 @@ func (o *Orchestrator) stepSubject(
 			prefix = p
 		}
 	}
-	return prefix + "." + step.Task + "." + runID
+	subject := prefix + "." + step.Task
+	if step.WorkerGroup != "" {
+		subject += "." + step.WorkerGroup
+	}
+	return subject + "." + runID
 }
 
 // buildTaskMsg constructs a *nats.Msg with headers for task publishing.
