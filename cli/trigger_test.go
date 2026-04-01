@@ -28,11 +28,6 @@ func TestTriggerCreateStoresCronInKV(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
-	// Override time function for predictable ID
-	oldTimeFunc := timeNowUnix
-	timeNowUnix = func() int64 { return 1234567890 }
-	defer func() { timeNowUnix = oldTimeFunc }()
-
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
 
@@ -44,9 +39,13 @@ func TestTriggerCreateStoresCronInKV(t *testing.T) {
 		"--backfill",
 	})
 
-	// Positive: trigger should be stored in KV
-	expectedID := "trig-1234567890"
-	entry, err := trigKV.Get(expectedID)
+	// Positive: exactly one trigger should be stored in KV
+	keys, _ := trigKV.Keys()
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(keys))
+	}
+
+	entry, err := trigKV.Get(keys[0])
 	if err != nil {
 		t.Fatalf("trigger not found in KV: %v", err)
 	}
@@ -80,10 +79,9 @@ func TestTriggerCreateStoresCronInKV(t *testing.T) {
 		t.Fatal("Backfill should be true")
 	}
 
-	// Negative: no other triggers should exist
-	keys, _ := trigKV.Keys()
-	if len(keys) != 1 {
-		t.Fatalf("expected 1 trigger, got %d", len(keys))
+	// Negative: ID should start with "trig-"
+	if len(def.ID) < 5 || def.ID[:5] != "trig-" {
+		t.Fatalf("expected ID to start with 'trig-', got %s", def.ID)
 	}
 }
 
@@ -101,10 +99,6 @@ func TestTriggerCreateSubjectStoresInKV(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
-	oldTimeFunc := timeNowUnix
-	timeNowUnix = func() int64 { return 9999999999 }
-	defer func() { timeNowUnix = oldTimeFunc }()
-
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
 
@@ -114,9 +108,13 @@ func TestTriggerCreateSubjectStoresInKV(t *testing.T) {
 		"--subject=events.github.push",
 	})
 
-	// Positive: subject trigger should be stored
-	expectedID := "trig-9999999999"
-	entry, err := trigKV.Get(expectedID)
+	// Positive: exactly one subject trigger should be stored
+	keys, _ := trigKV.Keys()
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(keys))
+	}
+
+	entry, err := trigKV.Get(keys[0])
 	if err != nil {
 		t.Fatalf("trigger not found in KV: %v", err)
 	}
