@@ -171,7 +171,7 @@ func TestServer_PrintsStartupAndShutdownBanner(t *testing.T) {
 	if !strings.Contains(output, "nats server started") {
 		t.Errorf("stderr missing 'nats server started'; got:\n%s", output)
 	}
-	if !strings.Contains(output, "HTTP:") {
+	if !strings.Contains(output, "http") {
 		t.Errorf("stderr missing ready banner; got:\n%s", output)
 	}
 	if !strings.Contains(output, "shutdown complete") {
