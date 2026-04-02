@@ -21,7 +21,7 @@ dagnats serve
 
 Zero config. Embedded NATS with JetStream, actor-based orchestrator, API server, and trigger system all running in one process.
 
-See `examples/hello-world/` for a runnable two-step workflow.
+Scaffold a new workflow project with `dagnats init my-workflow`, or see `examples/` for patterns.
 
 ```go
 // Define a workflow
@@ -138,6 +138,7 @@ Workers always run as separate processes connecting to NATS.
 ## CLI
 
 ```bash
+dagnats init <name>                                 # Scaffold new workflow project
 dagnats serve                                       # Start embedded server
 dagnats status                                      # Check system health
 dagnats workflow list                               # List registered workflows
@@ -160,6 +161,9 @@ dagnats dlq list [--run=<id>] [--limit=N]           # List dead-letter messages
 dagnats dlq replay <seq>                            # Replay a failed message
 dagnats dlq replay --run=<id>                       # Replay all failures for a run
 ```
+
+All commands support `--json` for machine-readable output. Workflow JSON files support
+editor autocomplete via `docs/workflow.schema.json` (add `"$schema"` reference).
 
 ## API
 
