@@ -49,7 +49,7 @@ func runRunCmd(args []string) {
 
 // printRunUsage prints the run subcommand help text.
 func printRunUsage() {
-	fmt.Println("Usage: dagnats run <command>")
+	fmt.Println("Usage: dagnats run <command> [--json]")
 	fmt.Println("Commands:")
 	fmt.Println("  start    start a workflow run")
 	fmt.Println("  status   show run status")

@@ -16,14 +16,14 @@ import (
 // runDLQCmd dispatches DLQ subcommands.
 func runDLQCmd(args []string) {
 	if HasHelpFlag(args) {
-		fmt.Println("Usage: dagnats dlq <command>")
+		fmt.Println("Usage: dagnats dlq <command> [--json]")
 		fmt.Println("Commands:")
 		fmt.Println("  list     list dead-letter messages")
 		fmt.Println("  replay   replay a dead-letter message")
 		return
 	}
 	if len(args) == 0 {
-		fmt.Println("Usage: dagnats dlq <list|replay>")
+		fmt.Println("Usage: dagnats dlq <list|replay> [--json]")
 		return
 	}
 	switch args[0] {

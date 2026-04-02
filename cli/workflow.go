@@ -15,7 +15,7 @@ import (
 // runWorkflowCmd dispatches workflow subcommands.
 func runWorkflowCmd(args []string) {
 	if HasHelpFlag(args) {
-		fmt.Println("Usage: dagnats workflow <command>")
+		fmt.Println("Usage: dagnats workflow <command> [--json]")
 		fmt.Println("Commands:")
 		fmt.Println("  list       list registered workflows")
 		fmt.Println("  register   register a workflow from a JSON file")
@@ -24,7 +24,7 @@ func runWorkflowCmd(args []string) {
 		return
 	}
 	if len(args) == 0 {
-		fmt.Println("Usage: dagnats workflow <command>")
+		fmt.Println("Usage: dagnats workflow <command> [--json]")
 		fmt.Println("Commands:")
 		fmt.Println("  list       list registered workflows")
 		fmt.Println("  register   register a workflow from a JSON file")

@@ -24,7 +24,7 @@ type triggerActionResult struct {
 // runTriggerCmd dispatches trigger subcommands.
 func runTriggerCmd(args []string) {
 	if HasHelpFlag(args) {
-		fmt.Println("Usage: dagnats trigger <command>")
+		fmt.Println("Usage: dagnats trigger <command> [--json]")
 		fmt.Println("Commands:")
 		fmt.Println("  create   create a new trigger")
 		fmt.Println("  list     list all triggers")
@@ -36,7 +36,7 @@ func runTriggerCmd(args []string) {
 	}
 	if len(args) == 0 {
 		fmt.Println("Usage: dagnats trigger " +
-			"<create|list|delete|enable|disable|test>")
+			"<create|list|delete|enable|disable|test> [--json]")
 		return
 	}
 	switch args[0] {

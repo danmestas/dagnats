@@ -59,4 +59,6 @@ func printUsage() {
 	fmt.Println("  serve     start embedded server")
 	fmt.Println("  status    show system health")
 	fmt.Println("  logs      tail telemetry log stream")
+	fmt.Println("\nGlobal flags:")
+	fmt.Println("  --json    output in JSON format")
 }
