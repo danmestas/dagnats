@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/protocol"
@@ -347,6 +348,49 @@ func TestStripJSONFlagPreservesOtherArgs(t *testing.T) {
 		if arg == "--json" {
 			t.Fatal("--json should have been stripped")
 		}
+	}
+}
+
+func TestRunEventsJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	events := []api.RunEvent{
+		{
+			Type:      "step.queued",
+			RunID:     "evt-run-1",
+			StepID:    "step-a",
+			Timestamp: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+			Data:      "queued",
+		},
+		{
+			Type:      "step.completed",
+			RunID:     "evt-run-1",
+			StepID:    "step-a",
+			Timestamp: time.Date(2026, 4, 1, 12, 1, 0, 0, time.UTC),
+			Data:      "done",
+		},
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, events)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain event fields
+	if !strings.Contains(output, `"type"`) {
+		t.Fatal("JSON output should contain type field")
+	}
+	if !strings.Contains(output, "step.queued") {
+		t.Fatal("JSON output should contain event type value")
+	}
+	if !strings.Contains(output, "step-a") {
+		t.Fatal("JSON output should contain step ID")
+	}
+
+	// Negative: output should not contain table headers
+	if strings.Contains(output, "TIMESTAMP") {
+		t.Fatal("JSON output should not contain table headers")
 	}
 }
 

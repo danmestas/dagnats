@@ -287,10 +287,21 @@ func printRunTable(runs []dag.WorkflowRun) {
 
 // runEventsCmd retrieves and prints the event history for a run.
 func runEventsCmd(args []string) {
+	if args == nil {
+		panic("runEventsCmd: args must not be nil")
+	}
+	if len(args) > 100 {
+		panic("runEventsCmd: args exceeds max bound")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats run events <run-id>"+
-				" [--full] [--type=TYPE] [--step=STEP]")
+				" [--full] [--type=TYPE] [--step=STEP]"+
+				" [--json]")
 		os.Exit(1)
 	}
 
@@ -299,19 +310,7 @@ func runEventsCmd(args []string) {
 		panic("runEventsCmd: runID must not be empty")
 	}
 
-	var fullData bool
-	var typeFilter, stepFilter string
-	for _, arg := range args[1:] {
-		if arg == "--full" {
-			fullData = true
-		}
-		if strings.HasPrefix(arg, "--type=") {
-			typeFilter = strings.TrimPrefix(arg, "--type=")
-		}
-		if strings.HasPrefix(arg, "--step=") {
-			stepFilter = strings.TrimPrefix(arg, "--step=")
-		}
-	}
+	fullData, typeFilter, stepFilter := parseEventFlags(args[1:])
 
 	svc, nc := connectService()
 	defer nc.Close()
@@ -331,11 +330,52 @@ func runEventsCmd(args []string) {
 		return
 	}
 
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, events); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	printEventsTable(events)
+}
+
+// parseEventFlags extracts --full, --type, and --step from flag args.
+func parseEventFlags(
+	args []string,
+) (fullData bool, typeFilter, stepFilter string) {
+	if len(args) > 100 {
+		panic("parseEventFlags: args exceeds max bound")
+	}
+	for _, arg := range args {
+		if arg == "--full" {
+			fullData = true
+		}
+		if strings.HasPrefix(arg, "--type=") {
+			typeFilter = strings.TrimPrefix(arg, "--type=")
+		}
+		if strings.HasPrefix(arg, "--step=") {
+			stepFilter = strings.TrimPrefix(arg, "--step=")
+		}
+	}
+	return fullData, typeFilter, stepFilter
+}
+
+// printEventsTable writes a formatted table of run events to stdout.
+func printEventsTable(events []api.RunEvent) {
+	if len(events) == 0 {
+		panic("printEventsTable: events must not be empty")
+	}
+	if len(events) > 10000 {
+		panic("printEventsTable: events exceeds max bound")
+	}
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "TIMESTAMP\tTYPE\tSTEP\tDATA")
 
 	for _, evt := range events {
-		timestamp := evt.Timestamp.Format("2006-01-02 15:04:05")
+		ts := evt.Timestamp.Format("2006-01-02 15:04:05")
 		step := evt.StepID
 		if step == "" {
 			step = "-"
@@ -345,7 +385,7 @@ func runEventsCmd(args []string) {
 			data = "-"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			timestamp, evt.Type, step, data)
+			ts, evt.Type, step, data)
 	}
 
 	w.Flush()

@@ -97,6 +97,113 @@ func TestInspectShowsStatusAndFailures(t *testing.T) {
 	}
 }
 
+func TestInspectResultJSONSerialization(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := inspectResult{
+		Run: dag.WorkflowRun{
+			RunID:      "json-inspect-1",
+			WorkflowID: "test-wf",
+			Status:     dag.RunStatusFailed,
+			Steps: map[string]dag.StepState{
+				"step-a": {
+					Status:   dag.StepStatusFailed,
+					Attempts: 2,
+					Error:    "timeout",
+				},
+			},
+			CreatedAt: time.Date(
+				2026, 4, 1, 12, 0, 0, 0, time.UTC,
+			),
+		},
+		Failures: []api.RunEvent{
+			{
+				Type:   "step.failed",
+				RunID:  "json-inspect-1",
+				StepID: "step-a",
+				Timestamp: time.Date(
+					2026, 4, 1, 12, 1, 0, 0, time.UTC,
+				),
+				Data: "timeout",
+			},
+		},
+		DeadLetters: []api.DeadLetter{
+			{
+				Sequence: 1,
+				RunID:    "json-inspect-1",
+				StepID:   "step-a",
+				Task:     "failing-task",
+				Error:    "timeout",
+			},
+		},
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: should contain all three sections
+	if !strings.Contains(output, `"run"`) {
+		t.Fatal("JSON should contain run section")
+	}
+	if !strings.Contains(output, `"failures"`) {
+		t.Fatal("JSON should contain failures section")
+	}
+	if !strings.Contains(output, `"dead_letters"`) {
+		t.Fatal("JSON should contain dead_letters section")
+	}
+	if !strings.Contains(output, "json-inspect-1") {
+		t.Fatal("JSON should contain run ID")
+	}
+
+	// Negative: should not contain human-readable formatting
+	if strings.Contains(output, "Run:") {
+		t.Fatal("JSON should not contain human format")
+	}
+}
+
+func TestInspectResultOmitsEmptySections(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := inspectResult{
+		Run: dag.WorkflowRun{
+			RunID:      "clean-json-1",
+			WorkflowID: "clean-wf",
+			Status:     dag.RunStatusCompleted,
+			Steps: map[string]dag.StepState{
+				"a": {
+					Status:   dag.StepStatusCompleted,
+					Attempts: 1,
+				},
+			},
+			CreatedAt: time.Date(
+				2026, 4, 1, 12, 0, 0, 0, time.UTC,
+			),
+		},
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: should contain run data
+	if !strings.Contains(output, "clean-json-1") {
+		t.Fatal("JSON should contain run ID")
+	}
+
+	// Negative: omitempty should exclude empty sections
+	if strings.Contains(output, "failures") {
+		t.Fatal("JSON should omit empty failures")
+	}
+	if strings.Contains(output, "dead_letters") {
+		t.Fatal("JSON should omit empty dead_letters")
+	}
+}
+
 func TestInspectCleanRunShowsNoFailures(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	srv, nc := natsutil.StartTestServer(t)
