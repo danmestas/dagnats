@@ -633,3 +633,496 @@ func TestServiceListRunEvents(t *testing.T) {
 		t.Fatal("workflow.started event not found in history")
 	}
 }
+
+func TestRegisterWorkflowInvalidDef(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: workflow with no steps returns validation error.
+	badDef := dag.WorkflowDef{Name: "bad-wf"}
+	err := svc.RegisterWorkflow(context.Background(), badDef)
+	if err == nil {
+		t.Fatal("expected error for invalid workflow def")
+	}
+
+	// Negative: valid workflow does not return error.
+	wb := dag.NewWorkflow("valid-wf")
+	wb.Task("a", "task-a")
+	goodDef, _ := wb.Build()
+	err = svc.RegisterWorkflow(context.Background(), goodDef)
+	if err != nil {
+		t.Fatalf("valid workflow should succeed: %v", err)
+	}
+}
+
+func TestStartRunUnknownWorkflow(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: unknown workflow returns error.
+	_, err := svc.StartRun(
+		context.Background(), "nonexistent", nil,
+	)
+	if err == nil {
+		t.Fatal("expected error for unknown workflow")
+	}
+
+	// Negative: error message mentions the workflow name.
+	if !contains(err.Error(), "nonexistent") {
+		t.Fatalf("error should mention workflow: %v", err)
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && searchString(s, sub)
+}
+
+func searchString(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGetWorkflowReturnsRegistered(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: register and retrieve a workflow.
+	wb := dag.NewWorkflow("get-wf")
+	wb.Task("a", "task-a")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	err = svc.RegisterWorkflow(context.Background(), def)
+	if err != nil {
+		t.Fatalf("RegisterWorkflow failed: %v", err)
+	}
+	got, err := svc.GetWorkflow("get-wf")
+	if err != nil {
+		t.Fatalf("GetWorkflow failed: %v", err)
+	}
+	if got.Name != "get-wf" {
+		t.Fatalf("Name = %q, want %q", got.Name, "get-wf")
+	}
+
+	// Negative: unknown workflow returns error.
+	_, err = svc.GetWorkflow("no-such-workflow")
+	if err == nil {
+		t.Fatal("expected error for unknown workflow")
+	}
+}
+
+func TestDeleteTriggerInnerRemovesKey(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Seed a trigger directly in KV.
+	def := trigger.TriggerDef{
+		ID:         "del-inner",
+		WorkflowID: "wf-x",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "0 0 * * *",
+			Timezone:   "UTC",
+		},
+	}
+	data, _ := json.Marshal(def)
+	_, putErr := svc.triggerKV.Put("del-inner", data)
+	if putErr != nil {
+		t.Fatalf("Put failed: %v", putErr)
+	}
+
+	// Positive: deleteTriggerInner removes the key.
+	err = svc.deleteTriggerInner("del-inner")
+	if err != nil {
+		t.Fatalf("deleteTriggerInner failed: %v", err)
+	}
+	_, err = svc.triggerKV.Get("del-inner")
+	if err == nil {
+		t.Fatal("key should be deleted after deleteTriggerInner")
+	}
+}
+
+func TestDeleteTriggerInnerNilKV(t *testing.T) {
+	// Verify deleteTriggerInner returns error when KV is nil.
+	svc := &Service{triggerKV: nil}
+	err := svc.deleteTriggerInner("any-id")
+	if err == nil {
+		t.Fatal("expected error when triggerKV is nil")
+	}
+}
+
+func TestListRunEventsInnerReadsHistory(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Publish a history event directly.
+	js, _ := nc.JetStream()
+	runID := "events-inner-run"
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, runID, []byte("{}"),
+	)
+	data, _ := evt.Marshal()
+	_, pubErr := js.Publish(evt.NATSSubject(), data)
+	if pubErr != nil {
+		t.Fatalf("Publish failed: %v", pubErr)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Positive: events are returned for the run.
+	events, err := svc.listRunEventsInner(runID, false)
+	if err != nil {
+		t.Fatalf("listRunEventsInner failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected at least one event")
+	}
+
+	// Negative: data should be truncated when fullData is false.
+	// (The default payload is short, so just confirm no error.)
+	if events[0].RunID != runID {
+		t.Fatalf("RunID = %q, want %q", events[0].RunID, runID)
+	}
+}
+
+func TestIsTaskSubject(t *testing.T) {
+	// Positive: subjects starting with "task." are task subjects.
+	if !isTaskSubject("task.x.y") {
+		t.Fatal("expected task.x.y to be a task subject")
+	}
+	if !isTaskSubject("task.a") {
+		t.Fatal("expected task.a to be a task subject")
+	}
+
+	// Negative: other prefixes are not task subjects.
+	if isTaskSubject("history.x") {
+		t.Fatal("history.x should not be a task subject")
+	}
+	if isTaskSubject("dead") {
+		t.Fatal("dead should not be a task subject")
+	}
+}
+
+// testSpanWithIDs is a test double that implements both Span and
+// SpanContext with configurable trace/span IDs.
+type testSpanWithIDs struct {
+	observe.Span
+	traceID string
+	spanID  string
+}
+
+func (s *testSpanWithIDs) TraceID() string { return s.traceID }
+func (s *testSpanWithIDs) SpanID() string  { return s.spanID }
+func (s *testSpanWithIDs) End()            {}
+func (s *testSpanWithIDs) SetStatus(
+	code observe.StatusCode, desc string,
+) {
+}
+func (s *testSpanWithIDs) SetAttributes(
+	attrs ...observe.Attribute,
+) {
+}
+func (s *testSpanWithIDs) RecordError(err error)                     {}
+func (s *testSpanWithIDs) AddEvent(n string, a ...observe.Attribute) {}
+
+func TestInjectAPIMsgTraceCtx(t *testing.T) {
+	span := &testSpanWithIDs{
+		traceID: "aaaa1111bbbb2222cccc3333dddd4444",
+		spanID:  "eeee5555ffff6666",
+	}
+	msg := &nats.Msg{Header: nats.Header{}}
+
+	// Positive: traceparent header is set.
+	injectAPIMsgTraceCtx(span, msg)
+	tp := msg.Header.Get("traceparent")
+	expected := "00-aaaa1111bbbb2222cccc3333dddd4444" +
+		"-eeee5555ffff6666-01"
+	if tp != expected {
+		t.Fatalf("traceparent = %q, want %q", tp, expected)
+	}
+
+	// Negative: noop span (empty IDs) does not set header.
+	msg2 := &nats.Msg{Header: nats.Header{}}
+	noopSpan := observe.NewNoopTracer()
+	_, ns := noopSpan.Start(context.Background(), "test")
+	injectAPIMsgTraceCtx(ns, msg2)
+	if msg2.Header.Get("traceparent") != "" {
+		t.Fatal("noop span should not set traceparent")
+	}
+}
+
+func TestExtractTaskFromSubject(t *testing.T) {
+	// Positive: "dead." prefix is stripped.
+	got := extractTaskFromSubject("dead.task-a")
+	if got != "task-a" {
+		t.Fatalf("got = %q, want %q", got, "task-a")
+	}
+
+	// Negative: non-"dead." subject returned as-is.
+	got = extractTaskFromSubject("task.a")
+	if got != "task.a" {
+		t.Fatalf("got = %q, want %q", got, "task.a")
+	}
+}
+
+func TestInjectAPITraceCtxWithIDs(t *testing.T) {
+	span := &testSpanWithIDs{
+		traceID: "aaaa1111bbbb2222cccc3333dddd4444",
+		spanID:  "eeee5555ffff6666",
+	}
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-1", nil,
+	)
+
+	// Positive: trace context is injected.
+	injectAPITraceCtx(span, &evt)
+	expected := "00-aaaa1111bbbb2222cccc3333dddd4444" +
+		"-eeee5555ffff6666-01"
+	if evt.TraceParent != expected {
+		t.Fatalf(
+			"TraceParent = %q, want %q",
+			evt.TraceParent, expected,
+		)
+	}
+
+	// Negative: noop span leaves TraceParent empty.
+	evt2 := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-2", nil,
+	)
+	noopTracer := observe.NewNoopTracer()
+	_, ns := noopTracer.Start(context.Background(), "test")
+	injectAPITraceCtx(ns, &evt2)
+	if evt2.TraceParent != "" {
+		t.Fatal("noop span should not set TraceParent")
+	}
+}
+
+func TestSendSignalNilKVError(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	// Create service without signals KV bucket.
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc.signalKV = nil
+
+	// Positive: SendSignal returns error when KV is nil.
+	err := svc.SendSignal(
+		context.Background(), "run-1", "sig", []byte("{}"),
+	)
+	if err == nil {
+		t.Fatal("expected error when signalKV is nil")
+	}
+
+	// Negative: error message mentions KV.
+	if !contains(err.Error(), "not available") {
+		t.Fatalf("error should mention KV: %v", err)
+	}
+}
+
+func TestDeleteTriggerNilKVErrorPath(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc.triggerKV = nil
+
+	// Positive: DeleteTrigger returns error when KV is nil.
+	err := svc.DeleteTrigger(
+		context.Background(), "any-trig",
+	)
+	if err == nil {
+		t.Fatal("expected error when triggerKV is nil")
+	}
+
+	// Negative: error mentions KV unavailability.
+	if !contains(err.Error(), "not available") {
+		t.Fatalf("error should mention KV: %v", err)
+	}
+}
+
+func TestReplayDeadLetterNotFound(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: replaying nonexistent sequence returns error.
+	err := svc.ReplayDeadLetter(context.Background(), 99999)
+	if err == nil {
+		t.Fatal("expected error for nonexistent sequence")
+	}
+
+	// Negative: error mentions the sequence number.
+	if !contains(err.Error(), "99999") {
+		t.Fatalf("error should mention sequence: %v", err)
+	}
+}
+
+func TestListRunEventsErrorPath(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: listing events for nonexistent run returns
+	// empty (not error), because SubscribeSync succeeds but
+	// NextMsg times out.
+	events, err := svc.ListRunEvents(
+		context.Background(), "no-run", false,
+	)
+	if err != nil {
+		t.Fatalf("ListRunEvents failed: %v", err)
+	}
+
+	// Negative: no events returned for nonexistent run.
+	if len(events) != 0 {
+		t.Fatalf(
+			"expected 0 events, got %d", len(events),
+		)
+	}
+}
+
+func TestSetTriggerEnabledNilKVError(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc.triggerKV = nil
+
+	// Positive: returns error when KV is nil.
+	err := svc.SetTriggerEnabled(
+		context.Background(), "t1", false,
+	)
+	if err == nil {
+		t.Fatal("expected error when triggerKV is nil")
+	}
+
+	// Negative: error mentions unavailability.
+	if !contains(err.Error(), "not available") {
+		t.Fatalf("error should mention KV: %v", err)
+	}
+}
+
+func TestListTriggersNilKV(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc.triggerKV = nil
+
+	// Positive: nil KV returns empty list, not error.
+	defs, err := svc.ListTriggers(context.Background())
+	if err != nil {
+		t.Fatalf("ListTriggers failed: %v", err)
+	}
+
+	// Negative: result is empty.
+	if len(defs) != 0 {
+		t.Fatalf("expected 0 triggers, got %d", len(defs))
+	}
+}
+
+func TestCreateTriggerNilKVError(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc.triggerKV = nil
+
+	def := trigger.TriggerDef{
+		ID:         "t1",
+		WorkflowID: "wf",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "0 0 * * *",
+			Timezone:   "UTC",
+		},
+	}
+
+	// Positive: CreateTrigger returns error when KV is nil.
+	err := svc.CreateTrigger(context.Background(), def)
+	if err == nil {
+		t.Fatal("expected error when triggerKV is nil")
+	}
+
+	// Negative: error mentions unavailability.
+	if !contains(err.Error(), "not available") {
+		t.Fatalf("error should mention KV: %v", err)
+	}
+}
+
+func TestNewServicePanicsNilNC(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil nc")
+		}
+	}()
+	NewService(nil, observe.NewNoopTelemetry())
+}
+
+func TestNewServicePanicsNilTel(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil tel")
+		}
+	}()
+	NewService(nc, nil)
+}
+
+func TestInjectAPIMsgTraceCtxNilHeader(t *testing.T) {
+	span := &testSpanWithIDs{
+		traceID: "aaaa1111bbbb2222cccc3333dddd4444",
+		spanID:  "eeee5555ffff6666",
+	}
+	// msg.Header is nil -- function should create it.
+	msg := &nats.Msg{}
+
+	injectAPIMsgTraceCtx(span, msg)
+	tp := msg.Header.Get("traceparent")
+	if tp == "" {
+		t.Fatal("expected traceparent to be set on nil header")
+	}
+
+	// Verify the full format.
+	expected := "00-aaaa1111bbbb2222cccc3333dddd4444" +
+		"-eeee5555ffff6666-01"
+	if tp != expected {
+		t.Fatalf("traceparent = %q, want %q", tp, expected)
+	}
+}

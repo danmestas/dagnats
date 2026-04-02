@@ -17,8 +17,12 @@ func TestValidateDuplicateStepIDs(t *testing.T) {
 		{ID: "a", Task: "task-b", Type: StepTypeNormal},
 	}}
 	err := Validate(def)
-	if err == nil { t.Fatal("expected error for duplicate step IDs, got nil") }
-	if !strings.Contains(err.Error(), "duplicate") { t.Fatalf("error should mention 'duplicate', got: %v", err) }
+	if err == nil {
+		t.Fatal("expected error for duplicate step IDs, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("error should mention 'duplicate', got: %v", err)
+	}
 }
 
 func TestValidateMissingDependency(t *testing.T) {
@@ -26,8 +30,12 @@ func TestValidateMissingDependency(t *testing.T) {
 		{ID: "a", Task: "task-a", DependsOn: []string{"nonexistent"}, Type: StepTypeNormal},
 	}}
 	err := Validate(def)
-	if err == nil { t.Fatal("expected error for missing dependency, got nil") }
-	if !strings.Contains(err.Error(), "nonexistent") { t.Fatalf("error should mention missing dep name, got: %v", err) }
+	if err == nil {
+		t.Fatal("expected error for missing dependency, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Fatalf("error should mention missing dep name, got: %v", err)
+	}
 }
 
 func TestValidateCycleDetection(t *testing.T) {
@@ -37,15 +45,23 @@ func TestValidateCycleDetection(t *testing.T) {
 		{ID: "c", Task: "task-c", DependsOn: []string{"b"}, Type: StepTypeNormal},
 	}}
 	err := Validate(def)
-	if err == nil { t.Fatal("expected error for cycle, got nil") }
-	if !strings.Contains(err.Error(), "cycle") { t.Fatalf("error should mention 'cycle', got: %v", err) }
+	if err == nil {
+		t.Fatal("expected error for cycle, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("error should mention 'cycle', got: %v", err)
+	}
 }
 
 func TestValidateEmptyWorkflow(t *testing.T) {
 	def := WorkflowDef{Name: "empty", Version: "1", Steps: nil}
 	err := Validate(def)
-	if err == nil { t.Fatal("expected error for empty workflow, got nil") }
-	if !strings.Contains(err.Error(), "no steps") { t.Fatalf("error should mention 'no steps', got: %v", err) }
+	if err == nil {
+		t.Fatal("expected error for empty workflow, got nil")
+	}
+	if !strings.Contains(err.Error(), "no steps") {
+		t.Fatalf("error should mention 'no steps', got: %v", err)
+	}
 }
 
 func TestValidateValidDAG(t *testing.T) {
@@ -56,7 +72,9 @@ func TestValidateValidDAG(t *testing.T) {
 		{ID: "d", Task: "task-d", DependsOn: []string{"b", "c"}, Type: StepTypeNormal},
 	}}
 	err := Validate(def)
-	if err != nil { t.Fatalf("expected valid DAG, got error: %v", err) }
+	if err != nil {
+		t.Fatalf("expected valid DAG, got error: %v", err)
+	}
 }
 
 func TestValidateAgentLoopRequiresLoopConfig(t *testing.T) {
@@ -64,8 +82,12 @@ func TestValidateAgentLoopRequiresLoopConfig(t *testing.T) {
 		{ID: "a", Task: "task-a", Type: StepTypeAgentLoop, Loop: nil},
 	}}
 	err := Validate(def)
-	if err == nil { t.Fatal("expected error for agent loop without Loop config, got nil") }
-	if !strings.Contains(err.Error(), "Loop") { t.Fatalf("error should mention 'Loop', got: %v", err) }
+	if err == nil {
+		t.Fatal("expected error for agent loop without Loop config, got nil")
+	}
+	if !strings.Contains(err.Error(), "Loop") {
+		t.Fatalf("error should mention 'Loop', got: %v", err)
+	}
 }
 
 func TestValidateNormalStepRejectsLoopConfig(t *testing.T) {
@@ -73,8 +95,12 @@ func TestValidateNormalStepRejectsLoopConfig(t *testing.T) {
 		{ID: "a", Task: "task-a", Type: StepTypeNormal, Loop: &AgentLoopConfig{MaxIterations: 5}},
 	}}
 	err := Validate(def)
-	if err == nil { t.Fatal("expected error for normal step with Loop config, got nil") }
-	if !strings.Contains(err.Error(), "Loop") { t.Fatalf("error should mention 'Loop', got: %v", err) }
+	if err == nil {
+		t.Fatal("expected error for normal step with Loop config, got nil")
+	}
+	if !strings.Contains(err.Error(), "Loop") {
+		t.Fatalf("error should mention 'Loop', got: %v", err)
+	}
 }
 
 func TestValidateAgentStepRejectsLoopConfig(t *testing.T) {

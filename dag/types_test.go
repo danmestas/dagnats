@@ -268,10 +268,10 @@ func TestStepDefCompensationFieldsJSON(t *testing.T) {
 
 func TestWorkflowDefTimeoutAndSchemaJSON(t *testing.T) {
 	wf := WorkflowDef{
-		Name:    "test",
-		Version: "1",
-		Steps:   []StepDef{{ID: "s1", Task: "t", Type: StepTypeNormal}},
-		Timeout: 30 * time.Minute,
+		Name:         "test",
+		Version:      "1",
+		Steps:        []StepDef{{ID: "s1", Task: "t", Type: StepTypeNormal}},
+		Timeout:      30 * time.Minute,
 		InputSchema:  json.RawMessage(`{"type":"object"}`),
 		OutputSchema: json.RawMessage(`{"type":"string"}`),
 	}
@@ -290,6 +290,104 @@ func TestWorkflowDefTimeoutAndSchemaJSON(t *testing.T) {
 	// Positive: InputSchema round-trips
 	if string(got.InputSchema) != `{"type":"object"}` {
 		t.Fatalf("InputSchema = %s", got.InputSchema)
+	}
+}
+
+func TestNewWorkflowRunInitialization(t *testing.T) {
+	def := WorkflowDef{
+		Name: "test", Version: "1",
+		Steps: []StepDef{
+			{ID: "a", Task: "t", Type: StepTypeNormal},
+			{ID: "b", Task: "t", Type: StepTypeNormal},
+		},
+	}
+	run := NewWorkflowRun(def, "run-123")
+	// Positive: all steps initialized to pending
+	if len(run.Steps) != 2 {
+		t.Fatalf("Steps count = %d, want 2", len(run.Steps))
+	}
+	if run.Steps["a"].Status != StepStatusPending {
+		t.Fatalf("step a status = %v, want pending",
+			run.Steps["a"].Status)
+	}
+	// Positive: run metadata set
+	if run.RunID != "run-123" {
+		t.Fatalf("RunID = %q, want run-123", run.RunID)
+	}
+	if run.Status != RunStatusPending {
+		t.Fatalf("Status = %v, want pending", run.Status)
+	}
+}
+
+func TestNewWorkflowRunEmptyRunIDPanics(t *testing.T) {
+	def := WorkflowDef{
+		Name: "t", Version: "1",
+		Steps: []StepDef{{ID: "a", Task: "t", Type: StepTypeNormal}},
+	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty runID")
+		}
+	}()
+	NewWorkflowRun(def, "")
+}
+
+func TestNewWorkflowRunNoStepsPanics(t *testing.T) {
+	def := WorkflowDef{Name: "t", Version: "1", Steps: []StepDef{}}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty steps")
+		}
+	}()
+	NewWorkflowRun(def, "run-1")
+}
+
+func TestStepStatusStringAll(t *testing.T) {
+	statuses := []struct {
+		s    StepStatus
+		want string
+	}{
+		{StepStatusPending, "pending"},
+		{StepStatusQueued, "queued"},
+		{StepStatusRunning, "running"},
+		{StepStatusCompleted, "completed"},
+		{StepStatusFailed, "failed"},
+		{StepStatusSkipped, "skipped"},
+		{StepStatusCancelled, "cancelled"},
+	}
+	for _, tt := range statuses {
+		if got := tt.s.String(); got != tt.want {
+			t.Fatalf("StepStatus(%d).String() = %q, want %q",
+				tt.s, got, tt.want)
+		}
+	}
+}
+
+func TestRunStatusUnmarshalJSONInvalid(t *testing.T) {
+	var r RunStatus
+	err := r.UnmarshalJSON([]byte(`"bogus"`))
+	// Positive: error for unknown
+	if err == nil {
+		t.Fatal("expected error for unknown RunStatus")
+	}
+	// Negative: valid string works
+	err = r.UnmarshalJSON([]byte(`"running"`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStepStatusUnmarshalJSONInvalid(t *testing.T) {
+	var s StepStatus
+	err := s.UnmarshalJSON([]byte(`"bogus"`))
+	// Positive: error for unknown
+	if err == nil {
+		t.Fatal("expected error for unknown StepStatus")
+	}
+	// Negative: valid string works
+	err = s.UnmarshalJSON([]byte(`"queued"`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

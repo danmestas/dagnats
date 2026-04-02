@@ -537,6 +537,370 @@ func TestSchedulerBackfillCapsAt100(t *testing.T) {
 	}
 }
 
+func TestSchedulerShouldFireMatchesTimezone(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "sf-trigger",
+		WorkflowID: "test-workflow",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "30 10 * * *",
+			Timezone:   "America/Denver",
+		},
+	}
+	err = scheduler.AddTrigger(def)
+	if err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	// 10:30 Denver (MDT = UTC-6) = 16:30 UTC
+	loc, _ := time.LoadLocation("America/Denver")
+	denverTime := time.Date(2026, 6, 15, 10, 30, 0, 0, loc)
+	utcTime := denverTime.UTC()
+
+	// Positive: fires at correct UTC equivalent
+	err = scheduler.Tick(utcTime)
+	if err != nil {
+		t.Fatalf("Tick failed: %v", err)
+	}
+
+	// Negative: does not fire at wrong hour
+	wrongHour := time.Date(2026, 6, 15, 10, 30, 0, 0, time.UTC)
+	js, _ := nc.JetStream()
+	sub, _ := js.SubscribeSync("history.>")
+	// Drain the first event
+	sub.NextMsg(1 * time.Second)
+
+	err = scheduler.Tick(wrongHour)
+	if err != nil {
+		t.Fatalf("Tick at wrong hour failed: %v", err)
+	}
+
+	_, err = sub.NextMsg(500 * time.Millisecond)
+	if err == nil {
+		t.Errorf("should not fire at 10:30 UTC for Denver trigger")
+	}
+}
+
+func TestSchedulerStartStopsOnSignal(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	stopChan := make(chan struct{})
+	doneChan := make(chan struct{})
+	go func() {
+		scheduler.Start(50*time.Millisecond, stopChan)
+		close(doneChan)
+	}()
+
+	// Let a few ticks happen
+	time.Sleep(200 * time.Millisecond)
+	close(stopChan)
+
+	// Positive: goroutine exits within bounded timeout
+	select {
+	case <-doneChan:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Start did not return after stop signal")
+	}
+
+	// Negative: channel is closed (no double-close panic)
+	select {
+	case <-doneChan:
+		// already closed, good
+	default:
+		t.Fatalf("doneChan should be closed")
+	}
+}
+
+func TestSchedulerAddTriggerRejectsNilCron(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "no-cron",
+		WorkflowID: "wf",
+		Enabled:    true,
+		// No Cron config
+	}
+
+	// Positive: returns error for nil cron
+	err = scheduler.AddTrigger(def)
+	if err == nil {
+		t.Fatalf("expected error for nil cron")
+	}
+
+	// Negative: trigger not added
+	scheduler.mu.RLock()
+	_, exists := scheduler.triggers["no-cron"]
+	scheduler.mu.RUnlock()
+	if exists {
+		t.Fatalf("trigger should not be registered")
+	}
+}
+
+func TestSchedulerTickReturnsErrorForBadTimezone(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "bad-tz",
+		WorkflowID: "wf",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "* * * * *",
+			Timezone:   "Invalid/Timezone",
+		},
+	}
+	err = scheduler.AddTrigger(def)
+	if err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	// Positive: Tick returns error for bad timezone
+	testTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	err = scheduler.Tick(testTime)
+	if err == nil {
+		t.Fatalf("expected error for invalid timezone")
+	}
+
+	// Negative: error message mentions the trigger ID
+	if !containsStr(err.Error(), "bad-tz") {
+		t.Fatalf("error = %q, should mention trigger ID", err)
+	}
+}
+
+func TestSchedulerTickReturnsErrorForBadCronExpr(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "bad-expr",
+		WorkflowID: "wf",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "invalid",
+			Timezone:   "UTC",
+		},
+	}
+	err = scheduler.AddTrigger(def)
+	if err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	// Positive: Tick returns error for invalid expression
+	testTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	err = scheduler.Tick(testTime)
+	if err == nil {
+		t.Fatalf("expected error for invalid cron expression")
+	}
+
+	// Negative: error message mentions the trigger ID
+	if !containsStr(err.Error(), "bad-expr") {
+		t.Fatalf("error = %q, should mention trigger ID", err)
+	}
+}
+
+// containsStr checks if substr is in s (avoids importing strings).
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSchedulerBackfillNoLastRun(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "no-last-run",
+		WorkflowID: "wf",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "* * * * *",
+			Timezone:   "UTC",
+			Backfill:   true,
+		},
+	}
+	err = scheduler.AddTrigger(def)
+	if err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	sub, _ := js.SubscribeSync("history.>")
+
+	// Positive: backfill succeeds with no error
+	err = scheduler.Backfill()
+	if err != nil {
+		t.Fatalf("Backfill failed: %v", err)
+	}
+
+	// Negative: no events fired (zero time means skip)
+	_, err = sub.NextMsg(500 * time.Millisecond)
+	if err == nil {
+		t.Errorf("no events expected when no last_run_at exists")
+	}
+}
+
+func TestSchedulerBackfillCorruptedLastRun(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "corrupt-trigger",
+		WorkflowID: "wf",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "* * * * *",
+			Timezone:   "UTC",
+			Backfill:   true,
+		},
+	}
+	err = scheduler.AddTrigger(def)
+	if err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	// Store corrupted timestamp
+	_, err = scheduler.stateKV.Put(
+		"corrupt-trigger.last_run_at", []byte("not-a-time"))
+	if err != nil {
+		t.Fatalf("KV Put failed: %v", err)
+	}
+
+	// Positive: Backfill returns error for corrupted time
+	err = scheduler.Backfill()
+	if err == nil {
+		t.Fatalf("expected error for corrupted last_run_at")
+	}
+
+	// Negative: error mentions the trigger
+	if !containsStr(err.Error(), "corrupt-trigger") {
+		t.Fatalf("error = %q, should mention trigger", err)
+	}
+}
+
+func TestSchedulerBackfillBadTimezone(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "bad-tz-backfill",
+		WorkflowID: "wf",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "* * * * *",
+			Timezone:   "Fake/Zone",
+			Backfill:   true,
+		},
+	}
+	err = scheduler.AddTrigger(def)
+	if err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	lastRun := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Minute)
+	_, err = scheduler.stateKV.Put(
+		"bad-tz-backfill.last_run_at",
+		[]byte(lastRun.Format(time.RFC3339)))
+	if err != nil {
+		t.Fatalf("KV Put failed: %v", err)
+	}
+
+	// Positive: returns error for invalid timezone
+	err = scheduler.Backfill()
+	if err == nil {
+		t.Fatalf("expected error for invalid timezone in backfill")
+	}
+
+	// Negative: error mentions the trigger
+	if !containsStr(err.Error(), "bad-tz-backfill") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
 func TestSchedulerBackfillSkipsNoBackfillTriggers(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc,

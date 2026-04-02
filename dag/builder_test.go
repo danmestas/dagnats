@@ -155,6 +155,125 @@ func TestBuilderAgentStep(t *testing.T) {
 	}
 }
 
+func TestBuilderVersionSetter(t *testing.T) {
+	wf := NewWorkflow("versioned").Version("2.0")
+	wf.Task("a", "task-a")
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	// Positive: custom version applied
+	if def.Version != "2.0" {
+		t.Fatalf("Version = %q, want %q", def.Version, "2.0")
+	}
+	// Negative: default is "1" when not overridden
+	wf2 := NewWorkflow("default-ver")
+	wf2.Task("b", "task-b")
+	def2, _ := wf2.Build()
+	if def2.Version != "1" {
+		t.Fatalf("default Version = %q, want %q", def2.Version, "1")
+	}
+}
+
+func TestBuilderNameAccessor(t *testing.T) {
+	wf := NewWorkflow("my-workflow")
+	// Positive: Name returns the configured name
+	if wf.Name() != "my-workflow" {
+		t.Fatalf("Name() = %q, want %q", wf.Name(), "my-workflow")
+	}
+	// Negative: different builder has different name
+	wf2 := NewWorkflow("other")
+	if wf2.Name() == wf.Name() {
+		t.Fatal("different builders should have different names")
+	}
+}
+
+func TestBuilderAgentEmptyIDPanics(t *testing.T) {
+	wf := NewWorkflow("bad-agent")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty agent step ID")
+		}
+	}()
+	wf.Agent("", "task", map[string]string{})
+}
+
+func TestBuilderAgentEmptyTaskPanics(t *testing.T) {
+	wf := NewWorkflow("bad-agent")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty agent task")
+		}
+	}()
+	wf.Agent("id", "", map[string]string{})
+}
+
+func TestBuilderDependsOnBeforeStepPanics(t *testing.T) {
+	wf := NewWorkflow("no-step")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for DependsOn before step")
+		}
+	}()
+	wf.DependsOn("a")
+}
+
+func TestBuilderWithTimeoutBeforeStepPanics(t *testing.T) {
+	wf := NewWorkflow("no-step")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for WithTimeout before step")
+		}
+	}()
+	wf.WithTimeout(time.Second)
+}
+
+func TestBuilderWithMaxIterationsBeforeStepPanics(t *testing.T) {
+	wf := NewWorkflow("no-step")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for WithMaxIterations before step")
+		}
+	}()
+	wf.WithMaxIterations(5)
+}
+
+func TestBuilderWithMaxDurationBeforeStepPanics(t *testing.T) {
+	wf := NewWorkflow("no-step")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for WithMaxDuration before step")
+		}
+	}()
+	wf.WithMaxDuration(time.Minute)
+}
+
+func TestBuilderWithMaxIterationsOnNormalPanics(t *testing.T) {
+	wf := NewWorkflow("normal")
+	wf.Task("a", "task-a")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal(
+				"expected panic for WithMaxIterations on normal",
+			)
+		}
+	}()
+	wf.WithMaxIterations(5)
+}
+
+func TestBuilderWithMaxDurationOnNormalPanics(t *testing.T) {
+	wf := NewWorkflow("normal")
+	wf.Task("a", "task-a")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal(
+				"expected panic for WithMaxDuration on normal",
+			)
+		}
+	}()
+	wf.WithMaxDuration(time.Minute)
+}
+
 func findStep(def WorkflowDef, id string) *StepDef {
 	for i := range def.Steps {
 		if def.Steps[i].ID == id {

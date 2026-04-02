@@ -67,3 +67,26 @@ func TestOneForOneRestartScope(t *testing.T) {
 		t.Fatalf("RestartScope = %v, want RestartOne", s.RestartScope())
 	}
 }
+
+func TestAllForOneCustomDecider(t *testing.T) {
+	permanent := errors.New("permanent")
+	s := &AllForOne{
+		Decider: func(err error) Directive {
+			if errors.Is(err, permanent) {
+				return Stop
+			}
+			return Restart
+		},
+	}
+
+	// Positive: permanent error -> Stop
+	if got := s.Decide(permanent); got != Stop {
+		t.Fatalf("Decide(permanent) = %v, want Stop", got)
+	}
+
+	// Positive: transient error -> Restart
+	got := s.Decide(errors.New("transient"))
+	if got != Restart {
+		t.Fatalf("Decide(transient) = %v, want Restart", got)
+	}
+}

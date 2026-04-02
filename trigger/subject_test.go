@@ -225,6 +225,64 @@ func publishAndVerifyWildcard(
 	}
 }
 
+func TestSubjectTriggerRejectsNilSubjectConfig(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "no-subject-config",
+		WorkflowID: "test-workflow",
+		Enabled:    true,
+		// Subject is nil
+	}
+
+	// Positive: returns error
+	_, err = NewSubjectTrigger(nc, def)
+	if err == nil {
+		t.Fatalf("expected error for nil subject config")
+	}
+
+	// Negative: non-nil config succeeds
+	def.Subject = &SubjectConfig{Subject: "test.subject"}
+	trigger, err := NewSubjectTrigger(nc, def)
+	if err != nil {
+		t.Fatalf("NewSubjectTrigger failed: %v", err)
+	}
+	defer trigger.Close()
+}
+
+func TestSubjectTriggerRejectsEmptySubject(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "empty-subject",
+		WorkflowID: "test-workflow",
+		Enabled:    true,
+		Subject:    &SubjectConfig{Subject: ""},
+	}
+
+	// Positive: returns error for empty subject
+	_, err = NewSubjectTrigger(nc, def)
+	if err == nil {
+		t.Fatalf("expected error for empty subject string")
+	}
+
+	// Negative: non-empty subject succeeds
+	def.Subject.Subject = "events.test"
+	trigger, err := NewSubjectTrigger(nc, def)
+	if err != nil {
+		t.Fatalf("NewSubjectTrigger failed: %v", err)
+	}
+	defer trigger.Close()
+}
+
 func TestSubjectTriggerEmptyPayload(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc)

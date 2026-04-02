@@ -130,6 +130,102 @@ func TestResolveInputNoDeps(t *testing.T) {
 	}
 }
 
+func TestIsCompleteAllDone(t *testing.T) {
+	def := WorkflowDef{Name: "test", Version: "1", Steps: []StepDef{
+		{ID: "a", Task: "t-a", Type: StepTypeNormal},
+		{ID: "b", Task: "t-b", DependsOn: []string{"a"}, Type: StepTypeNormal},
+	}}
+	// Positive: all steps completed
+	if !IsComplete(def, map[string]bool{"a": true, "b": true}) {
+		t.Fatal("expected IsComplete=true when all steps done")
+	}
+	// Negative: one step missing
+	if IsComplete(def, map[string]bool{"a": true}) {
+		t.Fatal("expected IsComplete=false when step b not done")
+	}
+}
+
+func TestIsCompleteEmpty(t *testing.T) {
+	def := WorkflowDef{Name: "empty", Version: "1", Steps: []StepDef{}}
+	// Positive: no steps means trivially complete
+	if !IsComplete(def, map[string]bool{}) {
+		t.Fatal("expected IsComplete=true for empty workflow")
+	}
+	// Negative: non-empty map doesn't break empty def
+	if !IsComplete(def, map[string]bool{"x": true}) {
+		t.Fatal("expected IsComplete=true for empty def with extra keys")
+	}
+}
+
+func TestAllDepsCompletedEmpty(t *testing.T) {
+	// Positive: no deps means always satisfied
+	if !allDepsCompleted(nil, map[string]bool{}) {
+		t.Fatal("expected nil deps to be satisfied")
+	}
+	// Negative: non-empty deps with empty completed
+	if allDepsCompleted([]string{"a"}, map[string]bool{}) {
+		t.Fatal("expected unsatisfied dep to return false")
+	}
+}
+
+func TestResolveSkippedNoSkipIf(t *testing.T) {
+	def := WorkflowDef{Name: "test", Version: "1", Steps: []StepDef{
+		{ID: "a", Task: "t-a", Type: StepTypeNormal},
+		{ID: "b", Task: "t-b", DependsOn: []string{"a"},
+			Type: StepTypeNormal},
+	}}
+	steps := map[string]StepState{
+		"a": {Status: StepStatusCompleted, Output: []byte(`{}`)},
+	}
+	completed := map[string]bool{"a": true}
+	// Positive: no steps returned when no SkipIf conditions
+	skipped := ResolveSkipped(def, completed, map[string]bool{}, steps)
+	if len(skipped) != 0 {
+		t.Fatalf("expected 0 skipped, got %d", len(skipped))
+	}
+	// Negative: already-completed steps excluded
+	skipped = ResolveSkipped(
+		def, map[string]bool{"a": true, "b": true},
+		map[string]bool{}, steps,
+	)
+	if len(skipped) != 0 {
+		t.Fatalf("expected 0 skipped for completed steps, got %d",
+			len(skipped))
+	}
+}
+
+func TestResolveSkippedDepsNotMet(t *testing.T) {
+	wf := NewWorkflow("skip-deps")
+	a := wf.Task("a", "task-a")
+	wf.Task("b", "task-b").After(a).SkipIf(
+		SkipIfOutput(a, "x", "==", float64(1)),
+	)
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	steps := map[string]StepState{
+		"a": {Status: StepStatusPending},
+	}
+	// Positive: deps not met so nothing skipped
+	skipped := ResolveSkipped(
+		def, map[string]bool{}, map[string]bool{}, steps,
+	)
+	if len(skipped) != 0 {
+		t.Fatalf("expected 0 skipped when deps unmet, got %d",
+			len(skipped))
+	}
+	// Negative: queued step excluded
+	skipped = ResolveSkipped(
+		def, map[string]bool{"a": true},
+		map[string]bool{"b": true}, steps,
+	)
+	if len(skipped) != 0 {
+		t.Fatalf("expected 0 skipped when queued, got %d",
+			len(skipped))
+	}
+}
+
 func readyIDs(steps []StepDef) []string {
 	ids := make([]string, len(steps))
 	for i, s := range steps {

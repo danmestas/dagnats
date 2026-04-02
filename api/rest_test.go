@@ -171,3 +171,292 @@ func TestRESTHealthBasic(t *testing.T) {
 		t.Fatal("expected stream info when TELEMETRY exists")
 	}
 }
+
+func TestNewRESTHandlerPanicsNilSvc(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil svc")
+		}
+	}()
+	NewRESTHandler(nil)
+}
+
+func TestRESTRegisterWorkflowBadJSON(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: invalid JSON returns 400.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost, "/workflows",
+		bytes.NewReader([]byte("not-json")),
+	)
+	handleRegisterWorkflow(svc, rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			rec.Code, http.StatusBadRequest)
+	}
+
+	// Negative: valid JSON with invalid def also returns 400.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(
+		http.MethodPost, "/workflows",
+		bytes.NewReader([]byte(`{"name":"bad","steps":[]}`)),
+	)
+	handleRegisterWorkflow(svc, rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			rec2.Code, http.StatusBadRequest)
+	}
+}
+
+func TestRESTStartRunBadJSON(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: invalid JSON returns 400.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost, "/runs",
+		bytes.NewReader([]byte("bad")),
+	)
+	handleStartRun(svc, rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			rec.Code, http.StatusBadRequest)
+	}
+
+	// Negative: valid JSON but unknown workflow returns 400.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(
+		http.MethodPost, "/runs",
+		bytes.NewReader([]byte(`{"workflow":"nope"}`)),
+	)
+	handleStartRun(svc, rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			rec2.Code, http.StatusBadRequest)
+	}
+}
+
+func TestRESTGetRunMissingID(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: missing run ID returns 400.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodGet, "/runs/", nil,
+	)
+	handleGetRun(svc, rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			rec.Code, http.StatusBadRequest)
+	}
+
+	// Negative: nonexistent run returns 404.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(
+		http.MethodGet, "/runs/no-such-run", nil,
+	)
+	handleGetRun(svc, rec2, req2)
+	if rec2.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d",
+			rec2.Code, http.StatusNotFound)
+	}
+}
+
+func TestRESTRegisterWorkflowInvalidDef(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// Positive: empty workflow def returns 400.
+	body := []byte(`{"name":"bad-wf","steps":[]}`)
+	resp, err := http.Post(
+		server.URL+"/workflows",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusBadRequest)
+	}
+
+	// Negative: valid def does not return 400.
+	wb := dag.NewWorkflow("rest-valid")
+	wb.Task("a", "task-a")
+	def, _ := wb.Build()
+	goodBody, _ := json.Marshal(def)
+	resp2, err := http.Post(
+		server.URL+"/workflows",
+		"application/json",
+		bytes.NewReader(goodBody),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp2.StatusCode == http.StatusBadRequest {
+		t.Fatal("valid def should not return 400")
+	}
+}
+
+func TestRESTStartRunUnknownWorkflow(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// Positive: unknown workflow returns 400.
+	body := []byte(`{"workflow":"nonexistent"}`)
+	resp, err := http.Post(
+		server.URL+"/runs",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusBadRequest)
+	}
+
+	// Negative: known workflow does not return 400.
+	wb := dag.NewWorkflow("rest-known")
+	wb.Task("a", "task-a")
+	def, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), def)
+	body2 := []byte(`{"workflow":"rest-known"}`)
+	resp2, err := http.Post(
+		server.URL+"/runs",
+		"application/json",
+		bytes.NewReader(body2),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp2.StatusCode == http.StatusBadRequest {
+		t.Fatal("known workflow should not return 400")
+	}
+}
+
+func TestRouteWorkflowsRejectsGET(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: GET returns 405.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/workflows", nil)
+	svc.routeWorkflows(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d",
+			rec.Code, http.StatusMethodNotAllowed)
+	}
+
+	// Negative: POST is not rejected (non-405).
+	rec2 := httptest.NewRecorder()
+	body := []byte(`{"name":"x","steps":[]}`)
+	req2 := httptest.NewRequest(
+		http.MethodPost, "/workflows",
+		bytes.NewReader(body),
+	)
+	svc.routeWorkflows(rec2, req2)
+	if rec2.Code == http.StatusMethodNotAllowed {
+		t.Fatal("POST should not return 405")
+	}
+}
+
+func TestRouteRunsRejectsGET(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: GET returns 405.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/runs", nil)
+	svc.routeRuns(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d",
+			rec.Code, http.StatusMethodNotAllowed)
+	}
+
+	// Negative: POST is not rejected.
+	rec2 := httptest.NewRecorder()
+	body := []byte(`{"workflow":"x"}`)
+	req2 := httptest.NewRequest(
+		http.MethodPost, "/runs",
+		bytes.NewReader(body),
+	)
+	svc.routeRuns(rec2, req2)
+	if rec2.Code == http.StatusMethodNotAllowed {
+		t.Fatal("POST should not return 405")
+	}
+}
+
+func TestRouteRunByIDRejectsPOST(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: POST returns 405.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost, "/runs/some-id", nil,
+	)
+	svc.routeRunByID(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d",
+			rec.Code, http.StatusMethodNotAllowed)
+	}
+
+	// Negative: GET is not rejected.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(
+		http.MethodGet, "/runs/some-id", nil,
+	)
+	svc.routeRunByID(rec2, req2)
+	if rec2.Code == http.StatusMethodNotAllowed {
+		t.Fatal("GET should not return 405")
+	}
+}
+
+func TestRouteHealthRejectsPOST(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: POST returns 405.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost, "/health/telemetry", nil,
+	)
+	svc.routeHealth(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d",
+			rec.Code, http.StatusMethodNotAllowed)
+	}
+
+	// Negative: GET is not rejected.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(
+		http.MethodGet, "/health/telemetry", nil,
+	)
+	svc.routeHealth(rec2, req2)
+	if rec2.Code == http.StatusMethodNotAllowed {
+		t.Fatal("GET should not return 405")
+	}
+}

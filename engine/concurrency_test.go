@@ -64,6 +64,97 @@ func TestConcurrencyAcquireAndRelease(t *testing.T) {
 	}
 }
 
+func TestConcurrencyReleaseWhenZero(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "concurrency_runs"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	cm := NewConcurrencyManager(js)
+
+	// Positive: release with no prior acquire is safe (already 0).
+	err := cm.ReleaseRun("wf-zero")
+	if err != nil {
+		t.Fatalf("release at zero should not error: %v", err)
+	}
+
+	// Acquire one, release it, then release again.
+	ok, err := cm.AcquireRun("wf-zero", 5)
+	if err != nil || !ok {
+		t.Fatalf("acquire should succeed: ok=%v err=%v", ok, err)
+	}
+	if err := cm.ReleaseRun("wf-zero"); err != nil {
+		t.Fatalf("release should succeed: %v", err)
+	}
+	// Positive: second release when counter is 0 is safe.
+	if err := cm.ReleaseRun("wf-zero"); err != nil {
+		t.Fatalf("release at zero should not error: %v", err)
+	}
+}
+
+func TestConcurrencyManagerSafeNoBucket(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	// Do NOT create concurrency_runs bucket.
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+
+	// Positive: NewConcurrencyManagerSafe returns nil, not panic.
+	cm, err := NewConcurrencyManagerSafe(js)
+	if cm != nil {
+		t.Fatal("expected nil manager when bucket missing")
+	}
+	// Positive: error is returned.
+	if err == nil {
+		t.Fatal("expected error when bucket missing")
+	}
+}
+
+func TestConcurrencyReadCounterNonNumeric(t *testing.T) {
+	// Methodology: manually write a non-numeric value to the
+	// concurrency KV, then acquire. readCounter should treat
+	// the parse error gracefully.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "concurrency_runs"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	kv, _ := js.KeyValue("concurrency_runs")
+
+	// Write non-numeric value directly.
+	kv.Put("workflow.bad-counter", []byte("not-a-number"))
+
+	cm := NewConcurrencyManager(js)
+
+	// Positive: acquire treats corrupted counter as 0 and
+	// succeeds. The readCounter returns (0, rev, nil) when
+	// Atoi fails.
+	ok, err := cm.AcquireRun("bad-counter", 2)
+	if err != nil {
+		t.Fatalf("acquire with corrupt counter: %v", err)
+	}
+	if !ok {
+		t.Fatal("acquire should succeed on corrupt counter")
+	}
+
+	// Positive: release on the same workflow is safe.
+	if err := cm.ReleaseRun("bad-counter"); err != nil {
+		t.Fatalf("release with corrupt counter: %v", err)
+	}
+}
+
 func TestConcurrencyUnlimitedWhenZero(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc,

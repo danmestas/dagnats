@@ -315,6 +315,54 @@ func TestWebhookHandlerEmptyBody(t *testing.T) {
 	}
 }
 
+func TestWebhookHandlerSignatureWithoutPrefix(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "prefix-webhook",
+		WorkflowID: "test-workflow",
+		Enabled:    true,
+		Webhook: &WebhookConfig{
+			Path:   "/webhooks/prefix",
+			Secret: "my-secret",
+		},
+	}
+
+	handler := NewWebhookHandler(nc, def)
+	payload := []byte(`{"test": true}`)
+
+	// Signature without sha256= prefix
+	req := httptest.NewRequest(
+		http.MethodPost, "/webhooks/prefix",
+		bytes.NewReader(payload))
+	req.Header.Set("X-Signature-256", "no-prefix-here")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// Positive: returns 401 for missing sha256= prefix
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+
+	// Negative: correct prefix passes validation step
+	mac := hmac.New(sha256.New, []byte("my-secret"))
+	mac.Write(payload)
+	validSig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	req2 := httptest.NewRequest(
+		http.MethodPost, "/webhooks/prefix",
+		bytes.NewReader(payload))
+	req2.Header.Set("X-Signature-256", validSig)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec2.Code)
+	}
+}
+
 func TestWebhookHandlerMethodNotAllowed(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc)
