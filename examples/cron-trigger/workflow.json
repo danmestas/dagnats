@@ -1,0 +1,12 @@
+{
+  "name": "cron-trigger",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "tick",
+      "task": "tick",
+      "type": "normal",
+      "depends_on": []
+    }
+  ]
+}

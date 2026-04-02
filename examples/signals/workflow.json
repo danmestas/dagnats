@@ -1,0 +1,24 @@
+{
+  "name": "signals",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "prepare",
+      "task": "prepare",
+      "type": "normal",
+      "depends_on": []
+    },
+    {
+      "id": "wait-for-approval",
+      "task": "wait-for-approval",
+      "type": "normal",
+      "depends_on": []
+    },
+    {
+      "id": "finalize",
+      "task": "finalize",
+      "type": "normal",
+      "depends_on": ["prepare", "wait-for-approval"]
+    }
+  ]
+}
