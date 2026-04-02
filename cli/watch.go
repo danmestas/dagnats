@@ -19,14 +19,29 @@ const (
 	watchTimeout      = 30 * time.Minute
 )
 
-// watchRun polls for events and status until the run completes, fails,
-// or is cancelled. Prints each new event as it arrives.
+// watchRun polls for events and status until the run completes,
+// fails, or is cancelled. Discards the terminal status.
 func watchRun(svc *api.Service, runID string) {
 	if svc == nil {
 		panic("watchRun: svc must not be nil")
 	}
 	if runID == "" {
 		panic("watchRun: runID must not be empty")
+	}
+	watchRunWithStatus(svc, runID)
+}
+
+// watchRunWithStatus polls for events and status until the run
+// reaches a terminal state. Returns the final RunStatus so callers
+// can act on the outcome. Returns RunStatusRunning on timeout.
+func watchRunWithStatus(
+	svc *api.Service, runID string,
+) dag.RunStatus {
+	if svc == nil {
+		panic("watchRunWithStatus: svc must not be nil")
+	}
+	if runID == "" {
+		panic("watchRunWithStatus: runID must not be empty")
 	}
 
 	fmt.Println()
@@ -41,14 +56,17 @@ func watchRun(svc *api.Service, runID string) {
 		seen += len(events)
 
 		if isTerminalStatus(status) {
-			fmt.Printf("\nRun %s: %s\n", status.String(), runID)
-			return
+			fmt.Printf(
+				"\nRun %s: %s\n", status.String(), runID,
+			)
+			return status
 		}
 
 		time.Sleep(watchPollInterval)
 	}
 
 	fmt.Fprintln(os.Stderr, "watch: timed out after 30m")
+	return dag.RunStatusRunning
 }
 
 // pollRunState fetches new events and the current run status.

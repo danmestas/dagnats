@@ -1,10 +1,11 @@
 // cli/run_test.go
 // Tests for CLI output formatting and run commands.
 // Methodology: unit test formatting functions, integration test commands
-// with embedded NATS to verify event publishing.
+// with embedded NATS to verify event publishing and --output flag.
 package cli
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -557,6 +560,89 @@ func TestRunSignalJSONOutput(t *testing.T) {
 	// Negative: should not contain human text
 	if strings.Contains(output, "Signal sent:") {
 		t.Fatal("JSON output should not contain human text")
+	}
+}
+
+func TestRunStartOutputPrintsResult(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	t.Setenv("NATS_URL", srv.ClientURL())
+
+	tel := observe.NewNoopTelemetry()
+	js, _ := nc.JetStream()
+
+	// Register a one-step workflow definition.
+	svc := api.NewService(nc, tel)
+	wb := dag.NewWorkflow("output-test-wf")
+	wb.Task("echo", "echo-task")
+	wfDef, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	ctx := context.Background()
+	if err := svc.RegisterWorkflow(ctx, wfDef); err != nil {
+		t.Fatalf("RegisterWorkflow failed: %v", err)
+	}
+
+	// Create a completed run snapshot directly in KV.
+	store := engine.NewSnapshotStore(js)
+	runID := "output-test-run-1"
+	run := dag.WorkflowRun{
+		RunID:      runID,
+		WorkflowID: "output-test-wf",
+		Status:     dag.RunStatusCompleted,
+		Steps: map[string]dag.StepState{
+			"echo": {
+				Status:   dag.StepStatusCompleted,
+				Attempts: 1,
+				Output:   []byte("hello from echo"),
+			},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+
+	// Publish a completed event so watchRunWithStatus exits.
+	evt := protocol.Event{
+		Type:      protocol.EventWorkflowCompleted,
+		RunID:     runID,
+		Timestamp: time.Now().UTC(),
+	}
+	evtData, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	_, err = js.Publish("history."+runID, evtData)
+	if err != nil {
+		t.Fatalf("publish event: %v", err)
+	}
+
+	// Use watchRunWithStatus + printRunOutputForStart to test
+	// the --output flow end-to-end without a live orchestrator.
+	var status dag.RunStatus
+	output := captureOutput(func() {
+		status = watchRunWithStatus(svc, runID)
+		if status == dag.RunStatusCompleted {
+			printRunOutputForStart(svc, runID)
+		}
+	})
+
+	// Positive: output should contain the step output data.
+	if !strings.Contains(output, "hello from echo") {
+		t.Fatalf(
+			"expected 'hello from echo' in output, got:\n%s",
+			output,
+		)
+	}
+
+	// Negative: should not contain JSON run_id (not JSON mode).
+	if strings.Contains(output, `"run_id"`) {
+		t.Fatal("output should not contain JSON run_id")
 	}
 }
 

@@ -1,8 +1,8 @@
 // cli/run_watch_test.go
-// Tests for the run watch command.
+// Tests for the run watch command and watchRunWithStatus.
 // Methodology: compile-time signature verification and integration test
 // with embedded NATS to validate that watch attaches to an existing run
-// and outputs events.
+// and outputs events, and that watchRunWithStatus returns terminal status.
 package cli
 
 import (
@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 )
 
@@ -92,5 +94,70 @@ func TestRunWatchOutputsEventsForExistingRun(t *testing.T) {
 	// Negative: output should not contain unrelated run data.
 	if strings.Contains(output, "phantom") {
 		t.Fatal("output should not contain phantom data")
+	}
+}
+
+func TestWatchRunWithStatusReturnsTerminal(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	t.Setenv("NATS_URL", srv.ClientURL())
+
+	js, _ := nc.JetStream()
+
+	// Create a completed run snapshot.
+	store := engine.NewSnapshotStore(js)
+	run := dag.WorkflowRun{
+		RunID:      "watch-status-1",
+		WorkflowID: "test-wf",
+		Status:     dag.RunStatusCompleted,
+		Steps: map[string]dag.StepState{
+			"step-a": {
+				Status:   dag.StepStatusCompleted,
+				Attempts: 1,
+			},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+
+	// Publish a completed event so watchRunWithStatus sees it.
+	evt := protocol.Event{
+		Type:      protocol.EventWorkflowCompleted,
+		RunID:     "watch-status-1",
+		Timestamp: time.Now().UTC(),
+	}
+	evtData, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	_, err = js.Publish(
+		"history.watch-status-1", evtData,
+	)
+	if err != nil {
+		t.Fatalf("publish event: %v", err)
+	}
+
+	svc := api.NewService(nc, observe.NewNoopTelemetry())
+
+	var status dag.RunStatus
+	captureOutput(func() {
+		status = watchRunWithStatus(svc, "watch-status-1")
+	})
+
+	// Positive: status should be completed.
+	if status != dag.RunStatusCompleted {
+		t.Fatalf(
+			"expected completed, got %s", status.String(),
+		)
+	}
+
+	// Negative: status should not be pending.
+	if status == dag.RunStatusPending {
+		t.Fatal("status should not be pending")
 	}
 }
