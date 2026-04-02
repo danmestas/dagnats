@@ -6,6 +6,14 @@ Combines Hatchet-style DAG orchestration with Temporal-style durable execution, 
 
 ## Quick Start
 
+### Install
+
+```bash
+go install github.com/danmestas/dagnats/cmd/dagnats@latest
+```
+
+### Run
+
 ```bash
 # One command — embedded NATS, engine, API, triggers
 dagnats serve
@@ -139,12 +147,14 @@ dagnats run status <run-id>                         # Check run status
 dagnats run inspect <run-id>                        # Status + errors + DLQ in one view
 dagnats run list [--workflow=X] [--status=running]  # List runs with filters
 dagnats run events <id> [--full] [--type=T] [--step=S]  # View event history
+dagnats run output <run-id>                         # Print final output of completed run
 dagnats run cancel <run-id>                         # Cancel a running workflow
 dagnats run signal <run-id> <name> <data>           # Send signal to a run
 dagnats trigger create <wf> --cron="..."            # Create a trigger
 dagnats trigger list                                # List triggers
 dagnats trigger enable <id>                         # Enable a trigger
 dagnats trigger disable <id>                        # Disable a trigger
+dagnats trigger test <cron-expr> [--tz=TZ] [--count=N]  # Validate cron and show fire times
 dagnats trigger delete <id>                         # Delete a trigger
 dagnats dlq list [--run=<id>] [--limit=N]           # List dead-letter messages
 dagnats dlq replay <seq>                            # Replay a failed message
@@ -190,6 +200,8 @@ Created by `natsutil.SetupAll(nc)`:
 ## Testing
 
 ```bash
+make test
+# or directly:
 go test ./... -timeout 120s
 ```
 
