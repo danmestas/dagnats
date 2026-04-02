@@ -143,7 +143,8 @@ func runStatusCmd(args []string) {
 	svc, nc := connectService()
 	defer nc.Close()
 
-	run, err := svc.GetRun(context.Background(), runID)
+	ctx := context.Background()
+	run, err := svc.GetRun(ctx, runID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
 		os.Exit(1)
@@ -157,7 +158,12 @@ func runStatusCmd(args []string) {
 		return
 	}
 
-	fmt.Print(FormatRunStatus(run))
+	def, defErr := svc.GetWorkflow(run.WorkflowID)
+	if defErr != nil {
+		fmt.Print(FormatRunStatus(run))
+		return
+	}
+	fmt.Print(FormatRunStatusWithDef(run, &def))
 }
 
 // runCancelResult is the JSON response for run cancel.
@@ -482,30 +488,69 @@ func filterRunEvents(
 
 // FormatRunStatus renders a WorkflowRun as a human-readable string.
 // Steps are rendered individually to avoid exposing raw Go map syntax.
+// Delegates to FormatRunStatusWithDef with nil def (no retry info).
 func FormatRunStatus(run dag.WorkflowRun) string {
+	return FormatRunStatusWithDef(run, nil)
+}
+
+// FormatRunStatusWithDef renders a WorkflowRun with optional retry
+// visibility. When def is non-nil, steps with retry policies show
+// "attempts: 3/5" instead of "attempts: 3".
+func FormatRunStatusWithDef(
+	run dag.WorkflowRun, def *dag.WorkflowDef,
+) string {
 	if run.Steps == nil {
-		panic("FormatRunStatus: Steps must not be nil")
+		panic("FormatRunStatusWithDef: Steps must not be nil")
 	}
 	if run.RunID == "" {
-		panic("FormatRunStatus: RunID must not be empty")
+		panic("FormatRunStatusWithDef: RunID must not be empty")
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Run:      %s\n", run.RunID)
 	fmt.Fprintf(&b, "Workflow: %s\n", run.WorkflowID)
-	fmt.Fprintf(&b, "Status:   %s\n", ColorStatus(run.Status.String()))
+	fmt.Fprintf(&b, "Status:   %s\n",
+		ColorStatus(run.Status.String()))
 	fmt.Fprintf(&b, "Created:  %s\n",
 		run.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
 	fmt.Fprintf(&b, "\nSteps:\n")
+
+	retryMax := buildRetryMaxMap(def)
 	for id, state := range run.Steps {
-		fmt.Fprintf(&b, "  %s\n", formatStepLine(id, state))
+		maxAttempts := retryMax[id]
+		fmt.Fprintf(&b, "  %s\n",
+			formatStepLine(id, state, maxAttempts))
 	}
 	return b.String()
 }
 
+// buildRetryMaxMap extracts the total max attempts (retries + 1)
+// for each step from the workflow definition. Returns empty map
+// when def is nil.
+func buildRetryMaxMap(def *dag.WorkflowDef) map[string]int {
+	if def == nil {
+		return map[string]int{}
+	}
+	if len(def.Steps) > 10000 {
+		panic("buildRetryMaxMap: steps exceeds max bound")
+	}
+
+	result := make(map[string]int, len(def.Steps))
+	for _, stepDef := range def.Steps {
+		policy := dag.ResolveRetryPolicy(*def, stepDef)
+		if policy != nil && policy.MaxAttempts > 0 {
+			result[stepDef.ID] = policy.MaxAttempts + 1
+		}
+	}
+	return result
+}
+
 // formatStepLine renders a single step as a human-readable line,
 // including error and iteration details when present.
-func formatStepLine(id string, state dag.StepState) string {
+// When maxAttempts > 0, shows "attempts: 3/5" format.
+func formatStepLine(
+	id string, state dag.StepState, maxAttempts int,
+) string {
 	if id == "" {
 		panic("formatStepLine: id must not be empty")
 	}
@@ -513,8 +558,17 @@ func formatStepLine(id string, state dag.StepState) string {
 		panic("formatStepLine: attempts must not be negative")
 	}
 
-	line := fmt.Sprintf("%-20s %s (attempts: %d)",
-		id, ColorStatus(state.Status.String()), state.Attempts)
+	var attemptStr string
+	if maxAttempts > 0 {
+		attemptStr = fmt.Sprintf("attempts: %d/%d",
+			state.Attempts, maxAttempts)
+	} else {
+		attemptStr = fmt.Sprintf("attempts: %d",
+			state.Attempts)
+	}
+
+	line := fmt.Sprintf("%-20s %s (%s)",
+		id, ColorStatus(state.Status.String()), attemptStr)
 
 	if state.Iterations > 0 {
 		line += fmt.Sprintf(" (iterations: %d)", state.Iterations)

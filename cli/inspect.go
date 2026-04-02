@@ -58,7 +58,12 @@ func runInspectCmd(args []string) {
 		return
 	}
 
-	fmt.Print(FormatRunStatus(run))
+	def, defErr := svc.GetWorkflow(run.WorkflowID)
+	if defErr != nil {
+		fmt.Print(FormatRunStatus(run))
+	} else {
+		fmt.Print(FormatRunStatusWithDef(run, &def))
+	}
 	printFailureEvents(svc, ctx, runID)
 	printRunDeadLetters(svc, ctx, runID)
 }
