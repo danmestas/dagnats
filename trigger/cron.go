@@ -166,6 +166,35 @@ func parseField(field string, min, max int) ([]int, error) {
 	return []int{val}, nil
 }
 
+// NextN returns the next n times after ref that match this cron expression.
+// Scans minute-by-minute starting from ref+1min. Panics if n is negative
+// or if ref is zero. Minute-by-minute scan is simple and correct for
+// 5-field cron; worst case ~527K iterations, <10ms on modern hardware.
+func (c *CronExpr) NextN(ref time.Time, n int) []time.Time {
+	if ref.IsZero() {
+		panic("NextN: ref must not be zero")
+	}
+	if n < 0 {
+		panic("NextN: n must not be negative")
+	}
+	if c.Minutes == nil {
+		panic("NextN: expression not initialized")
+	}
+
+	const maxScanMinutes = 366 * 24 * 60
+	results := make([]time.Time, 0, n)
+	// Start scanning from the next whole minute after ref
+	t := ref.Truncate(time.Minute).Add(time.Minute)
+
+	for i := 0; i < maxScanMinutes && len(results) < n; i++ {
+		if c.Matches(t) {
+			results = append(results, t)
+		}
+		t = t.Add(time.Minute)
+	}
+	return results
+}
+
 func rangeInts(min, max int) []int {
 	if min > max {
 		panic("rangeInts: min must not exceed max")

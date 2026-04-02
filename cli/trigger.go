@@ -24,11 +24,12 @@ func runTriggerCmd(args []string) {
 		fmt.Println("  delete   delete a trigger")
 		fmt.Println("  enable   enable a trigger")
 		fmt.Println("  disable  disable a trigger")
+		fmt.Println("  test     validate a cron expression and show fire times")
 		return
 	}
 	if len(args) == 0 {
 		fmt.Println("Usage: dagnats trigger " +
-			"<create|list|delete|enable|disable>")
+			"<create|list|delete|enable|disable|test>")
 		return
 	}
 	switch args[0] {
@@ -42,6 +43,8 @@ func runTriggerCmd(args []string) {
 		runTriggerEnableCmd(args[1:])
 	case "disable":
 		runTriggerDisableCmd(args[1:])
+	case "test":
+		runTriggerTestCmd(args[1:])
 	default:
 		fmt.Printf("unknown trigger subcommand: %s\n", args[0])
 	}

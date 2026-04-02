@@ -46,7 +46,9 @@
 
 **All triggers produce `TriggerEnvelope`** as workflow input: trigger type, source, timestamp, data.
 
-**Cron parser:** In-house ~100 LOC. 5-field standard (min hour dom month dow). Supports `*`, `*/N`, `N-M`, comma lists.
+**Cron parser:** In-house ~100 LOC. 5-field standard (min hour dom month dow). Supports `*`, `*/N`, `N-M`, comma lists. `NextN(ref, n)` scans minute-by-minute to compute upcoming fire times.
+
+**Cron validation:** `dagnats trigger test <expr> [--tz=TZ] [--count=N]` validates offline and previews next fire times.
 
 **Live reload:** KV watcher detects trigger add/update/delete without restart.
 
@@ -58,6 +60,18 @@
 - Payload: JSON with run_id, step_id, task, error, attempts
 - 30-day retention
 - CLI: `dagnats dlq list` (50 max), `dagnats dlq replay <seq>`
+
+## Run Output
+
+- `dagnats run output <run-id>` prints final output of terminal steps (steps with no dependents)
+- Single terminal: raw output. Multiple terminals: `--- stepID ---` separator per step.
+- Only works on completed runs; non-completed prints status warning.
+
+## CLI Connection Handling
+
+- `connectService()` recovers from `api.NewService` panics on missing NATS resources
+- Prints friendly error with hint (`run 'dagnats serve'`) instead of raw stack trace
+- All server-dependent CLI commands benefit (status, workflow list, run list, dlq, etc.)
 
 ## Signal API
 
