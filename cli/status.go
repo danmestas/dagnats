@@ -8,20 +8,35 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
+	"github.com/nats-io/nats.go"
 )
 
-// runSystemStatusCmd checks system health and prints a summary. It verifies
-// NATS connectivity, JetStream availability, and counts active workflow runs.
+// systemStatus holds all health data for JSON serialization.
+type systemStatus struct {
+	NATS       string         `json:"nats"`
+	JetStream  string         `json:"jetstream"`
+	Streams    int            `json:"stream_count"`
+	ActiveRuns int            `json:"active_runs"`
+	StreamInfo []streamInfo   `json:"streams,omitempty"`
+	Runs       map[string]int `json:"runs,omitempty"`
+}
+
+// runSystemStatusCmd checks system health and prints a summary.
+// Supports --json for machine-readable output.
 func runSystemStatusCmd(args []string) {
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if HasHelpFlag(args) {
-		fmt.Println("Usage: dagnats status")
+		fmt.Println("Usage: dagnats status [--json]")
 		fmt.Println(
 			"Shows system health: NATS, JetStream, active runs.")
 		return
 	}
 	if len(args) > 0 {
-		fmt.Println("Usage: dagnats status")
+		fmt.Println("Usage: dagnats status [--json]")
 		fmt.Println(
 			"Shows system health: NATS, JetStream, active runs.")
 		return
@@ -30,41 +45,109 @@ func runSystemStatusCmd(args []string) {
 	svc, nc := connectService()
 	defer nc.Close()
 
-	// Connection health — if connectService succeeded nc is non-nil,
-	// but verify the connection is still alive.
+	if jsonOutput {
+		status := collectSystemStatus(nc, svc)
+		err := FormatJSON(os.Stdout, status)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "json error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	printSystemStatus(nc, svc)
+}
+
+// collectSystemStatus gathers all health data into a struct.
+func collectSystemStatus(
+	nc *nats.Conn, svc *api.Service,
+) systemStatus {
+	if nc == nil {
+		panic("collectSystemStatus: nc must not be nil")
+	}
+	if svc == nil {
+		panic("collectSystemStatus: svc must not be nil")
+	}
+
+	status := systemStatus{NATS: "disconnected"}
+	if !nc.IsConnected() {
+		return status
+	}
+	status.NATS = "connected"
+
+	js, err := nc.JetStream()
+	if err != nil {
+		status.JetStream = "unavailable"
+		return status
+	}
+	info, err := js.AccountInfo()
+	if err != nil {
+		status.JetStream = "unavailable"
+		return status
+	}
+	if info == nil {
+		panic("collectSystemStatus: AccountInfo nil without error")
+	}
+	status.JetStream = "available"
+	status.Streams = info.Streams
+	status.StreamInfo = collectStreamInfo(js)
+
+	runs, err := svc.ListRuns(context.Background(), "")
+	if err != nil {
+		return status
+	}
+	status.ActiveRuns = countActiveRuns(runs)
+
+	runCounts, err := collectRunCountMap(svc)
+	if err == nil {
+		status.Runs = runCounts
+	}
+	return status
+}
+
+// printSystemStatus outputs human-readable health information.
+func printSystemStatus(nc *nats.Conn, svc *api.Service) {
+	if nc == nil {
+		panic("printSystemStatus: nc must not be nil")
+	}
+	if svc == nil {
+		panic("printSystemStatus: svc must not be nil")
+	}
+
 	if !nc.IsConnected() {
 		fmt.Fprintln(os.Stderr, "NATS:        disconnected")
 		os.Exit(1)
 	}
 	fmt.Println("NATS:        connected")
 
-	// JetStream availability and stream count.
 	js, err := nc.JetStream()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "JetStream:   unavailable (%v)\n", err)
+		fmt.Fprintf(os.Stderr,
+			"JetStream:   unavailable (%v)\n", err)
 		os.Exit(1)
 	}
 	info, err := js.AccountInfo()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "JetStream:   unavailable (%v)\n", err)
+		fmt.Fprintf(os.Stderr,
+			"JetStream:   unavailable (%v)\n", err)
 		os.Exit(1)
 	}
 	if info == nil {
-		panic("runSystemStatusCmd: AccountInfo returned nil without error")
+		panic("printSystemStatus: AccountInfo nil without error")
 	}
-	fmt.Printf("JetStream:   available (%d streams)\n", info.Streams)
+	fmt.Printf("JetStream:   available (%d streams)\n",
+		info.Streams)
 
-	// Count active runs (pending + running).
 	runs, err := svc.ListRuns(context.Background(), "")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Active runs: error (%v)\n", err)
+		fmt.Fprintf(os.Stderr,
+			"Active runs: error (%v)\n", err)
 		os.Exit(1)
 	}
 
 	activeCount := countActiveRuns(runs)
 	fmt.Printf("Active runs: %d\n", activeCount)
 
-	// Detailed stream and run breakdown for richer status output.
 	printStreamDetails(js)
 	printRunBreakdown(svc)
 }

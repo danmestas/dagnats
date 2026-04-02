@@ -120,6 +120,39 @@ func TestFormatCountMillions(t *testing.T) {
 	}
 }
 
+func TestCollectStreamInfoIntegration(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	streams := collectStreamInfo(js)
+
+	// Positive: must return known streams.
+	found := false
+	for _, s := range streams {
+		if s.Name == "WORKFLOW_HISTORY" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected WORKFLOW_HISTORY in collected streams")
+	}
+
+	// Negative: no empty names allowed.
+	for _, s := range streams {
+		if s.Name == "" {
+			t.Fatal("stream name must not be empty")
+		}
+	}
+}
+
 func TestStreamDetailsIntegration(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
