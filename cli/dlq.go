@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/danmestas/dagnats/api"
 )
 
 // runDLQCmd dispatches DLQ subcommands.
@@ -36,6 +38,59 @@ func runDLQCmd(args []string) {
 
 // runDLQListCmd lists dead-letter messages with optional filters.
 func runDLQListCmd(args []string) {
+	if args == nil {
+		panic("runDLQListCmd: args must not be nil")
+	}
+	const maxArgs = 100
+	if len(args) > maxArgs {
+		panic("runDLQListCmd: args exceeds max bound")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+	runFilter, limit := parseDLQListFlags(args)
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	letters, err := svc.ListDeadLetters(
+		context.Background(), limit,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "list dead letters: %v\n", err)
+		os.Exit(1)
+	}
+
+	if runFilter != "" {
+		letters = filterByRun(letters, runFilter)
+	}
+
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, letters); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(letters) == 0 {
+		fmt.Println("No dead letters found.")
+		return
+	}
+
+	printDLQTable(letters)
+}
+
+// parseDLQListFlags extracts --run and --limit from args.
+func parseDLQListFlags(args []string) (string, int) {
+	if args == nil {
+		panic("parseDLQListFlags: args must not be nil")
+	}
+	const maxArgs = 100
+	if len(args) > maxArgs {
+		panic("parseDLQListFlags: args exceeds max bound")
+	}
+
 	var runFilter string
 	limit := 50
 	for _, arg := range args {
@@ -59,32 +114,38 @@ func runDLQListCmd(args []string) {
 			limit = val
 		}
 	}
+	return runFilter, limit
+}
 
-	svc, nc := connectService()
-	defer nc.Close()
-
-	letters, err := svc.ListDeadLetters(
-		context.Background(), limit,
-	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "list dead letters: %v\n", err)
-		os.Exit(1)
+// filterByRun returns only letters matching the given run ID.
+func filterByRun(
+	letters []api.DeadLetter, runID string,
+) []api.DeadLetter {
+	if runID == "" {
+		panic("filterByRun: runID must not be empty")
+	}
+	const maxLetters = 10000
+	if len(letters) > maxLetters {
+		panic("filterByRun: letters exceeds max bound")
 	}
 
-	// Apply run filter client-side
-	if runFilter != "" {
-		filtered := letters[:0]
-		for _, l := range letters {
-			if l.RunID == runFilter {
-				filtered = append(filtered, l)
-			}
+	filtered := make([]api.DeadLetter, 0, len(letters))
+	for _, l := range letters {
+		if l.RunID == runID {
+			filtered = append(filtered, l)
 		}
-		letters = filtered
 	}
+	return filtered
+}
 
-	if len(letters) == 0 {
-		fmt.Println("No dead letters found.")
-		return
+// printDLQTable renders dead letters as a tab-aligned table.
+func printDLQTable(letters []api.DeadLetter) {
+	if letters == nil {
+		panic("printDLQTable: letters must not be nil")
+	}
+	const maxLetters = 10000
+	if len(letters) > maxLetters {
+		panic("printDLQTable: letters exceeds max bound")
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -106,9 +167,12 @@ func runDLQReplayCmd(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats dlq replay "+
-				"<sequence-number> | --run=<run-id>")
+				"<sequence-number> | --run=<run-id> [--json]")
 		os.Exit(1)
 	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
 
 	// Batch replay by run ID
 	var runFilter string
@@ -118,15 +182,28 @@ func runDLQReplayCmd(args []string) {
 		}
 	}
 	if runFilter != "" {
-		replayByRun(runFilter)
+		replayByRun(runFilter, jsonOutput)
 		return
 	}
 
-	replayBySequence(args[0])
+	replayBySequence(args[0], jsonOutput)
+}
+
+// dlqReplayResult is the JSON response for single replay.
+type dlqReplayResult struct {
+	Sequence uint64 `json:"sequence"`
+	Replayed bool   `json:"replayed"`
+}
+
+// dlqBatchResult is the JSON response for batch replay.
+type dlqBatchResult struct {
+	RunID     string   `json:"run_id"`
+	Replayed  int      `json:"replayed"`
+	Sequences []uint64 `json:"sequences"`
 }
 
 // replayBySequence replays a single dead letter by sequence number.
-func replayBySequence(seqStr string) {
+func replayBySequence(seqStr string, jsonOutput bool) {
 	if seqStr == "" {
 		panic("replayBySequence: seqStr must not be empty")
 	}
@@ -150,11 +227,22 @@ func replayBySequence(seqStr string) {
 		os.Exit(1)
 	}
 
+	if jsonOutput {
+		result := dlqReplayResult{
+			Sequence: seqNum, Replayed: true,
+		}
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	fmt.Printf("Replayed dead letter %d\n", seqNum)
 }
 
 // replayByRun replays all dead letters matching a run ID.
-func replayByRun(runID string) {
+func replayByRun(runID string, jsonOutput bool) {
 	if runID == "" {
 		panic("replayByRun: runID must not be empty")
 	}
@@ -171,18 +259,36 @@ func replayByRun(runID string) {
 	}
 
 	replayed := 0
+	sequences := make([]uint64, 0, len(letters))
 	for _, dl := range letters {
 		if dl.RunID != runID {
 			continue
 		}
-		if err := svc.ReplayDeadLetter(ctx, dl.Sequence); err != nil {
+		replayErr := svc.ReplayDeadLetter(ctx, dl.Sequence)
+		if replayErr != nil {
 			fmt.Fprintf(os.Stderr,
-				"replay seq %d: %v\n", dl.Sequence, err)
+				"replay seq %d: %v\n", dl.Sequence, replayErr)
 			continue
 		}
 		replayed++
-		fmt.Printf("Replayed dead letter %d (%s)\n",
-			dl.Sequence, dl.Task)
+		sequences = append(sequences, dl.Sequence)
+		if !jsonOutput {
+			fmt.Printf("Replayed dead letter %d (%s)\n",
+				dl.Sequence, dl.Task)
+		}
+	}
+
+	if jsonOutput {
+		result := dlqBatchResult{
+			RunID:     runID,
+			Replayed:  replayed,
+			Sequences: sequences,
+		}
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if replayed == 0 {
