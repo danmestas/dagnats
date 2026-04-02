@@ -40,6 +40,8 @@ func runRunCmd(args []string) {
 		runInspectCmd(args[1:])
 	case "watch":
 		runWatchCmd(args[1:])
+	case "output":
+		runOutputCmd(args[1:])
 	default:
 		fmt.Printf("unknown run subcommand: %s\n", args[0])
 	}
@@ -57,6 +59,7 @@ func printRunUsage() {
 	fmt.Println("  list     list workflow runs")
 	fmt.Println("  events   show run event history")
 	fmt.Println("  watch    watch a run until completion")
+	fmt.Println("  output   print final output of a completed run")
 }
 
 // runStartCmd starts a new workflow run with optional input.
