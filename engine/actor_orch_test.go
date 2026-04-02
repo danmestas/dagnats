@@ -66,6 +66,161 @@ func TestActorOrchBasicWorkflow(t *testing.T) {
 	}
 }
 
+func TestActorOrchSurvivesMalformedEvent(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name:    "ao-recover",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "ta", Type: dag.StepTypeNormal},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("ao-recover", defData)
+
+	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish garbage data.
+	js.Publish("history.ao-garbage",
+		[]byte("invalid json garbage"),
+		nats.MsgId("ao-garbage-1"))
+	time.Sleep(200 * time.Millisecond)
+
+	// Positive: subsequent valid event still works.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "ao-after", defData)
+	data, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    data,
+		Header: nats.Header{
+			"Nats-Msg-Id": {startEvt.NATSMsgID()},
+		},
+	})
+	time.Sleep(300 * time.Millisecond)
+
+	wa := orch.GetWorkflowActor("ao-after")
+	// Positive: actor was spawned for valid event.
+	if wa == nil {
+		t.Fatal("actor should exist after recovery")
+	}
+	if wa.RunStatus() != dag.RunStatusRunning {
+		t.Fatalf("status = %v, want Running", wa.RunStatus())
+	}
+}
+
+func TestActorOrchIgnoresUnhandledEvent(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+
+	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish an unhandled event type.
+	evt := protocol.Event{
+		Type:  "custom.unknown",
+		RunID: "ao-unk-1",
+	}
+	data, _ := json.Marshal(evt)
+	msg := &nats.Msg{
+		Subject: "history.ao-unk-1",
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {"ao-unk-1.custom"}},
+	}
+	js.PublishMsg(msg)
+	time.Sleep(200 * time.Millisecond)
+
+	// Positive: no actor spawned.
+	wa := orch.GetWorkflowActor("ao-unk-1")
+	if wa != nil {
+		t.Fatal("no actor should be spawned for unhandled event")
+	}
+}
+
+func TestActorOrchHandlesStepFailed(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name:    "actor-fail",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("actor-fail", defData)
+
+	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "arun-fail", defData)
+	data, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	// Fail step s1.
+	failEvt := protocol.NewWorkflowEvent(
+		protocol.EventStepFailed, "arun-fail",
+		[]byte(`"actor error"`))
+	failEvt.StepID = "s1"
+	fData, _ := failEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: failEvt.NATSSubject(),
+		Data:    fData,
+		Header:  nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	wa := orch.GetWorkflowActor("arun-fail")
+	for time.Now().Before(deadline) {
+		if wa != nil && wa.RunStatus() == dag.RunStatusFailed {
+			break
+		}
+		wa = orch.GetWorkflowActor("arun-fail")
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if wa == nil {
+		t.Fatal("expected workflow actor for arun-fail")
+	}
+	// Positive: workflow is Failed.
+	if wa.RunStatus() != dag.RunStatusFailed {
+		t.Fatalf("status = %v, want Failed", wa.RunStatus())
+	}
+	// Positive: step has error.
+	state := wa.StepState("s1")
+	if state.Status != dag.StepStatusFailed {
+		t.Fatalf("step status = %v, want Failed", state.Status)
+	}
+}
+
 func TestActorOrchRoutesCompletionToActor(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {

@@ -29,7 +29,7 @@ type Orchestrator struct {
 	store       *SnapshotStore
 	tel         *observe.Telemetry
 	sub         *nats.Subscription
-	runLocks    sync.Map // map[string]*sync.Mutex — per-run serialization
+	runLocks    sync.Map                // map[string]*sync.Mutex — per-run serialization
 	stepRoutes  map[dag.StepType]string // step type → subject prefix
 	concurrency *ConcurrencyManager     // nil if bucket missing
 

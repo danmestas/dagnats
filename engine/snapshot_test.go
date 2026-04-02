@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -108,6 +109,75 @@ func TestSnapshotUpdate(t *testing.T) {
 	}
 	if got.Steps["a"].Status != dag.StepStatusCompleted {
 		t.Fatalf("step-a Status = %v, want Completed", got.Steps["a"].Status)
+	}
+}
+
+func TestSnapshotListAllEmpty(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	err = natsutil.SetupKVBuckets(js)
+	if err != nil {
+		t.Fatalf("SetupKVBuckets failed: %v", err)
+	}
+	store := NewSnapshotStore(js)
+
+	// Positive: empty bucket returns empty slice, no error.
+	runs, err := store.ListAll(100)
+	if err != nil {
+		t.Fatalf("ListAll on empty bucket failed: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected 0 runs, got %d", len(runs))
+	}
+}
+
+func TestSnapshotListAllBounded(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	err = natsutil.SetupKVBuckets(js)
+	if err != nil {
+		t.Fatalf("SetupKVBuckets failed: %v", err)
+	}
+	store := NewSnapshotStore(js)
+
+	// Save 3 runs.
+	for i := 0; i < 3; i++ {
+		run := dag.WorkflowRun{
+			RunID:      fmt.Sprintf("bound-%d", i),
+			WorkflowID: "wf",
+			Status:     dag.RunStatusRunning,
+			Steps: map[string]dag.StepState{
+				"a": {Status: dag.StepStatusPending},
+			},
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := store.Save(run); err != nil {
+			t.Fatalf("Save failed: %v", err)
+		}
+	}
+
+	// Positive: maxRuns=2 limits results.
+	runs, err := store.ListAll(2)
+	if err != nil {
+		t.Fatalf("ListAll failed: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 runs, got %d", len(runs))
+	}
+
+	// Positive: maxRuns=10 returns all 3.
+	allRuns, err := store.ListAll(10)
+	if err != nil {
+		t.Fatalf("ListAll failed: %v", err)
+	}
+	if len(allRuns) != 3 {
+		t.Fatalf("expected 3 runs, got %d", len(allRuns))
 	}
 }
 

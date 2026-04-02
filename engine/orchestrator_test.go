@@ -753,7 +753,7 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 		failData, _ := failEvt.Marshal()
 		js.PublishMsg(&nats.Msg{
 			Subject: failEvt.NATSSubject(), Data: failData,
-			Header:  nats.Header{"Nats-Msg-Id": {msgID}},
+			Header: nats.Header{"Nats-Msg-Id": {msgID}},
 		})
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -819,7 +819,7 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 	failData, _ := failEvt.Marshal()
 	js.PublishMsg(&nats.Msg{
 		Subject: failEvt.NATSSubject(), Data: failData,
-		Header:  nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
+		Header: nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
 	})
 
 	// Check that run is cancelled
@@ -871,7 +871,7 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 	data, _ := startEvt.Marshal()
 	js.PublishMsg(&nats.Msg{
 		Subject: startEvt.NATSSubject(), Data: data,
-		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
 	time.Sleep(200 * time.Millisecond)
 
@@ -882,7 +882,7 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 	failData, _ := failEvt.Marshal()
 	js.PublishMsg(&nats.Msg{
 		Subject: failEvt.NATSSubject(), Data: failData,
-		Header:  nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
+		Header: nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
 	})
 
 	// Positive: DLQ message appears
@@ -898,7 +898,6 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 			dlqMsg.Subject)
 	}
 }
-
 
 func TestOrchestratorOnFailureStep(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
@@ -944,7 +943,7 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	data, _ := startEvt.Marshal()
 	js.PublishMsg(&nats.Msg{
 		Subject: startEvt.NATSSubject(), Data: data,
-		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
 	time.Sleep(200 * time.Millisecond)
 
@@ -955,7 +954,7 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	failData, _ := failEvt.Marshal()
 	js.PublishMsg(&nats.Msg{
 		Subject: failEvt.NATSSubject(), Data: failData,
-		Header:  nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
+		Header: nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
 	})
 
 	// Positive: notify task should be enqueued
@@ -1032,6 +1031,276 @@ func TestOrchestratorWorkerGroupRouting(t *testing.T) {
 	generalMsgs, _ := generalSub.Fetch(1, nats.MaxWait(500*time.Millisecond))
 	if len(generalMsgs) > 0 {
 		t.Fatal("task should not appear on non-group subject when group is set")
+	}
+}
+
+func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
+	// Methodology: agent-loop step with MaxIterations=3. After
+	// step.continue, verify new task and iteration count.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	wfDef := dag.WorkflowDef{
+		Name: "cont-wf", Version: "1",
+		Steps: []dag.StepDef{{
+			ID: "agent", Task: "agent-task",
+			Type: dag.StepTypeAgentLoop,
+			Loop: &dag.AgentLoopConfig{MaxIterations: 3},
+		}},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "cont-run", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+	taskSub, err := js.PullSubscribe(
+		"task.agent-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	if err != nil {
+		t.Fatalf("PullSubscribe failed: %v", err)
+	}
+	msgs, err := taskSub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch initial task failed: %v", err)
+	}
+	msgs[0].Ack()
+
+	cont := protocol.NewStepEvent(
+		protocol.EventStepContinue, "cont-run", "agent", nil)
+	contData, _ := cont.Marshal()
+	js.Publish(cont.NATSSubject(), contData,
+		nats.MsgId(cont.NATSMsgID()))
+
+	// Positive: new task message appears.
+	msgs2, err := taskSub.Fetch(
+		1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch iteration-1 task: %v", err)
+	}
+	if len(msgs2) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(msgs2))
+	}
+	// Positive: iteration count = 1 in snapshot.
+	store := NewSnapshotStore(js)
+	run, err := store.Load("cont-run")
+	if err != nil {
+		t.Fatalf("Load run: %v", err)
+	}
+	if run.Steps["agent"].Iterations != 1 {
+		t.Fatalf("Iterations = %d, want 1",
+			run.Steps["agent"].Iterations)
+	}
+}
+
+// skipIfWorkflow builds a->b(SkipIf)->c workflow definition.
+func skipIfWorkflow() dag.WorkflowDef {
+	return dag.WorkflowDef{
+		Name: "skip-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "task-a",
+				Type: dag.StepTypeNormal},
+			{
+				ID: "b", Task: "task-b",
+				DependsOn: []string{"a"},
+				Type:      dag.StepTypeNormal,
+				SkipIf: &dag.ParentCond{
+					StepID: "a", Field: "status",
+					Op: "==", Value: "skip",
+				},
+			},
+			{ID: "c", Task: "task-c",
+				DependsOn: []string{"b"},
+				Type:      dag.StepTypeNormal},
+		},
+	}
+}
+
+func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
+	// Methodology: complete "a" with output triggering SkipIf.
+	// Verify "b" is skipped and "c" proceeds.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := skipIfWorkflow()
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "skip-run", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	subA, _ := js.PullSubscribe(
+		"task.task-a.*", "", nats.BindStream("TASK_QUEUES"))
+	msgsA, err := subA.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch task-a failed: %v", err)
+	}
+	msgsA[0].Ack()
+
+	output := []byte(`{"status":"skip"}`)
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "skip-run", "a", output)
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	// Positive: task-c enqueued (b is skipped).
+	subC, _ := js.PullSubscribe(
+		"task.task-c.*", "", nats.BindStream("TASK_QUEUES"))
+	msgsC, err := subC.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch task-c failed: %v", err)
+	}
+	if len(msgsC) != 1 {
+		t.Fatalf("expected 1 task-c, got %d", len(msgsC))
+	}
+
+	// Positive: step "b" is Skipped.
+	store := NewSnapshotStore(js)
+	run, err := store.Load("skip-run")
+	if err != nil {
+		t.Fatalf("Load run failed: %v", err)
+	}
+	if run.Steps["b"].Status != dag.StepStatusSkipped {
+		t.Fatalf("b = %v, want Skipped",
+			run.Steps["b"].Status)
+	}
+}
+
+func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
+	// Methodology: after step completion, read KV directly and
+	// verify snapshot state matches expectations.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "snap-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-s1",
+				Type: dag.StepTypeNormal},
+			{
+				ID: "s2", Task: "task-s2",
+				DependsOn: []string{"s1"},
+				Type:      dag.StepTypeNormal,
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "snap-run", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+	time.Sleep(300 * time.Millisecond)
+
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "snap-run", "s1",
+		[]byte(`"result-1"`))
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+	time.Sleep(500 * time.Millisecond)
+
+	store := NewSnapshotStore(js)
+	run, err := store.Load("snap-run")
+	if err != nil {
+		t.Fatalf("Load snapshot failed: %v", err)
+	}
+	// Positive: s1 completed with output.
+	if run.Steps["s1"].Status != dag.StepStatusCompleted {
+		t.Fatalf("s1 = %v, want Completed",
+			run.Steps["s1"].Status)
+	}
+	if string(run.Steps["s1"].Output) != `"result-1"` {
+		t.Fatalf("output = %q, want %q",
+			string(run.Steps["s1"].Output), `"result-1"`)
+	}
+}
+
+func TestOrchestratorSnapshotRestore(t *testing.T) {
+	// Methodology: write a snapshot to KV manually, verify
+	// loadRunAndDef restores it correctly.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "snap-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-s1",
+				Type: dag.StepTypeNormal},
+			{ID: "s2", Task: "task-s2",
+				DependsOn: []string{"s1"},
+				Type:      dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	store := NewSnapshotStore(js)
+	crafted := dag.WorkflowRun{
+		RunID:      "crafted-run",
+		WorkflowID: "snap-wf",
+		Status:     dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"s1": {
+				Status: dag.StepStatusCompleted,
+				Output: []byte(`"crafted"`),
+			},
+			"s2": {Status: dag.StepStatusPending},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(crafted); err != nil {
+		t.Fatalf("Save crafted: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	wfDefR, runR, err := orch.loadRunAndDef("crafted-run")
+	if err != nil {
+		t.Fatalf("loadRunAndDef: %v", err)
+	}
+	// Positive: restored def matches.
+	if wfDefR.Name != "snap-wf" {
+		t.Fatalf("def = %q, want snap-wf", wfDefR.Name)
+	}
+	// Positive: restored run state matches.
+	if runR.Steps["s1"].Status != dag.StepStatusCompleted {
+		t.Fatalf("s1 = %v, want Completed",
+			runR.Steps["s1"].Status)
 	}
 }
 
@@ -1135,3 +1404,821 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 	}
 }
 
+func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
+	// Methodology: verify the LoopDelay path in handleStepContinue.
+	// A short delay (50ms) should still produce a task message.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "delay-wf", Version: "1",
+		Steps: []dag.StepDef{{
+			ID:   "delayed",
+			Task: "delay-task",
+			Type: dag.StepTypeAgentLoop,
+			Loop: &dag.AgentLoopConfig{
+				MaxIterations: 5,
+				LoopDelay:     50 * time.Millisecond,
+			},
+		}},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "delay-run", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	taskSub, err := js.PullSubscribe(
+		"task.delay-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	if err != nil {
+		t.Fatalf("PullSubscribe failed: %v", err)
+	}
+	// Drain initial task.
+	msgs, err := taskSub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch initial task failed: %v", err)
+	}
+	msgs[0].Ack()
+
+	// Send step.continue — delayed re-enqueue.
+	cont := protocol.NewStepEvent(
+		protocol.EventStepContinue, "delay-run", "delayed", nil)
+	contData, _ := cont.Marshal()
+	js.Publish(cont.NATSSubject(), contData,
+		nats.MsgId(cont.NATSMsgID()))
+
+	// Positive: task appears after the delay.
+	msgs2, err := taskSub.Fetch(1, nats.MaxWait(3*time.Second))
+	if err != nil {
+		t.Fatalf("delayed task did not arrive: %v", err)
+	}
+	if len(msgs2) != 1 {
+		t.Fatalf("expected 1 delayed task, got %d", len(msgs2))
+	}
+}
+
+func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
+	// Methodology: a -> b (SkipIf). Skip all -> workflow complete.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	wfDef := dag.WorkflowDef{
+		Name: "skipall-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "task-a",
+				Type: dag.StepTypeNormal},
+			{
+				ID: "b", Task: "task-b",
+				DependsOn: []string{"a"},
+				Type:      dag.StepTypeNormal,
+				SkipIf: &dag.ParentCond{
+					StepID: "a", Field: "skip",
+					Op: "==", Value: true,
+				},
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "skipall-run", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	subA, _ := js.PullSubscribe(
+		"task.task-a.*", "", nats.BindStream("TASK_QUEUES"))
+	msgsA, err := subA.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch task-a failed: %v", err)
+	}
+	msgsA[0].Ack()
+
+	// Complete a with skip=true — b should be skipped,
+	// workflow should complete.
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "skipall-run", "a",
+		[]byte(`{"skip":true}`))
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	store := NewSnapshotStore(js)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := store.Load("skipall-run")
+		if err == nil &&
+			run.Status == dag.RunStatusCompleted {
+			// Positive: workflow completed.
+			if run.Steps["b"].Status != dag.StepStatusSkipped {
+				t.Fatalf("b status = %v, want Skipped",
+					run.Steps["b"].Status)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("workflow should complete when all steps done/skipped")
+}
+
+// waitForEventType polls a subscription for a specific event type.
+func waitForEventType(
+	sub *nats.Subscription,
+	target protocol.EventType,
+	timeout time.Duration,
+) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		m, err := sub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		m.Ack()
+		evt, _ := protocol.UnmarshalEvent(m.Data)
+		if evt.Type == target {
+			return true
+		}
+	}
+	return false
+}
+
+func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
+	// Methodology: spawn a child, fail it, verify parent gets
+	// workflow.child.failed event.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	childDef := dag.WorkflowDef{
+		Name: "fail-child", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "fail-task",
+				Type: dag.StepTypeNormal},
+		},
+	}
+	childDefData, _ := json.Marshal(childDef)
+	defKV.Put("fail-child", childDefData)
+
+	parentSub, err := js.SubscribeSync(
+		"history.parent-fail",
+		nats.AckExplicit(), nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	spawnPayload, _ := json.Marshal(map[string]string{
+		"child_run_id":   "child-fail-1",
+		"child_workflow": "fail-child",
+		"parent_step_id": "parent-step",
+	})
+	spawnEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowSpawn, "parent-fail",
+		spawnPayload)
+	data, _ := spawnEvt.Marshal()
+	js.Publish(spawnEvt.NATSSubject(), data,
+		nats.MsgId(spawnEvt.NATSMsgID()))
+	time.Sleep(300 * time.Millisecond)
+
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed, "child-fail-1", "s1",
+		[]byte(`"child error"`))
+	failData, _ := failEvt.Marshal()
+	js.Publish(failEvt.NATSSubject(), failData,
+		nats.MsgId(failEvt.NATSMsgID()))
+
+	// Positive: parent notified.
+	found := waitForEventType(parentSub,
+		protocol.EventWorkflowChildFailed, 5*time.Second)
+	if !found {
+		t.Fatal("expected child.failed on parent")
+	}
+	// Positive: child run is Failed.
+	store := NewSnapshotStore(js)
+	childRun, _ := store.Load("child-fail-1")
+	if childRun.Status != dag.RunStatusFailed {
+		t.Fatalf("child = %v, want Failed",
+			childRun.Status)
+	}
+}
+
+func TestSplitTraceparent(t *testing.T) {
+	// Methodology: unit test for the traceparent parsing utility.
+
+	// Positive: valid W3C traceparent header.
+	traceID, spanID, ok := splitTraceparent(
+		"00-abc123-def456-01")
+	if !ok {
+		t.Fatal("expected ok=true for valid traceparent")
+	}
+	if traceID != "abc123" || spanID != "def456" {
+		t.Fatalf("traceID=%q spanID=%q, want abc123/def456",
+			traceID, spanID)
+	}
+
+	// Negative: invalid format (wrong version prefix).
+	_, _, ok2 := splitTraceparent("01-abc-def-01")
+	if ok2 {
+		t.Fatal("expected ok=false for version != 00")
+	}
+
+	// Negative: too few segments.
+	_, _, ok3 := splitTraceparent("00-abc-def")
+	if ok3 {
+		t.Fatal("expected ok=false for 3-segment string")
+	}
+}
+
+func TestIsHandledEventType(t *testing.T) {
+	// Methodology: unit test for event type filtering.
+
+	// Positive: known types are handled.
+	handled := []protocol.EventType{
+		protocol.EventWorkflowStarted,
+		protocol.EventStepCompleted,
+		protocol.EventStepContinue,
+		protocol.EventStepFailed,
+		protocol.EventWorkflowSpawn,
+		protocol.EventWorkflowCancelled,
+	}
+	for _, et := range handled {
+		if !isHandledEventType(et) {
+			t.Fatalf("%s should be handled", et)
+		}
+	}
+
+	// Negative: unknown type is not handled.
+	if isHandledEventType("foo.bar") {
+		t.Fatal("foo.bar should not be handled")
+	}
+}
+
+func TestErrString(t *testing.T) {
+	// Positive: nil returns empty string.
+	if errString(nil) != "" {
+		t.Fatal("errString(nil) should be empty")
+	}
+	// Positive: non-nil returns error message.
+	if errString(fmt.Errorf("boom")) != "boom" {
+		t.Fatal("errString should return error text")
+	}
+}
+
+func TestParseTraceparentFromHeader(t *testing.T) {
+	// Methodology: unit test for traceparent parsing from NATS
+	// message headers vs event field fallback.
+
+	// Positive: header takes priority.
+	msg := &nats.Msg{
+		Header: nats.Header{
+			"traceparent": {"00-tid1-sid1-01"},
+		},
+	}
+	evt := &protocol.Event{TraceParent: "00-tid2-sid2-01"}
+	traceID, spanID, ok := parseTraceparent(msg, evt)
+	if !ok {
+		t.Fatal("expected ok=true with header traceparent")
+	}
+	if traceID != "tid1" || spanID != "sid1" {
+		t.Fatalf("header should take priority: got %s/%s",
+			traceID, spanID)
+	}
+
+	// Positive: falls back to event field when no header.
+	msg2 := &nats.Msg{}
+	traceID2, spanID2, ok2 := parseTraceparent(msg2, evt)
+	if !ok2 {
+		t.Fatal("expected ok=true with event traceparent")
+	}
+	if traceID2 != "tid2" || spanID2 != "sid2" {
+		t.Fatalf("should fall back to event: got %s/%s",
+			traceID2, spanID2)
+	}
+
+	// Negative: neither header nor event has traceparent.
+	msg3 := &nats.Msg{}
+	evt3 := &protocol.Event{}
+	_, _, ok3 := parseTraceparent(msg3, evt3)
+	if ok3 {
+		t.Fatal("expected ok=false when no traceparent")
+	}
+}
+
+func TestOrchestratorTraceparentPropagation(t *testing.T) {
+	// Methodology: verify traceparent from a published event
+	// flows through the orchestrator without breaking processing.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "trace-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "trace-task",
+				Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish with traceparent header.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "trace-run", defData)
+	startData, _ := startEvt.Marshal()
+	tp := "00-aaaa-bbbb-01"
+	msg := &nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    startData,
+		Header: nats.Header{
+			"Nats-Msg-Id": {startEvt.NATSMsgID()},
+			"traceparent": {tp},
+		},
+	}
+	js.PublishMsg(msg)
+
+	// Positive: task should still be enqueued.
+	sub, _ := js.PullSubscribe(
+		"task.trace-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("task not enqueued with traceparent: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(msgs))
+	}
+}
+
+func TestCompletedSetAndQueuedSet(t *testing.T) {
+	// Methodology: unit test for the set-building helpers.
+	run := dag.WorkflowRun{
+		RunID:      "test-sets",
+		WorkflowID: "wf",
+		Status:     dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"a": {Status: dag.StepStatusCompleted},
+			"b": {Status: dag.StepStatusSkipped},
+			"c": {Status: dag.StepStatusQueued},
+			"d": {Status: dag.StepStatusPending},
+			"e": {Status: dag.StepStatusFailed},
+			"f": {Status: dag.StepStatusRunning},
+		},
+	}
+
+	completed := completedSet(run)
+	// Positive: a and b are in completed set.
+	if !completed["a"] || !completed["b"] {
+		t.Fatal("a and b should be in completed set")
+	}
+	// Negative: c, d, e, f are NOT in completed set.
+	if completed["c"] || completed["d"] ||
+		completed["e"] || completed["f"] {
+		t.Fatal("c/d/e/f should not be in completed set")
+	}
+
+	queued := queuedSet(run)
+	// Positive: a, b, c, e, f are in queued set.
+	for _, id := range []string{"a", "b", "c", "e", "f"} {
+		if !queued[id] {
+			t.Fatalf("%s should be in queued set", id)
+		}
+	}
+	// Negative: d (pending) is NOT in queued set.
+	if queued["d"] {
+		t.Fatal("d (pending) should not be in queued set")
+	}
+}
+
+func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
+	// Methodology: cancel an already-completed run. The handler
+	// should return nil without modifying the run.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "cancel-noop", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "t1", Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start and complete the workflow.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "cnoop-run", defData)
+	sd, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), sd,
+		nats.MsgId(startEvt.NATSMsgID()))
+	time.Sleep(200 * time.Millisecond)
+
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "cnoop-run", "s1",
+		[]byte(`"done"`))
+	cd, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), cd,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	store := NewSnapshotStore(js)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := store.Load("cnoop-run")
+		if err == nil &&
+			run.Status == dag.RunStatusCompleted {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Now cancel the completed workflow.
+	cancelEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowCancelled, "cnoop-run", nil)
+	ccd, _ := cancelEvt.Marshal()
+	js.Publish(cancelEvt.NATSSubject(), ccd,
+		nats.MsgId(cancelEvt.NATSMsgID()))
+	time.Sleep(300 * time.Millisecond)
+
+	// Positive: run is still Completed (not Cancelled).
+	run, _ := store.Load("cnoop-run")
+	if run.Status != dag.RunStatusCompleted {
+		t.Fatalf("status = %v, want Completed (cancel is noop)",
+			run.Status)
+	}
+	// Positive: step is still Completed.
+	if run.Steps["s1"].Status != dag.StepStatusCompleted {
+		t.Fatalf("step = %v, want Completed",
+			run.Steps["s1"].Status)
+	}
+}
+
+func TestOrchestratorStartWithInput(t *testing.T) {
+	// Methodology: start a workflow with input payload (structured
+	// format with workflow_def + input). Verify the workflow starts.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "input-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-in",
+				Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start with structured payload.
+	payload, _ := json.Marshal(map[string]interface{}{
+		"workflow_def": wfDef,
+		"input":        map[string]string{"key": "val"},
+	})
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "input-run", payload)
+	sd, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), sd,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Positive: task should be enqueued.
+	sub, _ := js.PullSubscribe(
+		"task.task-in.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("task not enqueued: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(msgs))
+	}
+
+	// Positive: run is Running.
+	store := NewSnapshotStore(js)
+	run, err := store.Load("input-run")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if run.Status != dag.RunStatusRunning {
+		t.Fatalf("status = %v, want Running", run.Status)
+	}
+}
+
+func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
+	// Methodology: verify that malformed event data does not
+	// crash the orchestrator and the system recovers.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "malform-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "t1", Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish garbage data to history stream.
+	js.Publish("history.malform-run",
+		[]byte("not valid json"),
+		nats.MsgId("malform-1"))
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Positive: orchestrator survives and processes next event.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "recover-run", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	store := NewSnapshotStore(js)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := store.Load("recover-run")
+		if err == nil && run.Status == dag.RunStatusRunning {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// Positive: orchestrator recovered from malformed event.
+	t.Fatalf("orchestrator should recover from malformed event")
+}
+
+func TestCheckLoopBoundsNoLoopConfig(t *testing.T) {
+	// Methodology: unit test for checkLoopBounds edge cases.
+
+	// Positive: nil Loop config returns false (no bounds).
+	step := dag.StepDef{ID: "s", Task: "t"}
+	exceeded, reason := checkLoopBounds(step, dag.StepState{})
+	if exceeded {
+		t.Fatal("nil Loop should not exceed bounds")
+	}
+	if reason != "" {
+		t.Fatalf("reason should be empty, got %q", reason)
+	}
+}
+
+func TestOrchestratorStopIdempotent(t *testing.T) {
+	// Methodology: verify Stop can be called multiple times
+	// and on a never-started orchestrator without panic.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+
+	// Positive: Stop on never-started is safe.
+	orch.Stop()
+	orch.Stop()
+
+	// Positive: Stop after Start is safe.
+	orch.Start()
+	orch.Stop()
+	orch.Stop()
+}
+
+func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
+	// Methodology: verify unknown event types are acked silently.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "unknown-evt", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "t1", Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Publish an event with an unhandled type.
+	evt := protocol.Event{
+		Type:  "custom.unknown",
+		RunID: "unknown-run",
+	}
+	data, _ := json.Marshal(evt)
+	js.Publish("history.unknown-run", data,
+		nats.MsgId("unknown-run.custom"))
+	time.Sleep(200 * time.Millisecond)
+
+	// Positive: no run was created (event was ignored).
+	store := NewSnapshotStore(js)
+	_, err := store.Load("unknown-run")
+	if err == nil {
+		t.Fatal("unknown event should not create a run")
+	}
+
+	// Positive: subsequent events still work.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "post-unknown",
+		defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+	time.Sleep(300 * time.Millisecond)
+	_, err = store.Load("post-unknown")
+	if err != nil {
+		t.Fatalf("orchestrator should still work: %v", err)
+	}
+}
+
+func TestLoadRunAndDefMissingRun(t *testing.T) {
+	// Methodology: verify loadRunAndDef returns error for
+	// a run that doesn't exist in the snapshot store.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+
+	// Positive: error returned for missing run.
+	_, _, err := orch.loadRunAndDef("nonexistent-run")
+	if err == nil {
+		t.Fatal("expected error for missing run")
+	}
+
+	// Positive: error message mentions the run ID.
+	if !strings.Contains(err.Error(), "nonexistent-run") {
+		t.Fatalf("error should mention run ID: %v", err)
+	}
+}
+
+func TestLoadRunAndDefMissingWorkflowDef(t *testing.T) {
+	// Methodology: snapshot exists but the workflow definition
+	// is not registered. loadRunAndDef should return error.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	store := NewSnapshotStore(js)
+	run := dag.WorkflowRun{
+		RunID:      "orphan-run",
+		WorkflowID: "missing-def",
+		Status:     dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"s1": {Status: dag.StepStatusPending},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+
+	// Positive: error returned for missing workflow def.
+	_, _, err := orch.loadRunAndDef("orphan-run")
+	if err == nil {
+		t.Fatal("expected error for missing workflow def")
+	}
+
+	// Positive: error references the workflow ID.
+	if !strings.Contains(err.Error(), "missing-def") {
+		t.Fatalf("error should mention workflow ID: %v", err)
+	}
+}
+
+func TestBuildTaskMsg(t *testing.T) {
+	// Methodology: unit test for buildTaskMsg construction.
+	msg := buildTaskMsg("task.foo.run-1", []byte("data"),
+		"run-1.foo.queued")
+
+	// Positive: subject is set.
+	if msg.Subject != "task.foo.run-1" {
+		t.Fatalf("Subject = %q, want task.foo.run-1",
+			msg.Subject)
+	}
+	// Positive: dedup ID is set.
+	if msg.Header.Get("Nats-Msg-Id") != "run-1.foo.queued" {
+		t.Fatalf("Nats-Msg-Id = %q, want run-1.foo.queued",
+			msg.Header.Get("Nats-Msg-Id"))
+	}
+}
+
+func TestStepSubjectRouting(t *testing.T) {
+	// Methodology: unit test for subject resolution.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	routes := map[dag.StepType]string{
+		dag.StepTypeAgent: "agent.task",
+	}
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry(),
+		WithStepRoutes(routes))
+
+	// Normal step -> default prefix.
+	step := dag.StepDef{
+		ID: "s1", Task: "my-task",
+		Type: dag.StepTypeNormal,
+	}
+	subj := orch.stepSubject(step, "run-1")
+	if subj != "task.my-task.run-1" {
+		t.Fatalf("subject = %q, want task.my-task.run-1", subj)
+	}
+
+	// Agent step -> custom prefix.
+	agentStep := dag.StepDef{
+		ID: "s2", Task: "llm",
+		Type: dag.StepTypeAgent,
+	}
+	agentSubj := orch.stepSubject(agentStep, "run-1")
+	if agentSubj != "agent.task.llm.run-1" {
+		t.Fatalf("subject = %q, want agent.task.llm.run-1",
+			agentSubj)
+	}
+}
+
+func TestFindStepDef(t *testing.T) {
+	wfDef := dag.WorkflowDef{
+		Name: "find-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "ta", Type: dag.StepTypeNormal},
+			{ID: "b", Task: "tb", Type: dag.StepTypeNormal},
+		},
+	}
+
+	// Positive: found step.
+	step, found := findStepDef(wfDef, "b")
+	if !found {
+		t.Fatal("expected to find step b")
+	}
+	if step.Task != "tb" {
+		t.Fatalf("step.Task = %q, want tb", step.Task)
+	}
+
+	// Negative: missing step.
+	_, found2 := findStepDef(wfDef, "z")
+	if found2 {
+		t.Fatal("expected not to find step z")
+	}
+}
