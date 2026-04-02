@@ -181,3 +181,65 @@ func TestCalculateDelayPanicsOnZeroAttempt(t *testing.T) {
 	}()
 	CalculateDelay(RetryPolicy{Strategy: RetryFixed}, 0)
 }
+
+func TestRetryStrategyMarshalJSONAll(t *testing.T) {
+	strategies := []struct {
+		s    RetryStrategy
+		want string
+	}{
+		{RetryFixed, `"fixed"`},
+		{RetryLinear, `"linear"`},
+		{RetryExponential, `"exponential"`},
+	}
+	for _, tt := range strategies {
+		data, err := tt.s.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON(%v): %v", tt.s, err)
+		}
+		// Positive: correct JSON string
+		if string(data) != tt.want {
+			t.Fatalf("MarshalJSON(%v) = %s, want %s",
+				tt.s, data, tt.want)
+		}
+	}
+	// Negative: unknown strategy panics on String()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for unknown RetryStrategy")
+		}
+	}()
+	_ = RetryStrategy(99).String()
+}
+
+func TestRetryStrategyUnmarshalJSONInvalid(t *testing.T) {
+	var s RetryStrategy
+	err := s.UnmarshalJSON([]byte(`"bogus"`))
+	// Positive: error returned for unknown strategy
+	if err == nil {
+		t.Fatal("expected error for unknown strategy string")
+	}
+	// Negative: valid string does not error
+	err = s.UnmarshalJSON([]byte(`"fixed"`))
+	if err != nil {
+		t.Fatalf("unexpected error for valid strategy: %v", err)
+	}
+}
+
+func TestCalculateDelayDefaultFallback(t *testing.T) {
+	// An unknown strategy falls through to default (InitialDelay).
+	p := RetryPolicy{
+		Strategy:     RetryStrategy(99),
+		InitialDelay: 7 * time.Second,
+	}
+	// Positive: returns InitialDelay as fallback
+	d := CalculateDelay(p, 1)
+	if d != 7*time.Second {
+		t.Fatalf("default delay = %v, want 7s", d)
+	}
+	// Negative: MaxDelay caps fallback
+	p.MaxDelay = 3 * time.Second
+	d = CalculateDelay(p, 1)
+	if d != 3*time.Second {
+		t.Fatalf("capped delay = %v, want 3s", d)
+	}
+}

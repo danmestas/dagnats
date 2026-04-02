@@ -148,3 +148,130 @@ func TestStepRefWithMaxIterationsOnNormalPanics(t *testing.T) {
 	}()
 	_ = ref.WithMaxIterations(10)
 }
+
+func TestStepRefWithRetries(t *testing.T) {
+	wf := NewWorkflow("retries")
+	_ = wf.Task("a", "task-a").WithRetries(3)
+
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	step := findStep(def, "a")
+	// Positive: retries set
+	if step.Retries != 3 {
+		t.Fatalf("Retries = %d, want 3", step.Retries)
+	}
+	// Negative: zero retries is default for unset
+	wf2 := NewWorkflow("no-retries")
+	wf2.Task("b", "task-b")
+	def2, _ := wf2.Build()
+	if findStep(def2, "b").Retries != 0 {
+		t.Fatal("unset Retries should be 0")
+	}
+}
+
+func TestStepRefWithRetriesZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value WithRetries")
+		}
+	}()
+	_ = ref.WithRetries(1)
+}
+
+func TestStepRefWithLoopDelay(t *testing.T) {
+	wf := NewWorkflow("loop-delay")
+	prep := wf.Task("prep", "task-prep")
+	_ = wf.AgentLoop("fix", "task-fix").After(prep).
+		WithMaxIterations(5).
+		WithLoopDelay(2 * time.Second).
+		WithMaxDuration(time.Minute)
+
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	step := findStep(def, "fix")
+	// Positive: loop delay set
+	if step.Loop.LoopDelay != 2*time.Second {
+		t.Fatalf("LoopDelay = %v, want 2s", step.Loop.LoopDelay)
+	}
+	// Negative: prep step has no loop config
+	if findStep(def, "prep").Loop != nil {
+		t.Fatal("prep should not have Loop config")
+	}
+}
+
+func TestStepRefWithLoopDelayOnNormalPanics(t *testing.T) {
+	wf := NewWorkflow("bad-delay")
+	ref := wf.Task("a", "task-a")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for WithLoopDelay on Task")
+		}
+	}()
+	_ = ref.WithLoopDelay(time.Second)
+}
+
+func TestStepRefWithLoopDelayZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value WithLoopDelay")
+		}
+	}()
+	_ = ref.WithLoopDelay(time.Second)
+}
+
+func TestStepRefWithMaxDurationOnNormalPanics(t *testing.T) {
+	wf := NewWorkflow("bad-dur")
+	ref := wf.Task("a", "task-a")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for WithMaxDuration on Task")
+		}
+	}()
+	_ = ref.WithMaxDuration(time.Minute)
+}
+
+func TestStepRefWithMaxDurationZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value WithMaxDuration")
+		}
+	}()
+	_ = ref.WithMaxDuration(time.Minute)
+}
+
+func TestStepRefWithTimeoutZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value WithTimeout")
+		}
+	}()
+	_ = ref.WithTimeout(time.Second)
+}
+
+func TestStepRefSkipIfZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value SkipIf")
+		}
+	}()
+	_ = ref.SkipIf(&ParentCond{})
+}
+
+func TestStepRefWithMaxIterationsZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value WithMaxIterations")
+		}
+	}()
+	_ = ref.WithMaxIterations(5)
+}

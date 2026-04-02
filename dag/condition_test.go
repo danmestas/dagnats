@@ -185,6 +185,127 @@ func TestValidateSkipIfInvalidOp(t *testing.T) {
 	}
 }
 
+func TestCompareValuesStringAllOps(t *testing.T) {
+	tests := []struct {
+		a, b string
+		op   string
+		want bool
+	}{
+		{"alpha", "alpha", "==", true},
+		{"alpha", "beta", "==", false},
+		{"alpha", "beta", "!=", true},
+		{"alpha", "alpha", "!=", false},
+		{"alpha", "beta", "<", true},
+		{"beta", "alpha", "<", false},
+		{"beta", "alpha", ">", true},
+		{"alpha", "beta", ">", false},
+		{"alpha", "alpha", "<=", true},
+		{"alpha", "beta", "<=", true},
+		{"beta", "alpha", "<=", false},
+		{"beta", "beta", ">=", true},
+		{"beta", "alpha", ">=", true},
+		{"alpha", "beta", ">=", false},
+	}
+	for _, tt := range tests {
+		got := compareValues(tt.a, tt.op, tt.b)
+		if got != tt.want {
+			t.Errorf("%q %s %q = %v, want %v",
+				tt.a, tt.op, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestCompareValuesInvalidOp(t *testing.T) {
+	// Positive: unknown op returns false for strings
+	if compareValues("a", "~=", "b") {
+		t.Fatal("unknown op should return false for strings")
+	}
+	// Negative: unknown op returns false for numbers
+	if compareValues(float64(1), "~=", float64(2)) {
+		t.Fatal("unknown op should return false for numbers")
+	}
+}
+
+func TestCompareValuesBoolNotComparable(t *testing.T) {
+	// Positive: bool == works
+	if !compareValues(true, "==", true) {
+		t.Fatal("true == true should be true")
+	}
+	// Negative: bool < not supported, returns false
+	if compareValues(true, "<", false) {
+		t.Fatal("bool < should return false")
+	}
+}
+
+func TestToFloat64IntTypes(t *testing.T) {
+	// Positive: int converts
+	v, ok := toFloat64(int(42))
+	if !ok || v != 42.0 {
+		t.Fatalf("int: got %v, %v", v, ok)
+	}
+	// Positive: int64 converts
+	v, ok = toFloat64(int64(99))
+	if !ok || v != 99.0 {
+		t.Fatalf("int64: got %v, %v", v, ok)
+	}
+	// Negative: string does not convert
+	_, ok = toFloat64("nope")
+	if ok {
+		t.Fatal("string should not convert to float64")
+	}
+}
+
+func TestCompareValuesMixedTypes(t *testing.T) {
+	// Positive: mismatched types (num vs bool) returns false
+	if compareValues(float64(1), "==", true) {
+		t.Fatal("num vs bool should return false")
+	}
+	// Negative: mismatched types (string vs num) returns false
+	if compareValues("hello", "==", float64(5)) {
+		t.Fatal("string vs num should return false")
+	}
+}
+
+func TestSkipIfOutputConstructor(t *testing.T) {
+	wf := NewWorkflow("skip-ctor")
+	parent := wf.Task("a", "task-a")
+	cond := SkipIfOutput(parent, "ready", "==", true)
+
+	// Positive: StepID matches parent
+	if cond.StepID != "a" {
+		t.Fatalf("StepID = %q, want %q", cond.StepID, "a")
+	}
+	// Positive: fields set correctly
+	if cond.Field != "ready" || cond.Op != "==" {
+		t.Fatalf("Field=%q Op=%q, want ready ==",
+			cond.Field, cond.Op)
+	}
+}
+
+func TestParentCondInvalidJSON(t *testing.T) {
+	steps := map[string]StepState{
+		"s1": {
+			Status: StepStatusCompleted,
+			Output: []byte(`{not json`),
+		},
+	}
+	cond := &ParentCond{
+		StepID: "s1", Field: "x", Op: "==", Value: float64(1),
+	}
+	// Positive: invalid JSON output returns false
+	if cond.Evaluate(steps) {
+		t.Fatal("invalid JSON should return false")
+	}
+	// Negative: valid JSON works
+	steps["s1"] = StepState{
+		Status: StepStatusCompleted,
+		Output: []byte(`{"x":1}`),
+	}
+	if !cond.Evaluate(steps) {
+		t.Fatal("valid JSON should evaluate correctly")
+	}
+}
+
 func TestValidateSkipIfNonParent(t *testing.T) {
 	wf := NewWorkflow("bad-ref")
 	wf.Task("a", "task-a")
