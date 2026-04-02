@@ -9,7 +9,9 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
+	"github.com/nats-io/nats.go"
 )
 
 // runWorkflowCmd dispatches workflow subcommands.
@@ -105,9 +107,10 @@ func printWorkflowListTable(defs []dag.WorkflowDef) {
 
 // workflowRegisterResult is the JSON output for workflow register.
 type workflowRegisterResult struct {
-	Name   string `json:"name"`
-	Action string `json:"action"`
-	Steps  int    `json:"steps"`
+	Name     string   `json:"name"`
+	Action   string   `json:"action"`
+	Steps    int      `json:"steps"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // runWorkflowRegisterCmd reads a workflow definition file and
@@ -153,11 +156,15 @@ func runWorkflowRegisterCmd(args []string) {
 		action = "updated"
 	}
 
+	// Check for missing worker consumers (warning only).
+	warnings := checkMissingWorkers(nc, def)
+
 	if jsonOutput {
 		result := workflowRegisterResult{
-			Name:   def.Name,
-			Action: action,
-			Steps:  len(def.Steps),
+			Name:     def.Name,
+			Action:   action,
+			Steps:    len(def.Steps),
+			Warnings: warnings,
 		}
 		if err := FormatJSON(os.Stdout, result); err != nil {
 			fmt.Fprintf(
@@ -170,6 +177,10 @@ func runWorkflowRegisterCmd(args []string) {
 
 	fmt.Printf("Workflow %s: %s (%d steps)\n",
 		action, def.Name, len(def.Steps))
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr,
+			"Warning: no active worker for task %q\n", w)
+	}
 }
 
 // readWorkflowDef reads and parses a workflow JSON file. Exits on
@@ -197,4 +208,24 @@ func readWorkflowDef(filePath string) dag.WorkflowDef {
 	}
 
 	return def
+}
+
+// checkMissingWorkers queries JetStream for active task consumers
+// and returns task types with no worker. Silently returns nil on
+// JetStream errors — this is best-effort advisory only.
+func checkMissingWorkers(
+	nc *nats.Conn, def dag.WorkflowDef,
+) []string {
+	if nc == nil {
+		panic("checkMissingWorkers: nc must not be nil")
+	}
+	if len(def.Steps) == 0 {
+		panic("checkMissingWorkers: def must have steps")
+	}
+
+	js, jsErr := nc.JetStream()
+	if jsErr != nil {
+		return nil
+	}
+	return api.CheckTaskConsumers(js, def)
 }

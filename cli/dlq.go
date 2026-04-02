@@ -20,10 +20,11 @@ func runDLQCmd(args []string) {
 		fmt.Println("Commands:")
 		fmt.Println("  list     list dead-letter messages")
 		fmt.Println("  replay   replay a dead-letter message")
+		fmt.Println("  watch    auto-replay dead letters on interval")
 		return
 	}
 	if len(args) == 0 {
-		fmt.Println("Usage: dagnats dlq <list|replay> [--json]")
+		fmt.Println("Usage: dagnats dlq <list|replay|watch> [--json]")
 		return
 	}
 	switch args[0] {
@@ -31,6 +32,8 @@ func runDLQCmd(args []string) {
 		runDLQListCmd(args[1:])
 	case "replay":
 		runDLQReplayCmd(args[1:])
+	case "watch":
+		runDLQWatchCmd(args[1:])
 	default:
 		fmt.Printf("unknown dlq subcommand: %s\n", args[0])
 	}
