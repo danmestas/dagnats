@@ -8,11 +8,18 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"text/tabwriter"
 
 	"github.com/danmestas/dagnats/trigger"
 )
+
+// triggerActionResult is the JSON response for delete/enable/disable.
+type triggerActionResult struct {
+	TriggerID string `json:"trigger_id"`
+	Action    string `json:"action"`
+}
 
 // runTriggerCmd dispatches trigger subcommands.
 func runTriggerCmd(args []string) {
@@ -112,19 +119,32 @@ func parseTriggerCreateFlags(args []string) *trigger.TriggerDef {
 
 // runTriggerCreateCmd creates a new trigger and stores it via api.Service.
 func runTriggerCreateCmd(args []string) {
+	runTriggerCreateCmdWithWriter(args, os.Stdout)
+}
+
+// runTriggerCreateCmdWithWriter creates a trigger, writing to w.
+func runTriggerCreateCmdWithWriter(args []string, w io.Writer) {
+	if w == nil {
+		panic("runTriggerCreateCmdWithWriter: w must not be nil")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	def := parseTriggerCreateFlags(args)
 	if def == nil {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats trigger create <workflow-id> "+
-				"[--cron=EXPR] [--subject=SUB] [--webhook=PATH] "+
-				"[--tz=TZ] [--backfill] [--secret=SEC]")
+				"[--cron=EXPR] [--subject=SUB] "+
+				"[--webhook=PATH] [--tz=TZ] "+
+				"[--backfill] [--secret=SEC] [--json]")
 		fmt.Fprintln(os.Stderr,
 			"error: exactly one of --cron, --subject, "+
 				"or --webhook must be specified")
 		os.Exit(1)
 	}
 	if def.WorkflowID == "" {
-		panic("runTriggerCreateCmd: workflowID must not be empty")
+		panic("runTriggerCreateCmdWithWriter: empty workflowID")
 	}
 
 	svc, nc := connectService()
@@ -136,11 +156,27 @@ func runTriggerCreateCmd(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Trigger created: %s\n", def.ID)
+	if jsonOutput {
+		result := map[string]string{"trigger_id": def.ID}
+		FormatJSON(w, result)
+		return
+	}
+	fmt.Fprintf(w, "Trigger created: %s\n", def.ID)
 }
 
 // runTriggerListCmd lists all triggers via api.Service.
 func runTriggerListCmd(args []string) {
+	runTriggerListCmdWithWriter(args, os.Stdout)
+}
+
+// runTriggerListCmdWithWriter lists triggers, writing to w.
+func runTriggerListCmdWithWriter(args []string, w io.Writer) {
+	if w == nil {
+		panic("runTriggerListCmdWithWriter: w must not be nil")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+
 	svc, nc := connectService()
 	defer nc.Close()
 
@@ -150,51 +186,87 @@ func runTriggerListCmd(args []string) {
 		os.Exit(1)
 	}
 
-	if len(defs) == 0 {
-		fmt.Println("No triggers found.")
+	if jsonOutput {
+		FormatJSON(w, defs)
 		return
 	}
 
-	// Print table header
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tWORKFLOW\tTYPE\tCONFIG\tENABLED")
+	if len(defs) == 0 {
+		fmt.Fprintln(w, "No triggers found.")
+		return
+	}
 
-	for _, def := range defs {
-		trigType := "unknown"
-		config := ""
-		if def.Cron != nil {
-			trigType = "cron"
-			config = def.Cron.Expression
-		} else if def.Subject != nil {
-			trigType = "subject"
-			config = def.Subject.Subject
-		} else if def.Webhook != nil {
-			trigType = "webhook"
-			config = def.Webhook.Path
+	printTriggerTable(w, defs)
+}
+
+// printTriggerTable writes a formatted trigger table to w.
+func printTriggerTable(w io.Writer, defs []trigger.TriggerDef) {
+	if w == nil {
+		panic("printTriggerTable: w must not be nil")
+	}
+	if defs == nil {
+		panic("printTriggerTable: defs must not be nil")
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tWORKFLOW\tTYPE\tCONFIG\tENABLED")
+
+	const maxDefs = 10000
+	for i, def := range defs {
+		if i >= maxDefs {
+			break
 		}
-
+		trigType, config := triggerTypeConfig(def)
 		enabled := "no"
 		if def.Enabled {
 			enabled = "yes"
 		}
-
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 			def.ID, def.WorkflowID, trigType, config, enabled)
 	}
 
-	w.Flush()
+	tw.Flush()
+}
+
+// triggerTypeConfig returns the type and config string for a trigger.
+func triggerTypeConfig(
+	def trigger.TriggerDef,
+) (string, string) {
+	if def.Cron != nil {
+		return "cron", def.Cron.Expression
+	}
+	if def.Subject != nil {
+		return "subject", def.Subject.Subject
+	}
+	if def.Webhook != nil {
+		return "webhook", def.Webhook.Path
+	}
+	return "unknown", ""
 }
 
 // runTriggerDeleteCmd deletes a trigger via api.Service.
 func runTriggerDeleteCmd(args []string) {
+	runTriggerDeleteCmdWithWriter(args, os.Stdout)
+}
+
+// runTriggerDeleteCmdWithWriter deletes a trigger, writing to w.
+func runTriggerDeleteCmdWithWriter(args []string, w io.Writer) {
+	if w == nil {
+		panic("runTriggerDeleteCmdWithWriter: w must not be nil")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats trigger delete <trigger-id>")
+			"Usage: dagnats trigger delete "+
+				"<trigger-id> [--json]")
 		os.Exit(1)
 	}
 	triggerID := args[0]
 	if triggerID == "" {
-		panic("runTriggerDeleteCmd: triggerID must not be empty")
+		panic("runTriggerDeleteCmdWithWriter: empty triggerID")
 	}
 
 	svc, nc := connectService()
@@ -206,19 +278,38 @@ func runTriggerDeleteCmd(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Trigger deleted: %s\n", triggerID)
+	if jsonOutput {
+		FormatJSON(w, triggerActionResult{
+			TriggerID: triggerID, Action: "deleted",
+		})
+		return
+	}
+	fmt.Fprintf(w, "Trigger deleted: %s\n", triggerID)
 }
 
 // runTriggerEnableCmd enables a trigger via api.Service.
 func runTriggerEnableCmd(args []string) {
+	runTriggerEnableCmdWithWriter(args, os.Stdout)
+}
+
+// runTriggerEnableCmdWithWriter enables a trigger, writing to w.
+func runTriggerEnableCmdWithWriter(args []string, w io.Writer) {
+	if w == nil {
+		panic("runTriggerEnableCmdWithWriter: w must not be nil")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats trigger enable <trigger-id>")
+			"Usage: dagnats trigger enable "+
+				"<trigger-id> [--json]")
 		os.Exit(1)
 	}
 	triggerID := args[0]
 	if triggerID == "" {
-		panic("runTriggerEnableCmd: triggerID must not be empty")
+		panic("runTriggerEnableCmdWithWriter: empty triggerID")
 	}
 
 	svc, nc := connectService()
@@ -232,19 +323,38 @@ func runTriggerEnableCmd(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Trigger enabled: %s\n", triggerID)
+	if jsonOutput {
+		FormatJSON(w, triggerActionResult{
+			TriggerID: triggerID, Action: "enabled",
+		})
+		return
+	}
+	fmt.Fprintf(w, "Trigger enabled: %s\n", triggerID)
 }
 
 // runTriggerDisableCmd disables a trigger via api.Service.
 func runTriggerDisableCmd(args []string) {
+	runTriggerDisableCmdWithWriter(args, os.Stdout)
+}
+
+// runTriggerDisableCmdWithWriter disables a trigger, writing to w.
+func runTriggerDisableCmdWithWriter(args []string, w io.Writer) {
+	if w == nil {
+		panic("runTriggerDisableCmdWithWriter: w must not be nil")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats trigger disable <trigger-id>")
+			"Usage: dagnats trigger disable "+
+				"<trigger-id> [--json]")
 		os.Exit(1)
 	}
 	triggerID := args[0]
 	if triggerID == "" {
-		panic("runTriggerDisableCmd: triggerID must not be empty")
+		panic("runTriggerDisableCmdWithWriter: empty triggerID")
 	}
 
 	svc, nc := connectService()
@@ -258,7 +368,13 @@ func runTriggerDisableCmd(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Trigger disabled: %s\n", triggerID)
+	if jsonOutput {
+		FormatJSON(w, triggerActionResult{
+			TriggerID: triggerID, Action: "disabled",
+		})
+		return
+	}
+	fmt.Fprintf(w, "Trigger disabled: %s\n", triggerID)
 }
 
 // generateTriggerID creates a unique ID for a new trigger using crypto/rand.
