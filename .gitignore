@@ -2,3 +2,5 @@ hatchet-analysis/
 .claude/worktrees/
 .worktrees/
 .superpowers/
+coverage.out
+.gitnexus/

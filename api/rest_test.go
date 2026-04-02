@@ -203,7 +203,7 @@ func TestRESTRegisterWorkflowBadJSON(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(
 		http.MethodPost, "/workflows",
-		bytes.NewReader([]byte(`{"name":""}`)),
+		bytes.NewReader([]byte(`{"name":"bad","steps":[]}`)),
 	)
 	handleRegisterWorkflow(svc, rec2, req2)
 	if rec2.Code != http.StatusBadRequest {
@@ -279,7 +279,7 @@ func TestRESTRegisterWorkflowInvalidDef(t *testing.T) {
 	defer server.Close()
 
 	// Positive: empty workflow def returns 400.
-	body := []byte(`{"name":"","steps":[]}`)
+	body := []byte(`{"name":"bad-wf","steps":[]}`)
 	resp, err := http.Post(
 		server.URL+"/workflows",
 		"application/json",

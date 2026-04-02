@@ -641,8 +641,8 @@ func TestRegisterWorkflowInvalidDef(t *testing.T) {
 	}
 	svc := NewService(nc, observe.NewNoopTelemetry())
 
-	// Positive: invalid workflow returns error.
-	badDef := dag.WorkflowDef{Name: ""}
+	// Positive: workflow with no steps returns validation error.
+	badDef := dag.WorkflowDef{Name: "bad-wf"}
 	err := svc.RegisterWorkflow(context.Background(), badDef)
 	if err == nil {
 		t.Fatal("expected error for invalid workflow def")

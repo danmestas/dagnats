@@ -267,6 +267,7 @@ func TestSplitWorkerTraceparentMalformed(t *testing.T) {
 
 func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
 	msg := &nats.Msg{
+		Data: []byte("{}"),
 		Header: nats.Header{
 			"traceparent": {"00-tid123-sid456-01"},
 		},
@@ -287,7 +288,7 @@ func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
 }
 
 func TestExtractWorkerTraceCtxNoHeader(t *testing.T) {
-	msg := &nats.Msg{}
+	msg := &nats.Msg{Data: []byte("{}")}
 	ctx := extractWorkerTraceCtx(msg)
 	// Positive: returns a valid context
 	if ctx == nil {

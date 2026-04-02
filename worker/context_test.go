@@ -326,7 +326,7 @@ func TestTaskContextPutStream(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-ps", StepID: "step-ps",
 		},
-		bgCtx, span, nil, nil, nil,
+		bgCtx, span, &nats.Msg{}, nil, nil,
 	)
 	// Subscribe to the stream subject before publishing
 	sub, err := nc.SubscribeSync("stream.run-ps.step-ps")
@@ -432,7 +432,7 @@ func TestTaskContextCheckpointNilKV(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-nocp", StepID: "step-nocp",
 		},
-		bgCtx, span, nil, nil, nil,
+		bgCtx, span, &nats.Msg{}, nil, nil,
 	)
 	// Positive: Checkpoint returns error when KV is nil
 	err := tc.Checkpoint([]byte("state"))
@@ -458,7 +458,7 @@ func TestTaskContextSignalNilKV(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-nosig", StepID: "step-nosig",
 		},
-		bgCtx, span, nil, nil, nil,
+		bgCtx, span, &nats.Msg{}, nil, nil,
 	)
 	// Positive: WaitForSignal errors when signalKV is nil
 	_, err := tc.WaitForSignal("sig", 1*time.Second)

@@ -193,10 +193,10 @@ func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
 		t.Fatal("expected error for invalid JSON")
 	}
 
-	// Negative: valid JSON with bad workflow also returns error.
+	// Negative: valid JSON but no steps triggers validation error.
 	reply, err = nc.Request(
 		"api.workflows.register",
-		[]byte(`{"name":""}`),
+		[]byte(`{"name":"bad-wf","steps":[]}`),
 		2*time.Second,
 	)
 	if err != nil {
@@ -204,7 +204,7 @@ func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
 	}
 	json.Unmarshal(reply.Data, &resp)
 	if resp["error"] == "" {
-		t.Fatal("expected error for empty workflow name")
+		t.Fatal("expected error for empty steps")
 	}
 }
 

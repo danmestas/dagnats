@@ -140,9 +140,18 @@ func (r *Runtime) runActor(cell *actorCell) {
 
 // handleFailure applies the parent's supervision strategy.
 func (r *Runtime) handleFailure(cell *actorCell, err error) {
-	r.mu.RLock()
-	parent, hasParent := r.actors[cell.parent.String()]
-	r.mu.RUnlock()
+	if cell == nil {
+		panic("handleFailure: cell must not be nil")
+	}
+
+	// Root actors have zero-value parent — skip lookup.
+	var parent *actorCell
+	var hasParent bool
+	if cell.parent != (Address{}) {
+		r.mu.RLock()
+		parent, hasParent = r.actors[cell.parent.String()]
+		r.mu.RUnlock()
+	}
 
 	directive := Stop // Default: stop if no supervisor
 	if hasParent && parent.strategy != nil {
