@@ -78,6 +78,58 @@ func TestValidateRejectsWebhookPathWithoutSlash(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsEmptyCronExpression(t *testing.T) {
+	def := TriggerDef{
+		ID: "t1", WorkflowID: "wf", Enabled: true,
+		Cron: &CronConfig{Expression: ""},
+	}
+	err := Validate(def)
+
+	// Positive: error returned
+	if err == nil {
+		t.Fatalf("expected error for empty cron expression")
+	}
+	// Positive: mentions "expression"
+	if !strings.Contains(err.Error(), "expression") {
+		t.Fatalf("error = %q, should mention expression", err)
+	}
+}
+
+func TestValidateRejectsInvalidCronExpression(t *testing.T) {
+	def := TriggerDef{
+		ID: "t1", WorkflowID: "wf", Enabled: true,
+		Cron: &CronConfig{Expression: "bad cron"},
+	}
+	err := Validate(def)
+
+	// Positive: error returned
+	if err == nil {
+		t.Fatalf("expected error for invalid cron expression")
+	}
+	// Negative: valid expression does not error
+	def.Cron.Expression = "*/5 * * * *"
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid expression rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsEmptyWebhookPath(t *testing.T) {
+	def := TriggerDef{
+		ID: "t1", WorkflowID: "wf", Enabled: true,
+		Webhook: &WebhookConfig{Path: ""},
+	}
+	err := Validate(def)
+
+	// Positive: error returned
+	if err == nil {
+		t.Fatalf("expected error for empty webhook path")
+	}
+	// Positive: mentions "path"
+	if !strings.Contains(err.Error(), "path") {
+		t.Fatalf("error = %q, should mention path", err)
+	}
+}
+
 func TestValidateAcceptsValidCron(t *testing.T) {
 	def := TriggerDef{
 		ID: "t1", WorkflowID: "wf", Enabled: true,
@@ -105,5 +157,24 @@ func TestValidateAcceptsValidWebhook(t *testing.T) {
 	}
 	if err := Validate(def); err != nil {
 		t.Fatalf("valid webhook rejected: %v", err)
+	}
+}
+
+func TestValidateAllThreeTypes(t *testing.T) {
+	def := TriggerDef{
+		ID: "t1", WorkflowID: "wf", Enabled: true,
+		Cron:    &CronConfig{Expression: "* * * * *"},
+		Subject: &SubjectConfig{Subject: "foo"},
+		Webhook: &WebhookConfig{Path: "/bar"},
+	}
+	err := Validate(def)
+
+	// Positive: error returned for 3 types
+	if err == nil {
+		t.Fatalf("expected error for all three types set")
+	}
+	// Positive: mentions count mismatch
+	if !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("error = %q", err)
 	}
 }
