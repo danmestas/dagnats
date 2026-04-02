@@ -1,0 +1,32 @@
+{
+  "name": "retry-errors",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "fetch",
+      "task": "fetch",
+      "type": "normal",
+      "depends_on": [],
+      "retry": {
+        "max_attempts": 3,
+        "strategy": "exponential",
+        "initial_delay": 1000000000,
+        "max_delay": 10000000000,
+        "multiplier": 2.0
+      },
+      "on_failure": "report-error"
+    },
+    {
+      "id": "process",
+      "task": "process",
+      "type": "normal",
+      "depends_on": ["fetch"]
+    },
+    {
+      "id": "report-error",
+      "task": "report-error",
+      "type": "normal",
+      "depends_on": []
+    }
+  ]
+}

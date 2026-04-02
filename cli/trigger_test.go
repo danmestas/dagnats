@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"testing"
@@ -309,5 +310,232 @@ func TestTriggerDeleteRemovesFromKV(t *testing.T) {
 	keys, _ := trigKV.Keys()
 	if len(keys) != 0 {
 		t.Fatalf("expected 0 triggers after delete, got %d", len(keys))
+	}
+}
+
+func TestTriggerCreateJSON(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	var buf bytes.Buffer
+	runTriggerCreateCmdWithWriter(
+		[]string{
+			"test-workflow",
+			"--cron=* * * * *",
+			"--json",
+		},
+		&buf,
+	)
+
+	// Positive: output is valid JSON with trigger_id
+	var result map[string]string
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	if result["trigger_id"] == "" {
+		t.Fatal("trigger_id should not be empty")
+	}
+
+	// Negative: output should not contain human text
+	if bytes.Contains(buf.Bytes(), []byte("Trigger created")) {
+		t.Fatal("JSON mode should not contain human text")
+	}
+}
+
+func TestTriggerListJSON(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+	trigKV, _ := js.KeyValue("triggers")
+
+	def := trigger.TriggerDef{
+		ID:         "trig-json-1",
+		WorkflowID: "wf-1",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "0 0 * * *",
+			Timezone:   "UTC",
+		},
+	}
+	data, _ := json.Marshal(def)
+	trigKV.Put("trig-json-1", data)
+
+	var buf bytes.Buffer
+	runTriggerListCmdWithWriter([]string{"--json"}, &buf)
+
+	// Positive: output is valid JSON array
+	var defs []trigger.TriggerDef
+	if err := json.Unmarshal(buf.Bytes(), &defs); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	if len(defs) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(defs))
+	}
+
+	// Negative: output should not contain table headers
+	if bytes.Contains(buf.Bytes(), []byte("WORKFLOW")) {
+		t.Fatal("JSON mode should not contain table headers")
+	}
+}
+
+func TestTriggerDeleteJSON(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+	trigKV, _ := js.KeyValue("triggers")
+
+	def := trigger.TriggerDef{
+		ID: "trig-del", WorkflowID: "wf",
+		Enabled: true,
+		Cron:    &trigger.CronConfig{Expression: "* * * * *"},
+	}
+	data, _ := json.Marshal(def)
+	trigKV.Put("trig-del", data)
+
+	var buf bytes.Buffer
+	runTriggerDeleteCmdWithWriter(
+		[]string{"trig-del", "--json"}, &buf,
+	)
+
+	// Positive: valid JSON with action=deleted
+	var result triggerActionResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	if result.Action != "deleted" {
+		t.Fatalf("expected action=deleted, got %s", result.Action)
+	}
+
+	// Negative: trigger_id should match
+	if result.TriggerID != "trig-del" {
+		t.Fatalf(
+			"expected trigger_id=trig-del, got %s",
+			result.TriggerID,
+		)
+	}
+}
+
+func TestTriggerEnableJSON(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+	trigKV, _ := js.KeyValue("triggers")
+
+	def := trigger.TriggerDef{
+		ID: "trig-en", WorkflowID: "wf",
+		Enabled: false,
+		Cron:    &trigger.CronConfig{Expression: "* * * * *"},
+	}
+	data, _ := json.Marshal(def)
+	trigKV.Put("trig-en", data)
+
+	var buf bytes.Buffer
+	runTriggerEnableCmdWithWriter(
+		[]string{"trig-en", "--json"}, &buf,
+	)
+
+	// Positive: valid JSON with action=enabled
+	var result triggerActionResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	if result.Action != "enabled" {
+		t.Fatalf("expected action=enabled, got %s", result.Action)
+	}
+
+	// Negative: no human text in output
+	if bytes.Contains(buf.Bytes(), []byte("Trigger enabled")) {
+		t.Fatal("JSON mode should not contain human text")
+	}
+}
+
+func TestTriggerDisableJSON(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+	trigKV, _ := js.KeyValue("triggers")
+
+	def := trigger.TriggerDef{
+		ID: "trig-dis", WorkflowID: "wf",
+		Enabled: true,
+		Cron:    &trigger.CronConfig{Expression: "* * * * *"},
+	}
+	data, _ := json.Marshal(def)
+	trigKV.Put("trig-dis", data)
+
+	var buf bytes.Buffer
+	runTriggerDisableCmdWithWriter(
+		[]string{"trig-dis", "--json"}, &buf,
+	)
+
+	// Positive: valid JSON with action=disabled
+	var result triggerActionResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	if result.Action != "disabled" {
+		t.Fatalf("expected action=disabled, got %s", result.Action)
+	}
+
+	// Negative: trigger_id should match
+	if result.TriggerID != "trig-dis" {
+		t.Fatalf(
+			"expected trigger_id=trig-dis, got %s",
+			result.TriggerID,
+		)
 	}
 }

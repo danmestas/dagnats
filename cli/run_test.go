@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/protocol"
@@ -243,6 +244,238 @@ func publishTestEvent(
 	_, err = js.Publish("history."+runID, data)
 	if err != nil {
 		t.Fatalf("publish event: %v", err)
+	}
+}
+
+func TestRunStatusJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	run := dag.WorkflowRun{
+		RunID: "json-run", WorkflowID: "wf-json",
+		Status: dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"step-a": {Status: dag.StepStatusCompleted, Attempts: 1},
+		},
+		CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, run)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should be valid JSON containing run_id
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, "json-run") {
+		t.Fatal("JSON output should contain run ID value")
+	}
+
+	// Negative: output should not contain table formatting
+	if strings.Contains(output, "Run:") {
+		t.Fatal("JSON output should not contain table format")
+	}
+}
+
+func TestRunListJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	runs := []dag.WorkflowRun{
+		{
+			RunID: "list-1", WorkflowID: "wf-a",
+			Status: dag.RunStatusCompleted,
+			Steps:  map[string]dag.StepState{},
+			CreatedAt: time.Date(
+				2026, 4, 1, 12, 0, 0, 0, time.UTC,
+			),
+		},
+		{
+			RunID: "list-2", WorkflowID: "wf-b",
+			Status: dag.RunStatusRunning,
+			Steps:  map[string]dag.StepState{},
+			CreatedAt: time.Date(
+				2026, 4, 1, 13, 0, 0, 0, time.UTC,
+			),
+		},
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, runs)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain both run IDs
+	if !strings.Contains(output, "list-1") {
+		t.Fatal("JSON output should contain first run ID")
+	}
+	if !strings.Contains(output, "list-2") {
+		t.Fatal("JSON output should contain second run ID")
+	}
+
+	// Negative: output should not contain table headers
+	if strings.Contains(output, "RUN_ID") {
+		t.Fatal("JSON output should not contain table headers")
+	}
+}
+
+func TestHasJSONFlagIntegration(t *testing.T) {
+	// Positive: --json should be detected
+	if !HasJSONFlag([]string{"--json", "--status=running"}) {
+		t.Fatal("should detect --json flag")
+	}
+
+	// Negative: absent --json should return false
+	if HasJSONFlag([]string{"--status=running"}) {
+		t.Fatal("should not detect --json when absent")
+	}
+}
+
+func TestStripJSONFlagPreservesOtherArgs(t *testing.T) {
+	args := StripJSONFlag(
+		[]string{"--json", "--workflow=wf", "--status=ok"},
+	)
+
+	// Positive: other args preserved
+	if len(args) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(args))
+	}
+
+	// Negative: --json should be removed
+	for _, arg := range args {
+		if arg == "--json" {
+			t.Fatal("--json should have been stripped")
+		}
+	}
+}
+
+func TestRunEventsJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	events := []api.RunEvent{
+		{
+			Type:      "step.queued",
+			RunID:     "evt-run-1",
+			StepID:    "step-a",
+			Timestamp: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+			Data:      "queued",
+		},
+		{
+			Type:      "step.completed",
+			RunID:     "evt-run-1",
+			StepID:    "step-a",
+			Timestamp: time.Date(2026, 4, 1, 12, 1, 0, 0, time.UTC),
+			Data:      "done",
+		},
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, events)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain event fields
+	if !strings.Contains(output, `"type"`) {
+		t.Fatal("JSON output should contain type field")
+	}
+	if !strings.Contains(output, "step.queued") {
+		t.Fatal("JSON output should contain event type value")
+	}
+	if !strings.Contains(output, "step-a") {
+		t.Fatal("JSON output should contain step ID")
+	}
+
+	// Negative: output should not contain table headers
+	if strings.Contains(output, "TIMESTAMP") {
+		t.Fatal("JSON output should not contain table headers")
+	}
+}
+
+func TestRunStartJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := runStartResult{RunID: "start-abc"}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain run_id field
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, "start-abc") {
+		t.Fatal("JSON output should contain run ID value")
+	}
+
+	// Negative: should not contain human-readable prefix
+	if strings.Contains(output, "Started:") {
+		t.Fatal("JSON output should not contain human text")
+	}
+}
+
+func TestRunCancelJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := runCancelResult{
+		RunID:     "cancel-xyz",
+		Cancelled: true,
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain expected fields
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, `"cancelled": true`) {
+		t.Fatal("JSON output should contain cancelled field")
+	}
+
+	// Negative: should not contain human text
+	if strings.Contains(output, "Cancelled:") {
+		t.Fatal("JSON output should not contain human text")
+	}
+}
+
+func TestRunSignalJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := runSignalResult{
+		RunID:  "sig-run",
+		Signal: "approval",
+		Sent:   true,
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain all fields
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, `"signal"`) {
+		t.Fatal("JSON output should contain signal field")
+	}
+	if !strings.Contains(output, `"sent": true`) {
+		t.Fatal("JSON output should contain sent field")
+	}
+
+	// Negative: should not contain human text
+	if strings.Contains(output, "Signal sent:") {
+		t.Fatal("JSON output should not contain human text")
 	}
 }
 

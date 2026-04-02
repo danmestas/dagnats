@@ -10,13 +10,31 @@ import (
 	"text/tabwriter"
 
 	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/dag"
 )
+
+// inspectResult combines all three data sources for JSON output.
+type inspectResult struct {
+	Run         dag.WorkflowRun  `json:"run"`
+	Failures    []api.RunEvent   `json:"failures,omitempty"`
+	DeadLetters []api.DeadLetter `json:"dead_letters,omitempty"`
+}
 
 // runInspectCmd prints a unified debug view for a single run.
 func runInspectCmd(args []string) {
+	if args == nil {
+		panic("runInspectCmd: args must not be nil")
+	}
+	if len(args) > 100 {
+		panic("runInspectCmd: args exceeds max bound")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run inspect <run-id>")
+			"Usage: dagnats run inspect <run-id> [--json]")
 		os.Exit(1)
 	}
 	runID := args[0]
@@ -29,19 +47,89 @@ func runInspectCmd(args []string) {
 
 	ctx := context.Background()
 
-	// Section 1: run status with step errors
 	run, err := svc.GetRun(ctx, runID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
 		os.Exit(1)
 	}
+
+	if jsonOutput {
+		printInspectJSON(svc, ctx, run)
+		return
+	}
+
 	fmt.Print(FormatRunStatus(run))
-
-	// Section 2: failure events
 	printFailureEvents(svc, ctx, runID)
-
-	// Section 3: dead-letter entries for this run
 	printRunDeadLetters(svc, ctx, runID)
+}
+
+// printInspectJSON collects all inspect data and outputs as JSON.
+func printInspectJSON(
+	svc *api.Service, ctx context.Context, run dag.WorkflowRun,
+) {
+	if svc == nil {
+		panic("printInspectJSON: svc must not be nil")
+	}
+	if run.RunID == "" {
+		panic("printInspectJSON: run.RunID must not be empty")
+	}
+
+	result := inspectResult{Run: run}
+
+	events, err := svc.ListRunEvents(ctx, run.RunID, true)
+	if err == nil {
+		result.Failures = collectFailures(events)
+	}
+
+	const dlqLimit = 50
+	letters, err := svc.ListDeadLetters(ctx, dlqLimit)
+	if err == nil {
+		result.DeadLetters = matchRunDeadLetters(
+			letters, run.RunID,
+		)
+	}
+
+	if err := FormatJSON(os.Stdout, result); err != nil {
+		fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// collectFailures filters events to only step.failed and
+// workflow.failed types.
+func collectFailures(events []api.RunEvent) []api.RunEvent {
+	if len(events) > 10000 {
+		panic("collectFailures: events exceeds max bound")
+	}
+
+	var failures []api.RunEvent
+	for _, evt := range events {
+		if evt.Type == "step.failed" ||
+			evt.Type == "workflow.failed" {
+			failures = append(failures, evt)
+		}
+	}
+	return failures
+}
+
+// matchRunDeadLetters returns only dead letters matching the run ID.
+func matchRunDeadLetters(
+	letters []api.DeadLetter, runID string,
+) []api.DeadLetter {
+	if len(letters) > 10000 {
+		panic("matchRunDeadLetters: letters exceeds max bound")
+	}
+	if runID == "" {
+		panic("matchRunDeadLetters: runID must not be empty")
+	}
+
+	var matched []api.DeadLetter
+	for _, l := range letters {
+		if l.RunID == runID {
+			matched = append(matched, l)
+		}
+	}
+	return matched
 }
 
 // printFailureEvents prints step.failed and workflow.failed events.

@@ -219,6 +219,139 @@ func TestDLQReplayByRun(t *testing.T) {
 	}
 }
 
+func TestDLQListJSONOutput(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"run_id":  "run-json-1",
+		"step_id": "step-j",
+		"task":    "json-task",
+		"error":   "json error",
+	})
+	_, err := js.Publish("dead.json-task.run-json-1.step-j", payload)
+	if err != nil {
+		t.Fatalf("publish dead letter: %v", err)
+	}
+
+	output := captureOutput(func() {
+		runDLQListCmd([]string{"--json"})
+	})
+
+	// Positive: should be valid JSON array with correct fields
+	var letters []map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &letters); err != nil {
+		t.Fatalf("output should be valid JSON: %v\n%s", err, output)
+	}
+	if len(letters) != 1 {
+		t.Fatalf("expected 1 letter, got %d", len(letters))
+	}
+	if letters[0]["run_id"] != "run-json-1" {
+		t.Fatal("JSON should contain correct run_id")
+	}
+
+	// Negative: should not contain table header
+	if strings.Contains(output, "SEQ") {
+		t.Fatal("JSON output should not contain table header")
+	}
+}
+
+func TestDLQReplayJSONSingleOutput(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"run_id":  "run-rj-1",
+		"step_id": "step-r",
+		"task":    "replay-json",
+		"error":   "fail",
+	})
+	_, err := js.Publish("dead.replay-json.run-rj-1.step-r", payload)
+	if err != nil {
+		t.Fatalf("publish dead letter: %v", err)
+	}
+
+	output := captureOutput(func() {
+		runDLQReplayCmd([]string{"1", "--json"})
+	})
+
+	// Positive: should be valid JSON with sequence and replayed
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output should be valid JSON: %v\n%s", err, output)
+	}
+	if result["replayed"] != true {
+		t.Fatal("JSON should have replayed=true")
+	}
+
+	// Negative: should not contain human-readable text
+	if strings.Contains(output, "Replayed dead letter") {
+		t.Fatal("JSON output should not contain text message")
+	}
+}
+
+func TestDLQReplayJSONBatchOutput(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	js, _ := nc.JetStream()
+
+	for _, task := range []string{"batch-a", "batch-b"} {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"run_id":  "run-batch-json",
+			"step_id": "step-1",
+			"task":    task,
+			"error":   "fail",
+		})
+		js.Publish("dead."+task, payload)
+	}
+
+	output := captureOutput(func() {
+		runDLQReplayCmd(
+			[]string{"--run=run-batch-json", "--json"},
+		)
+	})
+
+	// Positive: should be valid JSON with batch result
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output should be valid JSON: %v\n%s", err, output)
+	}
+	if result["run_id"] != "run-batch-json" {
+		t.Fatal("JSON should contain correct run_id")
+	}
+	if result["replayed"] != float64(2) {
+		t.Fatalf("expected 2 replayed, got %v", result["replayed"])
+	}
+
+	// Negative: should not contain text output
+	if strings.Contains(output, "Replayed") {
+		t.Fatal("JSON output should not contain text message")
+	}
+}
+
 // countDataLines counts non-header, non-empty lines in tabwriter output.
 func countDataLines(output string) int {
 	lines := strings.Split(strings.TrimSpace(output), "\n")

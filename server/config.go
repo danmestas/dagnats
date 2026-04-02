@@ -21,11 +21,11 @@ const (
 
 // Config holds all server configuration.
 type Config struct {
-	DataDir       string
-	HTTPAddr      string
-	NATSPort      int
-	LeafRemotes   []string
-	MaxStoreBytes int64
+	DataDir       string   `json:"data_dir"`
+	HTTPAddr      string   `json:"http_addr"`
+	NATSPort      int      `json:"nats_port"`
+	LeafRemotes   []string `json:"leaf_remotes"`
+	MaxStoreBytes int64    `json:"max_store_bytes"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.

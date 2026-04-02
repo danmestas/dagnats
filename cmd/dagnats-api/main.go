@@ -6,16 +6,16 @@ import (
 	"os"
 
 	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/cli"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe/simple"
 	"github.com/nats-io/nats.go"
 )
 
 func main() {
-	url := os.Getenv("NATS_URL")
-	if url == "" {
-		url = nats.DefaultURL
-	}
+	url := cli.GetEnvWithFallback(
+		"DAGNATS_NATS_URL", "NATS_URL", nats.DefaultURL,
+	)
 	nc, err := nats.Connect(url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to connect to NATS: %v\n", err)
@@ -31,10 +31,9 @@ func main() {
 	defer shutdown()
 	svc := api.NewService(nc, tel)
 	handler := api.NewRESTHandler(svc)
-	addr := os.Getenv("LISTEN_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
+	addr := cli.GetEnvWithFallback(
+		"DAGNATS_LISTEN_ADDR", "LISTEN_ADDR", ":8080",
+	)
 	fmt.Printf("dagnats-api listening on %s\n", addr)
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)

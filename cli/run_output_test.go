@@ -6,6 +6,7 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 )
@@ -91,5 +92,108 @@ func TestFormatRunOutput_MultipleTerminals(t *testing.T) {
 	// Negative: does not contain root step output (root has dependents)
 	if strings.Contains(output, "root-out") {
 		t.Fatal("should not show output from non-terminal step")
+	}
+}
+
+func TestRunOutputJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := runOutputResult{
+		RunID:  "out-run-1",
+		Status: "completed",
+		Outputs: map[string]string{
+			"final-step": "hello world",
+		},
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain expected fields
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, `"outputs"`) {
+		t.Fatal("JSON output should contain outputs field")
+	}
+	if !strings.Contains(output, "hello world") {
+		t.Fatal("JSON output should contain step output")
+	}
+
+	// Negative: should not contain human formatting
+	if strings.Contains(output, "---") {
+		t.Fatal("JSON output should not contain separator")
+	}
+}
+
+func TestRunOutputJSONOmitsEmptyOutputs(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := runOutputResult{
+		RunID:  "out-run-2",
+		Status: "running",
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: should contain run_id and status
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, "running") {
+		t.Fatal("JSON output should contain status value")
+	}
+
+	// Negative: outputs should be omitted when nil
+	if strings.Contains(output, `"outputs"`) {
+		t.Fatal("JSON output should omit empty outputs")
+	}
+}
+
+func TestBuildRunOutputResult(t *testing.T) {
+	run := dag.WorkflowRun{
+		RunID:      "build-out-1",
+		WorkflowID: "wf-build",
+		Status:     dag.RunStatusCompleted,
+		Steps: map[string]dag.StepState{
+			"step-a": {
+				Status: dag.StepStatusCompleted, Attempts: 1,
+				Output: []byte("result-a"),
+			},
+			"step-b": {
+				Status: dag.StepStatusCompleted, Attempts: 1,
+				Output: []byte("result-b"),
+			},
+		},
+		CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+	}
+	def := dag.WorkflowDef{
+		Name: "wf-build",
+		Steps: []dag.StepDef{
+			{ID: "step-a"},
+			{ID: "step-b", DependsOn: []string{"step-a"}},
+		},
+	}
+
+	result := buildRunOutputResult(run, def)
+
+	// Positive: terminal step output should be present
+	if result.Outputs["step-b"] != "result-b" {
+		t.Fatalf(
+			"expected step-b output 'result-b', got %q",
+			result.Outputs["step-b"],
+		)
+	}
+
+	// Negative: non-terminal step should not be in outputs
+	if _, ok := result.Outputs["step-a"]; ok {
+		t.Fatal("non-terminal step should not be in outputs")
 	}
 }

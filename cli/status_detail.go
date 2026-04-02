@@ -14,37 +14,68 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// printStreamDetails prints a table of JetStream stream statistics.
-// Iterates all streams on the server and displays message count, byte
-// usage, and consumer count for each.
-func printStreamDetails(js nats.JetStreamContext) {
+// streamInfo holds per-stream statistics for both human and JSON output.
+type streamInfo struct {
+	Name      string `json:"name"`
+	Messages  uint64 `json:"messages"`
+	Bytes     uint64 `json:"bytes"`
+	Consumers int    `json:"consumers"`
+}
+
+// collectStreamInfo gathers stream statistics from JetStream.
+// Returns a slice of streamInfo for all discoverable streams.
+func collectStreamInfo(
+	js nats.JetStreamContext,
+) []streamInfo {
 	if js == nil {
-		panic("printStreamDetails: js must not be nil")
+		panic("collectStreamInfo: js must not be nil")
 	}
 
 	const maxStreams = 200
 	names := collectStreamNames(js, maxStreams)
 
 	if len(names) == 0 {
-		panic("printStreamDetails: expected at least one stream")
+		panic("collectStreamInfo: expected at least one stream")
+	}
+
+	result := make([]streamInfo, 0, len(names))
+	for _, name := range names {
+		info, err := js.StreamInfo(name)
+		if err != nil {
+			continue
+		}
+		result = append(result, streamInfo{
+			Name:      name,
+			Messages:  info.State.Msgs,
+			Bytes:     info.State.Bytes,
+			Consumers: info.State.Consumers,
+		})
+	}
+	return result
+}
+
+// printStreamDetails prints a table of JetStream stream statistics.
+// Thin wrapper over collectStreamInfo for human-readable output.
+func printStreamDetails(js nats.JetStreamContext) {
+	if js == nil {
+		panic("printStreamDetails: js must not be nil")
+	}
+
+	streams := collectStreamInfo(js)
+	if len(streams) == 0 {
+		return
 	}
 
 	fmt.Println("\nStreams:")
 	w := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
 	fmt.Fprintf(w, "  STREAM\tMESSAGES\tBYTES\tCONSUMERS\n")
 
-	for _, name := range names {
-		info, err := js.StreamInfo(name)
-		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				"  %s\t(error: %v)\n", name, err)
-			continue
-		}
+	for _, s := range streams {
 		fmt.Fprintf(w, "  %s\t%s\t%s\t%d\n",
-			name,
-			formatCount(info.State.Msgs),
-			formatBytes(info.State.Bytes),
-			info.State.Consumers,
+			s.Name,
+			formatCount(s.Messages),
+			formatBytes(s.Bytes),
+			s.Consumers,
 		)
 	}
 	w.Flush()
@@ -72,7 +103,37 @@ func collectStreamNames(
 	return names
 }
 
+// collectRunCountMap queries all runs and returns a status-to-count map.
+// Keys are human-readable status strings; suitable for JSON output.
+func collectRunCountMap(
+	svc *api.Service,
+) (map[string]int, error) {
+	if svc == nil {
+		panic("collectRunCountMap: svc must not be nil")
+	}
+
+	runs, err := svc.ListRuns(context.Background(), "")
+	if err != nil {
+		return nil, err
+	}
+
+	if runs == nil {
+		panic("collectRunCountMap: ListRuns returned nil")
+	}
+
+	counts := countRunsByStatus(runs)
+	result := map[string]int{
+		"pending":   counts[dag.RunStatusPending],
+		"running":   counts[dag.RunStatusRunning],
+		"completed": counts[dag.RunStatusCompleted],
+		"failed":    counts[dag.RunStatusFailed],
+		"cancelled": counts[dag.RunStatusCancelled],
+	}
+	return result, nil
+}
+
 // printRunBreakdown prints a one-line summary of runs grouped by status.
+// Thin wrapper over collectRunCountMap for human-readable output.
 func printRunBreakdown(svc *api.Service) {
 	if svc == nil {
 		panic("printRunBreakdown: svc must not be nil")

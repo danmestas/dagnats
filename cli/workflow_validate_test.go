@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +48,8 @@ func TestWorkflowValidateAcceptsValidFile(t *testing.T) {
 		)
 	}
 
-	// Negative: must not contain "Invalid".
-	if strings.Contains(result, "Invalid") {
+	// Negative: must not contain "invalid" error prefix.
+	if strings.Contains(result, "invalid:") {
 		t.Fatal("valid workflow should not say Invalid")
 	}
 }
@@ -74,10 +75,10 @@ func TestWorkflowValidateRejectsNoSteps(t *testing.T) {
 		t.Fatal("expected error for workflow with no steps")
 	}
 
-	// Positive: error must mention "Invalid".
-	if !strings.Contains(err.Error(), "Invalid") {
+	// Positive: error must mention "invalid".
+	if !strings.Contains(err.Error(), "invalid") {
 		t.Fatalf(
-			"expected 'Invalid' in error, got: %v", err,
+			"expected 'invalid' in error, got: %v", err,
 		)
 	}
 
@@ -129,6 +130,84 @@ func TestWorkflowValidateRejectsMissingDependency(t *testing.T) {
 		t.Fatalf(
 			"expected empty result on error, got: %s", result,
 		)
+	}
+}
+
+func TestWorkflowValidateJSONValid(t *testing.T) {
+	validJSON := `{
+		"name": "json-valid",
+		"version": "1.0",
+		"steps": [
+			{"id": "a", "task": "task-a"},
+			{"id": "b", "task": "task-b", "depends_on": ["a"]}
+		]
+	}`
+	tmpFile := filepath.Join(t.TempDir(), "valid.json")
+	if err := os.WriteFile(
+		tmpFile, []byte(validJSON), 0644,
+	); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	output := captureOutput(func() {
+		runWorkflowValidateCmd([]string{tmpFile, "--json"})
+	})
+
+	var result workflowValidateResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("unmarshal json: %v (output: %s)", err, output)
+	}
+
+	// Positive: must be valid with correct name and step count.
+	if !result.Valid {
+		t.Fatal("expected valid=true")
+	}
+	if result.Name != "json-valid" {
+		t.Fatalf("expected name 'json-valid', got %q", result.Name)
+	}
+	if result.Steps != 2 {
+		t.Fatalf("expected 2 steps, got %d", result.Steps)
+	}
+
+	// Negative: error must be empty for valid workflow.
+	if result.Error != "" {
+		t.Fatalf("expected empty error, got %q", result.Error)
+	}
+}
+
+func TestWorkflowValidateJSONInvalid(t *testing.T) {
+	noStepsJSON := `{
+		"name": "empty-wf",
+		"version": "1.0",
+		"steps": []
+	}`
+	tmpFile := filepath.Join(t.TempDir(), "empty.json")
+	if err := os.WriteFile(
+		tmpFile, []byte(noStepsJSON), 0644,
+	); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	output := captureOutput(func() {
+		runWorkflowValidateCmd([]string{tmpFile, "--json"})
+	})
+
+	var result workflowValidateResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("unmarshal json: %v (output: %s)", err, output)
+	}
+
+	// Positive: must be invalid with an error message.
+	if result.Valid {
+		t.Fatal("expected valid=false for empty steps")
+	}
+	if result.Error == "" {
+		t.Fatal("expected non-empty error for invalid workflow")
+	}
+
+	// Negative: name should be empty on validation failure.
+	if result.Steps != 0 {
+		t.Fatalf("expected 0 steps on error, got %d", result.Steps)
 	}
 }
 

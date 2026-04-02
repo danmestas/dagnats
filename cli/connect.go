@@ -19,10 +19,9 @@ var exitFunc = os.Exit
 // friendly error and exits with code 1 if connection fails or
 // required NATS resources are missing.
 func connectService() (*api.Service, *nats.Conn) {
-	natsURL := os.Getenv("NATS_URL")
-	if natsURL == "" {
-		natsURL = nats.DefaultURL
-	}
+	natsURL := GetEnvWithFallback(
+		"DAGNATS_NATS_URL", "NATS_URL", nats.DefaultURL,
+	)
 	nc, err := nats.Connect(natsURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr,

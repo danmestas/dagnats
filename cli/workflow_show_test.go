@@ -7,6 +7,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -138,5 +139,59 @@ func TestWorkflowShowDisplaysTimeout(t *testing.T) {
 		t.Fatal(
 			"output should not contain 'none' when timeout is set",
 		)
+	}
+}
+
+func TestWorkflowShowJSON(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	defer nc.Close()
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	def := dag.WorkflowDef{
+		Name:    "json-show",
+		Version: "3.0",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task1", Timeout: time.Second},
+		},
+	}
+	err := svc.RegisterWorkflow(context.Background(), def)
+	if err != nil {
+		t.Fatalf("register workflow: %v", err)
+	}
+
+	output := captureOutput(func() {
+		runWorkflowShowCmd([]string{"json-show", "--json"})
+	})
+
+	var got dag.WorkflowDef
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf(
+			"unmarshal json: %v (output: %s)", err, output,
+		)
+	}
+
+	// Positive: name and version must match.
+	if got.Name != "json-show" {
+		t.Fatalf("expected name 'json-show', got %q", got.Name)
+	}
+	if got.Version != "3.0" {
+		t.Fatalf("expected version '3.0', got %q", got.Version)
+	}
+
+	// Positive: must have the correct step count.
+	if len(got.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(got.Steps))
+	}
+
+	// Negative: output must not contain table headers.
+	if strings.Contains(output, "TASK") {
+		t.Fatal("json output should not contain table headers")
 	}
 }

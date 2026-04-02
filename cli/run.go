@@ -49,7 +49,7 @@ func runRunCmd(args []string) {
 
 // printRunUsage prints the run subcommand help text.
 func printRunUsage() {
-	fmt.Println("Usage: dagnats run <command>")
+	fmt.Println("Usage: dagnats run <command> [--json]")
 	fmt.Println("Commands:")
 	fmt.Println("  start    start a workflow run")
 	fmt.Println("  status   show run status")
@@ -62,13 +62,23 @@ func printRunUsage() {
 	fmt.Println("  output   print final output of a completed run")
 }
 
+// runStartResult is the JSON response for run start.
+type runStartResult struct {
+	RunID string `json:"run_id"`
+}
+
 // runStartCmd starts a new workflow run with optional input.
 func runStartCmd(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run start <workflow> [input] [--watch]")
+			"Usage: dagnats run start"+
+				" <workflow> [input] [--watch] [--json]")
 		os.Exit(1)
 	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	workflowName := args[0]
 	if workflowName == "" {
 		panic("runStartCmd: workflowName must not be empty")
@@ -95,6 +105,15 @@ func runStartCmd(args []string) {
 		os.Exit(1)
 	}
 
+	if jsonOutput {
+		result := runStartResult{RunID: runID}
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	fmt.Printf("Started: %s\n", runID)
 
 	if watch {
@@ -104,8 +123,16 @@ func runStartCmd(args []string) {
 
 // runStatusCmd retrieves and prints the status of a workflow run.
 func runStatusCmd(args []string) {
+	if args == nil {
+		panic("runStatusCmd: args must not be nil")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: dagnats run status <run-id>")
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run status <run-id> [--json]")
 		os.Exit(1)
 	}
 	runID := args[0]
@@ -122,13 +149,31 @@ func runStatusCmd(args []string) {
 		os.Exit(1)
 	}
 
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, run); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	fmt.Print(FormatRunStatus(run))
 }
 
-// runCancelCmd publishes a workflow.cancelled event to cancel a running workflow.
+// runCancelResult is the JSON response for run cancel.
+type runCancelResult struct {
+	RunID     string `json:"run_id"`
+	Cancelled bool   `json:"cancelled"`
+}
+
+// runCancelCmd publishes a workflow.cancelled event.
 func runCancelCmd(args []string) {
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: dagnats run cancel <run-id>")
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run cancel <run-id> [--json]")
 		os.Exit(1)
 	}
 	runID := args[0]
@@ -145,14 +190,36 @@ func runCancelCmd(args []string) {
 		os.Exit(1)
 	}
 
+	if jsonOutput {
+		result := runCancelResult{
+			RunID: runID, Cancelled: true,
+		}
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	fmt.Printf("Cancelled: %s\n", runID)
+}
+
+// runSignalResult is the JSON response for run signal.
+type runSignalResult struct {
+	RunID  string `json:"run_id"`
+	Signal string `json:"signal"`
+	Sent   bool   `json:"sent"`
 }
 
 // runSignalCmd sends a signal to a running workflow.
 func runSignalCmd(args []string) {
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 3 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run signal <run-id> <name> <payload>")
+			"Usage: dagnats run signal"+
+				" <run-id> <name> <payload> [--json]")
 		os.Exit(1)
 	}
 
@@ -170,10 +237,23 @@ func runSignalCmd(args []string) {
 	svc, nc := connectService()
 	defer nc.Close()
 
-	err := svc.SendSignal(context.Background(), runID, name, []byte(payload))
+	err := svc.SendSignal(
+		context.Background(), runID, name, []byte(payload),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "send signal: %v\n", err)
 		os.Exit(1)
+	}
+
+	if jsonOutput {
+		result := runSignalResult{
+			RunID: runID, Signal: name, Sent: true,
+		}
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	fmt.Printf("Signal sent: %s\n", name)
@@ -181,20 +261,36 @@ func runSignalCmd(args []string) {
 
 // runListCmd lists workflow runs with optional filtering.
 func runListCmd(args []string) {
+	if args == nil {
+		panic("runListCmd: args must not be nil")
+	}
+	if len(args) > 100 {
+		panic("runListCmd: args exceeds max bound")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	var workflowFilter, statusFilter string
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--workflow=") {
-			workflowFilter = strings.TrimPrefix(arg, "--workflow=")
+			workflowFilter = strings.TrimPrefix(
+				arg, "--workflow=",
+			)
 		}
 		if strings.HasPrefix(arg, "--status=") {
-			statusFilter = strings.TrimPrefix(arg, "--status=")
+			statusFilter = strings.TrimPrefix(
+				arg, "--status=",
+			)
 		}
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
-	runs, err := svc.ListRuns(context.Background(), workflowFilter)
+	runs, err := svc.ListRuns(
+		context.Background(), workflowFilter,
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list runs: %v\n", err)
 		os.Exit(1)
@@ -204,16 +300,38 @@ func runListCmd(args []string) {
 	if statusFilter != "" {
 		filtered := runs[:0]
 		for _, r := range runs {
-			if strings.EqualFold(r.Status.String(), statusFilter) {
+			if strings.EqualFold(
+				r.Status.String(), statusFilter,
+			) {
 				filtered = append(filtered, r)
 			}
 		}
 		runs = filtered
 	}
 
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, runs); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if len(runs) == 0 {
 		fmt.Println("No runs found.")
 		return
+	}
+
+	printRunTable(runs)
+}
+
+// printRunTable writes a formatted table of workflow runs to stdout.
+func printRunTable(runs []dag.WorkflowRun) {
+	if len(runs) == 0 {
+		panic("printRunTable: runs must not be empty")
+	}
+	if len(runs) > 10000 {
+		panic("printRunTable: runs exceeds max bound")
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -224,7 +342,8 @@ func runListCmd(args []string) {
 		stepCount := len(run.Steps)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
 			run.RunID, run.WorkflowID,
-			ColorStatus(run.Status.String()), created, stepCount)
+			ColorStatus(run.Status.String()),
+			created, stepCount)
 	}
 
 	w.Flush()
@@ -232,10 +351,21 @@ func runListCmd(args []string) {
 
 // runEventsCmd retrieves and prints the event history for a run.
 func runEventsCmd(args []string) {
+	if args == nil {
+		panic("runEventsCmd: args must not be nil")
+	}
+	if len(args) > 100 {
+		panic("runEventsCmd: args exceeds max bound")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats run events <run-id>"+
-				" [--full] [--type=TYPE] [--step=STEP]")
+				" [--full] [--type=TYPE] [--step=STEP]"+
+				" [--json]")
 		os.Exit(1)
 	}
 
@@ -244,19 +374,7 @@ func runEventsCmd(args []string) {
 		panic("runEventsCmd: runID must not be empty")
 	}
 
-	var fullData bool
-	var typeFilter, stepFilter string
-	for _, arg := range args[1:] {
-		if arg == "--full" {
-			fullData = true
-		}
-		if strings.HasPrefix(arg, "--type=") {
-			typeFilter = strings.TrimPrefix(arg, "--type=")
-		}
-		if strings.HasPrefix(arg, "--step=") {
-			stepFilter = strings.TrimPrefix(arg, "--step=")
-		}
-	}
+	fullData, typeFilter, stepFilter := parseEventFlags(args[1:])
 
 	svc, nc := connectService()
 	defer nc.Close()
@@ -276,11 +394,52 @@ func runEventsCmd(args []string) {
 		return
 	}
 
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, events); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	printEventsTable(events)
+}
+
+// parseEventFlags extracts --full, --type, and --step from flag args.
+func parseEventFlags(
+	args []string,
+) (fullData bool, typeFilter, stepFilter string) {
+	if len(args) > 100 {
+		panic("parseEventFlags: args exceeds max bound")
+	}
+	for _, arg := range args {
+		if arg == "--full" {
+			fullData = true
+		}
+		if strings.HasPrefix(arg, "--type=") {
+			typeFilter = strings.TrimPrefix(arg, "--type=")
+		}
+		if strings.HasPrefix(arg, "--step=") {
+			stepFilter = strings.TrimPrefix(arg, "--step=")
+		}
+	}
+	return fullData, typeFilter, stepFilter
+}
+
+// printEventsTable writes a formatted table of run events to stdout.
+func printEventsTable(events []api.RunEvent) {
+	if len(events) == 0 {
+		panic("printEventsTable: events must not be empty")
+	}
+	if len(events) > 10000 {
+		panic("printEventsTable: events exceeds max bound")
+	}
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "TIMESTAMP\tTYPE\tSTEP\tDATA")
 
 	for _, evt := range events {
-		timestamp := evt.Timestamp.Format("2006-01-02 15:04:05")
+		ts := evt.Timestamp.Format("2006-01-02 15:04:05")
 		step := evt.StepID
 		if step == "" {
 			step = "-"
@@ -290,7 +449,7 @@ func runEventsCmd(args []string) {
 			data = "-"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			timestamp, evt.Type, step, data)
+			ts, evt.Type, step, data)
 	}
 
 	w.Flush()
