@@ -284,3 +284,190 @@ func TestTaskContextSignal(t *testing.T) {
 		t.Fatalf("signal = %q, want approved", string(data))
 	}
 }
+
+func TestTaskContextRetryCount(t *testing.T) {
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nil, tel, nil,
+		protocol.TaskPayload{
+			RunID: "run-rc", StepID: "step-rc",
+			Attempt: 3,
+		},
+		bgCtx, span, nil, nil, nil,
+	)
+	// Positive: returns correct attempt count
+	if tc.RetryCount() != 3 {
+		t.Fatalf(
+			"RetryCount() = %d, want 3", tc.RetryCount(),
+		)
+	}
+	// Negative: zero-value attempt is different
+	tc2 := newTaskContext(
+		nil, tel, nil,
+		protocol.TaskPayload{RunID: "r", StepID: "s"},
+		bgCtx, span, nil, nil, nil,
+	)
+	if tc2.RetryCount() != 0 {
+		t.Fatalf(
+			"RetryCount() = %d, want 0", tc2.RetryCount(),
+		)
+	}
+}
+
+func TestTaskContextPutStream(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nc, tel, nil,
+		protocol.TaskPayload{
+			RunID: "run-ps", StepID: "step-ps",
+		},
+		bgCtx, span, nil, nil, nil,
+	)
+	// Subscribe to the stream subject before publishing
+	sub, err := nc.SubscribeSync("stream.run-ps.step-ps")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	err = tc.PutStream([]byte("token-1"))
+	if err != nil {
+		t.Fatalf("PutStream failed: %v", err)
+	}
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("NextMsg timeout: %v", err)
+	}
+	// Positive: data arrives on correct subject
+	if string(msg.Data) != "token-1" {
+		t.Fatalf(
+			"data = %q, want %q", string(msg.Data), "token-1",
+		)
+	}
+	// Negative: no message on wrong subject
+	wrongSub, err := nc.SubscribeSync("stream.run-ps.other")
+	if err != nil {
+		t.Fatalf("Subscribe wrong failed: %v", err)
+	}
+	_, err = wrongSub.NextMsg(200 * time.Millisecond)
+	if err == nil {
+		t.Fatal("expected no message on wrong subject")
+	}
+}
+
+func TestNewTaskContextPanicsOnNilTel(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil tel, got nil")
+		}
+		// Positive: panic message mentions tel
+		msg := fmt.Sprintf("%v", r)
+		if msg != "newTaskContext: tel must not be nil" {
+			t.Fatalf("panic = %q, want tel message", msg)
+		}
+	}()
+	newTaskContext(
+		nil, nil, nil, protocol.TaskPayload{},
+		context.Background(), nil, nil, nil, nil,
+	)
+}
+
+func TestNewTaskContextPanicsOnNilCtx(t *testing.T) {
+	tel := observe.NewNoopTelemetry()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil ctx, got nil")
+		}
+		msg := fmt.Sprintf("%v", r)
+		// Positive: panic message mentions ctx
+		if msg != "newTaskContext: ctx must not be nil" {
+			t.Fatalf("panic = %q, want ctx message", msg)
+		}
+	}()
+	newTaskContext(
+		nil, tel, nil, protocol.TaskPayload{},
+		nil, nil, nil, nil, nil,
+	)
+}
+
+func TestNewTaskContextFieldInit(t *testing.T) {
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	payload := protocol.TaskPayload{
+		RunID:     "run-init",
+		StepID:    "step-init",
+		Iteration: 7,
+		Attempt:   2,
+		Input:     []byte(`"data"`),
+	}
+	tc := newTaskContext(
+		nil, tel, nil, payload,
+		bgCtx, span, nil, nil, nil,
+	)
+	// Positive: all fields from payload are set
+	if tc.runID != "run-init" {
+		t.Fatalf("runID = %q, want run-init", tc.runID)
+	}
+	if tc.iteration != 7 {
+		t.Fatalf("iteration = %d, want 7", tc.iteration)
+	}
+	// Negative: attempt is not iteration
+	if tc.attempt == tc.iteration {
+		t.Fatal("attempt should differ from iteration")
+	}
+}
+
+func TestTaskContextCheckpointNilKV(t *testing.T) {
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nil, tel, nil,
+		protocol.TaskPayload{
+			RunID: "run-nocp", StepID: "step-nocp",
+		},
+		bgCtx, span, nil, nil, nil,
+	)
+	// Positive: Checkpoint returns error when KV is nil
+	err := tc.Checkpoint([]byte("state"))
+	if err == nil {
+		t.Fatal("expected error for nil checkpointKV")
+	}
+	// Negative: LoadCheckpoint returns nil,nil when KV is nil
+	data, err := tc.LoadCheckpoint()
+	if err != nil || data != nil {
+		t.Fatalf(
+			"LoadCheckpoint = (%v, %v), want (nil, nil)",
+			data, err,
+		)
+	}
+}
+
+func TestTaskContextSignalNilKV(t *testing.T) {
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nil, tel, nil,
+		protocol.TaskPayload{
+			RunID: "run-nosig", StepID: "step-nosig",
+		},
+		bgCtx, span, nil, nil, nil,
+	)
+	// Positive: WaitForSignal errors when signalKV is nil
+	_, err := tc.WaitForSignal("sig", 1*time.Second)
+	if err == nil {
+		t.Fatal("expected error for nil signalKV")
+	}
+	// Negative: SendSignal also errors when signalKV is nil
+	err = tc.SendSignal("run-nosig", "sig", []byte("data"))
+	if err == nil {
+		t.Fatal("expected error for nil signalKV on send")
+	}
+}

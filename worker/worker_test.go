@@ -183,3 +183,248 @@ func TestWorkerWithGroupsOnlyHandlesGroupTasks(t *testing.T) {
 		t.Fatal("general task should not be handled by gpu worker")
 	}
 }
+
+func TestHandlePanicsOnEmptyTaskType(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	w := NewWorker(nc, observe.NewNoopTelemetry())
+	defer func() {
+		r := recover()
+		// Positive: panics on empty taskType
+		if r == nil {
+			t.Fatal("expected panic for empty taskType")
+		}
+		msg := fmt.Sprintf("%v", r)
+		// Negative: panic message is specific
+		if msg != "Worker.Handle: taskType must not be empty" {
+			t.Fatalf("panic = %q, want taskType message", msg)
+		}
+	}()
+	w.Handle("", func(ctx TaskContext) error { return nil })
+}
+
+func TestHandlePanicsOnNilHandler(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	w := NewWorker(nc, observe.NewNoopTelemetry())
+	defer func() {
+		r := recover()
+		// Positive: panics on nil handler
+		if r == nil {
+			t.Fatal("expected panic for nil handler")
+		}
+		msg := fmt.Sprintf("%v", r)
+		// Negative: message mentions handler
+		if msg != "Worker.Handle: handler must not be nil" {
+			t.Fatalf("panic = %q, want handler message", msg)
+		}
+	}()
+	w.Handle("valid-type", nil)
+}
+
+func TestHandleRegistersHandler(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w.Handle("my-task", func(ctx TaskContext) error {
+		return nil
+	})
+	// Positive: handler is stored in map
+	if _, ok := w.handlers["my-task"]; !ok {
+		t.Fatal("handler not found in map after Handle()")
+	}
+	// Negative: unregistered type is not present
+	if _, ok := w.handlers["other-task"]; ok {
+		t.Fatal("unexpected handler for other-task")
+	}
+}
+
+func TestSplitWorkerTraceparentValid(t *testing.T) {
+	traceID, spanID, ok := splitWorkerTraceparent(
+		"00-abc123-def456-01",
+	)
+	// Positive: parses valid traceparent
+	if !ok {
+		t.Fatal("expected ok=true for valid traceparent")
+	}
+	if traceID != "abc123" || spanID != "def456" {
+		t.Fatalf(
+			"traceID=%q spanID=%q, want abc123/def456",
+			traceID, spanID,
+		)
+	}
+}
+
+func TestSplitWorkerTraceparentMalformed(t *testing.T) {
+	// Negative: wrong number of parts
+	_, _, ok := splitWorkerTraceparent("abc-def")
+	if ok {
+		t.Fatal("expected ok=false for malformed input")
+	}
+	// Negative: wrong version prefix
+	_, _, ok = splitWorkerTraceparent("01-abc-def-01")
+	if ok {
+		t.Fatal("expected ok=false for wrong version")
+	}
+}
+
+func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
+	msg := &nats.Msg{
+		Header: nats.Header{
+			"traceparent": {"00-tid123-sid456-01"},
+		},
+	}
+	ctx := extractWorkerTraceCtx(msg)
+	// Positive: context is not nil
+	if ctx == nil {
+		t.Fatal("expected non-nil context")
+	}
+	// Verify parent info was injected via observe package
+	info, ok := observe.ParentInfoFromContext(ctx)
+	if !ok {
+		t.Fatal("expected ParentInfo in context")
+	}
+	if info.TraceID != "tid123" {
+		t.Fatalf("TraceID = %q, want tid123", info.TraceID)
+	}
+}
+
+func TestExtractWorkerTraceCtxNoHeader(t *testing.T) {
+	msg := &nats.Msg{}
+	ctx := extractWorkerTraceCtx(msg)
+	// Positive: returns a valid context
+	if ctx == nil {
+		t.Fatal("expected non-nil context")
+	}
+	// Negative: no parent info when no header
+	_, ok := observe.ParentInfoFromContext(ctx)
+	if ok {
+		t.Fatal("expected no ParentInfo without header")
+	}
+}
+
+// testSpan implements observe.Span and observe.SpanContext
+// with configurable trace/span IDs for testing trace injection.
+type testSpan struct {
+	observe.Span
+	traceID string
+	spanID  string
+}
+
+func (s *testSpan) TraceID() string                                  { return s.traceID }
+func (s *testSpan) SpanID() string                                   { return s.spanID }
+func (s *testSpan) End()                                             {}
+func (s *testSpan) SetStatus(code observe.StatusCode, desc string)   {}
+func (s *testSpan) SetAttributes(attrs ...observe.Attribute)         {}
+func (s *testSpan) RecordError(err error)                            {}
+func (s *testSpan) AddEvent(name string, attrs ...observe.Attribute) {}
+
+func TestInjectWorkerTraceCtxSetsHeader(t *testing.T) {
+	span := &testSpan{traceID: "t123", spanID: "s456"}
+	evt := &protocol.Event{}
+	msg := &nats.Msg{}
+	injectWorkerTraceCtx(span, evt, msg)
+	// Positive: traceparent header is set
+	tp := msg.Header.Get("traceparent")
+	want := "00-t123-s456-01"
+	if tp != want {
+		t.Fatalf("traceparent = %q, want %q", tp, want)
+	}
+	// Positive: event TraceParent field is set
+	if evt.TraceParent != want {
+		t.Fatalf(
+			"evt.TraceParent = %q, want %q",
+			evt.TraceParent, want,
+		)
+	}
+}
+
+func TestInjectWorkerTraceCtxEmptyIDs(t *testing.T) {
+	span := &testSpan{traceID: "", spanID: ""}
+	evt := &protocol.Event{}
+	msg := &nats.Msg{}
+	injectWorkerTraceCtx(span, evt, msg)
+	// Positive: no header set when IDs are empty
+	if msg.Header != nil {
+		tp := msg.Header.Get("traceparent")
+		if tp != "" {
+			t.Fatalf(
+				"traceparent = %q, want empty", tp,
+			)
+		}
+	}
+	// Negative: event TraceParent stays empty
+	if evt.TraceParent != "" {
+		t.Fatalf(
+			"evt.TraceParent = %q, want empty",
+			evt.TraceParent,
+		)
+	}
+}
+
+func TestWorkerNonRetryableErrorAcks(t *testing.T) {
+	// Verifies that a NonRetryableError causes Fail+Ack,
+	// not NakWithDelay. The handler is called exactly once.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	var callCount atomic.Int32
+	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w.Handle("perm-fail", func(ctx TaskContext) error {
+		callCount.Add(1)
+		return NewNonRetryableError(
+			fmt.Errorf("permanent"),
+		)
+	})
+	w.Start()
+	defer w.Stop()
+	payload := protocol.TaskPayload{
+		RunID:  "run-nre",
+		StepID: "step-nre",
+		Input:  json.RawMessage(`"x"`),
+	}
+	data, _ := json.Marshal(payload)
+	if _, err := js.Publish(
+		"task.perm-fail.run-nre", data,
+	); err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+	// Wait for handler to be called
+	deadline := time.After(5 * time.Second)
+	for callCount.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("handler not called within 5s")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	// Small delay to ensure no redelivery
+	time.Sleep(2 * time.Second)
+	// Positive: handler called exactly once (acked, not nak'd)
+	if callCount.Load() != 1 {
+		t.Fatalf(
+			"callCount = %d, want 1 (no retry)",
+			callCount.Load(),
+		)
+	}
+	// Negative: a step.failed event should appear
+	sub, _ := js.SubscribeSync(
+		"history.run-nre", nats.DeliverAll(),
+	)
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("NextMsg timeout: %v", err)
+	}
+	var evt protocol.Event
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if evt.Type != protocol.EventStepFailed {
+		t.Fatalf(
+			"event = %q, want %q",
+			evt.Type, protocol.EventStepFailed,
+		)
+	}
+}
