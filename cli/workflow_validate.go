@@ -128,7 +128,7 @@ func parseAndValidateWorkflow(
 
 	if err := dag.Validate(def); err != nil {
 		return dag.WorkflowDef{}, fmt.Errorf(
-			"Invalid: %w", err,
+			"invalid: %w", err,
 		)
 	}
 

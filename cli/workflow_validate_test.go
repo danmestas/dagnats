@@ -48,8 +48,8 @@ func TestWorkflowValidateAcceptsValidFile(t *testing.T) {
 		)
 	}
 
-	// Negative: must not contain "Invalid".
-	if strings.Contains(result, "Invalid") {
+	// Negative: must not contain "invalid" error prefix.
+	if strings.Contains(result, "invalid:") {
 		t.Fatal("valid workflow should not say Invalid")
 	}
 }
@@ -75,10 +75,10 @@ func TestWorkflowValidateRejectsNoSteps(t *testing.T) {
 		t.Fatal("expected error for workflow with no steps")
 	}
 
-	// Positive: error must mention "Invalid".
-	if !strings.Contains(err.Error(), "Invalid") {
+	// Positive: error must mention "invalid".
+	if !strings.Contains(err.Error(), "invalid") {
 		t.Fatalf(
-			"expected 'Invalid' in error, got: %v", err,
+			"expected 'invalid' in error, got: %v", err,
 		)
 	}
 
