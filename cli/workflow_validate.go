@@ -11,14 +11,28 @@ import (
 	"github.com/danmestas/dagnats/dag"
 )
 
+// workflowValidateResult is the JSON output for workflow validate.
+type workflowValidateResult struct {
+	Valid bool   `json:"valid"`
+	Name  string `json:"name,omitempty"`
+	Steps int    `json:"steps,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
 // runWorkflowValidateCmd validates a workflow JSON file without NATS.
 func runWorkflowValidateCmd(args []string) {
 	if args == nil {
 		panic("runWorkflowValidateCmd: args must not be nil")
 	}
+
+	jsonOutput := HasJSONFlag(args)
+	if jsonOutput {
+		args = StripJSONFlag(args)
+	}
+
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats workflow validate <file>")
+			"Usage: dagnats workflow validate <file> [--json]")
 		os.Exit(1)
 	}
 	filePath := args[0]
@@ -26,6 +40,11 @@ func runWorkflowValidateCmd(args []string) {
 		panic(
 			"runWorkflowValidateCmd: filePath must not be empty",
 		)
+	}
+
+	if jsonOutput {
+		runWorkflowValidateJSON(filePath)
+		return
 	}
 
 	result, err := validateWorkflowFile(filePath)
@@ -36,29 +55,107 @@ func runWorkflowValidateCmd(args []string) {
 	fmt.Println(result)
 }
 
-// validateWorkflowFile reads, parses, and validates a workflow JSON
-// file. Returns a human-readable success message or an error. Separating
-// this from the CLI wrapper enables direct testing without os.Exit.
-func validateWorkflowFile(filePath string) (string, error) {
+// runWorkflowValidateJSON outputs validation result as JSON.
+// Does not os.Exit(1) on validation failure so JSON consumers
+// can parse the structured error.
+func runWorkflowValidateJSON(filePath string) {
 	if filePath == "" {
-		panic("validateWorkflowFile: filePath must not be empty")
+		panic(
+			"runWorkflowValidateJSON: filePath must not be empty",
+		)
 	}
 	if len(filePath) > 4096 {
-		panic("validateWorkflowFile: filePath unreasonably long")
+		panic(
+			"runWorkflowValidateJSON: filePath unreasonably long",
+		)
+	}
+
+	def, err := parseAndValidateWorkflow(filePath)
+	if err != nil {
+		out := workflowValidateResult{
+			Valid: false,
+			Error: err.Error(),
+		}
+		if fmtErr := FormatJSON(os.Stdout, out); fmtErr != nil {
+			fmt.Fprintf(
+				os.Stderr, "format json: %v\n", fmtErr,
+			)
+			os.Exit(1)
+		}
+		return
+	}
+
+	out := workflowValidateResult{
+		Valid: true,
+		Name:  def.Name,
+		Steps: len(def.Steps),
+	}
+	if fmtErr := FormatJSON(os.Stdout, out); fmtErr != nil {
+		fmt.Fprintf(os.Stderr, "format json: %v\n", fmtErr)
+		os.Exit(1)
+	}
+}
+
+// parseAndValidateWorkflow reads, parses, and validates a workflow
+// JSON file. Returns the parsed def or an error.
+func parseAndValidateWorkflow(
+	filePath string,
+) (dag.WorkflowDef, error) {
+	if filePath == "" {
+		panic(
+			"parseAndValidateWorkflow: filePath must not be empty",
+		)
+	}
+	if len(filePath) > 4096 {
+		panic(
+			"parseAndValidateWorkflow: filePath unreasonably long",
+		)
 	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return "", fmt.Errorf("read file: %w", err)
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"read file: %w", err,
+		)
 	}
 
 	var def dag.WorkflowDef
 	if err := json.Unmarshal(data, &def); err != nil {
-		return "", fmt.Errorf("parse workflow: %w", err)
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"parse workflow: %w", err,
+		)
 	}
 
 	if err := dag.Validate(def); err != nil {
-		return "", fmt.Errorf("Invalid: %w", err)
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"Invalid: %w", err,
+		)
+	}
+
+	return def, nil
+}
+
+// validateWorkflowFile reads, parses, and validates a workflow JSON
+// file. Returns a human-readable success message or an error.
+// Separating this from the CLI wrapper enables direct testing
+// without os.Exit.
+func validateWorkflowFile(
+	filePath string,
+) (string, error) {
+	if filePath == "" {
+		panic(
+			"validateWorkflowFile: filePath must not be empty",
+		)
+	}
+	if len(filePath) > 4096 {
+		panic(
+			"validateWorkflowFile: filePath unreasonably long",
+		)
+	}
+
+	def, err := parseAndValidateWorkflow(filePath)
+	if err != nil {
+		return "", err
 	}
 
 	return fmt.Sprintf(

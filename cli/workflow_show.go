@@ -17,14 +17,22 @@ func runWorkflowShowCmd(args []string) {
 	if args == nil {
 		panic("runWorkflowShowCmd: args must not be nil")
 	}
+
+	jsonOutput := HasJSONFlag(args)
+	if jsonOutput {
+		args = StripJSONFlag(args)
+	}
+
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats workflow show <name>")
+			"Usage: dagnats workflow show <name> [--json]")
 		os.Exit(1)
 	}
 	workflowName := args[0]
 	if workflowName == "" {
-		panic("runWorkflowShowCmd: workflowName must not be empty")
+		panic(
+			"runWorkflowShowCmd: workflowName must not be empty",
+		)
 	}
 
 	svc, nc := connectService()
@@ -36,7 +44,28 @@ func runWorkflowShowCmd(args []string) {
 		os.Exit(1)
 	}
 
-	// Timeout defaults to "none" when unset -- avoids confusing "0s".
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, def); err != nil {
+			fmt.Fprintf(
+				os.Stderr, "format json: %v\n", err,
+			)
+			os.Exit(1)
+		}
+		return
+	}
+
+	printWorkflowShowHuman(def)
+}
+
+// printWorkflowShowHuman renders the human-readable workflow header.
+func printWorkflowShowHuman(def dag.WorkflowDef) {
+	if def.Name == "" {
+		panic("printWorkflowShowHuman: def.Name must not be empty")
+	}
+	if len(def.Steps) == 0 {
+		panic("printWorkflowShowHuman: def must have steps")
+	}
+
 	timeout := "none"
 	if def.Timeout > 0 {
 		timeout = def.Timeout.String()
