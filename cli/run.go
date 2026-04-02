@@ -104,8 +104,16 @@ func runStartCmd(args []string) {
 
 // runStatusCmd retrieves and prints the status of a workflow run.
 func runStatusCmd(args []string) {
+	if args == nil {
+		panic("runStatusCmd: args must not be nil")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: dagnats run status <run-id>")
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run status <run-id> [--json]")
 		os.Exit(1)
 	}
 	runID := args[0]
@@ -120,6 +128,14 @@ func runStatusCmd(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
 		os.Exit(1)
+	}
+
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, run); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	fmt.Print(FormatRunStatus(run))
@@ -181,20 +197,36 @@ func runSignalCmd(args []string) {
 
 // runListCmd lists workflow runs with optional filtering.
 func runListCmd(args []string) {
+	if args == nil {
+		panic("runListCmd: args must not be nil")
+	}
+	if len(args) > 100 {
+		panic("runListCmd: args exceeds max bound")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	var workflowFilter, statusFilter string
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--workflow=") {
-			workflowFilter = strings.TrimPrefix(arg, "--workflow=")
+			workflowFilter = strings.TrimPrefix(
+				arg, "--workflow=",
+			)
 		}
 		if strings.HasPrefix(arg, "--status=") {
-			statusFilter = strings.TrimPrefix(arg, "--status=")
+			statusFilter = strings.TrimPrefix(
+				arg, "--status=",
+			)
 		}
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
-	runs, err := svc.ListRuns(context.Background(), workflowFilter)
+	runs, err := svc.ListRuns(
+		context.Background(), workflowFilter,
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list runs: %v\n", err)
 		os.Exit(1)
@@ -204,16 +236,38 @@ func runListCmd(args []string) {
 	if statusFilter != "" {
 		filtered := runs[:0]
 		for _, r := range runs {
-			if strings.EqualFold(r.Status.String(), statusFilter) {
+			if strings.EqualFold(
+				r.Status.String(), statusFilter,
+			) {
 				filtered = append(filtered, r)
 			}
 		}
 		runs = filtered
 	}
 
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, runs); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if len(runs) == 0 {
 		fmt.Println("No runs found.")
 		return
+	}
+
+	printRunTable(runs)
+}
+
+// printRunTable writes a formatted table of workflow runs to stdout.
+func printRunTable(runs []dag.WorkflowRun) {
+	if len(runs) == 0 {
+		panic("printRunTable: runs must not be empty")
+	}
+	if len(runs) > 10000 {
+		panic("printRunTable: runs exceeds max bound")
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -224,7 +278,8 @@ func runListCmd(args []string) {
 		stepCount := len(run.Steps)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
 			run.RunID, run.WorkflowID,
-			ColorStatus(run.Status.String()), created, stepCount)
+			ColorStatus(run.Status.String()),
+			created, stepCount)
 	}
 
 	w.Flush()

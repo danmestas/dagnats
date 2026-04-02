@@ -246,6 +246,110 @@ func publishTestEvent(
 	}
 }
 
+func TestRunStatusJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	run := dag.WorkflowRun{
+		RunID: "json-run", WorkflowID: "wf-json",
+		Status: dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"step-a": {Status: dag.StepStatusCompleted, Attempts: 1},
+		},
+		CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, run)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should be valid JSON containing run_id
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, "json-run") {
+		t.Fatal("JSON output should contain run ID value")
+	}
+
+	// Negative: output should not contain table formatting
+	if strings.Contains(output, "Run:") {
+		t.Fatal("JSON output should not contain table format")
+	}
+}
+
+func TestRunListJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	runs := []dag.WorkflowRun{
+		{
+			RunID: "list-1", WorkflowID: "wf-a",
+			Status: dag.RunStatusCompleted,
+			Steps:  map[string]dag.StepState{},
+			CreatedAt: time.Date(
+				2026, 4, 1, 12, 0, 0, 0, time.UTC,
+			),
+		},
+		{
+			RunID: "list-2", WorkflowID: "wf-b",
+			Status: dag.RunStatusRunning,
+			Steps:  map[string]dag.StepState{},
+			CreatedAt: time.Date(
+				2026, 4, 1, 13, 0, 0, 0, time.UTC,
+			),
+		},
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, runs)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain both run IDs
+	if !strings.Contains(output, "list-1") {
+		t.Fatal("JSON output should contain first run ID")
+	}
+	if !strings.Contains(output, "list-2") {
+		t.Fatal("JSON output should contain second run ID")
+	}
+
+	// Negative: output should not contain table headers
+	if strings.Contains(output, "RUN_ID") {
+		t.Fatal("JSON output should not contain table headers")
+	}
+}
+
+func TestHasJSONFlagIntegration(t *testing.T) {
+	// Positive: --json should be detected
+	if !HasJSONFlag([]string{"--json", "--status=running"}) {
+		t.Fatal("should detect --json flag")
+	}
+
+	// Negative: absent --json should return false
+	if HasJSONFlag([]string{"--status=running"}) {
+		t.Fatal("should not detect --json when absent")
+	}
+}
+
+func TestStripJSONFlagPreservesOtherArgs(t *testing.T) {
+	args := StripJSONFlag(
+		[]string{"--json", "--workflow=wf", "--status=ok"},
+	)
+
+	// Positive: other args preserved
+	if len(args) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(args))
+	}
+
+	// Negative: --json should be removed
+	for _, arg := range args {
+		if arg == "--json" {
+			t.Fatal("--json should have been stripped")
+		}
+	}
+}
+
 func TestSignalCommandWritesToKV(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc,
