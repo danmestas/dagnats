@@ -38,6 +38,8 @@ func Run(args []string) {
 		runServeCmd(args[2:])
 	case "status":
 		runSystemStatusCmd(args[2:])
+	case "init":
+		runInitCmd(args[2:])
 	case "config":
 		runConfigCmd(args[2:])
 	case "logs":
@@ -59,6 +61,7 @@ func printUsage() {
 		"  trigger   create, list, delete, enable, disable triggers")
 	fmt.Println("  dlq       list, replay dead-letter messages")
 	fmt.Println("  serve     start embedded server")
+	fmt.Println("  init      scaffold a new workflow project")
 	fmt.Println("  config    show effective configuration")
 	fmt.Println("  status    show system health")
 	fmt.Println("  logs      tail telemetry log stream")

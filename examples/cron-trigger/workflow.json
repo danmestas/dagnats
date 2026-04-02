@@ -1,4 +1,5 @@
 {
+  "$schema": "../../docs/workflow.schema.json",
   "name": "cron-trigger",
   "version": "1.0",
   "steps": [

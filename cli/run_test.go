@@ -447,6 +447,87 @@ func TestRunCancelJSONOutput(t *testing.T) {
 	}
 }
 
+func TestFormatRunStatusWithDefShowsRetryMax(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	run := dag.WorkflowRun{
+		RunID: "retry-run", WorkflowID: "wf-retry",
+		Status: dag.RunStatusFailed,
+		Steps: map[string]dag.StepState{
+			"fetch": {
+				Status: dag.StepStatusFailed, Attempts: 3,
+				Error: "timeout",
+			},
+			"parse": {
+				Status: dag.StepStatusCompleted, Attempts: 1,
+			},
+		},
+		CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+	}
+	def := &dag.WorkflowDef{
+		Name:    "wf-retry",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:   "fetch",
+				Task: "fetch-task",
+				Retry: &dag.RetryPolicy{
+					MaxAttempts: 4,
+				},
+			},
+			{
+				ID:   "parse",
+				Task: "parse-task",
+			},
+		},
+	}
+	output := FormatRunStatusWithDef(run, def)
+
+	// Positive: failed step with retry policy shows max attempts
+	if !strings.Contains(output, "attempts: 3/5") {
+		t.Fatalf(
+			"expected 'attempts: 3/5', got:\n%s", output,
+		)
+	}
+
+	// Negative: step without retry policy shows plain attempts
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "parse") &&
+			strings.Contains(line, "/") {
+			t.Fatal("step without retry should not show max")
+		}
+	}
+}
+
+func TestFormatRunStatusWithDefNilDef(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	run := dag.WorkflowRun{
+		RunID: "nil-def", WorkflowID: "wf-nil",
+		Status: dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"step-a": {
+				Status: dag.StepStatusRunning, Attempts: 2,
+			},
+		},
+		CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+	}
+	output := FormatRunStatusWithDef(run, nil)
+
+	// Positive: should still render attempts without slash
+	if !strings.Contains(output, "attempts: 2)") {
+		t.Fatalf(
+			"expected plain 'attempts: 2)', got:\n%s", output,
+		)
+	}
+
+	// Negative: should not contain slash notation
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "step-a") &&
+			strings.Contains(line, "/") {
+			t.Fatal("nil def should not produce slash notation")
+		}
+	}
+}
+
 func TestRunSignalJSONOutput(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	result := runSignalResult{
