@@ -13,6 +13,34 @@ import (
 	"github.com/danmestas/dagnats/dag"
 )
 
+// printRunOutputForStart fetches a completed run and prints
+// its terminal step output. Used by --output flag on run start.
+func printRunOutputForStart(
+	svc *api.Service, runID string,
+) {
+	if svc == nil {
+		panic("printRunOutputForStart: svc must not be nil")
+	}
+	if runID == "" {
+		panic(
+			"printRunOutputForStart: runID must not be empty",
+		)
+	}
+	ctx := context.Background()
+	run, err := svc.GetRun(ctx, runID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
+		return
+	}
+	def, err := svc.GetWorkflow(run.WorkflowID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get workflow: %v\n", err)
+		return
+	}
+	fmt.Printf("\nOutput:\n")
+	fmt.Print(FormatRunOutput(run, def))
+}
+
 // runRunCmd dispatches run subcommands.
 func runRunCmd(args []string) {
 	if HasHelpFlag(args) {
@@ -72,7 +100,8 @@ func runStartCmd(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats run start"+
-				" <workflow> [input] [--watch] [--json]")
+				" <workflow> [input]"+
+				" [--watch] [--output] [--json]")
 		os.Exit(1)
 	}
 
@@ -85,13 +114,22 @@ func runStartCmd(args []string) {
 	}
 
 	var input []byte
-	var watch bool
+	var watch, showOutput bool
 	for _, arg := range args[1:] {
-		if arg == "--watch" {
+		switch arg {
+		case "--watch":
 			watch = true
-		} else if input == nil {
-			input = []byte(arg)
+		case "--output":
+			showOutput = true
+		default:
+			if input == nil {
+				input = []byte(arg)
+			}
 		}
+	}
+	// --output implies --watch
+	if showOutput {
+		watch = true
 	}
 
 	svc, nc := connectService()
@@ -117,7 +155,30 @@ func runStartCmd(args []string) {
 	fmt.Printf("Started: %s\n", runID)
 
 	if watch {
-		watchRun(svc, runID)
+		handleWatch(svc, runID, showOutput)
+	}
+}
+
+// handleWatch watches a run and optionally prints output.
+func handleWatch(
+	svc *api.Service, runID string, showOutput bool,
+) {
+	if svc == nil {
+		panic("handleWatch: svc must not be nil")
+	}
+	if runID == "" {
+		panic("handleWatch: runID must not be empty")
+	}
+
+	status := watchRunWithStatus(svc, runID)
+	if !showOutput {
+		return
+	}
+	if status == dag.RunStatusCompleted {
+		printRunOutputForStart(svc, runID)
+	} else {
+		fmt.Fprintf(os.Stderr,
+			"\nNo output: run %s\n", status.String())
 	}
 }
 

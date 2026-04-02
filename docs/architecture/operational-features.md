@@ -66,6 +66,7 @@
 - `dagnats run output <run-id>` prints final output of terminal steps (steps with no dependents)
 - Single terminal: raw output. Multiple terminals: `--- stepID ---` separator per step.
 - Only works on completed runs; non-completed prints status warning.
+- `dagnats run start <wf> --output` watches until completion then prints output (combines start + watch + output into one command). Non-completed runs print status to stderr.
 
 ## CLI Connection Handling
 
@@ -111,3 +112,17 @@
 - `Checkpoint(state)` → write to `checkpoints` KV at `{runID}.{stepID}`
 - `LoadCheckpoint()` → read from KV, returns nil on first run
 - Use case: resume long-running agent work after restart
+
+## Workflow JSON Schema
+
+- `docs/workflow-schema.json` — JSON Schema (draft-07) for workflow definition files
+- Enables IDE autocomplete and validation when editing `.json` workflow files
+- Add `"$schema": "./path/to/workflow-schema.json"` to workflow files for IDE support
+- Matches `dag/types.go` and validation rules in `docs/workflow-schema.md`
+- Durations accept both Go string format (`"5m"`) and nanosecond numbers
+
+## CI Pipeline
+
+- `.github/workflows/ci.yml` — runs on push to main and PRs
+- Steps: `gofmt` format check, `go vet`, `staticcheck`, `go test`
+- Go version pinned via `go-version-file: go.mod`

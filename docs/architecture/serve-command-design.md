@@ -30,6 +30,8 @@ Internal calls use NATS request/reply (micro). External callers use HTTP.
 
 ## Config
 
+See [`configuration.md`](../configuration.md) for the full config reference (keys, env vars, defaults, file format).
+
 ```go
 type Config struct {
     DataDir        string   // JetStream storage
@@ -40,41 +42,7 @@ type Config struct {
 }
 ```
 
-### Resolution Order (highest wins)
-
-1. Env vars: `DAGNATS_DATA_DIR`, `DAGNATS_HTTP_ADDR`, `DAGNATS_NATS_PORT`,
-   `DAGNATS_LEAF_REMOTES` (comma-separated)
-2. Config file: `./dagnats.yaml` in working directory (loaded if present)
-3. Platform defaults
-
-### Config File
-
-```yaml
-data_dir: /var/lib/dagnats
-http_addr: ":8080"
-nats_port: 4222
-leaf_remotes:
-  - nats://hub1.prod:7422
-  - nats://hub2.prod:7422
-```
-
-- No file required — zero-config starts everything on defaults
-- Fixed path `./dagnats.yaml` — no `--config` flag
-- Simple `key: value` format (one per line, `#` comments, no YAML dep)
-- `leaf_remotes` is comma-separated on one line
-- Invalid syntax → fatal error with line number
-- Unknown keys → logged as warning, not fatal (forward compatibility)
-- LeafRemotes capped at 10 entries
-
-### Platform Defaults
-
-| Field | Default |
-|-------|---------|
-| DataDir | macOS: `~/Library/Application Support/dagnats/`, Linux: `~/.local/share/dagnats/` |
-| HTTPAddr | `:8080` |
-| NATSPort | `4222` |
-| LeafRemotes | empty (standalone mode) |
-| MaxStoreBytes | `10737418240` (10GB) |
+Resolution order (highest wins): env vars → config file → platform defaults. Zero-config starts everything on defaults.
 
 ## Server Struct
 

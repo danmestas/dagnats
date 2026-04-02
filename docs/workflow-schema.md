@@ -1,5 +1,10 @@
 # Workflow Definition Schema
 
+> **IDE support:** Point your editor at
+> [`workflow-schema.json`](workflow-schema.json) for autocomplete
+> and validation. Add `"$schema": "./path/to/workflow-schema.json"`
+> to your workflow files.
+
 Reference for the JSON format used by `dagnats workflow register` and
 `dagnats workflow validate`.
 
