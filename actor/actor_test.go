@@ -37,3 +37,71 @@ func TestDirectiveString(t *testing.T) {
 		t.Fatalf("Resume.String() = %q", Resume.String())
 	}
 }
+
+func TestDirectiveStringPanicsOnUnknown(t *testing.T) {
+	// Negative: unknown directive panics
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected panic for unknown Directive")
+		}
+	}()
+	_ = Directive(99).String()
+}
+
+func TestWithMailboxSizePanicsOnZero(t *testing.T) {
+	// Negative: zero mailbox size panics
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic for zero mailbox size")
+		}
+	}()
+	opt := WithMailboxSize(0)
+	opt(&spawnOptions{})
+}
+
+func TestWithSupervisionPanicsOnNil(t *testing.T) {
+	// Negative: nil strategy panics
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic for nil strategy")
+		}
+	}()
+	opt := WithSupervision(nil)
+	opt(&spawnOptions{})
+}
+
+func TestSpawnPanicsOnEmptyAddress(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	// Negative: empty Type panics
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic for empty address")
+		}
+	}()
+	rt.Spawn(Address{Type: "", ID: "x"}, &testNopActor{})
+}
+
+func TestSpawnPanicsOnNilActor(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	// Negative: nil actor panics
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic for nil actor")
+		}
+	}()
+	rt.Spawn(Address{Type: "t", ID: "x"}, nil)
+}
+
+// testNopActor is a minimal actor that does nothing.
+type testNopActor struct{}
+
+func (a *testNopActor) Receive(
+	ctx *Context, msg Message,
+) error {
+	return nil
+}

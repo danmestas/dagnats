@@ -296,3 +296,244 @@ func TestRuntimeMailboxFull(t *testing.T) {
 		t.Fatalf("expected ErrMailboxFull, got %v", fullErr)
 	}
 }
+
+func TestRuntimeContextSelf(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	// selfActor records its own address via Context.Self()
+	sa := &selfActor{}
+	addr := Address{Type: "test", ID: "self-1"}
+	rt.Spawn(addr, sa)
+
+	rt.Send(addr, Message{Payload: "check"})
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if sa.selfAddr.Load() != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Positive: Self() returns the spawned address
+	got := sa.selfAddr.Load().(Address)
+	if got != addr {
+		t.Fatalf("Self() = %v, want %v", got, addr)
+	}
+
+	// Negative: Self() is not some other address
+	other := Address{Type: "other", ID: "x"}
+	if got == other {
+		t.Fatalf("Self() should not equal %v", other)
+	}
+}
+
+// selfActor stores the address returned by Context.Self().
+type selfActor struct {
+	selfAddr atomic.Value
+}
+
+func (a *selfActor) Receive(ctx *Context, msg Message) error {
+	a.selfAddr.Store(ctx.Self())
+	return nil
+}
+
+func TestRuntimeContextSpawnChild(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	parent := &spawnerActor{}
+	parentAddr := Address{Type: "test", ID: "parent"}
+	rt.Spawn(parentAddr, parent,
+		WithSupervision(&OneForOne{}),
+	)
+
+	// Tell parent to spawn a child
+	childAddr := Address{Type: "test", ID: "child"}
+	rt.Send(parentAddr, Message{Payload: childAddr})
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if parent.spawned.Load() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Positive: child was spawned
+	if parent.spawned.Load() < 1 {
+		t.Fatalf("expected child to be spawned")
+	}
+
+	// Positive: child can receive messages
+	err := rt.Send(childAddr, Message{Payload: "hi"})
+	if err != nil {
+		t.Fatalf("Send to child: %v", err)
+	}
+}
+
+// spawnerActor spawns a child echo actor on receiving a message.
+type spawnerActor struct {
+	spawned atomic.Int32
+}
+
+func (a *spawnerActor) Receive(
+	ctx *Context, msg Message,
+) error {
+	addr := msg.Payload.(Address)
+	err := ctx.Spawn(addr, &echoActor{})
+	if err != nil {
+		return err
+	}
+	a.spawned.Add(1)
+	return nil
+}
+
+func TestRuntimeStopAllRemovesAll(t *testing.T) {
+	rt := NewRuntime()
+
+	addr1 := Address{Type: "test", ID: "a1"}
+	addr2 := Address{Type: "test", ID: "a2"}
+	rt.Spawn(addr1, &echoActor{})
+	rt.Spawn(addr2, &echoActor{})
+
+	rt.StopAll()
+
+	// Negative: both actors gone
+	err1 := rt.Send(addr1, Message{Payload: "gone"})
+	if !errors.Is(err1, ErrActorNotFound) {
+		t.Fatalf("expected ErrActorNotFound for a1, got %v", err1)
+	}
+	err2 := rt.Send(addr2, Message{Payload: "gone"})
+	if !errors.Is(err2, ErrActorNotFound) {
+		t.Fatalf("expected ErrActorNotFound for a2, got %v", err2)
+	}
+}
+
+func TestRuntimeEscalateDirective(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	// Parent that escalates all child errors (no grandparent
+	// means escalation defaults to Stop)
+	parentAddr := Address{Type: "parent", ID: "esc-p1"}
+	rt.Spawn(parentAddr, &echoActor{},
+		WithSupervision(&OneForOne{
+			Decider: func(err error) Directive {
+				return Escalate
+			},
+		}),
+	)
+
+	// Child that always fails
+	child := &failAlwaysActor{}
+	childAddr := Address{Type: "child", ID: "esc-c1"}
+	pCtx := &Context{self: parentAddr, runtime: rt}
+	pCtx.Spawn(childAddr, child)
+
+	// Trigger failure in child
+	rt.Send(childAddr, Message{Payload: "fail"})
+	time.Sleep(200 * time.Millisecond)
+
+	// Positive: child stopped after escalation
+	err := rt.Send(childAddr, Message{Payload: "check"})
+	if !errors.Is(err, ErrActorNotFound) {
+		t.Fatalf("expected child gone, got %v", err)
+	}
+
+	// Positive: parent also stopped (escalation to root = Stop)
+	err = rt.Send(parentAddr, Message{Payload: "check"})
+	if !errors.Is(err, ErrActorNotFound) {
+		t.Fatalf("expected parent gone, got %v", err)
+	}
+}
+
+// failAlwaysActor always returns an error from Receive.
+type failAlwaysActor struct{}
+
+func (a *failAlwaysActor) Receive(
+	ctx *Context, msg Message,
+) error {
+	return errors.New("permanent failure")
+}
+
+func TestRuntimeResumeDirective(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	// Supervisor that resumes on all errors
+	supAddr := Address{Type: "sup", ID: "resume-sup"}
+	rt.Spawn(supAddr, &echoActor{},
+		WithSupervision(&OneForOne{
+			Decider: func(err error) Directive {
+				return Resume
+			},
+		}),
+	)
+
+	// Child that fails once then succeeds
+	child := &failOnceActor{}
+	childAddr := Address{Type: "child", ID: "resume-c1"}
+	supCtx := &Context{self: supAddr, runtime: rt}
+	supCtx.Spawn(childAddr, child)
+
+	// First message triggers failure + resume
+	rt.Send(childAddr, Message{Payload: "fail"})
+	time.Sleep(100 * time.Millisecond)
+
+	// Second message should be processed (actor resumed)
+	rt.Send(childAddr, Message{Payload: "ok"})
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if child.calls.Load() >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Positive: actor processed both messages
+	if child.calls.Load() < 2 {
+		t.Fatalf("expected >= 2 calls, got %d", child.calls.Load())
+	}
+
+	// Positive: actor is still alive
+	err := rt.Send(childAddr, Message{Payload: "still-here"})
+	if err != nil {
+		t.Fatalf("expected actor alive after resume, got %v", err)
+	}
+}
+
+func TestRuntimeRestartBudgetExhausted(t *testing.T) {
+	rt := NewRuntime()
+	defer rt.StopAll()
+
+	supAddr := Address{Type: "sup", ID: "budget-sup"}
+	rt.Spawn(supAddr, &echoActor{},
+		WithSupervision(&OneForOne{}),
+	)
+
+	// Child that always fails — will exhaust restart budget
+	child := &failAlwaysActor{}
+	childAddr := Address{Type: "child", ID: "budget-c1"}
+	supCtx := &Context{self: supAddr, runtime: rt}
+	supCtx.Spawn(childAddr, child)
+
+	// Send messages to trigger repeated failures
+	for i := 0; i < 10; i++ {
+		rt.Send(childAddr, Message{Payload: i})
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Positive: actor stopped after exhausting restart budget
+	err := rt.Send(childAddr, Message{Payload: "check"})
+	if !errors.Is(err, ErrActorNotFound) {
+		t.Fatalf(
+			"expected actor stopped after budget exhaust, got %v",
+			err,
+		)
+	}
+}
