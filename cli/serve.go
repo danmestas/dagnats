@@ -10,7 +10,16 @@ import (
 func runServeCmd(args []string) {
 	if HasHelpFlag(args) {
 		fmt.Println("Usage: dagnats serve")
-		fmt.Println("Starts the embedded NATS server with DagNats engine.")
+		fmt.Println("Starts embedded NATS server with" +
+			" DagNats engine and API.")
+		fmt.Println()
+		fmt.Println("Config: dagnats.yaml" +
+			" (optional, in current directory)")
+		fmt.Println("Env:    DAGNATS_DATA_DIR," +
+			" DAGNATS_HTTP_ADDR, DAGNATS_NATS_PORT")
+		fmt.Println()
+		fmt.Println("Run 'dagnats config show'" +
+			" to see effective configuration.")
 		return
 	}
 

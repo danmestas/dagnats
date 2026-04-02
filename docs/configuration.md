@@ -28,6 +28,16 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_LEAF_REMOTES`    | `leaf_remotes`    | Comma-separated, max 10 entries  |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |
 
+### Deprecated Variables
+
+The following environment variables are deprecated but still supported.
+They produce a warning on stderr when used. Migrate to the new names.
+
+| Old Name        | New Name              |
+|-----------------|-----------------------|
+| `NATS_URL`      | `DAGNATS_NATS_URL`    |
+| `LISTEN_ADDR`   | `DAGNATS_LISTEN_ADDR` |
+
 ## Config File
 
 Place a `dagnats.yaml` file in the working directory. Format is simple
