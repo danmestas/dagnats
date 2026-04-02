@@ -394,6 +394,91 @@ func TestRunEventsJSONOutput(t *testing.T) {
 	}
 }
 
+func TestRunStartJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := runStartResult{RunID: "start-abc"}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain run_id field
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, "start-abc") {
+		t.Fatal("JSON output should contain run ID value")
+	}
+
+	// Negative: should not contain human-readable prefix
+	if strings.Contains(output, "Started:") {
+		t.Fatal("JSON output should not contain human text")
+	}
+}
+
+func TestRunCancelJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := runCancelResult{
+		RunID:     "cancel-xyz",
+		Cancelled: true,
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain expected fields
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, `"cancelled": true`) {
+		t.Fatal("JSON output should contain cancelled field")
+	}
+
+	// Negative: should not contain human text
+	if strings.Contains(output, "Cancelled:") {
+		t.Fatal("JSON output should not contain human text")
+	}
+}
+
+func TestRunSignalJSONOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	result := runSignalResult{
+		RunID:  "sig-run",
+		Signal: "approval",
+		Sent:   true,
+	}
+
+	var buf strings.Builder
+	err := FormatJSON(&buf, result)
+	if err != nil {
+		t.Fatalf("FormatJSON failed: %v", err)
+	}
+	output := buf.String()
+
+	// Positive: output should contain all fields
+	if !strings.Contains(output, `"run_id"`) {
+		t.Fatal("JSON output should contain run_id field")
+	}
+	if !strings.Contains(output, `"signal"`) {
+		t.Fatal("JSON output should contain signal field")
+	}
+	if !strings.Contains(output, `"sent": true`) {
+		t.Fatal("JSON output should contain sent field")
+	}
+
+	// Negative: should not contain human text
+	if strings.Contains(output, "Signal sent:") {
+		t.Fatal("JSON output should not contain human text")
+	}
+}
+
 func TestSignalCommandWritesToKV(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc,

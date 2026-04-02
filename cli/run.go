@@ -62,13 +62,23 @@ func printRunUsage() {
 	fmt.Println("  output   print final output of a completed run")
 }
 
+// runStartResult is the JSON response for run start.
+type runStartResult struct {
+	RunID string `json:"run_id"`
+}
+
 // runStartCmd starts a new workflow run with optional input.
 func runStartCmd(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run start <workflow> [input] [--watch]")
+			"Usage: dagnats run start"+
+				" <workflow> [input] [--watch] [--json]")
 		os.Exit(1)
 	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	workflowName := args[0]
 	if workflowName == "" {
 		panic("runStartCmd: workflowName must not be empty")
@@ -93,6 +103,15 @@ func runStartCmd(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "start run: %v\n", err)
 		os.Exit(1)
+	}
+
+	if jsonOutput {
+		result := runStartResult{RunID: runID}
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	fmt.Printf("Started: %s\n", runID)
@@ -141,10 +160,20 @@ func runStatusCmd(args []string) {
 	fmt.Print(FormatRunStatus(run))
 }
 
-// runCancelCmd publishes a workflow.cancelled event to cancel a running workflow.
+// runCancelResult is the JSON response for run cancel.
+type runCancelResult struct {
+	RunID     string `json:"run_id"`
+	Cancelled bool   `json:"cancelled"`
+}
+
+// runCancelCmd publishes a workflow.cancelled event.
 func runCancelCmd(args []string) {
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: dagnats run cancel <run-id>")
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run cancel <run-id> [--json]")
 		os.Exit(1)
 	}
 	runID := args[0]
@@ -161,14 +190,36 @@ func runCancelCmd(args []string) {
 		os.Exit(1)
 	}
 
+	if jsonOutput {
+		result := runCancelResult{
+			RunID: runID, Cancelled: true,
+		}
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	fmt.Printf("Cancelled: %s\n", runID)
+}
+
+// runSignalResult is the JSON response for run signal.
+type runSignalResult struct {
+	RunID  string `json:"run_id"`
+	Signal string `json:"signal"`
+	Sent   bool   `json:"sent"`
 }
 
 // runSignalCmd sends a signal to a running workflow.
 func runSignalCmd(args []string) {
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 3 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run signal <run-id> <name> <payload>")
+			"Usage: dagnats run signal"+
+				" <run-id> <name> <payload> [--json]")
 		os.Exit(1)
 	}
 
@@ -186,10 +237,23 @@ func runSignalCmd(args []string) {
 	svc, nc := connectService()
 	defer nc.Close()
 
-	err := svc.SendSignal(context.Background(), runID, name, []byte(payload))
+	err := svc.SendSignal(
+		context.Background(), runID, name, []byte(payload),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "send signal: %v\n", err)
 		os.Exit(1)
+	}
+
+	if jsonOutput {
+		result := runSignalResult{
+			RunID: runID, Signal: name, Sent: true,
+		}
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	fmt.Printf("Signal sent: %s\n", name)

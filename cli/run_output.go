@@ -12,14 +12,25 @@ import (
 	"github.com/danmestas/dagnats/dag"
 )
 
+// runOutputResult is the JSON response for run output.
+type runOutputResult struct {
+	RunID   string            `json:"run_id"`
+	Status  string            `json:"status"`
+	Outputs map[string]string `json:"outputs,omitempty"`
+}
+
 // runOutputCmd prints the output of a completed run's terminal steps.
 func runOutputCmd(args []string) {
 	if args == nil {
 		panic("runOutputCmd: args must not be nil")
 	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run output <run-id>")
+			"Usage: dagnats run output <run-id> [--json]")
 		os.Exit(1)
 	}
 	runID := args[0]
@@ -44,7 +55,55 @@ func runOutputCmd(args []string) {
 		os.Exit(1)
 	}
 
+	if jsonOutput {
+		result := buildRunOutputResult(run, def)
+		if err := FormatJSON(os.Stdout, result); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	fmt.Print(FormatRunOutput(run, def))
+}
+
+// buildRunOutputResult constructs a runOutputResult from a run
+// and its workflow definition, including only terminal step outputs.
+func buildRunOutputResult(
+	run dag.WorkflowRun, def dag.WorkflowDef,
+) runOutputResult {
+	if run.RunID == "" {
+		panic("buildRunOutputResult: RunID must not be empty")
+	}
+	if run.Steps == nil {
+		panic("buildRunOutputResult: Steps must not be nil")
+	}
+
+	result := runOutputResult{
+		RunID:  run.RunID,
+		Status: run.Status.String(),
+	}
+
+	if run.Status != dag.RunStatusCompleted {
+		return result
+	}
+
+	terminals := findTerminalSteps(def)
+	outputs := make(map[string]string, len(terminals))
+	for _, stepID := range terminals {
+		state, ok := run.Steps[stepID]
+		if !ok || state.Status != dag.StepStatusCompleted {
+			continue
+		}
+		if len(state.Output) > 0 {
+			outputs[stepID] = string(state.Output)
+		}
+	}
+
+	if len(outputs) > 0 {
+		result.Outputs = outputs
+	}
+	return result
 }
 
 // FormatRunOutput returns the output of terminal steps in a run.
