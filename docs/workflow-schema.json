@@ -1,0 +1,218 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/danmestas/dagnats/blob/main/docs/workflow-schema.json",
+  "title": "DagNats Workflow Definition",
+  "description": "JSON Schema for DagNats workflow definitions",
+  "type": "object",
+  "required": ["name", "version", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference (allows $schema in workflow files)"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique workflow identifier"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Schema version for evolution"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "description": "At least one step required",
+      "items": {
+        "$ref": "#/$defs/StepDef"
+      }
+    },
+    "default_retry": {
+      "$ref": "#/$defs/RetryPolicy",
+      "description": "Fallback retry policy for all steps"
+    },
+    "concurrency": {
+      "$ref": "#/$defs/ConcurrencyLimit",
+      "description": "Workflow-level parallelism limits"
+    },
+    "timeout": {
+      "type": ["string", "number"],
+      "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
+      "description": "Overall workflow deadline (Go duration string or nanoseconds)"
+    },
+    "input_schema": {
+      "description": "JSON Schema for workflow input validation"
+    },
+    "output_schema": {
+      "description": "JSON Schema for workflow output validation"
+    }
+  },
+  "$defs": {
+    "StepDef": {
+      "type": "object",
+      "required": ["id", "task"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique step identifier within the workflow"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Task name workers subscribe to"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Step IDs that must complete before this step"
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Legacy retry count (prefer retry policy)"
+        },
+        "timeout": {
+          "type": ["string", "number"],
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
+          "description": "Per-step execution deadline (Go duration string or nanoseconds)"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["normal", "agent_loop", "sub_workflow", "agent"],
+          "description": "Execution semantics"
+        },
+        "loop": {
+          "$ref": "#/$defs/AgentLoopConfig",
+          "description": "Required when type is agent_loop"
+        },
+        "skip_if": {
+          "$ref": "#/$defs/ParentCond",
+          "description": "Conditional skip based on parent output"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Arbitrary key-value pairs"
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryPolicy",
+          "description": "Structured retry policy (overrides retries)"
+        },
+        "worker_group": {
+          "type": "string",
+          "description": "Routes to a specific worker pool"
+        },
+        "on_failure": {
+          "type": "string",
+          "description": "Step ID to run on failure"
+        },
+        "compensate": {
+          "type": "string",
+          "description": "Step ID for saga compensation"
+        }
+      }
+    },
+    "RetryPolicy": {
+      "type": "object",
+      "required": ["max_attempts", "strategy", "initial_delay"],
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total retry attempts; 0 means no retries"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["fixed", "linear", "exponential"],
+          "description": "Backoff algorithm"
+        },
+        "initial_delay": {
+          "type": ["string", "number"],
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
+          "description": "Base delay between attempts (Go duration string or nanoseconds)"
+        },
+        "max_delay": {
+          "type": ["string", "number"],
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
+          "description": "Delay cap; 0 means uncapped (Go duration string or nanoseconds)"
+        },
+        "multiplier": {
+          "type": "number",
+          "description": "Used by exponential strategy only"
+        }
+      }
+    },
+    "AgentLoopConfig": {
+      "type": "object",
+      "required": ["max_iterations"],
+      "additionalProperties": false,
+      "properties": {
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Upper bound on loop cycles; must be > 0"
+        },
+        "max_duration": {
+          "type": ["string", "number"],
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
+          "description": "Wall-clock limit (Go duration string or nanoseconds)"
+        },
+        "loop_delay": {
+          "type": ["string", "number"],
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
+          "description": "Pause between iterations (Go duration string or nanoseconds)"
+        }
+      }
+    },
+    "ConcurrencyLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_runs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Max parallel runs of this workflow"
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Max parallel steps within a run"
+        }
+      }
+    },
+    "ParentCond": {
+      "type": "object",
+      "required": ["step_id", "field", "op", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "step_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Parent step to check (must be in depends_on)"
+        },
+        "field": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Top-level key in parent's output JSON"
+        },
+        "op": {
+          "type": "string",
+          "enum": ["==", "!=", "<", ">", "<=", ">="],
+          "description": "Comparison operator"
+        },
+        "value": {
+          "description": "Value to compare against"
+        }
+      }
+    }
+  }
+}
