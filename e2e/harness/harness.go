@@ -72,11 +72,6 @@ func enabledTopologies(t *testing.T) []Topology {
 
 // Temporary stubs — replaced by later tasks.
 
-// NewLocalCluster returns a stub topology for the local cluster.
-func NewLocalCluster() Topology {
-	return &stubTopology{name: "local_cluster"}
-}
-
 // NewSupercluster returns a stub topology for the supercluster.
 func NewSupercluster() Topology {
 	return &stubTopology{name: "supercluster"}
