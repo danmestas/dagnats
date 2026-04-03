@@ -7,12 +7,24 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"text/tabwriter"
+	"time"
 
 	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/nats-io/nats.go"
 )
+
+// workflowMetric holds per-workflow run statistics for display and JSON.
+type workflowMetric struct {
+	Name      string `json:"name"`
+	Total     int    `json:"total"`
+	Running   int    `json:"running"`
+	Failed    int    `json:"failed"`
+	Completed int    `json:"completed"`
+	LastRunAt string `json:"last_run_at,omitempty"`
+}
 
 // streamInfo holds per-stream statistics for both human and JSON output.
 type streamInfo struct {
@@ -269,4 +281,144 @@ func formatCount(n uint64) string {
 		result += fmt.Sprintf(",%03d", groups[i])
 	}
 	return result
+}
+
+// collectWorkflowMetrics groups runs by WorkflowID and computes
+// per-workflow counts. Returns at most maxWorkflows entries sorted
+// by total descending.
+func collectWorkflowMetrics(
+	svc *api.Service,
+) ([]workflowMetric, error) {
+	if svc == nil {
+		panic("collectWorkflowMetrics: svc must not be nil")
+	}
+
+	runs, err := svc.ListRuns(context.Background(), "")
+	if err != nil {
+		return nil, err
+	}
+	if runs == nil {
+		panic("collectWorkflowMetrics: ListRuns returned nil")
+	}
+
+	return groupRunsByWorkflow(runs), nil
+}
+
+// workflowAccumulator tallies run counts for a single workflow.
+type workflowAccumulator struct {
+	total     int
+	running   int
+	failed    int
+	completed int
+	lastRunAt time.Time
+}
+
+// groupRunsByWorkflow tallies runs into per-workflow metrics.
+// Bounded to maxWorkflows results, sorted by total descending.
+func groupRunsByWorkflow(
+	runs []dag.WorkflowRun,
+) []workflowMetric {
+	if runs == nil {
+		panic("groupRunsByWorkflow: runs must not be nil")
+	}
+	const maxRuns = 10000
+	if len(runs) > maxRuns {
+		panic("groupRunsByWorkflow: runs exceeds max bound")
+	}
+
+	byWorkflow := make(map[string]*workflowAccumulator)
+	const maxWorkflows = 100
+	for _, r := range runs {
+		acc, exists := byWorkflow[r.WorkflowID]
+		if !exists {
+			if len(byWorkflow) >= maxWorkflows {
+				continue
+			}
+			acc = &workflowAccumulator{}
+			byWorkflow[r.WorkflowID] = acc
+		}
+		acc.total++
+		switch r.Status {
+		case dag.RunStatusRunning:
+			acc.running++
+		case dag.RunStatusFailed:
+			acc.failed++
+		case dag.RunStatusCompleted:
+			acc.completed++
+		}
+		if r.CreatedAt.After(acc.lastRunAt) {
+			acc.lastRunAt = r.CreatedAt
+		}
+	}
+
+	return buildSortedMetrics(byWorkflow)
+}
+
+// buildSortedMetrics converts the accumulator map into a sorted slice.
+func buildSortedMetrics(
+	byWorkflow map[string]*workflowAccumulator,
+) []workflowMetric {
+	if byWorkflow == nil {
+		panic("buildSortedMetrics: byWorkflow must not be nil")
+	}
+	if len(byWorkflow) < 0 {
+		panic("buildSortedMetrics: impossible negative length")
+	}
+
+	metrics := make([]workflowMetric, 0, len(byWorkflow))
+	for name, acc := range byWorkflow {
+		m := workflowMetric{
+			Name:      name,
+			Total:     acc.total,
+			Running:   acc.running,
+			Failed:    acc.failed,
+			Completed: acc.completed,
+		}
+		if !acc.lastRunAt.IsZero() {
+			m.LastRunAt = acc.lastRunAt.Format(
+				"2006-01-02 15:04",
+			)
+		}
+		metrics = append(metrics, m)
+	}
+
+	sort.Slice(metrics, func(i, j int) bool {
+		return metrics[i].Total > metrics[j].Total
+	})
+	return metrics
+}
+
+// printWorkflowMetrics prints a table of per-workflow run statistics.
+func printWorkflowMetrics(svc *api.Service) {
+	if svc == nil {
+		panic("printWorkflowMetrics: svc must not be nil")
+	}
+
+	metrics, err := collectWorkflowMetrics(svc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"Workflows: error (%v)\n", err)
+		return
+	}
+	if len(metrics) == 0 {
+		return
+	}
+
+	fmt.Println("\nWorkflows:")
+	w := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
+	fmt.Fprintf(w,
+		"  WORKFLOW\tTOTAL\tRUNNING\tFAILED"+
+			"\tCOMPLETED\tLAST RUN\n")
+
+	for _, m := range metrics {
+		lastRun := m.LastRunAt
+		if lastRun == "" {
+			lastRun = "-"
+		}
+		fmt.Fprintf(w, "  %s\t%d\t%d\t%d\t%d\t%s\n",
+			m.Name, m.Total, m.Running,
+			m.Failed, m.Completed, lastRun,
+		)
+	}
+	w.Flush()
 }

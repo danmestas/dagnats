@@ -191,11 +191,13 @@ type StepState struct {
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.
 // Steps maps step ID to its current StepState; initialized to pending for all steps.
+// Input preserves the original user-supplied payload so retries can reuse it.
 type WorkflowRun struct {
 	RunID        string               `json:"run_id"`
 	WorkflowID   string               `json:"workflow_id"`
 	Status       RunStatus            `json:"status"`
 	Steps        map[string]StepState `json:"steps"`
+	Input        json.RawMessage      `json:"input,omitempty"`
 	CreatedAt    time.Time            `json:"created_at"`
 	ParentRunID  string               `json:"parent_run_id,omitempty"`
 	ParentStepID string               `json:"parent_step_id,omitempty"`

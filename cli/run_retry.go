@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+
+	"github.com/danmestas/dagnats/api"
 )
 
 // runRetryResult is the JSON response for run retry.
@@ -14,6 +16,12 @@ type runRetryResult struct {
 	OriginalRunID string `json:"original_run_id"`
 	Workflow      string `json:"workflow"`
 	NewRunID      string `json:"new_run_id"`
+}
+
+// retryOutcome holds the result of retryRun for display.
+type retryOutcome struct {
+	WorkflowID string
+	NewRunID   string
 }
 
 // runRetryCmd looks up an existing run and starts a new run of the
@@ -43,9 +51,10 @@ func runRetryCmd(args []string) {
 		return
 	}
 
-	var input []byte
-	if len(args) > 1 {
-		input = []byte(args[1])
+	var explicitInput []byte
+	hasExplicitInput := len(args) > 1
+	if hasExplicitInput {
+		explicitInput = []byte(args[1])
 	}
 
 	svc, nc := connectService()
@@ -58,37 +67,72 @@ func runRetryCmd(args []string) {
 		return
 	}
 
+	outcome, err := retryRun(
+		svc, runID, explicitInput, hasExplicitInput,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		exitFunc(1)
+		return
+	}
+
+	printRetryResult(jsonOutput, runID, outcome)
+}
+
+// retryRun loads the original run, resolves input, and starts a new
+// run. Explicit input overrides the original run's stored input.
+func retryRun(
+	svc *api.Service,
+	runID string,
+	explicitInput []byte,
+	hasExplicitInput bool,
+) (retryOutcome, error) {
+	if svc == nil {
+		panic("retryRun: svc must not be nil")
+	}
+	if runID == "" {
+		panic("retryRun: runID must not be empty")
+	}
 	ctx := context.Background()
 	run, err := svc.GetRun(ctx, runID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
-		exitFunc(1)
-		return
+		return retryOutcome{}, fmt.Errorf("get run: %w", err)
+	}
+
+	input := explicitInput
+	if !hasExplicitInput && len(run.Input) > 0 {
+		input = run.Input
 	}
 
 	newRunID, err := svc.StartRun(
 		ctx, run.WorkflowID, input,
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "start run: %v\n", err)
+		return retryOutcome{},
+			fmt.Errorf("start run: %w", err)
+	}
+	return retryOutcome{
+		WorkflowID: run.WorkflowID,
+		NewRunID:   newRunID,
+	}, nil
+}
+
+// printRetryResult outputs the retry result in JSON or plain text.
+func printRetryResult(
+	jsonOutput bool, runID string, out retryOutcome,
+) {
+	if !jsonOutput {
+		fmt.Printf("Retrying workflow %s: %s\n",
+			out.WorkflowID, out.NewRunID)
+		return
+	}
+	result := runRetryResult{
+		OriginalRunID: runID,
+		Workflow:      out.WorkflowID,
+		NewRunID:      out.NewRunID,
+	}
+	if err := FormatJSON(os.Stdout, result); err != nil {
+		fmt.Fprintf(os.Stderr, "format json: %v\n", err)
 		exitFunc(1)
-		return
 	}
-
-	if jsonOutput {
-		result := runRetryResult{
-			OriginalRunID: runID,
-			Workflow:      run.WorkflowID,
-			NewRunID:      newRunID,
-		}
-		if err := FormatJSON(os.Stdout, result); err != nil {
-			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
-			exitFunc(1)
-			return
-		}
-		return
-	}
-
-	fmt.Printf("Retrying workflow %s: %s\n",
-		run.WorkflowID, newRunID)
 }

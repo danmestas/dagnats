@@ -160,6 +160,182 @@ func TestRetryJSONOutput(t *testing.T) {
 	}
 }
 
+func TestRetryUsesOriginalInput(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	tel := observe.NewNoopTelemetry()
+	svc := api.NewService(nc, tel)
+	def := dag.WorkflowDef{
+		Name:    "retry-input-test",
+		Version: "1.0",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "t1", Timeout: time.Second},
+		},
+	}
+	if err := svc.RegisterWorkflow(
+		context.Background(), def,
+	); err != nil {
+		t.Fatalf("register workflow: %v", err)
+	}
+
+	// Start orchestrator so the new run's snapshot gets created.
+	orch := engine.NewOrchestrator(nc, tel)
+	orch.Start()
+	defer orch.Stop()
+
+	// Save a snapshot with stored input so retry can reuse it.
+	js, _ := nc.JetStream()
+	store := engine.NewSnapshotStore(js)
+	originalRunID := "orig-input-run-001"
+	run := dag.WorkflowRun{
+		RunID:      originalRunID,
+		WorkflowID: "retry-input-test",
+		Status:     dag.RunStatusFailed,
+		Input:      json.RawMessage(`{"key":"original"}`),
+		Steps: map[string]dag.StepState{
+			"s1": {Status: dag.StepStatusFailed},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+
+	output := captureOutput(func() {
+		runRetryCmd([]string{originalRunID, "--json"})
+	})
+
+	// Positive: should produce valid JSON with a new run ID.
+	var result runRetryResult
+	if err := json.Unmarshal(
+		[]byte(output), &result,
+	); err != nil {
+		t.Fatalf("expected valid JSON: %v\n%s", err, output)
+	}
+	if result.NewRunID == "" {
+		t.Fatal("new_run_id must not be empty")
+	}
+
+	// Wait for orchestrator to process the event and save snapshot.
+	var newRun dag.WorkflowRun
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var loadErr error
+		newRun, loadErr = store.Load(result.NewRunID)
+		if loadErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Positive: new run should carry the original input forward.
+	if string(newRun.Input) != `{"key":"original"}` {
+		t.Fatalf(
+			"expected original input, got: %s",
+			string(newRun.Input),
+		)
+	}
+
+	// Negative: new run ID must differ from original.
+	if result.NewRunID == originalRunID {
+		t.Fatal("new run ID must differ from original")
+	}
+}
+
+func TestRetryExplicitInputOverridesOriginal(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	oldURL := os.Getenv("NATS_URL")
+	os.Setenv("NATS_URL", srv.ClientURL())
+	defer os.Setenv("NATS_URL", oldURL)
+
+	tel := observe.NewNoopTelemetry()
+	svc := api.NewService(nc, tel)
+	def := dag.WorkflowDef{
+		Name:    "retry-override-test",
+		Version: "1.0",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "t1", Timeout: time.Second},
+		},
+	}
+	if err := svc.RegisterWorkflow(
+		context.Background(), def,
+	); err != nil {
+		t.Fatalf("register workflow: %v", err)
+	}
+
+	orch := engine.NewOrchestrator(nc, tel)
+	orch.Start()
+	defer orch.Stop()
+
+	js, _ := nc.JetStream()
+	store := engine.NewSnapshotStore(js)
+	originalRunID := "orig-override-run-001"
+	run := dag.WorkflowRun{
+		RunID:      originalRunID,
+		WorkflowID: "retry-override-test",
+		Status:     dag.RunStatusFailed,
+		Input:      json.RawMessage(`{"key":"original"}`),
+		Steps: map[string]dag.StepState{
+			"s1": {Status: dag.StepStatusFailed},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(run); err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+
+	output := captureOutput(func() {
+		runRetryCmd([]string{
+			originalRunID,
+			`{"key":"override"}`,
+			"--json",
+		})
+	})
+
+	var result runRetryResult
+	if err := json.Unmarshal(
+		[]byte(output), &result,
+	); err != nil {
+		t.Fatalf("expected valid JSON: %v\n%s", err, output)
+	}
+
+	// Wait for orchestrator to process and save the snapshot.
+	var newRun dag.WorkflowRun
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var loadErr error
+		newRun, loadErr = store.Load(result.NewRunID)
+		if loadErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Positive: new run should use the explicit override input.
+	if string(newRun.Input) != `{"key":"override"}` {
+		t.Fatalf(
+			"expected override input, got: %s",
+			string(newRun.Input),
+		)
+	}
+
+	// Negative: should not contain the original input.
+	if string(newRun.Input) == `{"key":"original"}` {
+		t.Fatal("explicit input should override original")
+	}
+}
+
 func TestRetryNonexistentRun(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {

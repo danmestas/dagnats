@@ -92,7 +92,10 @@ func writeWorkflowJSON(dir string, name string) error {
 		panic("writeWorkflowJSON: name must not be empty")
 	}
 
+	schemaURL := "https://raw.githubusercontent.com/" +
+		"danmestas/dagnats/main/docs/workflow-schema.json"
 	content := fmt.Sprintf(`{
+  "$schema": %q,
   "name": %q,
   "version": "1.0",
   "steps": [
@@ -102,7 +105,7 @@ func writeWorkflowJSON(dir string, name string) error {
     }
   ]
 }
-`, name)
+`, schemaURL, name)
 
 	path := dir + "/workflow.json"
 	return os.WriteFile(path, []byte(content), 0644)

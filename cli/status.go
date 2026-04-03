@@ -15,12 +15,13 @@ import (
 
 // systemStatus holds all health data for JSON serialization.
 type systemStatus struct {
-	NATS       string         `json:"nats"`
-	JetStream  string         `json:"jetstream"`
-	Streams    int            `json:"stream_count"`
-	ActiveRuns int            `json:"active_runs"`
-	StreamInfo []streamInfo   `json:"streams,omitempty"`
-	Runs       map[string]int `json:"runs,omitempty"`
+	NATS       string           `json:"nats"`
+	JetStream  string           `json:"jetstream"`
+	Streams    int              `json:"stream_count"`
+	ActiveRuns int              `json:"active_runs"`
+	StreamInfo []streamInfo     `json:"streams,omitempty"`
+	Runs       map[string]int   `json:"runs,omitempty"`
+	Workflows  []workflowMetric `json:"workflows,omitempty"`
 }
 
 // runSystemStatusCmd checks system health and prints a summary.
@@ -102,6 +103,11 @@ func collectSystemStatus(
 	if err == nil {
 		status.Runs = runCounts
 	}
+
+	wfMetrics, err := collectWorkflowMetrics(svc)
+	if err == nil {
+		status.Workflows = wfMetrics
+	}
 	return status
 }
 
@@ -150,6 +156,7 @@ func printSystemStatus(nc *nats.Conn, svc *api.Service) {
 
 	printStreamDetails(js)
 	printRunBreakdown(svc)
+	printWorkflowMetrics(svc)
 }
 
 // countActiveRuns counts runs that are pending or running.

@@ -8,6 +8,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,177 @@ func TestFormatLogLine(t *testing.T) {
 			t.Fatal("warn log should not contain ERROR")
 		}
 	})
+}
+
+func TestParseTailFlag(t *testing.T) {
+	t.Run("absent returns zero", func(t *testing.T) {
+		got := parseTailFlag([]string{"--level=info"})
+		if got != 0 {
+			t.Fatalf("expected 0, got %d", got)
+		}
+		// Negative: should not return negative
+		if got < 0 {
+			t.Fatal("tail count must not be negative")
+		}
+	})
+
+	t.Run("valid value", func(t *testing.T) {
+		got := parseTailFlag([]string{"--tail=50"})
+		if got != 50 {
+			t.Fatalf("expected 50, got %d", got)
+		}
+		// Negative: must not exceed max
+		if got > tailCountMax {
+			t.Fatal("tail count must not exceed max")
+		}
+	})
+
+	t.Run("with other flags", func(t *testing.T) {
+		got := parseTailFlag(
+			[]string{"--level=info", "--tail=10", "--service=api"},
+		)
+		if got != 10 {
+			t.Fatalf("expected 10, got %d", got)
+		}
+		// Negative: must be positive
+		if got <= 0 {
+			t.Fatal("tail count must be positive")
+		}
+	})
+}
+
+func TestCollectTailMessages(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	_ = srv
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	// Publish 5 log records
+	const totalMessages = 5
+	for i := 0; i < totalMessages; i++ {
+		rec := simple.LogRecord{
+			Level:     "info",
+			Message:   "msg-" + strconv.Itoa(i),
+			Service:   "testsvc",
+			Timestamp: time.Now().UTC(),
+		}
+		data, marshalErr := json.Marshal(rec)
+		if marshalErr != nil {
+			t.Fatalf("marshal: %v", marshalErr)
+		}
+		_, pubErr := js.Publish(
+			"telemetry.logs.testsvc.info", data,
+		)
+		if pubErr != nil {
+			t.Fatalf("publish: %v", pubErr)
+		}
+	}
+
+	sub, err := js.SubscribeSync(
+		"telemetry.logs.testsvc.info",
+		nats.DeliverAll(), nats.AckNone(),
+	)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Errorf("unsubscribe: %v", err)
+		}
+	}()
+
+	// Collect last 3 of 5 messages
+	buf := collectTailMessages(sub, 3)
+
+	// Positive: should return exactly 3 records
+	if len(buf) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(buf))
+	}
+
+	// Positive: should be the LAST 3 messages (msg-2..msg-4)
+	if buf[0].Message != "msg-2" {
+		t.Fatalf(
+			"expected first record 'msg-2', got %q",
+			buf[0].Message,
+		)
+	}
+	if buf[2].Message != "msg-4" {
+		t.Fatalf(
+			"expected last record 'msg-4', got %q",
+			buf[2].Message,
+		)
+	}
+
+	// Negative: should not contain msg-0 or msg-1
+	for _, rec := range buf {
+		if rec.Message == "msg-0" || rec.Message == "msg-1" {
+			t.Fatalf("should not contain %q", rec.Message)
+		}
+	}
+}
+
+func TestCollectTailMessagesFewerThanCount(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	_ = srv
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	// Publish only 2 messages but request 10
+	for i := 0; i < 2; i++ {
+		rec := simple.LogRecord{
+			Level:     "warn",
+			Message:   "few-" + strconv.Itoa(i),
+			Service:   "fewsvc",
+			Timestamp: time.Now().UTC(),
+		}
+		data, marshalErr := json.Marshal(rec)
+		if marshalErr != nil {
+			t.Fatalf("marshal: %v", marshalErr)
+		}
+		_, pubErr := js.Publish(
+			"telemetry.logs.fewsvc.warn", data,
+		)
+		if pubErr != nil {
+			t.Fatalf("publish: %v", pubErr)
+		}
+	}
+
+	sub, err := js.SubscribeSync(
+		"telemetry.logs.fewsvc.warn",
+		nats.DeliverAll(), nats.AckNone(),
+	)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Errorf("unsubscribe: %v", err)
+		}
+	}()
+
+	buf := collectTailMessages(sub, 10)
+
+	// Positive: returns all available (2), not 10
+	if len(buf) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(buf))
+	}
+
+	// Negative: buffer should not be empty
+	if len(buf) == 0 {
+		t.Fatal("buffer must not be empty")
+	}
 }
 
 func TestLogsStreamIntegration(t *testing.T) {

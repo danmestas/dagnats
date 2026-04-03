@@ -1,5 +1,5 @@
 {
-  "$schema": "../../docs/workflow.schema.json",
+  "$schema": "../../docs/workflow-schema.json",
   "name": "signals",
   "version": "1.0",
   "steps": [

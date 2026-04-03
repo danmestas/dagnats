@@ -78,6 +78,16 @@ func TestScaffoldProjectWorkflowContainsName(t *testing.T) {
 		)
 	}
 
+	// Positive: must have $schema pointing to GitHub raw URL.
+	schema, ok := wf["$schema"].(string)
+	if !ok || schema == "" {
+		t.Fatal("expected $schema property in workflow.json")
+	}
+	if !strings.Contains(schema, "workflow-schema.json") {
+		t.Fatalf("$schema must reference workflow-schema.json,"+
+			" got %q", schema)
+	}
+
 	// Positive: must have steps array.
 	steps, ok := wf["steps"].([]any)
 	if !ok || len(steps) == 0 {

@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/danmestas/dagnats/observe/simple"
 	"github.com/nats-io/nats.go"
@@ -29,6 +31,7 @@ func runLogsCmd(args []string) {
 	}
 
 	var levelFilter, serviceFilter string
+	tailCount := parseTailFlag(args)
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--level=") {
 			levelFilter = strings.TrimPrefix(arg, "--level=")
@@ -48,6 +51,12 @@ func runLogsCmd(args []string) {
 	}
 
 	subject := buildLogSubject(serviceFilter, levelFilter)
+
+	if tailCount > 0 {
+		runLogsTail(js, subject, tailCount)
+		return
+	}
+
 	msgCh := make(chan *nats.Msg, 256)
 	sub, err := js.ChanSubscribe(subject, msgCh, nats.DeliverNew())
 	if err != nil {
@@ -157,6 +166,106 @@ func formatFields(fields map[string]any) []string {
 		pairs = append(pairs, fmt.Sprintf("%s=%v", k, fields[k]))
 	}
 	return pairs
+}
+
+// tailCountMax is the upper bound for --tail to prevent unbounded
+// memory usage when collecting historical log messages.
+const tailCountMax = 10000
+
+// parseTailFlag extracts the --tail=N value from args. Returns 0
+// when the flag is absent. Exits with an error for invalid values.
+func parseTailFlag(args []string) int {
+	if args == nil {
+		panic("parseTailFlag: args must not be nil")
+	}
+	if len(args) > 100 {
+		panic("parseTailFlag: args exceeds max bound")
+	}
+
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "--tail=") {
+			continue
+		}
+		val := strings.TrimPrefix(arg, "--tail=")
+		n, err := strconv.Atoi(val)
+		if err != nil || n <= 0 {
+			fmt.Fprintln(os.Stderr,
+				"Error: --tail must be a positive integer")
+			os.Exit(1)
+		}
+		if n > tailCountMax {
+			fmt.Fprintf(os.Stderr,
+				"Error: --tail exceeds maximum (%d)\n",
+				tailCountMax)
+			os.Exit(1)
+		}
+		return n
+	}
+	return 0
+}
+
+// runLogsTail fetches the last count log messages from the stream
+// and prints them. Subscribes with DeliverAll, drains into a ring
+// buffer, then exits without blocking for SIGINT.
+func runLogsTail(
+	js nats.JetStreamContext, subject string, count int,
+) {
+	if js == nil {
+		panic("runLogsTail: js must not be nil")
+	}
+	if count <= 0 || count > tailCountMax {
+		panic("runLogsTail: count out of bounds")
+	}
+
+	sub, err := js.SubscribeSync(subject,
+		nats.DeliverAll(), nats.AckNone())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "subscribe %s: %v\n",
+			subject, err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := sub.Unsubscribe(); err != nil {
+			fmt.Fprintf(os.Stderr, "unsubscribe: %v\n", err)
+		}
+	}()
+
+	buf := collectTailMessages(sub, count)
+	for _, rec := range buf {
+		fmt.Println(formatLogLine(rec))
+	}
+}
+
+// collectTailMessages reads messages from sub into a ring buffer
+// of capacity count. Stops when no message arrives within 1 second.
+func collectTailMessages(
+	sub *nats.Subscription, count int,
+) []simple.LogRecord {
+	if sub == nil {
+		panic("collectTailMessages: sub must not be nil")
+	}
+	if count <= 0 || count > tailCountMax {
+		panic("collectTailMessages: count out of bounds")
+	}
+
+	const drainTimeout = time.Second
+	buf := make([]simple.LogRecord, 0, count)
+
+	for i := 0; i < tailCountMax; i++ {
+		msg, err := sub.NextMsg(drainTimeout)
+		if err != nil {
+			break
+		}
+		var rec simple.LogRecord
+		if err := json.Unmarshal(msg.Data, &rec); err != nil {
+			continue
+		}
+		if len(buf) >= count {
+			buf = buf[1:]
+		}
+		buf = append(buf, rec)
+	}
+	return buf
 }
 
 // colorLevel pads the level string to 7 characters and applies

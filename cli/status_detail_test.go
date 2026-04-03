@@ -8,7 +8,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/natsutil"
 )
 
@@ -185,6 +187,156 @@ func TestStreamDetailsIntegration(t *testing.T) {
 	// Negative: must not contain error markers.
 	if strings.Contains(output, "(error") {
 		t.Fatalf("unexpected error in output: %s", output)
+	}
+}
+
+func TestGroupRunsByWorkflowGrouping(t *testing.T) {
+	now := time.Now().UTC()
+	earlier := now.Add(-1 * time.Hour)
+
+	runs := []dag.WorkflowRun{
+		{
+			WorkflowID: "wf-a",
+			Status:     dag.RunStatusCompleted,
+			CreatedAt:  earlier,
+		},
+		{
+			WorkflowID: "wf-a",
+			Status:     dag.RunStatusRunning,
+			CreatedAt:  now,
+		},
+		{
+			WorkflowID: "wf-a",
+			Status:     dag.RunStatusFailed,
+			CreatedAt:  earlier,
+		},
+		{
+			WorkflowID: "wf-b",
+			Status:     dag.RunStatusCompleted,
+			CreatedAt:  now,
+		},
+	}
+
+	metrics := groupRunsByWorkflow(runs)
+
+	// Positive: two distinct workflows should be returned.
+	if len(metrics) != 2 {
+		t.Fatalf("expected 2 workflows, got %d", len(metrics))
+	}
+
+	// Positive: wf-a has 3 total, should be first (sorted desc).
+	if metrics[0].Name != "wf-a" {
+		t.Fatalf("expected wf-a first, got %q", metrics[0].Name)
+	}
+	if metrics[0].Total != 3 {
+		t.Fatalf("expected wf-a total=3, got %d", metrics[0].Total)
+	}
+
+	// Negative: wf-b must not have failed or running counts.
+	if metrics[1].Running != 0 {
+		t.Fatalf(
+			"expected wf-b running=0, got %d",
+			metrics[1].Running,
+		)
+	}
+	if metrics[1].Failed != 0 {
+		t.Fatalf(
+			"expected wf-b failed=0, got %d",
+			metrics[1].Failed,
+		)
+	}
+}
+
+func TestGroupRunsByWorkflowStatusCounts(t *testing.T) {
+	now := time.Now().UTC()
+	runs := []dag.WorkflowRun{
+		{
+			WorkflowID: "wf-x",
+			Status:     dag.RunStatusRunning,
+			CreatedAt:  now,
+		},
+		{
+			WorkflowID: "wf-x",
+			Status:     dag.RunStatusFailed,
+			CreatedAt:  now,
+		},
+		{
+			WorkflowID: "wf-x",
+			Status:     dag.RunStatusCompleted,
+			CreatedAt:  now,
+		},
+		{
+			WorkflowID: "wf-x",
+			Status:     dag.RunStatusCompleted,
+			CreatedAt:  now,
+		},
+	}
+
+	metrics := groupRunsByWorkflow(runs)
+
+	// Positive: single workflow with correct status breakdown.
+	if len(metrics) != 1 {
+		t.Fatalf("expected 1 workflow, got %d", len(metrics))
+	}
+	m := metrics[0]
+	if m.Running != 1 || m.Failed != 1 || m.Completed != 2 {
+		t.Fatalf(
+			"expected running=1 failed=1 completed=2, "+
+				"got running=%d failed=%d completed=%d",
+			m.Running, m.Failed, m.Completed,
+		)
+	}
+
+	// Negative: total must equal sum of counted statuses
+	// plus any uncounted (pending/cancelled).
+	if m.Total != 4 {
+		t.Fatalf("expected total=4, got %d", m.Total)
+	}
+}
+
+func TestGroupRunsByWorkflowLastRunAt(t *testing.T) {
+	older := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 4, 3, 14, 30, 0, 0, time.UTC)
+
+	runs := []dag.WorkflowRun{
+		{
+			WorkflowID: "wf-t",
+			Status:     dag.RunStatusCompleted,
+			CreatedAt:  older,
+		},
+		{
+			WorkflowID: "wf-t",
+			Status:     dag.RunStatusRunning,
+			CreatedAt:  newer,
+		},
+	}
+
+	metrics := groupRunsByWorkflow(runs)
+
+	// Positive: last_run_at reflects the most recent CreatedAt.
+	if metrics[0].LastRunAt != "2026-04-03 14:30" {
+		t.Fatalf(
+			"expected last_run_at '2026-04-03 14:30', got %q",
+			metrics[0].LastRunAt,
+		)
+	}
+	// Negative: must not be the older timestamp.
+	if strings.Contains(metrics[0].LastRunAt, "2026-01-01") {
+		t.Fatal("last_run_at should not be the older timestamp")
+	}
+}
+
+func TestGroupRunsByWorkflowEmpty(t *testing.T) {
+	runs := []dag.WorkflowRun{}
+	metrics := groupRunsByWorkflow(runs)
+
+	// Positive: empty input yields empty output.
+	if len(metrics) != 0 {
+		t.Fatalf("expected 0 workflows, got %d", len(metrics))
+	}
+	// Negative: result must not be nil (it's an empty slice).
+	if metrics == nil {
+		t.Fatal("expected empty slice, not nil")
 	}
 }
 
