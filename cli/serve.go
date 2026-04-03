@@ -25,6 +25,14 @@ func runServeCmd(args []string) {
 
 	cfg := server.ConfigFromEnv()
 	srv := server.New(cfg)
+
+	if len(cfg.Workers) > 0 {
+		w := server.EmbeddedWorker(srv)
+		for _, wc := range cfg.Workers {
+			w.Handle(wc.Task, buildHandler(wc))
+		}
+	}
+
 	if err := srv.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
