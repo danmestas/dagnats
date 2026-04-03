@@ -70,21 +70,3 @@ func enabledTopologies(t *testing.T) []Topology {
 	return nil
 }
 
-// Temporary stubs — replaced by later tasks.
-
-// NewSupercluster returns a stub topology for the supercluster.
-func NewSupercluster() Topology {
-	return &stubTopology{name: "supercluster"}
-}
-
-type stubTopology struct{ name string }
-
-func (s *stubTopology) Name() string { return s.name }
-
-func (s *stubTopology) Connect(t *testing.T) *nats.Conn {
-	t.Helper()
-	t.Skip("topology not yet implemented: " + s.name)
-	return nil
-}
-
-func (s *stubTopology) Setup(_ *testing.T, _ *nats.Conn) {}
