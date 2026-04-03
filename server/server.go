@@ -39,6 +39,7 @@ type Server struct {
 	workerShims []*WorkerShim
 	workers     []*worker.Worker
 	running     atomic.Bool
+	tempCreds   string // inline creds temp file; cleaned on shutdown
 }
 
 // New creates a Server with the given config. Panics if DataDir is empty.
@@ -92,8 +93,25 @@ func (s *Server) startComponents() error {
 
 	var err error
 
+	// Resolve inline credentials to temp file if needed
+	if s.cfg.LeafCredentials != "" {
+		resolved, resolveErr := resolveCredentials(
+			s.cfg.LeafCredentials,
+		)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve credentials: %w", resolveErr)
+		}
+		if resolved != s.cfg.LeafCredentials {
+			s.tempCreds = resolved
+		}
+		s.cfg.LeafCredentials = resolved
+	}
+
 	s.ns, err = startNATS(s.cfg)
 	if err != nil {
+		if s.tempCreds != "" {
+			os.Remove(s.tempCreds)
+		}
 		return fmt.Errorf("start NATS: %w", err)
 	}
 	printStep(os.Stderr, "nats server started")
@@ -313,6 +331,9 @@ func (s *Server) shutdown() error {
 
 		s.ns.Shutdown()
 		s.ns.WaitForShutdown()
+		if s.tempCreds != "" {
+			os.Remove(s.tempCreds)
+		}
 		printStep(os.Stderr, "shutdown complete")
 	}()
 

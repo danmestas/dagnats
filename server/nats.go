@@ -3,7 +3,9 @@ package server
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -77,4 +79,31 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 	}
 
 	return ns, nil
+}
+
+// resolveCredentials handles leaf_credentials as either a file
+// path or inline credential content. If the value starts with
+// "-----BEGIN", it is treated as inline content and written to a
+// temp file (returned path). Otherwise it is treated as a file
+// path and returned as-is. Callers must clean up temp files via
+// cleanupCredentials.
+func resolveCredentials(value string) (string, error) {
+	if value == "" {
+		panic("resolveCredentials: value must not be empty")
+	}
+	if strings.HasPrefix(value, "-----BEGIN") {
+		f, err := os.CreateTemp("", "dagnats-creds-*.creds")
+		if err != nil {
+			return "", fmt.Errorf("create temp creds: %w", err)
+		}
+		if _, err := f.WriteString(value); err != nil {
+			f.Close()
+			os.Remove(f.Name())
+			return "", fmt.Errorf("write temp creds: %w", err)
+		}
+		f.Close()
+		os.Chmod(f.Name(), 0600)
+		return f.Name(), nil
+	}
+	return value, nil
 }
