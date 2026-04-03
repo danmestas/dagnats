@@ -3,6 +3,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/danmestas/dagnats/worker"
 )
 
 // testConfig returns a Config suitable for isolated testing.
@@ -181,5 +184,152 @@ func TestServer_PrintsStartupAndShutdownBanner(t *testing.T) {
 	// Negative: no errors during a clean lifecycle
 	if strings.Contains(strings.ToLower(output), "error") {
 		t.Errorf("stderr contains 'error' during clean run:\n%s", output)
+	}
+}
+
+// TestServer_EmbeddedWorkerCompletesRun verifies that an embedded
+// worker can process a task end-to-end: register handler, start
+// server, register workflow via REST, start run, poll until done.
+func TestServer_EmbeddedWorkerCompletesRun(t *testing.T) {
+	cfg := testConfig(t)
+	srv := New(cfg)
+
+	if srv == nil {
+		panic("New() returned nil")
+	}
+
+	// Register embedded handler that returns a fixed result.
+	// First steps receive no input (run-level input is not
+	// forwarded), so the handler must not depend on it.
+	w := EmbeddedWorker(srv)
+	w.Handle("upper", func(ctx worker.TaskContext) error {
+		return ctx.Complete([]byte(`"HELLO"`))
+	})
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+
+	// Wait for ready
+	readyURL := fmt.Sprintf(
+		"http://%s/ready", cfg.HTTPAddr,
+	)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(readyURL)
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Register workflow via REST API
+	wfBody := `{
+		"name": "embedded-test",
+		"version": "1.0",
+		"steps": [{"id": "upper", "task": "upper"}]
+	}`
+	wfResp, err := http.Post(
+		fmt.Sprintf(
+			"http://%s/workflows", cfg.HTTPAddr,
+		),
+		"application/json",
+		strings.NewReader(wfBody),
+	)
+	if err != nil {
+		t.Fatalf("register workflow: %v", err)
+	}
+	if wfResp.StatusCode != http.StatusOK &&
+		wfResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(wfResp.Body)
+		t.Fatalf("register workflow: %d %s",
+			wfResp.StatusCode, string(body))
+	}
+	wfResp.Body.Close()
+
+	// Start a run
+	runBody := `{
+		"workflow": "embedded-test",
+		"input": "hello"
+	}`
+	runResp, err := http.Post(
+		fmt.Sprintf(
+			"http://%s/runs", cfg.HTTPAddr,
+		),
+		"application/json",
+		strings.NewReader(runBody),
+	)
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	runRespBody, _ := io.ReadAll(runResp.Body)
+	runResp.Body.Close()
+
+	if runResp.StatusCode != http.StatusOK &&
+		runResp.StatusCode != http.StatusCreated {
+		t.Fatalf("start run: %d %s",
+			runResp.StatusCode, string(runRespBody))
+	}
+
+	// Extract run_id
+	var startResult struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(
+		runRespBody, &startResult,
+	); err != nil {
+		t.Fatalf("unmarshal run response: %v", err)
+	}
+	if startResult.RunID == "" {
+		t.Fatal("run_id is empty in response")
+	}
+
+	// Poll run status until completed (bounded 15s)
+	runURL := fmt.Sprintf(
+		"http://%s/runs/%s",
+		cfg.HTTPAddr, startResult.RunID,
+	)
+	pollDeadline := time.Now().Add(15 * time.Second)
+	completed := false
+
+	for time.Now().Before(pollDeadline) && !completed {
+		resp, err := http.Get(runURL)
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var runState struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(
+			body, &runState,
+		); err == nil && runState.Status == "completed" {
+			completed = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Positive: run completed
+	if !completed {
+		t.Fatal("run did not complete within 15s")
+	}
+
+	// Clean shutdown
+	srv.Stop()
+	select {
+	case err := <-errCh:
+		// Negative: no errors during clean shutdown
+		if err != nil {
+			t.Errorf("Run() returned error: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Run() did not return within 20s")
 	}
 }

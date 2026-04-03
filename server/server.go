@@ -28,7 +28,7 @@ type Server struct {
 	cfg     Config
 	ns      *natsserver.Server
 	nc      *nats.Conn
-	orch    *engine.ActorOrchestrator
+	orch    *engine.Orchestrator
 	svc     *api.Service
 	trig    *trigger.TriggerService
 	httpSrv *http.Server
@@ -123,7 +123,7 @@ func (s *Server) startComponents() error {
 
 	s.tel, s.telStop = simple.SetupTelemetry(s.nc)
 	s.svc = api.NewService(s.nc, s.tel)
-	s.orch = engine.NewActorOrchestrator(s.nc, s.tel)
+	s.orch = engine.NewOrchestrator(s.nc, s.tel)
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
 
