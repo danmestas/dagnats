@@ -53,7 +53,7 @@ func NewSubjectTrigger(nc *nats.Conn, def TriggerDef) (*SubjectTrigger, error) {
 	if def.Enabled {
 		sub, err := nc.Subscribe(def.Subject.Subject, trigger.handleMessage)
 		if err != nil {
-			return nil, fmt.Errorf("Subscribe %q: %w", def.Subject.Subject, err)
+			return nil, fmt.Errorf("subscribe %q: %w", def.Subject.Subject, err)
 		}
 		trigger.sub = sub
 	}

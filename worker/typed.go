@@ -38,8 +38,5 @@ func Typed[I, O any](fn TypedHandlerFunc[I, O]) HandlerFunc {
 		}
 		return ctx.Complete(data)
 	}
-	if handler == nil {
-		panic("Typed: constructed handler must not be nil")
-	}
 	return handler
 }

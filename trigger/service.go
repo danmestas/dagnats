@@ -176,7 +176,7 @@ func (ts *TriggerService) loadAllTriggers() error {
 
 	keys, err := ts.triggerKV.Keys()
 	if err != nil && err != nats.ErrNoKeysFound {
-		return fmt.Errorf("Keys: %w", err)
+		return fmt.Errorf("keys: %w", err)
 	}
 
 	loaded := 0

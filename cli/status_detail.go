@@ -361,10 +361,6 @@ func buildSortedMetrics(
 	if byWorkflow == nil {
 		panic("buildSortedMetrics: byWorkflow must not be nil")
 	}
-	if len(byWorkflow) < 0 {
-		panic("buildSortedMetrics: impossible negative length")
-	}
-
 	metrics := make([]workflowMetric, 0, len(byWorkflow))
 	for name, acc := range byWorkflow {
 		m := workflowMetric{
