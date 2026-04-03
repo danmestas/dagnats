@@ -38,7 +38,6 @@ func ParallelGet(
 	g.SetLimit(limit)
 
 	for i, key := range keys {
-		i, key := i, key
 		g.Go(func() error {
 			entry, err := kv.Get(key)
 			if err != nil {

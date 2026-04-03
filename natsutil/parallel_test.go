@@ -73,9 +73,15 @@ func TestParallelGetSkipsDeletedKeys(t *testing.T) {
 		t.Fatalf("CreateKeyValue: %v", err)
 	}
 
-	kv.Put("exists", []byte("data"))
-	kv.Put("gone", []byte("data"))
-	kv.Delete("gone")
+	if _, err := kv.Put("exists", []byte("data")); err != nil {
+		t.Fatalf("Put exists: %v", err)
+	}
+	if _, err := kv.Put("gone", []byte("data")); err != nil {
+		t.Fatalf("Put gone: %v", err)
+	}
+	if err := kv.Delete("gone"); err != nil {
+		t.Fatalf("Delete gone: %v", err)
+	}
 
 	entries, err := ParallelGet(
 		kv, []string{"exists", "gone"}, 8,
