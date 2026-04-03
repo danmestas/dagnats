@@ -62,6 +62,8 @@ func (s *Server) Run() error {
 		panic("Run: DataDir is empty")
 	}
 
+	s.running.Store(true)
+
 	if err := os.MkdirAll(s.cfg.DataDir, 0755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
@@ -143,6 +145,29 @@ func (s *Server) startComponents() error {
 		return fmt.Errorf("start trigger service: %w", err)
 	}
 	printStep(os.Stderr, "trigger service started")
+
+	// Materialize embedded workers (after streams & KV exist)
+	for _, shim := range s.workerShims {
+		var opts []worker.WorkerOption
+		if len(shim.groups) > 0 {
+			opts = append(
+				opts, worker.WithGroups(shim.groups...),
+			)
+		}
+		w := worker.NewWorker(s.nc, s.tel, opts...)
+		for _, reg := range shim.registrations {
+			w.Handle(reg.taskType, reg.handler)
+		}
+		if len(shim.registrations) > 0 {
+			w.Start()
+			s.workers = append(s.workers, w)
+		}
+		shim.started = true
+	}
+	if len(s.workers) > 0 {
+		printStep(os.Stderr, "embedded workers started")
+	}
+	s.workerShims = nil // no ambiguous stale state
 
 	return nil
 }
@@ -260,6 +285,16 @@ func (s *Server) shutdown() error {
 		printStep(os.Stderr, "stopping triggers...")
 		if s.trig != nil {
 			s.trig.Stop()
+		}
+		// Stop embedded workers before orchestrator so
+		// in-flight tasks can publish completion events.
+		for _, w := range s.workers {
+			w.Stop()
+		}
+		if len(s.workers) > 0 {
+			printStep(
+				os.Stderr, "embedded workers stopped",
+			)
 		}
 		printStep(os.Stderr, "stopping orchestrator...")
 		if s.orch != nil {
