@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -418,14 +419,19 @@ func (o *Orchestrator) findOldestPendingRun(
 		return "", false, fmt.Errorf("list run keys: %w", err)
 	}
 
+	entries, err := natsutil.ParallelGet(
+		o.store.kv, keys, natsutil.DefaultParallelism,
+	)
+	if err != nil {
+		return "", false, fmt.Errorf(
+			"parallel get runs: %w", err,
+		)
+	}
+
 	var oldestRun dag.WorkflowRun
 	var foundPending bool
 
-	for _, key := range keys {
-		entry, err := o.store.kv.Get(key)
-		if err != nil {
-			continue
-		}
+	for _, entry := range entries {
 		var run dag.WorkflowRun
 		if err := json.Unmarshal(entry.Value(), &run); err != nil {
 			continue
@@ -436,7 +442,8 @@ func (o *Orchestrator) findOldestPendingRun(
 		if run.Status != dag.RunStatusPending {
 			continue
 		}
-		if !foundPending || run.CreatedAt.Before(oldestRun.CreatedAt) {
+		if !foundPending ||
+			run.CreatedAt.Before(oldestRun.CreatedAt) {
 			oldestRun = run
 			foundPending = true
 		}
