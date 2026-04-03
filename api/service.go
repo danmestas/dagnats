@@ -17,6 +17,7 @@ import (
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/trigger"
 	"github.com/nats-io/nats.go"
 )
@@ -439,15 +440,18 @@ func (s *Service) listWorkflowsInner() ([]dag.WorkflowDef, error) {
 	if err != nil {
 		return nil, err
 	}
-	defs := make([]dag.WorkflowDef, 0, len(keys))
-	for _, key := range keys {
-		entry, err := s.defKV.Get(key)
-		if err != nil {
-			return nil, err
-		}
+
+	entries, err := natsutil.ParallelGet(
+		s.defKV, keys, natsutil.DefaultParallelism,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	defs := make([]dag.WorkflowDef, 0, len(entries))
+	for _, entry := range entries {
 		var def dag.WorkflowDef
-		err = json.Unmarshal(entry.Value(), &def)
-		if err != nil {
+		if err := json.Unmarshal(entry.Value(), &def); err != nil {
 			return nil, err
 		}
 		defs = append(defs, def)
@@ -657,15 +661,18 @@ func (s *Service) listTriggersInner() ([]trigger.TriggerDef, error) {
 	if err != nil {
 		return nil, err
 	}
-	defs := make([]trigger.TriggerDef, 0, len(keys))
-	for _, key := range keys {
-		entry, err := s.triggerKV.Get(key)
-		if err != nil {
-			return nil, err
-		}
+
+	entries, err := natsutil.ParallelGet(
+		s.triggerKV, keys, natsutil.DefaultParallelism,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	defs := make([]trigger.TriggerDef, 0, len(entries))
+	for _, entry := range entries {
 		var def trigger.TriggerDef
-		err = json.Unmarshal(entry.Value(), &def)
-		if err != nil {
+		if err := json.Unmarshal(entry.Value(), &def); err != nil {
 			return nil, err
 		}
 		defs = append(defs, def)
