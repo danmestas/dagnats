@@ -19,9 +19,9 @@ type WorkflowActor struct {
 	runID string
 	def   *dag.WorkflowDef
 	run   *dag.WorkflowRun
-	store *SnapshotStore          // nil in unit tests
-	js    nats.JetStreamContext    // nil in pure unit tests
-	mu    sync.RWMutex            // protects read access to run state
+	store *SnapshotStore        // nil in unit tests
+	js    nats.JetStreamContext // nil in pure unit tests
+	mu    sync.RWMutex          // protects read access to run state
 }
 
 // NewWorkflowActor creates a workflow actor for the given run.
