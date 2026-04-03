@@ -15,9 +15,9 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/engine"
+	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
-	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/trigger"
 	"github.com/nats-io/nats.go"
 )
