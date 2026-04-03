@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/observe/simple"
 	"github.com/danmestas/dagnats/trigger"
+	"github.com/danmestas/dagnats/worker"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
@@ -33,8 +34,11 @@ type Server struct {
 	httpSrv *http.Server
 	tel     *observe.Telemetry
 	telStop func()
-	ready   atomic.Bool
-	stopCh  chan struct{}
+	ready       atomic.Bool
+	stopCh      chan struct{}
+	workerShims []*WorkerShim
+	workers     []*worker.Worker
+	running     atomic.Bool
 }
 
 // New creates a Server with the given config. Panics if DataDir is empty.
