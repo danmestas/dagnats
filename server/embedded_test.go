@@ -171,8 +171,15 @@ func TestEmbeddedWorker_MultipleShims(t *testing.T) {
 	EmbeddedWorker(srv)
 	EmbeddedWorker(srv)
 
+	// Positive: both shims tracked
 	if len(srv.workerShims) != 2 {
 		t.Fatalf("workerShims = %d, want 2",
 			len(srv.workerShims))
+	}
+
+	// Negative: no workers created yet
+	if len(srv.workers) != 0 {
+		t.Errorf("workers = %d, want 0 before Run()",
+			len(srv.workers))
 	}
 }
