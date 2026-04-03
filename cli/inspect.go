@@ -31,19 +31,27 @@ func runInspectCmd(args []string) {
 
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
+	hasLast := HasLastFlag(args)
+	args = StripLastFlag(args)
 
-	if len(args) != 1 {
+	var rawID string
+	if len(args) == 1 {
+		rawID = args[0]
+	} else if !hasLast {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run inspect <run-id> [--json]")
+			"Usage: dagnats run inspect"+
+				" <run-id> [--last] [--json]")
 		os.Exit(1)
-	}
-	runID := args[0]
-	if runID == "" {
-		panic("runInspectCmd: runID must not be empty")
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
+
+	runID, err := ResolveRunID(svc, rawID, hasLast)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve run: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
@@ -173,7 +181,12 @@ func printFailureEvents(
 			step = "-"
 		}
 		ts := evt.Timestamp.Format("15:04:05")
-		fmt.Printf("  %s  %-24s %s\n", ts, ColorRed(evt.Type), step)
+		fmt.Printf("  %s  %-24s %s\n",
+			ts, ColorRed(evt.Type), step)
+		traceID := extractTraceID(evt.TraceParent)
+		if traceID != "" {
+			fmt.Printf("          trace: %s\n", traceID)
+		}
 		if evt.Data != "" && evt.Data != "-" {
 			fmt.Printf("          %s\n", evt.Data)
 		}

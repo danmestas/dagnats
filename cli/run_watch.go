@@ -15,22 +15,30 @@ func runWatchCmd(args []string) {
 		panic("runWatchCmd: args must not be nil")
 	}
 
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run watch <run-id>")
-		os.Exit(1)
-	}
+	hasLast := HasLastFlag(args)
+	args = StripLastFlag(args)
 
-	runID := args[0]
-	if runID == "" {
-		panic("runWatchCmd: runID must not be empty")
+	var rawID string
+	if len(args) == 1 {
+		rawID = args[0]
+	} else if !hasLast {
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run watch"+
+				" <run-id> [--last]")
+		os.Exit(1)
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
+	runID, err := ResolveRunID(svc, rawID, hasLast)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve run: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Verify the run exists before starting the watch loop.
-	_, err := svc.GetRun(context.Background(), runID)
+	_, err = svc.GetRun(context.Background(), runID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
 		os.Exit(1)
