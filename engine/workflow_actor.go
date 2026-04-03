@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/danmestas/dagnats/actor"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 )
 
 // WorkflowActor manages one workflow run as a supervised actor.
@@ -17,14 +19,17 @@ type WorkflowActor struct {
 	runID string
 	def   *dag.WorkflowDef
 	run   *dag.WorkflowRun
-	store *SnapshotStore // nil in unit tests
-	mu    sync.RWMutex   // protects read access to run state
+	store *SnapshotStore          // nil in unit tests
+	js    nats.JetStreamContext    // nil in pure unit tests
+	mu    sync.RWMutex            // protects read access to run state
 }
 
 // NewWorkflowActor creates a workflow actor for the given run.
-// store may be nil for testing without NATS.
+// store and js may be nil for testing without NATS.
 func NewWorkflowActor(
-	runID string, store *SnapshotStore,
+	runID string,
+	store *SnapshotStore,
+	js nats.JetStreamContext,
 ) *WorkflowActor {
 	if runID == "" {
 		panic("NewWorkflowActor: runID must not be empty")
@@ -32,6 +37,7 @@ func NewWorkflowActor(
 	return &WorkflowActor{
 		runID: runID,
 		store: store,
+		js:    js,
 	}
 }
 
@@ -91,20 +97,33 @@ func (wa *WorkflowActor) handleStarted(
 	}
 	run := dag.NewWorkflowRun(wfDef, wa.runID)
 	run.Status = dag.RunStatusRunning
+	if wfDef.Timeout > 0 {
+		deadline := time.Now().Add(wfDef.Timeout)
+		run.Deadline = &deadline
+	}
 
 	wa.mu.Lock()
 	wa.def = &wfDef
 	wa.run = &run
 	wa.mu.Unlock()
 
-	// Resolve and queue ready steps
-	completed := completedSet(run)
-	queued := queuedSet(run)
-	ready := dag.ResolveReady(wfDef, completed, queued)
-	for _, step := range ready {
-		state := run.Steps[step.ID]
-		state.Status = dag.StepStatusQueued
-		run.Steps[step.ID] = state
+	// Enqueue ready steps and publish tasks
+	if wa.js != nil {
+		if err := enqueueReadySteps(
+			wa.js, wfDef, wa.run,
+		); err != nil {
+			return err
+		}
+	} else {
+		// Fallback for unit tests without NATS: mark queued only
+		completed := completedSet(run)
+		queued := queuedSet(run)
+		ready := dag.ResolveReady(wfDef, completed, queued)
+		for _, step := range ready {
+			state := run.Steps[step.ID]
+			state.Status = dag.StepStatusQueued
+			run.Steps[step.ID] = state
+		}
 	}
 
 	return wa.saveIfStore()
@@ -122,23 +141,35 @@ func (wa *WorkflowActor) handleStepCompleted(
 	state.Status = dag.StepStatusCompleted
 	state.Output = evt.Payload
 	wa.run.Steps[evt.StepID] = state
-
-	completed := completedSet(*wa.run)
-	if dag.IsComplete(*wa.def, completed) {
-		wa.run.Status = dag.RunStatusCompleted
-		wa.mu.Unlock()
-		return wa.saveIfStore()
-	}
-
-	// Resolve newly ready steps
-	queued := queuedSet(*wa.run)
-	ready := dag.ResolveReady(*wa.def, completed, queued)
-	for _, step := range ready {
-		s := wa.run.Steps[step.ID]
-		s.Status = dag.StepStatusQueued
-		wa.run.Steps[step.ID] = s
-	}
 	wa.mu.Unlock()
+
+	if wa.js != nil {
+		if err := enqueueReadySteps(
+			wa.js, *wa.def, wa.run,
+		); err != nil {
+			return err
+		}
+		if wa.run.Status == dag.RunStatusCompleted {
+			return wa.saveIfStore()
+		}
+	} else {
+		// Fallback for unit tests without NATS
+		wa.mu.Lock()
+		completed := completedSet(*wa.run)
+		if dag.IsComplete(*wa.def, completed) {
+			wa.run.Status = dag.RunStatusCompleted
+			wa.mu.Unlock()
+			return wa.saveIfStore()
+		}
+		queued := queuedSet(*wa.run)
+		ready := dag.ResolveReady(*wa.def, completed, queued)
+		for _, step := range ready {
+			s := wa.run.Steps[step.ID]
+			s.Status = dag.StepStatusQueued
+			wa.run.Steps[step.ID] = s
+		}
+		wa.mu.Unlock()
+	}
 
 	return wa.saveIfStore()
 }
@@ -146,19 +177,36 @@ func (wa *WorkflowActor) handleStepCompleted(
 func (wa *WorkflowActor) handleStepFailed(
 	evt protocol.Event,
 ) error {
-	if wa.run == nil {
+	if wa.run == nil || wa.def == nil {
 		return fmt.Errorf("workflow not started")
 	}
 
 	wa.mu.Lock()
 	state := wa.run.Steps[evt.StepID]
-	state.Status = dag.StepStatusFailed
+	state.Attempts++
 	if evt.Payload != nil {
 		state.Error = string(evt.Payload)
 	}
+
+	stepDef, _ := findStepDef(*wa.def, evt.StepID)
+	policy := dag.ResolveRetryPolicy(*wa.def, stepDef)
+
+	if policy != nil && state.Attempts <= policy.MaxAttempts {
+		wa.run.Steps[evt.StepID] = state
+		wa.mu.Unlock()
+		return wa.saveIfStore()
+	}
+
+	state.Status = dag.StepStatusFailed
 	wa.run.Steps[evt.StepID] = state
 	wa.run.Status = dag.RunStatusFailed
 	wa.mu.Unlock()
+
+	if wa.js != nil {
+		publishWorkflowEvent(
+			wa.js, protocol.EventWorkflowFailed, wa.runID,
+		)
+	}
 
 	return wa.saveIfStore()
 }
@@ -170,11 +218,56 @@ func (wa *WorkflowActor) handleStepContinue(
 		return fmt.Errorf("workflow not started")
 	}
 
+	stepDef, found := findStepDef(*wa.def, evt.StepID)
+	if !found {
+		return fmt.Errorf(
+			"step %q not found in workflow def", evt.StepID,
+		)
+	}
+
 	wa.mu.Lock()
 	state := wa.run.Steps[evt.StepID]
 	state.Iterations++
+	if state.Iterations == 1 {
+		state.LoopStartedAt = time.Now().UTC()
+	}
+
+	if exceeded, reason := checkLoopBounds(
+		stepDef, state,
+	); exceeded {
+		state.Status = dag.StepStatusFailed
+		state.Error = reason
+		wa.run.Steps[evt.StepID] = state
+		wa.run.Status = dag.RunStatusFailed
+		wa.mu.Unlock()
+		if wa.js != nil {
+			publishWorkflowEvent(
+				wa.js, protocol.EventWorkflowFailed,
+				wa.runID,
+			)
+		}
+		return wa.saveIfStore()
+	}
+
 	wa.run.Steps[evt.StepID] = state
 	wa.mu.Unlock()
+
+	if wa.js != nil {
+		input, err := dag.ResolveInput(
+			stepDef, wa.run.Steps,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"resolve input for %q: %w", stepDef.ID, err,
+			)
+		}
+		if err := publishIterationTask(
+			wa.js, wa.runID, stepDef,
+			input, state.Iterations,
+		); err != nil {
+			return err
+		}
+	}
 
 	return wa.saveIfStore()
 }

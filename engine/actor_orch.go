@@ -112,7 +112,7 @@ func (ao *ActorOrchestrator) ensureActor(runID string) {
 		return
 	}
 
-	wa := NewWorkflowActor(runID, ao.store)
+	wa := NewWorkflowActor(runID, ao.store, ao.js)
 	addr := actor.Address{Type: "workflow", ID: runID}
 
 	err := ao.rt.Spawn(addr, wa,
