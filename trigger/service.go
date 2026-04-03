@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/natsutil"
 	"github.com/nats-io/nats.go"
 )
 
@@ -182,27 +183,30 @@ func (ts *TriggerService) loadAllTriggers() error {
 	if err != nil && err != nats.ErrNoKeysFound {
 		return fmt.Errorf("keys: %w", err)
 	}
+	if len(keys) == 0 {
+		return nil
+	}
 
-	loaded := 0
-	for _, key := range keys {
-		if loaded >= maxActiveTriggers {
-			break
-		}
+	// Cap to maxActiveTriggers
+	if len(keys) > maxActiveTriggers {
+		keys = keys[:maxActiveTriggers]
+	}
 
-		entry, err := ts.triggerKV.Get(key)
-		if err != nil {
-			continue
-		}
+	entries, err := natsutil.ParallelGet(
+		ts.triggerKV, keys, natsutil.DefaultParallelism,
+	)
+	if err != nil {
+		return fmt.Errorf("ParallelGet: %w", err)
+	}
 
+	for _, entry := range entries {
 		var def TriggerDef
 		if err := json.Unmarshal(entry.Value(), &def); err != nil {
 			continue
 		}
-
 		if err := ts.addTrigger(def); err != nil {
 			continue
 		}
-		loaded++
 	}
 
 	return nil
