@@ -60,12 +60,9 @@ go test ./e2e/features/...                               # all topologies
 
 All five servers run in-process using the `nats-server` Go library (already a dependency). Random ports, zero external dependencies. Tests connect through the leaf node — the full routing path is exercised: leaf → Cluster A → gateway → Cluster B.
 
-Port allocation: 5 client + 4 cluster route + 4 gateway = 13 random ports.
+Port allocation: 5 client + 4 cluster route + 4 gateway + 2 leaf listener = 15 random ports.
 
-JetStream domains:
-- Cluster A: `"cluster-a"`, R2 replication
-- Cluster B: `"cluster-b"`, R2 replication
-- Leaf: no JetStream, proxies through Cluster A
+JetStream: enabled on both clusters with no domain isolation (plain `nc.JetStream()` works from the leaf without domain prefixes). Leaf has no JetStream of its own — proxies through Cluster A.
 
 Per-suite lifecycle. ~45s for all feature tests.
 
