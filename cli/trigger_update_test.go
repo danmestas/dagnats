@@ -246,4 +246,3 @@ func TestTriggerUpdateJSON(t *testing.T) {
 		t.Fatal("JSON mode should not contain human text")
 	}
 }
-
