@@ -233,3 +233,111 @@ another_unknown: 12345
 		t.Errorf("Unknown keys caused error: %v", err)
 	}
 }
+
+func TestLoadConfigFile_ParsesWorkerEntries(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "dagnats.yaml")
+	content := "worker.run-tests.exec: go test ./...\n" +
+		"worker.notify.http: https://example.com/hook\n" +
+		"worker.check.http: https://example.com/check\n" +
+		"worker.check.http_method: PUT\n"
+	if err := os.WriteFile(
+		cfgPath, []byte(content), 0644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	if err := loadConfigFile(cfgPath, &cfg); err != nil {
+		t.Fatalf("loadConfigFile: %v", err)
+	}
+
+	// Positive: 3 workers parsed
+	if len(cfg.Workers) != 3 {
+		t.Fatalf("Workers = %d, want 3",
+			len(cfg.Workers))
+	}
+
+	// Positive: exec worker correct
+	found := false
+	for _, w := range cfg.Workers {
+		if w.Task == "run-tests" {
+			found = true
+			if w.Exec != "go test ./..." {
+				t.Errorf("Exec = %q, want %q",
+					w.Exec, "go test ./...")
+			}
+			if w.HTTP != "" {
+				t.Errorf("HTTP = %q, want empty",
+					w.HTTP)
+			}
+		}
+	}
+	if !found {
+		t.Error("worker 'run-tests' not found")
+	}
+
+	// Positive: http worker with method
+	for _, w := range cfg.Workers {
+		if w.Task == "check" {
+			if w.HTTPMethod != "PUT" {
+				t.Errorf("HTTPMethod = %q, want %q",
+					w.HTTPMethod, "PUT")
+			}
+		}
+	}
+}
+
+func TestValidateWorkerConfigs_RejectsDuplicates(
+	t *testing.T,
+) {
+	workers := []WorkerConfig{
+		{Task: "dup", Exec: "echo a"},
+		{Task: "dup", Exec: "echo b"},
+	}
+	err := validateWorkerConfigs(workers)
+	// Positive: error returned
+	if err == nil {
+		t.Fatal("expected error for duplicates")
+	}
+	// Positive: error mentions duplicate
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("error = %q, want 'duplicate'",
+			err.Error())
+	}
+}
+
+func TestValidateWorkerConfigs_RejectsBothExecAndHTTP(
+	t *testing.T,
+) {
+	workers := []WorkerConfig{
+		{Task: "bad", Exec: "echo", HTTP: "http://x"},
+	}
+	err := validateWorkerConfigs(workers)
+	// Positive: error returned
+	if err == nil {
+		t.Fatal("expected error for both exec and http")
+	}
+	// Negative: no panic
+	if strings.Contains(err.Error(), "panic") {
+		t.Error("unexpected panic in error message")
+	}
+}
+
+func TestValidateWorkerConfigs_RejectsNeitherExecNorHTTP(
+	t *testing.T,
+) {
+	workers := []WorkerConfig{
+		{Task: "empty"},
+	}
+	err := validateWorkerConfigs(workers)
+	// Positive: error returned
+	if err == nil {
+		t.Fatal("expected error for neither exec nor http")
+	}
+	// Positive: error mentions must have
+	if !strings.Contains(err.Error(), "must have") {
+		t.Errorf("error = %q, want 'must have'",
+			err.Error())
+	}
+}

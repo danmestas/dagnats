@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/observe/simple"
 	"github.com/danmestas/dagnats/trigger"
+	"github.com/danmestas/dagnats/worker"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
@@ -24,17 +25,20 @@ const shutdownDeadline = 15 * time.Second
 
 // Server is the all-in-one DagNats server lifecycle manager.
 type Server struct {
-	cfg     Config
-	ns      *natsserver.Server
-	nc      *nats.Conn
-	orch    *engine.ActorOrchestrator
-	svc     *api.Service
-	trig    *trigger.TriggerService
-	httpSrv *http.Server
-	tel     *observe.Telemetry
-	telStop func()
-	ready   atomic.Bool
-	stopCh  chan struct{}
+	cfg         Config
+	ns          *natsserver.Server
+	nc          *nats.Conn
+	orch        *engine.Orchestrator
+	svc         *api.Service
+	trig        *trigger.TriggerService
+	httpSrv     *http.Server
+	tel         *observe.Telemetry
+	telStop     func()
+	ready       atomic.Bool
+	stopCh      chan struct{}
+	workerShims []*WorkerShim
+	workers     []*worker.Worker
+	running     atomic.Bool
 }
 
 // New creates a Server with the given config. Panics if DataDir is empty.
@@ -57,6 +61,8 @@ func (s *Server) Run() error {
 	if s.cfg.DataDir == "" {
 		panic("Run: DataDir is empty")
 	}
+
+	s.running.Store(true)
 
 	if err := os.MkdirAll(s.cfg.DataDir, 0755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
@@ -117,7 +123,7 @@ func (s *Server) startComponents() error {
 
 	s.tel, s.telStop = simple.SetupTelemetry(s.nc)
 	s.svc = api.NewService(s.nc, s.tel)
-	s.orch = engine.NewActorOrchestrator(s.nc, s.tel)
+	s.orch = engine.NewOrchestrator(s.nc, s.tel)
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
 
@@ -139,6 +145,29 @@ func (s *Server) startComponents() error {
 		return fmt.Errorf("start trigger service: %w", err)
 	}
 	printStep(os.Stderr, "trigger service started")
+
+	// Materialize embedded workers (after streams & KV exist)
+	for _, shim := range s.workerShims {
+		var opts []worker.WorkerOption
+		if len(shim.groups) > 0 {
+			opts = append(
+				opts, worker.WithGroups(shim.groups...),
+			)
+		}
+		w := worker.NewWorker(s.nc, s.tel, opts...)
+		for _, reg := range shim.registrations {
+			w.Handle(reg.taskType, reg.handler)
+		}
+		if len(shim.registrations) > 0 {
+			w.Start()
+			s.workers = append(s.workers, w)
+		}
+		shim.started = true
+	}
+	if len(s.workers) > 0 {
+		printStep(os.Stderr, "embedded workers started")
+	}
+	s.workerShims = nil // no ambiguous stale state
 
 	return nil
 }
@@ -256,6 +285,16 @@ func (s *Server) shutdown() error {
 		printStep(os.Stderr, "stopping triggers...")
 		if s.trig != nil {
 			s.trig.Stop()
+		}
+		// Stop embedded workers before orchestrator so
+		// in-flight tasks can publish completion events.
+		for _, w := range s.workers {
+			w.Stop()
+		}
+		if len(s.workers) > 0 {
+			printStep(
+				os.Stderr, "embedded workers stopped",
+			)
 		}
 		printStep(os.Stderr, "stopping orchestrator...")
 		if s.orch != nil {

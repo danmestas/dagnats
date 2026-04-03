@@ -16,16 +16,26 @@ const (
 	defaultNATSPort      = 4222
 	defaultMaxStoreBytes = 10 << 30 // 10 GiB
 	maxLeafRemotes       = 10
-	maxConfigFileLines   = 100
+	maxConfigFileLines   = 300
+	maxWorkerConfigs     = 50
 )
+
+// WorkerConfig defines a config-driven embedded worker handler.
+type WorkerConfig struct {
+	Task       string
+	Exec       string
+	HTTP       string
+	HTTPMethod string // default: POST
+}
 
 // Config holds all server configuration.
 type Config struct {
-	DataDir       string   `json:"data_dir"`
-	HTTPAddr      string   `json:"http_addr"`
-	NATSPort      int      `json:"nats_port"`
-	LeafRemotes   []string `json:"leaf_remotes"`
-	MaxStoreBytes int64    `json:"max_store_bytes"`
+	DataDir       string         `json:"data_dir"`
+	HTTPAddr      string         `json:"http_addr"`
+	NATSPort      int            `json:"nats_port"`
+	LeafRemotes   []string       `json:"leaf_remotes"`
+	MaxStoreBytes int64          `json:"max_store_bytes"`
+	Workers       []WorkerConfig `json:"workers"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.
@@ -85,6 +95,12 @@ func ConfigFromEnv() Config {
 	// Apply env var overrides
 	applyEnvOverrides(&cfg)
 
+	if len(cfg.Workers) > 0 {
+		if err := validateWorkerConfigs(cfg.Workers); err != nil {
+			log.Fatalf("invalid worker config: %v", err)
+		}
+	}
+
 	if cfg.DataDir == "" {
 		panic("DataDir is empty after config resolution")
 	}
@@ -122,6 +138,30 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("DAGNATS_MAX_STORE_BYTES"); val != "" {
 		if maxBytes, err := strconv.ParseInt(val, 10, 64); err == nil {
 			cfg.MaxStoreBytes = maxBytes
+		}
+	}
+
+	// Override worker configs from env vars
+	for i := range cfg.Workers {
+		envTask := strings.ToUpper(
+			strings.ReplaceAll(
+				cfg.Workers[i].Task, "-", "_",
+			),
+		)
+		if val := os.Getenv(
+			"DAGNATS_WORKER_" + envTask + "_EXEC",
+		); val != "" {
+			cfg.Workers[i].Exec = val
+		}
+		if val := os.Getenv(
+			"DAGNATS_WORKER_" + envTask + "_HTTP",
+		); val != "" {
+			cfg.Workers[i].HTTP = val
+		}
+		if val := os.Getenv(
+			"DAGNATS_WORKER_" + envTask + "_HTTP_METHOD",
+		); val != "" {
+			cfg.Workers[i].HTTPMethod = val
 		}
 	}
 }
@@ -217,8 +257,117 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		}
 		cfg.MaxStoreBytes = maxBytes
 	default:
+		if strings.HasPrefix(key, "worker.") {
+			return applyWorkerConfigValue(key, val, cfg)
+		}
 		return fmt.Errorf("unknown config key: %s", key)
 	}
 
+	return nil
+}
+
+// applyWorkerConfigValue parses a worker.{task}.{field} key.
+func applyWorkerConfigValue(
+	key, val string, cfg *Config,
+) error {
+	if cfg == nil {
+		panic("applyWorkerConfigValue: cfg is nil")
+	}
+	if key == "" {
+		panic("applyWorkerConfigValue: key is empty")
+	}
+
+	parts := strings.SplitN(key, ".", 3)
+	if len(parts) != 3 || parts[0] != "worker" {
+		return fmt.Errorf(
+			"invalid worker key format: %s", key,
+		)
+	}
+
+	task := parts[1]
+	field := parts[2]
+
+	if task == "" {
+		return fmt.Errorf(
+			"worker key has empty task: %s", key,
+		)
+	}
+
+	idx := -1
+	for i := range cfg.Workers {
+		if cfg.Workers[i].Task == task {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		if len(cfg.Workers) >= maxWorkerConfigs {
+			return fmt.Errorf(
+				"max worker configs (%d) exceeded",
+				maxWorkerConfigs,
+			)
+		}
+		cfg.Workers = append(
+			cfg.Workers, WorkerConfig{Task: task},
+		)
+		idx = len(cfg.Workers) - 1
+	}
+
+	switch field {
+	case "exec":
+		cfg.Workers[idx].Exec = val
+	case "http":
+		cfg.Workers[idx].HTTP = val
+	case "http_method":
+		cfg.Workers[idx].HTTPMethod = val
+	default:
+		return fmt.Errorf(
+			"unknown worker field: %s", field,
+		)
+	}
+
+	return nil
+}
+
+// validateWorkerConfigs checks worker config consistency.
+func validateWorkerConfigs(
+	workers []WorkerConfig,
+) error {
+	if len(workers) > maxWorkerConfigs {
+		panic(
+			"validateWorkerConfigs: exceeds max bound",
+		)
+	}
+
+	seen := make(map[string]bool, len(workers))
+	for _, w := range workers {
+		if w.Task == "" {
+			return fmt.Errorf(
+				"worker config: task name is empty",
+			)
+		}
+		if seen[w.Task] {
+			return fmt.Errorf(
+				"worker config: duplicate task %q",
+				w.Task,
+			)
+		}
+		seen[w.Task] = true
+
+		hasExec := w.Exec != ""
+		hasHTTP := w.HTTP != ""
+		if hasExec && hasHTTP {
+			return fmt.Errorf(
+				"worker %q: both exec and http set",
+				w.Task,
+			)
+		}
+		if !hasExec && !hasHTTP {
+			return fmt.Errorf(
+				"worker %q: must have exec or http",
+				w.Task,
+			)
+		}
+	}
 	return nil
 }
