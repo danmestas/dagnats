@@ -25,15 +25,15 @@ const shutdownDeadline = 15 * time.Second
 
 // Server is the all-in-one DagNats server lifecycle manager.
 type Server struct {
-	cfg     Config
-	ns      *natsserver.Server
-	nc      *nats.Conn
-	orch    *engine.Orchestrator
-	svc     *api.Service
-	trig    *trigger.TriggerService
-	httpSrv *http.Server
-	tel     *observe.Telemetry
-	telStop func()
+	cfg         Config
+	ns          *natsserver.Server
+	nc          *nats.Conn
+	orch        *engine.Orchestrator
+	svc         *api.Service
+	trig        *trigger.TriggerService
+	httpSrv     *http.Server
+	tel         *observe.Telemetry
+	telStop     func()
 	ready       atomic.Bool
 	stopCh      chan struct{}
 	workerShims []*WorkerShim
