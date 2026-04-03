@@ -66,9 +66,20 @@ func runConfigShowCmd(args []string) {
 		remotesDisplay = strings.Join(cfg.LeafRemotes, ", ")
 	}
 
-	fmt.Printf("data_dir:        %s\n", cfg.DataDir)
-	fmt.Printf("http_addr:       %s\n", cfg.HTTPAddr)
-	fmt.Printf("nats_port:       %d\n", cfg.NATSPort)
-	fmt.Printf("leaf_remotes:    %s\n", remotesDisplay)
-	fmt.Printf("max_store_bytes: %d\n", cfg.MaxStoreBytes)
+	credsDisplay := "(none)"
+	if cfg.LeafCredentials != "" {
+		credsDisplay = cfg.LeafCredentials
+	}
+	monitorDisplay := "(disabled)"
+	if cfg.MonitorPort > 0 {
+		monitorDisplay = fmt.Sprintf(":%d", cfg.MonitorPort)
+	}
+
+	fmt.Printf("data_dir:         %s\n", cfg.DataDir)
+	fmt.Printf("http_addr:        %s\n", cfg.HTTPAddr)
+	fmt.Printf("nats_port:        %d\n", cfg.NATSPort)
+	fmt.Printf("monitor_port:     %s\n", monitorDisplay)
+	fmt.Printf("leaf_remotes:     %s\n", remotesDisplay)
+	fmt.Printf("leaf_credentials: %s\n", credsDisplay)
+	fmt.Printf("max_store_bytes:  %d\n", cfg.MaxStoreBytes)
 }

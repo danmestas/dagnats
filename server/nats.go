@@ -33,6 +33,7 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 	opts := &natsserver.Options{
 		Host:              host,
 		Port:              cfg.NATSPort,
+		HTTPPort:          cfg.MonitorPort,
 		JetStream:         true,
 		StoreDir:          filepath.Join(cfg.DataDir, "jetstream"),
 		JetStreamMaxStore: cfg.MaxStoreBytes,
@@ -48,9 +49,13 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 			if err != nil {
 				return nil, fmt.Errorf("parse leaf remote %q: %w", remote, err)
 			}
-			remotes = append(remotes, &natsserver.RemoteLeafOpts{
+			remote := &natsserver.RemoteLeafOpts{
 				URLs: []*url.URL{remoteURL},
-			})
+			}
+			if cfg.LeafCredentials != "" {
+				remote.Credentials = cfg.LeafCredentials
+			}
+			remotes = append(remotes, remote)
 		}
 		opts.LeafNode = natsserver.LeafNodeOpts{
 			Remotes: remotes,
