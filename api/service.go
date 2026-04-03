@@ -15,6 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/engine"
+	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/trigger"
@@ -439,15 +440,18 @@ func (s *Service) listWorkflowsInner() ([]dag.WorkflowDef, error) {
 	if err != nil {
 		return nil, err
 	}
-	defs := make([]dag.WorkflowDef, 0, len(keys))
-	for _, key := range keys {
-		entry, err := s.defKV.Get(key)
-		if err != nil {
-			return nil, err
-		}
+
+	entries, err := natsutil.ParallelGet(
+		s.defKV, keys, natsutil.DefaultParallelism,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	defs := make([]dag.WorkflowDef, 0, len(entries))
+	for _, entry := range entries {
 		var def dag.WorkflowDef
-		err = json.Unmarshal(entry.Value(), &def)
-		if err != nil {
+		if err := json.Unmarshal(entry.Value(), &def); err != nil {
 			return nil, err
 		}
 		defs = append(defs, def)
@@ -657,15 +661,18 @@ func (s *Service) listTriggersInner() ([]trigger.TriggerDef, error) {
 	if err != nil {
 		return nil, err
 	}
-	defs := make([]trigger.TriggerDef, 0, len(keys))
-	for _, key := range keys {
-		entry, err := s.triggerKV.Get(key)
-		if err != nil {
-			return nil, err
-		}
+
+	entries, err := natsutil.ParallelGet(
+		s.triggerKV, keys, natsutil.DefaultParallelism,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	defs := make([]trigger.TriggerDef, 0, len(entries))
+	for _, entry := range entries {
 		var def trigger.TriggerDef
-		err = json.Unmarshal(entry.Value(), &def)
-		if err != nil {
+		if err := json.Unmarshal(entry.Value(), &def); err != nil {
 			return nil, err
 		}
 		defs = append(defs, def)
@@ -928,19 +935,17 @@ func (s *Service) listDeadLettersInner(
 		return nil, err
 	}
 	defer sub.Unsubscribe() //nolint:errcheck
-	letters := make([]DeadLetter, 0, limit)
-	for i := 0; i < limit; i++ {
-		msg, err := sub.NextMsg(100 * time.Millisecond)
-		if err != nil {
-			break
-		}
+
+	deadline := time.Now().Add(10 * time.Second)
+	msgs := fetchMessages(sub, limit, deadline)
+	letters := make([]DeadLetter, 0, len(msgs))
+	for _, msg := range msgs {
 		meta, metaErr := msg.Metadata()
 		if metaErr != nil {
 			continue
 		}
 		var payload protocol.TaskPayload
-		unmarshalErr := json.Unmarshal(msg.Data, &payload)
-		if unmarshalErr != nil {
+		if json.Unmarshal(msg.Data, &payload) != nil {
 			continue
 		}
 		letters = append(letters, DeadLetter{
@@ -954,6 +959,38 @@ func (s *Service) listDeadLettersInner(
 		})
 	}
 	return letters, nil
+}
+
+// fetchMessages drains up to limit messages from sub within the
+// given total deadline. Returns on first NextMsg error (timeout or
+// stream exhaustion). Owns the timeout algebra so callers don't.
+func fetchMessages(
+	sub *nats.Subscription, limit int, deadline time.Time,
+) []*nats.Msg {
+	if sub == nil {
+		panic("fetchMessages: sub must not be nil")
+	}
+	if limit <= 0 {
+		panic("fetchMessages: limit must be positive")
+	}
+	const perMsg = 500 * time.Millisecond
+	msgs := make([]*nats.Msg, 0, limit)
+	for i := 0; i < limit; i++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		timeout := perMsg
+		if remaining < timeout {
+			timeout = remaining
+		}
+		msg, err := sub.NextMsg(timeout)
+		if err != nil {
+			break
+		}
+		msgs = append(msgs, msg)
+	}
+	return msgs
 }
 
 // extractTaskFromSubject extracts the task name from a subject.
@@ -1138,7 +1175,6 @@ func (s *Service) listRunEventsInner(
 		panic("listRunEventsInner: js must not be nil")
 	}
 	const maxEvents = 500
-	const fetchTimeoutMs = 2000
 	const dataTruncateLen = 200
 
 	sub, err := s.js.SubscribeSync(
@@ -1151,15 +1187,12 @@ func (s *Service) listRunEventsInner(
 	}
 	defer sub.Unsubscribe() //nolint:errcheck
 
-	events := make([]RunEvent, 0, maxEvents)
-	for i := 0; i < maxEvents; i++ {
-		msg, err := sub.NextMsg(fetchTimeoutMs * time.Millisecond)
-		if err != nil {
-			break
-		}
+	deadline := time.Now().Add(10 * time.Second)
+	msgs := fetchMessages(sub, maxEvents, deadline)
+	events := make([]RunEvent, 0, len(msgs))
+	for _, msg := range msgs {
 		var evt protocol.Event
-		err = json.Unmarshal(msg.Data, &evt)
-		if err != nil {
+		if json.Unmarshal(msg.Data, &evt) != nil {
 			continue
 		}
 		dataStr := string(evt.Payload)

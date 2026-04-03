@@ -5,6 +5,7 @@ go 1.25.4
 require (
 	github.com/nats-io/nats-server/v2 v2.12.6
 	github.com/nats-io/nats.go v1.50.0
+	golang.org/x/sync v0.20.0
 )
 
 require (

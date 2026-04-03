@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/sync/errgroup"
 )
 
 // Scheduler evaluates cron triggers and publishes workflow.started events
@@ -76,10 +78,13 @@ func (s *Scheduler) RemoveTrigger(id string) error {
 
 // Tick evaluates all enabled cron triggers at the given time. For each
 // matching trigger, publishes workflow.started with dedup Nats-Msg-Id.
-// Returns first publish error encountered.
+// Triggers are evaluated and fired concurrently.
 func (s *Scheduler) Tick(now time.Time) error {
 	if s.js == nil {
 		panic("Tick: JetStream context is nil")
+	}
+	if s.triggers == nil {
+		panic("Tick: triggers map is nil")
 	}
 
 	s.mu.RLock()
@@ -89,34 +94,37 @@ func (s *Scheduler) Tick(now time.Time) error {
 	}
 	s.mu.RUnlock()
 
+	var g errgroup.Group
 	for _, def := range snapshot {
 		if !def.Enabled || def.Cron == nil {
 			continue
 		}
-
-		shouldFire, err := s.shouldFire(def, now)
-		if err != nil {
-			return fmt.Errorf("shouldFire %q: %w", def.ID, err)
-		}
-		if !shouldFire {
-			continue
-		}
-
-		if err := s.fireWorkflow(def, now); err != nil {
-			return fmt.Errorf("fireWorkflow %q: %w", def.ID, err)
-		}
+		def := def
+		g.Go(func() error {
+			shouldFire, err := s.shouldFire(def, now)
+			if err != nil {
+				return fmt.Errorf("shouldFire %q: %w", def.ID, err)
+			}
+			if !shouldFire {
+				return nil
+			}
+			if err := s.fireWorkflow(def, now); err != nil {
+				return fmt.Errorf("fireWorkflow %q: %w", def.ID, err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
-// Start runs Tick in a loop at the given interval until stopChan closes.
+// Start runs Tick in a loop at the given interval until ctx is cancelled.
 // Blocks until shutdown. Interval should be <= 1 minute for production.
-func (s *Scheduler) Start(interval time.Duration, stopChan <-chan struct{}) {
+func (s *Scheduler) Start(ctx context.Context, interval time.Duration) {
+	if ctx == nil {
+		panic("Start: ctx must not be nil")
+	}
 	if interval <= 0 {
 		panic("Start: interval must be positive")
-	}
-	if stopChan == nil {
-		panic("Start: stopChan must not be nil")
 	}
 
 	ticker := time.NewTicker(interval)
@@ -124,7 +132,7 @@ func (s *Scheduler) Start(interval time.Duration, stopChan <-chan struct{}) {
 
 	for {
 		select {
-		case <-stopChan:
+		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
 			_ = s.Tick(now)
@@ -139,6 +147,9 @@ func (s *Scheduler) Backfill() error {
 	if s.stateKV == nil {
 		panic("Backfill: stateKV is nil")
 	}
+	if s.triggers == nil {
+		panic("Backfill: triggers map is nil")
+	}
 
 	s.mu.RLock()
 	snapshot := make(map[string]TriggerDef, len(s.triggers))
@@ -147,16 +158,20 @@ func (s *Scheduler) Backfill() error {
 	}
 	s.mu.RUnlock()
 
+	var g errgroup.Group
 	for _, def := range snapshot {
 		if def.Cron == nil || !def.Cron.Backfill {
 			continue
 		}
-
-		if err := s.backfillTrigger(def); err != nil {
-			return fmt.Errorf("backfill %q: %w", def.ID, err)
-		}
+		def := def
+		g.Go(func() error {
+			if err := s.backfillTrigger(def); err != nil {
+				return fmt.Errorf("backfill %q: %w", def.ID, err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 // backfillTrigger replays missed schedules for a single trigger.

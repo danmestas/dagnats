@@ -2222,3 +2222,56 @@ func TestFindStepDef(t *testing.T) {
 		t.Fatal("expected not to find step z")
 	}
 }
+
+func TestPublishReadyTasksParallel(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	// Create a workflow with 5 independent entry steps (no deps)
+	steps := make([]dag.StepDef, 5)
+	for i := range steps {
+		steps[i] = dag.StepDef{
+			ID:   fmt.Sprintf("s%d", i),
+			Task: fmt.Sprintf("task-%d", i),
+			Type: dag.StepTypeNormal,
+		}
+	}
+	wfDef := dag.WorkflowDef{
+		Name: "parallel-wf", Version: "1", Steps: steps,
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-parallel", defData,
+	)
+	evtData, _ := evt.Marshal()
+	js.Publish(evt.NATSSubject(), evtData, nats.MsgId(evt.NATSMsgID()))
+
+	// All 5 tasks should appear
+	for i := 0; i < 5; i++ {
+		subject := fmt.Sprintf("task.task-%d.*", i)
+		sub, err := js.PullSubscribe(subject, "",
+			nats.BindStream("TASK_QUEUES"))
+		if err != nil {
+			t.Fatalf("PullSubscribe %s: %v", subject, err)
+		}
+		msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+		if err != nil {
+			t.Fatalf("Fetch task-%d failed: %v", i, err)
+		}
+		// Positive: each task published
+		if len(msgs) != 1 {
+			t.Fatalf("task-%d: expected 1 msg, got %d", i, len(msgs))
+		}
+	}
+}
