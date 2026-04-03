@@ -8,6 +8,7 @@ import (
 
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/sync/errgroup"
 )
 
 // Scheduler evaluates cron triggers and publishes workflow.started events
@@ -76,7 +77,7 @@ func (s *Scheduler) RemoveTrigger(id string) error {
 
 // Tick evaluates all enabled cron triggers at the given time. For each
 // matching trigger, publishes workflow.started with dedup Nats-Msg-Id.
-// Returns first publish error encountered.
+// Triggers are evaluated and fired concurrently.
 func (s *Scheduler) Tick(now time.Time) error {
 	if s.js == nil {
 		panic("Tick: JetStream context is nil")
@@ -89,24 +90,27 @@ func (s *Scheduler) Tick(now time.Time) error {
 	}
 	s.mu.RUnlock()
 
+	var g errgroup.Group
 	for _, def := range snapshot {
 		if !def.Enabled || def.Cron == nil {
 			continue
 		}
-
-		shouldFire, err := s.shouldFire(def, now)
-		if err != nil {
-			return fmt.Errorf("shouldFire %q: %w", def.ID, err)
-		}
-		if !shouldFire {
-			continue
-		}
-
-		if err := s.fireWorkflow(def, now); err != nil {
-			return fmt.Errorf("fireWorkflow %q: %w", def.ID, err)
-		}
+		def := def
+		g.Go(func() error {
+			shouldFire, err := s.shouldFire(def, now)
+			if err != nil {
+				return fmt.Errorf("shouldFire %q: %w", def.ID, err)
+			}
+			if !shouldFire {
+				return nil
+			}
+			if err := s.fireWorkflow(def, now); err != nil {
+				return fmt.Errorf("fireWorkflow %q: %w", def.ID, err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 // Start runs Tick in a loop at the given interval until stopChan closes.
@@ -147,16 +151,20 @@ func (s *Scheduler) Backfill() error {
 	}
 	s.mu.RUnlock()
 
+	var g errgroup.Group
 	for _, def := range snapshot {
 		if def.Cron == nil || !def.Cron.Backfill {
 			continue
 		}
-
-		if err := s.backfillTrigger(def); err != nil {
-			return fmt.Errorf("backfill %q: %w", def.ID, err)
-		}
+		def := def
+		g.Go(func() error {
+			if err := s.backfillTrigger(def); err != nil {
+				return fmt.Errorf("backfill %q: %w", def.ID, err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 // backfillTrigger replays missed schedules for a single trigger.
