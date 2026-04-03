@@ -112,9 +112,13 @@ func parseTriggerCreateFlags(args []string) *trigger.TriggerDef {
 		}
 	}
 	if *webhook != "" {
+		webhookSecret := *secret
+		if webhookSecret == "" {
+			webhookSecret = os.Getenv("DAGNATS_WEBHOOK_SECRET")
+		}
 		def.Webhook = &trigger.WebhookConfig{
 			Path:   *webhook,
-			Secret: *secret,
+			Secret: webhookSecret,
 		}
 	}
 

@@ -492,6 +492,46 @@ func TestTriggerEnableJSON(t *testing.T) {
 	}
 }
 
+func TestTriggerCreateWebhookSecretFromEnv(t *testing.T) {
+	// Positive: env var is used when --secret not provided.
+	old := os.Getenv("DAGNATS_WEBHOOK_SECRET")
+	os.Setenv("DAGNATS_WEBHOOK_SECRET", "env-secret-123")
+	defer os.Setenv("DAGNATS_WEBHOOK_SECRET", old)
+
+	def := parseTriggerCreateFlags([]string{
+		"test-workflow",
+		"--webhook=/hooks/test",
+	})
+	if def == nil {
+		t.Fatal("expected non-nil def")
+	}
+	if def.Webhook == nil {
+		t.Fatal("Webhook config should not be nil")
+	}
+	if def.Webhook.Secret != "env-secret-123" {
+		t.Fatalf(
+			"expected secret env-secret-123, got %q",
+			def.Webhook.Secret,
+		)
+	}
+
+	// Negative: --secret flag overrides env var.
+	def2 := parseTriggerCreateFlags([]string{
+		"test-workflow",
+		"--webhook=/hooks/test",
+		"--secret=flag-secret",
+	})
+	if def2 == nil {
+		t.Fatal("expected non-nil def")
+	}
+	if def2.Webhook.Secret != "flag-secret" {
+		t.Fatalf(
+			"expected secret flag-secret, got %q",
+			def2.Webhook.Secret,
+		)
+	}
+}
+
 func TestTriggerDisableJSON(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc,

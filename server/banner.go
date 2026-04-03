@@ -7,12 +7,12 @@ import (
 
 // Gruvbox palette — 24-bit ANSI escape sequences.
 const (
-	grvFg    = "\033[38;2;235;219;178m" // #ebdbb2
-	grvAqua  = "\033[38;2;142;192;124m" // #8ec07c
-	grvGray  = "\033[38;2;146;131;116m" // #928374
-	grvOr    = "\033[38;2;254;128;25m"  // #fe8019
-	ansiB    = "\033[1m"
-	ansiR    = "\033[0m"
+	grvFg   = "\033[38;2;235;219;178m" // #ebdbb2
+	grvAqua = "\033[38;2;142;192;124m" // #8ec07c
+	grvGray = "\033[38;2;146;131;116m" // #928374
+	grvOr   = "\033[38;2;254;128;25m"  // #fe8019
+	ansiB   = "\033[1m"
+	ansiR   = "\033[0m"
 )
 
 //nolint:lll

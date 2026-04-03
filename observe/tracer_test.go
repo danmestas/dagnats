@@ -67,7 +67,10 @@ func TestParentInfoFromContextEmpty(t *testing.T) {
 		t.Fatal("should return false for empty context")
 	}
 	// Negative: ensure no default info is injected.
-	ctx := context.WithValue(context.Background(), "other", "val")
+	type ctxKey string
+	ctx := context.WithValue(
+		context.Background(), ctxKey("other"), "val",
+	)
 	_, ok = ParentInfoFromContext(ctx)
 	if ok {
 		t.Fatal("should return false for unrelated context")

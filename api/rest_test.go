@@ -353,69 +353,163 @@ func TestRESTStartRunUnknownWorkflow(t *testing.T) {
 	}
 }
 
-func TestRouteWorkflowsRejectsGET(t *testing.T) {
+func TestRouteWorkflowsRejectsPUT(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc, observe.NewNoopTelemetry())
 
-	// Positive: GET returns 405.
+	// Positive: PUT returns 405.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/workflows", nil)
+	req := httptest.NewRequest(http.MethodPut, "/workflows", nil)
 	svc.routeWorkflows(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d",
 			rec.Code, http.StatusMethodNotAllowed)
 	}
 
-	// Negative: POST is not rejected (non-405).
+	// Negative: GET is not rejected.
 	rec2 := httptest.NewRecorder()
-	body := []byte(`{"name":"x","steps":[]}`)
 	req2 := httptest.NewRequest(
-		http.MethodPost, "/workflows",
-		bytes.NewReader(body),
+		http.MethodGet, "/workflows", nil,
 	)
 	svc.routeWorkflows(rec2, req2)
 	if rec2.Code == http.StatusMethodNotAllowed {
-		t.Fatal("POST should not return 405")
+		t.Fatal("GET should not return 405")
 	}
 }
 
-func TestRouteRunsRejectsGET(t *testing.T) {
+func TestRESTListWorkflows(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// Register a workflow first.
+	wb := dag.NewWorkflow("list-test")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+
+	// Positive: GET /workflows returns 200 with array.
+	resp, err := http.Get(server.URL + "/workflows")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusOK)
+	}
+	var defs []dag.WorkflowDef
+	if err := json.NewDecoder(resp.Body).Decode(&defs); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if len(defs) == 0 {
+		t.Fatal("expected at least one workflow")
+	}
+
+	// Negative: list is not empty after registration.
+	found := false
+	for _, d := range defs {
+		if d.Name == "list-test" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("registered workflow not in list")
+	}
+}
+
+func TestRouteRunsRejectsPUT(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc, observe.NewNoopTelemetry())
 
-	// Positive: GET returns 405.
+	// Positive: PUT returns 405.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/runs", nil)
+	req := httptest.NewRequest(http.MethodPut, "/runs", nil)
 	svc.routeRuns(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d",
 			rec.Code, http.StatusMethodNotAllowed)
 	}
 
-	// Negative: POST is not rejected.
+	// Negative: GET is not rejected.
 	rec2 := httptest.NewRecorder()
-	body := []byte(`{"workflow":"x"}`)
 	req2 := httptest.NewRequest(
-		http.MethodPost, "/runs",
-		bytes.NewReader(body),
+		http.MethodGet, "/runs", nil,
 	)
 	svc.routeRuns(rec2, req2)
 	if rec2.Code == http.StatusMethodNotAllowed {
-		t.Fatal("POST should not return 405")
+		t.Fatal("GET should not return 405")
 	}
 }
 
-func TestRouteRunByIDRejectsPOST(t *testing.T) {
+func TestRESTListRuns(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wb := dag.NewWorkflow("list-runs-test")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+	runID, _ := svc.StartRun(
+		context.Background(), "list-runs-test", nil,
+	)
+
+	// Poll until snapshot exists.
+	deadline := time.After(5 * time.Second)
+	for {
+		_, err := svc.GetRun(context.Background(), runID)
+		if err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("run snapshot did not appear within 5s")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Positive: GET /runs returns 200 with array.
+	resp, err := http.Get(server.URL + "/runs")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusOK)
+	}
+	var runs []dag.WorkflowRun
+	if err := json.NewDecoder(resp.Body).Decode(&runs); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+
+	// Negative: list should not be empty.
+	if len(runs) == 0 {
+		t.Fatal("expected at least one run")
+	}
+}
+
+func TestRouteRunByIDRejectsPUT(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc, observe.NewNoopTelemetry())
 
-	// Positive: POST returns 405.
+	// Positive: PUT returns 405.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(
-		http.MethodPost, "/runs/some-id", nil,
+		http.MethodPut, "/runs/some-id", nil,
 	)
 	svc.routeRunByID(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -431,6 +525,92 @@ func TestRouteRunByIDRejectsPOST(t *testing.T) {
 	svc.routeRunByID(rec2, req2)
 	if rec2.Code == http.StatusMethodNotAllowed {
 		t.Fatal("GET should not return 405")
+	}
+}
+
+func TestRESTCancelRun(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wb := dag.NewWorkflow("cancel-test")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+	runID, _ := svc.StartRun(
+		context.Background(), "cancel-test", nil,
+	)
+
+	// Positive: POST /runs/{id}/cancel returns 200.
+	resp, err := http.Post(
+		server.URL+"/runs/"+runID+"/cancel",
+		"application/json", nil,
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusOK)
+	}
+
+	// Negative: GET on cancel path returns 405.
+	resp2, err := http.Get(
+		server.URL + "/runs/" + runID + "/cancel",
+	)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if resp2.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d",
+			resp2.StatusCode, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestRESTSendSignal(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	)
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// Positive: POST /runs/{id}/signal/{name} returns 200.
+	resp, err := http.Post(
+		server.URL+"/runs/test-run/signal/approve",
+		"application/json",
+		bytes.NewReader([]byte(`{"approved":true}`)),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusOK)
+	}
+
+	// Negative: missing signal name returns 400.
+	resp2, err := http.Post(
+		server.URL+"/runs/test-run/signal/",
+		"application/json", nil,
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			resp2.StatusCode, http.StatusBadRequest)
 	}
 }
 

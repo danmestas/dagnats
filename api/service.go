@@ -115,7 +115,7 @@ func (s *Service) RegisterWorkflow(
 	if def.Name == "" {
 		panic("RegisterWorkflow: def.Name must not be empty")
 	}
-	ctx, span := s.tel.Tracer.Start(ctx,
+	_, span := s.tel.Tracer.Start(ctx,
 		"api.registerWorkflow",
 		observe.WithAttributes(
 			observe.StringAttr("workflow_name", def.Name),

@@ -7,6 +7,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -39,32 +40,62 @@ func NewRESTHandler(svc *Service) http.Handler {
 	return mux
 }
 
-// routeWorkflows dispatches POST /workflows to handleRegisterWorkflow.
+// routeWorkflows dispatches GET and POST /workflows.
 func (s *Service) routeWorkflows(
 	w http.ResponseWriter, r *http.Request,
 ) {
-	if r.Method != http.MethodPost {
+	switch r.Method {
+	case http.MethodGet:
+		handleListWorkflows(s, w, r)
+	case http.MethodPost:
+		handleRegisterWorkflow(s, w, r)
+	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
 	}
-	handleRegisterWorkflow(s, w, r)
 }
 
-// routeRuns dispatches POST /runs to handleStartRun.
+// routeRuns dispatches GET and POST /runs.
 func (s *Service) routeRuns(
 	w http.ResponseWriter, r *http.Request,
 ) {
-	if r.Method != http.MethodPost {
+	switch r.Method {
+	case http.MethodGet:
+		handleListRuns(s, w, r)
+	case http.MethodPost:
+		handleStartRun(s, w, r)
+	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
 	}
-	handleStartRun(s, w, r)
 }
 
-// routeRunByID dispatches GET /runs/{id} to handleGetRun.
+// routeRunByID dispatches /runs/{id} sub-paths:
+//
+//	GET  /runs/{id}              → handleGetRun
+//	POST /runs/{id}/cancel       → handleCancelRun
+//	POST /runs/{id}/signal/{name} → handleSendSignal
 func (s *Service) routeRunByID(
 	w http.ResponseWriter, r *http.Request,
 ) {
+	parts := strings.Split(
+		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
+	)
+	// parts[0] = runID, parts[1] = sub-action (optional)
+	if len(parts) >= 2 && parts[1] == "cancel" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		handleCancelRun(s, w, r)
+		return
+	}
+	if len(parts) >= 3 && parts[1] == "signal" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		handleSendSignal(s, w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -109,6 +140,55 @@ func handleRegisterWorkflow(
 	encErr := json.NewEncoder(w).Encode(
 		map[string]string{"status": "registered", "name": def.Name},
 	)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// handleListWorkflows returns all registered workflow definitions as
+// a JSON array. Returns 200 on success.
+func handleListWorkflows(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleListWorkflows: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleListWorkflows: r must not be nil")
+	}
+	defs, err := svc.ListWorkflows(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(defs)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// handleListRuns returns all workflow runs as a JSON array.
+// Supports optional ?workflow= query parameter for filtering.
+func handleListRuns(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleListRuns: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleListRuns: r must not be nil")
+	}
+	workflowFilter := r.URL.Query().Get("workflow")
+	runs, err := svc.ListRuns(r.Context(), workflowFilter)
+	if err != nil {
+		http.Error(w, err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(runs)
 	if encErr != nil {
 		svc.tel.Logger.Error("encode response", encErr)
 	}
@@ -176,6 +256,91 @@ func handleGetRun(
 	}
 	w.Header().Set("Content-Type", "application/json")
 	encErr := json.NewEncoder(w).Encode(run)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// handleCancelRun extracts the run ID and publishes a cancel event.
+func handleCancelRun(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleCancelRun: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleCancelRun: r must not be nil")
+	}
+	parts := strings.Split(
+		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
+	)
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "missing run ID", http.StatusBadRequest)
+		return
+	}
+	runID := parts[0]
+	if err := svc.CancelRun(r.Context(), runID); err != nil {
+		http.Error(w, err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(
+		map[string]string{"status": "cancelled", "run_id": runID},
+	)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// handleSendSignal extracts run ID and signal name from the path,
+// reads the request body as signal data, and writes to KV.
+func handleSendSignal(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleSendSignal: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleSendSignal: r must not be nil")
+	}
+	parts := strings.Split(
+		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
+	)
+	if len(parts) < 3 || parts[2] == "" {
+		http.Error(w, "missing signal name",
+			http.StatusBadRequest)
+		return
+	}
+	runID := parts[0]
+	signalName := parts[2]
+
+	var data []byte
+	if r.Body != nil {
+		const maxSignalBytes = 1 << 20 // 1 MiB
+		limited := io.LimitReader(r.Body, maxSignalBytes)
+		var readErr error
+		data, readErr = io.ReadAll(limited)
+		if readErr != nil {
+			http.Error(w, "read body: "+readErr.Error(),
+				http.StatusBadRequest)
+			return
+		}
+	}
+
+	err := svc.SendSignal(r.Context(), runID, signalName, data)
+	if err != nil {
+		http.Error(w, err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(
+		map[string]string{
+			"status": "sent", "run_id": runID,
+			"signal": signalName,
+		},
+	)
 	if encErr != nil {
 		svc.tel.Logger.Error("encode response", encErr)
 	}

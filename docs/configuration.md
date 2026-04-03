@@ -28,6 +28,35 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_LEAF_REMOTES`    | `leaf_remotes`    | Comma-separated, max 10 entries  |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |
 
+### Triggers
+
+| Variable                  | Default  | Notes                                    |
+|---------------------------|----------|------------------------------------------|
+| `DAGNATS_WEBHOOK_SECRET`  | (none)   | Default HMAC secret for webhook triggers |
+
+When `DAGNATS_WEBHOOK_SECRET` is set and no `--secret` flag is provided
+to `dagnats trigger create`, the env var value is used. The `--secret`
+flag always takes precedence. This keeps secrets out of shell history.
+
+### Observability
+
+| Variable           | Default  | Notes                                          |
+|--------------------|----------|------------------------------------------------|
+| `JAEGER_ENDPOINT`  | (none)   | OTLP/HTTP base URL for span export             |
+
+When `JAEGER_ENDPOINT` is set, DagNats subscribes to the internal
+`TELEMETRY` span stream and batches spans to `{endpoint}/v1/traces`
+via OTLP/HTTP JSON. Example:
+
+```bash
+JAEGER_ENDPOINT=http://localhost:4318 dagnats serve
+```
+
+This works with any OTLP/HTTP-compatible backend (Jaeger, SigNoz,
+Grafana Tempo). When unset, spans are still written to the NATS
+`TELEMETRY` stream but not exported externally. Export failures
+never affect workflow execution.
+
 ### Deprecated Variables
 
 The following environment variables are deprecated but still supported.
