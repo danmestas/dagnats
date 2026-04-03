@@ -341,3 +341,87 @@ func TestValidateWorkerConfigs_RejectsNeitherExecNorHTTP(
 			err.Error())
 	}
 }
+
+func TestConfigLeafCredentials(t *testing.T) {
+	// Positive: default is empty
+	cfg := DefaultConfig()
+	if cfg.LeafCredentials != "" {
+		t.Fatalf(
+			"default LeafCredentials = %q, want empty",
+			cfg.LeafCredentials,
+		)
+	}
+
+	// Positive: env var sets it
+	t.Setenv("DAGNATS_LEAF_CREDENTIALS", "/tmp/ngs.creds")
+	cfg2 := DefaultConfig()
+	applyEnvOverrides(&cfg2)
+	if cfg2.LeafCredentials != "/tmp/ngs.creds" {
+		t.Fatalf(
+			"LeafCredentials = %q, want /tmp/ngs.creds",
+			cfg2.LeafCredentials,
+		)
+	}
+}
+
+func TestConfigFileLeafCredentials(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "test.yaml")
+	os.WriteFile(cfgFile, []byte(
+		"leaf_credentials: /etc/nats/leaf.creds\n",
+	), 0644)
+
+	cfg := DefaultConfig()
+	if err := loadConfigFile(cfgFile, &cfg); err != nil {
+		t.Fatalf("loadConfigFile: %v", err)
+	}
+	// Positive: value loaded from file
+	if cfg.LeafCredentials != "/etc/nats/leaf.creds" {
+		t.Fatalf(
+			"LeafCredentials = %q, want /etc/nats/leaf.creds",
+			cfg.LeafCredentials,
+		)
+	}
+}
+
+func TestConfigMonitorPort(t *testing.T) {
+	// Positive: default is 0 (disabled)
+	cfg := DefaultConfig()
+	if cfg.MonitorPort != 0 {
+		t.Fatalf(
+			"default MonitorPort = %d, want 0",
+			cfg.MonitorPort,
+		)
+	}
+
+	// Positive: env var sets it
+	t.Setenv("DAGNATS_MONITOR_PORT", "8222")
+	cfg2 := DefaultConfig()
+	applyEnvOverrides(&cfg2)
+	if cfg2.MonitorPort != 8222 {
+		t.Fatalf(
+			"MonitorPort = %d, want 8222",
+			cfg2.MonitorPort,
+		)
+	}
+}
+
+func TestConfigFileMonitorPort(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "test.yaml")
+	os.WriteFile(cfgFile, []byte(
+		"monitor_port: 8222\n",
+	), 0644)
+
+	cfg := DefaultConfig()
+	if err := loadConfigFile(cfgFile, &cfg); err != nil {
+		t.Fatalf("loadConfigFile: %v", err)
+	}
+	// Positive: value loaded from file
+	if cfg.MonitorPort != 8222 {
+		t.Fatalf(
+			"MonitorPort = %d, want 8222",
+			cfg.MonitorPort,
+		)
+	}
+}

@@ -30,12 +30,14 @@ type WorkerConfig struct {
 
 // Config holds all server configuration.
 type Config struct {
-	DataDir       string         `json:"data_dir"`
-	HTTPAddr      string         `json:"http_addr"`
-	NATSPort      int            `json:"nats_port"`
-	LeafRemotes   []string       `json:"leaf_remotes"`
-	MaxStoreBytes int64          `json:"max_store_bytes"`
-	Workers       []WorkerConfig `json:"workers"`
+	DataDir         string         `json:"data_dir"`
+	HTTPAddr        string         `json:"http_addr"`
+	NATSPort        int            `json:"nats_port"`
+	LeafRemotes     []string       `json:"leaf_remotes"`
+	LeafCredentials string         `json:"leaf_credentials"`
+	MonitorPort     int            `json:"monitor_port"`
+	MaxStoreBytes   int64          `json:"max_store_bytes"`
+	Workers         []WorkerConfig `json:"workers"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.
@@ -134,6 +136,14 @@ func applyEnvOverrides(cfg *Config) {
 			remotes = remotes[:maxLeafRemotes]
 		}
 		cfg.LeafRemotes = remotes
+	}
+	if val := os.Getenv("DAGNATS_LEAF_CREDENTIALS"); val != "" {
+		cfg.LeafCredentials = val
+	}
+	if val := os.Getenv("DAGNATS_MONITOR_PORT"); val != "" {
+		if port, err := strconv.Atoi(val); err == nil {
+			cfg.MonitorPort = port
+		}
 	}
 	if val := os.Getenv("DAGNATS_MAX_STORE_BYTES"); val != "" {
 		if maxBytes, err := strconv.ParseInt(val, 10, 64); err == nil {
@@ -250,6 +260,14 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			remotes = remotes[:maxLeafRemotes]
 		}
 		cfg.LeafRemotes = remotes
+	case "leaf_credentials":
+		cfg.LeafCredentials = val
+	case "monitor_port":
+		port, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid monitor_port: %w", err)
+		}
+		cfg.MonitorPort = port
 	case "max_store_bytes":
 		maxBytes, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
