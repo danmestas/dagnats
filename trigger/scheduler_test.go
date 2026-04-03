@@ -5,6 +5,7 @@
 package trigger
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -373,10 +374,10 @@ func TestSchedulerStartAutoTick(t *testing.T) {
 	}
 
 	// Start the scheduler with 100ms tick interval (for testing)
-	stopChan := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	doneChan := make(chan struct{})
 	go func() {
-		scheduler.Start(100*time.Millisecond, stopChan)
+		scheduler.Start(ctx, 100*time.Millisecond)
 		close(doneChan)
 	}()
 
@@ -384,7 +385,7 @@ func TestSchedulerStartAutoTick(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Stop scheduler
-	close(stopChan)
+	cancel()
 
 	// Wait for shutdown
 	select {
@@ -606,16 +607,16 @@ func TestSchedulerStartStopsOnSignal(t *testing.T) {
 		t.Fatalf("NewScheduler failed: %v", err)
 	}
 
-	stopChan := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	doneChan := make(chan struct{})
 	go func() {
-		scheduler.Start(50*time.Millisecond, stopChan)
+		scheduler.Start(ctx, 50*time.Millisecond)
 		close(doneChan)
 	}()
 
 	// Let a few ticks happen
 	time.Sleep(200 * time.Millisecond)
-	close(stopChan)
+	cancel()
 
 	// Positive: goroutine exits within bounded timeout
 	select {

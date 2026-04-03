@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,7 +22,8 @@ type TriggerService struct {
 	scheduler *Scheduler
 	subjects  map[string]*SubjectTrigger
 	webhooks  map[string]*WebhookHandler
-	stopChan  chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
 	watcher   nats.KeyWatcher
 	mu        sync.RWMutex
 }
@@ -51,6 +53,7 @@ func NewTriggerService(nc *nats.Conn) (*TriggerService, error) {
 		return nil, fmt.Errorf("NewScheduler: %w", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &TriggerService{
 		nc:        nc,
 		js:        js,
@@ -58,7 +61,8 @@ func NewTriggerService(nc *nats.Conn) (*TriggerService, error) {
 		scheduler: scheduler,
 		subjects:  make(map[string]*SubjectTrigger),
 		webhooks:  make(map[string]*WebhookHandler),
-		stopChan:  make(chan struct{}),
+		ctx:       ctx,
+		cancel:    cancel,
 	}, nil
 }
 
@@ -68,8 +72,8 @@ func (ts *TriggerService) Start() error {
 	if ts.scheduler == nil {
 		panic("Start: scheduler must not be nil")
 	}
-	if ts.stopChan == nil {
-		panic("Start: stopChan must not be nil")
+	if ts.ctx == nil {
+		panic("Start: ctx must not be nil")
 	}
 
 	if err := ts.loadAllTriggers(); err != nil {
@@ -77,7 +81,7 @@ func (ts *TriggerService) Start() error {
 	}
 
 	// Start scheduler in background
-	go ts.scheduler.Start(30*time.Second, ts.stopChan)
+	go ts.scheduler.Start(ts.ctx, 30*time.Second)
 
 	if err := ts.startKVWatcher(); err != nil {
 		return fmt.Errorf("startKVWatcher: %w", err)
@@ -89,14 +93,14 @@ func (ts *TriggerService) Start() error {
 // Stop terminates all triggers and the KV watcher.
 // Panics if called before initialization completes.
 func (ts *TriggerService) Stop() {
-	if ts.stopChan == nil {
-		panic("Stop: stopChan must not be nil")
+	if ts.cancel == nil {
+		panic("Stop: cancel must not be nil")
 	}
 	if ts.subjects == nil {
 		panic("Stop: subjects map must not be nil")
 	}
 
-	close(ts.stopChan)
+	ts.cancel()
 
 	ts.mu.Lock()
 	for _, st := range ts.subjects {
@@ -277,8 +281,8 @@ func (ts *TriggerService) startKVWatcher() error {
 	if ts.triggerKV == nil {
 		panic("startKVWatcher: triggerKV must not be nil")
 	}
-	if ts.stopChan == nil {
-		panic("startKVWatcher: stopChan must not be nil")
+	if ts.ctx == nil {
+		panic("startKVWatcher: ctx must not be nil")
 	}
 
 	watcher, err := ts.triggerKV.WatchAll()

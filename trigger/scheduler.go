@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -113,14 +114,14 @@ func (s *Scheduler) Tick(now time.Time) error {
 	return g.Wait()
 }
 
-// Start runs Tick in a loop at the given interval until stopChan closes.
+// Start runs Tick in a loop at the given interval until ctx is cancelled.
 // Blocks until shutdown. Interval should be <= 1 minute for production.
-func (s *Scheduler) Start(interval time.Duration, stopChan <-chan struct{}) {
+func (s *Scheduler) Start(ctx context.Context, interval time.Duration) {
+	if ctx == nil {
+		panic("Start: ctx must not be nil")
+	}
 	if interval <= 0 {
 		panic("Start: interval must be positive")
-	}
-	if stopChan == nil {
-		panic("Start: stopChan must not be nil")
 	}
 
 	ticker := time.NewTicker(interval)
@@ -128,7 +129,7 @@ func (s *Scheduler) Start(interval time.Duration, stopChan <-chan struct{}) {
 
 	for {
 		select {
-		case <-stopChan:
+		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
 			_ = s.Tick(now)
