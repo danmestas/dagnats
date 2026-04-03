@@ -465,6 +465,56 @@ func TestWorkflowActorWithSnapshotStore(t *testing.T) {
 	}
 }
 
+func TestWorkflowActorHandlesEnvelopePayload(t *testing.T) {
+	// Methodology: the API sends started events with an envelope
+	// {"workflow_def": {...}, "input": {...}}. The actor must
+	// unwrap this correctly instead of silently producing a
+	// zero-value WorkflowDef.
+	wfDef := dag.WorkflowDef{
+		Name:    "envelope-wf",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	envelope, _ := json.Marshal(map[string]interface{}{
+		"workflow_def": wfDef,
+		"input":        map[string]string{"key": "val"},
+	})
+
+	wa := NewWorkflowActor("run-env", nil)
+	rt := actor.NewRuntime()
+	defer rt.StopAll()
+
+	addr := actor.Address{Type: "workflow", ID: "run-env"}
+	if err := rt.Spawn(addr, wa); err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-env", envelope)
+	rt.Send(addr, actor.Message{Payload: evt})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if wa.RunStatus() != dag.RunStatusPending {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Positive: run status is Running (not panic/zero-value)
+	if wa.RunStatus() != dag.RunStatusRunning {
+		t.Fatalf("status = %v, want Running", wa.RunStatus())
+	}
+
+	// Positive: step s1 is Queued
+	state := wa.StepState("s1")
+	if state.Status != dag.StepStatusQueued {
+		t.Fatalf("step s1 = %v, want Queued", state.Status)
+	}
+}
+
 func TestWorkflowActorReceiveRejectsNonEvent(t *testing.T) {
 	wa := NewWorkflowActor("run-bad", nil)
 	rt := actor.NewRuntime()

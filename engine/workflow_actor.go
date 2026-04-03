@@ -68,8 +68,26 @@ func (wa *WorkflowActor) handleStarted(
 	evt protocol.Event,
 ) error {
 	var wfDef dag.WorkflowDef
-	if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
-		return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+	// Payload may be an envelope {"workflow_def":..., "input":...}
+	// from the API, or a bare WorkflowDef (backward compat).
+	var envelope struct {
+		WorkflowDef json.RawMessage `json:"workflow_def"`
+		Input       json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(
+		evt.Payload, &envelope,
+	); err == nil && envelope.WorkflowDef != nil {
+		if err := json.Unmarshal(
+			envelope.WorkflowDef, &wfDef,
+		); err != nil {
+			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+		}
+	} else {
+		if err := json.Unmarshal(
+			evt.Payload, &wfDef,
+		); err != nil {
+			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
+		}
 	}
 	run := dag.NewWorkflowRun(wfDef, wa.runID)
 	run.Status = dag.RunStatusRunning
