@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/natsutil"
 	"github.com/nats-io/nats.go"
 )
 
@@ -72,7 +73,10 @@ func (s *SnapshotStore) Load(runID string) (dag.WorkflowRun, error) {
 
 // ListAll returns all workflow runs from the KV bucket.
 // Scans all keys with prefix "run." bounded at maxRuns.
-func (s *SnapshotStore) ListAll(maxRuns int) ([]dag.WorkflowRun, error) {
+// Uses parallel fetches for throughput on large key sets.
+func (s *SnapshotStore) ListAll(
+	maxRuns int,
+) ([]dag.WorkflowRun, error) {
 	if s.kv == nil {
 		panic("SnapshotStore.ListAll: kv bucket must not be nil")
 	}
@@ -86,26 +90,37 @@ func (s *SnapshotStore) ListAll(maxRuns int) ([]dag.WorkflowRun, error) {
 		}
 		return nil, err
 	}
-	runs := make([]dag.WorkflowRun, 0, len(keys))
-	count := 0
+
+	// Filter to run.* keys and apply limit.
+	filtered := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if len(key) < 4 || key[:4] != "run." {
 			continue
 		}
-		if count >= maxRuns {
+		if len(filtered) >= maxRuns {
 			break
 		}
-		entry, err := s.kv.Get(key)
-		if err != nil {
-			return nil, err
-		}
+		filtered = append(filtered, key)
+	}
+
+	if len(filtered) == 0 {
+		return []dag.WorkflowRun{}, nil
+	}
+
+	entries, err := natsutil.ParallelGet(
+		s.kv, filtered, natsutil.DefaultParallelism,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	runs := make([]dag.WorkflowRun, 0, len(entries))
+	for _, entry := range entries {
 		var run dag.WorkflowRun
-		err = json.Unmarshal(entry.Value(), &run)
-		if err != nil {
+		if err := json.Unmarshal(entry.Value(), &run); err != nil {
 			return nil, err
 		}
 		runs = append(runs, run)
-		count++
 	}
 	return runs, nil
 }
