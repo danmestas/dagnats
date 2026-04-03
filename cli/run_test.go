@@ -62,8 +62,10 @@ func TestCancelCommandPublishesEvent(t *testing.T) {
 	sub, _ := js.SubscribeSync("history.>",
 		nats.AckExplicit(), nats.DeliverAll())
 
+	cancelRunID := "aabbccdd11223344aabbccdd11223344"
+
 	// Run cancel command
-	runCancelCmd([]string{"test-run-1"})
+	runCancelCmd([]string{cancelRunID})
 
 	// Positive: cancel event should be published
 	msg, err := sub.NextMsg(2 * time.Second)
@@ -80,8 +82,9 @@ func TestCancelCommandPublishesEvent(t *testing.T) {
 			"expected EventWorkflowCancelled, got %s", evt.Type,
 		)
 	}
-	if evt.RunID != "test-run-1" {
-		t.Fatalf("expected RunID test-run-1, got %s", evt.RunID)
+	if evt.RunID != cancelRunID {
+		t.Fatalf("expected RunID %s, got %s",
+			cancelRunID, evt.RunID)
 	}
 
 	// Negative: no second event should be published
@@ -169,17 +172,18 @@ func TestRunEventsTypeFilter(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
+	filterRunID1 := "ff110000111111112222222233333333"
 	js, _ := nc.JetStream()
-	publishTestEvent(t, js, "test-filter-1",
+	publishTestEvent(t, js, filterRunID1,
 		protocol.EventStepQueued, "step-a")
-	publishTestEvent(t, js, "test-filter-1",
+	publishTestEvent(t, js, filterRunID1,
 		protocol.EventStepFailed, "step-a")
-	publishTestEvent(t, js, "test-filter-1",
+	publishTestEvent(t, js, filterRunID1,
 		protocol.EventStepCompleted, "step-b")
 
 	output := captureOutput(func() {
 		runEventsCmd([]string{
-			"test-filter-1", "--type=step.failed",
+			filterRunID1, "--type=step.failed",
 		})
 	})
 
@@ -206,15 +210,16 @@ func TestRunEventsStepFilter(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
+	filterRunID2 := "ff220000111111112222222233333333"
 	js, _ := nc.JetStream()
-	publishTestEvent(t, js, "test-filter-2",
+	publishTestEvent(t, js, filterRunID2,
 		protocol.EventStepQueued, "step-a")
-	publishTestEvent(t, js, "test-filter-2",
+	publishTestEvent(t, js, filterRunID2,
 		protocol.EventStepQueued, "step-b")
 
 	output := captureOutput(func() {
 		runEventsCmd([]string{
-			"test-filter-2", "--step=step-a",
+			filterRunID2, "--step=step-a",
 		})
 	})
 
@@ -662,11 +667,13 @@ func TestSignalCommandWritesToKV(t *testing.T) {
 	js, _ := nc.JetStream()
 	sigKV, _ := js.KeyValue("signals")
 
+	signalRunID := "aabbccdd55667788aabbccdd55667788"
+
 	// Send signal command
-	runSignalCmd([]string{"run-abc", "approval", "approved"})
+	runSignalCmd([]string{signalRunID, "approval", "approved"})
 
 	// Positive: signal should be written to KV bucket
-	entry, err := sigKV.Get("run-abc.approval")
+	entry, err := sigKV.Get(signalRunID + ".approval")
 	if err != nil {
 		t.Fatalf("signal not written to KV: %v", err)
 	}
@@ -675,7 +682,7 @@ func TestSignalCommandWritesToKV(t *testing.T) {
 	}
 
 	// Negative: other keys should not exist
-	_, err = sigKV.Get("run-abc.other")
+	_, err = sigKV.Get(signalRunID + ".other")
 	if err == nil {
 		t.Fatal("unexpected signal key found")
 	}

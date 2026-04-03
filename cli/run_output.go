@@ -27,19 +27,27 @@ func runOutputCmd(args []string) {
 
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
+	hasLast := HasLastFlag(args)
+	args = StripLastFlag(args)
 
-	if len(args) != 1 {
+	var rawID string
+	if len(args) == 1 {
+		rawID = args[0]
+	} else if !hasLast {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run output <run-id> [--json]")
+			"Usage: dagnats run output"+
+				" <run-id> [--last] [--json]")
 		os.Exit(1)
-	}
-	runID := args[0]
-	if runID == "" {
-		panic("runOutputCmd: runID must not be empty")
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
+
+	runID, err := ResolveRunID(svc, rawID, hasLast)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve run: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 

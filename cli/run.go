@@ -70,6 +70,8 @@ func runRunCmd(args []string) {
 		runWatchCmd(args[1:])
 	case "output":
 		runOutputCmd(args[1:])
+	case "retry":
+		runRetryCmd(args[1:])
 	default:
 		fmt.Printf("unknown run subcommand: %s\n", args[0])
 	}
@@ -88,6 +90,52 @@ func printRunUsage() {
 	fmt.Println("  events   show run event history")
 	fmt.Println("  watch    watch a run until completion")
 	fmt.Println("  output   print final output of a completed run")
+	fmt.Println("  retry    re-run a workflow from a previous run")
+	fmt.Println()
+	fmt.Println("Flags:")
+	fmt.Println("  --last   use the most recent run")
+	fmt.Println("  --json   output as JSON")
+	fmt.Println()
+	fmt.Println("Run IDs accept 8+ character prefixes.")
+}
+
+// HasLastFlag returns true when args contains "--last".
+func HasLastFlag(args []string) bool {
+	if args == nil {
+		panic("HasLastFlag: args must not be nil")
+	}
+
+	const maxArgs = 1000
+	if len(args) > maxArgs {
+		panic("HasLastFlag: args exceeds max bound")
+	}
+
+	for _, arg := range args {
+		if arg == "--last" {
+			return true
+		}
+	}
+	return false
+}
+
+// StripLastFlag returns a copy of args with "--last" removed.
+func StripLastFlag(args []string) []string {
+	if args == nil {
+		panic("StripLastFlag: args must not be nil")
+	}
+
+	const maxArgs = 1000
+	if len(args) > maxArgs {
+		panic("StripLastFlag: args exceeds max bound")
+	}
+
+	result := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg != "--last" {
+			result = append(result, arg)
+		}
+	}
+	return result
 }
 
 // runStartResult is the JSON response for run start.
@@ -190,22 +238,29 @@ func runStatusCmd(args []string) {
 
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
+	hasLast := HasLastFlag(args)
+	args = StripLastFlag(args)
 
-	if len(args) != 1 {
+	var rawID string
+	if len(args) == 1 {
+		rawID = args[0]
+	} else if !hasLast {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run status <run-id> [--json]")
+			"Usage: dagnats run status"+
+				" <run-id> [--last] [--json]")
 		os.Exit(1)
-	}
-	runID := args[0]
-	if runID == "" {
-		panic("runStatusCmd: runID must not be empty")
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
-	ctx := context.Background()
-	run, err := svc.GetRun(ctx, runID)
+	runID, err := ResolveRunID(svc, rawID, hasLast)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve run: %v\n", err)
+		os.Exit(1)
+	}
+
+	run, err := svc.GetRun(context.Background(), runID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
 		os.Exit(1)
@@ -235,23 +290,35 @@ type runCancelResult struct {
 
 // runCancelCmd publishes a workflow.cancelled event.
 func runCancelCmd(args []string) {
+	if args == nil {
+		panic("runCancelCmd: args must not be nil")
+	}
+
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
+	hasLast := HasLastFlag(args)
+	args = StripLastFlag(args)
 
-	if len(args) != 1 {
+	var rawID string
+	if len(args) == 1 {
+		rawID = args[0]
+	} else if !hasLast {
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats run cancel <run-id> [--json]")
+			"Usage: dagnats run cancel"+
+				" <run-id> [--last] [--json]")
 		os.Exit(1)
-	}
-	runID := args[0]
-	if runID == "" {
-		panic("runCancelCmd: runID must not be empty")
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
-	err := svc.CancelRun(context.Background(), runID)
+	runID, err := ResolveRunID(svc, rawID, hasLast)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve run: %v\n", err)
+		os.Exit(1)
+	}
+
+	err = svc.CancelRun(context.Background(), runID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cancel run: %v\n", err)
 		os.Exit(1)
@@ -280,31 +347,55 @@ type runSignalResult struct {
 
 // runSignalCmd sends a signal to a running workflow.
 func runSignalCmd(args []string) {
+	if args == nil {
+		panic("runSignalCmd: args must not be nil")
+	}
+
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
+	hasLast := HasLastFlag(args)
+	args = StripLastFlag(args)
 
-	if len(args) != 3 {
+	// With --last: need 2 args (name, payload).
+	// Without --last: need 3 args (run-id, name, payload).
+	if hasLast && len(args) != 2 {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats run signal"+
-				" <run-id> <name> <payload> [--json]")
+				" --last <name> <payload> [--json]")
 		os.Exit(1)
 	}
-
-	runID := args[0]
-	name := args[1]
-	payload := args[2]
-
-	if runID == "" {
-		panic("runSignalCmd: runID must not be empty")
-	}
-	if name == "" {
-		panic("runSignalCmd: name must not be empty")
+	if !hasLast && len(args) != 3 {
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats run signal"+
+				" <run-id> <name> <payload>"+
+				" [--last] [--json]")
+		os.Exit(1)
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
-	err := svc.SendSignal(
+	var rawID, name, payload string
+	if hasLast {
+		name = args[0]
+		payload = args[1]
+	} else {
+		rawID = args[0]
+		name = args[1]
+		payload = args[2]
+	}
+
+	if name == "" {
+		panic("runSignalCmd: name must not be empty")
+	}
+
+	runID, err := ResolveRunID(svc, rawID, hasLast)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve run: %v\n", err)
+		os.Exit(1)
+	}
+
+	err = svc.SendSignal(
 		context.Background(), runID, name, []byte(payload),
 	)
 	if err != nil {
@@ -427,24 +518,31 @@ func runEventsCmd(args []string) {
 
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
+	hasLast := HasLastFlag(args)
+	args = StripLastFlag(args)
 
-	if len(args) < 1 {
+	var rawID string
+	if len(args) >= 1 && !strings.HasPrefix(args[0], "--") {
+		rawID = args[0]
+		args = args[1:]
+	} else if !hasLast {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats run events <run-id>"+
-				" [--full] [--type=TYPE] [--step=STEP]"+
-				" [--json]")
+				" [--last] [--full] [--type=TYPE]"+
+				" [--step=STEP] [--json]")
 		os.Exit(1)
 	}
 
-	runID := args[0]
-	if runID == "" {
-		panic("runEventsCmd: runID must not be empty")
-	}
-
-	fullData, typeFilter, stepFilter := parseEventFlags(args[1:])
+	fullData, typeFilter, stepFilter := parseEventFlags(args)
 
 	svc, nc := connectService()
 	defer nc.Close()
+
+	runID, err := ResolveRunID(svc, rawID, hasLast)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve run: %v\n", err)
+		os.Exit(1)
+	}
 
 	events, err := svc.ListRunEvents(
 		context.Background(), runID, fullData,
@@ -503,7 +601,7 @@ func printEventsTable(events []api.RunEvent) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TIMESTAMP\tTYPE\tSTEP\tDATA")
+	fmt.Fprintln(w, "TIMESTAMP\tTYPE\tSTEP\tTRACE\tDATA")
 
 	for _, evt := range events {
 		ts := evt.Timestamp.Format("2006-01-02 15:04:05")
@@ -511,12 +609,18 @@ func printEventsTable(events []api.RunEvent) {
 		if step == "" {
 			step = "-"
 		}
+		trace := extractTraceID(evt.TraceParent)
+		if trace == "" {
+			trace = "-"
+		} else if len(trace) > 16 {
+			trace = trace[:16]
+		}
 		data := evt.Data
 		if data == "" {
 			data = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			ts, evt.Type, step, data)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			ts, evt.Type, step, trace, data)
 	}
 
 	w.Flush()

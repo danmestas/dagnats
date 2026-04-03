@@ -74,8 +74,10 @@ func WithGroups(groups ...string) WorkerOption {
 }
 
 // NewWorker creates a Worker using the given connection and
-// telemetry bundle. Panics if nc or tel is nil, or if JetStream
-// cannot be initialised — all are programmer errors at startup.
+// optional telemetry bundle. Panics if nc is nil or if JetStream
+// cannot be initialised — both are programmer errors at startup.
+// When tel is nil, a noop telemetry is used so callers are not
+// forced to import observe for simple use cases.
 func NewWorker(
 	nc *nats.Conn, tel *observe.Telemetry, opts ...WorkerOption,
 ) *Worker {
@@ -83,7 +85,7 @@ func NewWorker(
 		panic("NewWorker: nc must not be nil")
 	}
 	if tel == nil {
-		panic("NewWorker: tel must not be nil")
+		tel = observe.NewNoopTelemetry()
 	}
 	js, err := nc.JetStream()
 	if err != nil {

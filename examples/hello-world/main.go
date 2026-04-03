@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
@@ -26,8 +25,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	tel := observe.NewNoopTelemetry()
-	w := worker.NewWorker(nc, tel)
+	w := worker.NewWorker(nc, nil)
 
 	// Step 1: produce a greeting from the input name
 	w.Handle("greet", func(ctx worker.TaskContext) error {

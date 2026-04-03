@@ -52,11 +52,12 @@ type DeadLetter struct {
 
 // RunEvent is a history event for display.
 type RunEvent struct {
-	Type      string    `json:"type"`
-	RunID     string    `json:"run_id"`
-	StepID    string    `json:"step_id"`
-	Timestamp time.Time `json:"timestamp"`
-	Data      string    `json:"data"`
+	Type        string    `json:"type"`
+	RunID       string    `json:"run_id"`
+	StepID      string    `json:"step_id"`
+	Timestamp   time.Time `json:"timestamp"`
+	Data        string    `json:"data"`
+	TraceParent string    `json:"trace_parent,omitempty"`
 }
 
 // NewService binds the control plane to an active NATS connection.
@@ -1016,11 +1017,12 @@ func (s *Service) listRunEventsInner(
 			dataStr = dataStr[:dataTruncateLen]
 		}
 		events = append(events, RunEvent{
-			Type:      string(evt.Type),
-			RunID:     evt.RunID,
-			StepID:    evt.StepID,
-			Timestamp: evt.Timestamp,
-			Data:      dataStr,
+			Type:        string(evt.Type),
+			RunID:       evt.RunID,
+			StepID:      evt.StepID,
+			Timestamp:   evt.Timestamp,
+			Data:        dataStr,
+			TraceParent: evt.TraceParent,
 		})
 	}
 	return events, nil
