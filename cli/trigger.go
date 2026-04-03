@@ -28,6 +28,7 @@ func runTriggerCmd(args []string) {
 		fmt.Println("Commands:")
 		fmt.Println("  create   create a new trigger")
 		fmt.Println("  list     list all triggers")
+		fmt.Println("  update   update an existing trigger")
 		fmt.Println("  delete   delete a trigger")
 		fmt.Println("  enable   enable a trigger")
 		fmt.Println("  disable  disable a trigger")
@@ -36,7 +37,8 @@ func runTriggerCmd(args []string) {
 	}
 	if len(args) == 0 {
 		fmt.Println("Usage: dagnats trigger " +
-			"<create|list|delete|enable|disable|test> [--json]")
+			"<create|list|update|delete|enable|disable|test>" +
+			" [--json]")
 		return
 	}
 	switch args[0] {
@@ -44,6 +46,8 @@ func runTriggerCmd(args []string) {
 		runTriggerCreateCmd(args[1:])
 	case "list":
 		runTriggerListCmd(args[1:])
+	case "update":
+		runTriggerUpdateCmd(args[1:])
 	case "delete":
 		runTriggerDeleteCmd(args[1:])
 	case "enable":

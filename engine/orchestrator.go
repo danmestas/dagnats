@@ -288,6 +288,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	}
 
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
+	run.Input = input
 
 	// Check concurrency limit if configured.
 	if wfDef.Concurrency != nil && o.concurrency != nil {

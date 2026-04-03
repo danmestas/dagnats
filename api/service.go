@@ -235,8 +235,12 @@ func (s *Service) startRunInner(
 		)
 	}
 	runID := generateRunID()
+	payload, err := buildStartPayload(entry.Value(), input)
+	if err != nil {
+		return "", err
+	}
 	evt := protocol.NewWorkflowEvent(
-		protocol.EventWorkflowStarted, runID, entry.Value(),
+		protocol.EventWorkflowStarted, runID, payload,
 	)
 	injectAPITraceCtx(span, &evt)
 	data, err := evt.Marshal()
@@ -301,6 +305,47 @@ func generateRunID() string {
 		panic("generateRunID: crypto/rand failed: " + err.Error())
 	}
 	return hex.EncodeToString(b)
+}
+
+// buildStartPayload wraps the workflow definition and optional user
+// input into a structured JSON payload for the workflow.started event.
+// The engine parses this to store Input on the WorkflowRun snapshot.
+func buildStartPayload(
+	defBytes []byte, input []byte,
+) ([]byte, error) {
+	if defBytes == nil {
+		panic("buildStartPayload: defBytes must not be nil")
+	}
+	if len(defBytes) == 0 {
+		panic("buildStartPayload: defBytes must not be empty")
+	}
+	sp := struct {
+		WorkflowDef json.RawMessage `json:"workflow_def"`
+		Input       json.RawMessage `json:"input,omitempty"`
+	}{
+		WorkflowDef: defBytes,
+		Input:       input,
+	}
+	return json.Marshal(sp)
+}
+
+// GetRunInput retrieves the stored input for the given run ID.
+// Returns nil when the run had no input. Returns an error when
+// the run snapshot cannot be loaded.
+func (s *Service) GetRunInput(
+	ctx context.Context, runID string,
+) ([]byte, error) {
+	if ctx == nil {
+		panic("GetRunInput: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("GetRunInput: runID must not be empty")
+	}
+	run, err := s.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return run.Input, nil
 }
 
 // injectAPITraceCtx sets TraceParent on the event from the active
@@ -735,6 +780,111 @@ func (s *Service) setTriggerEnabledInner(
 	}
 	_, err = s.triggerKV.Put(triggerID, data)
 	return err
+}
+
+// TriggerUpdates holds optional field overrides for UpdateTrigger.
+// Pointer fields distinguish "not provided" from "set to zero value".
+type TriggerUpdates struct {
+	CronExpr *string
+	Timezone *string
+	Backfill *bool
+	Subject  *string
+	Webhook  *string
+	Secret   *string
+}
+
+// UpdateTrigger reads an existing trigger, applies overrides, validates,
+// and writes back. Only non-nil fields in updates are applied.
+func (s *Service) UpdateTrigger(
+	ctx context.Context, triggerID string, updates TriggerUpdates,
+) error {
+	if ctx == nil {
+		panic("UpdateTrigger: ctx must not be nil")
+	}
+	if triggerID == "" {
+		panic("UpdateTrigger: triggerID must not be empty")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.updateTrigger",
+		observe.WithAttributes(
+			observe.StringAttr("trigger_id", triggerID),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	err := s.updateTriggerInner(triggerID, updates)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return err
+}
+
+// updateTriggerInner reads, patches, validates, and writes the trigger.
+func (s *Service) updateTriggerInner(
+	triggerID string, updates TriggerUpdates,
+) error {
+	if triggerID == "" {
+		panic("updateTriggerInner: triggerID must not be empty")
+	}
+	if s.triggerKV == nil {
+		return fmt.Errorf("triggers KV bucket not available")
+	}
+	entry, err := s.triggerKV.Get(triggerID)
+	if err != nil {
+		return fmt.Errorf(
+			"trigger %q not found: %w", triggerID, err,
+		)
+	}
+	var def trigger.TriggerDef
+	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		return fmt.Errorf("unmarshal trigger: %w", err)
+	}
+	applyTriggerUpdates(&def, updates)
+	if err := trigger.Validate(def); err != nil {
+		return fmt.Errorf("invalid trigger after update: %w", err)
+	}
+	data, err := json.Marshal(def)
+	if err != nil {
+		return fmt.Errorf("marshal trigger: %w", err)
+	}
+	_, err = s.triggerKV.Put(triggerID, data)
+	return err
+}
+
+// applyTriggerUpdates patches non-nil fields from updates onto def.
+func applyTriggerUpdates(
+	def *trigger.TriggerDef, updates TriggerUpdates,
+) {
+	if def == nil {
+		panic("applyTriggerUpdates: def must not be nil")
+	}
+	if def.ID == "" {
+		panic("applyTriggerUpdates: def.ID must not be empty")
+	}
+	if updates.CronExpr != nil && def.Cron != nil {
+		def.Cron.Expression = *updates.CronExpr
+	}
+	if updates.Timezone != nil && def.Cron != nil {
+		def.Cron.Timezone = *updates.Timezone
+	}
+	if updates.Backfill != nil && def.Cron != nil {
+		def.Cron.Backfill = *updates.Backfill
+	}
+	if updates.Subject != nil && def.Subject != nil {
+		def.Subject.Subject = *updates.Subject
+	}
+	if updates.Webhook != nil && def.Webhook != nil {
+		def.Webhook.Path = *updates.Webhook
+	}
+	if updates.Secret != nil && def.Webhook != nil {
+		def.Webhook.Secret = *updates.Secret
+	}
 }
 
 // ListDeadLetters retrieves up to limit dead letter messages.
