@@ -21,9 +21,9 @@ import (
 // SuperclusterTopology manages 5 NATS servers across 2 clusters
 // plus a leaf node. Implements both Topology and Resilient.
 type SuperclusterTopology struct {
-	clusterA [2]*natsserver.Server
-	clusterB [2]*natsserver.Server
-	leaf     *natsserver.Server
+	clusterA  [2]*natsserver.Server
+	clusterB  [2]*natsserver.Server
+	leaf      *natsserver.Server
 	confPaths map[string]string
 	started   bool
 }

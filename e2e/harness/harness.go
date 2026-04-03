@@ -69,4 +69,3 @@ func enabledTopologies(t *testing.T) []Topology {
 	}
 	return nil
 }
-
