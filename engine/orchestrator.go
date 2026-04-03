@@ -414,6 +414,9 @@ func (o *Orchestrator) findOldestPendingRun(
 	if workflowID == "" {
 		panic("findOldestPendingRun: workflowID must not be empty")
 	}
+	if o.store == nil {
+		panic("findOldestPendingRun: store must not be nil")
+	}
 	keys, err := o.store.kv.Keys()
 	if err != nil {
 		return "", false, fmt.Errorf("list run keys: %w", err)

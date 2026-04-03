@@ -83,6 +83,9 @@ func (s *Scheduler) Tick(now time.Time) error {
 	if s.js == nil {
 		panic("Tick: JetStream context is nil")
 	}
+	if s.triggers == nil {
+		panic("Tick: triggers map is nil")
+	}
 
 	s.mu.RLock()
 	snapshot := make(map[string]TriggerDef, len(s.triggers))
@@ -143,6 +146,9 @@ func (s *Scheduler) Start(ctx context.Context, interval time.Duration) {
 func (s *Scheduler) Backfill() error {
 	if s.stateKV == nil {
 		panic("Backfill: stateKV is nil")
+	}
+	if s.triggers == nil {
+		panic("Backfill: triggers map is nil")
 	}
 
 	s.mu.RLock()
