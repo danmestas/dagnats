@@ -25,7 +25,7 @@ func TestWorkflowActorHandlesStarted(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-1", nil)
+	wa := NewWorkflowActor("run-1", nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -70,7 +70,7 @@ func TestWorkflowActorHandlesStepCompleted(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-2", nil)
+	wa := NewWorkflowActor("run-2", nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -120,7 +120,7 @@ func TestWorkflowActorHandlesStepFailed(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-fail", nil)
+	wa := NewWorkflowActor("run-fail", nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -176,7 +176,7 @@ func TestWorkflowActorHandlesStepContinue(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-loop", nil)
+	wa := NewWorkflowActor("run-loop", nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -230,7 +230,7 @@ func TestWorkflowActorStepCompletedAdvancesDAG(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-chain", nil)
+	wa := NewWorkflowActor("run-chain", nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -284,7 +284,7 @@ func TestWorkflowActorStepCompletedAdvancesDAG(t *testing.T) {
 func TestWorkflowActorFailedBeforeStart(t *testing.T) {
 	// Methodology: sending step.failed before workflow.started
 	// must return error (not panic).
-	wa := NewWorkflowActor("run-nostart", nil)
+	wa := NewWorkflowActor("run-nostart", nil, nil)
 
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "run-nostart", "s1",
@@ -306,7 +306,7 @@ func TestWorkflowActorFailedBeforeStart(t *testing.T) {
 func TestWorkflowActorContinueBeforeStart(t *testing.T) {
 	// Methodology: sending step.continue before workflow.started
 	// must return error.
-	wa := NewWorkflowActor("run-nostart2", nil)
+	wa := NewWorkflowActor("run-nostart2", nil, nil)
 
 	contEvt := protocol.NewStepEvent(
 		protocol.EventStepContinue, "run-nostart2", "s1", nil)
@@ -327,7 +327,7 @@ func TestWorkflowActorContinueBeforeStart(t *testing.T) {
 func TestWorkflowActorCompletedBeforeStart(t *testing.T) {
 	// Methodology: sending step.completed before workflow.started
 	// must return error.
-	wa := NewWorkflowActor("run-nostart3", nil)
+	wa := NewWorkflowActor("run-nostart3", nil, nil)
 
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "run-nostart3", "s1",
@@ -357,7 +357,7 @@ func TestWorkflowActorUnhandledEventType(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-unk", nil)
+	wa := NewWorkflowActor("run-unk", nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -409,7 +409,7 @@ func TestWorkflowActorWithSnapshotStore(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("persist-run", store)
+	wa := NewWorkflowActor("persist-run", store, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -465,8 +465,58 @@ func TestWorkflowActorWithSnapshotStore(t *testing.T) {
 	}
 }
 
+func TestWorkflowActorHandlesEnvelopePayload(t *testing.T) {
+	// Methodology: the API sends started events with an envelope
+	// {"workflow_def": {...}, "input": {...}}. The actor must
+	// unwrap this correctly instead of silently producing a
+	// zero-value WorkflowDef.
+	wfDef := dag.WorkflowDef{
+		Name:    "envelope-wf",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	envelope, _ := json.Marshal(map[string]interface{}{
+		"workflow_def": wfDef,
+		"input":        map[string]string{"key": "val"},
+	})
+
+	wa := NewWorkflowActor("run-env", nil, nil)
+	rt := actor.NewRuntime()
+	defer rt.StopAll()
+
+	addr := actor.Address{Type: "workflow", ID: "run-env"}
+	if err := rt.Spawn(addr, wa); err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-env", envelope)
+	rt.Send(addr, actor.Message{Payload: evt})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if wa.RunStatus() != dag.RunStatusPending {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Positive: run status is Running (not panic/zero-value)
+	if wa.RunStatus() != dag.RunStatusRunning {
+		t.Fatalf("status = %v, want Running", wa.RunStatus())
+	}
+
+	// Positive: step s1 is Queued
+	state := wa.StepState("s1")
+	if state.Status != dag.StepStatusQueued {
+		t.Fatalf("step s1 = %v, want Queued", state.Status)
+	}
+}
+
 func TestWorkflowActorReceiveRejectsNonEvent(t *testing.T) {
-	wa := NewWorkflowActor("run-bad", nil)
+	wa := NewWorkflowActor("run-bad", nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 

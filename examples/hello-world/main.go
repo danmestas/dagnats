@@ -27,24 +27,31 @@ func main() {
 
 	w := worker.NewWorker(nc, nil)
 
-	// Step 1: produce a greeting from the input name
-	w.Handle("greet", func(ctx worker.TaskContext) error {
-		name := string(ctx.Input())
-		if name == "" {
-			name = "World"
-		}
-		greeting := fmt.Sprintf("Hello, %s!", name)
-		fmt.Printf("[greet] %s\n", greeting)
-		return ctx.Complete([]byte(greeting))
-	})
+	// Step 1: produce a greeting from the input name.
+	// HandleTyped handles JSON marshal/unmarshal automatically.
+	worker.HandleTyped(w, "greet",
+		func(
+			ctx worker.TaskContext, name string,
+		) (string, error) {
+			if name == "" {
+				name = "World"
+			}
+			greeting := fmt.Sprintf("Hello, %s!", name)
+			fmt.Printf("[greet] %s\n", greeting)
+			return greeting, nil
+		},
+	)
 
 	// Step 2: uppercase the greeting from step 1
-	w.Handle("uppercase", func(ctx worker.TaskContext) error {
-		input := string(ctx.Input())
-		result := strings.ToUpper(input)
-		fmt.Printf("[uppercase] %s\n", result)
-		return ctx.Complete([]byte(result))
-	})
+	worker.HandleTyped(w, "uppercase",
+		func(
+			ctx worker.TaskContext, input string,
+		) (string, error) {
+			result := strings.ToUpper(input)
+			fmt.Printf("[uppercase] %s\n", result)
+			return result, nil
+		},
+	)
 
 	fmt.Println("Worker ready. Waiting for tasks...")
 	w.Start()

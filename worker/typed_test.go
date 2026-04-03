@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/danmestas/dagnats/natsutil"
 )
 
 // mockTaskContext implements TaskContext for pure unit tests.
@@ -168,6 +170,72 @@ func TestTypedPanicsOnNilFn(t *testing.T) {
 		}
 	}()
 	Typed[addInput, addOutput](nil)
+}
+
+func TestHandleTypedRegistersHandler(t *testing.T) {
+	mock := &mockTaskContext{
+		input: []byte(`{"a":10,"b":20}`),
+	}
+	// Use HandleTyped on a real Worker to verify it wires
+	// through to the handlers map correctly.
+	_, nc := natsutil.StartTestServer(t)
+	w := NewWorker(nc, nil)
+	HandleTyped(w, "adder",
+		func(
+			ctx TaskContext, in addInput,
+		) (addOutput, error) {
+			return addOutput{Sum: in.A + in.B}, nil
+		},
+	)
+	// Positive: handler registered in map
+	handler, ok := w.handlers["adder"]
+	if !ok {
+		t.Fatal("handler not found after HandleTyped")
+	}
+	// Positive: handler works with typed JSON
+	err := handler(mock)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	var out addOutput
+	if err := json.Unmarshal(mock.completed, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Sum != 30 {
+		t.Fatalf("Sum = %d, want 30", out.Sum)
+	}
+}
+
+func TestHandleTypedPanicsOnNilFn(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	w := NewWorker(nc, nil)
+	defer func() {
+		r := recover()
+		// Positive: panics on nil fn
+		if r == nil {
+			t.Fatal("expected panic for nil fn")
+		}
+	}()
+	HandleTyped(w, "bad", (TypedHandlerFunc[addInput, addOutput])(nil))
+}
+
+func TestHandleTypedPanicsOnEmptyTaskType(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	w := NewWorker(nc, nil)
+	defer func() {
+		r := recover()
+		// Positive: panics on empty taskType
+		if r == nil {
+			t.Fatal("expected panic for empty taskType")
+		}
+	}()
+	HandleTyped(w, "",
+		func(
+			ctx TaskContext, in addInput,
+		) (addOutput, error) {
+			return addOutput{}, nil
+		},
+	)
 }
 
 // isNonRetryable is a helper using errors.As for NonRetryableError.

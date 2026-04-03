@@ -10,6 +10,18 @@ import (
 // work with concrete Go types instead of raw []byte.
 type TypedHandlerFunc[I, O any] func(ctx TaskContext, input I) (O, error)
 
+// HandleTyped registers a typed task handler that automatically
+// marshals/unmarshals JSON. Combines Typed() and Handle() into a
+// single call so workers don't need to know about the wrapping.
+func HandleTyped[I, O any](
+	w *Worker, taskType string, fn TypedHandlerFunc[I, O],
+) {
+	if w == nil {
+		panic("HandleTyped: worker must not be nil")
+	}
+	w.Handle(taskType, Typed(fn))
+}
+
 // Typed wraps a TypedHandlerFunc into a HandlerFunc by handling JSON
 // serialization. Marshal/unmarshal failures are wrapped in NonRetryableError
 // because bad serialization will not fix itself on retry.

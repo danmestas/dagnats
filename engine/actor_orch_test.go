@@ -66,6 +66,170 @@ func TestActorOrchBasicWorkflow(t *testing.T) {
 	}
 }
 
+func TestActorOrchEnqueuesTasksOnStart(t *testing.T) {
+	// Methodology: start a workflow via ActorOrchestrator, verify
+	// that a task message appears on the TASK_QUEUES stream.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name:    "actor-enqueue",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("actor-enqueue", defData)
+
+	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "enq-run-1", defData)
+	data, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    data,
+		Header: nats.Header{
+			"Nats-Msg-Id": {startEvt.NATSMsgID()},
+		},
+	})
+
+	// Positive: task appears on TASK_QUEUES stream
+	sub, err := js.PullSubscribe(
+		"task.task-a.*", "",
+		nats.BindStream("TASK_QUEUES"),
+	)
+	if err != nil {
+		t.Fatalf("PullSubscribe: %v", err)
+	}
+	msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("task not enqueued: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(msgs))
+	}
+
+	// Positive: task payload has correct run/step IDs
+	var payload protocol.TaskPayload
+	if err := json.Unmarshal(msgs[0].Data, &payload); err != nil {
+		t.Fatalf("unmarshal task payload: %v", err)
+	}
+	if payload.RunID != "enq-run-1" {
+		t.Fatalf("RunID = %q, want enq-run-1", payload.RunID)
+	}
+	if payload.StepID != "s1" {
+		t.Fatalf("StepID = %q, want s1", payload.StepID)
+	}
+}
+
+func TestActorOrchLinearChainEnqueuesNext(t *testing.T) {
+	// Methodology: two-step chain s1 → s2. Start workflow, verify
+	// s1 task appears. Complete s1, verify s2 task appears.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name:    "actor-chain",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "s1", Task: "task-a",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID: "s2", Task: "task-b",
+				DependsOn: []string{"s1"},
+				Type:      dag.StepTypeNormal,
+			},
+		},
+	}
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put("actor-chain", defData)
+
+	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "chain-run", defData)
+	data, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    data,
+		Header: nats.Header{
+			"Nats-Msg-Id": {startEvt.NATSMsgID()},
+		},
+	})
+
+	// Positive: task-a enqueued
+	subA, _ := js.PullSubscribe(
+		"task.task-a.*", "",
+		nats.BindStream("TASK_QUEUES"),
+	)
+	msgsA, err := subA.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("task-a not enqueued: %v", err)
+	}
+	msgsA[0].Ack()
+
+	// Negative: task-b NOT enqueued yet
+	subB, _ := js.PullSubscribe(
+		"task.task-b.*", "",
+		nats.BindStream("TASK_QUEUES"),
+	)
+	_, err = subB.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	if err == nil {
+		t.Fatal("task-b should not be enqueued before s1 completes")
+	}
+
+	// Complete s1
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "chain-run", "s1",
+		[]byte(`"s1-done"`))
+	compData, _ := compEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: compEvt.NATSSubject(),
+		Data:    compData,
+		Header: nats.Header{
+			"Nats-Msg-Id": {compEvt.NATSMsgID()},
+		},
+	})
+
+	// Positive: task-b now enqueued
+	msgsB, err := subB.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("task-b not enqueued after s1 completed: %v", err)
+	}
+	if len(msgsB) != 1 {
+		t.Fatalf("expected 1 task-b message, got %d", len(msgsB))
+	}
+
+	// Positive: task-b input contains s1 output
+	var bPayload protocol.TaskPayload
+	json.Unmarshal(msgsB[0].Data, &bPayload)
+	if string(bPayload.Input) != `"s1-done"` {
+		t.Fatalf(
+			"task-b input = %q, want s1-done",
+			string(bPayload.Input),
+		)
+	}
+}
+
 func TestActorOrchSurvivesMalformedEvent(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
