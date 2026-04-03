@@ -17,6 +17,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/sync/errgroup"
 )
 
 // Orchestrator subscribes to the history stream and drives workflow execution.
@@ -523,25 +524,32 @@ func (o *Orchestrator) handleStepContinue(
 			"resolve input for step %q: %w", stepDef.ID, err,
 		)
 	}
-	// If LoopDelay is configured, delay re-enqueue via time.AfterFunc.
-	// The timer publishes the iteration task after the delay elapses.
+	// If LoopDelay is configured, delay re-enqueue via a context-aware
+	// timer goroutine. Cancels cleanly if context expires before delay.
 	if stepDef.Loop != nil && stepDef.Loop.LoopDelay > 0 {
 		delay := stepDef.Loop.LoopDelay
 		runID := run.RunID
 		iter := state.Iterations
 		loopCtx := ctx
-		time.AfterFunc(delay, func() {
-			pubErr := o.publishIterationTask(
-				loopCtx, runID, stepDef, input, iter,
-			)
-			if pubErr != nil {
-				o.tel.Logger.Error(
-					"delayed iteration publish failed", pubErr,
-					observe.String("run_id", runID),
-					observe.String("step_id", stepDef.ID),
+		go func() {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-loopCtx.Done():
+				return
+			case <-timer.C:
+				pubErr := o.publishIterationTask(
+					loopCtx, runID, stepDef, input, iter,
 				)
+				if pubErr != nil {
+					o.tel.Logger.Error(
+						"delayed iteration publish failed", pubErr,
+						observe.String("run_id", runID),
+						observe.String("step_id", stepDef.ID),
+					)
+				}
 			}
-		})
+		}()
 		return nil
 	}
 	return o.publishIterationTask(
@@ -971,6 +979,7 @@ func (o *Orchestrator) enqueueReady(
 }
 
 // publishReadyTasks publishes a task message for each ready step.
+// Steps are published concurrently since they are independent.
 func (o *Orchestrator) publishReadyTasks(
 	ctx context.Context,
 	runID string,
@@ -984,7 +993,9 @@ func (o *Orchestrator) publishReadyTasks(
 	if len(ready) == 0 {
 		panic("publishReadyTasks: ready must not be empty")
 	}
+	var g errgroup.Group
 	for _, step := range ready {
+		step := step
 		input, err := dag.ResolveInput(step, run.Steps)
 		if err != nil {
 			return fmt.Errorf(
@@ -992,13 +1003,11 @@ func (o *Orchestrator) publishReadyTasks(
 			)
 		}
 		attempt := run.Steps[step.ID].Attempts
-		if err := o.publishTask(
-			ctx, runID, step, input, attempt,
-		); err != nil {
-			return err
-		}
+		g.Go(func() error {
+			return o.publishTask(ctx, runID, step, input, attempt)
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 // publishTask publishes a TaskPayload to task.{step.Task}.{runID} with
