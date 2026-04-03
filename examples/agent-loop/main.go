@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -32,6 +33,12 @@ func main() {
 
 	fmt.Println("Worker ready. Waiting for tasks...")
 	w.Start()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	<-sig
+	fmt.Println("\nShutting down...")
+	w.Stop()
 }
 
 // counterState is the checkpoint payload for the counter loop.

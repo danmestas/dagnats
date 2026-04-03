@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/danmestas/dagnats/worker"
@@ -34,6 +35,12 @@ func main() {
 
 	fmt.Println("Worker ready. Waiting for tasks...")
 	w.Start()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	<-sig
+	fmt.Println("\nShutting down...")
+	w.Stop()
 }
 
 // handlePrepare simulates preparation work and completes.
