@@ -364,3 +364,170 @@ func TestResolveCheckpoint(t *testing.T) {
 		)
 	}
 }
+
+func TestResolveSendSignal(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-sig", "step-sig",
+	)
+
+	// Send a signal to a different run
+	body := `{
+		"action":"send_signal",
+		"run_id":"run-target",
+		"name":"approval",
+		"data":{"approved":true}
+	}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify signal was written to KV
+	js, _ := nc.JetStream()
+	kv, err := js.KeyValue("signals")
+	if err != nil {
+		t.Fatalf("KeyValue failed: %v", err)
+	}
+	entry, err := kv.Get("run-target.approval")
+	if err != nil {
+		t.Fatalf("Get signal failed: %v", err)
+	}
+	expected := `{"approved":true}`
+	if string(entry.Value()) != expected {
+		t.Fatalf(
+			"unexpected signal data: %s", string(entry.Value()),
+		)
+	}
+
+	// Task should still be in ackMap (send_signal extends deadline)
+	_, ok := b.ackMap.Load(taskID)
+	if !ok {
+		t.Fatal(
+			"expected task to remain in ackMap after send_signal",
+		)
+	}
+}
+
+func TestResolveWaitSignalImmediate(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	// Pre-populate the signal in KV
+	js, _ := nc.JetStream()
+	kv, err := js.KeyValue("signals")
+	if err != nil {
+		t.Fatalf("KeyValue failed: %v", err)
+	}
+	signalData := []byte(`{"status":"ready"}`)
+	_, err = kv.Put("run-wait.approval", signalData)
+	if err != nil {
+		t.Fatalf("Put signal failed: %v", err)
+	}
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-wait", "step-wait",
+	)
+
+	// Wait for the signal (should return immediately)
+	body := `{
+		"action":"wait_signal",
+		"name":"approval",
+		"timeout_ms":5000
+	}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify signal data in response
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if result["status"] != "ready" {
+		t.Fatalf("unexpected signal data: %v", result)
+	}
+}
+
+func TestResolveWaitSignalTimeout(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-timeout", "step-timeout",
+	)
+
+	// Wait for signal that will never arrive
+	body := `{
+		"action":"wait_signal",
+		"name":"missing",
+		"timeout_ms":200
+	}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestTimeout {
+		t.Fatalf("expected 408, got %d", resp.StatusCode)
+	}
+}

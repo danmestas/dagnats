@@ -19,6 +19,7 @@ type Bridge struct {
 	js           nats.JetStreamContext
 	ackMap       *AckMap
 	checkpointKV nats.KeyValue
+	signalKV     nats.KeyValue
 	token        string
 }
 
@@ -33,12 +34,14 @@ func NewBridge(nc *nats.Conn) *Bridge {
 		panic("NewBridge: JetStream init failed: " + err.Error())
 	}
 	checkpointKV, _ := js.KeyValue("checkpoints")
+	signalKV, _ := js.KeyValue("signals")
 	token := os.Getenv("DAGNATS_BRIDGE_TOKEN")
 	return &Bridge{
 		nc:           nc,
 		js:           js,
 		ackMap:       NewAckMap(),
 		checkpointKV: checkpointKV,
+		signalKV:     signalKV,
 		token:        token,
 	}
 }
