@@ -170,6 +170,27 @@ func (b *WorkflowBuilder) WaitForEvent(id string, opts WaitForEventOpts) StepRef
 	return StepRef{id: id, index: idx, builder: b}
 }
 
+// Approval adds a human approval gate step to the workflow.
+// No worker is involved — the engine manages the token and timeout.
+func (b *WorkflowBuilder) Approval(
+	id string, cfg ApprovalConfig,
+) StepRef {
+	if id == "" {
+		panic("Approval: id must not be empty")
+	}
+	if cfg.Timeout <= 0 {
+		panic("Approval: Timeout must be positive")
+	}
+	b.steps = append(b.steps, StepDef{
+		ID:     id,
+		Type:   StepTypeApproval,
+		Config: MarshalConfig(&cfg),
+	})
+	idx := len(b.steps) - 1
+	b.current = idx
+	return StepRef{id: id, index: idx, builder: b}
+}
+
 // WithConcurrency sets workflow-level concurrency limits. MaxRuns bounds
 // how many runs of this workflow execute in parallel; MaxSteps bounds
 // how many steps execute concurrently within a single run.

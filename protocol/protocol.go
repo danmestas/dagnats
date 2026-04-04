@@ -80,6 +80,10 @@ const (
 	EventCompensateStepCompleted  EventType = "compensate.step.completed"
 	EventCompensateFailed         EventType = "compensate.failed"
 	EventCompensateCompleted      EventType = "compensate.completed"
+	EventApprovalRequested        EventType = "approval.requested"
+	EventApprovalGranted          EventType = "approval.granted"
+	EventApprovalRejected         EventType = "approval.rejected"
+	EventApprovalExpired          EventType = "approval.expired"
 )
 
 // Event is the core communication primitive published to the history stream.

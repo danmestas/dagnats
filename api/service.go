@@ -1245,6 +1245,149 @@ func StartTyped[I any](
 	return svc.StartRun(ctx, workflowName, data)
 }
 
+// HandleApproval validates a token and publishes an approval
+// granted or rejected event. Uses atomic CAS delete on the KV
+// entry to guarantee exactly-once consumption.
+func (s *Service) HandleApproval(
+	ctx context.Context,
+	runID, stepID, token, action string,
+	body json.RawMessage,
+) error {
+	if ctx == nil {
+		panic("HandleApproval: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("HandleApproval: runID must not be empty")
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.handleApproval",
+		observe.WithAttributes(
+			observe.StringAttr("run_id", runID),
+			observe.StringAttr("step_id", stepID),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	err := s.handleApprovalInner(
+		runID, stepID, token, action, body,
+	)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return err
+}
+
+// handleApprovalInner loads the token, verifies it, atomically
+// deletes it, and publishes the corresponding event.
+func (s *Service) handleApprovalInner(
+	runID, stepID, token, action string,
+	body json.RawMessage,
+) error {
+	if runID == "" {
+		panic(
+			"handleApprovalInner: runID must not be empty",
+		)
+	}
+	if stepID == "" {
+		panic(
+			"handleApprovalInner: stepID must not be empty",
+		)
+	}
+	return s.consumeTokenAndPublish(
+		runID, stepID, token, action, body,
+	)
+}
+
+// consumeTokenAndPublish performs atomic token verification and
+// event publishing. Separated to keep functions under 70 lines.
+func (s *Service) consumeTokenAndPublish(
+	runID, stepID, token, action string,
+	body json.RawMessage,
+) error {
+	if token == "" {
+		return fmt.Errorf("token is required")
+	}
+	if action != "approve" && action != "reject" {
+		return fmt.Errorf(
+			"action must be 'approve' or 'reject', got %q",
+			action,
+		)
+	}
+	kv, err := s.js.KeyValue("approval_tokens")
+	if err != nil {
+		return fmt.Errorf(
+			"approval_tokens bucket not available: %w", err,
+		)
+	}
+	key := runID + "." + stepID
+	entry, err := kv.Get(key)
+	if err != nil {
+		return fmt.Errorf("token not found or expired")
+	}
+
+	return s.verifyAndPublish(
+		kv, entry, key, token, action, runID, stepID, body,
+	)
+}
+
+// verifyAndPublish checks the token matches, atomically deletes
+// it, and publishes the approval event.
+func (s *Service) verifyAndPublish(
+	kv nats.KeyValue,
+	entry nats.KeyValueEntry,
+	key, token, action, runID, stepID string,
+	body json.RawMessage,
+) error {
+	if kv == nil {
+		panic("verifyAndPublish: kv must not be nil")
+	}
+	if entry == nil {
+		panic("verifyAndPublish: entry must not be nil")
+	}
+	var record struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+		return fmt.Errorf("corrupt token record: %w", err)
+	}
+	if record.Token != token {
+		return fmt.Errorf("invalid token")
+	}
+
+	// Atomic CAS delete — if revision changed, token was
+	// already consumed by a concurrent request.
+	if err := kv.Delete(
+		key, nats.LastRevision(entry.Revision()),
+	); err != nil {
+		return fmt.Errorf("token already consumed")
+	}
+
+	evtType := protocol.EventApprovalGranted
+	if action == "reject" {
+		evtType = protocol.EventApprovalRejected
+	}
+	evt := protocol.NewStepEvent(
+		evtType, runID, stepID, body,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal event: %w", err)
+	}
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	_, err = s.js.PublishMsg(msg)
+	return err
+}
+
 // ListWorkers returns all currently registered workers from the
 // directory. Returns an empty slice when no workers are registered
 // or when the workers KV bucket does not exist.

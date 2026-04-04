@@ -239,7 +239,10 @@ func isHandledEventType(t protocol.EventType) bool {
 		protocol.EventWorkflowCancelled,
 		protocol.EventStepSleepCompleted,
 		protocol.EventStepWaitMatched,
-		protocol.EventStepWaitTimeout:
+		protocol.EventStepWaitTimeout,
+		protocol.EventApprovalGranted,
+		protocol.EventApprovalRejected,
+		protocol.EventApprovalExpired:
 		return true
 	}
 	return false
@@ -287,6 +290,12 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleChildFailed(ctx, evt)
 	case protocol.EventWorkflowCancelled:
 		return o.handleWorkflowCancelled(ctx, evt)
+	case protocol.EventApprovalGranted:
+		return o.handleApprovalGranted(ctx, evt)
+	case protocol.EventApprovalRejected:
+		return o.handleApprovalRejected(ctx, evt)
+	case protocol.EventApprovalExpired:
+		return o.handleApprovalExpired(ctx, evt)
 	default:
 		return nil
 	}
@@ -1285,6 +1294,9 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	// were queued or running (they held a slot).
 	o.releaseCancelledTaskSlots(wfDef, run)
 
+	// Clean up approval tokens for cancelled approval steps.
+	o.cleanupApprovalTokens(wfDef, run)
+
 	if o.correlator != nil {
 		o.correlator.RemoveWaitersForRun(run.RunID)
 	}
@@ -1630,6 +1642,12 @@ func (o *Orchestrator) dispatchReadySteps(
 			}
 		case dag.StepTypeWaitForEvent:
 			if err := o.enqueueWaitForEventStep(
+				ctx, wfDef, &run, step,
+			); err != nil {
+				return err
+			}
+		case dag.StepTypeApproval:
+			if err := o.enqueueApprovalStep(
 				ctx, wfDef, &run, step,
 			); err != nil {
 				return err
