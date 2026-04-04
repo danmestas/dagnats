@@ -468,7 +468,106 @@ Each step is independently shippable and testable. Later steps build on earlier 
 
 **Note on capability parity:** Steps 2-6 ship for Go/embedded workers before the HTTP bridge (step 7). This is a pragmatic concession — the bridge cannot exist before the primitives it bridges. Once the bridge ships, it must support all primitives from day one. No subsequent primitive ships without bridge support in the same change.
 
-## 8. Out of Scope
+## 8. Bridge Completion (Post-Implementation Additions)
+
+The following items were identified during implementation as necessary to fulfill the capability parity principle. They are small, tactical additions — not new primitives.
+
+### 8a. Bridge Integration with `dagnats serve`
+
+The bridge must be startable as part of the all-in-one server lifecycle, not just as a standalone package.
+
+**Design:** Add the bridge to `server/server.go:startComponents()` after the orchestrator and trigger service are started. The bridge mounts on the existing HTTP mux at `/v1/` prefix, sharing the same `http.Server` as the REST API and webhook handler.
+
+```
+mux.Handle("/v1/", bridge.Handler())
+```
+
+The bridge is created with the server's `*nats.Conn` and `nats.JetStreamContext`. It starts automatically when the server starts. No separate process or port needed.
+
+**Configuration:** A new config key `bridge_enabled` (default: `true` when `dagnats serve` runs). The `DAGNATS_BRIDGE_TOKEN` env var controls auth as already implemented.
+
+**Shutdown:** The bridge has no persistent state beyond the in-memory ack map. HTTP server shutdown (existing 15s deadline) handles in-flight requests. Pending ack map entries expire via NATS AckWait.
+
+### 8b. Signal Support in Bridge
+
+The existing `TaskContext` interface exposes `WaitForSignal(name, timeout)` and `SendSignal(runID, name, data)`. These are available to embedded Go workers but not through the HTTP bridge — a capability parity violation.
+
+**Design:** Add two new actions to the resolve endpoint's action discriminator:
+
+```json
+{"action": "wait_signal", "name": "approval", "timeout_ms": 60000}
+{"action": "send_signal", "run_id": "run-xyz", "name": "approval", "data": {"approved": true}}
+```
+
+**`wait_signal` behavior:**
+1. Bridge reads the `signals` KV bucket for key `signals.{runID}.{name}` (using the task's runID from the ack map)
+2. If signal already present: return the signal data immediately as JSON response
+3. If not present: start a KV watch with the specified timeout
+4. On signal arrival: return signal data as JSON response
+5. On timeout: return HTTP 408 (Request Timeout)
+6. The NATS message stays in-flight (InProgress called periodically during the watch)
+
+**`send_signal` behavior:**
+1. Bridge writes to `signals.{runID}.{name}` KV bucket with the provided data
+2. Returns HTTP 200
+
+**Important:** `wait_signal` is a blocking HTTP call (long-poll pattern, same as task poll). The bridge calls `msg.InProgress()` periodically during the wait to prevent AckWait expiry.
+
+### 8c. Bridge Observability
+
+The bridge currently has no telemetry instrumentation. All other DagNats components (api, engine, worker) have provider-agnostic observability via `observe.Telemetry`.
+
+**Design:** Add to `Bridge` struct:
+- `tel *observe.Telemetry` field (passed via constructor)
+- Spans on each endpoint: `bridge.connect`, `bridge.poll`, `bridge.resolve`
+- Metrics: `bridge_requests_total` (counter by endpoint), `bridge_poll_duration_ms` (histogram), `bridge_ackmap_size` (gauge)
+- Structured logging on connect/disconnect, poll (empty vs tasks returned), resolve (action type)
+
+Follow the exact pattern from `api/service.go` — instrumented wrapper method calling inner logic method.
+
+### 8d. Go HTTP Reference Client
+
+A Go package that implements the bridge's HTTP protocol, validating the wire format end-to-end and serving as a template for other language SDKs.
+
+**Design:** Create `sdk/httpclient/` package:
+
+```go
+package httpclient
+
+// Client implements the DagNats worker protocol over HTTP.
+type Client struct {
+    baseURL string
+    token   string
+    http    *http.Client
+}
+
+func New(baseURL, token string) *Client
+func (c *Client) Connect(ctx context.Context, reg WorkerRegistration) error
+func (c *Client) Poll(ctx context.Context, taskTypes []string, maxTasks int, timeout time.Duration) ([]TaskPayload, error)
+func (c *Client) Complete(ctx context.Context, taskID string, output json.RawMessage) error
+func (c *Client) Fail(ctx context.Context, taskID string, errMsg string) error
+func (c *Client) Pause(ctx context.Context, taskID string, name string, duration time.Duration, checkpoint json.RawMessage) error
+func (c *Client) Checkpoint(ctx context.Context, taskID string, data json.RawMessage) error
+func (c *Client) WaitSignal(ctx context.Context, taskID string, name string, timeout time.Duration) (json.RawMessage, error)
+func (c *Client) SendSignal(ctx context.Context, taskID string, runID string, name string, data json.RawMessage) error
+```
+
+The client uses `protocol.TaskPayload`, `protocol.TaskResolution`, and `worker.WorkerRegistration` types directly — no duplication. It handles SSE heartbeat parsing in `Connect()` via a background goroutine.
+
+**Test:** An E2E test that starts a full DagNats server, connects via the HTTP client, polls a task, completes it, and verifies workflow completion — proving the protocol works end-to-end through the Go reference implementation.
+
+## 9. Build Order (Updated)
+
+Previous build order items 1-8 are complete. The following extend Tier 1:
+
+9. **Bridge integration with `dagnats serve`** — mount on existing HTTP mux
+10. **Signal support in bridge** — two new resolve actions
+11. **Bridge observability** — spans, metrics, structured logging
+12. **Go HTTP reference client** — validates wire protocol end-to-end
+
+Each is independently shippable. Items 9-10 are highest priority (capability parity). Item 11 is operational hygiene. Item 12 validates the protocol for SDK authors.
+
+## 10. Out of Scope (Unchanged)
 
 - Debounce and event batching (Tier 2)
 - Idempotency by expression (Tier 2)
