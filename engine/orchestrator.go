@@ -946,7 +946,7 @@ func (o *Orchestrator) handlePermanentFailure(
 	}
 
 	// Release task concurrency slot if configured.
-	o.releaseTaskSlot(wfDef, evt.StepID)
+	o.releaseTaskSlot(wfDef, stepID)
 
 	// If this is an auxiliary step (compensate target) failing,
 	// the compensation itself failed — critical state.
