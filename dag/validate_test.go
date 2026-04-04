@@ -159,6 +159,55 @@ func TestValidateCompensateRefExists(t *testing.T) {
 	}
 }
 
+func TestValidateOnFailureTargetNoDeps(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "main", Task: "t", Type: StepTypeNormal,
+				OnFailure: "fallback"},
+			{ID: "fallback", Task: "t", Type: StepTypeNormal,
+				DependsOn: []string{"main"}},
+		},
+	}
+	err := Validate(def)
+	// Positive: rejects OnFailure target with DependsOn
+	if err == nil {
+		t.Fatal("expected error: OnFailure target has DependsOn")
+	}
+}
+
+func TestValidateCompensateTargetNoDeps(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "main", Task: "t", Type: StepTypeNormal,
+				Compensate: "undo"},
+			{ID: "undo", Task: "t", Type: StepTypeNormal,
+				DependsOn: []string{"main"}},
+		},
+	}
+	err := Validate(def)
+	// Positive: rejects Compensate target with DependsOn
+	if err == nil {
+		t.Fatal("expected error: Compensate target has DependsOn")
+	}
+}
+
+func TestValidateOnFailureSelfReference(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "main", Task: "t", Type: StepTypeNormal,
+				OnFailure: "main"},
+		},
+	}
+	err := Validate(def)
+	// Positive: rejects self-referencing OnFailure
+	if err == nil {
+		t.Fatal("expected error: OnFailure self-reference")
+	}
+}
+
 func TestValidateOnFailureAndCompensateValid(t *testing.T) {
 	def := WorkflowDef{
 		Name: "v", Version: "1",

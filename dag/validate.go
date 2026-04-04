@@ -61,7 +61,7 @@ func validateStepReferences(
 			return err
 		}
 	}
-	return nil
+	return validateAuxTargets(def, ids)
 }
 
 // validateSingleStep validates one step's fields against the known ID set.
@@ -213,6 +213,53 @@ func detectCycle(steps []StepDef) error {
 			"workflow contains a cycle (%d of %d steps reachable)",
 			visited, len(steps),
 		)
+	}
+	return nil
+}
+
+// validateAuxTargets checks OnFailure and Compensate target constraints.
+// Targets must not have DependsOn (they receive error context, not
+// upstream output) and must not self-reference.
+func validateAuxTargets(
+	def WorkflowDef, ids map[string]bool,
+) error {
+	byID := make(map[string]StepDef, len(def.Steps))
+	for _, s := range def.Steps {
+		byID[s.ID] = s
+	}
+	for _, step := range def.Steps {
+		if step.OnFailure != "" {
+			if step.OnFailure == step.ID {
+				return fmt.Errorf(
+					"step %q OnFailure references itself",
+					step.ID,
+				)
+			}
+			target := byID[step.OnFailure]
+			if len(target.DependsOn) > 0 {
+				return fmt.Errorf(
+					"step %q OnFailure target %q must not "+
+						"have DependsOn",
+					step.ID, step.OnFailure,
+				)
+			}
+		}
+		if step.Compensate != "" {
+			if step.Compensate == step.ID {
+				return fmt.Errorf(
+					"step %q Compensate references itself",
+					step.ID,
+				)
+			}
+			target := byID[step.Compensate]
+			if len(target.DependsOn) > 0 {
+				return fmt.Errorf(
+					"step %q Compensate target %q must not "+
+						"have DependsOn",
+					step.ID, step.Compensate,
+				)
+			}
+		}
 	}
 	return nil
 }
