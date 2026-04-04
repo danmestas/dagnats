@@ -238,6 +238,21 @@ func (s *Service) startRunInner(
 			"workflow %q not found: %w", workflowName, err,
 		)
 	}
+	// Validate input against InputSchema if present.
+	if input != nil {
+		var def dag.WorkflowDef
+		if err := json.Unmarshal(entry.Value(), &def); err == nil {
+			if def.InputSchema != nil {
+				if err := dag.ValidateSchema(
+					def.InputSchema, input,
+				); err != nil {
+					return "", fmt.Errorf(
+						"input validation: %w", err,
+					)
+				}
+			}
+		}
+	}
 	runID := generateRunID()
 	payload, err := buildStartPayload(entry.Value(), input)
 	if err != nil {
@@ -1212,4 +1227,19 @@ func (s *Service) listRunEventsInner(
 		})
 	}
 	return events, nil
+}
+
+// StartTyped marshals a typed input and starts a workflow run.
+// Convenience wrapper around StartRun for typed workflows.
+func StartTyped[I any](
+	ctx context.Context, svc *Service, workflowName string, input I,
+) (string, error) {
+	if svc == nil {
+		panic("StartTyped: svc must not be nil")
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("marshal input: %w", err)
+	}
+	return svc.StartRun(ctx, workflowName, data)
 }
