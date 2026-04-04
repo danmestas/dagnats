@@ -29,6 +29,7 @@ type TaskContext interface {
 	Heartbeat() error
 	Checkpoint(state []byte) error
 	LoadCheckpoint() ([]byte, error)
+	Pause(name string, duration time.Duration) error
 	WaitForSignal(name string, timeout time.Duration) ([]byte, error)
 	SendSignal(runID, name string, data []byte) error
 }

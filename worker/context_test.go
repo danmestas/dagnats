@@ -471,3 +471,174 @@ func TestTaskContextSignalNilKV(t *testing.T) {
 		t.Fatal("expected error for nil signalKV on send")
 	}
 }
+
+func TestTaskContextPause(t *testing.T) {
+	// Methodology: create a worker with a handler that pauses on first call,
+	// then completes on resume. Verify handler is called twice with correct
+	// checkpoint data and that completion happens after the delay.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "checkpoints"},
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	var callCount int
+	pauseName := "waiting-for-approval"
+
+	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w.Handle("pausable", func(ctx TaskContext) error {
+		callCount++
+		checkpoint, err := ctx.LoadCheckpoint()
+		if err != nil {
+			return fmt.Errorf("load checkpoint: %w", err)
+		}
+		if checkpoint == nil {
+			// First call: pause for 200ms
+			return ctx.Pause(pauseName, 200*time.Millisecond)
+		}
+		// Resume detected: verify checkpoint data and complete
+		var data map[string]any
+		if err := json.Unmarshal(checkpoint, &data); err != nil {
+			return fmt.Errorf("unmarshal checkpoint: %w", err)
+		}
+		if data["pause_resume"] != pauseName {
+			return fmt.Errorf(
+				"pause_resume = %v, want %s",
+				data["pause_resume"], pauseName,
+			)
+		}
+		return ctx.Complete([]byte(`"resumed"`))
+	})
+	w.Start()
+	defer w.Stop()
+
+	// Subscribe to completion event
+	sub, _ := js.SubscribeSync("history.run-pause", nats.DeliverAll())
+
+	// Publish task
+	payload := protocol.TaskPayload{
+		RunID:  "run-pause",
+		StepID: "step-pause",
+		Input:  json.RawMessage(`"start"`),
+	}
+	data, _ := json.Marshal(payload)
+	start := time.Now()
+	if _, err := js.Publish("task.pausable.run-pause", data); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	// Wait for completion event
+	msg, err := sub.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("completion timeout: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	var evt protocol.Event
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+
+	// Positive: handler was called twice (initial + resume)
+	if callCount != 2 {
+		t.Fatalf("callCount = %d, want 2", callCount)
+	}
+
+	// Positive: completion event received
+	if evt.Type != protocol.EventStepCompleted {
+		t.Fatalf(
+			"event type = %q, want %q",
+			evt.Type, protocol.EventStepCompleted,
+		)
+	}
+
+	// Negative: elapsed time should be >= pause duration
+	if elapsed < 200*time.Millisecond {
+		t.Fatalf(
+			"elapsed = %v, want >= 200ms", elapsed,
+		)
+	}
+}
+
+func TestTaskContextPausePanicsOnEmptyName(t *testing.T) {
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nil, tel, nil,
+		protocol.TaskPayload{
+			RunID: "run-pause-panic", StepID: "step",
+		},
+		bgCtx, span, &nats.Msg{}, nil, nil,
+	)
+	defer func() {
+		r := recover()
+		// Positive: panics on empty name
+		if r == nil {
+			t.Fatal("expected panic for empty name")
+		}
+		msg := fmt.Sprintf("%v", r)
+		// Negative: message mentions name
+		if msg != "Pause: name must not be empty" {
+			t.Fatalf("panic = %q, want name message", msg)
+		}
+	}()
+	tc.Pause("", 1*time.Second)
+}
+
+func TestTaskContextPausePanicsOnZeroDuration(t *testing.T) {
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nil, tel, nil,
+		protocol.TaskPayload{
+			RunID: "run-pause-zero", StepID: "step",
+		},
+		bgCtx, span, &nats.Msg{}, nil, nil,
+	)
+	defer func() {
+		r := recover()
+		// Positive: panics on zero duration
+		if r == nil {
+			t.Fatal("expected panic for zero duration")
+		}
+		msg := fmt.Sprintf("%v", r)
+		// Negative: message mentions duration must be positive
+		if msg != "Pause: duration must be positive" {
+			t.Fatalf("panic = %q, want duration message", msg)
+		}
+	}()
+	tc.Pause("test", 0)
+}
+
+func TestTaskContextPausePanicsOnNegativeDuration(t *testing.T) {
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nil, tel, nil,
+		protocol.TaskPayload{
+			RunID: "run-pause-neg", StepID: "step",
+		},
+		bgCtx, span, &nats.Msg{}, nil, nil,
+	)
+	defer func() {
+		r := recover()
+		// Positive: panics on negative duration
+		if r == nil {
+			t.Fatal("expected panic for negative duration")
+		}
+		// Negative: error mentions positive requirement
+		msg := fmt.Sprintf("%v", r)
+		if msg != "Pause: duration must be positive" {
+			t.Fatalf("panic = %q, want positive message", msg)
+		}
+	}()
+	tc.Pause("test", -1*time.Second)
+}

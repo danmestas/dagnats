@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -297,6 +298,30 @@ func (c *taskContext) WaitForSignal(
 			)
 		}
 	}
+}
+
+// Pause checkpoints state with a pause marker, then NAKs with delay.
+// On redeliver, the handler calls LoadCheckpoint to detect the resume.
+// The engine is not involved — step stays StepStatusRunning.
+func (c *taskContext) Pause(name string, duration time.Duration) error {
+	if name == "" {
+		panic("Pause: name must not be empty")
+	}
+	if duration <= 0 {
+		panic("Pause: duration must be positive")
+	}
+	if c.msg == nil {
+		panic("Pause: msg already consumed or nil")
+	}
+	checkpoint := map[string]any{"pause_resume": name}
+	data, err := json.Marshal(checkpoint)
+	if err != nil {
+		return fmt.Errorf("marshal pause checkpoint: %w", err)
+	}
+	if err := c.Checkpoint(data); err != nil {
+		return fmt.Errorf("save pause checkpoint: %w", err)
+	}
+	return c.msg.NakWithDelay(duration)
 }
 
 // SendSignal writes data to KV at {runID}.{name} to wake up a
