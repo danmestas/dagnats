@@ -87,11 +87,32 @@
 - Subject routing: `task.{taskType}.{group}.{runID}`
 - Worker option: `WithGroups(groups...)` subscribes to group-specific subjects
 
-## Compensation/Saga (Declared, Not Implemented)
+## OnFailure Recovery
 
-- Fields: `StepDef.OnFailure`, `StepDef.Compensate` (step ID references)
-- Validation: referenced step IDs must exist in workflow
-- Intended flow: permanent failure → run OnFailure step → Compensate in reverse order
+- `StepDef.OnFailure` — step ID to run when this step permanently fails
+- OnFailure handler receives error context as input
+- If handler succeeds: original step transitions to `StepStatusRecovered`, dependents skipped
+- If handler fails: workflow fails normally
+- OnFailure targets cannot have their own `DependsOn` (receive error context directly)
+- `AuxSteps` map precomputed at `Build()` — auxiliary steps don't block `IsComplete()`
+
+## Saga Compensation
+
+- `StepDef.Compensate` — step ID to run for rollback
+- Triggered on permanent step failure (after OnFailure, if present)
+- Runs in reverse topological order via temporary `DependsOn` chain
+- `RunStatusCompensated` / `RunStatusCompensateFailed` for outcome tracking
+- Protocol events: `compensate.started`, `compensate.step.completed`, `compensate.failed`, `compensate.completed`
+
+## Scheduled Runs
+
+- API-level feature (not a trigger type): `ScheduleRun(ctx, workflow, input, runAt)`
+- Stored in `scheduled_runs` KV bucket with `RunAt` timestamp
+- Timer: `SLEEP_TIMERS` stream with `NakWithDelay(time.Until(runAt))` — fires on redeliver
+- `api/timer.go` consumes `scheduled.>` subjects, publishes `workflow.started` on fire
+- CLI: `dagnats run start <wf> --at "2026-04-05T10:00:00Z"`
+- REST: `POST /runs/scheduled`, `GET /runs/scheduled/{id}`, `DELETE /runs/scheduled/{id}`
+- Max 365 days ahead. Cancelable before fire.
 
 ## Input/Output Schemas
 
