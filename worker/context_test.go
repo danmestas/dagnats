@@ -642,3 +642,168 @@ func TestTaskContextPausePanicsOnNegativeDuration(t *testing.T) {
 	}()
 	tc.Pause("test", -1*time.Second)
 }
+
+func TestFailPermanentPublishesNonRetriable(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+
+	tc := newTaskContext(
+		nc, tel, js,
+		protocol.TaskPayload{
+			RunID: "run-1", StepID: "step-a",
+		},
+		bgCtx, span,
+		&nats.Msg{}, nil, nil,
+	)
+
+	if err := tc.FailPermanent(fmt.Errorf("not found")); err != nil {
+		t.Fatalf("FailPermanent: %v", err)
+	}
+
+	sub, err := js.PullSubscribe(
+		"history.run-1", "",
+		nats.BindStream("WORKFLOW_HISTORY"),
+	)
+	if err != nil {
+		t.Fatalf("PullSubscribe: %v", err)
+	}
+	msgs, err := sub.Fetch(1, nats.MaxWait(3*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(msgs))
+	}
+
+	var evt protocol.Event
+	if err := json.Unmarshal(msgs[0].Data, &evt); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+	if evt.Type != protocol.EventStepFailed {
+		t.Fatalf("event type = %q, want step.failed", evt.Type)
+	}
+
+	var payload protocol.StepFailedPayload
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.FailureType != protocol.FailureTypeNonRetriable {
+		t.Fatalf("FailureType = %q, want non_retriable",
+			payload.FailureType)
+	}
+	if payload.Error != "not found" {
+		t.Fatalf("Error = %q, want %q",
+			payload.Error, "not found")
+	}
+}
+
+func TestFailRetryAfterPublishesDelay(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+
+	tc := newTaskContext(
+		nc, tel, js,
+		protocol.TaskPayload{
+			RunID: "run-2", StepID: "step-b",
+		},
+		bgCtx, span,
+		&nats.Msg{}, nil, nil,
+	)
+
+	err := tc.FailRetryAfter(
+		fmt.Errorf("rate limited"), 5*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("FailRetryAfter: %v", err)
+	}
+
+	sub, _ := js.PullSubscribe(
+		"history.run-2", "",
+		nats.BindStream("WORKFLOW_HISTORY"),
+	)
+	msgs, _ := sub.Fetch(1, nats.MaxWait(3*time.Second))
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(msgs))
+	}
+
+	var evt protocol.Event
+	json.Unmarshal(msgs[0].Data, &evt)
+
+	var payload protocol.StepFailedPayload
+	json.Unmarshal(evt.Payload, &payload)
+	if payload.FailureType != protocol.FailureTypeRetryAfter {
+		t.Fatalf("FailureType = %q, want retry_after",
+			payload.FailureType)
+	}
+	if payload.RetryAfterMs != 5000 {
+		t.Fatalf("RetryAfterMs = %d, want 5000",
+			payload.RetryAfterMs)
+	}
+}
+
+func TestFailRetryAfterClampsBounds(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+	tel := observe.NewNoopTelemetry()
+	bgCtx := context.Background()
+	_, span := tel.Tracer.Start(bgCtx, "test")
+
+	tc := newTaskContext(
+		nc, tel, js,
+		protocol.TaskPayload{
+			RunID: "run-3", StepID: "step-c",
+		},
+		bgCtx, span,
+		&nats.Msg{}, nil, nil,
+	)
+	tc.FailRetryAfter(fmt.Errorf("slow"), 2*time.Hour)
+
+	sub, _ := js.PullSubscribe(
+		"history.run-3", "",
+		nats.BindStream("WORKFLOW_HISTORY"),
+	)
+	msgs, _ := sub.Fetch(1, nats.MaxWait(3*time.Second))
+	var evt protocol.Event
+	json.Unmarshal(msgs[0].Data, &evt)
+	var payload protocol.StepFailedPayload
+	json.Unmarshal(evt.Payload, &payload)
+	if payload.RetryAfterMs != 3_600_000 {
+		t.Fatalf("RetryAfterMs = %d, want 3600000 (clamped)",
+			payload.RetryAfterMs)
+	}
+}
+
+func TestFailPermanentPanicsOnNilErr(t *testing.T) {
+	tc := &taskContext{msg: &nats.Msg{}}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil err")
+		}
+	}()
+	tc.FailPermanent(nil)
+}
+
+func TestFailRetryAfterPanicsOnNegativeDuration(t *testing.T) {
+	tc := &taskContext{msg: &nats.Msg{}}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for negative duration")
+		}
+	}()
+	tc.FailRetryAfter(fmt.Errorf("err"), -1*time.Second)
+}

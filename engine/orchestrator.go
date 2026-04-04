@@ -45,6 +45,8 @@ type Orchestrator struct {
 	runsFailed       observe.Counter
 	stepEnqueueCount observe.Counter
 	snapshotDuration observe.Histogram
+	failNonRetriable observe.Counter
+	failRetryAfter   observe.Counter
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -106,6 +108,12 @@ func NewOrchestrator(
 		),
 		snapshotDuration: tel.Metrics.Histogram(
 			"snapshot.save.duration_ms", nil,
+		),
+		failNonRetriable: tel.Metrics.Counter(
+			"step.failure.non_retriable", nil,
+		),
+		failRetryAfter: tel.Metrics.Counter(
+			"step.failure.retry_after", nil,
 		),
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
@@ -736,10 +744,43 @@ func (o *Orchestrator) failLoopStep(
 	return o.notifyParentIfChild(run, fmt.Errorf("%s", reason))
 }
 
-// handleStepFailed processes a step failure event. If the step has retries
-// remaining, it stays queued for JetStream redelivery. If retries are
-// exhausted (or the step has zero retries configured), the step and workflow
-// are marked as permanently failed.
+// parseFailPayload parses a StepFailedPayload from event payload.
+// Falls back to treating raw strings as retriable errors for
+// backward compatibility with old workers that send plain strings.
+func parseFailPayload(
+	data json.RawMessage,
+) protocol.StepFailedPayload {
+	if len(data) == 0 {
+		return protocol.StepFailedPayload{
+			FailureType: protocol.FailureTypeRetriable,
+		}
+	}
+	var payload protocol.StepFailedPayload
+	if err := json.Unmarshal(data, &payload); err == nil &&
+		payload.Error != "" {
+		if payload.FailureType == "" {
+			payload.FailureType = protocol.FailureTypeRetriable
+		}
+		return payload
+	}
+	// Backward compat: raw quoted string
+	var rawErr string
+	if err := json.Unmarshal(data, &rawErr); err == nil {
+		return protocol.StepFailedPayload{
+			Error:       rawErr,
+			FailureType: protocol.FailureTypeRetriable,
+		}
+	}
+	return protocol.StepFailedPayload{
+		Error:       string(data),
+		FailureType: protocol.FailureTypeRetriable,
+	}
+}
+
+// handleStepFailed processes a step failure event. Parses the
+// structured StepFailedPayload and branches on FailureType:
+// non-retriable skips retries, retry-after schedules exact delay,
+// retriable uses existing backoff behavior.
 func (o *Orchestrator) handleStepFailed(
 	ctx context.Context, evt protocol.Event,
 ) error {
@@ -763,70 +804,244 @@ func (o *Orchestrator) handleStepFailed(
 
 	state := run.Steps[evt.StepID]
 	state.Attempts++
-	if evt.Payload != nil {
-		state.Error = string(evt.Payload)
-	}
+
+	failPayload := parseFailPayload(evt.Payload)
+	state.Error = failPayload.Error
 
 	stepDef, _ := findStepDef(wfDef, evt.StepID)
 	policy := dag.ResolveRetryPolicy(wfDef, stepDef)
 
+	// Non-retriable: skip all retries immediately.
+	if failPayload.FailureType ==
+		protocol.FailureTypeNonRetriable {
+		o.failNonRetriable.Inc()
+		o.tel.Logger.Info(
+			"step failed permanently (non-retriable)",
+			observe.String("run_id", evt.RunID),
+			observe.String("step_id", evt.StepID),
+		)
+		state.Status = dag.StepStatusFailed
+		run.Steps[evt.StepID] = state
+		return o.handlePermanentFailure(
+			ctx, wfDef, run, stepDef, state, evt.StepID,
+		)
+	}
+
+	// Retry-after: schedule exact delay if retries remain.
+	if failPayload.FailureType ==
+		protocol.FailureTypeRetryAfter {
+		o.failRetryAfter.Inc()
+		return o.handleRetryAfter(
+			ctx, wfDef, &run, stepDef, &state,
+			evt.StepID, failPayload.RetryAfterMs, policy,
+		)
+	}
+
+	// Retriable (default): existing backoff behavior.
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
-		// Retries remaining — save state and let NATS redeliver.
 		run.Steps[evt.StepID] = state
 		return o.saveSnapshot(ctx, run)
 	}
 
-	// Retries exhausted — permanent failure.
 	state.Status = dag.StepStatusFailed
 	run.Steps[evt.StepID] = state
+	return o.handlePermanentFailure(
+		ctx, wfDef, run, stepDef, state, evt.StepID,
+	)
+}
+
+// handleRetryAfter handles a retry-after failure: schedules an
+// exact delay if retries remain, otherwise permanent failure.
+func (o *Orchestrator) handleRetryAfter(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run *dag.WorkflowRun,
+	stepDef dag.StepDef,
+	state *dag.StepState,
+	stepID string,
+	retryAfterMs int64,
+	policy *dag.RetryPolicy,
+) error {
+	if stepID == "" {
+		panic("handleRetryAfter: stepID must not be empty")
+	}
+	if run.RunID == "" {
+		panic("handleRetryAfter: RunID must not be empty")
+	}
+	if policy != nil && state.Attempts <= policy.MaxAttempts {
+		run.Steps[stepID] = *state
+		if err := o.saveSnapshot(ctx, *run); err != nil {
+			return err
+		}
+		return o.scheduleRetryAfter(
+			run.RunID, stepID, stepDef,
+			retryAfterMs, *run,
+		)
+	}
+	state.Status = dag.StepStatusFailed
+	run.Steps[stepID] = *state
+	return o.handlePermanentFailure(
+		ctx, wfDef, *run, stepDef, *state, stepID,
+	)
+}
+
+// handlePermanentFailure handles a step whose retries are exhausted
+// or that was marked non-retriable. Checks aux steps, on-failure
+// handlers, compensation chains, then fails the workflow.
+func (o *Orchestrator) handlePermanentFailure(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	stepDef dag.StepDef,
+	state dag.StepState,
+	stepID string,
+) error {
+	if stepID == "" {
+		panic(
+			"handlePermanentFailure: stepID must not be empty",
+		)
+	}
+	if run.RunID == "" {
+		panic(
+			"handlePermanentFailure: RunID must not be empty",
+		)
+	}
 
 	// If this is an auxiliary step (compensate target) failing,
 	// the compensation itself failed — critical state.
-	if wfDef.AuxSteps[evt.StepID] {
-		run.Status = dag.RunStatusCompensateFailed
-		if err := o.saveSnapshot(ctx, run); err != nil {
-			return err
-		}
-		o.runsActive.Dec()
-		o.runsFailed.Inc()
-		o.publishDeadLetter(run.RunID, stepDef, state)
-		return o.notifyParentIfChild(
-			run,
-			fmt.Errorf("compensation failed: %s", state.Error),
-		)
+	if wfDef.AuxSteps[stepID] {
+		return o.failAuxStep(ctx, run, stepDef, state)
 	}
 
 	// Check for on-failure handler before failing the workflow.
 	if stepDef.OnFailure != "" {
-		onFailStep, found := findStepDef(wfDef, stepDef.OnFailure)
-		if found {
-			ofState := run.Steps[onFailStep.ID]
-			ofState.Status = dag.StepStatusQueued
-			run.Steps[onFailStep.ID] = ofState
-			if err := o.saveSnapshot(ctx, run); err != nil {
-				return err
-			}
-			errorInput := []byte(fmt.Sprintf(
-				`{"failed_step":"%s","error":%s}`,
-				evt.StepID, state.Error))
-			return o.publishTask(ctx, run.RunID, onFailStep,
-				errorInput, 0)
+		handled, err := o.tryOnFailureHandler(
+			ctx, wfDef, run, stepDef, state, stepID,
+		)
+		if err != nil {
+			return err
+		}
+		if handled {
+			return nil
 		}
 	}
 
 	// No on-failure handler — check for compensation.
 	completed := completedSet(run)
 	chain := dag.ResolveCompensateChain(
-		wfDef, completed, evt.StepID,
+		wfDef, completed, stepID,
 	)
 	if len(chain) > 0 {
 		return o.startCompensation(
-			ctx, wfDef, &run, evt.StepID, state.Error,
+			ctx, wfDef, &run, stepID, state.Error,
 		)
 	}
 
 	// No compensation either — fail the workflow.
 	return o.failWorkflow(ctx, run, stepDef, state)
+}
+
+// failAuxStep handles failure of an auxiliary (compensate) step.
+// Marks the run as CompensateFailed and publishes a dead letter.
+func (o *Orchestrator) failAuxStep(
+	ctx context.Context,
+	run dag.WorkflowRun,
+	stepDef dag.StepDef,
+	state dag.StepState,
+) error {
+	if run.RunID == "" {
+		panic("failAuxStep: RunID must not be empty")
+	}
+	if stepDef.ID == "" {
+		panic("failAuxStep: stepDef.ID must not be empty")
+	}
+	run.Status = dag.RunStatusCompensateFailed
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	o.runsActive.Dec()
+	o.runsFailed.Inc()
+	o.publishDeadLetter(run.RunID, stepDef, state)
+	return o.notifyParentIfChild(
+		run,
+		fmt.Errorf("compensation failed: %s", state.Error),
+	)
+}
+
+// tryOnFailureHandler attempts to run the on-failure handler for a
+// failed step. Returns (true, nil) if the handler was enqueued.
+func (o *Orchestrator) tryOnFailureHandler(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	stepDef dag.StepDef,
+	state dag.StepState,
+	stepID string,
+) (bool, error) {
+	if stepDef.OnFailure == "" {
+		panic("tryOnFailureHandler: OnFailure must not be empty")
+	}
+	if stepID == "" {
+		panic("tryOnFailureHandler: stepID must not be empty")
+	}
+	onFailStep, found := findStepDef(
+		wfDef, stepDef.OnFailure,
+	)
+	if !found {
+		return false, nil
+	}
+	ofState := run.Steps[onFailStep.ID]
+	ofState.Status = dag.StepStatusQueued
+	run.Steps[onFailStep.ID] = ofState
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return false, err
+	}
+	errorInput := []byte(fmt.Sprintf(
+		`{"failed_step":"%s","error":%q}`,
+		stepID, state.Error,
+	))
+	err := o.publishTask(
+		ctx, run.RunID, onFailStep, errorInput, 0,
+	)
+	return err == nil, err
+}
+
+// scheduleRetryAfter schedules a timer to re-publish the task
+// after the worker-requested delay via SLEEP_TIMERS.
+func (o *Orchestrator) scheduleRetryAfter(
+	runID string, stepID string,
+	stepDef dag.StepDef,
+	retryAfterMs int64,
+	run dag.WorkflowRun,
+) error {
+	if runID == "" {
+		panic("scheduleRetryAfter: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("scheduleRetryAfter: stepID must not be empty")
+	}
+	if retryAfterMs <= 0 {
+		retryAfterMs = 100
+	}
+	if retryAfterMs > 3_600_000 {
+		retryAfterMs = 3_600_000
+	}
+	input, err := dag.ResolveInput(stepDef, run.Steps)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve input for retry-after step %q: %w",
+			stepID, err,
+		)
+	}
+	return o.sleepTimer.Schedule(TimerMessage{
+		Action:     TimerActionRetryAfter,
+		RunID:      runID,
+		StepID:     stepID,
+		DurationMs: retryAfterMs,
+		TaskType:   stepDef.Task,
+		Input:      input,
+		Attempt:    run.Steps[stepID].Attempts,
+	})
 }
 
 // failWorkflow marks the workflow as permanently failed and releases
@@ -977,11 +1192,11 @@ func buildCompensateInput(
 ) []byte {
 	return []byte(fmt.Sprintf(
 		`{"original_step":%q,"original_output":%s,`+
-			`"trigger_step":%q,"trigger_error":%s}`,
+			`"trigger_step":%q,"trigger_error":%q}`,
 		originalID,
 		jsonOrNull(originalOutput),
 		failedStepID,
-		jsonOrNull([]byte(failedError)),
+		failedError,
 	))
 }
 
