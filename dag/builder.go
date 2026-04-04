@@ -191,6 +191,32 @@ func (b *WorkflowBuilder) Approval(
 	return StepRef{id: id, index: idx, builder: b}
 }
 
+// Planner appends a planner step that generates a DAG fragment at
+// runtime. The worker outputs JSON steps; the engine validates,
+// namespaces, and materializes them into the running workflow.
+func (b *WorkflowBuilder) Planner(
+	id, task string, cfg PlannerConfig,
+) StepRef {
+	if id == "" {
+		panic("Planner: id must not be empty")
+	}
+	if task == "" {
+		panic("Planner: task must not be empty")
+	}
+	if cfg.MaxSteps <= 0 {
+		panic("Planner: MaxSteps must be positive")
+	}
+	b.steps = append(b.steps, StepDef{
+		ID:     id,
+		Task:   task,
+		Type:   StepTypePlanner,
+		Config: MarshalConfig(&cfg),
+	})
+	idx := len(b.steps) - 1
+	b.current = idx
+	return StepRef{id: id, index: idx, builder: b}
+}
+
 // WithConcurrency sets workflow-level concurrency limits. MaxRuns bounds
 // how many runs of this workflow execute in parallel; MaxSteps bounds
 // how many steps execute concurrently within a single run.

@@ -149,3 +149,30 @@ func ParseWaitForEventConfig(
 	}
 	return cfg, nil
 }
+
+// ParsePlannerConfig extracts PlannerConfig from a StepDef's Config
+// field. Returns an error if the step type is wrong, Config is nil,
+// or the JSON is malformed.
+func ParsePlannerConfig(
+	step StepDef,
+) (PlannerConfig, error) {
+	if step.Type != StepTypePlanner {
+		return PlannerConfig{}, fmt.Errorf(
+			"step %q: expected Planner, got %s",
+			step.ID, step.Type,
+		)
+	}
+	if step.Config == nil {
+		return PlannerConfig{}, fmt.Errorf(
+			"step %q: Config is nil for Planner", step.ID,
+		)
+	}
+	var cfg PlannerConfig
+	if err := json.Unmarshal(step.Config, &cfg); err != nil {
+		return PlannerConfig{}, fmt.Errorf(
+			"step %q: unmarshal PlannerConfig: %w",
+			step.ID, err,
+		)
+	}
+	return cfg, nil
+}

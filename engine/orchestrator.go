@@ -416,6 +416,15 @@ func (o *Orchestrator) handleStepCompleted(
 	// Release task concurrency slot if configured.
 	o.releaseTaskSlot(wfDef, evt.StepID)
 
+	// If the completed step is a planner, materialize its output
+	// into the running DAG before checking completion or enqueueing.
+	stepDef, foundStep := findStepDef(wfDef, evt.StepID)
+	if foundStep && stepDef.Type == dag.StepTypePlanner {
+		return o.materializePlannerOutput(
+			ctx, wfDef, run, stepDef, evt.Payload,
+		)
+	}
+
 	// Check if this completed step is an OnFailure handler.
 	// If so, mark the original failed step as Recovered and
 	// skip its dependents.
@@ -2035,6 +2044,7 @@ func (o *Orchestrator) loadRunAndDef(
 			fmt.Errorf("unmarshal workflow def %q: %w",
 				run.WorkflowID, err)
 	}
+	wfDef = dag.EffectiveDef(wfDef, run)
 	return wfDef, run, nil
 }
 

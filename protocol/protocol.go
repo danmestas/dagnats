@@ -84,6 +84,7 @@ const (
 	EventApprovalGranted          EventType = "approval.granted"
 	EventApprovalRejected         EventType = "approval.rejected"
 	EventApprovalExpired          EventType = "approval.expired"
+	EventPlannerMaterialized      EventType = "planner.materialized"
 )
 
 // Event is the core communication primitive published to the history stream.

@@ -123,6 +123,9 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 	if err := validateApprovalStep(step); err != nil {
 		return err
 	}
+	if err := validatePlannerConfig(step); err != nil {
+		return err
+	}
 	if err := validateRateLimit(step); err != nil {
 		return err
 	}
@@ -152,7 +155,7 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 func stepRequiresTask(t StepType) bool {
 	switch t {
 	case StepTypeNormal, StepTypeAgentLoop, StepTypeSubWorkflow,
-		StepTypeAgent, StepTypeMap:
+		StepTypeAgent, StepTypeMap, StepTypePlanner:
 		return true
 	case StepTypeSleep, StepTypeWaitForEvent, StepTypeApproval:
 		return false

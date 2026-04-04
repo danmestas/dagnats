@@ -19,10 +19,11 @@ const (
 	StepTypeSleep
 	StepTypeWaitForEvent
 	StepTypeApproval
+	StepTypePlanner
 )
 
 var stepTypeStrings = [...]string{
-	"normal", "agent_loop", "sub_workflow", "agent", "map", "sleep", "wait_for_event", "approval",
+	"normal", "agent_loop", "sub_workflow", "agent", "map", "sleep", "wait_for_event", "approval", "planner",
 }
 
 func (s StepType) String() string {
@@ -234,6 +235,7 @@ type WorkflowRun struct {
 	Steps        map[string]StepState `json:"steps"`
 	Input        json.RawMessage      `json:"input,omitempty"`
 	CreatedAt    time.Time            `json:"created_at"`
+	DynamicSteps []StepDef            `json:"dynamic_steps,omitempty"`
 	ParentRunID  string               `json:"parent_run_id,omitempty"`
 	ParentStepID string               `json:"parent_step_id,omitempty"`
 	Deadline     *time.Time           `json:"deadline,omitempty"`
