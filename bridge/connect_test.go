@@ -131,5 +131,3 @@ func TestConnectBadRequest(t *testing.T) {
 		t.Fatalf("expected 400, got %d", resp2.StatusCode)
 	}
 }
-
-
