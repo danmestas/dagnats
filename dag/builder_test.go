@@ -390,3 +390,56 @@ func TestBuilderSleep(t *testing.T) {
 			sleepStep.Task)
 	}
 }
+
+func TestBuilderWaitForEvent(t *testing.T) {
+	b := NewWorkflow("test")
+	taskA := b.Task("a", "task-a")
+	waitRef := b.WaitForEvent("wait-for-signal", WaitForEventOpts{
+		Event: "external.signal",
+		Match: Match{
+			Left:  "event.data.status",
+			Op:    MatchOpEq,
+			Right: "step.a.output.expected",
+		},
+		Timeout: 30 * time.Second,
+	}).After(taskA)
+	taskB := b.Task("b", "task-b").After(waitRef)
+	_ = taskB
+	wf, err := b.Build()
+	if err != nil {
+		t.Fatalf("build must succeed: %v", err)
+	}
+	// Positive: correct step count
+	if len(wf.Steps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(wf.Steps))
+	}
+
+	waitStep := wf.Steps[1]
+	// Positive: correct ID
+	if waitStep.ID != "wait-for-signal" {
+		t.Fatalf("expected wait-for-signal, got %s", waitStep.ID)
+	}
+	// Positive: correct type
+	if waitStep.Type != StepTypeWaitForEvent {
+		t.Fatalf("expected StepTypeWaitForEvent, got %v", waitStep.Type)
+	}
+	// Positive: WaitForEvent config is set
+	if waitStep.WaitForEvent == nil {
+		t.Fatal("WaitForEvent config must not be nil")
+	}
+	// Positive: event name is correct
+	if waitStep.WaitForEvent.Event != "external.signal" {
+		t.Fatalf("expected external.signal, got %s",
+			waitStep.WaitForEvent.Event)
+	}
+	// Positive: Match.Left is correct
+	if waitStep.WaitForEvent.Match.Left != "event.data.status" {
+		t.Fatalf("expected event.data.status, got %s",
+			waitStep.WaitForEvent.Match.Left)
+	}
+	// Positive: empty Task
+	if waitStep.Task != "" {
+		t.Fatalf("wait step must have empty Task, got %s",
+			waitStep.Task)
+	}
+}

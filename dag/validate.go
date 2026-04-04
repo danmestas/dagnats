@@ -67,6 +67,9 @@ func validateStepReferences(
 		if err := validateSingleStep(step, ids); err != nil {
 			return err
 		}
+		if err := validateWaitForEventStep(step, ids); err != nil {
+			return err
+		}
 		if step.Type == StepTypeMap {
 			if err := validateMapNesting(step, stepTypes); err != nil {
 				return err
