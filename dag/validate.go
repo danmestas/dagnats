@@ -110,6 +110,9 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 	if err := validateSleepStep(step); err != nil {
 		return err
 	}
+	if err := validateRateLimit(step); err != nil {
+		return err
+	}
 	if step.OnFailure != "" && !ids[step.OnFailure] {
 		return fmt.Errorf(
 			"step %q OnFailure references %q which does not exist",
