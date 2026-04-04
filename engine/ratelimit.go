@@ -133,8 +133,11 @@ func (rl *RateLimiter) loadBucket(
 
 // refill adds tokens based on elapsed time since last refill.
 func (rl *RateLimiter) refill(bucket tokenBucket) tokenBucket {
+	if rl == nil {
+		panic("refill: nil receiver")
+	}
 	if bucket.PeriodNs <= 0 {
-		return bucket
+		panic("refill: bucket.PeriodNs must be positive")
 	}
 	now := rl.now().UnixNano()
 	elapsed := now - bucket.LastRefill

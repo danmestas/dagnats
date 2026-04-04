@@ -90,6 +90,9 @@ func writeSSEHeaders(w http.ResponseWriter) {
 	if w == nil {
 		panic("writeSSEHeaders: w must not be nil")
 	}
+	if w.Header() == nil {
+		panic("writeSSEHeaders: w.Header() must not be nil")
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -131,7 +134,7 @@ func sendHeartbeatLoop(
 			if flusher != nil {
 				flusher.Flush()
 			}
-			// Re-register to refresh KV TTL
+			// Re-registration is best-effort; KV TTL handles liveness if this fails
 			_ = dir.Register(reg)
 		}
 	}

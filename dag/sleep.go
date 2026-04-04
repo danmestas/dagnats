@@ -8,8 +8,14 @@ import (
 const maxSleepDuration = 365 * 24 * time.Hour
 
 func validateSleepStep(step StepDef) error {
+	if step.ID == "" {
+		panic("validateSleepStep: step.ID must not be empty")
+	}
 	if step.Type != StepTypeSleep {
 		return nil
+	}
+	if maxSleepDuration <= 0 {
+		panic("validateSleepStep: maxSleepDuration must be positive")
 	}
 	if step.Duration <= 0 {
 		return fmt.Errorf(

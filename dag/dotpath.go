@@ -14,6 +14,9 @@ func ExtractDotPath(path string, data []byte) (any, error) {
 	if path == "" {
 		panic("ExtractDotPath: path must not be empty")
 	}
+	if data == nil {
+		panic("ExtractDotPath: data must not be nil")
+	}
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty data")
 	}

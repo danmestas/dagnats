@@ -62,6 +62,9 @@ func NewSleepTimer(
 // Start subscribes to sleep.> on the SLEEP_TIMERS stream with a
 // durable consumer. Panics if already started.
 func (st *SleepTimer) Start() error {
+	if st.js == nil {
+		panic("SleepTimer.Start: js must not be nil")
+	}
 	if st.sub != nil {
 		panic("SleepTimer.Start: already started")
 	}
@@ -121,6 +124,9 @@ func (st *SleepTimer) Schedule(msg TimerMessage) error {
 func (st *SleepTimer) handleTimer(msg *nats.Msg) {
 	if msg == nil {
 		panic("handleTimer: msg must not be nil")
+	}
+	if len(msg.Data) == 0 {
+		panic("handleTimer: msg.Data must not be empty")
 	}
 
 	meta, err := msg.Metadata()

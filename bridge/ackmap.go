@@ -41,6 +41,9 @@ func (am *AckMap) Store(taskID string, msg *nats.Msg) {
 // Load retrieves the NATS message for the given task ID.
 // Returns (nil, false) if not found.
 func (am *AckMap) Load(taskID string) (*nats.Msg, bool) {
+	if am == nil {
+		panic("AckMap.Load: nil receiver")
+	}
 	if taskID == "" {
 		panic("AckMap.Load: taskID must not be empty")
 	}
@@ -53,6 +56,9 @@ func (am *AckMap) Load(taskID string) (*nats.Msg, bool) {
 
 // Delete removes a task from the map after resolution.
 func (am *AckMap) Delete(taskID string) {
+	if am == nil {
+		panic("AckMap.Delete: nil receiver")
+	}
 	if taskID == "" {
 		panic("AckMap.Delete: taskID must not be empty")
 	}

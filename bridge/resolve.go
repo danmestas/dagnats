@@ -267,10 +267,14 @@ func splitTaskID(taskID string) (runID, stepID string) {
 	// stepID is everything after.
 	for i := 0; i < len(taskID); i++ {
 		if taskID[i] == '.' {
-			return taskID[:i], taskID[i+1:]
+			runID = taskID[:i]
+			stepID = taskID[i+1:]
+			if runID == "" || stepID == "" {
+				panic("splitTaskID: runID and stepID must not be empty")
+			}
+			return runID, stepID
 		}
 	}
-	// No dot found — treat entire string as runID (shouldn't happen
-	// with well-formed IDs, but avoids panic).
-	return taskID, ""
+	// No dot found — programmer error with malformed task ID.
+	panic("splitTaskID: taskID must contain a dot separator")
 }

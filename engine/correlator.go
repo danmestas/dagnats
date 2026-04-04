@@ -157,6 +157,9 @@ func (c *Correlator) RemoveWaitersForRun(runID string) {
 			"Correlator.RemoveWaitersForRun: runID must not be empty",
 		)
 	}
+	if c.kvWatch == nil {
+		panic("Correlator.RemoveWaitersForRun: not started")
+	}
 
 	c.mu.Lock()
 	var keysToDelete []string
@@ -209,6 +212,9 @@ func (c *Correlator) handleKVPut(entry nats.KeyValueEntry) {
 	if entry == nil {
 		panic("handleKVPut: entry must not be nil")
 	}
+	if entry.Key() == "" {
+		panic("handleKVPut: entry.Key() must not be empty")
+	}
 	var w EventWaiter
 	if err := json.Unmarshal(entry.Value(), &w); err != nil {
 		return
@@ -230,6 +236,9 @@ func (c *Correlator) handleKVDelete(entry nats.KeyValueEntry) {
 		panic("handleKVDelete: entry must not be nil")
 	}
 	key := entry.Key()
+	if key == "" {
+		panic("handleKVDelete: entry.Key() must not be empty")
+	}
 	parts := strings.SplitN(key, ".", 3)
 	if len(parts) < 3 {
 		return
@@ -257,6 +266,9 @@ func (c *Correlator) handleKVDelete(entry nats.KeyValueEntry) {
 func (c *Correlator) handleEvent(msg *nats.Msg) {
 	if msg == nil {
 		panic("Correlator.handleEvent: msg must not be nil")
+	}
+	if len(msg.Data) == 0 {
+		panic("Correlator.handleEvent: msg.Data must not be empty")
 	}
 	eventType := extractEventType(msg.Subject)
 	if eventType == "" {
@@ -330,7 +342,7 @@ func extractEventType(subject string) string {
 		panic("extractEventType: subject must not be empty")
 	}
 	if !strings.HasPrefix(subject, "event.") {
-		return ""
+		panic("extractEventType: subject must start with 'event.'")
 	}
 	return strings.TrimPrefix(subject, "event.")
 }

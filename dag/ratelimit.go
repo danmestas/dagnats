@@ -21,7 +21,13 @@ type KeyedRateLimit struct {
 
 func validateRateLimit(step StepDef) error {
 	if step.ID == "" {
-		panic("validateRateLimit: step ID is empty")
+		panic("validateRateLimit: step.ID must not be empty")
+	}
+	if step.RateLimit == nil && step.KeyedRateLimit == nil {
+		return nil
+	}
+	if step.RateLimit != nil && step.KeyedRateLimit != nil {
+		panic("validateRateLimit: cannot set both RateLimit and KeyedRateLimit")
 	}
 	if step.RateLimit != nil {
 		if step.RateLimit.Limit <= 0 {
