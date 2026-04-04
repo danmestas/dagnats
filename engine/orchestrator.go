@@ -35,6 +35,7 @@ type Orchestrator struct {
 	runLocks    sync.Map                // map[string]*sync.Mutex — per-run serialization
 	stepRoutes  map[dag.StepType]string // step type → subject prefix
 	concurrency *ConcurrencyManager     // nil if bucket missing
+	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive       observe.Gauge
@@ -103,6 +104,7 @@ func NewOrchestrator(
 			"snapshot.save.duration_ms", nil,
 		),
 	}
+	o.sleepTimer = NewSleepTimer(nc, js)
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -115,6 +117,9 @@ func NewOrchestrator(
 func (o *Orchestrator) Start() {
 	if o.sub != nil {
 		panic("Orchestrator.Start: already started")
+	}
+	if err := o.sleepTimer.Start(); err != nil {
+		panic("Orchestrator.Start: sleepTimer failed: " + err.Error())
 	}
 	sub, err := o.js.Subscribe("history.>", o.handleEvent,
 		nats.DeliverAll(),
@@ -129,6 +134,9 @@ func (o *Orchestrator) Start() {
 // Stop drains and unsubscribes from the history stream.
 // Safe to call multiple times.
 func (o *Orchestrator) Stop() {
+	if o.sleepTimer != nil {
+		o.sleepTimer.Stop()
+	}
 	if o.sub == nil {
 		return
 	}
@@ -196,7 +204,8 @@ func isHandledEventType(t protocol.EventType) bool {
 		protocol.EventStepContinue,
 		protocol.EventStepFailed,
 		protocol.EventWorkflowSpawn,
-		protocol.EventWorkflowCancelled:
+		protocol.EventWorkflowCancelled,
+		protocol.EventStepSleepCompleted:
 		return true
 	}
 	return false
@@ -225,6 +234,8 @@ func (o *Orchestrator) dispatchEvent(
 	case protocol.EventWorkflowStarted:
 		return o.handleWorkflowStarted(ctx, evt)
 	case protocol.EventStepCompleted:
+		return o.handleStepCompleted(ctx, evt)
+	case protocol.EventStepSleepCompleted:
 		return o.handleStepCompleted(ctx, evt)
 	case protocol.EventStepContinue:
 		return o.handleStepContinue(ctx, evt)
@@ -1229,13 +1240,20 @@ func (o *Orchestrator) dispatchReadySteps(
 ) error {
 	var normalSteps []dag.StepDef
 	for _, step := range ready {
-		if step.Type == dag.StepTypeMap {
+		switch step.Type {
+		case dag.StepTypeMap:
 			if err := o.enqueueMapStep(
 				ctx, wfDef, &run, step,
 			); err != nil {
 				return err
 			}
-		} else {
+		case dag.StepTypeSleep:
+			if err := o.enqueueSleepStep(
+				ctx, &run, step,
+			); err != nil {
+				return err
+			}
+		default:
 			normalSteps = append(normalSteps, step)
 		}
 	}
@@ -1556,6 +1574,71 @@ func injectTraceCtx(
 		msg.Header = nats.Header{}
 	}
 	msg.Header.Set("traceparent", tp)
+}
+
+// enqueueSleepStep marks the step as Running, publishes a
+// SleepStarted event, and schedules a durable timer. No worker
+// is involved — the timer fires the completion event directly.
+func (o *Orchestrator) enqueueSleepStep(
+	ctx context.Context,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+) error {
+	if step.Type != dag.StepTypeSleep {
+		panic("enqueueSleepStep: step is not a Sleep step")
+	}
+	if run.RunID == "" {
+		panic("enqueueSleepStep: RunID must not be empty")
+	}
+
+	// Mark step as Running and record wake time.
+	state := run.Steps[step.ID]
+	state.Status = dag.StepStatusRunning
+	wakeAt := time.Now().Add(step.Duration)
+	state.WakeAt = &wakeAt
+	run.Steps[step.ID] = state
+	if err := o.saveSnapshot(ctx, *run); err != nil {
+		return err
+	}
+
+	// Publish sleep started event for observability.
+	o.publishSleepStarted(run.RunID, step.ID)
+
+	// Schedule durable timer via NakWithDelay.
+	durationMs := step.Duration.Milliseconds()
+	if durationMs <= 0 {
+		durationMs = 1
+	}
+	return o.sleepTimer.Schedule(TimerMessage{
+		Action:     TimerActionSleepComplete,
+		RunID:      run.RunID,
+		StepID:     step.ID,
+		DurationMs: durationMs,
+	})
+}
+
+// publishSleepStarted publishes an EventStepSleepStarted event.
+func (o *Orchestrator) publishSleepStarted(
+	runID string, stepID string,
+) {
+	if runID == "" {
+		panic("publishSleepStarted: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("publishSleepStarted: stepID must not be empty")
+	}
+	evt := protocol.NewStepEvent(
+		protocol.EventStepSleepStarted,
+		runID, stepID, nil,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return
+	}
+	o.js.Publish(
+		evt.NATSSubject(), data,
+		nats.MsgId(evt.NATSMsgID()),
+	)
 }
 
 // isMapInstanceID returns true if the step ID is a map instance

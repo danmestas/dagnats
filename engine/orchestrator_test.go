@@ -2568,3 +2568,118 @@ func TestMapInstanceIDHelpers(t *testing.T) {
 			base, idx)
 	}
 }
+
+func TestOrchestratorSleepStep(t *testing.T) {
+	// Methodology: workflow has task-a -> sleep(100ms) -> task-b.
+	// Start orchestrator, complete task-a manually, verify the sleep
+	// step completes via durable timer, then task-b gets enqueued.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "sleep-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "task-a", Task: "echo-a",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID: "nap", Type: dag.StepTypeSleep,
+				DependsOn: []string{"task-a"},
+				Duration:  100 * time.Millisecond,
+			},
+			{
+				ID: "task-b", Task: "echo-b",
+				Type:      dag.StepTypeNormal,
+				DependsOn: []string{"nap"},
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "sleep-run-1", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Drain and complete task-a.
+	subA, _ := js.PullSubscribe(
+		"task.echo-a.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgsA, err := subA.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch task-a failed: %v", err)
+	}
+	msgsA[0].Ack()
+
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "sleep-run-1",
+		"task-a", []byte(`"done"`))
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	// task-b should appear after the sleep timer fires (~100ms).
+	subB, _ := js.PullSubscribe(
+		"task.echo-b.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgsB, err := subB.Fetch(1, nats.MaxWait(10*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch task-b failed (sleep didn't fire?): %v", err)
+	}
+
+	// Positive: task-b was enqueued.
+	if len(msgsB) != 1 {
+		t.Fatalf("expected 1 task-b message, got %d", len(msgsB))
+	}
+	msgsB[0].Ack()
+
+	// Complete task-b so workflow finishes.
+	compB := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "sleep-run-1",
+		"task-b", []byte(`"final"`))
+	compBData, _ := compB.Marshal()
+	js.Publish(compB.NATSSubject(), compBData,
+		nats.MsgId(compB.NATSMsgID()))
+
+	// Wait for workflow to complete.
+	time.Sleep(500 * time.Millisecond)
+
+	run, err := orch.store.Load("sleep-run-1")
+	if err != nil {
+		t.Fatalf("load run failed: %v", err)
+	}
+
+	// Positive: workflow completed.
+	if run.Status != dag.RunStatusCompleted {
+		t.Fatalf(
+			"expected run status Completed, got %s",
+			run.Status,
+		)
+	}
+
+	// Positive: sleep step completed.
+	sleepState := run.Steps["nap"]
+	if sleepState.Status != dag.StepStatusCompleted {
+		t.Fatalf(
+			"expected sleep step Completed, got %s",
+			sleepState.Status,
+		)
+	}
+
+	// Negative: task-a should not be in pending state.
+	if run.Steps["task-a"].Status == dag.StepStatusPending {
+		t.Fatal("task-a should not still be pending")
+	}
+}
