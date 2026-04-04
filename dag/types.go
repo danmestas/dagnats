@@ -163,21 +163,22 @@ type ConcurrencyLimit struct {
 // Config holds type-specific configuration as raw JSON — use ParseXxxConfig
 // helpers to extract typed structs.
 type StepDef struct {
-	ID             string            `json:"id"`
-	Task           string            `json:"task"`
-	DependsOn      []string          `json:"depends_on,omitempty"`
-	Retries        int               `json:"retries,omitempty"`
-	Timeout        time.Duration     `json:"timeout"`
-	Type           StepType          `json:"type"`
-	Config         json.RawMessage   `json:"config,omitempty"`
-	SkipIf         *ParentCond       `json:"skip_if,omitempty"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
-	Retry          *RetryPolicy      `json:"retry,omitempty"`
-	WorkerGroup    string            `json:"worker_group,omitempty"`
-	OnFailure      string            `json:"on_failure,omitempty"`
-	Compensate     string            `json:"compensate,omitempty"`
-	RateLimit      *RateLimit        `json:"rate_limit,omitempty"`
-	KeyedRateLimit *KeyedRateLimit   `json:"keyed_rate_limit,omitempty"`
+	ID                 string            `json:"id"`
+	Task               string            `json:"task"`
+	DependsOn          []string          `json:"depends_on,omitempty"`
+	Retries            int               `json:"retries,omitempty"`
+	Timeout            time.Duration     `json:"timeout"`
+	Type               StepType          `json:"type"`
+	Config             json.RawMessage   `json:"config,omitempty"`
+	SkipIf             *ParentCond       `json:"skip_if,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
+	Retry              *RetryPolicy      `json:"retry,omitempty"`
+	WorkerGroup        string            `json:"worker_group,omitempty"`
+	OnFailure          string            `json:"on_failure,omitempty"`
+	Compensate         string            `json:"compensate,omitempty"`
+	RateLimit          *RateLimit        `json:"rate_limit,omitempty"`
+	KeyedRateLimit     *KeyedRateLimit   `json:"keyed_rate_limit,omitempty"`
+	MaxTaskConcurrency int               `json:"max_task_concurrency,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced

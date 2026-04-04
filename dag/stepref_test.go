@@ -429,3 +429,52 @@ func TestStepRefOnFailurePanicsSelfReference(t *testing.T) {
 	main := wb.Task("main", "t")
 	main.OnFailure(main)
 }
+
+func TestStepRefWithTaskConcurrency(t *testing.T) {
+	wf := NewWorkflow("task-concur")
+	_ = wf.Task("a", "call-claude").WithTaskConcurrency(5)
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	// Positive: MaxTaskConcurrency is set
+	step := findStep(def, "a")
+	if step.MaxTaskConcurrency != 5 {
+		t.Fatalf(
+			"MaxTaskConcurrency = %d, want 5",
+			step.MaxTaskConcurrency,
+		)
+	}
+	// Negative: unset step has zero value
+	wf2 := NewWorkflow("no-concur")
+	wf2.Task("b", "task-b")
+	def2, _ := wf2.Build()
+	step2 := findStep(def2, "b")
+	if step2.MaxTaskConcurrency != 0 {
+		t.Fatalf(
+			"MaxTaskConcurrency = %d, want 0",
+			step2.MaxTaskConcurrency,
+		)
+	}
+}
+
+func TestStepRefWithTaskConcurrencyZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value StepRef")
+		}
+	}()
+	_ = ref.WithTaskConcurrency(1)
+}
+
+func TestStepRefWithTaskConcurrencyNonPositivePanics(t *testing.T) {
+	wf := NewWorkflow("bad")
+	ref := wf.Task("a", "task-a")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for non-positive max")
+		}
+	}()
+	_ = ref.WithTaskConcurrency(0)
+}

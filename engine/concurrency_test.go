@@ -177,3 +177,152 @@ func TestConcurrencyUnlimitedWhenZero(t *testing.T) {
 		t.Fatalf("limit 0 should always succeed")
 	}
 }
+
+func TestTaskConcurrencyAcquireAndRelease(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "concurrency_runs"},
+			natsutil.KVConfig{Bucket: "concurrency_tasks"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	cm := NewConcurrencyManager(js)
+
+	// Positive: first acquire under limit succeeds
+	ok, err := cm.AcquireTask("call-claude", 2)
+	if err != nil {
+		t.Fatalf("acquire 1: %v", err)
+	}
+	if !ok {
+		t.Fatal("acquire 1 should succeed")
+	}
+
+	// Positive: second acquire under limit succeeds
+	ok2, err := cm.AcquireTask("call-claude", 2)
+	if err != nil {
+		t.Fatalf("acquire 2: %v", err)
+	}
+	if !ok2 {
+		t.Fatal("acquire 2 should succeed")
+	}
+
+	// Negative: third acquire at limit fails
+	ok3, err := cm.AcquireTask("call-claude", 2)
+	if err != nil {
+		t.Fatalf("acquire 3: %v", err)
+	}
+	if ok3 {
+		t.Fatal("acquire 3 should fail (at limit)")
+	}
+
+	// Release one and retry
+	if err := cm.ReleaseTask("call-claude"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	// Positive: acquire succeeds after release
+	ok4, err := cm.AcquireTask("call-claude", 2)
+	if err != nil {
+		t.Fatalf("acquire 4: %v", err)
+	}
+	if !ok4 {
+		t.Fatal("acquire 4 should succeed after release")
+	}
+}
+
+func TestTaskConcurrencyReleaseAtZero(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "concurrency_runs"},
+			natsutil.KVConfig{Bucket: "concurrency_tasks"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	cm := NewConcurrencyManager(js)
+
+	// Positive: release with no prior acquire is safe
+	err := cm.ReleaseTask("no-prior")
+	if err != nil {
+		t.Fatalf("release at zero should not error: %v", err)
+	}
+
+	// Acquire one, release it, release again
+	ok, err := cm.AcquireTask("no-prior", 5)
+	if err != nil || !ok {
+		t.Fatalf("acquire: ok=%v err=%v", ok, err)
+	}
+	if err := cm.ReleaseTask("no-prior"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	// Positive: double release at zero is safe
+	if err := cm.ReleaseTask("no-prior"); err != nil {
+		t.Fatalf("release at zero: %v", err)
+	}
+}
+
+func TestTaskConcurrencyUnlimitedWhenZero(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "concurrency_runs"},
+			natsutil.KVConfig{Bucket: "concurrency_tasks"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	cm := NewConcurrencyManager(js)
+
+	// Positive: limit 0 means unlimited
+	ok, err := cm.AcquireTask("any-task", 0)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if !ok {
+		t.Fatal("limit 0 should always succeed")
+	}
+}
+
+func TestTaskConcurrencyNoTaskBucket(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "concurrency_runs"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	// Safe variant — tasks bucket missing
+	cm, err := NewConcurrencyManagerSafe(js)
+	if err != nil {
+		t.Fatalf("safe constructor: %v", err)
+	}
+	if cm == nil {
+		t.Fatal("cm should not be nil when runs bucket exists")
+	}
+
+	// Positive: acquire succeeds even without task bucket
+	ok, err := cm.AcquireTask("call-claude", 2)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if !ok {
+		t.Fatal("acquire should succeed without task bucket")
+	}
+
+	// Positive: release is no-op without task bucket
+	if err := cm.ReleaseTask("call-claude"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}

@@ -442,3 +442,107 @@ func TestValidateSleepDuration365DayMax(t *testing.T) {
 		t.Fatalf("expected 'exceeds max' in error, got: %v", err)
 	}
 }
+
+func TestValidateMaxTaskConcurrencyBounds(t *testing.T) {
+	// Negative: exceeds upper bound
+	def := WorkflowDef{
+		Name:    "bad-tc",
+		Version: "1",
+		Steps: []StepDef{
+			{
+				ID: "a", Task: "task-a",
+				Type:               StepTypeNormal,
+				MaxTaskConcurrency: 1001,
+			},
+		},
+	}
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for MaxTaskConcurrency > 1000")
+	}
+	if !strings.Contains(err.Error(), "MaxTaskConcurrency") {
+		t.Fatalf("error should mention MaxTaskConcurrency: %v", err)
+	}
+
+	// Positive: valid value passes
+	def.Steps[0].MaxTaskConcurrency = 100
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid MaxTaskConcurrency should pass: %v", err)
+	}
+}
+
+func TestValidateMaxTaskConcurrencyNegative(t *testing.T) {
+	def := WorkflowDef{
+		Name:    "neg-tc",
+		Version: "1",
+		Steps: []StepDef{
+			{
+				ID: "a", Task: "task-a",
+				Type:               StepTypeNormal,
+				MaxTaskConcurrency: -1,
+			},
+		},
+	}
+	// Positive: negative values rejected
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for negative MaxTaskConcurrency")
+	}
+	// Negative: zero is valid (means unlimited)
+	def.Steps[0].MaxTaskConcurrency = 0
+	if err := Validate(def); err != nil {
+		t.Fatalf("zero MaxTaskConcurrency should pass: %v", err)
+	}
+}
+
+func TestValidateConcurrencyMaxStepsBounds(t *testing.T) {
+	def := WorkflowDef{
+		Name:    "bad-ms",
+		Version: "1",
+		Steps: []StepDef{
+			{ID: "a", Task: "task-a", Type: StepTypeNormal},
+		},
+		Concurrency: &ConcurrencyLimit{MaxSteps: 1001},
+	}
+	// Positive: exceeds bound
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for MaxSteps > 1000")
+	}
+	if !strings.Contains(err.Error(), "MaxSteps") {
+		t.Fatalf("error should mention MaxSteps: %v", err)
+	}
+
+	// Negative: valid value passes
+	def.Concurrency.MaxSteps = 10
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid MaxSteps should pass: %v", err)
+	}
+}
+
+func TestBuilderWithConcurrency(t *testing.T) {
+	wf := NewWorkflow("concur-wf")
+	wf.WithConcurrency(3, 5)
+	wf.Task("a", "task-a")
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	// Positive: concurrency set
+	if def.Concurrency == nil {
+		t.Fatal("Concurrency should not be nil")
+	}
+	if def.Concurrency.MaxRuns != 3 {
+		t.Fatalf("MaxRuns = %d, want 3", def.Concurrency.MaxRuns)
+	}
+	if def.Concurrency.MaxSteps != 5 {
+		t.Fatalf("MaxSteps = %d, want 5", def.Concurrency.MaxSteps)
+	}
+	// Negative: builder without WithConcurrency has nil
+	wf2 := NewWorkflow("no-concur")
+	wf2.Task("b", "task-b")
+	def2, _ := wf2.Build()
+	if def2.Concurrency != nil {
+		t.Fatal("Concurrency should be nil when not set")
+	}
+}

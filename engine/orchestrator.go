@@ -41,13 +41,15 @@ type Orchestrator struct {
 	correlator  *Correlator             // event wait-for-event matching
 
 	// Pre-allocated metric instruments — created once in constructor.
-	runsActive       observe.Gauge
-	runsCompleted    observe.Counter
-	runsFailed       observe.Counter
-	stepEnqueueCount observe.Counter
-	snapshotDuration observe.Histogram
-	failNonRetriable observe.Counter
-	failRetryAfter   observe.Counter
+	runsActive              observe.Gauge
+	runsCompleted           observe.Counter
+	runsFailed              observe.Counter
+	stepEnqueueCount        observe.Counter
+	snapshotDuration        observe.Histogram
+	failNonRetriable        observe.Counter
+	failRetryAfter          observe.Counter
+	taskConcurrencyAcquired observe.Counter
+	taskConcurrencyRejected observe.Counter
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -115,6 +117,12 @@ func NewOrchestrator(
 		),
 		failRetryAfter: tel.Metrics.Counter(
 			"step.failure.retry_after", nil,
+		),
+		taskConcurrencyAcquired: tel.Metrics.Counter(
+			"task.concurrency.acquired", nil,
+		),
+		taskConcurrencyRejected: tel.Metrics.Counter(
+			"task.concurrency.rejected", nil,
 		),
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
@@ -395,6 +403,9 @@ func (o *Orchestrator) handleStepCompleted(
 	state.Status = dag.StepStatusCompleted
 	state.Output = evt.Payload
 	run.Steps[evt.StepID] = state
+
+	// Release task concurrency slot if configured.
+	o.releaseTaskSlot(wfDef, evt.StepID)
 
 	// Check if this completed step is an OnFailure handler.
 	// If so, mark the original failed step as Recovered and
@@ -916,6 +927,9 @@ func (o *Orchestrator) handlePermanentFailure(
 		)
 	}
 
+	// Release task concurrency slot if configured.
+	o.releaseTaskSlot(wfDef, evt.StepID)
+
 	// If this is an auxiliary step (compensate target) failing,
 	// the compensation itself failed — critical state.
 	if wfDef.AuxSteps[stepID] {
@@ -1267,6 +1281,10 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		}
 	}
 
+	// Release task concurrency slots for cancelled steps that
+	// were queued or running (they held a slot).
+	o.releaseCancelledTaskSlots(wfDef, run)
+
 	if o.correlator != nil {
 		o.correlator.RemoveWaitersForRun(run.RunID)
 	}
@@ -1547,6 +1565,20 @@ func (o *Orchestrator) enqueueReady(
 		}
 	}
 	ready = filtered
+
+	// Per-run step concurrency: cap how many steps dispatch.
+	if wfDef.Concurrency != nil &&
+		wfDef.Concurrency.MaxSteps > 0 {
+		activeCount := countActiveSteps(run)
+		available := wfDef.Concurrency.MaxSteps - activeCount
+		if available <= 0 {
+			return nil
+		}
+		if len(ready) > available {
+			ready = ready[:available]
+		}
+	}
+
 	span.SetAttributes(
 		observe.Int64Attr("ready_steps_count", int64(len(ready))),
 	)
@@ -1664,6 +1696,23 @@ func (o *Orchestrator) publishTask(
 		panic("publishTask: step.ID must not be empty")
 	}
 
+	// Check per-task-type concurrency before publishing.
+	if step.MaxTaskConcurrency > 0 && o.concurrency != nil {
+		acquired, err := o.concurrency.AcquireTask(
+			step.Task, step.MaxTaskConcurrency,
+		)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			o.taskConcurrencyRejected.Inc()
+			return o.scheduleTaskConcurrencyRetry(
+				step, runID, input,
+			)
+		}
+		o.taskConcurrencyAcquired.Inc()
+	}
+
 	// Check rate limit before publishing.
 	if delayed, err := o.checkRateLimit(
 		step, runID, input,
@@ -1775,6 +1824,29 @@ func (o *Orchestrator) scheduleRateRetry(
 		RunID:      runID,
 		StepID:     step.ID,
 		DurationMs: durationMs,
+		TaskType:   step.Task,
+		Input:      input,
+	})
+}
+
+// scheduleTaskConcurrencyRetry schedules a timer to re-attempt
+// task dispatch after the task concurrency slot frees up.
+func (o *Orchestrator) scheduleTaskConcurrencyRetry(
+	step dag.StepDef, runID string, input []byte,
+) error {
+	if runID == "" {
+		panic("scheduleTaskConcurrencyRetry: " +
+			"runID must not be empty")
+	}
+	if step.ID == "" {
+		panic("scheduleTaskConcurrencyRetry: " +
+			"step.ID must not be empty")
+	}
+	return o.sleepTimer.Schedule(TimerMessage{
+		Action:     TimerActionTaskConcurRetry,
+		RunID:      runID,
+		StepID:     step.ID,
+		DurationMs: 1000,
 		TaskType:   step.Task,
 		Input:      input,
 	})
@@ -2912,4 +2984,54 @@ func queuedSet(run dag.WorkflowRun) map[string]bool {
 		}
 	}
 	return result
+}
+
+// releaseTaskSlot releases a task concurrency slot for the given
+// step if MaxTaskConcurrency is configured.
+func (o *Orchestrator) releaseTaskSlot(
+	wfDef dag.WorkflowDef, stepID string,
+) {
+	if o.concurrency == nil {
+		return
+	}
+	stepDef, found := findStepDef(wfDef, stepID)
+	if !found || stepDef.MaxTaskConcurrency <= 0 {
+		return
+	}
+	o.concurrency.ReleaseTask(stepDef.Task)
+}
+
+// releaseCancelledTaskSlots releases task concurrency slots for
+// all steps that were cancelled while queued or running.
+func (o *Orchestrator) releaseCancelledTaskSlots(
+	wfDef dag.WorkflowDef, run dag.WorkflowRun,
+) {
+	if o.concurrency == nil {
+		return
+	}
+	for id, state := range run.Steps {
+		if state.Status != dag.StepStatusCancelled {
+			continue
+		}
+		stepDef, found := findStepDef(wfDef, id)
+		if !found || stepDef.MaxTaskConcurrency <= 0 {
+			continue
+		}
+		o.concurrency.ReleaseTask(stepDef.Task)
+	}
+}
+
+// countActiveSteps counts steps that are currently queued or running.
+func countActiveSteps(run dag.WorkflowRun) int {
+	if run.Steps == nil {
+		panic("countActiveSteps: run.Steps must not be nil")
+	}
+	count := 0
+	for _, state := range run.Steps {
+		if state.Status == dag.StepStatusQueued ||
+			state.Status == dag.StepStatusRunning {
+			count++
+		}
+	}
+	return count
 }

@@ -20,10 +20,11 @@ import (
 type TimerAction string
 
 const (
-	TimerActionSleepComplete TimerAction = "sleep_complete"
-	TimerActionRateRetry     TimerAction = "rate_retry"
-	TimerActionWaitTimeout   TimerAction = "wait_timeout"
-	TimerActionRetryAfter    TimerAction = "retry_after"
+	TimerActionSleepComplete   TimerAction = "sleep_complete"
+	TimerActionRateRetry       TimerAction = "rate_retry"
+	TimerActionWaitTimeout     TimerAction = "wait_timeout"
+	TimerActionRetryAfter      TimerAction = "retry_after"
+	TimerActionTaskConcurRetry TimerAction = "task_concurrency_retry"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
@@ -169,6 +170,8 @@ func (st *SleepTimer) handleTimer(msg *nats.Msg) {
 		st.fireWaitTimeout(tm)
 	case TimerActionRetryAfter:
 		st.fireRetryAfter(tm)
+	case TimerActionTaskConcurRetry:
+		st.fireRateRetry(tm) // Same re-publish logic as rate retry
 	default:
 		// Unknown action — ack to prevent loop.
 	}

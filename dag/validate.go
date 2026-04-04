@@ -20,6 +20,10 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validateConcurrency(def); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 
@@ -129,6 +133,12 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 		return fmt.Errorf(
 			"step %q Compensate references %q which does not exist",
 			step.ID, step.Compensate,
+		)
+	}
+	if step.MaxTaskConcurrency < 0 || step.MaxTaskConcurrency > 1000 {
+		return fmt.Errorf(
+			"step %q MaxTaskConcurrency is %d (must be 0..1000)",
+			step.ID, step.MaxTaskConcurrency,
 		)
 	}
 	return nil
@@ -372,6 +382,29 @@ func validateAuxTargets(
 				)
 			}
 		}
+	}
+	return nil
+}
+
+// validateConcurrency checks workflow-level concurrency limits.
+// MaxSteps must be in range [0, 1000] if set.
+func validateConcurrency(def WorkflowDef) error {
+	if def.Name == "" {
+		panic("validateConcurrency: workflow name is empty")
+	}
+	if len(def.Steps) == 0 {
+		panic("validateConcurrency: called with empty steps")
+	}
+	if def.Concurrency == nil {
+		return nil
+	}
+	if def.Concurrency.MaxSteps < 0 ||
+		def.Concurrency.MaxSteps > 1000 {
+		return fmt.Errorf(
+			"workflow %q Concurrency.MaxSteps is %d "+
+				"(must be 0..1000)",
+			def.Name, def.Concurrency.MaxSteps,
+		)
 	}
 	return nil
 }

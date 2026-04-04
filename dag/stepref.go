@@ -214,3 +214,17 @@ func (r StepRef) WithKeyedRateLimit(krl KeyedRateLimit) StepRef {
 	r.builder.steps[r.index].KeyedRateLimit = &krl
 	return r
 }
+
+// WithTaskConcurrency sets the global per-task-type concurrency
+// limit on this step. At most max tasks of this type will execute
+// concurrently across all workflow runs.
+func (r StepRef) WithTaskConcurrency(max int) StepRef {
+	if r.builder == nil {
+		panic("WithTaskConcurrency called on zero-value StepRef")
+	}
+	if max <= 0 {
+		panic("WithTaskConcurrency: max must be positive")
+	}
+	r.builder.steps[r.index].MaxTaskConcurrency = max
+	return r
+}

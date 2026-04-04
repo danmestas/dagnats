@@ -12,10 +12,11 @@ import "time"
 // on Build(). current tracks the most recently added step so that chained
 // modifier calls (DependsOn, WithTimeout, etc.) always target the right step.
 type WorkflowBuilder struct {
-	name    string
-	version string
-	steps   []StepDef
-	current int
+	name        string
+	version     string
+	steps       []StepDef
+	current     int
+	concurrency *ConcurrencyLimit
 }
 
 // NewWorkflow starts a new builder for a workflow with the given name.
@@ -169,6 +170,19 @@ func (b *WorkflowBuilder) WaitForEvent(id string, opts WaitForEventOpts) StepRef
 	return StepRef{id: id, index: idx, builder: b}
 }
 
+// WithConcurrency sets workflow-level concurrency limits. MaxRuns bounds
+// how many runs of this workflow execute in parallel; MaxSteps bounds
+// how many steps execute concurrently within a single run.
+func (b *WorkflowBuilder) WithConcurrency(
+	maxRuns, maxSteps int,
+) *WorkflowBuilder {
+	b.concurrency = &ConcurrencyLimit{
+		MaxRuns:  maxRuns,
+		MaxSteps: maxSteps,
+	}
+	return b
+}
+
 // DependsOn declares that the active step must not start until all listed step
 // IDs have completed. Kept for backward compatibility — prefer After(StepRef)
 // for new code which provides compile-time safety.
@@ -233,7 +247,10 @@ func (b *WorkflowBuilder) WithMaxDuration(d time.Duration) *WorkflowBuilder {
 // error value rather than a panic at execution time.
 func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 	def := WorkflowDef{
-		Name: b.name, Version: b.version, Steps: b.steps,
+		Name:        b.name,
+		Version:     b.version,
+		Steps:       b.steps,
+		Concurrency: b.concurrency,
 	}
 	if err := Validate(def); err != nil {
 		return WorkflowDef{}, err
