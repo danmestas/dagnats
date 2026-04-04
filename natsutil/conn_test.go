@@ -164,3 +164,30 @@ func TestSetupAllWithExtras(t *testing.T) {
 		t.Fatalf("workflow_defs should exist: %v", err)
 	}
 }
+
+func TestSetupKVBucketsCreatesScheduledRuns(t *testing.T) {
+	_, nc := StartTestServer(t)
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	err = SetupKVBuckets(js)
+	if err != nil {
+		t.Fatalf("SetupKVBuckets: %v", err)
+	}
+
+	// Positive: scheduled_runs bucket exists.
+	kv, err := js.KeyValue("scheduled_runs")
+	if err != nil {
+		t.Fatalf("scheduled_runs bucket should exist: %v", err)
+	}
+
+	// Negative: bucket name is correct.
+	status, err := kv.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Bucket() != "scheduled_runs" {
+		t.Fatalf("bucket = %q, want scheduled_runs", status.Bucket())
+	}
+}

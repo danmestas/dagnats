@@ -26,13 +26,14 @@ import (
 // KV and publishes WorkflowStarted events to the history stream. Run state is
 // owned exclusively by the orchestrator -- the service only reads snapshots.
 type Service struct {
-	nc        *nats.Conn
-	js        nats.JetStreamContext
-	defKV     nats.KeyValue
-	store     *engine.SnapshotStore
-	tel       *observe.Telemetry
-	triggerKV nats.KeyValue
-	signalKV  nats.KeyValue
+	nc          *nats.Conn
+	js          nats.JetStreamContext
+	defKV       nats.KeyValue
+	store       *engine.SnapshotStore
+	tel         *observe.Telemetry
+	triggerKV   nats.KeyValue
+	signalKV    nats.KeyValue
+	scheduledKV nats.KeyValue
 
 	// Pre-allocated metric instruments -- created once in constructor.
 	requestCount    observe.Counter
@@ -84,14 +85,16 @@ func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 	}
 	triggerKV, _ := js.KeyValue("triggers")
 	signalKV, _ := js.KeyValue("signals")
+	scheduledKV, _ := js.KeyValue("scheduled_runs")
 	return &Service{
-		nc:        nc,
-		js:        js,
-		defKV:     defKV,
-		store:     engine.NewSnapshotStore(js),
-		tel:       tel,
-		triggerKV: triggerKV,
-		signalKV:  signalKV,
+		nc:          nc,
+		js:          js,
+		defKV:       defKV,
+		store:       engine.NewSnapshotStore(js),
+		tel:         tel,
+		triggerKV:   triggerKV,
+		signalKV:    signalKV,
+		scheduledKV: scheduledKV,
 		requestCount: tel.Metrics.Counter(
 			"api.requests", nil,
 		),

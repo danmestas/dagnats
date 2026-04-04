@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/engine"
@@ -21,6 +22,7 @@ import (
 type startRunRequest struct {
 	Workflow string          `json:"workflow"`
 	Input    json.RawMessage `json:"input,omitempty"`
+	RunAt    *time.Time      `json:"run_at,omitempty"`
 }
 
 // NewRESTHandler returns an http.Handler that routes the DagNats
@@ -94,6 +96,17 @@ func (s *Service) routeRunByID(
 			return
 		}
 		handleSendSignal(s, w, r)
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "scheduled" {
+		switch r.Method {
+		case http.MethodGet:
+			handleGetScheduledRun(s, w, r)
+		case http.MethodDelete:
+			handleCancelScheduledRun(s, w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -194,8 +207,8 @@ func handleListRuns(
 	}
 }
 
-// handleStartRun decodes a startRunRequest and calls StartRun.
-// Returns 201 with a JSON body containing the run_id on success.
+// handleStartRun decodes a startRunRequest and calls StartRun or
+// ScheduleRun based on the run_at field. Returns 201 on success.
 func handleStartRun(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
@@ -211,7 +224,32 @@ func handleStartRun(
 			http.StatusBadRequest)
 		return
 	}
-	runID, err := svc.StartRun(r.Context(), req.Workflow, req.Input)
+
+	// Scheduled run path: run_at within 1 second of now is treated
+	// as immediate (spec: "in the past or within 1 second").
+	const immediateThreshold = time.Second
+	if req.RunAt != nil &&
+		time.Until(*req.RunAt) > immediateThreshold {
+		runID, err := svc.ScheduleRun(
+			r.Context(), req.Workflow, req.Input, *req.RunAt,
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{
+			"run_id": runID,
+			"status": "scheduled",
+		})
+		return
+	}
+
+	// Immediate run path (existing).
+	runID, err := svc.StartRun(
+		r.Context(), req.Workflow, req.Input,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -363,6 +401,50 @@ type streamInfo struct {
 	Messages uint64  `json:"messages"`
 	Bytes    uint64  `json:"bytes"`
 	Percent  float64 `json:"percent"`
+}
+
+// handleGetScheduledRun returns a scheduled run by ID.
+func handleGetScheduledRun(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleGetScheduledRun: svc must not be nil")
+	}
+	parts := strings.Split(
+		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
+	)
+	runID := parts[0]
+	sr, err := svc.GetScheduledRun(runID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sr)
+}
+
+// handleCancelScheduledRun cancels a pending scheduled run.
+func handleCancelScheduledRun(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic(
+			"handleCancelScheduledRun: svc must not be nil",
+		)
+	}
+	parts := strings.Split(
+		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
+	)
+	runID := parts[0]
+	err := svc.CancelScheduledRun(runID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(
+		map[string]string{"status": "cancelled"},
+	)
 }
 
 // handleHealth returns service health and optional telemetry stream
