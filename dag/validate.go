@@ -122,13 +122,28 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 	return nil
 }
 
+// stepRequiresTask returns true for step types that must have a non-empty Task field.
+// Future step types like Sleep and WaitForEvent won't require a task.
+func stepRequiresTask(t StepType) bool {
+	switch t {
+	case StepTypeNormal, StepTypeAgentLoop, StepTypeSubWorkflow, StepTypeAgent, StepTypeMap:
+		return true
+	default:
+		return false
+	}
+}
+
 // validateLoopConfig checks AgentLoop/Loop consistency for a single step.
 func validateLoopConfig(step StepDef) error {
 	if step.ID == "" {
 		panic("validateLoopConfig: step ID is empty")
 	}
-	if step.Task == "" {
+	if step.Task == "" && stepRequiresTask(step.Type) {
 		panic("validateLoopConfig: step task is empty")
+	}
+	// Non-task step types (e.g., sleep, wait-for-event) skip task validation.
+	if step.Task == "" {
+		return nil
 	}
 	if step.Type == StepTypeAgentLoop && step.Loop == nil {
 		return fmt.Errorf(
@@ -156,8 +171,12 @@ func validateMapConfig(step StepDef) error {
 	if step.ID == "" {
 		panic("validateMapConfig: step ID is empty")
 	}
-	if step.Task == "" {
+	if step.Task == "" && stepRequiresTask(step.Type) {
 		panic("validateMapConfig: step task is empty")
+	}
+	// Non-task step types (e.g., sleep, wait-for-event) skip task validation.
+	if step.Task == "" {
+		return nil
 	}
 	if step.Type == StepTypeMap && step.Map == nil {
 		panic("Map step must have Map config")
@@ -220,8 +239,12 @@ func validateSkipIf(step StepDef) error {
 	if step.ID == "" {
 		panic("validateSkipIf: step ID is empty")
 	}
-	if step.Task == "" {
+	if step.Task == "" && stepRequiresTask(step.Type) {
 		panic("validateSkipIf: step task is empty")
+	}
+	// Non-task step types (e.g., sleep, wait-for-event) skip task validation.
+	if step.Task == "" {
+		return nil
 	}
 	if step.SkipIf == nil {
 		return nil
