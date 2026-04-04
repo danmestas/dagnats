@@ -2,8 +2,10 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -49,6 +51,11 @@ type Worker struct {
 	signalKV     nats.KeyValue
 	groups       []string
 
+	// Directory registration (observability only)
+	dir           *Directory
+	workerID      string
+	stopHeartbeat chan struct{}
+
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration observe.Histogram
 	stepRetries  observe.Counter
@@ -71,6 +78,17 @@ func WithGroups(groups ...string) WorkerOption {
 		}
 	}
 	return func(w *Worker) { w.groups = groups }
+}
+
+// generateWorkerID creates a unique worker ID using crypto/rand.
+// Panics if crypto/rand fails — that is a system-level error.
+func generateWorkerID() string {
+	b := make([]byte, 8)
+	_, err := rand.Read(b)
+	if err != nil {
+		panic("generateWorkerID: crypto/rand failed: " + err.Error())
+	}
+	return fmt.Sprintf("worker-%x", b)
 }
 
 // NewWorker creates a Worker using the given connection and
@@ -96,6 +114,7 @@ func NewWorker(
 		js:       js,
 		tel:      tel,
 		handlers: make(map[string]HandlerFunc),
+		workerID: generateWorkerID(),
 		stepDuration: tel.Metrics.Histogram(
 			"step.duration_ms", nil,
 		),
@@ -127,6 +146,23 @@ func (w *Worker) Handle(
 	w.handlers[taskType] = handler
 }
 
+// newDirectoryOptional creates a Directory if the workers KV
+// bucket exists. Returns error (not panic) if the bucket is
+// missing — directory is observability only, not critical path.
+func newDirectoryOptional(js nats.JetStreamContext) (*Directory, error) {
+	if js == nil {
+		panic("newDirectoryOptional: js must not be nil")
+	}
+	kv, err := js.KeyValue("workers")
+	if err != nil {
+		return nil, err
+	}
+	if kv == nil {
+		panic("newDirectoryOptional: kv must not be nil when err is nil")
+	}
+	return &Directory{kv: kv}, nil
+}
+
 // Start creates JetStream subscriptions for all registered task
 // types. Panics if any subscription fails — stream
 // misconfiguration is a startup error. Binds optional KV buckets
@@ -142,6 +178,26 @@ func (w *Worker) Start() {
 	// Bind optional KV buckets — no error if missing
 	w.checkpointKV, _ = w.js.KeyValue("checkpoints")
 	w.signalKV, _ = w.js.KeyValue("signals")
+
+	// Worker directory registration (observability only — not critical path)
+	d, err := newDirectoryOptional(w.js)
+	if err == nil {
+		w.dir = d
+		w.stopHeartbeat = make(chan struct{})
+		taskTypes := make([]string, 0, len(w.handlers))
+		for t := range w.handlers {
+			taskTypes = append(taskTypes, t)
+		}
+		reg := WorkerRegistration{
+			WorkerID:  w.workerID,
+			TaskTypes: taskTypes,
+			Language:  "go",
+			Transport: "nats",
+			MaxTasks:  len(taskTypes),
+		}
+		_ = w.dir.Register(reg)
+		go w.heartbeatLoop(reg)
+	}
 
 	for taskType, handler := range w.handlers {
 		h := handler
@@ -178,6 +234,27 @@ func (w *Worker) Start() {
 	}
 }
 
+// heartbeatLoop re-registers the worker every 30s to refresh the
+// KV TTL (bucket TTL is 60s). Stops when stopHeartbeat is closed.
+func (w *Worker) heartbeatLoop(reg WorkerRegistration) {
+	if w.dir == nil {
+		panic("heartbeatLoop: dir must not be nil")
+	}
+	if w.stopHeartbeat == nil {
+		panic("heartbeatLoop: stopHeartbeat must not be nil")
+	}
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_ = w.dir.Register(reg)
+		case <-w.stopHeartbeat:
+			return
+		}
+	}
+}
+
 // Stop unsubscribes all active subscriptions. Safe to call after
 // Start.
 func (w *Worker) Stop() {
@@ -186,6 +263,12 @@ func (w *Worker) Stop() {
 	}
 	if w.nc == nil {
 		panic("Worker.Stop: nc must not be nil")
+	}
+	if w.stopHeartbeat != nil {
+		close(w.stopHeartbeat)
+	}
+	if w.dir != nil {
+		_ = w.dir.Deregister(w.workerID)
 	}
 	for _, sub := range w.subs {
 		sub.Unsubscribe()

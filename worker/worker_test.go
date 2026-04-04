@@ -429,3 +429,102 @@ func TestWorkerNonRetryableErrorAcks(t *testing.T) {
 		)
 	}
 }
+
+func TestWorkerRegistersOnStart(t *testing.T) {
+	// Methodology: Start a worker with a handler, verify it registers
+	// in the directory with correct task types and metadata.
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+
+	w := NewWorker(nc, nil)
+	w.Handle("test-task", func(ctx TaskContext) error {
+		return ctx.Complete(nil)
+	})
+	w.Start()
+	defer w.Stop()
+
+	// Give worker a moment to register
+	time.Sleep(100 * time.Millisecond)
+
+	dir := NewDirectory(js)
+	workers, err := dir.List()
+	// Positive: no error from List
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	// Positive: exactly 1 worker found
+	if len(workers) != 1 {
+		t.Fatalf("worker count = %d, want 1", len(workers))
+	}
+	// Positive: TaskTypes contains "test-task"
+	found := false
+	for _, tt := range workers[0].TaskTypes {
+		if tt == "test-task" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("TaskTypes = %v, want [test-task]", workers[0].TaskTypes)
+	}
+	// Negative: Language and Transport are correct
+	if workers[0].Language != "go" {
+		t.Fatalf("Language = %q, want go", workers[0].Language)
+	}
+	if workers[0].Transport != "nats" {
+		t.Fatalf("Transport = %q, want nats", workers[0].Transport)
+	}
+}
+
+func TestWorkerDeregistersOnStop(t *testing.T) {
+	// Methodology: start worker, verify registered, stop, verify deregistered.
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+
+	w := NewWorker(nc, nil)
+	w.Handle("cleanup-task", func(ctx TaskContext) error {
+		return ctx.Complete(nil)
+	})
+	w.Start()
+
+	// Give worker a moment to register
+	time.Sleep(100 * time.Millisecond)
+
+	dir := NewDirectory(js)
+	workers, err := dir.List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	// Positive: worker is registered
+	if len(workers) != 1 {
+		t.Fatalf("worker count before Stop = %d, want 1", len(workers))
+	}
+
+	w.Stop()
+
+	// Give worker a moment to deregister
+	time.Sleep(100 * time.Millisecond)
+
+	workers, err = dir.List()
+	if err != nil {
+		t.Fatalf("List after Stop failed: %v", err)
+	}
+	// Positive: worker is deregistered
+	if len(workers) != 0 {
+		t.Fatalf("worker count after Stop = %d, want 0", len(workers))
+	}
+}
