@@ -3034,3 +3034,184 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 			string(waitState.Output))
 	}
 }
+
+func TestNonRetriableFailureSkipsRetries(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "test-nr", Version: "1",
+		DefaultRetry: &dag.RetryPolicy{
+			MaxAttempts:  5,
+			Strategy:     dag.RetryFixed,
+			InitialDelay: time.Second,
+		},
+		Steps: []dag.StepDef{
+			{
+				ID:   "a",
+				Task: "task-a",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Wait for task-a to be enqueued (proves start was processed).
+	taskSub, subErr := js.SubscribeSync(
+		"task.task-a.>",
+		nats.AckExplicit(),
+		nats.DeliverAll(),
+	)
+	if subErr != nil {
+		t.Fatalf("subscribe task-a: %v", subErr)
+	}
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted,
+		"run-nr-1",
+		defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    startData,
+		Header: nats.Header{
+			"Nats-Msg-Id": {startEvt.NATSMsgID()},
+		},
+	})
+
+	// Wait for the task to appear — proves workflow was created.
+	taskMsg, taskErr := taskSub.NextMsg(3 * time.Second)
+	if taskErr != nil {
+		t.Fatalf("task-a not enqueued: %v", taskErr)
+	}
+	taskMsg.Ack()
+
+	failPayload, _ := json.Marshal(protocol.StepFailedPayload{
+		Error:       "permanent error",
+		FailureType: protocol.FailureTypeNonRetriable,
+	})
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed,
+		"run-nr-1", "a",
+		failPayload,
+	)
+	failData, _ := failEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: failEvt.NATSSubject(),
+		Data:    failData,
+		Header: nats.Header{
+			"Nats-Msg-Id": {failEvt.NATSMsgID()},
+		},
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	store := NewSnapshotStore(js)
+	run, loadErr := store.Load("run-nr-1")
+	if loadErr != nil {
+		t.Fatalf("load run after fail: %v", loadErr)
+	}
+
+	// Positive: non-retriable should fail the workflow
+	// immediately despite 5 max retries configured.
+	if run.Status != dag.RunStatusFailed {
+		t.Fatalf(
+			"run status = %s, want failed", run.Status,
+		)
+	}
+
+	// Negative: should have only 1 attempt (no retries).
+	stepState := run.Steps["a"]
+	if stepState.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", stepState.Attempts)
+	}
+}
+
+func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "test-compat", Version: "1",
+		DefaultRetry: &dag.RetryPolicy{
+			MaxAttempts:  3,
+			Strategy:     dag.RetryFixed,
+			InitialDelay: time.Second,
+		},
+		Steps: []dag.StepDef{
+			{
+				ID:   "a",
+				Task: "task-a",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted,
+		"run-compat",
+		defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(
+		startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()),
+	)
+
+	time.Sleep(500 * time.Millisecond)
+
+	oldPayload := []byte(`"transient error"`)
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed,
+		"run-compat", "a",
+		oldPayload,
+	)
+	failData, _ := failEvt.Marshal()
+	js.Publish(
+		failEvt.NATSSubject(), failData,
+		nats.MsgId(failEvt.NATSMsgID()),
+	)
+
+	time.Sleep(500 * time.Millisecond)
+	store := NewSnapshotStore(js)
+	run, loadErr := store.Load("run-compat")
+	if loadErr != nil {
+		t.Fatalf("load run: %v", loadErr)
+	}
+
+	// Positive: old format should be treated as retriable,
+	// not cause immediate permanent failure.
+	if run.Status == dag.RunStatusFailed {
+		t.Fatal(
+			"old format payload should be retriable, " +
+				"not permanent",
+		)
+	}
+
+	// Negative: should have recorded exactly 1 attempt.
+	stepState := run.Steps["a"]
+	if stepState.Attempts != 1 {
+		t.Fatalf(
+			"attempts = %d, want 1", stepState.Attempts,
+		)
+	}
+}
