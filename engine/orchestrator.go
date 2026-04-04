@@ -997,7 +997,7 @@ func (o *Orchestrator) tryOnFailureHandler(
 		return false, err
 	}
 	errorInput := []byte(fmt.Sprintf(
-		`{"failed_step":"%s","error":%s}`,
+		`{"failed_step":"%s","error":%q}`,
 		stepID, state.Error,
 	))
 	err := o.publishTask(
@@ -1192,11 +1192,11 @@ func buildCompensateInput(
 ) []byte {
 	return []byte(fmt.Sprintf(
 		`{"original_step":%q,"original_output":%s,`+
-			`"trigger_step":%q,"trigger_error":%s}`,
+			`"trigger_step":%q,"trigger_error":%q}`,
 		originalID,
 		jsonOrNull(originalOutput),
 		failedStepID,
-		jsonOrNull([]byte(failedError)),
+		failedError,
 	))
 }
 
