@@ -2275,3 +2275,296 @@ func TestPublishReadyTasksParallel(t *testing.T) {
 		}
 	}
 }
+
+func TestOrchestratorMapStepFanOut(t *testing.T) {
+	// Methodology: workflow has fetch -> map -> summarize.
+	// fetch returns a JSON array of 3 items.
+	// map processes each item (3 instances).
+	// summarize receives the collected array of results.
+	// Verify: all 3 map instances complete, summarize gets [r0, r1, r2].
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "map-fanout", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "fetch", Task: "fetch-task",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID: "process", Task: "process-task",
+				Type:      dag.StepTypeMap,
+				DependsOn: []string{"fetch"},
+				Map:       &dag.MapConfig{MaxItems: 10},
+			},
+			{
+				ID: "summarize", Task: "summarize-task",
+				Type:      dag.StepTypeNormal,
+				DependsOn: []string{"process"},
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "map-run-1", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Drain fetch task.
+	fetchSub, _ := js.PullSubscribe(
+		"task.fetch-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgs, err := fetchSub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch fetch-task failed: %v", err)
+	}
+	msgs[0].Ack()
+
+	// Complete fetch with a JSON array of 3 items.
+	fetchOutput := []byte(`["item-a","item-b","item-c"]`)
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "map-run-1",
+		"fetch", fetchOutput)
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	// Wait for 3 map instance tasks to appear.
+	mapSub, _ := js.PullSubscribe(
+		"task.process-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	mapMsgs, err := mapSub.Fetch(
+		3, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch map tasks failed: %v", err)
+	}
+	// Positive: exactly 3 map instance tasks published.
+	if len(mapMsgs) != 3 {
+		t.Fatalf("expected 3 map tasks, got %d", len(mapMsgs))
+	}
+
+	// Complete all 3 map instances.
+	for i := 0; i < 3; i++ {
+		mapMsgs[i].Ack()
+		instanceID := fmt.Sprintf("process.map.%d", i)
+		result := []byte(fmt.Sprintf(`"result-%d"`, i))
+		evt := protocol.NewStepEvent(
+			protocol.EventStepCompleted, "map-run-1",
+			instanceID, result)
+		data, _ := evt.Marshal()
+		msgID := fmt.Sprintf(
+			"map-run-1.%s.completed", instanceID)
+		js.Publish(evt.NATSSubject(), data,
+			nats.MsgId(msgID))
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Wait for summarize task.
+	sumSub, _ := js.PullSubscribe(
+		"task.summarize-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	sumMsgs, err := sumSub.Fetch(
+		1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch summarize-task failed: %v", err)
+	}
+	// Positive: summarize task receives collected array.
+	if len(sumMsgs) != 1 {
+		t.Fatalf("expected 1 summarize task, got %d",
+			len(sumMsgs))
+	}
+	var payload protocol.TaskPayload
+	if err := json.Unmarshal(
+		sumMsgs[0].Data, &payload,
+	); err != nil {
+		t.Fatalf("unmarshal summarize payload: %v", err)
+	}
+	// Verify input is the collected array.
+	var collected []json.RawMessage
+	if err := json.Unmarshal(
+		payload.Input, &collected,
+	); err != nil {
+		t.Fatalf("unmarshal collected: %v", err)
+	}
+	if len(collected) != 3 {
+		t.Fatalf("collected len = %d, want 3",
+			len(collected))
+	}
+
+	// Complete summarize -> workflow completes.
+	sumMsgs[0].Ack()
+	sumEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "map-run-1",
+		"summarize", []byte(`"final"`))
+	sumData, _ := sumEvt.Marshal()
+	js.Publish(sumEvt.NATSSubject(), sumData,
+		nats.MsgId(sumEvt.NATSMsgID()))
+
+	store := NewSnapshotStore(js)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := store.Load("map-run-1")
+		if err == nil &&
+			run.Status == dag.RunStatusCompleted {
+			// Positive: workflow completed.
+			if run.Steps["process"].Status !=
+				dag.StepStatusCompleted {
+				t.Fatalf("process = %v, want Completed",
+					run.Steps["process"].Status)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("workflow should complete after map fan-out")
+}
+
+func TestOrchestratorMapStepFailFast(t *testing.T) {
+	// Methodology: workflow has fetch -> map.
+	// One map instance fails. Verify: map step and workflow fail.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "map-fail", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "fetch", Task: "fetch-task",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID: "process", Task: "process-task",
+				Type:      dag.StepTypeMap,
+				DependsOn: []string{"fetch"},
+				Map:       &dag.MapConfig{MaxItems: 10},
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "map-fail-1", defData)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Drain and complete fetch.
+	fetchSub, _ := js.PullSubscribe(
+		"task.fetch-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	fMsgs, err := fetchSub.Fetch(
+		1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch fetch-task failed: %v", err)
+	}
+	fMsgs[0].Ack()
+
+	fetchOutput := []byte(`["a","b","c"]`)
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "map-fail-1",
+		"fetch", fetchOutput)
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	// Wait for map tasks.
+	mapSub, _ := js.PullSubscribe(
+		"task.process-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	mapMsgs, err := mapSub.Fetch(
+		3, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch map tasks failed: %v", err)
+	}
+	for _, m := range mapMsgs {
+		m.Ack()
+	}
+
+	// Fail instance 1.
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed, "map-fail-1",
+		"process.map.1", []byte(`"instance error"`))
+	failData, _ := failEvt.Marshal()
+	js.Publish(failEvt.NATSSubject(), failData,
+		nats.MsgId("map-fail-1.process.map.1.failed"))
+
+	// Verify workflow fails.
+	store := NewSnapshotStore(js)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := store.Load("map-fail-1")
+		if err == nil &&
+			run.Status == dag.RunStatusFailed {
+			// Positive: map step is failed.
+			if run.Steps["process"].Status !=
+				dag.StepStatusFailed {
+				t.Fatalf("process = %v, want Failed",
+					run.Steps["process"].Status)
+			}
+			// Positive: map instance 1 is failed.
+			inst := run.Steps["process"].MapInstances
+			if len(inst) != 3 {
+				t.Fatalf("MapInstances len = %d, want 3",
+					len(inst))
+			}
+			if inst[1].Status != dag.StepStatusFailed {
+				t.Fatalf("instance[1] = %v, want Failed",
+					inst[1].Status)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("workflow should fail after map instance failure")
+}
+
+func TestMapInstanceIDHelpers(t *testing.T) {
+	// Methodology: unit tests for map instance ID construction
+	// and parsing utilities.
+
+	// Positive: mapInstanceID constructs correct format.
+	id := mapInstanceID("process", 2)
+	if id != "process.map.2" {
+		t.Fatalf("mapInstanceID = %q, want process.map.2", id)
+	}
+
+	// Positive: isMapInstanceID detects compound IDs.
+	if !isMapInstanceID("process.map.0") {
+		t.Fatal("process.map.0 should be a map instance ID")
+	}
+
+	// Negative: normal step IDs are not map instances.
+	if isMapInstanceID("process") {
+		t.Fatal("process should not be a map instance ID")
+	}
+
+	// Positive: parseMapInstanceID extracts base and index.
+	base, idx := parseMapInstanceID("process.map.5")
+	if base != "process" || idx != 5 {
+		t.Fatalf("parse = (%q, %d), want (process, 5)",
+			base, idx)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -337,6 +338,14 @@ func (o *Orchestrator) handleStepCompleted(
 	if err != nil {
 		return err
 	}
+
+	// Check if this is a map instance completion.
+	if isMapInstanceID(evt.StepID) {
+		return o.handleMapInstanceCompleted(
+			ctx, wfDef, run, evt,
+		)
+	}
+
 	state := run.Steps[evt.StepID]
 	state.Status = dag.StepStatusCompleted
 	state.Output = evt.Payload
@@ -664,6 +673,14 @@ func (o *Orchestrator) handleStepFailed(
 	if err != nil {
 		return err
 	}
+
+	// Check if this is a map instance failure.
+	if isMapInstanceID(evt.StepID) {
+		return o.handleMapInstanceFailed(
+			ctx, wfDef, run, evt,
+		)
+	}
+
 	state := run.Steps[evt.StepID]
 	state.Attempts++
 	if evt.Payload != nil {
@@ -985,7 +1002,35 @@ func (o *Orchestrator) enqueueReady(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	return o.publishReadyTasks(ctx, run.RunID, wfDef, run, ready)
+	return o.dispatchReadySteps(ctx, wfDef, run, ready)
+}
+
+// dispatchReadySteps separates map steps from normal steps and
+// dispatches each appropriately.
+func (o *Orchestrator) dispatchReadySteps(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	ready []dag.StepDef,
+) error {
+	var normalSteps []dag.StepDef
+	for _, step := range ready {
+		if step.Type == dag.StepTypeMap {
+			if err := o.enqueueMapStep(
+				ctx, wfDef, &run, step,
+			); err != nil {
+				return err
+			}
+		} else {
+			normalSteps = append(normalSteps, step)
+		}
+	}
+	if len(normalSteps) > 0 {
+		return o.publishReadyTasks(
+			ctx, run.RunID, wfDef, run, normalSteps,
+		)
+	}
+	return nil
 }
 
 // publishReadyTasks publishes a task message for each ready step.
@@ -1297,6 +1342,291 @@ func injectTraceCtx(
 		msg.Header = nats.Header{}
 	}
 	msg.Header.Set("traceparent", tp)
+}
+
+// isMapInstanceID returns true if the step ID is a map instance
+// (format: "{stepID}.map.{index}").
+func isMapInstanceID(stepID string) bool {
+	return strings.Contains(stepID, ".map.")
+}
+
+// parseMapInstanceID splits a compound map instance ID into the
+// base step ID and instance index. Panics if the format is invalid.
+func parseMapInstanceID(stepID string) (string, int) {
+	parts := strings.Split(stepID, ".map.")
+	if len(parts) != 2 {
+		panic("parseMapInstanceID: invalid format: " + stepID)
+	}
+	idx, err := strconv.Atoi(parts[1])
+	if err != nil {
+		panic("parseMapInstanceID: invalid index: " + parts[1])
+	}
+	return parts[0], idx
+}
+
+// mapInstanceID constructs a compound step ID for a map instance.
+func mapInstanceID(stepID string, index int) string {
+	return stepID + ".map." + strconv.Itoa(index)
+}
+
+// enqueueMapStep reads the upstream output as a JSON array and
+// publishes one task per element. MapInstances track each item's
+// state on the Map step's StepState.
+func (o *Orchestrator) enqueueMapStep(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+) error {
+	if step.Type != dag.StepTypeMap {
+		panic("enqueueMapStep: step is not a Map step")
+	}
+	if len(step.DependsOn) != 1 {
+		panic("enqueueMapStep: Map step must have exactly one dep")
+	}
+
+	// Read upstream output as JSON array.
+	upstream := run.Steps[step.DependsOn[0]]
+	var items []json.RawMessage
+	if err := json.Unmarshal(upstream.Output, &items); err != nil {
+		return fmt.Errorf(
+			"map step %q: upstream output is not a JSON array: %w",
+			step.ID, err,
+		)
+	}
+
+	if err := o.validateAndInitMapInstances(
+		ctx, run, step, items,
+	); err != nil {
+		return err
+	}
+
+	return o.publishMapTasks(ctx, run.RunID, step, items)
+}
+
+// validateAndInitMapInstances checks MaxItems and initializes
+// the MapInstances slice on the step state.
+func (o *Orchestrator) validateAndInitMapInstances(
+	ctx context.Context,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+	items []json.RawMessage,
+) error {
+	if step.Map == nil {
+		panic("validateAndInitMapInstances: Map config is nil")
+	}
+	maxItems := step.Map.MaxItems
+	if len(items) > maxItems {
+		return fmt.Errorf(
+			"map step %q: %d items exceeds MaxItems %d",
+			step.ID, len(items), maxItems,
+		)
+	}
+
+	state := run.Steps[step.ID]
+	state.Status = dag.StepStatusRunning
+	state.MapInstances = make(
+		[]dag.MapInstanceState, len(items),
+	)
+	for i := range items {
+		state.MapInstances[i] = dag.MapInstanceState{
+			Status: dag.StepStatusQueued,
+		}
+	}
+	run.Steps[step.ID] = state
+	return o.saveSnapshot(ctx, *run)
+}
+
+// publishMapTasks publishes one task per map item concurrently.
+func (o *Orchestrator) publishMapTasks(
+	ctx context.Context,
+	runID string,
+	step dag.StepDef,
+	items []json.RawMessage,
+) error {
+	var g errgroup.Group
+	for i, item := range items {
+		i, item := i, item
+		instanceStep := step
+		instanceStep.ID = mapInstanceID(step.ID, i)
+		g.Go(func() error {
+			return o.publishTask(
+				ctx, runID, instanceStep, item, 0,
+			)
+		})
+	}
+	return g.Wait()
+}
+
+// handleMapInstanceCompleted updates a single map instance's state.
+// When all instances are done, collects outputs and completes the
+// Map step.
+func (o *Orchestrator) handleMapInstanceCompleted(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	evt protocol.Event,
+) error {
+	baseID, idx := parseMapInstanceID(evt.StepID)
+	state := run.Steps[baseID]
+
+	if idx < 0 || idx >= len(state.MapInstances) {
+		return fmt.Errorf(
+			"map instance index %d out of range for %q",
+			idx, baseID,
+		)
+	}
+
+	state.MapInstances[idx].Status = dag.StepStatusCompleted
+	state.MapInstances[idx].Output = evt.Payload
+	run.Steps[baseID] = state
+
+	if !allMapInstancesDone(state.MapInstances) {
+		return o.saveSnapshot(ctx, run)
+	}
+
+	return o.collectMapOutputs(ctx, wfDef, run, baseID, state)
+}
+
+// allMapInstancesDone returns true when every instance is completed.
+func allMapInstancesDone(instances []dag.MapInstanceState) bool {
+	for _, inst := range instances {
+		if inst.Status != dag.StepStatusCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+// collectMapOutputs gathers outputs from all instances into an
+// ordered JSON array and completes the Map step.
+func (o *Orchestrator) collectMapOutputs(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	baseID string,
+	state dag.StepState,
+) error {
+	outputs := make(
+		[]json.RawMessage, len(state.MapInstances),
+	)
+	for i, inst := range state.MapInstances {
+		outputs[i] = inst.Output
+	}
+	collected, err := json.Marshal(outputs)
+	if err != nil {
+		return fmt.Errorf("marshal map outputs: %w", err)
+	}
+
+	state.Status = dag.StepStatusCompleted
+	state.Output = collected
+	run.Steps[baseID] = state
+
+	completed := completedSet(run)
+	if dag.IsComplete(wfDef, completed) {
+		return o.completeWorkflow(ctx, run)
+	}
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	return o.enqueueReady(ctx, wfDef, run)
+}
+
+// handleMapInstanceFailed marks the Map step as failed immediately
+// (fail-fast). Remaining instances will expire via AckWait.
+func (o *Orchestrator) handleMapInstanceFailed(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	evt protocol.Event,
+) error {
+	baseID, idx := parseMapInstanceID(evt.StepID)
+	state := run.Steps[baseID]
+
+	if idx < 0 || idx >= len(state.MapInstances) {
+		return fmt.Errorf(
+			"map instance index %d out of range for %q",
+			idx, baseID,
+		)
+	}
+
+	state.MapInstances[idx].Status = dag.StepStatusFailed
+	if evt.Payload != nil {
+		state.MapInstances[idx].Error = string(evt.Payload)
+	}
+
+	// Fail-fast: mark the Map step as failed.
+	state.Status = dag.StepStatusFailed
+	state.Error = fmt.Sprintf(
+		"map instance %d failed: %s", idx,
+		state.MapInstances[idx].Error,
+	)
+	run.Steps[baseID] = state
+
+	return o.failMapStep(ctx, wfDef, run, baseID, state)
+}
+
+// failMapStep handles the on-failure handler or fails the workflow.
+func (o *Orchestrator) failMapStep(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	baseID string,
+	state dag.StepState,
+) error {
+	stepDef, _ := findStepDef(wfDef, baseID)
+
+	// Check for on-failure handler.
+	if stepDef.OnFailure != "" {
+		return o.runMapOnFailure(
+			ctx, wfDef, run, baseID, state, stepDef,
+		)
+	}
+
+	// No on-failure — fail the workflow.
+	run.Status = dag.RunStatusFailed
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	o.runsActive.Dec()
+	o.runsFailed.Inc()
+	if err := o.publishWorkflowFailed(run.RunID); err != nil {
+		return err
+	}
+	o.publishDeadLetter(run.RunID, stepDef, state)
+	return o.notifyParentIfChild(
+		run, fmt.Errorf("%s", state.Error),
+	)
+}
+
+// runMapOnFailure enqueues the on-failure step for a failed map.
+func (o *Orchestrator) runMapOnFailure(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	baseID string,
+	state dag.StepState,
+	stepDef dag.StepDef,
+) error {
+	onFailStep, found := findStepDef(
+		wfDef, stepDef.OnFailure,
+	)
+	if !found {
+		return nil
+	}
+	ofState := run.Steps[onFailStep.ID]
+	ofState.Status = dag.StepStatusQueued
+	run.Steps[onFailStep.ID] = ofState
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	errorInput := []byte(fmt.Sprintf(
+		`{"failed_step":"%s","error":%q}`,
+		baseID, state.Error,
+	))
+	return o.publishTask(
+		ctx, run.RunID, onFailStep, errorInput, 0,
+	)
 }
 
 // completedSet returns a set of step IDs whose status is Completed or Skipped.
