@@ -168,3 +168,63 @@ func TestChildWorkflowEventTypes(t *testing.T) {
 		t.Fatalf("NATSMsgID should not be empty")
 	}
 }
+
+func TestTaskPayloadIncludesTaskID(t *testing.T) {
+	// Positive: TaskPayload includes TaskID field
+	p := TaskPayload{
+		TaskID: "run-1.step-a",
+		RunID:  "run-1",
+		StepID: "step-a",
+		Input:  []byte(`{"key":"value"}`),
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if !bytes.Contains(data, []byte("task_id")) {
+		t.Fatal("marshaled JSON must contain task_id field")
+	}
+
+	// Negative: unmarshal and verify field round-trips
+	var decoded TaskPayload
+	err = json.Unmarshal(data, &decoded)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if decoded.TaskID != p.TaskID {
+		t.Fatalf("TaskID = %q, want %q", decoded.TaskID, p.TaskID)
+	}
+}
+
+func TestTaskResolutionRoundTrip(t *testing.T) {
+	// Positive: complete action with output
+	res := TaskResolution{
+		Action: "complete",
+		Output: json.RawMessage(`{"result":"ok"}`),
+	}
+	data, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var decoded TaskResolution
+	err = json.Unmarshal(data, &decoded)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if decoded.Action != res.Action {
+		t.Fatalf("Action = %q, want %q", decoded.Action, res.Action)
+	}
+
+	// Negative: pause action with duration_ms
+	pauseRes := TaskResolution{
+		Action:     "pause",
+		DurationMs: 5000,
+	}
+	data, err = json.Marshal(pauseRes)
+	if err != nil {
+		t.Fatalf("Marshal pause failed: %v", err)
+	}
+	if !bytes.Contains(data, []byte("duration_ms")) {
+		t.Fatal("pause action must include duration_ms field")
+	}
+}
