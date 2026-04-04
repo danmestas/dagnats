@@ -42,7 +42,7 @@ func TestPollReturnsTask(t *testing.T) {
 		t.Fatalf("Publish failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -99,7 +99,7 @@ func TestPollTimeoutReturnsEmptyArray(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -147,7 +147,7 @@ func TestPollBadRequest(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -198,7 +198,7 @@ func TestPollMultipleTasks(t *testing.T) {
 		}
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 )
 
@@ -19,27 +20,50 @@ type Bridge struct {
 	js           nats.JetStreamContext
 	ackMap       *AckMap
 	checkpointKV nats.KeyValue
+	signalKV     nats.KeyValue
 	token        string
+	tel          *observe.Telemetry
+
+	// Pre-allocated metric instruments — created once in constructor.
+	requestCount    observe.Counter
+	requestDuration observe.Histogram
+	ackMapSize      observe.Gauge
 }
 
 // NewBridge creates a Bridge. Panics on nil nc — a programmer error.
 // Binds optional KV buckets for checkpoints (nil if not present).
-func NewBridge(nc *nats.Conn) *Bridge {
+// If tel is nil, uses a noop telemetry provider.
+func NewBridge(nc *nats.Conn, tel *observe.Telemetry) *Bridge {
 	if nc == nil {
 		panic("NewBridge: nc must not be nil")
+	}
+	if tel == nil {
+		tel = observe.NewNoopTelemetry()
 	}
 	js, err := nc.JetStream()
 	if err != nil {
 		panic("NewBridge: JetStream init failed: " + err.Error())
 	}
 	checkpointKV, _ := js.KeyValue("checkpoints")
+	signalKV, _ := js.KeyValue("signals")
 	token := os.Getenv("DAGNATS_BRIDGE_TOKEN")
 	return &Bridge{
 		nc:           nc,
 		js:           js,
 		ackMap:       NewAckMap(),
 		checkpointKV: checkpointKV,
+		signalKV:     signalKV,
 		token:        token,
+		tel:          tel,
+		requestCount: tel.Metrics.Counter(
+			"bridge.requests", nil,
+		),
+		requestDuration: tel.Metrics.Histogram(
+			"bridge.request.duration_ms", nil,
+		),
+		ackMapSize: tel.Metrics.Gauge(
+			"bridge.ackmap.size", nil,
+		),
 	}
 }
 

@@ -2,12 +2,20 @@ package bridge
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+)
+
+// errResponseAlreadyWritten signals that the handler wrote the HTTP
+// response directly and handleResolve should not write status 200.
+var errResponseAlreadyWritten = errors.New(
+	"response already written",
 )
 
 // resolveRequest is the JSON body for POST /v1/tasks/{id}/resolve.
@@ -19,6 +27,8 @@ type resolveRequest struct {
 	DurationMs int64           `json:"duration_ms,omitempty"`
 	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
 	Data       json.RawMessage `json:"data,omitempty"`
+	RunID      string          `json:"run_id,omitempty"`
+	TimeoutMs  int64           `json:"timeout_ms,omitempty"`
 }
 
 // pauseDurationMaxMs caps the maximum pause at 1 hour.
@@ -35,6 +45,9 @@ func (b *Bridge) handleResolve(
 	if b.js == nil {
 		panic("handleResolve: js must not be nil")
 	}
+	_, span := b.tel.Tracer.Start(r.Context(), "bridge.resolve")
+	defer span.End()
+
 	taskID := r.PathValue("id")
 	if taskID == "" {
 		http.Error(
@@ -55,8 +68,17 @@ func (b *Bridge) handleResolve(
 		return
 	}
 
-	err = b.dispatchAction(taskID, msg, req)
+	b.requestCount.Inc()
+	b.tel.Logger.Info("task resolved",
+		observe.String("task_id", taskID),
+		observe.String("action", req.Action),
+	)
+
+	err = b.dispatchAction(taskID, msg, req, w, r)
 	if err != nil {
+		if errors.Is(err, errResponseAlreadyWritten) {
+			return
+		}
 		http.Error(
 			w, err.Error(), http.StatusInternalServerError,
 		)
@@ -84,10 +106,12 @@ func parseResolveRequest(
 		return req, fmt.Errorf("action is required")
 	}
 	validActions := map[string]bool{
-		"complete":   true,
-		"fail":       true,
-		"pause":      true,
-		"checkpoint": true,
+		"complete":    true,
+		"fail":        true,
+		"pause":       true,
+		"checkpoint":  true,
+		"send_signal": true,
+		"wait_signal": true,
 	}
 	if !validActions[req.Action] {
 		return req, fmt.Errorf("invalid action: %s", req.Action)
@@ -97,7 +121,11 @@ func parseResolveRequest(
 
 // dispatchAction routes the resolve request to the correct handler.
 func (b *Bridge) dispatchAction(
-	taskID string, msg *nats.Msg, req resolveRequest,
+	taskID string,
+	msg *nats.Msg,
+	req resolveRequest,
+	w http.ResponseWriter,
+	r *http.Request,
 ) error {
 	if taskID == "" {
 		panic("dispatchAction: taskID must not be empty")
@@ -114,6 +142,10 @@ func (b *Bridge) dispatchAction(
 		return b.resolvePause(taskID, msg, req)
 	case "checkpoint":
 		return b.resolveCheckpoint(taskID, msg, req)
+	case "send_signal":
+		return b.resolveSendSignal(taskID, msg, req, w)
+	case "wait_signal":
+		return b.resolveWaitSignal(taskID, msg, req, w, r)
 	default:
 		return fmt.Errorf("unhandled action: %s", req.Action)
 	}
@@ -277,4 +309,161 @@ func splitTaskID(taskID string) (runID, stepID string) {
 	}
 	// No dot found — programmer error with malformed task ID.
 	panic("splitTaskID: taskID must contain a dot separator")
+}
+
+// resolveSendSignal writes a signal to the signals KV bucket,
+// then extends the ack deadline so the task remains in-flight.
+func (b *Bridge) resolveSendSignal(
+	taskID string,
+	msg *nats.Msg,
+	req resolveRequest,
+	w http.ResponseWriter,
+) error {
+	if taskID == "" {
+		panic("resolveSendSignal: taskID must not be empty")
+	}
+	if msg == nil {
+		panic("resolveSendSignal: msg must not be nil")
+	}
+	if b.signalKV == nil {
+		return fmt.Errorf("signal KV not configured")
+	}
+	if req.RunID == "" {
+		return fmt.Errorf("run_id is required")
+	}
+	if req.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	key := req.RunID + "." + req.Name
+	_, err := b.signalKV.Put(key, req.Data)
+	if err != nil {
+		return fmt.Errorf("write signal: %w", err)
+	}
+	if err := msg.InProgress(); err != nil {
+		return fmt.Errorf("in-progress: %w", err)
+	}
+	return nil
+}
+
+// signalTimeoutMaxMs caps wait_signal at 1 hour for safety.
+const signalTimeoutMaxMs = 3_600_000
+
+// resolveWaitSignal watches the signals KV bucket for a signal,
+// blocking until it arrives or timeout expires.
+func (b *Bridge) resolveWaitSignal(
+	taskID string,
+	msg *nats.Msg,
+	req resolveRequest,
+	w http.ResponseWriter,
+	r *http.Request,
+) error {
+	if taskID == "" {
+		panic("resolveWaitSignal: taskID must not be empty")
+	}
+	if msg == nil {
+		panic("resolveWaitSignal: msg must not be nil")
+	}
+	if b.signalKV == nil {
+		return fmt.Errorf("signal KV not configured")
+	}
+	if req.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if req.TimeoutMs <= 0 || req.TimeoutMs > signalTimeoutMaxMs {
+		return fmt.Errorf(
+			"timeout_ms must be in (0, %d]", signalTimeoutMaxMs,
+		)
+	}
+	runID, _ := splitTaskID(taskID)
+	signalData, err := b.waitForSignalOrTimeout(
+		runID, req.Name, req.TimeoutMs, msg, r,
+	)
+	if err != nil {
+		if err.Error() == "timeout" {
+			w.WriteHeader(http.StatusRequestTimeout)
+			return errResponseAlreadyWritten
+		}
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, writeErr := w.Write(signalData)
+	if writeErr != nil {
+		return writeErr
+	}
+	return errResponseAlreadyWritten
+}
+
+// inProgressIntervalMs is how often to extend the ack deadline
+// while waiting for a signal.
+const inProgressIntervalMs = 15_000
+
+// waitForSignalOrTimeout checks if a signal exists, or watches for
+// it, periodically extending the ack deadline until signal arrives,
+// timeout expires, or client disconnects.
+func (b *Bridge) waitForSignalOrTimeout(
+	runID, name string,
+	timeoutMs int64,
+	msg *nats.Msg,
+	r *http.Request,
+) ([]byte, error) {
+	if runID == "" {
+		panic("waitForSignalOrTimeout: runID must not be empty")
+	}
+	if name == "" {
+		panic("waitForSignalOrTimeout: name must not be empty")
+	}
+	key := runID + "." + name
+	entry, err := b.signalKV.Get(key)
+	if err == nil {
+		return entry.Value(), nil
+	}
+	if err != nats.ErrKeyNotFound {
+		return nil, fmt.Errorf("get signal: %w", err)
+	}
+	return b.watchForSignal(key, timeoutMs, msg, r)
+}
+
+// watchForSignal creates a KV watcher and blocks until signal
+// arrives, timeout expires, or client disconnects.
+func (b *Bridge) watchForSignal(
+	key string,
+	timeoutMs int64,
+	msg *nats.Msg,
+	r *http.Request,
+) ([]byte, error) {
+	if key == "" {
+		panic("watchForSignal: key must not be empty")
+	}
+	if msg == nil {
+		panic("watchForSignal: msg must not be nil")
+	}
+	watcher, err := b.signalKV.Watch(key)
+	if err != nil {
+		return nil, fmt.Errorf("create watcher: %w", err)
+	}
+	defer watcher.Stop()
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(
+		time.Duration(inProgressIntervalMs) * time.Millisecond,
+	)
+	defer ticker.Stop()
+	for {
+		select {
+		case entry := <-watcher.Updates():
+			if entry == nil {
+				continue
+			}
+			return entry.Value(), nil
+		case <-timer.C:
+			return nil, fmt.Errorf("timeout")
+		case <-ticker.C:
+			if err := msg.InProgress(); err != nil {
+				return nil, fmt.Errorf("in-progress: %w", err)
+			}
+		case <-r.Context().Done():
+			return nil, fmt.Errorf("client disconnect")
+		}
+	}
 }

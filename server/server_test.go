@@ -187,6 +187,79 @@ func TestServer_PrintsStartupAndShutdownBanner(t *testing.T) {
 	}
 }
 
+// TestServerMountsBridgeEndpoints verifies that the bridge handler
+// is mounted on the HTTP mux and responds to connection requests.
+func TestServerMountsBridgeEndpoints(t *testing.T) {
+	cfg := testConfig(t)
+	srv := New(cfg)
+
+	if srv == nil {
+		panic("New() returned nil")
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+
+	// Wait for server to become ready
+	readyURL := fmt.Sprintf("http://%s/ready", cfg.HTTPAddr)
+	deadline := time.Now().Add(10 * time.Second)
+	ready := false
+
+	for time.Now().Before(deadline) && !ready {
+		resp, err := http.Get(readyURL)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			ready = true
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if !ready {
+		t.Fatal("/ready did not return 200 within 10s")
+	}
+
+	// Test bridge endpoint responds
+	body := `{"worker_id":"w-1","task_types":["echo"],"max_tasks":1}`
+	resp, err := http.Post(
+		fmt.Sprintf("http://%s/v1/workers/connect", cfg.HTTPAddr),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST /v1/workers/connect: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Positive: endpoint responds with 200
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Errorf("bridge endpoint status: got %d, want 200; body: %s",
+			resp.StatusCode, string(bodyBytes))
+	}
+
+	// Negative: content type should be text/event-stream (SSE)
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "text/event-stream") {
+		t.Errorf("content type: got %q, want text/event-stream",
+			contentType)
+	}
+
+	// Clean shutdown
+	srv.Stop()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run() returned error: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Run() did not return within 20s")
+	}
+}
+
 // TestServer_EmbeddedWorkerCompletesRun verifies that an embedded
 // worker can process a task end-to-end: register handler, start
 // server, register workflow via REST, start run, poll until done.
