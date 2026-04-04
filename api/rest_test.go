@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -638,5 +640,142 @@ func TestRouteHealthRejectsPOST(t *testing.T) {
 	svc.routeHealth(rec2, req2)
 	if rec2.Code == http.StatusMethodNotAllowed {
 		t.Fatal("GET should not return 405")
+	}
+}
+
+func TestRESTStartScheduledRun(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	wb := dag.NewWorkflow("rest-sched")
+	wb.Task("a", "task-a")
+	wfDef, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	svc.RegisterWorkflow(context.Background(), wfDef)
+
+	handler := NewRESTHandler(svc)
+
+	runAt := time.Now().Add(1 * time.Hour).UTC()
+	body := fmt.Sprintf(
+		`{"workflow":"rest-sched","run_at":"%s"}`,
+		runAt.Format(time.RFC3339),
+	)
+	req := httptest.NewRequest(
+		"POST", "/runs",
+		strings.NewReader(body),
+	)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Positive: returns 201.
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s",
+			w.Code, w.Body.String())
+	}
+
+	// Positive: response contains run_id and status=scheduled.
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["run_id"] == "" {
+		t.Fatal("run_id should not be empty")
+	}
+	if resp["status"] != "scheduled" {
+		t.Fatalf("status = %q, want scheduled", resp["status"])
+	}
+}
+
+func TestRESTGetScheduledRun(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	wb := dag.NewWorkflow("rest-get-sched")
+	wb.Task("a", "task-a")
+	wfDef, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	svc.RegisterWorkflow(context.Background(), wfDef)
+
+	runAt := time.Now().Add(1 * time.Hour)
+	runID, err := svc.ScheduleRun(
+		context.Background(), "rest-get-sched", nil, runAt,
+	)
+	if err != nil {
+		t.Fatalf("ScheduleRun: %v", err)
+	}
+
+	handler := NewRESTHandler(svc)
+	req := httptest.NewRequest(
+		"GET", "/runs/"+runID+"/scheduled", nil,
+	)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Positive: returns 200.
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	// Positive: response contains correct RunID.
+	var sr ScheduledRun
+	json.Unmarshal(w.Body.Bytes(), &sr)
+	if sr.RunID != runID {
+		t.Fatalf("RunID = %q, want %q", sr.RunID, runID)
+	}
+}
+
+func TestRESTCancelScheduledRun(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	wb := dag.NewWorkflow("rest-cancel-sched")
+	wb.Task("a", "task-a")
+	wfDef, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	svc.RegisterWorkflow(context.Background(), wfDef)
+
+	runAt := time.Now().Add(1 * time.Hour)
+	runID, err := svc.ScheduleRun(
+		context.Background(), "rest-cancel-sched", nil, runAt,
+	)
+	if err != nil {
+		t.Fatalf("ScheduleRun: %v", err)
+	}
+
+	handler := NewRESTHandler(svc)
+	req := httptest.NewRequest(
+		"DELETE", "/runs/"+runID+"/scheduled", nil,
+	)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Positive: returns 200.
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	// Positive: status is now cancelled in KV.
+	sr, err := svc.GetScheduledRun(runID)
+	if err != nil {
+		t.Fatalf("GetScheduledRun: %v", err)
+	}
+	if sr.Status != "cancelled" {
+		t.Fatalf("Status = %q, want cancelled", sr.Status)
 	}
 }
