@@ -37,7 +37,7 @@ func TestBridgeE2EWorkflowCompletion(t *testing.T) {
 	defer orch.Stop()
 
 	// Create bridge and HTTP server
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 

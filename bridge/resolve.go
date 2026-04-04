@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -44,6 +45,9 @@ func (b *Bridge) handleResolve(
 	if b.js == nil {
 		panic("handleResolve: js must not be nil")
 	}
+	_, span := b.tel.Tracer.Start(r.Context(), "bridge.resolve")
+	defer span.End()
+
 	taskID := r.PathValue("id")
 	if taskID == "" {
 		http.Error(
@@ -63,6 +67,12 @@ func (b *Bridge) handleResolve(
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	b.requestCount.Inc()
+	b.tel.Logger.Info("task resolved",
+		observe.String("task_id", taskID),
+		observe.String("action", req.Action),
+	)
 
 	err = b.dispatchAction(taskID, msg, req, w, r)
 	if err != nil {

@@ -75,7 +75,7 @@ func TestResolveComplete(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -132,7 +132,7 @@ func TestResolveFail(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -190,7 +190,7 @@ func TestResolvePause(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -248,7 +248,7 @@ func TestResolveNotFound(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -275,7 +275,7 @@ func TestResolveBadAction(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -316,7 +316,7 @@ func TestResolveCheckpoint(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -376,7 +376,7 @@ func TestResolveSendSignal(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -442,7 +442,7 @@ func TestResolveWaitSignalImmediate(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -503,7 +503,7 @@ func TestResolveWaitSignalTimeout(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := NewBridge(nc, nil)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 

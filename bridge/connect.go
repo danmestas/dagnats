@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -32,11 +33,19 @@ func (b *Bridge) handleConnect(
 	if b.js == nil {
 		panic("handleConnect: js must not be nil")
 	}
+	_, span := b.tel.Tracer.Start(r.Context(), "bridge.connect")
+	defer span.End()
+
 	req, err := parseConnectRequest(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	b.tel.Logger.Info("worker connected",
+		observe.String("worker_id", req.WorkerID),
+		observe.Int("max_tasks", req.MaxTasks),
+	)
 
 	dir := worker.NewDirectory(b.js)
 	reg := worker.WorkerRegistration{
@@ -52,7 +61,12 @@ func (b *Bridge) handleConnect(
 		)
 		return
 	}
-	defer dir.Deregister(req.WorkerID)
+	defer func() {
+		dir.Deregister(req.WorkerID)
+		b.tel.Logger.Info("worker disconnected",
+			observe.String("worker_id", req.WorkerID),
+		)
+	}()
 
 	writeSSEHeaders(w)
 	sendHeartbeatLoop(w, r, reg, dir)

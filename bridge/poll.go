@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -42,12 +43,26 @@ func (b *Bridge) handlePoll(
 	if b.ackMap == nil {
 		panic("handlePoll: ackMap must not be nil")
 	}
+	ctx, span := b.tel.Tracer.Start(r.Context(), "bridge.poll")
+	defer span.End()
+
+	start := time.Now()
 	req, err := parsePollRequest(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	tasks := b.fetchTasks(req)
+
+	elapsed := time.Since(start).Milliseconds()
+	b.requestCount.Inc()
+	b.requestDuration.Observe(float64(elapsed))
+	b.tel.Logger.Info("poll completed",
+		observe.Int("task_count", len(tasks)),
+		observe.Int("elapsed_ms", int(elapsed)),
+	)
+
+	_ = ctx // span carries context
 	writePollResponse(w, tasks)
 }
 
