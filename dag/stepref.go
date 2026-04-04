@@ -103,3 +103,20 @@ func (r StepRef) WithMaxDuration(d time.Duration) StepRef {
 	r.builder.steps[r.index].Loop.MaxDuration = d
 	return r
 }
+
+// WithMaxItems configures the maximum number of items to process for a Map
+// step. Calling this on a non-Map step or with n <= 0 panics — these are
+// programmer errors that should be caught immediately.
+func (r StepRef) WithMaxItems(n int) StepRef {
+	if r.builder == nil {
+		panic("WithMaxItems called on zero-value StepRef")
+	}
+	if r.builder.steps[r.index].Map == nil {
+		panic("WithMaxItems called on non-Map step")
+	}
+	if n <= 0 {
+		panic("WithMaxItems: n must be positive")
+	}
+	r.builder.steps[r.index].Map.MaxItems = n
+	return r
+}

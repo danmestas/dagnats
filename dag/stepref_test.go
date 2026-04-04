@@ -275,3 +275,61 @@ func TestStepRefWithMaxIterationsZeroValuePanics(t *testing.T) {
 	}()
 	_ = ref.WithMaxIterations(5)
 }
+
+func TestStepRefWithMaxItems(t *testing.T) {
+	wf := NewWorkflow("map-maxitems")
+	input := wf.Task("input", "task-input")
+	_ = wf.Map("m", "task-m").After(input).WithMaxItems(500)
+
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	step := findStep(def, "m")
+	// Positive: MaxItems set
+	if step.Map.MaxItems != 500 {
+		t.Fatalf("MaxItems = %d, want 500", step.Map.MaxItems)
+	}
+
+	// Negative: default is 1000 when not overridden
+	wf2 := NewWorkflow("map-default")
+	input2 := wf2.Task("input", "task-input")
+	wf2.Map("m2", "task-m").After(input2)
+	def2, _ := wf2.Build()
+	if findStep(def2, "m2").Map.MaxItems != 1000 {
+		t.Fatal("default MaxItems should be 1000")
+	}
+}
+
+func TestStepRefWithMaxItemsZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value WithMaxItems")
+		}
+	}()
+	_ = ref.WithMaxItems(100)
+}
+
+func TestStepRefWithMaxItemsOnNonMapPanics(t *testing.T) {
+	wf := NewWorkflow("bad")
+	ref := wf.Task("a", "task-a")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for WithMaxItems on Task")
+		}
+	}()
+	_ = ref.WithMaxItems(100)
+}
+
+func TestStepRefWithMaxItemsNegativePanics(t *testing.T) {
+	wf := NewWorkflow("bad-n")
+	ref := wf.Map("m", "task-m")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for negative WithMaxItems")
+		}
+	}()
+	_ = ref.WithMaxItems(0)
+}

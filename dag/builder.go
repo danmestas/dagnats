@@ -79,6 +79,29 @@ func (b *WorkflowBuilder) Agent(
 	return StepRef{id: id, index: b.current, builder: b}
 }
 
+// Map appends a map step that fans out over an array from its dependency.
+// The step will execute taskType once per item in the input array, up to
+// MapConfig.MaxItems. Returns a StepRef for chaining dependency wiring
+// and calling WithMaxItems to override the default bound of 1000.
+func (b *WorkflowBuilder) Map(id, taskType string) StepRef {
+	if id == "" {
+		panic("Map: id must not be empty")
+	}
+	if taskType == "" {
+		panic("Map: taskType must not be empty")
+	}
+	step := StepDef{
+		ID:   id,
+		Task: taskType,
+		Type: StepTypeMap,
+		Map:  &MapConfig{MaxItems: 1000},
+	}
+	b.steps = append(b.steps, step)
+	idx := len(b.steps) - 1
+	b.current = idx
+	return StepRef{id: id, index: idx, builder: b}
+}
+
 // DependsOn declares that the active step must not start until all listed step
 // IDs have completed. Kept for backward compatibility — prefer After(StepRef)
 // for new code which provides compile-time safety.

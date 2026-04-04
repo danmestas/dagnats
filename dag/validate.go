@@ -45,6 +45,7 @@ func validateStepIDs(def WorkflowDef) (map[string]bool, error) {
 
 // validateStepReferences checks each step's dependencies, loop config,
 // SkipIf conditions, OnFailure, and Compensate references against known IDs.
+// Also checks for Map step nesting (Map steps cannot depend on other Map steps).
 func validateStepReferences(
 	def WorkflowDef,
 	ids map[string]bool,
@@ -56,9 +57,20 @@ func validateStepReferences(
 		panic("validateStepReferences: called with empty steps")
 	}
 
+	// Build a map of step types for nesting checks.
+	stepTypes := make(map[string]StepType, len(def.Steps))
+	for _, step := range def.Steps {
+		stepTypes[step.ID] = step.Type
+	}
+
 	for _, step := range def.Steps {
 		if err := validateSingleStep(step, ids); err != nil {
 			return err
+		}
+		if step.Type == StepTypeMap {
+			if err := validateMapNesting(step, stepTypes); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -87,6 +99,9 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 		}
 	}
 	if err := validateLoopConfig(step); err != nil {
+		return err
+	}
+	if err := validateMapConfig(step); err != nil {
 		return err
 	}
 	if err := validateSkipIf(step); err != nil {
@@ -131,6 +146,69 @@ func validateLoopConfig(step StepDef) error {
 		return fmt.Errorf(
 			"step %q has Loop config but is not AgentLoop type", step.ID,
 		)
+	}
+	return nil
+}
+
+// validateMapConfig checks Map step configuration and dependencies.
+// Map steps must have exactly one dependency, and MaxItems must be within bounds.
+func validateMapConfig(step StepDef) error {
+	if step.ID == "" {
+		panic("validateMapConfig: step ID is empty")
+	}
+	if step.Task == "" {
+		panic("validateMapConfig: step task is empty")
+	}
+	if step.Type == StepTypeMap && step.Map == nil {
+		panic("Map step must have Map config")
+	}
+	if step.Type == StepTypeMap {
+		if len(step.DependsOn) != 1 {
+			return fmt.Errorf(
+				"step %q is Map but has %d dependencies (must have exactly one)",
+				step.ID, len(step.DependsOn),
+			)
+		}
+		if step.Map.MaxItems <= 0 {
+			return fmt.Errorf(
+				"step %q is Map but MaxItems is %d (must be > 0)",
+				step.ID, step.Map.MaxItems,
+			)
+		}
+		if step.Map.MaxItems > 10000 {
+			return fmt.Errorf(
+				"step %q is Map but MaxItems is %d (must be <= 10000)",
+				step.ID, step.Map.MaxItems,
+			)
+		}
+	}
+	if step.Type != StepTypeMap && step.Map != nil {
+		return fmt.Errorf(
+			"step %q has Map config but is not Map type", step.ID,
+		)
+	}
+	return nil
+}
+
+// validateMapNesting checks that Map steps do not depend on other Map steps.
+// Nested map steps would create quadratic fanout which is not supported.
+func validateMapNesting(step StepDef, stepTypes map[string]StepType) error {
+	if step.ID == "" {
+		panic("validateMapNesting: step ID is empty")
+	}
+	if step.Type != StepTypeMap {
+		panic("validateMapNesting: called on non-Map step")
+	}
+	if stepTypes == nil {
+		panic("validateMapNesting: stepTypes map is nil")
+	}
+	for _, dep := range step.DependsOn {
+		if stepTypes[dep] == StepTypeMap {
+			return fmt.Errorf(
+				"step %q is Map and depends on %q which is also Map (nesting not supported)",
+				step.ID, dep,
+			)
+		}
 	}
 	return nil
 }
