@@ -56,10 +56,13 @@ const (
 	RunStatusCompleted
 	RunStatusFailed
 	RunStatusCancelled
+	RunStatusCompensated
+	RunStatusCompensateFailed
 )
 
 var runStatusStrings = [...]string{
 	"pending", "running", "completed", "failed", "cancelled",
+	"compensated", "compensate_failed",
 }
 
 func (r RunStatus) String() string {
@@ -99,10 +102,12 @@ const (
 	StepStatusFailed
 	StepStatusSkipped
 	StepStatusCancelled
+	StepStatusRecovered
 )
 
 var stepStatusStrings = [...]string{
-	"pending", "queued", "running", "completed", "failed", "skipped", "cancelled",
+	"pending", "queued", "running", "completed", "failed",
+	"skipped", "cancelled", "recovered",
 }
 
 func (s StepStatus) String() string {
@@ -173,6 +178,7 @@ type WorkflowDef struct {
 	Timeout      time.Duration     `json:"timeout,omitempty"`
 	InputSchema  json.RawMessage   `json:"input_schema,omitempty"`
 	OutputSchema json.RawMessage   `json:"output_schema,omitempty"`
+	AuxSteps     map[string]bool   `json:"aux_steps,omitempty"`
 }
 
 // StepState captures mutable runtime state for one step in a run.

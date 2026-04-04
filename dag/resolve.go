@@ -15,6 +15,12 @@ func ResolveReady(
 		if completed[step.ID] || queued[step.ID] {
 			continue
 		}
+		// Auxiliary steps (OnFailure/Compensate targets) are never
+		// resolved through normal dependency resolution. They are
+		// dispatched directly by the engine when their trigger fires.
+		if def.AuxSteps[step.ID] {
+			continue
+		}
 		if allDepsCompleted(step.DependsOn, completed) {
 			ready = append(ready, step)
 		}
@@ -68,11 +74,17 @@ func ResolveInput(step StepDef, steps map[string]StepState) ([]byte, error) {
 	return data, err
 }
 
-// IsComplete returns true when every step in the definition has been completed
-// or skipped. Used by the engine to decide whether to transition the run to
-// RunStatusCompleted.
-func IsComplete(def WorkflowDef, completed map[string]bool) bool {
+// IsComplete returns true when every step in the definition has been
+// completed or skipped. Auxiliary steps (OnFailure/Compensate targets)
+// that were never triggered don't block completion — they are expected
+// to remain Pending in the happy path.
+func IsComplete(
+	def WorkflowDef, completed map[string]bool,
+) bool {
 	for _, step := range def.Steps {
+		if def.AuxSteps[step.ID] && !completed[step.ID] {
+			continue
+		}
 		if !completed[step.ID] {
 			return false
 		}
@@ -89,4 +101,51 @@ func allDepsCompleted(deps []string, completed map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// ResolveCompensateChain returns compensate steps for completed steps
+// in reverse topological order. Each step (except the first) gets a
+// DependsOn pointing to the previous — this lets the engine enforce
+// sequential execution using existing resolution logic.
+func ResolveCompensateChain(
+	def WorkflowDef,
+	completed map[string]bool,
+	failedStepID string,
+) []StepDef {
+	// Collect completed steps with Compensate in definition order
+	// (def.Steps is topo-sorted from Build).
+	byID := make(map[string]StepDef, len(def.Steps))
+	for _, s := range def.Steps {
+		byID[s.ID] = s
+	}
+	var ordered []StepDef
+	for _, step := range def.Steps {
+		if step.Compensate == "" {
+			continue
+		}
+		if !completed[step.ID] {
+			continue
+		}
+		comp := byID[step.Compensate]
+		ordered = append(ordered, comp)
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+
+	// Reverse for compensation order (last completed first)
+	for i, j := 0, len(ordered)-1; i < j; i, j = i+1, j-1 {
+		ordered[i], ordered[j] = ordered[j], ordered[i]
+	}
+
+	// Wire DependsOn chain for sequential execution
+	chain := make([]StepDef, len(ordered))
+	for i, step := range ordered {
+		chain[i] = step
+		chain[i].DependsOn = nil
+		if i > 0 {
+			chain[i].DependsOn = []string{chain[i-1].ID}
+		}
+	}
+	return chain
 }

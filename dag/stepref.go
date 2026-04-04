@@ -103,3 +103,40 @@ func (r StepRef) WithMaxDuration(d time.Duration) StepRef {
 	r.builder.steps[r.index].Loop.MaxDuration = d
 	return r
 }
+
+// OnFailure designates a step to run when this step fails permanently
+// (retries exhausted). The target step receives error context as input.
+// Panics on zero-value StepRef, cross-builder refs, or self-reference.
+func (r StepRef) OnFailure(target StepRef) StepRef {
+	if r.builder == nil {
+		panic("OnFailure called on zero-value StepRef")
+	}
+	if target.builder != r.builder {
+		panic("OnFailure: target StepRef belongs to a different " +
+			"WorkflowBuilder")
+	}
+	if target.id == r.id {
+		panic("OnFailure: step cannot reference itself")
+	}
+	r.builder.steps[r.index].OnFailure = target.id
+	return r
+}
+
+// Compensate designates a step to reverse this step's side effects
+// during saga compensation. Runs in reverse topo order when a
+// downstream step fails permanently.
+// Panics on zero-value StepRef, cross-builder refs, or self-reference.
+func (r StepRef) Compensate(target StepRef) StepRef {
+	if r.builder == nil {
+		panic("Compensate called on zero-value StepRef")
+	}
+	if target.builder != r.builder {
+		panic("Compensate: target StepRef belongs to a different " +
+			"WorkflowBuilder")
+	}
+	if target.id == r.id {
+		panic("Compensate: step cannot reference itself")
+	}
+	r.builder.steps[r.index].Compensate = target.id
+	return r
+}

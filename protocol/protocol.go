@@ -22,20 +22,24 @@ type TaskPayload struct {
 type EventType string
 
 const (
-	EventWorkflowStarted        EventType = "workflow.started"
-	EventStepQueued             EventType = "step.queued"
-	EventStepStarted            EventType = "step.started"
-	EventStepCompleted          EventType = "step.completed"
-	EventStepFailed             EventType = "step.failed"
-	EventStepContinue           EventType = "step.continue"
-	EventAgentLoopIteration     EventType = "agent.loop.iteration"
-	EventWorkflowCompleted      EventType = "workflow.completed"
-	EventWorkflowFailed         EventType = "workflow.failed"
-	EventWorkflowSpawn          EventType = "workflow.spawn"
-	EventWorkflowChildCompleted EventType = "workflow.child.completed"
-	EventWorkflowChildFailed    EventType = "workflow.child.failed"
-	EventWorkflowCancelled      EventType = "workflow.cancelled"
-	EventStepCancelled          EventType = "step.cancelled"
+	EventWorkflowStarted         EventType = "workflow.started"
+	EventStepQueued              EventType = "step.queued"
+	EventStepStarted             EventType = "step.started"
+	EventStepCompleted           EventType = "step.completed"
+	EventStepFailed              EventType = "step.failed"
+	EventStepContinue            EventType = "step.continue"
+	EventAgentLoopIteration      EventType = "agent.loop.iteration"
+	EventWorkflowCompleted       EventType = "workflow.completed"
+	EventWorkflowFailed          EventType = "workflow.failed"
+	EventWorkflowSpawn           EventType = "workflow.spawn"
+	EventWorkflowChildCompleted  EventType = "workflow.child.completed"
+	EventWorkflowChildFailed     EventType = "workflow.child.failed"
+	EventWorkflowCancelled       EventType = "workflow.cancelled"
+	EventStepCancelled           EventType = "step.cancelled"
+	EventCompensateStarted       EventType = "compensate.started"
+	EventCompensateStepCompleted EventType = "compensate.step.completed"
+	EventCompensateFailed        EventType = "compensate.failed"
+	EventCompensateCompleted     EventType = "compensate.completed"
 )
 
 // Event is the core communication primitive published to the history stream.

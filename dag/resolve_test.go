@@ -226,6 +226,94 @@ func TestResolveSkippedDepsNotMet(t *testing.T) {
 	}
 }
 
+func TestIsCompleteSkipsUntriggeredAuxSteps(t *testing.T) {
+	def := WorkflowDef{
+		Name: "test", Version: "1",
+		Steps: []StepDef{
+			{ID: "main", Task: "t", Type: StepTypeNormal,
+				OnFailure: "fallback"},
+			{ID: "fallback", Task: "t", Type: StepTypeNormal},
+		},
+		AuxSteps: map[string]bool{"fallback": true},
+	}
+	completed := map[string]bool{"main": true}
+
+	// Positive: workflow is complete — fallback is aux, not triggered
+	if !IsComplete(def, completed) {
+		t.Fatal("expected workflow complete: aux step not triggered")
+	}
+
+	// Negative: without AuxSteps, workflow is not complete
+	def.AuxSteps = nil
+	if IsComplete(def, completed) {
+		t.Fatal("without AuxSteps, workflow should not be complete")
+	}
+}
+
+func TestResolveCompensateChain(t *testing.T) {
+	def := WorkflowDef{
+		Name: "saga", Version: "1",
+		Steps: []StepDef{
+			{ID: "create", Task: "create", Type: StepTypeNormal,
+				Compensate: "undo-create"},
+			{ID: "charge", Task: "charge", Type: StepTypeNormal,
+				DependsOn:  []string{"create"},
+				Compensate: "refund"},
+			{ID: "ship", Task: "ship", Type: StepTypeNormal,
+				DependsOn: []string{"charge"}},
+			{ID: "undo-create", Task: "undo", Type: StepTypeNormal},
+			{ID: "refund", Task: "refund", Type: StepTypeNormal},
+		},
+		AuxSteps: map[string]bool{
+			"undo-create": true, "refund": true,
+		},
+	}
+	completed := map[string]bool{
+		"create": true, "charge": true,
+	}
+
+	chain := ResolveCompensateChain(def, completed, "ship")
+
+	// Positive: 2 compensate steps returned
+	if len(chain) != 2 {
+		t.Fatalf("expected 2 compensate steps, got %d", len(chain))
+	}
+	// Positive: reverse order — refund first, then undo-create
+	if chain[0].ID != "refund" {
+		t.Fatalf("chain[0] = %q, want refund", chain[0].ID)
+	}
+	if chain[1].ID != "undo-create" {
+		t.Fatalf("chain[1] = %q, want undo-create", chain[1].ID)
+	}
+	// Positive: chain has DependsOn wired for sequencing
+	if len(chain[1].DependsOn) != 1 ||
+		chain[1].DependsOn[0] != "refund" {
+		t.Fatalf("chain[1].DependsOn = %v, want [refund]",
+			chain[1].DependsOn)
+	}
+	// Negative: first in chain has no DependsOn
+	if len(chain[0].DependsOn) != 0 {
+		t.Fatalf("chain[0].DependsOn = %v, want empty",
+			chain[0].DependsOn)
+	}
+}
+
+func TestResolveCompensateChainEmpty(t *testing.T) {
+	def := WorkflowDef{
+		Name: "no-saga", Version: "1",
+		Steps: []StepDef{
+			{ID: "a", Task: "t", Type: StepTypeNormal},
+		},
+	}
+	chain := ResolveCompensateChain(
+		def, map[string]bool{"a": true}, "a",
+	)
+	// Positive: no compensate steps
+	if len(chain) != 0 {
+		t.Fatalf("expected 0 steps, got %d", len(chain))
+	}
+}
+
 func readyIDs(steps []StepDef) []string {
 	ids := make([]string, len(steps))
 	for i, s := range steps {
