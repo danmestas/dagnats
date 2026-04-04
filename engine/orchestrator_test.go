@@ -3136,6 +3136,91 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 	}
 }
 
+func TestRetryAfterSchedulesExactDelay(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "test-ra", Version: "1",
+		DefaultRetry: &dag.RetryPolicy{
+			MaxAttempts:  3,
+			Strategy:     dag.RetryFixed,
+			InitialDelay: time.Minute,
+		},
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "task-ra", Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startPayload, _ := json.Marshal(map[string]any{
+		"workflow_def": wfDef,
+	})
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-ra-1", startPayload,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	time.Sleep(500 * time.Millisecond)
+
+	failPayload, _ := json.Marshal(protocol.StepFailedPayload{
+		Error:        "rate limited",
+		FailureType:  protocol.FailureTypeRetryAfter,
+		RetryAfterMs: 200,
+	})
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed, "run-ra-1", "a", failPayload,
+	)
+	failData, _ := failEvt.Marshal()
+	js.Publish(failEvt.NATSSubject(), failData,
+		nats.MsgId(failEvt.NATSMsgID()))
+
+	// The task should be re-published after ~200ms via SLEEP_TIMERS.
+	sub, _ := js.PullSubscribe(
+		"task.task-ra.*", "",
+		nats.BindStream("TASK_QUEUES"),
+	)
+	// Skip initial enqueue
+	msgs, fetchErr := sub.Fetch(1, nats.MaxWait(2*time.Second))
+	if fetchErr != nil {
+		t.Fatalf("initial task not received: %v", fetchErr)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 initial task, got %d", len(msgs))
+	}
+
+	// Second message = retry after timer fired
+	retryMsgs, retryErr := sub.Fetch(1, nats.MaxWait(5*time.Second))
+	if retryErr != nil {
+		t.Fatalf("retry task not received within 5s: %v", retryErr)
+	}
+	if len(retryMsgs) != 1 {
+		t.Fatalf("expected 1 retry task, got %d", len(retryMsgs))
+	}
+
+	// Verify run is NOT failed (retries remain)
+	time.Sleep(100 * time.Millisecond)
+	store := NewSnapshotStore(js)
+	run, loadErr := store.Load("run-ra-1")
+	if loadErr != nil {
+		t.Fatalf("load run: %v", loadErr)
+	}
+	if run.Status == dag.RunStatusFailed {
+		t.Fatal("run should not be failed — retries remain")
+	}
+}
+
 func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {

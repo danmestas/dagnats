@@ -992,7 +992,7 @@ func (o *Orchestrator) tryOnFailureHandler(
 }
 
 // scheduleRetryAfter schedules a timer to re-publish the task
-// after the worker-requested delay. Implemented in Task 5.
+// after the worker-requested delay via SLEEP_TIMERS.
 func (o *Orchestrator) scheduleRetryAfter(
 	runID string, stepID string,
 	stepDef dag.StepDef,
@@ -1000,17 +1000,33 @@ func (o *Orchestrator) scheduleRetryAfter(
 	run dag.WorkflowRun,
 ) error {
 	if runID == "" {
-		panic(
-			"scheduleRetryAfter: runID must not be empty",
-		)
+		panic("scheduleRetryAfter: runID must not be empty")
 	}
 	if stepID == "" {
-		panic(
-			"scheduleRetryAfter: stepID must not be empty",
+		panic("scheduleRetryAfter: stepID must not be empty")
+	}
+	if retryAfterMs <= 0 {
+		retryAfterMs = 100
+	}
+	if retryAfterMs > 3_600_000 {
+		retryAfterMs = 3_600_000
+	}
+	input, err := dag.ResolveInput(stepDef, run.Steps)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve input for retry-after step %q: %w",
+			stepID, err,
 		)
 	}
-	// TODO: implement in Task 5 with SLEEP_TIMERS
-	return fmt.Errorf("scheduleRetryAfter not yet implemented")
+	return o.sleepTimer.Schedule(TimerMessage{
+		Action:     TimerActionRetryAfter,
+		RunID:      runID,
+		StepID:     stepID,
+		DurationMs: retryAfterMs,
+		TaskType:   stepDef.Task,
+		Input:      input,
+		Attempt:    run.Steps[stepID].Attempts,
+	})
 }
 
 // failWorkflow marks the workflow as permanently failed and releases

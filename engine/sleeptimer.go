@@ -23,6 +23,7 @@ const (
 	TimerActionSleepComplete TimerAction = "sleep_complete"
 	TimerActionRateRetry     TimerAction = "rate_retry"
 	TimerActionWaitTimeout   TimerAction = "wait_timeout"
+	TimerActionRetryAfter    TimerAction = "retry_after"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
@@ -35,6 +36,7 @@ type TimerMessage struct {
 	DurationMs int64           `json:"duration_ms"`
 	TaskType   string          `json:"task_type,omitempty"`
 	Input      json.RawMessage `json:"input,omitempty"`
+	Attempt    int             `json:"attempt,omitempty"`
 }
 
 // SleepTimer manages durable timers via NakWithDelay on the
@@ -109,6 +111,12 @@ func (st *SleepTimer) Schedule(msg TimerMessage) error {
 	msgID := fmt.Sprintf(
 		"%s.%s.sleep", msg.RunID, msg.StepID,
 	)
+	if msg.Attempt > 0 {
+		msgID = fmt.Sprintf(
+			"%s.%s.sleep.%d",
+			msg.RunID, msg.StepID, msg.Attempt,
+		)
+	}
 	natsMsg := &nats.Msg{
 		Subject: subject,
 		Data:    data,
@@ -159,6 +167,8 @@ func (st *SleepTimer) handleTimer(msg *nats.Msg) {
 		st.fireRateRetry(tm)
 	case TimerActionWaitTimeout:
 		st.fireWaitTimeout(tm)
+	case TimerActionRetryAfter:
+		st.fireRetryAfter(tm)
 	default:
 		// Unknown action — ack to prevent loop.
 	}
@@ -236,6 +246,39 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	}
 	msgID := fmt.Sprintf(
 		"%s.%s.rate_retry", tm.RunID, tm.StepID,
+	)
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
+	}
+	st.js.PublishMsg(msg)
+}
+
+// fireRetryAfter re-publishes a task after a worker retry delay.
+// Distinct from fireRateRetry to avoid MsgId collisions.
+func (st *SleepTimer) fireRetryAfter(tm TimerMessage) {
+	if tm.RunID == "" {
+		panic("fireRetryAfter: RunID must not be empty")
+	}
+	if tm.TaskType == "" {
+		panic("fireRetryAfter: TaskType must not be empty")
+	}
+	subject := fmt.Sprintf(
+		"task.%s.%s", tm.TaskType, tm.RunID,
+	)
+	payload := protocol.TaskPayload{
+		TaskID: tm.RunID + "." + tm.StepID,
+		RunID:  tm.RunID,
+		StepID: tm.StepID,
+		Input:  tm.Input,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	msgID := fmt.Sprintf(
+		"%s.%s.retry_after", tm.RunID, tm.StepID,
 	)
 	msg := &nats.Msg{
 		Subject: subject,
