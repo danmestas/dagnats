@@ -49,10 +49,10 @@ func (b *WorkflowBuilder) Task(id, task string) StepRef {
 // WithMaxDuration before Build() — Validate enforces MaxIterations > 0.
 func (b *WorkflowBuilder) AgentLoop(id, task string) StepRef {
 	b.steps = append(b.steps, StepDef{
-		ID:   id,
-		Task: task,
-		Type: StepTypeAgentLoop,
-		Loop: &AgentLoopConfig{},
+		ID:     id,
+		Task:   task,
+		Type:   StepTypeAgentLoop,
+		Config: MarshalConfig(&AgentLoopConfig{}),
 	})
 	b.current = len(b.steps) - 1
 	return StepRef{id: id, index: b.current, builder: b}
@@ -91,10 +91,10 @@ func (b *WorkflowBuilder) Map(id, taskType string) StepRef {
 		panic("Map: taskType must not be empty")
 	}
 	step := StepDef{
-		ID:   id,
-		Task: taskType,
-		Type: StepTypeMap,
-		Map:  &MapConfig{MaxItems: 1000},
+		ID:     id,
+		Task:   taskType,
+		Type:   StepTypeMap,
+		Config: MarshalConfig(&MapConfig{MaxItems: 1000}),
 	}
 	b.steps = append(b.steps, step)
 	idx := len(b.steps) - 1
@@ -112,10 +112,9 @@ func (b *WorkflowBuilder) Sleep(id string, duration time.Duration) StepRef {
 		panic("Sleep: duration must be positive")
 	}
 	step := StepDef{
-		ID:       id,
-		Task:     "",
-		Type:     StepTypeSleep,
-		Duration: duration,
+		ID:     id,
+		Type:   StepTypeSleep,
+		Config: MarshalConfig(&SleepConfig{Duration: duration}),
 	}
 	b.steps = append(b.steps, step)
 	idx := len(b.steps) - 1
@@ -133,10 +132,9 @@ func (b *WorkflowBuilder) WaitForEvent(id string, opts WaitForEventOpts) StepRef
 		panic("WaitForEvent: opts.Event must not be empty")
 	}
 	step := StepDef{
-		ID:           id,
-		Task:         "",
-		Type:         StepTypeWaitForEvent,
-		WaitForEvent: &opts,
+		ID:     id,
+		Type:   StepTypeWaitForEvent,
+		Config: MarshalConfig(&opts),
 	}
 	b.steps = append(b.steps, step)
 	idx := len(b.steps) - 1
@@ -173,10 +171,15 @@ func (b *WorkflowBuilder) WithMaxIterations(n int) *WorkflowBuilder {
 	if b.current < 0 {
 		panic("WithMaxIterations called before adding a step")
 	}
-	if b.steps[b.current].Loop == nil {
+	if b.steps[b.current].Type != StepTypeAgentLoop {
 		panic("WithMaxIterations called on non-AgentLoop step")
 	}
-	b.steps[b.current].Loop.MaxIterations = n
+	cfg, err := ParseAgentLoopConfig(b.steps[b.current])
+	if err != nil {
+		panic("WithMaxIterations: " + err.Error())
+	}
+	cfg.MaxIterations = n
+	b.steps[b.current].Config = MarshalConfig(&cfg)
 	return b
 }
 
@@ -186,10 +189,15 @@ func (b *WorkflowBuilder) WithMaxDuration(d time.Duration) *WorkflowBuilder {
 	if b.current < 0 {
 		panic("WithMaxDuration called before adding a step")
 	}
-	if b.steps[b.current].Loop == nil {
+	if b.steps[b.current].Type != StepTypeAgentLoop {
 		panic("WithMaxDuration called on non-AgentLoop step")
 	}
-	b.steps[b.current].Loop.MaxDuration = d
+	cfg, err := ParseAgentLoopConfig(b.steps[b.current])
+	if err != nil {
+		panic("WithMaxDuration: " + err.Error())
+	}
+	cfg.MaxDuration = d
+	b.steps[b.current].Config = MarshalConfig(&cfg)
 	return b
 }
 

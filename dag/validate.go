@@ -142,7 +142,7 @@ func stepRequiresTask(t StepType) bool {
 	}
 }
 
-// validateLoopConfig checks AgentLoop/Loop consistency for a single step.
+// validateLoopConfig checks AgentLoop/Config consistency for a single step.
 func validateLoopConfig(step StepDef) error {
 	if step.ID == "" {
 		panic("validateLoopConfig: step ID is empty")
@@ -150,32 +150,32 @@ func validateLoopConfig(step StepDef) error {
 	if step.Task == "" && stepRequiresTask(step.Type) {
 		panic("validateLoopConfig: step task is empty")
 	}
-	// Non-task step types (e.g., sleep, wait-for-event) skip task validation.
+	// Non-task step types (e.g., sleep, wait-for-event) skip.
 	if step.Task == "" {
 		return nil
 	}
-	if step.Type == StepTypeAgentLoop && step.Loop == nil {
-		return fmt.Errorf(
-			"step %q is AgentLoop but Loop config is nil", step.ID,
-		)
-	}
-	if step.Type == StepTypeAgentLoop &&
-		step.Loop != nil && step.Loop.MaxIterations <= 0 {
-		return fmt.Errorf(
-			"step %q is AgentLoop but MaxIterations is %d (must be > 0)",
-			step.ID, step.Loop.MaxIterations,
-		)
-	}
-	if step.Type != StepTypeAgentLoop && step.Loop != nil {
-		return fmt.Errorf(
-			"step %q has Loop config but is not AgentLoop type", step.ID,
-		)
+	if step.Type == StepTypeAgentLoop {
+		cfg, err := ParseAgentLoopConfig(step)
+		if err != nil {
+			return fmt.Errorf(
+				"step %q is AgentLoop but Config is invalid: %w",
+				step.ID, err,
+			)
+		}
+		if cfg.MaxIterations <= 0 {
+			return fmt.Errorf(
+				"step %q is AgentLoop but MaxIterations is "+
+					"%d (must be > 0)",
+				step.ID, cfg.MaxIterations,
+			)
+		}
 	}
 	return nil
 }
 
 // validateMapConfig checks Map step configuration and dependencies.
-// Map steps must have exactly one dependency, and MaxItems must be within bounds.
+// Map steps must have exactly one dependency, and MaxItems must be
+// within bounds.
 func validateMapConfig(step StepDef) error {
 	if step.ID == "" {
 		panic("validateMapConfig: step ID is empty")
@@ -183,36 +183,35 @@ func validateMapConfig(step StepDef) error {
 	if step.Task == "" && stepRequiresTask(step.Type) {
 		panic("validateMapConfig: step task is empty")
 	}
-	// Non-task step types (e.g., sleep, wait-for-event) skip task validation.
+	// Non-task step types (e.g., sleep, wait-for-event) skip.
 	if step.Task == "" {
 		return nil
 	}
-	if step.Type == StepTypeMap && step.Map == nil {
+	if step.Type != StepTypeMap {
+		return nil
+	}
+	cfg, err := ParseMapConfig(step)
+	if err != nil {
 		panic("Map step must have Map config")
 	}
-	if step.Type == StepTypeMap {
-		if len(step.DependsOn) != 1 {
-			return fmt.Errorf(
-				"step %q is Map but has %d dependencies (must have exactly one)",
-				step.ID, len(step.DependsOn),
-			)
-		}
-		if step.Map.MaxItems <= 0 {
-			return fmt.Errorf(
-				"step %q is Map but MaxItems is %d (must be > 0)",
-				step.ID, step.Map.MaxItems,
-			)
-		}
-		if step.Map.MaxItems > 10000 {
-			return fmt.Errorf(
-				"step %q is Map but MaxItems is %d (must be <= 10000)",
-				step.ID, step.Map.MaxItems,
-			)
-		}
-	}
-	if step.Type != StepTypeMap && step.Map != nil {
+	if len(step.DependsOn) != 1 {
 		return fmt.Errorf(
-			"step %q has Map config but is not Map type", step.ID,
+			"step %q is Map but has %d dependencies "+
+				"(must have exactly one)",
+			step.ID, len(step.DependsOn),
+		)
+	}
+	if cfg.MaxItems <= 0 {
+		return fmt.Errorf(
+			"step %q is Map but MaxItems is %d (must be > 0)",
+			step.ID, cfg.MaxItems,
+		)
+	}
+	if cfg.MaxItems > 10000 {
+		return fmt.Errorf(
+			"step %q is Map but MaxItems is %d "+
+				"(must be <= 10000)",
+			step.ID, cfg.MaxItems,
 		)
 	}
 	return nil

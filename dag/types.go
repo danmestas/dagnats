@@ -160,7 +160,8 @@ type ConcurrencyLimit struct {
 
 // StepDef is the immutable declaration of a single step within a WorkflowDef.
 // DependsOn lists step IDs that must complete before this step is queued.
-// NOTE: Tier 2+ must refactor to step-type-specific config before adding fields.
+// Config holds type-specific configuration as raw JSON — use ParseXxxConfig
+// helpers to extract typed structs.
 type StepDef struct {
 	ID             string            `json:"id"`
 	Task           string            `json:"task"`
@@ -168,18 +169,15 @@ type StepDef struct {
 	Retries        int               `json:"retries,omitempty"`
 	Timeout        time.Duration     `json:"timeout"`
 	Type           StepType          `json:"type"`
-	Loop           *AgentLoopConfig  `json:"loop,omitempty"`
-	Map            *MapConfig        `json:"map,omitempty"`
+	Config         json.RawMessage   `json:"config,omitempty"`
 	SkipIf         *ParentCond       `json:"skip_if,omitempty"`
 	Metadata       map[string]string `json:"metadata,omitempty"`
 	Retry          *RetryPolicy      `json:"retry,omitempty"`
 	WorkerGroup    string            `json:"worker_group,omitempty"`
 	OnFailure      string            `json:"on_failure,omitempty"`
 	Compensate     string            `json:"compensate,omitempty"`
-	Duration       time.Duration     `json:"duration,omitempty"`
 	RateLimit      *RateLimit        `json:"rate_limit,omitempty"`
 	KeyedRateLimit *KeyedRateLimit   `json:"keyed_rate_limit,omitempty"`
-	WaitForEvent   *WaitForEventOpts `json:"wait_for_event,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced

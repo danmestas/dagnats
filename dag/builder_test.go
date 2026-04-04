@@ -83,11 +83,12 @@ func TestBuilderAgentLoop(t *testing.T) {
 	if fix.Type != StepTypeAgentLoop {
 		t.Fatalf("fix.Type = %v, want AgentLoop", fix.Type)
 	}
-	if fix.Loop == nil {
-		t.Fatal("fix.Loop must not be nil")
+	loopCfg, err := ParseAgentLoopConfig(*fix)
+	if err != nil {
+		t.Fatalf("ParseAgentLoopConfig: %v", err)
 	}
-	if fix.Loop.MaxIterations != 10 {
-		t.Fatalf("fix.Loop.MaxIterations = %d, want 10", fix.Loop.MaxIterations)
+	if loopCfg.MaxIterations != 10 {
+		t.Fatalf("MaxIterations = %d, want 10", loopCfg.MaxIterations)
 	}
 }
 
@@ -104,8 +105,9 @@ func TestBuilderWithTimeout(t *testing.T) {
 	if step.Timeout != 30*time.Second {
 		t.Fatalf("Timeout = %v, want 30s", step.Timeout)
 	}
-	if step.Loop != nil {
-		t.Fatal("normal step should not have Loop config")
+	_, loopErr := ParseAgentLoopConfig(*step)
+	if loopErr == nil {
+		t.Fatal("normal step should not have AgentLoop config")
 	}
 }
 
@@ -294,11 +296,12 @@ func TestBuilderMap(t *testing.T) {
 	}
 
 	// Positive: Map config initialized with default MaxItems
-	if step.Map == nil {
-		t.Fatal("Map config must not be nil")
+	mapCfg, mapErr := ParseMapConfig(*step)
+	if mapErr != nil {
+		t.Fatalf("ParseMapConfig: %v", mapErr)
 	}
-	if step.Map.MaxItems != 1000 {
-		t.Fatalf("Map.MaxItems = %d, want 1000", step.Map.MaxItems)
+	if mapCfg.MaxItems != 1000 {
+		t.Fatalf("Map.MaxItems = %d, want 1000", mapCfg.MaxItems)
 	}
 }
 
@@ -381,8 +384,12 @@ func TestBuilderSleep(t *testing.T) {
 		t.Fatalf("expected StepTypeSleep, got %v", sleepStep.Type)
 	}
 	// Positive: correct duration
-	if sleepStep.Duration != 1*time.Hour {
-		t.Fatalf("expected 1h duration, got %v", sleepStep.Duration)
+	sleepCfg, sleepErr := ParseSleepConfig(sleepStep)
+	if sleepErr != nil {
+		t.Fatalf("ParseSleepConfig: %v", sleepErr)
+	}
+	if sleepCfg.Duration != 1*time.Hour {
+		t.Fatalf("expected 1h, got %v", sleepCfg.Duration)
 	}
 	// Positive: empty Task
 	if sleepStep.Task != "" {
@@ -424,18 +431,18 @@ func TestBuilderWaitForEvent(t *testing.T) {
 		t.Fatalf("expected StepTypeWaitForEvent, got %v", waitStep.Type)
 	}
 	// Positive: WaitForEvent config is set
-	if waitStep.WaitForEvent == nil {
-		t.Fatal("WaitForEvent config must not be nil")
+	waitCfg, waitErr := ParseWaitForEventConfig(waitStep)
+	if waitErr != nil {
+		t.Fatalf("ParseWaitForEventConfig: %v", waitErr)
 	}
 	// Positive: event name is correct
-	if waitStep.WaitForEvent.Event != "external.signal" {
-		t.Fatalf("expected external.signal, got %s",
-			waitStep.WaitForEvent.Event)
+	if waitCfg.Event != "external.signal" {
+		t.Fatalf("expected external.signal, got %s", waitCfg.Event)
 	}
 	// Positive: Match.Left is correct
-	if waitStep.WaitForEvent.Match.Left != "event.data.status" {
+	if waitCfg.Match.Left != "event.data.status" {
 		t.Fatalf("expected event.data.status, got %s",
-			waitStep.WaitForEvent.Match.Left)
+			waitCfg.Match.Left)
 	}
 	// Positive: empty Task
 	if waitStep.Task != "" {

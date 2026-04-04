@@ -633,8 +633,9 @@ func (o *Orchestrator) handleStepContinue(
 	}
 	// If LoopDelay is configured, delay re-enqueue via a context-aware
 	// timer goroutine. Cancels cleanly if context expires before delay.
-	if stepDef.Loop != nil && stepDef.Loop.LoopDelay > 0 {
-		delay := stepDef.Loop.LoopDelay
+	loopCfg, _ := dag.ParseAgentLoopConfig(stepDef)
+	if loopCfg.LoopDelay > 0 {
+		delay := loopCfg.LoopDelay
 		runID := run.RunID
 		iter := state.Iterations
 		loopCtx := ctx
@@ -681,22 +682,23 @@ func findStepDef(
 func checkLoopBounds(
 	stepDef dag.StepDef, state dag.StepState,
 ) (bool, string) {
-	if stepDef.Loop == nil {
+	cfg, err := dag.ParseAgentLoopConfig(stepDef)
+	if err != nil {
 		return false, ""
 	}
-	if stepDef.Loop.MaxIterations > 0 &&
-		state.Iterations >= stepDef.Loop.MaxIterations {
+	if cfg.MaxIterations > 0 &&
+		state.Iterations >= cfg.MaxIterations {
 		return true, fmt.Sprintf(
 			"agent loop exceeded max iterations (%d)",
-			stepDef.Loop.MaxIterations,
+			cfg.MaxIterations,
 		)
 	}
-	if stepDef.Loop.MaxDuration > 0 &&
+	if cfg.MaxDuration > 0 &&
 		!state.LoopStartedAt.IsZero() &&
-		time.Since(state.LoopStartedAt) >= stepDef.Loop.MaxDuration {
+		time.Since(state.LoopStartedAt) >= cfg.MaxDuration {
 		return true, fmt.Sprintf(
 			"agent loop exceeded max duration (%s)",
-			stepDef.Loop.MaxDuration,
+			cfg.MaxDuration,
 		)
 	}
 	return false, ""
@@ -1970,10 +1972,15 @@ func (o *Orchestrator) enqueueSleepStep(
 		panic("enqueueSleepStep: RunID must not be empty")
 	}
 
+	sleepCfg, err := dag.ParseSleepConfig(step)
+	if err != nil {
+		return fmt.Errorf("enqueueSleepStep: %w", err)
+	}
+
 	// Mark step as Running and record wake time.
 	state := run.Steps[step.ID]
 	state.Status = dag.StepStatusRunning
-	wakeAt := time.Now().Add(step.Duration)
+	wakeAt := time.Now().Add(sleepCfg.Duration)
 	state.WakeAt = &wakeAt
 	run.Steps[step.ID] = state
 	if err := o.saveSnapshot(ctx, *run); err != nil {
@@ -1984,7 +1991,7 @@ func (o *Orchestrator) enqueueSleepStep(
 	o.publishSleepStarted(run.RunID, step.ID)
 
 	// Schedule durable timer via NakWithDelay.
-	durationMs := step.Duration.Milliseconds()
+	durationMs := sleepCfg.Duration.Milliseconds()
 	if durationMs <= 0 {
 		durationMs = 1
 	}
@@ -2088,10 +2095,11 @@ func (o *Orchestrator) validateAndInitMapInstances(
 	step dag.StepDef,
 	items []json.RawMessage,
 ) error {
-	if step.Map == nil {
-		panic("validateAndInitMapInstances: Map config is nil")
+	mapCfg, err := dag.ParseMapConfig(step)
+	if err != nil {
+		panic("validateAndInitMapInstances: " + err.Error())
 	}
-	maxItems := step.Map.MaxItems
+	maxItems := mapCfg.MaxItems
 	if len(items) > maxItems {
 		return fmt.Errorf(
 			"map step %q: %d items exceeds MaxItems %d",
@@ -2321,8 +2329,8 @@ func (o *Orchestrator) enqueueWaitForEventStep(
 		panic("enqueueWaitForEventStep: RunID must not be empty")
 	}
 
-	opts := step.WaitForEvent
-	if opts == nil {
+	opts, err := dag.ParseWaitForEventConfig(step)
+	if err != nil {
 		return fmt.Errorf(
 			"step %q: WaitForEvent config is nil", step.ID,
 		)
@@ -2338,7 +2346,7 @@ func (o *Orchestrator) enqueueWaitForEventStep(
 	}
 
 	return o.startWaitForEvent(
-		ctx, run, step, opts, resolvedMatch,
+		ctx, run, step, &opts, resolvedMatch,
 	)
 }
 

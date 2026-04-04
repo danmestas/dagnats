@@ -71,10 +71,15 @@ func (r StepRef) WithMaxIterations(n int) StepRef {
 	if r.builder == nil {
 		panic("WithMaxIterations called on zero-value StepRef")
 	}
-	if r.builder.steps[r.index].Loop == nil {
+	if r.builder.steps[r.index].Type != StepTypeAgentLoop {
 		panic("WithMaxIterations called on non-AgentLoop step")
 	}
-	r.builder.steps[r.index].Loop.MaxIterations = n
+	cfg, err := ParseAgentLoopConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithMaxIterations: " + err.Error())
+	}
+	cfg.MaxIterations = n
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
 	return r
 }
 
@@ -85,10 +90,15 @@ func (r StepRef) WithLoopDelay(d time.Duration) StepRef {
 	if r.builder == nil {
 		panic("WithLoopDelay called on zero-value StepRef")
 	}
-	if r.builder.steps[r.index].Loop == nil {
+	if r.builder.steps[r.index].Type != StepTypeAgentLoop {
 		panic("WithLoopDelay called on non-AgentLoop step")
 	}
-	r.builder.steps[r.index].Loop.LoopDelay = d
+	cfg, err := ParseAgentLoopConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithLoopDelay: " + err.Error())
+	}
+	cfg.LoopDelay = d
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
 	return r
 }
 
@@ -97,10 +107,15 @@ func (r StepRef) WithMaxDuration(d time.Duration) StepRef {
 	if r.builder == nil {
 		panic("WithMaxDuration called on zero-value StepRef")
 	}
-	if r.builder.steps[r.index].Loop == nil {
+	if r.builder.steps[r.index].Type != StepTypeAgentLoop {
 		panic("WithMaxDuration called on non-AgentLoop step")
 	}
-	r.builder.steps[r.index].Loop.MaxDuration = d
+	cfg, err := ParseAgentLoopConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithMaxDuration: " + err.Error())
+	}
+	cfg.MaxDuration = d
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
 	return r
 }
 
@@ -111,13 +126,18 @@ func (r StepRef) WithMaxItems(n int) StepRef {
 	if r.builder == nil {
 		panic("WithMaxItems called on zero-value StepRef")
 	}
-	if r.builder.steps[r.index].Map == nil {
+	if r.builder.steps[r.index].Type != StepTypeMap {
 		panic("WithMaxItems called on non-Map step")
 	}
 	if n <= 0 {
 		panic("WithMaxItems: n must be positive")
 	}
-	r.builder.steps[r.index].Map.MaxItems = n
+	cfg, err := ParseMapConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithMaxItems: " + err.Error())
+	}
+	cfg.MaxItems = n
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
 	return r
 }
 

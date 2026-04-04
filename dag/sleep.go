@@ -17,15 +17,20 @@ func validateSleepStep(step StepDef) error {
 	if maxSleepDuration <= 0 {
 		panic("validateSleepStep: maxSleepDuration must be positive")
 	}
-	if step.Duration <= 0 {
+	cfg, err := ParseSleepConfig(step)
+	if err != nil {
+		return fmt.Errorf(
+			"step %q: invalid sleep config: %w", step.ID, err)
+	}
+	if cfg.Duration <= 0 {
 		return fmt.Errorf(
 			"step %q: sleep duration must be positive, got %v",
-			step.ID, step.Duration)
+			step.ID, cfg.Duration)
 	}
-	if step.Duration > maxSleepDuration {
+	if cfg.Duration > maxSleepDuration {
 		return fmt.Errorf(
 			"step %q: sleep duration %v exceeds max %v",
-			step.ID, step.Duration, maxSleepDuration)
+			step.ID, cfg.Duration, maxSleepDuration)
 	}
 	return nil
 }

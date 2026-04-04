@@ -496,8 +496,8 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 		Concurrency: &dag.ConcurrencyLimit{MaxRuns: 1},
 		Steps: []dag.StepDef{{
 			ID: "loop", Task: "loop-t",
-			Type: dag.StepTypeAgentLoop,
-			Loop: &dag.AgentLoopConfig{MaxIterations: 1},
+			Type:   dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 1}),
 		}},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")

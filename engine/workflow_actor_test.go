@@ -168,10 +168,10 @@ func TestWorkflowActorHandlesStepContinue(t *testing.T) {
 		Name:    "loop-wf",
 		Version: "1",
 		Steps: []dag.StepDef{{
-			ID:   "loop",
-			Task: "loop-task",
-			Type: dag.StepTypeAgentLoop,
-			Loop: &dag.AgentLoopConfig{MaxIterations: 5},
+			ID:     "loop",
+			Task:   "loop-task",
+			Type:   dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 5}),
 		}},
 	}
 	defData, _ := json.Marshal(wfDef)

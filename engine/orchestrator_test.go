@@ -124,10 +124,10 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 
 	wfDef := dag.WorkflowDef{Name: "loop-wf", Version: "1", Steps: []dag.StepDef{
 		{
-			ID:   "loop-step",
-			Task: "agent-task",
-			Type: dag.StepTypeAgentLoop,
-			Loop: &dag.AgentLoopConfig{MaxIterations: 2},
+			ID:     "loop-step",
+			Task:   "agent-task",
+			Type:   dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 2}),
 		},
 	}}
 	defKV, _ := js.KeyValue("workflow_defs")
@@ -206,10 +206,10 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 
 	wfDef := dag.WorkflowDef{Name: "dur-wf", Version: "1", Steps: []dag.StepDef{
 		{
-			ID:   "dur-step",
-			Task: "dur-task",
-			Type: dag.StepTypeAgentLoop,
-			Loop: &dag.AgentLoopConfig{MaxIterations: 100, MaxDuration: 1 * time.Millisecond},
+			ID:     "dur-step",
+			Task:   "dur-task",
+			Type:   dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 100, MaxDuration: 1 * time.Millisecond}),
 		},
 	}}
 	defKV, _ := js.KeyValue("workflow_defs")
@@ -1046,8 +1046,8 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 		Name: "cont-wf", Version: "1",
 		Steps: []dag.StepDef{{
 			ID: "agent", Task: "agent-task",
-			Type: dag.StepTypeAgentLoop,
-			Loop: &dag.AgentLoopConfig{MaxIterations: 3},
+			Type:   dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 3}),
 		}},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
@@ -1419,10 +1419,10 @@ func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
 			ID:   "delayed",
 			Task: "delay-task",
 			Type: dag.StepTypeAgentLoop,
-			Loop: &dag.AgentLoopConfig{
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{
 				MaxIterations: 5,
 				LoopDelay:     50 * time.Millisecond,
-			},
+			}),
 		}},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
@@ -2299,7 +2299,7 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 				ID: "process", Task: "process-task",
 				Type:      dag.StepTypeMap,
 				DependsOn: []string{"fetch"},
-				Map:       &dag.MapConfig{MaxItems: 10},
+				Config:    dag.MarshalConfig(&dag.MapConfig{MaxItems: 10}),
 			},
 			{
 				ID: "summarize", Task: "summarize-task",
@@ -2452,7 +2452,7 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 				ID: "process", Task: "process-task",
 				Type:      dag.StepTypeMap,
 				DependsOn: []string{"fetch"},
-				Map:       &dag.MapConfig{MaxItems: 10},
+				Config:    dag.MarshalConfig(&dag.MapConfig{MaxItems: 10}),
 			},
 		},
 	}
@@ -2589,7 +2589,7 @@ func TestOrchestratorSleepStep(t *testing.T) {
 			{
 				ID: "nap", Type: dag.StepTypeSleep,
 				DependsOn: []string{"task-a"},
-				Duration:  100 * time.Millisecond,
+				Config:    dag.MarshalConfig(&dag.SleepConfig{Duration: 100 * time.Millisecond}),
 			},
 			{
 				ID: "task-b", Task: "echo-b",
@@ -2824,7 +2824,7 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 				ID:        "wait-step",
 				Type:      dag.StepTypeWaitForEvent,
 				DependsOn: []string{"task-a"},
-				WaitForEvent: &dag.WaitForEventOpts{
+				Config: dag.MarshalConfig(&dag.WaitForEventOpts{
 					Event: "payment.completed",
 					Match: dag.Match{
 						Left:  "order_id",
@@ -2832,7 +2832,7 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 						Right: "step.task-a.output.order_id",
 					},
 					Timeout: 5 * time.Second,
-				},
+				}),
 			},
 			{
 				ID: "task-b", Task: "echo-b",
@@ -2949,7 +2949,7 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 				ID:        "wait-step",
 				Type:      dag.StepTypeWaitForEvent,
 				DependsOn: []string{"task-a"},
-				WaitForEvent: &dag.WaitForEventOpts{
+				Config: dag.MarshalConfig(&dag.WaitForEventOpts{
 					Event: "payment.completed",
 					Match: dag.Match{
 						Left:  "order_id",
@@ -2957,7 +2957,7 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 						Right: "step.task-a.output.order_id",
 					},
 					Timeout: 200 * time.Millisecond,
-				},
+				}),
 			},
 			{
 				ID: "task-b", Task: "echo-b",
