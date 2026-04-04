@@ -275,3 +275,87 @@ func TestStepRefWithMaxIterationsZeroValuePanics(t *testing.T) {
 	}()
 	_ = ref.WithMaxIterations(5)
 }
+
+func TestStepRefOnFailure(t *testing.T) {
+	wb := NewWorkflow("test")
+	main := wb.Task("main", "risky")
+	fallback := wb.Task("fallback", "recover")
+	main.OnFailure(fallback)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Positive: main step has OnFailure set
+	for _, s := range def.Steps {
+		if s.ID == "main" {
+			if s.OnFailure != "fallback" {
+				t.Fatalf("OnFailure = %q, want fallback",
+					s.OnFailure)
+			}
+			return
+		}
+	}
+	t.Fatal("main step not found")
+}
+
+func TestStepRefOnFailurePanicsOnZeroValue(t *testing.T) {
+	defer func() {
+		r := recover()
+		// Positive: panics on zero-value StepRef
+		if r == nil {
+			t.Fatal("expected panic on zero-value StepRef")
+		}
+	}()
+	var ref StepRef
+	ref.OnFailure(StepRef{})
+}
+
+func TestStepRefOnFailurePanicsCrossBuilder(t *testing.T) {
+	defer func() {
+		r := recover()
+		// Positive: panics when refs from different builders
+		if r == nil {
+			t.Fatal("expected panic for cross-builder OnFailure")
+		}
+	}()
+	wb1 := NewWorkflow("a")
+	wb2 := NewWorkflow("b")
+	main := wb1.Task("main", "t")
+	fallback := wb2.Task("fallback", "t")
+	main.OnFailure(fallback)
+}
+
+func TestStepRefCompensate(t *testing.T) {
+	wb := NewWorkflow("test")
+	main := wb.Task("main", "create")
+	undo := wb.Task("undo", "delete")
+	main.Compensate(undo)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Positive: main step has Compensate set
+	for _, s := range def.Steps {
+		if s.ID == "main" {
+			if s.Compensate != "undo" {
+				t.Fatalf("Compensate = %q, want undo",
+					s.Compensate)
+			}
+			return
+		}
+	}
+	t.Fatal("main step not found")
+}
+
+func TestStepRefOnFailurePanicsSelfReference(t *testing.T) {
+	defer func() {
+		r := recover()
+		// Positive: panics on self-reference
+		if r == nil {
+			t.Fatal("expected panic for self-referencing OnFailure")
+		}
+	}()
+	wb := NewWorkflow("test")
+	main := wb.Task("main", "t")
+	main.OnFailure(main)
+}

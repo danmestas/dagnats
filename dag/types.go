@@ -178,6 +178,7 @@ type WorkflowDef struct {
 	Timeout      time.Duration     `json:"timeout,omitempty"`
 	InputSchema  json.RawMessage   `json:"input_schema,omitempty"`
 	OutputSchema json.RawMessage   `json:"output_schema,omitempty"`
+	AuxSteps     map[string]bool   `json:"aux_steps,omitempty"`
 }
 
 // StepState captures mutable runtime state for one step in a run.
