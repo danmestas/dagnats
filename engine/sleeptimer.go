@@ -22,6 +22,7 @@ type TimerAction string
 const (
 	TimerActionSleepComplete TimerAction = "sleep_complete"
 	TimerActionRateRetry     TimerAction = "rate_retry"
+	TimerActionWaitTimeout   TimerAction = "wait_timeout"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
@@ -150,6 +151,8 @@ func (st *SleepTimer) handleTimer(msg *nats.Msg) {
 		st.fireSleepComplete(tm)
 	case TimerActionRateRetry:
 		st.fireRateRetry(tm)
+	case TimerActionWaitTimeout:
+		st.fireWaitTimeout(tm)
 	default:
 		// Unknown action — ack to prevent loop.
 	}
@@ -168,6 +171,30 @@ func (st *SleepTimer) fireSleepComplete(tm TimerMessage) {
 	}
 	evt := protocol.NewStepEvent(
 		protocol.EventStepSleepCompleted,
+		tm.RunID, tm.StepID, nil,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return
+	}
+	st.js.Publish(
+		evt.NATSSubject(), data,
+		nats.MsgId(evt.NATSMsgID()),
+	)
+}
+
+// fireWaitTimeout publishes an EventStepWaitTimeout event to the
+// history stream for the given run. This wakes the orchestrator to
+// mark the wait step as completed with a timeout indicator.
+func (st *SleepTimer) fireWaitTimeout(tm TimerMessage) {
+	if tm.RunID == "" {
+		panic("fireWaitTimeout: RunID must not be empty")
+	}
+	if tm.StepID == "" {
+		panic("fireWaitTimeout: StepID must not be empty")
+	}
+	evt := protocol.NewStepEvent(
+		protocol.EventStepWaitTimeout,
 		tm.RunID, tm.StepID, nil,
 	)
 	data, err := evt.Marshal()

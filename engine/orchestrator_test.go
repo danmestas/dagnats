@@ -2801,3 +2801,236 @@ func TestOrchestratorRateLimitDelaysTask(t *testing.T) {
 		t.Fatalf("TaskType = %q, want rl-task", tm.TaskType)
 	}
 }
+
+func TestOrchestratorWaitForEventMatches(t *testing.T) {
+	// Methodology: workflow has task-a -> wait-for-event -> task-b.
+	// Complete task-a with output containing order_id. Publish a
+	// matching event to the EVENTS stream. Verify task-b runs and
+	// workflow completes.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "wait-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "task-a", Task: "echo-a",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID:        "wait-step",
+				Type:      dag.StepTypeWaitForEvent,
+				DependsOn: []string{"task-a"},
+				WaitForEvent: &dag.WaitForEventOpts{
+					Event: "payment.completed",
+					Match: dag.Match{
+						Left:  "order_id",
+						Op:    dag.MatchOpEq,
+						Right: "step.task-a.output.order_id",
+					},
+					Timeout: 5 * time.Second,
+				},
+			},
+			{
+				ID: "task-b", Task: "echo-b",
+				Type:      dag.StepTypeNormal,
+				DependsOn: []string{"wait-step"},
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start workflow.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "wait-run-1", defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Drain and complete task-a with order_id output.
+	subA, _ := js.PullSubscribe(
+		"task.echo-a.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgsA, err := subA.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch task-a failed: %v", err)
+	}
+	msgsA[0].Ack()
+
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "wait-run-1",
+		"task-a", []byte(`{"order_id":"ord-abc"}`))
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	// Wait for the wait step to register with the correlator.
+	time.Sleep(500 * time.Millisecond)
+
+	// Publish a matching event on the EVENTS stream.
+	eventPayload := []byte(
+		`{"order_id":"ord-abc","status":"paid"}`,
+	)
+	js.Publish("event.payment.completed", eventPayload)
+
+	// task-b should be enqueued after the wait step matches.
+	subB, _ := js.PullSubscribe(
+		"task.echo-b.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgsB, err := subB.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch task-b failed (timeout?): %v", err)
+	}
+
+	// Positive: task-b was dispatched.
+	if len(msgsB) != 1 {
+		t.Fatalf("expected 1 task-b message, got %d", len(msgsB))
+	}
+
+	// Complete task-b to finish the workflow.
+	msgsB[0].Ack()
+	compB := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "wait-run-1",
+		"task-b", []byte(`"final"`))
+	compBData, _ := compB.Marshal()
+	js.Publish(compB.NATSSubject(), compBData,
+		nats.MsgId(compB.NATSMsgID()))
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Positive: run should be completed.
+	store := NewSnapshotStore(js)
+	run, err := store.Load("wait-run-1")
+	if err != nil {
+		t.Fatalf("Load run failed: %v", err)
+	}
+	if run.Status != dag.RunStatusCompleted {
+		t.Fatalf("run.Status = %v, want Completed", run.Status)
+	}
+
+	// Negative: wait step output should be the event payload.
+	waitState := run.Steps["wait-step"]
+	if string(waitState.Output) !=
+		`{"order_id":"ord-abc","status":"paid"}` {
+		t.Fatalf("wait step output = %s, want event payload",
+			string(waitState.Output))
+	}
+}
+
+func TestOrchestratorWaitForEventTimeout(t *testing.T) {
+	// Methodology: workflow has task-a -> wait-for-event(200ms) ->
+	// task-b. Complete task-a, do NOT publish matching event. Verify
+	// the wait step completes with timeout output and task-b still
+	// runs (timeout is not a failure).
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "wait-timeout-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "task-a", Task: "echo-a",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID:        "wait-step",
+				Type:      dag.StepTypeWaitForEvent,
+				DependsOn: []string{"task-a"},
+				WaitForEvent: &dag.WaitForEventOpts{
+					Event: "payment.completed",
+					Match: dag.Match{
+						Left:  "order_id",
+						Op:    dag.MatchOpEq,
+						Right: "step.task-a.output.order_id",
+					},
+					Timeout: 200 * time.Millisecond,
+				},
+			},
+			{
+				ID: "task-b", Task: "echo-b",
+				Type:      dag.StepTypeNormal,
+				DependsOn: []string{"wait-step"},
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "wait-run-2", defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	subA, _ := js.PullSubscribe(
+		"task.echo-a.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgsA, err := subA.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch task-a failed: %v", err)
+	}
+	msgsA[0].Ack()
+
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "wait-run-2",
+		"task-a", []byte(`{"order_id":"ord-xyz"}`))
+	compData, _ := compEvt.Marshal()
+	js.Publish(compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	// Do NOT publish a matching event. Wait for timeout.
+	// task-b should still be enqueued after the timeout.
+	subB, _ := js.PullSubscribe(
+		"task.echo-b.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgsB, err := subB.Fetch(1, nats.MaxWait(10*time.Second))
+	if err != nil {
+		t.Fatalf(
+			"Fetch task-b after timeout failed: %v", err,
+		)
+	}
+
+	// Positive: task-b was dispatched after timeout.
+	if len(msgsB) != 1 {
+		t.Fatalf("expected 1 task-b message, got %d", len(msgsB))
+	}
+
+	// Check the wait step has timeout output.
+	store := NewSnapshotStore(js)
+	run, loadErr := store.Load("wait-run-2")
+	if loadErr != nil {
+		t.Fatalf("Load run failed: %v", loadErr)
+	}
+	waitState := run.Steps["wait-step"]
+
+	// Positive: wait step is completed (not failed).
+	if waitState.Status != dag.StepStatusCompleted {
+		t.Fatalf("wait step status = %v, want Completed",
+			waitState.Status)
+	}
+
+	// Negative: output indicates timeout, not a match.
+	if string(waitState.Output) != `{"timeout":true}` {
+		t.Fatalf("wait step output = %s, want timeout indicator",
+			string(waitState.Output))
+	}
+}

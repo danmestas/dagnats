@@ -37,6 +37,7 @@ type Orchestrator struct {
 	concurrency *ConcurrencyManager     // nil if bucket missing
 	rateLimiter *RateLimiter            // nil if bucket missing
 	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
+	correlator  *Correlator             // event wait-for-event matching
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive       observe.Gauge
@@ -108,6 +109,7 @@ func NewOrchestrator(
 		),
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
+	o.correlator = NewCorrelator(nc, js)
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -124,6 +126,11 @@ func (o *Orchestrator) Start() {
 	if err := o.sleepTimer.Start(); err != nil {
 		panic("Orchestrator.Start: sleepTimer failed: " + err.Error())
 	}
+	if err := o.correlator.Start(); err != nil {
+		panic(
+			"Orchestrator.Start: correlator failed: " + err.Error(),
+		)
+	}
 	sub, err := o.js.Subscribe("history.>", o.handleEvent,
 		nats.DeliverAll(),
 		nats.AckExplicit(),
@@ -137,6 +144,9 @@ func (o *Orchestrator) Start() {
 // Stop drains and unsubscribes from the history stream.
 // Safe to call multiple times.
 func (o *Orchestrator) Stop() {
+	if o.correlator != nil {
+		o.correlator.Stop()
+	}
 	if o.sleepTimer != nil {
 		o.sleepTimer.Stop()
 	}
@@ -208,7 +218,9 @@ func isHandledEventType(t protocol.EventType) bool {
 		protocol.EventStepFailed,
 		protocol.EventWorkflowSpawn,
 		protocol.EventWorkflowCancelled,
-		protocol.EventStepSleepCompleted:
+		protocol.EventStepSleepCompleted,
+		protocol.EventStepWaitMatched,
+		protocol.EventStepWaitTimeout:
 		return true
 	}
 	return false
@@ -240,6 +252,10 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepCompleted(ctx, evt)
 	case protocol.EventStepSleepCompleted:
 		return o.handleStepCompleted(ctx, evt)
+	case protocol.EventStepWaitMatched:
+		return o.handleStepCompleted(ctx, evt)
+	case protocol.EventStepWaitTimeout:
+		return o.handleWaitTimeout(ctx, evt)
 	case protocol.EventStepContinue:
 		return o.handleStepContinue(ctx, evt)
 	case protocol.EventStepFailed:
@@ -1027,6 +1043,10 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		}
 	}
 
+	if o.correlator != nil {
+		o.correlator.RemoveWaitersForRun(run.RunID)
+	}
+
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
@@ -1253,6 +1273,12 @@ func (o *Orchestrator) dispatchReadySteps(
 		case dag.StepTypeSleep:
 			if err := o.enqueueSleepStep(
 				ctx, &run, step,
+			); err != nil {
+				return err
+			}
+		case dag.StepTypeWaitForEvent:
+			if err := o.enqueueWaitForEventStep(
+				ctx, wfDef, &run, step,
 			); err != nil {
 				return err
 			}
@@ -2060,6 +2086,192 @@ func (o *Orchestrator) runMapOnFailure(
 	return o.publishTask(
 		ctx, run.RunID, onFailStep, errorInput, 0,
 	)
+}
+
+// enqueueWaitForEventStep marks the step as Running, resolves the
+// match condition, publishes a WaitStarted event, registers the
+// waiter with the correlator, and schedules a timeout timer.
+func (o *Orchestrator) enqueueWaitForEventStep(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+) error {
+	if step.Type != dag.StepTypeWaitForEvent {
+		panic("enqueueWaitForEventStep: wrong step type")
+	}
+	if run.RunID == "" {
+		panic("enqueueWaitForEventStep: RunID must not be empty")
+	}
+
+	opts := step.WaitForEvent
+	if opts == nil {
+		return fmt.Errorf(
+			"step %q: WaitForEvent config is nil", step.ID,
+		)
+	}
+
+	resolvedMatch, err := o.resolveWaitMatch(
+		opts.Match, run,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve match for step %q: %w", step.ID, err,
+		)
+	}
+
+	return o.startWaitForEvent(
+		ctx, run, step, opts, resolvedMatch,
+	)
+}
+
+// resolveWaitMatch resolves a builder-time Match to a runtime
+// ResolvedMatch using step outputs and workflow input.
+func (o *Orchestrator) resolveWaitMatch(
+	match dag.Match,
+	run *dag.WorkflowRun,
+) (dag.ResolvedMatch, error) {
+	if run == nil {
+		panic("resolveWaitMatch: run must not be nil")
+	}
+	if run.Steps == nil {
+		panic("resolveWaitMatch: run.Steps must not be nil")
+	}
+	stepOutputs := make(map[string][]byte, len(run.Steps))
+	for id, state := range run.Steps {
+		if state.Output != nil {
+			stepOutputs[id] = state.Output
+		}
+	}
+	return match.Resolve(stepOutputs, run.Input)
+}
+
+// startWaitForEvent marks the step Running, publishes
+// WaitStarted, registers the correlator waiter, and schedules
+// the timeout timer. Extracted to keep parent under 70 lines.
+func (o *Orchestrator) startWaitForEvent(
+	ctx context.Context,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+	opts *dag.WaitForEventOpts,
+	resolvedMatch dag.ResolvedMatch,
+) error {
+	if run.RunID == "" {
+		panic("startWaitForEvent: RunID must not be empty")
+	}
+	if step.ID == "" {
+		panic("startWaitForEvent: step.ID must not be empty")
+	}
+
+	state := run.Steps[step.ID]
+	state.Status = dag.StepStatusRunning
+	run.Steps[step.ID] = state
+	if err := o.saveSnapshot(ctx, *run); err != nil {
+		return err
+	}
+
+	o.publishWaitStarted(run.RunID, step.ID)
+
+	waiter := EventWaiter{
+		RunID:     run.RunID,
+		StepID:    step.ID,
+		EventType: opts.Event,
+		Match:     resolvedMatch,
+	}
+	if err := o.correlator.AddWaiter(waiter); err != nil {
+		return fmt.Errorf("add waiter: %w", err)
+	}
+
+	return o.scheduleWaitTimeout(run.RunID, step.ID, opts.Timeout)
+}
+
+// scheduleWaitTimeout schedules a timer for the wait-for-event
+// timeout. Uses the same SleepTimer infrastructure as sleep steps.
+func (o *Orchestrator) scheduleWaitTimeout(
+	runID string, stepID string, timeout time.Duration,
+) error {
+	if runID == "" {
+		panic("scheduleWaitTimeout: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("scheduleWaitTimeout: stepID must not be empty")
+	}
+	durationMs := timeout.Milliseconds()
+	if durationMs <= 0 {
+		durationMs = 1
+	}
+	return o.sleepTimer.Schedule(TimerMessage{
+		Action:     TimerActionWaitTimeout,
+		RunID:      runID,
+		StepID:     stepID,
+		DurationMs: durationMs,
+	})
+}
+
+// publishWaitStarted publishes an EventStepWaitStarted event.
+func (o *Orchestrator) publishWaitStarted(
+	runID string, stepID string,
+) {
+	if runID == "" {
+		panic("publishWaitStarted: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("publishWaitStarted: stepID must not be empty")
+	}
+	evt := protocol.NewStepEvent(
+		protocol.EventStepWaitStarted,
+		runID, stepID, nil,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return
+	}
+	o.js.Publish(
+		evt.NATSSubject(), data,
+		nats.MsgId(evt.NATSMsgID()),
+	)
+}
+
+// handleWaitTimeout marks the wait step as completed with a timeout
+// output so downstream steps can branch on it. Timeout is not a
+// failure — it completes the step with {"timeout": true}.
+func (o *Orchestrator) handleWaitTimeout(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleWaitTimeout: RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleWaitTimeout: StepID must not be empty")
+	}
+	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	if err != nil {
+		return err
+	}
+
+	state := run.Steps[evt.StepID]
+	// Only process if the step is still Running (not already matched).
+	if state.Status != dag.StepStatusRunning {
+		return nil
+	}
+
+	state.Status = dag.StepStatusCompleted
+	state.Output = []byte(`{"timeout":true}`)
+	run.Steps[evt.StepID] = state
+
+	// Remove the waiter since the step timed out.
+	if o.correlator != nil {
+		o.correlator.RemoveWaitersForRun(evt.RunID)
+	}
+
+	completed := completedSet(run)
+	if dag.IsComplete(wfDef, completed) {
+		return o.completeWorkflow(ctx, run)
+	}
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	return o.enqueueReady(ctx, wfDef, run)
 }
 
 // completedSet returns a set of step IDs whose status is Completed,
