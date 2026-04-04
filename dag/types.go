@@ -209,6 +209,7 @@ type MapInstanceState struct {
 // LoopStartedAt records when the first iteration began, for MaxDuration enforcement.
 // MapInstances tracks state for each parallel map item when Type == StepTypeMap.
 // WakeAt records when a sleep step should complete, for engine scheduling.
+// ChildRunID links to the spawned child run for SubWorkflow steps.
 type StepState struct {
 	Status        StepStatus         `json:"status"`
 	Attempts      int                `json:"attempts"`
@@ -218,6 +219,7 @@ type StepState struct {
 	Error         string             `json:"error,omitempty"`
 	MapInstances  []MapInstanceState `json:"map_instances,omitempty"`
 	WakeAt        *time.Time         `json:"wake_at,omitempty"`
+	ChildRunID    string             `json:"child_run_id,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

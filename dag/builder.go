@@ -79,6 +79,33 @@ func (b *WorkflowBuilder) Agent(
 	return StepRef{id: id, index: b.current, builder: b}
 }
 
+// SubWorkflow appends a sub-workflow step that spawns a child workflow
+// execution. The child workflow must be registered in the workflow_defs
+// KV bucket. By default the parent step blocks until the child completes;
+// use WithDetach() on the returned StepRef to fire-and-forget.
+func (b *WorkflowBuilder) SubWorkflow(
+	id, workflow string,
+) StepRef {
+	if id == "" {
+		panic("SubWorkflow: id must not be empty")
+	}
+	if workflow == "" {
+		panic("SubWorkflow: workflow must not be empty")
+	}
+	step := StepDef{
+		ID:   id,
+		Task: workflow,
+		Type: StepTypeSubWorkflow,
+		Config: MarshalConfig(&SubWorkflowConfig{
+			Workflow: workflow,
+		}),
+	}
+	b.steps = append(b.steps, step)
+	idx := len(b.steps) - 1
+	b.current = idx
+	return StepRef{id: id, index: idx, builder: b}
+}
+
 // Map appends a map step that fans out over an array from its dependency.
 // The step will execute taskType once per item in the input array, up to
 // MapConfig.MaxItems. Returns a StepRef for chaining dependency wiring

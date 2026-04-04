@@ -141,6 +141,25 @@ func (r StepRef) WithMaxItems(n int) StepRef {
 	return r
 }
 
+// WithDetach marks a SubWorkflow step as detached — the parent step
+// completes immediately after spawning the child, without waiting for
+// the child to finish. Panics if called on a non-SubWorkflow step.
+func (r StepRef) WithDetach() StepRef {
+	if r.builder == nil {
+		panic("WithDetach called on zero-value StepRef")
+	}
+	if r.builder.steps[r.index].Type != StepTypeSubWorkflow {
+		panic("WithDetach called on non-SubWorkflow step")
+	}
+	cfg, err := ParseSubWorkflowConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithDetach: " + err.Error())
+	}
+	cfg.Detach = true
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
+	return r
+}
+
 // OnFailure designates a step to run when this step fails permanently
 // (retries exhausted). The target step receives error context as input.
 // Panics on zero-value StepRef, cross-builder refs, or self-reference.

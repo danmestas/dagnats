@@ -110,6 +110,9 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 	if err := validateSkipIf(step); err != nil {
 		return err
 	}
+	if err := validateSubWorkflowConfig(step); err != nil {
+		return err
+	}
 	if err := validateSleepStep(step); err != nil {
 		return err
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nuid"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -225,6 +226,8 @@ func isHandledEventType(t protocol.EventType) bool {
 		protocol.EventStepContinue,
 		protocol.EventStepFailed,
 		protocol.EventWorkflowSpawn,
+		protocol.EventWorkflowChildCompleted,
+		protocol.EventWorkflowChildFailed,
 		protocol.EventWorkflowCancelled,
 		protocol.EventStepSleepCompleted,
 		protocol.EventStepWaitMatched,
@@ -270,6 +273,10 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepFailed(ctx, evt)
 	case protocol.EventWorkflowSpawn:
 		return o.handleWorkflowSpawn(ctx, evt)
+	case protocol.EventWorkflowChildCompleted:
+		return o.handleChildCompleted(ctx, evt)
+	case protocol.EventWorkflowChildFailed:
+		return o.handleChildFailed(ctx, evt)
 	case protocol.EventWorkflowCancelled:
 		return o.handleWorkflowCancelled(ctx, evt)
 	default:
@@ -1242,7 +1249,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if evt.RunID == "" {
 		panic("handleWorkflowCancelled: RunID must not be empty")
 	}
-	_, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -1264,6 +1271,8 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		o.correlator.RemoveWaitersForRun(run.RunID)
 	}
 
+	o.cascadeCancelChildren(wfDef, run)
+
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
@@ -1272,8 +1281,9 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
-		// Auto-start next pending run if available
-		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+		if err := o.startNextPendingRun(
+			ctx, run.WorkflowID,
+		); err != nil {
 			o.tel.Logger.Error(
 				"failed to start next pending run", err,
 				observe.String("workflow_id", run.WorkflowID),
@@ -1281,6 +1291,60 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		}
 	}
 	return o.notifyParentIfChild(run, fmt.Errorf("cancelled"))
+}
+
+// cascadeCancelChildren publishes cancellation events for all
+// non-detached child workflows that are still running. Detached
+// children have no ParentRunID so they are not cancelled.
+func (o *Orchestrator) cascadeCancelChildren(
+	wfDef dag.WorkflowDef, run dag.WorkflowRun,
+) {
+	if run.RunID == "" {
+		panic("cascadeCancelChildren: RunID must not be empty")
+	}
+	if run.Steps == nil {
+		panic("cascadeCancelChildren: Steps must not be nil")
+	}
+
+	for _, stepDef := range wfDef.Steps {
+		if stepDef.Type != dag.StepTypeSubWorkflow {
+			continue
+		}
+		state := run.Steps[stepDef.ID]
+		if state.ChildRunID == "" {
+			continue
+		}
+		childRun, err := o.store.Load(state.ChildRunID)
+		if err != nil {
+			continue
+		}
+		// Detached children have no ParentRunID — skip them.
+		if childRun.ParentRunID == "" {
+			continue
+		}
+		if childRun.Status != dag.RunStatusRunning {
+			continue
+		}
+		o.publishCancelEvent(state.ChildRunID)
+	}
+}
+
+// publishCancelEvent publishes EventWorkflowCancelled for a run.
+func (o *Orchestrator) publishCancelEvent(runID string) {
+	if runID == "" {
+		panic("publishCancelEvent: runID must not be empty")
+	}
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowCancelled, runID, nil,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return
+	}
+	o.js.Publish(
+		evt.NATSSubject(), data,
+		nats.MsgId(evt.NATSMsgID()),
+	)
 }
 
 const maxNestingDepth = 3
@@ -1310,9 +1374,11 @@ func (o *Orchestrator) handleWorkflowSpawn(
 		panic("handleWorkflowSpawn: RunID must not be empty")
 	}
 	var payload struct {
-		ChildRunID    string `json:"child_run_id"`
-		ChildWorkflow string `json:"child_workflow"`
-		ParentStepID  string `json:"parent_step_id"`
+		ChildRunID    string          `json:"child_run_id"`
+		ChildWorkflow string          `json:"child_workflow"`
+		ParentStepID  string          `json:"parent_step_id"`
+		Input         json.RawMessage `json:"input"`
+		Detach        bool            `json:"detach"`
 	}
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
 		return fmt.Errorf("unmarshal spawn payload: %w", err)
@@ -1334,11 +1400,35 @@ func (o *Orchestrator) handleWorkflowSpawn(
 		)
 	}
 
-	entry, err := o.defKV.Get(payload.ChildWorkflow)
+	return o.createChildRun(ctx, evt.RunID, payload.ChildRunID,
+		payload.ChildWorkflow, payload.ParentStepID,
+		payload.Input, payload.Detach)
+}
+
+// createChildRun loads the child workflow def, creates the child run,
+// and enqueues its entry-point steps. For detached children the parent
+// link is omitted so they run independently.
+func (o *Orchestrator) createChildRun(
+	ctx context.Context,
+	parentRunID string,
+	childRunID string,
+	childWorkflow string,
+	parentStepID string,
+	input json.RawMessage,
+	detach bool,
+) error {
+	if childRunID == "" {
+		panic("createChildRun: childRunID must not be empty")
+	}
+	if childWorkflow == "" {
+		panic("createChildRun: childWorkflow must not be empty")
+	}
+
+	entry, err := o.defKV.Get(childWorkflow)
 	if err != nil {
 		return fmt.Errorf(
 			"load child workflow def %q: %w",
-			payload.ChildWorkflow, err,
+			childWorkflow, err,
 		)
 	}
 	var childDef dag.WorkflowDef
@@ -1346,10 +1436,13 @@ func (o *Orchestrator) handleWorkflowSpawn(
 		return fmt.Errorf("unmarshal child def: %w", err)
 	}
 
-	childRun := dag.NewWorkflowRun(childDef, payload.ChildRunID)
-	childRun.ParentRunID = evt.RunID
-	childRun.ParentStepID = payload.ParentStepID
+	childRun := dag.NewWorkflowRun(childDef, childRunID)
+	childRun.Input = input
 	childRun.Status = dag.RunStatusRunning
+	if !detach {
+		childRun.ParentRunID = parentRunID
+		childRun.ParentStepID = parentStepID
+	}
 
 	if err := o.saveSnapshot(ctx, childRun); err != nil {
 		return err
@@ -1382,8 +1475,12 @@ func (o *Orchestrator) notifyParentIfChild(
 		return fmt.Errorf("marshal child event payload: %w", err)
 	}
 
-	evt := protocol.NewWorkflowEvent(
-		eventType, run.ParentRunID, payload)
+	// Use NewStepEvent keyed by ParentStepID so that multiple child
+	// completions from different sub-workflow steps produce distinct
+	// dedup IDs instead of colliding on a single workflow-level MsgID.
+	evt := protocol.NewStepEvent(
+		eventType, run.ParentRunID, run.ParentStepID, payload,
+	)
 	data, err := evt.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal child event: %w", err)
@@ -1481,6 +1578,12 @@ func (o *Orchestrator) dispatchReadySteps(
 	var normalSteps []dag.StepDef
 	for _, step := range ready {
 		switch step.Type {
+		case dag.StepTypeSubWorkflow:
+			if err := o.enqueueSubWorkflow(
+				ctx, wfDef, &run, step,
+			); err != nil {
+				return err
+			}
 		case dag.StepTypeMap:
 			if err := o.enqueueMapStep(
 				ctx, wfDef, &run, step,
@@ -2497,6 +2600,216 @@ func (o *Orchestrator) handleWaitTimeout(
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)
+}
+
+// enqueueSubWorkflow resolves input, generates a child run ID, and
+// publishes a spawn event. For detached sub-workflows the parent step
+// completes immediately; otherwise it stays Running until the child
+// finishes.
+func (o *Orchestrator) enqueueSubWorkflow(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+) error {
+	if step.Type != dag.StepTypeSubWorkflow {
+		panic("enqueueSubWorkflow: wrong step type")
+	}
+	if run.RunID == "" {
+		panic("enqueueSubWorkflow: RunID must not be empty")
+	}
+
+	cfg, err := dag.ParseSubWorkflowConfig(step)
+	if err != nil {
+		return fmt.Errorf("parse sub-workflow config: %w", err)
+	}
+
+	input, err := dag.ResolveInput(step, run.Steps)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve input for step %q: %w", step.ID, err,
+		)
+	}
+	childRunID := nuid.Next()
+
+	if err := o.spawnChild(
+		ctx, wfDef, run, step, cfg, input, childRunID,
+	); err != nil {
+		return err
+	}
+
+	// Detached sub-workflows complete the parent step immediately,
+	// which may unblock downstream steps or complete the workflow.
+	if cfg.Detach {
+		completed := completedSet(*run)
+		if dag.IsComplete(wfDef, completed) {
+			return o.completeWorkflow(ctx, *run)
+		}
+		return o.enqueueReady(ctx, wfDef, *run)
+	}
+	return nil
+}
+
+// spawnChild marks the parent step state, saves the snapshot, and
+// publishes the spawn event. Extracted to keep enqueueSubWorkflow
+// within the 70-line limit.
+func (o *Orchestrator) spawnChild(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+	cfg dag.SubWorkflowConfig,
+	input []byte,
+	childRunID string,
+) error {
+	if childRunID == "" {
+		panic("spawnChild: childRunID must not be empty")
+	}
+	if step.ID == "" {
+		panic("spawnChild: step.ID must not be empty")
+	}
+
+	state := run.Steps[step.ID]
+	if cfg.Detach {
+		state.Status = dag.StepStatusCompleted
+		state.ChildRunID = childRunID
+		state.Output = []byte(fmt.Sprintf(
+			`{"child_run_id":%q}`, childRunID,
+		))
+	} else {
+		state.Status = dag.StepStatusRunning
+		state.ChildRunID = childRunID
+	}
+	run.Steps[step.ID] = state
+	if err := o.saveSnapshot(ctx, *run); err != nil {
+		return err
+	}
+
+	return o.publishSpawnEvent(
+		run.RunID, step.ID, cfg, input, childRunID,
+	)
+}
+
+// publishSpawnEvent publishes EventWorkflowSpawn to the history
+// stream with the child run metadata in the payload.
+func (o *Orchestrator) publishSpawnEvent(
+	parentRunID string,
+	parentStepID string,
+	cfg dag.SubWorkflowConfig,
+	input []byte,
+	childRunID string,
+) error {
+	if parentRunID == "" {
+		panic("publishSpawnEvent: parentRunID must not be empty")
+	}
+	if parentStepID == "" {
+		panic("publishSpawnEvent: parentStepID must not be empty")
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"child_run_id":   childRunID,
+		"child_workflow": cfg.Workflow,
+		"parent_step_id": parentStepID,
+		"input":          json.RawMessage(input),
+		"detach":         cfg.Detach,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal spawn payload: %w", err)
+	}
+
+	evt := protocol.NewStepEvent(
+		protocol.EventWorkflowSpawn,
+		parentRunID, parentStepID, payload,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal spawn event: %w", err)
+	}
+
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Data:    data,
+		Header: nats.Header{
+			"Nats-Msg-Id": {evt.NATSMsgID()},
+		},
+	}
+	_, err = o.js.PublishMsg(msg)
+	return err
+}
+
+// handleChildCompleted processes EventWorkflowChildCompleted: loads
+// the child run's terminal output, marks the parent step Completed,
+// and enqueues the next ready steps.
+func (o *Orchestrator) handleChildCompleted(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleChildCompleted: RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleChildCompleted: StepID must not be empty")
+	}
+
+	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	if err != nil {
+		return err
+	}
+
+	state := run.Steps[evt.StepID]
+	if state.Status != dag.StepStatusRunning {
+		return nil // Already handled or cancelled.
+	}
+
+	// Carry the child's payload as the step output.
+	state.Status = dag.StepStatusCompleted
+	state.Output = evt.Payload
+	run.Steps[evt.StepID] = state
+
+	completed := completedSet(run)
+	if dag.IsComplete(wfDef, completed) {
+		return o.completeWorkflow(ctx, run)
+	}
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	return o.enqueueReady(ctx, wfDef, run)
+}
+
+// handleChildFailed processes EventWorkflowChildFailed: marks the
+// parent step Failed and delegates to failWorkflow.
+func (o *Orchestrator) handleChildFailed(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleChildFailed: RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleChildFailed: StepID must not be empty")
+	}
+
+	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	if err != nil {
+		return err
+	}
+
+	state := run.Steps[evt.StepID]
+	if state.Status != dag.StepStatusRunning {
+		return nil // Already handled or cancelled.
+	}
+
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if evt.Payload != nil {
+		json.Unmarshal(evt.Payload, &payload)
+	}
+
+	state.Status = dag.StepStatusFailed
+	state.Error = "child workflow failed: " + payload.Error
+	run.Steps[evt.StepID] = state
+
+	stepDef, _ := findStepDef(wfDef, evt.StepID)
+	return o.failWorkflow(ctx, run, stepDef, state)
 }
 
 // completedSet returns a set of step IDs whose status is Completed,

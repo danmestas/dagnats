@@ -98,6 +98,32 @@ func ParseSleepConfig(step StepDef) (SleepConfig, error) {
 	return cfg, nil
 }
 
+// ParseSubWorkflowConfig extracts SubWorkflowConfig from a
+// StepDef's Config field.
+func ParseSubWorkflowConfig(
+	step StepDef,
+) (SubWorkflowConfig, error) {
+	if step.Type != StepTypeSubWorkflow {
+		return SubWorkflowConfig{}, fmt.Errorf(
+			"step %q: expected SubWorkflow, got %s",
+			step.ID, step.Type,
+		)
+	}
+	if step.Config == nil {
+		return SubWorkflowConfig{}, fmt.Errorf(
+			"step %q: Config is nil for SubWorkflow", step.ID,
+		)
+	}
+	var cfg SubWorkflowConfig
+	if err := json.Unmarshal(step.Config, &cfg); err != nil {
+		return SubWorkflowConfig{}, fmt.Errorf(
+			"step %q: unmarshal SubWorkflowConfig: %w",
+			step.ID, err,
+		)
+	}
+	return cfg, nil
+}
+
 // ParseWaitForEventConfig extracts WaitForEventOpts from a
 // StepDef's Config field.
 func ParseWaitForEventConfig(
