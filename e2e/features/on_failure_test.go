@@ -1,6 +1,7 @@
 // e2e/features/on_failure_test.go
 // Tests on-failure handler execution. Methodology: main step fails,
-// fallback step executes with error context in its input.
+// fallback step executes with error context in its input, workflow
+// completes with main step Recovered.
 package features
 
 import (
@@ -45,39 +46,42 @@ func TestOnFailureHandler(t *testing.T) {
 		wfName := harness.UniqueName(t, "on-failure")
 		wb := dag.NewWorkflow(wfName)
 		main := wb.Task("main", "risky")
-		wb.Task("fallback", "recover").After(main)
+		fallback := wb.Task("fallback", "recover")
+		main.OnFailure(fallback)
 		wfDef, err := wb.Build()
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
-		// Set on_failure link (not available via builder).
-		// Find the main step index to set OnFailure.
-		for i := range wfDef.Steps {
-			if wfDef.Steps[i].ID == "main" {
-				wfDef.Steps[i].OnFailure = "fallback"
-				break
-			}
-		}
 
 		runID := harness.RegisterAndStart(t, svc, wfDef, nil)
 
-		// Wait — the workflow may complete (fallback succeeds)
-		// or fail (depends on whether fallback completion
-		// marks the workflow as done). Give it time.
 		time.Sleep(5 * time.Second)
 
 		run, _ := svc.GetRun(
 			context.Background(), runID,
 		)
 
-		// Positive: fallback step was executed.
+		// Positive: fallback step was executed
 		if run.Steps["fallback"].Status !=
 			dag.StepStatusCompleted {
 			t.Fatalf("fallback: expected completed, got %s",
 				run.Steps["fallback"].Status)
 		}
 
-		// Negative: fallback received error context.
+		// Positive: main step is recovered
+		if run.Steps["main"].Status !=
+			dag.StepStatusRecovered {
+			t.Fatalf("main: expected recovered, got %s",
+				run.Steps["main"].Status)
+		}
+
+		// Positive: workflow completed (not failed)
+		if run.Status != dag.RunStatusCompleted {
+			t.Fatalf("run: expected completed, got %s",
+				run.Status)
+		}
+
+		// Negative: fallback received error context
 		if len(fallbackInput) == 0 {
 			t.Fatal("fallback received no input")
 		}

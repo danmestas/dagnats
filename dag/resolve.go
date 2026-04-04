@@ -15,6 +15,12 @@ func ResolveReady(
 		if completed[step.ID] || queued[step.ID] {
 			continue
 		}
+		// Auxiliary steps (OnFailure/Compensate targets) are never
+		// resolved through normal dependency resolution. They are
+		// dispatched directly by the engine when their trigger fires.
+		if def.AuxSteps[step.ID] {
+			continue
+		}
 		if allDepsCompleted(step.DependsOn, completed) {
 			ready = append(ready, step)
 		}
@@ -68,11 +74,17 @@ func ResolveInput(step StepDef, steps map[string]StepState) ([]byte, error) {
 	return data, err
 }
 
-// IsComplete returns true when every step in the definition has been completed
-// or skipped. Used by the engine to decide whether to transition the run to
-// RunStatusCompleted.
-func IsComplete(def WorkflowDef, completed map[string]bool) bool {
+// IsComplete returns true when every step in the definition has been
+// completed or skipped. Auxiliary steps (OnFailure/Compensate targets)
+// that were never triggered don't block completion — they are expected
+// to remain Pending in the happy path.
+func IsComplete(
+	def WorkflowDef, completed map[string]bool,
+) bool {
 	for _, step := range def.Steps {
+		if def.AuxSteps[step.ID] && !completed[step.ID] {
+			continue
+		}
 		if !completed[step.ID] {
 			return false
 		}

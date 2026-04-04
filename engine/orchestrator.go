@@ -341,6 +341,12 @@ func (o *Orchestrator) handleStepCompleted(
 	state.Status = dag.StepStatusCompleted
 	state.Output = evt.Payload
 	run.Steps[evt.StepID] = state
+
+	// Check if this completed step is an OnFailure handler.
+	// If so, mark the original failed step as Recovered and
+	// skip its dependents.
+	o.recoverIfOnFailure(wfDef, &run, evt.StepID)
+
 	completed := completedSet(run)
 	if dag.IsComplete(wfDef, completed) {
 		return o.completeWorkflow(ctx, run)
@@ -349,6 +355,43 @@ func (o *Orchestrator) handleStepCompleted(
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)
+}
+
+// recoverIfOnFailure checks if stepID is an OnFailure target for a
+// failed step. If so, transitions the failed step to Recovered and
+// marks dependents of the failed step as Skipped.
+func (o *Orchestrator) recoverIfOnFailure(
+	wfDef dag.WorkflowDef,
+	run *dag.WorkflowRun,
+	completedStepID string,
+) {
+	for _, stepDef := range wfDef.Steps {
+		if stepDef.OnFailure != completedStepID {
+			continue
+		}
+		failedState := run.Steps[stepDef.ID]
+		if failedState.Status != dag.StepStatusFailed {
+			continue
+		}
+		// Mark the original failed step as recovered
+		failedState.Status = dag.StepStatusRecovered
+		run.Steps[stepDef.ID] = failedState
+
+		// Skip dependents of the failed step — they can't run
+		// without its output
+		for _, s := range wfDef.Steps {
+			for _, dep := range s.DependsOn {
+				if dep == stepDef.ID {
+					depState := run.Steps[s.ID]
+					if depState.Status == dag.StepStatusPending {
+						depState.Status = dag.StepStatusSkipped
+						run.Steps[s.ID] = depState
+					}
+				}
+			}
+		}
+		return
+	}
 }
 
 // completeWorkflow marks the run complete, saves, publishes the event,
@@ -1299,8 +1342,9 @@ func injectTraceCtx(
 	msg.Header.Set("traceparent", tp)
 }
 
-// completedSet returns a set of step IDs whose status is Completed or Skipped.
-// Skipped steps count as satisfied for downstream dependency resolution.
+// completedSet returns a set of step IDs whose status is Completed,
+// Skipped, or Recovered. All three count as "resolved" for downstream
+// dependency resolution and workflow completion checks.
 func completedSet(run dag.WorkflowRun) map[string]bool {
 	if run.Steps == nil {
 		panic("completedSet: run.Steps must not be nil")
@@ -1308,7 +1352,8 @@ func completedSet(run dag.WorkflowRun) map[string]bool {
 	result := make(map[string]bool, len(run.Steps))
 	for id, state := range run.Steps {
 		if state.Status == dag.StepStatusCompleted ||
-			state.Status == dag.StepStatusSkipped {
+			state.Status == dag.StepStatusSkipped ||
+			state.Status == dag.StepStatusRecovered {
 			result[id] = true
 		}
 	}

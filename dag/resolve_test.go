@@ -226,6 +226,30 @@ func TestResolveSkippedDepsNotMet(t *testing.T) {
 	}
 }
 
+func TestIsCompleteSkipsUntriggeredAuxSteps(t *testing.T) {
+	def := WorkflowDef{
+		Name: "test", Version: "1",
+		Steps: []StepDef{
+			{ID: "main", Task: "t", Type: StepTypeNormal,
+				OnFailure: "fallback"},
+			{ID: "fallback", Task: "t", Type: StepTypeNormal},
+		},
+		AuxSteps: map[string]bool{"fallback": true},
+	}
+	completed := map[string]bool{"main": true}
+
+	// Positive: workflow is complete — fallback is aux, not triggered
+	if !IsComplete(def, completed) {
+		t.Fatal("expected workflow complete: aux step not triggered")
+	}
+
+	// Negative: without AuxSteps, workflow is not complete
+	def.AuxSteps = nil
+	if IsComplete(def, completed) {
+		t.Fatal("without AuxSteps, workflow should not be complete")
+	}
+}
+
 func readyIDs(steps []StepDef) []string {
 	ids := make([]string, len(steps))
 	for i, s := range steps {
