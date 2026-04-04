@@ -484,6 +484,231 @@ func TestSubWorkflow_CancellationCascades(t *testing.T) {
 	}
 }
 
+func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	childDef := dag.WorkflowDef{
+		Name:    "child-wf-detach-cancel",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:   "child-step",
+				Task: "child-task-detach-cancel",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	registerWorkflowDef(t, js, childDef)
+
+	parentDef := dag.WorkflowDef{
+		Name:    "parent-wf-detach-cancel",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:   "spawn",
+				Task: "child-wf-detach-cancel",
+				Type: dag.StepTypeSubWorkflow,
+				Config: dag.MarshalConfig(
+					&dag.SubWorkflowConfig{
+						Workflow: "child-wf-detach-cancel",
+						Detach:   true,
+					},
+				),
+			},
+		},
+	}
+	registerWorkflowDef(t, js, parentDef)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	store := NewSnapshotStore(js)
+
+	startPayload, _ := json.Marshal(parentDef)
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted,
+		"parent-run-detach-cancel",
+		startPayload,
+	)
+	publishEvent(t, js, startEvt)
+
+	// Wait for parent to complete (detached completes immediately).
+	var parentRun dag.WorkflowRun
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		parentRun, err = store.Load(
+			"parent-run-detach-cancel",
+		)
+		if err == nil &&
+			parentRun.Status == dag.RunStatusCompleted {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if parentRun.Status != dag.RunStatusCompleted {
+		t.Fatalf(
+			"parent status = %v, want Completed",
+			parentRun.Status,
+		)
+	}
+
+	childRunID := parentRun.Steps["spawn"].ChildRunID
+	if childRunID == "" {
+		t.Fatal("child run ID not set on parent step")
+	}
+
+	// Cancel the parent.
+	cancelEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowCancelled,
+		"parent-run-detach-cancel", nil,
+	)
+	publishEvent(t, js, cancelEvt)
+
+	// Give orchestrator time to process cancellation.
+	time.Sleep(500 * time.Millisecond)
+
+	// Reload parent — it was already Completed, so cancel is
+	// a no-op (not Running). Load child to verify it survived.
+	childRun, err := store.Load(childRunID)
+	if err != nil {
+		t.Fatalf("load child run: %v", err)
+	}
+
+	// Positive: child is NOT cancelled — still Running.
+	if childRun.Status != dag.RunStatusRunning {
+		t.Fatalf(
+			"child status = %v, want Running",
+			childRun.Status,
+		)
+	}
+	// Negative: parent remained Completed (not cancelled).
+	parentAfter, err := store.Load("parent-run-detach-cancel")
+	if err != nil {
+		t.Fatalf("load parent after cancel: %v", err)
+	}
+	if parentAfter.Status != dag.RunStatusCompleted {
+		t.Fatalf(
+			"parent after cancel = %v, want Completed",
+			parentAfter.Status,
+		)
+	}
+}
+
+func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	childDef := dag.WorkflowDef{
+		Name:    "child-wf-input",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:   "child-step",
+				Task: "child-task-input",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	registerWorkflowDef(t, js, childDef)
+
+	parentDef := dag.WorkflowDef{
+		Name:    "parent-wf-input",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:   "step-a",
+				Task: "task-a",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID:        "spawn-b",
+				Task:      "child-wf-input",
+				Type:      dag.StepTypeSubWorkflow,
+				DependsOn: []string{"step-a"},
+				Config: dag.MarshalConfig(
+					&dag.SubWorkflowConfig{
+						Workflow: "child-wf-input",
+					},
+				),
+			},
+		},
+	}
+	registerWorkflowDef(t, js, parentDef)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	store := NewSnapshotStore(js)
+
+	startPayload, _ := json.Marshal(parentDef)
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted,
+		"parent-run-input",
+		startPayload,
+	)
+	publishEvent(t, js, startEvt)
+
+	// Complete step A with output.
+	stepAOutput := []byte(`{"msg":"hello"}`)
+	completeA := protocol.NewStepEvent(
+		protocol.EventStepCompleted,
+		"parent-run-input", "step-a", stepAOutput,
+	)
+	publishEvent(t, js, completeA)
+
+	// Wait for the child run to be created.
+	var childRunID string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		parentRun, err := store.Load("parent-run-input")
+		if err == nil {
+			state := parentRun.Steps["spawn-b"]
+			if state.ChildRunID != "" {
+				childRunID = state.ChildRunID
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if childRunID == "" {
+		t.Fatal("child run ID not set on parent step")
+	}
+
+	childRun, err := store.Load(childRunID)
+	if err != nil {
+		t.Fatalf("load child run: %v", err)
+	}
+
+	// Positive: child run input matches step A's output.
+	if string(childRun.Input) != string(stepAOutput) {
+		t.Fatalf(
+			"child Input = %s, want %s",
+			string(childRun.Input), string(stepAOutput),
+		)
+	}
+	// Negative: child should not have parent's original input.
+	parentRun, err := store.Load("parent-run-input")
+	if err != nil {
+		t.Fatalf("load parent run: %v", err)
+	}
+	if string(childRun.Input) == string(parentRun.Input) &&
+		len(parentRun.Input) > 0 {
+		t.Fatal(
+			"child input should differ from parent input",
+		)
+	}
+}
+
 func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {

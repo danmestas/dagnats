@@ -2760,9 +2760,13 @@ func (o *Orchestrator) handleChildCompleted(
 		return nil // Already handled or cancelled.
 	}
 
-	// Carry the child's payload as the step output.
+	output, err := o.loadChildTerminalOutputs(state.ChildRunID)
+	if err != nil {
+		return fmt.Errorf("load child outputs: %w", err)
+	}
+
 	state.Status = dag.StepStatusCompleted
-	state.Output = evt.Payload
+	state.Output = output
 	run.Steps[evt.StepID] = state
 
 	completed := completedSet(run)
@@ -2773,6 +2777,63 @@ func (o *Orchestrator) handleChildCompleted(
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)
+}
+
+// loadChildTerminalOutputs loads the child run and its workflow def,
+// finds terminal steps (steps no other step depends on), and returns
+// their outputs. One terminal step returns raw output; multiple
+// returns a JSON map keyed by step ID.
+func (o *Orchestrator) loadChildTerminalOutputs(
+	childRunID string,
+) ([]byte, error) {
+	if childRunID == "" {
+		panic("loadChildTerminalOutputs: childRunID empty")
+	}
+	childDef, childRun, err := o.loadRunAndDef(childRunID)
+	if err != nil {
+		return nil, err
+	}
+	return collectTerminalOutputs(childDef, childRun)
+}
+
+// collectTerminalOutputs finds steps that no other step depends on
+// and returns their outputs. Single terminal returns raw output;
+// multiple terminals return a JSON map keyed by step ID.
+func collectTerminalOutputs(
+	def dag.WorkflowDef, run dag.WorkflowRun,
+) ([]byte, error) {
+	if len(def.Steps) == 0 {
+		panic("collectTerminalOutputs: def has no steps")
+	}
+	if run.Steps == nil {
+		panic("collectTerminalOutputs: run.Steps is nil")
+	}
+	depTargets := make(map[string]bool, len(def.Steps))
+	for _, step := range def.Steps {
+		for _, dep := range step.DependsOn {
+			depTargets[dep] = true
+		}
+	}
+	var terminals []dag.StepDef
+	const maxTerminals = 1000
+	for _, step := range def.Steps {
+		if !depTargets[step.ID] {
+			terminals = append(terminals, step)
+		}
+		if len(terminals) > maxTerminals {
+			break
+		}
+	}
+	if len(terminals) == 1 {
+		return run.Steps[terminals[0].ID].Output, nil
+	}
+	collected := make(
+		map[string]json.RawMessage, len(terminals),
+	)
+	for _, step := range terminals {
+		collected[step.ID] = run.Steps[step.ID].Output
+	}
+	return json.Marshal(collected)
 }
 
 // handleChildFailed processes EventWorkflowChildFailed: marks the
@@ -2801,7 +2862,13 @@ func (o *Orchestrator) handleChildFailed(
 		Error string `json:"error"`
 	}
 	if evt.Payload != nil {
-		json.Unmarshal(evt.Payload, &payload)
+		if err := json.Unmarshal(
+			evt.Payload, &payload,
+		); err != nil {
+			return fmt.Errorf(
+				"unmarshal child failed payload: %w", err,
+			)
+		}
 	}
 
 	state.Status = dag.StepStatusFailed
