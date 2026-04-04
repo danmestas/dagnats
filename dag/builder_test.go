@@ -330,3 +330,28 @@ func findStep(def WorkflowDef, id string) *StepDef {
 	}
 	return nil
 }
+
+func TestBuildPopulatesAuxSteps(t *testing.T) {
+	wb := NewWorkflow("aux-test")
+	main := wb.Task("main", "risky")
+	fallback := wb.Task("fallback", "recover")
+	rollback := wb.Task("rollback", "undo")
+	main.OnFailure(fallback)
+	main.Compensate(rollback)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Positive: fallback is an aux step
+	if !def.AuxSteps["fallback"] {
+		t.Fatal("expected fallback in AuxSteps")
+	}
+	// Positive: rollback is an aux step
+	if !def.AuxSteps["rollback"] {
+		t.Fatal("expected rollback in AuxSteps")
+	}
+	// Negative: main is not an aux step
+	if def.AuxSteps["main"] {
+		t.Fatal("main should not be in AuxSteps")
+	}
+}

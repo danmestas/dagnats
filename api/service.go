@@ -26,13 +26,14 @@ import (
 // KV and publishes WorkflowStarted events to the history stream. Run state is
 // owned exclusively by the orchestrator -- the service only reads snapshots.
 type Service struct {
-	nc        *nats.Conn
-	js        nats.JetStreamContext
-	defKV     nats.KeyValue
-	store     *engine.SnapshotStore
-	tel       *observe.Telemetry
-	triggerKV nats.KeyValue
-	signalKV  nats.KeyValue
+	nc          *nats.Conn
+	js          nats.JetStreamContext
+	defKV       nats.KeyValue
+	store       *engine.SnapshotStore
+	tel         *observe.Telemetry
+	triggerKV   nats.KeyValue
+	signalKV    nats.KeyValue
+	scheduledKV nats.KeyValue
 
 	// Pre-allocated metric instruments -- created once in constructor.
 	requestCount    observe.Counter
@@ -84,14 +85,16 @@ func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 	}
 	triggerKV, _ := js.KeyValue("triggers")
 	signalKV, _ := js.KeyValue("signals")
+	scheduledKV, _ := js.KeyValue("scheduled_runs")
 	return &Service{
-		nc:        nc,
-		js:        js,
-		defKV:     defKV,
-		store:     engine.NewSnapshotStore(js),
-		tel:       tel,
-		triggerKV: triggerKV,
-		signalKV:  signalKV,
+		nc:          nc,
+		js:          js,
+		defKV:       defKV,
+		store:       engine.NewSnapshotStore(js),
+		tel:         tel,
+		triggerKV:   triggerKV,
+		signalKV:    signalKV,
+		scheduledKV: scheduledKV,
 		requestCount: tel.Metrics.Counter(
 			"api.requests", nil,
 		),
@@ -234,6 +237,21 @@ func (s *Service) startRunInner(
 		return "", fmt.Errorf(
 			"workflow %q not found: %w", workflowName, err,
 		)
+	}
+	// Validate input against InputSchema if present.
+	if input != nil {
+		var def dag.WorkflowDef
+		if err := json.Unmarshal(entry.Value(), &def); err == nil {
+			if def.InputSchema != nil {
+				if err := dag.ValidateSchema(
+					def.InputSchema, input,
+				); err != nil {
+					return "", fmt.Errorf(
+						"input validation: %w", err,
+					)
+				}
+			}
+		}
 	}
 	runID := generateRunID()
 	payload, err := buildStartPayload(entry.Value(), input)
@@ -1209,4 +1227,19 @@ func (s *Service) listRunEventsInner(
 		})
 	}
 	return events, nil
+}
+
+// StartTyped marshals a typed input and starts a workflow run.
+// Convenience wrapper around StartRun for typed workflows.
+func StartTyped[I any](
+	ctx context.Context, svc *Service, workflowName string, input I,
+) (string, error) {
+	if svc == nil {
+		panic("StartTyped: svc must not be nil")
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("marshal input: %w", err)
+	}
+	return svc.StartRun(ctx, workflowName, data)
 }

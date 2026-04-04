@@ -4,10 +4,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
@@ -93,8 +95,10 @@ func printRunUsage() {
 	fmt.Println("  retry    re-run a workflow from a previous run")
 	fmt.Println()
 	fmt.Println("Flags:")
-	fmt.Println("  --last   use the most recent run")
-	fmt.Println("  --json   output as JSON")
+	fmt.Println("  --at=TIME      schedule run at RFC3339 time")
+	fmt.Println("  --scheduled    list scheduled runs")
+	fmt.Println("  --last         use the most recent run")
+	fmt.Println("  --json         output as JSON")
 	fmt.Println()
 	fmt.Println("Run IDs accept 8+ character prefixes.")
 }
@@ -163,12 +167,15 @@ func runStartCmd(args []string) {
 
 	var input []byte
 	var watch, showOutput bool
+	var runAtStr string
 	for _, arg := range args[1:] {
-		switch arg {
-		case "--watch":
+		switch {
+		case arg == "--watch":
 			watch = true
-		case "--output":
+		case arg == "--output":
 			showOutput = true
+		case strings.HasPrefix(arg, "--at="):
+			runAtStr = strings.TrimPrefix(arg, "--at=")
 		default:
 			if input == nil {
 				input = []byte(arg)
@@ -182,6 +189,36 @@ func runStartCmd(args []string) {
 
 	svc, nc := connectService()
 	defer nc.Close()
+
+	if runAtStr != "" {
+		runAt, err := time.Parse(time.RFC3339, runAtStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"invalid --at time (use RFC3339): %v\n", err)
+			os.Exit(1)
+		}
+		runID, err := svc.ScheduleRun(
+			context.Background(), workflowName, input, runAt,
+		)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"schedule run: %v\n", err)
+			os.Exit(1)
+		}
+		if jsonOutput {
+			json.NewEncoder(os.Stdout).Encode(
+				map[string]string{
+					"run_id": runID,
+					"status": "scheduled",
+					"run_at": runAt.Format(time.RFC3339),
+				},
+			)
+		} else {
+			fmt.Printf("Scheduled %s (run at %s)\n",
+				runID[:8], runAt.Format(time.RFC3339))
+		}
+		return
+	}
 
 	runID, err := svc.StartRun(
 		context.Background(), workflowName, input,
@@ -262,6 +299,19 @@ func runStatusCmd(args []string) {
 
 	run, err := svc.GetRun(context.Background(), runID)
 	if err != nil {
+		// Try scheduled runs.
+		sr, serr := svc.GetScheduledRun(runID)
+		if serr == nil {
+			if jsonOutput {
+				FormatJSON(os.Stdout, sr)
+				return
+			}
+			fmt.Printf("Run:    %s\n", sr.RunID[:8])
+			fmt.Printf("Status: %s\n", sr.Status)
+			fmt.Printf("Run At: %s\n",
+				sr.RunAt.Format(time.RFC3339))
+			return
+		}
 		fmt.Fprintf(os.Stderr, "get run: %v\n", err)
 		os.Exit(1)
 	}
@@ -320,6 +370,19 @@ func runCancelCmd(args []string) {
 
 	err = svc.CancelRun(context.Background(), runID)
 	if err != nil {
+		// Try cancelling a scheduled run.
+		serr := svc.CancelScheduledRun(runID)
+		if serr == nil {
+			if jsonOutput {
+				result := runCancelResult{
+					RunID: runID, Cancelled: true,
+				}
+				FormatJSON(os.Stdout, result)
+				return
+			}
+			fmt.Printf("Cancelled scheduled: %s\n", runID)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "cancel run: %v\n", err)
 		os.Exit(1)
 	}
@@ -430,6 +493,7 @@ func runListCmd(args []string) {
 	args = StripJSONFlag(args)
 
 	var workflowFilter, statusFilter string
+	var scheduled bool
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--workflow=") {
 			workflowFilter = strings.TrimPrefix(
@@ -441,10 +505,49 @@ func runListCmd(args []string) {
 				arg, "--status=",
 			)
 		}
+		if arg == "--scheduled" {
+			scheduled = true
+		}
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
+
+	if scheduled {
+		sched, err := svc.ListScheduledRuns()
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"list scheduled: %v\n", err)
+			os.Exit(1)
+		}
+		if jsonOutput {
+			if err := FormatJSON(os.Stdout, sched); err != nil {
+				fmt.Fprintf(os.Stderr,
+					"format json: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if len(sched) == 0 {
+			fmt.Println("No scheduled runs.")
+			return
+		}
+		tw := tabwriter.NewWriter(
+			os.Stdout, 0, 4, 2, ' ', 0,
+		)
+		fmt.Fprintln(tw,
+			"RUN ID\tWORKFLOW\tRUN AT\tSTATUS")
+		for _, sr := range sched {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+				sr.RunID[:8],
+				sr.WorkflowID,
+				sr.RunAt.Format(time.RFC3339),
+				sr.Status,
+			)
+		}
+		tw.Flush()
+		return
+	}
 
 	runs, err := svc.ListRuns(
 		context.Background(), workflowFilter,

@@ -1126,3 +1126,93 @@ func TestInjectAPIMsgTraceCtxNilHeader(t *testing.T) {
 		t.Fatalf("traceparent = %q, want %q", tp, expected)
 	}
 }
+
+func TestStartRunInputValidation(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Register a workflow with InputSchema
+	wb := dag.NewWorkflow("schema-validation-test")
+	wb.Task("process", "process-task")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	def = dag.WithSchemas[struct {
+		Name string `json:"name"`
+		Age  int    `json:"age"`
+	}, any](def)
+
+	if err := svc.RegisterWorkflow(
+		context.Background(), def,
+	); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+
+	// Positive: valid input passes
+	validInput := []byte(`{"name":"alice","age":30}`)
+	_, err = svc.StartRun(
+		context.Background(), def.Name, validInput,
+	)
+	if err != nil {
+		t.Fatalf("valid input should pass: %v", err)
+	}
+
+	// Negative: wrong type fails
+	badInput := []byte(`{"name":123,"age":30}`)
+	_, err = svc.StartRun(
+		context.Background(), def.Name, badInput,
+	)
+	if err == nil {
+		t.Fatal("expected error for wrong input type")
+	}
+	if !contains(err.Error(), "input validation") {
+		t.Fatalf("error should mention validation: %v", err)
+	}
+
+	// Positive: nil input skips validation
+	_, err = svc.StartRun(
+		context.Background(), def.Name, nil,
+	)
+	if err != nil {
+		t.Fatalf("nil input should skip validation: %v", err)
+	}
+}
+
+func TestStartTyped(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	type input struct {
+		Name string `json:"name"`
+	}
+
+	wb := dag.NewWorkflow("typed-start-test")
+	wb.Task("greet", "greet-task")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := svc.RegisterWorkflow(
+		context.Background(), def,
+	); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+
+	// Positive: typed start works
+	runID, err := StartTyped(
+		context.Background(), svc, def.Name, input{Name: "alice"},
+	)
+	if err != nil {
+		t.Fatalf("StartTyped: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("expected non-empty runID")
+	}
+}

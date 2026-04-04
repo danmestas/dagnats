@@ -155,9 +155,31 @@ func (b *WorkflowBuilder) WithMaxDuration(d time.Duration) *WorkflowBuilder {
 // error (cycle, missing dep, etc.) is surfaced here so callers get a clean
 // error value rather than a panic at execution time.
 func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
-	def := WorkflowDef{Name: b.name, Version: b.version, Steps: b.steps}
+	def := WorkflowDef{
+		Name: b.name, Version: b.version, Steps: b.steps,
+	}
 	if err := Validate(def); err != nil {
 		return WorkflowDef{}, err
 	}
+	def.AuxSteps = buildAuxSteps(def.Steps)
 	return def, nil
+}
+
+// buildAuxSteps collects step IDs referenced by OnFailure or Compensate.
+// These steps are auxiliary — they don't block workflow completion
+// unless explicitly triggered.
+func buildAuxSteps(steps []StepDef) map[string]bool {
+	aux := make(map[string]bool)
+	for _, step := range steps {
+		if step.OnFailure != "" {
+			aux[step.OnFailure] = true
+		}
+		if step.Compensate != "" {
+			aux[step.Compensate] = true
+		}
+	}
+	if len(aux) == 0 {
+		return nil
+	}
+	return aux
 }
