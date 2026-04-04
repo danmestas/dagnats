@@ -244,3 +244,28 @@ func TestSetupAllCreatesEventWaitersKV(t *testing.T) {
 	assert(t, status.Bucket() == "event_waiters",
 		"bucket = %q, want event_waiters", status.Bucket())
 }
+
+func TestSetupAllCreatesRateLimitsKV(t *testing.T) {
+	s, nc := StartTestServer(t)
+	defer s.Shutdown()
+	defer nc.Close()
+
+	err := SetupAll(nc)
+	assert(t, err == nil, "SetupAll must succeed: %v", err)
+
+	js, err := nc.JetStream()
+	assert(t, err == nil, "JetStream must succeed: %v", err)
+
+	// Positive: rate_limits bucket exists
+	kv, err := js.KeyValue("rate_limits")
+	assert(t, err == nil,
+		"rate_limits KV bucket must exist: %v", err)
+	assert(t, kv != nil,
+		"rate_limits KV bucket must not be nil")
+
+	// Negative: bucket name is correct
+	status, err := kv.Status()
+	assert(t, err == nil, "status must succeed: %v", err)
+	assert(t, status.Bucket() == "rate_limits",
+		"bucket = %q, want rate_limits", status.Bucket())
+}

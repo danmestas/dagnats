@@ -70,6 +70,7 @@ func SetupKVBuckets(js nats.JetStreamContext) error {
 		{Bucket: "scheduled_runs"},
 		{Bucket: "workers", TTL: 60 * time.Second},
 		{Bucket: "event_waiters"},
+		{Bucket: "rate_limits"},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")

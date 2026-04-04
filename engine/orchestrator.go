@@ -35,6 +35,7 @@ type Orchestrator struct {
 	runLocks    sync.Map                // map[string]*sync.Mutex — per-run serialization
 	stepRoutes  map[dag.StepType]string // step type → subject prefix
 	concurrency *ConcurrencyManager     // nil if bucket missing
+	rateLimiter *RateLimiter            // nil if bucket missing
 	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
 
 	// Pre-allocated metric instruments — created once in constructor.
@@ -81,6 +82,7 @@ func NewOrchestrator(
 		)
 	}
 	cm, _ := NewConcurrencyManagerSafe(js)
+	rl := NewRateLimiter(js)
 	o := &Orchestrator{
 		nc:          nc,
 		js:          js,
@@ -88,6 +90,7 @@ func NewOrchestrator(
 		store:       NewSnapshotStore(js),
 		tel:         tel,
 		concurrency: cm,
+		rateLimiter: rl,
 		runsActive: tel.Metrics.Gauge(
 			"workflow.runs.active", nil,
 		),
@@ -1299,6 +1302,8 @@ func (o *Orchestrator) publishReadyTasks(
 
 // publishTask publishes a TaskPayload to task.{step.Task}.{runID} with
 // dedup ID and trace context headers on the outgoing NATS message.
+// If the step has a rate limit configured and tokens are exhausted,
+// schedules a timer for delayed re-attempt instead of publishing.
 func (o *Orchestrator) publishTask(
 	ctx context.Context,
 	runID string,
@@ -1311,6 +1316,137 @@ func (o *Orchestrator) publishTask(
 	}
 	if step.ID == "" {
 		panic("publishTask: step.ID must not be empty")
+	}
+
+	// Check rate limit before publishing.
+	if delayed, err := o.checkRateLimit(
+		step, runID, input,
+	); err != nil {
+		return err
+	} else if delayed {
+		return nil
+	}
+
+	return o.doPublishTask(ctx, runID, step, input, attempt)
+}
+
+// checkRateLimit evaluates rate limits for the step. Returns
+// delayed=true if the task was deferred via SleepTimer.
+func (o *Orchestrator) checkRateLimit(
+	step dag.StepDef, runID string, input []byte,
+) (bool, error) {
+	if o.rateLimiter == nil {
+		return false, nil
+	}
+	if step.Task == "" {
+		panic("checkRateLimit: step.Task must not be empty")
+	}
+
+	if step.RateLimit != nil {
+		return o.applyGlobalRateLimit(step, runID, input)
+	}
+	if step.KeyedRateLimit != nil {
+		return o.applyKeyedRateLimit(step, runID, input)
+	}
+	return false, nil
+}
+
+// applyGlobalRateLimit checks the global rate limit for this task type.
+func (o *Orchestrator) applyGlobalRateLimit(
+	step dag.StepDef, runID string, input []byte,
+) (bool, error) {
+	if step.RateLimit == nil {
+		panic("applyGlobalRateLimit: RateLimit must not be nil")
+	}
+	if runID == "" {
+		panic("applyGlobalRateLimit: runID must not be empty")
+	}
+	rl := step.RateLimit
+	allowed, retryAfter, err := o.rateLimiter.Allow(
+		step.Task, "_global", rl.Limit, rl.Period, 1,
+	)
+	if err != nil {
+		return false, fmt.Errorf("rate limit check: %w", err)
+	}
+	if allowed {
+		return false, nil
+	}
+	return true, o.scheduleRateRetry(
+		step, runID, input, retryAfter,
+	)
+}
+
+// applyKeyedRateLimit checks the per-key rate limit for this task.
+func (o *Orchestrator) applyKeyedRateLimit(
+	step dag.StepDef, runID string, input []byte,
+) (bool, error) {
+	if step.KeyedRateLimit == nil {
+		panic("applyKeyedRateLimit: KeyedRateLimit must not be nil")
+	}
+	if runID == "" {
+		panic("applyKeyedRateLimit: runID must not be empty")
+	}
+	krl := step.KeyedRateLimit
+	keyVal, err := dag.ExtractDotPath(krl.Key, input)
+	if err != nil {
+		return false, fmt.Errorf(
+			"extract rate limit key %q: %w", krl.Key, err,
+		)
+	}
+	key := fmt.Sprintf("%v", keyVal)
+	allowed, retryAfter, err := o.rateLimiter.Allow(
+		step.Task, key, krl.Limit, krl.Period, krl.Units,
+	)
+	if err != nil {
+		return false, fmt.Errorf("keyed rate limit: %w", err)
+	}
+	if allowed {
+		return false, nil
+	}
+	return true, o.scheduleRateRetry(
+		step, runID, input, retryAfter,
+	)
+}
+
+// scheduleRateRetry schedules a timer to re-attempt task dispatch
+// after the rate limit window allows more tokens.
+func (o *Orchestrator) scheduleRateRetry(
+	step dag.StepDef, runID string,
+	input []byte, retryAfter time.Duration,
+) error {
+	if runID == "" {
+		panic("scheduleRateRetry: runID must not be empty")
+	}
+	if step.ID == "" {
+		panic("scheduleRateRetry: step.ID must not be empty")
+	}
+	durationMs := retryAfter.Milliseconds()
+	if durationMs <= 0 {
+		durationMs = 100
+	}
+	return o.sleepTimer.Schedule(TimerMessage{
+		Action:     TimerActionRateRetry,
+		RunID:      runID,
+		StepID:     step.ID,
+		DurationMs: durationMs,
+		TaskType:   step.Task,
+		Input:      input,
+	})
+}
+
+// doPublishTask performs the actual NATS publish for a task message.
+func (o *Orchestrator) doPublishTask(
+	ctx context.Context,
+	runID string,
+	step dag.StepDef,
+	input []byte,
+	attempt int,
+) error {
+	if runID == "" {
+		panic("doPublishTask: runID must not be empty")
+	}
+	if step.ID == "" {
+		panic("doPublishTask: step.ID must not be empty")
 	}
 	ctx, span := o.tel.Tracer.Start(ctx,
 		"orchestrator.enqueueTask",

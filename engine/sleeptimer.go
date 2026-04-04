@@ -21,15 +21,19 @@ type TimerAction string
 
 const (
 	TimerActionSleepComplete TimerAction = "sleep_complete"
+	TimerActionRateRetry     TimerAction = "rate_retry"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
 // DurationMs is the sleep duration in milliseconds.
+// TaskType and Input are used by rate_retry to re-publish the task.
 type TimerMessage struct {
-	Action     TimerAction `json:"action"`
-	RunID      string      `json:"run_id"`
-	StepID     string      `json:"step_id"`
-	DurationMs int64       `json:"duration_ms"`
+	Action     TimerAction     `json:"action"`
+	RunID      string          `json:"run_id"`
+	StepID     string          `json:"step_id"`
+	DurationMs int64           `json:"duration_ms"`
+	TaskType   string          `json:"task_type,omitempty"`
+	Input      json.RawMessage `json:"input,omitempty"`
 }
 
 // SleepTimer manages durable timers via NakWithDelay on the
@@ -144,6 +148,8 @@ func (st *SleepTimer) handleTimer(msg *nats.Msg) {
 	switch tm.Action {
 	case TimerActionSleepComplete:
 		st.fireSleepComplete(tm)
+	case TimerActionRateRetry:
+		st.fireRateRetry(tm)
 	default:
 		// Unknown action — ack to prevent loop.
 	}
@@ -172,4 +178,35 @@ func (st *SleepTimer) fireSleepComplete(tm TimerMessage) {
 		evt.NATSSubject(), data,
 		nats.MsgId(evt.NATSMsgID()),
 	)
+}
+
+// fireRateRetry re-publishes a rate-limited task to the task queue.
+// The orchestrator scheduled this timer when the token bucket was
+// exhausted, so the task gets another chance at dispatch.
+func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
+	if tm.RunID == "" {
+		panic("fireRateRetry: RunID must not be empty")
+	}
+	if tm.TaskType == "" {
+		panic("fireRateRetry: TaskType must not be empty")
+	}
+	subject := fmt.Sprintf("task.%s.%s", tm.TaskType, tm.RunID)
+	payload := protocol.TaskPayload{
+		RunID:  tm.RunID,
+		StepID: tm.StepID,
+		Input:  tm.Input,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	msgID := fmt.Sprintf(
+		"%s.%s.rate_retry", tm.RunID, tm.StepID,
+	)
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
+	}
+	st.js.PublishMsg(msg)
 }

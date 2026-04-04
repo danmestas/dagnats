@@ -2683,3 +2683,121 @@ func TestOrchestratorSleepStep(t *testing.T) {
 		t.Fatal("task-a should not still be pending")
 	}
 }
+
+func TestOrchestratorRateLimitDelaysTask(t *testing.T) {
+	// Methodology: workflow with a single step that has a global rate
+	// limit of 1 per 10 seconds. Start two runs quickly. The first
+	// should get its task published immediately. The second should be
+	// deferred to the SLEEP_TIMERS stream instead of TASK_QUEUES.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name:    "rl-wf",
+		Version: "1",
+		Steps: []dag.StepDef{{
+			ID:   "rl-step",
+			Task: "rl-task",
+			Type: dag.StepTypeNormal,
+			RateLimit: &dag.RateLimit{
+				Limit:  1,
+				Period: 10 * time.Second,
+			},
+		}},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Start first run — should consume the one token.
+	evt1 := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "rl-run-1", defData,
+	)
+	data1, _ := evt1.Marshal()
+	js.Publish(
+		evt1.NATSSubject(), data1,
+		nats.MsgId(evt1.NATSMsgID()),
+	)
+
+	// First task should appear on TASK_QUEUES.
+	taskSub, err := js.PullSubscribe(
+		"task.rl-task.*", "",
+		nats.BindStream("TASK_QUEUES"),
+	)
+	if err != nil {
+		t.Fatalf("PullSubscribe: %v", err)
+	}
+	msgs, err := taskSub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch first task: %v", err)
+	}
+	// Positive: first task published normally.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(msgs))
+	}
+	msgs[0].Ack()
+
+	// Start second run — rate limit should be exhausted.
+	evt2 := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "rl-run-2", defData,
+	)
+	data2, _ := evt2.Marshal()
+	js.Publish(
+		evt2.NATSSubject(), data2,
+		nats.MsgId(evt2.NATSMsgID()),
+	)
+
+	// Second task should NOT appear on TASK_QUEUES.
+	time.Sleep(500 * time.Millisecond)
+	msgs2, _ := taskSub.Fetch(
+		1, nats.MaxWait(500*time.Millisecond),
+	)
+	// Negative: second task was deferred, not published.
+	if len(msgs2) > 0 {
+		t.Fatal("second task should be deferred by rate limit")
+	}
+
+	// The deferred task should be on the SLEEP_TIMERS stream.
+	sleepSub, err := js.PullSubscribe(
+		"sleep.>", "",
+		nats.BindStream("SLEEP_TIMERS"),
+	)
+	if err != nil {
+		t.Fatalf("PullSubscribe sleep: %v", err)
+	}
+	sleepMsgs, err := sleepSub.Fetch(
+		1, nats.MaxWait(3*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("Fetch sleep timer: %v", err)
+	}
+	// Positive: a rate_retry timer was scheduled.
+	if len(sleepMsgs) != 1 {
+		t.Fatalf(
+			"expected 1 sleep timer msg, got %d",
+			len(sleepMsgs),
+		)
+	}
+
+	var tm TimerMessage
+	if err := json.Unmarshal(
+		sleepMsgs[0].Data, &tm,
+	); err != nil {
+		t.Fatalf("unmarshal timer: %v", err)
+	}
+	// Positive: action is rate_retry.
+	if tm.Action != TimerActionRateRetry {
+		t.Fatalf("action = %q, want rate_retry", tm.Action)
+	}
+	// Negative: TaskType is set correctly.
+	if tm.TaskType != "rl-task" {
+		t.Fatalf("TaskType = %q, want rl-task", tm.TaskType)
+	}
+}
