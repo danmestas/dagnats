@@ -15,10 +15,11 @@ const (
 	StepTypeAgentLoop
 	StepTypeSubWorkflow
 	StepTypeAgent
+	StepTypeMap
 )
 
 var stepTypeStrings = [...]string{
-	"normal", "agent_loop", "sub_workflow", "agent",
+	"normal", "agent_loop", "sub_workflow", "agent", "map",
 }
 
 func (s StepType) String() string {
@@ -143,6 +144,12 @@ type AgentLoopConfig struct {
 	LoopDelay     time.Duration `json:"loop_delay,omitempty"`
 }
 
+// MapConfig controls parallel execution for map steps that fan out.
+// MaxItems caps the array size to prevent unbounded parallelism.
+type MapConfig struct {
+	MaxItems int `json:"max_items"`
+}
+
 // ConcurrencyLimit controls parallel execution at workflow and step level.
 type ConcurrencyLimit struct {
 	MaxRuns  int `json:"max_runs,omitempty"`
@@ -159,6 +166,7 @@ type StepDef struct {
 	Timeout     time.Duration     `json:"timeout"`
 	Type        StepType          `json:"type"`
 	Loop        *AgentLoopConfig  `json:"loop,omitempty"`
+	Map         *MapConfig        `json:"map,omitempty"`
 	SkipIf      *ParentCond       `json:"skip_if,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	Retry       *RetryPolicy      `json:"retry,omitempty"`
@@ -181,18 +189,28 @@ type WorkflowDef struct {
 	AuxSteps     map[string]bool   `json:"aux_steps,omitempty"`
 }
 
+// MapInstanceState tracks runtime state for one map item execution.
+// Each instance represents one parallel task invocation for a map step.
+type MapInstanceState struct {
+	Status StepStatus      `json:"status"`
+	Output json.RawMessage `json:"output,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}
+
 // StepState captures mutable runtime state for one step in a run.
 // Output is kept as raw bytes to remain payload-agnostic.
 // Iterations tracks how many agent-loop Continue cycles have completed;
 // used to generate unique dedup IDs for each re-enqueue.
 // LoopStartedAt records when the first iteration began, for MaxDuration enforcement.
+// MapInstances tracks state for each parallel map item when Type == StepTypeMap.
 type StepState struct {
-	Status        StepStatus `json:"status"`
-	Attempts      int        `json:"attempts"`
-	Iterations    int        `json:"iterations,omitempty"`
-	LoopStartedAt time.Time  `json:"loop_started_at,omitempty"`
-	Output        []byte     `json:"output,omitempty"`
-	Error         string     `json:"error,omitempty"`
+	Status        StepStatus         `json:"status"`
+	Attempts      int                `json:"attempts"`
+	Iterations    int                `json:"iterations,omitempty"`
+	LoopStartedAt time.Time          `json:"loop_started_at,omitempty"`
+	Output        []byte             `json:"output,omitempty"`
+	Error         string             `json:"error,omitempty"`
+	MapInstances  []MapInstanceState `json:"map_instances,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

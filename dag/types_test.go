@@ -420,6 +420,127 @@ func TestWorkflowRunDeadlineJSON(t *testing.T) {
 	}
 }
 
+func TestStepTypeMapStringAndJSON(t *testing.T) {
+	// Positive: string representation
+	if got := StepTypeMap.String(); got != "map" {
+		t.Fatalf("StepTypeMap.String() = %q, want %q", got, "map")
+	}
+
+	// Positive: JSON round-trip
+	data, err := json.Marshal(StepTypeMap)
+	if err != nil {
+		t.Fatalf("Marshal StepTypeMap: %v", err)
+	}
+	if string(data) != `"map"` {
+		t.Fatalf("Marshal StepTypeMap = %s, want %q", data, "map")
+	}
+
+	var got StepType
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal StepTypeMap: %v", err)
+	}
+	if got != StepTypeMap {
+		t.Fatalf("Unmarshal StepTypeMap = %v, want %v", got, StepTypeMap)
+	}
+}
+
+func TestMapConfigJSON(t *testing.T) {
+	cfg := MapConfig{MaxItems: 500}
+
+	// Positive: JSON round-trip
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal MapConfig: %v", err)
+	}
+
+	var got MapConfig
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal MapConfig: %v", err)
+	}
+	if got.MaxItems != 500 {
+		t.Fatalf("MaxItems = %d, want 500", got.MaxItems)
+	}
+
+	// Negative: zero value has zero MaxItems
+	zero := MapConfig{}
+	dataZero, _ := json.Marshal(zero)
+	var gotZero MapConfig
+	json.Unmarshal(dataZero, &gotZero)
+	if gotZero.MaxItems != 0 {
+		t.Fatalf("zero MapConfig MaxItems = %d, want 0", gotZero.MaxItems)
+	}
+}
+
+func TestMapInstanceStateJSON(t *testing.T) {
+	state := MapInstanceState{
+		Status: StepStatusCompleted,
+		Output: json.RawMessage(`{"result":"success"}`),
+		Error:  "",
+	}
+
+	// Positive: JSON round-trip
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("Marshal MapInstanceState: %v", err)
+	}
+
+	var got MapInstanceState
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal MapInstanceState: %v", err)
+	}
+	if got.Status != StepStatusCompleted {
+		t.Fatalf("Status = %v, want completed", got.Status)
+	}
+	if string(got.Output) != `{"result":"success"}` {
+		t.Fatalf("Output = %s", got.Output)
+	}
+
+	// Negative: omitempty fields omitted when empty
+	state2 := MapInstanceState{Status: StepStatusRunning}
+	data2, _ := json.Marshal(state2)
+	if bytes.Contains(data2, []byte("output")) {
+		t.Fatalf("empty Output should be omitted, got %s", data2)
+	}
+	if bytes.Contains(data2, []byte("error")) {
+		t.Fatalf("empty Error should be omitted, got %s", data2)
+	}
+}
+
+func TestStepStateMapInstancesJSON(t *testing.T) {
+	state := StepState{
+		Status: StepStatusRunning,
+		MapInstances: []MapInstanceState{
+			{Status: StepStatusCompleted, Output: json.RawMessage(`{"a":1}`)},
+			{Status: StepStatusRunning},
+		},
+	}
+
+	// Positive: JSON round-trip
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("Marshal StepState with MapInstances: %v", err)
+	}
+
+	var got StepState
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal StepState with MapInstances: %v", err)
+	}
+	if len(got.MapInstances) != 2 {
+		t.Fatalf("MapInstances count = %d, want 2", len(got.MapInstances))
+	}
+	if got.MapInstances[0].Status != StepStatusCompleted {
+		t.Fatalf("MapInstances[0].Status = %v, want completed",
+			got.MapInstances[0].Status)
+	}
+
+	// Negative: nil MapInstances omitted
+	state2 := StepState{Status: StepStatusPending}
+	data2, _ := json.Marshal(state2)
+	if bytes.Contains(data2, []byte("map_instances")) {
+		t.Fatalf("nil MapInstances should be omitted, got %s", data2)
+	}
+}
+
 func TestStepStatusRecoveredRoundTrip(t *testing.T) {
 	// Positive: Recovered serializes to "recovered"
 	data, err := json.Marshal(StepStatusRecovered)

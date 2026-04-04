@@ -274,6 +274,54 @@ func TestBuilderWithMaxDurationOnNormalPanics(t *testing.T) {
 	wf.WithMaxDuration(time.Minute)
 }
 
+func TestBuilderMap(t *testing.T) {
+	wf := NewWorkflow("map-wf")
+	input := wf.Task("input", "task-input")
+	_ = wf.Map("map-step", "task-map").After(input)
+
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// Positive: step created with correct type
+	step := findStep(def, "map-step")
+	if step == nil {
+		t.Fatal("map-step not found")
+	}
+	if step.Type != StepTypeMap {
+		t.Fatalf("Type = %v, want Map", step.Type)
+	}
+
+	// Positive: Map config initialized with default MaxItems
+	if step.Map == nil {
+		t.Fatal("Map config must not be nil")
+	}
+	if step.Map.MaxItems != 1000 {
+		t.Fatalf("Map.MaxItems = %d, want 1000", step.Map.MaxItems)
+	}
+}
+
+func TestBuilderMapEmptyIDPanics(t *testing.T) {
+	wf := NewWorkflow("bad-map")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty map step ID")
+		}
+	}()
+	wf.Map("", "task")
+}
+
+func TestBuilderMapEmptyTaskPanics(t *testing.T) {
+	wf := NewWorkflow("bad-map")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty map task")
+		}
+	}()
+	wf.Map("id", "")
+}
+
 func findStep(def WorkflowDef, id string) *StepDef {
 	for i := range def.Steps {
 		if def.Steps[i].ID == id {

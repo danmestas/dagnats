@@ -222,3 +222,144 @@ func TestValidateOnFailureAndCompensateValid(t *testing.T) {
 		t.Fatalf("valid def rejected: %v", err)
 	}
 }
+
+func TestValidateMapStepOneDep(t *testing.T) {
+	// Positive: Map step with exactly one dependency is valid
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "input", Task: "t", Type: StepTypeNormal},
+			{ID: "m", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 100}, DependsOn: []string{"input"}},
+		},
+	}
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid map step rejected: %v", err)
+	}
+
+	// Negative: Map step with zero dependencies fails
+	def2 := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "m", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 100}},
+		},
+	}
+	err := Validate(def2)
+	if err == nil {
+		t.Fatal("expected error for Map step with no dependencies")
+	}
+	if !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestValidateMapStepMultipleDepsRejected(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "a", Task: "t", Type: StepTypeNormal},
+			{ID: "b", Task: "t", Type: StepTypeNormal},
+			{ID: "m", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 100}, DependsOn: []string{"a", "b"}},
+		},
+	}
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for Map step with multiple dependencies")
+	}
+}
+
+func TestValidateMapStepMaxItems(t *testing.T) {
+	// Positive: MaxItems in valid range
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "input", Task: "t", Type: StepTypeNormal},
+			{ID: "m", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 5000}, DependsOn: []string{"input"}},
+		},
+	}
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid MaxItems rejected: %v", err)
+	}
+
+	// Negative: MaxItems zero fails
+	def2 := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "input", Task: "t", Type: StepTypeNormal},
+			{ID: "m", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 0}, DependsOn: []string{"input"}},
+		},
+	}
+	err := Validate(def2)
+	if err == nil {
+		t.Fatal("expected error for MaxItems = 0")
+	}
+
+	// Negative: MaxItems > 10,000 fails
+	def3 := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "input", Task: "t", Type: StepTypeNormal},
+			{ID: "m", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 10001}, DependsOn: []string{"input"}},
+		},
+	}
+	err = Validate(def3)
+	if err == nil {
+		t.Fatal("expected error for MaxItems > 10000")
+	}
+}
+
+func TestValidateMapNoNesting(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "input", Task: "t", Type: StepTypeNormal},
+			{ID: "m1", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 100}, DependsOn: []string{"input"}},
+			{ID: "m2", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 50}, DependsOn: []string{"m1"}},
+		},
+	}
+	err := Validate(def)
+	// Positive: error for nested Map step
+	if err == nil {
+		t.Fatal("expected error for Map step depending on Map step")
+	}
+	if !strings.Contains(err.Error(), "Map") && !strings.Contains(err.Error(), "nest") {
+		t.Fatalf("error = %q", err)
+	}
+
+	// Negative: Map depending on normal step is valid
+	def2 := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "input", Task: "t", Type: StepTypeNormal},
+			{ID: "m", Task: "t", Type: StepTypeMap,
+				Map: &MapConfig{MaxItems: 100}, DependsOn: []string{"input"}},
+		},
+	}
+	if err := Validate(def2); err != nil {
+		t.Fatalf("valid map should pass, got: %v", err)
+	}
+}
+
+func TestValidateMapStepRequiresMapConfig(t *testing.T) {
+	def := WorkflowDef{
+		Name: "v", Version: "1",
+		Steps: []StepDef{
+			{ID: "input", Task: "t", Type: StepTypeNormal},
+			{ID: "m", Task: "t", Type: StepTypeMap,
+				Map: nil, DependsOn: []string{"input"}},
+		},
+	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for Map step without Map config")
+		}
+	}()
+	Validate(def)
+}
