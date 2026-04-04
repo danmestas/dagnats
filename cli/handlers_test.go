@@ -74,6 +74,12 @@ func (f *fakeTaskContext) LoadCheckpoint() (
 	return nil, nil
 }
 
+func (f *fakeTaskContext) Pause(
+	_ string, _ time.Duration,
+) error {
+	return fmt.Errorf("Pause not expected")
+}
+
 func (f *fakeTaskContext) WaitForSignal(
 	_ string, _ time.Duration,
 ) ([]byte, error) {
