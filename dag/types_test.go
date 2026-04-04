@@ -596,3 +596,20 @@ func TestRunStatusCompensateFailedRoundTrip(t *testing.T) {
 		t.Fatalf("got %v, want RunStatusCompensateFailed", r)
 	}
 }
+
+func TestStepTypeSleepString(t *testing.T) {
+	// Positive: string representation
+	if StepTypeSleep.String() != "sleep" {
+		t.Fatalf("expected 'sleep', got '%s'", StepTypeSleep.String())
+	}
+
+	// Positive: JSON unmarshal
+	var st StepType
+	err := json.Unmarshal([]byte(`"sleep"`), &st)
+	if err != nil {
+		t.Fatalf("unmarshal must succeed: %v", err)
+	}
+	if st != StepTypeSleep {
+		t.Fatalf("expected StepTypeSleep, got %v", st)
+	}
+}

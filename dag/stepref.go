@@ -157,3 +157,21 @@ func (r StepRef) Compensate(target StepRef) StepRef {
 	r.builder.steps[r.index].Compensate = target.id
 	return r
 }
+
+// WithRateLimit sets global per-task-type rate limiting on this step.
+func (r StepRef) WithRateLimit(rl RateLimit) StepRef {
+	if r.builder == nil {
+		panic("WithRateLimit called on zero-value StepRef")
+	}
+	r.builder.steps[r.index].RateLimit = &rl
+	return r
+}
+
+// WithKeyedRateLimit sets per-key rate limiting on this step.
+func (r StepRef) WithKeyedRateLimit(krl KeyedRateLimit) StepRef {
+	if r.builder == nil {
+		panic("WithKeyedRateLimit called on zero-value StepRef")
+	}
+	r.builder.steps[r.index].KeyedRateLimit = &krl
+	return r
+}

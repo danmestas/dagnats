@@ -7,8 +7,10 @@
 package dag
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateDuplicateStepIDs(t *testing.T) {
@@ -362,4 +364,98 @@ func TestValidateMapStepRequiresMapConfig(t *testing.T) {
 		}
 	}()
 	Validate(def)
+}
+
+func TestValidateEmptyTaskForTaskRequiringTypes(t *testing.T) {
+	// Test that step types requiring a Task field panic when Task is empty.
+	// This preserves existing behavior for Normal, AgentLoop, SubWorkflow, Agent, Map.
+	taskRequiringTypes := []struct {
+		name     string
+		stepType StepType
+		loop     *AgentLoopConfig
+		mapCfg   *MapConfig
+		deps     []string
+	}{
+		{"Normal", StepTypeNormal, nil, nil, nil},
+		{"AgentLoop", StepTypeAgentLoop, &AgentLoopConfig{MaxIterations: 5}, nil, nil},
+		{"SubWorkflow", StepTypeSubWorkflow, nil, nil, nil},
+		{"Agent", StepTypeAgent, nil, nil, nil},
+		{"Map", StepTypeMap, nil, &MapConfig{MaxItems: 100}, []string{"input"}},
+	}
+
+	for _, tc := range taskRequiringTypes {
+		t.Run(tc.name, func(t *testing.T) {
+			steps := []StepDef{
+				{ID: "input", Task: "t", Type: StepTypeNormal},
+				{
+					ID:        "test",
+					Task:      "",
+					Type:      tc.stepType,
+					Loop:      tc.loop,
+					Map:       tc.mapCfg,
+					DependsOn: tc.deps,
+				},
+			}
+			if tc.stepType == StepTypeMap {
+				// Map needs a parent step
+				steps[1].DependsOn = []string{"input"}
+			} else {
+				steps = []StepDef{steps[1]}
+			}
+
+			def := WorkflowDef{Name: "test", Version: "1", Steps: steps}
+
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf(
+						"expected panic for %s step with empty Task",
+						tc.name,
+					)
+				}
+				// Positive assertion: panic message contains expected content
+				panicMsg := fmt.Sprint(r)
+				if !strings.Contains(panicMsg, "task is empty") {
+					t.Fatalf("panic message = %q", panicMsg)
+				}
+			}()
+			Validate(def)
+		})
+	}
+}
+
+func TestStepRequiresTask(t *testing.T) {
+	// Positive: known task-requiring types return true
+	taskTypes := []StepType{
+		StepTypeNormal,
+		StepTypeAgentLoop,
+		StepTypeSubWorkflow,
+		StepTypeAgent,
+		StepTypeMap,
+	}
+	for _, st := range taskTypes {
+		if !stepRequiresTask(st) {
+			t.Errorf("stepRequiresTask(%s) = false, want true", st)
+		}
+	}
+
+	// Negative: invalid/future step types return false (graceful degradation)
+	// This will be the behavior for StepTypeSleep and StepTypeWaitForEvent.
+	invalidType := StepType(999)
+	if stepRequiresTask(invalidType) {
+		t.Errorf("stepRequiresTask(999) = true, want false")
+	}
+}
+
+func TestValidateSleepDuration365DayMax(t *testing.T) {
+	b := NewWorkflow("test")
+	b.Sleep("too-long", 366*24*time.Hour)
+	_, err := b.Build()
+	// Positive: error for >365 day sleep
+	if err == nil {
+		t.Fatal("expected error for >365 day sleep")
+	}
+	if !strings.Contains(err.Error(), "exceeds max") {
+		t.Fatalf("expected 'exceeds max' in error, got: %v", err)
+	}
 }

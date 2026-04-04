@@ -102,6 +102,48 @@ func (b *WorkflowBuilder) Map(id, taskType string) StepRef {
 	return StepRef{id: id, index: idx, builder: b}
 }
 
+// Sleep adds a durable delay step to the workflow.
+// No worker is involved — the engine handles the timer.
+func (b *WorkflowBuilder) Sleep(id string, duration time.Duration) StepRef {
+	if id == "" {
+		panic("Sleep: id must not be empty")
+	}
+	if duration <= 0 {
+		panic("Sleep: duration must be positive")
+	}
+	step := StepDef{
+		ID:       id,
+		Task:     "",
+		Type:     StepTypeSleep,
+		Duration: duration,
+	}
+	b.steps = append(b.steps, step)
+	idx := len(b.steps) - 1
+	b.current = idx
+	return StepRef{id: id, index: idx, builder: b}
+}
+
+// WaitForEvent adds a step that waits for an external event to match a condition.
+// No worker is involved — the engine handles event matching.
+func (b *WorkflowBuilder) WaitForEvent(id string, opts WaitForEventOpts) StepRef {
+	if id == "" {
+		panic("WaitForEvent: id must not be empty")
+	}
+	if opts.Event == "" {
+		panic("WaitForEvent: opts.Event must not be empty")
+	}
+	step := StepDef{
+		ID:           id,
+		Task:         "",
+		Type:         StepTypeWaitForEvent,
+		WaitForEvent: &opts,
+	}
+	b.steps = append(b.steps, step)
+	idx := len(b.steps) - 1
+	b.current = idx
+	return StepRef{id: id, index: idx, builder: b}
+}
+
 // DependsOn declares that the active step must not start until all listed step
 // IDs have completed. Kept for backward compatibility — prefer After(StepRef)
 // for new code which provides compile-time safety.

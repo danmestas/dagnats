@@ -33,6 +33,12 @@ func (m *mockTaskContext) LoadCheckpoint() ([]byte, error) {
 	return nil, nil
 }
 
+func (m *mockTaskContext) Pause(
+	_ string, _ time.Duration,
+) error {
+	return nil
+}
+
 func (m *mockTaskContext) WaitForSignal(
 	_ string, _ time.Duration,
 ) ([]byte, error) {

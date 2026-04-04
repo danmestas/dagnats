@@ -28,6 +28,7 @@ func publishTask(
 		panic("publishTask: step.ID must not be empty")
 	}
 	payload := protocol.TaskPayload{
+		TaskID:  runID + "." + step.ID,
 		RunID:   runID,
 		StepID:  step.ID,
 		Attempt: attempt,
@@ -63,6 +64,7 @@ func publishIterationTask(
 		panic("publishIterationTask: step.ID must not be empty")
 	}
 	payload := protocol.TaskPayload{
+		TaskID:    runID + "." + step.ID,
 		RunID:     runID,
 		StepID:    step.ID,
 		Iteration: iteration,

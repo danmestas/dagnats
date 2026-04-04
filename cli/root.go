@@ -34,6 +34,8 @@ func Run(args []string) {
 		runTriggerCmd(args[2:])
 	case "dlq":
 		runDLQCmd(args[2:])
+	case "workers":
+		runWorkersCmd(args[2:])
 	case "serve":
 		runServeCmd(args[2:])
 	case "status":
@@ -60,6 +62,7 @@ func printUsage() {
 	fmt.Println(
 		"  trigger   create, list, delete, enable, disable triggers")
 	fmt.Println("  dlq       list, replay dead-letter messages")
+	fmt.Println("  workers   list registered workers")
 	fmt.Println("  serve     start embedded server")
 	fmt.Println("  init      scaffold a new workflow project")
 	fmt.Println("  config    show effective configuration")

@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/trigger"
+	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
 
@@ -1214,5 +1215,100 @@ func TestStartTyped(t *testing.T) {
 	}
 	if runID == "" {
 		t.Fatal("expected non-empty runID")
+	}
+}
+
+func TestServiceListWorkers(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: no workers returns empty list
+	workers, err := svc.ListWorkers(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkers failed: %v", err)
+	}
+	if len(workers) != 0 {
+		t.Fatalf("len(workers) = %d, want 0", len(workers))
+	}
+
+	// Register two workers via Directory
+	js, _ := nc.JetStream()
+	dir := worker.NewDirectory(js)
+	reg1 := worker.WorkerRegistration{
+		WorkerID:  "worker-1",
+		TaskTypes: []string{"task-a", "task-b"},
+		Language:  "go",
+		Transport: "nats",
+		MaxTasks:  10,
+	}
+	reg2 := worker.WorkerRegistration{
+		WorkerID:  "worker-2",
+		TaskTypes: []string{"task-c"},
+		Language:  "python",
+		Transport: "nats",
+		MaxTasks:  5,
+	}
+	if err := dir.Register(reg1); err != nil {
+		t.Fatalf("Register worker-1: %v", err)
+	}
+	if err := dir.Register(reg2); err != nil {
+		t.Fatalf("Register worker-2: %v", err)
+	}
+
+	// Positive: ListWorkers returns both workers
+	workers, err = svc.ListWorkers(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkers failed: %v", err)
+	}
+	if len(workers) != 2 {
+		t.Fatalf("len(workers) = %d, want 2", len(workers))
+	}
+
+	// Negative: verify worker fields are correct
+	foundWorker1 := false
+	foundWorker2 := false
+	for _, w := range workers {
+		if w.WorkerID == "worker-1" {
+			foundWorker1 = true
+			if w.Language != "go" {
+				t.Fatalf("worker-1 Language = %q, want %q",
+					w.Language, "go")
+			}
+		}
+		if w.WorkerID == "worker-2" {
+			foundWorker2 = true
+			if w.Language != "python" {
+				t.Fatalf("worker-2 Language = %q, want %q",
+					w.Language, "python")
+			}
+		}
+	}
+	if !foundWorker1 {
+		t.Fatal("worker-1 not found in list")
+	}
+	if !foundWorker2 {
+		t.Fatal("worker-2 not found in list")
+	}
+}
+
+func TestServiceListWorkersNoBucket(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	// Positive: ListWorkers returns empty when bucket doesn't exist
+	workers, err := svc.ListWorkers(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkers failed: %v", err)
+	}
+
+	// Negative: result is empty
+	if len(workers) != 0 {
+		t.Fatalf("expected 0 workers, got %d", len(workers))
 	}
 }

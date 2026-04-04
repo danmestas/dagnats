@@ -10,11 +10,25 @@ import (
 // Iteration is the agent-loop iteration index (0 for the first execution); workers
 // include it in Continue event MsgIds to prevent JetStream deduplication across cycles.
 type TaskPayload struct {
+	TaskID    string          `json:"task_id"` // {runID}.{stepID}
 	RunID     string          `json:"run_id"`
 	StepID    string          `json:"step_id"`
 	Iteration int             `json:"iteration,omitempty"`
 	Attempt   int             `json:"attempt,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
+}
+
+// TaskResolution is the wire format for HTTP bridge resolve actions.
+// The action field discriminates between complete/fail/pause/checkpoint.
+// Workers POST this to /v1/tasks/{id}/resolve to report task outcomes.
+type TaskResolution struct {
+	Action     string          `json:"action"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	DurationMs int64           `json:"duration_ms,omitempty"`
+	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
+	Data       json.RawMessage `json:"data,omitempty"`
 }
 
 // EventType identifies the kind of workflow lifecycle event.
@@ -32,6 +46,11 @@ const (
 	EventStepMapStarted           EventType = "step.map.started"
 	EventStepMapCompleted         EventType = "step.map.completed"
 	EventStepMapInstanceCompleted EventType = "step.map.instance.completed"
+	EventStepSleepStarted         EventType = "step.sleep.started"
+	EventStepSleepCompleted       EventType = "step.sleep.completed"
+	EventStepWaitStarted          EventType = "step.wait.started"
+	EventStepWaitMatched          EventType = "step.wait.matched"
+	EventStepWaitTimeout          EventType = "step.wait.timeout"
 	EventWorkflowCompleted        EventType = "workflow.completed"
 	EventWorkflowFailed           EventType = "workflow.failed"
 	EventWorkflowSpawn            EventType = "workflow.spawn"

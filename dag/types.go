@@ -16,10 +16,12 @@ const (
 	StepTypeSubWorkflow
 	StepTypeAgent
 	StepTypeMap
+	StepTypeSleep
+	StepTypeWaitForEvent
 )
 
 var stepTypeStrings = [...]string{
-	"normal", "agent_loop", "sub_workflow", "agent", "map",
+	"normal", "agent_loop", "sub_workflow", "agent", "map", "sleep", "wait_for_event",
 }
 
 func (s StepType) String() string {
@@ -158,21 +160,26 @@ type ConcurrencyLimit struct {
 
 // StepDef is the immutable declaration of a single step within a WorkflowDef.
 // DependsOn lists step IDs that must complete before this step is queued.
+// NOTE: Tier 2+ must refactor to step-type-specific config before adding fields.
 type StepDef struct {
-	ID          string            `json:"id"`
-	Task        string            `json:"task"`
-	DependsOn   []string          `json:"depends_on,omitempty"`
-	Retries     int               `json:"retries,omitempty"`
-	Timeout     time.Duration     `json:"timeout"`
-	Type        StepType          `json:"type"`
-	Loop        *AgentLoopConfig  `json:"loop,omitempty"`
-	Map         *MapConfig        `json:"map,omitempty"`
-	SkipIf      *ParentCond       `json:"skip_if,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	Retry       *RetryPolicy      `json:"retry,omitempty"`
-	WorkerGroup string            `json:"worker_group,omitempty"`
-	OnFailure   string            `json:"on_failure,omitempty"`
-	Compensate  string            `json:"compensate,omitempty"`
+	ID             string            `json:"id"`
+	Task           string            `json:"task"`
+	DependsOn      []string          `json:"depends_on,omitempty"`
+	Retries        int               `json:"retries,omitempty"`
+	Timeout        time.Duration     `json:"timeout"`
+	Type           StepType          `json:"type"`
+	Loop           *AgentLoopConfig  `json:"loop,omitempty"`
+	Map            *MapConfig        `json:"map,omitempty"`
+	SkipIf         *ParentCond       `json:"skip_if,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	Retry          *RetryPolicy      `json:"retry,omitempty"`
+	WorkerGroup    string            `json:"worker_group,omitempty"`
+	OnFailure      string            `json:"on_failure,omitempty"`
+	Compensate     string            `json:"compensate,omitempty"`
+	Duration       time.Duration     `json:"duration,omitempty"`
+	RateLimit      *RateLimit        `json:"rate_limit,omitempty"`
+	KeyedRateLimit *KeyedRateLimit   `json:"keyed_rate_limit,omitempty"`
+	WaitForEvent   *WaitForEventOpts `json:"wait_for_event,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced
@@ -203,6 +210,7 @@ type MapInstanceState struct {
 // used to generate unique dedup IDs for each re-enqueue.
 // LoopStartedAt records when the first iteration began, for MaxDuration enforcement.
 // MapInstances tracks state for each parallel map item when Type == StepTypeMap.
+// WakeAt records when a sleep step should complete, for engine scheduling.
 type StepState struct {
 	Status        StepStatus         `json:"status"`
 	Attempts      int                `json:"attempts"`
@@ -211,6 +219,7 @@ type StepState struct {
 	Output        []byte             `json:"output,omitempty"`
 	Error         string             `json:"error,omitempty"`
 	MapInstances  []MapInstanceState `json:"map_instances,omitempty"`
+	WakeAt        *time.Time         `json:"wake_at,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

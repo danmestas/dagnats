@@ -191,3 +191,81 @@ func TestSetupKVBucketsCreatesScheduledRuns(t *testing.T) {
 		t.Fatalf("bucket = %q, want scheduled_runs", status.Bucket())
 	}
 }
+
+// assert is a test helper that fails the test if the condition is false.
+// Minimum 2 assertions per test for positive and negative space validation.
+func assert(t *testing.T, condition bool, format string, args ...interface{}) {
+	t.Helper()
+	if !condition {
+		t.Fatalf(format, args...)
+	}
+}
+
+func TestSetupAllCreatesWorkersKV(t *testing.T) {
+	s, nc := StartTestServer(t)
+	defer s.Shutdown()
+	defer nc.Close()
+
+	err := SetupAll(nc)
+	assert(t, err == nil, "SetupAll must succeed: %v", err)
+
+	js, err := nc.JetStream()
+	assert(t, err == nil, "JetStream must succeed: %v", err)
+
+	kv, err := js.KeyValue("workers")
+	assert(t, err == nil, "workers KV bucket must exist: %v", err)
+	assert(t, kv != nil, "workers KV bucket must not be nil")
+
+	status, err := kv.Status()
+	assert(t, err == nil, "status must succeed: %v", err)
+	assert(t, status.TTL() == 60*time.Second,
+		"workers TTL must be 60s, got %v", status.TTL())
+}
+
+func TestSetupAllCreatesEventWaitersKV(t *testing.T) {
+	s, nc := StartTestServer(t)
+	defer s.Shutdown()
+	defer nc.Close()
+
+	err := SetupAll(nc)
+	assert(t, err == nil, "SetupAll must succeed: %v", err)
+
+	js, err := nc.JetStream()
+	assert(t, err == nil, "JetStream must succeed: %v", err)
+
+	// Positive: event_waiters bucket exists
+	kv, err := js.KeyValue("event_waiters")
+	assert(t, err == nil, "event_waiters KV bucket must exist: %v", err)
+	assert(t, kv != nil, "event_waiters KV bucket must not be nil")
+
+	// Negative: bucket name is correct
+	status, err := kv.Status()
+	assert(t, err == nil, "status must succeed: %v", err)
+	assert(t, status.Bucket() == "event_waiters",
+		"bucket = %q, want event_waiters", status.Bucket())
+}
+
+func TestSetupAllCreatesRateLimitsKV(t *testing.T) {
+	s, nc := StartTestServer(t)
+	defer s.Shutdown()
+	defer nc.Close()
+
+	err := SetupAll(nc)
+	assert(t, err == nil, "SetupAll must succeed: %v", err)
+
+	js, err := nc.JetStream()
+	assert(t, err == nil, "JetStream must succeed: %v", err)
+
+	// Positive: rate_limits bucket exists
+	kv, err := js.KeyValue("rate_limits")
+	assert(t, err == nil,
+		"rate_limits KV bucket must exist: %v", err)
+	assert(t, kv != nil,
+		"rate_limits KV bucket must not be nil")
+
+	// Negative: bucket name is correct
+	status, err := kv.Status()
+	assert(t, err == nil, "status must succeed: %v", err)
+	assert(t, status.Bucket() == "rate_limits",
+		"bucket = %q, want rate_limits", status.Bucket())
+}
