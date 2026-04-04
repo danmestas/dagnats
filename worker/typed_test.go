@@ -61,6 +61,18 @@ func (m *mockTaskContext) Fail(err error) error {
 	return nil
 }
 
+func (m *mockTaskContext) FailPermanent(err error) error {
+	m.failErr = err
+	return nil
+}
+
+func (m *mockTaskContext) FailRetryAfter(
+	err error, _ time.Duration,
+) error {
+	m.failErr = err
+	return nil
+}
+
 type addInput struct {
 	A int `json:"a"`
 	B int `json:"b"`

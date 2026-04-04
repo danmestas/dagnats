@@ -50,6 +50,20 @@ func (f *fakeTaskContext) Fail(err error) error {
 	return nil
 }
 
+func (f *fakeTaskContext) FailPermanent(err error) error {
+	f.failed = true
+	f.failErr = err
+	return nil
+}
+
+func (f *fakeTaskContext) FailRetryAfter(
+	err error, _ time.Duration,
+) error {
+	f.failed = true
+	f.failErr = err
+	return nil
+}
+
 func (f *fakeTaskContext) Continue(
 	_ []byte,
 ) error {

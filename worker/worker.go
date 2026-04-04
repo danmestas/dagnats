@@ -24,6 +24,8 @@ type TaskContext interface {
 	RetryCount() int
 	Complete(output []byte) error
 	Fail(err error) error
+	FailPermanent(err error) error
+	FailRetryAfter(err error, after time.Duration) error
 	Continue(output []byte) error
 	PutStream(data []byte) error
 	Heartbeat() error
