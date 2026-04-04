@@ -6,7 +6,6 @@ package bridge
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,7 +49,7 @@ func TestConnectRegistersWorker(t *testing.T) {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, _ := http.DefaultClient.Do(req) //nolint:bodyclose // closed below
 		if resp != nil {
 			// Verify SSE headers before closing
 			ct := resp.Header.Get("Content-Type")
@@ -133,13 +132,4 @@ func TestConnectBadRequest(t *testing.T) {
 	}
 }
 
-// isContextErr checks if the error is a context-related error
-// (expected during disconnect tests).
-func isContextErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "context") ||
-		strings.Contains(s, io.EOF.Error())
-}
+
