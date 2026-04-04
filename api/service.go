@@ -19,6 +19,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/trigger"
+	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
 
@@ -1242,4 +1243,73 @@ func StartTyped[I any](
 		return "", fmt.Errorf("marshal input: %w", err)
 	}
 	return svc.StartRun(ctx, workflowName, data)
+}
+
+// ListWorkers returns all currently registered workers from the
+// directory. Returns an empty slice when no workers are registered
+// or when the workers KV bucket does not exist.
+func (s *Service) ListWorkers(
+	ctx context.Context,
+) ([]worker.WorkerRegistration, error) {
+	if ctx == nil {
+		panic("ListWorkers: ctx must not be nil")
+	}
+	if s.js == nil {
+		panic("ListWorkers: js must not be nil")
+	}
+	_, span := s.tel.Tracer.Start(ctx, "api.listWorkers")
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	workers, err := s.listWorkersInner()
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return workers, err
+}
+
+// listWorkersInner attempts to list workers from the directory.
+// Returns empty slice when the workers bucket does not exist —
+// this is a normal condition when no workers have registered yet.
+func (s *Service) listWorkersInner() (
+	[]worker.WorkerRegistration, error,
+) {
+	if s.js == nil {
+		panic("listWorkersInner: js must not be nil")
+	}
+	kv, err := s.js.KeyValue("workers")
+	if err != nil {
+		return []worker.WorkerRegistration{}, nil
+	}
+	if kv == nil {
+		panic("listWorkersInner: kv must not be nil when err is nil")
+	}
+	keys, err := kv.Keys()
+	if err == nats.ErrNoKeysFound {
+		return []worker.WorkerRegistration{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if keys == nil {
+		panic("listWorkersInner: keys must not be nil when err is nil")
+	}
+	workers := make([]worker.WorkerRegistration, 0, len(keys))
+	for _, key := range keys {
+		entry, err := kv.Get(key)
+		if err != nil {
+			continue
+		}
+		var reg worker.WorkerRegistration
+		if err := json.Unmarshal(entry.Value(), &reg); err != nil {
+			continue
+		}
+		workers = append(workers, reg)
+	}
+	return workers, nil
 }
