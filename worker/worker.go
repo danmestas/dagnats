@@ -363,7 +363,7 @@ func (w *Worker) handleTaskError(
 			observe.String("task_type", taskType),
 			observe.String("run_id", runID),
 		)
-		tc.Fail(nre.Err)
+		tc.FailPermanent(nre.Err)
 		msg.Ack()
 		return
 	}
