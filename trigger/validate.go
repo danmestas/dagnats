@@ -1,6 +1,9 @@
 package trigger
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Validate checks a TriggerDef for structural correctness.
 // Returns nil if valid, descriptive error otherwise.
@@ -41,6 +44,52 @@ func Validate(def TriggerDef) error {
 		if err := validateWebhookConfig(def.ID, def.Webhook); err != nil {
 			return err
 		}
+	}
+	if def.Debounce != nil {
+		if err := validateDebounceConfig(def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const maxDebouncePeriod = 7 * 24 * time.Hour // 7 days
+
+func validateDebounceConfig(def TriggerDef) error {
+	if def.ID == "" {
+		panic("validateDebounceConfig: def.ID must not be empty")
+	}
+	if def.Debounce == nil {
+		panic("validateDebounceConfig: Debounce must not be nil")
+	}
+	d := def.Debounce
+
+	if def.Cron != nil {
+		return fmt.Errorf(
+			"trigger %q: debounce is incompatible with cron",
+			def.ID,
+		)
+	}
+	if d.Period <= 0 {
+		return fmt.Errorf(
+			"trigger %q: debounce period must be > 0", def.ID,
+		)
+	}
+	if d.Period > maxDebouncePeriod {
+		return fmt.Errorf(
+			"trigger %q: debounce period exceeds 7 days", def.ID,
+		)
+	}
+	if d.Timeout != 0 && d.Timeout < d.Period {
+		return fmt.Errorf(
+			"trigger %q: debounce timeout must be >= period",
+			def.ID,
+		)
+	}
+	if d.Timeout > maxDebouncePeriod {
+		return fmt.Errorf(
+			"trigger %q: debounce timeout exceeds 7 days", def.ID,
+		)
 	}
 	return nil
 }
