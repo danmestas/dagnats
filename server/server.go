@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/bridge"
 	"github.com/danmestas/dagnats/engine"
 	"github.com/danmestas/dagnats/natsutil"
 	"github.com/danmestas/dagnats/observe"
@@ -31,6 +32,7 @@ type Server struct {
 	orch        *engine.Orchestrator
 	svc         *api.Service
 	trig        *trigger.TriggerService
+	bridge      *bridge.Bridge
 	httpSrv     *http.Server
 	tel         *observe.Telemetry
 	telStop     func()
@@ -145,6 +147,9 @@ func (s *Server) startComponents() error {
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
 
+	s.bridge = bridge.NewBridge(s.nc)
+	printStep(os.Stderr, "http bridge ready")
+
 	s.trig, err = trigger.NewTriggerService(s.nc)
 	if err != nil {
 		s.orch.Stop()
@@ -203,6 +208,9 @@ func (s *Server) startHTTP() <-chan error {
 	mux.HandleFunc("/ready", s.handleReady)
 	if s.trig != nil {
 		mux.Handle("/hooks/", s.trig.WebhookHandler())
+	}
+	if s.bridge != nil {
+		mux.Handle("/v1/", s.bridge.Handler())
 	}
 
 	s.httpSrv = &http.Server{
