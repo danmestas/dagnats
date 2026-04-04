@@ -39,6 +39,12 @@ func SetupStreams(js nats.JetStreamContext) error {
 			Retention: nats.LimitsPolicy,
 			Storage:   nats.FileStorage,
 		},
+		{
+			Name:      "SLEEP_TIMERS",
+			Subjects:  []string{"sleep.>", "scheduled.>"},
+			Retention: nats.LimitsPolicy,
+			Storage:   nats.FileStorage,
+		},
 	}
 	if len(streams) == 0 {
 		panic("SetupStreams: streams config must not be empty")

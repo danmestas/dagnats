@@ -138,8 +138,22 @@ func (s *Service) scheduleRunInner(
 		return "", fmt.Errorf("store scheduled run: %w", err)
 	}
 
-	// TODO: publish timer message to SLEEP_TIMERS stream
-	// (will be added in Task 5 when SLEEP_TIMERS stream exists)
+	// Publish timer message to SLEEP_TIMERS.
+	timerData, err := json.Marshal(sr)
+	if err != nil {
+		return "", fmt.Errorf("marshal timer: %w", err)
+	}
+	timerMsg := &nats.Msg{
+		Subject: "scheduled." + runID,
+		Data:    timerData,
+		Header: nats.Header{
+			"Nats-Msg-Id": {"scheduled." + runID},
+		},
+	}
+	_, err = s.js.PublishMsg(timerMsg)
+	if err != nil {
+		return "", fmt.Errorf("publish timer: %w", err)
+	}
 
 	return runID, nil
 }
