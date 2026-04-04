@@ -45,6 +45,8 @@ type Orchestrator struct {
 	runsFailed       observe.Counter
 	stepEnqueueCount observe.Counter
 	snapshotDuration observe.Histogram
+	failNonRetriable observe.Counter
+	failRetryAfter   observe.Counter
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -106,6 +108,12 @@ func NewOrchestrator(
 		),
 		snapshotDuration: tel.Metrics.Histogram(
 			"snapshot.save.duration_ms", nil,
+		),
+		failNonRetriable: tel.Metrics.Counter(
+			"step.failure.non_retriable", nil,
+		),
+		failRetryAfter: tel.Metrics.Counter(
+			"step.failure.retry_after", nil,
 		),
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
@@ -806,6 +814,12 @@ func (o *Orchestrator) handleStepFailed(
 	// Non-retriable: skip all retries immediately.
 	if failPayload.FailureType ==
 		protocol.FailureTypeNonRetriable {
+		o.failNonRetriable.Inc()
+		o.tel.Logger.Info(
+			"step failed permanently (non-retriable)",
+			observe.String("run_id", evt.RunID),
+			observe.String("step_id", evt.StepID),
+		)
 		state.Status = dag.StepStatusFailed
 		run.Steps[evt.StepID] = state
 		return o.handlePermanentFailure(
@@ -816,6 +830,7 @@ func (o *Orchestrator) handleStepFailed(
 	// Retry-after: schedule exact delay if retries remain.
 	if failPayload.FailureType ==
 		protocol.FailureTypeRetryAfter {
+		o.failRetryAfter.Inc()
 		return o.handleRetryAfter(
 			ctx, wfDef, &run, stepDef, &state,
 			evt.StepID, failPayload.RetryAfterMs, policy,
