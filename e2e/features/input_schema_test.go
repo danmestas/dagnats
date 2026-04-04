@@ -53,20 +53,12 @@ func TestInputSchemaValidation(t *testing.T) {
 			t.Fatalf("RegisterWorkflow: %v", err)
 		}
 
-		// Positive: invalid input → run fails immediately.
-		badRunID, err := svc.StartRun(
+		// Positive: invalid input → rejected at API boundary.
+		_, err = svc.StartRun(
 			ctx, wfName, []byte(`{"age": 25}`),
 		)
-		if err != nil {
-			t.Fatalf("StartRun (bad): %v", err)
-		}
-		badRun := harness.WaitForRunStatus(
-			t, svc, badRunID,
-			dag.RunStatusFailed, 10*time.Second,
-		)
-		if badRun.Status != dag.RunStatusFailed {
-			t.Fatalf("bad input: expected failed, got %s",
-				badRun.Status)
+		if err == nil {
+			t.Fatal("StartRun should reject invalid input")
 		}
 
 		// Negative: valid input → run completes.
