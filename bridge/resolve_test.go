@@ -304,3 +304,63 @@ func TestResolveBadAction(t *testing.T) {
 		t.Fatal("expected task to remain in ackMap")
 	}
 }
+
+func TestResolveCheckpoint(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "checkpoints"},
+		),
+	)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-chk", "step-chk",
+	)
+
+	// Resolve with checkpoint action
+	body := `{"action":"checkpoint","data":{"progress":50}}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify checkpoint was written to KV
+	js, _ := nc.JetStream()
+	kv, err := js.KeyValue("checkpoints")
+	if err != nil {
+		t.Fatalf("KeyValue failed: %v", err)
+	}
+	entry, err := kv.Get(taskID)
+	if err != nil {
+		t.Fatalf("Get checkpoint failed: %v", err)
+	}
+	if string(entry.Value()) != `{"progress":50}` {
+		t.Fatalf(
+			"unexpected checkpoint: %s", string(entry.Value()),
+		)
+	}
+
+	// Task should still be in ackMap (checkpoint extends deadline)
+	_, ok := b.ackMap.Load(taskID)
+	if !ok {
+		t.Fatal(
+			"expected task to remain in ackMap after checkpoint",
+		)
+	}
+}

@@ -150,3 +150,76 @@ func TestSleepTimerDedupDuplicateSchedule(t *testing.T) {
 		t.Fatal("expected no second event, but got one")
 	}
 }
+
+func TestSleepTimerFiresRateRetry(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+
+	st := NewSleepTimer(nc, js)
+	if err := st.Start(); err != nil {
+		t.Fatalf("SleepTimer.Start failed: %v", err)
+	}
+	defer st.Stop()
+
+	// Subscribe to task.test-task.> to catch the re-published task.
+	sub, err := js.SubscribeSync(
+		"task.test-task.>",
+		nats.DeliverAll(),
+	)
+	if err != nil {
+		t.Fatalf("SubscribeSync failed: %v", err)
+	}
+
+	// Schedule a rate_retry timer with 100ms delay.
+	err = st.Schedule(TimerMessage{
+		Action:     TimerActionRateRetry,
+		RunID:      "run-rate-1",
+		StepID:     "step-rate-1",
+		DurationMs: 100,
+		TaskType:   "test-task",
+		Input:      json.RawMessage(`{"key":"value"}`),
+	})
+	if err != nil {
+		t.Fatalf("Schedule failed: %v", err)
+	}
+
+	// Wait for the task message on task.test-task.run-rate-1.
+	msg, err := sub.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("did not receive task message: %v", err)
+	}
+
+	// Verify the message arrived on the correct subject.
+	if msg.Subject != "task.test-task.run-rate-1" {
+		t.Fatalf(
+			"expected subject task.test-task.run-rate-1, got %s",
+			msg.Subject,
+		)
+	}
+
+	// Verify the payload is correct.
+	var payload protocol.TaskPayload
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		t.Fatalf("unmarshal payload failed: %v", err)
+	}
+	if payload.RunID != "run-rate-1" {
+		t.Fatalf("expected RunID run-rate-1, got %s", payload.RunID)
+	}
+	if payload.StepID != "step-rate-1" {
+		t.Fatalf(
+			"expected StepID step-rate-1, got %s", payload.StepID,
+		)
+	}
+	if string(payload.Input) != `{"key":"value"}` {
+		t.Fatalf(
+			"expected Input {\"key\":\"value\"}, got %s",
+			string(payload.Input),
+		)
+	}
+}

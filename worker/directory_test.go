@@ -175,3 +175,83 @@ func TestWorkerDirectoryTTLExpiry(t *testing.T) {
 		t.Fatalf("len(workers) after 100ms = %d, want 1", len(workers))
 	}
 }
+
+func TestNewDirectoryPanicsOnNilJS(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on nil js")
+		}
+		// Verify panic message mentions js must not be nil
+		if msg, ok := r.(string); ok {
+			if msg != "NewDirectory: js must not be nil" {
+				t.Fatalf("unexpected panic message: %s", msg)
+			}
+		}
+	}()
+	NewDirectory(nil)
+}
+
+func TestRegisterPanicsOnEmptyWorkerID(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+
+	dir := NewDirectory(js)
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on empty WorkerID")
+		}
+		// Verify panic message mentions WorkerID must not be empty
+		if msg, ok := r.(string); ok {
+			if msg != "Directory.Register: WorkerID must not be empty" {
+				t.Fatalf("unexpected panic message: %s", msg)
+			}
+		}
+	}()
+
+	dir.Register(WorkerRegistration{
+		WorkerID:  "",
+		TaskTypes: []string{"test"},
+	})
+}
+
+func TestRegisterPanicsOnEmptyTaskTypes(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+
+	dir := NewDirectory(js)
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on empty TaskTypes")
+		}
+		// Verify panic message mentions TaskTypes must not be empty
+		if msg, ok := r.(string); ok {
+			if msg != "Directory.Register: TaskTypes must not be empty" {
+				t.Fatalf("unexpected panic message: %s", msg)
+			}
+		}
+	}()
+
+	dir.Register(WorkerRegistration{
+		WorkerID:  "worker-123",
+		TaskTypes: []string{},
+	})
+}
