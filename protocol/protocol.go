@@ -32,6 +32,8 @@ const (
 	EventStepMapStarted           EventType = "step.map.started"
 	EventStepMapCompleted         EventType = "step.map.completed"
 	EventStepMapInstanceCompleted EventType = "step.map.instance.completed"
+	EventStepSleepStarted         EventType = "step.sleep.started"
+	EventStepSleepCompleted       EventType = "step.sleep.completed"
 	EventWorkflowCompleted        EventType = "workflow.completed"
 	EventWorkflowFailed           EventType = "workflow.failed"
 	EventWorkflowSpawn            EventType = "workflow.spawn"

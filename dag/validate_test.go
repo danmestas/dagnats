@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateDuplicateStepIDs(t *testing.T) {
@@ -443,5 +444,18 @@ func TestStepRequiresTask(t *testing.T) {
 	invalidType := StepType(999)
 	if stepRequiresTask(invalidType) {
 		t.Errorf("stepRequiresTask(999) = true, want false")
+	}
+}
+
+func TestValidateSleepDuration365DayMax(t *testing.T) {
+	b := NewWorkflow("test")
+	b.Sleep("too-long", 366*24*time.Hour)
+	_, err := b.Build()
+	// Positive: error for >365 day sleep
+	if err == nil {
+		t.Fatal("expected error for >365 day sleep")
+	}
+	if !strings.Contains(err.Error(), "exceeds max") {
+		t.Fatalf("expected 'exceeds max' in error, got: %v", err)
 	}
 }

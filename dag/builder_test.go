@@ -355,3 +355,38 @@ func TestBuildPopulatesAuxSteps(t *testing.T) {
 		t.Fatal("main should not be in AuxSteps")
 	}
 }
+
+func TestBuilderSleep(t *testing.T) {
+	b := NewWorkflow("test")
+	taskA := b.Task("a", "task-a")
+	sleepRef := b.Sleep("wait-1h", 1*time.Hour).After(taskA)
+	taskB := b.Task("b", "task-b").After(sleepRef)
+	_ = taskB
+	wf, err := b.Build()
+	if err != nil {
+		t.Fatalf("build must succeed: %v", err)
+	}
+	// Positive: correct step count
+	if len(wf.Steps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(wf.Steps))
+	}
+
+	sleepStep := wf.Steps[1]
+	// Positive: correct ID
+	if sleepStep.ID != "wait-1h" {
+		t.Fatalf("expected wait-1h, got %s", sleepStep.ID)
+	}
+	// Positive: correct type
+	if sleepStep.Type != StepTypeSleep {
+		t.Fatalf("expected StepTypeSleep, got %v", sleepStep.Type)
+	}
+	// Positive: correct duration
+	if sleepStep.Duration != 1*time.Hour {
+		t.Fatalf("expected 1h duration, got %v", sleepStep.Duration)
+	}
+	// Positive: empty Task
+	if sleepStep.Task != "" {
+		t.Fatalf("sleep step must have empty Task, got %s",
+			sleepStep.Task)
+	}
+}
