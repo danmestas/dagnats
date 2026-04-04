@@ -531,3 +531,97 @@ func TestResolveWaitSignalTimeout(t *testing.T) {
 		t.Fatalf("expected 408, got %d", resp.StatusCode)
 	}
 }
+
+func TestResolveFailWithFailureType(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	b := NewBridge(nc, nil)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-bf", "step-bf",
+	)
+
+	body := `{
+		"action": "fail",
+		"error": "not found",
+		"failure_type": "non_retriable"
+	}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	js, _ := nc.JetStream()
+	sub, _ := js.SubscribeSync(
+		"history.run-bf", nats.DeliverAll(),
+	)
+	msg, err := sub.NextMsg(3 * time.Second)
+	if err != nil {
+		t.Fatalf("no history event: %v", err)
+	}
+
+	var evt protocol.Event
+	json.Unmarshal(msg.Data, &evt)
+	if evt.Type != protocol.EventStepFailed {
+		t.Fatalf("event type = %q, want step.failed", evt.Type)
+	}
+	var payload protocol.StepFailedPayload
+	json.Unmarshal(evt.Payload, &payload)
+	if payload.FailureType != protocol.FailureTypeNonRetriable {
+		t.Fatalf("FailureType = %q, want non_retriable",
+			payload.FailureType)
+	}
+}
+
+func TestResolveFailDefaultsToRetriable(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	b := NewBridge(nc, nil)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-bfd", "step-bfd",
+	)
+
+	body := `{"action":"fail","error":"transient"}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	js, _ := nc.JetStream()
+	sub, _ := js.SubscribeSync(
+		"history.run-bfd", nats.DeliverAll(),
+	)
+	msg, _ := sub.NextMsg(3 * time.Second)
+	var evt protocol.Event
+	json.Unmarshal(msg.Data, &evt)
+	var payload protocol.StepFailedPayload
+	json.Unmarshal(evt.Payload, &payload)
+	if payload.FailureType != protocol.FailureTypeRetriable {
+		t.Fatalf("FailureType = %q, want retriable",
+			payload.FailureType)
+	}
+}

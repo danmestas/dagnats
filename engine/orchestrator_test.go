@@ -3034,3 +3034,269 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 			string(waitState.Output))
 	}
 }
+
+func TestNonRetriableFailureSkipsRetries(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "test-nr", Version: "1",
+		DefaultRetry: &dag.RetryPolicy{
+			MaxAttempts:  5,
+			Strategy:     dag.RetryFixed,
+			InitialDelay: time.Second,
+		},
+		Steps: []dag.StepDef{
+			{
+				ID:   "a",
+				Task: "task-a",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	// Wait for task-a to be enqueued (proves start was processed).
+	taskSub, subErr := js.SubscribeSync(
+		"task.task-a.>",
+		nats.AckExplicit(),
+		nats.DeliverAll(),
+	)
+	if subErr != nil {
+		t.Fatalf("subscribe task-a: %v", subErr)
+	}
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted,
+		"run-nr-1",
+		defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startEvt.NATSSubject(),
+		Data:    startData,
+		Header: nats.Header{
+			"Nats-Msg-Id": {startEvt.NATSMsgID()},
+		},
+	})
+
+	// Wait for the task to appear — proves workflow was created.
+	taskMsg, taskErr := taskSub.NextMsg(3 * time.Second)
+	if taskErr != nil {
+		t.Fatalf("task-a not enqueued: %v", taskErr)
+	}
+	taskMsg.Ack()
+
+	failPayload, _ := json.Marshal(protocol.StepFailedPayload{
+		Error:       "permanent error",
+		FailureType: protocol.FailureTypeNonRetriable,
+	})
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed,
+		"run-nr-1", "a",
+		failPayload,
+	)
+	failData, _ := failEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: failEvt.NATSSubject(),
+		Data:    failData,
+		Header: nats.Header{
+			"Nats-Msg-Id": {failEvt.NATSMsgID()},
+		},
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	store := NewSnapshotStore(js)
+	run, loadErr := store.Load("run-nr-1")
+	if loadErr != nil {
+		t.Fatalf("load run after fail: %v", loadErr)
+	}
+
+	// Positive: non-retriable should fail the workflow
+	// immediately despite 5 max retries configured.
+	if run.Status != dag.RunStatusFailed {
+		t.Fatalf(
+			"run status = %s, want failed", run.Status,
+		)
+	}
+
+	// Negative: should have only 1 attempt (no retries).
+	stepState := run.Steps["a"]
+	if stepState.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", stepState.Attempts)
+	}
+}
+
+func TestRetryAfterSchedulesExactDelay(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "test-ra", Version: "1",
+		DefaultRetry: &dag.RetryPolicy{
+			MaxAttempts:  3,
+			Strategy:     dag.RetryFixed,
+			InitialDelay: time.Minute,
+		},
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "task-ra", Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startPayload, _ := json.Marshal(map[string]any{
+		"workflow_def": wfDef,
+	})
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-ra-1", startPayload,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	time.Sleep(500 * time.Millisecond)
+
+	failPayload, _ := json.Marshal(protocol.StepFailedPayload{
+		Error:        "rate limited",
+		FailureType:  protocol.FailureTypeRetryAfter,
+		RetryAfterMs: 200,
+	})
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed, "run-ra-1", "a", failPayload,
+	)
+	failData, _ := failEvt.Marshal()
+	js.Publish(failEvt.NATSSubject(), failData,
+		nats.MsgId(failEvt.NATSMsgID()))
+
+	// The task should be re-published after ~200ms via SLEEP_TIMERS.
+	sub, _ := js.PullSubscribe(
+		"task.task-ra.*", "",
+		nats.BindStream("TASK_QUEUES"),
+	)
+	// Skip initial enqueue
+	msgs, fetchErr := sub.Fetch(1, nats.MaxWait(2*time.Second))
+	if fetchErr != nil {
+		t.Fatalf("initial task not received: %v", fetchErr)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 initial task, got %d", len(msgs))
+	}
+
+	// Second message = retry after timer fired
+	retryMsgs, retryErr := sub.Fetch(1, nats.MaxWait(5*time.Second))
+	if retryErr != nil {
+		t.Fatalf("retry task not received within 5s: %v", retryErr)
+	}
+	if len(retryMsgs) != 1 {
+		t.Fatalf("expected 1 retry task, got %d", len(retryMsgs))
+	}
+
+	// Verify run is NOT failed (retries remain)
+	time.Sleep(100 * time.Millisecond)
+	store := NewSnapshotStore(js)
+	run, loadErr := store.Load("run-ra-1")
+	if loadErr != nil {
+		t.Fatalf("load run: %v", loadErr)
+	}
+	if run.Status == dag.RunStatusFailed {
+		t.Fatal("run should not be failed — retries remain")
+	}
+}
+
+func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "test-compat", Version: "1",
+		DefaultRetry: &dag.RetryPolicy{
+			MaxAttempts:  3,
+			Strategy:     dag.RetryFixed,
+			InitialDelay: time.Second,
+		},
+		Steps: []dag.StepDef{
+			{
+				ID:   "a",
+				Task: "task-a",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted,
+		"run-compat",
+		defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(
+		startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()),
+	)
+
+	time.Sleep(500 * time.Millisecond)
+
+	oldPayload := []byte(`"transient error"`)
+	failEvt := protocol.NewStepEvent(
+		protocol.EventStepFailed,
+		"run-compat", "a",
+		oldPayload,
+	)
+	failData, _ := failEvt.Marshal()
+	js.Publish(
+		failEvt.NATSSubject(), failData,
+		nats.MsgId(failEvt.NATSMsgID()),
+	)
+
+	time.Sleep(500 * time.Millisecond)
+	store := NewSnapshotStore(js)
+	run, loadErr := store.Load("run-compat")
+	if loadErr != nil {
+		t.Fatalf("load run: %v", loadErr)
+	}
+
+	// Positive: old format should be treated as retriable,
+	// not cause immediate permanent failure.
+	if run.Status == dag.RunStatusFailed {
+		t.Fatal(
+			"old format payload should be retriable, " +
+				"not permanent",
+		)
+	}
+
+	// Negative: should have recorded exactly 1 attempt.
+	stepState := run.Steps["a"]
+	if stepState.Attempts != 1 {
+		t.Fatalf(
+			"attempts = %d, want 1", stepState.Attempts,
+		)
+	}
+}

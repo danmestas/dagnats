@@ -31,6 +31,24 @@ type TaskResolution struct {
 	Data       json.RawMessage `json:"data,omitempty"`
 }
 
+// FailureType distinguishes how the engine handles a step failure.
+type FailureType string
+
+const (
+	FailureTypeRetriable    FailureType = "retriable"
+	FailureTypeNonRetriable FailureType = "non_retriable"
+	FailureTypeRetryAfter   FailureType = "retry_after"
+)
+
+// StepFailedPayload is the structured payload for EventStepFailed.
+// FailureType defaults to retriable when empty (backward compat).
+// RetryAfterMs is only used with FailureTypeRetryAfter.
+type StepFailedPayload struct {
+	Error        string      `json:"error"`
+	FailureType  FailureType `json:"failure_type,omitempty"`
+	RetryAfterMs int64       `json:"retry_after_ms,omitempty"`
+}
+
 // EventType identifies the kind of workflow lifecycle event.
 // Using string constants makes events self-describing over the wire.
 type EventType string

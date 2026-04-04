@@ -228,3 +228,70 @@ func TestTaskResolutionRoundTrip(t *testing.T) {
 		t.Fatal("pause action must include duration_ms field")
 	}
 }
+
+func TestStepFailedPayloadRoundTrip(t *testing.T) {
+	payload := StepFailedPayload{
+		Error:       "resource not found",
+		FailureType: FailureTypeNonRetriable,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var decoded StepFailedPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if decoded.FailureType != FailureTypeNonRetriable {
+		t.Fatalf("FailureType = %q, want %q",
+			decoded.FailureType, FailureTypeNonRetriable)
+	}
+	if decoded.Error != "resource not found" {
+		t.Fatalf("Error = %q, want %q",
+			decoded.Error, "resource not found")
+	}
+
+	var empty StepFailedPayload
+	if err := json.Unmarshal([]byte(`{}`), &empty); err != nil {
+		t.Fatalf("Unmarshal empty failed: %v", err)
+	}
+	if empty.FailureType != "" {
+		t.Fatalf("empty FailureType = %q, want empty",
+			empty.FailureType)
+	}
+}
+
+func TestStepFailedPayloadRetryAfter(t *testing.T) {
+	payload := StepFailedPayload{
+		Error:        "rate limited",
+		FailureType:  FailureTypeRetryAfter,
+		RetryAfterMs: 5000,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"retry_after_ms":5000`)) {
+		t.Fatalf("JSON should contain retry_after_ms: %s", data)
+	}
+
+	var decoded StepFailedPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if decoded.RetryAfterMs != 5000 {
+		t.Fatalf("RetryAfterMs = %d, want 5000",
+			decoded.RetryAfterMs)
+	}
+
+	retriable := StepFailedPayload{
+		Error:       "transient",
+		FailureType: FailureTypeRetriable,
+	}
+	data, _ = json.Marshal(retriable)
+	if bytes.Contains(data, []byte("retry_after_ms")) {
+		t.Fatalf(
+			"retriable payload should omit retry_after_ms: %s",
+			data)
+	}
+}

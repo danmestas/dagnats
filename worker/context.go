@@ -94,7 +94,7 @@ func (c *taskContext) Complete(output []byte) error {
 	)
 }
 
-// Fail publishes a step.failed event with error status.
+// Fail publishes a step.failed event with retriable failure type.
 func (c *taskContext) Fail(err error) error {
 	if c.msg == nil {
 		panic("Fail: msg already consumed or nil")
@@ -113,10 +113,93 @@ func (c *taskContext) Fail(err error) error {
 	defer span.End()
 	span.RecordError(err)
 	span.SetStatus(observe.StatusError, err.Error())
-	payload := []byte(fmt.Sprintf("%q", err.Error()))
-	return c.publishEvent(
-		protocol.EventStepFailed, payload,
+	return c.publishFailedPayload(protocol.StepFailedPayload{
+		Error:       err.Error(),
+		FailureType: protocol.FailureTypeRetriable,
+	})
+}
+
+// FailPermanent publishes a step.failed event with non-retriable
+// failure type. The engine skips all retries for this step.
+func (c *taskContext) FailPermanent(err error) error {
+	if c.msg == nil {
+		panic("FailPermanent: msg already consumed or nil")
+	}
+	if err == nil {
+		panic("FailPermanent: err must not be nil")
+	}
+	_, span := c.tel.Tracer.Start(c.ctx,
+		"worker.failPermanent",
+		observe.WithAttributes(
+			observe.StringAttr("run_id", c.runID),
+			observe.StringAttr("step_id", c.stepID),
+			observe.StringAttr("error", err.Error()),
+			observe.StringAttr("failure_type", "non_retriable"),
+		),
 	)
+	defer span.End()
+	span.RecordError(err)
+	span.SetStatus(observe.StatusError, err.Error())
+	return c.publishFailedPayload(protocol.StepFailedPayload{
+		Error:       err.Error(),
+		FailureType: protocol.FailureTypeNonRetriable,
+	})
+}
+
+// FailRetryAfter publishes a step.failed event with an explicit
+// retry delay. The engine retries after exactly the specified
+// duration, ignoring the step's backoff policy for this attempt.
+func (c *taskContext) FailRetryAfter(
+	err error, after time.Duration,
+) error {
+	if c.msg == nil {
+		panic("FailRetryAfter: msg already consumed or nil")
+	}
+	if err == nil {
+		panic("FailRetryAfter: err must not be nil")
+	}
+	if after <= 0 {
+		panic("FailRetryAfter: after must be positive")
+	}
+	_, span := c.tel.Tracer.Start(c.ctx,
+		"worker.failRetryAfter",
+		observe.WithAttributes(
+			observe.StringAttr("run_id", c.runID),
+			observe.StringAttr("step_id", c.stepID),
+			observe.StringAttr("error", err.Error()),
+			observe.StringAttr("failure_type", "retry_after"),
+		),
+	)
+	defer span.End()
+	span.RecordError(err)
+	span.SetStatus(observe.StatusError, err.Error())
+	afterMs := after.Milliseconds()
+	if afterMs > 3_600_000 {
+		afterMs = 3_600_000
+	}
+	if afterMs < 100 {
+		afterMs = 100
+	}
+	return c.publishFailedPayload(protocol.StepFailedPayload{
+		Error:        err.Error(),
+		FailureType:  protocol.FailureTypeRetryAfter,
+		RetryAfterMs: afterMs,
+	})
+}
+
+// publishFailedPayload marshals a StepFailedPayload and publishes
+// it as a step.failed event.
+func (c *taskContext) publishFailedPayload(
+	payload protocol.StepFailedPayload,
+) error {
+	if c.runID == "" {
+		panic("publishFailedPayload: runID must not be empty")
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal StepFailedPayload: %w", err)
+	}
+	return c.publishEvent(protocol.EventStepFailed, data)
 }
 
 // Continue publishes a step.continue event. The MsgId includes a

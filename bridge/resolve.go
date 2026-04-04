@@ -20,15 +20,17 @@ var errResponseAlreadyWritten = errors.New(
 
 // resolveRequest is the JSON body for POST /v1/tasks/{id}/resolve.
 type resolveRequest struct {
-	Action     string          `json:"action"`
-	Output     json.RawMessage `json:"output,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	Name       string          `json:"name,omitempty"`
-	DurationMs int64           `json:"duration_ms,omitempty"`
-	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
-	Data       json.RawMessage `json:"data,omitempty"`
-	RunID      string          `json:"run_id,omitempty"`
-	TimeoutMs  int64           `json:"timeout_ms,omitempty"`
+	Action       string          `json:"action"`
+	Output       json.RawMessage `json:"output,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	FailureType  string          `json:"failure_type,omitempty"`
+	RetryAfterMs int64           `json:"retry_after_ms,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	DurationMs   int64           `json:"duration_ms,omitempty"`
+	Checkpoint   json.RawMessage `json:"checkpoint,omitempty"`
+	Data         json.RawMessage `json:"data,omitempty"`
+	RunID        string          `json:"run_id,omitempty"`
+	TimeoutMs    int64           `json:"timeout_ms,omitempty"`
 }
 
 // pauseDurationMaxMs caps the maximum pause at 1 hour.
@@ -188,9 +190,21 @@ func (b *Bridge) resolveFail(
 		panic("resolveFail: msg must not be nil")
 	}
 	runID, stepID := splitTaskID(taskID)
-	errPayload := []byte(fmt.Sprintf("%q", req.Error))
+	failureType := protocol.FailureType(req.FailureType)
+	if failureType == "" {
+		failureType = protocol.FailureTypeRetriable
+	}
+	payload := protocol.StepFailedPayload{
+		Error:        req.Error,
+		FailureType:  failureType,
+		RetryAfterMs: req.RetryAfterMs,
+	}
+	payloadData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal fail payload: %w", err)
+	}
 	evt := protocol.NewStepEvent(
-		protocol.EventStepFailed, runID, stepID, errPayload,
+		protocol.EventStepFailed, runID, stepID, payloadData,
 	)
 	if err := b.publishEvent(evt); err != nil {
 		return fmt.Errorf("publish fail event: %w", err)

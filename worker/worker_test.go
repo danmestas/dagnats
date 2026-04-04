@@ -528,3 +528,55 @@ func TestWorkerDeregistersOnStop(t *testing.T) {
 		t.Fatalf("worker count after Stop = %d, want 0", len(workers))
 	}
 }
+
+func TestNonRetryableErrorPublishesNonRetriablePayload(t *testing.T) {
+	// When handler returns NonRetryableError, the step.failed event
+	// payload must contain failure_type: "non_retriable" so the
+	// orchestrator skips retries.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w.Handle("fail-perm", func(ctx TaskContext) error {
+		return NewNonRetryableError(fmt.Errorf("permanent"))
+	})
+	w.Start()
+	defer w.Stop()
+
+	payload := protocol.TaskPayload{
+		TaskID: "run-np.step-np",
+		RunID:  "run-np",
+		StepID: "step-np",
+		Input:  []byte(`{}`),
+	}
+	data, _ := json.Marshal(payload)
+	js.Publish("task.fail-perm.run-np", data,
+		nats.MsgId("run-np.step-np.queued"))
+
+	sub, _ := js.PullSubscribe(
+		"history.run-np", "",
+		nats.BindStream("WORKFLOW_HISTORY"),
+	)
+	msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	var evt protocol.Event
+	json.Unmarshal(msgs[0].Data, &evt)
+	if evt.Type != protocol.EventStepFailed {
+		t.Fatalf("event type = %q, want step.failed", evt.Type)
+	}
+
+	var fp protocol.StepFailedPayload
+	if err := json.Unmarshal(evt.Payload, &fp); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if fp.FailureType != protocol.FailureTypeNonRetriable {
+		t.Fatalf("FailureType = %q, want non_retriable",
+			fp.FailureType)
+	}
+}
