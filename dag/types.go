@@ -56,10 +56,13 @@ const (
 	RunStatusCompleted
 	RunStatusFailed
 	RunStatusCancelled
+	RunStatusCompensated
+	RunStatusCompensateFailed
 )
 
 var runStatusStrings = [...]string{
 	"pending", "running", "completed", "failed", "cancelled",
+	"compensated", "compensate_failed",
 }
 
 func (r RunStatus) String() string {
@@ -99,10 +102,12 @@ const (
 	StepStatusFailed
 	StepStatusSkipped
 	StepStatusCancelled
+	StepStatusRecovered
 )
 
 var stepStatusStrings = [...]string{
-	"pending", "queued", "running", "completed", "failed", "skipped", "cancelled",
+	"pending", "queued", "running", "completed", "failed",
+	"skipped", "cancelled", "recovered",
 }
 
 func (s StepStatus) String() string {

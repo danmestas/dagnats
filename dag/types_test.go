@@ -419,3 +419,59 @@ func TestWorkflowRunDeadlineJSON(t *testing.T) {
 		t.Fatalf("nil Deadline should be omitted")
 	}
 }
+
+func TestStepStatusRecoveredRoundTrip(t *testing.T) {
+	// Positive: Recovered serializes to "recovered"
+	data, err := json.Marshal(StepStatusRecovered)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(data) != `"recovered"` {
+		t.Fatalf("got %s, want \"recovered\"", data)
+	}
+
+	// Positive: "recovered" deserializes back
+	var s StepStatus
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if s != StepStatusRecovered {
+		t.Fatalf("got %v, want StepStatusRecovered", s)
+	}
+}
+
+func TestRunStatusCompensatedRoundTrip(t *testing.T) {
+	data, err := json.Marshal(RunStatusCompensated)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// Positive: serializes to "compensated"
+	if string(data) != `"compensated"` {
+		t.Fatalf("got %s, want \"compensated\"", data)
+	}
+	var r RunStatus
+	if err := json.Unmarshal(data, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	// Positive: round-trips correctly
+	if r != RunStatusCompensated {
+		t.Fatalf("got %v, want RunStatusCompensated", r)
+	}
+}
+
+func TestRunStatusCompensateFailedRoundTrip(t *testing.T) {
+	data, err := json.Marshal(RunStatusCompensateFailed)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(data) != `"compensate_failed"` {
+		t.Fatalf("got %s, want \"compensate_failed\"", data)
+	}
+	var r RunStatus
+	if err := json.Unmarshal(data, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r != RunStatusCompensateFailed {
+		t.Fatalf("got %v, want RunStatusCompensateFailed", r)
+	}
+}
