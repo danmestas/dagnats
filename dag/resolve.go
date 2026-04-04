@@ -102,3 +102,50 @@ func allDepsCompleted(deps []string, completed map[string]bool) bool {
 	}
 	return true
 }
+
+// ResolveCompensateChain returns compensate steps for completed steps
+// in reverse topological order. Each step (except the first) gets a
+// DependsOn pointing to the previous — this lets the engine enforce
+// sequential execution using existing resolution logic.
+func ResolveCompensateChain(
+	def WorkflowDef,
+	completed map[string]bool,
+	failedStepID string,
+) []StepDef {
+	// Collect completed steps with Compensate in definition order
+	// (def.Steps is topo-sorted from Build).
+	byID := make(map[string]StepDef, len(def.Steps))
+	for _, s := range def.Steps {
+		byID[s.ID] = s
+	}
+	var ordered []StepDef
+	for _, step := range def.Steps {
+		if step.Compensate == "" {
+			continue
+		}
+		if !completed[step.ID] {
+			continue
+		}
+		comp := byID[step.Compensate]
+		ordered = append(ordered, comp)
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+
+	// Reverse for compensation order (last completed first)
+	for i, j := 0, len(ordered)-1; i < j; i, j = i+1, j-1 {
+		ordered[i], ordered[j] = ordered[j], ordered[i]
+	}
+
+	// Wire DependsOn chain for sequential execution
+	chain := make([]StepDef, len(ordered))
+	for i, step := range ordered {
+		chain[i] = step
+		chain[i].DependsOn = nil
+		if i > 0 {
+			chain[i].DependsOn = []string{chain[i-1].ID}
+		}
+	}
+	return chain
+}

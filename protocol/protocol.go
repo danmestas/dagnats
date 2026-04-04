@@ -35,7 +35,11 @@ const (
 	EventWorkflowChildCompleted EventType = "workflow.child.completed"
 	EventWorkflowChildFailed    EventType = "workflow.child.failed"
 	EventWorkflowCancelled      EventType = "workflow.cancelled"
-	EventStepCancelled          EventType = "step.cancelled"
+	EventStepCancelled           EventType = "step.cancelled"
+	EventCompensateStarted       EventType = "compensate.started"
+	EventCompensateStepCompleted EventType = "compensate.step.completed"
+	EventCompensateFailed        EventType = "compensate.failed"
+	EventCompensateCompleted     EventType = "compensate.completed"
 )
 
 // Event is the core communication primitive published to the history stream.
