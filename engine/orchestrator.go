@@ -1485,6 +1485,7 @@ func (o *Orchestrator) doPublishTask(
 	)
 	defer span.End()
 	payload := protocol.TaskPayload{
+		TaskID:  runID + "." + step.ID,
 		RunID:   runID,
 		StepID:  step.ID,
 		Attempt: attempt,
@@ -1529,6 +1530,7 @@ func (o *Orchestrator) publishIterationTask(
 	)
 	defer span.End()
 	payload := protocol.TaskPayload{
+		TaskID:    runID + "." + step.ID,
 		RunID:     runID,
 		StepID:    step.ID,
 		Iteration: iteration,

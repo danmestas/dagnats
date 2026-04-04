@@ -333,7 +333,10 @@ func (w *Worker) handleMessage(
 		)
 		return
 	}
-	msg.Ack()
+	// Pause() already NAK'd the message — don't double-ack.
+	if !tc.paused {
+		msg.Ack()
+	}
 }
 
 // handleTaskError processes a handler error by either failing

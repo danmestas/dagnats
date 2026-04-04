@@ -225,6 +225,7 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	}
 	subject := fmt.Sprintf("task.%s.%s", tm.TaskType, tm.RunID)
 	payload := protocol.TaskPayload{
+		TaskID: tm.RunID + "." + tm.StepID,
 		RunID:  tm.RunID,
 		StepID: tm.StepID,
 		Input:  tm.Input,

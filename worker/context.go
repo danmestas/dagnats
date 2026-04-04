@@ -25,6 +25,7 @@ type taskContext struct {
 	msg          *nats.Msg
 	checkpointKV nats.KeyValue
 	signalKV     nats.KeyValue
+	paused       bool // set by Pause() to prevent double-ack in handleMessage
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -321,6 +322,7 @@ func (c *taskContext) Pause(name string, duration time.Duration) error {
 	if err := c.Checkpoint(data); err != nil {
 		return fmt.Errorf("save pause checkpoint: %w", err)
 	}
+	c.paused = true
 	return c.msg.NakWithDelay(duration)
 }
 
