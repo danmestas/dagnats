@@ -388,12 +388,12 @@ func TestValidateEmptyTaskForTaskRequiringTypes(t *testing.T) {
 			steps := []StepDef{
 				{ID: "input", Task: "t", Type: StepTypeNormal},
 				{
-					ID:         "test",
-					Task:       "",
-					Type:       tc.stepType,
-					Loop:       tc.loop,
-					Map:        tc.mapCfg,
-					DependsOn:  tc.deps,
+					ID:        "test",
+					Task:      "",
+					Type:      tc.stepType,
+					Loop:      tc.loop,
+					Map:       tc.mapCfg,
+					DependsOn: tc.deps,
 				},
 			}
 			if tc.stepType == StepTypeMap {

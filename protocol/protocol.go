@@ -10,7 +10,7 @@ import (
 // Iteration is the agent-loop iteration index (0 for the first execution); workers
 // include it in Continue event MsgIds to prevent JetStream deduplication across cycles.
 type TaskPayload struct {
-	TaskID    string          `json:"task_id"`    // {runID}.{stepID}
+	TaskID    string          `json:"task_id"` // {runID}.{stepID}
 	RunID     string          `json:"run_id"`
 	StepID    string          `json:"step_id"`
 	Iteration int             `json:"iteration,omitempty"`

@@ -145,8 +145,8 @@ func TestValidateWaitForEventMissingFields(t *testing.T) {
 		ID:   "wait",
 		Type: StepTypeWaitForEvent,
 		WaitForEvent: &WaitForEventOpts{
-			Event: "",
-			Match: Match{Left: "x", Op: MatchOpEq, Right: "input.y"},
+			Event:   "",
+			Match:   Match{Left: "x", Op: MatchOpEq, Right: "input.y"},
 			Timeout: time.Second,
 		},
 	}

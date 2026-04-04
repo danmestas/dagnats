@@ -21,9 +21,9 @@ type Match struct {
 // ResolvedMatch is the runtime type stored in KV waiter entries.
 // Right is resolved to a concrete value when the waiter is created.
 type ResolvedMatch struct {
-	Left  string `json:"left"`
+	Left  string  `json:"left"`
 	Op    MatchOp `json:"op"`
-	Right any    `json:"right"`
+	Right any     `json:"right"`
 }
 
 // Evaluate checks if the match condition holds against event JSON data.
