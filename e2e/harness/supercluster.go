@@ -94,7 +94,7 @@ func (s *SuperclusterTopology) RestartNode(name string) error {
 		return fmt.Errorf("RestartNode %s: server: %w", name, err)
 	}
 	srv.Start()
-	if !srv.ReadyForConnections(10 * time.Second) {
+	if !srv.ReadyForConnections(20 * time.Second) {
 		srv.Shutdown()
 		return fmt.Errorf("RestartNode %s: not ready", name)
 	}
@@ -127,7 +127,7 @@ func (s *SuperclusterTopology) ReconnectLeaf() error {
 		return fmt.Errorf("ReconnectLeaf: server: %w", err)
 	}
 	srv.Start()
-	if !srv.ReadyForConnections(10 * time.Second) {
+	if !srv.ReadyForConnections(20 * time.Second) {
 		srv.Shutdown()
 		return fmt.Errorf("ReconnectLeaf: not ready")
 	}
@@ -153,12 +153,12 @@ func (s *SuperclusterTopology) startAll(t *testing.T) {
 	s.startClusterB(t, layout)
 	s.startLeaf(t, layout)
 
-	waitForCluster(t, s.clusterA[:], 10*time.Second)
-	waitForCluster(t, s.clusterB[:], 10*time.Second)
-	waitForGateways(t, s.clusterB[0], 1, 10*time.Second)
-	waitForLeafNode(t, s.clusterA[0], 10*time.Second)
+	waitForCluster(t, s.clusterA[:], 20*time.Second)
+	waitForCluster(t, s.clusterB[:], 20*time.Second)
+	waitForGateways(t, s.clusterB[0], 1, 20*time.Second)
+	waitForLeafNode(t, s.clusterA[0], 20*time.Second)
 	allServers := append(s.clusterA[:], s.clusterB[:]...)
-	waitForJetStreamLeader(t, allServers, 10*time.Second)
+	waitForJetStreamLeader(t, allServers, 20*time.Second)
 
 	s.started = true
 	t.Cleanup(func() { s.shutdownAll() })
@@ -386,6 +386,7 @@ func writeConfFile(
 }
 
 // startServerFromConf parses a config file and starts the server.
+// Retries up to 3 times on startup failure (port races on CI).
 func startServerFromConf(
 	t *testing.T, confPath string,
 ) *natsserver.Server {
@@ -394,15 +395,30 @@ func startServerFromConf(
 	if err != nil {
 		t.Fatalf("config %s: %v", confPath, err)
 	}
-	srv, err := natsserver.NewServer(opts)
-	if err != nil {
-		t.Fatalf("server %s: %v", opts.ServerName, err)
+	const maxRetries = 3
+	const readyTimeout = 20 * time.Second
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		srv, srvErr := natsserver.NewServer(opts)
+		if srvErr != nil {
+			if attempt == maxRetries {
+				t.Fatalf("server %s: %v", opts.ServerName, srvErr)
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		srv.Start()
+		if srv.ReadyForConnections(readyTimeout) {
+			return srv
+		}
+		srv.Shutdown()
+		if attempt == maxRetries {
+			t.Fatalf("server %s: not ready after %d attempts",
+				opts.ServerName, maxRetries)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	srv.Start()
-	if !srv.ReadyForConnections(10 * time.Second) {
-		t.Fatalf("server %s: not ready", opts.ServerName)
-	}
-	return srv
+	t.Fatal("startServerFromConf: unreachable")
+	return nil
 }
 
 // allocatePorts finds count available TCP ports by binding to :0.
