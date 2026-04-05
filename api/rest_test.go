@@ -779,3 +779,63 @@ func TestRESTCancelScheduledRun(t *testing.T) {
 		t.Fatalf("Status = %q, want cancelled", sr.Status)
 	}
 }
+
+func TestRESTBulkCancel(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	wb := dag.NewWorkflow("rest-bulk-wf")
+	wb.Task("s", "echo")
+	def, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), def)
+	svc.StartRun(context.Background(), "rest-bulk-wf", nil)
+	svc.StartRun(context.Background(), "rest-bulk-wf", nil)
+	time.Sleep(200 * time.Millisecond)
+
+	handler := NewRESTHandler(svc)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body := `{"workflow_id":"rest-bulk-wf"}`
+	resp, err := http.Post(
+		ts.URL+"/runs/cancel",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST /runs/cancel: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var result BulkCancelResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+	if len(result.Cancelled) != 2 {
+		t.Fatalf("cancelled = %d, want 2",
+			len(result.Cancelled))
+	}
+
+	// Negative: missing workflow_id returns 400
+	resp2, err2 := http.Post(
+		ts.URL+"/runs/cancel",
+		"application/json",
+		strings.NewReader(`{}`),
+	)
+	if err2 != nil {
+		t.Fatalf("POST /runs/cancel: %v", err2)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp2.StatusCode)
+	}
+}

@@ -37,6 +37,7 @@ func NewRESTHandler(svc *Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/workflows", svc.routeWorkflows)
 	mux.HandleFunc("/runs", svc.routeRuns)
+	mux.HandleFunc("/runs/cancel", svc.routeBulkCancel)
 	mux.HandleFunc("/runs/", svc.routeRunByID)
 	mux.HandleFunc("/health/telemetry", svc.routeHealth)
 	return mux
@@ -464,6 +465,46 @@ func approvalErrorCode(err error) int {
 		return http.StatusConflict
 	default:
 		return http.StatusBadRequest
+	}
+}
+
+// routeBulkCancel dispatches POST /runs/cancel.
+func (s *Service) routeBulkCancel(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	handleBulkCancel(s, w, r)
+}
+
+// handleBulkCancel parses a BulkCancelRequest and cancels
+// matching runs.
+func handleBulkCancel(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleBulkCancel: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleBulkCancel: r must not be nil")
+	}
+	var req BulkCancelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(),
+			http.StatusBadRequest)
+		return
+	}
+	resp, err := svc.BulkCancelRuns(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(resp)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
 	}
 }
 
