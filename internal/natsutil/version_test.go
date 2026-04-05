@@ -33,6 +33,16 @@ func TestParseVersion(t *testing.T) {
 		t.Fatalf("got %d.%d.%d, want 2.12.6", major, minor, patch)
 	}
 
+	// Positive: suffixed version (e.g. "2.12.6-beta") parses.
+	major, minor, patch, err = parseVersion("2.12.6-beta")
+	if err != nil {
+		t.Fatalf("suffixed parseVersion failed: %v", err)
+	}
+	if major != 2 || minor != 12 || patch != 6 {
+		t.Fatalf("suffixed: got %d.%d.%d, want 2.12.6",
+			major, minor, patch)
+	}
+
 	// Negative: malformed version returns error.
 	_, _, _, err = parseVersion("bad")
 	if err == nil {

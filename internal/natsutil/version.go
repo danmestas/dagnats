@@ -55,6 +55,8 @@ func RequireServerVersion(nc *nats.Conn, minimum string) error {
 }
 
 // parseVersion splits a "major.minor.patch" string into integers.
+// Tolerates suffixes like "2.12.6-beta" by stripping everything
+// after a hyphen in the patch component.
 func parseVersion(v string) (int, int, int, error) {
 	parts := strings.SplitN(v, ".", 3)
 	if len(parts) != 3 {
@@ -68,7 +70,9 @@ func parseVersion(v string) (int, int, int, error) {
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	patch, err := strconv.Atoi(parts[2])
+	// Strip suffix: "6-beta" → "6"
+	patchStr := strings.SplitN(parts[2], "-", 2)[0]
+	patch, err := strconv.Atoi(patchStr)
 	if err != nil {
 		return 0, 0, 0, err
 	}

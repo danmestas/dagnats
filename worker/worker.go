@@ -64,17 +64,16 @@ type HandlerFunc func(ctx TaskContext) error
 // subscription; messages are ack'd after the handler returns so
 // failures are retried by JetStream's MaxDeliver policy.
 type Worker struct {
-	nc              *nats.Conn
-	js              jetstream.JetStream
-	tel             *observe.Telemetry
-	handlers        map[string]HandlerFunc
-	consumeContexts []jetstream.ConsumeContext
-	checkpointKV    jetstream.KeyValue
-	signalKV        jetstream.KeyValue
-	groups          []string
-	partitions      int
-	singletons      map[string]bool
-	elasticGroups   []pcgroups.ConsumerGroupConsumeContext
+	nc           *nats.Conn
+	js           jetstream.JetStream
+	tel          *observe.Telemetry
+	handlers     map[string]HandlerFunc
+	stoppers     []interface{ Stop() } // all consumer lifecycles
+	checkpointKV jetstream.KeyValue
+	signalKV     jetstream.KeyValue
+	groups       []string
+	partitions   int
+	singletons   map[string]bool
 
 	// Directory registration (observability only)
 	dir           *Directory
@@ -185,7 +184,8 @@ func (w *Worker) Handle(
 
 // HandleSingleton registers a handler that runs as a single-
 // partition elastic consumer group. Only one consumer processes
-// messages at a time across all worker instances.
+// messages at a time across all worker instances. Implicitly
+// enables partitioned mode if not already configured.
 func (w *Worker) HandleSingleton(
 	taskType string, handler HandlerFunc,
 ) {
@@ -200,6 +200,11 @@ func (w *Worker) HandleSingleton(
 		w.singletons = make(map[string]bool)
 	}
 	w.singletons[taskType] = true
+	// Singleton requires pcgroups — enable partitioned mode
+	// if the caller didn't explicitly set WithPartitions.
+	if w.partitions == 0 {
+		w.partitions = 1
+	}
 }
 
 // newDirectoryOptional creates a Directory if the workers KV
@@ -310,8 +315,8 @@ func (w *Worker) subscribeTask(
 					tt, gName, gFilter,
 					partCount, h,
 				)
-				w.elasticGroups = append(
-					w.elasticGroups, cc,
+				w.stoppers = append(
+					w.stoppers, cc,
 				)
 			}
 		} else {
@@ -319,16 +324,16 @@ func (w *Worker) subscribeTask(
 				tt, groupName, filter,
 				partCount, h,
 			)
-			w.elasticGroups = append(
-				w.elasticGroups, cc,
+			w.stoppers = append(
+				w.stoppers, cc,
 			)
 		}
 	} else {
 		if len(w.groups) == 0 {
 			subject := "task." + taskType + ".>"
 			cc := w.createConsumer(tt, subject, h)
-			w.consumeContexts = append(
-				w.consumeContexts, cc,
+			w.stoppers = append(
+				w.stoppers, cc,
 			)
 			// Sticky subscription on STICKY_TASKS stream
 			// (separate from TASK_QUEUES to avoid work queue
@@ -337,8 +342,8 @@ func (w *Worker) subscribeTask(
 				tt, h,
 			)
 			if stickyCC != nil {
-				w.consumeContexts = append(
-					w.consumeContexts, stickyCC,
+				w.stoppers = append(
+					w.stoppers, stickyCC,
 				)
 			}
 		} else {
@@ -348,8 +353,8 @@ func (w *Worker) subscribeTask(
 				cc := w.createConsumer(
 					tt+"."+group, subject, h,
 				)
-				w.consumeContexts = append(
-					w.consumeContexts, cc,
+				w.stoppers = append(
+					w.stoppers, cc,
 				)
 			}
 		}
@@ -548,11 +553,8 @@ func (w *Worker) Stop() {
 	if w.dir != nil {
 		_ = w.dir.Deregister(w.workerID)
 	}
-	for _, cc := range w.elasticGroups {
-		cc.Stop()
-	}
-	for _, cc := range w.consumeContexts {
-		cc.Stop()
+	for _, s := range w.stoppers {
+		s.Stop()
 	}
 }
 
