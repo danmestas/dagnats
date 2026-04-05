@@ -25,7 +25,7 @@ func TestWorkflowActorHandlesStarted(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-1", nil, nil)
+	wa := NewWorkflowActor("run-1", nil, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -70,7 +70,7 @@ func TestWorkflowActorHandlesStepCompleted(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-2", nil, nil)
+	wa := NewWorkflowActor("run-2", nil, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -120,7 +120,7 @@ func TestWorkflowActorHandlesStepFailed(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-fail", nil, nil)
+	wa := NewWorkflowActor("run-fail", nil, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -176,7 +176,7 @@ func TestWorkflowActorHandlesStepContinue(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-loop", nil, nil)
+	wa := NewWorkflowActor("run-loop", nil, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -230,7 +230,7 @@ func TestWorkflowActorStepCompletedAdvancesDAG(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-chain", nil, nil)
+	wa := NewWorkflowActor("run-chain", nil, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -284,7 +284,7 @@ func TestWorkflowActorStepCompletedAdvancesDAG(t *testing.T) {
 func TestWorkflowActorFailedBeforeStart(t *testing.T) {
 	// Methodology: sending step.failed before workflow.started
 	// must return error (not panic).
-	wa := NewWorkflowActor("run-nostart", nil, nil)
+	wa := NewWorkflowActor("run-nostart", nil, nil, nil)
 
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "run-nostart", "s1",
@@ -306,7 +306,7 @@ func TestWorkflowActorFailedBeforeStart(t *testing.T) {
 func TestWorkflowActorContinueBeforeStart(t *testing.T) {
 	// Methodology: sending step.continue before workflow.started
 	// must return error.
-	wa := NewWorkflowActor("run-nostart2", nil, nil)
+	wa := NewWorkflowActor("run-nostart2", nil, nil, nil)
 
 	contEvt := protocol.NewStepEvent(
 		protocol.EventStepContinue, "run-nostart2", "s1", nil)
@@ -327,7 +327,7 @@ func TestWorkflowActorContinueBeforeStart(t *testing.T) {
 func TestWorkflowActorCompletedBeforeStart(t *testing.T) {
 	// Methodology: sending step.completed before workflow.started
 	// must return error.
-	wa := NewWorkflowActor("run-nostart3", nil, nil)
+	wa := NewWorkflowActor("run-nostart3", nil, nil, nil)
 
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "run-nostart3", "s1",
@@ -357,7 +357,7 @@ func TestWorkflowActorUnhandledEventType(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("run-unk", nil, nil)
+	wa := NewWorkflowActor("run-unk", nil, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -409,7 +409,7 @@ func TestWorkflowActorWithSnapshotStore(t *testing.T) {
 	}
 	defData, _ := json.Marshal(wfDef)
 
-	wa := NewWorkflowActor("persist-run", store, nil)
+	wa := NewWorkflowActor("persist-run", store, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -482,7 +482,7 @@ func TestWorkflowActorHandlesEnvelopePayload(t *testing.T) {
 		"input":        map[string]string{"key": "val"},
 	})
 
-	wa := NewWorkflowActor("run-env", nil, nil)
+	wa := NewWorkflowActor("run-env", nil, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 
@@ -516,7 +516,7 @@ func TestWorkflowActorHandlesEnvelopePayload(t *testing.T) {
 }
 
 func TestWorkflowActorReceiveRejectsNonEvent(t *testing.T) {
-	wa := NewWorkflowActor("run-bad", nil, nil)
+	wa := NewWorkflowActor("run-bad", nil, nil, nil)
 	rt := actor.NewRuntime()
 	defer rt.StopAll()
 

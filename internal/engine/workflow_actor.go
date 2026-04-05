@@ -10,6 +10,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // WorkflowActor manages one workflow run as a supervised actor.
@@ -21,6 +22,7 @@ type WorkflowActor struct {
 	run   *dag.WorkflowRun
 	store *SnapshotStore        // nil in unit tests
 	js    nats.JetStreamContext // nil in pure unit tests
+	jsNew jetstream.JetStream   // nil in pure unit tests
 	mu    sync.RWMutex          // protects read access to run state
 }
 
@@ -30,6 +32,7 @@ func NewWorkflowActor(
 	runID string,
 	store *SnapshotStore,
 	js nats.JetStreamContext,
+	jsNew jetstream.JetStream,
 ) *WorkflowActor {
 	if runID == "" {
 		panic("NewWorkflowActor: runID must not be empty")
@@ -38,6 +41,7 @@ func NewWorkflowActor(
 		runID: runID,
 		store: store,
 		js:    js,
+		jsNew: jsNew,
 	}
 }
 
@@ -110,7 +114,7 @@ func (wa *WorkflowActor) handleStarted(
 	// Enqueue ready steps and publish tasks
 	if wa.js != nil {
 		if err := enqueueReadySteps(
-			wa.js, wfDef, wa.run,
+			wa.js, wa.jsNew, wfDef, wa.run,
 		); err != nil {
 			return err
 		}
@@ -145,7 +149,7 @@ func (wa *WorkflowActor) handleStepCompleted(
 
 	if wa.js != nil {
 		if err := enqueueReadySteps(
-			wa.js, *wa.def, wa.run,
+			wa.js, wa.jsNew, *wa.def, wa.run,
 		); err != nil {
 			return err
 		}

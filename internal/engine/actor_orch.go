@@ -8,6 +8,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ActorOrchestrator is an actor-based workflow orchestrator. It
@@ -19,6 +20,7 @@ import (
 type ActorOrchestrator struct {
 	nc     *nats.Conn
 	js     nats.JetStreamContext
+	jsNew  jetstream.JetStream
 	tel    *observe.Telemetry
 	rt     *actor.Runtime
 	store  *SnapshotStore
@@ -40,9 +42,16 @@ func NewActorOrchestrator(
 	if err != nil {
 		panic("NewActorOrchestrator: JetStream: " + err.Error())
 	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		panic(
+			"NewActorOrchestrator: jetstream.New: " + err.Error(),
+		)
+	}
 	return &ActorOrchestrator{
 		nc:    nc,
 		js:    js,
+		jsNew: jsNew,
 		tel:   tel,
 		rt:    actor.NewRuntime(),
 		store: NewSnapshotStore(js),
@@ -112,7 +121,7 @@ func (ao *ActorOrchestrator) ensureActor(runID string) {
 		return
 	}
 
-	wa := NewWorkflowActor(runID, ao.store, ao.js)
+	wa := NewWorkflowActor(runID, ao.store, ao.js, ao.jsNew)
 	addr := actor.Address{Type: "workflow", ID: runID}
 
 	err := ao.rt.Spawn(addr, wa,

@@ -1,12 +1,14 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // publishTask publishes a TaskPayload for a ready step to the
@@ -126,6 +128,7 @@ func publishWorkflowEvent(
 // checks for workflow completion. Returns updated run state.
 func enqueueReadySteps(
 	js nats.JetStreamContext,
+	jsNew jetstream.JetStream,
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
 ) error {
@@ -193,9 +196,32 @@ func enqueueReadySteps(
 			)
 		}
 		attempt := run.Steps[step.ID].Attempts
-		if err := publishTask(
-			js, run.RunID, step, input, attempt,
-		); err != nil {
+		if jsNew != nil {
+			payload := protocol.TaskPayload{
+				TaskID:  run.RunID + "." + step.ID,
+				RunID:   run.RunID,
+				StepID:  step.ID,
+				Attempt: attempt,
+				Input:   input,
+			}
+			data, marshalErr := json.Marshal(payload)
+			if marshalErr != nil {
+				return fmt.Errorf(
+					"marshal TaskPayload: %w", marshalErr,
+				)
+			}
+			msgID := run.RunID + "." + step.ID + ".queued"
+			subject := taskSubject(step, run.RunID)
+			msg := buildTaskMsg(subject, data, msgID)
+			_, err = jsNew.PublishMsg(
+				context.Background(), msg,
+			)
+		} else {
+			err = publishTask(
+				js, run.RunID, step, input, attempt,
+			)
+		}
+		if err != nil {
 			return err
 		}
 	}
