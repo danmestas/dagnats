@@ -113,8 +113,10 @@ func (cm *ConcurrencyManager) ReleaseTask(ctx context.Context, ...) error
 // ratelimit.go
 func (rl *RateLimiter) Allow(ctx context.Context, ...) (...)
 
-// sleeptimer.go — all fire* methods gain ctx
-// correlator.go — match/deliver methods gain ctx
+// sleeptimer.go — fire* methods use context.WithTimeout
+//   (no parent ctx — they react to timer expiry, not events)
+// correlator.go — deliver methods use context.WithTimeout
+//   (no parent ctx — they react to KV watcher, not events)
 // approval.go — store/consume token methods gain ctx
 // sticky.go — create/get/delete binding methods gain ctx
 ```
@@ -298,11 +300,15 @@ git commit -m "refactor(bridge): thread r.Context() through handlers"
 
 Trigger fire methods are called from the scheduler tick — add ctx.
 Observe publish methods are fire-and-forget telemetry — keep
-`context.Background()` with a short timeout (telemetry should not
-block on slow JetStream).
+`context.Background()` with a short timeout. Telemetry must not be
+cancelled by the context it's observing — a failed request's telemetry
+should still be recorded.
 
 - [ ] **Step 1: Thread ctx through trigger fire/KV operations**
 - [ ] **Step 2: Add timeouts to observe publish calls**
+
+Observe calls use `context.Background()` with timeout, NOT a threaded
+ctx from the caller — telemetry must outlive the request it records:
 
 ```go
 ctx, cancel := context.WithTimeout(
@@ -327,14 +333,16 @@ git commit -m "refactor: thread ctx through triggers, timeout observe publishes"
 
 ---
 
-## Chunk 6: Setup + CLI + Final validation
+## Chunk 6: Setup + Final validation
 
-### Task 7: Add timeouts to setup, verify CLI
+### Task 7: Add timeouts to setup functions
 
 **Files:**
 - Modify: `internal/natsutil/conn.go` (~6 replacements)
 - Modify: `server/server.go`
-- Review: `cli/` files (keep `context.Background()`, correct for CLI)
+
+CLI commands correctly use `context.Background()` — no parent context
+exists. No changes needed in `cli/`.
 
 - [ ] **Step 1: Add bounded timeout to setup functions**
 
@@ -348,51 +356,35 @@ ctx, cancel := context.WithTimeout(
 defer cancel()
 ```
 
-- [ ] **Step 2: CLI — leave as-is or add signal handling**
-
-CLI commands use `context.Background()` — correct, no parent.
-Optionally add signal handling for graceful Ctrl-C:
-
-```go
-ctx, stop := signal.NotifyContext(
-    context.Background(), os.Interrupt,
-)
-defer stop()
-```
-
-This is optional and can be a follow-up.
-
-- [ ] **Step 3: Run full test suite**
+- [ ] **Step 2: Run full test suite**
 
 ```bash
 go test ./... -timeout 300s
 ```
 
-- [ ] **Step 4: Run vet**
+- [ ] **Step 3: Run vet**
 
 ```bash
 go vet ./...
 ```
 
-- [ ] **Step 5: Verify zero unnecessary context.Background()**
+- [ ] **Step 4: Verify remaining context.Background() is justified**
 
 ```bash
-# Count remaining — should be only in:
-# - constructors/startup (no parent)
-# - CLI commands (no parent)
-# - tests (no parent)
-# - observe telemetry (fire-and-forget with timeout)
 grep -rn 'context\.Background()' --include="*.go" \
     | grep -v _test.go | grep -v vendor | grep -v cli/ \
     | grep -v '.worktrees/dx'
 ```
 
-Review the remaining list — each should be justified.
+Every remaining instance should be: constructor/startup, CLI, test,
+observe telemetry (fire-and-forget), or SleepTimer/Correlator fire
+methods (no parent ctx). All others should use a threaded ctx or
+a bounded timeout.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add internal/natsutil/ server/ cli/
+git add internal/natsutil/ server/
 git commit -m "refactor: add timeouts to setup functions, finalize context threading"
 ```
 
