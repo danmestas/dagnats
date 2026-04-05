@@ -18,7 +18,7 @@ func ValidateSchema(
 	if err := json.Unmarshal(schema, &s); err != nil {
 		return fmt.Errorf("invalid schema: %w", err)
 	}
-	var value interface{}
+	var value any
 	if err := json.Unmarshal(data, &value); err != nil {
 		return fmt.Errorf("invalid data: %w", err)
 	}
@@ -34,14 +34,14 @@ type schemaNode struct {
 // validateNode checks a value against a schema node at the given path.
 // Recursion is bounded by schema depth (typically <20 levels).
 func validateNode(
-	s schemaNode, value interface{}, path string,
+	s schemaNode, value any, path string,
 ) error {
 	if s.Type != "" {
 		if err := checkType(s.Type, value, path); err != nil {
 			return err
 		}
 	}
-	obj, isObj := value.(map[string]interface{})
+	obj, isObj := value.(map[string]any)
 	if isObj && len(s.Required) > 0 {
 		for _, key := range s.Required {
 			if _, exists := obj[key]; !exists {
@@ -72,7 +72,7 @@ func validateNode(
 }
 
 func checkType(
-	expected string, value interface{}, path string,
+	expected string, value any, path string,
 ) error {
 	actual := jsonType(value)
 	if actual != expected {
@@ -86,7 +86,7 @@ func checkType(
 	return nil
 }
 
-func jsonType(v interface{}) string {
+func jsonType(v any) string {
 	switch v.(type) {
 	case string:
 		return "string"
@@ -94,9 +94,9 @@ func jsonType(v interface{}) string {
 		return "number"
 	case bool:
 		return "boolean"
-	case map[string]interface{}:
+	case map[string]any:
 		return "object"
-	case []interface{}:
+	case []any:
 		return "array"
 	case nil:
 		return "null"

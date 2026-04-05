@@ -10,13 +10,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/bridge"
-	"github.com/danmestas/dagnats/engine"
-	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/observe/simple"
+	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/observe"
-	"github.com/danmestas/dagnats/observe/simple"
-	"github.com/danmestas/dagnats/trigger"
 	"github.com/danmestas/dagnats/worker"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
@@ -150,7 +150,7 @@ func (s *Server) startComponents() error {
 	s.bridge = bridge.NewBridge(s.nc, s.tel)
 	printStep(os.Stderr, "http bridge ready")
 
-	s.trig, err = trigger.NewTriggerService(s.nc)
+	s.trig, err = trigger.NewTriggerService(s.nc, s.tel.Logger)
 	if err != nil {
 		s.orch.Stop()
 		s.telStop()

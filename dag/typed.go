@@ -22,7 +22,7 @@ func schemaFromType[T any]() json.RawMessage {
 	var zero T
 	t := reflect.TypeOf(zero)
 	if t == nil {
-		// interface{} / any — accept anything
+		// any / any — accept anything
 		return json.RawMessage(`{}`)
 	}
 	schema := typeToSchema(t)

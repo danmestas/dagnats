@@ -1,0 +1,169 @@
+package trigger
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
+)
+
+// SubjectTrigger subscribes to a NATS subject and publishes workflow.started
+// events for each incoming message. The original message payload is embedded
+// in the TriggerEnvelope.
+type SubjectTrigger struct {
+	nc       *nats.Conn
+	js       nats.JetStreamContext
+	def      TriggerDef
+	sub      *nats.Subscription
+	done     chan struct{}
+	logger   observe.Logger
+	debounce *Debouncer
+}
+
+// SubjectTriggerOpt configures optional behavior on SubjectTrigger.
+type SubjectTriggerOpt func(*SubjectTrigger)
+
+// WithDebouncer attaches a Debouncer for debounce-configured triggers.
+func WithDebouncer(d *Debouncer) SubjectTriggerOpt {
+	return func(st *SubjectTrigger) { st.debounce = d }
+}
+
+// NewSubjectTrigger creates a SubjectTrigger that subscribes to def.Subject.
+// Returns error if def lacks Subject config or subscription fails.
+// Panics if nc is nil (programmer error).
+func NewSubjectTrigger(
+	nc *nats.Conn,
+	def TriggerDef,
+	logger observe.Logger,
+	opts ...SubjectTriggerOpt,
+) (*SubjectTrigger, error) {
+	if nc == nil {
+		panic("NewSubjectTrigger: connection must not be nil")
+	}
+	if logger == nil {
+		panic("NewSubjectTrigger: logger must not be nil")
+	}
+	if def.ID == "" {
+		panic("NewSubjectTrigger: def.ID must not be empty")
+	}
+
+	if def.Subject == nil {
+		return nil, fmt.Errorf("trigger %q has no subject config", def.ID)
+	}
+	if def.Subject.Subject == "" {
+		return nil, fmt.Errorf("trigger %q: subject must not be empty", def.ID)
+	}
+
+	js, err := nc.JetStream()
+	if err != nil {
+		return nil, fmt.Errorf("JetStream: %w", err)
+	}
+
+	trigger := &SubjectTrigger{
+		nc:     nc,
+		js:     js,
+		def:    def,
+		done:   make(chan struct{}),
+		logger: logger,
+	}
+	for _, opt := range opts {
+		opt(trigger)
+	}
+
+	if def.Enabled {
+		sub, err := nc.Subscribe(def.Subject.Subject, trigger.handleMessage)
+		if err != nil {
+			return nil, fmt.Errorf("subscribe %q: %w", def.Subject.Subject, err)
+		}
+		trigger.sub = sub
+	}
+
+	return trigger, nil
+}
+
+// Close unsubscribes and releases resources.
+// Panics if done channel is nil (uninitialized trigger).
+func (s *SubjectTrigger) Close() error {
+	if s.done == nil {
+		panic("Close: done channel must not be nil")
+	}
+	if s.nc == nil {
+		panic("Close: connection must not be nil")
+	}
+
+	close(s.done)
+	if s.sub != nil {
+		return s.sub.Unsubscribe()
+	}
+	return nil
+}
+
+// handleMessage processes incoming NATS messages and publishes workflow.started.
+// Panics if msg is nil (NATS library invariant).
+func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
+	if msg == nil {
+		panic("handleMessage: msg must not be nil")
+	}
+	if s.js == nil {
+		panic("handleMessage: JetStream context must not be nil")
+	}
+
+	if !s.def.Enabled {
+		return
+	}
+
+	now := time.Now().UTC()
+
+	var data json.RawMessage
+	if len(msg.Data) > 0 {
+		data = json.RawMessage(msg.Data)
+	}
+
+	// Route through debounce if configured
+	if s.def.Debounce != nil && s.debounce != nil {
+		fire, eventData, err := s.debounce.DebounceOrFire(
+			s.def, data,
+		)
+		if err != nil || !fire {
+			return
+		}
+		data = eventData
+	}
+
+	envelope := TriggerEnvelope{
+		Trigger:   "subject",
+		Source:    s.def.ID,
+		Timestamp: now,
+		Data:      data,
+	}
+
+	payloadBytes, err := json.Marshal(envelope)
+	if err != nil {
+		s.logger.Error("marshal trigger envelope", err,
+			observe.String("trigger_id", s.def.ID))
+		return
+	}
+
+	runID := fmt.Sprintf("%s-%d", s.def.WorkflowID, now.UnixNano())
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted,
+		runID,
+		payloadBytes,
+	)
+
+	evtBytes, err := evt.Marshal()
+	if err != nil {
+		s.logger.Error("marshal workflow event", err,
+			observe.String("trigger_id", s.def.ID))
+		return
+	}
+
+	if _, err := s.js.Publish(evt.NATSSubject(), evtBytes); err != nil {
+		s.logger.Error("publish workflow event", err,
+			observe.String("trigger_id", s.def.ID),
+			observe.String("run_id", runID))
+	}
+}

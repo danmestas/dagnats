@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/danmestas/dagnats/api"
-	"github.com/danmestas/dagnats/natsutil"
-	"github.com/danmestas/dagnats/trigger"
+	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/trigger"
 )
 
 func TestTriggerUpdateCronExpression(t *testing.T) {

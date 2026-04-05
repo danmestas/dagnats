@@ -23,7 +23,7 @@ func (a Address) String() string {
 // Message is the envelope delivered to an actor's mailbox.
 type Message struct {
 	From    Address
-	Payload interface{}
+	Payload any
 }
 
 // Directive tells a supervisor how to handle a failed child.
@@ -82,7 +82,7 @@ func (c *Context) Self() Address { return c.self }
 
 // Send delivers a message to another actor's mailbox. Returns an
 // error if the target actor is not found or its mailbox is full.
-func (c *Context) Send(to Address, payload interface{}) error {
+func (c *Context) Send(to Address, payload any) error {
 	return c.runtime.Send(to, Message{
 		From:    c.self,
 		Payload: payload,

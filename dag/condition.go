@@ -7,10 +7,10 @@ import "encoding/json"
 // comparison operators: ==, !=, <, >, <=, >=. Value is the comparison target.
 // Evaluated purely — no I/O, no side effects.
 type ParentCond struct {
-	StepID string      `json:"step_id"`
-	Field  string      `json:"field"`
-	Op     string      `json:"op"`
-	Value  interface{} `json:"value"`
+	StepID string `json:"step_id"`
+	Field  string `json:"field"`
+	Op     string `json:"op"`
+	Value  any    `json:"value"`
 }
 
 // validOps is the closed set of comparison operators. Validate rejects
@@ -32,7 +32,7 @@ func (c *ParentCond) Evaluate(steps map[string]StepState) bool {
 	if !ok || state.Output == nil {
 		return false
 	}
-	var data map[string]interface{}
+	var data map[string]any
 	if err := json.Unmarshal(state.Output, &data); err != nil {
 		return false
 	}
@@ -46,7 +46,7 @@ func (c *ParentCond) Evaluate(steps map[string]StepState) bool {
 // compareValues performs the comparison. Both operands are compared as
 // float64 for numeric types (JSON numbers unmarshal as float64) and as
 // strings for string types. Mismatched types return false.
-func compareValues(a interface{}, op string, b interface{}) bool {
+func compareValues(a any, op string, b any) bool {
 	// Try numeric comparison first — JSON numbers are float64.
 	aNum, aOk := toFloat64(a)
 	bNum, bOk := toFloat64(b)
@@ -76,7 +76,7 @@ func compareValues(a interface{}, op string, b interface{}) bool {
 	return false
 }
 
-func toFloat64(v interface{}) (float64, bool) {
+func toFloat64(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
 		return n, true
@@ -126,7 +126,7 @@ func compareString(a, op, b string) bool {
 
 // SkipIfOutput creates a ParentCond for use with StepRef.SkipIf.
 // The parent must be in the step's DependsOn list (enforced by Validate).
-func SkipIfOutput(parent StepRef, field, op string, value interface{}) *ParentCond {
+func SkipIfOutput(parent StepRef, field, op string, value any) *ParentCond {
 	return &ParentCond{
 		StepID: parent.ID(),
 		Field:  field,

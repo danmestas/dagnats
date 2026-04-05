@@ -9,8 +9,8 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // inspectResult combines all three data sources for JSON output.
