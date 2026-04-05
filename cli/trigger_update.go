@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // runTriggerUpdateCmd updates an existing trigger in-place.

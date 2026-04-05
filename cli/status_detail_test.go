@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestFormatBytesZero(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/danmestas/dagnats/trigger"
+	"github.com/danmestas/dagnats/internal/trigger"
 )
 
 // triggerActionResult is the JSON response for delete/enable/disable.

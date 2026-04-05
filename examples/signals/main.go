@@ -56,7 +56,8 @@ func handlePrepare(ctx worker.TaskContext) error {
 func handleWaitForApproval(ctx worker.TaskContext) error {
 	fmt.Println("[wait-for-approval] waiting for signal...")
 
-	data, err := ctx.WaitForSignal(
+	sig := ctx.(worker.Signaler)
+	data, err := sig.WaitForSignal(
 		"approval", 5*time.Minute,
 	)
 	if err != nil {

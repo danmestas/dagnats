@@ -25,7 +25,7 @@ func TestConfigShowHumanOutput(t *testing.T) {
 	}
 
 	// Negative: should not be valid JSON (it is human-readable)
-	var discard map[string]interface{}
+	var discard map[string]any
 	if err := json.Unmarshal([]byte(output), &discard); err == nil {
 		t.Fatal("human output should not be valid JSON")
 	}
@@ -37,7 +37,7 @@ func TestConfigShowJSONOutput(t *testing.T) {
 	})
 
 	// Positive: should be valid JSON with expected keys
-	var cfg map[string]interface{}
+	var cfg map[string]any
 	if err := json.Unmarshal([]byte(output), &cfg); err != nil {
 		t.Fatalf("output should be valid JSON: %v\n%s", err, output)
 	}

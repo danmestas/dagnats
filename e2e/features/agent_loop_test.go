@@ -11,7 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/e2e/harness"
-	"github.com/danmestas/dagnats/engine"
+	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -40,17 +40,18 @@ func TestAgentLoop(t *testing.T) {
 		// Agent loop: continue 3 times, then complete.
 		harness.SubscribeWorker(t, nc, "counter",
 			func(tc worker.TaskContext) error {
+				cp := tc.(worker.Checkpointable)
 				// Load checkpoint to get current count.
 				var count int
-				cp, _ := tc.LoadCheckpoint()
-				if cp != nil {
-					json.Unmarshal(cp, &count)
+				saved, _ := cp.LoadCheckpoint()
+				if saved != nil {
+					json.Unmarshal(saved, &count)
 				}
 				count++
 
 				// Save checkpoint.
 				cpData, _ := json.Marshal(count)
-				tc.Checkpoint(cpData)
+				cp.Checkpoint(cpData)
 
 				if count >= 3 {
 					return tc.Complete(cpData)

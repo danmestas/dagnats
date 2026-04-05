@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 const (

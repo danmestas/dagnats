@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // ResolveRunID resolves a run ID from user input. It supports:

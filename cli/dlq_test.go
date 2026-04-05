@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 )
 
@@ -30,7 +30,7 @@ func TestDLQListShowsMessages(t *testing.T) {
 	js, _ := nc.JetStream()
 
 	// Publish a dead letter message
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, _ := json.Marshal(map[string]any{
 		"run_id":   "run-123",
 		"step_id":  "step-a",
 		"task":     "failing-task",
@@ -74,7 +74,7 @@ func TestDLQReplayRepublishes(t *testing.T) {
 	js, _ := nc.JetStream()
 
 	// Publish a dead letter message
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, _ := json.Marshal(map[string]any{
 		"run_id":   "run-456",
 		"step_id":  "step-b",
 		"task":     "retry-task",
@@ -101,7 +101,7 @@ func TestDLQReplayRepublishes(t *testing.T) {
 		t.Fatalf("replayed message not received: %v", err)
 	}
 
-	var replayed map[string]interface{}
+	var replayed map[string]any
 	if err := json.Unmarshal(msg.Data, &replayed); err != nil {
 		t.Fatalf("unmarshal replayed message: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestDLQListRespectsLimit(t *testing.T) {
 
 	// Publish 5 dead letters
 	for i := 0; i < 5; i++ {
-		payload, _ := json.Marshal(map[string]interface{}{
+		payload, _ := json.Marshal(map[string]any{
 			"run_id":  fmt.Sprintf("run-%d", i),
 			"step_id": "step-a",
 		})
@@ -183,7 +183,7 @@ func TestDLQReplayByRun(t *testing.T) {
 		{"target-run", "task-b"},
 		{"other-run", "task-c"},
 	} {
-		payload, _ := json.Marshal(map[string]interface{}{
+		payload, _ := json.Marshal(map[string]any{
 			"run_id":  item.runID,
 			"step_id": "step-1",
 		})
@@ -231,7 +231,7 @@ func TestDLQListJSONOutput(t *testing.T) {
 
 	js, _ := nc.JetStream()
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, _ := json.Marshal(map[string]any{
 		"run_id":  "run-json-1",
 		"step_id": "step-j",
 		"task":    "json-task",
@@ -247,7 +247,7 @@ func TestDLQListJSONOutput(t *testing.T) {
 	})
 
 	// Positive: should be valid JSON array with correct fields
-	var letters []map[string]interface{}
+	var letters []map[string]any
 	if err := json.Unmarshal([]byte(output), &letters); err != nil {
 		t.Fatalf("output should be valid JSON: %v\n%s", err, output)
 	}
@@ -276,7 +276,7 @@ func TestDLQReplayJSONSingleOutput(t *testing.T) {
 
 	js, _ := nc.JetStream()
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, _ := json.Marshal(map[string]any{
 		"run_id":  "run-rj-1",
 		"step_id": "step-r",
 		"task":    "replay-json",
@@ -292,7 +292,7 @@ func TestDLQReplayJSONSingleOutput(t *testing.T) {
 	})
 
 	// Positive: should be valid JSON with sequence and replayed
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("output should be valid JSON: %v\n%s", err, output)
 	}
@@ -319,7 +319,7 @@ func TestDLQReplayJSONBatchOutput(t *testing.T) {
 	js, _ := nc.JetStream()
 
 	for _, task := range []string{"batch-a", "batch-b"} {
-		payload, _ := json.Marshal(map[string]interface{}{
+		payload, _ := json.Marshal(map[string]any{
 			"run_id":  "run-batch-json",
 			"step_id": "step-1",
 			"task":    task,
@@ -335,7 +335,7 @@ func TestDLQReplayJSONBatchOutput(t *testing.T) {
 	})
 
 	// Positive: should be valid JSON with batch result
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("output should be valid JSON: %v\n%s", err, output)
 	}

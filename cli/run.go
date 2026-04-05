@@ -11,8 +11,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // printRunOutputForStart fetches a completed run and prints
@@ -60,6 +60,8 @@ func runRunCmd(args []string) {
 		runStatusCmd(args[1:])
 	case "cancel":
 		runCancelCmd(args[1:])
+	case "cancel-all":
+		runCancelAllCmd(args[1:])
 	case "signal":
 		runSignalCmd(args[1:])
 	case "list":
@@ -83,11 +85,12 @@ func runRunCmd(args []string) {
 func printRunUsage() {
 	fmt.Println("Usage: dagnats run <command> [--json]")
 	fmt.Println("Commands:")
-	fmt.Println("  start    start a workflow run")
-	fmt.Println("  status   show run status")
-	fmt.Println("  inspect  unified debug view for a run")
-	fmt.Println("  cancel   cancel a running workflow")
-	fmt.Println("  signal   send a signal to a run")
+	fmt.Println("  start       start a workflow run")
+	fmt.Println("  status      show run status")
+	fmt.Println("  inspect     unified debug view for a run")
+	fmt.Println("  cancel      cancel a running workflow")
+	fmt.Println("  cancel-all  cancel multiple runs by workflow")
+	fmt.Println("  signal      send a signal to a run")
 	fmt.Println("  list     list workflow runs")
 	fmt.Println("  events   show run event history")
 	fmt.Println("  watch    watch a run until completion")

@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/engine"
-	"github.com/danmestas/dagnats/natsutil"
-	"github.com/danmestas/dagnats/observe/simple"
+	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/observe/simple"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )

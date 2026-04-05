@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // runRetryResult is the JSON response for run retry.

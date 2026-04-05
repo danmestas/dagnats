@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // maxTrackedSequences bounds the in-memory replay tracker map.

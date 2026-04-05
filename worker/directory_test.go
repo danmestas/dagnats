@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestWorkerDirectoryRegister(t *testing.T) {

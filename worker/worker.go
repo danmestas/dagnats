@@ -14,9 +14,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// TaskContext is the deep interface workers use to report step results.
+// TaskContext is the core interface workers use to report step results.
 // Workers call exactly one of Complete, Fail, or Continue per execution.
 // They never deal with retries, timeouts, or DAG logic directly.
+//
+// Handlers that need checkpoints or signals type-assert to
+// Checkpointable or Signaler — the concrete taskContext satisfies both.
 type TaskContext interface {
 	Input() []byte
 	RunID() string
@@ -29,10 +32,24 @@ type TaskContext interface {
 	Continue(output []byte) error
 	PutStream(data []byte) error
 	Heartbeat() error
+}
+
+// Checkpointable saves and restores handler state across retries
+// and pauses. Depends on the optional "checkpoints" KV bucket —
+// returns error if the bucket was not provisioned at startup.
+type Checkpointable interface {
 	Checkpoint(state []byte) error
 	LoadCheckpoint() ([]byte, error)
 	Pause(name string, duration time.Duration) error
-	WaitForSignal(name string, timeout time.Duration) ([]byte, error)
+}
+
+// Signaler coordinates between steps via the optional "signals"
+// KV bucket. WaitForSignal blocks until a value appears or timeout
+// expires; SendSignal writes data for another step to read.
+type Signaler interface {
+	WaitForSignal(
+		name string, timeout time.Duration,
+	) ([]byte, error)
 	SendSignal(runID, name string, data []byte) error
 }
 

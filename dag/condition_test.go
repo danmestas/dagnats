@@ -22,7 +22,7 @@ func TestParentCondNumericOperators(t *testing.T) {
 
 	tests := []struct {
 		op   string
-		val  interface{}
+		val  any
 		want bool
 	}{
 		{"==", float64(5), true},

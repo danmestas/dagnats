@@ -10,7 +10,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/e2e/harness"
-	"github.com/danmestas/dagnats/engine"
+	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -39,7 +39,8 @@ func TestSignalWait(t *testing.T) {
 		// Step waits for "approval" signal.
 		harness.SubscribeWorker(t, nc, "wait-for-approval",
 			func(tc worker.TaskContext) error {
-				data, err := tc.WaitForSignal(
+				sig := tc.(worker.Signaler)
+				data, err := sig.WaitForSignal(
 					"approval", 30*time.Second,
 				)
 				if err != nil {
