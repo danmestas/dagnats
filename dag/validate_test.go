@@ -546,3 +546,35 @@ func TestBuilderWithConcurrency(t *testing.T) {
 		t.Fatal("Concurrency should be nil when not set")
 	}
 }
+
+func TestValidateIdempotencyKeyValid(t *testing.T) {
+	wb := NewWorkflow("idemp")
+	wb.Task("a", "t")
+	wb.WithIdempotencyKey("data.request_id")
+	// Positive: valid dot-path accepted
+	if _, err := wb.Build(); err != nil {
+		t.Fatalf("valid key rejected: %v", err)
+	}
+}
+
+func TestValidateIdempotencyKeyLeadingDot(t *testing.T) {
+	err := validateIdempotencyKey(".bad")
+	// Positive: leading dot rejected
+	if err == nil {
+		t.Fatal("expected error for leading dot")
+	}
+}
+
+func TestValidateIdempotencyKeyTrailingDot(t *testing.T) {
+	err := validateIdempotencyKey("bad.")
+	if err == nil {
+		t.Fatal("expected error for trailing dot")
+	}
+}
+
+func TestValidateIdempotencyKeyEmptySegment(t *testing.T) {
+	err := validateIdempotencyKey("a..b")
+	if err == nil {
+		t.Fatal("expected error for empty segment")
+	}
+}

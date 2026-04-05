@@ -450,3 +450,28 @@ func TestBuilderWaitForEvent(t *testing.T) {
 			waitStep.Task)
 	}
 }
+
+func TestWithIdempotencyKey(t *testing.T) {
+	wb := NewWorkflow("idemp-test")
+	wb.Task("process", "process-task")
+	wb.WithIdempotencyKey("data.request_id")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Positive: key is set
+	if def.IdempotencyKey != "data.request_id" {
+		t.Fatalf("IdempotencyKey = %q, want data.request_id",
+			def.IdempotencyKey)
+	}
+}
+
+func TestWithIdempotencyKeyPanicsOnEmpty(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty dotPath")
+		}
+	}()
+	wb := NewWorkflow("test")
+	wb.WithIdempotencyKey("")
+}

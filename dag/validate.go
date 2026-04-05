@@ -24,6 +24,10 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validateIdempotencyKey(def.IdempotencyKey); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 
@@ -414,6 +418,28 @@ func validateConcurrency(def WorkflowDef) error {
 				"(must be 0..1000)",
 			def.Name, def.Concurrency.MaxSteps,
 		)
+	}
+	return nil
+}
+
+// validateIdempotencyKey checks dot-path syntax: no empty segments,
+// no leading/trailing dots.
+func validateIdempotencyKey(key string) error {
+	if key == "" {
+		return nil
+	}
+	if key[0] == '.' || key[len(key)-1] == '.' {
+		return fmt.Errorf(
+			"idempotency_key %q: must not start or end with dot",
+			key,
+		)
+	}
+	for i := range len(key) - 1 {
+		if key[i] == '.' && key[i+1] == '.' {
+			return fmt.Errorf(
+				"idempotency_key %q: empty segment", key,
+			)
+		}
 	}
 	return nil
 }
