@@ -453,6 +453,10 @@ func (o *Orchestrator) handleStepCompleted(
 		)
 	}
 
+	// Create sticky binding if this is the first step of a
+	// sticky workflow and the worker included its ID.
+	o.createStickyBinding(wfDef, run, evt)
+
 	// Check if this completed step is an OnFailure handler.
 	// If so, mark the original failed step as Recovered and
 	// skip its dependents.
@@ -524,6 +528,7 @@ func (o *Orchestrator) completeWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
+	o.deleteStickyBinding(run.RunID)
 	o.runsActive.Dec()
 	o.runsCompleted.Inc()
 	if o.concurrency != nil {
@@ -1125,6 +1130,7 @@ func (o *Orchestrator) failWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
+	o.deleteStickyBinding(run.RunID)
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
 	if o.concurrency != nil {
@@ -1339,6 +1345,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	}
 
 	o.cascadeCancelChildren(wfDef, run)
+	o.deleteStickyBinding(run.RunID)
 
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
@@ -1778,6 +1785,19 @@ func (o *Orchestrator) publishTask(
 			)
 		}
 		o.taskConcurrencyAcquired.Inc()
+	}
+
+	// Check sticky binding — if a binding exists, route to the
+	// bound worker instead of the normal subject.
+	workerID := o.getStickyWorker(runID)
+	if workerID != "" {
+		wfDef, _, loadErr := o.loadRunAndDef(runID)
+		if loadErr == nil && wfDef.Sticky != dag.StickyNone {
+			return o.publishStickyTask(
+				ctx, runID, step, input, attempt,
+				workerID, wfDef.Sticky,
+			)
+		}
 	}
 
 	return o.doPublishTask(ctx, runID, step, input, attempt)

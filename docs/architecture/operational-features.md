@@ -23,11 +23,26 @@
 - Worker notification: best-effort (current task finishes, AckWait expires)
 - Agent loops: check cancellation before Continue()
 
+**Bulk cancellation:** `POST /runs/cancel` cancels multiple runs in one call, filtered by workflow ID, status (`running`/`pending`/`all`), and time range. Supports `--dry-run` to preview. Capped at 1000 runs per call — sequential publish (~1-2ms each) avoids thundering herd on the orchestrator. Synchronous (completes in 1-2s), no async job tracking needed. CLI: `dagnats run cancel-all --workflow=<name> [--status=running] [--after=T] [--before=T] [--dry-run]`. Cancelled runs release concurrency slots and cascade to non-detached sub-workflows. Cancellation does NOT trigger compensation (intentional, not failure).
+
+## Non-Retriable Errors
+
+Workers signal permanent failures via `FailPermanent(err)` or explicit retry delays via `FailRetryAfter(err, duration)`. Wire protocol: `StepFailedPayload` with `failure_type` discriminator (`retriable`, `non_retriable`, `retry_after`). Orchestrator parses and branches: non-retriable skips retries → on-failure/compensation/fail. Retry-after schedules exact delay via `SLEEP_TIMERS` (`TimerActionRetryAfter`), bypassing backoff. Existing `Fail(err)` defaults to retriable. Backward compat: old raw-string payloads treated as retriable. Bounds: retry-after clamped to [100ms, 1h]. HTTP bridge: `failure_type` + `retry_after_ms` on fail action.
+
+## Bulk Operations
+
+**Bulk run** (`POST /runs/bulk`): Start up to 1000 runs of same workflow. Def loaded once. Atomic validation (first bad input fails batch). CLI: `dagnats run bulk --workflow=X '{"a":1}' '{"a":2}'` or `--from-file=inputs.jsonl`.
+
+**Bulk retry** (`POST /runs/retry`): Retry up to 1000 failed runs. Mode `rerun` = fresh start with original input. Mode `replay` = re-publish DLQ task messages. CLI: `dagnats run retry-all --workflow=X --mode=rerun`.
+
+**Bulk cancel** (already documented above): `POST /runs/cancel`. All three share: 1000-run cap, sequential publish, dry-run, time range filters.
+
 ## Concurrency Limits
 
-**Two scopes:**
+**Three scopes:**
 - Per-workflow: `WorkflowDef.Concurrency.MaxRuns` — cap concurrent runs of same workflow
-- Per-step: not yet implemented (field exists)
+- Per-task-type: `StepDef.MaxTaskConcurrency` — global cap across all runs for a task type
+- Per-run: `ConcurrencyLimit.MaxSteps` — cap concurrent steps within a single run
 
 **Implementation:** KV-based counters with optimistic locking (CAS loops, bounded at 10 retries)
 - Acquire on workflow start, release on complete/fail/cancel
@@ -51,6 +66,10 @@
 **Cron validation:** `dagnats trigger test <expr> [--tz=TZ] [--count=N]` validates offline and previews next fire times.
 
 **Live reload:** KV watcher detects trigger add/update/delete without restart.
+
+**Debounce:** Subject triggers support `DebounceConfig` — collapses rapid events into a single fire. Uses `debounce_state` KV bucket. Mutual exclusion with batching.
+
+**Batching:** Collects multiple trigger events into a single workflow run. Controlled by `MaxSize` (fire when N events accumulate, max 1000) and `Timeout` (fire after duration, max 5min) — whichever comes first. Optional `Key` (dot-path) groups events into per-entity batches. Workflow receives a JSON array in `TriggerEnvelope.Data`. Uses `batch_state` KV bucket with CAS updates. Timer via `SLEEP_TIMERS` with `batch_fire` action. Mutual exclusion with debounce and singleton. Max payload 10 MiB (splits into sub-batches if exceeded).
 
 **Bounds:** Max 500 active triggers. Backfill capped at 100 per trigger on startup.
 
@@ -87,6 +106,12 @@
 - Subject routing: `task.{taskType}.{group}.{runID}`
 - Worker option: `WithGroups(groups...)` subscribes to group-specific subjects
 
+**Sticky workers:** Bind a workflow run to a specific worker after the first step. Subsequent steps route to the same worker for cache locality, local state, or GPU affinity. Two strategies:
+- `soft` — prefer sticky worker; 5s fallback timer re-publishes to any worker if unclaimed
+- `hard` — require sticky worker; queues until worker returns (needs workflow timeout)
+
+Binding stored in `sticky_bindings` KV (TTL: workflow timeout + 1h). Workers subscribe to `task.{type}.{workerID}.>` in addition to normal subjects. Engine writes binding on first `step.completed` (from `WorkerID` in event payload) and routes via `publishStickyTask` helper. Workers don't know about sticky — engine owns all routing (information hiding). Incompatible with per-step `WorkerGroup` overrides.
+
 ## OnFailure Recovery
 
 - `StepDef.OnFailure` — step ID to run when this step permanently fails
@@ -113,6 +138,14 @@
 - CLI: `dagnats run start <wf> --at "2026-04-05T10:00:00Z"`
 - REST: `POST /runs/scheduled`, `GET /runs/scheduled/{id}`, `DELETE /runs/scheduled/{id}`
 - Max 365 days ahead. Cancelable before fire.
+
+## Idempotency
+
+Prevents duplicate workflow runs by keying on a value extracted from input. `WorkflowDef.IdempotencyKey` is a dot-path expression (e.g., `"data.payment_id"`) evaluated at `StartRun` time.
+
+**Mechanism:** SHA-256 hash of `{workflowName}.{keyValue}` stored in `idempotency_keys` KV bucket (default 24h TTL). If key exists, return existing run ID (201→200 status code change signals idempotent return). If key missing, create run then store mapping. Race condition defined out of existence: KV `Create` (not `Put`) is atomic — loser retries and returns winner's run ID.
+
+**Soft failure:** Missing key path in input → run starts without idempotency, warning logged. KV unavailable → run starts normally. Completed run within TTL → returns existing ID (correct — operation already done).
 
 ## Input/Output Schemas
 

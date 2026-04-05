@@ -27,7 +27,8 @@ type taskContext struct {
 	msg          jetstream.Msg
 	checkpointKV jetstream.KeyValue
 	signalKV     jetstream.KeyValue
-	paused       bool // set by Pause() to prevent double-ack in handleMessage
+	paused       bool   // set by Pause() to prevent double-ack
+	workerID     string // included in completion events for sticky routing
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -283,6 +284,7 @@ func (c *taskContext) publishEvent(
 	evt := protocol.NewStepEvent(
 		eventType, c.runID, c.stepID, payload,
 	)
+	evt.WorkerID = c.workerID
 	data, err := evt.Marshal()
 	if err != nil {
 		return err

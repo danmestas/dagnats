@@ -82,6 +82,8 @@ func SetupKVBuckets(js jetstream.JetStream) error {
 			TTL:     168 * time.Hour,
 		},
 		{Bucket: "debounce_state", TTL: 14 * 24 * time.Hour},
+		{Bucket: "idempotency_keys", TTL: 24 * time.Hour},
+		{Bucket: "sticky_bindings", TTL: 25 * time.Hour},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
@@ -198,6 +200,9 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		return err
 	}
 	if err := SetupTelemetryStream(js); err != nil {
+		return err
+	}
+	if err := SetupStickyStream(js); err != nil {
 		return err
 	}
 

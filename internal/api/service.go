@@ -7,6 +7,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -251,21 +252,40 @@ func (s *Service) startRunInner(
 			"workflow %q not found: %w", workflowName, err,
 		)
 	}
+	var def dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		return "", fmt.Errorf("unmarshal workflow def: %w", err)
+	}
+
 	// Validate input against InputSchema if present.
-	if input != nil {
-		var def dag.WorkflowDef
-		if err := json.Unmarshal(entry.Value(), &def); err == nil {
-			if def.InputSchema != nil {
-				if err := dag.ValidateSchema(
-					def.InputSchema, input,
-				); err != nil {
-					return "", fmt.Errorf(
-						"input validation: %w", err,
-					)
-				}
-			}
+	if input != nil && def.InputSchema != nil {
+		if err := dag.ValidateSchema(
+			def.InputSchema, input,
+		); err != nil {
+			return "", fmt.Errorf(
+				"input validation: %w", err,
+			)
 		}
 	}
+
+	// Idempotency check: if configured, extract key from input
+	// and check for existing run.
+	if def.IdempotencyKey != "" && input != nil &&
+		s.idempotencyKV != nil {
+		existingID, err := s.checkIdempotency(
+			workflowName, def.IdempotencyKey, input,
+		)
+		if err != nil {
+			s.tel.Logger.Error(
+				"idempotency check failed", err,
+				observe.String("workflow", workflowName),
+			)
+			// Fall through — run without idempotency
+		} else if existingID != "" {
+			return existingID, nil
+		}
+	}
+
 	runID := generateRunID()
 	payload, err := buildStartPayload(entry.Value(), input)
 	if err != nil {
@@ -291,6 +311,14 @@ func (s *Service) startRunInner(
 	if err != nil {
 		return "", err
 	}
+	// Store idempotency key mapping after successful publish.
+	if def.IdempotencyKey != "" && input != nil &&
+		s.idempotencyKV != nil {
+		s.storeIdempotencyKey(
+			workflowName, def.IdempotencyKey, input, runID,
+		)
+	}
+
 	s.tel.Logger.Info("started run",
 		observe.String("run_id", runID),
 		observe.String("workflow", workflowName),
@@ -1273,6 +1301,60 @@ func (s *Service) listRunEventsInner(
 
 // StartTyped marshals a typed input and starts a workflow run.
 // Convenience wrapper around StartRun for typed workflows.
+// checkIdempotency extracts the idempotency key from input, hashes it,
+// and checks the KV for an existing run. Returns the existing run ID
+// if found, empty string if not, or error on extraction/KV failure.
+func (s *Service) checkIdempotency(
+	workflowName string, keyPath string, input []byte,
+) (string, error) {
+	if workflowName == "" {
+		panic("checkIdempotency: workflowName must not be empty")
+	}
+	if keyPath == "" {
+		panic("checkIdempotency: keyPath must not be empty")
+	}
+	val, err := dag.ExtractDotPath(keyPath, input)
+	if err != nil {
+		return "", fmt.Errorf("extract key %q: %w", keyPath, err)
+	}
+	kvKey := idempotencyHash(workflowName, fmt.Sprintf("%v", val))
+
+	entry, err := s.idempotencyKV.Get(
+		context.Background(), kvKey,
+	)
+	if err == nil {
+		return string(entry.Value()), nil
+	}
+	return "", nil
+}
+
+// storeIdempotencyKey stores the idempotency key -> run ID mapping.
+// Uses Create for atomicity — if another request raced and won, this
+// is a no-op (the winner's mapping stands).
+func (s *Service) storeIdempotencyKey(
+	workflowName string, keyPath string,
+	input []byte, runID string,
+) {
+	val, err := dag.ExtractDotPath(keyPath, input)
+	if err != nil {
+		return // extraction failed — skip silently
+	}
+	kvKey := idempotencyHash(workflowName, fmt.Sprintf("%v", val))
+	// Create fails if key exists (race loser) — that's fine.
+	_, _ = s.idempotencyKV.Create(
+		context.Background(), kvKey, []byte(runID),
+	)
+}
+
+// idempotencyHash produces a deterministic KV key from workflow name
+// and extracted key value using SHA-256.
+func idempotencyHash(workflowName string, keyValue string) string {
+	h := sha256.Sum256(
+		[]byte(workflowName + "." + keyValue),
+	)
+	return hex.EncodeToString(h[:])
+}
+
 func StartTyped[I any](
 	ctx context.Context, svc *Service, workflowName string, input I,
 ) (string, error) {

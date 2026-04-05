@@ -232,62 +232,82 @@ func (w *Worker) Start() {
 	if w.js == nil {
 		panic("Worker.Start: js must not be nil")
 	}
-	// Bind optional KV buckets — no error if missing
+
+	w.bindOptionalKV()
+	w.registerDirectory()
+
+	for taskType, handler := range w.handlers {
+		w.subscribeTask(taskType, handler)
+	}
+}
+
+// bindOptionalKV binds checkpoint and signal KV buckets if they
+// exist. Missing buckets are fine — features degrade gracefully.
+func (w *Worker) bindOptionalKV() {
 	w.checkpointKV, _ = w.js.KeyValue(
 		context.Background(), "checkpoints",
 	)
 	w.signalKV, _ = w.js.KeyValue(
 		context.Background(), "signals",
 	)
+}
 
-	// Worker directory registration (observability only — not critical path)
+// registerDirectory registers this worker in the observability
+// directory and starts a heartbeat goroutine. No-op if the
+// workers KV bucket doesn't exist — directory is not critical.
+func (w *Worker) registerDirectory() {
 	d, err := newDirectoryOptional(w.js)
-	if err == nil {
-		w.dir = d
-		w.stopHeartbeat = make(chan struct{})
-		taskTypes := make([]string, 0, len(w.handlers))
-		for t := range w.handlers {
-			taskTypes = append(taskTypes, t)
-		}
-		reg := WorkerRegistration{
-			WorkerID:  w.workerID,
-			TaskTypes: taskTypes,
-			Language:  "go",
-			Transport: "nats",
-			MaxTasks:  len(taskTypes),
-		}
-		_ = w.dir.Register(reg)
-		go w.heartbeatLoop(reg)
+	if err != nil {
+		return
+	}
+	w.dir = d
+	w.stopHeartbeat = make(chan struct{})
+	taskTypes := make([]string, 0, len(w.handlers))
+	for t := range w.handlers {
+		taskTypes = append(taskTypes, t)
+	}
+	reg := WorkerRegistration{
+		WorkerID:  w.workerID,
+		TaskTypes: taskTypes,
+		Language:  "go",
+		Transport: "nats",
+		MaxTasks:  len(taskTypes),
+	}
+	_ = w.dir.Register(reg)
+	go w.heartbeatLoop(reg)
+}
+
+// subscribeTask creates JetStream subscriptions for a single task
+// type. When groups are configured, subscribes per-group. Also
+// subscribes to the sticky subject for worker-affinity routing.
+func (w *Worker) subscribeTask(
+	taskType string, handler HandlerFunc,
+) {
+	if taskType == "" {
+		panic("subscribeTask: taskType must not be empty")
+	}
+	if handler == nil {
+		panic("subscribeTask: handler must not be nil")
 	}
 
-	for taskType, handler := range w.handlers {
-		h := handler
-		tt := taskType
+	h := handler
+	tt := taskType
 
-		if w.partitions > 0 {
-			partCount := w.partitions
-			if w.singletons[tt] {
-				partCount = 1
-			}
-			filter := "task." + tt + ".>"
-			groupName := "workers-" + tt
-			if len(w.groups) > 0 {
-				for _, group := range w.groups {
-					gFilter := "task." + tt + "." +
-						group + ".>"
-					gName := "workers-" + tt +
-						"-" + group
-					cc := w.createElasticConsumer(
-						tt, gName, gFilter,
-						partCount, h,
-					)
-					w.elasticGroups = append(
-						w.elasticGroups, cc,
-					)
-				}
-			} else {
+	if w.partitions > 0 {
+		partCount := w.partitions
+		if w.singletons[tt] {
+			partCount = 1
+		}
+		filter := "task." + tt + ".>"
+		groupName := "workers-" + tt
+		if len(w.groups) > 0 {
+			for _, group := range w.groups {
+				gFilter := "task." + tt + "." +
+					group + ".>"
+				gName := "workers-" + tt +
+					"-" + group
 				cc := w.createElasticConsumer(
-					tt, groupName, filter,
+					tt, gName, gFilter,
 					partCount, h,
 				)
 				w.elasticGroups = append(
@@ -295,23 +315,42 @@ func (w *Worker) Start() {
 				)
 			}
 		} else {
-			if len(w.groups) == 0 {
-				subject := "task." + taskType + ".>"
-				cc := w.createConsumer(tt, subject, h)
+			cc := w.createElasticConsumer(
+				tt, groupName, filter,
+				partCount, h,
+			)
+			w.elasticGroups = append(
+				w.elasticGroups, cc,
+			)
+		}
+	} else {
+		if len(w.groups) == 0 {
+			subject := "task." + taskType + ".>"
+			cc := w.createConsumer(tt, subject, h)
+			w.consumeContexts = append(
+				w.consumeContexts, cc,
+			)
+			// Sticky subscription on STICKY_TASKS stream
+			// (separate from TASK_QUEUES to avoid work queue
+			// filter conflict). Missing stream is fine.
+			stickyCC := w.createStickyConsumer(
+				tt, h,
+			)
+			if stickyCC != nil {
+				w.consumeContexts = append(
+					w.consumeContexts, stickyCC,
+				)
+			}
+		} else {
+			for _, group := range w.groups {
+				subject := "task." + tt + "." +
+					group + ".>"
+				cc := w.createConsumer(
+					tt+"."+group, subject, h,
+				)
 				w.consumeContexts = append(
 					w.consumeContexts, cc,
 				)
-			} else {
-				for _, group := range w.groups {
-					subject := "task." + tt + "." +
-						group + ".>"
-					cc := w.createConsumer(
-						tt+"."+group, subject, h,
-					)
-					w.consumeContexts = append(
-						w.consumeContexts, cc,
-					)
-				}
 			}
 		}
 	}
@@ -351,6 +390,50 @@ func (w *Worker) createConsumer(
 			"Worker.Start: Consume failed for " +
 				name + ": " + err.Error(),
 		)
+	}
+	return cc
+}
+
+// createStickyConsumer sets up a pull consumer on the STICKY_TASKS
+// stream for worker-affinity routing. Returns nil if the stream
+// does not exist — sticky routing is optional.
+func (w *Worker) createStickyConsumer(
+	taskType string, handler HandlerFunc,
+) jetstream.ConsumeContext {
+	if taskType == "" {
+		panic(
+			"createStickyConsumer: taskType must not be empty",
+		)
+	}
+	if handler == nil {
+		panic(
+			"createStickyConsumer: handler must not be nil",
+		)
+	}
+	subject := "sticky." + taskType + "." +
+		w.workerID + ".>"
+	ctx := context.Background()
+	stream, err := w.js.Stream(ctx, "STICKY_TASKS")
+	if err != nil {
+		return nil // Stream not provisioned — skip
+	}
+	cons, err := stream.CreateOrUpdateConsumer(
+		ctx, jetstream.ConsumerConfig{
+			FilterSubject: subject,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		return nil
+	}
+	tt := taskType
+	h := handler
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		w.handleMessage(tt, h, msg)
+	})
+	if err != nil {
+		return nil
 	}
 	return cc
 }
@@ -516,6 +599,7 @@ func (w *Worker) handleMessage(
 		w.nc, w.tel, w.js, payload, ctx, span, msg,
 		w.checkpointKV, w.signalKV,
 	)
+	tc.workerID = w.workerID
 	err = handler(tc)
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Observe(elapsed)
