@@ -1723,6 +1723,16 @@ func (o *Orchestrator) publishTask(
 		panic("publishTask: step.ID must not be empty")
 	}
 
+	// Check rate limit before concurrency acquisition so we
+	// don't hold a concurrency slot while waiting for tokens.
+	if delayed, err := o.checkRateLimit(
+		step, runID, input,
+	); err != nil {
+		return err
+	} else if delayed {
+		return nil
+	}
+
 	// Check per-task-type concurrency before publishing.
 	if step.MaxTaskConcurrency > 0 && o.concurrency != nil {
 		acquired, err := o.concurrency.AcquireTask(
@@ -1738,15 +1748,6 @@ func (o *Orchestrator) publishTask(
 			)
 		}
 		o.taskConcurrencyAcquired.Inc()
-	}
-
-	// Check rate limit before publishing.
-	if delayed, err := o.checkRateLimit(
-		step, runID, input,
-	); err != nil {
-		return err
-	} else if delayed {
-		return nil
 	}
 
 	return o.doPublishTask(ctx, runID, step, input, attempt)
