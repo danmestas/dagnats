@@ -13,17 +13,28 @@ import (
 // events for each incoming message. The original message payload is embedded
 // in the TriggerEnvelope.
 type SubjectTrigger struct {
-	nc   *nats.Conn
-	js   nats.JetStreamContext
-	def  TriggerDef
-	sub  *nats.Subscription
-	done chan struct{}
+	nc       *nats.Conn
+	js       nats.JetStreamContext
+	def      TriggerDef
+	sub      *nats.Subscription
+	done     chan struct{}
+	debounce *Debouncer
+}
+
+// SubjectTriggerOpt configures optional behavior on SubjectTrigger.
+type SubjectTriggerOpt func(*SubjectTrigger)
+
+// WithDebouncer attaches a Debouncer for debounce-configured triggers.
+func WithDebouncer(d *Debouncer) SubjectTriggerOpt {
+	return func(st *SubjectTrigger) { st.debounce = d }
 }
 
 // NewSubjectTrigger creates a SubjectTrigger that subscribes to def.Subject.
 // Returns error if def lacks Subject config or subscription fails.
 // Panics if nc is nil (programmer error).
-func NewSubjectTrigger(nc *nats.Conn, def TriggerDef) (*SubjectTrigger, error) {
+func NewSubjectTrigger(
+	nc *nats.Conn, def TriggerDef, opts ...SubjectTriggerOpt,
+) (*SubjectTrigger, error) {
 	if nc == nil {
 		panic("NewSubjectTrigger: connection must not be nil")
 	}
@@ -48,6 +59,9 @@ func NewSubjectTrigger(nc *nats.Conn, def TriggerDef) (*SubjectTrigger, error) {
 		js:   js,
 		def:  def,
 		done: make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(trigger)
 	}
 
 	if def.Enabled {
@@ -97,6 +111,17 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 	var data json.RawMessage
 	if len(msg.Data) > 0 {
 		data = json.RawMessage(msg.Data)
+	}
+
+	// Route through debounce if configured
+	if s.def.Debounce != nil && s.debounce != nil {
+		fire, eventData, err := s.debounce.DebounceOrFire(
+			s.def, data,
+		)
+		if err != nil || !fire {
+			return
+		}
+		data = eventData
 	}
 
 	envelope := TriggerEnvelope{

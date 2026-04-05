@@ -158,7 +158,7 @@ func (c *Correlator) RemoveWaitersForRun(runID string) {
 		)
 	}
 	if c.kvWatch == nil {
-		panic("Correlator.RemoveWaitersForRun: not started")
+		return // correlator not started — nothing to clean up
 	}
 
 	c.mu.Lock()

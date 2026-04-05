@@ -6,6 +6,7 @@ package trigger
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateRejectsNoTriggerType(t *testing.T) {
@@ -176,5 +177,75 @@ func TestValidateAllThreeTypes(t *testing.T) {
 	// Positive: mentions count mismatch
 	if !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestValidateDebounceValid(t *testing.T) {
+	def := TriggerDef{
+		ID: "d1", WorkflowID: "wf",
+		Subject:  &SubjectConfig{Subject: "test.>"},
+		Debounce: &DebounceConfig{Period: 5 * time.Second},
+	}
+	// Positive: valid debounce config
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid debounce rejected: %v", err)
+	}
+}
+
+func TestValidateDebounceWithTimeout(t *testing.T) {
+	def := TriggerDef{
+		ID: "d2", WorkflowID: "wf",
+		Subject: &SubjectConfig{Subject: "test.>"},
+		Debounce: &DebounceConfig{
+			Period:  5 * time.Second,
+			Timeout: 30 * time.Second,
+		},
+	}
+	// Positive: timeout >= period is valid
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid debounce+timeout rejected: %v", err)
+	}
+}
+
+func TestValidateDebounceRejectsCron(t *testing.T) {
+	def := TriggerDef{
+		ID: "d3", WorkflowID: "wf",
+		Cron:     &CronConfig{Expression: "* * * * *"},
+		Debounce: &DebounceConfig{Period: 5 * time.Second},
+	}
+	err := Validate(def)
+	// Positive: cron+debounce rejected
+	if err == nil {
+		t.Fatal("expected error for cron+debounce")
+	}
+	if !strings.Contains(err.Error(), "incompatible") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestValidateDebounceZeroPeriod(t *testing.T) {
+	def := TriggerDef{
+		ID: "d4", WorkflowID: "wf",
+		Subject:  &SubjectConfig{Subject: "test.>"},
+		Debounce: &DebounceConfig{Period: 0},
+	}
+	// Positive: zero period rejected
+	if err := Validate(def); err == nil {
+		t.Fatal("expected error for zero period")
+	}
+}
+
+func TestValidateDebounceTimeoutLessThanPeriod(t *testing.T) {
+	def := TriggerDef{
+		ID: "d5", WorkflowID: "wf",
+		Subject: &SubjectConfig{Subject: "test.>"},
+		Debounce: &DebounceConfig{
+			Period:  10 * time.Second,
+			Timeout: 5 * time.Second,
+		},
+	}
+	// Positive: timeout < period rejected
+	if err := Validate(def); err == nil {
+		t.Fatal("expected error for timeout < period")
 	}
 }
