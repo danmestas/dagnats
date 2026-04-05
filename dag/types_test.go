@@ -659,3 +659,82 @@ func TestStepDef_SingletonJSON(t *testing.T) {
 		t.Error("non-singleton should omit field")
 	}
 }
+
+func TestCancelOnBuilderAndJSON(t *testing.T) {
+	wb := NewWorkflow("cancel-test")
+	wb.Task("s", "echo")
+	wb.CancelOn("task.done",
+		Match{Left: "data.task_id", Op: MatchOpEq,
+			Right: "input.task_id"})
+
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(def.CancelOn) != 1 {
+		t.Fatalf("CancelOn = %d, want 1", len(def.CancelOn))
+	}
+	if def.CancelOn[0].Event != "task.done" {
+		t.Fatalf("event = %q", def.CancelOn[0].Event)
+	}
+
+	data, _ := json.Marshal(def)
+	var got WorkflowDef
+	json.Unmarshal(data, &got)
+	if len(got.CancelOn) != 1 {
+		t.Fatalf("roundtrip: CancelOn = %d", len(got.CancelOn))
+	}
+}
+
+func TestCancelOnWithTimeout(t *testing.T) {
+	wb := NewWorkflow("cancel-timeout")
+	wb.Task("s", "echo")
+	wb.CancelOnWithTimeout("deploy.rollback",
+		Match{Left: "data.env", Op: MatchOpEq, Right: "input.env"},
+		1*time.Hour)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if def.CancelOn[0].Timeout != 1*time.Hour {
+		t.Fatalf("timeout = %v, want 1h",
+			def.CancelOn[0].Timeout)
+	}
+}
+
+func TestSingletonModeRoundTrip(t *testing.T) {
+	cfg := SingletonConfig{
+		Mode: SingletonModeCancel,
+		Key:  "data.env",
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got SingletonConfig
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Mode != SingletonModeCancel {
+		t.Fatalf("mode = %v, want cancel", got.Mode)
+	}
+	if got.Key != "data.env" {
+		t.Fatalf("key = %q, want data.env", got.Key)
+	}
+}
+
+func TestSingletonOnWorkflowDef(t *testing.T) {
+	wb := NewWorkflow("test-singleton")
+	wb.Task("s", "echo")
+	wb.WithSingleton(SingletonModeSkip)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if def.Singleton == nil {
+		t.Fatal("singleton should not be nil")
+	}
+	if def.Singleton.Mode != SingletonModeSkip {
+		t.Fatalf("mode = %v, want skip", def.Singleton.Mode)
+	}
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "../../docs/workflow-schema.json",
+  "name": "order-pipeline",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "validate",
+      "task": "validate-order",
+      "type": "normal"
+    },
+    {
+      "id": "process-payment",
+      "type": "sub_workflow",
+      "config": {
+        "workflow": "payment-flow"
+      },
+      "depends_on": ["validate"]
+    },
+    {
+      "id": "confirm",
+      "task": "send-confirmation",
+      "type": "normal",
+      "depends_on": ["process-payment"]
+    }
+  ]
+}

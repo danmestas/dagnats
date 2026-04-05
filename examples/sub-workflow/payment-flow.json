@@ -1,0 +1,12 @@
+{
+  "$schema": "../../docs/workflow-schema.json",
+  "name": "payment-flow",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "charge",
+      "task": "charge",
+      "type": "normal"
+    }
+  ]
+}

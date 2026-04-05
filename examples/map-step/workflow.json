@@ -1,0 +1,24 @@
+{
+  "$schema": "../../docs/workflow-schema.json",
+  "name": "image-pipeline",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "fetch-urls",
+      "task": "fetch-urls",
+      "type": "normal"
+    },
+    {
+      "id": "resize",
+      "task": "resize-image",
+      "type": "map",
+      "depends_on": ["fetch-urls"]
+    },
+    {
+      "id": "build-gallery",
+      "task": "build-gallery",
+      "type": "normal",
+      "depends_on": ["resize"]
+    }
+  ]
+}

@@ -32,6 +32,18 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validatePriority(def); err != nil {
+		return err
+	}
+
+	if err := validateCancelOn(def); err != nil {
+		return err
+	}
+
+	if err := validateSingleton(def); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 
@@ -472,6 +484,65 @@ func validateIdempotencyKey(key string) error {
 		if key[i] == '.' && key[i+1] == '.' {
 			return fmt.Errorf(
 				"idempotency_key %q: empty segment", key,
+			)
+		}
+	}
+	return nil
+}
+
+// validatePriority checks PriorityConfig constraints.
+func validatePriority(def WorkflowDef) error {
+	if def.Priority == nil {
+		return nil
+	}
+	if def.Priority.Key == "" {
+		return fmt.Errorf("priority: key must not be empty")
+	}
+	if len(def.Priority.Rules) == 0 {
+		return fmt.Errorf("priority: rules must not be empty")
+	}
+	if len(def.Priority.Rules) > 20 {
+		return fmt.Errorf("priority: max 20 rules")
+	}
+	for _, offset := range def.Priority.Rules {
+		if offset < -600 || offset > 600 {
+			return fmt.Errorf(
+				"priority: offset %d out of [-600, 600]",
+				offset,
+			)
+		}
+	}
+	if def.Priority.DefaultOffset < -600 ||
+		def.Priority.DefaultOffset > 600 {
+		return fmt.Errorf(
+			"priority: default_offset out of [-600, 600]",
+		)
+	}
+	return nil
+}
+
+// validateCancelOn checks CancelOn constraints.
+func validateCancelOn(def WorkflowDef) error {
+	if len(def.CancelOn) > 5 {
+		return fmt.Errorf("cancel_on: max 5 entries")
+	}
+	for i, co := range def.CancelOn {
+		if co.Event == "" {
+			return fmt.Errorf(
+				"cancel_on[%d]: event must not be empty", i,
+			)
+		}
+	}
+	return nil
+}
+
+// validateSingleton checks Singleton constraints.
+func validateSingleton(def WorkflowDef) error {
+	if def.Singleton != nil {
+		if def.Singleton.Mode != SingletonModeSkip &&
+			def.Singleton.Mode != SingletonModeCancel {
+			return fmt.Errorf(
+				"singleton: mode must be skip or cancel",
 			)
 		}
 	}

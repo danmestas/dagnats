@@ -87,6 +87,7 @@ func SetupKVBuckets(js jetstream.JetStream) error {
 		{Bucket: "debounce_state", TTL: 14 * 24 * time.Hour},
 		{Bucket: "idempotency_keys", TTL: 24 * time.Hour},
 		{Bucket: "sticky_bindings", TTL: 25 * time.Hour},
+		{Bucket: "singleton_locks"},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
