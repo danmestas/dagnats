@@ -75,6 +75,7 @@ func SetupKVBuckets(js nats.JetStreamContext) error {
 		{Bucket: "approval_tokens", History: 1, TTL: 168 * time.Hour},
 		{Bucket: "debounce_state", TTL: 14 * 24 * time.Hour},
 		{Bucket: "idempotency_keys", TTL: 24 * time.Hour},
+		{Bucket: "sticky_bindings", TTL: 25 * time.Hour},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
@@ -86,6 +87,22 @@ func SetupKVBuckets(js nats.JetStreamContext) error {
 		}
 	}
 	return nil
+}
+
+// SetupStickyStream creates the STICKY_TASKS stream for worker-
+// specific task routing. Separated from SetupStreams because it's
+// only needed when sticky workflows are in use.
+func SetupStickyStream(js nats.JetStreamContext) error {
+	if js == nil {
+		panic("SetupStickyStream: js must not be nil")
+	}
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "STICKY_TASKS",
+		Subjects: []string{"sticky.>"},
+		Storage:  nats.MemoryStorage,
+		MaxAge:   30 * time.Minute,
+	})
+	return err
 }
 
 // SetupTelemetryStream creates the TELEMETRY stream for all observability
@@ -170,6 +187,9 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		return err
 	}
 	if err := SetupTelemetryStream(js); err != nil {
+		return err
+	}
+	if err := SetupStickyStream(js); err != nil {
 		return err
 	}
 

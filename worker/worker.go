@@ -218,6 +218,20 @@ func (w *Worker) Start() {
 				)
 			}
 			w.subs = append(w.subs, sub)
+			// Sticky subscription on STICKY_TASKS stream (separate
+			// from TASK_QUEUES to avoid work queue filter conflict).
+			stickySubject := "sticky." + taskType + "." +
+				w.workerID + ".>"
+			stickySub, err := w.js.Subscribe(
+				stickySubject, func(msg *nats.Msg) {
+					w.handleMessage(tt, h, msg)
+				}, nats.AckExplicit(), nats.DeliverAll(),
+			)
+			if err == nil {
+				w.subs = append(w.subs, stickySub)
+			}
+			// If STICKY_TASKS stream doesn't exist, that's fine —
+			// sticky routing just won't work (no sticky workflows).
 		} else {
 			// Groups configured — subscribe to each group
 			for _, group := range w.groups {
@@ -321,6 +335,7 @@ func (w *Worker) handleMessage(
 		w.nc, w.tel, w.js, payload, ctx, span, msg,
 		w.checkpointKV, w.signalKV,
 	)
+	tc.workerID = w.workerID
 	err = handler(tc)
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Observe(elapsed)
