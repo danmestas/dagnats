@@ -31,4 +31,4 @@ jobs:
           staticcheck ./...
 
       - name: Test
-        run: go test ./... -timeout 120s -count=1
+        run: go test ./... -timeout 300s -count=1

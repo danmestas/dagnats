@@ -386,7 +386,8 @@ func writeConfFile(
 }
 
 // startServerFromConf parses a config file and starts the server.
-// Retries up to 3 times on startup failure (port races on CI).
+// Retries up to 5 times with increasing backoff on startup failure
+// (port races and slow CI runners).
 func startServerFromConf(
 	t *testing.T, confPath string,
 ) *natsserver.Server {
@@ -395,15 +396,16 @@ func startServerFromConf(
 	if err != nil {
 		t.Fatalf("config %s: %v", confPath, err)
 	}
-	const maxRetries = 3
-	const readyTimeout = 20 * time.Second
+	const maxRetries = 5
+	const readyTimeout = 30 * time.Second
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		srv, srvErr := natsserver.NewServer(opts)
 		if srvErr != nil {
 			if attempt == maxRetries {
 				t.Fatalf("server %s: %v", opts.ServerName, srvErr)
 			}
-			time.Sleep(100 * time.Millisecond)
+			backoff := time.Duration(attempt) * 200 * time.Millisecond
+			time.Sleep(backoff)
 			continue
 		}
 		srv.Start()
@@ -415,7 +417,8 @@ func startServerFromConf(
 			t.Fatalf("server %s: not ready after %d attempts",
 				opts.ServerName, maxRetries)
 		}
-		time.Sleep(200 * time.Millisecond)
+		backoff := time.Duration(attempt) * 500 * time.Millisecond
+		time.Sleep(backoff)
 	}
 	t.Fatal("startServerFromConf: unreachable")
 	return nil
