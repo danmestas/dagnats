@@ -39,10 +39,34 @@ Removed legacy field once all callers migrated.
 `bridge/`, `internal/trigger/`, `internal/observe/`, `internal/api/`,
 `internal/natsutil/`, `cli/`, `server/`.
 
-## Constraints
+## Context Threading
 
-- All new `ctx` parameters use `context.Background()`. Threading real
-  contexts through the call chain is a follow-up.
+Contexts are threaded from entry points through all JetStream/KV operations:
+
+| Entry Point | Context Source |
+|-------------|---------------|
+| Orchestrator event handler | Trace context from message headers |
+| Worker message handler | Trace context from message headers |
+| HTTP bridge handlers | `r.Context()` from net/http |
+| API Service methods | `ctx` parameter (caller provides) |
+| CLI commands | `context.Background()` (no parent — correct) |
+
+**Where `context.Background()` remains (justified):**
+- Constructors and startup (no parent context exists)
+- SleepTimer/Correlator fire methods (`WithTimeout(5s)` — react to
+  timers/watchers, no parent event context)
+- Observe telemetry publishes (`WithTimeout(2s)` — must not be cancelled
+  by the request they're recording)
+- Setup functions (`WithTimeout(30s)` — bounded startup)
+- WorkflowActor (runs in actor system, no parent request context)
+- Trace context origins (`extractTraceCtxJS` fallback)
+
+**Worker `TaskContext`:** Uses stored `tc.ctx` (from message trace context)
+for all internal JetStream operations. No public API change — `Complete`,
+`Fail`, etc. signatures unchanged.
+
+## Other Constraints
+
 - `*nats.Msg` is still used for constructing outbound messages (publish).
   `jetstream.Msg` is for received messages only.
 - `nats.Header` is still used for header construction.
