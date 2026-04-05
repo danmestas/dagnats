@@ -73,10 +73,11 @@ func TestDeduplication(t *testing.T) {
 			t.Fatalf("Publish 2: %v", err)
 		}
 
-		// Wait for the run to complete.
+		// Wait for the run to complete. Supercluster needs extra
+		// time for cross-cluster replication and leader election.
 		harness.WaitForRunStatus(
 			t, svc, runID,
-			dag.RunStatusCompleted, 15*time.Second,
+			dag.RunStatusCompleted, 30*time.Second,
 		)
 
 		// Positive: exactly one run exists.
