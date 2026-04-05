@@ -98,7 +98,7 @@ func (s *Service) bulkRetryInner(
 		return BulkRetryResponse{}, err
 	}
 
-	runs, err := s.store.ListAll(context.Background(), maxBulkRetryLimit+1)
+	runs, err := s.store.ListAll(ctx, maxBulkRetryLimit+1)
 	if err != nil {
 		return BulkRetryResponse{},
 			fmt.Errorf("list runs: %w", err)
@@ -133,7 +133,7 @@ func (s *Service) bulkRetryInner(
 	case "rerun":
 		return s.bulkRerun(ctx, matched)
 	case "replay":
-		return s.bulkReplay(matched)
+		return s.bulkReplay(ctx, matched)
 	default:
 		panic("bulkRetryInner: invalid mode passed validation")
 	}
@@ -182,7 +182,7 @@ func (s *Service) bulkRerun(
 
 // bulkReplay re-publishes DLQ task messages for failed steps.
 func (s *Service) bulkReplay(
-	matched []dag.WorkflowRun,
+	ctx context.Context, matched []dag.WorkflowRun,
 ) (BulkRetryResponse, error) {
 	if matched == nil {
 		panic("bulkReplay: matched must not be nil")
@@ -219,7 +219,7 @@ func (s *Service) bulkReplay(
 			continue
 		}
 		for _, entry := range entries {
-			err := s.replayDeadLetterInner(entry.Sequence)
+			err := s.replayDeadLetterInner(ctx, entry.Sequence)
 			if err != nil {
 				continue
 			}

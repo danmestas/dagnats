@@ -62,7 +62,7 @@ func (s *Service) ScheduleRun(
 	s.requestCount.Inc()
 
 	runID, err := s.scheduleRunInner(
-		workflowName, input, runAt,
+		ctx, workflowName, input, runAt,
 	)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
@@ -78,6 +78,7 @@ func (s *Service) ScheduleRun(
 
 // scheduleRunInner holds the core logic for ScheduleRun.
 func (s *Service) scheduleRunInner(
+	ctx context.Context,
 	workflowName string,
 	input []byte,
 	runAt time.Time,
@@ -92,7 +93,7 @@ func (s *Service) scheduleRunInner(
 	}
 
 	// Validate workflow exists.
-	_, err := s.defKV.Get(context.Background(), workflowName)
+	_, err := s.defKV.Get(ctx, workflowName)
 	if err != nil {
 		return "", fmt.Errorf(
 			"workflow %q not found: %w", workflowName, err,
@@ -114,7 +115,7 @@ func (s *Service) scheduleRunInner(
 	}
 
 	// Enforce max scheduled runs bound.
-	keys, err := s.scheduledKV.Keys(context.Background())
+	keys, err := s.scheduledKV.Keys(ctx)
 	if err == nil && len(keys) >= maxScheduledRuns {
 		return "", fmt.Errorf(
 			"maximum scheduled runs (%d) reached",
@@ -136,7 +137,7 @@ func (s *Service) scheduleRunInner(
 		return "", fmt.Errorf("marshal scheduled run: %w", err)
 	}
 	_, err = s.scheduledKV.Put(
-		context.Background(), runID, data,
+		ctx, runID, data,
 	)
 	if err != nil {
 		return "", fmt.Errorf("store scheduled run: %w", err)
@@ -155,7 +156,7 @@ func (s *Service) scheduleRunInner(
 		},
 	}
 	_, err = s.js.PublishMsg(
-		context.Background(), timerMsg,
+		ctx, timerMsg,
 	)
 	if err != nil {
 		return "", fmt.Errorf("publish timer: %w", err)

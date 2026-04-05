@@ -755,7 +755,7 @@ func TestDeleteTriggerInnerRemovesKey(t *testing.T) {
 	}
 
 	// Positive: deleteTriggerInner removes the key.
-	err = svc.deleteTriggerInner("del-inner")
+	err = svc.deleteTriggerInner(context.Background(), "del-inner")
 	if err != nil {
 		t.Fatalf("deleteTriggerInner failed: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestDeleteTriggerInnerRemovesKey(t *testing.T) {
 func TestDeleteTriggerInnerNilKV(t *testing.T) {
 	// Verify deleteTriggerInner returns error when KV is nil.
 	svc := &Service{triggerKV: nil}
-	err := svc.deleteTriggerInner("any-id")
+	err := svc.deleteTriggerInner(context.Background(), "any-id")
 	if err == nil {
 		t.Fatal("expected error when triggerKV is nil")
 	}
