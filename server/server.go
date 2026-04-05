@@ -14,6 +14,7 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/observe/otlp"
 	"github.com/danmestas/dagnats/internal/observe/simple"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/observe"
@@ -34,6 +35,7 @@ type Server struct {
 	svc         *api.Service
 	trig        *trigger.TriggerService
 	bridge      *bridge.Bridge
+	otlpBridge  *otlp.Bridge
 	httpSrv     *http.Server
 	tel         *observe.Telemetry
 	telStop     func()
@@ -193,6 +195,17 @@ func (s *Server) startComponents() error {
 	}
 	s.workerShims = nil // no ambiguous stale state
 
+	// Start OTLP bridge if endpoint is configured
+	if s.cfg.OTLPEndpoint != "" {
+		s.otlpBridge = otlp.NewBridge(s.nc, otlp.BridgeConfig{
+			Endpoint:    s.cfg.OTLPEndpoint,
+			ServiceName: "dagnats",
+		})
+		s.otlpBridge.Start()
+		printStep(os.Stderr,
+			"otlp bridge started → "+s.cfg.OTLPEndpoint)
+	}
+
 	return nil
 }
 
@@ -326,6 +339,10 @@ func (s *Server) shutdown() error {
 		printStep(os.Stderr, "stopping orchestrator...")
 		if s.orch != nil {
 			s.orch.Stop()
+		}
+		if s.otlpBridge != nil {
+			s.otlpBridge.Stop()
+			printStep(os.Stderr, "otlp bridge stopped")
 		}
 		if s.telStop != nil {
 			s.telStop()

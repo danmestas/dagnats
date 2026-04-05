@@ -38,6 +38,7 @@ type Config struct {
 	MonitorPort     int            `json:"monitor_port"`
 	MaxStoreBytes   int64          `json:"max_store_bytes"`
 	Workers         []WorkerConfig `json:"workers"`
+	OTLPEndpoint    string         `json:"otlp_endpoint"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.
@@ -149,6 +150,12 @@ func applyEnvOverrides(cfg *Config) {
 		if maxBytes, err := strconv.ParseInt(val, 10, 64); err == nil {
 			cfg.MaxStoreBytes = maxBytes
 		}
+	}
+
+	if val := os.Getenv(
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+	); val != "" {
+		cfg.OTLPEndpoint = val
 	}
 
 	// Override worker configs from env vars
@@ -274,6 +281,8 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			return fmt.Errorf("invalid max_store_bytes: %w", err)
 		}
 		cfg.MaxStoreBytes = maxBytes
+	case "otlp_endpoint":
+		cfg.OTLPEndpoint = val
 	default:
 		if strings.HasPrefix(key, "worker.") {
 			return applyWorkerConfigValue(key, val, cfg)
