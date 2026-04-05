@@ -1312,3 +1312,94 @@ func TestServiceListWorkersNoBucket(t *testing.T) {
 		t.Fatalf("expected 0 workers, got %d", len(workers))
 	}
 }
+
+func TestStartRunIdempotency(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	wb := dag.NewWorkflow("idemp-test")
+	wb.Task("process", "process-task")
+	wb.WithIdempotencyKey("request_id")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := svc.RegisterWorkflow(
+		context.Background(), def,
+	); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+
+	input := []byte(`{"request_id":"req-123","data":"hello"}`)
+
+	// First call — new run
+	runID1, err := svc.StartRun(
+		context.Background(), def.Name, input,
+	)
+	if err != nil {
+		t.Fatalf("StartRun 1: %v", err)
+	}
+	if runID1 == "" {
+		t.Fatal("expected non-empty runID")
+	}
+
+	// Second call — same input, same idempotency key
+	runID2, err := svc.StartRun(
+		context.Background(), def.Name, input,
+	)
+	if err != nil {
+		t.Fatalf("StartRun 2: %v", err)
+	}
+
+	// Positive: same run ID returned
+	if runID2 != runID1 {
+		t.Fatalf("expected same runID, got %q and %q",
+			runID1, runID2)
+	}
+
+	// Different input — new run
+	input2 := []byte(`{"request_id":"req-456","data":"world"}`)
+	runID3, err := svc.StartRun(
+		context.Background(), def.Name, input2,
+	)
+	if err != nil {
+		t.Fatalf("StartRun 3: %v", err)
+	}
+
+	// Negative: different key produces different run
+	if runID3 == runID1 {
+		t.Fatal("different key should produce different run")
+	}
+}
+
+func TestStartRunIdempotencyMissingKey(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+
+	wb := dag.NewWorkflow("idemp-missing")
+	wb.Task("process", "process-task")
+	wb.WithIdempotencyKey("nonexistent_field")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	svc.RegisterWorkflow(context.Background(), def)
+
+	// Positive: missing key doesn't prevent run creation
+	runID, err := svc.StartRun(
+		context.Background(), def.Name,
+		[]byte(`{"other":"value"}`),
+	)
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("expected non-empty runID despite missing key")
+	}
+}
