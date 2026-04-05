@@ -39,8 +39,7 @@ func TestSignalWait(t *testing.T) {
 		// Step waits for "approval" signal.
 		harness.SubscribeWorker(t, nc, "wait-for-approval",
 			func(tc worker.TaskContext) error {
-				sig := tc.(worker.Signaler)
-				data, err := sig.WaitForSignal(
+				data, err := tc.WaitForSignal(
 					"approval", 30*time.Second,
 				)
 				if err != nil {
