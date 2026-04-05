@@ -7,6 +7,7 @@
 package dag
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -81,43 +82,24 @@ func TestValidateValidDAG(t *testing.T) {
 
 func TestValidateAgentLoopRequiresLoopConfig(t *testing.T) {
 	def := WorkflowDef{Name: "loop-no-config", Version: "1", Steps: []StepDef{
-		{ID: "a", Task: "task-a", Type: StepTypeAgentLoop, Loop: nil},
+		{ID: "a", Task: "task-a", Type: StepTypeAgentLoop, Config: nil},
 	}}
 	err := Validate(def)
 	if err == nil {
-		t.Fatal("expected error for agent loop without Loop config, got nil")
+		t.Fatal("expected error for agent loop without Config, got nil")
 	}
-	if !strings.Contains(err.Error(), "Loop") {
-		t.Fatalf("error should mention 'Loop', got: %v", err)
+	if !strings.Contains(err.Error(), "AgentLoop") {
+		t.Fatalf("error should mention 'AgentLoop', got: %v", err)
 	}
 }
 
-func TestValidateNormalStepRejectsLoopConfig(t *testing.T) {
-	def := WorkflowDef{Name: "normal-with-loop", Version: "1", Steps: []StepDef{
-		{ID: "a", Task: "task-a", Type: StepTypeNormal, Loop: &AgentLoopConfig{MaxIterations: 5}},
-	}}
-	err := Validate(def)
-	if err == nil {
-		t.Fatal("expected error for normal step with Loop config, got nil")
-	}
-	if !strings.Contains(err.Error(), "Loop") {
-		t.Fatalf("error should mention 'Loop', got: %v", err)
-	}
-}
+// Normal steps no longer carry a separate Loop field, so there is
+// no way to mis-assign loop config to a Normal step via the struct.
+// This test is replaced by TestParseAgentLoopConfigWrongType.
 
-func TestValidateAgentStepRejectsLoopConfig(t *testing.T) {
-	def := WorkflowDef{Name: "bad-agent", Version: "1", Steps: []StepDef{
-		{ID: "a", Task: "llm-task", Type: StepTypeAgent,
-			Loop: &AgentLoopConfig{MaxIterations: 5}},
-	}}
-	err := Validate(def)
-	if err == nil {
-		t.Fatal("expected error for agent step with loop config, got nil")
-	}
-	if !strings.Contains(err.Error(), "Loop") {
-		t.Fatalf("error should mention Loop, got: %v", err)
-	}
-}
+// Agent steps no longer carry a separate Loop field, so there is
+// no way to mis-assign loop config to an Agent step via the struct.
+// This test is replaced by TestParseAgentLoopConfigWrongType.
 
 func TestValidateAgentStepValid(t *testing.T) {
 	def := WorkflowDef{Name: "good-agent", Version: "1", Steps: []StepDef{
@@ -232,7 +214,7 @@ func TestValidateMapStepOneDep(t *testing.T) {
 		Steps: []StepDef{
 			{ID: "input", Task: "t", Type: StepTypeNormal},
 			{ID: "m", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 100}, DependsOn: []string{"input"}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 100}), DependsOn: []string{"input"}},
 		},
 	}
 	if err := Validate(def); err != nil {
@@ -244,7 +226,7 @@ func TestValidateMapStepOneDep(t *testing.T) {
 		Name: "v", Version: "1",
 		Steps: []StepDef{
 			{ID: "m", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 100}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 100})},
 		},
 	}
 	err := Validate(def2)
@@ -263,7 +245,7 @@ func TestValidateMapStepMultipleDepsRejected(t *testing.T) {
 			{ID: "a", Task: "t", Type: StepTypeNormal},
 			{ID: "b", Task: "t", Type: StepTypeNormal},
 			{ID: "m", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 100}, DependsOn: []string{"a", "b"}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 100}), DependsOn: []string{"a", "b"}},
 		},
 	}
 	err := Validate(def)
@@ -279,7 +261,7 @@ func TestValidateMapStepMaxItems(t *testing.T) {
 		Steps: []StepDef{
 			{ID: "input", Task: "t", Type: StepTypeNormal},
 			{ID: "m", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 5000}, DependsOn: []string{"input"}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 5000}), DependsOn: []string{"input"}},
 		},
 	}
 	if err := Validate(def); err != nil {
@@ -292,7 +274,7 @@ func TestValidateMapStepMaxItems(t *testing.T) {
 		Steps: []StepDef{
 			{ID: "input", Task: "t", Type: StepTypeNormal},
 			{ID: "m", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 0}, DependsOn: []string{"input"}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 0}), DependsOn: []string{"input"}},
 		},
 	}
 	err := Validate(def2)
@@ -306,7 +288,7 @@ func TestValidateMapStepMaxItems(t *testing.T) {
 		Steps: []StepDef{
 			{ID: "input", Task: "t", Type: StepTypeNormal},
 			{ID: "m", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 10001}, DependsOn: []string{"input"}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 10001}), DependsOn: []string{"input"}},
 		},
 	}
 	err = Validate(def3)
@@ -321,9 +303,9 @@ func TestValidateMapNoNesting(t *testing.T) {
 		Steps: []StepDef{
 			{ID: "input", Task: "t", Type: StepTypeNormal},
 			{ID: "m1", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 100}, DependsOn: []string{"input"}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 100}), DependsOn: []string{"input"}},
 			{ID: "m2", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 50}, DependsOn: []string{"m1"}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 50}), DependsOn: []string{"m1"}},
 		},
 	}
 	err := Validate(def)
@@ -341,7 +323,7 @@ func TestValidateMapNoNesting(t *testing.T) {
 		Steps: []StepDef{
 			{ID: "input", Task: "t", Type: StepTypeNormal},
 			{ID: "m", Task: "t", Type: StepTypeMap,
-				Map: &MapConfig{MaxItems: 100}, DependsOn: []string{"input"}},
+				Config: MarshalConfig(&MapConfig{MaxItems: 100}), DependsOn: []string{"input"}},
 		},
 	}
 	if err := Validate(def2); err != nil {
@@ -355,12 +337,12 @@ func TestValidateMapStepRequiresMapConfig(t *testing.T) {
 		Steps: []StepDef{
 			{ID: "input", Task: "t", Type: StepTypeNormal},
 			{ID: "m", Task: "t", Type: StepTypeMap,
-				Map: nil, DependsOn: []string{"input"}},
+				Config: nil, DependsOn: []string{"input"}},
 		},
 	}
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic for Map step without Map config")
+			t.Fatal("expected panic for Map step without Config")
 		}
 	}()
 	Validate(def)
@@ -372,15 +354,17 @@ func TestValidateEmptyTaskForTaskRequiringTypes(t *testing.T) {
 	taskRequiringTypes := []struct {
 		name     string
 		stepType StepType
-		loop     *AgentLoopConfig
-		mapCfg   *MapConfig
+		config   json.RawMessage
 		deps     []string
 	}{
-		{"Normal", StepTypeNormal, nil, nil, nil},
-		{"AgentLoop", StepTypeAgentLoop, &AgentLoopConfig{MaxIterations: 5}, nil, nil},
-		{"SubWorkflow", StepTypeSubWorkflow, nil, nil, nil},
-		{"Agent", StepTypeAgent, nil, nil, nil},
-		{"Map", StepTypeMap, nil, &MapConfig{MaxItems: 100}, []string{"input"}},
+		{"Normal", StepTypeNormal, nil, nil},
+		{"AgentLoop", StepTypeAgentLoop,
+			MarshalConfig(&AgentLoopConfig{MaxIterations: 5}), nil},
+		{"SubWorkflow", StepTypeSubWorkflow, nil, nil},
+		{"Agent", StepTypeAgent, nil, nil},
+		{"Map", StepTypeMap,
+			MarshalConfig(&MapConfig{MaxItems: 100}),
+			[]string{"input"}},
 	}
 
 	for _, tc := range taskRequiringTypes {
@@ -391,8 +375,7 @@ func TestValidateEmptyTaskForTaskRequiringTypes(t *testing.T) {
 					ID:        "test",
 					Task:      "",
 					Type:      tc.stepType,
-					Loop:      tc.loop,
-					Map:       tc.mapCfg,
+					Config:    tc.config,
 					DependsOn: tc.deps,
 				},
 			}
@@ -457,5 +440,109 @@ func TestValidateSleepDuration365DayMax(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds max") {
 		t.Fatalf("expected 'exceeds max' in error, got: %v", err)
+	}
+}
+
+func TestValidateMaxTaskConcurrencyBounds(t *testing.T) {
+	// Negative: exceeds upper bound
+	def := WorkflowDef{
+		Name:    "bad-tc",
+		Version: "1",
+		Steps: []StepDef{
+			{
+				ID: "a", Task: "task-a",
+				Type:               StepTypeNormal,
+				MaxTaskConcurrency: 1001,
+			},
+		},
+	}
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for MaxTaskConcurrency > 1000")
+	}
+	if !strings.Contains(err.Error(), "MaxTaskConcurrency") {
+		t.Fatalf("error should mention MaxTaskConcurrency: %v", err)
+	}
+
+	// Positive: valid value passes
+	def.Steps[0].MaxTaskConcurrency = 100
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid MaxTaskConcurrency should pass: %v", err)
+	}
+}
+
+func TestValidateMaxTaskConcurrencyNegative(t *testing.T) {
+	def := WorkflowDef{
+		Name:    "neg-tc",
+		Version: "1",
+		Steps: []StepDef{
+			{
+				ID: "a", Task: "task-a",
+				Type:               StepTypeNormal,
+				MaxTaskConcurrency: -1,
+			},
+		},
+	}
+	// Positive: negative values rejected
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for negative MaxTaskConcurrency")
+	}
+	// Negative: zero is valid (means unlimited)
+	def.Steps[0].MaxTaskConcurrency = 0
+	if err := Validate(def); err != nil {
+		t.Fatalf("zero MaxTaskConcurrency should pass: %v", err)
+	}
+}
+
+func TestValidateConcurrencyMaxStepsBounds(t *testing.T) {
+	def := WorkflowDef{
+		Name:    "bad-ms",
+		Version: "1",
+		Steps: []StepDef{
+			{ID: "a", Task: "task-a", Type: StepTypeNormal},
+		},
+		Concurrency: &ConcurrencyLimit{MaxSteps: 1001},
+	}
+	// Positive: exceeds bound
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected error for MaxSteps > 1000")
+	}
+	if !strings.Contains(err.Error(), "MaxSteps") {
+		t.Fatalf("error should mention MaxSteps: %v", err)
+	}
+
+	// Negative: valid value passes
+	def.Concurrency.MaxSteps = 10
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid MaxSteps should pass: %v", err)
+	}
+}
+
+func TestBuilderWithConcurrency(t *testing.T) {
+	wf := NewWorkflow("concur-wf")
+	wf.WithConcurrency(3, 5)
+	wf.Task("a", "task-a")
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	// Positive: concurrency set
+	if def.Concurrency == nil {
+		t.Fatal("Concurrency should not be nil")
+	}
+	if def.Concurrency.MaxRuns != 3 {
+		t.Fatalf("MaxRuns = %d, want 3", def.Concurrency.MaxRuns)
+	}
+	if def.Concurrency.MaxSteps != 5 {
+		t.Fatalf("MaxSteps = %d, want 5", def.Concurrency.MaxSteps)
+	}
+	// Negative: builder without WithConcurrency has nil
+	wf2 := NewWorkflow("no-concur")
+	wf2.Task("b", "task-b")
+	def2, _ := wf2.Build()
+	if def2.Concurrency != nil {
+		t.Fatal("Concurrency should be nil when not set")
 	}
 }

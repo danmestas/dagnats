@@ -71,6 +71,8 @@ func SetupKVBuckets(js nats.JetStreamContext) error {
 		{Bucket: "workers", TTL: 60 * time.Second},
 		{Bucket: "event_waiters"},
 		{Bucket: "rate_limits"},
+		{Bucket: "concurrency_tasks", History: 1},
+		{Bucket: "approval_tokens", History: 1, TTL: 168 * time.Hour},
 		{Bucket: "debounce_state", TTL: 14 * 24 * time.Hour},
 	}
 	if len(buckets) == 0 {

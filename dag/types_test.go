@@ -113,7 +113,7 @@ func TestWorkflowDefJSONRoundTrip(t *testing.T) {
 				DependsOn: []string{"step-a"},
 				Timeout:   60 * time.Second,
 				Type:      StepTypeAgentLoop,
-				Loop:      &AgentLoopConfig{MaxIterations: 10, MaxDuration: 5 * time.Minute},
+				Config:    MarshalConfig(&AgentLoopConfig{MaxIterations: 10, MaxDuration: 5 * time.Minute}),
 			},
 		},
 	}
@@ -138,11 +138,12 @@ func TestWorkflowDefJSONRoundTrip(t *testing.T) {
 	if got.Steps[1].Type != StepTypeAgentLoop {
 		t.Fatalf("Steps[1].Type = %v, want %v", got.Steps[1].Type, StepTypeAgentLoop)
 	}
-	if got.Steps[1].Loop == nil {
-		t.Fatal("Steps[1].Loop must not be nil for AgentLoop")
+	loopCfg, loopErr := ParseAgentLoopConfig(got.Steps[1])
+	if loopErr != nil {
+		t.Fatalf("ParseAgentLoopConfig: %v", loopErr)
 	}
-	if got.Steps[1].Loop.MaxIterations != 10 {
-		t.Fatalf("Steps[1].Loop.MaxIterations = %d, want 10", got.Steps[1].Loop.MaxIterations)
+	if loopCfg.MaxIterations != 10 {
+		t.Fatalf("MaxIterations = %d, want 10", loopCfg.MaxIterations)
 	}
 }
 

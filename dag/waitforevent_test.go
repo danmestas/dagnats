@@ -144,11 +144,11 @@ func TestValidateWaitForEventMissingFields(t *testing.T) {
 	step := StepDef{
 		ID:   "wait",
 		Type: StepTypeWaitForEvent,
-		WaitForEvent: &WaitForEventOpts{
+		Config: MarshalConfig(&WaitForEventOpts{
 			Event:   "",
 			Match:   Match{Left: "x", Op: MatchOpEq, Right: "input.y"},
 			Timeout: time.Second,
-		},
+		}),
 	}
 	err := validateWaitForEventStep(step, ids)
 	if err == nil {
@@ -156,16 +156,22 @@ func TestValidateWaitForEventMissingFields(t *testing.T) {
 	}
 
 	// Missing Match.Left
-	step.WaitForEvent.Event = "test.event"
-	step.WaitForEvent.Match.Left = ""
+	step.Config = MarshalConfig(&WaitForEventOpts{
+		Event:   "test.event",
+		Match:   Match{Left: "", Op: MatchOpEq, Right: "input.y"},
+		Timeout: time.Second,
+	})
 	err = validateWaitForEventStep(step, ids)
 	if err == nil {
 		t.Fatal("expected error for missing Match.Left, got nil")
 	}
 
 	// Missing Match.Op
-	step.WaitForEvent.Match.Left = "event.data.X"
-	step.WaitForEvent.Match.Op = ""
+	step.Config = MarshalConfig(&WaitForEventOpts{
+		Event:   "test.event",
+		Match:   Match{Left: "event.data.X", Op: "", Right: "input.y"},
+		Timeout: time.Second,
+	})
 	err = validateWaitForEventStep(step, ids)
 	if err == nil {
 		t.Fatal("expected error for missing Match.Op, got nil")
@@ -178,7 +184,7 @@ func TestValidateWaitForEventInvalidStepRef(t *testing.T) {
 	step := StepDef{
 		ID:   "wait",
 		Type: StepTypeWaitForEvent,
-		WaitForEvent: &WaitForEventOpts{
+		Config: MarshalConfig(&WaitForEventOpts{
 			Event: "test.event",
 			Match: Match{
 				Left:  "event.data.X",
@@ -186,7 +192,7 @@ func TestValidateWaitForEventInvalidStepRef(t *testing.T) {
 				Right: "step.missing.output.Y",
 			},
 			Timeout: time.Second,
-		},
+		}),
 	}
 
 	err := validateWaitForEventStep(step, ids)
@@ -206,7 +212,7 @@ func TestValidateWaitForEventValidStep(t *testing.T) {
 	step := StepDef{
 		ID:   "wait",
 		Type: StepTypeWaitForEvent,
-		WaitForEvent: &WaitForEventOpts{
+		Config: MarshalConfig(&WaitForEventOpts{
 			Event: "test.event",
 			Match: Match{
 				Left:  "event.data.X",
@@ -214,7 +220,7 @@ func TestValidateWaitForEventValidStep(t *testing.T) {
 				Right: "step.prev.output.Y",
 			},
 			Timeout: 5 * time.Second,
-		},
+		}),
 	}
 
 	err := validateWaitForEventStep(step, ids)
@@ -224,7 +230,15 @@ func TestValidateWaitForEventValidStep(t *testing.T) {
 	}
 
 	// Negative: try with input path
-	step.WaitForEvent.Match.Right = "input.Z"
+	step.Config = MarshalConfig(&WaitForEventOpts{
+		Event: "test.event",
+		Match: Match{
+			Left:  "event.data.X",
+			Op:    MatchOpEq,
+			Right: "input.Z",
+		},
+		Timeout: 5 * time.Second,
+	})
 	err = validateWaitForEventStep(step, ids)
 	if err != nil {
 		t.Fatalf("expected no error for input path, got: %v", err)

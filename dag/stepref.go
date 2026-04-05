@@ -71,10 +71,15 @@ func (r StepRef) WithMaxIterations(n int) StepRef {
 	if r.builder == nil {
 		panic("WithMaxIterations called on zero-value StepRef")
 	}
-	if r.builder.steps[r.index].Loop == nil {
+	if r.builder.steps[r.index].Type != StepTypeAgentLoop {
 		panic("WithMaxIterations called on non-AgentLoop step")
 	}
-	r.builder.steps[r.index].Loop.MaxIterations = n
+	cfg, err := ParseAgentLoopConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithMaxIterations: " + err.Error())
+	}
+	cfg.MaxIterations = n
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
 	return r
 }
 
@@ -85,10 +90,15 @@ func (r StepRef) WithLoopDelay(d time.Duration) StepRef {
 	if r.builder == nil {
 		panic("WithLoopDelay called on zero-value StepRef")
 	}
-	if r.builder.steps[r.index].Loop == nil {
+	if r.builder.steps[r.index].Type != StepTypeAgentLoop {
 		panic("WithLoopDelay called on non-AgentLoop step")
 	}
-	r.builder.steps[r.index].Loop.LoopDelay = d
+	cfg, err := ParseAgentLoopConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithLoopDelay: " + err.Error())
+	}
+	cfg.LoopDelay = d
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
 	return r
 }
 
@@ -97,10 +107,15 @@ func (r StepRef) WithMaxDuration(d time.Duration) StepRef {
 	if r.builder == nil {
 		panic("WithMaxDuration called on zero-value StepRef")
 	}
-	if r.builder.steps[r.index].Loop == nil {
+	if r.builder.steps[r.index].Type != StepTypeAgentLoop {
 		panic("WithMaxDuration called on non-AgentLoop step")
 	}
-	r.builder.steps[r.index].Loop.MaxDuration = d
+	cfg, err := ParseAgentLoopConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithMaxDuration: " + err.Error())
+	}
+	cfg.MaxDuration = d
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
 	return r
 }
 
@@ -111,13 +126,37 @@ func (r StepRef) WithMaxItems(n int) StepRef {
 	if r.builder == nil {
 		panic("WithMaxItems called on zero-value StepRef")
 	}
-	if r.builder.steps[r.index].Map == nil {
+	if r.builder.steps[r.index].Type != StepTypeMap {
 		panic("WithMaxItems called on non-Map step")
 	}
 	if n <= 0 {
 		panic("WithMaxItems: n must be positive")
 	}
-	r.builder.steps[r.index].Map.MaxItems = n
+	cfg, err := ParseMapConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithMaxItems: " + err.Error())
+	}
+	cfg.MaxItems = n
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
+	return r
+}
+
+// WithDetach marks a SubWorkflow step as detached — the parent step
+// completes immediately after spawning the child, without waiting for
+// the child to finish. Panics if called on a non-SubWorkflow step.
+func (r StepRef) WithDetach() StepRef {
+	if r.builder == nil {
+		panic("WithDetach called on zero-value StepRef")
+	}
+	if r.builder.steps[r.index].Type != StepTypeSubWorkflow {
+		panic("WithDetach called on non-SubWorkflow step")
+	}
+	cfg, err := ParseSubWorkflowConfig(r.builder.steps[r.index])
+	if err != nil {
+		panic("WithDetach: " + err.Error())
+	}
+	cfg.Detach = true
+	r.builder.steps[r.index].Config = MarshalConfig(&cfg)
 	return r
 }
 
@@ -173,5 +212,19 @@ func (r StepRef) WithKeyedRateLimit(krl KeyedRateLimit) StepRef {
 		panic("WithKeyedRateLimit called on zero-value StepRef")
 	}
 	r.builder.steps[r.index].KeyedRateLimit = &krl
+	return r
+}
+
+// WithTaskConcurrency sets the global per-task-type concurrency
+// limit on this step. At most max tasks of this type will execute
+// concurrently across all workflow runs.
+func (r StepRef) WithTaskConcurrency(max int) StepRef {
+	if r.builder == nil {
+		panic("WithTaskConcurrency called on zero-value StepRef")
+	}
+	if max <= 0 {
+		panic("WithTaskConcurrency: max must be positive")
+	}
+	r.builder.steps[r.index].MaxTaskConcurrency = max
 	return r
 }

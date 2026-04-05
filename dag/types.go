@@ -18,10 +18,12 @@ const (
 	StepTypeMap
 	StepTypeSleep
 	StepTypeWaitForEvent
+	StepTypeApproval
+	StepTypePlanner
 )
 
 var stepTypeStrings = [...]string{
-	"normal", "agent_loop", "sub_workflow", "agent", "map", "sleep", "wait_for_event",
+	"normal", "agent_loop", "sub_workflow", "agent", "map", "sleep", "wait_for_event", "approval", "planner",
 }
 
 func (s StepType) String() string {
@@ -160,26 +162,25 @@ type ConcurrencyLimit struct {
 
 // StepDef is the immutable declaration of a single step within a WorkflowDef.
 // DependsOn lists step IDs that must complete before this step is queued.
-// NOTE: Tier 2+ must refactor to step-type-specific config before adding fields.
+// Config holds type-specific configuration as raw JSON — use ParseXxxConfig
+// helpers to extract typed structs.
 type StepDef struct {
-	ID             string            `json:"id"`
-	Task           string            `json:"task"`
-	DependsOn      []string          `json:"depends_on,omitempty"`
-	Retries        int               `json:"retries,omitempty"`
-	Timeout        time.Duration     `json:"timeout"`
-	Type           StepType          `json:"type"`
-	Loop           *AgentLoopConfig  `json:"loop,omitempty"`
-	Map            *MapConfig        `json:"map,omitempty"`
-	SkipIf         *ParentCond       `json:"skip_if,omitempty"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
-	Retry          *RetryPolicy      `json:"retry,omitempty"`
-	WorkerGroup    string            `json:"worker_group,omitempty"`
-	OnFailure      string            `json:"on_failure,omitempty"`
-	Compensate     string            `json:"compensate,omitempty"`
-	Duration       time.Duration     `json:"duration,omitempty"`
-	RateLimit      *RateLimit        `json:"rate_limit,omitempty"`
-	KeyedRateLimit *KeyedRateLimit   `json:"keyed_rate_limit,omitempty"`
-	WaitForEvent   *WaitForEventOpts `json:"wait_for_event,omitempty"`
+	ID                 string            `json:"id"`
+	Task               string            `json:"task"`
+	DependsOn          []string          `json:"depends_on,omitempty"`
+	Retries            int               `json:"retries,omitempty"`
+	Timeout            time.Duration     `json:"timeout"`
+	Type               StepType          `json:"type"`
+	Config             json.RawMessage   `json:"config,omitempty"`
+	SkipIf             *ParentCond       `json:"skip_if,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
+	Retry              *RetryPolicy      `json:"retry,omitempty"`
+	WorkerGroup        string            `json:"worker_group,omitempty"`
+	OnFailure          string            `json:"on_failure,omitempty"`
+	Compensate         string            `json:"compensate,omitempty"`
+	RateLimit          *RateLimit        `json:"rate_limit,omitempty"`
+	KeyedRateLimit     *KeyedRateLimit   `json:"keyed_rate_limit,omitempty"`
+	MaxTaskConcurrency int               `json:"max_task_concurrency,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced
@@ -211,6 +212,7 @@ type MapInstanceState struct {
 // LoopStartedAt records when the first iteration began, for MaxDuration enforcement.
 // MapInstances tracks state for each parallel map item when Type == StepTypeMap.
 // WakeAt records when a sleep step should complete, for engine scheduling.
+// ChildRunID links to the spawned child run for SubWorkflow steps.
 type StepState struct {
 	Status        StepStatus         `json:"status"`
 	Attempts      int                `json:"attempts"`
@@ -220,6 +222,7 @@ type StepState struct {
 	Error         string             `json:"error,omitempty"`
 	MapInstances  []MapInstanceState `json:"map_instances,omitempty"`
 	WakeAt        *time.Time         `json:"wake_at,omitempty"`
+	ChildRunID    string             `json:"child_run_id,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.
@@ -232,6 +235,7 @@ type WorkflowRun struct {
 	Steps        map[string]StepState `json:"steps"`
 	Input        json.RawMessage      `json:"input,omitempty"`
 	CreatedAt    time.Time            `json:"created_at"`
+	DynamicSteps []StepDef            `json:"dynamic_steps,omitempty"`
 	ParentRunID  string               `json:"parent_run_id,omitempty"`
 	ParentStepID string               `json:"parent_step_id,omitempty"`
 	Deadline     *time.Time           `json:"deadline,omitempty"`

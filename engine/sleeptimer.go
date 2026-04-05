@@ -20,11 +20,12 @@ import (
 type TimerAction string
 
 const (
-	TimerActionSleepComplete TimerAction = "sleep_complete"
-	TimerActionRateRetry     TimerAction = "rate_retry"
-	TimerActionWaitTimeout   TimerAction = "wait_timeout"
-	TimerActionRetryAfter    TimerAction = "retry_after"
-	TimerActionDebounce      TimerAction = "debounce_fire"
+	TimerActionSleepComplete   TimerAction = "sleep_complete"
+	TimerActionRateRetry       TimerAction = "rate_retry"
+	TimerActionWaitTimeout     TimerAction = "wait_timeout"
+	TimerActionRetryAfter      TimerAction = "retry_after"
+	TimerActionTaskConcurRetry TimerAction = "task_concurrency_retry"
+	TimerActionDebounce        TimerAction = "debounce_fire"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
@@ -218,6 +219,10 @@ func (st *SleepTimer) handleTimer(msg *nats.Msg) {
 		st.fireWaitTimeout(tm)
 	case TimerActionRetryAfter:
 		st.fireRetryAfter(tm)
+	case TimerActionApprovalTimeout:
+		st.fireApprovalTimeout(tm)
+	case TimerActionTaskConcurRetry:
+		st.fireRateRetry(tm) // Same re-publish logic as rate retry
 	case TimerActionDebounce:
 		if st.onDebounce != nil {
 			st.onDebounce(tm, meta.Sequence.Stream)
@@ -264,6 +269,32 @@ func (st *SleepTimer) fireWaitTimeout(tm TimerMessage) {
 	}
 	evt := protocol.NewStepEvent(
 		protocol.EventStepWaitTimeout,
+		tm.RunID, tm.StepID, nil,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return
+	}
+	st.js.Publish(
+		evt.NATSSubject(), data,
+		nats.MsgId(evt.NATSMsgID()),
+	)
+}
+
+// fireApprovalTimeout publishes an EventApprovalExpired event to
+// the history stream. The orchestrator will fail the approval step
+// if it has not already been resolved.
+func (st *SleepTimer) fireApprovalTimeout(tm TimerMessage) {
+	if tm.RunID == "" {
+		panic("fireApprovalTimeout: RunID must not be empty")
+	}
+	if tm.StepID == "" {
+		panic(
+			"fireApprovalTimeout: StepID must not be empty",
+		)
+	}
+	evt := protocol.NewStepEvent(
+		protocol.EventApprovalExpired,
 		tm.RunID, tm.StepID, nil,
 	)
 	data, err := evt.Marshal()

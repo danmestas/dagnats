@@ -73,11 +73,15 @@ func TestStepRefAgentLoop(t *testing.T) {
 	if step.Type != StepTypeAgentLoop {
 		t.Fatalf("fix.Type = %v, want AgentLoop", step.Type)
 	}
-	if step.Loop.MaxIterations != 10 {
-		t.Fatalf("MaxIterations = %d, want 10", step.Loop.MaxIterations)
+	loopCfg, loopErr := ParseAgentLoopConfig(*step)
+	if loopErr != nil {
+		t.Fatalf("ParseAgentLoopConfig: %v", loopErr)
 	}
-	if step.Loop.MaxDuration != 5*time.Minute {
-		t.Fatalf("MaxDuration = %v, want 5m", step.Loop.MaxDuration)
+	if loopCfg.MaxIterations != 10 {
+		t.Fatalf("MaxIterations = %d, want 10", loopCfg.MaxIterations)
+	}
+	if loopCfg.MaxDuration != 5*time.Minute {
+		t.Fatalf("MaxDuration = %v, want 5m", loopCfg.MaxDuration)
 	}
 }
 
@@ -93,8 +97,9 @@ func TestStepRefWithTimeout(t *testing.T) {
 	if step.Timeout != 30*time.Second {
 		t.Fatalf("Timeout = %v, want 30s", step.Timeout)
 	}
-	if step.Loop != nil {
-		t.Fatal("normal step should not have Loop config")
+	_, loopErr := ParseAgentLoopConfig(*step)
+	if loopErr == nil {
+		t.Fatal("normal step should not have AgentLoop config")
 	}
 }
 
@@ -195,12 +200,14 @@ func TestStepRefWithLoopDelay(t *testing.T) {
 	}
 	step := findStep(def, "fix")
 	// Positive: loop delay set
-	if step.Loop.LoopDelay != 2*time.Second {
-		t.Fatalf("LoopDelay = %v, want 2s", step.Loop.LoopDelay)
+	loopCfg2, _ := ParseAgentLoopConfig(*step)
+	if loopCfg2.LoopDelay != 2*time.Second {
+		t.Fatalf("LoopDelay = %v, want 2s", loopCfg2.LoopDelay)
 	}
 	// Negative: prep step has no loop config
-	if findStep(def, "prep").Loop != nil {
-		t.Fatal("prep should not have Loop config")
+	_, prepErr := ParseAgentLoopConfig(*findStep(def, "prep"))
+	if prepErr == nil {
+		t.Fatal("prep should not have AgentLoop config")
 	}
 }
 
@@ -288,8 +295,12 @@ func TestStepRefWithMaxItems(t *testing.T) {
 
 	step := findStep(def, "m")
 	// Positive: MaxItems set
-	if step.Map.MaxItems != 500 {
-		t.Fatalf("MaxItems = %d, want 500", step.Map.MaxItems)
+	mapCfg, mapErr := ParseMapConfig(*step)
+	if mapErr != nil {
+		t.Fatalf("ParseMapConfig: %v", mapErr)
+	}
+	if mapCfg.MaxItems != 500 {
+		t.Fatalf("MaxItems = %d, want 500", mapCfg.MaxItems)
 	}
 
 	// Negative: default is 1000 when not overridden
@@ -297,7 +308,8 @@ func TestStepRefWithMaxItems(t *testing.T) {
 	input2 := wf2.Task("input", "task-input")
 	wf2.Map("m2", "task-m").After(input2)
 	def2, _ := wf2.Build()
-	if findStep(def2, "m2").Map.MaxItems != 1000 {
+	mapCfg2, _ := ParseMapConfig(*findStep(def2, "m2"))
+	if mapCfg2.MaxItems != 1000 {
 		t.Fatal("default MaxItems should be 1000")
 	}
 }
@@ -416,4 +428,53 @@ func TestStepRefOnFailurePanicsSelfReference(t *testing.T) {
 	wb := NewWorkflow("test")
 	main := wb.Task("main", "t")
 	main.OnFailure(main)
+}
+
+func TestStepRefWithTaskConcurrency(t *testing.T) {
+	wf := NewWorkflow("task-concur")
+	_ = wf.Task("a", "call-claude").WithTaskConcurrency(5)
+	def, err := wf.Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	// Positive: MaxTaskConcurrency is set
+	step := findStep(def, "a")
+	if step.MaxTaskConcurrency != 5 {
+		t.Fatalf(
+			"MaxTaskConcurrency = %d, want 5",
+			step.MaxTaskConcurrency,
+		)
+	}
+	// Negative: unset step has zero value
+	wf2 := NewWorkflow("no-concur")
+	wf2.Task("b", "task-b")
+	def2, _ := wf2.Build()
+	step2 := findStep(def2, "b")
+	if step2.MaxTaskConcurrency != 0 {
+		t.Fatalf(
+			"MaxTaskConcurrency = %d, want 0",
+			step2.MaxTaskConcurrency,
+		)
+	}
+}
+
+func TestStepRefWithTaskConcurrencyZeroValuePanics(t *testing.T) {
+	var ref StepRef
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero-value StepRef")
+		}
+	}()
+	_ = ref.WithTaskConcurrency(1)
+}
+
+func TestStepRefWithTaskConcurrencyNonPositivePanics(t *testing.T) {
+	wf := NewWorkflow("bad")
+	ref := wf.Task("a", "task-a")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for non-positive max")
+		}
+	}()
+	_ = ref.WithTaskConcurrency(0)
 }

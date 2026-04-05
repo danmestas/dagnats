@@ -98,6 +98,14 @@ func (s *Service) routeRunByID(
 		handleSendSignal(s, w, r)
 		return
 	}
+	if len(parts) >= 3 && parts[1] == "approval" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		handleApproval(s, w, r)
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "scheduled" {
 		switch r.Method {
 		case http.MethodGet:
@@ -381,6 +389,81 @@ func handleSendSignal(
 	)
 	if encErr != nil {
 		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// handleApproval processes POST /runs/{id}/approval/{step_id}.
+// Query params: action (approve/reject), token.
+// Optional JSON body with comment, approved_by.
+func handleApproval(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleApproval: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleApproval: r must not be nil")
+	}
+	parts := strings.Split(
+		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
+	)
+	if len(parts) < 3 || parts[2] == "" {
+		http.Error(w, "missing step ID",
+			http.StatusBadRequest)
+		return
+	}
+	runID := parts[0]
+	stepID := parts[2]
+	token := r.URL.Query().Get("token")
+	action := r.URL.Query().Get("action")
+
+	var body json.RawMessage
+	if r.Body != nil {
+		const maxBody = 1 << 20 // 1 MiB
+		limited := io.LimitReader(r.Body, maxBody)
+		data, readErr := io.ReadAll(limited)
+		if readErr != nil {
+			http.Error(w, "read body: "+readErr.Error(),
+				http.StatusBadRequest)
+			return
+		}
+		if len(data) > 0 {
+			body = data
+		}
+	}
+
+	err := svc.HandleApproval(
+		r.Context(), runID, stepID, token, action, body,
+	)
+	if err != nil {
+		code := approvalErrorCode(err)
+		http.Error(w, err.Error(), code)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(
+		map[string]string{
+			"status": action + "d",
+			"run_id": runID,
+			"step":   stepID,
+		},
+	)
+}
+
+// approvalErrorCode maps approval errors to HTTP status codes.
+func approvalErrorCode(err error) int {
+	if err == nil {
+		panic("approvalErrorCode: err must not be nil")
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "invalid token"),
+		strings.Contains(msg, "not found or expired"):
+		return http.StatusUnauthorized
+	case strings.Contains(msg, "already consumed"):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
 	}
 }
 

@@ -135,27 +135,40 @@ func validateWaitForEventStep(step StepDef, ids map[string]bool) error {
 		panic("validateWaitForEventStep: step ID must not be empty")
 	}
 
-	opts := step.WaitForEvent
-	if opts == nil {
-		return fmt.Errorf("step %q: WaitForEvent config is nil", step.ID)
+	opts, err := ParseWaitForEventConfig(step)
+	if err != nil {
+		return fmt.Errorf(
+			"step %q: WaitForEvent config is nil", step.ID)
 	}
 	if opts.Event == "" {
-		return fmt.Errorf("step %q: WaitForEvent.Event must not be empty", step.ID)
+		return fmt.Errorf(
+			"step %q: WaitForEvent.Event must not be empty",
+			step.ID)
 	}
 	if opts.Match.Left == "" {
-		return fmt.Errorf("step %q: WaitForEvent.Match.Left must not be empty", step.ID)
+		return fmt.Errorf(
+			"step %q: WaitForEvent.Match.Left must not be empty",
+			step.ID)
 	}
 	if opts.Match.Op == "" {
-		return fmt.Errorf("step %q: WaitForEvent.Match.Op must not be empty", step.ID)
+		return fmt.Errorf(
+			"step %q: WaitForEvent.Match.Op must not be empty",
+			step.ID)
 	}
 	if opts.Match.Right == "" {
-		return fmt.Errorf("step %q: WaitForEvent.Match.Right must not be empty", step.ID)
+		return fmt.Errorf(
+			"step %q: WaitForEvent.Match.Right must not be empty",
+			step.ID)
 	}
 	if opts.Timeout <= 0 {
-		return fmt.Errorf("step %q: WaitForEvent.Timeout must be positive", step.ID)
+		return fmt.Errorf(
+			"step %q: WaitForEvent.Timeout must be positive",
+			step.ID)
 	}
 
-	if err := validateMatchDotPaths(step.ID, opts.Match, ids); err != nil {
+	if err := validateMatchDotPaths(
+		step.ID, opts.Match, ids,
+	); err != nil {
 		return err
 	}
 

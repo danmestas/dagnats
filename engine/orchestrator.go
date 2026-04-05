@@ -19,6 +19,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nuid"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -40,13 +41,15 @@ type Orchestrator struct {
 	correlator  *Correlator             // event wait-for-event matching
 
 	// Pre-allocated metric instruments — created once in constructor.
-	runsActive       observe.Gauge
-	runsCompleted    observe.Counter
-	runsFailed       observe.Counter
-	stepEnqueueCount observe.Counter
-	snapshotDuration observe.Histogram
-	failNonRetriable observe.Counter
-	failRetryAfter   observe.Counter
+	runsActive              observe.Gauge
+	runsCompleted           observe.Counter
+	runsFailed              observe.Counter
+	stepEnqueueCount        observe.Counter
+	snapshotDuration        observe.Histogram
+	failNonRetriable        observe.Counter
+	failRetryAfter          observe.Counter
+	taskConcurrencyAcquired observe.Counter
+	taskConcurrencyRejected observe.Counter
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -114,6 +117,12 @@ func NewOrchestrator(
 		),
 		failRetryAfter: tel.Metrics.Counter(
 			"step.failure.retry_after", nil,
+		),
+		taskConcurrencyAcquired: tel.Metrics.Counter(
+			"task.concurrency.acquired", nil,
+		),
+		taskConcurrencyRejected: tel.Metrics.Counter(
+			"task.concurrency.rejected", nil,
 		),
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
@@ -225,10 +234,15 @@ func isHandledEventType(t protocol.EventType) bool {
 		protocol.EventStepContinue,
 		protocol.EventStepFailed,
 		protocol.EventWorkflowSpawn,
+		protocol.EventWorkflowChildCompleted,
+		protocol.EventWorkflowChildFailed,
 		protocol.EventWorkflowCancelled,
 		protocol.EventStepSleepCompleted,
 		protocol.EventStepWaitMatched,
-		protocol.EventStepWaitTimeout:
+		protocol.EventStepWaitTimeout,
+		protocol.EventApprovalGranted,
+		protocol.EventApprovalRejected,
+		protocol.EventApprovalExpired:
 		return true
 	}
 	return false
@@ -270,8 +284,18 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepFailed(ctx, evt)
 	case protocol.EventWorkflowSpawn:
 		return o.handleWorkflowSpawn(ctx, evt)
+	case protocol.EventWorkflowChildCompleted:
+		return o.handleChildCompleted(ctx, evt)
+	case protocol.EventWorkflowChildFailed:
+		return o.handleChildFailed(ctx, evt)
 	case protocol.EventWorkflowCancelled:
 		return o.handleWorkflowCancelled(ctx, evt)
+	case protocol.EventApprovalGranted:
+		return o.handleApprovalGranted(ctx, evt)
+	case protocol.EventApprovalRejected:
+		return o.handleApprovalRejected(ctx, evt)
+	case protocol.EventApprovalExpired:
+		return o.handleApprovalExpired(ctx, evt)
 	default:
 		return nil
 	}
@@ -388,6 +412,18 @@ func (o *Orchestrator) handleStepCompleted(
 	state.Status = dag.StepStatusCompleted
 	state.Output = evt.Payload
 	run.Steps[evt.StepID] = state
+
+	// Release task concurrency slot if configured.
+	o.releaseTaskSlot(wfDef, evt.StepID)
+
+	// If the completed step is a planner, materialize its output
+	// into the running DAG before checking completion or enqueueing.
+	stepDef, foundStep := findStepDef(wfDef, evt.StepID)
+	if foundStep && stepDef.Type == dag.StepTypePlanner {
+		return o.materializePlannerOutput(
+			ctx, wfDef, run, stepDef, evt.Payload,
+		)
+	}
 
 	// Check if this completed step is an OnFailure handler.
 	// If so, mark the original failed step as Recovered and
@@ -633,8 +669,9 @@ func (o *Orchestrator) handleStepContinue(
 	}
 	// If LoopDelay is configured, delay re-enqueue via a context-aware
 	// timer goroutine. Cancels cleanly if context expires before delay.
-	if stepDef.Loop != nil && stepDef.Loop.LoopDelay > 0 {
-		delay := stepDef.Loop.LoopDelay
+	loopCfg, _ := dag.ParseAgentLoopConfig(stepDef)
+	if loopCfg.LoopDelay > 0 {
+		delay := loopCfg.LoopDelay
 		runID := run.RunID
 		iter := state.Iterations
 		loopCtx := ctx
@@ -681,22 +718,23 @@ func findStepDef(
 func checkLoopBounds(
 	stepDef dag.StepDef, state dag.StepState,
 ) (bool, string) {
-	if stepDef.Loop == nil {
+	cfg, err := dag.ParseAgentLoopConfig(stepDef)
+	if err != nil {
 		return false, ""
 	}
-	if stepDef.Loop.MaxIterations > 0 &&
-		state.Iterations >= stepDef.Loop.MaxIterations {
+	if cfg.MaxIterations > 0 &&
+		state.Iterations >= cfg.MaxIterations {
 		return true, fmt.Sprintf(
 			"agent loop exceeded max iterations (%d)",
-			stepDef.Loop.MaxIterations,
+			cfg.MaxIterations,
 		)
 	}
-	if stepDef.Loop.MaxDuration > 0 &&
+	if cfg.MaxDuration > 0 &&
 		!state.LoopStartedAt.IsZero() &&
-		time.Since(state.LoopStartedAt) >= stepDef.Loop.MaxDuration {
+		time.Since(state.LoopStartedAt) >= cfg.MaxDuration {
 		return true, fmt.Sprintf(
 			"agent loop exceeded max duration (%s)",
-			stepDef.Loop.MaxDuration,
+			cfg.MaxDuration,
 		)
 	}
 	return false, ""
@@ -906,6 +944,9 @@ func (o *Orchestrator) handlePermanentFailure(
 			"handlePermanentFailure: RunID must not be empty",
 		)
 	}
+
+	// Release task concurrency slot if configured.
+	o.releaseTaskSlot(wfDef, stepID)
 
 	// If this is an auxiliary step (compensate target) failing,
 	// the compensation itself failed — critical state.
@@ -1240,7 +1281,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if evt.RunID == "" {
 		panic("handleWorkflowCancelled: RunID must not be empty")
 	}
-	_, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -1258,9 +1299,18 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		}
 	}
 
+	// Release task concurrency slots for cancelled steps that
+	// were queued or running (they held a slot).
+	o.releaseCancelledTaskSlots(wfDef, run)
+
+	// Clean up approval tokens for cancelled approval steps.
+	o.cleanupApprovalTokens(wfDef, run)
+
 	if o.correlator != nil {
 		o.correlator.RemoveWaitersForRun(run.RunID)
 	}
+
+	o.cascadeCancelChildren(wfDef, run)
 
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
@@ -1270,8 +1320,9 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
-		// Auto-start next pending run if available
-		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
+		if err := o.startNextPendingRun(
+			ctx, run.WorkflowID,
+		); err != nil {
 			o.tel.Logger.Error(
 				"failed to start next pending run", err,
 				observe.String("workflow_id", run.WorkflowID),
@@ -1279,6 +1330,60 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		}
 	}
 	return o.notifyParentIfChild(run, fmt.Errorf("cancelled"))
+}
+
+// cascadeCancelChildren publishes cancellation events for all
+// non-detached child workflows that are still running. Detached
+// children have no ParentRunID so they are not cancelled.
+func (o *Orchestrator) cascadeCancelChildren(
+	wfDef dag.WorkflowDef, run dag.WorkflowRun,
+) {
+	if run.RunID == "" {
+		panic("cascadeCancelChildren: RunID must not be empty")
+	}
+	if run.Steps == nil {
+		panic("cascadeCancelChildren: Steps must not be nil")
+	}
+
+	for _, stepDef := range wfDef.Steps {
+		if stepDef.Type != dag.StepTypeSubWorkflow {
+			continue
+		}
+		state := run.Steps[stepDef.ID]
+		if state.ChildRunID == "" {
+			continue
+		}
+		childRun, err := o.store.Load(state.ChildRunID)
+		if err != nil {
+			continue
+		}
+		// Detached children have no ParentRunID — skip them.
+		if childRun.ParentRunID == "" {
+			continue
+		}
+		if childRun.Status != dag.RunStatusRunning {
+			continue
+		}
+		o.publishCancelEvent(state.ChildRunID)
+	}
+}
+
+// publishCancelEvent publishes EventWorkflowCancelled for a run.
+func (o *Orchestrator) publishCancelEvent(runID string) {
+	if runID == "" {
+		panic("publishCancelEvent: runID must not be empty")
+	}
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowCancelled, runID, nil,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return
+	}
+	o.js.Publish(
+		evt.NATSSubject(), data,
+		nats.MsgId(evt.NATSMsgID()),
+	)
 }
 
 const maxNestingDepth = 3
@@ -1308,9 +1413,11 @@ func (o *Orchestrator) handleWorkflowSpawn(
 		panic("handleWorkflowSpawn: RunID must not be empty")
 	}
 	var payload struct {
-		ChildRunID    string `json:"child_run_id"`
-		ChildWorkflow string `json:"child_workflow"`
-		ParentStepID  string `json:"parent_step_id"`
+		ChildRunID    string          `json:"child_run_id"`
+		ChildWorkflow string          `json:"child_workflow"`
+		ParentStepID  string          `json:"parent_step_id"`
+		Input         json.RawMessage `json:"input"`
+		Detach        bool            `json:"detach"`
 	}
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
 		return fmt.Errorf("unmarshal spawn payload: %w", err)
@@ -1332,11 +1439,35 @@ func (o *Orchestrator) handleWorkflowSpawn(
 		)
 	}
 
-	entry, err := o.defKV.Get(payload.ChildWorkflow)
+	return o.createChildRun(ctx, evt.RunID, payload.ChildRunID,
+		payload.ChildWorkflow, payload.ParentStepID,
+		payload.Input, payload.Detach)
+}
+
+// createChildRun loads the child workflow def, creates the child run,
+// and enqueues its entry-point steps. For detached children the parent
+// link is omitted so they run independently.
+func (o *Orchestrator) createChildRun(
+	ctx context.Context,
+	parentRunID string,
+	childRunID string,
+	childWorkflow string,
+	parentStepID string,
+	input json.RawMessage,
+	detach bool,
+) error {
+	if childRunID == "" {
+		panic("createChildRun: childRunID must not be empty")
+	}
+	if childWorkflow == "" {
+		panic("createChildRun: childWorkflow must not be empty")
+	}
+
+	entry, err := o.defKV.Get(childWorkflow)
 	if err != nil {
 		return fmt.Errorf(
 			"load child workflow def %q: %w",
-			payload.ChildWorkflow, err,
+			childWorkflow, err,
 		)
 	}
 	var childDef dag.WorkflowDef
@@ -1344,10 +1475,13 @@ func (o *Orchestrator) handleWorkflowSpawn(
 		return fmt.Errorf("unmarshal child def: %w", err)
 	}
 
-	childRun := dag.NewWorkflowRun(childDef, payload.ChildRunID)
-	childRun.ParentRunID = evt.RunID
-	childRun.ParentStepID = payload.ParentStepID
+	childRun := dag.NewWorkflowRun(childDef, childRunID)
+	childRun.Input = input
 	childRun.Status = dag.RunStatusRunning
+	if !detach {
+		childRun.ParentRunID = parentRunID
+		childRun.ParentStepID = parentStepID
+	}
 
 	if err := o.saveSnapshot(ctx, childRun); err != nil {
 		return err
@@ -1380,8 +1514,12 @@ func (o *Orchestrator) notifyParentIfChild(
 		return fmt.Errorf("marshal child event payload: %w", err)
 	}
 
-	evt := protocol.NewWorkflowEvent(
-		eventType, run.ParentRunID, payload)
+	// Use NewStepEvent keyed by ParentStepID so that multiple child
+	// completions from different sub-workflow steps produce distinct
+	// dedup IDs instead of colliding on a single workflow-level MsgID.
+	evt := protocol.NewStepEvent(
+		eventType, run.ParentRunID, run.ParentStepID, payload,
+	)
 	data, err := evt.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal child event: %w", err)
@@ -1448,6 +1586,20 @@ func (o *Orchestrator) enqueueReady(
 		}
 	}
 	ready = filtered
+
+	// Per-run step concurrency: cap how many steps dispatch.
+	if wfDef.Concurrency != nil &&
+		wfDef.Concurrency.MaxSteps > 0 {
+		activeCount := countActiveSteps(run)
+		available := wfDef.Concurrency.MaxSteps - activeCount
+		if available <= 0 {
+			return nil
+		}
+		if len(ready) > available {
+			ready = ready[:available]
+		}
+	}
+
 	span.SetAttributes(
 		observe.Int64Attr("ready_steps_count", int64(len(ready))),
 	)
@@ -1479,6 +1631,12 @@ func (o *Orchestrator) dispatchReadySteps(
 	var normalSteps []dag.StepDef
 	for _, step := range ready {
 		switch step.Type {
+		case dag.StepTypeSubWorkflow:
+			if err := o.enqueueSubWorkflow(
+				ctx, wfDef, &run, step,
+			); err != nil {
+				return err
+			}
 		case dag.StepTypeMap:
 			if err := o.enqueueMapStep(
 				ctx, wfDef, &run, step,
@@ -1493,6 +1651,12 @@ func (o *Orchestrator) dispatchReadySteps(
 			}
 		case dag.StepTypeWaitForEvent:
 			if err := o.enqueueWaitForEventStep(
+				ctx, wfDef, &run, step,
+			); err != nil {
+				return err
+			}
+		case dag.StepTypeApproval:
+			if err := o.enqueueApprovalStep(
 				ctx, wfDef, &run, step,
 			); err != nil {
 				return err
@@ -1559,13 +1723,31 @@ func (o *Orchestrator) publishTask(
 		panic("publishTask: step.ID must not be empty")
 	}
 
-	// Check rate limit before publishing.
+	// Check rate limit before concurrency acquisition so we
+	// don't hold a concurrency slot while waiting for tokens.
 	if delayed, err := o.checkRateLimit(
 		step, runID, input,
 	); err != nil {
 		return err
 	} else if delayed {
 		return nil
+	}
+
+	// Check per-task-type concurrency before publishing.
+	if step.MaxTaskConcurrency > 0 && o.concurrency != nil {
+		acquired, err := o.concurrency.AcquireTask(
+			step.Task, step.MaxTaskConcurrency,
+		)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			o.taskConcurrencyRejected.Inc()
+			return o.scheduleTaskConcurrencyRetry(
+				step, runID, input,
+			)
+		}
+		o.taskConcurrencyAcquired.Inc()
 	}
 
 	return o.doPublishTask(ctx, runID, step, input, attempt)
@@ -1670,6 +1852,29 @@ func (o *Orchestrator) scheduleRateRetry(
 		RunID:      runID,
 		StepID:     step.ID,
 		DurationMs: durationMs,
+		TaskType:   step.Task,
+		Input:      input,
+	})
+}
+
+// scheduleTaskConcurrencyRetry schedules a timer to re-attempt
+// task dispatch after the task concurrency slot frees up.
+func (o *Orchestrator) scheduleTaskConcurrencyRetry(
+	step dag.StepDef, runID string, input []byte,
+) error {
+	if runID == "" {
+		panic("scheduleTaskConcurrencyRetry: " +
+			"runID must not be empty")
+	}
+	if step.ID == "" {
+		panic("scheduleTaskConcurrencyRetry: " +
+			"step.ID must not be empty")
+	}
+	return o.sleepTimer.Schedule(TimerMessage{
+		Action:     TimerActionTaskConcurRetry,
+		RunID:      runID,
+		StepID:     step.ID,
+		DurationMs: 1000,
 		TaskType:   step.Task,
 		Input:      input,
 	})
@@ -1840,6 +2045,7 @@ func (o *Orchestrator) loadRunAndDef(
 			fmt.Errorf("unmarshal workflow def %q: %w",
 				run.WorkflowID, err)
 	}
+	wfDef = dag.EffectiveDef(wfDef, run)
 	return wfDef, run, nil
 }
 
@@ -1970,10 +2176,15 @@ func (o *Orchestrator) enqueueSleepStep(
 		panic("enqueueSleepStep: RunID must not be empty")
 	}
 
+	sleepCfg, err := dag.ParseSleepConfig(step)
+	if err != nil {
+		return fmt.Errorf("enqueueSleepStep: %w", err)
+	}
+
 	// Mark step as Running and record wake time.
 	state := run.Steps[step.ID]
 	state.Status = dag.StepStatusRunning
-	wakeAt := time.Now().Add(step.Duration)
+	wakeAt := time.Now().Add(sleepCfg.Duration)
 	state.WakeAt = &wakeAt
 	run.Steps[step.ID] = state
 	if err := o.saveSnapshot(ctx, *run); err != nil {
@@ -1984,7 +2195,7 @@ func (o *Orchestrator) enqueueSleepStep(
 	o.publishSleepStarted(run.RunID, step.ID)
 
 	// Schedule durable timer via NakWithDelay.
-	durationMs := step.Duration.Milliseconds()
+	durationMs := sleepCfg.Duration.Milliseconds()
 	if durationMs <= 0 {
 		durationMs = 1
 	}
@@ -2088,10 +2299,11 @@ func (o *Orchestrator) validateAndInitMapInstances(
 	step dag.StepDef,
 	items []json.RawMessage,
 ) error {
-	if step.Map == nil {
-		panic("validateAndInitMapInstances: Map config is nil")
+	mapCfg, err := dag.ParseMapConfig(step)
+	if err != nil {
+		panic("validateAndInitMapInstances: " + err.Error())
 	}
-	maxItems := step.Map.MaxItems
+	maxItems := mapCfg.MaxItems
 	if len(items) > maxItems {
 		return fmt.Errorf(
 			"map step %q: %d items exceeds MaxItems %d",
@@ -2321,8 +2533,8 @@ func (o *Orchestrator) enqueueWaitForEventStep(
 		panic("enqueueWaitForEventStep: RunID must not be empty")
 	}
 
-	opts := step.WaitForEvent
-	if opts == nil {
+	opts, err := dag.ParseWaitForEventConfig(step)
+	if err != nil {
 		return fmt.Errorf(
 			"step %q: WaitForEvent config is nil", step.ID,
 		)
@@ -2338,7 +2550,7 @@ func (o *Orchestrator) enqueueWaitForEventStep(
 	}
 
 	return o.startWaitForEvent(
-		ctx, run, step, opts, resolvedMatch,
+		ctx, run, step, &opts, resolvedMatch,
 	)
 }
 
@@ -2491,6 +2703,283 @@ func (o *Orchestrator) handleWaitTimeout(
 	return o.enqueueReady(ctx, wfDef, run)
 }
 
+// enqueueSubWorkflow resolves input, generates a child run ID, and
+// publishes a spawn event. For detached sub-workflows the parent step
+// completes immediately; otherwise it stays Running until the child
+// finishes.
+func (o *Orchestrator) enqueueSubWorkflow(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+) error {
+	if step.Type != dag.StepTypeSubWorkflow {
+		panic("enqueueSubWorkflow: wrong step type")
+	}
+	if run.RunID == "" {
+		panic("enqueueSubWorkflow: RunID must not be empty")
+	}
+
+	cfg, err := dag.ParseSubWorkflowConfig(step)
+	if err != nil {
+		return fmt.Errorf("parse sub-workflow config: %w", err)
+	}
+
+	input, err := dag.ResolveInput(step, run.Steps)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve input for step %q: %w", step.ID, err,
+		)
+	}
+	childRunID := nuid.Next()
+
+	if err := o.spawnChild(
+		ctx, wfDef, run, step, cfg, input, childRunID,
+	); err != nil {
+		return err
+	}
+
+	// Detached sub-workflows complete the parent step immediately,
+	// which may unblock downstream steps or complete the workflow.
+	if cfg.Detach {
+		completed := completedSet(*run)
+		if dag.IsComplete(wfDef, completed) {
+			return o.completeWorkflow(ctx, *run)
+		}
+		return o.enqueueReady(ctx, wfDef, *run)
+	}
+	return nil
+}
+
+// spawnChild marks the parent step state, saves the snapshot, and
+// publishes the spawn event. Extracted to keep enqueueSubWorkflow
+// within the 70-line limit.
+func (o *Orchestrator) spawnChild(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+	cfg dag.SubWorkflowConfig,
+	input []byte,
+	childRunID string,
+) error {
+	if childRunID == "" {
+		panic("spawnChild: childRunID must not be empty")
+	}
+	if step.ID == "" {
+		panic("spawnChild: step.ID must not be empty")
+	}
+
+	state := run.Steps[step.ID]
+	if cfg.Detach {
+		state.Status = dag.StepStatusCompleted
+		state.ChildRunID = childRunID
+		state.Output = []byte(fmt.Sprintf(
+			`{"child_run_id":%q}`, childRunID,
+		))
+	} else {
+		state.Status = dag.StepStatusRunning
+		state.ChildRunID = childRunID
+	}
+	run.Steps[step.ID] = state
+	if err := o.saveSnapshot(ctx, *run); err != nil {
+		return err
+	}
+
+	return o.publishSpawnEvent(
+		run.RunID, step.ID, cfg, input, childRunID,
+	)
+}
+
+// publishSpawnEvent publishes EventWorkflowSpawn to the history
+// stream with the child run metadata in the payload.
+func (o *Orchestrator) publishSpawnEvent(
+	parentRunID string,
+	parentStepID string,
+	cfg dag.SubWorkflowConfig,
+	input []byte,
+	childRunID string,
+) error {
+	if parentRunID == "" {
+		panic("publishSpawnEvent: parentRunID must not be empty")
+	}
+	if parentStepID == "" {
+		panic("publishSpawnEvent: parentStepID must not be empty")
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"child_run_id":   childRunID,
+		"child_workflow": cfg.Workflow,
+		"parent_step_id": parentStepID,
+		"input":          json.RawMessage(input),
+		"detach":         cfg.Detach,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal spawn payload: %w", err)
+	}
+
+	evt := protocol.NewStepEvent(
+		protocol.EventWorkflowSpawn,
+		parentRunID, parentStepID, payload,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal spawn event: %w", err)
+	}
+
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Data:    data,
+		Header: nats.Header{
+			"Nats-Msg-Id": {evt.NATSMsgID()},
+		},
+	}
+	_, err = o.js.PublishMsg(msg)
+	return err
+}
+
+// handleChildCompleted processes EventWorkflowChildCompleted: loads
+// the child run's terminal output, marks the parent step Completed,
+// and enqueues the next ready steps.
+func (o *Orchestrator) handleChildCompleted(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleChildCompleted: RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleChildCompleted: StepID must not be empty")
+	}
+
+	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	if err != nil {
+		return err
+	}
+
+	state := run.Steps[evt.StepID]
+	if state.Status != dag.StepStatusRunning {
+		return nil // Already handled or cancelled.
+	}
+
+	output, err := o.loadChildTerminalOutputs(state.ChildRunID)
+	if err != nil {
+		return fmt.Errorf("load child outputs: %w", err)
+	}
+
+	state.Status = dag.StepStatusCompleted
+	state.Output = output
+	run.Steps[evt.StepID] = state
+
+	completed := completedSet(run)
+	if dag.IsComplete(wfDef, completed) {
+		return o.completeWorkflow(ctx, run)
+	}
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	return o.enqueueReady(ctx, wfDef, run)
+}
+
+// loadChildTerminalOutputs loads the child run and its workflow def,
+// finds terminal steps (steps no other step depends on), and returns
+// their outputs. One terminal step returns raw output; multiple
+// returns a JSON map keyed by step ID.
+func (o *Orchestrator) loadChildTerminalOutputs(
+	childRunID string,
+) ([]byte, error) {
+	if childRunID == "" {
+		panic("loadChildTerminalOutputs: childRunID empty")
+	}
+	childDef, childRun, err := o.loadRunAndDef(childRunID)
+	if err != nil {
+		return nil, err
+	}
+	return collectTerminalOutputs(childDef, childRun)
+}
+
+// collectTerminalOutputs finds steps that no other step depends on
+// and returns their outputs. Single terminal returns raw output;
+// multiple terminals return a JSON map keyed by step ID.
+func collectTerminalOutputs(
+	def dag.WorkflowDef, run dag.WorkflowRun,
+) ([]byte, error) {
+	if len(def.Steps) == 0 {
+		panic("collectTerminalOutputs: def has no steps")
+	}
+	if run.Steps == nil {
+		panic("collectTerminalOutputs: run.Steps is nil")
+	}
+	depTargets := make(map[string]bool, len(def.Steps))
+	for _, step := range def.Steps {
+		for _, dep := range step.DependsOn {
+			depTargets[dep] = true
+		}
+	}
+	var terminals []dag.StepDef
+	const maxTerminals = 1000
+	for _, step := range def.Steps {
+		if !depTargets[step.ID] {
+			terminals = append(terminals, step)
+		}
+		if len(terminals) > maxTerminals {
+			break
+		}
+	}
+	if len(terminals) == 1 {
+		return run.Steps[terminals[0].ID].Output, nil
+	}
+	collected := make(
+		map[string]json.RawMessage, len(terminals),
+	)
+	for _, step := range terminals {
+		collected[step.ID] = run.Steps[step.ID].Output
+	}
+	return json.Marshal(collected)
+}
+
+// handleChildFailed processes EventWorkflowChildFailed: marks the
+// parent step Failed and delegates to failWorkflow.
+func (o *Orchestrator) handleChildFailed(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleChildFailed: RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleChildFailed: StepID must not be empty")
+	}
+
+	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	if err != nil {
+		return err
+	}
+
+	state := run.Steps[evt.StepID]
+	if state.Status != dag.StepStatusRunning {
+		return nil // Already handled or cancelled.
+	}
+
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if evt.Payload != nil {
+		if err := json.Unmarshal(
+			evt.Payload, &payload,
+		); err != nil {
+			return fmt.Errorf(
+				"unmarshal child failed payload: %w", err,
+			)
+		}
+	}
+
+	state.Status = dag.StepStatusFailed
+	state.Error = "child workflow failed: " + payload.Error
+	run.Steps[evt.StepID] = state
+
+	stepDef, _ := findStepDef(wfDef, evt.StepID)
+	return o.failWorkflow(ctx, run, stepDef, state)
+}
+
 // completedSet returns a set of step IDs whose status is Completed,
 // Skipped, or Recovered. All three count as "resolved" for downstream
 // dependency resolution and workflow completion checks.
@@ -2524,4 +3013,54 @@ func queuedSet(run dag.WorkflowRun) map[string]bool {
 		}
 	}
 	return result
+}
+
+// releaseTaskSlot releases a task concurrency slot for the given
+// step if MaxTaskConcurrency is configured.
+func (o *Orchestrator) releaseTaskSlot(
+	wfDef dag.WorkflowDef, stepID string,
+) {
+	if o.concurrency == nil {
+		return
+	}
+	stepDef, found := findStepDef(wfDef, stepID)
+	if !found || stepDef.MaxTaskConcurrency <= 0 {
+		return
+	}
+	o.concurrency.ReleaseTask(stepDef.Task)
+}
+
+// releaseCancelledTaskSlots releases task concurrency slots for
+// all steps that were cancelled while queued or running.
+func (o *Orchestrator) releaseCancelledTaskSlots(
+	wfDef dag.WorkflowDef, run dag.WorkflowRun,
+) {
+	if o.concurrency == nil {
+		return
+	}
+	for id, state := range run.Steps {
+		if state.Status != dag.StepStatusCancelled {
+			continue
+		}
+		stepDef, found := findStepDef(wfDef, id)
+		if !found || stepDef.MaxTaskConcurrency <= 0 {
+			continue
+		}
+		o.concurrency.ReleaseTask(stepDef.Task)
+	}
+}
+
+// countActiveSteps counts steps that are currently queued or running.
+func countActiveSteps(run dag.WorkflowRun) int {
+	if run.Steps == nil {
+		panic("countActiveSteps: run.Steps must not be nil")
+	}
+	count := 0
+	for _, state := range run.Steps {
+		if state.Status == dag.StepStatusQueued ||
+			state.Status == dag.StepStatusRunning {
+			count++
+		}
+	}
+	return count
 }

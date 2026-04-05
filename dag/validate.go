@@ -20,6 +20,10 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validateConcurrency(def); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 
@@ -110,7 +114,16 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 	if err := validateSkipIf(step); err != nil {
 		return err
 	}
+	if err := validateSubWorkflowConfig(step); err != nil {
+		return err
+	}
 	if err := validateSleepStep(step); err != nil {
+		return err
+	}
+	if err := validateApprovalStep(step); err != nil {
+		return err
+	}
+	if err := validatePlannerConfig(step); err != nil {
 		return err
 	}
 	if err := validateRateLimit(step); err != nil {
@@ -128,6 +141,12 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 			step.ID, step.Compensate,
 		)
 	}
+	if step.MaxTaskConcurrency < 0 || step.MaxTaskConcurrency > 1000 {
+		return fmt.Errorf(
+			"step %q MaxTaskConcurrency is %d (must be 0..1000)",
+			step.ID, step.MaxTaskConcurrency,
+		)
+	}
 	return nil
 }
 
@@ -135,14 +154,17 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 // Future step types like Sleep and WaitForEvent won't require a task.
 func stepRequiresTask(t StepType) bool {
 	switch t {
-	case StepTypeNormal, StepTypeAgentLoop, StepTypeSubWorkflow, StepTypeAgent, StepTypeMap:
+	case StepTypeNormal, StepTypeAgentLoop, StepTypeSubWorkflow,
+		StepTypeAgent, StepTypeMap, StepTypePlanner:
 		return true
+	case StepTypeSleep, StepTypeWaitForEvent, StepTypeApproval:
+		return false
 	default:
 		return false
 	}
 }
 
-// validateLoopConfig checks AgentLoop/Loop consistency for a single step.
+// validateLoopConfig checks AgentLoop/Config consistency for a single step.
 func validateLoopConfig(step StepDef) error {
 	if step.ID == "" {
 		panic("validateLoopConfig: step ID is empty")
@@ -150,32 +172,32 @@ func validateLoopConfig(step StepDef) error {
 	if step.Task == "" && stepRequiresTask(step.Type) {
 		panic("validateLoopConfig: step task is empty")
 	}
-	// Non-task step types (e.g., sleep, wait-for-event) skip task validation.
+	// Non-task step types (e.g., sleep, wait-for-event) skip.
 	if step.Task == "" {
 		return nil
 	}
-	if step.Type == StepTypeAgentLoop && step.Loop == nil {
-		return fmt.Errorf(
-			"step %q is AgentLoop but Loop config is nil", step.ID,
-		)
-	}
-	if step.Type == StepTypeAgentLoop &&
-		step.Loop != nil && step.Loop.MaxIterations <= 0 {
-		return fmt.Errorf(
-			"step %q is AgentLoop but MaxIterations is %d (must be > 0)",
-			step.ID, step.Loop.MaxIterations,
-		)
-	}
-	if step.Type != StepTypeAgentLoop && step.Loop != nil {
-		return fmt.Errorf(
-			"step %q has Loop config but is not AgentLoop type", step.ID,
-		)
+	if step.Type == StepTypeAgentLoop {
+		cfg, err := ParseAgentLoopConfig(step)
+		if err != nil {
+			return fmt.Errorf(
+				"step %q is AgentLoop but Config is invalid: %w",
+				step.ID, err,
+			)
+		}
+		if cfg.MaxIterations <= 0 {
+			return fmt.Errorf(
+				"step %q is AgentLoop but MaxIterations is "+
+					"%d (must be > 0)",
+				step.ID, cfg.MaxIterations,
+			)
+		}
 	}
 	return nil
 }
 
 // validateMapConfig checks Map step configuration and dependencies.
-// Map steps must have exactly one dependency, and MaxItems must be within bounds.
+// Map steps must have exactly one dependency, and MaxItems must be
+// within bounds.
 func validateMapConfig(step StepDef) error {
 	if step.ID == "" {
 		panic("validateMapConfig: step ID is empty")
@@ -183,36 +205,35 @@ func validateMapConfig(step StepDef) error {
 	if step.Task == "" && stepRequiresTask(step.Type) {
 		panic("validateMapConfig: step task is empty")
 	}
-	// Non-task step types (e.g., sleep, wait-for-event) skip task validation.
+	// Non-task step types (e.g., sleep, wait-for-event) skip.
 	if step.Task == "" {
 		return nil
 	}
-	if step.Type == StepTypeMap && step.Map == nil {
+	if step.Type != StepTypeMap {
+		return nil
+	}
+	cfg, err := ParseMapConfig(step)
+	if err != nil {
 		panic("Map step must have Map config")
 	}
-	if step.Type == StepTypeMap {
-		if len(step.DependsOn) != 1 {
-			return fmt.Errorf(
-				"step %q is Map but has %d dependencies (must have exactly one)",
-				step.ID, len(step.DependsOn),
-			)
-		}
-		if step.Map.MaxItems <= 0 {
-			return fmt.Errorf(
-				"step %q is Map but MaxItems is %d (must be > 0)",
-				step.ID, step.Map.MaxItems,
-			)
-		}
-		if step.Map.MaxItems > 10000 {
-			return fmt.Errorf(
-				"step %q is Map but MaxItems is %d (must be <= 10000)",
-				step.ID, step.Map.MaxItems,
-			)
-		}
-	}
-	if step.Type != StepTypeMap && step.Map != nil {
+	if len(step.DependsOn) != 1 {
 		return fmt.Errorf(
-			"step %q has Map config but is not Map type", step.ID,
+			"step %q is Map but has %d dependencies "+
+				"(must have exactly one)",
+			step.ID, len(step.DependsOn),
+		)
+	}
+	if cfg.MaxItems <= 0 {
+		return fmt.Errorf(
+			"step %q is Map but MaxItems is %d (must be > 0)",
+			step.ID, cfg.MaxItems,
+		)
+	}
+	if cfg.MaxItems > 10000 {
+		return fmt.Errorf(
+			"step %q is Map but MaxItems is %d "+
+				"(must be <= 10000)",
+			step.ID, cfg.MaxItems,
 		)
 	}
 	return nil
@@ -370,6 +391,29 @@ func validateAuxTargets(
 				)
 			}
 		}
+	}
+	return nil
+}
+
+// validateConcurrency checks workflow-level concurrency limits.
+// MaxSteps must be in range [0, 1000] if set.
+func validateConcurrency(def WorkflowDef) error {
+	if def.Name == "" {
+		panic("validateConcurrency: workflow name is empty")
+	}
+	if len(def.Steps) == 0 {
+		panic("validateConcurrency: called with empty steps")
+	}
+	if def.Concurrency == nil {
+		return nil
+	}
+	if def.Concurrency.MaxSteps < 0 ||
+		def.Concurrency.MaxSteps > 1000 {
+		return fmt.Errorf(
+			"workflow %q Concurrency.MaxSteps is %d "+
+				"(must be 0..1000)",
+			def.Name, def.Concurrency.MaxSteps,
+		)
 	}
 	return nil
 }
