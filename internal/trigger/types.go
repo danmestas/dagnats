@@ -57,3 +57,16 @@ type TriggerEnvelope struct {
 	Timestamp time.Time       `json:"timestamp"`
 	Data      json.RawMessage `json:"data,omitempty"`
 }
+
+// TriggerFire records a single trigger fire event for history
+// tracking. Published to TRIGGER_HISTORY stream.
+type TriggerFire struct {
+	TriggerID  string    `json:"trigger_id"`
+	WorkflowID string    `json:"workflow_id"`
+	RunID      string    `json:"run_id,omitempty"`
+	Source     string    `json:"source"`
+	FiredAt    time.Time `json:"fired_at"`
+	Input      []byte    `json:"input,omitempty"`
+	Skipped    bool      `json:"skipped,omitempty"`
+	SkipReason string    `json:"skip_reason,omitempty"`
+}

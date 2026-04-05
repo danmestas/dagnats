@@ -1604,3 +1604,138 @@ func (s *Service) listWorkersInner(
 	}
 	return workers, nil
 }
+
+// TriggerFireEntry is a trigger fire record enriched with
+// run status information for CLI display.
+type TriggerFireEntry struct {
+	trigger.TriggerFire
+	Status   string        `json:"status,omitempty"`
+	Duration time.Duration `json:"duration,omitempty"`
+}
+
+// ListTriggerFires retrieves fire history for the given
+// trigger. Creates an ephemeral consumer on TRIGGER_HISTORY
+// and fetches up to limit messages.
+func (s *Service) ListTriggerFires(
+	ctx context.Context, triggerID string, limit int,
+) ([]TriggerFireEntry, error) {
+	if ctx == nil {
+		panic("ListTriggerFires: ctx must not be nil")
+	}
+	if triggerID == "" {
+		panic(
+			"ListTriggerFires: triggerID must not be empty",
+		)
+	}
+	_, span := s.tel.Tracer.Start(ctx,
+		"api.listTriggerFires",
+		observe.WithAttributes(
+			observe.StringAttr("trigger_id", triggerID),
+		),
+	)
+	defer span.End()
+	start := time.Now()
+	s.requestCount.Inc()
+
+	fires, err := s.listTriggerFiresInner(
+		triggerID, limit,
+	)
+	elapsed := float64(time.Since(start).Milliseconds())
+	s.requestDuration.Observe(elapsed)
+	if err != nil {
+		s.errorCount.Inc()
+		span.RecordError(err)
+		span.SetStatus(observe.StatusError, err.Error())
+	}
+	return fires, err
+}
+
+// listTriggerFiresInner fetches trigger fire records from the
+// TRIGGER_HISTORY stream via an ephemeral consumer.
+func (s *Service) listTriggerFiresInner(
+	triggerID string, limit int,
+) ([]TriggerFireEntry, error) {
+	if triggerID == "" {
+		panic(
+			"listTriggerFiresInner: triggerID must not be empty",
+		)
+	}
+	if s.js == nil {
+		panic("listTriggerFiresInner: js must not be nil")
+	}
+	ctx := context.Background()
+	subject := "trigger.fire." + triggerID
+	cons, err := s.js.CreateOrUpdateConsumer(
+		ctx, "TRIGGER_HISTORY",
+		jetstream.ConsumerConfig{
+			FilterSubject:     subject,
+			DeliverPolicy:     jetstream.DeliverLastPerSubjectPolicy,
+			AckPolicy:         jetstream.AckNonePolicy,
+			InactiveThreshold: 10 * time.Second,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"create consumer: %w", err,
+		)
+	}
+	return s.fetchFireEntries(cons, limit)
+}
+
+// fetchFireEntries reads messages from the consumer and
+// unmarshals them into TriggerFireEntry records. Enriches
+// each record with run status when a RunID is present.
+func (s *Service) fetchFireEntries(
+	cons jetstream.Consumer, limit int,
+) ([]TriggerFireEntry, error) {
+	if cons == nil {
+		panic("fetchFireEntries: cons must not be nil")
+	}
+	if limit <= 0 {
+		panic("fetchFireEntries: limit must be positive")
+	}
+	ctx := context.Background()
+	batch, err := cons.Fetch(limit,
+		jetstream.FetchMaxWait(2*time.Second),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	entries := make([]TriggerFireEntry, 0, limit)
+	for msg := range batch.Messages() {
+		var fire trigger.TriggerFire
+		if json.Unmarshal(msg.Data(), &fire) != nil {
+			continue
+		}
+		entry := TriggerFireEntry{TriggerFire: fire}
+		if fire.RunID != "" {
+			entry.Status, entry.Duration =
+				s.enrichFireStatus(ctx, fire.RunID)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// enrichFireStatus loads run status and duration for a fire
+// record. Returns empty values on error (best-effort).
+func (s *Service) enrichFireStatus(
+	ctx context.Context, runID string,
+) (string, time.Duration) {
+	if runID == "" {
+		panic("enrichFireStatus: runID must not be empty")
+	}
+	if ctx == nil {
+		panic("enrichFireStatus: ctx must not be nil")
+	}
+	run, err := s.store.Load(runID)
+	if err != nil {
+		return "", 0
+	}
+	var dur time.Duration
+	if run.Status != dag.RunStatusPending &&
+		run.Status != dag.RunStatusRunning {
+		dur = time.Since(run.CreatedAt)
+	}
+	return run.Status.String(), dur
+}
