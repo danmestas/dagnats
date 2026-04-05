@@ -21,12 +21,22 @@ import (
 // maxWaitersPerEventType caps the in-memory index to prevent unbounded growth.
 const maxWaitersPerEventType = 10000
 
+// WaiterAction distinguishes how the correlator handles a match.
+// String type for safe JSON serialization in KV.
+type WaiterAction string
+
+const (
+	WaiterActionComplete WaiterAction = "complete"
+	WaiterActionCancel   WaiterAction = "cancel"
+)
+
 // EventWaiter represents a registered wait-for-event entry.
 type EventWaiter struct {
 	RunID     string            `json:"run_id"`
 	StepID    string            `json:"step_id"`
 	EventType string            `json:"event_type"`
 	Match     dag.ResolvedMatch `json:"match"`
+	Action    WaiterAction      `json:"action"`
 }
 
 // Correlator watches the EVENTS stream and matches incoming events
@@ -325,7 +335,17 @@ func (c *Correlator) evaluateWaiter(
 	if err != nil || !matched {
 		return
 	}
-	c.publishMatchEvent(w, eventData)
+
+	action := w.Action
+	if action == "" {
+		action = WaiterActionComplete // backward compat
+	}
+	if action == WaiterActionCancel {
+		c.publishCancelEvent(w.RunID, eventData)
+	} else {
+		c.publishMatchEvent(w, eventData)
+	}
+
 	key := fmt.Sprintf(
 		"%s.%s.%s", w.EventType, w.RunID, w.StepID,
 	)
@@ -354,6 +374,31 @@ func (c *Correlator) publishMatchEvent(
 	}
 	c.js.Publish(
 		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
+	)
+}
+
+// publishCancelEvent publishes workflow.cancelled to the history
+// stream when a cancel waiter matches an incoming event.
+func (c *Correlator) publishCancelEvent(
+	runID string, eventData []byte,
+) {
+	if runID == "" {
+		panic("publishCancelEvent: runID must not be empty")
+	}
+	if c.js == nil {
+		panic("publishCancelEvent: js must not be nil")
+	}
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowCancelled, runID, eventData,
+	)
+	data, err := evt.Marshal()
+	if err != nil {
+		return
+	}
+	c.js.Publish(
+		context.Background(),
+		evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }

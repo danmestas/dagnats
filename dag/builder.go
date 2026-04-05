@@ -19,6 +19,9 @@ type WorkflowBuilder struct {
 	concurrency    *ConcurrencyLimit
 	idempotencyKey string
 	sticky         StickyStrategy
+	priority       *PriorityConfig
+	cancelOn       []CancelOn
+	singleton      *SingletonConfig
 }
 
 // NewWorkflow starts a new builder for a workflow with the given name.
@@ -319,6 +322,52 @@ func (b *WorkflowBuilder) WithIdempotencyKey(
 	return b
 }
 
+// WithPriority configures run priority ordering.
+func (b *WorkflowBuilder) WithPriority(
+	cfg PriorityConfig,
+) *WorkflowBuilder {
+	b.priority = &cfg
+	return b
+}
+
+// CancelOn registers an event that cancels the workflow.
+func (b *WorkflowBuilder) CancelOn(
+	event string, match Match,
+) *WorkflowBuilder {
+	b.cancelOn = append(b.cancelOn, CancelOn{
+		Event: event, Match: match,
+	})
+	return b
+}
+
+// CancelOnWithTimeout registers a cancellation event with timeout.
+func (b *WorkflowBuilder) CancelOnWithTimeout(
+	event string, match Match, timeout time.Duration,
+) *WorkflowBuilder {
+	b.cancelOn = append(b.cancelOn, CancelOn{
+		Event: event, Match: match, Timeout: timeout,
+	})
+	return b
+}
+
+// WithSingleton configures global singleton constraint.
+func (b *WorkflowBuilder) WithSingleton(
+	mode SingletonMode,
+) *WorkflowBuilder {
+	b.singleton = &SingletonConfig{Mode: mode}
+	return b
+}
+
+// WithSingletonKey configures per-entity singleton.
+func (b *WorkflowBuilder) WithSingletonKey(
+	mode SingletonMode, key string,
+) *WorkflowBuilder {
+	b.singleton = &SingletonConfig{
+		Mode: mode, Key: key,
+	}
+	return b
+}
+
 func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 	def := WorkflowDef{
 		Name:           b.name,
@@ -327,6 +376,15 @@ func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 		Concurrency:    b.concurrency,
 		IdempotencyKey: b.idempotencyKey,
 		Sticky:         b.sticky,
+	}
+	if b.priority != nil {
+		def.Priority = b.priority
+	}
+	if len(b.cancelOn) > 0 {
+		def.CancelOn = b.cancelOn
+	}
+	if b.singleton != nil {
+		def.Singleton = b.singleton
 	}
 	if err := Validate(def); err != nil {
 		return WorkflowDef{}, err

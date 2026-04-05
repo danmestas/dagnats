@@ -171,6 +171,28 @@ type ConcurrencyLimit struct {
 	MaxSteps int `json:"max_steps,omitempty"`
 }
 
+// CancelOn specifies an event that cancels a running workflow.
+type CancelOn struct {
+	Event   string        `json:"event"`
+	Match   Match         `json:"match"`
+	Timeout time.Duration `json:"timeout,omitempty"`
+}
+
+// SingletonMode determines behavior on duplicate detection.
+// String type for safe JSON serialization in KV storage.
+type SingletonMode string
+
+const (
+	SingletonModeSkip   SingletonMode = "skip"
+	SingletonModeCancel SingletonMode = "cancel"
+)
+
+// SingletonConfig constrains runs to one-at-a-time per key.
+type SingletonConfig struct {
+	Mode SingletonMode `json:"mode"`
+	Key  string        `json:"key,omitempty"`
+}
+
 // StepDef is the immutable declaration of a single step within a WorkflowDef.
 // DependsOn lists step IDs that must complete before this step is queued.
 // Config holds type-specific configuration as raw JSON — use ParseXxxConfig
@@ -209,6 +231,9 @@ type WorkflowDef struct {
 	AuxSteps       map[string]bool   `json:"aux_steps,omitempty"`
 	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 	Sticky         StickyStrategy    `json:"sticky,omitempty"`
+	Priority       *PriorityConfig   `json:"priority,omitempty"`
+	CancelOn       []CancelOn        `json:"cancel_on,omitempty"`
+	Singleton      *SingletonConfig  `json:"singleton,omitempty"`
 }
 
 // StickyStrategy controls worker affinity for workflow runs.
@@ -252,16 +277,18 @@ type StepState struct {
 // Steps maps step ID to its current StepState; initialized to pending for all steps.
 // Input preserves the original user-supplied payload so retries can reuse it.
 type WorkflowRun struct {
-	RunID        string               `json:"run_id"`
-	WorkflowID   string               `json:"workflow_id"`
-	Status       RunStatus            `json:"status"`
-	Steps        map[string]StepState `json:"steps"`
-	Input        json.RawMessage      `json:"input,omitempty"`
-	CreatedAt    time.Time            `json:"created_at"`
-	DynamicSteps []StepDef            `json:"dynamic_steps,omitempty"`
-	ParentRunID  string               `json:"parent_run_id,omitempty"`
-	ParentStepID string               `json:"parent_step_id,omitempty"`
-	Deadline     *time.Time           `json:"deadline,omitempty"`
+	RunID          string               `json:"run_id"`
+	WorkflowID     string               `json:"workflow_id"`
+	Status         RunStatus            `json:"status"`
+	Steps          map[string]StepState `json:"steps"`
+	Input          json.RawMessage      `json:"input,omitempty"`
+	CreatedAt      time.Time            `json:"created_at"`
+	DynamicSteps   []StepDef            `json:"dynamic_steps,omitempty"`
+	ParentRunID    string               `json:"parent_run_id,omitempty"`
+	ParentStepID   string               `json:"parent_step_id,omitempty"`
+	Deadline       *time.Time           `json:"deadline,omitempty"`
+	PriorityOffset int                  `json:"priority_offset,omitempty"`
+	SingletonKey   string               `json:"singleton_key,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.
@@ -285,4 +312,11 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun {
 		Steps:      steps,
 		CreatedAt:  time.Now().UTC(),
 	}
+}
+
+// EffectiveTime returns the priority-adjusted queue position.
+func (r WorkflowRun) EffectiveTime() time.Time {
+	return r.CreatedAt.Add(
+		-time.Duration(r.PriorityOffset) * time.Second,
+	)
 }
