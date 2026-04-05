@@ -19,6 +19,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nuid"
 	"golang.org/x/sync/errgroup"
 )
@@ -28,18 +29,18 @@ import (
 // snapshot store (NATS KV), so the orchestrator can crash and resume safely.
 type Orchestrator struct {
 	nc          *nats.Conn
-	js          nats.JetStreamContext
-	defKV       nats.KeyValue
+	js          jetstream.JetStream
+	defKV       jetstream.KeyValue
 	store       *SnapshotStore
 	tel         *observe.Telemetry
-	sub         *nats.Subscription
+	cc          jetstream.ConsumeContext
 	runLocks    sync.Map                // map[string]*sync.Mutex — per-run serialization
 	stepRoutes  map[dag.StepType]string // step type → subject prefix
 	concurrency *ConcurrencyManager     // nil if bucket missing
 	rateLimiter *RateLimiter            // nil if bucket missing
 	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
 	correlator  *Correlator             // event wait-for-event matching
-	stickyKV    nats.KeyValue           // sticky_bindings — run-to-worker
+	stickyKV    jetstream.KeyValue      // sticky_bindings — run-to-worker
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive              observe.Gauge
@@ -77,11 +78,13 @@ func NewOrchestrator(
 	if tel == nil {
 		panic("NewOrchestrator: tel must not be nil")
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		panic("NewOrchestrator: JetStream failed: " + err.Error())
+		panic("NewOrchestrator: jetstream.New: " + err.Error())
 	}
-	defKV, err := js.KeyValue("workflow_defs")
+	defKV, err := js.KeyValue(
+		context.Background(), "workflow_defs",
+	)
 	if err != nil {
 		panic(
 			"NewOrchestrator: workflow_defs bucket not found: " +
@@ -128,7 +131,9 @@ func NewOrchestrator(
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
 	o.correlator = NewCorrelator(nc, js)
-	o.stickyKV, _ = js.KeyValue("sticky_bindings")
+	o.stickyKV, _ = js.KeyValue(
+		context.Background(), "sticky_bindings",
+	)
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -136,28 +141,51 @@ func NewOrchestrator(
 }
 
 // Start subscribes to history.> on the WORKFLOW_HISTORY stream using
-// push-subscribe. Messages are delivered asynchronously to handleEvent.
+// a pull consumer. Messages are delivered asynchronously to handleEvent.
 // Panics if already started.
 func (o *Orchestrator) Start() {
-	if o.sub != nil {
+	if o.cc != nil {
 		panic("Orchestrator.Start: already started")
 	}
 	if err := o.sleepTimer.Start(); err != nil {
-		panic("Orchestrator.Start: sleepTimer failed: " + err.Error())
+		panic(
+			"Orchestrator.Start: sleepTimer failed: " +
+				err.Error(),
+		)
 	}
 	if err := o.correlator.Start(); err != nil {
 		panic(
-			"Orchestrator.Start: correlator failed: " + err.Error(),
+			"Orchestrator.Start: correlator failed: " +
+				err.Error(),
 		)
 	}
-	sub, err := o.js.Subscribe("history.>", o.handleEvent,
-		nats.DeliverAll(),
-		nats.AckExplicit(),
+	stream, err := o.js.Stream(
+		context.Background(), "WORKFLOW_HISTORY",
 	)
 	if err != nil {
-		panic("Orchestrator.Start: subscribe failed: " + err.Error())
+		panic(
+			"Orchestrator.Start: stream: " + err.Error(),
+		)
 	}
-	o.sub = sub
+	cons, err := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			FilterSubject: "history.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		panic(
+			"Orchestrator.Start: consumer: " + err.Error(),
+		)
+	}
+	cc, err := cons.Consume(o.handleEventJS)
+	if err != nil {
+		panic(
+			"Orchestrator.Start: consume: " + err.Error(),
+		)
+	}
+	o.cc = cc
 }
 
 // Stop drains and unsubscribes from the history stream.
@@ -169,13 +197,11 @@ func (o *Orchestrator) Stop() {
 	if o.sleepTimer != nil {
 		o.sleepTimer.Stop()
 	}
-	if o.sub == nil {
+	if o.cc == nil {
 		return
 	}
-	if err := o.sub.Unsubscribe(); err != nil {
-		o.tel.Logger.Error("Stop: unsubscribe error", err)
-	}
-	o.sub = nil
+	o.cc.Stop()
+	o.cc = nil
 }
 
 // getRunLock returns a per-run mutex, creating one on first access.
@@ -186,14 +212,14 @@ func (o *Orchestrator) getRunLock(runID string) *sync.Mutex {
 	return val.(*sync.Mutex)
 }
 
-// handleEvent is the central dispatcher. It unmarshals the event, extracts
-// trace context, and routes to the appropriate handler. Unknown event types
-// are acked and logged — not errors.
-func (o *Orchestrator) handleEvent(msg *nats.Msg) {
+// handleEventJS is the central dispatcher. It unmarshals the event,
+// extracts trace context, and routes to the appropriate handler.
+// Unknown event types are acked and logged — not errors.
+func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 	if msg == nil {
 		return
 	}
-	evt, err := protocol.UnmarshalEvent(msg.Data)
+	evt, err := protocol.UnmarshalEvent(msg.Data())
 	if err != nil {
 		o.tel.Logger.Error("handleEvent: unmarshal failed", err)
 		msg.NakWithDelay(5 * time.Second)
@@ -203,7 +229,7 @@ func (o *Orchestrator) handleEvent(msg *nats.Msg) {
 		msg.Ack()
 		return
 	}
-	ctx := extractTraceCtx(msg, &evt)
+	ctx := extractTraceCtxJS(msg, &evt)
 	ctx, span := o.tel.Tracer.Start(ctx,
 		"orchestrator.handleEvent",
 		observe.WithSpanKind(observe.SpanKindServer),
@@ -557,12 +583,12 @@ func (o *Orchestrator) findOldestPendingRun(
 	if o.store == nil {
 		panic("findOldestPendingRun: store must not be nil")
 	}
-	keys, err := o.store.kv.Keys()
+	keys, err := o.store.kv.Keys(context.Background())
 	if err != nil {
 		return "", false, fmt.Errorf("list run keys: %w", err)
 	}
 
-	entries, err := natsutil.ParallelGet(
+	entries, err := natsutil.ParallelGetJS(
 		o.store.kv, keys, natsutil.DefaultParallelism,
 	)
 	if err != nil {
@@ -1278,7 +1304,7 @@ func (o *Orchestrator) publishDeadLetter(
 	}
 	subject := fmt.Sprintf("dead.%s.%s.%s",
 		stepDef.Task, runID, stepDef.ID)
-	o.js.Publish(subject, payload)
+	o.js.Publish(context.Background(), subject, payload)
 }
 
 // handleWorkflowCancelled marks the run and all in-flight steps as
@@ -1390,8 +1416,8 @@ func (o *Orchestrator) publishCancelEvent(runID string) {
 		return
 	}
 	o.js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
 
@@ -1472,7 +1498,9 @@ func (o *Orchestrator) createChildRun(
 		panic("createChildRun: childWorkflow must not be empty")
 	}
 
-	entry, err := o.defKV.Get(childWorkflow)
+	entry, err := o.defKV.Get(
+		context.Background(), childWorkflow,
+	)
 	if err != nil {
 		return fmt.Errorf(
 			"load child workflow def %q: %w",
@@ -1538,7 +1566,7 @@ func (o *Orchestrator) notifyParentIfChild(
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
-	_, err = o.js.PublishMsg(msg)
+	_, err = o.js.PublishMsg(context.Background(), msg)
 	return err
 }
 
@@ -1941,7 +1969,7 @@ func (o *Orchestrator) doPublishTask(
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
-	_, err = o.js.PublishMsg(msg)
+	_, err = o.js.PublishMsg(context.Background(), msg)
 	o.stepEnqueueCount.Inc()
 	return err
 }
@@ -1988,7 +2016,7 @@ func (o *Orchestrator) publishIterationTask(
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
-	_, err = o.js.PublishMsg(msg)
+	_, err = o.js.PublishMsg(context.Background(), msg)
 	o.stepEnqueueCount.Inc()
 	return err
 }
@@ -2055,7 +2083,9 @@ func (o *Orchestrator) loadRunAndDef(
 		return dag.WorkflowDef{}, dag.WorkflowRun{},
 			fmt.Errorf("load run %q: %w", runID, err)
 	}
-	entry, err := o.defKV.Get(run.WorkflowID)
+	entry, err := o.defKV.Get(
+		context.Background(), run.WorkflowID,
+	)
 	if err != nil {
 		return dag.WorkflowDef{}, dag.WorkflowRun{},
 			fmt.Errorf("load workflow def %q: %w",
@@ -2086,7 +2116,8 @@ func (o *Orchestrator) publishWorkflowCompleted(runID string) error {
 		)
 	}
 	_, err = o.js.Publish(
-		evt.NATSSubject(), data, nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	return err
 }
@@ -2106,23 +2137,24 @@ func (o *Orchestrator) publishWorkflowFailed(runID string) error {
 		)
 	}
 	_, err = o.js.Publish(
-		evt.NATSSubject(), data, nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	return err
 }
 
-// extractTraceCtx reads W3C traceparent from the NATS message header
+// extractTraceCtxJS reads W3C traceparent from a jetstream.Msg header
 // or event payload and returns a context with parent span info.
-func extractTraceCtx(
-	msg *nats.Msg, evt *protocol.Event,
+func extractTraceCtxJS(
+	msg jetstream.Msg, evt *protocol.Event,
 ) context.Context {
 	if msg == nil {
-		panic("extractTraceCtx: msg must not be nil")
+		panic("extractTraceCtxJS: msg must not be nil")
 	}
 	if evt == nil {
-		panic("extractTraceCtx: evt must not be nil")
+		panic("extractTraceCtxJS: evt must not be nil")
 	}
-	traceID, spanID, ok := parseTraceparent(msg, evt)
+	traceID, spanID, ok := parseTraceparentJS(msg, evt)
 	if !ok {
 		return context.Background()
 	}
@@ -2131,8 +2163,24 @@ func extractTraceCtx(
 	)
 }
 
-// parseTraceparent reads traceparent from NATS header first, falling
-// back to the event field. Returns ok=false when neither has a value.
+// parseTraceparentJS reads traceparent from jetstream.Msg header
+// first, falling back to the event field.
+func parseTraceparentJS(
+	msg jetstream.Msg, evt *protocol.Event,
+) (traceID, spanID string, ok bool) {
+	if hdrs := msg.Headers(); hdrs != nil {
+		if h := hdrs.Get("traceparent"); h != "" {
+			return splitTraceparent(h)
+		}
+	}
+	if evt.TraceParent != "" {
+		return splitTraceparent(evt.TraceParent)
+	}
+	return "", "", false
+}
+
+// parseTraceparent reads traceparent from *nats.Msg header first,
+// falling back to the event field. Used by tests.
 func parseTraceparent(
 	msg *nats.Msg, evt *protocol.Event,
 ) (traceID, spanID string, ok bool) {
@@ -2248,8 +2296,8 @@ func (o *Orchestrator) publishSleepStarted(
 		return
 	}
 	o.js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
 
@@ -2678,8 +2726,8 @@ func (o *Orchestrator) publishWaitStarted(
 		return
 	}
 	o.js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
 
@@ -2856,7 +2904,7 @@ func (o *Orchestrator) publishSpawnEvent(
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	_, err = o.js.PublishMsg(msg)
+	_, err = o.js.PublishMsg(context.Background(), msg)
 	return err
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestErrorReporterWithActiveSpan(t *testing.T) {
@@ -50,9 +51,9 @@ func TestErrorReporterWithActiveSpan(t *testing.T) {
 
 func TestErrorReporterWithoutSpanFallsBack(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	if err := natsutil.SetupTelemetryStream(js); err != nil {
 		t.Fatalf("Setup: %v", err)
@@ -61,7 +62,11 @@ func TestErrorReporterWithoutSpanFallsBack(t *testing.T) {
 	reporter := NewErrorReporter(
 		observe.NewNoopTracer(), logger)
 
-	sub, err := js.SubscribeSync(
+	jsOld, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	sub, err := jsOld.SubscribeSync(
 		"telemetry.logs.>", nats.DeliverAll(),
 	)
 	if err != nil {

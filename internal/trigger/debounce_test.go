@@ -5,12 +5,14 @@
 package trigger
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestDebounceAbsorbsEvents(t *testing.T) {
@@ -18,7 +20,7 @@ func TestDebounceAbsorbsEvents(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, _ := nc.JetStream()
+	js, _ := jetstream.New(nc)
 	st := engine.NewSleepTimer(nc, js)
 
 	d, err := NewDebouncer(js, st)
@@ -55,7 +57,7 @@ func TestDebounceAbsorbsEvents(t *testing.T) {
 	}
 
 	// Negative: entry stores latest event data
-	entry, err := d.stateKV.Get("t1")
+	entry, err := d.stateKV.Get(context.Background(), "t1")
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
@@ -72,7 +74,7 @@ func TestDebounceFiresOnHardTimeout(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, _ := nc.JetStream()
+	js, _ := jetstream.New(nc)
 	st := engine.NewSleepTimer(nc, js)
 
 	d, err := NewDebouncer(js, st)
@@ -124,7 +126,7 @@ func TestDebounceNoConfig(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, _ := nc.JetStream()
+	js, _ := jetstream.New(nc)
 	st := engine.NewSleepTimer(nc, js)
 
 	d, err := NewDebouncer(js, st)
@@ -177,7 +179,7 @@ func TestHandleTimerFireStaleRejection(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, _ := nc.JetStream()
+	js, _ := jetstream.New(nc)
 	st := engine.NewSleepTimer(nc, js)
 
 	d, err := NewDebouncer(js, st)
@@ -197,7 +199,7 @@ func TestHandleTimerFireStaleRejection(t *testing.T) {
 		TimerSeq:    99,
 	}
 	data, _ := json.Marshal(entry)
-	d.stateKV.Create("t5", data)
+	d.stateKV.Create(context.Background(), "t5", data)
 
 	// Fire with wrong sequence — should be rejected
 	d.HandleTimerFire(engine.TimerMessage{

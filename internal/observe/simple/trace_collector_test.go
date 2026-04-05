@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestLiveSpanProducesSpanRecord(t *testing.T) {
@@ -35,10 +36,12 @@ func TestLiveSpanProducesSpanRecord(t *testing.T) {
 			t.Fatal("TraceID must not be empty")
 		}
 		if len(rec.TraceID) != 32 {
-			t.Errorf("TraceID length = %d, want 32", len(rec.TraceID))
+			t.Errorf("TraceID length = %d, want 32",
+				len(rec.TraceID))
 		}
 		if rec.DurationMS < 0 {
-			t.Errorf("DurationMS = %d, want >= 0", rec.DurationMS)
+			t.Errorf("DurationMS = %d, want >= 0",
+				rec.DurationMS)
 		}
 		if rec.Name != "test-op" {
 			t.Errorf("Name = %q, want test-op", rec.Name)
@@ -56,7 +59,8 @@ func TestLiveSpanProducesSpanRecord(t *testing.T) {
 		}
 		// Negative: no parent for root span.
 		if rec.ParentID != "" {
-			t.Errorf("ParentID = %q, want empty for root span",
+			t.Errorf(
+				"ParentID = %q, want empty for root span",
 				rec.ParentID)
 		}
 	case <-time.After(2 * time.Second):
@@ -66,15 +70,19 @@ func TestLiveSpanProducesSpanRecord(t *testing.T) {
 
 func TestTraceCollectorPublishesToNATS(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	if err := natsutil.SetupTelemetryStream(js); err != nil {
 		t.Fatalf("SetupTelemetryStream: %v", err)
 	}
 
-	sub, err := js.SubscribeSync("telemetry.spans.>",
+	jsLegacy, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	sub, err := jsLegacy.SubscribeSync("telemetry.spans.>",
 		nats.DeliverAll())
 	if err != nil {
 		t.Fatalf("SubscribeSync: %v", err)
@@ -101,7 +109,8 @@ func TestTraceCollectorPublishesToNATS(t *testing.T) {
 	// Positive: subject contains run_id.
 	wantSubject := "telemetry.spans.engine.run-abc-123"
 	if msg.Subject != wantSubject {
-		t.Errorf("Subject = %q, want %q", msg.Subject, wantSubject)
+		t.Errorf("Subject = %q, want %q",
+			msg.Subject, wantSubject)
 	}
 
 	var rec SpanRecord
@@ -126,7 +135,9 @@ func TestTraceCollectorParentSpanLinking(t *testing.T) {
 	ctx := context.Background()
 	parentSpan := newLiveSpan(ctx, "parent-op", "engine",
 		records, metrics, nil)
-	parentCtx := context.WithValue(ctx, spanContextKey{}, parentSpan)
+	parentCtx := context.WithValue(
+		ctx, spanContextKey{}, parentSpan,
+	)
 
 	childSpan := newLiveSpan(parentCtx, "child-op", "engine",
 		records, metrics, nil)
@@ -150,25 +161,28 @@ func TestTraceCollectorParentSpanLinking(t *testing.T) {
 
 	// Positive: child inherits parent's traceID.
 	if childRec.TraceID != parentRec.TraceID {
-		t.Errorf("child TraceID = %q, parent TraceID = %q, want equal",
+		t.Errorf(
+			"child TraceID = %q, parent TraceID = %q, want equal",
 			childRec.TraceID, parentRec.TraceID)
 	}
 	// Positive: child's parentID is parent's spanID.
 	if childRec.ParentID != parentRec.SpanID {
-		t.Errorf("child ParentID = %q, parent SpanID = %q, want equal",
+		t.Errorf(
+			"child ParentID = %q, parent SpanID = %q, want equal",
 			childRec.ParentID, parentRec.SpanID)
 	}
 	// Negative: parent has no parentID (root span).
 	if parentRec.ParentID != "" {
-		t.Errorf("parent ParentID = %q, want empty", parentRec.ParentID)
+		t.Errorf("parent ParentID = %q, want empty",
+			parentRec.ParentID)
 	}
 }
 
 func TestTraceCollectorDedup(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	if err := natsutil.SetupTelemetryStream(js); err != nil {
 		t.Fatalf("SetupTelemetryStream: %v", err)
@@ -193,18 +207,21 @@ func TestTraceCollectorDedup(t *testing.T) {
 	// Allow time for JetStream to process both publishes.
 	time.Sleep(200 * time.Millisecond)
 
-	streamInfo, err := js.StreamInfo("TELEMETRY")
+	ctx := context.Background()
+	stream, err := js.Stream(ctx, "TELEMETRY")
 	if err != nil {
-		t.Fatalf("StreamInfo: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
+	info := stream.CachedInfo()
 
 	// Positive: dedup means only 1 message stored.
-	if streamInfo.State.Msgs != 1 {
-		t.Errorf("stream message count = %d, want 1 (dedup failed)",
-			streamInfo.State.Msgs)
+	if info.State.Msgs != 1 {
+		t.Errorf(
+			"stream message count = %d, want 1 (dedup failed)",
+			info.State.Msgs)
 	}
 	// Negative: not zero messages.
-	if streamInfo.State.Msgs == 0 {
+	if info.State.Msgs == 0 {
 		t.Error("stream message count = 0, want at least 1")
 	}
 }

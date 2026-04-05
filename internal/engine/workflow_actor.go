@@ -9,7 +9,7 @@ import (
 	"github.com/danmestas/dagnats/actor"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // WorkflowActor manages one workflow run as a supervised actor.
@@ -19,9 +19,9 @@ type WorkflowActor struct {
 	runID string
 	def   *dag.WorkflowDef
 	run   *dag.WorkflowRun
-	store *SnapshotStore        // nil in unit tests
-	js    nats.JetStreamContext // nil in pure unit tests
-	mu    sync.RWMutex          // protects read access to run state
+	store *SnapshotStore      // nil in unit tests
+	js    jetstream.JetStream // nil in pure unit tests
+	mu    sync.RWMutex        // protects read access to run state
 }
 
 // NewWorkflowActor creates a workflow actor for the given run.
@@ -29,7 +29,7 @@ type WorkflowActor struct {
 func NewWorkflowActor(
 	runID string,
 	store *SnapshotStore,
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 ) *WorkflowActor {
 	if runID == "" {
 		panic("NewWorkflowActor: runID must not be empty")

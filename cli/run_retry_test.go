@@ -18,6 +18,7 @@ import (
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestRetryCreatesNewRun(t *testing.T) {
@@ -46,8 +47,11 @@ func TestRetryCreatesNewRun(t *testing.T) {
 	}
 
 	// Manually save a snapshot so GetRun finds the original run.
-	js, _ := nc.JetStream()
-	store := engine.NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := engine.NewSnapshotStore(jsNew)
 	originalRunID := "orig-run-001"
 	run := dag.WorkflowRun{
 		RunID:      originalRunID,
@@ -109,8 +113,11 @@ func TestRetryJSONOutput(t *testing.T) {
 		t.Fatalf("register workflow: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	store := engine.NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := engine.NewSnapshotStore(jsNew)
 	originalRunID := "orig-run-json-001"
 	run := dag.WorkflowRun{
 		RunID:      originalRunID,
@@ -191,8 +198,11 @@ func TestRetryUsesOriginalInput(t *testing.T) {
 	defer orch.Stop()
 
 	// Save a snapshot with stored input so retry can reuse it.
-	js, _ := nc.JetStream()
-	store := engine.NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := engine.NewSnapshotStore(jsNew)
 	originalRunID := "orig-input-run-001"
 	run := dag.WorkflowRun{
 		RunID:      originalRunID,
@@ -278,8 +288,11 @@ func TestRetryExplicitInputOverridesOriginal(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	js, _ := nc.JetStream()
-	store := engine.NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := engine.NewSnapshotStore(jsNew)
 	originalRunID := "orig-override-run-001"
 	run := dag.WorkflowRun{
 		RunID:      originalRunID,

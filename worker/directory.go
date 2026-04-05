@@ -1,9 +1,10 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // WorkerRegistration is the directory entry for a running worker.
@@ -23,22 +24,24 @@ type WorkerRegistration struct {
 // Each worker writes its registration to the "workers" bucket;
 // the bucket's TTL ensures stale entries are purged automatically.
 type Directory struct {
-	kv nats.KeyValue
+	kv jetstream.KeyValue
 }
 
-// NewDirectory creates a Directory backed by the "workers" KV bucket.
-// Panics if js is nil or the bucket does not exist — both are
-// programmer errors indicating missing setup.
-func NewDirectory(js nats.JetStreamContext) *Directory {
+// NewDirectory creates a Directory backed by the "workers" KV
+// bucket. Panics if js is nil or the bucket does not exist — both
+// are programmer errors indicating missing setup.
+func NewDirectory(js jetstream.JetStream) *Directory {
 	if js == nil {
 		panic("NewDirectory: js must not be nil")
 	}
-	kv, err := js.KeyValue("workers")
+	kv, err := js.KeyValue(
+		context.Background(), "workers",
+	)
 	if err != nil {
-		panic("NewDirectory: workers bucket not found: " + err.Error())
-	}
-	if kv == nil {
-		panic("NewDirectory: kv must not be nil")
+		panic(
+			"NewDirectory: workers bucket not found: " +
+				err.Error(),
+		)
 	}
 	return &Directory{kv: kv}
 }
@@ -60,12 +63,15 @@ func (d *Directory) Register(reg WorkerRegistration) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.kv.Put(reg.WorkerID, data)
+	_, err = d.kv.Put(
+		context.Background(), reg.WorkerID, data,
+	)
 	return err
 }
 
 // Deregister removes the worker's entry from the directory.
-// Panics if workerID is empty. Returns nil if the key does not exist.
+// Panics if workerID is empty. Returns nil if the key does not
+// exist.
 func (d *Directory) Deregister(workerID string) error {
 	if workerID == "" {
 		panic("Directory.Deregister: workerID must not be empty")
@@ -73,8 +79,8 @@ func (d *Directory) Deregister(workerID string) error {
 	if d.kv == nil {
 		panic("Directory.Deregister: kv must not be nil")
 	}
-	err := d.kv.Delete(workerID)
-	if err == nats.ErrKeyNotFound {
+	err := d.kv.Delete(context.Background(), workerID)
+	if err == jetstream.ErrKeyNotFound {
 		return nil
 	}
 	return err
@@ -87,24 +93,22 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 	if d.kv == nil {
 		panic("Directory.List: kv must not be nil")
 	}
-	keys, err := d.kv.Keys()
-	if err == nats.ErrNoKeysFound {
-		return []WorkerRegistration{}, nil
-	}
+	keys, err := d.kv.ListKeys(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	if keys == nil {
-		panic("Directory.List: keys must not be nil when err is nil")
-	}
-	workers := make([]WorkerRegistration, 0, len(keys))
-	for _, key := range keys {
-		entry, err := d.kv.Get(key)
+	workers := make([]WorkerRegistration, 0, 32)
+	for key := range keys.Keys() {
+		entry, err := d.kv.Get(
+			context.Background(), key,
+		)
 		if err != nil {
 			continue
 		}
 		var reg WorkerRegistration
-		if err := json.Unmarshal(entry.Value(), &reg); err != nil {
+		if err := json.Unmarshal(
+			entry.Value(), &reg,
+		); err != nil {
 			continue
 		}
 		workers = append(workers, reg)

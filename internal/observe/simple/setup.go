@@ -12,12 +12,13 @@ import (
 
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-// SetupTelemetry creates the simple telemetry stack using the provided NATS
-// connection. Returns a ready Telemetry bundle and a shutdown function that
-// flushes in-flight spans.
-// Panics on nil nc — a programmer error that must surface immediately.
+// SetupTelemetry creates the simple telemetry stack using the
+// provided NATS connection. Returns a ready Telemetry bundle and
+// a shutdown function that flushes in-flight spans.
+// Panics on nil nc -- a programmer error.
 func SetupTelemetry(nc *nats.Conn) (*observe.Telemetry, func()) {
 	if nc == nil {
 		panic("SetupTelemetry: nc must not be nil")
@@ -27,9 +28,11 @@ func SetupTelemetry(nc *nats.Conn) (*observe.Telemetry, func()) {
 	}
 	serviceName := filepath.Base(os.Args[0])
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		log.Printf("SetupTelemetry: JetStream unavailable: %v", err)
+		log.Printf(
+			"SetupTelemetry: JetStream unavailable: %v", err,
+		)
 		return observe.NewNoopTelemetry(), func() {}
 	}
 

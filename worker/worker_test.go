@@ -5,6 +5,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestWorkerHandlesTask(t *testing.T) {
@@ -266,9 +268,9 @@ func TestSplitWorkerTraceparentMalformed(t *testing.T) {
 }
 
 func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
-	msg := &nats.Msg{
-		Data: []byte("{}"),
-		Header: nats.Header{
+	msg := &testJetstreamMsg{
+		data: []byte("{}"),
+		headers: nats.Header{
 			"traceparent": {"00-tid123-sid456-01"},
 		},
 	}
@@ -288,7 +290,7 @@ func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
 }
 
 func TestExtractWorkerTraceCtxNoHeader(t *testing.T) {
-	msg := &nats.Msg{Data: []byte("{}")}
+	msg := &testJetstreamMsg{data: []byte("{}")}
 	ctx := extractWorkerTraceCtx(msg)
 	// Positive: returns a valid context
 	if ctx == nil {
@@ -299,6 +301,34 @@ func TestExtractWorkerTraceCtxNoHeader(t *testing.T) {
 	if ok {
 		t.Fatal("expected no ParentInfo without header")
 	}
+}
+
+// testJetstreamMsg is a minimal mock of jetstream.Msg for unit
+// tests that only need Data() and Headers().
+type testJetstreamMsg struct {
+	data    []byte
+	headers nats.Header
+}
+
+func (m *testJetstreamMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return nil, nil
+}
+func (m *testJetstreamMsg) Data() []byte         { return m.data }
+func (m *testJetstreamMsg) Headers() nats.Header { return m.headers }
+func (m *testJetstreamMsg) Subject() string      { return "" }
+func (m *testJetstreamMsg) Reply() string        { return "" }
+func (m *testJetstreamMsg) Ack() error           { return nil }
+func (m *testJetstreamMsg) DoubleAck(context.Context) error {
+	return nil
+}
+func (m *testJetstreamMsg) Nak() error { return nil }
+func (m *testJetstreamMsg) NakWithDelay(time.Duration) error {
+	return nil
+}
+func (m *testJetstreamMsg) InProgress() error { return nil }
+func (m *testJetstreamMsg) Term() error       { return nil }
+func (m *testJetstreamMsg) TermWithReason(string) error {
+	return nil
 }
 
 // testSpan implements observe.Span and observe.SpanContext
@@ -438,9 +468,9 @@ func TestWorkerRegistersOnStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	w := NewWorker(nc, nil)
@@ -490,9 +520,9 @@ func TestWorkerDeregistersOnStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	w := NewWorker(nc, nil)

@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestTaskContextComplete(t *testing.T) {
@@ -23,13 +24,19 @@ func TestTaskContextComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		t.Fatalf("JetStream failed: %v", err)
 	}
-	sub, err := js.SubscribeSync("history.run-1", nats.DeliverAll())
+	sub, err := jsLegacy.SubscribeSync(
+		"history.run-1", nats.DeliverAll(),
+	)
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
@@ -40,7 +47,7 @@ func TestTaskContextComplete(t *testing.T) {
 			RunID: "run-1", StepID: "step-a",
 			Input: []byte(`"input"`),
 		},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	err = tc.Complete([]byte(`"output"`))
 	if err != nil {
@@ -72,13 +79,19 @@ func TestTaskContextFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		t.Fatalf("JetStream failed: %v", err)
 	}
-	sub, err := js.SubscribeSync("history.run-2", nats.DeliverAll())
+	sub, err := jsLegacy.SubscribeSync(
+		"history.run-2", nats.DeliverAll(),
+	)
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
@@ -86,7 +99,7 @@ func TestTaskContextFail(t *testing.T) {
 	tc := newTaskContext(
 		nc, tel, js,
 		protocol.TaskPayload{RunID: "run-2", StepID: "step-b"},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	err = tc.Fail(fmt.Errorf("something broke"))
 	if err != nil {
@@ -111,13 +124,19 @@ func TestTaskContextContinue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		t.Fatalf("JetStream failed: %v", err)
 	}
-	sub, err := js.SubscribeSync("history.run-3", nats.DeliverAll())
+	sub, err := jsLegacy.SubscribeSync(
+		"history.run-3", nats.DeliverAll(),
+	)
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
@@ -125,7 +144,7 @@ func TestTaskContextContinue(t *testing.T) {
 	tc := newTaskContext(
 		nc, tel, js,
 		protocol.TaskPayload{RunID: "run-3", StepID: "step-c"},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	err = tc.Continue([]byte(`"next input"`))
 	if err != nil {
@@ -208,8 +227,13 @@ func TestTaskContextCheckpoint(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	cpKV, _ := js.KeyValue("checkpoints")
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cpKV, _ := js.KeyValue(
+		context.Background(), "checkpoints",
+	)
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
@@ -221,12 +245,12 @@ func TestTaskContextCheckpoint(t *testing.T) {
 		tel:          tel,
 		ctx:          bgCtx,
 		span:         span,
-		msg:          &nats.Msg{},
+		msg:          &testJetstreamMsg{},
 		checkpointKV: cpKV,
 	}
 
 	// Positive: checkpoint writes and reads back
-	err := tc.Checkpoint([]byte(`{"progress":50}`))
+	err = tc.Checkpoint([]byte(`{"progress":50}`))
 	if err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
@@ -252,8 +276,13 @@ func TestTaskContextSignal(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	sigKV, _ := js.KeyValue("signals")
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	sigKV, _ := js.KeyValue(
+		context.Background(), "signals",
+	)
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
@@ -326,7 +355,7 @@ func TestTaskContextPutStream(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-ps", StepID: "step-ps",
 		},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	// Subscribe to the stream subject before publishing
 	sub, err := nc.SubscribeSync("stream.run-ps.step-ps")
@@ -432,7 +461,7 @@ func TestTaskContextCheckpointNilKV(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-nocp", StepID: "step-nocp",
 		},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	// Positive: Checkpoint returns error when KV is nil
 	err := tc.Checkpoint([]byte("state"))
@@ -458,7 +487,7 @@ func TestTaskContextSignalNilKV(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-nosig", StepID: "step-nosig",
 		},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	// Positive: WaitForSignal errors when signalKV is nil
 	_, err := tc.WaitForSignal("sig", 1*time.Second)
@@ -575,7 +604,7 @@ func TestTaskContextPausePanicsOnEmptyName(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-pause-panic", StepID: "step",
 		},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	defer func() {
 		r := recover()
@@ -601,7 +630,7 @@ func TestTaskContextPausePanicsOnZeroDuration(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-pause-zero", StepID: "step",
 		},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	defer func() {
 		r := recover()
@@ -627,7 +656,7 @@ func TestTaskContextPausePanicsOnNegativeDuration(t *testing.T) {
 		protocol.TaskPayload{
 			RunID: "run-pause-neg", StepID: "step",
 		},
-		bgCtx, span, &nats.Msg{}, nil, nil,
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
 	defer func() {
 		r := recover()
@@ -649,7 +678,11 @@ func TestFailPermanentPublishesNonRetriable(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, _ := nc.JetStream()
+	jsLegacy, _ := nc.JetStream()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
@@ -660,14 +693,14 @@ func TestFailPermanentPublishesNonRetriable(t *testing.T) {
 			RunID: "run-1", StepID: "step-a",
 		},
 		bgCtx, span,
-		&nats.Msg{}, nil, nil,
+		&testJetstreamMsg{}, nil, nil,
 	)
 
 	if err := tc.FailPermanent(fmt.Errorf("not found")); err != nil {
 		t.Fatalf("FailPermanent: %v", err)
 	}
 
-	sub, err := js.PullSubscribe(
+	sub, err := jsLegacy.PullSubscribe(
 		"history.run-1", "",
 		nats.BindStream("WORKFLOW_HISTORY"),
 	)
@@ -709,7 +742,11 @@ func TestFailRetryAfterPublishesDelay(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, _ := nc.JetStream()
+	jsLegacy, _ := nc.JetStream()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
@@ -720,17 +757,17 @@ func TestFailRetryAfterPublishesDelay(t *testing.T) {
 			RunID: "run-2", StepID: "step-b",
 		},
 		bgCtx, span,
-		&nats.Msg{}, nil, nil,
+		&testJetstreamMsg{}, nil, nil,
 	)
 
-	err := tc.FailRetryAfter(
+	err = tc.FailRetryAfter(
 		fmt.Errorf("rate limited"), 5*time.Second,
 	)
 	if err != nil {
 		t.Fatalf("FailRetryAfter: %v", err)
 	}
 
-	sub, _ := js.PullSubscribe(
+	sub, _ := jsLegacy.PullSubscribe(
 		"history.run-2", "",
 		nats.BindStream("WORKFLOW_HISTORY"),
 	)
@@ -759,7 +796,11 @@ func TestFailRetryAfterClampsBounds(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, _ := nc.JetStream()
+	jsLegacy, _ := nc.JetStream()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	tel := observe.NewNoopTelemetry()
 	bgCtx := context.Background()
 	_, span := tel.Tracer.Start(bgCtx, "test")
@@ -770,11 +811,11 @@ func TestFailRetryAfterClampsBounds(t *testing.T) {
 			RunID: "run-3", StepID: "step-c",
 		},
 		bgCtx, span,
-		&nats.Msg{}, nil, nil,
+		&testJetstreamMsg{}, nil, nil,
 	)
 	tc.FailRetryAfter(fmt.Errorf("slow"), 2*time.Hour)
 
-	sub, _ := js.PullSubscribe(
+	sub, _ := jsLegacy.PullSubscribe(
 		"history.run-3", "",
 		nats.BindStream("WORKFLOW_HISTORY"),
 	)
@@ -790,7 +831,7 @@ func TestFailRetryAfterClampsBounds(t *testing.T) {
 }
 
 func TestFailPermanentPanicsOnNilErr(t *testing.T) {
-	tc := &taskContext{msg: &nats.Msg{}}
+	tc := &taskContext{msg: &testJetstreamMsg{}}
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic for nil err")
@@ -800,7 +841,7 @@ func TestFailPermanentPanicsOnNilErr(t *testing.T) {
 }
 
 func TestFailRetryAfterPanicsOnNegativeDuration(t *testing.T) {
-	tc := &taskContext{msg: &nats.Msg{}}
+	tc := &taskContext{msg: &testJetstreamMsg{}}
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic for negative duration")

@@ -3,12 +3,14 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -17,8 +19,8 @@ import (
 // Nats-Msg-Id for deduplication.
 type Scheduler struct {
 	nc       *nats.Conn
-	js       nats.JetStreamContext
-	stateKV  nats.KeyValue
+	js       jetstream.JetStream
+	stateKV  jetstream.KeyValue
 	triggers map[string]TriggerDef
 	mu       sync.RWMutex
 }
@@ -30,12 +32,14 @@ func NewScheduler(nc *nats.Conn) (*Scheduler, error) {
 		panic("NewScheduler: connection must not be nil")
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		return nil, fmt.Errorf("JetStream: %w", err)
+		return nil, fmt.Errorf("jetstream.New: %w", err)
 	}
 
-	kv, err := js.KeyValue("trigger_state")
+	kv, err := js.KeyValue(
+		context.Background(), "trigger_state",
+	)
 	if err != nil {
 		return nil, fmt.Errorf("KeyValue trigger_state: %w", err)
 	}
@@ -226,9 +230,9 @@ func (s *Scheduler) loadLastRun(triggerID string) (time.Time, error) {
 	}
 
 	key := fmt.Sprintf("%s.last_run_at", triggerID)
-	entry, err := s.stateKV.Get(key)
+	entry, err := s.stateKV.Get(context.Background(), key)
 	if err != nil {
-		if err == nats.ErrKeyNotFound {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return time.Time{}, nil
 		}
 		return time.Time{}, fmt.Errorf("KV Get: %w", err)
@@ -333,7 +337,10 @@ func (s *Scheduler) fireWorkflow(def TriggerDef, now time.Time) error {
 	minuteTimestamp := now.Unix() / 60
 	msgID := fmt.Sprintf("trigger.%s.%d", def.ID, minuteTimestamp)
 
-	_, err = s.js.Publish(evt.NATSSubject(), evtBytes, nats.MsgId(msgID))
+	_, err = s.js.Publish(
+		context.Background(), evt.NATSSubject(), evtBytes,
+		jetstream.WithMsgID(msgID),
+	)
 	if err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}

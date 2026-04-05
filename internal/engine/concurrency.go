@@ -1,33 +1,36 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ConcurrencyManager enforces run and step concurrency limits using
 // NATS KV counters with optimistic locking. Thread-safe.
 type ConcurrencyManager struct {
-	runKV  nats.KeyValue
-	taskKV nats.KeyValue
+	runKV  jetstream.KeyValue
+	taskKV jetstream.KeyValue
 }
 
 // NewConcurrencyManager creates a manager using the concurrency_runs
 // and concurrency_tasks KV buckets. Panics if buckets don't exist.
 func NewConcurrencyManager(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 ) *ConcurrencyManager {
 	if js == nil {
 		panic("NewConcurrencyManager: js must not be nil")
 	}
-	runKV, err := js.KeyValue("concurrency_runs")
+	ctx := context.Background()
+	runKV, err := js.KeyValue(ctx, "concurrency_runs")
 	if err != nil {
 		panic("NewConcurrencyManager: concurrency_runs: " +
 			err.Error())
 	}
-	taskKV, err := js.KeyValue("concurrency_tasks")
+	taskKV, err := js.KeyValue(ctx, "concurrency_tasks")
 	if err != nil {
 		panic("NewConcurrencyManager: concurrency_tasks: " +
 			err.Error())
@@ -41,16 +44,17 @@ func NewConcurrencyManager(
 // concurrency_runs and concurrency_tasks KV buckets. Returns nil
 // if the runs bucket doesn't exist. Tasks bucket is optional.
 func NewConcurrencyManagerSafe(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 ) (*ConcurrencyManager, error) {
 	if js == nil {
 		panic("NewConcurrencyManagerSafe: js must not be nil")
 	}
-	runKV, err := js.KeyValue("concurrency_runs")
+	ctx := context.Background()
+	runKV, err := js.KeyValue(ctx, "concurrency_runs")
 	if err != nil {
 		return nil, err
 	}
-	taskKV, _ := js.KeyValue("concurrency_tasks")
+	taskKV, _ := js.KeyValue(ctx, "concurrency_tasks")
 	return &ConcurrencyManager{
 		runKV: runKV, taskKV: taskKV,
 	}, nil
@@ -105,11 +109,12 @@ func (cm *ConcurrencyManager) ReleaseRun(
 			return nil // Already at zero
 		}
 		newVal := current - 1
+		ctx := context.Background()
 		data := []byte(strconv.Itoa(newVal))
 		if rev == 0 {
-			_, err = cm.runKV.Create(key, data)
+			_, err = cm.runKV.Create(ctx, key, data)
 		} else {
-			_, err = cm.runKV.Update(key, data, rev)
+			_, err = cm.runKV.Update(ctx, key, data, rev)
 		}
 		if err == nil {
 			return nil
@@ -170,12 +175,13 @@ func (cm *ConcurrencyManager) ReleaseTask(
 		if current <= 0 {
 			return nil // Already at zero
 		}
+		ctx := context.Background()
 		newVal := current - 1
 		data := []byte(strconv.Itoa(newVal))
 		if rev == 0 {
-			_, err = cm.taskKV.Create(key, data)
+			_, err = cm.taskKV.Create(ctx, key, data)
 		} else {
-			_, err = cm.taskKV.Update(key, data, rev)
+			_, err = cm.taskKV.Update(ctx, key, data, rev)
 		}
 		if err == nil {
 			return nil
@@ -186,7 +192,7 @@ func (cm *ConcurrencyManager) ReleaseTask(
 
 // readKV reads a counter from any KV bucket.
 func (cm *ConcurrencyManager) readKV(
-	kv nats.KeyValue, key string,
+	kv jetstream.KeyValue, key string,
 ) (int, uint64, error) {
 	if kv == nil {
 		panic("readKV: kv must not be nil")
@@ -194,9 +200,9 @@ func (cm *ConcurrencyManager) readKV(
 	if key == "" {
 		panic("readKV: key must not be empty")
 	}
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(context.Background(), key)
 	if err != nil {
-		if err == nats.ErrKeyNotFound {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return 0, 0, nil
 		}
 		return 0, 0, err
@@ -210,7 +216,8 @@ func (cm *ConcurrencyManager) readKV(
 
 // casIncrementKV performs a CAS increment on any KV bucket.
 func (cm *ConcurrencyManager) casIncrementKV(
-	kv nats.KeyValue, key string, current int, rev uint64,
+	kv jetstream.KeyValue, key string,
+	current int, rev uint64,
 ) bool {
 	if kv == nil {
 		panic("casIncrementKV: kv must not be nil")
@@ -218,13 +225,14 @@ func (cm *ConcurrencyManager) casIncrementKV(
 	if key == "" {
 		panic("casIncrementKV: key must not be empty")
 	}
+	ctx := context.Background()
 	newVal := current + 1
 	data := []byte(strconv.Itoa(newVal))
 	var err error
 	if rev == 0 {
-		_, err = kv.Create(key, data)
+		_, err = kv.Create(ctx, key, data)
 	} else {
-		_, err = kv.Update(key, data, rev)
+		_, err = kv.Update(ctx, key, data, rev)
 	}
 	return err == nil
 }
@@ -232,9 +240,9 @@ func (cm *ConcurrencyManager) casIncrementKV(
 func (cm *ConcurrencyManager) readCounter(
 	key string,
 ) (int, uint64, error) {
-	entry, err := cm.runKV.Get(key)
+	entry, err := cm.runKV.Get(context.Background(), key)
 	if err != nil {
-		if err == nats.ErrKeyNotFound {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return 0, 0, nil
 		}
 		return 0, 0, err
@@ -249,13 +257,14 @@ func (cm *ConcurrencyManager) readCounter(
 func (cm *ConcurrencyManager) casIncrement(
 	key string, current int, rev uint64,
 ) bool {
+	ctx := context.Background()
 	newVal := current + 1
 	data := []byte(strconv.Itoa(newVal))
 	var err error
 	if rev == 0 {
-		_, err = cm.runKV.Create(key, data)
+		_, err = cm.runKV.Create(ctx, key, data)
 	} else {
-		_, err = cm.runKV.Update(key, data, rev)
+		_, err = cm.runKV.Update(ctx, key, data, rev)
 	}
 	return err == nil
 }

@@ -13,20 +13,23 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const monitoredStream = "TELEMETRY"
 
-// StorageMonitor polls the TELEMETRY stream at a fixed interval and publishes
-// an advisory when storage usage exceeds the configured warn ratio.
+// StorageMonitor polls the TELEMETRY stream at a fixed interval
+// and publishes an advisory when storage usage exceeds the
+// configured warn ratio.
 type StorageMonitor struct {
 	nc        *nats.Conn
-	js        nats.JetStreamContext
+	js        jetstream.JetStream
 	interval  time.Duration
 	warnRatio float64
 }
 
-// storageAdvisory is the JSON payload published when usage crosses the threshold.
+// storageAdvisory is the JSON payload published when usage
+// crosses the threshold.
 type storageAdvisory struct {
 	Stream       string  `json:"stream"`
 	UsageBytes   uint64  `json:"usage_bytes"`
@@ -37,14 +40,18 @@ type storageAdvisory struct {
 }
 
 // NewStorageMonitor constructs a StorageMonitor.
-// Panics on nil nc — a programmer error that must surface immediately.
-func NewStorageMonitor(nc *nats.Conn, interval time.Duration, warnRatio float64) *StorageMonitor {
+// Panics on nil nc -- a programmer error that must surface.
+func NewStorageMonitor(
+	nc *nats.Conn, interval time.Duration, warnRatio float64,
+) *StorageMonitor {
 	if nc == nil {
 		panic("NewStorageMonitor: nc must not be nil")
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		panic(fmt.Sprintf("NewStorageMonitor: JetStream unavailable: %v", err))
+		panic(fmt.Sprintf(
+			"NewStorageMonitor: JetStream unavailable: %v", err,
+		))
 	}
 	return &StorageMonitor{
 		nc:        nc,
@@ -77,22 +84,29 @@ func (m *StorageMonitor) Start(ctx context.Context) {
 	}
 }
 
-// checkAndAlert fetches stream info and publishes an advisory if over threshold.
+// checkAndAlert fetches stream info and publishes an advisory
+// if over threshold.
 func (m *StorageMonitor) checkAndAlert() {
-	info, err := m.js.StreamInfo(monitoredStream)
+	ctx := context.Background()
+	stream, err := m.js.Stream(ctx, monitoredStream)
 	if err != nil {
-		log.Printf("StorageMonitor: StreamInfo error stream=%s: %v",
+		log.Printf(
+			"StorageMonitor: Stream error stream=%s: %v",
 			monitoredStream, err)
 		return
 	}
+	info := stream.CachedInfo()
 	if info.Config.MaxBytes <= 0 {
 		return
 	}
-	usage := float64(info.State.Bytes) / float64(info.Config.MaxBytes)
+	usage := float64(info.State.Bytes) /
+		float64(info.Config.MaxBytes)
 	if usage < m.warnRatio {
 		return
 	}
-	m.publishAdvisory(info.State.Bytes, info.Config.MaxBytes, usage)
+	m.publishAdvisory(
+		info.State.Bytes, info.Config.MaxBytes, usage,
+	)
 }
 
 // publishAdvisory serializes and publishes the storage advisory via core NATS.

@@ -7,27 +7,30 @@
 package simple
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-// LogCollector publishes LogRecord events to the NATS TELEMETRY stream.
-// Safe for concurrent use — each publish is independent.
-// With returns a new LogCollector that inherits all parent fields; the
-// parent's field slice is never mutated after construction.
+// LogCollector publishes LogRecord events to the NATS TELEMETRY
+// stream. Safe for concurrent use -- each publish is independent.
+// With returns a new LogCollector that inherits all parent fields;
+// the parent's field slice is never mutated after construction.
 type LogCollector struct {
-	js          nats.JetStreamContext
+	js          jetstream.JetStream
 	serviceName string
 	fields      []observe.Field
 }
 
 // NewLogCollector constructs a LogCollector.
-// Panics on nil js or empty serviceName — both are programmer errors.
-func NewLogCollector(js nats.JetStreamContext, serviceName string) *LogCollector {
+// Panics on nil js or empty serviceName -- programmer errors.
+func NewLogCollector(
+	js jetstream.JetStream, serviceName string,
+) *LogCollector {
 	if js == nil {
 		panic("NewLogCollector: js must not be nil")
 	}
@@ -98,8 +101,14 @@ func (lc *LogCollector) publish(level, msg string, err error, callFields []obser
 		return
 	}
 	subject := "telemetry.logs." + lc.serviceName + "." + level
-	if _, pubErr := lc.js.Publish(subject, data); pubErr != nil {
-		log.Printf("LogCollector.publish: publish error subject=%s: %v", subject, pubErr)
+	_, pubErr := lc.js.Publish(
+		context.Background(), subject, data,
+	)
+	if pubErr != nil {
+		log.Printf(
+			"LogCollector.publish: publish error subject=%s: %v",
+			subject, pubErr,
+		)
 	}
 }
 

@@ -3,17 +3,19 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 type taskContext struct {
 	nc           *nats.Conn
-	js           nats.JetStreamContext
+	js           jetstream.JetStream
 	tel          *observe.Telemetry
 	runID        string
 	stepID       string
@@ -22,9 +24,9 @@ type taskContext struct {
 	input        []byte
 	ctx          context.Context
 	span         observe.Span
-	msg          *nats.Msg
-	checkpointKV nats.KeyValue
-	signalKV     nats.KeyValue
+	msg          jetstream.Msg
+	checkpointKV jetstream.KeyValue
+	signalKV     jetstream.KeyValue
 	paused       bool   // set by Pause() to prevent double-ack
 	workerID     string // included in completion events for sticky routing
 }
@@ -35,13 +37,13 @@ type taskContext struct {
 func newTaskContext(
 	nc *nats.Conn,
 	tel *observe.Telemetry,
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 	payload protocol.TaskPayload,
 	ctx context.Context,
 	span observe.Span,
-	msg *nats.Msg,
-	checkpointKV nats.KeyValue,
-	signalKV nats.KeyValue,
+	msg jetstream.Msg,
+	checkpointKV jetstream.KeyValue,
+	signalKV jetstream.KeyValue,
 ) *taskContext {
 	if tel == nil {
 		panic("newTaskContext: tel must not be nil")
@@ -239,13 +241,15 @@ func (c *taskContext) Continue(output []byte) error {
 		"%s.%s.continue.%d.%s",
 		c.runID, c.stepID, c.iteration, nonce,
 	)
-	msg := &nats.Msg{
+	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	injectWorkerTraceCtx(c.span, &evt, msg)
-	_, err = c.js.PublishMsg(msg)
+	injectWorkerTraceCtx(c.span, &evt, outMsg)
+	_, err = c.js.PublishMsg(
+		context.Background(), outMsg,
+	)
 	return err
 }
 
@@ -285,15 +289,17 @@ func (c *taskContext) publishEvent(
 	if err != nil {
 		return err
 	}
-	msg := &nats.Msg{
+	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Data:    data,
 		Header: nats.Header{
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	injectWorkerTraceCtx(c.span, &evt, msg)
-	_, err = c.js.PublishMsg(msg)
+	injectWorkerTraceCtx(c.span, &evt, outMsg)
+	_, err = c.js.PublishMsg(
+		context.Background(), outMsg,
+	)
 	return err
 }
 
@@ -322,7 +328,9 @@ func (c *taskContext) Checkpoint(state []byte) error {
 		return fmt.Errorf("checkpoint KV not configured")
 	}
 	key := c.runID + "." + c.stepID
-	_, err := c.checkpointKV.Put(key, state)
+	_, err := c.checkpointKV.Put(
+		context.Background(), key, state,
+	)
 	return err
 }
 
@@ -339,9 +347,11 @@ func (c *taskContext) LoadCheckpoint() ([]byte, error) {
 		return nil, nil
 	}
 	key := c.runID + "." + c.stepID
-	entry, err := c.checkpointKV.Get(key)
+	entry, err := c.checkpointKV.Get(
+		context.Background(), key,
+	)
 	if err != nil {
-		if err == nats.ErrKeyNotFound {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -364,7 +374,9 @@ func (c *taskContext) WaitForSignal(
 		return nil, fmt.Errorf("signal KV not configured")
 	}
 	key := c.runID + "." + name
-	watcher, err := c.signalKV.Watch(key)
+	watcher, err := c.signalKV.Watch(
+		context.Background(), key,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -426,6 +438,8 @@ func (c *taskContext) SendSignal(
 		return fmt.Errorf("signal KV not configured")
 	}
 	key := runID + "." + name
-	_, err := c.signalKV.Put(key, data)
+	_, err := c.signalKV.Put(
+		context.Background(), key, data,
+	)
 	return err
 }

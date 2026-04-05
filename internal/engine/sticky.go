@@ -34,14 +34,18 @@ func (o *Orchestrator) createStickyBinding(
 	}
 
 	// Only create binding once per run
-	_, err := o.stickyKV.Get(run.RunID)
+	_, err := o.stickyKV.Get(
+		context.Background(), run.RunID,
+	)
 	if err == nil {
 		return // binding already exists
 	}
 
 	// Atomic create — if another step completes concurrently,
 	// the first one wins.
-	o.stickyKV.Create(run.RunID, []byte(evt.WorkerID))
+	_, _ = o.stickyKV.Create(
+		context.Background(), run.RunID, []byte(evt.WorkerID),
+	)
 }
 
 // getStickyWorker returns the bound worker ID for a run, or empty
@@ -50,7 +54,9 @@ func (o *Orchestrator) getStickyWorker(runID string) string {
 	if o.stickyKV == nil {
 		return ""
 	}
-	entry, err := o.stickyKV.Get(runID)
+	entry, err := o.stickyKV.Get(
+		context.Background(), runID,
+	)
 	if err != nil {
 		return ""
 	}
@@ -63,7 +69,7 @@ func (o *Orchestrator) deleteStickyBinding(runID string) {
 	if o.stickyKV == nil {
 		return
 	}
-	o.stickyKV.Delete(runID)
+	_ = o.stickyKV.Delete(context.Background(), runID)
 }
 
 // publishStickyTask encapsulates all sticky routing complexity.
@@ -120,7 +126,9 @@ func (o *Orchestrator) publishStickyTask(
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
 	injectTraceCtx(ctx, span, stickyMsg)
-	_, err = o.js.PublishMsg(stickyMsg)
+	_, err = o.js.PublishMsg(
+		context.Background(), stickyMsg,
+	)
 	if err != nil {
 		return fmt.Errorf("publish sticky task: %w", err)
 	}

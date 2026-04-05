@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // maxWaitersPerEventType caps the in-memory index to prevent unbounded growth.
@@ -31,20 +33,20 @@ type EventWaiter struct {
 // against waiters stored in the event_waiters KV bucket.
 type Correlator struct {
 	nc       *nats.Conn
-	js       nats.JetStreamContext
-	waiterKV nats.KeyValue
+	js       jetstream.JetStream
+	waiterKV jetstream.KeyValue
 
 	mu      sync.RWMutex
 	waiters map[string][]EventWaiter // eventType -> []EventWaiter
 
-	kvWatch  nats.KeyWatcher
-	eventSub *nats.Subscription
+	kvWatch jetstream.KeyWatcher
+	eventCC jetstream.ConsumeContext
 }
 
 // NewCorrelator creates a Correlator bound to the given connection.
 // Panics on nil nc or js — these are programmer errors.
 func NewCorrelator(
-	nc *nats.Conn, js nats.JetStreamContext,
+	nc *nats.Conn, js jetstream.JetStream,
 ) *Correlator {
 	if nc == nil {
 		panic("NewCorrelator: nc must not be nil")
@@ -52,7 +54,9 @@ func NewCorrelator(
 	if js == nil {
 		panic("NewCorrelator: js must not be nil")
 	}
-	kv, err := js.KeyValue("event_waiters")
+	kv, err := js.KeyValue(
+		context.Background(), "event_waiters",
+	)
 	if err != nil {
 		panic(
 			"NewCorrelator: event_waiters bucket not found: " +
@@ -77,34 +81,52 @@ func (c *Correlator) Start() error {
 	if c.waiterKV == nil {
 		panic("Correlator.Start: waiterKV must not be nil")
 	}
-	watcher, err := c.waiterKV.WatchAll()
+	watcher, err := c.waiterKV.WatchAll(
+		context.Background(),
+	)
 	if err != nil {
 		return fmt.Errorf("watch event_waiters: %w", err)
 	}
 	c.kvWatch = watcher
 	go c.processKVUpdates()
 
-	sub, err := c.js.Subscribe(
-		"event.>",
-		c.handleEvent,
-		nats.Durable("event-correlator"),
-		nats.ManualAck(),
+	stream, err := c.js.Stream(
+		context.Background(), "EVENTS",
 	)
 	if err != nil {
 		watcher.Stop()
 		c.kvWatch = nil
-		return fmt.Errorf("subscribe event.>: %w", err)
+		return fmt.Errorf("stream EVENTS: %w", err)
 	}
-	c.eventSub = sub
+	cons, err := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			Durable:       "event-correlator",
+			FilterSubject: "event.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		watcher.Stop()
+		c.kvWatch = nil
+		return fmt.Errorf("consumer event.>: %w", err)
+	}
+	cc, err := cons.Consume(c.handleEventJS)
+	if err != nil {
+		watcher.Stop()
+		c.kvWatch = nil
+		return fmt.Errorf("consume event.>: %w", err)
+	}
+	c.eventCC = cc
 	return nil
 }
 
 // Stop stops the KV watch and event subscription.
 // Safe to call multiple times.
 func (c *Correlator) Stop() {
-	if c.eventSub != nil {
-		c.eventSub.Unsubscribe()
-		c.eventSub = nil
+	if c.eventCC != nil {
+		c.eventCC.Stop()
+		c.eventCC = nil
 	}
 	if c.kvWatch != nil {
 		c.kvWatch.Stop()
@@ -143,7 +165,7 @@ func (c *Correlator) AddWaiter(w EventWaiter) error {
 	key := fmt.Sprintf(
 		"%s.%s.%s", w.EventType, w.RunID, w.StepID,
 	)
-	_, err = c.waiterKV.Put(key, data)
+	_, err = c.waiterKV.Put(context.Background(), key, data)
 	return err
 }
 
@@ -180,7 +202,7 @@ func (c *Correlator) RemoveWaitersForRun(runID string) {
 	c.mu.Unlock()
 
 	for _, key := range keysToDelete {
-		c.waiterKV.Delete(key)
+		c.waiterKV.Delete(context.Background(), key)
 	}
 }
 
@@ -199,16 +221,16 @@ func (c *Correlator) processKVUpdates() {
 			continue // End of initial values marker
 		}
 		switch entry.Operation() {
-		case nats.KeyValuePut:
+		case jetstream.KeyValuePut:
 			c.handleKVPut(entry)
-		case nats.KeyValueDelete, nats.KeyValuePurge:
+		case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
 			c.handleKVDelete(entry)
 		}
 	}
 }
 
 // handleKVPut adds a waiter to the in-memory index from a KV put.
-func (c *Correlator) handleKVPut(entry nats.KeyValueEntry) {
+func (c *Correlator) handleKVPut(entry jetstream.KeyValueEntry) {
 	if entry == nil {
 		panic("handleKVPut: entry must not be nil")
 	}
@@ -231,7 +253,7 @@ func (c *Correlator) handleKVPut(entry nats.KeyValueEntry) {
 
 // handleKVDelete removes a waiter from the in-memory index.
 // Key format: {eventType}.{runID}.{stepID}.
-func (c *Correlator) handleKVDelete(entry nats.KeyValueEntry) {
+func (c *Correlator) handleKVDelete(entry jetstream.KeyValueEntry) {
 	if entry == nil {
 		panic("handleKVDelete: entry must not be nil")
 	}
@@ -260,17 +282,19 @@ func (c *Correlator) handleKVDelete(entry nats.KeyValueEntry) {
 	}
 }
 
-// handleEvent processes an event from the EVENTS stream.
+// handleEventJS processes an event from the EVENTS stream.
 // Extracts event type from the subject, looks up waiters, and
 // evaluates matches.
-func (c *Correlator) handleEvent(msg *nats.Msg) {
+func (c *Correlator) handleEventJS(msg jetstream.Msg) {
 	if msg == nil {
-		panic("Correlator.handleEvent: msg must not be nil")
+		panic("Correlator.handleEventJS: msg must not be nil")
 	}
-	if len(msg.Data) == 0 {
-		panic("Correlator.handleEvent: msg.Data must not be empty")
+	if len(msg.Data()) == 0 {
+		panic(
+			"Correlator.handleEventJS: msg.Data must not be empty",
+		)
 	}
-	eventType := extractEventType(msg.Subject)
+	eventType := extractEventType(msg.Subject())
 	if eventType == "" {
 		msg.Ack()
 		return
@@ -281,7 +305,7 @@ func (c *Correlator) handleEvent(msg *nats.Msg) {
 	c.mu.RUnlock()
 
 	for _, w := range waiters {
-		c.evaluateWaiter(w, msg.Data)
+		c.evaluateWaiter(w, msg.Data())
 	}
 	msg.Ack()
 }
@@ -305,7 +329,7 @@ func (c *Correlator) evaluateWaiter(
 	key := fmt.Sprintf(
 		"%s.%s.%s", w.EventType, w.RunID, w.StepID,
 	)
-	c.waiterKV.Delete(key)
+	c.waiterKV.Delete(context.Background(), key)
 }
 
 // publishMatchEvent publishes EventStepWaitMatched to the history
@@ -329,8 +353,8 @@ func (c *Correlator) publishMatchEvent(
 		return
 	}
 	c.js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
 

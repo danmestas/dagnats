@@ -432,7 +432,7 @@ func TestSchedulerBackfillMissedRuns(t *testing.T) {
 	// Set last_run_at to 3 minutes ago in trigger_state KV
 	lastRun := time.Now().UTC().Add(-3 * time.Minute).Truncate(time.Minute)
 	lastRunBytes := []byte(lastRun.Format(time.RFC3339))
-	_, err = scheduler.stateKV.Put("backfill-trigger.last_run_at", lastRunBytes)
+	_, err = scheduler.stateKV.Put(context.Background(), "backfill-trigger.last_run_at", lastRunBytes)
 	if err != nil {
 		t.Fatalf("KV Put failed: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestSchedulerBackfillCapsAt100(t *testing.T) {
 	// Set last_run_at to 200 minutes ago
 	lastRun := time.Now().UTC().Add(-200 * time.Minute).Truncate(time.Minute)
 	lastRunBytes := []byte(lastRun.Format(time.RFC3339))
-	_, err = scheduler.stateKV.Put("cap-trigger.last_run_at", lastRunBytes)
+	_, err = scheduler.stateKV.Put(context.Background(), "cap-trigger.last_run_at", lastRunBytes)
 	if err != nil {
 		t.Fatalf("KV Put failed: %v", err)
 	}
@@ -837,6 +837,7 @@ func TestSchedulerBackfillCorruptedLastRun(t *testing.T) {
 
 	// Store corrupted timestamp
 	_, err = scheduler.stateKV.Put(
+		context.Background(),
 		"corrupt-trigger.last_run_at", []byte("not-a-time"))
 	if err != nil {
 		t.Fatalf("KV Put failed: %v", err)
@@ -884,6 +885,7 @@ func TestSchedulerBackfillBadTimezone(t *testing.T) {
 
 	lastRun := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Minute)
 	_, err = scheduler.stateKV.Put(
+		context.Background(),
 		"bad-tz-backfill.last_run_at",
 		[]byte(lastRun.Format(time.RFC3339)))
 	if err != nil {
@@ -938,7 +940,7 @@ func TestSchedulerBackfillSkipsNoBackfillTriggers(t *testing.T) {
 	// Set old last_run_at
 	lastRun := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Minute)
 	lastRunBytes := []byte(lastRun.Format(time.RFC3339))
-	_, err = scheduler.stateKV.Put("no-backfill-trigger.last_run_at", lastRunBytes)
+	_, err = scheduler.stateKV.Put(context.Background(), "no-backfill-trigger.last_run_at", lastRunBytes)
 	if err != nil {
 		t.Fatalf("KV Put failed: %v", err)
 	}
@@ -960,7 +962,7 @@ func TestSchedulerBackfillSkipsNoBackfillTriggers(t *testing.T) {
 	}
 
 	// Negative: verify no state changes
-	entry, err := scheduler.stateKV.Get("no-backfill-trigger.last_run_at")
+	entry, err := scheduler.stateKV.Get(context.Background(), "no-backfill-trigger.last_run_at")
 	if err != nil {
 		t.Fatalf("KV Get failed: %v", err)
 	}

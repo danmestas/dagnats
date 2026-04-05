@@ -22,23 +22,25 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Service is the control plane for DagNats. It writes workflow definitions to
-// KV and publishes WorkflowStarted events to the history stream. Run state is
-// owned exclusively by the orchestrator -- the service only reads snapshots.
+// Service is the control plane for DagNats. It writes workflow
+// definitions to KV and publishes WorkflowStarted events to the
+// history stream. Run state is owned exclusively by the
+// orchestrator -- the service only reads snapshots.
 type Service struct {
 	nc            *nats.Conn
-	js            nats.JetStreamContext
-	defKV         nats.KeyValue
+	js            jetstream.JetStream
+	defKV         jetstream.KeyValue
 	store         *engine.SnapshotStore
 	tel           *observe.Telemetry
-	triggerKV     nats.KeyValue
-	signalKV      nats.KeyValue
-	scheduledKV   nats.KeyValue
-	idempotencyKV nats.KeyValue
+	triggerKV     jetstream.KeyValue
+	signalKV      jetstream.KeyValue
+	scheduledKV   jetstream.KeyValue
+	idempotencyKV jetstream.KeyValue
 
-	// Pre-allocated metric instruments -- created once in constructor.
+	// Pre-allocated metric instruments -- created once.
 	requestCount    observe.Counter
 	requestDuration observe.Histogram
 	errorCount      observe.Counter
@@ -66,8 +68,8 @@ type RunEvent struct {
 }
 
 // NewService binds the control plane to an active NATS connection.
-// Panics if JetStream init fails or the workflow_defs bucket does not
-// exist -- callers must call natsutil.SetupAll before constructing.
+// Panics if JetStream init fails or the workflow_defs bucket does
+// not exist -- callers must call natsutil.SetupAll first.
 func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 	if nc == nil {
 		panic("NewService: nc must not be nil")
@@ -75,21 +77,26 @@ func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 	if tel == nil {
 		panic("NewService: tel must not be nil")
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		panic("NewService: JetStream init failed: " + err.Error())
+		panic(
+			"NewService: jetstream.New: " + err.Error(),
+		)
 	}
-	defKV, err := js.KeyValue("workflow_defs")
+	ctx := context.Background()
+	defKV, err := js.KeyValue(ctx, "workflow_defs")
 	if err != nil {
 		panic(
 			"NewService: workflow_defs bucket not found: " +
 				err.Error(),
 		)
 	}
-	triggerKV, _ := js.KeyValue("triggers")
-	signalKV, _ := js.KeyValue("signals")
-	scheduledKV, _ := js.KeyValue("scheduled_runs")
-	idempotencyKV, _ := js.KeyValue("idempotency_keys")
+	triggerKV, _ := js.KeyValue(ctx, "triggers")
+	signalKV, _ := js.KeyValue(ctx, "signals")
+	scheduledKV, _ := js.KeyValue(ctx, "scheduled_runs")
+	idempotencyKV, _ := js.KeyValue(
+		ctx, "idempotency_keys",
+	)
 	return &Service{
 		nc:            nc,
 		js:            js,
@@ -163,12 +170,12 @@ func (s *Service) registerWorkflowInner(
 	if err != nil {
 		return err
 	}
-	_, err = s.defKV.Put(def.Name, data)
+	_, err = s.defKV.Put(context.Background(), def.Name, data)
 	return err
 }
 
 // GetWorkflow retrieves the registered definition for the named
-// workflow. Returns a NATS key-not-found error when not registered.
+// workflow. Returns a key-not-found error when not registered.
 func (s *Service) GetWorkflow(name string) (dag.WorkflowDef, error) {
 	if name == "" {
 		panic("GetWorkflow: name must not be empty")
@@ -176,7 +183,7 @@ func (s *Service) GetWorkflow(name string) (dag.WorkflowDef, error) {
 	if s.defKV == nil {
 		panic("GetWorkflow: defKV must not be nil")
 	}
-	entry, err := s.defKV.Get(name)
+	entry, err := s.defKV.Get(context.Background(), name)
 	if err != nil {
 		return dag.WorkflowDef{}, err
 	}
@@ -237,7 +244,9 @@ func (s *Service) startRunInner(
 	if span == nil {
 		panic("startRunInner: span must not be nil")
 	}
-	entry, err := s.defKV.Get(workflowName)
+	entry, err := s.defKV.Get(
+		context.Background(), workflowName,
+	)
 	if err != nil {
 		return "", fmt.Errorf(
 			"workflow %q not found: %w", workflowName, err,
@@ -296,7 +305,9 @@ func (s *Service) startRunInner(
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
 	injectAPIMsgTraceCtx(span, msg)
-	_, err = s.js.PublishMsg(msg)
+	_, err = s.js.PublishMsg(
+		context.Background(), msg,
+	)
 	if err != nil {
 		return "", err
 	}
@@ -486,12 +497,13 @@ func (s *Service) listWorkflowsInner() ([]dag.WorkflowDef, error) {
 	if s.js == nil {
 		panic("listWorkflowsInner: js must not be nil")
 	}
-	keys, err := s.defKV.Keys()
+	ctx := context.Background()
+	keys, err := s.defKV.Keys(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	entries, err := natsutil.ParallelGet(
+	entries, err := natsutil.ParallelGetJS(
 		s.defKV, keys, natsutil.DefaultParallelism,
 	)
 	if err != nil {
@@ -501,7 +513,9 @@ func (s *Service) listWorkflowsInner() ([]dag.WorkflowDef, error) {
 	defs := make([]dag.WorkflowDef, 0, len(entries))
 	for _, entry := range entries {
 		var def dag.WorkflowDef
-		if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		if err := json.Unmarshal(
+			entry.Value(), &def,
+		); err != nil {
 			return nil, err
 		}
 		defs = append(defs, def)
@@ -560,7 +574,7 @@ func (s *Service) cancelRunInner(runID string) error {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
-	_, err = s.js.PublishMsg(msg)
+	_, err = s.js.PublishMsg(context.Background(), msg)
 	return err
 }
 
@@ -613,7 +627,9 @@ func (s *Service) sendSignalInner(
 		return fmt.Errorf("signals KV bucket not available")
 	}
 	key := runID + "." + name
-	_, err := s.signalKV.Put(key, data)
+	_, err := s.signalKV.Put(
+		context.Background(), key, data,
+	)
 	return err
 }
 
@@ -669,7 +685,9 @@ func (s *Service) createTriggerInner(def trigger.TriggerDef) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.triggerKV.Put(def.ID, data)
+	_, err = s.triggerKV.Put(
+		context.Background(), def.ID, data,
+	)
 	return err
 }
 
@@ -707,12 +725,13 @@ func (s *Service) listTriggersInner() ([]trigger.TriggerDef, error) {
 	if s.triggerKV == nil {
 		return []trigger.TriggerDef{}, nil
 	}
-	keys, err := s.triggerKV.Keys()
+	ctx := context.Background()
+	keys, err := s.triggerKV.Keys(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	entries, err := natsutil.ParallelGet(
+	entries, err := natsutil.ParallelGetJS(
 		s.triggerKV, keys, natsutil.DefaultParallelism,
 	)
 	if err != nil {
@@ -722,7 +741,9 @@ func (s *Service) listTriggersInner() ([]trigger.TriggerDef, error) {
 	defs := make([]trigger.TriggerDef, 0, len(entries))
 	for _, entry := range entries {
 		var def trigger.TriggerDef
-		if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		if err := json.Unmarshal(
+			entry.Value(), &def,
+		); err != nil {
 			return nil, err
 		}
 		defs = append(defs, def)
@@ -771,7 +792,9 @@ func (s *Service) deleteTriggerInner(triggerID string) error {
 	if s.triggerKV == nil {
 		return fmt.Errorf("triggers KV bucket not available")
 	}
-	return s.triggerKV.Delete(triggerID)
+	return s.triggerKV.Delete(
+		context.Background(), triggerID,
+	)
 }
 
 // SetTriggerEnabled updates the enabled state of a trigger.
@@ -820,7 +843,8 @@ func (s *Service) setTriggerEnabledInner(
 	if s.triggerKV == nil {
 		return fmt.Errorf("triggers KV bucket not available")
 	}
-	entry, err := s.triggerKV.Get(triggerID)
+	ctx := context.Background()
+	entry, err := s.triggerKV.Get(ctx, triggerID)
 	if err != nil {
 		return fmt.Errorf(
 			"trigger %q not found: %w", triggerID, err,
@@ -835,7 +859,7 @@ func (s *Service) setTriggerEnabledInner(
 	if err != nil {
 		return fmt.Errorf("marshal trigger: %w", err)
 	}
-	_, err = s.triggerKV.Put(triggerID, data)
+	_, err = s.triggerKV.Put(ctx, triggerID, data)
 	return err
 }
 
@@ -892,7 +916,8 @@ func (s *Service) updateTriggerInner(
 	if s.triggerKV == nil {
 		return fmt.Errorf("triggers KV bucket not available")
 	}
-	entry, err := s.triggerKV.Get(triggerID)
+	ctx := context.Background()
+	entry, err := s.triggerKV.Get(ctx, triggerID)
 	if err != nil {
 		return fmt.Errorf(
 			"trigger %q not found: %w", triggerID, err,
@@ -904,13 +929,15 @@ func (s *Service) updateTriggerInner(
 	}
 	applyTriggerUpdates(&def, updates)
 	if err := trigger.Validate(def); err != nil {
-		return fmt.Errorf("invalid trigger after update: %w", err)
+		return fmt.Errorf(
+			"invalid trigger after update: %w", err,
+		)
 	}
 	data, err := json.Marshal(def)
 	if err != nil {
 		return fmt.Errorf("marshal trigger: %w", err)
 	}
-	_, err = s.triggerKV.Put(triggerID, data)
+	_, err = s.triggerKV.Put(ctx, triggerID, data)
 	return err
 }
 
@@ -970,17 +997,22 @@ func (s *Service) ListDeadLetters(
 	return letters, err
 }
 
-// listDeadLettersInner fetches messages from the DEAD_LETTERS stream.
+// listDeadLettersInner fetches messages from the DEAD_LETTERS
+// stream using a legacy SubscribeSync via the raw connection.
 func (s *Service) listDeadLettersInner(
 	limit int,
 ) ([]DeadLetter, error) {
 	if limit <= 0 {
 		panic("listDeadLettersInner: limit must be positive")
 	}
-	if s.js == nil {
-		panic("listDeadLettersInner: js must not be nil")
+	if s.nc == nil {
+		panic("listDeadLettersInner: nc must not be nil")
 	}
-	sub, err := s.js.SubscribeSync("dead.>")
+	jsLegacy, err := s.nc.JetStream()
+	if err != nil {
+		return nil, err
+	}
+	sub, err := jsLegacy.SubscribeSync("dead.>")
 	if err != nil {
 		return nil, err
 	}
@@ -1116,7 +1148,9 @@ func (s *Service) replayDeadLetterInner(seq uint64) error {
 	if !isTaskSubject(origSubject) {
 		origSubject = "task." + origSubject
 	}
-	_, err = s.js.Publish(origSubject, data)
+	_, err = s.js.Publish(
+		context.Background(), origSubject, data,
+	)
 	return err
 }
 
@@ -1227,7 +1261,11 @@ func (s *Service) listRunEventsInner(
 	const maxEvents = 500
 	const dataTruncateLen = 200
 
-	sub, err := s.js.SubscribeSync(
+	jsLegacy, err := s.nc.JetStream()
+	if err != nil {
+		return nil, err
+	}
+	sub, err := jsLegacy.SubscribeSync(
 		"history."+runID,
 		nats.DeliverAll(),
 		nats.AckNone(),
@@ -1281,7 +1319,9 @@ func (s *Service) checkIdempotency(
 	}
 	kvKey := idempotencyHash(workflowName, fmt.Sprintf("%v", val))
 
-	entry, err := s.idempotencyKV.Get(kvKey)
+	entry, err := s.idempotencyKV.Get(
+		context.Background(), kvKey,
+	)
 	if err == nil {
 		return string(entry.Value()), nil
 	}
@@ -1301,7 +1341,9 @@ func (s *Service) storeIdempotencyKey(
 	}
 	kvKey := idempotencyHash(workflowName, fmt.Sprintf("%v", val))
 	// Create fails if key exists (race loser) — that's fine.
-	s.idempotencyKV.Create(kvKey, []byte(runID))
+	_, _ = s.idempotencyKV.Create(
+		context.Background(), kvKey, []byte(runID),
+	)
 }
 
 // idempotencyHash produces a deterministic KV key from workflow name
@@ -1400,14 +1442,15 @@ func (s *Service) consumeTokenAndPublish(
 			action,
 		)
 	}
-	kv, err := s.js.KeyValue("approval_tokens")
+	ctx := context.Background()
+	kv, err := s.js.KeyValue(ctx, "approval_tokens")
 	if err != nil {
 		return fmt.Errorf(
 			"approval_tokens bucket not available: %w", err,
 		)
 	}
 	key := runID + "." + stepID
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(ctx, key)
 	if err != nil {
 		return fmt.Errorf("token not found or expired")
 	}
@@ -1420,8 +1463,8 @@ func (s *Service) consumeTokenAndPublish(
 // verifyAndPublish checks the token matches, atomically deletes
 // it, and publishes the approval event.
 func (s *Service) verifyAndPublish(
-	kv nats.KeyValue,
-	entry nats.KeyValueEntry,
+	kv jetstream.KeyValue,
+	entry jetstream.KeyValueEntry,
 	key, token, action, runID, stepID string,
 	body json.RawMessage,
 ) error {
@@ -1434,17 +1477,20 @@ func (s *Service) verifyAndPublish(
 	var record struct {
 		Token string `json:"token"`
 	}
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+	if err := json.Unmarshal(
+		entry.Value(), &record,
+	); err != nil {
 		return fmt.Errorf("corrupt token record: %w", err)
 	}
 	if record.Token != token {
 		return fmt.Errorf("invalid token")
 	}
 
-	// Atomic CAS delete — if revision changed, token was
+	// Atomic CAS delete -- if revision changed, token was
 	// already consumed by a concurrent request.
 	if err := kv.Delete(
-		key, nats.LastRevision(entry.Revision()),
+		context.Background(), key,
+		jetstream.LastRevision(entry.Revision()),
 	); err != nil {
 		return fmt.Errorf("token already consumed")
 	}
@@ -1463,9 +1509,13 @@ func (s *Service) verifyAndPublish(
 	msg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Data:    data,
-		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+		Header: nats.Header{
+			"Nats-Msg-Id": {evt.NATSMsgID()},
+		},
 	}
-	_, err = s.js.PublishMsg(msg)
+	_, err = s.js.PublishMsg(
+		context.Background(), msg,
+	)
 	return err
 }
 
@@ -1498,39 +1548,45 @@ func (s *Service) ListWorkers(
 }
 
 // listWorkersInner attempts to list workers from the directory.
-// Returns empty slice when the workers bucket does not exist —
-// this is a normal condition when no workers have registered yet.
+// Returns empty slice when the workers bucket does not exist --
+// normal condition when no workers have registered yet.
 func (s *Service) listWorkersInner() (
 	[]worker.WorkerRegistration, error,
 ) {
 	if s.js == nil {
 		panic("listWorkersInner: js must not be nil")
 	}
-	kv, err := s.js.KeyValue("workers")
+	ctx := context.Background()
+	kv, err := s.js.KeyValue(ctx, "workers")
 	if err != nil {
 		return []worker.WorkerRegistration{}, nil
 	}
 	if kv == nil {
-		panic("listWorkersInner: kv must not be nil when err is nil")
+		panic(
+			"listWorkersInner: kv must not be nil when err is nil",
+		)
 	}
-	keys, err := kv.Keys()
-	if err == nats.ErrNoKeysFound {
+	keys, err := kv.Keys(ctx)
+	if err != nil {
 		return []worker.WorkerRegistration{}, nil
 	}
-	if err != nil {
-		return nil, err
-	}
 	if keys == nil {
-		panic("listWorkersInner: keys must not be nil when err is nil")
+		panic(
+			"listWorkersInner: keys must not be nil when err is nil",
+		)
 	}
-	workers := make([]worker.WorkerRegistration, 0, len(keys))
+	workers := make(
+		[]worker.WorkerRegistration, 0, len(keys),
+	)
 	for _, key := range keys {
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(ctx, key)
 		if err != nil {
 			continue
 		}
 		var reg worker.WorkerRegistration
-		if err := json.Unmarshal(entry.Value(), &reg); err != nil {
+		if err := json.Unmarshal(
+			entry.Value(), &reg,
+		); err != nil {
 			continue
 		}
 		workers = append(workers, reg)

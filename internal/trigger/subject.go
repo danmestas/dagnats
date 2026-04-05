@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // SubjectTrigger subscribes to a NATS subject and publishes workflow.started
@@ -15,7 +17,7 @@ import (
 // in the TriggerEnvelope.
 type SubjectTrigger struct {
 	nc       *nats.Conn
-	js       nats.JetStreamContext
+	js       jetstream.JetStream
 	def      TriggerDef
 	sub      *nats.Subscription
 	done     chan struct{}
@@ -57,9 +59,9 @@ func NewSubjectTrigger(
 		return nil, fmt.Errorf("trigger %q: subject must not be empty", def.ID)
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		return nil, fmt.Errorf("JetStream: %w", err)
+		return nil, fmt.Errorf("jetstream.New: %w", err)
 	}
 
 	trigger := &SubjectTrigger{
@@ -174,7 +176,9 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 		return
 	}
 
-	if _, err := s.js.Publish(evt.NATSSubject(), evtBytes); err != nil {
+	if _, err := s.js.Publish(
+		context.Background(), evt.NATSSubject(), evtBytes,
+	); err != nil {
 		s.logger.Error("publish workflow event", err,
 			observe.String("trigger_id", s.def.ID),
 			observe.String("run_id", runID))

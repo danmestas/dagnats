@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // WebhookHandler implements http.Handler for webhook triggers.
@@ -20,7 +22,7 @@ import (
 // workflow.started events to JetStream.
 type WebhookHandler struct {
 	nc  *nats.Conn
-	js  nats.JetStreamContext
+	js  jetstream.JetStream
 	def TriggerDef
 }
 
@@ -34,9 +36,13 @@ func NewWebhookHandler(nc *nats.Conn, def TriggerDef) *WebhookHandler {
 		panic("NewWebhookHandler: def.Webhook must not be nil")
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		panic(fmt.Sprintf("NewWebhookHandler: JetStream failed: %v", err))
+		panic(
+			fmt.Sprintf(
+				"NewWebhookHandler: jetstream.New: %v", err,
+			),
+		)
 	}
 
 	return &WebhookHandler{
@@ -166,7 +172,9 @@ func (h *WebhookHandler) publishWorkflowEvent(body []byte) error {
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
-	_, err = h.js.Publish(evt.NATSSubject(), evtBytes)
+	_, err = h.js.Publish(
+		context.Background(), evt.NATSSubject(), evtBytes,
+	)
 	if err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}

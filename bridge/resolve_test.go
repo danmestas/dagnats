@@ -5,6 +5,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // publishAndPollTask is a test helper that publishes a task and
@@ -27,9 +29,9 @@ func publishAndPollTask(
 	runID, stepID string,
 ) string {
 	t.Helper()
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 
 	payload := protocol.TaskPayload{
@@ -38,7 +40,8 @@ func publishAndPollTask(
 		Input:  json.RawMessage(`{"x":1}`),
 	}
 	data, _ := json.Marshal(payload)
-	_, err = js.Publish("task.echo."+runID, data)
+	ctx := context.Background()
+	_, err = js.Publish(ctx, "task.echo."+runID, data)
 	if err != nil {
 		t.Fatalf("Publish failed: %v", err)
 	}
@@ -66,6 +69,55 @@ func publishAndPollTask(
 		t.Fatalf("expected 1 task, got %d", len(tasks))
 	}
 	return tasks[0].TaskID
+}
+
+// consumeHistoryEvent reads a single event from the history stream
+// for the given run via the new jetstream API.
+func consumeHistoryEvent(
+	t *testing.T,
+	nc *nats.Conn,
+	runID string,
+	timeout time.Duration,
+) protocol.Event {
+	t.Helper()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	ctx := context.Background()
+	stream, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream(HISTORY) failed: %v", err)
+	}
+	cons, err := stream.CreateOrUpdateConsumer(
+		ctx, jetstream.ConsumerConfig{
+			FilterSubject:     "history." + runID,
+			AckPolicy:         jetstream.AckNonePolicy,
+			DeliverPolicy:     jetstream.DeliverAllPolicy,
+			InactiveThreshold: timeout,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateOrUpdateConsumer failed: %v", err)
+	}
+	fetchResult, err := cons.Fetch(
+		1, jetstream.FetchMaxWait(timeout),
+	)
+	if err != nil {
+		t.Fatalf("Fetch failed: %v", err)
+	}
+	msg, ok := <-fetchResult.Messages()
+	if !ok {
+		if fetchResult.Error() != nil {
+			t.Fatalf("fetch error: %v", fetchResult.Error())
+		}
+		t.Fatal("no history event received")
+	}
+	var evt protocol.Event
+	if err := json.Unmarshal(msg.Data(), &evt); err != nil {
+		t.Fatalf("unmarshal event failed: %v", err)
+	}
+	return evt
 }
 
 func TestResolveComplete(t *testing.T) {
@@ -106,18 +158,7 @@ func TestResolveComplete(t *testing.T) {
 	}
 
 	// Verify event on history stream
-	js, _ := nc.JetStream()
-	sub, _ := js.SubscribeSync(
-		"history.run-c", nats.DeliverAll(),
-	)
-	msg, err := sub.NextMsg(2 * time.Second)
-	if err != nil {
-		t.Fatalf("no history event: %v", err)
-	}
-	var evt protocol.Event
-	if err := json.Unmarshal(msg.Data, &evt); err != nil {
-		t.Fatalf("unmarshal event failed: %v", err)
-	}
+	evt := consumeHistoryEvent(t, nc, "run-c", 2*time.Second)
 	if evt.Type != protocol.EventStepCompleted {
 		t.Fatalf(
 			"expected step.completed, got %s", evt.Type,
@@ -162,18 +203,7 @@ func TestResolveFail(t *testing.T) {
 	}
 
 	// Verify fail event on history stream
-	js, _ := nc.JetStream()
-	sub, _ := js.SubscribeSync(
-		"history.run-f", nats.DeliverAll(),
-	)
-	msg, err := sub.NextMsg(2 * time.Second)
-	if err != nil {
-		t.Fatalf("no history event: %v", err)
-	}
-	var evt protocol.Event
-	if err := json.Unmarshal(msg.Data, &evt); err != nil {
-		t.Fatalf("unmarshal event failed: %v", err)
-	}
+	evt := consumeHistoryEvent(t, nc, "run-f", 2*time.Second)
 	if evt.Type != protocol.EventStepFailed {
 		t.Fatalf("expected step.failed, got %s", evt.Type)
 	}
@@ -225,12 +255,16 @@ func TestResolvePause(t *testing.T) {
 	}
 
 	// Verify checkpoint was written to KV
-	js, _ := nc.JetStream()
-	kv, err := js.KeyValue("checkpoints")
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	ctx := context.Background()
+	kv, err := js.KeyValue(ctx, "checkpoints")
 	if err != nil {
 		t.Fatalf("KeyValue failed: %v", err)
 	}
-	entry, err := kv.Get(taskID)
+	entry, err := kv.Get(ctx, taskID)
 	if err != nil {
 		t.Fatalf("Get checkpoint failed: %v", err)
 	}
@@ -341,12 +375,16 @@ func TestResolveCheckpoint(t *testing.T) {
 	}
 
 	// Verify checkpoint was written to KV
-	js, _ := nc.JetStream()
-	kv, err := js.KeyValue("checkpoints")
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	ctx := context.Background()
+	kv, err := js.KeyValue(ctx, "checkpoints")
 	if err != nil {
 		t.Fatalf("KeyValue failed: %v", err)
 	}
-	entry, err := kv.Get(taskID)
+	entry, err := kv.Get(ctx, taskID)
 	if err != nil {
 		t.Fatalf("Get checkpoint failed: %v", err)
 	}
@@ -406,12 +444,16 @@ func TestResolveSendSignal(t *testing.T) {
 	}
 
 	// Verify signal was written to KV
-	js, _ := nc.JetStream()
-	kv, err := js.KeyValue("signals")
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	ctx := context.Background()
+	kv, err := js.KeyValue(ctx, "signals")
 	if err != nil {
 		t.Fatalf("KeyValue failed: %v", err)
 	}
-	entry, err := kv.Get("run-target.approval")
+	entry, err := kv.Get(ctx, "run-target.approval")
 	if err != nil {
 		t.Fatalf("Get signal failed: %v", err)
 	}
@@ -447,13 +489,17 @@ func TestResolveWaitSignalImmediate(t *testing.T) {
 	defer ts.Close()
 
 	// Pre-populate the signal in KV
-	js, _ := nc.JetStream()
-	kv, err := js.KeyValue("signals")
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	ctx := context.Background()
+	kv, err := js.KeyValue(ctx, "signals")
 	if err != nil {
 		t.Fatalf("KeyValue failed: %v", err)
 	}
 	signalData := []byte(`{"status":"ready"}`)
-	_, err = kv.Put("run-wait.approval", signalData)
+	_, err = kv.Put(ctx, "run-wait.approval", signalData)
 	if err != nil {
 		t.Fatalf("Put signal failed: %v", err)
 	}
@@ -564,17 +610,7 @@ func TestResolveFailWithFailureType(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	js, _ := nc.JetStream()
-	sub, _ := js.SubscribeSync(
-		"history.run-bf", nats.DeliverAll(),
-	)
-	msg, err := sub.NextMsg(3 * time.Second)
-	if err != nil {
-		t.Fatalf("no history event: %v", err)
-	}
-
-	var evt protocol.Event
-	json.Unmarshal(msg.Data, &evt)
+	evt := consumeHistoryEvent(t, nc, "run-bf", 3*time.Second)
 	if evt.Type != protocol.EventStepFailed {
 		t.Fatalf("event type = %q, want step.failed", evt.Type)
 	}
@@ -611,13 +647,7 @@ func TestResolveFailDefaultsToRetriable(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	js, _ := nc.JetStream()
-	sub, _ := js.SubscribeSync(
-		"history.run-bfd", nats.DeliverAll(),
-	)
-	msg, _ := sub.NextMsg(3 * time.Second)
-	var evt protocol.Event
-	json.Unmarshal(msg.Data, &evt)
+	evt := consumeHistoryEvent(t, nc, "run-bfd", 3*time.Second)
 	var payload protocol.StepFailedPayload
 	json.Unmarshal(evt.Payload, &payload)
 	if payload.FailureType != protocol.FailureTypeRetriable {

@@ -12,6 +12,8 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/pcgroups"
 )
 
 // TaskContext is the core interface workers use to report step results.
@@ -63,13 +65,15 @@ type HandlerFunc func(ctx TaskContext) error
 // failures are retried by JetStream's MaxDeliver policy.
 type Worker struct {
 	nc           *nats.Conn
-	js           nats.JetStreamContext
+	js           jetstream.JetStream
 	tel          *observe.Telemetry
 	handlers     map[string]HandlerFunc
-	subs         []*nats.Subscription
-	checkpointKV nats.KeyValue
-	signalKV     nats.KeyValue
+	stoppers     []interface{ Stop() } // all consumer lifecycles
+	checkpointKV jetstream.KeyValue
+	signalKV     jetstream.KeyValue
 	groups       []string
+	partitions   int
+	singletons   map[string]bool
 
 	// Directory registration (observability only)
 	dir           *Directory
@@ -100,6 +104,18 @@ func WithGroups(groups ...string) WorkerOption {
 	return func(w *Worker) { w.groups = groups }
 }
 
+// WithPartitions configures pcgroups elastic consumer groups
+// with the given partition count. 0 = legacy consumer (default).
+func WithPartitions(n int) WorkerOption {
+	if n < 0 {
+		panic("WithPartitions: n must be >= 0")
+	}
+	if n > 256 {
+		panic("WithPartitions: n must be <= 256")
+	}
+	return func(w *Worker) { w.partitions = n }
+}
+
 // generateWorkerID creates a unique worker ID using crypto/rand.
 // Panics if crypto/rand fails — that is a system-level error.
 func generateWorkerID() string {
@@ -125,9 +141,9 @@ func NewWorker(
 	if tel == nil {
 		tel = observe.NewNoopTelemetry()
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		panic("NewWorker: JetStream init failed: " + err.Error())
+		panic("NewWorker: jetstream.New failed: " + err.Error())
 	}
 	w := &Worker{
 		nc:       nc,
@@ -166,19 +182,45 @@ func (w *Worker) Handle(
 	w.handlers[taskType] = handler
 }
 
+// HandleSingleton registers a handler that runs as a single-
+// partition elastic consumer group. Only one consumer processes
+// messages at a time across all worker instances. Implicitly
+// enables partitioned mode if not already configured.
+func (w *Worker) HandleSingleton(
+	taskType string, handler HandlerFunc,
+) {
+	if taskType == "" {
+		panic("HandleSingleton: taskType must not be empty")
+	}
+	if handler == nil {
+		panic("HandleSingleton: handler must not be nil")
+	}
+	w.handlers[taskType] = handler
+	if w.singletons == nil {
+		w.singletons = make(map[string]bool)
+	}
+	w.singletons[taskType] = true
+	// Singleton requires pcgroups — enable partitioned mode
+	// if the caller didn't explicitly set WithPartitions.
+	if w.partitions == 0 {
+		w.partitions = 1
+	}
+}
+
 // newDirectoryOptional creates a Directory if the workers KV
 // bucket exists. Returns error (not panic) if the bucket is
 // missing — directory is observability only, not critical path.
-func newDirectoryOptional(js nats.JetStreamContext) (*Directory, error) {
+func newDirectoryOptional(
+	js jetstream.JetStream,
+) (*Directory, error) {
 	if js == nil {
 		panic("newDirectoryOptional: js must not be nil")
 	}
-	kv, err := js.KeyValue("workers")
+	kv, err := js.KeyValue(
+		context.Background(), "workers",
+	)
 	if err != nil {
 		return nil, err
-	}
-	if kv == nil {
-		panic("newDirectoryOptional: kv must not be nil when err is nil")
 	}
 	return &Directory{kv: kv}, nil
 }
@@ -207,8 +249,12 @@ func (w *Worker) Start() {
 // bindOptionalKV binds checkpoint and signal KV buckets if they
 // exist. Missing buckets are fine — features degrade gracefully.
 func (w *Worker) bindOptionalKV() {
-	w.checkpointKV, _ = w.js.KeyValue("checkpoints")
-	w.signalKV, _ = w.js.KeyValue("signals")
+	w.checkpointKV, _ = w.js.KeyValue(
+		context.Background(), "checkpoints",
+	)
+	w.signalKV, _ = w.js.KeyValue(
+		context.Background(), "signals",
+	)
 }
 
 // registerDirectory registers this worker in the observability
@@ -251,57 +297,224 @@ func (w *Worker) subscribeTask(
 
 	h := handler
 	tt := taskType
-	dispatch := func(msg *nats.Msg) {
-		w.handleMessage(tt, h, msg)
-	}
 
-	if len(w.groups) == 0 {
-		w.subscribe("task."+taskType+".>", dispatch)
-		// Sticky subscription on STICKY_TASKS stream (separate
-		// from TASK_QUEUES to avoid work queue filter conflict).
-		// Missing stream is fine — sticky just won't work.
-		w.subscribeSoft(
-			"sticky."+taskType+"."+w.workerID+".>",
-			dispatch,
-		)
-	} else {
-		for _, group := range w.groups {
-			w.subscribe(
-				"task."+taskType+"."+group+".>",
-				dispatch,
+	if w.partitions > 0 {
+		partCount := w.partitions
+		if w.singletons[tt] {
+			partCount = 1
+		}
+		filter := "task." + tt + ".>"
+		groupName := "workers-" + tt
+		if len(w.groups) > 0 {
+			for _, group := range w.groups {
+				gFilter := "task." + tt + "." +
+					group + ".>"
+				gName := "workers-" + tt +
+					"-" + group
+				cc := w.createElasticConsumer(
+					tt, gName, gFilter,
+					partCount, h,
+				)
+				w.stoppers = append(
+					w.stoppers, cc,
+				)
+			}
+		} else {
+			cc := w.createElasticConsumer(
+				tt, groupName, filter,
+				partCount, h,
 			)
+			w.stoppers = append(
+				w.stoppers, cc,
+			)
+		}
+	} else {
+		if len(w.groups) == 0 {
+			subject := "task." + taskType + ".>"
+			cc := w.createConsumer(tt, subject, h)
+			w.stoppers = append(
+				w.stoppers, cc,
+			)
+			// Sticky subscription on STICKY_TASKS stream
+			// (separate from TASK_QUEUES to avoid work queue
+			// filter conflict). Missing stream is fine.
+			stickyCC := w.createStickyConsumer(
+				tt, h,
+			)
+			if stickyCC != nil {
+				w.stoppers = append(
+					w.stoppers, stickyCC,
+				)
+			}
+		} else {
+			for _, group := range w.groups {
+				subject := "task." + tt + "." +
+					group + ".>"
+				cc := w.createConsumer(
+					tt+"."+group, subject, h,
+				)
+				w.stoppers = append(
+					w.stoppers, cc,
+				)
+			}
 		}
 	}
 }
 
-// subscribe creates a JetStream subscription. Panics on failure
-// — stream misconfiguration is a startup error.
-func (w *Worker) subscribe(
-	subject string, cb nats.MsgHandler,
-) {
-	sub, err := w.js.Subscribe(
-		subject, cb,
-		nats.AckExplicit(), nats.DeliverAll(),
+// createConsumer sets up a JetStream pull consumer for the given
+// subject on the TASK_QUEUES stream and starts consuming. Panics
+// on any setup failure — stream misconfiguration is a startup error.
+func (w *Worker) createConsumer(
+	name string, subject string, handler HandlerFunc,
+) jetstream.ConsumeContext {
+	if subject == "" {
+		panic("createConsumer: subject must not be empty")
+	}
+	if handler == nil {
+		panic("createConsumer: handler must not be nil")
+	}
+	cons, err := w.js.CreateOrUpdateConsumer(
+		context.Background(), "TASK_QUEUES",
+		jetstream.ConsumerConfig{
+			FilterSubject: subject,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
 	)
 	if err != nil {
-		panic("Worker.subscribe: " + subject + ": " + err.Error())
+		panic(
+			"Worker.Start: consumer failed for " +
+				name + ": " + err.Error(),
+		)
 	}
-	w.subs = append(w.subs, sub)
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		w.handleMessage(name, handler, msg)
+	})
+	if err != nil {
+		panic(
+			"Worker.Start: Consume failed for " +
+				name + ": " + err.Error(),
+		)
+	}
+	return cc
 }
 
-// subscribeSoft creates a JetStream subscription, ignoring errors
-// if the stream doesn't exist. Used for optional subscriptions
-// like sticky routing where the stream may not be provisioned.
-func (w *Worker) subscribeSoft(
-	subject string, cb nats.MsgHandler,
-) {
-	sub, err := w.js.Subscribe(
-		subject, cb,
-		nats.AckExplicit(), nats.DeliverAll(),
-	)
-	if err == nil {
-		w.subs = append(w.subs, sub)
+// createStickyConsumer sets up a pull consumer on the STICKY_TASKS
+// stream for worker-affinity routing. Returns nil if the stream
+// does not exist — sticky routing is optional.
+func (w *Worker) createStickyConsumer(
+	taskType string, handler HandlerFunc,
+) jetstream.ConsumeContext {
+	if taskType == "" {
+		panic(
+			"createStickyConsumer: taskType must not be empty",
+		)
 	}
+	if handler == nil {
+		panic(
+			"createStickyConsumer: handler must not be nil",
+		)
+	}
+	subject := "sticky." + taskType + "." +
+		w.workerID + ".>"
+	ctx := context.Background()
+	stream, err := w.js.Stream(ctx, "STICKY_TASKS")
+	if err != nil {
+		return nil // Stream not provisioned — skip
+	}
+	cons, err := stream.CreateOrUpdateConsumer(
+		ctx, jetstream.ConsumerConfig{
+			FilterSubject: subject,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		return nil
+	}
+	tt := taskType
+	h := handler
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		w.handleMessage(tt, h, msg)
+	})
+	if err != nil {
+		return nil
+	}
+	return cc
+}
+
+// createElasticConsumer sets up a pcgroups elastic consumer
+// group for the given task type. Creates the group (idempotent)
+// then joins as a member.
+func (w *Worker) createElasticConsumer(
+	taskType string,
+	groupName string,
+	filter string,
+	partitions int,
+	handler HandlerFunc,
+) pcgroups.ConsumerGroupConsumeContext {
+	if taskType == "" {
+		panic(
+			"createElasticConsumer: taskType must not be empty",
+		)
+	}
+	if partitions <= 0 {
+		panic(
+			"createElasticConsumer: partitions must be positive",
+		)
+	}
+
+	ctx := context.Background()
+
+	_, err := pcgroups.CreateElastic(
+		ctx, w.js, "TASK_QUEUES", groupName,
+		uint(partitions),
+		[]pcgroups.PartitioningFilter{{
+			Filter: filter,
+		}},
+		1024, // maxBufferedMessages
+		0,    // maxBufferedBytes (unlimited)
+	)
+	if err != nil {
+		panic("createElasticConsumer: CreateElastic: " +
+			groupName + ": " + err.Error())
+	}
+
+	// Register this worker as a member so the group
+	// assigns partitions and the consumer starts receiving.
+	_, err = pcgroups.AddMembers(
+		ctx, w.js, "TASK_QUEUES", groupName,
+		[]string{w.workerID},
+	)
+	if err != nil {
+		panic("createElasticConsumer: AddMembers: " +
+			groupName + ": " + err.Error())
+	}
+
+	h := handler
+	tt := taskType
+	cc, err := pcgroups.ElasticConsume(
+		ctx, w.js, "TASK_QUEUES", groupName,
+		w.workerID,
+		func(msg jetstream.Msg) {
+			w.handleMessage(tt, h, msg)
+		},
+		jetstream.ConsumerConfig{
+			AckPolicy: jetstream.AckExplicitPolicy,
+		},
+	)
+	if err != nil {
+		panic("createElasticConsumer: ElasticConsume: " +
+			groupName + ": " + err.Error())
+	}
+
+	w.tel.Logger.Info("elastic consumer group joined",
+		observe.String("task_type", taskType),
+		observe.String("group", groupName),
+		observe.Int("partitions", partitions),
+	)
+
+	return cc
 }
 
 // heartbeatLoop re-registers the worker every 30s to refresh the
@@ -340,15 +553,15 @@ func (w *Worker) Stop() {
 	if w.dir != nil {
 		_ = w.dir.Deregister(w.workerID)
 	}
-	for _, sub := range w.subs {
-		sub.Unsubscribe()
+	for _, s := range w.stoppers {
+		s.Stop()
 	}
 }
 
 // handleMessage unmarshals the task payload, creates a traced
 // context, executes the handler, and records metrics.
 func (w *Worker) handleMessage(
-	taskType string, handler HandlerFunc, msg *nats.Msg,
+	taskType string, handler HandlerFunc, msg jetstream.Msg,
 ) {
 	if msg == nil {
 		panic("handleMessage: msg must not be nil")
@@ -357,7 +570,7 @@ func (w *Worker) handleMessage(
 		panic("handleMessage: handler must not be nil")
 	}
 	var payload protocol.TaskPayload
-	err := json.Unmarshal(msg.Data, &payload)
+	err := json.Unmarshal(msg.Data(), &payload)
 	if err != nil {
 		w.tel.Logger.Error(
 			"failed to unmarshal task payload", err,
@@ -414,7 +627,7 @@ func (w *Worker) handleMessage(
 func (w *Worker) handleTaskError(
 	err error,
 	tc *taskContext,
-	msg *nats.Msg,
+	msg jetstream.Msg,
 	taskType string,
 	runID string,
 ) {
@@ -446,17 +659,17 @@ func (w *Worker) handleTaskError(
 
 // extractWorkerTraceCtx reads W3C traceparent from the NATS
 // message header and returns a context with parent span info.
-func extractWorkerTraceCtx(msg *nats.Msg) context.Context {
+func extractWorkerTraceCtx(msg jetstream.Msg) context.Context {
 	if msg == nil {
 		panic("extractWorkerTraceCtx: msg must not be nil")
 	}
-	if msg.Data == nil {
+	if msg.Data() == nil {
 		panic("extractWorkerTraceCtx: msg.Data must not be nil")
 	}
-	if msg.Header == nil {
+	if msg.Headers() == nil {
 		return context.Background()
 	}
-	tp := msg.Header.Get("traceparent")
+	tp := msg.Headers().Get("traceparent")
 	if tp == "" {
 		return context.Background()
 	}

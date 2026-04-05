@@ -35,9 +35,9 @@ func TestNewWorkerNilTelemetry(t *testing.T) {
 
 	// Stop must succeed without error.
 	w.Stop()
-	if len(w.subs) == 0 {
+	if len(w.stoppers) == 0 {
 		t.Fatal(
-			"expected at least one subscription after Start",
+			"expected at least one consume context after Start",
 		)
 	}
 }
@@ -66,9 +66,9 @@ func TestNewWorkerExplicitTelemetry(t *testing.T) {
 	})
 	w.Start()
 	w.Stop()
-	if len(w.subs) == 0 {
+	if len(w.stoppers) == 0 {
 		t.Fatal(
-			"expected at least one subscription after Start",
+			"expected at least one consume context after Start",
 		)
 	}
 }

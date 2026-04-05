@@ -4,9 +4,11 @@ package engine
 // Each test uses its own embedded NATS server.
 
 import (
+	"context"
 	"testing"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestConcurrencyAcquireAndRelease(t *testing.T) {
@@ -19,8 +21,11 @@ func TestConcurrencyAcquireAndRelease(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	cm := NewConcurrencyManager(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: first acquire succeeds
 	ok, err := cm.AcquireRun("wf-1", 2)
@@ -74,11 +79,14 @@ func TestConcurrencyReleaseWhenZero(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	cm := NewConcurrencyManager(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: release with no prior acquire is safe (already 0).
-	err := cm.ReleaseRun("wf-zero")
+	err = cm.ReleaseRun("wf-zero")
 	if err != nil {
 		t.Fatalf("release at zero should not error: %v", err)
 	}
@@ -104,10 +112,13 @@ func TestConcurrencyManagerSafeNoBucket(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Positive: NewConcurrencyManagerSafe returns nil, not panic.
-	cm, err := NewConcurrencyManagerSafe(js)
+	cm, err := NewConcurrencyManagerSafe(jsNew)
 	if cm != nil {
 		t.Fatal("expected nil manager when bucket missing")
 	}
@@ -130,13 +141,21 @@ func TestConcurrencyReadCounterNonNumeric(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	kv, _ := js.KeyValue("concurrency_runs")
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	kv, _ := jsNew.KeyValue(
+		context.Background(), "concurrency_runs",
+	)
 
 	// Write non-numeric value directly.
-	kv.Put("workflow.bad-counter", []byte("not-a-number"))
+	kv.Put(
+		context.Background(),
+		"workflow.bad-counter", []byte("not-a-number"),
+	)
 
-	cm := NewConcurrencyManager(js)
+	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: acquire treats corrupted counter as 0 and
 	// succeeds. The readCounter returns (0, rev, nil) when
@@ -165,8 +184,11 @@ func TestConcurrencyUnlimitedWhenZero(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	cm := NewConcurrencyManager(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: limit 0 means unlimited
 	ok, err := cm.AcquireRun("wf-2", 0)
@@ -189,8 +211,11 @@ func TestTaskConcurrencyAcquireAndRelease(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	cm := NewConcurrencyManager(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: first acquire under limit succeeds
 	ok, err := cm.AcquireTask("call-claude", 2)
@@ -245,11 +270,14 @@ func TestTaskConcurrencyReleaseAtZero(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	cm := NewConcurrencyManager(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: release with no prior acquire is safe
-	err := cm.ReleaseTask("no-prior")
+	err = cm.ReleaseTask("no-prior")
 	if err != nil {
 		t.Fatalf("release at zero should not error: %v", err)
 	}
@@ -279,8 +307,11 @@ func TestTaskConcurrencyUnlimitedWhenZero(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	cm := NewConcurrencyManager(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: limit 0 means unlimited
 	ok, err := cm.AcquireTask("any-task", 0)
@@ -302,9 +333,12 @@ func TestTaskConcurrencyNoTaskBucket(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	// Safe variant — tasks bucket missing
-	cm, err := NewConcurrencyManagerSafe(js)
+	cm, err := NewConcurrencyManagerSafe(jsNew)
 	if err != nil {
 		t.Fatalf("safe constructor: %v", err)
 	}

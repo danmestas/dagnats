@@ -18,6 +18,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestFormatRunStatus(t *testing.T) {
@@ -173,7 +174,10 @@ func TestRunEventsTypeFilter(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	filterRunID1 := "ff110000111111112222222233333333"
-	js, _ := nc.JetStream()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	publishTestEvent(t, js, filterRunID1,
 		protocol.EventStepQueued, "step-a")
 	publishTestEvent(t, js, filterRunID1,
@@ -211,7 +215,10 @@ func TestRunEventsStepFilter(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	filterRunID2 := "ff220000111111112222222233333333"
-	js, _ := nc.JetStream()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	publishTestEvent(t, js, filterRunID2,
 		protocol.EventStepQueued, "step-a")
 	publishTestEvent(t, js, filterRunID2,
@@ -235,7 +242,7 @@ func TestRunEventsStepFilter(t *testing.T) {
 
 // publishTestEvent publishes a protocol.Event to the history stream.
 func publishTestEvent(
-	t *testing.T, js nats.JetStreamContext,
+	t *testing.T, js jetstream.JetStream,
 	runID string, evtType protocol.EventType, stepID string,
 ) {
 	t.Helper()
@@ -249,7 +256,9 @@ func publishTestEvent(
 	if err != nil {
 		t.Fatalf("marshal event: %v", err)
 	}
-	_, err = js.Publish("history."+runID, data)
+	_, err = js.Publish(
+		context.Background(), "history."+runID, data,
+	)
 	if err != nil {
 		t.Fatalf("publish event: %v", err)
 	}
@@ -578,6 +587,10 @@ func TestRunStartOutputPrintsResult(t *testing.T) {
 
 	tel := observe.NewNoopTelemetry()
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Register a one-step workflow definition.
 	svc := api.NewService(nc, tel)
@@ -593,7 +606,7 @@ func TestRunStartOutputPrintsResult(t *testing.T) {
 	}
 
 	// Create a completed run snapshot directly in KV.
-	store := engine.NewSnapshotStore(js)
+	store := engine.NewSnapshotStore(jsNew)
 	runID := "output-test-run-1"
 	run := dag.WorkflowRun{
 		RunID:      runID,

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ActorOrchestrator is an actor-based workflow orchestrator. It
@@ -18,11 +20,11 @@ import (
 // WorkflowActor. Snapshots still save to KV for durability.
 type ActorOrchestrator struct {
 	nc     *nats.Conn
-	js     nats.JetStreamContext
+	js     jetstream.JetStream
 	tel    *observe.Telemetry
 	rt     *actor.Runtime
 	store  *SnapshotStore
-	sub    *nats.Subscription
+	cc     jetstream.ConsumeContext
 	actors sync.Map // runID → *WorkflowActor
 }
 
@@ -36,9 +38,11 @@ func NewActorOrchestrator(
 	if tel == nil {
 		panic("NewActorOrchestrator: tel must not be nil")
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		panic("NewActorOrchestrator: JetStream: " + err.Error())
+		panic(
+			"NewActorOrchestrator: jetstream.New: " + err.Error(),
+		)
 	}
 	return &ActorOrchestrator{
 		nc:    nc,
@@ -51,34 +55,54 @@ func NewActorOrchestrator(
 
 // Start subscribes to the WORKFLOW_HISTORY stream.
 func (ao *ActorOrchestrator) Start() {
-	if ao.sub != nil {
+	if ao.cc != nil {
 		panic("ActorOrchestrator.Start: already started")
 	}
-	sub, err := ao.js.Subscribe("history.>", ao.handleEvent,
-		nats.DeliverAll(),
-		nats.AckExplicit(),
+	stream, err := ao.js.Stream(
+		context.Background(), "WORKFLOW_HISTORY",
 	)
 	if err != nil {
-		panic("ActorOrchestrator.Start: subscribe: " + err.Error())
+		panic(
+			"ActorOrchestrator.Start: stream: " + err.Error(),
+		)
 	}
-	ao.sub = sub
+	cons, err := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			FilterSubject: "history.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		panic(
+			"ActorOrchestrator.Start: consumer: " + err.Error(),
+		)
+	}
+	cc, err := cons.Consume(ao.handleEventJS)
+	if err != nil {
+		panic(
+			"ActorOrchestrator.Start: consume: " + err.Error(),
+		)
+	}
+	ao.cc = cc
 }
 
 // Stop drains and terminates all actors.
 func (ao *ActorOrchestrator) Stop() {
-	if ao.sub != nil {
-		ao.sub.Unsubscribe()
-		ao.sub = nil
+	if ao.cc != nil {
+		ao.cc.Stop()
+		ao.cc = nil
 	}
 	ao.rt.StopAll()
 }
 
-// handleEvent routes a history event to the per-run actor.
-func (ao *ActorOrchestrator) handleEvent(msg *nats.Msg) {
+// handleEventJS routes a history event to the per-run actor.
+// Accepts jetstream.Msg from the new consumer API.
+func (ao *ActorOrchestrator) handleEventJS(msg jetstream.Msg) {
 	if msg == nil {
 		return
 	}
-	evt, err := protocol.UnmarshalEvent(msg.Data)
+	evt, err := protocol.UnmarshalEvent(msg.Data())
 	if err != nil {
 		ao.tel.Logger.Error("unmarshal event", err)
 		msg.NakWithDelay(5 * time.Second)

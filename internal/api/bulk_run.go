@@ -76,7 +76,9 @@ func (s *Service) bulkRunInner(
 	if err := validateBulkRunRequest(req); err != nil {
 		return BulkRunResponse{}, err
 	}
-	entry, err := s.defKV.Get(req.WorkflowID)
+	entry, err := s.defKV.Get(
+		context.Background(), req.WorkflowID,
+	)
 	if err != nil {
 		return BulkRunResponse{}, fmt.Errorf(
 			"workflow %q not found: %w",
@@ -143,7 +145,9 @@ func (s *Service) publishBulkRuns(
 			},
 		}
 		injectAPIMsgTraceCtx(span, msg)
-		if _, err := s.js.PublishMsg(msg); err != nil {
+		if _, err := s.js.PublishMsg(
+			context.Background(), msg,
+		); err != nil {
 			return BulkRunResponse{
 				RunIDs: runIDs, Total: len(runIDs),
 			}, err

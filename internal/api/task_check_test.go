@@ -6,11 +6,12 @@
 package api
 
 import (
+	"context"
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestCheckTaskConsumersNoWorkers(t *testing.T) {
@@ -18,9 +19,9 @@ func TestCheckTaskConsumersNoWorkers(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 
 	wb := dag.NewWorkflow("check-wf")
@@ -55,19 +56,27 @@ func TestCheckTaskConsumersWithWorker(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 
 	// Simulate a worker subscribing to "task.greet.>"
-	_, subErr := js.AddConsumer("TASK_QUEUES", &nats.ConsumerConfig{
-		Durable:       "worker-greet",
-		FilterSubject: "task.greet.>",
-		AckPolicy:     nats.AckExplicitPolicy,
-	})
+	stream, streamErr := js.Stream(
+		context.Background(), "TASK_QUEUES",
+	)
+	if streamErr != nil {
+		t.Fatalf("Stream failed: %v", streamErr)
+	}
+	_, subErr := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			Durable:       "worker-greet",
+			FilterSubject: "task.greet.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+		},
+	)
 	if subErr != nil {
-		t.Fatalf("AddConsumer failed: %v", subErr)
+		t.Fatalf("CreateConsumer failed: %v", subErr)
 	}
 
 	wb := dag.NewWorkflow("check-wf")
@@ -98,27 +107,36 @@ func TestCheckTaskConsumersAllPresent(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 
-	// Register consumers for both task types.
-	_, err = js.AddConsumer("TASK_QUEUES", &nats.ConsumerConfig{
-		Durable:       "worker-greet",
-		FilterSubject: "task.greet.>",
-		AckPolicy:     nats.AckExplicitPolicy,
-	})
-	if err != nil {
-		t.Fatalf("AddConsumer greet failed: %v", err)
+	ctx := context.Background()
+	stream, streamErr := js.Stream(ctx, "TASK_QUEUES")
+	if streamErr != nil {
+		t.Fatalf("Stream failed: %v", streamErr)
 	}
-	_, err = js.AddConsumer("TASK_QUEUES", &nats.ConsumerConfig{
-		Durable:       "worker-upper",
-		FilterSubject: "task.uppercase.>",
-		AckPolicy:     nats.AckExplicitPolicy,
-	})
+	// Register consumers for both task types.
+	_, err = stream.CreateOrUpdateConsumer(
+		ctx, jetstream.ConsumerConfig{
+			Durable:       "worker-greet",
+			FilterSubject: "task.greet.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+		},
+	)
 	if err != nil {
-		t.Fatalf("AddConsumer uppercase failed: %v", err)
+		t.Fatalf("CreateConsumer greet failed: %v", err)
+	}
+	_, err = stream.CreateOrUpdateConsumer(
+		ctx, jetstream.ConsumerConfig{
+			Durable:       "worker-upper",
+			FilterSubject: "task.uppercase.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateConsumer uppercase failed: %v", err)
 	}
 
 	wb := dag.NewWorkflow("check-wf")

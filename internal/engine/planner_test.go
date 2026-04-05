@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestPlanner_MaterializeAndComplete(t *testing.T) {
@@ -24,6 +25,10 @@ func TestPlanner_MaterializeAndComplete(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Workflow: planner step that generates two normal steps.
 	wfDef := dag.WorkflowDef{
@@ -45,7 +50,7 @@ func TestPlanner_MaterializeAndComplete(t *testing.T) {
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	// Subscribe to the planner task queue.
 	planSub, err := js.PullSubscribe(
@@ -191,6 +196,10 @@ func TestPlanner_MaxStepsExceeded(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name:    "planner-max-wf",
@@ -211,7 +220,7 @@ func TestPlanner_MaxStepsExceeded(t *testing.T) {
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	planSub, err := js.PullSubscribe(
 		"task.generate-plan.*", "",
@@ -280,6 +289,10 @@ func TestPlanner_AllowedTasksViolation(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name:    "planner-allowed-wf",
@@ -301,7 +314,7 @@ func TestPlanner_AllowedTasksViolation(t *testing.T) {
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	planSub, err := js.PullSubscribe(
 		"task.generate-plan.*", "",
@@ -369,6 +382,10 @@ func TestPlanner_CycleInFragment(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name:    "planner-cycle-wf",
@@ -389,7 +406,7 @@ func TestPlanner_CycleInFragment(t *testing.T) {
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	planSub, err := js.PullSubscribe(
 		"task.generate-plan.*", "",
@@ -463,6 +480,10 @@ func TestPlanner_EmptyPlan(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name:    "planner-empty-wf",
@@ -483,7 +504,7 @@ func TestPlanner_EmptyPlan(t *testing.T) {
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	planSub, err := js.PullSubscribe(
 		"task.generate-plan.*", "",

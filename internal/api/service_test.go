@@ -18,6 +18,7 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestServiceRegisterWorkflow(t *testing.T) {
@@ -211,7 +212,9 @@ func TestServiceSendSignal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendSignal failed: %v", err)
 	}
-	entry, err := svc.signalKV.Get(runID + ".sig1")
+	entry, err := svc.signalKV.Get(
+		context.Background(), runID+".sig1",
+	)
 	if err != nil {
 		t.Fatalf("signal not written to KV: %v", err)
 	}
@@ -242,7 +245,9 @@ func TestServiceCreateTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTrigger failed: %v", err)
 	}
-	entry, err := svc.triggerKV.Get("trig-1")
+	entry, err := svc.triggerKV.Get(
+		context.Background(), "trig-1",
+	)
 	if err != nil {
 		t.Fatalf("trigger not written to KV: %v", err)
 	}
@@ -331,7 +336,7 @@ func TestServiceDeleteTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteTrigger failed: %v", err)
 	}
-	_, err = svc.triggerKV.Get("trig-del")
+	_, err = svc.triggerKV.Get(context.Background(), "trig-del")
 	if err == nil {
 		t.Fatal("trigger should be deleted")
 	}
@@ -350,14 +355,8 @@ func TestServiceSetTriggerEnabled(t *testing.T) {
 	svc := NewService(nc, observe.NewNoopTelemetry())
 
 	// Store a trigger directly in KV with Enabled: true
-	js, jsErr := nc.JetStream()
-	if jsErr != nil {
-		t.Fatalf("JetStream failed: %v", jsErr)
-	}
-	trigKV, kvErr := js.KeyValue("triggers")
-	if kvErr != nil {
-		t.Fatalf("KeyValue failed: %v", kvErr)
-	}
+	ctx := context.Background()
+	trigKV := svc.triggerKV
 	def := trigger.TriggerDef{
 		ID:         "trig-1",
 		WorkflowID: "wf-1",
@@ -371,18 +370,17 @@ func TestServiceSetTriggerEnabled(t *testing.T) {
 	if marshalErr != nil {
 		t.Fatalf("Marshal failed: %v", marshalErr)
 	}
-	_, putErr := trigKV.Put("trig-1", data)
+	_, putErr := trigKV.Put(ctx, "trig-1", data)
 	if putErr != nil {
 		t.Fatalf("Put failed: %v", putErr)
 	}
 
 	// Positive: disable the trigger
-	ctx := context.Background()
 	err = svc.SetTriggerEnabled(ctx, "trig-1", false)
 	if err != nil {
 		t.Fatalf("SetTriggerEnabled(false) failed: %v", err)
 	}
-	entry, err := trigKV.Get("trig-1")
+	entry, err := trigKV.Get(ctx, "trig-1")
 	if err != nil {
 		t.Fatalf("Get after disable failed: %v", err)
 	}
@@ -397,7 +395,7 @@ func TestServiceSetTriggerEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetTriggerEnabled(true) failed: %v", err)
 	}
-	entry, err = trigKV.Get("trig-1")
+	entry, err = trigKV.Get(ctx, "trig-1")
 	if err != nil {
 		t.Fatalf("Get after enable failed: %v", err)
 	}
@@ -749,7 +747,9 @@ func TestDeleteTriggerInnerRemovesKey(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(def)
-	_, putErr := svc.triggerKV.Put("del-inner", data)
+	_, putErr := svc.triggerKV.Put(
+		context.Background(), "del-inner", data,
+	)
 	if putErr != nil {
 		t.Fatalf("Put failed: %v", putErr)
 	}
@@ -759,7 +759,7 @@ func TestDeleteTriggerInnerRemovesKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deleteTriggerInner failed: %v", err)
 	}
-	_, err = svc.triggerKV.Get("del-inner")
+	_, err = svc.triggerKV.Get(context.Background(), "del-inner")
 	if err == nil {
 		t.Fatal("key should be deleted after deleteTriggerInner")
 	}
@@ -1235,8 +1235,8 @@ func TestServiceListWorkers(t *testing.T) {
 	}
 
 	// Register two workers via Directory
-	js, _ := nc.JetStream()
-	dir := worker.NewDirectory(js)
+	jsNew, _ := jetstream.New(nc)
+	dir := worker.NewDirectory(jsNew)
 	reg1 := worker.WorkerRegistration{
 		WorkerID:  "worker-1",
 		TaskTypes: []string{"task-a", "task-b"},

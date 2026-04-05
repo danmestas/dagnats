@@ -15,7 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // TimerActionApprovalTimeout fires when an approval gate expires.
@@ -140,7 +140,9 @@ func (o *Orchestrator) storeApprovalToken(
 	if stepID == "" {
 		panic("storeApprovalToken: stepID must not be empty")
 	}
-	kv, err := o.js.KeyValue("approval_tokens")
+	kv, err := o.js.KeyValue(
+		context.Background(), "approval_tokens",
+	)
 	if err != nil {
 		return fmt.Errorf("get approval_tokens bucket: %w", err)
 	}
@@ -156,7 +158,7 @@ func (o *Orchestrator) storeApprovalToken(
 		return fmt.Errorf("marshal approval token: %w", err)
 	}
 	key := runID + "." + stepID
-	_, err = kv.Put(key, data)
+	_, err = kv.Put(context.Background(), key, data)
 	return err
 }
 
@@ -201,8 +203,8 @@ func (o *Orchestrator) publishApprovalRequested(
 		return
 	}
 	o.js.Publish(
-		evt.NATSSubject(), evtData,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), evtData,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 
 	// Publish notification to the configured subject.
@@ -383,10 +385,12 @@ func (o *Orchestrator) deleteApprovalToken(
 			"deleteApprovalToken: stepID must not be empty",
 		)
 	}
-	kv, err := o.js.KeyValue("approval_tokens")
+	kv, err := o.js.KeyValue(
+		context.Background(), "approval_tokens",
+	)
 	if err != nil {
 		return
 	}
 	key := runID + "." + stepID
-	kv.Delete(key)
+	kv.Delete(context.Background(), key)
 }

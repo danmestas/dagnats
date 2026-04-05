@@ -14,6 +14,7 @@ import (
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestResolveRunIDFullIDPassthrough(t *testing.T) {
@@ -50,8 +51,11 @@ func TestResolveRunIDPrefixMatch(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	store := engine.NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := engine.NewSnapshotStore(jsNew)
 
 	run := dag.WorkflowRun{
 		RunID:      "aabbccdd1234567890abcdef12345678",
@@ -90,8 +94,11 @@ func TestResolveRunIDAmbiguousPrefix(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	store := engine.NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := engine.NewSnapshotStore(jsNew)
 
 	// Two runs sharing the same 8-char prefix.
 	run1 := dag.WorkflowRun{
@@ -117,7 +124,7 @@ func TestResolveRunIDAmbiguousPrefix(t *testing.T) {
 
 	svc := api.NewService(nc, observe.NewNoopTelemetry())
 
-	_, err := ResolveRunID(svc, "aabbccdd", false)
+	_, err = ResolveRunID(svc, "aabbccdd", false)
 
 	// Positive: ambiguous prefix returns error with count.
 	if err == nil {
@@ -172,8 +179,11 @@ func TestResolveRunIDLastFlag(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	js, _ := nc.JetStream()
-	store := engine.NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := engine.NewSnapshotStore(jsNew)
 
 	older := dag.WorkflowRun{
 		RunID:      "old00000111111112222222233333333",

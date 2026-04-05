@@ -4,10 +4,12 @@
 package natsutil
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -57,6 +59,55 @@ func ParallelGet(
 
 	// Compact: remove nil entries from deleted keys.
 	entries := make([]nats.KeyValueEntry, 0, len(keys))
+	for _, e := range raw {
+		if e != nil {
+			entries = append(entries, e)
+		}
+	}
+	return entries, nil
+}
+
+// ParallelGetJS fetches multiple KV entries concurrently using the
+// new jetstream.KeyValue API. Same bounded-parallelism approach as
+// ParallelGet but with context-aware operations.
+func ParallelGetJS(
+	kv jetstream.KeyValue, keys []string, limit int,
+) ([]jetstream.KeyValueEntry, error) {
+	if kv == nil {
+		panic("ParallelGetJS: kv must not be nil")
+	}
+	if limit <= 0 {
+		panic("ParallelGetJS: limit must be positive")
+	}
+	if len(keys) == 0 {
+		return []jetstream.KeyValueEntry{}, nil
+	}
+
+	raw := make([]jetstream.KeyValueEntry, len(keys))
+	var g errgroup.Group
+	g.SetLimit(limit)
+
+	for i, key := range keys {
+		g.Go(func() error {
+			entry, err := kv.Get(
+				context.Background(), key,
+			)
+			if err != nil {
+				if errors.Is(err, jetstream.ErrKeyNotFound) {
+					return nil
+				}
+				return fmt.Errorf("get %q: %w", key, err)
+			}
+			raw[i] = entry
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	entries := make([]jetstream.KeyValueEntry, 0, len(keys))
 	for _, e := range raw {
 		if e != nil {
 			entries = append(entries, e)

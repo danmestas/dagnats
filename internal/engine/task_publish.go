@@ -1,54 +1,22 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/jetstreamext"
 )
-
-// publishTask publishes a TaskPayload for a ready step to the
-// TASK_QUEUES stream. Used by both Orchestrator and WorkflowActor.
-func publishTask(
-	js nats.JetStreamContext,
-	runID string,
-	step dag.StepDef,
-	input []byte,
-	attempt int,
-) error {
-	if js == nil {
-		panic("publishTask: js must not be nil")
-	}
-	if runID == "" {
-		panic("publishTask: runID must not be empty")
-	}
-	if step.ID == "" {
-		panic("publishTask: step.ID must not be empty")
-	}
-	payload := protocol.TaskPayload{
-		TaskID:  runID + "." + step.ID,
-		RunID:   runID,
-		StepID:  step.ID,
-		Attempt: attempt,
-		Input:   input,
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal TaskPayload: %w", err)
-	}
-	msgID := runID + "." + step.ID + ".queued"
-	subject := taskSubject(step, runID)
-	msg := buildTaskMsg(subject, data, msgID)
-	_, err = js.PublishMsg(msg)
-	return err
-}
 
 // publishIterationTask publishes a TaskPayload for an agent-loop
 // re-enqueue with a distinct MsgId per iteration.
 func publishIterationTask(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 	runID string,
 	step dag.StepDef,
 	input []byte,
@@ -79,7 +47,7 @@ func publishIterationTask(
 	)
 	subject := taskSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	_, err = js.PublishMsg(msg)
+	_, err = js.PublishMsg(context.Background(), msg)
 	return err
 }
 
@@ -100,7 +68,7 @@ func taskSubject(step dag.StepDef, runID string) string {
 // publishWorkflowEvent publishes a workflow lifecycle event
 // (completed or failed) to the WORKFLOW_HISTORY stream.
 func publishWorkflowEvent(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 	eventType protocol.EventType,
 	runID string,
 ) error {
@@ -116,16 +84,58 @@ func publishWorkflowEvent(
 		return fmt.Errorf("marshal %s event: %w", eventType, err)
 	}
 	_, err = js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	return err
+}
+
+// collectReadyMessages builds NATS messages for ready steps
+// without publishing. Returns messages grouped by step.
+func collectReadyMessages(
+	runID string,
+	ready []dag.StepDef,
+	run *dag.WorkflowRun,
+) ([]*nats.Msg, error) {
+	if runID == "" {
+		panic("collectReadyMessages: runID must not be empty")
+	}
+	if run == nil {
+		panic("collectReadyMessages: run must not be nil")
+	}
+	msgs := make([]*nats.Msg, 0, len(ready))
+	for _, step := range ready {
+		input, err := dag.ResolveInput(step, run.Steps)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"resolve input for %q: %w", step.ID, err,
+			)
+		}
+		attempt := run.Steps[step.ID].Attempts
+		payload := protocol.TaskPayload{
+			TaskID:  runID + "." + step.ID,
+			RunID:   runID,
+			StepID:  step.ID,
+			Attempt: attempt,
+			Input:   input,
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"marshal TaskPayload: %w", err,
+			)
+		}
+		msgID := runID + "." + step.ID + ".queued"
+		subject := taskSubject(step, runID)
+		msgs = append(msgs, buildTaskMsg(subject, data, msgID))
+	}
+	return msgs, nil
 }
 
 // enqueueReadySteps resolves ready steps, publishes tasks, and
 // checks for workflow completion. Returns updated run state.
 func enqueueReadySteps(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
 ) error {
@@ -152,7 +162,8 @@ func enqueueReadySteps(
 		if dag.IsComplete(wfDef, completed) {
 			run.Status = dag.RunStatusCompleted
 			return publishWorkflowEvent(
-				js, protocol.EventWorkflowCompleted, run.RunID,
+				js, protocol.EventWorkflowCompleted,
+				run.RunID,
 			)
 		}
 	}
@@ -161,7 +172,8 @@ func enqueueReadySteps(
 	if dag.IsComplete(wfDef, completed) {
 		run.Status = dag.RunStatusCompleted
 		return publishWorkflowEvent(
-			js, protocol.EventWorkflowCompleted, run.RunID,
+			js, protocol.EventWorkflowCompleted,
+			run.RunID,
 		)
 	}
 
@@ -185,18 +197,51 @@ func enqueueReadySteps(
 		run.Steps[step.ID] = state
 	}
 
-	for _, step := range ready {
-		input, err := dag.ResolveInput(step, run.Steps)
-		if err != nil {
-			return fmt.Errorf(
-				"resolve input for %q: %w", step.ID, err,
-			)
+	msgs, err := collectReadyMessages(run.RunID, ready, run)
+	if err != nil {
+		return err
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	return publishAtomicBatches(js, msgs)
+}
+
+// publishAtomicBatches splits messages by stream prefix and
+// publishes each group as an atomic batch. Normal tasks go to
+// TASK_QUEUES (task.>), agent tasks to AGENT_TASKS (agent_task.>).
+func publishAtomicBatches(
+	js jetstream.JetStream, msgs []*nats.Msg,
+) error {
+	if js == nil {
+		panic("publishAtomicBatches: js must not be nil")
+	}
+	if len(msgs) == 0 {
+		panic("publishAtomicBatches: msgs must not be empty")
+	}
+	var taskMsgs, agentMsgs []*nats.Msg
+	for _, msg := range msgs {
+		if strings.HasPrefix(msg.Subject, "agent_task.") {
+			agentMsgs = append(agentMsgs, msg)
+		} else {
+			taskMsgs = append(taskMsgs, msg)
 		}
-		attempt := run.Steps[step.ID].Attempts
-		if err := publishTask(
-			js, run.RunID, step, input, attempt,
-		); err != nil {
-			return err
+	}
+	if len(taskMsgs) > 0 {
+		_, err := jetstreamext.PublishMsgBatch(
+			context.Background(), js, taskMsgs,
+		)
+		if err != nil {
+			return fmt.Errorf("atomic task publish: %w", err)
+		}
+	}
+	if len(agentMsgs) > 0 {
+		_, err := jetstreamext.PublishMsgBatch(
+			context.Background(), js, agentMsgs,
+		)
+		if err != nil {
+			return fmt.Errorf("atomic agent publish: %w", err)
 		}
 	}
 	return nil

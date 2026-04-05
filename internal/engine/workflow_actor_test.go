@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestWorkflowActorHandlesStarted(t *testing.T) {
@@ -398,8 +399,11 @@ func TestWorkflowActorWithSnapshotStore(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, _ := nc.JetStream()
-	store := NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := NewSnapshotStore(jsNew)
 
 	wfDef := dag.WorkflowDef{
 		Name: "persist-wf", Version: "1",

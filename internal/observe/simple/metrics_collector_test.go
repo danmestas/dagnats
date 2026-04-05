@@ -1,9 +1,9 @@
 // observe/simple/metrics_collector_test.go
-// Tests for MetricsCollector. Methodology: integration tests with a real embedded
-// NATS server per test. Each test creates a MetricsCollector, performs a metric
-// operation, and verifies the correct MetricPoint is published to the TELEMETRY
-// stream. Assertions cover both the positive case (field correctness) and the
-// negative space (no unexpected values).
+// Tests for MetricsCollector. Methodology: integration tests with a real
+// embedded NATS server per test. Each test creates a MetricsCollector,
+// performs a metric operation, and verifies the correct MetricPoint is
+// published to the TELEMETRY stream. Assertions cover both the positive
+// case (field correctness) and the negative space (no unexpected values).
 package simple
 
 import (
@@ -13,19 +13,24 @@ import (
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestMetricsCollectorCounter(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	if err := natsutil.SetupTelemetryStream(js); err != nil {
 		t.Fatalf("SetupTelemetryStream: %v", err)
 	}
 
-	sub, err := js.SubscribeSync("telemetry.metrics.>",
+	jsLegacy, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	sub, err := jsLegacy.SubscribeSync("telemetry.metrics.>",
 		nats.DeliverAll())
 	if err != nil {
 		t.Fatalf("SubscribeSync: %v", err)
@@ -33,7 +38,8 @@ func TestMetricsCollectorCounter(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	mc := NewMetricsCollector(js, "engine")
-	counter := mc.Counter("requests_total", map[string]string{"env": "test"})
+	counter := mc.Counter("requests_total",
+		map[string]string{"env": "test"})
 	counter.Inc()
 
 	msg, err := sub.NextMsg(2 * time.Second)
@@ -62,15 +68,19 @@ func TestMetricsCollectorCounter(t *testing.T) {
 
 func TestMetricsCollectorHistogram(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	if err := natsutil.SetupTelemetryStream(js); err != nil {
 		t.Fatalf("SetupTelemetryStream: %v", err)
 	}
 
-	sub, err := js.SubscribeSync("telemetry.metrics.>",
+	jsLegacy, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	sub, err := jsLegacy.SubscribeSync("telemetry.metrics.>",
 		nats.DeliverAll())
 	if err != nil {
 		t.Fatalf("SubscribeSync: %v", err)
@@ -78,7 +88,8 @@ func TestMetricsCollectorHistogram(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	mc := NewMetricsCollector(js, "worker")
-	hist := mc.Histogram("step.duration_ms", map[string]string{"task": "llm-coder"})
+	hist := mc.Histogram("step.duration_ms",
+		map[string]string{"task": "llm-coder"})
 	hist.Observe(42.5)
 
 	msg, err := sub.NextMsg(2 * time.Second)
@@ -104,15 +115,19 @@ func TestMetricsCollectorHistogram(t *testing.T) {
 
 func TestMetricsCollectorGauge(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 	if err := natsutil.SetupTelemetryStream(js); err != nil {
 		t.Fatalf("SetupTelemetryStream: %v", err)
 	}
 
-	sub, err := js.SubscribeSync("telemetry.metrics.>",
+	jsLegacy, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	sub, err := jsLegacy.SubscribeSync("telemetry.metrics.>",
 		nats.DeliverAll())
 	if err != nil {
 		t.Fatalf("SubscribeSync: %v", err)

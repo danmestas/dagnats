@@ -4,6 +4,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestPollReturnsTask(t *testing.T) {
@@ -22,9 +23,9 @@ func TestPollReturnsTask(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 
 	// Publish a task message
@@ -37,7 +38,8 @@ func TestPollReturnsTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal failed: %v", err)
 	}
-	_, err = js.Publish("task.echo.run-1", data)
+	ctx := context.Background()
+	_, err = js.Publish(ctx, "task.echo.run-1", data)
 	if err != nil {
 		t.Fatalf("Publish failed: %v", err)
 	}
@@ -175,11 +177,12 @@ func TestPollMultipleTasks(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 
+	ctx := context.Background()
 	// Publish 3 tasks
 	for i := 0; i < 3; i++ {
 		payload := protocol.TaskPayload{
@@ -189,9 +192,10 @@ func TestPollMultipleTasks(t *testing.T) {
 		}
 		data, _ := json.Marshal(payload)
 		_, err := js.Publish(
+			ctx,
 			"task.echo.run-m",
 			data,
-			nats.MsgId("dedup-"+string(rune('a'+i))),
+			jetstream.WithMsgID("dedup-"+string(rune('a'+i))),
 		)
 		if err != nil {
 			t.Fatalf("Publish %d failed: %v", i, err)

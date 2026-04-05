@@ -11,13 +11,14 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestSnapshotWriteAndRead(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
@@ -56,9 +57,9 @@ func TestSnapshotWriteAndRead(t *testing.T) {
 
 func TestSnapshotLoadNotFound(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
@@ -76,9 +77,9 @@ func TestSnapshotLoadNotFound(t *testing.T) {
 
 func TestSnapshotUpdate(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
@@ -114,9 +115,9 @@ func TestSnapshotUpdate(t *testing.T) {
 
 func TestSnapshotListAllEmpty(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
@@ -136,9 +137,9 @@ func TestSnapshotListAllEmpty(t *testing.T) {
 
 func TestSnapshotListAllBounded(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
@@ -183,9 +184,9 @@ func TestSnapshotListAllBounded(t *testing.T) {
 
 func TestSnapshotListAll(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
