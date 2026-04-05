@@ -19,6 +19,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nuid"
 	"golang.org/x/sync/errgroup"
 )
@@ -29,6 +30,7 @@ import (
 type Orchestrator struct {
 	nc          *nats.Conn
 	js          nats.JetStreamContext
+	jsNew       jetstream.JetStream // new jetstream API for orbit extensions
 	defKV       nats.KeyValue
 	store       *SnapshotStore
 	tel         *observe.Telemetry
@@ -80,6 +82,10 @@ func NewOrchestrator(
 	if err != nil {
 		panic("NewOrchestrator: JetStream failed: " + err.Error())
 	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		panic("NewOrchestrator: jetstream.New: " + err.Error())
+	}
 	defKV, err := js.KeyValue("workflow_defs")
 	if err != nil {
 		panic(
@@ -92,6 +98,7 @@ func NewOrchestrator(
 	o := &Orchestrator{
 		nc:          nc,
 		js:          js,
+		jsNew:       jsNew,
 		defKV:       defKV,
 		store:       NewSnapshotStore(js),
 		tel:         tel,
