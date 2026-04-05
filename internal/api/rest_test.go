@@ -839,3 +839,129 @@ func TestRESTBulkCancel(t *testing.T) {
 		t.Fatalf("status = %d, want 400", resp2.StatusCode)
 	}
 }
+
+func TestRESTBulkRun(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	wb := dag.NewWorkflow("rest-bulk-run")
+	wb.Task("s", "echo")
+	def, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), def)
+
+	handler := NewRESTHandler(svc)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body := `{"workflow_id":"rest-bulk-run","inputs":[{"a":1},{"a":2}]}`
+	resp, err := http.Post(
+		ts.URL+"/runs/bulk", "application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST /runs/bulk: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	var result BulkRunResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.RunIDs) != 2 {
+		t.Fatalf("run_ids = %d, want 2", len(result.RunIDs))
+	}
+
+	// Negative: empty inputs returns 400
+	resp2, err2 := http.Post(
+		ts.URL+"/runs/bulk", "application/json",
+		strings.NewReader(`{"workflow_id":"rest-bulk-run","inputs":[]}`),
+	)
+	if err2 != nil {
+		t.Fatalf("POST /runs/bulk: %v", err2)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp2.StatusCode)
+	}
+}
+
+func TestRESTBulkRetry(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc, observe.NewNoopTelemetry())
+	wb := dag.NewWorkflow("rest-retry-wf")
+	wb.Task("s", "echo")
+	def, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), def)
+
+	runID, _ := svc.StartRun(
+		context.Background(), "rest-retry-wf", []byte(`{"x":1}`),
+	)
+
+	// Wait for run snapshot to appear
+	deadline := time.After(5 * time.Second)
+	var run dag.WorkflowRun
+	for {
+		r, err := svc.GetRun(context.Background(), runID)
+		if err == nil {
+			run = r
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("run snapshot did not appear within 5s")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Mark as failed and save
+	run.Status = dag.RunStatusFailed
+	svc.store.Save(run)
+
+	handler := NewRESTHandler(svc)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body := `{"workflow_id":"rest-retry-wf","mode":"rerun"}`
+	resp, err := http.Post(
+		ts.URL+"/runs/retry", "application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST /runs/retry: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var result BulkRetryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Retried) != 1 {
+		t.Fatalf("retried = %d, want 1", len(result.Retried))
+	}
+
+	// Negative: missing mode returns 400
+	resp2, err2 := http.Post(
+		ts.URL+"/runs/retry", "application/json",
+		strings.NewReader(`{"workflow_id":"rest-retry-wf"}`),
+	)
+	if err2 != nil {
+		t.Fatalf("POST /runs/retry: %v", err2)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp2.StatusCode)
+	}
+}

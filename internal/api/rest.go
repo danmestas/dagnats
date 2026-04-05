@@ -37,6 +37,8 @@ func NewRESTHandler(svc *Service) http.Handler {
 	mux.HandleFunc("/workflows", svc.routeWorkflows)
 	mux.HandleFunc("/runs", svc.routeRuns)
 	mux.HandleFunc("/runs/cancel", svc.routeBulkCancel)
+	mux.HandleFunc("/runs/bulk", svc.routeBulkRun)
+	mux.HandleFunc("/runs/retry", svc.routeBulkRetry)
 	mux.HandleFunc("/runs/", svc.routeRunByID)
 	mux.HandleFunc("/health/telemetry", svc.routeHealth)
 	return mux
@@ -496,6 +498,85 @@ func handleBulkCancel(
 		return
 	}
 	resp, err := svc.BulkCancelRuns(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encErr := json.NewEncoder(w).Encode(resp)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// routeBulkRun dispatches POST /runs/bulk.
+func (s *Service) routeBulkRun(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	handleBulkRun(s, w, r)
+}
+
+// handleBulkRun starts multiple workflow runs.
+func handleBulkRun(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleBulkRun: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleBulkRun: r must not be nil")
+	}
+	var req BulkRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(),
+			http.StatusBadRequest)
+		return
+	}
+	resp, err := svc.BulkStartRuns(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	encErr := json.NewEncoder(w).Encode(resp)
+	if encErr != nil {
+		svc.tel.Logger.Error("encode response", encErr)
+	}
+}
+
+// routeBulkRetry dispatches POST /runs/retry.
+func (s *Service) routeBulkRetry(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	handleBulkRetry(s, w, r)
+}
+
+// handleBulkRetry retries failed workflow runs.
+func handleBulkRetry(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
+	if svc == nil {
+		panic("handleBulkRetry: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleBulkRetry: r must not be nil")
+	}
+	var req BulkRetryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(),
+			http.StatusBadRequest)
+		return
+	}
+	resp, err := svc.BulkRetryRuns(r.Context(), req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
