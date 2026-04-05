@@ -547,6 +547,56 @@ func TestBuilderWithConcurrency(t *testing.T) {
 	}
 }
 
+func TestValidateStickyValid(t *testing.T) {
+	wb := NewWorkflow("sticky")
+	wb.Task("a", "t")
+	wb.WithSticky(StickySoft)
+	// Positive: soft sticky accepted
+	if _, err := wb.Build(); err != nil {
+		t.Fatalf("valid sticky rejected: %v", err)
+	}
+}
+
+func TestValidateStickyHardRequiresTimeout(t *testing.T) {
+	wb := NewWorkflow("sticky-hard")
+	wb.Task("a", "t")
+	wb.WithSticky(StickyHard)
+	// Positive: hard sticky without timeout rejected
+	_, err := wb.Build()
+	if err == nil {
+		t.Fatal("expected error: hard sticky without timeout")
+	}
+}
+
+func TestValidateStickyHardWithTimeout(t *testing.T) {
+	def := WorkflowDef{
+		Name: "sticky-hard-ok", Version: "1",
+		Steps:   []StepDef{{ID: "a", Task: "t", Type: StepTypeNormal}},
+		Sticky:  StickyHard,
+		Timeout: 5 * time.Minute,
+	}
+	// Positive: hard sticky with timeout accepted
+	if err := Validate(def); err != nil {
+		t.Fatalf("valid hard+timeout rejected: %v", err)
+	}
+}
+
+func TestValidateStickyRejectsWorkerGroup(t *testing.T) {
+	def := WorkflowDef{
+		Name: "sticky-group", Version: "1",
+		Steps: []StepDef{
+			{ID: "a", Task: "t", Type: StepTypeNormal,
+				WorkerGroup: "gpu"},
+		},
+		Sticky: StickySoft,
+	}
+	err := Validate(def)
+	// Positive: sticky + WorkerGroup rejected
+	if err == nil {
+		t.Fatal("expected error: sticky + WorkerGroup")
+	}
+}
+
 func TestValidateIdempotencyKeyValid(t *testing.T) {
 	wb := NewWorkflow("idemp")
 	wb.Task("a", "t")

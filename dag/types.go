@@ -196,7 +196,17 @@ type WorkflowDef struct {
 	OutputSchema   json.RawMessage   `json:"output_schema,omitempty"`
 	AuxSteps       map[string]bool   `json:"aux_steps,omitempty"`
 	IdempotencyKey string            `json:"idempotency_key,omitempty"`
+	Sticky         StickyStrategy    `json:"sticky,omitempty"`
 }
+
+// StickyStrategy controls worker affinity for workflow runs.
+type StickyStrategy string
+
+const (
+	StickyNone StickyStrategy = ""
+	StickySoft StickyStrategy = "soft"
+	StickyHard StickyStrategy = "hard"
+)
 
 // MapInstanceState tracks runtime state for one map item execution.
 // Each instance represents one parallel task invocation for a map step.
