@@ -111,3 +111,5 @@ All timer actions share `SLEEP_TIMERS` via action discriminator:
 | `sleep_complete` | After sleep duration | Publishes `step.sleep.completed` |
 | `wait_timeout` | After wait-for-event timeout | Publishes `step.wait.timeout` |
 | `rate_retry` | After rate limit refill delay | Re-publishes task to `task.>` |
+| `debounce_fire` | After debounce window | Fires debounced trigger |
+| `batch_fire` | After batch timeout | Fires accumulated batch |

@@ -2,7 +2,7 @@
 
 ## Design Decision: NATS-Native Telemetry
 
-Zero external dependencies. Single `TELEMETRY` stream as sole backend. Optional Jaeger OTLP/HTTP exporter activated by env var. Observability failures never break workflows (noop fallback).
+Zero external dependencies. Single `TELEMETRY` stream as sole backend. External OTel collectors (e.g., SigNoz) consume from the stream. Observability failures never break workflows (noop fallback).
 
 ## Signal Types
 
@@ -36,14 +36,13 @@ W3C Trace Context (traceparent) dual-written to:
 - Active runs, completed runs, failed runs on engine
 - Task execution duration on workers
 
-## Components (~400 LOC target in `observe/simple/`)
+## Components (`internal/observe/simple/`)
 
 - TraceCollector: async publish with bounded buffer
 - MetricsCollector: counter/gauge/histogram wrappers
 - LogCollector: structured logging with trace context
 - ErrorReporter: span-aware error capture
 - Propagation: W3C inject/extract
-- Jaeger exporter: batch OTLP/HTTP upload
 - StorageMonitor: stream capacity warnings via `alerts.storage.TELEMETRY`
 
 ## Provider-Agnostic Interfaces
