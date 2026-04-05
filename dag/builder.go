@@ -12,11 +12,13 @@ import "time"
 // on Build(). current tracks the most recently added step so that chained
 // modifier calls (DependsOn, WithTimeout, etc.) always target the right step.
 type WorkflowBuilder struct {
-	name        string
-	version     string
-	steps       []StepDef
-	current     int
-	concurrency *ConcurrencyLimit
+	name           string
+	version        string
+	steps          []StepDef
+	current        int
+	concurrency    *ConcurrencyLimit
+	idempotencyKey string
+	sticky         StickyStrategy
 }
 
 // NewWorkflow starts a new builder for a workflow with the given name.
@@ -292,12 +294,39 @@ func (b *WorkflowBuilder) WithMaxDuration(d time.Duration) *WorkflowBuilder {
 // Build assembles the WorkflowDef and delegates to Validate. Any structural
 // error (cycle, missing dep, etc.) is surfaced here so callers get a clean
 // error value rather than a panic at execution time.
+// WithSticky configures worker affinity for workflow runs.
+// Soft prefers the same worker; Hard requires it.
+func (b *WorkflowBuilder) WithSticky(
+	s StickyStrategy,
+) *WorkflowBuilder {
+	if s != StickyNone && s != StickySoft && s != StickyHard {
+		panic("WithSticky: invalid StickyStrategy: " + string(s))
+	}
+	b.sticky = s
+	return b
+}
+
+// WithIdempotencyKey configures a dot-path expression evaluated against
+// workflow input to produce a dedup key. Duplicate runs with the same
+// key value return the existing run ID instead of creating a new one.
+func (b *WorkflowBuilder) WithIdempotencyKey(
+	dotPath string,
+) *WorkflowBuilder {
+	if dotPath == "" {
+		panic("WithIdempotencyKey: dotPath must not be empty")
+	}
+	b.idempotencyKey = dotPath
+	return b
+}
+
 func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 	def := WorkflowDef{
-		Name:        b.name,
-		Version:     b.version,
-		Steps:       b.steps,
-		Concurrency: b.concurrency,
+		Name:           b.name,
+		Version:        b.version,
+		Steps:          b.steps,
+		Concurrency:    b.concurrency,
+		IdempotencyKey: b.idempotencyKey,
+		Sticky:         b.sticky,
 	}
 	if err := Validate(def); err != nil {
 		return WorkflowDef{}, err

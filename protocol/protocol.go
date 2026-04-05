@@ -97,6 +97,7 @@ type Event struct {
 	Payload     json.RawMessage `json:"payload,omitempty"`
 	TraceParent string          `json:"trace_parent,omitempty"`
 	TraceState  string          `json:"trace_state,omitempty"`
+	WorkerID    string          `json:"worker_id,omitempty"`
 }
 
 // NewStepEvent constructs an Event for a step lifecycle transition.

@@ -197,16 +197,27 @@ type StepDef struct {
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced
 // by many runs. Version allows schema evolution without breaking existing runs.
 type WorkflowDef struct {
-	Name         string            `json:"name"`
-	Version      string            `json:"version"`
-	Steps        []StepDef         `json:"steps"`
-	DefaultRetry *RetryPolicy      `json:"default_retry,omitempty"`
-	Concurrency  *ConcurrencyLimit `json:"concurrency,omitempty"`
-	Timeout      time.Duration     `json:"timeout,omitempty"`
-	InputSchema  json.RawMessage   `json:"input_schema,omitempty"`
-	OutputSchema json.RawMessage   `json:"output_schema,omitempty"`
-	AuxSteps     map[string]bool   `json:"aux_steps,omitempty"`
+	Name           string            `json:"name"`
+	Version        string            `json:"version"`
+	Steps          []StepDef         `json:"steps"`
+	DefaultRetry   *RetryPolicy      `json:"default_retry,omitempty"`
+	Concurrency    *ConcurrencyLimit `json:"concurrency,omitempty"`
+	Timeout        time.Duration     `json:"timeout,omitempty"`
+	InputSchema    json.RawMessage   `json:"input_schema,omitempty"`
+	OutputSchema   json.RawMessage   `json:"output_schema,omitempty"`
+	AuxSteps       map[string]bool   `json:"aux_steps,omitempty"`
+	IdempotencyKey string            `json:"idempotency_key,omitempty"`
+	Sticky         StickyStrategy    `json:"sticky,omitempty"`
 }
+
+// StickyStrategy controls worker affinity for workflow runs.
+type StickyStrategy string
+
+const (
+	StickyNone StickyStrategy = ""
+	StickySoft StickyStrategy = "soft"
+	StickyHard StickyStrategy = "hard"
+)
 
 // MapInstanceState tracks runtime state for one map item execution.
 // Each instance represents one parallel task invocation for a map step.

@@ -24,6 +24,14 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validateIdempotencyKey(def.IdempotencyKey); err != nil {
+		return err
+	}
+
+	if err := validateSticky(def); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 
@@ -414,6 +422,58 @@ func validateConcurrency(def WorkflowDef) error {
 				"(must be 0..1000)",
 			def.Name, def.Concurrency.MaxSteps,
 		)
+	}
+	return nil
+}
+
+// validateSticky checks sticky strategy constraints.
+func validateSticky(def WorkflowDef) error {
+	if def.Sticky == StickyNone {
+		return nil
+	}
+	if def.Sticky != StickySoft && def.Sticky != StickyHard {
+		return fmt.Errorf(
+			"workflow %q: invalid sticky strategy %q",
+			def.Name, def.Sticky,
+		)
+	}
+	if def.Sticky == StickyHard && def.Timeout == 0 {
+		return fmt.Errorf(
+			"workflow %q: hard sticky requires a timeout "+
+				"to prevent permanent blocking",
+			def.Name,
+		)
+	}
+	for _, step := range def.Steps {
+		if step.WorkerGroup != "" {
+			return fmt.Errorf(
+				"workflow %q: sticky is incompatible with "+
+					"per-step WorkerGroup (step %q)",
+				def.Name, step.ID,
+			)
+		}
+	}
+	return nil
+}
+
+// validateIdempotencyKey checks dot-path syntax: no empty segments,
+// no leading/trailing dots.
+func validateIdempotencyKey(key string) error {
+	if key == "" {
+		return nil
+	}
+	if key[0] == '.' || key[len(key)-1] == '.' {
+		return fmt.Errorf(
+			"idempotency_key %q: must not start or end with dot",
+			key,
+		)
+	}
+	for i := range len(key) - 1 {
+		if key[i] == '.' && key[i+1] == '.' {
+			return fmt.Errorf(
+				"idempotency_key %q: empty segment", key,
+			)
+		}
 	}
 	return nil
 }
