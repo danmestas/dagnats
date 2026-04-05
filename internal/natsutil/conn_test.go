@@ -6,8 +6,11 @@
 package natsutil
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestStartTestServer(t *testing.T) {
@@ -268,4 +271,44 @@ func TestSetupAllCreatesRateLimitsKV(t *testing.T) {
 	assert(t, err == nil, "status must succeed: %v", err)
 	assert(t, status.Bucket() == "rate_limits",
 		"bucket = %q, want rate_limits", status.Bucket())
+}
+
+func TestEnableAtomicPublish(t *testing.T) {
+	_, nc := StartTestServer(t)
+
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	if err := SetupStreams(js); err != nil {
+		t.Fatalf("SetupStreams: %v", err)
+	}
+
+	// Call the function under test.
+	err = EnableAtomicPublish(nc, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("EnableAtomicPublish: %v", err)
+	}
+
+	// Positive: verify via new jetstream API that AllowAtomicPublish is set.
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	newJS, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	stream, err := newJS.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	info := stream.CachedInfo()
+	assert(t, info.Config.AllowAtomicPublish,
+		"AllowAtomicPublish should be true")
+
+	// Negative: non-existent stream should error.
+	err = EnableAtomicPublish(nc, "NONEXISTENT")
+	assert(t, err != nil,
+		"expected error for nonexistent stream, got nil")
 }

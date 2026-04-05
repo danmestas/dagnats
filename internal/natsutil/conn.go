@@ -1,9 +1,12 @@
 package natsutil
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // SetupStreams creates the three core JetStream streams required by DagNats.
@@ -193,5 +196,48 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		}
 	}
 
+	return nil
+}
+
+// EnableAtomicPublish updates an existing stream to allow atomic batch
+// publishing. This uses the new jetstream package because the legacy
+// nats.StreamConfig does not expose AllowAtomicPublish.
+// Requires NATS server >= 2.12.
+func EnableAtomicPublish(nc *nats.Conn, streamName string) error {
+	if nc == nil {
+		panic("EnableAtomicPublish: nc must not be nil")
+	}
+	if streamName == "" {
+		panic("EnableAtomicPublish: streamName must not be empty")
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return fmt.Errorf(
+			"natsutil: new jetstream client: %w", err,
+		)
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+
+	stream, err := js.Stream(ctx, streamName)
+	if err != nil {
+		return fmt.Errorf(
+			"natsutil: get stream %q: %w", streamName, err,
+		)
+	}
+
+	cfg := stream.CachedInfo().Config
+	cfg.AllowAtomicPublish = true
+
+	_, err = js.UpdateStream(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf(
+			"natsutil: update stream %q: %w", streamName, err,
+		)
+	}
 	return nil
 }
