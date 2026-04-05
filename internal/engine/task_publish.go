@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/jetstreamext"
 )
 
 // publishTask publishes a TaskPayload for a ready step to the
@@ -124,6 +126,48 @@ func publishWorkflowEvent(
 	return err
 }
 
+// collectReadyMessages builds NATS messages for ready steps
+// without publishing. Returns messages grouped by step.
+func collectReadyMessages(
+	runID string,
+	ready []dag.StepDef,
+	run *dag.WorkflowRun,
+) ([]*nats.Msg, error) {
+	if runID == "" {
+		panic("collectReadyMessages: runID must not be empty")
+	}
+	if run == nil {
+		panic("collectReadyMessages: run must not be nil")
+	}
+	msgs := make([]*nats.Msg, 0, len(ready))
+	for _, step := range ready {
+		input, err := dag.ResolveInput(step, run.Steps)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"resolve input for %q: %w", step.ID, err,
+			)
+		}
+		attempt := run.Steps[step.ID].Attempts
+		payload := protocol.TaskPayload{
+			TaskID:  runID + "." + step.ID,
+			RunID:   runID,
+			StepID:  step.ID,
+			Attempt: attempt,
+			Input:   input,
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"marshal TaskPayload: %w", err,
+			)
+		}
+		msgID := runID + "." + step.ID + ".queued"
+		subject := taskSubject(step, runID)
+		msgs = append(msgs, buildTaskMsg(subject, data, msgID))
+	}
+	return msgs, nil
+}
+
 // enqueueReadySteps resolves ready steps, publishes tasks, and
 // checks for workflow completion. Returns updated run state.
 func enqueueReadySteps(
@@ -190,41 +234,66 @@ func enqueueReadySteps(
 		run.Steps[step.ID] = state
 	}
 
-	for _, step := range ready {
-		input, err := dag.ResolveInput(step, run.Steps)
-		if err != nil {
-			return fmt.Errorf(
-				"resolve input for %q: %w", step.ID, err,
-			)
-		}
-		attempt := run.Steps[step.ID].Attempts
-		if js != nil {
-			payload := protocol.TaskPayload{
-				TaskID:  run.RunID + "." + step.ID,
-				RunID:   run.RunID,
-				StepID:  step.ID,
-				Attempt: attempt,
-				Input:   input,
-			}
-			data, marshalErr := json.Marshal(payload)
-			if marshalErr != nil {
-				return fmt.Errorf(
-					"marshal TaskPayload: %w", marshalErr,
-				)
-			}
-			msgID := run.RunID + "." + step.ID + ".queued"
-			subject := taskSubject(step, run.RunID)
-			msg := buildTaskMsg(subject, data, msgID)
-			_, err = js.PublishMsg(
-				context.Background(), msg,
-			)
-		} else {
-			err = publishTask(
-				jsLegacy, run.RunID, step, input, attempt,
-			)
-		}
-		if err != nil {
+	msgs, err := collectReadyMessages(run.RunID, ready, run)
+	if err != nil {
+		return err
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	if js != nil {
+		if err := publishAtomicBatches(js, msgs); err != nil {
 			return err
+		}
+	} else {
+		for _, step := range ready {
+			input, _ := dag.ResolveInput(step, run.Steps)
+			attempt := run.Steps[step.ID].Attempts
+			if err := publishTask(
+				jsLegacy, run.RunID, step, input, attempt,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// publishAtomicBatches splits messages by stream prefix and
+// publishes each group as an atomic batch. Normal tasks go to
+// TASK_QUEUES (task.>), agent tasks to AGENT_TASKS (agent_task.>).
+func publishAtomicBatches(
+	js jetstream.JetStream, msgs []*nats.Msg,
+) error {
+	if js == nil {
+		panic("publishAtomicBatches: js must not be nil")
+	}
+	if len(msgs) == 0 {
+		panic("publishAtomicBatches: msgs must not be empty")
+	}
+	var taskMsgs, agentMsgs []*nats.Msg
+	for _, msg := range msgs {
+		if strings.HasPrefix(msg.Subject, "agent_task.") {
+			agentMsgs = append(agentMsgs, msg)
+		} else {
+			taskMsgs = append(taskMsgs, msg)
+		}
+	}
+	if len(taskMsgs) > 0 {
+		_, err := jetstreamext.PublishMsgBatch(
+			context.Background(), js, taskMsgs,
+		)
+		if err != nil {
+			return fmt.Errorf("atomic task publish: %w", err)
+		}
+	}
+	if len(agentMsgs) > 0 {
+		_, err := jetstreamext.PublishMsgBatch(
+			context.Background(), js, agentMsgs,
+		)
+		if err != nil {
+			return fmt.Errorf("atomic agent publish: %w", err)
 		}
 	}
 	return nil

@@ -175,6 +175,10 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		return err
 	}
 
+	if err := EnableAtomicPublish(nc, "TASK_QUEUES"); err != nil {
+		return err
+	}
+
 	for _, sc := range options.streams {
 		_, err := js.AddStream(&nats.StreamConfig{
 			Name:      sc.Name,
