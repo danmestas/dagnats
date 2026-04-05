@@ -19,6 +19,7 @@ type WorkflowBuilder struct {
 	concurrency    *ConcurrencyLimit
 	idempotencyKey string
 	sticky         StickyStrategy
+	priority       *PriorityConfig
 }
 
 // NewWorkflow starts a new builder for a workflow with the given name.
@@ -319,6 +320,14 @@ func (b *WorkflowBuilder) WithIdempotencyKey(
 	return b
 }
 
+// WithPriority configures run priority ordering.
+func (b *WorkflowBuilder) WithPriority(
+	cfg PriorityConfig,
+) *WorkflowBuilder {
+	b.priority = &cfg
+	return b
+}
+
 func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 	def := WorkflowDef{
 		Name:           b.name,
@@ -327,6 +336,9 @@ func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 		Concurrency:    b.concurrency,
 		IdempotencyKey: b.idempotencyKey,
 		Sticky:         b.sticky,
+	}
+	if b.priority != nil {
+		def.Priority = b.priority
 	}
 	if err := Validate(def); err != nil {
 		return WorkflowDef{}, err

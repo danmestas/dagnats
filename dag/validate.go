@@ -32,6 +32,10 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validatePriority(def); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 
@@ -474,6 +478,37 @@ func validateIdempotencyKey(key string) error {
 				"idempotency_key %q: empty segment", key,
 			)
 		}
+	}
+	return nil
+}
+
+// validatePriority checks PriorityConfig constraints.
+func validatePriority(def WorkflowDef) error {
+	if def.Priority == nil {
+		return nil
+	}
+	if def.Priority.Key == "" {
+		return fmt.Errorf("priority: key must not be empty")
+	}
+	if len(def.Priority.Rules) == 0 {
+		return fmt.Errorf("priority: rules must not be empty")
+	}
+	if len(def.Priority.Rules) > 20 {
+		return fmt.Errorf("priority: max 20 rules")
+	}
+	for _, offset := range def.Priority.Rules {
+		if offset < -600 || offset > 600 {
+			return fmt.Errorf(
+				"priority: offset %d out of [-600, 600]",
+				offset,
+			)
+		}
+	}
+	if def.Priority.DefaultOffset < -600 ||
+		def.Priority.DefaultOffset > 600 {
+		return fmt.Errorf(
+			"priority: default_offset out of [-600, 600]",
+		)
 	}
 	return nil
 }

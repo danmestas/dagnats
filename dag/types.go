@@ -209,6 +209,7 @@ type WorkflowDef struct {
 	AuxSteps       map[string]bool   `json:"aux_steps,omitempty"`
 	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 	Sticky         StickyStrategy    `json:"sticky,omitempty"`
+	Priority       *PriorityConfig   `json:"priority,omitempty"`
 }
 
 // StickyStrategy controls worker affinity for workflow runs.
@@ -252,16 +253,18 @@ type StepState struct {
 // Steps maps step ID to its current StepState; initialized to pending for all steps.
 // Input preserves the original user-supplied payload so retries can reuse it.
 type WorkflowRun struct {
-	RunID        string               `json:"run_id"`
-	WorkflowID   string               `json:"workflow_id"`
-	Status       RunStatus            `json:"status"`
-	Steps        map[string]StepState `json:"steps"`
-	Input        json.RawMessage      `json:"input,omitempty"`
-	CreatedAt    time.Time            `json:"created_at"`
-	DynamicSteps []StepDef            `json:"dynamic_steps,omitempty"`
-	ParentRunID  string               `json:"parent_run_id,omitempty"`
-	ParentStepID string               `json:"parent_step_id,omitempty"`
-	Deadline     *time.Time           `json:"deadline,omitempty"`
+	RunID          string               `json:"run_id"`
+	WorkflowID     string               `json:"workflow_id"`
+	Status         RunStatus            `json:"status"`
+	Steps          map[string]StepState `json:"steps"`
+	Input          json.RawMessage      `json:"input,omitempty"`
+	CreatedAt      time.Time            `json:"created_at"`
+	DynamicSteps   []StepDef            `json:"dynamic_steps,omitempty"`
+	ParentRunID    string               `json:"parent_run_id,omitempty"`
+	ParentStepID   string               `json:"parent_step_id,omitempty"`
+	Deadline       *time.Time           `json:"deadline,omitempty"`
+	PriorityOffset int                  `json:"priority_offset,omitempty"`
+	SingletonKey   string               `json:"singleton_key,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.
@@ -285,4 +288,11 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun {
 		Steps:      steps,
 		CreatedAt:  time.Now().UTC(),
 	}
+}
+
+// EffectiveTime returns the priority-adjusted queue position.
+func (r WorkflowRun) EffectiveTime() time.Time {
+	return r.CreatedAt.Add(
+		-time.Duration(r.PriorityOffset) * time.Second,
+	)
 }
