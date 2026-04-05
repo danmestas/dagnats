@@ -41,6 +41,7 @@ type Orchestrator struct {
 	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
 	correlator  *Correlator             // event wait-for-event matching
 	stickyKV    jetstream.KeyValue      // sticky_bindings — run-to-worker
+	singletonKV jetstream.KeyValue      // singleton_locks — one-at-a-time
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive              observe.Gauge
@@ -133,6 +134,9 @@ func NewOrchestrator(
 	o.correlator = NewCorrelator(nc, js)
 	o.stickyKV, _ = js.KeyValue(
 		context.Background(), "sticky_bindings",
+	)
+	o.singletonKV, _ = js.KeyValue(
+		context.Background(), "singleton_locks",
 	)
 	for _, opt := range opts {
 		opt(o)
@@ -383,22 +387,24 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
 	run.Input = input
 
-	// Check concurrency limit if configured.
-	if wfDef.Concurrency != nil && o.concurrency != nil {
-		acquired, err := o.concurrency.AcquireRun(
-			wfDef.Name, wfDef.Concurrency.MaxRuns,
-		)
-		if err != nil {
-			return fmt.Errorf("acquire run: %w", err)
+	admission, admitErr := o.admitRun(wfDef, run, input)
+	if admitErr != nil {
+		return admitErr
+	}
+	if admission.cancelID != "" {
+		o.publishWorkflowCancelledEvent(admission.cancelID)
+	}
+	run.PriorityOffset = admission.offset
+	run.SingletonKey = admission.singletonKey
+	switch admission.action {
+	case admissionSkip:
+		return nil
+	case admissionQueue:
+		run.Status = dag.RunStatusPending
+		if err := o.saveSnapshot(ctx, run); err != nil {
+			return fmt.Errorf("save pending run: %w", err)
 		}
-		if !acquired {
-			// Limit reached — save as Pending and return.
-			run.Status = dag.RunStatusPending
-			if err := o.saveSnapshot(ctx, run); err != nil {
-				return fmt.Errorf("save pending run: %w", err)
-			}
-			return nil
-		}
+		return nil
 	}
 
 	run.Status = dag.RunStatusRunning
@@ -528,6 +534,7 @@ func (o *Orchestrator) completeWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
+	o.releaseSingletonLock(run)
 	o.deleteStickyBinding(run.RunID)
 	o.runsActive.Dec()
 	o.runsCompleted.Inc()
@@ -612,7 +619,7 @@ func (o *Orchestrator) findOldestPendingRun(
 			continue
 		}
 		if !foundPending ||
-			run.CreatedAt.Before(oldestRun.CreatedAt) {
+			run.EffectiveTime().Before(oldestRun.EffectiveTime()) {
 			oldestRun = run
 			foundPending = true
 		}
@@ -1130,6 +1137,7 @@ func (o *Orchestrator) failWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
+	o.releaseSingletonLock(run)
 	o.deleteStickyBinding(run.RunID)
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
@@ -1345,6 +1353,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	}
 
 	o.cascadeCancelChildren(wfDef, run)
+	o.releaseSingletonLock(run)
 	o.deleteStickyBinding(run.RunID)
 
 	if err := o.saveSnapshot(ctx, run); err != nil {
