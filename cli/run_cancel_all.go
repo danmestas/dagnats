@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // runCancelAllCmd cancels all matching runs for a workflow.
