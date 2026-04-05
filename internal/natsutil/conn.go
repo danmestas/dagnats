@@ -9,51 +9,52 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// SetupStreams creates the three core JetStream streams required by DagNats.
-// WORKFLOW_HISTORY uses dedup window of 5s to prevent duplicate event writes.
-// TASK_QUEUES uses WorkQueuePolicy so each message is consumed exactly once.
-func SetupStreams(js nats.JetStreamContext) error {
+// SetupStreams creates the core JetStream streams required by
+// DagNats. WORKFLOW_HISTORY uses a 5s dedup window.
+// TASK_QUEUES uses WorkQueuePolicy for exactly-once delivery.
+func SetupStreams(js jetstream.JetStream) error {
 	if js == nil {
 		panic("SetupStreams: js must not be nil")
 	}
-	streams := []nats.StreamConfig{
+	streams := []jetstream.StreamConfig{
 		{
 			Name:       "WORKFLOW_HISTORY",
 			Subjects:   []string{"history.>"},
-			Retention:  nats.LimitsPolicy,
-			Storage:    nats.FileStorage,
+			Retention:  jetstream.LimitsPolicy,
+			Storage:    jetstream.FileStorage,
 			Duplicates: 5_000_000_000,
 		},
 		{
 			Name:      "TASK_QUEUES",
 			Subjects:  []string{"task.>"},
-			Retention: nats.WorkQueuePolicy,
-			Storage:   nats.FileStorage,
+			Retention: jetstream.WorkQueuePolicy,
+			Storage:   jetstream.FileStorage,
 		},
 		{
 			Name:      "EVENTS",
 			Subjects:  []string{"event.>"},
-			Retention: nats.LimitsPolicy,
-			Storage:   nats.FileStorage,
+			Retention: jetstream.LimitsPolicy,
+			Storage:   jetstream.FileStorage,
 		},
 		{
 			Name:      "DEAD_LETTERS",
 			Subjects:  []string{"dead.>"},
-			Retention: nats.LimitsPolicy,
-			Storage:   nats.FileStorage,
+			Retention: jetstream.LimitsPolicy,
+			Storage:   jetstream.FileStorage,
 		},
 		{
 			Name:      "SLEEP_TIMERS",
 			Subjects:  []string{"sleep.>", "scheduled.>"},
-			Retention: nats.LimitsPolicy,
-			Storage:   nats.FileStorage,
+			Retention: jetstream.LimitsPolicy,
+			Storage:   jetstream.FileStorage,
 		},
 	}
 	if len(streams) == 0 {
 		panic("SetupStreams: streams config must not be empty")
 	}
+	ctx := context.Background()
 	for _, cfg := range streams {
-		_, err := js.AddStream(&cfg)
+		_, err := js.CreateOrUpdateStream(ctx, cfg)
 		if err != nil {
 			return err
 		}
@@ -61,13 +62,13 @@ func SetupStreams(js nats.JetStreamContext) error {
 	return nil
 }
 
-// SetupKVBuckets creates the KV buckets used to store workflow definitions
-// and runtime state for active workflow runs.
-func SetupKVBuckets(js nats.JetStreamContext) error {
+// SetupKVBuckets creates the KV buckets used to store workflow
+// definitions and runtime state for active workflow runs.
+func SetupKVBuckets(js jetstream.JetStream) error {
 	if js == nil {
 		panic("SetupKVBuckets: js must not be nil")
 	}
-	buckets := []nats.KeyValueConfig{
+	buckets := []jetstream.KeyValueConfig{
 		{Bucket: "workflow_defs"},
 		{Bucket: "workflow_runs"},
 		{Bucket: "scheduled_runs"},
@@ -75,14 +76,19 @@ func SetupKVBuckets(js nats.JetStreamContext) error {
 		{Bucket: "event_waiters"},
 		{Bucket: "rate_limits"},
 		{Bucket: "concurrency_tasks", History: 1},
-		{Bucket: "approval_tokens", History: 1, TTL: 168 * time.Hour},
+		{
+			Bucket:  "approval_tokens",
+			History: 1,
+			TTL:     168 * time.Hour,
+		},
 		{Bucket: "debounce_state", TTL: 14 * 24 * time.Hour},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
 	}
+	ctx := context.Background()
 	for _, cfg := range buckets {
-		_, err := js.CreateKeyValue(&cfg)
+		_, err := js.CreateOrUpdateKeyValue(ctx, cfg)
 		if err != nil {
 			return err
 		}
@@ -90,17 +96,18 @@ func SetupKVBuckets(js nats.JetStreamContext) error {
 	return nil
 }
 
-// SetupTelemetryStream creates the TELEMETRY stream for all observability
-// signals (spans, metrics, logs). 7-day retention, 1GB cap, 5s dedup window.
-func SetupTelemetryStream(js nats.JetStreamContext) error {
+// SetupTelemetryStream creates the TELEMETRY stream for all
+// observability signals (spans, metrics, logs). 7-day retention,
+// 1GB cap, 5s dedup window.
+func SetupTelemetryStream(js jetstream.JetStream) error {
 	if js == nil {
 		panic("SetupTelemetryStream: js must not be nil")
 	}
-	cfg := &nats.StreamConfig{
+	cfg := jetstream.StreamConfig{
 		Name:       "TELEMETRY",
 		Subjects:   []string{"telemetry.>"},
-		Retention:  nats.LimitsPolicy,
-		Storage:    nats.FileStorage,
+		Retention:  jetstream.LimitsPolicy,
+		Storage:    jetstream.FileStorage,
 		MaxAge:     7 * 24 * time.Hour,
 		MaxBytes:   1 << 30,
 		Duplicates: 5 * time.Second,
@@ -108,7 +115,7 @@ func SetupTelemetryStream(js nats.JetStreamContext) error {
 	if cfg.Name == "" {
 		panic("SetupTelemetryStream: stream name must not be empty")
 	}
-	_, err := js.AddStream(cfg)
+	_, err := js.CreateOrUpdateStream(context.Background(), cfg)
 	return err
 }
 
@@ -145,9 +152,9 @@ func WithKVBuckets(configs ...KVConfig) SetupOption {
 	}
 }
 
-// SetupAll creates all streams and KV buckets on the given connection.
-// Optional SetupOption args provision additional streams and KV buckets
-// for downstream packages without forking natsutil.
+// SetupAll creates all streams and KV buckets on the given
+// connection. Optional SetupOption args provision additional
+// streams and KV buckets for downstream packages.
 func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	if nc == nil {
 		panic("natsutil: connection must not be nil")
@@ -161,7 +168,7 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		opt(&options)
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		return err
 	}
@@ -175,26 +182,31 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		return err
 	}
 
-	if err := EnableAtomicPublish(nc, "TASK_QUEUES"); err != nil {
+	if err := enableAtomicPublish(js, "TASK_QUEUES"); err != nil {
 		return err
 	}
 
+	ctx := context.Background()
 	for _, sc := range options.streams {
-		_, err := js.AddStream(&nats.StreamConfig{
-			Name:      sc.Name,
-			Subjects:  sc.Subjects,
-			Retention: nats.WorkQueuePolicy,
-			Storage:   nats.FileStorage,
-		})
+		_, err := js.CreateOrUpdateStream(
+			ctx, jetstream.StreamConfig{
+				Name:      sc.Name,
+				Subjects:  sc.Subjects,
+				Retention: jetstream.WorkQueuePolicy,
+				Storage:   jetstream.FileStorage,
+			},
+		)
 		if err != nil {
 			return err
 		}
 	}
 
 	for _, kc := range options.kvs {
-		_, err := js.CreateKeyValue(&nats.KeyValueConfig{
-			Bucket: kc.Bucket,
-		})
+		_, err := js.CreateOrUpdateKeyValue(
+			ctx, jetstream.KeyValueConfig{
+				Bucket: kc.Bucket,
+			},
+		)
 		if err != nil {
 			return err
 		}
@@ -203,23 +215,16 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	return nil
 }
 
-// EnableAtomicPublish updates an existing stream to allow atomic batch
-// publishing. This uses the new jetstream package because the legacy
-// nats.StreamConfig does not expose AllowAtomicPublish.
-// Requires NATS server >= 2.12.
-func EnableAtomicPublish(nc *nats.Conn, streamName string) error {
-	if nc == nil {
-		panic("EnableAtomicPublish: nc must not be nil")
+// enableAtomicPublish updates an existing stream to allow atomic
+// batch publishing. Requires NATS server >= 2.12.
+func enableAtomicPublish(
+	js jetstream.JetStream, streamName string,
+) error {
+	if js == nil {
+		panic("enableAtomicPublish: js must not be nil")
 	}
 	if streamName == "" {
-		panic("EnableAtomicPublish: streamName must not be empty")
-	}
-
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return fmt.Errorf(
-			"natsutil: new jetstream client: %w", err,
-		)
+		panic("enableAtomicPublish: streamName must not be empty")
 	}
 
 	ctx, cancel := context.WithTimeout(

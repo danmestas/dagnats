@@ -7,6 +7,7 @@
 package simple
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"math"
@@ -14,19 +15,22 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-// MetricsCollector publishes MetricPoint events to the NATS TELEMETRY stream.
-// Safe for concurrent use — each instrument publishes independently.
+// MetricsCollector publishes MetricPoint events to the NATS
+// TELEMETRY stream. Safe for concurrent use -- each instrument
+// publishes independently.
 type MetricsCollector struct {
-	js          nats.JetStreamContext
+	js          jetstream.JetStream
 	serviceName string
 }
 
 // NewMetricsCollector constructs a MetricsCollector.
-// Panics on nil js or empty serviceName — both are programmer errors.
-func NewMetricsCollector(js nats.JetStreamContext, serviceName string) *MetricsCollector {
+// Panics on nil js or empty serviceName -- programmer errors.
+func NewMetricsCollector(
+	js jetstream.JetStream, serviceName string,
+) *MetricsCollector {
 	if js == nil {
 		panic("NewMetricsCollector: js must not be nil")
 	}
@@ -44,7 +48,10 @@ func (mc *MetricsCollector) Counter(name string, tags map[string]string) observe
 	if mc.js == nil {
 		panic("MetricsCollector.Counter: js must not be nil")
 	}
-	return &simpleCounter{js: mc.js, serviceName: mc.serviceName, name: name, tags: tags}
+	return &simpleCounter{
+		js: mc.js, serviceName: mc.serviceName,
+		name: name, tags: tags,
+	}
 }
 
 // Histogram returns a new simpleHistogram for the given name and tags.
@@ -55,7 +62,10 @@ func (mc *MetricsCollector) Histogram(name string, tags map[string]string) obser
 	if mc.js == nil {
 		panic("MetricsCollector.Histogram: js must not be nil")
 	}
-	return &simpleHistogram{js: mc.js, serviceName: mc.serviceName, name: name, tags: tags}
+	return &simpleHistogram{
+		js: mc.js, serviceName: mc.serviceName,
+		name: name, tags: tags,
+	}
 }
 
 // Gauge returns a new simpleGauge for the given name and tags.
@@ -66,12 +76,15 @@ func (mc *MetricsCollector) Gauge(name string, tags map[string]string) observe.G
 	if mc.js == nil {
 		panic("MetricsCollector.Gauge: js must not be nil")
 	}
-	return &simpleGauge{js: mc.js, serviceName: mc.serviceName, name: name, tags: tags}
+	return &simpleGauge{
+		js: mc.js, serviceName: mc.serviceName,
+		name: name, tags: tags,
+	}
 }
 
-// publishMetric serializes a MetricPoint to JSON and publishes it to NATS.
-// Errors are logged but never returned — metric publishing is best-effort.
-func publishMetric(js nats.JetStreamContext, pt MetricPoint) {
+// publishMetric serializes a MetricPoint to JSON and publishes
+// it to NATS. Errors are logged but never returned -- best-effort.
+func publishMetric(js jetstream.JetStream, pt MetricPoint) {
 	if js == nil {
 		panic("publishMetric: js must not be nil")
 	}
@@ -80,18 +93,23 @@ func publishMetric(js nats.JetStreamContext, pt MetricPoint) {
 	}
 	data, err := json.Marshal(pt)
 	if err != nil {
-		log.Printf("publishMetric: marshal error name=%s: %v", pt.Name, err)
+		log.Printf(
+			"publishMetric: marshal error name=%s: %v",
+			pt.Name, err)
 		return
 	}
 	subject := "telemetry.metrics." + pt.Service + "." + pt.Name
-	if _, err := js.Publish(subject, data); err != nil {
-		log.Printf("publishMetric: publish error subject=%s: %v", subject, err)
+	_, err = js.Publish(context.Background(), subject, data)
+	if err != nil {
+		log.Printf(
+			"publishMetric: publish error subject=%s: %v",
+			subject, err)
 	}
 }
 
 // simpleCounter is a monotonically increasing metric instrument.
 type simpleCounter struct {
-	js          nats.JetStreamContext
+	js          jetstream.JetStream
 	serviceName string
 	name        string
 	tags        map[string]string
@@ -114,7 +132,7 @@ func (c *simpleCounter) Add(delta float64) {
 
 // simpleHistogram records observations (e.g. latencies, sizes).
 type simpleHistogram struct {
-	js          nats.JetStreamContext
+	js          jetstream.JetStream
 	serviceName string
 	name        string
 	tags        map[string]string
@@ -137,7 +155,7 @@ func (h *simpleHistogram) Observe(value float64) {
 // are race-free. math.Float64bits/Float64frombits is the standard idiom for
 // storing float64 in a uint64 atomic.
 type simpleGauge struct {
-	js          nats.JetStreamContext
+	js          jetstream.JetStream
 	serviceName string
 	name        string
 	tags        map[string]string

@@ -20,6 +20,7 @@ import (
 	"github.com/danmestas/dagnats/worker"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const shutdownDeadline = 15 * time.Second
@@ -368,15 +369,22 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	js, err := s.nc.JetStream()
+	js, err := jetstream.New(s.nc)
 	if err != nil {
-		http.Error(w, "JetStream unavailable", http.StatusServiceUnavailable)
+		http.Error(
+			w, "JetStream unavailable",
+			http.StatusServiceUnavailable,
+		)
 		return
 	}
 
-	_, err = js.AccountInfo()
+	ctx := context.Background()
+	_, err = js.AccountInfo(ctx)
 	if err != nil {
-		http.Error(w, "JetStream account error", http.StatusServiceUnavailable)
+		http.Error(
+			w, "JetStream account error",
+			http.StatusServiceUnavailable,
+		)
 		return
 	}
 

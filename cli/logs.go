@@ -44,7 +44,7 @@ func runLogsCmd(args []string) {
 	_, nc := connectService()
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "JetStream: %v\n", err)
 		os.Exit(1)
@@ -53,12 +53,14 @@ func runLogsCmd(args []string) {
 	subject := buildLogSubject(serviceFilter, levelFilter)
 
 	if tailCount > 0 {
-		runLogsTail(js, subject, tailCount)
+		runLogsTail(jsLegacy, subject, tailCount)
 		return
 	}
 
 	msgCh := make(chan *nats.Msg, 256)
-	sub, err := js.ChanSubscribe(subject, msgCh, nats.DeliverNew())
+	sub, err := jsLegacy.ChanSubscribe(
+		subject, msgCh, nats.DeliverNew(),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "subscribe %s: %v\n", subject, err)
 		os.Exit(1)

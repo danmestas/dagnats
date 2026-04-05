@@ -12,6 +12,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // runWorkflowCmd dispatches workflow subcommands.
@@ -223,7 +224,7 @@ func checkMissingWorkers(
 		panic("checkMissingWorkers: def must have steps")
 	}
 
-	js, jsErr := nc.JetStream()
+	js, jsErr := jetstream.New(nc)
 	if jsErr != nil {
 		return nil
 	}

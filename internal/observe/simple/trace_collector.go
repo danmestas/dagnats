@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const recordsChanCapacity = 1024
@@ -37,9 +37,10 @@ func SpanFromContext(ctx context.Context) *LiveSpan {
 	return span
 }
 
-// TraceCollector implements observe.Tracer, publishing completed spans to NATS.
+// TraceCollector implements observe.Tracer, publishing completed
+// spans to NATS.
 type TraceCollector struct {
-	js          nats.JetStreamContext
+	js          jetstream.JetStream
 	metrics     observe.Metrics
 	serviceName string
 	records     chan SpanRecord
@@ -47,10 +48,10 @@ type TraceCollector struct {
 	once        sync.Once
 }
 
-// NewTraceCollector constructs a TraceCollector and starts the background
-// publisher goroutine. Call Flush() to drain and stop the publisher.
+// NewTraceCollector constructs a TraceCollector and starts the
+// background publisher goroutine. Call Flush() to drain and stop.
 func NewTraceCollector(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 	serviceName string,
 	metrics observe.Metrics,
 ) *TraceCollector {
@@ -83,9 +84,12 @@ func (tc *TraceCollector) publishLoop() {
 	}
 }
 
-// publishSpanRecord serializes a SpanRecord and publishes it to NATS with
-// Nats-Msg-Id for deduplication. Errors are logged but never returned.
-func publishSpanRecord(js nats.JetStreamContext, rec SpanRecord) {
+// publishSpanRecord serializes a SpanRecord and publishes it to
+// NATS with Nats-Msg-Id for deduplication. Errors are logged but
+// never returned.
+func publishSpanRecord(
+	js jetstream.JetStream, rec SpanRecord,
+) {
 	if js == nil {
 		panic("publishSpanRecord: js must not be nil")
 	}
@@ -94,20 +98,21 @@ func publishSpanRecord(js nats.JetStreamContext, rec SpanRecord) {
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
-		log.Printf("publishSpanRecord: marshal error name=%s: %v",
+		log.Printf(
+			"publishSpanRecord: marshal error name=%s: %v",
 			rec.Name, err)
 		return
 	}
 	runID := extractRunID(rec.Attributes)
 	subject := "telemetry.spans." + rec.Service + "." + runID
-	msg := &nats.Msg{
-		Subject: subject,
-		Data:    data,
-		Header:  nats.Header{},
-	}
-	msg.Header.Set("Nats-Msg-Id", rec.TraceID+"."+rec.SpanID)
-	if _, err := js.PublishMsg(msg); err != nil {
-		log.Printf("publishSpanRecord: publish error subject=%s: %v",
+	msgID := rec.TraceID + "." + rec.SpanID
+	_, err = js.Publish(
+		context.Background(), subject, data,
+		jetstream.WithMsgID(msgID),
+	)
+	if err != nil {
+		log.Printf(
+			"publishSpanRecord: publish error subject=%s: %v",
 			subject, err)
 	}
 }

@@ -10,30 +10,36 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestStorageMonitorPublishesAdvisory(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "TELEMETRY",
-		Subjects: []string{"telemetry.>"},
-		MaxBytes: 1024,
-		Storage:  nats.MemoryStorage,
-	})
+	_, err = js.CreateOrUpdateStream(
+		context.Background(), jetstream.StreamConfig{
+			Name:     "TELEMETRY",
+			Subjects: []string{"telemetry.>"},
+			MaxBytes: 1024,
+			Storage:  jetstream.MemoryStorage,
+		},
+	)
 	if err != nil {
-		t.Fatalf("AddStream: %v", err)
+		t.Fatalf("CreateOrUpdateStream: %v", err)
 	}
 	sub, err := nc.SubscribeSync("alerts.storage.>")
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	bigPayload := make([]byte, 900)
-	if _, err := js.Publish("telemetry.spans.test.r1", bigPayload); err != nil {
+	_, err = js.Publish(
+		context.Background(),
+		"telemetry.spans.test.r1", bigPayload,
+	)
+	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
