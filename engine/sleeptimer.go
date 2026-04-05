@@ -25,27 +25,37 @@ const (
 	TimerActionWaitTimeout     TimerAction = "wait_timeout"
 	TimerActionRetryAfter      TimerAction = "retry_after"
 	TimerActionTaskConcurRetry TimerAction = "task_concurrency_retry"
+	TimerActionDebounce        TimerAction = "debounce_fire"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
 // DurationMs is the sleep duration in milliseconds.
 // TaskType and Input are used by rate_retry to re-publish the task.
+// TriggerID and DebounceKey are used by debounce_fire.
 type TimerMessage struct {
-	Action     TimerAction     `json:"action"`
-	RunID      string          `json:"run_id"`
-	StepID     string          `json:"step_id"`
-	DurationMs int64           `json:"duration_ms"`
-	TaskType   string          `json:"task_type,omitempty"`
-	Input      json.RawMessage `json:"input,omitempty"`
-	Attempt    int             `json:"attempt,omitempty"`
+	Action      TimerAction     `json:"action"`
+	RunID       string          `json:"run_id"`
+	StepID      string          `json:"step_id"`
+	DurationMs  int64           `json:"duration_ms"`
+	TaskType    string          `json:"task_type,omitempty"`
+	Input       json.RawMessage `json:"input,omitempty"`
+	Attempt     int             `json:"attempt,omitempty"`
+	TriggerID   string          `json:"trigger_id,omitempty"`
+	DebounceKey string          `json:"debounce_key,omitempty"`
 }
+
+// DebounceHandler is called when a debounce timer fires. The seq
+// parameter is the JetStream stream sequence of the timer message,
+// used for stale timer detection.
+type DebounceHandler func(tm TimerMessage, seq uint64)
 
 // SleepTimer manages durable timers via NakWithDelay on the
 // SLEEP_TIMERS stream. Subscribes to sleep.> subjects.
 type SleepTimer struct {
-	nc  *nats.Conn
-	js  nats.JetStreamContext
-	sub *nats.Subscription
+	nc         *nats.Conn
+	js         nats.JetStreamContext
+	sub        *nats.Subscription
+	onDebounce DebounceHandler
 }
 
 // NewSleepTimer creates a SleepTimer bound to the given connection.
@@ -83,6 +93,15 @@ func (st *SleepTimer) Start() error {
 	}
 	st.sub = sub
 	return nil
+}
+
+// OnDebounce sets the handler called when a debounce timer fires.
+// Must be called before Start.
+func (st *SleepTimer) OnDebounce(fn DebounceHandler) {
+	if fn == nil {
+		panic("OnDebounce: fn must not be nil")
+	}
+	st.onDebounce = fn
 }
 
 // Stop drains the subscription. Safe to call multiple times.
@@ -125,6 +144,36 @@ func (st *SleepTimer) Schedule(msg TimerMessage) error {
 	}
 	_, err = st.js.PublishMsg(natsMsg)
 	return err
+}
+
+// ScheduleDebounce publishes a debounce timer. Returns the stream
+// sequence number for stale timer detection. Does not use dedup IDs
+// — each debounce reset publishes a new timer message.
+func (st *SleepTimer) ScheduleDebounce(
+	msg TimerMessage,
+) (uint64, error) {
+	if msg.TriggerID == "" {
+		panic("ScheduleDebounce: TriggerID must not be empty")
+	}
+	if msg.Action != TimerActionDebounce {
+		panic("ScheduleDebounce: Action must be debounce_fire")
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return 0, fmt.Errorf("marshal TimerMessage: %w", err)
+	}
+	subject := fmt.Sprintf(
+		"sleep.debounce.%s", msg.DebounceKey,
+	)
+	natsMsg := &nats.Msg{
+		Subject: subject,
+		Data:    data,
+	}
+	ack, err := st.js.PublishMsg(natsMsg)
+	if err != nil {
+		return 0, err
+	}
+	return ack.Sequence, nil
 }
 
 // handleTimer processes a timer message from the SLEEP_TIMERS
@@ -174,6 +223,10 @@ func (st *SleepTimer) handleTimer(msg *nats.Msg) {
 		st.fireApprovalTimeout(tm)
 	case TimerActionTaskConcurRetry:
 		st.fireRateRetry(tm) // Same re-publish logic as rate retry
+	case TimerActionDebounce:
+		if st.onDebounce != nil {
+			st.onDebounce(tm, meta.Sequence.Stream)
+		}
 	default:
 		// Unknown action — ack to prevent loop.
 	}

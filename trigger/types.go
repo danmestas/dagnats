@@ -12,12 +12,23 @@ import (
 // TriggerDef defines a single trigger. Exactly one of Cron, Subject,
 // or Webhook must be non-nil.
 type TriggerDef struct {
-	ID         string         `json:"id"`
-	WorkflowID string         `json:"workflow_id"`
-	Enabled    bool           `json:"enabled"`
-	Cron       *CronConfig    `json:"cron,omitempty"`
-	Subject    *SubjectConfig `json:"subject,omitempty"`
-	Webhook    *WebhookConfig `json:"webhook,omitempty"`
+	ID         string          `json:"id"`
+	WorkflowID string          `json:"workflow_id"`
+	Enabled    bool            `json:"enabled"`
+	Cron       *CronConfig     `json:"cron,omitempty"`
+	Subject    *SubjectConfig  `json:"subject,omitempty"`
+	Webhook    *WebhookConfig  `json:"webhook,omitempty"`
+	Debounce   *DebounceConfig `json:"debounce,omitempty"`
+}
+
+// DebounceConfig delays execution until events stop arriving.
+// Period resets on each new event. Timeout is the hard upper bound
+// — if events keep arriving and Period never elapses, the workflow
+// fires after Timeout with the most recent event.
+type DebounceConfig struct {
+	Period  time.Duration `json:"period"`
+	Timeout time.Duration `json:"timeout,omitempty"`
+	Key     string        `json:"key,omitempty"`
 }
 
 // CronConfig defines a cron-scheduled trigger.
