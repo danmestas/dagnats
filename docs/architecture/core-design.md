@@ -30,6 +30,9 @@
 | Need | NATS Primitive |
 |------|---------------|
 | Task distribution | JetStream pull consumers + MaxAckPending |
+| Atomic task fan-out | jetstreamext.PublishMsgBatch (orbit) |
+| Worker affinity | pcgroups elastic consumer groups (orbit) |
+| Singleton execution | pcgroups single-partition group (orbit) |
 | Retry with backoff | NakWithDelay (no timer service) |
 | Exactly-once delivery | Nats-Msg-Id dedup |
 | Run state snapshots | KV with Revision (optimistic locking) |
