@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SITE_DIR="docs/site"
+STATIC_DIR="$SITE_DIR/static"
+
+mkdir -p "$STATIC_DIR"
+
+# llms.txt: curated summary
+cat > "$STATIC_DIR/llms.txt" << 'HEADER'
+# DagNats
+
+> DAG-based workflow engine built on NATS for durable workflows and autonomous LLM coding pipelines.
+
+## Key Concepts
+
+- **Workflow**: A DAG of steps with dependencies, retries, timeouts, and concurrency limits
+- **Step**: A unit of work (8 types: Normal, AgentLoop, SubWorkflow, Map, Sleep, WaitForEvent, Approval, Planner)
+- **Worker**: A process that registers task handlers and consumes work from NATS
+- **Run**: A single execution of a workflow with input, status tracking, and event history
+- **Event**: An immutable record in the WORKFLOW_HISTORY stream driving DAG resolution
+
+## Quick Start
+
+1. `dagnats serve` — starts embedded NATS, engine, API, triggers
+2. Define workflow as JSON with steps and dependencies
+3. `dagnats workflow register workflow.json`
+4. Write Go worker with `worker.NewWorker()` and `HandleTyped[I,O]()`
+5. `dagnats run start <workflow> <input> --watch`
+
+## Go SDK Packages
+
+- `dag/` — Workflow definitions, builder API, DAG validation, pure Advance() state machine
+- `worker/` — Task execution framework, TaskContext interface, typed handlers
+- `protocol/` — Wire format types (Event, TaskPayload, TaskResolution)
+- `observe/` — Provider-agnostic telemetry interfaces (Logger, Tracer, Metrics, ErrorReporter)
+- `server/` — Embedded NATS server and lifecycle management
+- `bridge/` — HTTP-to-NATS gateway for remote/non-Go workers
+- `dagnatstest/` — One-call test setup with embedded NATS
+
+## Documentation
+
+Full docs at: https://github.com/danmestas/dagnats/tree/main/docs/site
+HEADER
+
+# llms-full.txt: all content concatenated
+echo "# DagNats Documentation (Full)" > "$STATIC_DIR/llms-full.txt"
+echo "" >> "$STATIC_DIR/llms-full.txt"
+echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATIC_DIR/llms-full.txt"
+echo "" >> "$STATIC_DIR/llms-full.txt"
+
+find "$SITE_DIR/content" -name "*.md" -type f | sort | while read -r file; do
+    echo "---" >> "$STATIC_DIR/llms-full.txt"
+    echo "# Source: $file" >> "$STATIC_DIR/llms-full.txt"
+    echo "" >> "$STATIC_DIR/llms-full.txt"
+    # Strip YAML frontmatter (between first --- and second ---)
+    sed -n '/^---$/,/^---$/!p' "$file" >> "$STATIC_DIR/llms-full.txt"
+    echo "" >> "$STATIC_DIR/llms-full.txt"
+done
+
+echo "Generated llms.txt and llms-full.txt in $STATIC_DIR/"
