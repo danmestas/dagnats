@@ -53,7 +53,7 @@ func (b *Bridge) handlePoll(
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	tasks := b.fetchTasks(req)
+	tasks := b.fetchTasks(ctx, req)
 
 	elapsed := time.Since(start).Milliseconds()
 	b.requestCount.Inc()
@@ -63,7 +63,6 @@ func (b *Bridge) handlePoll(
 		observe.Int("elapsed_ms", int(elapsed)),
 	)
 
-	_ = ctx // span carries context
 	writePollResponse(w, tasks)
 }
 
@@ -99,8 +98,11 @@ func parsePollRequest(r *http.Request) (pollRequest, error) {
 // Stores each fetched message in the ackMap so resolve can
 // ack/nak it later.
 func (b *Bridge) fetchTasks(
-	req pollRequest,
+	ctx context.Context, req pollRequest,
 ) []pollResponse {
+	if ctx == nil {
+		panic("fetchTasks: ctx must not be nil")
+	}
 	if len(req.TaskTypes) == 0 {
 		panic("fetchTasks: task_types must not be empty")
 	}
@@ -115,7 +117,7 @@ func (b *Bridge) fetchTasks(
 		if remaining <= 0 {
 			break
 		}
-		fetched := b.fetchForType(taskType, remaining, timeout)
+		fetched := b.fetchForType(ctx, taskType, remaining, timeout)
 		tasks = append(tasks, fetched...)
 		remaining -= len(fetched)
 	}
@@ -126,15 +128,18 @@ func (b *Bridge) fetchTasks(
 // and fetches up to count messages. Each message is stored in
 // the ackMap.
 func (b *Bridge) fetchForType(
+	ctx context.Context,
 	taskType string, count int, timeout time.Duration,
 ) []pollResponse {
+	if ctx == nil {
+		panic("fetchForType: ctx must not be nil")
+	}
 	if taskType == "" {
 		panic("fetchForType: taskType must not be empty")
 	}
 	if count <= 0 {
 		panic("fetchForType: count must be positive")
 	}
-	ctx := context.Background()
 	subject := "task." + taskType + ".>"
 	stream, err := b.js.Stream(ctx, "TASK_QUEUES")
 	if err != nil {

@@ -49,7 +49,7 @@ func (b *Bridge) handleResolve(
 	if b.js == nil {
 		panic("handleResolve: js must not be nil")
 	}
-	_, span := b.tel.Tracer.Start(r.Context(), "bridge.resolve")
+	ctx, span := b.tel.Tracer.Start(r.Context(), "bridge.resolve")
 	defer span.End()
 
 	taskID := r.PathValue("id")
@@ -78,7 +78,7 @@ func (b *Bridge) handleResolve(
 		observe.String("action", req.Action),
 	)
 
-	err = b.dispatchAction(taskID, msg, req, w, r)
+	err = b.dispatchAction(ctx, taskID, msg, req, w, r)
 	if err != nil {
 		if errors.Is(err, errResponseAlreadyWritten) {
 			return
@@ -125,12 +125,16 @@ func parseResolveRequest(
 
 // dispatchAction routes the resolve request to the correct handler.
 func (b *Bridge) dispatchAction(
+	ctx context.Context,
 	taskID string,
 	msg jetstream.Msg,
 	req resolveRequest,
 	w http.ResponseWriter,
 	r *http.Request,
 ) error {
+	if ctx == nil {
+		panic("dispatchAction: ctx must not be nil")
+	}
 	if taskID == "" {
 		panic("dispatchAction: taskID must not be empty")
 	}
@@ -139,17 +143,17 @@ func (b *Bridge) dispatchAction(
 	}
 	switch req.Action {
 	case "complete":
-		return b.resolveComplete(taskID, msg, req)
+		return b.resolveComplete(ctx, taskID, msg, req)
 	case "fail":
-		return b.resolveFail(taskID, msg, req)
+		return b.resolveFail(ctx, taskID, msg, req)
 	case "pause":
-		return b.resolvePause(taskID, msg, req)
+		return b.resolvePause(ctx, taskID, msg, req)
 	case "checkpoint":
-		return b.resolveCheckpoint(taskID, msg, req)
+		return b.resolveCheckpoint(ctx, taskID, msg, req)
 	case "send_signal":
-		return b.resolveSendSignal(taskID, msg, req, w)
+		return b.resolveSendSignal(ctx, taskID, msg, req, w)
 	case "wait_signal":
-		return b.resolveWaitSignal(taskID, msg, req, w, r)
+		return b.resolveWaitSignal(ctx, taskID, msg, req, w, r)
 	default:
 		return fmt.Errorf("unhandled action: %s", req.Action)
 	}
@@ -158,8 +162,12 @@ func (b *Bridge) dispatchAction(
 // resolveComplete publishes step.completed, acks the NATS message,
 // and removes the task from the ackMap.
 func (b *Bridge) resolveComplete(
+	ctx context.Context,
 	taskID string, msg jetstream.Msg, req resolveRequest,
 ) error {
+	if ctx == nil {
+		panic("resolveComplete: ctx must not be nil")
+	}
 	if taskID == "" {
 		panic("resolveComplete: taskID must not be empty")
 	}
@@ -170,7 +178,7 @@ func (b *Bridge) resolveComplete(
 	evt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, runID, stepID, req.Output,
 	)
-	if err := b.publishEvent(evt); err != nil {
+	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish complete event: %w", err)
 	}
 	if err := msg.Ack(); err != nil {
@@ -183,8 +191,12 @@ func (b *Bridge) resolveComplete(
 // resolveFail publishes step.failed, acks the NATS message, and
 // removes the task from the ackMap.
 func (b *Bridge) resolveFail(
+	ctx context.Context,
 	taskID string, msg jetstream.Msg, req resolveRequest,
 ) error {
+	if ctx == nil {
+		panic("resolveFail: ctx must not be nil")
+	}
 	if taskID == "" {
 		panic("resolveFail: taskID must not be empty")
 	}
@@ -208,7 +220,7 @@ func (b *Bridge) resolveFail(
 	evt := protocol.NewStepEvent(
 		protocol.EventStepFailed, runID, stepID, payloadData,
 	)
-	if err := b.publishEvent(evt); err != nil {
+	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish fail event: %w", err)
 	}
 	if err := msg.Ack(); err != nil {
@@ -220,8 +232,12 @@ func (b *Bridge) resolveFail(
 
 // resolvePause writes checkpoint to KV and NAKs with delay.
 func (b *Bridge) resolvePause(
+	ctx context.Context,
 	taskID string, msg jetstream.Msg, req resolveRequest,
 ) error {
+	if ctx == nil {
+		panic("resolvePause: ctx must not be nil")
+	}
 	if taskID == "" {
 		panic("resolvePause: taskID must not be empty")
 	}
@@ -233,7 +249,7 @@ func (b *Bridge) resolvePause(
 			"duration_ms must be in (0, %d]", pauseDurationMaxMs,
 		)
 	}
-	if err := b.writeCheckpoint(taskID, req.Checkpoint); err != nil {
+	if err := b.writeCheckpoint(ctx, taskID, req.Checkpoint); err != nil {
 		return err
 	}
 	duration := time.Duration(req.DurationMs) * time.Millisecond
@@ -247,15 +263,19 @@ func (b *Bridge) resolvePause(
 // resolveCheckpoint writes checkpoint data to KV and extends the
 // ack deadline so the task stays in-flight.
 func (b *Bridge) resolveCheckpoint(
+	ctx context.Context,
 	taskID string, msg jetstream.Msg, req resolveRequest,
 ) error {
+	if ctx == nil {
+		panic("resolveCheckpoint: ctx must not be nil")
+	}
 	if taskID == "" {
 		panic("resolveCheckpoint: taskID must not be empty")
 	}
 	if msg == nil {
 		panic("resolveCheckpoint: msg must not be nil")
 	}
-	if err := b.writeCheckpoint(taskID, req.Data); err != nil {
+	if err := b.writeCheckpoint(ctx, taskID, req.Data); err != nil {
 		return err
 	}
 	if err := msg.InProgress(); err != nil {
@@ -266,15 +286,17 @@ func (b *Bridge) resolveCheckpoint(
 
 // writeCheckpoint stores data in the checkpoints KV bucket.
 func (b *Bridge) writeCheckpoint(
-	taskID string, data []byte,
+	ctx context.Context, taskID string, data []byte,
 ) error {
+	if ctx == nil {
+		panic("writeCheckpoint: ctx must not be nil")
+	}
 	if taskID == "" {
 		panic("writeCheckpoint: taskID must not be empty")
 	}
 	if b.checkpointKV == nil {
 		return fmt.Errorf("checkpoint KV not configured")
 	}
-	ctx := context.Background()
 	_, err := b.checkpointKV.Put(ctx, taskID, data)
 	if err != nil {
 		return fmt.Errorf("write checkpoint: %w", err)
@@ -284,7 +306,12 @@ func (b *Bridge) writeCheckpoint(
 
 // publishEvent marshals and publishes an event to the history
 // stream with deduplication.
-func (b *Bridge) publishEvent(evt protocol.Event) error {
+func (b *Bridge) publishEvent(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if ctx == nil {
+		panic("publishEvent: ctx must not be nil")
+	}
 	if evt.RunID == "" {
 		panic("publishEvent: RunID must not be empty")
 	}
@@ -302,7 +329,6 @@ func (b *Bridge) publishEvent(evt protocol.Event) error {
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	ctx := context.Background()
 	_, err = b.js.PublishMsg(ctx, msg)
 	return err
 }
@@ -332,11 +358,15 @@ func splitTaskID(taskID string) (runID, stepID string) {
 // resolveSendSignal writes a signal to the signals KV bucket,
 // then extends the ack deadline so the task remains in-flight.
 func (b *Bridge) resolveSendSignal(
+	ctx context.Context,
 	taskID string,
 	msg jetstream.Msg,
 	req resolveRequest,
 	w http.ResponseWriter,
 ) error {
+	if ctx == nil {
+		panic("resolveSendSignal: ctx must not be nil")
+	}
 	if taskID == "" {
 		panic("resolveSendSignal: taskID must not be empty")
 	}
@@ -352,7 +382,6 @@ func (b *Bridge) resolveSendSignal(
 	if req.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	ctx := context.Background()
 	key := req.RunID + "." + req.Name
 	_, err := b.signalKV.Put(ctx, key, req.Data)
 	if err != nil {
@@ -370,12 +399,16 @@ const signalTimeoutMaxMs = 3_600_000
 // resolveWaitSignal watches the signals KV bucket for a signal,
 // blocking until it arrives or timeout expires.
 func (b *Bridge) resolveWaitSignal(
+	ctx context.Context,
 	taskID string,
 	msg jetstream.Msg,
 	req resolveRequest,
 	w http.ResponseWriter,
 	r *http.Request,
 ) error {
+	if ctx == nil {
+		panic("resolveWaitSignal: ctx must not be nil")
+	}
 	if taskID == "" {
 		panic("resolveWaitSignal: taskID must not be empty")
 	}
@@ -395,7 +428,7 @@ func (b *Bridge) resolveWaitSignal(
 	}
 	runID, _ := splitTaskID(taskID)
 	signalData, err := b.waitForSignalOrTimeout(
-		runID, req.Name, req.TimeoutMs, msg, r,
+		ctx, runID, req.Name, req.TimeoutMs, msg, r,
 	)
 	if err != nil {
 		if err.Error() == "timeout" {
@@ -420,18 +453,21 @@ const inProgressIntervalMs = 15_000
 // it, periodically extending the ack deadline until signal arrives,
 // timeout expires, or client disconnects.
 func (b *Bridge) waitForSignalOrTimeout(
+	ctx context.Context,
 	runID, name string,
 	timeoutMs int64,
 	msg jetstream.Msg,
 	r *http.Request,
 ) ([]byte, error) {
+	if ctx == nil {
+		panic("waitForSignalOrTimeout: ctx must not be nil")
+	}
 	if runID == "" {
 		panic("waitForSignalOrTimeout: runID must not be empty")
 	}
 	if name == "" {
 		panic("waitForSignalOrTimeout: name must not be empty")
 	}
-	ctx := context.Background()
 	key := runID + "." + name
 	entry, err := b.signalKV.Get(ctx, key)
 	if err == nil {
@@ -440,24 +476,27 @@ func (b *Bridge) waitForSignalOrTimeout(
 	if !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return nil, fmt.Errorf("get signal: %w", err)
 	}
-	return b.watchForSignal(key, timeoutMs, msg, r)
+	return b.watchForSignal(ctx, key, timeoutMs, msg, r)
 }
 
 // watchForSignal creates a KV watcher and blocks until signal
 // arrives, timeout expires, or client disconnects.
 func (b *Bridge) watchForSignal(
+	ctx context.Context,
 	key string,
 	timeoutMs int64,
 	msg jetstream.Msg,
 	r *http.Request,
 ) ([]byte, error) {
+	if ctx == nil {
+		panic("watchForSignal: ctx must not be nil")
+	}
 	if key == "" {
 		panic("watchForSignal: key must not be empty")
 	}
 	if msg == nil {
 		panic("watchForSignal: msg must not be nil")
 	}
-	ctx := context.Background()
 	watcher, err := b.signalKV.Watch(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("create watcher: %w", err)
