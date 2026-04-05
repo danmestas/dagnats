@@ -40,6 +40,7 @@ type Orchestrator struct {
 	rateLimiter *RateLimiter            // nil if bucket missing
 	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
 	correlator  *Correlator             // event wait-for-event matching
+	stickyKV    jetstream.KeyValue      // sticky_bindings — run-to-worker
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive              observe.Gauge
@@ -130,6 +131,9 @@ func NewOrchestrator(
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
 	o.correlator = NewCorrelator(nc, js)
+	o.stickyKV, _ = js.KeyValue(
+		context.Background(), "sticky_bindings",
+	)
 	for _, opt := range opts {
 		opt(o)
 	}

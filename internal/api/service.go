@@ -29,14 +29,15 @@ import (
 // history stream. Run state is owned exclusively by the
 // orchestrator -- the service only reads snapshots.
 type Service struct {
-	nc          *nats.Conn
-	js          jetstream.JetStream
-	defKV       jetstream.KeyValue
-	store       *engine.SnapshotStore
-	tel         *observe.Telemetry
-	triggerKV   jetstream.KeyValue
-	signalKV    jetstream.KeyValue
-	scheduledKV jetstream.KeyValue
+	nc            *nats.Conn
+	js            jetstream.JetStream
+	defKV         jetstream.KeyValue
+	store         *engine.SnapshotStore
+	tel           *observe.Telemetry
+	triggerKV     jetstream.KeyValue
+	signalKV      jetstream.KeyValue
+	scheduledKV   jetstream.KeyValue
+	idempotencyKV jetstream.KeyValue
 
 	// Pre-allocated metric instruments -- created once.
 	requestCount    observe.Counter
@@ -92,15 +93,19 @@ func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 	triggerKV, _ := js.KeyValue(ctx, "triggers")
 	signalKV, _ := js.KeyValue(ctx, "signals")
 	scheduledKV, _ := js.KeyValue(ctx, "scheduled_runs")
+	idempotencyKV, _ := js.KeyValue(
+		ctx, "idempotency_keys",
+	)
 	return &Service{
-		nc:          nc,
-		js:          js,
-		defKV:       defKV,
-		store:       engine.NewSnapshotStore(js),
-		tel:         tel,
-		triggerKV:   triggerKV,
-		signalKV:    signalKV,
-		scheduledKV: scheduledKV,
+		nc:            nc,
+		js:            js,
+		defKV:         defKV,
+		store:         engine.NewSnapshotStore(js),
+		tel:           tel,
+		triggerKV:     triggerKV,
+		signalKV:      signalKV,
+		scheduledKV:   scheduledKV,
+		idempotencyKV: idempotencyKV,
 		requestCount: tel.Metrics.Counter(
 			"api.requests", nil,
 		),

@@ -96,6 +96,25 @@ func SetupKVBuckets(js jetstream.JetStream) error {
 	return nil
 }
 
+// SetupStickyStream creates the STICKY_TASKS stream for worker-
+// specific task routing. Separated from SetupStreams because it's
+// only needed when sticky workflows are in use.
+func SetupStickyStream(js jetstream.JetStream) error {
+	if js == nil {
+		panic("SetupStickyStream: js must not be nil")
+	}
+	_, err := js.CreateOrUpdateStream(
+		context.Background(),
+		jetstream.StreamConfig{
+			Name:     "STICKY_TASKS",
+			Subjects: []string{"sticky.>"},
+			Storage:  jetstream.MemoryStorage,
+			MaxAge:   30 * time.Minute,
+		},
+	)
+	return err
+}
+
 // SetupTelemetryStream creates the TELEMETRY stream for all
 // observability signals (spans, metrics, logs). 7-day retention,
 // 1GB cap, 5s dedup window.
