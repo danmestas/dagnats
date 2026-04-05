@@ -115,8 +115,6 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 		return
 	}
 
-	now := time.Now().UTC()
-
 	var data json.RawMessage
 	if len(msg.Data) > 0 {
 		data = json.RawMessage(msg.Data)
@@ -133,6 +131,19 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 		data = eventData
 	}
 
+	s.publishWorkflowStarted(data)
+}
+
+// publishWorkflowStarted wraps data in a TriggerEnvelope and publishes
+// it as a workflow.started event to JetStream.
+func (s *SubjectTrigger) publishWorkflowStarted(
+	data json.RawMessage,
+) {
+	if s.js == nil {
+		panic("publishWorkflowStarted: js must not be nil")
+	}
+
+	now := time.Now().UTC()
 	envelope := TriggerEnvelope{
 		Trigger:   "subject",
 		Source:    s.def.ID,
@@ -147,7 +158,9 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 		return
 	}
 
-	runID := fmt.Sprintf("%s-%d", s.def.WorkflowID, now.UnixNano())
+	runID := fmt.Sprintf(
+		"%s-%d", s.def.WorkflowID, now.UnixNano(),
+	)
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted,
 		runID,

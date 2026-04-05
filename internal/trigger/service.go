@@ -324,36 +324,46 @@ func (ts *TriggerService) startKVWatcher() error {
 				if !ok {
 					return
 				}
-				if entry == nil {
-					continue
-				}
-
-				if entry.Operation() == nats.KeyValueDelete {
-					_ = ts.removeTrigger(entry.Key())
-					continue
-				}
-
-				var def TriggerDef
-				if err := json.Unmarshal(entry.Value(), &def); err != nil {
-					ts.logger.Error(
-						"unmarshal trigger def from KV watch",
-						err,
-					)
-					continue
-				}
-
-				// Remove old version and add new
-				_ = ts.removeTrigger(def.ID)
-
-				// Respect max triggers limit
-				if ts.TriggerCount() < maxActiveTriggers {
-					_ = ts.addTrigger(def)
+				if entry != nil {
+					ts.handleKVUpdate(entry)
 				}
 			}
 		}
 	}()
 
 	return nil
+}
+
+// handleKVUpdate dispatches a single KV watcher entry: removes
+// deleted triggers, replaces updated ones within the active limit.
+func (ts *TriggerService) handleKVUpdate(
+	entry nats.KeyValueEntry,
+) {
+	if entry == nil {
+		panic("handleKVUpdate: entry must not be nil")
+	}
+
+	if entry.Operation() == nats.KeyValueDelete {
+		_ = ts.removeTrigger(entry.Key())
+		return
+	}
+
+	var def TriggerDef
+	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		ts.logger.Error(
+			"unmarshal trigger def from KV watch",
+			err,
+		)
+		return
+	}
+
+	// Remove old version and add new
+	_ = ts.removeTrigger(def.ID)
+
+	// Respect max triggers limit
+	if ts.TriggerCount() < maxActiveTriggers {
+		_ = ts.addTrigger(def)
+	}
 }
 
 // timeNow is a testing seam for the current time.
