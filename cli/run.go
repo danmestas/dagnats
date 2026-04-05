@@ -62,6 +62,10 @@ func runRunCmd(args []string) {
 		runCancelCmd(args[1:])
 	case "cancel-all":
 		runCancelAllCmd(args[1:])
+	case "bulk":
+		runBulkCmd(args[1:])
+	case "retry-all":
+		runRetryAllCmd(args[1:])
 	case "signal":
 		runSignalCmd(args[1:])
 	case "list":
@@ -90,6 +94,8 @@ func printRunUsage() {
 	fmt.Println("  inspect     unified debug view for a run")
 	fmt.Println("  cancel      cancel a running workflow")
 	fmt.Println("  cancel-all  cancel multiple runs by workflow")
+	fmt.Println("  bulk        start multiple runs of a workflow")
+	fmt.Println("  retry-all   retry failed runs in bulk")
 	fmt.Println("  signal      send a signal to a run")
 	fmt.Println("  list     list workflow runs")
 	fmt.Println("  events   show run event history")
