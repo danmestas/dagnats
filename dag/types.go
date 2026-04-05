@@ -95,6 +95,17 @@ func (r *RunStatus) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("unknown RunStatus string: %q", str)
 }
 
+// IsTerminal returns true for statuses that represent a finished run.
+func (r RunStatus) IsTerminal() bool {
+	switch r {
+	case RunStatusCompleted, RunStatusFailed,
+		RunStatusCancelled, RunStatusCompensated,
+		RunStatusCompensateFailed:
+		return true
+	}
+	return false
+}
+
 // StepStatus tracks the lifecycle of a single step within a run. Queued means
 // the step has been dispatched to NATS but not yet claimed by a worker.
 type StepStatus int

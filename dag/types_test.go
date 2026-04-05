@@ -614,3 +614,25 @@ func TestStepTypeSleepString(t *testing.T) {
 		t.Fatalf("expected StepTypeSleep, got %v", st)
 	}
 }
+
+func TestRunStatusIsTerminal(t *testing.T) {
+	terminals := []RunStatus{
+		RunStatusCompleted, RunStatusFailed,
+		RunStatusCancelled, RunStatusCompensated,
+		RunStatusCompensateFailed,
+	}
+	for _, s := range terminals {
+		if !s.IsTerminal() {
+			t.Fatalf("%s should be terminal", s)
+		}
+	}
+
+	nonTerminals := []RunStatus{
+		RunStatusPending, RunStatusRunning,
+	}
+	for _, s := range nonTerminals {
+		if s.IsTerminal() {
+			t.Fatalf("%s should not be terminal", s)
+		}
+	}
+}
