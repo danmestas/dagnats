@@ -21,6 +21,7 @@ type WorkflowBuilder struct {
 	sticky         StickyStrategy
 	priority       *PriorityConfig
 	cancelOn       []CancelOn
+	singleton      *SingletonConfig
 }
 
 // NewWorkflow starts a new builder for a workflow with the given name.
@@ -349,6 +350,24 @@ func (b *WorkflowBuilder) CancelOnWithTimeout(
 	return b
 }
 
+// WithSingleton configures global singleton constraint.
+func (b *WorkflowBuilder) WithSingleton(
+	mode SingletonMode,
+) *WorkflowBuilder {
+	b.singleton = &SingletonConfig{Mode: mode}
+	return b
+}
+
+// WithSingletonKey configures per-entity singleton.
+func (b *WorkflowBuilder) WithSingletonKey(
+	mode SingletonMode, key string,
+) *WorkflowBuilder {
+	b.singleton = &SingletonConfig{
+		Mode: mode, Key: key,
+	}
+	return b
+}
+
 func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 	def := WorkflowDef{
 		Name:           b.name,
@@ -363,6 +382,9 @@ func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 	}
 	if len(b.cancelOn) > 0 {
 		def.CancelOn = b.cancelOn
+	}
+	if b.singleton != nil {
+		def.Singleton = b.singleton
 	}
 	if err := Validate(def); err != nil {
 		return WorkflowDef{}, err

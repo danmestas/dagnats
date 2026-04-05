@@ -701,3 +701,40 @@ func TestCancelOnWithTimeout(t *testing.T) {
 			def.CancelOn[0].Timeout)
 	}
 }
+
+func TestSingletonModeRoundTrip(t *testing.T) {
+	cfg := SingletonConfig{
+		Mode: SingletonModeCancel,
+		Key:  "data.env",
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got SingletonConfig
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Mode != SingletonModeCancel {
+		t.Fatalf("mode = %v, want cancel", got.Mode)
+	}
+	if got.Key != "data.env" {
+		t.Fatalf("key = %q, want data.env", got.Key)
+	}
+}
+
+func TestSingletonOnWorkflowDef(t *testing.T) {
+	wb := NewWorkflow("test-singleton")
+	wb.Task("s", "echo")
+	wb.WithSingleton(SingletonModeSkip)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if def.Singleton == nil {
+		t.Fatal("singleton should not be nil")
+	}
+	if def.Singleton.Mode != SingletonModeSkip {
+		t.Fatalf("mode = %v, want skip", def.Singleton.Mode)
+	}
+}

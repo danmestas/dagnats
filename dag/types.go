@@ -178,6 +178,21 @@ type CancelOn struct {
 	Timeout time.Duration `json:"timeout,omitempty"`
 }
 
+// SingletonMode determines behavior on duplicate detection.
+// String type for safe JSON serialization in KV storage.
+type SingletonMode string
+
+const (
+	SingletonModeSkip   SingletonMode = "skip"
+	SingletonModeCancel SingletonMode = "cancel"
+)
+
+// SingletonConfig constrains runs to one-at-a-time per key.
+type SingletonConfig struct {
+	Mode SingletonMode `json:"mode"`
+	Key  string        `json:"key,omitempty"`
+}
+
 // StepDef is the immutable declaration of a single step within a WorkflowDef.
 // DependsOn lists step IDs that must complete before this step is queued.
 // Config holds type-specific configuration as raw JSON — use ParseXxxConfig
@@ -218,6 +233,7 @@ type WorkflowDef struct {
 	Sticky         StickyStrategy    `json:"sticky,omitempty"`
 	Priority       *PriorityConfig   `json:"priority,omitempty"`
 	CancelOn       []CancelOn        `json:"cancel_on,omitempty"`
+	Singleton      *SingletonConfig  `json:"singleton,omitempty"`
 }
 
 // StickyStrategy controls worker affinity for workflow runs.

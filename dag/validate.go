@@ -40,6 +40,10 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validateSingleton(def); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 
@@ -526,6 +530,19 @@ func validateCancelOn(def WorkflowDef) error {
 		if co.Event == "" {
 			return fmt.Errorf(
 				"cancel_on[%d]: event must not be empty", i,
+			)
+		}
+	}
+	return nil
+}
+
+// validateSingleton checks Singleton constraints.
+func validateSingleton(def WorkflowDef) error {
+	if def.Singleton != nil {
+		if def.Singleton.Mode != SingletonModeSkip &&
+			def.Singleton.Mode != SingletonModeCancel {
+			return fmt.Errorf(
+				"singleton: mode must be skip or cancel",
 			)
 		}
 	}
