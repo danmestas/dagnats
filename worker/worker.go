@@ -12,6 +12,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // TaskContext is the core interface workers use to report step results.
@@ -62,14 +63,15 @@ type HandlerFunc func(ctx TaskContext) error
 // subscription; messages are ack'd after the handler returns so
 // failures are retried by JetStream's MaxDeliver policy.
 type Worker struct {
-	nc           *nats.Conn
-	js           nats.JetStreamContext
-	tel          *observe.Telemetry
-	handlers     map[string]HandlerFunc
-	subs         []*nats.Subscription
-	checkpointKV nats.KeyValue
-	signalKV     nats.KeyValue
-	groups       []string
+	nc              *nats.Conn
+	jsLegacy        nats.JetStreamContext
+	js              jetstream.JetStream
+	tel             *observe.Telemetry
+	handlers        map[string]HandlerFunc
+	consumeContexts []jetstream.ConsumeContext
+	checkpointKV    jetstream.KeyValue
+	signalKV        jetstream.KeyValue
+	groups          []string
 
 	// Directory registration (observability only)
 	dir           *Directory
@@ -125,12 +127,17 @@ func NewWorker(
 	if tel == nil {
 		tel = observe.NewNoopTelemetry()
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		panic("NewWorker: JetStream init failed: " + err.Error())
 	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		panic("NewWorker: jetstream.New failed: " + err.Error())
+	}
 	w := &Worker{
 		nc:       nc,
+		jsLegacy: jsLegacy,
 		js:       js,
 		tel:      tel,
 		handlers: make(map[string]HandlerFunc),
@@ -169,16 +176,20 @@ func (w *Worker) Handle(
 // newDirectoryOptional creates a Directory if the workers KV
 // bucket exists. Returns error (not panic) if the bucket is
 // missing — directory is observability only, not critical path.
-func newDirectoryOptional(js nats.JetStreamContext) (*Directory, error) {
-	if js == nil {
-		panic("newDirectoryOptional: js must not be nil")
+func newDirectoryOptional(
+	jsLegacy nats.JetStreamContext,
+) (*Directory, error) {
+	if jsLegacy == nil {
+		panic("newDirectoryOptional: jsLegacy must not be nil")
 	}
-	kv, err := js.KeyValue("workers")
+	kv, err := jsLegacy.KeyValue("workers")
 	if err != nil {
 		return nil, err
 	}
 	if kv == nil {
-		panic("newDirectoryOptional: kv must not be nil when err is nil")
+		panic(
+			"newDirectoryOptional: kv must not be nil when err is nil",
+		)
 	}
 	return &Directory{kv: kv}, nil
 }
@@ -196,11 +207,15 @@ func (w *Worker) Start() {
 		panic("Worker.Start: js must not be nil")
 	}
 	// Bind optional KV buckets — no error if missing
-	w.checkpointKV, _ = w.js.KeyValue("checkpoints")
-	w.signalKV, _ = w.js.KeyValue("signals")
+	w.checkpointKV, _ = w.js.KeyValue(
+		context.Background(), "checkpoints",
+	)
+	w.signalKV, _ = w.js.KeyValue(
+		context.Background(), "signals",
+	)
 
 	// Worker directory registration (observability only — not critical path)
-	d, err := newDirectoryOptional(w.js)
+	d, err := newDirectoryOptional(w.jsLegacy)
 	if err == nil {
 		w.dir = d
 		w.stopHeartbeat = make(chan struct{})
@@ -223,35 +238,59 @@ func (w *Worker) Start() {
 		h := handler
 		tt := taskType
 		if len(w.groups) == 0 {
-			// No groups — subscribe to all tasks of this type
 			subject := "task." + taskType + ".>"
-			sub, err := w.js.Subscribe(subject, func(msg *nats.Msg) {
-				w.handleMessage(tt, h, msg)
-			}, nats.AckExplicit(), nats.DeliverAll())
-			if err != nil {
-				panic(
-					"Worker.Start: Subscribe failed for " +
-						taskType + ": " + err.Error(),
-				)
-			}
-			w.subs = append(w.subs, sub)
+			cc := w.createConsumer(tt, subject, h)
+			w.consumeContexts = append(w.consumeContexts, cc)
 		} else {
-			// Groups configured — subscribe to each group
 			for _, group := range w.groups {
-				subject := "task." + taskType + "." + group + ".>"
-				sub, err := w.js.Subscribe(subject, func(msg *nats.Msg) {
-					w.handleMessage(tt, h, msg)
-				}, nats.AckExplicit(), nats.DeliverAll())
-				if err != nil {
-					panic(
-						"Worker.Start: Subscribe failed for " +
-							taskType + "." + group + ": " + err.Error(),
-					)
-				}
-				w.subs = append(w.subs, sub)
+				subject := "task." + tt + "." + group + ".>"
+				cc := w.createConsumer(
+					tt+"."+group, subject, h,
+				)
+				w.consumeContexts = append(
+					w.consumeContexts, cc,
+				)
 			}
 		}
 	}
+}
+
+// createConsumer sets up a JetStream pull consumer for the given
+// subject on the TASK_QUEUES stream and starts consuming. Panics
+// on any setup failure — stream misconfiguration is a startup error.
+func (w *Worker) createConsumer(
+	name string, subject string, handler HandlerFunc,
+) jetstream.ConsumeContext {
+	if subject == "" {
+		panic("createConsumer: subject must not be empty")
+	}
+	if handler == nil {
+		panic("createConsumer: handler must not be nil")
+	}
+	cons, err := w.js.CreateOrUpdateConsumer(
+		context.Background(), "TASK_QUEUES",
+		jetstream.ConsumerConfig{
+			FilterSubject: subject,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		panic(
+			"Worker.Start: consumer failed for " +
+				name + ": " + err.Error(),
+		)
+	}
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		w.handleMessage(name, handler, msg)
+	})
+	if err != nil {
+		panic(
+			"Worker.Start: Consume failed for " +
+				name + ": " + err.Error(),
+		)
+	}
+	return cc
 }
 
 // heartbeatLoop re-registers the worker every 30s to refresh the
@@ -290,15 +329,15 @@ func (w *Worker) Stop() {
 	if w.dir != nil {
 		_ = w.dir.Deregister(w.workerID)
 	}
-	for _, sub := range w.subs {
-		sub.Unsubscribe()
+	for _, cc := range w.consumeContexts {
+		cc.Stop()
 	}
 }
 
 // handleMessage unmarshals the task payload, creates a traced
 // context, executes the handler, and records metrics.
 func (w *Worker) handleMessage(
-	taskType string, handler HandlerFunc, msg *nats.Msg,
+	taskType string, handler HandlerFunc, msg jetstream.Msg,
 ) {
 	if msg == nil {
 		panic("handleMessage: msg must not be nil")
@@ -307,7 +346,7 @@ func (w *Worker) handleMessage(
 		panic("handleMessage: handler must not be nil")
 	}
 	var payload protocol.TaskPayload
-	err := json.Unmarshal(msg.Data, &payload)
+	err := json.Unmarshal(msg.Data(), &payload)
 	if err != nil {
 		w.tel.Logger.Error(
 			"failed to unmarshal task payload", err,
@@ -363,7 +402,7 @@ func (w *Worker) handleMessage(
 func (w *Worker) handleTaskError(
 	err error,
 	tc *taskContext,
-	msg *nats.Msg,
+	msg jetstream.Msg,
 	taskType string,
 	runID string,
 ) {
@@ -395,17 +434,17 @@ func (w *Worker) handleTaskError(
 
 // extractWorkerTraceCtx reads W3C traceparent from the NATS
 // message header and returns a context with parent span info.
-func extractWorkerTraceCtx(msg *nats.Msg) context.Context {
+func extractWorkerTraceCtx(msg jetstream.Msg) context.Context {
 	if msg == nil {
 		panic("extractWorkerTraceCtx: msg must not be nil")
 	}
-	if msg.Data == nil {
+	if msg.Data() == nil {
 		panic("extractWorkerTraceCtx: msg.Data must not be nil")
 	}
-	if msg.Header == nil {
+	if msg.Headers() == nil {
 		return context.Background()
 	}
-	tp := msg.Header.Get("traceparent")
+	tp := msg.Headers().Get("traceparent")
 	if tp == "" {
 		return context.Background()
 	}
