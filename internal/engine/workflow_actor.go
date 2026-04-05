@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -110,7 +111,7 @@ func (wa *WorkflowActor) handleStarted(
 	// Enqueue ready steps and publish tasks
 	if wa.js != nil {
 		if err := enqueueReadySteps(
-			wa.js, wfDef, wa.run,
+			context.Background(), wa.js, wfDef, wa.run,
 		); err != nil {
 			return err
 		}
@@ -145,7 +146,7 @@ func (wa *WorkflowActor) handleStepCompleted(
 
 	if wa.js != nil {
 		if err := enqueueReadySteps(
-			wa.js, *wa.def, wa.run,
+			context.Background(), wa.js, *wa.def, wa.run,
 		); err != nil {
 			return err
 		}
@@ -204,7 +205,8 @@ func (wa *WorkflowActor) handleStepFailed(
 
 	if wa.js != nil {
 		publishWorkflowEvent(
-			wa.js, protocol.EventWorkflowFailed, wa.runID,
+			context.Background(), wa.js,
+			protocol.EventWorkflowFailed, wa.runID,
 		)
 	}
 
@@ -242,8 +244,8 @@ func (wa *WorkflowActor) handleStepContinue(
 		wa.mu.Unlock()
 		if wa.js != nil {
 			publishWorkflowEvent(
-				wa.js, protocol.EventWorkflowFailed,
-				wa.runID,
+				context.Background(), wa.js,
+				protocol.EventWorkflowFailed, wa.runID,
 			)
 		}
 		return wa.saveIfStore()
@@ -262,7 +264,7 @@ func (wa *WorkflowActor) handleStepContinue(
 			)
 		}
 		if err := publishIterationTask(
-			wa.js, wa.runID, stepDef,
+			context.Background(), wa.js, wa.runID, stepDef,
 			input, state.Iterations,
 		); err != nil {
 			return err
@@ -279,7 +281,7 @@ func (wa *WorkflowActor) saveIfStore() error {
 	}
 	wa.mu.RLock()
 	defer wa.mu.RUnlock()
-	return wa.store.Save(*wa.run)
+	return wa.store.Save(context.Background(), *wa.run)
 }
 
 // RunStatus returns the current run status (thread-safe).

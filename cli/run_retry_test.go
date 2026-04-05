@@ -62,7 +62,7 @@ func TestRetryCreatesNewRun(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(run); err != nil {
+	if err := store.Save(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
@@ -128,7 +128,7 @@ func TestRetryJSONOutput(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(run); err != nil {
+	if err := store.Save(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
@@ -214,7 +214,7 @@ func TestRetryUsesOriginalInput(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(run); err != nil {
+	if err := store.Save(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestRetryUsesOriginalInput(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		var loadErr error
-		newRun, loadErr = store.Load(result.NewRunID)
+		newRun, loadErr = store.Load(context.Background(), result.NewRunID)
 		if loadErr == nil {
 			break
 		}
@@ -304,7 +304,7 @@ func TestRetryExplicitInputOverridesOriginal(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(run); err != nil {
+	if err := store.Save(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
@@ -328,7 +328,7 @@ func TestRetryExplicitInputOverridesOriginal(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		var loadErr error
-		newRun, loadErr = store.Load(result.NewRunID)
+		newRun, loadErr = store.Load(context.Background(), result.NewRunID)
 		if loadErr == nil {
 			break
 		}

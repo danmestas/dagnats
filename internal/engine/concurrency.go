@@ -63,7 +63,7 @@ func NewConcurrencyManagerSafe(
 // AcquireRun increments the counter for the workflow. Returns false
 // if the limit is reached. Limit 0 means unlimited.
 func (cm *ConcurrencyManager) AcquireRun(
-	workflowID string, limit int,
+	ctx context.Context, workflowID string, limit int,
 ) (bool, error) {
 	if workflowID == "" {
 		panic("AcquireRun: workflowID must not be empty")
@@ -76,14 +76,14 @@ func (cm *ConcurrencyManager) AcquireRun(
 
 	// Retry loop for optimistic locking (bounded)
 	for attempt := 0; attempt < 10; attempt++ {
-		current, rev, err := cm.readCounter(key)
+		current, rev, err := cm.readCounter(ctx, key)
 		if err != nil {
 			return false, err
 		}
 		if current >= limit {
 			return false, nil
 		}
-		if cm.casIncrement(key, current, rev) {
+		if cm.casIncrement(ctx, key, current, rev) {
 			return true, nil
 		}
 		// CAS failed — retry
@@ -93,7 +93,7 @@ func (cm *ConcurrencyManager) AcquireRun(
 
 // ReleaseRun decrements the counter for the workflow.
 func (cm *ConcurrencyManager) ReleaseRun(
-	workflowID string,
+	ctx context.Context, workflowID string,
 ) error {
 	if workflowID == "" {
 		panic("ReleaseRun: workflowID must not be empty")
@@ -101,7 +101,7 @@ func (cm *ConcurrencyManager) ReleaseRun(
 	key := "workflow." + workflowID
 
 	for attempt := 0; attempt < 10; attempt++ {
-		current, rev, err := cm.readCounter(key)
+		current, rev, err := cm.readCounter(ctx, key)
 		if err != nil {
 			return err
 		}
@@ -109,7 +109,6 @@ func (cm *ConcurrencyManager) ReleaseRun(
 			return nil // Already at zero
 		}
 		newVal := current - 1
-		ctx := context.Background()
 		data := []byte(strconv.Itoa(newVal))
 		if rev == 0 {
 			_, err = cm.runKV.Create(ctx, key, data)
@@ -127,7 +126,7 @@ func (cm *ConcurrencyManager) ReleaseRun(
 // AcquireTask increments the counter for a task type. Returns false
 // if the limit is reached. Limit 0 means unlimited.
 func (cm *ConcurrencyManager) AcquireTask(
-	taskType string, limit int,
+	ctx context.Context, taskType string, limit int,
 ) (bool, error) {
 	if taskType == "" {
 		panic("AcquireTask: taskType must not be empty")
@@ -141,14 +140,14 @@ func (cm *ConcurrencyManager) AcquireTask(
 
 	key := "task." + taskType
 	for attempt := 0; attempt < 10; attempt++ {
-		current, rev, err := cm.readKV(cm.taskKV, key)
+		current, rev, err := cm.readKV(ctx, cm.taskKV, key)
 		if err != nil {
 			return false, err
 		}
 		if current >= limit {
 			return false, nil
 		}
-		if cm.casIncrementKV(cm.taskKV, key, current, rev) {
+		if cm.casIncrementKV(ctx, cm.taskKV, key, current, rev) {
 			return true, nil
 		}
 	}
@@ -157,7 +156,7 @@ func (cm *ConcurrencyManager) AcquireTask(
 
 // ReleaseTask decrements the counter for a task type.
 func (cm *ConcurrencyManager) ReleaseTask(
-	taskType string,
+	ctx context.Context, taskType string,
 ) error {
 	if taskType == "" {
 		panic("ReleaseTask: taskType must not be empty")
@@ -168,14 +167,13 @@ func (cm *ConcurrencyManager) ReleaseTask(
 
 	key := "task." + taskType
 	for attempt := 0; attempt < 10; attempt++ {
-		current, rev, err := cm.readKV(cm.taskKV, key)
+		current, rev, err := cm.readKV(ctx, cm.taskKV, key)
 		if err != nil {
 			return err
 		}
 		if current <= 0 {
 			return nil // Already at zero
 		}
-		ctx := context.Background()
 		newVal := current - 1
 		data := []byte(strconv.Itoa(newVal))
 		if rev == 0 {
@@ -192,7 +190,7 @@ func (cm *ConcurrencyManager) ReleaseTask(
 
 // readKV reads a counter from any KV bucket.
 func (cm *ConcurrencyManager) readKV(
-	kv jetstream.KeyValue, key string,
+	ctx context.Context, kv jetstream.KeyValue, key string,
 ) (int, uint64, error) {
 	if kv == nil {
 		panic("readKV: kv must not be nil")
@@ -200,7 +198,7 @@ func (cm *ConcurrencyManager) readKV(
 	if key == "" {
 		panic("readKV: key must not be empty")
 	}
-	entry, err := kv.Get(context.Background(), key)
+	entry, err := kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return 0, 0, nil
@@ -216,7 +214,7 @@ func (cm *ConcurrencyManager) readKV(
 
 // casIncrementKV performs a CAS increment on any KV bucket.
 func (cm *ConcurrencyManager) casIncrementKV(
-	kv jetstream.KeyValue, key string,
+	ctx context.Context, kv jetstream.KeyValue, key string,
 	current int, rev uint64,
 ) bool {
 	if kv == nil {
@@ -225,7 +223,6 @@ func (cm *ConcurrencyManager) casIncrementKV(
 	if key == "" {
 		panic("casIncrementKV: key must not be empty")
 	}
-	ctx := context.Background()
 	newVal := current + 1
 	data := []byte(strconv.Itoa(newVal))
 	var err error
@@ -238,9 +235,9 @@ func (cm *ConcurrencyManager) casIncrementKV(
 }
 
 func (cm *ConcurrencyManager) readCounter(
-	key string,
+	ctx context.Context, key string,
 ) (int, uint64, error) {
-	entry, err := cm.runKV.Get(context.Background(), key)
+	entry, err := cm.runKV.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return 0, 0, nil
@@ -255,9 +252,8 @@ func (cm *ConcurrencyManager) readCounter(
 }
 
 func (cm *ConcurrencyManager) casIncrement(
-	key string, current int, rev uint64,
+	ctx context.Context, key string, current int, rev uint64,
 ) bool {
-	ctx := context.Background()
 	newVal := current + 1
 	data := []byte(strconv.Itoa(newVal))
 	var err error

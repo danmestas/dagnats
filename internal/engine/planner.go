@@ -179,7 +179,7 @@ func (o *Orchestrator) applyFragment(
 		return err
 	}
 
-	o.publishMaterializedEvent(run.RunID, stepDef.ID)
+	o.publishMaterializedEvent(ctx, run.RunID, stepDef.ID)
 
 	augmented := dag.EffectiveDef(wfDef, *run)
 	return o.enqueueReady(ctx, augmented, *run)
@@ -239,7 +239,7 @@ func (o *Orchestrator) failPlannerStep(
 // publishMaterializedEvent emits the planner.materialized event
 // to the history stream for observability.
 func (o *Orchestrator) publishMaterializedEvent(
-	runID, stepID string,
+	ctx context.Context, runID, stepID string,
 ) {
 	if runID == "" {
 		panic("publishMaterializedEvent: runID must not be empty")
@@ -257,7 +257,7 @@ func (o *Orchestrator) publishMaterializedEvent(
 		return
 	}
 	_, pubErr := o.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	if pubErr != nil {

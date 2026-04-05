@@ -6,6 +6,7 @@ package engine
 // Uses real embedded NATS server.
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func TestOrchestratorConcurrencySecondRunPends(t *testing.T) {
 		"cr-1", defData)
 	time.Sleep(200 * time.Millisecond)
 
-	r1, _ := orch.store.Load("cr-1")
+	r1, _ := orch.store.Load(context.Background(), "cr-1")
 	if r1.Status != dag.RunStatusRunning {
 		t.Fatalf("run-1 = %v, want Running", r1.Status)
 	}
@@ -58,7 +59,7 @@ func TestOrchestratorConcurrencySecondRunPends(t *testing.T) {
 		"cr-2", defData)
 	time.Sleep(200 * time.Millisecond)
 
-	r2, _ := orch.store.Load("cr-2")
+	r2, _ := orch.store.Load(context.Background(), "cr-2")
 	if r2.Status != dag.RunStatusPending {
 		t.Fatalf("run-2 = %v, want Pending", r2.Status)
 	}
@@ -110,7 +111,7 @@ func TestOrchestratorConcurrencyAutoStart(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		r2, err := orch.store.Load("ca-2")
+		r2, err := orch.store.Load(context.Background(), "ca-2")
 		if err == nil &&
 			r2.Status == dag.RunStatusRunning {
 			return
@@ -177,7 +178,7 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 		nats.MsgId(evt2.NATSMsgID()))
 	time.Sleep(200 * time.Millisecond)
 
-	run2, _ := orch.store.Load("cc-run-2")
+	run2, _ := orch.store.Load(context.Background(), "cc-run-2")
 	if run2.Status != dag.RunStatusPending {
 		t.Fatalf("run-2 = %v, want Pending", run2.Status)
 	}
@@ -192,10 +193,10 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 	// Wait for run-2 to auto-start.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		r2, err := orch.store.Load("cc-run-2")
+		r2, err := orch.store.Load(context.Background(), "cc-run-2")
 		if err == nil && r2.Status == dag.RunStatusRunning {
 			// Positive: run-1 cancelled.
-			r1, _ := orch.store.Load("cc-run-1")
+			r1, _ := orch.store.Load(context.Background(), "cc-run-1")
 			if r1.Status != dag.RunStatusCancelled {
 				t.Fatalf("run-1 = %v, want Cancelled",
 					r1.Status)
@@ -264,8 +265,8 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 	// Wait for run-1 to fail and run-2 to auto-start.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		r1, e1 := orch.store.Load("fc-run-1")
-		r2, e2 := orch.store.Load("fc-run-2")
+		r1, e1 := orch.store.Load(context.Background(), "fc-run-1")
+		r2, e2 := orch.store.Load(context.Background(), "fc-run-2")
 		if e1 == nil && r1.Status == dag.RunStatusFailed &&
 			e2 == nil && r2.Status == dag.RunStatusRunning {
 			return
@@ -334,10 +335,10 @@ func TestOrchestratorCompletionReleasesConcurrency(
 	// Wait for auto-start of run-2.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		r2, err := orch.store.Load("cc2-run-2")
+		r2, err := orch.store.Load(context.Background(), "cc2-run-2")
 		if err == nil && r2.Status == dag.RunStatusRunning {
 			// Positive: run-1 completed successfully.
-			r1, _ := orch.store.Load("cc2-run-1")
+			r1, _ := orch.store.Load(context.Background(), "cc2-run-1")
 			if r1.Status != dag.RunStatusCompleted {
 				t.Fatalf("run-1 = %v, want Completed",
 					r1.Status)
@@ -395,7 +396,7 @@ func TestOrchestratorConcurrencyNoPendingRuns(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := orch.store.Load("np-run-1")
+		run, err := orch.store.Load(context.Background(), "np-run-1")
 		if err == nil &&
 			run.Status == dag.RunStatusCompleted {
 			return
@@ -463,7 +464,7 @@ func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 	// Wait for run-2 to transition.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		r2, err := orch.store.Load("tc-run-2")
+		r2, err := orch.store.Load(context.Background(), "tc-run-2")
 		if err == nil && r2.Status == dag.RunStatusRunning {
 			// Positive: run-2 is now Running.
 			// Positive: deadline is set.
@@ -534,8 +535,8 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 	// Wait for run-1 to fail and run-2 to auto-start.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		r1, err1 := orch.store.Load("lc-run-1")
-		r2, err2 := orch.store.Load("lc-run-2")
+		r1, err1 := orch.store.Load(context.Background(), "lc-run-1")
+		r2, err2 := orch.store.Load(context.Background(), "lc-run-2")
 		if err1 == nil && r1.Status == dag.RunStatusFailed &&
 			err2 == nil && r2.Status == dag.RunStatusRunning {
 			return

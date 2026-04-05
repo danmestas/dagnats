@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func TestTokenBucketAllowsWithinLimit(t *testing.T) {
 	}
 
 	// 5 per minute, consume 1 — should be allowed
-	allowed, retryAfter, err := rl.Allow(
+	allowed, retryAfter, err := rl.Allow(context.Background(),
 		"task-a", "_global", 5, time.Minute, 1,
 	)
 	if err != nil {
@@ -65,7 +66,7 @@ func TestTokenBucketDeniesWhenExhausted(t *testing.T) {
 
 	// 2 per minute — consume all tokens
 	for i := 0; i < 2; i++ {
-		allowed, _, err := rl.Allow(
+		allowed, _, err := rl.Allow(context.Background(),
 			"task-b", "_global", 2, time.Minute, 1,
 		)
 		if err != nil {
@@ -77,7 +78,7 @@ func TestTokenBucketDeniesWhenExhausted(t *testing.T) {
 	}
 
 	// 3rd request should be denied
-	allowed, retryAfter, err := rl.Allow(
+	allowed, retryAfter, err := rl.Allow(context.Background(),
 		"task-b", "_global", 2, time.Minute, 1,
 	)
 	if err != nil {
@@ -116,7 +117,7 @@ func TestTokenBucketRefillsOverTime(t *testing.T) {
 
 	// 2 per second — exhaust all tokens
 	for i := 0; i < 2; i++ {
-		allowed, _, err := rl.Allow(
+		allowed, _, err := rl.Allow(context.Background(),
 			"task-c", "_global", 2, time.Second, 1,
 		)
 		if err != nil {
@@ -128,7 +129,7 @@ func TestTokenBucketRefillsOverTime(t *testing.T) {
 	}
 
 	// Verify exhausted
-	allowed, _, err := rl.Allow(
+	allowed, _, err := rl.Allow(context.Background(),
 		"task-c", "_global", 2, time.Second, 1,
 	)
 	if err != nil {
@@ -141,7 +142,7 @@ func TestTokenBucketRefillsOverTime(t *testing.T) {
 	// Advance clock by 600ms — should refill 1 token (2 per 1s)
 	now = now.Add(600 * time.Millisecond)
 
-	allowed, retryAfter, err := rl.Allow(
+	allowed, retryAfter, err := rl.Allow(context.Background(),
 		"task-c", "_global", 2, time.Second, 1,
 	)
 	if err != nil {
@@ -164,7 +165,7 @@ func TestTokenBucketNilIsNoOp(t *testing.T) {
 	var rl *RateLimiter
 
 	// Positive: nil limiter allows
-	allowed, retryAfter, err := rl.Allow(
+	allowed, retryAfter, err := rl.Allow(context.Background(),
 		"task-x", "_global", 1, time.Second, 1,
 	)
 	if err != nil {
@@ -196,7 +197,7 @@ func TestTokenBucketKeyedIsolation(t *testing.T) {
 	}
 
 	// Exhaust tokens for key "user-1"
-	allowed, _, err := rl.Allow(
+	allowed, _, err := rl.Allow(context.Background(),
 		"task-d", "user-1", 1, time.Minute, 1,
 	)
 	if err != nil {
@@ -207,7 +208,7 @@ func TestTokenBucketKeyedIsolation(t *testing.T) {
 	}
 
 	// user-1 is exhausted
-	allowed, _, _ = rl.Allow(
+	allowed, _, _ = rl.Allow(context.Background(),
 		"task-d", "user-1", 1, time.Minute, 1,
 	)
 	if allowed {
@@ -215,7 +216,7 @@ func TestTokenBucketKeyedIsolation(t *testing.T) {
 	}
 
 	// Positive: different key has its own bucket
-	allowed, _, err = rl.Allow(
+	allowed, _, err = rl.Allow(context.Background(),
 		"task-d", "user-2", 1, time.Minute, 1,
 	)
 	if err != nil {

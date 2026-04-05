@@ -621,7 +621,7 @@ func TestRunStartOutputPrintsResult(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(run); err != nil {
+	if err := store.Save(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 

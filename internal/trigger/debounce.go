@@ -144,7 +144,7 @@ func (d *Debouncer) createDebounceEntry(
 	}
 
 	// Schedule timer first to get the sequence
-	seq, err := d.sleepTimer.ScheduleDebounce(engine.TimerMessage{
+	seq, err := d.sleepTimer.ScheduleDebounce(context.Background(), engine.TimerMessage{
 		Action:      engine.TimerActionDebounce,
 		TriggerID:   def.ID,
 		DebounceKey: key,
@@ -186,7 +186,7 @@ func (d *Debouncer) updateDebounceEntry(
 	}
 
 	// Schedule new timer first to get the sequence
-	seq, err := d.sleepTimer.ScheduleDebounce(engine.TimerMessage{
+	seq, err := d.sleepTimer.ScheduleDebounce(context.Background(), engine.TimerMessage{
 		Action:      engine.TimerActionDebounce,
 		TriggerID:   def.ID,
 		DebounceKey: key,

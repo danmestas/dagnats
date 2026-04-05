@@ -48,9 +48,9 @@ func TestBulkRetryRerunMode(t *testing.T) {
 		if err1 == nil && err2 == nil {
 			// Mark runs as failed via snapshot
 			run1.Status = dag.RunStatusFailed
-			svc.store.Save(run1)
+			svc.store.Save(context.Background(), run1)
 			run2.Status = dag.RunStatusFailed
-			svc.store.Save(run2)
+			svc.store.Save(context.Background(), run2)
 			break
 		}
 		select {
@@ -114,7 +114,7 @@ func TestBulkRetryDryRun(t *testing.T) {
 		run, err := svc.GetRun(context.Background(), runID)
 		if err == nil {
 			run.Status = dag.RunStatusFailed
-			svc.store.Save(run)
+			svc.store.Save(context.Background(), run)
 			break
 		}
 		select {

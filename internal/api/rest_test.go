@@ -926,7 +926,7 @@ func TestRESTBulkRetry(t *testing.T) {
 
 	// Mark as failed and save
 	run.Status = dag.RunStatusFailed
-	svc.store.Save(run)
+	svc.store.Save(context.Background(), run)
 
 	handler := NewRESTHandler(svc)
 	ts := httptest.NewServer(handler)

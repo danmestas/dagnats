@@ -88,7 +88,7 @@ func (s *Service) bulkCancelInner(
 		return BulkCancelResponse{}, err
 	}
 
-	runs, err := s.store.ListAll(maxBulkCancelLimit + 1)
+	runs, err := s.store.ListAll(context.Background(), maxBulkCancelLimit+1)
 	if err != nil {
 		return BulkCancelResponse{},
 			fmt.Errorf("list runs: %w", err)

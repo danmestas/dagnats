@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
@@ -137,7 +138,7 @@ func (c *Correlator) Stop() {
 // AddWaiter writes a waiter entry to the event_waiters KV bucket.
 // Key format: {eventType}.{runID}.{stepID}. Bounded at
 // maxWaitersPerEventType per event type.
-func (c *Correlator) AddWaiter(w EventWaiter) error {
+func (c *Correlator) AddWaiter(ctx context.Context, w EventWaiter) error {
 	if w.RunID == "" {
 		panic("Correlator.AddWaiter: RunID must not be empty")
 	}
@@ -165,7 +166,7 @@ func (c *Correlator) AddWaiter(w EventWaiter) error {
 	key := fmt.Sprintf(
 		"%s.%s.%s", w.EventType, w.RunID, w.StepID,
 	)
-	_, err = c.waiterKV.Put(context.Background(), key, data)
+	_, err = c.waiterKV.Put(ctx, key, data)
 	return err
 }
 
@@ -173,7 +174,7 @@ func (c *Correlator) AddWaiter(w EventWaiter) error {
 // immediately removes them from the in-memory index. Used during
 // cancellation cleanup. The in-memory removal is synchronous to
 // avoid races between KV watch propagation and event matching.
-func (c *Correlator) RemoveWaitersForRun(runID string) {
+func (c *Correlator) RemoveWaitersForRun(ctx context.Context, runID string) {
 	if runID == "" {
 		panic(
 			"Correlator.RemoveWaitersForRun: runID must not be empty",
@@ -202,7 +203,7 @@ func (c *Correlator) RemoveWaitersForRun(runID string) {
 	c.mu.Unlock()
 
 	for _, key := range keysToDelete {
-		c.waiterKV.Delete(context.Background(), key)
+		c.waiterKV.Delete(ctx, key)
 	}
 }
 
@@ -325,18 +326,22 @@ func (c *Correlator) evaluateWaiter(
 	if err != nil || !matched {
 		return
 	}
-	c.publishMatchEvent(w, eventData)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	c.publishMatchEvent(ctx, w, eventData)
 	key := fmt.Sprintf(
 		"%s.%s.%s", w.EventType, w.RunID, w.StepID,
 	)
-	c.waiterKV.Delete(context.Background(), key)
+	c.waiterKV.Delete(ctx, key)
 }
 
 // publishMatchEvent publishes EventStepWaitMatched to the history
 // stream for the given run. The event payload carries the matched
 // event data so downstream steps can use it.
 func (c *Correlator) publishMatchEvent(
-	w EventWaiter, eventData []byte,
+	ctx context.Context, w EventWaiter, eventData []byte,
 ) {
 	if w.RunID == "" {
 		panic("publishMatchEvent: RunID must not be empty")
@@ -353,7 +358,7 @@ func (c *Correlator) publishMatchEvent(
 		return
 	}
 	c.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }

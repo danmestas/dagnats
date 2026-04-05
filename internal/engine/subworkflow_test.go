@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -135,7 +136,7 @@ func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
 	var childRunID string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		parentRun, err := store.Load("parent-run-1")
+		parentRun, err := store.Load(context.Background(), "parent-run-1")
 		if err == nil {
 			state := parentRun.Steps["spawn"]
 			if state.ChildRunID != "" {
@@ -150,7 +151,7 @@ func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
 	}
 
 	// Parent step should be Running (not completed yet).
-	parentRun, _ := store.Load("parent-run-1")
+	parentRun, _ := store.Load(context.Background(), "parent-run-1")
 	if parentRun.Steps["spawn"].Status != dag.StepStatusRunning {
 		t.Fatalf(
 			"parent step status = %v, want Running",
@@ -168,7 +169,7 @@ func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
 	// Wait for parent to complete.
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		parentRun, err = store.Load("parent-run-1")
+		parentRun, err = store.Load(context.Background(), "parent-run-1")
 		if err == nil &&
 			parentRun.Status == dag.RunStatusCompleted {
 			break
@@ -249,7 +250,7 @@ func TestSubWorkflow_ChildFailsParentFails(t *testing.T) {
 	var childRunID string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		parentRun, err := store.Load("parent-run-fail")
+		parentRun, err := store.Load(context.Background(), "parent-run-fail")
 		if err == nil {
 			state := parentRun.Steps["spawn"]
 			if state.ChildRunID != "" {
@@ -275,7 +276,7 @@ func TestSubWorkflow_ChildFailsParentFails(t *testing.T) {
 	var parentRun dag.WorkflowRun
 	for time.Now().Before(deadline) {
 		var err error
-		parentRun, err = store.Load("parent-run-fail")
+		parentRun, err = store.Load(context.Background(), "parent-run-fail")
 		if err == nil &&
 			parentRun.Status == dag.RunStatusFailed {
 			break
@@ -359,7 +360,7 @@ func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
 	var parentRun dag.WorkflowRun
 	for time.Now().Before(deadline) {
 		var err error
-		parentRun, err = store.Load("parent-run-detach")
+		parentRun, err = store.Load(context.Background(), "parent-run-detach")
 		if err == nil &&
 			parentRun.Status == dag.RunStatusCompleted {
 			break
@@ -379,7 +380,7 @@ func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
 	if childRunID == "" {
 		t.Fatal("child run ID not set on parent step")
 	}
-	childRun, err := store.Load(childRunID)
+	childRun, err := store.Load(context.Background(), childRunID)
 	if err != nil {
 		t.Fatalf("load child run: %v", err)
 	}
@@ -449,7 +450,7 @@ func TestSubWorkflow_CancellationCascades(t *testing.T) {
 	var childRunID string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		parentRun, err := store.Load("parent-run-cancel")
+		parentRun, err := store.Load(context.Background(), "parent-run-cancel")
 		if err == nil {
 			state := parentRun.Steps["spawn"]
 			if state.ChildRunID != "" {
@@ -475,8 +476,8 @@ func TestSubWorkflow_CancellationCascades(t *testing.T) {
 	var childRun dag.WorkflowRun
 	for time.Now().Before(deadline) {
 		var err1, err2 error
-		parentRun, err1 = store.Load("parent-run-cancel")
-		childRun, err2 = store.Load(childRunID)
+		parentRun, err1 = store.Load(context.Background(), "parent-run-cancel")
+		childRun, err2 = store.Load(context.Background(), childRunID)
 		if err1 == nil && err2 == nil &&
 			parentRun.Status == dag.RunStatusCancelled &&
 			childRun.Status == dag.RunStatusCancelled {
@@ -563,7 +564,7 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		var err error
-		parentRun, err = store.Load(
+		parentRun, err = store.Load(context.Background(),
 			"parent-run-detach-cancel",
 		)
 		if err == nil &&
@@ -596,7 +597,7 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 
 	// Reload parent — it was already Completed, so cancel is
 	// a no-op (not Running). Load child to verify it survived.
-	childRun, err := store.Load(childRunID)
+	childRun, err := store.Load(context.Background(), childRunID)
 	if err != nil {
 		t.Fatalf("load child run: %v", err)
 	}
@@ -609,7 +610,7 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 		)
 	}
 	// Negative: parent remained Completed (not cancelled).
-	parentAfter, err := store.Load("parent-run-detach-cancel")
+	parentAfter, err := store.Load(context.Background(), "parent-run-detach-cancel")
 	if err != nil {
 		t.Fatalf("load parent after cancel: %v", err)
 	}
@@ -695,7 +696,7 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 	var childRunID string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		parentRun, err := store.Load("parent-run-input")
+		parentRun, err := store.Load(context.Background(), "parent-run-input")
 		if err == nil {
 			state := parentRun.Steps["spawn-b"]
 			if state.ChildRunID != "" {
@@ -709,7 +710,7 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 		t.Fatal("child run ID not set on parent step")
 	}
 
-	childRun, err := store.Load(childRunID)
+	childRun, err := store.Load(context.Background(), childRunID)
 	if err != nil {
 		t.Fatalf("load child run: %v", err)
 	}
@@ -722,7 +723,7 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 		)
 	}
 	// Negative: child should not have parent's original input.
-	parentRun, err := store.Load("parent-run-input")
+	parentRun, err := store.Load(context.Background(), "parent-run-input")
 	if err != nil {
 		t.Fatalf("load parent run: %v", err)
 	}
@@ -770,21 +771,21 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 	// Level 2: deep-run (parentRunID="mid-run")
 	rootRun := dag.NewWorkflowRun(leafDef, "root-run")
 	rootRun.Status = dag.RunStatusRunning
-	if err := store.Save(rootRun); err != nil {
+	if err := store.Save(context.Background(), rootRun); err != nil {
 		t.Fatalf("save root run: %v", err)
 	}
 
 	midRun := dag.NewWorkflowRun(leafDef, "mid-run")
 	midRun.ParentRunID = "root-run"
 	midRun.Status = dag.RunStatusRunning
-	if err := store.Save(midRun); err != nil {
+	if err := store.Save(context.Background(), midRun); err != nil {
 		t.Fatalf("save mid run: %v", err)
 	}
 
 	deepRun := dag.NewWorkflowRun(leafDef, "deep-run")
 	deepRun.ParentRunID = "mid-run"
 	deepRun.Status = dag.RunStatusRunning
-	if err := store.Save(deepRun); err != nil {
+	if err := store.Save(context.Background(), deepRun); err != nil {
 		t.Fatalf("save deep run: %v", err)
 	}
 
@@ -813,12 +814,12 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// Positive: the rejected child should not exist.
-	_, err = store.Load("rejected-child")
+	_, err = store.Load(context.Background(), "rejected-child")
 	if err == nil {
 		t.Fatal("expected child run to not exist (nesting exceeded)")
 	}
 	// Negative: the deep run should still be running.
-	deepRunAfter, err := store.Load("deep-run")
+	deepRunAfter, err := store.Load(context.Background(), "deep-run")
 	if err != nil {
 		t.Fatalf("load deep run: %v", err)
 	}

@@ -55,7 +55,7 @@ func NewRateLimiter(
 // retryAfter indicating when the next token refills.
 // units is the number of tokens to consume per request.
 func (rl *RateLimiter) Allow(
-	taskType string, key string,
+	ctx context.Context, taskType string, key string,
 	limit int, period time.Duration, units int,
 ) (bool, time.Duration, error) {
 	if rl == nil {
@@ -71,7 +71,7 @@ func (rl *RateLimiter) Allow(
 	kvKey := taskType + "." + key
 	for attempt := 0; attempt < maxCASRetries; attempt++ {
 		allowed, retry, err := rl.tryAllow(
-			kvKey, limit, period, units,
+			ctx, kvKey, limit, period, units,
 		)
 		if err == nil {
 			return allowed, retry, nil
@@ -83,7 +83,7 @@ func (rl *RateLimiter) Allow(
 
 // tryAllow performs a single CAS attempt to consume tokens.
 func (rl *RateLimiter) tryAllow(
-	kvKey string, limit int,
+	ctx context.Context, kvKey string, limit int,
 	period time.Duration, units int,
 ) (bool, time.Duration, error) {
 	if kvKey == "" {
@@ -93,7 +93,7 @@ func (rl *RateLimiter) tryAllow(
 		panic("tryAllow: limit must be positive")
 	}
 
-	bucket, rev, err := rl.loadBucket(kvKey, limit, period)
+	bucket, rev, err := rl.loadBucket(ctx, kvKey, limit, period)
 	if err != nil {
 		return false, 0, err
 	}
@@ -102,7 +102,7 @@ func (rl *RateLimiter) tryAllow(
 
 	if bucket.Tokens >= units {
 		bucket.Tokens -= units
-		return true, 0, rl.saveBucket(kvKey, bucket, rev)
+		return true, 0, rl.saveBucket(ctx, kvKey, bucket, rev)
 	}
 
 	// Not enough tokens — calculate retry delay.
@@ -112,9 +112,10 @@ func (rl *RateLimiter) tryAllow(
 
 // loadBucket reads or initializes the token bucket from KV.
 func (rl *RateLimiter) loadBucket(
-	kvKey string, limit int, period time.Duration,
+	ctx context.Context, kvKey string, limit int,
+	period time.Duration,
 ) (tokenBucket, uint64, error) {
-	entry, err := rl.kv.Get(context.Background(), kvKey)
+	entry, err := rl.kv.Get(ctx, kvKey)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return tokenBucket{
 			Tokens:     limit,
@@ -179,13 +180,13 @@ func (rl *RateLimiter) timeUntilTokens(
 
 // saveBucket writes the bucket back to KV with CAS.
 func (rl *RateLimiter) saveBucket(
-	kvKey string, bucket tokenBucket, rev uint64,
+	ctx context.Context, kvKey string,
+	bucket tokenBucket, rev uint64,
 ) error {
 	data, err := json.Marshal(bucket)
 	if err != nil {
 		return fmt.Errorf("marshal bucket: %w", err)
 	}
-	ctx := context.Background()
 	if rev == 0 {
 		_, err = rl.kv.Create(ctx, kvKey, data)
 	} else {

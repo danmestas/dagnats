@@ -347,7 +347,7 @@ func (s *Service) GetRun(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	run, err := s.store.Load(runID)
+	run, err := s.store.Load(ctx, runID)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -1197,7 +1197,7 @@ func (s *Service) listRunsInner(
 		panic("listRunsInner: js must not be nil")
 	}
 	const maxRunsLimit = 1000
-	runs, err := s.store.ListAll(maxRunsLimit)
+	runs, err := s.store.ListAll(context.Background(), maxRunsLimit)
 	if err != nil {
 		return nil, err
 	}

@@ -98,7 +98,7 @@ func (s *Service) bulkRetryInner(
 		return BulkRetryResponse{}, err
 	}
 
-	runs, err := s.store.ListAll(maxBulkRetryLimit + 1)
+	runs, err := s.store.ListAll(context.Background(), maxBulkRetryLimit+1)
 	if err != nil {
 		return BulkRetryResponse{},
 			fmt.Errorf("list runs: %w", err)

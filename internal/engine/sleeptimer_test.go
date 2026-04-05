@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestSleepTimerFiresCompletion(t *testing.T) {
 	}
 
 	// Schedule a 100ms sleep.
-	err = st.Schedule(TimerMessage{
+	err = st.Schedule(context.Background(), TimerMessage{
 		Action:     TimerActionSleepComplete,
 		RunID:      "run-sleep-1",
 		StepID:     "sleep-step",
@@ -130,10 +131,10 @@ func TestSleepTimerDedupDuplicateSchedule(t *testing.T) {
 	}
 
 	// Schedule twice — second should be deduped.
-	if err := st.Schedule(tmsg); err != nil {
+	if err := st.Schedule(context.Background(), tmsg); err != nil {
 		t.Fatalf("first Schedule failed: %v", err)
 	}
-	if err := st.Schedule(tmsg); err != nil {
+	if err := st.Schedule(context.Background(), tmsg); err != nil {
 		t.Fatalf("second Schedule failed: %v", err)
 	}
 
@@ -190,7 +191,7 @@ func TestSleepTimerFiresRateRetry(t *testing.T) {
 	}
 
 	// Schedule a rate_retry timer with 100ms delay.
-	err = st.Schedule(TimerMessage{
+	err = st.Schedule(context.Background(), TimerMessage{
 		Action:     TimerActionRateRetry,
 		RunID:      "run-rate-1",
 		StepID:     "step-rate-1",

@@ -288,7 +288,7 @@ func (o *Orchestrator) dispatchEvent(
 	defer lock.Unlock()
 
 	// Check workflow timeout before dispatching any event.
-	run, loadErr := o.store.Load(evt.RunID)
+	run, loadErr := o.store.Load(ctx, evt.RunID)
 	if loadErr == nil && run.Deadline != nil &&
 		time.Now().After(*run.Deadline) &&
 		run.Status == dag.RunStatusRunning {
@@ -386,7 +386,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	// Check concurrency limit if configured.
 	if wfDef.Concurrency != nil && o.concurrency != nil {
 		acquired, err := o.concurrency.AcquireRun(
-			wfDef.Name, wfDef.Concurrency.MaxRuns,
+			ctx, wfDef.Name, wfDef.Concurrency.MaxRuns,
 		)
 		if err != nil {
 			return fmt.Errorf("acquire run: %w", err)
@@ -424,7 +424,7 @@ func (o *Orchestrator) handleStepCompleted(
 	if evt.StepID == "" {
 		panic("handleStepCompleted: StepID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -442,7 +442,7 @@ func (o *Orchestrator) handleStepCompleted(
 	run.Steps[evt.StepID] = state
 
 	// Release task concurrency slot if configured.
-	o.releaseTaskSlot(wfDef, evt.StepID)
+	o.releaseTaskSlot(ctx, wfDef, evt.StepID)
 
 	// If the completed step is a planner, materialize its output
 	// into the running DAG before checking completion or enqueueing.
@@ -455,7 +455,7 @@ func (o *Orchestrator) handleStepCompleted(
 
 	// Create sticky binding if this is the first step of a
 	// sticky workflow and the worker included its ID.
-	o.createStickyBinding(wfDef, run, evt)
+	o.createStickyBinding(ctx, wfDef, run, evt)
 
 	// Check if this completed step is an OnFailure handler.
 	// If so, mark the original failed step as Recovered and
@@ -528,11 +528,11 @@ func (o *Orchestrator) completeWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.deleteStickyBinding(run.RunID)
+	o.deleteStickyBinding(ctx, run.RunID)
 	o.runsActive.Dec()
 	o.runsCompleted.Inc()
 	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
 		// Auto-start next pending run if available
@@ -543,10 +543,10 @@ func (o *Orchestrator) completeWorkflow(
 			)
 		}
 	}
-	if err := o.publishWorkflowCompleted(run.RunID); err != nil {
+	if err := o.publishWorkflowCompleted(ctx, run.RunID); err != nil {
 		return err
 	}
-	return o.notifyParentIfChild(run, nil)
+	return o.notifyParentIfChild(ctx, run, nil)
 }
 
 // startNextPendingRun finds the oldest pending run for a workflow and
@@ -562,7 +562,7 @@ func (o *Orchestrator) startNextPendingRun(
 		panic("startNextPendingRun: store must not be nil")
 	}
 
-	runID, found, err := o.findOldestPendingRun(workflowID)
+	runID, found, err := o.findOldestPendingRun(ctx, workflowID)
 	if err != nil {
 		return err
 	}
@@ -575,7 +575,7 @@ func (o *Orchestrator) startNextPendingRun(
 // findOldestPendingRun scans workflow_runs KV for the oldest pending
 // run for the given workflow. Returns (runID, true, nil) when found.
 func (o *Orchestrator) findOldestPendingRun(
-	workflowID string,
+	ctx context.Context, workflowID string,
 ) (string, bool, error) {
 	if workflowID == "" {
 		panic("findOldestPendingRun: workflowID must not be empty")
@@ -583,7 +583,7 @@ func (o *Orchestrator) findOldestPendingRun(
 	if o.store == nil {
 		panic("findOldestPendingRun: store must not be nil")
 	}
-	keys, err := o.store.kv.Keys(context.Background())
+	keys, err := o.store.kv.Keys(ctx)
 	if err != nil {
 		return "", false, fmt.Errorf("list run keys: %w", err)
 	}
@@ -632,14 +632,14 @@ func (o *Orchestrator) transitionPendingToRunning(
 	if runID == "" {
 		panic("transitionPendingToRunning: runID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(runID)
+	wfDef, run, err := o.loadRunAndDef(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("load pending run %q: %w", runID, err)
 	}
 
 	if wfDef.Concurrency != nil {
 		acquired, err := o.concurrency.AcquireRun(
-			wfDef.Name, wfDef.Concurrency.MaxRuns,
+			ctx, wfDef.Name, wfDef.Concurrency.MaxRuns,
 		)
 		if err != nil {
 			return fmt.Errorf("acquire for pending run: %w", err)
@@ -672,7 +672,7 @@ func (o *Orchestrator) handleStepContinue(
 	if evt.StepID == "" {
 		panic("handleStepContinue: StepID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -798,7 +798,7 @@ func (o *Orchestrator) failLoopStep(
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
 	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
 		// Auto-start next pending run if available
@@ -809,10 +809,10 @@ func (o *Orchestrator) failLoopStep(
 			)
 		}
 	}
-	if err := o.publishWorkflowFailed(run.RunID); err != nil {
+	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	return o.notifyParentIfChild(run, fmt.Errorf("%s", reason))
+	return o.notifyParentIfChild(ctx, run, fmt.Errorf("%s", reason))
 }
 
 // parseFailPayload parses a StepFailedPayload from event payload.
@@ -861,7 +861,7 @@ func (o *Orchestrator) handleStepFailed(
 	if evt.StepID == "" {
 		panic("handleStepFailed: StepID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -945,7 +945,7 @@ func (o *Orchestrator) handleRetryAfter(
 			return err
 		}
 		return o.scheduleRetryAfter(
-			run.RunID, stepID, stepDef,
+			ctx, run.RunID, stepID, stepDef,
 			retryAfterMs, *run,
 		)
 	}
@@ -979,7 +979,7 @@ func (o *Orchestrator) handlePermanentFailure(
 	}
 
 	// Release task concurrency slot if configured.
-	o.releaseTaskSlot(wfDef, stepID)
+	o.releaseTaskSlot(ctx, wfDef, stepID)
 
 	// If this is an auxiliary step (compensate target) failing,
 	// the compensation itself failed — critical state.
@@ -1035,9 +1035,9 @@ func (o *Orchestrator) failAuxStep(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
-	o.publishDeadLetter(run.RunID, stepDef, state)
+	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
 	return o.notifyParentIfChild(
-		run,
+		ctx, run,
 		fmt.Errorf("compensation failed: %s", state.Error),
 	)
 }
@@ -1083,6 +1083,7 @@ func (o *Orchestrator) tryOnFailureHandler(
 // scheduleRetryAfter schedules a timer to re-publish the task
 // after the worker-requested delay via SLEEP_TIMERS.
 func (o *Orchestrator) scheduleRetryAfter(
+	ctx context.Context,
 	runID string, stepID string,
 	stepDef dag.StepDef,
 	retryAfterMs int64,
@@ -1107,7 +1108,7 @@ func (o *Orchestrator) scheduleRetryAfter(
 			stepID, err,
 		)
 	}
-	return o.sleepTimer.Schedule(TimerMessage{
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:     TimerActionRetryAfter,
 		RunID:      runID,
 		StepID:     stepID,
@@ -1130,11 +1131,11 @@ func (o *Orchestrator) failWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.deleteStickyBinding(run.RunID)
+	o.deleteStickyBinding(ctx, run.RunID)
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
 	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
@@ -1144,12 +1145,12 @@ func (o *Orchestrator) failWorkflow(
 			)
 		}
 	}
-	if err := o.publishWorkflowFailed(run.RunID); err != nil {
+	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	o.publishDeadLetter(run.RunID, stepDef, state)
+	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
 	return o.notifyParentIfChild(
-		run, fmt.Errorf("%s", state.Error),
+		ctx, run, fmt.Errorf("%s", state.Error),
 	)
 }
 
@@ -1284,6 +1285,7 @@ func jsonOrNull(b []byte) string {
 
 // publishDeadLetter publishes failed step info to the dead-letter queue.
 func (o *Orchestrator) publishDeadLetter(
+	ctx context.Context,
 	runID string, stepDef dag.StepDef, state dag.StepState,
 ) {
 	if runID == "" {
@@ -1304,7 +1306,7 @@ func (o *Orchestrator) publishDeadLetter(
 	}
 	subject := fmt.Sprintf("dead.%s.%s.%s",
 		stepDef.Task, runID, stepDef.ID)
-	o.js.Publish(context.Background(), subject, payload)
+	o.js.Publish(ctx, subject, payload)
 }
 
 // handleWorkflowCancelled marks the run and all in-flight steps as
@@ -1315,7 +1317,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if evt.RunID == "" {
 		panic("handleWorkflowCancelled: RunID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -1335,24 +1337,24 @@ func (o *Orchestrator) handleWorkflowCancelled(
 
 	// Release task concurrency slots for cancelled steps that
 	// were queued or running (they held a slot).
-	o.releaseCancelledTaskSlots(wfDef, run)
+	o.releaseCancelledTaskSlots(ctx, wfDef, run)
 
 	// Clean up approval tokens for cancelled approval steps.
-	o.cleanupApprovalTokens(wfDef, run)
+	o.cleanupApprovalTokens(ctx, wfDef, run)
 
 	if o.correlator != nil {
-		o.correlator.RemoveWaitersForRun(run.RunID)
+		o.correlator.RemoveWaitersForRun(ctx, run.RunID)
 	}
 
-	o.cascadeCancelChildren(wfDef, run)
-	o.deleteStickyBinding(run.RunID)
+	o.cascadeCancelChildren(ctx, wfDef, run)
+	o.deleteStickyBinding(ctx, run.RunID)
 
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
 	o.runsActive.Dec()
 	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(run.WorkflowID); err != nil {
+		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
 		if err := o.startNextPendingRun(
@@ -1364,13 +1366,14 @@ func (o *Orchestrator) handleWorkflowCancelled(
 			)
 		}
 	}
-	return o.notifyParentIfChild(run, fmt.Errorf("cancelled"))
+	return o.notifyParentIfChild(ctx, run, fmt.Errorf("cancelled"))
 }
 
 // cascadeCancelChildren publishes cancellation events for all
 // non-detached child workflows that are still running. Detached
 // children have no ParentRunID so they are not cancelled.
 func (o *Orchestrator) cascadeCancelChildren(
+	ctx context.Context,
 	wfDef dag.WorkflowDef, run dag.WorkflowRun,
 ) {
 	if run.RunID == "" {
@@ -1388,7 +1391,7 @@ func (o *Orchestrator) cascadeCancelChildren(
 		if state.ChildRunID == "" {
 			continue
 		}
-		childRun, err := o.store.Load(state.ChildRunID)
+		childRun, err := o.store.Load(ctx, state.ChildRunID)
 		if err != nil {
 			continue
 		}
@@ -1399,12 +1402,14 @@ func (o *Orchestrator) cascadeCancelChildren(
 		if childRun.Status != dag.RunStatusRunning {
 			continue
 		}
-		o.publishCancelEvent(state.ChildRunID)
+		o.publishCancelEvent(ctx, state.ChildRunID)
 	}
 }
 
 // publishCancelEvent publishes EventWorkflowCancelled for a run.
-func (o *Orchestrator) publishCancelEvent(runID string) {
+func (o *Orchestrator) publishCancelEvent(
+	ctx context.Context, runID string,
+) {
 	if runID == "" {
 		panic("publishCancelEvent: runID must not be empty")
 	}
@@ -1416,7 +1421,7 @@ func (o *Orchestrator) publishCancelEvent(runID string) {
 		return
 	}
 	o.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
@@ -1425,11 +1430,13 @@ const maxNestingDepth = 3
 
 // nestingDepth walks the parent chain to compute current depth.
 // Returns 0 for top-level runs, 1 for first child, etc.
-func (o *Orchestrator) nestingDepth(runID string) int {
+func (o *Orchestrator) nestingDepth(
+	ctx context.Context, runID string,
+) int {
 	depth := 0
 	currentID := runID
 	for i := 0; i < maxNestingDepth+1; i++ {
-		run, err := o.store.Load(currentID)
+		run, err := o.store.Load(ctx, currentID)
 		if err != nil || run.ParentRunID == "" {
 			break
 		}
@@ -1463,7 +1470,7 @@ func (o *Orchestrator) handleWorkflowSpawn(
 
 	// Enforce max nesting depth by walking the parent chain.
 	// The child would be at depth+1, so reject when depth+1 > max.
-	depth := o.nestingDepth(evt.RunID)
+	depth := o.nestingDepth(ctx, evt.RunID)
 	if depth+1 >= maxNestingDepth {
 		o.tel.Logger.Error(
 			"spawn rejected: max nesting depth exceeded",
@@ -1498,9 +1505,7 @@ func (o *Orchestrator) createChildRun(
 		panic("createChildRun: childWorkflow must not be empty")
 	}
 
-	entry, err := o.defKV.Get(
-		context.Background(), childWorkflow,
-	)
+	entry, err := o.defKV.Get(ctx, childWorkflow)
 	if err != nil {
 		return fmt.Errorf(
 			"load child workflow def %q: %w",
@@ -1531,7 +1536,7 @@ func (o *Orchestrator) createChildRun(
 // notifyParentIfChild publishes a child completion or failure event on the
 // parent's history subject when this run has a parent. No-op for top-level.
 func (o *Orchestrator) notifyParentIfChild(
-	run dag.WorkflowRun, childErr error,
+	ctx context.Context, run dag.WorkflowRun, childErr error,
 ) error {
 	if run.ParentRunID == "" {
 		return nil
@@ -1566,7 +1571,7 @@ func (o *Orchestrator) notifyParentIfChild(
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
-	_, err = o.js.PublishMsg(context.Background(), msg)
+	_, err = o.js.PublishMsg(ctx, msg)
 	return err
 }
 
@@ -1763,7 +1768,7 @@ func (o *Orchestrator) publishTask(
 	// Check rate limit before concurrency acquisition so we
 	// don't hold a concurrency slot while waiting for tokens.
 	if delayed, err := o.checkRateLimit(
-		step, runID, input,
+		ctx, step, runID, input,
 	); err != nil {
 		return err
 	} else if delayed {
@@ -1773,7 +1778,7 @@ func (o *Orchestrator) publishTask(
 	// Check per-task-type concurrency before publishing.
 	if step.MaxTaskConcurrency > 0 && o.concurrency != nil {
 		acquired, err := o.concurrency.AcquireTask(
-			step.Task, step.MaxTaskConcurrency,
+			ctx, step.Task, step.MaxTaskConcurrency,
 		)
 		if err != nil {
 			return err
@@ -1781,7 +1786,7 @@ func (o *Orchestrator) publishTask(
 		if !acquired {
 			o.taskConcurrencyRejected.Inc()
 			return o.scheduleTaskConcurrencyRetry(
-				step, runID, input,
+				ctx, step, runID, input,
 			)
 		}
 		o.taskConcurrencyAcquired.Inc()
@@ -1789,9 +1794,9 @@ func (o *Orchestrator) publishTask(
 
 	// Check sticky binding — if a binding exists, route to the
 	// bound worker instead of the normal subject.
-	workerID := o.getStickyWorker(runID)
+	workerID := o.getStickyWorker(ctx, runID)
 	if workerID != "" {
-		wfDef, _, loadErr := o.loadRunAndDef(runID)
+		wfDef, _, loadErr := o.loadRunAndDef(ctx, runID)
 		if loadErr == nil && wfDef.Sticky != dag.StickyNone {
 			return o.publishStickyTask(
 				ctx, runID, step, input, attempt,
@@ -1806,6 +1811,7 @@ func (o *Orchestrator) publishTask(
 // checkRateLimit evaluates rate limits for the step. Returns
 // delayed=true if the task was deferred via SleepTimer.
 func (o *Orchestrator) checkRateLimit(
+	ctx context.Context,
 	step dag.StepDef, runID string, input []byte,
 ) (bool, error) {
 	if o.rateLimiter == nil {
@@ -1816,16 +1822,17 @@ func (o *Orchestrator) checkRateLimit(
 	}
 
 	if step.RateLimit != nil {
-		return o.applyGlobalRateLimit(step, runID, input)
+		return o.applyGlobalRateLimit(ctx, step, runID, input)
 	}
 	if step.KeyedRateLimit != nil {
-		return o.applyKeyedRateLimit(step, runID, input)
+		return o.applyKeyedRateLimit(ctx, step, runID, input)
 	}
 	return false, nil
 }
 
 // applyGlobalRateLimit checks the global rate limit for this task type.
 func (o *Orchestrator) applyGlobalRateLimit(
+	ctx context.Context,
 	step dag.StepDef, runID string, input []byte,
 ) (bool, error) {
 	if step.RateLimit == nil {
@@ -1836,7 +1843,7 @@ func (o *Orchestrator) applyGlobalRateLimit(
 	}
 	rl := step.RateLimit
 	allowed, retryAfter, err := o.rateLimiter.Allow(
-		step.Task, "_global", rl.Limit, rl.Period, 1,
+		ctx, step.Task, "_global", rl.Limit, rl.Period, 1,
 	)
 	if err != nil {
 		return false, fmt.Errorf("rate limit check: %w", err)
@@ -1845,12 +1852,13 @@ func (o *Orchestrator) applyGlobalRateLimit(
 		return false, nil
 	}
 	return true, o.scheduleRateRetry(
-		step, runID, input, retryAfter,
+		ctx, step, runID, input, retryAfter,
 	)
 }
 
 // applyKeyedRateLimit checks the per-key rate limit for this task.
 func (o *Orchestrator) applyKeyedRateLimit(
+	ctx context.Context,
 	step dag.StepDef, runID string, input []byte,
 ) (bool, error) {
 	if step.KeyedRateLimit == nil {
@@ -1868,7 +1876,7 @@ func (o *Orchestrator) applyKeyedRateLimit(
 	}
 	key := fmt.Sprintf("%v", keyVal)
 	allowed, retryAfter, err := o.rateLimiter.Allow(
-		step.Task, key, krl.Limit, krl.Period, krl.Units,
+		ctx, step.Task, key, krl.Limit, krl.Period, krl.Units,
 	)
 	if err != nil {
 		return false, fmt.Errorf("keyed rate limit: %w", err)
@@ -1877,14 +1885,14 @@ func (o *Orchestrator) applyKeyedRateLimit(
 		return false, nil
 	}
 	return true, o.scheduleRateRetry(
-		step, runID, input, retryAfter,
+		ctx, step, runID, input, retryAfter,
 	)
 }
 
 // scheduleRateRetry schedules a timer to re-attempt task dispatch
 // after the rate limit window allows more tokens.
 func (o *Orchestrator) scheduleRateRetry(
-	step dag.StepDef, runID string,
+	ctx context.Context, step dag.StepDef, runID string,
 	input []byte, retryAfter time.Duration,
 ) error {
 	if runID == "" {
@@ -1897,7 +1905,7 @@ func (o *Orchestrator) scheduleRateRetry(
 	if durationMs <= 0 {
 		durationMs = 100
 	}
-	return o.sleepTimer.Schedule(TimerMessage{
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:     TimerActionRateRetry,
 		RunID:      runID,
 		StepID:     step.ID,
@@ -1910,6 +1918,7 @@ func (o *Orchestrator) scheduleRateRetry(
 // scheduleTaskConcurrencyRetry schedules a timer to re-attempt
 // task dispatch after the task concurrency slot frees up.
 func (o *Orchestrator) scheduleTaskConcurrencyRetry(
+	ctx context.Context,
 	step dag.StepDef, runID string, input []byte,
 ) error {
 	if runID == "" {
@@ -1920,7 +1929,7 @@ func (o *Orchestrator) scheduleTaskConcurrencyRetry(
 		panic("scheduleTaskConcurrencyRetry: " +
 			"step.ID must not be empty")
 	}
-	return o.sleepTimer.Schedule(TimerMessage{
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:     TimerActionTaskConcurRetry,
 		RunID:      runID,
 		StepID:     step.ID,
@@ -1969,7 +1978,7 @@ func (o *Orchestrator) doPublishTask(
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
-	_, err = o.js.PublishMsg(context.Background(), msg)
+	_, err = o.js.PublishMsg(ctx, msg)
 	o.stepEnqueueCount.Inc()
 	return err
 }
@@ -2016,7 +2025,7 @@ func (o *Orchestrator) publishIterationTask(
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
-	_, err = o.js.PublishMsg(context.Background(), msg)
+	_, err = o.js.PublishMsg(ctx, msg)
 	o.stepEnqueueCount.Inc()
 	return err
 }
@@ -2065,7 +2074,7 @@ func (o *Orchestrator) saveSnapshot(
 		panic("saveSnapshot: RunID must not be empty")
 	}
 	start := time.Now()
-	err := o.store.Save(run)
+	err := o.store.Save(ctx, run)
 	elapsed := float64(time.Since(start).Milliseconds())
 	o.snapshotDuration.Observe(elapsed)
 	return err
@@ -2073,19 +2082,17 @@ func (o *Orchestrator) saveSnapshot(
 
 // loadRunAndDef loads the workflow definition and current run snapshot.
 func (o *Orchestrator) loadRunAndDef(
-	runID string,
+	ctx context.Context, runID string,
 ) (dag.WorkflowDef, dag.WorkflowRun, error) {
 	if runID == "" {
 		panic("loadRunAndDef: runID must not be empty")
 	}
-	run, err := o.store.Load(runID)
+	run, err := o.store.Load(ctx, runID)
 	if err != nil {
 		return dag.WorkflowDef{}, dag.WorkflowRun{},
 			fmt.Errorf("load run %q: %w", runID, err)
 	}
-	entry, err := o.defKV.Get(
-		context.Background(), run.WorkflowID,
-	)
+	entry, err := o.defKV.Get(ctx, run.WorkflowID)
 	if err != nil {
 		return dag.WorkflowDef{}, dag.WorkflowRun{},
 			fmt.Errorf("load workflow def %q: %w",
@@ -2102,7 +2109,9 @@ func (o *Orchestrator) loadRunAndDef(
 }
 
 // publishWorkflowCompleted publishes a workflow.completed event.
-func (o *Orchestrator) publishWorkflowCompleted(runID string) error {
+func (o *Orchestrator) publishWorkflowCompleted(
+	ctx context.Context, runID string,
+) error {
 	if runID == "" {
 		panic("publishWorkflowCompleted: runID must not be empty")
 	}
@@ -2116,14 +2125,16 @@ func (o *Orchestrator) publishWorkflowCompleted(runID string) error {
 		)
 	}
 	_, err = o.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	return err
 }
 
 // publishWorkflowFailed publishes a workflow.failed event.
-func (o *Orchestrator) publishWorkflowFailed(runID string) error {
+func (o *Orchestrator) publishWorkflowFailed(
+	ctx context.Context, runID string,
+) error {
 	if runID == "" {
 		panic("publishWorkflowFailed: runID must not be empty")
 	}
@@ -2137,7 +2148,7 @@ func (o *Orchestrator) publishWorkflowFailed(runID string) error {
 		)
 	}
 	_, err = o.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	return err
@@ -2262,14 +2273,14 @@ func (o *Orchestrator) enqueueSleepStep(
 	}
 
 	// Publish sleep started event for observability.
-	o.publishSleepStarted(run.RunID, step.ID)
+	o.publishSleepStarted(ctx, run.RunID, step.ID)
 
 	// Schedule durable timer via NakWithDelay.
 	durationMs := sleepCfg.Duration.Milliseconds()
 	if durationMs <= 0 {
 		durationMs = 1
 	}
-	return o.sleepTimer.Schedule(TimerMessage{
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:     TimerActionSleepComplete,
 		RunID:      run.RunID,
 		StepID:     step.ID,
@@ -2279,7 +2290,7 @@ func (o *Orchestrator) enqueueSleepStep(
 
 // publishSleepStarted publishes an EventStepSleepStarted event.
 func (o *Orchestrator) publishSleepStarted(
-	runID string, stepID string,
+	ctx context.Context, runID string, stepID string,
 ) {
 	if runID == "" {
 		panic("publishSleepStarted: runID must not be empty")
@@ -2296,7 +2307,7 @@ func (o *Orchestrator) publishSleepStarted(
 		return
 	}
 	o.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
@@ -2548,12 +2559,12 @@ func (o *Orchestrator) failMapStep(
 	}
 	o.runsActive.Dec()
 	o.runsFailed.Inc()
-	if err := o.publishWorkflowFailed(run.RunID); err != nil {
+	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	o.publishDeadLetter(run.RunID, stepDef, state)
+	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
 	return o.notifyParentIfChild(
-		run, fmt.Errorf("%s", state.Error),
+		ctx, run, fmt.Errorf("%s", state.Error),
 	)
 }
 
@@ -2669,7 +2680,7 @@ func (o *Orchestrator) startWaitForEvent(
 		return err
 	}
 
-	o.publishWaitStarted(run.RunID, step.ID)
+	o.publishWaitStarted(ctx, run.RunID, step.ID)
 
 	waiter := EventWaiter{
 		RunID:     run.RunID,
@@ -2677,16 +2688,17 @@ func (o *Orchestrator) startWaitForEvent(
 		EventType: opts.Event,
 		Match:     resolvedMatch,
 	}
-	if err := o.correlator.AddWaiter(waiter); err != nil {
+	if err := o.correlator.AddWaiter(ctx, waiter); err != nil {
 		return fmt.Errorf("add waiter: %w", err)
 	}
 
-	return o.scheduleWaitTimeout(run.RunID, step.ID, opts.Timeout)
+	return o.scheduleWaitTimeout(ctx, run.RunID, step.ID, opts.Timeout)
 }
 
 // scheduleWaitTimeout schedules a timer for the wait-for-event
 // timeout. Uses the same SleepTimer infrastructure as sleep steps.
 func (o *Orchestrator) scheduleWaitTimeout(
+	ctx context.Context,
 	runID string, stepID string, timeout time.Duration,
 ) error {
 	if runID == "" {
@@ -2699,7 +2711,7 @@ func (o *Orchestrator) scheduleWaitTimeout(
 	if durationMs <= 0 {
 		durationMs = 1
 	}
-	return o.sleepTimer.Schedule(TimerMessage{
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:     TimerActionWaitTimeout,
 		RunID:      runID,
 		StepID:     stepID,
@@ -2709,7 +2721,7 @@ func (o *Orchestrator) scheduleWaitTimeout(
 
 // publishWaitStarted publishes an EventStepWaitStarted event.
 func (o *Orchestrator) publishWaitStarted(
-	runID string, stepID string,
+	ctx context.Context, runID string, stepID string,
 ) {
 	if runID == "" {
 		panic("publishWaitStarted: runID must not be empty")
@@ -2726,7 +2738,7 @@ func (o *Orchestrator) publishWaitStarted(
 		return
 	}
 	o.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
@@ -2743,7 +2755,7 @@ func (o *Orchestrator) handleWaitTimeout(
 	if evt.StepID == "" {
 		panic("handleWaitTimeout: StepID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -2760,7 +2772,7 @@ func (o *Orchestrator) handleWaitTimeout(
 
 	// Remove the waiter since the step timed out.
 	if o.correlator != nil {
-		o.correlator.RemoveWaitersForRun(evt.RunID)
+		o.correlator.RemoveWaitersForRun(ctx, evt.RunID)
 	}
 
 	completed := completedSet(run)
@@ -2857,13 +2869,14 @@ func (o *Orchestrator) spawnChild(
 	}
 
 	return o.publishSpawnEvent(
-		run.RunID, step.ID, cfg, input, childRunID,
+		ctx, run.RunID, step.ID, cfg, input, childRunID,
 	)
 }
 
 // publishSpawnEvent publishes EventWorkflowSpawn to the history
 // stream with the child run metadata in the payload.
 func (o *Orchestrator) publishSpawnEvent(
+	ctx context.Context,
 	parentRunID string,
 	parentStepID string,
 	cfg dag.SubWorkflowConfig,
@@ -2904,7 +2917,7 @@ func (o *Orchestrator) publishSpawnEvent(
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	_, err = o.js.PublishMsg(context.Background(), msg)
+	_, err = o.js.PublishMsg(ctx, msg)
 	return err
 }
 
@@ -2921,7 +2934,7 @@ func (o *Orchestrator) handleChildCompleted(
 		panic("handleChildCompleted: StepID must not be empty")
 	}
 
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -2931,7 +2944,7 @@ func (o *Orchestrator) handleChildCompleted(
 		return nil // Already handled or cancelled.
 	}
 
-	output, err := o.loadChildTerminalOutputs(state.ChildRunID)
+	output, err := o.loadChildTerminalOutputs(ctx, state.ChildRunID)
 	if err != nil {
 		return fmt.Errorf("load child outputs: %w", err)
 	}
@@ -2955,12 +2968,12 @@ func (o *Orchestrator) handleChildCompleted(
 // their outputs. One terminal step returns raw output; multiple
 // returns a JSON map keyed by step ID.
 func (o *Orchestrator) loadChildTerminalOutputs(
-	childRunID string,
+	ctx context.Context, childRunID string,
 ) ([]byte, error) {
 	if childRunID == "" {
 		panic("loadChildTerminalOutputs: childRunID empty")
 	}
-	childDef, childRun, err := o.loadRunAndDef(childRunID)
+	childDef, childRun, err := o.loadRunAndDef(ctx, childRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -3019,7 +3032,7 @@ func (o *Orchestrator) handleChildFailed(
 		panic("handleChildFailed: StepID must not be empty")
 	}
 
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -3088,7 +3101,7 @@ func queuedSet(run dag.WorkflowRun) map[string]bool {
 // releaseTaskSlot releases a task concurrency slot for the given
 // step if MaxTaskConcurrency is configured.
 func (o *Orchestrator) releaseTaskSlot(
-	wfDef dag.WorkflowDef, stepID string,
+	ctx context.Context, wfDef dag.WorkflowDef, stepID string,
 ) {
 	if o.concurrency == nil {
 		return
@@ -3097,12 +3110,13 @@ func (o *Orchestrator) releaseTaskSlot(
 	if !found || stepDef.MaxTaskConcurrency <= 0 {
 		return
 	}
-	o.concurrency.ReleaseTask(stepDef.Task)
+	o.concurrency.ReleaseTask(ctx, stepDef.Task)
 }
 
 // releaseCancelledTaskSlots releases task concurrency slots for
 // all steps that were cancelled while queued or running.
 func (o *Orchestrator) releaseCancelledTaskSlots(
+	ctx context.Context,
 	wfDef dag.WorkflowDef, run dag.WorkflowRun,
 ) {
 	if o.concurrency == nil {
@@ -3116,7 +3130,7 @@ func (o *Orchestrator) releaseCancelledTaskSlots(
 		if !found || stepDef.MaxTaskConcurrency <= 0 {
 			continue
 		}
-		o.concurrency.ReleaseTask(stepDef.Task)
+		o.concurrency.ReleaseTask(ctx, stepDef.Task)
 	}
 }
 
