@@ -170,13 +170,7 @@ func (ts *TriggerService) TriggerCount() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 
-	// Count scheduler triggers separately
-	cronCount := 0
-	ts.scheduler.mu.RLock()
-	cronCount = len(ts.scheduler.triggers)
-	ts.scheduler.mu.RUnlock()
-
-	return len(ts.subjects) + len(ts.webhooks) + cronCount
+	return len(ts.subjects) + len(ts.webhooks) + ts.scheduler.Count()
 }
 
 func (ts *TriggerService) loadAllTriggers() error {

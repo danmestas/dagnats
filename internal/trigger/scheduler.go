@@ -64,6 +64,13 @@ func (s *Scheduler) AddTrigger(def TriggerDef) error {
 	return nil
 }
 
+// Count returns the number of registered cron triggers.
+func (s *Scheduler) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.triggers)
+}
+
 // RemoveTrigger unregisters a trigger by ID.
 func (s *Scheduler) RemoveTrigger(id string) error {
 	if id == "" {
