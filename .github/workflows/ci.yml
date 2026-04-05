@@ -32,3 +32,5 @@ jobs:
 
       - name: Test
         run: go test ./... -timeout 300s -count=1
+        env:
+          E2E_TOPOLOGY: embedded
