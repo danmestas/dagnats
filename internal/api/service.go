@@ -1728,7 +1728,7 @@ func (s *Service) enrichFireStatus(
 	if ctx == nil {
 		panic("enrichFireStatus: ctx must not be nil")
 	}
-	run, err := s.store.Load(runID)
+	run, err := s.store.Load(ctx, runID)
 	if err != nil {
 		return "", 0
 	}
