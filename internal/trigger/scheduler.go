@@ -37,9 +37,11 @@ func NewScheduler(nc *nats.Conn) (*Scheduler, error) {
 		return nil, fmt.Errorf("jetstream.New: %w", err)
 	}
 
-	kv, err := js.KeyValue(
-		context.Background(), "trigger_state",
+	kvCtx, kvCancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
 	)
+	defer kvCancel()
+	kv, err := js.KeyValue(kvCtx, "trigger_state")
 	if err != nil {
 		return nil, fmt.Errorf("KeyValue trigger_state: %w", err)
 	}
@@ -98,6 +100,11 @@ func (s *Scheduler) Tick(now time.Time) error {
 		panic("Tick: triggers map is nil")
 	}
 
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+
 	s.mu.RLock()
 	snapshot := make(map[string]TriggerDef, len(s.triggers))
 	for k, v := range s.triggers {
@@ -119,7 +126,7 @@ func (s *Scheduler) Tick(now time.Time) error {
 			if !shouldFire {
 				return nil
 			}
-			if err := s.fireWorkflow(def, now); err != nil {
+			if err := s.fireWorkflow(ctx, def, now); err != nil {
 				return fmt.Errorf("fireWorkflow %q: %w", def.ID, err)
 			}
 			return nil
@@ -194,7 +201,12 @@ func (s *Scheduler) backfillTrigger(def TriggerDef) error {
 		panic("backfillTrigger: def.Cron is nil")
 	}
 
-	lastRun, err := s.loadLastRun(def.ID)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+
+	lastRun, err := s.loadLastRun(ctx, def.ID)
 	if err != nil {
 		return fmt.Errorf("loadLastRun: %w", err)
 	}
@@ -214,7 +226,7 @@ func (s *Scheduler) backfillTrigger(def TriggerDef) error {
 	}
 
 	for i := 0; i < fireCount; i++ {
-		if err := s.fireWorkflow(def, matches[i]); err != nil {
+		if err := s.fireWorkflow(ctx, def, matches[i]); err != nil {
 			return fmt.Errorf("fire %v: %w", matches[i], err)
 		}
 	}
@@ -224,13 +236,18 @@ func (s *Scheduler) backfillTrigger(def TriggerDef) error {
 
 // loadLastRun retrieves the last_run_at timestamp from trigger_state KV.
 // Returns zero time if key doesn't exist (no previous run).
-func (s *Scheduler) loadLastRun(triggerID string) (time.Time, error) {
+func (s *Scheduler) loadLastRun(
+	ctx context.Context, triggerID string,
+) (time.Time, error) {
+	if ctx == nil {
+		panic("loadLastRun: ctx must not be nil")
+	}
 	if triggerID == "" {
 		panic("loadLastRun: triggerID is empty")
 	}
 
 	key := fmt.Sprintf("%s.last_run_at", triggerID)
-	entry, err := s.stateKV.Get(context.Background(), key)
+	entry, err := s.stateKV.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return time.Time{}, nil
@@ -304,7 +321,12 @@ func (s *Scheduler) shouldFire(def TriggerDef, now time.Time) (bool, error) {
 
 // fireWorkflow publishes workflow.started with TriggerEnvelope payload.
 // Uses Nats-Msg-Id for deduplication: trigger.{id}.{unix_minute}.
-func (s *Scheduler) fireWorkflow(def TriggerDef, now time.Time) error {
+func (s *Scheduler) fireWorkflow(
+	ctx context.Context, def TriggerDef, now time.Time,
+) error {
+	if ctx == nil {
+		panic("fireWorkflow: ctx must not be nil")
+	}
 	if def.ID == "" {
 		panic("fireWorkflow: def.ID is empty")
 	}
@@ -338,7 +360,7 @@ func (s *Scheduler) fireWorkflow(def TriggerDef, now time.Time) error {
 	msgID := fmt.Sprintf("trigger.%s.%d", def.ID, minuteTimestamp)
 
 	_, err = s.js.Publish(
-		context.Background(), evt.NATSSubject(), evtBytes,
+		ctx, evt.NATSSubject(), evtBytes,
 		jetstream.WithMsgID(msgID),
 	)
 	if err != nil {

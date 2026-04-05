@@ -107,7 +107,7 @@ func (o *Orchestrator) activateApprovalGate(
 	expiresAt := now.Add(cfg.Timeout)
 
 	if err := o.storeApprovalToken(
-		run.RunID, step.ID, token, now, expiresAt,
+		ctx, run.RunID, step.ID, token, now, expiresAt,
 	); err != nil {
 		return err
 	}
@@ -120,17 +120,18 @@ func (o *Orchestrator) activateApprovalGate(
 	}
 
 	o.publishApprovalRequested(
-		run.RunID, step.ID, cfg, token, expiresAt,
+		ctx, run.RunID, step.ID, cfg, token, expiresAt,
 	)
 
 	return o.scheduleApprovalTimeout(
-		run.RunID, step.ID, cfg.Timeout,
+		ctx, run.RunID, step.ID, cfg.Timeout,
 	)
 }
 
 // storeApprovalToken writes the token record to KV with key
 // {runID}.{stepID}. Uses Create to prevent overwrites.
 func (o *Orchestrator) storeApprovalToken(
+	ctx context.Context,
 	runID, stepID, token string,
 	createdAt, expiresAt time.Time,
 ) error {
@@ -140,9 +141,7 @@ func (o *Orchestrator) storeApprovalToken(
 	if stepID == "" {
 		panic("storeApprovalToken: stepID must not be empty")
 	}
-	kv, err := o.js.KeyValue(
-		context.Background(), "approval_tokens",
-	)
+	kv, err := o.js.KeyValue(ctx, "approval_tokens")
 	if err != nil {
 		return fmt.Errorf("get approval_tokens bucket: %w", err)
 	}
@@ -158,13 +157,14 @@ func (o *Orchestrator) storeApprovalToken(
 		return fmt.Errorf("marshal approval token: %w", err)
 	}
 	key := runID + "." + stepID
-	_, err = kv.Put(context.Background(), key, data)
+	_, err = kv.Put(ctx, key, data)
 	return err
 }
 
 // publishApprovalRequested publishes the approval.requested event
 // to history and a notification to the configured NATS subject.
 func (o *Orchestrator) publishApprovalRequested(
+	ctx context.Context,
 	runID, stepID string,
 	cfg dag.ApprovalConfig,
 	token string,
@@ -203,7 +203,7 @@ func (o *Orchestrator) publishApprovalRequested(
 		return
 	}
 	o.js.Publish(
-		context.Background(), evt.NATSSubject(), evtData,
+		ctx, evt.NATSSubject(), evtData,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 
@@ -214,6 +214,7 @@ func (o *Orchestrator) publishApprovalRequested(
 // scheduleApprovalTimeout schedules a durable timer that fires
 // an approval.expired event after the configured timeout.
 func (o *Orchestrator) scheduleApprovalTimeout(
+	ctx context.Context,
 	runID, stepID string, timeout time.Duration,
 ) error {
 	if runID == "" {
@@ -230,7 +231,7 @@ func (o *Orchestrator) scheduleApprovalTimeout(
 	if durationMs <= 0 {
 		durationMs = 1
 	}
-	return o.sleepTimer.Schedule(TimerMessage{
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:     TimerActionApprovalTimeout,
 		RunID:      runID,
 		StepID:     stepID,
@@ -253,7 +254,7 @@ func (o *Orchestrator) handleApprovalGranted(
 			"handleApprovalGranted: StepID must not be empty",
 		)
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -291,7 +292,7 @@ func (o *Orchestrator) handleApprovalRejected(
 			"handleApprovalRejected: StepID must not be empty",
 		)
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -326,7 +327,7 @@ func (o *Orchestrator) handleApprovalExpired(
 			"handleApprovalExpired: StepID must not be empty",
 		)
 	}
-	wfDef, run, err := o.loadRunAndDef(evt.RunID)
+	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -346,6 +347,7 @@ func (o *Orchestrator) handleApprovalExpired(
 // cleanupApprovalTokens deletes tokens for any approval steps
 // that were cancelled. Called during workflow cancellation.
 func (o *Orchestrator) cleanupApprovalTokens(
+	ctx context.Context,
 	wfDef dag.WorkflowDef, run dag.WorkflowRun,
 ) {
 	if run.RunID == "" {
@@ -364,7 +366,7 @@ func (o *Orchestrator) cleanupApprovalTokens(
 		}
 		state := run.Steps[step.ID]
 		if state.Status == dag.StepStatusCancelled {
-			o.deleteApprovalToken(run.RunID, step.ID)
+			o.deleteApprovalToken(ctx, run.RunID, step.ID)
 		}
 	}
 }
@@ -373,7 +375,7 @@ func (o *Orchestrator) cleanupApprovalTokens(
 // cleanup. Errors are logged but not fatal — the timeout timer
 // will fire and see the step is already cancelled.
 func (o *Orchestrator) deleteApprovalToken(
-	runID, stepID string,
+	ctx context.Context, runID, stepID string,
 ) {
 	if runID == "" {
 		panic(
@@ -385,12 +387,10 @@ func (o *Orchestrator) deleteApprovalToken(
 			"deleteApprovalToken: stepID must not be empty",
 		)
 	}
-	kv, err := o.js.KeyValue(
-		context.Background(), "approval_tokens",
-	)
+	kv, err := o.js.KeyValue(ctx, "approval_tokens")
 	if err != nil {
 		return
 	}
 	key := runID + "." + stepID
-	kv.Delete(context.Background(), key)
+	kv.Delete(ctx, key)
 }

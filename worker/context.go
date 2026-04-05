@@ -248,7 +248,7 @@ func (c *taskContext) Continue(output []byte) error {
 	}
 	injectWorkerTraceCtx(c.span, &evt, outMsg)
 	_, err = c.js.PublishMsg(
-		context.Background(), outMsg,
+		c.ctx, outMsg,
 	)
 	return err
 }
@@ -298,7 +298,7 @@ func (c *taskContext) publishEvent(
 	}
 	injectWorkerTraceCtx(c.span, &evt, outMsg)
 	_, err = c.js.PublishMsg(
-		context.Background(), outMsg,
+		c.ctx, outMsg,
 	)
 	return err
 }
@@ -329,7 +329,7 @@ func (c *taskContext) Checkpoint(state []byte) error {
 	}
 	key := c.runID + "." + c.stepID
 	_, err := c.checkpointKV.Put(
-		context.Background(), key, state,
+		c.ctx, key, state,
 	)
 	return err
 }
@@ -348,7 +348,7 @@ func (c *taskContext) LoadCheckpoint() ([]byte, error) {
 	}
 	key := c.runID + "." + c.stepID
 	entry, err := c.checkpointKV.Get(
-		context.Background(), key,
+		c.ctx, key,
 	)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -375,7 +375,7 @@ func (c *taskContext) WaitForSignal(
 	}
 	key := c.runID + "." + name
 	watcher, err := c.signalKV.Watch(
-		context.Background(), key,
+		c.ctx, key,
 	)
 	if err != nil {
 		return nil, err
@@ -439,7 +439,7 @@ func (c *taskContext) SendSignal(
 	}
 	key := runID + "." + name
 	_, err := c.signalKV.Put(
-		context.Background(), key, data,
+		c.ctx, key, data,
 	)
 	return err
 }

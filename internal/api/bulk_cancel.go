@@ -55,7 +55,7 @@ func (s *Service) BulkCancelRuns(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	resp, err := s.bulkCancelInner(req)
+	resp, err := s.bulkCancelInner(ctx, req)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *Service) BulkCancelRuns(
 
 // bulkCancelInner lists, filters, and cancels matching runs.
 func (s *Service) bulkCancelInner(
-	req BulkCancelRequest,
+	ctx context.Context, req BulkCancelRequest,
 ) (BulkCancelResponse, error) {
 	if req.WorkflowID == "" {
 		panic("bulkCancelInner: WorkflowID must not be empty")
@@ -88,7 +88,7 @@ func (s *Service) bulkCancelInner(
 		return BulkCancelResponse{}, err
 	}
 
-	runs, err := s.store.ListAll(maxBulkCancelLimit + 1)
+	runs, err := s.store.ListAll(ctx, maxBulkCancelLimit+1)
 	if err != nil {
 		return BulkCancelResponse{},
 			fmt.Errorf("list runs: %w", err)
@@ -116,7 +116,7 @@ func (s *Service) bulkCancelInner(
 		}, nil
 	}
 
-	return s.executeBulkCancel(matched), nil
+	return s.executeBulkCancel(ctx, matched), nil
 }
 
 // validateBulkCancelRequest checks request validity.
@@ -146,7 +146,7 @@ func validateBulkCancelRequest(
 
 // executeBulkCancel cancels matched runs sequentially.
 func (s *Service) executeBulkCancel(
-	matched []dag.WorkflowRun,
+	ctx context.Context, matched []dag.WorkflowRun,
 ) BulkCancelResponse {
 	if s == nil {
 		panic("executeBulkCancel: service must not be nil")
@@ -162,7 +162,7 @@ func (s *Service) executeBulkCancel(
 			)
 			continue
 		}
-		if err := s.cancelRunInner(run.RunID); err != nil {
+		if err := s.cancelRunInner(ctx, run.RunID); err != nil {
 			resp.Skipped = append(
 				resp.Skipped, run.RunID,
 			)

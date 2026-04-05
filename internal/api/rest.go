@@ -5,7 +5,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -135,7 +134,7 @@ func (s *Service) routeHealth(
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	handleHealth(s, w)
+	handleHealth(s, w, r)
 }
 
 // handleRegisterWorkflow decodes a WorkflowDef from the request body
@@ -653,19 +652,22 @@ func handleCancelScheduledRun(
 
 // handleHealth returns service health and optional telemetry stream
 // status. Never fails the health check -- telemetry is informational.
-func handleHealth(svc *Service, w http.ResponseWriter) {
+func handleHealth(
+	svc *Service, w http.ResponseWriter, r *http.Request,
+) {
 	if svc == nil {
 		panic("handleHealth: svc must not be nil")
 	}
 	if w == nil {
 		panic("handleHealth: w must not be nil")
 	}
+	ctx := r.Context()
 	resp := healthResponse{Status: "healthy"}
 	stream, err := svc.js.Stream(
-		context.Background(), "TELEMETRY",
+		ctx, "TELEMETRY",
 	)
 	if err == nil {
-		info, infoErr := stream.Info(context.Background())
+		info, infoErr := stream.Info(ctx)
 		if infoErr == nil && info != nil {
 			resp.Telemetry = buildTelemetryInfo(info)
 		}

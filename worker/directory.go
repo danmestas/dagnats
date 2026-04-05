@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -63,9 +64,11 @@ func (d *Directory) Register(reg WorkerRegistration) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.kv.Put(
-		context.Background(), reg.WorkerID, data,
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
 	)
+	defer cancel()
+	_, err = d.kv.Put(ctx, reg.WorkerID, data)
 	return err
 }
 
@@ -79,7 +82,11 @@ func (d *Directory) Deregister(workerID string) error {
 	if d.kv == nil {
 		panic("Directory.Deregister: kv must not be nil")
 	}
-	err := d.kv.Delete(context.Background(), workerID)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	err := d.kv.Delete(ctx, workerID)
 	if err == jetstream.ErrKeyNotFound {
 		return nil
 	}
@@ -93,15 +100,17 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 	if d.kv == nil {
 		panic("Directory.List: kv must not be nil")
 	}
-	keys, err := d.kv.ListKeys(context.Background())
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	keys, err := d.kv.ListKeys(ctx)
 	if err != nil {
 		return nil, err
 	}
 	workers := make([]WorkerRegistration, 0, 32)
 	for key := range keys.Keys() {
-		entry, err := d.kv.Get(
-			context.Background(), key,
-		)
+		entry, err := d.kv.Get(ctx, key)
 		if err != nil {
 			continue
 		}

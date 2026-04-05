@@ -55,7 +55,7 @@ func TestInspectShowsStatusAndFailures(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(run); err != nil {
+	if err := store.Save(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestInspectCleanRunShowsNoFailures(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	store.Save(run)
+	store.Save(context.Background(), run)
 
 	output := captureOutput(func() {
 		runInspectCmd([]string{"clean-run-1"})

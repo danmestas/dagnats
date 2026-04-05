@@ -33,6 +33,7 @@ type admissionResult struct {
 
 // admitRun evaluates all flow control gates in order.
 func (o *Orchestrator) admitRun(
+	ctx context.Context,
 	wfDef dag.WorkflowDef,
 	run dag.WorkflowRun,
 	input json.RawMessage,
@@ -45,7 +46,7 @@ func (o *Orchestrator) admitRun(
 	// 1. Singleton
 	if wfDef.Singleton != nil && o.singletonKV != nil {
 		sResult, kvKey, err := o.singletonCheck(
-			wfDef.Name, wfDef.Singleton,
+			ctx, wfDef.Name, wfDef.Singleton,
 			run.RunID, input,
 		)
 		if err != nil {
@@ -70,7 +71,7 @@ func (o *Orchestrator) admitRun(
 	// 3. Concurrency
 	if wfDef.Concurrency != nil && o.concurrency != nil {
 		acquired, err := o.concurrency.AcquireRun(
-			wfDef.Name, wfDef.Concurrency.MaxRuns,
+			ctx, wfDef.Name, wfDef.Concurrency.MaxRuns,
 		)
 		if err != nil {
 			return result, fmt.Errorf(
@@ -88,6 +89,7 @@ func (o *Orchestrator) admitRun(
 // singletonCheck verifies the singleton lock. Returns an
 // admissionResult directly (not a tuple) for interface clarity.
 func (o *Orchestrator) singletonCheck(
+	ctx context.Context,
 	workflowName string,
 	cfg *dag.SingletonConfig,
 	newRunID string,
@@ -112,7 +114,6 @@ func (o *Orchestrator) singletonCheck(
 		}
 	}
 
-	ctx := context.Background()
 	lockData, _ := json.Marshal(map[string]string{
 		"run_id": newRunID,
 	})
@@ -140,7 +141,7 @@ func (o *Orchestrator) singletonCheck(
 	}
 
 	// Verify existing run is active
-	existingRun, loadErr := o.store.Load(lock.RunID)
+	existingRun, loadErr := o.store.Load(ctx, lock.RunID)
 	if loadErr != nil ||
 		existingRun.Status.IsTerminal() {
 		// Stale lock -- reclaim
@@ -155,7 +156,7 @@ func (o *Orchestrator) singletonCheck(
 
 	// Active run exists
 	return o.applySingletonMode(
-		cfg.Mode, kvKey, lock.RunID,
+		ctx, cfg.Mode, kvKey, lock.RunID,
 		lockData, entry.Revision(),
 	)
 }
@@ -164,6 +165,7 @@ func (o *Orchestrator) singletonCheck(
 // active singleton lock. Extracted to keep singletonCheck
 // within the 70-line limit.
 func (o *Orchestrator) applySingletonMode(
+	ctx context.Context,
 	mode dag.SingletonMode,
 	kvKey string,
 	existingRunID string,
@@ -186,7 +188,7 @@ func (o *Orchestrator) applySingletonMode(
 			kvKey, nil
 	case dag.SingletonModeCancel:
 		_, updateErr := o.singletonKV.Update(
-			context.Background(), kvKey, lockData,
+			ctx, kvKey, lockData,
 			revision,
 		)
 		if updateErr != nil {
@@ -206,7 +208,7 @@ func (o *Orchestrator) applySingletonMode(
 // this run. Uses SingletonKey stored on the run -- no need
 // to reload the workflow def or recompute the key path.
 func (o *Orchestrator) releaseSingletonLock(
-	run dag.WorkflowRun,
+	ctx context.Context, run dag.WorkflowRun,
 ) {
 	if o.singletonKV == nil {
 		return
@@ -214,7 +216,6 @@ func (o *Orchestrator) releaseSingletonLock(
 	if run.SingletonKey == "" {
 		return
 	}
-	ctx := context.Background()
 	entry, err := o.singletonKV.Get(
 		ctx, run.SingletonKey,
 	)

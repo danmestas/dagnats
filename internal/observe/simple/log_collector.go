@@ -101,9 +101,11 @@ func (lc *LogCollector) publish(level, msg string, err error, callFields []obser
 		return
 	}
 	subject := "telemetry.logs." + lc.serviceName + "." + level
-	_, pubErr := lc.js.Publish(
-		context.Background(), subject, data,
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 2*time.Second,
 	)
+	defer cancel()
+	_, pubErr := lc.js.Publish(ctx, subject, data)
 	if pubErr != nil {
 		log.Printf(
 			"LogCollector.publish: publish error subject=%s: %v",

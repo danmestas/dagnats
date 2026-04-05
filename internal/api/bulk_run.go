@@ -47,7 +47,7 @@ func (s *Service) BulkStartRuns(
 	defer span.End()
 	start := time.Now()
 	s.requestCount.Inc()
-	resp, err := s.bulkRunInner(span, req)
+	resp, err := s.bulkRunInner(ctx, span, req)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -64,7 +64,7 @@ func (s *Service) BulkStartRuns(
 }
 
 func (s *Service) bulkRunInner(
-	span observe.Span,
+	ctx context.Context, span observe.Span,
 	req BulkRunRequest,
 ) (BulkRunResponse, error) {
 	if req.WorkflowID == "" {
@@ -77,7 +77,7 @@ func (s *Service) bulkRunInner(
 		return BulkRunResponse{}, err
 	}
 	entry, err := s.defKV.Get(
-		context.Background(), req.WorkflowID,
+		ctx, req.WorkflowID,
 	)
 	if err != nil {
 		return BulkRunResponse{}, fmt.Errorf(
@@ -102,11 +102,12 @@ func (s *Service) bulkRunInner(
 		}
 	}
 	return s.publishBulkRuns(
-		span, req.WorkflowID, defBytes, req.Inputs,
+		ctx, span, req.WorkflowID, defBytes, req.Inputs,
 	)
 }
 
 func (s *Service) publishBulkRuns(
+	ctx context.Context,
 	span observe.Span,
 	workflowID string,
 	defBytes []byte,
@@ -146,7 +147,7 @@ func (s *Service) publishBulkRuns(
 		}
 		injectAPIMsgTraceCtx(span, msg)
 		if _, err := s.js.PublishMsg(
-			context.Background(), msg,
+			ctx, msg,
 		); err != nil {
 			return BulkRunResponse{
 				RunIDs: runIDs, Total: len(runIDs),

@@ -141,7 +141,7 @@ func (s *Service) RegisterWorkflow(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	err := s.registerWorkflowInner(def)
+	err := s.registerWorkflowInner(ctx, def)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -155,7 +155,7 @@ func (s *Service) RegisterWorkflow(
 // registerWorkflowInner holds the core logic, keeping the
 // instrumented wrapper under the 70-line limit.
 func (s *Service) registerWorkflowInner(
-	def dag.WorkflowDef,
+	ctx context.Context, def dag.WorkflowDef,
 ) error {
 	if s.defKV == nil {
 		panic("registerWorkflowInner: defKV must not be nil")
@@ -170,7 +170,7 @@ func (s *Service) registerWorkflowInner(
 	if err != nil {
 		return err
 	}
-	_, err = s.defKV.Put(context.Background(), def.Name, data)
+	_, err = s.defKV.Put(ctx, def.Name, data)
 	return err
 }
 
@@ -245,7 +245,7 @@ func (s *Service) startRunInner(
 		panic("startRunInner: span must not be nil")
 	}
 	entry, err := s.defKV.Get(
-		context.Background(), workflowName,
+		ctx, workflowName,
 	)
 	if err != nil {
 		return "", fmt.Errorf(
@@ -273,7 +273,7 @@ func (s *Service) startRunInner(
 	if def.IdempotencyKey != "" && input != nil &&
 		s.idempotencyKV != nil {
 		existingID, err := s.checkIdempotency(
-			workflowName, def.IdempotencyKey, input,
+			ctx, workflowName, def.IdempotencyKey, input,
 		)
 		if err != nil {
 			s.tel.Logger.Error(
@@ -306,7 +306,7 @@ func (s *Service) startRunInner(
 	}
 	injectAPIMsgTraceCtx(span, msg)
 	_, err = s.js.PublishMsg(
-		context.Background(), msg,
+		ctx, msg,
 	)
 	if err != nil {
 		return "", err
@@ -315,7 +315,7 @@ func (s *Service) startRunInner(
 	if def.IdempotencyKey != "" && input != nil &&
 		s.idempotencyKV != nil {
 		s.storeIdempotencyKey(
-			workflowName, def.IdempotencyKey, input, runID,
+			ctx, workflowName, def.IdempotencyKey, input, runID,
 		)
 	}
 
@@ -347,7 +347,7 @@ func (s *Service) GetRun(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	run, err := s.store.Load(runID)
+	run, err := s.store.Load(ctx, runID)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -478,7 +478,7 @@ func (s *Service) ListWorkflows(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	defs, err := s.listWorkflowsInner()
+	defs, err := s.listWorkflowsInner(ctx)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -490,14 +490,15 @@ func (s *Service) ListWorkflows(
 }
 
 // listWorkflowsInner holds the KV iteration logic.
-func (s *Service) listWorkflowsInner() ([]dag.WorkflowDef, error) {
+func (s *Service) listWorkflowsInner(
+	ctx context.Context,
+) ([]dag.WorkflowDef, error) {
 	if s.defKV == nil {
 		panic("listWorkflowsInner: defKV must not be nil")
 	}
 	if s.js == nil {
 		panic("listWorkflowsInner: js must not be nil")
 	}
-	ctx := context.Background()
 	keys, err := s.defKV.Keys(ctx)
 	if err != nil {
 		return nil, err
@@ -543,7 +544,7 @@ func (s *Service) CancelRun(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	err := s.cancelRunInner(runID)
+	err := s.cancelRunInner(ctx, runID)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -555,7 +556,9 @@ func (s *Service) CancelRun(
 }
 
 // cancelRunInner publishes the workflow.cancelled event.
-func (s *Service) cancelRunInner(runID string) error {
+func (s *Service) cancelRunInner(
+	ctx context.Context, runID string,
+) error {
 	if runID == "" {
 		panic("cancelRunInner: runID must not be empty")
 	}
@@ -574,7 +577,7 @@ func (s *Service) cancelRunInner(runID string) error {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
-	_, err = s.js.PublishMsg(context.Background(), msg)
+	_, err = s.js.PublishMsg(ctx, msg)
 	return err
 }
 
@@ -602,7 +605,7 @@ func (s *Service) SendSignal(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	err := s.sendSignalInner(runID, name, data)
+	err := s.sendSignalInner(ctx, runID, name, data)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -615,7 +618,7 @@ func (s *Service) SendSignal(
 
 // sendSignalInner writes to the signals KV bucket.
 func (s *Service) sendSignalInner(
-	runID string, name string, data []byte,
+	ctx context.Context, runID string, name string, data []byte,
 ) error {
 	if runID == "" {
 		panic("sendSignalInner: runID must not be empty")
@@ -628,7 +631,7 @@ func (s *Service) sendSignalInner(
 	}
 	key := runID + "." + name
 	_, err := s.signalKV.Put(
-		context.Background(), key, data,
+		ctx, key, data,
 	)
 	return err
 }
@@ -654,7 +657,7 @@ func (s *Service) CreateTrigger(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	err := s.createTriggerInner(def)
+	err := s.createTriggerInner(ctx, def)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -666,7 +669,9 @@ func (s *Service) CreateTrigger(
 }
 
 // createTriggerInner validates and writes the trigger to KV.
-func (s *Service) createTriggerInner(def trigger.TriggerDef) error {
+func (s *Service) createTriggerInner(
+	ctx context.Context, def trigger.TriggerDef,
+) error {
 	if def.ID == "" {
 		panic("createTriggerInner: def.ID must not be empty")
 	}
@@ -686,7 +691,7 @@ func (s *Service) createTriggerInner(def trigger.TriggerDef) error {
 		return err
 	}
 	_, err = s.triggerKV.Put(
-		context.Background(), def.ID, data,
+		ctx, def.ID, data,
 	)
 	return err
 }
@@ -706,7 +711,7 @@ func (s *Service) ListTriggers(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	defs, err := s.listTriggersInner()
+	defs, err := s.listTriggersInner(ctx)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -718,14 +723,15 @@ func (s *Service) ListTriggers(
 }
 
 // listTriggersInner holds the KV iteration logic.
-func (s *Service) listTriggersInner() ([]trigger.TriggerDef, error) {
+func (s *Service) listTriggersInner(
+	ctx context.Context,
+) ([]trigger.TriggerDef, error) {
 	if s.js == nil {
 		panic("listTriggersInner: js must not be nil")
 	}
 	if s.triggerKV == nil {
 		return []trigger.TriggerDef{}, nil
 	}
-	ctx := context.Background()
 	keys, err := s.triggerKV.Keys(ctx)
 	if err != nil {
 		return nil, err
@@ -771,7 +777,7 @@ func (s *Service) DeleteTrigger(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	err := s.deleteTriggerInner(triggerID)
+	err := s.deleteTriggerInner(ctx, triggerID)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -783,7 +789,9 @@ func (s *Service) DeleteTrigger(
 }
 
 // deleteTriggerInner deletes the trigger from KV.
-func (s *Service) deleteTriggerInner(triggerID string) error {
+func (s *Service) deleteTriggerInner(
+	ctx context.Context, triggerID string,
+) error {
 	if triggerID == "" {
 		panic(
 			"deleteTriggerInner: triggerID must not be empty",
@@ -793,7 +801,7 @@ func (s *Service) deleteTriggerInner(triggerID string) error {
 		return fmt.Errorf("triggers KV bucket not available")
 	}
 	return s.triggerKV.Delete(
-		context.Background(), triggerID,
+		ctx, triggerID,
 	)
 }
 
@@ -817,7 +825,7 @@ func (s *Service) SetTriggerEnabled(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	err := s.setTriggerEnabledInner(triggerID, enabled)
+	err := s.setTriggerEnabledInner(ctx, triggerID, enabled)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -830,7 +838,7 @@ func (s *Service) SetTriggerEnabled(
 
 // setTriggerEnabledInner reads, updates, and writes the trigger.
 func (s *Service) setTriggerEnabledInner(
-	triggerID string, enabled bool,
+	ctx context.Context, triggerID string, enabled bool,
 ) error {
 	if triggerID == "" {
 		panic(
@@ -843,7 +851,6 @@ func (s *Service) setTriggerEnabledInner(
 	if s.triggerKV == nil {
 		return fmt.Errorf("triggers KV bucket not available")
 	}
-	ctx := context.Background()
 	entry, err := s.triggerKV.Get(ctx, triggerID)
 	if err != nil {
 		return fmt.Errorf(
@@ -895,7 +902,7 @@ func (s *Service) UpdateTrigger(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	err := s.updateTriggerInner(triggerID, updates)
+	err := s.updateTriggerInner(ctx, triggerID, updates)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -908,7 +915,7 @@ func (s *Service) UpdateTrigger(
 
 // updateTriggerInner reads, patches, validates, and writes the trigger.
 func (s *Service) updateTriggerInner(
-	triggerID string, updates TriggerUpdates,
+	ctx context.Context, triggerID string, updates TriggerUpdates,
 ) error {
 	if triggerID == "" {
 		panic("updateTriggerInner: triggerID must not be empty")
@@ -916,7 +923,6 @@ func (s *Service) updateTriggerInner(
 	if s.triggerKV == nil {
 		return fmt.Errorf("triggers KV bucket not available")
 	}
-	ctx := context.Background()
 	entry, err := s.triggerKV.Get(ctx, triggerID)
 	if err != nil {
 		return fmt.Errorf(
@@ -1103,7 +1109,7 @@ func (s *Service) ReplayDeadLetter(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	err := s.replayDeadLetterInner(seq)
+	err := s.replayDeadLetterInner(ctx, seq)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -1115,7 +1121,9 @@ func (s *Service) ReplayDeadLetter(
 }
 
 // replayDeadLetterInner fetches by sequence and republishes.
-func (s *Service) replayDeadLetterInner(seq uint64) error {
+func (s *Service) replayDeadLetterInner(
+	ctx context.Context, seq uint64,
+) error {
 	if seq == 0 {
 		panic("replayDeadLetterInner: seq must be positive")
 	}
@@ -1149,7 +1157,7 @@ func (s *Service) replayDeadLetterInner(seq uint64) error {
 		origSubject = "task." + origSubject
 	}
 	_, err = s.js.Publish(
-		context.Background(), origSubject, data,
+		ctx, origSubject, data,
 	)
 	return err
 }
@@ -1175,7 +1183,7 @@ func (s *Service) ListRuns(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	runs, err := s.listRunsInner(workflowFilter)
+	runs, err := s.listRunsInner(ctx, workflowFilter)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -1188,7 +1196,7 @@ func (s *Service) ListRuns(
 
 // listRunsInner retrieves all runs from the store, filters, and sorts.
 func (s *Service) listRunsInner(
-	workflowFilter string,
+	ctx context.Context, workflowFilter string,
 ) ([]dag.WorkflowRun, error) {
 	if s.store == nil {
 		panic("listRunsInner: store must not be nil")
@@ -1197,7 +1205,7 @@ func (s *Service) listRunsInner(
 		panic("listRunsInner: js must not be nil")
 	}
 	const maxRunsLimit = 1000
-	runs, err := s.store.ListAll(maxRunsLimit)
+	runs, err := s.store.ListAll(ctx, maxRunsLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -1305,6 +1313,7 @@ func (s *Service) listRunEventsInner(
 // and checks the KV for an existing run. Returns the existing run ID
 // if found, empty string if not, or error on extraction/KV failure.
 func (s *Service) checkIdempotency(
+	ctx context.Context,
 	workflowName string, keyPath string, input []byte,
 ) (string, error) {
 	if workflowName == "" {
@@ -1320,7 +1329,7 @@ func (s *Service) checkIdempotency(
 	kvKey := idempotencyHash(workflowName, fmt.Sprintf("%v", val))
 
 	entry, err := s.idempotencyKV.Get(
-		context.Background(), kvKey,
+		ctx, kvKey,
 	)
 	if err == nil {
 		return string(entry.Value()), nil
@@ -1332,6 +1341,7 @@ func (s *Service) checkIdempotency(
 // Uses Create for atomicity — if another request raced and won, this
 // is a no-op (the winner's mapping stands).
 func (s *Service) storeIdempotencyKey(
+	ctx context.Context,
 	workflowName string, keyPath string,
 	input []byte, runID string,
 ) {
@@ -1342,7 +1352,7 @@ func (s *Service) storeIdempotencyKey(
 	kvKey := idempotencyHash(workflowName, fmt.Sprintf("%v", val))
 	// Create fails if key exists (race loser) — that's fine.
 	_, _ = s.idempotencyKV.Create(
-		context.Background(), kvKey, []byte(runID),
+		ctx, kvKey, []byte(runID),
 	)
 }
 
@@ -1394,7 +1404,7 @@ func (s *Service) HandleApproval(
 	s.requestCount.Inc()
 
 	err := s.handleApprovalInner(
-		runID, stepID, token, action, body,
+		ctx, runID, stepID, token, action, body,
 	)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
@@ -1409,6 +1419,7 @@ func (s *Service) HandleApproval(
 // handleApprovalInner loads the token, verifies it, atomically
 // deletes it, and publishes the corresponding event.
 func (s *Service) handleApprovalInner(
+	ctx context.Context,
 	runID, stepID, token, action string,
 	body json.RawMessage,
 ) error {
@@ -1423,13 +1434,14 @@ func (s *Service) handleApprovalInner(
 		)
 	}
 	return s.consumeTokenAndPublish(
-		runID, stepID, token, action, body,
+		ctx, runID, stepID, token, action, body,
 	)
 }
 
 // consumeTokenAndPublish performs atomic token verification and
 // event publishing. Separated to keep functions under 70 lines.
 func (s *Service) consumeTokenAndPublish(
+	ctx context.Context,
 	runID, stepID, token, action string,
 	body json.RawMessage,
 ) error {
@@ -1442,7 +1454,6 @@ func (s *Service) consumeTokenAndPublish(
 			action,
 		)
 	}
-	ctx := context.Background()
 	kv, err := s.js.KeyValue(ctx, "approval_tokens")
 	if err != nil {
 		return fmt.Errorf(
@@ -1456,13 +1467,14 @@ func (s *Service) consumeTokenAndPublish(
 	}
 
 	return s.verifyAndPublish(
-		kv, entry, key, token, action, runID, stepID, body,
+		ctx, kv, entry, key, token, action, runID, stepID, body,
 	)
 }
 
 // verifyAndPublish checks the token matches, atomically deletes
 // it, and publishes the approval event.
 func (s *Service) verifyAndPublish(
+	ctx context.Context,
 	kv jetstream.KeyValue,
 	entry jetstream.KeyValueEntry,
 	key, token, action, runID, stepID string,
@@ -1489,7 +1501,7 @@ func (s *Service) verifyAndPublish(
 	// Atomic CAS delete -- if revision changed, token was
 	// already consumed by a concurrent request.
 	if err := kv.Delete(
-		context.Background(), key,
+		ctx, key,
 		jetstream.LastRevision(entry.Revision()),
 	); err != nil {
 		return fmt.Errorf("token already consumed")
@@ -1514,7 +1526,7 @@ func (s *Service) verifyAndPublish(
 		},
 	}
 	_, err = s.js.PublishMsg(
-		context.Background(), msg,
+		ctx, msg,
 	)
 	return err
 }
@@ -1536,7 +1548,7 @@ func (s *Service) ListWorkers(
 	start := time.Now()
 	s.requestCount.Inc()
 
-	workers, err := s.listWorkersInner()
+	workers, err := s.listWorkersInner(ctx)
 	elapsed := float64(time.Since(start).Milliseconds())
 	s.requestDuration.Observe(elapsed)
 	if err != nil {
@@ -1550,13 +1562,12 @@ func (s *Service) ListWorkers(
 // listWorkersInner attempts to list workers from the directory.
 // Returns empty slice when the workers bucket does not exist --
 // normal condition when no workers have registered yet.
-func (s *Service) listWorkersInner() (
-	[]worker.WorkerRegistration, error,
-) {
+func (s *Service) listWorkersInner(
+	ctx context.Context,
+) ([]worker.WorkerRegistration, error) {
 	if s.js == nil {
 		panic("listWorkersInner: js must not be nil")
 	}
-	ctx := context.Background()
 	kv, err := s.js.KeyValue(ctx, "workers")
 	if err != nil {
 		return []worker.WorkerRegistration{}, nil

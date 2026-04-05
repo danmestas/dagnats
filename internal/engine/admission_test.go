@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -67,7 +68,7 @@ func TestPriorityAffectsPendingOrder(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Positive: run-low is running
-	lowRun, err := orch.store.Load("run-low")
+	lowRun, err := orch.store.Load(context.Background(), "run-low")
 	if err != nil {
 		t.Fatalf("load run-low: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestPriorityAffectsPendingOrder(t *testing.T) {
 	}
 
 	// run-high should be pending with priority offset
-	highRun, err := orch.store.Load("run-high")
+	highRun, err := orch.store.Load(context.Background(), "run-high")
 	if err != nil {
 		t.Fatalf("load run-high: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestSingletonSkipMode(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Positive: first run is running
-	firstRun, err := orch.store.Load("run-first")
+	firstRun, err := orch.store.Load(context.Background(), "run-first")
 	if err != nil {
 		t.Fatalf("load run-first: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestSingletonSkipMode(t *testing.T) {
 	}
 
 	// Negative: second run should not exist (skipped)
-	_, err = orch.store.Load("run-second")
+	_, err = orch.store.Load(context.Background(), "run-second")
 	if err == nil {
 		t.Fatal(
 			"run-second should not exist (singleton skip)",

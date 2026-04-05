@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -173,7 +174,7 @@ func TestApprovalStep_TokenStoredAndEventPublished(t *testing.T) {
 
 	// Verify step is Running in snapshot.
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load(runID)
+	run, err := store.Load(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("load snapshot: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestApprovalStep_RejectFailsWorkflow(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load(runID)
+		run, err := store.Load(context.Background(), runID)
 		if err == nil && run.Status == dag.RunStatusFailed {
 			// Positive: run failed.
 			state := run.Steps["gate"]
@@ -344,7 +345,7 @@ func TestApprovalStep_TimeoutFails(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load(runID)
+		run, err := store.Load(context.Background(), runID)
 		if err == nil && run.Status == dag.RunStatusFailed {
 			state := run.Steps["gate"]
 			// Positive: step failed with timeout message.

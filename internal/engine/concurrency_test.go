@@ -28,7 +28,7 @@ func TestConcurrencyAcquireAndRelease(t *testing.T) {
 	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: first acquire succeeds
-	ok, err := cm.AcquireRun("wf-1", 2)
+	ok, err := cm.AcquireRun(context.Background(), "wf-1", 2)
 	if err != nil {
 		t.Fatalf("acquire 1: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestConcurrencyAcquireAndRelease(t *testing.T) {
 	}
 
 	// Positive: second acquire succeeds (limit 2)
-	ok2, err := cm.AcquireRun("wf-1", 2)
+	ok2, err := cm.AcquireRun(context.Background(), "wf-1", 2)
 	if err != nil {
 		t.Fatalf("acquire 2: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestConcurrencyAcquireAndRelease(t *testing.T) {
 	}
 
 	// Negative: third acquire fails (at limit)
-	ok3, err := cm.AcquireRun("wf-1", 2)
+	ok3, err := cm.AcquireRun(context.Background(), "wf-1", 2)
 	if err != nil {
 		t.Fatalf("acquire 3: %v", err)
 	}
@@ -55,12 +55,12 @@ func TestConcurrencyAcquireAndRelease(t *testing.T) {
 	}
 
 	// Release one
-	if err := cm.ReleaseRun("wf-1"); err != nil {
+	if err := cm.ReleaseRun(context.Background(), "wf-1"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 
 	// Positive: acquire succeeds again after release
-	ok4, err := cm.AcquireRun("wf-1", 2)
+	ok4, err := cm.AcquireRun(context.Background(), "wf-1", 2)
 	if err != nil {
 		t.Fatalf("acquire 4: %v", err)
 	}
@@ -86,21 +86,21 @@ func TestConcurrencyReleaseWhenZero(t *testing.T) {
 	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: release with no prior acquire is safe (already 0).
-	err = cm.ReleaseRun("wf-zero")
+	err = cm.ReleaseRun(context.Background(), "wf-zero")
 	if err != nil {
 		t.Fatalf("release at zero should not error: %v", err)
 	}
 
 	// Acquire one, release it, then release again.
-	ok, err := cm.AcquireRun("wf-zero", 5)
+	ok, err := cm.AcquireRun(context.Background(), "wf-zero", 5)
 	if err != nil || !ok {
 		t.Fatalf("acquire should succeed: ok=%v err=%v", ok, err)
 	}
-	if err := cm.ReleaseRun("wf-zero"); err != nil {
+	if err := cm.ReleaseRun(context.Background(), "wf-zero"); err != nil {
 		t.Fatalf("release should succeed: %v", err)
 	}
 	// Positive: second release when counter is 0 is safe.
-	if err := cm.ReleaseRun("wf-zero"); err != nil {
+	if err := cm.ReleaseRun(context.Background(), "wf-zero"); err != nil {
 		t.Fatalf("release at zero should not error: %v", err)
 	}
 }
@@ -160,7 +160,7 @@ func TestConcurrencyReadCounterNonNumeric(t *testing.T) {
 	// Positive: acquire treats corrupted counter as 0 and
 	// succeeds. The readCounter returns (0, rev, nil) when
 	// Atoi fails.
-	ok, err := cm.AcquireRun("bad-counter", 2)
+	ok, err := cm.AcquireRun(context.Background(), "bad-counter", 2)
 	if err != nil {
 		t.Fatalf("acquire with corrupt counter: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestConcurrencyReadCounterNonNumeric(t *testing.T) {
 	}
 
 	// Positive: release on the same workflow is safe.
-	if err := cm.ReleaseRun("bad-counter"); err != nil {
+	if err := cm.ReleaseRun(context.Background(), "bad-counter"); err != nil {
 		t.Fatalf("release with corrupt counter: %v", err)
 	}
 }
@@ -191,7 +191,7 @@ func TestConcurrencyUnlimitedWhenZero(t *testing.T) {
 	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: limit 0 means unlimited
-	ok, err := cm.AcquireRun("wf-2", 0)
+	ok, err := cm.AcquireRun(context.Background(), "wf-2", 0)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestTaskConcurrencyAcquireAndRelease(t *testing.T) {
 	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: first acquire under limit succeeds
-	ok, err := cm.AcquireTask("call-claude", 2)
+	ok, err := cm.AcquireTask(context.Background(), "call-claude", 2)
 	if err != nil {
 		t.Fatalf("acquire 1: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestTaskConcurrencyAcquireAndRelease(t *testing.T) {
 	}
 
 	// Positive: second acquire under limit succeeds
-	ok2, err := cm.AcquireTask("call-claude", 2)
+	ok2, err := cm.AcquireTask(context.Background(), "call-claude", 2)
 	if err != nil {
 		t.Fatalf("acquire 2: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestTaskConcurrencyAcquireAndRelease(t *testing.T) {
 	}
 
 	// Negative: third acquire at limit fails
-	ok3, err := cm.AcquireTask("call-claude", 2)
+	ok3, err := cm.AcquireTask(context.Background(), "call-claude", 2)
 	if err != nil {
 		t.Fatalf("acquire 3: %v", err)
 	}
@@ -245,12 +245,12 @@ func TestTaskConcurrencyAcquireAndRelease(t *testing.T) {
 	}
 
 	// Release one and retry
-	if err := cm.ReleaseTask("call-claude"); err != nil {
+	if err := cm.ReleaseTask(context.Background(), "call-claude"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 
 	// Positive: acquire succeeds after release
-	ok4, err := cm.AcquireTask("call-claude", 2)
+	ok4, err := cm.AcquireTask(context.Background(), "call-claude", 2)
 	if err != nil {
 		t.Fatalf("acquire 4: %v", err)
 	}
@@ -277,21 +277,21 @@ func TestTaskConcurrencyReleaseAtZero(t *testing.T) {
 	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: release with no prior acquire is safe
-	err = cm.ReleaseTask("no-prior")
+	err = cm.ReleaseTask(context.Background(), "no-prior")
 	if err != nil {
 		t.Fatalf("release at zero should not error: %v", err)
 	}
 
 	// Acquire one, release it, release again
-	ok, err := cm.AcquireTask("no-prior", 5)
+	ok, err := cm.AcquireTask(context.Background(), "no-prior", 5)
 	if err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
 	}
-	if err := cm.ReleaseTask("no-prior"); err != nil {
+	if err := cm.ReleaseTask(context.Background(), "no-prior"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	// Positive: double release at zero is safe
-	if err := cm.ReleaseTask("no-prior"); err != nil {
+	if err := cm.ReleaseTask(context.Background(), "no-prior"); err != nil {
 		t.Fatalf("release at zero: %v", err)
 	}
 }
@@ -314,7 +314,7 @@ func TestTaskConcurrencyUnlimitedWhenZero(t *testing.T) {
 	cm := NewConcurrencyManager(jsNew)
 
 	// Positive: limit 0 means unlimited
-	ok, err := cm.AcquireTask("any-task", 0)
+	ok, err := cm.AcquireTask(context.Background(), "any-task", 0)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestTaskConcurrencyNoTaskBucket(t *testing.T) {
 	}
 
 	// Positive: acquire succeeds even without task bucket
-	ok, err := cm.AcquireTask("call-claude", 2)
+	ok, err := cm.AcquireTask(context.Background(), "call-claude", 2)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestTaskConcurrencyNoTaskBucket(t *testing.T) {
 	}
 
 	// Positive: release is no-op without task bucket
-	if err := cm.ReleaseTask("call-claude"); err != nil {
+	if err := cm.ReleaseTask(context.Background(), "call-claude"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 }

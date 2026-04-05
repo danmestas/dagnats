@@ -7,6 +7,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -87,7 +88,7 @@ func TestCancelOnEventCancelsWorkflow(t *testing.T) {
 
 	// Positive: verify running before cancel event.
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("run-cancel-on")
+	run, err := store.Load(context.Background(), "run-cancel-on")
 	if err != nil {
 		t.Fatalf("Load run: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestCancelOnEventCancelsWorkflow(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// Positive: run should be cancelled.
-	run2, err := store.Load("run-cancel-on")
+	run2, err := store.Load(context.Background(), "run-cancel-on")
 	if err != nil {
 		t.Fatalf("Load run after cancel: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestCancelOnNoMatchDoesNotCancel(t *testing.T) {
 
 	// Positive: should still be running.
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("run-nomatch")
+	run, err := store.Load(context.Background(), "run-nomatch")
 	if err != nil {
 		t.Fatalf("Load run: %v", err)
 	}

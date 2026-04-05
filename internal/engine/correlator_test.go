@@ -7,6 +7,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestCorrelatorMatchesEvent(t *testing.T) {
 			Right: "ord-123",
 		},
 	}
-	if err := c.AddWaiter(waiter); err != nil {
+	if err := c.AddWaiter(context.Background(), waiter); err != nil {
 		t.Fatalf("AddWaiter failed: %v", err)
 	}
 
@@ -120,7 +121,7 @@ func TestCorrelatorIgnoresNonMatchingEvent(t *testing.T) {
 			Right: "ord-123",
 		},
 	}
-	if err := c.AddWaiter(waiter); err != nil {
+	if err := c.AddWaiter(context.Background(), waiter); err != nil {
 		t.Fatalf("AddWaiter failed: %v", err)
 	}
 
@@ -184,14 +185,14 @@ func TestCorrelatorRemoveWaitersForRun(t *testing.T) {
 			Right: "ord-456",
 		},
 	}
-	if err := c.AddWaiter(waiter); err != nil {
+	if err := c.AddWaiter(context.Background(), waiter); err != nil {
 		t.Fatalf("AddWaiter failed: %v", err)
 	}
 
 	time.Sleep(200 * time.Millisecond)
 
 	// Remove all waiters for the run.
-	c.RemoveWaitersForRun("run-c3")
+	c.RemoveWaitersForRun(context.Background(), "run-c3")
 
 	// Wait for KV delete to propagate to the in-memory index.
 	time.Sleep(200 * time.Millisecond)

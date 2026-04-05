@@ -16,6 +16,7 @@ import (
 // publishIterationTask publishes a TaskPayload for an agent-loop
 // re-enqueue with a distinct MsgId per iteration.
 func publishIterationTask(
+	ctx context.Context,
 	js jetstream.JetStream,
 	runID string,
 	step dag.StepDef,
@@ -47,7 +48,7 @@ func publishIterationTask(
 	)
 	subject := taskSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	_, err = js.PublishMsg(context.Background(), msg)
+	_, err = js.PublishMsg(ctx, msg)
 	return err
 }
 
@@ -68,6 +69,7 @@ func taskSubject(step dag.StepDef, runID string) string {
 // publishWorkflowEvent publishes a workflow lifecycle event
 // (completed or failed) to the WORKFLOW_HISTORY stream.
 func publishWorkflowEvent(
+	ctx context.Context,
 	js jetstream.JetStream,
 	eventType protocol.EventType,
 	runID string,
@@ -84,7 +86,7 @@ func publishWorkflowEvent(
 		return fmt.Errorf("marshal %s event: %w", eventType, err)
 	}
 	_, err = js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	return err
@@ -135,6 +137,7 @@ func collectReadyMessages(
 // enqueueReadySteps resolves ready steps, publishes tasks, and
 // checks for workflow completion. Returns updated run state.
 func enqueueReadySteps(
+	ctx context.Context,
 	js jetstream.JetStream,
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
@@ -162,7 +165,7 @@ func enqueueReadySteps(
 		if dag.IsComplete(wfDef, completed) {
 			run.Status = dag.RunStatusCompleted
 			return publishWorkflowEvent(
-				js, protocol.EventWorkflowCompleted,
+				ctx, js, protocol.EventWorkflowCompleted,
 				run.RunID,
 			)
 		}
@@ -172,7 +175,7 @@ func enqueueReadySteps(
 	if dag.IsComplete(wfDef, completed) {
 		run.Status = dag.RunStatusCompleted
 		return publishWorkflowEvent(
-			js, protocol.EventWorkflowCompleted,
+			ctx, js, protocol.EventWorkflowCompleted,
 			run.RunID,
 		)
 	}
@@ -205,13 +208,14 @@ func enqueueReadySteps(
 		return nil
 	}
 
-	return publishAtomicBatches(js, msgs)
+	return publishAtomicBatches(ctx, js, msgs)
 }
 
 // publishAtomicBatches splits messages by stream prefix and
 // publishes each group as an atomic batch. Normal tasks go to
 // TASK_QUEUES (task.>), agent tasks to AGENT_TASKS (agent_task.>).
 func publishAtomicBatches(
+	ctx context.Context,
 	js jetstream.JetStream, msgs []*nats.Msg,
 ) error {
 	if js == nil {
@@ -230,7 +234,7 @@ func publishAtomicBatches(
 	}
 	if len(taskMsgs) > 0 {
 		_, err := jetstreamext.PublishMsgBatch(
-			context.Background(), js, taskMsgs,
+			ctx, js, taskMsgs,
 		)
 		if err != nil {
 			return fmt.Errorf("atomic task publish: %w", err)
@@ -238,7 +242,7 @@ func publishAtomicBatches(
 	}
 	if len(agentMsgs) > 0 {
 		_, err := jetstreamext.PublishMsgBatch(
-			context.Background(), js, agentMsgs,
+			ctx, js, agentMsgs,
 		)
 		if err != nil {
 			return fmt.Errorf("atomic agent publish: %w", err)

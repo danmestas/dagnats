@@ -124,8 +124,12 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 
 	// Route through debounce if configured
 	if s.def.Debounce != nil && s.debounce != nil {
+		debounceCtx, debounceCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer debounceCancel()
 		fire, eventData, err := s.debounce.DebounceOrFire(
-			s.def, data,
+			debounceCtx, s.def, data,
 		)
 		if err != nil || !fire {
 			return
@@ -176,8 +180,12 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 		return
 	}
 
+	pubCtx, pubCancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer pubCancel()
 	if _, err := s.js.Publish(
-		context.Background(), evt.NATSSubject(), evtBytes,
+		pubCtx, evt.NATSSubject(), evtBytes,
 	); err != nil {
 		s.logger.Error("publish workflow event", err,
 			observe.String("trigger_id", s.def.ID),

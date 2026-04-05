@@ -5,6 +5,7 @@ package engine
 // for SnapshotStore persistence. Messages are injected manually.
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -436,7 +437,7 @@ func TestWorkflowActorWithSnapshotStore(t *testing.T) {
 	}
 
 	// Positive: run persisted to KV.
-	run, err := store.Load("persist-run")
+	run, err := store.Load(context.Background(), "persist-run")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -460,7 +461,7 @@ func TestWorkflowActorWithSnapshotStore(t *testing.T) {
 	}
 
 	// Positive: completed state persisted to KV.
-	run2, err := store.Load("persist-run")
+	run2, err := store.Load(context.Background(), "persist-run")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

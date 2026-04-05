@@ -106,8 +106,12 @@ func publishSpanRecord(
 	runID := extractRunID(rec.Attributes)
 	subject := "telemetry.spans." + rec.Service + "." + runID
 	msgID := rec.TraceID + "." + rec.SpanID
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 2*time.Second,
+	)
+	defer cancel()
 	_, err = js.Publish(
-		context.Background(), subject, data,
+		ctx, subject, data,
 		jetstream.WithMsgID(msgID),
 	)
 	if err != nil {

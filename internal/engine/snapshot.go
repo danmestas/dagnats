@@ -38,7 +38,7 @@ func NewSnapshotStore(js jetstream.JetStream) *SnapshotStore {
 
 // Save serializes the WorkflowRun and writes it to the KV store under key "run.<RunID>".
 // Overwrites any existing entry — callers are responsible for optimistic concurrency if needed.
-func (s *SnapshotStore) Save(run dag.WorkflowRun) error {
+func (s *SnapshotStore) Save(ctx context.Context, run dag.WorkflowRun) error {
 	if run.RunID == "" {
 		panic("SnapshotStore.Save: RunID must not be empty")
 	}
@@ -50,7 +50,7 @@ func (s *SnapshotStore) Save(run dag.WorkflowRun) error {
 		return err
 	}
 	_, err = s.kv.Put(
-		context.Background(), "run."+run.RunID, data,
+		ctx, "run."+run.RunID, data,
 	)
 	return err
 }
@@ -58,7 +58,7 @@ func (s *SnapshotStore) Save(run dag.WorkflowRun) error {
 // Load retrieves and deserializes the WorkflowRun for the given run ID.
 // Returns ErrRunNotFound when no entry exists, allowing callers to handle
 // missing runs distinctly from NATS infrastructure errors.
-func (s *SnapshotStore) Load(runID string) (dag.WorkflowRun, error) {
+func (s *SnapshotStore) Load(ctx context.Context, runID string) (dag.WorkflowRun, error) {
 	if runID == "" {
 		panic("SnapshotStore.Load: runID must not be empty")
 	}
@@ -66,7 +66,7 @@ func (s *SnapshotStore) Load(runID string) (dag.WorkflowRun, error) {
 		panic("SnapshotStore.Load: kv bucket must not be nil")
 	}
 	entry, err := s.kv.Get(
-		context.Background(), "run."+runID,
+		ctx, "run."+runID,
 	)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -83,7 +83,7 @@ func (s *SnapshotStore) Load(runID string) (dag.WorkflowRun, error) {
 // Scans all keys with prefix "run." bounded at maxRuns.
 // Uses parallel fetches for throughput on large key sets.
 func (s *SnapshotStore) ListAll(
-	maxRuns int,
+	ctx context.Context, maxRuns int,
 ) ([]dag.WorkflowRun, error) {
 	if s.kv == nil {
 		panic("SnapshotStore.ListAll: kv bucket must not be nil")
@@ -91,7 +91,7 @@ func (s *SnapshotStore) ListAll(
 	if maxRuns <= 0 {
 		panic("SnapshotStore.ListAll: maxRuns must be positive")
 	}
-	keys, err := s.kv.Keys(context.Background())
+	keys, err := s.kv.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return []dag.WorkflowRun{}, nil

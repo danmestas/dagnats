@@ -128,7 +128,7 @@ func (st *SleepTimer) Stop() {
 
 // Schedule publishes a timer message to sleep.{runID}.{stepID}.
 // Uses Nats-Msg-Id for dedup so duplicate schedules are harmless.
-func (st *SleepTimer) Schedule(msg TimerMessage) error {
+func (st *SleepTimer) Schedule(ctx context.Context, msg TimerMessage) error {
 	if msg.RunID == "" {
 		panic("SleepTimer.Schedule: RunID must not be empty")
 	}
@@ -156,9 +156,7 @@ func (st *SleepTimer) Schedule(msg TimerMessage) error {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	_, err = st.js.PublishMsg(
-		context.Background(), natsMsg,
-	)
+	_, err = st.js.PublishMsg(ctx, natsMsg)
 	return err
 }
 
@@ -166,7 +164,7 @@ func (st *SleepTimer) Schedule(msg TimerMessage) error {
 // sequence number for stale timer detection. Does not use dedup IDs
 // — each debounce reset publishes a new timer message.
 func (st *SleepTimer) ScheduleDebounce(
-	msg TimerMessage,
+	ctx context.Context, msg TimerMessage,
 ) (uint64, error) {
 	if msg.TriggerID == "" {
 		panic("ScheduleDebounce: TriggerID must not be empty")
@@ -181,9 +179,7 @@ func (st *SleepTimer) ScheduleDebounce(
 	subject := fmt.Sprintf(
 		"sleep.debounce.%s", msg.DebounceKey,
 	)
-	ack, err := st.js.Publish(
-		context.Background(), subject, data,
-	)
+	ack, err := st.js.Publish(ctx, subject, data)
 	if err != nil {
 		return 0, err
 	}
@@ -257,6 +253,10 @@ func (st *SleepTimer) fireSleepComplete(tm TimerMessage) {
 	if tm.StepID == "" {
 		panic("fireSleepComplete: StepID must not be empty")
 	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
 	evt := protocol.NewStepEvent(
 		protocol.EventStepSleepCompleted,
 		tm.RunID, tm.StepID, nil,
@@ -266,7 +266,7 @@ func (st *SleepTimer) fireSleepComplete(tm TimerMessage) {
 		return
 	}
 	st.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
@@ -281,6 +281,10 @@ func (st *SleepTimer) fireWaitTimeout(tm TimerMessage) {
 	if tm.StepID == "" {
 		panic("fireWaitTimeout: StepID must not be empty")
 	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
 	evt := protocol.NewStepEvent(
 		protocol.EventStepWaitTimeout,
 		tm.RunID, tm.StepID, nil,
@@ -290,7 +294,7 @@ func (st *SleepTimer) fireWaitTimeout(tm TimerMessage) {
 		return
 	}
 	st.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
@@ -307,6 +311,10 @@ func (st *SleepTimer) fireApprovalTimeout(tm TimerMessage) {
 			"fireApprovalTimeout: StepID must not be empty",
 		)
 	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
 	evt := protocol.NewStepEvent(
 		protocol.EventApprovalExpired,
 		tm.RunID, tm.StepID, nil,
@@ -316,7 +324,7 @@ func (st *SleepTimer) fireApprovalTimeout(tm TimerMessage) {
 		return
 	}
 	st.js.Publish(
-		context.Background(), evt.NATSSubject(), data,
+		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
@@ -331,6 +339,10 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	if tm.TaskType == "" {
 		panic("fireRateRetry: TaskType must not be empty")
 	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
 	subject := fmt.Sprintf("task.%s.%s", tm.TaskType, tm.RunID)
 	payload := protocol.TaskPayload{
 		TaskID: tm.RunID + "." + tm.StepID,
@@ -350,7 +362,7 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	st.js.PublishMsg(context.Background(), msg)
+	st.js.PublishMsg(ctx, msg)
 }
 
 // fireRetryAfter re-publishes a task after a worker retry delay.
@@ -362,6 +374,10 @@ func (st *SleepTimer) fireRetryAfter(tm TimerMessage) {
 	if tm.TaskType == "" {
 		panic("fireRetryAfter: TaskType must not be empty")
 	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
 	subject := fmt.Sprintf(
 		"task.%s.%s", tm.TaskType, tm.RunID,
 	)
@@ -383,5 +399,5 @@ func (st *SleepTimer) fireRetryAfter(tm TimerMessage) {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	st.js.PublishMsg(context.Background(), msg)
+	st.js.PublishMsg(ctx, msg)
 }

@@ -378,7 +378,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
 	_, err = js.AccountInfo(ctx)
 	if err != nil {
 		http.Error(

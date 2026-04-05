@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -184,7 +185,7 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 
 	// Run must be marked Failed.
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("run-iter")
+	run, err := store.Load(context.Background(), "run-iter")
 	if err != nil {
 		t.Fatalf("Load run failed: %v", err)
 	}
@@ -266,7 +267,7 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("run-dur")
+	run, err := store.Load(context.Background(), "run-dur")
 	if err != nil {
 		t.Fatalf("Load run failed: %v", err)
 	}
@@ -315,7 +316,7 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("run-3")
+	run, err := store.Load(context.Background(), "run-3")
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
@@ -440,7 +441,7 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 	var loadErr error
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		childRun, loadErr = store.Load("child-run-1")
+		childRun, loadErr = store.Load(context.Background(), "child-run-1")
 		if loadErr == nil {
 			break
 		}
@@ -568,7 +569,7 @@ func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
 			run.ParentRunID = fmt.Sprintf("run-%d", i-1)
 			run.ParentStepID = "s1"
 		}
-		store.Save(run)
+		store.Save(context.Background(), run)
 	}
 
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
@@ -590,7 +591,7 @@ func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
 	// Poll briefly — run-3 should never be created
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := store.Load("run-3"); err == nil {
+		if _, err := store.Load(context.Background(), "run-3"); err == nil {
 			t.Fatalf("run-3 should not exist — nesting too deep")
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -650,7 +651,7 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load("cancel-run-1")
+		run, err := store.Load(context.Background(), "cancel-run-1")
 		if err == nil && run.Status == dag.RunStatusCancelled {
 			// Positive: run is cancelled
 			// Positive: step is cancelled
@@ -720,7 +721,7 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	store := NewSnapshotStore(jsNew)
-	run, _ := store.Load("retry-run-1")
+	run, _ := store.Load(context.Background(), "retry-run-1")
 
 	// Positive: run is still running (not failed yet)
 	if run.Status != dag.RunStatusRunning {
@@ -794,7 +795,7 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load("exhaust-run-1")
+		run, err := store.Load(context.Background(), "exhaust-run-1")
 		if err == nil && run.Status == dag.RunStatusFailed {
 			// Positive: permanently failed
 			if run.Steps["s1"].Status != dag.StepStatusFailed {
@@ -863,7 +864,7 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load("timeout-run-1")
+		run, err := store.Load(context.Background(), "timeout-run-1")
 		if err == nil && run.Status == dag.RunStatusCancelled {
 			return // Positive: timed out → cancelled
 		}
@@ -1008,7 +1009,7 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	// Positive: workflow should NOT be failed yet (on-failure is running)
 	store := NewSnapshotStore(jsNew)
 	time.Sleep(200 * time.Millisecond)
-	run, _ := store.Load("onfail-run-1")
+	run, _ := store.Load(context.Background(), "onfail-run-1")
 	if run.Status == dag.RunStatusFailed {
 		t.Fatalf("workflow should not be failed while on-failure step pending")
 	}
@@ -1137,7 +1138,7 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 	}
 	// Positive: iteration count = 1 in snapshot.
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("cont-run")
+	run, err := store.Load(context.Background(), "cont-run")
 	if err != nil {
 		t.Fatalf("Load run: %v", err)
 	}
@@ -1226,7 +1227,7 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 
 	// Positive: step "b" is Skipped.
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("skip-run")
+	run, err := store.Load(context.Background(), "skip-run")
 	if err != nil {
 		t.Fatalf("Load run failed: %v", err)
 	}
@@ -1285,7 +1286,7 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("snap-run")
+	run, err := store.Load(context.Background(), "snap-run")
 	if err != nil {
 		t.Fatalf("Load snapshot failed: %v", err)
 	}
@@ -1341,12 +1342,12 @@ func TestOrchestratorSnapshotRestore(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(crafted); err != nil {
+	if err := store.Save(context.Background(), crafted); err != nil {
 		t.Fatalf("Save crafted: %v", err)
 	}
 
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
-	wfDefR, runR, err := orch.loadRunAndDef("crafted-run")
+	wfDefR, runR, err := orch.loadRunAndDef(context.Background(), "crafted-run")
 	if err != nil {
 		t.Fatalf("loadRunAndDef: %v", err)
 	}
@@ -1444,7 +1445,7 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 
 	// Check that the run exists but is marked as failed
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("invalid-run")
+	run, err := store.Load(context.Background(), "invalid-run")
 	if err != nil {
 		t.Fatalf("failed run should exist in snapshot: %v", err)
 	}
@@ -1591,7 +1592,7 @@ func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load("skipall-run")
+		run, err := store.Load(context.Background(), "skipall-run")
 		if err == nil &&
 			run.Status == dag.RunStatusCompleted {
 			// Positive: workflow completed.
@@ -1690,7 +1691,7 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 	}
 	// Positive: child run is Failed.
 	store := NewSnapshotStore(jsNew)
-	childRun, _ := store.Load("child-fail-1")
+	childRun, _ := store.Load(context.Background(), "child-fail-1")
 	if childRun.Status != dag.RunStatusFailed {
 		t.Fatalf("child = %v, want Failed",
 			childRun.Status)
@@ -1936,7 +1937,7 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load("cnoop-run")
+		run, err := store.Load(context.Background(), "cnoop-run")
 		if err == nil &&
 			run.Status == dag.RunStatusCompleted {
 			break
@@ -1953,7 +1954,7 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Positive: run is still Completed (not Cancelled).
-	run, _ := store.Load("cnoop-run")
+	run, _ := store.Load(context.Background(), "cnoop-run")
 	if run.Status != dag.RunStatusCompleted {
 		t.Fatalf("status = %v, want Completed (cancel is noop)",
 			run.Status)
@@ -2018,7 +2019,7 @@ func TestOrchestratorStartWithInput(t *testing.T) {
 
 	// Positive: run is Running.
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("input-run")
+	run, err := store.Load(context.Background(), "input-run")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -2071,7 +2072,7 @@ func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load("recover-run")
+		run, err := store.Load(context.Background(), "recover-run")
 		if err == nil && run.Status == dag.RunStatusRunning {
 			return
 		}
@@ -2153,7 +2154,7 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 
 	// Positive: no run was created (event was ignored).
 	store := NewSnapshotStore(jsNew)
-	_, err = store.Load("unknown-run")
+	_, err = store.Load(context.Background(), "unknown-run")
 	if err == nil {
 		t.Fatal("unknown event should not create a run")
 	}
@@ -2166,7 +2167,7 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 	js.Publish(startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 	time.Sleep(300 * time.Millisecond)
-	_, err = store.Load("post-unknown")
+	_, err = store.Load(context.Background(), "post-unknown")
 	if err != nil {
 		t.Fatalf("orchestrator should still work: %v", err)
 	}
@@ -2183,7 +2184,7 @@ func TestLoadRunAndDefMissingRun(t *testing.T) {
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 
 	// Positive: error returned for missing run.
-	_, _, err := orch.loadRunAndDef("nonexistent-run")
+	_, _, err := orch.loadRunAndDef(context.Background(), "nonexistent-run")
 	if err == nil {
 		t.Fatal("expected error for missing run")
 	}
@@ -2216,14 +2217,14 @@ func TestLoadRunAndDefMissingWorkflowDef(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(run); err != nil {
+	if err := store.Save(context.Background(), run); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 
 	// Positive: error returned for missing workflow def.
-	_, _, err = orch.loadRunAndDef("orphan-run")
+	_, _, err = orch.loadRunAndDef(context.Background(), "orphan-run")
 	if err == nil {
 		t.Fatal("expected error for missing workflow def")
 	}
@@ -2508,7 +2509,7 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load("map-run-1")
+		run, err := store.Load(context.Background(), "map-run-1")
 		if err == nil &&
 			run.Status == dag.RunStatusCompleted {
 			// Positive: workflow completed.
@@ -2611,7 +2612,7 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err := store.Load("map-fail-1")
+		run, err := store.Load(context.Background(), "map-fail-1")
 		if err == nil &&
 			run.Status == dag.RunStatusFailed {
 			// Positive: map step is failed.
@@ -2752,7 +2753,7 @@ func TestOrchestratorSleepStep(t *testing.T) {
 	// Wait for workflow to complete.
 	time.Sleep(500 * time.Millisecond)
 
-	run, err := orch.store.Load("sleep-run-1")
+	run, err := orch.store.Load(context.Background(), "sleep-run-1")
 	if err != nil {
 		t.Fatalf("load run failed: %v", err)
 	}
@@ -3010,7 +3011,7 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 
 	// Positive: run should be completed.
 	store := NewSnapshotStore(jsNew)
-	run, err := store.Load("wait-run-1")
+	run, err := store.Load(context.Background(), "wait-run-1")
 	if err != nil {
 		t.Fatalf("Load run failed: %v", err)
 	}
@@ -3120,7 +3121,7 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 
 	// Check the wait step has timeout output.
 	store := NewSnapshotStore(jsNew)
-	run, loadErr := store.Load("wait-run-2")
+	run, loadErr := store.Load(context.Background(), "wait-run-2")
 	if loadErr != nil {
 		t.Fatalf("Load run failed: %v", loadErr)
 	}
@@ -3224,7 +3225,7 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 	store := NewSnapshotStore(jsNew)
-	run, loadErr := store.Load("run-nr-1")
+	run, loadErr := store.Load(context.Background(), "run-nr-1")
 	if loadErr != nil {
 		t.Fatalf("load run after fail: %v", loadErr)
 	}
@@ -3324,7 +3325,7 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 	// Verify run is NOT failed (retries remain)
 	time.Sleep(100 * time.Millisecond)
 	store := NewSnapshotStore(jsNew)
-	run, loadErr := store.Load("run-ra-1")
+	run, loadErr := store.Load(context.Background(), "run-ra-1")
 	if loadErr != nil {
 		t.Fatalf("load run: %v", loadErr)
 	}
@@ -3394,7 +3395,7 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 	store := NewSnapshotStore(jsNew)
-	run, loadErr := store.Load("run-compat")
+	run, loadErr := store.Load(context.Background(), "run-compat")
 	if loadErr != nil {
 		t.Fatalf("load run: %v", loadErr)
 	}

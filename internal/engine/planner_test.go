@@ -7,6 +7,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -117,7 +118,7 @@ func TestPlanner_MaterializeAndComplete(t *testing.T) {
 	}
 
 	// Verify dynamic steps exist in snapshot.
-	run, err := store.Load("plan-run-1")
+	run, err := store.Load(context.Background(), "plan-run-1")
 	if err != nil {
 		t.Fatalf("Load snapshot: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestPlanner_MaterializeAndComplete(t *testing.T) {
 	// Wait for workflow to complete.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		run, err = store.Load("plan-run-1")
+		run, err = store.Load(context.Background(), "plan-run-1")
 		if err == nil &&
 			run.Status == dag.RunStatusCompleted {
 			break
@@ -263,7 +264,7 @@ func TestPlanner_MaxStepsExceeded(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var run dag.WorkflowRun
 	for time.Now().Before(deadline) {
-		run, err = store.Load("plan-max-run")
+		run, err = store.Load(context.Background(), "plan-max-run")
 		if err == nil && run.Status == dag.RunStatusFailed {
 			break
 		}
@@ -355,7 +356,7 @@ func TestPlanner_AllowedTasksViolation(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var run dag.WorkflowRun
 	for time.Now().Before(deadline) {
-		run, err = store.Load("plan-allowed-run")
+		run, err = store.Load(context.Background(), "plan-allowed-run")
 		if err == nil && run.Status == dag.RunStatusFailed {
 			break
 		}
@@ -454,7 +455,7 @@ func TestPlanner_CycleInFragment(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var run dag.WorkflowRun
 	for time.Now().Before(deadline) {
-		run, err = store.Load("plan-cycle-run")
+		run, err = store.Load(context.Background(), "plan-cycle-run")
 		if err == nil && run.Status == dag.RunStatusFailed {
 			break
 		}
@@ -544,7 +545,7 @@ func TestPlanner_EmptyPlan(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var run dag.WorkflowRun
 	for time.Now().Before(deadline) {
-		run, err = store.Load("plan-empty-run")
+		run, err = store.Load(context.Background(), "plan-empty-run")
 		if err == nil &&
 			run.Status == dag.RunStatusCompleted {
 			break

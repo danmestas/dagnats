@@ -85,7 +85,7 @@ func TestEnqueueReadySteps_AtomicPublish(t *testing.T) {
 			"b": {Status: dag.StepStatusPending},
 		},
 	}
-	err = enqueueReadySteps(js, wfDef, run)
+	err = enqueueReadySteps(context.Background(), js, wfDef, run)
 	if err != nil {
 		t.Fatalf("enqueueReadySteps: %v", err)
 	}

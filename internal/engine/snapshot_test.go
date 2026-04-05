@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -33,11 +34,11 @@ func TestSnapshotWriteAndRead(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
 	}
-	err = store.Save(run)
+	err = store.Save(context.Background(), run)
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
-	got, err := store.Load(run.RunID)
+	got, err := store.Load(context.Background(), run.RunID)
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestSnapshotLoadNotFound(t *testing.T) {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
 	store := NewSnapshotStore(js)
-	_, err = store.Load("nonexistent")
+	_, err = store.Load(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent run, got nil")
 	}
@@ -91,17 +92,17 @@ func TestSnapshotUpdate(t *testing.T) {
 		Steps:     map[string]dag.StepState{"a": {Status: dag.StepStatusPending}},
 		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
 	}
-	err = store.Save(run)
+	err = store.Save(context.Background(), run)
 	if err != nil {
 		t.Fatalf("first Save failed: %v", err)
 	}
 	run.Steps["a"] = dag.StepState{Status: dag.StepStatusCompleted, Attempts: 1}
 	run.Status = dag.RunStatusCompleted
-	err = store.Save(run)
+	err = store.Save(context.Background(), run)
 	if err != nil {
 		t.Fatalf("second Save failed: %v", err)
 	}
-	got, err := store.Load("run-456")
+	got, err := store.Load(context.Background(), "run-456")
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestSnapshotListAllEmpty(t *testing.T) {
 	store := NewSnapshotStore(js)
 
 	// Positive: empty bucket returns empty slice, no error.
-	runs, err := store.ListAll(100)
+	runs, err := store.ListAll(context.Background(), 100)
 	if err != nil {
 		t.Fatalf("ListAll on empty bucket failed: %v", err)
 	}
@@ -158,13 +159,13 @@ func TestSnapshotListAllBounded(t *testing.T) {
 			},
 			CreatedAt: time.Now().UTC(),
 		}
-		if err := store.Save(run); err != nil {
+		if err := store.Save(context.Background(), run); err != nil {
 			t.Fatalf("Save failed: %v", err)
 		}
 	}
 
 	// Positive: maxRuns=2 limits results.
-	runs, err := store.ListAll(2)
+	runs, err := store.ListAll(context.Background(), 2)
 	if err != nil {
 		t.Fatalf("ListAll failed: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestSnapshotListAllBounded(t *testing.T) {
 	}
 
 	// Positive: maxRuns=10 returns all 3.
-	allRuns, err := store.ListAll(10)
+	allRuns, err := store.ListAll(context.Background(), 10)
 	if err != nil {
 		t.Fatalf("ListAll failed: %v", err)
 	}
@@ -207,15 +208,15 @@ func TestSnapshotListAll(t *testing.T) {
 		Steps:      map[string]dag.StepState{"b": {Status: dag.StepStatusCompleted}},
 		CreatedAt:  time.Now().UTC().Add(1 * time.Second).Truncate(time.Millisecond),
 	}
-	err = store.Save(run1)
+	err = store.Save(context.Background(), run1)
 	if err != nil {
 		t.Fatalf("Save run1 failed: %v", err)
 	}
-	err = store.Save(run2)
+	err = store.Save(context.Background(), run2)
 	if err != nil {
 		t.Fatalf("Save run2 failed: %v", err)
 	}
-	runs, err := store.ListAll(100)
+	runs, err := store.ListAll(context.Background(), 100)
 	if err != nil {
 		t.Fatalf("ListAll failed: %v", err)
 	}
