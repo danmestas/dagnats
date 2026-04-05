@@ -16,38 +16,57 @@ import (
 	"github.com/synadia-io/orbit.go/pcgroups"
 )
 
-// TaskContext is the core interface workers use to report step results.
-// Workers call exactly one of Complete, Fail, or Continue per execution.
-// They never deal with retries, timeouts, or DAG logic directly.
+// TaskContext is the interface workers use to interact with the
+// DagNats engine. Includes step completion, checkpointing, signals,
+// and streaming. Workers call exactly one of Complete, Fail, or
+// Continue per execution.
 //
-// Handlers that need checkpoints or signals type-assert to
-// Checkpointable or Signaler — the concrete taskContext satisfies both.
+// Checkpoint and signal methods depend on optional KV buckets
+// ("checkpoints" and "signals"). They return an error if the bucket
+// was not provisioned at startup — check your natsutil.SetupAll call.
 type TaskContext interface {
+	// Step identity and input
 	Input() []byte
 	RunID() string
 	StepID() string
 	RetryCount() int
+
+	// Step completion — call exactly one per execution
 	Complete(output []byte) error
 	Fail(err error) error
 	FailPermanent(err error) error
 	FailRetryAfter(err error, after time.Duration) error
 	Continue(output []byte) error
+
+	// Streaming and heartbeat
 	PutStream(data []byte) error
 	Heartbeat() error
+
+	// Checkpointing — save/restore handler state across retries
+	Checkpoint(state []byte) error
+	LoadCheckpoint() ([]byte, error)
+	Pause(name string, duration time.Duration) error
+
+	// Signals — coordinate between steps
+	WaitForSignal(
+		name string, timeout time.Duration,
+	) ([]byte, error)
+	SendSignal(runID, name string, data []byte) error
 }
 
-// Checkpointable saves and restores handler state across retries
-// and pauses. Depends on the optional "checkpoints" KV bucket —
-// returns error if the bucket was not provisioned at startup.
+// Checkpointable is the subset of TaskContext for checkpoint
+// operations. Kept for backward compatibility — code that type-
+// asserts to Checkpointable still compiles. Prefer using
+// TaskContext methods directly.
 type Checkpointable interface {
 	Checkpoint(state []byte) error
 	LoadCheckpoint() ([]byte, error)
 	Pause(name string, duration time.Duration) error
 }
 
-// Signaler coordinates between steps via the optional "signals"
-// KV bucket. WaitForSignal blocks until a value appears or timeout
-// expires; SendSignal writes data for another step to read.
+// Signaler is the subset of TaskContext for signal operations.
+// Kept for backward compatibility — code that type-asserts to
+// Signaler still compiles. Prefer using TaskContext methods directly.
 type Signaler interface {
 	WaitForSignal(
 		name string, timeout time.Duration,
