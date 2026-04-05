@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 
-	"github.com/danmestas/dagnats/api"
-	"github.com/danmestas/dagnats/engine"
+	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/engine"
 )
 
 func TestInspectShowsStatusAndFailures(t *testing.T) {
@@ -66,7 +66,7 @@ func TestInspectShowsStatusAndFailures(t *testing.T) {
 	js.Publish("history.inspect-run-1", evtData)
 
 	// Publish a dead letter for this run
-	dlPayload, _ := json.Marshal(map[string]interface{}{
+	dlPayload, _ := json.Marshal(map[string]any{
 		"run_id":  "inspect-run-1",
 		"step_id": "step-a",
 	})

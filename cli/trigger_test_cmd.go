@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danmestas/dagnats/trigger"
+	"github.com/danmestas/dagnats/internal/trigger"
 )
 
 // cronTestResult is the JSON response for trigger test.

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 )

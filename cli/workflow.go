@@ -9,8 +9,8 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/danmestas/dagnats/api"
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/nats-io/nats.go"
 )
 

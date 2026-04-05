@@ -7,7 +7,7 @@ package worker
 import (
 	"testing"
 
-	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 )
 

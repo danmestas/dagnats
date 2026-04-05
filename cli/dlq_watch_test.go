@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/api"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 func TestReplayTrackerShouldReplayUnderMax(t *testing.T) {

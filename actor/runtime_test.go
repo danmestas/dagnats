@@ -213,7 +213,7 @@ func TestRuntimeSpawnDuplicateReturnsError(t *testing.T) {
 // collectorActor stores all received payloads.
 type collectorActor struct {
 	mu       sync.Mutex
-	payloads []interface{}
+	payloads []any
 }
 
 func (a *collectorActor) Receive(ctx *Context, msg Message) error {

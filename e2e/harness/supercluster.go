@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/natsutil"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
