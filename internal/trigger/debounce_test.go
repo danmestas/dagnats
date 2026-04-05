@@ -11,6 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestDebounceAbsorbsEvents(t *testing.T) {
@@ -19,7 +20,8 @@ func TestDebounceAbsorbsEvents(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
-	st := engine.NewSleepTimer(nc, js)
+	jsNew, _ := jetstream.New(nc)
+	st := engine.NewSleepTimer(nc, jsNew)
 
 	d, err := NewDebouncer(js, st)
 	if err != nil {
@@ -73,7 +75,8 @@ func TestDebounceFiresOnHardTimeout(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
-	st := engine.NewSleepTimer(nc, js)
+	jsNew, _ := jetstream.New(nc)
+	st := engine.NewSleepTimer(nc, jsNew)
 
 	d, err := NewDebouncer(js, st)
 	if err != nil {
@@ -125,7 +128,8 @@ func TestDebounceNoConfig(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
-	st := engine.NewSleepTimer(nc, js)
+	jsNew, _ := jetstream.New(nc)
+	st := engine.NewSleepTimer(nc, jsNew)
 
 	d, err := NewDebouncer(js, st)
 	if err != nil {
@@ -178,7 +182,8 @@ func TestHandleTimerFireStaleRejection(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
-	st := engine.NewSleepTimer(nc, js)
+	jsNew, _ := jetstream.New(nc)
+	st := engine.NewSleepTimer(nc, jsNew)
 
 	d, err := NewDebouncer(js, st)
 	if err != nil {

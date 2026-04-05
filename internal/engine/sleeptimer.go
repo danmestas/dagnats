@@ -7,12 +7,14 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // TimerAction identifies the action to perform when a timer fires.
@@ -53,23 +55,23 @@ type DebounceHandler func(tm TimerMessage, seq uint64)
 // SLEEP_TIMERS stream. Subscribes to sleep.> subjects.
 type SleepTimer struct {
 	nc         *nats.Conn
-	js         nats.JetStreamContext
-	sub        *nats.Subscription
+	js         jetstream.JetStream
+	cc         jetstream.ConsumeContext
 	onDebounce DebounceHandler
 }
 
 // NewSleepTimer creates a SleepTimer bound to the given connection.
 // Panics on nil nc or js — these are programmer errors.
 func NewSleepTimer(
-	nc *nats.Conn, jsLegacy nats.JetStreamContext,
+	nc *nats.Conn, js jetstream.JetStream,
 ) *SleepTimer {
 	if nc == nil {
 		panic("NewSleepTimer: nc must not be nil")
 	}
-	if jsLegacy == nil {
-		panic("NewSleepTimer: jsLegacy must not be nil")
+	if js == nil {
+		panic("NewSleepTimer: js must not be nil")
 	}
-	return &SleepTimer{nc: nc, js: jsLegacy}
+	return &SleepTimer{nc: nc, js: js}
 }
 
 // Start subscribes to sleep.> on the SLEEP_TIMERS stream with a
@@ -78,20 +80,32 @@ func (st *SleepTimer) Start() error {
 	if st.js == nil {
 		panic("SleepTimer.Start: js must not be nil")
 	}
-	if st.sub != nil {
+	if st.cc != nil {
 		panic("SleepTimer.Start: already started")
 	}
-	sub, err := st.js.Subscribe(
-		"sleep.>",
-		st.handleTimer,
-		nats.Durable("sleep-timer"),
-		nats.ManualAck(),
-		nats.AckWait(30*time.Second),
+	stream, err := st.js.Stream(
+		context.Background(), "SLEEP_TIMERS",
 	)
 	if err != nil {
-		return fmt.Errorf("subscribe sleep.>: %w", err)
+		return fmt.Errorf("stream SLEEP_TIMERS: %w", err)
 	}
-	st.sub = sub
+	cons, err := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			Durable:       "sleep-timer",
+			FilterSubject: "sleep.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			AckWait:       30 * time.Second,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("consumer sleep.>: %w", err)
+	}
+	cc, err := cons.Consume(st.handleTimerJS)
+	if err != nil {
+		return fmt.Errorf("consume sleep.>: %w", err)
+	}
+	st.cc = cc
 	return nil
 }
 
@@ -106,9 +120,9 @@ func (st *SleepTimer) OnDebounce(fn DebounceHandler) {
 
 // Stop drains the subscription. Safe to call multiple times.
 func (st *SleepTimer) Stop() {
-	if st.sub != nil {
-		st.sub.Unsubscribe()
-		st.sub = nil
+	if st.cc != nil {
+		st.cc.Stop()
+		st.cc = nil
 	}
 }
 
@@ -142,7 +156,9 @@ func (st *SleepTimer) Schedule(msg TimerMessage) error {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	_, err = st.js.PublishMsg(natsMsg)
+	_, err = st.js.PublishMsg(
+		context.Background(), natsMsg,
+	)
 	return err
 }
 
@@ -165,26 +181,24 @@ func (st *SleepTimer) ScheduleDebounce(
 	subject := fmt.Sprintf(
 		"sleep.debounce.%s", msg.DebounceKey,
 	)
-	natsMsg := &nats.Msg{
-		Subject: subject,
-		Data:    data,
-	}
-	ack, err := st.js.PublishMsg(natsMsg)
+	ack, err := st.js.Publish(
+		context.Background(), subject, data,
+	)
 	if err != nil {
 		return 0, err
 	}
 	return ack.Sequence, nil
 }
 
-// handleTimer processes a timer message from the SLEEP_TIMERS
+// handleTimerJS processes a timer message from the SLEEP_TIMERS
 // stream. First delivery NAKs with the configured delay. Redelivery
 // dispatches the action and ACKs.
-func (st *SleepTimer) handleTimer(msg *nats.Msg) {
+func (st *SleepTimer) handleTimerJS(msg jetstream.Msg) {
 	if msg == nil {
-		panic("handleTimer: msg must not be nil")
+		panic("handleTimerJS: msg must not be nil")
 	}
-	if len(msg.Data) == 0 {
-		panic("handleTimer: msg.Data must not be empty")
+	if len(msg.Data()) == 0 {
+		panic("handleTimerJS: msg.Data must not be empty")
 	}
 
 	meta, err := msg.Metadata()
@@ -194,7 +208,7 @@ func (st *SleepTimer) handleTimer(msg *nats.Msg) {
 	}
 
 	var tm TimerMessage
-	if err := json.Unmarshal(msg.Data, &tm); err != nil {
+	if err := json.Unmarshal(msg.Data(), &tm); err != nil {
 		// Corrupt message — ack to avoid infinite redelivery.
 		msg.Ack()
 		return
@@ -252,8 +266,8 @@ func (st *SleepTimer) fireSleepComplete(tm TimerMessage) {
 		return
 	}
 	st.js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
 
@@ -276,8 +290,8 @@ func (st *SleepTimer) fireWaitTimeout(tm TimerMessage) {
 		return
 	}
 	st.js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
 
@@ -302,8 +316,8 @@ func (st *SleepTimer) fireApprovalTimeout(tm TimerMessage) {
 		return
 	}
 	st.js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
 
@@ -336,7 +350,7 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	st.js.PublishMsg(msg)
+	st.js.PublishMsg(context.Background(), msg)
 }
 
 // fireRetryAfter re-publishes a task after a worker retry delay.
@@ -369,5 +383,5 @@ func (st *SleepTimer) fireRetryAfter(tm TimerMessage) {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	st.js.PublishMsg(msg)
+	st.js.PublishMsg(context.Background(), msg)
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // maxTotalDynamicSteps is the absolute upper bound on accumulated
@@ -256,9 +256,9 @@ func (o *Orchestrator) publishMaterializedEvent(
 	if err != nil {
 		return
 	}
-	_, pubErr := o.jsLegacy.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+	_, pubErr := o.js.Publish(
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	if pubErr != nil {
 		o.tel.Logger.Error(

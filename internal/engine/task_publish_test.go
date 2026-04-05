@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -61,10 +62,6 @@ func TestCollectReadyMessages(t *testing.T) {
 
 func TestEnqueueReadySteps_AtomicPublish(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	jsLegacy, err := nc.JetStream()
-	if err != nil {
-		t.Fatalf("JetStream: %v", err)
-	}
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -88,7 +85,7 @@ func TestEnqueueReadySteps_AtomicPublish(t *testing.T) {
 			"b": {Status: dag.StepStatusPending},
 		},
 	}
-	err = enqueueReadySteps(jsLegacy, js, wfDef, run)
+	err = enqueueReadySteps(js, wfDef, run)
 	if err != nil {
 		t.Fatalf("enqueueReadySteps: %v", err)
 	}
@@ -100,7 +97,13 @@ func TestEnqueueReadySteps_AtomicPublish(t *testing.T) {
 		)
 	}
 	// Positive: messages in stream
-	info, err := jsLegacy.StreamInfo("TASK_QUEUES")
+	stream, err := js.Stream(
+		context.Background(), "TASK_QUEUES",
+	)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	info, err := stream.Info(context.Background())
 	if err != nil {
 		t.Fatalf("StreamInfo: %v", err)
 	}

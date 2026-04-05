@@ -14,6 +14,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestConnectRegistersWorker(t *testing.T) {
@@ -74,8 +75,8 @@ func TestConnectRegistersWorker(t *testing.T) {
 	// the client disconnects.
 	time.Sleep(200 * time.Millisecond)
 
-	js, _ := nc.JetStream()
-	dir := worker.NewDirectory(js)
+	jsNew, _ := jetstream.New(nc)
+	dir := worker.NewDirectory(jsNew)
 	workers, err := dir.List()
 	if err != nil {
 		t.Fatalf("List failed: %v", err)

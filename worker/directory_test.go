@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestWorkerDirectoryRegister(t *testing.T) {
@@ -17,9 +18,9 @@ func TestWorkerDirectoryRegister(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	dir := NewDirectory(js)
@@ -61,9 +62,9 @@ func TestWorkerDirectoryDeregister(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	dir := NewDirectory(js)
@@ -109,9 +110,9 @@ func TestWorkerDirectoryListEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	dir := NewDirectory(js)
@@ -135,9 +136,9 @@ func TestWorkerDirectoryTTLExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	dir := NewDirectory(js)
@@ -198,9 +199,9 @@ func TestRegisterPanicsOnEmptyWorkerID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	dir := NewDirectory(js)
@@ -230,9 +231,9 @@ func TestRegisterPanicsOnEmptyTaskTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	dir := NewDirectory(js)

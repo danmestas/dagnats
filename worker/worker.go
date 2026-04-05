@@ -65,7 +65,6 @@ type HandlerFunc func(ctx TaskContext) error
 // failures are retried by JetStream's MaxDeliver policy.
 type Worker struct {
 	nc              *nats.Conn
-	jsLegacy        nats.JetStreamContext
 	js              jetstream.JetStream
 	tel             *observe.Telemetry
 	handlers        map[string]HandlerFunc
@@ -143,17 +142,12 @@ func NewWorker(
 	if tel == nil {
 		tel = observe.NewNoopTelemetry()
 	}
-	jsLegacy, err := nc.JetStream()
-	if err != nil {
-		panic("NewWorker: JetStream init failed: " + err.Error())
-	}
 	js, err := jetstream.New(nc)
 	if err != nil {
 		panic("NewWorker: jetstream.New failed: " + err.Error())
 	}
 	w := &Worker{
 		nc:       nc,
-		jsLegacy: jsLegacy,
 		js:       js,
 		tel:      tel,
 		handlers: make(map[string]HandlerFunc),
@@ -212,19 +206,16 @@ func (w *Worker) HandleSingleton(
 // bucket exists. Returns error (not panic) if the bucket is
 // missing — directory is observability only, not critical path.
 func newDirectoryOptional(
-	jsLegacy nats.JetStreamContext,
+	js jetstream.JetStream,
 ) (*Directory, error) {
-	if jsLegacy == nil {
-		panic("newDirectoryOptional: jsLegacy must not be nil")
+	if js == nil {
+		panic("newDirectoryOptional: js must not be nil")
 	}
-	kv, err := jsLegacy.KeyValue("workers")
+	kv, err := js.KeyValue(
+		context.Background(), "workers",
+	)
 	if err != nil {
 		return nil, err
-	}
-	if kv == nil {
-		panic(
-			"newDirectoryOptional: kv must not be nil when err is nil",
-		)
 	}
 	return &Directory{kv: kv}, nil
 }
@@ -250,7 +241,7 @@ func (w *Worker) Start() {
 	)
 
 	// Worker directory registration (observability only — not critical path)
-	d, err := newDirectoryOptional(w.jsLegacy)
+	d, err := newDirectoryOptional(w.js)
 	if err == nil {
 		w.dir = d
 		w.stopHeartbeat = make(chan struct{})

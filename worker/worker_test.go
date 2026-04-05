@@ -468,9 +468,9 @@ func TestWorkerRegistersOnStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	w := NewWorker(nc, nil)
@@ -520,9 +520,9 @@ func TestWorkerDeregistersOnStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	w := NewWorker(nc, nil)

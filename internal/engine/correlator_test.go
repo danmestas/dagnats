@@ -29,7 +29,7 @@ func TestCorrelatorMatchesEvent(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	c := NewCorrelator(nc, js, jsNew)
+	c := NewCorrelator(nc, jsNew)
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestCorrelatorIgnoresNonMatchingEvent(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	c := NewCorrelator(nc, js, jsNew)
+	c := NewCorrelator(nc, jsNew)
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestCorrelatorRemoveWaitersForRun(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	c := NewCorrelator(nc, js, jsNew)
+	c := NewCorrelator(nc, jsNew)
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}

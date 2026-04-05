@@ -13,53 +13,17 @@ import (
 	"github.com/synadia-io/orbit.go/jetstreamext"
 )
 
-// publishTask publishes a TaskPayload for a ready step to the
-// TASK_QUEUES stream. Used by both Orchestrator and WorkflowActor.
-func publishTask(
-	jsLegacy nats.JetStreamContext,
-	runID string,
-	step dag.StepDef,
-	input []byte,
-	attempt int,
-) error {
-	if jsLegacy == nil {
-		panic("publishTask: jsLegacy must not be nil")
-	}
-	if runID == "" {
-		panic("publishTask: runID must not be empty")
-	}
-	if step.ID == "" {
-		panic("publishTask: step.ID must not be empty")
-	}
-	payload := protocol.TaskPayload{
-		TaskID:  runID + "." + step.ID,
-		RunID:   runID,
-		StepID:  step.ID,
-		Attempt: attempt,
-		Input:   input,
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal TaskPayload: %w", err)
-	}
-	msgID := runID + "." + step.ID + ".queued"
-	subject := taskSubject(step, runID)
-	msg := buildTaskMsg(subject, data, msgID)
-	_, err = jsLegacy.PublishMsg(msg)
-	return err
-}
-
 // publishIterationTask publishes a TaskPayload for an agent-loop
 // re-enqueue with a distinct MsgId per iteration.
 func publishIterationTask(
-	jsLegacy nats.JetStreamContext,
+	js jetstream.JetStream,
 	runID string,
 	step dag.StepDef,
 	input []byte,
 	iteration int,
 ) error {
-	if jsLegacy == nil {
-		panic("publishIterationTask: jsLegacy must not be nil")
+	if js == nil {
+		panic("publishIterationTask: js must not be nil")
 	}
 	if runID == "" {
 		panic("publishIterationTask: runID must not be empty")
@@ -83,7 +47,7 @@ func publishIterationTask(
 	)
 	subject := taskSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	_, err = jsLegacy.PublishMsg(msg)
+	_, err = js.PublishMsg(context.Background(), msg)
 	return err
 }
 
@@ -104,12 +68,12 @@ func taskSubject(step dag.StepDef, runID string) string {
 // publishWorkflowEvent publishes a workflow lifecycle event
 // (completed or failed) to the WORKFLOW_HISTORY stream.
 func publishWorkflowEvent(
-	jsLegacy nats.JetStreamContext,
+	js jetstream.JetStream,
 	eventType protocol.EventType,
 	runID string,
 ) error {
-	if jsLegacy == nil {
-		panic("publishWorkflowEvent: jsLegacy must not be nil")
+	if js == nil {
+		panic("publishWorkflowEvent: js must not be nil")
 	}
 	if runID == "" {
 		panic("publishWorkflowEvent: runID must not be empty")
@@ -119,9 +83,9 @@ func publishWorkflowEvent(
 	if err != nil {
 		return fmt.Errorf("marshal %s event: %w", eventType, err)
 	}
-	_, err = jsLegacy.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+	_, err = js.Publish(
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	return err
 }
@@ -171,13 +135,12 @@ func collectReadyMessages(
 // enqueueReadySteps resolves ready steps, publishes tasks, and
 // checks for workflow completion. Returns updated run state.
 func enqueueReadySteps(
-	jsLegacy nats.JetStreamContext,
 	js jetstream.JetStream,
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
 ) error {
-	if jsLegacy == nil {
-		panic("enqueueReadySteps: jsLegacy must not be nil")
+	if js == nil {
+		panic("enqueueReadySteps: js must not be nil")
 	}
 	if run == nil {
 		panic("enqueueReadySteps: run must not be nil")
@@ -199,7 +162,7 @@ func enqueueReadySteps(
 		if dag.IsComplete(wfDef, completed) {
 			run.Status = dag.RunStatusCompleted
 			return publishWorkflowEvent(
-				jsLegacy, protocol.EventWorkflowCompleted,
+				js, protocol.EventWorkflowCompleted,
 				run.RunID,
 			)
 		}
@@ -209,7 +172,7 @@ func enqueueReadySteps(
 	if dag.IsComplete(wfDef, completed) {
 		run.Status = dag.RunStatusCompleted
 		return publishWorkflowEvent(
-			jsLegacy, protocol.EventWorkflowCompleted,
+			js, protocol.EventWorkflowCompleted,
 			run.RunID,
 		)
 	}
@@ -242,22 +205,7 @@ func enqueueReadySteps(
 		return nil
 	}
 
-	if js != nil {
-		if err := publishAtomicBatches(js, msgs); err != nil {
-			return err
-		}
-	} else {
-		for _, step := range ready {
-			input, _ := dag.ResolveInput(step, run.Steps)
-			attempt := run.Steps[step.ID].Attempts
-			if err := publishTask(
-				jsLegacy, run.RunID, step, input, attempt,
-			); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return publishAtomicBatches(js, msgs)
 }
 
 // publishAtomicBatches splits messages by stream prefix and

@@ -33,32 +33,28 @@ type EventWaiter struct {
 // against waiters stored in the event_waiters KV bucket.
 type Correlator struct {
 	nc       *nats.Conn
-	js       nats.JetStreamContext
+	js       jetstream.JetStream
 	waiterKV jetstream.KeyValue
 
 	mu      sync.RWMutex
 	waiters map[string][]EventWaiter // eventType -> []EventWaiter
 
-	kvWatch  jetstream.KeyWatcher
-	eventSub *nats.Subscription
+	kvWatch jetstream.KeyWatcher
+	eventCC jetstream.ConsumeContext
 }
 
 // NewCorrelator creates a Correlator bound to the given connection.
 // Panics on nil nc or js — these are programmer errors.
 func NewCorrelator(
-	nc *nats.Conn, jsLegacy nats.JetStreamContext,
-	jsNew jetstream.JetStream,
+	nc *nats.Conn, js jetstream.JetStream,
 ) *Correlator {
 	if nc == nil {
 		panic("NewCorrelator: nc must not be nil")
 	}
-	if jsLegacy == nil {
-		panic("NewCorrelator: jsLegacy must not be nil")
+	if js == nil {
+		panic("NewCorrelator: js must not be nil")
 	}
-	if jsNew == nil {
-		panic("NewCorrelator: jsNew must not be nil")
-	}
-	kv, err := jsNew.KeyValue(
+	kv, err := js.KeyValue(
 		context.Background(), "event_waiters",
 	)
 	if err != nil {
@@ -69,7 +65,7 @@ func NewCorrelator(
 	}
 	return &Correlator{
 		nc:       nc,
-		js:       jsLegacy,
+		js:       js,
 		waiterKV: kv,
 		waiters:  make(map[string][]EventWaiter),
 	}
@@ -94,27 +90,43 @@ func (c *Correlator) Start() error {
 	c.kvWatch = watcher
 	go c.processKVUpdates()
 
-	sub, err := c.js.Subscribe(
-		"event.>",
-		c.handleEvent,
-		nats.Durable("event-correlator"),
-		nats.ManualAck(),
+	stream, err := c.js.Stream(
+		context.Background(), "EVENTS",
 	)
 	if err != nil {
 		watcher.Stop()
 		c.kvWatch = nil
-		return fmt.Errorf("subscribe event.>: %w", err)
+		return fmt.Errorf("stream EVENTS: %w", err)
 	}
-	c.eventSub = sub
+	cons, err := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			Durable:       "event-correlator",
+			FilterSubject: "event.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		watcher.Stop()
+		c.kvWatch = nil
+		return fmt.Errorf("consumer event.>: %w", err)
+	}
+	cc, err := cons.Consume(c.handleEventJS)
+	if err != nil {
+		watcher.Stop()
+		c.kvWatch = nil
+		return fmt.Errorf("consume event.>: %w", err)
+	}
+	c.eventCC = cc
 	return nil
 }
 
 // Stop stops the KV watch and event subscription.
 // Safe to call multiple times.
 func (c *Correlator) Stop() {
-	if c.eventSub != nil {
-		c.eventSub.Unsubscribe()
-		c.eventSub = nil
+	if c.eventCC != nil {
+		c.eventCC.Stop()
+		c.eventCC = nil
 	}
 	if c.kvWatch != nil {
 		c.kvWatch.Stop()
@@ -270,17 +282,19 @@ func (c *Correlator) handleKVDelete(entry jetstream.KeyValueEntry) {
 	}
 }
 
-// handleEvent processes an event from the EVENTS stream.
+// handleEventJS processes an event from the EVENTS stream.
 // Extracts event type from the subject, looks up waiters, and
 // evaluates matches.
-func (c *Correlator) handleEvent(msg *nats.Msg) {
+func (c *Correlator) handleEventJS(msg jetstream.Msg) {
 	if msg == nil {
-		panic("Correlator.handleEvent: msg must not be nil")
+		panic("Correlator.handleEventJS: msg must not be nil")
 	}
-	if len(msg.Data) == 0 {
-		panic("Correlator.handleEvent: msg.Data must not be empty")
+	if len(msg.Data()) == 0 {
+		panic(
+			"Correlator.handleEventJS: msg.Data must not be empty",
+		)
 	}
-	eventType := extractEventType(msg.Subject)
+	eventType := extractEventType(msg.Subject())
 	if eventType == "" {
 		msg.Ack()
 		return
@@ -291,7 +305,7 @@ func (c *Correlator) handleEvent(msg *nats.Msg) {
 	c.mu.RUnlock()
 
 	for _, w := range waiters {
-		c.evaluateWaiter(w, msg.Data)
+		c.evaluateWaiter(w, msg.Data())
 	}
 	msg.Ack()
 }
@@ -339,8 +353,8 @@ func (c *Correlator) publishMatchEvent(
 		return
 	}
 	c.js.Publish(
-		evt.NATSSubject(), data,
-		nats.MsgId(evt.NATSMsgID()),
+		context.Background(), evt.NATSSubject(), data,
+		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestSleepTimerFiresCompletion(t *testing.T) {
@@ -20,9 +21,13 @@ func TestSleepTimerFiresCompletion(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		t.Fatalf("JetStream failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	st := NewSleepTimer(nc, js)
@@ -32,7 +37,7 @@ func TestSleepTimerFiresCompletion(t *testing.T) {
 	defer st.Stop()
 
 	// Subscribe to history.run-sleep-1 to catch the completion event.
-	sub, err := js.SubscribeSync(
+	sub, err := jsLegacy.SubscribeSync(
 		"history.run-sleep-1",
 		nats.DeliverAll(),
 	)
@@ -94,9 +99,13 @@ func TestSleepTimerDedupDuplicateSchedule(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		t.Fatalf("JetStream failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	st := NewSleepTimer(nc, js)
@@ -105,7 +114,7 @@ func TestSleepTimerDedupDuplicateSchedule(t *testing.T) {
 	}
 	defer st.Stop()
 
-	sub, err := js.SubscribeSync(
+	sub, err := jsLegacy.SubscribeSync(
 		"history.run-dedup-1",
 		nats.DeliverAll(),
 	)
@@ -156,9 +165,13 @@ func TestSleepTimerFiresRateRetry(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		t.Fatalf("JetStream failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
 	st := NewSleepTimer(nc, js)
@@ -168,7 +181,7 @@ func TestSleepTimerFiresRateRetry(t *testing.T) {
 	defer st.Stop()
 
 	// Subscribe to task.test-task.> to catch the re-published task.
-	sub, err := js.SubscribeSync(
+	sub, err := jsLegacy.SubscribeSync(
 		"task.test-task.>",
 		nats.DeliverAll(),
 	)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Bridge is an HTTP-to-NATS gateway that lets non-Go workers
@@ -18,6 +19,7 @@ import (
 type Bridge struct {
 	nc           *nats.Conn
 	js           nats.JetStreamContext
+	jsNew        jetstream.JetStream // new API for KV operations
 	ackMap       *AckMap
 	checkpointKV nats.KeyValue
 	signalKV     nats.KeyValue
@@ -44,12 +46,19 @@ func NewBridge(nc *nats.Conn, tel *observe.Telemetry) *Bridge {
 	if err != nil {
 		panic("NewBridge: JetStream init failed: " + err.Error())
 	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		panic(
+			"NewBridge: jetstream.New failed: " + err.Error(),
+		)
+	}
 	checkpointKV, _ := js.KeyValue("checkpoints")
 	signalKV, _ := js.KeyValue("signals")
 	token := os.Getenv("DAGNATS_BRIDGE_TOKEN")
 	return &Bridge{
 		nc:           nc,
 		js:           js,
+		jsNew:        jsNew,
 		ackMap:       NewAckMap(),
 		checkpointKV: checkpointKV,
 		signalKV:     signalKV,

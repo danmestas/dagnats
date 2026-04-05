@@ -18,6 +18,7 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestServiceRegisterWorkflow(t *testing.T) {
@@ -1235,8 +1236,8 @@ func TestServiceListWorkers(t *testing.T) {
 	}
 
 	// Register two workers via Directory
-	js, _ := nc.JetStream()
-	dir := worker.NewDirectory(js)
+	jsNew, _ := jetstream.New(nc)
+	dir := worker.NewDirectory(jsNew)
 	reg1 := worker.WorkerRegistration{
 		WorkerID:  "worker-1",
 		TaskTypes: []string{"task-a", "task-b"},
