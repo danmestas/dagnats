@@ -416,7 +416,50 @@ func (o *Orchestrator) handleWorkflowStarted(
 		return fmt.Errorf("save initial run: %w", err)
 	}
 	o.runsActive.Inc()
-	return o.enqueueReady(ctx, wfDef, run)
+	if err := o.enqueueReady(ctx, wfDef, run); err != nil {
+		return err
+	}
+	o.registerCancelWaiters(wfDef, run)
+	return nil
+}
+
+// registerCancelWaiters registers one correlator waiter per
+// CancelOn entry so a matching external event cancels the run.
+func (o *Orchestrator) registerCancelWaiters(
+	wfDef dag.WorkflowDef, run dag.WorkflowRun,
+) {
+	if o.correlator == nil {
+		return
+	}
+	if run.RunID == "" {
+		panic("registerCancelWaiters: RunID must not be empty")
+	}
+	if run.Input == nil && len(wfDef.CancelOn) > 0 {
+		// Input may be nil — Resolve handles it gracefully.
+	}
+	for i, cancel := range wfDef.CancelOn {
+		resolved, err := cancel.Match.Resolve(
+			nil, run.Input,
+		)
+		if err != nil {
+			o.tel.Logger.Error(
+				"cancel match resolve failed", err,
+			)
+			continue
+		}
+		waiter := EventWaiter{
+			RunID:     run.RunID,
+			StepID:    fmt.Sprintf("__cancel_%d", i),
+			EventType: cancel.Event,
+			Match:     resolved,
+			Action:    WaiterActionCancel,
+		}
+		if err := o.correlator.AddWaiter(waiter); err != nil {
+			o.tel.Logger.Error(
+				"add cancel waiter failed", err,
+			)
+		}
+	}
 }
 
 // handleStepCompleted marks the step output in the snapshot, then checks
