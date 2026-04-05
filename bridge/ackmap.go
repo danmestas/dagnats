@@ -3,7 +3,7 @@ package bridge
 import (
 	"sync"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // AckMap tracks in-flight tasks for HTTP workers. Maps task_id
@@ -25,7 +25,7 @@ func NewAckMap() *AckMap {
 
 // Store saves a NATS message keyed by task ID.
 // Panics on empty taskID or nil msg — both are programmer errors.
-func (am *AckMap) Store(taskID string, msg *nats.Msg) {
+func (am *AckMap) Store(taskID string, msg jetstream.Msg) {
 	if taskID == "" {
 		panic("AckMap.Store: taskID must not be empty")
 	}
@@ -40,7 +40,7 @@ func (am *AckMap) Store(taskID string, msg *nats.Msg) {
 
 // Load retrieves the NATS message for the given task ID.
 // Returns (nil, false) if not found.
-func (am *AckMap) Load(taskID string) (*nats.Msg, bool) {
+func (am *AckMap) Load(taskID string) (jetstream.Msg, bool) {
 	if am == nil {
 		panic("AckMap.Load: nil receiver")
 	}
@@ -51,7 +51,7 @@ func (am *AckMap) Load(taskID string) (*nats.Msg, bool) {
 	if !ok {
 		return nil, false
 	}
-	return v.(*nats.Msg), true
+	return v.(jetstream.Msg), true
 }
 
 // Delete removes a task from the map after resolution.

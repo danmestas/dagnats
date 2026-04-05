@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"net/http"
 	"os"
 
@@ -18,11 +19,10 @@ import (
 // all requests are allowed (development mode).
 type Bridge struct {
 	nc           *nats.Conn
-	js           nats.JetStreamContext
-	jsNew        jetstream.JetStream // new API for KV operations
+	js           jetstream.JetStream
 	ackMap       *AckMap
-	checkpointKV nats.KeyValue
-	signalKV     nats.KeyValue
+	checkpointKV jetstream.KeyValue
+	signalKV     jetstream.KeyValue
 	token        string
 	tel          *observe.Telemetry
 
@@ -42,23 +42,17 @@ func NewBridge(nc *nats.Conn, tel *observe.Telemetry) *Bridge {
 	if tel == nil {
 		tel = observe.NewNoopTelemetry()
 	}
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		panic("NewBridge: JetStream init failed: " + err.Error())
+		panic("NewBridge: jetstream.New failed: " + err.Error())
 	}
-	jsNew, err := jetstream.New(nc)
-	if err != nil {
-		panic(
-			"NewBridge: jetstream.New failed: " + err.Error(),
-		)
-	}
-	checkpointKV, _ := js.KeyValue("checkpoints")
-	signalKV, _ := js.KeyValue("signals")
+	ctx := context.Background()
+	checkpointKV, _ := js.KeyValue(ctx, "checkpoints")
+	signalKV, _ := js.KeyValue(ctx, "signals")
 	token := os.Getenv("DAGNATS_BRIDGE_TOKEN")
 	return &Bridge{
 		nc:           nc,
 		js:           js,
-		jsNew:        jsNew,
 		ackMap:       NewAckMap(),
 		checkpointKV: checkpointKV,
 		signalKV:     signalKV,

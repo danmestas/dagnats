@@ -4,14 +4,43 @@
 package bridge
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+// stubMsg implements jetstream.Msg for unit testing the AckMap
+// without a real NATS connection. Only the interface is needed;
+// the AckMap never calls any methods on the stored message.
+type stubMsg struct {
+	subject string
+}
+
+func (s *stubMsg) Data() []byte                    { return nil }
+func (s *stubMsg) Headers() nats.Header            { return nil }
+func (s *stubMsg) Subject() string                 { return s.subject }
+func (s *stubMsg) Reply() string                   { return "" }
+func (s *stubMsg) Ack() error                      { return nil }
+func (s *stubMsg) DoubleAck(context.Context) error { return nil }
+func (s *stubMsg) Nak() error                      { return nil }
+func (s *stubMsg) NakWithDelay(time.Duration) error {
+	return nil
+}
+func (s *stubMsg) InProgress() error { return nil }
+func (s *stubMsg) Term() error       { return nil }
+func (s *stubMsg) TermWithReason(string) error {
+	return nil
+}
+func (s *stubMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return nil, nil
+}
 
 func TestAckMapStoreAndLoad(t *testing.T) {
 	am := NewAckMap()
-	msg := &nats.Msg{Subject: "task.echo.run1"}
+	msg := &stubMsg{subject: "task.echo.run1"}
 
 	am.Store("run1.step1", msg)
 
@@ -32,7 +61,7 @@ func TestAckMapStoreAndLoad(t *testing.T) {
 
 func TestAckMapDelete(t *testing.T) {
 	am := NewAckMap()
-	msg := &nats.Msg{Subject: "task.echo.run1"}
+	msg := &stubMsg{subject: "task.echo.run1"}
 
 	am.Store("run1.step1", msg)
 	am.Delete("run1.step1")
@@ -50,8 +79,8 @@ func TestAckMapDelete(t *testing.T) {
 
 func TestAckMapCount(t *testing.T) {
 	am := NewAckMap()
-	msg1 := &nats.Msg{Subject: "task.echo.run1"}
-	msg2 := &nats.Msg{Subject: "task.echo.run2"}
+	msg1 := &stubMsg{subject: "task.echo.run1"}
+	msg2 := &stubMsg{subject: "task.echo.run2"}
 
 	if am.Count() != 0 {
 		t.Fatalf("expected count 0, got %d", am.Count())
@@ -84,7 +113,7 @@ func TestAckMapStorePanicsEmptyID(t *testing.T) {
 			t.Fatal("expected panic on empty taskID")
 		}
 	}()
-	am.Store("", &nats.Msg{})
+	am.Store("", &stubMsg{})
 }
 
 func TestAckMapStorePanicsNilMsg(t *testing.T) {

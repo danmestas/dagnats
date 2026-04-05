@@ -47,7 +47,7 @@ func (b *Bridge) handleConnect(
 		observe.Int("max_tasks", req.MaxTasks),
 	)
 
-	dir := worker.NewDirectory(b.jsNew)
+	dir := worker.NewDirectory(b.js)
 	reg := worker.WorkerRegistration{
 		WorkerID:  req.WorkerID,
 		TaskTypes: req.TaskTypes,

@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,7 +9,7 @@ import (
 
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // pollRequest is the JSON body for POST /v1/tasks/poll.
@@ -121,7 +122,7 @@ func (b *Bridge) fetchTasks(
 	return tasks
 }
 
-// fetchForType creates a pull subscription for one task type
+// fetchForType creates an ephemeral consumer for one task type
 // and fetches up to count messages. Each message is stored in
 // the ackMap.
 func (b *Bridge) fetchForType(
@@ -133,24 +134,30 @@ func (b *Bridge) fetchForType(
 	if count <= 0 {
 		panic("fetchForType: count must be positive")
 	}
+	ctx := context.Background()
 	subject := "task." + taskType + ".>"
-	sub, err := b.js.PullSubscribe(
-		subject,
-		"",
-		nats.AckExplicit(),
+	stream, err := b.js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		return nil
+	}
+	cons, err := stream.CreateOrUpdateConsumer(
+		ctx, jetstream.ConsumerConfig{
+			FilterSubject:     subject,
+			AckPolicy:         jetstream.AckExplicitPolicy,
+			InactiveThreshold: timeout,
+		},
 	)
 	if err != nil {
 		return nil
 	}
-	defer sub.Unsubscribe()
-
-	msgs, err := sub.Fetch(count, nats.MaxWait(timeout))
+	fetchResult, err := cons.Fetch(
+		count, jetstream.FetchMaxWait(timeout),
+	)
 	if err != nil {
 		return nil
 	}
-
-	tasks := make([]pollResponse, 0, len(msgs))
-	for _, msg := range msgs {
+	tasks := make([]pollResponse, 0, count)
+	for msg := range fetchResult.Messages() {
 		resp, ok := b.processPolledMsg(msg)
 		if ok {
 			tasks = append(tasks, resp)
@@ -162,7 +169,7 @@ func (b *Bridge) fetchForType(
 // processPolledMsg unmarshals a NATS message into a poll response
 // and stores it in the ackMap for later resolution.
 func (b *Bridge) processPolledMsg(
-	msg *nats.Msg,
+	msg jetstream.Msg,
 ) (pollResponse, bool) {
 	if msg == nil {
 		panic("processPolledMsg: msg must not be nil")
@@ -171,7 +178,7 @@ func (b *Bridge) processPolledMsg(
 		panic("processPolledMsg: ackMap must not be nil")
 	}
 	var payload protocol.TaskPayload
-	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
 		msg.Ack()
 		return pollResponse{}, false
 	}
