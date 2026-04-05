@@ -25,11 +25,24 @@
 
 **Bulk cancellation:** `POST /runs/cancel` cancels multiple runs in one call, filtered by workflow ID, status (`running`/`pending`/`all`), and time range. Supports `--dry-run` to preview. Capped at 1000 runs per call — sequential publish (~1-2ms each) avoids thundering herd on the orchestrator. Synchronous (completes in 1-2s), no async job tracking needed. CLI: `dagnats run cancel-all --workflow=<name> [--status=running] [--after=T] [--before=T] [--dry-run]`. Cancelled runs release concurrency slots and cascade to non-detached sub-workflows. Cancellation does NOT trigger compensation (intentional, not failure).
 
+## Non-Retriable Errors
+
+Workers signal permanent failures via `FailPermanent(err)` or explicit retry delays via `FailRetryAfter(err, duration)`. Wire protocol: `StepFailedPayload` with `failure_type` discriminator (`retriable`, `non_retriable`, `retry_after`). Orchestrator parses and branches: non-retriable skips retries → on-failure/compensation/fail. Retry-after schedules exact delay via `SLEEP_TIMERS` (`TimerActionRetryAfter`), bypassing backoff. Existing `Fail(err)` defaults to retriable. Backward compat: old raw-string payloads treated as retriable. Bounds: retry-after clamped to [100ms, 1h]. HTTP bridge: `failure_type` + `retry_after_ms` on fail action.
+
+## Bulk Operations
+
+**Bulk run** (`POST /runs/bulk`): Start up to 1000 runs of same workflow. Def loaded once. Atomic validation (first bad input fails batch). CLI: `dagnats run bulk --workflow=X '{"a":1}' '{"a":2}'` or `--from-file=inputs.jsonl`.
+
+**Bulk retry** (`POST /runs/retry`): Retry up to 1000 failed runs. Mode `rerun` = fresh start with original input. Mode `replay` = re-publish DLQ task messages. CLI: `dagnats run retry-all --workflow=X --mode=rerun`.
+
+**Bulk cancel** (already documented above): `POST /runs/cancel`. All three share: 1000-run cap, sequential publish, dry-run, time range filters.
+
 ## Concurrency Limits
 
-**Two scopes:**
+**Three scopes:**
 - Per-workflow: `WorkflowDef.Concurrency.MaxRuns` — cap concurrent runs of same workflow
-- Per-step: not yet implemented (field exists)
+- Per-task-type: `StepDef.MaxTaskConcurrency` — global cap across all runs for a task type
+- Per-run: `ConcurrencyLimit.MaxSteps` — cap concurrent steps within a single run
 
 **Implementation:** KV-based counters with optimistic locking (CAS loops, bounded at 10 retries)
 - Acquire on workflow start, release on complete/fail/cancel

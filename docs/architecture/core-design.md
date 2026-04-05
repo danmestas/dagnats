@@ -134,6 +134,60 @@ Three interfaces, split by concern. Handlers type-assert to optional capabilitie
 - Flat struct schema generation only in v1 (no nested object recursion)
 - Standalone functions, not a typed builder wrapper (Go generics limitation with interfaces)
 
+## Dynamic DAG Generation (Planner Steps)
+
+`StepTypePlanner` — a step whose output is a JSON DAG fragment. The engine materializes the fragment as runtime steps, then executes them.
+
+**Flow:** planner step runs → returns `{steps: [...], edges: [...]}` → engine validates (bounds, cycles, ID collisions) → appends to `WorkflowRun.DynamicSteps` → `EffectiveSteps()` merges static + dynamic → normal execution resumes.
+
+**Bounds:** 100 generated steps per planner, 500 total dynamic per run, 10 depth max. Generated step IDs namespaced: `{plannerStepID}.{generatedID}`. Output aggregation: 1 terminal = raw, N terminals = map.
+
+**Event:** `EventPlannerMaterialized` records what was generated for observability.
+
+## Human Approval Gates
+
+`StepTypeApproval` — pauses execution until a human approves or rejects via HTTP endpoint or CLI.
+
+**Token:** 256-bit cryptographically random, stored in `approval_tokens` KV (7-day TTL). Atomic consumption via CAS prevents double-approve.
+
+**Endpoints:** `POST /runs/{id}/approval/{step_id}?action=approve&token={token}` and `?action=reject`. CLI: `dagnats run approve/reject <run-id> <step-id> --token=<token>`.
+
+**Notification:** Published to `approval.{runID}.{stepID}` NATS subject for integrations (Slack, Discord, etc.). Timeout configurable (max 168h / 7 days) — auto-rejects on expiry.
+
+## Per-Step Concurrency Limits
+
+Two additional scopes beyond per-workflow `MaxRuns`:
+
+**Per-task-type global:** `StepDef.MaxTaskConcurrency` — "at most N `call-claude` tasks across all runs." KV bucket: `concurrency_tasks` with CAS counters. Checked at task dispatch. If exhausted, retry via `SLEEP_TIMERS` with 1s delay.
+
+**Per-run:** `ConcurrencyLimit.MaxSteps` — "at most N steps concurrent within this run." Enforced in `enqueueReady`. Builder: `WithConcurrency(maxRuns, maxSteps)`, `WithTaskConcurrency(max)`.
+
+**Bounds:** 1-1000 per scope. CAS retry: 10 attempts.
+
+## Non-Retriable Errors
+
+`StepFailedPayload` wire protocol type with `FailureType` discriminator:
+
+- `retriable` (default) — normal retry policy applies
+- `non_retriable` — engine skips all retries, goes straight to on-failure/compensation/fail
+- `retry_after` — engine schedules exact delay via `SLEEP_TIMERS` (`TimerActionRetryAfter`), bypassing backoff policy
+
+Worker API: `FailPermanent(err)`, `FailRetryAfter(err, duration)`. Existing `Fail(err)` defaults to retriable. Backward compatible: old raw-string payloads parsed as retriable. `RetryAfter` clamped to [100ms, 1 hour].
+
+HTTP bridge: `failure_type` and `retry_after_ms` fields on fail resolve action.
+
+Observability: `step.failure.non_retriable` and `step.failure.retry_after` counters.
+
+## Bulk Operations
+
+**Bulk run** (`POST /runs/bulk`, `dagnats run bulk`): Start up to 1000 runs of the same workflow in one call. Def loaded once, schema parsed once. Atomic validation: first bad input fails the entire batch before any events publish. CLI supports positional JSON args and `--from-file=inputs.jsonl`.
+
+**Bulk retry** (`POST /runs/retry`, `dagnats run retry-all`): Retry up to 1000 failed runs. Two modes:
+- `rerun` — fresh start with original input (new run ID, clean state, uses current workflow def)
+- `replay` — re-publish DLQ task messages to resume at failed step (existing run, limited by 30-day DLQ retention)
+
+Both support `--dry-run`, time range filters (`--after`, `--before`). Sequential processing, 1000-run cap.
+
 ## Competitive Context
 
 Built to reach parity with Kestra, Hatchet, and Temporal. Key differentiators:
