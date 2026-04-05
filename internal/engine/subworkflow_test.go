@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // registerWorkflowDef marshals and stores a WorkflowDef in the
@@ -64,6 +65,10 @@ func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Register child workflow with one normal step.
 	childDef := dag.WorkflowDef{
@@ -100,7 +105,7 @@ func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	// Start the parent workflow.
 	startPayload, _ := json.Marshal(parentDef)
@@ -193,6 +198,10 @@ func TestSubWorkflow_ChildFailsParentFails(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	childDef := dag.WorkflowDef{
 		Name:    "child-wf-fail",
@@ -227,7 +236,7 @@ func TestSubWorkflow_ChildFailsParentFails(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	startPayload, _ := json.Marshal(parentDef)
 	startEvt := protocol.NewWorkflowEvent(
@@ -296,6 +305,10 @@ func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	childDef := dag.WorkflowDef{
 		Name:    "child-wf-detach",
@@ -331,7 +344,7 @@ func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	startPayload, _ := json.Marshal(parentDef)
 	startEvt := protocol.NewWorkflowEvent(
@@ -385,6 +398,10 @@ func TestSubWorkflow_CancellationCascades(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	childDef := dag.WorkflowDef{
 		Name:    "child-wf-cancel",
@@ -419,7 +436,7 @@ func TestSubWorkflow_CancellationCascades(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	startPayload, _ := json.Marshal(parentDef)
 	startEvt := protocol.NewWorkflowEvent(
@@ -490,6 +507,10 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	childDef := dag.WorkflowDef{
 		Name:    "child-wf-detach-cancel",
@@ -527,7 +548,7 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	startPayload, _ := json.Marshal(parentDef)
 	startEvt := protocol.NewWorkflowEvent(
@@ -606,6 +627,10 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	childDef := dag.WorkflowDef{
 		Name:    "child-wf-input",
@@ -648,7 +673,7 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	startPayload, _ := json.Marshal(parentDef)
 	startEvt := protocol.NewWorkflowEvent(
@@ -715,6 +740,10 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Create a chain of workflow defs that would exceed max depth.
 	leafDef := dag.WorkflowDef{
@@ -730,7 +759,7 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, leafDef)
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	defer orch.Stop()
@@ -772,7 +801,7 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 	data, _ := spawnEvt.Marshal()
 
 	// Publish and wait for the message to be processed.
-	_, err := js.Publish(
+	_, err = js.Publish(
 		spawnEvt.NATSSubject(), data,
 		nats.MsgId(spawnEvt.NATSMsgID()),
 	)

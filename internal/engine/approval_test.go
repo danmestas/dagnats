@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // buildApprovalWorkflow creates a two-step workflow: an approval
@@ -139,6 +140,10 @@ func TestApprovalStep_TokenStoredAndEventPublished(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := buildApprovalWorkflow(t)
 	runID := "run-approval-1"
@@ -167,7 +172,7 @@ func TestApprovalStep_TokenStoredAndEventPublished(t *testing.T) {
 	}
 
 	// Verify step is Running in snapshot.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load(runID)
 	if err != nil {
 		t.Fatalf("load snapshot: %v", err)
@@ -243,6 +248,10 @@ func TestApprovalStep_RejectFailsWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := buildApprovalWorkflow(t)
 	runID := "run-approval-3"
@@ -262,7 +271,7 @@ func TestApprovalStep_RejectFailsWorkflow(t *testing.T) {
 	)
 
 	// Wait for run to fail.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load(runID)
@@ -296,6 +305,10 @@ func TestApprovalStep_TimeoutFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Build workflow with very short timeout.
 	b := dag.NewWorkflow("approval-timeout-wf")
@@ -328,7 +341,7 @@ func TestApprovalStep_TimeoutFails(t *testing.T) {
 	)
 
 	// Wait for run to fail via timeout.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load(runID)

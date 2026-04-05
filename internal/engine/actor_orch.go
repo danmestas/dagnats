@@ -54,7 +54,7 @@ func NewActorOrchestrator(
 		js:       js,
 		tel:      tel,
 		rt:       actor.NewRuntime(),
-		store:    NewSnapshotStore(jsLegacy),
+		store:    NewSnapshotStore(js),
 	}
 }
 

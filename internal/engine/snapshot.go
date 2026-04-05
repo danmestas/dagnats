@@ -1,12 +1,13 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ErrRunNotFound is returned by Load when no snapshot exists for the given run ID.
@@ -16,18 +17,21 @@ var ErrRunNotFound = errors.New("workflow run not found")
 // SnapshotStore persists and retrieves WorkflowRun state in the NATS KV store.
 // The workflow_runs bucket must exist before NewSnapshotStore is called.
 type SnapshotStore struct {
-	kv nats.KeyValue
+	kv jetstream.KeyValue
 }
 
 // NewSnapshotStore binds a SnapshotStore to the workflow_runs KV bucket.
 // Panics if the bucket has not been created — callers must call SetupKVBuckets first.
-func NewSnapshotStore(jsLegacy nats.JetStreamContext) *SnapshotStore {
-	if jsLegacy == nil {
-		panic("NewSnapshotStore: JetStreamContext must not be nil")
+func NewSnapshotStore(js jetstream.JetStream) *SnapshotStore {
+	if js == nil {
+		panic("NewSnapshotStore: JetStream must not be nil")
 	}
-	kv, err := jsLegacy.KeyValue("workflow_runs")
+	kv, err := js.KeyValue(
+		context.Background(), "workflow_runs",
+	)
 	if err != nil {
-		panic("NewSnapshotStore: workflow_runs bucket not found: " + err.Error())
+		panic("NewSnapshotStore: workflow_runs bucket not found: " +
+			err.Error())
 	}
 	return &SnapshotStore{kv: kv}
 }
@@ -45,7 +49,9 @@ func (s *SnapshotStore) Save(run dag.WorkflowRun) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.kv.Put("run."+run.RunID, data)
+	_, err = s.kv.Put(
+		context.Background(), "run."+run.RunID, data,
+	)
 	return err
 }
 
@@ -59,9 +65,11 @@ func (s *SnapshotStore) Load(runID string) (dag.WorkflowRun, error) {
 	if s.kv == nil {
 		panic("SnapshotStore.Load: kv bucket must not be nil")
 	}
-	entry, err := s.kv.Get("run." + runID)
+	entry, err := s.kv.Get(
+		context.Background(), "run."+runID,
+	)
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return dag.WorkflowRun{}, ErrRunNotFound
 		}
 		return dag.WorkflowRun{}, err
@@ -83,9 +91,9 @@ func (s *SnapshotStore) ListAll(
 	if maxRuns <= 0 {
 		panic("SnapshotStore.ListAll: maxRuns must be positive")
 	}
-	keys, err := s.kv.Keys()
+	keys, err := s.kv.Keys(context.Background())
 	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return []dag.WorkflowRun{}, nil
 		}
 		return nil, err
@@ -107,7 +115,7 @@ func (s *SnapshotStore) ListAll(
 		return []dag.WorkflowRun{}, nil
 	}
 
-	entries, err := natsutil.ParallelGet(
+	entries, err := natsutil.ParallelGetJS(
 		s.kv, filtered, natsutil.DefaultParallelism,
 	)
 	if err != nil {

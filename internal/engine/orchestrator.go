@@ -31,7 +31,7 @@ type Orchestrator struct {
 	nc          *nats.Conn
 	jsLegacy    nats.JetStreamContext
 	js          jetstream.JetStream // new jetstream API for orbit extensions
-	defKV       nats.KeyValue
+	defKV       jetstream.KeyValue
 	store       *SnapshotStore
 	tel         *observe.Telemetry
 	sub         *nats.Subscription
@@ -86,21 +86,23 @@ func NewOrchestrator(
 	if err != nil {
 		panic("NewOrchestrator: jetstream.New: " + err.Error())
 	}
-	defKV, err := jsLegacy.KeyValue("workflow_defs")
+	defKV, err := js.KeyValue(
+		context.Background(), "workflow_defs",
+	)
 	if err != nil {
 		panic(
 			"NewOrchestrator: workflow_defs bucket not found: " +
 				err.Error(),
 		)
 	}
-	cm, _ := NewConcurrencyManagerSafe(jsLegacy)
-	rl := NewRateLimiter(jsLegacy)
+	cm, _ := NewConcurrencyManagerSafe(js)
+	rl := NewRateLimiter(js)
 	o := &Orchestrator{
 		nc:          nc,
 		jsLegacy:    jsLegacy,
 		js:          js,
 		defKV:       defKV,
-		store:       NewSnapshotStore(jsLegacy),
+		store:       NewSnapshotStore(js),
 		tel:         tel,
 		concurrency: cm,
 		rateLimiter: rl,
@@ -133,7 +135,7 @@ func NewOrchestrator(
 		),
 	}
 	o.sleepTimer = NewSleepTimer(nc, jsLegacy)
-	o.correlator = NewCorrelator(nc, jsLegacy)
+	o.correlator = NewCorrelator(nc, jsLegacy, js)
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -557,12 +559,12 @@ func (o *Orchestrator) findOldestPendingRun(
 	if o.store == nil {
 		panic("findOldestPendingRun: store must not be nil")
 	}
-	keys, err := o.store.kv.Keys()
+	keys, err := o.store.kv.Keys(context.Background())
 	if err != nil {
 		return "", false, fmt.Errorf("list run keys: %w", err)
 	}
 
-	entries, err := natsutil.ParallelGet(
+	entries, err := natsutil.ParallelGetJS(
 		o.store.kv, keys, natsutil.DefaultParallelism,
 	)
 	if err != nil {
@@ -1470,7 +1472,9 @@ func (o *Orchestrator) createChildRun(
 		panic("createChildRun: childWorkflow must not be empty")
 	}
 
-	entry, err := o.defKV.Get(childWorkflow)
+	entry, err := o.defKV.Get(
+		context.Background(), childWorkflow,
+	)
 	if err != nil {
 		return fmt.Errorf(
 			"load child workflow def %q: %w",
@@ -2040,7 +2044,9 @@ func (o *Orchestrator) loadRunAndDef(
 		return dag.WorkflowDef{}, dag.WorkflowRun{},
 			fmt.Errorf("load run %q: %w", runID, err)
 	}
-	entry, err := o.defKV.Get(run.WorkflowID)
+	entry, err := o.defKV.Get(
+		context.Background(), run.WorkflowID,
+	)
 	if err != nil {
 		return dag.WorkflowDef{}, dag.WorkflowRun{},
 			fmt.Errorf("load workflow def %q: %w",

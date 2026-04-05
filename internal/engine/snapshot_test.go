@@ -11,6 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestSnapshotWriteAndRead(t *testing.T) {
@@ -23,7 +24,11 @@ func TestSnapshotWriteAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	store := NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	store := NewSnapshotStore(jsNew)
 	run := dag.WorkflowRun{
 		RunID: "run-123", WorkflowID: "test-wf", Status: dag.RunStatusRunning,
 		Steps: map[string]dag.StepState{
@@ -64,7 +69,11 @@ func TestSnapshotLoadNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	store := NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	store := NewSnapshotStore(jsNew)
 	_, err = store.Load("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent run, got nil")
@@ -84,7 +93,11 @@ func TestSnapshotUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	store := NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	store := NewSnapshotStore(jsNew)
 	run := dag.WorkflowRun{
 		RunID: "run-456", WorkflowID: "test-wf", Status: dag.RunStatusRunning,
 		Steps:     map[string]dag.StepState{"a": {Status: dag.StepStatusPending}},
@@ -122,7 +135,11 @@ func TestSnapshotListAllEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	store := NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	store := NewSnapshotStore(jsNew)
 
 	// Positive: empty bucket returns empty slice, no error.
 	runs, err := store.ListAll(100)
@@ -144,7 +161,11 @@ func TestSnapshotListAllBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	store := NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	store := NewSnapshotStore(jsNew)
 
 	// Save 3 runs.
 	for i := 0; i < 3; i++ {
@@ -191,7 +212,11 @@ func TestSnapshotListAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	store := NewSnapshotStore(js)
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	store := NewSnapshotStore(jsNew)
 	run1 := dag.WorkflowRun{
 		RunID:      "run-001",
 		WorkflowID: "wf-a",

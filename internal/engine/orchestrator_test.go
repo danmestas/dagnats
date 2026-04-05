@@ -17,6 +17,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestOrchestratorStartsFirstStep(t *testing.T) {
@@ -121,6 +122,10 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{Name: "loop-wf", Version: "1", Steps: []dag.StepDef{
 		{
@@ -178,7 +183,7 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Run must be marked Failed.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("run-iter")
 	if err != nil {
 		t.Fatalf("Load run failed: %v", err)
@@ -203,6 +208,10 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{Name: "dur-wf", Version: "1", Steps: []dag.StepDef{
 		{
@@ -256,7 +265,7 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("run-dur")
 	if err != nil {
 		t.Fatalf("Load run failed: %v", err)
@@ -279,6 +288,10 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{Name: "single-step", Version: "1", Steps: []dag.StepDef{
 		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
@@ -301,7 +314,7 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	js.Publish(compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()))
 
 	time.Sleep(500 * time.Millisecond)
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("run-3")
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
@@ -385,6 +398,10 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 	}
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	defKV, _ := js.KeyValue("workflow_defs")
 
 	// Register a child workflow definition
@@ -418,7 +435,7 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 		nats.MsgId(spawnEvt.NATSMsgID()))
 
 	// Wait for child run to appear in snapshot store
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	var childRun dag.WorkflowRun
 	var loadErr error
 	deadline := time.Now().Add(5 * time.Second)
@@ -522,8 +539,12 @@ func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
 	}
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 
 	// Register child workflow def
 	childDef := dag.WorkflowDef{
@@ -583,6 +604,10 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 	}
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	defKV, _ := js.KeyValue("workflow_defs")
 
 	wfDef := dag.WorkflowDef{
@@ -622,7 +647,7 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 	js.PublishMsg(cancelMsg)
 
 	// Wait for processing
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load("cancel-run-1")
@@ -648,6 +673,10 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 	}
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	defKV, _ := js.KeyValue("workflow_defs")
 
 	wfDef := dag.WorkflowDef{
@@ -690,7 +719,7 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 	})
 	time.Sleep(200 * time.Millisecond)
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, _ := store.Load("retry-run-1")
 
 	// Positive: run is still running (not failed yet)
@@ -713,6 +742,10 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 	}
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	defKV, _ := js.KeyValue("workflow_defs")
 
 	wfDef := dag.WorkflowDef{
@@ -758,7 +791,7 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load("exhaust-run-1")
@@ -782,6 +815,10 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 	}
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	defKV, _ := js.KeyValue("workflow_defs")
 
 	wfDef := dag.WorkflowDef{
@@ -823,7 +860,7 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 	})
 
 	// Check that run is cancelled
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load("timeout-run-1")
@@ -906,6 +943,10 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	}
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	defKV, _ := js.KeyValue("workflow_defs")
 
 	// Workflow: deploy fails → notify runs
@@ -965,7 +1006,7 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	msg.Ack()
 
 	// Positive: workflow should NOT be failed yet (on-failure is running)
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	time.Sleep(200 * time.Millisecond)
 	run, _ := store.Load("onfail-run-1")
 	if run.Status == dag.RunStatusFailed {
@@ -1042,6 +1083,10 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	wfDef := dag.WorkflowDef{
 		Name: "cont-wf", Version: "1",
 		Steps: []dag.StepDef{{
@@ -1091,7 +1136,7 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 		t.Fatalf("expected 1 task, got %d", len(msgs2))
 	}
 	// Positive: iteration count = 1 in snapshot.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("cont-run")
 	if err != nil {
 		t.Fatalf("Load run: %v", err)
@@ -1133,6 +1178,10 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := skipIfWorkflow()
 	defKV, _ := js.KeyValue("workflow_defs")
@@ -1176,7 +1225,7 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 	}
 
 	// Positive: step "b" is Skipped.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("skip-run")
 	if err != nil {
 		t.Fatalf("Load run failed: %v", err)
@@ -1195,6 +1244,10 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "snap-wf", Version: "1",
@@ -1231,7 +1284,7 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 		nats.MsgId(compEvt.NATSMsgID()))
 	time.Sleep(500 * time.Millisecond)
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("snap-run")
 	if err != nil {
 		t.Fatalf("Load snapshot failed: %v", err)
@@ -1255,6 +1308,10 @@ func TestOrchestratorSnapshotRestore(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "snap-wf", Version: "1",
@@ -1270,7 +1327,7 @@ func TestOrchestratorSnapshotRestore(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	crafted := dag.WorkflowRun{
 		RunID:      "crafted-run",
 		WorkflowID: "snap-wf",
@@ -1311,6 +1368,10 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Define workflow with input schema requiring "repo" field
 	schema := json.RawMessage(`{
@@ -1382,7 +1443,7 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Check that the run exists but is marked as failed
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("invalid-run")
 	if err != nil {
 		t.Fatalf("failed run should exist in snapshot: %v", err)
@@ -1476,6 +1537,10 @@ func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	wfDef := dag.WorkflowDef{
 		Name: "skipall-wf", Version: "1",
 		Steps: []dag.StepDef{
@@ -1523,7 +1588,7 @@ func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 	js.Publish(compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load("skipall-run")
@@ -1570,6 +1635,10 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	defKV, _ := js.KeyValue("workflow_defs")
 
 	childDef := dag.WorkflowDef{
@@ -1620,7 +1689,7 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 		t.Fatal("expected child.failed on parent")
 	}
 	// Positive: child run is Failed.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	childRun, _ := store.Load("child-fail-1")
 	if childRun.Status != dag.RunStatusFailed {
 		t.Fatalf("child = %v, want Failed",
@@ -1830,6 +1899,10 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "cancel-noop", Version: "1",
@@ -1860,7 +1933,7 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	js.Publish(compEvt.NATSSubject(), cd,
 		nats.MsgId(compEvt.NATSMsgID()))
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load("cnoop-run")
@@ -1900,6 +1973,10 @@ func TestOrchestratorStartWithInput(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "input-wf", Version: "1",
@@ -1940,7 +2017,7 @@ func TestOrchestratorStartWithInput(t *testing.T) {
 	}
 
 	// Positive: run is Running.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("input-run")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
@@ -1958,6 +2035,10 @@ func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "malform-wf", Version: "1",
@@ -1987,7 +2068,7 @@ func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 	js.Publish(startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load("recover-run")
@@ -2041,6 +2122,10 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "unknown-evt", Version: "1",
@@ -2067,8 +2152,8 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Positive: no run was created (event was ignored).
-	store := NewSnapshotStore(js)
-	_, err := store.Load("unknown-run")
+	store := NewSnapshotStore(jsNew)
+	_, err = store.Load("unknown-run")
 	if err == nil {
 		t.Fatal("unknown event should not create a run")
 	}
@@ -2116,9 +2201,12 @@ func TestLoadRunAndDefMissingWorkflowDef(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run := dag.WorkflowRun{
 		RunID:      "orphan-run",
 		WorkflowID: "missing-def",
@@ -2135,7 +2223,7 @@ func TestLoadRunAndDefMissingWorkflowDef(t *testing.T) {
 	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
 
 	// Positive: error returned for missing workflow def.
-	_, _, err := orch.loadRunAndDef("orphan-run")
+	_, _, err = orch.loadRunAndDef("orphan-run")
 	if err == nil {
 		t.Fatal("expected error for missing workflow def")
 	}
@@ -2287,6 +2375,10 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "map-fanout", Version: "1",
@@ -2413,7 +2505,7 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 	js.Publish(sumEvt.NATSSubject(), sumData,
 		nats.MsgId(sumEvt.NATSMsgID()))
 
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load("map-run-1")
@@ -2440,6 +2532,10 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "map-fail", Version: "1",
@@ -2512,7 +2608,7 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 		nats.MsgId("map-fail-1.process.map.1.failed"))
 
 	// Verify workflow fails.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := store.Load("map-fail-1")
@@ -2812,6 +2908,10 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "wait-wf", Version: "1",
@@ -2909,7 +3009,7 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Positive: run should be completed.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, err := store.Load("wait-run-1")
 	if err != nil {
 		t.Fatalf("Load run failed: %v", err)
@@ -2937,6 +3037,10 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "wait-timeout-wf", Version: "1",
@@ -3015,7 +3119,7 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 	}
 
 	// Check the wait step has timeout output.
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, loadErr := store.Load("wait-run-2")
 	if loadErr != nil {
 		t.Fatalf("Load run failed: %v", loadErr)
@@ -3041,6 +3145,10 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "test-nr", Version: "1",
@@ -3115,7 +3223,7 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 	})
 
 	time.Sleep(500 * time.Millisecond)
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, loadErr := store.Load("run-nr-1")
 	if loadErr != nil {
 		t.Fatalf("load run after fail: %v", loadErr)
@@ -3142,6 +3250,10 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "test-ra", Version: "1",
@@ -3211,7 +3323,7 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 
 	// Verify run is NOT failed (retries remain)
 	time.Sleep(100 * time.Millisecond)
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, loadErr := store.Load("run-ra-1")
 	if loadErr != nil {
 		t.Fatalf("load run: %v", loadErr)
@@ -3227,6 +3339,10 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	wfDef := dag.WorkflowDef{
 		Name: "test-compat", Version: "1",
@@ -3277,7 +3393,7 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 	)
 
 	time.Sleep(500 * time.Millisecond)
-	store := NewSnapshotStore(js)
+	store := NewSnapshotStore(jsNew)
 	run, loadErr := store.Load("run-compat")
 	if loadErr != nil {
 		t.Fatalf("load run: %v", loadErr)

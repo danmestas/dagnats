@@ -21,6 +21,7 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Service is the control plane for DagNats. It writes workflow definitions to
@@ -84,6 +85,10 @@ func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 				err.Error(),
 		)
 	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		panic("NewService: jetstream.New: " + err.Error())
+	}
 	triggerKV, _ := js.KeyValue("triggers")
 	signalKV, _ := js.KeyValue("signals")
 	scheduledKV, _ := js.KeyValue("scheduled_runs")
@@ -91,7 +96,7 @@ func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 		nc:          nc,
 		js:          js,
 		defKV:       defKV,
-		store:       engine.NewSnapshotStore(js),
+		store:       engine.NewSnapshotStore(jsNew),
 		tel:         tel,
 		triggerKV:   triggerKV,
 		signalKV:    signalKV,

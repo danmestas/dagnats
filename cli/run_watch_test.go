@@ -17,6 +17,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Compile-time check: runWatchCmd must accept []string.
@@ -48,9 +49,13 @@ func TestRunWatchOutputsEventsForExistingRun(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Create a run snapshot so GetRun succeeds.
-	store := engine.NewSnapshotStore(js)
+	store := engine.NewSnapshotStore(jsNew)
 	run := dag.WorkflowRun{
 		RunID:      "watch-run-1",
 		WorkflowID: "test-wf",
@@ -106,9 +111,13 @@ func TestWatchRunWithStatusReturnsTerminal(t *testing.T) {
 	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Create a completed run snapshot.
-	store := engine.NewSnapshotStore(js)
+	store := engine.NewSnapshotStore(jsNew)
 	run := dag.WorkflowRun{
 		RunID:      "watch-status-1",
 		WorkflowID: "test-wf",

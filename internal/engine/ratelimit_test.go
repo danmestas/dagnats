@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestTokenBucketAllowsWithinLimit(t *testing.T) {
@@ -17,12 +18,13 @@ func TestTokenBucketAllowsWithinLimit(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, err := nc.JetStream()
+
+	jsNew, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	rl := NewRateLimiter(js)
+	rl := NewRateLimiter(jsNew)
 	if rl == nil {
 		t.Fatal("NewRateLimiter returned nil")
 	}
@@ -50,12 +52,13 @@ func TestTokenBucketDeniesWhenExhausted(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, err := nc.JetStream()
+
+	jsNew, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	rl := NewRateLimiter(js)
+	rl := NewRateLimiter(jsNew)
 	if rl == nil {
 		t.Fatal("NewRateLimiter returned nil")
 	}
@@ -96,12 +99,13 @@ func TestTokenBucketRefillsOverTime(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, err := nc.JetStream()
+
+	jsNew, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	rl := NewRateLimiter(js)
+	rl := NewRateLimiter(jsNew)
 	if rl == nil {
 		t.Fatal("NewRateLimiter returned nil")
 	}
@@ -180,12 +184,13 @@ func TestTokenBucketKeyedIsolation(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, err := nc.JetStream()
+
+	jsNew, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	rl := NewRateLimiter(js)
+	rl := NewRateLimiter(jsNew)
 	if rl == nil {
 		t.Fatal("NewRateLimiter returned nil")
 	}

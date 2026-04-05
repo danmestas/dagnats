@@ -18,6 +18,7 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestFormatRunStatus(t *testing.T) {
@@ -578,6 +579,10 @@ func TestRunStartOutputPrintsResult(t *testing.T) {
 
 	tel := observe.NewNoopTelemetry()
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Register a one-step workflow definition.
 	svc := api.NewService(nc, tel)
@@ -593,7 +598,7 @@ func TestRunStartOutputPrintsResult(t *testing.T) {
 	}
 
 	// Create a completed run snapshot directly in KV.
-	store := engine.NewSnapshotStore(js)
+	store := engine.NewSnapshotStore(jsNew)
 	runID := "output-test-run-1"
 	run := dag.WorkflowRun{
 		RunID:      runID,

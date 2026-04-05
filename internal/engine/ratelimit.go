@@ -7,11 +7,13 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const maxCASRetries = 10
@@ -27,19 +29,21 @@ type tokenBucket struct {
 // Nil-safe: all methods are no-ops when receiver is nil, so callers
 // do not need to check before calling Allow.
 type RateLimiter struct {
-	kv  nats.KeyValue
+	kv  jetstream.KeyValue
 	now func() time.Time // injectable clock for testing
 }
 
 // NewRateLimiter creates a RateLimiter using the rate_limits KV bucket.
 // Returns nil if the bucket does not exist, making rate limiting optional.
 func NewRateLimiter(
-	jsLegacy nats.JetStreamContext,
+	js jetstream.JetStream,
 ) *RateLimiter {
-	if jsLegacy == nil {
-		panic("NewRateLimiter: jsLegacy must not be nil")
+	if js == nil {
+		panic("NewRateLimiter: js must not be nil")
 	}
-	kv, err := jsLegacy.KeyValue("rate_limits")
+	kv, err := js.KeyValue(
+		context.Background(), "rate_limits",
+	)
 	if err != nil {
 		return nil
 	}
@@ -110,8 +114,8 @@ func (rl *RateLimiter) tryAllow(
 func (rl *RateLimiter) loadBucket(
 	kvKey string, limit int, period time.Duration,
 ) (tokenBucket, uint64, error) {
-	entry, err := rl.kv.Get(kvKey)
-	if err == nats.ErrKeyNotFound {
+	entry, err := rl.kv.Get(context.Background(), kvKey)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return tokenBucket{
 			Tokens:     limit,
 			LastRefill: rl.now().UnixNano(),
@@ -181,10 +185,11 @@ func (rl *RateLimiter) saveBucket(
 	if err != nil {
 		return fmt.Errorf("marshal bucket: %w", err)
 	}
+	ctx := context.Background()
 	if rev == 0 {
-		_, err = rl.kv.Create(kvKey, data)
+		_, err = rl.kv.Create(ctx, kvKey, data)
 	} else {
-		_, err = rl.kv.Update(kvKey, data, rev)
+		_, err = rl.kv.Update(ctx, kvKey, data, rev)
 	}
 	return err
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
@@ -33,10 +34,14 @@ func TestInspectShowsStatusAndFailures(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	// Create a run snapshot so GetRun works
 	tel := observe.NewNoopTelemetry()
-	store := engine.NewSnapshotStore(js)
+	store := engine.NewSnapshotStore(jsNew)
 	run := dag.WorkflowRun{
 		RunID:      "inspect-run-1",
 		WorkflowID: "test-wf",
@@ -215,7 +220,10 @@ func TestInspectCleanRunShowsNoFailures(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
-	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	svc := api.NewService(nc, observe.NewNoopTelemetry())
 	wb := dag.NewWorkflow("clean-wf")
@@ -223,7 +231,7 @@ func TestInspectCleanRunShowsNoFailures(t *testing.T) {
 	def, _ := wb.Build()
 	svc.RegisterWorkflow(context.Background(), def)
 
-	store := engine.NewSnapshotStore(js)
+	store := engine.NewSnapshotStore(jsNew)
 	run := dag.WorkflowRun{
 		RunID:      "clean-run-1",
 		WorkflowID: "clean-wf",

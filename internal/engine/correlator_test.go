@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestCorrelatorMatchesEvent(t *testing.T) {
@@ -23,8 +24,12 @@ func TestCorrelatorMatchesEvent(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
-	c := NewCorrelator(nc, js)
+	c := NewCorrelator(nc, js, jsNew)
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -94,8 +99,12 @@ func TestCorrelatorIgnoresNonMatchingEvent(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
-	c := NewCorrelator(nc, js)
+	c := NewCorrelator(nc, js, jsNew)
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -154,8 +163,12 @@ func TestCorrelatorRemoveWaitersForRun(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
-	c := NewCorrelator(nc, js)
+	c := NewCorrelator(nc, js, jsNew)
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
