@@ -36,6 +36,10 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validateCancelOn(def); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 
@@ -509,6 +513,21 @@ func validatePriority(def WorkflowDef) error {
 		return fmt.Errorf(
 			"priority: default_offset out of [-600, 600]",
 		)
+	}
+	return nil
+}
+
+// validateCancelOn checks CancelOn constraints.
+func validateCancelOn(def WorkflowDef) error {
+	if len(def.CancelOn) > 5 {
+		return fmt.Errorf("cancel_on: max 5 entries")
+	}
+	for i, co := range def.CancelOn {
+		if co.Event == "" {
+			return fmt.Errorf(
+				"cancel_on[%d]: event must not be empty", i,
+			)
+		}
 	}
 	return nil
 }

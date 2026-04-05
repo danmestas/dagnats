@@ -20,6 +20,7 @@ type WorkflowBuilder struct {
 	idempotencyKey string
 	sticky         StickyStrategy
 	priority       *PriorityConfig
+	cancelOn       []CancelOn
 }
 
 // NewWorkflow starts a new builder for a workflow with the given name.
@@ -328,6 +329,26 @@ func (b *WorkflowBuilder) WithPriority(
 	return b
 }
 
+// CancelOn registers an event that cancels the workflow.
+func (b *WorkflowBuilder) CancelOn(
+	event string, match Match,
+) *WorkflowBuilder {
+	b.cancelOn = append(b.cancelOn, CancelOn{
+		Event: event, Match: match,
+	})
+	return b
+}
+
+// CancelOnWithTimeout registers a cancellation event with timeout.
+func (b *WorkflowBuilder) CancelOnWithTimeout(
+	event string, match Match, timeout time.Duration,
+) *WorkflowBuilder {
+	b.cancelOn = append(b.cancelOn, CancelOn{
+		Event: event, Match: match, Timeout: timeout,
+	})
+	return b
+}
+
 func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 	def := WorkflowDef{
 		Name:           b.name,
@@ -339,6 +360,9 @@ func (b *WorkflowBuilder) Build() (WorkflowDef, error) {
 	}
 	if b.priority != nil {
 		def.Priority = b.priority
+	}
+	if len(b.cancelOn) > 0 {
+		def.CancelOn = b.cancelOn
 	}
 	if err := Validate(def); err != nil {
 		return WorkflowDef{}, err

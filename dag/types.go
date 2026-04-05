@@ -171,6 +171,13 @@ type ConcurrencyLimit struct {
 	MaxSteps int `json:"max_steps,omitempty"`
 }
 
+// CancelOn specifies an event that cancels a running workflow.
+type CancelOn struct {
+	Event   string        `json:"event"`
+	Match   Match         `json:"match"`
+	Timeout time.Duration `json:"timeout,omitempty"`
+}
+
 // StepDef is the immutable declaration of a single step within a WorkflowDef.
 // DependsOn lists step IDs that must complete before this step is queued.
 // Config holds type-specific configuration as raw JSON — use ParseXxxConfig
@@ -210,6 +217,7 @@ type WorkflowDef struct {
 	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 	Sticky         StickyStrategy    `json:"sticky,omitempty"`
 	Priority       *PriorityConfig   `json:"priority,omitempty"`
+	CancelOn       []CancelOn        `json:"cancel_on,omitempty"`
 }
 
 // StickyStrategy controls worker affinity for workflow runs.
