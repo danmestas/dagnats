@@ -163,12 +163,18 @@ func main() {
 }
 
 // runInitCmd is the CLI entry point for "dagnats init <name>".
+// Routes to init workflow subcommand when first arg is "workflow".
 func runInitCmd(args []string) {
 	if args == nil {
 		panic("runInitCmd: args must not be nil")
 	}
 	if len(args) > 1000 {
 		panic("runInitCmd: args exceeds max bound")
+	}
+
+	if len(args) > 0 && args[0] == "workflow" {
+		runInitWorkflowCmd(args[1:])
+		return
 	}
 
 	jsonOutput := HasJSONFlag(args)

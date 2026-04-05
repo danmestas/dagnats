@@ -23,22 +23,57 @@ type systemStatus struct {
 	StreamInfo []streamInfo     `json:"streams,omitempty"`
 	Runs       map[string]int   `json:"runs,omitempty"`
 	Workflows  []workflowMetric `json:"workflows,omitempty"`
+	Queues     []queueHealth    `json:"queues,omitempty"`
+	DLQ        *dlqSummary      `json:"dlq,omitempty"`
+	Engine     *engineLag       `json:"engine,omitempty"`
+}
+
+// hasDetailFlag returns true if args contains "--detail".
+func hasDetailFlag(args []string) bool {
+	const maxArgs = 1000
+	if len(args) > maxArgs {
+		panic("hasDetailFlag: args exceeds max bound")
+	}
+	for _, arg := range args {
+		if arg == "--detail" {
+			return true
+		}
+	}
+	return false
+}
+
+// stripDetailFlag returns a copy of args without "--detail".
+func stripDetailFlag(args []string) []string {
+	if args == nil {
+		panic("stripDetailFlag: args must not be nil")
+	}
+	result := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg != "--detail" {
+			result = append(result, arg)
+		}
+	}
+	return result
 }
 
 // runSystemStatusCmd checks system health and prints a summary.
-// Supports --json for machine-readable output.
+// Supports --json and --detail for machine-readable or enriched output.
 func runSystemStatusCmd(args []string) {
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
+	detail := hasDetailFlag(args)
+	args = stripDetailFlag(args)
 
 	if HasHelpFlag(args) {
-		fmt.Println("Usage: dagnats status [--json]")
+		fmt.Println(
+			"Usage: dagnats status [--json] [--detail]")
 		fmt.Println(
 			"Shows system health: NATS, JetStream, active runs.")
 		return
 	}
 	if len(args) > 0 {
-		fmt.Println("Usage: dagnats status [--json]")
+		fmt.Println(
+			"Usage: dagnats status [--json] [--detail]")
 		fmt.Println(
 			"Shows system health: NATS, JetStream, active runs.")
 		return
@@ -49,6 +84,9 @@ func runSystemStatusCmd(args []string) {
 
 	if jsonOutput {
 		status := collectSystemStatus(nc, svc)
+		if detail {
+			appendDetailToStatus(&status, nc)
+		}
 		err := FormatJSON(os.Stdout, status)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "json error: %v\n", err)
@@ -58,6 +96,9 @@ func runSystemStatusCmd(args []string) {
 	}
 
 	printSystemStatus(nc, svc)
+	if detail {
+		printDetailSections(nc)
+	}
 }
 
 // collectSystemStatus gathers all health data into a struct.

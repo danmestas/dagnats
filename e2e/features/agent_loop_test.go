@@ -40,10 +40,9 @@ func TestAgentLoop(t *testing.T) {
 		// Agent loop: continue 3 times, then complete.
 		harness.SubscribeWorker(t, nc, "counter",
 			func(tc worker.TaskContext) error {
-				cp := tc.(worker.Checkpointable)
 				// Load checkpoint to get current count.
 				var count int
-				saved, _ := cp.LoadCheckpoint()
+				saved, _ := tc.LoadCheckpoint()
 				if saved != nil {
 					json.Unmarshal(saved, &count)
 				}
@@ -51,7 +50,7 @@ func TestAgentLoop(t *testing.T) {
 
 				// Save checkpoint.
 				cpData, _ := json.Marshal(count)
-				cp.Checkpoint(cpData)
+				tc.Checkpoint(cpData)
 
 				if count >= 3 {
 					return tc.Complete(cpData)
