@@ -52,7 +52,10 @@ func SetupStreams(js jetstream.JetStream) error {
 	if len(streams) == 0 {
 		panic("SetupStreams: streams config must not be empty")
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
 	for _, cfg := range streams {
 		_, err := js.CreateOrUpdateStream(ctx, cfg)
 		if err != nil {
@@ -88,7 +91,10 @@ func SetupKVBuckets(js jetstream.JetStream) error {
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
 	for _, cfg := range buckets {
 		_, err := js.CreateOrUpdateKeyValue(ctx, cfg)
 		if err != nil {
@@ -105,8 +111,12 @@ func SetupStickyStream(js jetstream.JetStream) error {
 	if js == nil {
 		panic("SetupStickyStream: js must not be nil")
 	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
 	_, err := js.CreateOrUpdateStream(
-		context.Background(),
+		ctx,
 		jetstream.StreamConfig{
 			Name:     "STICKY_TASKS",
 			Subjects: []string{"sticky.>"},
@@ -136,7 +146,11 @@ func SetupTelemetryStream(js jetstream.JetStream) error {
 	if cfg.Name == "" {
 		panic("SetupTelemetryStream: stream name must not be empty")
 	}
-	_, err := js.CreateOrUpdateStream(context.Background(), cfg)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+	_, err := js.CreateOrUpdateStream(ctx, cfg)
 	return err
 }
 
@@ -210,7 +224,10 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		return err
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
 	for _, sc := range options.streams {
 		_, err := js.CreateOrUpdateStream(
 			ctx, jetstream.StreamConfig{

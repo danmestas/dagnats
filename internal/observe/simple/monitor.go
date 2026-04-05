@@ -87,7 +87,10 @@ func (m *StorageMonitor) Start(ctx context.Context) {
 // checkAndAlert fetches stream info and publishes an advisory
 // if over threshold.
 func (m *StorageMonitor) checkAndAlert() {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 2*time.Second,
+	)
+	defer cancel()
 	stream, err := m.js.Stream(ctx, monitoredStream)
 	if err != nil {
 		log.Printf(

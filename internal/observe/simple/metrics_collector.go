@@ -99,7 +99,11 @@ func publishMetric(js jetstream.JetStream, pt MetricPoint) {
 		return
 	}
 	subject := "telemetry.metrics." + pt.Service + "." + pt.Name
-	_, err = js.Publish(context.Background(), subject, data)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 2*time.Second,
+	)
+	defer cancel()
+	_, err = js.Publish(ctx, subject, data)
 	if err != nil {
 		log.Printf(
 			"publishMetric: publish error subject=%s: %v",

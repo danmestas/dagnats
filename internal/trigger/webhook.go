@@ -93,7 +93,7 @@ func (h *WebhookHandler) ServeHTTP(
 
 	// Publish workflow event if enabled
 	if h.def.Enabled {
-		if err := h.publishWorkflowEvent(body); err != nil {
+		if err := h.publishWorkflowEvent(r.Context(), body); err != nil {
 			http.Error(w, "failed to publish event", http.StatusInternalServerError)
 			return
 		}
@@ -132,8 +132,14 @@ func (h *WebhookHandler) validateSignature(
 	return hmac.Equal([]byte(actualMAC), []byte(expectedMAC))
 }
 
-// publishWorkflowEvent builds TriggerEnvelope and publishes workflow.started.
-func (h *WebhookHandler) publishWorkflowEvent(body []byte) error {
+// publishWorkflowEvent builds TriggerEnvelope and publishes
+// workflow.started.
+func (h *WebhookHandler) publishWorkflowEvent(
+	ctx context.Context, body []byte,
+) error {
+	if ctx == nil {
+		panic("publishWorkflowEvent: ctx must not be nil")
+	}
 	if body == nil {
 		panic("publishWorkflowEvent: body must not be nil")
 	}
@@ -160,7 +166,9 @@ func (h *WebhookHandler) publishWorkflowEvent(body []byte) error {
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
 
-	runID := fmt.Sprintf("%s-%d", h.def.WorkflowID, now.UnixNano())
+	runID := fmt.Sprintf(
+		"%s-%d", h.def.WorkflowID, now.UnixNano(),
+	)
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted,
 		runID,
@@ -172,9 +180,7 @@ func (h *WebhookHandler) publishWorkflowEvent(body []byte) error {
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
-	_, err = h.js.Publish(
-		context.Background(), evt.NATSSubject(), evtBytes,
-	)
+	_, err = h.js.Publish(ctx, evt.NATSSubject(), evtBytes)
 	if err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}

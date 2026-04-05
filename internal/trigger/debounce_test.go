@@ -36,7 +36,7 @@ func TestDebounceAbsorbsEvents(t *testing.T) {
 
 	// Positive: first event is absorbed (not fired)
 	fire, _, err := d.DebounceOrFire(
-		def, json.RawMessage(`{"v":1}`),
+		context.Background(), def, json.RawMessage(`{"v":1}`),
 	)
 	if err != nil {
 		t.Fatalf("event 1: %v", err)
@@ -47,7 +47,7 @@ func TestDebounceAbsorbsEvents(t *testing.T) {
 
 	// Positive: second event is also absorbed (resets window)
 	fire, _, err = d.DebounceOrFire(
-		def, json.RawMessage(`{"v":2}`),
+		context.Background(), def, json.RawMessage(`{"v":2}`),
 	)
 	if err != nil {
 		t.Fatalf("event 2: %v", err)
@@ -93,7 +93,7 @@ func TestDebounceFiresOnHardTimeout(t *testing.T) {
 
 	// First event — creates window
 	fire, _, err := d.DebounceOrFire(
-		def, json.RawMessage(`{"v":1}`),
+		context.Background(), def, json.RawMessage(`{"v":1}`),
 	)
 	if err != nil {
 		t.Fatalf("event 1: %v", err)
@@ -107,7 +107,7 @@ func TestDebounceFiresOnHardTimeout(t *testing.T) {
 
 	// Next event should fire immediately (timeout exceeded)
 	fire, data, err := d.DebounceOrFire(
-		def, json.RawMessage(`{"v":2}`),
+		context.Background(), def, json.RawMessage(`{"v":2}`),
 	)
 	if err != nil {
 		t.Fatalf("event 2: %v", err)
@@ -141,7 +141,7 @@ func TestDebounceNoConfig(t *testing.T) {
 
 	// Positive: no debounce config fires immediately
 	fire, data, err := d.DebounceOrFire(
-		def, json.RawMessage(`{"v":1}`),
+		context.Background(), def, json.RawMessage(`{"v":1}`),
 	)
 	if err != nil {
 		t.Fatalf("DebounceOrFire: %v", err)

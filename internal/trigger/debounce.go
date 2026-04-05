@@ -43,9 +43,11 @@ func NewDebouncer(
 	if sleepTimer == nil {
 		panic("NewDebouncer: sleepTimer must not be nil")
 	}
-	stateKV, err := js.KeyValue(
-		context.Background(), "debounce_state",
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
 	)
+	defer cancel()
+	stateKV, err := js.KeyValue(ctx, "debounce_state")
 	if err != nil {
 		return nil, fmt.Errorf("debounce_state KV: %w", err)
 	}
@@ -85,8 +87,11 @@ func debounceKey(def TriggerDef, data json.RawMessage) string {
 // or fires immediately due to hard timeout (returns true with the
 // event data to use). If debounce is nil, returns true immediately.
 func (d *Debouncer) DebounceOrFire(
-	def TriggerDef, eventData json.RawMessage,
+	ctx context.Context, def TriggerDef, eventData json.RawMessage,
 ) (fire bool, data json.RawMessage, err error) {
+	if ctx == nil {
+		panic("DebounceOrFire: ctx must not be nil")
+	}
 	if def.Debounce == nil {
 		return true, eventData, nil
 	}
@@ -95,7 +100,7 @@ func (d *Debouncer) DebounceOrFire(
 	now := time.Now()
 
 	// Try to load existing entry
-	entry, err := d.stateKV.Get(context.Background(), key)
+	entry, err := d.stateKV.Get(ctx, key)
 	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return false, nil, fmt.Errorf("get debounce_state: %w", err)
 	}
@@ -114,37 +119,41 @@ func (d *Debouncer) DebounceOrFire(
 		if def.Debounce.Timeout > 0 &&
 			now.Sub(firstSeen) >= def.Debounce.Timeout {
 			// Hard timeout — fire with latest event
-			d.stateKV.Delete(context.Background(), key)
+			d.stateKV.Delete(ctx, key)
 			return true, eventData, nil
 		}
 
 		// Reset the window — update event data and schedule new timer
 		return false, nil, d.updateDebounceEntry(
-			key, eventData, existing.FirstSeenNs,
+			ctx, key, eventData, existing.FirstSeenNs,
 			def, entry.Revision(),
 		)
 	}
 
 	// New window — create entry and schedule timer
 	return false, nil, d.createDebounceEntry(
-		key, eventData, now.UnixNano(), def,
+		ctx, key, eventData, now.UnixNano(), def,
 	)
 }
 
 // createDebounceEntry creates a new debounce KV entry and schedules
 // a timer. This is the ONLY code path that creates entries.
 func (d *Debouncer) createDebounceEntry(
+	ctx context.Context,
 	key string,
 	eventData json.RawMessage,
 	firstSeenNs int64,
 	def TriggerDef,
 ) error {
+	if ctx == nil {
+		panic("createDebounceEntry: ctx must not be nil")
+	}
 	if key == "" {
 		panic("createDebounceEntry: key must not be empty")
 	}
 
 	// Schedule timer first to get the sequence
-	seq, err := d.sleepTimer.ScheduleDebounce(context.Background(), engine.TimerMessage{
+	seq, err := d.sleepTimer.ScheduleDebounce(ctx, engine.TimerMessage{
 		Action:      engine.TimerActionDebounce,
 		TriggerID:   def.ID,
 		DebounceKey: key,
@@ -163,7 +172,7 @@ func (d *Debouncer) createDebounceEntry(
 	if err != nil {
 		return fmt.Errorf("marshal debounce entry: %w", err)
 	}
-	_, err = d.stateKV.Create(context.Background(), key, data)
+	_, err = d.stateKV.Create(ctx, key, data)
 	if err != nil {
 		return fmt.Errorf("create debounce_state: %w", err)
 	}
@@ -175,18 +184,22 @@ func (d *Debouncer) createDebounceEntry(
 // Invariant: every write updates the TimerSeq. This is the ONLY
 // code path that updates entries.
 func (d *Debouncer) updateDebounceEntry(
+	ctx context.Context,
 	key string,
 	eventData json.RawMessage,
 	firstSeenNs int64,
 	def TriggerDef,
 	revision uint64,
 ) error {
+	if ctx == nil {
+		panic("updateDebounceEntry: ctx must not be nil")
+	}
 	if key == "" {
 		panic("updateDebounceEntry: key must not be empty")
 	}
 
 	// Schedule new timer first to get the sequence
-	seq, err := d.sleepTimer.ScheduleDebounce(context.Background(), engine.TimerMessage{
+	seq, err := d.sleepTimer.ScheduleDebounce(ctx, engine.TimerMessage{
 		Action:      engine.TimerActionDebounce,
 		TriggerID:   def.ID,
 		DebounceKey: key,
@@ -205,9 +218,7 @@ func (d *Debouncer) updateDebounceEntry(
 	if err != nil {
 		return fmt.Errorf("marshal debounce entry: %w", err)
 	}
-	_, err = d.stateKV.Update(
-		context.Background(), key, data, revision,
-	)
+	_, err = d.stateKV.Update(ctx, key, data, revision)
 	if err != nil {
 		return fmt.Errorf("update debounce_state: %w", err)
 	}
@@ -224,9 +235,11 @@ func (d *Debouncer) HandleTimerFire(
 	if tm.DebounceKey == "" {
 		return
 	}
-	entry, err := d.stateKV.Get(
-		context.Background(), tm.DebounceKey,
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
 	)
+	defer cancel()
+	entry, err := d.stateKV.Get(ctx, tm.DebounceKey)
 	if err != nil {
 		return // entry gone — already fired or cleaned up
 	}
@@ -244,7 +257,7 @@ func (d *Debouncer) HandleTimerFire(
 
 	// Fresh timer — fire the workflow
 	d.fireWorkflow(tm.TriggerID, de.LastEvent)
-	d.stateKV.Delete(context.Background(), tm.DebounceKey)
+	d.stateKV.Delete(ctx, tm.DebounceKey)
 }
 
 // fireWorkflow publishes workflow.started with the debounced event

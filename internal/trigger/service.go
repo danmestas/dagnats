@@ -53,9 +53,11 @@ func NewTriggerService(
 		return nil, fmt.Errorf("jetstream.New: %w", err)
 	}
 
-	triggerKV, err := js.KeyValue(
-		context.Background(), "triggers",
+	kvCtx, kvCancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
 	)
+	defer kvCancel()
+	triggerKV, err := js.KeyValue(kvCtx, "triggers")
 	if err != nil {
 		return nil, fmt.Errorf("triggers KV bucket: %w", err)
 	}
@@ -185,7 +187,11 @@ func (ts *TriggerService) loadAllTriggers() error {
 		panic("loadAllTriggers: scheduler must not be nil")
 	}
 
-	keys, err := ts.triggerKV.Keys(context.Background())
+	keysCtx, keysCancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer keysCancel()
+	keys, err := ts.triggerKV.Keys(keysCtx)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return fmt.Errorf("keys: %w", err)
 	}
@@ -305,9 +311,7 @@ func (ts *TriggerService) startKVWatcher() error {
 		panic("startKVWatcher: ctx must not be nil")
 	}
 
-	watcher, err := ts.triggerKV.WatchAll(
-		context.Background(),
-	)
+	watcher, err := ts.triggerKV.WatchAll(ts.ctx)
 	if err != nil {
 		return fmt.Errorf("WatchAll: %w", err)
 	}
