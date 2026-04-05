@@ -7,12 +7,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // maxScheduleAhead is the maximum duration a run can be scheduled
@@ -90,7 +92,7 @@ func (s *Service) scheduleRunInner(
 	}
 
 	// Validate workflow exists.
-	_, err := s.defKV.Get(workflowName)
+	_, err := s.defKV.Get(context.Background(), workflowName)
 	if err != nil {
 		return "", fmt.Errorf(
 			"workflow %q not found: %w", workflowName, err,
@@ -112,7 +114,7 @@ func (s *Service) scheduleRunInner(
 	}
 
 	// Enforce max scheduled runs bound.
-	keys, err := s.scheduledKV.Keys()
+	keys, err := s.scheduledKV.Keys(context.Background())
 	if err == nil && len(keys) >= maxScheduledRuns {
 		return "", fmt.Errorf(
 			"maximum scheduled runs (%d) reached",
@@ -133,7 +135,9 @@ func (s *Service) scheduleRunInner(
 	if err != nil {
 		return "", fmt.Errorf("marshal scheduled run: %w", err)
 	}
-	_, err = s.scheduledKV.Put(runID, data)
+	_, err = s.scheduledKV.Put(
+		context.Background(), runID, data,
+	)
 	if err != nil {
 		return "", fmt.Errorf("store scheduled run: %w", err)
 	}
@@ -150,7 +154,9 @@ func (s *Service) scheduleRunInner(
 			"Nats-Msg-Id": {"scheduled." + runID},
 		},
 	}
-	_, err = s.js.PublishMsg(timerMsg)
+	_, err = s.js.PublishMsg(
+		context.Background(), timerMsg,
+	)
 	if err != nil {
 		return "", fmt.Errorf("publish timer: %w", err)
 	}
@@ -171,7 +177,9 @@ func (s *Service) GetScheduledRun(
 			"scheduled_runs KV bucket not available",
 		)
 	}
-	entry, err := s.scheduledKV.Get(runID)
+	entry, err := s.scheduledKV.Get(
+		context.Background(), runID,
+	)
 	if err != nil {
 		return ScheduledRun{}, err
 	}
@@ -193,7 +201,9 @@ func (s *Service) CancelScheduledRun(
 			"scheduled_runs KV bucket not available",
 		)
 	}
-	entry, err := s.scheduledKV.Get(runID)
+	entry, err := s.scheduledKV.Get(
+		context.Background(), runID,
+	)
 	if err != nil {
 		return fmt.Errorf(
 			"scheduled run %q not found: %w", runID, err,
@@ -214,7 +224,7 @@ func (s *Service) CancelScheduledRun(
 		return fmt.Errorf("marshal: %w", err)
 	}
 	_, err = s.scheduledKV.Update(
-		runID, data, entry.Revision(),
+		context.Background(), runID, data, entry.Revision(),
 	)
 	if err != nil {
 		return fmt.Errorf("update: %w", err)
@@ -230,8 +240,8 @@ func (s *Service) ListScheduledRuns() ([]ScheduledRun, error) {
 			"scheduled_runs KV bucket not available",
 		)
 	}
-	keys, err := s.scheduledKV.Keys()
-	if err == nats.ErrNoKeysFound {
+	keys, err := s.scheduledKV.Keys(context.Background())
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -245,7 +255,9 @@ func (s *Service) ListScheduledRuns() ([]ScheduledRun, error) {
 
 	runs := make([]ScheduledRun, 0, len(keys))
 	for _, key := range keys {
-		entry, err := s.scheduledKV.Get(key)
+		entry, err := s.scheduledKV.Get(
+			context.Background(), key,
+		)
 		if err != nil {
 			continue
 		}

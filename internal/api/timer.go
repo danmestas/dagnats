@@ -12,13 +12,14 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // TimerConsumer subscribes to the SLEEP_TIMERS stream for
 // scheduled.> subjects and fires workflows when timers expire.
 type TimerConsumer struct {
 	svc *Service
-	sub *nats.Subscription
+	cc  jetstream.ConsumeContext
 }
 
 // NewTimerConsumer creates a timer consumer. Panics on nil svc.
@@ -31,33 +32,45 @@ func NewTimerConsumer(svc *Service) *TimerConsumer {
 
 // Start subscribes to scheduled.> on the SLEEP_TIMERS stream.
 func (tc *TimerConsumer) Start() error {
-	sub, err := tc.svc.js.Subscribe(
-		"scheduled.>",
-		tc.handleTimer,
-		nats.Durable("scheduled-run-timer"),
-		nats.ManualAck(),
-		nats.AckWait(30*time.Second),
+	stream, err := tc.svc.js.Stream(
+		context.Background(), "SLEEP_TIMERS",
 	)
 	if err != nil {
-		return fmt.Errorf("subscribe SLEEP_TIMERS: %w", err)
+		return fmt.Errorf("stream SLEEP_TIMERS: %w", err)
 	}
-	tc.sub = sub
+	cons, err := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			Durable:       "scheduled-run-timer",
+			FilterSubject: "scheduled.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			AckWait:       30 * time.Second,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("consumer scheduled.>: %w", err)
+	}
+	cc, err := cons.Consume(tc.handleTimerJS)
+	if err != nil {
+		return fmt.Errorf("consume scheduled.>: %w", err)
+	}
+	tc.cc = cc
 	return nil
 }
 
 // Stop unsubscribes the timer consumer.
 func (tc *TimerConsumer) Stop() {
-	if tc.sub != nil {
-		tc.sub.Unsubscribe()
+	if tc.cc != nil {
+		tc.cc.Stop()
 	}
 }
 
-// handleTimer processes a timer message. On first delivery,
+// handleTimerJS processes a timer message. On first delivery,
 // NAKs with delay to schedule the actual fire time. On
 // redelivery (NumDelivered > 1), fires the workflow.
-func (tc *TimerConsumer) handleTimer(msg *nats.Msg) {
+func (tc *TimerConsumer) handleTimerJS(msg jetstream.Msg) {
 	if msg == nil {
-		panic("handleTimer: msg must not be nil")
+		panic("handleTimerJS: msg must not be nil")
 	}
 
 	meta, err := msg.Metadata()
@@ -67,7 +80,7 @@ func (tc *TimerConsumer) handleTimer(msg *nats.Msg) {
 	}
 
 	var sr ScheduledRun
-	if err := json.Unmarshal(msg.Data, &sr); err != nil {
+	if err := json.Unmarshal(msg.Data(), &sr); err != nil {
 		msg.Ack()
 		return
 	}
@@ -89,7 +102,9 @@ func (tc *TimerConsumer) handleTimer(msg *nats.Msg) {
 		return
 	}
 	if current.Status != "scheduled" {
-		tc.svc.scheduledKV.Delete(sr.RunID)
+		tc.svc.scheduledKV.Delete(
+			context.Background(), sr.RunID,
+		)
 		msg.Ack()
 		return
 	}
@@ -103,7 +118,9 @@ func (tc *TimerConsumer) handleTimer(msg *nats.Msg) {
 		return
 	}
 
-	tc.svc.scheduledKV.Delete(sr.RunID)
+	tc.svc.scheduledKV.Delete(
+		context.Background(), sr.RunID,
+	)
 	msg.Ack()
 }
 
@@ -120,7 +137,9 @@ func (tc *TimerConsumer) fireScheduledRun(
 		)
 	}
 
-	entry, err := tc.svc.defKV.Get(sr.WorkflowID)
+	entry, err := tc.svc.defKV.Get(
+		context.Background(), sr.WorkflowID,
+	)
 	if err != nil {
 		return fmt.Errorf(
 			"workflow %q not found: %w", sr.WorkflowID, err,
@@ -157,7 +176,9 @@ func (tc *TimerConsumer) fireScheduledRun(
 		},
 	}
 	injectAPIMsgTraceCtx(span, pubMsg)
-	_, err = tc.svc.js.PublishMsg(pubMsg)
+	_, err = tc.svc.js.PublishMsg(
+		context.Background(), pubMsg,
+	)
 
 	span.SetAttributes(
 		observe.StringAttr("run_id", sr.RunID),

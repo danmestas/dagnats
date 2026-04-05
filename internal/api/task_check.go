@@ -1,22 +1,23 @@
 // api/task_check.go
 // Validates that workflow task types have active JetStream consumers on
-// the TASK_QUEUES stream. Returns unmatched task types as warnings —
+// the TASK_QUEUES stream. Returns unmatched task types as warnings --
 // registration still succeeds because workers may appear later.
 package api
 
 import (
+	"context"
 	"sort"
 	"strings"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // CheckTaskConsumers returns task types from the workflow definition
 // that have no active consumer on the TASK_QUEUES stream. Used as a
-// warning at registration time — missing consumers may appear later.
+// warning at registration time -- missing consumers may appear later.
 func CheckTaskConsumers(
-	js nats.JetStreamContext, def dag.WorkflowDef,
+	js jetstream.JetStream, def dag.WorkflowDef,
 ) []string {
 	if js == nil {
 		panic("CheckTaskConsumers: js must not be nil")
@@ -57,7 +58,7 @@ func collectTaskTypes(def dag.WorkflowDef) []string {
 // extracts the task type from each consumer's FilterSubject.
 // Returns a set (map) for O(1) lookup.
 func listActiveTaskTypes(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 ) map[string]struct{} {
 	if js == nil {
 		panic("listActiveTaskTypes: js must not be nil")
@@ -65,15 +66,22 @@ func listActiveTaskTypes(
 
 	active := make(map[string]struct{})
 	const maxConsumers = 10000
-	count := 0
 
-	for info := range js.ConsumersInfo("TASK_QUEUES") {
+	ctx := context.Background()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		return active
+	}
+
+	lister := stream.ListConsumers(ctx)
+	count := 0
+	for info := range lister.Info() {
 		if count >= maxConsumers {
 			break
 		}
 		count++
-
-		taskType := extractTaskType(info.Config.FilterSubject)
+		subject := info.Config.FilterSubject
+		taskType := extractTaskType(subject)
 		if taskType != "" {
 			active[taskType] = struct{}{}
 		}

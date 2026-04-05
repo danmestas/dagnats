@@ -5,6 +5,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,7 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // startRunRequest is the JSON body expected by POST /runs.
@@ -579,9 +580,14 @@ func handleHealth(svc *Service, w http.ResponseWriter) {
 		panic("handleHealth: w must not be nil")
 	}
 	resp := healthResponse{Status: "healthy"}
-	info, err := svc.js.StreamInfo("TELEMETRY")
-	if err == nil && info != nil {
-		resp.Telemetry = buildTelemetryInfo(info)
+	stream, err := svc.js.Stream(
+		context.Background(), "TELEMETRY",
+	)
+	if err == nil {
+		info, infoErr := stream.Info(context.Background())
+		if infoErr == nil && info != nil {
+			resp.Telemetry = buildTelemetryInfo(info)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	encErr := json.NewEncoder(w).Encode(resp)
@@ -592,7 +598,7 @@ func handleHealth(svc *Service, w http.ResponseWriter) {
 
 // buildTelemetryInfo constructs telemetry info from JetStream stream
 // metadata. Calculates usage percent from Bytes/MaxBytes.
-func buildTelemetryInfo(info *nats.StreamInfo) *telemetryInfo {
+func buildTelemetryInfo(info *jetstream.StreamInfo) *telemetryInfo {
 	if info == nil {
 		panic("buildTelemetryInfo: info must not be nil")
 	}

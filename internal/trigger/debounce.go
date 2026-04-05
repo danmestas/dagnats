@@ -5,13 +5,15 @@
 package trigger
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // debounceEntry is the KV value for a pending debounce window.
@@ -24,15 +26,15 @@ type debounceEntry struct {
 // Debouncer manages debounce state for triggers. Integrates with the
 // SleepTimer for durable timers and a KV bucket for state persistence.
 type Debouncer struct {
-	js         nats.JetStreamContext
-	stateKV    nats.KeyValue
+	js         jetstream.JetStream
+	stateKV    jetstream.KeyValue
 	sleepTimer *engine.SleepTimer
 	onFire     FireHandler
 }
 
 // NewDebouncer creates a Debouncer. Panics on nil arguments.
 func NewDebouncer(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 	sleepTimer *engine.SleepTimer,
 ) (*Debouncer, error) {
 	if js == nil {
@@ -41,7 +43,9 @@ func NewDebouncer(
 	if sleepTimer == nil {
 		panic("NewDebouncer: sleepTimer must not be nil")
 	}
-	stateKV, err := js.KeyValue("debounce_state")
+	stateKV, err := js.KeyValue(
+		context.Background(), "debounce_state",
+	)
 	if err != nil {
 		return nil, fmt.Errorf("debounce_state KV: %w", err)
 	}
@@ -91,8 +95,8 @@ func (d *Debouncer) DebounceOrFire(
 	now := time.Now()
 
 	// Try to load existing entry
-	entry, err := d.stateKV.Get(key)
-	if err != nil && err != nats.ErrKeyNotFound {
+	entry, err := d.stateKV.Get(context.Background(), key)
+	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return false, nil, fmt.Errorf("get debounce_state: %w", err)
 	}
 
@@ -110,7 +114,7 @@ func (d *Debouncer) DebounceOrFire(
 		if def.Debounce.Timeout > 0 &&
 			now.Sub(firstSeen) >= def.Debounce.Timeout {
 			// Hard timeout — fire with latest event
-			d.stateKV.Delete(key)
+			d.stateKV.Delete(context.Background(), key)
 			return true, eventData, nil
 		}
 
@@ -159,7 +163,7 @@ func (d *Debouncer) createDebounceEntry(
 	if err != nil {
 		return fmt.Errorf("marshal debounce entry: %w", err)
 	}
-	_, err = d.stateKV.Create(key, data)
+	_, err = d.stateKV.Create(context.Background(), key, data)
 	if err != nil {
 		return fmt.Errorf("create debounce_state: %w", err)
 	}
@@ -201,7 +205,9 @@ func (d *Debouncer) updateDebounceEntry(
 	if err != nil {
 		return fmt.Errorf("marshal debounce entry: %w", err)
 	}
-	_, err = d.stateKV.Update(key, data, revision)
+	_, err = d.stateKV.Update(
+		context.Background(), key, data, revision,
+	)
 	if err != nil {
 		return fmt.Errorf("update debounce_state: %w", err)
 	}
@@ -218,7 +224,9 @@ func (d *Debouncer) HandleTimerFire(
 	if tm.DebounceKey == "" {
 		return
 	}
-	entry, err := d.stateKV.Get(tm.DebounceKey)
+	entry, err := d.stateKV.Get(
+		context.Background(), tm.DebounceKey,
+	)
 	if err != nil {
 		return // entry gone — already fired or cleaned up
 	}
@@ -236,7 +244,7 @@ func (d *Debouncer) HandleTimerFire(
 
 	// Fresh timer — fire the workflow
 	d.fireWorkflow(tm.TriggerID, de.LastEvent)
-	d.stateKV.Delete(tm.DebounceKey)
+	d.stateKV.Delete(context.Background(), tm.DebounceKey)
 }
 
 // fireWorkflow publishes workflow.started with the debounced event

@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 const maxActiveTriggers = 500
@@ -19,14 +21,14 @@ const maxActiveTriggers = 500
 // from the triggers KV bucket on startup and watches for live changes.
 type TriggerService struct {
 	nc        *nats.Conn
-	js        nats.JetStreamContext
-	triggerKV nats.KeyValue
+	js        jetstream.JetStream
+	triggerKV jetstream.KeyValue
 	scheduler *Scheduler
 	subjects  map[string]*SubjectTrigger
 	webhooks  map[string]*WebhookHandler
 	ctx       context.Context
 	cancel    context.CancelFunc
-	watcher   nats.KeyWatcher
+	watcher   jetstream.KeyWatcher
 	logger    observe.Logger
 	mu        sync.RWMutex
 }
@@ -46,12 +48,14 @@ func NewTriggerService(
 		panic("NewTriggerService: nc must be connected")
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		return nil, fmt.Errorf("JetStream: %w", err)
+		return nil, fmt.Errorf("jetstream.New: %w", err)
 	}
 
-	triggerKV, err := js.KeyValue("triggers")
+	triggerKV, err := js.KeyValue(
+		context.Background(), "triggers",
+	)
 	if err != nil {
 		return nil, fmt.Errorf("triggers KV bucket: %w", err)
 	}
@@ -118,7 +122,7 @@ func (ts *TriggerService) Stop() {
 	ts.mu.Unlock()
 
 	if ts.watcher != nil {
-		_ = ts.watcher.Stop()
+		ts.watcher.Stop()
 	}
 }
 
@@ -181,8 +185,8 @@ func (ts *TriggerService) loadAllTriggers() error {
 		panic("loadAllTriggers: scheduler must not be nil")
 	}
 
-	keys, err := ts.triggerKV.Keys()
-	if err != nil && err != nats.ErrNoKeysFound {
+	keys, err := ts.triggerKV.Keys(context.Background())
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return fmt.Errorf("keys: %w", err)
 	}
 	if len(keys) == 0 {
@@ -194,11 +198,11 @@ func (ts *TriggerService) loadAllTriggers() error {
 		keys = keys[:maxActiveTriggers]
 	}
 
-	entries, err := natsutil.ParallelGet(
+	entries, err := natsutil.ParallelGetJS(
 		ts.triggerKV, keys, natsutil.DefaultParallelism,
 	)
 	if err != nil {
-		return fmt.Errorf("ParallelGet: %w", err)
+		return fmt.Errorf("ParallelGetJS: %w", err)
 	}
 
 	for _, entry := range entries {
@@ -301,7 +305,9 @@ func (ts *TriggerService) startKVWatcher() error {
 		panic("startKVWatcher: ctx must not be nil")
 	}
 
-	watcher, err := ts.triggerKV.WatchAll()
+	watcher, err := ts.triggerKV.WatchAll(
+		context.Background(),
+	)
 	if err != nil {
 		return fmt.Errorf("WatchAll: %w", err)
 	}
@@ -331,13 +337,14 @@ func (ts *TriggerService) startKVWatcher() error {
 // handleKVUpdate dispatches a single KV watcher entry: removes
 // deleted triggers, replaces updated ones within the active limit.
 func (ts *TriggerService) handleKVUpdate(
-	entry nats.KeyValueEntry,
+	entry jetstream.KeyValueEntry,
 ) {
 	if entry == nil {
 		panic("handleKVUpdate: entry must not be nil")
 	}
 
-	if entry.Operation() == nats.KeyValueDelete {
+	if entry.Operation() == jetstream.KeyValueDelete ||
+		entry.Operation() == jetstream.KeyValuePurge {
 		_ = ts.removeTrigger(entry.Key())
 		return
 	}

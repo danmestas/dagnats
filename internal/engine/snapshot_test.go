@@ -16,19 +16,15 @@ import (
 
 func TestSnapshotWriteAndRead(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	jsNew, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New failed: %v", err)
-	}
-	store := NewSnapshotStore(jsNew)
+	store := NewSnapshotStore(js)
 	run := dag.WorkflowRun{
 		RunID: "run-123", WorkflowID: "test-wf", Status: dag.RunStatusRunning,
 		Steps: map[string]dag.StepState{
@@ -61,19 +57,15 @@ func TestSnapshotWriteAndRead(t *testing.T) {
 
 func TestSnapshotLoadNotFound(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	jsNew, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New failed: %v", err)
-	}
-	store := NewSnapshotStore(jsNew)
+	store := NewSnapshotStore(js)
 	_, err = store.Load("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent run, got nil")
@@ -85,19 +77,15 @@ func TestSnapshotLoadNotFound(t *testing.T) {
 
 func TestSnapshotUpdate(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	jsNew, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New failed: %v", err)
-	}
-	store := NewSnapshotStore(jsNew)
+	store := NewSnapshotStore(js)
 	run := dag.WorkflowRun{
 		RunID: "run-456", WorkflowID: "test-wf", Status: dag.RunStatusRunning,
 		Steps:     map[string]dag.StepState{"a": {Status: dag.StepStatusPending}},
@@ -127,19 +115,15 @@ func TestSnapshotUpdate(t *testing.T) {
 
 func TestSnapshotListAllEmpty(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	jsNew, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New failed: %v", err)
-	}
-	store := NewSnapshotStore(jsNew)
+	store := NewSnapshotStore(js)
 
 	// Positive: empty bucket returns empty slice, no error.
 	runs, err := store.ListAll(100)
@@ -153,19 +137,15 @@ func TestSnapshotListAllEmpty(t *testing.T) {
 
 func TestSnapshotListAllBounded(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	jsNew, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New failed: %v", err)
-	}
-	store := NewSnapshotStore(jsNew)
+	store := NewSnapshotStore(js)
 
 	// Save 3 runs.
 	for i := 0; i < 3; i++ {
@@ -204,19 +184,15 @@ func TestSnapshotListAllBounded(t *testing.T) {
 
 func TestSnapshotListAll(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("JetStream failed: %v", err)
+		t.Fatalf("jetstream.New failed: %v", err)
 	}
 	err = natsutil.SetupKVBuckets(js)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
-	jsNew, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New failed: %v", err)
-	}
-	store := NewSnapshotStore(jsNew)
+	store := NewSnapshotStore(js)
 	run1 := dag.WorkflowRun{
 		RunID:      "run-001",
 		WorkflowID: "wf-a",
