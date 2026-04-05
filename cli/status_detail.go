@@ -13,7 +13,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // workflowMetric holds per-workflow run statistics for display and JSON.
@@ -37,7 +37,7 @@ type streamInfo struct {
 // collectStreamInfo gathers stream statistics from JetStream.
 // Returns a slice of streamInfo for all discoverable streams.
 func collectStreamInfo(
-	js nats.JetStreamContext,
+	js jetstream.JetStream,
 ) []streamInfo {
 	if js == nil {
 		panic("collectStreamInfo: js must not be nil")
@@ -50,12 +50,14 @@ func collectStreamInfo(
 		panic("collectStreamInfo: expected at least one stream")
 	}
 
+	ctx := context.Background()
 	result := make([]streamInfo, 0, len(names))
 	for _, name := range names {
-		info, err := js.StreamInfo(name)
+		stream, err := js.Stream(ctx, name)
 		if err != nil {
 			continue
 		}
+		info := stream.CachedInfo()
 		result = append(result, streamInfo{
 			Name:      name,
 			Messages:  info.State.Msgs,
@@ -68,7 +70,7 @@ func collectStreamInfo(
 
 // printStreamDetails prints a table of JetStream stream statistics.
 // Thin wrapper over collectStreamInfo for human-readable output.
-func printStreamDetails(js nats.JetStreamContext) {
+func printStreamDetails(js jetstream.JetStream) {
 	if js == nil {
 		panic("printStreamDetails: js must not be nil")
 	}
@@ -95,7 +97,7 @@ func printStreamDetails(js nats.JetStreamContext) {
 
 // collectStreamNames reads up to limit stream names from JetStream.
 func collectStreamNames(
-	js nats.JetStreamContext, limit int,
+	js jetstream.JetStream, limit int,
 ) []string {
 	if js == nil {
 		panic("collectStreamNames: js must not be nil")
@@ -104,9 +106,10 @@ func collectStreamNames(
 		panic("collectStreamNames: limit must be positive")
 	}
 
+	ctx := context.Background()
 	names := make([]string, 0, limit)
-	ch := js.StreamNames()
-	for name := range ch {
+	lister := js.StreamNames(ctx)
+	for name := range lister.Name() {
 		names = append(names, name)
 		if len(names) >= limit {
 			break

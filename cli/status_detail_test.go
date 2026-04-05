@@ -12,6 +12,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestFormatBytesZero(t *testing.T) {
@@ -128,7 +129,7 @@ func TestCollectStreamInfoIntegration(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestStreamDetailsIntegration(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

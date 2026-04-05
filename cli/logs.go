@@ -5,6 +5,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,7 +17,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/observe/simple"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // runLogsCmd tails telemetry logs from JetStream with optional filters.
@@ -44,7 +45,7 @@ func runLogsCmd(args []string) {
 	_, nc := connectService()
 	defer nc.Close()
 
-	jsLegacy, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "JetStream: %v\n", err)
 		os.Exit(1)
@@ -53,16 +54,43 @@ func runLogsCmd(args []string) {
 	subject := buildLogSubject(serviceFilter, levelFilter)
 
 	if tailCount > 0 {
-		runLogsTail(jsLegacy, subject, tailCount)
+		runLogsTail(js, subject, tailCount)
 		return
 	}
 
-	msgCh := make(chan *nats.Msg, 256)
-	sub, err := jsLegacy.ChanSubscribe(
-		subject, msgCh, nats.DeliverNew(),
+	runLogsFollow(js, subject)
+}
+
+// runLogsFollow streams new log messages using an ordered consumer.
+// Blocks until interrupted by SIGINT or SIGTERM.
+func runLogsFollow(js jetstream.JetStream, subject string) {
+	if js == nil {
+		panic("runLogsFollow: js must not be nil")
+	}
+	if subject == "" {
+		panic("runLogsFollow: subject must not be empty")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cons, err := js.OrderedConsumer(
+		ctx, "TELEMETRY",
+		jetstream.OrderedConsumerConfig{
+			FilterSubjects: []string{subject},
+			DeliverPolicy:  jetstream.DeliverNewPolicy,
+		},
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "subscribe %s: %v\n", subject, err)
+		fmt.Fprintf(os.Stderr, "subscribe %s: %v\n",
+			subject, err)
+		os.Exit(1)
+	}
+
+	iter, err := cons.Messages()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "messages %s: %v\n",
+			subject, err)
 		os.Exit(1)
 	}
 
@@ -71,22 +99,24 @@ func runLogsCmd(args []string) {
 
 	fmt.Fprintf(os.Stderr, "Tailing logs on %s ...\n", subject)
 
-	for {
-		select {
-		case msg := <-msgCh:
-			var rec simple.LogRecord
-			if err := json.Unmarshal(msg.Data, &rec); err != nil {
-				fmt.Fprintf(os.Stderr,
-					"logs: unmarshal: %v\n", err)
-				continue
-			}
-			fmt.Println(formatLogLine(rec))
-		case <-sigCh:
-			if err := sub.Unsubscribe(); err != nil {
-				fmt.Fprintf(os.Stderr, "unsubscribe: %v\n", err)
-			}
+	go func() {
+		<-sigCh
+		iter.Stop()
+	}()
+
+	const maxMessages = 1000000
+	for i := 0; i < maxMessages; i++ {
+		msg, err := iter.Next()
+		if err != nil {
 			return
 		}
+		var rec simple.LogRecord
+		if err := json.Unmarshal(msg.Data(), &rec); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"logs: unmarshal: %v\n", err)
+			continue
+		}
+		fmt.Println(formatLogLine(rec))
 	}
 }
 
@@ -207,10 +237,10 @@ func parseTailFlag(args []string) int {
 }
 
 // runLogsTail fetches the last count log messages from the stream
-// and prints them. Subscribes with DeliverAll, drains into a ring
-// buffer, then exits without blocking for SIGINT.
+// and prints them. Uses an ordered consumer with DeliverAll, drains
+// into a ring buffer, then exits without blocking for SIGINT.
 func runLogsTail(
-	js nats.JetStreamContext, subject string, count int,
+	js jetstream.JetStream, subject string, count int,
 ) {
 	if js == nil {
 		panic("runLogsTail: js must not be nil")
@@ -219,47 +249,50 @@ func runLogsTail(
 		panic("runLogsTail: count out of bounds")
 	}
 
-	sub, err := js.SubscribeSync(subject,
-		nats.DeliverAll(), nats.AckNone())
+	ctx := context.Background()
+	cons, err := js.OrderedConsumer(
+		ctx, "TELEMETRY",
+		jetstream.OrderedConsumerConfig{
+			FilterSubjects: []string{subject},
+			DeliverPolicy:  jetstream.DeliverAllPolicy,
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "subscribe %s: %v\n",
 			subject, err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := sub.Unsubscribe(); err != nil {
-			fmt.Fprintf(os.Stderr, "unsubscribe: %v\n", err)
-		}
-	}()
 
-	buf := collectTailMessages(sub, count)
+	buf := collectTailMessages(cons, count)
 	for _, rec := range buf {
 		fmt.Println(formatLogLine(rec))
 	}
 }
 
-// collectTailMessages reads messages from sub into a ring buffer
-// of capacity count. Stops when no message arrives within 1 second.
+// collectTailMessages reads messages from consumer into a ring
+// buffer of capacity count. Stops when no message arrives within
+// the fetch timeout.
 func collectTailMessages(
-	sub *nats.Subscription, count int,
+	cons jetstream.Consumer, count int,
 ) []simple.LogRecord {
-	if sub == nil {
-		panic("collectTailMessages: sub must not be nil")
+	if cons == nil {
+		panic("collectTailMessages: cons must not be nil")
 	}
 	if count <= 0 || count > tailCountMax {
 		panic("collectTailMessages: count out of bounds")
 	}
 
-	const drainTimeout = time.Second
 	buf := make([]simple.LogRecord, 0, count)
 
 	for i := 0; i < tailCountMax; i++ {
-		msg, err := sub.NextMsg(drainTimeout)
+		msg, err := cons.Next(
+			jetstream.FetchMaxWait(time.Second),
+		)
 		if err != nil {
 			break
 		}
 		var rec simple.LogRecord
-		if err := json.Unmarshal(msg.Data, &rec); err != nil {
+		if err := json.Unmarshal(msg.Data(), &rec); err != nil {
 			continue
 		}
 		if len(buf) >= count {

@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/observe/simple"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestBuildLogSubject(t *testing.T) {
@@ -180,12 +182,12 @@ func TestCollectTailMessages(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
 
-	// Publish 5 log records
+	// Publish 5 log records via legacy API (test setup only).
 	const totalMessages = 5
 	for i := 0; i < totalMessages; i++ {
 		rec := simple.LogRecord{
@@ -198,7 +200,7 @@ func TestCollectTailMessages(t *testing.T) {
 		if marshalErr != nil {
 			t.Fatalf("marshal: %v", marshalErr)
 		}
-		_, pubErr := js.Publish(
+		_, pubErr := jsLegacy.Publish(
 			"telemetry.logs.testsvc.info", data,
 		)
 		if pubErr != nil {
@@ -206,21 +208,25 @@ func TestCollectTailMessages(t *testing.T) {
 		}
 	}
 
-	sub, err := js.SubscribeSync(
-		"telemetry.logs.testsvc.info",
-		nats.DeliverAll(), nats.AckNone(),
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cons, err := js.OrderedConsumer(
+		context.Background(), "TELEMETRY",
+		jetstream.OrderedConsumerConfig{
+			FilterSubjects: []string{
+				"telemetry.logs.testsvc.info",
+			},
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
 	)
 	if err != nil {
-		t.Fatalf("subscribe: %v", err)
+		t.Fatalf("ordered consumer: %v", err)
 	}
-	defer func() {
-		if err := sub.Unsubscribe(); err != nil {
-			t.Errorf("unsubscribe: %v", err)
-		}
-	}()
 
 	// Collect last 3 of 5 messages
-	buf := collectTailMessages(sub, 3)
+	buf := collectTailMessages(cons, 3)
 
 	// Positive: should return exactly 3 records
 	if len(buf) != 3 {
@@ -256,7 +262,7 @@ func TestCollectTailMessagesFewerThanCount(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -273,7 +279,7 @@ func TestCollectTailMessagesFewerThanCount(t *testing.T) {
 		if marshalErr != nil {
 			t.Fatalf("marshal: %v", marshalErr)
 		}
-		_, pubErr := js.Publish(
+		_, pubErr := jsLegacy.Publish(
 			"telemetry.logs.fewsvc.warn", data,
 		)
 		if pubErr != nil {
@@ -281,20 +287,24 @@ func TestCollectTailMessagesFewerThanCount(t *testing.T) {
 		}
 	}
 
-	sub, err := js.SubscribeSync(
-		"telemetry.logs.fewsvc.warn",
-		nats.DeliverAll(), nats.AckNone(),
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	cons, err := js.OrderedConsumer(
+		context.Background(), "TELEMETRY",
+		jetstream.OrderedConsumerConfig{
+			FilterSubjects: []string{
+				"telemetry.logs.fewsvc.warn",
+			},
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
 	)
 	if err != nil {
-		t.Fatalf("subscribe: %v", err)
+		t.Fatalf("ordered consumer: %v", err)
 	}
-	defer func() {
-		if err := sub.Unsubscribe(); err != nil {
-			t.Errorf("unsubscribe: %v", err)
-		}
-	}()
 
-	buf := collectTailMessages(sub, 10)
+	buf := collectTailMessages(cons, 10)
 
 	// Positive: returns all available (2), not 10
 	if len(buf) != 2 {

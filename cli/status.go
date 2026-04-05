@@ -11,6 +11,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // systemStatus holds all health data for JSON serialization.
@@ -76,12 +77,12 @@ func collectSystemStatus(
 	}
 	status.NATS = "connected"
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		status.JetStream = "unavailable"
 		return status
 	}
-	info, err := js.AccountInfo()
+	info, err := js.AccountInfo(context.Background())
 	if err != nil {
 		status.JetStream = "unavailable"
 		return status
@@ -126,13 +127,13 @@ func printSystemStatus(nc *nats.Conn, svc *api.Service) {
 	}
 	fmt.Println("NATS:        connected")
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
 			"JetStream:   unavailable (%v)\n", err)
 		os.Exit(1)
 	}
-	info, err := js.AccountInfo()
+	info, err := js.AccountInfo(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
 			"JetStream:   unavailable (%v)\n", err)

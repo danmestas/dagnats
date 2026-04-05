@@ -174,7 +174,10 @@ func TestRunEventsTypeFilter(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	filterRunID1 := "ff110000111111112222222233333333"
-	js, _ := nc.JetStream()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	publishTestEvent(t, js, filterRunID1,
 		protocol.EventStepQueued, "step-a")
 	publishTestEvent(t, js, filterRunID1,
@@ -212,7 +215,10 @@ func TestRunEventsStepFilter(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	filterRunID2 := "ff220000111111112222222233333333"
-	js, _ := nc.JetStream()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	publishTestEvent(t, js, filterRunID2,
 		protocol.EventStepQueued, "step-a")
 	publishTestEvent(t, js, filterRunID2,
@@ -236,7 +242,7 @@ func TestRunEventsStepFilter(t *testing.T) {
 
 // publishTestEvent publishes a protocol.Event to the history stream.
 func publishTestEvent(
-	t *testing.T, js nats.JetStreamContext,
+	t *testing.T, js jetstream.JetStream,
 	runID string, evtType protocol.EventType, stepID string,
 ) {
 	t.Helper()
@@ -250,7 +256,9 @@ func publishTestEvent(
 	if err != nil {
 		t.Fatalf("marshal event: %v", err)
 	}
-	_, err = js.Publish("history."+runID, data)
+	_, err = js.Publish(
+		context.Background(), "history."+runID, data,
+	)
 	if err != nil {
 		t.Fatalf("publish event: %v", err)
 	}
