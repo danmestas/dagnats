@@ -9,6 +9,7 @@ package dag
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -634,5 +635,27 @@ func TestRunStatusIsTerminal(t *testing.T) {
 		if s.IsTerminal() {
 			t.Fatalf("%s should not be terminal", s)
 		}
+	}
+}
+
+func TestStepDef_SingletonJSON(t *testing.T) {
+	step := StepDef{ID: "x", Task: "t", Singleton: true}
+	data, err := json.Marshal(step)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got StepDef
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	// Positive: Singleton survives round-trip
+	if !got.Singleton {
+		t.Error("Singleton lost in round-trip")
+	}
+	// Negative: non-singleton omits field from JSON
+	step2 := StepDef{ID: "y", Task: "t"}
+	data2, _ := json.Marshal(step2)
+	if strings.Contains(string(data2), "singleton") {
+		t.Error("non-singleton should omit field")
 	}
 }

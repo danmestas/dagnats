@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/pcgroups"
 )
 
 // TaskContext is the core interface workers use to report step results.
@@ -72,6 +73,9 @@ type Worker struct {
 	checkpointKV    jetstream.KeyValue
 	signalKV        jetstream.KeyValue
 	groups          []string
+	partitions      int
+	singletons      map[string]bool
+	elasticGroups   []pcgroups.ConsumerGroupConsumeContext
 
 	// Directory registration (observability only)
 	dir           *Directory
@@ -100,6 +104,18 @@ func WithGroups(groups ...string) WorkerOption {
 		}
 	}
 	return func(w *Worker) { w.groups = groups }
+}
+
+// WithPartitions configures pcgroups elastic consumer groups
+// with the given partition count. 0 = legacy consumer (default).
+func WithPartitions(n int) WorkerOption {
+	if n < 0 {
+		panic("WithPartitions: n must be >= 0")
+	}
+	if n > 256 {
+		panic("WithPartitions: n must be <= 256")
+	}
+	return func(w *Worker) { w.partitions = n }
 }
 
 // generateWorkerID creates a unique worker ID using crypto/rand.
@@ -173,6 +189,25 @@ func (w *Worker) Handle(
 	w.handlers[taskType] = handler
 }
 
+// HandleSingleton registers a handler that runs as a single-
+// partition elastic consumer group. Only one consumer processes
+// messages at a time across all worker instances.
+func (w *Worker) HandleSingleton(
+	taskType string, handler HandlerFunc,
+) {
+	if taskType == "" {
+		panic("HandleSingleton: taskType must not be empty")
+	}
+	if handler == nil {
+		panic("HandleSingleton: handler must not be nil")
+	}
+	w.handlers[taskType] = handler
+	if w.singletons == nil {
+		w.singletons = make(map[string]bool)
+	}
+	w.singletons[taskType] = true
+}
+
 // newDirectoryOptional creates a Directory if the workers KV
 // bucket exists. Returns error (not panic) if the bucket is
 // missing — directory is observability only, not critical path.
@@ -237,19 +272,55 @@ func (w *Worker) Start() {
 	for taskType, handler := range w.handlers {
 		h := handler
 		tt := taskType
-		if len(w.groups) == 0 {
-			subject := "task." + taskType + ".>"
-			cc := w.createConsumer(tt, subject, h)
-			w.consumeContexts = append(w.consumeContexts, cc)
-		} else {
-			for _, group := range w.groups {
-				subject := "task." + tt + "." + group + ".>"
-				cc := w.createConsumer(
-					tt+"."+group, subject, h,
+
+		if w.partitions > 0 {
+			partCount := w.partitions
+			if w.singletons[tt] {
+				partCount = 1
+			}
+			filter := "task." + tt + ".>"
+			groupName := "workers-" + tt
+			if len(w.groups) > 0 {
+				for _, group := range w.groups {
+					gFilter := "task." + tt + "." +
+						group + ".>"
+					gName := "workers-" + tt +
+						"-" + group
+					cc := w.createElasticConsumer(
+						tt, gName, gFilter,
+						partCount, h,
+					)
+					w.elasticGroups = append(
+						w.elasticGroups, cc,
+					)
+				}
+			} else {
+				cc := w.createElasticConsumer(
+					tt, groupName, filter,
+					partCount, h,
 				)
+				w.elasticGroups = append(
+					w.elasticGroups, cc,
+				)
+			}
+		} else {
+			if len(w.groups) == 0 {
+				subject := "task." + taskType + ".>"
+				cc := w.createConsumer(tt, subject, h)
 				w.consumeContexts = append(
 					w.consumeContexts, cc,
 				)
+			} else {
+				for _, group := range w.groups {
+					subject := "task." + tt + "." +
+						group + ".>"
+					cc := w.createConsumer(
+						tt+"."+group, subject, h,
+					)
+					w.consumeContexts = append(
+						w.consumeContexts, cc,
+					)
+				}
 			}
 		}
 	}
@@ -293,6 +364,80 @@ func (w *Worker) createConsumer(
 	return cc
 }
 
+// createElasticConsumer sets up a pcgroups elastic consumer
+// group for the given task type. Creates the group (idempotent)
+// then joins as a member.
+func (w *Worker) createElasticConsumer(
+	taskType string,
+	groupName string,
+	filter string,
+	partitions int,
+	handler HandlerFunc,
+) pcgroups.ConsumerGroupConsumeContext {
+	if taskType == "" {
+		panic(
+			"createElasticConsumer: taskType must not be empty",
+		)
+	}
+	if partitions <= 0 {
+		panic(
+			"createElasticConsumer: partitions must be positive",
+		)
+	}
+
+	ctx := context.Background()
+
+	_, err := pcgroups.CreateElastic(
+		ctx, w.js, "TASK_QUEUES", groupName,
+		uint(partitions),
+		[]pcgroups.PartitioningFilter{{
+			Filter: filter,
+		}},
+		1024, // maxBufferedMessages
+		0,    // maxBufferedBytes (unlimited)
+	)
+	if err != nil {
+		panic("createElasticConsumer: CreateElastic: " +
+			groupName + ": " + err.Error())
+	}
+
+	// Register this worker as a member so the group
+	// assigns partitions and the consumer starts receiving.
+	_, err = pcgroups.AddMembers(
+		ctx, w.js, "TASK_QUEUES", groupName,
+		[]string{w.workerID},
+	)
+	if err != nil {
+		panic("createElasticConsumer: AddMembers: " +
+			groupName + ": " + err.Error())
+	}
+
+	h := handler
+	tt := taskType
+	cc, err := pcgroups.ElasticConsume(
+		ctx, w.js, "TASK_QUEUES", groupName,
+		w.workerID,
+		func(msg jetstream.Msg) {
+			w.handleMessage(tt, h, msg)
+		},
+		jetstream.ConsumerConfig{
+			AckPolicy: jetstream.AckExplicitPolicy,
+		},
+	)
+	if err != nil {
+		panic("createElasticConsumer: ElasticConsume: " +
+			groupName + ": " + err.Error())
+	}
+
+	w.tel.Logger.Info("elastic consumer group joined",
+		observe.String("task_type", taskType),
+		observe.String("group", groupName),
+		observe.Int("partitions", partitions),
+	)
+
+	return cc
+}
+
 // heartbeatLoop re-registers the worker every 30s to refresh the
 // KV TTL (bucket TTL is 60s). Stops when stopHeartbeat is closed.
 func (w *Worker) heartbeatLoop(reg WorkerRegistration) {
@@ -328,6 +473,9 @@ func (w *Worker) Stop() {
 	}
 	if w.dir != nil {
 		_ = w.dir.Deregister(w.workerID)
+	}
+	for _, cc := range w.elasticGroups {
+		cc.Stop()
 	}
 	for _, cc := range w.consumeContexts {
 		cc.Stop()

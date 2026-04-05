@@ -192,6 +192,7 @@ type StepDef struct {
 	RateLimit          *RateLimit        `json:"rate_limit,omitempty"`
 	KeyedRateLimit     *KeyedRateLimit   `json:"keyed_rate_limit,omitempty"`
 	MaxTaskConcurrency int               `json:"max_task_concurrency,omitempty"`
+	Singleton          bool              `json:"singleton,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced

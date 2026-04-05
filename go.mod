@@ -7,6 +7,7 @@ require (
 	github.com/nats-io/nats.go v1.50.0
 	github.com/nats-io/nuid v1.0.1
 	github.com/synadia-io/orbit.go/jetstreamext v0.2.1
+	github.com/synadia-io/orbit.go/pcgroups v0.2.1
 	golang.org/x/sync v0.20.0
 )
 
