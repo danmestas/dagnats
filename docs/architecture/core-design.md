@@ -11,12 +11,17 @@
 | Package | Role | Key Constraint |
 |---------|------|----------------|
 | `dag/` | Pure DAG logic, workflow types, validation | Zero I/O. `Advance()` is a pure function |
-| `engine/` | Stateless event processor, DAG orchestration | Reads history stream, writes KV snapshots |
+| `internal/engine/` | Stateless event processor, DAG orchestration | Reads history stream, writes KV snapshots |
 | `worker/` | Task execution framework | Deep `TaskContext` hides all NATS mechanics |
-| `api/` | Control plane (REST + NATS micro) | Wrapper → Inner pattern with tracing/metrics |
+| `internal/api/` | Control plane (REST + NATS micro) | Wrapper → Inner pattern with tracing/metrics |
 | `cli/` | Thin client over api.Service | No business logic, no direct NATS access |
 | `bridge/` | HTTP-to-NATS gateway for remote workers | 3 deep endpoints, ack map, capability parity |
 | `sdk/httpclient/` | Go HTTP reference client | Validates wire protocol, template for other SDKs |
+| `internal/natsutil/` | NATS resource setup (streams, KV) | Plumbing — not public API |
+| `internal/trigger/` | Cron, subject, webhook triggers | Lives behind api/server |
+| `internal/observe/simple/` | Concrete telemetry adapters | Implements `observe/` interfaces |
+
+**Public vs internal:** `dag/`, `protocol/`, `observe/` (interfaces), `worker/`, `actor/`, `bridge/`, `sdk/`, `server/`, `cli/` are public API. Implementation packages live under `internal/` to prevent external import coupling.
 
 ## Event Sourcing Model
 
@@ -68,6 +73,10 @@
 | workers | Worker directory (60s TTL heartbeat) |
 | event_waiters | Wait-for-event correlation entries |
 | rate_limits | Token bucket state per task type |
+| debounce_state | Subject trigger debounce windows |
+| batch_state | Trigger event batch accumulation (TTL: 2x max timeout) |
+| idempotency_keys | Workflow dedup key→runID mapping (TTL: 24h default) |
+| sticky_bindings | Run→worker affinity binding (TTL: workflow timeout + 1h) |
 
 ## DAG Resolution
 
@@ -90,19 +99,25 @@
 | Sleep | Durable delay — engine handles via `SLEEP_TIMERS` NakWithDelay. No worker involved. Max 365 days. |
 | WaitForEvent | Event correlation — blocks until matching external event arrives. In-memory waiter index via KV watch. Timeout via `SLEEP_TIMERS`. |
 
-## Worker SDK (TaskContext)
+## Worker SDK
 
-Deep interface hiding NATS complexity:
+Three interfaces, split by concern. Handlers type-assert to optional capabilities.
 
+**TaskContext (core):** Every handler receives this.
 - `Input()`, `RunID()`, `StepID()`, `RetryCount()` — read-only context
-- `Complete(output)`, `Fail(err)`, `Continue(output)` — exactly one per invocation
+- `Complete(output)`, `Fail(err)`, `FailPermanent(err)`, `FailRetryAfter(err, d)` — terminal actions
+- `Continue(output)` — agent loop iteration
 - `PutStream(data)` — real-time streaming via core pub/sub (`stream.{runID}.{stepID}`)
 - `Heartbeat()` — extends AckWait via InProgress()
+
+**Checkpointable:** Handlers that need state across retries type-assert to this.
 - `Checkpoint(state)` / `LoadCheckpoint()` — KV persistence at `{runID}.{stepID}`
-- `WaitForSignal(name, timeout)` / `SendSignal(runID, name, data)` — KV watch-based
 - `Pause(name, duration)` — checkpoint + NakWithDelay for mid-task durable delay
-- `WithGroups(groups...)` — worker group routing via subject subscription
-- `WithRateLimit(rl)` / `WithKeyedRateLimit(krl)` — KV token bucket rate limiting
+
+**Signaler:** Handlers that coordinate across steps type-assert to this.
+- `WaitForSignal(name, timeout)` / `SendSignal(runID, name, data)` — KV watch-based
+
+**Worker options:** `WithGroups(groups...)` for routing, `WithRateLimit` / `WithKeyedRateLimit` for KV token bucket rate limiting.
 
 ## Child Workflows
 
