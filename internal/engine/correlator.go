@@ -44,15 +44,15 @@ type Correlator struct {
 // NewCorrelator creates a Correlator bound to the given connection.
 // Panics on nil nc or js — these are programmer errors.
 func NewCorrelator(
-	nc *nats.Conn, js nats.JetStreamContext,
+	nc *nats.Conn, jsLegacy nats.JetStreamContext,
 ) *Correlator {
 	if nc == nil {
 		panic("NewCorrelator: nc must not be nil")
 	}
-	if js == nil {
-		panic("NewCorrelator: js must not be nil")
+	if jsLegacy == nil {
+		panic("NewCorrelator: jsLegacy must not be nil")
 	}
-	kv, err := js.KeyValue("event_waiters")
+	kv, err := jsLegacy.KeyValue("event_waiters")
 	if err != nil {
 		panic(
 			"NewCorrelator: event_waiters bucket not found: " +
@@ -61,7 +61,7 @@ func NewCorrelator(
 	}
 	return &Correlator{
 		nc:       nc,
-		js:       js,
+		js:       jsLegacy,
 		waiterKV: kv,
 		waiters:  make(map[string][]EventWaiter),
 	}

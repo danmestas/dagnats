@@ -29,8 +29,8 @@ import (
 // snapshot store (NATS KV), so the orchestrator can crash and resume safely.
 type Orchestrator struct {
 	nc          *nats.Conn
-	js          nats.JetStreamContext
-	jsNew       jetstream.JetStream // new jetstream API for orbit extensions
+	jsLegacy    nats.JetStreamContext
+	js          jetstream.JetStream // new jetstream API for orbit extensions
 	defKV       nats.KeyValue
 	store       *SnapshotStore
 	tel         *observe.Telemetry
@@ -78,29 +78,29 @@ func NewOrchestrator(
 	if tel == nil {
 		panic("NewOrchestrator: tel must not be nil")
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		panic("NewOrchestrator: JetStream failed: " + err.Error())
 	}
-	jsNew, err := jetstream.New(nc)
+	js, err := jetstream.New(nc)
 	if err != nil {
 		panic("NewOrchestrator: jetstream.New: " + err.Error())
 	}
-	defKV, err := js.KeyValue("workflow_defs")
+	defKV, err := jsLegacy.KeyValue("workflow_defs")
 	if err != nil {
 		panic(
 			"NewOrchestrator: workflow_defs bucket not found: " +
 				err.Error(),
 		)
 	}
-	cm, _ := NewConcurrencyManagerSafe(js)
-	rl := NewRateLimiter(js)
+	cm, _ := NewConcurrencyManagerSafe(jsLegacy)
+	rl := NewRateLimiter(jsLegacy)
 	o := &Orchestrator{
 		nc:          nc,
+		jsLegacy:    jsLegacy,
 		js:          js,
-		jsNew:       jsNew,
 		defKV:       defKV,
-		store:       NewSnapshotStore(js),
+		store:       NewSnapshotStore(jsLegacy),
 		tel:         tel,
 		concurrency: cm,
 		rateLimiter: rl,
@@ -132,8 +132,8 @@ func NewOrchestrator(
 			"task.concurrency.rejected", nil,
 		),
 	}
-	o.sleepTimer = NewSleepTimer(nc, js)
-	o.correlator = NewCorrelator(nc, js)
+	o.sleepTimer = NewSleepTimer(nc, jsLegacy)
+	o.correlator = NewCorrelator(nc, jsLegacy)
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -155,7 +155,7 @@ func (o *Orchestrator) Start() {
 			"Orchestrator.Start: correlator failed: " + err.Error(),
 		)
 	}
-	sub, err := o.js.Subscribe("history.>", o.handleEvent,
+	sub, err := o.jsLegacy.Subscribe("history.>", o.handleEvent,
 		nats.DeliverAll(),
 		nats.AckExplicit(),
 	)
@@ -1277,7 +1277,7 @@ func (o *Orchestrator) publishDeadLetter(
 	}
 	subject := fmt.Sprintf("dead.%s.%s.%s",
 		stepDef.Task, runID, stepDef.ID)
-	o.js.Publish(subject, payload)
+	o.jsLegacy.Publish(subject, payload)
 }
 
 // handleWorkflowCancelled marks the run and all in-flight steps as
@@ -1387,7 +1387,7 @@ func (o *Orchestrator) publishCancelEvent(runID string) {
 	if err != nil {
 		return
 	}
-	o.js.Publish(
+	o.jsLegacy.Publish(
 		evt.NATSSubject(), data,
 		nats.MsgId(evt.NATSMsgID()),
 	)
@@ -1536,7 +1536,7 @@ func (o *Orchestrator) notifyParentIfChild(
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
-	_, err = o.js.PublishMsg(msg)
+	_, err = o.jsLegacy.PublishMsg(msg)
 	return err
 }
 
@@ -1926,7 +1926,7 @@ func (o *Orchestrator) doPublishTask(
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
-	_, err = o.js.PublishMsg(msg)
+	_, err = o.jsLegacy.PublishMsg(msg)
 	o.stepEnqueueCount.Inc()
 	return err
 }
@@ -1973,7 +1973,7 @@ func (o *Orchestrator) publishIterationTask(
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
 	injectTraceCtx(ctx, span, msg)
-	_, err = o.js.PublishMsg(msg)
+	_, err = o.jsLegacy.PublishMsg(msg)
 	o.stepEnqueueCount.Inc()
 	return err
 }
@@ -2070,7 +2070,7 @@ func (o *Orchestrator) publishWorkflowCompleted(runID string) error {
 			"marshal workflow.completed event: %w", err,
 		)
 	}
-	_, err = o.js.Publish(
+	_, err = o.jsLegacy.Publish(
 		evt.NATSSubject(), data, nats.MsgId(evt.NATSMsgID()),
 	)
 	return err
@@ -2090,7 +2090,7 @@ func (o *Orchestrator) publishWorkflowFailed(runID string) error {
 			"marshal workflow.failed event: %w", err,
 		)
 	}
-	_, err = o.js.Publish(
+	_, err = o.jsLegacy.Publish(
 		evt.NATSSubject(), data, nats.MsgId(evt.NATSMsgID()),
 	)
 	return err
@@ -2232,7 +2232,7 @@ func (o *Orchestrator) publishSleepStarted(
 	if err != nil {
 		return
 	}
-	o.js.Publish(
+	o.jsLegacy.Publish(
 		evt.NATSSubject(), data,
 		nats.MsgId(evt.NATSMsgID()),
 	)
@@ -2662,7 +2662,7 @@ func (o *Orchestrator) publishWaitStarted(
 	if err != nil {
 		return
 	}
-	o.js.Publish(
+	o.jsLegacy.Publish(
 		evt.NATSSubject(), data,
 		nats.MsgId(evt.NATSMsgID()),
 	)
@@ -2841,7 +2841,7 @@ func (o *Orchestrator) publishSpawnEvent(
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	_, err = o.js.PublishMsg(msg)
+	_, err = o.jsLegacy.PublishMsg(msg)
 	return err
 }
 

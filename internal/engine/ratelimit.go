@@ -34,12 +34,12 @@ type RateLimiter struct {
 // NewRateLimiter creates a RateLimiter using the rate_limits KV bucket.
 // Returns nil if the bucket does not exist, making rate limiting optional.
 func NewRateLimiter(
-	js nats.JetStreamContext,
+	jsLegacy nats.JetStreamContext,
 ) *RateLimiter {
-	if js == nil {
-		panic("NewRateLimiter: js must not be nil")
+	if jsLegacy == nil {
+		panic("NewRateLimiter: jsLegacy must not be nil")
 	}
-	kv, err := js.KeyValue("rate_limits")
+	kv, err := jsLegacy.KeyValue("rate_limits")
 	if err != nil {
 		return nil
 	}

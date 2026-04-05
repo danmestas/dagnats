@@ -61,15 +61,15 @@ type SleepTimer struct {
 // NewSleepTimer creates a SleepTimer bound to the given connection.
 // Panics on nil nc or js — these are programmer errors.
 func NewSleepTimer(
-	nc *nats.Conn, js nats.JetStreamContext,
+	nc *nats.Conn, jsLegacy nats.JetStreamContext,
 ) *SleepTimer {
 	if nc == nil {
 		panic("NewSleepTimer: nc must not be nil")
 	}
-	if js == nil {
-		panic("NewSleepTimer: js must not be nil")
+	if jsLegacy == nil {
+		panic("NewSleepTimer: jsLegacy must not be nil")
 	}
-	return &SleepTimer{nc: nc, js: js}
+	return &SleepTimer{nc: nc, js: jsLegacy}
 }
 
 // Start subscribes to sleep.> on the SLEEP_TIMERS stream with a

@@ -18,14 +18,14 @@ import (
 // Unlike Orchestrator, run state lives in-memory within each
 // WorkflowActor. Snapshots still save to KV for durability.
 type ActorOrchestrator struct {
-	nc     *nats.Conn
-	js     nats.JetStreamContext
-	jsNew  jetstream.JetStream
-	tel    *observe.Telemetry
-	rt     *actor.Runtime
-	store  *SnapshotStore
-	sub    *nats.Subscription
-	actors sync.Map // runID → *WorkflowActor
+	nc       *nats.Conn
+	jsLegacy nats.JetStreamContext
+	js       jetstream.JetStream
+	tel      *observe.Telemetry
+	rt       *actor.Runtime
+	store    *SnapshotStore
+	sub      *nats.Subscription
+	actors   sync.Map // runID → *WorkflowActor
 }
 
 // NewActorOrchestrator creates an actor-based orchestrator.
@@ -38,23 +38,23 @@ func NewActorOrchestrator(
 	if tel == nil {
 		panic("NewActorOrchestrator: tel must not be nil")
 	}
-	js, err := nc.JetStream()
+	jsLegacy, err := nc.JetStream()
 	if err != nil {
 		panic("NewActorOrchestrator: JetStream: " + err.Error())
 	}
-	jsNew, err := jetstream.New(nc)
+	js, err := jetstream.New(nc)
 	if err != nil {
 		panic(
 			"NewActorOrchestrator: jetstream.New: " + err.Error(),
 		)
 	}
 	return &ActorOrchestrator{
-		nc:    nc,
-		js:    js,
-		jsNew: jsNew,
-		tel:   tel,
-		rt:    actor.NewRuntime(),
-		store: NewSnapshotStore(js),
+		nc:       nc,
+		jsLegacy: jsLegacy,
+		js:       js,
+		tel:      tel,
+		rt:       actor.NewRuntime(),
+		store:    NewSnapshotStore(jsLegacy),
 	}
 }
 
@@ -63,7 +63,7 @@ func (ao *ActorOrchestrator) Start() {
 	if ao.sub != nil {
 		panic("ActorOrchestrator.Start: already started")
 	}
-	sub, err := ao.js.Subscribe("history.>", ao.handleEvent,
+	sub, err := ao.jsLegacy.Subscribe("history.>", ao.handleEvent,
 		nats.DeliverAll(),
 		nats.AckExplicit(),
 	)
@@ -121,7 +121,7 @@ func (ao *ActorOrchestrator) ensureActor(runID string) {
 		return
 	}
 
-	wa := NewWorkflowActor(runID, ao.store, ao.js, ao.jsNew)
+	wa := NewWorkflowActor(runID, ao.store, ao.jsLegacy, ao.js)
 	addr := actor.Address{Type: "workflow", ID: runID}
 
 	err := ao.rt.Spawn(addr, wa,

@@ -17,17 +17,17 @@ type ConcurrencyManager struct {
 // NewConcurrencyManager creates a manager using the concurrency_runs
 // and concurrency_tasks KV buckets. Panics if buckets don't exist.
 func NewConcurrencyManager(
-	js nats.JetStreamContext,
+	jsLegacy nats.JetStreamContext,
 ) *ConcurrencyManager {
-	if js == nil {
-		panic("NewConcurrencyManager: js must not be nil")
+	if jsLegacy == nil {
+		panic("NewConcurrencyManager: jsLegacy must not be nil")
 	}
-	runKV, err := js.KeyValue("concurrency_runs")
+	runKV, err := jsLegacy.KeyValue("concurrency_runs")
 	if err != nil {
 		panic("NewConcurrencyManager: concurrency_runs: " +
 			err.Error())
 	}
-	taskKV, err := js.KeyValue("concurrency_tasks")
+	taskKV, err := jsLegacy.KeyValue("concurrency_tasks")
 	if err != nil {
 		panic("NewConcurrencyManager: concurrency_tasks: " +
 			err.Error())
@@ -41,16 +41,16 @@ func NewConcurrencyManager(
 // concurrency_runs and concurrency_tasks KV buckets. Returns nil
 // if the runs bucket doesn't exist. Tasks bucket is optional.
 func NewConcurrencyManagerSafe(
-	js nats.JetStreamContext,
+	jsLegacy nats.JetStreamContext,
 ) (*ConcurrencyManager, error) {
-	if js == nil {
-		panic("NewConcurrencyManagerSafe: js must not be nil")
+	if jsLegacy == nil {
+		panic("NewConcurrencyManagerSafe: jsLegacy must not be nil")
 	}
-	runKV, err := js.KeyValue("concurrency_runs")
+	runKV, err := jsLegacy.KeyValue("concurrency_runs")
 	if err != nil {
 		return nil, err
 	}
-	taskKV, _ := js.KeyValue("concurrency_tasks")
+	taskKV, _ := jsLegacy.KeyValue("concurrency_tasks")
 	return &ConcurrencyManager{
 		runKV: runKV, taskKV: taskKV,
 	}, nil

@@ -140,7 +140,7 @@ func (o *Orchestrator) storeApprovalToken(
 	if stepID == "" {
 		panic("storeApprovalToken: stepID must not be empty")
 	}
-	kv, err := o.js.KeyValue("approval_tokens")
+	kv, err := o.jsLegacy.KeyValue("approval_tokens")
 	if err != nil {
 		return fmt.Errorf("get approval_tokens bucket: %w", err)
 	}
@@ -200,7 +200,7 @@ func (o *Orchestrator) publishApprovalRequested(
 	if err != nil {
 		return
 	}
-	o.js.Publish(
+	o.jsLegacy.Publish(
 		evt.NATSSubject(), evtData,
 		nats.MsgId(evt.NATSMsgID()),
 	)
@@ -383,7 +383,7 @@ func (o *Orchestrator) deleteApprovalToken(
 			"deleteApprovalToken: stepID must not be empty",
 		)
 	}
-	kv, err := o.js.KeyValue("approval_tokens")
+	kv, err := o.jsLegacy.KeyValue("approval_tokens")
 	if err != nil {
 		return
 	}

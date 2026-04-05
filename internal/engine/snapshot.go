@@ -21,11 +21,11 @@ type SnapshotStore struct {
 
 // NewSnapshotStore binds a SnapshotStore to the workflow_runs KV bucket.
 // Panics if the bucket has not been created — callers must call SetupKVBuckets first.
-func NewSnapshotStore(js nats.JetStreamContext) *SnapshotStore {
-	if js == nil {
+func NewSnapshotStore(jsLegacy nats.JetStreamContext) *SnapshotStore {
+	if jsLegacy == nil {
 		panic("NewSnapshotStore: JetStreamContext must not be nil")
 	}
-	kv, err := js.KeyValue("workflow_runs")
+	kv, err := jsLegacy.KeyValue("workflow_runs")
 	if err != nil {
 		panic("NewSnapshotStore: workflow_runs bucket not found: " + err.Error())
 	}

@@ -17,13 +17,13 @@ import (
 // State lives in memory — snapshots save to KV for durability but
 // loads only happen on actor start (recovery).
 type WorkflowActor struct {
-	runID string
-	def   *dag.WorkflowDef
-	run   *dag.WorkflowRun
-	store *SnapshotStore        // nil in unit tests
-	js    nats.JetStreamContext // nil in pure unit tests
-	jsNew jetstream.JetStream   // nil in pure unit tests
-	mu    sync.RWMutex          // protects read access to run state
+	runID    string
+	def      *dag.WorkflowDef
+	run      *dag.WorkflowRun
+	store    *SnapshotStore        // nil in unit tests
+	jsLegacy nats.JetStreamContext // nil in pure unit tests
+	js       jetstream.JetStream   // nil in pure unit tests
+	mu       sync.RWMutex          // protects read access to run state
 }
 
 // NewWorkflowActor creates a workflow actor for the given run.
@@ -31,17 +31,17 @@ type WorkflowActor struct {
 func NewWorkflowActor(
 	runID string,
 	store *SnapshotStore,
-	js nats.JetStreamContext,
-	jsNew jetstream.JetStream,
+	jsLegacy nats.JetStreamContext,
+	js jetstream.JetStream,
 ) *WorkflowActor {
 	if runID == "" {
 		panic("NewWorkflowActor: runID must not be empty")
 	}
 	return &WorkflowActor{
-		runID: runID,
-		store: store,
-		js:    js,
-		jsNew: jsNew,
+		runID:    runID,
+		store:    store,
+		jsLegacy: jsLegacy,
+		js:       js,
 	}
 }
 
@@ -112,9 +112,9 @@ func (wa *WorkflowActor) handleStarted(
 	wa.mu.Unlock()
 
 	// Enqueue ready steps and publish tasks
-	if wa.js != nil {
+	if wa.jsLegacy != nil {
 		if err := enqueueReadySteps(
-			wa.js, wa.jsNew, wfDef, wa.run,
+			wa.jsLegacy, wa.js, wfDef, wa.run,
 		); err != nil {
 			return err
 		}
@@ -147,9 +147,9 @@ func (wa *WorkflowActor) handleStepCompleted(
 	wa.run.Steps[evt.StepID] = state
 	wa.mu.Unlock()
 
-	if wa.js != nil {
+	if wa.jsLegacy != nil {
 		if err := enqueueReadySteps(
-			wa.js, wa.jsNew, *wa.def, wa.run,
+			wa.jsLegacy, wa.js, *wa.def, wa.run,
 		); err != nil {
 			return err
 		}
@@ -206,9 +206,9 @@ func (wa *WorkflowActor) handleStepFailed(
 	wa.run.Status = dag.RunStatusFailed
 	wa.mu.Unlock()
 
-	if wa.js != nil {
+	if wa.jsLegacy != nil {
 		publishWorkflowEvent(
-			wa.js, protocol.EventWorkflowFailed, wa.runID,
+			wa.jsLegacy, protocol.EventWorkflowFailed, wa.runID,
 		)
 	}
 
@@ -244,9 +244,9 @@ func (wa *WorkflowActor) handleStepContinue(
 		wa.run.Steps[evt.StepID] = state
 		wa.run.Status = dag.RunStatusFailed
 		wa.mu.Unlock()
-		if wa.js != nil {
+		if wa.jsLegacy != nil {
 			publishWorkflowEvent(
-				wa.js, protocol.EventWorkflowFailed,
+				wa.jsLegacy, protocol.EventWorkflowFailed,
 				wa.runID,
 			)
 		}
@@ -256,7 +256,7 @@ func (wa *WorkflowActor) handleStepContinue(
 	wa.run.Steps[evt.StepID] = state
 	wa.mu.Unlock()
 
-	if wa.js != nil {
+	if wa.jsLegacy != nil {
 		input, err := dag.ResolveInput(
 			stepDef, wa.run.Steps,
 		)
@@ -266,7 +266,7 @@ func (wa *WorkflowActor) handleStepContinue(
 			)
 		}
 		if err := publishIterationTask(
-			wa.js, wa.runID, stepDef,
+			wa.jsLegacy, wa.runID, stepDef,
 			input, state.Iterations,
 		); err != nil {
 			return err

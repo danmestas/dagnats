@@ -256,7 +256,7 @@ func (o *Orchestrator) publishMaterializedEvent(
 	if err != nil {
 		return
 	}
-	_, pubErr := o.js.Publish(
+	_, pubErr := o.jsLegacy.Publish(
 		evt.NATSSubject(), data,
 		nats.MsgId(evt.NATSMsgID()),
 	)

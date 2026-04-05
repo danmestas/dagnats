@@ -14,14 +14,14 @@ import (
 // publishTask publishes a TaskPayload for a ready step to the
 // TASK_QUEUES stream. Used by both Orchestrator and WorkflowActor.
 func publishTask(
-	js nats.JetStreamContext,
+	jsLegacy nats.JetStreamContext,
 	runID string,
 	step dag.StepDef,
 	input []byte,
 	attempt int,
 ) error {
-	if js == nil {
-		panic("publishTask: js must not be nil")
+	if jsLegacy == nil {
+		panic("publishTask: jsLegacy must not be nil")
 	}
 	if runID == "" {
 		panic("publishTask: runID must not be empty")
@@ -43,21 +43,21 @@ func publishTask(
 	msgID := runID + "." + step.ID + ".queued"
 	subject := taskSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	_, err = js.PublishMsg(msg)
+	_, err = jsLegacy.PublishMsg(msg)
 	return err
 }
 
 // publishIterationTask publishes a TaskPayload for an agent-loop
 // re-enqueue with a distinct MsgId per iteration.
 func publishIterationTask(
-	js nats.JetStreamContext,
+	jsLegacy nats.JetStreamContext,
 	runID string,
 	step dag.StepDef,
 	input []byte,
 	iteration int,
 ) error {
-	if js == nil {
-		panic("publishIterationTask: js must not be nil")
+	if jsLegacy == nil {
+		panic("publishIterationTask: jsLegacy must not be nil")
 	}
 	if runID == "" {
 		panic("publishIterationTask: runID must not be empty")
@@ -81,7 +81,7 @@ func publishIterationTask(
 	)
 	subject := taskSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	_, err = js.PublishMsg(msg)
+	_, err = jsLegacy.PublishMsg(msg)
 	return err
 }
 
@@ -102,12 +102,12 @@ func taskSubject(step dag.StepDef, runID string) string {
 // publishWorkflowEvent publishes a workflow lifecycle event
 // (completed or failed) to the WORKFLOW_HISTORY stream.
 func publishWorkflowEvent(
-	js nats.JetStreamContext,
+	jsLegacy nats.JetStreamContext,
 	eventType protocol.EventType,
 	runID string,
 ) error {
-	if js == nil {
-		panic("publishWorkflowEvent: js must not be nil")
+	if jsLegacy == nil {
+		panic("publishWorkflowEvent: jsLegacy must not be nil")
 	}
 	if runID == "" {
 		panic("publishWorkflowEvent: runID must not be empty")
@@ -117,7 +117,7 @@ func publishWorkflowEvent(
 	if err != nil {
 		return fmt.Errorf("marshal %s event: %w", eventType, err)
 	}
-	_, err = js.Publish(
+	_, err = jsLegacy.Publish(
 		evt.NATSSubject(), data,
 		nats.MsgId(evt.NATSMsgID()),
 	)
@@ -127,13 +127,13 @@ func publishWorkflowEvent(
 // enqueueReadySteps resolves ready steps, publishes tasks, and
 // checks for workflow completion. Returns updated run state.
 func enqueueReadySteps(
-	js nats.JetStreamContext,
-	jsNew jetstream.JetStream,
+	jsLegacy nats.JetStreamContext,
+	js jetstream.JetStream,
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
 ) error {
-	if js == nil {
-		panic("enqueueReadySteps: js must not be nil")
+	if jsLegacy == nil {
+		panic("enqueueReadySteps: jsLegacy must not be nil")
 	}
 	if run == nil {
 		panic("enqueueReadySteps: run must not be nil")
@@ -155,7 +155,8 @@ func enqueueReadySteps(
 		if dag.IsComplete(wfDef, completed) {
 			run.Status = dag.RunStatusCompleted
 			return publishWorkflowEvent(
-				js, protocol.EventWorkflowCompleted, run.RunID,
+				jsLegacy, protocol.EventWorkflowCompleted,
+				run.RunID,
 			)
 		}
 	}
@@ -164,7 +165,8 @@ func enqueueReadySteps(
 	if dag.IsComplete(wfDef, completed) {
 		run.Status = dag.RunStatusCompleted
 		return publishWorkflowEvent(
-			js, protocol.EventWorkflowCompleted, run.RunID,
+			jsLegacy, protocol.EventWorkflowCompleted,
+			run.RunID,
 		)
 	}
 
@@ -196,7 +198,7 @@ func enqueueReadySteps(
 			)
 		}
 		attempt := run.Steps[step.ID].Attempts
-		if jsNew != nil {
+		if js != nil {
 			payload := protocol.TaskPayload{
 				TaskID:  run.RunID + "." + step.ID,
 				RunID:   run.RunID,
@@ -213,12 +215,12 @@ func enqueueReadySteps(
 			msgID := run.RunID + "." + step.ID + ".queued"
 			subject := taskSubject(step, run.RunID)
 			msg := buildTaskMsg(subject, data, msgID)
-			_, err = jsNew.PublishMsg(
+			_, err = js.PublishMsg(
 				context.Background(), msg,
 			)
 		} else {
 			err = publishTask(
-				js, run.RunID, step, input, attempt,
+				jsLegacy, run.RunID, step, input, attempt,
 			)
 		}
 		if err != nil {
