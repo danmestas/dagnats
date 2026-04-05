@@ -33,7 +33,7 @@ func WithDebouncer(d *Debouncer) SubjectTriggerOpt {
 
 // NewSubjectTrigger creates a SubjectTrigger that subscribes to def.Subject.
 // Returns error if def lacks Subject config or subscription fails.
-// Panics if nc is nil (programmer error).
+// Panics if nc or logger is nil (programmer error).
 func NewSubjectTrigger(
 	nc *nats.Conn,
 	def TriggerDef,

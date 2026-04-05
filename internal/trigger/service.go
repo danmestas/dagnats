@@ -32,7 +32,7 @@ type TriggerService struct {
 }
 
 // NewTriggerService creates the service. KV buckets must exist.
-// Panics if nc or logger is nil (programmer error).
+// Panics if nc or logger is nil, or nc is not connected (programmer error).
 func NewTriggerService(
 	nc *nats.Conn, logger observe.Logger,
 ) (*TriggerService, error) {
