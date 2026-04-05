@@ -195,76 +195,112 @@ func (w *Worker) Start() {
 	if w.js == nil {
 		panic("Worker.Start: js must not be nil")
 	}
-	// Bind optional KV buckets — no error if missing
-	w.checkpointKV, _ = w.js.KeyValue("checkpoints")
-	w.signalKV, _ = w.js.KeyValue("signals")
 
-	// Worker directory registration (observability only — not critical path)
-	d, err := newDirectoryOptional(w.js)
-	if err == nil {
-		w.dir = d
-		w.stopHeartbeat = make(chan struct{})
-		taskTypes := make([]string, 0, len(w.handlers))
-		for t := range w.handlers {
-			taskTypes = append(taskTypes, t)
-		}
-		reg := WorkerRegistration{
-			WorkerID:  w.workerID,
-			TaskTypes: taskTypes,
-			Language:  "go",
-			Transport: "nats",
-			MaxTasks:  len(taskTypes),
-		}
-		_ = w.dir.Register(reg)
-		go w.heartbeatLoop(reg)
-	}
+	w.bindOptionalKV()
+	w.registerDirectory()
 
 	for taskType, handler := range w.handlers {
-		h := handler
-		tt := taskType
-		if len(w.groups) == 0 {
-			// No groups — subscribe to all tasks of this type
-			subject := "task." + taskType + ".>"
-			sub, err := w.js.Subscribe(subject, func(msg *nats.Msg) {
-				w.handleMessage(tt, h, msg)
-			}, nats.AckExplicit(), nats.DeliverAll())
-			if err != nil {
-				panic(
-					"Worker.Start: Subscribe failed for " +
-						taskType + ": " + err.Error(),
-				)
-			}
-			w.subs = append(w.subs, sub)
-			// Sticky subscription on STICKY_TASKS stream (separate
-			// from TASK_QUEUES to avoid work queue filter conflict).
-			stickySubject := "sticky." + taskType + "." +
-				w.workerID + ".>"
-			stickySub, err := w.js.Subscribe(
-				stickySubject, func(msg *nats.Msg) {
-					w.handleMessage(tt, h, msg)
-				}, nats.AckExplicit(), nats.DeliverAll(),
+		w.subscribeTask(taskType, handler)
+	}
+}
+
+// bindOptionalKV binds checkpoint and signal KV buckets if they
+// exist. Missing buckets are fine — features degrade gracefully.
+func (w *Worker) bindOptionalKV() {
+	w.checkpointKV, _ = w.js.KeyValue("checkpoints")
+	w.signalKV, _ = w.js.KeyValue("signals")
+}
+
+// registerDirectory registers this worker in the observability
+// directory and starts a heartbeat goroutine. No-op if the
+// workers KV bucket doesn't exist — directory is not critical.
+func (w *Worker) registerDirectory() {
+	d, err := newDirectoryOptional(w.js)
+	if err != nil {
+		return
+	}
+	w.dir = d
+	w.stopHeartbeat = make(chan struct{})
+	taskTypes := make([]string, 0, len(w.handlers))
+	for t := range w.handlers {
+		taskTypes = append(taskTypes, t)
+	}
+	reg := WorkerRegistration{
+		WorkerID:  w.workerID,
+		TaskTypes: taskTypes,
+		Language:  "go",
+		Transport: "nats",
+		MaxTasks:  len(taskTypes),
+	}
+	_ = w.dir.Register(reg)
+	go w.heartbeatLoop(reg)
+}
+
+// subscribeTask creates JetStream subscriptions for a single task
+// type. When groups are configured, subscribes per-group. Also
+// subscribes to the sticky subject for worker-affinity routing.
+func (w *Worker) subscribeTask(
+	taskType string, handler HandlerFunc,
+) {
+	if taskType == "" {
+		panic("subscribeTask: taskType must not be empty")
+	}
+	if handler == nil {
+		panic("subscribeTask: handler must not be nil")
+	}
+
+	h := handler
+	tt := taskType
+	dispatch := func(msg *nats.Msg) {
+		w.handleMessage(tt, h, msg)
+	}
+
+	if len(w.groups) == 0 {
+		w.subscribe("task."+taskType+".>", dispatch)
+		// Sticky subscription on STICKY_TASKS stream (separate
+		// from TASK_QUEUES to avoid work queue filter conflict).
+		// Missing stream is fine — sticky just won't work.
+		w.subscribeSoft(
+			"sticky."+taskType+"."+w.workerID+".>",
+			dispatch,
+		)
+	} else {
+		for _, group := range w.groups {
+			w.subscribe(
+				"task."+taskType+"."+group+".>",
+				dispatch,
 			)
-			if err == nil {
-				w.subs = append(w.subs, stickySub)
-			}
-			// If STICKY_TASKS stream doesn't exist, that's fine —
-			// sticky routing just won't work (no sticky workflows).
-		} else {
-			// Groups configured — subscribe to each group
-			for _, group := range w.groups {
-				subject := "task." + taskType + "." + group + ".>"
-				sub, err := w.js.Subscribe(subject, func(msg *nats.Msg) {
-					w.handleMessage(tt, h, msg)
-				}, nats.AckExplicit(), nats.DeliverAll())
-				if err != nil {
-					panic(
-						"Worker.Start: Subscribe failed for " +
-							taskType + "." + group + ": " + err.Error(),
-					)
-				}
-				w.subs = append(w.subs, sub)
-			}
 		}
+	}
+}
+
+// subscribe creates a JetStream subscription. Panics on failure
+// — stream misconfiguration is a startup error.
+func (w *Worker) subscribe(
+	subject string, cb nats.MsgHandler,
+) {
+	sub, err := w.js.Subscribe(
+		subject, cb,
+		nats.AckExplicit(), nats.DeliverAll(),
+	)
+	if err != nil {
+		panic("Worker.subscribe: " + subject + ": " + err.Error())
+	}
+	w.subs = append(w.subs, sub)
+}
+
+// subscribeSoft creates a JetStream subscription, ignoring errors
+// if the stream doesn't exist. Used for optional subscriptions
+// like sticky routing where the stream may not be provisioned.
+func (w *Worker) subscribeSoft(
+	subject string, cb nats.MsgHandler,
+) {
+	sub, err := w.js.Subscribe(
+		subject, cb,
+		nats.AckExplicit(), nats.DeliverAll(),
+	)
+	if err == nil {
+		w.subs = append(w.subs, sub)
 	}
 }
 
