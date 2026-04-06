@@ -134,7 +134,7 @@ This shows the raw events on the `WORKFLOW_HISTORY` stream for that run, in orde
 
 If spans are not appearing in your observability backend:
 
-1. **Check `JAEGER_ENDPOINT`**: must be a valid OTLP/HTTP base URL (e.g., `http://localhost:4318`)
+1. **Check `OTEL_EXPORTER_OTLP_ENDPOINT`**: must be a valid OTLP/HTTP base URL (e.g., `http://localhost:4318`)
 2. **Check connectivity**: the telemetry exporter must reach `{endpoint}/v1/traces`
 3. **Check TELEMETRY stream**: spans are always written to the NATS `TELEMETRY` stream regardless of export. If the stream has messages but exports fail, the issue is between DagNats and your backend.
 

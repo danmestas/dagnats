@@ -14,6 +14,8 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `http_addr`       | string   | `:8080`                                            | `:8080`                                  |
 | `nats_port`       | int      | `4222`                                             | `4222`                                   |
 | `leaf_remotes`    | []string | (none)                                             | (none)                                   |
+| `leaf_credentials`| string   | (none)                                             | (none)                                   |
+| `monitor_port`    | int      | (none)                                             | (none)                                   |
 | `max_store_bytes` | int64    | `10737418240` (10 GiB)                             | `10737418240` (10 GiB)                   |
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
@@ -26,6 +28,8 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_HTTP_ADDR`       | `http_addr`       |                                  |
 | `DAGNATS_NATS_PORT`       | `nats_port`       | Must be a valid integer          |
 | `DAGNATS_LEAF_REMOTES`    | `leaf_remotes`    | Comma-separated, max 10 entries  |
+| `DAGNATS_LEAF_CREDENTIALS`| `leaf_credentials`| Path to creds file or inline PEM |
+| `DAGNATS_MONITOR_PORT`    | `monitor_port`    | NATS monitoring HTTP port        |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |
 
 ### Triggers
@@ -40,20 +44,20 @@ flag always takes precedence. This keeps secrets out of shell history.
 
 ### Observability
 
-| Variable           | Default  | Notes                                          |
-|--------------------|----------|------------------------------------------------|
-| `JAEGER_ENDPOINT`  | (none)   | OTLP/HTTP base URL for span export             |
+| Variable                       | Default  | Notes                              |
+|--------------------------------|----------|------------------------------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (none)   | OTLP/HTTP base URL for telemetry   |
 
-When `JAEGER_ENDPOINT` is set, DagNats subscribes to the internal
-`TELEMETRY` span stream and batches spans to `{endpoint}/v1/traces`
-via OTLP/HTTP JSON. Example:
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, DagNats subscribes to
+the internal `TELEMETRY` span stream and batches spans to
+`{endpoint}/v1/traces` via OTLP/HTTP JSON. Example:
 
 ```bash
-JAEGER_ENDPOINT=http://localhost:4318 dagnats serve
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 dagnats serve
 ```
 
-This works with any OTLP/HTTP-compatible backend (Jaeger, SigNoz,
-Grafana Tempo). When unset, spans are still written to the NATS
+This works with any OTLP/HTTP-compatible backend (SigNoz, Grafana
+Tempo, Jaeger). When unset, spans are still written to the NATS
 `TELEMETRY` stream but not exported externally. Export failures
 never affect workflow execution.
 
@@ -84,12 +88,41 @@ max_store_bytes: 5368709120
 
 Unknown keys produce a warning but do not cause an error.
 
+### Inline Leaf Credentials
+
+`DAGNATS_LEAF_CREDENTIALS` accepts either a file path or inline PEM
+content. If the value starts with `-----BEGIN`, DagNats writes it to a
+secure temp file automatically. This is useful in CI/CD where mounting
+a credentials file is inconvenient:
+
+```bash
+DAGNATS_LEAF_CREDENTIALS="-----BEGIN NATS USER JWT-----
+eyJ0eXAiOiJK...
+------END NATS USER JWT------
+-----BEGIN USER NKEY SEED-----
+SUAM...
+------END USER NKEY SEED------" dagnats serve
+```
+
 ## Viewing Effective Config
 
-```
+```bash
 dagnats config show
 dagnats config show --json
 ```
 
 The `config show` command loads the resolved configuration (all three tiers
 merged) and prints it. Use `--json` for machine-readable output.
+
+Example output:
+
+```
+data_dir:        /Users/you/Library/Application Support/dagnats
+http_addr:       :8080
+nats_port:       4222
+leaf_remotes:    (none)
+leaf_credentials:(none)
+monitor_port:    (none)
+max_store_bytes: 10737418240
+otlp_endpoint:   (none)
+```

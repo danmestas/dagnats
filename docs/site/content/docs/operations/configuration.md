@@ -53,12 +53,12 @@ When `DAGNATS_WEBHOOK_SECRET` is set and no `--secret` flag is provided to `dagn
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `JAEGER_ENDPOINT` | (none) | OTLP/HTTP base URL for span export |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (none) | OTLP/HTTP base URL for telemetry |
 
-When `JAEGER_ENDPOINT` is set, DagNats subscribes to the internal `TELEMETRY` span stream and batches spans to `{endpoint}/v1/traces` via OTLP/HTTP JSON. Works with any OTLP/HTTP-compatible backend (Jaeger, SigNoz, Grafana Tempo). When unset, spans are still written to the NATS `TELEMETRY` stream but not exported externally. Export failures never affect workflow execution.
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, DagNats subscribes to the internal `TELEMETRY` span stream and batches spans to `{endpoint}/v1/traces` via OTLP/HTTP JSON. Works with any OTLP/HTTP-compatible backend (SigNoz, Grafana Tempo, Jaeger). When unset, spans are still written to the NATS `TELEMETRY` stream but not exported externally. Export failures never affect workflow execution.
 
 ```bash
-JAEGER_ENDPOINT=http://localhost:4318 dagnats serve
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 dagnats serve
 ```
 
 ### Workers (Config-Driven)
@@ -114,6 +114,19 @@ worker.my-task.http_method: PUT
 
 Maximum of 50 worker configs. Duplicate task names are rejected. Having both `exec` and `http` for the same task is rejected.
 
+### Inline Leaf Credentials
+
+`DAGNATS_LEAF_CREDENTIALS` accepts either a file path or inline PEM content. If the value starts with `-----BEGIN`, DagNats writes it to a secure temp file automatically. This is useful in CI/CD where mounting a credentials file is inconvenient:
+
+```bash
+DAGNATS_LEAF_CREDENTIALS="-----BEGIN NATS USER JWT-----
+eyJ0eXAiOiJK...
+------END NATS USER JWT------
+-----BEGIN USER NKEY SEED-----
+SUAM...
+------END USER NKEY SEED------" dagnats serve
+```
+
 ## Viewing Effective Config
 
 ```bash
@@ -122,3 +135,16 @@ dagnats config show --json
 ```
 
 The `config show` command loads the resolved configuration (all three tiers merged) and prints it. Use `--json` for machine-readable output. This is the fastest way to verify which values are active.
+
+Example output:
+
+```
+data_dir:        /Users/you/Library/Application Support/dagnats
+http_addr:       :8080
+nats_port:       4222
+leaf_remotes:    (none)
+leaf_credentials:(none)
+monitor_port:    (none)
+max_store_bytes: 10737418240
+otlp_endpoint:   (none)
+```
