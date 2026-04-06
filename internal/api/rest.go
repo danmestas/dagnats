@@ -291,7 +291,7 @@ func handleGetRun(
 		return
 	}
 	runID := parts[0]
-	run, err := svc.GetRun(r.Context(), runID)
+	resp, err := svc.GetRunResponse(r.Context(), runID)
 	if err != nil {
 		if errors.Is(err, engine.ErrRunNotFound) {
 			http.Error(w, "run not found", http.StatusNotFound)
@@ -301,7 +301,7 @@ func handleGetRun(
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	encErr := json.NewEncoder(w).Encode(run)
+	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
 	}

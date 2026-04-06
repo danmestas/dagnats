@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -333,6 +334,14 @@ func (s *Service) startRunInner(
 	return runID, nil
 }
 
+// RunResponse wraps a workflow run snapshot with the trace ID
+// extracted from the run's first history event. Always includes
+// trace_id (empty string when no trace context is available).
+type RunResponse struct {
+	dag.WorkflowRun
+	TraceID string `json:"trace_id"`
+}
+
 // GetRun retrieves the current snapshot for the given run ID.
 // Returns engine.ErrRunNotFound when no snapshot exists.
 func (s *Service) GetRun(
@@ -363,6 +372,81 @@ func (s *Service) GetRun(
 		span.SetStatus(codes.Error, err.Error())
 	}
 	return run, err
+}
+
+// GetRunResponse retrieves the run snapshot enriched with the
+// trace ID from the first history event. Returns empty trace_id
+// when no trace context exists on the start event.
+func (s *Service) GetRunResponse(
+	ctx context.Context, runID string,
+) (RunResponse, error) {
+	if ctx == nil {
+		panic("GetRunResponse: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("GetRunResponse: runID must not be empty")
+	}
+	run, err := s.GetRun(ctx, runID)
+	if err != nil {
+		return RunResponse{}, err
+	}
+	traceID := s.fetchRunTraceID(runID)
+	return RunResponse{
+		WorkflowRun: run,
+		TraceID:     traceID,
+	}, nil
+}
+
+// fetchRunTraceID reads the first history event for a run and
+// extracts the trace ID from its TraceParent field. Returns ""
+// on any failure (best-effort, non-blocking).
+func (s *Service) fetchRunTraceID(runID string) string {
+	if runID == "" {
+		panic("fetchRunTraceID: runID must not be empty")
+	}
+	if s.nc == nil {
+		panic("fetchRunTraceID: nc must not be nil")
+	}
+	jsLegacy, err := s.nc.JetStream()
+	if err != nil {
+		return ""
+	}
+	sub, err := jsLegacy.SubscribeSync(
+		"history."+runID,
+		nats.DeliverAll(),
+		nats.AckNone(),
+	)
+	if err != nil {
+		return ""
+	}
+	defer sub.Unsubscribe() //nolint:errcheck
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		return ""
+	}
+	var evt protocol.Event
+	if json.Unmarshal(msg.Data, &evt) != nil {
+		return ""
+	}
+	return parseTraceID(evt.TraceParent)
+}
+
+// parseTraceID extracts the 32-char hex trace ID from a W3C
+// traceparent string. Format: "00-{traceID}-{spanID}-{flags}".
+// Returns "" when the input is empty or malformed.
+func parseTraceID(traceparent string) string {
+	if traceparent == "" {
+		return ""
+	}
+	if len(traceparent) > 256 {
+		panic("parseTraceID: traceparent exceeds max length")
+	}
+	parts := strings.Split(traceparent, "-")
+	if len(parts) != 4 || parts[0] != "00" {
+		return ""
+	}
+	return parts[1]
 }
 
 // generateRunID returns a 32-character lowercase hex string from

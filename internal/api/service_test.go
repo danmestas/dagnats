@@ -1428,3 +1428,147 @@ func TestStartRunIdempotencyMissingKey(t *testing.T) {
 		t.Fatal("expected non-empty runID despite missing key")
 	}
 }
+
+func TestGetRunResponseTraceID(t *testing.T) {
+	// Set up W3C propagator so StartRun injects traceparent.
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc)
+	wb := dag.NewWorkflow("trace-wf")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+
+	// Create a span context with a known trace ID.
+	wantTraceID := "aaaa1111bbbb2222cccc3333dddd4444"
+	span := newTestSpanWithIDs(
+		wantTraceID, "eeee5555ffff6666",
+	)
+	ctx := trace.ContextWithRemoteSpanContext(
+		context.Background(), span.SpanContext(),
+	)
+	runID, err := svc.StartRun(ctx, "trace-wf", nil)
+	if err != nil {
+		t.Fatalf("StartRun failed: %v", err)
+	}
+
+	// Wait for the orchestrator to create the snapshot.
+	deadline := time.After(5 * time.Second)
+	var resp RunResponse
+	for {
+		resp, err = svc.GetRunResponse(
+			context.Background(), runID,
+		)
+		if err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("snapshot not ready in 5s: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Positive: trace_id matches the injected trace ID.
+	if resp.TraceID != wantTraceID {
+		t.Fatalf(
+			"TraceID = %q, want %q",
+			resp.TraceID, wantTraceID,
+		)
+	}
+
+	// Negative: run fields are still correct.
+	if resp.RunID != runID {
+		t.Fatalf(
+			"RunID = %q, want %q", resp.RunID, runID,
+		)
+	}
+}
+
+func TestGetRunResponseNoTrace(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc)
+	if err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc)
+	wb := dag.NewWorkflow("notrace-wf")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+
+	// Start run without any trace context.
+	runID, err := svc.StartRun(
+		context.Background(), "notrace-wf", nil,
+	)
+	if err != nil {
+		t.Fatalf("StartRun failed: %v", err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	var resp RunResponse
+	for {
+		resp, err = svc.GetRunResponse(
+			context.Background(), runID,
+		)
+		if err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("snapshot not ready in 5s: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Positive: trace_id is empty when no context injected.
+	if resp.TraceID != "" {
+		t.Fatalf(
+			"TraceID = %q, want empty", resp.TraceID,
+		)
+	}
+
+	// Negative: run fields are still populated.
+	if resp.RunID != runID {
+		t.Fatalf(
+			"RunID = %q, want %q", resp.RunID, runID,
+		)
+	}
+}
+
+func TestParseTraceID(t *testing.T) {
+	// Positive: valid traceparent extracts trace ID.
+	got := parseTraceID(
+		"00-aaaa1111bbbb2222cccc3333dddd4444" +
+			"-eeee5555ffff6666-01",
+	)
+	if got != "aaaa1111bbbb2222cccc3333dddd4444" {
+		t.Fatalf("got = %q, want trace ID", got)
+	}
+
+	// Negative: empty input returns empty string.
+	if parseTraceID("") != "" {
+		t.Fatal("empty input should return empty")
+	}
+
+	// Negative: malformed input returns empty string.
+	if parseTraceID("not-a-traceparent") != "" {
+		t.Fatal("malformed input should return empty")
+	}
+}
