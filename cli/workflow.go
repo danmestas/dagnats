@@ -182,6 +182,14 @@ func runWorkflowRegisterCmd(args []string) {
 		fmt.Fprintf(os.Stderr,
 			"Warning: no active worker for task %q\n", w)
 	}
+
+	printHint(false,
+		"Hint: start a run with:",
+		fmt.Sprintf(
+			"  dagnats run start %s '{}' --watch",
+			def.Name,
+		),
+	)
 }
 
 // readWorkflowDef reads and parses a workflow JSON file. Exits on

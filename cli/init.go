@@ -257,4 +257,18 @@ func runInitScaffold(name string, jsonOutput bool) {
 	for _, f := range files {
 		fmt.Printf("  %s/%s\n", dir, f)
 	}
+
+	printHint(false,
+		"Next steps:",
+		fmt.Sprintf("  cd %s", name),
+		"  dagnats serve          "+
+			"# start the engine",
+		"  go run .               "+
+			"# start your worker (in another terminal)",
+		"  dagnats workflow register workflow.json",
+		fmt.Sprintf(
+			"  dagnats run start %s '{\"name\":\"world\"}'",
+			name,
+		),
+	)
 }
