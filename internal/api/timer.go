@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -156,29 +157,25 @@ func (tc *TimerConsumer) fireScheduledRun(
 		protocol.EventWorkflowStarted, sr.RunID, payload,
 	)
 
-	_, span := tc.svc.tracer.Start(
+	ctx, span := tc.svc.tracer.Start(
 		context.Background(),
 		"dagnats.api fireScheduledRun",
 	)
 	defer span.End()
-	injectAPITraceCtx(span, &evt)
-
-	data, err := evt.Marshal()
-	if err != nil {
-		return err
-	}
 
 	pubMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
-		Data:    data,
 		Header: nats.Header{
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	injectAPIMsgTraceCtx(span, pubMsg)
-	_, err = tc.svc.js.PublishMsg(
-		context.Background(), pubMsg,
-	)
+	observe.InjectTraceContext(ctx, pubMsg, &evt)
+	data, err := evt.Marshal()
+	if err != nil {
+		return err
+	}
+	pubMsg.Data = data
+	_, err = tc.svc.js.PublishMsg(ctx, pubMsg)
 
 	span.SetAttributes(
 		attribute.String("run_id", sr.RunID),

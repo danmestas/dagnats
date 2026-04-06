@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
@@ -239,37 +242,13 @@ func TestHandleRegistersHandler(t *testing.T) {
 	}
 }
 
-func TestSplitWorkerTraceparentValid(t *testing.T) {
-	traceID, spanID, ok := splitWorkerTraceparent(
-		"00-abc123-def456-01",
+func TestExtractTraceContextWithTraceparent(t *testing.T) {
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
 	)
-	// Positive: parses valid traceparent
-	if !ok {
-		t.Fatal("expected ok=true for valid traceparent")
-	}
-	if traceID != "abc123" || spanID != "def456" {
-		t.Fatalf(
-			"traceID=%q spanID=%q, want abc123/def456",
-			traceID, spanID,
-		)
-	}
-}
-
-func TestSplitWorkerTraceparentMalformed(t *testing.T) {
-	// Negative: wrong number of parts
-	_, _, ok := splitWorkerTraceparent("abc-def")
-	if ok {
-		t.Fatal("expected ok=false for malformed input")
-	}
-	// Negative: wrong version prefix
-	_, _, ok = splitWorkerTraceparent("01-abc-def-01")
-	if ok {
-		t.Fatal("expected ok=false for wrong version")
-	}
-}
-
-func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
-	// Use valid 32-char trace ID and 16-char span ID for OTel.
+	// Use valid 32-char trace ID and 16-char span ID.
 	msg := &testJetstreamMsg{
 		data: []byte("{}"),
 		headers: nats.Header{
@@ -280,7 +259,7 @@ func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
 			},
 		},
 	}
-	ctx := extractWorkerTraceCtx(msg)
+	ctx := observe.ExtractTraceContext(msg, nil)
 	// Positive: context is not nil
 	if ctx == nil {
 		t.Fatal("expected non-nil context")
@@ -299,9 +278,14 @@ func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
 	}
 }
 
-func TestExtractWorkerTraceCtxNoHeader(t *testing.T) {
+func TestExtractTraceContextNoHeader(t *testing.T) {
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
 	msg := &testJetstreamMsg{data: []byte("{}")}
-	ctx := extractWorkerTraceCtx(msg)
+	ctx := observe.ExtractTraceContext(msg, nil)
 	// Positive: returns a valid context
 	if ctx == nil {
 		t.Fatal("expected non-nil context")
@@ -362,13 +346,21 @@ func newTestSpan(
 	return span
 }
 
-func TestInjectWorkerTraceCtxSetsHeader(t *testing.T) {
+func TestInjectTraceContextSetsHeader(t *testing.T) {
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
 	traceID := "0af7651916cd43dd8448eb211c80319c"
 	spanID := "b7ad6b7169203331"
 	span := newTestSpan(traceID, spanID)
+	ctx := trace.ContextWithRemoteSpanContext(
+		context.Background(), span.SpanContext(),
+	)
 	evt := &protocol.Event{}
 	msg := &nats.Msg{}
-	injectWorkerTraceCtx(span, evt, msg)
+	observe.InjectTraceContext(ctx, msg, evt)
 	// Positive: traceparent header is set
 	tp := msg.Header.Get("traceparent")
 	want := "00-" + traceID + "-" + spanID + "-01"
@@ -384,21 +376,24 @@ func TestInjectWorkerTraceCtxSetsHeader(t *testing.T) {
 	}
 }
 
-func TestInjectWorkerTraceCtxEmptyIDs(t *testing.T) {
-	// Noop span has invalid span context — no injection.
-	_, span := tracenoop.NewTracerProvider().
-		Tracer("test").Start(context.Background(), "test")
+func TestInjectTraceContextEmptyIDs(t *testing.T) {
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
+	// Background context has no span — no injection.
 	evt := &protocol.Event{}
 	msg := &nats.Msg{}
-	injectWorkerTraceCtx(span, evt, msg)
-	// Positive: no header set when span context is invalid
-	if msg.Header != nil {
-		tp := msg.Header.Get("traceparent")
-		if tp != "" {
-			t.Fatalf(
-				"traceparent = %q, want empty", tp,
-			)
-		}
+	observe.InjectTraceContext(
+		context.Background(), msg, evt,
+	)
+	// Positive: no traceparent when no span context
+	tp := msg.Header.Get("traceparent")
+	if tp != "" {
+		t.Fatalf(
+			"traceparent = %q, want empty", tp,
+		)
 	}
 	// Negative: event TraceParent stays empty
 	if evt.TraceParent != "" {

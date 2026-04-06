@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -582,7 +582,7 @@ func (w *Worker) handleMessage(
 		msg.Ack()
 		return
 	}
-	ctx := extractWorkerTraceCtx(msg)
+	ctx := observe.ExtractTraceContext(msg, nil)
 	ctx, span := w.tracer.Start(ctx,
 		"worker.executeTask",
 		trace.WithSpanKind(trace.SpanKindServer),
@@ -660,93 +660,4 @@ func (w *Worker) handleTaskError(
 	)
 	w.stepRetries.Add(context.Background(), 1)
 	msg.NakWithDelay(5 * time.Second)
-}
-
-// extractWorkerTraceCtx reads W3C traceparent from the NATS
-// message header and returns a context with remote span context.
-func extractWorkerTraceCtx(msg jetstream.Msg) context.Context {
-	if msg == nil {
-		panic("extractWorkerTraceCtx: msg must not be nil")
-	}
-	if msg.Data() == nil {
-		panic("extractWorkerTraceCtx: msg.Data must not be nil")
-	}
-	if msg.Headers() == nil {
-		return context.Background()
-	}
-	tp := msg.Headers().Get("traceparent")
-	if tp == "" {
-		return context.Background()
-	}
-	traceIDStr, spanIDStr, ok := splitWorkerTraceparent(tp)
-	if !ok {
-		return context.Background()
-	}
-	return buildRemoteSpanCtx(traceIDStr, spanIDStr)
-}
-
-// buildRemoteSpanCtx creates a context carrying a remote OTel
-// span context from raw trace and span ID hex strings.
-func buildRemoteSpanCtx(
-	traceIDHex, spanIDHex string,
-) context.Context {
-	tid, err := trace.TraceIDFromHex(traceIDHex)
-	if err != nil {
-		return context.Background()
-	}
-	sid, err := trace.SpanIDFromHex(spanIDHex)
-	if err != nil {
-		return context.Background()
-	}
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    tid,
-		SpanID:     sid,
-		TraceFlags: trace.FlagsSampled,
-		Remote:     true,
-	})
-	return trace.ContextWithRemoteSpanContext(
-		context.Background(), sc,
-	)
-}
-
-// splitWorkerTraceparent parses "00-{traceID}-{spanID}-{flags}".
-func splitWorkerTraceparent(
-	tp string,
-) (traceID, spanID string, ok bool) {
-	if tp == "" {
-		panic("splitWorkerTraceparent: tp must not be empty")
-	}
-	if len(tp) > 256 {
-		panic("splitWorkerTraceparent: tp exceeds max length")
-	}
-	parts := strings.Split(tp, "-")
-	if len(parts) != 4 || parts[0] != "00" {
-		return "", "", false
-	}
-	return parts[1], parts[2], true
-}
-
-// injectWorkerTraceCtx writes traceparent to a NATS message
-// header and event TraceParent field. No-op when the span
-// context is invalid.
-func injectWorkerTraceCtx(
-	span trace.Span, evt *protocol.Event, msg *nats.Msg,
-) {
-	if msg == nil {
-		panic("injectWorkerTraceCtx: msg must not be nil")
-	}
-	if evt == nil {
-		panic("injectWorkerTraceCtx: evt must not be nil")
-	}
-	sc := span.SpanContext()
-	if !sc.IsValid() {
-		return
-	}
-	tp := "00-" + sc.TraceID().String() + "-" +
-		sc.SpanID().String() + "-01"
-	if msg.Header == nil {
-		msg.Header = nats.Header{}
-	}
-	msg.Header.Set("traceparent", tp)
-	evt.TraceParent = tp
 }

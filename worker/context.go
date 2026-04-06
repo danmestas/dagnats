@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -234,10 +235,6 @@ func (c *taskContext) Continue(output []byte) error {
 		protocol.EventStepContinue,
 		c.runID, c.stepID, output,
 	)
-	data, err := evt.Marshal()
-	if err != nil {
-		return err
-	}
 	nonce := fmt.Sprintf("%d", time.Now().UnixNano())
 	msgID := fmt.Sprintf(
 		"%s.%s.continue.%d.%s",
@@ -245,10 +242,14 @@ func (c *taskContext) Continue(output []byte) error {
 	)
 	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
-		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	injectWorkerTraceCtx(c.span, &evt, outMsg)
+	observe.InjectTraceContext(c.ctx, outMsg, &evt)
+	data, err := evt.Marshal()
+	if err != nil {
+		return err
+	}
+	outMsg.Data = data
 	_, err = c.js.PublishMsg(
 		c.ctx, outMsg,
 	)
@@ -287,18 +288,18 @@ func (c *taskContext) publishEvent(
 		eventType, c.runID, c.stepID, payload,
 	)
 	evt.WorkerID = c.workerID
-	data, err := evt.Marshal()
-	if err != nil {
-		return err
-	}
 	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
-		Data:    data,
 		Header: nats.Header{
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	injectWorkerTraceCtx(c.span, &evt, outMsg)
+	observe.InjectTraceContext(c.ctx, outMsg, &evt)
+	data, err := evt.Marshal()
+	if err != nil {
+		return err
+	}
+	outMsg.Data = data
 	_, err = c.js.PublishMsg(
 		c.ctx, outMsg,
 	)

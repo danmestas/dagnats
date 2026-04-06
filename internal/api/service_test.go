@@ -14,10 +14,13 @@ import (
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
@@ -856,15 +859,24 @@ func (s *testSpanWithIDs) SpanContext() trace.SpanContext {
 	return s.sc
 }
 
-func TestInjectAPIMsgTraceCtx(t *testing.T) {
+func TestInjectTraceContextOnMsg(t *testing.T) {
+	// Set up W3C propagator for this test.
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
 	span := newTestSpanWithIDs(
 		"aaaa1111bbbb2222cccc3333dddd4444",
 		"eeee5555ffff6666",
 	)
+	ctx := trace.ContextWithRemoteSpanContext(
+		context.Background(), span.SpanContext(),
+	)
 	msg := &nats.Msg{Header: nats.Header{}}
 
-	// Positive: traceparent header is set.
-	injectAPIMsgTraceCtx(span, msg)
+	// Positive: traceparent header is set via observe helper.
+	observe.InjectTraceContext(ctx, msg, nil)
 	tp := msg.Header.Get("traceparent")
 	expected := "00-aaaa1111bbbb2222cccc3333dddd4444" +
 		"-eeee5555ffff6666-01"
@@ -872,13 +884,13 @@ func TestInjectAPIMsgTraceCtx(t *testing.T) {
 		t.Fatalf("traceparent = %q, want %q", tp, expected)
 	}
 
-	// Negative: noop span (empty IDs) does not set header.
+	// Negative: noop context does not set traceparent.
 	msg2 := &nats.Msg{Header: nats.Header{}}
-	noopTracer := tracenoop.NewTracerProvider().Tracer("")
-	_, ns := noopTracer.Start(context.Background(), "test")
-	injectAPIMsgTraceCtx(ns, msg2)
+	observe.InjectTraceContext(
+		context.Background(), msg2, nil,
+	)
 	if msg2.Header.Get("traceparent") != "" {
-		t.Fatal("noop span should not set traceparent")
+		t.Fatal("background ctx should not set traceparent")
 	}
 }
 
@@ -896,17 +908,27 @@ func TestExtractTaskFromSubject(t *testing.T) {
 	}
 }
 
-func TestInjectAPITraceCtxWithIDs(t *testing.T) {
+func TestInjectTraceContextOnEvent(t *testing.T) {
+	// Set up W3C propagator for this test.
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
 	span := newTestSpanWithIDs(
 		"aaaa1111bbbb2222cccc3333dddd4444",
 		"eeee5555ffff6666",
 	)
+	ctx := trace.ContextWithRemoteSpanContext(
+		context.Background(), span.SpanContext(),
+	)
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-1", nil,
 	)
+	msg := &nats.Msg{}
 
-	// Positive: trace context is injected.
-	injectAPITraceCtx(span, &evt)
+	// Positive: trace context is injected into event.
+	observe.InjectTraceContext(ctx, msg, &evt)
 	expected := "00-aaaa1111bbbb2222cccc3333dddd4444" +
 		"-eeee5555ffff6666-01"
 	if evt.TraceParent != expected {
@@ -916,15 +938,16 @@ func TestInjectAPITraceCtxWithIDs(t *testing.T) {
 		)
 	}
 
-	// Negative: noop span leaves TraceParent empty.
+	// Negative: background ctx leaves TraceParent empty.
 	evt2 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-2", nil,
 	)
-	noopTracer := tracenoop.NewTracerProvider().Tracer("")
-	_, ns := noopTracer.Start(context.Background(), "test")
-	injectAPITraceCtx(ns, &evt2)
+	msg2 := &nats.Msg{}
+	observe.InjectTraceContext(
+		context.Background(), msg2, &evt2,
+	)
 	if evt2.TraceParent != "" {
-		t.Fatal("noop span should not set TraceParent")
+		t.Fatal("background ctx should not set TraceParent")
 	}
 }
 
@@ -1099,15 +1122,24 @@ func TestNewServicePanicsNilNC(t *testing.T) {
 	NewService(nil)
 }
 
-func TestInjectAPIMsgTraceCtxNilHeader(t *testing.T) {
+func TestInjectTraceContextNilHeader(t *testing.T) {
+	// Set up W3C propagator for this test.
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
 	span := newTestSpanWithIDs(
 		"aaaa1111bbbb2222cccc3333dddd4444",
 		"eeee5555ffff6666",
 	)
+	ctx := trace.ContextWithRemoteSpanContext(
+		context.Background(), span.SpanContext(),
+	)
 	// msg.Header is nil -- function should create it.
 	msg := &nats.Msg{}
 
-	injectAPIMsgTraceCtx(span, msg)
+	observe.InjectTraceContext(ctx, msg, nil)
 	tp := msg.Header.Get("traceparent")
 	if tp == "" {
 		t.Fatal("expected traceparent to be set on nil header")

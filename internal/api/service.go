@@ -19,6 +19,7 @@ import (
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -301,17 +302,16 @@ func (s *Service) startRunInner(
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, runID, payload,
 	)
-	injectAPITraceCtx(span, &evt)
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	observe.InjectTraceContext(ctx, msg, &evt)
 	data, err := evt.Marshal()
 	if err != nil {
 		return "", err
 	}
-	msg := &nats.Msg{
-		Subject: evt.NATSSubject(),
-		Data:    data,
-		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
-	}
-	injectAPIMsgTraceCtx(span, msg)
+	msg.Data = data
 	_, err = s.js.PublishMsg(
 		ctx, msg,
 	)
@@ -415,55 +415,6 @@ func (s *Service) GetRunInput(
 		return nil, err
 	}
 	return run.Input, nil
-}
-
-// injectAPITraceCtx sets TraceParent on the event from the active
-// span's SpanContext, enabling the engine to link its spans as
-// children of the API span. No-op when span lacks valid SpanContext.
-func injectAPITraceCtx(span trace.Span, evt *protocol.Event) {
-	if span == nil {
-		panic("injectAPITraceCtx: span must not be nil")
-	}
-	if evt == nil {
-		panic("injectAPITraceCtx: evt must not be nil")
-	}
-	tp := formatAPITraceparent(span)
-	if tp == "" {
-		return
-	}
-	evt.TraceParent = tp
-}
-
-// injectAPIMsgTraceCtx sets traceparent header on the outgoing NATS
-// message from the active span's SpanContext. No-op when span lacks
-// SpanContext or IDs are empty.
-func injectAPIMsgTraceCtx(span trace.Span, msg *nats.Msg) {
-	if span == nil {
-		panic("injectAPIMsgTraceCtx: span must not be nil")
-	}
-	if msg == nil {
-		panic("injectAPIMsgTraceCtx: msg must not be nil")
-	}
-	tp := formatAPITraceparent(span)
-	if tp == "" {
-		return
-	}
-	if msg.Header == nil {
-		msg.Header = nats.Header{}
-	}
-	msg.Header.Set("traceparent", tp)
-}
-
-// formatAPITraceparent extracts trace/span IDs from the span and
-// returns a W3C traceparent string. Returns "" when the span's
-// SpanContext is not valid or has empty IDs.
-func formatAPITraceparent(span trace.Span) string {
-	sc := span.SpanContext()
-	if !sc.TraceID().IsValid() || !sc.SpanID().IsValid() {
-		return ""
-	}
-	return "00-" + sc.TraceID().String() +
-		"-" + sc.SpanID().String() + "-01"
 }
 
 // ListWorkflows retrieves all registered workflow definitions from KV.

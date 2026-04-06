@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
@@ -134,21 +135,20 @@ func (s *Service) publishBulkRuns(
 		evt := protocol.NewWorkflowEvent(
 			protocol.EventWorkflowStarted, runID, payload,
 		)
-		injectAPITraceCtx(span, &evt)
+		msg := &nats.Msg{
+			Subject: evt.NATSSubject(),
+			Header: nats.Header{
+				"Nats-Msg-Id": {evt.NATSMsgID()},
+			},
+		}
+		observe.InjectTraceContext(ctx, msg, &evt)
 		data, err := evt.Marshal()
 		if err != nil {
 			return BulkRunResponse{
 				RunIDs: runIDs, Total: len(runIDs),
 			}, err
 		}
-		msg := &nats.Msg{
-			Subject: evt.NATSSubject(),
-			Data:    data,
-			Header: nats.Header{
-				"Nats-Msg-Id": {evt.NATSMsgID()},
-			},
-		}
-		injectAPIMsgTraceCtx(span, msg)
+		msg.Data = data
 		if _, err := s.js.PublishMsg(
 			ctx, msg,
 		); err != nil {

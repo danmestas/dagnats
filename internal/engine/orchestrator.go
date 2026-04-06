@@ -17,6 +17,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -248,7 +249,7 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 		msg.Ack()
 		return
 	}
-	ctx := extractTraceCtxJS(msg, &evt)
+	ctx := observe.ExtractTraceContext(msg, &evt)
 	ctx, span := o.tracer.Start(ctx,
 		"dagnats.engine handleEvent",
 		trace.WithSpanKind(trace.SpanKindServer),
@@ -1639,15 +1640,16 @@ func (o *Orchestrator) notifyParentIfChild(
 	evt := protocol.NewStepEvent(
 		eventType, run.ParentRunID, run.ParentStepID, payload,
 	)
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	observe.InjectTraceContext(ctx, msg, &evt)
 	data, err := evt.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal child event: %w", err)
 	}
-	msg := &nats.Msg{
-		Subject: evt.NATSSubject(),
-		Data:    data,
-		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
-	}
+	msg.Data = data
 	_, err = o.js.PublishMsg(ctx, msg)
 	return err
 }
@@ -2054,7 +2056,7 @@ func (o *Orchestrator) doPublishTask(
 	msgID := runID + "." + step.ID + ".queued"
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	injectTraceCtx(ctx, span, msg)
+	observe.InjectTraceContext(ctx, msg, nil)
 	_, err = o.js.PublishMsg(ctx, msg)
 	o.stepEnqueueCount.Add(ctx, 1)
 	return err
@@ -2101,7 +2103,7 @@ func (o *Orchestrator) publishIterationTask(
 	)
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	injectTraceCtx(ctx, span, msg)
+	observe.InjectTraceContext(ctx, msg, nil)
 	_, err = o.js.PublishMsg(ctx, msg)
 	o.stepEnqueueCount.Add(ctx, 1)
 	return err
@@ -2231,64 +2233,6 @@ func (o *Orchestrator) publishWorkflowFailed(
 	return err
 }
 
-// extractTraceCtxJS reads W3C traceparent from a jetstream.Msg header
-// or event payload and returns a context with remote span context.
-func extractTraceCtxJS(
-	msg jetstream.Msg, evt *protocol.Event,
-) context.Context {
-	if msg == nil {
-		panic("extractTraceCtxJS: msg must not be nil")
-	}
-	if evt == nil {
-		panic("extractTraceCtxJS: evt must not be nil")
-	}
-	traceIDStr, spanIDStr, ok := parseTraceparentJS(msg, evt)
-	if !ok {
-		return context.Background()
-	}
-	return buildRemoteSpanCtx(traceIDStr, spanIDStr)
-}
-
-// buildRemoteSpanCtx creates a context carrying a remote OTel span
-// context from raw trace and span ID hex strings.
-func buildRemoteSpanCtx(
-	traceIDHex, spanIDHex string,
-) context.Context {
-	tid, err := trace.TraceIDFromHex(traceIDHex)
-	if err != nil {
-		return context.Background()
-	}
-	sid, err := trace.SpanIDFromHex(spanIDHex)
-	if err != nil {
-		return context.Background()
-	}
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    tid,
-		SpanID:     sid,
-		TraceFlags: trace.FlagsSampled,
-		Remote:     true,
-	})
-	return trace.ContextWithRemoteSpanContext(
-		context.Background(), sc,
-	)
-}
-
-// parseTraceparentJS reads traceparent from jetstream.Msg header
-// first, falling back to the event field.
-func parseTraceparentJS(
-	msg jetstream.Msg, evt *protocol.Event,
-) (traceID, spanID string, ok bool) {
-	if hdrs := msg.Headers(); hdrs != nil {
-		if h := hdrs.Get("traceparent"); h != "" {
-			return splitTraceparent(h)
-		}
-	}
-	if evt.TraceParent != "" {
-		return splitTraceparent(evt.TraceParent)
-	}
-	return "", "", false
-}
-
 // parseTraceparent reads traceparent from *nats.Msg header first,
 // falling back to the event field. Used by tests.
 func parseTraceparent(
@@ -2314,27 +2258,6 @@ func splitTraceparent(
 		return "", "", false
 	}
 	return parts[1], parts[2], true
-}
-
-// injectTraceCtx writes traceparent to outgoing NATS message headers.
-// Extracts trace and span IDs from the OTel span context.
-// No-op when the span context is invalid or IDs are empty.
-func injectTraceCtx(
-	ctx context.Context, span trace.Span, msg *nats.Msg,
-) {
-	if msg == nil {
-		panic("injectTraceCtx: msg must not be nil")
-	}
-	sc := span.SpanContext()
-	if !sc.IsValid() {
-		return
-	}
-	tp := "00-" + sc.TraceID().String() + "-" +
-		sc.SpanID().String() + "-01"
-	if msg.Header == nil {
-		msg.Header = nats.Header{}
-	}
-	msg.Header.Set("traceparent", tp)
 }
 
 // enqueueSleepStep marks the step as Running, publishes a
@@ -3000,18 +2923,18 @@ func (o *Orchestrator) publishSpawnEvent(
 		protocol.EventWorkflowSpawn,
 		parentRunID, parentStepID, payload,
 	)
-	data, err := evt.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal spawn event: %w", err)
-	}
-
 	msg := &nats.Msg{
 		Subject: evt.NATSSubject(),
-		Data:    data,
 		Header: nats.Header{
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
+	observe.InjectTraceContext(ctx, msg, &evt)
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal spawn event: %w", err)
+	}
+	msg.Data = data
 	_, err = o.js.PublishMsg(ctx, msg)
 	return err
 }
