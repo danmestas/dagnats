@@ -18,18 +18,18 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// createStickyBinding writes a sticky binding if the workflow is
-// sticky and no binding exists yet. Called from handleStepCompleted.
-func (o *Orchestrator) createStickyBinding(
+// CreateBinding writes a sticky binding if the workflow is sticky
+// and no binding exists yet. Safe to call on nil receiver.
+func (sr *StickyRouter) CreateBinding(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
 	run dag.WorkflowRun,
 	evt protocol.Event,
 ) {
-	if wfDef.Sticky == dag.StickyNone {
+	if sr == nil {
 		return
 	}
-	if o.stickyKV == nil {
+	if wfDef.Sticky == dag.StickyNone {
 		return
 	}
 	if evt.WorkerID == "" {
@@ -37,49 +37,50 @@ func (o *Orchestrator) createStickyBinding(
 	}
 
 	// Only create binding once per run
-	_, err := o.stickyKV.Get(ctx, run.RunID)
+	_, err := sr.kv.Get(ctx, run.RunID)
 	if err == nil {
 		return // binding already exists
 	}
 
 	// Atomic create — if another step completes concurrently,
 	// the first one wins.
-	_, _ = o.stickyKV.Create(
+	_, _ = sr.kv.Create(
 		ctx, run.RunID, []byte(evt.WorkerID),
 	)
 }
 
-// getStickyWorker returns the bound worker ID for a run, or empty
-// string if no binding exists.
-func (o *Orchestrator) getStickyWorker(
+// GetWorker returns the bound worker ID for a run, or empty
+// string if no binding exists. Safe to call on nil receiver.
+func (sr *StickyRouter) GetWorker(
 	ctx context.Context, runID string,
 ) string {
-	if o.stickyKV == nil {
+	if sr == nil {
 		return ""
 	}
-	entry, err := o.stickyKV.Get(ctx, runID)
+	entry, err := sr.kv.Get(ctx, runID)
 	if err != nil {
 		return ""
 	}
 	return string(entry.Value())
 }
 
-// deleteStickyBinding removes the binding for a run. Called on
+// DeleteBinding removes the binding for a run. Called on
 // workflow completion, failure, or cancellation.
-func (o *Orchestrator) deleteStickyBinding(
+// Safe to call on nil receiver.
+func (sr *StickyRouter) DeleteBinding(
 	ctx context.Context, runID string,
 ) {
-	if o.stickyKV == nil {
+	if sr == nil {
 		return
 	}
-	_ = o.stickyKV.Delete(ctx, runID)
+	_ = sr.kv.Delete(ctx, runID)
 }
 
-// publishStickyTask encapsulates all sticky routing complexity.
+// PublishTask encapsulates all sticky routing complexity.
 // Hard: publish only to worker-specific subject.
 // Soft: publish to worker-specific subject, schedule fallback timer
 // that re-publishes to normal subject if unclaimed.
-func (o *Orchestrator) publishStickyTask(
+func (sr *StickyRouter) PublishTask(
 	ctx context.Context,
 	runID string,
 	step dag.StepDef,
@@ -88,14 +89,19 @@ func (o *Orchestrator) publishStickyTask(
 	workerID string,
 	strategy dag.StickyStrategy,
 ) error {
+	if sr == nil {
+		panic("StickyRouter.PublishTask: called on nil receiver")
+	}
 	if runID == "" {
-		panic("publishStickyTask: runID must not be empty")
+		panic("StickyRouter.PublishTask: runID must not be empty")
 	}
 	if workerID == "" {
-		panic("publishStickyTask: workerID must not be empty")
+		panic(
+			"StickyRouter.PublishTask: workerID must not be empty",
+		)
 	}
 
-	ctx, span := o.tracer.Start(ctx,
+	ctx, span := sr.tracer.Start(ctx,
 		"dagnats.engine publishStickyTask",
 		trace.WithAttributes(
 			attribute.String("run_id", runID),
@@ -129,16 +135,16 @@ func (o *Orchestrator) publishStickyTask(
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
 	observe.InjectTraceContext(ctx, stickyMsg, nil)
-	_, err = o.js.PublishMsg(ctx, stickyMsg)
+	_, err = sr.js.PublishMsg(ctx, stickyMsg)
 	if err != nil {
 		return fmt.Errorf("publish sticky task: %w", err)
 	}
-	o.stepEnqueueCount.Add(ctx, 1)
+	sr.stepEnqueueCount.Add(ctx, 1)
 
-	if strategy == dag.StickySoft && o.sleepTimer != nil {
+	if strategy == dag.StickySoft && sr.sleepTimer != nil {
 		// Schedule fallback: if sticky worker doesn't claim
 		// within 5 seconds, re-publish to normal subject.
-		o.sleepTimer.Schedule(ctx, TimerMessage{
+		sr.sleepTimer.Schedule(ctx, TimerMessage{
 			Action:     TimerActionRateRetry, // reuses rate retry
 			RunID:      runID,
 			StepID:     step.ID,
