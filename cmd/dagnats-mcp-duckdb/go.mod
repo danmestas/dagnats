@@ -9,7 +9,7 @@ require (
 
 require (
 	github.com/apache/arrow-go/v18 v18.1.0 // indirect
-	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/google/flatbuffers v25.1.24+incompatible // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
