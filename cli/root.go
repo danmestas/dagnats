@@ -73,7 +73,7 @@ func printUsage() {
 	fmt.Println("  init      scaffold a new workflow project")
 	fmt.Println("  config    show effective configuration")
 	fmt.Println("  status    show system health")
-	fmt.Println("  logs      tail telemetry log stream")
+	fmt.Println("  logs      tail or search telemetry log stream")
 	fmt.Println("  dev       watch mode: build and restart on changes")
 	fmt.Println("  trace     view and search trace spans")
 	fmt.Println("  metrics   view metric snapshots")

@@ -19,8 +19,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// runLogsCmd tails telemetry logs from JetStream with optional filters.
-// Blocks until interrupted by SIGINT or SIGTERM.
+// runLogsCmd dispatches to logs subcommands: tail (default) or search.
+// Blocks until interrupted by SIGINT or SIGTERM for tail mode.
 func runLogsCmd(args []string) {
 	if args == nil {
 		panic("runLogsCmd: args must not be nil")
@@ -28,6 +28,21 @@ func runLogsCmd(args []string) {
 	const maxArgs = 100
 	if len(args) > maxArgs {
 		panic("runLogsCmd: args exceeds max bound")
+	}
+
+	if len(args) > 0 && args[0] == "search" {
+		runLogsSearchCmd(args[1:])
+		return
+	}
+
+	runLogsTailCmd(args)
+}
+
+// runLogsTailCmd tails telemetry logs from JetStream with optional
+// filters. Blocks until interrupted by SIGINT or SIGTERM.
+func runLogsTailCmd(args []string) {
+	if args == nil {
+		panic("runLogsTailCmd: args must not be nil")
 	}
 
 	var levelFilter, serviceFilter string
