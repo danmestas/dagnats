@@ -26,7 +26,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	// Step 1: produce a greeting from the input name.
 	// HandleTyped handles JSON marshal/unmarshal automatically.

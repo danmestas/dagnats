@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 func TestTaskContextComplete(t *testing.T) {
@@ -38,11 +38,11 @@ func TestTaskContextComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nc, tel, js,
+		nc, tr, js,
 		protocol.TaskPayload{
 			RunID: "run-1", StepID: "step-a",
 			Input: []byte(`"input"`),
@@ -93,11 +93,11 @@ func TestTaskContextFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nc, tel, js,
+		nc, tr, js,
 		protocol.TaskPayload{RunID: "run-2", StepID: "step-b"},
 		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
@@ -138,11 +138,11 @@ func TestTaskContextContinue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nc, tel, js,
+		nc, tr, js,
 		protocol.TaskPayload{RunID: "run-3", StepID: "step-c"},
 		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
@@ -164,11 +164,11 @@ func TestTaskContextContinue(t *testing.T) {
 }
 
 func TestTaskContextInput(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-4", StepID: "step-d",
 			Input: []byte(`"hello"`),
@@ -194,9 +194,9 @@ func TestTaskContextInput(t *testing.T) {
 }
 
 func TestTaskContextHeartbeat(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 
 	// Positive: nil msg panics — catches programmer error
 	defer func() {
@@ -206,7 +206,7 @@ func TestTaskContextHeartbeat(t *testing.T) {
 		}
 	}()
 	tc := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-hb", StepID: "step-hb",
 		},
@@ -234,15 +234,15 @@ func TestTaskContextCheckpoint(t *testing.T) {
 	cpKV, _ := js.KeyValue(
 		context.Background(), "checkpoints",
 	)
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := &taskContext{
 		nc:           nc,
 		js:           js,
 		runID:        "run-cp",
 		stepID:       "step-cp",
-		tel:          tel,
+		tracer:       tr,
 		ctx:          bgCtx,
 		span:         span,
 		msg:          &testJetstreamMsg{},
@@ -283,15 +283,15 @@ func TestTaskContextSignal(t *testing.T) {
 	sigKV, _ := js.KeyValue(
 		context.Background(), "signals",
 	)
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := &taskContext{
 		nc:       nc,
 		js:       js,
 		runID:    "run-sig",
 		stepID:   "step-sig",
-		tel:      tel,
+		tracer:   tr,
 		ctx:      bgCtx,
 		span:     span,
 		signalKV: sigKV,
@@ -315,11 +315,11 @@ func TestTaskContextSignal(t *testing.T) {
 }
 
 func TestTaskContextRetryCount(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-rc", StepID: "step-rc",
 			Attempt: 3,
@@ -334,7 +334,7 @@ func TestTaskContextRetryCount(t *testing.T) {
 	}
 	// Negative: zero-value attempt is different
 	tc2 := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{RunID: "r", StepID: "s"},
 		bgCtx, span, nil, nil, nil,
 	)
@@ -347,11 +347,11 @@ func TestTaskContextRetryCount(t *testing.T) {
 
 func TestTaskContextPutStream(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nc, tel, nil,
+		nc, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-ps", StepID: "step-ps",
 		},
@@ -387,16 +387,16 @@ func TestTaskContextPutStream(t *testing.T) {
 	}
 }
 
-func TestNewTaskContextPanicsOnNilTel(t *testing.T) {
+func TestNewTaskContextPanicsOnNilTracer(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("expected panic for nil tel, got nil")
+			t.Fatal("expected panic for nil tracer, got nil")
 		}
-		// Positive: panic message mentions tel
+		// Positive: panic message mentions tracer
 		msg := fmt.Sprintf("%v", r)
-		if msg != "newTaskContext: tel must not be nil" {
-			t.Fatalf("panic = %q, want tel message", msg)
+		if msg != "newTaskContext: tracer must not be nil" {
+			t.Fatalf("panic = %q, want tracer message", msg)
 		}
 	}()
 	newTaskContext(
@@ -406,7 +406,7 @@ func TestNewTaskContextPanicsOnNilTel(t *testing.T) {
 }
 
 func TestNewTaskContextPanicsOnNilCtx(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -419,15 +419,15 @@ func TestNewTaskContextPanicsOnNilCtx(t *testing.T) {
 		}
 	}()
 	newTaskContext(
-		nil, tel, nil, protocol.TaskPayload{},
+		nil, tr, nil, protocol.TaskPayload{},
 		nil, nil, nil, nil, nil,
 	)
 }
 
 func TestNewTaskContextFieldInit(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	payload := protocol.TaskPayload{
 		RunID:     "run-init",
 		StepID:    "step-init",
@@ -436,7 +436,7 @@ func TestNewTaskContextFieldInit(t *testing.T) {
 		Input:     []byte(`"data"`),
 	}
 	tc := newTaskContext(
-		nil, tel, nil, payload,
+		nil, tr, nil, payload,
 		bgCtx, span, nil, nil, nil,
 	)
 	// Positive: all fields from payload are set
@@ -453,11 +453,11 @@ func TestNewTaskContextFieldInit(t *testing.T) {
 }
 
 func TestTaskContextCheckpointNilKV(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-nocp", StepID: "step-nocp",
 		},
@@ -479,11 +479,11 @@ func TestTaskContextCheckpointNilKV(t *testing.T) {
 }
 
 func TestTaskContextSignalNilKV(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-nosig", StepID: "step-nosig",
 		},
@@ -519,7 +519,7 @@ func TestTaskContextPause(t *testing.T) {
 	var callCount int
 	pauseName := "waiting-for-approval"
 
-	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w := NewWorker(nc)
 	w.Handle("pausable", func(ctx TaskContext) error {
 		callCount++
 		checkpoint, err := ctx.LoadCheckpoint()
@@ -595,11 +595,11 @@ func TestTaskContextPause(t *testing.T) {
 }
 
 func TestTaskContextPausePanicsOnEmptyName(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-pause-panic", StepID: "step",
 		},
@@ -621,11 +621,11 @@ func TestTaskContextPausePanicsOnEmptyName(t *testing.T) {
 }
 
 func TestTaskContextPausePanicsOnZeroDuration(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-pause-zero", StepID: "step",
 		},
@@ -647,11 +647,11 @@ func TestTaskContextPausePanicsOnZeroDuration(t *testing.T) {
 }
 
 func TestTaskContextPausePanicsOnNegativeDuration(t *testing.T) {
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 	tc := newTaskContext(
-		nil, tel, nil,
+		nil, tr, nil,
 		protocol.TaskPayload{
 			RunID: "run-pause-neg", StepID: "step",
 		},
@@ -682,12 +682,12 @@ func TestFailPermanentPublishesNonRetriable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 
 	tc := newTaskContext(
-		nc, tel, js,
+		nc, tr, js,
 		protocol.TaskPayload{
 			RunID: "run-1", StepID: "step-a",
 		},
@@ -746,12 +746,12 @@ func TestFailRetryAfterPublishesDelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 
 	tc := newTaskContext(
-		nc, tel, js,
+		nc, tr, js,
 		protocol.TaskPayload{
 			RunID: "run-2", StepID: "step-b",
 		},
@@ -800,12 +800,12 @@ func TestFailRetryAfterClampsBounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
+	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
-	_, span := tel.Tracer.Start(bgCtx, "test")
+	_, span := tr.Start(bgCtx, "test")
 
 	tc := newTaskContext(
-		nc, tel, js,
+		nc, tr, js,
 		protocol.TaskPayload{
 			RunID: "run-3", StepID: "step-c",
 		},

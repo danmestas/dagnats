@@ -13,7 +13,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -114,8 +113,7 @@ func SubscribeWorker(
 	if taskName == "" {
 		panic("SubscribeWorker: taskName must not be empty")
 	}
-	tel := observe.NewNoopTelemetry()
-	w := worker.NewWorker(nc, tel)
+	w := worker.NewWorker(nc)
 	w.Handle(taskName, handler)
 	w.Start()
 	t.Cleanup(func() { w.Stop() })

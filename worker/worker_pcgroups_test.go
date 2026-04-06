@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
+
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -32,7 +32,7 @@ func TestWorker_ElasticConsume(t *testing.T) {
 	var mu sync.Mutex
 	received := make([]string, 0, 2)
 
-	w := NewWorker(nc, observe.NewNoopTelemetry(),
+	w := NewWorker(nc,
 		WithPartitions(2),
 	)
 	w.Handle("compile", func(ctx TaskContext) error {
@@ -108,7 +108,7 @@ func TestWorker_Singleton(t *testing.T) {
 	}
 
 	var count atomic.Int32
-	w := NewWorker(nc, observe.NewNoopTelemetry(),
+	w := NewWorker(nc,
 		WithPartitions(4),
 	)
 	w.HandleSingleton("deploy", func(ctx TaskContext) error {
@@ -157,7 +157,7 @@ func TestWorker_Singleton(t *testing.T) {
 
 func TestHandleSingletonPanicsOnEmptyTaskType(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	w := NewWorker(nc, observe.NewNoopTelemetry(),
+	w := NewWorker(nc,
 		WithPartitions(4),
 	)
 	defer func() {
@@ -179,7 +179,7 @@ func TestHandleSingletonPanicsOnEmptyTaskType(t *testing.T) {
 
 func TestHandleSingletonPanicsOnNilHandler(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	w := NewWorker(nc, observe.NewNoopTelemetry(),
+	w := NewWorker(nc,
 		WithPartitions(4),
 	)
 	defer func() {

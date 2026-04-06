@@ -14,7 +14,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -68,7 +67,7 @@ func TestE2EAgentStepRouting(t *testing.T) {
 	defer orch.Stop()
 
 	// Normal worker handles "prepare"
-	w := worker.NewWorker(nc, observe.NewNoopTelemetry())
+	w := worker.NewWorker(nc)
 	w.Handle("prep-task", func(ctx worker.TaskContext) error {
 		return ctx.Complete([]byte(`"prepared"`))
 	})

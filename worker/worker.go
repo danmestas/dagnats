@@ -6,14 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/synadia-io/orbit.go/pcgroups"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TaskContext is the interface workers use to interact with the
@@ -65,7 +70,7 @@ type HandlerFunc func(ctx TaskContext) error
 type Worker struct {
 	nc           *nats.Conn
 	js           jetstream.JetStream
-	tel          *observe.Telemetry
+	tracer       trace.Tracer
 	handlers     map[string]HandlerFunc
 	stoppers     []interface{ Stop() } // all consumer lifecycles
 	checkpointKV jetstream.KeyValue
@@ -80,9 +85,9 @@ type Worker struct {
 	stopHeartbeat chan struct{}
 
 	// Pre-allocated metric instruments — created once in constructor.
-	stepDuration observe.Histogram
-	stepRetries  observe.Counter
-	tasksActive  observe.Gauge
+	stepDuration metric.Float64Histogram
+	stepRetries  metric.Int64Counter
+	tasksActive  metric.Int64UpDownCounter
 }
 
 // WorkerOption configures optional Worker behavior.
@@ -126,39 +131,37 @@ func generateWorkerID() string {
 	return fmt.Sprintf("worker-%x", b)
 }
 
-// NewWorker creates a Worker using the given connection and
-// optional telemetry bundle. Panics if nc is nil or if JetStream
-// cannot be initialised — both are programmer errors at startup.
-// When tel is nil, a noop telemetry is used so callers are not
-// forced to import observe for simple use cases.
+// NewWorker creates a Worker using the given connection.
+// Panics if nc is nil or if JetStream cannot be initialised
+// — both are programmer errors at startup. Tracing and
+// metrics use the global OTel providers (noop by default).
 func NewWorker(
-	nc *nats.Conn, tel *observe.Telemetry, opts ...WorkerOption,
+	nc *nats.Conn, opts ...WorkerOption,
 ) *Worker {
 	if nc == nil {
 		panic("NewWorker: nc must not be nil")
-	}
-	if tel == nil {
-		tel = observe.NewNoopTelemetry()
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
 		panic("NewWorker: jetstream.New failed: " + err.Error())
 	}
+	m := otel.Meter("dagnats/worker")
+	stepDur, _ := m.Float64Histogram(
+		"step.duration_ms",
+	)
+	stepRet, _ := m.Int64Counter("step.retries")
+	active, _ := m.Int64UpDownCounter(
+		"worker.tasks.active",
+	)
 	w := &Worker{
-		nc:       nc,
-		js:       js,
-		tel:      tel,
-		handlers: make(map[string]HandlerFunc),
-		workerID: generateWorkerID(),
-		stepDuration: tel.Metrics.Histogram(
-			"step.duration_ms", nil,
-		),
-		stepRetries: tel.Metrics.Counter(
-			"step.retries", nil,
-		),
-		tasksActive: tel.Metrics.Gauge(
-			"worker.tasks.active", nil,
-		),
+		nc:           nc,
+		js:           js,
+		tracer:       otel.Tracer("dagnats/worker"),
+		handlers:     make(map[string]HandlerFunc),
+		workerID:     generateWorkerID(),
+		stepDuration: stepDur,
+		stepRetries:  stepRet,
+		tasksActive:  active,
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -507,10 +510,10 @@ func (w *Worker) createElasticConsumer(
 			groupName + ": " + err.Error())
 	}
 
-	w.tel.Logger.Info("elastic consumer group joined",
-		observe.String("task_type", taskType),
-		observe.String("group", groupName),
-		observe.Int("partitions", partitions),
+	slog.Info("elastic consumer group joined",
+		"task_type", taskType,
+		"group", groupName,
+		"partitions", partitions,
 	)
 
 	return cc
@@ -571,44 +574,45 @@ func (w *Worker) handleMessage(
 	var payload protocol.TaskPayload
 	err := json.Unmarshal(msg.Data(), &payload)
 	if err != nil {
-		w.tel.Logger.Error(
-			"failed to unmarshal task payload", err,
-			observe.String("task_type", taskType),
+		slog.Error(
+			"failed to unmarshal task payload",
+			"error", err,
+			"task_type", taskType,
 		)
 		msg.Ack()
 		return
 	}
 	ctx := extractWorkerTraceCtx(msg)
-	ctx, span := w.tel.Tracer.Start(ctx,
+	ctx, span := w.tracer.Start(ctx,
 		"worker.executeTask",
-		observe.WithSpanKind(observe.SpanKindServer),
-		observe.WithAttributes(
-			observe.StringAttr("run_id", payload.RunID),
-			observe.StringAttr("step_id", payload.StepID),
-			observe.StringAttr("task_name", taskType),
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("run_id", payload.RunID),
+			attribute.String("step_id", payload.StepID),
+			attribute.String("task_name", taskType),
 		),
 	)
 	defer span.End()
-	w.tasksActive.Inc()
+	w.tasksActive.Add(ctx, 1)
 	start := time.Now()
-	w.tel.Logger.Info("executing task",
-		observe.String("task_type", taskType),
-		observe.String("run_id", payload.RunID),
-		observe.String("step_id", payload.StepID),
+	slog.InfoContext(ctx, "executing task",
+		"task_type", taskType,
+		"run_id", payload.RunID,
+		"step_id", payload.StepID,
 	)
 	tc := newTaskContext(
-		w.nc, w.tel, w.js, payload, ctx, span, msg,
+		w.nc, w.tracer, w.js, payload, ctx, span, msg,
 		w.checkpointKV, w.signalKV,
 	)
 	tc.workerID = w.workerID
 	err = handler(tc)
 	elapsed := float64(time.Since(start).Milliseconds())
-	w.stepDuration.Observe(elapsed)
-	w.tasksActive.Dec()
+	w.stepDuration.Record(ctx, elapsed)
+	w.tasksActive.Add(ctx, -1)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(
-			observe.StatusError, err.Error(),
+			codes.Error, err.Error(),
 		)
 		w.handleTaskError(
 			err, tc, msg, taskType, payload.RunID,
@@ -638,26 +642,28 @@ func (w *Worker) handleTaskError(
 	}
 	var nre *NonRetryableError
 	if errors.As(err, &nre) {
-		w.tel.Logger.Error(
-			"task failed permanently", nre.Err,
-			observe.String("task_type", taskType),
-			observe.String("run_id", runID),
+		slog.Error(
+			"task failed permanently",
+			"error", nre.Err,
+			"task_type", taskType,
+			"run_id", runID,
 		)
 		tc.FailPermanent(nre.Err)
 		msg.Ack()
 		return
 	}
-	w.tel.Logger.Error(
-		"task handler returned error, will retry", err,
-		observe.String("task_type", taskType),
-		observe.String("run_id", runID),
+	slog.Error(
+		"task handler returned error, will retry",
+		"error", err,
+		"task_type", taskType,
+		"run_id", runID,
 	)
-	w.stepRetries.Inc()
+	w.stepRetries.Add(context.Background(), 1)
 	msg.NakWithDelay(5 * time.Second)
 }
 
 // extractWorkerTraceCtx reads W3C traceparent from the NATS
-// message header and returns a context with parent span info.
+// message header and returns a context with remote span context.
 func extractWorkerTraceCtx(msg jetstream.Msg) context.Context {
 	if msg == nil {
 		panic("extractWorkerTraceCtx: msg must not be nil")
@@ -672,12 +678,34 @@ func extractWorkerTraceCtx(msg jetstream.Msg) context.Context {
 	if tp == "" {
 		return context.Background()
 	}
-	traceID, spanID, ok := splitWorkerTraceparent(tp)
+	traceIDStr, spanIDStr, ok := splitWorkerTraceparent(tp)
 	if !ok {
 		return context.Background()
 	}
-	return observe.ContextWithParentInfo(
-		context.Background(), traceID, spanID,
+	return buildRemoteSpanCtx(traceIDStr, spanIDStr)
+}
+
+// buildRemoteSpanCtx creates a context carrying a remote OTel
+// span context from raw trace and span ID hex strings.
+func buildRemoteSpanCtx(
+	traceIDHex, spanIDHex string,
+) context.Context {
+	tid, err := trace.TraceIDFromHex(traceIDHex)
+	if err != nil {
+		return context.Background()
+	}
+	sid, err := trace.SpanIDFromHex(spanIDHex)
+	if err != nil {
+		return context.Background()
+	}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    tid,
+		SpanID:     sid,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	return trace.ContextWithRemoteSpanContext(
+		context.Background(), sc,
 	)
 }
 
@@ -699,10 +727,10 @@ func splitWorkerTraceparent(
 }
 
 // injectWorkerTraceCtx writes traceparent to a NATS message
-// header and event TraceParent field. No-op when the span does
-// not implement SpanContext or has empty IDs.
+// header and event TraceParent field. No-op when the span
+// context is invalid.
 func injectWorkerTraceCtx(
-	span observe.Span, evt *protocol.Event, msg *nats.Msg,
+	span trace.Span, evt *protocol.Event, msg *nats.Msg,
 ) {
 	if msg == nil {
 		panic("injectWorkerTraceCtx: msg must not be nil")
@@ -710,16 +738,12 @@ func injectWorkerTraceCtx(
 	if evt == nil {
 		panic("injectWorkerTraceCtx: evt must not be nil")
 	}
-	sc, ok := span.(observe.SpanContext)
-	if !ok {
+	sc := span.SpanContext()
+	if !sc.IsValid() {
 		return
 	}
-	traceID := sc.TraceID()
-	spanID := sc.SpanID()
-	if traceID == "" || spanID == "" {
-		return
-	}
-	tp := "00-" + traceID + "-" + spanID + "-01"
+	tp := "00-" + sc.TraceID().String() + "-" +
+		sc.SpanID().String() + "-01"
 	if msg.Header == nil {
 		msg.Header = nats.Header{}
 	}

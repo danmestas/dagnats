@@ -27,7 +27,7 @@ func TestE2ETelemetryTracePropagation(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	tel, shutdown := simple.SetupTelemetry(nc)
+	_, shutdown := simple.SetupTelemetry(nc)
 	defer shutdown()
 
 	ctx := t.Context()
@@ -36,7 +36,7 @@ func TestE2ETelemetryTracePropagation(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	w := worker.NewWorker(nc, tel)
+	w := worker.NewWorker(nc)
 	w.Handle("tel-a", func(tc worker.TaskContext) error {
 		return tc.Complete([]byte(`"a-done"`))
 	})

@@ -180,7 +180,7 @@ func (s *Server) startComponents() error {
 				opts, worker.WithGroups(shim.groups...),
 			)
 		}
-		w := worker.NewWorker(s.nc, s.tel, opts...)
+		w := worker.NewWorker(s.nc, opts...)
 		for _, reg := range shim.registrations {
 			w.Handle(reg.taskType, reg.handler)
 		}

@@ -12,19 +12,16 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 )
 
 func TestRunAndWait_Completed(t *testing.T) {
 	nc := Server(t)
-	tel := observe.NewNoopTelemetry()
-
 	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	t.Cleanup(func() { orch.Stop() })
 
-	w := worker.NewWorker(nc, tel)
+	w := worker.NewWorker(nc)
 	w.Handle("echo", func(tc worker.TaskContext) error {
 		return tc.Complete(tc.Input())
 	})

@@ -45,7 +45,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	// Parent workflow step 1: validate the order
 	worker.HandleTyped(w, "validate-order",

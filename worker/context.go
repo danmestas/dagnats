@@ -7,23 +7,25 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type taskContext struct {
 	nc           *nats.Conn
 	js           jetstream.JetStream
-	tel          *observe.Telemetry
+	tracer       trace.Tracer
 	runID        string
 	stepID       string
 	iteration    int
 	attempt      int
 	input        []byte
 	ctx          context.Context
-	span         observe.Span
+	span         trace.Span
 	msg          jetstream.Msg
 	checkpointKV jetstream.KeyValue
 	signalKV     jetstream.KeyValue
@@ -36,17 +38,17 @@ type taskContext struct {
 // parent executeTask span so child spans link correctly.
 func newTaskContext(
 	nc *nats.Conn,
-	tel *observe.Telemetry,
+	tracer trace.Tracer,
 	js jetstream.JetStream,
 	payload protocol.TaskPayload,
 	ctx context.Context,
-	span observe.Span,
+	span trace.Span,
 	msg jetstream.Msg,
 	checkpointKV jetstream.KeyValue,
 	signalKV jetstream.KeyValue,
 ) *taskContext {
-	if tel == nil {
-		panic("newTaskContext: tel must not be nil")
+	if tracer == nil {
+		panic("newTaskContext: tracer must not be nil")
 	}
 	if ctx == nil {
 		panic("newTaskContext: ctx must not be nil")
@@ -54,7 +56,7 @@ func newTaskContext(
 	return &taskContext{
 		nc:           nc,
 		js:           js,
-		tel:          tel,
+		tracer:       tracer,
 		runID:        payload.RunID,
 		stepID:       payload.StepID,
 		iteration:    payload.Iteration,
@@ -81,12 +83,12 @@ func (c *taskContext) Complete(output []byte) error {
 	if c.runID == "" {
 		panic("Complete: runID must not be empty")
 	}
-	_, span := c.tel.Tracer.Start(c.ctx,
+	_, span := c.tracer.Start(c.ctx,
 		"worker.complete",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", c.runID),
-			observe.StringAttr("step_id", c.stepID),
-			observe.Int64Attr(
+		trace.WithAttributes(
+			attribute.String("run_id", c.runID),
+			attribute.String("step_id", c.stepID),
+			attribute.Int64(
 				"output_size_bytes", int64(len(output)),
 			),
 		),
@@ -105,17 +107,17 @@ func (c *taskContext) Fail(err error) error {
 	if err == nil {
 		panic("Fail: err must not be nil")
 	}
-	_, span := c.tel.Tracer.Start(c.ctx,
+	_, span := c.tracer.Start(c.ctx,
 		"worker.fail",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", c.runID),
-			observe.StringAttr("step_id", c.stepID),
-			observe.StringAttr("error", err.Error()),
+		trace.WithAttributes(
+			attribute.String("run_id", c.runID),
+			attribute.String("step_id", c.stepID),
+			attribute.String("error", err.Error()),
 		),
 	)
 	defer span.End()
 	span.RecordError(err)
-	span.SetStatus(observe.StatusError, err.Error())
+	span.SetStatus(codes.Error, err.Error())
 	return c.publishFailedPayload(protocol.StepFailedPayload{
 		Error:       err.Error(),
 		FailureType: protocol.FailureTypeRetriable,
@@ -131,18 +133,18 @@ func (c *taskContext) FailPermanent(err error) error {
 	if err == nil {
 		panic("FailPermanent: err must not be nil")
 	}
-	_, span := c.tel.Tracer.Start(c.ctx,
+	_, span := c.tracer.Start(c.ctx,
 		"worker.failPermanent",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", c.runID),
-			observe.StringAttr("step_id", c.stepID),
-			observe.StringAttr("error", err.Error()),
-			observe.StringAttr("failure_type", "non_retriable"),
+		trace.WithAttributes(
+			attribute.String("run_id", c.runID),
+			attribute.String("step_id", c.stepID),
+			attribute.String("error", err.Error()),
+			attribute.String("failure_type", "non_retriable"),
 		),
 	)
 	defer span.End()
 	span.RecordError(err)
-	span.SetStatus(observe.StatusError, err.Error())
+	span.SetStatus(codes.Error, err.Error())
 	return c.publishFailedPayload(protocol.StepFailedPayload{
 		Error:       err.Error(),
 		FailureType: protocol.FailureTypeNonRetriable,
@@ -164,18 +166,18 @@ func (c *taskContext) FailRetryAfter(
 	if after <= 0 {
 		panic("FailRetryAfter: after must be positive")
 	}
-	_, span := c.tel.Tracer.Start(c.ctx,
+	_, span := c.tracer.Start(c.ctx,
 		"worker.failRetryAfter",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", c.runID),
-			observe.StringAttr("step_id", c.stepID),
-			observe.StringAttr("error", err.Error()),
-			observe.StringAttr("failure_type", "retry_after"),
+		trace.WithAttributes(
+			attribute.String("run_id", c.runID),
+			attribute.String("step_id", c.stepID),
+			attribute.String("error", err.Error()),
+			attribute.String("failure_type", "retry_after"),
 		),
 	)
 	defer span.End()
 	span.RecordError(err)
-	span.SetStatus(observe.StatusError, err.Error())
+	span.SetStatus(codes.Error, err.Error())
 	afterMs := after.Milliseconds()
 	if afterMs > 3_600_000 {
 		afterMs = 3_600_000
@@ -217,12 +219,12 @@ func (c *taskContext) Continue(output []byte) error {
 	if c.runID == "" {
 		panic("Continue: runID must not be empty")
 	}
-	_, span := c.tel.Tracer.Start(c.ctx,
+	_, span := c.tracer.Start(c.ctx,
 		"worker.continue",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", c.runID),
-			observe.StringAttr("step_id", c.stepID),
-			observe.Int64Attr(
+		trace.WithAttributes(
+			attribute.String("run_id", c.runID),
+			attribute.String("step_id", c.stepID),
+			attribute.Int64(
 				"iteration", int64(c.iteration),
 			),
 		),

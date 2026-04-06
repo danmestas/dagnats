@@ -12,14 +12,12 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/e2e/harness"
 	"github.com/danmestas/dagnats/internal/engine"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
 
 func TestWorkerGroups(t *testing.T) {
 	harness.RunE2E(t, func(t *testing.T, nc *nats.Conn) {
-		tel := observe.NewNoopTelemetry()
 		orch := engine.NewOrchestrator(nc)
 		orch.Start()
 		t.Cleanup(func() { orch.Stop() })
@@ -29,7 +27,7 @@ func TestWorkerGroups(t *testing.T) {
 
 		// GPU worker — subscribes to gpu group.
 		gpuWorker := worker.NewWorker(
-			nc, tel, worker.WithGroups("gpu"),
+			nc, worker.WithGroups("gpu"),
 		)
 		gpuWorker.Handle("render", func(tc worker.TaskContext) error {
 			gpuCalled.Store(true)
@@ -40,7 +38,7 @@ func TestWorkerGroups(t *testing.T) {
 
 		// CPU worker — subscribes to cpu group (not gpu).
 		defaultWorker := worker.NewWorker(
-			nc, tel, worker.WithGroups("cpu"),
+			nc, worker.WithGroups("cpu"),
 		)
 		defaultWorker.Handle("render",
 			func(tc worker.TaskContext) error {
