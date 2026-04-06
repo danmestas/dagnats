@@ -54,26 +54,6 @@ type TaskContext interface {
 	SendSignal(runID, name string, data []byte) error
 }
 
-// Checkpointable is the subset of TaskContext for checkpoint
-// operations. Kept for backward compatibility — code that type-
-// asserts to Checkpointable still compiles. Prefer using
-// TaskContext methods directly.
-type Checkpointable interface {
-	Checkpoint(state []byte) error
-	LoadCheckpoint() ([]byte, error)
-	Pause(name string, duration time.Duration) error
-}
-
-// Signaler is the subset of TaskContext for signal operations.
-// Kept for backward compatibility — code that type-asserts to
-// Signaler still compiles. Prefer using TaskContext methods directly.
-type Signaler interface {
-	WaitForSignal(
-		name string, timeout time.Duration,
-	) ([]byte, error)
-	SendSignal(runID, name string, data []byte) error
-}
-
 // HandlerFunc is the function signature for task handlers
 // registered with a Worker.
 type HandlerFunc func(ctx TaskContext) error

@@ -367,5 +367,46 @@ func (s *Scheduler) fireWorkflow(
 		return fmt.Errorf("publish: %w", err)
 	}
 
+	if err := s.publishTriggerFire(def, runID, now); err != nil {
+		return fmt.Errorf("publishTriggerFire: %w", err)
+	}
+
 	return nil
+}
+
+// publishTriggerFire records a TriggerFire event to the
+// TRIGGER_HISTORY stream for auditing and CLI display.
+// Uses dedup ID to prevent duplicate records.
+func (s *Scheduler) publishTriggerFire(
+	def TriggerDef, runID string, now time.Time,
+) error {
+	if def.ID == "" {
+		panic("publishTriggerFire: def.ID is empty")
+	}
+	if def.WorkflowID == "" {
+		panic(
+			"publishTriggerFire: def.WorkflowID is empty",
+		)
+	}
+	fire := TriggerFire{
+		TriggerID:  def.ID,
+		WorkflowID: def.WorkflowID,
+		RunID:      runID,
+		Source:     "cron",
+		FiredAt:    now.UTC(),
+	}
+	fireBytes, err := json.Marshal(fire)
+	if err != nil {
+		return fmt.Errorf("marshal trigger fire: %w", err)
+	}
+	minuteTimestamp := now.Unix() / 60
+	fireMsgID := fmt.Sprintf(
+		"trigger.%s.%d.fire", def.ID, minuteTimestamp,
+	)
+	subject := fmt.Sprintf("trigger.fire.%s", def.ID)
+	_, err = s.js.Publish(
+		context.Background(), subject, fireBytes,
+		jetstream.WithMsgID(fireMsgID),
+	)
+	return err
 }

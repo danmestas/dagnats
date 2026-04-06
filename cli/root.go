@@ -46,6 +46,10 @@ func Run(args []string) {
 		runConfigCmd(args[2:])
 	case "logs":
 		runLogsCmd(args[2:])
+	case "otlp-bridge":
+		runOTLPBridgeCmd(args[2:])
+	case "dev":
+		runDevCmd(args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[1])
 		printUsage()
@@ -68,6 +72,9 @@ func printUsage() {
 	fmt.Println("  config    show effective configuration")
 	fmt.Println("  status    show system health")
 	fmt.Println("  logs      tail telemetry log stream")
+	fmt.Println(
+		"  otlp-bridge  export telemetry to OTLP/HTTP")
+	fmt.Println("  dev       watch mode: build and restart on changes")
 	fmt.Println("\nGlobal flags:")
 	fmt.Println("  --json    output in JSON format")
 }

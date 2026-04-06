@@ -522,14 +522,13 @@ func TestTaskContextPause(t *testing.T) {
 	w := NewWorker(nc, observe.NewNoopTelemetry())
 	w.Handle("pausable", func(ctx TaskContext) error {
 		callCount++
-		cp := ctx.(Checkpointable)
-		checkpoint, err := cp.LoadCheckpoint()
+		checkpoint, err := ctx.LoadCheckpoint()
 		if err != nil {
 			return fmt.Errorf("load checkpoint: %w", err)
 		}
 		if checkpoint == nil {
 			// First call: pause for 200ms
-			return cp.Pause(pauseName, 200*time.Millisecond)
+			return ctx.Pause(pauseName, 200*time.Millisecond)
 		}
 		// Resume detected: verify checkpoint data and complete
 		var data map[string]any

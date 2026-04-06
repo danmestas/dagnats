@@ -108,8 +108,6 @@ func (f *fakeTaskContext) SendSignal(
 
 // Verify fakeTaskContext implements all worker interfaces.
 var _ worker.TaskContext = (*fakeTaskContext)(nil)
-var _ worker.Checkpointable = (*fakeTaskContext)(nil)
-var _ worker.Signaler = (*fakeTaskContext)(nil)
 
 // --- Exec handler tests ---
 

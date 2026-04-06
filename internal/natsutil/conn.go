@@ -155,6 +155,36 @@ func SetupTelemetryStream(js jetstream.JetStream) error {
 	return err
 }
 
+// SetupTriggerHistoryStream creates the TRIGGER_HISTORY stream
+// for recording trigger fire events. 30-day retention, file
+// storage, discard oldest messages when limits are reached.
+func SetupTriggerHistoryStream(
+	js jetstream.JetStream,
+) error {
+	if js == nil {
+		panic(
+			"SetupTriggerHistoryStream: js must not be nil",
+		)
+	}
+	cfg := jetstream.StreamConfig{
+		Name:      "TRIGGER_HISTORY",
+		Subjects:  []string{"trigger.fire.>"},
+		Retention: jetstream.LimitsPolicy,
+		Storage:   jetstream.FileStorage,
+		MaxAge:    30 * 24 * time.Hour,
+		Discard:   jetstream.DiscardOld,
+	}
+	if cfg.Name == "" {
+		panic(
+			"SetupTriggerHistoryStream: name must not be empty",
+		)
+	}
+	_, err := js.CreateOrUpdateStream(
+		context.Background(), cfg,
+	)
+	return err
+}
+
 // StreamConfig defines an additional JetStream stream for SetupAll to provision.
 type StreamConfig struct {
 	Name     string
@@ -218,6 +248,9 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		return err
 	}
 	if err := SetupStickyStream(js); err != nil {
+		return err
+	}
+	if err := SetupTriggerHistoryStream(js); err != nil {
 		return err
 	}
 
