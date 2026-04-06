@@ -13,6 +13,29 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 )
 
+// logRunEvents fetches and logs history events for a run to aid
+// debugging on timeout. Best-effort — errors are silently ignored
+// because this runs only in failure paths.
+func logRunEvents(
+	t *testing.T, svc *api.Service, runID string,
+) {
+	t.Helper()
+	ctx := context.Background()
+	events, err := svc.ListRunEvents(ctx, runID, false)
+	if err != nil || len(events) == 0 {
+		return
+	}
+	t.Logf("Events at timeout for run %s:", runID)
+	for _, e := range events {
+		t.Logf(
+			"  %s %s %s",
+			e.Timestamp.Format(time.RFC3339),
+			e.Type,
+			e.StepID,
+		)
+	}
+}
+
 // RunAndWait starts a workflow run and blocks until it reaches any
 // terminal status (Completed, Failed, Cancelled, Compensated,
 // CompensateFailed). Returns the final WorkflowRun snapshot.
@@ -91,6 +114,7 @@ func WaitForStatus(
 			if err == nil {
 				lastStatus = run.Status.String()
 			}
+			logRunEvents(t, svc, runID)
 			t.Fatalf(
 				"WaitForStatus: run %q did not reach "+
 					"target status within %s (last: %s)",
