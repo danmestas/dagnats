@@ -12,9 +12,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // maxScheduleAhead is the maximum duration a run can be scheduled
@@ -51,28 +53,28 @@ func (s *Service) ScheduleRun(
 	if workflowName == "" {
 		panic("ScheduleRun: workflowName must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.scheduleRun",
-		observe.WithAttributes(
-			observe.StringAttr("workflow_name", workflowName),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api scheduleRun",
+		trace.WithAttributes(
+			attribute.String("workflow_name", workflowName),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	runID, err := s.scheduleRunInner(
 		ctx, workflowName, input, runAt,
 	)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 		return "", err
 	}
-	span.SetAttributes(observe.StringAttr("run_id", runID))
+	span.SetAttributes(attribute.String("run_id", runID))
 	return runID, nil
 }
 

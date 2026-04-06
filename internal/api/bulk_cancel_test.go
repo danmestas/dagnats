@@ -25,7 +25,7 @@ func TestBulkCancelByWorkflow(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb1 := dag.NewWorkflow("bulk-wf-a")
 	wb1.Task("step-a", "echo")
@@ -79,7 +79,7 @@ func TestBulkCancelDryRun(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("dry-run-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()
@@ -121,7 +121,7 @@ func TestBulkCancelRequiresWorkflowID(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	_, err := svc.BulkCancelRuns(context.Background(),
 		BulkCancelRequest{},
@@ -145,7 +145,7 @@ func TestBulkCancelStatusFilter(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("status-filter-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()
@@ -186,7 +186,7 @@ func TestBulkCancelEmptyResult(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	resp, err := svc.BulkCancelRuns(context.Background(),
 		BulkCancelRequest{WorkflowID: "nonexistent"},

@@ -145,7 +145,7 @@ func (s *Server) startComponents() error {
 	printStep(os.Stderr, "streams and kv buckets ready")
 
 	s.tel, s.telStop = simple.SetupTelemetry(s.nc)
-	s.svc = api.NewService(s.nc, s.tel)
+	s.svc = api.NewService(s.nc)
 	s.orch = engine.NewOrchestrator(s.nc, s.tel)
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")

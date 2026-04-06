@@ -25,7 +25,7 @@ func TestBulkRetryRerunMode(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("retry-rerun-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()
@@ -98,7 +98,7 @@ func TestBulkRetryDryRun(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("retry-dry-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()
@@ -152,7 +152,7 @@ func TestBulkRetryRequiresMode(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	_, err := svc.BulkRetryRuns(context.Background(),
 		BulkRetryRequest{
@@ -186,7 +186,7 @@ func TestBulkRetrySkipsNonFailed(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("retry-skip-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()

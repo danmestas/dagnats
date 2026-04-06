@@ -21,11 +21,10 @@ func TestScheduledRunTimerFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
-	svc := NewService(nc, tel)
+	svc := NewService(nc)
 
 	// Start orchestrator so workflow.started events get processed.
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
 	orch.Start()
 	t.Cleanup(func() { orch.Stop() })
 
@@ -87,8 +86,7 @@ func TestScheduledRunTimerCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
-	svc := NewService(nc, tel)
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("cancel-timer-test")
 	wb.Task("a", "task-a")

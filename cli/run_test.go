@@ -15,7 +15,7 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
+
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -585,7 +585,6 @@ func TestRunStartOutputPrintsResult(t *testing.T) {
 	}
 	t.Setenv("NATS_URL", srv.ClientURL())
 
-	tel := observe.NewNoopTelemetry()
 	js, _ := nc.JetStream()
 	jsNew, err := jetstream.New(nc)
 	if err != nil {
@@ -593,7 +592,7 @@ func TestRunStartOutputPrintsResult(t *testing.T) {
 	}
 
 	// Register a one-step workflow definition.
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("output-test-wf")
 	wb.Task("echo", "echo-task")
 	wfDef, err := wb.Build()

@@ -14,7 +14,7 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
+
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -25,7 +25,7 @@ func TestResolveRunIDFullIDPassthrough(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 
 	fullID := "abcdef1234567890abcdef1234567890"
 	got, err := ResolveRunID(svc, fullID, false)
@@ -69,7 +69,7 @@ func TestResolveRunIDPrefixMatch(t *testing.T) {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 
 	got, err := ResolveRunID(svc, "aabbccdd", false)
 
@@ -123,7 +123,7 @@ func TestResolveRunIDAmbiguousPrefix(t *testing.T) {
 		t.Fatalf("save run2: %v", err)
 	}
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 
 	_, err = ResolveRunID(svc, "aabbccdd", false)
 
@@ -152,7 +152,7 @@ func TestResolveRunIDNoMatch(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 
 	_, err := ResolveRunID(svc, "zzzzzzzz", false)
 
@@ -207,7 +207,7 @@ func TestResolveRunIDLastFlag(t *testing.T) {
 		t.Fatalf("save newer: %v", err)
 	}
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 
 	got, err := ResolveRunID(svc, "", true)
 
@@ -235,7 +235,7 @@ func TestResolveRunIDPrefixTooShort(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 
 	_, err := ResolveRunID(svc, "abc", false)
 

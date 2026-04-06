@@ -7,12 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // TimerConsumer subscribes to the SLEEP_TIMERS stream for
@@ -111,9 +112,7 @@ func (tc *TimerConsumer) handleTimerJS(msg jetstream.Msg) {
 
 	err = tc.fireScheduledRun(current)
 	if err != nil {
-		tc.svc.tel.Logger.Error(
-			"fire scheduled run", err,
-		)
+		slog.Error("fire scheduled run", "error", err)
 		msg.NakWithDelay(5 * time.Second)
 		return
 	}
@@ -157,8 +156,9 @@ func (tc *TimerConsumer) fireScheduledRun(
 		protocol.EventWorkflowStarted, sr.RunID, payload,
 	)
 
-	_, span := tc.svc.tel.Tracer.Start(
-		context.Background(), "timer.fireScheduledRun",
+	_, span := tc.svc.tracer.Start(
+		context.Background(),
+		"dagnats.api fireScheduledRun",
 	)
 	defer span.End()
 	injectAPITraceCtx(span, &evt)
@@ -181,8 +181,8 @@ func (tc *TimerConsumer) fireScheduledRun(
 	)
 
 	span.SetAttributes(
-		observe.StringAttr("run_id", sr.RunID),
-		observe.StringAttr("workflow", sr.WorkflowID),
+		attribute.String("run_id", sr.RunID),
+		attribute.String("workflow", sr.WorkflowID),
 	)
 	return err
 }

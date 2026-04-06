@@ -22,8 +22,8 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
-	natsAPI := NewNATSAPI(svc, nc, observe.NewNoopLogger())
+	svc := NewService(nc)
+	natsAPI := NewNATSAPI(svc, nc)
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -100,40 +100,27 @@ func TestNewNATSAPIPanicsNilSvc(t *testing.T) {
 			t.Fatal("expected panic for nil svc")
 		}
 	}()
-	NewNATSAPI(nil, nc, observe.NewNoopLogger())
+	NewNATSAPI(nil, nc)
 }
 
 func TestNewNATSAPIPanicsNilNC(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	defer func() {
 		r := recover()
 		if r == nil {
 			t.Fatal("expected panic for nil nc")
 		}
 	}()
-	NewNATSAPI(svc, nil, observe.NewNoopLogger())
-}
-
-func TestNewNATSAPIPanicsNilLogger(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
-	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for nil logger")
-		}
-	}()
-	NewNATSAPI(svc, nc, nil)
+	NewNATSAPI(svc, nil)
 }
 
 func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
-	natsAPI := NewNATSAPI(svc, nc, observe.NewNoopLogger())
+	svc := NewService(nc)
+	natsAPI := NewNATSAPI(svc, nc)
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -173,8 +160,8 @@ func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
 func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
-	natsAPI := NewNATSAPI(svc, nc, observe.NewNoopLogger())
+	svc := NewService(nc)
+	natsAPI := NewNATSAPI(svc, nc)
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -211,8 +198,8 @@ func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
 func TestNATSAPIHandleStartRunInvalidJSON(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
-	natsAPI := NewNATSAPI(svc, nc, observe.NewNoopLogger())
+	svc := NewService(nc)
+	natsAPI := NewNATSAPI(svc, nc)
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -250,8 +237,8 @@ func TestNATSAPIHandleStartRunInvalidJSON(t *testing.T) {
 func TestNATSAPIHandleGetRunNotFound(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
-	natsAPI := NewNATSAPI(svc, nc, observe.NewNoopLogger())
+	svc := NewService(nc)
+	natsAPI := NewNATSAPI(svc, nc)
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -288,8 +275,8 @@ func TestNATSAPIHandleGetRunNotFound(t *testing.T) {
 func TestNATSAPIStopUnsubscribes(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
-	natsAPI := NewNATSAPI(svc, nc, observe.NewNoopLogger())
+	svc := NewService(nc)
+	natsAPI := NewNATSAPI(svc, nc)
 	natsAPI.Start()
 
 	// Positive: subscriptions exist before Stop.

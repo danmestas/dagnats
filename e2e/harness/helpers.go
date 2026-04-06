@@ -38,8 +38,7 @@ func NewTestService(t *testing.T, nc *nats.Conn) *api.Service {
 	if nc == nil {
 		panic("NewTestService: nc must not be nil")
 	}
-	tel := observe.NewNoopTelemetry()
-	return api.NewService(nc, tel)
+	return api.NewService(nc)
 }
 
 // RegisterAndStart registers a workflow and starts a run.

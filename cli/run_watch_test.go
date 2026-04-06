@@ -16,7 +16,6 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -152,7 +151,7 @@ func TestWatchRunWithStatusReturnsTerminal(t *testing.T) {
 		t.Fatalf("publish event: %v", err)
 	}
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 
 	var status dag.RunStatus
 	captureOutput(func() {

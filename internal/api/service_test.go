@@ -19,6 +19,8 @@ import (
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 func TestServiceRegisterWorkflow(t *testing.T) {
@@ -27,7 +29,7 @@ func TestServiceRegisterWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("test-wf")
 	wb.Task("a", "task-a")
 	wfDef, err := wb.Build()
@@ -53,7 +55,7 @@ func TestServiceStartRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("test-wf")
 	wb.Task("a", "task-a")
 	wfDef, _ := wb.Build()
@@ -79,7 +81,7 @@ func TestServiceGetRunStatus(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("test-wf")
 	wb.Task("a", "task-a")
 	wfDef, _ := wb.Build()
@@ -120,7 +122,7 @@ func TestServiceGetRunNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	_, err = svc.GetRun(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent run")
@@ -133,7 +135,7 @@ func TestServiceListWorkflows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb1 := dag.NewWorkflow("wf-a")
 	wb1.Task("a", "task-a")
 	def1, _ := wb1.Build()
@@ -157,7 +159,7 @@ func TestServiceCancelRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("test-wf")
 	wb.Task("a", "task-a")
 	def, _ := wb.Build()
@@ -205,7 +207,7 @@ func TestServiceSendSignal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	runID := "test-run-123"
 	data := []byte(`{"value":42}`)
 	err = svc.SendSignal(context.Background(), runID, "sig1", data)
@@ -231,7 +233,7 @@ func TestServiceCreateTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	def := trigger.TriggerDef{
 		ID:         "trig-1",
 		WorkflowID: "wf-a",
@@ -266,7 +268,7 @@ func TestServiceCreateTriggerValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	def := trigger.TriggerDef{
 		ID:         "bad-trig",
 		WorkflowID: "wf-a",
@@ -286,7 +288,7 @@ func TestServiceListTriggers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	def1 := trigger.TriggerDef{
 		ID:         "trig-1",
 		WorkflowID: "wf-a",
@@ -321,7 +323,7 @@ func TestServiceDeleteTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	def := trigger.TriggerDef{
 		ID:         "trig-del",
 		WorkflowID: "wf-a",
@@ -352,7 +354,7 @@ func TestServiceSetTriggerEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Store a trigger directly in KV with Enabled: true
 	ctx := context.Background()
@@ -418,7 +420,7 @@ func TestServiceListDeadLetters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	js, _ := nc.JetStream()
 	payload := protocol.TaskPayload{
 		RunID:  "run-123",
@@ -452,7 +454,7 @@ func TestServiceReplayDeadLetter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	js, _ := nc.JetStream()
 	payload := protocol.TaskPayload{
 		RunID:  "run-456",
@@ -499,7 +501,7 @@ func TestServiceListRuns(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("list-test-wf")
 	wb.Task("a", "task-a")
 	wfDef, _ := wb.Build()
@@ -551,7 +553,7 @@ func TestServiceListRunsFilterByWorkflow(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb1 := dag.NewWorkflow("filter-wf-a")
 	wb1.Task("a", "task-a")
 	def1, _ := wb1.Build()
@@ -603,7 +605,7 @@ func TestServiceListRunEvents(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("events-test-wf")
 	wb.Task("a", "task-a")
 	wfDef, _ := wb.Build()
@@ -638,7 +640,7 @@ func TestRegisterWorkflowInvalidDef(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: workflow with no steps returns validation error.
 	badDef := dag.WorkflowDef{Name: "bad-wf"}
@@ -662,7 +664,7 @@ func TestStartRunUnknownWorkflow(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: unknown workflow returns error.
 	_, err := svc.StartRun(
@@ -696,7 +698,7 @@ func TestGetWorkflowReturnsRegistered(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: register and retrieve a workflow.
 	wb := dag.NewWorkflow("get-wf")
@@ -734,7 +736,7 @@ func TestDeleteTriggerInnerRemovesKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Seed a trigger directly in KV.
 	def := trigger.TriggerDef{
@@ -780,7 +782,7 @@ func TestListRunEventsInnerReadsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Publish a history event directly.
 	js, _ := nc.JetStream()
@@ -829,33 +831,37 @@ func TestIsTaskSubject(t *testing.T) {
 	}
 }
 
-// testSpanWithIDs is a test double that implements both Span and
-// SpanContext with configurable trace/span IDs.
+// testSpanWithIDs is a test double that wraps a noop OTel span
+// with configurable trace/span IDs via a custom SpanContext.
 type testSpanWithIDs struct {
-	observe.Span
-	traceID string
-	spanID  string
+	trace.Span
+	sc trace.SpanContext
 }
 
-func (s *testSpanWithIDs) TraceID() string { return s.traceID }
-func (s *testSpanWithIDs) SpanID() string  { return s.spanID }
-func (s *testSpanWithIDs) End()            {}
-func (s *testSpanWithIDs) SetStatus(
-	code observe.StatusCode, desc string,
-) {
+func newTestSpanWithIDs(
+	traceID, spanID string,
+) *testSpanWithIDs {
+	tid, _ := trace.TraceIDFromHex(traceID)
+	sid, _ := trace.SpanIDFromHex(spanID)
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    tid,
+		SpanID:     sid,
+		TraceFlags: trace.FlagsSampled,
+	})
+	noopTracer := tracenoop.NewTracerProvider().Tracer("")
+	_, noopSpan := noopTracer.Start(context.Background(), "noop")
+	return &testSpanWithIDs{Span: noopSpan, sc: sc}
 }
-func (s *testSpanWithIDs) SetAttributes(
-	attrs ...observe.Attribute,
-) {
+
+func (s *testSpanWithIDs) SpanContext() trace.SpanContext {
+	return s.sc
 }
-func (s *testSpanWithIDs) RecordError(err error)                     {}
-func (s *testSpanWithIDs) AddEvent(n string, a ...observe.Attribute) {}
 
 func TestInjectAPIMsgTraceCtx(t *testing.T) {
-	span := &testSpanWithIDs{
-		traceID: "aaaa1111bbbb2222cccc3333dddd4444",
-		spanID:  "eeee5555ffff6666",
-	}
+	span := newTestSpanWithIDs(
+		"aaaa1111bbbb2222cccc3333dddd4444",
+		"eeee5555ffff6666",
+	)
 	msg := &nats.Msg{Header: nats.Header{}}
 
 	// Positive: traceparent header is set.
@@ -869,8 +875,8 @@ func TestInjectAPIMsgTraceCtx(t *testing.T) {
 
 	// Negative: noop span (empty IDs) does not set header.
 	msg2 := &nats.Msg{Header: nats.Header{}}
-	noopSpan := observe.NewNoopTracer()
-	_, ns := noopSpan.Start(context.Background(), "test")
+	noopTracer := tracenoop.NewTracerProvider().Tracer("")
+	_, ns := noopTracer.Start(context.Background(), "test")
 	injectAPIMsgTraceCtx(ns, msg2)
 	if msg2.Header.Get("traceparent") != "" {
 		t.Fatal("noop span should not set traceparent")
@@ -892,10 +898,10 @@ func TestExtractTaskFromSubject(t *testing.T) {
 }
 
 func TestInjectAPITraceCtxWithIDs(t *testing.T) {
-	span := &testSpanWithIDs{
-		traceID: "aaaa1111bbbb2222cccc3333dddd4444",
-		spanID:  "eeee5555ffff6666",
-	}
+	span := newTestSpanWithIDs(
+		"aaaa1111bbbb2222cccc3333dddd4444",
+		"eeee5555ffff6666",
+	)
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-1", nil,
 	)
@@ -915,7 +921,7 @@ func TestInjectAPITraceCtxWithIDs(t *testing.T) {
 	evt2 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-2", nil,
 	)
-	noopTracer := observe.NewNoopTracer()
+	noopTracer := tracenoop.NewTracerProvider().Tracer("")
 	_, ns := noopTracer.Start(context.Background(), "test")
 	injectAPITraceCtx(ns, &evt2)
 	if evt2.TraceParent != "" {
@@ -929,7 +935,7 @@ func TestSendSignalNilKVError(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 	// Create service without signals KV bucket.
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	svc.signalKV = nil
 
 	// Positive: SendSignal returns error when KV is nil.
@@ -951,7 +957,7 @@ func TestDeleteTriggerNilKVErrorPath(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	svc.triggerKV = nil
 
 	// Positive: DeleteTrigger returns error when KV is nil.
@@ -973,7 +979,7 @@ func TestReplayDeadLetterNotFound(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: replaying nonexistent sequence returns error.
 	err := svc.ReplayDeadLetter(context.Background(), 99999)
@@ -992,7 +998,7 @@ func TestListRunEventsErrorPath(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: listing events for nonexistent run returns
 	// empty (not error), because SubscribeSync succeeds but
@@ -1017,7 +1023,7 @@ func TestSetTriggerEnabledNilKVError(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	svc.triggerKV = nil
 
 	// Positive: returns error when KV is nil.
@@ -1039,7 +1045,7 @@ func TestListTriggersNilKV(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	svc.triggerKV = nil
 
 	// Positive: nil KV returns empty list, not error.
@@ -1059,7 +1065,7 @@ func TestCreateTriggerNilKVError(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	svc.triggerKV = nil
 
 	def := trigger.TriggerDef{
@@ -1091,26 +1097,14 @@ func TestNewServicePanicsNilNC(t *testing.T) {
 			t.Fatal("expected panic for nil nc")
 		}
 	}()
-	NewService(nil, observe.NewNoopTelemetry())
-}
-
-func TestNewServicePanicsNilTel(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
-	natsutil.SetupAll(nc)
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for nil tel")
-		}
-	}()
-	NewService(nc, nil)
+	NewService(nil)
 }
 
 func TestInjectAPIMsgTraceCtxNilHeader(t *testing.T) {
-	span := &testSpanWithIDs{
-		traceID: "aaaa1111bbbb2222cccc3333dddd4444",
-		spanID:  "eeee5555ffff6666",
-	}
+	span := newTestSpanWithIDs(
+		"aaaa1111bbbb2222cccc3333dddd4444",
+		"eeee5555ffff6666",
+	)
 	// msg.Header is nil -- function should create it.
 	msg := &nats.Msg{}
 
@@ -1133,7 +1127,7 @@ func TestStartRunInputValidation(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Register a workflow with InputSchema
 	wb := dag.NewWorkflow("schema-validation-test")
@@ -1188,7 +1182,7 @@ func TestStartTyped(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	type input struct {
 		Name string `json:"name"`
@@ -1223,7 +1217,7 @@ func TestServiceListWorkers(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: no workers returns empty list
 	workers, err := svc.ListWorkers(context.Background())
@@ -1299,7 +1293,7 @@ func TestServiceListWorkersNoBucket(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: ListWorkers returns empty when bucket doesn't exist
 	workers, err := svc.ListWorkers(context.Background())
@@ -1318,7 +1312,7 @@ func TestStartRunIdempotency(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("idemp-test")
 	wb.Task("process", "process-task")
@@ -1380,7 +1374,7 @@ func TestStartRunIdempotencyMissingKey(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("idemp-missing")
 	wb.Task("process", "process-task")

@@ -29,7 +29,8 @@ func main() {
 	}
 	tel, shutdown := simple.SetupTelemetry(nc)
 	defer shutdown()
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
+	_ = tel // tel used by other components; api now uses otel global
 	handler := api.NewRESTHandler(svc)
 	addr := cli.GetEnvWithFallback(
 		"DAGNATS_LISTEN_ADDR", "LISTEN_ADDR", ":8080",

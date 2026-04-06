@@ -11,7 +11,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestBulkRunStartsMultiple(t *testing.T) {
@@ -19,7 +18,7 @@ func TestBulkRunStartsMultiple(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("bulk-run-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()
@@ -59,7 +58,7 @@ func TestBulkRunRequiresWorkflowID(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	_, err := svc.BulkStartRuns(context.Background(),
 		BulkRunRequest{Inputs: []json.RawMessage{json.RawMessage(`{}`)}},
 	)
@@ -76,7 +75,7 @@ func TestBulkRunEmptyInputsError(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	_, err := svc.BulkStartRuns(context.Background(),
 		BulkRunRequest{WorkflowID: "wf"},
 	)
@@ -93,7 +92,7 @@ func TestBulkRunValidationFailsAtomically(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("bulk-schema-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()
@@ -126,7 +125,7 @@ func TestBulkRunWorkflowNotFound(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	_, err := svc.BulkStartRuns(context.Background(),
 		BulkRunRequest{WorkflowID: "nonexistent", Inputs: []json.RawMessage{json.RawMessage(`{}`)}},
 	)

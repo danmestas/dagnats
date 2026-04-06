@@ -8,10 +8,9 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log/slog"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 )
 
@@ -19,16 +18,15 @@ import (
 // owns no business logic -- it only translates between wire bytes and
 // typed calls.
 type NATSAPI struct {
-	svc    *Service
-	nc     *nats.Conn
-	logger observe.Logger
-	subs   []*nats.Subscription
+	svc  *Service
+	nc   *nats.Conn
+	subs []*nats.Subscription
 }
 
-// NewNATSAPI constructs a NATSAPI bound to svc, nc, and logger.
+// NewNATSAPI constructs a NATSAPI bound to svc and nc.
 // Panics if any argument is nil.
 func NewNATSAPI(
-	svc *Service, nc *nats.Conn, logger observe.Logger,
+	svc *Service, nc *nats.Conn,
 ) *NATSAPI {
 	if svc == nil {
 		panic("NewNATSAPI: svc must not be nil")
@@ -36,10 +34,7 @@ func NewNATSAPI(
 	if nc == nil {
 		panic("NewNATSAPI: nc must not be nil")
 	}
-	if logger == nil {
-		panic("NewNATSAPI: logger must not be nil")
-	}
-	return &NATSAPI{svc: svc, nc: nc, logger: logger}
+	return &NATSAPI{svc: svc, nc: nc}
 }
 
 // Start registers subscriptions for all control-plane subjects.
@@ -158,13 +153,9 @@ func (n *NATSAPI) reply(msg *nats.Msg, payload any) {
 	if msg == nil {
 		panic("reply: msg must not be nil")
 	}
-	if n.logger == nil {
-		panic("reply: logger must not be nil")
-	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		n.logger.Error("reply: marshal failed",
-			fmt.Errorf("marshal reply payload: %w", err))
+		slog.Error("reply: marshal failed", "error", err)
 		return
 	}
 	msg.Respond(data) //nolint:errcheck -- best-effort reply

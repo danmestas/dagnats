@@ -15,7 +15,6 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -60,7 +59,7 @@ func TestTriggerHistoryParsesFires(t *testing.T) {
 	}
 
 	// Use the API service to retrieve the fire records.
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 	fires, err := svc.ListTriggerFires(
 		context.Background(), "test-trig", 10,
 	)
