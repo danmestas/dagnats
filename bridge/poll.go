@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -44,7 +44,7 @@ func (b *Bridge) handlePoll(
 	if b.ackMap == nil {
 		panic("handlePoll: ackMap must not be nil")
 	}
-	ctx, span := b.tel.Tracer.Start(r.Context(), "bridge.poll")
+	ctx, span := b.tracer.Start(r.Context(), "bridge.poll")
 	defer span.End()
 
 	start := time.Now()
@@ -56,11 +56,11 @@ func (b *Bridge) handlePoll(
 	tasks := b.fetchTasks(ctx, req)
 
 	elapsed := time.Since(start).Milliseconds()
-	b.requestCount.Inc()
-	b.requestDuration.Observe(float64(elapsed))
-	b.tel.Logger.Info("poll completed",
-		observe.Int("task_count", len(tasks)),
-		observe.Int("elapsed_ms", int(elapsed)),
+	b.requestCount.Add(ctx, 1)
+	b.requestDuration.Record(ctx, float64(elapsed))
+	slog.InfoContext(ctx, "poll completed",
+		"task_count", len(tasks),
+		"elapsed_ms", elapsed,
 	)
 
 	writePollResponse(w, tasks)

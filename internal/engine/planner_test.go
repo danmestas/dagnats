@@ -14,7 +14,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -48,7 +47,7 @@ func TestPlanner_MaterializeAndComplete(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, wfDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 	store := NewSnapshotStore(jsNew)
@@ -218,7 +217,7 @@ func TestPlanner_MaxStepsExceeded(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, wfDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 	store := NewSnapshotStore(jsNew)
@@ -312,7 +311,7 @@ func TestPlanner_AllowedTasksViolation(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, wfDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 	store := NewSnapshotStore(jsNew)
@@ -404,7 +403,7 @@ func TestPlanner_CycleInFragment(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, wfDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 	store := NewSnapshotStore(jsNew)
@@ -502,7 +501,7 @@ func TestPlanner_EmptyPlan(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, wfDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 	store := NewSnapshotStore(jsNew)

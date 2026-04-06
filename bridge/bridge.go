@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Bridge is an HTTP-to-NATS gateway that lets non-Go workers
@@ -24,23 +26,19 @@ type Bridge struct {
 	checkpointKV jetstream.KeyValue
 	signalKV     jetstream.KeyValue
 	token        string
-	tel          *observe.Telemetry
+	tracer       trace.Tracer
 
 	// Pre-allocated metric instruments — created once in constructor.
-	requestCount    observe.Counter
-	requestDuration observe.Histogram
-	ackMapSize      observe.Gauge
+	requestCount    metric.Int64Counter
+	requestDuration metric.Float64Histogram
+	ackMapSize      metric.Int64UpDownCounter
 }
 
 // NewBridge creates a Bridge. Panics on nil nc — a programmer error.
 // Binds optional KV buckets for checkpoints (nil if not present).
-// If tel is nil, uses a noop telemetry provider.
-func NewBridge(nc *nats.Conn, tel *observe.Telemetry) *Bridge {
+func NewBridge(nc *nats.Conn) *Bridge {
 	if nc == nil {
 		panic("NewBridge: nc must not be nil")
-	}
-	if tel == nil {
-		tel = observe.NewNoopTelemetry()
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -50,23 +48,23 @@ func NewBridge(nc *nats.Conn, tel *observe.Telemetry) *Bridge {
 	checkpointKV, _ := js.KeyValue(ctx, "checkpoints")
 	signalKV, _ := js.KeyValue(ctx, "signals")
 	token := os.Getenv("DAGNATS_BRIDGE_TOKEN")
+	m := otel.Meter("dagnats/bridge")
+	reqCount, _ := m.Int64Counter("bridge.requests")
+	reqDur, _ := m.Float64Histogram(
+		"bridge.request.duration_ms",
+	)
+	ackSize, _ := m.Int64UpDownCounter("bridge.ackmap.size")
 	return &Bridge{
-		nc:           nc,
-		js:           js,
-		ackMap:       NewAckMap(),
-		checkpointKV: checkpointKV,
-		signalKV:     signalKV,
-		token:        token,
-		tel:          tel,
-		requestCount: tel.Metrics.Counter(
-			"bridge.requests", nil,
-		),
-		requestDuration: tel.Metrics.Histogram(
-			"bridge.request.duration_ms", nil,
-		),
-		ackMapSize: tel.Metrics.Gauge(
-			"bridge.ackmap.size", nil,
-		),
+		nc:              nc,
+		js:              js,
+		ackMap:          NewAckMap(),
+		checkpointKV:    checkpointKV,
+		signalKV:        signalKV,
+		token:           token,
+		tracer:          otel.Tracer("dagnats/bridge"),
+		requestCount:    reqCount,
+		requestDuration: reqDur,
+		ackMapSize:      ackSize,
 	}
 }
 

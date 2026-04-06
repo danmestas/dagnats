@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -23,6 +24,11 @@ import (
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Service is the control plane for DagNats. It writes workflow
@@ -34,16 +40,17 @@ type Service struct {
 	js            jetstream.JetStream
 	defKV         jetstream.KeyValue
 	store         *engine.SnapshotStore
-	tel           *observe.Telemetry
+	tracer        trace.Tracer
+	meter         metric.Meter
 	triggerKV     jetstream.KeyValue
 	signalKV      jetstream.KeyValue
 	scheduledKV   jetstream.KeyValue
 	idempotencyKV jetstream.KeyValue
 
 	// Pre-allocated metric instruments -- created once.
-	requestCount    observe.Counter
-	requestDuration observe.Histogram
-	errorCount      observe.Counter
+	requestCount    metric.Int64Counter
+	requestDuration metric.Float64Histogram
+	errorCount      metric.Int64Counter
 }
 
 // DeadLetter represents a message that failed processing.
@@ -70,12 +77,9 @@ type RunEvent struct {
 // NewService binds the control plane to an active NATS connection.
 // Panics if JetStream init fails or the workflow_defs bucket does
 // not exist -- callers must call natsutil.SetupAll first.
-func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
+func NewService(nc *nats.Conn) *Service {
 	if nc == nil {
 		panic("NewService: nc must not be nil")
-	}
-	if tel == nil {
-		panic("NewService: tel must not be nil")
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -97,25 +101,26 @@ func NewService(nc *nats.Conn, tel *observe.Telemetry) *Service {
 	idempotencyKV, _ := js.KeyValue(
 		ctx, "idempotency_keys",
 	)
+	m := otel.Meter("dagnats/api")
+	reqCount, _ := m.Int64Counter("api.requests")
+	reqDur, _ := m.Float64Histogram(
+		"api.request.duration_ms",
+	)
+	errCount, _ := m.Int64Counter("api.errors")
 	return &Service{
-		nc:            nc,
-		js:            js,
-		defKV:         defKV,
-		store:         engine.NewSnapshotStore(js),
-		tel:           tel,
-		triggerKV:     triggerKV,
-		signalKV:      signalKV,
-		scheduledKV:   scheduledKV,
-		idempotencyKV: idempotencyKV,
-		requestCount: tel.Metrics.Counter(
-			"api.requests", nil,
-		),
-		requestDuration: tel.Metrics.Histogram(
-			"api.request.duration_ms", nil,
-		),
-		errorCount: tel.Metrics.Counter(
-			"api.errors", nil,
-		),
+		nc:              nc,
+		js:              js,
+		defKV:           defKV,
+		store:           engine.NewSnapshotStore(js),
+		tracer:          otel.Tracer("dagnats/api"),
+		meter:           m,
+		triggerKV:       triggerKV,
+		signalKV:        signalKV,
+		scheduledKV:     scheduledKV,
+		idempotencyKV:   idempotencyKV,
+		requestCount:    reqCount,
+		requestDuration: reqDur,
+		errorCount:      errCount,
 	}
 }
 
@@ -131,23 +136,23 @@ func (s *Service) RegisterWorkflow(
 	if def.Name == "" {
 		panic("RegisterWorkflow: def.Name must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.registerWorkflow",
-		observe.WithAttributes(
-			observe.StringAttr("workflow_name", def.Name),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api registerWorkflow",
+		trace.WithAttributes(
+			attribute.String("workflow_name", def.Name),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.registerWorkflowInner(ctx, def)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -205,26 +210,28 @@ func (s *Service) StartRun(
 	if workflowName == "" {
 		panic("StartRun: workflowName must not be empty")
 	}
-	ctx, span := s.tel.Tracer.Start(ctx,
-		"api.startRun",
-		observe.WithAttributes(
-			observe.StringAttr("workflow_name", workflowName),
+	ctx, span := s.tracer.Start(ctx,
+		"dagnats.api startRun",
+		trace.WithAttributes(
+			attribute.String("workflow_name", workflowName),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
-	runID, err := s.startRunInner(ctx, span, workflowName, input)
+	runID, err := s.startRunInner(
+		ctx, span, workflowName, input,
+	)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 		return "", err
 	}
-	span.SetAttributes(observe.StringAttr("run_id", runID))
+	span.SetAttributes(attribute.String("run_id", runID))
 	return runID, nil
 }
 
@@ -232,7 +239,7 @@ func (s *Service) StartRun(
 // including trace context injection on the outgoing NATS message.
 func (s *Service) startRunInner(
 	ctx context.Context,
-	span observe.Span,
+	span trace.Span,
 	workflowName string,
 	input []byte,
 ) (string, error) {
@@ -276,9 +283,10 @@ func (s *Service) startRunInner(
 			ctx, workflowName, def.IdempotencyKey, input,
 		)
 		if err != nil {
-			s.tel.Logger.Error(
-				"idempotency check failed", err,
-				observe.String("workflow", workflowName),
+			slog.ErrorContext(ctx,
+				"idempotency check failed",
+				"error", err,
+				"workflow", workflowName,
 			)
 			// Fall through — run without idempotency
 		} else if existingID != "" {
@@ -294,17 +302,16 @@ func (s *Service) startRunInner(
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, runID, payload,
 	)
-	injectAPITraceCtx(span, &evt)
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	observe.InjectTraceContext(ctx, msg, &evt)
 	data, err := evt.Marshal()
 	if err != nil {
 		return "", err
 	}
-	msg := &nats.Msg{
-		Subject: evt.NATSSubject(),
-		Data:    data,
-		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
-	}
-	injectAPIMsgTraceCtx(span, msg)
+	msg.Data = data
 	_, err = s.js.PublishMsg(
 		ctx, msg,
 	)
@@ -319,9 +326,9 @@ func (s *Service) startRunInner(
 		)
 	}
 
-	s.tel.Logger.Info("started run",
-		observe.String("run_id", runID),
-		observe.String("workflow", workflowName),
+	slog.InfoContext(ctx, "started run",
+		"run_id", runID,
+		"workflow", workflowName,
 	)
 	return runID, nil
 }
@@ -337,23 +344,23 @@ func (s *Service) GetRun(
 	if runID == "" {
 		panic("GetRun: runID must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.getRun",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", runID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api getRun",
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	run, err := s.store.Load(ctx, runID)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return run, err
 }
@@ -410,59 +417,6 @@ func (s *Service) GetRunInput(
 	return run.Input, nil
 }
 
-// injectAPITraceCtx sets TraceParent on the event from the active
-// span's SpanContext, enabling the engine to link its spans as
-// children of the API span. No-op when span lacks SpanContext.
-func injectAPITraceCtx(span observe.Span, evt *protocol.Event) {
-	if span == nil {
-		panic("injectAPITraceCtx: span must not be nil")
-	}
-	if evt == nil {
-		panic("injectAPITraceCtx: evt must not be nil")
-	}
-	tp := formatAPITraceparent(span)
-	if tp == "" {
-		return
-	}
-	evt.TraceParent = tp
-}
-
-// injectAPIMsgTraceCtx sets traceparent header on the outgoing NATS
-// message from the active span's SpanContext. No-op when span lacks
-// SpanContext or IDs are empty.
-func injectAPIMsgTraceCtx(span observe.Span, msg *nats.Msg) {
-	if span == nil {
-		panic("injectAPIMsgTraceCtx: span must not be nil")
-	}
-	if msg == nil {
-		panic("injectAPIMsgTraceCtx: msg must not be nil")
-	}
-	tp := formatAPITraceparent(span)
-	if tp == "" {
-		return
-	}
-	if msg.Header == nil {
-		msg.Header = nats.Header{}
-	}
-	msg.Header.Set("traceparent", tp)
-}
-
-// formatAPITraceparent extracts trace/span IDs from the span and
-// returns a W3C traceparent string. Returns "" when the span does
-// not implement SpanContext or has empty IDs.
-func formatAPITraceparent(span observe.Span) string {
-	sc, ok := span.(observe.SpanContext)
-	if !ok {
-		return ""
-	}
-	traceID := sc.TraceID()
-	spanID := sc.SpanID()
-	if traceID == "" || spanID == "" {
-		return ""
-	}
-	return "00-" + traceID + "-" + spanID + "-01"
-}
-
 // ListWorkflows retrieves all registered workflow definitions from KV.
 func (s *Service) ListWorkflows(
 	ctx context.Context,
@@ -473,18 +427,20 @@ func (s *Service) ListWorkflows(
 	if s.defKV == nil {
 		panic("ListWorkflows: defKV must not be nil")
 	}
-	_, span := s.tel.Tracer.Start(ctx, "api.listWorkflows")
+	_, span := s.tracer.Start(
+		ctx, "dagnats.api listWorkflows",
+	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	defs, err := s.listWorkflowsInner(ctx)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return defs, err
 }
@@ -534,23 +490,23 @@ func (s *Service) CancelRun(
 	if runID == "" {
 		panic("CancelRun: runID must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.cancelRun",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", runID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api cancelRun",
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.cancelRunInner(ctx, runID)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -594,24 +550,24 @@ func (s *Service) SendSignal(
 	if name == "" {
 		panic("SendSignal: name must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.sendSignal",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", runID),
-			observe.StringAttr("signal_name", name),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api sendSignal",
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
+			attribute.String("signal_name", name),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.sendSignalInner(ctx, runID, name, data)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -646,24 +602,24 @@ func (s *Service) CreateTrigger(
 	if def.ID == "" {
 		panic("CreateTrigger: def.ID must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.createTrigger",
-		observe.WithAttributes(
-			observe.StringAttr("trigger_id", def.ID),
-			observe.StringAttr("workflow_id", def.WorkflowID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api createTrigger",
+		trace.WithAttributes(
+			attribute.String("trigger_id", def.ID),
+			attribute.String("workflow_id", def.WorkflowID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.createTriggerInner(ctx, def)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -706,18 +662,20 @@ func (s *Service) ListTriggers(
 	if s.js == nil {
 		panic("ListTriggers: js must not be nil")
 	}
-	_, span := s.tel.Tracer.Start(ctx, "api.listTriggers")
+	_, span := s.tracer.Start(
+		ctx, "dagnats.api listTriggers",
+	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	defs, err := s.listTriggersInner(ctx)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return defs, err
 }
@@ -767,23 +725,23 @@ func (s *Service) DeleteTrigger(
 	if triggerID == "" {
 		panic("DeleteTrigger: triggerID must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.deleteTrigger",
-		observe.WithAttributes(
-			observe.StringAttr("trigger_id", triggerID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api deleteTrigger",
+		trace.WithAttributes(
+			attribute.String("trigger_id", triggerID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.deleteTriggerInner(ctx, triggerID)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -815,23 +773,23 @@ func (s *Service) SetTriggerEnabled(
 	if triggerID == "" {
 		panic("SetTriggerEnabled: triggerID must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.setTriggerEnabled",
-		observe.WithAttributes(
-			observe.StringAttr("trigger_id", triggerID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api setTriggerEnabled",
+		trace.WithAttributes(
+			attribute.String("trigger_id", triggerID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.setTriggerEnabledInner(ctx, triggerID, enabled)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -892,23 +850,23 @@ func (s *Service) UpdateTrigger(
 	if triggerID == "" {
 		panic("UpdateTrigger: triggerID must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.updateTrigger",
-		observe.WithAttributes(
-			observe.StringAttr("trigger_id", triggerID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api updateTrigger",
+		trace.WithAttributes(
+			attribute.String("trigger_id", triggerID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.updateTriggerInner(ctx, triggerID, updates)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -987,18 +945,20 @@ func (s *Service) ListDeadLetters(
 	if limit <= 0 {
 		panic("ListDeadLetters: limit must be positive")
 	}
-	_, span := s.tel.Tracer.Start(ctx, "api.listDeadLetters")
+	_, span := s.tracer.Start(
+		ctx, "dagnats.api listDeadLetters",
+	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	letters, err := s.listDeadLettersInner(limit)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return letters, err
 }
@@ -1099,23 +1059,23 @@ func (s *Service) ReplayDeadLetter(
 	if seq == 0 {
 		panic("ReplayDeadLetter: seq must be positive")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.replayDeadLetter",
-		observe.WithAttributes(
-			observe.Int64Attr("sequence", int64(seq)),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api replayDeadLetter",
+		trace.WithAttributes(
+			attribute.Int64("sequence", int64(seq)),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.replayDeadLetterInner(ctx, seq)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -1178,18 +1138,20 @@ func (s *Service) ListRuns(
 	if s.store == nil {
 		panic("ListRuns: store must not be nil")
 	}
-	_, span := s.tel.Tracer.Start(ctx, "api.listRuns")
+	_, span := s.tracer.Start(
+		ctx, "dagnats.api listRuns",
+	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	runs, err := s.listRunsInner(ctx, workflowFilter)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return runs, err
 }
@@ -1235,23 +1197,23 @@ func (s *Service) ListRunEvents(
 	if runID == "" {
 		panic("ListRunEvents: runID must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.listRunEvents",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", runID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api listRunEvents",
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	events, err := s.listRunEventsInner(runID, fullData)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return events, err
 }
@@ -1392,26 +1354,26 @@ func (s *Service) HandleApproval(
 	if runID == "" {
 		panic("HandleApproval: runID must not be empty")
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.handleApproval",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", runID),
-			observe.StringAttr("step_id", stepID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api handleApproval",
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
+			attribute.String("step_id", stepID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	err := s.handleApprovalInner(
 		ctx, runID, stepID, token, action, body,
 	)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
 }
@@ -1543,18 +1505,20 @@ func (s *Service) ListWorkers(
 	if s.js == nil {
 		panic("ListWorkers: js must not be nil")
 	}
-	_, span := s.tel.Tracer.Start(ctx, "api.listWorkers")
+	_, span := s.tracer.Start(
+		ctx, "dagnats.api listWorkers",
+	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	workers, err := s.listWorkersInner(ctx)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return workers, err
 }
@@ -1627,25 +1591,25 @@ func (s *Service) ListTriggerFires(
 			"ListTriggerFires: triggerID must not be empty",
 		)
 	}
-	_, span := s.tel.Tracer.Start(ctx,
-		"api.listTriggerFires",
-		observe.WithAttributes(
-			observe.StringAttr("trigger_id", triggerID),
+	_, span := s.tracer.Start(ctx,
+		"dagnats.api listTriggerFires",
+		trace.WithAttributes(
+			attribute.String("trigger_id", triggerID),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	fires, err := s.listTriggerFiresInner(
 		triggerID, limit,
 	)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	}
 	return fires, err
 }

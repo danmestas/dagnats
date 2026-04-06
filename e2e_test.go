@@ -16,7 +16,6 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -29,16 +28,15 @@ func TestE2ELinearWorkflow(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	tel := observe.NewNoopTelemetry()
 	ctx := context.Background()
 
 	// Start orchestrator
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	// Register workers
-	w := worker.NewWorker(nc, tel)
+	w := worker.NewWorker(nc)
 	w.Handle("task-a", func(tc worker.TaskContext) error {
 		return tc.Complete([]byte(`"a-output"`))
 	})
@@ -49,7 +47,7 @@ func TestE2ELinearWorkflow(t *testing.T) {
 	defer w.Stop()
 
 	// Register workflow and start run via service
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("e2e-linear")
 	a := wb.Task("a", "task-a")
 	wb.Task("b", "task-b").After(a)
@@ -162,15 +160,13 @@ func TestE2EAgentLoop(t *testing.T) {
 	js, _ := nc.JetStream()
 	ctx := context.Background()
 
-	tel := observe.NewNoopTelemetry()
-
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	// Worker that loops 3 times then completes
 	iteration := 0
-	w := worker.NewWorker(nc, tel)
+	w := worker.NewWorker(nc)
 	w.Handle("looper", func(tc worker.TaskContext) error {
 		iteration++
 		if iteration < 3 {
@@ -183,7 +179,7 @@ func TestE2EAgentLoop(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("e2e-loop")
 	wb.AgentLoop("loop", "looper").WithMaxIterations(10)
 	wfDef, err := wb.Build()

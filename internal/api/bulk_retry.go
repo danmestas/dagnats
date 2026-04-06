@@ -7,11 +7,15 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/observe"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 const maxBulkRetryLimit = 1000
@@ -46,38 +50,35 @@ func (s *Service) BulkRetryRuns(
 	if ctx == nil {
 		panic("BulkRetryRuns: ctx must not be nil")
 	}
-	if s.tel == nil {
-		panic("BulkRetryRuns: tel must not be nil")
-	}
 	if req.WorkflowID == "" {
 		return BulkRetryResponse{},
 			fmt.Errorf("workflow_id is required")
 	}
-	ctx, span := s.tel.Tracer.Start(ctx,
-		"api.bulkRetryRuns",
-		observe.WithAttributes(
-			observe.StringAttr("workflow_id", req.WorkflowID),
-			observe.StringAttr("mode", req.Mode),
-			observe.BoolAttr("dry_run", req.DryRun),
+	ctx, span := s.tracer.Start(ctx,
+		"dagnats.api bulkRetryRuns",
+		trace.WithAttributes(
+			attribute.String("workflow_id", req.WorkflowID),
+			attribute.String("mode", req.Mode),
+			attribute.Bool("dry_run", req.DryRun),
 		),
 	)
 	defer span.End()
 	start := time.Now()
-	s.requestCount.Inc()
+	s.requestCount.Add(ctx, 1)
 
 	resp, err := s.bulkRetryInner(ctx, req)
 	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Observe(elapsed)
+	s.requestDuration.Record(ctx, elapsed)
 	if err != nil {
-		s.errorCount.Inc()
+		s.errorCount.Add(ctx, 1)
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
+		span.SetStatus(codes.Error, err.Error())
 	} else {
-		s.tel.Logger.Info("bulk retry completed",
-			observe.String("workflow_id", req.WorkflowID),
-			observe.String("mode", req.Mode),
-			observe.Int("retried", len(resp.Retried)),
-			observe.Int("skipped", len(resp.Skipped)),
+		slog.InfoContext(ctx, "bulk retry completed",
+			"workflow_id", req.WorkflowID,
+			"mode", req.Mode,
+			"retried", len(resp.Retried),
+			"skipped", len(resp.Skipped),
 		)
 	}
 	return resp, err
@@ -152,7 +153,7 @@ func (s *Service) bulkRerun(
 	if s.js == nil {
 		panic("bulkRerun: js must not be nil")
 	}
-	noopTracer := observe.NewNoopTracer()
+	noopTracer := tracenoop.NewTracerProvider().Tracer("")
 	_, noopSpan := noopTracer.Start(ctx, "noop")
 	var resp BulkRetryResponse
 	for _, run := range matched {

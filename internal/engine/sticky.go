@@ -14,6 +14,8 @@ import (
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // createStickyBinding writes a sticky binding if the workflow is
@@ -93,12 +95,12 @@ func (o *Orchestrator) publishStickyTask(
 		panic("publishStickyTask: workerID must not be empty")
 	}
 
-	ctx, span := o.tel.Tracer.Start(ctx,
-		"orchestrator.publishStickyTask",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", runID),
-			observe.StringAttr("worker_id", workerID),
-			observe.StringAttr("strategy", string(strategy)),
+	ctx, span := o.tracer.Start(ctx,
+		"dagnats.engine publishStickyTask",
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
+			attribute.String("worker_id", workerID),
+			attribute.String("strategy", string(strategy)),
 		),
 	)
 	defer span.End()
@@ -126,12 +128,12 @@ func (o *Orchestrator) publishStickyTask(
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	injectTraceCtx(ctx, span, stickyMsg)
+	observe.InjectTraceContext(ctx, stickyMsg, nil)
 	_, err = o.js.PublishMsg(ctx, stickyMsg)
 	if err != nil {
 		return fmt.Errorf("publish sticky task: %w", err)
 	}
-	o.stepEnqueueCount.Inc()
+	o.stepEnqueueCount.Add(ctx, 1)
 
 	if strategy == dag.StickySoft && o.sleepTimer != nil {
 		// Schedule fallback: if sticky worker doesn't claim

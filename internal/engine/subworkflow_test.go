@@ -13,7 +13,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -102,7 +101,7 @@ func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, parentDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -233,7 +232,7 @@ func TestSubWorkflow_ChildFailsParentFails(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, parentDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -341,7 +340,7 @@ func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, parentDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -433,7 +432,7 @@ func TestSubWorkflow_CancellationCascades(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, parentDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -545,7 +544,7 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, parentDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -670,7 +669,7 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 	}
 	registerWorkflowDef(t, js, parentDef)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -761,7 +760,7 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 	registerWorkflowDef(t, js, leafDef)
 
 	store := NewSnapshotStore(jsNew)
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

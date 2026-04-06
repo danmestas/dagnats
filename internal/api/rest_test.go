@@ -18,13 +18,12 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestRESTRegisterWorkflow(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -49,7 +48,7 @@ func TestRESTRegisterWorkflow(t *testing.T) {
 func TestRESTStartRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -82,11 +81,11 @@ func TestRESTStartRun(t *testing.T) {
 func TestRESTGetRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -127,7 +126,7 @@ func TestRESTGetRun(t *testing.T) {
 func TestRESTGetRunNotFound(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -144,7 +143,7 @@ func TestRESTGetRunNotFound(t *testing.T) {
 func TestRESTHealthBasic(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -187,7 +186,7 @@ func TestNewRESTHandlerPanicsNilSvc(t *testing.T) {
 func TestRESTRegisterWorkflowBadJSON(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: invalid JSON returns 400.
 	rec := httptest.NewRecorder()
@@ -217,7 +216,7 @@ func TestRESTRegisterWorkflowBadJSON(t *testing.T) {
 func TestRESTStartRunBadJSON(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: invalid JSON returns 400.
 	rec := httptest.NewRecorder()
@@ -247,7 +246,7 @@ func TestRESTStartRunBadJSON(t *testing.T) {
 func TestRESTGetRunMissingID(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: missing run ID returns 400.
 	rec := httptest.NewRecorder()
@@ -275,7 +274,7 @@ func TestRESTGetRunMissingID(t *testing.T) {
 func TestRESTRegisterWorkflowInvalidDef(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -316,7 +315,7 @@ func TestRESTRegisterWorkflowInvalidDef(t *testing.T) {
 func TestRESTStartRunUnknownWorkflow(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -358,7 +357,7 @@ func TestRESTStartRunUnknownWorkflow(t *testing.T) {
 func TestRouteWorkflowsRejectsPUT(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: PUT returns 405.
 	rec := httptest.NewRecorder()
@@ -383,7 +382,7 @@ func TestRouteWorkflowsRejectsPUT(t *testing.T) {
 func TestRESTListWorkflows(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -427,7 +426,7 @@ func TestRESTListWorkflows(t *testing.T) {
 func TestRouteRunsRejectsPUT(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: PUT returns 405.
 	rec := httptest.NewRecorder()
@@ -452,11 +451,11 @@ func TestRouteRunsRejectsPUT(t *testing.T) {
 func TestRESTListRuns(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -506,7 +505,7 @@ func TestRESTListRuns(t *testing.T) {
 func TestRouteRunByIDRejectsPUT(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: PUT returns 405.
 	rec := httptest.NewRecorder()
@@ -533,11 +532,11 @@ func TestRouteRunByIDRejectsPUT(t *testing.T) {
 func TestRESTCancelRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -583,7 +582,7 @@ func TestRESTSendSignal(t *testing.T) {
 			natsutil.KVConfig{Bucket: "signals"},
 		),
 	)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -619,7 +618,7 @@ func TestRESTSendSignal(t *testing.T) {
 func TestRouteHealthRejectsPOST(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	// Positive: POST returns 405.
 	rec := httptest.NewRecorder()
@@ -649,7 +648,7 @@ func TestRESTStartScheduledRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("rest-sched")
 	wb.Task("a", "task-a")
@@ -696,7 +695,7 @@ func TestRESTGetScheduledRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("rest-get-sched")
 	wb.Task("a", "task-a")
@@ -740,7 +739,7 @@ func TestRESTCancelScheduledRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("rest-cancel-sched")
 	wb.Task("a", "task-a")
@@ -786,11 +785,11 @@ func TestRESTBulkCancel(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("rest-bulk-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()
@@ -845,7 +844,7 @@ func TestRESTBulkRun(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("rest-bulk-run")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()
@@ -894,11 +893,11 @@ func TestRESTBulkRetry(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 	wb := dag.NewWorkflow("rest-retry-wf")
 	wb.Task("s", "echo")
 	def, _ := wb.Build()

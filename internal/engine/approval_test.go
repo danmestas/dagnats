@@ -13,7 +13,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -61,7 +60,7 @@ func startApprovalRun(
 		t.Fatalf("put def: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 
 	payload := buildStartEvtPayload(t, defData, nil)
@@ -327,7 +326,7 @@ func TestApprovalStep_TimeoutFails(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

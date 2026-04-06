@@ -10,7 +10,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestScheduleRun(t *testing.T) {
@@ -19,7 +18,7 @@ func TestScheduleRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("sched-test")
 	wb.Task("a", "task-a")
@@ -70,7 +69,7 @@ func TestCancelScheduledRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("cancel-test")
 	wb.Task("a", "task-a")
@@ -116,7 +115,7 @@ func TestListScheduledRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("list-test")
 	wb.Task("a", "task-a")
@@ -172,7 +171,7 @@ func TestScheduleRunValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc := NewService(nc, observe.NewNoopTelemetry())
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("valid-test")
 	wb.Task("a", "task-a")

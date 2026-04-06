@@ -17,6 +17,10 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 func TestWorkerHandlesTask(t *testing.T) {
@@ -30,7 +34,7 @@ func TestWorkerHandlesTask(t *testing.T) {
 		t.Fatalf("JetStream failed: %v", err)
 	}
 	var called atomic.Bool
-	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w := NewWorker(nc)
 	w.Handle("echo", func(ctx TaskContext) error {
 		called.Store(true)
 		return ctx.Complete(ctx.Input())
@@ -83,7 +87,7 @@ func TestWorkerNaksOnHandlerError(t *testing.T) {
 	}
 
 	var callCount atomic.Int32
-	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w := NewWorker(nc)
 	w.Handle("failing", func(ctx TaskContext) error {
 		n := callCount.Add(1)
 		if n == 1 {
@@ -138,7 +142,7 @@ func TestWorkerWithGroupsOnlyHandlesGroupTasks(t *testing.T) {
 	}
 
 	var gpuCalled atomic.Bool
-	w := NewWorker(nc, observe.NewNoopTelemetry(), WithGroups("gpu"))
+	w := NewWorker(nc, WithGroups("gpu"))
 	w.Handle("ml-training", func(ctx TaskContext) error {
 		gpuCalled.Store(true)
 		return ctx.Complete(ctx.Input())
@@ -188,7 +192,7 @@ func TestWorkerWithGroupsOnlyHandlesGroupTasks(t *testing.T) {
 
 func TestHandlePanicsOnEmptyTaskType(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w := NewWorker(nc)
 	defer func() {
 		r := recover()
 		// Positive: panics on empty taskType
@@ -206,7 +210,7 @@ func TestHandlePanicsOnEmptyTaskType(t *testing.T) {
 
 func TestHandlePanicsOnNilHandler(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w := NewWorker(nc)
 	defer func() {
 		r := recover()
 		// Positive: panics on nil handler
@@ -224,7 +228,7 @@ func TestHandlePanicsOnNilHandler(t *testing.T) {
 
 func TestHandleRegistersHandler(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w := NewWorker(nc)
 	w.Handle("my-task", func(ctx TaskContext) error {
 		return nil
 	})
@@ -238,68 +242,58 @@ func TestHandleRegistersHandler(t *testing.T) {
 	}
 }
 
-func TestSplitWorkerTraceparentValid(t *testing.T) {
-	traceID, spanID, ok := splitWorkerTraceparent(
-		"00-abc123-def456-01",
+func TestExtractTraceContextWithTraceparent(t *testing.T) {
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
 	)
-	// Positive: parses valid traceparent
-	if !ok {
-		t.Fatal("expected ok=true for valid traceparent")
-	}
-	if traceID != "abc123" || spanID != "def456" {
-		t.Fatalf(
-			"traceID=%q spanID=%q, want abc123/def456",
-			traceID, spanID,
-		)
-	}
-}
-
-func TestSplitWorkerTraceparentMalformed(t *testing.T) {
-	// Negative: wrong number of parts
-	_, _, ok := splitWorkerTraceparent("abc-def")
-	if ok {
-		t.Fatal("expected ok=false for malformed input")
-	}
-	// Negative: wrong version prefix
-	_, _, ok = splitWorkerTraceparent("01-abc-def-01")
-	if ok {
-		t.Fatal("expected ok=false for wrong version")
-	}
-}
-
-func TestExtractWorkerTraceCtxWithTraceparent(t *testing.T) {
+	// Use valid 32-char trace ID and 16-char span ID.
 	msg := &testJetstreamMsg{
 		data: []byte("{}"),
 		headers: nats.Header{
-			"traceparent": {"00-tid123-sid456-01"},
+			"traceparent": {
+				"00-" +
+					"0af7651916cd43dd8448eb211c80319c-" +
+					"b7ad6b7169203331-01",
+			},
 		},
 	}
-	ctx := extractWorkerTraceCtx(msg)
+	ctx := observe.ExtractTraceContext(msg, nil)
 	// Positive: context is not nil
 	if ctx == nil {
 		t.Fatal("expected non-nil context")
 	}
-	// Verify parent info was injected via observe package
-	info, ok := observe.ParentInfoFromContext(ctx)
-	if !ok {
-		t.Fatal("expected ParentInfo in context")
+	// Verify remote span context was injected
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		t.Fatal("expected valid SpanContext")
 	}
-	if info.TraceID != "tid123" {
-		t.Fatalf("TraceID = %q, want tid123", info.TraceID)
+	wantTrace := "0af7651916cd43dd8448eb211c80319c"
+	if sc.TraceID().String() != wantTrace {
+		t.Fatalf(
+			"TraceID = %q, want %q",
+			sc.TraceID().String(), wantTrace,
+		)
 	}
 }
 
-func TestExtractWorkerTraceCtxNoHeader(t *testing.T) {
+func TestExtractTraceContextNoHeader(t *testing.T) {
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
 	msg := &testJetstreamMsg{data: []byte("{}")}
-	ctx := extractWorkerTraceCtx(msg)
+	ctx := observe.ExtractTraceContext(msg, nil)
 	// Positive: returns a valid context
 	if ctx == nil {
 		t.Fatal("expected non-nil context")
 	}
-	// Negative: no parent info when no header
-	_, ok := observe.ParentInfoFromContext(ctx)
-	if ok {
-		t.Fatal("expected no ParentInfo without header")
+	// Negative: no span context when no header
+	sc := trace.SpanContextFromContext(ctx)
+	if sc.IsValid() {
+		t.Fatal("expected invalid SpanContext without header")
 	}
 }
 
@@ -331,30 +325,45 @@ func (m *testJetstreamMsg) TermWithReason(string) error {
 	return nil
 }
 
-// testSpan implements observe.Span and observe.SpanContext
-// with configurable trace/span IDs for testing trace injection.
-type testSpan struct {
-	observe.Span
-	traceID string
-	spanID  string
+// newTestSpan creates a noop OTel span with a valid span context
+// for testing trace injection.
+func newTestSpan(
+	traceIDHex, spanIDHex string,
+) trace.Span {
+	tid, _ := trace.TraceIDFromHex(traceIDHex)
+	sid, _ := trace.SpanIDFromHex(spanIDHex)
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    tid,
+		SpanID:     sid,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(
+		context.Background(), sc,
+	)
+	// Use noop tracer to create a span carrying the context.
+	_, span := tracenoop.NewTracerProvider().
+		Tracer("test").Start(ctx, "test")
+	return span
 }
 
-func (s *testSpan) TraceID() string                                  { return s.traceID }
-func (s *testSpan) SpanID() string                                   { return s.spanID }
-func (s *testSpan) End()                                             {}
-func (s *testSpan) SetStatus(code observe.StatusCode, desc string)   {}
-func (s *testSpan) SetAttributes(attrs ...observe.Attribute)         {}
-func (s *testSpan) RecordError(err error)                            {}
-func (s *testSpan) AddEvent(name string, attrs ...observe.Attribute) {}
-
-func TestInjectWorkerTraceCtxSetsHeader(t *testing.T) {
-	span := &testSpan{traceID: "t123", spanID: "s456"}
+func TestInjectTraceContextSetsHeader(t *testing.T) {
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
+	traceID := "0af7651916cd43dd8448eb211c80319c"
+	spanID := "b7ad6b7169203331"
+	span := newTestSpan(traceID, spanID)
+	ctx := trace.ContextWithRemoteSpanContext(
+		context.Background(), span.SpanContext(),
+	)
 	evt := &protocol.Event{}
 	msg := &nats.Msg{}
-	injectWorkerTraceCtx(span, evt, msg)
+	observe.InjectTraceContext(ctx, msg, evt)
 	// Positive: traceparent header is set
 	tp := msg.Header.Get("traceparent")
-	want := "00-t123-s456-01"
+	want := "00-" + traceID + "-" + spanID + "-01"
 	if tp != want {
 		t.Fatalf("traceparent = %q, want %q", tp, want)
 	}
@@ -367,19 +376,24 @@ func TestInjectWorkerTraceCtxSetsHeader(t *testing.T) {
 	}
 }
 
-func TestInjectWorkerTraceCtxEmptyIDs(t *testing.T) {
-	span := &testSpan{traceID: "", spanID: ""}
+func TestInjectTraceContextEmptyIDs(t *testing.T) {
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+		),
+	)
+	// Background context has no span — no injection.
 	evt := &protocol.Event{}
 	msg := &nats.Msg{}
-	injectWorkerTraceCtx(span, evt, msg)
-	// Positive: no header set when IDs are empty
-	if msg.Header != nil {
-		tp := msg.Header.Get("traceparent")
-		if tp != "" {
-			t.Fatalf(
-				"traceparent = %q, want empty", tp,
-			)
-		}
+	observe.InjectTraceContext(
+		context.Background(), msg, evt,
+	)
+	// Positive: no traceparent when no span context
+	tp := msg.Header.Get("traceparent")
+	if tp != "" {
+		t.Fatalf(
+			"traceparent = %q, want empty", tp,
+		)
 	}
 	// Negative: event TraceParent stays empty
 	if evt.TraceParent != "" {
@@ -402,7 +416,7 @@ func TestWorkerNonRetryableErrorAcks(t *testing.T) {
 		t.Fatalf("JetStream failed: %v", err)
 	}
 	var callCount atomic.Int32
-	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w := NewWorker(nc)
 	w.Handle("perm-fail", func(ctx TaskContext) error {
 		callCount.Add(1)
 		return NewNonRetryableError(
@@ -473,7 +487,7 @@ func TestWorkerRegistersOnStart(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	w := NewWorker(nc, nil)
+	w := NewWorker(nc)
 	w.Handle("test-task", func(ctx TaskContext) error {
 		return ctx.Complete(nil)
 	})
@@ -525,7 +539,7 @@ func TestWorkerDeregistersOnStop(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	w := NewWorker(nc, nil)
+	w := NewWorker(nc)
 	w.Handle("cleanup-task", func(ctx TaskContext) error {
 		return ctx.Complete(nil)
 	})
@@ -569,7 +583,7 @@ func TestNonRetryableErrorPublishesNonRetriablePayload(t *testing.T) {
 	}
 	js, _ := nc.JetStream()
 
-	w := NewWorker(nc, observe.NewNoopTelemetry())
+	w := NewWorker(nc)
 	w.Handle("fail-perm", func(ctx TaskContext) error {
 		return NewNonRetryableError(fmt.Errorf("permanent"))
 	})

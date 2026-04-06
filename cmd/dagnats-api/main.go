@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -8,7 +9,7 @@ import (
 	"github.com/danmestas/dagnats/cli"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/observe/simple"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 )
 
@@ -27,9 +28,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed to setup NATS resources: %v\n", err)
 		os.Exit(1)
 	}
-	tel, shutdown := simple.SetupTelemetry(nc)
-	defer shutdown()
-	svc := api.NewService(nc, tel)
+	telShutdown, telErr := observe.InitTelemetry(
+		context.Background(), observe.Config{
+			ServiceName:  "dagnats-api",
+			NATSConn:     nc,
+			OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		},
+	)
+	if telErr != nil {
+		fmt.Fprintf(os.Stderr, "failed to init telemetry: %v\n", telErr)
+		os.Exit(1)
+	}
+	defer telShutdown(context.Background())
+	svc := api.NewService(nc)
 	handler := api.NewRESTHandler(svc)
 	addr := cli.GetEnvWithFallback(
 		"DAGNATS_LISTEN_ADDR", "LISTEN_ADDR", ":8080",

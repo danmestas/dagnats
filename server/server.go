@@ -14,8 +14,6 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/observe/otlp"
-	"github.com/danmestas/dagnats/internal/observe/simple"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
@@ -35,10 +33,8 @@ type Server struct {
 	svc         *api.Service
 	trig        *trigger.TriggerService
 	bridge      *bridge.Bridge
-	otlpBridge  *otlp.Bridge
 	httpSrv     *http.Server
-	tel         *observe.Telemetry
-	telStop     func()
+	telShutdown func(context.Context)
 	ready       atomic.Bool
 	stopCh      chan struct{}
 	workerShims []*WorkerShim
@@ -144,19 +140,33 @@ func (s *Server) startComponents() error {
 	}
 	printStep(os.Stderr, "streams and kv buckets ready")
 
-	s.tel, s.telStop = simple.SetupTelemetry(s.nc)
-	s.svc = api.NewService(s.nc, s.tel)
-	s.orch = engine.NewOrchestrator(s.nc, s.tel)
+	telShutdown, telErr := observe.InitTelemetry(
+		context.Background(), observe.Config{
+			ServiceName:  "dagnats",
+			NATSConn:     s.nc,
+			OTLPEndpoint: s.cfg.OTLPEndpoint,
+		},
+	)
+	if telErr != nil {
+		s.nc.Close()
+		s.ns.Shutdown()
+		return fmt.Errorf("init telemetry: %w", telErr)
+	}
+	s.telShutdown = telShutdown
+	printStep(os.Stderr, "telemetry initialized")
+
+	s.svc = api.NewService(s.nc)
+	s.orch = engine.NewOrchestrator(s.nc)
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
 
-	s.bridge = bridge.NewBridge(s.nc, s.tel)
+	s.bridge = bridge.NewBridge(s.nc)
 	printStep(os.Stderr, "http bridge ready")
 
-	s.trig, err = trigger.NewTriggerService(s.nc, s.tel.Logger)
+	s.trig, err = trigger.NewTriggerService(s.nc)
 	if err != nil {
 		s.orch.Stop()
-		s.telStop()
+		s.telShutdown(context.Background())
 		s.nc.Close()
 		s.ns.Shutdown()
 		return fmt.Errorf("create trigger service: %w", err)
@@ -165,7 +175,7 @@ func (s *Server) startComponents() error {
 	if err := s.trig.Start(); err != nil {
 		s.trig.Stop()
 		s.orch.Stop()
-		s.telStop()
+		s.telShutdown(context.Background())
 		s.nc.Close()
 		s.ns.Shutdown()
 		return fmt.Errorf("start trigger service: %w", err)
@@ -180,7 +190,7 @@ func (s *Server) startComponents() error {
 				opts, worker.WithGroups(shim.groups...),
 			)
 		}
-		w := worker.NewWorker(s.nc, s.tel, opts...)
+		w := worker.NewWorker(s.nc, opts...)
 		for _, reg := range shim.registrations {
 			w.Handle(reg.taskType, reg.handler)
 		}
@@ -194,17 +204,6 @@ func (s *Server) startComponents() error {
 		printStep(os.Stderr, "embedded workers started")
 	}
 	s.workerShims = nil // no ambiguous stale state
-
-	// Start OTLP bridge if endpoint is configured
-	if s.cfg.OTLPEndpoint != "" {
-		s.otlpBridge = otlp.NewBridge(s.nc, otlp.BridgeConfig{
-			Endpoint:    s.cfg.OTLPEndpoint,
-			ServiceName: "dagnats",
-		})
-		s.otlpBridge.Start()
-		printStep(os.Stderr,
-			"otlp bridge started → "+s.cfg.OTLPEndpoint)
-	}
 
 	return nil
 }
@@ -340,12 +339,9 @@ func (s *Server) shutdown() error {
 		if s.orch != nil {
 			s.orch.Stop()
 		}
-		if s.otlpBridge != nil {
-			s.otlpBridge.Stop()
-			printStep(os.Stderr, "otlp bridge stopped")
-		}
-		if s.telStop != nil {
-			s.telStop()
+		if s.telShutdown != nil {
+			s.telShutdown(context.Background())
+			printStep(os.Stderr, "telemetry shut down")
 		}
 
 		printStep(os.Stderr, "draining nats...")

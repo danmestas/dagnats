@@ -16,7 +16,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestWorkflowRegisterShowsCreatedVsUpdated(t *testing.T) {
@@ -174,7 +173,7 @@ func TestWorkflowListJSON(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	// Register a workflow via the API so list can find it.
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
 		Name:    "list-json",
 		Version: "1.0",

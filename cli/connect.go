@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/danmestas/dagnats/internal/api"
-	"github.com/danmestas/dagnats/observe"
+
 	"github.com/nats-io/nats.go"
 )
 
@@ -62,6 +62,6 @@ func tryNewService(
 			errMsg = fmt.Sprintf("%v", r)
 		}
 	}()
-	svc = api.NewService(nc, observe.NewNoopTelemetry())
+	svc = api.NewService(nc)
 	return svc, ""
 }

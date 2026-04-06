@@ -12,7 +12,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestScheduledRunTimerFires(t *testing.T) {
@@ -21,11 +20,10 @@ func TestScheduledRunTimerFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
-	svc := NewService(nc, tel)
+	svc := NewService(nc)
 
 	// Start orchestrator so workflow.started events get processed.
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	t.Cleanup(func() { orch.Stop() })
 
@@ -87,8 +85,7 @@ func TestScheduledRunTimerCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	tel := observe.NewNoopTelemetry()
-	svc := NewService(nc, tel)
+	svc := NewService(nc)
 
 	wb := dag.NewWorkflow("cancel-timer-test")
 	wb.Task("a", "task-a")

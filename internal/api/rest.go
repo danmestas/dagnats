@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -29,9 +30,6 @@ type startRunRequest struct {
 func NewRESTHandler(svc *Service) http.Handler {
 	if svc == nil {
 		panic("NewRESTHandler: svc must not be nil")
-	}
-	if svc.tel == nil {
-		panic("NewRESTHandler: svc.tel must not be nil")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/workflows", svc.routeWorkflows)
@@ -164,7 +162,7 @@ func handleRegisterWorkflow(
 		map[string]string{"status": "registered", "name": def.Name},
 	)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -188,7 +186,7 @@ func handleListWorkflows(
 	w.Header().Set("Content-Type", "application/json")
 	encErr := json.NewEncoder(w).Encode(defs)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -213,7 +211,7 @@ func handleListRuns(
 	w.Header().Set("Content-Type", "application/json")
 	encErr := json.NewEncoder(w).Encode(runs)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -270,7 +268,7 @@ func handleStartRun(
 		map[string]string{"run_id": runID},
 	)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -305,7 +303,7 @@ func handleGetRun(
 	w.Header().Set("Content-Type", "application/json")
 	encErr := json.NewEncoder(w).Encode(run)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -337,7 +335,7 @@ func handleCancelRun(
 		map[string]string{"status": "cancelled", "run_id": runID},
 	)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -390,7 +388,7 @@ func handleSendSignal(
 		},
 	)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -505,7 +503,7 @@ func handleBulkCancel(
 	w.Header().Set("Content-Type", "application/json")
 	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -545,7 +543,7 @@ func handleBulkRun(
 	w.WriteHeader(http.StatusCreated)
 	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -584,7 +582,7 @@ func handleBulkRetry(
 	w.Header().Set("Content-Type", "application/json")
 	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode response", encErr)
+		slog.Error("encode response", "error", encErr)
 	}
 }
 
@@ -675,7 +673,7 @@ func handleHealth(
 	w.Header().Set("Content-Type", "application/json")
 	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
-		svc.tel.Logger.Error("encode health response", encErr)
+		slog.Error("encode health response", "error", encErr)
 	}
 }
 

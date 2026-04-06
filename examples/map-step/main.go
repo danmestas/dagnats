@@ -35,7 +35,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	// Step 1: Return a list of image URLs.
 	// The Map step expects its input to be a JSON array.

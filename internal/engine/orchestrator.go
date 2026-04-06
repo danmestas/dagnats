@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,11 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -32,7 +38,7 @@ type Orchestrator struct {
 	js          jetstream.JetStream
 	defKV       jetstream.KeyValue
 	store       *SnapshotStore
-	tel         *observe.Telemetry
+	tracer      trace.Tracer
 	cc          jetstream.ConsumeContext
 	runLocks    sync.Map                // map[string]*sync.Mutex — per-run serialization
 	stepRoutes  map[dag.StepType]string // step type → subject prefix
@@ -44,15 +50,15 @@ type Orchestrator struct {
 	singletonKV jetstream.KeyValue      // singleton_locks — one-at-a-time
 
 	// Pre-allocated metric instruments — created once in constructor.
-	runsActive              observe.Gauge
-	runsCompleted           observe.Counter
-	runsFailed              observe.Counter
-	stepEnqueueCount        observe.Counter
-	snapshotDuration        observe.Histogram
-	failNonRetriable        observe.Counter
-	failRetryAfter          observe.Counter
-	taskConcurrencyAcquired observe.Counter
-	taskConcurrencyRejected observe.Counter
+	runsActive              metric.Int64UpDownCounter
+	runsCompleted           metric.Int64Counter
+	runsFailed              metric.Int64Counter
+	stepEnqueueCount        metric.Int64Counter
+	snapshotDuration        metric.Float64Histogram
+	failNonRetriable        metric.Int64Counter
+	failRetryAfter          metric.Int64Counter
+	taskConcurrencyAcquired metric.Int64Counter
+	taskConcurrencyRejected metric.Int64Counter
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -70,14 +76,11 @@ func WithStepRoutes(
 // Panics if nc is nil or JetStream cannot be obtained — both are programmer
 // errors. KV buckets must already exist (call natsutil.SetupAll first).
 func NewOrchestrator(
-	nc *nats.Conn, tel *observe.Telemetry,
+	nc *nats.Conn,
 	opts ...OrchestratorOption,
 ) *Orchestrator {
 	if nc == nil {
 		panic("NewOrchestrator: nc must not be nil")
-	}
-	if tel == nil {
-		panic("NewOrchestrator: tel must not be nil")
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -94,41 +97,51 @@ func NewOrchestrator(
 	}
 	cm, _ := NewConcurrencyManagerSafe(js)
 	rl := NewRateLimiter(js)
+	m := otel.Meter("dagnats/engine")
+	runsActive, _ := m.Int64UpDownCounter(
+		"workflow.runs.active",
+	)
+	runsCompleted, _ := m.Int64Counter(
+		"workflow.runs.completed",
+	)
+	runsFailed, _ := m.Int64Counter(
+		"workflow.runs.failed",
+	)
+	stepEnqueue, _ := m.Int64Counter(
+		"step.enqueue.count",
+	)
+	snapDur, _ := m.Float64Histogram(
+		"snapshot.save.duration_ms",
+	)
+	failNonRetriable, _ := m.Int64Counter(
+		"step.failure.non_retriable",
+	)
+	failRetryAfter, _ := m.Int64Counter(
+		"step.failure.retry_after",
+	)
+	taskConcAcquired, _ := m.Int64Counter(
+		"task.concurrency.acquired",
+	)
+	taskConcRejected, _ := m.Int64Counter(
+		"task.concurrency.rejected",
+	)
 	o := &Orchestrator{
-		nc:          nc,
-		js:          js,
-		defKV:       defKV,
-		store:       NewSnapshotStore(js),
-		tel:         tel,
-		concurrency: cm,
-		rateLimiter: rl,
-		runsActive: tel.Metrics.Gauge(
-			"workflow.runs.active", nil,
-		),
-		runsCompleted: tel.Metrics.Counter(
-			"workflow.runs.completed", nil,
-		),
-		runsFailed: tel.Metrics.Counter(
-			"workflow.runs.failed", nil,
-		),
-		stepEnqueueCount: tel.Metrics.Counter(
-			"step.enqueue.count", nil,
-		),
-		snapshotDuration: tel.Metrics.Histogram(
-			"snapshot.save.duration_ms", nil,
-		),
-		failNonRetriable: tel.Metrics.Counter(
-			"step.failure.non_retriable", nil,
-		),
-		failRetryAfter: tel.Metrics.Counter(
-			"step.failure.retry_after", nil,
-		),
-		taskConcurrencyAcquired: tel.Metrics.Counter(
-			"task.concurrency.acquired", nil,
-		),
-		taskConcurrencyRejected: tel.Metrics.Counter(
-			"task.concurrency.rejected", nil,
-		),
+		nc:                      nc,
+		js:                      js,
+		defKV:                   defKV,
+		store:                   NewSnapshotStore(js),
+		tracer:                  otel.Tracer("dagnats/engine"),
+		concurrency:             cm,
+		rateLimiter:             rl,
+		runsActive:              runsActive,
+		runsCompleted:           runsCompleted,
+		runsFailed:              runsFailed,
+		stepEnqueueCount:        stepEnqueue,
+		snapshotDuration:        snapDur,
+		failNonRetriable:        failNonRetriable,
+		failRetryAfter:          failRetryAfter,
+		taskConcurrencyAcquired: taskConcAcquired,
+		taskConcurrencyRejected: taskConcRejected,
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
 	o.correlator = NewCorrelator(nc, js)
@@ -225,7 +238,10 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 	}
 	evt, err := protocol.UnmarshalEvent(msg.Data())
 	if err != nil {
-		o.tel.Logger.Error("handleEvent: unmarshal failed", err)
+		slog.ErrorContext(
+			context.Background(),
+			"handleEvent: unmarshal failed", "error", err,
+		)
 		msg.NakWithDelay(5 * time.Second)
 		return
 	}
@@ -233,24 +249,25 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 		msg.Ack()
 		return
 	}
-	ctx := extractTraceCtxJS(msg, &evt)
-	ctx, span := o.tel.Tracer.Start(ctx,
-		"orchestrator.handleEvent",
-		observe.WithSpanKind(observe.SpanKindServer),
-		observe.WithAttributes(
-			observe.StringAttr("run_id", evt.RunID),
-			observe.StringAttr("event_type", string(evt.Type)),
-			observe.StringAttr("step_id", evt.StepID),
+	ctx := observe.ExtractTraceContext(msg, &evt)
+	ctx, span := o.tracer.Start(ctx,
+		"dagnats.engine handleEvent",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("run_id", evt.RunID),
+			attribute.String("event_type", string(evt.Type)),
+			attribute.String("step_id", evt.StepID),
 		),
 	)
 	defer span.End()
 	err = o.dispatchEvent(ctx, evt)
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(observe.StatusError, err.Error())
-		o.tel.Logger.Error("handleEvent: handler error", err,
-			observe.String("event_type", string(evt.Type)),
-			observe.String("run_id", evt.RunID),
+		span.SetStatus(codes.Error, err.Error())
+		slog.ErrorContext(ctx, "handleEvent: handler error",
+			"error", err,
+			"event_type", string(evt.Type),
+			"run_id", evt.RunID,
 		)
 		msg.NakWithDelay(5 * time.Second)
 		return
@@ -415,7 +432,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return fmt.Errorf("save initial run: %w", err)
 	}
-	o.runsActive.Inc()
+	o.runsActive.Add(ctx, 1)
 	if err := o.enqueueReady(ctx, wfDef, run); err != nil {
 		return err
 	}
@@ -443,8 +460,9 @@ func (o *Orchestrator) registerCancelWaiters(
 			nil, run.Input,
 		)
 		if err != nil {
-			o.tel.Logger.Error(
-				"cancel match resolve failed", err,
+			slog.ErrorContext(ctx,
+				"cancel match resolve failed",
+				"error", err,
 			)
 			continue
 		}
@@ -456,8 +474,8 @@ func (o *Orchestrator) registerCancelWaiters(
 			Action:    WaiterActionCancel,
 		}
 		if err := o.correlator.AddWaiter(ctx, waiter); err != nil {
-			o.tel.Logger.Error(
-				"add cancel waiter failed", err,
+			slog.ErrorContext(ctx,
+				"add cancel waiter failed", "error", err,
 			)
 		}
 	}
@@ -580,17 +598,18 @@ func (o *Orchestrator) completeWorkflow(
 	}
 	o.releaseSingletonLock(ctx, run)
 	o.deleteStickyBinding(ctx, run.RunID)
-	o.runsActive.Dec()
-	o.runsCompleted.Inc()
+	o.runsActive.Add(ctx, -1)
+	o.runsCompleted.Add(ctx, 1)
 	if o.concurrency != nil {
 		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
 		// Auto-start next pending run if available
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
-			o.tel.Logger.Error(
-				"failed to start next pending run", err,
-				observe.String("workflow_id", run.WorkflowID),
+			slog.ErrorContext(ctx,
+				"failed to start next pending run",
+				"error", err,
+				"workflow_id", run.WorkflowID,
 			)
 		}
 	}
@@ -708,7 +727,7 @@ func (o *Orchestrator) transitionPendingToRunning(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return fmt.Errorf("save running run: %w", err)
 	}
-	o.runsActive.Inc()
+	o.runsActive.Add(ctx, 1)
 	return o.enqueueReady(ctx, wfDef, run)
 }
 
@@ -770,10 +789,11 @@ func (o *Orchestrator) handleStepContinue(
 					loopCtx, runID, stepDef, input, iter,
 				)
 				if pubErr != nil {
-					o.tel.Logger.Error(
-						"delayed iteration publish failed", pubErr,
-						observe.String("run_id", runID),
-						observe.String("step_id", stepDef.ID),
+					slog.ErrorContext(loopCtx,
+						"delayed iteration publish failed",
+						"error", pubErr,
+						"run_id", runID,
+						"step_id", stepDef.ID,
 					)
 				}
 			}
@@ -846,17 +866,18 @@ func (o *Orchestrator) failLoopStep(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.runsActive.Dec()
-	o.runsFailed.Inc()
+	o.runsActive.Add(ctx, -1)
+	o.runsFailed.Add(ctx, 1)
 	if o.concurrency != nil {
 		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
 		// Auto-start next pending run if available
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
-			o.tel.Logger.Error(
-				"failed to start next pending run", err,
-				observe.String("workflow_id", run.WorkflowID),
+			slog.ErrorContext(ctx,
+				"failed to start next pending run",
+				"error", err,
+				"workflow_id", run.WorkflowID,
 			)
 		}
 	}
@@ -936,11 +957,11 @@ func (o *Orchestrator) handleStepFailed(
 	// Non-retriable: skip all retries immediately.
 	if failPayload.FailureType ==
 		protocol.FailureTypeNonRetriable {
-		o.failNonRetriable.Inc()
-		o.tel.Logger.Info(
+		o.failNonRetriable.Add(ctx, 1)
+		slog.InfoContext(ctx,
 			"step failed permanently (non-retriable)",
-			observe.String("run_id", evt.RunID),
-			observe.String("step_id", evt.StepID),
+			"run_id", evt.RunID,
+			"step_id", evt.StepID,
 		)
 		state.Status = dag.StepStatusFailed
 		run.Steps[evt.StepID] = state
@@ -952,7 +973,7 @@ func (o *Orchestrator) handleStepFailed(
 	// Retry-after: schedule exact delay if retries remain.
 	if failPayload.FailureType ==
 		protocol.FailureTypeRetryAfter {
-		o.failRetryAfter.Inc()
+		o.failRetryAfter.Add(ctx, 1)
 		return o.handleRetryAfter(
 			ctx, wfDef, &run, stepDef, &state,
 			evt.StepID, failPayload.RetryAfterMs, policy,
@@ -1084,8 +1105,8 @@ func (o *Orchestrator) failAuxStep(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.runsActive.Dec()
-	o.runsFailed.Inc()
+	o.runsActive.Add(ctx, -1)
+	o.runsFailed.Add(ctx, 1)
 	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
 	return o.notifyParentIfChild(
 		ctx, run,
@@ -1184,16 +1205,17 @@ func (o *Orchestrator) failWorkflow(
 	}
 	o.releaseSingletonLock(ctx, run)
 	o.deleteStickyBinding(ctx, run.RunID)
-	o.runsActive.Dec()
-	o.runsFailed.Inc()
+	o.runsActive.Add(ctx, -1)
+	o.runsFailed.Add(ctx, 1)
 	if o.concurrency != nil {
 		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
 		}
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
-			o.tel.Logger.Error(
-				"failed to start next pending run", err,
-				observe.String("workflow_id", run.WorkflowID),
+			slog.ErrorContext(ctx,
+				"failed to start next pending run",
+				"error", err,
+				"workflow_id", run.WorkflowID,
 			)
 		}
 	}
@@ -1296,7 +1318,7 @@ func (o *Orchestrator) handleCompensateStepCompleted(
 	// All compensate steps done — mark workflow as Compensated
 	run.Status = dag.RunStatusCompensated
 	o.saveSnapshot(ctx, *run)
-	o.runsActive.Dec()
+	o.runsActive.Add(ctx, -1)
 	return true
 }
 
@@ -1405,7 +1427,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.runsActive.Dec()
+	o.runsActive.Add(ctx, -1)
 	if o.concurrency != nil {
 		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
 			return fmt.Errorf("release run: %w", err)
@@ -1413,9 +1435,10 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		if err := o.startNextPendingRun(
 			ctx, run.WorkflowID,
 		); err != nil {
-			o.tel.Logger.Error(
-				"failed to start next pending run", err,
-				observe.String("workflow_id", run.WorkflowID),
+			slog.ErrorContext(ctx,
+				"failed to start next pending run",
+				"error", err,
+				"workflow_id", run.WorkflowID,
 			)
 		}
 	}
@@ -1525,9 +1548,11 @@ func (o *Orchestrator) handleWorkflowSpawn(
 	// The child would be at depth+1, so reject when depth+1 > max.
 	depth := o.nestingDepth(ctx, evt.RunID)
 	if depth+1 >= maxNestingDepth {
-		o.tel.Logger.Error(
+		slog.ErrorContext(ctx,
 			"spawn rejected: max nesting depth exceeded",
-			fmt.Errorf("depth %d >= max %d", depth, maxNestingDepth),
+			"error", fmt.Errorf(
+				"depth %d >= max %d", depth, maxNestingDepth,
+			),
 		)
 		return fmt.Errorf(
 			"max nesting depth %d exceeded", maxNestingDepth,
@@ -1582,7 +1607,7 @@ func (o *Orchestrator) createChildRun(
 		return err
 	}
 
-	o.runsActive.Inc()
+	o.runsActive.Add(ctx, 1)
 	return o.enqueueReady(ctx, childDef, childRun)
 }
 
@@ -1615,15 +1640,16 @@ func (o *Orchestrator) notifyParentIfChild(
 	evt := protocol.NewStepEvent(
 		eventType, run.ParentRunID, run.ParentStepID, payload,
 	)
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	observe.InjectTraceContext(ctx, msg, &evt)
 	data, err := evt.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal child event: %w", err)
 	}
-	msg := &nats.Msg{
-		Subject: evt.NATSSubject(),
-		Data:    data,
-		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
-	}
+	msg.Data = data
 	_, err = o.js.PublishMsg(ctx, msg)
 	return err
 }
@@ -1646,10 +1672,10 @@ func (o *Orchestrator) enqueueReady(
 	if run.RunID == "" {
 		panic("enqueueReady: RunID must not be empty")
 	}
-	ctx, span := o.tel.Tracer.Start(ctx,
-		"orchestrator.enqueueReady",
-		observe.WithAttributes(
-			observe.StringAttr("run_id", run.RunID),
+	ctx, span := o.tracer.Start(ctx,
+		"dagnats.engine enqueueReady",
+		trace.WithAttributes(
+			attribute.String("run_id", run.RunID),
 		),
 	)
 	defer span.End()
@@ -1696,7 +1722,7 @@ func (o *Orchestrator) enqueueReady(
 	}
 
 	span.SetAttributes(
-		observe.Int64Attr("ready_steps_count", int64(len(ready))),
+		attribute.Int64("ready_steps_count", int64(len(ready))),
 	)
 	if len(ready) == 0 && len(skipped) == 0 {
 		return nil
@@ -1837,12 +1863,12 @@ func (o *Orchestrator) publishTask(
 			return err
 		}
 		if !acquired {
-			o.taskConcurrencyRejected.Inc()
+			o.taskConcurrencyRejected.Add(ctx, 1)
 			return o.scheduleTaskConcurrencyRetry(
 				ctx, step, runID, input,
 			)
 		}
-		o.taskConcurrencyAcquired.Inc()
+		o.taskConcurrencyAcquired.Add(ctx, 1)
 	}
 
 	// Check sticky binding — if a binding exists, route to the
@@ -2006,13 +2032,13 @@ func (o *Orchestrator) doPublishTask(
 	if step.ID == "" {
 		panic("doPublishTask: step.ID must not be empty")
 	}
-	ctx, span := o.tel.Tracer.Start(ctx,
-		"orchestrator.enqueueTask",
-		observe.WithSpanKind(observe.SpanKindClient),
-		observe.WithAttributes(
-			observe.StringAttr("run_id", runID),
-			observe.StringAttr("step_id", step.ID),
-			observe.StringAttr("task_name", step.Task),
+	ctx, span := o.tracer.Start(ctx,
+		"dagnats.engine enqueueTask",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
+			attribute.String("step_id", step.ID),
+			attribute.String("task_name", step.Task),
 		),
 	)
 	defer span.End()
@@ -2030,9 +2056,9 @@ func (o *Orchestrator) doPublishTask(
 	msgID := runID + "." + step.ID + ".queued"
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	injectTraceCtx(ctx, span, msg)
+	observe.InjectTraceContext(ctx, msg, nil)
 	_, err = o.js.PublishMsg(ctx, msg)
-	o.stepEnqueueCount.Inc()
+	o.stepEnqueueCount.Add(ctx, 1)
 	return err
 }
 
@@ -2051,13 +2077,13 @@ func (o *Orchestrator) publishIterationTask(
 	if step.ID == "" {
 		panic("publishIterationTask: step.ID must not be empty")
 	}
-	ctx, span := o.tel.Tracer.Start(ctx,
-		"orchestrator.enqueueTask",
-		observe.WithSpanKind(observe.SpanKindClient),
-		observe.WithAttributes(
-			observe.StringAttr("run_id", runID),
-			observe.StringAttr("step_id", step.ID),
-			observe.StringAttr("task_name", step.Task),
+	ctx, span := o.tracer.Start(ctx,
+		"dagnats.engine enqueueTask",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
+			attribute.String("step_id", step.ID),
+			attribute.String("task_name", step.Task),
 		),
 	)
 	defer span.End()
@@ -2077,9 +2103,9 @@ func (o *Orchestrator) publishIterationTask(
 	)
 	subject := o.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	injectTraceCtx(ctx, span, msg)
+	observe.InjectTraceContext(ctx, msg, nil)
 	_, err = o.js.PublishMsg(ctx, msg)
-	o.stepEnqueueCount.Inc()
+	o.stepEnqueueCount.Add(ctx, 1)
 	return err
 }
 
@@ -2129,7 +2155,7 @@ func (o *Orchestrator) saveSnapshot(
 	start := time.Now()
 	err := o.store.Save(ctx, run)
 	elapsed := float64(time.Since(start).Milliseconds())
-	o.snapshotDuration.Observe(elapsed)
+	o.snapshotDuration.Record(ctx, elapsed)
 	return err
 }
 
@@ -2207,42 +2233,6 @@ func (o *Orchestrator) publishWorkflowFailed(
 	return err
 }
 
-// extractTraceCtxJS reads W3C traceparent from a jetstream.Msg header
-// or event payload and returns a context with parent span info.
-func extractTraceCtxJS(
-	msg jetstream.Msg, evt *protocol.Event,
-) context.Context {
-	if msg == nil {
-		panic("extractTraceCtxJS: msg must not be nil")
-	}
-	if evt == nil {
-		panic("extractTraceCtxJS: evt must not be nil")
-	}
-	traceID, spanID, ok := parseTraceparentJS(msg, evt)
-	if !ok {
-		return context.Background()
-	}
-	return observe.ContextWithParentInfo(
-		context.Background(), traceID, spanID,
-	)
-}
-
-// parseTraceparentJS reads traceparent from jetstream.Msg header
-// first, falling back to the event field.
-func parseTraceparentJS(
-	msg jetstream.Msg, evt *protocol.Event,
-) (traceID, spanID string, ok bool) {
-	if hdrs := msg.Headers(); hdrs != nil {
-		if h := hdrs.Get("traceparent"); h != "" {
-			return splitTraceparent(h)
-		}
-	}
-	if evt.TraceParent != "" {
-		return splitTraceparent(evt.TraceParent)
-	}
-	return "", "", false
-}
-
 // parseTraceparent reads traceparent from *nats.Msg header first,
 // falling back to the event field. Used by tests.
 func parseTraceparent(
@@ -2268,31 +2258,6 @@ func splitTraceparent(
 		return "", "", false
 	}
 	return parts[1], parts[2], true
-}
-
-// injectTraceCtx writes traceparent to outgoing NATS message headers.
-// Uses SpanContext type assertion to extract IDs from the active span.
-// No-op when the span does not implement SpanContext or has empty IDs.
-func injectTraceCtx(
-	ctx context.Context, span observe.Span, msg *nats.Msg,
-) {
-	if msg == nil {
-		panic("injectTraceCtx: msg must not be nil")
-	}
-	sc, ok := span.(observe.SpanContext)
-	if !ok {
-		return
-	}
-	traceID := sc.TraceID()
-	spanID := sc.SpanID()
-	if traceID == "" || spanID == "" {
-		return
-	}
-	tp := "00-" + traceID + "-" + spanID + "-01"
-	if msg.Header == nil {
-		msg.Header = nats.Header{}
-	}
-	msg.Header.Set("traceparent", tp)
 }
 
 // enqueueSleepStep marks the step as Running, publishes a
@@ -2610,8 +2575,8 @@ func (o *Orchestrator) failMapStep(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.runsActive.Dec()
-	o.runsFailed.Inc()
+	o.runsActive.Add(ctx, -1)
+	o.runsFailed.Add(ctx, 1)
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
@@ -2958,18 +2923,18 @@ func (o *Orchestrator) publishSpawnEvent(
 		protocol.EventWorkflowSpawn,
 		parentRunID, parentStepID, payload,
 	)
-	data, err := evt.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal spawn event: %w", err)
-	}
-
 	msg := &nats.Msg{
 		Subject: evt.NATSSubject(),
-		Data:    data,
 		Header: nats.Header{
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
+	observe.InjectTraceContext(ctx, msg, &evt)
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal spawn event: %w", err)
+	}
+	msg.Data = data
 	_, err = o.js.PublishMsg(ctx, msg)
 	return err
 }

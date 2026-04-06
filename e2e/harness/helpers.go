@@ -13,7 +13,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -38,8 +37,7 @@ func NewTestService(t *testing.T, nc *nats.Conn) *api.Service {
 	if nc == nil {
 		panic("NewTestService: nc must not be nil")
 	}
-	tel := observe.NewNoopTelemetry()
-	return api.NewService(nc, tel)
+	return api.NewService(nc)
 }
 
 // RegisterAndStart registers a workflow and starts a run.
@@ -115,8 +113,7 @@ func SubscribeWorker(
 	if taskName == "" {
 		panic("SubscribeWorker: taskName must not be empty")
 	}
-	tel := observe.NewNoopTelemetry()
-	w := worker.NewWorker(nc, tel)
+	w := worker.NewWorker(nc)
 	w.Handle(taskName, handler)
 	w.Start()
 	t.Cleanup(func() { w.Stop() })

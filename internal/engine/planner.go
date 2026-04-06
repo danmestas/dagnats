@@ -8,9 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -221,11 +221,11 @@ func (o *Orchestrator) failPlannerStep(
 		panic("failPlannerStep: stepDef.ID must not be empty")
 	}
 
-	o.tel.Logger.Error(
+	slog.ErrorContext(ctx,
 		"planner step failed",
-		fmt.Errorf("%s", reason),
-		observe.String("run_id", run.RunID),
-		observe.String("step_id", stepDef.ID),
+		"error", fmt.Errorf("%s", reason),
+		"run_id", run.RunID,
+		"step_id", stepDef.ID,
 	)
 
 	state := run.Steps[stepDef.ID]
@@ -261,10 +261,11 @@ func (o *Orchestrator) publishMaterializedEvent(
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	if pubErr != nil {
-		o.tel.Logger.Error(
-			"publish planner.materialized failed", pubErr,
-			observe.String("run_id", runID),
-			observe.String("step_id", stepID),
+		slog.ErrorContext(ctx,
+			"publish planner.materialized failed",
+			"error", pubErr,
+			"run_id", runID,
+			"step_id", stepID,
 		)
 	}
 }

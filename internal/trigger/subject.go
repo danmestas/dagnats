@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -21,7 +21,6 @@ type SubjectTrigger struct {
 	def      TriggerDef
 	sub      *nats.Subscription
 	done     chan struct{}
-	logger   observe.Logger
 	debounce *Debouncer
 }
 
@@ -35,18 +34,14 @@ func WithDebouncer(d *Debouncer) SubjectTriggerOpt {
 
 // NewSubjectTrigger creates a SubjectTrigger that subscribes to def.Subject.
 // Returns error if def lacks Subject config or subscription fails.
-// Panics if nc or logger is nil (programmer error).
+// Panics if nc is nil (programmer error).
 func NewSubjectTrigger(
 	nc *nats.Conn,
 	def TriggerDef,
-	logger observe.Logger,
 	opts ...SubjectTriggerOpt,
 ) (*SubjectTrigger, error) {
 	if nc == nil {
 		panic("NewSubjectTrigger: connection must not be nil")
-	}
-	if logger == nil {
-		panic("NewSubjectTrigger: logger must not be nil")
 	}
 	if def.ID == "" {
 		panic("NewSubjectTrigger: def.ID must not be empty")
@@ -65,11 +60,10 @@ func NewSubjectTrigger(
 	}
 
 	trigger := &SubjectTrigger{
-		nc:     nc,
-		js:     js,
-		def:    def,
-		done:   make(chan struct{}),
-		logger: logger,
+		nc:   nc,
+		js:   js,
+		def:  def,
+		done: make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(trigger)
@@ -159,8 +153,9 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 
 	payloadBytes, err := json.Marshal(envelope)
 	if err != nil {
-		s.logger.Error("marshal trigger envelope", err,
-			observe.String("trigger_id", s.def.ID))
+		slog.Error("marshal trigger envelope",
+			"error", err,
+			"trigger_id", s.def.ID)
 		return
 	}
 
@@ -175,8 +170,9 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 
 	evtBytes, err := evt.Marshal()
 	if err != nil {
-		s.logger.Error("marshal workflow event", err,
-			observe.String("trigger_id", s.def.ID))
+		slog.Error("marshal workflow event",
+			"error", err,
+			"trigger_id", s.def.ID)
 		return
 	}
 
@@ -187,8 +183,9 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 	if _, err := s.js.Publish(
 		pubCtx, evt.NATSSubject(), evtBytes,
 	); err != nil {
-		s.logger.Error("publish workflow event", err,
-			observe.String("trigger_id", s.def.ID),
-			observe.String("run_id", runID))
+		slog.Error("publish workflow event",
+			"error", err,
+			"trigger_id", s.def.ID,
+			"run_id", runID)
 	}
 }

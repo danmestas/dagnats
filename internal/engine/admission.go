@@ -9,9 +9,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -54,8 +54,8 @@ func (o *Orchestrator) admitRun(
 		}
 		result.singletonKey = kvKey
 		if sResult.action == admissionSkip {
-			o.tel.Logger.Info("singleton skip",
-				observe.String("run_id", run.RunID),
+			slog.InfoContext(ctx, "singleton skip",
+				"run_id", run.RunID,
 			)
 			result.action = admissionSkip
 			return result, nil
@@ -192,9 +192,9 @@ func (o *Orchestrator) applySingletonMode(
 			revision,
 		)
 		if updateErr != nil {
-			o.tel.Logger.Error(
+			slog.ErrorContext(ctx,
 				"singleton cancel: update lock failed",
-				updateErr,
+				"error", updateErr,
 			)
 		}
 		return admissionResult{cancelID: existingRunID},
@@ -234,10 +234,10 @@ func (o *Orchestrator) releaseSingletonLock(
 		if deleteErr := o.singletonKV.Delete(
 			ctx, run.SingletonKey,
 		); deleteErr != nil {
-			o.tel.Logger.Error(
+			slog.ErrorContext(ctx,
 				"release singleton lock failed",
-				deleteErr,
-				observe.String("key", run.SingletonKey),
+				"error", deleteErr,
+				"key", run.SingletonKey,
 			)
 		}
 	}
@@ -266,9 +266,10 @@ func (o *Orchestrator) publishWorkflowCancelledEvent(
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 	if pubErr != nil {
-		o.tel.Logger.Error(
-			"publish cancel event failed", pubErr,
-			observe.String("run_id", runID),
+		slog.ErrorContext(context.Background(),
+			"publish cancel event failed",
+			"error", pubErr,
+			"run_id", runID,
 		)
 	}
 }

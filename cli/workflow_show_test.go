@@ -16,7 +16,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestWorkflowShowDisplaysRegisteredWorkflow(t *testing.T) {
@@ -32,7 +31,7 @@ func TestWorkflowShowDisplaysRegisteredWorkflow(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	// Register a workflow via the API so show can retrieve it.
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
 		Name:    "show-test",
 		Version: "2.0",
@@ -108,7 +107,7 @@ func TestWorkflowShowDisplaysTimeout(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
 		Name:    "timeout-test",
 		Version: "1.0",
@@ -153,7 +152,7 @@ func TestWorkflowShowJSON(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
 		Name:    "json-show",
 		Version: "3.0",

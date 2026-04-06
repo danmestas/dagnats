@@ -197,7 +197,7 @@ func TestHandleTypedRegistersHandler(t *testing.T) {
 	// Use HandleTyped on a real Worker to verify it wires
 	// through to the handlers map correctly.
 	_, nc := natsutil.StartTestServer(t)
-	w := NewWorker(nc, nil)
+	w := NewWorker(nc)
 	HandleTyped(w, "adder",
 		func(
 			ctx TaskContext, in addInput,
@@ -226,7 +226,7 @@ func TestHandleTypedRegistersHandler(t *testing.T) {
 
 func TestHandleTypedPanicsOnNilFn(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	w := NewWorker(nc, nil)
+	w := NewWorker(nc)
 	defer func() {
 		r := recover()
 		// Positive: panics on nil fn
@@ -239,7 +239,7 @@ func TestHandleTypedPanicsOnNilFn(t *testing.T) {
 
 func TestHandleTypedPanicsOnEmptyTaskType(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	w := NewWorker(nc, nil)
+	w := NewWorker(nc)
 	defer func() {
 		r := recover()
 		// Positive: panics on empty taskType

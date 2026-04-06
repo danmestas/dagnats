@@ -24,7 +24,7 @@ func TestConnectRegistersWorker(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc, nil)
+	b := NewBridge(nc)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
@@ -96,7 +96,7 @@ func TestConnectBadRequest(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc, nil)
+	b := NewBridge(nc)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 

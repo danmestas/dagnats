@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -49,7 +49,7 @@ func (b *Bridge) handleResolve(
 	if b.js == nil {
 		panic("handleResolve: js must not be nil")
 	}
-	ctx, span := b.tel.Tracer.Start(r.Context(), "bridge.resolve")
+	ctx, span := b.tracer.Start(r.Context(), "bridge.resolve")
 	defer span.End()
 
 	taskID := r.PathValue("id")
@@ -72,10 +72,10 @@ func (b *Bridge) handleResolve(
 		return
 	}
 
-	b.requestCount.Inc()
-	b.tel.Logger.Info("task resolved",
-		observe.String("task_id", taskID),
-		observe.String("action", req.Action),
+	b.requestCount.Add(ctx, 1)
+	slog.InfoContext(ctx, "task resolved",
+		"task_id", taskID,
+		"action", req.Action,
 	)
 
 	err = b.dispatchAction(ctx, taskID, msg, req, w, r)
