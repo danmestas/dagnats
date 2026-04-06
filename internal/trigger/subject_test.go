@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -58,7 +57,7 @@ func setupSubjectTrigger(
 		},
 	}
 
-	trigger, err := NewSubjectTrigger(nc, def, observe.NewNoopLogger())
+	trigger, err := NewSubjectTrigger(nc, def)
 	if err != nil {
 		t.Fatalf("NewSubjectTrigger failed: %v", err)
 	}
@@ -128,7 +127,7 @@ func TestSubjectTriggerDisabled(t *testing.T) {
 		},
 	}
 
-	trigger, err := NewSubjectTrigger(nc, def, observe.NewNoopLogger())
+	trigger, err := NewSubjectTrigger(nc, def)
 	if err != nil {
 		t.Fatalf("NewSubjectTrigger failed: %v", err)
 	}
@@ -188,7 +187,7 @@ func setupWildcardSubjectTrigger(
 		},
 	}
 
-	trigger, err := NewSubjectTrigger(nc, def, observe.NewNoopLogger())
+	trigger, err := NewSubjectTrigger(nc, def)
 	if err != nil {
 		t.Fatalf("NewSubjectTrigger failed: %v", err)
 	}
@@ -241,14 +240,14 @@ func TestSubjectTriggerRejectsNilSubjectConfig(t *testing.T) {
 	}
 
 	// Positive: returns error
-	_, err = NewSubjectTrigger(nc, def, observe.NewNoopLogger())
+	_, err = NewSubjectTrigger(nc, def)
 	if err == nil {
 		t.Fatalf("expected error for nil subject config")
 	}
 
 	// Negative: non-nil config succeeds
 	def.Subject = &SubjectConfig{Subject: "test.subject"}
-	trigger, err := NewSubjectTrigger(nc, def, observe.NewNoopLogger())
+	trigger, err := NewSubjectTrigger(nc, def)
 	if err != nil {
 		t.Fatalf("NewSubjectTrigger failed: %v", err)
 	}
@@ -270,14 +269,14 @@ func TestSubjectTriggerRejectsEmptySubject(t *testing.T) {
 	}
 
 	// Positive: returns error for empty subject
-	_, err = NewSubjectTrigger(nc, def, observe.NewNoopLogger())
+	_, err = NewSubjectTrigger(nc, def)
 	if err == nil {
 		t.Fatalf("expected error for empty subject string")
 	}
 
 	// Negative: non-empty subject succeeds
 	def.Subject.Subject = "events.test"
-	trigger, err := NewSubjectTrigger(nc, def, observe.NewNoopLogger())
+	trigger, err := NewSubjectTrigger(nc, def)
 	if err != nil {
 		t.Fatalf("NewSubjectTrigger failed: %v", err)
 	}
@@ -305,7 +304,7 @@ func TestSubjectTriggerEmptyPayload(t *testing.T) {
 		},
 	}
 
-	trigger, err := NewSubjectTrigger(nc, def, observe.NewNoopLogger())
+	trigger, err := NewSubjectTrigger(nc, def)
 	if err != nil {
 		t.Fatalf("NewSubjectTrigger failed: %v", err)
 	}

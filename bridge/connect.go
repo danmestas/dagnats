@@ -3,10 +3,10 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -33,7 +33,7 @@ func (b *Bridge) handleConnect(
 	if b.js == nil {
 		panic("handleConnect: js must not be nil")
 	}
-	_, span := b.tel.Tracer.Start(r.Context(), "bridge.connect")
+	ctx, span := b.tracer.Start(r.Context(), "bridge.connect")
 	defer span.End()
 
 	req, err := parseConnectRequest(r)
@@ -42,9 +42,9 @@ func (b *Bridge) handleConnect(
 		return
 	}
 
-	b.tel.Logger.Info("worker connected",
-		observe.String("worker_id", req.WorkerID),
-		observe.Int("max_tasks", req.MaxTasks),
+	slog.InfoContext(ctx, "worker connected",
+		"worker_id", req.WorkerID,
+		"max_tasks", req.MaxTasks,
 	)
 
 	dir := worker.NewDirectory(b.js)
@@ -63,8 +63,8 @@ func (b *Bridge) handleConnect(
 	}
 	defer func() {
 		dir.Deregister(req.WorkerID)
-		b.tel.Logger.Info("worker disconnected",
-			observe.String("worker_id", req.WorkerID),
+		slog.InfoContext(ctx, "worker disconnected",
+			"worker_id", req.WorkerID,
 		)
 	}()
 

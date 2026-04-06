@@ -9,8 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -29,20 +30,16 @@ type TriggerService struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	watcher   jetstream.KeyWatcher
-	logger    observe.Logger
 	mu        sync.RWMutex
 }
 
 // NewTriggerService creates the service. KV buckets must exist.
-// Panics if nc or logger is nil, or nc is not connected (programmer error).
+// Panics if nc is nil or nc is not connected (programmer error).
 func NewTriggerService(
-	nc *nats.Conn, logger observe.Logger,
+	nc *nats.Conn,
 ) (*TriggerService, error) {
 	if nc == nil {
 		panic("NewTriggerService: nc must not be nil")
-	}
-	if logger == nil {
-		panic("NewTriggerService: logger must not be nil")
 	}
 	if !nc.IsConnected() {
 		panic("NewTriggerService: nc must be connected")
@@ -77,7 +74,6 @@ func NewTriggerService(
 		webhooks:  make(map[string]*WebhookHandler),
 		ctx:       ctx,
 		cancel:    cancel,
-		logger:    logger,
 	}, nil
 }
 
@@ -214,18 +210,16 @@ func (ts *TriggerService) loadAllTriggers() error {
 	for _, entry := range entries {
 		var def TriggerDef
 		if err := json.Unmarshal(entry.Value(), &def); err != nil {
-			ts.logger.Error(
-				"unmarshal trigger def on load",
-				err,
-				observe.String("key", entry.Key()),
+			slog.Error("unmarshal trigger def on load",
+				"error", err,
+				"key", entry.Key(),
 			)
 			continue
 		}
 		if err := ts.addTrigger(def); err != nil {
-			ts.logger.Error(
-				"add trigger on load",
-				err,
-				observe.String("trigger_id", def.ID),
+			slog.Error("add trigger on load",
+				"error", err,
+				"trigger_id", def.ID,
 			)
 			continue
 		}
@@ -257,7 +251,7 @@ func (ts *TriggerService) addTrigger(def TriggerDef) error {
 	case def.Cron != nil:
 		return ts.scheduler.AddTrigger(def)
 	case def.Subject != nil:
-		trigger, err := NewSubjectTrigger(ts.nc, def, ts.logger)
+		trigger, err := NewSubjectTrigger(ts.nc, def)
 		if err != nil {
 			return fmt.Errorf("NewSubjectTrigger: %w", err)
 		}
@@ -355,9 +349,8 @@ func (ts *TriggerService) handleKVUpdate(
 
 	var def TriggerDef
 	if err := json.Unmarshal(entry.Value(), &def); err != nil {
-		ts.logger.Error(
-			"unmarshal trigger def from KV watch",
-			err,
+		slog.Error("unmarshal trigger def from KV watch",
+			"error", err,
 		)
 		return
 	}

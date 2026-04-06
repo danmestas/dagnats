@@ -150,10 +150,10 @@ func (s *Server) startComponents() error {
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
 
-	s.bridge = bridge.NewBridge(s.nc, s.tel)
+	s.bridge = bridge.NewBridge(s.nc)
 	printStep(os.Stderr, "http bridge ready")
 
-	s.trig, err = trigger.NewTriggerService(s.nc, s.tel.Logger)
+	s.trig, err = trigger.NewTriggerService(s.nc)
 	if err != nil {
 		s.orch.Stop()
 		s.telStop()

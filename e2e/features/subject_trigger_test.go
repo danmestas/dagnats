@@ -13,7 +13,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/e2e/harness"
 	"github.com/danmestas/dagnats/internal/trigger"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -51,7 +50,7 @@ func TestSubjectTrigger(t *testing.T) {
 			t.Fatalf("RegisterWorkflow: %v", err)
 		}
 
-		ts, err := trigger.NewTriggerService(nc, observe.NewNoopLogger())
+		ts, err := trigger.NewTriggerService(nc)
 		if err != nil {
 			t.Fatalf("NewTriggerService: %v", err)
 		}
