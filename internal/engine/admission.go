@@ -31,21 +31,21 @@ type admissionResult struct {
 	singletonKey string // KV key for lock release
 }
 
-// admitRun evaluates all flow control gates in order.
-func (o *Orchestrator) admitRun(
+// Admit evaluates all flow control gates in order.
+func (ac *AdmissionController) Admit(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
 	run dag.WorkflowRun,
 	input json.RawMessage,
 ) (admissionResult, error) {
 	if run.RunID == "" {
-		panic("admitRun: RunID must not be empty")
+		panic("Admit: RunID must not be empty")
 	}
 	var result admissionResult
 
 	// 1. Singleton
-	if wfDef.Singleton != nil && o.singletonKV != nil {
-		sResult, kvKey, err := o.singletonCheck(
+	if wfDef.Singleton != nil && ac.singletonKV != nil {
+		sResult, kvKey, err := ac.singletonCheck(
 			ctx, wfDef.Name, wfDef.Singleton,
 			run.RunID, input,
 		)
@@ -69,8 +69,8 @@ func (o *Orchestrator) admitRun(
 	)
 
 	// 3. Concurrency
-	if wfDef.Concurrency != nil && o.concurrency != nil {
-		acquired, err := o.concurrency.AcquireRun(
+	if wfDef.Concurrency != nil && ac.concurrency != nil {
+		acquired, err := ac.concurrency.AcquireRun(
 			ctx, wfDef.Name, wfDef.Concurrency.MaxRuns,
 		)
 		if err != nil {
@@ -88,7 +88,7 @@ func (o *Orchestrator) admitRun(
 
 // singletonCheck verifies the singleton lock. Returns an
 // admissionResult directly (not a tuple) for interface clarity.
-func (o *Orchestrator) singletonCheck(
+func (ac *AdmissionController) singletonCheck(
 	ctx context.Context,
 	workflowName string,
 	cfg *dag.SingletonConfig,
@@ -119,7 +119,7 @@ func (o *Orchestrator) singletonCheck(
 	})
 
 	// Try to claim
-	_, err := o.singletonKV.Create(
+	_, err := ac.singletonKV.Create(
 		ctx, kvKey, lockData,
 	)
 	if err == nil {
@@ -127,7 +127,7 @@ func (o *Orchestrator) singletonCheck(
 	}
 
 	// Key exists -- check if stale
-	entry, err := o.singletonKV.Get(ctx, kvKey)
+	entry, err := ac.singletonKV.Get(ctx, kvKey)
 	if err != nil {
 		return admissionResult{}, kvKey, nil
 	}
@@ -141,11 +141,11 @@ func (o *Orchestrator) singletonCheck(
 	}
 
 	// Verify existing run is active
-	existingRun, loadErr := o.store.Load(ctx, lock.RunID)
+	existingRun, loadErr := ac.store.Load(ctx, lock.RunID)
 	if loadErr != nil ||
 		existingRun.Status.IsTerminal() {
 		// Stale lock -- reclaim
-		_, updateErr := o.singletonKV.Update(
+		_, updateErr := ac.singletonKV.Update(
 			ctx, kvKey, lockData, entry.Revision(),
 		)
 		if updateErr != nil {
@@ -155,7 +155,7 @@ func (o *Orchestrator) singletonCheck(
 	}
 
 	// Active run exists
-	return o.applySingletonMode(
+	return ac.applySingletonMode(
 		ctx, cfg.Mode, kvKey, lock.RunID,
 		lockData, entry.Revision(),
 	)
@@ -164,7 +164,7 @@ func (o *Orchestrator) singletonCheck(
 // applySingletonMode handles the mode-based action for an
 // active singleton lock. Extracted to keep singletonCheck
 // within the 70-line limit.
-func (o *Orchestrator) applySingletonMode(
+func (ac *AdmissionController) applySingletonMode(
 	ctx context.Context,
 	mode dag.SingletonMode,
 	kvKey string,
@@ -187,7 +187,7 @@ func (o *Orchestrator) applySingletonMode(
 		return admissionResult{action: admissionSkip},
 			kvKey, nil
 	case dag.SingletonModeCancel:
-		_, updateErr := o.singletonKV.Update(
+		_, updateErr := ac.singletonKV.Update(
 			ctx, kvKey, lockData,
 			revision,
 		)
@@ -204,19 +204,19 @@ func (o *Orchestrator) applySingletonMode(
 	}
 }
 
-// releaseSingletonLock deletes the lock if it belongs to
+// ReleaseSingletonLock deletes the lock if it belongs to
 // this run. Uses SingletonKey stored on the run -- no need
 // to reload the workflow def or recompute the key path.
-func (o *Orchestrator) releaseSingletonLock(
+func (ac *AdmissionController) ReleaseSingletonLock(
 	ctx context.Context, run dag.WorkflowRun,
 ) {
-	if o.singletonKV == nil {
+	if ac.singletonKV == nil {
 		return
 	}
 	if run.SingletonKey == "" {
 		return
 	}
-	entry, err := o.singletonKV.Get(
+	entry, err := ac.singletonKV.Get(
 		ctx, run.SingletonKey,
 	)
 	if err != nil {
@@ -231,7 +231,7 @@ func (o *Orchestrator) releaseSingletonLock(
 		return
 	}
 	if lock.RunID == run.RunID {
-		if deleteErr := o.singletonKV.Delete(
+		if deleteErr := ac.singletonKV.Delete(
 			ctx, run.SingletonKey,
 		); deleteErr != nil {
 			slog.ErrorContext(ctx,
@@ -246,7 +246,7 @@ func (o *Orchestrator) releaseSingletonLock(
 // publishWorkflowCancelledEvent publishes a cancel event
 // onto the history stream so handleWorkflowCancelled picks
 // it up through the normal event loop.
-func (o *Orchestrator) publishWorkflowCancelledEvent(
+func (ac *AdmissionController) publishWorkflowCancelledEvent(
 	runID string,
 ) {
 	if runID == "" {
@@ -261,7 +261,7 @@ func (o *Orchestrator) publishWorkflowCancelledEvent(
 	if err != nil {
 		return
 	}
-	_, pubErr := o.js.Publish(
+	_, pubErr := ac.js.Publish(
 		context.Background(), evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)

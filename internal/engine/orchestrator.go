@@ -42,12 +42,11 @@ type Orchestrator struct {
 	cc          jetstream.ConsumeContext
 	runLocks    sync.Map                // map[string]*sync.Mutex — per-run serialization
 	stepRoutes  map[dag.StepType]string // step type → subject prefix
-	concurrency *ConcurrencyManager     // nil if bucket missing
+	admission   *AdmissionController    // singleton + concurrency
 	rateLimiter *RateLimiter            // nil if bucket missing
 	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
 	correlator  *Correlator             // event wait-for-event matching
 	stickyKV    jetstream.KeyValue      // sticky_bindings — run-to-worker
-	singletonKV jetstream.KeyValue      // singleton_locks — one-at-a-time
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive              metric.Int64UpDownCounter
@@ -96,6 +95,13 @@ func NewOrchestrator(
 		)
 	}
 	cm, _ := NewConcurrencyManagerSafe(js)
+	store := NewSnapshotStore(js)
+	singletonKV, _ := js.KeyValue(
+		context.Background(), "singleton_locks",
+	)
+	ac := NewAdmissionController(
+		nc, js, store, cm, singletonKV,
+	)
 	rl := NewRateLimiter(js)
 	m := otel.Meter("dagnats/engine")
 	runsActive, _ := m.Int64UpDownCounter(
@@ -129,9 +135,9 @@ func NewOrchestrator(
 		nc:                      nc,
 		js:                      js,
 		defKV:                   defKV,
-		store:                   NewSnapshotStore(js),
+		store:                   store,
 		tracer:                  otel.Tracer("dagnats/engine"),
-		concurrency:             cm,
+		admission:               ac,
 		rateLimiter:             rl,
 		runsActive:              runsActive,
 		runsCompleted:           runsCompleted,
@@ -147,9 +153,6 @@ func NewOrchestrator(
 	o.correlator = NewCorrelator(nc, js)
 	o.stickyKV, _ = js.KeyValue(
 		context.Background(), "sticky_bindings",
-	)
-	o.singletonKV, _ = js.KeyValue(
-		context.Background(), "singleton_locks",
 	)
 	for _, opt := range opts {
 		opt(o)
@@ -404,12 +407,12 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
 	run.Input = input
 
-	admission, admitErr := o.admitRun(ctx, wfDef, run, input)
+	admission, admitErr := o.admission.Admit(ctx, wfDef, run, input)
 	if admitErr != nil {
 		return admitErr
 	}
 	if admission.cancelID != "" {
-		o.publishWorkflowCancelledEvent(admission.cancelID)
+		o.admission.publishWorkflowCancelledEvent(admission.cancelID)
 	}
 	run.PriorityOffset = admission.offset
 	run.SingletonKey = admission.singletonKey
@@ -596,15 +599,16 @@ func (o *Orchestrator) completeWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.releaseSingletonLock(ctx, run)
+	o.admission.ReleaseSingletonLock(ctx, run)
 	o.deleteStickyBinding(ctx, run.RunID)
 	o.runsActive.Add(ctx, -1)
 	o.runsCompleted.Add(ctx, 1)
-	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
-			return fmt.Errorf("release run: %w", err)
-		}
-		// Auto-start next pending run if available
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
 			slog.ErrorContext(ctx,
 				"failed to start next pending run",
@@ -708,7 +712,7 @@ func (o *Orchestrator) transitionPendingToRunning(
 	}
 
 	if wfDef.Concurrency != nil {
-		acquired, err := o.concurrency.AcquireRun(
+		acquired, err := o.admission.AcquireRun(
 			ctx, wfDef.Name, wfDef.Concurrency.MaxRuns,
 		)
 		if err != nil {
@@ -868,11 +872,12 @@ func (o *Orchestrator) failLoopStep(
 	}
 	o.runsActive.Add(ctx, -1)
 	o.runsFailed.Add(ctx, 1)
-	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
-			return fmt.Errorf("release run: %w", err)
-		}
-		// Auto-start next pending run if available
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
 			slog.ErrorContext(ctx,
 				"failed to start next pending run",
@@ -1203,14 +1208,16 @@ func (o *Orchestrator) failWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.releaseSingletonLock(ctx, run)
+	o.admission.ReleaseSingletonLock(ctx, run)
 	o.deleteStickyBinding(ctx, run.RunID)
 	o.runsActive.Add(ctx, -1)
 	o.runsFailed.Add(ctx, 1)
-	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
-			return fmt.Errorf("release run: %w", err)
-		}
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
 			slog.ErrorContext(ctx,
 				"failed to start next pending run",
@@ -1421,17 +1428,19 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	}
 
 	o.cascadeCancelChildren(ctx, wfDef, run)
-	o.releaseSingletonLock(ctx, run)
+	o.admission.ReleaseSingletonLock(ctx, run)
 	o.deleteStickyBinding(ctx, run.RunID)
 
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
 	o.runsActive.Add(ctx, -1)
-	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
-			return fmt.Errorf("release run: %w", err)
-		}
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
 		if err := o.startNextPendingRun(
 			ctx, run.WorkflowID,
 		); err != nil {
@@ -1855,8 +1864,8 @@ func (o *Orchestrator) publishTask(
 	}
 
 	// Check per-task-type concurrency before publishing.
-	if step.MaxTaskConcurrency > 0 && o.concurrency != nil {
-		acquired, err := o.concurrency.AcquireTask(
+	if step.MaxTaskConcurrency > 0 && o.admission.HasConcurrency() {
+		acquired, err := o.admission.AcquireTask(
 			ctx, step.Task, step.MaxTaskConcurrency,
 		)
 		if err != nil {
@@ -3121,14 +3130,22 @@ func queuedSet(run dag.WorkflowRun) map[string]bool {
 func (o *Orchestrator) releaseTaskSlot(
 	ctx context.Context, wfDef dag.WorkflowDef, stepID string,
 ) {
-	if o.concurrency == nil {
+	if !o.admission.HasConcurrency() {
 		return
 	}
 	stepDef, found := findStepDef(wfDef, stepID)
 	if !found || stepDef.MaxTaskConcurrency <= 0 {
 		return
 	}
-	o.concurrency.ReleaseTask(ctx, stepDef.Task)
+	if err := o.admission.ReleaseTask(
+		ctx, stepDef.Task,
+	); err != nil {
+		slog.ErrorContext(ctx,
+			"release task slot failed",
+			"error", err,
+			"step_id", stepID,
+		)
+	}
 }
 
 // releaseCancelledTaskSlots releases task concurrency slots for
@@ -3137,7 +3154,7 @@ func (o *Orchestrator) releaseCancelledTaskSlots(
 	ctx context.Context,
 	wfDef dag.WorkflowDef, run dag.WorkflowRun,
 ) {
-	if o.concurrency == nil {
+	if !o.admission.HasConcurrency() {
 		return
 	}
 	for id, state := range run.Steps {
@@ -3148,7 +3165,15 @@ func (o *Orchestrator) releaseCancelledTaskSlots(
 		if !found || stepDef.MaxTaskConcurrency <= 0 {
 			continue
 		}
-		o.concurrency.ReleaseTask(ctx, stepDef.Task)
+		if err := o.admission.ReleaseTask(
+			ctx, stepDef.Task,
+		); err != nil {
+			slog.ErrorContext(ctx,
+				"release cancelled task slot failed",
+				"error", err,
+				"step_id", id,
+			)
+		}
 	}
 }
 
