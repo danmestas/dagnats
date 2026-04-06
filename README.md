@@ -211,6 +211,15 @@ go test ./... -timeout 120s
 
 Tests use real embedded NATS servers (no mocks). Each test gets its own server via `natsutil.StartTestServer(t)`. 17 packages, all passing.
 
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/getting-started.md) | Workflows, workers, and first run |
+| [Configuration](docs/configuration.md) | Config keys, env vars, file format |
+| [Production](docs/production.md) | Deployment, security, tuning, observability |
+| [Workflow Schema](docs/workflow-schema.md) | JSON schema reference |
+
 ## Design Philosophy
 
 - **Ousterhout:** Deep modules with small interfaces. Pull complexity downward.

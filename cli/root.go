@@ -56,6 +56,10 @@ func Run(args []string) {
 		runObserveCmd(args[2:])
 	case "sidecar":
 		runSidecarCmd(args[2:])
+	case "completion":
+		runCompletionCmd(args[2:])
+	case "__complete":
+		handleCompleteCmd(args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[1])
 		printUsage()
@@ -83,6 +87,8 @@ func printUsage() {
 	fmt.Println("  metrics   view metric snapshots")
 	fmt.Println("  observe   observability pipeline health")
 	fmt.Println("  sidecar   local observability sidecar")
+	fmt.Println(
+		"  completion  generate shell completion scripts")
 	fmt.Println("\nGlobal flags:")
 	fmt.Println("  --json    output in JSON format")
 }
