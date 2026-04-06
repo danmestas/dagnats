@@ -43,6 +43,7 @@ type Orchestrator struct {
 	runLocks    sync.Map                // map[string]*sync.Mutex — per-run serialization
 	stepRoutes  map[dag.StepType]string // step type → subject prefix
 	admission   *AdmissionController    // singleton + concurrency
+	approval    *ApprovalGate           // approval token lifecycle
 	rateLimiter *RateLimiter            // nil if bucket missing
 	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
 	correlator  *Correlator             // event wait-for-event matching
@@ -150,6 +151,9 @@ func NewOrchestrator(
 		taskConcurrencyRejected: taskConcRejected,
 	}
 	o.sleepTimer = NewSleepTimer(nc, js)
+	o.approval = NewApprovalGate(
+		nc, js, o.sleepTimer, o.tracer,
+	)
 	o.correlator = NewCorrelator(nc, js)
 	o.stickyKV, _ = js.KeyValue(
 		context.Background(), "sticky_bindings",
@@ -343,11 +347,19 @@ func (o *Orchestrator) dispatchEvent(
 	case protocol.EventWorkflowCancelled:
 		return o.handleWorkflowCancelled(ctx, evt)
 	case protocol.EventApprovalGranted:
-		return o.handleApprovalGranted(ctx, evt)
+		return o.approval.HandleGranted(
+			ctx, evt, o.loadRunAndDef,
+			o.completeWorkflow, o.saveSnapshot,
+			o.enqueueReady,
+		)
 	case protocol.EventApprovalRejected:
-		return o.handleApprovalRejected(ctx, evt)
+		return o.approval.HandleRejected(
+			ctx, evt, o.loadRunAndDef, o.failWorkflow,
+		)
 	case protocol.EventApprovalExpired:
-		return o.handleApprovalExpired(ctx, evt)
+		return o.approval.HandleExpired(
+			ctx, evt, o.loadRunAndDef, o.failWorkflow,
+		)
 	default:
 		return nil
 	}
@@ -1421,7 +1433,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	o.releaseCancelledTaskSlots(ctx, wfDef, run)
 
 	// Clean up approval tokens for cancelled approval steps.
-	o.cleanupApprovalTokens(ctx, wfDef, run)
+	o.approval.CleanupTokens(ctx, wfDef, run)
 
 	if o.correlator != nil {
 		o.correlator.RemoveWaitersForRun(ctx, run.RunID)
@@ -1786,8 +1798,9 @@ func (o *Orchestrator) dispatchReadySteps(
 				return err
 			}
 		case dag.StepTypeApproval:
-			if err := o.enqueueApprovalStep(
+			if err := o.approval.Enqueue(
 				ctx, wfDef, &run, step,
+				o.saveSnapshot,
 			); err != nil {
 				return err
 			}
