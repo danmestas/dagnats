@@ -549,6 +549,33 @@ Disable a trigger without deleting it.
 dagnats trigger disable <trigger-id> [--json]
 ```
 
+### trigger history
+
+View fire history for a trigger, including timestamps, statuses, run IDs, and durations.
+
+```
+dagnats trigger history <trigger-id> [--limit=N] [--json]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `trigger-id` | Yes | Trigger ID |
+
+| Flag | Description |
+|------|-------------|
+| `--limit=N` | Max fire records to display (default: 10, max: 500) |
+
+**Example:**
+```bash
+dagnats trigger history trig-a1b2c3d4e5f6a7b8
+# TIME                 STATUS     RUN ID              DURATION
+# 2025-01-15 09:00:00  completed  a1b2c3d4e5f6a7b8    2.5s
+# 2025-01-14 09:00:00  failed     c9d0e1f2a3b4c5d6    1.2s
+
+dagnats trigger history trig-a1b2c3d4e5f6a7b8 --limit=5 --json
+# [{"fired_at":"...","status":"completed","run_id":"...","duration":"2.5s"},...]
+```
+
 ### trigger test
 
 Validate a cron expression and show the next N fire times. Offline operation (no NATS required).
@@ -724,6 +751,47 @@ dagnats init my-pipeline --json
 # {"name":"my-pipeline","directory":"my-pipeline","files":["workflow.json","main.go"]}
 ```
 
+### init workflow
+
+Scaffold a workflow JSON definition with linearly chained steps and print handler registration code snippets.
+
+```
+dagnats init workflow <name> [--steps=a,b,c]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `name` | Yes | Workflow name (alphanumeric and hyphens, 2-256 chars) |
+
+| Flag | Description |
+|------|-------------|
+| `--steps=a,b,c` | Comma-separated step names (default: single `process` step, max: 20) |
+
+Steps are chained linearly -- each step depends on the previous one. The generated JSON file includes a `$schema` reference for editor validation.
+
+**Example:**
+```bash
+dagnats init workflow image-pipeline --steps=fetch,resize,upload
+# Created image-pipeline.json
+#
+# Register handlers in your worker:
+#
+# w.Handle("image-pipeline-fetch", handleFetch)
+# w.Handle("image-pipeline-resize", handleResize)
+# w.Handle("image-pipeline-upload", handleUpload)
+
+dagnats init workflow simple-job
+# Created simple-job.json
+#
+# Register handlers in your worker:
+#
+# w.Handle("simple-job-process", func(ctx worker.TaskContext) error {
+#     input := ctx.Input()
+#     // TODO: implement process logic
+#     return ctx.Complete(input)
+# })
+```
+
 ---
 
 ## config
@@ -762,8 +830,12 @@ Running `dagnats config` without a subcommand defaults to `show`.
 Show system health: NATS connection, JetStream availability, active run count, stream details, and per-workflow metrics.
 
 ```
-dagnats status [--json]
+dagnats status [--detail] [--json]
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--detail` | Include queue health, dead-letter summary, and engine lag |
 
 **Example:**
 ```bash
@@ -771,6 +843,26 @@ dagnats status
 # NATS:        connected
 # JetStream:   available (5 streams)
 # Active runs: 2
+
+dagnats status --detail
+# NATS:        connected
+# JetStream:   available (5 streams)
+# Active runs: 2
+#
+# Task Queues:
+#   TASK        PENDING  IN-FLIGHT  REDELIVERED  ACK WAIT
+#   lint.run    3        1          0            30000ms
+#   llm.chat    0        2          1            60000ms
+#
+# Dead Letters: 1 total
+#   Oldest: 2025-01-15 09:05:00
+#   Newest: 2025-01-15 09:05:00
+#   TASK      COUNT
+#   lint.run  1
+#
+# Engine:
+#   History lag:     0 messages (0.0s)
+#   Scheduled timers: 1
 
 dagnats status --json
 # {"nats":"connected","jetstream":"available","stream_count":5,"active_runs":2,...}
@@ -801,6 +893,42 @@ dagnats logs --level=ERROR
 dagnats logs --tail=20 --service=api
 # 09:14:00 INFO    api  started run [run_id=a1b2 workflow=deploy]
 # 09:14:01 INFO    api  started run [run_id=c3d4 workflow=review]
+```
+
+---
+
+## dev
+
+Watch mode for development. Builds and restarts a Go project automatically when `.go` files change. Verifies NATS is reachable before entering the watch loop. Adds the dev binary (`.dagnats-dev`) to `.gitignore` automatically.
+
+```
+dagnats dev [--dir=DIR] [--delay=MS]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dir` | Project directory to watch (default: `.`) |
+| `--delay` | Poll interval in milliseconds (default: 500, minimum: 100) |
+
+The watcher polls for changes to non-test `.go` files, skipping hidden directories, `vendor/`, and `.git/`. On change detection, it rebuilds the project and restarts the binary. If a rebuild fails, the previous process keeps running. The child process runs with `DAGNATS_DEV_MODE=true` set in the environment.
+
+Shutdown is clean: `Ctrl+C` sends SIGTERM to the child process (with a 5-second SIGKILL fallback) and removes the dev binary.
+
+**Example:**
+```bash
+dagnats dev
+# [dev] watching 42 files in .
+# [dev] building...
+# [dev] started
+# [dev] change detected, rebuilding...
+# [dev] restarted
+# ^C
+# [dev] shutting down...
+
+dagnats dev --dir=./cmd/worker --delay=1000
+# [dev] watching 12 files in ./cmd/worker
+# [dev] building...
+# [dev] started
 ```
 
 ---

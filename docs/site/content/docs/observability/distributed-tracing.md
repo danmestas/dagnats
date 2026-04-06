@@ -93,6 +93,34 @@ func (a *OTelTracerAdapter) Start(
 
 Pass the adapter into the `observe.Telemetry` bundle. All DagNats components (engine, worker, bridge) use the same `Tracer` interface, so swapping backends requires no code changes outside the adapter.
 
+## Built-in OTLP Bridge
+
+DagNats includes a built-in OTLP/HTTP exporter that bridges the NATS `TELEMETRY` stream to any OTLP-compatible backend (SigNoz, Jaeger, Grafana Tempo, etc.). The bridge consumes spans, logs, and metrics from the telemetry stream and POSTs them to the standard OTLP endpoints (`/v1/traces`, `/v1/logs`, `/v1/metrics`).
+
+Run it as a standalone process:
+
+```bash
+dagnats otlp-bridge --endpoint=http://localhost:4318
+```
+
+Or set the endpoint via environment variable:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+dagnats otlp-bridge
+```
+
+The bridge creates a durable consumer (`otlp-bridge`) on the `TELEMETRY` stream with explicit ack policy. Messages are fetched in batches (default: 100) and flushed on a configurable interval (default: 5s). Failed exports are retried via `NakWithDelay` up to 4 delivery attempts.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Batch size | 100 | Messages per fetch |
+| Flush interval | 5s | Max wait between flushes |
+| Max deliveries | 4 | Retry limit before dead-letter |
+| Service name | `dagnats` | `service.name` resource attribute |
+
+The bridge routes messages by subject prefix: `telemetry.spans.*` to traces, `telemetry.logs.*` to logs, and `telemetry.metrics.*` to metrics. Custom headers can be configured programmatically via `BridgeConfig.Headers` for backends that require authentication tokens.
+
 ## SpanContext
 
 Span implementations may optionally implement the `SpanContext` interface to expose trace and span IDs for cross-process propagation:
