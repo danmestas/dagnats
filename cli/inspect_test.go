@@ -14,7 +14,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -40,7 +39,6 @@ func TestInspectShowsStatusAndFailures(t *testing.T) {
 	}
 
 	// Create a run snapshot so GetRun works
-	tel := observe.NewNoopTelemetry()
 	store := engine.NewSnapshotStore(jsNew)
 	run := dag.WorkflowRun{
 		RunID:      "inspect-run-1",
@@ -76,8 +74,6 @@ func TestInspectShowsStatusAndFailures(t *testing.T) {
 		"step_id": "step-a",
 	})
 	js.Publish("dead.failing-task", dlPayload)
-
-	_ = tel // silence unused
 
 	output := captureOutput(func() {
 		runInspectCmd([]string{"inspect-run-1"})
