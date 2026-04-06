@@ -1,13 +1,14 @@
 // cli/inspect.go
 // Unified debug view: status + failed step errors + DLQ entries for a run.
-// Replaces the 3-command workflow of `run status` + `run events --type` + `dlq list`.
+// Replaces the 3-command workflow of `run status` + `run events --type`
+// + `dlq list`. Cross-references failures and DLQ inline under steps.
 package cli
 
 import (
 	"context"
 	"fmt"
 	"os"
-	"text/tabwriter"
+	"sort"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
@@ -18,6 +19,14 @@ type inspectResult struct {
 	Run         dag.WorkflowRun  `json:"run"`
 	Failures    []api.RunEvent   `json:"failures,omitempty"`
 	DeadLetters []api.DeadLetter `json:"dead_letters,omitempty"`
+}
+
+// stepDebugContext collects failure events and DLQ entries for a
+// single step, enabling inline cross-referenced output.
+type stepDebugContext struct {
+	Failures    []api.RunEvent
+	DeadLetters []api.DeadLetter
+	TraceID     string
 }
 
 // runInspectCmd prints a unified debug view for a single run.
@@ -66,14 +75,184 @@ func runInspectCmd(args []string) {
 		return
 	}
 
+	failures := fetchFailures(svc, ctx, runID)
+	deadLetters := fetchDeadLetters(svc, ctx, runID)
+
 	def, defErr := svc.GetWorkflow(run.WorkflowID)
-	if defErr != nil {
-		fmt.Print(FormatRunStatus(run))
-	} else {
-		fmt.Print(FormatRunStatusWithDef(run, &def))
+	var defPtr *dag.WorkflowDef
+	if defErr == nil {
+		defPtr = &def
 	}
-	printFailureEvents(svc, ctx, runID)
-	printRunDeadLetters(svc, ctx, runID)
+
+	printRunHeader(run)
+	contexts := collectStepContexts(failures, deadLetters)
+	retryMax := buildRetryMaxMap(defPtr)
+	printStepsWithContext(run, retryMax, contexts)
+}
+
+// printRunHeader prints the run metadata lines (ID, workflow,
+// status, created).
+func printRunHeader(run dag.WorkflowRun) {
+	if run.RunID == "" {
+		panic("printRunHeader: RunID must not be empty")
+	}
+	if run.WorkflowID == "" {
+		panic("printRunHeader: WorkflowID must not be empty")
+	}
+
+	fmt.Printf("Run:      %s\n", run.RunID)
+	fmt.Printf("Workflow: %s\n", run.WorkflowID)
+	fmt.Printf("Status:   %s\n",
+		ColorStatus(run.Status.String()))
+	fmt.Printf("Created:  %s\n",
+		run.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
+}
+
+// fetchFailures retrieves step.failed events for a run. Returns
+// nil on error (non-fatal for display).
+func fetchFailures(
+	svc *api.Service, ctx context.Context, runID string,
+) []api.RunEvent {
+	if svc == nil {
+		panic("fetchFailures: svc must not be nil")
+	}
+	if runID == "" {
+		panic("fetchFailures: runID must not be empty")
+	}
+
+	events, err := svc.ListRunEvents(ctx, runID, true)
+	if err != nil {
+		return nil
+	}
+	return collectFailures(events)
+}
+
+// fetchDeadLetters retrieves DLQ entries matching a run. Returns
+// nil on error (non-fatal for display).
+func fetchDeadLetters(
+	svc *api.Service, ctx context.Context, runID string,
+) []api.DeadLetter {
+	if svc == nil {
+		panic("fetchDeadLetters: svc must not be nil")
+	}
+	if runID == "" {
+		panic("fetchDeadLetters: runID must not be empty")
+	}
+
+	const dlqLimit = 50
+	letters, err := svc.ListDeadLetters(ctx, dlqLimit)
+	if err != nil {
+		return nil
+	}
+	return matchRunDeadLetters(letters, runID)
+}
+
+// collectStepContexts groups failures and DLQ entries by step ID.
+func collectStepContexts(
+	failures []api.RunEvent,
+	deadLetters []api.DeadLetter,
+) map[string]stepDebugContext {
+	if len(failures) > 10000 {
+		panic("collectStepContexts: failures exceeds max")
+	}
+	if len(deadLetters) > 10000 {
+		panic("collectStepContexts: deadLetters exceeds max")
+	}
+
+	result := make(map[string]stepDebugContext)
+	for _, f := range failures {
+		ctx := result[f.StepID]
+		ctx.Failures = append(ctx.Failures, f)
+		traceID := extractTraceID(f.TraceParent)
+		if traceID != "" {
+			ctx.TraceID = traceID
+		}
+		result[f.StepID] = ctx
+	}
+	for _, dl := range deadLetters {
+		ctx := result[dl.StepID]
+		ctx.DeadLetters = append(ctx.DeadLetters, dl)
+		result[dl.StepID] = ctx
+	}
+	return result
+}
+
+// printStepsWithContext prints sorted steps with inline failure
+// events, trace hints, and DLQ entries under failed steps.
+func printStepsWithContext(
+	run dag.WorkflowRun,
+	retryMax map[string]int,
+	contexts map[string]stepDebugContext,
+) {
+	if run.Steps == nil {
+		panic("printStepsWithContext: Steps must not be nil")
+	}
+	if retryMax == nil {
+		panic("printStepsWithContext: retryMax must not be nil")
+	}
+
+	stepIDs := sortedStepIDs(run.Steps)
+	fmt.Printf("\nSteps:\n")
+	for _, id := range stepIDs {
+		state := run.Steps[id]
+		maxAttempts := retryMax[id]
+		fmt.Printf("  %s\n",
+			formatStepLine(id, state, maxAttempts))
+		printStepDebugLines(contexts[id])
+	}
+}
+
+// sortedStepIDs returns step IDs sorted alphabetically.
+func sortedStepIDs(
+	steps map[string]dag.StepState,
+) []string {
+	if len(steps) > 10000 {
+		panic("sortedStepIDs: steps exceeds max bound")
+	}
+	if steps == nil {
+		panic("sortedStepIDs: steps must not be nil")
+	}
+
+	ids := make([]string, 0, len(steps))
+	for id := range steps {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// printStepDebugLines prints indented failure events, trace hints,
+// and DLQ entries for a single step.
+func printStepDebugLines(ctx stepDebugContext) {
+	const maxFailures = 10000
+	if len(ctx.Failures) > maxFailures {
+		panic("printStepDebugLines: failures exceeds max")
+	}
+	if len(ctx.DeadLetters) > maxFailures {
+		panic("printStepDebugLines: deadLetters exceeds max")
+	}
+
+	for _, f := range ctx.Failures {
+		ts := f.Timestamp.Format("15:04:05")
+		data := f.Data
+		if data == "" || data == "-" {
+			data = ""
+		}
+		if data != "" {
+			fmt.Printf("    %s  %s  %s\n", ts, f.Type, data)
+		} else {
+			fmt.Printf("    %s  %s\n", ts, f.Type)
+		}
+	}
+	if ctx.TraceID != "" {
+		fmt.Printf("    trace: %s\n", ctx.TraceID)
+		fmt.Printf("    view:  dagnats trace %s\n", ctx.TraceID)
+	}
+	for _, dl := range ctx.DeadLetters {
+		fmt.Printf("    DLQ #%d: %s\n", dl.Sequence, dl.Error)
+		fmt.Printf("    replay: dagnats dlq replay %d\n",
+			dl.Sequence)
+	}
 }
 
 // printInspectJSON collects all inspect data and outputs as JSON.
@@ -125,7 +304,7 @@ func collectFailures(events []api.RunEvent) []api.RunEvent {
 	return failures
 }
 
-// matchRunDeadLetters returns only dead letters matching the run ID.
+// matchRunDeadLetters returns only dead letters matching the run.
 func matchRunDeadLetters(
 	letters []api.DeadLetter, runID string,
 ) []api.DeadLetter {
@@ -143,90 +322,4 @@ func matchRunDeadLetters(
 		}
 	}
 	return matched
-}
-
-// printFailureEvents prints step.failed and workflow.failed events.
-func printFailureEvents(
-	svc *api.Service, ctx context.Context, runID string,
-) {
-	if svc == nil {
-		panic("printFailureEvents: svc must not be nil")
-	}
-	if runID == "" {
-		panic("printFailureEvents: runID must not be empty")
-	}
-
-	events, err := svc.ListRunEvents(ctx, runID, true)
-	if err != nil {
-		return
-	}
-
-	failures := filterRunEvents(events, "", "")
-	filtered := failures[:0]
-	for _, evt := range failures {
-		if evt.Type == "step.failed" ||
-			evt.Type == "workflow.failed" {
-			filtered = append(filtered, evt)
-		}
-	}
-
-	if len(filtered) == 0 {
-		return
-	}
-
-	fmt.Println("\nFailures:")
-	for _, evt := range filtered {
-		step := evt.StepID
-		if step == "" {
-			step = "-"
-		}
-		ts := evt.Timestamp.Format("15:04:05")
-		fmt.Printf("  %s  %-24s %s\n",
-			ts, ColorRed(evt.Type), step)
-		traceID := extractTraceID(evt.TraceParent)
-		if traceID != "" {
-			fmt.Printf("          trace: %s\n", traceID)
-		}
-		if evt.Data != "" && evt.Data != "-" {
-			fmt.Printf("          %s\n", evt.Data)
-		}
-	}
-}
-
-// printRunDeadLetters prints DLQ entries matching the given run.
-func printRunDeadLetters(
-	svc *api.Service, ctx context.Context, runID string,
-) {
-	if svc == nil {
-		panic("printRunDeadLetters: svc must not be nil")
-	}
-	if runID == "" {
-		panic("printRunDeadLetters: runID must not be empty")
-	}
-
-	const dlqLimit = 50
-	letters, err := svc.ListDeadLetters(ctx, dlqLimit)
-	if err != nil {
-		return
-	}
-
-	matched := letters[:0]
-	for _, l := range letters {
-		if l.RunID == runID {
-			matched = append(matched, l)
-		}
-	}
-
-	if len(matched) == 0 {
-		return
-	}
-
-	fmt.Println("\nDead Letters:")
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "  SEQ\tTASK\tSTEP\tERROR")
-	for _, dl := range matched {
-		fmt.Fprintf(w, "  %d\t%s\t%s\t%s\n",
-			dl.Sequence, dl.Task, dl.StepID, dl.Error)
-	}
-	w.Flush()
 }
