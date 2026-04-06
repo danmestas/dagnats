@@ -13,13 +13,15 @@ const queryTimeout = 30 * time.Second
 // queryTraces searches traces with optional filters on service, operation,
 // status, and time range.
 func queryTraces(db *DB, args map[string]any) (string, error) {
-	where, params := buildTraceFilters(args)
+	var qb queryBuilder
+	addTraceFilters(&qb, args)
 	query := fmt.Sprintf(
-		`SELECT TraceId, SpanName, Duration, StatusCode, Timestamp `+
-			`FROM traces%s ORDER BY Timestamp DESC`, where,
+		`SELECT TraceId, SpanName, Duration, StatusCode, `+
+			`Timestamp FROM traces%s ORDER BY Timestamp DESC`,
+		qb.where(),
 	)
 	limit := intArg(args, "limit", defaultLimit)
-	return executeAndMarshal(db, query, limit, params)
+	return executeAndMarshal(db, query, limit, qb.args)
 }
 
 // getTrace returns all spans for a specific trace ID.
@@ -28,57 +30,53 @@ func getTrace(db *DB, args map[string]any) (string, error) {
 	if !ok || traceID == "" {
 		return "", fmt.Errorf("trace_id is required")
 	}
+	var qb queryBuilder
+	qb.add("TraceId = "+qb.placeholder(), traceID)
 	query := fmt.Sprintf(
-		`SELECT * FROM traces WHERE TraceId = '%s' `+
-			`ORDER BY Timestamp ASC`,
-		sanitize(traceID),
+		`SELECT * FROM traces%s ORDER BY Timestamp ASC`,
+		qb.where(),
 	)
-	return executeAndMarshal(db, query, maxLimit, nil)
+	return executeAndMarshal(db, query, maxLimit, qb.args)
 }
 
 // queryLogs searches logs with optional filters on service, severity,
 // and body content.
 func queryLogs(db *DB, args map[string]any) (string, error) {
-	var clauses []string
+	var qb queryBuilder
 	if svc, ok := args["service"].(string); ok && svc != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("ServiceName = '%s'", sanitize(svc)),
-		)
+		qb.add("ServiceName = "+qb.placeholder(), svc)
 	}
 	if sev, ok := args["severity"].(string); ok && sev != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("SeverityText = '%s'", sanitize(sev)),
-		)
+		qb.add("SeverityText = "+qb.placeholder(), sev)
 	}
 	if body, ok := args["body"].(string); ok && body != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("Body ILIKE '%%%s%%'", sanitize(body)),
+		qb.add(
+			"Body ILIKE '%' || "+qb.placeholder()+" || '%'",
+			body,
 		)
 	}
-	where := buildWhere(clauses)
 	query := fmt.Sprintf(
-		`SELECT * FROM logs%s ORDER BY Timestamp DESC`, where,
+		`SELECT * FROM logs%s ORDER BY Timestamp DESC`,
+		qb.where(),
 	)
 	limit := intArg(args, "limit", defaultLimit)
-	return executeAndMarshal(db, query, limit, nil)
+	return executeAndMarshal(db, query, limit, qb.args)
 }
 
 // queryMetrics searches across all metric views.
 func queryMetrics(db *DB, args map[string]any) (string, error) {
-	var clauses []string
+	var qb queryBuilder
 	if name, ok := args["name"].(string); ok && name != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("MetricName = '%s'", sanitize(name)),
-		)
+		qb.add("MetricName = "+qb.placeholder(), name)
 	}
 	if svc, ok := args["service"].(string); ok && svc != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("ServiceName = '%s'", sanitize(svc)),
-		)
+		qb.add("ServiceName = "+qb.placeholder(), svc)
 	}
-	where := buildWhere(clauses)
+	w := qb.where()
 	limit := intArg(args, "limit", defaultLimit)
 
+	// Each UNION arm uses the same WHERE clause. DuckDB binds
+	// positional parameters once, so the same $1/$2 apply to all.
 	query := fmt.Sprintf(
 		`SELECT 'gauge' AS type, * FROM metrics_gauge%s `+
 			`UNION ALL `+
@@ -86,48 +84,40 @@ func queryMetrics(db *DB, args map[string]any) (string, error) {
 			`UNION ALL `+
 			`SELECT 'histogram' AS type, * `+
 			`FROM metrics_histogram%s`,
-		where, where, where,
+		w, w, w,
 	)
-	return executeAndMarshal(db, query, limit, nil)
+	return executeAndMarshal(db, query, limit, qb.args)
 }
 
 // getErrors returns traces with error status (StatusCode = 2).
 func getErrors(db *DB, args map[string]any) (string, error) {
-	var clauses []string
-	clauses = append(clauses, "StatusCode = 2")
+	var qb queryBuilder
+	qb.addClause("StatusCode = 2")
 	if svc, ok := args["service"].(string); ok && svc != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("ServiceName = '%s'", sanitize(svc)),
-		)
+		qb.add("ServiceName = "+qb.placeholder(), svc)
 	}
-	addTimeRange(&clauses, args)
-	where := buildWhere(clauses)
+	addTimeRange(&qb, args)
 	query := fmt.Sprintf(
 		`SELECT TraceId, SpanName, Duration, StatusMessage, `+
 			`Timestamp FROM traces%s ORDER BY Timestamp DESC`,
-		where,
+		qb.where(),
 	)
 	limit := intArg(args, "limit", defaultLimit)
-	return executeAndMarshal(db, query, limit, nil)
+	return executeAndMarshal(db, query, limit, qb.args)
 }
 
 // latencyPercentiles computes p50, p90, p95, p99 for a span name.
 func latencyPercentiles(
 	db *DB, args map[string]any,
 ) (string, error) {
-	var clauses []string
+	var qb queryBuilder
 	if op, ok := args["operation"].(string); ok && op != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("SpanName = '%s'", sanitize(op)),
-		)
+		qb.add("SpanName = "+qb.placeholder(), op)
 	}
 	if svc, ok := args["service"].(string); ok && svc != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("ServiceName = '%s'", sanitize(svc)),
-		)
+		qb.add("ServiceName = "+qb.placeholder(), svc)
 	}
-	addTimeRange(&clauses, args)
-	where := buildWhere(clauses)
+	addTimeRange(&qb, args)
 	query := fmt.Sprintf(
 		`SELECT `+
 			`percentile_disc(0.5) WITHIN GROUP `+
@@ -139,12 +129,14 @@ func latencyPercentiles(
 			`percentile_disc(0.99) WITHIN GROUP `+
 			`(ORDER BY Duration) AS p99, `+
 			`count(*) AS total_spans `+
-			`FROM traces%s`, where,
+			`FROM traces%s`, qb.where(),
 	)
-	return executeAndMarshal(db, query, 1, nil)
+	return executeAndMarshal(db, query, 1, qb.args)
 }
 
 // querySql executes raw SQL with an enforced limit.
+// The query itself cannot be parameterized since it is user-provided
+// SQL. Safety relies on the database being opened read-only.
 func querySql(db *DB, args map[string]any) (string, error) {
 	query, ok := args["sql"].(string)
 	if !ok || query == "" {
@@ -156,14 +148,14 @@ func querySql(db *DB, args map[string]any) (string, error) {
 
 // executeAndMarshal runs the query and returns JSON.
 func executeAndMarshal(
-	db *DB, query string, limit int, _ map[string]any,
+	db *DB, query string, limit int, args []any,
 ) (string, error) {
 	ctx, cancel := context.WithTimeout(
 		context.Background(), queryTimeout,
 	)
 	defer cancel()
 
-	results, err := db.Query(ctx, query, limit)
+	results, err := db.Query(ctx, query, limit, args...)
 	if err != nil {
 		return "", fmt.Errorf("execute query: %w", err)
 	}
@@ -177,55 +169,61 @@ func executeAndMarshal(
 	return string(data), nil
 }
 
-// buildTraceFilters builds WHERE clauses from trace query args.
-func buildTraceFilters(
-	args map[string]any,
-) (string, map[string]any) {
-	var clauses []string
-	if svc, ok := args["service"].(string); ok && svc != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("ServiceName = '%s'", sanitize(svc)),
-		)
-	}
-	if op, ok := args["operation"].(string); ok && op != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("SpanName = '%s'", sanitize(op)),
-		)
-	}
-	if status, ok := args["status"].(string); ok && status != "" {
-		clauses = append(clauses,
-			fmt.Sprintf("StatusCode = %s", sanitize(status)),
-		)
-	}
-	addTimeRange(&clauses, args)
-	return buildWhere(clauses), nil
+// queryBuilder accumulates WHERE clauses with positional parameters.
+type queryBuilder struct {
+	clauses []string
+	args    []any
+	idx     int
 }
 
-// addTimeRange appends time-range clauses if since/until are present.
-func addTimeRange(clauses *[]string, args map[string]any) {
-	if since, ok := args["since"].(string); ok && since != "" {
-		*clauses = append(*clauses,
-			fmt.Sprintf("Timestamp >= '%s'", sanitize(since)),
-		)
-	}
-	if until, ok := args["until"].(string); ok && until != "" {
-		*clauses = append(*clauses,
-			fmt.Sprintf("Timestamp <= '%s'", sanitize(until)),
-		)
-	}
+// placeholder returns the next $N placeholder string.
+func (qb *queryBuilder) placeholder() string {
+	qb.idx++
+	return fmt.Sprintf("$%d", qb.idx)
 }
 
-// buildWhere joins clauses into a WHERE string.
-func buildWhere(clauses []string) string {
-	if len(clauses) == 0 {
+// add appends a clause (which should contain a $N placeholder from a
+// prior call to placeholder()) and its corresponding argument.
+func (qb *queryBuilder) add(clause string, arg any) {
+	qb.clauses = append(qb.clauses, clause)
+	qb.args = append(qb.args, arg)
+}
+
+// addClause appends a clause with no parameter (e.g. static conditions).
+func (qb *queryBuilder) addClause(clause string) {
+	qb.clauses = append(qb.clauses, clause)
+}
+
+// where returns the assembled WHERE string, or empty if no clauses.
+func (qb *queryBuilder) where() string {
+	if len(qb.clauses) == 0 {
 		return ""
 	}
-	return " WHERE " + strings.Join(clauses, " AND ")
+	return " WHERE " + strings.Join(qb.clauses, " AND ")
 }
 
-// sanitize removes single quotes to prevent SQL injection.
-func sanitize(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+// addTraceFilters builds parameterized trace query filters.
+func addTraceFilters(qb *queryBuilder, args map[string]any) {
+	if svc, ok := args["service"].(string); ok && svc != "" {
+		qb.add("ServiceName = "+qb.placeholder(), svc)
+	}
+	if op, ok := args["operation"].(string); ok && op != "" {
+		qb.add("SpanName = "+qb.placeholder(), op)
+	}
+	if status, ok := args["status"].(string); ok && status != "" {
+		qb.add("StatusCode = "+qb.placeholder(), status)
+	}
+	addTimeRange(qb, args)
+}
+
+// addTimeRange appends parameterized time-range clauses.
+func addTimeRange(qb *queryBuilder, args map[string]any) {
+	if since, ok := args["since"].(string); ok && since != "" {
+		qb.add("Timestamp >= "+qb.placeholder(), since)
+	}
+	if until, ok := args["until"].(string); ok && until != "" {
+		qb.add("Timestamp <= "+qb.placeholder(), until)
+	}
 }
 
 // intArg extracts an integer argument with a default.
