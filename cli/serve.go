@@ -18,7 +18,16 @@ func runServeCmd(args []string) {
 		return
 	}
 
-	cfg := server.ConfigFromEnv()
+	configPath := extractConfigFlag(args)
+
+	cfg, loadedPath, err := server.ConfigWithPath(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	printConfigSource(os.Stderr, loadedPath)
+
 	srv := server.New(cfg)
 
 	if len(cfg.Workers) > 0 {
@@ -36,17 +45,25 @@ func runServeCmd(args []string) {
 
 // printServeHelp prints usage for the serve command.
 func printServeHelp() {
-	fmt.Println("Usage: dagnats serve [--dry-run]")
+	fmt.Println("Usage: dagnats serve [--config=PATH]" +
+		" [--dry-run]")
 	fmt.Println("Starts embedded NATS server with" +
 		" DagNats engine and API.")
 	fmt.Println()
 	fmt.Println("Flags:")
-	fmt.Println("  --dry-run  validate config" +
+	fmt.Println("  --config=PATH  path to config file")
+	fmt.Println("  --dry-run      validate config" +
 		" without starting the server")
 	fmt.Println()
-	fmt.Println("Config: dagnats.yaml" +
-		" (optional, in current directory)")
-	fmt.Println("Env:    DAGNATS_DATA_DIR," +
+	fmt.Println("Config search order (when --config" +
+		" not specified):")
+	fmt.Println("  1. ./dagnats.yaml")
+	fmt.Println("  2. $XDG_CONFIG_HOME/dagnats/" +
+		"dagnats.yaml")
+	fmt.Println("  3. /etc/dagnats/dagnats.yaml" +
+		" (Linux only)")
+	fmt.Println()
+	fmt.Println("Env: DAGNATS_DATA_DIR," +
 		" DAGNATS_HTTP_ADDR, DAGNATS_NATS_PORT")
 	fmt.Println()
 	fmt.Println("Run 'dagnats config show'" +

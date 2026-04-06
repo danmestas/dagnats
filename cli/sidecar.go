@@ -80,28 +80,14 @@ func runSidecarStartCmd(args []string) {
 	}
 
 	configPath := extractConfigFlag(args)
+	if configPath == "" {
+		configPath = defaultConfigFileName
+	}
 	cfg := loadSidecarConfig(configPath)
 	ensureStorageDir(cfg)
 	writeCollectorYAML(cfg)
 	checkBinariesAvailable()
 	startSupervisor(cfg)
-}
-
-// extractConfigFlag pulls --config=X from args, defaults to
-// dagnats.yaml in the current directory.
-func extractConfigFlag(args []string) string {
-	if args == nil {
-		panic("extractConfigFlag: args must not be nil")
-	}
-	if len(args) > sidecarMaxArgs {
-		panic("extractConfigFlag: args exceeds max bound")
-	}
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--config=") {
-			return strings.TrimPrefix(arg, "--config=")
-		}
-	}
-	return defaultConfigFileName
 }
 
 // loadSidecarConfig reads and validates the config file.
