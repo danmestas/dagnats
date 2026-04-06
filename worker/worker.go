@@ -250,13 +250,28 @@ func (w *Worker) Start() {
 
 // bindOptionalKV binds checkpoint and signal KV buckets if they
 // exist. Missing buckets are fine — features degrade gracefully.
+// Logs warnings so operators know which features are unavailable.
 func (w *Worker) bindOptionalKV() {
 	w.checkpointKV, _ = w.js.KeyValue(
 		context.Background(), "checkpoints",
 	)
+	if w.checkpointKV == nil {
+		slog.Warn(
+			"checkpoint KV bucket not found" +
+				" — Checkpoint/LoadCheckpoint/Pause" +
+				" will return errors",
+		)
+	}
 	w.signalKV, _ = w.js.KeyValue(
 		context.Background(), "signals",
 	)
+	if w.signalKV == nil {
+		slog.Warn(
+			"signal KV bucket not found" +
+				" — WaitForSignal/SendSignal" +
+				" will return errors",
+		)
+	}
 }
 
 // registerDirectory registers this worker in the observability
