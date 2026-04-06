@@ -250,7 +250,17 @@ func runStartCmd(args []string) {
 
 	if watch {
 		handleWatch(svc, runID, showOutput)
+		return
 	}
+
+	printHint(false,
+		"Hint: follow progress with:",
+		fmt.Sprintf("  dagnats run watch %s", runID),
+		fmt.Sprintf(
+			"  dagnats run inspect %s    # if it fails",
+			runID,
+		),
+	)
 }
 
 // handleWatch watches a run and optionally prints output.

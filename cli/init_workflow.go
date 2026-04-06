@@ -213,6 +213,16 @@ func runInitWorkflowCmd(args []string) {
 	}
 	fmt.Printf("Created %s.json\n", parsed.name)
 	printWorkflowSnippet(parsed.name, steps)
+
+	printHint(false,
+		"Next steps:",
+		fmt.Sprintf(
+			"  dagnats workflow register %s.json",
+			parsed.name,
+		),
+		"  # Add handler code to your main.go "+
+			"(see snippet above)",
+	)
 }
 
 // workflowArgResult holds the parsed arguments for init workflow.
