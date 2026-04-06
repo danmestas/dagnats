@@ -134,12 +134,14 @@ func (n *NATSAPI) handleGetRun(msg *nats.Msg) {
 		panic("handleGetRun: svc must not be nil")
 	}
 	runID := string(msg.Data)
-	run, err := n.svc.GetRun(context.Background(), runID)
+	resp, err := n.svc.GetRunResponse(
+		context.Background(), runID,
+	)
 	if err != nil {
 		n.reply(msg, map[string]string{"error": err.Error()})
 		return
 	}
-	data, err := json.Marshal(run)
+	data, err := json.Marshal(resp)
 	if err != nil {
 		n.reply(msg, map[string]string{"error": err.Error()})
 		return

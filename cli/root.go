@@ -48,6 +48,14 @@ func Run(args []string) {
 		runLogsCmd(args[2:])
 	case "dev":
 		runDevCmd(args[2:])
+	case "trace":
+		runTraceCmd(args[2:])
+	case "metrics":
+		runMetricsCmd(args[2:])
+	case "observe":
+		runObserveCmd(args[2:])
+	case "sidecar":
+		runSidecarCmd(args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[1])
 		printUsage()
@@ -69,8 +77,12 @@ func printUsage() {
 	fmt.Println("  init      scaffold a new workflow project")
 	fmt.Println("  config    show effective configuration")
 	fmt.Println("  status    show system health")
-	fmt.Println("  logs      tail telemetry log stream")
+	fmt.Println("  logs      tail or search telemetry log stream")
 	fmt.Println("  dev       watch mode: build and restart on changes")
+	fmt.Println("  trace     view and search trace spans")
+	fmt.Println("  metrics   view metric snapshots")
+	fmt.Println("  observe   observability pipeline health")
+	fmt.Println("  sidecar   local observability sidecar")
 	fmt.Println("\nGlobal flags:")
 	fmt.Println("  --json    output in JSON format")
 }

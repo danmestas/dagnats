@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -291,7 +292,7 @@ func handleGetRun(
 		return
 	}
 	runID := parts[0]
-	run, err := svc.GetRun(r.Context(), runID)
+	resp, err := svc.GetRunResponse(r.Context(), runID)
 	if err != nil {
 		if errors.Is(err, engine.ErrRunNotFound) {
 			http.Error(w, "run not found", http.StatusNotFound)
@@ -301,7 +302,7 @@ func handleGetRun(
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	encErr := json.NewEncoder(w).Encode(run)
+	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
 	}
@@ -594,7 +595,15 @@ type healthResponse struct {
 
 // telemetryInfo carries stream and backend status for health.
 type telemetryInfo struct {
-	Stream *streamInfo `json:"stream,omitempty"`
+	Stream    *streamInfo `json:"stream,omitempty"`
+	Consumers int         `json:"consumers"`
+	OTLP      *otlpInfo   `json:"otlp"`
+}
+
+// otlpInfo reports OTLP exporter configuration status.
+type otlpInfo struct {
+	Endpoint   string `json:"endpoint"`
+	Configured bool   `json:"configured"`
 }
 
 // streamInfo carries TELEMETRY stream usage stats.
@@ -649,7 +658,8 @@ func handleCancelScheduledRun(
 }
 
 // handleHealth returns service health and optional telemetry stream
-// status. Never fails the health check -- telemetry is informational.
+// status. Status is "healthy" when the TELEMETRY stream is accessible,
+// "degraded" otherwise.
 func handleHealth(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
@@ -660,13 +670,12 @@ func handleHealth(
 		panic("handleHealth: w must not be nil")
 	}
 	ctx := r.Context()
-	resp := healthResponse{Status: "healthy"}
-	stream, err := svc.js.Stream(
-		ctx, "TELEMETRY",
-	)
+	resp := healthResponse{Status: "degraded"}
+	stream, err := svc.js.Stream(ctx, "TELEMETRY")
 	if err == nil {
 		info, infoErr := stream.Info(ctx)
 		if infoErr == nil && info != nil {
+			resp.Status = "healthy"
 			resp.Telemetry = buildTelemetryInfo(info)
 		}
 	}
@@ -698,5 +707,17 @@ func buildTelemetryInfo(info *jetstream.StreamInfo) *telemetryInfo {
 			Bytes:    info.State.Bytes,
 			Percent:  pct,
 		},
+		Consumers: info.State.Consumers,
+		OTLP:      buildOTLPInfo(),
+	}
+}
+
+// buildOTLPInfo reports whether an OTLP exporter endpoint is
+// configured via the OTEL_EXPORTER_OTLP_ENDPOINT env var.
+func buildOTLPInfo() *otlpInfo {
+	ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	return &otlpInfo{
+		Endpoint:   ep,
+		Configured: ep != "",
 	}
 }
