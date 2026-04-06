@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/danmestas/dagnats/internal/observe/simple"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -110,7 +109,7 @@ func runLogsFollow(js jetstream.JetStream, subject string) {
 		if err != nil {
 			return
 		}
-		var rec simple.LogRecord
+		var rec LogRecord
 		if err := json.Unmarshal(msg.Data(), &rec); err != nil {
 			fmt.Fprintf(os.Stderr,
 				"logs: unmarshal: %v\n", err)
@@ -142,28 +141,30 @@ func buildLogSubject(service, level string) string {
 }
 
 // formatLogLine renders a LogRecord as a single human-readable line.
-// Format: HH:MM:SS LEVEL   SERVICE  message [key=val ...]
-func formatLogLine(rec simple.LogRecord) string {
-	if rec.Message == "" {
-		panic("formatLogLine: Message must not be empty")
+// Format: HH:MM:SS SEVERITY SERVICE  body [key=val ...]
+func formatLogLine(rec LogRecord) string {
+	if rec.Body == "" {
+		panic("formatLogLine: Body must not be empty")
 	}
-	if rec.Level == "" {
-		panic("formatLogLine: Level must not be empty")
+	if rec.Severity == "" {
+		panic("formatLogLine: Severity must not be empty")
+	}
+
+	ts, err := time.Parse(time.RFC3339Nano, rec.Timestamp)
+	if err != nil {
+		ts = time.Now().UTC()
 	}
 
 	var b strings.Builder
-	b.WriteString(rec.Timestamp.Format("15:04:05"))
+	b.WriteString(ts.Format("15:04:05"))
 	b.WriteByte(' ')
-	b.WriteString(colorLevel(strings.ToUpper(rec.Level)))
+	b.WriteString(colorLevel(strings.ToUpper(rec.Severity)))
 	b.WriteByte(' ')
-	b.WriteString(rec.Service)
+	b.WriteString(rec.ServiceName)
 	b.WriteString("  ")
-	b.WriteString(rec.Message)
+	b.WriteString(rec.Body)
 
-	fields := formatFields(rec.Fields)
-	if rec.Error != "" {
-		fields = append(fields, ColorRed("error="+rec.Error))
-	}
+	fields := formatAttributes(rec.Attributes)
 	if len(fields) > 0 {
 		b.WriteString(" [")
 		b.WriteString(strings.Join(fields, " "))
@@ -172,30 +173,30 @@ func formatLogLine(rec simple.LogRecord) string {
 	return b.String()
 }
 
-// formatFields sorts field key=value pairs alphabetically.
+// formatAttributes sorts attribute key=value pairs alphabetically.
 // Returns nil when the map is empty to avoid unnecessary allocation.
-func formatFields(fields map[string]any) []string {
-	if fields == nil {
+func formatAttributes(attrs map[string]string) []string {
+	if attrs == nil {
 		return nil
 	}
-	if len(fields) == 0 {
+	if len(attrs) == 0 {
 		return nil
 	}
 
-	const maxFields = 1000
-	if len(fields) > maxFields {
-		panic("formatFields: fields exceeds max bound")
+	const maxAttrs = 1000
+	if len(attrs) > maxAttrs {
+		panic("formatAttributes: attributes exceeds max bound")
 	}
 
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
 	pairs := make([]string, 0, len(keys))
 	for _, k := range keys {
-		pairs = append(pairs, fmt.Sprintf("%s=%v", k, fields[k]))
+		pairs = append(pairs, k+"="+attrs[k])
 	}
 	return pairs
 }
@@ -274,7 +275,7 @@ func runLogsTail(
 // the fetch timeout.
 func collectTailMessages(
 	cons jetstream.Consumer, count int,
-) []simple.LogRecord {
+) []LogRecord {
 	if cons == nil {
 		panic("collectTailMessages: cons must not be nil")
 	}
@@ -282,7 +283,7 @@ func collectTailMessages(
 		panic("collectTailMessages: count out of bounds")
 	}
 
-	buf := make([]simple.LogRecord, 0, count)
+	buf := make([]LogRecord, 0, count)
 
 	for i := 0; i < tailCountMax; i++ {
 		msg, err := cons.Next(
@@ -291,7 +292,7 @@ func collectTailMessages(
 		if err != nil {
 			break
 		}
-		var rec simple.LogRecord
+		var rec LogRecord
 		if err := json.Unmarshal(msg.Data(), &rec); err != nil {
 			continue
 		}

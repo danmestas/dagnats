@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/observe/simple"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -54,81 +53,85 @@ func TestFormatLogLine(t *testing.T) {
 	os.Setenv("NO_COLOR", "1")
 	defer os.Setenv("NO_COLOR", oldNoColor)
 
-	ts := time.Date(2025, 6, 15, 14, 30, 45, 0, time.UTC)
+	tsStr := "2025-06-15T14:30:45.000000000Z"
 
 	t.Run("basic info log", func(t *testing.T) {
-		rec := simple.LogRecord{
-			Level:     "info",
-			Message:   "server started",
-			Service:   "engine",
-			Timestamp: ts,
+		rec := LogRecord{
+			Severity:    "info",
+			Body:        "server started",
+			ServiceName: "engine",
+			Timestamp:   tsStr,
 		}
 		line := formatLogLine(rec)
 
-		// Positive: contains time, level, service, message
+		// Positive: contains time, severity, service, body
 		if !strings.Contains(line, "14:30:45") {
 			t.Fatal("line should contain formatted timestamp")
 		}
 		if !strings.Contains(line, "INFO") {
-			t.Fatal("line should contain uppercase level")
+			t.Fatal("line should contain uppercase severity")
 		}
 		if !strings.Contains(line, "engine") {
 			t.Fatal("line should contain service name")
 		}
 		if !strings.Contains(line, "server started") {
-			t.Fatal("line should contain message")
+			t.Fatal("line should contain body")
 		}
 
-		// Negative: no field brackets when fields empty
+		// Negative: no brackets when attributes empty
 		if strings.Contains(line, "[") {
-			t.Fatal("line should not have brackets without fields")
+			t.Fatal("line should not have brackets without attrs")
 		}
 	})
 
-	t.Run("error log with fields", func(t *testing.T) {
-		rec := simple.LogRecord{
-			Level:     "error",
-			Message:   "task failed",
-			Service:   "worker",
-			Timestamp: ts,
-			Error:     "connection refused",
-			Fields:    map[string]any{"run_id": "abc", "attempt": 3},
+	t.Run("error log with attributes", func(t *testing.T) {
+		rec := LogRecord{
+			Severity:    "error",
+			Body:        "task failed",
+			ServiceName: "worker",
+			Timestamp:   tsStr,
+			Attributes: map[string]string{
+				"run_id":  "abc",
+				"attempt": "3",
+				"error":   "connection refused",
+			},
 		}
 		line := formatLogLine(rec)
 
-		// Positive: contains error field
+		// Positive: contains error attribute
 		if !strings.Contains(line, "error=connection refused") {
-			t.Fatalf("should contain error, got: %s", line)
+			t.Fatalf("should contain error attr, got: %s", line)
 		}
 
-		// Positive: contains sorted fields
+		// Positive: contains sorted attributes
 		if !strings.Contains(line, "attempt=3") {
-			t.Fatalf("should contain attempt field, got: %s", line)
+			t.Fatalf("should contain attempt attr, got: %s", line)
 		}
 		if !strings.Contains(line, "run_id=abc") {
-			t.Fatalf("should contain run_id field, got: %s", line)
+			t.Fatalf("should contain run_id attr, got: %s", line)
 		}
 
-		// Fields should be sorted: attempt before run_id
+		// Attributes should be sorted: attempt before run_id
 		attemptIdx := strings.Index(line, "attempt=3")
 		runIdx := strings.Index(line, "run_id=abc")
 		if attemptIdx > runIdx {
-			t.Fatal("fields should be sorted alphabetically")
+			t.Fatal("attributes should be sorted alphabetically")
 		}
 	})
 
-	t.Run("warn log level padding", func(t *testing.T) {
-		rec := simple.LogRecord{
-			Level:     "warn",
-			Message:   "slow query",
-			Service:   "api",
-			Timestamp: ts,
+	t.Run("warn log severity padding", func(t *testing.T) {
+		rec := LogRecord{
+			Severity:    "warn",
+			Body:        "slow query",
+			ServiceName: "api",
+			Timestamp:   tsStr,
 		}
 		line := formatLogLine(rec)
 
 		// Positive: WARN should be padded to 7 chars
 		if !strings.Contains(line, "WARN   ") {
-			t.Fatalf("level should be padded to 7, got: %q", line)
+			t.Fatalf("severity should be padded to 7, got: %q",
+				line)
 		}
 
 		// Negative: should not contain ERROR
@@ -187,14 +190,14 @@ func TestCollectTailMessages(t *testing.T) {
 		t.Fatalf("JetStream: %v", err)
 	}
 
-	// Publish 5 log records via legacy API (test setup only).
+	// Publish 5 log records in OTLP format (test setup only).
 	const totalMessages = 5
 	for i := 0; i < totalMessages; i++ {
-		rec := simple.LogRecord{
-			Level:     "info",
-			Message:   "msg-" + strconv.Itoa(i),
-			Service:   "testsvc",
-			Timestamp: time.Now().UTC(),
+		rec := LogRecord{
+			Severity:    "info",
+			Body:        "msg-" + strconv.Itoa(i),
+			ServiceName: "testsvc",
+			Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
 		}
 		data, marshalErr := json.Marshal(rec)
 		if marshalErr != nil {
@@ -234,23 +237,23 @@ func TestCollectTailMessages(t *testing.T) {
 	}
 
 	// Positive: should be the LAST 3 messages (msg-2..msg-4)
-	if buf[0].Message != "msg-2" {
+	if buf[0].Body != "msg-2" {
 		t.Fatalf(
 			"expected first record 'msg-2', got %q",
-			buf[0].Message,
+			buf[0].Body,
 		)
 	}
-	if buf[2].Message != "msg-4" {
+	if buf[2].Body != "msg-4" {
 		t.Fatalf(
 			"expected last record 'msg-4', got %q",
-			buf[2].Message,
+			buf[2].Body,
 		)
 	}
 
 	// Negative: should not contain msg-0 or msg-1
 	for _, rec := range buf {
-		if rec.Message == "msg-0" || rec.Message == "msg-1" {
-			t.Fatalf("should not contain %q", rec.Message)
+		if rec.Body == "msg-0" || rec.Body == "msg-1" {
+			t.Fatalf("should not contain %q", rec.Body)
 		}
 	}
 }
@@ -269,11 +272,11 @@ func TestCollectTailMessagesFewerThanCount(t *testing.T) {
 
 	// Publish only 2 messages but request 10
 	for i := 0; i < 2; i++ {
-		rec := simple.LogRecord{
-			Level:     "warn",
-			Message:   "few-" + strconv.Itoa(i),
-			Service:   "fewsvc",
-			Timestamp: time.Now().UTC(),
+		rec := LogRecord{
+			Severity:    "warn",
+			Body:        "few-" + strconv.Itoa(i),
+			ServiceName: "fewsvc",
+			Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
 		}
 		data, marshalErr := json.Marshal(rec)
 		if marshalErr != nil {
@@ -332,12 +335,12 @@ func TestLogsStreamIntegration(t *testing.T) {
 		t.Fatalf("JetStream: %v", err)
 	}
 
-	rec := simple.LogRecord{
-		Level:     "info",
-		Message:   "integration test log",
-		Service:   "testservice",
-		Timestamp: time.Now().UTC(),
-		Fields:    map[string]any{"key": "value"},
+	rec := LogRecord{
+		Severity:    "info",
+		Body:        "integration test log",
+		ServiceName: "testservice",
+		Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
+		Attributes:  map[string]string{"key": "value"},
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
@@ -364,17 +367,17 @@ func TestLogsStreamIntegration(t *testing.T) {
 	}
 
 	// Positive: message data should unmarshal to LogRecord
-	var received simple.LogRecord
+	var received LogRecord
 	if err := json.Unmarshal(msg.Data, &received); err != nil {
 		t.Fatalf("unmarshal received: %v", err)
 	}
-	if received.Message != "integration test log" {
-		t.Fatal("received message should match published")
+	if received.Body != "integration test log" {
+		t.Fatal("received body should match published")
 	}
 
-	// Negative: service should not be empty
-	if received.Service == "" {
-		t.Fatal("received service should not be empty")
+	// Negative: service name should not be empty
+	if received.ServiceName == "" {
+		t.Fatal("received service name should not be empty")
 	}
 
 	// Verify formatLogLine produces correct output for this record
