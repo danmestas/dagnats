@@ -18,6 +18,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestRESTRegisterWorkflow(t *testing.T) {
@@ -170,6 +171,142 @@ func TestRESTHealthBasic(t *testing.T) {
 	}
 	if health.Telemetry.Stream == nil {
 		t.Fatal("expected stream info when TELEMETRY exists")
+	}
+
+	// Consumer count must be a non-negative integer.
+	if health.Telemetry.Consumers < 0 {
+		t.Fatalf("Consumers = %d, want >= 0",
+			health.Telemetry.Consumers)
+	}
+
+	// OTLP info must always be present when stream exists.
+	if health.Telemetry.OTLP == nil {
+		t.Fatal("expected otlp info in telemetry response")
+	}
+}
+
+func TestHealthDegradedWithoutStream(t *testing.T) {
+	// Start NATS and create KV buckets + streams but skip
+	// the TELEMETRY stream so health reports degraded.
+	_, nc := natsutil.StartTestServer(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	if err := natsutil.SetupStreams(js); err != nil {
+		t.Fatalf("SetupStreams: %v", err)
+	}
+	if err := natsutil.SetupKVBuckets(js); err != nil {
+		t.Fatalf("SetupKVBuckets: %v", err)
+	}
+	if err := natsutil.SetupStickyStream(js); err != nil {
+		t.Fatalf("SetupStickyStream: %v", err)
+	}
+
+	svc := NewService(nc)
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, getErr := http.Get(
+		server.URL + "/health/telemetry",
+	)
+	if getErr != nil {
+		t.Fatalf("GET /health/telemetry failed: %v", getErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusOK)
+	}
+	var health healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+
+	// Positive: status is degraded when stream is missing.
+	if health.Status != "degraded" {
+		t.Fatalf("Status = %q, want %q",
+			health.Status, "degraded")
+	}
+
+	// Negative: telemetry info should be nil when stream
+	// does not exist.
+	if health.Telemetry != nil {
+		t.Fatal("expected nil telemetry when stream missing")
+	}
+}
+
+func TestHealthOTLPConfigured(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc)
+
+	// Set the env var for this test.
+	t.Setenv(
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"http://localhost:4318",
+	)
+
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/health/telemetry")
+	if err != nil {
+		t.Fatalf("GET /health/telemetry failed: %v", err)
+	}
+	var health healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+
+	// Positive: OTLP configured is true with endpoint set.
+	if health.Telemetry == nil || health.Telemetry.OTLP == nil {
+		t.Fatal("expected otlp info in response")
+	}
+	if !health.Telemetry.OTLP.Configured {
+		t.Fatal("expected Configured=true when env var set")
+	}
+	if health.Telemetry.OTLP.Endpoint != "http://localhost:4318" {
+		t.Fatalf("Endpoint = %q, want %q",
+			health.Telemetry.OTLP.Endpoint,
+			"http://localhost:4318")
+	}
+}
+
+func TestHealthOTLPNotConfigured(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc)
+
+	// Ensure the env var is unset for this test.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/health/telemetry")
+	if err != nil {
+		t.Fatalf("GET /health/telemetry failed: %v", err)
+	}
+	var health healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+
+	// Positive: OTLP configured is false when env var unset.
+	if health.Telemetry == nil || health.Telemetry.OTLP == nil {
+		t.Fatal("expected otlp info in response")
+	}
+	if health.Telemetry.OTLP.Configured {
+		t.Fatal("expected Configured=false when env var empty")
+	}
+
+	// Negative: endpoint should be empty string.
+	if health.Telemetry.OTLP.Endpoint != "" {
+		t.Fatalf("Endpoint = %q, want empty",
+			health.Telemetry.OTLP.Endpoint)
 	}
 }
 
