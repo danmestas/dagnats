@@ -7,7 +7,9 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,12 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
+
+// containsSubstring checks if s contains substr. Extracted
+// to avoid repeating strings.Contains in every assertion.
+func containsSubstring(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
 
 func TestTaskContextComplete(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
@@ -463,10 +471,23 @@ func TestTaskContextCheckpointNilKV(t *testing.T) {
 		},
 		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
-	// Positive: Checkpoint returns error when KV is nil
+	// Positive: Checkpoint returns error with remediation guidance
 	err := tc.Checkpoint([]byte("state"))
 	if err == nil {
 		t.Fatal("expected error for nil checkpointKV")
+	}
+	if !errors.Is(err, errCheckpointKVNotConfigured) {
+		t.Fatalf(
+			"error = %q, want errCheckpointKVNotConfigured",
+			err,
+		)
+	}
+	wantSubstr := "natsutil.SetupAll()"
+	if !containsSubstring(err.Error(), wantSubstr) {
+		t.Fatalf(
+			"error %q missing remediation %q",
+			err.Error(), wantSubstr,
+		)
 	}
 	// Negative: LoadCheckpoint returns nil,nil when KV is nil
 	data, err := tc.LoadCheckpoint()
@@ -489,15 +510,34 @@ func TestTaskContextSignalNilKV(t *testing.T) {
 		},
 		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
-	// Positive: WaitForSignal errors when signalKV is nil
+	// Positive: WaitForSignal returns error with remediation
 	_, err := tc.WaitForSignal("sig", 1*time.Second)
 	if err == nil {
 		t.Fatal("expected error for nil signalKV")
 	}
-	// Negative: SendSignal also errors when signalKV is nil
+	if !errors.Is(err, errSignalKVNotConfigured) {
+		t.Fatalf(
+			"error = %q, want errSignalKVNotConfigured",
+			err,
+		)
+	}
+	wantSubstr := "natsutil.SetupAll()"
+	if !containsSubstring(err.Error(), wantSubstr) {
+		t.Fatalf(
+			"error %q missing remediation %q",
+			err.Error(), wantSubstr,
+		)
+	}
+	// Negative: SendSignal also errors with remediation
 	err = tc.SendSignal("run-nosig", "sig", []byte("data"))
 	if err == nil {
 		t.Fatal("expected error for nil signalKV on send")
+	}
+	if !errors.Is(err, errSignalKVNotConfigured) {
+		t.Fatalf(
+			"SendSignal error = %q, want errSignalKVNotConfigured",
+			err,
+		)
 	}
 }
 
@@ -644,6 +684,32 @@ func TestTaskContextPausePanicsOnZeroDuration(t *testing.T) {
 		}
 	}()
 	tc.Pause("test", 0)
+}
+
+func TestTaskContextPauseNilCheckpointKV(t *testing.T) {
+	tr := tracenoop.NewTracerProvider().Tracer("test")
+	bgCtx := context.Background()
+	_, span := tr.Start(bgCtx, "test")
+	tc := newTaskContext(
+		nil, tr, nil,
+		protocol.TaskPayload{
+			RunID: "run-pause-nil", StepID: "step",
+		},
+		bgCtx, span, &testJetstreamMsg{}, nil, nil,
+	)
+	// Positive: Pause returns error when checkpointKV is nil
+	err := tc.Pause("wait", 1*time.Second)
+	if err == nil {
+		t.Fatal("expected error for nil checkpointKV")
+	}
+	// Negative: error contains remediation guidance
+	wantSubstr := "natsutil.SetupAll()"
+	if !containsSubstring(err.Error(), wantSubstr) {
+		t.Fatalf(
+			"error %q missing remediation %q",
+			err.Error(), wantSubstr,
+		)
+	}
 }
 
 func TestTaskContextPausePanicsOnNegativeDuration(t *testing.T) {

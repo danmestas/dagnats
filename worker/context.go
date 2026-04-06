@@ -16,6 +16,20 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// Sentinel errors for missing KV buckets. Exported so callers
+// can check with errors.Is and get remediation guidance.
+var errCheckpointKVNotConfigured = errors.New(
+	"checkpoint KV not configured" +
+		" — ensure natsutil.SetupAll() has been called" +
+		" or start the server with 'dagnats serve'",
+)
+
+var errSignalKVNotConfigured = errors.New(
+	"signal KV not configured" +
+		" — ensure natsutil.SetupAll() has been called" +
+		" or start the server with 'dagnats serve'",
+)
+
 type taskContext struct {
 	nc           *nats.Conn
 	js           jetstream.JetStream
@@ -328,7 +342,7 @@ func (c *taskContext) Checkpoint(state []byte) error {
 		panic("Checkpoint: runID must not be empty")
 	}
 	if c.checkpointKV == nil {
-		return fmt.Errorf("checkpoint KV not configured")
+		return errCheckpointKVNotConfigured
 	}
 	key := c.runID + "." + c.stepID
 	_, err := c.checkpointKV.Put(
@@ -374,7 +388,7 @@ func (c *taskContext) WaitForSignal(
 		panic("WaitForSignal: timeout must be in (0, 1h]")
 	}
 	if c.signalKV == nil {
-		return nil, fmt.Errorf("signal KV not configured")
+		return nil, errSignalKVNotConfigured
 	}
 	key := c.runID + "." + name
 	watcher, err := c.signalKV.Watch(
@@ -438,7 +452,7 @@ func (c *taskContext) SendSignal(
 		panic("SendSignal: name must not be empty")
 	}
 	if c.signalKV == nil {
-		return fmt.Errorf("signal KV not configured")
+		return errSignalKVNotConfigured
 	}
 	key := runID + "." + name
 	_, err := c.signalKV.Put(
