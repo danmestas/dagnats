@@ -8,14 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -41,29 +39,30 @@ func (s *Service) BulkStartRuns(
 		return BulkRunResponse{},
 			fmt.Errorf("workflow_id is required")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api bulkStartRuns",
-		trace.WithAttributes(
+	var resp BulkRunResponse
+	err := s.observed(ctx, "bulkStartRuns",
+		[]attribute.KeyValue{
 			attribute.String("workflow_id", req.WorkflowID),
-			attribute.Int64("count", int64(len(req.Inputs))),
-		),
+			attribute.Int64(
+				"count", int64(len(req.Inputs)),
+			),
+		},
+		func(ctx context.Context) error {
+			span := trace.SpanFromContext(ctx)
+			var innerErr error
+			resp, innerErr = s.bulkRunInner(
+				ctx, span, req,
+			)
+			if innerErr == nil {
+				slog.InfoContext(ctx,
+					"bulk run completed",
+					"workflow_id", req.WorkflowID,
+					"started", resp.Total,
+				)
+			}
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-	resp, err := s.bulkRunInner(ctx, span, req)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	} else {
-		slog.InfoContext(ctx, "bulk run completed",
-			"workflow_id", req.WorkflowID,
-			"started", resp.Total,
-		)
-	}
 	return resp, err
 }
 

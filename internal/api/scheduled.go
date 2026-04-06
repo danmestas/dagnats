@@ -15,7 +15,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -53,29 +52,26 @@ func (s *Service) ScheduleRun(
 	if workflowName == "" {
 		panic("ScheduleRun: workflowName must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api scheduleRun",
-		trace.WithAttributes(
+	var runID string
+	err := s.observed(ctx, "scheduleRun",
+		[]attribute.KeyValue{
 			attribute.String("workflow_name", workflowName),
-		),
+		},
+		func(ctx context.Context) error {
+			var innerErr error
+			runID, innerErr = s.scheduleRunInner(
+				ctx, workflowName, input, runAt,
+			)
+			if innerErr == nil {
+				span := trace.SpanFromContext(ctx)
+				span.SetAttributes(
+					attribute.String("run_id", runID),
+				)
+			}
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	runID, err := s.scheduleRunInner(
-		ctx, workflowName, input, runAt,
-	)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return "", err
-	}
-	span.SetAttributes(attribute.String("run_id", runID))
-	return runID, nil
+	return runID, err
 }
 
 // scheduleRunInner holds the core logic for ScheduleRun.

@@ -12,8 +12,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 const maxBulkCancelLimit = 1000
@@ -46,32 +44,27 @@ func (s *Service) BulkCancelRuns(
 		return BulkCancelResponse{},
 			fmt.Errorf("workflow_id is required")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api bulkCancelRuns",
-		trace.WithAttributes(
+	var resp BulkCancelResponse
+	err := s.observed(ctx, "bulkCancelRuns",
+		[]attribute.KeyValue{
 			attribute.String("workflow_id", req.WorkflowID),
 			attribute.String("status_filter", req.Status),
 			attribute.Bool("dry_run", req.DryRun),
-		),
+		},
+		func(ctx context.Context) error {
+			var innerErr error
+			resp, innerErr = s.bulkCancelInner(ctx, req)
+			if innerErr == nil {
+				slog.InfoContext(ctx,
+					"bulk cancel completed",
+					"workflow_id", req.WorkflowID,
+					"cancelled", len(resp.Cancelled),
+					"skipped", len(resp.Skipped),
+				)
+			}
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	resp, err := s.bulkCancelInner(ctx, req)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	} else {
-		slog.InfoContext(ctx, "bulk cancel completed",
-			"workflow_id", req.WorkflowID,
-			"cancelled", len(resp.Cancelled),
-			"skipped", len(resp.Skipped),
-		)
-	}
 	return resp, err
 }
 
