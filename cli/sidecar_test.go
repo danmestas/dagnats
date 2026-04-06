@@ -74,15 +74,16 @@ func TestExtractConfigFlagCustom(t *testing.T) {
 func TestExtractConfigFlagDefault(t *testing.T) {
 	got := extractConfigFlag([]string{})
 
-	// Positive: should return default config filename.
-	if got != defaultConfigFileName {
-		t.Fatalf("expected %q, got %q",
-			defaultConfigFileName, got)
+	// Positive: should return empty when no flag given.
+	// Callers apply their own default (e.g. sidecar uses
+	// defaultConfigFileName).
+	if got != "" {
+		t.Fatalf("expected empty, got %q", got)
 	}
 
-	// Negative: should not be empty.
-	if got == "" {
-		t.Fatal("config path should not be empty")
+	// Negative: should not match any filename.
+	if got == defaultConfigFileName {
+		t.Fatal("should not return default filename")
 	}
 }
 

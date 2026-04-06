@@ -83,24 +83,41 @@ func DefaultConfig() Config {
 // Config file is dagnats.yaml in CWD. Missing file is not an error.
 // Panics if DataDir is empty or MaxStoreBytes <= 0 after resolution.
 func ConfigFromEnv() Config {
-	if true {
-		// Assertion: environment must be queryable
+	cfg, _, err := ConfigWithPath("")
+	if err != nil {
+		log.Fatalf("config load failed: %v", err)
+	}
+	return cfg
+}
+
+// ConfigWithPath loads config using an explicit path or standard search.
+// Returns the resolved config and the path of the file that was loaded
+// (empty string if no file was found). When configPath is non-empty, the
+// file must exist or an error is returned.
+// Panics if DataDir is empty or MaxStoreBytes <= 0 after resolution.
+func ConfigWithPath(
+	configPath string,
+) (Config, string, error) {
+	if len(configPath) > 4096 {
+		panic("ConfigWithPath: configPath exceeds max length")
 	}
 
 	cfg := DefaultConfig()
 
-	// Load config file if present
-	cfgPath := "dagnats.yaml"
-	if err := loadConfigFile(cfgPath, &cfg); err != nil {
-		log.Printf("Warning: config file load failed: %v", err)
+	loadedPath, err := resolveAndLoadConfig(
+		configPath, &cfg,
+	)
+	if err != nil {
+		return Config{}, "", err
 	}
 
-	// Apply env var overrides
 	applyEnvOverrides(&cfg)
 
 	if len(cfg.Workers) > 0 {
 		if err := validateWorkerConfigs(cfg.Workers); err != nil {
-			log.Fatalf("invalid worker config: %v", err)
+			return Config{}, "", fmt.Errorf(
+				"invalid worker config: %w", err,
+			)
 		}
 	}
 
@@ -108,10 +125,115 @@ func ConfigFromEnv() Config {
 		panic("DataDir is empty after config resolution")
 	}
 	if cfg.MaxStoreBytes <= 0 {
-		panic(fmt.Sprintf("MaxStoreBytes <= 0: %d", cfg.MaxStoreBytes))
+		panic(fmt.Sprintf(
+			"MaxStoreBytes <= 0: %d", cfg.MaxStoreBytes,
+		))
 	}
 
-	return cfg
+	return cfg, loadedPath, nil
+}
+
+// resolveAndLoadConfig picks the config file and loads it into cfg.
+// When explicit is non-empty, that file must exist. Otherwise,
+// standard directories are searched in priority order.
+func resolveAndLoadConfig(
+	explicit string, cfg *Config,
+) (string, error) {
+	if cfg == nil {
+		panic("resolveAndLoadConfig: cfg is nil")
+	}
+
+	if explicit != "" {
+		return loadExplicitConfig(explicit, cfg)
+	}
+
+	return loadFirstFoundConfig(cfg)
+}
+
+// loadExplicitConfig loads a user-specified config file.
+// Returns an error if the file does not exist.
+func loadExplicitConfig(
+	path string, cfg *Config,
+) (string, error) {
+	if cfg == nil {
+		panic("loadExplicitConfig: cfg is nil")
+	}
+	if path == "" {
+		panic("loadExplicitConfig: path is empty")
+	}
+
+	_, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf(
+			"config file not found: %s", path,
+		)
+	}
+
+	if err := loadConfigFile(path, cfg); err != nil {
+		return "", fmt.Errorf(
+			"load config file: %w", err,
+		)
+	}
+	return path, nil
+}
+
+// loadFirstFoundConfig searches standard directories for a config
+// file and loads the first one found. Returns "" if none found.
+func loadFirstFoundConfig(
+	cfg *Config,
+) (string, error) {
+	if cfg == nil {
+		panic("loadFirstFoundConfig: cfg is nil")
+	}
+
+	candidates := configSearchPaths()
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := loadConfigFile(path, cfg); err != nil {
+			return "", fmt.Errorf(
+				"load config file %s: %w", path, err,
+			)
+		}
+		return path, nil
+	}
+	return "", nil
+}
+
+// configSearchPaths returns the ordered list of config file
+// locations to search. CWD first, then XDG, then /etc on Linux.
+func configSearchPaths() []string {
+	const maxPaths = 4
+	paths := make([]string, 0, maxPaths)
+
+	// 1. Current working directory
+	paths = append(paths, "dagnats.yaml")
+
+	// 2. XDG_CONFIG_HOME or ~/.config
+	xdgConfigHome := os.Getenv("XDG_CONFIG_HOME")
+	if xdgConfigHome == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			xdgConfigHome = filepath.Join(
+				home, ".config",
+			)
+		}
+	}
+	if xdgConfigHome != "" {
+		paths = append(paths, filepath.Join(
+			xdgConfigHome, "dagnats", "dagnats.yaml",
+		))
+	}
+
+	// 3. System-wide on Linux only
+	if runtime.GOOS == "linux" {
+		paths = append(paths, filepath.Join(
+			"/etc", "dagnats", "dagnats.yaml",
+		))
+	}
+
+	return paths
 }
 
 // applyEnvOverrides applies environment variable overrides to cfg.
