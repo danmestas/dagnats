@@ -36,15 +36,13 @@ W3C Trace Context (traceparent) dual-written to:
 - Active runs, completed runs, failed runs on engine
 - Task execution duration on workers
 
-## Components (`internal/observe/simple/`)
+## Components
 
-- TraceCollector: async publish with bounded buffer
-- MetricsCollector: counter/gauge/histogram wrappers
-- LogCollector: structured logging with trace context
-- ErrorReporter: span-aware error capture
-- Propagation: W3C inject/extract
-- StorageMonitor: stream capacity warnings via `alerts.storage.TELEMETRY`
+- `observe/setup.go` — `InitTelemetry()` bootstraps OTel SDK (TracerProvider, MeterProvider, LoggerProvider)
+- `observe/config.go` — `Config` struct for service name, NATS conn, OTLP endpoint
+- `observe/carrier.go` — `NATSHeaderCarrier` for W3C propagation over NATS headers
+- `observe/natsexporter/` — NATS JetStream exporters for spans, metrics, and logs
 
-## Provider-Agnostic Interfaces
+## OTel SDK
 
-All observability must go through in-house interfaces. No direct imports of Sentry, Jaeger, etc. outside adapter packages. Pattern: `interface` in `observe/` → `adapter` in `observe/{provider}/`.
+All observability uses the official OpenTelemetry Go SDK directly. No custom interfaces or abstractions. Packages import `go.opentelemetry.io/otel/trace`, `go.opentelemetry.io/otel/metric`, and `go.opentelemetry.io/otel/log` for instrumentation.

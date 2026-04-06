@@ -19,9 +19,9 @@
 | `sdk/httpclient/` | Go HTTP reference client | Validates wire protocol, template for other SDKs |
 | `internal/natsutil/` | NATS resource setup (streams, KV) | Plumbing — not public API |
 | `internal/trigger/` | Cron, subject, webhook triggers | Lives behind api/server |
-| `internal/observe/simple/` | Concrete telemetry adapters | Implements `observe/` interfaces |
+| `observe/` | OTel SDK bootstrap + NATS exporters | `InitTelemetry()`, `NATSHeaderCarrier`, `natsexporter/` |
 
-**Public vs internal:** `dag/`, `protocol/`, `observe/` (interfaces), `worker/`, `actor/`, `bridge/`, `sdk/`, `server/`, `cli/` are public API. Implementation packages live under `internal/` to prevent external import coupling.
+**Public vs internal:** `dag/`, `protocol/`, `observe/` (OTel bootstrap + NATS exporters), `worker/`, `actor/`, `bridge/`, `sdk/`, `server/`, `cli/` are public API. Implementation packages live under `internal/` to prevent external import coupling.
 
 ## Event Sourcing Model
 
@@ -121,6 +121,30 @@ Three interfaces, split by concern. Handlers type-assert to optional capabilitie
 - `WaitForSignal(name, timeout)` / `SendSignal(runID, name, data)` — KV watch-based
 
 **Worker options:** `WithGroups(groups...)` for routing, `WithRateLimit` / `WithKeyedRateLimit` for KV token bucket rate limiting.
+
+## Event-Based Cancellation
+
+`CancelOn` declarations on `WorkflowDef` — "cancel this workflow if event X arrives." Reuses the `Correlator` with a `WaiterActionCancel` discriminator (same infrastructure as `WaitForEvent`).
+
+**Flow:** On `workflow.started`, register one cancel waiter per `CancelOn` entry. On match: publish `workflow.cancelled` with triggering event as payload. All cancel waiters removed on any terminal state.
+
+**Builder:** `wb.CancelOn(event, match)`, `wb.CancelOnWithTimeout(event, match, duration)`.
+
+**Bounds:** Max 5 `CancelOn` entries per workflow. Timeout max 365 days. Cancel waiters share the 10,000-per-event-type bound with wait-for-event.
+
+## Priority Queues
+
+Numeric adjustment in seconds applied to a run's effective queue position. Computed from input data via dot-path + rules map.
+
+```go
+type PriorityConfig struct {
+    Key           string         `json:"key"`            // dot-path into input
+    Rules         map[string]int `json:"rules"`          // value -> offset seconds
+    DefaultOffset int            `json:"default_offset"` // when no rule matches
+}
+```
+
+`EffectiveTime() = CreatedAt - PriorityOffset`. Positive offsets advance the run, negative delay it. Range: [-600, +600] seconds. Only affects ordering when concurrency limits create backlogs. `--priority=N` CLI flag overrides expression evaluation.
 
 ## Child Workflows
 
