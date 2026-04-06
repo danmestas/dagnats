@@ -126,16 +126,18 @@ func (db *DB) Close() error {
 }
 
 // Query executes a SQL query and returns results as a slice of maps.
-// A LIMIT clause is enforced if not already present.
+// A LIMIT clause is enforced if not already present. Use $1, $2, etc.
+// placeholders in the query and pass corresponding values as args.
 func (db *DB) Query(
 	ctx context.Context, query string, limit int,
+	args ...any,
 ) ([]map[string]any, error) {
 	if limit <= 0 || limit > maxLimit {
 		limit = defaultLimit
 	}
 	query = enforceLimit(query, limit)
 
-	rows, err := db.conn.QueryContext(ctx, query)
+	rows, err := db.conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
