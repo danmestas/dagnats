@@ -146,7 +146,7 @@ func (s *Server) startComponents() error {
 
 	s.tel, s.telStop = simple.SetupTelemetry(s.nc)
 	s.svc = api.NewService(s.nc)
-	s.orch = engine.NewOrchestrator(s.nc, s.tel)
+	s.orch = engine.NewOrchestrator(s.nc)
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
 

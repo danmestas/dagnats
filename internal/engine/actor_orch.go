@@ -2,11 +2,11 @@ package engine
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/actor"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -21,7 +21,6 @@ import (
 type ActorOrchestrator struct {
 	nc     *nats.Conn
 	js     jetstream.JetStream
-	tel    *observe.Telemetry
 	rt     *actor.Runtime
 	store  *SnapshotStore
 	cc     jetstream.ConsumeContext
@@ -30,13 +29,10 @@ type ActorOrchestrator struct {
 
 // NewActorOrchestrator creates an actor-based orchestrator.
 func NewActorOrchestrator(
-	nc *nats.Conn, tel *observe.Telemetry,
+	nc *nats.Conn,
 ) *ActorOrchestrator {
 	if nc == nil {
 		panic("NewActorOrchestrator: nc must not be nil")
-	}
-	if tel == nil {
-		panic("NewActorOrchestrator: tel must not be nil")
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -47,7 +43,6 @@ func NewActorOrchestrator(
 	return &ActorOrchestrator{
 		nc:    nc,
 		js:    js,
-		tel:   tel,
 		rt:    actor.NewRuntime(),
 		store: NewSnapshotStore(js),
 	}
@@ -104,7 +99,7 @@ func (ao *ActorOrchestrator) handleEventJS(msg jetstream.Msg) {
 	}
 	evt, err := protocol.UnmarshalEvent(msg.Data())
 	if err != nil {
-		ao.tel.Logger.Error("unmarshal event", err)
+		slog.Error("unmarshal event", "error", err)
 		msg.NakWithDelay(5 * time.Second)
 		return
 	}
@@ -120,8 +115,9 @@ func (ao *ActorOrchestrator) handleEventJS(msg jetstream.Msg) {
 	addr := actor.Address{Type: "workflow", ID: evt.RunID}
 	sendErr := ao.rt.Send(addr, actor.Message{Payload: evt})
 	if sendErr != nil {
-		ao.tel.Logger.Error("route event to actor", sendErr,
-			observe.String("run_id", evt.RunID),
+		slog.Error("route event to actor",
+			"error", sendErr,
+			"run_id", evt.RunID,
 		)
 		msg.NakWithDelay(5 * time.Second)
 		return

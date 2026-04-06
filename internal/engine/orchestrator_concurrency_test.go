@@ -13,7 +13,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -42,7 +41,7 @@ func TestOrchestratorConcurrencySecondRunPends(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -89,7 +88,7 @@ func TestOrchestratorConcurrencyAutoStart(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -158,7 +157,7 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -234,7 +233,7 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -304,7 +303,7 @@ func TestOrchestratorCompletionReleasesConcurrency(
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -375,7 +374,7 @@ func TestOrchestratorConcurrencyNoPendingRuns(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -433,7 +432,7 @@ func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -505,7 +504,7 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

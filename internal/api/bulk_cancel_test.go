@@ -12,7 +12,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestBulkCancelByWorkflow(t *testing.T) {
@@ -21,7 +20,7 @@ func TestBulkCancelByWorkflow(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -75,7 +74,7 @@ func TestBulkCancelDryRun(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -141,7 +140,7 @@ func TestBulkCancelStatusFilter(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

@@ -20,7 +20,7 @@ import (
 func TestWorkerGroups(t *testing.T) {
 	harness.RunE2E(t, func(t *testing.T, nc *nats.Conn) {
 		tel := observe.NewNoopTelemetry()
-		orch := engine.NewOrchestrator(nc, tel)
+		orch := engine.NewOrchestrator(nc)
 		orch.Start()
 		t.Cleanup(func() { orch.Stop() })
 

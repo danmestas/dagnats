@@ -18,7 +18,6 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestBridgeE2EWorkflowCompletion(t *testing.T) {
@@ -28,11 +27,10 @@ func TestBridgeE2EWorkflowCompletion(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	tel := observe.NewNoopTelemetry()
 	ctx := context.Background()
 
 	// Start orchestrator
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -42,7 +40,7 @@ func TestBridgeE2EWorkflowCompletion(t *testing.T) {
 	defer ts.Close()
 
 	// Register a simple one-step workflow
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("bridge-e2e")
 	wb.Task("echo-step", "echo")
 	wfDef, err := wb.Build()

@@ -62,7 +62,7 @@ func TestE2EAgentStepRouting(t *testing.T) {
 	routes := map[dag.StepType]string{
 		dag.StepTypeAgent: "agent.task",
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry(),
+	orch := engine.NewOrchestrator(nc,
 		engine.WithStepRoutes(routes))
 	orch.Start()
 	defer orch.Stop()

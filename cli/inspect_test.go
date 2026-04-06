@@ -225,7 +225,7 @@ func TestInspectCleanRunShowsNoFailures(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("clean-wf")
 	wb.Task("a", "task-a")
 	def, _ := wb.Build()

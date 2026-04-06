@@ -15,7 +15,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -40,7 +39,7 @@ func TestOrchestratorStartsFirstStep(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -85,7 +84,7 @@ func TestOrchestratorAdvancesAfterStepCompleted(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -140,7 +139,7 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -226,7 +225,7 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -301,7 +300,7 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -368,7 +367,7 @@ func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
 	routes := map[dag.StepType]string{
 		dag.StepTypeAgent: "agent.task",
 	}
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry(),
+	orch := NewOrchestrator(nc,
 		WithStepRoutes(routes))
 	orch.Start()
 	defer orch.Stop()
@@ -419,7 +418,7 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 		t.Fatalf("put child def: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -487,7 +486,7 @@ func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
 		t.Fatalf("subscribe parent history: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -572,7 +571,7 @@ func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
 		store.Save(context.Background(), run)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -620,7 +619,7 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("cancel-test", defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -695,7 +694,7 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("retry-test", defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -763,7 +762,7 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("exhaust-test", defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -833,7 +832,7 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("timeout-test", defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -899,7 +898,7 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 		t.Fatalf("subscribe DLQ: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -975,7 +974,7 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	taskSub, _ := js.SubscribeSync("task.notify-task.>",
 		nats.AckExplicit(), nats.DeliverAll())
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1040,7 +1039,7 @@ func TestOrchestratorWorkerGroupRouting(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1100,7 +1099,7 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1189,7 +1188,7 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1266,7 +1265,7 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1346,7 +1345,7 @@ func TestOrchestratorSnapshotRestore(t *testing.T) {
 		t.Fatalf("Save crafted: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	wfDefR, runR, err := orch.loadRunAndDef(context.Background(), "crafted-run")
 	if err != nil {
 		t.Fatalf("loadRunAndDef: %v", err)
@@ -1395,7 +1394,7 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1491,7 +1490,7 @@ func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1562,7 +1561,7 @@ func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1659,7 +1658,7 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1820,7 +1819,7 @@ func TestOrchestratorTraceparentPropagation(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1915,7 +1914,7 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -1990,7 +1989,7 @@ func TestOrchestratorStartWithInput(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -2051,7 +2050,7 @@ func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -2104,7 +2103,7 @@ func TestOrchestratorStopIdempotent(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 
 	// Positive: Stop on never-started is safe.
 	orch.Stop()
@@ -2138,7 +2137,7 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -2181,7 +2180,7 @@ func TestLoadRunAndDefMissingRun(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 
 	// Positive: error returned for missing run.
 	_, _, err := orch.loadRunAndDef(context.Background(), "nonexistent-run")
@@ -2221,7 +2220,7 @@ func TestLoadRunAndDefMissingWorkflowDef(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 
 	// Positive: error returned for missing workflow def.
 	_, _, err = orch.loadRunAndDef(context.Background(), "orphan-run")
@@ -2262,7 +2261,7 @@ func TestStepSubjectRouting(t *testing.T) {
 	routes := map[dag.StepType]string{
 		dag.StepTypeAgent: "agent.task",
 	}
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry(),
+	orch := NewOrchestrator(nc,
 		WithStepRoutes(routes))
 
 	// Normal step -> default prefix.
@@ -2336,7 +2335,7 @@ func TestPublishReadyTasksParallel(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -2405,7 +2404,7 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -2557,7 +2556,7 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -2699,7 +2698,7 @@ func TestOrchestratorSleepStep(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -2809,7 +2808,7 @@ func TestOrchestratorRateLimitDelaysTask(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -2946,7 +2945,7 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -3075,7 +3074,7 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -3170,7 +3169,7 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -3271,7 +3270,7 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -3364,7 +3363,7 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

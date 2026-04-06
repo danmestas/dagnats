@@ -12,7 +12,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestBulkRetryRerunMode(t *testing.T) {
@@ -21,7 +20,7 @@ func TestBulkRetryRerunMode(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -94,7 +93,7 @@ func TestBulkRetryDryRun(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -182,7 +181,7 @@ func TestBulkRetrySkipsNonFailed(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

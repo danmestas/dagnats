@@ -18,7 +18,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestRESTRegisterWorkflow(t *testing.T) {
@@ -82,7 +81,7 @@ func TestRESTStartRun(t *testing.T) {
 func TestRESTGetRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -452,7 +451,7 @@ func TestRouteRunsRejectsPUT(t *testing.T) {
 func TestRESTListRuns(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -533,7 +532,7 @@ func TestRouteRunByIDRejectsPUT(t *testing.T) {
 func TestRESTCancelRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -786,7 +785,7 @@ func TestRESTBulkCancel(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -894,7 +893,7 @@ func TestRESTBulkRetry(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

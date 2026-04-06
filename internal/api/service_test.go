@@ -14,7 +14,6 @@ import (
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -77,7 +76,7 @@ func TestServiceGetRunStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -497,7 +496,7 @@ func TestServiceListRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -549,7 +548,7 @@ func TestServiceListRunsFilterByWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -601,7 +600,7 @@ func TestServiceListRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

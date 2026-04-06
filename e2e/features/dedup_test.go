@@ -13,7 +13,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/e2e/harness"
 	"github.com/danmestas/dagnats/internal/engine"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -21,8 +20,7 @@ import (
 
 func TestDeduplication(t *testing.T) {
 	harness.RunE2E(t, func(t *testing.T, nc *nats.Conn) {
-		tel := observe.NewNoopTelemetry()
-		orch := engine.NewOrchestrator(nc, tel)
+		orch := engine.NewOrchestrator(nc)
 		orch.Start()
 		t.Cleanup(func() { orch.Stop() })
 

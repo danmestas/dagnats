@@ -32,7 +32,7 @@ func TestE2ETelemetryTracePropagation(t *testing.T) {
 
 	ctx := t.Context()
 
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -46,7 +46,7 @@ func TestE2ETelemetryTracePropagation(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("e2e-telemetry")
 	a := wb.Task("a", "tel-a")
 	wb.Task("b", "tel-b").After(a)

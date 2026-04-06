@@ -12,7 +12,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 )
 
 func TestScheduledRunTimerFires(t *testing.T) {
@@ -24,7 +23,7 @@ func TestScheduledRunTimerFires(t *testing.T) {
 	svc := NewService(nc)
 
 	// Start orchestrator so workflow.started events get processed.
-	orch := engine.NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	t.Cleanup(func() { orch.Stop() })
 

@@ -12,7 +12,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -53,7 +52,7 @@ func TestPriorityAffectsPendingOrder(t *testing.T) {
 		t.Fatalf("put def: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -121,7 +120,7 @@ func TestSingletonSkipMode(t *testing.T) {
 		t.Fatalf("put def: %v", err)
 	}
 
-	orch := NewOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

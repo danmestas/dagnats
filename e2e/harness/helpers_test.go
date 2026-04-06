@@ -10,7 +10,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 )
@@ -20,9 +19,7 @@ func TestHelperRoundTrip(t *testing.T) {
 	nc := topo.Connect(t)
 	topo.Setup(t, nc)
 
-	tel := observe.NewNoopTelemetry()
-
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	t.Cleanup(func() { orch.Stop() })
 

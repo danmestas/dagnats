@@ -20,7 +20,7 @@ func TestRunAndWait_Completed(t *testing.T) {
 	nc := Server(t)
 	tel := observe.NewNoopTelemetry()
 
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	t.Cleanup(func() { orch.Stop() })
 
@@ -31,7 +31,7 @@ func TestRunAndWait_Completed(t *testing.T) {
 	w.Start()
 	t.Cleanup(func() { w.Stop() })
 
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("run-and-wait-test")
 	wb.Task("step1", "echo")
 	wfDef, err := wb.Build()
@@ -63,15 +63,14 @@ func TestRunAndWait_Completed(t *testing.T) {
 
 func TestWaitForStatus_SpecificStatus(t *testing.T) {
 	nc := Server(t)
-	tel := observe.NewNoopTelemetry()
 
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	t.Cleanup(func() { orch.Stop() })
 
 	// No worker — run will stay Pending or move to Running
 	// but never complete.
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("wait-status-test")
 	wb.Task("step1", "noop")
 	wfDef, err := wb.Build()

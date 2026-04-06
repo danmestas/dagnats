@@ -17,7 +17,6 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -32,7 +31,7 @@ func TestRetryCreatesNewRun(t *testing.T) {
 	defer os.Setenv("NATS_URL", oldURL)
 
 	// Register workflow so StartRun can find the definition.
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
 		Name:    "retry-test",
 		Version: "1.0",
@@ -99,7 +98,7 @@ func TestRetryJSONOutput(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
-	svc := api.NewService(nc, observe.NewNoopTelemetry())
+	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
 		Name:    "retry-json-test",
 		Version: "1.0",
@@ -177,8 +176,7 @@ func TestRetryUsesOriginalInput(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
-	tel := observe.NewNoopTelemetry()
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
 		Name:    "retry-input-test",
 		Version: "1.0",
@@ -193,7 +191,7 @@ func TestRetryUsesOriginalInput(t *testing.T) {
 	}
 
 	// Start orchestrator so the new run's snapshot gets created.
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -269,8 +267,7 @@ func TestRetryExplicitInputOverridesOriginal(t *testing.T) {
 	os.Setenv("NATS_URL", srv.ClientURL())
 	defer os.Setenv("NATS_URL", oldURL)
 
-	tel := observe.NewNoopTelemetry()
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
 		Name:    "retry-override-test",
 		Version: "1.0",
@@ -284,7 +281,7 @@ func TestRetryExplicitInputOverridesOriginal(t *testing.T) {
 		t.Fatalf("register workflow: %v", err)
 	}
 
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

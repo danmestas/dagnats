@@ -10,7 +10,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -36,7 +35,7 @@ func TestActorOrchBasicWorkflow(t *testing.T) {
 	defKV.Put("actor-test", defData)
 
 	// Start ActorOrchestrator
-	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewActorOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -87,7 +86,7 @@ func TestActorOrchEnqueuesTasksOnStart(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("actor-enqueue", defData)
 
-	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewActorOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -160,7 +159,7 @@ func TestActorOrchLinearChainEnqueuesNext(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("actor-chain", defData)
 
-	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewActorOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -249,7 +248,7 @@ func TestActorOrchSurvivesMalformedEvent(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("ao-recover", defData)
 
-	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewActorOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -290,7 +289,7 @@ func TestActorOrchIgnoresUnhandledEvent(t *testing.T) {
 
 	js, _ := nc.JetStream()
 
-	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewActorOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -334,7 +333,7 @@ func TestActorOrchHandlesStepFailed(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("actor-fail", defData)
 
-	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewActorOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -404,7 +403,7 @@ func TestActorOrchRoutesCompletionToActor(t *testing.T) {
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put("actor-test-2", defData)
 
-	orch := NewActorOrchestrator(nc, observe.NewNoopTelemetry())
+	orch := NewActorOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 

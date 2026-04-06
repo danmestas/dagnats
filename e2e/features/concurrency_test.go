@@ -13,7 +13,6 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/e2e/harness"
 	"github.com/danmestas/dagnats/internal/engine"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
@@ -32,8 +31,7 @@ func TestConcurrencyLimit(t *testing.T) {
 			t.Fatalf("CreateKeyValue: %v", err)
 		}
 
-		tel := observe.NewNoopTelemetry()
-		orch := engine.NewOrchestrator(nc, tel)
+		orch := engine.NewOrchestrator(nc)
 		orch.Start()
 		t.Cleanup(func() { orch.Stop() })
 

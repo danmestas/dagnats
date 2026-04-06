@@ -33,7 +33,7 @@ func TestE2ELinearWorkflow(t *testing.T) {
 	ctx := context.Background()
 
 	// Start orchestrator
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -49,7 +49,7 @@ func TestE2ELinearWorkflow(t *testing.T) {
 	defer w.Stop()
 
 	// Register workflow and start run via service
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("e2e-linear")
 	a := wb.Task("a", "task-a")
 	wb.Task("b", "task-b").After(a)
@@ -164,7 +164,7 @@ func TestE2EAgentLoop(t *testing.T) {
 
 	tel := observe.NewNoopTelemetry()
 
-	orch := engine.NewOrchestrator(nc, tel)
+	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
@@ -183,7 +183,7 @@ func TestE2EAgentLoop(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	svc := api.NewService(nc, tel)
+	svc := api.NewService(nc)
 	wb := dag.NewWorkflow("e2e-loop")
 	wb.AgentLoop("loop", "looper").WithMaxIterations(10)
 	wfDef, err := wb.Build()
