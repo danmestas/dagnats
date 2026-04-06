@@ -27,7 +27,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -137,25 +136,14 @@ func (s *Service) RegisterWorkflow(
 	if def.Name == "" {
 		panic("RegisterWorkflow: def.Name must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api registerWorkflow",
-		trace.WithAttributes(
+	return s.observed(ctx, "registerWorkflow",
+		[]attribute.KeyValue{
 			attribute.String("workflow_name", def.Name),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.registerWorkflowInner(ctx, def)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.registerWorkflowInner(ctx, def)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // registerWorkflowInner holds the core logic, keeping the
@@ -211,29 +199,26 @@ func (s *Service) StartRun(
 	if workflowName == "" {
 		panic("StartRun: workflowName must not be empty")
 	}
-	ctx, span := s.tracer.Start(ctx,
-		"dagnats.api startRun",
-		trace.WithAttributes(
+	var runID string
+	err := s.observed(ctx, "startRun",
+		[]attribute.KeyValue{
 			attribute.String("workflow_name", workflowName),
-		),
+		},
+		func(ctx context.Context) error {
+			span := trace.SpanFromContext(ctx)
+			var innerErr error
+			runID, innerErr = s.startRunInner(
+				ctx, span, workflowName, input,
+			)
+			if innerErr == nil {
+				span.SetAttributes(
+					attribute.String("run_id", runID),
+				)
+			}
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	runID, err := s.startRunInner(
-		ctx, span, workflowName, input,
-	)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return "", err
-	}
-	span.SetAttributes(attribute.String("run_id", runID))
-	return runID, nil
+	return runID, err
 }
 
 // startRunInner holds the core publish logic for StartRun,
@@ -353,24 +338,17 @@ func (s *Service) GetRun(
 	if runID == "" {
 		panic("GetRun: runID must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api getRun",
-		trace.WithAttributes(
+	var run dag.WorkflowRun
+	err := s.observed(ctx, "getRun",
+		[]attribute.KeyValue{
 			attribute.String("run_id", runID),
-		),
+		},
+		func(ctx context.Context) error {
+			var innerErr error
+			run, innerErr = s.store.Load(ctx, runID)
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	run, err := s.store.Load(ctx, runID)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
 	return run, err
 }
 
@@ -511,21 +489,14 @@ func (s *Service) ListWorkflows(
 	if s.defKV == nil {
 		panic("ListWorkflows: defKV must not be nil")
 	}
-	_, span := s.tracer.Start(
-		ctx, "dagnats.api listWorkflows",
+	var defs []dag.WorkflowDef
+	err := s.observed(ctx, "listWorkflows", nil,
+		func(ctx context.Context) error {
+			var innerErr error
+			defs, innerErr = s.listWorkflowsInner(ctx)
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	defs, err := s.listWorkflowsInner(ctx)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
 	return defs, err
 }
 
@@ -574,25 +545,14 @@ func (s *Service) CancelRun(
 	if runID == "" {
 		panic("CancelRun: runID must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api cancelRun",
-		trace.WithAttributes(
+	return s.observed(ctx, "cancelRun",
+		[]attribute.KeyValue{
 			attribute.String("run_id", runID),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.cancelRunInner(ctx, runID)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.cancelRunInner(ctx, runID)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // cancelRunInner publishes the workflow.cancelled event.
@@ -634,26 +594,15 @@ func (s *Service) SendSignal(
 	if name == "" {
 		panic("SendSignal: name must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api sendSignal",
-		trace.WithAttributes(
+	return s.observed(ctx, "sendSignal",
+		[]attribute.KeyValue{
 			attribute.String("run_id", runID),
 			attribute.String("signal_name", name),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.sendSignalInner(ctx, runID, name, data)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.sendSignalInner(ctx, runID, name, data)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // sendSignalInner writes to the signals KV bucket.
@@ -686,26 +635,15 @@ func (s *Service) CreateTrigger(
 	if def.ID == "" {
 		panic("CreateTrigger: def.ID must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api createTrigger",
-		trace.WithAttributes(
+	return s.observed(ctx, "createTrigger",
+		[]attribute.KeyValue{
 			attribute.String("trigger_id", def.ID),
 			attribute.String("workflow_id", def.WorkflowID),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.createTriggerInner(ctx, def)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.createTriggerInner(ctx, def)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // createTriggerInner validates and writes the trigger to KV.
@@ -746,21 +684,14 @@ func (s *Service) ListTriggers(
 	if s.js == nil {
 		panic("ListTriggers: js must not be nil")
 	}
-	_, span := s.tracer.Start(
-		ctx, "dagnats.api listTriggers",
+	var defs []trigger.TriggerDef
+	err := s.observed(ctx, "listTriggers", nil,
+		func(ctx context.Context) error {
+			var innerErr error
+			defs, innerErr = s.listTriggersInner(ctx)
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	defs, err := s.listTriggersInner(ctx)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
 	return defs, err
 }
 
@@ -809,25 +740,14 @@ func (s *Service) DeleteTrigger(
 	if triggerID == "" {
 		panic("DeleteTrigger: triggerID must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api deleteTrigger",
-		trace.WithAttributes(
+	return s.observed(ctx, "deleteTrigger",
+		[]attribute.KeyValue{
 			attribute.String("trigger_id", triggerID),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.deleteTriggerInner(ctx, triggerID)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.deleteTriggerInner(ctx, triggerID)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // deleteTriggerInner deletes the trigger from KV.
@@ -857,25 +777,16 @@ func (s *Service) SetTriggerEnabled(
 	if triggerID == "" {
 		panic("SetTriggerEnabled: triggerID must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api setTriggerEnabled",
-		trace.WithAttributes(
+	return s.observed(ctx, "setTriggerEnabled",
+		[]attribute.KeyValue{
 			attribute.String("trigger_id", triggerID),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.setTriggerEnabledInner(
+				ctx, triggerID, enabled,
+			)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.setTriggerEnabledInner(ctx, triggerID, enabled)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // setTriggerEnabledInner reads, updates, and writes the trigger.
@@ -934,25 +845,16 @@ func (s *Service) UpdateTrigger(
 	if triggerID == "" {
 		panic("UpdateTrigger: triggerID must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api updateTrigger",
-		trace.WithAttributes(
+	return s.observed(ctx, "updateTrigger",
+		[]attribute.KeyValue{
 			attribute.String("trigger_id", triggerID),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.updateTriggerInner(
+				ctx, triggerID, updates,
+			)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.updateTriggerInner(ctx, triggerID, updates)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // updateTriggerInner reads, patches, validates, and writes the trigger.
@@ -1029,21 +931,14 @@ func (s *Service) ListDeadLetters(
 	if limit <= 0 {
 		panic("ListDeadLetters: limit must be positive")
 	}
-	_, span := s.tracer.Start(
-		ctx, "dagnats.api listDeadLetters",
+	var letters []DeadLetter
+	err := s.observed(ctx, "listDeadLetters", nil,
+		func(_ context.Context) error {
+			var innerErr error
+			letters, innerErr = s.listDeadLettersInner(limit)
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	letters, err := s.listDeadLettersInner(limit)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
 	return letters, err
 }
 
@@ -1143,25 +1038,14 @@ func (s *Service) ReplayDeadLetter(
 	if seq == 0 {
 		panic("ReplayDeadLetter: seq must be positive")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api replayDeadLetter",
-		trace.WithAttributes(
+	return s.observed(ctx, "replayDeadLetter",
+		[]attribute.KeyValue{
 			attribute.Int64("sequence", int64(seq)),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.replayDeadLetterInner(ctx, seq)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.replayDeadLetterInner(ctx, seq)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // replayDeadLetterInner fetches by sequence and republishes.
@@ -1222,21 +1106,16 @@ func (s *Service) ListRuns(
 	if s.store == nil {
 		panic("ListRuns: store must not be nil")
 	}
-	_, span := s.tracer.Start(
-		ctx, "dagnats.api listRuns",
+	var runs []dag.WorkflowRun
+	err := s.observed(ctx, "listRuns", nil,
+		func(ctx context.Context) error {
+			var innerErr error
+			runs, innerErr = s.listRunsInner(
+				ctx, workflowFilter,
+			)
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	runs, err := s.listRunsInner(ctx, workflowFilter)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
 	return runs, err
 }
 
@@ -1281,24 +1160,19 @@ func (s *Service) ListRunEvents(
 	if runID == "" {
 		panic("ListRunEvents: runID must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api listRunEvents",
-		trace.WithAttributes(
+	var events []RunEvent
+	err := s.observed(ctx, "listRunEvents",
+		[]attribute.KeyValue{
 			attribute.String("run_id", runID),
-		),
+		},
+		func(_ context.Context) error {
+			var innerErr error
+			events, innerErr = s.listRunEventsInner(
+				runID, fullData,
+			)
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	events, err := s.listRunEventsInner(runID, fullData)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
 	return events, err
 }
 
@@ -1438,28 +1312,17 @@ func (s *Service) HandleApproval(
 	if runID == "" {
 		panic("HandleApproval: runID must not be empty")
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api handleApproval",
-		trace.WithAttributes(
+	return s.observed(ctx, "handleApproval",
+		[]attribute.KeyValue{
 			attribute.String("run_id", runID),
 			attribute.String("step_id", stepID),
-		),
+		},
+		func(ctx context.Context) error {
+			return s.handleApprovalInner(
+				ctx, runID, stepID, token, action, body,
+			)
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	err := s.handleApprovalInner(
-		ctx, runID, stepID, token, action, body,
-	)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	return err
 }
 
 // handleApprovalInner loads the token, verifies it, atomically
@@ -1589,21 +1452,14 @@ func (s *Service) ListWorkers(
 	if s.js == nil {
 		panic("ListWorkers: js must not be nil")
 	}
-	_, span := s.tracer.Start(
-		ctx, "dagnats.api listWorkers",
+	var workers []worker.WorkerRegistration
+	err := s.observed(ctx, "listWorkers", nil,
+		func(ctx context.Context) error {
+			var innerErr error
+			workers, innerErr = s.listWorkersInner(ctx)
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	workers, err := s.listWorkersInner(ctx)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
 	return workers, err
 }
 
@@ -1675,26 +1531,19 @@ func (s *Service) ListTriggerFires(
 			"ListTriggerFires: triggerID must not be empty",
 		)
 	}
-	_, span := s.tracer.Start(ctx,
-		"dagnats.api listTriggerFires",
-		trace.WithAttributes(
+	var fires []TriggerFireEntry
+	err := s.observed(ctx, "listTriggerFires",
+		[]attribute.KeyValue{
 			attribute.String("trigger_id", triggerID),
-		),
+		},
+		func(_ context.Context) error {
+			var innerErr error
+			fires, innerErr = s.listTriggerFiresInner(
+				triggerID, limit,
+			)
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	fires, err := s.listTriggerFiresInner(
-		triggerID, limit,
-	)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
 	return fires, err
 }
 

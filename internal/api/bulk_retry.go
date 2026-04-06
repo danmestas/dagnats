@@ -13,8 +13,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -54,33 +52,28 @@ func (s *Service) BulkRetryRuns(
 		return BulkRetryResponse{},
 			fmt.Errorf("workflow_id is required")
 	}
-	ctx, span := s.tracer.Start(ctx,
-		"dagnats.api bulkRetryRuns",
-		trace.WithAttributes(
+	var resp BulkRetryResponse
+	err := s.observed(ctx, "bulkRetryRuns",
+		[]attribute.KeyValue{
 			attribute.String("workflow_id", req.WorkflowID),
 			attribute.String("mode", req.Mode),
 			attribute.Bool("dry_run", req.DryRun),
-		),
+		},
+		func(ctx context.Context) error {
+			var innerErr error
+			resp, innerErr = s.bulkRetryInner(ctx, req)
+			if innerErr == nil {
+				slog.InfoContext(ctx,
+					"bulk retry completed",
+					"workflow_id", req.WorkflowID,
+					"mode", req.Mode,
+					"retried", len(resp.Retried),
+					"skipped", len(resp.Skipped),
+				)
+			}
+			return innerErr
+		},
 	)
-	defer span.End()
-	start := time.Now()
-	s.requestCount.Add(ctx, 1)
-
-	resp, err := s.bulkRetryInner(ctx, req)
-	elapsed := float64(time.Since(start).Milliseconds())
-	s.requestDuration.Record(ctx, elapsed)
-	if err != nil {
-		s.errorCount.Add(ctx, 1)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	} else {
-		slog.InfoContext(ctx, "bulk retry completed",
-			"workflow_id", req.WorkflowID,
-			"mode", req.Mode,
-			"retried", len(resp.Retried),
-			"skipped", len(resp.Skipped),
-		)
-	}
 	return resp, err
 }
 
