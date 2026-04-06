@@ -114,6 +114,13 @@ http.ListenAndServe(":8080", b.Handler())
 
 The bridge binds optional KV buckets for **checkpoints** and **signals** at construction time. If these buckets are missing, the corresponding resolve actions return an error.
 
+## Examples
+
+Working examples of non-Go workers using the HTTP bridge:
+
+- **[Python worker](https://github.com/Craft-Design-Group/dagnats/tree/main/examples/http-worker-python)** -- complete Python worker with connect, poll, resolve, and reconnection logic
+- **[curl walkthrough](https://github.com/Craft-Design-Group/dagnats/tree/main/examples/http-worker-curl)** -- step-by-step protocol walkthrough using only curl commands
+
 ## Related
 
 - [Worker Configuration](/docs/workers/worker-configuration) -- Go native worker setup
