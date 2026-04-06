@@ -54,6 +54,8 @@ func Run(args []string) {
 		runMetricsCmd(args[2:])
 	case "observe":
 		runObserveCmd(args[2:])
+	case "sidecar":
+		runSidecarCmd(args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[1])
 		printUsage()
@@ -80,6 +82,7 @@ func printUsage() {
 	fmt.Println("  trace     view and search trace spans")
 	fmt.Println("  metrics   view metric snapshots")
 	fmt.Println("  observe   observability pipeline health")
+	fmt.Println("  sidecar   local observability sidecar")
 	fmt.Println("\nGlobal flags:")
 	fmt.Println("  --json    output in JSON format")
 }
