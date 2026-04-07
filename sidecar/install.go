@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -287,6 +288,70 @@ func writeExecutable(r io.Reader, dest string) error {
 	return nil
 }
 
+// localBinary describes a binary built from the local module.
+type localBinary struct {
+	Name string
+	Pkg  string
+}
+
+// localBinaries lists binaries built from the local Go module.
+var localBinaries = []localBinary{
+	{Name: "dagnats-mcp-duckdb", Pkg: "./cmd/mcp-duckdb/"},
+}
+
+// BuildLocal builds a binary from the local Go module using
+// go build. Requires go on PATH.
+func BuildLocal(name, pkg string) error {
+	if name == "" {
+		panic("BuildLocal: name is empty")
+	}
+	if pkg == "" {
+		panic("BuildLocal: pkg is empty")
+	}
+
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		return fmt.Errorf(
+			"go not found on PATH: %w", err,
+		)
+	}
+
+	modRoot, err := findModuleRoot()
+	if err != nil {
+		return fmt.Errorf("find module root: %w", err)
+	}
+
+	binDir, err := BinDir()
+	if err != nil {
+		return fmt.Errorf("resolve bin dir: %w", err)
+	}
+
+	dest := filepath.Join(binDir, name)
+	cmd := exec.Command(goPath, "build", "-o", dest, pkg)
+	cmd.Dir = modRoot
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go build %s: %w", name, err)
+	}
+	return nil
+}
+
+// findModuleRoot returns the directory containing go.mod.
+func findModuleRoot() (string, error) {
+	cmd := exec.Command("go", "env", "GOMOD")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go env GOMOD: %w", err)
+	}
+	gomod := strings.TrimSpace(string(out))
+	if gomod == "" || gomod == os.DevNull {
+		return "", fmt.Errorf("not in a Go module")
+	}
+	return filepath.Dir(gomod), nil
+}
+
 // InstallAll checks for otelcol, otlp2parquet, and
 // dagnats-mcp-duckdb, installs any that are missing.
 // Uses prebuilt downloads where available, falls back to
@@ -336,46 +401,24 @@ func InstallAll(w io.Writer) error {
 		fmt.Fprintf(w, "✓ %s installed\n", name)
 	}
 
-	// dagnats-mcp-duckdb: always build from Go source.
-	if err := installMCPDuckDB(w); err != nil {
-		return err
+	// Local Go binaries: build from in-repo source.
+	for _, lb := range localBinaries {
+		path, err := FindBinary(lb.Name)
+		if err == nil {
+			fmt.Fprintf(w, "✓ %s found at %s\n",
+				lb.Name, path)
+			continue
+		}
+
+		fmt.Fprintf(w, "🔨 building %s...\n", lb.Name)
+		if err := BuildLocal(lb.Name, lb.Pkg); err != nil {
+			return fmt.Errorf(
+				"build %s: %w", lb.Name, err,
+			)
+		}
+		fmt.Fprintf(w, "✓ %s built\n", lb.Name)
 	}
 
-	return nil
-}
-
-// installMCPDuckDB builds dagnats-mcp-duckdb from the
-// in-repo Go source at cmd/dagnats-mcp-duckdb/.
-func installMCPDuckDB(w io.Writer) error {
-	if w == nil {
-		panic("installMCPDuckDB: writer is nil")
-	}
-
-	name := "dagnats-mcp-duckdb"
-	path, err := FindBinary(name)
-	if err == nil {
-		fmt.Fprintf(w, "✓ %s found at %s\n", name, path)
-		return nil
-	}
-
-	binDir, err := BinDir()
-	if err != nil {
-		return fmt.Errorf("bin dir: %w", err)
-	}
-
-	dest := filepath.Join(binDir, name)
-	fmt.Fprintf(w, "⬇ building %s...\n", name)
-
-	cmd := exec.Command(
-		"go", "build", "-o", dest, "./cmd/"+name+"/")
-	cmd.Stdout = w
-	cmd.Stderr = w
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("build %s: %w", name, err)
-	}
-
-	fmt.Fprintf(w, "✓ %s installed\n", name)
 	return nil
 }
 
@@ -434,7 +477,9 @@ func buildWithCargo(
 	}
 
 	// Build
-	fmt.Fprintf(w, "  building with cargo (this may take a few minutes)...\n")
+	fmt.Fprintf(w,
+		"  building with cargo"+
+			" (this may take a few minutes)...\n")
 	build := exec.Command("cargo", "build", "--release")
 	build.Dir = tmpDir
 	build.Stdout = w
@@ -444,9 +489,12 @@ func buildWithCargo(
 	}
 
 	// Copy binary
-	src := filepath.Join(tmpDir, "target", "release", name)
+	src := filepath.Join(
+		tmpDir, "target", "release", name,
+	)
 	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("built binary not found at %s", src)
+		return fmt.Errorf(
+			"built binary not found at %s", src)
 	}
 
 	data, err := os.ReadFile(src)

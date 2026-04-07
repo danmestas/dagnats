@@ -199,7 +199,9 @@ func collectorYAMLPath(
 
 // checkBinariesAvailable verifies all required binaries exist.
 func checkBinariesAvailable() {
-	required := []string{"otelcol", "otlp2parquet", "dagnats-mcp-duckdb"}
+	required := []string{
+		"otelcol", "otlp2parquet", "dagnats-mcp-duckdb",
+	}
 	missing := findMissingBinaries(required)
 
 	if len(missing) > 0 {
