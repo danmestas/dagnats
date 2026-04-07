@@ -293,6 +293,78 @@ func TestInspectCleanRunShowsNoFailures(t *testing.T) {
 	}
 }
 
+func TestHasFlagAndStripFlag(t *testing.T) {
+	args := []string{"run-123", "--trace", "--json"}
+
+	// Positive: detects --trace flag.
+	if !hasFlag(args, "--trace") {
+		t.Fatal("should detect --trace flag")
+	}
+
+	// Positive: strips --trace flag.
+	stripped := stripFlag(args, "--trace")
+	if len(stripped) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(stripped))
+	}
+
+	// Negative: --trace no longer present.
+	if hasFlag(stripped, "--trace") {
+		t.Fatal("should not contain --trace after strip")
+	}
+
+	// Negative: flag not present returns false.
+	if hasFlag(args, "--missing") {
+		t.Fatal("should not detect missing flag")
+	}
+}
+
+func TestInspectNoTraceWithoutFlag(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	t.Setenv("NATS_URL", srv.ClientURL())
+
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	store := engine.NewSnapshotStore(jsNew)
+	run := dag.WorkflowRun{
+		RunID:      "notrace-run-1",
+		WorkflowID: "test-wf",
+		Status:     dag.RunStatusCompleted,
+		Steps: map[string]dag.StepState{
+			"a": {
+				Status:   dag.StepStatusCompleted,
+				Attempts: 1,
+			},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(
+		context.Background(), run,
+	); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	output := captureOutput(func() {
+		runInspectCmd([]string{"notrace-run-1"})
+	})
+
+	// Positive: shows run status.
+	if !strings.Contains(output, "notrace-run-1") {
+		t.Fatal("should contain run ID")
+	}
+
+	// Negative: no Trace section without --trace flag.
+	if strings.Contains(output, "Trace:") {
+		t.Fatal("should not show trace without --trace")
+	}
+}
+
 func TestCollectStepContextsGroupsByStep(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	failures := []api.RunEvent{

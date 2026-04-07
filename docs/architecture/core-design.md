@@ -113,12 +113,12 @@ Three interfaces, split by concern. Handlers type-assert to optional capabilitie
 - `PutStream(data)` — real-time streaming via core pub/sub (`stream.{runID}.{stepID}`)
 - `Heartbeat()` — extends AckWait via InProgress()
 
-**Checkpointable:** Handlers that need state across retries type-assert to this.
-- `Checkpoint(state)` / `LoadCheckpoint()` — KV persistence at `{runID}.{stepID}`
-- `Pause(name, duration)` — checkpoint + NakWithDelay for mid-task durable delay
+**Checkpointing** (methods on TaskContext directly):
+- `Checkpoint(state)` / `LoadCheckpoint()` — KV persistence
+- `Pause(name, duration)` — checkpoint + NakWithDelay
 
-**Signaler:** Handlers that coordinate across steps type-assert to this.
-- `WaitForSignal(name, timeout)` / `SendSignal(runID, name, data)` — KV watch-based
+**Signals** (methods on TaskContext directly):
+- `WaitForSignal(name, timeout)` / `SendSignal(runID, name, data)`
 
 **Worker options:** `WithGroups(groups...)` for routing, `WithRateLimit` / `WithKeyedRateLimit` for KV token bucket rate limiting.
 

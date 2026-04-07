@@ -17,6 +17,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `leaf_credentials`| string   | (none)                                             | (none)                                   |
 | `monitor_port`    | int      | (none)                                             | (none)                                   |
 | `max_store_bytes` | int64    | `10737418240` (10 GiB)                             | `10737418240` (10 GiB)                   |
+| `otlp_endpoint`   | string   | (none)                                             | (none)                                   |
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 

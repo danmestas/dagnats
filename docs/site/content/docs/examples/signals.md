@@ -41,7 +41,7 @@ The `prepare` and `wait-for-approval` steps both have no dependencies, so they r
 
 ## Worker Implementation
 
-The `wait-for-approval` handler casts the context to `worker.Signaler` to access `WaitForSignal`. This blocks until an external process sends the named signal or the timeout expires.
+The `wait-for-approval` handler calls `ctx.WaitForSignal` to block until an external process sends the named signal or the timeout expires.
 
 ```go
 package main
@@ -98,10 +98,8 @@ func handlePrepare(ctx worker.TaskContext) error {
 func handleWaitForApproval(ctx worker.TaskContext) error {
 	fmt.Println("[wait-for-approval] waiting for signal...")
 
-	// Cast to Signaler to access signal methods.
 	// The signal name "approval" is application-defined.
-	sig := ctx.(worker.Signaler)
-	data, err := sig.WaitForSignal(
+	data, err := ctx.WaitForSignal(
 		"approval", 5*time.Minute,
 	)
 	if err != nil {
