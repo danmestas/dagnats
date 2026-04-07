@@ -160,3 +160,57 @@ func TestHealthHandler_Stopped(t *testing.T) {
 		)
 	}
 }
+
+func TestHealthServer_Lifecycle(t *testing.T) {
+	t.Parallel()
+
+	procs := []*Process{
+		{Name: "test", Bin: "sleep", Args: []string{"60"}},
+		{Name: "test2", Bin: "sleep", Args: []string{"60"}},
+		{Name: "test3", Bin: "sleep", Args: []string{"60"}},
+	}
+	sup := testSupervisor(procs)
+	sup.cfg.Supervisor.Listen = "localhost:0"
+
+	if err := sup.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	if err := sup.startHealthServer(); err != nil {
+		sup.Stop()
+		t.Fatalf("startHealthServer failed: %v", err)
+	}
+
+	url := "http://" + sup.healthAddr + "/healthz"
+	resp, err := http.Get(url)
+	if err != nil {
+		sup.Stop()
+		t.Fatalf("health endpoint unreachable: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Positive: endpoint returns 200.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode health response: %v", err)
+	}
+
+	if len(body.Processes) != 3 {
+		t.Fatalf(
+			"expected 3 processes, got %d",
+			len(body.Processes),
+		)
+	}
+
+	sup.Stop()
+
+	// Negative: endpoint should be down after Stop.
+	_, err = http.Get(url)
+	if err == nil {
+		t.Fatal("health endpoint should be down after Stop")
+	}
+}
