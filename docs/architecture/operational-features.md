@@ -37,6 +37,24 @@ Workers signal permanent failures via `FailPermanent(err)` or explicit retry del
 
 **Bulk cancel** (already documented above): `POST /runs/cancel`. All three share: 1000-run cap, sequential publish, dry-run, time range filters.
 
+## Singleton Workflows
+
+At most one active run per key. Two conflict modes:
+- **Skip:** discard the new run silently
+- **Cancel:** cancel the existing run, start the new one ("last write wins")
+
+**Builder API:**
+- `WithSingleton(mode)` — global singleton (one run of this workflow at a time)
+- `WithSingletonKey(mode, dotPath)` — per-entity (e.g., one sync per user)
+
+**Mechanism:** `singleton_locks` KV bucket. CAS `Create` on `{workflow}` or `{workflow}.{keyValue}`. If key exists: load existing lock, verify run is active via KV snapshot. Stale locks (terminal runs) reclaimed via CAS `Update`. Lock released on every terminal state, guarded by `lock.RunID == run.RunID` to prevent cancel-mode from deleting the replacement's lock.
+
+**CLI:**
+- `dagnats singleton list [--workflow=X]` — shows active locks
+- `dagnats singleton release <key>` — admin escape hatch for stuck locks
+
+**Bounds:** Max key length 256 chars. CAS retry 3 attempts. Key extraction failure falls back to global key with warning.
+
 ## Concurrency Limits
 
 **Three scopes:**

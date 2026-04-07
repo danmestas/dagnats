@@ -12,6 +12,41 @@
 
 **Files:** `cli/dev.go` (entry), `cli/dev_watch.go` (watcher), `cli/dev_runner.go` (build/restart).
 
+## dagnatstest.NewHarness(t)
+
+`NewHarness(t)` returns a `Harness` struct with `NC`, `Engine`, `Svc`, `Worker` — all wired to an embedded NATS server with streams/KV provisioned. Eliminates ~15 lines of boilerplate per integration test. Worker is created but NOT started — register handlers first, then call `h.Start(t)`. `h.RegisterAndRun(t, def, input, timeout)` registers a workflow, starts a run, and blocks until terminal status.
+
+`HandleTypedOn[I,O](h, t, taskType, fn)` is a package-level generic function (Go generics can't be methods) matching the `worker.HandleTyped` pattern.
+
+## dagnatstest Fixtures
+
+Pre-built workflow definitions for common DAG topologies:
+
+- `LinearDef(t, n)` — n steps in sequence, task names `task-0` through `task-(n-1)`
+- `FanOutDef(t, n)` — 1 root → n parallel branches
+- `FanInDef(t, n)` — root → n branches → join
+- `DiamondDef(t)` — a → {b, c} → d
+
+`PassHandler()` completes with input as output. `FailHandler(msg)` returns a `NonRetryableError`. All Def functions generate unique names via `t.Name()` + atomic counter to avoid KV collisions in parallel tests.
+
+## Shell Completions
+
+`dagnats completion bash` and `dagnats completion zsh` generate shell scripts that delegate all logic to a hidden `dagnats __complete` command.
+
+**Static completions:** top-level commands, subcommands, flags — all hardcoded in sorted `[]string` vars. **Dynamic completions:** workflow names and run IDs fetched from NATS KV with 500ms timeout. Silent failure if NATS unreachable (shell completion convention).
+
+## dagnats run inspect
+
+Unified debug view combining status, failure events, DLQ entries, and optional trace spans. One command replaces `run status` + `run events --type` + `dlq list` + `trace`.
+
+**Cross-references:** Failure events and DLQ entries displayed inline under their corresponding failed step with `replay:` and `view:` copy-paste hints. `--trace` flag fetches spans from TELEMETRY stream and renders the span tree after steps. `--json` includes all sections with `omitempty`.
+
+**Architecture:** `gatherInspectData` collects all data into a single `inspectData` struct. Two renderers (`renderInspectHuman`, `renderInspectJSON`) consume the same data — no divergence possible.
+
+## dagnats clean
+
+Purges run data for a clean slate between test runs. Purges 5 streams (WORKFLOW_HISTORY, TASK_QUEUES, EVENTS, DEAD_LETTERS, SLEEP_TIMERS) and clears 10 runtime KV buckets. Preserves workflow definitions and telemetry by default. `--all` clears everything. `--force` skips confirmation prompt.
+
 ## dagnats status --detail
 
 Extends the status command with three sections for operational health:
