@@ -12,7 +12,10 @@
       "id": "resize",
       "task": "resize-image",
       "type": "map",
-      "depends_on": ["fetch-urls"]
+      "depends_on": ["fetch-urls"],
+      "config": {
+        "max_items": 10
+      }
     },
     {
       "id": "build-gallery",
