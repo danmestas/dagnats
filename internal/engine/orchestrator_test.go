@@ -2269,7 +2269,7 @@ func TestStepSubjectRouting(t *testing.T) {
 		ID: "s1", Task: "my-task",
 		Type: dag.StepTypeNormal,
 	}
-	subj := orch.stepSubject(step, "run-1")
+	subj := orch.publisher.stepSubject(step, "run-1")
 	if subj != "task.my-task.run-1" {
 		t.Fatalf("subject = %q, want task.my-task.run-1", subj)
 	}
@@ -2279,7 +2279,7 @@ func TestStepSubjectRouting(t *testing.T) {
 		ID: "s2", Task: "llm",
 		Type: dag.StepTypeAgent,
 	}
-	agentSubj := orch.stepSubject(agentStep, "run-1")
+	agentSubj := orch.publisher.stepSubject(agentStep, "run-1")
 	if agentSubj != "agent.task.llm.run-1" {
 		t.Fatalf("subject = %q, want agent.task.llm.run-1",
 			agentSubj)

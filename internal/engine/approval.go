@@ -7,8 +7,6 @@ package engine
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -44,30 +42,26 @@ type approvalRequestedPayload struct {
 	ExpiresAt   time.Time         `json:"expires_at"`
 }
 
-// generateApprovalToken returns a 64-character hex string from
-// 32 crypto-random bytes. Panics if OS entropy is unavailable.
-func generateApprovalToken() (string, error) {
-	b := make([]byte, 32)
-	_, err := rand.Read(b)
-	if err != nil {
-		return "", fmt.Errorf("generate token: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
+// SaveSnapshotFunc is called by ApprovalGate to persist run state.
+// The Orchestrator provides its saveSnapshot method as the callback.
+type SaveSnapshotFunc func(
+	ctx context.Context, run dag.WorkflowRun,
+) error
 
-// enqueueApprovalStep activates an approval gate: generates a
-// token, stores it in KV, publishes events, and schedules timeout.
-func (o *Orchestrator) enqueueApprovalStep(
+// Enqueue activates an approval gate: generates a token, stores
+// it in KV, publishes events, and schedules timeout.
+func (ag *ApprovalGate) Enqueue(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
 	step dag.StepDef,
+	saveFn SaveSnapshotFunc,
 ) error {
 	if step.Type != dag.StepTypeApproval {
-		panic("enqueueApprovalStep: wrong step type")
+		panic("Enqueue: wrong step type")
 	}
 	if run.RunID == "" {
-		panic("enqueueApprovalStep: RunID must not be empty")
+		panic("Enqueue: RunID must not be empty")
 	}
 
 	cfg, err := dag.ParseApprovalConfig(step)
@@ -80,33 +74,31 @@ func (o *Orchestrator) enqueueApprovalStep(
 		return err
 	}
 
-	return o.activateApprovalGate(
-		ctx, run, step, cfg, token,
+	return ag.activate(
+		ctx, run, step, cfg, token, saveFn,
 	)
 }
 
-// activateApprovalGate stores the token, marks the step running,
-// publishes events, and schedules the timeout timer. Extracted
-// to keep enqueueApprovalStep under 70 lines.
-func (o *Orchestrator) activateApprovalGate(
+// activate stores the token, marks the step running, publishes
+// events, and schedules the timeout timer.
+func (ag *ApprovalGate) activate(
 	ctx context.Context,
 	run *dag.WorkflowRun,
 	step dag.StepDef,
 	cfg dag.ApprovalConfig,
 	token string,
+	saveFn SaveSnapshotFunc,
 ) error {
 	if token == "" {
-		panic("activateApprovalGate: token must not be empty")
+		panic("activate: token must not be empty")
 	}
 	if cfg.Subject == "" {
-		panic(
-			"activateApprovalGate: Subject must not be empty",
-		)
+		panic("activate: Subject must not be empty")
 	}
 	now := time.Now().UTC()
 	expiresAt := now.Add(cfg.Timeout)
 
-	if err := o.storeApprovalToken(
+	if err := ag.storeToken(
 		ctx, run.RunID, step.ID, token, now, expiresAt,
 	); err != nil {
 		return err
@@ -115,35 +107,37 @@ func (o *Orchestrator) activateApprovalGate(
 	state := run.Steps[step.ID]
 	state.Status = dag.StepStatusRunning
 	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run); err != nil {
+	if err := saveFn(ctx, *run); err != nil {
 		return err
 	}
 
-	o.publishApprovalRequested(
+	ag.publishRequested(
 		ctx, run.RunID, step.ID, cfg, token, expiresAt,
 	)
 
-	return o.scheduleApprovalTimeout(
+	return ag.scheduleTimeout(
 		ctx, run.RunID, step.ID, cfg.Timeout,
 	)
 }
 
-// storeApprovalToken writes the token record to KV with key
-// {runID}.{stepID}. Uses Create to prevent overwrites.
-func (o *Orchestrator) storeApprovalToken(
+// storeToken writes the token record to KV with key
+// {runID}.{stepID}. Uses Put to store the record.
+func (ag *ApprovalGate) storeToken(
 	ctx context.Context,
 	runID, stepID, token string,
 	createdAt, expiresAt time.Time,
 ) error {
 	if runID == "" {
-		panic("storeApprovalToken: runID must not be empty")
+		panic("storeToken: runID must not be empty")
 	}
 	if stepID == "" {
-		panic("storeApprovalToken: stepID must not be empty")
+		panic("storeToken: stepID must not be empty")
 	}
-	kv, err := o.js.KeyValue(ctx, "approval_tokens")
+	kv, err := ag.js.KeyValue(ctx, "approval_tokens")
 	if err != nil {
-		return fmt.Errorf("get approval_tokens bucket: %w", err)
+		return fmt.Errorf(
+			"get approval_tokens bucket: %w", err,
+		)
 	}
 	record := approvalTokenRecord{
 		Token:     token,
@@ -161,9 +155,9 @@ func (o *Orchestrator) storeApprovalToken(
 	return err
 }
 
-// publishApprovalRequested publishes the approval.requested event
-// to history and a notification to the configured NATS subject.
-func (o *Orchestrator) publishApprovalRequested(
+// publishRequested publishes the approval.requested event to
+// history and a notification to the configured NATS subject.
+func (ag *ApprovalGate) publishRequested(
 	ctx context.Context,
 	runID, stepID string,
 	cfg dag.ApprovalConfig,
@@ -171,13 +165,11 @@ func (o *Orchestrator) publishApprovalRequested(
 	expiresAt time.Time,
 ) {
 	if runID == "" {
-		panic(
-			"publishApprovalRequested: runID must not be empty",
-		)
+		panic("publishRequested: runID must not be empty")
 	}
 	if stepID == "" {
 		panic(
-			"publishApprovalRequested: stepID must not be empty",
+			"publishRequested: stepID must not be empty",
 		)
 	}
 	payload := approvalRequestedPayload{
@@ -202,36 +194,36 @@ func (o *Orchestrator) publishApprovalRequested(
 	if err != nil {
 		return
 	}
-	o.js.Publish(
+	ag.js.Publish(
 		ctx, evt.NATSSubject(), evtData,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 
 	// Publish notification to the configured subject.
-	o.nc.Publish(cfg.Subject, data)
+	ag.nc.Publish(cfg.Subject, data)
 }
 
-// scheduleApprovalTimeout schedules a durable timer that fires
-// an approval.expired event after the configured timeout.
-func (o *Orchestrator) scheduleApprovalTimeout(
+// scheduleTimeout schedules a durable timer that fires an
+// approval.expired event after the configured timeout.
+func (ag *ApprovalGate) scheduleTimeout(
 	ctx context.Context,
 	runID, stepID string, timeout time.Duration,
 ) error {
 	if runID == "" {
 		panic(
-			"scheduleApprovalTimeout: runID must not be empty",
+			"scheduleTimeout: runID must not be empty",
 		)
 	}
 	if stepID == "" {
 		panic(
-			"scheduleApprovalTimeout: stepID must not be empty",
+			"scheduleTimeout: stepID must not be empty",
 		)
 	}
 	durationMs := timeout.Milliseconds()
 	if durationMs <= 0 {
 		durationMs = 1
 	}
-	return o.sleepTimer.Schedule(ctx, TimerMessage{
+	return ag.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:     TimerActionApprovalTimeout,
 		RunID:      runID,
 		StepID:     stepID,
@@ -239,22 +231,31 @@ func (o *Orchestrator) scheduleApprovalTimeout(
 	})
 }
 
-// handleApprovalGranted completes the approval step with the
-// granted payload as output. Guards against duplicate processing.
-func (o *Orchestrator) handleApprovalGranted(
-	ctx context.Context, evt protocol.Event,
+// HandleGranted completes the approval step with the granted
+// payload as output. Guards against duplicate processing.
+func (ag *ApprovalGate) HandleGranted(
+	ctx context.Context,
+	evt protocol.Event,
+	loadFn func(ctx context.Context, runID string) (
+		dag.WorkflowDef, dag.WorkflowRun, error,
+	),
+	completeFn func(
+		ctx context.Context, run dag.WorkflowRun,
+	) error,
+	saveFn SaveSnapshotFunc,
+	enqueueFn func(
+		ctx context.Context,
+		wfDef dag.WorkflowDef,
+		run dag.WorkflowRun,
+	) error,
 ) error {
 	if evt.RunID == "" {
-		panic(
-			"handleApprovalGranted: RunID must not be empty",
-		)
+		panic("HandleGranted: RunID must not be empty")
 	}
 	if evt.StepID == "" {
-		panic(
-			"handleApprovalGranted: StepID must not be empty",
-		)
+		panic("HandleGranted: StepID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
+	wfDef, run, err := loadFn(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -269,30 +270,40 @@ func (o *Orchestrator) handleApprovalGranted(
 
 	completed := completedSet(run)
 	if dag.IsComplete(wfDef, completed) {
-		return o.completeWorkflow(ctx, run)
+		return completeFn(ctx, run)
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := saveFn(ctx, run); err != nil {
 		return err
 	}
-	return o.enqueueReady(ctx, wfDef, run)
+	return enqueueFn(ctx, wfDef, run)
 }
 
-// handleApprovalRejected fails the approval step and delegates
-// to the standard failure path (on-failure, compensate, or fail).
-func (o *Orchestrator) handleApprovalRejected(
-	ctx context.Context, evt protocol.Event,
+// HandleRejected fails the approval step and delegates to the
+// standard failure path (on-failure, compensate, or fail).
+func (ag *ApprovalGate) HandleRejected(
+	ctx context.Context,
+	evt protocol.Event,
+	loadFn func(ctx context.Context, runID string) (
+		dag.WorkflowDef, dag.WorkflowRun, error,
+	),
+	failFn func(
+		ctx context.Context,
+		run dag.WorkflowRun,
+		stepDef dag.StepDef,
+		state dag.StepState,
+	) error,
 ) error {
 	if evt.RunID == "" {
 		panic(
-			"handleApprovalRejected: RunID must not be empty",
+			"HandleRejected: RunID must not be empty",
 		)
 	}
 	if evt.StepID == "" {
 		panic(
-			"handleApprovalRejected: StepID must not be empty",
+			"HandleRejected: StepID must not be empty",
 		)
 	}
-	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
+	wfDef, run, err := loadFn(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -309,25 +320,35 @@ func (o *Orchestrator) handleApprovalRejected(
 	run.Steps[evt.StepID] = state
 
 	stepDef, _ := findStepDef(wfDef, evt.StepID)
-	return o.failWorkflow(ctx, run, stepDef, state)
+	return failFn(ctx, run, stepDef, state)
 }
 
-// handleApprovalExpired fails the approval step when the timeout
-// fires. Guards against steps already approved or rejected.
-func (o *Orchestrator) handleApprovalExpired(
-	ctx context.Context, evt protocol.Event,
+// HandleExpired fails the approval step when the timeout fires.
+// Guards against steps already approved or rejected.
+func (ag *ApprovalGate) HandleExpired(
+	ctx context.Context,
+	evt protocol.Event,
+	loadFn func(ctx context.Context, runID string) (
+		dag.WorkflowDef, dag.WorkflowRun, error,
+	),
+	failFn func(
+		ctx context.Context,
+		run dag.WorkflowRun,
+		stepDef dag.StepDef,
+		state dag.StepState,
+	) error,
 ) error {
 	if evt.RunID == "" {
 		panic(
-			"handleApprovalExpired: RunID must not be empty",
+			"HandleExpired: RunID must not be empty",
 		)
 	}
 	if evt.StepID == "" {
 		panic(
-			"handleApprovalExpired: StepID must not be empty",
+			"HandleExpired: StepID must not be empty",
 		)
 	}
-	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
+	wfDef, run, err := loadFn(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -341,24 +362,20 @@ func (o *Orchestrator) handleApprovalExpired(
 	run.Steps[evt.StepID] = state
 
 	stepDef, _ := findStepDef(wfDef, evt.StepID)
-	return o.failWorkflow(ctx, run, stepDef, state)
+	return failFn(ctx, run, stepDef, state)
 }
 
-// cleanupApprovalTokens deletes tokens for any approval steps
-// that were cancelled. Called during workflow cancellation.
-func (o *Orchestrator) cleanupApprovalTokens(
+// CleanupTokens deletes tokens for any approval steps that were
+// cancelled. Called during workflow cancellation.
+func (ag *ApprovalGate) CleanupTokens(
 	ctx context.Context,
 	wfDef dag.WorkflowDef, run dag.WorkflowRun,
 ) {
 	if run.RunID == "" {
-		panic(
-			"cleanupApprovalTokens: RunID must not be empty",
-		)
+		panic("CleanupTokens: RunID must not be empty")
 	}
 	if run.Steps == nil {
-		panic(
-			"cleanupApprovalTokens: Steps must not be nil",
-		)
+		panic("CleanupTokens: Steps must not be nil")
 	}
 	for _, step := range wfDef.Steps {
 		if step.Type != dag.StepTypeApproval {
@@ -366,28 +383,24 @@ func (o *Orchestrator) cleanupApprovalTokens(
 		}
 		state := run.Steps[step.ID]
 		if state.Status == dag.StepStatusCancelled {
-			o.deleteApprovalToken(ctx, run.RunID, step.ID)
+			ag.deleteToken(ctx, run.RunID, step.ID)
 		}
 	}
 }
 
-// deleteApprovalToken removes a token from KV during cancellation
+// deleteToken removes a token from KV during cancellation
 // cleanup. Errors are logged but not fatal — the timeout timer
 // will fire and see the step is already cancelled.
-func (o *Orchestrator) deleteApprovalToken(
+func (ag *ApprovalGate) deleteToken(
 	ctx context.Context, runID, stepID string,
 ) {
 	if runID == "" {
-		panic(
-			"deleteApprovalToken: runID must not be empty",
-		)
+		panic("deleteToken: runID must not be empty")
 	}
 	if stepID == "" {
-		panic(
-			"deleteApprovalToken: stepID must not be empty",
-		)
+		panic("deleteToken: stepID must not be empty")
 	}
-	kv, err := o.js.KeyValue(ctx, "approval_tokens")
+	kv, err := ag.js.KeyValue(ctx, "approval_tokens")
 	if err != nil {
 		return
 	}

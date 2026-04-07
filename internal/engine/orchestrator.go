@@ -34,31 +34,28 @@ import (
 // It is intentionally stateless between events — all run state lives in the
 // snapshot store (NATS KV), so the orchestrator can crash and resume safely.
 type Orchestrator struct {
-	nc          *nats.Conn
-	js          jetstream.JetStream
-	defKV       jetstream.KeyValue
-	store       *SnapshotStore
-	tracer      trace.Tracer
-	cc          jetstream.ConsumeContext
-	runLocks    sync.Map                // map[string]*sync.Mutex — per-run serialization
-	stepRoutes  map[dag.StepType]string // step type → subject prefix
-	concurrency *ConcurrencyManager     // nil if bucket missing
-	rateLimiter *RateLimiter            // nil if bucket missing
-	sleepTimer  *SleepTimer             // durable sleep via NakWithDelay
-	correlator  *Correlator             // event wait-for-event matching
-	stickyKV    jetstream.KeyValue      // sticky_bindings — run-to-worker
-	singletonKV jetstream.KeyValue      // singleton_locks — one-at-a-time
+	nc         *nats.Conn
+	js         jetstream.JetStream
+	defKV      jetstream.KeyValue
+	store      *SnapshotStore
+	tracer     trace.Tracer
+	cc         jetstream.ConsumeContext
+	runLocks   sync.Map             // map[string]*sync.Mutex — per-run serialization
+	admission  *AdmissionController // singleton + concurrency
+	approval   *ApprovalGate        // approval token lifecycle
+	sleepTimer *SleepTimer          // durable sleep via NakWithDelay
+	correlator *Correlator          // event wait-for-event matching
+	sticky     *StickyRouter        // worker affinity bindings
+	publisher  *TaskPublisher       // task dispatch pipeline
+	recovery   *RecoveryManager     // failure recovery + compensation
 
 	// Pre-allocated metric instruments — created once in constructor.
-	runsActive              metric.Int64UpDownCounter
-	runsCompleted           metric.Int64Counter
-	runsFailed              metric.Int64Counter
-	stepEnqueueCount        metric.Int64Counter
-	snapshotDuration        metric.Float64Histogram
-	failNonRetriable        metric.Int64Counter
-	failRetryAfter          metric.Int64Counter
-	taskConcurrencyAcquired metric.Int64Counter
-	taskConcurrencyRejected metric.Int64Counter
+	runsActive       metric.Int64UpDownCounter
+	runsCompleted    metric.Int64Counter
+	runsFailed       metric.Int64Counter
+	snapshotDuration metric.Float64Histogram
+	failNonRetriable metric.Int64Counter
+	failRetryAfter   metric.Int64Counter
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -69,7 +66,9 @@ type OrchestratorOption func(*Orchestrator)
 func WithStepRoutes(
 	routes map[dag.StepType]string,
 ) OrchestratorOption {
-	return func(o *Orchestrator) { o.stepRoutes = routes }
+	return func(o *Orchestrator) {
+		o.publisher.stepRoutes = routes
+	}
 }
 
 // NewOrchestrator creates an Orchestrator bound to the given NATS connection.
@@ -96,6 +95,13 @@ func NewOrchestrator(
 		)
 	}
 	cm, _ := NewConcurrencyManagerSafe(js)
+	store := NewSnapshotStore(js)
+	singletonKV, _ := js.KeyValue(
+		context.Background(), "singleton_locks",
+	)
+	ac := NewAdmissionController(
+		nc, js, store, cm, singletonKV,
+	)
 	rl := NewRateLimiter(js)
 	m := otel.Meter("dagnats/engine")
 	runsActive, _ := m.Int64UpDownCounter(
@@ -125,32 +131,47 @@ func NewOrchestrator(
 	taskConcRejected, _ := m.Int64Counter(
 		"task.concurrency.rejected",
 	)
-	o := &Orchestrator{
-		nc:                      nc,
-		js:                      js,
-		defKV:                   defKV,
-		store:                   NewSnapshotStore(js),
-		tracer:                  otel.Tracer("dagnats/engine"),
-		concurrency:             cm,
-		rateLimiter:             rl,
-		runsActive:              runsActive,
-		runsCompleted:           runsCompleted,
-		runsFailed:              runsFailed,
-		stepEnqueueCount:        stepEnqueue,
-		snapshotDuration:        snapDur,
-		failNonRetriable:        failNonRetriable,
-		failRetryAfter:          failRetryAfter,
-		taskConcurrencyAcquired: taskConcAcquired,
-		taskConcurrencyRejected: taskConcRejected,
-	}
-	o.sleepTimer = NewSleepTimer(nc, js)
-	o.correlator = NewCorrelator(nc, js)
-	o.stickyKV, _ = js.KeyValue(
+	tracer := otel.Tracer("dagnats/engine")
+	sleepTimer := NewSleepTimer(nc, js)
+	stickyKV, _ := js.KeyValue(
 		context.Background(), "sticky_bindings",
 	)
-	o.singletonKV, _ = js.KeyValue(
-		context.Background(), "singleton_locks",
+	sticky := NewStickyRouter(
+		stickyKV, js, sleepTimer, tracer,
+		stepEnqueue,
 	)
+	publisher := NewTaskPublisher(
+		js, rl, ac, sticky, sleepTimer, tracer,
+		stepEnqueue, taskConcAcquired, taskConcRejected,
+	)
+	recovery := NewRecoveryManager(
+		js, publisher, tracer, runsActive, runsFailed,
+	)
+	o := &Orchestrator{
+		nc:               nc,
+		js:               js,
+		defKV:            defKV,
+		store:            store,
+		tracer:           tracer,
+		admission:        ac,
+		sleepTimer:       sleepTimer,
+		sticky:           sticky,
+		publisher:        publisher,
+		recovery:         recovery,
+		runsActive:       runsActive,
+		runsCompleted:    runsCompleted,
+		runsFailed:       runsFailed,
+		snapshotDuration: snapDur,
+		failNonRetriable: failNonRetriable,
+		failRetryAfter:   failRetryAfter,
+	}
+	o.approval = NewApprovalGate(
+		nc, js, o.sleepTimer, o.tracer,
+	)
+	o.correlator = NewCorrelator(nc, js)
+	// Wire the loadRunAndDef callback so TaskPublisher can
+	// check sticky workflow definitions without circular deps.
+	o.publisher.loadRunAndDef = o.loadRunAndDef
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -340,11 +361,19 @@ func (o *Orchestrator) dispatchEvent(
 	case protocol.EventWorkflowCancelled:
 		return o.handleWorkflowCancelled(ctx, evt)
 	case protocol.EventApprovalGranted:
-		return o.handleApprovalGranted(ctx, evt)
+		return o.approval.HandleGranted(
+			ctx, evt, o.loadRunAndDef,
+			o.completeWorkflow, o.saveSnapshot,
+			o.enqueueReady,
+		)
 	case protocol.EventApprovalRejected:
-		return o.handleApprovalRejected(ctx, evt)
+		return o.approval.HandleRejected(
+			ctx, evt, o.loadRunAndDef, o.failWorkflow,
+		)
 	case protocol.EventApprovalExpired:
-		return o.handleApprovalExpired(ctx, evt)
+		return o.approval.HandleExpired(
+			ctx, evt, o.loadRunAndDef, o.failWorkflow,
+		)
 	default:
 		return nil
 	}
@@ -404,12 +433,12 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
 	run.Input = input
 
-	admission, admitErr := o.admitRun(ctx, wfDef, run, input)
+	admission, admitErr := o.admission.Admit(ctx, wfDef, run, input)
 	if admitErr != nil {
 		return admitErr
 	}
 	if admission.cancelID != "" {
-		o.publishWorkflowCancelledEvent(admission.cancelID)
+		o.admission.publishWorkflowCancelledEvent(admission.cancelID)
 	}
 	run.PriorityOffset = admission.offset
 	run.SingletonKey = admission.singletonKey
@@ -523,16 +552,16 @@ func (o *Orchestrator) handleStepCompleted(
 
 	// Create sticky binding if this is the first step of a
 	// sticky workflow and the worker included its ID.
-	o.createStickyBinding(ctx, wfDef, run, evt)
+	o.sticky.CreateBinding(ctx, wfDef, run, evt)
 
 	// Check if this completed step is an OnFailure handler.
 	// If so, mark the original failed step as Recovered and
 	// skip its dependents.
-	o.recoverIfOnFailure(wfDef, &run, evt.StepID)
+	o.recovery.RecoverIfOnFailure(wfDef, &run, evt.StepID)
 
 	// Check if this is a compensate step completing.
-	if o.handleCompensateStepCompleted(
-		ctx, wfDef, &run, evt.StepID,
+	if o.recovery.HandleCompensateCompleted(
+		ctx, wfDef, &run, evt.StepID, o.saveSnapshot,
 	) {
 		return nil
 	}
@@ -547,43 +576,6 @@ func (o *Orchestrator) handleStepCompleted(
 	return o.enqueueReady(ctx, wfDef, run)
 }
 
-// recoverIfOnFailure checks if stepID is an OnFailure target for a
-// failed step. If so, transitions the failed step to Recovered and
-// marks dependents of the failed step as Skipped.
-func (o *Orchestrator) recoverIfOnFailure(
-	wfDef dag.WorkflowDef,
-	run *dag.WorkflowRun,
-	completedStepID string,
-) {
-	for _, stepDef := range wfDef.Steps {
-		if stepDef.OnFailure != completedStepID {
-			continue
-		}
-		failedState := run.Steps[stepDef.ID]
-		if failedState.Status != dag.StepStatusFailed {
-			continue
-		}
-		// Mark the original failed step as recovered
-		failedState.Status = dag.StepStatusRecovered
-		run.Steps[stepDef.ID] = failedState
-
-		// Skip dependents of the failed step — they can't run
-		// without its output
-		for _, s := range wfDef.Steps {
-			for _, dep := range s.DependsOn {
-				if dep == stepDef.ID {
-					depState := run.Steps[s.ID]
-					if depState.Status == dag.StepStatusPending {
-						depState.Status = dag.StepStatusSkipped
-						run.Steps[s.ID] = depState
-					}
-				}
-			}
-		}
-		return
-	}
-}
-
 // completeWorkflow marks the run complete, saves, publishes the event,
 // adjusts metrics, and releases concurrency slot.
 func (o *Orchestrator) completeWorkflow(
@@ -596,15 +588,16 @@ func (o *Orchestrator) completeWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.releaseSingletonLock(ctx, run)
-	o.deleteStickyBinding(ctx, run.RunID)
+	o.admission.ReleaseSingletonLock(ctx, run)
+	o.sticky.DeleteBinding(ctx, run.RunID)
 	o.runsActive.Add(ctx, -1)
 	o.runsCompleted.Add(ctx, 1)
-	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
-			return fmt.Errorf("release run: %w", err)
-		}
-		// Auto-start next pending run if available
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
 			slog.ErrorContext(ctx,
 				"failed to start next pending run",
@@ -708,7 +701,7 @@ func (o *Orchestrator) transitionPendingToRunning(
 	}
 
 	if wfDef.Concurrency != nil {
-		acquired, err := o.concurrency.AcquireRun(
+		acquired, err := o.admission.AcquireRun(
 			ctx, wfDef.Name, wfDef.Concurrency.MaxRuns,
 		)
 		if err != nil {
@@ -785,7 +778,7 @@ func (o *Orchestrator) handleStepContinue(
 			case <-loopCtx.Done():
 				return
 			case <-timer.C:
-				pubErr := o.publishIterationTask(
+				pubErr := o.publisher.PublishIteration(
 					loopCtx, runID, stepDef, input, iter,
 				)
 				if pubErr != nil {
@@ -800,7 +793,7 @@ func (o *Orchestrator) handleStepContinue(
 		}()
 		return nil
 	}
-	return o.publishIterationTask(
+	return o.publisher.PublishIteration(
 		ctx, run.RunID, stepDef, input, state.Iterations,
 	)
 }
@@ -868,11 +861,12 @@ func (o *Orchestrator) failLoopStep(
 	}
 	o.runsActive.Add(ctx, -1)
 	o.runsFailed.Add(ctx, 1)
-	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
-			return fmt.Errorf("release run: %w", err)
-		}
-		// Auto-start next pending run if available
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
 			slog.ErrorContext(ctx,
 				"failed to start next pending run",
@@ -965,8 +959,10 @@ func (o *Orchestrator) handleStepFailed(
 		)
 		state.Status = dag.StepStatusFailed
 		run.Steps[evt.StepID] = state
-		return o.handlePermanentFailure(
+		return o.recovery.HandlePermanentFailure(
 			ctx, wfDef, run, stepDef, state, evt.StepID,
+			o.saveSnapshot, o.failWorkflow,
+			o.notifyParentIfChild, o.releaseTaskSlot,
 		)
 	}
 
@@ -988,8 +984,10 @@ func (o *Orchestrator) handleStepFailed(
 
 	state.Status = dag.StepStatusFailed
 	run.Steps[evt.StepID] = state
-	return o.handlePermanentFailure(
+	return o.recovery.HandlePermanentFailure(
 		ctx, wfDef, run, stepDef, state, evt.StepID,
+		o.saveSnapshot, o.failWorkflow,
+		o.notifyParentIfChild, o.releaseTaskSlot,
 	)
 }
 
@@ -1023,133 +1021,11 @@ func (o *Orchestrator) handleRetryAfter(
 	}
 	state.Status = dag.StepStatusFailed
 	run.Steps[stepID] = *state
-	return o.handlePermanentFailure(
+	return o.recovery.HandlePermanentFailure(
 		ctx, wfDef, *run, stepDef, *state, stepID,
+		o.saveSnapshot, o.failWorkflow,
+		o.notifyParentIfChild, o.releaseTaskSlot,
 	)
-}
-
-// handlePermanentFailure handles a step whose retries are exhausted
-// or that was marked non-retriable. Checks aux steps, on-failure
-// handlers, compensation chains, then fails the workflow.
-func (o *Orchestrator) handlePermanentFailure(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
-	run dag.WorkflowRun,
-	stepDef dag.StepDef,
-	state dag.StepState,
-	stepID string,
-) error {
-	if stepID == "" {
-		panic(
-			"handlePermanentFailure: stepID must not be empty",
-		)
-	}
-	if run.RunID == "" {
-		panic(
-			"handlePermanentFailure: RunID must not be empty",
-		)
-	}
-
-	// Release task concurrency slot if configured.
-	o.releaseTaskSlot(ctx, wfDef, stepID)
-
-	// If this is an auxiliary step (compensate target) failing,
-	// the compensation itself failed — critical state.
-	if wfDef.AuxSteps[stepID] {
-		return o.failAuxStep(ctx, run, stepDef, state)
-	}
-
-	// Check for on-failure handler before failing the workflow.
-	if stepDef.OnFailure != "" {
-		handled, err := o.tryOnFailureHandler(
-			ctx, wfDef, run, stepDef, state, stepID,
-		)
-		if err != nil {
-			return err
-		}
-		if handled {
-			return nil
-		}
-	}
-
-	// No on-failure handler — check for compensation.
-	completed := completedSet(run)
-	chain := dag.ResolveCompensateChain(
-		wfDef, completed, stepID,
-	)
-	if len(chain) > 0 {
-		return o.startCompensation(
-			ctx, wfDef, &run, stepID, state.Error,
-		)
-	}
-
-	// No compensation either — fail the workflow.
-	return o.failWorkflow(ctx, run, stepDef, state)
-}
-
-// failAuxStep handles failure of an auxiliary (compensate) step.
-// Marks the run as CompensateFailed and publishes a dead letter.
-func (o *Orchestrator) failAuxStep(
-	ctx context.Context,
-	run dag.WorkflowRun,
-	stepDef dag.StepDef,
-	state dag.StepState,
-) error {
-	if run.RunID == "" {
-		panic("failAuxStep: RunID must not be empty")
-	}
-	if stepDef.ID == "" {
-		panic("failAuxStep: stepDef.ID must not be empty")
-	}
-	run.Status = dag.RunStatusCompensateFailed
-	if err := o.saveSnapshot(ctx, run); err != nil {
-		return err
-	}
-	o.runsActive.Add(ctx, -1)
-	o.runsFailed.Add(ctx, 1)
-	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
-	return o.notifyParentIfChild(
-		ctx, run,
-		fmt.Errorf("compensation failed: %s", state.Error),
-	)
-}
-
-// tryOnFailureHandler attempts to run the on-failure handler for a
-// failed step. Returns (true, nil) if the handler was enqueued.
-func (o *Orchestrator) tryOnFailureHandler(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
-	run dag.WorkflowRun,
-	stepDef dag.StepDef,
-	state dag.StepState,
-	stepID string,
-) (bool, error) {
-	if stepDef.OnFailure == "" {
-		panic("tryOnFailureHandler: OnFailure must not be empty")
-	}
-	if stepID == "" {
-		panic("tryOnFailureHandler: stepID must not be empty")
-	}
-	onFailStep, found := findStepDef(
-		wfDef, stepDef.OnFailure,
-	)
-	if !found {
-		return false, nil
-	}
-	ofState := run.Steps[onFailStep.ID]
-	ofState.Status = dag.StepStatusQueued
-	run.Steps[onFailStep.ID] = ofState
-	if err := o.saveSnapshot(ctx, run); err != nil {
-		return false, err
-	}
-	errorInput := []byte(fmt.Sprintf(
-		`{"failed_step":"%s","error":%q}`,
-		stepID, state.Error,
-	))
-	err := o.publishTask(
-		ctx, run.RunID, onFailStep, errorInput, 0,
-	)
-	return err == nil, err
 }
 
 // scheduleRetryAfter schedules a timer to re-publish the task
@@ -1203,14 +1079,16 @@ func (o *Orchestrator) failWorkflow(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.releaseSingletonLock(ctx, run)
-	o.deleteStickyBinding(ctx, run.RunID)
+	o.admission.ReleaseSingletonLock(ctx, run)
+	o.sticky.DeleteBinding(ctx, run.RunID)
 	o.runsActive.Add(ctx, -1)
 	o.runsFailed.Add(ctx, 1)
-	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
-			return fmt.Errorf("release run: %w", err)
-		}
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
 		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
 			slog.ErrorContext(ctx,
 				"failed to start next pending run",
@@ -1222,165 +1100,10 @@ func (o *Orchestrator) failWorkflow(
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
+	o.recovery.PublishDeadLetter(ctx, run.RunID, stepDef, state)
 	return o.notifyParentIfChild(
 		ctx, run, fmt.Errorf("%s", state.Error),
 	)
-}
-
-// startCompensation begins the saga compensation chain. Resolves
-// compensate steps in reverse topo order and enqueues the first one.
-func (o *Orchestrator) startCompensation(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
-	run *dag.WorkflowRun,
-	failedStepID string,
-	failedError string,
-) error {
-	completed := completedSet(*run)
-	chain := dag.ResolveCompensateChain(
-		wfDef, completed, failedStepID,
-	)
-	if len(chain) == 0 {
-		return nil
-	}
-
-	// Mark compensate steps as queued
-	for _, step := range chain {
-		state := run.Steps[step.ID]
-		state.Status = dag.StepStatusQueued
-		run.Steps[step.ID] = state
-	}
-	if err := o.saveSnapshot(ctx, *run); err != nil {
-		return err
-	}
-
-	// Build input for the first compensate step
-	first := chain[0]
-	originalID := findCompensateSource(wfDef, first.ID)
-	input := buildCompensateInput(
-		originalID, run.Steps[originalID].Output,
-		failedStepID, failedError,
-	)
-	return o.publishTask(ctx, run.RunID, first, input, 0)
-}
-
-// handleCompensateStepCompleted checks if the completed step is part
-// of a compensation chain. If the chain is done, marks the workflow
-// as Compensated. If more steps remain, publishes the next one.
-// Returns true if this was a compensate step (caller should return).
-func (o *Orchestrator) handleCompensateStepCompleted(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
-	run *dag.WorkflowRun,
-	stepID string,
-) bool {
-	if !wfDef.AuxSteps[stepID] {
-		return false
-	}
-	// Only handle steps that are Compensate targets, not OnFailure.
-	if findCompensateSource(wfDef, stepID) == "" {
-		return false
-	}
-
-	// Find the next queued compensate step
-	for _, step := range wfDef.Steps {
-		if step.Compensate == "" {
-			continue
-		}
-		compState := run.Steps[step.Compensate]
-		if compState.Status != dag.StepStatusQueued {
-			continue
-		}
-		// Found a queued compensate step — publish it
-		compDef, _ := findStepDef(wfDef, step.Compensate)
-
-		// Find the original failure for error context
-		var failedStepID, failedError string
-		for _, s := range wfDef.Steps {
-			st := run.Steps[s.ID]
-			if st.Status == dag.StepStatusFailed {
-				failedStepID = s.ID
-				failedError = st.Error
-				break
-			}
-		}
-
-		input := buildCompensateInput(
-			step.ID, run.Steps[step.ID].Output,
-			failedStepID, failedError,
-		)
-		o.saveSnapshot(ctx, *run)
-		o.publishTask(ctx, run.RunID, compDef, input, 0)
-		return true
-	}
-
-	// All compensate steps done — mark workflow as Compensated
-	run.Status = dag.RunStatusCompensated
-	o.saveSnapshot(ctx, *run)
-	o.runsActive.Add(ctx, -1)
-	return true
-}
-
-// findCompensateSource returns the step ID whose Compensate field
-// points to the given compensate step ID.
-func findCompensateSource(
-	wfDef dag.WorkflowDef, compStepID string,
-) string {
-	for _, step := range wfDef.Steps {
-		if step.Compensate == compStepID {
-			return step.ID
-		}
-	}
-	return ""
-}
-
-// buildCompensateInput creates the JSON input for a compensate step.
-func buildCompensateInput(
-	originalID string, originalOutput []byte,
-	failedStepID string, failedError string,
-) []byte {
-	return []byte(fmt.Sprintf(
-		`{"original_step":%q,"original_output":%s,`+
-			`"trigger_step":%q,"trigger_error":%q}`,
-		originalID,
-		jsonOrNull(originalOutput),
-		failedStepID,
-		failedError,
-	))
-}
-
-func jsonOrNull(b []byte) string {
-	if len(b) == 0 {
-		return "null"
-	}
-	return string(b)
-}
-
-// publishDeadLetter publishes failed step info to the dead-letter queue.
-func (o *Orchestrator) publishDeadLetter(
-	ctx context.Context,
-	runID string, stepDef dag.StepDef, state dag.StepState,
-) {
-	if runID == "" {
-		panic("publishDeadLetter: runID must not be empty")
-	}
-	if stepDef.ID == "" {
-		panic("publishDeadLetter: stepDef.ID must not be empty")
-	}
-	payload, err := json.Marshal(map[string]any{
-		"run_id":   runID,
-		"step_id":  stepDef.ID,
-		"task":     stepDef.Task,
-		"error":    state.Error,
-		"attempts": state.Attempts,
-	})
-	if err != nil {
-		return
-	}
-	subject := fmt.Sprintf("dead.%s.%s.%s",
-		stepDef.Task, runID, stepDef.ID)
-	o.js.Publish(ctx, subject, payload)
 }
 
 // handleWorkflowCancelled marks the run and all in-flight steps as
@@ -1414,24 +1137,26 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	o.releaseCancelledTaskSlots(ctx, wfDef, run)
 
 	// Clean up approval tokens for cancelled approval steps.
-	o.cleanupApprovalTokens(ctx, wfDef, run)
+	o.approval.CleanupTokens(ctx, wfDef, run)
 
 	if o.correlator != nil {
 		o.correlator.RemoveWaitersForRun(ctx, run.RunID)
 	}
 
 	o.cascadeCancelChildren(ctx, wfDef, run)
-	o.releaseSingletonLock(ctx, run)
-	o.deleteStickyBinding(ctx, run.RunID)
+	o.admission.ReleaseSingletonLock(ctx, run)
+	o.sticky.DeleteBinding(ctx, run.RunID)
 
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
 	o.runsActive.Add(ctx, -1)
-	if o.concurrency != nil {
-		if err := o.concurrency.ReleaseRun(ctx, run.WorkflowID); err != nil {
-			return fmt.Errorf("release run: %w", err)
-		}
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
 		if err := o.startNextPendingRun(
 			ctx, run.WorkflowID,
 		); err != nil {
@@ -1777,8 +1502,9 @@ func (o *Orchestrator) dispatchReadySteps(
 				return err
 			}
 		case dag.StepTypeApproval:
-			if err := o.enqueueApprovalStep(
+			if err := o.approval.Enqueue(
 				ctx, wfDef, &run, step,
+				o.saveSnapshot,
 			); err != nil {
 				return err
 			}
@@ -1787,362 +1513,11 @@ func (o *Orchestrator) dispatchReadySteps(
 		}
 	}
 	if len(normalSteps) > 0 {
-		return o.publishReadyTasks(
+		return o.publisher.PublishBatch(
 			ctx, run.RunID, wfDef, run, normalSteps,
 		)
 	}
 	return nil
-}
-
-// publishReadyTasks publishes a task message for each ready step.
-// Steps are published concurrently since they are independent.
-func (o *Orchestrator) publishReadyTasks(
-	ctx context.Context,
-	runID string,
-	wfDef dag.WorkflowDef,
-	run dag.WorkflowRun,
-	ready []dag.StepDef,
-) error {
-	if runID == "" {
-		panic("publishReadyTasks: runID must not be empty")
-	}
-	if len(ready) == 0 {
-		panic("publishReadyTasks: ready must not be empty")
-	}
-	var g errgroup.Group
-	for _, step := range ready {
-		step := step
-		input, err := dag.ResolveInput(step, run.Steps)
-		if err != nil {
-			return fmt.Errorf(
-				"resolve input for step %q: %w", step.ID, err,
-			)
-		}
-		attempt := run.Steps[step.ID].Attempts
-		g.Go(func() error {
-			return o.publishTask(ctx, runID, step, input, attempt)
-		})
-	}
-	return g.Wait()
-}
-
-// publishTask publishes a TaskPayload to task.{step.Task}.{runID} with
-// dedup ID and trace context headers on the outgoing NATS message.
-// If the step has a rate limit configured and tokens are exhausted,
-// schedules a timer for delayed re-attempt instead of publishing.
-func (o *Orchestrator) publishTask(
-	ctx context.Context,
-	runID string,
-	step dag.StepDef,
-	input []byte,
-	attempt int,
-) error {
-	if runID == "" {
-		panic("publishTask: runID must not be empty")
-	}
-	if step.ID == "" {
-		panic("publishTask: step.ID must not be empty")
-	}
-
-	// Check rate limit before concurrency acquisition so we
-	// don't hold a concurrency slot while waiting for tokens.
-	if delayed, err := o.checkRateLimit(
-		ctx, step, runID, input,
-	); err != nil {
-		return err
-	} else if delayed {
-		return nil
-	}
-
-	// Check per-task-type concurrency before publishing.
-	if step.MaxTaskConcurrency > 0 && o.concurrency != nil {
-		acquired, err := o.concurrency.AcquireTask(
-			ctx, step.Task, step.MaxTaskConcurrency,
-		)
-		if err != nil {
-			return err
-		}
-		if !acquired {
-			o.taskConcurrencyRejected.Add(ctx, 1)
-			return o.scheduleTaskConcurrencyRetry(
-				ctx, step, runID, input,
-			)
-		}
-		o.taskConcurrencyAcquired.Add(ctx, 1)
-	}
-
-	// Check sticky binding — if a binding exists, route to the
-	// bound worker instead of the normal subject.
-	workerID := o.getStickyWorker(ctx, runID)
-	if workerID != "" {
-		wfDef, _, loadErr := o.loadRunAndDef(ctx, runID)
-		if loadErr == nil && wfDef.Sticky != dag.StickyNone {
-			return o.publishStickyTask(
-				ctx, runID, step, input, attempt,
-				workerID, wfDef.Sticky,
-			)
-		}
-	}
-
-	return o.doPublishTask(ctx, runID, step, input, attempt)
-}
-
-// checkRateLimit evaluates rate limits for the step. Returns
-// delayed=true if the task was deferred via SleepTimer.
-func (o *Orchestrator) checkRateLimit(
-	ctx context.Context,
-	step dag.StepDef, runID string, input []byte,
-) (bool, error) {
-	if o.rateLimiter == nil {
-		return false, nil
-	}
-	if step.Task == "" {
-		panic("checkRateLimit: step.Task must not be empty")
-	}
-
-	if step.RateLimit != nil {
-		return o.applyGlobalRateLimit(ctx, step, runID, input)
-	}
-	if step.KeyedRateLimit != nil {
-		return o.applyKeyedRateLimit(ctx, step, runID, input)
-	}
-	return false, nil
-}
-
-// applyGlobalRateLimit checks the global rate limit for this task type.
-func (o *Orchestrator) applyGlobalRateLimit(
-	ctx context.Context,
-	step dag.StepDef, runID string, input []byte,
-) (bool, error) {
-	if step.RateLimit == nil {
-		panic("applyGlobalRateLimit: RateLimit must not be nil")
-	}
-	if runID == "" {
-		panic("applyGlobalRateLimit: runID must not be empty")
-	}
-	rl := step.RateLimit
-	allowed, retryAfter, err := o.rateLimiter.Allow(
-		ctx, step.Task, "_global", rl.Limit, rl.Period, 1,
-	)
-	if err != nil {
-		return false, fmt.Errorf("rate limit check: %w", err)
-	}
-	if allowed {
-		return false, nil
-	}
-	return true, o.scheduleRateRetry(
-		ctx, step, runID, input, retryAfter,
-	)
-}
-
-// applyKeyedRateLimit checks the per-key rate limit for this task.
-func (o *Orchestrator) applyKeyedRateLimit(
-	ctx context.Context,
-	step dag.StepDef, runID string, input []byte,
-) (bool, error) {
-	if step.KeyedRateLimit == nil {
-		panic("applyKeyedRateLimit: KeyedRateLimit must not be nil")
-	}
-	if runID == "" {
-		panic("applyKeyedRateLimit: runID must not be empty")
-	}
-	krl := step.KeyedRateLimit
-	keyVal, err := dag.ExtractDotPath(krl.Key, input)
-	if err != nil {
-		return false, fmt.Errorf(
-			"extract rate limit key %q: %w", krl.Key, err,
-		)
-	}
-	key := fmt.Sprintf("%v", keyVal)
-	allowed, retryAfter, err := o.rateLimiter.Allow(
-		ctx, step.Task, key, krl.Limit, krl.Period, krl.Units,
-	)
-	if err != nil {
-		return false, fmt.Errorf("keyed rate limit: %w", err)
-	}
-	if allowed {
-		return false, nil
-	}
-	return true, o.scheduleRateRetry(
-		ctx, step, runID, input, retryAfter,
-	)
-}
-
-// scheduleRateRetry schedules a timer to re-attempt task dispatch
-// after the rate limit window allows more tokens.
-func (o *Orchestrator) scheduleRateRetry(
-	ctx context.Context, step dag.StepDef, runID string,
-	input []byte, retryAfter time.Duration,
-) error {
-	if runID == "" {
-		panic("scheduleRateRetry: runID must not be empty")
-	}
-	if step.ID == "" {
-		panic("scheduleRateRetry: step.ID must not be empty")
-	}
-	durationMs := retryAfter.Milliseconds()
-	if durationMs <= 0 {
-		durationMs = 100
-	}
-	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionRateRetry,
-		RunID:      runID,
-		StepID:     step.ID,
-		DurationMs: durationMs,
-		TaskType:   step.Task,
-		Input:      input,
-	})
-}
-
-// scheduleTaskConcurrencyRetry schedules a timer to re-attempt
-// task dispatch after the task concurrency slot frees up.
-func (o *Orchestrator) scheduleTaskConcurrencyRetry(
-	ctx context.Context,
-	step dag.StepDef, runID string, input []byte,
-) error {
-	if runID == "" {
-		panic("scheduleTaskConcurrencyRetry: " +
-			"runID must not be empty")
-	}
-	if step.ID == "" {
-		panic("scheduleTaskConcurrencyRetry: " +
-			"step.ID must not be empty")
-	}
-	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionTaskConcurRetry,
-		RunID:      runID,
-		StepID:     step.ID,
-		DurationMs: 1000,
-		TaskType:   step.Task,
-		Input:      input,
-	})
-}
-
-// doPublishTask performs the actual NATS publish for a task message.
-func (o *Orchestrator) doPublishTask(
-	ctx context.Context,
-	runID string,
-	step dag.StepDef,
-	input []byte,
-	attempt int,
-) error {
-	if runID == "" {
-		panic("doPublishTask: runID must not be empty")
-	}
-	if step.ID == "" {
-		panic("doPublishTask: step.ID must not be empty")
-	}
-	ctx, span := o.tracer.Start(ctx,
-		"dagnats.engine enqueueTask",
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("run_id", runID),
-			attribute.String("step_id", step.ID),
-			attribute.String("task_name", step.Task),
-		),
-	)
-	defer span.End()
-	payload := protocol.TaskPayload{
-		TaskID:  runID + "." + step.ID,
-		RunID:   runID,
-		StepID:  step.ID,
-		Attempt: attempt,
-		Input:   input,
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal TaskPayload: %w", err)
-	}
-	msgID := runID + "." + step.ID + ".queued"
-	subject := o.stepSubject(step, runID)
-	msg := buildTaskMsg(subject, data, msgID)
-	observe.InjectTraceContext(ctx, msg, nil)
-	_, err = o.js.PublishMsg(ctx, msg)
-	o.stepEnqueueCount.Add(ctx, 1)
-	return err
-}
-
-// publishIterationTask publishes a TaskPayload for an agent-loop
-// re-enqueue. Each iteration's MsgId is distinct for JetStream dedup.
-func (o *Orchestrator) publishIterationTask(
-	ctx context.Context,
-	runID string,
-	step dag.StepDef,
-	input []byte,
-	iteration int,
-) error {
-	if runID == "" {
-		panic("publishIterationTask: runID must not be empty")
-	}
-	if step.ID == "" {
-		panic("publishIterationTask: step.ID must not be empty")
-	}
-	ctx, span := o.tracer.Start(ctx,
-		"dagnats.engine enqueueTask",
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("run_id", runID),
-			attribute.String("step_id", step.ID),
-			attribute.String("task_name", step.Task),
-		),
-	)
-	defer span.End()
-	payload := protocol.TaskPayload{
-		TaskID:    runID + "." + step.ID,
-		RunID:     runID,
-		StepID:    step.ID,
-		Iteration: iteration,
-		Input:     input,
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal TaskPayload: %w", err)
-	}
-	msgID := fmt.Sprintf(
-		"%s.%s.continue.%d", runID, step.ID, iteration,
-	)
-	subject := o.stepSubject(step, runID)
-	msg := buildTaskMsg(subject, data, msgID)
-	observe.InjectTraceContext(ctx, msg, nil)
-	_, err = o.js.PublishMsg(ctx, msg)
-	o.stepEnqueueCount.Add(ctx, 1)
-	return err
-}
-
-// stepSubject resolves the NATS subject for a step based on routing config.
-// Defaults to "task.{task}.{runID}" if no custom route is configured.
-// When WorkerGroup is set, routes to "task.{task}.{group}.{runID}".
-func (o *Orchestrator) stepSubject(
-	step dag.StepDef, runID string,
-) string {
-	prefix := "task"
-	if o.stepRoutes != nil {
-		if p, ok := o.stepRoutes[step.Type]; ok {
-			prefix = p
-		}
-	}
-	subject := prefix + "." + step.Task
-	if step.WorkerGroup != "" {
-		subject += "." + step.WorkerGroup
-	}
-	return subject + "." + runID
-}
-
-// buildTaskMsg constructs a *nats.Msg with headers for task publishing.
-func buildTaskMsg(
-	subject string, data []byte, msgID string,
-) *nats.Msg {
-	if subject == "" {
-		panic("buildTaskMsg: subject must not be empty")
-	}
-	if msgID == "" {
-		panic("buildTaskMsg: msgID must not be empty")
-	}
-	return &nats.Msg{
-		Subject: subject,
-		Data:    data,
-		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
-	}
 }
 
 // saveSnapshot saves the run state to KV and records the duration.
@@ -2437,7 +1812,7 @@ func (o *Orchestrator) publishMapTasks(
 		instanceStep := step
 		instanceStep.ID = mapInstanceID(step.ID, i)
 		g.Go(func() error {
-			return o.publishTask(
+			return o.publisher.Publish(
 				ctx, runID, instanceStep, item, 0,
 			)
 		})
@@ -2580,7 +1955,7 @@ func (o *Orchestrator) failMapStep(
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
+	o.recovery.PublishDeadLetter(ctx, run.RunID, stepDef, state)
 	return o.notifyParentIfChild(
 		ctx, run, fmt.Errorf("%s", state.Error),
 	)
@@ -2611,7 +1986,7 @@ func (o *Orchestrator) runMapOnFailure(
 		`{"failed_step":"%s","error":%q}`,
 		baseID, state.Error,
 	))
-	return o.publishTask(
+	return o.publisher.Publish(
 		ctx, run.RunID, onFailStep, errorInput, 0,
 	)
 }
@@ -3121,14 +2496,22 @@ func queuedSet(run dag.WorkflowRun) map[string]bool {
 func (o *Orchestrator) releaseTaskSlot(
 	ctx context.Context, wfDef dag.WorkflowDef, stepID string,
 ) {
-	if o.concurrency == nil {
+	if !o.admission.HasConcurrency() {
 		return
 	}
 	stepDef, found := findStepDef(wfDef, stepID)
 	if !found || stepDef.MaxTaskConcurrency <= 0 {
 		return
 	}
-	o.concurrency.ReleaseTask(ctx, stepDef.Task)
+	if err := o.admission.ReleaseTask(
+		ctx, stepDef.Task,
+	); err != nil {
+		slog.ErrorContext(ctx,
+			"release task slot failed",
+			"error", err,
+			"step_id", stepID,
+		)
+	}
 }
 
 // releaseCancelledTaskSlots releases task concurrency slots for
@@ -3137,7 +2520,7 @@ func (o *Orchestrator) releaseCancelledTaskSlots(
 	ctx context.Context,
 	wfDef dag.WorkflowDef, run dag.WorkflowRun,
 ) {
-	if o.concurrency == nil {
+	if !o.admission.HasConcurrency() {
 		return
 	}
 	for id, state := range run.Steps {
@@ -3148,7 +2531,15 @@ func (o *Orchestrator) releaseCancelledTaskSlots(
 		if !found || stepDef.MaxTaskConcurrency <= 0 {
 			continue
 		}
-		o.concurrency.ReleaseTask(ctx, stepDef.Task)
+		if err := o.admission.ReleaseTask(
+			ctx, stepDef.Task,
+		); err != nil {
+			slog.ErrorContext(ctx,
+				"release cancelled task slot failed",
+				"error", err,
+				"step_id", id,
+			)
+		}
 	}
 }
 
