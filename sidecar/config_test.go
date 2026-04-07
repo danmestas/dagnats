@@ -264,3 +264,29 @@ func TestValidate_S3WithConfig(t *testing.T) {
 		t.Error("S3 config was modified during validation")
 	}
 }
+
+func TestLoadConfig_UnknownKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad.yaml")
+	content := `listen: "0.0.0.0:4318"
+unknown_field: true
+`
+	if err := os.WriteFile(
+		cfgPath, []byte(content), 0o600,
+	); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	_, err := LoadConfig(cfgPath)
+
+	// Positive: error returned for unknown key.
+	if err == nil {
+		t.Fatal("LoadConfig() should fail for unknown key")
+	}
+
+	// Positive: error message mentions the field.
+	if !strings.Contains(err.Error(), "unknown_field") {
+		t.Errorf("error = %q, want mention of 'unknown_field'",
+			err.Error())
+	}
+}

@@ -1,6 +1,7 @@
 package sidecar
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -89,7 +90,9 @@ func LoadConfig(path string) (*SidecarConfig, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
