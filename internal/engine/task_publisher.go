@@ -72,12 +72,20 @@ func NewTaskPublisher(
 	stepEnqueueCount metric.Int64Counter,
 	taskConcAcquired metric.Int64Counter,
 	taskConcRejected metric.Int64Counter,
+	loadRunAndDef func(
+		ctx context.Context, runID string,
+	) (dag.WorkflowDef, dag.WorkflowRun, error),
 ) *TaskPublisher {
 	if js == nil {
 		panic("NewTaskPublisher: js must not be nil")
 	}
 	if tracer == nil {
 		panic("NewTaskPublisher: tracer must not be nil")
+	}
+	if loadRunAndDef == nil {
+		panic(
+			"NewTaskPublisher: loadRunAndDef must not be nil",
+		)
 	}
 	return &TaskPublisher{
 		js:                      js,
@@ -89,6 +97,7 @@ func NewTaskPublisher(
 		stepEnqueueCount:        stepEnqueueCount,
 		taskConcurrencyAcquired: taskConcAcquired,
 		taskConcurrencyRejected: taskConcRejected,
+		loadRunAndDef:           loadRunAndDef,
 	}
 }
 
@@ -347,8 +356,11 @@ func (tp *TaskPublisher) doPublish(
 	msg := buildTaskMsg(subject, data, msgID)
 	observe.InjectTraceContext(ctx, msg, nil)
 	_, err = tp.js.PublishMsg(ctx, msg)
+	if err != nil {
+		return err
+	}
 	tp.stepEnqueueCount.Add(ctx, 1)
-	return err
+	return nil
 }
 
 // PublishIteration publishes a TaskPayload for an agent-loop
@@ -398,8 +410,11 @@ func (tp *TaskPublisher) PublishIteration(
 	msg := buildTaskMsg(subject, data, msgID)
 	observe.InjectTraceContext(ctx, msg, nil)
 	_, err = tp.js.PublishMsg(ctx, msg)
+	if err != nil {
+		return err
+	}
 	tp.stepEnqueueCount.Add(ctx, 1)
-	return err
+	return nil
 }
 
 // stepSubject resolves the NATS subject for a step based on

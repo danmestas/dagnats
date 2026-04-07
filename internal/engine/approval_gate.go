@@ -18,6 +18,14 @@ import (
 // storage, timeout scheduling, grant/reject handling, and
 // cleanup. Talks to NATS KV and JetStream but delegates
 // snapshot persistence back to the Orchestrator via callbacks.
+//
+// Callback protocol: ApprovalGate modifies run.Steps state
+// in-place (e.g. marking a step Running or Completed), then
+// calls saveFn so the caller can persist the snapshot. Methods
+// like HandleGranted additionally accept loadFn to reload
+// current state and enqueueFn/completeFn to advance the DAG.
+// The ordering contract is: load → modify run.Steps → save →
+// enqueue/complete.
 type ApprovalGate struct {
 	nc         *nats.Conn
 	js         jetstream.JetStream

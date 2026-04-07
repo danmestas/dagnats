@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // buildApprovalWorkflow creates a two-step workflow: an approval
@@ -533,4 +534,76 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestApprovalStep_ZeroTimeoutReturnsError(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	sleepTimer := NewSleepTimer(nc, jsNew)
+	ag := NewApprovalGate(
+		nc, jsNew, sleepTimer,
+		noop.NewTracerProvider().Tracer("test"),
+	)
+
+	// Build a valid workflow, then replace the approval config
+	// with zero timeout to simulate a deserialized definition
+	// that bypasses the builder's validation.
+	cfg := dag.ApprovalConfig{
+		Timeout: 0,
+		Subject: "approvals.zero",
+	}
+	cfgData, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	step := dag.StepDef{
+		ID:     "gate",
+		Type:   dag.StepTypeApproval,
+		Config: cfgData,
+	}
+	wfDef := dag.WorkflowDef{
+		Name:  "zero-timeout-wf",
+		Steps: []dag.StepDef{step},
+	}
+
+	run := dag.WorkflowRun{
+		RunID:  "run-zero-timeout",
+		Status: dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"gate": {Status: dag.StepStatusPending},
+		},
+	}
+
+	saveFn := func(
+		ctx context.Context, r dag.WorkflowRun,
+	) error {
+		return nil
+	}
+
+	err = ag.Enqueue(
+		context.Background(), wfDef, &run, step, saveFn,
+	)
+
+	// Positive: Enqueue must return an error for zero timeout.
+	if err == nil {
+		t.Fatal(
+			"expected error for zero timeout, got nil",
+		)
+	}
+
+	// Negative: error message must mention the constraint.
+	errMsg := err.Error()
+	if indexOf(errMsg, "positive") < 0 {
+		t.Fatalf(
+			"expected error about positive timeout, got: %s",
+			errMsg,
+		)
+	}
 }
