@@ -328,6 +328,32 @@ func TestPrintStartBannerExportHint(t *testing.T) {
 	}
 }
 
+func TestPrintStartBannerBackend(t *testing.T) {
+	cfg := sidecar.DefaultConfig()
+	cfg.Backend = &sidecar.BackendConfig{
+		Endpoint: "https://otel.prod.example.com",
+	}
+	output := captureSidecarOutput(func() {
+		printStartBanner(cfg)
+	})
+	if !strings.Contains(output, "https://otel.prod.example.com") {
+		t.Fatalf("expected backend endpoint in banner, got:\n%s", output)
+	}
+	if !strings.Contains(output, "forwarding") {
+		t.Fatalf("expected 'forwarding' in banner, got:\n%s", output)
+	}
+}
+
+func TestPrintStartBannerNoBackend(t *testing.T) {
+	cfg := sidecar.DefaultConfig()
+	output := captureSidecarOutput(func() {
+		printStartBanner(cfg)
+	})
+	if strings.Contains(output, "Backend:") {
+		t.Fatalf("should not show Backend when nil, got:\n%s", output)
+	}
+}
+
 // captureSidecarOutput captures stdout from a function.
 func captureSidecarOutput(fn func()) string {
 	oldStdout := os.Stdout
