@@ -54,14 +54,29 @@ Add a conditional line in `printStartBanner` when `cfg.Backend != nil`:
 
 The supervisor gets a small HTTP server exposing internal state.
 
-**Config:** New `supervisor` section in `SidecarConfig`:
+**Config:** New `SupervisorConfig` struct and field in `SidecarConfig`:
+
+```go
+type SupervisorConfig struct {
+    Listen string `yaml:"listen"`
+}
+```
+
+Added to `SidecarConfig`:
+
+```go
+Supervisor SupervisorConfig `yaml:"supervisor"`
+```
+
+`DefaultConfig()` sets `Supervisor.Listen` to `"localhost:4320"`.
+`Validate()` checks that `Supervisor.Listen` is not empty.
+
+YAML representation:
 
 ```yaml
 supervisor:
   listen: "localhost:4320"
 ```
-
-Defaults to `localhost:4320` via `DefaultConfig()`.
 
 **Endpoint:** `GET /healthz` returns JSON:
 
@@ -100,20 +115,38 @@ Defaults to `localhost:4320` via `DefaultConfig()`.
 ```
 
 **Supervisor changes:**
-- Add `startedAt time.Time` to `Supervisor`
-- Add `startedAt time.Time` and `restarts int` to `Process`
+- Add `startedAt time.Time` to `Supervisor`, set in `Start()`
+- Add `startedAt time.Time` to `Process`, set in `Start()`
+- Add `restarts int` to `Process`, incremented in `RestartWithBackoff()`
 - `Supervisor.Run()` starts the health HTTP server before the signal wait loop,
-  shuts it down on stop
-- Handler reads live state from the existing `processes` slice (already has
-  `IsRunning()`, PID via `cmd.Process.Pid`)
-- Bounded: `ReadTimeout`, `WriteTimeout`, `MaxHeaderBytes` on `http.Server`
+  shuts it down on stop with a `5 * time.Second` context deadline on
+  `http.Server.Shutdown()`
+- Handler reads `s.cfg.Storage` for storage info and iterates `s.processes`
+  for per-process state (already has `IsRunning()`, PID via `cmd.Process.Pid`)
+- Bounded: `ReadTimeout: 5s`, `WriteTimeout: 5s`, `MaxHeaderBytes: 1 << 16`
+  on `http.Server`
+
+**Banner update:** `printStartBanner` adds a health endpoint line:
+
+```
+  Health:      http://localhost:4320/healthz
+```
 
 **Updated `sidecar status` command:**
 - Probes `GET /healthz` on the configured supervisor address
-- If reachable: prints per-process table with status, PID, uptime, restart count
+- If reachable: prints per-process table:
+  ```
+  Sidecar running (uptime: 1h0m21s)
+    NAME                STATUS   PID    RESTARTS  UPTIME
+    otlp2parquet        running  12345  0         1h0m21s
+    otelcol             running  12346  1         14m2s
+    dagnats-mcp-duckdb  running  12347  0         1h0m20s
+  Storage: ./telemetry-data (local)
+  ```
 - If unreachable: falls back to binary-exists check (current behavior) with
   "sidecar not running" message
 - Supports `--json` flag (passes through the healthz JSON)
+- Updates `printSidecarUsage()` to document `--json` flag
 
 **Updated `observe status` sidecar section:**
 - Switches from raw TCP probe to hitting `/healthz` for richer data
@@ -151,12 +184,19 @@ No flags.
 ### 7. Include `dagnats-mcp-duckdb` in install and status
 
 The MCP DuckDB binary is built from `cmd/dagnats-mcp-duckdb/` in this repo,
-not downloaded externally. Different install strategy:
+not downloaded externally. Different install strategy than the download-based
+binaries.
 
-- `sidecar install` runs
-  `go build -o ~/.dagnats/bin/dagnats-mcp-duckdb ./cmd/dagnats-mcp-duckdb/`
-  (Go toolchain required, already a given for this project)
-- `sidecar status` includes it in the binary check list
+`InstallAll()` currently iterates `knownBinaries` and calls `Install()` which
+downloads tarballs. The go-build path is handled separately:
+
+- Add a new `BuildLocal(name, pkg string)` function in `sidecar/install.go`
+  that runs `go build -o ~/.dagnats/bin/<name> <pkg>`
+- `InstallAll()` gets a second loop after the download loop that handles
+  local builds. A `localBinaries` map (or slice of structs) lists
+  `{"dagnats-mcp-duckdb", "./cmd/dagnats-mcp-duckdb/"}`
+- `FindBinary` already searches `~/.dagnats/bin/`, so no changes needed there
+- `sidecar status` includes `dagnats-mcp-duckdb` in the binary check list
 - `checkBinariesAvailable()` includes it with the same hint
 
 **Files:** `sidecar/install.go`, `cli/sidecar.go`
