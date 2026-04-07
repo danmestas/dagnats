@@ -655,3 +655,176 @@ func TestResolveFailDefaultsToRetriable(t *testing.T) {
 			payload.FailureType)
 	}
 }
+
+func TestResolvePauseInvalidDuration(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-pause-bad", "step1")
+
+	// Negative: duration_ms = 0 should fail
+	body := `{"action":"pause","duration_ms":0}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+
+	// Negative: duration_ms too large
+	body2 := `{"action":"pause","duration_ms":3600001}`
+	resp2, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body2),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500",
+			resp2.StatusCode)
+	}
+}
+
+func TestResolveSendSignalMissingFields(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-sig-bad", "step1")
+
+	// Negative: missing name
+	body := `{"action":"send_signal","run_id":"r1","data":{}}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("missing name: status = %d, want 500",
+			resp.StatusCode)
+	}
+
+	// Positive: task should remain in ackMap after validation error
+	_, ok := b.ackMap.Load(taskID)
+	if !ok {
+		t.Error("expected task to remain in ackMap after error")
+	}
+
+	// Negative: missing run_id - test with same task
+	body2 := `{"action":"send_signal","name":"s","data":{}}`
+	resp2, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body2),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusInternalServerError {
+		t.Errorf("missing run_id: status = %d, want 500",
+			resp2.StatusCode)
+	}
+}
+
+func TestResolveWaitSignalInvalidTimeout(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "signals"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-wait-bad", "step1")
+
+	// Negative: timeout_ms = 0 should fail
+	body := `{
+		"action":"wait_signal",
+		"name":"sig",
+		"timeout_ms":0
+	}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestResolveInvalidJSON(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-badjson", "step1")
+
+	// Negative: malformed JSON
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(`{not json}`),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+
+	// Positive: task should still be in ackMap (not lost)
+	if b.ackMap.Count() == 0 {
+		t.Error("ackMap should still hold the task")
+	}
+}
