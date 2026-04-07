@@ -42,7 +42,10 @@ func runSidecarCmd(args []string) {
 	case "status":
 		runSidecarStatusCmd(args[1:])
 	default:
-		runSidecarStartCmd(args)
+		fmt.Fprintf(os.Stderr,
+			"unknown sidecar command: %s\n", args[0])
+		printSidecarUsage()
+		exitFunc(1)
 	}
 }
 

@@ -226,22 +226,35 @@ func TestSidecarCmdDispatchNoArgs(t *testing.T) {
 }
 
 func TestSidecarCmdDispatchUnknown(t *testing.T) {
-	// Unknown subcommand should fall through to start.
+	// Unknown subcommand should error, not attempt start.
 	var exitCode int
 	oldExit := exitFunc
 	exitFunc = func(code int) { exitCode = code }
 	defer func() { exitFunc = oldExit }()
 
-	oldDir, _ := os.Getwd()
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	// Capture stderr to verify error message.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
 
 	runSidecarCmd([]string{"unknown-flag"})
 
-	// Positive: should fail (treated as start).
+	w.Close()
+	os.Stderr = oldStderr
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	// Positive: should exit with code 1.
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+
+	// Negative: should not attempt start.
+	if strings.Contains(output, "Sidecar started") ||
+		strings.Contains(output, "missing binaries") {
+		t.Fatal("should not attempt start for unknown subcommand")
 	}
 }
 
@@ -261,6 +274,44 @@ func TestCollectorYAMLPath(t *testing.T) {
 	if !strings.Contains(got, cfg.Storage.LocalPath) {
 		t.Fatalf("expected storage path in config path, got %q",
 			got)
+	}
+}
+
+func TestSidecarCmdUnknownSubcommand(t *testing.T) {
+	var exitCode int
+	oldExit := exitFunc
+	exitFunc = func(code int) { exitCode = code }
+	defer func() { exitFunc = oldExit }()
+
+	// Capture stderr to check error output.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	runSidecarCmd([]string{"bogus"})
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	// Positive: should exit with code 1.
+	if exitCode != 1 {
+		t.Fatalf("expected exit 1, got %d", exitCode)
+	}
+
+	// Positive: should show error for unknown command.
+	if !strings.Contains(output, "unknown sidecar command") {
+		t.Fatalf("expected unknown command error, got:\n%s",
+			output)
+	}
+
+	// Negative: should not attempt start (no config error).
+	if strings.Contains(output, "error: load config") ||
+		strings.Contains(output, "missing binaries") {
+		t.Fatal("should not attempt start for unknown subcommand")
 	}
 }
 
