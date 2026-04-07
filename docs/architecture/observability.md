@@ -1,34 +1,42 @@
 # Observability
 
-## Design Decision: NATS-Native Telemetry
+## Design Decision: NATS-Native + OTel SDK
 
-Zero external dependencies. Single `TELEMETRY` stream as sole backend. External OTel collectors (e.g., SigNoz) consume from the stream. Observability failures never break workflows (noop fallback).
+All observability uses the official OpenTelemetry Go SDK directly.
+No custom interfaces or abstractions — packages import
+`go.opentelemetry.io/otel/trace`, `go.opentelemetry.io/otel/metric`,
+and `go.opentelemetry.io/otel/log` for instrumentation.
+
+Telemetry is always written to a NATS `TELEMETRY` JetStream stream
+(7-day retention, 1 GB cap). Optionally, an OTLP/HTTP exporter sends
+data to an external collector (SigNoz, Grafana Tempo, Jaeger) when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set. Observability failures never
+break workflows — export errors are silently dropped.
 
 ## Signal Types
 
-**Spans:** `telemetry.spans.{service}.{run_id}` — enables per-run trace queries
-**Metrics:** `telemetry.metrics.{service}.{metric_name}` — per-metric dashboards
-**Logs:** `telemetry.logs.{service}.{level}` — severity-based filtering
+Subjects within the `TELEMETRY` stream:
 
-All published as JSON (human-debuggable via `nats sub`).
+- **Spans:** `telemetry.spans.{service}.{run_id}`
+- **Metrics:** `telemetry.metrics.{service}.{metric_name}`
+- **Logs:** `telemetry.logs.{service}.{level}`
+
+All published as protobuf JSON (human-debuggable via `nats sub`).
 
 ## Trace Propagation
 
 W3C Trace Context (traceparent) dual-written to:
-- NATS message headers (runtime propagation)
-- Event payload fields `TraceParent`, `TraceState` (persistence in event log)
-
-## Data Model
-
-- **SpanRecord:** trace_id, span_id, parent_id, name, service, kind, duration_ms, status, attributes, events, error
-- **MetricPoint:** name, type (counter/gauge/histogram), value, tags, service, timestamp
-- **LogRecord:** level, message, service, trace_id, span_id, fields, timestamp, error
+- NATS message headers (runtime propagation between components)
+- Event payload fields `TraceParent`, `TraceState` (persisted in
+  the WORKFLOW_HISTORY stream for later correlation)
 
 ## Instrumentation Points
 
-**Engine:** orchestrator.handleEvent, orchestrator.advanceDAG, orchestrator.enqueueTask, orchestrator.saveSnapshot
-**Worker:** worker.executeTask, worker.complete, worker.fail, worker.continue
-**API:** api.registerWorkflow, api.startRun, api.getRun (wrapper/inner pattern with span attributes)
+| Component | Spans |
+|-----------|-------|
+| Engine | handleEvent, advanceDAG, enqueueTask, saveSnapshot |
+| Worker | executeTask, complete, fail, continue |
+| API | registerWorkflow, startRun, getRun |
 
 ## Metrics
 
@@ -38,11 +46,39 @@ W3C Trace Context (traceparent) dual-written to:
 
 ## Components
 
-- `observe/setup.go` — `InitTelemetry()` bootstraps OTel SDK (TracerProvider, MeterProvider, LoggerProvider)
-- `observe/config.go` — `Config` struct for service name, NATS conn, OTLP endpoint
-- `observe/carrier.go` — `NATSHeaderCarrier` for W3C propagation over NATS headers
-- `observe/natsexporter/` — NATS JetStream exporters for spans, metrics, and logs
+| File | Purpose |
+|------|---------|
+| `observe/setup.go` | `InitTelemetry()` — bootstraps OTel SDK providers |
+| `observe/config.go` | `Config` struct (service name, NATS conn, OTLP endpoint) |
+| `observe/carrier.go` | `NATSHeaderCarrier` for W3C propagation over NATS |
+| `observe/propagation.go` | `ExtractTraceContext` from NATS messages |
+| `observe/natsexporter/` | NATS JetStream exporters for spans, metrics, logs |
 
-## OTel SDK
+## Configuration
 
-All observability uses the official OpenTelemetry Go SDK directly. No custom interfaces or abstractions. Packages import `go.opentelemetry.io/otel/trace`, `go.opentelemetry.io/otel/metric`, and `go.opentelemetry.io/otel/log` for instrumentation.
+```bash
+# Export to any OTLP/HTTP-compatible backend
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 dagnats serve
+
+# Or set in dagnats.yaml
+otlp_endpoint: http://collector:4318
+```
+
+Without OTLP export configured, telemetry is still available via:
+
+```bash
+dagnats trace <run-id>        # span tree for a run
+dagnats logs search --level=error  # search log stream
+dagnats metrics show           # metric snapshots
+dagnats run inspect <id> --trace   # unified debug view with spans
+```
+
+## CLI Observability Commands
+
+- `dagnats trace <run-id>` — view distributed trace tree
+- `dagnats trace search` — find traces by service/status
+- `dagnats logs` — tail or search telemetry log stream
+- `dagnats metrics show` — view metric snapshots
+- `dagnats run inspect --trace` — unified debug view with inline
+  span tree
+- `dagnats status --detail` — stream health, queue depth, DLQ count

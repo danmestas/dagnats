@@ -107,6 +107,7 @@ func printRunUsage() {
 	fmt.Println("  --at=TIME      schedule run at RFC3339 time")
 	fmt.Println("  --scheduled    list scheduled runs")
 	fmt.Println("  --last         use the most recent run")
+	fmt.Println("  --trace        include span tree (inspect)")
 	fmt.Println("  --json         output as JSON")
 	fmt.Println()
 	fmt.Println("Run IDs accept 8+ character prefixes.")

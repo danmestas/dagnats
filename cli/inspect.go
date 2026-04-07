@@ -1,7 +1,6 @@
 // cli/inspect.go
-// Unified debug view: status + failed step errors + DLQ entries for a run.
-// Replaces the 3-command workflow of `run status` + `run events --type`
-// + `dlq list`. Cross-references failures and DLQ inline under steps.
+// Unified debug view: status + failures + DLQ + optional trace tree.
+// One command for the full debug picture of a run.
 package cli
 
 import (
@@ -12,13 +11,27 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// inspectResult combines all three data sources for JSON output.
+// inspectResult combines all data sources for JSON output.
 type inspectResult struct {
 	Run         dag.WorkflowRun  `json:"run"`
 	Failures    []api.RunEvent   `json:"failures,omitempty"`
 	DeadLetters []api.DeadLetter `json:"dead_letters,omitempty"`
+	Spans       []inspectSpan    `json:"spans,omitempty"`
+}
+
+// inspectSpan is a simplified span for JSON output.
+type inspectSpan struct {
+	TraceID    string `json:"trace_id"`
+	SpanID     string `json:"span_id"`
+	ParentID   string `json:"parent_span_id,omitempty"`
+	Name       string `json:"name"`
+	DurationMs int64  `json:"duration_ms"`
+	Status     string `json:"status"`
 }
 
 // stepDebugContext collects failure events and DLQ entries for a
@@ -27,6 +40,16 @@ type stepDebugContext struct {
 	Failures    []api.RunEvent
 	DeadLetters []api.DeadLetter
 	TraceID     string
+}
+
+// inspectData holds everything needed to render inspect output.
+// Gathered once, rendered by either human-readable or JSON path.
+type inspectData struct {
+	Run         dag.WorkflowRun
+	Def         *dag.WorkflowDef
+	Failures    []api.RunEvent
+	DeadLetters []api.DeadLetter
+	Spans       []*tracepb.Span
 }
 
 // runInspectCmd prints a unified debug view for a single run.
@@ -42,6 +65,8 @@ func runInspectCmd(args []string) {
 	args = StripJSONFlag(args)
 	hasLast := HasLastFlag(args)
 	args = StripLastFlag(args)
+	showTrace := hasFlag(args, "--trace")
+	args = stripFlag(args, "--trace")
 
 	var rawID string
 	if len(args) == 1 {
@@ -49,7 +74,7 @@ func runInspectCmd(args []string) {
 	} else if !hasLast {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats run inspect"+
-				" <run-id> [--last] [--json]")
+				" <run-id> [--last] [--trace] [--json]")
 		os.Exit(1)
 	}
 
@@ -62,6 +87,29 @@ func runInspectCmd(args []string) {
 		os.Exit(1)
 	}
 
+	data := gatherInspectData(svc, nc, runID, showTrace)
+
+	if jsonOutput {
+		renderInspectJSON(data)
+	} else {
+		renderInspectHuman(data)
+	}
+}
+
+// gatherInspectData collects all data sources for a run into a
+// single struct. Both renderers consume the same data — no
+// divergence possible.
+func gatherInspectData(
+	svc *api.Service, nc *nats.Conn,
+	runID string, showTrace bool,
+) inspectData {
+	if svc == nil {
+		panic("gatherInspectData: svc must not be nil")
+	}
+	if runID == "" {
+		panic("gatherInspectData: runID must not be empty")
+	}
+
 	ctx := context.Background()
 
 	run, err := svc.GetRun(ctx, runID)
@@ -70,24 +118,30 @@ func runInspectCmd(args []string) {
 		os.Exit(1)
 	}
 
-	if jsonOutput {
-		printInspectJSON(svc, ctx, run)
-		return
+	d := inspectData{
+		Run:         run,
+		Failures:    fetchFailures(svc, ctx, runID),
+		DeadLetters: fetchDeadLetters(svc, ctx, runID),
 	}
-
-	failures := fetchFailures(svc, ctx, runID)
-	deadLetters := fetchDeadLetters(svc, ctx, runID)
 
 	def, defErr := svc.GetWorkflow(run.WorkflowID)
-	var defPtr *dag.WorkflowDef
 	if defErr == nil {
-		defPtr = &def
+		d.Def = &def
 	}
 
-	printRunHeader(run)
-	contexts := collectStepContexts(failures, deadLetters)
-	retryMax := buildRetryMaxMap(defPtr)
-	printStepsWithContext(run, retryMax, contexts)
+	if showTrace {
+		// Empty non-nil slice signals "trace requested but
+		// nothing found" to renderers.
+		d.Spans = []*tracepb.Span{}
+		js, jsErr := jetstream.New(nc)
+		if jsErr == nil {
+			if spans := collectRunSpans(js, runID); len(spans) > 0 {
+				d.Spans = spans
+			}
+		}
+	}
+
+	return d
 }
 
 // printRunHeader prints the run metadata lines (ID, workflow,
@@ -255,36 +309,105 @@ func printStepDebugLines(ctx stepDebugContext) {
 	}
 }
 
-// printInspectJSON collects all inspect data and outputs as JSON.
-func printInspectJSON(
-	svc *api.Service, ctx context.Context, run dag.WorkflowRun,
-) {
-	if svc == nil {
-		panic("printInspectJSON: svc must not be nil")
+// renderInspectHuman prints the human-readable inspect output.
+func renderInspectHuman(d inspectData) {
+	if d.Run.RunID == "" {
+		panic("renderInspectHuman: RunID must not be empty")
 	}
-	if run.RunID == "" {
-		panic("printInspectJSON: run.RunID must not be empty")
+	if d.Run.Steps == nil {
+		panic("renderInspectHuman: Steps must not be nil")
 	}
 
-	result := inspectResult{Run: run}
+	printRunHeader(d.Run)
+	contexts := collectStepContexts(d.Failures, d.DeadLetters)
+	retryMax := buildRetryMaxMap(d.Def)
+	printStepsWithContext(d.Run, retryMax, contexts)
 
-	events, err := svc.ListRunEvents(ctx, run.RunID, true)
-	if err == nil {
-		result.Failures = collectFailures(events)
+	if len(d.Spans) > 0 {
+		fmt.Println()
+		printSpanTrees(d.Spans)
+	} else if d.Spans != nil {
+		fmt.Println("\nTrace: no spans found")
+	}
+}
+
+// renderInspectJSON outputs all inspect data as JSON.
+func renderInspectJSON(d inspectData) {
+	if d.Run.RunID == "" {
+		panic("renderInspectJSON: RunID must not be empty")
 	}
 
-	const dlqLimit = 50
-	letters, err := svc.ListDeadLetters(ctx, dlqLimit)
-	if err == nil {
-		result.DeadLetters = matchRunDeadLetters(
-			letters, run.RunID,
-		)
+	result := inspectResult{
+		Run:         d.Run,
+		Failures:    d.Failures,
+		DeadLetters: d.DeadLetters,
+		Spans:       convertSpans(d.Spans),
 	}
 
 	if err := FormatJSON(os.Stdout, result); err != nil {
 		fmt.Fprintf(os.Stderr, "format json: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// convertSpans maps protobuf spans to the JSON-friendly format.
+// Returns nil when input is nil (preserves omitempty behavior).
+func convertSpans(
+	spans []*tracepb.Span,
+) []inspectSpan {
+	if spans == nil {
+		return nil
+	}
+	const maxSpans = 10000
+	if len(spans) > maxSpans {
+		panic("convertSpans: spans exceeds max bound")
+	}
+
+	result := make([]inspectSpan, 0, len(spans))
+	for _, sp := range spans {
+		result = append(result, inspectSpan{
+			TraceID:    spanHexTraceID(sp),
+			SpanID:     spanHexSpanID(sp),
+			ParentID:   spanHexParentID(sp),
+			Name:       sp.Name,
+			DurationMs: spanDurationMs(sp),
+			Status:     spanStatusLabel(sp),
+		})
+	}
+	return result
+}
+
+// hasFlag returns true if args contains the given flag.
+func hasFlag(args []string, flag string) bool {
+	if args == nil {
+		panic("hasFlag: args must not be nil")
+	}
+	if flag == "" {
+		panic("hasFlag: flag must not be empty")
+	}
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
+// stripFlag returns a copy of args with the given flag removed.
+func stripFlag(args []string, flag string) []string {
+	if args == nil {
+		panic("stripFlag: args must not be nil")
+	}
+	if flag == "" {
+		panic("stripFlag: flag must not be empty")
+	}
+	result := make([]string, 0, len(args))
+	for _, a := range args {
+		if a != flag {
+			result = append(result, a)
+		}
+	}
+	return result
 }
 
 // collectFailures filters events to only step.failed and

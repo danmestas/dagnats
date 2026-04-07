@@ -492,15 +492,23 @@ curl -X POST \
 
 ## Observability
 
-Export traces to any OTLP-compatible backend:
+Export traces to any OTLP/HTTP-compatible backend (SigNoz,
+Grafana Tempo, Jaeger):
 
 ```bash
-JAEGER_ENDPOINT=http://localhost:4318 dagnats serve
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 dagnats serve
 ```
 
 All workflow events, step transitions, and worker executions are
 traced. Spans are always written to the internal NATS `TELEMETRY`
 stream regardless of whether an external exporter is configured.
+
+View traces without an external collector:
+
+```bash
+dagnats trace <run-id>
+dagnats run inspect <run-id> --trace
+```
 
 ---
 

@@ -81,10 +81,7 @@ const counterTarget = 5
 // handleCounter loads the checkpoint, increments the counter,
 // saves the checkpoint, and either continues or completes.
 func handleCounter(ctx worker.TaskContext) error {
-	// Cast to Checkpointable to access checkpoint methods.
-	// Agent loop steps always implement this interface.
-	cp := ctx.(worker.Checkpointable)
-	state := loadCounter(cp)
+	state := loadCounter(ctx)
 	state.Count++
 
 	fmt.Printf(
@@ -98,7 +95,7 @@ func handleCounter(ctx worker.TaskContext) error {
 	}
 
 	// Persist state to NATS KV so it survives restarts.
-	if err := cp.Checkpoint(data); err != nil {
+	if err := ctx.Checkpoint(data); err != nil {
 		return fmt.Errorf("save checkpoint: %w", err)
 	}
 
@@ -113,8 +110,8 @@ func handleCounter(ctx worker.TaskContext) error {
 
 // loadCounter reads the checkpoint from KV. Returns a zero-value
 // counterState if no checkpoint exists yet.
-func loadCounter(cp worker.Checkpointable) counterState {
-	raw, err := cp.LoadCheckpoint()
+func loadCounter(ctx worker.TaskContext) counterState {
+	raw, err := ctx.LoadCheckpoint()
 	if err != nil || raw == nil {
 		return counterState{}
 	}

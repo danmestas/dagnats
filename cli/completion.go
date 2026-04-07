@@ -59,7 +59,7 @@ var flagMap = map[string][]string{
 		"--full", "--json", "--last",
 		"--step=", "--type=",
 	},
-	"run.inspect":       {"--json", "--last"},
+	"run.inspect":       {"--json", "--last", "--trace"},
 	"run.watch":         {"--json", "--last"},
 	"run.output":        {"--json", "--last"},
 	"run.retry":         {"--json", "--last"},
