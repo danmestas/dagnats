@@ -18,7 +18,7 @@ const (
 	maxDownloadSize = 200 * 1024 * 1024 // 200 MB
 
 	defaultOtelcolVersion      = "0.102.0"
-	defaultOtlp2parquetVersion = "0.5.0"
+	defaultOtlp2parquetVersion = "0.11.0"
 
 	binDirName = ".dagnats/bin"
 	dirPerms   = 0o755

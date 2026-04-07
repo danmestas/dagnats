@@ -60,7 +60,11 @@ func (p *Process) Start(ctx context.Context) error {
 		)
 	}
 
-	cmd := exec.Command(p.Bin, p.Args...)
+	bin := p.Bin
+	if resolved, err := FindBinary(bin); err == nil {
+		bin = resolved
+	}
+	cmd := exec.Command(bin, p.Args...)
 	cmd.Env = p.Env
 	cmd.Dir = p.Dir
 	// Create a new process group so we can signal the
