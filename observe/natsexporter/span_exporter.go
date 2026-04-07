@@ -117,15 +117,17 @@ func serviceNameFromResource(
 	return "unknown"
 }
 
-// runIDFromSpan extracts the dagnats.run.id attribute from a
-// span. Returns "no-run" when absent so the subject remains
-// valid for spans outside a workflow run.
+// runIDFromSpan extracts the run ID from a span's attributes.
+// Checks both "dagnats.run.id" (canonical) and "run_id" (used by
+// engine/worker instrumentation). Returns "no-run" when absent
+// so the subject remains valid for spans outside a workflow run.
 func runIDFromSpan(s sdktrace.ReadOnlySpan) string {
 	if s == nil {
 		return "no-run"
 	}
 	for _, kv := range s.Attributes() {
-		if string(kv.Key) == "dagnats.run.id" {
+		k := string(kv.Key)
+		if k == "dagnats.run.id" || k == "run_id" {
 			return kv.Value.AsString()
 		}
 	}
