@@ -169,7 +169,7 @@ func collectorYAMLPath(
 
 // checkBinariesAvailable verifies all required binaries exist.
 func checkBinariesAvailable() {
-	required := []string{"otelcol", "otlp2parquet"}
+	required := []string{"otelcol", "otlp2parquet", "dagnats-mcp-duckdb"}
 	missing := findMissingBinaries(required)
 
 	if len(missing) > 0 {
@@ -257,7 +257,7 @@ func runSidecarInstallCmd(args []string) {
 		)
 		fmt.Println()
 		fmt.Println(
-			"Downloads otelcol and otlp2parquet to ~/.dagnats/bin/.",
+			"Installs otelcol, otlp2parquet, and dagnats-mcp-duckdb.",
 		)
 		return
 	}
@@ -288,7 +288,7 @@ func runSidecarStatusCmd(args []string) {
 		return
 	}
 
-	names := []string{"otelcol", "otlp2parquet"}
+	names := []string{"otelcol", "otlp2parquet", "dagnats-mcp-duckdb"}
 	allFound := true
 
 	for _, name := range names {
