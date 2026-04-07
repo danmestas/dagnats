@@ -2434,14 +2434,27 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 	js.Publish(compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
-	// Wait for 3 map instance tasks to appear.
+	// Wait for 3 map instance tasks to appear. Use a
+	// polling loop because CI runners may be slow to
+	// deliver all 3 messages in a single Fetch call.
 	mapSub, _ := js.PullSubscribe(
 		"task.process-task.*", "",
 		nats.BindStream("TASK_QUEUES"))
-	mapMsgs, err := mapSub.Fetch(
-		3, nats.MaxWait(5*time.Second))
-	if err != nil {
-		t.Fatalf("Fetch map tasks failed: %v", err)
+	var mapMsgs []*nats.Msg
+	fetchDeadline := time.After(10 * time.Second)
+	for len(mapMsgs) < 3 {
+		batch, fetchErr := mapSub.Fetch(
+			3-len(mapMsgs),
+			nats.MaxWait(2*time.Second))
+		if fetchErr == nil {
+			mapMsgs = append(mapMsgs, batch...)
+		}
+		select {
+		case <-fetchDeadline:
+			t.Fatalf("expected 3 map tasks, got %d",
+				len(mapMsgs))
+		default:
+		}
 	}
 	// Positive: exactly 3 map instance tasks published.
 	if len(mapMsgs) != 3 {
