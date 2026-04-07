@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -178,7 +179,7 @@ func setupTracerProvider(
 
 	if cfg.OTLPEndpoint != "" {
 		otlpExp, err := otlptracehttp.New(ctx,
-			otlptracehttp.WithEndpoint(cfg.OTLPEndpoint),
+			otlptracehttp.WithEndpoint(otlpHostPort(cfg.OTLPEndpoint)),
 			otlptracehttp.WithInsecure(),
 		)
 		if err != nil {
@@ -213,7 +214,7 @@ func setupMeterProvider(
 
 	if cfg.OTLPEndpoint != "" {
 		otlpExp, err := otlpmetrichttp.New(ctx,
-			otlpmetrichttp.WithEndpoint(cfg.OTLPEndpoint),
+			otlpmetrichttp.WithEndpoint(otlpHostPort(cfg.OTLPEndpoint)),
 			otlpmetrichttp.WithInsecure(),
 		)
 		if err != nil {
@@ -252,7 +253,7 @@ func setupLoggerProvider(
 
 	if cfg.OTLPEndpoint != "" {
 		otlpExp, err := otlploghttp.New(ctx,
-			otlploghttp.WithEndpoint(cfg.OTLPEndpoint),
+			otlploghttp.WithEndpoint(otlpHostPort(cfg.OTLPEndpoint)),
 			otlploghttp.WithInsecure(),
 		)
 		if err != nil {
@@ -264,4 +265,17 @@ func setupLoggerProvider(
 	}
 
 	return log.NewLoggerProvider(opts...), nil
+}
+
+// otlpHostPort strips the http:// or https:// scheme prefix from
+// an OTLP endpoint so it can be passed to WithEndpoint (which
+// expects host:port, not a URL). Users typically set the env var
+// as "http://host:4318" following the OTel convention.
+func otlpHostPort(endpoint string) string {
+	if endpoint == "" {
+		panic("otlpHostPort: endpoint must not be empty")
+	}
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+	return endpoint
 }
