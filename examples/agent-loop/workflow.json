@@ -8,7 +8,7 @@
       "task": "counter",
       "type": "agent_loop",
       "depends_on": [],
-      "loop": {
+      "config": {
         "max_iterations": 10,
         "loop_delay": 1000000000
       }

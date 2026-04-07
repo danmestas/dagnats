@@ -18,7 +18,7 @@ const (
 	maxDownloadSize = 200 * 1024 * 1024 // 200 MB
 
 	defaultOtelcolVersion      = "0.102.0"
-	defaultOtlp2parquetVersion = "0.5.0"
+	defaultOtlp2parquetVersion = "0.11.0"
 
 	binDirName = ".dagnats/bin"
 	dirPerms   = 0o755
@@ -287,15 +287,18 @@ func writeExecutable(r io.Reader, dest string) error {
 	return nil
 }
 
-// InstallAll checks for otelcol and otlp2parquet,
-// downloads any that are missing. Prints progress to w.
+// InstallAll checks for otelcol, otlp2parquet, and
+// dagnats-mcp-duckdb, installs any that are missing.
+// Uses prebuilt downloads where available, falls back to
+// building from source for otlp2parquet (Rust/cargo) and
+// dagnats-mcp-duckdb (Go).
 func InstallAll(w io.Writer) error {
 	if w == nil {
 		panic("InstallAll: writer is nil")
 	}
 
+	// Download-based binaries.
 	names := []string{"otelcol", "otlp2parquet"}
-
 	for _, name := range names {
 		path, err := FindBinary(name)
 		if err == nil {
@@ -314,11 +317,147 @@ func InstallAll(w io.Writer) error {
 		)
 
 		if err := Install(name, spec.version); err != nil {
+			if name == "otlp2parquet" {
+				fmt.Fprintf(w,
+					"  download failed, building from source...\n")
+				if buildErr := buildFromSource(
+					w, name, "cargo",
+					"github.com/smithclay/otlp2parquet",
+				); buildErr != nil {
+					return fmt.Errorf(
+						"install %s: download: %w, build: %v",
+						name, err, buildErr)
+				}
+				continue
+			}
 			return fmt.Errorf("install %s: %w", name, err)
 		}
 
 		fmt.Fprintf(w, "✓ %s installed\n", name)
 	}
 
+	// dagnats-mcp-duckdb: always build from Go source.
+	if err := installMCPDuckDB(w); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// installMCPDuckDB builds dagnats-mcp-duckdb from the
+// in-repo Go source at cmd/dagnats-mcp-duckdb/.
+func installMCPDuckDB(w io.Writer) error {
+	if w == nil {
+		panic("installMCPDuckDB: writer is nil")
+	}
+
+	name := "dagnats-mcp-duckdb"
+	path, err := FindBinary(name)
+	if err == nil {
+		fmt.Fprintf(w, "✓ %s found at %s\n", name, path)
+		return nil
+	}
+
+	binDir, err := BinDir()
+	if err != nil {
+		return fmt.Errorf("bin dir: %w", err)
+	}
+
+	dest := filepath.Join(binDir, name)
+	fmt.Fprintf(w, "⬇ building %s...\n", name)
+
+	cmd := exec.Command(
+		"go", "build", "-o", dest, "./cmd/"+name+"/")
+	cmd.Stdout = w
+	cmd.Stderr = w
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build %s: %w", name, err)
+	}
+
+	fmt.Fprintf(w, "✓ %s installed\n", name)
+	return nil
+}
+
+// buildFromSource clones a repo and builds with cargo or go.
+// For cargo (Rust): clones, runs cargo build --release, copies
+// binary to ~/.dagnats/bin/.
+func buildFromSource(
+	w io.Writer,
+	name, toolchain, repo string,
+) error {
+	if name == "" {
+		panic("buildFromSource: name is empty")
+	}
+
+	binDir, err := BinDir()
+	if err != nil {
+		return fmt.Errorf("bin dir: %w", err)
+	}
+	dest := filepath.Join(binDir, name)
+
+	switch toolchain {
+	case "cargo":
+		return buildWithCargo(w, name, repo, dest)
+	default:
+		return fmt.Errorf("unsupported toolchain: %s",
+			toolchain)
+	}
+}
+
+// buildWithCargo clones a git repo to a temp dir, builds
+// with cargo, and copies the release binary to dest.
+func buildWithCargo(
+	w io.Writer,
+	name, repo, dest string,
+) error {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		return fmt.Errorf(
+			"cargo not found — install Rust: https://rustup.rs")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dagnats-build-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Clone
+	cloneURL := "https://" + repo
+	fmt.Fprintf(w, "  cloning %s...\n", repo)
+	clone := exec.Command(
+		"git", "clone", "--depth=1", cloneURL, tmpDir)
+	clone.Stdout = w
+	clone.Stderr = w
+	if err := clone.Run(); err != nil {
+		return fmt.Errorf("git clone: %w", err)
+	}
+
+	// Build
+	fmt.Fprintf(w, "  building with cargo (this may take a few minutes)...\n")
+	build := exec.Command("cargo", "build", "--release")
+	build.Dir = tmpDir
+	build.Stdout = w
+	build.Stderr = w
+	if err := build.Run(); err != nil {
+		return fmt.Errorf("cargo build: %w", err)
+	}
+
+	// Copy binary
+	src := filepath.Join(tmpDir, "target", "release", name)
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("built binary not found at %s", src)
+	}
+
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read binary: %w", err)
+	}
+
+	if err := os.WriteFile(dest, data, binPerms); err != nil {
+		return fmt.Errorf("write binary: %w", err)
+	}
+
+	fmt.Fprintf(w, "✓ %s built and installed\n", name)
 	return nil
 }

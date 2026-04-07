@@ -43,8 +43,8 @@ func NewSupervisor(cfg *SidecarConfig) (*Supervisor, error) {
 			Name: "otlp2parquet",
 			Bin:  "otlp2parquet",
 			Args: []string{
-				"--listen", ":4319",
-				"--data-dir", cfg.Storage.LocalPath,
+				"--port", "4319",
+				"--output", cfg.Storage.LocalPath,
 			},
 		},
 		{
