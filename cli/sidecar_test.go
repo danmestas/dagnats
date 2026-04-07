@@ -5,6 +5,9 @@
 package cli
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -351,6 +354,62 @@ func TestPrintStartBannerNoBackend(t *testing.T) {
 	})
 	if strings.Contains(output, "Backend:") {
 		t.Fatalf("should not show Backend when nil, got:\n%s", output)
+	}
+}
+
+// --- Health endpoint status ---
+
+func TestSidecarStatusWithHealthEndpoint(t *testing.T) {
+	handler := http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"status":"ok",`+
+				`"uptime_seconds":3621,`+
+				`"processes":[{"name":"otelcol",`+
+				`"status":"running","pid":12345,`+
+				`"restarts":0,"uptime_seconds":3621}],`+
+				`"storage":{"path":"./telemetry-data",`+
+				`"type":"local"}}`)
+		},
+	)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	output := captureSidecarOutput(func() {
+		printHealthStatus(srv.URL)
+	})
+
+	// Positive: should show the process name.
+	if !strings.Contains(output, "otelcol") {
+		t.Fatalf("expected otelcol, got:\n%s", output)
+	}
+
+	// Positive: should show running status.
+	if !strings.Contains(output, "running") {
+		t.Fatalf("expected running, got:\n%s", output)
+	}
+
+	// Negative: should not say "not running".
+	if strings.Contains(output, "not running") {
+		t.Fatalf(
+			"should not say not running, got:\n%s", output)
+	}
+}
+
+func TestSidecarStatusFallback(t *testing.T) {
+	output := captureSidecarOutput(func() {
+		printHealthStatus("http://127.0.0.1:19999")
+	})
+
+	// Positive: should indicate sidecar is not running.
+	if !strings.Contains(output, "not running") {
+		t.Fatalf("expected 'not running', got:\n%s", output)
+	}
+
+	// Positive: should show binary names in fallback.
+	if !strings.Contains(output, "otelcol") {
+		t.Fatalf(
+			"expected otelcol in fallback, got:\n%s", output)
 	}
 }
 
