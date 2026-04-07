@@ -523,46 +523,49 @@ func (o *Orchestrator) handleStepCompleted(
 		return err
 	}
 
-	// Check if this is a map instance completion.
+	// Map instances have their own completion logic.
 	if isMapInstanceID(evt.StepID) {
 		return o.handleMapInstanceCompleted(
 			ctx, wfDef, run, evt,
 		)
 	}
 
-	state := run.Steps[evt.StepID]
-	state.Status = dag.StepStatusCompleted
-	state.Output = evt.Payload
-	run.Steps[evt.StepID] = state
-
-	// Release task concurrency slot if configured.
-	o.releaseTaskSlot(ctx, wfDef, evt.StepID)
-
-	// If the completed step is a planner, materialize its output
-	// into the running DAG before checking completion or enqueueing.
+	// Planner steps must materialize output before DAG
+	// resolution — short-circuit before Advance.
 	stepDef, foundStep := findStepDef(wfDef, evt.StepID)
 	if foundStep && stepDef.Type == dag.StepTypePlanner {
+		state := run.Steps[evt.StepID]
+		state.Status = dag.StepStatusCompleted
+		state.Output = evt.Payload
+		run.Steps[evt.StepID] = state
+		o.releaseTaskSlot(ctx, wfDef, evt.StepID)
 		return o.materializePlannerOutput(
 			ctx, wfDef, run, stepDef, evt.Payload,
 		)
 	}
 
-	// Create sticky binding if this is the first step of a
-	// sticky workflow and the worker included its ID.
-	o.sticky.CreateBinding(ctx, wfDef, run, evt)
+	// Pure core: compute state transition and side effects.
+	advEvt := Event{
+		Type:    EventStepCompleted,
+		StepID:  evt.StepID,
+		Payload: evt.Payload,
+	}
+	run, _ = Advance(wfDef, run, advEvt)
 
-	// Check if this completed step is an OnFailure handler.
-	// If so, mark the original failed step as Recovered and
-	// skip its dependents.
+	// Orchestrator-only I/O that Advance cannot handle.
+	o.releaseTaskSlot(ctx, wfDef, evt.StepID)
+	o.sticky.CreateBinding(ctx, wfDef, run, evt)
 	o.recovery.RecoverIfOnFailure(wfDef, &run, evt.StepID)
 
-	// Check if this is a compensate step completing.
 	if o.recovery.HandleCompensateCompleted(
 		ctx, wfDef, &run, evt.StepID, o.saveSnapshot,
 	) {
 		return nil
 	}
 
+	// Recovery may have changed run state (e.g. marking a step
+	// Recovered), so use orchestrator's enqueueReady which
+	// respects post-recovery state.
 	completed := completedSet(run)
 	if dag.IsComplete(wfDef, completed) {
 		return o.completeWorkflow(ctx, run)
@@ -722,7 +725,9 @@ func (o *Orchestrator) transitionPendingToRunning(
 }
 
 // handleStepContinue re-enqueues an agent-loop step for another iteration.
-// MaxIterations and MaxDuration are enforced; violations fail the run.
+// Uses Advance for iteration increment and MaxIterations check, then
+// applies LoopStartedAt tracking, MaxDuration enforcement, and
+// LoopDelay scheduling that only the orchestrator can do.
 func (o *Orchestrator) handleStepContinue(
 	ctx context.Context, evt protocol.Event,
 ) error {
@@ -742,17 +747,59 @@ func (o *Orchestrator) handleStepContinue(
 			"step %q not found in workflow def", evt.StepID,
 		)
 	}
+
+	// Pure core: increment iterations and check MaxIterations.
+	advEvt := Event{
+		Type:   EventStepContinue,
+		StepID: evt.StepID,
+	}
+	run, effects := Advance(wfDef, run, advEvt)
+
+	// If Advance produced a FailWorkflow effect, MaxIterations
+	// was exceeded — fail via orchestrator's full failure path.
+	if hasEffect[FailWorkflow](effects) {
+		state := run.Steps[evt.StepID]
+		return o.failLoopStep(
+			ctx, run, evt.StepID, state, state.Error,
+		)
+	}
+
+	// Orchestrator-only: track loop start time and enforce
+	// MaxDuration, which the pure core does not handle.
 	state := run.Steps[evt.StepID]
-	state.Iterations++
 	if state.Iterations == 1 {
 		state.LoopStartedAt = time.Now().UTC()
 	}
-	if exceeded, reason := checkLoopBounds(stepDef, state); exceeded {
-		return o.failLoopStep(ctx, run, evt.StepID, state, reason)
+	if exceeded, reason := checkLoopBounds(
+		stepDef, state,
+	); exceeded {
+		return o.failLoopStep(
+			ctx, run, evt.StepID, state, reason,
+		)
 	}
 	run.Steps[evt.StepID] = state
+
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
+	}
+	return o.publishContinueTask(
+		ctx, run, stepDef, state,
+	)
+}
+
+// publishContinueTask resolves input and publishes the next
+// iteration task, with optional LoopDelay scheduling.
+func (o *Orchestrator) publishContinueTask(
+	ctx context.Context,
+	run dag.WorkflowRun,
+	stepDef dag.StepDef,
+	state dag.StepState,
+) error {
+	if stepDef.ID == "" {
+		panic("publishContinueTask: stepDef.ID must not be empty")
+	}
+	if run.RunID == "" {
+		panic("publishContinueTask: RunID must not be empty")
 	}
 	input, err := dag.ResolveInput(stepDef, run.Steps)
 	if err != nil {
@@ -760,39 +807,59 @@ func (o *Orchestrator) handleStepContinue(
 			"resolve input for step %q: %w", stepDef.ID, err,
 		)
 	}
-	// If LoopDelay is configured, delay re-enqueue via a context-aware
-	// timer goroutine. Cancels cleanly if context expires before delay.
 	loopCfg, _ := dag.ParseAgentLoopConfig(stepDef)
 	if loopCfg.LoopDelay > 0 {
-		delay := loopCfg.LoopDelay
-		runID := run.RunID
-		iter := state.Iterations
-		loopCtx := ctx
-		go func() {
-			timer := time.NewTimer(delay)
-			defer timer.Stop()
-			select {
-			case <-loopCtx.Done():
-				return
-			case <-timer.C:
-				pubErr := o.publisher.PublishIteration(
-					loopCtx, runID, stepDef, input, iter,
-				)
-				if pubErr != nil {
-					slog.ErrorContext(loopCtx,
-						"delayed iteration publish failed",
-						"error", pubErr,
-						"run_id", runID,
-						"step_id", stepDef.ID,
-					)
-				}
-			}
-		}()
-		return nil
+		return o.scheduleDelayedIteration(
+			ctx, run.RunID, stepDef, input,
+			state.Iterations, loopCfg.LoopDelay,
+		)
 	}
 	return o.publisher.PublishIteration(
 		ctx, run.RunID, stepDef, input, state.Iterations,
 	)
+}
+
+// scheduleDelayedIteration defers re-enqueue via a context-aware
+// timer goroutine. Cancels cleanly if context expires.
+func (o *Orchestrator) scheduleDelayedIteration(
+	ctx context.Context,
+	runID string,
+	stepDef dag.StepDef,
+	input []byte,
+	iteration int,
+	delay time.Duration,
+) error {
+	if runID == "" {
+		panic(
+			"scheduleDelayedIteration: runID must not be empty",
+		)
+	}
+	if delay <= 0 {
+		panic(
+			"scheduleDelayedIteration: delay must be positive",
+		)
+	}
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			pubErr := o.publisher.PublishIteration(
+				ctx, runID, stepDef, input, iteration,
+			)
+			if pubErr != nil {
+				slog.ErrorContext(ctx,
+					"delayed iteration publish failed",
+					"error", pubErr,
+					"run_id", runID,
+					"step_id", stepDef.ID,
+				)
+			}
+		}
+	}()
+	return nil
 }
 
 // findStepDef locates a step definition by ID within a workflow def.
@@ -945,7 +1012,10 @@ func (o *Orchestrator) handleStepFailed(
 	stepDef, _ := findStepDef(wfDef, evt.StepID)
 	policy := dag.ResolveRetryPolicy(wfDef, stepDef)
 
-	// Non-retriable: skip all retries immediately.
+	// Non-retriable: use pure core for step state transition,
+	// then delegate to recovery manager for failure handling.
+	// Advance sets run.Status=Failed, but recovery may intercept
+	// with an on-failure handler, so preserve the original status.
 	if failPayload.FailureType ==
 		protocol.FailureTypeNonRetriable {
 		o.failNonRetriable.Add(ctx, 1)
@@ -954,8 +1024,20 @@ func (o *Orchestrator) handleStepFailed(
 			"run_id", evt.RunID,
 			"step_id", evt.StepID,
 		)
-		state.Status = dag.StepStatusFailed
-		run.Steps[evt.StepID] = state
+		advEvt := Event{
+			Type:   EventStepFailed,
+			StepID: evt.StepID,
+			FailPayload: FailPayload{
+				Error:       failPayload.Error,
+				FailureType: FailureTypeNonRetriable,
+			},
+		}
+		prevStatus := run.Status
+		run, _ = Advance(wfDef, run, advEvt)
+		// Recovery may handle the failure with an on-failure
+		// handler — don't prematurely mark the run Failed.
+		run.Status = prevStatus
+		state = run.Steps[evt.StepID]
 		return o.recovery.HandlePermanentFailure(
 			ctx, wfDef, run, stepDef, state, evt.StepID,
 			o.saveSnapshot, o.failWorkflow,
