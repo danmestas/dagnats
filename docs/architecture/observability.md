@@ -1,5 +1,9 @@
 # Observability
 
+For deployment modes (embedded sidecar, distributed S3, external
+collector) and usage guide, see [../observability.md](../observability.md).
+This document covers architecture and internals.
+
 ## Design Decision: NATS-Native + OTel SDK
 
 All observability uses the official OpenTelemetry Go SDK directly.
@@ -53,6 +57,12 @@ W3C Trace Context (traceparent) dual-written to:
 | `observe/carrier.go` | `NATSHeaderCarrier` for W3C propagation over NATS |
 | `observe/propagation.go` | `ExtractTraceContext` from NATS messages |
 | `observe/natsexporter/` | NATS JetStream exporters for spans, metrics, logs |
+| `sidecar/supervisor.go` | Process supervisor for sidecar child processes |
+| `sidecar/collector.go` | OTel Collector YAML config generation |
+| `sidecar/config.go` | Sidecar config (local/S3 storage, backend forwarding) |
+| `sidecar/process.go` | Child process management with health checks |
+| `sidecar/install.go` | Binary detection and installer for otelcol, otlp2parquet |
+| `cmd/dagnats-mcp-duckdb/` | DuckDB MCP server over Parquet telemetry files |
 
 ## Configuration
 
