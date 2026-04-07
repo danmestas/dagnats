@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,7 +36,7 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		Port:              cfg.NATSPort,
 		HTTPPort:          cfg.MonitorPort,
 		JetStream:         true,
-		StoreDir:          filepath.Join(cfg.DataDir, "jetstream"),
+		StoreDir:          cfg.DataDir,
 		JetStreamMaxStore: cfg.MaxStoreBytes,
 		NoLog:             true,
 		NoSigs:            true,
@@ -64,7 +63,24 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		}
 	}
 
-	// Create and start server
+	ns, err := tryStartNATS(opts)
+	if err != nil && cfg.NATSPort == defaultNATSPort {
+		printStep(os.Stderr,
+			fmt.Sprintf("port %d in use, picking a free port", cfg.NATSPort))
+		opts.Port = -1
+		ns, err = tryStartNATS(opts)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ns, nil
+}
+
+func tryStartNATS(opts *natsserver.Options) (*natsserver.Server, error) {
+	if opts == nil {
+		panic("tryStartNATS: opts must not be nil")
+	}
+
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
 		return nil, fmt.Errorf("create NATS server: %w", err)
@@ -72,7 +88,6 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 
 	ns.Start()
 
-	// Wait for server to be ready
 	if !ns.ReadyForConnections(natsReadyTimeout) {
 		ns.Shutdown()
 		return nil, fmt.Errorf("NATS server not ready after %v", natsReadyTimeout)
