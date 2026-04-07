@@ -2364,6 +2364,105 @@ func TestPublishReadyTasksParallel(t *testing.T) {
 	}
 }
 
+func TestOrchestratorCompensationChain(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{
+		Name:    "comp-test",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "task-a", Type: dag.StepTypeNormal,
+				Compensate: "undo-a"},
+			{ID: "b", Task: "task-b", DependsOn: []string{"a"},
+				Type:  dag.StepTypeNormal,
+				Retry: &dag.RetryPolicy{MaxAttempts: 1}},
+			{ID: "undo-a", Task: "task-undo-a",
+				Type: dag.StepTypeNormal},
+		},
+		AuxSteps: map[string]bool{"undo-a": true},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	runID := "comp-run-1"
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, runID, defData)
+	evtData, _ := evt.Marshal()
+	js.Publish(evt.NATSSubject(), evtData,
+		nats.MsgId(evt.NATSMsgID()))
+
+	// Complete step a
+	sub, _ := js.PullSubscribe("task.task-a.*",
+		"", nats.BindStream("TASK_QUEUES"))
+	msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("expected task-a, got err=%v len=%d",
+			err, len(msgs))
+	}
+	msgs[0].Ack()
+
+	completeEvt := protocol.NewWorkflowEvent(
+		protocol.EventStepCompleted, runID,
+		[]byte(`{"result":"ok"}`))
+	completeEvt.StepID = "a"
+	completeData, _ := completeEvt.Marshal()
+	js.Publish(completeEvt.NATSSubject(), completeData,
+		nats.MsgId(completeEvt.NATSMsgID()))
+
+	// Fail step b permanently (non-retriable)
+	subB, _ := js.PullSubscribe("task.task-b.*",
+		"", nats.BindStream("TASK_QUEUES"))
+	msgsB, err := subB.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil || len(msgsB) != 1 {
+		t.Fatalf("expected task-b, got err=%v len=%d",
+			err, len(msgsB))
+	}
+	msgsB[0].Ack()
+
+	failEvt := protocol.NewWorkflowEvent(
+		protocol.EventStepFailed, runID,
+		[]byte(`{"error":"boom","failure_type":"non_retriable"}`))
+	failEvt.StepID = "b"
+	failData, _ := failEvt.Marshal()
+	js.Publish(failEvt.NATSSubject(), failData,
+		nats.MsgId(failEvt.NATSMsgID()))
+
+	// Positive: undo-a compensation task should be dispatched
+	subUndo, _ := js.PullSubscribe("task.task-undo-a.*",
+		"", nats.BindStream("TASK_QUEUES"))
+	msgsUndo, err := subUndo.Fetch(
+		1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("expected undo-a task: %v", err)
+	}
+	if len(msgsUndo) != 1 {
+		t.Fatalf("expected 1 undo task, got %d",
+			len(msgsUndo))
+	}
+
+	// Positive: undo task payload has compensation context
+	var payload protocol.TaskPayload
+	if err := json.Unmarshal(
+		msgsUndo[0].Data, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.StepID != "undo-a" {
+		t.Errorf("step = %s, want undo-a", payload.StepID)
+	}
+}
+
 func TestOrchestratorMapStepFanOut(t *testing.T) {
 	// Methodology: workflow has fetch -> map -> summarize.
 	// fetch returns a JSON array of 3 items.

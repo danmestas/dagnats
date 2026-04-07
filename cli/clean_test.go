@@ -6,6 +6,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -387,5 +388,192 @@ func TestDryRunReport_ShowsStreamInfo(t *testing.T) {
 		if e.Messages == 0 {
 			t.Errorf("entry %s has 0 messages", e.Name)
 		}
+	}
+}
+
+func TestParseCleanFlags_AllFlags(t *testing.T) {
+	args := []string{
+		"--all", "--force", "--json", "--dry-run",
+		"--older-than=7d", "--type=otel,dlq",
+	}
+	f := parseCleanFlags(args)
+
+	if !f.all {
+		t.Error("expected all=true")
+	}
+	if !f.force {
+		t.Error("expected force=true")
+	}
+	if !f.json {
+		t.Error("expected json=true")
+	}
+	if !f.dryRun {
+		t.Error("expected dryRun=true")
+	}
+	if f.olderThan != 7*24*time.Hour {
+		t.Errorf("olderThan = %v, want 168h", f.olderThan)
+	}
+	if len(f.types) != 2 ||
+		f.types[0] != "otel" || f.types[1] != "dlq" {
+		t.Errorf("types = %v, want [otel dlq]", f.types)
+	}
+}
+
+func TestParseCleanFlags_Empty(t *testing.T) {
+	f := parseCleanFlags([]string{})
+
+	if f.all || f.force || f.json || f.dryRun {
+		t.Error("expected all flags false for empty args")
+	}
+	if f.olderThan != 0 {
+		t.Errorf("olderThan = %v, want 0", f.olderThan)
+	}
+	if len(f.types) != 0 {
+		t.Errorf("types = %v, want empty", f.types)
+	}
+}
+
+func TestFormatCleanBytes(t *testing.T) {
+	tests := []struct {
+		input uint64
+		want  string
+	}{
+		{0, "0 B"},
+		{500, "500 B"},
+		{1024, "1.0 KiB"},
+		{1536, "1.5 KiB"},
+		{1048576, "1.0 MiB"},
+		{1073741824, "1.0 GiB"},
+		{1610612736, "1.5 GiB"},
+	}
+	for _, tt := range tests {
+		got := formatCleanBytes(tt.input)
+		if got != tt.want {
+			t.Errorf("formatCleanBytes(%d) = %q, want %q",
+				tt.input, got, tt.want)
+		}
+	}
+
+	if formatCleanBytes(1023) != "1023 B" {
+		t.Error("1023 should be bytes, not KiB")
+	}
+}
+
+func TestPurgeStreamBefore_PartialPurge(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	oldJS, _ := nc.JetStream()
+	for i := 0; i < 5; i++ {
+		oldJS.Publish("history.purge-test",
+			[]byte(fmt.Sprintf("msg-%d", i)))
+	}
+
+	stream, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	info, _ := stream.Info(ctx)
+	if info.State.Msgs != 5 {
+		t.Fatalf("expected 5 msgs, got %d",
+			info.State.Msgs)
+	}
+
+	purged := purgeStreamBefore(ctx, stream, 24*time.Hour)
+	if purged {
+		t.Error("expected no purge for fresh messages")
+	}
+
+	info2, _ := stream.Info(ctx)
+	if info2.State.Msgs != 5 {
+		t.Fatalf("expected 5 msgs after no-op purge, got %d",
+			info2.State.Msgs)
+	}
+}
+
+func TestPurgeStreamBefore_AllOld(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	oldJS, _ := nc.JetStream()
+	oldJS.Publish("history.old-test", []byte("old"))
+
+	stream, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	purged := purgeStreamBefore(ctx, stream, time.Millisecond)
+	if !purged {
+		t.Error("expected purge for old message")
+	}
+
+	info, _ := stream.Info(ctx)
+	if info.State.Msgs != 0 {
+		t.Errorf("expected 0 msgs after purge, got %d",
+			info.State.Msgs)
+	}
+}
+
+func TestPurgeKVBucketBefore_SelectiveDelete(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	kv, err := js.KeyValue(ctx, "workflow_runs")
+	if err != nil {
+		t.Fatalf("KeyValue: %v", err)
+	}
+
+	kv.Put(ctx, "old-key", []byte("old"))
+	time.Sleep(50 * time.Millisecond)
+	kv.Put(ctx, "new-key", []byte("new"))
+
+	err = purgeKVBucketBefore(ctx, kv, 25*time.Millisecond)
+	if err != nil {
+		t.Fatalf("purgeKVBucketBefore: %v", err)
+	}
+
+	_, err = kv.Get(ctx, "old-key")
+	if err == nil {
+		t.Error("old-key should have been deleted")
+	}
+
+	entry, err := kv.Get(ctx, "new-key")
+	if err != nil {
+		t.Fatalf("new-key should survive: %v", err)
+	}
+	if string(entry.Value()) != "new" {
+		t.Errorf("value = %q, want new",
+			string(entry.Value()))
 	}
 }
