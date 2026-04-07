@@ -14,9 +14,10 @@ const (
 	ansiR   = "\033[0m"
 )
 
-//nolint:lll
 // banner3-D figlet font, each letter colored from gruvbox palette.
 // Letter columns: D[0:12] A[12:23] G[23:35] N[35:47] A[47:58] T[58:69] S[69:]
+//
+//nolint:lll
 var logo = ansiB + logoLine(0) + logoLine(1) + logoLine(2) + logoLine(3) +
 	logoLine(4) + logoLine(5) + logoLine(6) + logoLine(7) + ansiR
 

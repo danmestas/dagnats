@@ -62,12 +62,12 @@ var allCategories = []string{"runs", "dlq", "otel", "defs"}
 
 // cleanFlags holds parsed command-line options for clean.
 type cleanFlags struct {
-	all      bool
-	force    bool
-	json     bool
-	dryRun   bool
+	all       bool
+	force     bool
+	json      bool
+	dryRun    bool
 	olderThan time.Duration
-	types    []string
+	types     []string
 }
 
 // parseCleanFlags extracts flags from args.
