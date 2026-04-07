@@ -20,10 +20,11 @@ const (
 
 // SidecarConfig holds the full sidecar configuration.
 type SidecarConfig struct {
-	Listen  string         `yaml:"listen"`
-	Storage StorageConfig  `yaml:"storage"`
-	Backend *BackendConfig `yaml:"backend,omitempty"`
-	MCP     MCPConfig      `yaml:"mcp"`
+	Listen     string           `yaml:"listen"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Backend    *BackendConfig   `yaml:"backend,omitempty"`
+	MCP        MCPConfig        `yaml:"mcp"`
+	Supervisor SupervisorConfig `yaml:"supervisor"`
 }
 
 // StorageConfig controls where telemetry data is persisted.
@@ -51,6 +52,11 @@ type MCPConfig struct {
 	Listen string `yaml:"listen"`
 }
 
+// SupervisorConfig controls the supervisor health endpoint.
+type SupervisorConfig struct {
+	Listen string `yaml:"listen"`
+}
+
 // DefaultConfig returns config with sensible zero-config defaults.
 // Every field has a safe value so the sidecar works out of the box.
 func DefaultConfig() *SidecarConfig {
@@ -62,6 +68,9 @@ func DefaultConfig() *SidecarConfig {
 		},
 		MCP: MCPConfig{
 			Listen: "", // empty = stdio transport
+		},
+		Supervisor: SupervisorConfig{
+			Listen: "localhost:4320",
 		},
 	}
 }
@@ -135,6 +144,10 @@ func (c *SidecarConfig) Validate() error {
 
 	if c.Listen == "" {
 		return fmt.Errorf("listen address must not be empty")
+	}
+
+	if c.Supervisor.Listen == "" {
+		return fmt.Errorf("supervisor listen address must not be empty")
 	}
 
 	validTypes := map[string]bool{

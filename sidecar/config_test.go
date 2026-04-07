@@ -32,6 +32,12 @@ func TestDefaultConfig(t *testing.T) {
 			cfg.MCP.Listen)
 	}
 
+	// Positive: supervisor listen defaults to localhost:4320.
+	if cfg.Supervisor.Listen != "localhost:4320" {
+		t.Errorf("Supervisor.Listen = %q, want %q",
+			cfg.Supervisor.Listen, "localhost:4320")
+	}
+
 	// Negative: optional sections are nil
 	if cfg.Backend != nil {
 		t.Errorf("Backend = %+v, want nil", cfg.Backend)
@@ -288,5 +294,36 @@ unknown_field: true
 	if !strings.Contains(err.Error(), "unknown_field") {
 		t.Errorf("error = %q, want mention of 'unknown_field'",
 			err.Error())
+	}
+}
+
+func TestValidate_EmptySupervisorListen(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Supervisor.Listen = ""
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should fail for empty supervisor listen")
+	}
+	if !strings.Contains(err.Error(), "supervisor") {
+		t.Errorf("error = %q, want mention of 'supervisor'", err.Error())
+	}
+}
+
+func TestLoadConfig_SupervisorListen(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sup.yaml")
+	content := `supervisor:
+  listen: "localhost:9999"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Supervisor.Listen != "localhost:9999" {
+		t.Errorf("Supervisor.Listen = %q, want %q",
+			cfg.Supervisor.Listen, "localhost:9999")
 	}
 }
