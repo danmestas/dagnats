@@ -318,6 +318,26 @@ func TestSidecarCmdUnknownSubcommand(t *testing.T) {
 	}
 }
 
+func TestPrintStartBannerHealthLine(t *testing.T) {
+	cfg := sidecar.DefaultConfig()
+	output := captureSidecarOutput(func() {
+		printStartBanner(cfg)
+	})
+
+	// Positive: should show the /healthz path.
+	if !strings.Contains(output, "/healthz") {
+		t.Fatalf(
+			"expected /healthz in banner, got:\n%s", output)
+	}
+
+	// Positive: should show the supervisor listen address.
+	if !strings.Contains(output, "localhost:4320") {
+		t.Fatalf(
+			"expected localhost:4320 in banner, got:\n%s",
+			output)
+	}
+}
+
 func TestPrintStartBannerExportHint(t *testing.T) {
 	cfg := sidecar.DefaultConfig()
 	output := captureSidecarOutput(func() {

@@ -255,8 +255,11 @@ func printStartBanner(cfg *sidecar.SidecarConfig) {
 	fmt.Printf("  Storage:      %s (%s)\n",
 		cfg.Storage.Type, cfg.Storage.LocalPath)
 	fmt.Printf("  DuckDB MCP:   %s\n", mcpTransport)
+	fmt.Printf("  Health:       http://%s/healthz\n",
+		cfg.Supervisor.Listen)
 	if cfg.Backend != nil {
-		fmt.Printf("  Backend:      %s (forwarding)\n", cfg.Backend.Endpoint)
+		fmt.Printf("  Backend:      %s (forwarding)\n",
+			cfg.Backend.Endpoint)
 	}
 }
 
