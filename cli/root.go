@@ -56,6 +56,10 @@ func Run(args []string) {
 		runObserveCmd(args[2:])
 	case "sidecar":
 		runSidecarCmd(args[2:])
+	case "singleton":
+		runSingletonCmd(args[2:])
+	case "clean":
+		runCleanCmd(args[2:])
 	case "completion":
 		runCompletionCmd(args[2:])
 	case "__complete":
@@ -85,6 +89,8 @@ func printUsage() {
 	fmt.Println("  dev       watch mode: build and restart on changes")
 	fmt.Println("  trace     view and search trace spans")
 	fmt.Println("  metrics   view metric snapshots")
+	fmt.Println("  singleton list and release singleton locks")
+	fmt.Println("  clean     purge run data (for testing)")
 	fmt.Println("  observe   observability pipeline health")
 	fmt.Println("  sidecar   local observability sidecar")
 	fmt.Println(

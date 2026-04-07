@@ -18,9 +18,10 @@ import (
 
 // topLevelCommands lists every top-level command for static completion.
 var topLevelCommands = []string{
-	"completion", "config", "dev", "dlq", "init", "logs",
-	"metrics", "observe", "run", "serve", "sidecar",
-	"status", "trace", "trigger", "workers", "workflow",
+	"clean", "completion", "config", "dev", "dlq", "init",
+	"logs", "metrics", "observe", "run", "serve", "sidecar",
+	"singleton", "status", "trace", "trigger", "workers",
+	"workflow",
 }
 
 // subcommandMap maps parent commands to their subcommands.
@@ -39,6 +40,9 @@ var subcommandMap = map[string][]string{
 	},
 	"dlq": {
 		"list", "replay", "watch",
+	},
+	"singleton": {
+		"list", "release",
 	},
 	"completion": {
 		"bash", "zsh",
