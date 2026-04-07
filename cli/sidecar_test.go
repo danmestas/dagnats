@@ -315,6 +315,19 @@ func TestSidecarCmdUnknownSubcommand(t *testing.T) {
 	}
 }
 
+func TestPrintStartBannerExportHint(t *testing.T) {
+	cfg := sidecar.DefaultConfig()
+	output := captureSidecarOutput(func() {
+		printStartBanner(cfg)
+	})
+	if !strings.Contains(output, "OTEL_EXPORTER_OTLP_ENDPOINT") {
+		t.Fatalf("expected OTEL env var in banner, got:\n%s", output)
+	}
+	if !strings.Contains(output, "localhost") {
+		t.Fatalf("expected localhost in export hint, got:\n%s", output)
+	}
+}
+
 // captureSidecarOutput captures stdout from a function.
 func captureSidecarOutput(fn func()) string {
 	oldStdout := os.Stdout

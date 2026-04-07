@@ -241,9 +241,13 @@ func printStartBanner(cfg *sidecar.SidecarConfig) {
 		mcpTransport = cfg.MCP.Listen
 	}
 
+	exportAddr := strings.Replace(cfg.Listen, "0.0.0.0", "localhost", 1)
+
 	fmt.Println("Sidecar started:")
 	fmt.Printf("  Collector:    http://%s (OTLP/HTTP)\n",
 		cfg.Listen)
+	fmt.Printf("  Export:       export OTEL_EXPORTER_OTLP_ENDPOINT=http://%s\n",
+		exportAddr)
 	fmt.Printf("  Storage:      %s (%s)\n",
 		cfg.Storage.Type, cfg.Storage.LocalPath)
 	fmt.Printf("  DuckDB MCP:   %s\n", mcpTransport)
