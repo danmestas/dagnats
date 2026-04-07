@@ -933,6 +933,65 @@ dagnats dev --dir=./cmd/worker --delay=1000
 
 ---
 
+## clean
+
+Purge data from streams and KV buckets. Cleans runs and dead letters by default. Supports filtering by category and age.
+
+```
+dagnats clean [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--type=CATEGORIES` | Comma-separated categories to clean: `runs`, `dlq`, `otel`, `defs` |
+| `--older-than=DURATION` | Only clean data older than duration (`7d`, `24h`, `30m`) |
+| `--dry-run` | Show what would be cleaned without doing it |
+| `--all` | Clean all categories (runs, dlq, otel, defs) |
+| `--force` | Skip confirmation prompt |
+| `--json` | Output result as JSON |
+
+**Categories:**
+
+| Category | Streams | KV Buckets |
+|----------|---------|------------|
+| `runs` | WORKFLOW_HISTORY, TASK_QUEUES, EVENTS, SLEEP_TIMERS | workflow_runs, scheduled_runs, event_waiters, rate_limits, concurrency_tasks, approval_tokens, debounce_state, idempotency_keys, sticky_bindings, singleton_locks |
+| `dlq` | DEAD_LETTERS | — |
+| `otel` | TELEMETRY | — |
+| `defs` | — | workflow_defs |
+
+Default (no `--type`): `runs` + `dlq`
+
+**Example:**
+```bash
+dagnats clean --dry-run
+# Would clean:
+#   WORKFLOW_HISTORY       stream  1042 msgs  12.3 MiB
+#   TASK_QUEUES            stream  0 msgs     0 B
+#   DEAD_LETTERS           stream  3 msgs     1.2 KiB
+#   workflow_runs           kv     28 keys
+# Total: 1073 messages, 12.3 MiB
+
+dagnats clean --older-than=7d --force
+# Purged 4 streams, cleared 10 KV buckets
+
+dagnats clean --type=otel --force
+# Purged 1 streams, cleared 0 KV buckets
+
+dagnats clean --type=otel,dlq --older-than=30d --dry-run
+# Would clean:
+#   TELEMETRY             stream  500 msgs  5.1 MiB
+#   DEAD_LETTERS          stream  1 msgs    512 B
+# Total: 501 messages, 5.1 MiB
+
+dagnats clean --all --force
+# Purged 6 streams, cleared 11 KV buckets
+
+dagnats clean --force --json
+# {"streams_purged":5,"buckets_cleared":10,"errors":0}
+```
+
+---
+
 ## Run ID Prefix Resolution
 
 All commands that accept a run ID support 8+ character prefix matching. The CLI resolves the prefix to the full run ID by scanning existing runs. If the prefix is ambiguous, the command reports an error.
