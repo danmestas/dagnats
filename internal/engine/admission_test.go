@@ -151,6 +151,69 @@ func TestSingletonSkipMode(t *testing.T) {
 	}
 }
 
+func TestSingletonCancelMode(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{
+		Name:    "cancel-singleton",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:   "a",
+				Task: "slow-task",
+				Type: dag.StepTypeNormal,
+			},
+		},
+		Singleton: &dag.SingletonConfig{
+			Mode: dag.SingletonModeCancel,
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	if _, err := defKV.Put(wfDef.Name, defData); err != nil {
+		t.Fatalf("put def: %v", err)
+	}
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	// Start first run
+	startAdmissionRun(t, js, wfDef, "run-1", nil)
+	time.Sleep(300 * time.Millisecond)
+
+	// Start second run -- should cancel first
+	startAdmissionRun(t, js, wfDef, "run-2", nil)
+	time.Sleep(300 * time.Millisecond)
+
+	// Positive: run-2 should be running
+	run2, err := orch.store.Load(context.Background(), "run-2")
+	if err != nil {
+		t.Fatalf("load run-2: %v", err)
+	}
+	if run2.Status != dag.RunStatusRunning {
+		t.Errorf("run-2 status = %s, want running",
+			run2.Status)
+	}
+
+	// Positive: run-1 should be cancelled
+	run1, err := orch.store.Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("load run-1: %v", err)
+	}
+	if run1.Status != dag.RunStatusCancelled {
+		t.Errorf("run-1 status = %s, want cancelled",
+			run1.Status)
+	}
+}
+
 // startAdmissionRun publishes a workflow.started event with
 // the new-format payload containing both def and input.
 func startAdmissionRun(
