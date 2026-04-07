@@ -6,8 +6,11 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -17,11 +20,12 @@ import (
 )
 
 const (
-	observeMaxArgs        = 100
-	otlpProbeTimeout      = 2 * time.Second
-	sidecarProbeTimeout   = 1 * time.Second
-	sidecarDefaultAddress = "localhost:4318"
-	streamInfoTimeout     = 5 * time.Second
+	observeMaxArgs           = 100
+	otlpProbeTimeout         = 2 * time.Second
+	sidecarProbeTimeout      = 1 * time.Second
+	sidecarDefaultAddress    = "localhost:4318"
+	supervisorDefaultAddress = "localhost:4320"
+	streamInfoTimeout        = 5 * time.Second
 )
 
 // observeStatus holds the full status report for JSON output.
@@ -302,20 +306,134 @@ func extractHostPort(endpoint string) string {
 	return addr
 }
 
-// collectSidecarStatus probes the local sidecar collector.
+// collectSidecarStatus probes the local sidecar via the
+// supervisor health endpoint, falling back to TCP probe.
 func collectSidecarStatus() *sidecarStatus {
+	return collectSidecarStatusFromAddr(
+		supervisorDefaultAddress,
+	)
+}
+
+// collectSidecarStatusFromAddr probes the sidecar health
+// endpoint at addr, falling back to TCP probe on failure.
+func collectSidecarStatusFromAddr(
+	addr string,
+) *sidecarStatus {
+	if addr == "" {
+		panic(
+			"collectSidecarStatusFromAddr: addr must not be empty",
+		)
+	}
+	if len(addr) > 1024 {
+		panic(
+			"collectSidecarStatusFromAddr: addr exceeds max",
+		)
+	}
+
+	status := probeHealthHTTP(addr)
+	if status != nil {
+		return status
+	}
+	return probeSidecarTCP(addr)
+}
+
+// probeHealthHTTP tries HTTP GET to http://addr/healthz.
+// Returns nil if the probe fails.
+func probeHealthHTTP(addr string) *sidecarStatus {
+	if addr == "" {
+		panic("probeHealthHTTP: addr must not be empty")
+	}
+
+	const maxBody = 64 * 1024
+	client := &http.Client{Timeout: sidecarProbeTimeout}
+	url := "http://" + addr + "/healthz"
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	data, err := io.ReadAll(
+		io.LimitReader(resp.Body, maxBody),
+	)
+	if err != nil {
+		return nil
+	}
+
+	return parseHealthForStatus(addr, data)
+}
+
+// observeHealthResponse is the shape for observe parsing.
+type observeHealthResponse struct {
+	Status    string                   `json:"status"`
+	Processes []observeProcessResponse `json:"processes"`
+}
+
+// observeProcessResponse is one process entry.
+type observeProcessResponse struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// parseHealthForStatus parses health JSON and builds a
+// sidecarStatus with running process count.
+func parseHealthForStatus(
+	addr string, data []byte,
+) *sidecarStatus {
+	if addr == "" {
+		panic("parseHealthForStatus: addr must not be empty")
+	}
+	if data == nil {
+		panic("parseHealthForStatus: data must not be nil")
+	}
+
+	var health observeHealthResponse
+	if err := json.Unmarshal(data, &health); err != nil {
+		return nil
+	}
+
+	running := 0
+	const maxProcesses = 100
+	for i, p := range health.Processes {
+		if i >= maxProcesses {
+			break
+		}
+		if p.Status == "running" {
+			running++
+		}
+	}
+
+	return &sidecarStatus{
+		Address: addr,
+		Status: fmt.Sprintf(
+			"running, %d processes healthy", running,
+		),
+	}
+}
+
+// probeSidecarTCP does a plain TCP dial to check reachability.
+func probeSidecarTCP(addr string) *sidecarStatus {
+	if addr == "" {
+		panic("probeSidecarTCP: addr must not be empty")
+	}
+
 	conn, err := net.DialTimeout(
-		"tcp", sidecarDefaultAddress, sidecarProbeTimeout,
+		"tcp", addr, sidecarProbeTimeout,
 	)
 	if err != nil {
 		return &sidecarStatus{
-			Address: sidecarDefaultAddress,
+			Address: addr,
 			Status:  "not detected",
 		}
 	}
 	conn.Close()
 	return &sidecarStatus{
-		Address: sidecarDefaultAddress,
+		Address: addr,
 		Status:  "detected",
 	}
 }
