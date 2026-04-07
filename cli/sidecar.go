@@ -257,7 +257,7 @@ func runSidecarInstallCmd(args []string) {
 		)
 		fmt.Println()
 		fmt.Println(
-			"Installs otelcol, otlp2parquet, and dagnats-mcp-duckdb.",
+			"Installs otelcol, otlp2parquet, and dagnats-mcp-duckdb to ~/.dagnats/bin/.",
 		)
 		return
 	}
