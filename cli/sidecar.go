@@ -45,6 +45,8 @@ func runSidecarCmd(args []string) {
 		runSidecarInstallCmd(args[1:])
 	case "status":
 		runSidecarStatusCmd(args[1:])
+	case "init":
+		runSidecarInitCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr,
 			"unknown sidecar command: %s\n", args[0])
@@ -68,6 +70,9 @@ func printSidecarUsage() {
 	)
 	fmt.Println(
 		"  status   show sidecar health [--json]",
+	)
+	fmt.Println(
+		"  init     scaffold a dagnats.yaml config",
 	)
 	fmt.Println()
 	fmt.Println("Start flags:")
@@ -466,4 +471,54 @@ func printBinaryStatus() {
 func formatDuration(d time.Duration) string {
 	truncated := d.Truncate(time.Second)
 	return truncated.String()
+}
+
+const initConfigTemplate = `# Sidecar configuration — uncomment to override defaults.
+# listen: 0.0.0.0:4318
+# supervisor:
+#   listen: localhost:4320
+# storage:
+#   type: local
+#   local_path: ./telemetry-data
+# backend:
+#   endpoint: https://otel.example.com
+#   headers:
+#     Authorization: Bearer <token>
+# mcp:
+#   listen: ""  # empty = stdio
+`
+
+// runSidecarInitCmd writes a commented-out dagnats.yaml template.
+// Refuses to overwrite an existing file.
+func runSidecarInitCmd(args []string) {
+	if args == nil {
+		panic("runSidecarInitCmd: args must not be nil")
+	}
+	if HasHelpFlag(args) {
+		fmt.Println("Usage: dagnats sidecar init")
+		fmt.Println()
+		fmt.Println("Creates a dagnats.yaml config template.")
+		return
+	}
+
+	cfgPath := defaultConfigFileName
+	if _, err := os.Stat(cfgPath); err == nil {
+		fmt.Fprintf(os.Stderr,
+			"error: %s already exists\n", cfgPath)
+		exitFunc(1)
+		return
+	}
+
+	const filePerms = 0o644
+	err := os.WriteFile(
+		cfgPath, []byte(initConfigTemplate), filePerms,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"error: write config: %v\n", err)
+		exitFunc(1)
+		return
+	}
+
+	fmt.Printf("Created %s\n", cfgPath)
 }

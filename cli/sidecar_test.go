@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -374,6 +375,69 @@ func TestPrintStartBannerNoBackend(t *testing.T) {
 	})
 	if strings.Contains(output, "Backend:") {
 		t.Fatalf("should not show Backend when nil, got:\n%s", output)
+	}
+}
+
+// --- Init command ---
+
+func TestSidecarInitCreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	output := captureSidecarOutput(func() {
+		runSidecarInitCmd([]string{})
+	})
+
+	cfgPath := filepath.Join(dir, "dagnats.yaml")
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("expected dagnats.yaml: %v", err)
+	}
+
+	data, _ := os.ReadFile(cfgPath)
+
+	// Positive: file should contain commented listen.
+	if !strings.Contains(string(data), "# listen:") {
+		t.Fatal("expected commented listen")
+	}
+
+	// Positive: output should mention the filename.
+	if !strings.Contains(output, "dagnats.yaml") {
+		t.Fatal("expected confirmation")
+	}
+
+	// Negative: config file should not be empty.
+	if len(data) == 0 {
+		t.Fatal("config file should not be empty")
+	}
+}
+
+func TestSidecarInitRefusesOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	cfgPath := filepath.Join(dir, "dagnats.yaml")
+	os.WriteFile(cfgPath, []byte("existing"), 0o600)
+
+	var exitCode int
+	oldExit := exitFunc
+	exitFunc = func(code int) { exitCode = code }
+	defer func() { exitFunc = oldExit }()
+
+	runSidecarInitCmd([]string{})
+
+	// Positive: should exit with code 1.
+	if exitCode != 1 {
+		t.Fatalf("expected exit 1, got %d", exitCode)
+	}
+
+	// Negative: should not overwrite existing content.
+	data, _ := os.ReadFile(cfgPath)
+	if string(data) != "existing" {
+		t.Fatal("should not overwrite")
 	}
 }
 
