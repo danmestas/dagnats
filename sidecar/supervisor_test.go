@@ -139,3 +139,24 @@ func TestSupervisor_StartFailure(t *testing.T) {
 		)
 	}
 }
+
+func TestSupervisor_StartedAt(t *testing.T) {
+	t.Parallel()
+	procs := []*Process{
+		{Name: "first", Bin: "sleep", Args: []string{"60"}},
+		{Name: "second", Bin: "sleep", Args: []string{"60"}},
+		{Name: "third", Bin: "sleep", Args: []string{"60"}},
+	}
+	sup := testSupervisor(procs)
+	defer sup.Stop()
+	before := time.Now()
+	if err := sup.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if sup.startedAt.IsZero() {
+		t.Fatal("expected startedAt to be set after Start")
+	}
+	if sup.startedAt.Before(before) {
+		t.Fatal("startedAt should be >= before Start call")
+	}
+}

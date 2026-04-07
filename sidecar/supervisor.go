@@ -24,6 +24,7 @@ type Supervisor struct {
 	processes []*Process // [otlp2parquet, otelcol, mcp]
 	ctx       context.Context
 	cancel    context.CancelFunc
+	startedAt time.Time
 }
 
 // NewSupervisor builds a Supervisor with three Process structs
@@ -87,6 +88,8 @@ func (s *Supervisor) Start() error {
 	if len(s.processes) != processCountExpected {
 		panic("Supervisor.Start: unexpected process count")
 	}
+
+	s.startedAt = time.Now()
 
 	for i, proc := range s.processes {
 		if err := proc.Start(s.ctx); err != nil {
