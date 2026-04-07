@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -74,7 +75,11 @@ func (s *Server) Run() error {
 		return err
 	}
 
-	httpErrCh := s.startHTTP()
+	httpErrCh, err := s.startHTTP()
+	if err != nil {
+		s.shutdown()
+		return err
+	}
 
 	s.ready.Store(true)
 	printBanner(os.Stderr, s.cfg.HTTPAddr, s.ns.ClientURL())
@@ -209,8 +214,9 @@ func (s *Server) startComponents() error {
 }
 
 // startHTTP creates and launches the HTTP server in a goroutine.
-// Returns a channel that receives any ListenAndServe error.
-func (s *Server) startHTTP() <-chan error {
+// If the default port is taken, picks a free one automatically.
+// Returns a channel that receives any Serve error.
+func (s *Server) startHTTP() (<-chan error, error) {
 	if s.svc == nil {
 		panic("startHTTP: svc is nil")
 	}
@@ -226,21 +232,29 @@ func (s *Server) startHTTP() <-chan error {
 		mux.Handle("/v1/", s.bridge.Handler())
 	}
 
-	s.httpSrv = &http.Server{
-		Addr:    s.cfg.HTTPAddr,
-		Handler: mux,
+	ln, err := net.Listen("tcp", s.cfg.HTTPAddr)
+	if err != nil && s.cfg.HTTPAddr == defaultHTTPAddr {
+		printStep(os.Stderr,
+			fmt.Sprintf("%s in use, picking a free port", s.cfg.HTTPAddr))
+		ln, err = net.Listen("tcp", ":0")
 	}
+	if err != nil {
+		return nil, fmt.Errorf("listen HTTP: %w", err)
+	}
+	s.cfg.HTTPAddr = ln.Addr().String()
+
+	s.httpSrv = &http.Server{Handler: mux}
 
 	errCh := make(chan error, 1)
 	go func() {
-		err := s.httpSrv.ListenAndServe()
+		err := s.httpSrv.Serve(ln)
 		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 		close(errCh)
 	}()
 
-	return errCh
+	return errCh, nil
 }
 
 // waitAndShutdown blocks until signal, stopCh, or HTTP error, then shuts down.
