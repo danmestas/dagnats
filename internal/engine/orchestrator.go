@@ -47,6 +47,7 @@ type Orchestrator struct {
 	correlator *Correlator          // event wait-for-event matching
 	sticky     *StickyRouter        // worker affinity bindings
 	publisher  *TaskPublisher       // task dispatch pipeline
+	recovery   *RecoveryManager     // failure recovery + compensation
 
 	// Pre-allocated metric instruments — created once in constructor.
 	runsActive       metric.Int64UpDownCounter
@@ -143,6 +144,9 @@ func NewOrchestrator(
 		js, rl, ac, sticky, sleepTimer, tracer,
 		stepEnqueue, taskConcAcquired, taskConcRejected,
 	)
+	recovery := NewRecoveryManager(
+		js, publisher, tracer, runsActive, runsFailed,
+	)
 	o := &Orchestrator{
 		nc:               nc,
 		js:               js,
@@ -153,6 +157,7 @@ func NewOrchestrator(
 		sleepTimer:       sleepTimer,
 		sticky:           sticky,
 		publisher:        publisher,
+		recovery:         recovery,
 		runsActive:       runsActive,
 		runsCompleted:    runsCompleted,
 		runsFailed:       runsFailed,
@@ -552,11 +557,11 @@ func (o *Orchestrator) handleStepCompleted(
 	// Check if this completed step is an OnFailure handler.
 	// If so, mark the original failed step as Recovered and
 	// skip its dependents.
-	o.recoverIfOnFailure(wfDef, &run, evt.StepID)
+	o.recovery.RecoverIfOnFailure(wfDef, &run, evt.StepID)
 
 	// Check if this is a compensate step completing.
-	if o.handleCompensateStepCompleted(
-		ctx, wfDef, &run, evt.StepID,
+	if o.recovery.HandleCompensateCompleted(
+		ctx, wfDef, &run, evt.StepID, o.saveSnapshot,
 	) {
 		return nil
 	}
@@ -569,43 +574,6 @@ func (o *Orchestrator) handleStepCompleted(
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)
-}
-
-// recoverIfOnFailure checks if stepID is an OnFailure target for a
-// failed step. If so, transitions the failed step to Recovered and
-// marks dependents of the failed step as Skipped.
-func (o *Orchestrator) recoverIfOnFailure(
-	wfDef dag.WorkflowDef,
-	run *dag.WorkflowRun,
-	completedStepID string,
-) {
-	for _, stepDef := range wfDef.Steps {
-		if stepDef.OnFailure != completedStepID {
-			continue
-		}
-		failedState := run.Steps[stepDef.ID]
-		if failedState.Status != dag.StepStatusFailed {
-			continue
-		}
-		// Mark the original failed step as recovered
-		failedState.Status = dag.StepStatusRecovered
-		run.Steps[stepDef.ID] = failedState
-
-		// Skip dependents of the failed step — they can't run
-		// without its output
-		for _, s := range wfDef.Steps {
-			for _, dep := range s.DependsOn {
-				if dep == stepDef.ID {
-					depState := run.Steps[s.ID]
-					if depState.Status == dag.StepStatusPending {
-						depState.Status = dag.StepStatusSkipped
-						run.Steps[s.ID] = depState
-					}
-				}
-			}
-		}
-		return
-	}
 }
 
 // completeWorkflow marks the run complete, saves, publishes the event,
@@ -991,8 +959,10 @@ func (o *Orchestrator) handleStepFailed(
 		)
 		state.Status = dag.StepStatusFailed
 		run.Steps[evt.StepID] = state
-		return o.handlePermanentFailure(
+		return o.recovery.HandlePermanentFailure(
 			ctx, wfDef, run, stepDef, state, evt.StepID,
+			o.saveSnapshot, o.failWorkflow,
+			o.notifyParentIfChild, o.releaseTaskSlot,
 		)
 	}
 
@@ -1014,8 +984,10 @@ func (o *Orchestrator) handleStepFailed(
 
 	state.Status = dag.StepStatusFailed
 	run.Steps[evt.StepID] = state
-	return o.handlePermanentFailure(
+	return o.recovery.HandlePermanentFailure(
 		ctx, wfDef, run, stepDef, state, evt.StepID,
+		o.saveSnapshot, o.failWorkflow,
+		o.notifyParentIfChild, o.releaseTaskSlot,
 	)
 }
 
@@ -1049,133 +1021,11 @@ func (o *Orchestrator) handleRetryAfter(
 	}
 	state.Status = dag.StepStatusFailed
 	run.Steps[stepID] = *state
-	return o.handlePermanentFailure(
+	return o.recovery.HandlePermanentFailure(
 		ctx, wfDef, *run, stepDef, *state, stepID,
+		o.saveSnapshot, o.failWorkflow,
+		o.notifyParentIfChild, o.releaseTaskSlot,
 	)
-}
-
-// handlePermanentFailure handles a step whose retries are exhausted
-// or that was marked non-retriable. Checks aux steps, on-failure
-// handlers, compensation chains, then fails the workflow.
-func (o *Orchestrator) handlePermanentFailure(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
-	run dag.WorkflowRun,
-	stepDef dag.StepDef,
-	state dag.StepState,
-	stepID string,
-) error {
-	if stepID == "" {
-		panic(
-			"handlePermanentFailure: stepID must not be empty",
-		)
-	}
-	if run.RunID == "" {
-		panic(
-			"handlePermanentFailure: RunID must not be empty",
-		)
-	}
-
-	// Release task concurrency slot if configured.
-	o.releaseTaskSlot(ctx, wfDef, stepID)
-
-	// If this is an auxiliary step (compensate target) failing,
-	// the compensation itself failed — critical state.
-	if wfDef.AuxSteps[stepID] {
-		return o.failAuxStep(ctx, run, stepDef, state)
-	}
-
-	// Check for on-failure handler before failing the workflow.
-	if stepDef.OnFailure != "" {
-		handled, err := o.tryOnFailureHandler(
-			ctx, wfDef, run, stepDef, state, stepID,
-		)
-		if err != nil {
-			return err
-		}
-		if handled {
-			return nil
-		}
-	}
-
-	// No on-failure handler — check for compensation.
-	completed := completedSet(run)
-	chain := dag.ResolveCompensateChain(
-		wfDef, completed, stepID,
-	)
-	if len(chain) > 0 {
-		return o.startCompensation(
-			ctx, wfDef, &run, stepID, state.Error,
-		)
-	}
-
-	// No compensation either — fail the workflow.
-	return o.failWorkflow(ctx, run, stepDef, state)
-}
-
-// failAuxStep handles failure of an auxiliary (compensate) step.
-// Marks the run as CompensateFailed and publishes a dead letter.
-func (o *Orchestrator) failAuxStep(
-	ctx context.Context,
-	run dag.WorkflowRun,
-	stepDef dag.StepDef,
-	state dag.StepState,
-) error {
-	if run.RunID == "" {
-		panic("failAuxStep: RunID must not be empty")
-	}
-	if stepDef.ID == "" {
-		panic("failAuxStep: stepDef.ID must not be empty")
-	}
-	run.Status = dag.RunStatusCompensateFailed
-	if err := o.saveSnapshot(ctx, run); err != nil {
-		return err
-	}
-	o.runsActive.Add(ctx, -1)
-	o.runsFailed.Add(ctx, 1)
-	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
-	return o.notifyParentIfChild(
-		ctx, run,
-		fmt.Errorf("compensation failed: %s", state.Error),
-	)
-}
-
-// tryOnFailureHandler attempts to run the on-failure handler for a
-// failed step. Returns (true, nil) if the handler was enqueued.
-func (o *Orchestrator) tryOnFailureHandler(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
-	run dag.WorkflowRun,
-	stepDef dag.StepDef,
-	state dag.StepState,
-	stepID string,
-) (bool, error) {
-	if stepDef.OnFailure == "" {
-		panic("tryOnFailureHandler: OnFailure must not be empty")
-	}
-	if stepID == "" {
-		panic("tryOnFailureHandler: stepID must not be empty")
-	}
-	onFailStep, found := findStepDef(
-		wfDef, stepDef.OnFailure,
-	)
-	if !found {
-		return false, nil
-	}
-	ofState := run.Steps[onFailStep.ID]
-	ofState.Status = dag.StepStatusQueued
-	run.Steps[onFailStep.ID] = ofState
-	if err := o.saveSnapshot(ctx, run); err != nil {
-		return false, err
-	}
-	errorInput := []byte(fmt.Sprintf(
-		`{"failed_step":"%s","error":%q}`,
-		stepID, state.Error,
-	))
-	err := o.publisher.Publish(
-		ctx, run.RunID, onFailStep, errorInput, 0,
-	)
-	return err == nil, err
 }
 
 // scheduleRetryAfter schedules a timer to re-publish the task
@@ -1250,165 +1100,10 @@ func (o *Orchestrator) failWorkflow(
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
+	o.recovery.PublishDeadLetter(ctx, run.RunID, stepDef, state)
 	return o.notifyParentIfChild(
 		ctx, run, fmt.Errorf("%s", state.Error),
 	)
-}
-
-// startCompensation begins the saga compensation chain. Resolves
-// compensate steps in reverse topo order and enqueues the first one.
-func (o *Orchestrator) startCompensation(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
-	run *dag.WorkflowRun,
-	failedStepID string,
-	failedError string,
-) error {
-	completed := completedSet(*run)
-	chain := dag.ResolveCompensateChain(
-		wfDef, completed, failedStepID,
-	)
-	if len(chain) == 0 {
-		return nil
-	}
-
-	// Mark compensate steps as queued
-	for _, step := range chain {
-		state := run.Steps[step.ID]
-		state.Status = dag.StepStatusQueued
-		run.Steps[step.ID] = state
-	}
-	if err := o.saveSnapshot(ctx, *run); err != nil {
-		return err
-	}
-
-	// Build input for the first compensate step
-	first := chain[0]
-	originalID := findCompensateSource(wfDef, first.ID)
-	input := buildCompensateInput(
-		originalID, run.Steps[originalID].Output,
-		failedStepID, failedError,
-	)
-	return o.publisher.Publish(ctx, run.RunID, first, input, 0)
-}
-
-// handleCompensateStepCompleted checks if the completed step is part
-// of a compensation chain. If the chain is done, marks the workflow
-// as Compensated. If more steps remain, publishes the next one.
-// Returns true if this was a compensate step (caller should return).
-func (o *Orchestrator) handleCompensateStepCompleted(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
-	run *dag.WorkflowRun,
-	stepID string,
-) bool {
-	if !wfDef.AuxSteps[stepID] {
-		return false
-	}
-	// Only handle steps that are Compensate targets, not OnFailure.
-	if findCompensateSource(wfDef, stepID) == "" {
-		return false
-	}
-
-	// Find the next queued compensate step
-	for _, step := range wfDef.Steps {
-		if step.Compensate == "" {
-			continue
-		}
-		compState := run.Steps[step.Compensate]
-		if compState.Status != dag.StepStatusQueued {
-			continue
-		}
-		// Found a queued compensate step — publish it
-		compDef, _ := findStepDef(wfDef, step.Compensate)
-
-		// Find the original failure for error context
-		var failedStepID, failedError string
-		for _, s := range wfDef.Steps {
-			st := run.Steps[s.ID]
-			if st.Status == dag.StepStatusFailed {
-				failedStepID = s.ID
-				failedError = st.Error
-				break
-			}
-		}
-
-		input := buildCompensateInput(
-			step.ID, run.Steps[step.ID].Output,
-			failedStepID, failedError,
-		)
-		o.saveSnapshot(ctx, *run)
-		o.publisher.Publish(ctx, run.RunID, compDef, input, 0)
-		return true
-	}
-
-	// All compensate steps done — mark workflow as Compensated
-	run.Status = dag.RunStatusCompensated
-	o.saveSnapshot(ctx, *run)
-	o.runsActive.Add(ctx, -1)
-	return true
-}
-
-// findCompensateSource returns the step ID whose Compensate field
-// points to the given compensate step ID.
-func findCompensateSource(
-	wfDef dag.WorkflowDef, compStepID string,
-) string {
-	for _, step := range wfDef.Steps {
-		if step.Compensate == compStepID {
-			return step.ID
-		}
-	}
-	return ""
-}
-
-// buildCompensateInput creates the JSON input for a compensate step.
-func buildCompensateInput(
-	originalID string, originalOutput []byte,
-	failedStepID string, failedError string,
-) []byte {
-	return []byte(fmt.Sprintf(
-		`{"original_step":%q,"original_output":%s,`+
-			`"trigger_step":%q,"trigger_error":%q}`,
-		originalID,
-		jsonOrNull(originalOutput),
-		failedStepID,
-		failedError,
-	))
-}
-
-func jsonOrNull(b []byte) string {
-	if len(b) == 0 {
-		return "null"
-	}
-	return string(b)
-}
-
-// publishDeadLetter publishes failed step info to the dead-letter queue.
-func (o *Orchestrator) publishDeadLetter(
-	ctx context.Context,
-	runID string, stepDef dag.StepDef, state dag.StepState,
-) {
-	if runID == "" {
-		panic("publishDeadLetter: runID must not be empty")
-	}
-	if stepDef.ID == "" {
-		panic("publishDeadLetter: stepDef.ID must not be empty")
-	}
-	payload, err := json.Marshal(map[string]any{
-		"run_id":   runID,
-		"step_id":  stepDef.ID,
-		"task":     stepDef.Task,
-		"error":    state.Error,
-		"attempts": state.Attempts,
-	})
-	if err != nil {
-		return
-	}
-	subject := fmt.Sprintf("dead.%s.%s.%s",
-		stepDef.Task, runID, stepDef.ID)
-	o.js.Publish(ctx, subject, payload)
 }
 
 // handleWorkflowCancelled marks the run and all in-flight steps as
@@ -2260,7 +1955,7 @@ func (o *Orchestrator) failMapStep(
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	o.publishDeadLetter(ctx, run.RunID, stepDef, state)
+	o.recovery.PublishDeadLetter(ctx, run.RunID, stepDef, state)
 	return o.notifyParentIfChild(
 		ctx, run, fmt.Errorf("%s", state.Error),
 	)
