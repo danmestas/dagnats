@@ -5,6 +5,8 @@
 package server
 
 import (
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 
@@ -72,5 +74,64 @@ func TestStartNATS_StandaloneBindsLocalhost(t *testing.T) {
 	}
 	if addr == "" {
 		t.Error("server address is empty")
+	}
+}
+
+func TestStartNATS_FallsBackWhenDefaultPortTaken(t *testing.T) {
+	ln, err := net.Listen("tcp", fmt.Sprintf(
+		"127.0.0.1:%d", defaultNATSPort))
+	if err != nil {
+		t.Skipf("cannot bind default port %d: %v",
+			defaultNATSPort, err)
+	}
+	defer ln.Close()
+
+	cfg := Config{
+		DataDir:       t.TempDir(),
+		NATSPort:      defaultNATSPort,
+		MaxStoreBytes: 1 << 30,
+	}
+
+	ns, err := startNATS(cfg)
+	if err != nil {
+		t.Fatalf("startNATS should fallback: %v", err)
+	}
+	defer ns.Shutdown()
+
+	addr := ns.Addr().String()
+	if addr == "" {
+		t.Fatal("server address is empty")
+	}
+
+	defaultAddr := fmt.Sprintf("127.0.0.1:%d",
+		defaultNATSPort)
+	if addr == defaultAddr {
+		t.Errorf("expected different port, got %s", addr)
+	}
+
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("connect to fallback port: %v", err)
+	}
+	nc.Close()
+}
+
+func TestStartNATS_ExplicitPortFailsHard(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:14222")
+	if err != nil {
+		t.Skipf("cannot bind 14222: %v", err)
+	}
+	defer ln.Close()
+
+	cfg := Config{
+		DataDir:       t.TempDir(),
+		NATSPort:      14222,
+		MaxStoreBytes: 1 << 30,
+	}
+
+	ns, err := startNATS(cfg)
+	if err == nil {
+		ns.Shutdown()
+		t.Fatal("expected error for explicit port conflict")
 	}
 }
