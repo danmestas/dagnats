@@ -140,13 +140,6 @@ func NewOrchestrator(
 		stickyKV, js, sleepTimer, tracer,
 		stepEnqueue,
 	)
-	publisher := NewTaskPublisher(
-		js, rl, ac, sticky, sleepTimer, tracer,
-		stepEnqueue, taskConcAcquired, taskConcRejected,
-	)
-	recovery := NewRecoveryManager(
-		js, publisher, tracer, runsActive, runsFailed,
-	)
 	o := &Orchestrator{
 		nc:               nc,
 		js:               js,
@@ -156,8 +149,6 @@ func NewOrchestrator(
 		admission:        ac,
 		sleepTimer:       sleepTimer,
 		sticky:           sticky,
-		publisher:        publisher,
-		recovery:         recovery,
 		runsActive:       runsActive,
 		runsCompleted:    runsCompleted,
 		runsFailed:       runsFailed,
@@ -165,13 +156,19 @@ func NewOrchestrator(
 		failNonRetriable: failNonRetriable,
 		failRetryAfter:   failRetryAfter,
 	}
+	publisher := NewTaskPublisher(
+		js, rl, ac, sticky, sleepTimer, tracer,
+		stepEnqueue, taskConcAcquired, taskConcRejected,
+		o.loadRunAndDef,
+	)
+	o.publisher = publisher
+	o.recovery = NewRecoveryManager(
+		js, publisher, tracer, runsActive, runsFailed,
+	)
 	o.approval = NewApprovalGate(
 		nc, js, o.sleepTimer, o.tracer,
 	)
 	o.correlator = NewCorrelator(nc, js)
-	// Wire the loadRunAndDef callback so TaskPublisher can
-	// check sticky workflow definitions without circular deps.
-	o.publisher.loadRunAndDef = o.loadRunAndDef
 	for _, opt := range opts {
 		opt(o)
 	}

@@ -42,14 +42,18 @@ type approvalRequestedPayload struct {
 	ExpiresAt   time.Time         `json:"expires_at"`
 }
 
-// SaveSnapshotFunc is called by ApprovalGate to persist run state.
-// The Orchestrator provides its saveSnapshot method as the callback.
+// SaveSnapshotFunc persists a WorkflowRun snapshot after a
+// subsystem has modified run.Steps state. The Orchestrator
+// provides its saveSnapshot method as the concrete callback.
+// Callers must not modify the run further after saveFn returns
+// successfully — the persisted state is the source of truth.
 type SaveSnapshotFunc func(
 	ctx context.Context, run dag.WorkflowRun,
 ) error
 
 // Enqueue activates an approval gate: generates a token, stores
 // it in KV, publishes events, and schedules timeout.
+// Callback order: marks step Running → saveFn → publish → schedule.
 func (ag *ApprovalGate) Enqueue(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
@@ -221,7 +225,10 @@ func (ag *ApprovalGate) scheduleTimeout(
 	}
 	durationMs := timeout.Milliseconds()
 	if durationMs <= 0 {
-		durationMs = 1
+		return fmt.Errorf(
+			"approval timeout must be positive, got %v",
+			timeout,
+		)
 	}
 	return ag.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:     TimerActionApprovalTimeout,
@@ -233,6 +240,8 @@ func (ag *ApprovalGate) scheduleTimeout(
 
 // HandleGranted completes the approval step with the granted
 // payload as output. Guards against duplicate processing.
+// Callback order: loadFn → modify step Completed → saveFn →
+// enqueueFn (or completeFn if DAG is done).
 func (ag *ApprovalGate) HandleGranted(
 	ctx context.Context,
 	evt protocol.Event,
@@ -280,6 +289,7 @@ func (ag *ApprovalGate) HandleGranted(
 
 // HandleRejected fails the approval step and delegates to the
 // standard failure path (on-failure, compensate, or fail).
+// Callback order: loadFn → modify step Failed → failFn.
 func (ag *ApprovalGate) HandleRejected(
 	ctx context.Context,
 	evt protocol.Event,
@@ -325,6 +335,7 @@ func (ag *ApprovalGate) HandleRejected(
 
 // HandleExpired fails the approval step when the timeout fires.
 // Guards against steps already approved or rejected.
+// Callback order: loadFn → modify step Failed → failFn.
 func (ag *ApprovalGate) HandleExpired(
 	ctx context.Context,
 	evt protocol.Event,

@@ -19,6 +19,16 @@ import (
 // handlers, saga compensation chains, and dead-letter publishing.
 // Delegates snapshot persistence and workflow-level transitions
 // back to the Orchestrator via callbacks.
+//
+// Callback protocol: failFn triggers workflow-level failure,
+// saveFn persists the run snapshot after state mutations,
+// notifyFn propagates failure to a parent workflow, and
+// releaseSlotFn frees task concurrency. RecoveryManager
+// modifies run.Steps in-place, then calls saveFn so the caller
+// persists. Compensation is sequential — one step at a time in
+// reverse topological order. Dead-letter publish is
+// fire-and-forget: errors are silently dropped because the
+// workflow is already in a terminal failure state.
 type RecoveryManager struct {
 	js        jetstream.JetStream
 	publisher *TaskPublisher
@@ -60,8 +70,10 @@ func NewRecoveryManager(
 	}
 }
 
-// FailWorkflowFunc is called by RecoveryManager to delegate
-// workflow-level failure handling to the Orchestrator.
+// FailWorkflowFunc transitions a workflow to a failed terminal
+// state. The Orchestrator provides this so RecoveryManager can
+// trigger failure without owning the workflow lifecycle. The
+// implementation is responsible for persisting and notifying.
 type FailWorkflowFunc func(
 	ctx context.Context,
 	run dag.WorkflowRun,
@@ -69,15 +81,19 @@ type FailWorkflowFunc func(
 	state dag.StepState,
 ) error
 
-// NotifyParentFunc is called by RecoveryManager to notify a
-// parent workflow of child failure.
+// NotifyParentFunc propagates a child workflow failure to its
+// parent so the parent can handle or cascade the failure.
+// Called after the child run has already been persisted in its
+// terminal state.
 type NotifyParentFunc func(
 	ctx context.Context,
 	run dag.WorkflowRun,
 	childErr error,
 ) error
 
-// ReleaseTaskSlotFunc releases a task concurrency slot.
+// ReleaseTaskSlotFunc releases a task concurrency slot so other
+// runs can claim it. Called early in failure handling before any
+// recovery logic, because the failed step no longer needs the slot.
 type ReleaseTaskSlotFunc func(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
@@ -87,6 +103,9 @@ type ReleaseTaskSlotFunc func(
 // HandlePermanentFailure handles a step whose retries are
 // exhausted or that was marked non-retriable. Checks aux steps,
 // on-failure handlers, compensation chains, then fails workflow.
+// Callback order: releaseSlotFn first, then one of: saveFn →
+// notifyFn (aux failure), saveFn → publish (on-failure/compensate),
+// or failFn (no recovery path).
 func (rm *RecoveryManager) HandlePermanentFailure(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
@@ -180,6 +199,7 @@ func (rm *RecoveryManager) failAuxStep(
 
 // TryOnFailure attempts to run the on-failure handler for a
 // failed step. Returns (true, nil) if the handler was enqueued.
+// Callback order: modify step Queued → saveFn → publish task.
 func (rm *RecoveryManager) TryOnFailure(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
@@ -221,7 +241,10 @@ func (rm *RecoveryManager) TryOnFailure(
 
 // StartCompensation begins the saga compensation chain.
 // Resolves compensate steps in reverse topo order and enqueues
-// the first one.
+// the first one. Subsequent steps are published one at a time
+// by HandleCompensateCompleted as each completes.
+// Callback order: modify all compensate steps Queued → saveFn →
+// publish first step.
 func (rm *RecoveryManager) StartCompensation(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
@@ -264,6 +287,7 @@ func (rm *RecoveryManager) StartCompensation(
 // part of a compensation chain. If the chain is done, marks
 // the workflow as Compensated. If more steps remain, publishes
 // the next one. Returns true if this was a compensate step.
+// Callback order: saveFn → publish next (or saveFn to finalize).
 func (rm *RecoveryManager) HandleCompensateCompleted(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
@@ -322,7 +346,9 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 }
 
 // PublishDeadLetter publishes failed step info to the
-// dead-letter queue for manual inspection.
+// dead-letter queue for manual inspection. Fire-and-forget:
+// publish errors are silently dropped because the workflow is
+// already in a terminal state.
 func (rm *RecoveryManager) PublishDeadLetter(
 	ctx context.Context,
 	runID string,
@@ -356,7 +382,8 @@ func (rm *RecoveryManager) PublishDeadLetter(
 
 // RecoverIfOnFailure checks if stepID is an OnFailure target
 // for a failed step. If so, transitions the failed step to
-// Recovered and marks dependents as Skipped.
+// Recovered and marks dependents as Skipped. No callbacks —
+// modifies run.Steps in-place; caller must persist afterward.
 func (rm *RecoveryManager) RecoverIfOnFailure(
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
