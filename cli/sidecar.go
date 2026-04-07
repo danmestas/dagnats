@@ -91,11 +91,29 @@ func runSidecarStartCmd(args []string) {
 		return
 	}
 
+	dryRun := hasDryRunFlag(args)
+
 	configPath := extractConfigFlag(args)
 	if configPath == "" {
 		configPath = defaultConfigFileName
 	}
 	cfg := loadSidecarConfig(configPath)
+	if cfg == nil {
+		return
+	}
+
+	if dryRun {
+		data, err := sidecar.GenerateCollectorConfig(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"error: generate config: %v\n", err)
+			exitFunc(1)
+			return
+		}
+		fmt.Print(string(data))
+		return
+	}
+
 	ensureStorageDir(cfg)
 	writeCollectorYAML(cfg)
 	checkBinariesAvailable()

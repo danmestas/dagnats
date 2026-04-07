@@ -378,6 +378,34 @@ func TestPrintStartBannerNoBackend(t *testing.T) {
 	}
 }
 
+// --- Dry run ---
+
+func TestSidecarStartDryRun(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	output := captureSidecarOutput(func() {
+		runSidecarStartCmd([]string{"--dry-run"})
+	})
+
+	// Positive: should contain OTel collector config sections.
+	if !strings.Contains(output, "receivers:") {
+		t.Fatalf("expected receivers:, got:\n%s", output)
+	}
+
+	// Positive: should contain OTLP receiver.
+	if !strings.Contains(output, "otlp:") {
+		t.Fatalf("expected otlp:, got:\n%s", output)
+	}
+
+	// Negative: should not actually start the sidecar.
+	if strings.Contains(output, "Sidecar started") {
+		t.Fatal("dry-run should not start")
+	}
+}
+
 // --- Init command ---
 
 func TestSidecarInitCreatesFile(t *testing.T) {
