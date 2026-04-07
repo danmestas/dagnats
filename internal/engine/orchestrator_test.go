@@ -2381,7 +2381,7 @@ func TestOrchestratorCompensationChain(t *testing.T) {
 			{ID: "a", Task: "task-a", Type: dag.StepTypeNormal,
 				Compensate: "undo-a"},
 			{ID: "b", Task: "task-b", DependsOn: []string{"a"},
-				Type: dag.StepTypeNormal,
+				Type:  dag.StepTypeNormal,
 				Retry: &dag.RetryPolicy{MaxAttempts: 1}},
 			{ID: "undo-a", Task: "task-undo-a",
 				Type: dag.StepTypeNormal},
