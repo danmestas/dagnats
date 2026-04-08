@@ -237,3 +237,69 @@ func TestSleepTimerFiresRateRetry(t *testing.T) {
 		)
 	}
 }
+
+func TestSleepTimerStartsLazilyOnSchedule(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	jsLegacy, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	st := NewSleepTimer(nc, js)
+	// Do NOT call Start() — Schedule should trigger it.
+
+	// Subscribe to history.lazy-run to catch the completion event.
+	sub, err := jsLegacy.SubscribeSync(
+		"history.lazy-run",
+		nats.DeliverAll(),
+	)
+	if err != nil {
+		t.Fatalf("SubscribeSync failed: %v", err)
+	}
+
+	err = st.Schedule(context.Background(), TimerMessage{
+		Action:     TimerActionSleepComplete,
+		RunID:      "lazy-run",
+		StepID:     "lazy-step",
+		DurationMs: 100,
+	})
+	if err != nil {
+		t.Fatalf("Schedule before Start: %v", err)
+	}
+
+	// Wait for the completion event (bounded 5s timeout).
+	msg, err := sub.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf(
+			"did not receive sleep completion event: %v", err,
+		)
+	}
+
+	var evt protocol.Event
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+
+	// Positive: event type is step.sleep.completed.
+	if evt.Type != protocol.EventStepSleepCompleted {
+		t.Fatalf(
+			"expected event type %s, got %s",
+			protocol.EventStepSleepCompleted, evt.Type,
+		)
+	}
+
+	// Negative: timer fired even without explicit Start().
+	if evt.StepID != "lazy-step" {
+		t.Fatalf(
+			"expected step ID 'lazy-step', got %q",
+			evt.StepID,
+		)
+	}
+}

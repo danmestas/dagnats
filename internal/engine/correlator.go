@@ -50,8 +50,9 @@ type Correlator struct {
 	mu      sync.RWMutex
 	waiters map[string][]EventWaiter // eventType -> []EventWaiter
 
-	kvWatch jetstream.KeyWatcher
-	eventCC jetstream.ConsumeContext
+	kvWatch   jetstream.KeyWatcher
+	eventCC   jetstream.ConsumeContext
+	startOnce sync.Once
 }
 
 // NewCorrelator creates a Correlator bound to the given connection.
@@ -84,13 +85,20 @@ func NewCorrelator(
 
 // Start begins KV watch on event_waiters and subscribes to the
 // EVENTS stream to match incoming events against waiters.
-// Panics if already started.
+// Safe to call multiple times — only starts once.
 func (c *Correlator) Start() error {
-	if c.kvWatch != nil {
-		panic("Correlator.Start: already started")
-	}
+	var err error
+	c.startOnce.Do(func() {
+		err = c.startConsumers()
+	})
+	return err
+}
+
+// startConsumers performs the actual startup work for the correlator.
+// Called exactly once by Start() via sync.Once.
+func (c *Correlator) startConsumers() error {
 	if c.waiterKV == nil {
-		panic("Correlator.Start: waiterKV must not be nil")
+		panic("Correlator.startConsumers: waiterKV must not be nil")
 	}
 	watcher, err := c.waiterKV.WatchAll(
 		context.Background(),
@@ -157,6 +165,10 @@ func (c *Correlator) AddWaiter(ctx context.Context, w EventWaiter) error {
 	}
 	if w.EventType == "" {
 		panic("Correlator.AddWaiter: EventType must not be empty")
+	}
+
+	if err := c.Start(); err != nil {
+		return fmt.Errorf("start correlator: %w", err)
 	}
 
 	c.mu.RLock()

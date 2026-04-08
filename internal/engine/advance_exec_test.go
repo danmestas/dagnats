@@ -142,7 +142,7 @@ func TestExecuteSideEffects_CompleteWorkflow(t *testing.T) {
 
 	// Bump runsActive so the decrement in completeWorkflow
 	// does not go negative.
-	orch.runsActive.Add(context.Background(), 1)
+	orch.metrics.runsActive.Add(context.Background(), 1)
 
 	effects := []SideEffect{CompleteWorkflow{}}
 	err = orch.executeSideEffects(

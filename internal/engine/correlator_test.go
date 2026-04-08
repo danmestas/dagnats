@@ -225,3 +225,71 @@ func TestCorrelatorRemoveWaitersForRun(t *testing.T) {
 		t.Fatalf("expected 0 waiters after removal, got %d", count)
 	}
 }
+
+func TestCorrelatorLazyStart(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	c := NewCorrelator(nc, jsNew)
+	defer c.Stop()
+
+	// Register a waiter WITHOUT calling Start() first.
+	waiter := EventWaiter{
+		RunID:     "run-c4",
+		StepID:    "wait-step",
+		EventType: "payment.completed",
+		Match: dag.ResolvedMatch{
+			Left:  "order_id",
+			Op:    dag.MatchOpEq,
+			Right: "ord-789",
+		},
+	}
+	if err := c.AddWaiter(context.Background(), waiter); err != nil {
+		t.Fatalf("AddWaiter failed: %v", err)
+	}
+
+	// Give KV watch time to populate the in-memory index.
+	time.Sleep(200 * time.Millisecond)
+
+	// Subscribe to history for the match event.
+	historySub, err := js.SubscribeSync(
+		"history.run-c4",
+		nats.DeliverNew(),
+	)
+	if err != nil {
+		t.Fatalf("SubscribeSync history failed: %v", err)
+	}
+
+	// Publish a matching event.
+	eventData := []byte(`{"order_id":"ord-789","amount":199.99}`)
+	js.Publish("event.payment.completed", eventData)
+
+	// Positive: match event should appear on history stream.
+	msg, err := historySub.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("no match event received: %v", err)
+	}
+
+	var evt protocol.Event
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+
+	// Positive: correct event type.
+	if evt.Type != protocol.EventStepWaitMatched {
+		t.Fatalf("event type = %v, want %v",
+			evt.Type, protocol.EventStepWaitMatched)
+	}
+	// Negative: verify payload matches what we published.
+	if string(evt.Payload) != string(eventData) {
+		t.Fatalf("payload = %s, want %s",
+			string(evt.Payload), string(eventData))
+	}
+}

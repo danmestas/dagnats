@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/protocol"
@@ -58,6 +59,7 @@ type SleepTimer struct {
 	js         jetstream.JetStream
 	cc         jetstream.ConsumeContext
 	onDebounce DebounceHandler
+	startOnce  sync.Once
 }
 
 // NewSleepTimer creates a SleepTimer bound to the given connection.
@@ -74,14 +76,21 @@ func NewSleepTimer(
 	return &SleepTimer{nc: nc, js: js}
 }
 
-// Start subscribes to sleep.> on the SLEEP_TIMERS stream with a
-// durable consumer. Panics if already started.
+// Start subscribes to sleep.> on the SLEEP_TIMERS stream.
+// Idempotent — safe to call multiple times. The consumer is
+// also started lazily on the first call to Schedule.
 func (st *SleepTimer) Start() error {
+	var err error
+	st.startOnce.Do(func() {
+		err = st.startConsumer()
+	})
+	return err
+}
+
+// startConsumer creates the durable consumer on SLEEP_TIMERS.
+func (st *SleepTimer) startConsumer() error {
 	if st.js == nil {
-		panic("SleepTimer.Start: js must not be nil")
-	}
-	if st.cc != nil {
-		panic("SleepTimer.Start: already started")
+		panic("SleepTimer.startConsumer: js must not be nil")
 	}
 	stream, err := st.js.Stream(
 		context.Background(), "SLEEP_TIMERS",
@@ -135,6 +144,9 @@ func (st *SleepTimer) Schedule(ctx context.Context, msg TimerMessage) error {
 	if msg.StepID == "" {
 		panic("SleepTimer.Schedule: StepID must not be empty")
 	}
+	if err := st.Start(); err != nil {
+		return fmt.Errorf("start sleep timer: %w", err)
+	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal TimerMessage: %w", err)
@@ -171,6 +183,9 @@ func (st *SleepTimer) ScheduleDebounce(
 	}
 	if msg.Action != TimerActionDebounce {
 		panic("ScheduleDebounce: Action must be debounce_fire")
+	}
+	if err := st.Start(); err != nil {
+		return 0, fmt.Errorf("start sleep timer: %w", err)
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

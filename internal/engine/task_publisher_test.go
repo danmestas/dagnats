@@ -93,11 +93,13 @@ func TestDoPublishMetricNotIncrementedOnFailure(t *testing.T) {
 	tracer := tracenoop.NewTracerProvider().Tracer("test")
 
 	tp := &TaskPublisher{
-		js:                      &failingJS{},
-		tracer:                  tracer,
-		stepEnqueueCount:        counter,
-		taskConcurrencyAcquired: &noopCounter{},
-		taskConcurrencyRejected: &noopCounter{},
+		js:     &failingJS{},
+		tracer: tracer,
+		metrics: pubMetrics{
+			stepEnqueue:      counter,
+			taskConcAcquired: &noopCounter{},
+			taskConcRejected: &noopCounter{},
+		},
 		loadRunAndDef: func(
 			_ context.Context, _ string,
 		) (dag.WorkflowDef, dag.WorkflowRun, error) {
@@ -145,11 +147,13 @@ func TestDoPublishMetricIncrementedOnSuccess(t *testing.T) {
 	tracer := tracenoop.NewTracerProvider().Tracer("test")
 
 	tp := &TaskPublisher{
-		js:                      &succeedingJS{},
-		tracer:                  tracer,
-		stepEnqueueCount:        counter,
-		taskConcurrencyAcquired: &noopCounter{},
-		taskConcurrencyRejected: &noopCounter{},
+		js:     &succeedingJS{},
+		tracer: tracer,
+		metrics: pubMetrics{
+			stepEnqueue:      counter,
+			taskConcAcquired: &noopCounter{},
+			taskConcRejected: &noopCounter{},
+		},
 		loadRunAndDef: func(
 			_ context.Context, _ string,
 		) (dag.WorkflowDef, dag.WorkflowRun, error) {
@@ -188,11 +192,13 @@ func TestPublishIterationMetricNotIncrementedOnFailure(
 	tracer := tracenoop.NewTracerProvider().Tracer("test")
 
 	tp := &TaskPublisher{
-		js:                      &failingJS{},
-		tracer:                  tracer,
-		stepEnqueueCount:        counter,
-		taskConcurrencyAcquired: &noopCounter{},
-		taskConcurrencyRejected: &noopCounter{},
+		js:     &failingJS{},
+		tracer: tracer,
+		metrics: pubMetrics{
+			stepEnqueue:      counter,
+			taskConcAcquired: &noopCounter{},
+			taskConcRejected: &noopCounter{},
+		},
 		loadRunAndDef: func(
 			_ context.Context, _ string,
 		) (dag.WorkflowDef, dag.WorkflowRun, error) {

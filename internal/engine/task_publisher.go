@@ -16,7 +16,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
@@ -49,9 +48,7 @@ type TaskPublisher struct {
 	stepRoutes  map[dag.StepType]string
 	tracer      trace.Tracer
 
-	stepEnqueueCount        metric.Int64Counter
-	taskConcurrencyAcquired metric.Int64Counter
-	taskConcurrencyRejected metric.Int64Counter
+	metrics pubMetrics
 
 	// loadRunAndDef is injected by Orchestrator so that Publish
 	// can check sticky workflow definitions without importing
@@ -69,9 +66,7 @@ func NewTaskPublisher(
 	sticky *StickyRouter,
 	sleepTimer *SleepTimer,
 	tracer trace.Tracer,
-	stepEnqueueCount metric.Int64Counter,
-	taskConcAcquired metric.Int64Counter,
-	taskConcRejected metric.Int64Counter,
+	metrics pubMetrics,
 	loadRunAndDef func(
 		ctx context.Context, runID string,
 	) (dag.WorkflowDef, dag.WorkflowRun, error),
@@ -88,16 +83,14 @@ func NewTaskPublisher(
 		)
 	}
 	return &TaskPublisher{
-		js:                      js,
-		rateLimiter:             rateLimiter,
-		admission:               admission,
-		sticky:                  sticky,
-		sleepTimer:              sleepTimer,
-		tracer:                  tracer,
-		stepEnqueueCount:        stepEnqueueCount,
-		taskConcurrencyAcquired: taskConcAcquired,
-		taskConcurrencyRejected: taskConcRejected,
-		loadRunAndDef:           loadRunAndDef,
+		js:            js,
+		rateLimiter:   rateLimiter,
+		admission:     admission,
+		sticky:        sticky,
+		sleepTimer:    sleepTimer,
+		tracer:        tracer,
+		metrics:       metrics,
+		loadRunAndDef: loadRunAndDef,
 	}
 }
 
@@ -138,12 +131,12 @@ func (tp *TaskPublisher) Publish(
 			return err
 		}
 		if !acquired {
-			tp.taskConcurrencyRejected.Add(ctx, 1)
+			tp.metrics.taskConcRejected.Add(ctx, 1)
 			return tp.scheduleConcurrencyRetry(
 				ctx, step, runID, input,
 			)
 		}
-		tp.taskConcurrencyAcquired.Add(ctx, 1)
+		tp.metrics.taskConcAcquired.Add(ctx, 1)
 	}
 
 	// Check sticky binding — if a binding exists, route to the
@@ -359,7 +352,7 @@ func (tp *TaskPublisher) doPublish(
 	if err != nil {
 		return err
 	}
-	tp.stepEnqueueCount.Add(ctx, 1)
+	tp.metrics.stepEnqueue.Add(ctx, 1)
 	return nil
 }
 
@@ -413,7 +406,7 @@ func (tp *TaskPublisher) PublishIteration(
 	if err != nil {
 		return err
 	}
-	tp.stepEnqueueCount.Add(ctx, 1)
+	tp.metrics.stepEnqueue.Add(ctx, 1)
 	return nil
 }
 

@@ -403,6 +403,107 @@ func TestApprovalStep_DoubleApproveFails(t *testing.T) {
 	// Negative: first attempt should have succeeded (checked above).
 }
 
+func TestApprovalGateNilReceiverIsNoOp(t *testing.T) {
+	var ag *ApprovalGate
+
+	// Enqueue on nil should return error, not panic.
+	wfDef := dag.WorkflowDef{
+		Name: "test-wf",
+		Steps: []dag.StepDef{
+			{
+				ID:   "gate",
+				Type: dag.StepTypeApproval,
+				Config: json.RawMessage(
+					`{"timeout_ms":5000,"subject":"test"}`,
+				),
+			},
+		},
+	}
+	run := dag.WorkflowRun{
+		RunID:  "r1",
+		Status: dag.RunStatusRunning,
+		Steps: map[string]dag.StepState{
+			"gate": {Status: dag.StepStatusPending},
+		},
+	}
+	saveFn := func(
+		ctx context.Context, r dag.WorkflowRun,
+	) error {
+		return nil
+	}
+
+	err := ag.Enqueue(
+		context.Background(), wfDef, &run, wfDef.Steps[0], saveFn,
+	)
+	// Positive: Enqueue must return error from nil gate.
+	if err == nil {
+		t.Fatal("expected error from nil ApprovalGate")
+	}
+
+	// HandleGranted on nil should return nil (no-op).
+	loadFn := func(
+		ctx context.Context, runID string,
+	) (dag.WorkflowDef, dag.WorkflowRun, error) {
+		return wfDef, run, nil
+	}
+	completeFn := func(
+		ctx context.Context, r dag.WorkflowRun,
+	) error {
+		return nil
+	}
+	enqueueFn := func(
+		ctx context.Context,
+		wf dag.WorkflowDef,
+		r dag.WorkflowRun,
+	) error {
+		return nil
+	}
+	evt := protocol.NewStepEvent(
+		protocol.EventApprovalGranted, "r1", "gate", nil,
+	)
+	err = ag.HandleGranted(
+		context.Background(), evt, loadFn, completeFn,
+		saveFn, enqueueFn,
+	)
+	if err != nil {
+		t.Fatalf("HandleGranted on nil should return nil, got: %v", err)
+	}
+
+	// HandleRejected on nil should return nil (no-op).
+	failFn := func(
+		ctx context.Context,
+		r dag.WorkflowRun,
+		stepDef dag.StepDef,
+		state dag.StepState,
+	) error {
+		return nil
+	}
+	evt = protocol.NewStepEvent(
+		protocol.EventApprovalRejected, "r1", "gate", nil,
+	)
+	err = ag.HandleRejected(
+		context.Background(), evt, loadFn, failFn,
+	)
+	if err != nil {
+		t.Fatalf("HandleRejected on nil should return nil, got: %v", err)
+	}
+
+	// HandleExpired on nil should return nil (no-op).
+	evt = protocol.NewStepEvent(
+		protocol.EventApprovalExpired, "r1", "gate", nil,
+	)
+	err = ag.HandleExpired(
+		context.Background(), evt, loadFn, failFn,
+	)
+	if err != nil {
+		t.Fatalf("HandleExpired on nil should return nil, got: %v", err)
+	}
+
+	// CleanupTokens on nil should not panic.
+	ag.CleanupTokens(context.Background(), wfDef, run)
+	// Negative: if we reach here without panicking, the test passes.
+}
+
 // newTestService creates a Service for testing.
 func newTestService(t *testing.T, nc *nats.Conn) *apiService {
 	t.Helper()
