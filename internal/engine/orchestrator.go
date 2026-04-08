@@ -25,7 +25,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
@@ -50,12 +49,7 @@ type Orchestrator struct {
 	recovery   *RecoveryManager     // failure recovery + compensation
 
 	// Pre-allocated metric instruments — created once in constructor.
-	runsActive       metric.Int64UpDownCounter
-	runsCompleted    metric.Int64Counter
-	runsFailed       metric.Int64Counter
-	snapshotDuration metric.Float64Histogram
-	failNonRetriable metric.Int64Counter
-	failRetryAfter   metric.Int64Counter
+	metrics orchMetrics
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -104,33 +98,8 @@ func NewOrchestrator(
 	)
 	rl := NewRateLimiter(js)
 	m := otel.Meter("dagnats/engine")
-	runsActive, _ := m.Int64UpDownCounter(
-		"workflow.runs.active",
-	)
-	runsCompleted, _ := m.Int64Counter(
-		"workflow.runs.completed",
-	)
-	runsFailed, _ := m.Int64Counter(
-		"workflow.runs.failed",
-	)
-	stepEnqueue, _ := m.Int64Counter(
-		"step.enqueue.count",
-	)
-	snapDur, _ := m.Float64Histogram(
-		"snapshot.save.duration_ms",
-	)
-	failNonRetriable, _ := m.Int64Counter(
-		"step.failure.non_retriable",
-	)
-	failRetryAfter, _ := m.Int64Counter(
-		"step.failure.retry_after",
-	)
-	taskConcAcquired, _ := m.Int64Counter(
-		"task.concurrency.acquired",
-	)
-	taskConcRejected, _ := m.Int64Counter(
-		"task.concurrency.rejected",
-	)
+	om := newOrchMetrics(m)
+	pm := newPubMetrics(m)
 	tracer := otel.Tracer("dagnats/engine")
 	sleepTimer := NewSleepTimer(nc, js)
 	stickyKV, _ := js.KeyValue(
@@ -138,32 +107,27 @@ func NewOrchestrator(
 	)
 	sticky := NewStickyRouter(
 		stickyKV, js, sleepTimer, tracer,
-		stepEnqueue,
+		pm.stepEnqueue,
 	)
 	o := &Orchestrator{
-		nc:               nc,
-		js:               js,
-		defKV:            defKV,
-		store:            store,
-		tracer:           tracer,
-		admission:        ac,
-		sleepTimer:       sleepTimer,
-		sticky:           sticky,
-		runsActive:       runsActive,
-		runsCompleted:    runsCompleted,
-		runsFailed:       runsFailed,
-		snapshotDuration: snapDur,
-		failNonRetriable: failNonRetriable,
-		failRetryAfter:   failRetryAfter,
+		nc:         nc,
+		js:         js,
+		defKV:      defKV,
+		store:      store,
+		tracer:     tracer,
+		admission:  ac,
+		sleepTimer: sleepTimer,
+		sticky:     sticky,
+		metrics:    om,
 	}
 	publisher := NewTaskPublisher(
 		js, rl, ac, sticky, sleepTimer, tracer,
-		stepEnqueue, taskConcAcquired, taskConcRejected,
-		o.loadRunAndDef,
+		pm, o.loadRunAndDef,
 	)
 	o.publisher = publisher
 	o.recovery = NewRecoveryManager(
-		js, publisher, tracer, runsActive, runsFailed,
+		js, publisher, tracer,
+		om.runsActive, om.runsFailed,
 	)
 	o.approval = NewApprovalGate(
 		nc, js, o.sleepTimer, o.tracer,
@@ -458,7 +422,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return fmt.Errorf("save initial run: %w", err)
 	}
-	o.runsActive.Add(ctx, 1)
+	o.metrics.runsActive.Add(ctx, 1)
 	if err := o.enqueueReady(ctx, wfDef, run); err != nil {
 		return err
 	}
@@ -590,8 +554,8 @@ func (o *Orchestrator) completeWorkflow(
 	}
 	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
-	o.runsActive.Add(ctx, -1)
-	o.runsCompleted.Add(ctx, 1)
+	o.metrics.runsActive.Add(ctx, -1)
+	o.metrics.runsCompleted.Add(ctx, 1)
 	if err := o.admission.ReleaseRunIfConcurrency(
 		ctx, run.WorkflowID,
 	); err != nil {
@@ -720,7 +684,7 @@ func (o *Orchestrator) transitionPendingToRunning(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return fmt.Errorf("save running run: %w", err)
 	}
-	o.runsActive.Add(ctx, 1)
+	o.metrics.runsActive.Add(ctx, 1)
 	return o.enqueueReady(ctx, wfDef, run)
 }
 
@@ -923,8 +887,8 @@ func (o *Orchestrator) failLoopStep(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.runsActive.Add(ctx, -1)
-	o.runsFailed.Add(ctx, 1)
+	o.metrics.runsActive.Add(ctx, -1)
+	o.metrics.runsFailed.Add(ctx, 1)
 	if err := o.admission.ReleaseRunIfConcurrency(
 		ctx, run.WorkflowID,
 	); err != nil {
@@ -1018,7 +982,7 @@ func (o *Orchestrator) handleStepFailed(
 	// with an on-failure handler, so preserve the original status.
 	if failPayload.FailureType ==
 		protocol.FailureTypeNonRetriable {
-		o.failNonRetriable.Add(ctx, 1)
+		o.metrics.failNonRetriable.Add(ctx, 1)
 		slog.InfoContext(ctx,
 			"step failed permanently (non-retriable)",
 			"run_id", evt.RunID,
@@ -1048,7 +1012,7 @@ func (o *Orchestrator) handleStepFailed(
 	// Retry-after: schedule exact delay if retries remain.
 	if failPayload.FailureType ==
 		protocol.FailureTypeRetryAfter {
-		o.failRetryAfter.Add(ctx, 1)
+		o.metrics.failRetryAfter.Add(ctx, 1)
 		return o.handleRetryAfter(
 			ctx, wfDef, &run, stepDef, &state,
 			evt.StepID, failPayload.RetryAfterMs, policy,
@@ -1160,8 +1124,8 @@ func (o *Orchestrator) failWorkflow(
 	}
 	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
-	o.runsActive.Add(ctx, -1)
-	o.runsFailed.Add(ctx, 1)
+	o.metrics.runsActive.Add(ctx, -1)
+	o.metrics.runsFailed.Add(ctx, 1)
 	if err := o.admission.ReleaseRunIfConcurrency(
 		ctx, run.WorkflowID,
 	); err != nil {
@@ -1229,7 +1193,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.runsActive.Add(ctx, -1)
+	o.metrics.runsActive.Add(ctx, -1)
 	if err := o.admission.ReleaseRunIfConcurrency(
 		ctx, run.WorkflowID,
 	); err != nil {
@@ -1411,7 +1375,7 @@ func (o *Orchestrator) createChildRun(
 		return err
 	}
 
-	o.runsActive.Add(ctx, 1)
+	o.metrics.runsActive.Add(ctx, 1)
 	return o.enqueueReady(ctx, childDef, childRun)
 }
 
@@ -1609,7 +1573,7 @@ func (o *Orchestrator) saveSnapshot(
 	start := time.Now()
 	err := o.store.Save(ctx, run)
 	elapsed := float64(time.Since(start).Milliseconds())
-	o.snapshotDuration.Record(ctx, elapsed)
+	o.metrics.snapshotDuration.Record(ctx, elapsed)
 	return err
 }
 
@@ -2029,8 +1993,8 @@ func (o *Orchestrator) failMapStep(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.runsActive.Add(ctx, -1)
-	o.runsFailed.Add(ctx, 1)
+	o.metrics.runsActive.Add(ctx, -1)
+	o.metrics.runsFailed.Add(ctx, 1)
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
