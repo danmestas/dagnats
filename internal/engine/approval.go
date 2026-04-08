@@ -61,6 +61,9 @@ func (ag *ApprovalGate) Enqueue(
 	step dag.StepDef,
 	saveFn SaveSnapshotFunc,
 ) error {
+	if ag == nil {
+		return fmt.Errorf("approval gate not configured")
+	}
 	if step.Type != dag.StepTypeApproval {
 		panic("Enqueue: wrong step type")
 	}
@@ -258,6 +261,9 @@ func (ag *ApprovalGate) HandleGranted(
 		run dag.WorkflowRun,
 	) error,
 ) error {
+	if ag == nil {
+		return nil
+	}
 	if evt.RunID == "" {
 		panic("HandleGranted: RunID must not be empty")
 	}
@@ -303,6 +309,9 @@ func (ag *ApprovalGate) HandleRejected(
 		state dag.StepState,
 	) error,
 ) error {
+	if ag == nil {
+		return nil
+	}
 	if evt.RunID == "" {
 		panic(
 			"HandleRejected: RunID must not be empty",
@@ -349,6 +358,9 @@ func (ag *ApprovalGate) HandleExpired(
 		state dag.StepState,
 	) error,
 ) error {
+	if ag == nil {
+		return nil
+	}
 	if evt.RunID == "" {
 		panic(
 			"HandleExpired: RunID must not be empty",
@@ -382,6 +394,9 @@ func (ag *ApprovalGate) CleanupTokens(
 	ctx context.Context,
 	wfDef dag.WorkflowDef, run dag.WorkflowRun,
 ) {
+	if ag == nil {
+		return
+	}
 	if run.RunID == "" {
 		panic("CleanupTokens: RunID must not be empty")
 	}
