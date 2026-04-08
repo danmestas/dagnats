@@ -141,22 +141,11 @@ func NewOrchestrator(
 
 // Start subscribes to history.> on the WORKFLOW_HISTORY stream using
 // a pull consumer. Messages are delivered asynchronously to handleEvent.
+// SleepTimer and Correlator start lazily on first use via sync.Once.
 // Panics if already started.
 func (o *Orchestrator) Start() {
 	if o.cc != nil {
 		panic("Orchestrator.Start: already started")
-	}
-	if err := o.sleepTimer.Start(); err != nil {
-		panic(
-			"Orchestrator.Start: sleepTimer failed: " +
-				err.Error(),
-		)
-	}
-	if err := o.correlator.Start(); err != nil {
-		panic(
-			"Orchestrator.Start: correlator failed: " +
-				err.Error(),
-		)
 	}
 	stream, err := o.js.Stream(
 		context.Background(), "WORKFLOW_HISTORY",
