@@ -153,10 +153,15 @@ func (s *StepStatus) UnmarshalJSON(data []byte) error {
 
 // AgentLoopConfig bounds the iterative behavior of an agent-loop step.
 // Both limits are enforced: whichever fires first terminates the loop.
+// BudgetWarnAt and BudgetForceAt are advisory — the engine does not
+// enforce them. Workers read these to inject budget warnings into
+// LLM conversations (e.g., "you have N iterations left").
 type AgentLoopConfig struct {
 	MaxIterations int           `json:"max_iterations"`
 	MaxDuration   time.Duration `json:"max_duration,omitempty"`
 	LoopDelay     time.Duration `json:"loop_delay,omitempty"`
+	BudgetWarnAt  int           `json:"budget_warn_at,omitempty"`
+	BudgetForceAt int           `json:"budget_force_at,omitempty"`
 }
 
 // MapConfig controls parallel execution for map steps that fan out.

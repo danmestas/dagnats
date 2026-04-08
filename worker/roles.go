@@ -1,6 +1,9 @@
 package worker
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Role-based interfaces narrow the full TaskContext surface so
 // handlers declare only the capabilities they need. The underlying
@@ -15,6 +18,7 @@ type SimpleTask interface {
 	Input() []byte
 	RunID() string
 	StepID() string
+	Context() context.Context
 	Complete(output []byte) error
 	Fail(err error) error
 	FailPermanent(err error) error
@@ -31,10 +35,13 @@ type CheckpointTask interface {
 
 // LoopTask adds agent-loop iteration capability for handlers
 // that call Continue to request another execution cycle.
+// Includes streaming and heartbeat for long-running iterations.
 type LoopTask interface {
 	CheckpointTask
 	Continue(output []byte) error
 	FailRetryAfter(err error, after time.Duration) error
+	PutStream(data []byte) error
+	Heartbeat() error
 }
 
 // StreamTask adds streaming output and heartbeat for handlers

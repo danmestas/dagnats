@@ -35,6 +35,7 @@ type TaskContext interface {
 	RunID() string
 	StepID() string
 	RetryCount() int
+	Context() context.Context
 
 	// Step completion — call exactly one per execution
 	Complete(output []byte) error
@@ -654,6 +655,19 @@ func (w *Worker) handleTaskError(
 	}
 	if msg == nil {
 		panic("handleTaskError: msg must not be nil")
+	}
+	var rle *RateLimitError
+	if errors.As(err, &rle) {
+		slog.Error(
+			"task hit rate limit, will retry after delay",
+			"error", rle.Err,
+			"retry_after", rle.RetryAfter,
+			"task_type", taskType,
+			"run_id", runID,
+		)
+		tc.FailRetryAfter(rle.Err, rle.RetryAfter)
+		msg.Ack()
+		return
 	}
 	var nre *NonRetryableError
 	if errors.As(err, &nre) {

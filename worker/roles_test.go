@@ -120,6 +120,21 @@ func TestHandleSimpleRegistersAndExecutes(t *testing.T) {
 	}
 }
 
+func TestLoopTaskIncludesPutStreamAndHeartbeat(t *testing.T) {
+	// Compile-time check: LoopTask must include PutStream and Heartbeat.
+	// If either method is removed from the interface, this will not compile.
+	var lt LoopTask = (*taskContext)(nil)
+
+	// Verify PutStream and Heartbeat are accessible through LoopTask.
+	_ = lt.PutStream
+	_ = lt.Heartbeat
+
+	// Also verify the original methods are still present.
+	_ = lt.Continue
+	_ = lt.FailRetryAfter
+	_ = lt.Checkpoint
+}
+
 func TestHandleLoopCanContinue(t *testing.T) {
 	// Integration: register via HandleLoop, verify Continue works.
 	_, nc := natsutil.StartTestServer(t)
