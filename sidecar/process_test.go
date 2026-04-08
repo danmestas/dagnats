@@ -247,6 +247,48 @@ func TestProcess_MaxFailures(t *testing.T) {
 	}
 }
 
+func TestProcess_StartedAt(t *testing.T) {
+	t.Parallel()
+	p := &Process{
+		Name: "test-started-at",
+		Bin:  "sleep",
+		Args: []string{"60"},
+	}
+	before := time.Now()
+	if err := p.Start(t.Context()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer func() { _ = p.Stop(5 * time.Second) }()
+	if p.startedAt.IsZero() {
+		t.Fatal("expected startedAt to be set after Start")
+	}
+	if p.startedAt.Before(before) {
+		t.Fatal("startedAt should be >= before Start call")
+	}
+}
+
+func TestProcess_RestartsCounter(t *testing.T) {
+	t.Parallel()
+	p := &Process{
+		Name: "test-restarts",
+		Bin:  "sleep",
+		Args: []string{"60"},
+	}
+	if err := p.Start(t.Context()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if p.restarts != 0 {
+		t.Fatalf("expected 0 restarts, got %d", p.restarts)
+	}
+	if err := p.RestartWithBackoff(); err != nil {
+		t.Fatalf("RestartWithBackoff failed: %v", err)
+	}
+	if p.restarts != 1 {
+		t.Fatalf("expected 1 restart, got %d", p.restarts)
+	}
+	_ = p.Stop(5 * time.Second)
+}
+
 func containsSubstring(s, substr string) bool {
 	return len(s) >= len(substr) &&
 		findSubstring(s, substr)

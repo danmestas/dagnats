@@ -5,7 +5,11 @@
 package cli
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -226,22 +230,35 @@ func TestSidecarCmdDispatchNoArgs(t *testing.T) {
 }
 
 func TestSidecarCmdDispatchUnknown(t *testing.T) {
-	// Unknown subcommand should fall through to start.
+	// Unknown subcommand should error, not attempt start.
 	var exitCode int
 	oldExit := exitFunc
 	exitFunc = func(code int) { exitCode = code }
 	defer func() { exitFunc = oldExit }()
 
-	oldDir, _ := os.Getwd()
-	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	// Capture stderr to verify error message.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
 
 	runSidecarCmd([]string{"unknown-flag"})
 
-	// Positive: should fail (treated as start).
+	w.Close()
+	os.Stderr = oldStderr
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	// Positive: should exit with code 1.
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+
+	// Negative: should not attempt start.
+	if strings.Contains(output, "Sidecar started") ||
+		strings.Contains(output, "missing binaries") {
+		t.Fatal("should not attempt start for unknown subcommand")
 	}
 }
 
@@ -261,6 +278,250 @@ func TestCollectorYAMLPath(t *testing.T) {
 	if !strings.Contains(got, cfg.Storage.LocalPath) {
 		t.Fatalf("expected storage path in config path, got %q",
 			got)
+	}
+}
+
+func TestSidecarCmdUnknownSubcommand(t *testing.T) {
+	var exitCode int
+	oldExit := exitFunc
+	exitFunc = func(code int) { exitCode = code }
+	defer func() { exitFunc = oldExit }()
+
+	// Capture stderr to check error output.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	runSidecarCmd([]string{"bogus"})
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	// Positive: should exit with code 1.
+	if exitCode != 1 {
+		t.Fatalf("expected exit 1, got %d", exitCode)
+	}
+
+	// Positive: should show error for unknown command.
+	if !strings.Contains(output, "unknown sidecar command") {
+		t.Fatalf("expected unknown command error, got:\n%s",
+			output)
+	}
+
+	// Negative: should not attempt start (no config error).
+	if strings.Contains(output, "error: load config") ||
+		strings.Contains(output, "missing binaries") {
+		t.Fatal("should not attempt start for unknown subcommand")
+	}
+}
+
+func TestPrintStartBannerHealthLine(t *testing.T) {
+	cfg := sidecar.DefaultConfig()
+	output := captureSidecarOutput(func() {
+		printStartBanner(cfg)
+	})
+
+	// Positive: should show the /healthz path.
+	if !strings.Contains(output, "/healthz") {
+		t.Fatalf(
+			"expected /healthz in banner, got:\n%s", output)
+	}
+
+	// Positive: should show the supervisor listen address.
+	if !strings.Contains(output, "localhost:4320") {
+		t.Fatalf(
+			"expected localhost:4320 in banner, got:\n%s",
+			output)
+	}
+}
+
+func TestPrintStartBannerExportHint(t *testing.T) {
+	cfg := sidecar.DefaultConfig()
+	output := captureSidecarOutput(func() {
+		printStartBanner(cfg)
+	})
+	if !strings.Contains(output, "OTEL_EXPORTER_OTLP_ENDPOINT") {
+		t.Fatalf("expected OTEL env var in banner, got:\n%s", output)
+	}
+	if !strings.Contains(output, "localhost") {
+		t.Fatalf("expected localhost in export hint, got:\n%s", output)
+	}
+}
+
+func TestPrintStartBannerBackend(t *testing.T) {
+	cfg := sidecar.DefaultConfig()
+	cfg.Backend = &sidecar.BackendConfig{
+		Endpoint: "https://otel.prod.example.com",
+	}
+	output := captureSidecarOutput(func() {
+		printStartBanner(cfg)
+	})
+	if !strings.Contains(output, "https://otel.prod.example.com") {
+		t.Fatalf("expected backend endpoint in banner, got:\n%s", output)
+	}
+	if !strings.Contains(output, "forwarding") {
+		t.Fatalf("expected 'forwarding' in banner, got:\n%s", output)
+	}
+}
+
+func TestPrintStartBannerNoBackend(t *testing.T) {
+	cfg := sidecar.DefaultConfig()
+	output := captureSidecarOutput(func() {
+		printStartBanner(cfg)
+	})
+	if strings.Contains(output, "Backend:") {
+		t.Fatalf("should not show Backend when nil, got:\n%s", output)
+	}
+}
+
+// --- Dry run ---
+
+func TestSidecarStartDryRun(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	output := captureSidecarOutput(func() {
+		runSidecarStartCmd([]string{"--dry-run"})
+	})
+
+	// Positive: should contain OTel collector config sections.
+	if !strings.Contains(output, "receivers:") {
+		t.Fatalf("expected receivers:, got:\n%s", output)
+	}
+
+	// Positive: should contain OTLP receiver.
+	if !strings.Contains(output, "otlp:") {
+		t.Fatalf("expected otlp:, got:\n%s", output)
+	}
+
+	// Negative: should not actually start the sidecar.
+	if strings.Contains(output, "Sidecar started") {
+		t.Fatal("dry-run should not start")
+	}
+}
+
+// --- Init command ---
+
+func TestSidecarInitCreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	output := captureSidecarOutput(func() {
+		runSidecarInitCmd([]string{})
+	})
+
+	cfgPath := filepath.Join(dir, "dagnats.yaml")
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("expected dagnats.yaml: %v", err)
+	}
+
+	data, _ := os.ReadFile(cfgPath)
+
+	// Positive: file should contain commented listen.
+	if !strings.Contains(string(data), "# listen:") {
+		t.Fatal("expected commented listen")
+	}
+
+	// Positive: output should mention the filename.
+	if !strings.Contains(output, "dagnats.yaml") {
+		t.Fatal("expected confirmation")
+	}
+
+	// Negative: config file should not be empty.
+	if len(data) == 0 {
+		t.Fatal("config file should not be empty")
+	}
+}
+
+func TestSidecarInitRefusesOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	cfgPath := filepath.Join(dir, "dagnats.yaml")
+	os.WriteFile(cfgPath, []byte("existing"), 0o600)
+
+	var exitCode int
+	oldExit := exitFunc
+	exitFunc = func(code int) { exitCode = code }
+	defer func() { exitFunc = oldExit }()
+
+	runSidecarInitCmd([]string{})
+
+	// Positive: should exit with code 1.
+	if exitCode != 1 {
+		t.Fatalf("expected exit 1, got %d", exitCode)
+	}
+
+	// Negative: should not overwrite existing content.
+	data, _ := os.ReadFile(cfgPath)
+	if string(data) != "existing" {
+		t.Fatal("should not overwrite")
+	}
+}
+
+// --- Health endpoint status ---
+
+func TestSidecarStatusWithHealthEndpoint(t *testing.T) {
+	handler := http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"status":"ok",`+
+				`"uptime_seconds":3621,`+
+				`"processes":[{"name":"otelcol",`+
+				`"status":"running","pid":12345,`+
+				`"restarts":0,"uptime_seconds":3621}],`+
+				`"storage":{"path":"./telemetry-data",`+
+				`"type":"local"}}`)
+		},
+	)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	output := captureSidecarOutput(func() {
+		printHealthStatus(srv.URL)
+	})
+
+	// Positive: should show the process name.
+	if !strings.Contains(output, "otelcol") {
+		t.Fatalf("expected otelcol, got:\n%s", output)
+	}
+
+	// Positive: should show running status.
+	if !strings.Contains(output, "running") {
+		t.Fatalf("expected running, got:\n%s", output)
+	}
+
+	// Negative: should not say "not running".
+	if strings.Contains(output, "not running") {
+		t.Fatalf(
+			"should not say not running, got:\n%s", output)
+	}
+}
+
+func TestSidecarStatusFallback(t *testing.T) {
+	output := captureSidecarOutput(func() {
+		printHealthStatus("http://127.0.0.1:19999")
+	})
+
+	// Positive: should indicate sidecar is not running.
+	if !strings.Contains(output, "not running") {
+		t.Fatalf("expected 'not running', got:\n%s", output)
+	}
+
+	// Positive: should show binary names in fallback.
+	if !strings.Contains(output, "otelcol") {
+		t.Fatalf(
+			"expected otelcol in fallback, got:\n%s", output)
 	}
 }
 

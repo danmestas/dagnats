@@ -17,8 +17,27 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestBuildLocal_GoNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := BuildLocal("test", "./cmd/test/")
+
+	// Positive: should return an error.
+	if err == nil {
+		t.Fatal("expected error when go not on PATH")
+	}
+
+	// Positive: error should mention go.
+	if !strings.Contains(err.Error(), "go") {
+		t.Errorf(
+			"error = %q, want mention of 'go'", err.Error(),
+		)
+	}
+}
 
 func TestFindBinary_OnPath(t *testing.T) {
 	// "ls" is always on PATH in Unix-like systems.

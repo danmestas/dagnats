@@ -32,6 +32,12 @@ func TestDefaultConfig(t *testing.T) {
 			cfg.MCP.Listen)
 	}
 
+	// Positive: supervisor listen defaults to localhost:4320.
+	if cfg.Supervisor.Listen != "localhost:4320" {
+		t.Errorf("Supervisor.Listen = %q, want %q",
+			cfg.Supervisor.Listen, "localhost:4320")
+	}
+
 	// Negative: optional sections are nil
 	if cfg.Backend != nil {
 		t.Errorf("Backend = %+v, want nil", cfg.Backend)
@@ -262,5 +268,62 @@ func TestValidate_S3WithConfig(t *testing.T) {
 	// Negative: should not reject well-formed S3
 	if cfg.Storage.S3.Bucket != "telemetry" {
 		t.Error("S3 config was modified during validation")
+	}
+}
+
+func TestLoadConfig_UnknownKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad.yaml")
+	content := `listen: "0.0.0.0:4318"
+unknown_field: true
+`
+	if err := os.WriteFile(
+		cfgPath, []byte(content), 0o600,
+	); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	_, err := LoadConfig(cfgPath)
+
+	// Positive: error returned for unknown key.
+	if err == nil {
+		t.Fatal("LoadConfig() should fail for unknown key")
+	}
+
+	// Positive: error message mentions the field.
+	if !strings.Contains(err.Error(), "unknown_field") {
+		t.Errorf("error = %q, want mention of 'unknown_field'",
+			err.Error())
+	}
+}
+
+func TestValidate_EmptySupervisorListen(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Supervisor.Listen = ""
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should fail for empty supervisor listen")
+	}
+	if !strings.Contains(err.Error(), "supervisor") {
+		t.Errorf("error = %q, want mention of 'supervisor'", err.Error())
+	}
+}
+
+func TestLoadConfig_SupervisorListen(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sup.yaml")
+	content := `supervisor:
+  listen: "localhost:9999"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Supervisor.Listen != "localhost:9999" {
+		t.Errorf("Supervisor.Listen = %q, want %q",
+			cfg.Supervisor.Listen, "localhost:9999")
 	}
 }

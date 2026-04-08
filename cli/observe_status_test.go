@@ -7,6 +7,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -238,6 +241,39 @@ func TestRunObserveCmdUnknown(t *testing.T) {
 	// Negative: should not succeed
 	if exitCode == 0 {
 		t.Fatal("should not succeed with unknown subcommand")
+	}
+}
+
+// --- Health-based sidecar status ---
+
+func TestCollectSidecarStatusFromHealth(t *testing.T) {
+	handler := http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set(
+				"Content-Type", "application/json",
+			)
+			fmt.Fprint(w, `{"status":"ok","processes":[`+
+				`{"name":"a","status":"running"},`+
+				`{"name":"b","status":"running"},`+
+				`{"name":"c","status":"running"}]}`)
+		},
+	)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	got := collectSidecarStatusFromAddr(addr)
+
+	// Positive: should contain the process count.
+	if !strings.Contains(got.Status, "3") {
+		t.Fatalf(
+			"expected count in status, got %q", got.Status,
+		)
+	}
+
+	// Negative: should not be "not detected".
+	if got.Status == "not detected" {
+		t.Fatal("should detect running sidecar")
 	}
 }
 

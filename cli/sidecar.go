@@ -5,10 +5,14 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/danmestas/dagnats/sidecar"
 )
@@ -41,8 +45,13 @@ func runSidecarCmd(args []string) {
 		runSidecarInstallCmd(args[1:])
 	case "status":
 		runSidecarStatusCmd(args[1:])
+	case "init":
+		runSidecarInitCmd(args[1:])
 	default:
-		runSidecarStartCmd(args)
+		fmt.Fprintf(os.Stderr,
+			"unknown sidecar command: %s\n", args[0])
+		printSidecarUsage()
+		exitFunc(1)
 	}
 }
 
@@ -60,7 +69,10 @@ func printSidecarUsage() {
 		"  install  install/update external binaries",
 	)
 	fmt.Println(
-		"  status   check if required binaries are available",
+		"  status   show sidecar health [--json]",
+	)
+	fmt.Println(
+		"  init     scaffold a dagnats.yaml config",
 	)
 	fmt.Println()
 	fmt.Println("Start flags:")
@@ -79,11 +91,29 @@ func runSidecarStartCmd(args []string) {
 		return
 	}
 
+	dryRun := hasDryRunFlag(args)
+
 	configPath := extractConfigFlag(args)
 	if configPath == "" {
 		configPath = defaultConfigFileName
 	}
 	cfg := loadSidecarConfig(configPath)
+	if cfg == nil {
+		return
+	}
+
+	if dryRun {
+		data, err := sidecar.GenerateCollectorConfig(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"error: generate config: %v\n", err)
+			exitFunc(1)
+			return
+		}
+		fmt.Print(string(data))
+		return
+	}
+
 	ensureStorageDir(cfg)
 	writeCollectorYAML(cfg)
 	checkBinariesAvailable()
@@ -169,7 +199,9 @@ func collectorYAMLPath(
 
 // checkBinariesAvailable verifies all required binaries exist.
 func checkBinariesAvailable() {
-	required := []string{"otelcol", "otlp2parquet", "dagnats-mcp-duckdb"}
+	required := []string{
+		"otelcol", "otlp2parquet", "dagnats-mcp-duckdb",
+	}
 	missing := findMissingBinaries(required)
 
 	if len(missing) > 0 {
@@ -238,12 +270,22 @@ func printStartBanner(cfg *sidecar.SidecarConfig) {
 		mcpTransport = cfg.MCP.Listen
 	}
 
+	exportAddr := strings.Replace(cfg.Listen, "0.0.0.0", "localhost", 1)
+
 	fmt.Println("Sidecar started:")
 	fmt.Printf("  Collector:    http://%s (OTLP/HTTP)\n",
 		cfg.Listen)
+	fmt.Printf("  Export:       export OTEL_EXPORTER_OTLP_ENDPOINT=http://%s\n",
+		exportAddr)
 	fmt.Printf("  Storage:      %s (%s)\n",
 		cfg.Storage.Type, cfg.Storage.LocalPath)
 	fmt.Printf("  DuckDB MCP:   %s\n", mcpTransport)
+	fmt.Printf("  Health:       http://%s/healthz\n",
+		cfg.Supervisor.Listen)
+	if cfg.Backend != nil {
+		fmt.Printf("  Backend:      %s (forwarding)\n",
+			cfg.Backend.Endpoint)
+	}
 }
 
 // runSidecarInstallCmd installs required external binaries.
@@ -272,33 +314,168 @@ func runSidecarInstallCmd(args []string) {
 	fmt.Println("All binaries installed.")
 }
 
-// runSidecarStatusCmd checks binary availability and prints.
+// runSidecarStatusCmd probes the health endpoint or falls back
+// to binary detection.
 func runSidecarStatusCmd(args []string) {
 	if args == nil {
 		panic("runSidecarStatusCmd: args must not be nil")
 	}
 	if HasHelpFlag(args) {
 		fmt.Println(
-			"Usage: dagnats sidecar status",
+			"Usage: dagnats sidecar status [--json]",
 		)
 		fmt.Println()
 		fmt.Println(
-			"Checks if required binaries are available.",
+			"Probes sidecar health or lists binary status.",
 		)
 		return
 	}
 
-	names := []string{"otelcol", "otlp2parquet", "dagnats-mcp-duckdb"}
-	allFound := true
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
 
+	configPath := extractConfigFlag(args)
+	if configPath == "" {
+		configPath = defaultConfigFileName
+	}
+	cfg := loadSidecarConfig(configPath)
+	if cfg == nil {
+		return
+	}
+	baseURL := "http://" + cfg.Supervisor.Listen
+
+	if jsonOutput {
+		printHealthJSON(baseURL)
+		return
+	}
+	printHealthStatus(baseURL)
+}
+
+// printHealthJSON probes health and writes raw JSON to stdout.
+func printHealthJSON(baseURL string) {
+	if baseURL == "" {
+		panic("printHealthJSON: baseURL must not be empty")
+	}
+
+	data, err := probeHealthEndpoint(baseURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"error: health probe: %v\n", err)
+		exitFunc(1)
+		return
+	}
+	fmt.Print(string(data))
+}
+
+// probeHealthEndpoint sends HTTP GET to baseURL+"/healthz"
+// with a 2s timeout and bounded read (64KB).
+func probeHealthEndpoint(
+	baseURL string,
+) ([]byte, error) {
+	if baseURL == "" {
+		panic("probeHealthEndpoint: baseURL must not be empty")
+	}
+	if len(baseURL) > 1024 {
+		panic("probeHealthEndpoint: baseURL exceeds max length")
+	}
+
+	const maxResponseBytes = 64 * 1024
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Get(baseURL + "/healthz")
+	if err != nil {
+		return nil, fmt.Errorf("GET /healthz: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(
+			"health endpoint returned %d", resp.StatusCode,
+		)
+	}
+
+	data, err := io.ReadAll(
+		io.LimitReader(resp.Body, maxResponseBytes),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	return data, nil
+}
+
+// healthResponse is the JSON shape from the health endpoint.
+type healthResponse struct {
+	Status    string            `json:"status"`
+	Uptime    float64           `json:"uptime_seconds"`
+	Processes []processResponse `json:"processes"`
+}
+
+// processResponse is one process in the health response.
+type processResponse struct {
+	Name     string  `json:"name"`
+	Status   string  `json:"status"`
+	PID      int     `json:"pid"`
+	Restarts int     `json:"restarts"`
+	Uptime   float64 `json:"uptime_seconds"`
+}
+
+// printHealthStatus probes health; on success prints a
+// per-process table, on failure prints binary fallback.
+func printHealthStatus(baseURL string) {
+	if baseURL == "" {
+		panic("printHealthStatus: baseURL must not be empty")
+	}
+
+	data, err := probeHealthEndpoint(baseURL)
+	if err != nil {
+		fmt.Println("Sidecar not running.")
+		fmt.Println()
+		printBinaryStatus()
+		return
+	}
+
+	var health healthResponse
+	if err := json.Unmarshal(data, &health); err != nil {
+		fmt.Println("Sidecar not running.")
+		fmt.Println()
+		printBinaryStatus()
+		return
+	}
+
+	printProcessTable(health)
+}
+
+// printProcessTable renders the process list as a table.
+func printProcessTable(health healthResponse) {
+	fmt.Println("Sidecar running:")
+	fmt.Printf("  %-20s %-10s %-8s %-10s %s\n",
+		"PROCESS", "STATUS", "PID", "RESTARTS", "UPTIME")
+
+	for _, p := range health.Processes {
+		uptime := formatDuration(
+			time.Duration(p.Uptime) * time.Second,
+		)
+		fmt.Printf("  %-20s %-10s %-8d %-10d %s\n",
+			p.Name, p.Status, p.PID, p.Restarts, uptime)
+	}
+}
+
+// printBinaryStatus lists binary availability as fallback.
+func printBinaryStatus() {
+	names := []string{
+		"otelcol", "otlp2parquet", "dagnats-mcp-duckdb",
+	}
+	fmt.Println("Binaries:")
+
+	allFound := true
 	for _, name := range names {
 		path, err := sidecar.FindBinary(name)
 		if err != nil {
-			fmt.Printf("  %-16s not found\n", name)
+			fmt.Printf("  %-20s not found\n", name)
 			allFound = false
 			continue
 		}
-		fmt.Printf("  %-16s %s\n", name, path)
+		fmt.Printf("  %-20s %s\n", name, path)
 	}
 
 	if !allFound {
@@ -308,4 +485,60 @@ func runSidecarStatusCmd(args []string) {
 				"to download missing binaries",
 		)
 	}
+}
+
+// formatDuration truncates a duration to seconds.
+func formatDuration(d time.Duration) string {
+	truncated := d.Truncate(time.Second)
+	return truncated.String()
+}
+
+const initConfigTemplate = `# Sidecar configuration — uncomment to override defaults.
+# listen: 0.0.0.0:4318
+# supervisor:
+#   listen: localhost:4320
+# storage:
+#   type: local
+#   local_path: ./telemetry-data
+# backend:
+#   endpoint: https://otel.example.com
+#   headers:
+#     Authorization: Bearer <token>
+# mcp:
+#   listen: ""  # empty = stdio
+`
+
+// runSidecarInitCmd writes a commented-out dagnats.yaml template.
+// Refuses to overwrite an existing file.
+func runSidecarInitCmd(args []string) {
+	if args == nil {
+		panic("runSidecarInitCmd: args must not be nil")
+	}
+	if HasHelpFlag(args) {
+		fmt.Println("Usage: dagnats sidecar init")
+		fmt.Println()
+		fmt.Println("Creates a dagnats.yaml config template.")
+		return
+	}
+
+	cfgPath := defaultConfigFileName
+	if _, err := os.Stat(cfgPath); err == nil {
+		fmt.Fprintf(os.Stderr,
+			"error: %s already exists\n", cfgPath)
+		exitFunc(1)
+		return
+	}
+
+	const filePerms = 0o644
+	err := os.WriteFile(
+		cfgPath, []byte(initConfigTemplate), filePerms,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"error: write config: %v\n", err)
+		exitFunc(1)
+		return
+	}
+
+	fmt.Printf("Created %s\n", cfgPath)
 }

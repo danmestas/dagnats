@@ -31,12 +31,14 @@ type Process struct {
 	Dir    string
 	Health func() error // nil = just check process alive
 
-	cmd      *exec.Cmd
-	done     chan struct{} // closed when cmd.Wait returns
-	mu       sync.Mutex
-	backoff  time.Duration
-	failures int
-	failedAt time.Time
+	cmd       *exec.Cmd
+	done      chan struct{} // closed when cmd.Wait returns
+	mu        sync.Mutex
+	backoff   time.Duration
+	failures  int
+	failedAt  time.Time
+	startedAt time.Time
+	restarts  int
 }
 
 // Start launches the child process. Stdout and stderr are
@@ -87,6 +89,7 @@ func (p *Process) Start(ctx context.Context) error {
 		close(p.done)
 	}()
 
+	p.startedAt = time.Now()
 	return nil
 }
 
@@ -180,6 +183,7 @@ func (p *Process) RestartWithBackoff() error {
 
 	p.failures++
 	p.failedAt = now
+	p.restarts++
 
 	if p.failures > maxConsecutiveFailures {
 		p.mu.Unlock()
