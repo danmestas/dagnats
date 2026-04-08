@@ -5,6 +5,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -24,6 +25,7 @@ func (m *mockTaskContext) Input() []byte           { return m.input }
 func (m *mockTaskContext) RunID() string           { return "mock-run" }
 func (m *mockTaskContext) StepID() string          { return "mock-step" }
 func (m *mockTaskContext) RetryCount() int         { return 0 }
+func (m *mockTaskContext) Context() context.Context { return context.Background() }
 func (m *mockTaskContext) Heartbeat() error        { return nil }
 func (m *mockTaskContext) PutStream([]byte) error  { return nil }
 func (m *mockTaskContext) Checkpoint([]byte) error { return nil }

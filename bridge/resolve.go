@@ -116,6 +116,9 @@ func parseResolveRequest(
 		"checkpoint":  true,
 		"send_signal": true,
 		"wait_signal": true,
+		"continue":    true,
+		"heartbeat":   true,
+		"stream":      true,
 	}
 	if !validActions[req.Action] {
 		return req, fmt.Errorf("invalid action: %s", req.Action)
@@ -154,6 +157,12 @@ func (b *Bridge) dispatchAction(
 		return b.resolveSendSignal(ctx, taskID, msg, req, w)
 	case "wait_signal":
 		return b.resolveWaitSignal(ctx, taskID, msg, req, w, r)
+	case "continue":
+		return b.resolveContinue(ctx, taskID, msg, req)
+	case "heartbeat":
+		return b.resolveHeartbeat(ctx, taskID, msg)
+	case "stream":
+		return b.resolveStream(ctx, taskID, msg, req)
 	default:
 		return fmt.Errorf("unhandled action: %s", req.Action)
 	}
@@ -282,6 +291,93 @@ func (b *Bridge) resolveCheckpoint(
 		return fmt.Errorf("in-progress: %w", err)
 	}
 	return nil
+}
+
+// resolveContinue publishes a step.continue event, acks the NATS
+// message, and removes the task from the ackMap. This enables
+// non-Go agents to implement agent loops via the HTTP bridge.
+func (b *Bridge) resolveContinue(
+	ctx context.Context,
+	taskID string, msg jetstream.Msg, req resolveRequest,
+) error {
+	if ctx == nil {
+		panic("resolveContinue: ctx must not be nil")
+	}
+	if taskID == "" {
+		panic("resolveContinue: taskID must not be empty")
+	}
+	if msg == nil {
+		panic("resolveContinue: msg must not be nil")
+	}
+	runID, stepID := splitTaskID(taskID)
+	evt := protocol.NewStepEvent(
+		protocol.EventStepContinue, runID, stepID, req.Output,
+	)
+	nonce := fmt.Sprintf("%d", time.Now().UnixNano())
+	msgID := fmt.Sprintf(
+		"%s.%s.continue.bridge.%s", runID, stepID, nonce,
+	)
+	outMsg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
+	}
+	data, err := evt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal continue event: %w", err)
+	}
+	outMsg.Data = data
+	_, err = b.js.PublishMsg(ctx, outMsg)
+	if err != nil {
+		return fmt.Errorf("publish continue event: %w", err)
+	}
+	if err := msg.Ack(); err != nil {
+		return fmt.Errorf("ack message: %w", err)
+	}
+	b.ackMap.Delete(taskID)
+	return nil
+}
+
+// resolveHeartbeat extends the ack deadline without completing
+// or removing the task from the ackMap. Non-Go agents call this
+// periodically to prevent the message from being redelivered.
+func (b *Bridge) resolveHeartbeat(
+	ctx context.Context,
+	taskID string, msg jetstream.Msg,
+) error {
+	if ctx == nil {
+		panic("resolveHeartbeat: ctx must not be nil")
+	}
+	if taskID == "" {
+		panic("resolveHeartbeat: taskID must not be empty")
+	}
+	if msg == nil {
+		panic("resolveHeartbeat: msg must not be nil")
+	}
+	return msg.InProgress()
+}
+
+// resolveStream publishes data to core NATS pub/sub on
+// stream.{runID}.{stepID} for real-time consumption, then extends
+// the ack deadline. The task remains in-flight in the ackMap.
+func (b *Bridge) resolveStream(
+	ctx context.Context,
+	taskID string, msg jetstream.Msg, req resolveRequest,
+) error {
+	if ctx == nil {
+		panic("resolveStream: ctx must not be nil")
+	}
+	if taskID == "" {
+		panic("resolveStream: taskID must not be empty")
+	}
+	if msg == nil {
+		panic("resolveStream: msg must not be nil")
+	}
+	runID, stepID := splitTaskID(taskID)
+	subject := fmt.Sprintf("stream.%s.%s", runID, stepID)
+	if err := b.nc.Publish(subject, req.Data); err != nil {
+		return fmt.Errorf("publish stream: %w", err)
+	}
+	return msg.InProgress()
 }
 
 // writeCheckpoint stores data in the checkpoints KV bucket.

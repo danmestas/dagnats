@@ -828,3 +828,167 @@ func TestResolveInvalidJSON(t *testing.T) {
 		t.Error("ackMap should still hold the task")
 	}
 }
+
+func TestResolveContinuePublishesEvent(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-cont", "step-cont",
+	)
+
+	body := `{"action":"continue","output":{"next":"step2"}}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify continue event published
+	evt := consumeHistoryEvent(t, nc, "run-cont", 5*time.Second)
+	if evt.Type != protocol.EventStepContinue {
+		t.Errorf("event type = %s, want %s",
+			evt.Type, protocol.EventStepContinue)
+	}
+
+	// Verify ackMap entry removed
+	_, ok := b.ackMap.Load(taskID)
+	if ok {
+		t.Error("expected task removed from ackMap after continue")
+	}
+}
+
+func TestResolveHeartbeatExtendsDeadline(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-hb", "step-hb",
+	)
+
+	body := `{"action":"heartbeat"}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify task is still in ackMap (heartbeat keeps it alive)
+	_, ok := b.ackMap.Load(taskID)
+	if !ok {
+		t.Error("expected task to remain in ackMap after heartbeat")
+	}
+}
+
+func TestResolveStreamPublishesData(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	// Subscribe to stream subject before publishing
+	sub, err := nc.SubscribeSync("stream.run-str.step-str")
+	if err != nil {
+		t.Fatalf("subscribe failed: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-str", "step-str",
+	)
+
+	body := `{"action":"stream","data":{"token":"hello"}}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify stream message received
+	msg, err := sub.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("no stream message received: %v", err)
+	}
+	if !strings.Contains(string(msg.Data), "hello") {
+		t.Errorf("stream data = %s, want to contain 'hello'",
+			string(msg.Data))
+	}
+
+	// Verify task still in ackMap (stream keeps task alive)
+	_, ok := b.ackMap.Load(taskID)
+	if !ok {
+		t.Error("expected task to remain in ackMap after stream")
+	}
+}
+
+func TestResolveInvalidActionRejected(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := NewBridge(nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(
+		t, nc, b, ts, "run-inv", "step-inv",
+	)
+
+	body := `{"action":"destroy"}`
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+
+	// Positive: task should still be in ackMap (not lost)
+	_, ok := b.ackMap.Load(taskID)
+	if !ok {
+		t.Fatal("expected task to remain in ackMap")
+	}
+}

@@ -914,3 +914,40 @@ func TestFailRetryAfterPanicsOnNegativeDuration(t *testing.T) {
 	}()
 	tc.FailRetryAfter(fmt.Errorf("err"), -1*time.Second)
 }
+
+func TestTaskContext_Context_ReturnsInjectedContext(t *testing.T) {
+	type ctxKey string
+	key := ctxKey("test-key")
+	parent := context.WithValue(
+		context.Background(), key, "test-value",
+	)
+	tr := tracenoop.NewTracerProvider().Tracer("test")
+	_, span := tr.Start(parent, "test")
+	tc := newTaskContext(
+		nil, tr, nil,
+		protocol.TaskPayload{
+			RunID: "run-ctx", StepID: "step-ctx",
+		},
+		parent, span, nil, nil, nil,
+	)
+
+	// Positive: Context() returns the injected context
+	got := tc.Context()
+	if got != parent {
+		t.Fatal("Context() did not return the injected context")
+	}
+
+	// Positive: value is accessible through the returned context
+	val := got.Value(key)
+	if val != "test-value" {
+		t.Fatalf(
+			"context value = %v, want %q", val, "test-value",
+		)
+	}
+
+	// Negative: a different key returns nil
+	other := ctxKey("other-key")
+	if got.Value(other) != nil {
+		t.Fatal("expected nil for missing context key")
+	}
+}

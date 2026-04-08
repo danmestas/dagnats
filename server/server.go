@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
+	"github.com/danmestas/dagnats/internal/web"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -197,7 +198,12 @@ func (s *Server) startComponents() error {
 		}
 		w := worker.NewWorker(s.nc, opts...)
 		for _, reg := range shim.registrations {
-			w.Handle(reg.taskType, reg.handler)
+			switch reg.role {
+			case roleSingleton:
+				w.HandleSingleton(reg.taskType, reg.handler)
+			default:
+				w.Handle(reg.taskType, reg.handler)
+			}
 		}
 		if len(shim.registrations) > 0 {
 			w.Start()
@@ -231,6 +237,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	if s.bridge != nil {
 		mux.Handle("/v1/", s.bridge.Handler())
 	}
+	mux.Handle("/ui/", web.New(s.svc, s.nc).Handler())
 
 	ln, err := net.Listen("tcp", s.cfg.HTTPAddr)
 	if err != nil && s.cfg.HTTPAddr == defaultHTTPAddr {
