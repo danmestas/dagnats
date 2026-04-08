@@ -85,10 +85,10 @@ func newTaskContext(
 	}
 }
 
-func (c *taskContext) Input() []byte        { return c.input }
-func (c *taskContext) RunID() string        { return c.runID }
-func (c *taskContext) StepID() string       { return c.stepID }
-func (c *taskContext) RetryCount() int      { return c.attempt }
+func (c *taskContext) Input() []byte            { return c.input }
+func (c *taskContext) RunID() string            { return c.runID }
+func (c *taskContext) StepID() string           { return c.stepID }
+func (c *taskContext) RetryCount() int          { return c.attempt }
 func (c *taskContext) Context() context.Context { return c.ctx }
 
 // Complete publishes a step.completed event with trace context.

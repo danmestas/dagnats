@@ -31,9 +31,9 @@ type fakeTaskContext struct {
 }
 
 func (f *fakeTaskContext) Context() context.Context { return context.Background() }
-func (f *fakeTaskContext) Input() []byte             { return f.input }
-func (f *fakeTaskContext) RunID() string  { return f.runID }
-func (f *fakeTaskContext) StepID() string { return f.stepID }
+func (f *fakeTaskContext) Input() []byte            { return f.input }
+func (f *fakeTaskContext) RunID() string            { return f.runID }
+func (f *fakeTaskContext) StepID() string           { return f.stepID }
 func (f *fakeTaskContext) RetryCount() int {
 	return f.retryCount
 }

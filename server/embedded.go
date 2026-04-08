@@ -10,7 +10,7 @@ const maxEmbeddedWorkers = 50
 type roleType int
 
 const (
-	roleDefault   roleType = iota
+	roleDefault roleType = iota
 	roleLoop
 	roleStream
 	roleSignal
