@@ -754,7 +754,7 @@ func (o *Orchestrator) publishContinueTask(
 	if run.RunID == "" {
 		panic("publishContinueTask: RunID must not be empty")
 	}
-	input, err := dag.ResolveInput(stepDef, run.Steps)
+	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
 	if err != nil {
 		return fmt.Errorf(
 			"resolve input for step %q: %w", stepDef.ID, err,
@@ -1081,7 +1081,7 @@ func (o *Orchestrator) scheduleRetryAfter(
 	if retryAfterMs > 3_600_000 {
 		retryAfterMs = 3_600_000
 	}
-	input, err := dag.ResolveInput(stepDef, run.Steps)
+	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
 	if err != nil {
 		return fmt.Errorf(
 			"resolve input for retry-after step %q: %w",
@@ -2232,7 +2232,7 @@ func (o *Orchestrator) enqueueSubWorkflow(
 		return fmt.Errorf("parse sub-workflow config: %w", err)
 	}
 
-	input, err := dag.ResolveInput(step, run.Steps)
+	input, err := dag.ResolveInput(step, run.Steps, run.Input)
 	if err != nil {
 		return fmt.Errorf(
 			"resolve input for step %q: %w", step.ID, err,

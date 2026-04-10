@@ -447,7 +447,7 @@ func (tp *TaskPublisher) PublishBatch(
 	var g errgroup.Group
 	for _, step := range ready {
 		step := step
-		input, err := dag.ResolveInput(step, run.Steps)
+		input, err := dag.ResolveInput(step, run.Steps, run.Input)
 		if err != nil {
 			return fmt.Errorf(
 				"resolve input for step %q: %w",
