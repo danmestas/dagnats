@@ -56,11 +56,14 @@ func ResolveSkipped(
 }
 
 // ResolveInput builds the input payload for a step from its upstream outputs.
-// No deps → nil (first step receives workflow-level input from the caller).
+// No deps → forward the run-level input so root steps receive caller data.
 // Single dep → pass that step's output through unchanged.
 // Fan-in → map of dep ID → raw output, so the task can address each upstream.
-func ResolveInput(step StepDef, steps map[string]StepState) ([]byte, error) {
+func ResolveInput(step StepDef, steps map[string]StepState, runInput ...json.RawMessage) ([]byte, error) {
 	if len(step.DependsOn) == 0 {
+		if len(runInput) > 0 && len(runInput[0]) > 0 {
+			return runInput[0], nil
+		}
 		return nil, nil
 	}
 	if len(step.DependsOn) == 1 {

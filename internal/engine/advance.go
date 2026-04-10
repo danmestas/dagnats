@@ -195,7 +195,7 @@ func advanceContinue(
 
 	run.Steps[evt.StepID] = state
 
-	input, inputErr := dag.ResolveInput(stepDef, run.Steps)
+	input, inputErr := dag.ResolveInput(stepDef, run.Steps, run.Input)
 	if inputErr != nil {
 		panic("advanceContinue: ResolveInput: " + inputErr.Error())
 	}
@@ -231,7 +231,7 @@ func resolveNextSteps(
 		if run.Steps[step.ID].Status == dag.StepStatusSkipped {
 			continue
 		}
-		input, err := dag.ResolveInput(step, run.Steps)
+		input, err := dag.ResolveInput(step, run.Steps, run.Input)
 		if err != nil {
 			panic("resolveNextSteps: ResolveInput: " + err.Error())
 		}

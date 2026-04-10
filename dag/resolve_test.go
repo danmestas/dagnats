@@ -130,6 +130,18 @@ func TestResolveInputNoDeps(t *testing.T) {
 	}
 }
 
+func TestResolveInputNoDepsWithRunInput(t *testing.T) {
+	step := StepDef{ID: "a", DependsOn: nil}
+	runInput := json.RawMessage(`{"prompt":"hello","repo":"/tmp"}`)
+	input, err := ResolveInput(step, map[string]StepState{}, runInput)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(input) != `{"prompt":"hello","repo":"/tmp"}` {
+		t.Fatalf("input = %q, want run input forwarded", string(input))
+	}
+}
+
 func TestIsCompleteAllDone(t *testing.T) {
 	def := WorkflowDef{Name: "test", Version: "1", Steps: []StepDef{
 		{ID: "a", Task: "t-a", Type: StepTypeNormal},

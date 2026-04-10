@@ -256,7 +256,7 @@ func (wa *WorkflowActor) handleStepContinue(
 
 	if wa.js != nil {
 		input, err := dag.ResolveInput(
-			stepDef, wa.run.Steps,
+			stepDef, wa.run.Steps, wa.run.Input,
 		)
 		if err != nil {
 			return fmt.Errorf(
