@@ -7,200 +7,292 @@
 <meta name="color-scheme" content="light dark">
 <title>dagnats(1) — DAG workflow engine on NATS</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --paper: #f4f1e8;
-  --ink: #1a1814;
-  --mute: #6b6760;
-  --rule: #1a1814;
-  --ember: #d63a0f;
-  --measure: 72ch;
-  --gap: clamp(2rem, 5vw, 3.5rem);
+  --paper:  #f5f1e6;
+  --paper-2:#ece7d8;
+  --ink:    #14110b;
+  --mute:   #5e5b53;
+  --rule:   #14110b;
+  --ember:  #c63a0f;
+  --measure: 76ch;
+  --gap:   clamp(2.25rem, 5vw, 3.5rem);
+  --mono: "Geist Mono", ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Consolas, "Courier New", monospace;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { font-size: 16px; -webkit-text-size-adjust: 100%; }
 body {
   background: var(--paper);
   color: var(--ink);
-  font: 400 clamp(14px, 1.05vw, 16px)/1.6 ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Consolas, "Courier New", monospace;
-  font-feature-settings: "calt" 1, "ss01" 1;
+  font: 400 clamp(15px, 1.05vw, 17px)/1.7 var(--mono);
+  font-feature-settings: "tnum" 1, "calt" 1, "ss01" 1;
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
-.skip {
-  position: absolute;
-  left: -9999px;
-}
+.skip { position: absolute; left: -9999px; }
 .skip:focus {
-  position: fixed;
-  top: 0.75rem;
-  left: 0.75rem;
-  background: var(--ember);
-  color: var(--paper);
-  padding: 0.5rem 0.75rem;
-  z-index: 10;
-  text-decoration: none;
+  position: fixed; top: 0.75rem; left: 0.75rem;
+  background: var(--ember); color: var(--paper);
+  padding: 0.5rem 0.75rem; z-index: 10; text-decoration: none;
 }
-.topbar {
+header.topbar {
   border-bottom: 1px solid var(--rule);
   padding: 0.75rem 1.5rem;
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
-  font-size: 0.8125rem;
-  color: var(--mute);
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 1rem; flex-wrap: wrap;
+  font-size: 0.78125rem;
+  letter-spacing: 0.04em;
 }
-.topbar a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.topbar a { color: inherit; text-decoration: none; border-bottom: 1px solid currentColor; }
 .topbar a:hover { color: var(--ember); }
-.topbar .name { color: var(--ink); font-weight: 700; letter-spacing: 0.02em; }
+.topbar .name { font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; }
+.topbar .meta { color: var(--mute); display: flex; gap: 1.25rem; flex-wrap: wrap; }
+.topbar .meta span { display: inline-flex; gap: 0.4rem; }
+.topbar .meta b { color: var(--ink); font-weight: 500; }
+
 main {
-  max-width: 86ch;
+  max-width: 88ch;
   margin: 0 auto;
-  padding: clamp(2.5rem, 6vw, 4.5rem) 1.5rem clamp(3rem, 7vw, 5rem);
+  padding: clamp(2rem, 4vw, 3rem) 1.5rem clamp(3rem, 6vw, 4.5rem);
 }
+
 .title {
-  border-bottom: 2px solid var(--rule);
-  padding-bottom: 1.5rem;
-  margin-bottom: 2.5rem;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+  padding-bottom: clamp(2rem, 4vw, 2.75rem);
+  margin-bottom: clamp(2rem, 4vw, 3rem);
+  border-bottom: 1px solid var(--rule);
 }
 .title h1 {
-  font-size: clamp(2.75rem, 9vw, 5.25rem);
+  font-size: clamp(3rem, 11vw, 6.5rem);
   font-weight: 700;
-  letter-spacing: -0.045em;
-  line-height: 0.95;
+  letter-spacing: -0.05em;
+  line-height: 0.92;
 }
 .title .lead {
-  margin-top: 1rem;
-  color: var(--ink);
-  max-width: var(--measure);
   font-size: clamp(1rem, 1.2vw, 1.0625rem);
+  max-width: var(--measure);
+  color: var(--ink);
+  line-height: 1.6;
 }
-section + section { margin-top: var(--gap); }
+.spec {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78125rem;
+  margin-top: 0.5rem;
+  letter-spacing: 0.02em;
+}
+.spec td { padding: 0.35rem 0; border-top: 1px dashed var(--rule); vertical-align: top; }
+.spec td:first-child {
+  width: 12rem;
+  color: var(--mute);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.6875rem;
+  padding-top: 0.5rem;
+}
+.spec tr:first-child td { border-top: 1px solid var(--rule); }
+.spec tr:last-child td { border-bottom: 1px solid var(--rule); }
+
+section { margin-top: var(--gap); }
+section > .num {
+  display: block;
+  font-size: 0.6875rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin-bottom: 0.4rem;
+}
 h2 {
-  font-size: 0.8125rem;
+  font-size: clamp(1.125rem, 1.6vw, 1.3125rem);
   font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+}
+h2 .anchor {
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--mute);
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  border-bottom: 1px solid var(--rule);
-  padding-bottom: 0.25rem;
-  margin-bottom: 1.25rem;
-  color: var(--ink);
 }
-p { max-width: var(--measure); margin-bottom: 0.875rem; }
+
+p { max-width: var(--measure); margin-bottom: 1rem; }
 p:last-child { margin-bottom: 0; }
 strong { font-weight: 700; }
-code { font: inherit; background: rgba(26, 24, 20, 0.07); padding: 0.05em 0.3em; }
+
 a {
   color: var(--ink);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-thickness: 1px;
+  text-decoration: none;
+  border-bottom: 1px solid var(--ink);
 }
-a:hover { color: var(--ember); }
-ol, ul { padding-left: 1.5rem; max-width: var(--measure); }
-ol li, ul li { margin-bottom: 0.625rem; padding-left: 0.25rem; }
-ol li::marker { font-weight: 700; }
+a:hover { color: var(--ember); border-bottom-color: var(--ember); }
+
+code {
+  font: inherit;
+  font-size: 0.94em;
+  background: var(--paper-2);
+  padding: 0.05em 0.35em;
+}
+
+ol, ul { padding-left: 0; max-width: var(--measure); list-style: none; }
+ol li, ul li {
+  margin-bottom: 0.875rem;
+  padding-left: 3.25rem;
+  position: relative;
+  line-height: 1.65;
+}
+ol { counter-reset: item; }
+ol li {
+  counter-increment: item;
+}
+ol li::before {
+  content: counter(item, decimal-leading-zero);
+  position: absolute;
+  left: 0;
+  top: 0.05em;
+  font-weight: 700;
+  font-size: 0.78125rem;
+  letter-spacing: 0.04em;
+  color: var(--ember);
+  width: 2.5rem;
+}
+ul li::before {
+  content: "—";
+  position: absolute;
+  left: 1rem;
+  color: var(--mute);
+}
+
 .code-block {
   position: relative;
   margin-bottom: 1rem;
+  border: 1px solid var(--rule);
+  background: var(--paper-2);
 }
 pre {
-  background: var(--ink);
-  color: var(--paper);
   padding: 1rem 1.25rem;
-  font-size: 0.8125rem;
-  line-height: 1.55;
+  font-size: 0.85rem;
+  line-height: 1.65;
   overflow-x: auto;
   white-space: pre;
-  font-family: inherit;
+  font-family: var(--mono);
+  color: var(--ink);
 }
 pre.ascii {
   background: transparent;
-  color: var(--ink);
   border: 1px solid var(--rule);
+  padding: 1.25rem;
   font-size: clamp(0.6875rem, 1vw, 0.8125rem);
-  line-height: 1.4;
+  line-height: 1.45;
+  color: var(--ink);
+  margin-bottom: 1rem;
 }
+
 .copy-btn {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
-  background: transparent;
-  color: var(--paper);
-  border: 1px solid currentColor;
+  position: absolute; top: 0.5rem; right: 0.5rem;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--ink);
   font: inherit;
   font-size: 0.6875rem;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  padding: 0.125rem 0.5rem;
+  padding: 0.15rem 0.55rem;
   cursor: pointer;
-  opacity: 0.5;
 }
-.copy-btn:hover, .copy-btn:focus-visible { opacity: 1; outline: none; }
-.copy-btn[data-state="copied"] { color: var(--ember); border-color: var(--ember); opacity: 1; }
-table {
+.copy-btn:hover, .copy-btn:focus-visible { background: var(--ink); color: var(--paper); outline: none; }
+.copy-btn[data-state="copied"] { color: var(--ember); border-color: var(--ember); background: var(--paper); }
+
+table.cmp {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.8125rem;
-  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+  margin-bottom: 0.75rem;
 }
-th, td {
+table.cmp th, table.cmp td {
   text-align: left;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--rule);
+  padding: 0.625rem 0.875rem;
   vertical-align: top;
+  border-bottom: 1px dashed var(--rule);
 }
-thead th { border-bottom: 2px solid var(--rule); }
-th {
+table.cmp thead th {
+  border-bottom: 1px solid var(--rule);
+  border-top: 1px solid var(--rule);
+  font-size: 0.6875rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  background: var(--paper-2);
 }
-td:first-child, th:first-child { padding-left: 0; font-weight: 700; }
-td:last-child, th:last-child { padding-right: 0; }
-.col-self { color: var(--ember); font-weight: 700; }
+table.cmp td:first-child, table.cmp th:first-child {
+  padding-left: 0.875rem;
+  width: 30%;
+  font-weight: 500;
+  color: var(--mute);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+}
+table.cmp td:last-child, table.cmp th:last-child { padding-right: 0.875rem; }
+table.cmp .col-self { color: var(--ember); font-weight: 700; }
+table.cmp tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
+
+.fineprint {
+  font-size: 0.75rem;
+  color: var(--mute);
+  margin-top: 0.5rem;
+  letter-spacing: 0.02em;
+}
+
 footer {
-  border-top: 2px solid var(--rule);
+  border-top: 1px solid var(--rule);
   margin-top: var(--gap);
   padding: 1.5rem 0;
-  font-size: 0.8125rem;
+  font-size: 0.78125rem;
   color: var(--mute);
   display: flex;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 1rem;
+  letter-spacing: 0.04em;
 }
-footer a { color: inherit; }
-.fineprint {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px dashed var(--rule);
-  font-size: 0.75rem;
-  color: var(--mute);
-  max-width: var(--measure);
-}
+footer a { color: inherit; border-bottom-color: var(--mute); }
+
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #14130f;
-    --ink: #ece8dc;
-    --mute: #807c75;
-    --rule: #ece8dc;
-    --ember: #ff5a26;
+    --paper:  #15140f;
+    --paper-2:#1f1d17;
+    --ink:    #ece8dc;
+    --mute:   #908b80;
+    --rule:   #ece8dc;
+    --ember:  #ff5a26;
   }
-  code { background: rgba(236, 232, 220, 0.1); }
 }
 @media print {
-  body { background: white; color: black; font-size: 11pt; }
-  pre { background: white; color: black; border: 1px solid black; }
-  a { color: black; }
-  a::after { content: " (" attr(href) ")"; font-size: 0.85em; }
+  body { background: white; color: black; font-size: 11pt; line-height: 1.5; }
+  .code-block, pre { background: white; color: black; border: 1px solid black; }
+  a { color: black; border-bottom: 0; text-decoration: underline; }
+  a::after { content: " (" attr(href) ")"; font-size: 0.85em; color: #555; }
   .copy-btn, .skip { display: none; }
   section { break-inside: avoid; }
 }
-@media (max-width: 480px) {
-  .topbar { flex-direction: column; gap: 0.25rem; }
-  pre { font-size: 0.75rem; }
+@media (max-width: 540px) {
+  header.topbar { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+  .topbar .meta { gap: 0.75rem; }
+  .spec td:first-child { width: 9rem; }
+  table.cmp td:first-child { width: 40%; }
+  ol li, ul li { padding-left: 2.5rem; }
 }
 </style>
 </head>
@@ -209,11 +301,12 @@ footer a { color: inherit; }
 <a href="#main" class="skip">skip to content</a>
 
 <header class="topbar">
-  <div><span class="name">dagnats(1)</span> &nbsp;workflow engine</div>
-  <div>
-    <a href="https://github.com/danmestas/dagnats">github.com/danmestas/dagnats</a>
-    &nbsp;&middot;&nbsp; Apache-2.0
-    &nbsp;&middot;&nbsp; <a href="/docs/">docs</a>
+  <div class="name">dagnats(1)</div>
+  <div class="meta">
+    <span>v <b>0.1</b></span>
+    <span>license <b>Apache-2.0</b></span>
+    <span><a href="https://github.com/danmestas/dagnats">github</a></span>
+    <span><a href="/docs/">docs</a></span>
   </div>
 </header>
 
@@ -222,39 +315,53 @@ footer a { color: inherit; }
 <section class="title">
   <h1>dagnats</h1>
   <p class="lead">A workflow engine for durable jobs and autonomous LLM coding pipelines. NATS is the only dependency. The deploy artifact is one Go binary.</p>
+  <table class="spec">
+    <tbody>
+      <tr><td>Project</td>      <td>dagnats — DAG workflow engine</td></tr>
+      <tr><td>Language</td>     <td>Go (module <code>github.com/danmestas/dagnats</code>)</td></tr>
+      <tr><td>Runtime deps</td> <td>NATS JetStream (embedded)</td></tr>
+      <tr><td>Binaries</td>     <td>1 (<code>dagnats serve</code> = orchestrator + API + triggers + NATS)</td></tr>
+      <tr><td>License</td>      <td>Apache-2.0</td></tr>
+      <tr><td>Status</td>       <td>v0.1 · alpha · breaking changes possible</td></tr>
+    </tbody>
+  </table>
 </section>
 
 <section>
-<h2>Install</h2>
-<div class="code-block">
-<pre id="install">$ go install github.com/danmestas/dagnats/cmd/dagnats@latest
+  <span class="num">§01</span>
+  <h2>Install <span class="anchor">install</span></h2>
+  <div class="code-block">
+    <pre id="install">$ go install github.com/danmestas/dagnats/cmd/dagnats@latest
 $ dagnats serve</pre>
-<button type="button" class="copy-btn" data-copy="install" aria-label="Copy install command">copy</button>
-</div>
-<p>That is the entire install. There is no step three. <code>dagnats serve</code> starts an embedded NATS server, the orchestrator, the API, and the trigger system in one process.</p>
+    <button type="button" class="copy-btn" data-copy="install" aria-label="Copy install command">copy</button>
+  </div>
+  <p>That is the entire install. There is no step three. <code>dagnats serve</code> starts an embedded NATS server, the orchestrator, the API, and the trigger system in one process.</p>
 </section>
 
 <section>
-<h2>What it is</h2>
-<p>dagnats is a Go workflow engine. You describe work as a directed acyclic graph of tasks; dagnats runs the graph, retries failures, recovers from crashes, and reconstructs state from an immutable event log.</p>
-<p>Its only infrastructure dependency is NATS JetStream, which is embedded in the same process. There is no Postgres to migrate, no Redis to monitor, no separate broker to configure.</p>
-<p>Two audiences benefit. Backend engineers needing durable workflows that survive restarts get a single binary instead of a small fleet of services. Teams building autonomous coding pipelines get first-class step types &mdash; <code>AgentLoop</code>, <code>Planner</code>, <code>Approval</code>, <code>WaitForEvent</code> &mdash; that other engines treat as application-layer concerns.</p>
+  <span class="num">§02</span>
+  <h2>What it is <span class="anchor">overview</span></h2>
+  <p>dagnats is a Go workflow engine. You describe work as a directed acyclic graph of tasks; dagnats runs the graph, retries failures, recovers from crashes, and reconstructs state from an immutable event log.</p>
+  <p>Its only infrastructure dependency is NATS JetStream, which is embedded in the same process. There is no Postgres to migrate, no Redis to monitor, no separate broker to configure.</p>
+  <p>Two audiences benefit. Backend engineers needing durable workflows that survive restarts get a single binary instead of a small fleet of services. Teams building autonomous coding pipelines get first-class step types &mdash; <code>AgentLoop</code>, <code>Planner</code>, <code>Approval</code>, <code>WaitForEvent</code> &mdash; that other engines treat as application-layer concerns.</p>
 </section>
 
 <section>
-<h2>Why you might want it</h2>
-<ol>
-<li><strong>One binary, zero external databases.</strong> The deploy is <code>scp dagnats user@host &amp;&amp; ./dagnats serve</code>. No Postgres migrations. No Redis to operate. No broker.</li>
-<li><strong>Crash-safe by default.</strong> Workflow state is event-sourced into JetStream and snapshotted in KV. Kill the process, start it again, in-flight work resumes from the last event.</li>
-<li><strong>Agent loops are first-class.</strong> <code>AgentLoop</code>, <code>Planner</code>, <code>Approval</code>, and Continue-As-New are step types in the workflow language &mdash; not patterns you reimplement per project.</li>
-<li><strong>Inspectable.</strong> Every event is a JSON message on a stream. <code>nats sub "history.&gt;"</code> tails any workflow run live, in any terminal.</li>
-<li><strong>Bounded.</strong> No unbounded queues. No unbounded retries. No recursion. Every loop has a fixed upper bound. (TigerStyle &mdash; safety first.)</li>
-</ol>
+  <span class="num">§03</span>
+  <h2>Why you might want it <span class="anchor">why</span></h2>
+  <ol>
+    <li><strong>One binary, zero external databases.</strong> The deploy is <code>scp dagnats user@host &amp;&amp; ./dagnats serve</code>. No Postgres migrations. No Redis to operate. No broker.</li>
+    <li><strong>Crash-safe by default.</strong> Workflow state is event-sourced into JetStream and snapshotted in KV. Kill the process, start it again, in-flight work resumes from the last event.</li>
+    <li><strong>Agent loops are first-class.</strong> <code>AgentLoop</code>, <code>Planner</code>, <code>Approval</code>, and Continue-As-New are step types in the workflow language &mdash; not patterns you reimplement per project.</li>
+    <li><strong>Inspectable.</strong> Every event is a JSON message on a stream. <code>nats sub "history.&gt;"</code> tails any workflow run live, in any terminal.</li>
+    <li><strong>Bounded.</strong> No unbounded queues. No unbounded retries. No recursion. Every loop has a fixed upper bound. (TigerStyle &mdash; safety first.)</li>
+  </ol>
 </section>
 
 <section>
-<h2>How it fits together</h2>
-<pre class="ascii">  triggers              orchestrator             workers
+  <span class="num">§04</span>
+  <h2>How it fits together <span class="anchor">architecture</span></h2>
+  <pre class="ascii">  triggers              orchestrator             workers
   --------              ------------             -------
   cron                  &gt;  consume event           ^
   webhook   --events--&gt; &gt;  advance DAG  --tasks--&gt; |
@@ -267,52 +374,55 @@ $ dagnats serve</pre>
 </section>
 
 <section>
-<h2>Compared to neighbors</h2>
-<table>
-<thead>
-<tr>
-  <th></th>
-  <th class="col-self">dagnats</th>
-  <th>Temporal</th>
-  <th>Hatchet</th>
-  <th>Inngest</th>
-</tr>
-</thead>
-<tbody>
-<tr><td>Stack</td>      <td class="col-self">NATS only</td>           <td>Postgres + Cassandra</td> <td>Postgres + RabbitMQ</td> <td>Postgres + Redis</td></tr>
-<tr><td>Binaries</td>   <td class="col-self">1</td>                    <td>~5</td>                   <td>~3</td>                   <td>hosted</td></tr>
-<tr><td>OSS</td>        <td class="col-self">yes</td>                  <td>yes</td>                  <td>yes</td>                  <td>partial</td></tr>
-<tr><td>Native agent steps</td><td class="col-self">yes</td>           <td>no</td>                   <td>no</td>                   <td>no</td></tr>
-<tr><td>SDKs</td>       <td class="col-self">Go + HTTP bridge</td>     <td>many</td>                 <td>3</td>                    <td>3</td></tr>
-<tr><td>Self-host</td>  <td class="col-self">trivial</td>              <td>involved</td>             <td>moderate</td>             <td>n/a</td></tr>
-</tbody>
-</table>
-<p class="fineprint">Comparison reflects open-source distributions as of writing. Approximate, meant for orientation.</p>
+  <span class="num">§05</span>
+  <h2>Compared to neighbors <span class="anchor">comparison</span></h2>
+  <table class="cmp">
+    <thead>
+      <tr>
+        <th></th>
+        <th class="col-self">dagnats</th>
+        <th>Temporal</th>
+        <th>Hatchet</th>
+        <th>Inngest</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Stack</td>         <td class="col-self">NATS only</td>      <td>PG + Cassandra</td> <td>PG + RabbitMQ</td>  <td>PG + Redis</td></tr>
+      <tr><td>Binaries</td>      <td class="col-self">1</td>              <td>~5</td>             <td>~3</td>             <td>hosted</td></tr>
+      <tr><td>OSS</td>           <td class="col-self">yes</td>            <td>yes</td>            <td>yes</td>            <td>partial</td></tr>
+      <tr><td>Native agent steps</td><td class="col-self">yes</td>        <td>no</td>             <td>no</td>             <td>no</td></tr>
+      <tr><td>SDKs</td>          <td class="col-self">Go + HTTP bridge</td><td>many</td>          <td>3</td>              <td>3</td></tr>
+      <tr><td>Self-host</td>     <td class="col-self">trivial</td>        <td>involved</td>       <td>moderate</td>       <td>n/a</td></tr>
+    </tbody>
+  </table>
+  <p class="fineprint">Comparison reflects open-source distributions as of writing. Approximate; orientation only.</p>
 </section>
 
 <section>
-<h2>What it is not</h2>
-<p>dagnats is young. It is single-tenant by design. JetStream is the bottleneck &mdash; saturate it and dagnats does not scale around it for you. There is one Go SDK plus an HTTP bridge for everything else; if you need a native TypeScript or Python SDK, you will be writing it. Multi-region is on the roadmap, not in the box.</p>
-<p>Don't reach for it for sub-millisecond task routing (use a queue). Don't reach for it for embarrassingly-parallel batch jobs without dependencies (use a worker pool). Don't reach for it where eventual consistency would surprise you (use a database with transactions).</p>
+  <span class="num">§06</span>
+  <h2>What it is not <span class="anchor">limits</span></h2>
+  <p>dagnats is young. It is single-tenant by design. JetStream is the bottleneck &mdash; saturate it and dagnats does not scale around it for you. There is one Go SDK plus an HTTP bridge for everything else; if you need a native TypeScript or Python SDK, you will be writing it. Multi-region is on the roadmap, not in the box.</p>
+  <p>Don't reach for it for sub-millisecond task routing (use a queue). Don't reach for it for embarrassingly-parallel batch jobs without dependencies (use a worker pool). Don't reach for it where eventual consistency would surprise you (use a database with transactions).</p>
 </section>
 
 <section>
-<h2>Get going</h2>
-<div class="code-block">
-<pre id="quickstart">$ go install github.com/danmestas/dagnats/cmd/dagnats@latest
+  <span class="num">§07</span>
+  <h2>Get going <span class="anchor">start</span></h2>
+  <div class="code-block">
+    <pre id="quickstart">$ go install github.com/danmestas/dagnats/cmd/dagnats@latest
 $ dagnats serve                              # one process, embedded NATS
 $ dagnats workflow register hello.json
 $ dagnats run start hello --watch</pre>
-<button type="button" class="copy-btn" data-copy="quickstart" aria-label="Copy quickstart commands">copy</button>
-</div>
-<p>Walkthrough: <a href="/docs/get-started/">/docs/get-started</a>. Architecture: <a href="/docs/architecture/">/docs/architecture</a>. SDK reference: <a href="/docs/reference/sdk/">/docs/reference/sdk</a>. Source: <a href="https://github.com/danmestas/dagnats">github.com/danmestas/dagnats</a>.</p>
+    <button type="button" class="copy-btn" data-copy="quickstart" aria-label="Copy quickstart commands">copy</button>
+  </div>
+  <p>Walkthrough: <a href="/docs/get-started/">/docs/get-started</a> · Architecture: <a href="/docs/architecture/">/docs/architecture</a> · SDK reference: <a href="/docs/reference/sdk/">/docs/reference/sdk</a> · Source: <a href="https://github.com/danmestas/dagnats">github.com/danmestas/dagnats</a>.</p>
 </section>
 
 </main>
 
 <footer>
-  <div>Apache-2.0 &nbsp;&middot;&nbsp; <a href="https://github.com/danmestas/dagnats">github</a> &nbsp;&middot;&nbsp; <a href="/docs/">docs</a></div>
-  <div>open source. no telemetry on this site.</div>
+  <div>Apache-2.0 &nbsp;·&nbsp; <a href="https://github.com/danmestas/dagnats">github</a> &nbsp;·&nbsp; <a href="/docs/">docs</a></div>
+  <div>open source · no telemetry on this site</div>
 </footer>
 
 <script>
