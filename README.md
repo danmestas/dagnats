@@ -198,6 +198,9 @@ Tests use real embedded NATS servers (no mocks). Each test gets its own server v
 | [Configuration](docs/configuration.md) | Config keys, env vars, file format |
 | [Production](docs/production.md) | Deployment, security, tuning, observability |
 | [Workflow Schema](docs/workflow-schema.md) | JSON schema reference |
+| [AGENTS.md](AGENTS.md) | Conventions for coding agents (Codex, Cursor, Claude Code) |
+
+For coding agents and LLM tools: a curated [`llms.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms.txt) and a full-content [`llms-full.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms-full.txt) are regenerated on every commit.
 
 ## Design Philosophy
 
