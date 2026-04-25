@@ -112,34 +112,7 @@ All state lives in NATS. No external database, no Redis, no Postgres.
 
 ## Running
 
-### Single Binary (recommended)
-
-```bash
-# Zero config — everything in one process
-dagnats serve
-
-# With config file
-cat > dagnats.yaml << EOF
-data_dir: /var/lib/dagnats
-http_addr: :8080
-nats_port: 4222
-EOF
-dagnats serve
-
-# Leaf node mode — connect to hub cluster
-DAGNATS_LEAF_REMOTES=nats://hub1:7422,nats://hub2:7422 dagnats serve
-```
-
-### Distributed (scaling out)
-
-```bash
-# Separate processes for independent scaling
-nats-server -js
-NATS_URL=nats://cluster:4222 dagnats-engine
-NATS_URL=nats://cluster:4222 dagnats-api
-```
-
-Workers always run as separate processes connecting to NATS.
+`dagnats serve` covers single-machine deployments. For leaf-node and distributed topologies (and the trade-off matrix), see [Production guide → Deployment Topologies](docs/production.md#deployment-topologies).
 
 ## CLI
 

@@ -27,15 +27,23 @@ what _consumes_ that telemetry.
      + DuckDB MCP   + DuckDB     OTel Collector
 ```
 
+## Choosing a Mode
+
+| | Embedded | Distributed | External |
+|---|---|---|---|
+| **Setup** | `sidecar install && sidecar start` | sidecar + S3 config | Set one env var |
+| **Storage** | Local Parquet files | S3 Parquet files | Backend-managed |
+| **Query** | DuckDB MCP (AI) | DuckDB CLI/WASM/MCP | Backend UI |
+| **Cost** | Free | S3 storage only | Backend license |
+| **Best for** | Dev, testing, AI debug | Team clusters | Production |
+| **Retention** | Disk space | S3 lifecycle rules | Backend config |
+
 ---
 
 ## Mode 1: Embedded (dev, testing, AI analysis)
 
 Run the sidecar alongside DagNats. It writes Parquet files to
 disk and exposes them to AI tools via a DuckDB MCP server.
-
-**Use when:** local development, integration tests, debugging
-with Claude or other AI assistants.
 
 ### Architecture
 
@@ -135,10 +143,6 @@ Anyone on the team can query the telemetry with DuckDB -- either
 via the MCP server, a local DuckDB CLI, or DuckDB-WASM in the
 browser.
 
-**Use when:** multi-node clusters, shared team environments, or
-when you want distributed tracing without running a full
-collector infrastructure.
-
 ### Architecture
 
 ```
@@ -200,9 +204,6 @@ no backend server.
 Skip the sidecar entirely. Point DagNats at your production
 OTel Collector (SigNoz, Grafana Tempo, Jaeger, Datadog, etc.).
 
-**Use when:** you already run production observability
-infrastructure and want telemetry flowing into it.
-
 ### Config
 
 ```bash
@@ -214,9 +215,6 @@ Or in `dagnats.yaml`:
 ```yaml
 otlp_endpoint: http://collector:4318
 ```
-
-That's it. No sidecar, no Parquet, no DuckDB. Traces, metrics,
-and logs flow directly to your collector via OTLP/HTTP.
 
 ### Hybrid: External + Sidecar
 
@@ -239,17 +237,6 @@ DagNats points at the sidecar (`localhost:4318`), which fans out
 to both Parquet storage and the production backend.
 
 ---
-
-## Comparison
-
-| | Embedded | Distributed | External |
-|---|---|---|---|
-| **Setup** | `sidecar install && sidecar start` | sidecar + S3 config | Set one env var |
-| **Storage** | Local Parquet files | S3 Parquet files | Backend-managed |
-| **Query** | DuckDB MCP (AI) | DuckDB CLI/WASM/MCP | Backend UI |
-| **Cost** | Free | S3 storage only | Backend license |
-| **Best for** | Dev, testing, AI debug | Team clusters | Production |
-| **Retention** | Disk space | S3 lifecycle rules | Backend config |
 
 ## CLI Commands
 
