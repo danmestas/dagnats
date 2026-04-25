@@ -21,10 +21,16 @@ dagnats serve
 
 Zero config. Embedded NATS with JetStream, actor-based orchestrator, API server, and trigger system all running in one process.
 
-Scaffold a new workflow project with `dagnats init my-workflow`, or see `examples/` for patterns.
+Scaffold a new workflow project with `dagnats init my-workflow`, or browse `examples/` (try `cd examples/hello-world && go run .` after starting `dagnats serve`).
+
+**Full walkthrough:** see [docs/getting-started.md](docs/getting-started.md) for a zero-to-running-workflow guide in eight steps.
+
+### Defining workflows
+
+Workflows are JSON files (the primary, registry-friendly format). The Go builder shown below is for programmatic construction — useful for tests and in-process scenarios.
 
 ```go
-// Define a workflow
+// Define a workflow with the Go builder
 wf, _ := dag.NewWorkflow("code-review").
     Task("plan", "llm-planner").
     Task("code", "llm-coder").DependsOn("plan").
@@ -34,8 +40,8 @@ wf, _ := dag.NewWorkflow("code-review").
         WithMaxIterations(10).
     Build()
 
-// Register a worker
-w := worker.NewWorker(nc, tel)
+// Register a worker (variadic options: worker.WithGroups, worker.WithPartitions)
+w := worker.NewWorker(nc)
 w.Handle("llm-coder", func(ctx worker.TaskContext) error {
     plan := ctx.Input()
     code := generateCode(plan)
@@ -163,7 +169,7 @@ dagnats dlq replay --run=<id>                       # Replay all failures for a 
 ```
 
 All commands support `--json` for machine-readable output. Workflow JSON files support
-editor autocomplete via `docs/workflow.schema.json` (add `"$schema"` reference).
+editor autocomplete via `docs/workflow-schema.json` (add `"$schema"` reference).
 
 ## API
 

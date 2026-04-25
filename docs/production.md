@@ -62,6 +62,15 @@ Run the engine, API, and workers as separate processes against a
 shared NATS cluster. Use this only when you need independent scaling
 of components across machines.
 
+Install the standalone binaries (separate from `dagnats serve`):
+
+```bash
+go install github.com/danmestas/dagnats/cmd/dagnats-engine@latest
+go install github.com/danmestas/dagnats/cmd/dagnats-api@latest
+```
+
+Then run them against your cluster:
+
 ```bash
 nats-server -js
 NATS_URL=nats://cluster:4222 dagnats-engine
@@ -180,20 +189,22 @@ DagNats stores all state in the `data_dir` directory. To back up:
 3. Restart the server
 
 For zero-downtime backup of the NATS JetStream data, use the
-`nats` CLI with stream and KV export commands against the running
-server:
+`nats` CLI with stream backup commands against the running server.
+KV buckets are backed by streams named `KV_<bucket>`, so the same
+`nats stream backup` command works for both:
 
 ```bash
-# Export a stream
+# Back up a stream
 nats stream backup WORKFLOW_HISTORY /backup/workflow-history/
 
-# Export a KV bucket
-nats kv get workflow_runs --raw > /backup/workflow-runs.json
+# Back up a KV bucket (the underlying stream is KV_<bucket>)
+nats stream backup KV_workflow_runs /backup/kv-workflow-runs/
+nats stream backup KV_checkpoints /backup/kv-checkpoints/
 ```
 
 Restore by placing the backed-up data directory at the configured
-`data_dir` path before starting the server, or by using the
-corresponding `nats stream restore` commands.
+`data_dir` path before starting the server, or by using
+`nats stream restore <name> <path>` against a running server.
 
 ## Tuning
 

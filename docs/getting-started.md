@@ -82,7 +82,7 @@ Open `workflow.json`. It defines a minimal pipeline with one step:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/.../workflow-schema.json",
+  "$schema": "https://raw.githubusercontent.com/danmestas/dagnats/main/docs/workflow-schema.json",
   "name": "hello-world",
   "version": "1.0",
   "steps": [
@@ -410,9 +410,7 @@ Route specific steps to dedicated worker pools:
 ```
 
 ```go
-w := worker.NewWorker(
-    nc, nil, worker.WithGroups("gpu-workers"),
-)
+w := worker.NewWorker(nc, worker.WithGroups("gpu-workers"))
 w.Handle("inference", func(ctx worker.TaskContext) error {
     // Runs only on workers in the "gpu-workers" group
 })
