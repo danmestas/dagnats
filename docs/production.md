@@ -6,25 +6,17 @@ keys, environment variables, and file format details, see
 
 ## Deployment Topologies
 
-DagNats supports three deployment models. Choose based on scale and
-isolation requirements.
+| Topology | Command | When to use | NATS bind |
+|---|---|---|---|
+| **Single binary** | `dagnats serve` | single machine, simplest operations | `127.0.0.1` |
+| **Leaf node** | `DAGNATS_LEAF_REMOTES=... dagnats serve` | existing NATS cluster; multi-instance state sharing | `0.0.0.0` |
+| **Distributed** | `dagnats-engine` + `dagnats-api` (separate processes) | independent component scaling | external cluster |
 
-### Single Binary (recommended for most deployments)
+Workers always run as separate processes connecting to NATS, regardless of topology.
 
-```bash
-dagnats serve
-```
+### Single binary
 
-One process runs the embedded NATS server, orchestrator, API, trigger
-service, and HTTP server. All components connect to the embedded NATS
-on localhost. This is the simplest deployment and the right starting
-point for most teams.
-
-**When to use:** single machine, moderate throughput, simplest
-operations. Workers still run as separate processes connecting via
-NATS.
-
-**Config example:**
+The default. One process runs NATS, orchestrator, API, trigger service, and HTTP — all connecting locally.
 
 ```yaml
 # dagnats.yaml
@@ -34,15 +26,7 @@ nats_port: 4222
 max_store_bytes: 10737418240
 ```
 
-### Leaf Node (hub-and-spoke)
-
-The embedded NATS server connects to an external NATS hub cluster as
-a leaf node. NATS handles message routing transparently. The DagNats
-process still runs all components locally.
-
-**When to use:** you already operate a NATS cluster and want DagNats
-traffic to flow through it, or you need multiple DagNats instances
-sharing state via a central hub.
+### Leaf node
 
 ```bash
 DAGNATS_LEAF_REMOTES=nats://hub1:7422,nats://hub2:7422 \
@@ -50,34 +34,24 @@ DAGNATS_LEAF_CREDENTIALS=/etc/dagnats/hub.creds \
   dagnats serve
 ```
 
-In leaf mode the embedded NATS binds to `0.0.0.0` instead of
-`127.0.0.1` because hub communication requires external
-connectivity. Standalone mode binds to localhost only.
+Leaf mode binds NATS to `0.0.0.0` (hub communication requires external connectivity). Restrict the port via firewall — see [Network Isolation](#network-isolation). Maximum 10 remotes per instance.
 
-**Leaf remote limit:** maximum 10 remotes per instance.
+### Distributed
 
-### Distributed (separate processes)
-
-Run the engine, API, and workers as separate processes against a
-shared NATS cluster. Use this only when you need independent scaling
-of components across machines.
-
-Install the standalone binaries (separate from `dagnats serve`):
+Install the standalone binaries:
 
 ```bash
 go install github.com/danmestas/dagnats/cmd/dagnats-engine@latest
 go install github.com/danmestas/dagnats/cmd/dagnats-api@latest
 ```
 
-Then run them against your cluster:
+Run against an external cluster:
 
 ```bash
 nats-server -js
 NATS_URL=nats://cluster:4222 dagnats-engine
 NATS_URL=nats://cluster:4222 dagnats-api
 ```
-
-Workers are always separate processes regardless of topology.
 
 ## Security
 
@@ -263,49 +237,10 @@ Useful for Prometheus scraping or manual debugging.
 
 ## Observability
 
-### OTLP Export
+For deployment modes (embedded sidecar, distributed S3, external collector) and direct telemetry consumption (`nats sub "telemetry.spans.>"`), see [observability.md](observability.md). The two production-specific notes are:
 
-DagNats writes all telemetry (traces, metrics, logs) to an internal
-NATS `TELEMETRY` stream. When `OTEL_EXPORTER_OTLP_ENDPOINT` is
-set, the server also exports spans to the specified OTLP/HTTP
-endpoint:
-
-```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 dagnats serve
-```
-
-Spans are batched and sent to `{endpoint}/v1/traces`. This works
-with any OTLP/HTTP-compatible backend: SigNoz, Grafana Tempo,
-Jaeger, or any OpenTelemetry Collector.
-
-**Export failures never affect workflow execution.** The TELEMETRY
-stream always receives data regardless of export status.
-
-You can also set this in the config file:
-
-```yaml
-otlp_endpoint: http://collector:4318
-```
-
-### Internal Telemetry Stream
-
-Even without OTLP export, all telemetry flows to the NATS
-`TELEMETRY` stream (7-day retention, 1 GB cap). You can consume
-it directly:
-
-```bash
-nats sub "telemetry.spans.>"
-nats sub "telemetry.metrics.>"
-nats sub "telemetry.logs.>"
-```
-
-Subject hierarchy:
-- `telemetry.spans.{service}.{run_id}`
-- `telemetry.metrics.{service}.{metric_name}`
-- `telemetry.logs.{service}.{level}`
-
-All messages are JSON for human readability and `nats sub`
-debugging.
+- **Export failures never affect workflow execution.** The internal `TELEMETRY` stream always receives data regardless of OTLP export status.
+- The `TELEMETRY` stream is capped at 7-day retention and 1 GB — size externals accordingly if you need longer history.
 
 ### Instrumentation Points
 
