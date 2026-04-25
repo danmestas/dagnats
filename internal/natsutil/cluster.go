@@ -8,6 +8,20 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// ClusterOptions describes the NATS topology this dagnats instance
+// is participating in. Empty Routes means standalone or leaf mode
+// (no quorum wait, R=1 streams unless explicitly overridden).
+type ClusterOptions struct {
+	// Routes is the list of peer URLs this instance connects to.
+	// Empty for non-cluster modes.
+	Routes []string
+
+	// ReplicasOverride forces the JetStream replication factor when
+	// > 0. Otherwise R is auto-derived from cluster size via
+	// DeriveReplicas.
+	ReplicasOverride int
+}
+
 // DeriveReplicas computes the JetStream replication factor for streams
 // and KV buckets given the cluster route list and an optional explicit
 // override.

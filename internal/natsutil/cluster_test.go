@@ -81,3 +81,34 @@ func TestWaitForClusterQuorum_TimesOut(t *testing.T) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
+
+func TestSetupAll_StandaloneNoOptionUsesR1(t *testing.T) {
+	_, nc := StartTestServer(t)
+	if err := SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	// Verify a known stream exists at R=1.
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if got := s.CachedInfo().Config.Replicas; got != 1 {
+		t.Errorf("Replicas = %d, want 1", got)
+	}
+}
+
+func TestSetupAll_WithClusterOverrideHonored(t *testing.T) {
+	_, nc := StartTestServer(t)
+	// Standalone single node + WithCluster(ReplicasOverride=1) — verifies
+	// override path doesn't break standalone (no actual cluster needed for R=1).
+	err := SetupAll(nc, WithCluster(ClusterOptions{ReplicasOverride: 1}))
+	if err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+}

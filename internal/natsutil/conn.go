@@ -232,6 +232,7 @@ type SetupOption func(*setupOptions)
 type setupOptions struct {
 	streams []StreamConfig
 	kvs     []KVConfig
+	cluster ClusterOptions
 }
 
 // WithStreams adds extra JetStream streams to provision.
@@ -245,6 +246,16 @@ func WithStreams(configs ...StreamConfig) SetupOption {
 func WithKVBuckets(configs ...KVConfig) SetupOption {
 	return func(o *setupOptions) {
 		o.kvs = append(o.kvs, configs...)
+	}
+}
+
+// WithCluster declares cluster topology for SetupAll. When
+// ClusterOptions.Routes is non-empty, SetupAll blocks until cluster
+// quorum forms (60s internal timeout) before creating streams at the
+// derived replication factor.
+func WithCluster(c ClusterOptions) SetupOption {
+	return func(o *setupOptions) {
+		o.cluster = c
 	}
 }
 
@@ -268,10 +279,27 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	if err != nil {
 		return err
 	}
-	if err := SetupStreams(js, 1); err != nil {
+
+	if len(options.cluster.Routes) > 0 {
+		quorumCtx, quorumCancel := context.WithTimeout(
+			context.Background(), 60*time.Second,
+		)
+		_, err := WaitForClusterQuorum(
+			quorumCtx, js, len(options.cluster.Routes)+1,
+		)
+		quorumCancel()
+		if err != nil {
+			return fmt.Errorf("cluster quorum did not form: %w", err)
+		}
+	}
+
+	replicas := DeriveReplicas(
+		options.cluster.Routes, options.cluster.ReplicasOverride,
+	)
+	if err := SetupStreams(js, replicas); err != nil {
 		return err
 	}
-	if err := SetupKVBuckets(js, 1); err != nil {
+	if err := SetupKVBuckets(js, replicas); err != nil {
 		return err
 	}
 	if err := SetupTelemetryStream(js); err != nil {
