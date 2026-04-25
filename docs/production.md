@@ -6,17 +6,93 @@ keys, environment variables, and file format details, see
 
 ## Deployment Topologies
 
-| Topology | Command | When to use | NATS bind |
-|---|---|---|---|
-| **Single binary** | `dagnats serve` | single machine, simplest operations | `127.0.0.1` |
-| **Leaf node** | `DAGNATS_LEAF_REMOTES=... dagnats serve` | existing NATS cluster; multi-instance state sharing | `0.0.0.0` |
-| **Distributed** | `dagnats-engine` + `dagnats-api` (separate processes) | independent component scaling | external cluster |
+| Topology | Hub shape | When to use |
+|---|---|---|
+| **Leaf → clustered hub** | 3+ NATS servers in one DC | the production default |
+| **Leaf → single-node hub** | one NATS server | small prod or hobby; HA between dagnats leaves but hub is a SPOF |
+| **Leaf → supercluster** | multiple clusters, gateway-connected, multi-region | global / multi-DC, regional failover, edge |
+| **Single binary** | none (embedded only) | dev / eval / CI / single-machine non-critical |
+| **Distributed** | external cluster, dagnats components split | rare — only when `dagnats-engine` and `dagnats-api` need independent scaling |
 
 Workers always run as separate processes connecting to NATS, regardless of topology.
 
-### Single binary
+### Leaf node — production
 
-The default. One process runs NATS, orchestrator, API, trigger service, and HTTP — all connecting locally.
+The hub (cluster or supercluster) is an external NATS deployment — `nats-server` processes you run separately, or Synadia Cloud. dagnats's embedded NATS does not run in cluster or supercluster mode itself; it only acts as a leaf connecting outward.
+
+In all three leaf flavors, dagnats binds NATS to `0.0.0.0` because hub communication requires external connectivity. Restrict the port via firewall — see [Network Isolation](#network-isolation). Maximum 10 remotes per instance.
+
+```bash
+DAGNATS_LEAF_REMOTES=nats://hub1:7422,nats://hub2:7422 \
+DAGNATS_LEAF_CREDENTIALS=/etc/dagnats/hub.creds \
+  dagnats serve
+```
+
+The hub shape determines what failure modes you've actually defended against.
+
+#### Clustered hub — the default
+
+Two or more dagnats instances connect to a 3-node NATS cluster (Synadia Cloud or self-hosted). State lives in the hub via JetStream R=3 replication. Optimistic locking on the `concurrency_runs` KV bucket ensures only one instance is the active orchestrator for any given run, so you get HA without split-brain.
+
+What this gets you:
+
+- **No data loss on host failure.** State lives in the hub cluster, not in `data_dir` on the dying machine.
+- **Zero-downtime upgrades.** Roll dagnats instances one at a time; in-flight runs migrate.
+- **Horizontal scale.** Add another dagnats node and it joins the consumer pool automatically.
+- **Tenancy on existing NATS.** If your team already runs NATS for messaging, dagnats becomes another consumer for free.
+
+The honest tradeoff: a 3-node NATS cluster is real ops surface. Synadia Cloud removes that and turns it into a vendor decision. Self-hosting is straightforward (`nats-server` is a single ~15 MB Go binary), but it's still three more processes to monitor. Compared to Temporal's Postgres + Cassandra requirement, it's the lighter end of the spectrum — but it's not zero.
+
+#### Single-node hub — cheap, with a SPOF
+
+One NATS server with one or more dagnats leaves. You get HA *between the leaves* (any can fail and the others continue), but the hub itself is a single point of failure — if the hub box dies, your runs stall until it comes back.
+
+```bash
+# on the hub box
+nats-server -js -p 4222 --cluster_name=dagnats-hub
+```
+
+When this is the right answer:
+
+- Hobby and personal projects where downtime is annoying but not page-worthy.
+- Small production deployments where you can tolerate hub-restart blips.
+- Migration step toward a clustered hub — the dagnats config doesn't change, you just point `DAGNATS_LEAF_REMOTES` at three nats-server instances later.
+
+When it's the wrong answer: anything with an SLO. You haven't actually bought HA, you've just spread the leaves around. Skip this and run a 3-node cluster.
+
+#### Supercluster hub — multi-region
+
+Multiple NATS clusters in different regions, connected via gateway connections. dagnats leaves connect to their *local* cluster for low-latency operation, and the supercluster's global subject routing lets workflows triggered in one region reach workers in another.
+
+```
+                ┌──────────────┐  gateway  ┌──────────────┐
+                │  Cluster US  │◄─────────►│  Cluster EU  │
+                │  (3 nodes)   │           │  (3 nodes)   │
+                └──────┬───────┘           └──────┬───────┘
+                       │ leaves                   │ leaves
+                ┌──────┴───────┐           ┌──────┴───────┐
+                │ dagnats × N  │           │ dagnats × N  │
+                └──────────────┘           └──────────────┘
+```
+
+The hard part is **JetStream replication strategy**. Vanilla supercluster gives you global *subject* routing, but JetStream streams and KV buckets are *cluster-local* by default. For workflow state to survive a region loss you need one of:
+
+- **Stream mirroring** — passive replication from the primary cluster's `WORKFLOW_HISTORY` / `TASK_QUEUES` / KV streams into a mirror in the secondary cluster. Simple to operate. The mirror is read-only; failover means promoting the mirror.
+- **Stream sourcing** — active-active replication where each cluster sources from the others. Supports concurrent writes across regions, requires careful subject-namespace partitioning to avoid conflicts on the `concurrency_runs` KV.
+
+Pick mirroring for failover-only setups; pick sourcing for true active-active multi-region writes. The dagnats engine itself doesn't need to know which you chose — it sees one logical NATS surface.
+
+When this is the right answer:
+
+- **Regional data residency.** EU data must stay in the EU; US must stay in the US. Run regional dagnats clusters and route workflows by tenant.
+- **Edge / latency-sensitive workloads.** Workers and triggers physically close to the request origin; central coordination via gateway.
+- **Multi-DC failover.** Region A goes dark; region B continues serving runs from the mirrored streams.
+
+When it's the wrong answer: anything a single-region clustered hub solves. Supercluster is the highest ops surface in the table, demands genuine NATS expertise, and turns failover testing into a real engineering project. Reach for it because you have a multi-region requirement nothing simpler satisfies, not because it sounds cool.
+
+### Single binary — dev, eval, small
+
+One process runs everything — embedded NATS, orchestrator, API, triggers — all local. The right shape for development, evaluation, CI / ephemeral environments, and personal deployments where a host failure is a shrug. Don't ship this for production unless you can articulate exactly why your downtime budget tolerates a single point of failure.
 
 ```yaml
 # dagnats.yaml
@@ -26,17 +102,9 @@ nats_port: 4222
 max_store_bytes: 10737418240
 ```
 
-### Leaf node
-
-```bash
-DAGNATS_LEAF_REMOTES=nats://hub1:7422,nats://hub2:7422 \
-DAGNATS_LEAF_CREDENTIALS=/etc/dagnats/hub.creds \
-  dagnats serve
-```
-
-Leaf mode binds NATS to `0.0.0.0` (hub communication requires external connectivity). Restrict the port via firewall — see [Network Isolation](#network-isolation). Maximum 10 remotes per instance.
-
 ### Distributed
+
+Rare. Run if and only if you have a specific operational reason to scale `dagnats-engine` and `dagnats-api` independently. Most teams that think they need this end up needing more workers, which are already separate processes in any topology.
 
 Install the standalone binaries:
 
@@ -57,18 +125,21 @@ NATS_URL=nats://cluster:4222 dagnats-api
 
 ### Network Isolation
 
-In standalone mode (no `leaf_remotes`), the embedded NATS server
-binds to `127.0.0.1`. Only local processes can connect. This is the
-default and requires no additional network configuration.
-
-In leaf node mode, NATS binds to `0.0.0.0`. Use firewall rules to
-restrict which hosts can reach the NATS port. The HTTP API port
-(`http_addr`) always binds to the address you configure -- restrict
-it with a firewall or bind to a specific interface:
+In leaf node mode (production), NATS binds to `0.0.0.0` because the
+hub cluster needs to reach it. Use firewall rules to restrict which
+hosts can connect to the NATS port — only the hub cluster's egress
+should be allowed. The HTTP API port (`http_addr`) always binds to
+the address you configure; restrict it with a firewall or bind to a
+specific interface:
 
 ```yaml
 http_addr: 127.0.0.1:8080
 ```
+
+In single-binary mode (dev / eval), the embedded NATS server binds
+to `127.0.0.1`. Only local processes can connect. No additional
+network configuration is required — but this is also why this mode
+is not appropriate for production.
 
 ### Authentication (Leaf Node)
 
