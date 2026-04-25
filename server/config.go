@@ -128,6 +128,8 @@ func ConfigWithPath(
 		}
 	}
 
+	validateClusterConfig(&cfg)
+
 	if cfg.DataDir == "" {
 		panic("DataDir is empty after config resolution")
 	}
@@ -523,6 +525,55 @@ func applyWorkerConfigValue(
 	}
 
 	return nil
+}
+
+// validateClusterConfig panics with a clear message if cluster config
+// is internally inconsistent. TigerStyle: programmer-error invariants
+// are panics, not returned errors.
+//
+// Rules:
+//   - Cluster mode is detected by len(NATSClusterRoutes) > 0.
+//   - Clustering requires NATSClusterName non-empty.
+//   - NATSClusterRoutes must have between 2 and maxClusterRoutes entries.
+//   - NATSJetStreamReplicas must be in {0, 1, 3, 5}.
+//   - Cluster mode and leaf mode are mutually exclusive.
+func validateClusterConfig(cfg *Config) {
+	if cfg == nil {
+		panic("validateClusterConfig: cfg is nil")
+	}
+
+	switch cfg.NATSJetStreamReplicas {
+	case 0, 1, 3, 5:
+	default:
+		panic(fmt.Sprintf(
+			"nats_jetstream_replicas must be 0, 1, 3, or 5; got %d",
+			cfg.NATSJetStreamReplicas,
+		))
+	}
+
+	clustered := len(cfg.NATSClusterRoutes) > 0
+	if !clustered {
+		return
+	}
+
+	if cfg.NATSClusterName == "" {
+		panic("nats_cluster_name is required when nats_cluster_routes is set")
+	}
+	if len(cfg.NATSClusterRoutes) < 2 {
+		panic(fmt.Sprintf(
+			"nats_cluster_routes needs at least 2 entries (3-node minimum); got %d",
+			len(cfg.NATSClusterRoutes),
+		))
+	}
+	if len(cfg.NATSClusterRoutes) > maxClusterRoutes {
+		panic(fmt.Sprintf(
+			"nats_cluster_routes capped at %d; got %d",
+			maxClusterRoutes, len(cfg.NATSClusterRoutes),
+		))
+	}
+	if len(cfg.LeafRemotes) > 0 {
+		panic("nats_cluster_routes and leaf_remotes are mutually exclusive")
+	}
 }
 
 // validateWorkerConfigs checks worker config consistency.

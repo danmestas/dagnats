@@ -5,6 +5,7 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -481,5 +482,107 @@ func TestApplyConfigValue_NATSCluster(t *testing.T) {
 			t.Fatalf("applyConfigValue(%s, %s): %v", tc.key, tc.val, err)
 		}
 		tc.check(t, &cfg)
+	}
+}
+
+func TestValidateClusterConfig(t *testing.T) {
+	cases := []struct {
+		name      string
+		mut       func(*Config)
+		wantPanic string // substring match on panic message
+	}{
+		{
+			name: "cluster requires name",
+			mut: func(c *Config) {
+				c.NATSClusterRoutes = []string{"nats://a:6222", "nats://b:6222"}
+			},
+			wantPanic: "nats_cluster_name",
+		},
+		{
+			name: "cluster requires at least 2 routes (3-node minimum)",
+			mut: func(c *Config) {
+				c.NATSClusterName = "x"
+				c.NATSClusterRoutes = []string{"nats://a:6222"}
+			},
+			wantPanic: "nats_cluster_routes",
+		},
+		{
+			name: "replicas must be 0, 1, 3, or 5",
+			mut: func(c *Config) {
+				c.NATSJetStreamReplicas = 4
+			},
+			wantPanic: "nats_jetstream_replicas",
+		},
+		{
+			name: "negative replicas rejected",
+			mut: func(c *Config) {
+				c.NATSJetStreamReplicas = -1
+			},
+			wantPanic: "nats_jetstream_replicas",
+		},
+		{
+			name: "routes over cap rejected",
+			mut: func(c *Config) {
+				c.NATSClusterName = "x"
+				routes := make([]string, 11)
+				for i := 0; i < 11; i++ {
+					routes[i] = fmt.Sprintf("nats://node-%d:6222", i)
+				}
+				c.NATSClusterRoutes = routes
+			},
+			wantPanic: "nats_cluster_routes",
+		},
+		{
+			name: "leaf and cluster mutually exclusive",
+			mut: func(c *Config) {
+				c.NATSClusterName = "x"
+				c.NATSClusterRoutes = []string{"nats://a:6222", "nats://b:6222"}
+				c.LeafRemotes = []string{"nats://hub:7422"}
+			},
+			wantPanic: "leaf_remotes",
+		},
+		{
+			name: "valid clustered config",
+			mut: func(c *Config) {
+				c.NATSClusterName = "dagnats"
+				c.NATSClusterRoutes = []string{
+					"nats://a:6222",
+					"nats://b:6222",
+				}
+				c.NATSJetStreamReplicas = 3
+			},
+			wantPanic: "",
+		},
+		{
+			name:      "valid standalone config",
+			mut:       func(c *Config) {},
+			wantPanic: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tc.mut(&cfg)
+
+			defer func() {
+				r := recover()
+				if tc.wantPanic == "" {
+					if r != nil {
+						t.Errorf("unexpected panic: %v", r)
+					}
+					return
+				}
+				if r == nil {
+					t.Errorf("expected panic containing %q, got none", tc.wantPanic)
+					return
+				}
+				if !strings.Contains(fmt.Sprint(r), tc.wantPanic) {
+					t.Errorf("panic = %v, want substring %q", r, tc.wantPanic)
+				}
+			}()
+
+			validateClusterConfig(&cfg)
+		})
 	}
 }
