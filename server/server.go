@@ -138,6 +138,10 @@ func (s *Server) startComponents() error {
 			natsutil.KVConfig{Bucket: "checkpoints"},
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
 		),
+		natsutil.WithCluster(natsutil.ClusterOptions{
+			Routes:           s.cfg.NATSClusterRoutes,
+			ReplicasOverride: s.cfg.NATSJetStreamReplicas,
+		}),
 	)
 	if err != nil {
 		s.nc.Close()
