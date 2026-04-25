@@ -82,6 +82,38 @@ The AI can then analyze traces, find slow spans, correlate
 errors, and compute latency distributions directly from your
 telemetry.
 
+#### Wire up the MCP server
+
+The `dagnats-mcp-duckdb` binary runs over stdio. Install it and
+register it with your client.
+
+```bash
+go install github.com/danmestas/dagnats/cmd/dagnats-mcp-duckdb@latest
+```
+
+**Claude Code:**
+
+```bash
+claude mcp add dagnats-telemetry -- dagnats-mcp-duckdb --data-dir ./telemetry-data
+```
+
+**Generic MCP client** (Cursor, Continue, anything that reads an
+`mcp.json`-style config):
+
+```json
+{
+  "mcpServers": {
+    "dagnats-telemetry": {
+      "command": "dagnats-mcp-duckdb",
+      "args": ["--data-dir", "./telemetry-data"]
+    }
+  }
+}
+```
+
+Point `--data-dir` at the directory the sidecar writes Parquet
+files to (default `./telemetry-data`).
+
 ### Sidecar Config
 
 ```yaml

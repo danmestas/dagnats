@@ -16,9 +16,18 @@ DAG-based workflow engine built on NATS for autonomous LLM coding pipelines.
 
 ## Architecture
 
-See `docs/architecture/` for condensed architectural decision records.
-
 Five components: `dag/` (pure DAG logic), `engine/` (orchestrator), `worker/` (task framework), `api/` (control plane), `cli/` (CLI client). `natsutil/` owns NATS resource setup; other packages may import `nats.go` for runtime operations.
+
+`docs/architecture/` contains two kinds of files:
+
+- **ADRs** (`adr-NNN-*.md`) — load-bearing decisions with context, alternatives, and consequences:
+  - `adr-001-agent-harness-gaps.md` — interface gaps in the agent harness
+  - `adr-002-durable-agent-loop.md` — durable agent loop via dagnats primitives
+  - `adr-003-sidecar-dx-improvements.md` — sidecar DX improvements
+  - `adr-004-lazy-orchestrator-subsystems.md` — lazy orchestrator subsystems
+- **Design notes** (everything else, e.g., `core-design.md`, `agent-system.md`) — background reading. May be superseded by later ADRs; check the file header for status.
+
+When adding a new decision, write a numbered ADR. When taking notes that don't represent a decision, use a descriptive filename without the `adr-` prefix.
 
 ## Coding Rules
 
