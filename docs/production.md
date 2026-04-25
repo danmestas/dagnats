@@ -8,15 +8,36 @@ keys, environment variables, and file format details, see
 
 | Topology | Command | When to use | NATS bind |
 |---|---|---|---|
-| **Single binary** | `dagnats serve` | single machine, simplest operations | `127.0.0.1` |
-| **Leaf node** | `DAGNATS_LEAF_REMOTES=... dagnats serve` | existing NATS cluster; multi-instance state sharing | `0.0.0.0` |
-| **Distributed** | `dagnats-engine` + `dagnats-api` (separate processes) | independent component scaling | external cluster |
+| **Leaf node** (production) | `DAGNATS_LEAF_REMOTES=... dagnats serve` | the production default — multi-instance HA, zero-downtime upgrades, no host-loss data loss | `0.0.0.0` |
+| **Single binary** (dev / eval / small) | `dagnats serve` | development, evaluation, CI, single-machine non-critical deployments | `127.0.0.1` |
+| **Distributed** | `dagnats-engine` + `dagnats-api` (separate processes) | rare — only when components need independent scaling | external cluster |
 
 Workers always run as separate processes connecting to NATS, regardless of topology.
 
-### Single binary
+### Leaf node — the production default
 
-The default. One process runs NATS, orchestrator, API, trigger service, and HTTP — all connecting locally.
+Two or more dagnats instances connect to a hub NATS cluster (3-node Synadia Cloud or a self-hosted nats-server cluster). State lives in the hub via JetStream R=3 replication. Optimistic locking on the `concurrency_runs` KV bucket ensures only one instance is the active orchestrator for any given run, so you get HA without split-brain.
+
+```bash
+DAGNATS_LEAF_REMOTES=nats://hub1:7422,nats://hub2:7422 \
+DAGNATS_LEAF_CREDENTIALS=/etc/dagnats/hub.creds \
+  dagnats serve
+```
+
+What this gets you:
+
+- **No data loss on host failure.** State lives in the hub cluster, not in `data_dir` on the dying machine.
+- **Zero-downtime upgrades.** Roll instances one at a time; in-flight runs migrate.
+- **Horizontal scale.** Add another dagnats node and it joins the consumer pool automatically.
+- **Tenancy on existing NATS.** If your team already runs NATS for messaging, dagnats becomes another consumer for free.
+
+Leaf mode binds NATS to `0.0.0.0` because hub communication requires external connectivity. Restrict the port via firewall — see [Network Isolation](#network-isolation). Maximum 10 remotes per instance.
+
+The honest tradeoff: a 3-node NATS cluster is real ops surface. Synadia Cloud removes that and turns it into a vendor decision. Self-hosting is straightforward (`nats-server` is a single ~15 MB Go binary), but it's still three more processes to monitor. Compared to Temporal's Postgres + Cassandra requirement, it's the lighter end of the spectrum — but it's not zero.
+
+### Single binary — dev, eval, small
+
+One process runs everything — embedded NATS, orchestrator, API, triggers — all local. The right shape for development, evaluation, CI / ephemeral environments, and personal deployments where a host failure is a shrug. Don't ship this for production unless you can articulate exactly why your downtime budget tolerates a single point of failure.
 
 ```yaml
 # dagnats.yaml
@@ -26,17 +47,9 @@ nats_port: 4222
 max_store_bytes: 10737418240
 ```
 
-### Leaf node
-
-```bash
-DAGNATS_LEAF_REMOTES=nats://hub1:7422,nats://hub2:7422 \
-DAGNATS_LEAF_CREDENTIALS=/etc/dagnats/hub.creds \
-  dagnats serve
-```
-
-Leaf mode binds NATS to `0.0.0.0` (hub communication requires external connectivity). Restrict the port via firewall — see [Network Isolation](#network-isolation). Maximum 10 remotes per instance.
-
 ### Distributed
+
+Rare. Run if and only if you have a specific operational reason to scale `dagnats-engine` and `dagnats-api` independently. Most teams that think they need this end up needing more workers, which are already separate processes in any topology.
 
 Install the standalone binaries:
 
@@ -57,18 +70,21 @@ NATS_URL=nats://cluster:4222 dagnats-api
 
 ### Network Isolation
 
-In standalone mode (no `leaf_remotes`), the embedded NATS server
-binds to `127.0.0.1`. Only local processes can connect. This is the
-default and requires no additional network configuration.
-
-In leaf node mode, NATS binds to `0.0.0.0`. Use firewall rules to
-restrict which hosts can reach the NATS port. The HTTP API port
-(`http_addr`) always binds to the address you configure -- restrict
-it with a firewall or bind to a specific interface:
+In leaf node mode (production), NATS binds to `0.0.0.0` because the
+hub cluster needs to reach it. Use firewall rules to restrict which
+hosts can connect to the NATS port — only the hub cluster's egress
+should be allowed. The HTTP API port (`http_addr`) always binds to
+the address you configure; restrict it with a firewall or bind to a
+specific interface:
 
 ```yaml
 http_addr: 127.0.0.1:8080
 ```
+
+In single-binary mode (dev / eval), the embedded NATS server binds
+to `127.0.0.1`. Only local processes can connect. No additional
+network configuration is required — but this is also why this mode
+is not appropriate for production.
 
 ### Authentication (Leaf Node)
 
