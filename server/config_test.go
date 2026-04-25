@@ -425,3 +425,61 @@ func TestConfigFileMonitorPort(t *testing.T) {
 		)
 	}
 }
+
+func TestApplyEnvOverrides_NATSCluster(t *testing.T) {
+	t.Setenv("DAGNATS_NATS_CLUSTER_NAME", "dagnats-prod")
+	t.Setenv("DAGNATS_NATS_CLUSTER_ROUTES", "nats://node-1:6222,nats://node-2:6222")
+	t.Setenv("DAGNATS_NATS_CLUSTER_AUTH_TOKEN", "secret-tok")
+	t.Setenv("DAGNATS_NATS_JETSTREAM_REPLICAS", "3")
+
+	cfg := DefaultConfig()
+	applyEnvOverrides(&cfg)
+
+	if cfg.NATSClusterName != "dagnats-prod" {
+		t.Errorf("NATSClusterName = %q, want %q", cfg.NATSClusterName, "dagnats-prod")
+	}
+	if got := cfg.NATSClusterRoutes; len(got) != 2 || got[0] != "nats://node-1:6222" {
+		t.Errorf("NATSClusterRoutes = %v", got)
+	}
+	if cfg.NATSClusterAuthToken != "secret-tok" {
+		t.Errorf("NATSClusterAuthToken = %q", cfg.NATSClusterAuthToken)
+	}
+	if cfg.NATSJetStreamReplicas != 3 {
+		t.Errorf("NATSJetStreamReplicas = %d, want 3", cfg.NATSJetStreamReplicas)
+	}
+}
+
+func TestApplyConfigValue_NATSCluster(t *testing.T) {
+	cfg := DefaultConfig()
+	cases := []struct {
+		key, val string
+		check    func(*testing.T, *Config)
+	}{
+		{"nats_cluster_name", "dagnats-staging", func(t *testing.T, c *Config) {
+			if c.NATSClusterName != "dagnats-staging" {
+				t.Errorf("NATSClusterName = %q", c.NATSClusterName)
+			}
+		}},
+		{"nats_cluster_routes", "nats://a:6222, nats://b:6222", func(t *testing.T, c *Config) {
+			if len(c.NATSClusterRoutes) != 2 {
+				t.Fatalf("want 2 routes, got %v", c.NATSClusterRoutes)
+			}
+		}},
+		{"nats_cluster_auth_token", "tok", func(t *testing.T, c *Config) {
+			if c.NATSClusterAuthToken != "tok" {
+				t.Errorf("token = %q", c.NATSClusterAuthToken)
+			}
+		}},
+		{"nats_jetstream_replicas", "5", func(t *testing.T, c *Config) {
+			if c.NATSJetStreamReplicas != 5 {
+				t.Errorf("replicas = %d", c.NATSJetStreamReplicas)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		if err := applyConfigValue(tc.key, tc.val, 1, &cfg); err != nil {
+			t.Fatalf("applyConfigValue(%s, %s): %v", tc.key, tc.val, err)
+		}
+		tc.check(t, &cfg)
+	}
+}

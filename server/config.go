@@ -16,6 +16,7 @@ const (
 	defaultNATSPort      = 4222
 	defaultMaxStoreBytes = 10 << 30 // 10 GiB
 	maxLeafRemotes       = 10
+	maxClusterRoutes     = 10
 	maxConfigFileLines   = 300
 	maxWorkerConfigs     = 50
 )
@@ -35,6 +36,12 @@ type Config struct {
 	NATSPort        int            `json:"nats_port"`
 	LeafRemotes     []string       `json:"leaf_remotes"`
 	LeafCredentials string         `json:"leaf_credentials"`
+
+	NATSClusterName       string   `json:"nats_cluster_name"`
+	NATSClusterRoutes     []string `json:"nats_cluster_routes"`
+	NATSClusterAuthToken  string   `json:"nats_cluster_auth_token"`
+	NATSJetStreamReplicas int      `json:"nats_jetstream_replicas"`
+
 	MonitorPort     int            `json:"monitor_port"`
 	MaxStoreBytes   int64          `json:"max_store_bytes"`
 	Workers         []WorkerConfig `json:"workers"`
@@ -263,6 +270,27 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("DAGNATS_LEAF_CREDENTIALS"); val != "" {
 		cfg.LeafCredentials = val
 	}
+	if val := os.Getenv("DAGNATS_NATS_CLUSTER_NAME"); val != "" {
+		cfg.NATSClusterName = val
+	}
+	if val := os.Getenv("DAGNATS_NATS_CLUSTER_ROUTES"); val != "" {
+		routes := strings.Split(val, ",")
+		for i := range routes {
+			routes[i] = strings.TrimSpace(routes[i])
+		}
+		if len(routes) > maxClusterRoutes {
+			routes = routes[:maxClusterRoutes]
+		}
+		cfg.NATSClusterRoutes = routes
+	}
+	if val := os.Getenv("DAGNATS_NATS_CLUSTER_AUTH_TOKEN"); val != "" {
+		cfg.NATSClusterAuthToken = val
+	}
+	if val := os.Getenv("DAGNATS_NATS_JETSTREAM_REPLICAS"); val != "" {
+		if r, err := strconv.Atoi(val); err == nil {
+			cfg.NATSJetStreamReplicas = r
+		}
+	}
 	if val := os.Getenv("DAGNATS_MONITOR_PORT"); val != "" {
 		if port, err := strconv.Atoi(val); err == nil {
 			cfg.MonitorPort = port
@@ -391,6 +419,25 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.LeafRemotes = remotes
 	case "leaf_credentials":
 		cfg.LeafCredentials = val
+	case "nats_cluster_name":
+		cfg.NATSClusterName = val
+	case "nats_cluster_routes":
+		routes := strings.Split(val, ",")
+		for i := range routes {
+			routes[i] = strings.TrimSpace(routes[i])
+		}
+		if len(routes) > maxClusterRoutes {
+			routes = routes[:maxClusterRoutes]
+		}
+		cfg.NATSClusterRoutes = routes
+	case "nats_cluster_auth_token":
+		cfg.NATSClusterAuthToken = val
+	case "nats_jetstream_replicas":
+		r, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid nats_jetstream_replicas: %w", err)
+		}
+		cfg.NATSJetStreamReplicas = r
 	case "monitor_port":
 		port, err := strconv.Atoi(val)
 		if err != nil {
