@@ -21,7 +21,7 @@ func TestSnapshotWriteAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = natsutil.SetupKVBuckets(js)
+	err = natsutil.SetupKVBuckets(js, 1)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestSnapshotLoadNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = natsutil.SetupKVBuckets(js)
+	err = natsutil.SetupKVBuckets(js, 1)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestSnapshotUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = natsutil.SetupKVBuckets(js)
+	err = natsutil.SetupKVBuckets(js, 1)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestSnapshotListAllEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = natsutil.SetupKVBuckets(js)
+	err = natsutil.SetupKVBuckets(js, 1)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestSnapshotListAllBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = natsutil.SetupKVBuckets(js)
+	err = natsutil.SetupKVBuckets(js, 1)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSnapshotListAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = natsutil.SetupKVBuckets(js)
+	err = natsutil.SetupKVBuckets(js, 1)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}

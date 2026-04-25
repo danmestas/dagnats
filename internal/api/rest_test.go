@@ -193,10 +193,10 @@ func TestHealthDegradedWithoutStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	if err := natsutil.SetupStreams(js); err != nil {
+	if err := natsutil.SetupStreams(js, 1); err != nil {
 		t.Fatalf("SetupStreams: %v", err)
 	}
-	if err := natsutil.SetupKVBuckets(js); err != nil {
+	if err := natsutil.SetupKVBuckets(js, 1); err != nil {
 		t.Fatalf("SetupKVBuckets: %v", err)
 	}
 	if err := natsutil.SetupStickyStream(js); err != nil {

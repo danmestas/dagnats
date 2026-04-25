@@ -32,7 +32,7 @@ func TestSetupStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = SetupStreams(js)
+	err = SetupStreams(js, 1)
 	if err != nil {
 		t.Fatalf("SetupStreams failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestSetupKVBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = SetupKVBuckets(js)
+	err = SetupKVBuckets(js, 1)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets failed: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestSetupKVBucketsCreatesScheduledRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	err = SetupKVBuckets(js)
+	err = SetupKVBuckets(js, 1)
 	if err != nil {
 		t.Fatalf("SetupKVBuckets: %v", err)
 	}
@@ -278,6 +278,29 @@ func TestSetupAllCreatesRateLimitsKV(t *testing.T) {
 		"bucket = %q, want rate_limits", status.Bucket())
 }
 
+func TestSetupStreams_Replicas(t *testing.T) {
+	_, nc := StartTestServer(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	if err := SetupStreams(js, 1); err != nil {
+		t.Fatalf("SetupStreams: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream(WORKFLOW_HISTORY): %v", err)
+	}
+	cfg := info.CachedInfo().Config
+	if cfg.Replicas != 1 {
+		t.Errorf("WORKFLOW_HISTORY Replicas = %d, want 1", cfg.Replicas)
+	}
+}
+
 func TestEnableAtomicPublish(t *testing.T) {
 	_, nc := StartTestServer(t)
 
@@ -285,7 +308,7 @@ func TestEnableAtomicPublish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	if err := SetupStreams(js); err != nil {
+	if err := SetupStreams(js, 1); err != nil {
 		t.Fatalf("SetupStreams: %v", err)
 	}
 
