@@ -31,6 +31,10 @@ menu:
         icon: github
 
 params:
+  # Default version for local dev; the CF build replaces this with the
+  # latest git tag via scripts/sync-version.sh before Hugo runs.
+  version: "0.1"
+
   navbar:
     displayTitle: true
     displayLogo: false

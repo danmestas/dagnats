@@ -381,7 +381,7 @@ footer a { color: inherit; border-bottom-color: var(--mute); }
 <header class="topbar">
   <div class="name">dagnats</div>
   <div class="meta">
-    <span>v <b>0.1</b></span>
+    <span>v <b>{{ .Site.Params.version }}</b></span>
     <span>license <b>Apache-2.0</b></span>
     <span><a href="https://github.com/danmestas/dagnats">github</a></span>
     <span><a href="/docs/">docs</a></span>
@@ -400,7 +400,7 @@ footer a { color: inherit; border-bottom-color: var(--mute); }
       <tr><td>Runtime deps</td> <td>NATS JetStream (embedded)</td></tr>
       <tr><td>Binaries</td>     <td>1 (<code>dagnats serve</code> = orchestrator + API + triggers + NATS)</td></tr>
       <tr><td>License</td>      <td>Apache-2.0</td></tr>
-      <tr><td>Status</td>       <td>v0.1 · alpha · breaking changes possible</td></tr>
+      <tr><td>Status</td>       <td>v{{ .Site.Params.version }} · alpha · breaking changes possible</td></tr>
     </tbody>
   </table>
 </section>
