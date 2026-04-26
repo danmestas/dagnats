@@ -22,11 +22,12 @@ import (
 )
 
 const (
-	minTestClusterNodes  = 3
-	maxTestClusterNodes  = 5
-	testClusterReadyTime = 5 * time.Second
-	testClusterFormTime  = 15 * time.Second
-	testClusterQuorumTTL = 30 * time.Second
+	minTestClusterNodes    = 3
+	maxTestClusterNodes    = 5
+	testClusterReadyTime   = 5 * time.Second
+	testClusterFormTime    = 15 * time.Second
+	testClusterQuorumTTL   = 30 * time.Second
+	placementProbeInterval = 250 * time.Millisecond
 )
 
 // StartTestCluster starts n in-process NATS servers configured as a
@@ -202,21 +203,33 @@ func confirmClusterQuorum(t *testing.T, nc *nats.Conn, n int) {
 // probeStreamPlacement creates and deletes a throwaway R=n stream,
 // retrying on "peer offline" errors that occur when peers' JS API is
 // up but their meta state hasn't fully synced for placement. Returns
-// once placement succeeds or fails the test on ctx timeout.
+// once placement succeeds; fails the test when ctx is cancelled.
+//
+// The retry interval is bounded by placementProbeInterval and the
+// total wait by the caller's ctx — there is no separate attempt cap.
 func probeStreamPlacement(
 	ctx context.Context, t *testing.T, js jetstream.JetStream, n int,
 ) {
 	t.Helper()
+	if t == nil {
+		panic("probeStreamPlacement: t is nil")
+	}
+	if js == nil {
+		panic("probeStreamPlacement: js is nil")
+	}
+	if n < 1 {
+		panic(fmt.Sprintf("probeStreamPlacement: n=%d", n))
+	}
+
 	const probeName = "dagnats_test_placement_probe"
 	cfg := jetstream.StreamConfig{
 		Name:     probeName,
 		Subjects: []string{"_dagnats.test.probe"},
 		Replicas: n,
 	}
-	for attempt := 0; attempt < 60; attempt++ {
-		if ctx.Err() != nil {
-			t.Fatalf("probeStreamPlacement: ctx done: %v", ctx.Err())
-		}
+
+	var lastErr error
+	for {
 		_, err := js.CreateOrUpdateStream(ctx, cfg)
 		if err == nil {
 			if delErr := js.DeleteStream(ctx, probeName); delErr != nil {
@@ -224,9 +237,17 @@ func probeStreamPlacement(
 			}
 			return
 		}
-		time.Sleep(250 * time.Millisecond)
+		lastErr = err
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("probeStreamPlacement: ctx done before R=%d placement (last err: %v)",
+				n, lastErr)
+			return
+		case <-time.After(placementProbeInterval):
+			// retry
+		}
 	}
-	t.Fatal("probeStreamPlacement: stream placement at R=n not ready")
 }
 
 // allocateFreePorts finds count available TCP ports by binding 127.0.0.1:0
