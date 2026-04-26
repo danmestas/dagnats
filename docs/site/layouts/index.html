@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="dagnats — DAG workflow engine on NATS. One binary. No external databases. Open source.">
 <meta name="color-scheme" content="light dark">
-<title>dagnats(1) — DAG workflow engine on NATS</title>
+<title>dagnats — DAG workflow engine on NATS</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -40,7 +40,7 @@ body {
 }
 header.topbar {
   border-bottom: 1px solid var(--rule);
-  padding: 0.75rem 1.5rem;
+  padding: clamp(0.625rem, 2.5vw, 0.75rem) clamp(1rem, 4vw, 1.5rem);
   display: flex; justify-content: space-between; align-items: baseline;
   gap: 1rem; flex-wrap: wrap;
   font-size: 0.78125rem;
@@ -56,7 +56,8 @@ header.topbar {
 main {
   max-width: 88ch;
   margin: 0 auto;
-  padding: clamp(2rem, 4vw, 3rem) 1.5rem clamp(3rem, 6vw, 4.5rem);
+  padding: clamp(2rem, 4vw, 3rem) clamp(1rem, 4vw, 1.5rem) clamp(3rem, 6vw, 4.5rem);
+  overflow-wrap: anywhere;
 }
 
 .title {
@@ -68,7 +69,7 @@ main {
   border-bottom: 1px solid var(--rule);
 }
 .title h1 {
-  font-size: clamp(3rem, 11vw, 6.5rem);
+  font-size: clamp(2.75rem, 13vw, 6.5rem);
   font-weight: 700;
   letter-spacing: -0.05em;
   line-height: 0.92;
@@ -118,6 +119,7 @@ h2 {
   justify-content: space-between;
   align-items: baseline;
   gap: 1rem;
+  flex-wrap: wrap;
 }
 h2 .anchor {
   font-size: 0.6875rem;
@@ -148,7 +150,7 @@ code {
 ol, ul { padding-left: 0; max-width: var(--measure); list-style: none; }
 ol li, ul li {
   margin-bottom: 0.875rem;
-  padding-left: 3.25rem;
+  padding-left: 2.75rem;
   position: relative;
   line-height: 1.65;
 }
@@ -165,12 +167,12 @@ ol li::before {
   font-size: 0.78125rem;
   letter-spacing: 0.04em;
   color: var(--ember);
-  width: 2.5rem;
+  width: 2rem;
 }
 ul li::before {
   content: "—";
   position: absolute;
-  left: 1rem;
+  left: 0.5rem;
   color: var(--mute);
 }
 
@@ -181,7 +183,7 @@ ul li::before {
   background: var(--paper-2);
 }
 pre {
-  padding: 1rem 1.25rem;
+  padding: 1rem 4.25rem 1rem 1.25rem;
   font-size: 0.85rem;
   line-height: 1.65;
   overflow-x: auto;
@@ -192,30 +194,66 @@ pre {
 pre.ascii {
   background: transparent;
   border: 1px solid var(--rule);
-  padding: 1.25rem;
-  font-size: clamp(0.6875rem, 1vw, 0.8125rem);
+  padding: clamp(0.75rem, 2.5vw, 1.25rem);
+  font-size: clamp(0.7rem, 1.7vw, 0.8125rem);
   line-height: 1.45;
   color: var(--ink);
   margin-bottom: 1rem;
+  overflow-x: auto;
+}
+
+.diagram {
+  display: block;
+  width: 100%;
+  min-width: 30rem;
+  height: auto;
+  margin-bottom: 0.5rem;
+  font-family: var(--mono);
+  color: var(--ink);
+}
+.diagram .rule { stroke: var(--rule); stroke-width: 1; opacity: 0.5; }
+.diagram .box { fill: none; stroke: var(--rule); stroke-width: 1; }
+.diagram .head {
+  font-size: 11px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  fill: var(--mute);
+}
+.diagram .item { font-size: 13px; fill: var(--ink); }
+.diagram .stack { font-size: 12px; fill: var(--mute); font-style: italic; }
+.diagram .flow line { stroke: var(--ember); stroke-width: 1.5; fill: none; }
+.diagram .arrowhead { fill: var(--ember); }
+.diagram .flow-label {
+  font-size: 10px;
+  fill: var(--ember);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
 }
 
 .copy-btn {
-  position: absolute; top: 0.5rem; right: 0.5rem;
+  position: absolute; top: 0.45rem; right: 0.45rem;
   background: var(--paper);
   color: var(--ink);
   border: 1px solid var(--ink);
   font: inherit;
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   padding: 0.15rem 0.55rem;
   cursor: pointer;
+  z-index: 1;
 }
 .copy-btn:hover, .copy-btn:focus-visible { background: var(--ink); color: var(--paper); outline: none; }
 .copy-btn[data-state="copied"] { color: var(--ember); border-color: var(--ember); background: var(--paper); }
 
+.table-scroll {
+  margin: 0 calc(-1 * clamp(0rem, 2vw, 0.5rem));
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 table.cmp {
   width: 100%;
+  min-width: 30rem;
   border-collapse: collapse;
   font-size: 0.875rem;
   margin-bottom: 0.75rem;
@@ -289,10 +327,28 @@ footer a { color: inherit; border-bottom-color: var(--mute); }
 }
 @media (max-width: 540px) {
   header.topbar { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
-  .topbar .meta { gap: 0.75rem; }
-  .spec td:first-child { width: 9rem; }
-  table.cmp td:first-child { width: 40%; }
-  ol li, ul li { padding-left: 2.5rem; }
+  .topbar .meta { gap: 0.75rem; row-gap: 0.35rem; }
+  .spec td:first-child { width: 8rem; font-size: 0.625rem; }
+  .spec td { padding: 0.4rem 0; }
+  table.cmp { font-size: 0.6875rem; min-width: 0; table-layout: fixed; }
+  table.cmp th, table.cmp td { padding: 0.45rem 0.45rem; word-break: break-word; }
+  table.cmp td:first-child, table.cmp th:first-child {
+    padding-left: 0.55rem;
+    width: auto;
+    font-size: 0.5625rem;
+  }
+  table.cmp td:last-child, table.cmp th:last-child { padding-right: 0.55rem; }
+  ol li, ul li { padding-left: 2.25rem; }
+  ol li::before { width: 1.75rem; }
+  footer { flex-direction: column; gap: 0.5rem; align-items: flex-start; }
+  .copy-btn { font-size: 0.5625rem; padding: 0.1rem 0.4rem; top: 0.35rem; right: 0.35rem; }
+  pre { font-size: 0.78rem; padding: 0.875rem 3.5rem 0.875rem 0.9rem; }
+}
+@media (max-width: 380px) {
+  .topbar .name { letter-spacing: 0.12em; }
+  .spec td:first-child { width: 7rem; }
+  table.cmp { font-size: 0.625rem; }
+  table.cmp th, table.cmp td { padding: 0.4rem 0.3rem; }
 }
 </style>
 </head>
@@ -301,7 +357,7 @@ footer a { color: inherit; border-bottom-color: var(--mute); }
 <a href="#main" class="skip">skip to content</a>
 
 <header class="topbar">
-  <div class="name">dagnats(1)</div>
+  <div class="name">dagnats</div>
   <div class="meta">
     <span>v <b>0.1</b></span>
     <span>license <b>Apache-2.0</b></span>
@@ -361,21 +417,76 @@ $ dagnats serve</pre>
 <section>
   <span class="num">§04</span>
   <h2>How it fits together <span class="anchor">architecture</span></h2>
-  <pre class="ascii">  triggers              orchestrator             workers
-  --------              ------------             -------
-  cron                  &gt;  consume event           ^
-  webhook   --events--&gt; &gt;  advance DAG  --tasks--&gt; |
-  subject               &gt;  snapshot kv             |
-                               ^                   |
-                               +---- results ------+
+  <div class="table-scroll">
+    <svg class="diagram" viewBox="0 0 640 260" role="img" aria-labelledby="arch-title arch-desc" preserveAspectRatio="xMidYMid meet">
+      <title id="arch-title">dagnats architecture</title>
+      <desc id="arch-desc">Triggers send events to the orchestrator. The orchestrator advances the DAG, dispatches tasks to workers, and receives results back. All workflow state lives in NATS JetStream and KV.</desc>
 
-  all state lives in NATS JetStream + KV. that is the entire system.
-  there is no separate database.</pre>
+      <defs>
+        <marker id="dn-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path class="arrowhead" d="M0,0 L10,5 L0,10 Z"/>
+        </marker>
+      </defs>
+
+      <g class="rule">
+        <line x1="40" y1="38" x2="160" y2="38"/>
+        <line x1="240" y1="38" x2="400" y2="38"/>
+        <line x1="480" y1="38" x2="600" y2="38"/>
+      </g>
+
+      <g class="head">
+        <text x="100" y="28" text-anchor="middle">triggers</text>
+        <text x="320" y="28" text-anchor="middle">orchestrator</text>
+        <text x="540" y="28" text-anchor="middle">workers</text>
+      </g>
+
+      <g class="item">
+        <text x="100" y="76" text-anchor="middle">cron</text>
+        <text x="100" y="100" text-anchor="middle">webhook</text>
+        <text x="100" y="124" text-anchor="middle">subject</text>
+      </g>
+
+      <rect class="box" x="240" y="60" width="160" height="100"/>
+      <g class="item">
+        <text x="320" y="88" text-anchor="middle">consume event</text>
+        <text x="320" y="112" text-anchor="middle">advance DAG</text>
+        <text x="320" y="136" text-anchor="middle">snapshot KV</text>
+      </g>
+
+      <rect class="box" x="490" y="60" width="100" height="100"/>
+      <g class="item">
+        <text x="540" y="88" text-anchor="middle">worker</text>
+        <text x="540" y="112" text-anchor="middle">worker</text>
+        <text x="540" y="136" text-anchor="middle">worker</text>
+      </g>
+
+      <rect class="box" x="240" y="200" width="160" height="40"/>
+      <g class="item">
+        <text x="320" y="225" text-anchor="middle">JetStream + KV</text>
+      </g>
+
+      <g class="flow">
+        <line x1="160" y1="100" x2="234" y2="100" marker-end="url(#dn-arrow)"/>
+        <line x1="400" y1="88" x2="486" y2="88" marker-end="url(#dn-arrow)"/>
+        <line x1="490" y1="136" x2="404" y2="136" marker-end="url(#dn-arrow)"/>
+        <line x1="320" y1="160" x2="320" y2="196" marker-end="url(#dn-arrow)"/>
+      </g>
+
+      <g class="flow-label">
+        <text x="197" y="92" text-anchor="middle">events</text>
+        <text x="443" y="80" text-anchor="middle">tasks</text>
+        <text x="447" y="154" text-anchor="middle">results</text>
+        <text x="334" y="183" text-anchor="start">state</text>
+      </g>
+    </svg>
+  </div>
+  <p class="fineprint">All workflow state lives in NATS JetStream + KV &mdash; that is the entire system. There is no separate database.</p>
 </section>
 
 <section>
   <span class="num">§05</span>
   <h2>Compared to neighbors <span class="anchor">comparison</span></h2>
+  <div class="table-scroll">
   <table class="cmp">
     <thead>
       <tr>
@@ -395,6 +506,7 @@ $ dagnats serve</pre>
       <tr><td>Self-host</td>     <td class="col-self">trivial</td>        <td>involved</td>       <td>moderate</td>       <td>n/a</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="fineprint">Comparison reflects open-source distributions as of writing. Approximate; orientation only.</p>
 </section>
 
