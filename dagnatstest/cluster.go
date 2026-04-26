@@ -180,7 +180,11 @@ func waitForJetStreamLeader(t *testing.T, servers []*natsserver.Server) {
 }
 
 // confirmClusterQuorum verifies the cluster is API-healthy by calling
-// AccountInfo via the production WaitForClusterQuorum helper.
+// AccountInfo via the production WaitForClusterQuorum helper, then
+// probes stream placement at R=n by creating and deleting a throwaway
+// stream. The placement probe ensures all n peers are actually ready
+// to host stream replicas — AccountInfo alone can return success
+// before all peers' JS subsystems are fully synced for placement.
 func confirmClusterQuorum(t *testing.T, nc *nats.Conn, n int) {
 	t.Helper()
 	js, err := jetstream.New(nc)
@@ -192,6 +196,37 @@ func confirmClusterQuorum(t *testing.T, nc *nats.Conn, n int) {
 	if _, err := natsutil.WaitForClusterQuorum(ctx, js, n); err != nil {
 		t.Fatalf("cluster did not form: %v", err)
 	}
+	probeStreamPlacement(ctx, t, js, n)
+}
+
+// probeStreamPlacement creates and deletes a throwaway R=n stream,
+// retrying on "peer offline" errors that occur when peers' JS API is
+// up but their meta state hasn't fully synced for placement. Returns
+// once placement succeeds or fails the test on ctx timeout.
+func probeStreamPlacement(
+	ctx context.Context, t *testing.T, js jetstream.JetStream, n int,
+) {
+	t.Helper()
+	const probeName = "dagnats_test_placement_probe"
+	cfg := jetstream.StreamConfig{
+		Name:     probeName,
+		Subjects: []string{"_dagnats.test.probe"},
+		Replicas: n,
+	}
+	for attempt := 0; attempt < 60; attempt++ {
+		if ctx.Err() != nil {
+			t.Fatalf("probeStreamPlacement: ctx done: %v", ctx.Err())
+		}
+		_, err := js.CreateOrUpdateStream(ctx, cfg)
+		if err == nil {
+			if delErr := js.DeleteStream(ctx, probeName); delErr != nil {
+				t.Fatalf("probeStreamPlacement: cleanup: %v", delErr)
+			}
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatal("probeStreamPlacement: stream placement at R=n not ready")
 }
 
 // allocateFreePorts finds count available TCP ports by binding 127.0.0.1:0
