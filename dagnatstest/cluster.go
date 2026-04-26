@@ -210,7 +210,6 @@ func confirmClusterQuorum(t *testing.T, nc *nats.Conn, n int) {
 func probeStreamPlacement(
 	ctx context.Context, t *testing.T, js jetstream.JetStream, n int,
 ) {
-	t.Helper()
 	if t == nil {
 		panic("probeStreamPlacement: t is nil")
 	}
@@ -220,6 +219,7 @@ func probeStreamPlacement(
 	if n < 1 {
 		panic(fmt.Sprintf("probeStreamPlacement: n=%d", n))
 	}
+	t.Helper()
 
 	const probeName = "dagnats_test_placement_probe"
 	cfg := jetstream.StreamConfig{
