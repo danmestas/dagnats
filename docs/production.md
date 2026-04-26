@@ -8,6 +8,7 @@ keys, environment variables, and file format details, see
 
 | Topology | Hub shape | When to use |
 |---|---|---|
+| **Self-clustered** | none — dagnats nodes form their own cluster | self-contained HA without external NATS infrastructure |
 | **Leaf → clustered hub** | 3+ NATS servers in one DC | the production default |
 | **Leaf → single-node hub** | one NATS server | small prod or hobby; HA between dagnats leaves but hub is a SPOF |
 | **Leaf → supercluster** | multiple clusters, gateway-connected, multi-region | global / multi-DC, regional failover, edge |
@@ -15,6 +16,34 @@ keys, environment variables, and file format details, see
 | **Distributed** | external cluster, dagnats components split | rare — only when `dagnats-engine` and `dagnats-api` need independent scaling |
 
 Workers always run as separate processes connecting to NATS, regardless of topology.
+
+### Self-clustered — embedded HA
+
+Three or five dagnats instances each run their own embedded NATS server in cluster configuration, connecting directly to each other via NATS cluster routes. JetStream replicates state across nodes (R=3 or R=5). Failover is automatic; rolling upgrades work without an external NATS deployment.
+
+**Config (each node):**
+```yaml
+nats_cluster_name: dagnats-prod
+nats_cluster_routes:
+  - nats://node-1.dagnats.svc.cluster.local:6222
+  - nats://node-2.dagnats.svc.cluster.local:6222
+nats_cluster_auth_token: ${DAGNATS_CLUSTER_TOKEN}
+```
+
+**What you get:**
+- No external NATS to operate.
+- JetStream replicates at R=3 (auto-derived from a 3-node cluster). Streams and KV buckets survive any single-host failure.
+- Zero-downtime rolling upgrades: drain and restart nodes one at a time.
+- Explicit override available via `nats_jetstream_replicas` for the rare case of intentionally choosing R<cluster_size.
+
+**What you don't get (in v1):**
+- Dynamic membership. Adding or removing nodes requires planned reconfiguration on all nodes plus a rolling restart.
+- TLS for cluster routes. v1 uses token-based auth; TLS lands in v1.1.
+- Multi-region. Use leaf → supercluster for that.
+
+**Migration from single-binary:** add the four cluster fields to each node's config, restart all nodes within the 60-second quorum-wait window. Streams auto-update from R=1 to R=3 in place via JetStream's `CreateOrUpdateStream` semantics. Reversible by removing the cluster fields and restarting.
+
+**Bound:** `nats_cluster_routes` cap is 10 entries (11-node maximum). Quorum-wait at startup is bounded at 60 seconds; if peers don't connect in time, `SetupAll` returns an error and the process exits.
 
 ### Leaf node — production
 
