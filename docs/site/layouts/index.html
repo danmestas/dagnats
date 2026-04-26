@@ -526,7 +526,7 @@ $ dagnats serve</pre>
       <tr><td>Stack</td>         <td class="col-self">NATS only</td>      <td>PG + Cassandra</td> <td>PG + RabbitMQ</td>  <td>PG + Redis</td></tr>
       <tr><td>Binaries</td>      <td class="col-self">1</td>              <td>~5</td>             <td>~3</td>             <td>hosted</td></tr>
       <tr><td>OSS</td>           <td class="col-self">yes</td>            <td>yes</td>            <td>yes</td>            <td>partial</td></tr>
-      <tr><td>Native agent steps</td><td class="col-self">yes</td>        <td>no</td>             <td>no</td>             <td>no</td></tr>
+      <tr><td>Native agent steps</td><td class="col-self">yes</td>        <td>no</td>             <td>yes</td>            <td>yes</td></tr>
       <tr><td>SDKs</td>          <td class="col-self">Go + HTTP bridge</td><td>many</td>          <td>3</td>              <td>3</td></tr>
       <tr><td>Self-host</td>     <td class="col-self">trivial</td>        <td>involved</td>       <td>moderate</td>       <td>n/a</td></tr>
     </tbody>
@@ -538,7 +538,7 @@ $ dagnats serve</pre>
 <section>
   <span class="num">§06</span>
   <h2>What it is not <span class="anchor">limits</span></h2>
-  <p>dagnats is young. It is single-tenant by design. JetStream is the bottleneck &mdash; saturate it and dagnats does not scale around it for you. There is one Go SDK plus an HTTP bridge for everything else; if you need a native TypeScript or Python SDK, you will be writing it. Multi-region is on the roadmap, not in the box.</p>
+  <p>dagnats is young. It is single-tenant by design. There is one Go SDK plus an HTTP bridge for everything else; if you need a native TypeScript or Python SDK, you will be writing it.</p>
   <p>Don't reach for it for sub-millisecond task routing (use a queue). Don't reach for it for embarrassingly-parallel batch jobs without dependencies (use a worker pool). Don't reach for it where eventual consistency would surprise you (use a database with transactions).</p>
 </section>
 
