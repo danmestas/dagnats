@@ -31,21 +31,21 @@ type WorkerConfig struct {
 
 // Config holds all server configuration.
 type Config struct {
-	DataDir         string         `json:"data_dir"`
-	HTTPAddr        string         `json:"http_addr"`
-	NATSPort        int            `json:"nats_port"`
-	LeafRemotes     []string       `json:"leaf_remotes"`
-	LeafCredentials string         `json:"leaf_credentials"`
+	DataDir         string   `json:"data_dir"`
+	HTTPAddr        string   `json:"http_addr"`
+	NATSPort        int      `json:"nats_port"`
+	LeafRemotes     []string `json:"leaf_remotes"`
+	LeafCredentials string   `json:"leaf_credentials"`
 
 	NATSClusterName       string   `json:"nats_cluster_name"`
 	NATSClusterRoutes     []string `json:"nats_cluster_routes"`
 	NATSClusterAuthToken  string   `json:"nats_cluster_auth_token"`
 	NATSJetStreamReplicas int      `json:"nats_jetstream_replicas"`
 
-	MonitorPort     int            `json:"monitor_port"`
-	MaxStoreBytes   int64          `json:"max_store_bytes"`
-	Workers         []WorkerConfig `json:"workers"`
-	OTLPEndpoint    string         `json:"otlp_endpoint"`
+	MonitorPort   int            `json:"monitor_port"`
+	MaxStoreBytes int64          `json:"max_store_bytes"`
+	Workers       []WorkerConfig `json:"workers"`
+	OTLPEndpoint  string         `json:"otlp_endpoint"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.
