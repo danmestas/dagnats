@@ -12,9 +12,15 @@ import (
 // SetupStreams creates the core JetStream streams required by
 // DagNats. WORKFLOW_HISTORY uses a 5s dedup window.
 // TASK_QUEUES uses WorkQueuePolicy for exactly-once delivery.
-func SetupStreams(js jetstream.JetStream) error {
+func SetupStreams(js jetstream.JetStream, replicas int) error {
 	if js == nil {
 		panic("SetupStreams: js must not be nil")
+	}
+	if replicas != 1 && replicas != 3 && replicas != 5 {
+		panic(fmt.Sprintf(
+			"SetupStreams: replicas must be 1, 3, or 5; got %d",
+			replicas,
+		))
 	}
 	streams := []jetstream.StreamConfig{
 		{
@@ -23,30 +29,35 @@ func SetupStreams(js jetstream.JetStream) error {
 			Retention:  jetstream.LimitsPolicy,
 			Storage:    jetstream.FileStorage,
 			Duplicates: 5_000_000_000,
+			Replicas:   replicas,
 		},
 		{
 			Name:      "TASK_QUEUES",
 			Subjects:  []string{"task.>"},
 			Retention: jetstream.WorkQueuePolicy,
 			Storage:   jetstream.FileStorage,
+			Replicas:  replicas,
 		},
 		{
 			Name:      "EVENTS",
 			Subjects:  []string{"event.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
+			Replicas:  replicas,
 		},
 		{
 			Name:      "DEAD_LETTERS",
 			Subjects:  []string{"dead.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
+			Replicas:  replicas,
 		},
 		{
 			Name:      "SLEEP_TIMERS",
 			Subjects:  []string{"sleep.>", "scheduled.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
+			Replicas:  replicas,
 		},
 	}
 	if len(streams) == 0 {
@@ -67,27 +78,46 @@ func SetupStreams(js jetstream.JetStream) error {
 
 // SetupKVBuckets creates the KV buckets used to store workflow
 // definitions and runtime state for active workflow runs.
-func SetupKVBuckets(js jetstream.JetStream) error {
+func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 	if js == nil {
 		panic("SetupKVBuckets: js must not be nil")
 	}
+	if replicas != 1 && replicas != 3 && replicas != 5 {
+		panic(fmt.Sprintf(
+			"SetupKVBuckets: replicas must be 1, 3, or 5; got %d",
+			replicas,
+		))
+	}
 	buckets := []jetstream.KeyValueConfig{
-		{Bucket: "workflow_defs"},
-		{Bucket: "workflow_runs"},
-		{Bucket: "scheduled_runs"},
-		{Bucket: "workers", TTL: 60 * time.Second},
-		{Bucket: "event_waiters"},
-		{Bucket: "rate_limits"},
-		{Bucket: "concurrency_tasks", History: 1},
+		{Bucket: "workflow_defs", Replicas: replicas},
+		{Bucket: "workflow_runs", Replicas: replicas},
+		{Bucket: "scheduled_runs", Replicas: replicas},
+		{Bucket: "workers", TTL: 60 * time.Second, Replicas: replicas},
+		{Bucket: "event_waiters", Replicas: replicas},
+		{Bucket: "rate_limits", Replicas: replicas},
+		{Bucket: "concurrency_tasks", History: 1, Replicas: replicas},
 		{
-			Bucket:  "approval_tokens",
-			History: 1,
-			TTL:     168 * time.Hour,
+			Bucket:   "approval_tokens",
+			History:  1,
+			TTL:      168 * time.Hour,
+			Replicas: replicas,
 		},
-		{Bucket: "debounce_state", TTL: 14 * 24 * time.Hour},
-		{Bucket: "idempotency_keys", TTL: 24 * time.Hour},
-		{Bucket: "sticky_bindings", TTL: 25 * time.Hour},
-		{Bucket: "singleton_locks"},
+		{
+			Bucket:   "debounce_state",
+			TTL:      14 * 24 * time.Hour,
+			Replicas: replicas,
+		},
+		{
+			Bucket:   "idempotency_keys",
+			TTL:      24 * time.Hour,
+			Replicas: replicas,
+		},
+		{
+			Bucket:   "sticky_bindings",
+			TTL:      25 * time.Hour,
+			Replicas: replicas,
+		},
+		{Bucket: "singleton_locks", Replicas: replicas},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
@@ -202,6 +232,7 @@ type SetupOption func(*setupOptions)
 type setupOptions struct {
 	streams []StreamConfig
 	kvs     []KVConfig
+	cluster ClusterOptions
 }
 
 // WithStreams adds extra JetStream streams to provision.
@@ -215,6 +246,16 @@ func WithStreams(configs ...StreamConfig) SetupOption {
 func WithKVBuckets(configs ...KVConfig) SetupOption {
 	return func(o *setupOptions) {
 		o.kvs = append(o.kvs, configs...)
+	}
+}
+
+// WithCluster declares cluster topology for SetupAll. When
+// ClusterOptions.Routes is non-empty, SetupAll blocks until cluster
+// quorum forms (60s internal timeout) before creating streams at the
+// derived replication factor.
+func WithCluster(c ClusterOptions) SetupOption {
+	return func(o *setupOptions) {
+		o.cluster = c
 	}
 }
 
@@ -238,10 +279,27 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	if err != nil {
 		return err
 	}
-	if err := SetupStreams(js); err != nil {
+
+	if len(options.cluster.Routes) > 0 {
+		quorumCtx, quorumCancel := context.WithTimeout(
+			context.Background(), 60*time.Second,
+		)
+		_, err := WaitForClusterQuorum(
+			quorumCtx, js, len(options.cluster.Routes)+1,
+		)
+		quorumCancel()
+		if err != nil {
+			return fmt.Errorf("cluster quorum did not form: %w", err)
+		}
+	}
+
+	replicas := DeriveReplicas(
+		options.cluster.Routes, options.cluster.ReplicasOverride,
+	)
+	if err := SetupStreams(js, replicas); err != nil {
 		return err
 	}
-	if err := SetupKVBuckets(js); err != nil {
+	if err := SetupKVBuckets(js, replicas); err != nil {
 		return err
 	}
 	if err := SetupTelemetryStream(js); err != nil {

@@ -135,3 +135,25 @@ func TestStartNATS_ExplicitPortFailsHard(t *testing.T) {
 		t.Fatal("expected error for explicit port conflict")
 	}
 }
+
+func TestStartNATS_ClusterOptsSet(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.NATSPort = -1
+	cfg.NATSClusterName = "dagnats-test"
+	cfg.NATSClusterRoutes = []string{
+		"nats://127.0.0.1:16222",
+		"nats://127.0.0.1:16223",
+	}
+	cfg.NATSClusterAuthToken = "tok"
+
+	ns, err := startNATS(cfg)
+	if err != nil {
+		t.Fatalf("startNATS: %v", err)
+	}
+	t.Cleanup(func() { ns.Shutdown() })
+
+	if ns.ClusterAddr() == nil {
+		t.Error("ClusterAddr is nil; cluster opts not applied")
+	}
+}

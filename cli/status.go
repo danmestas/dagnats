@@ -96,6 +96,14 @@ func runSystemStatusCmd(args []string) {
 	}
 
 	printSystemStatus(nc, svc)
+
+	// Probe /health/cluster after the existing status output. The probe
+	// fails silently for standalone/leaf modes and for older servers
+	// without the endpoint (404), so default-mode output is unchanged.
+	if report, _ := fetchClusterHealth(clusterHealthURL()); report != nil {
+		printClusterStatus(report)
+	}
+
 	if detail {
 		printDetailSections(nc)
 	}

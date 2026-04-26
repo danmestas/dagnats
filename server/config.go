@@ -16,6 +16,7 @@ const (
 	defaultNATSPort      = 4222
 	defaultMaxStoreBytes = 10 << 30 // 10 GiB
 	maxLeafRemotes       = 10
+	maxClusterRoutes     = 10
 	maxConfigFileLines   = 300
 	maxWorkerConfigs     = 50
 )
@@ -35,6 +36,12 @@ type Config struct {
 	NATSPort        int            `json:"nats_port"`
 	LeafRemotes     []string       `json:"leaf_remotes"`
 	LeafCredentials string         `json:"leaf_credentials"`
+
+	NATSClusterName       string   `json:"nats_cluster_name"`
+	NATSClusterRoutes     []string `json:"nats_cluster_routes"`
+	NATSClusterAuthToken  string   `json:"nats_cluster_auth_token"`
+	NATSJetStreamReplicas int      `json:"nats_jetstream_replicas"`
+
 	MonitorPort     int            `json:"monitor_port"`
 	MaxStoreBytes   int64          `json:"max_store_bytes"`
 	Workers         []WorkerConfig `json:"workers"`
@@ -120,6 +127,8 @@ func ConfigWithPath(
 			)
 		}
 	}
+
+	validateClusterConfig(&cfg)
 
 	if cfg.DataDir == "" {
 		panic("DataDir is empty after config resolution")
@@ -263,6 +272,27 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("DAGNATS_LEAF_CREDENTIALS"); val != "" {
 		cfg.LeafCredentials = val
 	}
+	if val := os.Getenv("DAGNATS_NATS_CLUSTER_NAME"); val != "" {
+		cfg.NATSClusterName = val
+	}
+	if val := os.Getenv("DAGNATS_NATS_CLUSTER_ROUTES"); val != "" {
+		routes := strings.Split(val, ",")
+		for i := range routes {
+			routes[i] = strings.TrimSpace(routes[i])
+		}
+		if len(routes) > maxClusterRoutes {
+			routes = routes[:maxClusterRoutes]
+		}
+		cfg.NATSClusterRoutes = routes
+	}
+	if val := os.Getenv("DAGNATS_NATS_CLUSTER_AUTH_TOKEN"); val != "" {
+		cfg.NATSClusterAuthToken = val
+	}
+	if val := os.Getenv("DAGNATS_NATS_JETSTREAM_REPLICAS"); val != "" {
+		if r, err := strconv.Atoi(val); err == nil {
+			cfg.NATSJetStreamReplicas = r
+		}
+	}
 	if val := os.Getenv("DAGNATS_MONITOR_PORT"); val != "" {
 		if port, err := strconv.Atoi(val); err == nil {
 			cfg.MonitorPort = port
@@ -391,6 +421,25 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.LeafRemotes = remotes
 	case "leaf_credentials":
 		cfg.LeafCredentials = val
+	case "nats_cluster_name":
+		cfg.NATSClusterName = val
+	case "nats_cluster_routes":
+		routes := strings.Split(val, ",")
+		for i := range routes {
+			routes[i] = strings.TrimSpace(routes[i])
+		}
+		if len(routes) > maxClusterRoutes {
+			routes = routes[:maxClusterRoutes]
+		}
+		cfg.NATSClusterRoutes = routes
+	case "nats_cluster_auth_token":
+		cfg.NATSClusterAuthToken = val
+	case "nats_jetstream_replicas":
+		r, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid nats_jetstream_replicas: %w", err)
+		}
+		cfg.NATSJetStreamReplicas = r
 	case "monitor_port":
 		port, err := strconv.Atoi(val)
 		if err != nil {
@@ -476,6 +525,55 @@ func applyWorkerConfigValue(
 	}
 
 	return nil
+}
+
+// validateClusterConfig panics with a clear message if cluster config
+// is internally inconsistent. TigerStyle: programmer-error invariants
+// are panics, not returned errors.
+//
+// Rules:
+//   - Cluster mode is detected by len(NATSClusterRoutes) > 0.
+//   - Clustering requires NATSClusterName non-empty.
+//   - NATSClusterRoutes must have between 2 and maxClusterRoutes entries.
+//   - NATSJetStreamReplicas must be in {0, 1, 3, 5}.
+//   - Cluster mode and leaf mode are mutually exclusive.
+func validateClusterConfig(cfg *Config) {
+	if cfg == nil {
+		panic("validateClusterConfig: cfg is nil")
+	}
+
+	switch cfg.NATSJetStreamReplicas {
+	case 0, 1, 3, 5:
+	default:
+		panic(fmt.Sprintf(
+			"nats_jetstream_replicas must be 0, 1, 3, or 5; got %d",
+			cfg.NATSJetStreamReplicas,
+		))
+	}
+
+	clustered := len(cfg.NATSClusterRoutes) > 0
+	if !clustered {
+		return
+	}
+
+	if cfg.NATSClusterName == "" {
+		panic("nats_cluster_name is required when nats_cluster_routes is set")
+	}
+	if len(cfg.NATSClusterRoutes) < 2 {
+		panic(fmt.Sprintf(
+			"nats_cluster_routes needs at least 2 entries (3-node minimum); got %d",
+			len(cfg.NATSClusterRoutes),
+		))
+	}
+	if len(cfg.NATSClusterRoutes) > maxClusterRoutes {
+		panic(fmt.Sprintf(
+			"nats_cluster_routes capped at %d; got %d",
+			maxClusterRoutes, len(cfg.NATSClusterRoutes),
+		))
+	}
+	if len(cfg.LeafRemotes) > 0 {
+		panic("nats_cluster_routes and leaf_remotes are mutually exclusive")
+	}
 }
 
 // validateWorkerConfigs checks worker config consistency.
