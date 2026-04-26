@@ -45,6 +45,8 @@ nats_cluster_auth_token: ${DAGNATS_CLUSTER_TOKEN}
 
 **Bound:** `nats_cluster_routes` cap is 10 entries (11-node maximum). Quorum-wait at startup is bounded at 60 seconds; if peers don't connect in time, `SetupAll` returns an error and the process exits.
 
+**v1 observability limitations:** the `/health/cluster` endpoint reports `connected_peers` as `len(nats_cluster_routes)` and per-stream `in_sync` as the configured `replicas` value — both are optimistic and not partition-aware. They reflect intent rather than runtime state. Don't wire them to alerting expecting "is the cluster healthy *right now*" semantics. v1.1 will replace the optimistic values with real partition-aware peer state via `nats-server`'s peer info APIs.
+
 ### Leaf node — production
 
 The hub (cluster or supercluster) is an external NATS deployment — `nats-server` processes you run separately, or Synadia Cloud. dagnats's embedded NATS does not run in cluster or supercluster mode itself; it only acts as a leaf connecting outward.

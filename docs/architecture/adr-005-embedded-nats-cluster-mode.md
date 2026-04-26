@@ -54,3 +54,13 @@ Three deviations surfaced during implementation, all driven by the actual nats-s
 ## Out of scope (deferred to v1.1+)
 
 Dynamic membership, TLS / mTLS for cluster routes, `advertise` address, combined leaf+cluster mode, OTel cluster lifecycle metrics, explicit `dagnats nats migrate-replicas` command.
+
+## Failure-mode tests deferred to v1.1
+
+The spec (Spec § "Failure modes (explicitly tested)") enumerated seven failure-mode tests. v1 ships the four positive-path tests (fresh cluster R=3, R=1→R=3 migration, override honored, healthy-cluster fast setup). The following are deferred:
+
+- **TestQuorumTimeout:** validates the internal 60s quorum-wait bound. Requires either exposing the timeout for test override or simulating a never-forming cluster — both add design surface. Deferred until the quorum-wait timing is exposed via config in v1.1.
+- **TestAuthTokenMismatch:** validates the optional `nats_cluster_auth_token` knob actually rejects mismatched peers. Requires starting two clusters with different tokens — the existing `dagnatstest.StartTestCluster` doesn't expose token config. Cheap to add once the helper is extended.
+- **TestPartitionedStartup, TestUnderprovisioned, TestMismatchedNames:** all require multi-cluster or partition-injection harnesses not yet built. Deferred.
+
+These deferrals are honest — failure modes are real, the cluster will hit them in production. Operators should be aware that v1 has covered the happy path and the migration path with real cluster tests, not the negative-space failures.
