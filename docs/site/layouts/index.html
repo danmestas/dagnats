@@ -177,13 +177,25 @@ ul li::before {
 }
 
 .code-block {
-  position: relative;
   margin-bottom: 1rem;
   border: 1px solid var(--rule);
   background: var(--paper-2);
 }
+.code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.85rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+  font-size: 0.625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
 pre {
-  padding: 1rem 4.25rem 1rem 1.25rem;
+  padding: 0.875rem 1.25rem;
   font-size: 0.85rem;
   line-height: 1.65;
   overflow-x: auto;
@@ -231,8 +243,7 @@ pre.ascii {
 }
 
 .copy-btn {
-  position: absolute; top: 0.45rem; right: 0.45rem;
-  background: var(--paper);
+  background: transparent;
   color: var(--ink);
   border: 1px solid var(--ink);
   font: inherit;
@@ -241,7 +252,7 @@ pre.ascii {
   text-transform: uppercase;
   padding: 0.15rem 0.55rem;
   cursor: pointer;
-  z-index: 1;
+  flex-shrink: 0;
 }
 .copy-btn:hover, .copy-btn:focus-visible { background: var(--ink); color: var(--paper); outline: none; }
 .copy-btn[data-state="copied"] { color: var(--ember); border-color: var(--ember); background: var(--paper); }
@@ -330,25 +341,36 @@ footer a { color: inherit; border-bottom-color: var(--mute); }
   .topbar .meta { gap: 0.75rem; row-gap: 0.35rem; }
   .spec td:first-child { width: 8rem; font-size: 0.625rem; }
   .spec td { padding: 0.4rem 0; }
-  table.cmp { font-size: 0.6875rem; min-width: 0; table-layout: fixed; }
-  table.cmp th, table.cmp td { padding: 0.45rem 0.45rem; word-break: break-word; }
+  table.cmp { font-size: 0.6875rem; min-width: 0; table-layout: auto; }
+  table.cmp th, table.cmp td { padding: 0.45rem 0.4rem; }
+  table.cmp tbody td { white-space: normal; word-break: normal; overflow-wrap: break-word; }
+  table.cmp thead th {
+    font-size: 0.5rem;
+    letter-spacing: 0.06em;
+    padding: 0.5rem 0.3rem;
+    white-space: nowrap;
+  }
   table.cmp td:first-child, table.cmp th:first-child {
     padding-left: 0.55rem;
-    width: auto;
+    width: 28%;
     font-size: 0.5625rem;
+    letter-spacing: 0.04em;
   }
   table.cmp td:last-child, table.cmp th:last-child { padding-right: 0.55rem; }
   ol li, ul li { padding-left: 2.25rem; }
   ol li::before { width: 1.75rem; }
   footer { flex-direction: column; gap: 0.5rem; align-items: flex-start; }
-  .copy-btn { font-size: 0.5625rem; padding: 0.1rem 0.4rem; top: 0.35rem; right: 0.35rem; }
-  pre { font-size: 0.78rem; padding: 0.875rem 3.5rem 0.875rem 0.9rem; }
+  .copy-btn { font-size: 0.5625rem; padding: 0.1rem 0.4rem; }
+  pre { font-size: 0.78rem; padding: 0.75rem 0.9rem; }
+  .code-bar { padding: 0.3rem 0.4rem 0.3rem 0.7rem; }
 }
 @media (max-width: 380px) {
   .topbar .name { letter-spacing: 0.12em; }
   .spec td:first-child { width: 7rem; }
   table.cmp { font-size: 0.625rem; }
-  table.cmp th, table.cmp td { padding: 0.4rem 0.3rem; }
+  table.cmp th, table.cmp td { padding: 0.4rem 0.25rem; }
+  table.cmp thead th { font-size: 0.4375rem; padding: 0.45rem 0.2rem; }
+  table.cmp td:first-child, table.cmp th:first-child { font-size: 0.5rem; padding-left: 0.4rem; width: 26%; }
 }
 </style>
 </head>
@@ -387,9 +409,12 @@ footer a { color: inherit; border-bottom-color: var(--mute); }
   <span class="num">§01</span>
   <h2>Install <span class="anchor">install</span></h2>
   <div class="code-block">
+    <div class="code-bar">
+      <span>shell</span>
+      <button type="button" class="copy-btn" data-copy="install" aria-label="Copy install command">copy</button>
+    </div>
     <pre id="install">$ go install github.com/danmestas/dagnats/cmd/dagnats@latest
 $ dagnats serve</pre>
-    <button type="button" class="copy-btn" data-copy="install" aria-label="Copy install command">copy</button>
   </div>
   <p>That is the entire install. There is no step three. <code>dagnats serve</code> starts an embedded NATS server, the orchestrator, the API, and the trigger system in one process.</p>
 </section>
@@ -521,11 +546,14 @@ $ dagnats serve</pre>
   <span class="num">§07</span>
   <h2>Get going <span class="anchor">start</span></h2>
   <div class="code-block">
+    <div class="code-bar">
+      <span>shell</span>
+      <button type="button" class="copy-btn" data-copy="quickstart" aria-label="Copy quickstart commands">copy</button>
+    </div>
     <pre id="quickstart">$ go install github.com/danmestas/dagnats/cmd/dagnats@latest
 $ dagnats serve                              # one process, embedded NATS
 $ dagnats workflow register hello.json
 $ dagnats run start hello --watch</pre>
-    <button type="button" class="copy-btn" data-copy="quickstart" aria-label="Copy quickstart commands">copy</button>
   </div>
   <p>Walkthrough: <a href="/docs/get-started/">/docs/get-started</a> · Architecture: <a href="/docs/architecture/">/docs/architecture</a> · SDK reference: <a href="/docs/reference/sdk/">/docs/reference/sdk</a> · Source: <a href="https://github.com/danmestas/dagnats">github.com/danmestas/dagnats</a>.</p>
 </section>
