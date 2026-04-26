@@ -22,11 +22,12 @@ import (
 )
 
 const (
-	minTestClusterNodes  = 3
-	maxTestClusterNodes  = 5
-	testClusterReadyTime = 5 * time.Second
-	testClusterFormTime  = 15 * time.Second
-	testClusterQuorumTTL = 30 * time.Second
+	minTestClusterNodes    = 3
+	maxTestClusterNodes    = 5
+	testClusterReadyTime   = 5 * time.Second
+	testClusterFormTime    = 15 * time.Second
+	testClusterQuorumTTL   = 30 * time.Second
+	placementProbeInterval = 250 * time.Millisecond
 )
 
 // StartTestCluster starts n in-process NATS servers configured as a
@@ -180,7 +181,11 @@ func waitForJetStreamLeader(t *testing.T, servers []*natsserver.Server) {
 }
 
 // confirmClusterQuorum verifies the cluster is API-healthy by calling
-// AccountInfo via the production WaitForClusterQuorum helper.
+// AccountInfo via the production WaitForClusterQuorum helper, then
+// probes stream placement at R=n by creating and deleting a throwaway
+// stream. The placement probe ensures all n peers are actually ready
+// to host stream replicas — AccountInfo alone can return success
+// before all peers' JS subsystems are fully synced for placement.
 func confirmClusterQuorum(t *testing.T, nc *nats.Conn, n int) {
 	t.Helper()
 	js, err := jetstream.New(nc)
@@ -191,6 +196,57 @@ func confirmClusterQuorum(t *testing.T, nc *nats.Conn, n int) {
 	defer cancel()
 	if _, err := natsutil.WaitForClusterQuorum(ctx, js, n); err != nil {
 		t.Fatalf("cluster did not form: %v", err)
+	}
+	probeStreamPlacement(ctx, t, js, n)
+}
+
+// probeStreamPlacement creates and deletes a throwaway R=n stream,
+// retrying on "peer offline" errors that occur when peers' JS API is
+// up but their meta state hasn't fully synced for placement. Returns
+// once placement succeeds; fails the test when ctx is cancelled.
+//
+// The retry interval is bounded by placementProbeInterval and the
+// total wait by the caller's ctx — there is no separate attempt cap.
+func probeStreamPlacement(
+	ctx context.Context, t *testing.T, js jetstream.JetStream, n int,
+) {
+	if t == nil {
+		panic("probeStreamPlacement: t is nil")
+	}
+	if js == nil {
+		panic("probeStreamPlacement: js is nil")
+	}
+	if n < 1 {
+		panic(fmt.Sprintf("probeStreamPlacement: n=%d", n))
+	}
+	t.Helper()
+
+	const probeName = "dagnats_test_placement_probe"
+	cfg := jetstream.StreamConfig{
+		Name:     probeName,
+		Subjects: []string{"_dagnats.test.probe"},
+		Replicas: n,
+	}
+
+	var lastErr error
+	for {
+		_, err := js.CreateOrUpdateStream(ctx, cfg)
+		if err == nil {
+			if delErr := js.DeleteStream(ctx, probeName); delErr != nil {
+				t.Fatalf("probeStreamPlacement: cleanup: %v", delErr)
+			}
+			return
+		}
+		lastErr = err
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("probeStreamPlacement: ctx done before R=%d placement (last err: %v)",
+				n, lastErr)
+			return
+		case <-time.After(placementProbeInterval):
+			// retry
+		}
 	}
 }
 

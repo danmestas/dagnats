@@ -78,7 +78,7 @@ func WaitForClusterQuorum(
 	defer ticker.Stop()
 
 	for {
-		ready, err := jsClusterReady(ctx, js, expectedSize)
+		ready, err := jsClusterReady(ctx, js)
 		if err == nil && ready {
 			return time.Since(start), nil
 		}
@@ -91,30 +91,26 @@ func WaitForClusterQuorum(
 	}
 }
 
-// jsClusterReady returns true when JetStream reports a healthy
-// cluster of at least expectedSize nodes with a meta-leader elected.
-// For expectedSize=1 (standalone), returns true as soon as
-// AccountInfo succeeds.
+// jsClusterReady returns true when JetStream's API responds to
+// AccountInfo. Caller-supplied expectedSize is intentionally NOT
+// inspected here — peer-count verification is left to the cluster
+// integration tests (and to the placement probe in dagnatstest).
+//
+// We deliberately do not consult info.API.Errors either: it is a
+// monotonic lifetime counter on the JS API account, not a current-
+// health signal. Any prior failed API call (e.g. a transient stream-
+// placement error during a R=1 → R=3 migration on a fresh cluster)
+// would cause this check to falsely report unready forever. A
+// successful AccountInfo response is itself the readiness signal —
+// it requires the meta-leader to be elected and JS to be operational.
 func jsClusterReady(
-	ctx context.Context, js jetstream.JetStream, expectedSize int,
+	ctx context.Context, js jetstream.JetStream,
 ) (bool, error) {
 	info, err := js.AccountInfo(ctx)
 	if err != nil {
 		return false, err
 	}
 	if info == nil {
-		return false, nil
-	}
-	// For standalone (expectedSize=1), AccountInfo success is sufficient.
-	if expectedSize == 1 {
-		return true, nil
-	}
-	// Cluster mode: AccountInfo's API.Errors should be 0 and the API
-	// call itself succeeded. The nats-server library does not expose
-	// peer count directly via AccountInfo, but we can infer readiness
-	// by checking that JetStream is operational. Peer count
-	// verification happens in the cluster integration tests.
-	if info.API.Errors > 0 {
 		return false, nil
 	}
 	return true, nil
