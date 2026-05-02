@@ -972,3 +972,82 @@ func TestRealisticTaskNames_AllSanitizationPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestMigration_ListFailure_Panics(t *testing.T) {
+	// Methodology: start Worker against a NATS server, shut the server
+	// down before Start runs, expect Start to panic with a message naming
+	// the cleanup operation. If injecting list-failure proves > 1 hour of
+	// effort, defer per ADR-006 §6.3 — file follow-up issue and add a
+	// TODO referencing it.
+	ns, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	w := NewWorker(nc)
+	w.Handle("render", func(ctx TaskContext) error { return nil })
+	ns.Shutdown()
+	ns.WaitForShutdown()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on shut-down NATS, got none")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected string panic, got %#v", r)
+		}
+		if !strings.Contains(msg, "Stream") &&
+			!strings.Contains(msg, "cleanupOrphanEphemerals") &&
+			!strings.Contains(msg, "iterator") {
+			t.Fatalf("expected cleanup-related panic, got: %s", msg)
+		}
+	}()
+	w.Start()
+}
+
+func TestMigration_DeleteFailure_Panics(t *testing.T) {
+	// Methodology: same family — if delete failures (non-NotFound) are
+	// painful to inject under embedded NATS, this test stays a placeholder
+	// and is filed as a follow-up issue. The minimal viable shape: pre-seed
+	// an orphan, force a delete error, expect panic. Without an SDK seam
+	// for "make DeleteConsumer fail with non-NotFound," shutting the
+	// server mid-cleanup is the cheapest reproduction.
+	ns, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if _, err := stream.CreateOrUpdateConsumer(ctx,
+		jetstream.ConsumerConfig{
+			FilterSubject: "task.render.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+		},
+	); err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	w := NewWorker(nc)
+	w.Handle("render", func(ctx TaskContext) error { return nil })
+
+	// Shut down NATS just before Start to fail the delete (or list).
+	ns.Shutdown()
+	ns.WaitForShutdown()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic, got none")
+		}
+	}()
+	w.Start()
+}
