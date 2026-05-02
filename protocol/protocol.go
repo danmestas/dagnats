@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -156,7 +157,11 @@ func (e Event) NATSMsgID() string {
 	if e.StepID == "" {
 		return e.RunID + "." + string(e.Type)
 	}
-	return e.RunID + "." + e.StepID + "." + string(e.Type)
+	base := e.RunID + "." + e.StepID + "." + string(e.Type)
+	if e.AttemptNumber > 0 {
+		return base + "." + strconv.Itoa(e.AttemptNumber)
+	}
+	return base
 }
 
 // Marshal serializes the event to JSON for publishing to NATS.

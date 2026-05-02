@@ -352,3 +352,54 @@ func TestEvent_OmitEmpty_AttemptNumberZero(t *testing.T) {
 		t.Fatalf("marshalled JSON must omit attempt_number when zero, got: %s", data)
 	}
 }
+
+func TestNATSMsgID_NoAttempt(t *testing.T) {
+	// AttemptNumber == 0: existing behaviour is preserved exactly.
+	evt := Event{Type: EventStepCompleted, RunID: "r1", StepID: "s1"}
+	got := evt.NATSMsgID()
+	want := "r1.s1.step.completed"
+	if got != want {
+		t.Fatalf("NATSMsgID() = %q, want %q", got, want)
+	}
+}
+
+func TestNATSMsgID_WithAttempt(t *testing.T) {
+	cases := []struct {
+		name    string
+		attempt int
+		want    string
+	}{
+		{"attempt_one", 1, "r1.s1.step.started.1"},
+		{"attempt_two", 2, "r1.s1.step.started.2"},
+		{"attempt_forty_two", 42, "r1.s1.step.started.42"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			evt := Event{
+				Type:          EventStepStarted,
+				RunID:         "r1",
+				StepID:        "s1",
+				AttemptNumber: tc.attempt,
+			}
+			got := evt.NATSMsgID()
+			if got != tc.want {
+				t.Fatalf("NATSMsgID() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNATSMsgID_WorkflowEventIgnoresAttempt(t *testing.T) {
+	// Workflow events have empty StepID; the attempt suffix must NOT
+	// be appended even if AttemptNumber happens to be set.
+	evt := Event{
+		Type:          EventWorkflowStarted,
+		RunID:         "r1",
+		AttemptNumber: 5, // deliberately set; should be ignored
+	}
+	got := evt.NATSMsgID()
+	want := "r1.workflow.started"
+	if got != want {
+		t.Fatalf("NATSMsgID() = %q, want %q (workflow event must not append attempt)", got, want)
+	}
+}
