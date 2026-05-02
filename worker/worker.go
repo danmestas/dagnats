@@ -66,6 +66,15 @@ type TaskContext interface {
 // registered with a Worker.
 type HandlerFunc func(ctx TaskContext) error
 
+// publishMsgFunc is the signature of jetstream.JetStream.PublishMsg.
+// Stored on the Worker (and threaded into taskContext) as a single-method
+// seam so tests can inject failures into publishStarted without a
+// growing interface or vendored fakes. Default value is the bound
+// w.js.PublishMsg method; tests override via withPublishMsgFunc.
+type publishMsgFunc func(
+	ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt,
+) (*jetstream.PubAck, error)
+
 // Worker subscribes to task subjects and dispatches messages to
 // registered handlers. Each task type gets its own JetStream
 // subscription; messages are ack'd after the handler returns so
@@ -73,6 +82,7 @@ type HandlerFunc func(ctx TaskContext) error
 type Worker struct {
 	nc           *nats.Conn
 	js           jetstream.JetStream
+	publishMsg   publishMsgFunc
 	tracer       trace.Tracer
 	handlers     map[string]HandlerFunc
 	stoppers     []interface{ Stop() } // all consumer lifecycles
@@ -124,6 +134,21 @@ func WithPartitions(n int) WorkerOption {
 	return func(w *Worker) { w.partitions = n }
 }
 
+// withPublishMsgFunc replaces the JetStream publish hook used by
+// taskContext.publishStarted. Test-only seam for injecting publish
+// failures (NATS unreachable, broker rejection) deterministically.
+// Lowercase to keep the option package-internal — only worker tests
+// need this. Panics if fn is nil (programmer error). The seam is a
+// function pointer rather than an interface because publishStarted
+// uses exactly one method; an interface would invite later growth
+// and pull complexity sideways.
+func withPublishMsgFunc(fn publishMsgFunc) WorkerOption {
+	if fn == nil {
+		panic("withPublishMsgFunc: fn must not be nil")
+	}
+	return func(w *Worker) { w.publishMsg = fn }
+}
+
 // generateWorkerID creates a unique worker ID using crypto/rand.
 // Panics if crypto/rand fails — that is a system-level error.
 func generateWorkerID() string {
@@ -160,6 +185,7 @@ func NewWorker(
 	w := &Worker{
 		nc:           nc,
 		js:           js,
+		publishMsg:   js.PublishMsg, // default; tests override via option
 		tracer:       otel.Tracer("dagnats/worker"),
 		handlers:     make(map[string]HandlerFunc),
 		workerID:     generateWorkerID(),
@@ -169,6 +195,9 @@ func NewWorker(
 	}
 	for _, opt := range opts {
 		opt(w)
+	}
+	if w.publishMsg == nil {
+		panic("NewWorker: publishMsg must not be nil after opts")
 	}
 	return w
 }
@@ -704,6 +733,7 @@ func (w *Worker) handleMessage(
 		w.checkpointKV, w.signalKV,
 	)
 	tc.workerID = w.workerID
+	tc.publishMsg = w.publishMsg
 
 	if err := tc.publishStarted(msg); err != nil {
 		slog.ErrorContext(ctx, "failed to begin attempt — NAK and retry",

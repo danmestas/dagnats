@@ -33,6 +33,7 @@ var errSignalKVNotConfigured = errors.New(
 type taskContext struct {
 	nc           *nats.Conn
 	js           jetstream.JetStream
+	publishMsg   publishMsgFunc // injected by Worker for publishStarted
 	tracer       trace.Tracer
 	runID        string
 	stepID       string
@@ -506,6 +507,9 @@ func (c *taskContext) publishStarted(msg jetstream.Msg) error {
 		return err
 	}
 	outMsg.Data = data
-	_, err = c.js.PublishMsg(c.ctx, outMsg)
+	if c.publishMsg == nil {
+		panic("publishStarted: publishMsg must not be nil")
+	}
+	_, err = c.publishMsg(c.ctx, outMsg)
 	return err
 }
