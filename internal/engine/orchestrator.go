@@ -1495,7 +1495,33 @@ func (o *Orchestrator) enqueueReady(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	return o.dispatchReadySteps(ctx, wfDef, run, ready)
+	if err := o.dispatchReadySteps(ctx, wfDef, run, ready); err != nil {
+		return err
+	}
+	// Emit step.queued for normal/agent-loop steps after the task is on
+	// the queue. Map / sleep / wait / sub-workflow / approval steps have
+	// their own typed lifecycle events and are excluded here.
+	for _, step := range ready {
+		if step.Type != dag.StepTypeNormal && step.Type != dag.StepTypeAgentLoop {
+			continue
+		}
+		qEvt := protocol.NewStepEvent(
+			protocol.EventStepQueued, run.RunID, step.ID, nil,
+		)
+		qEvt.AttemptNumber = 1
+		if err := publishLifecycleEvent(ctx, o.js, qEvt); err != nil {
+			slog.ErrorContext(ctx, "failed to publish step.queued",
+				"error", err,
+				"run_id", run.RunID,
+				"step_id", step.ID,
+			)
+			// Do NOT roll back — the task is already on TASK_QUEUES
+			// and a worker will pick it up. step.queued is
+			// observability-only at this point in the design;
+			// missing it is not correctness-fatal. See spec §3.
+		}
+	}
+	return nil
 }
 
 // dispatchReadySteps separates map steps from normal steps and
