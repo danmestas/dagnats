@@ -250,6 +250,8 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 func isHandledEventType(t protocol.EventType) bool {
 	switch t {
 	case protocol.EventWorkflowStarted,
+		protocol.EventStepQueued,
+		protocol.EventStepStarted,
 		protocol.EventStepCompleted,
 		protocol.EventStepContinue,
 		protocol.EventStepFailed,
@@ -302,6 +304,10 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepContinue(ctx, evt)
 	case protocol.EventStepFailed:
 		return o.handleStepFailed(ctx, evt)
+	case protocol.EventStepStarted:
+		return o.handleStepStarted(ctx, evt)
+	case protocol.EventStepQueued:
+		return o.handleStepQueued(ctx, evt)
 	case protocol.EventWorkflowSpawn:
 		return o.handleWorkflowSpawn(ctx, evt)
 	case protocol.EventWorkflowChildCompleted:
@@ -2614,4 +2620,65 @@ func countActiveSteps(run dag.WorkflowRun) int {
 		}
 	}
 	return count
+}
+
+// handleStepStarted transitions the step from Queued to Running and
+// updates the attempt counter. Monotonic: refuses to regress a
+// terminal state — a stale step.started arriving after the engine
+// already saw step.completed/step.failed is logged and ignored.
+//
+// Attempts uses max() rule so out-of-order delivery cannot decrement
+// the counter; a higher AttemptNumber wins.
+func (o *Orchestrator) handleStepStarted(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleStepStarted: evt.RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleStepStarted: evt.StepID must not be empty")
+	}
+
+	run, err := o.store.Load(ctx, evt.RunID)
+	if err != nil {
+		return fmt.Errorf("load run %q: %w", evt.RunID, err)
+	}
+	state, ok := run.Steps[evt.StepID]
+	if !ok {
+		slog.WarnContext(ctx,
+			"step.started for unknown step",
+			"run_id", evt.RunID,
+			"step_id", evt.StepID,
+		)
+		return nil
+	}
+
+	// Monotonic guard — don't regress a terminal state.
+	if state.Status == dag.StepStatusCompleted ||
+		state.Status == dag.StepStatusFailed {
+		slog.WarnContext(ctx,
+			"stale step.started ignored — step is terminal",
+			"run_id", evt.RunID,
+			"step_id", evt.StepID,
+			"current_status", state.Status,
+			"event_attempt", evt.AttemptNumber,
+		)
+		return nil
+	}
+
+	state.Status = dag.StepStatusRunning
+	if evt.AttemptNumber > state.Attempts {
+		state.Attempts = evt.AttemptNumber
+	}
+	run.Steps[evt.StepID] = state
+	return o.saveSnapshot(ctx, run)
+}
+
+// handleStepQueued: stub — full implementation in Task 10.
+// Bundled with handleStepStarted dispatch wiring so the switch
+// compiles in one diff.
+func (o *Orchestrator) handleStepQueued(
+	ctx context.Context, evt protocol.Event,
+) error {
+	return nil
 }
