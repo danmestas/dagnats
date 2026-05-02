@@ -746,3 +746,133 @@ func TestTwoWorkers_KillOne_OtherDrains(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerStart_DurableIdempotent(t *testing.T) {
+	// Methodology: Start, Stop, Start again on the same Worker. Both Start
+	// calls succeed; the durable persists across Stop/Start; a message
+	// published between phases delivers after the second Start.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	var processed atomic.Int32
+	w := NewWorker(nc)
+	w.Handle("render", func(ctx TaskContext) error {
+		processed.Add(1)
+		return ctx.Complete([]byte(`"ok"`))
+	})
+	w.Start()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if _, err := stream.Consumer(ctx, "workers-render"); err != nil {
+		t.Fatalf("after first Start, workers-render missing: %v", err)
+	}
+	w.Stop()
+	if _, err := stream.Consumer(ctx, "workers-render"); err != nil {
+		t.Fatalf("after Stop, durable should persist: %v", err)
+	}
+
+	// Publish while stopped.
+	payload := protocol.TaskPayload{
+		RunID:  "between",
+		StepID: "s",
+		Input:  json.RawMessage(`"x"`),
+	}
+	data, _ := json.Marshal(payload)
+	if _, err := js.Publish(ctx, "task.render.between", data); err != nil {
+		t.Fatalf("Publish between phases: %v", err)
+	}
+
+	// Restart: same Worker instance Start() again.
+	w2 := NewWorker(nc)
+	w2.Handle("render", func(ctx TaskContext) error {
+		processed.Add(1)
+		return ctx.Complete([]byte(`"ok"`))
+	})
+	w2.Start()
+	t.Cleanup(w2.Stop)
+
+	deadline := time.After(5 * time.Second)
+	for processed.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("queued message not processed after restart")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func TestWorkerStart_NewProcessReclaimsDurable(t *testing.T) {
+	// Methodology: first Worker starts, registers durable, processes a
+	// message, exits without unbinding. Second Worker (separate instance,
+	// same handlers) starts against the same stream — no panic, durable
+	// resumes, in-flight message redelivers within AckWait if first worker
+	// died holding it. We use a handler that errors once to force NAK and
+	// redelivery; restart between attempts means the second worker handles
+	// the redelivered message.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	w1 := NewWorker(nc)
+	var w1Calls atomic.Int32
+	w1.Handle("render", func(ctx TaskContext) error {
+		w1Calls.Add(1)
+		return fmt.Errorf("force redelivery")
+	})
+	w1.Start()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	payload := protocol.TaskPayload{
+		RunID:  "reclaim",
+		StepID: "s",
+		Input:  json.RawMessage(`"x"`),
+	}
+	data, _ := json.Marshal(payload)
+	if _, err := js.Publish(ctx, "task.render.reclaim", data); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	deadline := time.After(5 * time.Second)
+	for w1Calls.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("w1 didn't process initial message")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	w1.Stop()
+
+	var w2Calls atomic.Int32
+	w2 := NewWorker(nc)
+	w2.Handle("render", func(ctx TaskContext) error {
+		w2Calls.Add(1)
+		return ctx.Complete([]byte(`"ok"`))
+	})
+	w2.Start()
+	t.Cleanup(w2.Stop)
+
+	deadline = time.After(30 * time.Second)
+	for w2Calls.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("w2 didn't pick up redelivered message")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
