@@ -426,6 +426,11 @@ func (w *Worker) subscribePullConsumer(
 	filter := consumerFilterFor(taskType, group)
 	ctx := context.Background()
 
+	// Cross-process collision check (ADR-010): panic before mutating
+	// shared NATS state if another process already owns our durable
+	// name with a different filter subject. Runs ahead of cleanup so
+	// the operator sees the rename guidance, not a cleanup-side error.
+	assertNoCrossProcessCollision(ctx, w.js, filter, durable)
 	w.cleanupOrphanEphemerals(ctx, filter, durable)
 
 	cfg := jetstream.ConsumerConfig{
