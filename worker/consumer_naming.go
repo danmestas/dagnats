@@ -64,3 +64,25 @@ func consumerNameFor(taskType, group string) string {
 	}
 	return out
 }
+
+// consumerFilterFor produces the filter subject for a (taskType, group) pair.
+// Inputs are NOT sanitized — they appear in the message-subject hierarchy and
+// must round-trip exactly. Subject validity is the publisher's contract;
+// sanitization is a consumer-naming concern.
+func consumerFilterFor(taskType, group string) string {
+	if taskType == "" {
+		panic("consumerFilterFor: taskType must not be empty")
+	}
+	if group == "" {
+		out := "task." + taskType + ".>"
+		if out == "" {
+			panic("consumerFilterFor: result must not be empty")
+		}
+		return out
+	}
+	out := "task." + taskType + "." + group + ".>"
+	if out == "" {
+		panic("consumerFilterFor: result must not be empty")
+	}
+	return out
+}

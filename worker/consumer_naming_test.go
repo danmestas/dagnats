@@ -96,3 +96,37 @@ func TestConsumerNameFor_RejectsEmptyTaskType(t *testing.T) {
 	}()
 	consumerNameFor("", "")
 }
+
+func TestConsumerFilterFor(t *testing.T) {
+	cases := []struct {
+		name            string
+		taskType, group string
+		want            string
+	}{
+		{"default_branch", "render", "", "task.render.>"},
+		{"default_branch_dotted_task", "render.gpu", "", "task.render.gpu.>"},
+		{"groups_branch", "render", "gpu", "task.render.gpu.>"},
+		{"groups_branch_hyphenated", "nasr-ingest", "fastlane", "task.nasr-ingest.fastlane.>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := consumerFilterFor(tc.taskType, tc.group)
+			if got != tc.want {
+				t.Fatalf("consumerFilterFor(%q, %q) = %q, want %q",
+					tc.taskType, tc.group, got, tc.want)
+			}
+			if got == "" {
+				t.Fatal("consumerFilterFor returned empty")
+			}
+		})
+	}
+}
+
+func TestConsumerFilterFor_RejectsEmptyTaskType(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on empty taskType, got none")
+		}
+	}()
+	consumerFilterFor("", "")
+}
