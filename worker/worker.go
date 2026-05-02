@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
@@ -84,6 +86,7 @@ type Worker struct {
 	dir           *Directory
 	workerID      string
 	stopHeartbeat chan struct{}
+	stopOnce      sync.Once
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration metric.Float64Histogram
@@ -241,6 +244,8 @@ func (w *Worker) Start() {
 		panic("Worker.Start: js must not be nil")
 	}
 
+	assertNoConsumerNameCollisions(w.handlers, w.groups)
+
 	w.bindOptionalKV()
 	w.registerDirectory()
 
@@ -348,73 +353,148 @@ func (w *Worker) subscribeTask(
 		}
 	} else {
 		if len(w.groups) == 0 {
-			subject := "task." + taskType + ".>"
-			cc := w.createConsumer(tt, subject, h)
-			w.stoppers = append(
-				w.stoppers, cc,
-			)
+			cc := w.subscribePullConsumer(tt, "", h)
+			w.stoppers = append(w.stoppers, cc)
 			// Sticky subscription on STICKY_TASKS stream
 			// (separate from TASK_QUEUES to avoid work queue
 			// filter conflict). Missing stream is fine.
-			stickyCC := w.createStickyConsumer(
-				tt, h,
-			)
+			stickyCC := w.createStickyConsumer(tt, h)
 			if stickyCC != nil {
-				w.stoppers = append(
-					w.stoppers, stickyCC,
-				)
+				w.stoppers = append(w.stoppers, stickyCC)
 			}
 		} else {
 			for _, group := range w.groups {
-				subject := "task." + tt + "." +
-					group + ".>"
-				cc := w.createConsumer(
-					tt+"."+group, subject, h,
-				)
-				w.stoppers = append(
-					w.stoppers, cc,
-				)
+				cc := w.subscribePullConsumer(tt, group, h)
+				w.stoppers = append(w.stoppers, cc)
 			}
 		}
 	}
 }
 
-// createConsumer sets up a JetStream pull consumer for the given
-// subject on the TASK_QUEUES stream and starts consuming. Panics
-// on any setup failure — stream misconfiguration is a startup error.
-func (w *Worker) createConsumer(
-	name string, subject string, handler HandlerFunc,
+// subscribePullConsumer attaches a worker to a durable JetStream pull
+// consumer on TASK_QUEUES, creating it if absent. Idempotent across
+// worker restarts. Cleans up orphan ephemeral consumers with the same
+// filter subject before creation (see ADR-006 §3, added in Task 7).
+// Panics on setup failure; stream/consumer setup errors are startup-fatal.
+//
+// The durable name and filter subject are derived from (taskType, group)
+// via consumerNameFor and consumerFilterFor. AckWait is the package-private
+// defaultAckWait. Per-task override via WithAckWait is a deferred follow-up.
+func (w *Worker) subscribePullConsumer(
+	taskType, group string, handler HandlerFunc,
 ) jetstream.ConsumeContext {
-	if subject == "" {
-		panic("createConsumer: subject must not be empty")
+	if taskType == "" {
+		panic("subscribePullConsumer: taskType must not be empty")
 	}
 	if handler == nil {
-		panic("createConsumer: handler must not be nil")
+		panic("subscribePullConsumer: handler must not be nil")
 	}
-	cons, err := w.js.CreateOrUpdateConsumer(
-		context.Background(), "TASK_QUEUES",
-		jetstream.ConsumerConfig{
-			FilterSubject: subject,
-			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: jetstream.DeliverAllPolicy,
-		},
-	)
+	if defaultAckWait <= 0 {
+		panic("subscribePullConsumer: defaultAckWait must be positive")
+	}
+
+	durable := consumerNameFor(taskType, group)
+	filter := consumerFilterFor(taskType, group)
+	ctx := context.Background()
+
+	w.cleanupOrphanEphemerals(ctx, filter, durable)
+
+	cfg := jetstream.ConsumerConfig{
+		Durable:       durable,
+		Name:          durable,
+		FilterSubject: filter,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckWait:       defaultAckWait,
+		// DLQ routing and retry budgets are the engine's responsibility
+		// (NakWithDelay + attempt count in step state), not NATS's. We
+		// leave NATS unbounded so engine policy isn't silently shadowed.
+		MaxDeliver: -1,
+	}
+	cons, err := w.js.CreateOrUpdateConsumer(ctx, "TASK_QUEUES", cfg)
 	if err != nil {
-		panic(
-			"Worker.Start: consumer failed for " +
-				name + ": " + err.Error(),
-		)
+		panic("subscribePullConsumer: CreateOrUpdateConsumer for " +
+			durable + ": " + err.Error())
 	}
+
+	tt := taskType
+	h := handler
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		w.handleMessage(name, handler, msg)
+		w.handleMessage(tt, h, msg)
 	})
 	if err != nil {
-		panic(
-			"Worker.Start: Consume failed for " +
-				name + ": " + err.Error(),
-		)
+		panic("subscribePullConsumer: Consume for " + durable + ": " +
+			err.Error())
 	}
 	return cc
+}
+
+// cleanupOrphanEphemerals deletes pre-existing ephemeral consumers on
+// TASK_QUEUES whose FilterSubject matches the one we're about to claim.
+// 3-prong identity: matching filter, Durable=="" (ephemeral), and Name
+// not under the "workers-" prefix (belt-and-suspenders against future state
+// we haven't anticipated). Iterator form, not single-page list — past page
+// 1 a stale orphan would re-trigger #136 in deployments with enough state.
+func (w *Worker) cleanupOrphanEphemerals(
+	ctx context.Context, filter, durable string,
+) {
+	if filter == "" {
+		panic("cleanupOrphanEphemerals: filter must not be empty")
+	}
+	if durable == "" {
+		panic("cleanupOrphanEphemerals: durable must not be empty")
+	}
+
+	stream, err := w.js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		panic("cleanupOrphanEphemerals: Stream: " + err.Error())
+	}
+
+	iter := stream.ListConsumers(ctx)
+	for info := range iter.Info() {
+		if info.Config.FilterSubject != filter {
+			continue
+		}
+		if info.Config.Durable != "" {
+			continue
+		}
+		if strings.HasPrefix(info.Name, "workers-") {
+			continue
+		}
+		// Log only when WE actually deleted the orphan. Concurrent
+		// workers that lose the race silently observe the consumer
+		// is already gone; the audit trail records actions taken,
+		// not actions attempted. NATS server's DeleteConsumer is
+		// idempotent across concurrent callers (both succeed), so
+		// we use a pre-delete existence check via Consumer() — the
+		// metadata layer serializes lookups with deletes, giving
+		// us a reliable "did we observe it as still present" signal.
+		if _, err := stream.Consumer(ctx, info.Name); err != nil {
+			if errors.Is(err, jetstream.ErrConsumerNotFound) {
+				continue // sibling worker beat us; nothing to log
+			}
+			panic("cleanupOrphanEphemerals: Consumer lookup for " +
+				info.Name + ": " + err.Error())
+		}
+		err := stream.DeleteConsumer(ctx, info.Name)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrConsumerNotFound) {
+				continue
+			}
+			panic("cleanupOrphanEphemerals: DeleteConsumer for " +
+				info.Name + ": " + err.Error())
+		}
+		slog.Info("removing orphan ephemeral consumer for migration to durable",
+			"consumer_name", info.Name,
+			"filter_subject", info.Config.FilterSubject,
+			"stream", "TASK_QUEUES",
+			"durable_being_claimed", durable,
+			"reason", "ephemeral with matching filter; pre-fix dagnats orphan",
+		)
+	}
+	if err := iter.Err(); err != nil {
+		panic("cleanupOrphanEphemerals: iterator: " + err.Error())
+	}
 }
 
 // createStickyConsumer sets up a pull consumer on the STICKY_TASKS
@@ -557,7 +637,8 @@ func (w *Worker) heartbeatLoop(reg WorkerRegistration) {
 }
 
 // Stop unsubscribes all active subscriptions. Safe to call after
-// Start.
+// Start. Idempotent — repeat calls are no-ops, which makes
+// kill-mid-test patterns + t.Cleanup safe.
 func (w *Worker) Stop() {
 	if w.handlers == nil {
 		panic("Worker.Stop: worker not initialized")
@@ -565,15 +646,17 @@ func (w *Worker) Stop() {
 	if w.nc == nil {
 		panic("Worker.Stop: nc must not be nil")
 	}
-	if w.stopHeartbeat != nil {
-		close(w.stopHeartbeat)
-	}
-	if w.dir != nil {
-		_ = w.dir.Deregister(w.workerID)
-	}
-	for _, s := range w.stoppers {
-		s.Stop()
-	}
+	w.stopOnce.Do(func() {
+		if w.stopHeartbeat != nil {
+			close(w.stopHeartbeat)
+		}
+		if w.dir != nil {
+			_ = w.dir.Deregister(w.workerID)
+		}
+		for _, s := range w.stoppers {
+			s.Stop()
+		}
+	})
 }
 
 // handleMessage unmarshals the task payload, creates a traced
