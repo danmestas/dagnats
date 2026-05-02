@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -426,5 +427,84 @@ func TestMigration_ConcurrentStartup_OneOrphan(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("migration log fired %d times, want 1", count)
+	}
+}
+
+func TestMigration_PaginationManyConsumers(t *testing.T) {
+	// Methodology: pre-seed 300 consumers on TASK_QUEUES — well past the
+	// SDK's typical 256-entry first-page boundary. One of them is the
+	// orphan ephemeral matching task.render.>, placed at index 250. Drive
+	// subscribePullConsumer directly. Asserts the iterator form (not the
+	// single-page list) finds and deletes the orphan regardless of position.
+	if testing.Short() {
+		t.Skip("skipping 300-consumer pagination test in -short mode")
+	}
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Seed 300 unrelated durables with distinct filter subjects so they
+	// don't match the cleanup rule. The orphan goes in at index 250.
+	for i := 0; i < 300; i++ {
+		var cfg jetstream.ConsumerConfig
+		if i == 250 {
+			cfg = jetstream.ConsumerConfig{
+				FilterSubject: "task.render.>",
+				AckPolicy:     jetstream.AckExplicitPolicy,
+				DeliverPolicy: jetstream.DeliverAllPolicy,
+			}
+		} else {
+			cfg = jetstream.ConsumerConfig{
+				Durable:       fmt.Sprintf("filler-%03d", i),
+				Name:          fmt.Sprintf("filler-%03d", i),
+				FilterSubject: fmt.Sprintf("task.filler%03d.>", i),
+				AckPolicy:     jetstream.AckExplicitPolicy,
+				DeliverPolicy: jetstream.DeliverAllPolicy,
+			}
+		}
+		if _, err := stream.CreateOrUpdateConsumer(ctx, cfg); err != nil {
+			t.Fatalf("seed consumer %d: %v", i, err)
+		}
+	}
+
+	w := NewWorker(nc)
+	cc := w.subscribePullConsumer("render", "",
+		func(ctx TaskContext) error { return nil })
+	t.Cleanup(cc.Stop)
+
+	// Durable workers-render must exist; orphan must be gone.
+	cons, err := stream.Consumer(ctx, "workers-render")
+	if err != nil {
+		t.Fatalf("workers-render not created: %v", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.Config.Durable != "workers-render" {
+		t.Fatalf("Durable = %q, want workers-render", info.Config.Durable)
+	}
+
+	// Re-scan: there must be no remaining ephemeral with task.render.> filter.
+	iter := stream.ListConsumers(ctx)
+	for ci := range iter.Info() {
+		if ci.Config.FilterSubject == "task.render.>" &&
+			ci.Config.Durable == "" {
+			t.Fatalf("orphan ephemeral still present: %s", ci.Name)
+		}
+	}
+	if err := iter.Err(); err != nil {
+		t.Fatalf("iterator err: %v", err)
 	}
 }
