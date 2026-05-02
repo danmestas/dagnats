@@ -601,17 +601,18 @@ func TestTaskContextPause(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	// Wait for completion event
+	// Wait for first event (now step.started since #137 Task 4)
 	msg, err := sub.NextMsg(5 * time.Second)
 	if err != nil {
 		t.Fatalf("completion timeout: %v", err)
 	}
-	elapsed := time.Since(start)
-
 	var evt protocol.Event
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		t.Fatalf("unmarshal event: %v", err)
 	}
+	// Drain until step.completed so elapsed reflects total handler time.
+	evt = nextEventOfType(t, sub, protocol.EventStepCompleted, 5*time.Second, evt)
+	elapsed := time.Since(start)
 
 	// Positive: handler was called twice (initial + resume)
 	if callCount != 2 {

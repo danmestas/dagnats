@@ -112,6 +112,7 @@ func TestHandleSimpleRegistersAndExecutes(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
+	evt = nextEventOfType(t, sub, protocol.EventStepCompleted, 5*time.Second, evt)
 	if evt.Type != protocol.EventStepCompleted {
 		t.Fatalf(
 			"event type = %q, want %q",
@@ -194,6 +195,7 @@ func TestHandleLoopCanContinue(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
+	evt = nextEventOfType(t, sub, protocol.EventStepContinue, 5*time.Second, evt)
 	// Negative: event is continue, not completed.
 	if evt.Type != protocol.EventStepContinue {
 		t.Fatalf(
@@ -275,6 +277,7 @@ func TestHandleCheckpointRegistersAndExecutes(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
+	evt = nextEventOfType(t, sub, protocol.EventStepCompleted, 5*time.Second, evt)
 	if evt.Type != protocol.EventStepCompleted {
 		t.Fatalf(
 			"event = %q, want %q",
@@ -351,6 +354,7 @@ func TestHandleStreamRegistersAndExecutes(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
+	evt = nextEventOfType(t, sub, protocol.EventStepCompleted, 5*time.Second, evt)
 	if evt.Type != protocol.EventStepCompleted {
 		t.Fatalf(
 			"event = %q, want %q",
@@ -424,6 +428,7 @@ func TestHandleSignalRegistersAndExecutes(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
+	evt = nextEventOfType(t, sub, protocol.EventStepCompleted, 5*time.Second, evt)
 	if evt.Type != protocol.EventStepCompleted {
 		t.Fatalf(
 			"event = %q, want %q",
