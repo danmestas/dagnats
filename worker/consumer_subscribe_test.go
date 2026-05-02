@@ -508,3 +508,61 @@ func TestMigration_PaginationManyConsumers(t *testing.T) {
 		t.Fatalf("iterator err: %v", err)
 	}
 }
+
+func TestMigration_NoOrphan(t *testing.T) {
+	// Methodology: fresh stream, no pre-seeded orphan. subscribePullConsumer
+	// creates the durable cleanly and emits no migration log. Round-trips
+	// a message through the durable to confirm end-to-end happy path.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	var processed atomic.Int32
+	w := NewWorker(nc)
+	logs := captureLogs(t, func() {
+		cc := w.subscribePullConsumer("render", "",
+			func(ctx TaskContext) error {
+				processed.Add(1)
+				return ctx.Complete([]byte(`"ok"`))
+			})
+		t.Cleanup(cc.Stop)
+	})
+
+	for _, l := range logs {
+		if strings.Contains(l, "removing orphan ephemeral consumer") {
+			t.Fatalf("unexpected migration log: %s", l)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if _, err := stream.Consumer(ctx, "workers-render"); err != nil {
+		t.Fatalf("workers-render not created: %v", err)
+	}
+
+	payload := protocol.TaskPayload{
+		RunID: "run-baseline", StepID: "s1",
+		Input: json.RawMessage(`"hi"`),
+	}
+	data, _ := json.Marshal(payload)
+	if _, err := js.Publish(ctx, "task.render.run-baseline", data); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	deadline := time.After(5 * time.Second)
+	for processed.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("handler not called within 5s")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
