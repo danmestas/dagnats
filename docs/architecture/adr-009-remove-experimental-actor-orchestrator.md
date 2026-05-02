@@ -42,11 +42,13 @@ Delete `actor_orch.go`, `actor_orch_test.go`, `workflow_actor.go`, and
 `workflow_actor_test.go`. The `actor/` runtime package (pure Go,
 NATS-free) stays — it is general-purpose and not tied to engine.
 
-No engine helpers became orphans: every helper used by the actor
-variant (`enqueueReadySteps`, `findStepDef`, `completedSet`,
-`queuedSet`, `checkLoopBounds`, `publishIterationTask`,
-`publishWorkflowEvent`, `isHandledEventType`) has multiple production
-callers in `orchestrator.go`, `recovery_manager.go`, `approval.go`,
+One engine helper became an orphan and was removed alongside the
+actor files: `publishIterationTask` (formerly in `task_publish.go`)
+was only called by `WorkflowActor.handleStepContinue`. The remaining
+helpers (`enqueueReadySteps`, `findStepDef`, `completedSet`,
+`queuedSet`, `checkLoopBounds`, `publishWorkflowEvent`,
+`isHandledEventType`) all retain multiple production callers in
+`orchestrator.go`, `recovery_manager.go`, `approval.go`,
 `advance_exec.go`, `task_publish.go`, and `planner.go`.
 
 ## Consequences

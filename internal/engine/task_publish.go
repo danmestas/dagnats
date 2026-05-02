@@ -13,45 +13,6 @@ import (
 	"github.com/synadia-io/orbit.go/jetstreamext"
 )
 
-// publishIterationTask publishes a TaskPayload for an agent-loop
-// re-enqueue with a distinct MsgId per iteration.
-func publishIterationTask(
-	ctx context.Context,
-	js jetstream.JetStream,
-	runID string,
-	step dag.StepDef,
-	input []byte,
-	iteration int,
-) error {
-	if js == nil {
-		panic("publishIterationTask: js must not be nil")
-	}
-	if runID == "" {
-		panic("publishIterationTask: runID must not be empty")
-	}
-	if step.ID == "" {
-		panic("publishIterationTask: step.ID must not be empty")
-	}
-	payload := protocol.TaskPayload{
-		TaskID:    runID + "." + step.ID,
-		RunID:     runID,
-		StepID:    step.ID,
-		Iteration: iteration,
-		Input:     input,
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal TaskPayload: %w", err)
-	}
-	msgID := fmt.Sprintf(
-		"%s.%s.iter.%d", runID, step.ID, iteration,
-	)
-	subject := taskSubject(step, runID)
-	msg := buildTaskMsg(subject, data, msgID)
-	_, err = js.PublishMsg(ctx, msg)
-	return err
-}
-
 // taskSubject builds the NATS subject for a task. Agent steps
 // use the "agent_task" prefix; normal steps use "task".
 func taskSubject(step dag.StepDef, runID string) string {
