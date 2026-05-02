@@ -483,12 +483,19 @@ func (w *Worker) subscribePullConsumer(
 	ackWait := w.coalesceAckWait(taskType)
 	ctx := context.Background()
 
-	// Cross-process collision check (ADR-010): panic before mutating
-	// shared NATS state if another process already owns our durable
-	// name with a different filter subject. Runs ahead of cleanup so
-	// the operator sees the rename guidance, not a cleanup-side error.
-	assertNoCrossProcessCollision(ctx, w.js, filter, durable)
+	// Orphan cleanup first, cross-process collision check second.
+	// The two helpers operate on disjoint consumer sets — cleanup on
+	// ephemerals with our filter, xprocess on durables with our name —
+	// so order is interchangeable for correctness. Cleanup-first
+	// preserves the timing of cleanup's concurrent-dedup race
+	// (ADR-006 §3): adding work before cleanup tightens the window in
+	// which two workers both observe the orphan as still present and
+	// both log the deletion. xprocess (ADR-010) is best-effort — it
+	// catches the steady-state collision after one worker creates the
+	// durable, even though a TOCTOU window at CreateOrUpdateConsumer
+	// remains; running it after cleanup does not change that property.
 	w.cleanupOrphanEphemerals(ctx, filter, durable)
+	assertNoCrossProcessCollision(ctx, w.js, filter, durable)
 
 	cfg := jetstream.ConsumerConfig{
 		Durable:       durable,
