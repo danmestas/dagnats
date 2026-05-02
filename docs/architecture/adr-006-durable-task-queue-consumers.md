@@ -3,7 +3,7 @@
 **Status:** Accepted (2026-05-01)
 **Deciders:** Dan Mestas
 **Spec:** [`docs/superpowers/specs/2026-05-01-issue-136-durable-task-queue-consumers-design.md`](../superpowers/specs/2026-05-01-issue-136-durable-task-queue-consumers-design.md)
-**Issue:** [#136](https://github.com/danmestas/issues/136)
+**Issue:** [#136](https://github.com/danmestas/dagnats/issues/136)
 
 ## Context
 
