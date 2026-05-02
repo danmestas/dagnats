@@ -295,3 +295,60 @@ func TestStepFailedPayloadRetryAfter(t *testing.T) {
 			data)
 	}
 }
+
+func TestEvent_MarshalRoundTrip_PreservesAttemptNumber(t *testing.T) {
+	original := Event{
+		Type:          EventStepStarted,
+		RunID:         "run-attempt",
+		StepID:        "step-x",
+		Timestamp:     time.Now().UTC().Truncate(time.Millisecond),
+		AttemptNumber: 7,
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if decoded.AttemptNumber != 7 {
+		t.Fatalf("AttemptNumber = %d, want 7", decoded.AttemptNumber)
+	}
+	if decoded.Type != original.Type {
+		t.Fatalf("Type = %q, want %q", decoded.Type, original.Type)
+	}
+}
+
+func TestEvent_UnmarshalLegacyMissingAttempt(t *testing.T) {
+	// Legacy event JSON written before this field existed must still
+	// deserialize successfully with AttemptNumber defaulting to zero.
+	legacy := []byte(`{"type":"step.completed","run_id":"r","step_id":"s","timestamp":"2026-01-01T00:00:00Z"}`)
+	var decoded Event
+	if err := json.Unmarshal(legacy, &decoded); err != nil {
+		t.Fatalf("Unmarshal legacy failed: %v", err)
+	}
+	if decoded.AttemptNumber != 0 {
+		t.Fatalf("AttemptNumber = %d, want 0 for legacy event", decoded.AttemptNumber)
+	}
+	if decoded.Type != EventStepCompleted {
+		t.Fatalf("Type = %q, want %q", decoded.Type, EventStepCompleted)
+	}
+}
+
+func TestEvent_OmitEmpty_AttemptNumberZero(t *testing.T) {
+	// AttemptNumber=0 must not appear in marshalled JSON so existing
+	// wire format is preserved for events that don't use it.
+	evt := Event{
+		Type:      EventWorkflowStarted,
+		RunID:     "run-omit",
+		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if bytes.Contains(data, []byte("attempt_number")) {
+		t.Fatalf("marshalled JSON must omit attempt_number when zero, got: %s", data)
+	}
+}
