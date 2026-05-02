@@ -461,3 +461,51 @@ func (c *taskContext) SendSignal(
 	)
 	return err
 }
+
+// publishStarted publishes step.started for the current attempt.
+// Reads the attempt number from the original NATS message metadata —
+// NumDelivered increments on each redelivery (NAK retries, AckWait
+// expiry), so the resulting AttemptNumber is correct for both
+// happy-path first attempts and post-NAK redelivery.
+//
+// Returns error if metadata read or publish fails. The caller (worker
+// dispatch loop) NAKs the original message on error so the engine
+// never sees step.completed for an attempt it never saw step.started
+// for. Lifecycle stays consistent.
+//
+// Called once per attempt, before invoking the user's task handler.
+// Hides the metadata read + AttemptNumber assignment + publish chain
+// from the dispatch loop. publishEvent (used by Complete and Fail*)
+// is NOT modified — it stays unchanged so its callers don't gain
+// knowledge of AttemptNumber.
+func (c *taskContext) publishStarted(msg jetstream.Msg) error {
+	if msg == nil {
+		panic("publishStarted: msg must not be nil")
+	}
+	if c.runID == "" {
+		panic("publishStarted: runID must not be empty")
+	}
+	meta, err := msg.Metadata()
+	if err != nil {
+		return err
+	}
+	evt := protocol.NewStepEvent(
+		protocol.EventStepStarted, c.runID, c.stepID, nil,
+	)
+	evt.WorkerID = c.workerID
+	evt.AttemptNumber = int(meta.NumDelivered)
+	outMsg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Header: nats.Header{
+			"Nats-Msg-Id": {evt.NATSMsgID()},
+		},
+	}
+	observe.InjectTraceContext(c.ctx, outMsg, &evt)
+	data, err := evt.Marshal()
+	if err != nil {
+		return err
+	}
+	outMsg.Data = data
+	_, err = c.js.PublishMsg(c.ctx, outMsg)
+	return err
+}
