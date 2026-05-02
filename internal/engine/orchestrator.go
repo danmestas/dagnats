@@ -2674,11 +2674,45 @@ func (o *Orchestrator) handleStepStarted(
 	return o.saveSnapshot(ctx, run)
 }
 
-// handleStepQueued: stub — full implementation in Task 10.
-// Bundled with handleStepStarted dispatch wiring so the switch
-// compiles in one diff.
+// handleStepQueued is mostly a no-op during normal operation — the
+// engine's dispatch path already set Status to Queued before it
+// emitted this event. The handler exists for state recovery on
+// engine restart, where the history stream is replayed and the
+// engine reconstructs run state from events alone.
+//
+// Monotonic: refuses to roll back from Running, Completed, Failed.
 func (o *Orchestrator) handleStepQueued(
 	ctx context.Context, evt protocol.Event,
 ) error {
-	return nil
+	if evt.RunID == "" {
+		panic("handleStepQueued: evt.RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleStepQueued: evt.StepID must not be empty")
+	}
+
+	run, err := o.store.Load(ctx, evt.RunID)
+	if err != nil {
+		return fmt.Errorf("load run %q: %w", evt.RunID, err)
+	}
+	state, ok := run.Steps[evt.StepID]
+	if !ok {
+		slog.WarnContext(ctx,
+			"step.queued for unknown step",
+			"run_id", evt.RunID, "step_id", evt.StepID,
+		)
+		return nil
+	}
+	if state.Status == dag.StepStatusCompleted ||
+		state.Status == dag.StepStatusFailed ||
+		state.Status == dag.StepStatusRunning {
+		// Already past Queued — don't roll back.
+		return nil
+	}
+	state.Status = dag.StepStatusQueued
+	if evt.AttemptNumber > state.Attempts {
+		state.Attempts = evt.AttemptNumber
+	}
+	run.Steps[evt.StepID] = state
+	return o.saveSnapshot(ctx, run)
 }

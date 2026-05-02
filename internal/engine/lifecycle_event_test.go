@@ -527,3 +527,130 @@ func waitForStepAttempts(
 	t.Fatalf("step %q in run %q did not reach attempts %d within %v",
 		stepID, runID, want, timeout)
 }
+
+func TestOnEvent_StepQueued_DuringReplay_ReconstructsState(t *testing.T) {
+	// Methodology: simulate replay by publishing a sequence of events
+	// to a fresh history stream and verifying final state. The
+	// step.queued event during replay must set Status=Queued without
+	// rolling back any later transitions.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, _ := jetstream.New(nc)
+
+	wfDef := dag.WorkflowDef{
+		Name: "replay-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	// Replay sequence: workflow.started → step.queued → step.started → step.completed.
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-rp", defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(
+		startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()),
+	)
+
+	store := NewSnapshotStore(jsNew)
+	waitForStepStatus(t, store, "run-rp", "a", dag.StepStatusQueued, 5*time.Second)
+
+	startedEvt := protocol.NewStepEvent(
+		protocol.EventStepStarted, "run-rp", "a", nil,
+	)
+	startedEvt.AttemptNumber = 1
+	startedData, _ := startedEvt.Marshal()
+	js.Publish(
+		startedEvt.NATSSubject(), startedData,
+		nats.MsgId(startedEvt.NATSMsgID()),
+	)
+	waitForStepStatus(t, store, "run-rp", "a", dag.StepStatusRunning, 5*time.Second)
+
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "run-rp", "a", []byte(`"done"`),
+	)
+	compData, _ := compEvt.Marshal()
+	js.Publish(
+		compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()),
+	)
+	waitForStepStatus(t, store, "run-rp", "a", dag.StepStatusCompleted, 5*time.Second)
+
+	loaded, _ := store.Load(context.Background(), "run-rp")
+	if loaded.Steps["a"].Status != dag.StepStatusCompleted {
+		t.Fatalf("Status = %v, want Completed", loaded.Steps["a"].Status)
+	}
+	if loaded.Steps["a"].Attempts != 1 {
+		t.Fatalf("Attempts = %d, want 1", loaded.Steps["a"].Attempts)
+	}
+}
+
+func TestOnEvent_StepQueued_NoRollback_FromRunning(t *testing.T) {
+	// Methodology: seed a step with Status=Running, then fire
+	// step.queued. Engine's monotonic guard must keep state at Running.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, _ := jetstream.New(nc)
+
+	wfDef := dag.WorkflowDef{
+		Name: "noroll-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	store := NewSnapshotStore(jsNew)
+	run := dag.NewWorkflowRun(wfDef, "run-nr")
+	run.Status = dag.RunStatusRunning
+	st := run.Steps["a"]
+	st.Status = dag.StepStatusRunning
+	st.Attempts = 2
+	run.Steps["a"] = st
+	if err := store.Save(context.Background(), run); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	queuedEvt := protocol.NewStepEvent(
+		protocol.EventStepQueued, "run-nr", "a", nil,
+	)
+	queuedEvt.AttemptNumber = 1
+	data, _ := queuedEvt.Marshal()
+	js.Publish(
+		queuedEvt.NATSSubject(), data,
+		nats.MsgId(queuedEvt.NATSMsgID()),
+	)
+
+	time.Sleep(500 * time.Millisecond)
+
+	loaded, _ := store.Load(context.Background(), "run-nr")
+	if loaded.Steps["a"].Status != dag.StepStatusRunning {
+		t.Fatalf("Status = %v, want Running (no rollback)",
+			loaded.Steps["a"].Status)
+	}
+	if loaded.Steps["a"].Attempts != 2 {
+		t.Fatalf("Attempts = %d, want 2 (must not change)",
+			loaded.Steps["a"].Attempts)
+	}
+}
