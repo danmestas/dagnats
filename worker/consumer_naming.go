@@ -9,9 +9,8 @@ import "time"
 // defaultAckWait bounds the longest expected task duration plus a margin.
 // Workers running tasks longer than this should call msg.InProgress()
 // periodically (planned: ADR-008 heartbeats, tracked as follow-up to
-// issue #136) or override at handler registration via WithAckWait
-// (planned: tracked as follow-up to issue #136). See ADR-006 §"Out of
-// scope (deferred)" for the full deferred-list.
+// issue #136) or override at handler registration via WithAckWait.
+// See ADR-006 §"Out of scope (deferred)" for the full deferred-list.
 const defaultAckWait = 5 * time.Minute
 
 // sanitizeConsumerName maps a task-type or group string to a NATS-legal

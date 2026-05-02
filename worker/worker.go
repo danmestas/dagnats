@@ -91,6 +91,11 @@ type Worker struct {
 	groups       []string
 	partitions   int
 	singletons   map[string]bool
+	// handlerAckWait holds per-task AckWait overrides registered via
+	// WithAckWait. Sparse: only populated for task types whose caller
+	// supplied an override. coalesceAckWait falls back to defaultAckWait
+	// for absent keys.
+	handlerAckWait map[string]time.Duration
 
 	// Directory registration (observability only)
 	dir           *Directory
@@ -202,11 +207,56 @@ func NewWorker(
 	return w
 }
 
-// Handle registers a HandlerFunc for the given task type.
-// Panics on empty taskType or nil handler — both are programmer
-// errors.
+// HandlerOption configures per-handler behavior at registration time.
+// Distinct from WorkerOption (which configures the Worker itself):
+// HandlerOptions bind a knob to a specific taskType. Variadic on Handle
+// keeps existing callers source-compatible.
+type HandlerOption func(w *Worker, taskType string)
+
+// WithAckWait overrides the JetStream AckWait for the consumer that
+// will be created for taskType. Sub-second tasks should use a short
+// override so worker-crash redelivery latency is bounded; long-running
+// agent loops can opt into a longer wait. Panics if d <= 0 — non-positive
+// durations are programmer errors per TigerStyle.
+func WithAckWait(d time.Duration) HandlerOption {
+	if d <= 0 {
+		panic("WithAckWait: d must be positive")
+	}
+	return func(w *Worker, taskType string) {
+		if w == nil {
+			panic("WithAckWait: w must not be nil")
+		}
+		if taskType == "" {
+			panic("WithAckWait: taskType must not be empty")
+		}
+		if w.handlerAckWait == nil {
+			w.handlerAckWait = make(map[string]time.Duration)
+		}
+		w.handlerAckWait[taskType] = d
+	}
+}
+
+// coalesceAckWait returns the per-task AckWait override if registered,
+// otherwise defaultAckWait. Keeps the consumer-config builder free of
+// nil-map and missing-key bookkeeping.
+func (w *Worker) coalesceAckWait(taskType string) time.Duration {
+	if w == nil {
+		panic("coalesceAckWait: w must not be nil")
+	}
+	if taskType == "" {
+		panic("coalesceAckWait: taskType must not be empty")
+	}
+	if d, ok := w.handlerAckWait[taskType]; ok {
+		return d
+	}
+	return defaultAckWait
+}
+
+// Handle registers a HandlerFunc for the given task type. Optional
+// HandlerOptions (e.g. WithAckWait) tune per-task knobs. Panics on
+// empty taskType or nil handler — both are programmer errors.
 func (w *Worker) Handle(
-	taskType string, handler HandlerFunc,
+	taskType string, handler HandlerFunc, opts ...HandlerOption,
 ) {
 	if taskType == "" {
 		panic("Worker.Handle: taskType must not be empty")
@@ -215,6 +265,12 @@ func (w *Worker) Handle(
 		panic("Worker.Handle: handler must not be nil")
 	}
 	w.handlers[taskType] = handler
+	for _, opt := range opts {
+		if opt == nil {
+			panic("Worker.Handle: opt must not be nil")
+		}
+		opt(w, taskType)
+	}
 }
 
 // HandleSingleton registers a handler that runs as a single-
@@ -407,8 +463,8 @@ func (w *Worker) subscribeTask(
 // Panics on setup failure; stream/consumer setup errors are startup-fatal.
 //
 // The durable name and filter subject are derived from (taskType, group)
-// via consumerNameFor and consumerFilterFor. AckWait is the package-private
-// defaultAckWait. Per-task override via WithAckWait is a deferred follow-up.
+// via consumerNameFor and consumerFilterFor. AckWait derives from per-task
+// override (see WithAckWait) or defaultAckWait.
 func (w *Worker) subscribePullConsumer(
 	taskType, group string, handler HandlerFunc,
 ) jetstream.ConsumeContext {
@@ -424,9 +480,22 @@ func (w *Worker) subscribePullConsumer(
 
 	durable := consumerNameFor(taskType, group)
 	filter := consumerFilterFor(taskType, group)
+	ackWait := w.coalesceAckWait(taskType)
 	ctx := context.Background()
 
+	// Orphan cleanup first, cross-process collision check second.
+	// The two helpers operate on disjoint consumer sets — cleanup on
+	// ephemerals with our filter, xprocess on durables with our name —
+	// so order is interchangeable for correctness. Cleanup-first
+	// preserves the timing of cleanup's concurrent-dedup race
+	// (ADR-006 §3): adding work before cleanup tightens the window in
+	// which two workers both observe the orphan as still present and
+	// both log the deletion. xprocess (ADR-010) is best-effort — it
+	// catches the steady-state collision after one worker creates the
+	// durable, even though a TOCTOU window at CreateOrUpdateConsumer
+	// remains; running it after cleanup does not change that property.
 	w.cleanupOrphanEphemerals(ctx, filter, durable)
+	assertNoCrossProcessCollision(ctx, w.js, filter, durable)
 
 	cfg := jetstream.ConsumerConfig{
 		Durable:       durable,
@@ -434,7 +503,7 @@ func (w *Worker) subscribePullConsumer(
 		FilterSubject: filter,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
-		AckWait:       defaultAckWait,
+		AckWait:       ackWait,
 		// DLQ routing and retry budgets are the engine's responsibility
 		// (NakWithDelay + attempt count in step state), not NATS's. We
 		// leave NATS unbounded so engine policy isn't silently shadowed.
