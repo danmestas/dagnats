@@ -962,8 +962,10 @@ func (o *Orchestrator) handleStepFailed(
 		)
 	}
 
+	// Attempts is owned by step.queued / step.started lifecycle events
+	// (max() rule in handleStepQueued/handleStepStarted). step.failed
+	// fires within an attempt and must not touch the counter.
 	state := run.Steps[evt.StepID]
-	state.Attempts++
 
 	failPayload := parseFailPayload(evt.Payload)
 	state.Error = failPayload.Error
