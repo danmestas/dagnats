@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
@@ -443,6 +444,8 @@ func (w *Worker) subscribePullConsumer(
 	filter := consumerFilterFor(taskType, group)
 	ctx := context.Background()
 
+	w.cleanupOrphanEphemerals(ctx, filter, durable)
+
 	cfg := jetstream.ConsumerConfig{
 		Durable:       durable,
 		Name:          durable,
@@ -471,6 +474,56 @@ func (w *Worker) subscribePullConsumer(
 			err.Error())
 	}
 	return cc
+}
+
+// cleanupOrphanEphemerals deletes pre-existing ephemeral consumers on
+// TASK_QUEUES whose FilterSubject matches the one we're about to claim.
+// 3-prong identity: matching filter, Durable=="" (ephemeral), and Name
+// not under the "workers-" prefix (belt-and-suspenders against future state
+// we haven't anticipated). Iterator form, not single-page list — past page
+// 1 a stale orphan would re-trigger #136 in deployments with enough state.
+func (w *Worker) cleanupOrphanEphemerals(
+	ctx context.Context, filter, durable string,
+) {
+	if filter == "" {
+		panic("cleanupOrphanEphemerals: filter must not be empty")
+	}
+	if durable == "" {
+		panic("cleanupOrphanEphemerals: durable must not be empty")
+	}
+
+	stream, err := w.js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		panic("cleanupOrphanEphemerals: Stream: " + err.Error())
+	}
+
+	iter := stream.ListConsumers(ctx)
+	for info := range iter.Info() {
+		if info.Config.FilterSubject != filter {
+			continue
+		}
+		if info.Config.Durable != "" {
+			continue
+		}
+		if strings.HasPrefix(info.Name, "workers-") {
+			continue
+		}
+		slog.Info("removing orphan ephemeral consumer for migration to durable",
+			"consumer_name", info.Name,
+			"filter_subject", info.Config.FilterSubject,
+			"stream", "TASK_QUEUES",
+			"durable_being_claimed", durable,
+			"reason", "ephemeral with matching filter; pre-fix dagnats orphan",
+		)
+		err := stream.DeleteConsumer(ctx, info.Name)
+		if err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+			panic("cleanupOrphanEphemerals: DeleteConsumer for " +
+				info.Name + ": " + err.Error())
+		}
+	}
+	if err := iter.Err(); err != nil {
+		panic("cleanupOrphanEphemerals: iterator: " + err.Error())
+	}
 }
 
 // createStickyConsumer sets up a pull consumer on the STICKY_TASKS
