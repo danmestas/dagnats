@@ -52,6 +52,8 @@ type Event struct {
 
 `omitempty` preserves the existing wire format for events that don't set it (`workflow.*`, `agent.loop.*`, `compensate.*`, `approval.*`). Old events on the stream deserialize unchanged — `AttemptNumber` is just zero.
 
+**Why on `Event` rather than per-event `Payload`:** `AttemptNumber` is structural identity (it influences `NATSMsgID` for dedupe), not event-specific data. Multiple event types need it (`started` now, `queued` now, `failed` eventually). Top-level placement avoids both per-payload duplication and unmarshal cost in `NATSMsgID`.
+
 ### `NATSMsgID()` — append attempt suffix when set
 
 ```go
@@ -93,63 +95,72 @@ Why `step.completed` / `step.failed` keep `AttemptNumber=0` in this PR: keeps th
 
 ## §2. Worker emits `step.started`
 
-The publish happens at `worker/worker.go:~707` (right after `tc.workerID = w.workerID`, before `err = handler(tc)`).
+The publish happens at `worker/worker.go:~707` (right after `tc.workerID = w.workerID`, before `err = handler(tc)`). The dispatch loop stays clean by delegating to a new dedicated helper — `publishEvent` (the existing generic helper) is **not modified**.
 
-### `publishEvent` signature change
+### New helper: `tc.publishStarted(msg)`
 
-`worker/context.go:293`:
+`worker/context.go` gains one new method. The existing `publishEvent` is untouched.
 
 ```go
-func (c *taskContext) publishEvent(
-    eventType protocol.EventType, payload []byte, attemptNumber int,
-) error {
-    if eventType == "" {
-        panic("publishEvent: eventType must not be empty")
+// publishStarted publishes step.started for the current attempt.
+// Reads the attempt number from the original NATS message metadata
+// (NumDelivered increments on each redelivery: NAK retries, AckWait
+// expiry). Returns error if metadata read or publish fails — caller
+// should NAK the original message to allow retry.
+//
+// Called once per attempt, before invoking the user's task handler.
+// Hides the metadata-read + AttemptNumber-assignment + publish chain
+// from the dispatch loop.
+func (c *taskContext) publishStarted(msg jetstream.Msg) error {
+    if msg == nil {
+        panic("publishStarted: msg must not be nil")
     }
     if c.runID == "" {
-        panic("publishEvent: runID must not be empty")
+        panic("publishStarted: runID must not be empty")
     }
-    evt := protocol.NewStepEvent(eventType, c.runID, c.stepID, payload)
+    meta, err := msg.Metadata()
+    if err != nil {
+        return err
+    }
+    evt := protocol.NewStepEvent(
+        protocol.EventStepStarted, c.runID, c.stepID, nil,
+    )
     evt.WorkerID = c.workerID
-    evt.AttemptNumber = attemptNumber  // NEW
-    // ... rest unchanged: subject, msg-id header, trace inject, marshal, publish
+    evt.AttemptNumber = int(meta.NumDelivered)
+    outMsg := &nats.Msg{
+        Subject: evt.NATSSubject(),
+        Header: nats.Header{
+            "Nats-Msg-Id": {evt.NATSMsgID()},
+        },
+    }
+    observe.InjectTraceContext(c.ctx, outMsg, &evt)
+    data, err := evt.Marshal()
+    if err != nil {
+        return err
+    }
+    outMsg.Data = data
+    _, err = c.js.PublishMsg(c.ctx, outMsg)
+    return err
 }
 ```
 
-Existing callers updated to pass `0`:
-- `worker/context.go:113` (EventStepCompleted) → `c.publishEvent(protocol.EventStepCompleted, output, 0)`
-- `worker/context.go:223` (EventStepFailed) → `c.publishEvent(protocol.EventStepFailed, data, 0)`
+This mirrors the existing `publishEvent` body (`context.go:293`) but is specialized: the AttemptNumber assignment and the metadata read are encapsulated. Callers don't carry knowledge of the `Event.AttemptNumber` field or `msg.Metadata().NumDelivered`.
 
-Legacy behavior preserved.
+The existing `publishEvent` (used by `Complete` and `Fail*` paths) is **unchanged**. No "pass 0 for legacy" anywhere.
 
-### Worker dispatch — emit step.started before handler
+### Worker dispatch — three lines of integration
 
-Inserted in `worker/worker.go` between current lines 706-707 (after `tc.workerID = w.workerID`, before `err = handler(tc)`):
+Inserted in `worker/worker.go` between current lines 706-707:
 
 ```go
 tc.workerID = w.workerID
 
-meta, err := msg.Metadata()
-if err != nil {
-    slog.ErrorContext(ctx, "failed to read msg metadata",
+if err := tc.publishStarted(msg); err != nil {
+    slog.ErrorContext(ctx, "failed to begin attempt — NAK and retry",
         "error", err,
         "task_type", taskType,
         "run_id", payload.RunID,
         "step_id", payload.StepID,
-    )
-    msg.NakWithDelay(1 * time.Second)
-    return
-}
-attempt := int(meta.NumDelivered)
-if err := tc.publishEvent(
-    protocol.EventStepStarted, nil, attempt,
-); err != nil {
-    slog.ErrorContext(ctx, "failed to publish step.started",
-        "error", err,
-        "task_type", taskType,
-        "run_id", payload.RunID,
-        "step_id", payload.StepID,
-        "attempt", attempt,
     )
     msg.NakWithDelay(1 * time.Second)
     return
@@ -157,6 +168,8 @@ if err := tc.publishEvent(
 
 err = handler(tc)
 ```
+
+The dispatch loop's reader doesn't need to think about NumDelivered, msg metadata, or AttemptNumber assignment. Those live entirely inside `publishStarted`.
 
 ### Failure-mode rationale
 
@@ -173,7 +186,8 @@ The event carries enough information in its envelope (`RunID`, `StepID`, `Worker
 - `TestWorker_PublishesStepStartedBeforeHandler` — dispatch a task, register a handler that captures the moment of invocation, drain the history stream, assert `step.started` arrives BEFORE the handler observed its input. `AttemptNumber=1`, `WorkerID` populated.
 - `TestWorker_PublishStartedFailure_NaksAndRetries` — close the JetStream connection mid-test (or inject error), dispatch a task, assert handler never invoked, message NAK'd, redelivery happens. Verifies the failure-mode policy.
 - `TestWorker_AttemptNumberFromNumDelivered` — register a handler that errors on first call (NAK path), succeeds on second. Assert two `step.started` events with `AttemptNumber=1` and `AttemptNumber=2`.
-- `TestPublishEvent_AppliesAttemptNumber` — unit test on `taskContext.publishEvent` confirming the new param flows into the published Event.
+- `TestPublishStarted_PanicsOnNilMsg` — defends the assertion contract.
+- `TestPublishStarted_PanicsOnEmptyRunID` — defends the assertion contract.
 
 ---
 
@@ -450,26 +464,41 @@ Option-B promise from the brainstorming: spell out concretely what each follow-u
 
 **Root cause** (independent of #137): `worker/worker.go:767-774` — the regular-error branch of `handleTaskError` calls `NakWithDelay` but never publishes `step.failed`. Engine never observes the failure, just an eventual redelivery.
 
-**Fix after #137 lands:**
+**Fix after #137 lands:** add `tc.publishFailed(msg, payload)` helper following the same per-event-type pattern as `publishStarted`, then call it from `handleTaskError`'s regular-error branch.
 
 ```go
-// In handleTaskError's regular-error branch (around line 767):
+// worker/context.go — NEW (parallel to publishStarted):
+func (c *taskContext) publishFailed(
+    msg jetstream.Msg, payload protocol.StepFailedPayload,
+) error {
+    if msg == nil {
+        panic("publishFailed: msg must not be nil")
+    }
+    meta, err := msg.Metadata()
+    if err != nil {
+        return err
+    }
+    data, err := json.Marshal(payload)
+    if err != nil {
+        return err
+    }
+    evt := protocol.NewStepEvent(
+        protocol.EventStepFailed, c.runID, c.stepID, data,
+    )
+    evt.WorkerID = c.workerID
+    evt.AttemptNumber = int(meta.NumDelivered)
+    /* same publish-msg pipeline as publishStarted */
+}
+
+// worker/worker.go — handleTaskError's regular-error branch:
 slog.Error("task handler returned error, will retry", ...)
 w.stepRetries.Add(context.Background(), 1)
 
-// NEW: emit step.failed before NAK so engine sees the failure.
-attempt := 1
-if meta, mErr := msg.Metadata(); mErr == nil {
-    attempt = int(meta.NumDelivered)
-}
-data, _ := json.Marshal(protocol.StepFailedPayload{
-    Error:       err.Error(),
+if err := tc.publishFailed(msg, protocol.StepFailedPayload{
+    Error:       handlerErr.Error(),
     FailureType: protocol.FailureTypeRetriable,
-})
-if pErr := tc.publishEvent(
-    protocol.EventStepFailed, data, attempt,
-); pErr != nil {
-    slog.Error("failed to publish step.failed", "error", pErr, ...)
+}); err != nil {
+    slog.Error("failed to publish step.failed", "error", err, ...)
     // proceed with NAK regardless — engine missing the event is
     // fixable by replay; double-NAKing is fixable by msg dedup.
 }
@@ -477,7 +506,7 @@ if pErr := tc.publishEvent(
 msg.NakWithDelay(5 * time.Second)
 ```
 
-**What changes:** `step.failed` event now has `AttemptNumber` set per §1, so msg-id is `<run>.<step>.step.failed.<N>` — distinct per attempt. Engine's existing `step.failed` handler processes the event.
+**What changes:** `step.failed` event now has `AttemptNumber` set, so msg-id is `<run>.<step>.step.failed.<N>` — distinct per attempt. Engine's existing `step.failed` handler processes the event. The `Complete` and `FailRetryAfter`/`FailPermanent` paths still go through the existing `publishEvent` (unchanged) — they don't need attempt-numbering yet because each fires only once per step.
 
 **Tests:** end-to-end where handler returns regular error, assert: history contains `step.failed (attempt 1)` BEFORE the NAK redelivery, engine state shows `Attempts=1, Status=Failed` (or Queued for retry depending on engine's existing logic).
 
@@ -544,7 +573,7 @@ The PR is contained to `protocol/`, `worker/`, and `internal/engine/`. **Rollbac
 
 - [ ] `protocol.Event.AttemptNumber` added with `omitempty` JSON tag.
 - [ ] `protocol.NATSMsgID()` includes attempt suffix when `AttemptNumber > 0`, tested with `TestNATSMsgID_*` cases.
-- [ ] `worker.taskContext.publishEvent` signature extended to accept `attemptNumber int`. All existing callsites updated to pass `0`.
+- [ ] `worker.taskContext.publishStarted(msg)` method added. Reads `NumDelivered` from msg metadata, sets `AttemptNumber`, publishes step.started. Existing `publishEvent` unchanged.
 - [ ] Worker publishes `step.started` at `worker/worker.go:~707` (before `handler(tc)` invocation), with `attempt = msg.Metadata().NumDelivered`. Failure-mode is log + NAK with 1s delay.
 - [ ] Engine publishes `step.queued` at the dispatch site (post-`PublishMsg` to TASK_QUEUES). Failure-mode is log + proceed (no rollback). New helper `internal/engine/event_publisher.go`.
 - [ ] Engine `onEvent` switch (`internal/engine/orchestrator.go:250-310`) gains cases for `EventStepQueued` and `EventStepStarted`, each routing to a dedicated handler with monotonic guards.
@@ -568,8 +597,8 @@ For orientation, not as a prescription. Writing-plans owns the actual sequencing
 
 - `protocol/protocol.go` — add `AttemptNumber int` field to `Event`, update `NATSMsgID()` to include suffix.
 - `protocol/protocol_test.go` — append `TestNATSMsgID_*`, `TestEvent_MarshalRoundTrip_PreservesAttemptNumber`, `TestEvent_UnmarshalLegacyMissingAttempt`.
-- `worker/context.go` — extend `publishEvent` signature; update existing callers at lines 113, 223 to pass `0`.
-- `worker/worker.go` — insert `step.started` publish between current lines 706-707, with `NumDelivered`-based attempt number and NAK-on-failure path.
+- `worker/context.go` — add new `publishStarted(msg)` method. **Existing `publishEvent` is unchanged.**
+- `worker/worker.go` — insert 3-line `tc.publishStarted(msg)` call between current lines 706-707, with NAK-on-failure path. The helper hides metadata + AttemptNumber + publish.
 - `worker/lifecycle_event_test.go` (new) or append to existing `worker/consumer_subscribe_test.go` — `TestWorker_PublishesStepStartedBeforeHandler`, `TestWorker_PublishStartedFailure_NaksAndRetries`, `TestWorker_AttemptNumberFromNumDelivered`, `TestPublishEvent_AppliesAttemptNumber`.
 - `internal/engine/event_publisher.go` (new) — `publishLifecycleEvent` helper.
 - `internal/engine/orchestrator.go` — add `step.queued` publish at dispatch site; add `EventStepQueued` and `EventStepStarted` cases to `onEvent` switch; new methods `handleStepQueued` and `handleStepStarted`.
