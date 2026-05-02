@@ -56,6 +56,13 @@ func NewScheduler(nc *nats.Conn) (*Scheduler, error) {
 
 // AddTrigger registers a cron trigger. Only processes triggers with Cron
 // config. Panics on empty ID (programmer error).
+//
+// Contract: AddTrigger MUST NOT publish workflow.started. The next fire
+// is computed by the steady-state Tick path on cron-time match. Missed
+// fires are replayed by Backfill, gated on def.Cron.Backfill==true.
+// Issue #139 — registering a future-only cron with backfill:false must
+// never trigger an immediate run. The cron_backfill_test.go suite is a
+// regression guard for this contract.
 func (s *Scheduler) AddTrigger(def TriggerDef) error {
 	if def.ID == "" {
 		panic("AddTrigger: trigger ID must not be empty")
@@ -193,12 +200,19 @@ func (s *Scheduler) Backfill() error {
 }
 
 // backfillTrigger replays missed schedules for a single trigger.
+// Returns immediately when def.Cron.Backfill is false — this is a
+// defense-in-depth guard duplicating the filter in Backfill, so a
+// direct caller (or a future entry point) cannot accidentally replay
+// missed fires for a trigger authored with backfill:false. See #139.
 func (s *Scheduler) backfillTrigger(def TriggerDef) error {
 	if def.ID == "" {
 		panic("backfillTrigger: def.ID is empty")
 	}
 	if def.Cron == nil {
 		panic("backfillTrigger: def.Cron is nil")
+	}
+	if !def.Cron.Backfill {
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(
