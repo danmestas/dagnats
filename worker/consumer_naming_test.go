@@ -60,3 +60,39 @@ func TestDefaultAckWait_IsFiveMinutes(t *testing.T) {
 		t.Fatalf("defaultAckWait must be positive, got %v", defaultAckWait)
 	}
 }
+
+func TestConsumerNameFor(t *testing.T) {
+	cases := []struct {
+		name            string
+		taskType, group string
+		want            string
+	}{
+		{"default_branch_simple", "render", "", "workers-render"},
+		{"default_branch_dotted", "render.gpu", "", "workers-render-gpu"},
+		{"default_branch_hyphenated", "nasr-ingest", "", "workers-nasr-ingest"},
+		{"groups_branch_simple", "render", "gpu", "workers-render-gpu"},
+		{"groups_branch_dotted_group", "render", "gpu.fast", "workers-render-gpu-fast"},
+		{"groups_branch_safe_escape", "render", "gpu*1", "workers-render-gpu_1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := consumerNameFor(tc.taskType, tc.group)
+			if got != tc.want {
+				t.Fatalf("consumerNameFor(%q, %q) = %q, want %q",
+					tc.taskType, tc.group, got, tc.want)
+			}
+			if got == "" {
+				t.Fatal("consumerNameFor returned empty")
+			}
+		})
+	}
+}
+
+func TestConsumerNameFor_RejectsEmptyTaskType(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on empty taskType, got none")
+		}
+	}()
+	consumerNameFor("", "")
+}

@@ -41,3 +41,26 @@ func sanitizeConsumerName(s string) string {
 	}
 	return string(out)
 }
+
+// consumerNameFor produces the durable consumer name for a (taskType, group)
+// pair. group=="" means the default branch. Both inputs are sanitized via
+// sanitizeConsumerName before being concatenated under the "workers-" prefix.
+// The "workers-" prefix is reserved for dagnats-managed consumers.
+func consumerNameFor(taskType, group string) string {
+	if taskType == "" {
+		panic("consumerNameFor: taskType must not be empty")
+	}
+	if group == "" {
+		out := "workers-" + sanitizeConsumerName(taskType)
+		if out == "" {
+			panic("consumerNameFor: result must not be empty")
+		}
+		return out
+	}
+	out := "workers-" + sanitizeConsumerName(taskType) + "-" +
+		sanitizeConsumerName(group)
+	if out == "" {
+		panic("consumerNameFor: result must not be empty")
+	}
+	return out
+}
