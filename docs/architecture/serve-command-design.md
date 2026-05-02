@@ -51,7 +51,7 @@ type Server struct {
     cfg       Config
     ns        *natsserver.Server
     nc        *nats.Conn
-    orch      *engine.ActorOrchestrator // actor-based, per-run in-memory state
+    orch      *engine.Orchestrator      // event-sourced, KV-backed run state
     api       *api.Service
     trig      *trigger.TriggerService
     http      *http.Server
@@ -68,7 +68,7 @@ type Server struct {
 4. `natsutil.SetupAll(nc)` — streams, KV buckets, telemetry stream
 5. `simple.SetupTelemetry(nc)` — tracing, metrics, logging; capture shutdown func
 6. `api.NewService(nc, tel)` — control plane
-7. `engine.NewActorOrchestrator(nc, tel)` — actor-based workflow execution
+7. `engine.NewOrchestrator(nc, tel)` — event-sourced workflow execution
 8. `trigger.NewTriggerService(nc)` — cron/subject/webhook
 9. `orch.Start()` + `trig.Start()` — subscribe to streams
 10. Start HTTP server (non-blocking)
@@ -78,7 +78,7 @@ type Server struct {
 
 1. HTTP server graceful shutdown (5s timeout)
 2. `trig.Stop()` — unsubscribe triggers, stop scheduler
-3. `orch.Stop()` — unsubscribe from history stream, stop all actors
+3. `orch.Stop()` — unsubscribe from history stream, drain handlers
 4. `telStop()` — cancel Jaeger exporter, flush pending spans
 5. `nc.Drain()` — flush pending NATS messages
 6. `ns.Shutdown()` — stop embedded NATS
