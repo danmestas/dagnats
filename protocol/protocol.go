@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -90,14 +91,15 @@ const (
 // Event is the core communication primitive published to the history stream.
 // Payload carries event-specific data as raw JSON to keep the type schema-agnostic.
 type Event struct {
-	Type        EventType       `json:"type"`
-	RunID       string          `json:"run_id"`
-	StepID      string          `json:"step_id,omitempty"`
-	Timestamp   time.Time       `json:"timestamp"`
-	Payload     json.RawMessage `json:"payload,omitempty"`
-	TraceParent string          `json:"trace_parent,omitempty"`
-	TraceState  string          `json:"trace_state,omitempty"`
-	WorkerID    string          `json:"worker_id,omitempty"`
+	Type          EventType       `json:"type"`
+	RunID         string          `json:"run_id"`
+	StepID        string          `json:"step_id,omitempty"`
+	Timestamp     time.Time       `json:"timestamp"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
+	TraceParent   string          `json:"trace_parent,omitempty"`
+	TraceState    string          `json:"trace_state,omitempty"`
+	WorkerID      string          `json:"worker_id,omitempty"`
+	AttemptNumber int             `json:"attempt_number,omitempty"`
 }
 
 // NewStepEvent constructs an Event for a step lifecycle transition.
@@ -155,7 +157,11 @@ func (e Event) NATSMsgID() string {
 	if e.StepID == "" {
 		return e.RunID + "." + string(e.Type)
 	}
-	return e.RunID + "." + e.StepID + "." + string(e.Type)
+	base := e.RunID + "." + e.StepID + "." + string(e.Type)
+	if e.AttemptNumber > 0 {
+		return base + "." + strconv.Itoa(e.AttemptNumber)
+	}
+	return base
 }
 
 // Marshal serializes the event to JSON for publishing to NATS.

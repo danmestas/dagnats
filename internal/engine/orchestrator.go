@@ -250,6 +250,8 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 func isHandledEventType(t protocol.EventType) bool {
 	switch t {
 	case protocol.EventWorkflowStarted,
+		protocol.EventStepQueued,
+		protocol.EventStepStarted,
 		protocol.EventStepCompleted,
 		protocol.EventStepContinue,
 		protocol.EventStepFailed,
@@ -302,6 +304,10 @@ func (o *Orchestrator) dispatchEvent(
 		return o.handleStepContinue(ctx, evt)
 	case protocol.EventStepFailed:
 		return o.handleStepFailed(ctx, evt)
+	case protocol.EventStepStarted:
+		return o.handleStepStarted(ctx, evt)
+	case protocol.EventStepQueued:
+		return o.handleStepQueued(ctx, evt)
 	case protocol.EventWorkflowSpawn:
 		return o.handleWorkflowSpawn(ctx, evt)
 	case protocol.EventWorkflowChildCompleted:
@@ -956,8 +962,10 @@ func (o *Orchestrator) handleStepFailed(
 		)
 	}
 
+	// Attempts is owned by step.queued / step.started lifecycle events
+	// (max() rule in handleStepQueued/handleStepStarted). step.failed
+	// fires within an attempt and must not touch the counter.
 	state := run.Steps[evt.StepID]
-	state.Attempts++
 
 	failPayload := parseFailPayload(evt.Payload)
 	state.Error = failPayload.Error
@@ -1494,6 +1502,34 @@ func (o *Orchestrator) enqueueReady(
 	}
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
+	}
+	// Emit step.queued BEFORE dispatching the task — otherwise on a fast
+	// transport the worker can pick up the task and emit step.started
+	// before the engine's step.queued lands in the history stream,
+	// producing out-of-order timestamps. The publish-before-dispatch
+	// ordering matches the semantic ordering. Failure to publish is
+	// logged but doesn't roll back the dispatch (the task is the
+	// load-bearing artifact; step.queued is observability).
+	// Map / sleep / wait / sub-workflow / approval steps have their own
+	// typed lifecycle events and are excluded here.
+	for _, step := range ready {
+		if step.Type != dag.StepTypeNormal && step.Type != dag.StepTypeAgentLoop {
+			continue
+		}
+		qEvt := protocol.NewStepEvent(
+			protocol.EventStepQueued, run.RunID, step.ID, nil,
+		)
+		qEvt.AttemptNumber = 1
+		if err := publishLifecycleEvent(ctx, o.js, qEvt); err != nil {
+			slog.ErrorContext(ctx, "failed to publish step.queued",
+				"error", err,
+				"run_id", run.RunID,
+				"step_id", step.ID,
+			)
+			// Do NOT roll back the dispatch on publish failure —
+			// step.queued is observability-only; missing it is not
+			// correctness-fatal. See spec §3.
+		}
 	}
 	return o.dispatchReadySteps(ctx, wfDef, run, ready)
 }
@@ -2588,4 +2624,99 @@ func countActiveSteps(run dag.WorkflowRun) int {
 		}
 	}
 	return count
+}
+
+// handleStepStarted transitions the step from Queued to Running and
+// updates the attempt counter. Monotonic: refuses to regress a
+// terminal state — a stale step.started arriving after the engine
+// already saw step.completed/step.failed is logged and ignored.
+//
+// Attempts uses max() rule so out-of-order delivery cannot decrement
+// the counter; a higher AttemptNumber wins.
+func (o *Orchestrator) handleStepStarted(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleStepStarted: evt.RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleStepStarted: evt.StepID must not be empty")
+	}
+
+	run, err := o.store.Load(ctx, evt.RunID)
+	if err != nil {
+		return fmt.Errorf("load run %q: %w", evt.RunID, err)
+	}
+	state, ok := run.Steps[evt.StepID]
+	if !ok {
+		slog.WarnContext(ctx,
+			"step.started for unknown step",
+			"run_id", evt.RunID,
+			"step_id", evt.StepID,
+		)
+		return nil
+	}
+
+	// Monotonic guard — don't regress a terminal state.
+	if state.Status == dag.StepStatusCompleted ||
+		state.Status == dag.StepStatusFailed {
+		slog.WarnContext(ctx,
+			"stale step.started ignored — step is terminal",
+			"run_id", evt.RunID,
+			"step_id", evt.StepID,
+			"current_status", state.Status,
+			"event_attempt", evt.AttemptNumber,
+		)
+		return nil
+	}
+
+	state.Status = dag.StepStatusRunning
+	if evt.AttemptNumber > state.Attempts {
+		state.Attempts = evt.AttemptNumber
+	}
+	run.Steps[evt.StepID] = state
+	return o.saveSnapshot(ctx, run)
+}
+
+// handleStepQueued is mostly a no-op during normal operation — the
+// engine's dispatch path already set Status to Queued before it
+// emitted this event. The handler exists for state recovery on
+// engine restart, where the history stream is replayed and the
+// engine reconstructs run state from events alone.
+//
+// Monotonic: refuses to roll back from Running, Completed, Failed.
+func (o *Orchestrator) handleStepQueued(
+	ctx context.Context, evt protocol.Event,
+) error {
+	if evt.RunID == "" {
+		panic("handleStepQueued: evt.RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("handleStepQueued: evt.StepID must not be empty")
+	}
+
+	run, err := o.store.Load(ctx, evt.RunID)
+	if err != nil {
+		return fmt.Errorf("load run %q: %w", evt.RunID, err)
+	}
+	state, ok := run.Steps[evt.StepID]
+	if !ok {
+		slog.WarnContext(ctx,
+			"step.queued for unknown step",
+			"run_id", evt.RunID, "step_id", evt.StepID,
+		)
+		return nil
+	}
+	if state.Status == dag.StepStatusCompleted ||
+		state.Status == dag.StepStatusFailed ||
+		state.Status == dag.StepStatusRunning {
+		// Already past Queued — don't roll back.
+		return nil
+	}
+	state.Status = dag.StepStatusQueued
+	if evt.AttemptNumber > state.Attempts {
+		state.Attempts = evt.AttemptNumber
+	}
+	run.Steps[evt.StepID] = state
+	return o.saveSnapshot(ctx, run)
 }

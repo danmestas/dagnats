@@ -704,6 +704,18 @@ func (w *Worker) handleMessage(
 		w.checkpointKV, w.signalKV,
 	)
 	tc.workerID = w.workerID
+
+	if err := tc.publishStarted(msg); err != nil {
+		slog.ErrorContext(ctx, "failed to begin attempt — NAK and retry",
+			"error", err,
+			"task_type", taskType,
+			"run_id", payload.RunID,
+			"step_id", payload.StepID,
+		)
+		msg.NakWithDelay(1 * time.Second)
+		return
+	}
+
 	err = handler(tc)
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Record(ctx, elapsed)

@@ -68,9 +68,49 @@ func TestWorkerHandlesTask(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
+	evt = nextEventOfType(t, sub, protocol.EventStepCompleted, 5*time.Second, evt)
 	if evt.Type != protocol.EventStepCompleted {
 		t.Fatalf("event type = %q, want %q", evt.Type, protocol.EventStepCompleted)
 	}
+}
+
+// nextEventOfType drains events from sub until one of type want is found
+// (or timeout elapses). The first event peeked by the caller is passed in
+// as `first`; if it already matches, it is returned unchanged. Otherwise
+// the helper consumes additional messages until match or timeout. On
+// timeout it calls t.Fatalf with the last observed type. Used by tests
+// that previously assumed step.completed was the first event published —
+// since Task 4 of #137, step.started precedes the terminal event.
+func nextEventOfType(
+	t *testing.T,
+	sub *nats.Subscription,
+	want protocol.EventType,
+	timeout time.Duration,
+	first protocol.Event,
+) protocol.Event {
+	t.Helper()
+	if first.Type == want {
+		return first
+	}
+	deadline := time.Now().Add(timeout)
+	last := first.Type
+	for time.Now().Before(deadline) {
+		msg, err := sub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		var evt protocol.Event
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			t.Fatalf("nextEventOfType: Unmarshal: %v", err)
+		}
+		last = evt.Type
+		if evt.Type == want {
+			return evt
+		}
+	}
+	t.Fatalf("nextEventOfType: timed out waiting for %q, last seen %q",
+		want, last)
+	return protocol.Event{}
 }
 
 func TestWorkerNaksOnHandlerError(t *testing.T) {
@@ -466,6 +506,7 @@ func TestWorkerNonRetryableErrorAcks(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
+	evt = nextEventOfType(t, sub, protocol.EventStepFailed, 2*time.Second, evt)
 	if evt.Type != protocol.EventStepFailed {
 		t.Fatalf(
 			"event = %q, want %q",
@@ -604,13 +645,23 @@ func TestNonRetryableErrorPublishesNonRetriablePayload(t *testing.T) {
 		"history.run-np", "",
 		nats.BindStream("WORKFLOW_HISTORY"),
 	)
-	msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+	// Fetch up to 2: step.started (since #137 Task 4) precedes step.failed.
+	msgs, err := sub.Fetch(2, nats.MaxWait(5*time.Second))
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 
 	var evt protocol.Event
-	json.Unmarshal(msgs[0].Data, &evt)
+	for _, m := range msgs {
+		var candidate protocol.Event
+		if err := json.Unmarshal(m.Data, &candidate); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if candidate.Type == protocol.EventStepFailed {
+			evt = candidate
+			break
+		}
+	}
 	if evt.Type != protocol.EventStepFailed {
 		t.Fatalf("event type = %q, want step.failed", evt.Type)
 	}

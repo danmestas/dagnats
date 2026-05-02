@@ -128,13 +128,16 @@ func advanceCompleted(
 // advanceFailed handles a step failure event. For non-retriable failures
 // the step is marked Failed and the workflow fails. Also resolves any
 // SkipIf conditions that trigger on the failed step.
+//
+// Attempts is owned by step.queued / step.started lifecycle events
+// (max() rule in handleStepQueued/handleStepStarted). step.failed
+// fires within an attempt and must not touch the counter.
 func advanceFailed(
 	def dag.WorkflowDef,
 	run dag.WorkflowRun,
 	evt Event,
 ) (dag.WorkflowRun, []SideEffect) {
 	state := run.Steps[evt.StepID]
-	state.Attempts++
 	state.Error = evt.FailPayload.Error
 
 	if evt.FailPayload.FailureType == FailureTypeNonRetriable {

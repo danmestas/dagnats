@@ -776,8 +776,24 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 	})
 	time.Sleep(200 * time.Millisecond)
 
-	// Fail 3 times (> MaxAttempts of 2)
+	// Fail 3 times (> MaxAttempts of 2). Mirror production: worker
+	// emits step.started before step.failed. Attempts is owned by
+	// step.queued/step.started lifecycle events (max() rule);
+	// step.failed only updates state.
 	for i := 0; i < 3; i++ {
+		startedEvt := protocol.NewStepEvent(
+			protocol.EventStepStarted, "exhaust-run-1", "s1", nil,
+		)
+		startedEvt.AttemptNumber = i + 1
+		startedData, _ := startedEvt.Marshal()
+		js.PublishMsg(&nats.Msg{
+			Subject: startedEvt.NATSSubject(), Data: startedData,
+			Header: nats.Header{
+				"Nats-Msg-Id": {startedEvt.NATSMsgID()},
+			},
+		})
+		time.Sleep(50 * time.Millisecond)
+
 		failEvt := protocol.NewStepEvent(
 			protocol.EventStepFailed, "exhaust-run-1", "s1",
 			[]byte(`"permanent error"`))
@@ -3315,6 +3331,22 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 		t.Fatalf("task-a not enqueued: %v", taskErr)
 	}
 	taskMsg.Ack()
+
+	// Mirror production: worker emits step.started before step.failed.
+	// Attempts is owned by step.queued/step.started lifecycle events
+	// (max() rule); step.failed only updates state.
+	startedEvt := protocol.NewStepEvent(
+		protocol.EventStepStarted, "run-nr-1", "a", nil,
+	)
+	startedEvt.AttemptNumber = 1
+	startedData, _ := startedEvt.Marshal()
+	js.PublishMsg(&nats.Msg{
+		Subject: startedEvt.NATSSubject(),
+		Data:    startedData,
+		Header: nats.Header{
+			"Nats-Msg-Id": {startedEvt.NATSMsgID()},
+		},
+	})
 
 	failPayload, _ := json.Marshal(protocol.StepFailedPayload{
 		Error:       "permanent error",
