@@ -38,3 +38,4 @@ This convention makes dependency between proposals explicit and prevents acciden
 - `adr-007-unify-consumer-paths.md` — unify default + elastic paths (Proposed).
 - `adr-009-remove-experimental-actor-orchestrator.md` — delete unused `WorkflowActor` / `ActorOrchestrator`, single orchestrator path.
 - `adr-010-cross-process-consumer-collision-detection.md` — runtime check that panics when a different process already owns our durable name with a different filter subject.
+- `adr-011-engine-sole-retry-authority.md` — engine owns Attempts, retry timing, and timeout enforcement; closes #141, #147, #140.

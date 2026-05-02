@@ -27,8 +27,10 @@ const (
 	TimerActionRateRetry       TimerAction = "rate_retry"
 	TimerActionWaitTimeout     TimerAction = "wait_timeout"
 	TimerActionRetryAfter      TimerAction = "retry_after"
+	TimerActionRetryBackoff    TimerAction = "retry_backoff"
 	TimerActionTaskConcurRetry TimerAction = "task_concurrency_retry"
 	TimerActionDebounce        TimerAction = "debounce_fire"
+	TimerActionStepTimeout     TimerAction = "step_timeout"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
@@ -52,14 +54,22 @@ type TimerMessage struct {
 // used for stale timer detection.
 type DebounceHandler func(tm TimerMessage, seq uint64)
 
+// StepTimeoutHandler is called when a step_timeout timer fires.
+// The handler owns the staleness check (compare current run state
+// vs the (runID, stepID, attempt) baked into the timer) and the
+// synthetic step.failed publish. Hosting this on the orchestrator
+// avoids piping a SnapshotStore into SleepTimer.
+type StepTimeoutHandler func(tm TimerMessage)
+
 // SleepTimer manages durable timers via NakWithDelay on the
 // SLEEP_TIMERS stream. Subscribes to sleep.> subjects.
 type SleepTimer struct {
-	nc         *nats.Conn
-	js         jetstream.JetStream
-	cc         jetstream.ConsumeContext
-	onDebounce DebounceHandler
-	startOnce  sync.Once
+	nc            *nats.Conn
+	js            jetstream.JetStream
+	cc            jetstream.ConsumeContext
+	onDebounce    DebounceHandler
+	onStepTimeout StepTimeoutHandler
+	startOnce     sync.Once
 }
 
 // NewSleepTimer creates a SleepTimer bound to the given connection.
@@ -127,6 +137,16 @@ func (st *SleepTimer) OnDebounce(fn DebounceHandler) {
 	st.onDebounce = fn
 }
 
+// OnStepTimeout sets the handler called when a step_timeout timer
+// fires. Must be called before Start. The handler owns the
+// staleness check and synthetic step.failed publish.
+func (st *SleepTimer) OnStepTimeout(fn StepTimeoutHandler) {
+	if fn == nil {
+		panic("OnStepTimeout: fn must not be nil")
+	}
+	st.onStepTimeout = fn
+}
+
 // Stop drains the subscription. Safe to call multiple times.
 func (st *SleepTimer) Stop() {
 	if st.cc != nil {
@@ -137,6 +157,9 @@ func (st *SleepTimer) Stop() {
 
 // Schedule publishes a timer message to sleep.{runID}.{stepID}.
 // Uses Nats-Msg-Id for dedup so duplicate schedules are harmless.
+// MsgID embeds the Action so different timer kinds for the same
+// (run, step, attempt) — e.g. step_timeout AND retry_backoff for
+// the same failed attempt — never collide on dedup.
 func (st *SleepTimer) Schedule(ctx context.Context, msg TimerMessage) error {
 	if msg.RunID == "" {
 		panic("SleepTimer.Schedule: RunID must not be empty")
@@ -154,13 +177,17 @@ func (st *SleepTimer) Schedule(ctx context.Context, msg TimerMessage) error {
 	subject := fmt.Sprintf(
 		"sleep.%s.%s", msg.RunID, msg.StepID,
 	)
+	action := string(msg.Action)
+	if action == "" {
+		action = "sleep"
+	}
 	msgID := fmt.Sprintf(
-		"%s.%s.sleep", msg.RunID, msg.StepID,
+		"%s.%s.%s", msg.RunID, msg.StepID, action,
 	)
 	if msg.Attempt > 0 {
 		msgID = fmt.Sprintf(
-			"%s.%s.sleep.%d",
-			msg.RunID, msg.StepID, msg.Attempt,
+			"%s.%s.%s.%d",
+			msg.RunID, msg.StepID, action, msg.Attempt,
 		)
 	}
 	natsMsg := &nats.Msg{
@@ -244,6 +271,8 @@ func (st *SleepTimer) handleTimerJS(msg jetstream.Msg) {
 		st.fireWaitTimeout(tm)
 	case TimerActionRetryAfter:
 		st.fireRetryAfter(tm)
+	case TimerActionRetryBackoff:
+		st.fireRetryBackoff(tm)
 	case TimerActionApprovalTimeout:
 		st.fireApprovalTimeout(tm)
 	case TimerActionTaskConcurRetry:
@@ -251,6 +280,10 @@ func (st *SleepTimer) handleTimerJS(msg jetstream.Msg) {
 	case TimerActionDebounce:
 		if st.onDebounce != nil {
 			st.onDebounce(tm, meta.Sequence.Stream)
+		}
+	case TimerActionStepTimeout:
+		if st.onStepTimeout != nil {
+			st.onStepTimeout(tm)
 		}
 	default:
 		// Unknown action — ack to prevent loop.
@@ -380,14 +413,54 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	st.js.PublishMsg(ctx, msg)
 }
 
-// fireRetryAfter re-publishes a task after a worker retry delay.
-// Distinct from fireRateRetry to avoid MsgId collisions.
+// fireRetryAfter re-publishes a task after a worker-requested retry
+// delay. Distinct MsgId suffix from rate_retry / retry_backoff so
+// dedup is per-cause and concurrent re-publishes don't collide.
 func (st *SleepTimer) fireRetryAfter(tm TimerMessage) {
 	if tm.RunID == "" {
 		panic("fireRetryAfter: RunID must not be empty")
 	}
 	if tm.TaskType == "" {
 		panic("fireRetryAfter: TaskType must not be empty")
+	}
+	st.republishTask(tm, "retry_after")
+}
+
+// fireRetryBackoff re-publishes a task after a policy-driven backoff
+// delay. Mirrors fireRetryAfter; the only difference is who chose the
+// delay (worker for retry_after, RetryPolicy for retry_backoff). The
+// MsgId suffix differs so the two fire paths never dedup against each
+// other on the same step.
+func (st *SleepTimer) fireRetryBackoff(tm TimerMessage) {
+	if tm.RunID == "" {
+		panic("fireRetryBackoff: RunID must not be empty")
+	}
+	if tm.TaskType == "" {
+		panic("fireRetryBackoff: TaskType must not be empty")
+	}
+	st.republishTask(tm, "retry_backoff")
+}
+
+// republishTask is the shared task re-publish path used by retry_after
+// and retry_backoff timer fires. The kind suffix scopes the dedup
+// MsgId to the cause, so the two paths can fire independently for the
+// same step without colliding. Including Attempt in the MsgId keeps
+// each retry distinct within JetStream's dedup window — without it,
+// a multi-retry backoff loop would dedup attempts 2..N to a no-op.
+//
+// payload.Attempt carries the next attempt number to the worker so
+// step.started fires with the correct AttemptNumber. The original
+// failed attempt is tm.Attempt; the next attempt is tm.Attempt+1.
+// Without this hint the worker would derive AttemptNumber from NATS
+// metadata (NumDelivered=1 on a fresh re-publish), losing the count.
+func (st *SleepTimer) republishTask(
+	tm TimerMessage, kind string,
+) {
+	if kind == "" {
+		panic("republishTask: kind must not be empty")
+	}
+	if tm.RunID == "" {
+		panic("republishTask: RunID must not be empty")
 	}
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 5*time.Second,
@@ -397,17 +470,19 @@ func (st *SleepTimer) fireRetryAfter(tm TimerMessage) {
 		"task.%s.%s", tm.TaskType, tm.RunID,
 	)
 	payload := protocol.TaskPayload{
-		TaskID: tm.RunID + "." + tm.StepID,
-		RunID:  tm.RunID,
-		StepID: tm.StepID,
-		Input:  tm.Input,
+		TaskID:  tm.RunID + "." + tm.StepID,
+		RunID:   tm.RunID,
+		StepID:  tm.StepID,
+		Input:   tm.Input,
+		Attempt: tm.Attempt + 1,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
 	msgID := fmt.Sprintf(
-		"%s.%s.retry_after", tm.RunID, tm.StepID,
+		"%s.%s.%s.%d",
+		tm.RunID, tm.StepID, kind, tm.Attempt,
 	)
 	msg := &nats.Msg{
 		Subject: subject,

@@ -133,6 +133,12 @@ func NewOrchestrator(
 		nc, js, o.sleepTimer, o.tracer,
 	)
 	o.correlator = NewCorrelator(nc, js)
+	// Wire the step timeout watchdog (issue #140). Hooking from the
+	// orchestrator side keeps SleepTimer free of a SnapshotStore
+	// dependency while still letting the fire path do staleness
+	// checks against live run state before publishing a synthetic
+	// step.failed.
+	o.sleepTimer.OnStepTimeout(o.fireStepTimeout)
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -1016,10 +1022,19 @@ func (o *Orchestrator) handleStepFailed(
 		)
 	}
 
-	// Retriable (default): existing backoff behavior.
+	// Retriable (default): schedule the next attempt via the durable
+	// SLEEP_TIMERS path. dag.CalculateDelay drives the wait; the
+	// timer re-publishes the task so step.queued / step.started will
+	// fire fresh for the new attempt. Without this, attempts were
+	// recorded but never re-dispatched (issue #147).
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
 		run.Steps[evt.StepID] = state
-		return o.saveSnapshot(ctx, run)
+		if err := o.saveSnapshot(ctx, run); err != nil {
+			return err
+		}
+		return o.scheduleRetryBackoff(
+			ctx, evt.RunID, evt.StepID, stepDef, policy, run,
+		)
 	}
 
 	state.Status = dag.StepStatusFailed
@@ -1105,6 +1120,175 @@ func (o *Orchestrator) scheduleRetryAfter(
 		Input:      input,
 		Attempt:    run.Steps[stepID].Attempts,
 	})
+}
+
+// scheduleRetryBackoff schedules a timer that re-publishes the task
+// after the policy-derived delay. Mirrors scheduleRetryAfter; the
+// only difference is the delay source (dag.CalculateDelay vs the
+// worker-supplied retryAfterMs) and the timer Action. Both ride the
+// same SLEEP_TIMERS plumbing, which keeps the retry path durable
+// across orchestrator restarts.
+func (o *Orchestrator) scheduleRetryBackoff(
+	ctx context.Context,
+	runID string, stepID string,
+	stepDef dag.StepDef,
+	policy *dag.RetryPolicy,
+	run dag.WorkflowRun,
+) error {
+	if runID == "" {
+		panic("scheduleRetryBackoff: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("scheduleRetryBackoff: stepID must not be empty")
+	}
+	if policy == nil {
+		panic("scheduleRetryBackoff: policy must not be nil")
+	}
+	// state.Attempts is 1-indexed and counts attempts that have
+	// already started (see handleStepStarted's max() rule). The
+	// upcoming attempt is Attempts+1, so the delay before the next
+	// attempt is CalculateDelay(policy, Attempts) — e.g. for
+	// Attempts=1 with exponential the delay is InitialDelay (the
+	// 1st retry), and for Attempts=2 it is InitialDelay*Multiplier.
+	attempts := run.Steps[stepID].Attempts
+	if attempts < 1 {
+		panic("scheduleRetryBackoff: attempts must be >= 1")
+	}
+	delay := dag.CalculateDelay(*policy, attempts)
+	delayMs := delay.Milliseconds()
+	if delayMs < 1 {
+		delayMs = 1
+	}
+	if delayMs > 3_600_000 {
+		delayMs = 3_600_000
+	}
+	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve input for retry-backoff step %q: %w",
+			stepID, err,
+		)
+	}
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
+		Action:     TimerActionRetryBackoff,
+		RunID:      runID,
+		StepID:     stepID,
+		DurationMs: delayMs,
+		TaskType:   stepDef.Task,
+		Input:      input,
+		Attempt:    attempts,
+	})
+}
+
+// scheduleStepTimeout schedules a watchdog timer that fires a
+// synthetic step.failed (retriable) if the step is still on the
+// same attempt when stepDef.Timeout elapses (issue #140). Caller
+// gates on stepDef.Timeout > 0 — entering with zero is a bug.
+//
+// The Attempt field carries the attempt number that was current
+// when the timer was scheduled. fireStepTimeout drops the fire if
+// the step has since moved to a later attempt or terminal status.
+// MsgId encodes Attempt so a step that runs N attempts gets N
+// independent timers, none deduped against the others.
+func (o *Orchestrator) scheduleStepTimeout(
+	ctx context.Context,
+	runID, stepID string,
+	stepDef dag.StepDef,
+	attempt int,
+) error {
+	if runID == "" {
+		panic("scheduleStepTimeout: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("scheduleStepTimeout: stepID must not be empty")
+	}
+	if stepDef.Timeout <= 0 {
+		panic("scheduleStepTimeout: Timeout must be > 0")
+	}
+	if attempt < 1 {
+		panic("scheduleStepTimeout: attempt must be >= 1")
+	}
+	delayMs := stepDef.Timeout.Milliseconds()
+	if delayMs < 1 {
+		delayMs = 1
+	}
+	if delayMs > 24*60*60*1000 {
+		delayMs = 24 * 60 * 60 * 1000
+	}
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
+		Action:     TimerActionStepTimeout,
+		RunID:      runID,
+		StepID:     stepID,
+		DurationMs: delayMs,
+		TaskType:   stepDef.Task,
+		Attempt:    attempt,
+	})
+}
+
+// fireStepTimeout publishes a synthetic step.failed (retriable)
+// for a step whose stepDef.Timeout elapsed while it was still
+// running on the same attempt that scheduled the timer.
+//
+// Staleness is the load-bearing invariant: by the time the timer
+// fires, the step may have completed, failed via worker, been
+// cancelled, or progressed to a later attempt. Any of those means
+// the timer is observing a prior life of the step — drop it.
+//
+// AttemptNumber on the synthetic event piggybacks on Event.NATSMsgID,
+// scoping JetStream dedup to (run, step, attempt) so the timer fire
+// can coexist with a worker step.failed that landed concurrently —
+// engine treats both arrivals as one logical failure for that attempt.
+func (o *Orchestrator) fireStepTimeout(tm TimerMessage) {
+	if tm.RunID == "" {
+		panic("fireStepTimeout: RunID must not be empty")
+	}
+	if tm.StepID == "" {
+		panic("fireStepTimeout: StepID must not be empty")
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	run, err := o.store.Load(ctx, tm.RunID)
+	if err != nil {
+		return // No state to act on — nothing to fail.
+	}
+	state, ok := run.Steps[tm.StepID]
+	if !ok {
+		return // Unknown step — drop.
+	}
+	// Staleness: only fire if the step is still Running on the
+	// exact attempt the timer was scheduled for.
+	if state.Status != dag.StepStatusRunning {
+		return
+	}
+	if state.Attempts != tm.Attempt {
+		return
+	}
+	dur := time.Duration(tm.DurationMs) * time.Millisecond
+	payload := protocol.StepFailedPayload{
+		Error: fmt.Sprintf(
+			"step timeout exceeded (%s)", dur,
+		),
+		FailureType: protocol.FailureTypeRetriable,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	evt := protocol.NewStepEvent(
+		protocol.EventStepFailed,
+		tm.RunID, tm.StepID, data,
+	)
+	evt.AttemptNumber = tm.Attempt
+	if err := publishLifecycleEvent(ctx, o.js, evt); err != nil {
+		slog.WarnContext(ctx,
+			"step timeout: publish step.failed",
+			"run_id", tm.RunID,
+			"step_id", tm.StepID,
+			"error", err,
+		)
+	}
 }
 
 // failWorkflow marks the workflow as permanently failed and releases
@@ -2675,7 +2859,53 @@ func (o *Orchestrator) handleStepStarted(
 		state.Attempts = evt.AttemptNumber
 	}
 	run.Steps[evt.StepID] = state
-	return o.saveSnapshot(ctx, run)
+	if err := o.saveSnapshot(ctx, run); err != nil {
+		return err
+	}
+	// Schedule the per-step watchdog (issue #140). Every
+	// step.started arms a fresh timer; stale fires from prior
+	// attempts are dropped by fireStepTimeout's staleness guard.
+	// Skipping the watchdog on def-load failure is acceptable: the
+	// run is already saved as Running, and the next step.started
+	// (e.g. on retry) will re-arm.
+	wfDef, err := o.loadDef(ctx, run.WorkflowID)
+	if err != nil {
+		return nil
+	}
+	stepDef, found := findStepDef(wfDef, evt.StepID)
+	if !found || stepDef.Timeout <= 0 {
+		return nil
+	}
+	return o.scheduleStepTimeout(
+		ctx, evt.RunID, evt.StepID, stepDef, state.Attempts,
+	)
+}
+
+// loadDef fetches and unmarshals a WorkflowDef from defKV. Split
+// out from loadRunAndDef so callers that already have the run can
+// skip the redundant snapshot load.
+func (o *Orchestrator) loadDef(
+	ctx context.Context, workflowID string,
+) (dag.WorkflowDef, error) {
+	if workflowID == "" {
+		panic("loadDef: workflowID must not be empty")
+	}
+	if o.defKV == nil {
+		panic("loadDef: defKV must not be nil")
+	}
+	entry, err := o.defKV.Get(ctx, workflowID)
+	if err != nil {
+		return dag.WorkflowDef{},
+			fmt.Errorf("load workflow def %q: %w",
+				workflowID, err)
+	}
+	var wfDef dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
+		return dag.WorkflowDef{},
+			fmt.Errorf("unmarshal workflow def %q: %w",
+				workflowID, err)
+	}
+	return wfDef, nil
 }
 
 // handleStepQueued is mostly a no-op during normal operation — the

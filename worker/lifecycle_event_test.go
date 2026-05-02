@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
+	enginepkg "github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -260,12 +262,13 @@ func TestWorker_PublishStartedFailure_NaksAndRetries(t *testing.T) {
 	}
 }
 
-func TestWorker_AttemptNumberFromNumDelivered(t *testing.T) {
-	// Methodology: handler errors on the first call, succeeds on
-	// the second. The first attempt produces AttemptNumber=1, the
-	// post-NAK redelivery produces AttemptNumber=2. Both step.started
-	// events must appear in the history stream with distinct
-	// AttemptNumber values, proving NumDelivered → AttemptNumber.
+func TestWorker_AttemptNumberFromEngineRetry(t *testing.T) {
+	// Methodology: handler errors on the first call, succeeds on the
+	// second. The engine drives the retry loop (issue #141 fix); each
+	// re-dispatch carries payload.Attempt = previous+1 so step.started
+	// fires with the correct AttemptNumber. Both step.started events
+	// must appear in the history stream with distinct AttemptNumber
+	// values, proving payload.Attempt → c.attempt → AttemptNumber.
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -274,6 +277,25 @@ func TestWorker_AttemptNumberFromNumDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JetStream failed: %v", err)
 	}
+
+	wfDef := dag.WorkflowDef{
+		Name: "lifecycle-attempt", Version: "1",
+		DefaultRetry: &dag.RetryPolicy{
+			MaxAttempts:  2,
+			Strategy:     dag.RetryFixed,
+			InitialDelay: 100 * time.Millisecond,
+		},
+		Steps: []dag.StepDef{
+			{ID: "step-r", Task: "retry-attempt", Type: dag.StepTypeNormal},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData, _ := json.Marshal(wfDef)
+	defKV.Put(wfDef.Name, defData)
+
+	orch := enginepkg.NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
 
 	var calls atomic.Int32
 	w := NewWorker(nc)
@@ -287,14 +309,14 @@ func TestWorker_AttemptNumberFromNumDelivered(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	payload := protocol.TaskPayload{
-		RunID:  "run-retry-1",
-		StepID: "step-r",
-	}
-	data, _ := json.Marshal(payload)
-	if _, err := js.Publish("task.retry-attempt.run-retry-1", data); err != nil {
-		t.Fatalf("publish task: %v", err)
-	}
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-retry-1", defData,
+	)
+	startData, _ := startEvt.Marshal()
+	js.Publish(
+		startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()),
+	)
 
 	deadline := time.After(15 * time.Second)
 	for calls.Load() < 2 {
