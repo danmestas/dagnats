@@ -242,6 +242,8 @@ func (w *Worker) Start() {
 		panic("Worker.Start: js must not be nil")
 	}
 
+	assertNoConsumerNameCollisions(w.handlers, w.groups)
+
 	w.bindOptionalKV()
 	w.registerDirectory()
 
@@ -349,73 +351,22 @@ func (w *Worker) subscribeTask(
 		}
 	} else {
 		if len(w.groups) == 0 {
-			subject := "task." + taskType + ".>"
-			cc := w.createConsumer(tt, subject, h)
-			w.stoppers = append(
-				w.stoppers, cc,
-			)
+			cc := w.subscribePullConsumer(tt, "", h)
+			w.stoppers = append(w.stoppers, cc)
 			// Sticky subscription on STICKY_TASKS stream
 			// (separate from TASK_QUEUES to avoid work queue
 			// filter conflict). Missing stream is fine.
-			stickyCC := w.createStickyConsumer(
-				tt, h,
-			)
+			stickyCC := w.createStickyConsumer(tt, h)
 			if stickyCC != nil {
-				w.stoppers = append(
-					w.stoppers, stickyCC,
-				)
+				w.stoppers = append(w.stoppers, stickyCC)
 			}
 		} else {
 			for _, group := range w.groups {
-				subject := "task." + tt + "." +
-					group + ".>"
-				cc := w.createConsumer(
-					tt+"."+group, subject, h,
-				)
-				w.stoppers = append(
-					w.stoppers, cc,
-				)
+				cc := w.subscribePullConsumer(tt, group, h)
+				w.stoppers = append(w.stoppers, cc)
 			}
 		}
 	}
-}
-
-// createConsumer sets up a JetStream pull consumer for the given
-// subject on the TASK_QUEUES stream and starts consuming. Panics
-// on any setup failure — stream misconfiguration is a startup error.
-func (w *Worker) createConsumer(
-	name string, subject string, handler HandlerFunc,
-) jetstream.ConsumeContext {
-	if subject == "" {
-		panic("createConsumer: subject must not be empty")
-	}
-	if handler == nil {
-		panic("createConsumer: handler must not be nil")
-	}
-	cons, err := w.js.CreateOrUpdateConsumer(
-		context.Background(), "TASK_QUEUES",
-		jetstream.ConsumerConfig{
-			FilterSubject: subject,
-			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: jetstream.DeliverAllPolicy,
-		},
-	)
-	if err != nil {
-		panic(
-			"Worker.Start: consumer failed for " +
-				name + ": " + err.Error(),
-		)
-	}
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		w.handleMessage(name, handler, msg)
-	})
-	if err != nil {
-		panic(
-			"Worker.Start: Consume failed for " +
-				name + ": " + err.Error(),
-		)
-	}
-	return cc
 }
 
 // subscribePullConsumer attaches a worker to a durable JetStream pull

@@ -131,10 +131,10 @@ func (l *logCapture) Write(p []byte) (int, error) {
 
 func TestMigration_OrphanEphemeralRemoved(t *testing.T) {
 	// Methodology: pre-seed an ephemeral consumer matching task.render.>,
-	// drive subscribePullConsumer directly (bypassing Start which still
-	// uses the legacy createConsumer path until Task 12), assert the orphan
-	// is deleted, the migration INFO log fires with all five expected
-	// fields, the durable is created, and a published message round-trips.
+	// drive subscribePullConsumer directly to isolate the helper from the
+	// Start() wiring, assert the orphan is deleted, the migration INFO log
+	// fires with all five expected fields, the durable is created, and a
+	// published message round-trips.
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -170,9 +170,8 @@ func TestMigration_OrphanEphemeralRemoved(t *testing.T) {
 
 	var processed atomic.Int32
 	w := NewWorker(nc)
-	// Don't call Handle/Start. Drive helper directly so we exercise the
-	// new path; Start still routes through the legacy createConsumer until
-	// Task 12 wires this in.
+	// Don't call Handle/Start. Drive helper directly so we isolate
+	// subscribePullConsumer from the Start() wiring under test elsewhere.
 
 	logs := captureLogs(t, func() {
 		cc := w.subscribePullConsumer("render", "",
@@ -564,5 +563,53 @@ func TestMigration_NoOrphan(t *testing.T) {
 			t.Fatal("handler not called within 5s")
 		case <-time.After(50 * time.Millisecond):
 		}
+	}
+}
+
+func TestTwoWorkers_SameTaskType_NoPanic(t *testing.T) {
+	// Methodology: two Workers handling render, both Start() against the
+	// same stream. Original repro from #136: WorkQueuePolicy refuses two
+	// consumers with the same FilterSubject; pre-fix this panics with NATS
+	// error 10100. Post-fix both share the durable workers-render.
+	_, nc1 := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc1); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	nc2, err := nats.Connect(nc1.Servers()[0])
+	if err != nil {
+		t.Fatalf("second connect: %v", err)
+	}
+	t.Cleanup(func() { nc2.Close() })
+
+	w1 := NewWorker(nc1)
+	w1.Handle("render", func(ctx TaskContext) error { return nil })
+	w2 := NewWorker(nc2)
+	w2.Handle("render", func(ctx TaskContext) error { return nil })
+
+	w1.Start()
+	t.Cleanup(w1.Stop)
+	w2.Start() // must not panic
+	t.Cleanup(w2.Stop)
+
+	js, err := jetstream.New(nc1)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	cons, err := stream.Consumer(ctx, "workers-render")
+	if err != nil {
+		t.Fatalf("workers-render not present: %v", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.Config.Durable != "workers-render" {
+		t.Fatalf("Durable = %q, want workers-render", info.Config.Durable)
 	}
 }
