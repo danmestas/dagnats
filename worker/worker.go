@@ -508,6 +508,29 @@ func (w *Worker) cleanupOrphanEphemerals(
 		if strings.HasPrefix(info.Name, "workers-") {
 			continue
 		}
+		// Log only when WE actually deleted the orphan. Concurrent
+		// workers that lose the race silently observe the consumer
+		// is already gone; the audit trail records actions taken,
+		// not actions attempted. NATS server's DeleteConsumer is
+		// idempotent across concurrent callers (both succeed), so
+		// we use a pre-delete existence check via Consumer() — the
+		// metadata layer serializes lookups with deletes, giving
+		// us a reliable "did we observe it as still present" signal.
+		if _, err := stream.Consumer(ctx, info.Name); err != nil {
+			if errors.Is(err, jetstream.ErrConsumerNotFound) {
+				continue // sibling worker beat us; nothing to log
+			}
+			panic("cleanupOrphanEphemerals: Consumer lookup for " +
+				info.Name + ": " + err.Error())
+		}
+		err := stream.DeleteConsumer(ctx, info.Name)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrConsumerNotFound) {
+				continue
+			}
+			panic("cleanupOrphanEphemerals: DeleteConsumer for " +
+				info.Name + ": " + err.Error())
+		}
 		slog.Info("removing orphan ephemeral consumer for migration to durable",
 			"consumer_name", info.Name,
 			"filter_subject", info.Config.FilterSubject,
@@ -515,11 +538,6 @@ func (w *Worker) cleanupOrphanEphemerals(
 			"durable_being_claimed", durable,
 			"reason", "ephemeral with matching filter; pre-fix dagnats orphan",
 		)
-		err := stream.DeleteConsumer(ctx, info.Name)
-		if err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
-			panic("cleanupOrphanEphemerals: DeleteConsumer for " +
-				info.Name + ": " + err.Error())
-		}
 	}
 	if err := iter.Err(); err != nil {
 		panic("cleanupOrphanEphemerals: iterator: " + err.Error())

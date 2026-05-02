@@ -18,6 +18,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -345,5 +346,85 @@ func TestMigration_PreservesUnrelatedConsumer(t *testing.T) {
 			strings.Contains(l, "removing orphan") {
 			t.Fatalf("must not log migration for unrelated consumer; got: %s", l)
 		}
+	}
+}
+
+func TestMigration_ConcurrentStartup_OneOrphan(t *testing.T) {
+	// Methodology: pre-seed one orphan ephemeral. Two workers race to
+	// delete it via subscribePullConsumer; both must succeed without
+	// panic, both bind to the same durable, the orphan must be deleted
+	// exactly once, and the migration log fires exactly once (only the
+	// winning worker logs; the loser swallows ErrConsumerNotFound).
+	_, nc1 := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc1); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	nc2, err := nats.Connect(nc1.Servers()[0])
+	if err != nil {
+		t.Fatalf("second connect: %v", err)
+	}
+	t.Cleanup(func() { nc2.Close() })
+
+	js, err := jetstream.New(nc1)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	orphan, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		FilterSubject: "task.render.>",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+	orphanInfo, err := orphan.Info(ctx)
+	if err != nil {
+		t.Fatalf("orphan.Info: %v", err)
+	}
+
+	logs := captureLogs(t, func() {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			w := NewWorker(nc1)
+			cc := w.subscribePullConsumer("render", "",
+				func(ctx TaskContext) error { return nil })
+			t.Cleanup(cc.Stop)
+		}()
+		go func() {
+			defer wg.Done()
+			w := NewWorker(nc2)
+			cc := w.subscribePullConsumer("render", "",
+				func(ctx TaskContext) error { return nil })
+			t.Cleanup(cc.Stop)
+		}()
+		wg.Wait()
+	})
+
+	// Durable exists.
+	if _, err := stream.Consumer(ctx, "workers-render"); err != nil {
+		t.Fatalf("workers-render not created: %v", err)
+	}
+	// Orphan gone.
+	if _, err := stream.Consumer(ctx, orphanInfo.Name); !errors.Is(err,
+		jetstream.ErrConsumerNotFound) {
+		t.Fatalf("orphan still present or unexpected error: %v", err)
+	}
+	// Migration log fired exactly once across both workers.
+	count := 0
+	for _, l := range logs {
+		if strings.Contains(l, "removing orphan ephemeral consumer") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("migration log fired %d times, want 1", count)
 	}
 }
