@@ -58,7 +58,7 @@ Contexts are threaded from entry points through all JetStream/KV operations:
 - Observe telemetry publishes (`WithTimeout(2s)` — must not be cancelled
   by the request they're recording)
 - Setup functions (`WithTimeout(30s)` — bounded startup)
-- WorkflowActor (runs in actor system, no parent request context)
+- Orchestrator handlers (history-stream consumers, no parent request context)
 - Trace context origins (`extractTraceCtxJS` fallback)
 
 **Worker `TaskContext`:** Uses stored `tc.ctx` (from message trace context)

@@ -31,17 +31,13 @@ DagNats was already ~70% actor-like (per-run state, message-driven, supervision 
 
 ## Per-Workflow Actors (`engine/`)
 
-**WorkflowActor** (`engine/workflow_actor.go`):
-- Implements `actor.Actor`
-- Holds `WorkflowRun` + `WorkflowDef` in memory (no per-event KV loads)
-- Handles: started, completed, failed, continue events
-- Still snapshots to KV for durability
-
-**ActorOrchestrator** (`engine/actor_orch.go`):
-- Subscribes to `history.>` stream
-- Routes events to per-run WorkflowActors
-- Spawns actors on demand
-- OneForOne supervision
+**Status (2026-05-02):** The experimental actor-based engine path
+(`WorkflowActor`, `ActorOrchestrator`) was removed (closes #149). See
+[ADR-009](adr-009-remove-experimental-actor-orchestrator.md). It was
+never wired into any `cmd/` binary; production runs through
+`engine.Orchestrator` (event-sourced, per-event KV load of run state).
+The `actor/` runtime package remains for any future exploration.
+Resurrect via `git log` if needed.
 
 ## Agent Step Type
 

@@ -36,3 +36,4 @@ This convention makes dependency between proposals explicit and prevents acciden
 - `adr-005-embedded-nats-cluster-mode.md` — embedded NATS cluster mode.
 - `adr-006-durable-task-queue-consumers.md` — durable consumers on TASK_QUEUES (this fix).
 - `adr-007-unify-consumer-paths.md` — unify default + elastic paths (Proposed).
+- `adr-009-remove-experimental-actor-orchestrator.md` — delete unused `WorkflowActor` / `ActorOrchestrator`, single orchestrator path.

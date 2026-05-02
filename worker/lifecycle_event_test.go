@@ -156,7 +156,108 @@ func TestWorker_PublishesStepStartedBeforeHandler(t *testing.T) {
 }
 
 func TestWorker_PublishStartedFailure_NaksAndRetries(t *testing.T) {
-	t.Skip("publish-failure injection deferred — see #148")
+	// Methodology: inject a publishMsgFunc that fails the FIRST
+	// publishStarted call and delegates to the real js.PublishMsg
+	// thereafter. Worker must NAK the original task message on the
+	// first delivery (handler NEVER invoked) and the retry must
+	// succeed (handler invoked exactly once, completion lands in
+	// history). Proves NAK-and-recover semantics without racy
+	// connection-close trickery — the seam is a function pointer,
+	// chosen over an interface because publishStarted needs exactly
+	// one method (Ousterhout: minimum interface, deepest module).
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	jsCtx, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+
+	// Fail only the FIRST publishStarted call; subsequent calls hit
+	// the real broker so the retry can succeed. The seam is wired
+	// only into publishStarted (Complete/Fail still use c.js.PublishMsg
+	// directly), so every invocation here is a step.started publish —
+	// no subject filtering needed.
+	var startedCalls atomic.Int32
+	injected := func(
+		ctx context.Context, m *nats.Msg,
+		opts ...jetstream.PublishOpt,
+	) (*jetstream.PubAck, error) {
+		if startedCalls.Add(1) == 1 {
+			return nil, fmt.Errorf("injected publish failure")
+		}
+		return jsCtx.PublishMsg(ctx, m, opts...)
+	}
+
+	var handlerCalls atomic.Int32
+	w := NewWorker(nc, withPublishMsgFunc(injected))
+	w.Handle("nak-recover", func(tc TaskContext) error {
+		handlerCalls.Add(1)
+		return tc.Complete([]byte(`"ok"`))
+	})
+	w.Start()
+	defer w.Stop()
+
+	payload := protocol.TaskPayload{
+		RunID:  "run-nak-1",
+		StepID: "step-nak",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if _, err := js.Publish("task.nak-recover.run-nak-1", data); err != nil {
+		t.Fatalf("publish task: %v", err)
+	}
+
+	sub, err := js.SubscribeSync("history.run-nak-1", nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	var sawStartedAttempt2, sawCompleted bool
+	for time.Now().Before(deadline) && !(sawStartedAttempt2 && sawCompleted) {
+		msg, err := sub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		var evt protocol.Event
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
+		}
+		switch evt.Type {
+		case protocol.EventStepStarted:
+			if evt.AttemptNumber == 2 {
+				sawStartedAttempt2 = true
+			}
+		case protocol.EventStepCompleted:
+			sawCompleted = true
+		}
+	}
+
+	// Positive assertions: redelivery published step.started with
+	// AttemptNumber=2, the handler ran on the retry, completion
+	// landed in history.
+	if !sawStartedAttempt2 {
+		t.Fatal("expected step.started with AttemptNumber=2 in history, got none")
+	}
+	if !sawCompleted {
+		t.Fatal("expected step.completed in history, got none")
+	}
+	if got := handlerCalls.Load(); got != 1 {
+		t.Fatalf("handler invoked %d times, want exactly 1 (NAK precedes handler)", got)
+	}
+	// Negative assertion: the seam observed at least 2 step.started
+	// publishes (one rejected, one succeeded). Otherwise the test
+	// would be vacuously green — the recovery path was never traversed.
+	if got := startedCalls.Load(); got < 2 {
+		t.Fatalf("seam saw %d step.started publishes, want >= 2 (failure + retry)", got)
+	}
 }
 
 func TestWorker_AttemptNumberFromNumDelivered(t *testing.T) {
