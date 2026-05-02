@@ -417,6 +417,62 @@ func (w *Worker) createConsumer(
 	return cc
 }
 
+// subscribePullConsumer attaches a worker to a durable JetStream pull
+// consumer on TASK_QUEUES, creating it if absent. Idempotent across
+// worker restarts. Cleans up orphan ephemeral consumers with the same
+// filter subject before creation (see ADR-006 §3, added in Task 7).
+// Panics on setup failure; stream/consumer setup errors are startup-fatal.
+//
+// The durable name and filter subject are derived from (taskType, group)
+// via consumerNameFor and consumerFilterFor. AckWait is the package-private
+// defaultAckWait. Per-task override via WithAckWait is a deferred follow-up.
+func (w *Worker) subscribePullConsumer(
+	taskType, group string, handler HandlerFunc,
+) jetstream.ConsumeContext {
+	if taskType == "" {
+		panic("subscribePullConsumer: taskType must not be empty")
+	}
+	if handler == nil {
+		panic("subscribePullConsumer: handler must not be nil")
+	}
+	if defaultAckWait <= 0 {
+		panic("subscribePullConsumer: defaultAckWait must be positive")
+	}
+
+	durable := consumerNameFor(taskType, group)
+	filter := consumerFilterFor(taskType, group)
+	ctx := context.Background()
+
+	cfg := jetstream.ConsumerConfig{
+		Durable:       durable,
+		Name:          durable,
+		FilterSubject: filter,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckWait:       defaultAckWait,
+		// DLQ routing and retry budgets are the engine's responsibility
+		// (NakWithDelay + attempt count in step state), not NATS's. We
+		// leave NATS unbounded so engine policy isn't silently shadowed.
+		MaxDeliver: -1,
+	}
+	cons, err := w.js.CreateOrUpdateConsumer(ctx, "TASK_QUEUES", cfg)
+	if err != nil {
+		panic("subscribePullConsumer: CreateOrUpdateConsumer for " +
+			durable + ": " + err.Error())
+	}
+
+	tt := taskType
+	h := handler
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		w.handleMessage(tt, h, msg)
+	})
+	if err != nil {
+		panic("subscribePullConsumer: Consume for " + durable + ": " +
+			err.Error())
+	}
+	return cc
+}
+
 // createStickyConsumer sets up a pull consumer on the STICKY_TASKS
 // stream for worker-affinity routing. Returns nil if the stream
 // does not exist — sticky routing is optional.
