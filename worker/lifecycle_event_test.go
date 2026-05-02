@@ -153,3 +153,7 @@ func TestWorker_PublishesStepStartedBeforeHandler(t *testing.T) {
 		t.Fatalf("StepID = %q, want %q", startedEvt.StepID, "step-x")
 	}
 }
+
+func TestWorker_PublishStartedFailure_NaksAndRetries(t *testing.T) {
+	t.Skip("publish-failure injection deferred — see #148")
+}
