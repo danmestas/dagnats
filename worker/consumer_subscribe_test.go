@@ -876,3 +876,99 @@ func TestWorkerStart_NewProcessReclaimsDurable(t *testing.T) {
 		}
 	}
 }
+
+func TestRealisticTaskNames_AllSanitizationPaths(t *testing.T) {
+	// Methodology: register two task types covering the end-to-end-viable
+	// sanitization branches — identity (nasr-ingest) and dot-collapse
+	// (render.gpu). Start the worker, publish one message per type, assert
+	// each is processed by the correct handler. Verify the durable names
+	// match expected by reading back the stream's consumers.
+	//
+	// The safe-escape branch (vendor::ingest → vendor__ingest) is NOT
+	// exercised end-to-end: any character that triggers safe-escape also
+	// makes the resulting filter subject invalid in NATS. That branch is
+	// covered by the unit test in TestSanitizeConsumerName.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	var counts sync.Map
+	w := NewWorker(nc)
+	for _, tt := range []string{"nasr-ingest", "render.gpu"} {
+		tt := tt
+		w.Handle(tt, func(ctx TaskContext) error {
+			v, _ := counts.LoadOrStore(tt, new(atomic.Int32))
+			v.(*atomic.Int32).Add(1)
+			return ctx.Complete([]byte(`"ok"`))
+		})
+	}
+	w.Start()
+	t.Cleanup(w.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for tt, want := range map[string]string{
+		"nasr-ingest": "workers-nasr-ingest",
+		"render.gpu":  "workers-render-gpu",
+	} {
+		cons, err := stream.Consumer(ctx, want)
+		if err != nil {
+			t.Errorf("expected durable %q for task %q: %v", want, tt, err)
+			continue
+		}
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Errorf("Info(%q): %v", want, err)
+			continue
+		}
+		if info.Config.Durable != want {
+			t.Errorf("Durable for %q = %q, want %q",
+				tt, info.Config.Durable, want)
+		}
+	}
+
+	for _, tt := range []string{"nasr-ingest", "render.gpu"} {
+		payload := protocol.TaskPayload{
+			RunID:  "san-" + tt,
+			StepID: "s",
+			Input:  json.RawMessage(`"x"`),
+		}
+		data, _ := json.Marshal(payload)
+		// Subjects allow dots (separator), so render.gpu publishes on
+		// "task.render.gpu.san" — this is the publisher's contract, the
+		// filter "task.render.gpu.>" matches.
+		subj := "task." + tt + ".san"
+		if _, err := js.Publish(ctx, subj, data); err != nil {
+			t.Fatalf("Publish %s: %v", tt, err)
+		}
+	}
+
+	deadline := time.After(10 * time.Second)
+	for {
+		all := true
+		for _, tt := range []string{"nasr-ingest", "render.gpu"} {
+			v, ok := counts.Load(tt)
+			if !ok || v.(*atomic.Int32).Load() == 0 {
+				all = false
+				break
+			}
+		}
+		if all {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("not all task types processed within 10s")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
