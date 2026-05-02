@@ -1503,12 +1503,15 @@ func (o *Orchestrator) enqueueReady(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	if err := o.dispatchReadySteps(ctx, wfDef, run, ready); err != nil {
-		return err
-	}
-	// Emit step.queued for normal/agent-loop steps after the task is on
-	// the queue. Map / sleep / wait / sub-workflow / approval steps have
-	// their own typed lifecycle events and are excluded here.
+	// Emit step.queued BEFORE dispatching the task — otherwise on a fast
+	// transport the worker can pick up the task and emit step.started
+	// before the engine's step.queued lands in the history stream,
+	// producing out-of-order timestamps. The publish-before-dispatch
+	// ordering matches the semantic ordering. Failure to publish is
+	// logged but doesn't roll back the dispatch (the task is the
+	// load-bearing artifact; step.queued is observability).
+	// Map / sleep / wait / sub-workflow / approval steps have their own
+	// typed lifecycle events and are excluded here.
 	for _, step := range ready {
 		if step.Type != dag.StepTypeNormal && step.Type != dag.StepTypeAgentLoop {
 			continue
@@ -1523,13 +1526,12 @@ func (o *Orchestrator) enqueueReady(
 				"run_id", run.RunID,
 				"step_id", step.ID,
 			)
-			// Do NOT roll back — the task is already on TASK_QUEUES
-			// and a worker will pick it up. step.queued is
-			// observability-only at this point in the design;
-			// missing it is not correctness-fatal. See spec §3.
+			// Do NOT roll back the dispatch on publish failure —
+			// step.queued is observability-only; missing it is not
+			// correctness-fatal. See spec §3.
 		}
 	}
-	return nil
+	return o.dispatchReadySteps(ctx, wfDef, run, ready)
 }
 
 // dispatchReadySteps separates map steps from normal steps and
