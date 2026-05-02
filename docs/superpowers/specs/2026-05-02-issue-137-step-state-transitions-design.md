@@ -353,14 +353,13 @@ func (o *Orchestrator) handleStepStarted(
     if evt.AttemptNumber > step.Attempts {
         step.Attempts = evt.AttemptNumber
     }
-    if step.StartedAt.IsZero() {
-        step.StartedAt = evt.Timestamp
-    }
     return o.persistRunState(ctx, state)
 }
 ```
 
-The exact method names (`loadRunState`, `persistRunState`, `state.Step`) are placeholders; implementer swaps to the actual helpers used by existing handlers (`onStepCompleted`, `onStepFailed`).
+The exact method names (`loadRunState`, `persistRunState`, `state.Step`) are placeholders; implementer swaps to the actual helpers used by existing handlers (`onStepCompleted`, `onStepFailed`). In the current code these are `o.store.Load(ctx, runID)` (returns `dag.WorkflowRun`), `o.saveSnapshot(ctx, run)`, and `run.Steps[stepID]` (a value — mutate then re-assign).
+
+**`StepState` does not have a `StartedAt` field** in the current `dag/types.go`. We don't add one in this PR — §8.4 explicitly scopes timestamp-on-state out, and the lifecycle event's own `Timestamp` carries the start time on the wire. If a future PR (e.g., #140's timer arming) needs a stored timestamp, that's its decision.
 
 ### `step.queued` handler
 
@@ -518,7 +517,7 @@ msg.NakWithDelay(5 * time.Second)
 
 **Inputs #137 provides:**
 - `step.started` event has `Timestamp` and `AttemptNumber` — engine knows when the attempt began.
-- The orchestrator's `step.started` handler sets `step.StartedAt`. Adding `step.Timeout` reading from the workflow definition gives all the inputs the deadline computation needs.
+- The `step.started` event itself carries `Timestamp` on the wire — #140's timer logic can read it directly from history (or the event handler can stamp a new `StartedAt` field on `StepState` if persistence is needed). Adding `step.Timeout` reading from the workflow definition gives all the inputs the deadline computation needs.
 
 **What #140 needs to add (its own design):**
 
