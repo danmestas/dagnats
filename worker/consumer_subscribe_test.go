@@ -245,3 +245,105 @@ func TestMigration_OrphanEphemeralRemoved(t *testing.T) {
 		t.Errorf("processed = %d, want 1", processed.Load())
 	}
 }
+
+func TestMigration_PreservesManagedConsumer(t *testing.T) {
+	// Methodology: pre-seed a durable named workers-render with the same
+	// filter we'd claim. subscribePullConsumer must not delete it; the durable
+	// count on the stream stays 1 (CreateOrUpdate is idempotent) and no
+	// migration log fires.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_, err = stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "workers-render",
+		Name:          "workers-render",
+		FilterSubject: "task.render.>",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		t.Fatalf("seed managed durable: %v", err)
+	}
+
+	w := NewWorker(nc)
+	logs := captureLogs(t, func() {
+		cc := w.subscribePullConsumer("render", "",
+			func(ctx TaskContext) error { return nil })
+		t.Cleanup(cc.Stop)
+	})
+
+	cons, err := stream.Consumer(ctx, "workers-render")
+	if err != nil {
+		t.Fatalf("Consumer(workers-render): %v", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.Config.Durable != "workers-render" {
+		t.Errorf("Durable lost: %q", info.Config.Durable)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "removing orphan ephemeral consumer") {
+			t.Fatalf("must not emit migration log for managed durable; got: %s", l)
+		}
+	}
+}
+
+func TestMigration_PreservesUnrelatedConsumer(t *testing.T) {
+	// Methodology: pre-seed an unrelated durable (audit-tap on task.audit.>)
+	// on the same stream, drive subscribePullConsumer for render, assert the
+	// unrelated consumer is untouched and no migration log fires.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_, err = stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "audit-tap",
+		Name:          "audit-tap",
+		FilterSubject: "task.audit.>",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		t.Fatalf("seed unrelated: %v", err)
+	}
+
+	w := NewWorker(nc)
+	logs := captureLogs(t, func() {
+		cc := w.subscribePullConsumer("render", "",
+			func(ctx TaskContext) error { return nil })
+		t.Cleanup(cc.Stop)
+	})
+
+	if _, err := stream.Consumer(ctx, "audit-tap"); err != nil {
+		t.Fatalf("audit-tap was deleted or unreachable: %v", err)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "audit-tap") &&
+			strings.Contains(l, "removing orphan") {
+			t.Fatalf("must not log migration for unrelated consumer; got: %s", l)
+		}
+	}
+}
