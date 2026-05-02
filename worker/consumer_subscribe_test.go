@@ -7,6 +7,7 @@ package worker
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,4 +68,24 @@ func TestSubscribePullConsumer_AppliesExpectedConfig(t *testing.T) {
 	if info.Config.MaxDeliver != -1 {
 		t.Errorf("MaxDeliver = %d, want -1", info.Config.MaxDeliver)
 	}
+}
+
+func TestSubscribePullConsumer_RejectsEmptyTaskType(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	w := NewWorker(nc)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on empty taskType, got none")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "taskType") {
+			t.Fatalf("expected panic mentioning taskType, got %#v", r)
+		}
+	}()
+	w.subscribePullConsumer("", "",
+		func(ctx TaskContext) error { return nil })
 }
