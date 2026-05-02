@@ -10,6 +10,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -156,4 +157,76 @@ func TestWorker_PublishesStepStartedBeforeHandler(t *testing.T) {
 
 func TestWorker_PublishStartedFailure_NaksAndRetries(t *testing.T) {
 	t.Skip("publish-failure injection deferred — see #148")
+}
+
+func TestWorker_AttemptNumberFromNumDelivered(t *testing.T) {
+	// Methodology: handler errors on the first call, succeeds on
+	// the second. The first attempt produces AttemptNumber=1, the
+	// post-NAK redelivery produces AttemptNumber=2. Both step.started
+	// events must appear in the history stream with distinct
+	// AttemptNumber values, proving NumDelivered → AttemptNumber.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+
+	var calls atomic.Int32
+	w := NewWorker(nc)
+	w.Handle("retry-attempt", func(tc TaskContext) error {
+		n := calls.Add(1)
+		if n == 1 {
+			return fmt.Errorf("transient error attempt %d", n)
+		}
+		return tc.Complete([]byte(`"ok"`))
+	})
+	w.Start()
+	defer w.Stop()
+
+	payload := protocol.TaskPayload{
+		RunID:  "run-retry-1",
+		StepID: "step-r",
+	}
+	data, _ := json.Marshal(payload)
+	if _, err := js.Publish("task.retry-attempt.run-retry-1", data); err != nil {
+		t.Fatalf("publish task: %v", err)
+	}
+
+	deadline := time.After(15 * time.Second)
+	for calls.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("calls = %d, want 2 within 15s", calls.Load())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	sub, err := js.SubscribeSync("history.run-retry-1", nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	attemptsSeen := make(map[int]bool)
+	timeout := time.Now().Add(5 * time.Second)
+	for time.Now().Before(timeout) && !(attemptsSeen[1] && attemptsSeen[2]) {
+		msg, err := sub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		var evt protocol.Event
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if evt.Type == protocol.EventStepStarted {
+			attemptsSeen[evt.AttemptNumber] = true
+		}
+	}
+	if !attemptsSeen[1] {
+		t.Fatal("expected step.started with AttemptNumber=1, missing")
+	}
+	if !attemptsSeen[2] {
+		t.Fatal("expected step.started with AttemptNumber=2, missing")
+	}
 }
