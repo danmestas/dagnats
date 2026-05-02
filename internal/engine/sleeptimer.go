@@ -27,6 +27,7 @@ const (
 	TimerActionRateRetry       TimerAction = "rate_retry"
 	TimerActionWaitTimeout     TimerAction = "wait_timeout"
 	TimerActionRetryAfter      TimerAction = "retry_after"
+	TimerActionRetryBackoff    TimerAction = "retry_backoff"
 	TimerActionTaskConcurRetry TimerAction = "task_concurrency_retry"
 	TimerActionDebounce        TimerAction = "debounce_fire"
 )
@@ -244,6 +245,8 @@ func (st *SleepTimer) handleTimerJS(msg jetstream.Msg) {
 		st.fireWaitTimeout(tm)
 	case TimerActionRetryAfter:
 		st.fireRetryAfter(tm)
+	case TimerActionRetryBackoff:
+		st.fireRetryBackoff(tm)
 	case TimerActionApprovalTimeout:
 		st.fireApprovalTimeout(tm)
 	case TimerActionTaskConcurRetry:
@@ -380,14 +383,54 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	st.js.PublishMsg(ctx, msg)
 }
 
-// fireRetryAfter re-publishes a task after a worker retry delay.
-// Distinct from fireRateRetry to avoid MsgId collisions.
+// fireRetryAfter re-publishes a task after a worker-requested retry
+// delay. Distinct MsgId suffix from rate_retry / retry_backoff so
+// dedup is per-cause and concurrent re-publishes don't collide.
 func (st *SleepTimer) fireRetryAfter(tm TimerMessage) {
 	if tm.RunID == "" {
 		panic("fireRetryAfter: RunID must not be empty")
 	}
 	if tm.TaskType == "" {
 		panic("fireRetryAfter: TaskType must not be empty")
+	}
+	st.republishTask(tm, "retry_after")
+}
+
+// fireRetryBackoff re-publishes a task after a policy-driven backoff
+// delay. Mirrors fireRetryAfter; the only difference is who chose the
+// delay (worker for retry_after, RetryPolicy for retry_backoff). The
+// MsgId suffix differs so the two fire paths never dedup against each
+// other on the same step.
+func (st *SleepTimer) fireRetryBackoff(tm TimerMessage) {
+	if tm.RunID == "" {
+		panic("fireRetryBackoff: RunID must not be empty")
+	}
+	if tm.TaskType == "" {
+		panic("fireRetryBackoff: TaskType must not be empty")
+	}
+	st.republishTask(tm, "retry_backoff")
+}
+
+// republishTask is the shared task re-publish path used by retry_after
+// and retry_backoff timer fires. The kind suffix scopes the dedup
+// MsgId to the cause, so the two paths can fire independently for the
+// same step without colliding. Including Attempt in the MsgId keeps
+// each retry distinct within JetStream's dedup window — without it,
+// a multi-retry backoff loop would dedup attempts 2..N to a no-op.
+//
+// payload.Attempt carries the next attempt number to the worker so
+// step.started fires with the correct AttemptNumber. The original
+// failed attempt is tm.Attempt; the next attempt is tm.Attempt+1.
+// Without this hint the worker would derive AttemptNumber from NATS
+// metadata (NumDelivered=1 on a fresh re-publish), losing the count.
+func (st *SleepTimer) republishTask(
+	tm TimerMessage, kind string,
+) {
+	if kind == "" {
+		panic("republishTask: kind must not be empty")
+	}
+	if tm.RunID == "" {
+		panic("republishTask: RunID must not be empty")
 	}
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 5*time.Second,
@@ -397,17 +440,19 @@ func (st *SleepTimer) fireRetryAfter(tm TimerMessage) {
 		"task.%s.%s", tm.TaskType, tm.RunID,
 	)
 	payload := protocol.TaskPayload{
-		TaskID: tm.RunID + "." + tm.StepID,
-		RunID:  tm.RunID,
-		StepID: tm.StepID,
-		Input:  tm.Input,
+		TaskID:  tm.RunID + "." + tm.StepID,
+		RunID:   tm.RunID,
+		StepID:  tm.StepID,
+		Input:   tm.Input,
+		Attempt: tm.Attempt + 1,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
 	msgID := fmt.Sprintf(
-		"%s.%s.retry_after", tm.RunID, tm.StepID,
+		"%s.%s.%s.%d",
+		tm.RunID, tm.StepID, kind, tm.Attempt,
 	)
 	msg := &nats.Msg{
 		Subject: subject,

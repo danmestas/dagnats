@@ -290,7 +290,10 @@ func (c *taskContext) PutStream(data []byte) error {
 }
 
 // publishEvent creates, traces, and publishes a step lifecycle
-// event with trace context propagation.
+// event with trace context propagation. AttemptNumber is set from
+// c.attempt when known so each retry's MsgId is distinct — without
+// it, step.failed emitted on attempt 2..N would dedup to attempt 1
+// and the engine would never see the later failures.
 func (c *taskContext) publishEvent(
 	eventType protocol.EventType, payload []byte,
 ) error {
@@ -304,6 +307,9 @@ func (c *taskContext) publishEvent(
 		eventType, c.runID, c.stepID, payload,
 	)
 	evt.WorkerID = c.workerID
+	if c.attempt > 0 {
+		evt.AttemptNumber = c.attempt
+	}
 	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Header: nats.Header{
@@ -464,10 +470,14 @@ func (c *taskContext) SendSignal(
 }
 
 // publishStarted publishes step.started for the current attempt.
-// Reads the attempt number from the original NATS message metadata —
-// NumDelivered increments on each redelivery (NAK retries, AckWait
-// expiry), so the resulting AttemptNumber is correct for both
-// happy-path first attempts and post-NAK redelivery.
+// AttemptNumber preference order:
+//  1. payload.Attempt (c.attempt > 0) — set explicitly by the engine
+//     when re-publishing via SLEEP_TIMERS (retry_after / retry_backoff).
+//     The fresh NATS message has NumDelivered=1 so deriving from
+//     metadata would lose the attempt count across timer-driven retries.
+//  2. meta.NumDelivered — increments on NATS redelivery (NAK retries,
+//     AckWait expiry) and is correct for in-place retries that share
+//     the original message.
 //
 // Returns error if metadata read or publish fails. The caller (worker
 // dispatch loop) NAKs the original message on error so the engine
@@ -475,10 +485,9 @@ func (c *taskContext) SendSignal(
 // for. Lifecycle stays consistent.
 //
 // Called once per attempt, before invoking the user's task handler.
-// Hides the metadata read + AttemptNumber assignment + publish chain
-// from the dispatch loop. publishEvent (used by Complete and Fail*)
-// is NOT modified — it stays unchanged so its callers don't gain
-// knowledge of AttemptNumber.
+// Hides the AttemptNumber resolution + publish chain from the dispatch
+// loop. publishEvent (used by Complete and Fail*) is NOT modified — it
+// stays unchanged so its callers don't gain knowledge of AttemptNumber.
 func (c *taskContext) publishStarted(msg jetstream.Msg) error {
 	if msg == nil {
 		panic("publishStarted: msg must not be nil")
@@ -494,7 +503,11 @@ func (c *taskContext) publishStarted(msg jetstream.Msg) error {
 		protocol.EventStepStarted, c.runID, c.stepID, nil,
 	)
 	evt.WorkerID = c.workerID
-	evt.AttemptNumber = int(meta.NumDelivered)
+	if c.attempt > 0 {
+		evt.AttemptNumber = c.attempt
+	} else {
+		evt.AttemptNumber = int(meta.NumDelivered)
+	}
 	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Header: nats.Header{

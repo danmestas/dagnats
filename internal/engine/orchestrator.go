@@ -1016,10 +1016,19 @@ func (o *Orchestrator) handleStepFailed(
 		)
 	}
 
-	// Retriable (default): existing backoff behavior.
+	// Retriable (default): schedule the next attempt via the durable
+	// SLEEP_TIMERS path. dag.CalculateDelay drives the wait; the
+	// timer re-publishes the task so step.queued / step.started will
+	// fire fresh for the new attempt. Without this, attempts were
+	// recorded but never re-dispatched (issue #147).
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
 		run.Steps[evt.StepID] = state
-		return o.saveSnapshot(ctx, run)
+		if err := o.saveSnapshot(ctx, run); err != nil {
+			return err
+		}
+		return o.scheduleRetryBackoff(
+			ctx, evt.RunID, evt.StepID, stepDef, policy, run,
+		)
 	}
 
 	state.Status = dag.StepStatusFailed
@@ -1104,6 +1113,64 @@ func (o *Orchestrator) scheduleRetryAfter(
 		TaskType:   stepDef.Task,
 		Input:      input,
 		Attempt:    run.Steps[stepID].Attempts,
+	})
+}
+
+// scheduleRetryBackoff schedules a timer that re-publishes the task
+// after the policy-derived delay. Mirrors scheduleRetryAfter; the
+// only difference is the delay source (dag.CalculateDelay vs the
+// worker-supplied retryAfterMs) and the timer Action. Both ride the
+// same SLEEP_TIMERS plumbing, which keeps the retry path durable
+// across orchestrator restarts.
+func (o *Orchestrator) scheduleRetryBackoff(
+	ctx context.Context,
+	runID string, stepID string,
+	stepDef dag.StepDef,
+	policy *dag.RetryPolicy,
+	run dag.WorkflowRun,
+) error {
+	if runID == "" {
+		panic("scheduleRetryBackoff: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("scheduleRetryBackoff: stepID must not be empty")
+	}
+	if policy == nil {
+		panic("scheduleRetryBackoff: policy must not be nil")
+	}
+	// state.Attempts is 1-indexed and counts attempts that have
+	// already started (see handleStepStarted's max() rule). The
+	// upcoming attempt is Attempts+1, so the delay before the next
+	// attempt is CalculateDelay(policy, Attempts) — e.g. for
+	// Attempts=1 with exponential the delay is InitialDelay (the
+	// 1st retry), and for Attempts=2 it is InitialDelay*Multiplier.
+	attempts := run.Steps[stepID].Attempts
+	if attempts < 1 {
+		panic("scheduleRetryBackoff: attempts must be >= 1")
+	}
+	delay := dag.CalculateDelay(*policy, attempts)
+	delayMs := delay.Milliseconds()
+	if delayMs < 1 {
+		delayMs = 1
+	}
+	if delayMs > 3_600_000 {
+		delayMs = 3_600_000
+	}
+	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
+	if err != nil {
+		return fmt.Errorf(
+			"resolve input for retry-backoff step %q: %w",
+			stepID, err,
+		)
+	}
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
+		Action:     TimerActionRetryBackoff,
+		RunID:      runID,
+		StepID:     stepID,
+		DurationMs: delayMs,
+		TaskType:   stepDef.Task,
+		Input:      input,
+		Attempt:    attempts,
 	})
 }
 
