@@ -813,13 +813,14 @@ func TestWorkerStart_DurableIdempotent(t *testing.T) {
 }
 
 func TestWorkerStart_NewProcessReclaimsDurable(t *testing.T) {
-	// Methodology: first Worker starts, registers durable, processes a
-	// message, exits without unbinding. Second Worker (separate instance,
-	// same handlers) starts against the same stream — no panic, durable
-	// resumes, in-flight message redelivers within AckWait if first worker
-	// died holding it. We use a handler that errors once to force NAK and
-	// redelivery; restart between attempts means the second worker handles
-	// the redelivered message.
+	// Methodology: first Worker starts, registers durable, picks up a
+	// message and blocks indefinitely without acking. We Stop w1 with
+	// the message still in flight; AckWait expires shortly after and
+	// the second Worker (same durable) sees the redelivery. Earlier
+	// versions of this test forced redelivery via a handler error,
+	// but #141 made generic errors publish step.failed + Ack rather
+	// than NAK — so a blocking handler + tight AckWait is the right
+	// way to keep the message redeliverable across worker restarts.
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -831,10 +832,22 @@ func TestWorkerStart_NewProcessReclaimsDurable(t *testing.T) {
 
 	w1 := NewWorker(nc)
 	var w1Calls atomic.Int32
+	// The handler parks on a never-closed channel. After w1.Stop runs,
+	// the handler goroutine remains parked — it never returns to the
+	// dispatch loop, so the message is never Acked from the dying
+	// worker process. AckWait on the consumer (2s) is what makes the
+	// message redeliverable to w2. The leaked goroutine is harmless:
+	// the test server tears NATS down at cleanup, severing the conn.
+	w1Block := make(chan struct{})
+	_ = w1Block
 	w1.Handle("render", func(ctx TaskContext) error {
 		w1Calls.Add(1)
-		return fmt.Errorf("force redelivery")
-	})
+		select {
+		case <-w1Block:
+		case <-time.After(60 * time.Second):
+		}
+		return ctx.Complete([]byte(`"unreachable"`))
+	}, WithAckWait(2*time.Second))
 	w1.Start()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -856,6 +869,10 @@ func TestWorkerStart_NewProcessReclaimsDurable(t *testing.T) {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+	// Stop w1 while the handler is still parked on w1Block — AckWait
+	// will fire and JetStream will mark the message redeliverable.
+	// Do NOT close w1Block: if the goroutine wakes up it will Ack from
+	// the now-stopped worker, defeating the test.
 	w1.Stop()
 
 	var w2Calls atomic.Int32
@@ -863,7 +880,7 @@ func TestWorkerStart_NewProcessReclaimsDurable(t *testing.T) {
 	w2.Handle("render", func(ctx TaskContext) error {
 		w2Calls.Add(1)
 		return ctx.Complete([]byte(`"ok"`))
-	})
+	}, WithAckWait(2*time.Second))
 	w2.Start()
 	t.Cleanup(w2.Stop)
 

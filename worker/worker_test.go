@@ -113,10 +113,14 @@ func nextEventOfType(
 	return protocol.Event{}
 }
 
-func TestWorkerNaksOnHandlerError(t *testing.T) {
-	// Methodology: handler returns an error on the first call so the worker
-	// NakWithDelay's the message. JetStream redelivers it; on the second call
-	// the handler succeeds. We count invocations to confirm redelivery happened.
+func TestWorkerHandlerErrorPublishesStepFailedAndAcks(t *testing.T) {
+	// Methodology: handler returns a generic error. After the #141 fix
+	// the worker publishes a retriable step.failed event and acks the
+	// original message; the engine (not present here) is the sole retry
+	// authority. We assert the event lands on history with FailureType
+	// = retriable, the handler ran exactly once (no NAK redelivery
+	// loop), and the message was acked (no further deliveries arrive
+	// within a short window).
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -129,14 +133,17 @@ func TestWorkerNaksOnHandlerError(t *testing.T) {
 	var callCount atomic.Int32
 	w := NewWorker(nc)
 	w.Handle("failing", func(ctx TaskContext) error {
-		n := callCount.Add(1)
-		if n == 1 {
-			return fmt.Errorf("transient error on attempt %d", n)
-		}
-		return ctx.Complete(ctx.Input())
+		callCount.Add(1)
+		return fmt.Errorf("transient error")
 	})
 	w.Start()
 	defer w.Stop()
+
+	sub, err := js.SubscribeSync("history.run-nak", nats.DeliverAll())
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	payload := protocol.TaskPayload{
 		RunID:  "run-nak",
@@ -148,23 +155,46 @@ func TestWorkerNaksOnHandlerError(t *testing.T) {
 		t.Fatalf("Publish failed: %v", err)
 	}
 
-	// Wait for handler to be called at least twice (first error, then success).
-	deadline := time.After(15 * time.Second)
-	for callCount.Load() < 2 {
-		select {
-		case <-deadline:
-			t.Fatalf("handler called %d time(s), want >= 2 within 15s", callCount.Load())
-		case <-time.After(50 * time.Millisecond):
+	// Drain history until step.failed appears or deadline.
+	deadline := time.Now().Add(5 * time.Second)
+	var failPayload protocol.StepFailedPayload
+	sawFailed := false
+	for time.Now().Before(deadline) && !sawFailed {
+		msg, err := sub.NextMsg(250 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		var evt protocol.Event
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
+		}
+		if evt.Type == protocol.EventStepFailed {
+			if err := json.Unmarshal(evt.Payload, &failPayload); err != nil {
+				t.Fatalf("unmarshal failPayload: %v", err)
+			}
+			sawFailed = true
 		}
 	}
-
-	// Positive: redelivery happened (count >= 2).
-	if callCount.Load() < 2 {
-		t.Errorf("handler call count = %d, want >= 2", callCount.Load())
+	if !sawFailed {
+		t.Fatal("step.failed event not observed within 5s")
 	}
-	// Negative: handler was not called an unreasonable number of times.
-	if callCount.Load() > 5 {
-		t.Errorf("handler call count = %d, want <= 5 (unexpected loop)", callCount.Load())
+	// Positive: the published failure type is retriable (handed to the
+	// engine for retry, not a permanent skip).
+	if failPayload.FailureType != protocol.FailureTypeRetriable {
+		t.Fatalf(
+			"FailureType = %q, want %q",
+			failPayload.FailureType, protocol.FailureTypeRetriable,
+		)
+	}
+	// Negative: no NAK redelivery loop. Handler ran once, then the
+	// worker acked. After the step.failed event was observed, allow
+	// a brief settle window and confirm the count stayed at 1.
+	time.Sleep(300 * time.Millisecond)
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf(
+			"handler call count = %d, want 1 (worker must Ack, not NAK)",
+			got,
+		)
 	}
 }
 

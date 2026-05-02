@@ -836,7 +836,16 @@ func (w *Worker) handleMessage(
 }
 
 // handleTaskError processes a handler error by either failing
-// permanently (NonRetryableError) or scheduling a retry via NAK.
+// permanently (NonRetryableError), scheduling a retry-after
+// (RateLimitError), or — for any other error — publishing a
+// retriable step.failed and acking the message so the engine
+// owns the retry decision (issue #141).
+//
+// The engine is the sole retry authority. The hardcoded NAK delay
+// that used to live here ignored the policy's initial_delay /
+// multiplier / max_delay and produced no step.failed event, so
+// the engine never observed the failure: attempts stayed at 0/N
+// and the run wedged in 'running' indefinitely.
 func (w *Worker) handleTaskError(
 	err error,
 	tc *taskContext,
@@ -876,11 +885,24 @@ func (w *Worker) handleTaskError(
 		return
 	}
 	slog.Error(
-		"task handler returned error, will retry",
+		"task handler returned error, will retry via engine",
 		"error", err,
 		"task_type", taskType,
 		"run_id", runID,
 	)
 	w.stepRetries.Add(context.Background(), 1)
-	msg.NakWithDelay(5 * time.Second)
+	if failErr := tc.Fail(err); failErr != nil {
+		// Publishing step.failed itself failed (NATS unreachable, etc).
+		// Falling back to NAK keeps the failure observable: silently
+		// acking with no event would re-introduce the wedge symptom.
+		slog.Error(
+			"publishing step.failed failed — falling back to NAK",
+			"error", failErr,
+			"task_type", taskType,
+			"run_id", runID,
+		)
+		msg.NakWithDelay(5 * time.Second)
+		return
+	}
+	msg.Ack()
 }
