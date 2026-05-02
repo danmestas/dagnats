@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/observe"
@@ -85,6 +86,7 @@ type Worker struct {
 	dir           *Directory
 	workerID      string
 	stopHeartbeat chan struct{}
+	stopOnce      sync.Once
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration metric.Float64Histogram
@@ -635,7 +637,8 @@ func (w *Worker) heartbeatLoop(reg WorkerRegistration) {
 }
 
 // Stop unsubscribes all active subscriptions. Safe to call after
-// Start.
+// Start. Idempotent — repeat calls are no-ops, which makes
+// kill-mid-test patterns + t.Cleanup safe.
 func (w *Worker) Stop() {
 	if w.handlers == nil {
 		panic("Worker.Stop: worker not initialized")
@@ -643,15 +646,17 @@ func (w *Worker) Stop() {
 	if w.nc == nil {
 		panic("Worker.Stop: nc must not be nil")
 	}
-	if w.stopHeartbeat != nil {
-		close(w.stopHeartbeat)
-	}
-	if w.dir != nil {
-		_ = w.dir.Deregister(w.workerID)
-	}
-	for _, s := range w.stoppers {
-		s.Stop()
-	}
+	w.stopOnce.Do(func() {
+		if w.stopHeartbeat != nil {
+			close(w.stopHeartbeat)
+		}
+		if w.dir != nil {
+			_ = w.dir.Deregister(w.workerID)
+		}
+		for _, s := range w.stoppers {
+			s.Stop()
+		}
+	})
 }
 
 // handleMessage unmarshals the task payload, creates a traced

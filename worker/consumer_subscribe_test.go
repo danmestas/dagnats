@@ -613,3 +613,136 @@ func TestTwoWorkers_SameTaskType_NoPanic(t *testing.T) {
 		t.Fatalf("Durable = %q, want workers-render", info.Config.Durable)
 	}
 }
+
+func TestTwoWorkers_LoadBalance(t *testing.T) {
+	// Methodology: two workers, 10 messages, NATS-managed load balance via
+	// the shared durable. Each worker tracks how many messages it processed;
+	// the sum must be 10 and each must process at least one (otherwise
+	// "load-balance" is a misnomer).
+	_, nc1 := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc1); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	nc2, err := nats.Connect(nc1.Servers()[0])
+	if err != nil {
+		t.Fatalf("second connect: %v", err)
+	}
+	t.Cleanup(func() { nc2.Close() })
+
+	var w1Count, w2Count atomic.Int32
+	w1 := NewWorker(nc1)
+	w1.Handle("render", func(ctx TaskContext) error {
+		w1Count.Add(1)
+		return ctx.Complete([]byte(`"ok"`))
+	})
+	w2 := NewWorker(nc2)
+	w2.Handle("render", func(ctx TaskContext) error {
+		w2Count.Add(1)
+		return ctx.Complete([]byte(`"ok"`))
+	})
+	w1.Start()
+	t.Cleanup(w1.Stop)
+	w2.Start()
+	t.Cleanup(w2.Stop)
+
+	js, err := jetstream.New(nc1)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for i := 0; i < 10; i++ {
+		payload := protocol.TaskPayload{
+			RunID:  fmt.Sprintf("run-%d", i),
+			StepID: "s",
+			Input:  json.RawMessage(`"x"`),
+		}
+		data, _ := json.Marshal(payload)
+		if _, err := js.Publish(ctx,
+			fmt.Sprintf("task.render.run-%d", i), data); err != nil {
+			t.Fatalf("Publish %d: %v", i, err)
+		}
+	}
+
+	deadline := time.After(15 * time.Second)
+	for w1Count.Load()+w2Count.Load() < 10 {
+		select {
+		case <-deadline:
+			t.Fatalf("only %d/10 processed after 15s (w1=%d w2=%d)",
+				w1Count.Load()+w2Count.Load(), w1Count.Load(), w2Count.Load())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if w1Count.Load() == 0 {
+		t.Errorf("w1 processed 0 — no load balance happened (w2=%d)", w2Count.Load())
+	}
+	if w2Count.Load() == 0 {
+		t.Errorf("w2 processed 0 — no load balance happened (w1=%d)", w1Count.Load())
+	}
+	if total := w1Count.Load() + w2Count.Load(); total != 10 {
+		t.Errorf("total processed = %d, want 10", total)
+	}
+}
+
+func TestTwoWorkers_KillOne_OtherDrains(t *testing.T) {
+	// Methodology: two workers, kill one mid-processing, remaining worker
+	// drains the queue. Bounded timeout = 30s + AckWait so a redelivery
+	// after the killed worker's ackWait expiry can succeed.
+	_, nc1 := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc1); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	nc2, err := nats.Connect(nc1.Servers()[0])
+	if err != nil {
+		t.Fatalf("second connect: %v", err)
+	}
+	t.Cleanup(func() { nc2.Close() })
+
+	var processed atomic.Int32
+	w1 := NewWorker(nc1)
+	w1.Handle("render", func(ctx TaskContext) error {
+		processed.Add(1)
+		return ctx.Complete([]byte(`"ok"`))
+	})
+	w2 := NewWorker(nc2)
+	w2.Handle("render", func(ctx TaskContext) error {
+		processed.Add(1)
+		return ctx.Complete([]byte(`"ok"`))
+	})
+	w1.Start()
+	t.Cleanup(w1.Stop)
+	w2.Start()
+	t.Cleanup(w2.Stop)
+
+	js, err := jetstream.New(nc1)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(),
+		defaultAckWait+30*time.Second)
+	defer cancel()
+
+	// Publish 5 messages, then kill w1.
+	for i := 0; i < 5; i++ {
+		payload := protocol.TaskPayload{
+			RunID:  fmt.Sprintf("kill-%d", i),
+			StepID: "s",
+			Input:  json.RawMessage(`"x"`),
+		}
+		data, _ := json.Marshal(payload)
+		if _, err := js.Publish(ctx,
+			fmt.Sprintf("task.render.kill-%d", i), data); err != nil {
+			t.Fatalf("Publish %d: %v", i, err)
+		}
+	}
+	w1.Stop()
+
+	deadline := time.After(defaultAckWait + 30*time.Second)
+	for processed.Load() < 5 {
+		select {
+		case <-deadline:
+			t.Fatalf("only %d/5 processed before timeout", processed.Load())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
