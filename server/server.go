@@ -33,6 +33,7 @@ type Server struct {
 	nc          *nats.Conn
 	orch        *engine.Orchestrator
 	svc         *api.Service
+	natsAPI     *api.NATSAPI
 	trig        *trigger.TriggerService
 	bridge      *bridge.Bridge
 	httpSrv     *http.Server
@@ -166,6 +167,10 @@ func (s *Server) startComponents() error {
 	printStep(os.Stderr, "telemetry initialized")
 
 	s.svc = api.NewService(s.nc)
+	s.natsAPI = api.NewNATSAPI(s.svc, s.nc)
+	s.natsAPI.Start()
+	printStep(os.Stderr, "nats api started")
+
 	s.orch = engine.NewOrchestrator(s.nc)
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
@@ -176,6 +181,7 @@ func (s *Server) startComponents() error {
 	s.trig, err = trigger.NewTriggerService(s.nc)
 	if err != nil {
 		s.orch.Stop()
+		s.natsAPI.Stop()
 		s.telShutdown(context.Background())
 		s.nc.Close()
 		s.ns.Shutdown()
@@ -185,6 +191,7 @@ func (s *Server) startComponents() error {
 	if err := s.trig.Start(); err != nil {
 		s.trig.Stop()
 		s.orch.Stop()
+		s.natsAPI.Stop()
 		s.telShutdown(context.Background())
 		s.nc.Close()
 		s.ns.Shutdown()
@@ -353,6 +360,9 @@ func (s *Server) shutdown() error {
 		printStep(os.Stderr, "stopping triggers...")
 		if s.trig != nil {
 			s.trig.Stop()
+		}
+		if s.natsAPI != nil {
+			s.natsAPI.Stop()
 		}
 		// Stop embedded workers before orchestrator so
 		// in-flight tasks can publish completion events.
