@@ -749,12 +749,54 @@ func (w *Worker) Stop() {
 			close(w.stopHeartbeat)
 		}
 		if w.dir != nil {
-			_ = w.dir.Deregister(w.workerID)
+			// Best-effort: deregistration is observability-only; a failure
+			// here just means stale entries linger until KV TTL evicts
+			// them. Logged so the failure stays visible without aborting
+			// shutdown.
+			if err := w.dir.Deregister(w.workerID); err != nil {
+				slog.Warn(
+					"worker.Stop: directory deregister failed (non-fatal)",
+					"worker_id", w.workerID,
+					"error", err,
+				)
+			}
 		}
 		for _, s := range w.stoppers {
 			s.Stop()
 		}
 	})
+}
+
+// startTaskSpan begins an OTel span for the task dispatch and constructs
+// the taskContext bound to the message. Returns the (ctx, span, tc)
+// trio so handleMessage stays focused on dispatch and error handling.
+// Caller is responsible for `defer span.End()`.
+func (w *Worker) startTaskSpan(
+	payload protocol.TaskPayload, taskType string, msg jetstream.Msg,
+) (context.Context, trace.Span, *taskContext) {
+	if msg == nil {
+		panic("startTaskSpan: msg must not be nil")
+	}
+	if w.tracer == nil {
+		panic("startTaskSpan: tracer must not be nil")
+	}
+	ctx := observe.ExtractTraceContext(msg, nil)
+	ctx, span := w.tracer.Start(ctx,
+		"worker.executeTask",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("run_id", payload.RunID),
+			attribute.String("step_id", payload.StepID),
+			attribute.String("task_name", taskType),
+		),
+	)
+	tc := newTaskContext(
+		w.nc, w.tracer, w.js, payload, ctx, span, msg,
+		w.checkpointKV, w.signalKV,
+	)
+	tc.workerID = w.workerID
+	tc.publishMsg = w.publishMsg
+	return ctx, span, tc
 }
 
 // handleMessage unmarshals the task payload, creates a traced
@@ -779,16 +821,7 @@ func (w *Worker) handleMessage(
 		msg.Ack()
 		return
 	}
-	ctx := observe.ExtractTraceContext(msg, nil)
-	ctx, span := w.tracer.Start(ctx,
-		"worker.executeTask",
-		trace.WithSpanKind(trace.SpanKindServer),
-		trace.WithAttributes(
-			attribute.String("run_id", payload.RunID),
-			attribute.String("step_id", payload.StepID),
-			attribute.String("task_name", taskType),
-		),
-	)
+	ctx, span, tc := w.startTaskSpan(payload, taskType, msg)
 	defer span.End()
 	w.tasksActive.Add(ctx, 1)
 	start := time.Now()
@@ -797,12 +830,6 @@ func (w *Worker) handleMessage(
 		"run_id", payload.RunID,
 		"step_id", payload.StepID,
 	)
-	tc := newTaskContext(
-		w.nc, w.tracer, w.js, payload, ctx, span, msg,
-		w.checkpointKV, w.signalKV,
-	)
-	tc.workerID = w.workerID
-	tc.publishMsg = w.publishMsg
 
 	if err := tc.publishStarted(msg); err != nil {
 		slog.ErrorContext(ctx, "failed to begin attempt — NAK and retry",
