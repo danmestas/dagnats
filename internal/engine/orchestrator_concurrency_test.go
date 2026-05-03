@@ -47,21 +47,13 @@ func TestOrchestratorConcurrencySecondRunPends(t *testing.T) {
 
 	publishEvt(js, protocol.EventWorkflowStarted,
 		"cr-1", defData)
-	time.Sleep(200 * time.Millisecond)
-
-	r1, _ := orch.store.Load(context.Background(), "cr-1")
-	if r1.Status != dag.RunStatusRunning {
-		t.Fatalf("run-1 = %v, want Running", r1.Status)
-	}
+	waitForRunStatus(t, orch.store, "cr-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	publishEvt(js, protocol.EventWorkflowStarted,
 		"cr-2", defData)
-	time.Sleep(200 * time.Millisecond)
-
-	r2, _ := orch.store.Load(context.Background(), "cr-2")
-	if r2.Status != dag.RunStatusPending {
-		t.Fatalf("run-2 = %v, want Pending", r2.Status)
-	}
+	waitForRunStatus(t, orch.store, "cr-2",
+		dag.RunStatusPending, 5*time.Second)
 }
 
 func TestOrchestratorConcurrencyAutoStart(t *testing.T) {
@@ -94,11 +86,13 @@ func TestOrchestratorConcurrencyAutoStart(t *testing.T) {
 
 	publishEvt(js, protocol.EventWorkflowStarted,
 		"ca-1", defData)
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "ca-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	publishEvt(js, protocol.EventWorkflowStarted,
 		"ca-2", defData)
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "ca-2",
+		dag.RunStatusPending, 5*time.Second)
 
 	// Complete run-1.
 	compEvt := protocol.NewStepEvent(
@@ -167,7 +161,8 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 	d1, _ := evt1.Marshal()
 	js.Publish(evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "cc-run-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	// Start run-2 (should be Pending).
 	evt2 := protocol.NewWorkflowEvent(
@@ -175,12 +170,8 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 	d2, _ := evt2.Marshal()
 	js.Publish(evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
-
-	run2, _ := orch.store.Load(context.Background(), "cc-run-2")
-	if run2.Status != dag.RunStatusPending {
-		t.Fatalf("run-2 = %v, want Pending", run2.Status)
-	}
+	waitForRunStatus(t, orch.store, "cc-run-2",
+		dag.RunStatusPending, 5*time.Second)
 
 	// Cancel run-1.
 	cancelEvt := protocol.NewWorkflowEvent(
@@ -243,7 +234,8 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 	d1, _ := evt1.Marshal()
 	js.Publish(evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "fc-run-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	// Start run-2 (should be Pending).
 	evt2 := protocol.NewWorkflowEvent(
@@ -251,7 +243,8 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 	d2, _ := evt2.Marshal()
 	js.Publish(evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "fc-run-2",
+		dag.RunStatusPending, 5*time.Second)
 
 	// Fail run-1 permanently.
 	failEvt := protocol.NewStepEvent(
@@ -313,7 +306,8 @@ func TestOrchestratorCompletionReleasesConcurrency(
 	d1, _ := evt1.Marshal()
 	js.Publish(evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "cc2-run-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	// Start run-2 (queued as Pending).
 	evt2 := protocol.NewWorkflowEvent(
@@ -321,7 +315,8 @@ func TestOrchestratorCompletionReleasesConcurrency(
 	d2, _ := evt2.Marshal()
 	js.Publish(evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "cc2-run-2",
+		dag.RunStatusPending, 5*time.Second)
 
 	// Complete run-1.
 	compEvt := protocol.NewStepEvent(
@@ -384,7 +379,8 @@ func TestOrchestratorConcurrencyNoPendingRuns(t *testing.T) {
 	d, _ := evt.Marshal()
 	js.Publish(evt.NATSSubject(), d,
 		nats.MsgId(evt.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "np-run-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "np-run-1", "s1",
@@ -442,7 +438,8 @@ func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 	d1, _ := evt1.Marshal()
 	js.Publish(evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "tc-run-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	// Start run-2 (queued as Pending).
 	evt2 := protocol.NewWorkflowEvent(
@@ -450,7 +447,8 @@ func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 	d2, _ := evt2.Marshal()
 	js.Publish(evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "tc-run-2",
+		dag.RunStatusPending, 5*time.Second)
 
 	// Complete run-1.
 	compEvt := protocol.NewStepEvent(
@@ -514,7 +512,8 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 	d1, _ := evt1.Marshal()
 	js.Publish(evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "lc-run-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	// Start run-2 (queued as Pending).
 	evt2 := protocol.NewWorkflowEvent(
@@ -522,7 +521,8 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 	d2, _ := evt2.Marshal()
 	js.Publish(evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "lc-run-2",
+		dag.RunStatusPending, 5*time.Second)
 
 	// Send continue to trip MaxIterations on run-1.
 	cont := protocol.NewStepEvent(
