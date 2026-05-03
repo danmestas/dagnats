@@ -120,29 +120,49 @@ func NewOrchestrator(
 		sticky:     sticky,
 		metrics:    om,
 	}
+	o.wireDependentSubsystems(rl, ac, pm, om)
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o
+}
+
+// wireDependentSubsystems builds and binds the subsystems whose
+// construction depends on the partially-constructed Orchestrator (their
+// callbacks close over o or call o.loadRunAndDef). Extracted so
+// NewOrchestrator stays under TigerStyle's 70-line limit and the
+// callback wiring lives in one focused unit.
+func (o *Orchestrator) wireDependentSubsystems(
+	rl *RateLimiter,
+	ac *AdmissionController,
+	pm pubMetrics,
+	om orchMetrics,
+) {
+	if o == nil {
+		panic("wireDependentSubsystems: o must not be nil")
+	}
+	if o.js == nil {
+		panic("wireDependentSubsystems: o.js must not be nil")
+	}
 	publisher := NewTaskPublisher(
-		js, rl, ac, sticky, sleepTimer, tracer,
+		o.js, rl, ac, o.sticky, o.sleepTimer, o.tracer,
 		pm, o.loadRunAndDef,
 	)
 	o.publisher = publisher
 	o.recovery = NewRecoveryManager(
-		js, publisher, tracer,
+		o.js, publisher, o.tracer,
 		om.runsActive, om.runsFailed,
 	)
 	o.approval = NewApprovalGate(
-		nc, js, o.sleepTimer, o.tracer,
+		o.nc, o.js, o.sleepTimer, o.tracer,
 	)
-	o.correlator = NewCorrelator(nc, js)
+	o.correlator = NewCorrelator(o.nc, o.js)
 	// Wire the step timeout watchdog (issue #140). Hooking from the
 	// orchestrator side keeps SleepTimer free of a SnapshotStore
 	// dependency while still letting the fire path do staleness
 	// checks against live run state before publishing a synthetic
 	// step.failed.
 	o.sleepTimer.OnStepTimeout(o.fireStepTimeout)
-	for _, opt := range opts {
-		opt(o)
-	}
-	return o
 }
 
 // Start subscribes to history.> on the WORKFLOW_HISTORY stream using
