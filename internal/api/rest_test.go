@@ -1044,7 +1044,7 @@ func TestRESTBulkRetry(t *testing.T) {
 		context.Background(), "rest-retry-wf", []byte(`{"x":1}`),
 	)
 
-	// Wait for run snapshot to appear
+	// Wait for run snapshot to appear.
 	deadline := time.After(5 * time.Second)
 	var run dag.WorkflowRun
 	for {
@@ -1060,9 +1060,18 @@ func TestRESTBulkRetry(t *testing.T) {
 		}
 	}
 
-	// Mark as failed and save
+	// Stop orchestrator before forcing terminal state. Otherwise the
+	// live orchestrator can process queued events between our Save
+	// and the API call, reverting Failed back to Running and making
+	// the bulk-retry assertion vacuous (no Failed runs, nothing to
+	// retry, but the test still passes against an incorrect snapshot
+	// observation).
+	orch.Stop()
+
 	run.Status = dag.RunStatusFailed
-	svc.store.Save(context.Background(), run)
+	if err := svc.store.Save(context.Background(), run); err != nil {
+		t.Fatalf("force state: %v", err)
+	}
 
 	handler := NewRESTHandler(svc)
 	ts := httptest.NewServer(handler)
