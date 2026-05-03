@@ -648,6 +648,14 @@ func TestNonRetryableErrorPublishesNonRetriablePayload(t *testing.T) {
 	// When handler returns NonRetryableError, the step.failed event
 	// payload must contain failure_type: "non_retriable" so the
 	// orchestrator skips retries.
+	//
+	// The history subscription is created BEFORE the task is
+	// published. The previous order (publish, then subscribe with a
+	// 5s Fetch budget) raced on slow CI: the worker could pull, run
+	// the handler, and publish step.started + step.failed before the
+	// subscriber's Fetch was ready, occasionally causing only one of
+	// the two events to land in the 5s window — the test then read
+	// the zero-value Event and saw `Type=""`.
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -661,6 +669,13 @@ func TestNonRetryableErrorPublishesNonRetriablePayload(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
+	// Subscribe BEFORE publishing so neither step.started nor
+	// step.failed can be missed by a late-armed Fetch.
+	sub, _ := js.PullSubscribe(
+		"history.run-np", "",
+		nats.BindStream("WORKFLOW_HISTORY"),
+	)
+
 	payload := protocol.TaskPayload{
 		TaskID: "run-np.step-np",
 		RunID:  "run-np",
@@ -671,25 +686,30 @@ func TestNonRetryableErrorPublishesNonRetriablePayload(t *testing.T) {
 	js.Publish("task.fail-perm.run-np", data,
 		nats.MsgId("run-np.step-np.queued"))
 
-	sub, _ := js.PullSubscribe(
-		"history.run-np", "",
-		nats.BindStream("WORKFLOW_HISTORY"),
-	)
-	// Fetch up to 2: step.started (since #137 Task 4) precedes step.failed.
-	msgs, err := sub.Fetch(2, nats.MaxWait(5*time.Second))
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-
+	// Drain history events until step.failed appears or the bounded
+	// deadline expires. One Fetch(2) was timing-fragile under load;
+	// a small loop with the same total budget is robust to the
+	// 1-message-then-2-messages cadence.
 	var evt protocol.Event
-	for _, m := range msgs {
-		var candidate protocol.Event
-		if err := json.Unmarshal(m.Data, &candidate); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && evt.Type != protocol.EventStepFailed {
+		remaining := time.Until(deadline)
+		if remaining > 2*time.Second {
+			remaining = 2 * time.Second
 		}
-		if candidate.Type == protocol.EventStepFailed {
-			evt = candidate
-			break
+		msgs, err := sub.Fetch(1, nats.MaxWait(remaining))
+		if err != nil {
+			continue
+		}
+		for _, m := range msgs {
+			var candidate protocol.Event
+			if uerr := json.Unmarshal(m.Data, &candidate); uerr != nil {
+				t.Fatalf("Unmarshal: %v", uerr)
+			}
+			if candidate.Type == protocol.EventStepFailed {
+				evt = candidate
+				break
+			}
 		}
 	}
 	if evt.Type != protocol.EventStepFailed {
