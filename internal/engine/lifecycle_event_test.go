@@ -534,6 +534,28 @@ func waitForStepAttempts(
 		stepID, runID, want, timeout)
 }
 
+// waitForRunStatus polls the store until run status matches or
+// timeout fires. Bounded — never spins past timeout.
+func waitForRunStatus(
+	t *testing.T,
+	store *SnapshotStore,
+	runID string,
+	want dag.RunStatus,
+	timeout time.Duration,
+) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		run, err := store.Load(context.Background(), runID)
+		if err == nil && run.Status == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("run %q did not reach status %v within %v",
+		runID, want, timeout)
+}
+
 func TestOnEvent_StepQueued_DuringReplay_ReconstructsState(t *testing.T) {
 	// Methodology: simulate replay by publishing a sequence of events
 	// to a fresh history stream and verifying final state. The

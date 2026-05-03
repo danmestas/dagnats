@@ -179,10 +179,10 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 	js.Publish(cont2.NATSSubject(), cont2Data,
 		nats.MsgId("run-iter.loop-step.step.continue.2"))
 
-	// Give the orchestrator time to process.
-	time.Sleep(500 * time.Millisecond)
+	// Wait until orchestrator marks the run Failed.
+	waitForRunStatus(t, orch.store, "run-iter",
+		dag.RunStatusFailed, 5*time.Second)
 
-	// Run must be marked Failed.
 	store := NewSnapshotStore(jsNew)
 	run, err := store.Load(context.Background(), "run-iter")
 	if err != nil {
@@ -263,7 +263,8 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 	js.Publish(cont2.NATSSubject(), cont2Data,
 		nats.MsgId("run-dur.dur-step.step.continue.2"))
 
-	time.Sleep(500 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "run-dur",
+		dag.RunStatusFailed, 5*time.Second)
 
 	store := NewSnapshotStore(jsNew)
 	run, err := store.Load(context.Background(), "run-dur")
@@ -308,12 +309,14 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	startData, _ := startEvt.Marshal()
 	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
 
-	time.Sleep(200 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "run-3", "a",
+		dag.StepStatusQueued, 5*time.Second)
 	compEvt := protocol.NewStepEvent(protocol.EventStepCompleted, "run-3", "a", []byte(`"done"`))
 	compData, _ := compEvt.Marshal()
 	js.Publish(compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()))
 
-	time.Sleep(500 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "run-3",
+		dag.RunStatusCompleted, 5*time.Second)
 	store := NewSnapshotStore(jsNew)
 	run, err := store.Load(context.Background(), "run-3")
 	if err != nil {
@@ -502,8 +505,9 @@ func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
 	js.Publish(spawnEvt.NATSSubject(), data,
 		nats.MsgId(spawnEvt.NATSMsgID()))
 
-	// Wait for child task to appear, then simulate completion
-	time.Sleep(300 * time.Millisecond)
+	// Wait for child step to be queued, then simulate completion.
+	waitForStepStatus(t, orch.store, "child-run-2", "s1",
+		dag.StepStatusQueued, 5*time.Second)
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted,
 		"child-run-2", "s1", []byte(`"child-result"`))
@@ -633,7 +637,8 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	}
 	js.PublishMsg(msg)
-	time.Sleep(200 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "cancel-run-1",
+		dag.RunStatusRunning, 5*time.Second)
 
 	// Cancel the workflow
 	cancelEvt := protocol.NewWorkflowEvent(
@@ -706,7 +711,8 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
-	time.Sleep(200 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "retry-run-1", "s1",
+		dag.StepStatusQueued, 5*time.Second)
 
 	// First failure — should not be permanently failed
 	failEvt := protocol.NewStepEvent(
@@ -717,7 +723,8 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 		Subject: failEvt.NATSSubject(), Data: failData,
 		Header: nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
 	})
-	time.Sleep(200 * time.Millisecond)
+	waitForStepAttempts(t, orch.store, "retry-run-1", "s1",
+		1, 5*time.Second)
 
 	store := NewSnapshotStore(jsNew)
 	run, _ := store.Load(context.Background(), "retry-run-1")
@@ -774,7 +781,8 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
-	time.Sleep(200 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "exhaust-run-1", "s1",
+		dag.StepStatusQueued, 5*time.Second)
 
 	// Fail 3 times (> MaxAttempts of 2). Mirror production: worker
 	// emits step.started before step.failed. Attempts is owned by
@@ -926,7 +934,8 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
-	time.Sleep(200 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "dlq-run-1", "s1",
+		dag.StepStatusQueued, 5*time.Second)
 
 	// Fail the step permanently (no retries configured)
 	failEvt := protocol.NewStepEvent(
@@ -1002,7 +1011,8 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
-	time.Sleep(200 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "onfail-run-1", "deploy",
+		dag.StepStatusQueued, 5*time.Second)
 
 	// Fail deploy step permanently
 	failEvt := protocol.NewStepEvent(
@@ -1022,8 +1032,9 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	msg.Ack()
 
 	// Positive: workflow should NOT be failed yet (on-failure is running)
+	waitForStepStatus(t, orch.store, "onfail-run-1", "deploy",
+		dag.StepStatusFailed, 5*time.Second)
 	store := NewSnapshotStore(jsNew)
-	time.Sleep(200 * time.Millisecond)
 	run, _ := store.Load(context.Background(), "onfail-run-1")
 	if run.Status == dag.RunStatusFailed {
 		t.Fatalf("workflow should not be failed while on-failure step pending")
@@ -1290,7 +1301,8 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 	startData, _ := startEvt.Marshal()
 	js.Publish(startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
-	time.Sleep(300 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "snap-run", "s1",
+		dag.StepStatusQueued, 5*time.Second)
 
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "snap-run", "s1",
@@ -1298,7 +1310,8 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 	compData, _ := compEvt.Marshal()
 	js.Publish(compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
-	time.Sleep(500 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "snap-run", "s1",
+		dag.StepStatusCompleted, 5*time.Second)
 
 	store := NewSnapshotStore(jsNew)
 	run, err := store.Load(context.Background(), "snap-run")
@@ -1465,8 +1478,9 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 		nats.MsgId(invalidEvt.NATSMsgID()),
 	)
 
-	// Wait a moment for processing
-	time.Sleep(500 * time.Millisecond)
+	// Wait until run reaches Failed state.
+	waitForRunStatus(t, orch.store, "invalid-run",
+		dag.RunStatusFailed, 5*time.Second)
 
 	// Check that the run exists but is marked as failed
 	store := NewSnapshotStore(jsNew)
@@ -1699,7 +1713,8 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 	data, _ := spawnEvt.Marshal()
 	js.Publish(spawnEvt.NATSSubject(), data,
 		nats.MsgId(spawnEvt.NATSMsgID()))
-	time.Sleep(300 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "child-fail-1", "s1",
+		dag.StepStatusQueued, 5*time.Second)
 
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "child-fail-1", "s1",
@@ -1950,7 +1965,8 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	sd, _ := startEvt.Marshal()
 	js.Publish(startEvt.NATSSubject(), sd,
 		nats.MsgId(startEvt.NATSMsgID()))
-	time.Sleep(200 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "cnoop-run", "s1",
+		dag.StepStatusQueued, 5*time.Second)
 
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "cnoop-run", "s1",
@@ -2191,7 +2207,8 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 	startData, _ := startEvt.Marshal()
 	js.Publish(startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
-	time.Sleep(300 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "post-unknown",
+		dag.RunStatusRunning, 5*time.Second)
 	_, err = store.Load(context.Background(), "post-unknown")
 	if err != nil {
 		t.Fatalf("orchestrator should still work: %v", err)
@@ -2888,7 +2905,8 @@ func TestOrchestratorSleepStep(t *testing.T) {
 		nats.MsgId(compB.NATSMsgID()))
 
 	// Wait for workflow to complete.
-	time.Sleep(500 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "sleep-run-1",
+		dag.RunStatusCompleted, 5*time.Second)
 
 	run, err := orch.store.Load(context.Background(), "sleep-run-1")
 	if err != nil {
@@ -3113,7 +3131,8 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Wait for the wait step to register with the correlator.
-	time.Sleep(500 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "wait-run-1", "wait-step",
+		dag.StepStatusRunning, 5*time.Second)
 
 	// Publish a matching event on the EVENTS stream.
 	eventPayload := []byte(
@@ -3144,7 +3163,8 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	js.Publish(compB.NATSSubject(), compBData,
 		nats.MsgId(compB.NATSMsgID()))
 
-	time.Sleep(500 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "wait-run-1",
+		dag.RunStatusCompleted, 5*time.Second)
 
 	// Positive: run should be completed.
 	store := NewSnapshotStore(jsNew)
@@ -3376,7 +3396,8 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 		},
 	})
 
-	time.Sleep(500 * time.Millisecond)
+	waitForRunStatus(t, orch.store, "run-nr-1",
+		dag.RunStatusFailed, 5*time.Second)
 	store := NewSnapshotStore(jsNew)
 	run, loadErr := store.Load(context.Background(), "run-nr-1")
 	if loadErr != nil {
@@ -3438,7 +3459,8 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 	js.Publish(startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
-	time.Sleep(500 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "run-ra-1", "a",
+		dag.StepStatusQueued, 5*time.Second)
 
 	failPayload, _ := json.Marshal(protocol.StepFailedPayload{
 		Error:        "rate limited",
@@ -3532,7 +3554,8 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
 
-	time.Sleep(500 * time.Millisecond)
+	waitForStepStatus(t, orch.store, "run-compat", "a",
+		dag.StepStatusQueued, 5*time.Second)
 
 	oldPayload := []byte(`"transient error"`)
 	failEvt := protocol.NewStepEvent(
