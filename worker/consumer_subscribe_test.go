@@ -686,8 +686,16 @@ func TestTwoWorkers_LoadBalance(t *testing.T) {
 
 func TestTwoWorkers_KillOne_OtherDrains(t *testing.T) {
 	// Methodology: two workers, kill one mid-processing, remaining worker
-	// drains the queue. Bounded timeout = 30s + AckWait so a redelivery
-	// after the killed worker's ackWait expiry can succeed.
+	// drains the queue via AckWait redelivery.
+	//
+	// Performance: using WithAckWait(2s) instead of the package default
+	// (5 min) keeps the worst-case test runtime at ~5s instead of 5+min
+	// when w1 happens to pull a message before being killed. The
+	// mechanism under test (JetStream redelivers un-Acked messages
+	// after AckWait expiry) is identical at any AckWait duration; the
+	// 5-minute production default is just the worst-possible window
+	// for tests to wait through.
+	const ackWait = 2 * time.Second
 	_, nc1 := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc1); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -703,12 +711,12 @@ func TestTwoWorkers_KillOne_OtherDrains(t *testing.T) {
 	w1.Handle("render", func(ctx TaskContext) error {
 		processed.Add(1)
 		return ctx.Complete([]byte(`"ok"`))
-	})
+	}, WithAckWait(ackWait))
 	w2 := NewWorker(nc2)
 	w2.Handle("render", func(ctx TaskContext) error {
 		processed.Add(1)
 		return ctx.Complete([]byte(`"ok"`))
-	})
+	}, WithAckWait(ackWait))
 	w1.Start()
 	t.Cleanup(w1.Stop)
 	w2.Start()
@@ -719,7 +727,7 @@ func TestTwoWorkers_KillOne_OtherDrains(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(),
-		defaultAckWait+30*time.Second)
+		ackWait+30*time.Second)
 	defer cancel()
 
 	// Publish 5 messages, then kill w1.
@@ -737,7 +745,7 @@ func TestTwoWorkers_KillOne_OtherDrains(t *testing.T) {
 	}
 	w1.Stop()
 
-	deadline := time.After(defaultAckWait + 30*time.Second)
+	deadline := time.After(ackWait + 30*time.Second)
 	for processed.Load() < 5 {
 		select {
 		case <-deadline:
@@ -996,6 +1004,14 @@ func TestMigration_ListFailure_Panics(t *testing.T) {
 	// the cleanup operation. If injecting list-failure proves > 1 hour of
 	// effort, defer per ADR-006 §6.3 — file follow-up issue and add a
 	// TODO referencing it.
+	//
+	// Performance: nc.Close() forces the client to CLOSED state so
+	// JetStream calls return ErrConnectionClosed instantly. Without it,
+	// the client enters RECONNECTING and each JS call inside Start
+	// (bindOptionalKV × 2, registerDirectory, cleanupOrphanEphemerals)
+	// waits the default 5s JS context-timeout — totalling ~20s per
+	// run with no observability gain. The panic-during-cleanup signal
+	// fires identically either way; this just makes it fire fast.
 	ns, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -1004,6 +1020,7 @@ func TestMigration_ListFailure_Panics(t *testing.T) {
 	w.Handle("render", func(ctx TaskContext) error { return nil })
 	ns.Shutdown()
 	ns.WaitForShutdown()
+	nc.Close()
 
 	defer func() {
 		r := recover()
@@ -1058,8 +1075,11 @@ func TestMigration_DeleteFailure_Panics(t *testing.T) {
 	w.Handle("render", func(ctx TaskContext) error { return nil })
 
 	// Shut down NATS just before Start to fail the delete (or list).
+	// nc.Close() forces fail-fast on JS calls — see sibling test
+	// TestMigration_ListFailure_Panics for the rationale (saves ~20s).
 	ns.Shutdown()
 	ns.WaitForShutdown()
+	nc.Close()
 
 	defer func() {
 		if r := recover(); r == nil {
