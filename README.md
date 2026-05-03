@@ -61,71 +61,11 @@ w.Handle("llm-coder", func(ctx worker.TaskContext) error {
 w.Start()
 ```
 
-## Architecture
+## How it works
 
-```
-Triggers (cron, NATS subjects, webhooks)
-          |
-    Control Plane  -->  REST API + NATS micro
-          |
-    Orchestrator   -->  Event-sourced; reads run state from KV per event
-          |
-    Workers        -->  Pull tasks, execute handlers, publish results
-          |
-    Orchestrator   -->  Advance DAG, repeat until complete
-```
+Workflows are DAGs. The orchestrator subscribes to a NATS history stream and advances the DAG one event at a time, reading and writing run state to a KV bucket. Workers pull tasks from a durable JetStream consumer, execute handlers, and publish results back as events. Retries, step timeouts, and concurrency limits are scheduled by the engine through durable NATS primitives — no timer service, no external database, no Redis.
 
-All state lives in NATS. No external database, no Redis, no Postgres.
-
-### Packages
-
-| Package | Purpose |
-|---------|---------|
-| `dag/` | Pure DAG logic — types, builder, validation, resolution, retry policies, schema validation |
-| `internal/engine/` | Orchestrator — event consumption, DAG advancement, retry-backoff scheduler, step-timeout watchdog, concurrency, cancel |
-| `worker/` | Worker framework — TaskContext, heartbeat, checkpoint, signals |
-| `internal/api/` | Control plane — REST + NATS request/reply |
-| `internal/trigger/` | Cron, NATS subject, and webhook triggers with live reload |
-| `actor/` | General-purpose Go actor runtime — supervision, restart tracking, mailboxes (no longer used by the engine; see ADR-009) |
-| `server/` | Embedded NATS server, full lifecycle, single-binary deployment |
-| `cli/` | CLI client — workflow, run, trigger, dlq, serve, status commands |
-| `observe/` | Provider-agnostic observability interfaces |
-| `natsutil/` | NATS resource setup + embedded test server |
-| `protocol/` | Wire-format types — Event, EventType, TaskPayload |
-
-### Key Design Decisions
-
-**Event-Sourced Orchestrator.** A single orchestrator subscribes to the workflow history stream. On each event, it loads the run snapshot from KV, advances the DAG, and saves. No long-lived in-memory state per run. (ADR-009 records the removal of an earlier actor-per-run prototype.)
-
-**Engine as Sole Retry Authority.** Workers report failures via `step.failed`; the engine schedules the next attempt via a durable `SLEEP_TIMERS` consumer using the policy's backoff curve. Step-level `Timeout` arms a watchdog that emits a synthetic `step.failed` if the attempt is still running when it fires. (ADR-011.)
-
-**Deep Worker Interface.** `TaskContext` provides: `Input()`, `Complete()`, `Fail()`, `FailPermanent()`, `FailRetryAfter()`, `Continue()`, `PutStream()`, `Heartbeat()`, `Checkpoint()`/`LoadCheckpoint()`, `WaitForSignal()`/`SendSignal()`. Workers never see retries, timeouts, or DAG logic.
-
-**Configurable Retry Policies.** Fixed, linear, or exponential backoff. Per-step override or workflow default. Resolution: step → workflow → legacy Retries field → no retry.
-
-**Concurrency Limits.** KV-based counters with optimistic locking. Excess runs queued as pending, auto-started when slots open.
-
-**Trigger System.** Cron (in-house parser, 30s tick), NATS subject subscriptions, HTTP webhooks with HMAC-SHA256. Live reload via KV watcher.
-
-**Always-Embedded NATS.** `dagnats serve` starts an embedded NATS server. Standalone for single-machine, leaf node mode for connecting to a hub cluster. Components always connect to localhost.
-
-**Event Sourcing + KV Snapshots.** Immutable history stream for replay and audit. KV snapshots for fast recovery.
-
-**NATS-Native Patterns.** No custom infrastructure:
-
-| Need | NATS Primitive |
-|------|---------------|
-| Task distribution | JetStream pull consumers (durable per task type) |
-| Retry with backoff | Engine-scheduled `SLEEP_TIMERS` entry per attempt (per-policy delay) |
-| Step timeouts | Engine watchdog timer; emits synthetic `step.failed` on fire |
-| Exactly-once delivery | `Nats-Msg-Id` dedup (attempt-suffixed for retries) |
-| Run state snapshots | KV with optimistic locking |
-| Cross-workflow signals | KV watches |
-| Dead-letter queue | Dedicated stream |
-
-## Running
-
-`dagnats serve` covers single-machine deployments. For leaf-node and distributed topologies (and the trade-off matrix), see [Production guide → Deployment Topologies](docs/production.md#deployment-topologies).
+`dagnats serve` covers single-machine deployments. For leaf-node and distributed topologies, see the [Production guide](docs/production.md#deployment-topologies). Architecture decisions are recorded in [docs/architecture/](docs/architecture/) (ADR-006 onwards).
 
 ## CLI
 
@@ -215,11 +155,15 @@ Tests use real embedded NATS servers (no mocks). Each test gets its own server v
 
 For coding agents and LLM tools: a curated [`llms.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms.txt) and a full-content [`llms-full.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms-full.txt) are regenerated on every commit.
 
-## Design Philosophy
+## Acknowledgements
 
-- **Ousterhout:** Deep modules with small interfaces. Pull complexity downward.
-- **TigerStyle:** Safety > Performance > DX. Assertions as contracts. Bounded everything.
-- **HIPP:** Small. Fast. Reliable. Zero-config where possible. Minimal dependencies.
+dagnats's design draws on three bodies of work:
+
+- **John Ousterhout** — *A Philosophy of Software Design.* Deep modules with small interfaces; information hiding; pulling complexity downward.
+- **Dr. Richard Hipp** — the design discipline behind SQLite. Small, fast, reliable; zero-config where possible; minimal dependencies; long-term maintainability over feature breadth.
+- **TigerBeetle's TigerStyle** — Safety > Performance > Developer Experience; assertions as contracts; bounded everything; zero technical debt.
+
+We are grateful for the public writing and code these projects have shared.
 
 ## License
 
