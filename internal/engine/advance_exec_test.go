@@ -40,11 +40,9 @@ func TestExecuteSideEffects_EnqueueTask(t *testing.T) {
 			},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
+	defData := mustMarshal(t, wfDef)
 	defKV, _ := js.KeyValue("workflow_defs")
-	if _, err := defKV.Put(wfDef.Name, defData); err != nil {
-		t.Fatalf("put def: %v", err)
-	}
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 
@@ -118,11 +116,9 @@ func TestExecuteSideEffects_CompleteWorkflow(t *testing.T) {
 			},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
+	defData := mustMarshal(t, wfDef)
 	defKV, _ := js.KeyValue("workflow_defs")
-	if _, err := defKV.Put(wfDef.Name, defData); err != nil {
-		t.Fatalf("put def: %v", err)
-	}
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 
@@ -234,11 +230,9 @@ func TestAdvanceIntegration_StepCompletedTriggersEnqueue(
 			},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
+	defData := mustMarshal(t, wfDef)
 	defKV, _ := js.KeyValue("workflow_defs")
-	if _, err := defKV.Put(wfDef.Name, defData); err != nil {
-		t.Fatalf("put def: %v", err)
-	}
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

@@ -31,7 +31,7 @@ func TestRESTRegisterWorkflow(t *testing.T) {
 	wb := dag.NewWorkflow("rest-test")
 	wb.Task("a", "task-a")
 	wfDef, _ := wb.Build()
-	body, _ := json.Marshal(wfDef)
+	body := mustMarshal(t, wfDef)
 	resp, err := http.Post(
 		server.URL+"/workflows",
 		"application/json",
@@ -435,7 +435,7 @@ func TestRESTRegisterWorkflowInvalidDef(t *testing.T) {
 	wb := dag.NewWorkflow("rest-valid")
 	wb.Task("a", "task-a")
 	def, _ := wb.Build()
-	goodBody, _ := json.Marshal(def)
+	goodBody := mustMarshal(t, def)
 	resp2, err := http.Post(
 		server.URL+"/workflows",
 		"application/json",

@@ -150,10 +150,8 @@ func TestConcurrencyReadCounterNonNumeric(t *testing.T) {
 	)
 
 	// Write non-numeric value directly.
-	kv.Put(
-		context.Background(),
-		"workflow.bad-counter", []byte("not-a-number"),
-	)
+	mustPutJS(t, context.Background(), kv,
+		"workflow.bad-counter", []byte("not-a-number"))
 
 	cm := NewConcurrencyManager(jsNew)
 

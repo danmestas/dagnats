@@ -47,10 +47,8 @@ func TestPriorityAffectsPendingOrder(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	if _, err := defKV.Put(wfDef.Name, defData); err != nil {
-		t.Fatalf("put def: %v", err)
-	}
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -115,10 +113,8 @@ func TestSingletonSkipMode(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	if _, err := defKV.Put(wfDef.Name, defData); err != nil {
-		t.Fatalf("put def: %v", err)
-	}
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -176,10 +172,8 @@ func TestSingletonCancelMode(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	if _, err := defKV.Put(wfDef.Name, defData); err != nil {
-		t.Fatalf("put def: %v", err)
-	}
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

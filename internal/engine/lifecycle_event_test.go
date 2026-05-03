@@ -35,8 +35,8 @@ func TestOrchestrator_PublishesStepQueuedOnDispatch(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -45,8 +45,11 @@ func TestOrchestrator_PublishesStepQueuedOnDispatch(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-q1", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -122,8 +125,8 @@ func TestOrchestrator_DispatchPublishesTaskOnWorkflowStarted(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -132,8 +135,11 @@ func TestOrchestrator_DispatchPublishesTaskOnWorkflowStarted(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-dp", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -170,8 +176,8 @@ func TestOnEvent_StepStarted_TransitionsQueuedToRunning(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -181,8 +187,11 @@ func TestOnEvent_StepStarted_TransitionsQueuedToRunning(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-st1", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -196,8 +205,11 @@ func TestOnEvent_StepStarted_TransitionsQueuedToRunning(t *testing.T) {
 		protocol.EventStepStarted, "run-st1", "a", nil,
 	)
 	startedEvt.AttemptNumber = 1
-	startedData, _ := startedEvt.Marshal()
-	js.Publish(
+	startedData, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startedEvt.NATSSubject(), startedData,
 		nats.MsgId(startedEvt.NATSMsgID()),
 	)
@@ -230,8 +242,8 @@ func TestOnEvent_StepStarted_IncrementsAttempts(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -240,8 +252,11 @@ func TestOnEvent_StepStarted_IncrementsAttempts(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-att", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -253,8 +268,11 @@ func TestOnEvent_StepStarted_IncrementsAttempts(t *testing.T) {
 		protocol.EventStepStarted, "run-att", "a", nil,
 	)
 	startedEvt.AttemptNumber = 3
-	startedData, _ := startedEvt.Marshal()
-	js.Publish(
+	startedData, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startedEvt.NATSSubject(), startedData,
 		nats.MsgId(startedEvt.NATSMsgID()),
 	)
@@ -284,8 +302,8 @@ func TestOnEvent_StepStarted_IsIdempotentOnSameAttempt(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -294,8 +312,11 @@ func TestOnEvent_StepStarted_IsIdempotentOnSameAttempt(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-idem", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -310,8 +331,11 @@ func TestOnEvent_StepStarted_IsIdempotentOnSameAttempt(t *testing.T) {
 			protocol.EventStepStarted, "run-idem", "a", nil,
 		)
 		startedEvt.AttemptNumber = 2
-		data, _ := startedEvt.Marshal()
-		js.Publish(
+		data, err := startedEvt.Marshal()
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		mustPublish(t, js,
 			startedEvt.NATSSubject(), data,
 			nats.MsgId(startedEvt.NATSMsgID()),
 		)
@@ -340,8 +364,8 @@ func TestOnEvent_StepStarted_IgnoredAfterCompleted(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	store := NewSnapshotStore(jsNew)
 	run := dag.NewWorkflowRun(wfDef, "run-stcomp")
@@ -362,8 +386,11 @@ func TestOnEvent_StepStarted_IgnoredAfterCompleted(t *testing.T) {
 		protocol.EventStepStarted, "run-stcomp", "a", nil,
 	)
 	startedEvt.AttemptNumber = 1
-	data, _ := startedEvt.Marshal()
-	js.Publish(
+	data, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startedEvt.NATSSubject(), data,
 		nats.MsgId(startedEvt.NATSMsgID()),
 	)
@@ -395,8 +422,8 @@ func TestOnEvent_StepStarted_IgnoredAfterFailed(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	store := NewSnapshotStore(jsNew)
 	run := dag.NewWorkflowRun(wfDef, "run-stfail")
@@ -417,8 +444,11 @@ func TestOnEvent_StepStarted_IgnoredAfterFailed(t *testing.T) {
 		protocol.EventStepStarted, "run-stfail", "a", nil,
 	)
 	startedEvt.AttemptNumber = 4
-	data, _ := startedEvt.Marshal()
-	js.Publish(
+	data, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startedEvt.NATSSubject(), data,
 		nats.MsgId(startedEvt.NATSMsgID()),
 	)
@@ -453,8 +483,8 @@ func TestOnEvent_StepStarted_AttemptsMonotonic_NeverDecreases(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	store := NewSnapshotStore(jsNew)
 	run := dag.NewWorkflowRun(wfDef, "run-mono")
@@ -475,8 +505,11 @@ func TestOnEvent_StepStarted_AttemptsMonotonic_NeverDecreases(t *testing.T) {
 		protocol.EventStepStarted, "run-mono", "a", nil,
 	)
 	startedEvt.AttemptNumber = 2
-	data, _ := startedEvt.Marshal()
-	js.Publish(
+	data, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startedEvt.NATSSubject(), data,
 		nats.MsgId(startedEvt.NATSMsgID()),
 	)
@@ -575,8 +608,8 @@ func TestOnEvent_StepQueued_DuringReplay_ReconstructsState(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -586,8 +619,11 @@ func TestOnEvent_StepQueued_DuringReplay_ReconstructsState(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-rp", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -599,8 +635,11 @@ func TestOnEvent_StepQueued_DuringReplay_ReconstructsState(t *testing.T) {
 		protocol.EventStepStarted, "run-rp", "a", nil,
 	)
 	startedEvt.AttemptNumber = 1
-	startedData, _ := startedEvt.Marshal()
-	js.Publish(
+	startedData, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startedEvt.NATSSubject(), startedData,
 		nats.MsgId(startedEvt.NATSMsgID()),
 	)
@@ -609,8 +648,11 @@ func TestOnEvent_StepQueued_DuringReplay_ReconstructsState(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "run-rp", "a", []byte(`"done"`),
 	)
-	compData, _ := compEvt.Marshal()
-	js.Publish(
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()),
 	)
@@ -642,8 +684,8 @@ func TestOnEvent_StepQueued_NoRollback_FromRunning(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	store := NewSnapshotStore(jsNew)
 	run := dag.NewWorkflowRun(wfDef, "run-nr")
@@ -664,8 +706,11 @@ func TestOnEvent_StepQueued_NoRollback_FromRunning(t *testing.T) {
 		protocol.EventStepQueued, "run-nr", "a", nil,
 	)
 	queuedEvt.AttemptNumber = 1
-	data, _ := queuedEvt.Marshal()
-	js.Publish(
+	data, err := queuedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		queuedEvt.NATSSubject(), data,
 		nats.MsgId(queuedEvt.NATSMsgID()),
 	)

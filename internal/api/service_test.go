@@ -428,7 +428,7 @@ func TestServiceListDeadLetters(t *testing.T) {
 		RunID:  "run-123",
 		StepID: "step-1",
 	}
-	data, _ := json.Marshal(payload)
+	data := mustMarshal(t, payload)
 	msg := &nats.Msg{
 		Subject: "dead.task-a",
 		Data:    data,
@@ -462,7 +462,7 @@ func TestServiceReplayDeadLetter(t *testing.T) {
 		RunID:  "run-456",
 		StepID: "step-2",
 	}
-	data, _ := json.Marshal(payload)
+	data := mustMarshal(t, payload)
 	msg := &nats.Msg{
 		Subject: "dead.task-replay",
 		Data:    data,
@@ -750,7 +750,7 @@ func TestDeleteTriggerInnerRemovesKey(t *testing.T) {
 			Timezone:   "UTC",
 		},
 	}
-	data, _ := json.Marshal(def)
+	data := mustMarshal(t, def)
 	_, putErr := svc.triggerKV.Put(
 		context.Background(), "del-inner", data,
 	)

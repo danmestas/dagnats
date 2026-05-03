@@ -7,7 +7,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -38,19 +37,19 @@ func TestOrchestratorConcurrencySecondRunPends(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	publishEvt(js, protocol.EventWorkflowStarted,
+	publishEvt(t, js, protocol.EventWorkflowStarted,
 		"cr-1", defData)
 	waitForRunStatus(t, orch.store, "cr-1",
 		dag.RunStatusRunning, 5*time.Second)
 
-	publishEvt(js, protocol.EventWorkflowStarted,
+	publishEvt(t, js, protocol.EventWorkflowStarted,
 		"cr-2", defData)
 	waitForRunStatus(t, orch.store, "cr-2",
 		dag.RunStatusPending, 5*time.Second)
@@ -77,19 +76,19 @@ func TestOrchestratorConcurrencyAutoStart(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	publishEvt(js, protocol.EventWorkflowStarted,
+	publishEvt(t, js, protocol.EventWorkflowStarted,
 		"ca-1", defData)
 	waitForRunStatus(t, orch.store, "ca-1",
 		dag.RunStatusRunning, 5*time.Second)
 
-	publishEvt(js, protocol.EventWorkflowStarted,
+	publishEvt(t, js, protocol.EventWorkflowStarted,
 		"ca-2", defData)
 	waitForRunStatus(t, orch.store, "ca-2",
 		dag.RunStatusPending, 5*time.Second)
@@ -98,8 +97,11 @@ func TestOrchestratorConcurrencyAutoStart(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "ca-1", "sa",
 		[]byte(`"done"`))
-	cd, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), cd,
+	cd, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), cd,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -116,14 +118,19 @@ func TestOrchestratorConcurrencyAutoStart(t *testing.T) {
 
 // publishEvt is a helper for concurrency tests.
 func publishEvt(
+	t *testing.T,
 	js nats.JetStreamContext,
 	evtType protocol.EventType,
 	runID string,
 	payload []byte,
 ) {
+	t.Helper()
 	evt := protocol.NewWorkflowEvent(evtType, runID, payload)
-	data, _ := evt.Marshal()
-	js.Publish(evt.NATSSubject(), data,
+	data, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt.NATSSubject(), data,
 		nats.MsgId(evt.NATSMsgID()))
 }
 
@@ -148,8 +155,8 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -158,8 +165,11 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 	// Start run-1.
 	evt1 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "cc-run-1", defData)
-	d1, _ := evt1.Marshal()
-	js.Publish(evt1.NATSSubject(), d1,
+	d1, err := evt1.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "cc-run-1",
 		dag.RunStatusRunning, 5*time.Second)
@@ -167,8 +177,11 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 	// Start run-2 (should be Pending).
 	evt2 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "cc-run-2", defData)
-	d2, _ := evt2.Marshal()
-	js.Publish(evt2.NATSSubject(), d2,
+	d2, err := evt2.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "cc-run-2",
 		dag.RunStatusPending, 5*time.Second)
@@ -176,8 +189,11 @@ func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 	// Cancel run-1.
 	cancelEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowCancelled, "cc-run-1", nil)
-	cd, _ := cancelEvt.Marshal()
-	js.Publish(cancelEvt.NATSSubject(), cd,
+	cd, err := cancelEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cancelEvt.NATSSubject(), cd,
 		nats.MsgId(cancelEvt.NATSMsgID()))
 
 	// Wait for run-2 to auto-start.
@@ -221,8 +237,8 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -231,8 +247,11 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 	// Start run-1.
 	evt1 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "fc-run-1", defData)
-	d1, _ := evt1.Marshal()
-	js.Publish(evt1.NATSSubject(), d1,
+	d1, err := evt1.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "fc-run-1",
 		dag.RunStatusRunning, 5*time.Second)
@@ -240,8 +259,11 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 	// Start run-2 (should be Pending).
 	evt2 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "fc-run-2", defData)
-	d2, _ := evt2.Marshal()
-	js.Publish(evt2.NATSSubject(), d2,
+	d2, err := evt2.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "fc-run-2",
 		dag.RunStatusPending, 5*time.Second)
@@ -250,8 +272,11 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "fc-run-1", "s1",
 		[]byte(`"permanent"`))
-	fd, _ := failEvt.Marshal()
-	js.Publish(failEvt.NATSSubject(), fd,
+	fd, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, failEvt.NATSSubject(), fd,
 		nats.MsgId(failEvt.NATSMsgID()))
 
 	// Wait for run-1 to fail and run-2 to auto-start.
@@ -293,8 +318,8 @@ func TestOrchestratorCompletionReleasesConcurrency(
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -303,8 +328,11 @@ func TestOrchestratorCompletionReleasesConcurrency(
 	// Start run-1.
 	evt1 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "cc2-run-1", defData)
-	d1, _ := evt1.Marshal()
-	js.Publish(evt1.NATSSubject(), d1,
+	d1, err := evt1.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "cc2-run-1",
 		dag.RunStatusRunning, 5*time.Second)
@@ -312,8 +340,11 @@ func TestOrchestratorCompletionReleasesConcurrency(
 	// Start run-2 (queued as Pending).
 	evt2 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "cc2-run-2", defData)
-	d2, _ := evt2.Marshal()
-	js.Publish(evt2.NATSSubject(), d2,
+	d2, err := evt2.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "cc2-run-2",
 		dag.RunStatusPending, 5*time.Second)
@@ -322,8 +353,11 @@ func TestOrchestratorCompletionReleasesConcurrency(
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "cc2-run-1", "s1",
 		[]byte(`"done"`))
-	cd, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), cd,
+	cd, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), cd,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Wait for auto-start of run-2.
@@ -366,8 +400,8 @@ func TestOrchestratorConcurrencyNoPendingRuns(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -376,8 +410,11 @@ func TestOrchestratorConcurrencyNoPendingRuns(t *testing.T) {
 	// Start and complete a single run.
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "np-run-1", defData)
-	d, _ := evt.Marshal()
-	js.Publish(evt.NATSSubject(), d,
+	d, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt.NATSSubject(), d,
 		nats.MsgId(evt.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "np-run-1",
 		dag.RunStatusRunning, 5*time.Second)
@@ -385,8 +422,11 @@ func TestOrchestratorConcurrencyNoPendingRuns(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "np-run-1", "s1",
 		[]byte(`"done"`))
-	cd, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), cd,
+	cd, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), cd,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -425,8 +465,8 @@ func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -435,8 +475,11 @@ func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 	// Start run-1 (gets slot).
 	evt1 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "tc-run-1", defData)
-	d1, _ := evt1.Marshal()
-	js.Publish(evt1.NATSSubject(), d1,
+	d1, err := evt1.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "tc-run-1",
 		dag.RunStatusRunning, 5*time.Second)
@@ -444,8 +487,11 @@ func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 	// Start run-2 (queued as Pending).
 	evt2 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "tc-run-2", defData)
-	d2, _ := evt2.Marshal()
-	js.Publish(evt2.NATSSubject(), d2,
+	d2, err := evt2.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "tc-run-2",
 		dag.RunStatusPending, 5*time.Second)
@@ -454,8 +500,11 @@ func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "tc-run-1", "s1",
 		[]byte(`"done"`))
-	cd, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), cd,
+	cd, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), cd,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Wait for run-2 to transition.
@@ -499,8 +548,8 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 		}},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -509,8 +558,11 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 	// Start run-1.
 	evt1 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "lc-run-1", defData)
-	d1, _ := evt1.Marshal()
-	js.Publish(evt1.NATSSubject(), d1,
+	d1, err := evt1.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt1.NATSSubject(), d1,
 		nats.MsgId(evt1.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "lc-run-1",
 		dag.RunStatusRunning, 5*time.Second)
@@ -518,8 +570,11 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 	// Start run-2 (queued as Pending).
 	evt2 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "lc-run-2", defData)
-	d2, _ := evt2.Marshal()
-	js.Publish(evt2.NATSSubject(), d2,
+	d2, err := evt2.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt2.NATSSubject(), d2,
 		nats.MsgId(evt2.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "lc-run-2",
 		dag.RunStatusPending, 5*time.Second)
@@ -527,8 +582,11 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 	// Send continue to trip MaxIterations on run-1.
 	cont := protocol.NewStepEvent(
 		protocol.EventStepContinue, "lc-run-1", "loop", nil)
-	cd, _ := cont.Marshal()
-	js.Publish(cont.NATSSubject(), cd,
+	cd, err := cont.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cont.NATSSubject(), cd,
 		nats.MsgId(cont.NATSMsgID()))
 
 	// Wait for run-1 to fail and run-2 to auto-start.

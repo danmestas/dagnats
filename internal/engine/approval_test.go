@@ -211,7 +211,7 @@ func TestApprovalStep_ApproveUnblocksDownstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	js.Publish(
+	mustPublish(t, js,
 		evt.NATSSubject(), evtData,
 		nats.MsgId(evt.NATSMsgID()),
 	)
@@ -265,8 +265,11 @@ func TestApprovalStep_RejectFailsWorkflow(t *testing.T) {
 		runID, "gate",
 		[]byte(`"deployment not safe"`),
 	)
-	evtData, _ := evt.Marshal()
-	js.Publish(
+	evtData, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		evt.NATSSubject(), evtData,
 		nats.MsgId(evt.NATSMsgID()),
 	)
@@ -324,8 +327,8 @@ func TestApprovalStep_TimeoutFails(t *testing.T) {
 
 	runID := "run-approval-4"
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -335,8 +338,11 @@ func TestApprovalStep_TimeoutFails(t *testing.T) {
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, runID, payload,
 	)
-	evtData, _ := evt.Marshal()
-	js.Publish(
+	evtData, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		evt.NATSSubject(), evtData,
 		nats.MsgId(evt.NATSMsgID()),
 	)

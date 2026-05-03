@@ -30,7 +30,7 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 	wb := dag.NewWorkflow("nats-test")
 	wb.Task("a", "task-a")
 	wfDef, _ := wb.Build()
-	reqData, _ := json.Marshal(wfDef)
+	reqData := mustMarshal(t, wfDef)
 	reply, err := nc.Request(
 		"api.workflows.register", reqData, 5*time.Second,
 	)
@@ -48,7 +48,7 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 	}
 
 	// Start run via NATS request.
-	startReq, _ := json.Marshal(
+	startReq := mustMarshal(t,
 		startRunRequest{Workflow: "nats-test"},
 	)
 	reply, err = nc.Request(
@@ -127,7 +127,7 @@ func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
 	wb := dag.NewWorkflow("sub-test")
 	wb.Task("a", "task-a")
 	def, _ := wb.Build()
-	data, _ := json.Marshal(def)
+	data := mustMarshal(t, def)
 	reply, err := nc.Request(
 		"api.workflows.register", data, 2*time.Second,
 	)
@@ -141,7 +141,7 @@ func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
 	}
 
 	// Positive: runs.start subject responds.
-	startReq, _ := json.Marshal(
+	startReq := mustMarshal(t,
 		startRunRequest{Workflow: "sub-test"},
 	)
 	reply, err = nc.Request(
@@ -218,7 +218,7 @@ func TestNATSAPIHandleStartRunInvalidJSON(t *testing.T) {
 	}
 
 	// Negative: valid JSON but unknown workflow returns error.
-	startReq, _ := json.Marshal(
+	startReq := mustMarshal(t,
 		startRunRequest{Workflow: "nonexistent"},
 	)
 	reply, err = nc.Request(

@@ -65,7 +65,7 @@ func TestCorrelatorMatchesEvent(t *testing.T) {
 
 	// Publish a matching event.
 	eventData := []byte(`{"order_id":"ord-123","amount":99.99}`)
-	js.Publish("event.payment.completed", eventData)
+	mustPublish(t, js, "event.payment.completed", eventData)
 
 	// Wait for the match event on the history stream.
 	msg, err := historySub.NextMsg(5 * time.Second)
@@ -137,7 +137,7 @@ func TestCorrelatorIgnoresNonMatchingEvent(t *testing.T) {
 
 	// Publish a NON-matching event (different order_id).
 	eventData := []byte(`{"order_id":"ord-999","amount":50.00}`)
-	js.Publish("event.payment.completed", eventData)
+	mustPublish(t, js, "event.payment.completed", eventData)
 
 	// Negative: no match event should appear within 1 second.
 	msg, err := historySub.NextMsg(1 * time.Second)
@@ -207,7 +207,7 @@ func TestCorrelatorRemoveWaitersForRun(t *testing.T) {
 
 	// Publish a matching event — should NOT trigger a match.
 	eventData := []byte(`{"order_id":"ord-456","amount":75.00}`)
-	js.Publish("event.payment.completed", eventData)
+	mustPublish(t, js, "event.payment.completed", eventData)
 
 	// Negative: no match event since waiter was removed.
 	msg, err := historySub.NextMsg(1 * time.Second)
@@ -269,7 +269,7 @@ func TestCorrelatorLazyStart(t *testing.T) {
 
 	// Publish a matching event.
 	eventData := []byte(`{"order_id":"ord-789","amount":199.99}`)
-	js.Publish("event.payment.completed", eventData)
+	mustPublish(t, js, "event.payment.completed", eventData)
 
 	// Positive: match event should appear on history stream.
 	msg, err := historySub.NextMsg(5 * time.Second)
