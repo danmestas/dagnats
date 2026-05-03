@@ -749,7 +749,17 @@ func (w *Worker) Stop() {
 			close(w.stopHeartbeat)
 		}
 		if w.dir != nil {
-			_ = w.dir.Deregister(w.workerID)
+			// Best-effort: deregistration is observability-only; a failure
+			// here just means stale entries linger until KV TTL evicts
+			// them. Logged so the failure stays visible without aborting
+			// shutdown.
+			if err := w.dir.Deregister(w.workerID); err != nil {
+				slog.Warn(
+					"worker.Stop: directory deregister failed (non-fatal)",
+					"worker_id", w.workerID,
+					"error", err,
+				)
+			}
 		}
 		for _, s := range w.stoppers {
 			s.Stop()
