@@ -8,7 +8,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -26,9 +25,7 @@ func TestRetryCreatesNewRun(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	// Register workflow so StartRun can find the definition.
 	svc := api.NewService(nc)
@@ -94,9 +91,7 @@ func TestRetryJSONOutput(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
@@ -172,9 +167,7 @@ func TestRetryUsesOriginalInput(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
@@ -263,9 +256,7 @@ func TestRetryExplicitInputOverridesOriginal(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
@@ -352,9 +343,7 @@ func TestRetryNonexistentRun(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	// Override exitFunc to prevent os.Exit in tests.
 	var exitCode int

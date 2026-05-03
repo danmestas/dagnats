@@ -6,7 +6,6 @@ package cli
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -53,9 +52,7 @@ func TestCancelCommandPublishesEvent(t *testing.T) {
 	}
 
 	// Set NATS_URL env var for the CLI to use
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 
@@ -169,9 +166,7 @@ func TestRunEventsTypeFilter(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	filterRunID1 := "ff110000111111112222222233333333"
 	js, err := jetstream.New(nc)
@@ -210,9 +205,7 @@ func TestRunEventsStepFilter(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	filterRunID2 := "ff220000111111112222222233333333"
 	js, err := jetstream.New(nc)
@@ -672,9 +665,7 @@ func TestSignalCommandWritesToKV(t *testing.T) {
 	}
 
 	// Set NATS_URL env var for the CLI to use
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	sigKV, _ := js.KeyValue("signals")

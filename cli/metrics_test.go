@@ -336,8 +336,7 @@ func TestMetricsShowIntegration(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Unsetenv("NATS_URL")
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	jsLegacy, err := nc.JetStream()
 	if err != nil {
@@ -419,8 +418,7 @@ func TestMetricsShowJSONOutput(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Unsetenv("NATS_URL")
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	jsLegacy, err := nc.JetStream()
 	if err != nil {
@@ -480,8 +478,7 @@ func TestMetricsShowNoResults(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Unsetenv("NATS_URL")
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	exitCalled := false
 	oldExit := exitFunc

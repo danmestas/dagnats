@@ -6,7 +6,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -25,9 +24,7 @@ func TestTriggerUpdateCronExpression(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -89,9 +86,7 @@ func TestTriggerUpdateTimezone(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -156,9 +151,7 @@ func TestTriggerUpdateNonExistent(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	// Attempt to update a non-existent trigger via the service
 	// directly, since the CLI calls os.Exit on error.
@@ -197,9 +190,7 @@ func TestTriggerUpdateJSON(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")

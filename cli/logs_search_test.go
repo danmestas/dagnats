@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -120,9 +119,7 @@ func TestMatchesSearch(t *testing.T) {
 }
 
 func TestPrintSearchResults(t *testing.T) {
-	oldNoColor := os.Getenv("NO_COLOR")
-	os.Setenv("NO_COLOR", "1")
-	defer os.Setenv("NO_COLOR", oldNoColor)
+	t.Setenv("NO_COLOR", "1")
 
 	records := []LogRecord{
 		{

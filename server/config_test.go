@@ -56,18 +56,11 @@ func TestDefaultConfig_PortsAndLimits(t *testing.T) {
 
 func TestConfigFromEnv_OverridesDefaults(t *testing.T) {
 	// Set all env vars
-	os.Setenv("DAGNATS_DATA_DIR", "/tmp/dagnats-test")
-	os.Setenv("DAGNATS_HTTP_ADDR", ":9999")
-	os.Setenv("DAGNATS_NATS_PORT", "5555")
-	os.Setenv("DAGNATS_LEAF_REMOTES", "nats://leaf1:7422,nats://leaf2:7422")
-	os.Setenv("DAGNATS_MAX_STORE_BYTES", "1073741824")
-	defer func() {
-		os.Unsetenv("DAGNATS_DATA_DIR")
-		os.Unsetenv("DAGNATS_HTTP_ADDR")
-		os.Unsetenv("DAGNATS_NATS_PORT")
-		os.Unsetenv("DAGNATS_LEAF_REMOTES")
-		os.Unsetenv("DAGNATS_MAX_STORE_BYTES")
-	}()
+	t.Setenv("DAGNATS_DATA_DIR", "/tmp/dagnats-test")
+	t.Setenv("DAGNATS_HTTP_ADDR", ":9999")
+	t.Setenv("DAGNATS_NATS_PORT", "5555")
+	t.Setenv("DAGNATS_LEAF_REMOTES", "nats://leaf1:7422,nats://leaf2:7422")
+	t.Setenv("DAGNATS_MAX_STORE_BYTES", "1073741824")
 
 	cfg := ConfigFromEnv()
 
@@ -131,8 +124,7 @@ func TestConfigFromEnv_LeafRemotesCapped(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		remotes[i] = "nats://leaf" + string(rune('0'+i)) + ":7422"
 	}
-	os.Setenv("DAGNATS_LEAF_REMOTES", strings.Join(remotes, ","))
-	defer os.Unsetenv("DAGNATS_LEAF_REMOTES")
+	t.Setenv("DAGNATS_LEAF_REMOTES", strings.Join(remotes, ","))
 
 	cfg := ConfigFromEnv()
 

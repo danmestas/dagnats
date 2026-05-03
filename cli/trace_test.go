@@ -667,8 +667,7 @@ func TestTraceViewOutputIntegration(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Unsetenv("NATS_URL")
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	jsLegacy, err := nc.JetStream()
 	if err != nil {

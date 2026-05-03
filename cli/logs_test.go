@@ -8,7 +8,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -49,9 +48,7 @@ func TestBuildLogSubject(t *testing.T) {
 
 func TestFormatLogLine(t *testing.T) {
 	// Disable color so ANSI codes don't interfere with assertions
-	oldNoColor := os.Getenv("NO_COLOR")
-	os.Setenv("NO_COLOR", "1")
-	defer os.Setenv("NO_COLOR", oldNoColor)
+	t.Setenv("NO_COLOR", "1")
 
 	tsStr := "2025-06-15T14:30:45.000000000Z"
 
@@ -326,9 +323,7 @@ func TestLogsStreamIntegration(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, err := nc.JetStream()
 	if err != nil {

@@ -66,9 +66,7 @@ func TestFindBinary_InDagnatsDir(t *testing.T) {
 	}
 
 	// Override HOME so binDirPath resolves to our temp.
-	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
 
 	path, err := FindBinary("fakebinary")
 	if err != nil {
@@ -96,9 +94,7 @@ func TestFindBinary_NotFound(t *testing.T) {
 func TestBinDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
 
 	dir, err := BinDir()
 	if err != nil {
@@ -166,9 +162,7 @@ func TestDownloadURL_Unknown(t *testing.T) {
 func TestInstallFromMockServer(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
 
 	// Build a tar.gz containing a fake "testbin" file.
 	archive := buildTarGz(t, "testbin", "#!/bin/sh\necho hi\n")
