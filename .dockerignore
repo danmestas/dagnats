@@ -1,0 +1,29 @@
+# Keep the docker build context small + reproducible.
+
+.git/
+.github/
+.claude/
+.vscode/
+.idea/
+
+# Build artifacts
+bin/
+dist/
+*.test
+*.out
+
+# Tests aren't needed at runtime; the binary is the deliverable.
+**/*_test.go
+
+# Documentation site (Hugo build) is a separate deploy.
+docs/site/public/
+docs/site/resources/
+
+# Local-only files
+.env
+.env.local
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
