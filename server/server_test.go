@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/worker"
+	"github.com/nats-io/nats.go"
 )
 
 // testConfig returns a Config suitable for isolated testing.
@@ -399,6 +400,102 @@ func TestServer_EmbeddedWorkerCompletesRun(t *testing.T) {
 	select {
 	case err := <-errCh:
 		// Negative: no errors during clean shutdown
+		if err != nil {
+			t.Errorf("Run() returned error: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Run() did not return within 20s")
+	}
+}
+
+// TestServer_NATSAPIRespondsAfterReady verifies that the NATSAPI control
+// plane is wired into Server.Run. After /ready returns 200, an external
+// NATS client must get a structured reply (not ErrNoResponders) on
+// api.workflows.register and api.runs.start. Regression test for #164.
+func TestServer_NATSAPIRespondsAfterReady(t *testing.T) {
+	cfg := testConfig(t)
+	srv := New(cfg)
+
+	if srv == nil {
+		panic("New() returned nil")
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+
+	readyURL := fmt.Sprintf("http://%s/ready", cfg.HTTPAddr)
+	deadline := time.Now().Add(10 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) && !ready {
+		resp, err := http.Get(readyURL)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			ready = true
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatal("/ready did not return 200 within 10s")
+	}
+
+	// External caller path: connect to embedded NATS via its URL.
+	nc, err := nats.Connect(srv.ns.ClientURL())
+	if err != nil {
+		t.Fatalf("connect external NATS client: %v", err)
+	}
+	defer nc.Close()
+
+	// Positive: api.workflows.register subscriber responds.
+	wfBody := []byte(
+		`{"name":"natsapi-wired","steps":` +
+			`[{"id":"a","task":"a"}]}`,
+	)
+	reply, err := nc.Request(
+		"api.workflows.register", wfBody, 2*time.Second,
+	)
+	if err != nil {
+		t.Fatalf(
+			"api.workflows.register: %v "+
+				"(NATSAPI not wired into Server.Run?)", err,
+		)
+	}
+	var regResp map[string]string
+	if err := json.Unmarshal(reply.Data, &regResp); err != nil {
+		t.Fatalf("unmarshal register reply: %v", err)
+	}
+	if regResp["status"] != "registered" {
+		t.Fatalf(
+			"register status = %q, want 'registered' (body=%s)",
+			regResp["status"], string(reply.Data),
+		)
+	}
+
+	// Positive: api.runs.start subscriber responds with a run_id.
+	startBody := []byte(`{"workflow":"natsapi-wired"}`)
+	reply, err = nc.Request(
+		"api.runs.start", startBody, 2*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("api.runs.start: %v", err)
+	}
+	var startResp map[string]string
+	if err := json.Unmarshal(reply.Data, &startResp); err != nil {
+		t.Fatalf("unmarshal start reply: %v", err)
+	}
+	if startResp["run_id"] == "" {
+		t.Fatalf(
+			"start reply missing run_id (body=%s)",
+			string(reply.Data),
+		)
+	}
+
+	srv.Stop()
+	select {
+	case err := <-errCh:
 		if err != nil {
 			t.Errorf("Run() returned error: %v", err)
 		}

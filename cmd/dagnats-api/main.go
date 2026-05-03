@@ -41,6 +41,9 @@ func main() {
 	}
 	defer telShutdown(context.Background())
 	svc := api.NewService(nc)
+	natsAPI := api.NewNATSAPI(svc, nc)
+	natsAPI.Start()
+	defer natsAPI.Stop()
 	handler := api.NewRESTHandler(svc)
 	addr := cli.GetEnvWithFallback(
 		"DAGNATS_LISTEN_ADDR", "LISTEN_ADDR", ":8080",
