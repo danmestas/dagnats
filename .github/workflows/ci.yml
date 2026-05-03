@@ -31,6 +31,12 @@ jobs:
           staticcheck ./...
 
       - name: Test
-        run: go test ./... -timeout 300s -count=1
+        # 600s matches the Makefile's `make test` timeout. The worker
+        # package alone takes ~75s locally and the embedded NATS
+        # supercluster e2e adds ~80s; CI runners with constrained
+        # resources occasionally exceeded the previous 300s budget,
+        # tripping the worker package's per-test timeout. See
+        # memory/project_ci_doc_only_skip.md for surfacing history.
+        run: go test ./... -timeout 600s -count=1
         env:
           E2E_TOPOLOGY: embedded

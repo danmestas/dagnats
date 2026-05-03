@@ -365,7 +365,17 @@ func TestHandleCompleteCmd_WithDagnatsPrefix(t *testing.T) {
 
 // TestDynamicCompletions_NoNATS verifies that dynamic completions
 // return nil when NATS is unavailable (silent failure).
+//
+// connectForCompletion() reads DAGNATS_NATS_URL → NATS_URL → default.
+// If a developer has `dagnats serve` running locally on the default
+// port, an unset env var would point at a real NATS with real
+// workflow names, masking the "NATS unavailable" assertion this test
+// is supposed to make. Pin to a deliberately-unbound URL so the
+// connect always fails regardless of host environment.
 func TestDynamicCompletions_NoNATS(t *testing.T) {
+	t.Setenv("DAGNATS_NATS_URL", "nats://127.0.0.1:1")
+	t.Setenv("NATS_URL", "nats://127.0.0.1:1")
+
 	got := fetchDynamicCompletions("run.start", "")
 
 	// Positive: nil result when NATS is down.
