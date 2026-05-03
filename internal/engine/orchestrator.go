@@ -979,36 +979,10 @@ func (o *Orchestrator) handleStepFailed(
 	stepDef, _ := findStepDef(wfDef, evt.StepID)
 	policy := dag.ResolveRetryPolicy(wfDef, stepDef)
 
-	// Non-retriable: use pure core for step state transition,
-	// then delegate to recovery manager for failure handling.
-	// Advance sets run.Status=Failed, but recovery may intercept
-	// with an on-failure handler, so preserve the original status.
 	if failPayload.FailureType ==
 		protocol.FailureTypeNonRetriable {
-		o.metrics.failNonRetriable.Add(ctx, 1)
-		slog.InfoContext(ctx,
-			"step failed permanently (non-retriable)",
-			"run_id", evt.RunID,
-			"step_id", evt.StepID,
-		)
-		advEvt := Event{
-			Type:   EventStepFailed,
-			StepID: evt.StepID,
-			FailPayload: FailPayload{
-				Error:       failPayload.Error,
-				FailureType: FailureTypeNonRetriable,
-			},
-		}
-		prevStatus := run.Status
-		run, _ = Advance(wfDef, run, advEvt)
-		// Recovery may handle the failure with an on-failure
-		// handler — don't prematurely mark the run Failed.
-		run.Status = prevStatus
-		state = run.Steps[evt.StepID]
-		return o.recovery.HandlePermanentFailure(
-			ctx, wfDef, run, stepDef, state, evt.StepID,
-			o.saveSnapshot, o.failWorkflow,
-			o.notifyParentIfChild, o.releaseTaskSlot,
+		return o.dispatchNonRetriableFailure(
+			ctx, wfDef, run, stepDef, evt, failPayload,
 		)
 	}
 
@@ -1020,6 +994,76 @@ func (o *Orchestrator) handleStepFailed(
 			ctx, wfDef, &run, stepDef, &state,
 			evt.StepID, failPayload.RetryAfterMs, policy,
 		)
+	}
+
+	return o.dispatchRetriableFailure(
+		ctx, wfDef, run, state, stepDef, evt, policy,
+	)
+}
+
+// dispatchNonRetriableFailure is the inner branch of handleStepFailed for
+// failure_type=non_retriable: increments metrics, runs the pure-core
+// Advance to record the terminal step state, preserves run.Status so
+// on-failure recovery handlers can intercept, and delegates the rest to
+// the recovery manager.
+func (o *Orchestrator) dispatchNonRetriableFailure(
+	ctx context.Context, wfDef dag.WorkflowDef, run dag.WorkflowRun,
+	stepDef dag.StepDef, evt protocol.Event,
+	failPayload protocol.StepFailedPayload,
+) error {
+	if evt.RunID == "" {
+		panic("dispatchNonRetriableFailure: RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("dispatchNonRetriableFailure: StepID must not be empty")
+	}
+
+	// Non-retriable: use pure core for step state transition,
+	// then delegate to recovery manager for failure handling.
+	// Advance sets run.Status=Failed, but recovery may intercept
+	// with an on-failure handler, so preserve the original status.
+	o.metrics.failNonRetriable.Add(ctx, 1)
+	slog.InfoContext(ctx,
+		"step failed permanently (non-retriable)",
+		"run_id", evt.RunID,
+		"step_id", evt.StepID,
+	)
+	advEvt := Event{
+		Type:   EventStepFailed,
+		StepID: evt.StepID,
+		FailPayload: FailPayload{
+			Error:       failPayload.Error,
+			FailureType: FailureTypeNonRetriable,
+		},
+	}
+	prevStatus := run.Status
+	run, _ = Advance(wfDef, run, advEvt)
+	// Recovery may handle the failure with an on-failure
+	// handler — don't prematurely mark the run Failed.
+	run.Status = prevStatus
+	state := run.Steps[evt.StepID]
+	return o.recovery.HandlePermanentFailure(
+		ctx, wfDef, run, stepDef, state, evt.StepID,
+		o.saveSnapshot, o.failWorkflow,
+		o.notifyParentIfChild, o.releaseTaskSlot,
+	)
+}
+
+// dispatchRetriableFailure is the inner branch of handleStepFailed for
+// failure_type=retriable: if attempts remain, save snapshot and schedule
+// retry backoff; if exhausted, transition step to Failed and call
+// HandlePermanentFailure. Pre-#147 this branch silently saved without
+// scheduling — the explicit name pins the post-#147 contract.
+func (o *Orchestrator) dispatchRetriableFailure(
+	ctx context.Context, wfDef dag.WorkflowDef, run dag.WorkflowRun,
+	state dag.StepState, stepDef dag.StepDef, evt protocol.Event,
+	policy *dag.RetryPolicy,
+) error {
+	if evt.RunID == "" {
+		panic("dispatchRetriableFailure: RunID must not be empty")
+	}
+	if evt.StepID == "" {
+		panic("dispatchRetriableFailure: StepID must not be empty")
 	}
 
 	// Retriable (default): schedule the next attempt via the durable
