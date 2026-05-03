@@ -396,7 +396,16 @@ func startServerFromConf(
 	if err != nil {
 		t.Fatalf("config %s: %v", confPath, err)
 	}
-	const maxRetries = 5
+	// maxRetries is generous enough for slow CI runners. The previous
+	// budget of 5 (locally fine, ~always succeeds on attempt 1) was
+	// too tight on resource-constrained CI VMs and surfaced as
+	// "server X: not ready after 5 attempts" flakes on PRs touching
+	// unrelated code (PRs #146, #159, others). Cumulative wait at 15
+	// retries is bounded: sum_{i=1}^{15} i*500ms = 60s; with
+	// readyTimeout per attempt at 30s the total worst case is
+	// ~75s + 30*15 = ~7.5min, which is still well inside the package
+	// `go test` budget of 600s.
+	const maxRetries = 15
 	const readyTimeout = 30 * time.Second
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		srv, srvErr := natsserver.NewServer(opts)
