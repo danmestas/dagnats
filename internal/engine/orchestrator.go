@@ -1672,48 +1672,16 @@ func (o *Orchestrator) enqueueReady(
 		),
 	)
 	defer span.End()
-	completed := completedSet(run)
-	queued := queuedSet(run)
 
-	// Process skipped steps first — they may unblock downstream steps
-	// that would otherwise not appear in ResolveReady.
-	skipped := dag.ResolveSkipped(wfDef, completed, queued, run.Steps)
-	for _, step := range skipped {
-		state := run.Steps[step.ID]
-		state.Status = dag.StepStatusSkipped
-		run.Steps[step.ID] = state
+	ready, skipped, finished, err := o.resolveReadySteps(
+		ctx, wfDef, &run,
+	)
+	if err != nil {
+		return err
 	}
-	if len(skipped) > 0 {
-		// Recompute completed set after marking skips.
-		completed = completedSet(run)
-		if dag.IsComplete(wfDef, completed) {
-			return o.completeWorkflow(ctx, run)
-		}
+	if finished {
+		return nil
 	}
-
-	ready := dag.ResolveReady(wfDef, completed, queued)
-	// Exclude steps that were just marked as skipped.
-	filtered := make([]dag.StepDef, 0, len(ready))
-	for _, step := range ready {
-		if run.Steps[step.ID].Status != dag.StepStatusSkipped {
-			filtered = append(filtered, step)
-		}
-	}
-	ready = filtered
-
-	// Per-run step concurrency: cap how many steps dispatch.
-	if wfDef.Concurrency != nil &&
-		wfDef.Concurrency.MaxSteps > 0 {
-		activeCount := countActiveSteps(run)
-		available := wfDef.Concurrency.MaxSteps - activeCount
-		if available <= 0 {
-			return nil
-		}
-		if len(ready) > available {
-			ready = ready[:available]
-		}
-	}
-
 	span.SetAttributes(
 		attribute.Int64("ready_steps_count", int64(len(ready))),
 	)
@@ -1731,15 +1699,91 @@ func (o *Orchestrator) enqueueReady(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	// Emit step.queued BEFORE dispatching the task — otherwise on a fast
-	// transport the worker can pick up the task and emit step.started
-	// before the engine's step.queued lands in the history stream,
-	// producing out-of-order timestamps. The publish-before-dispatch
-	// ordering matches the semantic ordering. Failure to publish is
-	// logged but doesn't roll back the dispatch (the task is the
-	// load-bearing artifact; step.queued is observability).
-	// Map / sleep / wait / sub-workflow / approval steps have their own
-	// typed lifecycle events and are excluded here.
+	o.publishStepQueuedEvents(ctx, run, ready)
+	return o.dispatchReadySteps(ctx, wfDef, run, ready)
+}
+
+// resolveReadySteps determines which steps should be dispatched in this
+// pass: marks newly-skipped steps, returns early if the run completes
+// purely via skips, then resolves the ready set (excluding skips) and
+// applies the per-run concurrency cap. Mutates run.Steps in place for
+// skipped steps. The `finished` flag tells the caller the workflow has
+// already been completed (or is over the cap with nothing to do) and no
+// further dispatch is required.
+func (o *Orchestrator) resolveReadySteps(
+	ctx context.Context, wfDef dag.WorkflowDef, run *dag.WorkflowRun,
+) (ready []dag.StepDef, skipped []dag.StepDef, finished bool, err error) {
+	if run == nil {
+		panic("resolveReadySteps: run must not be nil")
+	}
+	if run.RunID == "" {
+		panic("resolveReadySteps: RunID must not be empty")
+	}
+	completed := completedSet(*run)
+	queued := queuedSet(*run)
+
+	// Process skipped steps first — they may unblock downstream steps
+	// that would otherwise not appear in ResolveReady.
+	skipped = dag.ResolveSkipped(wfDef, completed, queued, run.Steps)
+	for _, step := range skipped {
+		state := run.Steps[step.ID]
+		state.Status = dag.StepStatusSkipped
+		run.Steps[step.ID] = state
+	}
+	if len(skipped) > 0 {
+		// Recompute completed set after marking skips.
+		completed = completedSet(*run)
+		if dag.IsComplete(wfDef, completed) {
+			if err := o.completeWorkflow(ctx, *run); err != nil {
+				return nil, skipped, true, err
+			}
+			return nil, skipped, true, nil
+		}
+	}
+
+	ready = dag.ResolveReady(wfDef, completed, queued)
+	// Exclude steps that were just marked as skipped.
+	filtered := make([]dag.StepDef, 0, len(ready))
+	for _, step := range ready {
+		if run.Steps[step.ID].Status != dag.StepStatusSkipped {
+			filtered = append(filtered, step)
+		}
+	}
+	ready = filtered
+
+	// Per-run step concurrency: cap how many steps dispatch.
+	if wfDef.Concurrency != nil &&
+		wfDef.Concurrency.MaxSteps > 0 {
+		activeCount := countActiveSteps(*run)
+		available := wfDef.Concurrency.MaxSteps - activeCount
+		if available <= 0 {
+			return nil, skipped, true, nil
+		}
+		if len(ready) > available {
+			ready = ready[:available]
+		}
+	}
+	return ready, skipped, false, nil
+}
+
+// publishStepQueuedEvents emits step.queued BEFORE the task dispatch —
+// otherwise on a fast transport the worker can pick up the task and emit
+// step.started before the engine's step.queued lands in the history
+// stream, producing out-of-order timestamps. The publish-before-dispatch
+// ordering matches the semantic ordering. Failure to publish is logged
+// but doesn't roll back the dispatch (the task is the load-bearing
+// artifact; step.queued is observability). Map / sleep / wait /
+// sub-workflow / approval steps have their own typed lifecycle events
+// and are excluded here.
+func (o *Orchestrator) publishStepQueuedEvents(
+	ctx context.Context, run dag.WorkflowRun, ready []dag.StepDef,
+) {
+	if run.RunID == "" {
+		panic("publishStepQueuedEvents: RunID must not be empty")
+	}
+	if o.js == nil {
+		panic("publishStepQueuedEvents: js must not be nil")
+	}
 	for _, step := range ready {
 		if step.Type != dag.StepTypeNormal && step.Type != dag.StepTypeAgentLoop {
 			continue
@@ -1759,7 +1803,6 @@ func (o *Orchestrator) enqueueReady(
 			// correctness-fatal. See spec §3.
 		}
 	}
-	return o.dispatchReadySteps(ctx, wfDef, run, ready)
 }
 
 // dispatchReadySteps separates map steps from normal steps and
