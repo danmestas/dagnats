@@ -39,17 +39,14 @@ func TestBulkRetryRerunMode(t *testing.T) {
 		[]byte(`{"item":"b"}`),
 	)
 
-	// Wait for orchestrator to create snapshots
+	// Wait for orchestrator to create snapshots.
 	deadline := time.After(5 * time.Second)
+	var run1, run2 dag.WorkflowRun
 	for {
-		run1, err1 := svc.GetRun(context.Background(), runID1)
-		run2, err2 := svc.GetRun(context.Background(), runID2)
+		var err1, err2 error
+		run1, err1 = svc.GetRun(context.Background(), runID1)
+		run2, err2 = svc.GetRun(context.Background(), runID2)
 		if err1 == nil && err2 == nil {
-			// Mark runs as failed via snapshot
-			run1.Status = dag.RunStatusFailed
-			svc.store.Save(context.Background(), run1)
-			run2.Status = dag.RunStatusFailed
-			svc.store.Save(context.Background(), run2)
 			break
 		}
 		select {
@@ -57,6 +54,21 @@ func TestBulkRetryRerunMode(t *testing.T) {
 			t.Fatal("snapshots did not appear within 5s")
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+
+	// Stop the orchestrator before forcing terminal state. Without this
+	// fence, the live orchestrator can process queued events between
+	// our Save and BulkRetryRuns, overwriting Failed back to Running
+	// and leaving the test asserting against the wrong snapshot.
+	orch.Stop()
+
+	run1.Status = dag.RunStatusFailed
+	if err := svc.store.Save(context.Background(), run1); err != nil {
+		t.Fatalf("force state run1: %v", err)
+	}
+	run2.Status = dag.RunStatusFailed
+	if err := svc.store.Save(context.Background(), run2); err != nil {
+		t.Fatalf("force state run2: %v", err)
 	}
 
 	resp, err := svc.BulkRetryRuns(context.Background(),
@@ -107,13 +119,13 @@ func TestBulkRetryDryRun(t *testing.T) {
 		context.Background(), "retry-dry-wf", nil,
 	)
 
-	// Wait for orchestrator to create snapshot
+	// Wait for orchestrator to create snapshot.
 	deadline := time.After(5 * time.Second)
+	var run dag.WorkflowRun
 	for {
-		run, err := svc.GetRun(context.Background(), runID)
+		var err error
+		run, err = svc.GetRun(context.Background(), runID)
 		if err == nil {
-			run.Status = dag.RunStatusFailed
-			svc.store.Save(context.Background(), run)
 			break
 		}
 		select {
@@ -121,6 +133,15 @@ func TestBulkRetryDryRun(t *testing.T) {
 			t.Fatal("snapshot did not appear within 5s")
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+
+	// Stop orchestrator before forcing terminal state — see
+	// TestBulkRetryRerunMode for the race rationale.
+	orch.Stop()
+
+	run.Status = dag.RunStatusFailed
+	if err := svc.store.Save(context.Background(), run); err != nil {
+		t.Fatalf("force state: %v", err)
 	}
 
 	resp, err := svc.BulkRetryRuns(context.Background(),

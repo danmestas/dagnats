@@ -595,6 +595,16 @@ func TestSchedulerShouldFireMatchesTimezone(t *testing.T) {
 }
 
 func TestSchedulerStartStopsOnSignal(t *testing.T) {
+	// Methodology: start the scheduler in a goroutine, let a few ticks
+	// fire, cancel the context, verify Start returns within a bounded
+	// window. The bounded `<-time.After` arm is the negative-space
+	// guard — without it, a Start that loops forever would hang the
+	// test rather than fail. (An earlier "is doneChan closed?" double-
+	// select was structurally vacuous: the only path past the first
+	// select required doneChan to be closed, so the second's default
+	// arm was unreachable. Verifying "no ticks after Start returns"
+	// would require a tick-counter test seam in the production
+	// Scheduler — that's scope creep for this test's purpose.)
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
@@ -614,24 +624,17 @@ func TestSchedulerStartStopsOnSignal(t *testing.T) {
 		close(doneChan)
 	}()
 
-	// Let a few ticks happen
+	// Let a few ticks happen.
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 
-	// Positive: goroutine exits within bounded timeout
+	// Start must return within a bounded window after cancel. The
+	// time.After arm is the negative-space guard against an infinite
+	// loop in Start — without it the test would hang.
 	select {
 	case <-doneChan:
-		// success
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Start did not return after stop signal")
-	}
-
-	// Negative: channel is closed (no double-close panic)
-	select {
-	case <-doneChan:
-		// already closed, good
-	default:
-		t.Fatalf("doneChan should be closed")
 	}
 }
 

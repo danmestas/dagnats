@@ -1314,6 +1314,16 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 		t.Fatalf("output = %q, want %q",
 			string(run.Steps["s1"].Output), `"result-1"`)
 	}
+	// Positive: s2 must have been advanced to Queued (or beyond)
+	// once s1 completed. Without this assertion, a regression that
+	// completes s1 but never advances the DAG to s2 would still
+	// pass the test (the snapshot would still reflect "s1 completed").
+	s2 := run.Steps["s2"].Status
+	if s2 != dag.StepStatusQueued &&
+		s2 != dag.StepStatusRunning &&
+		s2 != dag.StepStatusCompleted {
+		t.Fatalf("s2 = %v, want Queued/Running/Completed after s1 completed", s2)
+	}
 }
 
 func TestOrchestratorSnapshotRestore(t *testing.T) {

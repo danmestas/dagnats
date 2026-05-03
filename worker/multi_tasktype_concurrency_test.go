@@ -20,11 +20,13 @@ func TestMultiTaskType_RunsConcurrently(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 
+	aStarted := make(chan struct{})
 	aBlock := make(chan struct{})
 	bDone := make(chan struct{})
 
 	w := NewWorker(nc)
 	w.Handle("type-a", func(tc TaskContext) error {
+		close(aStarted)
 		<-aBlock
 		return tc.Complete([]byte(`"a-done"`))
 	})
@@ -42,7 +44,16 @@ func TestMultiTaskType_RunsConcurrently(t *testing.T) {
 		t.Fatalf("publish A: %v", err)
 	}
 
-	time.Sleep(300 * time.Millisecond)
+	// Wait for type-a's handler to be invoked AND blocked before
+	// publishing type-b. A bare time.Sleep here would race: under CI
+	// load type-b could land before type-a entered its block,
+	// masking the very serialization bug this test guards against.
+	select {
+	case <-aStarted:
+	case <-time.After(5 * time.Second):
+		close(aBlock)
+		t.Fatal("type-a handler did not start within 5s")
+	}
 
 	payloadB := protocol.TaskPayload{RunID: "run-b", StepID: "s"}
 	dataB, _ := json.Marshal(payloadB)
@@ -52,7 +63,6 @@ func TestMultiTaskType_RunsConcurrently(t *testing.T) {
 
 	select {
 	case <-bDone:
-		t.Log("type-b processed concurrently with blocked type-a — works")
 	case <-time.After(3 * time.Second):
 		close(aBlock)
 		t.Fatal("type-b NOT processed within 3s while type-a blocked — cross-type concurrency broken")

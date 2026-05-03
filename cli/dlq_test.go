@@ -7,6 +7,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -363,17 +364,40 @@ func countDataLines(output string) int {
 }
 
 // captureOutput runs a function and captures its stdout output.
+//
+// Reads the pipe concurrently with fn() so writes longer than the OS
+// pipe buffer (~64 KiB) don't deadlock. The previous fixed-buffer
+// single-Read version (1) silently truncated long output, making
+// strings.Contains assertions test the wrong bytes, and (2) hung
+// indefinitely if fn wrote past the pipe buffer before w.Close.
 func captureOutput(fn func()) string {
 	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic("captureOutput: os.Pipe: " + err.Error())
+	}
 	os.Stdout = w
+
+	var (
+		got     []byte
+		readErr error
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		got, readErr = io.ReadAll(r)
+	}()
 
 	fn()
 
-	w.Close()
+	if err := w.Close(); err != nil {
+		panic("captureOutput: w.Close: " + err.Error())
+	}
 	os.Stdout = oldStdout
+	<-done
 
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	return string(buf[:n])
+	if readErr != nil {
+		panic("captureOutput: read: " + readErr.Error())
+	}
+	return string(got)
 }

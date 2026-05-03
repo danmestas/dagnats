@@ -102,7 +102,13 @@ func TestOrchestrator_StepQueuedMsgIdIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestOrchestrator_DispatchProceedsIfQueuedPublishFails(t *testing.T) {
+// TestOrchestrator_DispatchPublishesTaskOnWorkflowStarted: methodology
+// — start a workflow with one normal step and verify the orchestrator
+// publishes a task message to TASK_QUEUES. Anchors the basic dispatch
+// path; does not exercise the queued-publish-failure recovery (that
+// would need a publish-seam injection — currently unimplemented; see
+// the related fail_fast_e2e tests for the worker-side failure path).
+func TestOrchestrator_DispatchPublishesTaskOnWorkflowStarted(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
