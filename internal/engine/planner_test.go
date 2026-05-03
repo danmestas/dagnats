@@ -8,7 +8,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -62,7 +61,7 @@ func TestPlanner_MaterializeAndComplete(t *testing.T) {
 	}
 
 	// Start the workflow.
-	startPayload, _ := json.Marshal(wfDef)
+	startPayload := mustMarshal(t, wfDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "plan-run-1",
 		startPayload,
@@ -79,7 +78,7 @@ func TestPlanner_MaterializeAndComplete(t *testing.T) {
 	}
 
 	// Simulate planner worker output: two steps, b depends on a.
-	planOutput, _ := json.Marshal(map[string]any{
+	planOutput := mustMarshal(t, map[string]any{
 		"steps": []map[string]any{
 			{"id": "a", "task": "build", "type": "normal"},
 			{
@@ -230,7 +229,7 @@ func TestPlanner_MaxStepsExceeded(t *testing.T) {
 		t.Fatalf("PullSubscribe: %v", err)
 	}
 
-	startPayload, _ := json.Marshal(wfDef)
+	startPayload := mustMarshal(t, wfDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "plan-max-run",
 		startPayload,
@@ -246,7 +245,7 @@ func TestPlanner_MaxStepsExceeded(t *testing.T) {
 	}
 
 	// Output 2 steps but MaxSteps is 1.
-	planOutput, _ := json.Marshal(map[string]any{
+	planOutput := mustMarshal(t, map[string]any{
 		"steps": []map[string]any{
 			{"id": "a", "task": "t1", "type": "normal"},
 			{"id": "b", "task": "t2", "type": "normal"},
@@ -324,7 +323,7 @@ func TestPlanner_AllowedTasksViolation(t *testing.T) {
 		t.Fatalf("PullSubscribe: %v", err)
 	}
 
-	startPayload, _ := json.Marshal(wfDef)
+	startPayload := mustMarshal(t, wfDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "plan-allowed-run",
 		startPayload,
@@ -340,7 +339,7 @@ func TestPlanner_AllowedTasksViolation(t *testing.T) {
 	}
 
 	// Output a step with a disallowed task type.
-	planOutput, _ := json.Marshal(map[string]any{
+	planOutput := mustMarshal(t, map[string]any{
 		"steps": []map[string]any{
 			{"id": "a", "task": "forbidden", "type": "normal"},
 		},
@@ -416,7 +415,7 @@ func TestPlanner_CycleInFragment(t *testing.T) {
 		t.Fatalf("PullSubscribe: %v", err)
 	}
 
-	startPayload, _ := json.Marshal(wfDef)
+	startPayload := mustMarshal(t, wfDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "plan-cycle-run",
 		startPayload,
@@ -432,7 +431,7 @@ func TestPlanner_CycleInFragment(t *testing.T) {
 	}
 
 	// Output a cycle: a -> b -> a.
-	planOutput, _ := json.Marshal(map[string]any{
+	planOutput := mustMarshal(t, map[string]any{
 		"steps": []map[string]any{
 			{
 				"id": "a", "task": "t1", "type": "normal",
@@ -514,7 +513,7 @@ func TestPlanner_EmptyPlan(t *testing.T) {
 		t.Fatalf("PullSubscribe: %v", err)
 	}
 
-	startPayload, _ := json.Marshal(wfDef)
+	startPayload := mustMarshal(t, wfDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "plan-empty-run",
 		startPayload,
@@ -530,7 +529,7 @@ func TestPlanner_EmptyPlan(t *testing.T) {
 	}
 
 	// Empty plan: no steps.
-	planOutput, _ := json.Marshal(map[string]any{
+	planOutput := mustMarshal(t, map[string]any{
 		"steps": []any{},
 	})
 

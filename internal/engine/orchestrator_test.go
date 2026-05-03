@@ -36,16 +36,19 @@ func TestOrchestratorStartsFirstStep(t *testing.T) {
 		{ID: "b", Task: "task-b", DependsOn: []string{"a"}, Type: dag.StepTypeNormal},
 	}}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	evt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-1", defData)
-	evtData, _ := evt.Marshal()
-	js.Publish(evt.NATSSubject(), evtData, nats.MsgId(evt.NATSMsgID()))
+	evtData, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt.NATSSubject(), evtData, nats.MsgId(evt.NATSMsgID()))
 
 	// task-a should be enqueued
 	sub, err := js.PullSubscribe("task.task-a.*", "", nats.BindStream("TASK_QUEUES"))
@@ -81,16 +84,19 @@ func TestOrchestratorAdvancesAfterStepCompleted(t *testing.T) {
 		{ID: "b", Task: "task-b", DependsOn: []string{"a"}, Type: dag.StepTypeNormal},
 	}}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-2", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
 
 	subA, _ := js.PullSubscribe("task.task-a.*", "", nats.BindStream("TASK_QUEUES"))
 	msgsA, err := subA.Fetch(1, nats.MaxWait(5*time.Second))
@@ -100,8 +106,11 @@ func TestOrchestratorAdvancesAfterStepCompleted(t *testing.T) {
 	msgsA[0].Ack()
 
 	compEvt := protocol.NewStepEvent(protocol.EventStepCompleted, "run-2", "a", []byte(`"done"`))
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()))
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()))
 
 	subB, _ := js.PullSubscribe("task.task-b.*", "", nats.BindStream("TASK_QUEUES"))
 	msgsB, err := subB.Fetch(1, nats.MaxWait(5*time.Second))
@@ -136,8 +145,8 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 		},
 	}}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -145,8 +154,11 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 
 	// Start the workflow — iteration 0 task should be published.
 	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-iter", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
 
 	taskSub, err := js.PullSubscribe("task.agent-task.*", "", nats.BindStream("TASK_QUEUES"))
 	if err != nil {
@@ -160,8 +172,11 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 
 	// First step.continue — iteration becomes 1, still within MaxIterations=2.
 	cont1 := protocol.NewStepEvent(protocol.EventStepContinue, "run-iter", "loop-step", nil)
-	cont1Data, _ := cont1.Marshal()
-	js.Publish(cont1.NATSSubject(), cont1Data, nats.MsgId(cont1.NATSMsgID()))
+	cont1Data, err := cont1.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cont1.NATSSubject(), cont1Data, nats.MsgId(cont1.NATSMsgID()))
 
 	msgs2, err := taskSub.Fetch(1, nats.MaxWait(5*time.Second))
 	if err != nil {
@@ -175,8 +190,11 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 		[]byte(`"continue"`),
 	)
 	// Use a distinct MsgId so JetStream dedup doesn't drop it.
-	cont2Data, _ := cont2.Marshal()
-	js.Publish(cont2.NATSSubject(), cont2Data,
+	cont2Data, err := cont2.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cont2.NATSSubject(), cont2Data,
 		nats.MsgId("run-iter.loop-step.step.continue.2"))
 
 	// Wait until orchestrator marks the run Failed.
@@ -222,16 +240,19 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 		},
 	}}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-dur", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
 
 	taskSub, err := js.PullSubscribe("task.dur-task.*", "", nats.BindStream("TASK_QUEUES"))
 	if err != nil {
@@ -245,8 +266,11 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 
 	// Send first continue to set LoopStartedAt, then sleep past MaxDuration.
 	cont1 := protocol.NewStepEvent(protocol.EventStepContinue, "run-dur", "dur-step", nil)
-	cont1Data, _ := cont1.Marshal()
-	js.Publish(cont1.NATSSubject(), cont1Data, nats.MsgId(cont1.NATSMsgID()))
+	cont1Data, err := cont1.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cont1.NATSSubject(), cont1Data, nats.MsgId(cont1.NATSMsgID()))
 
 	msgs2, err := taskSub.Fetch(1, nats.MaxWait(5*time.Second))
 	if err != nil {
@@ -259,8 +283,11 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 
 	// Second continue should trip MaxDuration.
 	cont2 := protocol.NewStepEvent(protocol.EventStepContinue, "run-dur", "dur-step", nil)
-	cont2Data, _ := cont2.Marshal()
-	js.Publish(cont2.NATSSubject(), cont2Data,
+	cont2Data, err := cont2.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cont2.NATSSubject(), cont2Data,
 		nats.MsgId("run-dur.dur-step.step.continue.2"))
 
 	waitForRunStatus(t, orch.store, "run-dur",
@@ -298,22 +325,28 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
 	}}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-3", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
 
 	waitForStepStatus(t, orch.store, "run-3", "a",
 		dag.StepStatusQueued, 5*time.Second)
 	compEvt := protocol.NewStepEvent(protocol.EventStepCompleted, "run-3", "a", []byte(`"done"`))
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()))
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData, nats.MsgId(compEvt.NATSMsgID()))
 
 	waitForRunStatus(t, orch.store, "run-3",
 		dag.RunStatusCompleted, 5*time.Second)
@@ -355,7 +388,7 @@ func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
 			},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
+	defData := mustMarshal(t, wfDef)
 	if _, err := defKV.Put("routed-wf", defData); err != nil {
 		t.Fatalf("put def: %v", err)
 	}
@@ -378,8 +411,11 @@ func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
 	// Publish workflow.started event
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-route-1", defData)
-	data, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), data,
+	data, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), data,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	// Agent task should arrive on AGENT_TASKS, not TASK_QUEUES
@@ -416,7 +452,7 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 				Type: dag.StepTypeNormal},
 		},
 	}
-	childDefData, _ := json.Marshal(childDef)
+	childDefData := mustMarshal(t, childDef)
 	if _, err := defKV.Put("child-wf", childDefData); err != nil {
 		t.Fatalf("put child def: %v", err)
 	}
@@ -426,15 +462,18 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 	defer orch.Stop()
 
 	// Publish spawn event
-	spawnPayload, _ := json.Marshal(map[string]string{
+	spawnPayload := mustMarshal(t, map[string]string{
 		"child_run_id":   "child-run-1",
 		"child_workflow": "child-wf",
 		"parent_step_id": "parent-step-a",
 	})
 	spawnEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowSpawn, "parent-run-1", spawnPayload)
-	data, _ := spawnEvt.Marshal()
-	js.Publish(spawnEvt.NATSSubject(), data,
+	data, err := spawnEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, spawnEvt.NATSSubject(), data,
 		nats.MsgId(spawnEvt.NATSMsgID()))
 
 	// Wait for child run to appear in snapshot store
@@ -479,8 +518,8 @@ func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
 			{ID: "s1", Task: "echo-task", Type: dag.StepTypeNormal},
 		},
 	}
-	childDefData, _ := json.Marshal(childDef)
-	defKV.Put("notify-child", childDefData)
+	childDefData := mustMarshal(t, childDef)
+	mustPut(t, defKV, "notify-child", childDefData)
 
 	// Subscribe to parent's history for child.completed
 	parentSub, err := js.SubscribeSync("history.parent-run-2",
@@ -494,15 +533,18 @@ func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
 	defer orch.Stop()
 
 	// Spawn a child workflow
-	spawnPayload, _ := json.Marshal(map[string]string{
+	spawnPayload := mustMarshal(t, map[string]string{
 		"child_run_id":   "child-run-2",
 		"child_workflow": "notify-child",
 		"parent_step_id": "parent-step-b",
 	})
 	spawnEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowSpawn, "parent-run-2", spawnPayload)
-	data, _ := spawnEvt.Marshal()
-	js.Publish(spawnEvt.NATSSubject(), data,
+	data, err := spawnEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, spawnEvt.NATSSubject(), data,
 		nats.MsgId(spawnEvt.NATSMsgID()))
 
 	// Wait for child step to be queued, then simulate completion.
@@ -511,8 +553,11 @@ func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted,
 		"child-run-2", "s1", []byte(`"child-result"`))
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Look for workflow.child.completed on parent's history
@@ -557,8 +602,8 @@ func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
 			{ID: "s1", Task: "t", Type: dag.StepTypeNormal},
 		},
 	}
-	childDefData, _ := json.Marshal(childDef)
-	defKV.Put("deep-child", childDefData)
+	childDefData := mustMarshal(t, childDef)
+	mustPut(t, defKV, "deep-child", childDefData)
 
 	// Create a chain: run-0 -> run-1 -> run-2 (depth 3)
 	for i := 0; i < 3; i++ {
@@ -580,15 +625,18 @@ func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
 	defer orch.Stop()
 
 	// Try to spawn from run-2 (depth would be 4, exceeds 3)
-	spawnPayload, _ := json.Marshal(map[string]string{
+	spawnPayload := mustMarshal(t, map[string]string{
 		"child_run_id":   "run-3",
 		"child_workflow": "deep-child",
 		"parent_step_id": "s1",
 	})
 	spawnEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowSpawn, "run-2", spawnPayload)
-	data, _ := spawnEvt.Marshal()
-	js.Publish(spawnEvt.NATSSubject(), data,
+	data, err := spawnEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, spawnEvt.NATSSubject(), data,
 		nats.MsgId(spawnEvt.NATSMsgID()))
 
 	// Poll briefly — run-3 should never be created
@@ -620,8 +668,8 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 			{ID: "s1", Task: "slow-task", Type: dag.StepTypeNormal},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put("cancel-test", defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, "cancel-test", defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -630,26 +678,32 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 	// Start workflow
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "cancel-run-1", defData)
-	data, _ := startEvt.Marshal()
+	data, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 	msg := &nats.Msg{
 		Subject: startEvt.NATSSubject(),
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	}
-	js.PublishMsg(msg)
+	mustPublishMsg(t, js, msg)
 	waitForRunStatus(t, orch.store, "cancel-run-1",
 		dag.RunStatusRunning, 5*time.Second)
 
 	// Cancel the workflow
 	cancelEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowCancelled, "cancel-run-1", nil)
-	cancelData, _ := cancelEvt.Marshal()
+	cancelData, err := cancelEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 	cancelMsg := &nats.Msg{
 		Subject: cancelEvt.NATSSubject(),
 		Data:    cancelData,
 		Header:  nats.Header{"Nats-Msg-Id": {cancelEvt.NATSMsgID()}},
 	}
-	js.PublishMsg(cancelMsg)
+	mustPublishMsg(t, js, cancelMsg)
 
 	// Wait for processing
 	store := NewSnapshotStore(jsNew)
@@ -696,8 +750,8 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 			{ID: "s1", Task: "flaky-task", Type: dag.StepTypeNormal},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put("retry-test", defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, "retry-test", defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -706,8 +760,11 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 	// Start workflow
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "retry-run-1", defData)
-	data, _ := startEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	data, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
@@ -718,8 +775,11 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "retry-run-1", "s1",
 		[]byte(`"transient error"`))
-	failData, _ := failEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: failEvt.NATSSubject(), Data: failData,
 		Header: nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
 	})
@@ -766,8 +826,8 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 			{ID: "s1", Task: "bad-task", Type: dag.StepTypeNormal},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put("exhaust-test", defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, "exhaust-test", defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -776,8 +836,11 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 	// Start workflow
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "exhaust-run-1", defData)
-	data, _ := startEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	data, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
@@ -793,8 +856,11 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 			protocol.EventStepStarted, "exhaust-run-1", "s1", nil,
 		)
 		startedEvt.AttemptNumber = i + 1
-		startedData, _ := startedEvt.Marshal()
-		js.PublishMsg(&nats.Msg{
+		startedData, err := startedEvt.Marshal()
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		mustPublishMsg(t, js, &nats.Msg{
 			Subject: startedEvt.NATSSubject(), Data: startedData,
 			Header: nats.Header{
 				"Nats-Msg-Id": {startedEvt.NATSMsgID()},
@@ -807,8 +873,11 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 			[]byte(`"permanent error"`))
 		// Unique msg ID per attempt
 		msgID := fmt.Sprintf("exhaust-run-1.s1.fail.%d", i)
-		failData, _ := failEvt.Marshal()
-		js.PublishMsg(&nats.Msg{
+		failData, err := failEvt.Marshal()
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		mustPublishMsg(t, js, &nats.Msg{
 			Subject: failEvt.NATSSubject(), Data: failData,
 			Header: nats.Header{"Nats-Msg-Id": {msgID}},
 		})
@@ -853,8 +922,8 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 			{ID: "slow", Task: "slow-task", Type: dag.StepTypeNormal},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put("timeout-test", defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, "timeout-test", defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -863,8 +932,11 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 	// Start workflow
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "timeout-run-1", defData)
-	data, _ := startEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	data, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
@@ -877,8 +949,11 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "timeout-run-1", "slow",
 		[]byte(`"timed out"`))
-	failData, _ := failEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: failEvt.NATSSubject(), Data: failData,
 		Header: nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
 	})
@@ -912,8 +987,8 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 			{ID: "s1", Task: "bad-task", Type: dag.StepTypeNormal},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put("dlq-test", defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, "dlq-test", defData)
 
 	// Subscribe to DLQ
 	dlqSub, err := js.SubscribeSync("dead.>",
@@ -929,8 +1004,11 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 	// Start workflow
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "dlq-run-1", defData)
-	data, _ := startEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	data, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
@@ -941,8 +1019,11 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "dlq-run-1", "s1",
 		[]byte(`"permanent error"`))
-	failData, _ := failEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: failEvt.NATSSubject(), Data: failData,
 		Header: nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
 	})
@@ -992,8 +1073,8 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 			},
 		},
 	}
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put("onfail-test", defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, "onfail-test", defData)
 
 	// Subscribe to task queue for notify
 	taskSub, _ := js.SubscribeSync("task.notify-task.>",
@@ -1006,8 +1087,11 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	// Start workflow
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "onfail-run-1", defData)
-	data, _ := startEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	data, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: startEvt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
 	})
@@ -1018,8 +1102,11 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "onfail-run-1", "deploy",
 		[]byte(`"deploy crashed"`))
-	failData, _ := failEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: failEvt.NATSSubject(), Data: failData,
 		Header: nats.Header{"Nats-Msg-Id": {failEvt.NATSMsgID()}},
 	})
@@ -1063,8 +1150,8 @@ func TestOrchestratorWorkerGroupRouting(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1074,8 +1161,11 @@ func TestOrchestratorWorkerGroupRouting(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "gpu-run-1", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()))
 
 	// Positive: task should appear on gpu-specific subject
 	gpuSub, err := js.PullSubscribe(
@@ -1123,8 +1213,8 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 		}},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1132,8 +1222,11 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "cont-run", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 	taskSub, err := js.PullSubscribe(
 		"task.agent-task.*", "",
@@ -1149,8 +1242,11 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 
 	cont := protocol.NewStepEvent(
 		protocol.EventStepContinue, "cont-run", "agent", nil)
-	contData, _ := cont.Marshal()
-	js.Publish(cont.NATSSubject(), contData,
+	contData, err := cont.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cont.NATSSubject(), contData,
 		nats.MsgId(cont.NATSMsgID()))
 
 	// Positive: new task message appears.
@@ -1212,8 +1308,8 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 
 	wfDef := skipIfWorkflow()
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1221,8 +1317,11 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "skip-run", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	subA, _ := js.PullSubscribe(
@@ -1236,8 +1335,11 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 	output := []byte(`{"status":"skip"}`)
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "skip-run", "a", output)
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Positive: task-c enqueued (b is skipped).
@@ -1289,8 +1391,8 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1298,8 +1400,11 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "snap-run", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 	waitForStepStatus(t, orch.store, "snap-run", "s1",
 		dag.StepStatusQueued, 5*time.Second)
@@ -1307,8 +1412,11 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "snap-run", "s1",
 		[]byte(`"result-1"`))
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 	waitForStepStatus(t, orch.store, "snap-run", "s1",
 		dag.StepStatusCompleted, 5*time.Second)
@@ -1363,8 +1471,8 @@ func TestOrchestratorSnapshotRestore(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	store := NewSnapshotStore(jsNew)
 	crafted := dag.WorkflowRun{
@@ -1430,8 +1538,8 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1439,15 +1547,18 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 
 	// Positive: valid input with required "repo" field
 	validInput := json.RawMessage(`{"repo": "github.com/test/repo"}`)
-	startPayload, _ := json.Marshal(map[string]any{
+	startPayload := mustMarshal(t, map[string]any{
 		"workflow_def": wfDef,
 		"input":        validInput,
 	})
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "valid-run", startPayload,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData, nats.MsgId(startEvt.NATSMsgID()),
 	)
 
@@ -1465,15 +1576,18 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 
 	// Negative: invalid input missing "repo" field
 	invalidInput := json.RawMessage(`{"wrong_field": "value"}`)
-	invalidPayload, _ := json.Marshal(map[string]any{
+	invalidPayload := mustMarshal(t, map[string]any{
 		"workflow_def": wfDef,
 		"input":        invalidInput,
 	})
 	invalidEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "invalid-run", invalidPayload,
 	)
-	invalidData, _ := invalidEvt.Marshal()
-	js.Publish(
+	invalidData, err := invalidEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		invalidEvt.NATSSubject(), invalidData,
 		nats.MsgId(invalidEvt.NATSMsgID()),
 	)
@@ -1527,8 +1641,8 @@ func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
 		}},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1536,8 +1650,11 @@ func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
 
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "delay-run", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	taskSub, err := js.PullSubscribe(
@@ -1556,8 +1673,11 @@ func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
 	// Send step.continue — delayed re-enqueue.
 	cont := protocol.NewStepEvent(
 		protocol.EventStepContinue, "delay-run", "delayed", nil)
-	contData, _ := cont.Marshal()
-	js.Publish(cont.NATSSubject(), contData,
+	contData, err := cont.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cont.NATSSubject(), contData,
 		nats.MsgId(cont.NATSMsgID()))
 
 	// Positive: task appears after the delay.
@@ -1598,8 +1718,8 @@ func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1607,8 +1727,11 @@ func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "skipall-run", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	subA, _ := js.PullSubscribe(
@@ -1624,8 +1747,11 @@ func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "skipall-run", "a",
 		[]byte(`{"skip":true}`))
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	store := NewSnapshotStore(jsNew)
@@ -1688,8 +1814,8 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 				Type: dag.StepTypeNormal},
 		},
 	}
-	childDefData, _ := json.Marshal(childDef)
-	defKV.Put("fail-child", childDefData)
+	childDefData := mustMarshal(t, childDef)
+	mustPut(t, defKV, "fail-child", childDefData)
 
 	parentSub, err := js.SubscribeSync(
 		"history.parent-fail",
@@ -1702,7 +1828,7 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	spawnPayload, _ := json.Marshal(map[string]string{
+	spawnPayload := mustMarshal(t, map[string]string{
 		"child_run_id":   "child-fail-1",
 		"child_workflow": "fail-child",
 		"parent_step_id": "parent-step",
@@ -1710,8 +1836,11 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 	spawnEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowSpawn, "parent-fail",
 		spawnPayload)
-	data, _ := spawnEvt.Marshal()
-	js.Publish(spawnEvt.NATSSubject(), data,
+	data, err := spawnEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, spawnEvt.NATSSubject(), data,
 		nats.MsgId(spawnEvt.NATSMsgID()))
 	waitForStepStatus(t, orch.store, "child-fail-1", "s1",
 		dag.StepStatusQueued, 5*time.Second)
@@ -1719,8 +1848,11 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "child-fail-1", "s1",
 		[]byte(`"child error"`))
-	failData, _ := failEvt.Marshal()
-	js.Publish(failEvt.NATSSubject(), failData,
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, failEvt.NATSSubject(), failData,
 		nats.MsgId(failEvt.NATSMsgID()))
 
 	// Positive: parent notified.
@@ -1857,8 +1989,8 @@ func TestOrchestratorTraceparentPropagation(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1867,7 +1999,10 @@ func TestOrchestratorTraceparentPropagation(t *testing.T) {
 	// Publish with traceparent header.
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "trace-run", defData)
-	startData, _ := startEvt.Marshal()
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 	tp := "00-aaaa-bbbb-01"
 	msg := &nats.Msg{
 		Subject: startEvt.NATSSubject(),
@@ -1877,7 +2012,7 @@ func TestOrchestratorTraceparentPropagation(t *testing.T) {
 			"traceparent": {tp},
 		},
 	}
-	js.PublishMsg(msg)
+	mustPublishMsg(t, js, msg)
 
 	// Positive: task should still be enqueued.
 	sub, _ := js.PullSubscribe(
@@ -1952,8 +2087,8 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1962,8 +2097,11 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	// Start and complete the workflow.
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "cnoop-run", defData)
-	sd, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), sd,
+	sd, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), sd,
 		nats.MsgId(startEvt.NATSMsgID()))
 	waitForStepStatus(t, orch.store, "cnoop-run", "s1",
 		dag.StepStatusQueued, 5*time.Second)
@@ -1971,8 +2109,11 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "cnoop-run", "s1",
 		[]byte(`"done"`))
-	cd, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), cd,
+	cd, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), cd,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	store := NewSnapshotStore(jsNew)
@@ -1989,8 +2130,11 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	// Now cancel the completed workflow.
 	cancelEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowCancelled, "cnoop-run", nil)
-	ccd, _ := cancelEvt.Marshal()
-	js.Publish(cancelEvt.NATSSubject(), ccd,
+	ccd, err := cancelEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cancelEvt.NATSSubject(), ccd,
 		nats.MsgId(cancelEvt.NATSMsgID()))
 	time.Sleep(300 * time.Millisecond)
 
@@ -2028,22 +2172,25 @@ func TestOrchestratorStartWithInput(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	// Start with structured payload.
-	payload, _ := json.Marshal(map[string]any{
+	payload := mustMarshal(t, map[string]any{
 		"workflow_def": wfDef,
 		"input":        map[string]string{"key": "val"},
 	})
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "input-run", payload)
-	sd, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), sd,
+	sd, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), sd,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	// Positive: task should be enqueued.
@@ -2089,15 +2236,15 @@ func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	// Publish garbage data to history stream.
-	js.Publish("history.malform-run",
+	mustPublish(t, js, "history.malform-run",
 		[]byte("not valid json"),
 		nats.MsgId("malform-1"))
 
@@ -2106,8 +2253,11 @@ func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 	// Positive: orchestrator survives and processes next event.
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "recover-run", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	store := NewSnapshotStore(jsNew)
@@ -2176,8 +2326,8 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -2188,8 +2338,8 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 		Type:  "custom.unknown",
 		RunID: "unknown-run",
 	}
-	data, _ := json.Marshal(evt)
-	js.Publish("history.unknown-run", data,
+	data := mustMarshal(t, evt)
+	mustPublish(t, js, "history.unknown-run", data,
 		nats.MsgId("unknown-run.custom"))
 	time.Sleep(200 * time.Millisecond)
 
@@ -2204,8 +2354,11 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "post-unknown",
 		defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 	waitForRunStatus(t, orch.store, "post-unknown",
 		dag.RunStatusRunning, 5*time.Second)
@@ -2375,8 +2528,8 @@ func TestPublishReadyTasksParallel(t *testing.T) {
 		Name: "parallel-wf", Version: "1", Steps: steps,
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -2385,8 +2538,11 @@ func TestPublishReadyTasksParallel(t *testing.T) {
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-parallel", defData,
 	)
-	evtData, _ := evt.Marshal()
-	js.Publish(evt.NATSSubject(), evtData, nats.MsgId(evt.NATSMsgID()))
+	evtData, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt.NATSSubject(), evtData, nats.MsgId(evt.NATSMsgID()))
 
 	// All 5 tasks should appear
 	for i := 0; i < 5; i++ {
@@ -2432,8 +2588,8 @@ func TestOrchestratorCompensationChain(t *testing.T) {
 		AuxSteps: map[string]bool{"undo-a": true},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -2442,8 +2598,11 @@ func TestOrchestratorCompensationChain(t *testing.T) {
 	runID := "comp-run-1"
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, runID, defData)
-	evtData, _ := evt.Marshal()
-	js.Publish(evt.NATSSubject(), evtData,
+	evtData, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, evt.NATSSubject(), evtData,
 		nats.MsgId(evt.NATSMsgID()))
 
 	// Complete step a
@@ -2460,8 +2619,11 @@ func TestOrchestratorCompensationChain(t *testing.T) {
 		protocol.EventStepCompleted, runID,
 		[]byte(`{"result":"ok"}`))
 	completeEvt.StepID = "a"
-	completeData, _ := completeEvt.Marshal()
-	js.Publish(completeEvt.NATSSubject(), completeData,
+	completeData, err := completeEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, completeEvt.NATSSubject(), completeData,
 		nats.MsgId(completeEvt.NATSMsgID()))
 
 	// Fail step b permanently (non-retriable)
@@ -2478,8 +2640,11 @@ func TestOrchestratorCompensationChain(t *testing.T) {
 		protocol.EventStepFailed, runID,
 		[]byte(`{"error":"boom","failure_type":"non_retriable"}`))
 	failEvt.StepID = "b"
-	failData, _ := failEvt.Marshal()
-	js.Publish(failEvt.NATSSubject(), failData,
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, failEvt.NATSSubject(), failData,
 		nats.MsgId(failEvt.NATSMsgID()))
 
 	// Positive: undo-a compensation task should be dispatched
@@ -2543,8 +2708,8 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -2553,8 +2718,11 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 	// Start workflow.
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "map-run-1", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	// Drain fetch task.
@@ -2572,8 +2740,11 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "map-run-1",
 		"fetch", fetchOutput)
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Wait for 3 map instance tasks to appear. Use a
@@ -2611,10 +2782,13 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 		evt := protocol.NewStepEvent(
 			protocol.EventStepCompleted, "map-run-1",
 			instanceID, result)
-		data, _ := evt.Marshal()
+		data, err := evt.Marshal()
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
 		msgID := fmt.Sprintf(
 			"map-run-1.%s.completed", instanceID)
-		js.Publish(evt.NATSSubject(), data,
+		mustPublish(t, js, evt.NATSSubject(), data,
 			nats.MsgId(msgID))
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -2656,8 +2830,11 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 	sumEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "map-run-1",
 		"summarize", []byte(`"final"`))
-	sumData, _ := sumEvt.Marshal()
-	js.Publish(sumEvt.NATSSubject(), sumData,
+	sumData, err := sumEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, sumEvt.NATSSubject(), sumData,
 		nats.MsgId(sumEvt.NATSMsgID()))
 
 	store := NewSnapshotStore(jsNew)
@@ -2708,8 +2885,8 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -2718,8 +2895,11 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 	// Start workflow.
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "map-fail-1", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	// Drain and complete fetch.
@@ -2737,8 +2917,11 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "map-fail-1",
 		"fetch", fetchOutput)
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Wait for map tasks.
@@ -2758,8 +2941,11 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "map-fail-1",
 		"process.map.1", []byte(`"instance error"`))
-	failData, _ := failEvt.Marshal()
-	js.Publish(failEvt.NATSSubject(), failData,
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, failEvt.NATSSubject(), failData,
 		nats.MsgId("map-fail-1.process.map.1.failed"))
 
 	// Verify workflow fails.
@@ -2850,8 +3036,8 @@ func TestOrchestratorSleepStep(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -2860,8 +3046,11 @@ func TestOrchestratorSleepStep(t *testing.T) {
 	// Start workflow.
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "sleep-run-1", defData)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	// Drain and complete task-a.
@@ -2877,8 +3066,11 @@ func TestOrchestratorSleepStep(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "sleep-run-1",
 		"task-a", []byte(`"done"`))
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// task-b should appear after the sleep timer fires (~100ms).
@@ -2900,8 +3092,11 @@ func TestOrchestratorSleepStep(t *testing.T) {
 	compB := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "sleep-run-1",
 		"task-b", []byte(`"final"`))
-	compBData, _ := compB.Marshal()
-	js.Publish(compB.NATSSubject(), compBData,
+	compBData, err := compB.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compB.NATSSubject(), compBData,
 		nats.MsgId(compB.NATSMsgID()))
 
 	// Wait for workflow to complete.
@@ -2961,8 +3156,8 @@ func TestOrchestratorRateLimitDelaysTask(t *testing.T) {
 		}},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -2972,8 +3167,11 @@ func TestOrchestratorRateLimitDelaysTask(t *testing.T) {
 	evt1 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "rl-run-1", defData,
 	)
-	data1, _ := evt1.Marshal()
-	js.Publish(
+	data1, err := evt1.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		evt1.NATSSubject(), data1,
 		nats.MsgId(evt1.NATSMsgID()),
 	)
@@ -3000,8 +3198,11 @@ func TestOrchestratorRateLimitDelaysTask(t *testing.T) {
 	evt2 := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "rl-run-2", defData,
 	)
-	data2, _ := evt2.Marshal()
-	js.Publish(
+	data2, err := evt2.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		evt2.NATSSubject(), data2,
 		nats.MsgId(evt2.NATSMsgID()),
 	)
@@ -3098,8 +3299,8 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -3109,8 +3310,11 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "wait-run-1", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	// Drain and complete task-a with order_id output.
@@ -3126,8 +3330,11 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "wait-run-1",
 		"task-a", []byte(`{"order_id":"ord-abc"}`))
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Wait for the wait step to register with the correlator.
@@ -3138,7 +3345,7 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	eventPayload := []byte(
 		`{"order_id":"ord-abc","status":"paid"}`,
 	)
-	js.Publish("event.payment.completed", eventPayload)
+	mustPublish(t, js, "event.payment.completed", eventPayload)
 
 	// task-b should be enqueued after the wait step matches.
 	subB, _ := js.PullSubscribe(
@@ -3159,8 +3366,11 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	compB := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "wait-run-1",
 		"task-b", []byte(`"final"`))
-	compBData, _ := compB.Marshal()
-	js.Publish(compB.NATSSubject(), compBData,
+	compBData, err := compB.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compB.NATSSubject(), compBData,
 		nats.MsgId(compB.NATSMsgID()))
 
 	waitForRunStatus(t, orch.store, "wait-run-1",
@@ -3229,8 +3439,8 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -3239,8 +3449,11 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "wait-run-2", defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	subA, _ := js.PullSubscribe(
@@ -3255,8 +3468,11 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 	compEvt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, "wait-run-2",
 		"task-a", []byte(`{"order_id":"ord-xyz"}`))
-	compData, _ := compEvt.Marshal()
-	js.Publish(compEvt.NATSSubject(), compData,
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
 	// Do NOT publish a matching event. Wait for timeout.
@@ -3324,8 +3540,8 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -3346,8 +3562,11 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 		"run-nr-1",
 		defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: startEvt.NATSSubject(),
 		Data:    startData,
 		Header: nats.Header{
@@ -3369,8 +3588,11 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 		protocol.EventStepStarted, "run-nr-1", "a", nil,
 	)
 	startedEvt.AttemptNumber = 1
-	startedData, _ := startedEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	startedData, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: startedEvt.NATSSubject(),
 		Data:    startedData,
 		Header: nats.Header{
@@ -3378,7 +3600,7 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 		},
 	})
 
-	failPayload, _ := json.Marshal(protocol.StepFailedPayload{
+	failPayload := mustMarshal(t, protocol.StepFailedPayload{
 		Error:       "permanent error",
 		FailureType: protocol.FailureTypeNonRetriable,
 	})
@@ -3387,8 +3609,11 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 		"run-nr-1", "a",
 		failPayload,
 	)
-	failData, _ := failEvt.Marshal()
-	js.PublishMsg(&nats.Msg{
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
 		Subject: failEvt.NATSSubject(),
 		Data:    failData,
 		Header: nats.Header{
@@ -3442,27 +3667,30 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	startPayload, _ := json.Marshal(map[string]any{
+	startPayload := mustMarshal(t, map[string]any{
 		"workflow_def": wfDef,
 	})
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "run-ra-1", startPayload,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(startEvt.NATSSubject(), startData,
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()))
 
 	waitForStepStatus(t, orch.store, "run-ra-1", "a",
 		dag.StepStatusQueued, 5*time.Second)
 
-	failPayload, _ := json.Marshal(protocol.StepFailedPayload{
+	failPayload := mustMarshal(t, protocol.StepFailedPayload{
 		Error:        "rate limited",
 		FailureType:  protocol.FailureTypeRetryAfter,
 		RetryAfterMs: 200,
@@ -3470,8 +3698,11 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 	failEvt := protocol.NewStepEvent(
 		protocol.EventStepFailed, "run-ra-1", "a", failPayload,
 	)
-	failData, _ := failEvt.Marshal()
-	js.Publish(failEvt.NATSSubject(), failData,
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, failEvt.NATSSubject(), failData,
 		nats.MsgId(failEvt.NATSMsgID()))
 
 	// The task should be re-published after ~200ms via SLEEP_TIMERS.
@@ -3536,8 +3767,8 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 		},
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -3548,8 +3779,11 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 		"run-compat",
 		defData,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -3563,8 +3797,11 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 		"run-compat", "a",
 		oldPayload,
 	)
-	failData, _ := failEvt.Marshal()
-	js.Publish(
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		failEvt.NATSSubject(), failData,
 		nats.MsgId(failEvt.NATSMsgID()),
 	)

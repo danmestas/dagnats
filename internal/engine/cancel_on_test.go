@@ -58,15 +58,15 @@ func TestCancelOnEventCancelsWorkflow(t *testing.T) {
 	}
 
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
 	// Start workflow with input containing task_id.
-	startPayload, _ := json.Marshal(struct {
+	startPayload := mustMarshal(t, struct {
 		WorkflowDef json.RawMessage `json:"workflow_def"`
 		Input       json.RawMessage `json:"input"`
 	}{
@@ -77,8 +77,11 @@ func TestCancelOnEventCancelsWorkflow(t *testing.T) {
 		protocol.EventWorkflowStarted,
 		"run-cancel-on", startPayload,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -98,7 +101,7 @@ func TestCancelOnEventCancelsWorkflow(t *testing.T) {
 	}
 
 	// Publish matching event to EVENTS stream.
-	js.Publish(
+	mustPublish(t, js,
 		"event.task.completed",
 		[]byte(`{"task_id":"task-123","result":"done"}`),
 	)
@@ -157,14 +160,14 @@ func TestCancelOnNoMatchDoesNotCancel(t *testing.T) {
 	}
 
 	defKV, _ := js.KeyValue("workflow_defs")
-	defData, _ := json.Marshal(wfDef)
-	defKV.Put(wfDef.Name, defData)
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
 
-	startPayload, _ := json.Marshal(struct {
+	startPayload := mustMarshal(t, struct {
 		WorkflowDef json.RawMessage `json:"workflow_def"`
 		Input       json.RawMessage `json:"input"`
 	}{
@@ -175,8 +178,11 @@ func TestCancelOnNoMatchDoesNotCancel(t *testing.T) {
 		protocol.EventWorkflowStarted,
 		"run-nomatch", startPayload,
 	)
-	startData, _ := startEvt.Marshal()
-	js.Publish(
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js,
 		startEvt.NATSSubject(), startData,
 		nats.MsgId(startEvt.NATSMsgID()),
 	)
@@ -184,7 +190,7 @@ func TestCancelOnNoMatchDoesNotCancel(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Non-matching event (different task_id).
-	js.Publish(
+	mustPublish(t, js,
 		"event.task.completed",
 		[]byte(`{"task_id":"task-999"}`),
 	)

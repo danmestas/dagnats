@@ -108,7 +108,7 @@ func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
 	store := NewSnapshotStore(jsNew)
 
 	// Start the parent workflow.
-	startPayload, _ := json.Marshal(parentDef)
+	startPayload := mustMarshal(t, parentDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "parent-run-1",
 		startPayload,
@@ -238,7 +238,7 @@ func TestSubWorkflow_ChildFailsParentFails(t *testing.T) {
 
 	store := NewSnapshotStore(jsNew)
 
-	startPayload, _ := json.Marshal(parentDef)
+	startPayload := mustMarshal(t, parentDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "parent-run-fail",
 		startPayload,
@@ -346,7 +346,7 @@ func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
 
 	store := NewSnapshotStore(jsNew)
 
-	startPayload, _ := json.Marshal(parentDef)
+	startPayload := mustMarshal(t, parentDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "parent-run-detach",
 		startPayload,
@@ -438,7 +438,7 @@ func TestSubWorkflow_CancellationCascades(t *testing.T) {
 
 	store := NewSnapshotStore(jsNew)
 
-	startPayload, _ := json.Marshal(parentDef)
+	startPayload := mustMarshal(t, parentDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "parent-run-cancel",
 		startPayload,
@@ -550,7 +550,7 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 
 	store := NewSnapshotStore(jsNew)
 
-	startPayload, _ := json.Marshal(parentDef)
+	startPayload := mustMarshal(t, parentDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted,
 		"parent-run-detach-cancel",
@@ -675,7 +675,7 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 
 	store := NewSnapshotStore(jsNew)
 
-	startPayload, _ := json.Marshal(parentDef)
+	startPayload := mustMarshal(t, parentDef)
 	startEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted,
 		"parent-run-input",
@@ -789,7 +789,7 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 	}
 
 	// Attempt to spawn from depth=2, which would create depth=3.
-	spawnPayload, _ := json.Marshal(map[string]any{
+	spawnPayload := mustMarshal(t, map[string]any{
 		"child_run_id":   "rejected-child",
 		"child_workflow": "leaf-wf",
 		"parent_step_id": "spawn",
