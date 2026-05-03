@@ -5,7 +5,6 @@
 package cli
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -348,9 +347,7 @@ func TestRunBreakdownNoRuns(t *testing.T) {
 	}
 	nc.Close()
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	svc, svcNc := connectService()
 	defer svcNc.Close()

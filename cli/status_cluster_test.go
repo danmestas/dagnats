@@ -29,17 +29,7 @@ func withClusterServer(t *testing.T, ts *httptest.Server) {
 		t.Fatalf("parse test server URL: %v", err)
 	}
 
-	prev, hadPrev := os.LookupEnv("DAGNATS_HTTP_ADDR")
-	if err := os.Setenv("DAGNATS_HTTP_ADDR", u.Host); err != nil {
-		t.Fatalf("setenv: %v", err)
-	}
-	t.Cleanup(func() {
-		if hadPrev {
-			_ = os.Setenv("DAGNATS_HTTP_ADDR", prev)
-			return
-		}
-		_ = os.Unsetenv("DAGNATS_HTTP_ADDR")
-	})
+	t.Setenv("DAGNATS_HTTP_ADDR", u.Host)
 }
 
 // clusterJSONSample is a canonical /health/cluster response for a

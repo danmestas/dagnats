@@ -7,7 +7,6 @@ package cli
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -44,9 +43,7 @@ func TestRunWatchOutputsEventsForExistingRun(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	jsNew, err := jetstream.New(nc)

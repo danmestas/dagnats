@@ -8,7 +8,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -26,9 +25,7 @@ func TestWorkflowShowDisplaysRegisteredWorkflow(t *testing.T) {
 	defer nc.Close()
 
 	// Point CLI at the test NATS server.
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	// Register a workflow via the API so show can retrieve it.
 	svc := api.NewService(nc)
@@ -103,9 +100,7 @@ func TestWorkflowShowDisplaysTimeout(t *testing.T) {
 	}
 	defer nc.Close()
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	svc := api.NewService(nc)
 	def := dag.WorkflowDef{
@@ -148,9 +143,7 @@ func TestWorkflowShowJSON(t *testing.T) {
 	}
 	defer nc.Close()
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	svc := api.NewService(nc)
 	def := dag.WorkflowDef{

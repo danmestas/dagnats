@@ -5,7 +5,6 @@
 package cli
 
 import (
-	"os"
 	"testing"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -15,9 +14,7 @@ func TestConnectServiceFriendlyErrorOnBadURL(t *testing.T) {
 	// This test validates the exitFunc indirection works for connection
 	// failures. The existing code already handled this case with os.Exit,
 	// but the new exitFunc var makes it testable.
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", "nats://127.0.0.1:19999")
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", "nats://127.0.0.1:19999")
 
 	var exitCode int
 	oldExit := exitFunc
@@ -45,9 +42,7 @@ func TestConnectServiceFriendlyErrorOnMissingBuckets(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
 	defer nc.Close()
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	var exitCode int
 	oldExit := exitFunc

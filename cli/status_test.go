@@ -6,7 +6,6 @@ package cli
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -21,9 +20,7 @@ func TestStatusCommandShowsConnected(t *testing.T) {
 	nc.Close()
 
 	// Point CLI at embedded server.
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	output := captureOutput(func() {
 		runSystemStatusCmd([]string{})
@@ -53,9 +50,7 @@ func TestStatusCommandJSONOutput(t *testing.T) {
 	}
 	nc.Close()
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	output := captureOutput(func() {
 		runSystemStatusCmd([]string{"--json"})
@@ -94,9 +89,7 @@ func TestStatusCommandJSONHasStreams(t *testing.T) {
 	}
 	nc.Close()
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	output := captureOutput(func() {
 		runSystemStatusCmd([]string{"--json"})

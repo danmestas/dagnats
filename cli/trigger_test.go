@@ -6,7 +6,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
@@ -25,9 +24,7 @@ func TestTriggerCreateStoresCronInKV(t *testing.T) {
 	}
 
 	// Set NATS_URL env var for the CLI to use
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -96,9 +93,7 @@ func TestTriggerCreateSubjectStoresInKV(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -154,9 +149,7 @@ func TestTriggerListPrintsTriggers(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -212,9 +205,7 @@ func TestTriggerEnableDisableFlipsKV(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -274,9 +265,7 @@ func TestTriggerDeleteRemovesFromKV(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -323,9 +312,7 @@ func TestTriggerCreateJSON(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	var buf bytes.Buffer
 	runTriggerCreateCmdWithWriter(
@@ -362,9 +349,7 @@ func TestTriggerListJSON(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -409,9 +394,7 @@ func TestTriggerDeleteJSON(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -457,9 +440,7 @@ func TestTriggerEnableJSON(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
@@ -494,9 +475,7 @@ func TestTriggerEnableJSON(t *testing.T) {
 
 func TestTriggerCreateWebhookSecretFromEnv(t *testing.T) {
 	// Positive: env var is used when --secret not provided.
-	old := os.Getenv("DAGNATS_WEBHOOK_SECRET")
-	os.Setenv("DAGNATS_WEBHOOK_SECRET", "env-secret-123")
-	defer os.Setenv("DAGNATS_WEBHOOK_SECRET", old)
+	t.Setenv("DAGNATS_WEBHOOK_SECRET", "env-secret-123")
 
 	def := parseTriggerCreateFlags([]string{
 		"test-workflow",
@@ -542,9 +521,7 @@ func TestTriggerDisableJSON(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")

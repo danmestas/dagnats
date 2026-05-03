@@ -26,9 +26,7 @@ func TestWorkflowRegisterShowsCreatedVsUpdated(t *testing.T) {
 	defer nc.Close()
 
 	// Point CLI at test server
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	// Write a workflow definition with two steps
 	wfJSON := `{
@@ -104,9 +102,7 @@ func TestWorkflowRegisterJSON(t *testing.T) {
 	}
 	defer nc.Close()
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	wfJSON := `{
 		"name":"json-reg",
@@ -168,9 +164,7 @@ func TestWorkflowListJSON(t *testing.T) {
 	}
 	defer nc.Close()
 
-	oldURL := os.Getenv("NATS_URL")
-	os.Setenv("NATS_URL", srv.ClientURL())
-	defer os.Setenv("NATS_URL", oldURL)
+	t.Setenv("NATS_URL", srv.ClientURL())
 
 	// Register a workflow via the API so list can find it.
 	svc := api.NewService(nc)
