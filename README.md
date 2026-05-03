@@ -9,7 +9,18 @@ Combines Hatchet-style DAG orchestration with Temporal-style durable execution, 
 ### Install
 
 ```bash
+# From source
 go install github.com/danmestas/dagnats/cmd/dagnats@latest
+
+# From a release tarball (linux/darwin, amd64/arm64)
+# https://github.com/danmestas/dagnats/releases/latest
+```
+
+Or run the official Docker image:
+
+```bash
+docker build -t dagnats:latest .  # build locally; published image pending
+docker run --rm -p 4222:4222 -p 8080:8080 dagnats:latest
 ```
 
 ### Run
@@ -19,7 +30,7 @@ go install github.com/danmestas/dagnats/cmd/dagnats@latest
 dagnats serve
 ```
 
-Zero config. Embedded NATS with JetStream, actor-based orchestrator, API server, and trigger system all running in one process.
+Zero config. Embedded NATS with JetStream, event-sourced orchestrator, API server, and trigger system all running in one process.
 
 Scaffold a new workflow project with `dagnats init my-workflow`, or browse `examples/` (try `cd examples/hello-world && go run .` after starting `dagnats serve`).
 
@@ -57,7 +68,7 @@ Triggers (cron, NATS subjects, webhooks)
           |
     Control Plane  -->  REST API + NATS micro
           |
-    Orchestrator   -->  Actor-based, per-run in-memory state
+    Orchestrator   -->  Event-sourced; reads run state from KV per event
           |
     Workers        -->  Pull tasks, execute handlers, publish results
           |
@@ -71,11 +82,11 @@ All state lives in NATS. No external database, no Redis, no Postgres.
 | Package | Purpose |
 |---------|---------|
 | `dag/` | Pure DAG logic — types, builder, validation, resolution, retry policies, schema validation |
-| `engine/` | Actor-based orchestrator — event consumption, DAG advancement, concurrency, cancel |
+| `internal/engine/` | Orchestrator — event consumption, DAG advancement, retry-backoff scheduler, step-timeout watchdog, concurrency, cancel |
 | `worker/` | Worker framework — TaskContext, heartbeat, checkpoint, signals |
-| `api/` | Control plane — REST + NATS request/reply |
-| `trigger/` | Cron, NATS subject, and webhook triggers with live reload |
-| `actor/` | Pure Go actor runtime — supervision, restart tracking, mailboxes |
+| `internal/api/` | Control plane — REST + NATS request/reply |
+| `internal/trigger/` | Cron, NATS subject, and webhook triggers with live reload |
+| `actor/` | General-purpose Go actor runtime — supervision, restart tracking, mailboxes (no longer used by the engine; see ADR-009) |
 | `server/` | Embedded NATS server, full lifecycle, single-binary deployment |
 | `cli/` | CLI client — workflow, run, trigger, dlq, serve, status commands |
 | `observe/` | Provider-agnostic observability interfaces |
@@ -84,9 +95,11 @@ All state lives in NATS. No external database, no Redis, no Postgres.
 
 ### Key Design Decisions
 
-**Actor-Based Orchestrator.** Per-workflow actors hold run state in memory. Events route to the correct actor via the actor runtime. Snapshots save to KV for durability. OneForOne supervision with bounded restart tracking.
+**Event-Sourced Orchestrator.** A single orchestrator subscribes to the workflow history stream. On each event, it loads the run snapshot from KV, advances the DAG, and saves. No long-lived in-memory state per run. (ADR-009 records the removal of an earlier actor-per-run prototype.)
 
-**Deep Worker Interface.** `TaskContext` provides: `Input()`, `Complete()`, `Fail()`, `Continue()`, `PutStream()`, `Heartbeat()`, `Checkpoint()`/`LoadCheckpoint()`, `WaitForSignal()`/`SendSignal()`. Workers never see retries, timeouts, or DAG logic.
+**Engine as Sole Retry Authority.** Workers report failures via `step.failed`; the engine schedules the next attempt via a durable `SLEEP_TIMERS` consumer using the policy's backoff curve. Step-level `Timeout` arms a watchdog that emits a synthetic `step.failed` if the attempt is still running when it fires. (ADR-011.)
+
+**Deep Worker Interface.** `TaskContext` provides: `Input()`, `Complete()`, `Fail()`, `FailPermanent()`, `FailRetryAfter()`, `Continue()`, `PutStream()`, `Heartbeat()`, `Checkpoint()`/`LoadCheckpoint()`, `WaitForSignal()`/`SendSignal()`. Workers never see retries, timeouts, or DAG logic.
 
 **Configurable Retry Policies.** Fixed, linear, or exponential backoff. Per-step override or workflow default. Resolution: step → workflow → legacy Retries field → no retry.
 
@@ -102,11 +115,11 @@ All state lives in NATS. No external database, no Redis, no Postgres.
 
 | Need | NATS Primitive |
 |------|---------------|
-| Task distribution | JetStream pull consumers + MaxAckPending |
-| Retry with backoff | NakWithDelay |
-| Exactly-once delivery | Nats-Msg-Id dedup |
+| Task distribution | JetStream pull consumers (durable per task type) |
+| Retry with backoff | Engine-scheduled `SLEEP_TIMERS` entry per attempt (per-policy delay) |
+| Step timeouts | Engine watchdog timer; emits synthetic `step.failed` on fire |
+| Exactly-once delivery | `Nats-Msg-Id` dedup (attempt-suffixed for retries) |
 | Run state snapshots | KV with optimistic locking |
-| Step timeouts | AckWait + MaxDeliver |
 | Cross-workflow signals | KV watches |
 | Dead-letter queue | Dedicated stream |
 
@@ -185,10 +198,10 @@ Created by `natsutil.SetupAll(nc)`:
 ```bash
 make test
 # or directly:
-go test ./... -timeout 120s
+go test ./... -timeout 600s
 ```
 
-Tests use real embedded NATS servers (no mocks). Each test gets its own server via `natsutil.StartTestServer(t)`. 17 packages, all passing.
+Tests use real embedded NATS servers (no mocks). Each test gets its own server via `natsutil.StartTestServer(t)`. The full suite takes ~5 minutes locally (worker package ~75s, engine ~45s, e2e harness ~80s).
 
 ## Documentation
 
@@ -210,4 +223,4 @@ For coding agents and LLM tools: a curated [`llms.txt`](https://dagnats-docs.dan
 
 ## License
 
-Private. See repository settings.
+Apache License 2.0. See [LICENSE](LICENSE) for the full text.

@@ -203,29 +203,42 @@ func TestPrintStartBannerCustomMCP(t *testing.T) {
 // --- Dispatch tests ---
 
 func TestSidecarCmdDispatchNoArgs(t *testing.T) {
-	// With no args, should default to start which will try to
-	// load config. We intercept the exit to verify dispatch.
+	// With no args, dispatch should route to runSidecarStartCmd. The
+	// test verifies that routing by feeding an unparseable dagnats.yaml
+	// so loadSidecarConfig fails before startSupervisor is reached —
+	// otherwise the test would hang spawning real collector processes
+	// (sidecar.LoadConfig silently falls back to DefaultConfig when
+	// the file is missing, which is fine for production UX but lets
+	// execution fall through to startSupervisor in the test override).
 	var exitCode int
 	oldExit := exitFunc
 	exitFunc = func(code int) { exitCode = code }
 	defer func() { exitFunc = oldExit }()
 
-	// Run in a temp dir with no config and no binaries.
 	oldDir, _ := os.Getwd()
 	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	// Unparseable YAML — LoadConfig returns an error, loadSidecarConfig
+	// calls exitFunc(1) and returns nil, runSidecarStartCmd bails.
+	cfgPath := filepath.Join(tmpDir, defaultConfigFileName)
+	if err := os.WriteFile(cfgPath, []byte(":::not yaml:::"), 0o644); err != nil {
+		t.Fatalf("write bad config: %v", err)
+	}
 
 	runSidecarCmd([]string{})
 
-	// Positive: should attempt start and fail on missing binaries.
+	// Positive: dispatch reached start, which exited on bad config.
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
 	}
 
-	// Negative: should not succeed.
+	// Negative: must not have succeeded (would mean dispatch missed start).
 	if exitCode == 0 {
-		t.Fatal("should not succeed without binaries")
+		t.Fatal("should not succeed with malformed config")
 	}
 }
 
