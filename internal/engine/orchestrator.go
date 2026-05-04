@@ -297,9 +297,25 @@ func isHandledEventType(t protocol.EventType) bool {
 }
 
 // dispatchEvent routes an event to its handler under a per-run lock.
+// A defer recover converts any handler panic into an error so a single
+// poisoned event cannot kill the consumer goroutine and crash the
+// engine. The recovered error is logged with full event context and
+// returned upstream where handleEventJS NAKs the message.
 func (o *Orchestrator) dispatchEvent(
 	ctx context.Context, evt protocol.Event,
-) error {
+) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx,
+				"dispatchEvent: handler panic recovered",
+				"panic", fmt.Sprintf("%v", r),
+				"event_type", string(evt.Type),
+				"run_id", evt.RunID,
+				"step_id", evt.StepID,
+			)
+			err = fmt.Errorf("handler panic: %v", r)
+		}
+	}()
 	if evt.RunID == "" {
 		panic("dispatchEvent: RunID must not be empty")
 	}
@@ -399,6 +415,35 @@ func (o *Orchestrator) handleWorkflowStarted(
 			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
 		}
 		input = nil
+	}
+
+	// Validate the WorkflowDef itself before constructing a run.
+	// dag.NewWorkflowRun panics on invariant violations (e.g. empty
+	// Steps); validating here turns that panic into a recorded
+	// failure. A trigger publishing a malformed payload (see #167)
+	// must not crash the engine.
+	if validateErr := dag.Validate(wfDef); validateErr != nil {
+		slog.ErrorContext(ctx,
+			"workflow.started: WorkflowDef failed validation",
+			"error", validateErr,
+			"run_id", evt.RunID,
+			"workflow_id", wfDef.Name,
+		)
+		failed := dag.WorkflowRun{
+			RunID:      evt.RunID,
+			WorkflowID: wfDef.Name,
+			Status:     dag.RunStatusFailed,
+			Steps:      map[string]dag.StepState{},
+			CreatedAt:  time.Now().UTC(),
+		}
+		if saveErr := o.saveSnapshot(ctx, failed); saveErr != nil {
+			slog.ErrorContext(ctx,
+				"workflow.started: save failed-run snapshot",
+				"error", saveErr,
+				"run_id", evt.RunID,
+			)
+		}
+		return nil
 	}
 
 	// Validate input against schema if configured.
