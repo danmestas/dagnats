@@ -155,10 +155,11 @@ func (h *WebhookHandler) publishWorkflowEvent(
 	}
 
 	envelope := TriggerEnvelope{
-		Trigger:   "webhook",
-		Source:    h.def.ID,
-		Timestamp: now,
-		Data:      data,
+		Trigger:    "webhook",
+		Source:     h.def.ID,
+		WorkflowID: h.def.WorkflowID,
+		Timestamp:  now,
+		Data:       data,
 	}
 
 	payloadBytes, err := json.Marshal(envelope)

@@ -145,10 +145,11 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 
 	now := time.Now().UTC()
 	envelope := TriggerEnvelope{
-		Trigger:   "subject",
-		Source:    s.def.ID,
-		Timestamp: now,
-		Data:      data,
+		Trigger:    "subject",
+		Source:     s.def.ID,
+		WorkflowID: s.def.WorkflowID,
+		Timestamp:  now,
+		Data:       data,
 	}
 
 	payloadBytes, err := json.Marshal(envelope)

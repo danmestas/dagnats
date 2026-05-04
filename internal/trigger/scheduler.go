@@ -349,9 +349,10 @@ func (s *Scheduler) fireWorkflow(
 	}
 
 	envelope := TriggerEnvelope{
-		Trigger:   "cron",
-		Source:    def.ID,
-		Timestamp: now.UTC(),
+		Trigger:    "cron",
+		Source:     def.ID,
+		WorkflowID: def.WorkflowID,
+		Timestamp:  now.UTC(),
 	}
 	payloadBytes, err := json.Marshal(envelope)
 	if err != nil {
