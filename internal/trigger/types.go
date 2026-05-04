@@ -51,11 +51,16 @@ type WebhookConfig struct {
 
 // TriggerEnvelope is the standard workflow input produced by all
 // trigger types. Workflows always know how they were triggered.
+// WorkflowID identifies which registered workflow to run; the
+// orchestrator resolves the WorkflowDef from workflow_defs KV at
+// handle time. Including it here keeps the trigger publish paths
+// free of KV lookups (#167).
 type TriggerEnvelope struct {
-	Trigger   string          `json:"trigger"`
-	Source    string          `json:"source"`
-	Timestamp time.Time       `json:"timestamp"`
-	Data      json.RawMessage `json:"data,omitempty"`
+	Trigger    string          `json:"trigger"`
+	Source     string          `json:"source"`
+	WorkflowID string          `json:"workflow_id"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Data       json.RawMessage `json:"data,omitempty"`
 }
 
 // TriggerFire records a single trigger fire event for history

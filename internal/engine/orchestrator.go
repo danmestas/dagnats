@@ -390,31 +390,13 @@ func (o *Orchestrator) handleWorkflowStarted(
 		panic("handleWorkflowStarted: Payload must not be nil")
 	}
 
-	// The payload can be either just the WorkflowDef (backward compat)
-	// or a structure containing both def and input.
-	var startPayload struct {
-		WorkflowDef json.RawMessage `json:"workflow_def"`
-		Input       json.RawMessage `json:"input"`
+	wfDef, input, err := o.resolveStartPayload(ctx, evt)
+	if err != nil {
+		return err
 	}
-	var wfDef dag.WorkflowDef
-	var input json.RawMessage
-
-	// Try to unmarshal as structured payload first
-	if err := json.Unmarshal(evt.Payload, &startPayload); err == nil &&
-		startPayload.WorkflowDef != nil {
-		// New format with separate workflow_def and input
-		if err := json.Unmarshal(
-			startPayload.WorkflowDef, &wfDef,
-		); err != nil {
-			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
-		}
-		input = startPayload.Input
-	} else {
-		// Backward compat: payload is just the WorkflowDef
-		if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
-			return fmt.Errorf("unmarshal WorkflowDef: %w", err)
-		}
-		input = nil
+	if wfDef.Name == "" && len(wfDef.Steps) == 0 {
+		// Permanent failure already persisted by resolveStartPayload.
+		return nil
 	}
 
 	// Validate the WorkflowDef itself before constructing a run.
@@ -423,26 +405,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	// failure. A trigger publishing a malformed payload (see #167)
 	// must not crash the engine.
 	if validateErr := dag.Validate(wfDef); validateErr != nil {
-		slog.ErrorContext(ctx,
-			"workflow.started: WorkflowDef failed validation",
-			"error", validateErr,
-			"run_id", evt.RunID,
-			"workflow_id", wfDef.Name,
-		)
-		failed := dag.WorkflowRun{
-			RunID:      evt.RunID,
-			WorkflowID: wfDef.Name,
-			Status:     dag.RunStatusFailed,
-			Steps:      map[string]dag.StepState{},
-			CreatedAt:  time.Now().UTC(),
-		}
-		if saveErr := o.saveSnapshot(ctx, failed); saveErr != nil {
-			slog.ErrorContext(ctx,
-				"workflow.started: save failed-run snapshot",
-				"error", saveErr,
-				"run_id", evt.RunID,
-			)
-		}
+		o.persistFailedStartRun(ctx, evt, wfDef.Name, validateErr)
 		return nil
 	}
 
@@ -494,6 +457,115 @@ func (o *Orchestrator) handleWorkflowStarted(
 	}
 	o.registerCancelWaiters(ctx, wfDef, run)
 	return nil
+}
+
+// resolveStartPayload decodes evt.Payload into a WorkflowDef and Input.
+// Three shapes are accepted, in priority order:
+//
+//  1. Structured {workflow_def, input} — produced by the API service
+//     when a user invokes a workflow manually.
+//  2. TriggerEnvelope {trigger, source, workflow_id, ...} — produced
+//     by every trigger type (#167). The def is resolved from
+//     workflow_defs KV by WorkflowID; the envelope itself becomes the
+//     run's Input so workflows can observe how they were fired.
+//  3. Bare WorkflowDef — backward compat for direct callers (tests
+//     and any embedded users that pre-date the structured shape).
+//
+// For trigger envelopes referencing a workflow that has no registered
+// def, the helper persists a RunStatusFailed snapshot and returns
+// (zero, nil, nil) so the caller ACKs the message — redelivery would
+// re-fail identically.
+func (o *Orchestrator) resolveStartPayload(
+	ctx context.Context, evt protocol.Event,
+) (dag.WorkflowDef, json.RawMessage, error) {
+	var startPayload struct {
+		WorkflowDef json.RawMessage `json:"workflow_def"`
+		Input       json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(evt.Payload, &startPayload); err == nil &&
+		startPayload.WorkflowDef != nil {
+		var wfDef dag.WorkflowDef
+		if err := json.Unmarshal(startPayload.WorkflowDef, &wfDef); err != nil {
+			return dag.WorkflowDef{}, nil,
+				fmt.Errorf("unmarshal WorkflowDef: %w", err)
+		}
+		return wfDef, startPayload.Input, nil
+	}
+
+	if workflowID, ok := decodeTriggerEnvelope(evt.Payload); ok {
+		entry, err := o.defKV.Get(ctx, workflowID)
+		if err != nil {
+			o.persistFailedStartRun(ctx, evt, workflowID,
+				fmt.Errorf("resolve trigger workflow def: %w", err))
+			return dag.WorkflowDef{}, nil, nil
+		}
+		var wfDef dag.WorkflowDef
+		if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
+			return dag.WorkflowDef{}, nil,
+				fmt.Errorf("unmarshal trigger workflow def: %w", err)
+		}
+		return wfDef, evt.Payload, nil
+	}
+
+	var wfDef dag.WorkflowDef
+	if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
+		return dag.WorkflowDef{}, nil,
+			fmt.Errorf("unmarshal WorkflowDef: %w", err)
+	}
+	return wfDef, nil, nil
+}
+
+// decodeTriggerEnvelope returns the workflow ID from a TriggerEnvelope
+// payload (#167). ok is false for any payload that does not look like
+// a trigger envelope so the caller can fall through to the next shape.
+func decodeTriggerEnvelope(payload []byte) (string, bool) {
+	var env struct {
+		Trigger    string `json:"trigger"`
+		WorkflowID string `json:"workflow_id"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return "", false
+	}
+	if env.Trigger == "" || env.WorkflowID == "" {
+		return "", false
+	}
+	return env.WorkflowID, true
+}
+
+// persistFailedStartRun records a permanent failure for a
+// workflow.started event whose payload could not be turned into a
+// runnable WorkflowDef. ACKing the message (the caller returns nil) is
+// correct because redelivery would just re-write the same failure.
+func (o *Orchestrator) persistFailedStartRun(
+	ctx context.Context, evt protocol.Event,
+	workflowID string, reason error,
+) {
+	if evt.RunID == "" {
+		panic("persistFailedStartRun: RunID must not be empty")
+	}
+	if reason == nil {
+		panic("persistFailedStartRun: reason must not be nil")
+	}
+	slog.ErrorContext(ctx,
+		"workflow.started: failing run permanently",
+		"error", reason,
+		"run_id", evt.RunID,
+		"workflow_id", workflowID,
+	)
+	failed := dag.WorkflowRun{
+		RunID:      evt.RunID,
+		WorkflowID: workflowID,
+		Status:     dag.RunStatusFailed,
+		Steps:      map[string]dag.StepState{},
+		CreatedAt:  time.Now().UTC(),
+	}
+	if saveErr := o.saveSnapshot(ctx, failed); saveErr != nil {
+		slog.ErrorContext(ctx,
+			"workflow.started: save failed-run snapshot",
+			"error", saveErr,
+			"run_id", evt.RunID,
+		)
+	}
 }
 
 // registerCancelWaiters registers one correlator waiter per
