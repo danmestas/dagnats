@@ -8,6 +8,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -391,12 +392,11 @@ func (o *Orchestrator) handleWorkflowStarted(
 	}
 
 	wfDef, input, err := o.resolveStartPayload(ctx, evt)
+	if errors.Is(err, errStartPayloadHandled) {
+		return nil
+	}
 	if err != nil {
 		return err
-	}
-	if wfDef.Name == "" && len(wfDef.Steps) == 0 {
-		// Permanent failure already persisted by resolveStartPayload.
-		return nil
 	}
 
 	// Validate the WorkflowDef itself before constructing a run.
@@ -459,6 +459,11 @@ func (o *Orchestrator) handleWorkflowStarted(
 	return nil
 }
 
+// errStartPayloadHandled signals that resolveStartPayload has already
+// persisted a permanent failure for the event and the caller should
+// ACK without further processing. Detect with errors.Is.
+var errStartPayloadHandled = errors.New("start payload already handled")
+
 // resolveStartPayload decodes evt.Payload into a WorkflowDef and Input.
 // Three shapes are accepted, in priority order:
 //
@@ -473,8 +478,8 @@ func (o *Orchestrator) handleWorkflowStarted(
 //
 // For trigger envelopes referencing a workflow that has no registered
 // def, the helper persists a RunStatusFailed snapshot and returns
-// (zero, nil, nil) so the caller ACKs the message — redelivery would
-// re-fail identically.
+// errStartPayloadHandled so the caller ACKs the message — redelivery
+// would re-fail identically.
 func (o *Orchestrator) resolveStartPayload(
 	ctx context.Context, evt protocol.Event,
 ) (dag.WorkflowDef, json.RawMessage, error) {
@@ -497,7 +502,7 @@ func (o *Orchestrator) resolveStartPayload(
 		if err != nil {
 			o.persistFailedStartRun(ctx, evt, workflowID,
 				fmt.Errorf("resolve trigger workflow def: %w", err))
-			return dag.WorkflowDef{}, nil, nil
+			return dag.WorkflowDef{}, nil, errStartPayloadHandled
 		}
 		var wfDef dag.WorkflowDef
 		if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
