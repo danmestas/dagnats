@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -104,9 +105,16 @@ type Worker struct {
 	stopOnce      sync.Once
 
 	// Pre-allocated metric instruments — created once in constructor.
-	stepDuration metric.Float64Histogram
-	stepRetries  metric.Int64Counter
-	tasksActive  metric.Int64UpDownCounter
+	stepDuration          metric.Float64Histogram
+	stepRetries           metric.Int64Counter
+	tasksActive           metric.Int64UpDownCounter
+	cancelledTasksSkipped metric.Int64Counter
+
+	// workflowRunsKV is the optional binding to the workflow_runs KV
+	// bucket. When present, the worker fast-skips tasks whose parent
+	// run has been cancelled (issue #174). When absent (legacy NATS
+	// setups without the bucket), the skip check defaults to execute.
+	workflowRunsKV jetstream.KeyValue
 }
 
 // WorkerOption configures optional Worker behavior.
@@ -187,16 +195,20 @@ func NewWorker(
 	active, _ := m.Int64UpDownCounter(
 		"worker.tasks.active",
 	)
+	skipped, _ := m.Int64Counter(
+		"worker.tasks.cancelled_skipped",
+	)
 	w := &Worker{
-		nc:           nc,
-		js:           js,
-		publishMsg:   js.PublishMsg, // default; tests override via option
-		tracer:       otel.Tracer("dagnats/worker"),
-		handlers:     make(map[string]HandlerFunc),
-		workerID:     generateWorkerID(),
-		stepDuration: stepDur,
-		stepRetries:  stepRet,
-		tasksActive:  active,
+		nc:                    nc,
+		js:                    js,
+		publishMsg:            js.PublishMsg, // default; tests override via option
+		tracer:                otel.Tracer("dagnats/worker"),
+		handlers:              make(map[string]HandlerFunc),
+		workerID:              generateWorkerID(),
+		stepDuration:          stepDur,
+		stepRetries:           stepRet,
+		tasksActive:           active,
+		cancelledTasksSkipped: skipped,
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -361,6 +373,15 @@ func (w *Worker) bindOptionalKV() {
 			"signal KV bucket not found" +
 				" — WaitForSignal/SendSignal" +
 				" will return errors",
+		)
+	}
+	w.workflowRunsKV, _ = w.js.KeyValue(
+		context.Background(), "workflow_runs",
+	)
+	if w.workflowRunsKV == nil {
+		slog.Warn(
+			"workflow_runs KV bucket not found" +
+				" — cancelled-run fast-skip disabled",
 		)
 	}
 }
@@ -799,6 +820,49 @@ func (w *Worker) startTaskSpan(
 	return ctx, span, tc
 }
 
+// shouldSkipForCancelledRun returns true when the parent run is
+// already cancelled and the worker should fast-skip the task.
+//
+// Defensive default: any error path (KV not bound, missing run,
+// transient lookup failure) returns false so the worker proceeds with
+// normal execution. We'd rather over-execute a borderline-cancelled
+// task than drop work due to a flaky lookup.
+func (w *Worker) shouldSkipForCancelledRun(runID string) bool {
+	if runID == "" {
+		panic("shouldSkipForCancelledRun: runID must not be empty")
+	}
+	// Counter must have been initialized by NewWorker. A nil counter
+	// signals the Worker was constructed without the constructor — a
+	// programmer error that will surface here rather than silently in
+	// the .Add call after a successful skip decision.
+	if w.cancelledTasksSkipped == nil {
+		panic("shouldSkipForCancelledRun: counter not initialized; " +
+			"use NewWorker")
+	}
+	if w.workflowRunsKV == nil {
+		return false
+	}
+	const lookupTimeout = 2 * time.Second
+	ctx, cancel := context.WithTimeout(
+		context.Background(), lookupTimeout,
+	)
+	defer cancel()
+	entry, err := w.workflowRunsKV.Get(ctx, "run."+runID)
+	if err != nil {
+		// Missing run / transient error: defensive default is execute.
+		return false
+	}
+	var run dag.WorkflowRun
+	if err := json.Unmarshal(entry.Value(), &run); err != nil {
+		slog.Warn("workflow_runs entry unmarshal failed; proceeding",
+			"error", err,
+			"run_id", runID,
+		)
+		return false
+	}
+	return run.Status == dag.RunStatusCancelled
+}
+
 // handleMessage unmarshals the task payload, creates a traced
 // context, executes the handler, and records metrics.
 func (w *Worker) handleMessage(
@@ -817,6 +881,16 @@ func (w *Worker) handleMessage(
 			"failed to unmarshal task payload",
 			"error", err,
 			"task_type", taskType,
+		)
+		msg.Ack()
+		return
+	}
+	if w.shouldSkipForCancelledRun(payload.RunID) {
+		w.cancelledTasksSkipped.Add(context.Background(), 1)
+		slog.Info("skipping task — parent run cancelled",
+			"task_type", taskType,
+			"run_id", payload.RunID,
+			"step_id", payload.StepID,
 		)
 		msg.Ack()
 		return
