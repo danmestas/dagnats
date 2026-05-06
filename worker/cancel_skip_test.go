@@ -2,7 +2,9 @@
 // Tests for the worker's fast-skip behavior when a task's parent run
 // has already been cancelled (issue #174). Methodology: pre-mark the
 // run in workflow_runs KV, publish a task message for it, observe
-// whether the handler runs.
+// whether the handler runs. Also covers the worker_status snapshot
+// write that surfaces drain progress in `dagnats status --detail`
+// (issue #182).
 package worker
 
 import (
@@ -82,6 +84,74 @@ func TestWorker_SkipsTasksForCancelledRuns(t *testing.T) {
 	// Positive: handler must NOT have been called.
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("expected 0 handler calls for cancelled run, got %d", got)
+	}
+}
+
+// TestWorker_WritesCancelledStatusSnapshot verifies that on each
+// cancelled-task skip, the worker writes its counter to the
+// worker_status KV bucket so `dagnats status --detail` can aggregate
+// drain progress (#182). The bucket is opt-in via SetupAll options
+// so older deployments don't see surprise NATS writes.
+func TestWorker_WritesCancelledStatusSnapshot(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{
+			Bucket: "worker_status",
+		}),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	const runID = "run-cancelled-snap-1"
+	putRunStatus(t, js, runID, dag.RunStatusCancelled)
+
+	w := NewWorker(nc)
+	w.Handle("echo", func(ctx TaskContext) error {
+		return ctx.Complete(ctx.Input())
+	})
+	w.Start()
+	defer w.Stop()
+
+	payload := protocol.TaskPayload{
+		RunID:  runID,
+		StepID: "step-a",
+		Input:  json.RawMessage(`"x"`),
+	}
+	data, _ := json.Marshal(payload)
+	if _, err := js.Publish(
+		context.Background(), "task.echo."+runID, data,
+	); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	// Wait for the worker to receive, skip, and write the snapshot.
+	// Poll until the snapshot appears or timeout fires.
+	kv, err := js.KeyValue(context.Background(), "worker_status")
+	if err != nil {
+		t.Fatalf("KeyValue: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var found bool
+	for time.Now().Before(deadline) {
+		keys, kerr := kv.Keys(context.Background())
+		if kerr == nil && len(keys) > 0 {
+			entry, _ := kv.Get(context.Background(), keys[0])
+			var snap protocol.WorkerStatusSnapshot
+			if entry != nil &&
+				json.Unmarshal(entry.Value(), &snap) == nil &&
+				snap.CancelledTasksSkipped >= 1 {
+				found = true
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !found {
+		t.Fatal("expected worker_status snapshot with skipped >= 1")
 	}
 }
 

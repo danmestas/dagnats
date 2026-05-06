@@ -13,6 +13,93 @@ import (
 	"testing"
 )
 
+// TestWorkflowValidateAcceptsValidEmbeddedTrigger confirms that
+// `workflow validate` honors and validates embedded triggers introduced
+// in #171, achieving parity with `workflow register` (issue #180).
+func TestWorkflowValidateAcceptsValidEmbeddedTrigger(t *testing.T) {
+	good := `{
+		"name": "wf-with-trigger",
+		"version": "1.0",
+		"triggers": [{
+			"id": "t1",
+			"enabled": true,
+			"cron": {"expression": "*/5 * * * *", "timezone": "UTC", "backfill": false}
+		}],
+		"steps": [{"id": "a", "task": "task-a"}]
+	}`
+	tmpFile := filepath.Join(t.TempDir(), "good.json")
+	if err := os.WriteFile(tmpFile, []byte(good), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	result, err := validateWorkflowFile(tmpFile)
+	if err != nil {
+		t.Fatalf("expected valid, got error: %v", err)
+	}
+	if !strings.Contains(result, "Valid: wf-with-trigger") {
+		t.Fatalf("expected Valid output, got: %s", result)
+	}
+}
+
+// TestWorkflowValidateRejectsBadEmbeddedCron confirms that an
+// invalid cron in an embedded trigger fails validate, not just register
+// (the gap that motivated #180).
+func TestWorkflowValidateRejectsBadEmbeddedCron(t *testing.T) {
+	bad := `{
+		"name": "wf-bad",
+		"version": "1.0",
+		"triggers": [{
+			"id": "t1",
+			"enabled": true,
+			"cron": {"expression": "not a cron", "timezone": "UTC"}
+		}],
+		"steps": [{"id": "a", "task": "task-a"}]
+	}`
+	tmpFile := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(tmpFile, []byte(bad), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := validateWorkflowFile(tmpFile)
+	// Positive: errors when embedded cron is malformed.
+	if err == nil {
+		t.Fatal("expected error for bad embedded cron")
+	}
+	// Positive: error message mentions the trigger.
+	if !strings.Contains(err.Error(), "trigger") {
+		t.Fatalf("error should mention trigger, got: %v", err)
+	}
+}
+
+// TestWorkflowValidateRejectsMismatchedTriggerWorkflowID mirrors the
+// guard from registerWorkflowWithTriggers: a typo'd workflow_id in an
+// embedded trigger is almost certainly a copy-paste error and should
+// fail validation up-front rather than silently wire the trigger to a
+// different workflow at register time.
+func TestWorkflowValidateRejectsMismatchedTriggerWorkflowID(t *testing.T) {
+	bad := `{
+		"name": "wf-parent",
+		"version": "1.0",
+		"triggers": [{
+			"id": "t1",
+			"workflow_id": "different-wf",
+			"enabled": true,
+			"cron": {"expression": "*/5 * * * *", "timezone": "UTC"}
+		}],
+		"steps": [{"id": "a", "task": "task-a"}]
+	}`
+	tmpFile := filepath.Join(t.TempDir(), "mismatch.json")
+	if err := os.WriteFile(tmpFile, []byte(bad), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := validateWorkflowFile(tmpFile)
+	if err == nil {
+		t.Fatal("expected error for mismatched workflow_id")
+	}
+	if !strings.Contains(err.Error(), "does not match parent") {
+		t.Fatalf(
+			"error should mention parent mismatch, got: %v", err)
+	}
+}
+
 func TestWorkflowValidateAcceptsValidFile(t *testing.T) {
 	validJSON := `{
 		"name": "valid-wf",

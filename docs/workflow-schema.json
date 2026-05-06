@@ -150,7 +150,10 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "expression": {"type": "string"},
+            "expression": {
+              "type": "string",
+              "description": "5-field cron expression: minute hour day-of-month month day-of-week. Sub-minute scheduling is not supported (the trigger engine has minute-precision dedup). 6-field forms with a leading seconds field are rejected."
+            },
             "timezone": {"type": "string"},
             "backfill": {"type": "boolean"}
           },

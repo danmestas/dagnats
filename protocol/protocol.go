@@ -175,3 +175,12 @@ func UnmarshalEvent(data []byte) (Event, error) {
 	err := json.Unmarshal(data, &evt)
 	return evt, err
 }
+
+// WorkerStatusSnapshot is the per-worker counter snapshot stored in
+// the worker_status KV bucket. Workers update their entry as
+// counters change; the CLI reads and aggregates entries to surface
+// drain progress (issue #182). Last-write-wins on the WorkerID key.
+type WorkerStatusSnapshot struct {
+	WorkerID              string `json:"worker_id"`
+	CancelledTasksSkipped uint64 `json:"cancelled_tasks_skipped"`
+}

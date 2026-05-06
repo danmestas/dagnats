@@ -4,6 +4,7 @@ package trigger
 // No NATS dependency — pure time logic.
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -104,6 +105,34 @@ func TestParseCronRejectsInvalid(t *testing.T) {
 		if err == nil {
 			t.Errorf("expected error for %q", expr)
 		}
+	}
+}
+
+// TestParseCronFieldCountErrorMentionsForm confirms the field-count
+// error is operator-friendly (issue #172). Operators arriving from
+// 6-field cron tooling (Quartz, robfig/cron-v3, k8s) need to know to
+// drop the leading seconds field — the previous "expected 5 fields,
+// got 6" said what was wrong but not how to fix it.
+func TestParseCronFieldCountErrorMentionsForm(t *testing.T) {
+	_, err := ParseCron("0 */3 * * * *")
+	// Positive: errors on 6-field input.
+	if err == nil {
+		t.Fatal("expected error for 6-field expression")
+	}
+	msg := err.Error()
+	// Positive: error names the 5-field shape.
+	if !strings.Contains(msg, "5 fields") {
+		t.Errorf("error should reference \"5 fields\", got: %v", err)
+	}
+	if !strings.Contains(msg, "minute hour day-of-month") {
+		t.Errorf(
+			"error should name the field order, got: %v", err)
+	}
+	// Positive: error tells the operator the next step.
+	if !strings.Contains(msg, "Drop") {
+		t.Errorf(
+			"error should mention dropping the seconds field, got: %v",
+			err)
 	}
 }
 

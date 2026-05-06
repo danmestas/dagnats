@@ -17,12 +17,29 @@ type workflowStep struct {
 	DependsOn []string `json:"depends_on,omitempty"`
 }
 
+// workflowTriggerStub mirrors the trigger.TriggerDef JSON shape so
+// the scaffold can emit a sample disabled trigger without importing
+// internal/trigger. The init package stays a pure file generator.
+type workflowTriggerStub struct {
+	ID      string   `json:"id"`
+	Enabled bool     `json:"enabled"`
+	Cron    cronStub `json:"cron"`
+}
+
+// cronStub mirrors trigger.CronConfig for the scaffold output.
+type cronStub struct {
+	Expression string `json:"expression"`
+	Timezone   string `json:"timezone"`
+	Backfill   bool   `json:"backfill"`
+}
+
 // workflowDef represents the complete workflow JSON document.
 type workflowDef struct {
-	Schema  string         `json:"$schema"`
-	Name    string         `json:"name"`
-	Version string         `json:"version"`
-	Steps   []workflowStep `json:"steps"`
+	Schema   string                `json:"$schema"`
+	Name     string                `json:"name"`
+	Version  string                `json:"version"`
+	Triggers []workflowTriggerStub `json:"triggers"`
+	Steps    []workflowStep        `json:"steps"`
 }
 
 // scaffoldWorkflow generates a workflow JSON file in dir named
@@ -85,11 +102,26 @@ func buildWorkflowDef(
 		wfSteps = append(wfSteps, ws)
 	}
 
+	// Emit a disabled cron trigger stub so the embedded-triggers
+	// pattern (issue #171) is discoverable in the file the operator
+	// will be editing. Disabled means the workflow registers cleanly
+	// without firing — flip enabled:true to activate.
+	triggerStubs := []workflowTriggerStub{{
+		ID:      name + "-cron",
+		Enabled: false,
+		Cron: cronStub{
+			Expression: "*/5 * * * *",
+			Timezone:   "UTC",
+			Backfill:   false,
+		},
+	}}
+
 	return workflowDef{
-		Schema:  schemaURL,
-		Name:    name,
-		Version: "1.0",
-		Steps:   wfSteps,
+		Schema:   schemaURL,
+		Name:     name,
+		Version:  "1.0",
+		Triggers: triggerStubs,
+		Steps:    wfSteps,
 	}
 }
 

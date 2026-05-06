@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -115,6 +116,14 @@ type Worker struct {
 	// run has been cancelled (issue #174). When absent (legacy NATS
 	// setups without the bucket), the skip check defaults to execute.
 	workflowRunsKV jetstream.KeyValue
+
+	// workerStatusKV is the optional binding to the worker_status KV
+	// bucket. When present, the worker writes a snapshot of its
+	// cancelled-skip counter on each skip, for `dagnats status
+	// --detail` aggregation (issue #182). Atomic counter holds the
+	// authoritative in-memory value; the KV write is best-effort.
+	workerStatusKV         jetstream.KeyValue
+	cancelledSkippedAtomic uint64
 }
 
 // WorkerOption configures optional Worker behavior.
@@ -382,6 +391,15 @@ func (w *Worker) bindOptionalKV() {
 		slog.Warn(
 			"workflow_runs KV bucket not found" +
 				" — cancelled-run fast-skip disabled",
+		)
+	}
+	w.workerStatusKV, _ = w.js.KeyValue(
+		context.Background(), "worker_status",
+	)
+	if w.workerStatusKV == nil {
+		slog.Warn(
+			"worker_status KV bucket not found" +
+				" — drain-progress aggregation disabled",
 		)
 	}
 }
@@ -863,6 +881,50 @@ func (w *Worker) shouldSkipForCancelledRun(runID string) bool {
 	return run.Status == dag.RunStatusCancelled
 }
 
+// publishWorkerStatus writes the latest cancelled-skip count to the
+// worker_status KV under this worker's ID. Best-effort: log on
+// failure rather than block the skip path. Idempotent
+// (last-write-wins on workerID key) so missed writes self-heal on
+// the next skip.
+//
+// Synchronous Put per skip is the simplest correct shape for the
+// motivating scenario (one-time backlog drain of dozens of cancelled
+// tasks during operator intervention). Each Put adds ~10ms to a skip,
+// which is invisible at human scale. If sustained high-rate
+// cancellation traffic ever needs a debounced/async writer, the
+// atomic counter is already the source of truth — refactor at that
+// point, not preemptively.
+func (w *Worker) publishWorkerStatus(skipped uint64) {
+	if w == nil {
+		panic("publishWorkerStatus: w must not be nil")
+	}
+	if w.workerStatusKV == nil {
+		return
+	}
+	snap := protocol.WorkerStatusSnapshot{
+		WorkerID:              w.workerID,
+		CancelledTasksSkipped: skipped,
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		slog.Warn("worker_status marshal failed",
+			"error", err)
+		return
+	}
+	const writeTimeout = 2 * time.Second
+	ctx, cancel := context.WithTimeout(
+		context.Background(), writeTimeout,
+	)
+	defer cancel()
+	_, err = w.workerStatusKV.Put(ctx, w.workerID, data)
+	if err != nil {
+		slog.Warn("worker_status KV write failed",
+			"error", err,
+			"worker_id", w.workerID,
+		)
+	}
+}
+
 // handleMessage unmarshals the task payload, creates a traced
 // context, executes the handler, and records metrics.
 func (w *Worker) handleMessage(
@@ -887,6 +949,8 @@ func (w *Worker) handleMessage(
 	}
 	if w.shouldSkipForCancelledRun(payload.RunID) {
 		w.cancelledTasksSkipped.Add(context.Background(), 1)
+		count := atomic.AddUint64(&w.cancelledSkippedAtomic, 1)
+		w.publishWorkerStatus(count)
 		slog.Info("skipping task — parent run cancelled",
 			"task_type", taskType,
 			"run_id", payload.RunID,

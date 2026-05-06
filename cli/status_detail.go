@@ -5,7 +5,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"text/tabwriter"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -93,6 +96,58 @@ func printStreamDetails(js jetstream.JetStream) {
 		)
 	}
 	w.Flush()
+}
+
+// printWorkerStatus aggregates the worker_status KV (#182) and
+// surfaces a "Cancelled tasks skipped" line in the detail output.
+// Silent no-op if the bucket isn't bound — older NATS deployments
+// without the bucket schema simply don't see the line.
+func printWorkerStatus(js jetstream.JetStream) {
+	if js == nil {
+		panic("printWorkerStatus: js must not be nil")
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+
+	kv, err := js.KeyValue(ctx, "worker_status")
+	if err != nil {
+		// Missing bucket is expected on older deployments —
+		// nothing to display.
+		return
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		// "no keys found" is the empty-bucket case; treat as silent.
+		return
+	}
+	const maxKeys = 10000
+	if len(keys) > maxKeys {
+		panic("printWorkerStatus: keys exceeds bound")
+	}
+
+	var totalSkipped uint64
+	for _, key := range keys {
+		entry, gerr := kv.Get(ctx, key)
+		if gerr != nil {
+			continue
+		}
+		var snap protocol.WorkerStatusSnapshot
+		if uerr := json.Unmarshal(entry.Value(), &snap); uerr != nil {
+			slog.Warn(
+				"worker_status entry unmarshal failed; skipping",
+				"key", key, "error", uerr,
+			)
+			continue
+		}
+		totalSkipped += snap.CancelledTasksSkipped
+	}
+	if totalSkipped == 0 {
+		// No drain activity worth reporting.
+		return
+	}
+	fmt.Printf("Cancelled tasks skipped: %d\n", totalSkipped)
 }
 
 // collectStreamNames reads up to limit stream names from JetStream.
