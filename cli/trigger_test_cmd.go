@@ -36,21 +36,62 @@ func runTriggerTestCmd(args []string) {
 	fs := flag.NewFlagSet("trigger test", flag.ExitOnError)
 	tz := fs.String("tz", "UTC", "Timezone")
 	count := fs.Int("count", 5, "Number of fire times to show")
+	cronFlag := fs.String("cron", "",
+		"Cron expression (alternative to positional argument)")
 	fs.Parse(args)
 
-	if fs.NArg() != 1 {
+	expr, err := resolveTriggerTestExpr(*cronFlag, fs.Args())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprintln(os.Stderr,
-			"Usage: dagnats trigger test <cron-expr> "+
+			"Usage: dagnats trigger test "+
+				"(<cron-expr> | --cron=EXPR) "+
 				"[--tz=TZ] [--count=N] [--json]")
 		os.Exit(1)
 	}
-	expr := fs.Arg(0)
 
 	if jsonOutput {
 		FormatCronTestJSON(os.Stdout, expr, *tz, *count)
 		return
 	}
 	fmt.Print(FormatCronTest(expr, *tz, *count))
+}
+
+// resolveTriggerTestExpr picks the cron expression to test, accepting
+// either a --cron flag value or a single positional argument. Errors
+// when both forms or neither are supplied.
+//
+// Why both forms: trigger create takes --cron=, so operators expect
+// trigger test to accept the same shape (issue #175).
+func resolveTriggerTestExpr(
+	cronFlag string, posArgs []string,
+) (string, error) {
+	if posArgs == nil {
+		panic("resolveTriggerTestExpr: posArgs must not be nil")
+	}
+	const maxArgs = 1000
+	if len(posArgs) > maxArgs {
+		panic("resolveTriggerTestExpr: posArgs exceeds max bound")
+	}
+
+	hasFlag := cronFlag != ""
+	posCount := len(posArgs)
+
+	if hasFlag && posCount > 0 {
+		return "", fmt.Errorf(
+			"specify cron expression as positional " +
+				"OR --cron=, not both")
+	}
+	if !hasFlag && posCount != 1 {
+		return "", fmt.Errorf(
+			"cron expression required: " +
+				"dagnats trigger test " +
+				"(<cron-expr> | --cron=EXPR)")
+	}
+	if hasFlag {
+		return cronFlag, nil
+	}
+	return posArgs[0], nil
 }
 
 // FormatCronTestJSON writes a JSON cronTestResult to w.
