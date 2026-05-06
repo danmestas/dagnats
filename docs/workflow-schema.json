@@ -47,6 +47,13 @@
     },
     "output_schema": {
       "description": "JSON Schema for workflow output validation"
+    },
+    "triggers": {
+      "type": "array",
+      "description": "Optional triggers registered alongside the workflow. workflow_id is auto-filled from the workflow name when omitted.",
+      "items": {
+        "$ref": "#/$defs/TriggerDef"
+      }
     }
   },
   "$defs": {
@@ -117,6 +124,63 @@
         "compensate": {
           "type": "string",
           "description": "Step ID for saga compensation"
+        }
+      }
+    },
+    "TriggerDef": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "description": "Trigger declaration: exactly one of cron, subject, or webhook must be present.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique trigger identifier"
+        },
+        "workflow_id": {
+          "type": "string",
+          "description": "Auto-filled from the workflow's name when omitted"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the trigger is active"
+        },
+        "cron": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "expression": {"type": "string"},
+            "timezone": {"type": "string"},
+            "backfill": {"type": "boolean"}
+          },
+          "required": ["expression"]
+        },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "subject": {"type": "string"}
+          },
+          "required": ["subject"]
+        },
+        "webhook": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {"type": "string"},
+            "secret": {"type": "string"}
+          },
+          "required": ["path"]
+        },
+        "debounce": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "period": {"type": ["string", "number"]},
+            "timeout": {"type": ["string", "number"]},
+            "key": {"type": "string"}
+          }
         }
       }
     },
