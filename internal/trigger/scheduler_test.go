@@ -53,6 +53,220 @@ func TestSchedulerTickFiresMatchingTriggers(t *testing.T) {
 	}
 }
 
+// TestSchedulerTickDoesNotDoubleFireWithinSameMinute regresses #173.
+// The scheduler ticks every 30s but cron is minute-resolution, so two
+// ticks 30s apart in a matching minute used to fire twice. JetStream
+// stream-level msgID dedup masks this only when publishes are <5s apart
+// (the workflow stream's Duplicates window). To prove the bug at the
+// scheduler level — independent of JetStream stream config — this test
+// uses a CORE NATS subscriber on `history.>`, which sees every publish
+// regardless of stream dedup.
+func TestSchedulerTickDoesNotDoubleFireWithinSameMinute(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "every3-trigger",
+		WorkflowID: "test-workflow",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "*/3 * * * *",
+			Timezone:   "UTC",
+			Backfill:   false,
+		},
+	}
+	if err := scheduler.AddTrigger(def); err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	// Core NATS sub: bypasses stream-level dedup so we see real publish
+	// behavior. Any double-publish from Tick is observable here.
+	sub, err := nc.SubscribeSync("history.>")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	// Two ticks in the same matching minute (12:24:00 and 12:24:30).
+	// `*/3 * * * *` matches minute 24, so Matches() returns true for both.
+	tick1 := time.Date(2026, 3, 31, 12, 24, 0, 0, time.UTC)
+	tick2 := tick1.Add(30 * time.Second)
+
+	if err := scheduler.Tick(tick1); err != nil {
+		t.Fatalf("first Tick failed: %v", err)
+	}
+	// Positive: first tick fires exactly one event.
+	msg1, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("expected first event: %v", err)
+	}
+	if msg1 == nil {
+		t.Fatalf("expected non-nil first message")
+	}
+
+	if err := scheduler.Tick(tick2); err != nil {
+		t.Fatalf("second Tick failed: %v", err)
+	}
+	// Negative: second tick (same minute) must not produce a second publish.
+	msg2, err := sub.NextMsg(1500 * time.Millisecond)
+	if err == nil {
+		t.Errorf(
+			"expected no second event within same matching minute, "+
+				"got %s", msg2.Subject)
+	}
+}
+
+// TestSchedulerTickFiresInNextMatchingMinute confirms the in-process
+// dedup is per-minute, not permanent: a later matching minute must
+// produce a new run.
+func TestSchedulerTickFiresInNextMatchingMinute(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "every3-next",
+		WorkflowID: "test-workflow",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "*/3 * * * *",
+			Timezone:   "UTC",
+			Backfill:   false,
+		},
+	}
+	if err := scheduler.AddTrigger(def); err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	sub, err := nc.SubscribeSync("history.>")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	tick1 := time.Date(2026, 3, 31, 12, 24, 0, 0, time.UTC)
+	tick2 := time.Date(2026, 3, 31, 12, 27, 0, 0, time.UTC)
+
+	if err := scheduler.Tick(tick1); err != nil {
+		t.Fatalf("first Tick failed: %v", err)
+	}
+	msg1, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("expected first event: %v", err)
+	}
+
+	if err := scheduler.Tick(tick2); err != nil {
+		t.Fatalf("second Tick failed: %v", err)
+	}
+	msg2, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("expected second event in next matching minute: %v", err)
+	}
+
+	// Positive: distinct subjects (runID embedded) prove separate fires.
+	if msg1.Subject == msg2.Subject {
+		t.Errorf("expected distinct subjects, got %q twice", msg1.Subject)
+	}
+}
+
+// TestSchedulerBackfillThenLiveTickNoDoubleFire regresses the same
+// failure class as #173 at the backfill→live-tick boundary. Backfill
+// replays the most recent missed minute; if the next live Tick lands
+// in that same minute (and the workflow stream's 5s msgID dedup window
+// has elapsed because backfill ran ≥30s earlier), the minute would
+// fire twice. The in-process claimMinute guard prevents this.
+func TestSchedulerBackfillThenLiveTickNoDoubleFire(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	scheduler, err := NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler failed: %v", err)
+	}
+
+	def := TriggerDef{
+		ID:         "boundary-trigger",
+		WorkflowID: "test-workflow",
+		Enabled:    true,
+		Cron: &CronConfig{
+			Expression: "* * * * *",
+			Timezone:   "UTC",
+			Backfill:   true,
+		},
+	}
+	if err := scheduler.AddTrigger(def); err != nil {
+		t.Fatalf("AddTrigger failed: %v", err)
+	}
+
+	// Seed last_run_at to 1 minute ago so Backfill replays the most
+	// recent missed minute, which we will then re-tick live.
+	lastRun := time.Now().UTC().Add(-1 * time.Minute).Truncate(time.Minute)
+	_, err = scheduler.stateKV.Put(
+		context.Background(),
+		"boundary-trigger.last_run_at",
+		[]byte(lastRun.Format(time.RFC3339)))
+	if err != nil {
+		t.Fatalf("KV Put failed: %v", err)
+	}
+
+	sub, err := nc.SubscribeSync("history.>")
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	if err := scheduler.Backfill(); err != nil {
+		t.Fatalf("Backfill failed: %v", err)
+	}
+	// Drain any backfilled events.
+	backfilled := 0
+	for {
+		_, err := sub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			break
+		}
+		backfilled++
+	}
+	if backfilled == 0 {
+		t.Fatalf("expected at least one backfilled event")
+	}
+
+	// Live tick at the most recent backfilled minute. Without the
+	// claimMinute guard in backfill, this would publish again.
+	if err := scheduler.Tick(time.Now().UTC()); err != nil {
+		t.Fatalf("Tick failed: %v", err)
+	}
+
+	// Negative: no live event for an already-claimed minute.
+	msg, err := sub.NextMsg(1500 * time.Millisecond)
+	if err == nil {
+		t.Errorf(
+			"expected no live event for backfilled minute, got %s",
+			msg.Subject)
+	}
+}
+
 func setupSchedulerWithEveryMinuteTrigger(
 	t *testing.T, nc *nats.Conn, js nats.JetStreamContext,
 ) (*Scheduler, *nats.Subscription) {
