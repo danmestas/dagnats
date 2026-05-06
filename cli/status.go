@@ -205,6 +205,7 @@ func printSystemStatus(nc *nats.Conn, svc *api.Service) {
 	fmt.Printf("Active runs: %d\n", activeCount)
 
 	printStreamDetails(js)
+	printWorkerStatus(js)
 	printRunBreakdown(svc)
 	printWorkflowMetrics(svc)
 }

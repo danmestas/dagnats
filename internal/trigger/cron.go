@@ -26,8 +26,16 @@ func ParseCron(expr string) (*CronExpr, error) {
 
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {
+		// Surface the field-count requirement explicitly. Operators
+		// arriving from Quartz / robfig-cron-v3 / k8s default to a
+		// 6-field form (leading seconds); the engine's minute-precision
+		// dedup makes sub-minute scheduling unsupportable here, so 5
+		// fields is the only valid form (issue #172).
 		return nil, fmt.Errorf(
-			"expected 5 fields, got %d", len(fields))
+			"dagnats cron expressions use 5 fields "+
+				"(minute hour day-of-month month day-of-week); "+
+				"got %d. Drop any leading seconds field if present",
+			len(fields))
 	}
 
 	minutes, err := parseField(fields[0], 0, 59)

@@ -4,7 +4,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -119,20 +118,27 @@ func parseAndValidateWorkflow(
 		)
 	}
 
-	var def dag.WorkflowDef
-	if err := json.Unmarshal(data, &def); err != nil {
+	wf, err := parseWorkflowFile(data)
+	if err != nil {
 		return dag.WorkflowDef{}, fmt.Errorf(
 			"parse workflow: %w", err,
 		)
 	}
 
-	if err := dag.Validate(def); err != nil {
+	if err := dag.Validate(wf.WorkflowDef); err != nil {
 		return dag.WorkflowDef{}, fmt.Errorf(
 			"invalid: %w", err,
 		)
 	}
 
-	return def, nil
+	// Validate embedded triggers (#180): same gate as register, so
+	// `workflow validate` catches malformed cron / mismatched
+	// workflow_id offline.
+	if err := validateEmbeddedTriggers(&wf); err != nil {
+		return dag.WorkflowDef{}, err
+	}
+
+	return wf.WorkflowDef, nil
 }
 
 // validateWorkflowFile reads, parses, and validates a workflow JSON

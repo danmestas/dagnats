@@ -112,6 +112,58 @@ func TestInitWorkflow_MultipleSteps(t *testing.T) {
 	}
 }
 
+// TestInitWorkflow_IncludesDisabledTriggerStub confirms the scaffold
+// emits a disabled trigger block so operators discover the embedded-
+// trigger pattern (issue #181). Disabled means it's dormant — the
+// generated workflow registers cleanly without firing on a schedule.
+func TestInitWorkflow_IncludesDisabledTriggerStub(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := scaffoldWorkflow(dir, "demo-wf", nil); err != nil {
+		t.Fatalf("scaffoldWorkflow: %v", err)
+	}
+
+	path := filepath.Join(dir, "demo-wf.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var wf map[string]any
+	if err := json.Unmarshal(data, &wf); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	triggers, ok := wf["triggers"].([]any)
+	// Positive: triggers array exists.
+	if !ok {
+		t.Fatalf("expected triggers array in scaffold, got: %v",
+			wf["triggers"])
+	}
+	if len(triggers) != 1 {
+		t.Fatalf("expected 1 trigger stub, got %d", len(triggers))
+	}
+	stub, ok := triggers[0].(map[string]any)
+	if !ok {
+		t.Fatal("trigger stub must be an object")
+	}
+	// Positive: stub is disabled by default.
+	if enabled, _ := stub["enabled"].(bool); enabled {
+		t.Fatal("scaffolded trigger stub must default to disabled")
+	}
+	// Positive: stub uses a 5-field cron (per #172).
+	cron, ok := stub["cron"].(map[string]any)
+	if !ok {
+		t.Fatal("stub must include a cron block")
+	}
+	expr, _ := cron["expression"].(string)
+	if strings.Count(expr, " ") != 4 {
+		t.Fatalf(
+			"cron expression must be 5-field, got %q "+
+				"(field count = %d)",
+			expr, strings.Count(expr, " ")+1)
+	}
+}
+
 func TestInitWorkflow_AlreadyExists(t *testing.T) {
 	dir := t.TempDir()
 

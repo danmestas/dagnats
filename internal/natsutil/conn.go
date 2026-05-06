@@ -93,6 +93,14 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 		{Bucket: "workflow_runs", Replicas: replicas},
 		{Bucket: "scheduled_runs", Replicas: replicas},
 		{Bucket: "workers", TTL: 60 * time.Second, Replicas: replicas},
+		// worker_status: per-worker counter snapshots (cancelled-task
+		// skip count, etc.) used by `dagnats status --detail`. TTL'd
+		// so dead workers' entries age out of the aggregate (#182).
+		{
+			Bucket:   "worker_status",
+			TTL:      120 * time.Second,
+			Replicas: replicas,
+		},
 		{Bucket: "event_waiters", Replicas: replicas},
 		{Bucket: "rate_limits", Replicas: replicas},
 		{Bucket: "concurrency_tasks", History: 1, Replicas: replicas},

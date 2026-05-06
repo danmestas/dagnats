@@ -5,12 +5,15 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -152,6 +155,112 @@ func TestCollectStreamInfoIntegration(t *testing.T) {
 		if s.Name == "" {
 			t.Fatal("stream name must not be empty")
 		}
+	}
+}
+
+// TestPrintWorkerStatus_SumsAcrossWorkers confirms #182: the
+// `dagnats status --detail` output surfaces a summed
+// "Cancelled tasks skipped" line by reading worker_status KV
+// snapshots and aggregating.
+func TestPrintWorkerStatus_SumsAcrossWorkers(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{
+			Bucket: "worker_status",
+		}),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	kv, err := js.KeyValue(context.Background(), "worker_status")
+	if err != nil {
+		t.Fatalf("KeyValue: %v", err)
+	}
+	snapA, _ := json.Marshal(protocol.WorkerStatusSnapshot{
+		WorkerID:              "worker-a",
+		CancelledTasksSkipped: 30,
+	})
+	snapB, _ := json.Marshal(protocol.WorkerStatusSnapshot{
+		WorkerID:              "worker-b",
+		CancelledTasksSkipped: 17,
+	})
+	if _, err := kv.Put(
+		context.Background(), "worker-a", snapA,
+	); err != nil {
+		t.Fatalf("Put A: %v", err)
+	}
+	if _, err := kv.Put(
+		context.Background(), "worker-b", snapB,
+	); err != nil {
+		t.Fatalf("Put B: %v", err)
+	}
+
+	out := captureOutput(func() {
+		printWorkerStatus(js)
+	})
+	// Positive: output mentions cancelled-tasks counter.
+	if !strings.Contains(out, "Cancelled tasks skipped") {
+		t.Fatalf(
+			"expected 'Cancelled tasks skipped' line, got: %s",
+			out)
+	}
+	// Positive: sum (30+17 = 47) appears.
+	if !strings.Contains(out, "47") {
+		t.Fatalf("expected summed total 47, got: %s", out)
+	}
+}
+
+// TestPrintWorkerStatus_SilentOnEmptyBucket covers the case where
+// the worker_status bucket exists but no worker has skipped any
+// tasks yet. Avoid a confusing "Cancelled tasks skipped: 0" line
+// when there's nothing to report.
+func TestPrintWorkerStatus_SilentOnEmptyBucket(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{
+			Bucket: "worker_status",
+		}),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	out := captureOutput(func() {
+		printWorkerStatus(js)
+	})
+	if strings.Contains(out, "Cancelled tasks skipped") {
+		t.Fatalf(
+			"expected silent on empty bucket, got: %s", out)
+	}
+}
+
+// TestPrintWorkerStatus_GracefulOnMissingBucket confirms the printer
+// is a no-op when the worker_status bucket isn't present (e.g., older
+// NATS deployments that haven't yet migrated to the bucket schema).
+func TestPrintWorkerStatus_GracefulOnMissingBucket(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	out := captureOutput(func() {
+		printWorkerStatus(js)
+	})
+	// Positive: silent on missing bucket — no crash, no spurious line.
+	if strings.Contains(out, "Cancelled tasks skipped") {
+		t.Fatalf(
+			"expected silent no-op when bucket absent, got: %s",
+			out)
 	}
 }
 

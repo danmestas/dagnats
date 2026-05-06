@@ -251,6 +251,37 @@ func parseWorkflowFile(data []byte) (workflowFile, error) {
 	return wf, nil
 }
 
+// validateEmbeddedTriggers auto-fills each embedded trigger's
+// workflow_id from the parent workflow's name, rejects explicit
+// mismatches (a copy-paste error trap), and runs trigger.Validate.
+// Mutates wf.Triggers in place so callers can write them after a
+// successful validation. Shared by `workflow register` (#171) and
+// `workflow validate` (#180) so both gates apply the same rules.
+func validateEmbeddedTriggers(wf *workflowFile) error {
+	if wf == nil {
+		panic("validateEmbeddedTriggers: wf must not be nil")
+	}
+	if wf.WorkflowDef.Name == "" {
+		panic("validateEmbeddedTriggers: parent workflow name empty")
+	}
+	for i := range wf.Triggers {
+		got := wf.Triggers[i].WorkflowID
+		if got != "" && got != wf.WorkflowDef.Name {
+			return fmt.Errorf("trigger %q: workflow_id %q "+
+				"does not match parent workflow %q",
+				wf.Triggers[i].ID, got, wf.WorkflowDef.Name)
+		}
+		if got == "" {
+			wf.Triggers[i].WorkflowID = wf.WorkflowDef.Name
+		}
+		if err := trigger.Validate(wf.Triggers[i]); err != nil {
+			return fmt.Errorf("trigger %q: %w",
+				wf.Triggers[i].ID, err)
+		}
+	}
+	return nil
+}
+
 // registerWorkflowWithTriggers validates triggers up-front, registers
 // the workflow definition, then creates each trigger. Atomicity: a
 // validation failure prevents any KV write, so an invalid embedded
@@ -266,24 +297,8 @@ func registerWorkflowWithTriggers(
 	if svc == nil {
 		panic("registerWorkflowWithTriggers: svc must not be nil")
 	}
-	for i := range wf.Triggers {
-		// Guard against a copy-paste typo: an embedded trigger's
-		// workflow_id, if explicitly set, must match the parent.
-		// Silently re-routing to a different workflow would be a
-		// debugging trap.
-		got := wf.Triggers[i].WorkflowID
-		if got != "" && got != wf.WorkflowDef.Name {
-			return fmt.Errorf("trigger %q: workflow_id %q "+
-				"does not match parent workflow %q",
-				wf.Triggers[i].ID, got, wf.WorkflowDef.Name)
-		}
-		if got == "" {
-			wf.Triggers[i].WorkflowID = wf.WorkflowDef.Name
-		}
-		if err := trigger.Validate(wf.Triggers[i]); err != nil {
-			return fmt.Errorf("trigger %q: %w",
-				wf.Triggers[i].ID, err)
-		}
+	if err := validateEmbeddedTriggers(&wf); err != nil {
+		return err
 	}
 	if err := svc.RegisterWorkflow(
 		ctx, wf.WorkflowDef,
