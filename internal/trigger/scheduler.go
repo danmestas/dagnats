@@ -17,12 +17,22 @@ import (
 // Scheduler evaluates cron triggers and publishes workflow.started events
 // when schedules match. Uses NATS KV for last-run tracking and JetStream
 // Nats-Msg-Id for deduplication.
+//
+// lastFired tracks the most recent matching minute fired per trigger ID,
+// enforcing in-process minute-precision dedup. This is required because
+// the scheduler ticks at sub-minute intervals (30s) but cron is
+// minute-resolution: without it, two ticks in the same matching minute
+// both call fireWorkflow, and JetStream's per-stream Nats-Msg-Id dedup
+// only catches publishes inside the stream's Duplicates window (5s for
+// the workflow events stream). See issue #173.
 type Scheduler struct {
-	nc       *nats.Conn
-	js       jetstream.JetStream
-	stateKV  jetstream.KeyValue
-	triggers map[string]TriggerDef
-	mu       sync.RWMutex
+	nc          *nats.Conn
+	js          jetstream.JetStream
+	stateKV     jetstream.KeyValue
+	triggers    map[string]TriggerDef
+	mu          sync.RWMutex
+	lastFiredMu sync.Mutex
+	lastFired   map[string]time.Time
 }
 
 // NewScheduler creates a Scheduler that uses the trigger_state KV bucket.
@@ -47,10 +57,11 @@ func NewScheduler(nc *nats.Conn) (*Scheduler, error) {
 	}
 
 	return &Scheduler{
-		nc:       nc,
-		js:       js,
-		stateKV:  kv,
-		triggers: make(map[string]TriggerDef),
+		nc:        nc,
+		js:        js,
+		stateKV:   kv,
+		triggers:  make(map[string]TriggerDef),
+		lastFired: make(map[string]time.Time),
 	}, nil
 }
 
@@ -91,9 +102,35 @@ func (s *Scheduler) RemoveTrigger(id string) error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.triggers, id)
+	s.mu.Unlock()
+
+	s.lastFiredMu.Lock()
+	delete(s.lastFired, id)
+	s.lastFiredMu.Unlock()
 	return nil
+}
+
+// claimMinute returns true if the given minute (truncated to the minute
+// boundary) is newer than the last claim for this trigger. On true, the
+// minute is recorded so subsequent calls within the same minute return
+// false. This is the in-process dedup guard for #173.
+func (s *Scheduler) claimMinute(triggerID string, now time.Time) bool {
+	if triggerID == "" {
+		panic("claimMinute: triggerID must not be empty")
+	}
+	if now.IsZero() {
+		panic("claimMinute: now must not be zero")
+	}
+	minute := now.Truncate(time.Minute)
+
+	s.lastFiredMu.Lock()
+	defer s.lastFiredMu.Unlock()
+	if !minute.After(s.lastFired[triggerID]) {
+		return false
+	}
+	s.lastFired[triggerID] = minute
+	return true
 }
 
 // Tick evaluates all enabled cron triggers at the given time. For each
@@ -131,6 +168,13 @@ func (s *Scheduler) Tick(now time.Time) error {
 				return fmt.Errorf("shouldFire %q: %w", def.ID, err)
 			}
 			if !shouldFire {
+				return nil
+			}
+			// In-process minute dedup: cron is minute-resolution but
+			// the scheduler ticks every 30s, so the same matching
+			// minute can be evaluated twice. Claim the minute before
+			// firing; if already claimed, treat as no-op. See #173.
+			if !s.claimMinute(def.ID, now) {
 				return nil
 			}
 			if err := s.fireWorkflow(ctx, def, now); err != nil {
@@ -240,6 +284,14 @@ func (s *Scheduler) backfillTrigger(def TriggerDef) error {
 	}
 
 	for i := 0; i < fireCount; i++ {
+		// Claim the minute so a subsequent live Tick at the same
+		// minute (e.g. the boundary between backfill end and the
+		// first steady-state tick, which can be ≥30s later — past
+		// the workflow stream's 5s msgID Duplicates window) does
+		// not re-fire. Same root cause as #173, same guard.
+		if !s.claimMinute(def.ID, matches[i]) {
+			continue
+		}
 		if err := s.fireWorkflow(ctx, def, matches[i]); err != nil {
 			return fmt.Errorf("fire %v: %w", matches[i], err)
 		}
