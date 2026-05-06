@@ -10,6 +10,55 @@ import (
 	"testing"
 )
 
+func TestResolveTriggerTestExpr_PositionalOnly(t *testing.T) {
+	expr, err := resolveTriggerTestExpr("", []string{"*/3 * * * *"})
+	// Positive: succeeds
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	// Positive: returns the positional expression
+	if expr != "*/3 * * * *" {
+		t.Fatalf("expected positional expr, got %q", expr)
+	}
+}
+
+func TestResolveTriggerTestExpr_FlagOnly(t *testing.T) {
+	expr, err := resolveTriggerTestExpr("*/3 * * * *", []string{})
+	// Positive: succeeds
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	// Positive: returns the flag value
+	if expr != "*/3 * * * *" {
+		t.Fatalf("expected flag expr, got %q", expr)
+	}
+}
+
+func TestResolveTriggerTestExpr_BothFormsRejected(t *testing.T) {
+	_, err := resolveTriggerTestExpr(
+		"*/3 * * * *", []string{"*/5 * * * *"})
+	// Positive: errors when both forms supplied
+	if err == nil {
+		t.Fatal("expected error when both forms supplied")
+	}
+	// Positive: error mentions both-forms
+	if !strings.Contains(err.Error(), "OR --cron=") {
+		t.Fatalf("error should reference --cron=, got: %v", err)
+	}
+}
+
+func TestResolveTriggerTestExpr_NeitherFormRejected(t *testing.T) {
+	_, err := resolveTriggerTestExpr("", []string{})
+	// Positive: errors when nothing supplied
+	if err == nil {
+		t.Fatal("expected error when neither form supplied")
+	}
+	// Positive: error mentions cron expression required
+	if !strings.Contains(err.Error(), "required") {
+		t.Fatalf("error should mention required, got: %v", err)
+	}
+}
+
 func TestFormatCronTest_ValidExpr(t *testing.T) {
 	output := FormatCronTest("*/15 * * * *", "UTC", 5)
 	// Positive: contains the expression
