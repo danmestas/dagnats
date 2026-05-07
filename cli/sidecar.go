@@ -197,20 +197,35 @@ func collectorYAMLPath(
 	return cfg.Storage.LocalPath + "/otelcol-config.yaml"
 }
 
-// checkBinariesAvailable verifies all required binaries exist.
+// checkBinariesAvailable verifies hard-required sidecar
+// binaries exist on disk and warns about missing optional
+// ones. Required binaries (otelcol, otlp2parquet) drive the
+// OTLP receive → parquet write → backend forward pipeline
+// and their absence is a hard failure. dagnats-mcp-duckdb
+// is optional: it powers ad-hoc DuckDB queries against the
+// parquet output but is not on the data path. Mirrors the
+// soft-optional install behavior introduced in #187 so
+// `start` no longer hard-fails on hosts where the MCP
+// binary couldn't be built. See #197.
 func checkBinariesAvailable() {
-	required := []string{
-		"otelcol", "otlp2parquet", "dagnats-mcp-duckdb",
-	}
-	missing := findMissingBinaries(required)
+	required := []string{"otelcol", "otlp2parquet"}
+	optional := []string{"dagnats-mcp-duckdb"}
 
-	if len(missing) > 0 {
+	if missing := findMissingBinaries(required); len(missing) > 0 {
 		fmt.Fprintf(os.Stderr,
 			"error: missing binaries: %s\n",
 			strings.Join(missing, ", "))
 		fmt.Fprintf(os.Stderr,
 			"hint: run 'dagnats sidecar install' first\n")
 		exitFunc(1)
+		return
+	}
+
+	if missing := findMissingBinaries(optional); len(missing) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"notice: optional binaries not installed: %s "+
+				"(MCP DuckDB queries will be unavailable)\n",
+			strings.Join(missing, ", "))
 	}
 }
 
