@@ -7,6 +7,9 @@ package observe
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -147,6 +150,88 @@ func TestInitTelemetry_SpansReachNATS(t *testing.T) {
 	// Assertion 2: exactly one message (no duplicates).
 	if count != 1 {
 		t.Errorf("message count = %d, want 1", count)
+	}
+}
+
+func TestInitTelemetry_OTLPHonorsPerSignalEndpointEnv(t *testing.T) {
+	// Before #184: dagnats called WithEndpoint(generic) on every
+	// OTLP exporter, which overrode the SDK's default behavior of
+	// honoring per-signal endpoint env vars. After #184: dagnats
+	// passes no explicit endpoint or transport-security option,
+	// the SDK reads env vars itself, and OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+	// takes precedence over the generic OTEL_EXPORTER_OTLP_ENDPOINT.
+	// genericTraces counts only /v1/traces requests to the
+	// generic endpoint; the SDK also sends metrics + logs there
+	// when per-signal env vars are not set, and we explicitly
+	// don't want to assert on those — only the trace path.
+	var genericTraces, perSignalTraces atomic.Int32
+	genericSrv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/traces" {
+				genericTraces.Add(1)
+			}
+			w.WriteHeader(http.StatusOK)
+		},
+	))
+	defer genericSrv.Close()
+	tracesSrv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			perSignalTraces.Add(1)
+			w.WriteHeader(http.StatusOK)
+		},
+	))
+	defer tracesSrv.Close()
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", genericSrv.URL)
+	t.Setenv(
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", tracesSrv.URL,
+	)
+
+	_, nc := startNATS(t)
+	shutdown, err := InitTelemetry(
+		context.Background(),
+		Config{
+			ServiceName:  "test-svc",
+			NATSConn:     nc,
+			OTLPEndpoint: genericSrv.URL,
+		},
+	)
+	if err != nil {
+		t.Fatalf("InitTelemetry: %v", err)
+	}
+
+	tracer := otel.Tracer("test")
+	_, span := tracer.Start(
+		context.Background(), "per-signal-test",
+	)
+	span.End()
+
+	flushCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	shutdown(flushCtx)
+
+	// Positive: per-signal traces endpoint received the span.
+	if perSignalTraces.Load() == 0 {
+		t.Errorf(
+			"expected per-signal traces endpoint to receive "+
+				"spans; generic /v1/traces=%d "+
+				"per-signal=%d",
+			genericTraces.Load(), perSignalTraces.Load(),
+		)
+	}
+	// Negative: generic endpoint should not receive /v1/traces
+	// requests when per-signal env var is set (SDK precedence
+	// rule). Metric/log requests to the generic endpoint are
+	// expected and not counted here.
+	if genericTraces.Load() > 0 {
+		t.Errorf(
+			"generic endpoint received %d /v1/traces "+
+				"requests; per-signal traces endpoint "+
+				"should take precedence",
+			genericTraces.Load(),
+		)
 	}
 }
 

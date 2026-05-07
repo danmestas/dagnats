@@ -7,8 +7,10 @@ import "github.com/nats-io/nats.go"
 
 // Config controls how InitTelemetry wires OTel providers.
 // ServiceName and NATSConn are required — InitTelemetry panics
-// if either is zero-valued. OTLPEndpoint enables dual export
-// to an OTLP/HTTP collector (e.g. SigNoz) when non-empty.
+// if either is zero-valued. OTLPEndpoint, when non-empty, gates
+// whether OTLP/HTTP export is enabled at all; the actual
+// endpoint, headers, TLS, protocol, and per-signal overrides
+// come from the standard OTel SDK env vars (see #184).
 type Config struct {
 	// ServiceName identifies this process in telemetry data.
 	ServiceName string
@@ -17,8 +19,13 @@ type Config struct {
 	// NATS-backed exporters. Caller owns the connection.
 	NATSConn *nats.Conn
 
-	// OTLPEndpoint enables OTLP/HTTP export when non-empty.
-	// Example: "100.105.156.92:4318".
+	// OTLPEndpoint is a sentinel that gates OTLP exporter
+	// construction: when non-empty, dagnats constructs OTLP
+	// exporters and the OTel SDK reads its standard env vars
+	// (OTEL_EXPORTER_OTLP_ENDPOINT, _HEADERS, _PROTOCOL,
+	// _INSECURE, per-signal variants, etc.) for the actual
+	// endpoint and transport configuration. The string value
+	// itself is no longer passed to the SDK.
 	OTLPEndpoint string
 
 	// Resource holds additional OTel resource attributes
