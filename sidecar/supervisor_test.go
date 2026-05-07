@@ -6,6 +6,9 @@ package sidecar
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -138,6 +141,116 @@ func TestSupervisor_StartFailure(t *testing.T) {
 			"expected third process to never have started",
 		)
 	}
+}
+
+func TestNewSupervisor_OmitsMissingMCPDuckDB(t *testing.T) {
+	// After #187: dagnats-mcp-duckdb is optional. When the binary
+	// is not on disk at NewSupervisor time, it is omitted from the
+	// process list and the sidecar runs the OTLP pipe without it.
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", t.TempDir()) // empty PATH; nothing findable
+
+	sup, err := NewSupervisor(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+	defer sup.Stop()
+
+	// Positive: the two required processes are present.
+	names := processNames(sup)
+	if !slices.Contains(names, "otlp2parquet") {
+		t.Errorf("expected otlp2parquet in %v", names)
+	}
+	if !slices.Contains(names, "otelcol") {
+		t.Errorf("expected otelcol in %v", names)
+	}
+
+	// Negative: dagnats-mcp-duckdb is omitted when missing.
+	if slices.Contains(names, "dagnats-mcp-duckdb") {
+		t.Errorf(
+			"expected dagnats-mcp-duckdb omitted when not on "+
+				"disk; got %v", names,
+		)
+	}
+}
+
+func TestNewSupervisor_IncludesPresentMCPDuckDB(t *testing.T) {
+	// Regression guard: when dagnats-mcp-duckdb IS present on
+	// disk, NewSupervisor still includes it and the supervisor
+	// will manage it as before.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, binDirName)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	fakeBin := filepath.Join(binDir, "dagnats-mcp-duckdb")
+	if err := os.WriteFile(
+		fakeBin, []byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", t.TempDir())
+
+	sup, err := NewSupervisor(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+	defer sup.Stop()
+
+	names := processNames(sup)
+	if !slices.Contains(names, "dagnats-mcp-duckdb") {
+		t.Errorf(
+			"expected dagnats-mcp-duckdb in %v when present "+
+				"on disk", names,
+		)
+	}
+}
+
+func TestSupervisor_StartPanicsOnUnexpectedProcessCount(t *testing.T) {
+	// The Start() invariant accepts [processCountMin,
+	// processCountMax]. Counts outside that band must panic
+	// rather than silently launching with an inconsistent set.
+	cases := []struct {
+		name  string
+		count int
+	}{
+		{"zero", 0},
+		{"one", 1},
+		{"four", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			procs := make([]*Process, tc.count)
+			for i := range procs {
+				procs[i] = &Process{
+					Name: "p",
+					Bin:  "sleep",
+					Args: []string{"60"},
+				}
+			}
+			sup := testSupervisor(procs)
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf(
+						"expected panic for count=%d",
+						tc.count,
+					)
+				}
+				sup.Stop()
+			}()
+			_ = sup.Start()
+		})
+	}
+}
+
+func processNames(sup *Supervisor) []string {
+	out := make([]string, 0, len(sup.processes))
+	for _, p := range sup.processes {
+		out = append(out, p.Name)
+	}
+	return out
 }
 
 func TestSupervisor_StartedAt(t *testing.T) {

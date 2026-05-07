@@ -21,14 +21,20 @@ const (
 	healthShutTimeout  = 5 * time.Second
 	healthMaxHeader    = 1 << 16
 
-	processCountExpected = 3
+	// otlp2parquet + otelcol are always required.
+	// dagnats-mcp-duckdb is included only when present on disk.
+	processCountMin = 2
+	processCountMax = 3
 )
 
-// Supervisor orchestrates the three sidecar child processes
-// in dependency order: otlp2parquet, otelcol, mcp.
+// Supervisor orchestrates the sidecar child processes in
+// dependency order: otlp2parquet, otelcol, and (when
+// installed) dagnats-mcp-duckdb. The MCP DuckDB process is
+// best-effort — its absence does not block the core OTLP
+// receive → collector → parquet writer pipeline. See #187.
 type Supervisor struct {
 	cfg        *SidecarConfig
-	processes  []*Process // [otlp2parquet, otelcol, mcp]
+	processes  []*Process
 	ctx        context.Context
 	cancel     context.CancelFunc
 	startedAt  time.Time
@@ -36,8 +42,10 @@ type Supervisor struct {
 	healthAddr string // actual listen address after start
 }
 
-// NewSupervisor builds a Supervisor with three Process structs
-// configured from the sidecar config.
+// NewSupervisor builds a Supervisor with the always-required
+// processes plus dagnats-mcp-duckdb when its binary is on
+// disk. When dagnats-mcp-duckdb is absent, a notice is
+// written to stderr and the supervisor runs without it.
 func NewSupervisor(cfg *SidecarConfig) (*Supervisor, error) {
 	if cfg == nil {
 		panic("NewSupervisor: cfg is nil")
@@ -64,13 +72,22 @@ func NewSupervisor(cfg *SidecarConfig) (*Supervisor, error) {
 				"--config", collectorConfigPath(cfg),
 			},
 		},
-		{
+	}
+
+	if _, err := FindBinary("dagnats-mcp-duckdb"); err == nil {
+		procs = append(procs, &Process{
 			Name: "dagnats-mcp-duckdb",
 			Bin:  "dagnats-mcp-duckdb",
 			Args: []string{
 				"--data-dir", cfg.Storage.LocalPath,
 			},
-		},
+		})
+	} else {
+		fmt.Fprintln(os.Stderr,
+			"notice: dagnats-mcp-duckdb not found; "+
+				"MCP DuckDB queries unavailable. "+
+				"Run 'dagnats sidecar install' or install "+
+				"the binary manually if needed.")
 	}
 
 	return &Supervisor{
@@ -94,8 +111,13 @@ func collectorConfigPath(cfg *SidecarConfig) string {
 // must become healthy within 5s before the next one starts.
 // On partial failure, already-started processes are stopped.
 func (s *Supervisor) Start() error {
-	if len(s.processes) != processCountExpected {
-		panic("Supervisor.Start: unexpected process count")
+	n := len(s.processes)
+	if n < processCountMin || n > processCountMax {
+		panic(fmt.Sprintf(
+			"Supervisor.Start: process count %d outside "+
+				"[%d,%d]",
+			n, processCountMin, processCountMax,
+		))
 	}
 
 	s.startedAt = time.Now()

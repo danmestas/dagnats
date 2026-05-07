@@ -298,7 +298,7 @@ type localBinary struct {
 
 // localBinaries lists binaries built from the local Go module.
 var localBinaries = []localBinary{
-	{Name: "dagnats-mcp-duckdb", Pkg: "./cmd/mcp-duckdb/"},
+	{Name: "dagnats-mcp-duckdb", Pkg: "./cmd/dagnats-mcp-duckdb/"},
 }
 
 // BuildLocal builds a binary from the local Go module using
@@ -414,6 +414,21 @@ func InstallAll(w io.Writer) error {
 
 		fmt.Fprintf(w, "🔨 building %s...\n", lb.Name)
 		if err := BuildLocal(lb.Name, lb.Pkg); err != nil {
+			// dagnats-mcp-duckdb is best-effort: it powers
+			// ad-hoc MCP DuckDB queries, not the core OTLP
+			// pipe. Skip on build failure rather than failing
+			// the whole install. The supervisor will also
+			// log a notice and run without it. See #187.
+			if lb.Name == "dagnats-mcp-duckdb" {
+				fmt.Fprintf(w,
+					"⚠ %s not built (%v); MCP DuckDB "+
+						"queries will be unavailable. "+
+						"Install Go and re-run from the "+
+						"dagnats source tree if needed.\n",
+					lb.Name, err,
+				)
+				continue
+			}
 			return fmt.Errorf(
 				"build %s: %w", lb.Name, err,
 			)
