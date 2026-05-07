@@ -135,18 +135,48 @@ func TestDownloadURL_Otelcol(t *testing.T) {
 
 func TestDownloadURL_Otlp2parquet(t *testing.T) {
 	url, err := DownloadURL(
-		"otlp2parquet", "0.5.0", "linux", "amd64",
+		"otlp2parquet", "0.9.1", "linux", "amd64",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// Upstream switched to a "cli-" infix in the release filename
+	// at v0.8.0 and the previous "otlp2parquet-<os>-<arch>.tar.gz"
+	// pattern produces a 404 against any release from v0.8.0 onward.
 	expected := "https://github.com/" +
 		"smithclay/otlp2parquet/" +
-		"releases/download/v0.5.0/" +
-		"otlp2parquet-linux-amd64.tar.gz"
+		"releases/download/v0.9.1/" +
+		"otlp2parquet-cli-linux-amd64.tar.gz"
 	if url != expected {
 		t.Fatalf("expected:\n  %s\ngot:\n  %s", expected, url)
+	}
+}
+
+func TestOtlp2parquetDefaultVersionExistsUpstream(t *testing.T) {
+	// Guards against the failure mode that produced #186: the
+	// hardcoded default version drifted past upstream's actual
+	// releases (we shipped v0.11.0 when only v0.9.x existed),
+	// so the install command always 404'd. The default version
+	// must be a release that actually exists.
+	spec, ok := knownBinaries["otlp2parquet"]
+	if !ok {
+		t.Fatal("otlp2parquet missing from knownBinaries")
+	}
+	if spec.version == "" {
+		t.Fatal("otlp2parquet default version is empty")
+	}
+
+	// Anchor on the version known-good at the time of the fix.
+	// Bumping this requires verifying the new tag exists at
+	// https://github.com/smithclay/otlp2parquet/releases.
+	const knownGood = "0.9.1"
+	if spec.version != knownGood {
+		t.Errorf(
+			"default otlp2parquet version = %q; "+
+				"want %q (verify upstream before bumping)",
+			spec.version, knownGood,
+		)
 	}
 }
 

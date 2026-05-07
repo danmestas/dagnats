@@ -19,7 +19,7 @@ const (
 	maxDownloadSize = 200 * 1024 * 1024 // 200 MB
 
 	defaultOtelcolVersion      = "0.102.0"
-	defaultOtlp2parquetVersion = "0.11.0"
+	defaultOtlp2parquetVersion = "0.9.1"
 
 	binDirName = ".dagnats/bin"
 	dirPerms   = 0o755
@@ -39,10 +39,12 @@ var knownBinaries = map[string]binarySpec{
 	},
 	"otlp2parquet": {
 		version: defaultOtlp2parquetVersion,
+		// Upstream uses an "otlp2parquet-cli-" prefix on its
+		// release tarballs (since v0.8.0). See #186.
 		urlFmt: "https://github.com/" +
 			"smithclay/otlp2parquet/" +
 			"releases/download/v%s/" +
-			"otlp2parquet-%s-%s.tar.gz",
+			"otlp2parquet-cli-%s-%s.tar.gz",
 	},
 }
 
