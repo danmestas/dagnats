@@ -11,6 +11,7 @@ type orchMetrics struct {
 	runsActive       metric.Int64UpDownCounter
 	runsCompleted    metric.Int64Counter
 	runsFailed       metric.Int64Counter
+	runsReconciled   metric.Int64Counter
 	snapshotDuration metric.Float64Histogram
 	failNonRetriable metric.Int64Counter
 	failRetryAfter   metric.Int64Counter
@@ -31,6 +32,9 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 	runsFailed, _ := m.Int64Counter(
 		"workflow.runs.failed",
 	)
+	runsReconciled, _ := m.Int64Counter(
+		"workflow.runs.reconciled",
+	)
 	snapshotDuration, _ := m.Float64Histogram(
 		"snapshot.save.duration_ms",
 	)
@@ -44,6 +48,7 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 		runsActive:       runsActive,
 		runsCompleted:    runsCompleted,
 		runsFailed:       runsFailed,
+		runsReconciled:   runsReconciled,
 		snapshotDuration: snapshotDuration,
 		failNonRetriable: failNonRetriable,
 		failRetryAfter:   failRetryAfter,

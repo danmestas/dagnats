@@ -51,6 +51,10 @@ type Orchestrator struct {
 
 	// Pre-allocated metric instruments — created once in constructor.
 	metrics orchMetrics
+
+	// reconcileCancel stops the periodic janitor goroutine. Set
+	// in Start, called in Stop. nil before Start / after Stop.
+	reconcileCancel context.CancelFunc
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -201,11 +205,25 @@ func (o *Orchestrator) Start() {
 		)
 	}
 	o.cc = cc
+
+	// Wire the periodic reconciliation janitor (#185). The
+	// goroutine exits when reconcileCancel is invoked from
+	// Stop. Started after the consumer is wired so a healthy
+	// orchestrator is always doing one or the other.
+	reconcileCtx, cancel := context.WithCancel(
+		context.Background(),
+	)
+	o.reconcileCancel = cancel
+	o.startReconciler(reconcileCtx)
 }
 
 // Stop drains and unsubscribes from the history stream.
 // Safe to call multiple times.
 func (o *Orchestrator) Stop() {
+	if o.reconcileCancel != nil {
+		o.reconcileCancel()
+		o.reconcileCancel = nil
+	}
 	if o.correlator != nil {
 		o.correlator.Stop()
 	}
