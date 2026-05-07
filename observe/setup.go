@@ -11,7 +11,6 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
-	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -178,10 +177,12 @@ func setupTracerProvider(
 	}
 
 	if cfg.OTLPEndpoint != "" {
-		otlpExp, err := otlptracehttp.New(ctx,
-			otlptracehttp.WithEndpoint(otlpHostPort(cfg.OTLPEndpoint)),
-			otlptracehttp.WithInsecure(),
-		)
+		// No explicit endpoint or transport-security options:
+		// the OTel SDK reads the standard env vars
+		// (OTEL_EXPORTER_OTLP_ENDPOINT, _HEADERS, _PROTOCOL,
+		// _INSECURE, per-signal variants, etc.) directly. See
+		// #184 for why dagnats no longer wraps these knobs.
+		otlpExp, err := otlptracehttp.New(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("otlp trace: %w", err)
 		}
@@ -213,10 +214,8 @@ func setupMeterProvider(
 	}
 
 	if cfg.OTLPEndpoint != "" {
-		otlpExp, err := otlpmetrichttp.New(ctx,
-			otlpmetrichttp.WithEndpoint(otlpHostPort(cfg.OTLPEndpoint)),
-			otlpmetrichttp.WithInsecure(),
-		)
+		// SDK reads env vars; see #184.
+		otlpExp, err := otlpmetrichttp.New(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("otlp metric: %w", err)
 		}
@@ -252,10 +251,8 @@ func setupLoggerProvider(
 	}
 
 	if cfg.OTLPEndpoint != "" {
-		otlpExp, err := otlploghttp.New(ctx,
-			otlploghttp.WithEndpoint(otlpHostPort(cfg.OTLPEndpoint)),
-			otlploghttp.WithInsecure(),
-		)
+		// SDK reads env vars; see #184.
+		otlpExp, err := otlploghttp.New(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("otlp log: %w", err)
 		}
@@ -265,17 +262,4 @@ func setupLoggerProvider(
 	}
 
 	return log.NewLoggerProvider(opts...), nil
-}
-
-// otlpHostPort strips the http:// or https:// scheme prefix from
-// an OTLP endpoint so it can be passed to WithEndpoint (which
-// expects host:port, not a URL). Users typically set the env var
-// as "http://host:4318" following the OTel convention.
-func otlpHostPort(endpoint string) string {
-	if endpoint == "" {
-		panic("otlpHostPort: endpoint must not be empty")
-	}
-	endpoint = strings.TrimPrefix(endpoint, "https://")
-	endpoint = strings.TrimPrefix(endpoint, "http://")
-	return endpoint
 }
