@@ -255,6 +255,98 @@ func TestInstallFromMockServer_NotFound(t *testing.T) {
 	}
 }
 
+func TestLocalBinariesPkgExists(t *testing.T) {
+	// Guards against the failure mode of #187: localBinaries[i].Pkg
+	// pointed at "./cmd/mcp-duckdb/" but the actual directory is
+	// "./cmd/dagnats-mcp-duckdb/", so BuildLocal could never succeed
+	// even when Go was on PATH inside the source tree.
+	modRoot, err := findModuleRoot()
+	if err != nil {
+		t.Skipf("not in source tree: %v", err)
+	}
+
+	if len(localBinaries) == 0 {
+		t.Fatal("localBinaries is empty; nothing to validate")
+	}
+
+	for _, lb := range localBinaries {
+		rel := strings.TrimPrefix(lb.Pkg, "./")
+		full := filepath.Join(modRoot, rel)
+
+		info, statErr := os.Stat(full)
+		if statErr != nil {
+			t.Errorf(
+				"localBinary %q: Pkg %q resolves to %q, "+
+					"which does not exist: %v",
+				lb.Name, lb.Pkg, full, statErr,
+			)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf(
+				"localBinary %q: Pkg %q is not a directory",
+				lb.Name, lb.Pkg,
+			)
+		}
+	}
+}
+
+func TestInstallAll_SoftFailsMCPDuckDB(t *testing.T) {
+	// After #187: when BuildLocal cannot succeed for
+	// dagnats-mcp-duckdb (e.g., Go not on PATH or not in the
+	// dagnats source tree), InstallAll skips it with a notice
+	// rather than failing the whole install. otelcol and
+	// otlp2parquet remain hard-required.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, binDirName)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Pre-populate fake otelcol and otlp2parquet so the
+	// download-required binaries are "found" and the install
+	// loop reaches the local-build loop.
+	for _, name := range []string{"otelcol", "otlp2parquet"} {
+		if err := os.WriteFile(
+			filepath.Join(binDir, name),
+			[]byte("#!/bin/sh\n"), 0o755,
+		); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	t.Setenv("HOME", tmp)
+	// PATH points at an empty dir, so `go` is unreachable and
+	// BuildLocal will fail with "go not found on PATH".
+	t.Setenv("PATH", t.TempDir())
+
+	var buf bytes.Buffer
+	err := InstallAll(&buf)
+	if err != nil {
+		t.Fatalf(
+			"InstallAll should succeed when only "+
+				"dagnats-mcp-duckdb fails to build, got: %v\n"+
+				"output: %s",
+			err, buf.String(),
+		)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "dagnats-mcp-duckdb") {
+		t.Errorf(
+			"expected dagnats-mcp-duckdb notice in output, "+
+				"got: %s", out,
+		)
+	}
+	if !strings.Contains(out, "MCP") &&
+		!strings.Contains(out, "mcp") {
+		t.Errorf(
+			"expected user-facing MCP notice in output, "+
+				"got: %s", out,
+		)
+	}
+}
+
 func TestExtractBinary_NotInArchive(t *testing.T) {
 	archive := buildTarGz(t, "other", "data")
 
