@@ -332,6 +332,119 @@ func TestSidecarCmdUnknownSubcommand(t *testing.T) {
 	}
 }
 
+func TestCheckBinariesAvailable_OptionalMCPMissingDoesNotExit(t *testing.T) {
+	// #197: PR #187 made `dagnats sidecar install` tolerate
+	// dagnats-mcp-duckdb being unbuildable (no Go on PATH),
+	// but `dagnats sidecar start` still hard-required the
+	// binary at runtime. Result: install reports success
+	// while start refuses to launch, defeating the soft-
+	// optional design.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, ".dagnats", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Required binaries present, optional dagnats-mcp-duckdb
+	// deliberately absent.
+	for _, name := range []string{"otelcol", "otlp2parquet"} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(
+			path, []byte("#!/bin/sh\n"), 0o755,
+		); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", t.TempDir())
+
+	var exitCode int
+	exitCalled := false
+	oldExit := exitFunc
+	exitFunc = func(code int) {
+		exitCode = code
+		exitCalled = true
+	}
+	defer func() { exitFunc = oldExit }()
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	checkBinariesAvailable()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if exitCalled {
+		t.Errorf(
+			"checkBinariesAvailable should not exit when "+
+				"only optional dagnats-mcp-duckdb is "+
+				"missing; exitFunc was called with code %d",
+			exitCode,
+		)
+	}
+	if !strings.Contains(output, "dagnats-mcp-duckdb") {
+		t.Errorf(
+			"expected stderr warning mentioning "+
+				"dagnats-mcp-duckdb; got:\n%s", output,
+		)
+	}
+}
+
+func TestCheckBinariesAvailable_RequiredMissingStillExits(t *testing.T) {
+	// Regression guard for #197's fix: when a hard-required
+	// binary (otelcol or otlp2parquet) is missing, the CLI
+	// must still exit 1 with the same error shape.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, ".dagnats", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "otlp2parquet"),
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", t.TempDir())
+
+	var exitCode int
+	oldExit := exitFunc
+	exitFunc = func(code int) { exitCode = code }
+	defer func() { exitFunc = oldExit }()
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	checkBinariesAvailable()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if exitCode != 1 {
+		t.Errorf(
+			"expected exit 1 when required otelcol missing, "+
+				"got %d", exitCode,
+		)
+	}
+	if !strings.Contains(output, "otelcol") {
+		t.Errorf(
+			"expected error mentioning otelcol; got:\n%s",
+			output,
+		)
+	}
+}
+
 func TestPrintStartBannerHealthLine(t *testing.T) {
 	cfg := sidecar.DefaultConfig()
 	output := captureSidecarOutput(func() {
