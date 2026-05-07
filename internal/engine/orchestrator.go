@@ -186,8 +186,24 @@ func (o *Orchestrator) Start() {
 			"Orchestrator.Start: stream: " + err.Error(),
 		)
 	}
+	// Durable consumer name persists ack offsets across dagnats
+	// restarts. Without this (originally an ephemeral consumer),
+	// every restart created a new consumer that replayed the entire
+	// history stream from sequence 1, re-delivering workflow.started
+	// and step.* events for runs that completed days ago. Combined
+	// with non-idempotent handlers, that produced duplicate run
+	// executions and the symptoms reported in #196 / #194 / #195.
+	//
+	// First deploy of this change still replays once because the
+	// durable consumer is being created for the first time; the
+	// idempotency guards added in #196 — terminal-run short-circuits
+	// at the top of handleWorkflowStarted, handleStepCompleted, and
+	// handleStepFailed, plus the pre-existing stale-event guard in
+	// handleStepStarted — make that replay a no-op for runs that
+	// have already reached a terminal state.
 	cons, err := stream.CreateOrUpdateConsumer(
 		context.Background(), jetstream.ConsumerConfig{
+			Durable:       "orchestrator",
 			FilterSubject: "history.>",
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			DeliverPolicy: jetstream.DeliverAllPolicy,
@@ -407,6 +423,31 @@ func (o *Orchestrator) handleWorkflowStarted(
 	}
 	if evt.Payload == nil {
 		panic("handleWorkflowStarted: Payload must not be nil")
+	}
+
+	// Idempotency guard (#196). Bug shape: dagnats restart causes
+	// the WORKFLOW_HISTORY consumer to replay historical events,
+	// including workflow.started for runs that have long since
+	// completed. Without this guard, NewWorkflowRun + saveSnapshot
+	// below overwrite the existing terminal-state KV entry with a
+	// fresh Pending run and re-dispatch the first step, producing
+	// duplicate workflow.completed events and worker storms. Any
+	// existing record means a prior workflow.started for this RunID
+	// has been processed — treat the redelivery as a no-op.
+	if existing, loadErr := o.store.Load(
+		ctx, evt.RunID,
+	); loadErr == nil {
+		slog.InfoContext(ctx,
+			"skipping redelivered workflow.started — "+
+				"run already exists in workflow_runs KV",
+			"run_id", evt.RunID,
+			"existing_status", existing.Status.String(),
+		)
+		return nil
+	} else if !errors.Is(loadErr, ErrRunNotFound) {
+		return fmt.Errorf(
+			"load existing run %q: %w", evt.RunID, loadErr,
+		)
 	}
 
 	wfDef, input, err := o.resolveStartPayload(ctx, evt)
@@ -646,6 +687,21 @@ func (o *Orchestrator) handleStepCompleted(
 	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
+	}
+
+	// Idempotency guard (#196). A step.completed event for a run
+	// already in a terminal state is a redelivery from a JetStream
+	// history replay. Without this guard, Advance would re-mark the
+	// step Completed and call completeWorkflow, double-decrementing
+	// runsActive and republishing workflow.completed.
+	if run.Status.IsTerminal() {
+		slog.InfoContext(ctx,
+			"skipping step.completed for terminal run",
+			"run_id", evt.RunID,
+			"step_id", evt.StepID,
+			"run_status", run.Status.String(),
+		)
+		return nil
 	}
 
 	// Map instances have their own completion logic.
@@ -1119,6 +1175,20 @@ func (o *Orchestrator) handleStepFailed(
 	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
+	}
+
+	// Idempotency guard (#196). Same shape as the guard in
+	// handleStepCompleted — a step.failed for a terminal run is a
+	// redelivery and re-running the failure path would double-fire
+	// failWorkflow + DLQ publish + runsFailed metric.
+	if run.Status.IsTerminal() {
+		slog.InfoContext(ctx,
+			"skipping step.failed for terminal run",
+			"run_id", evt.RunID,
+			"step_id", evt.StepID,
+			"run_status", run.Status.String(),
+		)
+		return nil
 	}
 
 	// Check if this is a map instance failure.
