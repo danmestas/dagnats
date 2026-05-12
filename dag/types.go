@@ -3,6 +3,7 @@ package dag
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -104,6 +105,29 @@ func (r RunStatus) IsTerminal() bool {
 		return true
 	}
 	return false
+}
+
+// ParseRunStatus parses an operator-supplied string into a RunStatus.
+// Case-insensitive, trims surrounding whitespace. On no match it
+// returns a descriptive error listing the valid set, so callers never
+// need to maintain their own copy of the status names.
+//
+// Single deep entry point: every CLI flag, API parameter, or other
+// surface that accepts a run-status string MUST funnel through here.
+func ParseRunStatus(s string) (RunStatus, error) {
+	if len(runStatusStrings) == 0 {
+		panic("ParseRunStatus: runStatusStrings empty")
+	}
+	lc := strings.ToLower(strings.TrimSpace(s))
+	for i, name := range runStatusStrings {
+		if name == lc {
+			return RunStatus(i), nil
+		}
+	}
+	return 0, fmt.Errorf(
+		"unknown run status %q; valid: %s",
+		s, strings.Join(runStatusStrings[:], ", "),
+	)
 }
 
 // StepStatus tracks the lifecycle of a single step within a run. Queued means
