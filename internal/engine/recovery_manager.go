@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -349,6 +350,14 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 // dead-letter queue for manual inspection. Fire-and-forget:
 // publish errors are silently dropped because the workflow is
 // already in a terminal state.
+//
+// Idempotency: sets Nats-Msg-Id to a deterministic key over
+// (runID, stepID, attempts) so duplicate calls — e.g. from engine
+// consumer redelivery of a `step.failed` event before the terminal-run
+// guard latches — produce exactly one DLQ entry. See issue #202:
+// 39/80 DLQ subjects double-written, 1 thrice. The DEAD_LETTERS
+// stream's Duplicates window must cover the longest plausible engine
+// redelivery interval (see natsutil.SetupStreams).
 func (rm *RecoveryManager) PublishDeadLetter(
 	ctx context.Context,
 	runID string,
@@ -377,7 +386,16 @@ func (rm *RecoveryManager) PublishDeadLetter(
 	}
 	subject := fmt.Sprintf("dead.%s.%s.%s",
 		stepDef.Task, runID, stepDef.ID)
-	rm.js.Publish(ctx, subject, payload)
+	msgID := fmt.Sprintf("dlq:%s:%s:%d",
+		runID, stepDef.ID, state.Attempts)
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    payload,
+		Header: nats.Header{
+			"Nats-Msg-Id": {msgID},
+		},
+	}
+	_, _ = rm.js.PublishMsg(ctx, msg)
 }
 
 // RecoverIfOnFailure checks if stepID is an OnFailure target
