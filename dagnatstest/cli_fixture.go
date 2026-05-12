@@ -35,10 +35,10 @@ type ExitSwapper func(next func(int)) func(int)
 // Harness; the harness owns NATS lifecycle, the fixture owns the
 // shape of "execute the CLI and observe its output".
 type CLIFixture struct {
-	h         *Harness
-	natsURL   string
-	runCLI    CLIRunner
-	swapExit  ExitSwapper
+	h        *Harness
+	natsURL  string
+	runCLI   CLIRunner
+	swapExit ExitSwapper
 }
 
 // NewCLIFixture constructs a CLIFixture. runCLI is typically cli.Run
