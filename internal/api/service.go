@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -53,7 +54,10 @@ type Service struct {
 	errorCount      metric.Int64Counter
 }
 
-// DeadLetter represents a message that failed processing.
+// DeadLetter represents a message that failed processing. The
+// final schema (#200) extends the legacy fields with Body, Headers,
+// DeliveryCount, and Consumer so replay can re-publish the original
+// task verbatim and operators can see delivery metadata.
 type DeadLetter struct {
 	Sequence  uint64    `json:"sequence"`
 	Subject   string    `json:"subject"`
@@ -62,7 +66,54 @@ type DeadLetter struct {
 	Task      string    `json:"task"`
 	Error     string    `json:"error"`
 	Timestamp time.Time `json:"timestamp"`
+
+	// Body is the original task message payload at the moment of
+	// DLQ entry — the marshalled protocol.TaskPayload bytes that
+	// would have been on the task subject. Empty for legacy entries
+	// written before this schema landed; replay against a legacy
+	// entry returns ErrDLQBodyMissing.
+	Body []byte `json:"body,omitempty"`
+
+	// Headers carries the original NATS headers verbatim so replay
+	// reproduces the same dispatch context.
+	Headers nats.Header `json:"headers,omitempty"`
+
+	// DeliveryCount is the JetStream redelivery count at the moment
+	// of DLQ publish — i.e. the value that triggered exhaustion.
+	DeliveryCount int `json:"delivery_count,omitempty"`
+
+	// Consumer is the JetStream consumer name that delivered the
+	// original message. Surfaces in the CLI so operators can tell
+	// which path the task came through.
+	Consumer string `json:"consumer,omitempty"`
 }
+
+// DeadLetterView is the operator-facing rendering of a DLQ entry:
+// the raw DeadLetter plus derived fields the CLI surfaces directly.
+// CLI code does no derivation of its own — all derivation lives here.
+type DeadLetterView struct {
+	DeadLetter
+	BodyPreserved bool `json:"body_preserved"`
+}
+
+// newDeadLetterView returns the operator-facing rendering of a
+// DeadLetter. BodyPreserved is true when the stored Body is
+// non-empty — only such entries are replayable.
+func newDeadLetterView(dl DeadLetter) DeadLetterView {
+	return DeadLetterView{
+		DeadLetter:    dl,
+		BodyPreserved: len(dl.Body) > 0,
+	}
+}
+
+// ErrDLQBodyMissing is returned by ReplayDeadLetter when the DLQ
+// entry's Body is empty — typically a legacy entry written before
+// the body-preservation schema landed. Operators recover such
+// entries via upstream reconstruction; the CLI must not silently
+// re-publish a stub.
+var ErrDLQBodyMissing = errors.New(
+	"dlq entry body not preserved; replay unsupported",
+)
 
 // RunEvent is a history event for display.
 type RunEvent struct {
