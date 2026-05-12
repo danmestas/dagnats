@@ -1,4 +1,5 @@
 bin/
+dist/
 hatchet-analysis/
 .claude/worktrees/
 .worktrees/

@@ -347,6 +347,62 @@ func TestInstallAll_SoftFailsMCPDuckDB(t *testing.T) {
 	}
 }
 
+func TestKnownBinaries_IncludesMCPDuckDB(t *testing.T) {
+	// #188: dagnats-mcp-duckdb must be a first-class download
+	// like otelcol/otlp2parquet so prebuilt-binary hosts can
+	// install it without Go or a CGO toolchain.
+	spec, ok := knownBinaries["dagnats-mcp-duckdb"]
+	if !ok {
+		t.Fatal(
+			"knownBinaries must include dagnats-mcp-duckdb",
+		)
+	}
+	if spec.urlFmt == "" {
+		t.Fatal("dagnats-mcp-duckdb URL template must be set")
+	}
+	if spec.version == "" {
+		t.Fatal("dagnats-mcp-duckdb default version must be set")
+	}
+}
+
+func TestDownloadURL_MCPDuckDB_LinuxAMD64(t *testing.T) {
+	// #188: the URL produced for linux/amd64 must point at
+	// the dagnats GitHub release artifact for the named
+	// version and platform pair.
+	spec, ok := knownBinaries["dagnats-mcp-duckdb"]
+	if !ok {
+		t.Fatal("dagnats-mcp-duckdb missing from knownBinaries")
+	}
+
+	url, err := DownloadURL(
+		"dagnats-mcp-duckdb", spec.version, "linux", "amd64",
+	)
+	if err != nil {
+		t.Fatalf("DownloadURL: unexpected error: %v", err)
+	}
+
+	// Positive: URL must embed both the platform pair and
+	// the dagnats release host.
+	if !strings.Contains(url, "linux-amd64") {
+		t.Errorf(
+			"URL must embed linux-amd64 platform pair: %s",
+			url,
+		)
+	}
+	if !strings.Contains(url, "danmestas/dagnats") {
+		t.Errorf(
+			"URL must reference the dagnats release: %s", url,
+		)
+	}
+
+	// Negative: must not collide with otelcol upstream.
+	if strings.Contains(url, "open-telemetry") {
+		t.Errorf(
+			"URL must not point at otelcol upstream: %s", url,
+		)
+	}
+}
+
 func TestExtractBinary_NotInArchive(t *testing.T) {
 	archive := buildTarGz(t, "other", "data")
 
