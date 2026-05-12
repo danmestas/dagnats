@@ -18,6 +18,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -425,6 +426,67 @@ func (f *DLQFixture) IsBodyMissingError(err error) bool {
 	}
 	// Compares against the typed sentinel exposed by internal/api.
 	return errors.Is(err, api.ErrDLQBodyMissing)
+}
+
+// Seed publishes n synthetic DLQ entries with deterministic body bytes
+// ("seed-<i>") and a populated metadata header set so #203's CLI tests
+// can assert on truncation, --all behavior, and the visibility of the
+// delivery_count + consumer fields in --json output.
+//
+// Bounded: n must be in (0, seedMax]. Helpers stay under 70 lines so the
+// publish loop delegates to seedOne.
+func (f *DLQFixture) Seed(t *testing.T, n int) {
+	if t == nil {
+		panic("Seed: t must not be nil")
+	}
+	if n <= 0 {
+		panic("Seed: n must be positive")
+	}
+	const seedMax = 2000
+	if n > seedMax {
+		panic("Seed: n exceeds bound")
+	}
+	t.Helper()
+	js, err := jetstream.New(f.h.NC)
+	if err != nil {
+		t.Fatalf("Seed: jetstream: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		f.seedOne(t, js, i)
+	}
+	f.WaitForCount(t, n, 10*time.Second)
+}
+
+// seedOne publishes one synthetic DLQ entry on dead.seed-task.run-i.s1
+// with a modern-shape header set. Body is "seed-<i>" so callers can
+// recognize it deterministically.
+func (f *DLQFixture) seedOne(
+	t *testing.T, js jetstream.JetStream, i int,
+) {
+	t.Helper()
+	runID := fmt.Sprintf("seed-run-%d", i)
+	stepID := "s1"
+	task := "seed-task"
+	subject := "dead." + task + "." + runID + "." + stepID
+	body := []byte(fmt.Sprintf("seed-%d", i))
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    body,
+		Header: nats.Header{
+			"Nats-Msg-Id":                 {"seed:" + runID},
+			engine.HeaderDLQRunID:         {runID},
+			engine.HeaderDLQStepID:        {stepID},
+			engine.HeaderDLQTask:          {task},
+			engine.HeaderDLQError:         {"seed entry"},
+			engine.HeaderDLQAttempts:      {"3"},
+			engine.HeaderDLQDeliveryCount: {"3"},
+			engine.HeaderDLQConsumer:      {engine.DLQConsumerTaskQueues},
+			engine.HeaderDLQTaskSubject:   {"task." + task + "." + runID},
+		},
+	}
+	if _, err := js.PublishMsg(t.Context(), msg); err != nil {
+		t.Fatalf("Seed: publish %d: %v", i, err)
+	}
 }
 
 // WaitForCount polls Count() until it returns target or timeout.
