@@ -31,7 +31,9 @@ help: ## Show available targets
 .PHONY: build test lint fmt vet serve clean
 .PHONY: docs-serve docs-build docs-gen-sdk docs-gen-llms
 .PHONY: build-release docker docker-push release release-preflight
-.PHONY: build-mcp-duckdb-linux-amd64 verify-dagnats-cgo-free
+.PHONY: build-mcp-duckdb-linux-amd64 build-mcp-duckdb-linux-arm64
+.PHONY: build-mcp-duckdb-darwin-amd64 build-mcp-duckdb-darwin-arm64
+.PHONY: build-mcp-duckdb-all verify-dagnats-cgo-free
 
 # ---------- Development targets ----------
 
@@ -141,6 +143,103 @@ build-mcp-duckdb-linux-amd64: ## Build dagnats-mcp-duckdb linux/amd64 tarball
 	@cd $(DIST) && shasum -a 256 $(MCPDUCKDB_PKGNAME).tar.gz
 	@echo "" && echo "Built:" && ls -lh $(DIST)/$(MCPDUCKDB_PKGNAME).tar.gz
 
+# linux/arm64: same Docker-based pattern as linux/amd64, just with
+# --platform linux/arm64. Docker Desktop / containerd transparently
+# uses qemu-user for the cross-arch build; on a native arm64 host
+# (e.g. an Apple Silicon dev box) the build runs natively. The
+# resulting binary depends on glibc/libstdc++/libm/libdl/libgcc_s
+# and runs on every Ubuntu/Debian/RHEL release for arm64.
+# See #188.
+MCPDUCKDB_LINUX_ARM64_PKGNAME := dagnats-mcp-duckdb-linux-arm64
+build-mcp-duckdb-linux-arm64: ## Build dagnats-mcp-duckdb linux/arm64 tarball
+	@mkdir -p "$(DIST)/$(MCPDUCKDB_LINUX_ARM64_PKGNAME)"
+	docker run --rm --platform linux/arm64 \
+	  -v "$(CURDIR):/src" -w /src/cmd/dagnats-mcp-duckdb \
+	  -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=arm64 \
+	  -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
+	  $(MCPDUCKDB_BUILDER_IMG) \
+	  go build -trimpath -ldflags="-s -w" \
+	    -o "/src/$(DIST)/$(MCPDUCKDB_LINUX_ARM64_PKGNAME)/dagnats-mcp-duckdb" .
+	@cp LICENSE README.md "$(DIST)/$(MCPDUCKDB_LINUX_ARM64_PKGNAME)/" 2>/dev/null || true
+	@(cd $(DIST) && \
+	  tar czf "$(MCPDUCKDB_LINUX_ARM64_PKGNAME).tar.gz" \
+	    "$(MCPDUCKDB_LINUX_ARM64_PKGNAME)")
+	@rm -rf "$(DIST)/$(MCPDUCKDB_LINUX_ARM64_PKGNAME)"
+	@cd $(DIST) && \
+	  shasum -a 256 $(MCPDUCKDB_LINUX_ARM64_PKGNAME).tar.gz >> SHA256SUMS
+	@cd $(DIST) && shasum -a 256 $(MCPDUCKDB_LINUX_ARM64_PKGNAME).tar.gz
+	@echo "" && echo "Built:" && \
+	  ls -lh $(DIST)/$(MCPDUCKDB_LINUX_ARM64_PKGNAME).tar.gz
+
+# darwin builds run natively on a macOS host (typically the GHA
+# macos-latest runner, which is arm64). go-duckdb v1.8.x ships a
+# static libduckdb.a for darwin/amd64 + darwin/arm64 under its
+# deps/ tree, so the host needs only Xcode CommandLineTools (clang
+# + the macOS SDK) — no DuckDB toolchain, no Homebrew install.
+# CGO_ENABLED=1 plus -arch via CC selects the right slice. We pin
+# MACOSX_DEPLOYMENT_TARGET=11.0 to match the dagnats main binary's
+# minimum supported macOS. See #188.
+MCPDUCKDB_DARWIN_DEPLOYMENT_TARGET := 11.0
+MCPDUCKDB_DARWIN_AMD64_PKGNAME := dagnats-mcp-duckdb-darwin-amd64
+build-mcp-duckdb-darwin-amd64: ## Build dagnats-mcp-duckdb darwin/amd64 tarball
+	@if [ "$$(uname -s)" != "Darwin" ]; then \
+	  echo "ERROR: build-mcp-duckdb-darwin-amd64 requires a macOS host"; \
+	  exit 1; \
+	fi
+	@mkdir -p "$(DIST)/$(MCPDUCKDB_DARWIN_AMD64_PKGNAME)"
+	cd cmd/dagnats-mcp-duckdb && \
+	  CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
+	  CC="clang -arch x86_64" CXX="clang++ -arch x86_64" \
+	  MACOSX_DEPLOYMENT_TARGET=$(MCPDUCKDB_DARWIN_DEPLOYMENT_TARGET) \
+	  go build -trimpath -ldflags="-s -w" \
+	    -o "$(CURDIR)/$(DIST)/$(MCPDUCKDB_DARWIN_AMD64_PKGNAME)/dagnats-mcp-duckdb" .
+	@cp LICENSE README.md "$(DIST)/$(MCPDUCKDB_DARWIN_AMD64_PKGNAME)/" 2>/dev/null || true
+	@(cd $(DIST) && \
+	  tar czf "$(MCPDUCKDB_DARWIN_AMD64_PKGNAME).tar.gz" \
+	    "$(MCPDUCKDB_DARWIN_AMD64_PKGNAME)")
+	@rm -rf "$(DIST)/$(MCPDUCKDB_DARWIN_AMD64_PKGNAME)"
+	@cd $(DIST) && \
+	  shasum -a 256 $(MCPDUCKDB_DARWIN_AMD64_PKGNAME).tar.gz >> SHA256SUMS
+	@cd $(DIST) && shasum -a 256 $(MCPDUCKDB_DARWIN_AMD64_PKGNAME).tar.gz
+	@echo "" && echo "Built:" && \
+	  ls -lh $(DIST)/$(MCPDUCKDB_DARWIN_AMD64_PKGNAME).tar.gz
+
+MCPDUCKDB_DARWIN_ARM64_PKGNAME := dagnats-mcp-duckdb-darwin-arm64
+build-mcp-duckdb-darwin-arm64: ## Build dagnats-mcp-duckdb darwin/arm64 tarball
+	@if [ "$$(uname -s)" != "Darwin" ]; then \
+	  echo "ERROR: build-mcp-duckdb-darwin-arm64 requires a macOS host"; \
+	  exit 1; \
+	fi
+	@mkdir -p "$(DIST)/$(MCPDUCKDB_DARWIN_ARM64_PKGNAME)"
+	cd cmd/dagnats-mcp-duckdb && \
+	  CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+	  CC="clang -arch arm64" CXX="clang++ -arch arm64" \
+	  MACOSX_DEPLOYMENT_TARGET=$(MCPDUCKDB_DARWIN_DEPLOYMENT_TARGET) \
+	  go build -trimpath -ldflags="-s -w" \
+	    -o "$(CURDIR)/$(DIST)/$(MCPDUCKDB_DARWIN_ARM64_PKGNAME)/dagnats-mcp-duckdb" .
+	@cp LICENSE README.md "$(DIST)/$(MCPDUCKDB_DARWIN_ARM64_PKGNAME)/" 2>/dev/null || true
+	@(cd $(DIST) && \
+	  tar czf "$(MCPDUCKDB_DARWIN_ARM64_PKGNAME).tar.gz" \
+	    "$(MCPDUCKDB_DARWIN_ARM64_PKGNAME)")
+	@rm -rf "$(DIST)/$(MCPDUCKDB_DARWIN_ARM64_PKGNAME)"
+	@cd $(DIST) && \
+	  shasum -a 256 $(MCPDUCKDB_DARWIN_ARM64_PKGNAME).tar.gz >> SHA256SUMS
+	@cd $(DIST) && shasum -a 256 $(MCPDUCKDB_DARWIN_ARM64_PKGNAME).tar.gz
+	@echo "" && echo "Built:" && \
+	  ls -lh $(DIST)/$(MCPDUCKDB_DARWIN_ARM64_PKGNAME).tar.gz
+
+# Convenience aggregate: build all four mcp-duckdb tarballs.
+# Darwin targets require a macOS host; linux targets require
+# Docker. The release pipeline invokes these per-platform on
+# the matching GHA runner so this aggregate is for local dev
+# only.
+build-mcp-duckdb-all: build-mcp-duckdb-linux-amd64 \
+                     build-mcp-duckdb-linux-arm64 \
+                     build-mcp-duckdb-darwin-amd64 \
+                     build-mcp-duckdb-darwin-arm64 ## Build all four mcp-duckdb tarballs
+	@echo "" && echo "All mcp-duckdb artifacts:" && \
+	  ls -lh $(DIST)/dagnats-mcp-duckdb-*.tar.gz
+
 # Verify the main dagnats binary stays pure-Go (CGO-free) so the
 # release tarball size and dependency surface for the dominant
 # deployment path doesn't drift. Reads the build metadata embedded
@@ -185,7 +284,7 @@ release-preflight:
 	  exit 1; \
 	fi
 
-release: release-preflight lint test build-release build-mcp-duckdb-linux-amd64 ## Build artifacts and publish a GitHub release for the current tag
+release: release-preflight lint test build-release build-mcp-duckdb-linux-amd64 build-mcp-duckdb-linux-arm64 build-mcp-duckdb-darwin-amd64 build-mcp-duckdb-darwin-arm64 ## Build artifacts and publish a GitHub release for the current tag
 	@TAG=$$(git describe --tags --exact-match HEAD); \
 	VERSION_NO_V=$${TAG#v}; \
 	NOTES=$$(awk -v ver="$$VERSION_NO_V" '$$0 ~ "^## \\[" ver "\\]" {flag=1; next} flag && /^## \[/ {flag=0} flag' CHANGELOG.md); \
