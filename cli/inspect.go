@@ -18,10 +18,10 @@ import (
 
 // inspectResult combines all data sources for JSON output.
 type inspectResult struct {
-	Run         dag.WorkflowRun  `json:"run"`
-	Failures    []api.RunEvent   `json:"failures,omitempty"`
-	DeadLetters []api.DeadLetter `json:"dead_letters,omitempty"`
-	Spans       []inspectSpan    `json:"spans,omitempty"`
+	Run         dag.WorkflowRun      `json:"run"`
+	Failures    []api.RunEvent       `json:"failures,omitempty"`
+	DeadLetters []api.DeadLetterView `json:"dead_letters,omitempty"`
+	Spans       []inspectSpan        `json:"spans,omitempty"`
 }
 
 // inspectSpan is a simplified span for JSON output.
@@ -38,7 +38,7 @@ type inspectSpan struct {
 // single step, enabling inline cross-referenced output.
 type stepDebugContext struct {
 	Failures    []api.RunEvent
-	DeadLetters []api.DeadLetter
+	DeadLetters []api.DeadLetterView
 	TraceID     string
 }
 
@@ -48,7 +48,7 @@ type inspectData struct {
 	Run         dag.WorkflowRun
 	Def         *dag.WorkflowDef
 	Failures    []api.RunEvent
-	DeadLetters []api.DeadLetter
+	DeadLetters []api.DeadLetterView
 	Spans       []*tracepb.Span
 }
 
@@ -185,7 +185,7 @@ func fetchFailures(
 // nil on error (non-fatal for display).
 func fetchDeadLetters(
 	svc *api.Service, ctx context.Context, runID string,
-) []api.DeadLetter {
+) []api.DeadLetterView {
 	if svc == nil {
 		panic("fetchDeadLetters: svc must not be nil")
 	}
@@ -204,7 +204,7 @@ func fetchDeadLetters(
 // collectStepContexts groups failures and DLQ entries by step ID.
 func collectStepContexts(
 	failures []api.RunEvent,
-	deadLetters []api.DeadLetter,
+	deadLetters []api.DeadLetterView,
 ) map[string]stepDebugContext {
 	if len(failures) > 10000 {
 		panic("collectStepContexts: failures exceeds max")
@@ -429,8 +429,8 @@ func collectFailures(events []api.RunEvent) []api.RunEvent {
 
 // matchRunDeadLetters returns only dead letters matching the run.
 func matchRunDeadLetters(
-	letters []api.DeadLetter, runID string,
-) []api.DeadLetter {
+	letters []api.DeadLetterView, runID string,
+) []api.DeadLetterView {
 	if len(letters) > 10000 {
 		panic("matchRunDeadLetters: letters exceeds max bound")
 	}
@@ -438,7 +438,7 @@ func matchRunDeadLetters(
 		panic("matchRunDeadLetters: runID must not be empty")
 	}
 
-	var matched []api.DeadLetter
+	var matched []api.DeadLetterView
 	for _, l := range letters {
 		if l.RunID == runID {
 			matched = append(matched, l)

@@ -8,12 +8,41 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strconv"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+)
+
+// DLQ header keys carry structured metadata about the failed task so
+// list/replay code can recover it without re-parsing the body. The
+// canonical header set lands with the #200 body-preservation schema;
+// listers detect "new shape" by looking for HeaderDLQRunID and fall
+// back to the legacy JSON shape when it is absent.
+const (
+	HeaderDLQRunID         = "Dagnats-Dlq-Run-Id"
+	HeaderDLQStepID        = "Dagnats-Dlq-Step-Id"
+	HeaderDLQTask          = "Dagnats-Dlq-Task"
+	HeaderDLQError         = "Dagnats-Dlq-Error"
+	HeaderDLQAttempts      = "Dagnats-Dlq-Attempts"
+	HeaderDLQDeliveryCount = "Dagnats-Dlq-Delivery-Count"
+	HeaderDLQConsumer      = "Dagnats-Dlq-Consumer"
+	// HeaderDLQTaskSubject preserves the original task subject so
+	// replay can re-publish to the exact same path (incl. runID and
+	// worker group routing) rather than reconstructing from
+	// (task, runID) alone.
+	HeaderDLQTaskSubject = "Dagnats-Dlq-Task-Subject"
+
+	// DLQConsumerTaskQueues is the consumer-name marker for DLQ entries
+	// originating from MaxDeliver exhaustion on the TASK_QUEUES stream.
+	// Surfaces in the CLI so operators can distinguish DLQ paths once
+	// other dispatch consumers gain DLQ semantics.
+	DLQConsumerTaskQueues = "TASK_QUEUES"
 )
 
 // RecoveryManager handles step failure recovery: on-failure
@@ -137,7 +166,7 @@ func (rm *RecoveryManager) HandlePermanentFailure(
 	// the compensation itself failed — critical state.
 	if wfDef.AuxSteps[stepID] {
 		return rm.failAuxStep(
-			ctx, run, stepDef, state, saveFn, notifyFn,
+			ctx, run, wfDef, stepDef, state, saveFn, notifyFn,
 		)
 	}
 
@@ -174,6 +203,7 @@ func (rm *RecoveryManager) HandlePermanentFailure(
 func (rm *RecoveryManager) failAuxStep(
 	ctx context.Context,
 	run dag.WorkflowRun,
+	wfDef dag.WorkflowDef,
 	stepDef dag.StepDef,
 	state dag.StepState,
 	saveFn SaveSnapshotFunc,
@@ -191,7 +221,11 @@ func (rm *RecoveryManager) failAuxStep(
 	}
 	rm.runsActive.Add(ctx, -1)
 	rm.runsFailed.Add(ctx, 1)
-	rm.PublishDeadLetter(ctx, run.RunID, stepDef, state)
+	taskSubject := ""
+	if stepDef.Task != "" {
+		taskSubject = rm.publisher.StepSubject(stepDef, run.RunID)
+	}
+	rm.PublishDeadLetter(ctx, run, wfDef, stepDef, state, taskSubject)
 	return notifyFn(
 		ctx, run,
 		fmt.Errorf("compensation failed: %s", state.Error),
@@ -347,55 +381,141 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 }
 
 // PublishDeadLetter publishes failed step info to the
-// dead-letter queue for manual inspection. Fire-and-forget:
-// publish errors are silently dropped because the workflow is
-// already in a terminal state.
+// dead-letter queue for manual inspection.
+//
+// As of #200, the DLQ entry body is the original task message
+// payload (the marshalled protocol.TaskPayload bytes that would be
+// dispatched on a re-publish), with run/step/task/error/attempts
+// metadata carried in structured headers including the original
+// task subject. Replay reads the stored body + subject verbatim and
+// re-publishes — no synthesis from metadata. When body computation
+// fails, the publish is skipped rather than writing a useless stub
+// (TigerStyle: fail loudly).
 //
 // Idempotency: sets Nats-Msg-Id to a deterministic key over
 // (runID, stepID, attempts) so duplicate calls — e.g. from engine
 // consumer redelivery of a `step.failed` event before the terminal-run
-// guard latches — produce exactly one DLQ entry. See issue #202:
-// 39/80 DLQ subjects double-written, 1 thrice. The DEAD_LETTERS
-// stream's Duplicates window must cover the longest plausible engine
-// redelivery interval (see natsutil.SetupStreams).
+// guard latches — produce exactly one DLQ entry. See issue #202.
+// The DEAD_LETTERS stream's Duplicates window must cover the longest
+// plausible engine redelivery interval (see natsutil.SetupStreams).
+//
+// taskSubject is the original task subject the engine dispatched on.
+// When empty, the publish falls back to a derived default —
+// "task.<task>.<runID>" — preserving the historical behavior for
+// the test seam.
 func (rm *RecoveryManager) PublishDeadLetter(
 	ctx context.Context,
-	runID string,
+	run dag.WorkflowRun,
+	wfDef dag.WorkflowDef,
 	stepDef dag.StepDef,
 	state dag.StepState,
+	taskSubject string,
 ) {
-	if runID == "" {
-		panic(
-			"PublishDeadLetter: runID must not be empty",
-		)
+	if ctx == nil {
+		panic("PublishDeadLetter: ctx must not be nil")
 	}
 	if stepDef.ID == "" {
 		panic(
 			"PublishDeadLetter: stepDef.ID must not be empty",
 		)
 	}
-	payload, err := json.Marshal(map[string]any{
-		"run_id":   runID,
-		"step_id":  stepDef.ID,
-		"task":     stepDef.Task,
-		"error":    state.Error,
-		"attempts": state.Attempts,
-	})
-	if err != nil {
+	runID := run.RunID
+	if runID == "" {
+		panic("PublishDeadLetter: run.RunID must not be empty")
+	}
+	body, err := buildDLQBody(run, wfDef, stepDef, state)
+	if err != nil || len(body) == 0 {
+		slog.WarnContext(ctx,
+			"skipping DLQ publish: body unavailable",
+			"run_id", runID,
+			"step_id", stepDef.ID,
+			"error", err,
+		)
 		return
+	}
+	if taskSubject == "" {
+		taskSubject = fmt.Sprintf("task.%s.%s",
+			stepDef.Task, runID)
 	}
 	subject := fmt.Sprintf("dead.%s.%s.%s",
 		stepDef.Task, runID, stepDef.ID)
 	msgID := fmt.Sprintf("dlq:%s:%s:%d",
 		runID, stepDef.ID, state.Attempts)
+	header := nats.Header{
+		"Nats-Msg-Id":          {msgID},
+		HeaderDLQRunID:         {runID},
+		HeaderDLQStepID:        {stepDef.ID},
+		HeaderDLQTask:          {stepDef.Task},
+		HeaderDLQError:         {state.Error},
+		HeaderDLQAttempts:      {strconv.Itoa(state.Attempts)},
+		HeaderDLQDeliveryCount: {strconv.Itoa(state.Attempts)},
+		HeaderDLQConsumer:      {DLQConsumerTaskQueues},
+		HeaderDLQTaskSubject:   {taskSubject},
+	}
 	msg := &nats.Msg{
 		Subject: subject,
-		Data:    payload,
-		Header: nats.Header{
-			"Nats-Msg-Id": {msgID},
-		},
+		Data:    body,
+		Header:  header,
 	}
 	_, _ = rm.js.PublishMsg(ctx, msg)
+}
+
+// buildDLQBody reconstructs the bytes that the engine would have
+// dispatched on the task subject — the marshalled
+// protocol.TaskPayload with resolved input. Returns an error if
+// input resolution fails so PublishDeadLetter can skip the publish
+// (TigerStyle: fail loudly rather than write a useless stub).
+func buildDLQBody(
+	run dag.WorkflowRun,
+	wfDef dag.WorkflowDef,
+	stepDef dag.StepDef,
+	state dag.StepState,
+) ([]byte, error) {
+	if stepDef.ID == "" {
+		panic("buildDLQBody: stepDef.ID must not be empty")
+	}
+	if run.RunID == "" {
+		panic("buildDLQBody: run.RunID must not be empty")
+	}
+	input, err := resolveDLQInput(run, wfDef, stepDef)
+	if err != nil {
+		return nil, fmt.Errorf("resolve input: %w", err)
+	}
+	payload := protocol.TaskPayload{
+		TaskID:  run.RunID + "." + stepDef.ID,
+		RunID:   run.RunID,
+		StepID:  stepDef.ID,
+		Attempt: state.Attempts,
+		Input:   input,
+	}
+	return json.Marshal(payload)
+}
+
+// resolveDLQInput resolves the step input bytes using the same path
+// the task publisher takes (dag.ResolveInput). When wfDef is empty
+// (legacy test seam), falls back to the run's input. When the step
+// has no upstream and run.Input is empty, returns a JSON null so
+// callers always get a non-empty body — DLQ entries are never empty.
+func resolveDLQInput(
+	run dag.WorkflowRun,
+	wfDef dag.WorkflowDef,
+	stepDef dag.StepDef,
+) ([]byte, error) {
+	if wfDef.Name == "" {
+		// Legacy / test-seam path: no DAG to resolve against.
+		if len(run.Input) > 0 {
+			return run.Input, nil
+		}
+		return []byte("null"), nil
+	}
+	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
+	if err != nil {
+		return nil, err
+	}
+	if len(input) == 0 {
+		return []byte("null"), nil
+	}
+	return input, nil
 }
 
 // RecoverIfOnFailure checks if stepID is an OnFailure target

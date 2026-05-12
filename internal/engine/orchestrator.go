@@ -1598,7 +1598,20 @@ func (o *Orchestrator) failWorkflow(
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	o.recovery.PublishDeadLetter(ctx, run.RunID, stepDef, state)
+	// Best-effort definition reload so PublishDeadLetter can resolve
+	// the step's input via dag.ResolveInput. A missing def degrades
+	// to using run.Input directly — replay still works for single-step
+	// workflows, which is the firestorm-dataworks shape.
+	wfDef, _ := o.loadDef(ctx, run.WorkflowID)
+	// Reconciler-driven failure paths use a synthetic stepDef with
+	// no Task name; for those, leave taskSubject empty and let
+	// PublishDeadLetter derive a best-effort default.
+	taskSubject := ""
+	if stepDef.Task != "" {
+		taskSubject = o.publisher.StepSubject(stepDef, run.RunID)
+	}
+	o.recovery.PublishDeadLetter(ctx, run, wfDef, stepDef, state,
+		taskSubject)
 	return o.notifyParentIfChild(
 		ctx, run, fmt.Errorf("%s", state.Error),
 	)
@@ -2524,7 +2537,12 @@ func (o *Orchestrator) failMapStep(
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	o.recovery.PublishDeadLetter(ctx, run.RunID, stepDef, state)
+	taskSubject := ""
+	if stepDef.Task != "" {
+		taskSubject = o.publisher.StepSubject(stepDef, run.RunID)
+	}
+	o.recovery.PublishDeadLetter(ctx, run, wfDef, stepDef, state,
+		taskSubject)
 	return o.notifyParentIfChild(
 		ctx, run, fmt.Errorf("%s", state.Error),
 	)

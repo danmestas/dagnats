@@ -13,9 +13,55 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
+
+// publishModernDLQ publishes a post-#200 DLQ entry: body is the
+// marshalled TaskPayload that would have been dispatched, metadata
+// in structured headers including the original task subject.
+func publishModernDLQ(
+	t *testing.T, js nats.JetStreamContext,
+	runID, stepID, task string,
+	input []byte,
+) {
+	t.Helper()
+	payload, err := json.Marshal(protocol.TaskPayload{
+		TaskID: runID + "." + stepID,
+		RunID:  runID,
+		StepID: stepID,
+		Input:  input,
+	})
+	if err != nil {
+		t.Fatalf("publishModernDLQ: marshal: %v", err)
+	}
+	subject := "dead." + task + "." + runID + "." + stepID
+	taskSubject := "task." + task + "." + runID
+	// Include task in the dedup key so multi-task batch tests don't
+	// collide on (runID, stepID); the production code key includes
+	// attempts which serves the same disambiguation.
+	dedupID := "dlq:" + runID + ":" + stepID + ":" + task
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    payload,
+		Header: nats.Header{
+			"Nats-Msg-Id":                 {dedupID},
+			engine.HeaderDLQRunID:         {runID},
+			engine.HeaderDLQStepID:        {stepID},
+			engine.HeaderDLQTask:          {task},
+			engine.HeaderDLQError:         {"simulated failure"},
+			engine.HeaderDLQAttempts:      {"3"},
+			engine.HeaderDLQDeliveryCount: {"3"},
+			engine.HeaderDLQConsumer:      {engine.DLQConsumerTaskQueues},
+			engine.HeaderDLQTaskSubject:   {taskSubject},
+		},
+	}
+	if _, err := js.PublishMsg(msg); err != nil {
+		t.Fatalf("publishModernDLQ: publish: %v", err)
+	}
+}
 
 func TestDLQListShowsMessages(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
@@ -70,26 +116,14 @@ func TestDLQReplayRepublishes(t *testing.T) {
 
 	js, _ := nc.JetStream()
 
-	// Publish a dead letter message
-	payload, _ := json.Marshal(map[string]any{
-		"run_id":   "run-456",
-		"step_id":  "step-b",
-		"task":     "retry-task",
-		"error":    "timeout",
-		"attempts": 5,
-	})
-	subject := "dead.retry-task.run-456.step-b"
-	_, err := js.Publish(subject, payload)
-	if err != nil {
-		t.Fatalf("publish dead letter: %v", err)
-	}
+	// Modern DLQ entry: body is the TaskPayload, metadata in headers.
+	// Replay must re-publish that body verbatim onto the task subject.
+	input := []byte(`{"timeout":"5s"}`)
+	publishModernDLQ(t, js, "run-456", "step-b", "retry-task", input)
 
-	// Get sequence number (should be 1 for first message)
-	// Subscribe to task queue to verify replay
 	sub, _ := js.SubscribeSync("task.retry-task.>",
 		nats.AckExplicit(), nats.DeliverAll())
 
-	// Replay the dead letter by sequence number
 	runDLQReplayCmd([]string{"1"})
 
 	// Positive: message should appear on task queue
@@ -98,12 +132,16 @@ func TestDLQReplayRepublishes(t *testing.T) {
 		t.Fatalf("replayed message not received: %v", err)
 	}
 
-	var replayed map[string]any
+	var replayed protocol.TaskPayload
 	if err := json.Unmarshal(msg.Data, &replayed); err != nil {
 		t.Fatalf("unmarshal replayed message: %v", err)
 	}
-	if replayed["run_id"] != "run-456" {
+	if replayed.RunID != "run-456" {
 		t.Fatal("replayed message should have correct run_id")
+	}
+	if string(replayed.Input) != string(input) {
+		t.Fatalf("replayed input must equal original; got %q want %q",
+			replayed.Input, input)
 	}
 
 	// Negative: should not receive duplicate
@@ -167,20 +205,17 @@ func TestDLQReplayByRun(t *testing.T) {
 
 	js, _ := nc.JetStream()
 
-	// Publish 2 dead letters for target run, 1 for other run
-	for _, item := range []struct {
-		runID string
-		task  string
+	// Publish 2 modern DLQ entries for target run, 1 for other run.
+	for i, item := range []struct {
+		runID, task string
 	}{
 		{"target-run", "task-a"},
 		{"target-run", "task-b"},
 		{"other-run", "task-c"},
 	} {
-		payload, _ := json.Marshal(map[string]any{
-			"run_id":  item.runID,
-			"step_id": "step-1",
-		})
-		js.Publish("dead."+item.task, payload)
+		input := []byte(fmt.Sprintf(`{"i":%d}`, i))
+		publishModernDLQ(t, js,
+			item.runID, "step-1", item.task, input)
 	}
 
 	// Subscribe to task queues to count replayed messages
@@ -222,6 +257,8 @@ func TestDLQListJSONOutput(t *testing.T) {
 
 	js, _ := nc.JetStream()
 
+	// Legacy-shape entry — exercises the listDeadLettersInner
+	// backward-compat path (body_preserved is false for these).
 	payload, _ := json.Marshal(map[string]any{
 		"run_id":  "run-json-1",
 		"step_id": "step-j",
@@ -248,10 +285,48 @@ func TestDLQListJSONOutput(t *testing.T) {
 	if letters[0]["run_id"] != "run-json-1" {
 		t.Fatal("JSON should contain correct run_id")
 	}
+	// Legacy entry: body_preserved must be false.
+	if letters[0]["body_preserved"] != false {
+		t.Fatalf("legacy entry must report body_preserved=false; got %v",
+			letters[0]["body_preserved"])
+	}
 
 	// Negative: should not contain table header
 	if strings.Contains(output, "SEQ") {
 		t.Fatal("JSON output should not contain table header")
+	}
+}
+
+// TestDLQListBodyPreservedField is the #200 acceptance test for the
+// CLI surface: dagnats dlq list --json must emit body_preserved=true
+// for post-fix DLQ entries so operators can tell at a glance which
+// entries are replayable.
+func TestDLQListBodyPreservedField(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+
+	t.Setenv("NATS_URL", srv.ClientURL())
+
+	js, _ := nc.JetStream()
+	publishModernDLQ(t, js,
+		"run-bp-1", "step-bp", "bp-task", []byte(`{"k":"v"}`))
+
+	output := captureOutput(func() {
+		runDLQListCmd([]string{"--json"})
+	})
+
+	// Output is pretty-printed JSON; parse instead of substring.
+	var letters []map[string]any
+	if err := json.Unmarshal([]byte(output), &letters); err != nil {
+		t.Fatalf("output must be valid JSON: %v\n%s", err, output)
+	}
+	if len(letters) != 1 {
+		t.Fatalf("expected 1 letter, got %d", len(letters))
+	}
+	if got, want := letters[0]["body_preserved"], true; got != want {
+		t.Fatalf("body_preserved = %v, want %v", got, want)
 	}
 }
 
@@ -265,16 +340,8 @@ func TestDLQReplayJSONSingleOutput(t *testing.T) {
 
 	js, _ := nc.JetStream()
 
-	payload, _ := json.Marshal(map[string]any{
-		"run_id":  "run-rj-1",
-		"step_id": "step-r",
-		"task":    "replay-json",
-		"error":   "fail",
-	})
-	_, err := js.Publish("dead.replay-json.run-rj-1.step-r", payload)
-	if err != nil {
-		t.Fatalf("publish dead letter: %v", err)
-	}
+	publishModernDLQ(t, js, "run-rj-1", "step-r", "replay-json",
+		[]byte(`{"k":"v"}`))
 
 	output := captureOutput(func() {
 		runDLQReplayCmd([]string{"1", "--json"})
@@ -306,13 +373,8 @@ func TestDLQReplayJSONBatchOutput(t *testing.T) {
 	js, _ := nc.JetStream()
 
 	for _, task := range []string{"batch-a", "batch-b"} {
-		payload, _ := json.Marshal(map[string]any{
-			"run_id":  "run-batch-json",
-			"step_id": "step-1",
-			"task":    task,
-			"error":   "fail",
-		})
-		js.Publish("dead."+task, payload)
+		publishModernDLQ(t, js, "run-batch-json", "step-1", task,
+			[]byte(`{"k":"v"}`))
 	}
 
 	output := captureOutput(func() {

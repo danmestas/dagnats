@@ -458,22 +458,37 @@ func TestServiceReplayDeadLetter(t *testing.T) {
 	}
 	svc := NewService(nc)
 	js, _ := nc.JetStream()
+	// Post-#200 shape: body is the TaskPayload, metadata in headers,
+	// original task subject preserved verbatim.
 	payload := protocol.TaskPayload{
+		TaskID: "run-456.step-2",
 		RunID:  "run-456",
 		StepID: "step-2",
+		Input:  []byte(`{"replay":"ok"}`),
 	}
 	data := mustMarshal(t, payload)
+	taskSubject := "task.task-replay.run-456"
 	msg := &nats.Msg{
-		Subject: "dead.task-replay",
+		Subject: "dead.task-replay.run-456.step-2",
 		Data:    data,
-		Header:  nats.Header{"Error": {"replay test"}},
+		Header: nats.Header{
+			"Nats-Msg-Id":                 {"dlq:run-456:step-2:1"},
+			engine.HeaderDLQRunID:         {"run-456"},
+			engine.HeaderDLQStepID:        {"step-2"},
+			engine.HeaderDLQTask:          {"task-replay"},
+			engine.HeaderDLQError:         {"replay test"},
+			engine.HeaderDLQAttempts:      {"1"},
+			engine.HeaderDLQDeliveryCount: {"1"},
+			engine.HeaderDLQConsumer:      {engine.DLQConsumerTaskQueues},
+			engine.HeaderDLQTaskSubject:   {taskSubject},
+		},
 	}
 	ack, err := js.PublishMsg(msg)
 	if err != nil {
 		t.Fatalf("PublishMsg failed: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	sub, subErr := js.SubscribeSync("task.task-replay")
+	sub, subErr := js.SubscribeSync(taskSubject)
 	if subErr != nil {
 		t.Fatalf("SubscribeSync failed: %v", subErr)
 	}
@@ -487,9 +502,16 @@ func TestServiceReplayDeadLetter(t *testing.T) {
 		t.Fatalf("replayed message not received: %v", err)
 	}
 	var replayPayload protocol.TaskPayload
-	json.Unmarshal(replayed.Data, &replayPayload)
+	if err := json.Unmarshal(replayed.Data, &replayPayload); err != nil {
+		t.Fatalf("unmarshal replay: %v", err)
+	}
 	if replayPayload.RunID != "run-456" {
-		t.Fatalf("RunID = %q, want %q", replayPayload.RunID, "run-456")
+		t.Fatalf("RunID = %q, want %q",
+			replayPayload.RunID, "run-456")
+	}
+	if string(replayPayload.Input) != `{"replay":"ok"}` {
+		t.Fatalf("Input = %q, want %q",
+			replayPayload.Input, `{"replay":"ok"}`)
 	}
 }
 

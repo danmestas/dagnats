@@ -46,5 +46,12 @@ func PublishDeadLetterForTest(
 		Attempts: attempts,
 		Error:    "synthetic test failure",
 	}
-	o.recovery.PublishDeadLetter(ctx, runID, stepDef, state)
+	// Synthetic run: only the fields the DLQ-publish path reads.
+	// wfDef is zero so buildDLQBody takes the legacy/test-seam path.
+	// taskSubject empty so PublishDeadLetter derives the default
+	// "task.<task>.<runID>" — matches the pre-#200 test seam shape.
+	run := dag.WorkflowRun{RunID: runID}
+	o.recovery.PublishDeadLetter(
+		ctx, run, dag.WorkflowDef{}, stepDef, state, "",
+	)
 }

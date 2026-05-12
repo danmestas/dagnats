@@ -122,8 +122,8 @@ func parseDLQListFlags(args []string) (string, int) {
 
 // filterByRun returns only letters matching the given run ID.
 func filterByRun(
-	letters []api.DeadLetter, runID string,
-) []api.DeadLetter {
+	letters []api.DeadLetterView, runID string,
+) []api.DeadLetterView {
 	if runID == "" {
 		panic("filterByRun: runID must not be empty")
 	}
@@ -132,7 +132,7 @@ func filterByRun(
 		panic("filterByRun: letters exceeds max bound")
 	}
 
-	filtered := make([]api.DeadLetter, 0, len(letters))
+	filtered := make([]api.DeadLetterView, 0, len(letters))
 	for _, l := range letters {
 		if l.RunID == runID {
 			filtered = append(filtered, l)
@@ -142,7 +142,9 @@ func filterByRun(
 }
 
 // printDLQTable renders dead letters as a tab-aligned table.
-func printDLQTable(letters []api.DeadLetter) {
+// BODY column surfaces whether the entry's stored body is preserved
+// (Y) — only such entries are replayable; legacy entries show "-".
+func printDLQTable(letters []api.DeadLetterView) {
 	if letters == nil {
 		panic("printDLQTable: letters must not be nil")
 	}
@@ -153,13 +155,17 @@ func printDLQTable(letters []api.DeadLetter) {
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w,
-		"SEQ\tSUBJECT\tRUN_ID\tSTEP_ID\tTASK\tERROR\tTIMESTAMP")
+		"SEQ\tSUBJECT\tRUN_ID\tSTEP_ID\tTASK\tBODY\tERROR\tTIMESTAMP")
 
 	for _, letter := range letters {
 		ts := letter.Timestamp.Format("2006-01-02 15:04:05")
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		body := "-"
+		if letter.BodyPreserved {
+			body = "Y"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			letter.Sequence, letter.Subject, letter.RunID,
-			letter.StepID, letter.Task, letter.Error, ts)
+			letter.StepID, letter.Task, body, letter.Error, ts)
 	}
 
 	w.Flush()

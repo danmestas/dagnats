@@ -91,7 +91,7 @@ func (t *replayTracker) exhausted() int {
 
 // FormatDLQWatchAction writes a human-readable replay action line.
 func FormatDLQWatchAction(
-	w io.Writer, letter api.DeadLetter,
+	w io.Writer, letter api.DeadLetterView,
 	attempt int, maxReplays int,
 ) {
 	if w == nil {
@@ -107,7 +107,7 @@ func FormatDLQWatchAction(
 
 // FormatDLQWatchActionSkipped writes a skip line for exhausted entries.
 func FormatDLQWatchActionSkipped(
-	w io.Writer, letter api.DeadLetter, maxReplays int,
+	w io.Writer, letter api.DeadLetterView, maxReplays int,
 ) {
 	if w == nil {
 		panic("FormatDLQWatchActionSkipped: writer must not be nil")
@@ -149,7 +149,7 @@ type dlqWatchActionJSON struct {
 
 // FormatDLQWatchActionJSON writes a JSON line for a watch action.
 func FormatDLQWatchActionJSON(
-	w io.Writer, letter api.DeadLetter,
+	w io.Writer, letter api.DeadLetterView,
 	action string, attempt int,
 ) {
 	if w == nil {

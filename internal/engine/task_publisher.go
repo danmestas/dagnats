@@ -416,6 +416,22 @@ func (tp *TaskPublisher) PublishIteration(
 func (tp *TaskPublisher) stepSubject(
 	step dag.StepDef, runID string,
 ) string {
+	return tp.StepSubject(step, runID)
+}
+
+// StepSubject is the exported variant of stepSubject so other
+// subsystems (notably DLQ publish, which needs to preserve the
+// original dispatch subject for verbatim replay) can resolve it
+// without duplicating the routing logic.
+func (tp *TaskPublisher) StepSubject(
+	step dag.StepDef, runID string,
+) string {
+	if runID == "" {
+		panic("StepSubject: runID must not be empty")
+	}
+	if step.Task == "" {
+		panic("StepSubject: step.Task must not be empty")
+	}
 	prefix := "task"
 	if tp.stepRoutes != nil {
 		if p, ok := tp.stepRoutes[step.Type]; ok {

@@ -10,9 +10,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,7 +55,10 @@ type Service struct {
 	errorCount      metric.Int64Counter
 }
 
-// DeadLetter represents a message that failed processing.
+// DeadLetter represents a message that failed processing. The
+// final schema (#200) extends the legacy fields with Body, Headers,
+// DeliveryCount, and Consumer so replay can re-publish the original
+// task verbatim and operators can see delivery metadata.
 type DeadLetter struct {
 	Sequence  uint64    `json:"sequence"`
 	Subject   string    `json:"subject"`
@@ -62,7 +67,54 @@ type DeadLetter struct {
 	Task      string    `json:"task"`
 	Error     string    `json:"error"`
 	Timestamp time.Time `json:"timestamp"`
+
+	// Body is the original task message payload at the moment of
+	// DLQ entry — the marshalled protocol.TaskPayload bytes that
+	// would have been on the task subject. Empty for legacy entries
+	// written before this schema landed; replay against a legacy
+	// entry returns ErrDLQBodyMissing.
+	Body []byte `json:"body,omitempty"`
+
+	// Headers carries the original NATS headers verbatim so replay
+	// reproduces the same dispatch context.
+	Headers nats.Header `json:"headers,omitempty"`
+
+	// DeliveryCount is the JetStream redelivery count at the moment
+	// of DLQ publish — i.e. the value that triggered exhaustion.
+	DeliveryCount int `json:"delivery_count,omitempty"`
+
+	// Consumer is the JetStream consumer name that delivered the
+	// original message. Surfaces in the CLI so operators can tell
+	// which path the task came through.
+	Consumer string `json:"consumer,omitempty"`
 }
+
+// DeadLetterView is the operator-facing rendering of a DLQ entry:
+// the raw DeadLetter plus derived fields the CLI surfaces directly.
+// CLI code does no derivation of its own — all derivation lives here.
+type DeadLetterView struct {
+	DeadLetter
+	BodyPreserved bool `json:"body_preserved"`
+}
+
+// newDeadLetterView returns the operator-facing rendering of a
+// DeadLetter. BodyPreserved is true when the stored Body is
+// non-empty — only such entries are replayable.
+func newDeadLetterView(dl DeadLetter) DeadLetterView {
+	return DeadLetterView{
+		DeadLetter:    dl,
+		BodyPreserved: len(dl.Body) > 0,
+	}
+}
+
+// ErrDLQBodyMissing is returned by ReplayDeadLetter when the DLQ
+// entry's Body is empty — typically a legacy entry written before
+// the body-preservation schema landed. Operators recover such
+// entries via upstream reconstruction; the CLI must not silently
+// re-publish a stub.
+var ErrDLQBodyMissing = errors.New(
+	"dlq entry body not preserved; replay unsupported",
+)
 
 // RunEvent is a history event for display.
 type RunEvent struct {
@@ -922,31 +974,35 @@ func applyTriggerUpdates(
 }
 
 // ListDeadLetters retrieves up to limit dead letter messages.
+// Returns operator-facing views with derived fields (e.g.
+// BodyPreserved) so CLI rendering is pure transport.
 func (s *Service) ListDeadLetters(
 	ctx context.Context, limit int,
-) ([]DeadLetter, error) {
+) ([]DeadLetterView, error) {
 	if ctx == nil {
 		panic("ListDeadLetters: ctx must not be nil")
 	}
 	if limit <= 0 {
 		panic("ListDeadLetters: limit must be positive")
 	}
-	var letters []DeadLetter
+	var views []DeadLetterView
 	err := s.observed(ctx, "listDeadLetters", nil,
 		func(_ context.Context) error {
 			var innerErr error
-			letters, innerErr = s.listDeadLettersInner(limit)
+			views, innerErr = s.listDeadLettersInner(limit)
 			return innerErr
 		},
 	)
-	return letters, err
+	return views, err
 }
 
 // listDeadLettersInner fetches messages from the DEAD_LETTERS
 // stream using a legacy SubscribeSync via the raw connection.
+// Returns DeadLetterView so derived fields (BodyPreserved) are
+// computed exactly once at the engine boundary.
 func (s *Service) listDeadLettersInner(
 	limit int,
-) ([]DeadLetter, error) {
+) ([]DeadLetterView, error) {
 	if limit <= 0 {
 		panic("listDeadLettersInner: limit must be positive")
 	}
@@ -965,27 +1021,114 @@ func (s *Service) listDeadLettersInner(
 
 	deadline := time.Now().Add(10 * time.Second)
 	msgs := fetchMessages(sub, limit, deadline)
-	letters := make([]DeadLetter, 0, len(msgs))
+	views := make([]DeadLetterView, 0, len(msgs))
 	for _, msg := range msgs {
 		meta, metaErr := msg.Metadata()
 		if metaErr != nil {
 			continue
 		}
-		var payload protocol.TaskPayload
-		if json.Unmarshal(msg.Data, &payload) != nil {
-			continue
-		}
-		letters = append(letters, DeadLetter{
-			Sequence:  meta.Sequence.Stream,
-			Subject:   msg.Subject,
-			RunID:     payload.RunID,
-			StepID:    payload.StepID,
-			Task:      extractTaskFromSubject(msg.Subject),
-			Error:     msg.Header.Get("Error"),
-			Timestamp: meta.Timestamp,
-		})
+		views = append(views,
+			newDeadLetterView(parseDLQMessage(msg, meta)))
 	}
-	return letters, nil
+	return views, nil
+}
+
+// parseDLQMessage decodes a DLQ stream message into a DeadLetter,
+// supporting both the post-#200 shape (body in msg.Data, metadata
+// in structured headers) and the pre-#200 legacy shape (metadata
+// JSON in msg.Data, no body preserved). Detection key:
+// HeaderDLQRunID is set only for post-#200 entries.
+func parseDLQMessage(
+	msg *nats.Msg, meta *nats.MsgMetadata,
+) DeadLetter {
+	if msg == nil {
+		panic("parseDLQMessage: msg must not be nil")
+	}
+	if meta == nil {
+		panic("parseDLQMessage: meta must not be nil")
+	}
+	if msg.Header.Get(engine.HeaderDLQRunID) != "" {
+		return parseModernDLQ(msg, meta)
+	}
+	return parseLegacyDLQ(msg, meta)
+}
+
+// parseModernDLQ decodes a post-#200 DLQ entry: body in msg.Data,
+// metadata in structured Dagnats-Dlq-* headers, original task
+// subject preserved via HeaderDLQTaskSubject.
+func parseModernDLQ(
+	msg *nats.Msg, meta *nats.MsgMetadata,
+) DeadLetter {
+	attempts, _ := strconv.Atoi(
+		msg.Header.Get(engine.HeaderDLQAttempts),
+	)
+	deliveryCount, _ := strconv.Atoi(
+		msg.Header.Get(engine.HeaderDLQDeliveryCount),
+	)
+	taskSubject := msg.Header.Get(engine.HeaderDLQTaskSubject)
+	stored := DeadLetter{
+		Sequence:      meta.Sequence.Stream,
+		Subject:       msg.Subject,
+		RunID:         msg.Header.Get(engine.HeaderDLQRunID),
+		StepID:        msg.Header.Get(engine.HeaderDLQStepID),
+		Task:          msg.Header.Get(engine.HeaderDLQTask),
+		Error:         msg.Header.Get(engine.HeaderDLQError),
+		Timestamp:     meta.Timestamp,
+		Body:          msg.Data,
+		DeliveryCount: deliveryCount,
+		Consumer:      msg.Header.Get(engine.HeaderDLQConsumer),
+	}
+	if stored.Error == "" {
+		stored.Error = msg.Header.Get("Error")
+	}
+	// Stash attempts (legacy) into headers map for downstream use;
+	// also preserve the original task subject so replay knows where
+	// to re-publish without re-deriving from (task, runID).
+	stored.Headers = nats.Header{}
+	if taskSubject != "" {
+		stored.Headers[engine.HeaderDLQTaskSubject] = []string{taskSubject}
+	}
+	if attempts > 0 {
+		stored.Headers[engine.HeaderDLQAttempts] = []string{
+			strconv.Itoa(attempts),
+		}
+	}
+	return stored
+}
+
+// parseLegacyDLQ decodes a pre-#200 DLQ entry: metadata JSON in
+// msg.Data, no body preserved. The returned DeadLetter has empty
+// Body so newDeadLetterView reports BodyPreserved=false and replay
+// returns ErrDLQBodyMissing.
+func parseLegacyDLQ(
+	msg *nats.Msg, meta *nats.MsgMetadata,
+) DeadLetter {
+	var raw struct {
+		RunID    string `json:"run_id"`
+		StepID   string `json:"step_id"`
+		Task     string `json:"task"`
+		Error    string `json:"error"`
+		Attempts int    `json:"attempts"`
+	}
+	_ = json.Unmarshal(msg.Data, &raw) //nolint:errcheck
+	errStr := raw.Error
+	if errStr == "" {
+		errStr = msg.Header.Get("Error")
+	}
+	taskName := raw.Task
+	if taskName == "" {
+		taskName = extractTaskFromSubject(msg.Subject)
+	}
+	return DeadLetter{
+		Sequence:      meta.Sequence.Stream,
+		Subject:       msg.Subject,
+		RunID:         raw.RunID,
+		StepID:        raw.StepID,
+		Task:          taskName,
+		Error:         errStr,
+		Timestamp:     meta.Timestamp,
+		DeliveryCount: raw.Attempts,
+	}
 }
 
 // fetchMessages drains up to limit messages from sub within the
@@ -1048,7 +1191,11 @@ func (s *Service) ReplayDeadLetter(
 	)
 }
 
-// replayDeadLetterInner fetches by sequence and republishes.
+// replayDeadLetterInner fetches the DLQ entry by sequence and
+// re-publishes its stored body verbatim onto the original task
+// subject. Returns ErrDLQBodyMissing when the entry pre-dates the
+// body-preservation schema (no Body field) — operators must recover
+// such entries upstream rather than replay.
 func (s *Service) replayDeadLetterInner(
 	ctx context.Context, seq uint64,
 ) error {
@@ -1058,36 +1205,54 @@ func (s *Service) replayDeadLetterInner(
 	if s.js == nil {
 		panic("replayDeadLetterInner: js must not be nil")
 	}
-	letters, err := s.listDeadLettersInner(100)
+	views, err := s.listDeadLettersInner(100)
 	if err != nil {
 		return err
 	}
-	var target *DeadLetter
-	for i := range letters {
-		if letters[i].Sequence == seq {
-			target = &letters[i]
+	var target *DeadLetterView
+	for i := range views {
+		if views[i].Sequence == seq {
+			target = &views[i]
 			break
 		}
 	}
 	if target == nil {
-		return fmt.Errorf("dead letter with sequence %d not found", seq)
+		return fmt.Errorf(
+			"dead letter with sequence %d not found", seq,
+		)
 	}
-	payload := protocol.TaskPayload{
-		RunID:  target.RunID,
-		StepID: target.StepID,
+	if len(target.Body) == 0 {
+		return fmt.Errorf("dlq sequence %d: %w",
+			seq, ErrDLQBodyMissing)
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
+	taskSubject := ""
+	if target.Headers != nil {
+		taskSubject = target.Headers.Get(
+			engine.HeaderDLQTaskSubject,
+		)
 	}
-	origSubject := target.Task
-	if !isTaskSubject(origSubject) {
-		origSubject = "task." + origSubject
+	if taskSubject == "" {
+		taskSubject = deriveTaskSubject(target.Task)
 	}
-	_, err = s.js.Publish(
-		ctx, origSubject, data,
-	)
-	return err
+	msg := &nats.Msg{
+		Subject: taskSubject,
+		Data:    target.Body,
+		Header:  target.Headers,
+	}
+	if _, err := s.js.PublishMsg(ctx, msg); err != nil {
+		return fmt.Errorf("dlq replay: publish: %w", err)
+	}
+	return nil
+}
+
+// deriveTaskSubject is the legacy-shape fallback when the DLQ
+// entry's stored task subject is missing — best-effort recovery for
+// entries written before HeaderDLQTaskSubject existed.
+func deriveTaskSubject(task string) string {
+	if isTaskSubject(task) {
+		return task
+	}
+	return "task." + task
 }
 
 // isTaskSubject checks if a subject starts with "task.".
