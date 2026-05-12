@@ -40,3 +40,18 @@ jobs:
         run: go test ./... -timeout 600s -count=1
         env:
           E2E_TOPOLOGY: embedded
+
+      - name: Assert main dagnats binary is CGO-free
+        # The main dagnats binary must stay pure-Go even after #188
+        # adds a CGO release artifact for dagnats-mcp-duckdb. A
+        # regression here would inflate every dagnats deployment
+        # with a libstdc++ dependency it doesn't need.
+        run: |
+          set -eu
+          CGO_ENABLED=0 go build -trimpath -o /tmp/dagnats ./cmd/dagnats
+          if go version -m /tmp/dagnats | grep -q 'CGO_ENABLED=1'; then
+            echo "ERROR: main dagnats binary must stay CGO-free"
+            go version -m /tmp/dagnats | grep -E 'CGO|cgo|build' || true
+            exit 1
+          fi
+          echo "OK: main dagnats binary is CGO-free"

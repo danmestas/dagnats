@@ -31,6 +31,7 @@ help: ## Show available targets
 .PHONY: build test lint fmt vet serve clean
 .PHONY: docs-serve docs-build docs-gen-sdk docs-gen-llms
 .PHONY: build-release docker docker-push release release-preflight
+.PHONY: build-mcp-duckdb-linux-amd64 verify-dagnats-cgo-free
 
 # ---------- Development targets ----------
 
@@ -111,6 +112,54 @@ build-release: clean ## Build cross-platform release binaries + tarballs into ./
 	done > SHA256SUMS
 	@echo "" && echo "Built artifacts:" && ls -lh $(DIST)/
 
+# Build dagnats-mcp-duckdb for linux/amd64 with CGO + the bundled
+# libduckdb.a from marcboeker/go-duckdb. The static link tag is
+# the default in go-duckdb v1.8.x, so the resulting binary needs
+# only glibc + libstdc++ + libm + libdl on the target host — all
+# standard on every Ubuntu/Debian/RHEL release.
+#
+# We build inside a golang:1.26-bookworm container (linux/amd64)
+# so the toolchain is reproducible and host-independent. Hosts
+# need only Docker. The cmd/dagnats-mcp-duckdb directory is its
+# own Go module, so the build runs from inside that subdir.
+# See #188.
+MCPDUCKDB_BUILDER_IMG := golang:1.26-bookworm
+MCPDUCKDB_PKGNAME := dagnats-mcp-duckdb-linux-amd64
+build-mcp-duckdb-linux-amd64: ## Build dagnats-mcp-duckdb linux/amd64 tarball
+	@mkdir -p "$(DIST)/$(MCPDUCKDB_PKGNAME)"
+	docker run --rm --platform linux/amd64 \
+	  -v "$(CURDIR):/src" -w /src/cmd/dagnats-mcp-duckdb \
+	  -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=amd64 \
+	  -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
+	  $(MCPDUCKDB_BUILDER_IMG) \
+	  go build -trimpath -ldflags="-s -w" \
+	    -o "/src/$(DIST)/$(MCPDUCKDB_PKGNAME)/dagnats-mcp-duckdb" .
+	@cp LICENSE README.md "$(DIST)/$(MCPDUCKDB_PKGNAME)/" 2>/dev/null || true
+	@(cd $(DIST) && tar czf "$(MCPDUCKDB_PKGNAME).tar.gz" "$(MCPDUCKDB_PKGNAME)")
+	@rm -rf "$(DIST)/$(MCPDUCKDB_PKGNAME)"
+	@cd $(DIST) && shasum -a 256 $(MCPDUCKDB_PKGNAME).tar.gz >> SHA256SUMS
+	@cd $(DIST) && shasum -a 256 $(MCPDUCKDB_PKGNAME).tar.gz
+	@echo "" && echo "Built:" && ls -lh $(DIST)/$(MCPDUCKDB_PKGNAME).tar.gz
+
+# Verify the main dagnats binary stays pure-Go (CGO-free) so the
+# release tarball size and dependency surface for the dominant
+# deployment path doesn't drift. Reads the build metadata embedded
+# by `go build -trimpath` and fails if cgo was linked in. See #188.
+verify-dagnats-cgo-free: ## Assert dist/dagnats-linux-amd64 is CGO-free
+	@bin="$(DIST)/dagnats_$(VERSION)_linux_amd64/dagnats"; \
+	if [ ! -f "$$bin" ]; then \
+	  bin="$$(find $(DIST) -name 'dagnats' -path '*linux_amd64*' | head -1)"; \
+	fi; \
+	if [ -z "$$bin" ] || [ ! -f "$$bin" ]; then \
+	  echo "ERROR: main dagnats linux/amd64 binary not found under $(DIST)"; \
+	  exit 1; \
+	fi; \
+	if go version -m "$$bin" | grep -q '^\s*build\s*CGO_ENABLED=1'; then \
+	  echo "ERROR: main dagnats must stay CGO-free, but $$bin has CGO_ENABLED=1"; \
+	  exit 1; \
+	fi; \
+	echo "✓ $$bin is CGO-free"
+
 docker: ## Build Docker image (DOCKER_IMAGE=name to override)
 	docker build \
 	  --build-arg VERSION=$(VERSION) \
@@ -136,7 +185,7 @@ release-preflight:
 	  exit 1; \
 	fi
 
-release: release-preflight lint test build-release ## Build artifacts and publish a GitHub release for the current tag
+release: release-preflight lint test build-release build-mcp-duckdb-linux-amd64 ## Build artifacts and publish a GitHub release for the current tag
 	@TAG=$$(git describe --tags --exact-match HEAD); \
 	VERSION_NO_V=$${TAG#v}; \
 	NOTES=$$(awk -v ver="$$VERSION_NO_V" '$$0 ~ "^## \\[" ver "\\]" {flag=1; next} flag && /^## \[/ {flag=0} flag' CHANGELOG.md); \
