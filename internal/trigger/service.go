@@ -20,17 +20,25 @@ const maxActiveTriggers = 500
 
 // TriggerService coordinates all trigger types. It loads definitions
 // from the triggers KV bucket on startup and watches for live changes.
+//
+// httpRoutes maps method:path → HTTPHandler. The composite key matches
+// the routing key the HTTPRouter dispatches on; collision detection is
+// the ADR-013 "refuse second registration that conflicts on
+// (method, path)" rule. PR 3 may surface conflicts as registration-
+// time errors; PR 2 logs and skips so an unrelated KV update cannot
+// brick the trigger service.
 type TriggerService struct {
-	nc        *nats.Conn
-	js        jetstream.JetStream
-	triggerKV jetstream.KeyValue
-	scheduler *Scheduler
-	subjects  map[string]*SubjectTrigger
-	webhooks  map[string]*WebhookHandler
-	ctx       context.Context
-	cancel    context.CancelFunc
-	watcher   jetstream.KeyWatcher
-	mu        sync.RWMutex
+	nc         *nats.Conn
+	js         jetstream.JetStream
+	triggerKV  jetstream.KeyValue
+	scheduler  *Scheduler
+	subjects   map[string]*SubjectTrigger
+	webhooks   map[string]*WebhookHandler
+	httpRoutes map[string]*HTTPHandler
+	ctx        context.Context
+	cancel     context.CancelFunc
+	watcher    jetstream.KeyWatcher
+	mu         sync.RWMutex
 }
 
 // NewTriggerService creates the service. KV buckets must exist.
@@ -66,14 +74,15 @@ func NewTriggerService(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &TriggerService{
-		nc:        nc,
-		js:        js,
-		triggerKV: triggerKV,
-		scheduler: scheduler,
-		subjects:  make(map[string]*SubjectTrigger),
-		webhooks:  make(map[string]*WebhookHandler),
-		ctx:       ctx,
-		cancel:    cancel,
+		nc:         nc,
+		js:         js,
+		triggerKV:  triggerKV,
+		scheduler:  scheduler,
+		subjects:   make(map[string]*SubjectTrigger),
+		webhooks:   make(map[string]*WebhookHandler),
+		httpRoutes: make(map[string]*HTTPHandler),
+		ctx:        ctx,
+		cancel:     cancel,
 	}, nil
 }
 
@@ -172,7 +181,65 @@ func (ts *TriggerService) TriggerCount() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 
-	return len(ts.subjects) + len(ts.webhooks) + ts.scheduler.Count()
+	return len(ts.subjects) +
+		len(ts.webhooks) +
+		len(ts.httpRoutes) +
+		ts.scheduler.Count()
+}
+
+// HTTPRouter returns an http.Handler that dispatches requests to the
+// HTTPHandler registered for the request's (method, path). Returns
+// 404 when no handler matches the path and 405 when the path is
+// known but the method does not match. Safe to call before Start —
+// the returned handler always reads the current httpRoutes map
+// under the service's RWMutex.
+//
+// Why a single http.Handler vs. one registration per route: the API
+// server already owns a mux; layering a second one would create two
+// places to look when a route 404s. Returning a flat handler keeps
+// route ownership in the trigger service and the API mux's only job
+// is to forward "/api/*" (or whatever prefix) to this handler.
+func (ts *TriggerService) HTTPRouter() http.Handler {
+	if ts.httpRoutes == nil {
+		panic("HTTPRouter: httpRoutes map must not be nil")
+	}
+	return http.HandlerFunc(func(
+		w http.ResponseWriter, r *http.Request,
+	) {
+		ts.serveHTTPRoute(w, r)
+	})
+}
+
+// serveHTTPRoute is the inner dispatch — split out so the closure
+// in HTTPRouter stays small and exempt from the 70-line rule.
+func (ts *TriggerService) serveHTTPRoute(
+	w http.ResponseWriter, r *http.Request,
+) {
+	ts.mu.RLock()
+	pathMethods := make(map[string]*HTTPHandler, 4)
+	for key, handler := range ts.httpRoutes {
+		if handler.def.HTTP == nil {
+			continue
+		}
+		if handler.def.HTTP.Path != r.URL.Path {
+			continue
+		}
+		pathMethods[handler.def.HTTP.Method] = handler
+		_ = key
+	}
+	ts.mu.RUnlock()
+
+	if len(pathMethods) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	handler, methodOK := pathMethods[r.Method]
+	if !methodOK {
+		http.Error(w, "method not allowed",
+			http.StatusMethodNotAllowed)
+		return
+	}
+	handler.ServeHTTP(w, r)
 }
 
 func (ts *TriggerService) loadAllTriggers() error {
@@ -263,9 +330,32 @@ func (ts *TriggerService) addTrigger(def TriggerDef) error {
 			ts.webhooks[def.Webhook.Path] = handler
 		}
 		return nil
+	case def.HTTP != nil:
+		key := httpRouteKey(def.HTTP.Method, def.HTTP.Path)
+		if _, exists := ts.httpRoutes[key]; exists {
+			return fmt.Errorf(
+				"http trigger %q: route %s already registered",
+				def.ID, key,
+			)
+		}
+		ts.httpRoutes[key] = NewHTTPHandler(ts.nc, def)
+		return nil
 	}
 
 	return fmt.Errorf("no trigger type specified")
+}
+
+// httpRouteKey is the composite map key for the (method, path) →
+// handler table. Defined in one place so the router and the
+// registration code cannot drift.
+func httpRouteKey(method string, path string) string {
+	if method == "" {
+		panic("httpRouteKey: method must not be empty")
+	}
+	if path == "" {
+		panic("httpRouteKey: path must not be empty")
+	}
+	return method + " " + path
 }
 
 func (ts *TriggerService) removeTrigger(id string) error {
@@ -290,6 +380,14 @@ func (ts *TriggerService) removeTrigger(id string) error {
 	for path, handler := range ts.webhooks {
 		if handler.def.ID == id {
 			delete(ts.webhooks, path)
+			break
+		}
+	}
+
+	// HTTP routes are keyed by "METHOD PATH"; locate by trigger ID.
+	for key, handler := range ts.httpRoutes {
+		if handler.def.ID == id {
+			delete(ts.httpRoutes, key)
 			break
 		}
 	}
