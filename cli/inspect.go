@@ -18,10 +18,10 @@ import (
 
 // inspectResult combines all data sources for JSON output.
 type inspectResult struct {
-	Run         dag.WorkflowRun  `json:"run"`
-	Failures    []api.RunEvent   `json:"failures,omitempty"`
+	Run         dag.WorkflowRun      `json:"run"`
+	Failures    []api.RunEvent       `json:"failures,omitempty"`
 	DeadLetters []api.DeadLetterView `json:"dead_letters,omitempty"`
-	Spans       []inspectSpan    `json:"spans,omitempty"`
+	Spans       []inspectSpan        `json:"spans,omitempty"`
 }
 
 // inspectSpan is a simplified span for JSON output.

@@ -145,13 +145,15 @@ func TestInspectResultJSONSerialization(t *testing.T) {
 				Data: "timeout",
 			},
 		},
-		DeadLetters: []api.DeadLetter{
+		DeadLetters: []api.DeadLetterView{
 			{
-				Sequence: 1,
-				RunID:    "json-inspect-1",
-				StepID:   "step-a",
-				Task:     "failing-task",
-				Error:    "timeout",
+				DeadLetter: api.DeadLetter{
+					Sequence: 1,
+					RunID:    "json-inspect-1",
+					StepID:   "step-a",
+					Task:     "failing-task",
+					Error:    "timeout",
+				},
 			},
 		},
 	}
@@ -386,11 +388,13 @@ func TestCollectStepContextsGroupsByStep(t *testing.T) {
 			),
 		},
 	}
-	deadLetters := []api.DeadLetter{
+	deadLetters := []api.DeadLetterView{
 		{
-			Sequence: 42,
-			StepID:   "deploy",
-			Error:    "connection refused",
+			DeadLetter: api.DeadLetter{
+				Sequence: 42,
+				StepID:   "deploy",
+				Error:    "connection refused",
+			},
 		},
 	}
 
@@ -463,10 +467,12 @@ func TestPrintStepDebugLinesOutput(t *testing.T) {
 				),
 			},
 		},
-		DeadLetters: []api.DeadLetter{
+		DeadLetters: []api.DeadLetterView{
 			{
-				Sequence: 42,
-				Error:    "connection refused",
+				DeadLetter: api.DeadLetter{
+					Sequence: 42,
+					Error:    "connection refused",
+				},
 			},
 		},
 		TraceID: "abc123def456",

@@ -130,14 +130,16 @@ func TestReplayTrackerPanicsOnOverflow(t *testing.T) {
 }
 
 func TestFormatDLQWatchAction(t *testing.T) {
-	letter := api.DeadLetter{
-		Sequence:  42,
-		Subject:   "dead.my-task.run-1.step-a",
-		RunID:     "run-1",
-		StepID:    "step-a",
-		Task:      "my-task",
-		Error:     "timeout",
-		Timestamp: time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
+	letter := api.DeadLetterView{
+		DeadLetter: api.DeadLetter{
+			Sequence:  42,
+			Subject:   "dead.my-task.run-1.step-a",
+			RunID:     "run-1",
+			StepID:    "step-a",
+			Task:      "my-task",
+			Error:     "timeout",
+			Timestamp: time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
 	}
 
 	var buf bytes.Buffer
@@ -159,9 +161,11 @@ func TestFormatDLQWatchAction(t *testing.T) {
 }
 
 func TestFormatDLQWatchActionSkipped(t *testing.T) {
-	letter := api.DeadLetter{
-		Sequence: 7,
-		Task:     "stuck-task",
+	letter := api.DeadLetterView{
+		DeadLetter: api.DeadLetter{
+			Sequence: 7,
+			Task:     "stuck-task",
+		},
 	}
 
 	var buf bytes.Buffer
@@ -197,10 +201,12 @@ func TestFormatDLQWatchSummary(t *testing.T) {
 }
 
 func TestFormatDLQWatchActionJSON(t *testing.T) {
-	letter := api.DeadLetter{
-		Sequence: 42,
-		Task:     "my-task",
-		RunID:    "run-1",
+	letter := api.DeadLetterView{
+		DeadLetter: api.DeadLetter{
+			Sequence: 42,
+			Task:     "my-task",
+			RunID:    "run-1",
+		},
 	}
 
 	var buf bytes.Buffer
