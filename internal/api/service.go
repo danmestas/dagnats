@@ -973,6 +973,27 @@ func applyTriggerUpdates(
 	}
 }
 
+// CountDeadLetters returns the current number of entries on the
+// DEAD_LETTERS stream. CLI uses this to surface truncation footers
+// without rolling its own NATS plumbing.
+func (s *Service) CountDeadLetters(ctx context.Context) (int, error) {
+	if ctx == nil {
+		panic("CountDeadLetters: ctx must not be nil")
+	}
+	if s.js == nil {
+		panic("CountDeadLetters: js must not be nil")
+	}
+	stream, err := s.js.Stream(ctx, "DEAD_LETTERS")
+	if err != nil {
+		return 0, err
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return int(info.State.Msgs), nil
+}
+
 // ListDeadLetters retrieves up to limit dead letter messages.
 // Returns operator-facing views with derived fields (e.g.
 // BodyPreserved) so CLI rendering is pure transport.
