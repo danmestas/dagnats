@@ -6,12 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/httpenvelope"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -69,14 +70,16 @@ func (h *WebhookHandler) ServeHTTP(
 		return
 	}
 
-	// 1 MB body limit
-	const maxBodySize = 1 * 1024 * 1024
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-
-	body, err := io.ReadAll(r.Body)
+	// 1 MB body limit — central in httpenvelope so the webhook and
+	// (future) http trigger never drift.
+	const maxBodySize int64 = 1 * 1024 * 1024
+	body, err := httpenvelope.BoundedBody(r.Body, maxBodySize)
 	if err != nil {
-		if strings.Contains(err.Error(), "request body too large") {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		if errors.Is(err, httpenvelope.ErrBodyTooLarge) {
+			http.Error(
+				w, "request body too large",
+				http.StatusRequestEntityTooLarge,
+			)
 			return
 		}
 		http.Error(w, "failed to read body", http.StatusBadRequest)
