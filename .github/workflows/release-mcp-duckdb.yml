@@ -1,0 +1,136 @@
+name: Release dagnats-mcp-duckdb
+
+# Builds the four dagnats-mcp-duckdb release tarballs (linux/{amd64,arm64},
+# darwin/{amd64,arm64}) when a release tag is pushed. The linux builds run
+# on ubuntu (Docker-based, qemu for arm64) and the darwin builds run on
+# macos-latest (native arm64 + cross-compile to amd64 via clang -arch). The
+# darwin job is intentionally a single runner to keep macOS minutes low —
+# see #188 PR 6b for the cost-control rationale.
+#
+# This workflow does not auto-publish today: it uploads the tarballs +
+# SHA256SUMS as workflow artifacts and the operator attaches them to the
+# release manually (matching the rest of the dagnats release flow, which
+# is operator-driven via `make release`). When `make release` is wired
+# into CI, this workflow becomes the build half of that pipeline.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build (branch, tag, or SHA)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: linux/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up QEMU for cross-arch
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        run: make build-mcp-duckdb-linux-${{ matrix.arch }}
+
+      - name: Smoke-test
+        # Verify the tarball extracts and the binary's --help exits 0 on a
+        # clean ubuntu:24.04 host. ldd output is captured for the audit log
+        # so a future libstdc++ drift shows up clearly.
+        run: |
+          set -eu
+          PKG="dagnats-mcp-duckdb-linux-${{ matrix.arch }}"
+          docker run --rm --platform linux/${{ matrix.arch }} \
+            -v "$PWD/dist:/dist" ubuntu:24.04 sh -c "
+              set -eu
+              cd /tmp
+              tar xzf /dist/${PKG}.tar.gz
+              cd ${PKG}
+              ldd ./dagnats-mcp-duckdb
+              ./dagnats-mcp-duckdb --help
+            "
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dagnats-mcp-duckdb-linux-${{ matrix.arch }}
+          path: |
+            dist/dagnats-mcp-duckdb-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  # Single macOS runner builds both darwin slices via clang -arch.
+  # macos-latest is arm64; darwin/arm64 builds natively, darwin/amd64
+  # cross-compiles. One runner keeps macOS minutes low — see #188 PR 6b.
+  darwin:
+    name: darwin/{amd64,arm64}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build darwin/arm64
+        run: make build-mcp-duckdb-darwin-arm64
+
+      - name: Smoke-test darwin/arm64
+        run: |
+          set -eu
+          PKG="dagnats-mcp-duckdb-darwin-arm64"
+          cd /tmp
+          tar xzf "$GITHUB_WORKSPACE/dist/${PKG}.tar.gz"
+          cd "${PKG}"
+          otool -L ./dagnats-mcp-duckdb
+          ./dagnats-mcp-duckdb --help
+
+      - name: Build darwin/amd64
+        run: make build-mcp-duckdb-darwin-amd64
+
+      - name: Smoke-test darwin/amd64
+        # macos-latest runners support running x86_64 binaries via Rosetta;
+        # if that's unavailable on a future runner image, fall through to
+        # otool -L only (which still verifies the binary is well-formed and
+        # links only against system libs).
+        run: |
+          set -eu
+          PKG="dagnats-mcp-duckdb-darwin-amd64"
+          cd /tmp
+          rm -rf "${PKG}"
+          tar xzf "$GITHUB_WORKSPACE/dist/${PKG}.tar.gz"
+          cd "${PKG}"
+          otool -L ./dagnats-mcp-duckdb
+          if arch -x86_64 true 2>/dev/null; then
+            arch -x86_64 ./dagnats-mcp-duckdb --help
+          else
+            echo "Rosetta unavailable on this runner; skipping --help exec"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dagnats-mcp-duckdb-darwin
+          path: |
+            dist/dagnats-mcp-duckdb-darwin-amd64.tar.gz
+            dist/dagnats-mcp-duckdb-darwin-arm64.tar.gz
+          if-no-files-found: error

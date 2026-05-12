@@ -403,6 +403,59 @@ func TestDownloadURL_MCPDuckDB_LinuxAMD64(t *testing.T) {
 	}
 }
 
+func TestKnownBinaries_MCPDuckDB_ResolvesForAllPlatforms(
+	t *testing.T,
+) {
+	// #188 (PR 6b): URL resolution must succeed for every
+	// platform pair the main dagnats binary already targets,
+	// so `dagnats sidecar install` on any of them produces a
+	// well-formed download URL (no special casing per
+	// platform). The release pipeline must publish a tarball
+	// for each.
+	t.Parallel()
+	spec, ok := knownBinaries["dagnats-mcp-duckdb"]
+	if !ok {
+		t.Fatal("dagnats-mcp-duckdb missing from knownBinaries")
+	}
+
+	platforms := []struct{ os, arch string }{
+		{"linux", "amd64"},
+		{"linux", "arm64"},
+		{"darwin", "amd64"},
+		{"darwin", "arm64"},
+	}
+
+	for _, p := range platforms {
+		url, err := DownloadURL(
+			"dagnats-mcp-duckdb", spec.version, p.os, p.arch,
+		)
+		if err != nil {
+			t.Errorf(
+				"%s/%s: DownloadURL error: %v",
+				p.os, p.arch, err,
+			)
+			continue
+		}
+
+		// Positive: URL embeds the requested platform pair.
+		want := p.os + "-" + p.arch
+		if !strings.Contains(url, want) {
+			t.Errorf(
+				"%s/%s: URL must embed %q: %s",
+				p.os, p.arch, want, url,
+			)
+		}
+
+		// Positive: URL points at the dagnats release host.
+		if !strings.Contains(url, "danmestas/dagnats") {
+			t.Errorf(
+				"%s/%s: URL must reference dagnats release: %s",
+				p.os, p.arch, url,
+			)
+		}
+	}
+}
+
 func TestExtractBinary_NotInArchive(t *testing.T) {
 	archive := buildTarGz(t, "other", "data")
 
