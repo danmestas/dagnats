@@ -738,3 +738,95 @@ func TestSingletonOnWorkflowDef(t *testing.T) {
 		t.Fatalf("mode = %v, want skip", def.Singleton.Mode)
 	}
 }
+
+// ParseRunStatus is the single deep entry point for parsing
+// RunStatus from operator-supplied strings. Tests cover the
+// known-good path, case-insensitivity, and the error shape that
+// lists the valid set so callers never duplicate the slice.
+func TestParseRunStatus_KnownLowercase(t *testing.T) {
+	t.Parallel()
+	got, err := ParseRunStatus("failed")
+	if err != nil {
+		t.Fatalf("ParseRunStatus(\"failed\"): %v", err)
+	}
+	if got != RunStatusFailed {
+		t.Fatalf("expected RunStatusFailed, got %v", got)
+	}
+}
+
+func TestParseRunStatus_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	got, err := ParseRunStatus("FAILED")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != RunStatusFailed {
+		t.Fatalf("expected RunStatusFailed, got %v", got)
+	}
+}
+
+func TestParseRunStatus_MixedCaseWithWhitespace(t *testing.T) {
+	t.Parallel()
+	got, err := ParseRunStatus("  Completed  ")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != RunStatusCompleted {
+		t.Fatalf("expected RunStatusCompleted, got %v", got)
+	}
+}
+
+func TestParseRunStatus_AllKnownValuesRoundTrip(t *testing.T) {
+	t.Parallel()
+	known := []RunStatus{
+		RunStatusPending, RunStatusRunning,
+		RunStatusCompleted, RunStatusFailed,
+		RunStatusCancelled, RunStatusCompensated,
+		RunStatusCompensateFailed,
+	}
+	if len(known) == 0 {
+		t.Fatal("known statuses list must not be empty")
+	}
+	for _, want := range known {
+		got, err := ParseRunStatus(want.String())
+		if err != nil {
+			t.Fatalf("ParseRunStatus(%q): %v",
+				want.String(), err)
+		}
+		if got != want {
+			t.Fatalf("ParseRunStatus(%q) = %v, want %v",
+				want.String(), got, want)
+		}
+	}
+}
+
+func TestParseRunStatus_Unknown_ListsValidSet(t *testing.T) {
+	t.Parallel()
+	_, err := ParseRunStatus("nonsense")
+	if err == nil {
+		t.Fatalf("expected error for unknown status")
+	}
+	required := []string{
+		"failed", "completed", "valid:",
+	}
+	for _, want := range required {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf(
+				"error %q must mention %q (valid set)",
+				err.Error(), want,
+			)
+		}
+	}
+}
+
+func TestParseRunStatus_Empty_ReturnsError(t *testing.T) {
+	t.Parallel()
+	_, err := ParseRunStatus("")
+	if err == nil {
+		t.Fatalf("empty string must error")
+	}
+	if !strings.Contains(err.Error(), "valid:") {
+		t.Fatalf("error must list valid set: %q",
+			err.Error())
+	}
+}

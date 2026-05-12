@@ -110,6 +110,15 @@ func printRunUsage() {
 	fmt.Println("  --trace        include span tree (inspect)")
 	fmt.Println("  --json         output as JSON")
 	fmt.Println()
+	fmt.Println("`run list` flags:")
+	fmt.Println(
+		"  --workflow=NAME   filter by workflow name")
+	fmt.Printf(
+		"  --state=STATE     filter by run state (%s); "+
+			"case-insensitive\n",
+		strings.Join(dag.RunStatusNames(), ", "),
+	)
+	fmt.Println()
 	fmt.Println("Run IDs accept 8+ character prefixes.")
 }
 
@@ -500,6 +509,73 @@ func runSignalCmd(args []string) {
 	fmt.Printf("Signal sent: %s\n", name)
 }
 
+// runListFlags is the parsed shape of `dagnats run list` arguments.
+// state is the raw operator-supplied string; downstream callers parse
+// it via dag.ParseRunStatus so the valid-set lives in dag/, not here.
+type runListFlags struct {
+	workflow  string
+	state     string
+	scheduled bool
+}
+
+// parseRunListFlags is the single entry point for parsing the
+// `dagnats run list` flag set. It accepts both `--flag=value` and
+// `--flag value` shapes, recognises `--state` as the canonical
+// state-filter flag, and treats `--status` as a silent alias of
+// `--state`. Unrecognised flags fall through silently (matching the
+// pre-existing parser shape — other commands in this CLI tolerate
+// stray args). Unknown values for `--state` are not caught here;
+// dag.ParseRunStatus owns that validation.
+func parseRunListFlags(args []string) (runListFlags, error) {
+	if args == nil {
+		panic("parseRunListFlags: args must not be nil")
+	}
+	if len(args) > 100 {
+		panic("parseRunListFlags: args exceeds bound")
+	}
+	var out runListFlags
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case strings.HasPrefix(arg, "--workflow="):
+			out.workflow = strings.TrimPrefix(arg, "--workflow=")
+		case arg == "--workflow":
+			if i+1 >= len(args) {
+				return out, fmt.Errorf(
+					"--workflow requires a value",
+				)
+			}
+			i++
+			out.workflow = args[i]
+		case strings.HasPrefix(arg, "--state="):
+			out.state = strings.TrimPrefix(arg, "--state=")
+		case arg == "--state":
+			if i+1 >= len(args) {
+				return out, fmt.Errorf(
+					"--state requires a value",
+				)
+			}
+			i++
+			out.state = args[i]
+		case strings.HasPrefix(arg, "--status="):
+			// Silent alias retained for back-compat with
+			// existing scripts. Canonical form is --state.
+			out.state = strings.TrimPrefix(arg, "--status=")
+		case arg == "--status":
+			if i+1 >= len(args) {
+				return out, fmt.Errorf(
+					"--status requires a value",
+				)
+			}
+			i++
+			out.state = args[i]
+		case arg == "--scheduled":
+			out.scheduled = true
+		}
+	}
+	return out, nil
+}
+
 // runListCmd lists workflow runs with optional filtering.
 func runListCmd(args []string) {
 	if args == nil {
@@ -512,97 +588,122 @@ func runListCmd(args []string) {
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
 
-	var workflowFilter, statusFilter string
-	var scheduled bool
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--workflow=") {
-			workflowFilter = strings.TrimPrefix(
-				arg, "--workflow=",
-			)
-		}
-		if strings.HasPrefix(arg, "--status=") {
-			statusFilter = strings.TrimPrefix(
-				arg, "--status=",
-			)
-		}
-		if arg == "--scheduled" {
-			scheduled = true
-		}
+	flags, parseErr := parseRunListFlags(args)
+	if parseErr != nil {
+		fmt.Fprintln(os.Stderr, parseErr.Error())
+		exitFunc(1)
+		return
+	}
+	stateFilter, err := resolveStateFilter(flags.state)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		exitFunc(1)
+		return
 	}
 
 	svc, nc := connectService()
 	defer nc.Close()
 
-	if scheduled {
-		sched, err := svc.ListScheduledRuns()
-		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				"list scheduled: %v\n", err)
-			os.Exit(1)
-		}
-		if jsonOutput {
-			if err := FormatJSON(os.Stdout, sched); err != nil {
-				fmt.Fprintf(os.Stderr,
-					"format json: %v\n", err)
-				os.Exit(1)
-			}
-			return
-		}
-		if len(sched) == 0 {
-			fmt.Println("No scheduled runs.")
-			return
-		}
-		tw := tabwriter.NewWriter(
-			os.Stdout, 0, 4, 2, ' ', 0,
-		)
-		fmt.Fprintln(tw,
-			"RUN ID\tWORKFLOW\tRUN AT\tSTATUS")
-		for _, sr := range sched {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-				sr.RunID[:8],
-				sr.WorkflowID,
-				sr.RunAt.Format(time.RFC3339),
-				sr.Status,
-			)
-		}
-		tw.Flush()
+	if flags.scheduled {
+		runScheduledList(svc, jsonOutput)
 		return
 	}
+	runActiveList(svc, flags.workflow, stateFilter, jsonOutput)
+}
 
+// resolveStateFilter wraps dag.ParseRunStatus so callers get a
+// pointer (nil = no filter) without inlining a 5-line guard at each
+// call site. Empty input is "no filter" — not an error.
+func resolveStateFilter(
+	raw string,
+) (*dag.RunStatus, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, err := dag.ParseRunStatus(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+// runScheduledList renders the `--scheduled` view. Extracted from
+// runListCmd to keep each function under 70 lines.
+func runScheduledList(svc *api.Service, jsonOutput bool) {
+	if svc == nil {
+		panic("runScheduledList: svc must not be nil")
+	}
+	sched, err := svc.ListScheduledRuns()
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"list scheduled: %v\n", err)
+		exitFunc(1)
+		return
+	}
+	if jsonOutput {
+		if err := FormatJSON(os.Stdout, sched); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"format json: %v\n", err)
+			exitFunc(1)
+		}
+		return
+	}
+	if len(sched) == 0 {
+		fmt.Println("No scheduled runs.")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "RUN ID\tWORKFLOW\tRUN AT\tSTATUS")
+	for _, sr := range sched {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+			sr.RunID[:8], sr.WorkflowID,
+			sr.RunAt.Format(time.RFC3339), sr.Status,
+		)
+	}
+	tw.Flush()
+}
+
+// runActiveList renders the non-scheduled `run list` view. Optional
+// stateFilter (nil = no filter) narrows the result client-side.
+func runActiveList(
+	svc *api.Service,
+	workflowFilter string,
+	stateFilter *dag.RunStatus,
+	jsonOutput bool,
+) {
+	if svc == nil {
+		panic("runActiveList: svc must not be nil")
+	}
 	runs, err := svc.ListRuns(
 		context.Background(), workflowFilter,
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list runs: %v\n", err)
-		os.Exit(1)
+		exitFunc(1)
+		return
 	}
-
-	// Client-side status filter
-	if statusFilter != "" {
+	if stateFilter != nil {
+		want := *stateFilter
 		filtered := runs[:0]
 		for _, r := range runs {
-			if strings.EqualFold(
-				r.Status.String(), statusFilter,
-			) {
+			if r.Status == want {
 				filtered = append(filtered, r)
 			}
 		}
 		runs = filtered
 	}
-
 	if jsonOutput {
 		if err := FormatJSON(os.Stdout, runs); err != nil {
-			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(os.Stderr,
+				"format json: %v\n", err)
+			exitFunc(1)
 		}
 		return
 	}
-
 	if len(runs) == 0 {
 		fmt.Println("No runs found.")
 		return
 	}
-
 	printRunTable(runs)
 }
 
