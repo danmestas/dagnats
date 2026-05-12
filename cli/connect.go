@@ -15,6 +15,19 @@ import (
 // exitFunc is the function called on fatal errors. Replaced in tests.
 var exitFunc = os.Exit
 
+// SwapExitFunc replaces the package-level exit hook and returns the
+// prior value. Test fixtures use it to intercept os.Exit so a
+// non-zero exit from in-process cli.Run does not terminate the test
+// runner. Always pair with a deferred SwapExitFunc(prev) to restore.
+func SwapExitFunc(next func(int)) func(int) {
+	if next == nil {
+		panic("SwapExitFunc: next must not be nil")
+	}
+	prev := exitFunc
+	exitFunc = next
+	return prev
+}
+
 // connectService creates an api.Service bound to NATS. Prints a
 // friendly error and exits with code 1 if connection fails or
 // required NATS resources are missing.
