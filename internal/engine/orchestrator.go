@@ -1603,7 +1603,13 @@ func (o *Orchestrator) failWorkflow(
 	// to using run.Input directly — replay still works for single-step
 	// workflows, which is the firestorm-dataworks shape.
 	wfDef, _ := o.loadDef(ctx, run.WorkflowID)
-	taskSubject := o.publisher.StepSubject(stepDef, run.RunID)
+	// Reconciler-driven failure paths use a synthetic stepDef with
+	// no Task name; for those, leave taskSubject empty and let
+	// PublishDeadLetter derive a best-effort default.
+	taskSubject := ""
+	if stepDef.Task != "" {
+		taskSubject = o.publisher.StepSubject(stepDef, run.RunID)
+	}
 	o.recovery.PublishDeadLetter(ctx, run, wfDef, stepDef, state,
 		taskSubject)
 	return o.notifyParentIfChild(
@@ -2531,7 +2537,10 @@ func (o *Orchestrator) failMapStep(
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}
-	taskSubject := o.publisher.StepSubject(stepDef, run.RunID)
+	taskSubject := ""
+	if stepDef.Task != "" {
+		taskSubject = o.publisher.StepSubject(stepDef, run.RunID)
+	}
 	o.recovery.PublishDeadLetter(ctx, run, wfDef, stepDef, state,
 		taskSubject)
 	return o.notifyParentIfChild(

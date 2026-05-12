@@ -221,7 +221,10 @@ func (rm *RecoveryManager) failAuxStep(
 	}
 	rm.runsActive.Add(ctx, -1)
 	rm.runsFailed.Add(ctx, 1)
-	taskSubject := rm.publisher.StepSubject(stepDef, run.RunID)
+	taskSubject := ""
+	if stepDef.Task != "" {
+		taskSubject = rm.publisher.StepSubject(stepDef, run.RunID)
+	}
 	rm.PublishDeadLetter(ctx, run, wfDef, stepDef, state, taskSubject)
 	return notifyFn(
 		ctx, run,
