@@ -195,7 +195,7 @@ func (s *Service) bulkReplay(
 	}
 
 	dlqByRun := make(
-		map[string][]DeadLetter, len(dlqEntries),
+		map[string][]DeadLetterView, len(dlqEntries),
 	)
 	for _, entry := range dlqEntries {
 		dlqByRun[entry.RunID] = append(
