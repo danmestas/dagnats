@@ -107,6 +107,16 @@ func (r RunStatus) IsTerminal() bool {
 	return false
 }
 
+// RunStatusNames returns the canonical lowercase string names for
+// every RunStatus value, in numeric order. Callers (CLI help text,
+// API docs, error messages) reuse this rather than maintaining
+// their own copy of the slice.
+func RunStatusNames() []string {
+	out := make([]string, len(runStatusStrings))
+	copy(out, runStatusStrings[:])
+	return out
+}
+
 // ParseRunStatus parses an operator-supplied string into a RunStatus.
 // Case-insensitive, trims surrounding whitespace. On no match it
 // returns a descriptive error listing the valid set, so callers never
