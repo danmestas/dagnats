@@ -50,7 +50,18 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Subjects:  []string{"dead.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
-			Replicas:  replicas,
+			// Dedup window: the engine's WORKFLOW_HISTORY consumer
+			// uses default AckWait (30s) and no MaxDeliver cap, so a
+			// redelivered step.failed can re-enter the failure path.
+			// PublishDeadLetter sets Nats-Msg-Id keyed on
+			// (runID, stepID, attempts); the window must cover the
+			// longest plausible republish interval — slow operator
+			// reruns, reconciler-driven dupes, and the observed
+			// ~2min engine redelivery cycles from #202. 24h is
+			// conservative; cost is small (header-only state per
+			// dedup-id).
+			Duplicates: 24 * time.Hour,
+			Replicas:   replicas,
 		},
 		{
 			Name:      "SLEEP_TIMERS",
