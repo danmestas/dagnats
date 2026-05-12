@@ -3,19 +3,19 @@
 // HTTPHandler implements http.Handler for the synchronous HTTP trigger
 // kind per ADR-013. The handler:
 //
-//   1. Reads and bounds the body via httpenvelope.
-//   2. Verifies HMAC when HTTPConfig.Secret is set.
-//   3. Subscribes to httpenvelope.ResponseSubject(runID) on the plain
-//      NATS connection BEFORE publishing the workflow.started event.
-//      Without subscribe-before-publish, a workflow fast enough to
-//      respond inside the publish→subscribe window would lose the
-//      response (ADR-013 §1 step 3).
-//   4. Publishes the TriggerEnvelope on the JetStream history stream
-//      so the engine picks it up.
-//   5. Awaits the response (or per-request timeout) and writes the
-//      engine's status/headers/body to the http.ResponseWriter.
-//   6. Always sets X-Dagnats-Run-Id so operators can correlate the
-//      response back to `dagnats run inspect` (ADR-013 Q7).
+//  1. Reads and bounds the body via httpenvelope.
+//  2. Verifies HMAC when HTTPConfig.Secret is set.
+//  3. Subscribes to httpenvelope.ResponseSubject(runID) on the plain
+//     NATS connection BEFORE publishing the workflow.started event.
+//     Without subscribe-before-publish, a workflow fast enough to
+//     respond inside the publish→subscribe window would lose the
+//     response (ADR-013 §1 step 3).
+//  4. Publishes the TriggerEnvelope on the JetStream history stream
+//     so the engine picks it up.
+//  5. Awaits the response (or per-request timeout) and writes the
+//     engine's status/headers/body to the http.ResponseWriter.
+//  6. Always sets X-Dagnats-Run-Id so operators can correlate the
+//     response back to `dagnats run inspect` (ADR-013 Q7).
 //
 // Failure-mode coverage (run.failed / cancelled / no-respond) lands
 // in PR 3; PR 2 covers the happy path and per-request timeout.

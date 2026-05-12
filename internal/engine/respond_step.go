@@ -92,7 +92,7 @@ func (o *Orchestrator) enqueueRespondStep(
 // resolveRespondBody picks the body bytes per RespondConfig.BodyFrom:
 //   - empty       — upstream step's output if any, else run.Input.
 //   - "data.X.Y"  — dotpath into the run's resolved input (the
-//                   trigger envelope's Data for HTTP-trigger runs).
+//     trigger envelope's Data for HTTP-trigger runs).
 //   - "X.Y"       — dotpath into the upstream's output.
 //
 // The simple split (data.* vs other) avoids a config knob for
