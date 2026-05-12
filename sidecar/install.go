@@ -20,6 +20,10 @@ const (
 
 	defaultOtelcolVersion      = "0.102.0"
 	defaultOtlp2parquetVersion = "0.9.1"
+	// defaultMCPDuckDBVersion tracks the dagnats release tag.
+	// The tarball is built and published alongside the main
+	// dagnats binaries; bump in lockstep with the release tag.
+	defaultMCPDuckDBVersion = "0.0.1"
 
 	binDirName = ".dagnats/bin"
 	dirPerms   = 0o755
@@ -45,6 +49,18 @@ var knownBinaries = map[string]binarySpec{
 			"smithclay/otlp2parquet/" +
 			"releases/download/v%s/" +
 			"otlp2parquet-cli-%s-%s.tar.gz",
+	},
+	// dagnats-mcp-duckdb ships from the dagnats release itself.
+	// CGO+marcboeker/go-duckdb means we can't bundle it into the
+	// main pure-Go dagnats binary, but the release pipeline builds
+	// a standalone per-platform tarball alongside the main release.
+	// See #188.
+	"dagnats-mcp-duckdb": {
+		version: defaultMCPDuckDBVersion,
+		urlFmt: "https://github.com/" +
+			"danmestas/dagnats/" +
+			"releases/download/v%s/" +
+			"dagnats-mcp-duckdb-%s-%s.tar.gz",
 	},
 }
 
@@ -126,6 +142,11 @@ func DownloadURL(
 		), nil
 	case "otlp2parquet":
 		spec := knownBinaries["otlp2parquet"]
+		return fmt.Sprintf(
+			spec.urlFmt, version, goos, goarch,
+		), nil
+	case "dagnats-mcp-duckdb":
+		spec := knownBinaries["dagnats-mcp-duckdb"]
 		return fmt.Sprintf(
 			spec.urlFmt, version, goos, goarch,
 		), nil
@@ -403,13 +424,35 @@ func InstallAll(w io.Writer) error {
 		fmt.Fprintf(w, "✓ %s installed\n", name)
 	}
 
-	// Local Go binaries: build from in-repo source.
+	// Local Go binaries: try prebuilt download first (clean
+	// hosts have no Go), fall back to BuildLocal for the
+	// dagnats source tree path, and soft-skip if both fail.
 	for _, lb := range localBinaries {
 		path, err := FindBinary(lb.Name)
 		if err == nil {
 			fmt.Fprintf(w, "✓ %s found at %s\n",
 				lb.Name, path)
 			continue
+		}
+
+		// Prefer prebuilt download when knownBinaries has an
+		// entry — this is the prebuilt-host path and avoids
+		// the Go/CGO toolchain. See #188.
+		if spec, ok := knownBinaries[lb.Name]; ok {
+			fmt.Fprintf(
+				w, "⬇ installing %s v%s...\n",
+				lb.Name, spec.version,
+			)
+			if err := Install(lb.Name, spec.version); err == nil {
+				fmt.Fprintf(w, "✓ %s installed\n", lb.Name)
+				continue
+			} else {
+				fmt.Fprintf(w,
+					"  download failed (%v); "+
+						"trying local build...\n",
+					err,
+				)
+			}
 		}
 
 		fmt.Fprintf(w, "🔨 building %s...\n", lb.Name)
