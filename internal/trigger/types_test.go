@@ -9,6 +9,47 @@ import (
 	"time"
 )
 
+func TestTriggerDefHTTPJSON(t *testing.T) {
+	def := TriggerDef{
+		ID:         "t-http",
+		WorkflowID: "orders-wf",
+		Enabled:    true,
+		HTTP: &HTTPConfig{
+			Path:              "/api/orders",
+			Method:            "POST",
+			TimeoutMs:         30000,
+			MaxBodyBytes:      1024,
+			IdempotencyHeader: "Idempotency-Key",
+		},
+	}
+
+	data, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got TriggerDef
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Positive: HTTPConfig round-trips.
+	if got.HTTP == nil {
+		t.Fatal("HTTP should be non-nil after round-trip")
+	}
+	if got.HTTP.Path != "/api/orders" {
+		t.Fatalf("Path = %q, want /api/orders", got.HTTP.Path)
+	}
+	// Negative: other one-of variants stay nil.
+	if got.Cron != nil || got.Webhook != nil ||
+		got.Subject != nil {
+		t.Fatalf(
+			"only HTTP should be set, got cron=%v webhook=%v subject=%v",
+			got.Cron, got.Webhook, got.Subject,
+		)
+	}
+}
+
 func TestTriggerDefCronJSON(t *testing.T) {
 	def := TriggerDef{
 		ID:         "t1",

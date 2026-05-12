@@ -10,7 +10,10 @@ import (
 )
 
 // TriggerDef defines a single trigger. Exactly one of Cron, Subject,
-// or Webhook must be non-nil.
+// Webhook, or HTTP must be non-nil. HTTP triggers (ADR-013) differ
+// from Webhook triggers in that the caller waits for a workflow
+// response; webhook callers are fire-and-forget. The shapes stay
+// distinct so the semantic contract cannot be mistaken at a glance.
 type TriggerDef struct {
 	ID         string          `json:"id"`
 	WorkflowID string          `json:"workflow_id"`
@@ -18,6 +21,7 @@ type TriggerDef struct {
 	Cron       *CronConfig     `json:"cron,omitempty"`
 	Subject    *SubjectConfig  `json:"subject,omitempty"`
 	Webhook    *WebhookConfig  `json:"webhook,omitempty"`
+	HTTP       *HTTPConfig     `json:"http,omitempty"`
 	Debounce   *DebounceConfig `json:"debounce,omitempty"`
 }
 
