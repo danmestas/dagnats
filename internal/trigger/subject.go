@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -160,9 +161,7 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 		return
 	}
 
-	runID := fmt.Sprintf(
-		"%s-%d", s.def.WorkflowID, now.UnixNano(),
-	)
+	runID := runid.New()
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted,
 		runID,

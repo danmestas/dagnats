@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/httpenvelope"
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -170,9 +171,7 @@ func (h *WebhookHandler) publishWorkflowEvent(
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
 
-	runID := fmt.Sprintf(
-		"%s-%d", h.def.WorkflowID, now.UnixNano(),
-	)
+	runID := runid.New()
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted,
 		runID,
