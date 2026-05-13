@@ -67,10 +67,10 @@ const idempotencyKVBucket = "http_idempotency"
 
 // HTTPHandler implements http.Handler for one HTTP trigger.
 type HTTPHandler struct {
-	nc    *nats.Conn
-	js    jetstream.JetStream
-	idkv  jetstream.KeyValue // nil unless IdempotencyHeader is set
-	def   TriggerDef
+	nc   *nats.Conn
+	js   jetstream.JetStream
+	idkv jetstream.KeyValue // nil unless IdempotencyHeader is set
+	def  TriggerDef
 }
 
 // NewHTTPHandler constructs an HTTPHandler bound to def's config.
