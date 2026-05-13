@@ -170,6 +170,20 @@ func (h *HTTPHandler) ServeHTTP(
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
+	// Subscribe to failure history BEFORE publishing the trigger
+	// envelope so a fast-failing engine cannot publish
+	// workflow.failed before the failure observer is wired up.
+	failCh := make(chan failureSignal, 1)
+	stopFailWatch, ferr := startFailureObserver(h.nc, runID, failCh)
+	if ferr != nil {
+		http.Error(w,
+			`{"error":"failure_observer_failed","run_id":"`+runID+`"}`,
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	defer stopFailWatch()
+
 	if !replay {
 		envelope, err := buildHTTPEnvelope(r, h.def, body)
 		if err != nil {
@@ -193,7 +207,7 @@ func (h *HTTPHandler) ServeHTTP(
 	// awaitResponse uses the request's own context for client-close
 	// detection; the per-request timeout is its own arm so the two
 	// don't race when the timeout fires.
-	h.awaitResponse(r.Context(), w, sub, runID)
+	h.awaitResponse(r.Context(), w, sub, runID, failCh)
 }
 
 // resolveIdempotentRunID looks up the idempotency KV for a prior runID
@@ -443,14 +457,17 @@ func (h *HTTPHandler) publishTrigger(
 	return nil
 }
 
-// awaitResponse selects on the response subscription, the failure
-// observer (history.<runID>), the request context, and the per-request
-// timeout. Maps each terminal signal to the documented HTTP outcome
-// per ADR-013 §"Failure handling". All async subscriptions are torn
-// down on every exit path via deferred unsubscribe.
+// awaitResponse selects on the response subscription, the
+// pre-armed failure observer (history.<runID>), the request context,
+// and the per-request timeout. Maps each terminal signal to the
+// documented HTTP outcome per ADR-013 §"Failure handling". The
+// caller is responsible for arming the failure observer BEFORE
+// publishing the trigger envelope so a fast-failing engine cannot
+// publish workflow.failed before the observer is wired.
 func (h *HTTPHandler) awaitResponse(
 	ctx context.Context, w http.ResponseWriter,
 	sub *nats.Subscription, runID string,
+	failCh <-chan failureSignal,
 ) {
 	if sub == nil {
 		panic("awaitResponse: sub must not be nil")
@@ -458,19 +475,12 @@ func (h *HTTPHandler) awaitResponse(
 	if runID == "" {
 		panic("awaitResponse: runID must not be empty")
 	}
+	if failCh == nil {
+		panic("awaitResponse: failCh must not be nil")
+	}
 
 	respCh := make(chan *nats.Msg, 1)
-	failCh := make(chan failureSignal, 1)
 	startResponseReader(sub, respCh)
-	stopFailWatch, err := startFailureObserver(h.nc, runID, failCh)
-	if err != nil {
-		http.Error(w,
-			`{"error":"failure_observer_failed","run_id":"`+runID+`"}`,
-			http.StatusInternalServerError,
-		)
-		return
-	}
-	defer stopFailWatch()
 
 	timer := time.NewTimer(awaitTimeout(ctx, h.def.HTTP.TimeoutMs))
 	defer timer.Stop()
