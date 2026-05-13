@@ -58,16 +58,26 @@ type httpResponsePayload struct {
 	Body        []byte            `json:"body,omitempty"`
 }
 
+// idempotencyKVBucket is the JetStream KV bucket that stores
+// (triggerID, header-value) → originalRunID for HTTP idempotency
+// replay (ADR-013 Q6 / PR 3). Created by natsutil.SetupKVBuckets so
+// the handler can assume it exists in any topology that uses HTTP
+// triggers. Bucket-level TTL governs entry lifetime — see conn.go.
+const idempotencyKVBucket = "http_idempotency"
+
 // HTTPHandler implements http.Handler for one HTTP trigger.
 type HTTPHandler struct {
-	nc  *nats.Conn
-	js  jetstream.JetStream
-	def TriggerDef
+	nc    *nats.Conn
+	js    jetstream.JetStream
+	idkv  jetstream.KeyValue // nil unless IdempotencyHeader is set
+	def   TriggerDef
 }
 
 // NewHTTPHandler constructs an HTTPHandler bound to def's config.
 // Panics on nil connection or missing HTTP config — both are
-// programmer errors caught at trigger registration time.
+// programmer errors caught at trigger registration time. Resolves
+// the idempotency KV lazily so a handler whose trigger doesn't use
+// IdempotencyHeader does not require the bucket to exist.
 func NewHTTPHandler(nc *nats.Conn, def TriggerDef) *HTTPHandler {
 	if nc == nil {
 		panic("NewHTTPHandler: nc must not be nil")
@@ -79,7 +89,22 @@ func NewHTTPHandler(nc *nats.Conn, def TriggerDef) *HTTPHandler {
 	if err != nil {
 		panic(fmt.Sprintf("NewHTTPHandler: jetstream.New: %v", err))
 	}
-	return &HTTPHandler{nc: nc, js: js, def: def}
+	h := &HTTPHandler{nc: nc, js: js, def: def}
+	if def.HTTP.IdempotencyHeader != "" {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+		kv, err := js.KeyValue(ctx, idempotencyKVBucket)
+		if err == nil {
+			h.idkv = kv
+		}
+		// Bucket may not exist in tests/topologies that don't use
+		// HTTP triggers; the handler degrades to per-run subjects
+		// (the PR 2 behavior). This is benign because the bucket
+		// is created by natsutil.SetupAll in normal deployments.
+	}
+	return h
 }
 
 // ServeHTTP is the http.Handler entry point. Splits the work across
@@ -105,16 +130,35 @@ func (h *HTTPHandler) ServeHTTP(
 		return
 	}
 
-	runID := fmt.Sprintf(
+	newRunID := fmt.Sprintf(
 		"%s-%d", h.def.WorkflowID, time.Now().UTC().UnixNano(),
 	)
-	w.Header().Set(httpRunIDHeader, runID)
 
 	timeout := time.Duration(h.def.HTTP.TimeoutMs) * time.Millisecond
 	publishCtx, publishCancel := context.WithTimeout(
 		r.Context(), timeout,
 	)
 	defer publishCancel()
+
+	runID, replay := h.resolveIdempotentRunID(
+		publishCtx, r, newRunID,
+	)
+	w.Header().Set(httpRunIDHeader, runID)
+
+	// Replay fast path: a previous request already received the
+	// engine response and stored it in KV. Read it and return.
+	if replay {
+		if data, ok := h.fetchStoredResult(
+			r.Context(), runID, timeout,
+		); ok {
+			writeHTTPResponse(w, data)
+			return
+		}
+		// No stored result yet — the original handler is still
+		// mid-flight. Fall through to subscribe + await on the same
+		// per-run subject; both handlers will see the engine's
+		// publish (NATS fan-out).
+	}
 
 	sub, err := h.subscribeResponse(runID)
 	if err != nil {
@@ -126,28 +170,169 @@ func (h *HTTPHandler) ServeHTTP(
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
-	envelope, err := buildHTTPEnvelope(r, h.def, body)
-	if err != nil {
-		http.Error(w,
-			"failed to build envelope",
-			http.StatusInternalServerError,
-		)
-		return
-	}
-	if err := h.publishTrigger(
-		publishCtx, envelope, runID, r,
-	); err != nil {
-		http.Error(w,
-			"failed to publish trigger",
-			http.StatusInternalServerError,
-		)
-		return
+	if !replay {
+		envelope, err := buildHTTPEnvelope(r, h.def, body)
+		if err != nil {
+			http.Error(w,
+				"failed to build envelope",
+				http.StatusInternalServerError,
+			)
+			return
+		}
+		if err := h.publishTrigger(
+			publishCtx, envelope, runID, r,
+		); err != nil {
+			http.Error(w,
+				"failed to publish trigger",
+				http.StatusInternalServerError,
+			)
+			return
+		}
 	}
 
 	// awaitResponse uses the request's own context for client-close
 	// detection; the per-request timeout is its own arm so the two
 	// don't race when the timeout fires.
 	h.awaitResponse(r.Context(), w, sub, runID)
+}
+
+// resolveIdempotentRunID looks up the idempotency KV for a prior runID
+// bound to (triggerID, header-value). On hit, returns (existingRunID,
+// true) so the caller subscribes to the original run's subject and
+// skips publishing a new workflow.started event. On miss, atomically
+// claims newRunID via KV.Create and returns (newRunID, false). Any KV
+// error (bucket missing, header empty, ctx cancelled) falls through
+// to (newRunID, false) — the worst case is the pre-replay PR 2
+// behavior (each request its own per-run subject).
+func (h *HTTPHandler) resolveIdempotentRunID(
+	ctx context.Context, r *http.Request, newRunID string,
+) (string, bool) {
+	if r == nil {
+		panic("resolveIdempotentRunID: r must not be nil")
+	}
+	if newRunID == "" {
+		panic("resolveIdempotentRunID: newRunID must not be empty")
+	}
+	if h.idkv == nil {
+		return newRunID, false
+	}
+	hdrName := h.def.HTTP.IdempotencyHeader
+	if hdrName == "" {
+		return newRunID, false
+	}
+	hdrValue := r.Header.Get(hdrName)
+	if hdrValue == "" {
+		return newRunID, false
+	}
+	key := idempotencyKey(h.def.ID, hdrValue)
+
+	entry, err := h.idkv.Get(ctx, key)
+	if err == nil && entry != nil && len(entry.Value()) > 0 {
+		return string(entry.Value()), true
+	}
+	// Miss: race-safe claim via Create (first writer wins).
+	if _, err := h.idkv.Create(
+		ctx, key, []byte(newRunID),
+	); err != nil {
+		// Someone else won the race — re-read and use theirs.
+		entry, err := h.idkv.Get(ctx, key)
+		if err == nil && entry != nil && len(entry.Value()) > 0 {
+			return string(entry.Value()), true
+		}
+		// Genuine KV error: degrade to PR 2 behavior.
+		return newRunID, false
+	}
+	return newRunID, false
+}
+
+// idempotencyKey composes the KV key. Trigger ID prefix scopes the
+// header value to the route — two distinct triggers can use the same
+// Idempotency-Key without colliding. The "claim" prefix distinguishes
+// claim entries from result entries (storeResult / fetchStoredResult).
+func idempotencyKey(triggerID, headerValue string) string {
+	if triggerID == "" {
+		panic("idempotencyKey: triggerID must not be empty")
+	}
+	if headerValue == "" {
+		panic("idempotencyKey: headerValue must not be empty")
+	}
+	return "claim." + triggerID + "." + headerValue
+}
+
+// resultKey is the KV key for the stored response payload of a run,
+// readable by replay handlers. The runID is unique per run so no
+// prefix collision is possible.
+func resultKey(runID string) string {
+	if runID == "" {
+		panic("resultKey: runID must not be empty")
+	}
+	return "result." + runID
+}
+
+// storeResult writes the engine response payload to the idempotency
+// KV under result.<runID> so subsequent replay requests (same
+// IdempotencyHeader value) can serve it without re-running the
+// workflow. Errors are logged at the caller's discretion — best-effort
+// only; the live response is already on the wire.
+func (h *HTTPHandler) storeResult(
+	ctx context.Context, runID string, data []byte,
+) {
+	if runID == "" {
+		panic("storeResult: runID must not be empty")
+	}
+	if data == nil {
+		panic("storeResult: data must not be nil")
+	}
+	if h.idkv == nil {
+		return
+	}
+	// Use a separate short-deadline ctx so the request's own timer
+	// cannot abort the KV write after the response is on the wire.
+	writeCtx, cancel := context.WithTimeout(
+		context.Background(), 2*time.Second,
+	)
+	defer cancel()
+	_, _ = h.idkv.Put(writeCtx, resultKey(runID), data)
+	_ = ctx
+}
+
+// fetchStoredResult polls the idempotency KV for the result of a
+// prior run, returning the stored payload and ok=true on hit. Polls
+// at 25ms intervals up to the configured timeout because the original
+// handler may not have written the result yet when a duplicate
+// arrives. Bounded loop per TigerStyle.
+func (h *HTTPHandler) fetchStoredResult(
+	ctx context.Context, runID string, timeout time.Duration,
+) ([]byte, bool) {
+	if runID == "" {
+		panic("fetchStoredResult: runID must not be empty")
+	}
+	if timeout <= 0 {
+		panic("fetchStoredResult: timeout must be positive")
+	}
+	if h.idkv == nil {
+		return nil, false
+	}
+	const pollInterval = 25 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for i := 0; i < 10000; i++ {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		readCtx, cancel := context.WithTimeout(
+			context.Background(), 500*time.Millisecond,
+		)
+		entry, err := h.idkv.Get(readCtx, resultKey(runID))
+		cancel()
+		if err == nil && entry != nil && len(entry.Value()) > 0 {
+			return entry.Value(), true
+		}
+		if time.Now().After(deadline) {
+			return nil, false
+		}
+		time.Sleep(pollInterval)
+	}
+	return nil, false
 }
 
 // readAndValidate reads the body within the configured limit and,
@@ -292,6 +477,11 @@ func (h *HTTPHandler) awaitResponse(
 
 	select {
 	case msg := <-respCh:
+		// Store the result in KV first so any concurrent / future
+		// replay request for this runID sees the same response. KV
+		// write errors are non-fatal — the live client still gets
+		// the response on the wire; only replay degrades.
+		h.storeResult(ctx, runID, msg.Data)
 		writeHTTPResponse(w, msg.Data)
 	case sig := <-failCh:
 		writeFailureResponse(w, runID, sig)
