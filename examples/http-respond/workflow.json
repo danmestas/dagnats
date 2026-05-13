@@ -1,0 +1,34 @@
+{
+  "$schema": "../../docs/workflow-schema.json",
+  "name": "http-echo",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "echo",
+      "task": "echo",
+      "depends_on": []
+    },
+    {
+      "id": "respond",
+      "type": "respond",
+      "depends_on": ["echo"],
+      "config": {
+        "status": 200,
+        "content_type": "application/json"
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "id": "http-echo-trigger",
+      "workflow_id": "http-echo",
+      "enabled": true,
+      "http": {
+        "path": "/api/echo",
+        "method": "POST",
+        "timeout_ms": 5000,
+        "max_body_bytes": 1048576
+      }
+    }
+  ]
+}
