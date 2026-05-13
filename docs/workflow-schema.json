@@ -91,7 +91,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["normal", "agent_loop", "sub_workflow", "agent"],
+          "enum": ["normal", "agent_loop", "sub_workflow", "agent", "respond"],
           "description": "Execution semantics"
         },
         "loop": {
@@ -131,7 +131,7 @@
       "type": "object",
       "required": ["id"],
       "additionalProperties": false,
-      "description": "Trigger declaration: exactly one of cron, subject, or webhook must be present.",
+      "description": "Trigger declaration: exactly one of cron, subject, webhook, or http must be present.",
       "properties": {
         "id": {
           "type": "string",
@@ -175,6 +175,41 @@
             "secret": {"type": "string"}
           },
           "required": ["path"]
+        },
+        "http": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Synchronous HTTP trigger per ADR-013. Pairs with a respond step in the DAG.",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Exact-match URL path (must start with /). No wildcards in v1."
+            },
+            "method": {
+              "type": "string",
+              "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Hard cap on the synchronous wait for the respond step. Default 30000."
+            },
+            "max_body_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Request body size cap. Default 1 MiB."
+            },
+            "secret": {
+              "type": "string",
+              "minLength": 16,
+              "description": "Optional HMAC secret. Mirrors WebhookConfig.Secret."
+            },
+            "idempotency_header": {
+              "type": "string",
+              "description": "Optional header name (e.g. Idempotency-Key) whose value replays the prior run's response from KV."
+            }
+          },
+          "required": ["path", "method", "timeout_ms", "max_body_bytes"]
         },
         "debounce": {
           "type": "object",

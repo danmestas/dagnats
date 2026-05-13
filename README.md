@@ -67,6 +67,17 @@ Workflows are DAGs. The orchestrator subscribes to a NATS history stream and adv
 
 `dagnats serve` covers single-machine deployments. For leaf-node and distributed topologies, see the [Production guide](docs/production.md#deployment-topologies). Architecture decisions are recorded in [docs/architecture/](docs/architecture/) (ADR-006 onwards).
 
+### Trigger kinds
+
+Workflows can fire on four event sources:
+
+- **Cron** — time-based; `dagnats trigger create <wf> --cron="..."`.
+- **Webhook** — fire-and-forget at `POST /hooks/{path}`; 202 with no result.
+- **NATS subject** — subscribe to a JetStream subject filter; one message → one run.
+- **HTTP request/response** — synchronous endpoint at `/api/{path}` whose response comes from a `respond` step in the DAG. Use this when the workflow *is* an HTTP API. See [ADR-013](docs/architecture/adr-013-http-trigger-respond-step.md) and [`examples/http-respond/`](examples/http-respond/).
+
+Cron triggers are CLI-created. The other three are declared inline in workflow JSON under the workflow's `triggers` array.
+
 ## CLI
 
 ```bash
@@ -111,7 +122,10 @@ POST   /runs/{id}/signal/{name}  Send signal
 GET    /health                 NATS + JetStream connectivity check
 GET    /health/telemetry       Telemetry stream usage stats
 GET    /ready                  Server readiness
-POST   /hooks/{path}           Webhook trigger endpoint
+POST   /hooks/{path}           Webhook trigger endpoint (fire-and-forget, 202)
+*      /api/{user-path}        HTTP trigger endpoints (synchronous; method + path
+                               defined per workflow; response comes from the
+                               workflow's respond step — see ADR-013)
 ```
 
 ## NATS Resources
@@ -132,6 +146,7 @@ Created by `natsutil.SetupAll(nc)`:
 | KV | signals | Cross-workflow signals |
 | KV | checkpoints | Worker step state |
 | KV | concurrency_runs | Per-workflow counters |
+| KV | http_idempotency | HTTP trigger idempotency-key → run_id and stored response payloads (1h TTL) |
 
 ## Testing
 
