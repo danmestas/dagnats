@@ -87,17 +87,9 @@ Every trigger kind (cron, webhook, subject, http) hands the worker a **wrapped e
 
 `data.body` is base64-encoded over JSON because the engine treats it as opaque bytes — `[]byte` in Go, which `encoding/json` renders as base64. Unmarshalling back into `[]byte` decodes it.
 
-A minimal Go worker that pulls `method`, `path`, and the parsed body out of the envelope:
+The `worker.UnwrapTrigger()` option on `HandleTyped` auto-detects the envelope and hands the typed handler the unwrapped `data` directly, so workers that don't need the outer metadata can skip the wrapper struct:
 
 ```go
-type triggerEnvelope struct {
-    Trigger    string          `json:"trigger"`
-    Source     string          `json:"source"`
-    WorkflowID string          `json:"workflow_id"`
-    Timestamp  string          `json:"timestamp"`
-    Data       httpRequestData `json:"data"`
-}
-
 type httpRequestData struct {
     Method  string            `json:"method"`
     Path    string            `json:"path"`
@@ -106,18 +98,23 @@ type httpRequestData struct {
 }
 
 worker.HandleTyped(w, "echo",
-    func(ctx worker.TaskContext, in triggerEnvelope) (echoOutput, error) {
-        // in.Data.Method == "POST"
-        // in.Data.Path   == "/api/echo"
-        // in.Data.Body   == raw request bytes (already base64-decoded)
+    func(ctx worker.TaskContext, in httpRequestData) (echoOutput, error) {
+        // in.Method == "POST"
+        // in.Path   == "/api/echo"
+        // in.Body   == raw request bytes (already base64-decoded)
         var inner struct{ Name string `json:"name"` }
-        _ = json.Unmarshal(in.Data.Body, &inner)
+        _ = json.Unmarshal(in.Body, &inner)
         ...
     },
+    worker.UnwrapTrigger(),
 )
 ```
 
-This wrap is shared with `cron`, `webhook`, and `subject` triggers — the metadata (`trigger`, `source`, `workflow_id`, `timestamp`) is uniform, only `data` varies by trigger kind. Working example: [`examples/http-respond/main.go`](https://github.com/danmestas/dagnats/blob/main/examples/http-respond/main.go).
+Auto-detect is structural: the option only unwraps inputs whose JSON has both a top-level `trigger` string AND a top-level `data` field. Plain inputs (e.g. during local unit tests, or when the workflow is invoked directly via the CLI) still pass through unchanged.
+
+Authors who need the trigger metadata fields (`trigger`, `source`, `timestamp`) can drop the option and unmarshal the envelope manually via `ctx.Input()` — see [#229](https://github.com/danmestas/dagnats/issues/229) for when these will become first-class on `TaskContext`.
+
+This wrap is shared with `cron`, `webhook`, and `subject` triggers — the metadata is uniform, only `data` varies by trigger kind. Working example: [`examples/http-respond/main.go`](https://github.com/danmestas/dagnats/blob/main/examples/http-respond/main.go).
 
 ## Defining the respond step
 

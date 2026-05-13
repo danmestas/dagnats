@@ -1,14 +1,13 @@
 // examples/http-respond/main.go
 // Minimal DagNats worker for the http-respond example. The `echo`
-// task receives the trigger envelope (which wraps the HTTP request
-// envelope under .data) and returns a shaped JSON response that the
-// `respond` step then ships back as the HTTP body.
+// task uses worker.UnwrapTrigger() so the typed handler receives the
+// HTTP request fields directly — the trigger envelope's outer
+// metadata (trigger kind, source, workflow_id, timestamp) is hidden
+// from the worker, since this example does not need it.
 //
-// Trigger envelopes are wrapped: the worker's input JSON has the
-// trigger metadata at the top level (`trigger`, `source`,
-// `workflow_id`, `timestamp`) and the request envelope nested under
-// `data`. Same convention as webhook and subject triggers. See
-// docs/site/content/docs/triggers/http.md for the full shape.
+// Workers that DO need the metadata fields should drop the option
+// and unmarshal the full envelope themselves; see issue #229 for the
+// path to first-class metadata access on the TaskContext.
 //
 // Pair with `dagnats serve` and curl per the README.
 package main
@@ -22,17 +21,6 @@ import (
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
-
-// triggerEnvelope mirrors internal/trigger.TriggerEnvelope on the
-// wire. Every trigger kind (cron, webhook, subject, http) lands
-// here; the kind-specific payload lives under Data.
-type triggerEnvelope struct {
-	Trigger    string          `json:"trigger"`
-	Source     string          `json:"source"`
-	WorkflowID string          `json:"workflow_id"`
-	Timestamp  string          `json:"timestamp"`
-	Data       httpRequestData `json:"data"`
-}
 
 // httpRequestData mirrors internal/httpenvelope.Envelope — the
 // fields the HTTP trigger lifts from the inbound request. Body is
@@ -70,20 +58,21 @@ func main() {
 
 	worker.HandleTyped(w, "echo",
 		func(
-			ctx worker.TaskContext, in triggerEnvelope,
+			ctx worker.TaskContext, in httpRequestData,
 		) (echoOutput, error) {
-			fmt.Printf("[echo] %s %s\n", in.Data.Method, in.Data.Path)
+			fmt.Printf("[echo] %s %s\n", in.Method, in.Path)
 			var body json.RawMessage
-			if len(in.Data.Body) > 0 {
-				body = json.RawMessage(in.Data.Body)
+			if len(in.Body) > 0 {
+				body = json.RawMessage(in.Body)
 			}
 			return echoOutput{
 				You:    "the dagnats http trigger",
-				Method: in.Data.Method,
-				Path:   in.Data.Path,
+				Method: in.Method,
+				Path:   in.Path,
 				Body:   body,
 			}, nil
 		},
+		worker.UnwrapTrigger(),
 	)
 
 	fmt.Println("Worker ready. Waiting for /api/echo requests...")
