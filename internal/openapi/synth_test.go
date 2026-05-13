@@ -368,3 +368,76 @@ func TestBuildGoldenMinimal(t *testing.T) {
 		)
 	}
 }
+
+// TestRequestBodyByVerb pins the semantics: GET and DELETE produce no
+// requestBody (most SDK generators break on GET/DELETE-with-body, even
+// though OpenAPI 3.1 technically allows it). POST/PUT/PATCH produce
+// the requestBody with required=true.
+func TestRequestBodyByVerb(t *testing.T) {
+	cases := []struct {
+		method   string
+		wantBody bool
+	}{
+		{"GET", false},
+		{"DELETE", false},
+		{"POST", true},
+		{"PUT", true},
+		{"PATCH", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			td := trigger.TriggerDef{
+				ID:         "trig-" + tc.method,
+				WorkflowID: "wf-" + tc.method,
+				Enabled:    true,
+				HTTP: &trigger.HTTPConfig{
+					Path:         "/api/x",
+					Method:       tc.method,
+					TimeoutMs:    1000,
+					MaxBodyBytes: 1024,
+				},
+			}
+			def := dag.WorkflowDef{
+				Name:    "wf-" + tc.method,
+				Version: "1.0",
+				Steps: []dag.StepDef{
+					{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
+					{
+						ID:        "r",
+						Type:      dag.StepTypeRespond,
+						DependsOn: []string{"a"},
+						Config:    json.RawMessage(`{"status":200}`),
+					},
+				},
+			}
+			spec := Build("t", "1", []trigger.TriggerDef{td},
+				map[string]dag.WorkflowDef{def.Name: def})
+			item, ok := spec.Paths["/api/x"]
+			if !ok {
+				t.Fatalf("path missing for %s", tc.method)
+			}
+			var op *Operation
+			switch tc.method {
+			case "GET":
+				op = item.Get
+			case "POST":
+				op = item.Post
+			case "PUT":
+				op = item.Put
+			case "PATCH":
+				op = item.Patch
+			case "DELETE":
+				op = item.Delete
+			}
+			if op == nil {
+				t.Fatalf("operation missing for %s", tc.method)
+			}
+			// Positive AND negative space.
+			gotBody := op.RequestBody != nil
+			if gotBody != tc.wantBody {
+				t.Fatalf("%s requestBody present = %v, want %v",
+					tc.method, gotBody, tc.wantBody)
+			}
+		})
+	}
+}
