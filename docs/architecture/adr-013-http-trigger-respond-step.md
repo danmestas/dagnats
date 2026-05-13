@@ -1,6 +1,6 @@
 # ADR-013: HTTP Trigger + Respond Step (Durable Endpoints)
 
-**Status:** Proposed
+**Status:** Accepted
 **Deciders:** Dan Mestas
 **Depends on:** ADR-011 (engine sole retry authority), ADR-012 (engine resolves WorkflowDef)
 **Related:** Inngest Durable Endpoints (beta, Nov 2025); iii `http` trigger + middleware skills
@@ -64,17 +64,22 @@ type TriggerDef struct {
 }
 
 type HTTPConfig struct {
-    Path            string        `json:"path"`             // exact match, e.g. "/api/orders"
-    Method          string        `json:"method"`           // GET|POST|PUT|PATCH|DELETE
-    TimeoutMs       int           `json:"timeout_ms"`       // hard cap; default 30_000
-    MaxBodyBytes    int64         `json:"max_body_bytes"`   // default 1 MiB (matches webhook.go)
+    Path              string `json:"path"`                          // exact match, e.g. "/api/orders"
+    Method            string `json:"method"`                        // GET|POST|PUT|PATCH|DELETE
+    TimeoutMs         int    `json:"timeout_ms"`                    // hard cap; default 30_000
+    MaxBodyBytes      int64  `json:"max_body_bytes"`                // default 1 MiB
+    Secret            string `json:"secret,omitempty"`              // optional HMAC, mirrors WebhookConfig.Secret
+    IdempotencyHeader string `json:"idempotency_header,omitempty"`  // e.g. "Idempotency-Key"; becomes Nats-Msg-Id
 }
 ```
 
 Routes register on the same `cmd/dagnats-api` mux that hosts `/hooks/{path}` and
 the control plane (`internal/api/rest.go`). The handler:
 
-1. Reads and bounds the body (programmer-error assertion: `MaxBodyBytes > 0`).
+1. Reads and bounds the body via the shared `internal/httpenvelope` helper
+   (programmer-error assertion: `MaxBodyBytes > 0`). The helper is used by
+   both webhook and http triggers so envelope shape and body limits stay in
+   one place — preventing the two from drifting under independent maintenance.
 2. Generates a `run_id`.
 3. Subscribes (sync, with timeout) to `dagnats.http.response.<run_id>`
    **before** publishing the workflow.started event — eliminates a race where
@@ -114,8 +119,26 @@ type RespondConfig struct {
 
 The DAG can still continue past a `respond` step — the response is **sent**
 when the step executes; subsequent steps (logging, notifications, cleanup)
-proceed normally and do not affect the already-sent HTTP response. This is a
-deliberate choice: respond is a side effect, not a return statement.
+proceed normally and do not affect the already-sent HTTP response.
+
+#### Mental model: `respond` is a side effect, not a return
+
+This is the workflow-author's #1 cognitive trap, so spell it out:
+
+    http trigger → [step A] → [step B] → respond → [step C] → [step D]
+                                          │
+                                          └─ HTTP response dispatched here
+                                             (client connection released)
+
+`[step C]` and `[step D]` run **after** the HTTP client has already received
+its response. Their outputs are not visible to the caller. This is desirable
+for cleanup, audit logging, or fanning out follow-up workflows.
+
+**Anti-pattern:** placing an auth-revocation, billing-charge, or any
+"must-complete-before-the-user-sees-success" operation *after* `respond`. The
+user has already seen success; the late step can fail silently. Put such
+steps **before** `respond`, or split into a separate workflow keyed off the
+response event.
 
 ### Correlation — uses NATS, no new state
 
@@ -131,6 +154,17 @@ This is preferred over an in-memory `runID → ResponseWriter` map because:
 - Survives `dagnats-api` horizontal scaling without sticky sessions.
 - Aligns with the project's NATS-native pattern rule (CLAUDE.md → "NATS-Native
   Patterns").
+
+**Subject ownership.** The subject `dagnats.http.response.<run_id>` is
+**engine-private** — not a public surface. The string is produced in exactly
+one place: a helper `internal/httpenvelope.ResponseSubject(runID string) string`.
+The API handler (subscriber, in `internal/trigger`) and the engine's respond
+step (publisher, in `internal/engine`) both import it. Co-locating the helper
+in `internal/httpenvelope` (rather than `internal/trigger`) avoids a
+`trigger ↔ engine` import cycle while keeping the single-producer invariant.
+Hardcoding the subject in two packages would be change amplification waiting
+to happen; one helper makes it a single-site rename if the subject ever needs
+versioning.
 
 ### Failure handling
 
@@ -149,12 +183,33 @@ The 504-on-no-respond case is the foot-gun the validation step below mitigates.
 ### Workflow validation at registration
 
 When `POST /workflows` accepts a definition that includes an `http` trigger,
-the API service walks the DAG and warns (non-fatal) if any reachable terminal
-step path does not include a `respond` step. Fatal rejection is too strict
-(branches can legitimately complete without responding once one branch already
-responded), but silent acceptance breeds production hangs.
+two layers of validation run before the workflow is persisted:
 
-Validation lives in `dag/` (pure logic, unit-testable, no NATS).
+**Layer 1 — graph validation (`dag/` package, pure, no NATS):**
+
+- Warn if any reachable terminal step path does not include a `respond` step
+  (the 504-hang foot-gun).
+- Warn if more than one `respond` step is *simultaneously reachable* from the
+  trigger (the duplicate-respond case — see Q2 resolution). Multiple respond
+  nodes on mutually-exclusive branches (e.g. happy vs error) are legitimate;
+  the validator distinguishes "both reachable on the same execution" from
+  "one of two branches will run."
+
+Fatal rejection is too strict (legitimate branch-per-outcome patterns exist),
+so both checks emit warnings, not errors. Silent acceptance breeds production
+hangs and silent runtime drops.
+
+**Layer 2 — field validation (`internal/trigger` package):**
+
+- `Path` syntax (must start with `/`, no wildcards in v1).
+- `Method` enum (GET|POST|PUT|PATCH|DELETE).
+- `MaxBodyBytes > 0`, `TimeoutMs > 0`.
+- If `Secret` is set, minimum length check.
+- If `IdempotencyHeader` is set, syntactically valid HTTP header name.
+
+Field validation is fatal; graph validation surfaces warnings in the
+`POST /workflows` response body so the workflow author sees them at
+registration time, not first production hang.
 
 ## Why a step, not a return value
 
@@ -194,22 +249,47 @@ skip it — the body becomes `TriggerEnvelope.Data`, same as webhook bodies
 already do today. Bounded by `MaxBodyBytes` (default 1 MiB, matches
 `internal/trigger/webhook.go`). Ship v1 **with** POST body.
 
+### ...add engine-tracked "responded" state for runtime first-write-wins
+
+An earlier draft proposed a JetStream KV gate (`KV.Create("responded:<run_id>")`)
+to fail loudly on a second runtime `respond`. Rejected: it introduces a new
+engine state primitive the codebase does not have today — per-run "side
+effect performed" tracking is absent (see `internal/engine/task_publisher.go:36`,
+which only tracks per-`(runID, stepID, attempt)` task dedup). Two sources of
+truth (KV and subject) can disagree under partition. The chosen design
+instead relies on:
+
+1. **Graph validator** catches duplicate `respond` at registration (most cases).
+2. **Subject semantics** — the originating API replica unsubscribes after the
+   first publish; a second publish has no subscriber and is silently dropped
+   at NATS. This is benign because the HTTP response is already on the wire.
+3. **Per-task dedup** — the existing `Nats-Msg-Id` keyed on `(runID, stepID,
+   attempt)` prevents the *same* respond step from re-firing on retry.
+
+This pulls the loudness *up* to validation (where the cost is a warning in
+the registration response) rather than *sideways* into runtime state (where
+the cost is a new KV bucket and a partition-risk dependency).
+
 ## Implementation plan (estimate)
 
-| Component                                              | LOC est. | Risk    |
-| ------------------------------------------------------ | -------- | ------- |
-| `internal/trigger`: `HTTPConfig`, validation, types    | ~120     | low     |
-| `internal/trigger/http.go`: HTTPHandler (mirrors webhook.go) | ~180     | medium  |
-| `internal/api`: route registration from trigger KV     | ~100     | medium  |
-| `dag`: `StepTypeRespond`, `RespondConfig`, validation  | ~80      | low     |
-| `engine`: respond step execution + publish path        | ~100     | low     |
-| `dag`: reachability check for `respond` from `http` trigger | ~80   | low     |
-| Tests: trigger fire→workflow→respond happy path        | ~200     | low     |
-| Tests: timeout, run-failure, run-cancellation, no-respond | ~150  | medium  |
-| Tests: distributed correlation (API server ≠ engine)   | ~120     | medium  |
-| Example workflow + docs/site page                      | ~100     | trivial |
+| Component                                                              | LOC est. | Risk    |
+| ---------------------------------------------------------------------- | -------- | ------- |
+| `internal/httpenvelope`: shared body-bounding + envelope build (webhook+http) | ~60      | low     |
+| `internal/trigger`: `HTTPConfig` types + field validation              | ~80      | low     |
+| `internal/trigger/http.go`: HTTPHandler (uses `httpenvelope` + `ResponseSubject`) | ~150 | medium  |
+| `internal/trigger/http.go`: `ResponseSubject(runID)` helper            | ~10      | low     |
+| `internal/api`: route registration from trigger KV                     | ~100     | medium  |
+| `dag`: `StepTypeRespond`, `RespondConfig`                              | ~50      | low     |
+| `dag`: graph validation (reachability + multiplicity for `respond`)    | ~100     | low     |
+| `engine`: respond step execution (publishes via `ResponseSubject`)     | ~80      | low     |
+| Tests: trigger fire→workflow→respond happy path                        | ~200     | low     |
+| Tests: timeout, run-failure, run-cancellation, no-respond              | ~150     | medium  |
+| Tests: distributed correlation (API server ≠ engine)                   | ~120     | medium  |
+| Tests: graph validator (missing respond, duplicate respond warnings)   | ~60      | low     |
+| Tests: idempotency-header dedup window                                 | ~50      | low     |
+| Example workflow + docs/site page                                      | ~100     | trivial |
 
-**Total ~1,230 LOC** (incl. tests). Single contributor estimate: **1 week**.
+**Total ~1,310 LOC** (incl. tests). Single contributor estimate: **1 week**.
 
 Should split into ≥3 PRs:
 
@@ -217,35 +297,53 @@ Should split into ≥3 PRs:
 2. API handler + correlation subscription + happy path e2e
 3. Failure-mode coverage (timeout/fail/cancel/no-respond) + validation
 
-## Open questions for the planning phase
+## Resolved questions
 
-1. **HTTP method semantics for input**: should `GET` triggers carry query
-   string only (Inngest's beta limitation) or query+headers? Recommend
-   query+headers; no body for GET.
-2. **First-write-wins enforcement**: rely on NATS subject having one
-   subscriber, or have engine track "responded" state per run and refuse
-   second `respond` step? Recommend the latter — fail-loud in workflow
-   logs even if NATS would silently drop.
-3. **Streaming responses**: out of scope for v1 (Inngest supports, we
-   defer). Mark as future ADR.
-4. **TLS termination**: same answer as today (operator's responsibility,
-   front with caddy/nginx/CF). No change.
-5. **Authentication**: out of scope at the trigger layer — workflow author
-   adds an auth step before `respond`. Optional `secret`/HMAC field in
-   `HTTPConfig` mirroring `WebhookConfig.Secret` is a maybe.
-6. **Idempotency**: should the trigger generate a `Nats-Msg-Id` from a
-   request hash so repeated calls don't fan out duplicate runs? Recommend
-   yes, **opt-in** via `HTTPConfig.IdempotencyHeader` (e.g.
-   `Idempotency-Key`).
-7. **Observability**: the run_id should be returned in a response header
-   (`X-Dagnats-Run-Id`) so callers can inspect via `dagnats run inspect`.
-8. **Per-route concurrency limits**: defer to JetStream consumer config on
-   the trigger? Or surface as `HTTPConfig.MaxConcurrent`? Recommend defer.
-9. **Distributed: subject collision**: two `dagnats-api` replicas both
-   subscribed to `dagnats.http.response.<run_id>`. Use queue group? With a
-   unique `run_id` per request, only one replica generated it and only one
-   has the open ResponseWriter — no collision in practice, but worth
-   asserting explicitly in the design doc.
+Resolutions captured during the planning phase. Each is one-liner; see
+referenced sections above for design impact.
+
+1. **GET trigger inputs:** query + headers, no body. Same envelope shape as
+   POST. Stripping headers on GET would create an unknown unknown ("why did
+   my `Authorization` header vanish?"). See `HTTPConfig`.
+2. **First-write-wins enforcement:** pure subject semantics + graph validator
+   warns on duplicate `respond`. No engine KV state. See "Why not... add
+   engine-tracked responded state" and "Workflow validation at registration".
+3. **Streaming responses:** deferred to a future ADR. v1 = single-shot
+   `respond` (one publish, one HTTP response). Adding streaming later is a
+   strict superset; adding it now would force a stream-vs-single-shot
+   interface choice on every workflow author from day one.
+4. **TLS termination:** operator's responsibility (caddy/nginx/CF), no
+   change from status quo. Reuses the existing `dagnats-api` mux conventions.
+5. **Authentication:** out of scope at the trigger layer — workflow author
+   adds an auth step before `respond`. `HTTPConfig.Secret` (HMAC) is offered
+   as a near-zero-cost shared-secret guard, mirroring `WebhookConfig.Secret`.
+6. **Idempotency:** opt-in via `HTTPConfig.IdempotencyHeader` (e.g.
+   `Idempotency-Key`). **Implementation reality (discovered during PR 2):** a
+   `Nats-Msg-Id` alone is insufficient — JetStream dedup collapses the publish,
+   but a sequential duplicate HTTP request still subscribes on a fresh
+   `ResponseSubject(newRunID)` that no respond step will ever hit, and the
+   second request times out. The real implementation uses a JetStream KV
+   bucket (`dagnats_http_idempotency`) keyed on `(triggerID, header-value)
+   → runID`, plus the response payload stored under `result.<runID>` so
+   duplicates can replay the original run's response without re-running the
+   workflow. The replay poll uses exponential backoff (25ms → 500ms cap) so
+   concurrent duplicates don't thunder the bucket.
+7. **Observability:** `X-Dagnats-Run-Id` always present in the response, not
+   configurable. The value is tiny, the upside (debug via `dagnats run
+   inspect`) is universal, and there's no scenario where a caller is *harmed*
+   by an extra header. Pull complexity down by not making it a knob.
+8. **Per-route concurrency limits:** deferred. Already expressible via
+   `MaxAckPending` on the trigger's JetStream consumer; surfacing a second
+   `HTTPConfig.MaxConcurrent` knob would be change amplification (two ways to
+   spell the same constraint, divergent under load). Add the field only after
+   a real user reads the docs and still asks for it.
+9. **HA correlation (subject collision under replicas):** single-replica
+   correlation is the v1 contract. The originating `dagnats-api` replica is
+   the only subscriber to `dagnats.http.response.<run_id>`; if that replica
+   dies between subscribe and publish, the client's TCP socket closes and
+   the front-end proxy returns 502 — which is correct, since the client
+   connection is gone. Durable in-flight HTTP request survival across API
+   restarts is a future ADR if anyone asks.
 
 ## Alignment with project rules
 
