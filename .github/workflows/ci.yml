@@ -15,22 +15,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Detect code changes
+        id: filter
+        # On PR events, query the API for the changed files and decide
+        # whether to run the Go pipeline. On push (to main after merge),
+        # always run. Branch protection requires the `test` check, so
+        # this job always reports — doc-only PRs short-circuit cleanly
+        # rather than triggering a 3-minute Go test run that has no
+        # bearing on the diff.
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "push to main → running full Go pipeline"
+            exit 0
+          fi
+          files=$(gh api \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --paginate --jq '.[].filename')
+          echo "Changed files:"
+          echo "$files" | sed 's/^/  /'
+          if echo "$files" | grep -qE '\.go$|^go\.(mod|sum)$|^\.github/workflows/|^Makefile$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "→ code paths touched, running full Go pipeline"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "→ doc-only PR, Go pipeline will be skipped"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - uses: actions/setup-go@v5
+        if: steps.filter.outputs.code == 'true'
         with:
           go-version-file: go.mod
 
       - name: Format check
+        if: steps.filter.outputs.code == 'true'
         run: test -z "$(gofmt -l .)"
 
       - name: Vet
+        if: steps.filter.outputs.code == 'true'
         run: go vet ./...
 
       - name: Staticcheck
+        if: steps.filter.outputs.code == 'true'
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
           staticcheck ./...
 
       - name: Test
+        if: steps.filter.outputs.code == 'true'
         # 600s matches the Makefile's `make test` timeout. The worker
         # package alone takes ~75s locally and the embedded NATS
         # supercluster e2e adds ~80s; CI runners with constrained
@@ -42,6 +76,7 @@ jobs:
           E2E_TOPOLOGY: embedded
 
       - name: Assert main dagnats binary is CGO-free
+        if: steps.filter.outputs.code == 'true'
         # The main dagnats binary must stay pure-Go even after #188
         # adds a CGO release artifact for dagnats-mcp-duckdb. A
         # regression here would inflate every dagnats deployment
