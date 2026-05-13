@@ -1,0 +1,151 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "test",
+    "version": "1.0.0",
+    "description": "Auto-generated from registered HTTP-trigger workflows. Synthesised on demand at request time."
+  },
+  "paths": {
+    "/api/echo": {
+      "post": {
+        "operationId": "echo_post",
+        "requestBody": {
+          "required": true,
+          "description": "JSON payload — see schema",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow responded successfully",
+            "headers": {
+              "X-Dagnats-Run-Id": {
+                "description": "Echoed run identifier for engine correlation",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "499": {
+            "description": "Client closed request before workflow responded",
+            "headers": {
+              "X-Dagnats-Run-Id": {
+                "description": "Echoed run identifier for engine correlation",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DagnatsError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Workflow failed before producing a respond step",
+            "headers": {
+              "X-Dagnats-Run-Id": {
+                "description": "Echoed run identifier for engine correlation",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DagnatsError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Workflow was cancelled before responding",
+            "headers": {
+              "X-Dagnats-Run-Id": {
+                "description": "Echoed run identifier for engine correlation",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DagnatsError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Workflow exceeded its HTTP trigger timeout",
+            "headers": {
+              "X-Dagnats-Run-Id": {
+                "description": "Echoed run identifier for engine correlation",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DagnatsError"
+                }
+              }
+            }
+          }
+        },
+        "summary": "echo",
+        "tags": [
+          "echo"
+        ],
+        "x-dagnats-max-body-bytes": 1048576,
+        "x-dagnats-timeout-ms": 5000
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DagnatsError": {
+        "type": "object",
+        "required": [
+          "error",
+          "run_id"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

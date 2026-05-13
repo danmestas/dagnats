@@ -63,8 +63,10 @@ func TestRegisterWorkflowHTTPTriggerWithRespondNoWarnings(t *testing.T) {
 	svc := NewService(nc)
 
 	wfDef := dag.WorkflowDef{
-		Name:    "wf-clean",
-		Version: "v1",
+		Name:         "wf-clean",
+		Version:      "v1",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
 		Steps: []dag.StepDef{
 			{
 				ID:     "respond",
@@ -98,8 +100,10 @@ func TestRegisterWorkflowHTTPTriggerWithoutRespondWarns(t *testing.T) {
 	svc := NewService(nc)
 
 	wfDef := dag.WorkflowDef{
-		Name:    "wf-missing-respond",
-		Version: "v1",
+		Name:         "wf-missing-respond",
+		Version:      "v1",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
 		Steps: []dag.StepDef{
 			{ID: "noop", Type: dag.StepTypeNormal, Task: "noop"},
 		},
@@ -112,14 +116,24 @@ func TestRegisterWorkflowHTTPTriggerWithoutRespondWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterWorkflowWithWarnings: %v", err)
 	}
-	if len(warnings) != 1 {
-		t.Fatalf("len(warnings) = %d, want 1: %v",
-			len(warnings), warnings)
+	if !apiHasWarning(warnings, dag.WarnMissingRespond) {
+		t.Fatalf("want WarnMissingRespond, got %v", warnings)
 	}
-	if warnings[0].Kind != dag.WarnMissingRespond {
-		t.Fatalf("Kind = %q, want %q",
-			warnings[0].Kind, dag.WarnMissingRespond)
+	if apiHasWarning(warnings, dag.WarnMissingSchemas) {
+		t.Fatalf("schemas set — should not warn: %v", warnings)
 	}
+}
+
+// apiHasWarning is a small kind-membership check used by these tests
+// now that the validator may surface missing_schemas alongside other
+// kinds.
+func apiHasWarning(ws []dag.Warning, kind string) bool {
+	for _, w := range ws {
+		if w.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRegisterWorkflowNoHTTPTriggerNoWarning(t *testing.T) {
@@ -168,8 +182,10 @@ func TestRESTHandleRegisterWorkflowSurfacesWarnings(t *testing.T) {
 	registerHTTPTrigger(t, svc, "wf-rest-warn")
 
 	wfDef := dag.WorkflowDef{
-		Name:    "wf-rest-warn",
-		Version: "v1",
+		Name:         "wf-rest-warn",
+		Version:      "v1",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
 		Steps: []dag.StepDef{
 			{ID: "noop", Type: dag.StepTypeNormal, Task: "noop"},
 		},
@@ -199,13 +215,8 @@ func TestRESTHandleRegisterWorkflowSurfacesWarnings(t *testing.T) {
 	if resp.Status != "registered" {
 		t.Fatalf("Status = %q, want registered", resp.Status)
 	}
-	if len(resp.Warnings) != 1 {
-		t.Fatalf("len(Warnings) = %d, want 1: %v",
-			len(resp.Warnings), resp.Warnings)
-	}
-	if resp.Warnings[0].Kind != dag.WarnMissingRespond {
-		t.Fatalf("Kind = %q, want %q",
-			resp.Warnings[0].Kind, dag.WarnMissingRespond)
+	if !apiHasWarning(resp.Warnings, dag.WarnMissingRespond) {
+		t.Fatalf("want WarnMissingRespond, got %v", resp.Warnings)
 	}
 }
 
@@ -237,5 +248,47 @@ func TestRESTHandleRegisterWorkflowFieldValidationFails(t *testing.T) {
 	if !strings.Contains(strings.ToLower(rec.Body.String()), "step") {
 		t.Fatalf("error body = %q, want mention of step",
 			rec.Body.String())
+	}
+}
+
+func TestRegisterWorkflowHTTPTriggerMissingSchemas(t *testing.T) {
+	// The brief locks in that a non-fatal missing_schemas warning fires
+	// when an HTTP-triggered workflow registers without input_schema /
+	// output_schema. The workflow IS persisted; the operator just sees
+	// the warning in the response body.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc)
+	registerHTTPTrigger(t, svc, "wf-noschemas")
+
+	wfDef := dag.WorkflowDef{
+		Name:    "wf-noschemas",
+		Version: "v1",
+		Steps: []dag.StepDef{
+			{
+				ID:     "respond",
+				Type:   dag.StepTypeRespond,
+				Config: makeRespondConfig(t),
+			},
+		},
+	}
+	warnings, err := svc.RegisterWorkflowWithWarnings(
+		context.Background(), wfDef,
+	)
+	if err != nil {
+		t.Fatalf("RegisterWorkflowWithWarnings: %v", err)
+	}
+	if !apiHasWarning(warnings, dag.WarnMissingSchemas) {
+		t.Fatalf("want WarnMissingSchemas, got %v", warnings)
+	}
+	// Workflow MUST still be persisted (warning is non-fatal).
+	if _, err := svc.GetWorkflow("wf-noschemas"); err != nil {
+		t.Fatalf("workflow not persisted despite non-fatal warning: %v", err)
 	}
 }

@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/bridge"
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/openapi"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/internal/web"
 	"github.com/danmestas/dagnats/observe"
@@ -261,6 +263,16 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	}
 	mux.Handle("/ui/", web.New(s.svc, s.nc).Handler())
 
+	// OpenAPI spec + Scalar-rendered explorer. Routes mount as
+	// fixed entries so the catch-all REST mux ("/") never sees them.
+	docsHandler := openapi.Handler(
+		"dagnats HTTP API", openapiSpecVersion,
+		newOpenAPIProvider(s.svc),
+	)
+	mux.Handle("/openapi.json", docsHandler)
+	mux.Handle("/docs", docsHandler)
+	mux.Handle("/docs/", docsHandler)
+
 	ln, err := net.Listen("tcp", s.cfg.HTTPAddr)
 	if err != nil && s.cfg.HTTPAddr == defaultHTTPAddr {
 		printStep(os.Stderr,
@@ -471,5 +483,37 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ready"))
 	} else {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}
+}
+
+// openapiSpecVersion is the value reported in the OpenAPI `info.version`
+// field. Bumped manually when the spec shape changes — distinct from
+// the dagnats binary version so the spec can iterate independently.
+const openapiSpecVersion = "1.0.0"
+
+// newOpenAPIProvider returns an openapi.ProviderFunc closure over the
+// running api.Service. Each /openapi.json request rereads the
+// triggers / workflow defs KVs so the spec always reflects the live
+// state, which matches the brief's "on-demand, no caching" rule.
+func newOpenAPIProvider(svc *api.Service) openapi.ProviderFunc {
+	if svc == nil {
+		panic("newOpenAPIProvider: svc must not be nil")
+	}
+	return func(ctx context.Context) (
+		[]trigger.TriggerDef, map[string]dag.WorkflowDef, error,
+	) {
+		triggers, err := svc.ListTriggers(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("list triggers: %w", err)
+		}
+		defs, err := svc.ListWorkflows(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("list workflows: %w", err)
+		}
+		idx := make(map[string]dag.WorkflowDef, len(defs))
+		for _, d := range defs {
+			idx[d.Name] = d
+		}
+		return triggers, idx, nil
 	}
 }
