@@ -229,7 +229,10 @@ func runValidatorShape(
 
 // assertWarning decodes the registration response and verifies the
 // presence (or absence) of the expected warning kind. Empty
-// wantKind means "no warnings".
+// wantKind means "no respond-related warnings" — missing_schemas may
+// still appear because these fixtures intentionally omit
+// input/output schemas, which now produces a non-fatal warning per
+// the OpenAPI synthesiser brief.
 func assertWarning(
 	t *testing.T, tag string, body []byte, wantKind string,
 ) {
@@ -247,18 +250,25 @@ func assertWarning(
 			resp.Status)
 	}
 	if wantKind == "" {
-		if len(resp.Warnings) != 0 {
-			t.Fatalf("%s: warnings = %v, want none", tag,
-				resp.Warnings)
+		for _, w := range resp.Warnings {
+			if w.Kind == dag.WarnMissingRespond ||
+				w.Kind == dag.WarnDuplicateRespond {
+				t.Fatalf("%s: unwanted respond warning: %v",
+					tag, w)
+			}
 		}
 		return
 	}
-	if len(resp.Warnings) != 1 {
-		t.Fatalf("%s: warnings = %v, want 1", tag, resp.Warnings)
+	var found bool
+	for _, w := range resp.Warnings {
+		if w.Kind == wantKind {
+			found = true
+			break
+		}
 	}
-	if resp.Warnings[0].Kind != wantKind {
-		t.Fatalf("%s: Kind = %q, want %q", tag,
-			resp.Warnings[0].Kind, wantKind)
+	if !found {
+		t.Fatalf("%s: missing: warnings = %v, want kind %q",
+			tag, resp.Warnings, wantKind)
 	}
 }
 

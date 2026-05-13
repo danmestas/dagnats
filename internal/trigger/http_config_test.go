@@ -188,3 +188,93 @@ func TestHTTPConfigIdempotencyHeaderEmptyAllowed(t *testing.T) {
 		t.Fatalf("valid header rejected: %v", err)
 	}
 }
+
+func TestHTTPAuthHTTPBearerAccepted(t *testing.T) {
+	cfg := validHTTPConfig()
+	cfg.Authentication = &HTTPAuthentication{
+		Name:         "bearerAuth",
+		Type:         "http",
+		Scheme:       "bearer",
+		BearerFormat: "JWT",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("http+bearer rejected: %v", err)
+	}
+	// Negative: an http auth without scheme fails.
+	cfg.Authentication.Scheme = ""
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for type=http without scheme")
+	}
+	if !strings.Contains(err.Error(), "scheme") {
+		t.Fatalf("err = %v, want mention of scheme", err)
+	}
+}
+
+func TestHTTPAuthAPIKeyHeaderAccepted(t *testing.T) {
+	cfg := validHTTPConfig()
+	cfg.Authentication = &HTTPAuthentication{
+		Name:       "apiKeyAuth",
+		Type:       "apiKey",
+		In:         "header",
+		HeaderName: "X-API-Key",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("apiKey header rejected: %v", err)
+	}
+	// Negative: header missing name.
+	cfg.Authentication.HeaderName = ""
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for apiKey/header without header_name")
+	}
+	if !strings.Contains(err.Error(), "header_name") {
+		t.Fatalf("err = %v, want mention of header_name", err)
+	}
+}
+
+func TestHTTPAuthTypeEnumRejected(t *testing.T) {
+	cfg := validHTTPConfig()
+	cfg.Authentication = &HTTPAuthentication{
+		Name: "weirdAuth",
+		Type: "magicToken",
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for bogus auth type")
+	}
+	if !strings.Contains(err.Error(), "type") {
+		t.Fatalf("err = %v, want mention of type", err)
+	}
+}
+
+func TestHTTPAuthNameRequired(t *testing.T) {
+	cfg := validHTTPConfig()
+	cfg.Authentication = &HTTPAuthentication{
+		Type:   "http",
+		Scheme: "bearer",
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty auth name")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Fatalf("err = %v, want mention of name", err)
+	}
+}
+
+func TestHTTPAuthAPIKeyInEnum(t *testing.T) {
+	cfg := validHTTPConfig()
+	cfg.Authentication = &HTTPAuthentication{
+		Name: "apiKeyAuth",
+		Type: "apiKey",
+		In:   "body",
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for apiKey with in=body")
+	}
+	if !strings.Contains(err.Error(), "in") {
+		t.Fatalf("err = %v, want mention of in", err)
+	}
+}

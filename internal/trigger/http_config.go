@@ -11,13 +11,97 @@ import (
 // back to the originating request via dagnats.http.response.<run_id>
 // (see ResponseSubject). Field validation lives in Validate(); graph
 // reachability checks live in dag.ValidateRespondReachability.
+//
+// Authentication is metadata only — the engine does not enforce
+// JWT/OAuth/etc. validation. Per ADR-013 Q5 enforcement is a
+// workflow-step concern. The field exists so the OpenAPI spec
+// generator can advertise the expected security scheme to clients.
 type HTTPConfig struct {
-	Path              string `json:"path"`
-	Method            string `json:"method"`
-	TimeoutMs         int    `json:"timeout_ms"`
-	MaxBodyBytes      int64  `json:"max_body_bytes"`
-	Secret            string `json:"secret,omitempty"`
-	IdempotencyHeader string `json:"idempotency_header,omitempty"`
+	Path              string              `json:"path"`
+	Method            string              `json:"method"`
+	TimeoutMs         int                 `json:"timeout_ms"`
+	MaxBodyBytes      int64               `json:"max_body_bytes"`
+	Secret            string              `json:"secret,omitempty"`
+	IdempotencyHeader string              `json:"idempotency_header,omitempty"`
+	Authentication    *HTTPAuthentication `json:"authentication,omitempty"`
+}
+
+// HTTPAuthentication declaratively advertises an OpenAPI 3.1 security
+// scheme so the generated spec at GET /openapi.json describes the
+// expected auth shape. The engine does NOT enforce the declared
+// scheme — validation remains a workflow-step concern per ADR-013 Q5.
+// This field exists purely so clients generated from the spec carry
+// the correct auth headers / scopes.
+type HTTPAuthentication struct {
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	Scheme       string `json:"scheme,omitempty"`
+	BearerFormat string `json:"bearer_format,omitempty"`
+	In           string `json:"in,omitempty"`
+	HeaderName   string `json:"header_name,omitempty"`
+	Description  string `json:"description,omitempty"`
+}
+
+// httpAuthAllowedTypes mirrors OpenAPI 3.1 securityScheme.type. The
+// closed set rejects typo-class errors (e.g. "Bearer" → "type": "http"
+// with "scheme": "bearer") at registration time. Extending requires a
+// matching mapping in the OpenAPI synthesiser.
+var httpAuthAllowedTypes = map[string]bool{
+	"http":          true,
+	"apiKey":        true,
+	"oauth2":        true,
+	"openIdConnect": true,
+}
+
+// httpAuthAPIKeyInValues enumerates OpenAPI 3.1's apiKey.in values.
+var httpAuthAPIKeyInValues = map[string]bool{
+	"header": true,
+	"query":  true,
+	"cookie": true,
+}
+
+// Validate enforces field-level rules per OpenAPI 3.1 securityScheme
+// shape. Mirrored from HTTPConfig.Validate — fatal at registration.
+func (a *HTTPAuthentication) Validate() error {
+	if a == nil {
+		panic("HTTPAuthentication.Validate: receiver must not be nil")
+	}
+	if a.Name == "" {
+		return fmt.Errorf("authentication name must not be empty")
+	}
+	if !httpAuthAllowedTypes[a.Type] {
+		return fmt.Errorf(
+			"authentication type %q not allowed; valid: "+
+				"http apiKey oauth2 openIdConnect",
+			a.Type,
+		)
+	}
+	if a.Type == "http" && a.Scheme == "" {
+		return fmt.Errorf(
+			"authentication scheme required for type=http",
+		)
+	}
+	if a.Type == "apiKey" {
+		if !httpAuthAPIKeyInValues[a.In] {
+			return fmt.Errorf(
+				"authentication.in %q not allowed for apiKey; "+
+					"valid: header query cookie",
+				a.In,
+			)
+		}
+		if a.In == "header" && a.HeaderName == "" {
+			return fmt.Errorf(
+				"authentication.header_name required for apiKey/header",
+			)
+		}
+		if a.HeaderName != "" && !isValidHTTPHeaderName(a.HeaderName) {
+			return fmt.Errorf(
+				"authentication.header_name %q is not a valid header name",
+				a.HeaderName,
+			)
+		}
+	}
+	return nil
 }
 
 // httpConfigSecretMinLen sets the minimum HMAC secret length when a
@@ -76,6 +160,11 @@ func (c *HTTPConfig) Validate() error {
 			"idempotency_header %q is not a valid header name",
 			c.IdempotencyHeader,
 		)
+	}
+	if c.Authentication != nil {
+		if err := c.Authentication.Validate(); err != nil {
+			return fmt.Errorf("authentication: %w", err)
+		}
 	}
 	return nil
 }

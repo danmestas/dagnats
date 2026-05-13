@@ -16,6 +16,7 @@ type Warning struct {
 const (
 	WarnMissingRespond   = "missing_respond"
 	WarnDuplicateRespond = "duplicate_respond"
+	WarnMissingSchemas   = "missing_schemas"
 )
 
 // validateRespondMaxSteps caps the input size to keep the validator's
@@ -38,6 +39,10 @@ const validateRespondMaxSteps = 10000
 // an HTTP trigger has no caller to leave hanging. duplicate_respond is
 // always emitted, since two responds on the same run is wrong
 // regardless of trigger kind (the second publish always drops).
+// missing_schemas is emitted only for HTTP-triggered workflows that
+// lack input_schema and/or output_schema, since the OpenAPI generator
+// falls back to free-form objects in that case and clients lose type
+// safety.
 //
 // Returns a nil slice when there are no problems. Callers should
 // distinguish nil from non-empty rather than relying on len().
@@ -48,28 +53,60 @@ func ValidateRespondReachability(
 		panic("ValidateRespondReachability: step count exceeds cap")
 	}
 
+	var out []Warning
 	responds := findRespondSteps(def)
 
 	if hasHTTPTrigger && len(responds) == 0 {
-		return []Warning{{
+		out = append(out, Warning{
 			Kind: WarnMissingRespond,
 			Message: "workflow has an HTTP trigger but no respond " +
 				"step is reachable; calls will hang until timeout",
-		}}
-	}
-
-	if len(responds) < 2 {
-		return nil
-	}
-
-	if anyPairSimultaneous(def, responds) {
-		return []Warning{{
+		})
+	} else if len(responds) >= 2 && anyPairSimultaneous(def, responds) {
+		out = append(out, Warning{
 			Kind: WarnDuplicateRespond,
 			Message: "two or more respond steps are simultaneously " +
 				"reachable; only the first publish is delivered",
-		}}
+		})
 	}
-	return nil
+
+	if hasHTTPTrigger {
+		if msg := missingSchemasMessage(def); msg != "" {
+			out = append(out, Warning{
+				Kind:    WarnMissingSchemas,
+				Message: msg,
+			})
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// missingSchemasMessage describes which schema fields are missing on
+// the workflow. Returns "" when both are present. Callers gate on
+// hasHTTPTrigger — non-HTTP workflows have no OpenAPI surface to
+// generate, so the warning is meaningless there.
+func missingSchemasMessage(def WorkflowDef) string {
+	missingIn := len(def.InputSchema) == 0
+	missingOut := len(def.OutputSchema) == 0
+	switch {
+	case missingIn && missingOut:
+		return "workflow has an HTTP trigger but neither " +
+			"input_schema nor output_schema is set; OpenAPI " +
+			"spec falls back to free-form objects"
+	case missingIn:
+		return "workflow has an HTTP trigger but input_schema " +
+			"is missing; OpenAPI requestBody falls back to a " +
+			"free-form object"
+	case missingOut:
+		return "workflow has an HTTP trigger but output_schema " +
+			"is missing; OpenAPI response body falls back to a " +
+			"free-form object"
+	}
+	return ""
 }
 
 // findRespondSteps returns the IDs of every StepTypeRespond in the
