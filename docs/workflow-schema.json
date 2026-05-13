@@ -91,7 +91,17 @@
         },
         "type": {
           "type": "string",
-          "enum": ["normal", "agent_loop", "sub_workflow", "agent", "respond"],
+          "enum": [
+            "normal",
+            "agent_loop",
+            "sub_workflow",
+            "agent",
+            "map",
+            "sleep",
+            "approval",
+            "planner",
+            "respond"
+          ],
           "description": "Execution semantics"
         },
         "loop": {
