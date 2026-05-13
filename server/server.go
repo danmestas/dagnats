@@ -248,6 +248,13 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	mux.HandleFunc("/ready", s.handleReady)
 	if s.trig != nil {
 		mux.Handle("/hooks/", s.trig.WebhookHandler())
+		// ADR-013 HTTP trigger routes mount under /api/. The router
+		// receives the full request path so HTTPConfig.Path entries
+		// must start with /api/ (validation enforces a leading "/"
+		// only; the convention here is documented in the example
+		// workflow). Future iterations may surface a configurable
+		// prefix; v1 is fixed.
+		mux.Handle("/api/", s.trig.HTTPRouter())
 	}
 	if s.bridge != nil {
 		mux.Handle("/v1/", s.bridge.Handler())
