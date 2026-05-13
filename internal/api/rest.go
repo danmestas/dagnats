@@ -137,7 +137,11 @@ func (s *Service) routeHealth(
 }
 
 // handleRegisterWorkflow decodes a WorkflowDef from the request body
-// and persists it via Service.RegisterWorkflow. Returns 201 on success.
+// and persists it via Service.RegisterWorkflowWithWarnings. Returns
+// 201 on success. Graph-level warnings (missing_respond /
+// duplicate_respond for HTTP-triggered workflows per ADR-013) appear
+// in the response body's "warnings" field — never as a non-2xx
+// status, because legitimate branch-per-outcome patterns trigger them.
 func handleRegisterWorkflow(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
@@ -153,15 +157,25 @@ func handleRegisterWorkflow(
 			http.StatusBadRequest)
 		return
 	}
-	if err := svc.RegisterWorkflow(r.Context(), def); err != nil {
+	warnings, err := svc.RegisterWorkflowWithWarnings(
+		r.Context(), def,
+	)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	encErr := json.NewEncoder(w).Encode(
-		map[string]string{"status": "registered", "name": def.Name},
-	)
+	resp := struct {
+		Status   string        `json:"status"`
+		Name     string        `json:"name"`
+		Warnings []dag.Warning `json:"warnings,omitempty"`
+	}{
+		Status:   "registered",
+		Name:     def.Name,
+		Warnings: warnings,
+	}
+	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
 	}
