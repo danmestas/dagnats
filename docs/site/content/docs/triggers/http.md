@@ -66,6 +66,59 @@ Configuration fields:
 
 Routes mount under `/api/` on the same HTTP listener as the control plane. Two HTTP triggers may not share the same `(method, path)` — registration of a colliding trigger returns a `route_conflict` error with the holder trigger's id.
 
+## Reading the request inside a worker
+
+Every trigger kind (cron, webhook, subject, http) hands the worker a **wrapped envelope**. The worker's task input is *not* the HTTP request directly — it's a `TriggerEnvelope` whose `data` field carries the request envelope:
+
+```json
+{
+  "trigger": "http",
+  "source": "http-echo-trigger",
+  "workflow_id": "http-echo",
+  "timestamp": "2026-05-13T18:37:29Z",
+  "data": {
+    "method": "POST",
+    "path": "/api/echo",
+    "headers": { "Content-Type": "application/json" },
+    "body": "<base64-encoded request bytes>"
+  }
+}
+```
+
+`data.body` is base64-encoded over JSON because the engine treats it as opaque bytes — `[]byte` in Go, which `encoding/json` renders as base64. Unmarshalling back into `[]byte` decodes it.
+
+A minimal Go worker that pulls `method`, `path`, and the parsed body out of the envelope:
+
+```go
+type triggerEnvelope struct {
+    Trigger    string          `json:"trigger"`
+    Source     string          `json:"source"`
+    WorkflowID string          `json:"workflow_id"`
+    Timestamp  string          `json:"timestamp"`
+    Data       httpRequestData `json:"data"`
+}
+
+type httpRequestData struct {
+    Method  string            `json:"method"`
+    Path    string            `json:"path"`
+    Headers map[string]string `json:"headers,omitempty"`
+    Body    []byte            `json:"body,omitempty"` // base64 over JSON
+}
+
+worker.HandleTyped(w, "echo",
+    func(ctx worker.TaskContext, in triggerEnvelope) (echoOutput, error) {
+        // in.Data.Method == "POST"
+        // in.Data.Path   == "/api/echo"
+        // in.Data.Body   == raw request bytes (already base64-decoded)
+        var inner struct{ Name string `json:"name"` }
+        _ = json.Unmarshal(in.Data.Body, &inner)
+        ...
+    },
+)
+```
+
+This wrap is shared with `cron`, `webhook`, and `subject` triggers — the metadata (`trigger`, `source`, `workflow_id`, `timestamp`) is uniform, only `data` varies by trigger kind. Working example: [`examples/http-respond/main.go`](https://github.com/danmestas/dagnats/blob/main/examples/http-respond/main.go).
+
 ## Defining the respond step
 
 ```json
