@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -283,17 +284,24 @@ func (h *HTTPHandler) resolveIdempotentRunID(
 		return string(entry.Value()), true
 	}
 	// Miss: race-safe claim via Create (first writer wins).
-	if _, err := h.idkv.Create(
-		ctx, key, []byte(newRunID),
-	); err != nil {
-		// Someone else won the race — re-read and use theirs.
-		entry, err := h.idkv.Get(ctx, key)
-		if err == nil && entry != nil && len(entry.Value()) > 0 {
-			return string(entry.Value()), true
-		}
-		// Genuine KV error: degrade to PR 2 behavior.
+	_, createErr := h.idkv.Create(ctx, key, []byte(newRunID))
+	if createErr == nil {
 		return newRunID, false
 	}
+	// Create failed: either a concurrent claim raced us (benign — re-read
+	// and reuse the winner's runID) or the KV itself is unhealthy
+	// (degrade to PR 2 behavior but make the failure visible to operators
+	// so a sustained idempotency-replay outage does not stay silent).
+	entry, getErr := h.idkv.Get(ctx, key)
+	if getErr == nil && entry != nil && len(entry.Value()) > 0 {
+		return string(entry.Value()), true
+	}
+	slog.WarnContext(ctx, "http idempotency KV unhealthy; degrading to fresh run",
+		"trigger_id", h.def.ID,
+		"key", key,
+		"create_error", createErr,
+		"get_error", getErr,
+	)
 	return newRunID, false
 }
 
@@ -324,8 +332,8 @@ func resultKey(runID string) string {
 // storeResult writes the engine response payload to the idempotency
 // KV under result.<runID> so subsequent replay requests (same
 // IdempotencyHeader value) can serve it without re-running the
-// workflow. Errors are logged at the caller's discretion — best-effort
-// only; the live response is already on the wire.
+// workflow. Errors are logged but not propagated — the live response
+// is already on the wire; only replay degrades on KV failure.
 func (h *HTTPHandler) storeResult(
 	ctx context.Context, runID string, data []byte,
 ) {
@@ -338,14 +346,23 @@ func (h *HTTPHandler) storeResult(
 	if h.idkv == nil {
 		return
 	}
-	// Use a separate short-deadline ctx so the request's own timer
-	// cannot abort the KV write after the response is on the wire.
+	// Deliberate detach from the request context: the request's own
+	// timer cannot abort the KV write after the response is on the
+	// wire. 2s is generous for a KV Put on a healthy cluster.
 	writeCtx, cancel := context.WithTimeout(
 		context.Background(), 2*time.Second,
 	)
 	defer cancel()
-	_, _ = h.idkv.Put(writeCtx, resultKey(runID), data)
-	_ = ctx
+	_, putErr := h.idkv.Put(writeCtx, resultKey(runID), data)
+	if putErr != nil {
+		// ctx (not writeCtx) is logged-against so any trace context the
+		// caller threaded in propagates to the warning.
+		slog.WarnContext(ctx, "http idempotency result Put failed; replay will re-run",
+			"trigger_id", h.def.ID,
+			"run_id", runID,
+			"error", putErr,
+		)
+	}
 }
 
 // fetchStoredResult polls the idempotency KV for the result of a
@@ -556,10 +573,13 @@ func (h *HTTPHandler) awaitResponse(
 	}
 }
 
-// awaitTimeout returns the per-request timeout as a duration. The
-// request's own context handles client-close as its own select arm
-// in awaitResponse — the timeout here is purely the configured
-// HTTPConfig.TimeoutMs cap.
+// awaitTimeout returns the per-request timeout as a duration, bounded
+// by the request context's remaining deadline when one is set. The
+// timer covers the configured HTTPConfig.TimeoutMs cap; the ctx.Done
+// arm in awaitResponse still fires on client-close, but composing the
+// deadline here keeps the timer from out-running an upstream proxy's
+// own deadline (which would otherwise reply 504 after the caller's
+// connection budget had already expired).
 func awaitTimeout(ctx context.Context, timeoutMs int) time.Duration {
 	if ctx == nil {
 		panic("awaitTimeout: ctx must not be nil")
@@ -567,7 +587,23 @@ func awaitTimeout(ctx context.Context, timeoutMs int) time.Duration {
 	if timeoutMs <= 0 {
 		panic("awaitTimeout: timeoutMs must be positive")
 	}
-	return time.Duration(timeoutMs) * time.Millisecond
+	configured := time.Duration(timeoutMs) * time.Millisecond
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return configured
+	}
+	remaining := time.Until(deadline)
+	// Already-past deadline: return a tiny positive duration so the
+	// timer arm fires on the very next scheduler tick. time.NewTimer
+	// accepts negative values, but returning a positive value keeps
+	// the semantics readable at call sites that inspect the duration.
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	if remaining < configured {
+		return remaining
+	}
+	return configured
 }
 
 // failureSignal carries the kind of failure event observed on
