@@ -21,10 +21,12 @@ const (
 	StepTypeWaitForEvent
 	StepTypeApproval
 	StepTypePlanner
+	StepTypeRespond
 )
 
 var stepTypeStrings = [...]string{
-	"normal", "agent_loop", "sub_workflow", "agent", "map", "sleep", "wait_for_event", "approval", "planner",
+	"normal", "agent_loop", "sub_workflow", "agent", "map", "sleep",
+	"wait_for_event", "approval", "planner", "respond",
 }
 
 func (s StepType) String() string {
