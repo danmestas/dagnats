@@ -374,3 +374,86 @@ func TestServiceRespectsMaxTriggers(t *testing.T) {
 		t.Fatalf("expected some triggers loaded")
 	}
 }
+
+// TestServiceWatcherReplayPreservesSubjectSubscription is the
+// regression guard for #217 / #221 / #223. The KV watcher opens
+// with DeliverLastPerSubject (default WatchAll) and replays
+// existing keys at startup. Before the revision-based dedup in
+// handleKVUpdate, the replay would removeTrigger+addTrigger on the
+// same definition, briefly unsubscribing the active SubjectTrigger
+// from the server. Any inbound NATS message landing in that gap
+// was lost.
+//
+// This test inspects the SubjectTrigger pointer identity before and
+// after the watcher has had time to replay. With the fix, the
+// pointer must be the same instance loadAllTriggers installed.
+// Without the fix, handleKVUpdate creates a new SubjectTrigger.
+func TestServiceWatcherReplayPreservesSubjectSubscription(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+			natsutil.KVConfig{Bucket: "trigger_state"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	trigKV, _ := js.KeyValue("triggers")
+
+	def := TriggerDef{
+		ID:         "subj-replay",
+		WorkflowID: "wf",
+		Enabled:    true,
+		Subject: &SubjectConfig{
+			Subject: "events.replay.fire",
+		},
+	}
+	defData, _ := json.Marshal(def)
+	if _, err := trigKV.Put("subj-replay", defData); err != nil {
+		t.Fatalf("put def: %v", err)
+	}
+
+	svc, err := NewTriggerService(nc)
+	if err != nil {
+		t.Fatalf("NewTriggerService: %v", err)
+	}
+	if err := svc.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Stop()
+
+	// Capture the SubjectTrigger installed by loadAllTriggers.
+	svc.mu.RLock()
+	installed := svc.subjects[def.ID]
+	svc.mu.RUnlock()
+	if installed == nil {
+		t.Fatal("loadAllTriggers did not install subj-replay")
+	}
+
+	// Give the KV watcher generous time to deliver its initial
+	// replay. The watcher runs in a goroutine started by
+	// startKVWatcher; the regression bug is that this replay
+	// removes+re-adds the trigger. With the fix the replay is a
+	// no-op. 200ms is well above the watcher's typical end-of-
+	// initial-data marker latency on in-memory NATS.
+	time.Sleep(200 * time.Millisecond)
+
+	// Negative: SubjectTrigger pointer must be the SAME instance
+	// loadAllTriggers installed. A new pointer here means the
+	// watcher's replay re-created the trigger, which is the race
+	// that drops in-flight messages on the server (#217 / #221 /
+	// #223).
+	svc.mu.RLock()
+	final := svc.subjects[def.ID]
+	svc.mu.RUnlock()
+	if final == nil {
+		t.Fatal("watcher replay removed subj-replay entirely")
+	}
+	if final != installed {
+		t.Fatal("watcher replay re-created the SubjectTrigger; " +
+			"installed pointer changed (regression: " +
+			"#217 / #221 / #223)")
+	}
+}

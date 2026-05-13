@@ -35,10 +35,19 @@ type TriggerService struct {
 	subjects   map[string]*SubjectTrigger
 	webhooks   map[string]*WebhookHandler
 	httpRoutes map[string]*HTTPHandler
-	ctx        context.Context
-	cancel     context.CancelFunc
-	watcher    jetstream.KeyWatcher
-	mu         sync.RWMutex
+	// revisions tracks the highest KV revision applied for each
+	// trigger ID. The KV watcher (jetstream.WatchAll) opens with
+	// DeliverLastPerSubject and replays existing keys on startup —
+	// so the same revision that loadAllTriggers just applied is
+	// re-delivered shortly after. Without dedup, handleKVUpdate
+	// removes the active SubjectTrigger and re-creates it, briefly
+	// unsubscribing on the server. Any inbound NATS message that
+	// hits the gap is lost (#217 / #221 / #223).
+	revisions map[string]uint64
+	ctx       context.Context
+	cancel    context.CancelFunc
+	watcher   jetstream.KeyWatcher
+	mu        sync.RWMutex
 }
 
 // NewTriggerService creates the service. KV buckets must exist.
@@ -81,6 +90,7 @@ func NewTriggerService(
 		subjects:   make(map[string]*SubjectTrigger),
 		webhooks:   make(map[string]*WebhookHandler),
 		httpRoutes: make(map[string]*HTTPHandler),
+		revisions:  make(map[string]uint64),
 		ctx:        ctx,
 		cancel:     cancel,
 	}, nil
@@ -290,9 +300,28 @@ func (ts *TriggerService) loadAllTriggers() error {
 			)
 			continue
 		}
+		ts.recordRevision(def.ID, entry.Revision())
 	}
 
 	return nil
+}
+
+// recordRevision stores the last-applied KV revision for a trigger
+// ID. Subsequent watcher entries with the same or older revision are
+// idempotent replays (DeliverLastPerSubject on watcher startup) and
+// must be skipped to avoid unsubscribing an active SubjectTrigger.
+func (ts *TriggerService) recordRevision(id string, rev uint64) {
+	if id == "" {
+		panic("recordRevision: id must not be empty")
+	}
+	if rev == 0 {
+		panic("recordRevision: rev must be > 0")
+	}
+	ts.mu.Lock()
+	if cur := ts.revisions[id]; rev > cur {
+		ts.revisions[id] = rev
+	}
+	ts.mu.Unlock()
 }
 
 func (ts *TriggerService) addTrigger(def TriggerDef) error {
@@ -432,6 +461,9 @@ func (ts *TriggerService) startKVWatcher() error {
 
 // handleKVUpdate dispatches a single KV watcher entry: removes
 // deleted triggers, replaces updated ones within the active limit.
+// Revisions seen by loadAllTriggers are skipped so the watcher's
+// initial DeliverLastPerSubject replay does not unsubscribe-and-
+// re-subscribe an already-active SubjectTrigger.
 func (ts *TriggerService) handleKVUpdate(
 	entry jetstream.KeyValueEntry,
 ) {
@@ -441,6 +473,9 @@ func (ts *TriggerService) handleKVUpdate(
 
 	if entry.Operation() == jetstream.KeyValueDelete ||
 		entry.Operation() == jetstream.KeyValuePurge {
+		ts.mu.Lock()
+		delete(ts.revisions, entry.Key())
+		ts.mu.Unlock()
 		_ = ts.removeTrigger(entry.Key())
 		return
 	}
@@ -453,12 +488,25 @@ func (ts *TriggerService) handleKVUpdate(
 		return
 	}
 
+	rev := entry.Revision()
+	ts.mu.RLock()
+	last := ts.revisions[def.ID]
+	ts.mu.RUnlock()
+	if rev <= last {
+		// Idempotent replay (or out-of-order delivery from the
+		// ordered consumer): trigger is already installed at this
+		// revision or newer. Skipping avoids the unsubscribe gap.
+		return
+	}
+
 	// Remove old version and add new
 	_ = ts.removeTrigger(def.ID)
 
 	// Respect max triggers limit
 	if ts.TriggerCount() < maxActiveTriggers {
-		_ = ts.addTrigger(def)
+		if err := ts.addTrigger(def); err == nil {
+			ts.recordRevision(def.ID, rev)
+		}
 	}
 }
 
