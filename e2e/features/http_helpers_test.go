@@ -128,14 +128,23 @@ func (s *httpE2EStack) registerHTTPTrigger(
 }
 
 // waitForHTTPRoute polls the HTTPRouter until the (method, path)
-// route resolves to anything other than 404. Bounded — the watcher
-// reacts asynchronously to KV.Put, so a fixed sleep would be flaky
-// across topologies. 50ms poll matches http_respond_test.go.
+// route resolves to "registered". Bounded — the KV watcher reacts
+// asynchronously to KV.Put, so a fixed sleep would be flaky across
+// topologies.
+//
+// Probe technique: send an OPTIONS request (not in the v1 allowed
+// method set). The router returns 405 once the path is registered
+// (regardless of which method is registered there) and 404 while
+// the watcher has not yet wired the route. This is critical for
+// tests with blocking workers — a probe that uses the registered
+// method would FIRE the workflow and the worker would block on the
+// probe's event, starving the actual test request.
 func waitForHTTPRoute(
 	t *testing.T, ts *trigger.TriggerService,
 	method string, path string, budget time.Duration,
 ) {
 	t.Helper()
+	_ = method // probe always uses OPTIONS — see above
 	deadline := time.Now().Add(budget)
 	// Bounded iteration: budget/50ms + safety margin caps the loop.
 	const maxIter = 1000
@@ -144,10 +153,14 @@ func waitForHTTPRoute(
 			t.Fatalf("waitForHTTPRoute: %s %s not ready in %s",
 				method, path, budget)
 		}
-		probe := httptest.NewRequest(method, path, nil)
+		probe := httptest.NewRequest(http.MethodOptions, path, nil)
 		rec := httptest.NewRecorder()
 		ts.HTTPRouter().ServeHTTP(rec, probe)
-		if rec.Code != http.StatusNotFound {
+		// 405 means the path is in httpRoutes but the method
+		// doesn't match — exactly the "wired but won't fire the
+		// workflow" state we need. 404 means the watcher hasn't
+		// reacted yet.
+		if rec.Code == http.StatusMethodNotAllowed {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
