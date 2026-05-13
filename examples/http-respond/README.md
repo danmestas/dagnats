@@ -9,7 +9,7 @@ The DAG: `echo` (normal step, runs the worker) → `respond` (engine-resolved st
 
 ## Workflow
 
-- `echo` -- worker step. Receives the HTTP request envelope (`method`, `path`, `headers`, `body`), returns a JSON object describing what arrived.
+- `echo` -- worker step. Receives a `TriggerEnvelope` wrapping the HTTP request (`trigger`, `source`, `workflow_id`, `timestamp`, `data: {method, path, headers, body}`), and returns a JSON object describing what arrived. See [main.go](main.go) for the wrapper-struct pattern that lifts `data.method`, `data.path`, and `data.body` out of the envelope. The wrap is shared with cron/webhook/subject triggers; full shape in [docs/triggers/http](https://github.com/danmestas/dagnats/blob/main/docs/site/content/docs/triggers/http.md#reading-the-request-inside-a-worker).
 - `respond` -- ships the upstream output as the HTTP response (status 200, `application/json`).
 
 ## Run It
@@ -37,6 +37,8 @@ curl -sS -X POST http://localhost:8080/api/echo \
   -d '{"name":"alice"}'
 # {"you_sent":"the dagnats http trigger","method":"POST","path":"/api/echo","body":{"name":"alice"}}
 ```
+
+How `body` lands as JSON (not a base64 string): the trigger envelope carries `data.body` as `[]byte`, which `encoding/json` renders as base64 on the wire. The example worker unmarshals into `[]byte` (auto-decoded back to raw bytes), then wraps as `json.RawMessage` in the output struct so the response carries the original JSON verbatim. If the inbound body weren't JSON, you'd see the base64 form here.
 
 The response header `X-Dagnats-Run-Id` carries the run id; `dagnats run inspect <id>` walks the DAG.
 
