@@ -8,6 +8,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 
 	"github.com/danmestas/dagnats/dag"
@@ -82,12 +83,16 @@ func buildOpExtensions(
 	}
 }
 
-// buildRequestBody renders the requestBody object. GET-style triggers
-// without a meaningful body still get a requestBody{} when an
-// InputSchema is defined — OpenAPI permits this and the engine
-// happily reads request bodies on GET too.
+// buildRequestBody renders the requestBody object. Returns nil for
+// GET and DELETE — OpenAPI 3.1 technically permits bodies on those
+// verbs, but most SDK generators (openapi-typescript,
+// openapi-generator-cli, swagger-codegen) treat GET/DELETE-with-body
+// as malformed and either fail codegen or produce broken clients.
+// Omitting requestBody keeps the spec interoperable with the
+// ecosystem; callers who genuinely need GET-with-body are off the
+// happy path anyway.
 //
-// Schema resolution order:
+// Schema resolution order (for non-GET/DELETE):
 //  1. workflow.InputSchema if present
 //  2. free-form {type: object, additionalProperties: true}
 //
@@ -97,6 +102,9 @@ func buildRequestBody(
 ) *RequestBody {
 	if cfg == nil {
 		panic("buildRequestBody: cfg must not be nil")
+	}
+	if cfg.Method == http.MethodGet || cfg.Method == http.MethodDelete {
+		return nil
 	}
 	schema := def.InputSchema
 	if len(schema) == 0 {
