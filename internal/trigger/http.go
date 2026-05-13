@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/httpenvelope"
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -127,9 +128,12 @@ func (h *HTTPHandler) ServeHTTP(
 	if !ok {
 		return
 	}
-	newRunID := fmt.Sprintf(
-		"%s-%d", h.def.WorkflowID, time.Now().UTC().UnixNano(),
-	)
+	// runid.New is crypto-random; the previous workflowID + UnixNano
+	// shape collided under concurrent load and the per-run JetStream
+	// dedup window dropped one of the colliding workflow.started
+	// events, delivering the surviving run's response to both
+	// waiting HTTP handlers (a cross-client data leak).
+	newRunID := runid.New()
 	timeout := time.Duration(h.def.HTTP.TimeoutMs) * time.Millisecond
 	publishCtx, publishCancel := context.WithTimeout(
 		r.Context(), timeout,
