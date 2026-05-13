@@ -698,7 +698,11 @@ func (s *Service) CreateTrigger(
 	)
 }
 
-// createTriggerInner validates and writes the trigger to KV.
+// createTriggerInner validates and writes the trigger to KV. For HTTP
+// triggers it additionally checks for an existing trigger that already
+// claims the same (method, path) and refuses with a typed
+// RouteConflictError. Self-replace (same trigger ID) is allowed so
+// operators can update a route's config without temporary unregister.
 func (s *Service) createTriggerInner(
 	ctx context.Context, def trigger.TriggerDef,
 ) error {
@@ -716,6 +720,9 @@ func (s *Service) createTriggerInner(
 	if err := trigger.Validate(def); err != nil {
 		return fmt.Errorf("invalid trigger: %w", err)
 	}
+	if err := s.checkHTTPRouteConflict(ctx, def); err != nil {
+		return err
+	}
 	data, err := json.Marshal(def)
 	if err != nil {
 		return err
@@ -724,6 +731,49 @@ func (s *Service) createTriggerInner(
 		ctx, def.ID, data,
 	)
 	return err
+}
+
+// checkHTTPRouteConflict returns a *trigger.RouteConflictError when
+// def is an HTTP trigger whose (method, path) is already claimed by
+// a different trigger ID. Non-HTTP triggers are pass-through. Same-ID
+// re-registration (idempotent update) is allowed.
+func (s *Service) checkHTTPRouteConflict(
+	ctx context.Context, def trigger.TriggerDef,
+) error {
+	if def.HTTP == nil {
+		return nil
+	}
+	if s.triggerKV == nil {
+		return fmt.Errorf("triggers KV bucket not available")
+	}
+	existing, err := s.listTriggersInner(ctx)
+	if err != nil {
+		// No keys yet is a benign "first trigger" case.
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list triggers for conflict check: %w", err)
+	}
+	for _, other := range existing {
+		if other.ID == def.ID {
+			continue
+		}
+		if other.HTTP == nil {
+			continue
+		}
+		if other.HTTP.Method != def.HTTP.Method {
+			continue
+		}
+		if other.HTTP.Path != def.HTTP.Path {
+			continue
+		}
+		return &trigger.RouteConflictError{
+			Method:          def.HTTP.Method,
+			Path:            def.HTTP.Path,
+			HolderTriggerID: other.ID,
+		}
+	}
+	return nil
 }
 
 // ListTriggers retrieves all trigger definitions from KV.
