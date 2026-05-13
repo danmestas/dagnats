@@ -9,7 +9,7 @@ The DAG: `echo` (normal step, runs the worker) → `respond` (engine-resolved st
 
 ## Workflow
 
-- `echo` -- worker step. Receives a `TriggerEnvelope` wrapping the HTTP request (`trigger`, `source`, `workflow_id`, `timestamp`, `data: {method, path, headers, body}`), and returns a JSON object describing what arrived. See [main.go](main.go) for the wrapper-struct pattern that lifts `data.method`, `data.path`, and `data.body` out of the envelope. The wrap is shared with cron/webhook/subject triggers; full shape in [docs/triggers/http](https://github.com/danmestas/dagnats/blob/main/docs/site/content/docs/triggers/http.md#reading-the-request-inside-a-worker).
+- `echo` -- worker step. Receives a `TriggerEnvelope` wrapping the HTTP request (`trigger`, `source`, `workflow_id`, `timestamp`, `data: {method, path, headers, body}`), and returns a JSON object describing what arrived. The worker is registered with `worker.UnwrapTrigger()` so the typed handler sees `data.method`, `data.path`, and `data.body` directly without manually unwrapping the envelope -- see [main.go](main.go). The wrap is shared with cron/webhook/subject triggers; full shape in [docs/triggers/http](https://github.com/danmestas/dagnats/blob/main/docs/site/content/docs/triggers/http.md#reading-the-request-inside-a-worker).
 - `respond` -- ships the upstream output as the HTTP response (status 200, `application/json`).
 
 ## Run It
