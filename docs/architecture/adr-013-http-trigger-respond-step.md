@@ -1,6 +1,6 @@
 # ADR-013: HTTP Trigger + Respond Step (Durable Endpoints)
 
-**Status:** Proposed
+**Status:** Accepted
 **Deciders:** Dan Mestas
 **Depends on:** ADR-011 (engine sole retry authority), ADR-012 (engine resolves WorkflowDef)
 **Related:** Inngest Durable Endpoints (beta, Nov 2025); iii `http` trigger + middleware skills
@@ -157,11 +157,14 @@ This is preferred over an in-memory `runID → ResponseWriter` map because:
 
 **Subject ownership.** The subject `dagnats.http.response.<run_id>` is
 **engine-private** — not a public surface. The string is produced in exactly
-one place: a helper `internal/trigger/http.ResponseSubject(runID string) string`.
-The API handler (subscriber) and the engine's respond step (publisher) both
-import it. Hardcoding the subject in two packages would be change
-amplification waiting to happen; one helper makes it a single-site rename if
-the subject ever needs versioning.
+one place: a helper `internal/httpenvelope.ResponseSubject(runID string) string`.
+The API handler (subscriber, in `internal/trigger`) and the engine's respond
+step (publisher, in `internal/engine`) both import it. Co-locating the helper
+in `internal/httpenvelope` (rather than `internal/trigger`) avoids a
+`trigger ↔ engine` import cycle while keeping the single-producer invariant.
+Hardcoding the subject in two packages would be change amplification waiting
+to happen; one helper makes it a single-site rename if the subject ever needs
+versioning.
 
 ### Failure handling
 
@@ -315,12 +318,16 @@ referenced sections above for design impact.
    adds an auth step before `respond`. `HTTPConfig.Secret` (HMAC) is offered
    as a near-zero-cost shared-secret guard, mirroring `WebhookConfig.Secret`.
 6. **Idempotency:** opt-in via `HTTPConfig.IdempotencyHeader` (e.g.
-   `Idempotency-Key`). The header value becomes the `Nats-Msg-Id`, leveraging
-   JetStream's existing dedup window. **Caveat:** the default JetStream dedup
-   window is 30s. A workflow author expecting Stripe-style 24h semantics will
-   be surprised; the first PR must either surface the window in `HTTPConfig`
-   or bump the trigger stream's default dedup window to a more realistic
-   value (decision deferred to implementation, documented in PR 1).
+   `Idempotency-Key`). **Implementation reality (discovered during PR 2):** a
+   `Nats-Msg-Id` alone is insufficient — JetStream dedup collapses the publish,
+   but a sequential duplicate HTTP request still subscribes on a fresh
+   `ResponseSubject(newRunID)` that no respond step will ever hit, and the
+   second request times out. The real implementation uses a JetStream KV
+   bucket (`dagnats_http_idempotency`) keyed on `(triggerID, header-value)
+   → runID`, plus the response payload stored under `result.<runID>` so
+   duplicates can replay the original run's response without re-running the
+   workflow. The replay poll uses exponential backoff (25ms → 500ms cap) so
+   concurrent duplicates don't thunder the bucket.
 7. **Observability:** `X-Dagnats-Run-Id` always present in the response, not
    configurable. The value is tiny, the upside (debug via `dagnats run
    inspect`) is universal, and there's no scenario where a caller is *harmed*
