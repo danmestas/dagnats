@@ -220,6 +220,68 @@ func (s *Service) registerWorkflowInner(
 	return err
 }
 
+// RegisterWorkflowWithWarnings is the variant that returns the
+// graph-level warnings produced by dag.ValidateRespondReachability
+// alongside the persistence outcome. Per ADR-013 PR 3, the REST
+// handler surfaces these warnings in the response body so the
+// workflow author sees them at registration time, not first
+// production hang. Fatal field-level errors (dag.Validate) still
+// short-circuit the persist; warnings do NOT.
+//
+// hasHTTPTrigger is computed by walking the triggers KV for any
+// trigger whose WorkflowID matches def.Name and whose HTTP variant
+// is non-nil. A registration error during the trigger lookup is
+// logged and treated as "no HTTP trigger" — failing the registration
+// over a transient list error would be worse than skipping the
+// reachability warning.
+func (s *Service) RegisterWorkflowWithWarnings(
+	ctx context.Context, def dag.WorkflowDef,
+) ([]dag.Warning, error) {
+	if ctx == nil {
+		panic("RegisterWorkflowWithWarnings: ctx must not be nil")
+	}
+	if def.Name == "" {
+		panic("RegisterWorkflowWithWarnings: def.Name must not be empty")
+	}
+	if err := s.RegisterWorkflow(ctx, def); err != nil {
+		return nil, err
+	}
+	hasHTTP := s.hasHTTPTriggerFor(ctx, def.Name)
+	return dag.ValidateRespondReachability(def, hasHTTP), nil
+}
+
+// hasHTTPTriggerFor returns true when at least one trigger in the
+// triggers KV binds an HTTP variant to workflowName. Errors are
+// logged and the function falls through to false so a transient KV
+// hiccup never escalates into a failed registration.
+func (s *Service) hasHTTPTriggerFor(
+	ctx context.Context, workflowName string,
+) bool {
+	if workflowName == "" {
+		panic("hasHTTPTriggerFor: workflowName must not be empty")
+	}
+	if s.triggerKV == nil {
+		return false
+	}
+	defs, err := s.listTriggersInner(ctx)
+	if err != nil {
+		if !errors.Is(err, jetstream.ErrNoKeysFound) {
+			slog.Warn("list triggers for HTTP-trigger check",
+				"error", err, "workflow", workflowName)
+		}
+		return false
+	}
+	for _, d := range defs {
+		if d.WorkflowID != workflowName {
+			continue
+		}
+		if d.HTTP != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // GetWorkflow retrieves the registered definition for the named
 // workflow. Returns a key-not-found error when not registered.
 func (s *Service) GetWorkflow(name string) (dag.WorkflowDef, error) {
