@@ -111,8 +111,10 @@ func (h *HTTPHandler) ServeHTTP(
 	w.Header().Set(httpRunIDHeader, runID)
 
 	timeout := time.Duration(h.def.HTTP.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
+	publishCtx, publishCancel := context.WithTimeout(
+		r.Context(), timeout,
+	)
+	defer publishCancel()
 
 	sub, err := h.subscribeResponse(runID)
 	if err != nil {
@@ -132,7 +134,9 @@ func (h *HTTPHandler) ServeHTTP(
 		)
 		return
 	}
-	if err := h.publishTrigger(ctx, envelope, runID, r); err != nil {
+	if err := h.publishTrigger(
+		publishCtx, envelope, runID, r,
+	); err != nil {
 		http.Error(w,
 			"failed to publish trigger",
 			http.StatusInternalServerError,
@@ -140,7 +144,10 @@ func (h *HTTPHandler) ServeHTTP(
 		return
 	}
 
-	h.awaitResponse(ctx, w, sub, runID)
+	// awaitResponse uses the request's own context for client-close
+	// detection; the per-request timeout is its own arm so the two
+	// don't race when the timeout fires.
+	h.awaitResponse(r.Context(), w, sub, runID)
 }
 
 // readAndValidate reads the body within the configured limit and,
@@ -251,9 +258,11 @@ func (h *HTTPHandler) publishTrigger(
 	return nil
 }
 
-// awaitResponse selects on the response subscription and the
-// per-request timeout. PR 3 will extend this with run.failed and
-// run.cancelled event observation.
+// awaitResponse selects on the response subscription, the failure
+// observer (history.<runID>), the request context, and the per-request
+// timeout. Maps each terminal signal to the documented HTTP outcome
+// per ADR-013 §"Failure handling". All async subscriptions are torn
+// down on every exit path via deferred unsubscribe.
 func (h *HTTPHandler) awaitResponse(
 	ctx context.Context, w http.ResponseWriter,
 	sub *nats.Subscription, runID string,
@@ -265,21 +274,198 @@ func (h *HTTPHandler) awaitResponse(
 		panic("awaitResponse: runID must not be empty")
 	}
 
-	deadline, hasDeadline := ctx.Deadline()
-	wait := time.Until(deadline)
-	if !hasDeadline || wait <= 0 {
-		wait = time.Duration(h.def.HTTP.TimeoutMs) * time.Millisecond
-	}
-
-	msg, err := sub.NextMsg(wait)
+	respCh := make(chan *nats.Msg, 1)
+	failCh := make(chan failureSignal, 1)
+	startResponseReader(sub, respCh)
+	stopFailWatch, err := startFailureObserver(h.nc, runID, failCh)
 	if err != nil {
+		http.Error(w,
+			`{"error":"failure_observer_failed","run_id":"`+runID+`"}`,
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	defer stopFailWatch()
+
+	timer := time.NewTimer(awaitTimeout(ctx, h.def.HTTP.TimeoutMs))
+	defer timer.Stop()
+
+	select {
+	case msg := <-respCh:
+		writeHTTPResponse(w, msg.Data)
+	case sig := <-failCh:
+		writeFailureResponse(w, runID, sig)
+	case <-ctx.Done():
+		// Client closed the request before any signal arrived. 499
+		// is nginx's "client closed request" code — observability
+		// tooling distinguishes it from 5xx and ADR-013 reserves it
+		// for this case.
+		http.Error(w,
+			`{"error":"client_closed","run_id":"`+runID+`"}`,
+			499,
+		)
+	case <-timer.C:
 		http.Error(w,
 			`{"error":"workflow_timeout","run_id":"`+runID+`"}`,
 			http.StatusGatewayTimeout,
 		)
+	}
+}
+
+// awaitTimeout returns the per-request timeout as a duration. The
+// request's own context handles client-close as its own select arm
+// in awaitResponse — the timeout here is purely the configured
+// HTTPConfig.TimeoutMs cap.
+func awaitTimeout(ctx context.Context, timeoutMs int) time.Duration {
+	if ctx == nil {
+		panic("awaitTimeout: ctx must not be nil")
+	}
+	if timeoutMs <= 0 {
+		panic("awaitTimeout: timeoutMs must be positive")
+	}
+	return time.Duration(timeoutMs) * time.Millisecond
+}
+
+// failureSignal carries the kind of failure event observed on
+// history.<runID>. The select case maps it to a specific HTTP status.
+type failureSignal struct {
+	kind string // "failed" or "cancelled"
+}
+
+// startResponseReader spawns a goroutine that does a single blocking
+// NextMsg on the response subscription and forwards the message (or
+// silently exits on error — the awaitResponse select will fall through
+// to ctx.Done / timer).
+func startResponseReader(
+	sub *nats.Subscription, out chan<- *nats.Msg,
+) {
+	if sub == nil {
+		panic("startResponseReader: sub must not be nil")
+	}
+	if out == nil {
+		panic("startResponseReader: out must not be nil")
+	}
+	go func() {
+		// 24h cap so a hung subscription cannot block forever even
+		// if the awaitResponse select somehow misses its other arms.
+		msg, err := sub.NextMsg(24 * time.Hour)
+		if err != nil {
+			return
+		}
+		select {
+		case out <- msg:
+		default:
+		}
+	}()
+}
+
+// startFailureObserver subscribes (plain NATS) to history.<runID> and
+// forwards the first workflow.failed or workflow.cancelled event to
+// failCh. Returns a teardown func that the caller MUST defer. Returns
+// an error if the subscription cannot be opened — failing fast is
+// safer than silently losing failure signals.
+func startFailureObserver(
+	nc *nats.Conn, runID string, failCh chan<- failureSignal,
+) (func(), error) {
+	if nc == nil {
+		panic("startFailureObserver: nc must not be nil")
+	}
+	if runID == "" {
+		panic("startFailureObserver: runID must not be empty")
+	}
+	sub, err := nc.SubscribeSync("history." + runID)
+	if err != nil {
+		return nil, fmt.Errorf("subscribe history: %w", err)
+	}
+	if err := nc.Flush(); err != nil {
+		_ = sub.Unsubscribe()
+		return nil, fmt.Errorf("flush: %w", err)
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go observeFailureEvents(sub, failCh, stop, done)
+	return func() {
+		close(stop)
+		_ = sub.Unsubscribe()
+		<-done
+	}, nil
+}
+
+// observeFailureEvents loops on the per-run history subscription
+// looking for the two terminal events the HTTP handler reacts to. It
+// exits on stop close or first matching event. Bounded loop (10k
+// iterations) per TigerStyle "all loops bounded".
+func observeFailureEvents(
+	sub *nats.Subscription, out chan<- failureSignal,
+	stop <-chan struct{}, done chan<- struct{},
+) {
+	defer close(done)
+	for i := 0; i < 10000; i++ {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		msg, err := sub.NextMsg(50 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		var evt protocol.Event
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			continue
+		}
+		sig, ok := failureSignalFor(evt.Type)
+		if !ok {
+			continue
+		}
+		select {
+		case out <- sig:
+		default:
+		}
 		return
 	}
-	writeHTTPResponse(w, msg.Data)
+}
+
+// failureSignalFor maps a protocol event type to the failureSignal
+// kind the HTTP handler reacts to. Returns ok=false for events the
+// handler ignores (step.*, etc.) — keeps the select arm shallow.
+func failureSignalFor(t protocol.EventType) (failureSignal, bool) {
+	switch t {
+	case protocol.EventWorkflowFailed:
+		return failureSignal{kind: "failed"}, true
+	case protocol.EventWorkflowCancelled:
+		return failureSignal{kind: "cancelled"}, true
+	}
+	return failureSignal{}, false
+}
+
+// writeFailureResponse maps a failureSignal to the documented HTTP
+// status + body shape. Keep parallel to ADR-013 §"Failure handling".
+func writeFailureResponse(
+	w http.ResponseWriter, runID string, sig failureSignal,
+) {
+	if w == nil {
+		panic("writeFailureResponse: w must not be nil")
+	}
+	if runID == "" {
+		panic("writeFailureResponse: runID must not be empty")
+	}
+	switch sig.kind {
+	case "failed":
+		http.Error(w,
+			`{"error":"workflow_failed","run_id":"`+runID+`"}`,
+			http.StatusInternalServerError,
+		)
+	case "cancelled":
+		http.Error(w,
+			`{"error":"workflow_cancelled","run_id":"`+runID+`"}`,
+			http.StatusServiceUnavailable,
+		)
+	default:
+		// Unknown kind is a programmer error — failureSignalFor only
+		// returns the two cases above.
+		panic("writeFailureResponse: unknown sig kind " + sig.kind)
+	}
 }
 
 // writeHTTPResponse decodes the engine's response payload and
