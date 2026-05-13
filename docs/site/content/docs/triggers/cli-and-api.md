@@ -104,5 +104,7 @@ dagnats run get <run-id> --json
 
 - [Cron Schedules](/docs/triggers/cron-schedules) -- automated recurring runs
 - [Event Triggers](/docs/triggers/event-triggers) -- start runs from NATS events
+- [Webhooks](/docs/triggers/webhooks) -- fire-and-forget HTTP triggers (202 immediately)
+- [HTTP Trigger + Respond Step](/docs/triggers/http) -- synchronous HTTP request/response endpoints
 - [Retry Policies](/docs/reliability/retry-policies) -- handling transient failures
 - [Cancellation](/docs/reliability/cancellation) -- stopping a running workflow
