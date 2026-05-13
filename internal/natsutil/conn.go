@@ -132,6 +132,18 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 			Replicas: replicas,
 		},
 		{
+			// http_idempotency: maps an HTTP trigger's
+			// (triggerID, Idempotency-Key header value) → originalRunID
+			// so duplicate requests subscribe to the original run's
+			// response subject (ADR-013 Q6 / PR 3). 1h TTL: long enough
+			// for a typical retry window without bloating state. If
+			// Stripe-style 24h is needed, surface as an HTTPConfig
+			// field; for v1 the value is fixed.
+			Bucket:   "http_idempotency",
+			TTL:      1 * time.Hour,
+			Replicas: replicas,
+		},
+		{
 			Bucket:   "sticky_bindings",
 			TTL:      25 * time.Hour,
 			Replicas: replicas,
