@@ -10,7 +10,8 @@ import (
 // Panics if called with a completely uninitialized def (programmer error).
 func Validate(def TriggerDef) error {
 	if def.ID == "" && def.WorkflowID == "" &&
-		def.Cron == nil && def.Subject == nil && def.Webhook == nil {
+		def.Cron == nil && def.Subject == nil &&
+		def.Webhook == nil && def.HTTP == nil {
 		panic("Validate: completely empty TriggerDef is a programmer error")
 	}
 
@@ -25,7 +26,7 @@ func Validate(def TriggerDef) error {
 	count := countTriggerTypes(def)
 	if count != 1 {
 		return fmt.Errorf(
-			"trigger %q: exactly one of cron/subject/webhook "+
+			"trigger %q: exactly one of cron/subject/webhook/http "+
 				"must be set (got %d)", def.ID, count)
 	}
 
@@ -43,6 +44,13 @@ func Validate(def TriggerDef) error {
 	if def.Webhook != nil {
 		if err := validateWebhookConfig(def.ID, def.Webhook); err != nil {
 			return err
+		}
+	}
+	if def.HTTP != nil {
+		if err := def.HTTP.Validate(); err != nil {
+			return fmt.Errorf(
+				"trigger %q: http config: %w", def.ID, err,
+			)
 		}
 	}
 	if def.Debounce != nil {
@@ -110,6 +118,9 @@ func countTriggerTypes(def TriggerDef) int {
 		count++
 	}
 	if def.Webhook != nil {
+		count++
+	}
+	if def.HTTP != nil {
 		count++
 	}
 	return count

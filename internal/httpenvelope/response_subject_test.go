@@ -1,9 +1,9 @@
-// trigger/response_subject_test.go
+// httpenvelope/response_subject_test.go
 //
 // Methodology: pure unit tests for the engine-private response subject
 // helper. ADR-013 mandates that this string is produced in exactly one
 // place; these tests pin the shape and the empty-runID assertion.
-package trigger
+package httpenvelope
 
 import (
 	"strings"

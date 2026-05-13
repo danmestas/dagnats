@@ -220,6 +220,68 @@ func (s *Service) registerWorkflowInner(
 	return err
 }
 
+// RegisterWorkflowWithWarnings is the variant that returns the
+// graph-level warnings produced by dag.ValidateRespondReachability
+// alongside the persistence outcome. Per ADR-013 PR 3, the REST
+// handler surfaces these warnings in the response body so the
+// workflow author sees them at registration time, not first
+// production hang. Fatal field-level errors (dag.Validate) still
+// short-circuit the persist; warnings do NOT.
+//
+// hasHTTPTrigger is computed by walking the triggers KV for any
+// trigger whose WorkflowID matches def.Name and whose HTTP variant
+// is non-nil. A registration error during the trigger lookup is
+// logged and treated as "no HTTP trigger" — failing the registration
+// over a transient list error would be worse than skipping the
+// reachability warning.
+func (s *Service) RegisterWorkflowWithWarnings(
+	ctx context.Context, def dag.WorkflowDef,
+) ([]dag.Warning, error) {
+	if ctx == nil {
+		panic("RegisterWorkflowWithWarnings: ctx must not be nil")
+	}
+	if def.Name == "" {
+		panic("RegisterWorkflowWithWarnings: def.Name must not be empty")
+	}
+	if err := s.RegisterWorkflow(ctx, def); err != nil {
+		return nil, err
+	}
+	hasHTTP := s.hasHTTPTriggerFor(ctx, def.Name)
+	return dag.ValidateRespondReachability(def, hasHTTP), nil
+}
+
+// hasHTTPTriggerFor returns true when at least one trigger in the
+// triggers KV binds an HTTP variant to workflowName. Errors are
+// logged and the function falls through to false so a transient KV
+// hiccup never escalates into a failed registration.
+func (s *Service) hasHTTPTriggerFor(
+	ctx context.Context, workflowName string,
+) bool {
+	if workflowName == "" {
+		panic("hasHTTPTriggerFor: workflowName must not be empty")
+	}
+	if s.triggerKV == nil {
+		return false
+	}
+	defs, err := s.listTriggersInner(ctx)
+	if err != nil {
+		if !errors.Is(err, jetstream.ErrNoKeysFound) {
+			slog.Warn("list triggers for HTTP-trigger check",
+				"error", err, "workflow", workflowName)
+		}
+		return false
+	}
+	for _, d := range defs {
+		if d.WorkflowID != workflowName {
+			continue
+		}
+		if d.HTTP != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // GetWorkflow retrieves the registered definition for the named
 // workflow. Returns a key-not-found error when not registered.
 func (s *Service) GetWorkflow(name string) (dag.WorkflowDef, error) {
@@ -698,7 +760,11 @@ func (s *Service) CreateTrigger(
 	)
 }
 
-// createTriggerInner validates and writes the trigger to KV.
+// createTriggerInner validates and writes the trigger to KV. For HTTP
+// triggers it additionally checks for an existing trigger that already
+// claims the same (method, path) and refuses with a typed
+// RouteConflictError. Self-replace (same trigger ID) is allowed so
+// operators can update a route's config without temporary unregister.
 func (s *Service) createTriggerInner(
 	ctx context.Context, def trigger.TriggerDef,
 ) error {
@@ -716,6 +782,9 @@ func (s *Service) createTriggerInner(
 	if err := trigger.Validate(def); err != nil {
 		return fmt.Errorf("invalid trigger: %w", err)
 	}
+	if err := s.checkHTTPRouteConflict(ctx, def); err != nil {
+		return err
+	}
 	data, err := json.Marshal(def)
 	if err != nil {
 		return err
@@ -724,6 +793,49 @@ func (s *Service) createTriggerInner(
 		ctx, def.ID, data,
 	)
 	return err
+}
+
+// checkHTTPRouteConflict returns a *trigger.RouteConflictError when
+// def is an HTTP trigger whose (method, path) is already claimed by
+// a different trigger ID. Non-HTTP triggers are pass-through. Same-ID
+// re-registration (idempotent update) is allowed.
+func (s *Service) checkHTTPRouteConflict(
+	ctx context.Context, def trigger.TriggerDef,
+) error {
+	if def.HTTP == nil {
+		return nil
+	}
+	if s.triggerKV == nil {
+		return fmt.Errorf("triggers KV bucket not available")
+	}
+	existing, err := s.listTriggersInner(ctx)
+	if err != nil {
+		// No keys yet is a benign "first trigger" case.
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list triggers for conflict check: %w", err)
+	}
+	for _, other := range existing {
+		if other.ID == def.ID {
+			continue
+		}
+		if other.HTTP == nil {
+			continue
+		}
+		if other.HTTP.Method != def.HTTP.Method {
+			continue
+		}
+		if other.HTTP.Path != def.HTTP.Path {
+			continue
+		}
+		return &trigger.RouteConflictError{
+			Method:          def.HTTP.Method,
+			Path:            def.HTTP.Path,
+			HolderTriggerID: other.ID,
+		}
+	}
+	return nil
 }
 
 // ListTriggers retrieves all trigger definitions from KV.

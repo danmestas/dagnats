@@ -8,4 +8,5 @@ weight: 4
   {{< card link="cron-schedules" title="Cron Schedules" >}}
   {{< card link="event-triggers" title="Event Triggers" >}}
   {{< card link="webhooks" title="Webhooks" >}}
+  {{< card link="http" title="HTTP Trigger + Respond Step" >}}
 {{< /cards >}}

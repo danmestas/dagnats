@@ -41,6 +41,30 @@ func BuildEnvelope(req *http.Request, max int64) (Envelope, error) {
 	if err != nil {
 		return Envelope{}, err
 	}
+	return BuildEnvelopeFromBody(req, body, max), nil
+}
+
+// BuildEnvelopeFromBody constructs an Envelope when the caller has
+// already read and bounded the request body. max is kept on the
+// signature so callers cannot drift from BoundedBody's contract;
+// the parameter is currently informational since body is supplied.
+//
+// Why this variant exists: HTTPHandler reads the body once and
+// then needs both the bytes (for HMAC validation) and the
+// envelope (for the engine). Re-reading req.Body is not safe; the
+// stream is single-shot.
+func BuildEnvelopeFromBody(
+	req *http.Request, body []byte, max int64,
+) Envelope {
+	if req == nil {
+		panic("BuildEnvelopeFromBody: request must not be nil")
+	}
+	if req.URL == nil {
+		panic("BuildEnvelopeFromBody: request URL must not be nil")
+	}
+	if max <= 0 {
+		panic("BuildEnvelopeFromBody: max must be > 0")
+	}
 
 	var query map[string]string
 	if rawQ := req.URL.Query(); len(rawQ) > 0 {
@@ -68,5 +92,5 @@ func BuildEnvelope(req *http.Request, max int64) (Envelope, error) {
 		Query:   query,
 		Headers: headers,
 		Body:    body,
-	}, nil
+	}
 }

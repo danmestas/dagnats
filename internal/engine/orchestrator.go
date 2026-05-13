@@ -2090,6 +2090,12 @@ func (o *Orchestrator) dispatchReadySteps(
 			); err != nil {
 				return err
 			}
+		case dag.StepTypeRespond:
+			if err := o.enqueueRespondStep(
+				ctx, &run, step,
+			); err != nil {
+				return err
+			}
 		default:
 			normalSteps = append(normalSteps, step)
 		}
