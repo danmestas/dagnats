@@ -345,10 +345,10 @@ func (h *HTTPHandler) storeResult(
 }
 
 // fetchStoredResult polls the idempotency KV for the result of a
-// prior run, returning the stored payload and ok=true on hit. Polls
-// at 25ms intervals up to the configured timeout because the original
-// handler may not have written the result yet when a duplicate
-// arrives. Bounded loop per TigerStyle.
+// prior run, returning the stored payload and ok=true on hit.
+// Exponential backoff (25ms → 500ms cap) keeps concurrent duplicates
+// from thundering the bucket: a 30s timeout costs ~60 gets per miss,
+// not ~1200. Bounded loop per TigerStyle.
 func (h *HTTPHandler) fetchStoredResult(
 	ctx context.Context, runID string, timeout time.Duration,
 ) ([]byte, bool) {
@@ -361,7 +361,9 @@ func (h *HTTPHandler) fetchStoredResult(
 	if h.idkv == nil {
 		return nil, false
 	}
-	const pollInterval = 25 * time.Millisecond
+	const pollIntervalMin = 25 * time.Millisecond
+	const pollIntervalMax = 500 * time.Millisecond
+	interval := pollIntervalMin
 	deadline := time.Now().Add(timeout)
 	for i := 0; i < 10000; i++ {
 		if ctx.Err() != nil {
@@ -378,7 +380,11 @@ func (h *HTTPHandler) fetchStoredResult(
 		if time.Now().After(deadline) {
 			return nil, false
 		}
-		time.Sleep(pollInterval)
+		time.Sleep(interval)
+		interval *= 2
+		if interval > pollIntervalMax {
+			interval = pollIntervalMax
+		}
 	}
 	return nil, false
 }
