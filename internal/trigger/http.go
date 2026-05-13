@@ -118,22 +118,18 @@ func (h *HTTPHandler) ServeHTTP(
 	if r == nil {
 		panic("ServeHTTP: Request must not be nil")
 	}
-
 	if r.Method != h.def.HTTP.Method {
 		http.Error(w, "method not allowed",
 			http.StatusMethodNotAllowed)
 		return
 	}
-
 	body, ok := h.readAndValidate(w, r)
 	if !ok {
 		return
 	}
-
 	newRunID := fmt.Sprintf(
 		"%s-%d", h.def.WorkflowID, time.Now().UTC().UnixNano(),
 	)
-
 	timeout := time.Duration(h.def.HTTP.TimeoutMs) * time.Millisecond
 	publishCtx, publishCancel := context.WithTimeout(
 		r.Context(), timeout,
@@ -145,39 +141,66 @@ func (h *HTTPHandler) ServeHTTP(
 	)
 	w.Header().Set(httpRunIDHeader, runID)
 
-	// Replay fast path: a previous request already received the
-	// engine response and stored it in KV. Read it and return.
-	if replay {
-		if data, ok := h.fetchStoredResult(
-			r.Context(), runID, timeout,
-		); ok {
-			writeHTTPResponse(w, data)
-			return
-		}
-		// No stored result yet — the original handler is still
-		// mid-flight. Fall through to subscribe + await on the same
-		// per-run subject; both handlers will see the engine's
-		// publish (NATS fan-out).
+	if replay && h.replayFromStoredResult(w, r, runID, timeout) {
+		return
 	}
+	h.dispatchAndAwait(w, r, body, publishCtx, runID, replay)
+}
 
+// replayFromStoredResult is the fast path when the (triggerID,
+// header-value) → runID claim already exists and the original
+// handler stored its response in KV. Returns true when the stored
+// payload was found and the HTTP response was written; false to
+// fall through to the subscribe-and-await path (which both the
+// original and any concurrent replay handlers also use when no
+// stored payload exists yet).
+func (h *HTTPHandler) replayFromStoredResult(
+	w http.ResponseWriter, r *http.Request,
+	runID string, timeout time.Duration,
+) bool {
+	if w == nil {
+		panic("replayFromStoredResult: w must not be nil")
+	}
+	if runID == "" {
+		panic("replayFromStoredResult: runID must not be empty")
+	}
+	data, ok := h.fetchStoredResult(r.Context(), runID, timeout)
+	if !ok {
+		return false
+	}
+	writeHTTPResponse(w, data)
+	return true
+}
+
+// dispatchAndAwait runs the subscribe-publish-await sequence for a
+// non-replay request, OR for a replay request whose stored result
+// was not yet present in KV. Subscribing to history.<runID> BEFORE
+// publishing the trigger envelope closes the race where a fast-
+// failing engine emits workflow.failed before the observer wires up.
+func (h *HTTPHandler) dispatchAndAwait(
+	w http.ResponseWriter, r *http.Request, body []byte,
+	publishCtx context.Context, runID string, replay bool,
+) {
+	if runID == "" {
+		panic("dispatchAndAwait: runID must not be empty")
+	}
+	if w == nil {
+		panic("dispatchAndAwait: w must not be nil")
+	}
 	sub, err := h.subscribeResponse(runID)
 	if err != nil {
-		http.Error(w,
-			"failed to subscribe response",
-			http.StatusInternalServerError,
-		)
+		http.Error(w, "failed to subscribe response",
+			http.StatusInternalServerError)
 		return
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
-	// Subscribe to failure history BEFORE publishing the trigger
-	// envelope so a fast-failing engine cannot publish
-	// workflow.failed before the failure observer is wired up.
 	failCh := make(chan failureSignal, 1)
 	stopFailWatch, ferr := startFailureObserver(h.nc, runID, failCh)
 	if ferr != nil {
 		http.Error(w,
-			`{"error":"failure_observer_failed","run_id":"`+runID+`"}`,
+			`{"error":"failure_observer_failed","run_id":"`+
+				runID+`"}`,
 			http.StatusInternalServerError,
 		)
 		return
@@ -185,29 +208,40 @@ func (h *HTTPHandler) ServeHTTP(
 	defer stopFailWatch()
 
 	if !replay {
-		envelope, err := buildHTTPEnvelope(r, h.def, body)
-		if err != nil {
-			http.Error(w,
-				"failed to build envelope",
-				http.StatusInternalServerError,
-			)
-			return
-		}
-		if err := h.publishTrigger(
-			publishCtx, envelope, runID, r,
-		); err != nil {
-			http.Error(w,
-				"failed to publish trigger",
-				http.StatusInternalServerError,
-			)
+		if !h.buildAndPublish(publishCtx, w, r, body, runID) {
 			return
 		}
 	}
-
-	// awaitResponse uses the request's own context for client-close
-	// detection; the per-request timeout is its own arm so the two
-	// don't race when the timeout fires.
 	h.awaitResponse(r.Context(), w, sub, runID, failCh)
+}
+
+// buildAndPublish marshals the trigger envelope and publishes the
+// workflow.started event. Returns false (and writes the HTTP error)
+// on either failure; true on success.
+func (h *HTTPHandler) buildAndPublish(
+	ctx context.Context, w http.ResponseWriter, r *http.Request,
+	body []byte, runID string,
+) bool {
+	if runID == "" {
+		panic("buildAndPublish: runID must not be empty")
+	}
+	if w == nil {
+		panic("buildAndPublish: w must not be nil")
+	}
+	envelope, err := buildHTTPEnvelope(r, h.def, body)
+	if err != nil {
+		http.Error(w, "failed to build envelope",
+			http.StatusInternalServerError)
+		return false
+	}
+	if err := h.publishTrigger(
+		ctx, envelope, runID, r,
+	); err != nil {
+		http.Error(w, "failed to publish trigger",
+			http.StatusInternalServerError)
+		return false
+	}
+	return true
 }
 
 // resolveIdempotentRunID looks up the idempotency KV for a prior runID
