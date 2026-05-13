@@ -556,3 +556,74 @@ func TestTriggerDisableJSON(t *testing.T) {
 		)
 	}
 }
+
+// TestTriggerTypeConfig is a pure-function table test covering each
+// trigger kind. The list command's TYPE and CONFIG columns flow from
+// this; if a new trigger kind lands without a case here, the CLI
+// quietly renders "unknown" (the bug that motivated this test).
+func TestTriggerTypeConfig(t *testing.T) {
+	cases := []struct {
+		name     string
+		def      trigger.TriggerDef
+		wantKind string
+		wantCfg  string
+	}{
+		{
+			name: "cron",
+			def: trigger.TriggerDef{
+				Cron: &trigger.CronConfig{Expression: "*/5 * * * *"},
+			},
+			wantKind: "cron",
+			wantCfg:  "*/5 * * * *",
+		},
+		{
+			name: "subject",
+			def: trigger.TriggerDef{
+				Subject: &trigger.SubjectConfig{Subject: "events.>"},
+			},
+			wantKind: "subject",
+			wantCfg:  "events.>",
+		},
+		{
+			name: "webhook",
+			def: trigger.TriggerDef{
+				Webhook: &trigger.WebhookConfig{Path: "/hooks/x"},
+			},
+			wantKind: "webhook",
+			wantCfg:  "/hooks/x",
+		},
+		{
+			name: "http",
+			def: trigger.TriggerDef{
+				HTTP: &trigger.HTTPConfig{
+					Method: "POST",
+					Path:   "/api/echo",
+				},
+			},
+			wantKind: "http",
+			wantCfg:  "POST /api/echo",
+		},
+		{
+			name:     "unknown when no variant set",
+			def:      trigger.TriggerDef{},
+			wantKind: "unknown",
+			wantCfg:  "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotKind, gotCfg := triggerTypeConfig(tc.def)
+			// Positive: kind matches.
+			if gotKind != tc.wantKind {
+				t.Fatalf("kind: want %q got %q",
+					tc.wantKind, gotKind)
+			}
+			// Negative: config matches the kind, not some other variant's.
+			if gotCfg != tc.wantCfg {
+				t.Fatalf("config: want %q got %q",
+					tc.wantCfg, gotCfg)
+			}
+		})
+	}
+}
