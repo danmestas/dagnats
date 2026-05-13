@@ -144,13 +144,25 @@ func resolveRespondBody(
 func pickUpstreamOutput(
 	step dag.StepDef, run *dag.WorkflowRun,
 ) []byte {
+	if run == nil {
+		panic("pickUpstreamOutput: run must not be nil")
+	}
+	if run.Steps == nil {
+		panic("pickUpstreamOutput: run.Steps must not be nil")
+	}
 	if len(step.DependsOn) == 0 {
 		return nil
 	}
 	if len(step.DependsOn) != 1 {
 		return nil
 	}
-	return run.Steps[step.DependsOn[0]].Output
+	depID := step.DependsOn[0]
+	if depID == "" {
+		// Empty dependency ID would silently return nil (zero value of
+		// the absent map entry). That hides a workflow-validation gap.
+		panic("pickUpstreamOutput: step.DependsOn[0] must not be empty")
+	}
+	return run.Steps[depID].Output
 }
 
 // publishRespondPayload emits the response envelope to the per-run
