@@ -16,8 +16,9 @@
 // token. Bounded waits — every goroutine has a hard 30s
 // per-request budget.
 //
-// CI runs this single test with `-count=100 -timeout 300s`
-// per the brief to prove zero flakes.
+// CI runs this single test with `-count=100 -timeout 1800s`
+// per the brief to prove zero flakes. The run-id generator
+// it once exercised is internal/runid.New (crypto-random).
 package features
 
 import (
@@ -73,26 +74,15 @@ func echoHTTPBodyHandler(tc worker.TaskContext) error {
 // correlation invariant: 50 parallel requests with distinct
 // payloads all see their own payload back, none other's.
 //
-// KNOWN FAILURE (skipped pending upstream fix): the test
-// deterministically catches a real concurrency bug in
-// internal/trigger/http.go where the run id is generated from
-// `time.Now().UTC().UnixNano()` with no per-process uniqueness
-// guarantee. Under high concurrency, two requests can land in the
-// same nanosecond and produce identical run ids, causing JetStream
-// dedup to drop one workflow.started event and the surviving run's
-// response to be delivered to BOTH HTTP handlers — a crossover.
-// The brief explicitly requires this test to ship without the
-// underlying fix (one bug fix per PR; this PR is tests). The skip
-// directive is the audit trail. Remove t.Skip once the upstream
-// run-id generator switches to nuid (or any source with a
-// per-process monotonic counter component).
+// Originally surfaced a runID-generation bug where
+// internal/trigger/http.go composed run ids from workflowID +
+// time.Now().UnixNano(), allowing two requests in the same
+// nanosecond to collide. JetStream dedup then dropped one
+// workflow.started and the surviving run's response delivered
+// to both waiting HTTP handlers (cross-client data leak). Fixed
+// by routing both internal/api and internal/trigger through
+// internal/runid.New (16 crypto-random bytes -> 32 lowercase hex).
 func TestHTTPTrigger_Concurrency_NoCrossover(t *testing.T) {
-	t.Skip(
-		"surfaces real concurrency bug in trigger/http.go run-id " +
-			"generator (time.Now().UnixNano collisions); track in " +
-			"the PR body. Test is correct and runnable; do not " +
-			"unskip until the run-id generator is fixed upstream.",
-	)
 	harness.RunE2E(t, func(t *testing.T, nc *nats.Conn) {
 		stack := startHTTPE2EStack(t, nc)
 

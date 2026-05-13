@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -121,7 +122,7 @@ func (s *Service) scheduleRunInner(
 		)
 	}
 
-	runID := generateRunID()
+	runID := runid.New()
 	sr := ScheduledRun{
 		RunID:      runID,
 		WorkflowID: workflowName,

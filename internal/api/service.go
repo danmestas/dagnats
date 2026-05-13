@@ -6,7 +6,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,6 +20,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
@@ -394,7 +394,7 @@ func (s *Service) startRunInner(
 		}
 	}
 
-	runID := generateRunID()
+	runID := runid.New()
 	payload, err := buildStartPayload(entry.Value(), input)
 	if err != nil {
 		return "", err
@@ -539,17 +539,6 @@ func parseTraceID(traceparent string) string {
 		return ""
 	}
 	return parts[1]
-}
-
-// generateRunID returns a 32-character lowercase hex string from
-// 16 crypto-random bytes. Panics only if the OS entropy source is
-// unavailable -- a fatal system condition.
-func generateRunID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic("generateRunID: crypto/rand failed: " + err.Error())
-	}
-	return hex.EncodeToString(b)
 }
 
 // buildStartPayload wraps the workflow definition and optional user

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -124,7 +125,7 @@ func (s *Service) publishBulkRuns(
 	}
 	runIDs := make([]string, 0, len(inputs))
 	for _, input := range inputs {
-		runID := generateRunID()
+		runID := runid.New()
 		payload, err := buildStartPayload(defBytes, input)
 		if err != nil {
 			return BulkRunResponse{
