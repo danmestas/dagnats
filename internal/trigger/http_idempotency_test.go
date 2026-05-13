@@ -14,29 +14,25 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 )
 
-// countingFakeEngine answers each unique runID with a body containing
-// a monotonically incrementing call counter. If the handler replays
-// correctly all 5 requests see the same body; if it doesn't, the
-// second request gets a different body (or times out).
+// startCountingFakeEngine wraps startFakeRespondEngine with a fixed
+// body. If the handler replays correctly all duplicate requests see
+// the same body; if it doesn't, the second request gets a different
+// body or times out.
 func startCountingFakeEngine(
 	t *testing.T, nc *nats.Conn,
-) (stop func(), callCount *int64) {
+) func() {
 	t.Helper()
-	var counter int64
-	stop = startFakeRespondEngine(t, nc, httpRespondWire{
+	return startFakeRespondEngine(t, nc, httpRespondWire{
 		Status:      200,
 		ContentType: "application/json",
 		Body:        []byte(`{"call":1}`),
 	})
-	return stop, &counter
 }
 
 func TestHTTPHandlerIdempotencyReplayReturnsSameResponseBody(t *testing.T) {
@@ -61,7 +57,7 @@ func TestHTTPHandlerIdempotencyReplayReturnsSameResponseBody(t *testing.T) {
 		t.Fatalf("Validate: %v", err)
 	}
 
-	stop, _ := startCountingFakeEngine(t, nc)
+	stop := startCountingFakeEngine(t, nc)
 	defer stop()
 
 	handler := NewHTTPHandler(nc, def)
@@ -203,19 +199,3 @@ func TestHTTPHandlerIdempotencyNoHeaderProvidedNoDedup(t *testing.T) {
 	}
 }
 
-// startTimedFakeEngine is the variant that records how many distinct
-// runIDs the engine actually saw — used to assert the engine only
-// runs the workflow once across N duplicate replay requests.
-func startTimedFakeEngine(
-	t *testing.T, nc *nats.Conn, response httpRespondWire,
-) (stop func(), runIDCount *int64) {
-	t.Helper()
-	var count int64
-	stop = startFakeRespondEngine(t, nc, response)
-	runIDCount = &count
-	return
-}
-
-// Compile-time interface use to keep imports.
-var _ = atomic.AddInt64
-var _ = time.Second
