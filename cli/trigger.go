@@ -252,6 +252,10 @@ func triggerTypeConfig(
 	if def.Webhook != nil {
 		return "webhook", def.Webhook.Path
 	}
+	if def.HTTP != nil {
+		return "http",
+			fmt.Sprintf("%s %s", def.HTTP.Method, def.HTTP.Path)
+	}
 	return "unknown", ""
 }
 
