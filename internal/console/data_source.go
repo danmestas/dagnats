@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -62,6 +63,21 @@ type DataSource interface {
 	// log + continue rather than fail the operator action.
 	EmitAuditEvent(ctx context.Context, evt AuditEvent) error
 
+	// SetTriggerEnabled flips a single trigger's enabled bit. The
+	// caller is responsible for emitting the audit event; the
+	// DataSource only owns the mutation. Returns an error when the
+	// trigger isn't found or KV write fails. Used by the trigger
+	// toggle endpoint.
+	SetTriggerEnabled(ctx context.Context, triggerID string, enabled bool) error
+
+	// ListTriggerFires returns recent firings for one trigger, newest
+	// first. Empty + nil-error when no firings exist (zero state).
+	// limit must be positive; callers pass 25-50 for the recent-activity
+	// panel.
+	ListTriggerFires(
+		ctx context.Context, triggerID string, limit int,
+	) ([]TriggerFireRow, error)
+
 	// WatchRuns streams the workflow_runs KV bucket. Each emitted
 	// RunUpdate carries the latest snapshot for one run plus a flag
 	// indicating whether this is the first emission for that key
@@ -80,6 +96,20 @@ type DataSource interface {
 	WatchRunHistory(
 		ctx context.Context, runID string, fromSeq uint64,
 	) (<-chan HistoryEvent, error)
+
+	// WatchTriggers streams the triggers KV bucket. Each TriggerUpdate
+	// is one observation: a new trigger landed, an existing trigger was
+	// toggled / edited, or a delete tombstone arrived (Deleted=true,
+	// Def fields cleared). The channel closes on ctx cancellation.
+	WatchTriggers(ctx context.Context) (<-chan TriggerUpdate, error)
+
+	// WatchDLQ streams the dead-letter stream. DLQUpdate carries the
+	// rendered DeadLetterView plus the operation that produced it —
+	// new entries arrive with Operation=DLQOpAdded; entries removed
+	// by retry / discard arrive with Operation=DLQOpRemoved (and
+	// View.Sequence is the only valid field). The channel closes on
+	// ctx cancellation.
+	WatchDLQ(ctx context.Context) (<-chan DLQUpdate, error)
 }
 
 // RunUpdate is one observation on the workflow_runs KV bucket. Created
@@ -99,6 +129,47 @@ type RunUpdate struct {
 type HistoryEvent struct {
 	Event api.RunEvent
 	Seq   uint64
+}
+
+// TriggerFireRow is one observation on the TRIGGER_HISTORY stream
+// scoped to a single trigger. The DataSource owns the cross-stream
+// enrichment (run status, duration); the console only renders the
+// projection. Empty RunID means the firing was skipped (e.g. trigger
+// disabled at fire time) and produced no run.
+type TriggerFireRow struct {
+	FiredAt    time.Time
+	RunID      string
+	Skipped    bool
+	SkipReason string
+	Status     string
+	Duration   time.Duration
+}
+
+// TriggerUpdate is one observation on the triggers KV bucket. Deleted
+// marks a tombstone — Def is zeroed and the consumer should remove
+// the matching row by ID. Otherwise Def is the post-write snapshot.
+type TriggerUpdate struct {
+	Def     trigger.TriggerDef
+	Deleted bool
+	Seq     uint64
+}
+
+// DLQOp tags one DLQUpdate as additive or destructive.
+type DLQOp string
+
+const (
+	// DLQOpAdded means the entry just appeared on the DLQ stream.
+	DLQOpAdded DLQOp = "added"
+	// DLQOpRemoved means an entry was retried or discarded and is
+	// no longer in the stream. Only View.Sequence is populated.
+	DLQOpRemoved DLQOp = "removed"
+)
+
+// DLQUpdate is one observation on the DLQ stream. View carries the
+// full entry on additions; on removals only Sequence is meaningful.
+type DLQUpdate struct {
+	View      api.DeadLetterView
+	Operation DLQOp
 }
 
 // apiServiceAdapter wraps *api.Service to satisfy DataSource. The
@@ -280,6 +351,61 @@ func (a *apiServiceAdapter) EmitAuditEvent(
 		logger = slog.Default()
 	}
 	return emitAuditEventInner(ctx, a.auditKV, logger, evt)
+}
+
+func (a *apiServiceAdapter) SetTriggerEnabled(
+	ctx context.Context, triggerID string, enabled bool,
+) error {
+	if a.svc == nil {
+		panic("apiServiceAdapter.SetTriggerEnabled: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.SetTriggerEnabled: ctx is nil")
+	}
+	if triggerID == "" {
+		panic("apiServiceAdapter.SetTriggerEnabled: triggerID is empty")
+	}
+	return a.svc.SetTriggerEnabled(ctx, triggerID, enabled)
+}
+
+func (a *apiServiceAdapter) ListTriggerFires(
+	ctx context.Context, triggerID string, limit int,
+) ([]TriggerFireRow, error) {
+	if a.svc == nil {
+		panic("apiServiceAdapter.ListTriggerFires: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.ListTriggerFires: ctx is nil")
+	}
+	if triggerID == "" {
+		panic("apiServiceAdapter.ListTriggerFires: triggerID is empty")
+	}
+	if limit <= 0 {
+		panic("apiServiceAdapter.ListTriggerFires: limit must be positive")
+	}
+	entries, err := a.svc.ListTriggerFires(ctx, triggerID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list trigger fires: %w", err)
+	}
+	rows := make([]TriggerFireRow, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, triggerFireRowFromEntry(e))
+	}
+	return rows, nil
+}
+
+// triggerFireRowFromEntry projects one api.TriggerFireEntry into the
+// console's render shape. Strips trigger-internal noise so the
+// console only depends on the fields it renders.
+func triggerFireRowFromEntry(e api.TriggerFireEntry) TriggerFireRow {
+	return TriggerFireRow{
+		FiredAt:    e.FiredAt,
+		RunID:      e.RunID,
+		Skipped:    e.Skipped,
+		SkipReason: e.SkipReason,
+		Status:     e.Status,
+		Duration:   e.Duration,
+	}
 }
 
 // WatchRuns opens a KV watcher against the workflow_runs bucket and
@@ -470,6 +596,225 @@ func historyPump(
 			return
 		}
 	}
+}
+
+// WatchTriggers watches the triggers KV bucket and translates each
+// entry update into a TriggerUpdate. Tombstones (delete / purge)
+// surface as Deleted=true so the SSE consumer can patch the row out.
+// Initial replay is included — caller filters as needed.
+func (a *apiServiceAdapter) WatchTriggers(
+	ctx context.Context,
+) (<-chan TriggerUpdate, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.WatchTriggers: ctx is nil")
+	}
+	if a.nc == nil {
+		return nil, errors.New("nats.Conn not configured")
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream init: %w", err)
+	}
+	kv, err := js.KeyValue(ctx, "triggers")
+	if err != nil {
+		return nil, fmt.Errorf("triggers bucket: %w", err)
+	}
+	watcher, err := kv.WatchAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("watch triggers: %w", err)
+	}
+	const bufSize = 16
+	out := make(chan TriggerUpdate, bufSize)
+	go triggerWatchPump(ctx, watcher, out)
+	return out, nil
+}
+
+// triggerWatchPump translates KV updates into TriggerUpdate values.
+// Mirrors runWatchPump's bounded-loop + drop-oldest discipline so a
+// slow consumer can never wedge the goroutine.
+func triggerWatchPump(
+	ctx context.Context,
+	watcher jetstream.KeyWatcher, out chan TriggerUpdate,
+) {
+	defer close(out)
+	defer watcher.Stop()           //nolint:errcheck
+	const maxUpdates = 100_000_000 // bounded loop per project rule
+	for i := 0; i < maxUpdates; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case entry, ok := <-watcher.Updates():
+			if !ok {
+				return
+			}
+			if entry == nil {
+				continue
+			}
+			tu, ok := parseTriggerUpdate(entry)
+			if !ok {
+				continue
+			}
+			if !sendTriggerOrDrop(ctx, out, tu) {
+				return
+			}
+		}
+	}
+}
+
+// sendTriggerOrDrop is the trigger-update variant of sendOrDropOldest.
+// Copied rather than generic-ified — the channel type prevents the
+// straightforward generic, and the code is small enough that the
+// duplication is honest.
+func sendTriggerOrDrop(
+	ctx context.Context, out chan TriggerUpdate, value TriggerUpdate,
+) bool {
+	select {
+	case out <- value:
+		return true
+	case <-ctx.Done():
+		return false
+	default:
+	}
+	select {
+	case <-out:
+	default:
+	}
+	select {
+	case out <- value:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// parseTriggerUpdate decodes a KV entry into a TriggerUpdate. Put ops
+// carry a fresh def; delete / purge ops surface as Deleted=true with
+// the def's ID copied from the entry key so the consumer can target
+// the row.
+func parseTriggerUpdate(
+	entry jetstream.KeyValueEntry,
+) (TriggerUpdate, bool) {
+	if entry == nil {
+		return TriggerUpdate{}, false
+	}
+	switch entry.Operation() {
+	case jetstream.KeyValuePut:
+		var def trigger.TriggerDef
+		if err := json.Unmarshal(entry.Value(), &def); err != nil {
+			return TriggerUpdate{}, false
+		}
+		return TriggerUpdate{Def: def, Seq: entry.Revision()}, true
+	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
+		return TriggerUpdate{
+			Def:     trigger.TriggerDef{ID: entry.Key()},
+			Deleted: true,
+			Seq:     entry.Revision(),
+		}, true
+	}
+	return TriggerUpdate{}, false
+}
+
+// WatchDLQ watches the DEAD_LETTERS stream via an ephemeral consumer
+// and translates each message into a DLQUpdate. Removals aren't
+// observable on the stream level (DLQ entries are deleted by sequence
+// after a retry); the SSE handler synthesises DLQOpRemoved events
+// directly from the mutation handler, not from this watcher.
+func (a *apiServiceAdapter) WatchDLQ(
+	ctx context.Context,
+) (<-chan DLQUpdate, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.WatchDLQ: ctx is nil")
+	}
+	if a.nc == nil {
+		return nil, errors.New("nats.Conn not configured")
+	}
+	jsLegacy, err := a.nc.JetStream()
+	if err != nil {
+		return nil, fmt.Errorf("jetstream legacy: %w", err)
+	}
+	const bufSize = 16
+	out := make(chan DLQUpdate, bufSize)
+	sub, err := jsLegacy.SubscribeSync(
+		"dead_letters.>",
+		nats.AckNone(),
+		nats.DeliverNew(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dlq subscribe: %w", err)
+	}
+	go dlqWatchPump(ctx, sub, out, a.svc)
+	return out, nil
+}
+
+// dlqWatchPump pumps DLQ messages off the subscription. Reaches into
+// api.Service.ListDeadLetters for the rendered view so the SSE writer
+// receives the same projection the list page rendered. svc may be nil
+// in degraded operation; in that case we ignore the message rather
+// than synthesise a partial view.
+func dlqWatchPump(
+	ctx context.Context, sub *nats.Subscription,
+	out chan DLQUpdate, svc *api.Service,
+) {
+	defer close(out)
+	defer sub.Unsubscribe() //nolint:errcheck
+	const pollWait = 250 * time.Millisecond
+	const maxIters = 1_000_000_000
+	for i := 0; i < maxIters; i++ {
+		if ctx.Err() != nil {
+			return
+		}
+		msg, err := sub.NextMsg(pollWait)
+		if err != nil {
+			if errors.Is(err, nats.ErrTimeout) {
+				continue
+			}
+			return
+		}
+		du, ok := dlqUpdateFrom(ctx, svc, msg)
+		if !ok {
+			continue
+		}
+		select {
+		case out <- du:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// dlqUpdateFrom builds a DLQUpdate from one DLQ message. The simplest
+// shape — the message carries enough envelope to read the sequence
+// from JetStream metadata; we re-fetch the view from the service so
+// the same projection helpers stay the single source of truth.
+func dlqUpdateFrom(
+	ctx context.Context, svc *api.Service, msg *nats.Msg,
+) (DLQUpdate, bool) {
+	if msg == nil {
+		return DLQUpdate{}, false
+	}
+	meta, err := msg.Metadata()
+	if err != nil || meta == nil {
+		return DLQUpdate{}, false
+	}
+	if svc == nil {
+		return DLQUpdate{}, false
+	}
+	// Pull a small window of recent entries and pick the matching seq.
+	// 64 is generous for the live case (we just appended); ListDeadLetters
+	// returns newest-first so the entry is in the leading slot.
+	views, err := svc.ListDeadLetters(ctx, 64)
+	if err != nil {
+		return DLQUpdate{}, false
+	}
+	for _, v := range views {
+		if v.Sequence == meta.Sequence.Stream {
+			return DLQUpdate{
+				View:      v,
+				Operation: DLQOpAdded,
+			}, true
+		}
+	}
+	return DLQUpdate{}, false
 }
 
 // parseHistoryEvent decodes one history message. Returns ok=false on

@@ -384,6 +384,30 @@ func (r *resumeRecorder) EmitAuditEvent(
 	return r.inner.EmitAuditEvent(ctx, evt)
 }
 
+func (r *resumeRecorder) SetTriggerEnabled(
+	ctx context.Context, triggerID string, enabled bool,
+) error {
+	return r.inner.SetTriggerEnabled(ctx, triggerID, enabled)
+}
+
+func (r *resumeRecorder) ListTriggerFires(
+	ctx context.Context, triggerID string, limit int,
+) ([]TriggerFireRow, error) {
+	return r.inner.ListTriggerFires(ctx, triggerID, limit)
+}
+
+func (r *resumeRecorder) WatchTriggers(
+	ctx context.Context,
+) (<-chan TriggerUpdate, error) {
+	return r.inner.WatchTriggers(ctx)
+}
+
+func (r *resumeRecorder) WatchDLQ(
+	ctx context.Context,
+) (<-chan DLQUpdate, error) {
+	return r.inner.WatchDLQ(ctx)
+}
+
 // readSSEUntil reads the SSE response body looking for
 // `event: datastar-patch-elements` headers and capturing the row id
 // payload substrings. Stops once want events have been seen OR the

@@ -690,6 +690,220 @@ func TestAuditKeyFor_chronologicalOrder(t *testing.T) {
 	}
 }
 
+// TestTriggerToggle_disablesEnabled flips an enabled trigger off,
+// asserts the service was called with enabled=false, audit row has
+// action=trigger.disable outcome=success, response carries the new
+// state for the client to render the pill.
+func TestTriggerToggle_disablesEnabled(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-A", "alpha", "cron"),
+	}
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost,
+		"/console/triggers/cron-A/toggle", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(fake.triggerSetCalls) != 1 ||
+		fake.triggerSetCalls[0].ID != "cron-A" ||
+		fake.triggerSetCalls[0].Enabled != false {
+		t.Errorf("toggle calls = %+v, want one disable-cron-A",
+			fake.triggerSetCalls)
+	}
+	if len(fake.auditEvents) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(fake.auditEvents))
+	}
+	evt := fake.auditEvents[0]
+	if evt.Action != string(ActionTriggerDisable) {
+		t.Errorf("action = %q, want %q", evt.Action, ActionTriggerDisable)
+	}
+	if evt.Outcome != string(OutcomeSuccess) {
+		t.Errorf("outcome = %q, want success", evt.Outcome)
+	}
+	if evt.Target != "cron-A" {
+		t.Errorf("target = %q, want cron-A", evt.Target)
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		`"action":"toggle"`,
+		`"enabled":false`,
+		`"state":"disabled"`,
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("missing %q in toggle response: %s", sub, body)
+		}
+	}
+}
+
+// TestTriggerToggle_enablesDisabled flips a disabled trigger on.
+func TestTriggerToggle_enablesDisabled(t *testing.T) {
+	fake := newFakeDS()
+	td := sampleTrigger("cron-B", "alpha", "cron")
+	td.Enabled = false
+	fake.triggers = []trigger.TriggerDef{td}
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost,
+		"/console/triggers/cron-B/toggle", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if !fake.triggerSetCalls[0].Enabled {
+		t.Errorf("expected enabled=true; got %+v", fake.triggerSetCalls)
+	}
+	if fake.auditEvents[0].Action != string(ActionTriggerEnable) {
+		t.Errorf("action = %q, want trigger.enable",
+			fake.auditEvents[0].Action)
+	}
+}
+
+// TestTriggerToggle_readOnly returns 405 and records denied audit.
+func TestTriggerToggle_readOnly(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-C", "alpha", "cron"),
+	}
+	h := mountWithFakeRO(t, fake, true)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost,
+		"/console/triggers/cron-C/toggle", nil))
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+	if len(fake.triggerSetCalls) != 0 {
+		t.Errorf("expected no toggle calls in read-only mode")
+	}
+	if len(fake.auditEvents) != 1 ||
+		fake.auditEvents[0].Outcome != string(OutcomeDenied) {
+		t.Errorf("expected one denied audit event; got %+v",
+			fake.auditEvents)
+	}
+}
+
+// TestTriggerToggle_notFound returns 404 when the trigger id is
+// unknown. The handler does the lookup itself (to know current state)
+// so the 404 path is server-side.
+func TestTriggerToggle_notFound(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost,
+		"/console/triggers/no-such/toggle", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+	if len(fake.triggerSetCalls) != 0 {
+		t.Errorf("expected no toggle calls for unknown trigger")
+	}
+}
+
+// TestTriggerToggle_methodCheck rejects GET on the toggle endpoint.
+func TestTriggerToggle_methodCheck(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-D", "alpha", "cron"),
+	}
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/triggers/cron-D/toggle", nil))
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET on toggle: status = %d, want 405", rr.Code)
+	}
+}
+
+// TestTriggerToggle_serviceFailure records a failed audit.
+func TestTriggerToggle_serviceFailure(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-E", "alpha", "cron"),
+	}
+	fake.triggerSetErr = errors.New("simulated KV failure")
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost,
+		"/console/triggers/cron-E/toggle", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if len(fake.auditEvents) != 1 ||
+		fake.auditEvents[0].Outcome != string(OutcomeFailed) {
+		t.Errorf("expected one failed audit event; got %+v",
+			fake.auditEvents)
+	}
+}
+
+// TestTriggerDetail_rendersFireHistory feeds the fake recent firings
+// and asserts the activity table renders them with the run link and
+// outcome badge.
+func TestTriggerDetail_rendersFireHistory(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-fire", "alpha", "cron"),
+	}
+	fake.triggerFires["cron-fire"] = []TriggerFireRow{
+		{
+			FiredAt: time.Now().Add(-2 * time.Minute),
+			RunID:   "run-abc-12345678",
+			Status:  "completed",
+		},
+		{
+			FiredAt:    time.Now().Add(-3 * time.Minute),
+			Skipped:    true,
+			SkipReason: "trigger disabled",
+		},
+		{
+			FiredAt: time.Now().Add(-90 * time.Second),
+			RunID:   "run-def-99999999",
+			Status:  "running",
+		},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/triggers/cron-fire", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		"Recent activity",
+		"run-abc-",
+		"run-def-",
+		"skipped",
+		"running",
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("missing %q in fire history view", sub)
+		}
+	}
+	// Empty-state copy must NOT appear when there are firings.
+	if strings.Contains(body, "No firings recorded") {
+		t.Errorf("unexpected empty state with seeded firings")
+	}
+}
+
+// TestTriggerDetail_zeroStateNoFirings asserts the empty-state copy
+// stays in place when the fake reports no firings.
+func TestTriggerDetail_zeroStateNoFirings(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-empty", "alpha", "cron"),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/triggers/cron-empty", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "No firings recorded") {
+		t.Errorf("expected empty-state copy for trigger with no firings")
+	}
+}
+
 // TestClassifyDLQReason maps known patterns to fixed classes.
 func TestClassifyDLQReason(t *testing.T) {
 	cases := map[string]string{

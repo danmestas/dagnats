@@ -119,7 +119,7 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		})
 	mux.HandleFunc("/console/triggers/",
 		func(w http.ResponseWriter, r *http.Request) {
-			servePageTriggerDetail(w, r, ts, cfg)
+			dispatchTriggers(w, r, ts, cfg)
 		})
 	mux.HandleFunc("/console/dlq",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +143,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		"text/css; charset=utf-8"))
 	mux.HandleFunc("/console/assets/connection-state.js",
 		servePlainAssetAt("sources/connection-state.js",
+			"application/javascript; charset=utf-8"))
+	mux.HandleFunc("/console/assets/toast.js",
+		servePlainAssetAt("sources/toast.js",
 			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)

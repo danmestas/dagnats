@@ -168,6 +168,8 @@ type TriggerDetailView struct {
 	RecentFirings  []TriggerFiringRow
 	NextFireText   string
 	NextFireMethod string
+	ReadOnly       bool
+	CSRFToken      string
 }
 
 // TriggerFiringRow is one row in the "recent activity" panel. Empty
@@ -202,6 +204,8 @@ func servePageTriggerDetail(
 		return
 	}
 	view := buildTriggerDetail(r.Context(), ds, id)
+	view.ReadOnly = cfg.ReadOnly
+	view.CSRFToken = csrfTokenFor(r)
 	renderPage(w, r, ts, cfg, "trigger-detail", pageData{
 		Title:   "Trigger " + id,
 		Section: "triggers",
@@ -210,6 +214,9 @@ func servePageTriggerDetail(
 }
 
 // buildTriggerDetail looks up the trigger and shapes the detail view.
+// Reads recent firings via the DataSource so the "Recent activity"
+// panel shows real data rather than the empty zero-state. Failures
+// on the firings read are non-fatal — the panel just renders empty.
 func buildTriggerDetail(
 	ctx context.Context, ds DataSource, id string,
 ) TriggerDetailView {
@@ -224,9 +231,61 @@ func buildTriggerDetail(
 		if t.ID != id {
 			continue
 		}
-		return populateTriggerDetail(t)
+		view := populateTriggerDetail(t)
+		view.RecentFirings = readTriggerFirings(ctx, ds, id)
+		return view
 	}
 	return TriggerDetailView{ID: id, NotFound: true}
+}
+
+// readTriggerFirings pulls the recent fire history and projects each
+// row into the render shape. Bounded to 25 — the activity panel is
+// a quick glance, not a full audit log. ListTriggerFires errors are
+// swallowed; the panel renders empty and the user sees the zero state.
+func readTriggerFirings(
+	ctx context.Context, ds DataSource, id string,
+) []TriggerFiringRow {
+	const firingsLimit = 25
+	fires, err := ds.ListTriggerFires(ctx, id, firingsLimit)
+	if err != nil || len(fires) == 0 {
+		return nil
+	}
+	rows := make([]TriggerFiringRow, 0, len(fires))
+	for _, f := range fires {
+		rows = append(rows, triggerFiringRowFrom(f))
+	}
+	return rows
+}
+
+// triggerFiringRowFrom shapes one fire record into the render row.
+// Outcome is "skipped" when the firing didn't produce a run, the
+// status of the run otherwise, or "fired" when the run status hasn't
+// been resolved yet (race between trigger publish + run creation).
+func triggerFiringRowFrom(f TriggerFireRow) TriggerFiringRow {
+	row := TriggerFiringRow{
+		FiredAt:    f.FiredAt.UTC().Format(time.RFC3339),
+		RunID:      f.RunID,
+		RunIDShort: shortRunID(f.RunID),
+		Skipped:    f.Skipped,
+	}
+	switch {
+	case f.Skipped:
+		row.Outcome = "skipped"
+		row.OutcomeRaw = "skipped"
+	case f.Status == "succeeded", f.Status == "completed":
+		row.Outcome = "succeeded"
+		row.OutcomeRaw = "completed"
+	case f.Status == "failed":
+		row.Outcome = "failed"
+		row.OutcomeRaw = "failed"
+	case f.Status == "running":
+		row.Outcome = "running"
+		row.OutcomeRaw = "running"
+	default:
+		row.Outcome = "fired"
+		row.OutcomeRaw = "queued"
+	}
+	return row
 }
 
 // populateTriggerDetail assembles the per-trigger detail view from

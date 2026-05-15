@@ -830,3 +830,110 @@ body[data-theme="dark"] {
 .trigger-icon[data-kind="webhook"] { color: var(--status-running); }
 .trigger-icon[data-kind="subject"] { color: var(--status-completed); }
 .trigger-icon[data-kind="http"]    { color: var(--status-pending); }
+
+/*
+ * Toast notifications — top-right corner, slide-in on entry, fade on
+ * exit. Aesthetic per the locked e-ink editorial palette: warm-cream
+ * surface, paper-indigo accent (info) or muted-rust accent (error) on
+ * the left border, IBM Plex Sans body. Self-dismisses after 3s; manual
+ * close via the × button.
+ *
+ * Wired via the console:toast custom event. The action handlers POST
+ * a JSON body whose `toast` field is dispatched here.
+ */
+.console-toasts {
+  position: fixed;
+  top: 5.5rem;
+  right: 1.25rem;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+  max-width: min(28rem, 92vw);
+}
+.console-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem 0.65rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-tile);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 180ms ease, transform 180ms ease;
+  font-size: 0.92rem;
+  color: var(--text-primary);
+}
+.console-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.console-toast.is-leaving {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.console-toast-error {
+  border-left-color: var(--status-failed);
+}
+.console-toast-reduced {
+  transition: opacity 120ms linear;
+  transform: none !important;
+}
+.console-toast-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.console-toast-message {
+  margin: 0;
+  font-family: var(--font-body);
+  line-height: 1.35;
+}
+.console-toast-link {
+  align-self: flex-start;
+  color: var(--accent);
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+.console-toast-error .console-toast-link {
+  color: var(--status-failed);
+}
+.console-toast-undo {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.2rem 0.6rem;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+.console-toast-undo:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.console-toast-close {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 0.25rem;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+.console-toast-close:hover { color: var(--text-primary); }
+
+@media (prefers-reduced-motion: reduce) {
+  .console-toast {
+    transition: opacity 120ms linear;
+    transform: none !important;
+  }
+}

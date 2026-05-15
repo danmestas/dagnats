@@ -17,6 +17,7 @@ import "embed"
 //go:embed assets/uplot.min.js.gz
 //go:embed assets/app.css
 //go:embed assets/sources/connection-state.js
+//go:embed assets/sources/toast.js
 //go:embed assets/fonts/fraunces-latin.woff2
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
 var assetsFS embed.FS
