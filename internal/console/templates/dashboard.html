@@ -5,6 +5,19 @@
     <p class="console-lede">Operational view of this dagnats deployment.</p>
   </header>
 
+  {{if .MetricsAvailable}}
+  <div class="console-grid console-grid-metrics" aria-label="System health">
+    {{range .MetricsTiles}}
+      {{template "metric_tile" .}}
+    {{end}}
+  </div>
+  {{else}}
+  <div class="console-notice console-notice-muted">
+    <p>Metrics aggregator not wired.
+       Start dagnats with the embedded TELEMETRY stream to enable live tiles.</p>
+  </div>
+  {{end}}
+
   <div class="console-grid">
     <article class="console-tile" aria-labelledby="tile-overview">
       <header><h2 id="tile-overview">System overview</h2></header>
@@ -15,7 +28,9 @@
         <div><dt>Build</dt><dd>{{.Overview.Build}}</dd></div>
       </dl>
       <footer class="console-tile-footer">
-        Live tiles arrive in a later PR. This view proves the page renders.
+        <a href="/console/ops/metrics" class="console-tile-link">
+          Open metrics dashboard &rarr;
+        </a>
       </footer>
     </article>
 

@@ -1,0 +1,28 @@
+{{define "metric_tile"}}
+<article class="console-tile console-metric-tile{{if .Empty}} is-empty{{end}}"
+         id="{{.ID}}"
+         data-metric="{{.MetricID}}"
+         aria-labelledby="{{.ID}}-title">
+  <header class="console-metric-tile-header">
+    <h3 class="console-metric-tile-title" id="{{.ID}}-title">{{.Title}}</h3>
+    {{if .Href}}
+      <a href="{{.Href}}" class="console-metric-tile-deep">drill &rarr;</a>
+    {{end}}
+  </header>
+  <p class="console-metric-tile-value">
+    <span class="console-metric-tile-number">{{.Value}}</span>
+    {{if .Unit}}<span class="console-metric-tile-unit">{{.Unit}}</span>{{end}}
+    {{if and (not .Empty) (ne .Trend "flat")}}
+      <span class="console-metric-tile-arrow console-metric-tile-arrow-{{.Trend}}"
+            aria-label="trend {{.Trend}}">
+        {{if eq .Trend "up"}}&uarr;{{else}}&darr;{{end}}
+      </span>
+    {{end}}
+  </p>
+  {{if .Empty}}
+    <p class="console-metric-tile-empty">no data yet</p>
+  {{else}}
+    <p class="console-metric-tile-hint">{{.Hint}}</p>
+  {{end}}
+</article>
+{{end}}

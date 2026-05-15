@@ -1286,3 +1286,223 @@ body[data-theme="dark"] {
   font-size: 14px;
   color: var(--text-secondary);
 }
+
+/*
+ * Metrics dashboard — PR 6.
+ *
+ * Tiles + µPlot charts stay inside the locked e-ink + Fraunces +
+ * IBM Plex aesthetic. NO bright dashboard palette — charts read like
+ * a printed report, not a Grafana clone.
+ */
+
+.console-grid-metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 12px 0 24px 0;
+}
+.console-metric-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background-image:
+    repeating-linear-gradient(
+      0deg, transparent 0, transparent 23px,
+      var(--accent-soft) 23px, var(--accent-soft) 24px);
+}
+.console-metric-tile.is-empty {
+  background-image: none;
+  opacity: 0.85;
+}
+.console-metric-tile-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.console-metric-tile-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+}
+.console-metric-tile-deep {
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.console-metric-tile-deep:hover {
+  text-decoration: underline;
+}
+.console-metric-tile-value {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+.console-metric-tile-number {
+  margin-right: 4px;
+}
+.console-metric-tile-unit {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-right: 6px;
+}
+.console-metric-tile-arrow {
+  display: inline-block;
+  font-size: 16px;
+  margin-left: 4px;
+}
+.console-metric-tile-arrow-up {
+  color: var(--status-completed);
+}
+.console-metric-tile-arrow-down {
+  color: var(--status-failed);
+}
+.console-metric-tile-hint,
+.console-metric-tile-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.console-charts {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  margin: 12px 0 24px 0;
+}
+.console-chart {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px 16px 16px;
+}
+.console-chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.console-chart-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-caps: small-caps;
+  letter-spacing: 0.03em;
+  color: var(--text-primary);
+}
+.console-chart-window {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+.console-chart-description {
+  margin: 4px 0 12px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.console-chart-canvas {
+  min-height: 220px;
+  position: relative;
+}
+.console-chart-empty {
+  padding: 32px 8px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-style: italic;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.console-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.console-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.console-chart-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  background: var(--accent);
+}
+.console-chart-stroke-paper-indigo {
+  background: #4f63b4;
+}
+.console-chart-stroke-warm-clay {
+  background: #b76a4a;
+}
+.console-chart-stroke-muted-rust {
+  background: #8a3d2e;
+}
+
+.console-section-subhead {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-variant-caps: small-caps;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin: 18px 0 8px 0;
+}
+
+.console-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.console-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.console-table th,
+.console-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.console-table .console-num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+.console-visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+
+@media (max-width: 480px) {
+  .console-grid-metrics {
+    grid-template-columns: 1fr;
+  }
+  .console-charts {
+    grid-template-columns: 1fr;
+  }
+  .console-metric-tile-value {
+    font-size: 24px;
+  }
+}

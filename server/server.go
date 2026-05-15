@@ -18,6 +18,8 @@ import (
 	"github.com/danmestas/dagnats/internal/console"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/observe/metrics"
+	"github.com/danmestas/dagnats/internal/observe/prom"
 	"github.com/danmestas/dagnats/internal/openapi"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/internal/web"
@@ -42,6 +44,8 @@ type Server struct {
 	bridge      *bridge.Bridge
 	httpSrv     *http.Server
 	telShutdown func(context.Context)
+	metricsAgg  *metrics.Aggregator
+	metricsStop func()
 	ready       atomic.Bool
 	stopCh      chan struct{}
 	workerShims []*WorkerShim
@@ -286,7 +290,9 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	}
 	s.cfg.HTTPAddr = ln.Addr().String()
 
-	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc)
+	s.startMetricsAggregator()
+	mountMetricsExporter(mux, s.metricsAgg, slog.Default())
+	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc, s.metricsAgg)
 
 	s.httpSrv = &http.Server{Handler: mux}
 
@@ -401,6 +407,13 @@ func (s *Server) shutdown() error {
 		if s.orch != nil {
 			s.orch.Stop()
 		}
+		if s.metricsStop != nil {
+			s.metricsStop()
+		}
+		if s.metricsAgg != nil {
+			s.metricsAgg.Close()
+			printStep(os.Stderr, "metrics aggregator shut down")
+		}
 		if s.telShutdown != nil {
 			s.telShutdown(context.Background())
 			printStep(os.Stderr, "telemetry shut down")
@@ -500,6 +513,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 func mountConsole(
 	mux *http.ServeMux, httpAddr string,
 	svc *api.Service, nc *nats.Conn,
+	agg *metrics.Aggregator,
 ) {
 	if mux == nil {
 		panic("mountConsole: mux is nil")
@@ -548,6 +562,7 @@ func mountConsole(
 		Logger:   logger,
 		Data:     console.NewAPIDataSource(svc, nc, auditKV, logger),
 		ReadOnly: readOnly,
+		Metrics:  console.AdaptAggregator(agg),
 	}
 	if !readOnly {
 		enableConsoleSoftDiscard(&consoleCfg, svc, logger)
@@ -585,6 +600,72 @@ func enableConsoleSoftDiscard(
 	console.EnableSoftDiscard(cfg, window, expire)
 	stop := make(chan struct{})
 	go console.RunTombstoneSweeper(cfg, 250*time.Millisecond, stop)
+}
+
+// startMetricsAggregator builds the in-memory metric aggregator and
+// boots the NATS pump that drains the TELEMETRY stream into it.
+// Nil-tolerant: when the JetStream connection isn't available the
+// aggregator stays nil and the dashboard renders empty-state tiles
+// (the /metrics exporter still mounts but returns the no-data banner).
+func (s *Server) startMetricsAggregator() {
+	if s == nil {
+		panic("startMetricsAggregator: s is nil")
+	}
+	if s.nc == nil {
+		return
+	}
+	js, err := jetstream.New(s.nc)
+	if err != nil {
+		slog.Default().Warn(
+			"metrics: jetstream init failed; aggregator disabled",
+			"err", err)
+		return
+	}
+	agg := metrics.NewAggregator(slog.Default())
+	ctx := context.Background()
+	stop, err := agg.StartPump(ctx, js)
+	if err != nil {
+		slog.Default().Warn(
+			"metrics: pump start failed; aggregator disabled",
+			"err", err)
+		agg.Close()
+		return
+	}
+	s.metricsAgg = agg
+	s.metricsStop = stop
+}
+
+// mountMetricsExporter installs /metrics. Auth is loopback-default:
+// non-loopback listeners refuse the request unless the operator has
+// set METRICS_AUTH=none. METRICS_AUTH=basic reuses the console basic-
+// auth password; METRICS_AUTH=forward trusts X-Forwarded-User. Same
+// vocabulary as the console gate, kept independent so an operator
+// can lock the console down without locking the scraper out.
+func mountMetricsExporter(
+	mux *http.ServeMux, agg *metrics.Aggregator, logger *slog.Logger,
+) {
+	if mux == nil {
+		panic("mountMetricsExporter: mux is nil")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if agg == nil {
+		// Aggregator init failed earlier — install a stub handler
+		// that reports the gap to scrapers rather than 404.
+		mux.HandleFunc("/metrics",
+			func(w http.ResponseWriter, r *http.Request) {
+				if r == nil {
+					panic("metrics stub: r is nil")
+				}
+				w.Header().Set("Content-Type", prom.ContentType)
+				_, _ = w.Write([]byte(
+					"# metrics aggregator not configured\n",
+				))
+			})
+		return
+	}
+	mux.Handle("/metrics", prom.Handler(agg, logger))
 }
 
 // openConsoleAuditKV opens (or creates) the console_audit KV bucket on

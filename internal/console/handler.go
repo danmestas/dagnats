@@ -50,6 +50,13 @@ type Config struct {
 	DLQSoftDiscard bool
 	tomb           *dlqTombstoneStore
 	bus            *eventBusBinding
+
+	// Metrics, when non-nil, exposes the live metric aggregator to
+	// the dashboard tiles, the metrics page, and the per-metric SSE
+	// patcher. server.go wires this to a metrics.NewAggregator()
+	// pumped from the TELEMETRY stream. Nil in tests that don't care
+	// about metrics — the dashboard renders empty-state placeholders.
+	Metrics MetricsSource
 }
 
 // tombstones returns the configured tombstone store. Internal helper —
@@ -171,6 +178,14 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageAuditLog(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/ops/metrics",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageMetrics(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/sse/metrics",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveSSEMetrics(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/api/dag/static/",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageDAGStatic(w, r, cfg)
@@ -191,6 +206,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/assets/count-chip.js",
 		servePlainAssetAt("sources/count-chip.js",
+			"application/javascript; charset=utf-8"))
+	mux.HandleFunc("/console/assets/metrics.js",
+		servePlainAssetAt("sources/metrics.js",
 			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
@@ -300,21 +318,22 @@ type templateSet struct {
 // HTML file that owns `{{define "content"}}` for that section.
 // Adding a new page is: add a file, add an entry here.
 var pageContentFiles = map[string]string{
-	"dashboard":       "templates/dashboard.html",
-	"workflows-list":  "templates/workflows_list.html",
-	"workflow-detail": "templates/workflow_detail.html",
-	"runs-list":       "templates/runs_list.html",
-	"run-detail":      "templates/run_detail.html",
-	"triggers-list":   "templates/triggers_list.html",
-	"trigger-detail":  "templates/trigger_detail.html",
-	"dlq-list":        "templates/dlq_list.html",
-	"dlq-detail":      "templates/dlq_detail.html",
-	"audit-log":       "templates/audit_log.html",
-	"ops-index":       "templates/ops_index.html",
-	"ops-workers":     "templates/ops_workers.html",
-	"ops-leases":      "templates/ops_leases.html",
-	"ops-kv":          "templates/ops_kv.html",
-	"not-found":       "templates/not_found.html",
+	"dashboard":         "templates/dashboard.html",
+	"workflows-list":    "templates/workflows_list.html",
+	"workflow-detail":   "templates/workflow_detail.html",
+	"runs-list":         "templates/runs_list.html",
+	"run-detail":        "templates/run_detail.html",
+	"triggers-list":     "templates/triggers_list.html",
+	"trigger-detail":    "templates/trigger_detail.html",
+	"dlq-list":          "templates/dlq_list.html",
+	"dlq-detail":        "templates/dlq_detail.html",
+	"audit-log":         "templates/audit_log.html",
+	"ops-index":         "templates/ops_index.html",
+	"ops-workers":       "templates/ops_workers.html",
+	"ops-leases":        "templates/ops_leases.html",
+	"ops-kv":            "templates/ops_kv.html",
+	"metrics_dashboard": "templates/metrics_dashboard.html",
+	"not-found":         "templates/not_found.html",
 }
 
 // loadTemplates builds the base tree (layout + fragments) and the
@@ -404,14 +423,19 @@ func pagerArgs(
 }
 
 // dashboardData is what the layout + dashboard.html templates expect.
-// Keeping it small in PR 1 — later PRs add live tiles. ReadOnly
-// mirrors Config.ReadOnly so the layout shows the read-only banner.
+// PR 6 added the MetricsTiles slice so the landing page shows live
+// run-throughput / success-rate / DLQ tiles instead of the heartbeat-
+// only placeholder PR 1 shipped with. MetricsAvailable lets the
+// template render an explicit "metrics not wired" state when the
+// aggregator wasn't attached at startup.
 type dashboardData struct {
-	Title    string
-	Section  string
-	Actor    Actor
-	Overview overviewData
-	ReadOnly bool
+	Title            string
+	Section          string
+	Actor            Actor
+	Overview         overviewData
+	ReadOnly         bool
+	MetricsTiles     []MetricsTile
+	MetricsAvailable bool
 }
 
 type overviewData struct {
@@ -443,7 +467,11 @@ func serveDashboard(
 			AuthMode: cfg.AuthMode.String(),
 			Build:    cfg.Build,
 		},
-		ReadOnly: cfg.ReadOnly,
+		ReadOnly:         cfg.ReadOnly,
+		MetricsAvailable: cfg.Metrics != nil,
+	}
+	if cfg.Metrics != nil {
+		data.MetricsTiles = buildMetricsTiles(cfg.Metrics)
 	}
 	tmpl, ok := ts.pageTemplates["dashboard"]
 	if !ok {
