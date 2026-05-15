@@ -247,3 +247,239 @@ a:hover { text-decoration: underline; }
 .status-failed    { color: var(--status-failed); }
 .status-skipped   { color: var(--status-skipped); }
 .status-pending   { color: var(--status-pending); }
+
+/* Filter bars on list pages. Stack horizontally; wrap on narrow widths. */
+.console-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: end;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+}
+.console-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  min-width: 180px;
+}
+.console-field input.input,
+.console-field select.select {
+  padding: 0.35rem 0.55rem;
+  background: var(--bg);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.92rem;
+}
+.console-field input.input:focus,
+.console-field select.select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Card shell for list / detail containers. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+.card-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+}
+.card-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.card-body {
+  padding: 1rem;
+}
+
+/* Tables. Avoid Basecoat's full reset — keep the e-ink-leaning look. */
+.console-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+.console-table thead th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 0.55rem 0.8rem;
+  background: var(--accent-soft);
+}
+.console-table tbody td {
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.console-table tbody tr:last-child td { border-bottom: 0; }
+
+/* Status badges. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: var(--bg);
+}
+.badge-outline { background: transparent; }
+.badge .status-icon { font-size: 0.85em; line-height: 1; }
+.badge-completed {
+  color: var(--status-completed);
+  border-color: var(--status-completed);
+}
+.badge-running {
+  color: var(--status-running);
+  border-color: var(--status-running);
+}
+.badge-failed {
+  color: var(--status-failed);
+  border-color: var(--status-failed);
+}
+.badge-skipped, .badge-cancelled {
+  color: var(--status-skipped);
+  border-color: var(--status-skipped);
+}
+.badge-pending, .badge-queued {
+  color: var(--status-pending);
+  border-color: var(--status-pending);
+}
+
+/* Alerts for validator warnings + run errors. */
+.alert {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  background: var(--surface);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+}
+.alert strong { display: block; margin-bottom: 0.25rem; }
+.alert-warning { border-left-color: var(--status-running); }
+.alert-error   { border-left-color: var(--status-failed); }
+.alert ul.console-list { margin: 0.25rem 0 0; padding-left: 1.25rem; }
+
+/* Pre blocks (JSON viewer). Wrap so long lines never trigger
+   horizontal scroll on table-shaped layouts. */
+.console-pre {
+  margin: 0;
+  padding: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  font: 0.85rem var(--font-mono);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.console-pre-error { color: var(--status-failed); }
+
+/* Step status grid on run detail. */
+.console-step-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.console-step-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.8rem;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.console-step-card header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 600;
+}
+.console-step-icon { font-size: 1rem; }
+.console-step-id { font-family: var(--font-mono); }
+.console-step-card.status-completed { border-color: var(--status-completed); }
+.console-step-card.status-running   { border-color: var(--status-running); }
+.console-step-card.status-failed    { border-color: var(--status-failed); }
+.console-step-card.status-pending   { border-color: var(--status-pending); }
+.console-step-card.is-skipped {
+  border-style: dashed;
+  border-color: var(--status-skipped);
+  color: var(--text-secondary);
+}
+.console-step-card .console-step-error {
+  margin: 0;
+  color: var(--status-failed);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
+/* Pagination control. */
+.console-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.console-pager-info {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-right: auto;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.btn:hover { text-decoration: none; border-color: var(--text-secondary); }
+.btn.is-disabled,
+.btn-outline.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-outline { background: transparent; }
+.btn-primary {
+  background: var(--accent);
+  color: var(--surface);
+  border-color: var(--accent);
+}
+
+/* Cosmetic helpers. */
+.muted { color: var(--text-secondary); }
+.console-empty {
+  color: var(--text-secondary);
+  font-style: italic;
+  padding: 0.5rem 0;
+}
+.console-event-data {
+  max-width: 480px;
+  word-break: break-all;
+}

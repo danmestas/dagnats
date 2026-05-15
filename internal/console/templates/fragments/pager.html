@@ -1,0 +1,15 @@
+{{define "pager"}}{{with .}}
+<nav class="console-pager" aria-label="pagination">
+  <span class="console-pager-info">page {{.Page}}</span>
+  {{if .HasPrev}}
+    <a class="btn btn-outline" href="{{.URL}}?page={{.PrevPage}}">‹ prev</a>
+  {{else}}
+    <span class="btn btn-outline is-disabled" aria-disabled="true">‹ prev</span>
+  {{end}}
+  {{if .HasNext}}
+    <a class="btn btn-outline" href="{{.URL}}?page={{.NextPage}}">next ›</a>
+  {{else}}
+    <span class="btn btn-outline is-disabled" aria-disabled="true">next ›</span>
+  {{end}}
+</nav>
+{{end}}{{end}}

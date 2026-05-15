@@ -1,0 +1,14 @@
+{{define "workflows-tbody"}}<tbody id="workflows-tbody">
+  {{range .Rows}}
+  <tr>
+    <td><a href="/console/workflows/{{.Name}}">{{.Name}}</a></td>
+    <td><span class="badge badge-outline">{{.Version}}</span></td>
+    <td>{{.StepCount}}</td>
+    <td>{{.TriggerCount}}</td>
+    <td class="console-mono">{{if .LastRunTime}}{{.LastRunTime}}{{else}}<span class="muted">never</span>{{end}}</td>
+    <td>{{if .LastRunStatus}}{{template "status-badge" .LastRunStatus}}{{else}}<span class="muted">—</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="console-empty">no workflows match this filter</td></tr>
+  {{end}}
+</tbody>{{end}}

@@ -24,5 +24,13 @@ var assetsFS embed.FS
 //go:embed templates/layout.html
 //go:embed templates/dashboard.html
 //go:embed templates/disabled.html
+//go:embed templates/workflows_list.html
+//go:embed templates/workflow_detail.html
+//go:embed templates/runs_list.html
+//go:embed templates/run_detail.html
 //go:embed templates/fragments/heartbeat.html
+//go:embed templates/fragments/workflows_tbody.html
+//go:embed templates/fragments/runs_tbody.html
+//go:embed templates/fragments/status_badge.html
+//go:embed templates/fragments/pager.html
 var templatesFS embed.FS
