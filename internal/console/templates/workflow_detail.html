@@ -1,0 +1,88 @@
+{{define "content"}}{{with .Page}}
+<section class="console-section">
+  {{if .NotFound}}
+    <header class="console-section-header">
+      <h1>Workflow {{.Name}}</h1>
+      <p class="console-lede">No workflow registered under this name.</p>
+    </header>
+    <p><a href="/console/workflows">← back to workflows</a></p>
+  {{else}}
+    <header class="console-section-header">
+      <h1>{{.Name}}</h1>
+      <p class="console-lede">
+        <span class="badge badge-outline">version {{.Version}}</span>
+      </p>
+    </header>
+
+    {{if .Warnings}}
+    <div class="alert alert-warning" role="alert">
+      <strong>Validator warnings</strong>
+      <ul class="console-list">
+        {{range .Warnings}}
+        <li><code>{{.Kind}}</code> — {{.Message}}</li>
+        {{end}}
+      </ul>
+    </div>
+    {{end}}
+
+    <article class="card">
+      <header class="card-header"><h2>Definition</h2></header>
+      <div class="card-body">
+        <pre class="console-pre"><code>{{.Definition}}</code></pre>
+      </div>
+    </article>
+
+    <article class="card">
+      <header class="card-header"><h2>Triggers</h2></header>
+      <div class="card-body">
+        {{if .Triggers}}
+        <table class="table console-table">
+          <thead>
+            <tr><th>ID</th><th>Kind</th><th>Target</th><th>Enabled</th></tr>
+          </thead>
+          <tbody>
+            {{range .Triggers}}
+            <tr>
+              <td class="console-mono">{{.ID}}</td>
+              <td><span class="badge badge-outline">{{.Kind}}</span></td>
+              <td class="console-mono">{{.Target}}</td>
+              <td>{{if .Enabled}}yes{{else}}no{{end}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+        {{else}}
+        <p class="console-empty">no triggers attached</p>
+        {{end}}
+      </div>
+    </article>
+
+    <article class="card">
+      <header class="card-header"><h2>Recent runs</h2></header>
+      <div class="card-body">
+        {{if .RecentRuns}}
+        <table class="table console-table">
+          <thead>
+            <tr>
+              <th>Run id</th><th>Status</th><th>Started at</th><th>Duration</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .RecentRuns}}
+            <tr>
+              <td class="console-mono"><a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a></td>
+              <td>{{template "status-badge" .Status}}</td>
+              <td class="console-mono">{{.StartedAt}}</td>
+              <td>{{.Duration}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+        {{else}}
+        <p class="console-empty">no runs yet</p>
+        {{end}}
+      </div>
+    </article>
+  {{end}}
+</section>
+{{end}}{{end}}

@@ -1,0 +1,98 @@
+{{define "content"}}{{with .Page}}
+<section class="console-section">
+  {{if .NotFound}}
+    <header class="console-section-header">
+      <h1>Run {{.RunIDShort}}</h1>
+      <p class="console-lede">No run snapshot found.</p>
+    </header>
+    <p><a href="/console/runs">← back to runs</a></p>
+  {{else}}
+    <header class="console-section-header">
+      <h1>Run <span class="console-mono">{{.RunIDShort}}</span></h1>
+      <p class="console-lede">
+        Workflow <a href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a>
+        — {{template "status-badge" .Status}}
+        — started <span class="console-mono">{{.StartedAt}}</span>
+        — duration {{.Duration}}
+        — trigger <span class="badge badge-outline">{{.TriggerKind}}</span>
+      </p>
+    </header>
+
+    {{if .HasError}}
+    <div class="alert alert-error" role="alert">
+      <strong>Last step error</strong>
+      <pre class="console-pre console-pre-error"><code>{{.ErrorMsg}}</code></pre>
+    </div>
+    {{end}}
+
+    <article class="card" id="run-detail-steps">
+      <header class="card-header"><h2>Step status</h2></header>
+      <div class="card-body">
+        <div class="console-step-grid">
+          {{range .Steps}}
+          <div class="console-step-card status-{{.Status}}{{if .Skipped}} is-skipped{{end}}">
+            <header>
+              <span class="console-step-icon">{{.Icon}}</span>
+              <span class="console-step-id">{{.ID}}</span>
+            </header>
+            <dl class="console-deflist">
+              <div><dt>status</dt><dd>{{.Status}}</dd></div>
+              <div><dt>attempts</dt><dd>{{.Attempts}}</dd></div>
+              {{if .Duration}}<div><dt>duration</dt><dd>{{.Duration}}</dd></div>{{end}}
+            </dl>
+            {{if .HasError}}
+            <p class="console-step-error">{{.ErrorMsg}}</p>
+            {{end}}
+          </div>
+          {{end}}
+        </div>
+      </div>
+    </article>
+
+    <article class="card" id="run-detail-events">
+      <header class="card-header"><h2>Event timeline</h2></header>
+      <div class="card-body">
+        {{if .Events}}
+        <table class="table console-table">
+          <thead>
+            <tr><th>Time</th><th>Event</th><th>Step</th><th>Data</th></tr>
+          </thead>
+          <tbody>
+            {{range .Events}}
+            <tr>
+              <td class="console-mono">{{.Timestamp}}</td>
+              <td><span class="badge badge-outline">{{.Type}}</span></td>
+              <td class="console-mono">{{.StepID}}</td>
+              <td class="console-mono console-event-data">{{.DataPreview}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+        {{else}}
+        <p class="console-empty">no events recorded</p>
+        {{end}}
+      </div>
+    </article>
+
+    <article class="card" id="run-detail-input">
+      <header class="card-header"><h2>Run input</h2></header>
+      <div class="card-body">
+        {{if .Input}}
+        <pre class="console-pre"><code>{{.Input}}</code></pre>
+        {{else}}
+        <p class="console-empty">no input recorded</p>
+        {{end}}
+      </div>
+    </article>
+
+    {{if .HasOutput}}
+    <article class="card" id="run-detail-output">
+      <header class="card-header"><h2>Run output</h2></header>
+      <div class="card-body">
+        <pre class="console-pre"><code>{{.Output}}</code></pre>
+      </div>
+    </article>
+    {{end}}
+  {{end}}
+</section>
+{{end}}{{end}}

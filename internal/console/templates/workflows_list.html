@@ -1,0 +1,49 @@
+{{define "content"}}{{with .Page}}
+<section class="console-section"
+         data-signals="{workflowsFilter: '{{.Filter}}', workflowsSort: '{{.Sort}}'}">
+  <header class="console-section-header">
+    <h1>Workflows</h1>
+    <p class="console-lede">
+      Registered workflow definitions. {{.Total}} total.
+    </p>
+  </header>
+
+  <form class="console-filter-bar" data-on:submit__prevent>
+    <label class="console-field">
+      <span>Filter by name</span>
+      <input type="text"
+             class="input"
+             placeholder="substring match"
+             data-bind:workflowsFilter
+             data-on:input__debounce.200ms="@get('/console/api/fragments/workflows-list')" />
+    </label>
+    <label class="console-field">
+      <span>Sort</span>
+      <select class="select"
+              data-bind:workflowsSort
+              data-on:change="@get('/console/api/fragments/workflows-list')">
+        <option value="name"{{if eq .Sort "name"}} selected{{end}}>Name</option>
+        <option value="last_run"{{if eq .Sort "last_run"}} selected{{end}}>Last run</option>
+      </select>
+    </label>
+  </form>
+
+  <div class="card">
+    <table class="table console-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Version</th>
+          <th>Steps</th>
+          <th>Triggers</th>
+          <th>Last run</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      {{template "workflows-tbody" .}}
+    </table>
+  </div>
+
+  {{template "pager" pagerArgs .Page .HasPrev .HasNext .PrevPage .NextPage "/console/workflows"}}
+</section>
+{{end}}{{end}}

@@ -1,0 +1,65 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="console-section"
+         data-signals="{runsWorkflow: '{{.Workflow}}', runsStatus: '{{.Status}}', runsRange: '{{.Range}}'}">
+  <header class="console-section-header">
+    <h1>Runs</h1>
+    <p class="console-lede">{{.Total}} total. PR 3 ships live updates over SSE.</p>
+  </header>
+
+  <form class="console-filter-bar" data-on:submit__prevent>
+    <label class="console-field">
+      <span>Workflow</span>
+      <select class="select"
+              data-bind:runsWorkflow
+              data-on:change="@get('/console/api/fragments/runs-list')">
+        <option value=""{{if eq .Workflow ""}} selected{{end}}>any</option>
+        {{range .Workflows}}
+        <option value="{{.}}"{{if eq $page.Workflow .}} selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="console-field">
+      <span>Status</span>
+      <select class="select"
+              data-bind:runsStatus
+              data-on:change="@get('/console/api/fragments/runs-list')">
+        <option value=""{{if eq .Status ""}} selected{{end}}>any</option>
+        <option value="pending"{{if eq .Status "pending"}} selected{{end}}>pending</option>
+        <option value="running"{{if eq .Status "running"}} selected{{end}}>running</option>
+        <option value="completed"{{if eq .Status "completed"}} selected{{end}}>completed</option>
+        <option value="failed"{{if eq .Status "failed"}} selected{{end}}>failed</option>
+        <option value="cancelled"{{if eq .Status "cancelled"}} selected{{end}}>cancelled</option>
+      </select>
+    </label>
+    <label class="console-field">
+      <span>Range</span>
+      <select class="select"
+              data-bind:runsRange
+              data-on:change="@get('/console/api/fragments/runs-list')">
+        <option value="all"{{if or (eq .Range "all") (eq .Range "")}} selected{{end}}>all</option>
+        <option value="1h"{{if eq .Range "1h"}} selected{{end}}>last hour</option>
+        <option value="24h"{{if eq .Range "24h"}} selected{{end}}>last 24h</option>
+        <option value="7d"{{if eq .Range "7d"}} selected{{end}}>last 7d</option>
+      </select>
+    </label>
+  </form>
+
+  <div class="card">
+    <table class="table console-table">
+      <thead>
+        <tr>
+          <th>Run id</th>
+          <th>Workflow</th>
+          <th>Status</th>
+          <th>Trigger</th>
+          <th>Started at</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+      {{template "runs-tbody" .}}
+    </table>
+  </div>
+
+  {{template "pager" pagerArgs .Page .HasPrev .HasNext .PrevPage .NextPage "/console/runs"}}
+</section>
+{{end}}{{end}}
