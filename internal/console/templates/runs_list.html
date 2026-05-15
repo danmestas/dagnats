@@ -7,7 +7,7 @@
     <p class="console-lede">{{.Total}} total. PR 3 ships live updates over SSE.</p>
   </header>
 
-  <form class="console-filter-bar" data-on:submit__prevent>
+  <form class="console-filter-bar" data-on:submit__prevent="$event.preventDefault()">
     <label class="console-field">
       <span>Workflow</span>
       <select class="select"

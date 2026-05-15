@@ -1,36 +1,22 @@
 /*
  * dagnats console — entry point.
  *
- * Datastar's upstream bundle exports the engine but does NOT auto-walk
- * the DOM on import. The vendored `datastar.js` is patched to expose
- * `window.datastar` and to call `apply()` at DOMContentLoaded — so
- * importing the bundle as a side-effect is enough to wire every
- * `data-*` attribute that landed in the static HTML. Surfaced to the
- * window for the headless-Chrome smoke test which asserts on
- * `window.datastar`.
+ * Importing `datastar.js` registers every attribute / action / watcher
+ * with the engine. Each `attribute()` call enqueues the plugin and
+ * schedules a setTimeout(0) flush that, on first invocation, also
+ * calls the engine's `apply()` to walk the DOM and wire every
+ * `data-*` attribute that landed in the static HTML. That auto-init
+ * is the path that wires `data-init`, `data-on:*`, etc.
+ *
+ * The vendored bundle is patched to also assign `window.datastar` so
+ * the headless-Chrome smoke test can introspect bootstrap state. We
+ * do NOT call `apply()` ourselves — the engine's deferred apply is
+ * the one keyed on the `queuedAttributeNames` set, and an early
+ * external `apply()` would no-op against the cleared queue.
  */
 
-import * as datastar from "./datastar.js";
+import "./datastar.js";
 import "./basecoat.js";
-
-// Defensive fallback: if the bundle's auto-bootstrap missed (race on
-// `import` vs DOMContentLoaded under exotic loaders), call apply()
-// explicitly. The engine's apply() is idempotent for already-walked
-// roots.
-if (typeof window !== "undefined") {
-  if (!window.datastar) {
-    window.datastar = datastar;
-  }
-  if (typeof datastar.apply === "function") {
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", function () {
-        try { datastar.apply(); } catch (_) {}
-      });
-    } else {
-      try { datastar.apply(); } catch (_) {}
-    }
-  }
-}
 
 // Theme toggle — three-state cycle: System (prefers-color-scheme) →
 // Light → Dark → System. State lives in localStorage; absence of

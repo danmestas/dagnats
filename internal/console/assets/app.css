@@ -624,3 +624,15 @@ body[data-theme="dark"] {
   margin-top: 0.5rem;
 }
 
+/*
+ * Hide the "no rows" placeholder when an SSE prepend has put real
+ * rows ahead of it. CSS-only via :has() so reduced-motion + JS-off
+ * paths still work. Browsers without :has() (older Safari) get a
+ * slightly cluttered table — degrades gracefully.
+ */
+#runs-tbody:has(tr[id^="run-row-"]:not([id="run-row-empty"])) #run-row-empty {
+  display: none;
+}
+#run-events-body:has(tr[id^="run-event-row-"]) #run-events-empty {
+  display: none;
+}

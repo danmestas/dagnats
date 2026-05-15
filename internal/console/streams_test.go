@@ -91,7 +91,10 @@ func TestSSERuns_emitsPatchOnNewRun(t *testing.T) {
 		Created: true, Seq: 3,
 	}
 
-	gotEventLines, gotRunIDs := readSSEUntil(t, resp.Body, 2, 1500)
+	// Each update emits 2 patch events (remove + prepend). 4 = both
+	// real updates transmitted in full. The reader stops after >want
+	// events so a few sentinel emissions can buffer beyond that.
+	gotEventLines, gotRunIDs := readSSEUntil(t, resp.Body, 4, 1500)
 	if gotEventLines < 2 {
 		t.Fatalf("got %d patch events, want >= 2", gotEventLines)
 	}
@@ -154,9 +157,12 @@ func TestSSERuns_filterRejectsNonMatching(t *testing.T) {
 		Created: true, Seq: 3,
 	}
 
-	gotEventLines, gotRunIDs := readSSEUntil(t, resp.Body, 1, 1500)
-	if gotEventLines < 1 {
-		t.Fatalf("got %d patch events, want >= 1 for fail-1", gotEventLines)
+	// Each accepted update emits 2 patch events (remove + prepend);
+	// 4 = both matching updates fully transmitted. The "fail-1" id
+	// must appear; the "ok-1" id must NOT.
+	gotEventLines, gotRunIDs := readSSEUntil(t, resp.Body, 4, 1500)
+	if gotEventLines < 2 {
+		t.Fatalf("got %d patch events, want >= 2 for fail-1+fail-2", gotEventLines)
 	}
 	if gotRunIDs["ok-1"] {
 		t.Errorf("filter leaked completed run ok-1 onto stream")

@@ -141,9 +141,16 @@ func runMatchesFilter(run dag.WorkflowRun, f runsFilter) bool {
 }
 
 // emitRunPatch renders the single-row template and patches it into
-// #runs-tbody. New runs (Created=true) prepend; updates replace the
-// row by id selector. The row's outer element carries `id="run-row-<id>"`
-// so the replace mode finds it without selector hints from the server.
+// the tbody. To handle the three browser-side cases uniformly
+// (page didn't include this id, page included this id, page included
+// stale row for this id), we emit TWO patches: a remove targeting
+// the row's id selector (no-op if absent), followed by a prepend into
+// the tbody. The result is "this row, on top, fresh content" in every
+// case.
+//
+// The single-write alternative — outer-mode replace by id — fails
+// silently for rows the page never rendered, which is the common case
+// for "live new run while operator was watching the list".
 func emitRunPatch(
 	sse *datastar.ServerSentEventGenerator,
 	tmpl *template.Template, update RunUpdate,
@@ -157,22 +164,29 @@ func emitRunPatch(
 	row := runRowFromRun(update.Run)
 	html, err := renderFragment(tmpl, "run-row", rowPatch{
 		Row:    row,
-		Fresh:  update.Created,
+		Fresh:  true, // always highlight; the row is freshly placed.
 		PutSeq: update.Seq,
 	})
 	if err != nil {
 		return fmt.Errorf("render run-row: %w", err)
 	}
-	opts := []datastar.PatchElementOption{
+	// First: remove the row if it exists.
+	rmOpts := []datastar.PatchElementOption{
+		datastar.WithSelector("#run-row-" + row.RunID),
+		datastar.WithMode(datastar.ElementPatchModeRemove),
+	}
+	// Datastar's remove with a missing selector logs a warning but
+	// doesn't error. Ignore the warning; the second patch is what
+	// matters.
+	_ = sse.PatchElements("", rmOpts...)
+	// Then: prepend the fresh row to the tbody.
+	prependOpts := []datastar.PatchElementOption{
+		datastar.WithSelector("#runs-tbody"),
+		datastar.WithMode(datastar.ElementPatchModePrepend),
 		datastar.WithPatchElementsEventID(
 			strconv.FormatUint(update.Seq, 10)),
 	}
-	if update.Created {
-		opts = append(opts,
-			datastar.WithSelector("#runs-tbody"),
-			datastar.WithMode(datastar.ElementPatchModePrepend))
-	}
-	if err := sse.PatchElements(html, opts...); err != nil {
+	if err := sse.PatchElements(html, prependOpts...); err != nil {
 		return fmt.Errorf("patch run row: %w", err)
 	}
 	return nil
@@ -434,4 +448,3 @@ func eventRowFromHistory(he HistoryEvent, idx int) EventRow {
 		DataFull:    he.Event.Data,
 	}
 }
-
