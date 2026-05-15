@@ -1,0 +1,51 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="console-section">
+  <header class="console-section-header">
+    <h1>Dead-letter queue</h1>
+    <p class="console-lede">
+      {{if .Total}}{{.Total}} entries awaiting operator decision.{{else}}No entries — your workflows are healthy.{{end}}
+    </p>
+  </header>
+
+  <form class="console-filter-bar" method="GET" action="/console/dlq">
+    <label class="console-field">
+      <span>Reason class</span>
+      <select class="select" name="reason" onchange="this.form.submit()">
+        <option value=""{{if eq .ReasonFilter ""}} selected{{end}}>any</option>
+        <option value="timeout"{{if eq .ReasonFilter "timeout"}} selected{{end}}>timeout</option>
+        <option value="panic"{{if eq .ReasonFilter "panic"}} selected{{end}}>panic</option>
+        <option value="unrecoverable"{{if eq .ReasonFilter "unrecoverable"}} selected{{end}}>unrecoverable</option>
+        <option value="max-attempts"{{if eq .ReasonFilter "max-attempts"}} selected{{end}}>max-attempts</option>
+        <option value="other"{{if eq .ReasonFilter "other"}} selected{{end}}>other</option>
+      </select>
+    </label>
+  </form>
+
+  <div class="card">
+    {{if .Rows}}
+    <table class="table console-table">
+      <thead>
+        <tr>
+          <th>Seq</th>
+          <th>Reason</th>
+          <th>Workflow</th>
+          <th>Run</th>
+          <th>Failed at</th>
+          <th>Attempts</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="dlq-tbody">
+        {{template "dlq-tbody" .}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="card-body">
+      <p class="console-empty">
+        Your workflows are healthy. New dead letters will appear here.
+      </p>
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}{{end}}

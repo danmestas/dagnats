@@ -35,6 +35,11 @@ type Config struct {
 	// HeartbeatInterval, when zero, defaults to 5 * time.Second. Tests
 	// override this so the lifecycle assertions complete quickly.
 	HeartbeatInterval time.Duration
+	// ReadOnly, when true, refuses every mutation under /console/*
+	// with a 405 + JSON body. UI rendering pages also read this flag
+	// to render mutation buttons as visible-but-disabled with a
+	// tooltip explaining the env var that flipped them off.
+	ReadOnly bool
 }
 
 const defaultHeartbeatInterval = 5 * time.Second
@@ -68,7 +73,8 @@ func Mount(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	routes(mux, ts, cfg)
 
-	return authMiddleware(cfg.AuthMode, cfg.Password, mux)
+	guarded := readOnlyMiddleware(cfg.ReadOnly, mux)
+	return authMiddleware(cfg.AuthMode, cfg.Password, guarded)
 }
 
 // routes wires every public path under /console/ into mux.
@@ -93,6 +99,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/runs", func(w http.ResponseWriter, r *http.Request) {
 		servePageRunsList(w, r, ts, cfg)
 	})
+	mux.HandleFunc("/console/runs/lookup", func(w http.ResponseWriter, r *http.Request) {
+		serveRunIDLookup(w, r, ts, cfg)
+	})
 	mux.HandleFunc("/console/runs/", func(w http.ResponseWriter, r *http.Request) {
 		servePageRunDetail(w, r, ts, cfg)
 	})
@@ -104,6 +113,26 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			serveFragmentRunsList(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/triggers",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageTriggersList(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/triggers/",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageTriggerDetail(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/dlq",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageDLQList(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/dlq/",
+		func(w http.ResponseWriter, r *http.Request) {
+			dispatchDLQ(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/ops/audit",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageAuditLog(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/assets/console.js", serveGzAsset("console.js.gz",
 		"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/assets/basecoat.css", serveGzAsset("basecoat.css.gz",
@@ -112,6 +141,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/assets/app.css", servePlainAsset("app.css",
 		"text/css; charset=utf-8"))
+	mux.HandleFunc("/console/assets/connection-state.js",
+		servePlainAssetAt("sources/connection-state.js",
+			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
 	})
@@ -129,7 +161,8 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 // dashboard handler stay focused on rendering, the dispatcher on
 // routing. We can't bind /console/ exclusively because Go's mux
 // makes that prefix-greedy — anything not matched elsewhere falls
-// through here and we need to NotFound it.
+// through here and we need to NotFound it. PR 4 wraps the 404 in
+// the console layout so the operator keeps the chrome + a back link.
 func dispatchRoot(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -141,10 +174,62 @@ func dispatchRoot(
 		panic("dispatchRoot: r is nil")
 	}
 	if r.URL.Path != "/console/" && r.URL.Path != "/console" {
-		http.NotFound(w, r)
+		serveNotFound(w, r, ts, cfg)
 		return
 	}
 	serveDashboard(w, r, ts, cfg)
+}
+
+// serveNotFound renders the layout-wrapped 404 page. Used in place of
+// http.NotFound across the console so the operator always keeps the
+// header + a clear path back to the dashboard. Sets X-Robots-Tag:
+// noindex so external crawlers don't accumulate dead URLs.
+func serveNotFound(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("serveNotFound: w is nil")
+	}
+	if r == nil {
+		panic("serveNotFound: r is nil")
+	}
+	if ts == nil {
+		panic("serveNotFound: ts is nil")
+	}
+	actor, _ := ActorFrom(r.Context())
+	data := pageData{
+		Title:   "Not found",
+		Section: "",
+		Actor:   actor,
+		Overview: overviewData{
+			Listener: cfg.HTTPAddr,
+			AuthMode: cfg.AuthMode.String(),
+			Build:    cfg.Build,
+		},
+		Page: notFoundView{Path: r.URL.Path},
+	}
+	tmpl, ok := ts.pageTemplates["not-found"]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "layout", data); err != nil {
+		cfg.Logger.Error("console: render 404", "err", err)
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Robots-Tag", "noindex")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// notFoundView powers the not-found page template.
+type notFoundView struct {
+	Path string
 }
 
 // templateSet bundles the templates the handlers need. base owns
@@ -166,6 +251,12 @@ var pageContentFiles = map[string]string{
 	"workflow-detail": "templates/workflow_detail.html",
 	"runs-list":       "templates/runs_list.html",
 	"run-detail":      "templates/run_detail.html",
+	"triggers-list":   "templates/triggers_list.html",
+	"trigger-detail":  "templates/trigger_detail.html",
+	"dlq-list":        "templates/dlq_list.html",
+	"dlq-detail":      "templates/dlq_detail.html",
+	"audit-log":       "templates/audit_log.html",
+	"not-found":       "templates/not_found.html",
 }
 
 // loadTemplates builds the base tree (layout + fragments) and the
@@ -206,13 +297,32 @@ func loadTemplates() (*templateSet, error) {
 // funcMap exposes helpers used inside templates. statusIcon mirrors
 // the Go-side helper so badges share the same vocabulary. pagerArgs
 // packs the pager template's positional inputs into a struct so the
-// template stays readable.
+// template stays readable. triggerKindGlyph supplies the per-kind
+// header icon for triggers list / detail.
 func funcMap() template.FuncMap {
 	return template.FuncMap{
-		"join":       strings.Join,
-		"statusIcon": statusIcon,
-		"pagerArgs":  pagerArgs,
+		"join":             strings.Join,
+		"statusIcon":       statusIcon,
+		"pagerArgs":        pagerArgs,
+		"triggerKindGlyph": triggerKindGlyph,
 	}
+}
+
+// triggerKindGlyph returns a one-character icon for each trigger kind.
+// Matches the rendering in the CLI's `trigger list` so the same kind
+// reads identically across surfaces. Unknown kinds get a neutral dot.
+func triggerKindGlyph(kind string) string {
+	switch kind {
+	case "cron":
+		return "⏱"
+	case "webhook":
+		return "↘"
+	case "subject":
+		return "📡"
+	case "http":
+		return "⤴"
+	}
+	return "•"
 }
 
 // pagerArgsValue is the literal type the pager template binds to.
@@ -236,12 +346,14 @@ func pagerArgs(
 }
 
 // dashboardData is what the layout + dashboard.html templates expect.
-// Keeping it small in PR 1 — later PRs add live tiles.
+// Keeping it small in PR 1 — later PRs add live tiles. ReadOnly
+// mirrors Config.ReadOnly so the layout shows the read-only banner.
 type dashboardData struct {
 	Title    string
 	Section  string
 	Actor    Actor
 	Overview overviewData
+	ReadOnly bool
 }
 
 type overviewData struct {
@@ -273,6 +385,7 @@ func serveDashboard(
 			AuthMode: cfg.AuthMode.String(),
 			Build:    cfg.Build,
 		},
+		ReadOnly: cfg.ReadOnly,
 	}
 	tmpl, ok := ts.pageTemplates["dashboard"]
 	if !ok {
@@ -353,18 +466,25 @@ func serveFontAsset() http.HandlerFunc {
 // small enough that the gzip overhead and the absence of a `.gz`
 // embed would only complicate the build path.
 func servePlainAsset(name, contentType string) http.HandlerFunc {
-	if name == "" {
-		panic("servePlainAsset: name is empty")
+	return servePlainAssetAt(name, contentType)
+}
+
+// servePlainAssetAt mirrors servePlainAsset but takes a path under
+// assets/ rather than a flat filename, so it can serve files nested
+// in subdirectories (e.g. assets/sources/connection-state.js).
+func servePlainAssetAt(path, contentType string) http.HandlerFunc {
+	if path == "" {
+		panic("servePlainAssetAt: path is empty")
 	}
 	if contentType == "" {
-		panic("servePlainAsset: contentType is empty")
+		panic("servePlainAssetAt: contentType is empty")
 	}
-	body, err := fs.ReadFile(assetsFS, "assets/"+name)
+	body, err := fs.ReadFile(assetsFS, "assets/"+path)
 	if err != nil {
-		panic(fmt.Sprintf("servePlainAsset: read %s: %v", name, err))
+		panic(fmt.Sprintf("servePlainAssetAt: read %s: %v", path, err))
 	}
 	if len(body) == 0 {
-		panic(fmt.Sprintf("servePlainAsset: %s is empty", name))
+		panic(fmt.Sprintf("servePlainAssetAt: %s is empty", path))
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

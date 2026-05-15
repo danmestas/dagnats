@@ -36,12 +36,18 @@ import (
 // control over what the console renders. Mutation helpers (addX)
 // keep test setup verbose but transparent.
 type fakeDataSource struct {
-	workflows  []dag.WorkflowDef
-	runs       []dag.WorkflowRun
-	events     map[string][]api.RunEvent
-	triggers   []trigger.TriggerDef
-	runUpdates chan RunUpdate
-	runHistory map[string]chan HistoryEvent
+	workflows    []dag.WorkflowDef
+	runs         []dag.WorkflowRun
+	events       map[string][]api.RunEvent
+	triggers     []trigger.TriggerDef
+	runUpdates   chan RunUpdate
+	runHistory   map[string]chan HistoryEvent
+	deadLetters  []api.DeadLetterView
+	auditEvents  []AuditEvent
+	replayCalls  []uint64
+	discardCalls []uint64
+	replayErr    error
+	discardErr   error
 }
 
 func newFakeDS() *fakeDataSource {
@@ -133,6 +139,69 @@ func (f *fakeDataSource) WatchRuns(
 		close(ch)
 	}()
 	return ch, nil
+}
+
+func (f *fakeDataSource) ListDeadLetters(
+	_ context.Context, limit int,
+) ([]api.DeadLetterView, error) {
+	if limit <= 0 {
+		panic("fakeDataSource.ListDeadLetters: limit must be positive")
+	}
+	out := append([]api.DeadLetterView{}, f.deadLetters...)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeDataSource) ReplayDeadLetter(
+	_ context.Context, seq uint64,
+) error {
+	if seq == 0 {
+		panic("fakeDataSource.ReplayDeadLetter: seq must be positive")
+	}
+	f.replayCalls = append(f.replayCalls, seq)
+	return f.replayErr
+}
+
+func (f *fakeDataSource) DiscardDeadLetter(
+	_ context.Context, seq uint64,
+) error {
+	if seq == 0 {
+		panic("fakeDataSource.DiscardDeadLetter: seq must be positive")
+	}
+	f.discardCalls = append(f.discardCalls, seq)
+	if f.discardErr != nil {
+		return f.discardErr
+	}
+	for i := range f.deadLetters {
+		if f.deadLetters[i].Sequence == seq {
+			f.deadLetters = append(
+				f.deadLetters[:i], f.deadLetters[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+func (f *fakeDataSource) ListAuditEvents(
+	_ context.Context, limit int,
+) ([]AuditEvent, error) {
+	if limit <= 0 {
+		panic("fakeDataSource.ListAuditEvents: limit must be positive")
+	}
+	out := append([]AuditEvent{}, f.auditEvents...)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeDataSource) EmitAuditEvent(
+	_ context.Context, evt AuditEvent,
+) error {
+	f.auditEvents = append([]AuditEvent{evt}, f.auditEvents...)
+	return nil
 }
 
 func (f *fakeDataSource) WatchRunHistory(
@@ -524,6 +593,29 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 		Status:     dag.RunStatusCompleted,
 		CreatedAt:  time.Now(),
 	}}
+	fake.triggers = []trigger.TriggerDef{{
+		ID:         "cron-1",
+		WorkflowID: "alpha",
+		Enabled:    true,
+		Cron:       &trigger.CronConfig{Expression: "*/5 * * * *"},
+	}}
+	fake.deadLetters = []api.DeadLetterView{{
+		DeadLetter: api.DeadLetter{
+			Sequence:  42,
+			Subject:   "dead.task.alpha.first",
+			RunID:     "run-failed-1",
+			StepID:    "first",
+			Task:      "task.alpha.first",
+			Error:     "task timed out",
+			Timestamp: time.Now(),
+			Body:      []byte(`{"x":1}`),
+		},
+		BodyPreserved: true,
+	}}
+	fake.auditEvents = []AuditEvent{{
+		Time: time.Now(), Actor: "operator",
+		Action: "dlq.retry", Target: "42", Outcome: "success",
+	}}
 	h := mountWithFake(t, fake)
 	pages := []string{
 		"/console/",
@@ -531,6 +623,11 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 		"/console/workflows/alpha",
 		"/console/runs",
 		"/console/runs/run-1",
+		"/console/triggers",
+		"/console/triggers/cron-1",
+		"/console/dlq",
+		"/console/dlq/42",
+		"/console/ops/audit",
 	}
 	external := regexp.MustCompile(
 		`(?i)(src|href)\s*=\s*"((https?:)?//[^"]+)"`)

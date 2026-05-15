@@ -1,0 +1,31 @@
+{{define "triggers-tbody"}}
+{{if .Rows}}
+  {{range .Rows}}
+  <tr id="trigger-row-{{.ID}}">
+    <td>
+      <span class="trigger-icon" data-kind="{{.Kind}}" aria-hidden="true">{{triggerKindGlyph .Kind}}</span>
+      <span class="badge badge-outline">{{.Kind}}</span>
+    </td>
+    <td class="console-mono">
+      <a href="/console/triggers/{{.ID}}">{{.ID}}</a>
+    </td>
+    <td class="console-mono">
+      {{if .Workflow}}<a href="/console/workflows/{{.Workflow}}">{{.Workflow}}</a>{{else}}<span class="muted">—</span>{{end}}
+    </td>
+    <td class="console-mono">{{.Target}}</td>
+    <td>
+      <span class="badge {{if .Enabled}}badge-completed{{else}}badge-skipped{{end}}">
+        <span class="status-icon" aria-hidden="true">{{.StatusIcon}}</span>
+        {{.StatusLabel}}
+      </span>
+    </td>
+  </tr>
+  {{end}}
+{{else}}
+  <tr id="triggers-row-empty">
+    <td colspan="5" class="console-empty">
+      No triggers match. Register a trigger via the CLI or the API.
+    </td>
+  </tr>
+{{end}}
+{{end}}

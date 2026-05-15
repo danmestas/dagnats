@@ -1,0 +1,38 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="console-section">
+  <header class="console-section-header">
+    <h1>Triggers</h1>
+    <p class="console-lede">{{.Total}} configured.</p>
+  </header>
+
+  <form class="console-filter-bar" method="GET" action="/console/triggers">
+    <label class="console-field">
+      <span>Type</span>
+      <select class="select" name="type" onchange="this.form.submit()">
+        <option value=""{{if eq .TypeFilter ""}} selected{{end}}>any</option>
+        <option value="cron"{{if eq .TypeFilter "cron"}} selected{{end}}>cron</option>
+        <option value="webhook"{{if eq .TypeFilter "webhook"}} selected{{end}}>webhook</option>
+        <option value="subject"{{if eq .TypeFilter "subject"}} selected{{end}}>subject</option>
+        <option value="http"{{if eq .TypeFilter "http"}} selected{{end}}>http</option>
+      </select>
+    </label>
+  </form>
+
+  <div class="card">
+    <table class="table console-table">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>ID</th>
+          <th>Workflow</th>
+          <th>Target</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="triggers-tbody">
+        {{template "triggers-tbody" .}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}{{end}}

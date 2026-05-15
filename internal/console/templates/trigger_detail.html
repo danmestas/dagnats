@@ -1,0 +1,79 @@
+{{define "content"}}{{with .Page}}
+<section class="console-section">
+  {{if .NotFound}}
+    <header class="console-section-header">
+      <h1>Trigger {{.ID}}</h1>
+      <p class="console-lede">No trigger registered with this id.</p>
+    </header>
+    <p><a class="btn btn-outline" href="/console/triggers">Return to triggers</a></p>
+  {{else}}
+    <header class="console-section-header">
+      <h1>
+        <span class="trigger-icon" data-kind="{{.Kind}}" aria-hidden="true">{{triggerKindGlyph .Kind}}</span>
+        {{.ID}}
+      </h1>
+      <p class="console-lede">
+        <span class="badge badge-outline">{{.Kind}}</span>
+        <span class="badge {{if .Enabled}}badge-completed{{else}}badge-skipped{{end}}">
+          <span class="status-icon" aria-hidden="true">{{.StatusIcon}}</span>
+          {{.StatusLabel}}
+        </span>
+        attached to
+        {{if .Workflow}}<a href="/console/workflows/{{.Workflow}}" class="console-mono">{{.Workflow}}</a>{{else}}<span class="muted">no workflow</span>{{end}}
+      </p>
+    </header>
+
+    {{if .SignatureOn}}
+    <div class="alert" role="status">
+      <strong>HMAC signature required</strong>
+      Inbound deliveries must include a signature header.
+    </div>
+    {{end}}
+
+    <article class="card">
+      <header class="card-header"><h2>Configuration</h2></header>
+      <div class="card-body">
+        <dl class="console-deflist">
+          <div><dt>Type</dt><dd>{{.Kind}}</dd></div>
+          <div><dt>Target</dt><dd class="console-mono">{{.Target}}</dd></div>
+          <div><dt>Next fire</dt><dd>{{.NextFireText}}</dd></div>
+        </dl>
+        <pre class="console-pre"><code>{{.ConfigJSON}}</code></pre>
+      </div>
+    </article>
+
+    <article class="card">
+      <header class="card-header"><h2>Recent activity</h2></header>
+      <div class="card-body">
+        {{if .RecentFirings}}
+        <table class="table console-table">
+          <thead>
+            <tr><th>Fired at</th><th>Outcome</th><th>Run</th></tr>
+          </thead>
+          <tbody>
+            {{range .RecentFirings}}
+            <tr>
+              <td class="console-mono">{{.FiredAt}}</td>
+              <td>
+                <span class="badge badge-{{.OutcomeRaw}}">{{.Outcome}}</span>
+              </td>
+              <td class="console-mono">
+                {{if .RunID}}<a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a>{{else}}<span class="muted">—</span>{{end}}
+              </td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+        {{else}}
+        <p class="console-empty">
+          No firings recorded. Activity will appear here once the
+          trigger receives traffic.
+        </p>
+        {{end}}
+      </div>
+    </article>
+
+    <p><a class="btn btn-outline" href="/console/triggers">← back to triggers</a></p>
+  {{end}}
+</section>
+{{end}}{{end}}

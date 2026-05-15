@@ -526,15 +526,53 @@ func mountConsole(
 		printStep(os.Stderr, console.DisabledLogMessage)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	auditKV := openConsoleAuditKV(nc, logger)
+	readOnly := console.ReadOnlyFromEnv(os.Getenv("CONSOLE_READ_ONLY"))
+	if readOnly {
+		printStep(os.Stderr, "console: read-only mode active "+
+			"(CONSOLE_READ_ONLY=true); mutations refused")
+	}
 	handler := console.Mount(console.Config{
 		HTTPAddr: httpAddr,
 		AuthMode: mode,
 		Password: cfg.Password,
 		Build:    "dev",
 		Logger:   logger,
-		Data:     console.NewAPIDataSource(svc, nc),
+		Data:     console.NewAPIDataSource(svc, nc, auditKV, logger),
+		ReadOnly: readOnly,
 	})
 	mux.Handle("/console/", handler)
+}
+
+// openConsoleAuditKV opens (or creates) the console_audit KV bucket on
+// the live JetStream connection. nil-tolerant: returns nil with a
+// slog.Warn when JetStream init or bucket creation fails so the
+// console mount path can still serve read-only pages without audit
+// support. The audit emitter logs and drops on a nil bucket.
+func openConsoleAuditKV(
+	nc *nats.Conn, logger *slog.Logger,
+) jetstream.KeyValue {
+	if nc == nil {
+		return nil
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		logger.Warn("console: jetstream for audit init failed",
+			"err", err)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 10*time.Second)
+	defer cancel()
+	kv, err := console.NewAuditKV(ctx, js)
+	if err != nil {
+		logger.Warn("console: open audit bucket failed", "err", err)
+		return nil
+	}
+	return kv
 }
 
 // openapiSpecVersion is the value reported in the OpenAPI `info.version`
