@@ -110,6 +110,27 @@ type DataSource interface {
 	// View.Sequence is the only valid field). The channel closes on
 	// ctx cancellation.
 	WatchDLQ(ctx context.Context) (<-chan DLQUpdate, error)
+
+	// ListKVBuckets returns the known KV buckets the console can
+	// inspect. Returns nil + nil-error when JetStream isn't reachable
+	// — callers render the zero state. Each entry carries a short
+	// description so the UI can label the side nav without baking
+	// strings into templates.
+	ListKVBuckets(ctx context.Context) ([]KVBucketInfo, error)
+
+	// ListKVKeys returns up to limit keys for one bucket. cursor is
+	// the next-page token returned by the previous call; empty for
+	// the first page. Returns the keys + the next cursor (empty when
+	// the list is fully drained). Empty bucket: nil + empty cursor.
+	ListKVKeys(
+		ctx context.Context, bucket, cursor string, limit int,
+	) ([]string, string, error)
+
+	// GetKVEntry returns the value + revision metadata for one key.
+	// Returns ErrKVNotFound when the key is missing.
+	GetKVEntry(
+		ctx context.Context, bucket, key string,
+	) (KVEntryView, error)
 }
 
 // RunUpdate is one observation on the workflow_runs KV bucket. Created
@@ -153,6 +174,32 @@ type TriggerUpdate struct {
 	Deleted bool
 	Seq     uint64
 }
+
+// KVBucketInfo is one row in the KV inspector side nav. Description is
+// rendered as a tooltip + secondary label so operators understand
+// what each bucket holds without having to remember the schema.
+type KVBucketInfo struct {
+	Name        string
+	Description string
+	Keys        int
+}
+
+// KVEntryView is the materialised value of one KV key. Revision lets
+// the UI show "rev 17 of <key>" — the engine writes monotonically so
+// the number is meaningful.
+type KVEntryView struct {
+	Bucket   string
+	Key      string
+	Value    []byte
+	Revision uint64
+	Created  time.Time
+	IsJSON   bool
+}
+
+// ErrKVNotFound is returned by GetKVEntry when no key exists with the
+// given name. Lets callers render a "not found" message rather than
+// confuse the operator with a 500.
+var ErrKVNotFound = errors.New("kv key not found")
 
 // DLQOp tags one DLQUpdate as additive or destructive.
 type DLQOp string
@@ -815,6 +862,159 @@ func dlqUpdateFrom(
 		}
 	}
 	return DLQUpdate{}, false
+}
+
+// kvBucketsKnown is the list the console exposes by default. Adding a
+// bucket here surfaces it in the side nav; missing buckets are
+// silently skipped (the engine may not have created them yet).
+var kvBucketsKnown = []KVBucketInfo{
+	{Name: "workflow_defs", Description: "registered workflow definitions"},
+	{Name: "workflow_runs", Description: "live workflow run snapshots"},
+	{Name: "triggers", Description: "registered trigger definitions"},
+	{Name: "dead_letters", Description: "DLQ projection (auxiliary)"},
+	{Name: AuditBucket, Description: "console audit log"},
+}
+
+// ListKVBuckets returns the registered KV buckets and their current
+// key count. Buckets that don't exist (yet) come back with Keys=0; the
+// UI renders them grey-disabled so operators can see the inventory.
+func (a *apiServiceAdapter) ListKVBuckets(
+	ctx context.Context,
+) ([]KVBucketInfo, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ListKVBuckets: ctx is nil")
+	}
+	if a.nc == nil {
+		return nil, nil
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream init: %w", err)
+	}
+	out := make([]KVBucketInfo, 0, len(kvBucketsKnown))
+	for _, info := range kvBucketsKnown {
+		out = append(out, kvBucketCount(ctx, js, info))
+	}
+	return out, nil
+}
+
+// kvBucketCount enriches one bucket info with its live key count. A
+// missing bucket reports zero so the UI doesn't show errors for buckets
+// the engine hasn't created yet.
+func kvBucketCount(
+	ctx context.Context, js jetstream.JetStream, info KVBucketInfo,
+) KVBucketInfo {
+	kv, err := js.KeyValue(ctx, info.Name)
+	if err != nil {
+		return info
+	}
+	status, err := kv.Status(ctx)
+	if err != nil {
+		return info
+	}
+	info.Keys = int(status.Values())
+	return info
+}
+
+// ListKVKeys returns up to limit keys from one bucket. cursor is
+// currently unused — JetStream KV.ListKeys doesn't support cursored
+// pagination directly. We return an empty next-cursor when the page
+// fits; callers can detect "more" by len(keys) == limit.
+func (a *apiServiceAdapter) ListKVKeys(
+	ctx context.Context, bucket, _ string, limit int,
+) ([]string, string, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ListKVKeys: ctx is nil")
+	}
+	if bucket == "" {
+		panic("apiServiceAdapter.ListKVKeys: bucket is empty")
+	}
+	if limit <= 0 {
+		panic("apiServiceAdapter.ListKVKeys: limit must be positive")
+	}
+	if a.nc == nil {
+		return nil, "", nil
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return nil, "", fmt.Errorf("jetstream init: %w", err)
+	}
+	kv, err := js.KeyValue(ctx, bucket)
+	if err != nil {
+		// Empty / nonexistent bucket — render the zero state.
+		return nil, "", nil
+	}
+	lister, err := kv.ListKeys(ctx)
+	if err != nil {
+		return nil, "", nil //nolint:nilerr
+	}
+	defer lister.Stop() //nolint:errcheck
+	out := make([]string, 0, limit)
+	for key := range lister.Keys() {
+		out = append(out, key)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, "", nil
+}
+
+// GetKVEntry fetches the value + revision for one key. Returns
+// ErrKVNotFound when the key is missing. The value is returned as
+// raw bytes so the UI can attempt JSON pretty-printing client-side
+// or fall back to a hex dump.
+func (a *apiServiceAdapter) GetKVEntry(
+	ctx context.Context, bucket, key string,
+) (KVEntryView, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.GetKVEntry: ctx is nil")
+	}
+	if bucket == "" {
+		panic("apiServiceAdapter.GetKVEntry: bucket is empty")
+	}
+	if key == "" {
+		panic("apiServiceAdapter.GetKVEntry: key is empty")
+	}
+	if a.nc == nil {
+		return KVEntryView{}, ErrKVNotFound
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return KVEntryView{}, fmt.Errorf("jetstream init: %w", err)
+	}
+	kv, err := js.KeyValue(ctx, bucket)
+	if err != nil {
+		return KVEntryView{}, ErrKVNotFound
+	}
+	entry, err := kv.Get(ctx, key)
+	if err != nil {
+		return KVEntryView{}, ErrKVNotFound
+	}
+	val := entry.Value()
+	return KVEntryView{
+		Bucket:   bucket,
+		Key:      key,
+		Value:    val,
+		Revision: entry.Revision(),
+		Created:  entry.Created(),
+		IsJSON:   looksLikeJSON(val),
+	}, nil
+}
+
+// looksLikeJSON returns true when b begins with `{` or `[` after
+// whitespace. Used to flip the renderer into the syntax-tinted view
+// without a full parse pass on every read.
+func looksLikeJSON(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{', '[':
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // parseHistoryEvent decodes one history message. Returns ok=false on

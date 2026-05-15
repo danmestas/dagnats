@@ -55,6 +55,11 @@ type fakeDataSource struct {
 	triggerSetErr   error
 	triggerUpdates  chan TriggerUpdate
 	dlqUpdates      chan DLQUpdate
+
+	// PR 5b additions: KV inspector backing data.
+	kvBuckets []KVBucketInfo
+	kvKeys    map[string][]string
+	kvEntries map[string][]byte
 }
 
 // triggerSetCall captures one SetTriggerEnabled invocation so tests can
@@ -69,6 +74,8 @@ func newFakeDS() *fakeDataSource {
 		events:       make(map[string][]api.RunEvent),
 		runHistory:   make(map[string]chan HistoryEvent),
 		triggerFires: make(map[string][]TriggerFireRow),
+		kvKeys:       make(map[string][]string),
+		kvEntries:    make(map[string][]byte),
 	}
 }
 
@@ -311,6 +318,50 @@ func (f *fakeDataSource) WatchRunHistory(
 		close(ch)
 	}()
 	return ch, nil
+}
+
+// PR 5b: KV inspector data the fake exposes. kvBuckets is the side-nav
+// inventory; kvEntries is keyed by bucket/key so GetKVEntry can hand
+// back deterministic bytes.
+func (f *fakeDataSource) ListKVBuckets(
+	_ context.Context,
+) ([]KVBucketInfo, error) {
+	return append([]KVBucketInfo{}, f.kvBuckets...), nil
+}
+
+func (f *fakeDataSource) ListKVKeys(
+	_ context.Context, bucket, _ string, limit int,
+) ([]string, string, error) {
+	if bucket == "" {
+		panic("fakeDataSource.ListKVKeys: bucket is empty")
+	}
+	if limit <= 0 {
+		panic("fakeDataSource.ListKVKeys: limit must be positive")
+	}
+	keys := append([]string{}, f.kvKeys[bucket]...)
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+	return keys, "", nil
+}
+
+func (f *fakeDataSource) GetKVEntry(
+	_ context.Context, bucket, key string,
+) (KVEntryView, error) {
+	if bucket == "" {
+		panic("fakeDataSource.GetKVEntry: bucket is empty")
+	}
+	if key == "" {
+		panic("fakeDataSource.GetKVEntry: key is empty")
+	}
+	val, ok := f.kvEntries[bucket+"/"+key]
+	if !ok {
+		return KVEntryView{}, ErrKVNotFound
+	}
+	return KVEntryView{
+		Bucket: bucket, Key: key, Value: val, Revision: 1,
+		IsJSON: looksLikeJSON(val),
+	}, nil
 }
 
 type stringError string
@@ -716,6 +767,10 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 		"/console/triggers/cron-1",
 		"/console/dlq",
 		"/console/dlq/42",
+		"/console/ops",
+		"/console/ops/workers",
+		"/console/ops/leases",
+		"/console/ops/kv",
 		"/console/ops/audit",
 	}
 	external := regexp.MustCompile(

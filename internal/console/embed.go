@@ -38,6 +38,10 @@ var assetsFS embed.FS
 //go:embed templates/dlq_list.html
 //go:embed templates/dlq_detail.html
 //go:embed templates/audit_log.html
+//go:embed templates/ops_index.html
+//go:embed templates/ops_workers.html
+//go:embed templates/ops_leases.html
+//go:embed templates/ops_kv.html
 //go:embed templates/not_found.html
 //go:embed templates/fragments/heartbeat.html
 //go:embed templates/fragments/workflows_tbody.html

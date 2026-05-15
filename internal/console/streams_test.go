@@ -408,6 +408,24 @@ func (r *resumeRecorder) WatchDLQ(
 	return r.inner.WatchDLQ(ctx)
 }
 
+func (r *resumeRecorder) ListKVBuckets(
+	ctx context.Context,
+) ([]KVBucketInfo, error) {
+	return r.inner.ListKVBuckets(ctx)
+}
+
+func (r *resumeRecorder) ListKVKeys(
+	ctx context.Context, bucket, cursor string, limit int,
+) ([]string, string, error) {
+	return r.inner.ListKVKeys(ctx, bucket, cursor, limit)
+}
+
+func (r *resumeRecorder) GetKVEntry(
+	ctx context.Context, bucket, key string,
+) (KVEntryView, error) {
+	return r.inner.GetKVEntry(ctx, bucket, key)
+}
+
 // readSSEUntil reads the SSE response body looking for
 // `event: datastar-patch-elements` headers and capturing the row id
 // payload substrings. Stops once want events have been seen OR the

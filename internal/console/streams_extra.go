@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/danmestas/dagnats/internal/console/events"
 	"github.com/starfederation/datastar-go/datastar"
 )
 
@@ -165,12 +166,16 @@ func removePatch(
 	return nil
 }
 
-// serveSSEDLQ streams DLQ stream updates as Datastar patches into
-// #dlq-tbody. New dead letters prepend with a highlight; this PR
-// does not synthesise removals from this handler — those land via
-// the dedicated retry / discard mutation handlers which emit a
-// targeted SSE event on the same stream (see streams_dlq_remove.go
-// in a later PR).
+// serveSSEDLQ streams DLQ updates as Datastar patches into
+// #dlq-tbody. Two sources feed the stream:
+//
+//   - The KV watcher fan-out (additions): new dead letters land here.
+//   - The in-process event bus (removals + replaces): mutation
+//     handlers publish "row.remove" / "row.replace" events so the
+//     list refreshes without a page reload.
+//
+// Both sources share the SSE writer; events arrive in their natural
+// order and the pump multiplexes them.
 func serveSSEDLQ(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -196,30 +201,48 @@ func serveSSEDLQ(
 		http.Error(w, "watch failed", http.StatusServiceUnavailable)
 		return
 	}
+	busCh, busCancel := subscribeDLQEvents(cfg)
+	defer busCancel()
 	sse := datastar.NewSSE(w, r)
-	pumpDLQUpdates(r.Context(), sse, ts.base, ch, cfg)
+	pumpDLQCombined(r.Context(), sse, ts.base, ch, busCh, cfg)
 }
 
-// pumpDLQUpdates translates DLQ messages to PatchElements. Mirrors
-// pumpTriggerUpdates' bounded-loop discipline.
-func pumpDLQUpdates(
+// subscribeDLQEvents returns a receive-only channel of bus events
+// for the DLQ topic, plus a cancel function. When the bus isn't
+// configured the channel is pre-closed.
+func subscribeDLQEvents(
+	cfg Config,
+) (<-chan events.Event, func()) {
+	if cfg.bus == nil {
+		ch := make(chan events.Event)
+		close(ch)
+		return ch, func() {}
+	}
+	return cfg.bus.subscribe(events.TopicDLQ)
+}
+
+// pumpDLQCombined multiplexes the KV-watch DLQUpdate stream and the
+// in-process events.Event stream onto one SSE writer. Either channel
+// closing ends the loop; ctx cancellation likewise.
+func pumpDLQCombined(
 	ctx context.Context,
 	sse *datastar.ServerSentEventGenerator,
 	tmpl *template.Template,
-	ch <-chan DLQUpdate, cfg Config,
+	kvCh <-chan DLQUpdate, busCh <-chan events.Event,
+	cfg Config,
 ) {
 	if sse == nil {
-		panic("pumpDLQUpdates: sse is nil")
+		panic("pumpDLQCombined: sse is nil")
 	}
 	if tmpl == nil {
-		panic("pumpDLQUpdates: tmpl is nil")
+		panic("pumpDLQCombined: tmpl is nil")
 	}
 	const maxIters = 1_000_000_000
 	for i := 0; i < maxIters; i++ {
 		select {
 		case <-ctx.Done():
 			return
-		case update, ok := <-ch:
+		case update, ok := <-kvCh:
 			if !ok {
 				return
 			}
@@ -228,8 +251,38 @@ func pumpDLQUpdates(
 					"seq", update.View.Sequence, "err", err)
 				return
 			}
+		case evt, ok := <-busCh:
+			if !ok {
+				busCh = nil
+				continue
+			}
+			if err := emitDLQBusPatch(sse, evt); err != nil {
+				cfg.Logger.Warn("console: sse dlq bus emit",
+					"key", evt.Key, "err", err)
+				return
+			}
 		}
 	}
+}
+
+// emitDLQBusPatch translates one events.Event for the DLQ topic into
+// a Datastar patch. row.remove patches the row out (used after retry
+// + soft-discard expiry); row.replace re-renders the row (used after
+// undo restores).
+func emitDLQBusPatch(
+	sse *datastar.ServerSentEventGenerator, evt events.Event,
+) error {
+	if sse == nil {
+		panic("emitDLQBusPatch: sse is nil")
+	}
+	if evt.Key == "" {
+		return nil
+	}
+	switch evt.Op {
+	case events.OpRowRemove:
+		return removePatch(sse, "#dlq-row-"+evt.Key, 0)
+	}
+	return nil
 }
 
 // emitDLQPatch renders one DLQ row and prepends it to #dlq-tbody.

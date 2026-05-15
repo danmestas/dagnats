@@ -540,7 +540,7 @@ func mountConsole(
 			"using random secret (restarts will rotate it). "+
 			"Set the env var for stable tokens across restarts.")
 	}
-	handler := console.Mount(console.Config{
+	consoleCfg := console.Config{
 		HTTPAddr: httpAddr,
 		AuthMode: mode,
 		Password: cfg.Password,
@@ -548,8 +548,43 @@ func mountConsole(
 		Logger:   logger,
 		Data:     console.NewAPIDataSource(svc, nc, auditKV, logger),
 		ReadOnly: readOnly,
-	})
+	}
+	if !readOnly {
+		enableConsoleSoftDiscard(&consoleCfg, svc, logger)
+	}
+	handler := console.Mount(consoleCfg)
 	mux.Handle("/console/", handler)
+}
+
+// enableConsoleSoftDiscard wires the DLQ soft-discard tombstone path
+// + sweeper goroutine. window is 5s per the brief. The expiry path
+// invokes svc.DiscardDeadLetter with a short timeout so a stuck
+// JetStream call doesn't wedge the sweeper.
+func enableConsoleSoftDiscard(
+	cfg *console.Config, svc *api.Service, logger *slog.Logger,
+) {
+	if cfg == nil {
+		panic("enableConsoleSoftDiscard: cfg is nil")
+	}
+	if svc == nil {
+		panic("enableConsoleSoftDiscard: svc is nil")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	const window = 5 * time.Second
+	expire := func(seq uint64) {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), 4*time.Second)
+		defer cancel()
+		if err := svc.DiscardDeadLetter(ctx, seq); err != nil {
+			logger.Warn("console: soft-discard sweep removal failed",
+				"seq", seq, "err", err)
+		}
+	}
+	console.EnableSoftDiscard(cfg, window, expire)
+	stop := make(chan struct{})
+	go console.RunTombstoneSweeper(cfg, 250*time.Millisecond, stop)
 }
 
 // openConsoleAuditKV opens (or creates) the console_audit KV bucket on

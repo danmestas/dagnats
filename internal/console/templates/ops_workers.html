@@ -1,0 +1,43 @@
+{{define "content"}}
+<section class="page page-ops-workers" data-page="ops-workers">
+  <header class="page-header">
+    <a class="page-back" href="/console/ops">← Ops</a>
+    <h1>Workers</h1>
+  </header>
+
+  {{if .Page.Note}}
+  <aside class="callout callout-info" role="status">
+    <p>{{.Page.Note}}</p>
+  </aside>
+  {{end}}
+
+  <table class="data-table" id="workers-table">
+    <thead>
+      <tr>
+        <th>Worker</th>
+        <th>Status</th>
+        <th>Last heartbeat</th>
+        <th>Current lease</th>
+        <th>Uptime</th>
+        <th>Tasks</th>
+      </tr>
+    </thead>
+    <tbody id="workers-tbody">
+      {{range .Page.Workers}}
+      <tr id="worker-row-{{.ID}}">
+        <td class="mono">{{.ID}}</td>
+        <td>{{.Status}}</td>
+        <td>{{.LastHeartbeat}}</td>
+        <td>{{.CurrentLease}}</td>
+        <td>{{.Uptime}}</td>
+        <td>{{.TaskCount}}</td>
+      </tr>
+      {{else}}
+      <tr class="empty-row">
+        <td colspan="6">no workers reporting — see callout above</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

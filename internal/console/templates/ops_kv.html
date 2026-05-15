@@ -1,0 +1,71 @@
+{{define "content"}}
+<section class="page page-ops-kv" data-page="ops-kv">
+  <header class="page-header">
+    <a class="page-back" href="/console/ops">← Ops</a>
+    <h1>KV inspector</h1>
+    <p class="page-subtitle">
+      Read-only inspection of JetStream KV buckets the engine uses.
+    </p>
+  </header>
+
+  <div class="kv-layout">
+    <nav class="kv-buckets" aria-label="KV buckets">
+      <h2 class="kv-section-title">Buckets</h2>
+      <ul class="kv-bucket-list">
+        {{range .Page.Buckets}}
+        <li class="kv-bucket-item">
+          <a href="/console/ops/kv?bucket={{.Name}}"
+             class="kv-bucket-link {{if eq .Name $.Page.ActiveBucket}}is-active{{end}}"
+             title="{{.Description}}">
+            <span class="kv-bucket-name">{{.Name}}</span>
+            <span class="kv-bucket-count">{{.Keys}}</span>
+          </a>
+        </li>
+        {{else}}
+        <li class="kv-bucket-empty">no KV buckets reachable</li>
+        {{end}}
+      </ul>
+    </nav>
+
+    <section class="kv-keys" aria-label="Keys">
+      <h2 class="kv-section-title">
+        Keys
+        {{if .Page.ActiveBucket}}
+          <span class="kv-section-sub">{{.Page.ActiveBucket}}</span>
+        {{end}}
+      </h2>
+      <ul class="kv-key-list">
+        {{range .Page.Keys}}
+        <li class="kv-key-item">
+          <a href="/console/ops/kv?bucket={{$.Page.ActiveBucket}}&key={{.}}"
+             class="kv-key-link mono">{{.}}</a>
+        </li>
+        {{else}}
+        <li class="kv-key-empty">no keys to show</li>
+        {{end}}
+      </ul>
+    </section>
+
+    <section class="kv-entry" aria-label="Entry">
+      <h2 class="kv-section-title">Value</h2>
+      {{if .Page.Entry}}
+        {{if .Page.Entry.NotFound}}
+        <p class="kv-entry-missing">Key not found in this bucket.</p>
+        {{else}}
+        <header class="kv-entry-header">
+          <span class="kv-entry-key mono">{{.Page.Entry.Key}}</span>
+          <span class="kv-entry-meta">rev {{.Page.Entry.Revision}}</span>
+        </header>
+        {{if .Page.Entry.IsJSON}}
+        <pre class="kv-entry-value kv-entry-json"><code>{{.Page.Entry.ValuePretty}}</code></pre>
+        {{else}}
+        <pre class="kv-entry-value kv-entry-raw"><code>{{.Page.Entry.ValueRaw}}</code></pre>
+        {{end}}
+        {{end}}
+      {{else}}
+      <p class="kv-entry-hint">Pick a key on the left to view its value.</p>
+      {{end}}
+    </section>
+  </div>
+</section>
+{{end}}
