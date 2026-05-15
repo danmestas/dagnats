@@ -772,6 +772,7 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 		"/console/ops/leases",
 		"/console/ops/kv",
 		"/console/ops/audit",
+		"/console/ops/metrics",
 	}
 	external := regexp.MustCompile(
 		`(?i)(src|href)\s*=\s*"((https?:)?//[^"]+)"`)

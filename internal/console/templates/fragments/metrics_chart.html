@@ -1,0 +1,35 @@
+{{define "metrics_chart"}}
+<article class="console-chart{{if .Empty}} is-empty{{end}}"
+         id="{{.ID}}-wrap"
+         aria-labelledby="{{.ID}}-title">
+  <header class="console-chart-header">
+    <h3 class="console-chart-title" id="{{.ID}}-title">{{.Title}}</h3>
+    {{if .WindowLabel}}
+      <span class="console-chart-window">{{.WindowLabel}}</span>
+    {{end}}
+  </header>
+  <p class="console-chart-description">{{.Description}}</p>
+  {{if .Empty}}
+    <div class="console-chart-empty" role="status">
+      <p>no data yet — waiting for the first sample to arrive</p>
+    </div>
+  {{else}}
+    <div class="console-chart-canvas" id="{{.ID}}-canvas"
+         data-chart-id="{{.ID}}"
+         data-chart-unit="{{.Unit}}"
+         data-chart-x="{{.XAxis}}"
+         data-chart-series='{{range .Series}}{{.Label}}|{{.Stroke}};{{end}}'
+         data-chart-values='{{range .Series}}{{.Values}};{{end}}'>
+    </div>
+    <div class="console-chart-legend" aria-label="series legend">
+      {{range .Series}}
+        <span class="console-chart-legend-item">
+          <span class="console-chart-legend-swatch console-chart-stroke-{{.Stroke}}"
+                aria-hidden="true"></span>
+          <span class="console-chart-legend-label">{{.Label}}</span>
+        </span>
+      {{end}}
+    </div>
+  {{end}}
+</article>
+{{end}}

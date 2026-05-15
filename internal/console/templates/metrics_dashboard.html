@@ -1,0 +1,105 @@
+{{define "content"}}
+<section class="console-section console-metrics-page"
+         data-init="@get('/console/sse/metrics', {openWhenHidden: true})">
+  <header class="console-section-header">
+    <h1>Metrics</h1>
+    <p class="console-lede">
+      Live observability sourced from the TELEMETRY stream.
+      Charts auto-update as new samples arrive.
+    </p>
+  </header>
+
+  {{if not .Page.Available}}
+    <div class="console-notice console-notice-muted" role="status">
+      <h2>Metrics aggregator not wired</h2>
+      <p>
+        The console hasn't been given a metrics aggregator. Start dagnats with
+        the embedded TELEMETRY stream and re-load this page.
+      </p>
+    </div>
+  {{else}}
+
+  <h2 class="console-section-subhead">System health</h2>
+  <div class="console-grid console-grid-metrics">
+    {{range .Page.Tiles}}
+      {{template "metric_tile" .}}
+    {{end}}
+  </div>
+
+  <h2 class="console-section-subhead">Charts</h2>
+  <div class="console-charts">
+    {{range .Page.Charts}}
+      {{template "metrics_chart" .}}
+    {{end}}
+  </div>
+
+  {{if .Page.Workflows}}
+    <h2 class="console-section-subhead">Per-workflow</h2>
+    <div class="console-table-wrap">
+      <table class="console-table">
+        <caption class="console-visually-hidden">
+          Completed and failed runs per workflow over the last hour.
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Workflow</th>
+            <th scope="col" class="console-num">Completed&nbsp;(1h)</th>
+            <th scope="col" class="console-num">Failed&nbsp;(1h)</th>
+            <th scope="col" class="console-num">p50&nbsp;(ms)</th>
+            <th scope="col" class="console-num">p95&nbsp;(ms)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Page.Workflows}}
+            <tr>
+              <td>
+                <a href="/console/ops/metrics?workflow={{.Workflow}}">
+                  {{.Workflow}}
+                </a>
+              </td>
+              <td class="console-num">{{.Completed1h}}</td>
+              <td class="console-num">{{.Failed1h}}</td>
+              <td class="console-num">{{printf "%.1f" .P50LatencyMs}}</td>
+              <td class="console-num">{{printf "%.1f" .P95LatencyMs}}</td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  {{end}}
+
+  {{if .Page.StepRows}}
+    <h2 class="console-section-subhead">
+      Steps in <span class="console-mono">{{.Page.Workflow}}</span>
+    </h2>
+    <div class="console-table-wrap">
+      <table class="console-table">
+        <thead>
+          <tr>
+            <th scope="col">Step</th>
+            <th scope="col" class="console-num">Completed&nbsp;(1h)</th>
+            <th scope="col" class="console-num">Failed&nbsp;(1h)</th>
+            <th scope="col" class="console-num">p50&nbsp;(ms)</th>
+            <th scope="col" class="console-num">p95&nbsp;(ms)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Page.StepRows}}
+            <tr>
+              <td>{{.Step}}</td>
+              <td class="console-num">{{.Completed1h}}</td>
+              <td class="console-num">{{.Failed1h}}</td>
+              <td class="console-num">{{printf "%.1f" .P50LatencyMs}}</td>
+              <td class="console-num">{{printf "%.1f" .P95LatencyMs}}</td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  {{end}}
+
+  <script src="/console/assets/uplot.min.js" defer></script>
+  <script src="/console/assets/metrics.js" defer></script>
+  {{end}}
+</section>
+{{end}}
