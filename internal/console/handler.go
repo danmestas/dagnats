@@ -115,6 +115,13 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
 	})
+	mux.HandleFunc("/console/sse/runs", func(w http.ResponseWriter, r *http.Request) {
+		serveSSERuns(w, r, ts, cfg)
+	})
+	mux.HandleFunc("/console/sse/runs/", func(w http.ResponseWriter, r *http.Request) {
+		serveSSERunDetail(w, r, ts, cfg)
+	})
+	mux.HandleFunc("/console/assets/fonts/", serveFontAsset())
 }
 
 // dispatchRoot picks between dashboard (/console/, /console) and 404.
@@ -308,6 +315,36 @@ func serveGzAsset(name, contentType string) http.HandlerFunc {
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		_, _ = w.Write(body)
+	}
+}
+
+// serveFontAsset streams one of the embedded woff2 font binaries. The
+// file path under /console/assets/fonts/ maps directly to the file
+// name on disk; missing files render 404. woff2 is precompressed by
+// the format; we do NOT add Content-Encoding, the browser handles
+// decompression natively. Cache-Control is long+immutable so reloads
+// don't re-fetch.
+func serveFontAsset() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/console/assets/fonts/")
+		if name == "" || strings.Contains(name, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		body, err := fs.ReadFile(assetsFS, "assets/fonts/"+name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "font/woff2")
+		w.Header().Set("Cache-Control",
+			"public, max-age=31536000, immutable")
 		_, _ = w.Write(body)
 	}
 }

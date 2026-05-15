@@ -8,12 +8,40 @@
  * <body> means "follow system."
  */
 
+/* Self-hosted woff2 font binaries — see ADR-014 local-first asset
+   policy. Two faces only; everything else falls back to the system
+   monospace. Fraunces is a variable serif (Latin subset). IBM Plex
+   Sans is a humanist grotesque (Latin subset). Both SIL OFL. */
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url(/console/assets/fonts/fraunces-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+                 U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F,
+                 U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+                 U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url(/console/assets/fonts/ibm-plex-sans-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+                 U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F,
+                 U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+                 U+FEFF, U+FFFD;
+}
+
 :root {
   --radius-tile:  10px;
   --radius-pill:  9999px;
 
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-               Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont,
+               "Segoe UI", "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
                "Liberation Mono", monospace;
 
@@ -482,4 +510,129 @@ a:hover { text-decoration: underline; }
 .console-event-data {
   max-width: 480px;
   word-break: break-all;
+}
+
+/*
+ * Display typography. Editorial-feeling display-serif on top-level
+ * h1 + brand mark + run id; body / table / labels stay on the
+ * sans grotesque. The font-feature-settings turn on `ss01` (slanted
+ * forms) and contextual alternates so the serif feels alive at large
+ * sizes without going decorative.
+ */
+.console-section-header h1,
+.console-tile header h2,
+.card-header h2,
+.console-brand .console-name {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-feature-settings: "ss01" on, "calt" on, "kern" on;
+  letter-spacing: -0.01em;
+}
+.console-section-header h1 {
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+/*
+ * Paper-grain background. Subtle SVG noise rendered to a base64
+ * data URL — keeps the asset count at the existing two CSS / JS
+ * bundles. Light theme = warm cream grain; dark theme = warm
+ * near-black with finer specks. opacity baked into the SVG so the
+ * overlay doesn't tint the colour underneath.
+ */
+body {
+  background-image:
+    radial-gradient(at 8% 12%, rgba(63, 83, 99, 0.04) 0,
+                    transparent 60%),
+    radial-gradient(at 92% 88%, rgba(168, 137, 80, 0.04) 0,
+                    transparent 50%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='5'/><feColorMatrix values='0 0 0 0 0.1  0 0 0 0 0.08  0 0 0 0 0.06  0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  background-blend-mode: multiply;
+}
+body[data-theme="dark"] {
+  background-image:
+    radial-gradient(at 12% 8%, rgba(122, 142, 157, 0.05) 0,
+                    transparent 65%),
+    radial-gradient(at 88% 92%, rgba(205, 177, 120, 0.04) 0,
+                    transparent 55%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' seed='9'/><feColorMatrix values='0 0 0 0 0.9  0 0 0 0 0.88  0 0 0 0 0.82  0 0 0 0.04 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  background-blend-mode: screen;
+}
+@media (prefers-color-scheme: dark) {
+  body:not([data-theme="light"]):not([data-theme="dark"]) {
+    background-image:
+      radial-gradient(at 12% 8%, rgba(122, 142, 157, 0.05) 0,
+                      transparent 65%),
+      radial-gradient(at 88% 92%, rgba(205, 177, 120, 0.04) 0,
+                      transparent 55%),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' seed='9'/><feColorMatrix values='0 0 0 0 0.9  0 0 0 0 0.88  0 0 0 0 0.82  0 0 0 0.04 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    background-blend-mode: screen;
+  }
+}
+
+/*
+ * Entry animation for SSE-patched rows. .row-enter is applied by the
+ * server-side template on the freshly-patched element. The keyframes
+ * fade the background-color from a low-opacity accent tint to
+ * transparent over ~600ms — paper-indigo at first, then back to
+ * surface. Opacity / transform stay tight (240ms) so the row looks
+ * arrived, not bouncy.
+ *
+ * Operators who prefer no motion get a static dropping-in via the
+ * prefers-reduced-motion override below.
+ */
+@keyframes rowEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px);
+    background-color: var(--accent-soft);
+  }
+  60% {
+    background-color: var(--accent-soft);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    background-color: transparent;
+  }
+}
+.row-enter {
+  animation: rowEnter 600ms ease-out both;
+  /* Stagger looks unnecessary for the row counts the UI shows; if
+     we ever do, target nth-of-type and add a 30ms delay. */
+}
+@media (prefers-reduced-motion: reduce) {
+  .row-enter {
+    animation: none;
+    background-color: transparent;
+  }
+}
+
+/*
+ * Editorial detail: drop cap on the first event of the timeline,
+ * a vertical rule on the run-detail lede. Both apply where the
+ * scope is narrow so the page doesn't shout.
+ */
+#run-events-body tr:first-of-type td:first-of-type::first-letter {
+  font-family: var(--font-display);
+  font-size: 1.1em;
+  letter-spacing: 0.04em;
+}
+.console-section-header .console-lede {
+  border-left: 2px solid var(--border);
+  padding-left: 0.65rem;
+  margin-top: 0.5rem;
+}
+
+/*
+ * Hide the "no rows" placeholder when an SSE prepend has put real
+ * rows ahead of it. CSS-only via :has() so reduced-motion + JS-off
+ * paths still work. Browsers without :has() (older Safari) get a
+ * slightly cluttered table — degrades gracefully.
+ */
+#runs-tbody:has(tr[id^="run-row-"]:not([id="run-row-empty"])) #run-row-empty {
+  display: none;
+}
+#run-events-body:has(tr[id^="run-event-row-"]) #run-events-empty {
+  display: none;
 }

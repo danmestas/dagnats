@@ -1,12 +1,13 @@
 {{define "content"}}{{$page := .Page}}{{with $page}}
 <section class="console-section"
-         data-signals="{runsWorkflow: '{{.Workflow}}', runsStatus: '{{.Status}}', runsRange: '{{.Range}}'}">
+         data-signals="{runsWorkflow: '{{.Workflow}}', runsStatus: '{{.Status}}', runsRange: '{{.Range}}'}"
+         data-init="@get('/console/sse/runs', {openWhenHidden: true})">
   <header class="console-section-header">
     <h1>Runs</h1>
     <p class="console-lede">{{.Total}} total. PR 3 ships live updates over SSE.</p>
   </header>
 
-  <form class="console-filter-bar" data-on:submit__prevent>
+  <form class="console-filter-bar" data-on:submit__prevent="$event.preventDefault()">
     <label class="console-field">
       <span>Workflow</span>
       <select class="select"

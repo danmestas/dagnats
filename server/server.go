@@ -286,7 +286,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	}
 	s.cfg.HTTPAddr = ln.Addr().String()
 
-	mountConsole(mux, s.cfg.HTTPAddr, s.svc)
+	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc)
 
 	s.httpSrv = &http.Server{Handler: mux}
 
@@ -497,7 +497,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 // and the loud startup log line is emitted here. Doing the gate at
 // mount time (rather than skipping the mount) keeps the route table
 // honest — every binary serves the same surface.
-func mountConsole(mux *http.ServeMux, httpAddr string, svc *api.Service) {
+func mountConsole(
+	mux *http.ServeMux, httpAddr string,
+	svc *api.Service, nc *nats.Conn,
+) {
 	if mux == nil {
 		panic("mountConsole: mux is nil")
 	}
@@ -529,7 +532,7 @@ func mountConsole(mux *http.ServeMux, httpAddr string, svc *api.Service) {
 		Password: cfg.Password,
 		Build:    "dev",
 		Logger:   logger,
-		Data:     console.NewAPIDataSource(svc),
+		Data:     console.NewAPIDataSource(svc, nc),
 	})
 	mux.Handle("/console/", handler)
 }

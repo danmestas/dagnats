@@ -1,0 +1,6 @@
+{{define "run-event-row"}}<tr id="run-event-row-{{.Index}}" class="row-enter">
+    <td class="console-mono">{{.Timestamp}}</td>
+    <td><span class="badge badge-outline">{{.Type}}</span></td>
+    <td class="console-mono">{{.StepID}}</td>
+    <td class="console-mono console-event-data">{{.DataPreview}}</td>
+  </tr>{{end}}

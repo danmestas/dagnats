@@ -1,6 +1,6 @@
 {{define "runs-tbody"}}<tbody id="runs-tbody">
   {{range .Rows}}
-  <tr>
+  <tr id="run-row-{{.RunID}}">
     <td class="console-mono"><a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a></td>
     <td><a href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a></td>
     <td>{{template "status-badge" .Status}}</td>
@@ -9,6 +9,6 @@
     <td>{{.Duration}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="6" class="console-empty">no runs match these filters</td></tr>
+  <tr id="run-row-empty"><td colspan="6" class="console-empty">no runs match these filters</td></tr>
   {{end}}
 </tbody>{{end}}

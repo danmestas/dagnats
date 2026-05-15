@@ -1,13 +1,18 @@
 /*
  * dagnats console — entry point.
  *
- * Imports Datastar (auto-initializes `data-*` attributes on load),
- * pulls in Basecoat's interactive components (dialogs, dropdowns, etc.),
- * and exposes any global hooks the console templates rely on.
+ * Importing `datastar.js` registers every attribute / action / watcher
+ * with the engine. Each `attribute()` call enqueues the plugin and
+ * schedules a setTimeout(0) flush that, on first invocation, also
+ * calls the engine's `apply()` to walk the DOM and wire every
+ * `data-*` attribute that landed in the static HTML. That auto-init
+ * is the path that wires `data-init`, `data-on:*`, etc.
  *
- * The build pipeline (esbuild) bundles this with `datastar.js` and
- * `basecoat.js` into a single `console.js`, which is gzipped and
- * embedded into the dagnats binary via `//go:embed`.
+ * The vendored bundle is patched to also assign `window.datastar` so
+ * the headless-Chrome smoke test can introspect bootstrap state. We
+ * do NOT call `apply()` ourselves — the engine's deferred apply is
+ * the one keyed on the `queuedAttributeNames` set, and an early
+ * external `apply()` would no-op against the cleared queue.
  */
 
 import "./datastar.js";

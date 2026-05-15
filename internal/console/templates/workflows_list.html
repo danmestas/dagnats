@@ -8,7 +8,7 @@
     </p>
   </header>
 
-  <form class="console-filter-bar" data-on:submit__prevent>
+  <form class="console-filter-bar" data-on:submit__prevent="$event.preventDefault()">
     <label class="console-field">
       <span>Filter by name</span>
       <input type="text"
