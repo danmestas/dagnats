@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/starfederation/datastar-go/datastar"
 )
 
 // Config carries the runtime state Mount needs to wire up the console.
@@ -230,7 +232,9 @@ func servePlainAsset(name, contentType string) http.HandlerFunc {
 // serveHeartbeat streams a Datastar PatchElements event at the
 // configured interval, exposing the current server time. The handler
 // returns when the client disconnects (r.Context().Done()) — that
-// branch is the proof point for SSE cleanup tests.
+// branch is the proof point for SSE cleanup tests. Wire format is
+// handled by the official Datastar Go SDK; we own the cadence and
+// the rendered fragment, the SDK owns the SSE framing.
 func serveHeartbeat(
 	w http.ResponseWriter, r *http.Request,
 	tmpl *template.Template, interval time.Duration,
@@ -249,11 +253,7 @@ func serveHeartbeat(
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	sse, err := newSSEWriter(w)
-	if err != nil {
-		http.Error(w, "sse unsupported", http.StatusInternalServerError)
-		return
-	}
+	sse := datastar.NewSSE(w, r)
 
 	if err := emitHeartbeat(sse, tmpl); err != nil {
 		// First write failure — client likely already gone. Nothing to
@@ -278,8 +278,12 @@ func serveHeartbeat(
 
 // emitHeartbeat renders the heartbeat fragment template and writes it
 // as one Datastar PatchElements event. Returns the first error so the
-// outer loop can exit cleanly on client disconnect.
-func emitHeartbeat(sse *sseWriter, tmpl *template.Template) error {
+// outer loop can exit cleanly on client disconnect. Multi-line HTML
+// is safe — the SDK frames each line as its own data: record per the
+// Datastar wire spec.
+func emitHeartbeat(
+	sse *datastar.ServerSentEventGenerator, tmpl *template.Template,
+) error {
 	if sse == nil {
 		panic("emitHeartbeat: sse is nil")
 	}

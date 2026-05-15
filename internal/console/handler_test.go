@@ -64,7 +64,8 @@ func TestServeDashboard_rendersLayoutAndNav(t *testing.T) {
 		`href="/console/assets/basecoat.css"`,
 		`href="/console/assets/app.css"`,
 		`src="/console/assets/console.js"`,
-		`data-on-load="@get('/console/sse/heartbeat')"`,
+		`data-init="@get('/console/sse/heartbeat', {openWhenHidden: true})"`,
+		`id="theme-toggle"`,
 	}
 	for _, sub := range wantSubs {
 		if !strings.Contains(body, sub) {

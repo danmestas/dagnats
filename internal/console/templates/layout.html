@@ -6,9 +6,26 @@
   <title>{{.Title}} — dagnats console</title>
   <link rel="stylesheet" href="/console/assets/basecoat.css">
   <link rel="stylesheet" href="/console/assets/app.css">
+  <script>
+    // Apply persisted theme before first paint to avoid the
+    // light → dark flash. app.js owns the toggle UI; this stub
+    // owns the early-render application only.
+    (function () {
+      try {
+        var t = localStorage.getItem("dagnats-console-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-pretheme", t);
+          document.addEventListener("DOMContentLoaded", function () {
+            document.body.setAttribute("data-theme", t);
+            document.documentElement.removeAttribute("data-pretheme");
+          });
+        }
+      } catch (_) {}
+    })();
+  </script>
   <script src="/console/assets/console.js" defer></script>
 </head>
-<body data-theme="eink">
+<body>
   <header class="console-header">
     <div class="console-header-inner">
       <a href="/console/" class="console-brand">
@@ -27,6 +44,12 @@
       <div class="console-actor">
         {{if .Actor.Display}}<span title="{{.Actor.Source}}">{{.Actor.Display}}</span>{{end}}
       </div>
+      <button type="button" id="theme-toggle" class="theme-toggle"
+              data-theme-mode="system"
+              aria-label="Theme: system (click to cycle)">
+        <span class="theme-toggle-icon" aria-hidden="true"></span>
+        <span class="theme-toggle-label">System</span>
+      </button>
     </div>
   </header>
   <main class="console-main">

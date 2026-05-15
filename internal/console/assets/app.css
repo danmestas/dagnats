@@ -1,26 +1,14 @@
 /*
  * dagnats console — custom styles layered on Basecoat.
  *
- * The e-ink palette lives as CSS custom properties on <body>. Subsequent
- * stylesheets and JS reference --bg / --surface / --text-primary / etc.
- * so a theme switch is a single attribute change on <body>.
+ * Both palettes are e-ink-flavored (warm cream / warm near-black, low
+ * saturation accents). The defaults follow the operator's OS preference
+ * via prefers-color-scheme; an explicit data-theme="light" or
+ * data-theme="dark" on <body> overrides. No data-theme attribute on
+ * <body> means "follow system."
  */
 
-:root,
-body[data-theme="eink"] {
-  --bg:               #F8F5EF;
-  --surface:          #FFFCF6;
-  --border:           #D6CFC0;
-  --text-primary:     #1F1B16;
-  --text-secondary:   #5A554C;
-  --accent:           #3F5363;
-
-  --status-completed: #6B7A56;
-  --status-running:   #A88950;
-  --status-failed:    #9A6052;
-  --status-skipped:   #807A6E;
-  --status-pending:   #5A6B7D;
-
+:root {
   --radius-tile:  10px;
   --radius-pill:  9999px;
 
@@ -28,6 +16,56 @@ body[data-theme="eink"] {
                Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
                "Liberation Mono", monospace;
+
+  /* Light palette — system default when prefers-color-scheme is light. */
+  --bg:               #F8F5EF;
+  --surface:          #FFFCF6;
+  --border:           #D6CFC0;
+  --text-primary:     #1F1B16;
+  --text-secondary:   #5A554C;
+  --accent:           #3F5363;
+  --accent-soft:      rgba(63, 83, 99, 0.08);
+
+  --status-completed: #6B7A56;
+  --status-running:   #A88950;
+  --status-failed:    #9A6052;
+  --status-skipped:   #807A6E;
+  --status-pending:   #5A6B7D;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:             #1A1814;
+    --surface:        #252220;
+    --border:         #3A3530;
+    --text-primary:   #E8E2D6;
+    --text-secondary: #9B968B;
+    --accent:         #7A8E9D;
+    --accent-soft:    rgba(122, 142, 157, 0.14);
+
+    --status-completed: #9CAA82;
+    --status-running:   #CDB178;
+    --status-failed:    #C18876;
+    --status-skipped:   #B5B0A4;
+    --status-pending:   #8A9BAD;
+  }
+}
+
+/* Operator-explicit overrides — beat the system preference. */
+body[data-theme="light"] {
+  --bg:               #F8F5EF;
+  --surface:          #FFFCF6;
+  --border:           #D6CFC0;
+  --text-primary:     #1F1B16;
+  --text-secondary:   #5A554C;
+  --accent:           #3F5363;
+  --accent-soft:      rgba(63, 83, 99, 0.08);
+
+  --status-completed: #6B7A56;
+  --status-running:   #A88950;
+  --status-failed:    #9A6052;
+  --status-skipped:   #807A6E;
+  --status-pending:   #5A6B7D;
 }
 
 body[data-theme="dark"] {
@@ -37,6 +75,7 @@ body[data-theme="dark"] {
   --text-primary:   #E8E2D6;
   --text-secondary: #9B968B;
   --accent:         #7A8E9D;
+  --accent-soft:    rgba(122, 142, 157, 0.14);
 
   --status-completed: #9CAA82;
   --status-running:   #CDB178;
@@ -102,7 +141,7 @@ a:hover { text-decoration: underline; }
 .console-nav a:hover { color: var(--text-primary); text-decoration: none; }
 .console-nav a.is-active {
   color: var(--text-primary);
-  background: rgba(63, 83, 99, 0.08);
+  background: var(--accent-soft);
 }
 
 .console-actor {
@@ -110,6 +149,37 @@ a:hover { text-decoration: underline; }
   color: var(--text-secondary);
   font-size: 0.9rem;
 }
+
+/* Theme toggle — cycles System → Light → Dark via JS in app.js. */
+.theme-toggle {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  line-height: 1;
+}
+.theme-toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+.theme-toggle-icon {
+  display: inline-block;
+  width: 0.9em;
+  text-align: center;
+  font-feature-settings: "tnum";
+}
+.theme-toggle[data-theme-mode="system"] .theme-toggle-icon::before { content: "◐"; }
+.theme-toggle[data-theme-mode="light"]  .theme-toggle-icon::before { content: "○"; }
+.theme-toggle[data-theme-mode="dark"]   .theme-toggle-icon::before { content: "●"; }
+.theme-toggle-label { letter-spacing: 0.02em; }
 
 .console-main {
   max-width: 1200px;
