@@ -134,7 +134,50 @@
       errLine.textContent = "type " + expect + " to confirm";
       return;
     }
-    pending.form.submit();
+    submitAction(pending.form, pending.actionType);
+  }
+
+  // submitAction posts the form via fetch so the response shapes the
+  // toast feedback. On success: dispatch console:toast with the body's
+  // toast payload, then redirect to the DLQ list (since the entry is
+  // gone). On failure: show an error toast in place.
+  function submitAction(form, actionType) {
+    if (!form) return;
+    var token = "";
+    var csrf = form.querySelector("input[name=csrf_token]");
+    if (csrf) token = csrf.value || "";
+    close();
+    fetch(form.action, {
+      method: "POST",
+      headers: {
+        "X-CSRF-Token": token,
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error(actionType + " failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      if (data && data.toast) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: data.toast,
+        }));
+      }
+      // Navigate back to the list — the entry is gone, the detail
+      // page would 404 on refresh.
+      setTimeout(function () { window.location = "/console/dlq"; }, 200);
+    }).catch(function (err) {
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: (err && err.message) ? err.message : actionType + " failed",
+        },
+      }));
+    });
   }
 
   document.querySelectorAll("[data-action-confirm]").forEach(function (btn) {

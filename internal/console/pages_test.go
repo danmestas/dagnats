@@ -48,12 +48,27 @@ type fakeDataSource struct {
 	discardCalls []uint64
 	replayErr    error
 	discardErr   error
+
+	// PR 5 additions: trigger toggle + recent firings + watch streams.
+	triggerFires    map[string][]TriggerFireRow
+	triggerSetCalls []triggerSetCall
+	triggerSetErr   error
+	triggerUpdates  chan TriggerUpdate
+	dlqUpdates      chan DLQUpdate
+}
+
+// triggerSetCall captures one SetTriggerEnabled invocation so tests can
+// assert against the call pattern.
+type triggerSetCall struct {
+	ID      string
+	Enabled bool
 }
 
 func newFakeDS() *fakeDataSource {
 	return &fakeDataSource{
-		events:     make(map[string][]api.RunEvent),
-		runHistory: make(map[string]chan HistoryEvent),
+		events:       make(map[string][]api.RunEvent),
+		runHistory:   make(map[string]chan HistoryEvent),
+		triggerFires: make(map[string][]TriggerFireRow),
 	}
 }
 
@@ -202,6 +217,80 @@ func (f *fakeDataSource) EmitAuditEvent(
 ) error {
 	f.auditEvents = append([]AuditEvent{evt}, f.auditEvents...)
 	return nil
+}
+
+func (f *fakeDataSource) SetTriggerEnabled(
+	_ context.Context, triggerID string, enabled bool,
+) error {
+	if triggerID == "" {
+		panic("fakeDataSource.SetTriggerEnabled: empty triggerID")
+	}
+	f.triggerSetCalls = append(f.triggerSetCalls,
+		triggerSetCall{ID: triggerID, Enabled: enabled})
+	if f.triggerSetErr != nil {
+		return f.triggerSetErr
+	}
+	for i := range f.triggers {
+		if f.triggers[i].ID == triggerID {
+			f.triggers[i].Enabled = enabled
+			return nil
+		}
+	}
+	return errNotFound("trigger", triggerID)
+}
+
+func (f *fakeDataSource) ListTriggerFires(
+	_ context.Context, triggerID string, limit int,
+) ([]TriggerFireRow, error) {
+	if triggerID == "" {
+		panic("fakeDataSource.ListTriggerFires: empty triggerID")
+	}
+	if limit <= 0 {
+		panic("fakeDataSource.ListTriggerFires: limit must be positive")
+	}
+	rows := f.triggerFires[triggerID]
+	out := make([]TriggerFireRow, 0, len(rows))
+	for i := range rows {
+		out = append(out, rows[i])
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeDataSource) WatchTriggers(
+	ctx context.Context,
+) (<-chan TriggerUpdate, error) {
+	if ctx == nil {
+		panic("fakeDataSource.WatchTriggers: ctx is nil")
+	}
+	if f.triggerUpdates != nil {
+		return f.triggerUpdates, nil
+	}
+	ch := make(chan TriggerUpdate)
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func (f *fakeDataSource) WatchDLQ(
+	ctx context.Context,
+) (<-chan DLQUpdate, error) {
+	if ctx == nil {
+		panic("fakeDataSource.WatchDLQ: ctx is nil")
+	}
+	if f.dlqUpdates != nil {
+		return f.dlqUpdates, nil
+	}
+	ch := make(chan DLQUpdate)
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, nil
 }
 
 func (f *fakeDataSource) WatchRunHistory(

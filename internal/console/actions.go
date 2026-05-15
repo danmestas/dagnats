@@ -3,9 +3,12 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/danmestas/dagnats/internal/trigger"
 )
 
 // actions.go owns the mutation endpoints PR 4 introduces: DLQ retry,
@@ -30,6 +33,153 @@ func writeReadOnly(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusMethodNotAllowed)
 	_, _ = w.Write([]byte(readOnlyJSONBody))
+}
+
+// triggerByID searches defs for a trigger with the given id. Lives
+// here next to the toggle handler that needs it; if other call sites
+// pick it up later the helper can move to triggers.go.
+func triggerByID(
+	defs []trigger.TriggerDef, id string,
+) (trigger.TriggerDef, bool) {
+	if id == "" {
+		panic("triggerByID: id is empty")
+	}
+	for _, t := range defs {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return trigger.TriggerDef{}, false
+}
+
+// dispatchTriggers routes /console/triggers/<id> and /<id>/<action>.
+// Action paths are POST; everything else falls through to the
+// trigger-detail page renderer.
+func dispatchTriggers(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("dispatchTriggers: w is nil")
+	}
+	if r == nil {
+		panic("dispatchTriggers: r is nil")
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/console/triggers/")
+	if rest == "" {
+		serveNotFound(w, r, ts, cfg)
+		return
+	}
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 1 {
+		servePageTriggerDetail(w, r, ts, cfg)
+		return
+	}
+	id, action := parts[0], parts[1]
+	switch action {
+	case "toggle":
+		handleTriggerToggle(w, r, cfg, id)
+	default:
+		serveNotFound(w, r, ts, cfg)
+	}
+}
+
+// handleTriggerToggle inverts the trigger's enabled bit and emits the
+// matching audit row. Same scaffold as DLQ actions: parse → check
+// ReadOnly → execute → audit → respond. The flip is "read current,
+// invert, write" — race-prone but the DLQ surface already accepts the
+// same risk and the operator action is idempotent under the audit log.
+func handleTriggerToggle(
+	w http.ResponseWriter, r *http.Request,
+	cfg Config, id string,
+) {
+	if w == nil {
+		panic("handleTriggerToggle: w is nil")
+	}
+	if r == nil {
+		panic("handleTriggerToggle: r is nil")
+	}
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if cfg.ReadOnly {
+		emitAuditBestEffort(r.Context(), cfg,
+			attemptOf(r, ActionTriggerDisable, id, OutcomeDenied,
+				map[string]any{"reason": "read_only"}))
+		writeReadOnly(w)
+		return
+	}
+	executeTriggerToggle(w, r, cfg, id)
+}
+
+// executeTriggerToggle runs the read-then-flip-then-write path,
+// emits the audit, and writes the response. Pulled out so the
+// outer handler stays at ≤70 lines under the project rule.
+func executeTriggerToggle(
+	w http.ResponseWriter, r *http.Request,
+	cfg Config, id string,
+) {
+	ds, ok := requireData(w, cfg, "trigger-toggle")
+	if !ok {
+		return
+	}
+	defs, err := ds.ListTriggers(r.Context())
+	if err != nil {
+		cfg.Logger.Error("console: trigger toggle list", "err", err)
+		http.Error(w, "lookup failed: "+err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	current, found := triggerByID(defs, id)
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	desired := !current.Enabled
+	action := actionFromToggle(desired)
+	if err := ds.SetTriggerEnabled(r.Context(), id, desired); err != nil {
+		cfg.Logger.Error("console: trigger toggle", "id", id, "err", err)
+		emitAuditBestEffort(r.Context(), cfg,
+			attemptOf(r, action, id, OutcomeFailed,
+				map[string]any{"error": err.Error()}))
+		http.Error(w, "toggle failed: "+err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	emitAuditBestEffort(r.Context(), cfg,
+		attemptOf(r, action, id, OutcomeSuccess,
+			map[string]any{"enabled": desired}))
+	writeActionOK(w, triggerToggleBody(id, desired))
+}
+
+// actionFromToggle picks the audit action constant for one toggle
+// direction. desired=true → enable; desired=false → disable.
+func actionFromToggle(desired bool) AuditAction {
+	if desired {
+		return ActionTriggerEnable
+	}
+	return ActionTriggerDisable
+}
+
+// triggerToggleBody returns the JSON response for a successful toggle.
+// Includes the new state so the client can update the pill in-place
+// without a refetch.
+func triggerToggleBody(id string, enabled bool) []byte {
+	state := "disabled"
+	verb := "Disabled"
+	if enabled {
+		state = "enabled"
+		verb = "Enabled"
+	}
+	const tmpl = `{"ok":true,"action":"toggle","id":%q,"enabled":%t,` +
+		`"state":%q,"toast":{"level":"info","message":"%s trigger %s"}}`
+	return []byte(fmt.Sprintf(tmpl, id, enabled, state, verb, id))
 }
 
 // dispatchDLQ routes /console/dlq/<seq> and /console/dlq/<seq>/<action>.
@@ -85,7 +235,7 @@ func handleDLQRetry(
 	}
 	if cfg.ReadOnly {
 		emitAuditBestEffort(r.Context(), cfg,
-			actionAttempt(r, "dlq.retry", seqStr, "denied",
+			attemptOf(r, ActionDLQRetry, seqStr, OutcomeDenied,
 				map[string]any{"reason": "read_only"}))
 		writeReadOnly(w)
 		return
@@ -102,7 +252,7 @@ func handleDLQRetry(
 	if err := ds.ReplayDeadLetter(r.Context(), seq); err != nil {
 		cfg.Logger.Error("console: dlq replay", "seq", seq, "err", err)
 		emitAuditBestEffort(r.Context(), cfg,
-			actionAttempt(r, "dlq.retry", seqStr, "failed",
+			attemptOf(r, ActionDLQRetry, seqStr, OutcomeFailed,
 				map[string]any{"error": err.Error()}))
 		http.Error(w, "retry failed: "+err.Error(),
 			http.StatusInternalServerError)
@@ -119,10 +269,18 @@ func handleDLQRetry(
 		data["discard_warning"] = discardErr.Error()
 	}
 	emitAuditBestEffort(r.Context(), cfg,
-		actionAttempt(r, "dlq.retry", seqStr, "success", data))
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"ok":true}`))
+		attemptOf(r, ActionDLQRetry, seqStr, OutcomeSuccess, data))
+	writeActionOK(w, retrySuccessBody(seq))
+}
+
+// retrySuccessBody returns the JSON body for a successful retry.
+// Includes the discarded sequence so the client toast can announce
+// what disappeared from the list.
+func retrySuccessBody(seq uint64) []byte {
+	const tmpl = `{"ok":true,"action":"retry","seq":%d,` +
+		`"toast":{"level":"info","message":"Retry queued — original ` +
+		`DLQ entry #%d cleared"}}`
+	return []byte(fmt.Sprintf(tmpl, seq, seq))
 }
 
 // errAlreadyGone is a marker for the discard-after-retry path. The
@@ -149,7 +307,7 @@ func handleDLQDiscard(
 	}
 	if cfg.ReadOnly {
 		emitAuditBestEffort(r.Context(), cfg,
-			actionAttempt(r, "dlq.discard", seqStr, "denied",
+			attemptOf(r, ActionDLQDiscard, seqStr, OutcomeDenied,
 				map[string]any{"reason": "read_only"}))
 		writeReadOnly(w)
 		return
@@ -166,27 +324,57 @@ func handleDLQDiscard(
 	if err := ds.DiscardDeadLetter(r.Context(), seq); err != nil {
 		cfg.Logger.Error("console: dlq discard", "seq", seq, "err", err)
 		emitAuditBestEffort(r.Context(), cfg,
-			actionAttempt(r, "dlq.discard", seqStr, "failed",
+			attemptOf(r, ActionDLQDiscard, seqStr, OutcomeFailed,
 				map[string]any{"error": err.Error()}))
 		http.Error(w, "discard failed: "+err.Error(),
 			http.StatusInternalServerError)
 		return
 	}
 	emitAuditBestEffort(r.Context(), cfg,
-		actionAttempt(r, "dlq.discard", seqStr, "success", nil))
+		attemptOf(r, ActionDLQDiscard, seqStr, OutcomeSuccess, nil))
+	writeActionOK(w, discardSuccessBody(seq))
+}
+
+// discardSuccessBody returns the JSON body for a successful discard.
+func discardSuccessBody(seq uint64) []byte {
+	const tmpl = `{"ok":true,"action":"discard","seq":%d,` +
+		`"toast":{"level":"info","message":"Entry #%d discarded"}}`
+	return []byte(fmt.Sprintf(tmpl, seq, seq))
+}
+
+// writeActionOK is the common 200-OK + JSON write path for mutation
+// handlers. Centralising the response shape keeps every action's
+// success body shaped the same way, which the client-side toast wire
+// also depends on.
+func writeActionOK(w http.ResponseWriter, body []byte) {
+	if w == nil {
+		panic("writeActionOK: w is nil")
+	}
+	if len(body) == 0 {
+		panic("writeActionOK: body is empty")
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"ok":true}`))
+	_, _ = w.Write(body)
 }
 
 // actionAttempt returns a populated AuditEvent for one operator
 // action. Pulled out so the action handlers stay readable.
+//
+// The string-action overload exists for legacy paths that haven't
+// migrated to the typed constants yet. Prefer attemptOf for new code.
 func actionAttempt(
 	r *http.Request, action, target, outcome string,
 	data map[string]any,
 ) AuditEvent {
 	if r == nil {
 		panic("actionAttempt: r is nil")
+	}
+	if action == "" {
+		panic("actionAttempt: action is empty")
+	}
+	if outcome == "" {
+		panic("actionAttempt: outcome is empty")
 	}
 	actor, _ := ActorFrom(r.Context())
 	return AuditEvent{
@@ -197,6 +385,26 @@ func actionAttempt(
 		Outcome: outcome,
 		Data:    data,
 	}
+}
+
+// attemptOf is the typed-constants entry point. Every new call site
+// builds AuditEvents through this function rather than the legacy
+// string-arg actionAttempt. Behaviour is identical; the typed
+// signature makes the constants table the single source of truth.
+func attemptOf(
+	r *http.Request, action AuditAction, target string,
+	outcome AuditOutcome, data map[string]any,
+) AuditEvent {
+	if r == nil {
+		panic("attemptOf: r is nil")
+	}
+	if action == "" {
+		panic("attemptOf: action is empty")
+	}
+	if outcome == "" {
+		panic("attemptOf: outcome is empty")
+	}
+	return actionAttempt(r, action.String(), target, outcome.String(), data)
 }
 
 // emitAuditBestEffort writes one audit event via the configured

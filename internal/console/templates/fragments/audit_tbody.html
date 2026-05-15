@@ -5,7 +5,9 @@
     <td class="console-mono" title="{{.Time}}">{{.TimeRel}}</td>
     <td>{{.Actor}}</td>
     <td class="console-mono">{{.Action}}</td>
-    <td class="console-mono">{{.Target}}</td>
+    <td class="console-mono">
+      {{if .TargetLink}}<a href="{{.TargetLink}}">{{.Target}}</a>{{else}}{{.Target}}{{end}}
+    </td>
     <td>
       <span class="badge {{if eq .Outcome "success"}}badge-completed{{else if eq .Outcome "denied"}}badge-skipped{{else}}badge-failed{{end}}">
         {{.Outcome}}

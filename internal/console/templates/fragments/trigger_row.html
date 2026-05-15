@@ -1,0 +1,22 @@
+{{define "trigger-row"}}
+<tr id="trigger-row-{{.Row.ID}}"
+    {{if .Fresh}}data-fresh="true"{{end}}>
+  <td>
+    <span class="trigger-icon" data-kind="{{.Row.Kind}}" aria-hidden="true">{{triggerKindGlyph .Row.Kind}}</span>
+    <span class="badge badge-outline">{{.Row.Kind}}</span>
+  </td>
+  <td class="console-mono">
+    <a href="/console/triggers/{{.Row.ID}}">{{.Row.ID}}</a>
+  </td>
+  <td class="console-mono">
+    {{if .Row.Workflow}}<a href="/console/workflows/{{.Row.Workflow}}">{{.Row.Workflow}}</a>{{else}}<span class="muted">&mdash;</span>{{end}}
+  </td>
+  <td class="console-mono">{{.Row.Target}}</td>
+  <td>
+    <span class="badge {{if .Row.Enabled}}badge-completed{{else}}badge-skipped{{end}}">
+      <span class="status-icon" aria-hidden="true">{{.Row.StatusIcon}}</span>
+      {{.Row.StatusLabel}}
+    </span>
+  </td>
+</tr>
+{{end}}

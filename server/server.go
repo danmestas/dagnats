@@ -532,6 +532,14 @@ func mountConsole(
 		printStep(os.Stderr, "console: read-only mode active "+
 			"(CONSOLE_READ_ONLY=true); mutations refused")
 	}
+	if _, generated, err := console.LoadCSRFSecretFromEnv(); err != nil {
+		printStep(os.Stderr, "console: CSRF secret load failed: "+
+			err.Error())
+	} else if generated && mode != console.AuthLoopback {
+		printStep(os.Stderr, "console: CONSOLE_CSRF_SECRET not set; "+
+			"using random secret (restarts will rotate it). "+
+			"Set the env var for stable tokens across restarts.")
+	}
 	handler := console.Mount(console.Config{
 		HTTPAddr: httpAddr,
 		AuthMode: mode,

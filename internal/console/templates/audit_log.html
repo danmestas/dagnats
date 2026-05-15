@@ -17,9 +17,18 @@
       <span>Action</span>
       <select class="select" name="action">
         <option value=""{{if eq .ActionFilter ""}} selected{{end}}>any</option>
-        <option value="dlq.retry"{{if eq .ActionFilter "dlq.retry"}} selected{{end}}>dlq.retry</option>
-        <option value="dlq.discard"{{if eq .ActionFilter "dlq.discard"}} selected{{end}}>dlq.discard</option>
-        <option value="trigger.toggle"{{if eq .ActionFilter "trigger.toggle"}} selected{{end}}>trigger.toggle</option>
+        {{range .Actions}}
+        <option value="{{.}}"{{if eq $page.ActionFilter (printf "%s" .)}} selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="console-field">
+      <span>Range</span>
+      <select class="select" name="range" onchange="this.form.submit()">
+        <option value=""{{if eq .RangeFilter ""}} selected{{end}}>all</option>
+        <option value="1h"{{if eq .RangeFilter "1h"}} selected{{end}}>last hour</option>
+        <option value="24h"{{if eq .RangeFilter "24h"}} selected{{end}}>last 24h</option>
+        <option value="7d"{{if eq .RangeFilter "7d"}} selected{{end}}>last 7 days</option>
       </select>
     </label>
     <button type="submit" class="btn">Filter</button>

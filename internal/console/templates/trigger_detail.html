@@ -14,7 +14,8 @@
       </h1>
       <p class="console-lede">
         <span class="badge badge-outline">{{.Kind}}</span>
-        <span class="badge {{if .Enabled}}badge-completed{{else}}badge-skipped{{end}}">
+        <span id="trigger-status-pill"
+              class="badge {{if .Enabled}}badge-completed{{else}}badge-skipped{{end}}">
           <span class="status-icon" aria-hidden="true">{{.StatusIcon}}</span>
           {{.StatusLabel}}
         </span>
@@ -39,6 +40,29 @@
           <div><dt>Next fire</dt><dd>{{.NextFireText}}</dd></div>
         </dl>
         <pre class="console-pre"><code>{{.ConfigJSON}}</code></pre>
+      </div>
+    </article>
+
+    <article class="card">
+      <header class="card-header"><h2>Operator actions</h2></header>
+      <div class="card-body">
+        <p class="muted" style="margin-top: 0;">
+          {{if .Enabled}}
+          Disable the trigger to stop new firings. Existing runs are unaffected.
+          {{else}}
+          Enable the trigger to resume firings on its source.
+          {{end}}
+          {{if .ReadOnly}}<strong>Console is read-only;</strong> actions are disabled.{{end}}
+        </p>
+        <button type="button"
+                id="trigger-toggle-btn"
+                class="btn {{if .Enabled}}btn-destructive{{else}}btn-restorative{{end}}"
+                data-trigger-id="{{.ID}}"
+                data-trigger-current="{{.Enabled}}"
+                data-csrf="{{.CSRFToken}}"
+                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to toggle triggers."{{end}}>
+          {{if .Enabled}}Disable trigger{{else}}Enable trigger{{end}}
+        </button>
       </div>
     </article>
 
@@ -73,7 +97,67 @@
       </div>
     </article>
 
-    <p><a class="btn btn-outline" href="/console/triggers">← back to triggers</a></p>
+    <p><a class="btn btn-outline" href="/console/triggers">&larr; back to triggers</a></p>
   {{end}}
 </section>
+
+<script>
+(function () {
+  // Trigger toggle: POST to /console/triggers/<id>/toggle, then patch
+  // the pill + button inline. Toast wiring is owned by the central
+  // console:toast bus; this script just dispatches.
+  var btn = document.getElementById("trigger-toggle-btn");
+  if (!btn || btn.hasAttribute("disabled")) return;
+  btn.addEventListener("click", function () {
+    var id = btn.getAttribute("data-trigger-id");
+    var csrf = btn.getAttribute("data-csrf") || "";
+    var orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "...";
+    fetch("/console/triggers/" + encodeURIComponent(id) + "/toggle", {
+      method: "POST",
+      headers: {
+        "X-CSRF-Token": csrf,
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("toggle failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      var enabled = !!data.enabled;
+      btn.setAttribute("data-trigger-current", enabled);
+      btn.textContent = enabled ? "Disable trigger" : "Enable trigger";
+      btn.className = "btn " + (enabled ? "btn-destructive" : "btn-restorative");
+      btn.disabled = false;
+      var pill = document.getElementById("trigger-status-pill");
+      if (pill) {
+        pill.className = "badge " + (enabled ? "badge-completed" : "badge-skipped");
+        pill.innerHTML =
+          '<span class="status-icon" aria-hidden="true">' +
+          (enabled ? "&check;" : "&oslash;") + '</span> ' +
+          (enabled ? "enabled" : "disabled");
+      }
+      if (data.toast) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: data.toast,
+        }));
+      }
+    }).catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = orig;
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: (err && err.message) ? err.message : "toggle failed",
+        },
+      }));
+    });
+  });
+})();
+</script>
 {{end}}{{end}}

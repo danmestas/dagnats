@@ -17,6 +17,8 @@ import "embed"
 //go:embed assets/uplot.min.js.gz
 //go:embed assets/app.css
 //go:embed assets/sources/connection-state.js
+//go:embed assets/sources/toast.js
+//go:embed assets/sources/count-chip.js
 //go:embed assets/fonts/fraunces-latin.woff2
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
 var assetsFS embed.FS
@@ -49,4 +51,6 @@ var assetsFS embed.FS
 //go:embed templates/fragments/dlq_tbody.html
 //go:embed templates/fragments/audit_tbody.html
 //go:embed templates/fragments/connection_pill.html
+//go:embed templates/fragments/trigger_row.html
+//go:embed templates/fragments/dlq_row.html
 var templatesFS embed.FS
