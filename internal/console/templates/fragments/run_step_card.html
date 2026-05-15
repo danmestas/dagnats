@@ -1,0 +1,14 @@
+{{define "run-step-card"}}<div id="step-card-{{.ID}}" class="console-step-card status-{{.Status}}{{if .Skipped}} is-skipped{{end}} row-enter">
+            <header>
+              <span class="console-step-icon">{{.Icon}}</span>
+              <span class="console-step-id">{{.ID}}</span>
+            </header>
+            <dl class="console-deflist">
+              <div><dt>status</dt><dd>{{.Status}}</dd></div>
+              <div><dt>attempts</dt><dd>{{.Attempts}}</dd></div>
+              {{if .Duration}}<div><dt>duration</dt><dd>{{.Duration}}</dd></div>{{end}}
+            </dl>
+            {{if .HasError}}
+            <p class="console-step-error">{{.ErrorMsg}}</p>
+            {{end}}
+          </div>{{end}}

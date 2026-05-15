@@ -36,15 +36,18 @@ import (
 // control over what the console renders. Mutation helpers (addX)
 // keep test setup verbose but transparent.
 type fakeDataSource struct {
-	workflows []dag.WorkflowDef
-	runs      []dag.WorkflowRun
-	events    map[string][]api.RunEvent
-	triggers  []trigger.TriggerDef
+	workflows  []dag.WorkflowDef
+	runs       []dag.WorkflowRun
+	events     map[string][]api.RunEvent
+	triggers   []trigger.TriggerDef
+	runUpdates chan RunUpdate
+	runHistory map[string]chan HistoryEvent
 }
 
 func newFakeDS() *fakeDataSource {
 	return &fakeDataSource{
-		events: make(map[string][]api.RunEvent),
+		events:     make(map[string][]api.RunEvent),
+		runHistory: make(map[string]chan HistoryEvent),
 	}
 }
 
@@ -108,6 +111,48 @@ func (f *fakeDataSource) ListTriggers(
 	_ context.Context,
 ) ([]trigger.TriggerDef, error) {
 	return append([]trigger.TriggerDef{}, f.triggers...), nil
+}
+
+// WatchRuns and WatchRunHistory let the fake satisfy the streaming
+// surface PR 3 added. The default fake returns a static, never-firing
+// channel; tests that exercise the SSE handlers (streams_test.go)
+// supply a fake.runUpdates / fake.runHistory channel they own and
+// drive directly.
+func (f *fakeDataSource) WatchRuns(
+	ctx context.Context,
+) (<-chan RunUpdate, error) {
+	if ctx == nil {
+		panic("fakeDataSource.WatchRuns: ctx is nil")
+	}
+	if f.runUpdates != nil {
+		return f.runUpdates, nil
+	}
+	ch := make(chan RunUpdate)
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func (f *fakeDataSource) WatchRunHistory(
+	ctx context.Context, runID string, _ uint64,
+) (<-chan HistoryEvent, error) {
+	if ctx == nil {
+		panic("fakeDataSource.WatchRunHistory: ctx is nil")
+	}
+	if runID == "" {
+		panic("fakeDataSource.WatchRunHistory: runID is empty")
+	}
+	if ch, ok := f.runHistory[runID]; ok {
+		return ch, nil
+	}
+	ch := make(chan HistoryEvent)
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, nil
 }
 
 type stringError string

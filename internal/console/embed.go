@@ -16,6 +16,8 @@ import "embed"
 //go:embed assets/basecoat.css.gz
 //go:embed assets/uplot.min.js.gz
 //go:embed assets/app.css
+//go:embed assets/fonts/fraunces-latin.woff2
+//go:embed assets/fonts/ibm-plex-sans-latin.woff2
 var assetsFS embed.FS
 
 // templatesFS carries every Go html/template file the console renders.
@@ -33,4 +35,7 @@ var assetsFS embed.FS
 //go:embed templates/fragments/runs_tbody.html
 //go:embed templates/fragments/status_badge.html
 //go:embed templates/fragments/pager.html
+//go:embed templates/fragments/run_row.html
+//go:embed templates/fragments/run_event_row.html
+//go:embed templates/fragments/run_step_card.html
 var templatesFS embed.FS

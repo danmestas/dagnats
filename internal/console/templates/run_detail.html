@@ -1,5 +1,6 @@
 {{define "content"}}{{with .Page}}
-<section class="console-section">
+<section class="console-section"
+         data-init="@get('/console/sse/runs/{{.RunID}}', {openWhenHidden: true})">
   {{if .NotFound}}
     <header class="console-section-header">
       <h1>Run {{.RunIDShort}}</h1>
@@ -11,7 +12,7 @@
       <h1>Run <span class="console-mono">{{.RunIDShort}}</span></h1>
       <p class="console-lede">
         Workflow <a href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a>
-        — {{template "status-badge" .Status}}
+        — <span id="run-detail-status">{{template "status-badge" .Status}}</span>
         — started <span class="console-mono">{{.StartedAt}}</span>
         — duration {{.Duration}}
         — trigger <span class="badge badge-outline">{{.TriggerKind}}</span>
@@ -30,7 +31,7 @@
       <div class="card-body">
         <div class="console-step-grid">
           {{range .Steps}}
-          <div class="console-step-card status-{{.Status}}{{if .Skipped}} is-skipped{{end}}">
+          <div id="step-card-{{.ID}}" class="console-step-card status-{{.Status}}{{if .Skipped}} is-skipped{{end}}">
             <header>
               <span class="console-step-icon">{{.Icon}}</span>
               <span class="console-step-id">{{.ID}}</span>
@@ -52,25 +53,23 @@
     <article class="card" id="run-detail-events">
       <header class="card-header"><h2>Event timeline</h2></header>
       <div class="card-body">
-        {{if .Events}}
         <table class="table console-table">
           <thead>
             <tr><th>Time</th><th>Event</th><th>Step</th><th>Data</th></tr>
           </thead>
-          <tbody>
+          <tbody id="run-events-body">
             {{range .Events}}
-            <tr>
+            <tr id="run-event-row-{{.Index}}">
               <td class="console-mono">{{.Timestamp}}</td>
               <td><span class="badge badge-outline">{{.Type}}</span></td>
               <td class="console-mono">{{.StepID}}</td>
               <td class="console-mono console-event-data">{{.DataPreview}}</td>
             </tr>
+            {{else}}
+            <tr id="run-events-empty"><td colspan="4" class="console-empty">no events recorded</td></tr>
             {{end}}
           </tbody>
         </table>
-        {{else}}
-        <p class="console-empty">no events recorded</p>
-        {{end}}
       </div>
     </article>
 
