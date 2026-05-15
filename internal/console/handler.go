@@ -40,6 +40,27 @@ type Config struct {
 	// to render mutation buttons as visible-but-disabled with a
 	// tooltip explaining the env var that flipped them off.
 	ReadOnly bool
+
+	// DLQSoftDiscard, when true, routes DLQ discard through the
+	// in-memory tombstone store: the JetStream entry stays in place
+	// until the undo window expires. The Bus, when non-nil, is the
+	// event channel mutation handlers publish to so SSE streams can
+	// patch rows in/out without a refetch. Both are wired by
+	// server.go at startup; tests opt in with helper builders.
+	DLQSoftDiscard bool
+	tomb           *dlqTombstoneStore
+	bus            *eventBusBinding
+}
+
+// tombstones returns the configured tombstone store. Internal helper —
+// not exported because external callers shouldn't reach into Config's
+// lazily-allocated state. The lazy allocation pattern lets tests
+// opt into soft-discard without rewriting their config builders.
+func (c *Config) tombstones() *dlqTombstoneStore {
+	if c == nil {
+		return nil
+	}
+	return c.tomb
 }
 
 const defaultHeartbeatInterval = 5 * time.Second
@@ -130,9 +151,29 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			dispatchDLQ(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/ops",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageOpsIndex(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/ops/workers",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageWorkers(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/ops/leases",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageLeases(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/ops/kv",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageKVInspector(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/ops/audit",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageAuditLog(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/api/dag/static/",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageDAGStatic(w, r, cfg)
 		})
 	mux.HandleFunc("/console/assets/console.js", serveGzAsset("console.js.gz",
 		"application/javascript; charset=utf-8"))
@@ -269,6 +310,10 @@ var pageContentFiles = map[string]string{
 	"dlq-list":        "templates/dlq_list.html",
 	"dlq-detail":      "templates/dlq_detail.html",
 	"audit-log":       "templates/audit_log.html",
+	"ops-index":       "templates/ops_index.html",
+	"ops-workers":     "templates/ops_workers.html",
+	"ops-leases":      "templates/ops_leases.html",
+	"ops-kv":          "templates/ops_kv.html",
 	"not-found":       "templates/not_found.html",
 }
 

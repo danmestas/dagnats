@@ -210,9 +210,68 @@ func dispatchDLQ(
 		handleDLQRetry(w, r, cfg, seqStr)
 	case "discard":
 		handleDLQDiscard(w, r, cfg, seqStr)
+	case "undo-discard":
+		handleDLQUndoDiscard(w, r, cfg, seqStr)
 	default:
 		serveNotFound(w, r, ts, cfg)
 	}
+}
+
+// handleDLQUndoDiscard reverses a recent soft-discard. The undo token
+// comes in via the X-Undo-Token header (the toast.js wire format).
+// Inside the grace window the entry is restored (nothing actually
+// happened to it yet — discard was soft); past the window the call is
+// rejected with 410 Gone and an audit row records the late attempt.
+func handleDLQUndoDiscard(
+	w http.ResponseWriter, r *http.Request,
+	cfg Config, seqStr string,
+) {
+	if w == nil {
+		panic("handleDLQUndoDiscard: w is nil")
+	}
+	if r == nil {
+		panic("handleDLQUndoDiscard: r is nil")
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if cfg.ReadOnly {
+		emitAuditBestEffort(r.Context(), cfg,
+			attemptOf(r, ActionDLQUndoDiscard, seqStr, OutcomeDenied,
+				map[string]any{"reason": "read_only"}))
+		writeReadOnly(w)
+		return
+	}
+	seq, err := parseDLQSequence(seqStr)
+	if err != nil {
+		http.Error(w, "invalid sequence", http.StatusBadRequest)
+		return
+	}
+	token := r.Header.Get("X-Undo-Token")
+	if token == "" {
+		http.Error(w, "missing undo token", http.StatusBadRequest)
+		return
+	}
+	tomb := cfg.tombstones()
+	if tomb == nil || !tomb.Undo(seq, token) {
+		emitAuditBestEffort(r.Context(), cfg,
+			attemptOf(r, ActionDLQUndoDiscard, seqStr, OutcomeFailed,
+				map[string]any{"reason": "expired_or_invalid"}))
+		http.Error(w, "undo window closed", http.StatusGone)
+		return
+	}
+	emitAuditBestEffort(r.Context(), cfg,
+		attemptOf(r, ActionDLQUndoDiscard, seqStr, OutcomeSuccess, nil))
+	writeActionOK(w, undoSuccessBody(seq))
+}
+
+// undoSuccessBody returns the JSON body for a successful undo.
+func undoSuccessBody(seq uint64) []byte {
+	const tmpl = `{"ok":true,"action":"undo-discard","seq":%d,` +
+		`"toast":{"level":"info","message":"Discard cancelled for #%d"}}`
+	return []byte(fmt.Sprintf(tmpl, seq, seq))
 }
 
 // handleDLQRetry executes a POST /console/dlq/<seq>/retry. ReadOnly
@@ -270,6 +329,7 @@ func handleDLQRetry(
 	}
 	emitAuditBestEffort(r.Context(), cfg,
 		attemptOf(r, ActionDLQRetry, seqStr, OutcomeSuccess, data))
+	publishDLQRemoval(cfg, seqStr)
 	writeActionOK(w, retrySuccessBody(seq))
 }
 
@@ -288,8 +348,25 @@ func retrySuccessBody(seq uint64) []byte {
 // cleanup, and the resulting "no message" error is benign.
 var errAlreadyGone = errors.New("dlq entry already gone")
 
-// handleDLQDiscard executes a POST /console/dlq/<seq>/discard. Removes
-// the DLQ entry permanently without re-injecting.
+// publishDLQRemoval emits a row.remove event on the event bus so any
+// open SSE stream on /console/sse/dlq patches the row out without
+// the operator having to refresh. Best-effort — no bus means no
+// event, mutation succeeded anyway.
+func publishDLQRemoval(cfg Config, seqStr string) {
+	if cfg.bus == nil {
+		return
+	}
+	cfg.bus.publish(busEventDLQRemove(seqStr))
+}
+
+// handleDLQDiscard executes a POST /console/dlq/<seq>/discard. With
+// the soft-discard tombstone store configured (default), the entry is
+// flagged as pending-removal and an undo token is issued. The toast
+// shows an Undo button; a sweeper goroutine permanently removes the
+// entry once the window elapses without an undo POST.
+//
+// Without the tombstone store (legacy path), discard removes the
+// entry immediately — matches PR 4 behaviour for back-compat.
 func handleDLQDiscard(
 	w http.ResponseWriter, r *http.Request,
 	cfg Config, seqStr string,
@@ -321,6 +398,43 @@ func handleDLQDiscard(
 	if !ok {
 		return
 	}
+	if tomb := cfg.tombstones(); tomb != nil {
+		executeDLQSoftDiscard(w, r, cfg, ds, seq, seqStr, tomb)
+		return
+	}
+	executeDLQHardDiscard(w, r, cfg, ds, seq, seqStr)
+}
+
+// executeDLQSoftDiscard tombstones the entry and returns the undo
+// token. The audit row records "outcome=success, soft=true" so the
+// log makes the deferred removal visible.
+func executeDLQSoftDiscard(
+	w http.ResponseWriter, r *http.Request, cfg Config,
+	ds DataSource, seq uint64, seqStr string,
+	tomb *dlqTombstoneStore,
+) {
+	if ds == nil {
+		panic("executeDLQSoftDiscard: ds is nil")
+	}
+	if tomb == nil {
+		panic("executeDLQSoftDiscard: tomb is nil")
+	}
+	token, expires := tomb.Tombstone(seq)
+	emitAuditBestEffort(r.Context(), cfg,
+		attemptOf(r, ActionDLQDiscard, seqStr, OutcomeSuccess,
+			map[string]any{"soft": true, "expires": expires.UTC()}))
+	writeActionOK(w, softDiscardBody(seq, token))
+}
+
+// executeDLQHardDiscard runs the legacy non-undoable discard for
+// installations that haven't enabled the tombstone store.
+func executeDLQHardDiscard(
+	w http.ResponseWriter, r *http.Request, cfg Config,
+	ds DataSource, seq uint64, seqStr string,
+) {
+	if ds == nil {
+		panic("executeDLQHardDiscard: ds is nil")
+	}
 	if err := ds.DiscardDeadLetter(r.Context(), seq); err != nil {
 		cfg.Logger.Error("console: dlq discard", "seq", seq, "err", err)
 		emitAuditBestEffort(r.Context(), cfg,
@@ -335,11 +449,23 @@ func handleDLQDiscard(
 	writeActionOK(w, discardSuccessBody(seq))
 }
 
-// discardSuccessBody returns the JSON body for a successful discard.
+// discardSuccessBody returns the JSON body for a hard discard.
 func discardSuccessBody(seq uint64) []byte {
 	const tmpl = `{"ok":true,"action":"discard","seq":%d,` +
 		`"toast":{"level":"info","message":"Entry #%d discarded"}}`
 	return []byte(fmt.Sprintf(tmpl, seq, seq))
+}
+
+// softDiscardBody returns the JSON body for a soft discard. The toast
+// fields carry the undo affordance: undoToken pinned to /undo-discard,
+// undoHref the target POST path. The front-end renders an Undo button
+// that holds the message visible for the 5-second window.
+func softDiscardBody(seq uint64, token string) []byte {
+	const tmpl = `{"ok":true,"action":"discard","seq":%d,` +
+		`"toast":{"level":"info",` +
+		`"message":"Discarded #%d — undo within 5s",` +
+		`"undoToken":%q,"undoHref":"/console/dlq/%d/undo-discard"}}`
+	return []byte(fmt.Sprintf(tmpl, seq, seq, token, seq))
 }
 
 // writeActionOK is the common 200-OK + JSON write path for mutation

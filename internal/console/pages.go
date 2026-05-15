@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html/template"
 	"net/http"
 	"sort"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/console/dagviz"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
 
@@ -301,6 +304,12 @@ type WorkflowDetailView struct {
 	Triggers       []TriggerLine
 	RecentRuns     []RunRow
 	NotFound       bool
+	// DAGSVG is the pre-rendered inline SVG for the static DAG
+	// visualisation. Empty when the workflow has 0 steps or layout
+	// failed; DAGFallback carries a human-readable explanation in
+	// that case.
+	DAGSVG      template.HTML
+	DAGFallback string
 }
 
 // TriggerLine is one trigger entry under a workflow. The kind/target
@@ -371,7 +380,7 @@ func buildWorkflowDetail(
 		}
 	}
 	warnings := dag.ValidateRespondReachability(def, hasHTTP)
-	return WorkflowDetailView{
+	view := WorkflowDetailView{
 		Name:       name,
 		Version:    def.Version,
 		Definition: string(defJSON),
@@ -379,6 +388,48 @@ func buildWorkflowDetail(
 		Triggers:   attached,
 		RecentRuns: toRunRows(runs),
 	}
+	view.DAGSVG, view.DAGFallback = renderStaticDAG(def)
+	return view
+}
+
+// renderStaticDAG returns the SVG + an optional fallback string for
+// the workflow-detail header. Pure projection — failures are converted
+// to readable text so the page still renders. Imports kept local so
+// pages.go doesn't pull dagviz into other call sites.
+func renderStaticDAG(def dag.WorkflowDef) (template.HTML, string) {
+	body, err := dagviz.Render(def, nil)
+	if err != nil {
+		switch {
+		case errors.Is(err, dagviz.ErrCycle):
+			return "", "Workflow definition has a cycle — DAG omitted."
+		case errors.Is(err, dagviz.ErrTooManySteps):
+			return "", "Workflow exceeds 30-step visualisation cap — view list below."
+		}
+		return "", "DAG visualisation unavailable."
+	}
+	return template.HTML(body), ""
+}
+
+// renderLiveDAG produces the run-detail overlay rendering. run is
+// non-nil here — buildRunDetail already short-circuited the
+// no-run-state case.
+func renderLiveDAG(
+	def dag.WorkflowDef, run *dag.WorkflowRun,
+) (template.HTML, string) {
+	if run == nil {
+		return renderStaticDAG(def)
+	}
+	body, err := dagviz.Render(def, run)
+	if err != nil {
+		switch {
+		case errors.Is(err, dagviz.ErrCycle):
+			return "", "Workflow definition has a cycle — DAG omitted."
+		case errors.Is(err, dagviz.ErrTooManySteps):
+			return "", "Workflow exceeds 30-step visualisation cap — see list below."
+		}
+		return "", "DAG visualisation unavailable."
+	}
+	return template.HTML(body), ""
 }
 
 // triggerLinesFor narrows triggers to those attached to workflowName
@@ -691,6 +742,11 @@ type RunDetailView struct {
 	NotFound    bool
 	Steps       []StepCard
 	Events      []EventRow
+	// DAGSVG is the live-state overlay rendering. Empty when the
+	// workflow def can't be loaded or when the renderer returned an
+	// error (cycle / too many steps).
+	DAGSVG      template.HTML
+	DAGFallback string
 }
 
 // StepCard is one cell in the step status grid.
@@ -763,6 +819,7 @@ func buildRunDetail(
 	def, defErr := ds.GetWorkflow(run.WorkflowID)
 	if defErr == nil {
 		view.Steps = stepCardsFor(def, run)
+		view.DAGSVG, view.DAGFallback = renderLiveDAG(def, &run)
 	}
 	events, _ := ds.ListRunEvents(ctx, id, false)
 	view.Events = toEventRows(events)

@@ -957,3 +957,332 @@ body[data-theme="dark"] {
   color: var(--status-completed) !important;
   transform: scale(1.06);
 }
+
+/*
+ * PR 5b — DAG visualisation + ops pages.
+ *
+ * The DAG card embeds an inline SVG (see internal/console/dagviz).
+ * We tint step boxes by status, give every box a paper-grain fill,
+ * and keep edges as gentle curves so the eye follows the flow. No
+ * external libraries — everything renders server-side.
+ */
+
+.dagviz-card { padding: 0; }
+.dagviz-card-body {
+  overflow-x: auto;
+  padding: 12px 16px;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      var(--surface) 0,
+      var(--surface) 6px,
+      var(--accent-soft) 6px,
+      var(--accent-soft) 7px
+    );
+  border-top: 1px solid var(--border);
+}
+
+.dagviz {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.dagviz-empty {
+  max-width: 320px;
+  margin: 0 auto;
+}
+.dagviz-empty-text {
+  fill: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+
+.dagviz-step {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 1.4;
+  transition: fill 200ms ease, stroke 200ms ease;
+  filter: drop-shadow(0 1.5px 0 rgba(0, 0, 0, 0.06));
+}
+.dagviz-step:focus { outline: none; stroke: var(--accent); }
+.dagviz-step:hover { stroke: var(--accent); }
+
+.dagviz-step-pending   { fill: var(--surface); }
+.dagviz-step-queued    { fill: color-mix(in srgb, var(--status-pending) 10%, var(--surface)); }
+.dagviz-step-running {
+  fill: color-mix(in srgb, var(--status-running) 18%, var(--surface));
+  stroke: var(--status-running);
+  stroke-width: 1.8;
+}
+.dagviz-step-completed {
+  fill: color-mix(in srgb, var(--status-completed) 14%, var(--surface));
+  stroke: var(--status-completed);
+}
+.dagviz-step-failed {
+  fill: color-mix(in srgb, var(--status-failed) 18%, var(--surface));
+  stroke: var(--status-failed);
+  stroke-width: 1.8;
+}
+.dagviz-step-skipped {
+  fill: color-mix(in srgb, var(--status-skipped) 8%, var(--surface));
+  stroke: var(--status-skipped);
+  stroke-dasharray: 4 3;
+}
+.dagviz-step-cancelled {
+  fill: color-mix(in srgb, var(--status-skipped) 10%, var(--surface));
+  stroke: var(--status-skipped);
+  stroke-dasharray: 2 3;
+}
+.dagviz-step-recovered {
+  fill: color-mix(in srgb, var(--status-completed) 10%, var(--surface));
+  stroke: var(--status-completed);
+  stroke-dasharray: 6 3;
+}
+
+.dagviz-label {
+  fill: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.dagviz-sublabel {
+  fill: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.dagviz-pill {
+  fill: var(--surface);
+  stroke: var(--border);
+}
+.dagviz-pill-running   { fill: var(--status-running); stroke: var(--status-running); }
+.dagviz-pill-completed { fill: var(--status-completed); stroke: var(--status-completed); }
+.dagviz-pill-failed    { fill: var(--status-failed); stroke: var(--status-failed); }
+.dagviz-pill-skipped   { fill: var(--status-skipped); stroke: var(--status-skipped); }
+.dagviz-pill-cancelled { fill: var(--status-skipped); stroke: var(--status-skipped); }
+.dagviz-pill-recovered { fill: var(--status-completed); stroke: var(--status-completed); }
+.dagviz-pill-queued    { fill: var(--status-pending); stroke: var(--status-pending); }
+
+.dagviz-pill-text {
+  fill: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.dagviz-attempts {
+  fill: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.dagviz-edge {
+  stroke: var(--text-secondary);
+  stroke-width: 1.1;
+  opacity: 0.6;
+}
+.dagviz-arrow { fill: var(--text-secondary); opacity: 0.7; }
+
+.dagviz-fallback {
+  margin: 0;
+  padding: 18px 8px;
+  color: var(--text-secondary);
+  font-style: italic;
+  text-align: center;
+}
+
+/* Stale-snapshot indicator: when the SSE stream has been quiet for >10s
+   the run-detail page can apply the class to fade the DAG. Datastar
+   reactivity flips this class via a separate signal. */
+.dagviz-stale {
+  opacity: 0.7;
+  transition: opacity 400ms ease;
+}
+
+/* Mobile narrow viewport — fall back to scrolling rather than try to
+   squeeze the DAG into 320px width. */
+@media (max-width: 480px) {
+  .dagviz-card-body { padding: 8px; }
+  .dagviz { min-width: 480px; }
+}
+
+/*
+ * Ops index tiles + sub-pages.
+ */
+.ops-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+.ops-tile {
+  display: block;
+  padding: 18px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+.ops-tile:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  text-decoration: none;
+}
+.ops-tile-title {
+  margin: 0 0 6px 0;
+  font-family: var(--font-display, var(--font-sans));
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--text-primary);
+}
+.ops-tile-metric {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+}
+.ops-tile-hint {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.callout {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.callout p { margin: 0; font-size: 14px; }
+
+.row-near-expiry { background: color-mix(in srgb, var(--status-running) 14%, transparent); }
+
+/*
+ * KV inspector layout: 3-column on wide screens (buckets / keys /
+ * value). Collapses to stacked sections on narrow viewports.
+ */
+.kv-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(220px, 280px) 1fr;
+  gap: 18px;
+  margin-top: 18px;
+}
+@media (max-width: 900px) {
+  .kv-layout { grid-template-columns: 1fr; }
+}
+.kv-section-title {
+  margin: 0 0 8px 0;
+  font-family: var(--font-display, var(--font-sans));
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.kv-section-sub {
+  margin-left: 6px;
+  color: var(--text-primary);
+  text-transform: none;
+  font-weight: 600;
+}
+.kv-bucket-list,
+.kv-key-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.kv-bucket-item,
+.kv-key-item { margin-bottom: 2px; }
+.kv-bucket-link,
+.kv-key-link {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.kv-bucket-link:hover,
+.kv-key-link:hover {
+  background: var(--accent-soft);
+  text-decoration: none;
+}
+.kv-bucket-link.is-active {
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+  padding-left: 6px;
+}
+.kv-bucket-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.kv-bucket-empty,
+.kv-key-empty {
+  padding: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.kv-entry { min-width: 0; }
+.kv-entry-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+.kv-entry-key {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.kv-entry-meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.kv-entry-value {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 60vh;
+  color: var(--text-primary);
+}
+.kv-entry-missing {
+  padding: 16px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.kv-entry-hint {
+  padding: 24px 8px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/*
+ * Page header helpers used across the ops sub-pages.
+ */
+.page-back {
+  display: inline-block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--accent);
+}
+.page-subtitle {
+  margin: 6px 0 0 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+}

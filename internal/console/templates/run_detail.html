@@ -26,6 +26,19 @@
     </div>
     {{end}}
 
+    <article class="card dagviz-card" id="run-detail-dag">
+      <header class="card-header"><h2>DAG (live)</h2></header>
+      <div class="card-body dagviz-card-body">
+        {{if .DAGSVG}}
+          {{.DAGSVG}}
+        {{else if .DAGFallback}}
+          <p class="dagviz-fallback">{{.DAGFallback}}</p>
+        {{else}}
+          <p class="console-empty">DAG visualisation unavailable.</p>
+        {{end}}
+      </div>
+    </article>
+
     <article class="card" id="run-detail-steps">
       <header class="card-header"><h2>Step status</h2></header>
       <div class="card-body">
