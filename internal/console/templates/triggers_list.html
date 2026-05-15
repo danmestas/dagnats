@@ -1,8 +1,13 @@
 {{define "content"}}{{$page := .Page}}{{with $page}}
-<section class="console-section">
+<section class="console-section"
+         data-signals="{}"
+         data-on-load="@get('/console/sse/triggers', {openWhenHidden: true})">
   <header class="console-section-header">
     <h1>Triggers</h1>
-    <p class="console-lede">{{.Total}} configured.</p>
+    <p class="console-lede">
+      <span id="triggers-count" data-count="{{.Total}}">{{.Total}}</span> configured.
+      <span id="triggers-count-tick" data-last="0" hidden></span>
+    </p>
   </header>
 
   <form class="console-filter-bar" method="GET" action="/console/triggers">

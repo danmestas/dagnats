@@ -611,38 +611,40 @@ func parseDLQSequence(s string) (uint64, error) {
 	return v, nil
 }
 
-// csrfTokenFor returns a small per-request token tied to the actor's
-// session. The token is just a server-side opaque string the form
-// echoes back; the server compares the echo with the freshly-generated
-// value carried in a hidden header. Since the console is single-origin
-// and same-binary, this is a soft defence: the real boundary is
-// authMiddleware. Operators who flip CONSOLE_READ_ONLY=true also
-// receive a 405 long before the token check runs.
+// csrfTokenFor returns the HMAC-bound token the template embeds in
+// the per-form hidden field. Loopback callers get an empty string —
+// the csrfMiddleware bypasses loopback by design (no session boundary
+// to bind to). Non-loopback callers get a stable HMAC over their
+// actor identity + the server secret, which the middleware verifies
+// on every mutation.
 func csrfTokenFor(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
 	actor, _ := ActorFrom(r.Context())
-	return actor.Display() + ":" + r.URL.Path
+	return CSRFTokenForActor(actor)
 }
 
 // AuditLogView powers /console/ops/audit.
 type AuditLogView struct {
 	ActorFilter  string
 	ActionFilter string
+	RangeFilter  string
 	Total        int
 	Rows         []AuditRow
+	Actions      []AuditAction
 }
 
 // AuditRow is one rendered audit-log entry.
 type AuditRow struct {
-	Time     string
-	TimeRel  string
-	Actor    string
-	Action   string
-	Target   string
-	Outcome  string
-	DataJSON string
+	Time       string
+	TimeRel    string
+	Actor      string
+	Action     string
+	Target     string
+	TargetLink string // empty when the target isn't a known resource id.
+	Outcome    string
+	DataJSON   string
 }
 
 // servePageAuditLog renders /console/ops/audit.
@@ -668,7 +670,8 @@ func servePageAuditLog(
 	})
 }
 
-// buildAuditView reads recent audit events and applies filter params.
+// buildAuditView reads recent audit events and applies filter params:
+// actor (exact match), action (exact match), and range (time window).
 func buildAuditView(
 	ctx context.Context, ds DataSource, q map[string][]string,
 ) AuditLogView {
@@ -678,16 +681,17 @@ func buildAuditView(
 	if ctx == nil {
 		panic("buildAuditView: ctx is nil")
 	}
-	const auditMax = 200
+	const auditMax = 500
 	events, _ := ds.ListAuditEvents(ctx, auditMax)
 	actorFilter := firstQueryValue(q, "actor")
 	actionFilter := firstQueryValue(q, "action")
+	rangeFilter := firstQueryValue(q, "range")
+	now := time.Now()
 	rows := make([]AuditRow, 0, len(events))
 	for _, e := range events {
-		if actorFilter != "" && e.Actor != actorFilter {
-			continue
-		}
-		if actionFilter != "" && e.Action != actionFilter {
+		if !auditMatchesFilters(
+			e, actorFilter, actionFilter, rangeFilter, now,
+		) {
 			continue
 		}
 		rows = append(rows, auditRowFromEvent(e))
@@ -695,21 +699,86 @@ func buildAuditView(
 	return AuditLogView{
 		ActorFilter:  actorFilter,
 		ActionFilter: actionFilter,
+		RangeFilter:  rangeFilter,
 		Total:        len(rows),
 		Rows:         rows,
+		Actions:      AuditActionList(),
 	}
 }
 
+// auditMatchesFilters applies the actor / action / range filters to
+// one AuditEvent. Returns true when the event survives all three.
+// Empty filter values pass through unchanged.
+func auditMatchesFilters(
+	e AuditEvent, actor, action, rng string, now time.Time,
+) bool {
+	if actor != "" && e.Actor != actor {
+		return false
+	}
+	if action != "" && e.Action != action {
+		return false
+	}
+	if !auditTimeInRange(e.Time, rng, now) {
+		return false
+	}
+	return true
+}
+
+// auditTimeInRange returns true when t falls within the chosen window.
+// Supported windows: 1h / 24h / 7d / "" or "all" (no filter).
+func auditTimeInRange(t time.Time, rng string, now time.Time) bool {
+	if rng == "" || rng == "all" {
+		return true
+	}
+	var window time.Duration
+	switch rng {
+	case "1h":
+		window = time.Hour
+	case "24h":
+		window = 24 * time.Hour
+	case "7d":
+		window = 7 * 24 * time.Hour
+	default:
+		return true
+	}
+	return t.After(now.Add(-window))
+}
+
 // auditRowFromEvent projects one AuditEvent into the render shape.
+// Resolves the target string into a link href when it parses as a
+// known resource id ("dlq:<seq>", "trigger:<id>", "run:<id>"); plain
+// IDs without a prefix fall back to no link.
 func auditRowFromEvent(e AuditEvent) AuditRow {
 	dataBytes, _ := json.Marshal(e.Data)
 	return AuditRow{
-		Time:     e.Time.UTC().Format(time.RFC3339),
-		TimeRel:  formatDuration(time.Since(e.Time)) + " ago",
-		Actor:    e.Actor,
-		Action:   e.Action,
-		Target:   e.Target,
-		Outcome:  e.Outcome,
-		DataJSON: string(dataBytes),
+		Time:       e.Time.UTC().Format(time.RFC3339),
+		TimeRel:    formatDuration(time.Since(e.Time)) + " ago",
+		Actor:      e.Actor,
+		Action:     e.Action,
+		Target:     e.Target,
+		TargetLink: targetLinkFor(e.Action, e.Target),
+		Outcome:    e.Outcome,
+		DataJSON:   string(dataBytes),
 	}
+}
+
+// targetLinkFor produces a console URL for the target when the action
+// implies a known resource shape. Empty string for ambiguous targets.
+// Centralising the rules here keeps the audit-log template free of
+// per-action conditionals.
+func targetLinkFor(action, target string) string {
+	if target == "" {
+		return ""
+	}
+	switch action {
+	case string(ActionDLQRetry),
+		string(ActionDLQDiscard),
+		string(ActionDLQUndoDiscard):
+		// Target is the raw DLQ sequence string.
+		return "/console/dlq/" + target
+	case string(ActionTriggerEnable),
+		string(ActionTriggerDisable):
+		return "/console/triggers/" + target
+	}
+	return ""
 }

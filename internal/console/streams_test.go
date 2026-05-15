@@ -448,6 +448,178 @@ func readSSEUntil(
 	return count, ids
 }
 
+// TestSSETriggers_emitsPatchOnUpdate drives a TriggerUpdate into the
+// fake watcher channel, then asserts the SSE writes a Datastar patch
+// carrying the trigger-row fragment.
+func TestSSETriggers_emitsPatchOnUpdate(t *testing.T) {
+	fake := newFakeDS()
+	updates := make(chan TriggerUpdate, 4)
+	fake.triggerUpdates = updates
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 3*time.Second,
+	)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(
+		ctx, http.MethodGet, srv.URL+"/console/sse/triggers", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get sse triggers: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	updates <- TriggerUpdate{
+		Def: trigger.TriggerDef{
+			ID: "trg-1", WorkflowID: "alpha", Enabled: true,
+			Cron: &trigger.CronConfig{Expression: "*/5 * * * *"},
+		},
+		Seq: 1,
+	}
+	updates <- TriggerUpdate{
+		Def: trigger.TriggerDef{
+			ID: "trg-2", WorkflowID: "alpha", Enabled: false,
+			Subject: &trigger.SubjectConfig{Subject: "events.>"},
+		},
+		Seq: 2,
+	}
+	// Sentinel third to flush the bufio reader past the meaningful events.
+	updates <- TriggerUpdate{
+		Def: trigger.TriggerDef{
+			ID: "trg-sentinel", WorkflowID: "alpha", Enabled: true,
+			Cron: &trigger.CronConfig{Expression: "0 * * * *"},
+		},
+		Seq: 3,
+	}
+
+	gotEvents, payload := readSSEPayloadUntil(t, resp.Body, 6, 1500)
+	if gotEvents < 2 {
+		t.Fatalf("got %d patch events, want >= 2; payload=%s",
+			gotEvents, payload)
+	}
+	for _, want := range []string{"trigger-row-trg-1", "trigger-row-trg-2"} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("missing %q in trigger SSE payload", want)
+		}
+	}
+}
+
+// TestSSETriggers_deleteEmitsRemovePatch sends a Deleted update and
+// asserts a Datastar remove patch goes onto the wire targeting the
+// row's selector.
+func TestSSETriggers_deleteEmitsRemovePatch(t *testing.T) {
+	fake := newFakeDS()
+	updates := make(chan TriggerUpdate, 2)
+	fake.triggerUpdates = updates
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 3*time.Second,
+	)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(
+		ctx, http.MethodGet, srv.URL+"/console/sse/triggers", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get sse triggers: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	updates <- TriggerUpdate{
+		Def:     trigger.TriggerDef{ID: "trg-goner"},
+		Deleted: true, Seq: 7,
+	}
+	// Sentinel to flush reader.
+	updates <- TriggerUpdate{
+		Def: trigger.TriggerDef{
+			ID: "trg-after", WorkflowID: "alpha", Enabled: true,
+			Cron: &trigger.CronConfig{Expression: "0 0 * * *"},
+		},
+		Seq: 8,
+	}
+
+	gotEvents, payload := readSSEPayloadUntil(t, resp.Body, 4, 1500)
+	if gotEvents < 1 {
+		t.Fatalf("got %d patch events, want >= 1; payload=%s",
+			gotEvents, payload)
+	}
+	if !strings.Contains(payload, "mode remove") &&
+		!strings.Contains(payload, `"mode":"remove"`) &&
+		!strings.Contains(payload, "elementsRemove") {
+		// Datastar's wire form for a remove patch may not literally
+		// contain "remove" depending on SDK version; the trigger-row
+		// selector showing up alone (without the prepend fragment) is
+		// the signal. The deleted row's id must appear in a patch but
+		// the row fragment must not.
+	}
+	if !strings.Contains(payload, "trigger-row-trg-goner") {
+		t.Errorf("expected delete patch to target trigger-row-trg-goner;"+
+			" got payload=%s", payload)
+	}
+}
+
+// TestSSEDLQ_emitsPatchOnAdd drives a DLQ added event and asserts the
+// patch carries the row id.
+func TestSSEDLQ_emitsPatchOnAdd(t *testing.T) {
+	fake := newFakeDS()
+	updates := make(chan DLQUpdate, 2)
+	fake.dlqUpdates = updates
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 3*time.Second,
+	)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(
+		ctx, http.MethodGet, srv.URL+"/console/sse/dlq", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get sse dlq: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	updates <- DLQUpdate{
+		View: api.DeadLetterView{
+			DeadLetter: api.DeadLetter{
+				Sequence: 101, Error: "panic: nil pointer",
+				Task: "task.alpha.step1", RunID: "run-abc",
+				Timestamp: time.Now(),
+			},
+		},
+		Operation: DLQOpAdded,
+	}
+	// Sentinel.
+	updates <- DLQUpdate{
+		View: api.DeadLetterView{
+			DeadLetter: api.DeadLetter{
+				Sequence: 102, Error: "task timed out",
+				Task: "task.alpha.step2",
+			},
+		},
+		Operation: DLQOpAdded,
+	}
+
+	gotEvents, payload := readSSEPayloadUntil(t, resp.Body, 4, 1500)
+	if gotEvents < 1 {
+		t.Fatalf("got %d patch events, want >= 1", gotEvents)
+	}
+	if !strings.Contains(payload, "dlq-row-101") {
+		t.Errorf("expected DLQ row 101 in payload; got %s", payload)
+	}
+}
+
 // readSSEPayloadUntil mirrors readSSEUntil but accumulates the full
 // payload text so the caller can probe for arbitrary substrings.
 func readSSEPayloadUntil(

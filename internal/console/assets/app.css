@@ -937,3 +937,23 @@ body[data-theme="dark"] {
     transform: none !important;
   }
 }
+
+/*
+ * Total-count chip — the small "N total" indicator in list-page
+ * headers that ticks up as SSE streams in new rows. The is-incremented
+ * class pulses briefly on each update so the operator's eye catches
+ * the change without the chip becoming a distraction.
+ */
+#triggers-count,
+#dlq-count,
+#runs-count {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent);
+  transition: color 160ms ease, transform 160ms ease;
+}
+.is-incremented {
+  color: var(--status-completed) !important;
+  transform: scale(1.06);
+}

@@ -1,9 +1,13 @@
 {{define "content"}}{{$page := .Page}}{{with $page}}
-<section class="console-section">
+<section class="console-section"
+         data-signals="{}"
+         data-on-load="@get('/console/sse/dlq', {openWhenHidden: true})">
   <header class="console-section-header">
     <h1>Dead-letter queue</h1>
     <p class="console-lede">
-      {{if .Total}}{{.Total}} entries awaiting operator decision.{{else}}No entries — your workflows are healthy.{{end}}
+      <span id="dlq-count" data-count="{{.Total}}">{{.Total}}</span>
+      {{if .Total}} entries awaiting operator decision.{{else}} — no entries, your workflows are healthy.{{end}}
+      <span id="dlq-count-tick" data-last="0" hidden></span>
     </p>
   </header>
 

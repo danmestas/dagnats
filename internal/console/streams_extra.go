@@ -1,0 +1,312 @@
+package console
+
+import (
+	"context"
+	"fmt"
+	"html/template"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/starfederation/datastar-go/datastar"
+)
+
+// streams_extra.go owns the PR 5 SSE endpoints that complete the live
+// experience promised by ADR-014:
+//
+//   GET /console/sse/triggers   — triggers list page live updates.
+//   GET /console/sse/dlq        — DLQ list page live updates.
+//
+// Both handlers mirror the runs-SSE shape from streams.go (PR 3). The
+// repetition is honest: each watcher returns its own channel type and
+// the per-update render is small enough that abstraction would obscure
+// more than it saves.
+
+// serveSSETriggers streams trigger KV updates as Datastar patches into
+// #triggers-tbody. New triggers prepend with a highlight; toggles
+// replace the existing row; deletes patch the row out.
+func serveSSETriggers(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("serveSSETriggers: w is nil")
+	}
+	if r == nil {
+		panic("serveSSETriggers: r is nil")
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	ds, ok := requireData(w, cfg, "sse-triggers")
+	if !ok {
+		return
+	}
+	ch, err := ds.WatchTriggers(r.Context())
+	if err != nil {
+		cfg.Logger.Error("console: sse triggers watch", "err", err)
+		http.Error(w, "watch failed", http.StatusServiceUnavailable)
+		return
+	}
+	sse := datastar.NewSSE(w, r)
+	pumpTriggerUpdates(r.Context(), sse, ts.base, ch, cfg)
+}
+
+// pumpTriggerUpdates is the inner loop translating TriggerUpdate values
+// into Datastar PatchElements events. Bounded loop, exits on ctx done
+// or channel close. Watcher initial-replay is included; the patch logic
+// is idempotent so re-rendering an already-present row is harmless.
+func pumpTriggerUpdates(
+	ctx context.Context,
+	sse *datastar.ServerSentEventGenerator,
+	tmpl *template.Template,
+	ch <-chan TriggerUpdate, cfg Config,
+) {
+	if sse == nil {
+		panic("pumpTriggerUpdates: sse is nil")
+	}
+	if tmpl == nil {
+		panic("pumpTriggerUpdates: tmpl is nil")
+	}
+	const maxIters = 1_000_000_000
+	for i := 0; i < maxIters; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case update, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := emitTriggerPatch(sse, tmpl, update); err != nil {
+				cfg.Logger.Warn("console: sse triggers emit",
+					"trigger_id", update.Def.ID, "err", err)
+				return
+			}
+		}
+	}
+}
+
+// emitTriggerPatch translates one TriggerUpdate into one or two
+// Datastar patches. Updates: remove-then-prepend so the row lands at
+// the top with a fresh highlight regardless of prior state. Deletes:
+// remove-only.
+func emitTriggerPatch(
+	sse *datastar.ServerSentEventGenerator,
+	tmpl *template.Template, update TriggerUpdate,
+) error {
+	if update.Def.ID == "" {
+		return nil
+	}
+	rowSelector := "#trigger-row-" + update.Def.ID
+	if update.Deleted {
+		return removePatch(sse, rowSelector, update.Seq)
+	}
+	row := triggerRowFromDef(update.Def)
+	html, err := renderFragment(tmpl, "trigger-row", triggerRowPatch{
+		Row:    row,
+		Fresh:  true,
+		PutSeq: update.Seq,
+	})
+	if err != nil {
+		return fmt.Errorf("render trigger-row: %w", err)
+	}
+	if err := removePatch(sse, rowSelector, update.Seq); err != nil {
+		return err
+	}
+	prependOpts := []datastar.PatchElementOption{
+		datastar.WithSelector("#triggers-tbody"),
+		datastar.WithMode(datastar.ElementPatchModePrepend),
+		datastar.WithPatchElementsEventID(
+			strconv.FormatUint(update.Seq, 10)),
+	}
+	if err := sse.PatchElements(html, prependOpts...); err != nil {
+		return fmt.Errorf("patch trigger row: %w", err)
+	}
+	return emitCountChip(sse, "triggers-count", update.Seq)
+}
+
+// triggerRowPatch is the template binding for the trigger-row fragment.
+type triggerRowPatch struct {
+	Row    TriggerRow
+	Fresh  bool
+	PutSeq uint64
+}
+
+// removePatch issues one Datastar remove against selector. Returns nil
+// even when the selector matches nothing — Datastar logs a warning but
+// doesn't propagate that as an error, so the caller treats it as
+// best-effort.
+func removePatch(
+	sse *datastar.ServerSentEventGenerator,
+	selector string, seq uint64,
+) error {
+	if sse == nil {
+		panic("removePatch: sse is nil")
+	}
+	if selector == "" {
+		panic("removePatch: selector is empty")
+	}
+	rmOpts := []datastar.PatchElementOption{
+		datastar.WithSelector(selector),
+		datastar.WithMode(datastar.ElementPatchModeRemove),
+		datastar.WithPatchElementsEventID(
+			strconv.FormatUint(seq, 10)),
+	}
+	if err := sse.PatchElements("", rmOpts...); err != nil {
+		// A row-not-found warning isn't fatal; pass through other
+		// transport failures.
+		if strings.Contains(err.Error(), "not found") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// serveSSEDLQ streams DLQ stream updates as Datastar patches into
+// #dlq-tbody. New dead letters prepend with a highlight; this PR
+// does not synthesise removals from this handler — those land via
+// the dedicated retry / discard mutation handlers which emit a
+// targeted SSE event on the same stream (see streams_dlq_remove.go
+// in a later PR).
+func serveSSEDLQ(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("serveSSEDLQ: w is nil")
+	}
+	if r == nil {
+		panic("serveSSEDLQ: r is nil")
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	ds, ok := requireData(w, cfg, "sse-dlq")
+	if !ok {
+		return
+	}
+	ch, err := ds.WatchDLQ(r.Context())
+	if err != nil {
+		cfg.Logger.Error("console: sse dlq watch", "err", err)
+		http.Error(w, "watch failed", http.StatusServiceUnavailable)
+		return
+	}
+	sse := datastar.NewSSE(w, r)
+	pumpDLQUpdates(r.Context(), sse, ts.base, ch, cfg)
+}
+
+// pumpDLQUpdates translates DLQ messages to PatchElements. Mirrors
+// pumpTriggerUpdates' bounded-loop discipline.
+func pumpDLQUpdates(
+	ctx context.Context,
+	sse *datastar.ServerSentEventGenerator,
+	tmpl *template.Template,
+	ch <-chan DLQUpdate, cfg Config,
+) {
+	if sse == nil {
+		panic("pumpDLQUpdates: sse is nil")
+	}
+	if tmpl == nil {
+		panic("pumpDLQUpdates: tmpl is nil")
+	}
+	const maxIters = 1_000_000_000
+	for i := 0; i < maxIters; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case update, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := emitDLQPatch(sse, tmpl, update); err != nil {
+				cfg.Logger.Warn("console: sse dlq emit",
+					"seq", update.View.Sequence, "err", err)
+				return
+			}
+		}
+	}
+}
+
+// emitDLQPatch renders one DLQ row and prepends it to #dlq-tbody.
+// DLQOpRemoved patches just remove the row.
+func emitDLQPatch(
+	sse *datastar.ServerSentEventGenerator,
+	tmpl *template.Template, update DLQUpdate,
+) error {
+	if update.View.Sequence == 0 {
+		return nil
+	}
+	rowSelector := "#dlq-row-" + strconv.FormatUint(update.View.Sequence, 10)
+	if update.Operation == DLQOpRemoved {
+		return removePatch(sse, rowSelector, update.View.Sequence)
+	}
+	row := dlqRowFromView(update.View)
+	html, err := renderFragment(tmpl, "dlq-row", dlqRowPatch{
+		Row:    row,
+		Fresh:  true,
+		PutSeq: update.View.Sequence,
+	})
+	if err != nil {
+		return fmt.Errorf("render dlq-row: %w", err)
+	}
+	if err := removePatch(sse, rowSelector, update.View.Sequence); err != nil {
+		return err
+	}
+	prependOpts := []datastar.PatchElementOption{
+		datastar.WithSelector("#dlq-tbody"),
+		datastar.WithMode(datastar.ElementPatchModePrepend),
+		datastar.WithPatchElementsEventID(
+			strconv.FormatUint(update.View.Sequence, 10)),
+	}
+	if err := sse.PatchElements(html, prependOpts...); err != nil {
+		return fmt.Errorf("patch dlq row: %w", err)
+	}
+	return emitCountChip(sse, "dlq-count", update.View.Sequence)
+}
+
+// dlqRowPatch is the template binding for the dlq-row fragment.
+type dlqRowPatch struct {
+	Row    DLQRow
+	Fresh  bool
+	PutSeq uint64
+}
+
+// emitCountChip patches a small total-count chip in the page header.
+// The chip's id is a stable per-page string (triggers-count, dlq-count,
+// runs-count); the count is a Datastar morph-by-id replacement so the
+// number animates without flicker. Pattern: append a one-tick increment
+// rather than recomputing — the chip carries data-count which the
+// JS-side ticker maintains. To avoid that complexity, we just write
+// the current count as the inner text, sourced from the row count of
+// the tbody after this patch lands. Datastar reads the post-patch DOM,
+// so the per-update arithmetic happens client-side via the patch event.
+func emitCountChip(
+	sse *datastar.ServerSentEventGenerator,
+	chipID string, seq uint64,
+) error {
+	if sse == nil {
+		panic("emitCountChip: sse is nil")
+	}
+	if chipID == "" {
+		panic("emitCountChip: chipID is empty")
+	}
+	// Single-shot signal write: client JS reads data-count attrs and
+	// increments. We just touch the chip's data-last attr so the
+	// front-end ticker picks up the update event. Keeps the server
+	// stateless wrt the count itself.
+	html := fmt.Sprintf(
+		`<span id="%s-tick" data-last="%d" hidden></span>`,
+		chipID, seq)
+	opts := []datastar.PatchElementOption{
+		datastar.WithSelector("#" + chipID + "-tick"),
+		datastar.WithMode(datastar.ElementPatchModeReplace),
+		datastar.WithPatchElementsEventID(
+			strconv.FormatUint(seq, 10)),
+	}
+	return sse.PatchElements(html, opts...)
+}

@@ -74,7 +74,8 @@ func Mount(cfg Config) http.Handler {
 	routes(mux, ts, cfg)
 
 	guarded := readOnlyMiddleware(cfg.ReadOnly, mux)
-	return authMiddleware(cfg.AuthMode, cfg.Password, guarded)
+	csrfGuarded := csrfMiddleware(cfg.AuthMode, guarded)
+	return authMiddleware(cfg.AuthMode, cfg.Password, csrfGuarded)
 }
 
 // routes wires every public path under /console/ into mux.
@@ -147,6 +148,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/assets/toast.js",
 		servePlainAssetAt("sources/toast.js",
 			"application/javascript; charset=utf-8"))
+	mux.HandleFunc("/console/assets/count-chip.js",
+		servePlainAssetAt("sources/count-chip.js",
+			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
 	})
@@ -155,6 +159,12 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	})
 	mux.HandleFunc("/console/sse/runs/", func(w http.ResponseWriter, r *http.Request) {
 		serveSSERunDetail(w, r, ts, cfg)
+	})
+	mux.HandleFunc("/console/sse/triggers", func(w http.ResponseWriter, r *http.Request) {
+		serveSSETriggers(w, r, ts, cfg)
+	})
+	mux.HandleFunc("/console/sse/dlq", func(w http.ResponseWriter, r *http.Request) {
+		serveSSEDLQ(w, r, ts, cfg)
 	})
 	mux.HandleFunc("/console/assets/fonts/", serveFontAsset())
 }

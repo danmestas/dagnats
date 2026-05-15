@@ -46,6 +46,34 @@ func mountWithFakeRO(
 	})
 }
 
+// mountWithFakeAuth boots the console with a non-loopback auth mode
+// so the CSRF middleware fires. Test seeds a fixed CSRF secret so
+// expected tokens are deterministic.
+func mountWithFakeAuth(
+	t *testing.T, fake *fakeDataSource, mode AuthMode,
+) http.Handler {
+	t.Helper()
+	if fake == nil {
+		t.Fatalf("mountWithFakeAuth: fake is nil")
+	}
+	_, _, err := LoadCSRFSecret("test-secret-fixed-32-bytes-fixed-")
+	if err != nil {
+		t.Fatalf("LoadCSRFSecret: %v", err)
+	}
+	password := ""
+	if mode == AuthBasic {
+		password = "pw"
+	}
+	return Mount(Config{
+		HTTPAddr: "10.0.0.1:9999",
+		AuthMode: mode,
+		Password: password,
+		Build:    "test",
+		Logger:   slog.New(slog.NewTextHandler(testLogWriter(t), nil)),
+		Data:     fake,
+	})
+}
+
 func sampleTrigger(id, workflow, kind string) trigger.TriggerDef {
 	td := trigger.TriggerDef{
 		ID: id, WorkflowID: workflow, Enabled: true,
@@ -882,6 +910,206 @@ func TestTriggerDetail_rendersFireHistory(t *testing.T) {
 	// Empty-state copy must NOT appear when there are firings.
 	if strings.Contains(body, "No firings recorded") {
 		t.Errorf("unexpected empty state with seeded firings")
+	}
+}
+
+// TestCSRF_loopbackBypassesMiddleware confirms the policy: loopback
+// requests skip CSRF entirely (no session boundary to bind to).
+func TestCSRF_loopbackBypassesMiddleware(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(900, "panic"),
+	}
+	h := mountWithFake(t, fake) // loopback
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/console/dlq/900/retry", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (loopback CSRF bypass)", rr.Code)
+	}
+}
+
+// TestCSRF_forwardAuthRequiresToken returns 403 when no token is sent.
+func TestCSRF_forwardAuthRequiresToken(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(901, "panic"),
+	}
+	h := mountWithFakeAuth(t, fake, AuthForwarded)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/console/dlq/901/retry", nil)
+	req.Header.Set("X-Forwarded-User", "alice")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (missing token)", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "csrf_invalid") {
+		t.Errorf("expected csrf_invalid error code; body=%s",
+			rr.Body.String())
+	}
+	if len(fake.replayCalls) != 0 {
+		t.Errorf("expected no replay call when CSRF fails")
+	}
+}
+
+// TestCSRF_forwardAuthAcceptsValidToken passes when the correct HMAC
+// is sent in the X-CSRF-Token header.
+func TestCSRF_forwardAuthAcceptsValidToken(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(902, "panic"),
+	}
+	h := mountWithFakeAuth(t, fake, AuthForwarded)
+	good := CSRFTokenForActor(Actor{User: "alice", Source: AuthForwarded})
+	if good == "" {
+		t.Fatalf("expected non-empty CSRF token")
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/console/dlq/902/retry", nil)
+	req.Header.Set("X-Forwarded-User", "alice")
+	req.Header.Set("X-CSRF-Token", good)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s",
+			rr.Code, rr.Body.String())
+	}
+}
+
+// TestCSRF_forwardAuthRejectsWrongToken returns 403 on a tampered token.
+func TestCSRF_forwardAuthRejectsWrongToken(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(903, "panic"),
+	}
+	h := mountWithFakeAuth(t, fake, AuthForwarded)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/console/dlq/903/retry", nil)
+	req.Header.Set("X-Forwarded-User", "alice")
+	req.Header.Set("X-CSRF-Token", "deadbeef")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rr.Code)
+	}
+}
+
+// TestCSRF_basicAuthAcceptsFormField allows submission via the hidden
+// csrf_token form field.
+func TestCSRF_basicAuthAcceptsFormField(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(904, "panic"),
+	}
+	h := mountWithFakeAuth(t, fake, AuthBasic)
+	good := CSRFTokenForActor(Actor{Source: AuthBasic})
+	if good == "" {
+		t.Fatalf("expected non-empty CSRF token for basic auth actor")
+	}
+	body := strings.NewReader("csrf_token=" + good)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/console/dlq/904/retry", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("console", "pw")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s",
+			rr.Code, rr.Body.String())
+	}
+}
+
+// TestCSRF_assetsExempt confirms GET on assets isn't gated.
+func TestCSRF_assetsExempt(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFakeAuth(t, fake, AuthBasic)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/console/assets/app.css", nil)
+	req.SetBasicAuth("console", "pw")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("asset GET = %d, want 200", rr.Code)
+	}
+}
+
+// TestAuditView_rangeFilter1h keeps only events younger than one hour.
+func TestAuditView_rangeFilter1h(t *testing.T) {
+	fake := newFakeDS()
+	fake.auditEvents = []AuditEvent{
+		{Time: time.Now().Add(-30 * time.Minute), Actor: "alice",
+			Action: string(ActionDLQRetry), Target: "100",
+			Outcome: string(OutcomeSuccess)},
+		{Time: time.Now().Add(-3 * time.Hour), Actor: "bob",
+			Action: string(ActionDLQDiscard), Target: "200",
+			Outcome: string(OutcomeSuccess)},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/ops/audit?range=1h", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "100") || strings.Contains(body, "200") {
+		t.Errorf("range filter failed: body=%s", body)
+	}
+}
+
+// TestAuditView_targetLinksDLQ renders the target as a link when the
+// action is a DLQ verb.
+func TestAuditView_targetLinksDLQ(t *testing.T) {
+	fake := newFakeDS()
+	fake.auditEvents = []AuditEvent{
+		{Time: time.Now(), Actor: "alice",
+			Action: string(ActionDLQRetry), Target: "555",
+			Outcome: string(OutcomeSuccess)},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/ops/audit", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, `href="/console/dlq/555"`) {
+		t.Errorf("expected DLQ target link; body=%s", body)
+	}
+}
+
+// TestAuditView_targetLinksTrigger links to the trigger detail page.
+func TestAuditView_targetLinksTrigger(t *testing.T) {
+	fake := newFakeDS()
+	fake.auditEvents = []AuditEvent{
+		{Time: time.Now(), Actor: "alice",
+			Action: string(ActionTriggerEnable), Target: "cron-x",
+			Outcome: string(OutcomeSuccess)},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/ops/audit", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, `href="/console/triggers/cron-x"`) {
+		t.Errorf("expected trigger target link; body=%s", body)
+	}
+}
+
+// TestAuditView_actionDropdownIncludesAllConstants checks that every
+// AuditAction constant shows up in the dropdown — the audit log
+// surface must enumerate the same vocabulary the emitters use.
+func TestAuditView_actionDropdownIncludesAllConstants(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/ops/audit", nil))
+	body := rr.Body.String()
+	for _, a := range AuditActionList() {
+		if !strings.Contains(body, string(a)) {
+			t.Errorf("audit-log dropdown missing %q", a)
+		}
 	}
 }
 
