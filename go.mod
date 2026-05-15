@@ -6,6 +6,7 @@ require (
 	github.com/nats-io/nats-server/v2 v2.12.6
 	github.com/nats-io/nats.go v1.50.0
 	github.com/nats-io/nuid v1.0.1
+	github.com/starfederation/datastar-go v1.2.1
 	github.com/synadia-io/orbit.go/jetstreamext v0.2.1
 	github.com/synadia-io/orbit.go/pcgroups v0.2.1
 	go.opentelemetry.io/otel v1.43.0
@@ -25,6 +26,8 @@ require (
 )
 
 require (
+	github.com/CAFxX/httpcompression v0.0.9 // indirect
+	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.6.0-default-no-op // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -38,6 +41,7 @@ require (
 	github.com/nats-io/jwt/v2 v2.8.1 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/synadia-io/orbit.go/natsext v0.1.2 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect

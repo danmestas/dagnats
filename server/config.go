@@ -12,7 +12,12 @@ import (
 )
 
 const (
-	defaultHTTPAddr      = ":8080"
+	// defaultHTTPAddr binds only to loopback by default so the embedded
+	// control plane UI (and every other HTTP surface) is reachable
+	// only from processes on the host. Operators with remote-access
+	// deployments must set DAGNATS_HTTP_ADDR explicitly to a
+	// non-loopback bind (e.g. "0.0.0.0:8080"). See ADR-014.
+	defaultHTTPAddr      = "127.0.0.1:8080"
 	defaultNATSPort      = 4222
 	defaultMaxStoreBytes = 10 << 30 // 10 GiB
 	maxLeafRemotes       = 10

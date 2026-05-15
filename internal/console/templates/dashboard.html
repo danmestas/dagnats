@@ -1,0 +1,30 @@
+{{define "content"}}
+<section class="console-section">
+  <header class="console-section-header">
+    <h1>Dashboard</h1>
+    <p class="console-lede">Operational view of this dagnats deployment.</p>
+  </header>
+
+  <div class="console-grid">
+    <article class="console-tile" aria-labelledby="tile-overview">
+      <header><h2 id="tile-overview">System overview</h2></header>
+      <dl class="console-deflist">
+        <div><dt>Listener</dt><dd>{{.Overview.Listener}}</dd></div>
+        <div><dt>Auth mode</dt><dd>{{.Overview.AuthMode}}</dd></div>
+        <div><dt>Actor</dt><dd>{{.Actor.Display}}</dd></div>
+        <div><dt>Build</dt><dd>{{.Overview.Build}}</dd></div>
+      </dl>
+      <footer class="console-tile-footer">
+        Live tiles arrive in a later PR. This view proves the page renders.
+      </footer>
+    </article>
+
+    <article class="console-tile" aria-labelledby="tile-heartbeat"
+             data-init="@get('/console/sse/heartbeat', {openWhenHidden: true})">
+      <header><h2 id="tile-heartbeat">Heartbeat</h2></header>
+      <p>SSE plumbing demo. Updates every 5 seconds.</p>
+      <p id="heartbeat-now" class="console-mono">awaiting first tick&hellip;</p>
+    </article>
+  </div>
+</section>
+{{end}}

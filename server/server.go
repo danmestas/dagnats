@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/bridge"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/console"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/openapi"
@@ -284,6 +286,8 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	}
 	s.cfg.HTTPAddr = ln.Addr().String()
 
+	mountConsole(mux, s.cfg.HTTPAddr)
+
 	s.httpSrv = &http.Server{Handler: mux}
 
 	errCh := make(chan error, 1)
@@ -484,6 +488,46 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	} else {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 	}
+}
+
+// mountConsole wires the embedded operator UI at /console/. The mount
+// is unconditional: when the listener is bound to a non-loopback
+// interface without auth configured, the console.Mount handler still
+// installs but every request returns 503 with the documented JSON body
+// and the loud startup log line is emitted here. Doing the gate at
+// mount time (rather than skipping the mount) keeps the route table
+// honest — every binary serves the same surface.
+func mountConsole(mux *http.ServeMux, httpAddr string) {
+	if mux == nil {
+		panic("mountConsole: mux is nil")
+	}
+	if httpAddr == "" {
+		panic("mountConsole: httpAddr is empty")
+	}
+	cfg := console.AuthConfig{
+		HTTPAddr:    httpAddr,
+		ForwardAuth: os.Getenv("DAGNATS_CONSOLE_TRUST_FORWARDED_AUTH") == "true",
+		Password:    os.Getenv("DAGNATS_CONSOLE_PASSWORD"),
+	}
+	mode, err := console.ResolveAuthMode(cfg)
+	if err != nil {
+		// Operator configured both forward-auth and basic-auth — the
+		// resolver returns AuthDisabled in that case alongside an
+		// error explaining the conflict.
+		printStep(os.Stderr, "console: "+err.Error())
+	}
+	if mode == console.AuthDisabled {
+		printStep(os.Stderr, console.DisabledLogMessage)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	handler := console.Mount(console.Config{
+		HTTPAddr: httpAddr,
+		AuthMode: mode,
+		Password: cfg.Password,
+		Build:    "dev",
+		Logger:   logger,
+	})
+	mux.Handle("/console/", handler)
 }
 
 // openapiSpecVersion is the value reported in the OpenAPI `info.version`
