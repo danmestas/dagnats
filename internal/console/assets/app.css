@@ -1,0 +1,179 @@
+/*
+ * dagnats console — custom styles layered on Basecoat.
+ *
+ * The e-ink palette lives as CSS custom properties on <body>. Subsequent
+ * stylesheets and JS reference --bg / --surface / --text-primary / etc.
+ * so a theme switch is a single attribute change on <body>.
+ */
+
+:root,
+body[data-theme="eink"] {
+  --bg:               #F8F5EF;
+  --surface:          #FFFCF6;
+  --border:           #D6CFC0;
+  --text-primary:     #1F1B16;
+  --text-secondary:   #5A554C;
+  --accent:           #3F5363;
+
+  --status-completed: #6B7A56;
+  --status-running:   #A88950;
+  --status-failed:    #9A6052;
+  --status-skipped:   #807A6E;
+  --status-pending:   #5A6B7D;
+
+  --radius-tile:  10px;
+  --radius-pill:  9999px;
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+               Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+               "Liberation Mono", monospace;
+}
+
+body[data-theme="dark"] {
+  --bg:             #1A1814;
+  --surface:        #252220;
+  --border:         #3A3530;
+  --text-primary:   #E8E2D6;
+  --text-secondary: #9B968B;
+  --accent:         #7A8E9D;
+
+  --status-completed: #9CAA82;
+  --status-running:   #CDB178;
+  --status-failed:    #C18876;
+  --status-skipped:   #B5B0A4;
+  --status-pending:   #8A9BAD;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+.console-header {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.console-header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0.75rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+.console-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.console-brand:hover { text-decoration: none; }
+.console-mark {
+  width: 16px; height: 16px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  display: inline-block;
+}
+.console-name { letter-spacing: 0.02em; }
+
+.console-nav {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.95rem;
+}
+.console-nav a {
+  color: var(--text-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+}
+.console-nav a:hover { color: var(--text-primary); text-decoration: none; }
+.console-nav a.is-active {
+  color: var(--text-primary);
+  background: rgba(63, 83, 99, 0.08);
+}
+
+.console-actor {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.console-main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+}
+
+.console-section-header {
+  margin-bottom: 1.25rem;
+}
+.console-section-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+.console-lede {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.console-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.console-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  padding: 1.1rem 1.2rem;
+}
+.console-tile header h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.console-tile-footer {
+  margin-top: 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.console-deflist {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.75rem;
+  row-gap: 0.25rem;
+}
+.console-deflist > div { display: contents; }
+.console-deflist dt {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.console-deflist dd { margin: 0; }
+
+.console-mono {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+.status-completed { color: var(--status-completed); }
+.status-running   { color: var(--status-running); }
+.status-failed    { color: var(--status-failed); }
+.status-skipped   { color: var(--status-skipped); }
+.status-pending   { color: var(--status-pending); }

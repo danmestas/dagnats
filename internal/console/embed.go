@@ -1,0 +1,28 @@
+// Package console implements the dagnats embedded operator UI.
+//
+// The package mounts under `/console/` (sibling of `/docs` from the
+// openapi package). Everything is server-rendered HTML driven by
+// Datastar + Basecoat; assets are vendored locally and never fetched
+// from a CDN at runtime. See ADR-014 for the architecture.
+package console
+
+import "embed"
+
+// assetsFS holds the gzipped bundles and the small uncompressed app.css.
+// Files arrive verbatim from the deploy-time bundling pipeline
+// documented in `assets/README.md`.
+//
+//go:embed assets/console.js.gz
+//go:embed assets/basecoat.css.gz
+//go:embed assets/uplot.min.js.gz
+//go:embed assets/app.css
+var assetsFS embed.FS
+
+// templatesFS carries every Go html/template file the console renders.
+// Layouts live at the root; per-region fragments live under fragments/.
+//
+//go:embed templates/layout.html
+//go:embed templates/dashboard.html
+//go:embed templates/disabled.html
+//go:embed templates/fragments/heartbeat.html
+var templatesFS embed.FS

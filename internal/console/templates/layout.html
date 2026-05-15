@@ -1,0 +1,36 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} — dagnats console</title>
+  <link rel="stylesheet" href="/console/assets/basecoat.css">
+  <link rel="stylesheet" href="/console/assets/app.css">
+  <script src="/console/assets/console.js" defer></script>
+</head>
+<body data-theme="eink">
+  <header class="console-header">
+    <div class="console-header-inner">
+      <a href="/console/" class="console-brand">
+        <span class="console-mark"></span>
+        <span class="console-name">dagnats</span>
+      </a>
+      <nav class="console-nav" aria-label="primary">
+        <a href="/console/"          class="{{if eq .Section "dashboard"}}is-active{{end}}">Dashboard</a>
+        <a href="/console/workflows" class="{{if eq .Section "workflows"}}is-active{{end}}">Workflows</a>
+        <a href="/console/runs"      class="{{if eq .Section "runs"}}is-active{{end}}">Runs</a>
+        <a href="/console/triggers"  class="{{if eq .Section "triggers"}}is-active{{end}}">Triggers</a>
+        <a href="/console/dlq"       class="{{if eq .Section "dlq"}}is-active{{end}}">DLQ</a>
+        <a href="/console/ops/health" class="{{if eq .Section "ops"}}is-active{{end}}">Ops</a>
+        <a href="/console/help"      class="{{if eq .Section "help"}}is-active{{end}}">Help</a>
+      </nav>
+      <div class="console-actor">
+        {{if .Actor.Display}}<span title="{{.Actor.Source}}">{{.Actor.Display}}</span>{{end}}
+      </div>
+    </div>
+  </header>
+  <main class="console-main">
+    {{template "content" .}}
+  </main>
+</body>
+</html>{{end}}
