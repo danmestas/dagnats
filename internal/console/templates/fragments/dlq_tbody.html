@@ -1,0 +1,22 @@
+{{define "dlq-tbody"}}
+{{$readonly := .ReadOnly}}
+{{range .Rows}}
+<tr id="dlq-row-{{.Sequence}}">
+  <td class="console-mono">
+    <a href="/console/dlq/{{.Sequence}}">#{{.Sequence}}</a>
+  </td>
+  <td title="{{.ReasonFull}}">{{.ReasonShort}}</td>
+  <td class="console-mono">
+    {{if .Workflow}}<a href="/console/workflows/{{.Workflow}}">{{.Workflow}}</a>{{else}}<span class="muted">—</span>{{end}}
+  </td>
+  <td class="console-mono">
+    {{if .OriginalRunID}}<a href="/console/runs/{{.OriginalRunID}}">{{.OriginalRunIDS}}</a>{{else}}<span class="muted">—</span>{{end}}
+  </td>
+  <td class="console-mono">{{.FailedAt}}</td>
+  <td>{{.Attempts}}</td>
+  <td>
+    <a class="btn btn-outline" href="/console/dlq/{{.Sequence}}">Inspect</a>
+  </td>
+</tr>
+{{end}}
+{{end}}

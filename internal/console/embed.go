@@ -16,6 +16,7 @@ import "embed"
 //go:embed assets/basecoat.css.gz
 //go:embed assets/uplot.min.js.gz
 //go:embed assets/app.css
+//go:embed assets/sources/connection-state.js
 //go:embed assets/fonts/fraunces-latin.woff2
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
 var assetsFS embed.FS
@@ -30,6 +31,12 @@ var assetsFS embed.FS
 //go:embed templates/workflow_detail.html
 //go:embed templates/runs_list.html
 //go:embed templates/run_detail.html
+//go:embed templates/triggers_list.html
+//go:embed templates/trigger_detail.html
+//go:embed templates/dlq_list.html
+//go:embed templates/dlq_detail.html
+//go:embed templates/audit_log.html
+//go:embed templates/not_found.html
 //go:embed templates/fragments/heartbeat.html
 //go:embed templates/fragments/workflows_tbody.html
 //go:embed templates/fragments/runs_tbody.html
@@ -38,4 +45,8 @@ var assetsFS embed.FS
 //go:embed templates/fragments/run_row.html
 //go:embed templates/fragments/run_event_row.html
 //go:embed templates/fragments/run_step_card.html
+//go:embed templates/fragments/triggers_tbody.html
+//go:embed templates/fragments/dlq_tbody.html
+//go:embed templates/fragments/audit_tbody.html
+//go:embed templates/fragments/connection_pill.html
 var templatesFS embed.FS

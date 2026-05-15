@@ -1,0 +1,8 @@
+{{define "connection-pill"}}
+<div id="console-connection" class="console-connection" data-state="{{.State}}"
+     role="status" aria-live="polite" aria-atomic="true"
+     title="{{.Title}}">
+  <span class="console-connection-dot" aria-hidden="true"></span>
+  <span class="console-connection-label">{{.Label}}</span>
+</div>
+{{end}}

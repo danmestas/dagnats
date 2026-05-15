@@ -1,0 +1,155 @@
+{{define "content"}}{{with .Page}}
+<section class="console-section">
+  <header class="console-section-header">
+    <h1>Dead letter #{{.Sequence}}</h1>
+    <p class="console-lede">
+      <span class="badge badge-failed">{{.ReasonClass}}</span>
+      from
+      {{if .Workflow}}<a href="/console/workflows/{{.Workflow}}" class="console-mono">{{.Workflow}}</a>{{else}}<span class="muted">unknown workflow</span>{{end}}
+      —
+      original run
+      {{if .OriginalRunID}}<a href="/console/runs/{{.OriginalRunID}}" class="console-mono">{{.OriginalRunIDS}}</a>{{else}}<span class="muted">unknown</span>{{end}}
+    </p>
+  </header>
+
+  <article class="card">
+    <header class="card-header"><h2>Failure</h2></header>
+    <div class="card-body">
+      <dl class="console-deflist">
+        <div><dt>Reason class</dt><dd><span class="badge badge-failed">{{.ReasonClass}}</span></dd></div>
+        <div><dt>Failed at</dt><dd class="console-mono">{{.FailedAt}}</dd></div>
+        <div><dt>Delivery count</dt><dd>{{.Attempts}}</dd></div>
+        <div><dt>Step id</dt><dd class="console-mono">{{if .StepID}}{{.StepID}}{{else}}<span class="muted">—</span>{{end}}</dd></div>
+        <div><dt>Task subject</dt><dd class="console-mono">{{.Task}}</dd></div>
+        <div><dt>Consumer</dt><dd class="console-mono">{{if .Consumer}}{{.Consumer}}{{else}}<span class="muted">—</span>{{end}}</dd></div>
+        <div><dt>Body preserved</dt><dd>{{if .BodyPreserved}}yes — retry-eligible{{else}}<span class="muted">no — legacy entry, retry unsupported</span>{{end}}</dd></div>
+      </dl>
+      <h3 style="margin-top: 1rem; font-size: 0.95rem;">Error message</h3>
+      <pre class="console-pre console-pre-error"><code>{{.ReasonFull}}</code></pre>
+      {{if .BodyPreview}}
+      <h3 style="margin-top: 1rem; font-size: 0.95rem;">Original input</h3>
+      <pre class="console-pre"><code>{{.BodyPreview}}</code></pre>
+      {{end}}
+    </div>
+  </article>
+
+  <article class="card">
+    <header class="card-header"><h2>Operator actions</h2></header>
+    <div class="card-body">
+      <p class="muted" style="margin-top: 0;">
+        Retry re-injects the original task payload as a fresh run.
+        Discard removes the entry permanently — there is no undo.
+        {{if .ReadOnly}}<strong>Console is read-only;</strong> actions are disabled.{{end}}
+      </p>
+      <form method="POST" action="/console/dlq/{{.Sequence}}/retry"
+            data-confirm-action="retry"
+            data-confirm-reason="{{.ReasonFull}}"
+            data-confirm-target="entry #{{.Sequence}}">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      </form>
+      <form method="POST" action="/console/dlq/{{.Sequence}}/discard"
+            data-confirm-action="discard"
+            data-confirm-reason="{{.ReasonFull}}"
+            data-confirm-target="entry #{{.Sequence}}">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      </form>
+      <div class="console-modal-actions">
+        <button type="button" class="btn btn-restorative"
+                {{if not .BodyPreserved}}disabled aria-disabled="true" title="Legacy entry — body not preserved; retry unsupported"{{else if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to retry."{{else}}data-action-confirm="retry"{{end}}>
+          Retry
+        </button>
+        <button type="button" class="btn btn-destructive"
+                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to discard."{{else}}data-action-confirm="discard"{{end}}>
+          Discard
+        </button>
+      </div>
+    </div>
+  </article>
+
+  <p style="margin-top: 1rem;">
+    <a class="btn btn-outline" href="/console/dlq">← back to DLQ</a>
+  </p>
+</section>
+
+<div id="dlq-confirm-modal" class="console-modal" role="dialog"
+     aria-modal="true" aria-labelledby="dlq-confirm-title">
+  <div class="console-modal-card">
+    <h2 id="dlq-confirm-title">Confirm action</h2>
+    <p id="dlq-confirm-prompt" class="muted"></p>
+    <p>Reason this entry is on the DLQ:</p>
+    <pre id="dlq-confirm-reason"></pre>
+    <p>To proceed, type <strong id="dlq-confirm-word">RETRY</strong> exactly:</p>
+    <input id="dlq-confirm-input" class="input" type="text"
+           autocomplete="off" spellcheck="false" style="width: 100%;">
+    <p id="dlq-confirm-error" class="muted" style="color: var(--status-failed); min-height: 1.2rem;"></p>
+    <div class="console-modal-actions">
+      <button type="button" id="dlq-confirm-cancel" class="btn btn-outline">Cancel</button>
+      <button type="button" id="dlq-confirm-go" class="btn btn-destructive">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.getElementById("dlq-confirm-modal");
+  if (!modal) return;
+  var prompt = document.getElementById("dlq-confirm-prompt");
+  var reason = document.getElementById("dlq-confirm-reason");
+  var word = document.getElementById("dlq-confirm-word");
+  var input = document.getElementById("dlq-confirm-input");
+  var errLine = document.getElementById("dlq-confirm-error");
+  var goBtn = document.getElementById("dlq-confirm-go");
+  var cancelBtn = document.getElementById("dlq-confirm-cancel");
+  var pending = null;
+
+  function openFor(actionType) {
+    var form = document.querySelector(
+      "form[data-confirm-action='" + actionType + "']");
+    if (!form) return;
+    pending = { form: form, actionType: actionType };
+    var expect = actionType.toUpperCase();
+    var target = form.getAttribute("data-confirm-target") || "this entry";
+    var why = form.getAttribute("data-confirm-reason") || "";
+    word.textContent = expect;
+    reason.textContent = why || "(no reason captured)";
+    prompt.textContent =
+      (actionType === "discard"
+        ? "Discard " + target + " permanently. This cannot be undone."
+        : "Retry " + target + ". The original input is re-injected as a fresh run.");
+    input.value = "";
+    errLine.textContent = "";
+    modal.setAttribute("data-open", "true");
+    setTimeout(function () { input.focus(); }, 0);
+  }
+
+  function close() {
+    pending = null;
+    modal.removeAttribute("data-open");
+  }
+
+  function confirm() {
+    if (!pending) return;
+    var expect = pending.actionType.toUpperCase();
+    if (input.value !== expect) {
+      errLine.textContent = "type " + expect + " to confirm";
+      return;
+    }
+    pending.form.submit();
+  }
+
+  document.querySelectorAll("[data-action-confirm]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openFor(btn.getAttribute("data-action-confirm"));
+    });
+  });
+  cancelBtn.addEventListener("click", close);
+  goBtn.addEventListener("click", confirm);
+  modal.addEventListener("click", function (e) {
+    if (e.target === modal) close();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal.getAttribute("data-open")) close();
+  });
+})();
+</script>
+{{end}}{{end}}

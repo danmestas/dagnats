@@ -28,13 +28,15 @@ const (
 
 // pageData is the common payload for every full-page render. Section
 // is the active nav tab. Title is the <title> string. Body is template
-// `content`-named data ready to inject.
+// `content`-named data ready to inject. ReadOnly mirrors Config.ReadOnly
+// so the layout shows the read-only banner uniformly.
 type pageData struct {
 	Title    string
 	Section  string
 	Actor    Actor
 	Overview overviewData
 	Page     any
+	ReadOnly bool
 }
 
 // renderPage executes the shared `layout` template with the given
@@ -69,6 +71,7 @@ func renderPage(
 		AuthMode: cfg.AuthMode.String(),
 		Build:    cfg.Build,
 	}
+	pd.ReadOnly = cfg.ReadOnly
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "layout", pd); err != nil {
 		cfg.Logger.Error("console: render page", "section", pd.Section, "err", err)
@@ -322,7 +325,7 @@ func servePageWorkflowDetail(
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/console/workflows/")
 	if name == "" || strings.Contains(name, "/") {
-		http.NotFound(w, r)
+		serveNotFound(w, r, ts, cfg)
 		return
 	}
 	ds, ok := requireData(w, cfg, "workflow-detail")
@@ -725,7 +728,7 @@ func servePageRunDetail(
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/console/runs/")
 	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
+		serveNotFound(w, r, ts, cfg)
 		return
 	}
 	ds, ok := requireData(w, cfg, "run-detail")

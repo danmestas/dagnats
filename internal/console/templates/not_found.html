@@ -1,0 +1,27 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="console-section">
+  <header class="console-section-header">
+    <h1>Page not found</h1>
+    <p class="console-lede">
+      {{if .Path}}<code class="console-mono">{{.Path}}</code> doesn't exist
+      in this console.{{else}}The requested path doesn't exist.{{end}}
+      This section may be coming in a later PR.
+    </p>
+  </header>
+  <div class="card">
+    <div class="card-body">
+      <p>
+        <a class="btn btn-outline" href="/console/">Return to dashboard</a>
+      </p>
+      <p class="muted" style="margin-top: 1rem;">
+        Available sections:
+        <a href="/console/workflows">Workflows</a>,
+        <a href="/console/runs">Runs</a>,
+        <a href="/console/triggers">Triggers</a>,
+        <a href="/console/dlq">DLQ</a>,
+        <a href="/console/ops/audit">Audit log</a>.
+      </p>
+    </div>
+  </div>
+</section>
+{{end}}{{end}}

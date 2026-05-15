@@ -636,3 +636,197 @@ body[data-theme="dark"] {
 #run-events-body:has(tr[id^="run-event-row-"]) #run-events-empty {
   display: none;
 }
+
+/*
+ * Connection-state indicator. A small pill in the header that reports
+ * live SSE health: idle (muted dot), live (warm-green dot), reconnecting
+ * (amber pulse), offline (rust dot). Colours map to the status palette
+ * so we stay in the e-ink editorial system. Pulse animation is muted
+ * when prefers-reduced-motion is set.
+ */
+.console-connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  background: var(--surface);
+  line-height: 1;
+  white-space: nowrap;
+}
+.console-connection-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  box-shadow: 0 0 0 1px var(--border) inset;
+  flex: 0 0 auto;
+}
+.console-connection[data-state="idle"] .console-connection-dot {
+  background: var(--status-skipped);
+}
+.console-connection[data-state="live"] {
+  color: var(--status-completed);
+  border-color: var(--status-completed);
+}
+.console-connection[data-state="live"] .console-connection-dot {
+  background: var(--status-completed);
+  box-shadow: 0 0 6px var(--status-completed);
+}
+.console-connection[data-state="reconnecting"] {
+  color: var(--status-running);
+  border-color: var(--status-running);
+}
+.console-connection[data-state="reconnecting"] .console-connection-dot {
+  background: var(--status-running);
+  animation: pulseDot 1.1s ease-in-out infinite;
+}
+.console-connection[data-state="offline"] {
+  color: var(--status-failed);
+  border-color: var(--status-failed);
+}
+.console-connection[data-state="offline"] .console-connection-dot {
+  background: var(--status-failed);
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .console-connection-dot { animation: none !important; }
+}
+
+/*
+ * Destructive action affordances — DLQ retry / discard.
+ *
+ * Three visual tiers, deliberately distinct so an operator can never
+ * mistake "retry" for "discard" or for a neutral nav button:
+ *   - .btn-destructive (rust): "Discard"; permanent loss of state.
+ *   - .btn-restorative (paper-indigo accent): "Retry"; replays an
+ *     entry — undoable if the retry itself fails.
+ *   - .btn-outline / .btn (default): all other neutral navigation.
+ *
+ * Both destructive tiers refuse to look like plain links — full pill
+ * border, weighted typography, slight saturation bump on hover.
+ */
+.btn-destructive {
+  background: var(--bg);
+  color: var(--status-failed);
+  border-color: var(--status-failed);
+  font-weight: 600;
+}
+.btn-destructive:hover {
+  background: var(--status-failed);
+  color: var(--surface);
+  text-decoration: none;
+}
+.btn-restorative {
+  background: var(--bg);
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.btn-restorative:hover {
+  background: var(--accent);
+  color: var(--surface);
+  text-decoration: none;
+}
+.btn-destructive:disabled,
+.btn-restorative:disabled,
+.btn-destructive.is-disabled,
+.btn-restorative.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--bg);
+}
+
+/*
+ * Read-only banner — flat across the top of every list/detail page
+ * when CONSOLE_READ_ONLY=true. Sits inside .console-main so it scrolls
+ * with content but is hard to miss.
+ */
+.console-readonly-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--status-running);
+  border-left: 4px solid var(--status-running);
+  background: color-mix(in srgb, var(--status-running) 8%, var(--surface));
+  border-radius: var(--radius-tile);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+.console-readonly-banner strong {
+  color: var(--status-running);
+}
+
+/*
+ * DLQ retry / discard modal — backdrop dim + centered card.
+ * Pure CSS reveal: target the hidden checkbox via :checked to flip
+ * the modal visible. Submitting closes it.
+ */
+.console-modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 50;
+}
+.console-modal[data-open="true"] { display: flex; }
+.console-modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  padding: 1.25rem;
+  width: min(540px, 92vw);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+}
+.console-modal-card h2 {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+.console-modal-card pre {
+  margin: 0.5rem 0;
+  padding: 0.65rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: 0.82rem var(--font-mono);
+  max-height: 200px;
+  overflow: auto;
+}
+.console-modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+/*
+ * Trigger icons — Unicode glyphs sized to match the badge baseline.
+ * Each kind gets its own visually-distinct mark so the operator can
+ * scan a page of mixed triggers without parsing labels.
+ */
+.trigger-icon {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  letter-spacing: 0;
+  line-height: 1;
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.trigger-icon[data-kind="cron"]    { color: var(--accent); }
+.trigger-icon[data-kind="webhook"] { color: var(--status-running); }
+.trigger-icon[data-kind="subject"] { color: var(--status-completed); }
+.trigger-icon[data-kind="http"]    { color: var(--status-pending); }

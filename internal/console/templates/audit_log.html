@@ -1,0 +1,46 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="console-section">
+  <header class="console-section-header">
+    <h1>Audit log</h1>
+    <p class="console-lede">
+      {{if .Total}}{{.Total}} recent operator actions.{{else}}No actions recorded yet.{{end}}
+    </p>
+  </header>
+
+  <form class="console-filter-bar" method="GET" action="/console/ops/audit">
+    <label class="console-field">
+      <span>Actor</span>
+      <input class="input" type="text" name="actor" value="{{.ActorFilter}}"
+             placeholder="exact actor name" autocomplete="off">
+    </label>
+    <label class="console-field">
+      <span>Action</span>
+      <select class="select" name="action">
+        <option value=""{{if eq .ActionFilter ""}} selected{{end}}>any</option>
+        <option value="dlq.retry"{{if eq .ActionFilter "dlq.retry"}} selected{{end}}>dlq.retry</option>
+        <option value="dlq.discard"{{if eq .ActionFilter "dlq.discard"}} selected{{end}}>dlq.discard</option>
+        <option value="trigger.toggle"{{if eq .ActionFilter "trigger.toggle"}} selected{{end}}>trigger.toggle</option>
+      </select>
+    </label>
+    <button type="submit" class="btn">Filter</button>
+  </form>
+
+  <div class="card">
+    <table class="table console-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Actor</th>
+          <th>Action</th>
+          <th>Target</th>
+          <th>Outcome</th>
+          <th>Data</th>
+        </tr>
+      </thead>
+      <tbody id="audit-tbody">
+        {{template "audit-tbody" .}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}{{end}}

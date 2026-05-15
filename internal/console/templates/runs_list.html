@@ -45,6 +45,17 @@
     </label>
   </form>
 
+  <form class="console-filter-bar" method="GET" action="/console/runs/lookup"
+        aria-label="Find run by id">
+    <label class="console-field" style="flex: 1; min-width: 280px;">
+      <span>Find run by id</span>
+      <input class="input" type="text" name="id"
+             placeholder="paste a run id and press Enter"
+             autocomplete="off" spellcheck="false">
+    </label>
+    <button type="submit" class="btn">Find</button>
+  </form>
+
   <div class="card">
     <table class="table console-table">
       <thead>

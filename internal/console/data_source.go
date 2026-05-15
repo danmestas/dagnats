@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -33,6 +34,33 @@ type DataSource interface {
 	GetRun(ctx context.Context, runID string) (dag.WorkflowRun, error)
 	ListRunEvents(ctx context.Context, runID string, fullData bool) ([]api.RunEvent, error)
 	ListTriggers(ctx context.Context) ([]trigger.TriggerDef, error)
+
+	// ListDeadLetters returns up to limit recent dead-letter entries.
+	// Backed by api.Service.ListDeadLetters; PR 4 widens the surface
+	// so the console can render the DLQ list/detail without touching
+	// JetStream directly.
+	ListDeadLetters(ctx context.Context, limit int) ([]api.DeadLetterView, error)
+
+	// ReplayDeadLetter re-publishes the dead-letter entry with the
+	// given sequence onto its original task subject. Returns nil on
+	// success; api.ErrDLQBodyMissing when the entry pre-dates the
+	// body-preservation schema; any other error on transport failure.
+	ReplayDeadLetter(ctx context.Context, seq uint64) error
+
+	// DiscardDeadLetter removes the dead-letter entry with the given
+	// sequence permanently. Returns nil on success; an error when the
+	// entry is missing or JetStream rejects the delete.
+	DiscardDeadLetter(ctx context.Context, seq uint64) error
+
+	// ListAuditEvents returns up to limit recent audit events from the
+	// console_audit KV bucket. Returns nil + nil-error when the bucket
+	// is empty / not configured; callers render the zero state.
+	ListAuditEvents(ctx context.Context, limit int) ([]AuditEvent, error)
+
+	// EmitAuditEvent writes one audit event into the console_audit
+	// bucket. Returns an error on transport failure; callers should
+	// log + continue rather than fail the operator action.
+	EmitAuditEvent(ctx context.Context, evt AuditEvent) error
 
 	// WatchRuns streams the workflow_runs KV bucket. Each emitted
 	// RunUpdate carries the latest snapshot for one run plus a flag
@@ -82,21 +110,36 @@ type HistoryEvent struct {
 // WORKFLOW_HISTORY stream directly. We could route through api.Service
 // but the watch shape is one-of-a-kind to the console and keeping it
 // alongside the rest of the adapter keeps the wiring legible.
+//
+// PR 4 adds auditKV — the console_audit JetStream KV the adapter
+// reads from / writes to. nil-safe: when auditKV is nil, Emit logs a
+// warning and continues and List returns the zero state.
 type apiServiceAdapter struct {
-	svc *api.Service
-	nc  *nats.Conn
+	svc     *api.Service
+	nc      *nats.Conn
+	auditKV jetstream.KeyValue
+	logger  *slog.Logger
 }
 
 // NewAPIDataSource returns a DataSource backed by the live api.Service.
 // Panics on nil so misconfiguration fails at startup, not at first
 // request. nc may be nil — in that case the streaming methods return an
 // error rather than panic, so older callers that haven't been updated
-// keep building.
-func NewAPIDataSource(svc *api.Service, nc *nats.Conn) DataSource {
+// keep building. logger may be nil — the adapter falls back to slog
+// default when audit emit needs to warn.
+func NewAPIDataSource(
+	svc *api.Service, nc *nats.Conn,
+	auditKV jetstream.KeyValue, logger *slog.Logger,
+) DataSource {
 	if svc == nil {
 		panic("NewAPIDataSource: svc is nil")
 	}
-	return &apiServiceAdapter{svc: svc, nc: nc}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &apiServiceAdapter{
+		svc: svc, nc: nc, auditKV: auditKV, logger: logger,
+	}
 }
 
 func (a *apiServiceAdapter) ListWorkflows(
@@ -167,6 +210,76 @@ func (a *apiServiceAdapter) ListTriggers(
 		panic("apiServiceAdapter.ListTriggers: ctx is nil")
 	}
 	return a.svc.ListTriggers(ctx)
+}
+
+func (a *apiServiceAdapter) ListDeadLetters(
+	ctx context.Context, limit int,
+) ([]api.DeadLetterView, error) {
+	if a.svc == nil {
+		panic("apiServiceAdapter.ListDeadLetters: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.ListDeadLetters: ctx is nil")
+	}
+	if limit <= 0 {
+		panic("apiServiceAdapter.ListDeadLetters: limit must be positive")
+	}
+	return a.svc.ListDeadLetters(ctx, limit)
+}
+
+func (a *apiServiceAdapter) ReplayDeadLetter(
+	ctx context.Context, seq uint64,
+) error {
+	if a.svc == nil {
+		panic("apiServiceAdapter.ReplayDeadLetter: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.ReplayDeadLetter: ctx is nil")
+	}
+	if seq == 0 {
+		panic("apiServiceAdapter.ReplayDeadLetter: seq must be positive")
+	}
+	return a.svc.ReplayDeadLetter(ctx, seq)
+}
+
+func (a *apiServiceAdapter) DiscardDeadLetter(
+	ctx context.Context, seq uint64,
+) error {
+	if a.svc == nil {
+		panic("apiServiceAdapter.DiscardDeadLetter: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.DiscardDeadLetter: ctx is nil")
+	}
+	if seq == 0 {
+		panic("apiServiceAdapter.DiscardDeadLetter: seq must be positive")
+	}
+	return a.svc.DiscardDeadLetter(ctx, seq)
+}
+
+func (a *apiServiceAdapter) ListAuditEvents(
+	ctx context.Context, limit int,
+) ([]AuditEvent, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ListAuditEvents: ctx is nil")
+	}
+	if limit <= 0 {
+		panic("apiServiceAdapter.ListAuditEvents: limit must be positive")
+	}
+	return listAuditEventsInner(ctx, a.auditKV, limit)
+}
+
+func (a *apiServiceAdapter) EmitAuditEvent(
+	ctx context.Context, evt AuditEvent,
+) error {
+	if ctx == nil {
+		panic("apiServiceAdapter.EmitAuditEvent: ctx is nil")
+	}
+	logger := a.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return emitAuditEventInner(ctx, a.auditKV, logger, evt)
 }
 
 // WatchRuns opens a KV watcher against the workflow_runs bucket and

@@ -1367,6 +1367,37 @@ func (s *Service) replayDeadLetterInner(
 	return nil
 }
 
+// DiscardDeadLetter removes the entry at the given stream sequence
+// from the DEAD_LETTERS stream permanently. Returns an error when the
+// sequence is missing or JetStream rejects the delete. Operators
+// trigger this via /console/dlq/<seq>/discard after a typed
+// confirmation; CLI may expose it later.
+func (s *Service) DiscardDeadLetter(
+	ctx context.Context, seq uint64,
+) error {
+	if ctx == nil {
+		panic("DiscardDeadLetter: ctx must not be nil")
+	}
+	if seq == 0 {
+		panic("DiscardDeadLetter: seq must be positive")
+	}
+	return s.observed(ctx, "discardDeadLetter",
+		[]attribute.KeyValue{
+			attribute.Int64("sequence", int64(seq)),
+		},
+		func(ctx context.Context) error {
+			stream, err := s.js.Stream(ctx, "DEAD_LETTERS")
+			if err != nil {
+				return fmt.Errorf("dlq stream: %w", err)
+			}
+			if err := stream.DeleteMsg(ctx, seq); err != nil {
+				return fmt.Errorf("delete dlq seq %d: %w", seq, err)
+			}
+			return nil
+		},
+	)
+}
+
 // deriveTaskSubject is the legacy-shape fallback when the DLQ
 // entry's stored task subject is missing — best-effort recovery for
 // entries written before HeaderDLQTaskSubject existed.

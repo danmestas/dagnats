@@ -354,6 +354,36 @@ func (r *resumeRecorder) WatchRunHistory(
 	return r.inner.WatchRunHistory(ctx, runID, fromSeq)
 }
 
+func (r *resumeRecorder) ListDeadLetters(
+	ctx context.Context, limit int,
+) ([]api.DeadLetterView, error) {
+	return r.inner.ListDeadLetters(ctx, limit)
+}
+
+func (r *resumeRecorder) ReplayDeadLetter(
+	ctx context.Context, seq uint64,
+) error {
+	return r.inner.ReplayDeadLetter(ctx, seq)
+}
+
+func (r *resumeRecorder) DiscardDeadLetter(
+	ctx context.Context, seq uint64,
+) error {
+	return r.inner.DiscardDeadLetter(ctx, seq)
+}
+
+func (r *resumeRecorder) ListAuditEvents(
+	ctx context.Context, limit int,
+) ([]AuditEvent, error) {
+	return r.inner.ListAuditEvents(ctx, limit)
+}
+
+func (r *resumeRecorder) EmitAuditEvent(
+	ctx context.Context, evt AuditEvent,
+) error {
+	return r.inner.EmitAuditEvent(ctx, evt)
+}
+
 // readSSEUntil reads the SSE response body looking for
 // `event: datastar-patch-elements` headers and capturing the row id
 // payload substrings. Stops once want events have been seen OR the

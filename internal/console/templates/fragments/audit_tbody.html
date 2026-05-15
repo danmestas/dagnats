@@ -1,0 +1,24 @@
+{{define "audit-tbody"}}
+{{if .Rows}}
+  {{range .Rows}}
+  <tr>
+    <td class="console-mono" title="{{.Time}}">{{.TimeRel}}</td>
+    <td>{{.Actor}}</td>
+    <td class="console-mono">{{.Action}}</td>
+    <td class="console-mono">{{.Target}}</td>
+    <td>
+      <span class="badge {{if eq .Outcome "success"}}badge-completed{{else if eq .Outcome "denied"}}badge-skipped{{else}}badge-failed{{end}}">
+        {{.Outcome}}
+      </span>
+    </td>
+    <td class="console-event-data console-mono">{{.DataJSON}}</td>
+  </tr>
+  {{end}}
+{{else}}
+  <tr>
+    <td colspan="6" class="console-empty">
+      No audit entries match the current filter.
+    </td>
+  </tr>
+{{end}}
+{{end}}
