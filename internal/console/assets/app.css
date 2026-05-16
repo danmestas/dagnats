@@ -1456,6 +1456,49 @@ body[data-theme="dark"] {
   background: #8a3d2e;
 }
 
+.console-chart-legend-anomaly {
+  margin-left: 16px;
+}
+.console-chart-legend-anomaly-swatch {
+  background: transparent;
+  border: 1.5px solid #8a3d2e;
+  border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  display: inline-block;
+}
+
+.console-chart-glossary {
+  margin-top: 8px;
+  font-family: var(--font-serif);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.console-chart-glossary > summary {
+  cursor: pointer;
+  font-variant-caps: small-caps;
+  letter-spacing: 0.04em;
+}
+.console-chart-glossary > p {
+  margin: 6px 0 0 0;
+  line-height: 1.5;
+}
+
+.console-chart-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: var(--surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: var(--font-serif);
+  font-size: 12px;
+  pointer-events: none;
+  box-shadow: 0 2px 6px rgba(43, 38, 31, 0.18);
+  max-width: 280px;
+}
+
 .console-section-subhead {
   font-family: var(--font-serif);
   font-size: 14px;
@@ -1504,5 +1547,25 @@ body[data-theme="dark"] {
   }
   .console-metric-tile-value {
     font-size: 24px;
+  }
+}
+
+@media (max-width: 420px) {
+  /* PR 7 mobile: legend below the chart + smaller, time-axis ticks
+   * thinned so the labels don't collide. */
+  .console-chart-legend {
+    flex-direction: row;
+    flex-wrap: wrap;
+    font-size: 11px;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .console-chart-canvas {
+    /* uPlot picks the width from clientWidth; force the host wider
+     * than its grid cell so labels have room. */
+    min-width: 100%;
+  }
+  .console-chart-glossary {
+    font-size: 11px;
   }
 }

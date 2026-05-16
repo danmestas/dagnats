@@ -7,6 +7,13 @@ import "go.opentelemetry.io/otel/metric"
 
 // orchMetrics bundles the Orchestrator's pre-allocated metric
 // instruments. Created once in NewOrchestrator.
+//
+// Label policy: workflow labels (workflowID) are bounded because
+// workflows are first-class definitions. Step labels (stepID) are
+// bounded within one workflow's definition. RunID is NEVER attached
+// to instruments here — it is unbounded and would explode storage
+// in the aggregator. See LabelCardinalityCeiling in metrics_test.go
+// for the regression guard.
 type orchMetrics struct {
 	runsActive       metric.Int64UpDownCounter
 	runsCompleted    metric.Int64Counter
@@ -15,6 +22,8 @@ type orchMetrics struct {
 	snapshotDuration metric.Float64Histogram
 	failNonRetriable metric.Int64Counter
 	failRetryAfter   metric.Int64Counter
+	dlqEntries       metric.Int64Counter
+	dlqDepth         metric.Int64UpDownCounter
 }
 
 // newOrchMetrics creates all orchestrator metric instruments.
@@ -44,6 +53,12 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 	failRetryAfter, _ := m.Int64Counter(
 		"step.failure.retry_after",
 	)
+	dlqEntries, _ := m.Int64Counter(
+		"dlq_entries_total",
+	)
+	dlqDepth, _ := m.Int64UpDownCounter(
+		"dlq_depth",
+	)
 	return orchMetrics{
 		runsActive:       runsActive,
 		runsCompleted:    runsCompleted,
@@ -52,6 +67,8 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 		snapshotDuration: snapshotDuration,
 		failNonRetriable: failNonRetriable,
 		failRetryAfter:   failRetryAfter,
+		dlqEntries:       dlqEntries,
+		dlqDepth:         dlqDepth,
 	}
 }
 

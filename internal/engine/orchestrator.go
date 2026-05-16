@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 )
@@ -157,6 +158,7 @@ func (o *Orchestrator) wireDependentSubsystems(
 	o.recovery = NewRecoveryManager(
 		o.js, publisher, o.tracer,
 		om.runsActive, om.runsFailed,
+		om.dlqEntries, om.dlqDepth,
 	)
 	o.approval = NewApprovalGate(
 		o.nc, o.js, o.sleepTimer, o.tracer,
@@ -771,8 +773,11 @@ func (o *Orchestrator) completeWorkflow(
 	}
 	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
-	o.metrics.runsActive.Add(ctx, -1)
-	o.metrics.runsCompleted.Add(ctx, 1)
+	wfAttr := metric.WithAttributes(
+		attribute.String("workflow", run.WorkflowID),
+	)
+	o.metrics.runsActive.Add(ctx, -1, wfAttr)
+	o.metrics.runsCompleted.Add(ctx, 1, wfAttr)
 	if err := o.admission.ReleaseRunIfConcurrency(
 		ctx, run.WorkflowID,
 	); err != nil {
@@ -1104,8 +1109,11 @@ func (o *Orchestrator) failLoopStep(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.metrics.runsActive.Add(ctx, -1)
-	o.metrics.runsFailed.Add(ctx, 1)
+	wfAttr := metric.WithAttributes(
+		attribute.String("workflow", run.WorkflowID),
+	)
+	o.metrics.runsActive.Add(ctx, -1, wfAttr)
+	o.metrics.runsFailed.Add(ctx, 1, wfAttr)
 	if err := o.admission.ReleaseRunIfConcurrency(
 		ctx, run.WorkflowID,
 	); err != nil {
@@ -1579,8 +1587,11 @@ func (o *Orchestrator) failWorkflow(
 	}
 	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
-	o.metrics.runsActive.Add(ctx, -1)
-	o.metrics.runsFailed.Add(ctx, 1)
+	wfAttr := metric.WithAttributes(
+		attribute.String("workflow", run.WorkflowID),
+	)
+	o.metrics.runsActive.Add(ctx, -1, wfAttr)
+	o.metrics.runsFailed.Add(ctx, 1, wfAttr)
 	if err := o.admission.ReleaseRunIfConcurrency(
 		ctx, run.WorkflowID,
 	); err != nil {
@@ -2109,16 +2120,28 @@ func (o *Orchestrator) dispatchReadySteps(
 }
 
 // saveSnapshot saves the run state to KV and records the duration.
+// Records the duration with a workflow label so the per-workflow
+// drilldown table sees per-workflow snapshot latency rather than a
+// global aggregate. RunID is intentionally not attached — unbounded
+// cardinality would blow up the metrics store. See orchMetrics docs
+// for the label policy.
 func (o *Orchestrator) saveSnapshot(
 	ctx context.Context, run dag.WorkflowRun,
 ) error {
 	if run.RunID == "" {
 		panic("saveSnapshot: RunID must not be empty")
 	}
+	if ctx == nil {
+		panic("saveSnapshot: ctx must not be nil")
+	}
 	start := time.Now()
 	err := o.store.Save(ctx, run)
 	elapsed := float64(time.Since(start).Milliseconds())
-	o.metrics.snapshotDuration.Record(ctx, elapsed)
+	o.metrics.snapshotDuration.Record(ctx, elapsed,
+		metric.WithAttributes(
+			attribute.String("workflow", run.WorkflowID),
+		),
+	)
 	return err
 }
 
@@ -2538,8 +2561,11 @@ func (o *Orchestrator) failMapStep(
 	if err := o.saveSnapshot(ctx, run); err != nil {
 		return err
 	}
-	o.metrics.runsActive.Add(ctx, -1)
-	o.metrics.runsFailed.Add(ctx, 1)
+	wfAttr := metric.WithAttributes(
+		attribute.String("workflow", run.WorkflowID),
+	)
+	o.metrics.runsActive.Add(ctx, -1, wfAttr)
+	o.metrics.runsFailed.Add(ctx, 1, wfAttr)
 	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
 		return err
 	}

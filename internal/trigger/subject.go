@@ -108,7 +108,9 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 		panic("handleMessage: JetStream context must not be nil")
 	}
 
+	bg := context.Background()
 	if !s.def.Enabled {
+		RecordFiring(bg, TypeSubject, OutcomeSkipped)
 		return
 	}
 
@@ -126,7 +128,12 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 		fire, eventData, err := s.debounce.DebounceOrFire(
 			debounceCtx, s.def, data,
 		)
-		if err != nil || !fire {
+		if err != nil {
+			RecordFiring(bg, TypeSubject, OutcomeError)
+			return
+		}
+		if !fire {
+			RecordFiring(bg, TypeSubject, OutcomeSkipped)
 			return
 		}
 		data = eventData
@@ -187,5 +194,8 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 			"error", err,
 			"trigger_id", s.def.ID,
 			"run_id", runID)
+		RecordFiring(pubCtx, TypeSubject, OutcomeError)
+		return
 	}
+	RecordFiring(pubCtx, TypeSubject, OutcomeFired)
 }

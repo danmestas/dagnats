@@ -650,22 +650,31 @@ func mountMetricsExporter(
 	if logger == nil {
 		logger = slog.Default()
 	}
+	authCfg := LoadMetricsAuthConfigFromEnv(logger)
 	if agg == nil {
 		// Aggregator init failed earlier — install a stub handler
-		// that reports the gap to scrapers rather than 404.
-		mux.HandleFunc("/metrics",
-			func(w http.ResponseWriter, r *http.Request) {
-				if r == nil {
-					panic("metrics stub: r is nil")
-				}
-				w.Header().Set("Content-Type", prom.ContentType)
-				_, _ = w.Write([]byte(
-					"# metrics aggregator not configured\n",
-				))
-			})
+		// that reports the gap to scrapers rather than 404. The
+		// gate still applies so an unauthorised caller can't probe
+		// for the aggregator's presence.
+		stub := http.HandlerFunc(func(
+			w http.ResponseWriter, r *http.Request,
+		) {
+			if r == nil {
+				panic("metrics stub: r is nil")
+			}
+			w.Header().Set("Content-Type", prom.ContentType)
+			_, _ = w.Write([]byte(
+				"# metrics aggregator not configured\n",
+			))
+		})
+		mux.Handle("/metrics",
+			metricsAuthMiddleware(authCfg, stub))
 		return
 	}
-	mux.Handle("/metrics", prom.Handler(agg, logger))
+	mux.Handle("/metrics",
+		metricsAuthMiddleware(
+			authCfg, prom.Handler(agg, logger),
+		))
 }
 
 // openConsoleAuditKV opens (or creates) the console_audit KV bucket on
