@@ -19,7 +19,10 @@
          data-chart-unit="{{.Unit}}"
          data-chart-x="{{.XAxis}}"
          data-chart-series='{{range .Series}}{{.Label}}|{{.Stroke}};{{end}}'
-         data-chart-values='{{range .Series}}{{.Values}};{{end}}'>
+         data-chart-values='{{range .Series}}{{.Values}};{{end}}'
+         data-chart-anomaly-x='{{range .Anomalies}}{{.TimestampSecs}},{{end}}'
+         data-chart-anomaly-y='{{range .Anomalies}}{{.ValueMs}},{{end}}'
+         data-chart-anomaly-reasons='{{range $i, $a := .Anomalies}}{{if $i}}|{{end}}{{$a.Reason}}{{end}}'>
     </div>
     <div class="console-chart-legend" aria-label="series legend">
       {{range .Series}}
@@ -29,7 +32,25 @@
           <span class="console-chart-legend-label">{{.Label}}</span>
         </span>
       {{end}}
+      {{if .Anomalies}}
+        <span class="console-chart-legend-item console-chart-legend-anomaly">
+          <span class="console-chart-legend-swatch console-chart-legend-anomaly-swatch"
+                aria-hidden="true"></span>
+          <span class="console-chart-legend-label">anomaly</span>
+        </span>
+      {{end}}
     </div>
+    <details class="console-chart-glossary">
+      <summary>How to read these percentiles &amp; markers</summary>
+      <p>
+        <strong>p50</strong> is the median latency &mdash; half of observations
+        completed faster. <strong>p95</strong> and <strong>p99</strong> are
+        the tail: 95&nbsp;% / 99&nbsp;% of observations were faster. Anomaly
+        markers (<span aria-hidden="true">&#9675;</span>) appear where p99
+        exceeded <strong>3&times; p50</strong> &mdash; possible tail-latency
+        events worth investigating.
+      </p>
+    </details>
   {{end}}
 </article>
 {{end}}

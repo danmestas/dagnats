@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -67,16 +68,28 @@ type RecoveryManager struct {
 	// Metrics for compensation failures.
 	runsActive metric.Int64UpDownCounter
 	runsFailed metric.Int64Counter
+	// DLQ instruments. dlqEntries is incremented once per
+	// PublishDeadLetter call (reason label drives the dashboard's
+	// failure-mode breakdown); dlqDepth follows the same call so the
+	// gauge reflects the current depth of the DLQ stream. Both nil
+	// in legacy test seams that build a RecoveryManager via the
+	// short constructor — guard before use.
+	dlqEntries metric.Int64Counter
+	dlqDepth   metric.Int64UpDownCounter
 }
 
 // NewRecoveryManager creates a RecoveryManager with the given
-// dependencies. All parameters are required.
+// dependencies. All parameters are required. dlqEntries and dlqDepth
+// may be nil for tests that don't observe metrics — PublishDeadLetter
+// nil-guards before recording.
 func NewRecoveryManager(
 	js jetstream.JetStream,
 	publisher *TaskPublisher,
 	tracer trace.Tracer,
 	runsActive metric.Int64UpDownCounter,
 	runsFailed metric.Int64Counter,
+	dlqEntries metric.Int64Counter,
+	dlqDepth metric.Int64UpDownCounter,
 ) *RecoveryManager {
 	if js == nil {
 		panic("NewRecoveryManager: js must not be nil")
@@ -97,6 +110,8 @@ func NewRecoveryManager(
 		tracer:     tracer,
 		runsActive: runsActive,
 		runsFailed: runsFailed,
+		dlqEntries: dlqEntries,
+		dlqDepth:   dlqDepth,
 	}
 }
 
@@ -457,7 +472,57 @@ func (rm *RecoveryManager) PublishDeadLetter(
 		Data:    body,
 		Header:  header,
 	}
-	_, _ = rm.js.PublishMsg(ctx, msg)
+	_, err = rm.js.PublishMsg(ctx, msg)
+	rm.recordDLQObservation(ctx, run.WorkflowID, state, err)
+}
+
+// recordDLQObservation increments the DLQ counter + depth gauge.
+// Skipped when the publish itself failed or when the instruments are
+// nil (test seams that don't observe metrics). Reason labels come
+// from a closed enum so the cardinality stays bounded — see
+// resolveDLQReason for the enum.
+func (rm *RecoveryManager) recordDLQObservation(
+	ctx context.Context,
+	workflowID string,
+	state dag.StepState,
+	publishErr error,
+) {
+	if ctx == nil {
+		panic("recordDLQObservation: ctx must not be nil")
+	}
+	if publishErr != nil {
+		return
+	}
+	if rm.dlqEntries == nil && rm.dlqDepth == nil {
+		return
+	}
+	reason := resolveDLQReason(state)
+	attrs := []attribute.KeyValue{
+		attribute.String("reason", reason),
+		attribute.String("workflow", workflowID),
+	}
+	if rm.dlqEntries != nil {
+		rm.dlqEntries.Add(ctx, 1, metric.WithAttributes(attrs...))
+	}
+	if rm.dlqDepth != nil {
+		rm.dlqDepth.Add(ctx, 1, metric.WithAttributes(attrs...))
+	}
+}
+
+// resolveDLQReason maps a failed step's state to a bounded reason
+// label. Three cases today: "max_deliveries" when the step exhausted
+// MaxDeliver retries (most common path); "non_retriable" when the
+// task returned a permanent failure; "unknown" as the catch-all so
+// the label is always present. Bounded enum prevents cardinality
+// blow-up in the metrics store.
+func resolveDLQReason(state dag.StepState) string {
+	if state.Status == dag.StepStatusFailed && state.Attempts > 0 {
+		return "max_deliveries"
+	}
+	if state.Error != "" {
+		return "non_retriable"
+	}
+	return "unknown"
 }
 
 // buildDLQBody reconstructs the bytes that the engine would have

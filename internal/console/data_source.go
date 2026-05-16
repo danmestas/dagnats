@@ -397,7 +397,12 @@ func (a *apiServiceAdapter) EmitAuditEvent(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return emitAuditEventInner(ctx, a.auditKV, logger, evt)
+	err := emitAuditEventInner(ctx, a.auditKV, logger, evt)
+	// Record the metric regardless of KV success: a denied/failed
+	// outcome is still a meaningful audit observation. The outcome
+	// label distinguishes them in the dashboard.
+	recordAuditEvent(ctx, evt)
+	return err
 }
 
 func (a *apiServiceAdapter) SetTriggerEnabled(

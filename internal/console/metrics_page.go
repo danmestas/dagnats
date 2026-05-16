@@ -52,7 +52,8 @@ type MetricsTile struct {
 
 // MetricsChart is one large chart on the page. Series is the slice of
 // per-line data; XAxis is the shared timestamp axis as seconds-since
-// epoch (µPlot's native shape).
+// epoch (µPlot's native shape). Anomalies are detected outliers the
+// client renders as a points-only overlay series.
 type MetricsChart struct {
 	ID          string
 	Title       string
@@ -62,6 +63,11 @@ type MetricsChart struct {
 	Series      []ChartSeries
 	Empty       bool
 	WindowLabel string
+	// Anomalies carries the muted-rust point overlays the µPlot
+	// renderer draws on top of the regular series. Empty for charts
+	// that don't have a latency-shape definition. The tooltip text
+	// lives on each marker so the client doesn't have to redo math.
+	Anomalies []AnomalyMarker
 }
 
 // ChartSeries is one line/area in a MetricsChart.
@@ -505,6 +511,7 @@ func buildLatencyChart(src MetricsSource) MetricsChart {
 		{Label: "p95", Values: p95, Stroke: "warm-clay"},
 		{Label: "p99", Values: p99, Stroke: "muted-rust"},
 	}
+	out.Anomalies = DetectAnomalies(series.Points)
 	return out
 }
 

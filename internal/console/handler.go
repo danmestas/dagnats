@@ -186,6 +186,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			serveSSEMetrics(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/api/metrics/chart/",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveAPIMetricsChart(w, r, cfg)
+		})
 	mux.HandleFunc("/console/api/dag/static/",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageDAGStatic(w, r, cfg)

@@ -90,6 +90,7 @@ func (h *WebhookHandler) ServeHTTP(
 	// Validate HMAC if secret configured
 	if h.def.Webhook.Secret != "" {
 		if !h.validateSignature(r, body) {
+			RecordFiring(r.Context(), TypeWebhook, OutcomeError)
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}
@@ -98,9 +99,13 @@ func (h *WebhookHandler) ServeHTTP(
 	// Publish workflow event if enabled
 	if h.def.Enabled {
 		if err := h.publishWorkflowEvent(r.Context(), body); err != nil {
+			RecordFiring(r.Context(), TypeWebhook, OutcomeError)
 			http.Error(w, "failed to publish event", http.StatusInternalServerError)
 			return
 		}
+		RecordFiring(r.Context(), TypeWebhook, OutcomeFired)
+	} else {
+		RecordFiring(r.Context(), TypeWebhook, OutcomeSkipped)
 	}
 
 	w.WriteHeader(http.StatusOK)

@@ -235,6 +235,7 @@ func (h *HTTPHandler) buildAndPublish(
 	}
 	envelope, err := buildHTTPEnvelope(r, h.def, body)
 	if err != nil {
+		RecordFiring(ctx, TypeHTTP, OutcomeError)
 		http.Error(w, "failed to build envelope",
 			http.StatusInternalServerError)
 		return false
@@ -242,10 +243,12 @@ func (h *HTTPHandler) buildAndPublish(
 	if err := h.publishTrigger(
 		ctx, envelope, runID, r,
 	); err != nil {
+		RecordFiring(ctx, TypeHTTP, OutcomeError)
 		http.Error(w, "failed to publish trigger",
 			http.StatusInternalServerError)
 		return false
 	}
+	RecordFiring(ctx, TypeHTTP, OutcomeFired)
 	return true
 }
 

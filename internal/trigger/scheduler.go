@@ -432,13 +432,16 @@ func (s *Scheduler) fireWorkflow(
 		jetstream.WithMsgID(msgID),
 	)
 	if err != nil {
+		RecordFiring(ctx, TypeCron, OutcomeError)
 		return fmt.Errorf("publish: %w", err)
 	}
 
 	if err := s.publishTriggerFire(def, runID, now); err != nil {
+		RecordFiring(ctx, TypeCron, OutcomeError)
 		return fmt.Errorf("publishTriggerFire: %w", err)
 	}
 
+	RecordFiring(ctx, TypeCron, OutcomeFired)
 	return nil
 }
 
