@@ -68,6 +68,10 @@ type TriggersListView struct {
 // TriggerRow is one row on the triggers list page. The Kind / Target
 // fields mirror the workflow-detail TriggerLine shape so the operator
 // sees consistent labels across surfaces.
+//
+// Sparkline carries hours-many activity buckets for the "Activity (24h)"
+// column. Nil when no firings have been recorded — the template hides
+// the canvas so the empty state stays honest.
 type TriggerRow struct {
 	ID            string
 	Kind          string
@@ -77,6 +81,7 @@ type TriggerRow struct {
 	StatusLabel   string
 	StatusIcon    string
 	LastFiredText string
+	Sparkline     []float64
 }
 
 // servePageTriggersList renders /console/triggers.
@@ -126,10 +131,32 @@ func buildTriggersView(
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].ID < rows[j].ID
 	})
+	attachTriggerSparklines(ctx, ds, rows)
 	return TriggersListView{
 		TypeFilter: typeFilter,
 		Total:      len(rows),
 		Rows:       rows,
+	}
+}
+
+// attachTriggerSparklines mirrors attachWorkflowSparklines for trigger
+// rows. Pulled into its own helper so the view assembler stays small
+// and the empty-state path is the same shape on both surfaces.
+func attachTriggerSparklines(
+	ctx context.Context, ds DataSource, rows []TriggerRow,
+) {
+	if ds == nil {
+		return
+	}
+	if ctx == nil {
+		panic("attachTriggerSparklines: ctx is nil")
+	}
+	for i := range rows {
+		data, err := ds.SparklineData(ctx, "trigger", rows[i].ID, sparklineHours)
+		if err != nil {
+			continue
+		}
+		rows[i].Sparkline = data
 	}
 }
 

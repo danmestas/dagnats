@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -408,7 +409,34 @@ func funcMap() template.FuncMap {
 		"statusIcon":       statusIcon,
 		"pagerArgs":        pagerArgs,
 		"triggerKindGlyph": triggerKindGlyph,
+		"jsonArray":        jsonArrayHelper,
 	}
+}
+
+// jsonArrayHelper serialises a []float64 into a compact JSON array
+// suitable for embedding in a data-* attribute. Returns an empty
+// string when xs is nil so the template can branch on truthiness:
+// {{if .Sparkline}}<canvas .../>{{end}}.
+//
+// Why not encoding/json directly: hand-rolled formatting avoids the
+// reflection cost for the row-by-row render hot path and keeps the
+// output dependency-free.
+func jsonArrayHelper(xs []float64) template.JS {
+	if len(xs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(xs) * 8)
+	b.WriteByte('[')
+	const maxLen = 1024 // bounded loop
+	for i := 0; i < len(xs) && i < maxLen; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(xs[i], 'f', -1, 64))
+	}
+	b.WriteByte(']')
+	return template.JS(b.String())
 }
 
 // triggerKindGlyph returns a one-character icon for each trigger kind.

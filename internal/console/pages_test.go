@@ -61,6 +61,11 @@ type fakeDataSource struct {
 	kvBuckets []KVBucketInfo
 	kvKeys    map[string][]string
 	kvEntries map[string][]byte
+
+	// T13 (Phase 2): sparkline backing data. sparklineSeries is keyed
+	// by "kind/id" so the test can pre-seed deterministic hourly counts
+	// without going through the metrics aggregator.
+	sparklineSeries map[string][]float64
 }
 
 // triggerSetCall captures one SetTriggerEnabled invocation so tests can
@@ -72,12 +77,37 @@ type triggerSetCall struct {
 
 func newFakeDS() *fakeDataSource {
 	return &fakeDataSource{
-		events:       make(map[string][]api.RunEvent),
-		runHistory:   make(map[string]chan HistoryEvent),
-		triggerFires: make(map[string][]TriggerFireRow),
-		kvKeys:       make(map[string][]string),
-		kvEntries:    make(map[string][]byte),
+		events:          make(map[string][]api.RunEvent),
+		runHistory:      make(map[string]chan HistoryEvent),
+		triggerFires:    make(map[string][]TriggerFireRow),
+		kvKeys:          make(map[string][]string),
+		kvEntries:       make(map[string][]byte),
+		sparklineSeries: make(map[string][]float64),
 	}
+}
+
+// seedSparklineHourly populates sparklineSeries with hours-many points
+// for the (kind, id) tuple. Each bucket gets value i+1 so tests can
+// assert ordering and non-zeroness in one shot. now is unused — the
+// fake stores by slot index, not wall-clock — but we keep the
+// parameter so the call site reads like the production usage.
+func (f *fakeDataSource) seedSparklineHourly(
+	kind, id string, _ time.Time, hours int,
+) {
+	if kind == "" {
+		panic("seedSparklineHourly: kind is empty")
+	}
+	if id == "" {
+		panic("seedSparklineHourly: id is empty")
+	}
+	if hours <= 0 {
+		panic("seedSparklineHourly: hours must be positive")
+	}
+	buckets := make([]float64, hours)
+	for i := 0; i < hours; i++ {
+		buckets[i] = float64(i + 1)
+	}
+	f.sparklineSeries[kind+"/"+id] = buckets
 }
 
 func (f *fakeDataSource) ListWorkflows(
@@ -344,6 +374,36 @@ func (f *fakeDataSource) ListKVKeys(
 		keys = keys[:limit]
 	}
 	return keys, "", nil
+}
+
+func (f *fakeDataSource) SparklineData(
+	_ context.Context, kind, id string, hours int,
+) ([]float64, error) {
+	if kind == "" {
+		panic("fakeDataSource.SparklineData: kind is empty")
+	}
+	if id == "" {
+		panic("fakeDataSource.SparklineData: id is empty")
+	}
+	if hours <= 0 {
+		panic("fakeDataSource.SparklineData: hours must be positive")
+	}
+	src, ok := f.sparklineSeries[kind+"/"+id]
+	if !ok || len(src) == 0 {
+		return nil, nil
+	}
+	out := make([]float64, hours)
+	// Copy the trailing window so the newest bucket lands at index
+	// len-1, matching the production bucketHourly contract.
+	copyFrom := len(src) - hours
+	if copyFrom < 0 {
+		copyFrom = 0
+	}
+	src = src[copyFrom:]
+	for i := 0; i < len(src) && i < hours; i++ {
+		out[i] = src[i]
+	}
+	return out, nil
 }
 
 func (f *fakeDataSource) GetKVEntry(

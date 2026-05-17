@@ -426,6 +426,12 @@ func (r *resumeRecorder) GetKVEntry(
 	return r.inner.GetKVEntry(ctx, bucket, key)
 }
 
+func (r *resumeRecorder) SparklineData(
+	ctx context.Context, kind, id string, hours int,
+) ([]float64, error) {
+	return r.inner.SparklineData(ctx, kind, id, hours)
+}
+
 // readSSEUntil reads the SSE response body looking for
 // `event: datastar-patch-elements` headers and capturing the row id
 // payload substrings. Stops once want events have been seen OR the
