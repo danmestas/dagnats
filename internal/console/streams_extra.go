@@ -204,7 +204,15 @@ func serveSSEDLQ(
 	busCh, busCancel := subscribeDLQEvents(cfg)
 	defer busCancel()
 	sse := datastar.NewSSE(w, r)
-	pumpDLQCombined(r.Context(), sse, ts.base, ch, busCh, cfg)
+	// Thread per-actor CSRF + read-only state into the SSE pump so the
+	// freshly-rendered rows carry the same inline-action affordances
+	// as the initial page render. Without this, SSE-prepended rows
+	// would arrive without working Retry/Discard buttons.
+	rowCtx := dlqRowContext{
+		ReadOnly:  cfg.ReadOnly,
+		CSRFToken: csrfTokenFor(r),
+	}
+	pumpDLQCombined(r.Context(), sse, ts.base, ch, busCh, cfg, rowCtx)
 }
 
 // subscribeDLQEvents returns a receive-only channel of bus events
@@ -229,7 +237,7 @@ func pumpDLQCombined(
 	sse *datastar.ServerSentEventGenerator,
 	tmpl *template.Template,
 	kvCh <-chan DLQUpdate, busCh <-chan events.Event,
-	cfg Config,
+	cfg Config, rowCtx dlqRowContext,
 ) {
 	if sse == nil {
 		panic("pumpDLQCombined: sse is nil")
@@ -246,7 +254,7 @@ func pumpDLQCombined(
 			if !ok {
 				return
 			}
-			if err := emitDLQPatch(sse, tmpl, update); err != nil {
+			if err := emitDLQPatch(sse, tmpl, update, rowCtx); err != nil {
 				cfg.Logger.Warn("console: sse dlq emit",
 					"seq", update.View.Sequence, "err", err)
 				return
@@ -289,7 +297,7 @@ func emitDLQBusPatch(
 // DLQOpRemoved patches just remove the row.
 func emitDLQPatch(
 	sse *datastar.ServerSentEventGenerator,
-	tmpl *template.Template, update DLQUpdate,
+	tmpl *template.Template, update DLQUpdate, rowCtx dlqRowContext,
 ) error {
 	if update.View.Sequence == 0 {
 		return nil
@@ -300,9 +308,11 @@ func emitDLQPatch(
 	}
 	row := dlqRowFromView(update.View)
 	html, err := renderFragment(tmpl, "dlq-row", dlqRowPatch{
-		Row:    row,
-		Fresh:  true,
-		PutSeq: update.View.Sequence,
+		Row:       row,
+		Fresh:     true,
+		PutSeq:    update.View.Sequence,
+		ReadOnly:  rowCtx.ReadOnly,
+		CSRFToken: rowCtx.CSRFToken,
 	})
 	if err != nil {
 		return fmt.Errorf("render dlq-row: %w", err)
@@ -323,10 +333,24 @@ func emitDLQPatch(
 }
 
 // dlqRowPatch is the template binding for the dlq-row fragment.
+// ReadOnly + CSRFToken carry the per-actor state the inline-action
+// buttons need; without them an SSE-arriving row would render with
+// dead Retry/Discard buttons and force the operator back through
+// the inspect-then-act loop that T09 was meant to eliminate.
 type dlqRowPatch struct {
-	Row    DLQRow
-	Fresh  bool
-	PutSeq uint64
+	Row       DLQRow
+	Fresh     bool
+	PutSeq    uint64
+	ReadOnly  bool
+	CSRFToken string
+}
+
+// dlqRowContext is the per-request context the SSE pump needs to
+// render rows with working inline actions. Threaded from the SSE
+// handler (which has the *http.Request) down to emitDLQPatch.
+type dlqRowContext struct {
+	ReadOnly  bool
+	CSRFToken string
 }
 
 // emitCountChip patches a small total-count chip in the page header.

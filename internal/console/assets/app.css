@@ -751,6 +751,36 @@ body[data-theme="dark"] {
 }
 
 /*
+ * Small button variant — DLQ list row actions cram Retry + Discard +
+ * Inspect into the trailing Actions column, so each pill needs to
+ * pack tighter than the page-level destructive pair on the detail
+ * page. Same color tiers, smaller padding + tighter font.
+ */
+.btn-sm {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+}
+
+/*
+ * DLQ row Actions column — inline-flex so the three buttons hug each
+ * other on desktop; wrap to a two-row layout on narrow screens so the
+ * pills never overflow the column. The destructive pair stays at the
+ * front so the operator's eye lands on them first; Inspect sits last
+ * as the escape hatch to the full detail page.
+ */
+.dlq-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}
+@media (max-width: 600px) {
+  .dlq-actions { flex-direction: column; align-items: stretch; }
+  .dlq-actions .btn-sm { width: 100%; text-align: center;
+                         justify-content: center; }
+}
+
+/*
  * Read-only banner — flat across the top of every list/detail page
  * when CONSOLE_READ_ONLY=true. Sits inside .console-main so it scrolls
  * with content but is hard to miss.

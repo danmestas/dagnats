@@ -389,6 +389,7 @@ type DLQListView struct {
 	Total        int
 	Rows         []DLQRow
 	ReadOnly     bool
+	CSRFToken    string
 }
 
 // DLQRow is one row on the DLQ list page.
@@ -421,6 +422,7 @@ func servePageDLQList(
 	}
 	view := buildDLQView(r.Context(), ds, r.URL.Query())
 	view.ReadOnly = cfg.ReadOnly
+	view.CSRFToken = csrfTokenFor(r)
 	renderPage(w, r, ts, cfg, "dlq-list", pageData{
 		Title:   "DLQ",
 		Section: "dlq",

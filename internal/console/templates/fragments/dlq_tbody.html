@@ -1,5 +1,6 @@
 {{define "dlq-tbody"}}
 {{$readonly := .ReadOnly}}
+{{$csrf := .CSRFToken}}
 {{range .Rows}}
 <tr id="dlq-row-{{.Sequence}}">
   <td class="console-mono">
@@ -14,8 +15,40 @@
   </td>
   <td class="console-mono">{{.FailedAt}}</td>
   <td>{{.Attempts}}</td>
-  <td>
-    <a class="btn btn-outline" href="/console/dlq/{{.Sequence}}">Inspect</a>
+  <td class="dlq-actions">
+    {{/*
+      Per-row hidden forms carry the POST target + CSRF token. The
+      shared modal JS picks the matching form by data-confirm-action
+      + data-confirm-seq when the operator clicks one of the
+      [data-action-confirm] buttons next to them.
+    */}}
+    <form method="POST" action="/console/dlq/{{.Sequence}}/retry"
+          data-confirm-action="retry"
+          data-confirm-seq="{{.Sequence}}"
+          data-confirm-reason="{{.ReasonFull}}"
+          data-confirm-target="entry #{{.Sequence}}"
+          style="display:none;">
+      <input type="hidden" name="csrf_token" value="{{$csrf}}">
+    </form>
+    <form method="POST" action="/console/dlq/{{.Sequence}}/discard"
+          data-confirm-action="discard"
+          data-confirm-seq="{{.Sequence}}"
+          data-confirm-reason="{{.ReasonFull}}"
+          data-confirm-target="entry #{{.Sequence}}"
+          style="display:none;">
+      <input type="hidden" name="csrf_token" value="{{$csrf}}">
+    </form>
+    <button type="button" class="btn btn-sm btn-restorative"
+            data-dlq-action="retry" data-dlq-seq="{{.Sequence}}"
+            {{if not .BodyPreserved}}disabled aria-disabled="true" title="Legacy entry — body not preserved; retry unsupported"{{else if $readonly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to retry."{{else}}data-action-confirm="retry" data-confirm-seq="{{.Sequence}}"{{end}}>
+      Retry
+    </button>
+    <button type="button" class="btn btn-sm btn-destructive"
+            data-dlq-action="discard" data-dlq-seq="{{.Sequence}}"
+            {{if $readonly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to discard."{{else}}data-action-confirm="discard" data-confirm-seq="{{.Sequence}}"{{end}}>
+      Discard
+    </button>
+    <a class="btn btn-sm btn-outline" href="/console/dlq/{{.Sequence}}">Inspect</a>
   </td>
 </tr>
 {{end}}

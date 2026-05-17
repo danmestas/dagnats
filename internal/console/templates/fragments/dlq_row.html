@@ -13,8 +13,34 @@
   </td>
   <td class="console-mono">{{.Row.FailedAt}}</td>
   <td>{{.Row.Attempts}}</td>
-  <td>
-    <a class="btn btn-outline" href="/console/dlq/{{.Row.Sequence}}">Inspect</a>
+  <td class="dlq-actions">
+    <form method="POST" action="/console/dlq/{{.Row.Sequence}}/retry"
+          data-confirm-action="retry"
+          data-confirm-seq="{{.Row.Sequence}}"
+          data-confirm-reason="{{.Row.ReasonFull}}"
+          data-confirm-target="entry #{{.Row.Sequence}}"
+          style="display:none;">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    </form>
+    <form method="POST" action="/console/dlq/{{.Row.Sequence}}/discard"
+          data-confirm-action="discard"
+          data-confirm-seq="{{.Row.Sequence}}"
+          data-confirm-reason="{{.Row.ReasonFull}}"
+          data-confirm-target="entry #{{.Row.Sequence}}"
+          style="display:none;">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    </form>
+    <button type="button" class="btn btn-sm btn-restorative"
+            data-dlq-action="retry" data-dlq-seq="{{.Row.Sequence}}"
+            {{if not .Row.BodyPreserved}}disabled aria-disabled="true" title="Legacy entry — body not preserved; retry unsupported"{{else if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to retry."{{else}}data-action-confirm="retry" data-confirm-seq="{{.Row.Sequence}}"{{end}}>
+      Retry
+    </button>
+    <button type="button" class="btn btn-sm btn-destructive"
+            data-dlq-action="discard" data-dlq-seq="{{.Row.Sequence}}"
+            {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to discard."{{else}}data-action-confirm="discard" data-confirm-seq="{{.Row.Sequence}}"{{end}}>
+      Discard
+    </button>
+    <a class="btn btn-sm btn-outline" href="/console/dlq/{{.Row.Sequence}}">Inspect</a>
   </td>
 </tr>
 {{end}}
