@@ -173,6 +173,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			dispatchDLQ(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/api/dlq/",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveDLQConfirmFragment(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/ops",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageOpsIndex(w, r, ts, cfg)

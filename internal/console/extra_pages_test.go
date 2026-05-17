@@ -308,6 +308,177 @@ func TestDLQDetail_rendersAndExposesActions(t *testing.T) {
 	}
 }
 
+// TestDLQList_rowsHaveInlineRetryAndDiscardButtons asserts T09's
+// signature contract: every DLQ row carries inline Retry + Discard
+// buttons plus the existing Inspect link, each wired through the
+// shared typed-confirm modal (so the destructive constraint that the
+// detail page enforces is preserved on the list). Methodology: seed
+// one DLQ entry, GET the list, look for the inline button attributes
+// and the per-row hidden forms the modal JS reads.
+func TestDLQList_rowsHaveInlineRetryAndDiscardButtons(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(42, "task timed out"),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/dlq", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		`data-dlq-action="retry"`,
+		`data-dlq-action="discard"`,
+		`data-dlq-seq="42"`,
+		`action="/console/dlq/42/retry"`,
+		`action="/console/dlq/42/discard"`,
+		`data-confirm-action="retry"`,
+		`data-confirm-action="discard"`,
+		"btn-restorative",
+		"btn-destructive",
+		"Inspect",
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("missing %q in DLQ list row actions", sub)
+		}
+	}
+}
+
+// TestDLQList_inlineButtonsHiddenInReadOnly asserts read-only mode
+// suppresses the mutation paths on the list rows just like it does on
+// detail. Operators must not be able to launch a retry/discard from
+// the list when CONSOLE_READ_ONLY=true is on. We check that the
+// disabled affordance is present so the action looks the same as the
+// detail page (gray + tooltip), not that the buttons vanish.
+func TestDLQList_inlineButtonsHiddenInReadOnly(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(43, "panic"),
+	}
+	h := mountWithFakeRO(t, fake, true)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/dlq", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `disabled aria-disabled="true"`) {
+		t.Errorf("read-only list rows must disable inline buttons")
+	}
+	if !strings.Contains(body, "Console is read-only") {
+		t.Errorf("read-only tooltip explanation absent")
+	}
+}
+
+// TestDLQConfirmModalFragment_retryAndDiscardVariants asserts the new
+// /console/api/dlq/<seq>/confirm fragment endpoint returns the modal
+// markup with the correct typed-confirm word + reason text per
+// action. Methodology: seed one DLQ entry, GET ?action=retry then
+// ?action=discard, look for the action-specific substrings.
+func TestDLQConfirmModalFragment_retryAndDiscardVariants(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(55, "task timed out after 30s"),
+	}
+	h := mountWithFake(t, fake)
+	cases := []struct {
+		action, word string
+	}{
+		{"retry", "RETRY"},
+		{"discard", "DISCARD"},
+	}
+	for _, c := range cases {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet,
+			"/console/api/dlq/55/confirm?action="+c.action, nil)
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", c.action, rr.Code)
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, c.word) {
+			t.Errorf("%s: missing confirm word %q in fragment body",
+				c.action, c.word)
+		}
+		if !strings.Contains(body, "dlq-confirm-modal") {
+			t.Errorf("%s: missing modal id", c.action)
+		}
+		if !strings.Contains(body, `data-confirm-action="`+c.action+`"`) {
+			t.Errorf("%s: missing form data-confirm-action", c.action)
+		}
+		if !strings.Contains(body, "task timed out") {
+			t.Errorf("%s: missing seeded reason text", c.action)
+		}
+	}
+}
+
+// TestDLQConfirmModalFragment_unknownActionRejects asserts a bad
+// action value yields 400 so the fragment endpoint never returns a
+// half-populated modal.
+func TestDLQConfirmModalFragment_unknownActionRejects(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(56, "panic"),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/console/api/dlq/56/confirm?action=delete", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code == http.StatusOK {
+		t.Errorf("unknown action returned 200; want 4xx")
+	}
+}
+
+// TestDLQConfirmModalFragment_unknownSeqIs404 asserts a missing DLQ
+// entry yields 404 rather than a modal that points at nothing.
+func TestDLQConfirmModalFragment_unknownSeqIs404(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/console/api/dlq/9999/confirm?action=retry", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("missing seq status = %d, want 404", rr.Code)
+	}
+}
+
+// TestDLQListAndDetail_shareModalPartial asserts the modal markup
+// rendered on both the list page and the detail page is the same
+// canonical partial — the contract is "one source of truth for the
+// destructive-action constraint." We assert the stable shared id and
+// the typed-confirm input id are present on both.
+func TestDLQListAndDetail_shareModalPartial(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(77, "panic"),
+	}
+	h := mountWithFake(t, fake)
+	listRR := httptest.NewRecorder()
+	h.ServeHTTP(listRR, httptest.NewRequest(http.MethodGet,
+		"/console/dlq", nil))
+	detailRR := httptest.NewRecorder()
+	h.ServeHTTP(detailRR, httptest.NewRequest(http.MethodGet,
+		"/console/dlq/77", nil))
+	shared := []string{
+		`id="dlq-confirm-modal"`,
+		`id="dlq-confirm-input"`,
+		`id="dlq-confirm-go"`,
+	}
+	for _, sub := range shared {
+		if !strings.Contains(listRR.Body.String(), sub) {
+			t.Errorf("list missing shared modal sub %q", sub)
+		}
+		if !strings.Contains(detailRR.Body.String(), sub) {
+			t.Errorf("detail missing shared modal sub %q", sub)
+		}
+	}
+}
+
 // TestDLQDetail_readOnlyDisablesButtons asserts visible-but-disabled
 // state when ReadOnly is on. Both buttons get the disabled attr +
 // an explanatory tooltip.
