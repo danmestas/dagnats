@@ -81,3 +81,120 @@
   border-bottom-color: var(--text-primary, #1f1b16);
 }
 /* === end tooltip === */
+
+/* === Phase 2: step list (added 2026-05-17, T02) === */
+.step-list { list-style: none; padding: 0; margin: 0; }
+.step-list-row {
+  border-bottom: 1px solid var(--border, #D6CFC0);
+}
+.step-list-row:last-child { border-bottom: 0; }
+.step-list-row[data-state="failed"] {
+  background: color-mix(in srgb, var(--status-failed, #9A6052) 8%, transparent);
+}
+.step-list-row[data-state="running"] .step-status {
+  animation: step-pulse 1.5s ease-in-out infinite;
+}
+.step-list-summary {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  list-style: none;
+  outline-offset: 2px;
+}
+.step-list-summary::-webkit-details-marker { display: none; }
+.step-list-summary::marker { content: ""; }
+.step-list-summary::before {
+  content: "\25B8"; /* right-pointing triangle: signifier that row expands */
+  display: inline-block;
+  width: 0.75rem; flex-shrink: 0;
+  color: var(--text-secondary, #5A554C);
+  transition: transform 120ms ease;
+}
+details[open] > .step-list-summary::before { transform: rotate(90deg); }
+.step-list-summary:hover { background: var(--accent-soft, rgba(0,0,0,0.04)); }
+.step-list-summary:focus-visible {
+  outline: 2px solid var(--accent, #3F5363);
+  outline-offset: -2px;
+}
+.step-status {
+  width: 1.25rem; text-align: center;
+  font-size: 1rem; font-weight: 600;
+  flex-shrink: 0;
+}
+.step-status-completed { color: var(--status-completed, #6B7A56); }
+.step-status-running   { color: var(--status-running, #A88950); }
+.step-status-failed    { color: var(--status-failed, #9A6052); }
+.step-status-skipped   { color: var(--status-skipped, #807A6E); opacity: 0.8; }
+.step-status-cancelled { color: var(--status-skipped, #807A6E); opacity: 0.8; }
+.step-status-pending   { color: var(--status-pending, #5A6B7D); opacity: 0.7; }
+.step-status-queued    { color: var(--status-pending, #5A6B7D); }
+.step-status-recovered { color: var(--status-completed, #6B7A56); }
+.step-status-sr {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.step-name {
+  flex: 1 1 auto;
+  font-weight: 500;
+  color: var(--text-primary, #1F1B16);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.step-duration,
+.step-attempts,
+.step-relative {
+  color: var(--text-secondary, #5A554C);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.step-attempts { color: var(--status-failed, #9A6052); }
+.step-list-body {
+  padding: 0.5rem 1rem 1rem 2.5rem;
+  background: var(--bg, #F8F5EF);
+}
+.step-error {
+  background: color-mix(in srgb, var(--status-failed, #9A6052) 10%, transparent);
+  padding: 0.625rem 0.875rem;
+  border-radius: 4px;
+  border-left: 3px solid var(--status-failed, #9A6052);
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text-primary, #1F1B16);
+}
+.step-io { margin-top: 0.5rem; }
+.step-io > summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--text-secondary, #5A554C);
+  padding: 0.25rem 0;
+}
+.step-io-json {
+  background: var(--surface, #FFFCF6);
+  padding: 0.625rem 0.75rem;
+  border-radius: 4px;
+  border: 1px solid var(--border, #D6CFC0);
+  font-size: 0.8125rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+.step-events { margin-top: 0.5rem; }
+.step-events-list {
+  list-style: none; padding: 0; margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.step-events-list li { padding: 0.125rem 0; }
+.step-events-list time { color: var(--text-secondary, #5A554C); margin-right: 0.5rem; }
+@media (prefers-reduced-motion: reduce) {
+  .step-list-row[data-state="running"] .step-status { animation: none; }
+  details[open] > .step-list-summary::before { transition: none; }
+}
+@keyframes step-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+/* === end Phase 2: step list === */

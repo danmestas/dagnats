@@ -62,4 +62,5 @@ var assetsFS embed.FS
 //go:embed templates/fragments/dlq_row.html
 //go:embed templates/fragments/metric_tile.html
 //go:embed templates/fragments/metrics_chart.html
+//go:embed templates/components/step_list.html
 var templatesFS embed.FS
