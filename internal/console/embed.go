@@ -66,4 +66,6 @@ var assetsFS embed.FS
 //go:embed templates/components/step_list.html
 //go:embed templates/components/run_error_banner.html
 //go:embed templates/components/run_tab_panels.html
+//go:embed templates/components/tile_live.html
+//go:embed templates/components/recent_panels.html
 var templatesFS embed.FS

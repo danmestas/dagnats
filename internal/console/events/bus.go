@@ -39,6 +39,13 @@ const (
 	TopicDLQ Topic = "dlq"
 	// TopicTrigger — trigger rows: enable/disable.
 	TopicTrigger Topic = "trigger"
+	// TopicRun — workflow run lifecycle: started, completed, failed.
+	// Subscribers (e.g. the dashboard SSE handler) react by patching
+	// the in-flight / failed-1h / success-rate / p99 tiles.
+	TopicRun Topic = "run"
+	// TopicAudit — operator action emitted into the console_audit KV.
+	// The dashboard's recent-actions panel patches on each new event.
+	TopicAudit Topic = "audit"
 )
 
 // Op identifies the operation that produced the event. Combined with

@@ -64,7 +64,10 @@ func TestServeDashboard_rendersLayoutAndNav(t *testing.T) {
 		`href="/console/assets/basecoat.css"`,
 		`href="/console/assets/app.css"`,
 		`src="/console/assets/console.js"`,
-		`data-init="@get('/console/sse/heartbeat', {openWhenHidden: true})"`,
+		// Phase 2 T07: dashboard now subscribes to /console/sse/dashboard
+		// for live tile updates. The legacy heartbeat SSE moved off the
+		// landing page (it was a plumbing demo, not operator value).
+		`data-init="@get('/console/sse/dashboard', {openWhenHidden: true})"`,
 		`id="theme-toggle"`,
 	}
 	for _, sub := range wantSubs {

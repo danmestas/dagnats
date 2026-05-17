@@ -536,6 +536,11 @@ func attemptOf(
 // emitAuditBestEffort writes one audit event via the configured
 // DataSource. Failures are slog.Warn'd and dropped — audit gaps must
 // never block the response the operator is waiting on.
+//
+// Phase 2 T07: when cfg.bus is attached, also publishes a TopicAudit
+// event so the dashboard SSE handler can patch the recent-actions
+// panel without a refresh. The publish is best-effort + non-blocking
+// — bus saturation drops the event with a slog.Warn upstream.
 func emitAuditBestEffort(
 	ctx context.Context, cfg Config, evt AuditEvent,
 ) {
@@ -546,6 +551,9 @@ func emitAuditBestEffort(
 		cfg.Logger.Warn("console: audit emit failed",
 			"action", evt.Action, "target", evt.Target,
 			"outcome", evt.Outcome, "err", err)
+	}
+	if cfg.bus != nil {
+		cfg.bus.publish(busEventAuditRecorded(evt.Action + "/" + evt.Target))
 	}
 }
 

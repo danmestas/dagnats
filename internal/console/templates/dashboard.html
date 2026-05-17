@@ -1,8 +1,11 @@
-{{define "content"}}
-<section class="console-section">
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="console-section"
+         data-init="@get('/console/sse/dashboard', {openWhenHidden: true})">
   <header class="console-section-header">
     <h1>Dashboard</h1>
-    <p class="console-lede">Operational view of this dagnats deployment.</p>
+    <p class="console-lede">
+      Live operational view: is anything on fire right now?
+    </p>
   </header>
 
   <aside id="console-onboarding" class="console-onboarding" hidden
@@ -13,20 +16,17 @@
     <div class="console-onboarding-body">
       <p>
         This console is a live window onto the NATS state the engine
-        is already keeping &mdash; not a separate database. Everything
-        updates as workflows run, triggers fire, and dead-letters
-        accumulate. No refresh needed.
+        is already keeping &mdash; not a separate database. Tiles
+        update without refresh as workflows run, triggers fire, and
+        dead-letters accumulate.
       </p>
       <p>
-        <strong>Operations</strong> (Workflows, Runs, Triggers, DLQ)
-        are the day-to-day surfaces. Browse what's registered, watch
-        what's running, retry what failed.
+        <strong>Tiles up top:</strong> the operational snapshot. Click
+        any tile to drill into the matching list.
       </p>
       <p>
-        <strong>Ops</strong> is the deeper view: workers and leases,
-        the KV bucket inspector, an audit log of every operator
-        action, and a metrics dashboard with latency histograms and
-        anomaly markers. Reach for it when operations don't answer.
+        <strong>Recent panels:</strong> the last few failures and the
+        last few operator actions, side by side.
       </p>
     </div>
     <footer class="console-onboarding-footer">
@@ -35,27 +35,24 @@
     </footer>
   </aside>
 
-  {{if .MetricsAvailable}}
-  <div class="console-grid console-grid-metrics" aria-label="System health">
-    {{range .MetricsTiles}}
-      {{template "metric_tile" .}}
-    {{end}}
+  <div class="dashboard-tile-grid" aria-label="Operational status">
+    {{range .Tiles}}{{template "dashboard_tile" .}}{{end}}
   </div>
-  {{else}}
-  <div class="console-notice console-notice-muted">
-    <p>Metrics aggregator not wired.
-       Start dagnats with the embedded TELEMETRY stream to enable live tiles.</p>
-  </div>
-  {{end}}
 
-  <div class="console-grid">
+  <div class="dashboard-recent-grid">
+    {{template "recent_failures_card" .RecentFailures}}
+    {{template "recent_actions_card" .RecentActions}}
+  </div>
+
+  <details class="dashboard-config-disclosure">
+    <summary>Show config</summary>
     <article class="console-tile" aria-labelledby="tile-overview">
       <header><h2 id="tile-overview">System overview</h2></header>
       <dl class="console-deflist">
-        <div><dt>Listener</dt><dd>{{.Overview.Listener}}</dd></div>
-        <div><dt>Auth mode</dt><dd>{{.Overview.AuthMode}}</dd></div>
-        <div><dt>Actor</dt><dd>{{.Actor.Display}}</dd></div>
-        <div><dt>Build</dt><dd>{{.Overview.Build}}</dd></div>
+        <div><dt>Listener</dt><dd>{{$.Overview.Listener}}</dd></div>
+        <div><dt>Auth mode</dt><dd>{{$.Overview.AuthMode}}</dd></div>
+        <div><dt>Actor</dt><dd>{{$.Actor.Display}}</dd></div>
+        <div><dt>Build</dt><dd>{{$.Overview.Build}}</dd></div>
       </dl>
       <footer class="console-tile-footer">
         <a href="/console/ops/metrics" class="console-tile-link">
@@ -63,13 +60,6 @@
         </a>
       </footer>
     </article>
-
-    <article class="console-tile" aria-labelledby="tile-heartbeat"
-             data-init="@get('/console/sse/heartbeat', {openWhenHidden: true})">
-      <header><h2 id="tile-heartbeat">Heartbeat</h2></header>
-      <p>SSE plumbing demo. Updates every 5 seconds.</p>
-      <p id="heartbeat-now" class="console-mono">awaiting first tick&hellip;</p>
-    </article>
-  </div>
+  </details>
 </section>
-{{end}}
+{{end}}{{end}}

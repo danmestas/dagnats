@@ -235,6 +235,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
 	})
+	mux.HandleFunc("/console/sse/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		serveSSEDashboard(w, r, ts, cfg)
+	})
 	mux.HandleFunc("/console/sse/runs", func(w http.ResponseWriter, r *http.Request) {
 		serveSSERuns(w, r, ts, cfg)
 	})
@@ -505,11 +508,11 @@ func pagerArgs(
 }
 
 // dashboardData is what the layout + dashboard.html templates expect.
-// PR 6 added the MetricsTiles slice so the landing page shows live
-// run-throughput / success-rate / DLQ tiles instead of the heartbeat-
-// only placeholder PR 1 shipped with. MetricsAvailable lets the
-// template render an explicit "metrics not wired" state when the
-// aggregator wasn't attached at startup.
+// Phase 2 T06+T07+T08 replaced the legacy MetricsTiles/MetricsAvailable
+// slice with a fully assembled DashboardView (six operational tiles +
+// recent panels) under Page. The legacy keys remain on the struct so
+// older tests asserting on the wire-up don't regress, but the rebuilt
+// dashboard.html consults Page only.
 type dashboardData struct {
 	Title            string
 	Section          string
@@ -518,6 +521,7 @@ type dashboardData struct {
 	ReadOnly         bool
 	MetricsTiles     []MetricsTile
 	MetricsAvailable bool
+	Page             DashboardView
 }
 
 type overviewData struct {
@@ -540,6 +544,8 @@ func serveDashboard(
 		panic("serveDashboard: r is nil")
 	}
 	actor, _ := ActorFrom(r.Context())
+	view := buildDashboardView(r.Context(), cfg)
+	view.Actor = actor
 	data := dashboardData{
 		Title:   "Dashboard",
 		Section: "dashboard",
@@ -551,6 +557,7 @@ func serveDashboard(
 		},
 		ReadOnly:         cfg.ReadOnly,
 		MetricsAvailable: cfg.Metrics != nil,
+		Page:             view,
 	}
 	if cfg.Metrics != nil {
 		data.MetricsTiles = buildMetricsTiles(cfg.Metrics)

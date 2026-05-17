@@ -137,6 +137,35 @@ func busEventDLQRemove(seqStr string) events.Event {
 	}
 }
 
+// busEventRunCompleted constructs the canonical event for a workflow
+// run completion. The dashboard SSE handler reacts by patching the
+// failed-1h / in-flight / success-rate / p99 tiles + recent-failures
+// panel.
+func busEventRunCompleted(runID string) events.Event {
+	if runID == "" {
+		panic("busEventRunCompleted: runID is empty")
+	}
+	return events.Event{
+		Topic: events.TopicRun,
+		Op:    events.OpRowReplace,
+		Key:   runID,
+	}
+}
+
+// busEventAuditRecorded constructs the canonical event for a new audit
+// entry. The dashboard SSE handler reacts by patching the recent-
+// actions panel.
+func busEventAuditRecorded(key string) events.Event {
+	if key == "" {
+		panic("busEventAuditRecorded: key is empty")
+	}
+	return events.Event{
+		Topic: events.TopicAudit,
+		Op:    events.OpRowAdd,
+		Key:   key,
+	}
+}
+
 // _ ensures the sync import isn't dropped if the file shrinks later;
 // we leave the import for future synchronization scaffolding (test
 // helpers below the binding may need it).
