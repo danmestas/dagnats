@@ -243,6 +243,15 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		serveSSEDLQ(w, r, ts, cfg)
 	})
 	mux.HandleFunc("/console/assets/fonts/", serveFontAsset())
+	// Fixture pages for Phase 2 component vendoring smoke tests. Gated
+	// by DAGNATS_FIXTURES=true so production never exposes them. Tests
+	// flip the env var on before calling Mount.
+	if fixturesEnabled() {
+		mux.HandleFunc("/console/__fixtures__/",
+			func(w http.ResponseWriter, r *http.Request) {
+				serveBasecoatFixture(w, r)
+			})
+	}
 }
 
 // dispatchRoot picks between dashboard (/console/, /console) and 404.
