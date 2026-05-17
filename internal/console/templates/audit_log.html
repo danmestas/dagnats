@@ -34,6 +34,21 @@
     <button type="submit" class="btn">Filter</button>
   </form>
 
+  {{if and (eq .Total 0) (eq .ActorFilter "") (eq .ActionFilter "") (eq .RangeFilter "")}}
+  <div class="console-empty-action">
+    <p>
+      Operator actions appear here as they happen &mdash; trigger
+      toggles, DLQ retries, run cancels.
+    </p>
+    <p class="console-empty-action-hint">
+      Try toggling a trigger on the
+      <a href="/console/triggers">triggers page</a>, or retrying an
+      entry from the <a href="/console/dlq">DLQ</a> &mdash; the
+      result lands here within a second.
+    </p>
+  </div>
+  {{end}}
+
   <div class="card">
     <table class="table console-table">
       <thead>

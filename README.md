@@ -158,11 +158,24 @@ go test ./... -timeout 600s
 
 Tests use real embedded NATS servers (no mocks). Each test gets its own server via `natsutil.StartTestServer(t)`. The full suite takes ~5 minutes locally (worker package ~75s, engine ~45s, e2e harness ~80s).
 
+## Console
+
+`dagnats serve` mounts a server-rendered operator UI at
+`http://127.0.0.1:8080/console/` (loopback by default). The console
+is a live window onto NATS state — workflows, runs, triggers,
+dead-letter queue, audit log, and a metrics dashboard with anomaly
+markers. Mutations (retry, discard, toggle) flow through the same
+API the CLI uses, and SSE pushes row-level updates without polling.
+For deployment, auth modes, env vars, and the production checklist
+see [docs/console.md](docs/console.md).
+
 ## Documentation
 
 | Guide | Description |
 |-------|-------------|
 | [Getting Started](docs/getting-started.md) | Workflows, workers, and first run |
+| [Console](docs/console.md) | Operator UI: deployment, auth, env vars, key workflows |
+| [Console Contributing](docs/console-contributing.md) | DX guide for changing the console |
 | [Configuration](docs/configuration.md) | Config keys, env vars, file format |
 | [Production](docs/production.md) | Deployment, security, tuning, observability |
 | [Workflow Schema](docs/workflow-schema.md) | JSON schema reference |

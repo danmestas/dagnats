@@ -5,6 +5,36 @@
     <p class="console-lede">Operational view of this dagnats deployment.</p>
   </header>
 
+  <aside id="console-onboarding" class="console-onboarding" hidden
+         role="region" aria-labelledby="console-onboarding-title">
+    <header class="console-onboarding-header">
+      <h2 id="console-onboarding-title">Welcome to the dagnats console</h2>
+    </header>
+    <div class="console-onboarding-body">
+      <p>
+        This console is a live window onto the NATS state the engine
+        is already keeping &mdash; not a separate database. Everything
+        updates as workflows run, triggers fire, and dead-letters
+        accumulate. No refresh needed.
+      </p>
+      <p>
+        <strong>Operations</strong> (Workflows, Runs, Triggers, DLQ)
+        are the day-to-day surfaces. Browse what's registered, watch
+        what's running, retry what failed.
+      </p>
+      <p>
+        <strong>Ops</strong> is the deeper view: workers and leases,
+        the KV bucket inspector, an audit log of every operator
+        action, and a metrics dashboard with latency histograms and
+        anomaly markers. Reach for it when operations don't answer.
+      </p>
+    </div>
+    <footer class="console-onboarding-footer">
+      <button type="button" id="console-onboarding-dismiss"
+              class="btn">Got it</button>
+    </footer>
+  </aside>
+
   {{if .MetricsAvailable}}
   <div class="console-grid console-grid-metrics" aria-label="System health">
     {{range .MetricsTiles}}

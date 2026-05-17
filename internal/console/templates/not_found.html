@@ -13,14 +13,19 @@
       <p>
         <a class="btn btn-outline" href="/console/">Return to dashboard</a>
       </p>
-      <p class="muted" style="margin-top: 1rem;">
-        Available sections:
-        <a href="/console/workflows">Workflows</a>,
-        <a href="/console/runs">Runs</a>,
-        <a href="/console/triggers">Triggers</a>,
-        <a href="/console/dlq">DLQ</a>,
-        <a href="/console/ops/audit">Audit log</a>.
-      </p>
+      <nav class="console-popular-destinations"
+           aria-label="Popular destinations">
+        <h3>Popular destinations</h3>
+        <ul>
+          <li><a href="/console/workflows">Workflows</a></li>
+          <li><a href="/console/runs">Runs</a></li>
+          <li><a href="/console/triggers">Triggers</a></li>
+          <li><a href="/console/dlq">Dead-letter queue</a></li>
+          <li><a href="/console/ops/metrics">Metrics</a></li>
+          <li><a href="/console/ops/audit">Audit log</a></li>
+          <li><a href="/console/ops">Ops index</a></li>
+        </ul>
+      </nav>
     </div>
   </div>
 </section>

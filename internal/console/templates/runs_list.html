@@ -56,6 +56,19 @@
     <button type="submit" class="btn">Find</button>
   </form>
 
+  {{if and (eq .Total 0) (eq .Workflow "") (eq .Status "") (or (eq .Range "") (eq .Range "all")) (eq .SinceUnix 0) (eq .UntilUnix 0)}}
+  <div class="console-empty-action">
+    <p>
+      No runs to show. Start one from the CLI:
+    </p>
+    <p><code>dagnats run start &lt;workflow&gt; '&lt;input-json&gt;'</code></p>
+    <p class="console-empty-action-hint">
+      For unattended execution, register a cron, webhook, subject, or
+      HTTP trigger via the <a href="/console/triggers">triggers page</a>.
+    </p>
+  </div>
+  {{end}}
+
   <div class="card">
     <table class="table console-table">
       <thead>

@@ -291,7 +291,9 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	s.cfg.HTTPAddr = ln.Addr().String()
 
 	s.startMetricsAggregator()
-	mountMetricsExporter(mux, s.metricsAgg, slog.Default())
+	mountMetricsExporter(
+		mux, s.metricsAgg, slog.Default(), s.cfg.HTTPAddr,
+	)
 	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc, s.metricsAgg)
 
 	s.httpSrv = &http.Server{Handler: mux}
@@ -642,15 +644,20 @@ func (s *Server) startMetricsAggregator() {
 // vocabulary as the console gate, kept independent so an operator
 // can lock the console down without locking the scraper out.
 func mountMetricsExporter(
-	mux *http.ServeMux, agg *metrics.Aggregator, logger *slog.Logger,
+	mux *http.ServeMux, agg *metrics.Aggregator,
+	logger *slog.Logger, httpAddr string,
 ) {
 	if mux == nil {
 		panic("mountMetricsExporter: mux is nil")
+	}
+	if httpAddr == "" {
+		panic("mountMetricsExporter: httpAddr is empty")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	authCfg := LoadMetricsAuthConfigFromEnv(logger)
+	LogMetricsAuthStartup(logger, authCfg, httpAddr)
 	if agg == nil {
 		// Aggregator init failed earlier — install a stub handler
 		// that reports the gap to scrapers rather than 404. The

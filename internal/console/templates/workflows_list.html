@@ -28,6 +28,21 @@
     </label>
   </form>
 
+  {{if and (eq .Total 0) (eq .Filter "")}}
+  <div class="console-empty-action">
+    <p>
+      No workflows registered yet. Define one as JSON and register it:
+    </p>
+    <p><code>dagnats workflow register path/to/workflow.json</code></p>
+    <p class="console-empty-action-hint">
+      Need a starting point? Run <code>dagnats init my-workflow</code>
+      &mdash; it scaffolds a project with an example workflow and worker.
+      Full walkthrough in
+      <a href="/docs">the API docs</a>.
+    </p>
+  </div>
+  {{end}}
+
   <div class="card">
     <table class="table console-table">
       <thead>

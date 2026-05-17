@@ -23,6 +23,22 @@
     </label>
   </form>
 
+  {{if and (eq .Total 0) (eq .TypeFilter "")}}
+  <div class="console-empty-action">
+    <p>No triggers configured. Add one of four kinds:</p>
+    <p>
+      <strong>Cron</strong> from the CLI:
+      <code>dagnats trigger create &lt;workflow&gt; --cron="*/5 * * * *"</code>
+    </p>
+    <p class="console-empty-action-hint">
+      <strong>Webhook</strong>, <strong>NATS subject</strong>, and
+      <strong>HTTP request/response</strong> triggers are declared
+      inline in workflow JSON under a <code>triggers</code> array
+      &mdash; see the workflow schema for shape.
+    </p>
+  </div>
+  {{end}}
+
   <div class="card">
     <table class="table console-table">
       <thead>

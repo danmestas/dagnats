@@ -20,6 +20,28 @@
 (function () {
   "use strict";
 
+  // anomalyURLFor builds the runs-filter URL for one anomaly marker.
+  // Exported on window so the test harness can verify the wire shape
+  // even on pages where uPlot isn't loaded (the chart canvas may not
+  // render, but the URL contract should still be inspectable).
+  function anomalyURLFor(workflow, sinceSecs, untilSecs) {
+    const params = [];
+    if (typeof workflow === "string" && workflow.length > 0) {
+      params.push("workflow=" + encodeURIComponent(workflow));
+    }
+    params.push("status=failed");
+    if (Number.isFinite(sinceSecs)) {
+      params.push("since=" + Math.floor(sinceSecs));
+    }
+    if (Number.isFinite(untilSecs)) {
+      params.push("until=" + Math.floor(untilSecs));
+    }
+    return "/console/runs?" + params.join("&");
+  }
+  if (typeof window === "object") {
+    window.__dagnatsAnomalyURLFor = anomalyURLFor;
+  }
+
   if (typeof window.uPlot !== "function") {
     console.warn("metrics.js: window.uPlot not defined, skipping chart init");
     return;
@@ -262,6 +284,13 @@
     canvas.__anomalyReasons = parseAnomalyReasons(
       canvas.dataset.chartAnomalyReasons || "",
     );
+    canvas.__anomalySinceSecs = parseFloats(
+      canvas.dataset.chartAnomalySince || "",
+    );
+    canvas.__anomalyUntilSecs = parseFloats(
+      canvas.dataset.chartAnomalyUntil || "",
+    );
+    canvas.__chartWorkflow = canvas.dataset.chartWorkflow || "";
     canvas.__lastFetch = 0;
     canvas.__lastSetData = 0;
     const data = [xs];
@@ -293,6 +322,64 @@
     }
     installSSEHook();
     installAnomalyTooltip();
+    installAnomalyClick();
+  }
+
+  // installAnomalyClick navigates to /console/runs filtered to the
+  // anomaly's time window when the operator clicks a marker. Reuses
+  // the same hit-test the tooltip uses so the cursor and the click
+  // agree on what's "near" a marker.
+  function installAnomalyClick() {
+    document.addEventListener("click", function (ev) {
+      const canvases = document.querySelectorAll(
+        ".console-chart-canvas[data-chart-id]",
+      );
+      const MAX = 8;
+      for (let i = 0; i < canvases.length && i < MAX; i++) {
+        const c = canvases[i];
+        const idx = anomalyHitIndex(c, ev.clientX, ev.clientY);
+        if (idx < 0) {
+          continue;
+        }
+        const url = anomalyURLFor(
+          c.__chartWorkflow || "",
+          c.__anomalySinceSecs && c.__anomalySinceSecs[idx],
+          c.__anomalyUntilSecs && c.__anomalyUntilSecs[idx],
+        );
+        if (url) {
+          window.location.href = url;
+          ev.preventDefault();
+        }
+        return;
+      }
+    });
+  }
+
+  // anomalyHitIndex returns the index of the anomaly marker under the
+  // given viewport coordinates, or -1 if none. Pulled out so both the
+  // click handler and the tooltip use one source of truth.
+  function anomalyHitIndex(canvas, clientX, clientY) {
+    if (!canvas || !canvas.__uplot || !canvas.__anomalyXs) {
+      return -1;
+    }
+    const rect = canvas.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right ||
+        clientY < rect.top || clientY > rect.bottom) {
+      return -1;
+    }
+    const u = canvas.__uplot;
+    const HIT = 10;
+    const LIM = 1024;
+    for (let k = 0; k < canvas.__anomalyXs.length && k < LIM; k++) {
+      const px = u.valToPos(canvas.__anomalyXs[k], "x", true) + rect.left;
+      const py = u.valToPos(canvas.__anomalyYs[k], "y", true) + rect.top;
+      const dx = clientX - px;
+      const dy = clientY - py;
+      if (dx * dx + dy * dy <= HIT * HIT) {
+        return k;
+      }
+    }
+    return -1;
   }
 
   // installSSEHook listens for the tile patches the server emits.
@@ -346,31 +433,17 @@
       );
       const MAX = 8;
       let foundReason = "";
+      let hoveringMarker = false;
       for (let i = 0; i < canvases.length && i < MAX; i++) {
         const c = canvases[i];
-        if (!c.__uplot || !c.__anomalyXs) {
-          continue;
-        }
-        const rect = c.getBoundingClientRect();
-        if (ev.clientX < rect.left || ev.clientX > rect.right ||
-            ev.clientY < rect.top || ev.clientY > rect.bottom) {
-          continue;
-        }
-        const u = c.__uplot;
-        const HIT = 10;
-        const LIM = 1024;
-        for (let k = 0; k < c.__anomalyXs.length && k < LIM; k++) {
-          const px = u.valToPos(c.__anomalyXs[k], "x", true) + rect.left;
-          const py = u.valToPos(c.__anomalyYs[k], "y", true) + rect.top;
-          const dx = ev.clientX - px;
-          const dy = ev.clientY - py;
-          if (dx * dx + dy * dy <= HIT * HIT) {
-            foundReason = c.__anomalyReasons[k] || "anomaly";
-            break;
-          }
-        }
-        if (foundReason) {
+        const idx = anomalyHitIndex(c, ev.clientX, ev.clientY);
+        if (idx >= 0) {
+          foundReason = c.__anomalyReasons[idx] || "anomaly";
+          hoveringMarker = true;
+          c.style.cursor = "pointer";
           break;
+        } else if (c.style && c.style.cursor === "pointer") {
+          c.style.cursor = "";
         }
       }
       if (foundReason) {
@@ -380,6 +453,14 @@
         tooltip.style.display = "block";
       } else {
         tooltip.style.display = "none";
+      }
+      if (!hoveringMarker) {
+        // Clear cursors on canvases the mouse moved away from.
+        for (let i = 0; i < canvases.length && i < MAX; i++) {
+          if (canvases[i].style && canvases[i].style.cursor === "pointer") {
+            canvases[i].style.cursor = "";
+          }
+        }
       }
     });
   }
@@ -442,6 +523,8 @@
     canvas.__anomalyXs = [];
     canvas.__anomalyYs = [];
     canvas.__anomalyReasons = [];
+    canvas.__anomalySinceSecs = [];
+    canvas.__anomalyUntilSecs = [];
     if (Array.isArray(payload.anomalies)) {
       const MAX_A = 256;
       for (let i = 0; i < payload.anomalies.length && i < MAX_A; i++) {
@@ -449,6 +532,8 @@
         canvas.__anomalyXs.push(a.TimestampSecs);
         canvas.__anomalyYs.push(a.ValueMs);
         canvas.__anomalyReasons.push(a.Reason || "anomaly");
+        canvas.__anomalySinceSecs.push(a.WindowStartSecs || 0);
+        canvas.__anomalyUntilSecs.push(a.WindowEndSecs || 0);
       }
     }
     canvas.__lastSetData = Date.now();
