@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -946,3 +947,45 @@ func atoi(i int) string {
 // the DataSource interface; if it stops, callers see an immediate
 // failure instead of a far-away runtime nil dereference.
 var _ DataSource = (*fakeDataSource)(nil)
+
+// TestPrintCSS_includesMediaPrintBlock locks in the Phase-2 print
+// stylesheet. Operators print run-detail pages for archival; the
+// block strips nav/theme-toggle/tabs chrome and reveals URLs after
+// links so the printed copy is self-referential.
+func TestPrintCSS_includesMediaPrintBlock(t *testing.T) {
+	cssBytes, err := os.ReadFile("assets/sources/basecoat-raw.css")
+	if err != nil {
+		t.Fatalf("read basecoat-raw.css: %v", err)
+	}
+	css := string(cssBytes)
+
+	// Positive space: the block exists and hides the chrome we
+	// intend to hide, expands tab panels, and prints URLs inline.
+	wantSubstrings := []string{
+		"=== Phase 2: print stylesheet ===",
+		"@media print",
+		"nav, .console-connection, .console-theme-toggle, .command-palette, .side-sheet",
+		"display: none !important",
+		".tabs-content { display: block !important",
+		"a::after { content: \" (\" attr(href) \")\"",
+		"=== end Phase 2: print ===",
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(css, s) {
+			t.Errorf("print CSS missing expected fragment %q", s)
+		}
+	}
+
+	// Negative space: the block must not accidentally re-enable
+	// the chrome it just hid (a stray `display: block` on .nav
+	// inside the @media print scope would defeat the rule).
+	printStart := strings.Index(css, "=== Phase 2: print stylesheet ===")
+	printEnd := strings.Index(css, "=== end Phase 2: print ===")
+	if printStart < 0 || printEnd < 0 || printEnd <= printStart {
+		t.Fatalf("could not locate Phase-2 print block boundaries: start=%d end=%d", printStart, printEnd)
+	}
+	block := css[printStart:printEnd]
+	if strings.Contains(block, "nav { display: block") {
+		t.Error("print block must not re-enable nav inside @media print")
+	}
+}
