@@ -1341,6 +1341,71 @@ func TestServiceListWorkers(t *testing.T) {
 	}
 }
 
+// TestServiceListWorkersFiltersStale proves that ListWorkers excludes
+// workers whose last heartbeat is older than worker.MaxWorkerStaleness.
+// Otherwise a SIGKILL'd worker keeps appearing in `dagnats workers list`
+// until NATS gets around to purging the KV entry — which can be tens of
+// seconds past the nominal bucket TTL. Regression for #233.
+func TestServiceListWorkersFiltersStale(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc)
+
+	// Short window so the test runs in <1s instead of 60s.
+	prev := worker.MaxWorkerStaleness
+	worker.MaxWorkerStaleness = 50 * time.Millisecond
+	t.Cleanup(func() { worker.MaxWorkerStaleness = prev })
+
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	dir := worker.NewDirectory(jsNew)
+	dead := worker.WorkerRegistration{
+		WorkerID:  "worker-dead",
+		TaskTypes: []string{"task-a"},
+		Language:  "go",
+		Transport: "nats",
+		MaxTasks:  1,
+	}
+	if err := dir.Register(dead); err != nil {
+		t.Fatalf("Register dead: %v", err)
+	}
+
+	// Wait past the staleness window so the dead worker's entry is
+	// older than the cutoff at the moment ListWorkers reads.
+	time.Sleep(150 * time.Millisecond)
+
+	live := worker.WorkerRegistration{
+		WorkerID:  "worker-live",
+		TaskTypes: []string{"task-b"},
+		Language:  "go",
+		Transport: "nats",
+		MaxTasks:  1,
+	}
+	if err := dir.Register(live); err != nil {
+		t.Fatalf("Register live: %v", err)
+	}
+
+	workers, err := svc.ListWorkers(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkers: %v", err)
+	}
+
+	// Positive: the fresh worker survives the filter.
+	// Negative: the stale worker is absent.
+	if len(workers) != 1 {
+		t.Fatalf("len(workers) = %d, want 1; got %+v",
+			len(workers), workers)
+	}
+	if workers[0].WorkerID != "worker-live" {
+		t.Fatalf("WorkerID = %q, want %q",
+			workers[0].WorkerID, "worker-live")
+	}
+}
+
 func TestServiceListWorkersNoBucket(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
