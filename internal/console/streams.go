@@ -234,6 +234,13 @@ func serveSSERunDetail(
 		return
 	}
 	from := parseLastEventID(r.Header.Get("Last-Event-ID"))
+	if from == 0 {
+		// Initial connect — the page already rendered events up to
+		// MaxEventSeq into the static tbody. Resume past that prefix
+		// so the live stream doesn't duplicate every row. A reconnect
+		// supplies Last-Event-ID and takes precedence.
+		from = parseFromQuery(r.URL.Query().Get("from"))
+	}
 	ch, err := ds.WatchRunHistory(r.Context(), id, from)
 	if err != nil {
 		cfg.Logger.Error("console: sse run-detail watch",
@@ -256,6 +263,21 @@ func parseLastEventID(h string) uint64 {
 		return 0
 	}
 	v, err := strconv.ParseUint(h, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// parseFromQuery reads the ?from=<seq> query param. Same semantics
+// as Last-Event-ID — the value is the last sequence the client
+// already saw, watcher resumes from seq+1. Unparseable / empty
+// returns 0 (replay-from-the-start).
+func parseFromQuery(q string) uint64 {
+	if q == "" {
+		return 0
+	}
+	v, err := strconv.ParseUint(q, 10, 64)
 	if err != nil {
 		return 0
 	}

@@ -34,24 +34,25 @@ const shutdownDeadline = 15 * time.Second
 
 // Server is the all-in-one DagNats server lifecycle manager.
 type Server struct {
-	cfg         Config
-	ns          *natsserver.Server
-	nc          *nats.Conn
-	orch        *engine.Orchestrator
-	svc         *api.Service
-	natsAPI     *api.NATSAPI
-	trig        *trigger.TriggerService
-	bridge      *bridge.Bridge
-	httpSrv     *http.Server
-	telShutdown func(context.Context)
-	metricsAgg  *metrics.Aggregator
-	metricsStop func()
-	ready       atomic.Bool
-	stopCh      chan struct{}
-	workerShims []*WorkerShim
-	workers     []*worker.Worker
-	running     atomic.Bool
-	tempCreds   string // inline creds temp file; cleaned on shutdown
+	cfg                Config
+	ns                 *natsserver.Server
+	nc                 *nats.Conn
+	orch               *engine.Orchestrator
+	svc                *api.Service
+	natsAPI            *api.NATSAPI
+	trig               *trigger.TriggerService
+	bridge             *bridge.Bridge
+	httpSrv            *http.Server
+	telShutdown        func(context.Context)
+	metricsAgg         *metrics.Aggregator
+	metricsStop        func()
+	metricsErrorReason string
+	ready              atomic.Bool
+	stopCh             chan struct{}
+	workerShims        []*WorkerShim
+	workers            []*worker.Worker
+	running            atomic.Bool
+	tempCreds          string // inline creds temp file; cleaned on shutdown
 }
 
 // New creates a Server with the given config. Panics if DataDir is empty.
@@ -293,8 +294,10 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	s.startMetricsAggregator()
 	mountMetricsExporter(
 		mux, s.metricsAgg, slog.Default(), s.cfg.HTTPAddr,
+		s.metricsErrorReason,
 	)
-	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc, s.metricsAgg)
+	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc,
+		s.metricsAgg, s.metricsErrorReason)
 
 	s.httpSrv = &http.Server{Handler: mux}
 
@@ -515,7 +518,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 func mountConsole(
 	mux *http.ServeMux, httpAddr string,
 	svc *api.Service, nc *nats.Conn,
-	agg *metrics.Aggregator,
+	agg *metrics.Aggregator, metricsErrorReason string,
 ) {
 	if mux == nil {
 		panic("mountConsole: mux is nil")
@@ -557,14 +560,15 @@ func mountConsole(
 			"Set the env var for stable tokens across restarts.")
 	}
 	consoleCfg := console.Config{
-		HTTPAddr: httpAddr,
-		AuthMode: mode,
-		Password: cfg.Password,
-		Build:    "dev",
-		Logger:   logger,
-		Data:     console.NewAPIDataSource(svc, nc, auditKV, logger),
-		ReadOnly: readOnly,
-		Metrics:  console.AdaptAggregator(agg),
+		HTTPAddr:           httpAddr,
+		AuthMode:           mode,
+		Password:           cfg.Password,
+		Build:              "dev",
+		Logger:             logger,
+		Data:               console.NewAPIDataSource(svc, nc, auditKV, logger),
+		ReadOnly:           readOnly,
+		Metrics:            console.AdaptAggregator(agg),
+		MetricsErrorReason: metricsErrorReason,
 	}
 	if !readOnly {
 		enableConsoleSoftDiscard(&consoleCfg, svc, logger)
@@ -618,6 +622,7 @@ func (s *Server) startMetricsAggregator() {
 	}
 	js, err := jetstream.New(s.nc)
 	if err != nil {
+		s.metricsErrorReason = "jetstream init failed: " + err.Error()
 		slog.Default().Warn(
 			"metrics: jetstream init failed; aggregator disabled",
 			"err", err)
@@ -627,6 +632,7 @@ func (s *Server) startMetricsAggregator() {
 	ctx := context.Background()
 	stop, err := agg.StartPump(ctx, js)
 	if err != nil {
+		s.metricsErrorReason = "pump start failed: " + err.Error()
 		slog.Default().Warn(
 			"metrics: pump start failed; aggregator disabled",
 			"err", err)
@@ -645,7 +651,7 @@ func (s *Server) startMetricsAggregator() {
 // can lock the console down without locking the scraper out.
 func mountMetricsExporter(
 	mux *http.ServeMux, agg *metrics.Aggregator,
-	logger *slog.Logger, httpAddr string,
+	logger *slog.Logger, httpAddr string, errorReason string,
 ) {
 	if mux == nil {
 		panic("mountMetricsExporter: mux is nil")
@@ -662,7 +668,14 @@ func mountMetricsExporter(
 		// Aggregator init failed earlier — install a stub handler
 		// that reports the gap to scrapers rather than 404. The
 		// gate still applies so an unauthorised caller can't probe
-		// for the aggregator's presence.
+		// for the aggregator's presence. When the aggregator failed
+		// to start (rather than was never wired) include the failure
+		// reason so scrapers and operators reading curl output learn
+		// the layer is broken, not deferred.
+		body := "# metrics aggregator not configured\n"
+		if errorReason != "" {
+			body = "# metrics aggregator down: " + errorReason + "\n"
+		}
 		stub := http.HandlerFunc(func(
 			w http.ResponseWriter, r *http.Request,
 		) {
@@ -670,9 +683,7 @@ func mountMetricsExporter(
 				panic("metrics stub: r is nil")
 			}
 			w.Header().Set("Content-Type", prom.ContentType)
-			_, _ = w.Write([]byte(
-				"# metrics aggregator not configured\n",
-			))
+			_, _ = w.Write([]byte(body))
 		})
 		mux.Handle("/metrics",
 			metricsAuthMiddleware(authCfg, stub))

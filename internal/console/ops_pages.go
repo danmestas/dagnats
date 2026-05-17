@@ -180,7 +180,7 @@ func servePageWorkers(
 		panic("servePageWorkers: r is nil")
 	}
 	view := WorkersListView{
-		Note: "Engine telemetry for worker heartbeats lands in PR 5c. " +
+		Note: "Worker telemetry is not yet wired. " +
 			"This page surfaces the planned shape; data populates once " +
 			"the engine writes to the worker_heartbeats KV bucket.",
 	}
@@ -222,7 +222,7 @@ func servePageLeases(
 		panic("servePageLeases: r is nil")
 	}
 	view := LeasesListView{
-		Note: "Lease telemetry lands in PR 5c alongside worker heartbeats. " +
+		Note: "Lease telemetry is not yet wired. " +
 			"Today, leases are tracked internally by the engine's admission " +
 			"layer but not surfaced to the console.",
 	}

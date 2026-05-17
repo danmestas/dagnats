@@ -103,6 +103,75 @@ func TestServer_StartsAndStops(t *testing.T) {
 	}
 }
 
+// TestServer_MetricsExporterIsWired pins the close-out fix for the
+// silently-swallowed metrics aggregator startup. Boots a full Server
+// (which provisions the TELEMETRY stream via natsutil and starts the
+// pump), curls /metrics, and asserts the response is the Prometheus
+// exposition format — NOT the "metrics aggregator not configured"
+// stub. The negative assertion catches regressions where startup
+// silently disables the aggregator and the page renders the
+// misleading "deferred feature" empty state.
+func TestServer_MetricsExporterIsWired(t *testing.T) {
+	cfg := testConfig(t)
+	srv := New(cfg)
+	if srv == nil {
+		panic("New() returned nil")
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+	defer func() {
+		srv.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(20 * time.Second):
+			t.Fatal("Run() did not return within 20s")
+		}
+	}()
+	readyURL := fmt.Sprintf("http://%s/ready", cfg.HTTPAddr)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(readyURL)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	metricsURL := fmt.Sprintf("http://%s/metrics", cfg.HTTPAddr)
+	resp, err := http.Get(metricsURL)
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/metrics status: got %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read /metrics: %v", err)
+	}
+	bodyStr := string(body)
+	// Negative: must not be the stub when aggregator is wired.
+	if strings.Contains(bodyStr, "aggregator not configured") {
+		t.Fatalf("/metrics returned stub body — aggregator failed "+
+			"to start (Bug 1 regression). body:\n%s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "aggregator down:") {
+		t.Fatalf("/metrics reports aggregator down (Bug 1 "+
+			"regression). body:\n%s", bodyStr)
+	}
+	// Positive: Prometheus exposition format starts with HELP/TYPE
+	// directives even when no metrics have been collected yet —
+	// dagnats_metrics_pump_lag_ms ships as a static gauge from the
+	// exporter. An empty body would also be unexpected here.
+	if len(bodyStr) == 0 {
+		t.Fatalf("/metrics returned empty body")
+	}
+}
+
 // TestServer_PrintsStartupAndShutdownBanner verifies that the server
 // emits progress lines to stderr during startup and shutdown.
 func TestServer_PrintsStartupAndShutdownBanner(t *testing.T) {

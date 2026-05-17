@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -594,6 +595,58 @@ func TestRunDetail_rendersEventTimelineAndStepGrid(t *testing.T) {
 		if !strings.Contains(body, sub) {
 			t.Errorf("run detail missing %q", sub)
 		}
+	}
+}
+
+// TestRunDetail_eventTimelineRowsUnique pins the close-out fix for the
+// end-of-arc bug where every row appeared twice — once from the
+// server-rendered tbody and once from the SSE replay. The SSE URL
+// must carry ?from=<MaxEventSeq> so live updates resume past the
+// rendered prefix. We assert (positive) that each event id appears
+// exactly once in the rendered HTML and (negative) that the SSE
+// data-init URL carries the from= parameter.
+func TestRunDetail_eventTimelineRowsUnique(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	now := time.Now()
+	run := runWithSteps("run-dup", "alpha", dag.RunStatusCompleted,
+		map[string]dag.StepState{
+			"first":  {Status: dag.StepStatusCompleted, Attempts: 1},
+			"second": {Status: dag.StepStatusCompleted, Attempts: 1},
+		},
+		now.Add(-time.Minute),
+	)
+	fake.runs = []dag.WorkflowRun{run}
+	fake.events["run-dup"] = []api.RunEvent{
+		{Type: "workflow.started", RunID: "run-dup",
+			Timestamp: now.Add(-2 * time.Minute), Seq: 11},
+		{Type: "step.queued", RunID: "run-dup", StepID: "first",
+			Timestamp: now.Add(-110 * time.Second), Seq: 12},
+		{Type: "step.completed", RunID: "run-dup", StepID: "first",
+			Timestamp: now.Add(-100 * time.Second), Seq: 13},
+		{Type: "step.completed", RunID: "run-dup", StepID: "second",
+			Timestamp: now.Add(-30 * time.Second), Seq: 14},
+		{Type: "workflow.completed", RunID: "run-dup",
+			Timestamp: now.Add(-25 * time.Second), Seq: 15},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/runs/run-dup", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for i := 0; i < 5; i++ {
+		needle := `id="run-event-row-` + strconv.Itoa(i) + `"`
+		if got := strings.Count(body, needle); got != 1 {
+			t.Errorf("row %s appeared %d times, want 1", needle, got)
+		}
+	}
+	// SSE must resume past the rendered prefix using ?from=<MaxSeq>.
+	if !strings.Contains(body, "/console/sse/runs/run-dup?from=15") {
+		t.Errorf("SSE data-init missing ?from=<seq>; body=\n%s",
+			body)
 	}
 }
 

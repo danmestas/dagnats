@@ -136,6 +136,30 @@ func TestMetricsPage_EmptyAggregatorRendersExplicitState(t *testing.T) {
 	if strings.Contains(body, "id=\"tile-runs-rate\"") {
 		t.Fatal("empty page must not render tiles")
 	}
+	if strings.Contains(body, "Metrics aggregator down") {
+		t.Fatal("nil-but-no-error path must not render the down banner")
+	}
+}
+
+// TestMetricsPage_DownAggregatorSurfacesErrorBanner pins the close-out
+// fix for the silent-stderr disable: when the aggregator failed to
+// start, the page must surface a "Metrics aggregator down" banner
+// instead of the misleading "not wired" copy that implies a deferred
+// feature. Positive assertion: the error reason text is visible.
+// Negative: the "not wired" empty state must not also fire.
+func TestMetricsPage_DownAggregatorSurfacesErrorBanner(t *testing.T) {
+	cfg := makeMetricsCfg(t, nil)
+	cfg.MetricsErrorReason = "pump start failed: stream missing"
+	rec := exerciseMetrics(t, cfg, "/console/ops/metrics")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	mustContainMetrics(t, body, "Metrics aggregator down")
+	mustContainMetrics(t, body, "pump start failed: stream missing")
+	if strings.Contains(body, "Metrics aggregator not wired") {
+		t.Fatal("down banner must replace the not-wired copy")
+	}
 }
 
 func TestDashboard_EmbedsLiveMetricsTilesWhenAggregatorWired(t *testing.T) {

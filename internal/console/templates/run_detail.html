@@ -1,6 +1,6 @@
 {{define "content"}}{{with .Page}}
 <section class="console-section"
-         data-init="@get('/console/sse/runs/{{.RunID}}', {openWhenHidden: true})">
+         data-init="@get('/console/sse/runs/{{.RunID}}?from={{.MaxEventSeq}}', {openWhenHidden: true})">
   {{if .NotFound}}
     <header class="console-section-header">
       <h1>Run {{.RunIDShort}}</h1>

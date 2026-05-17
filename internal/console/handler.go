@@ -57,6 +57,16 @@ type Config struct {
 	// pumped from the TELEMETRY stream. Nil in tests that don't care
 	// about metrics — the dashboard renders empty-state placeholders.
 	Metrics MetricsSource
+
+	// MetricsErrorReason is the operator-facing explanation surfaced
+	// on /console/ops/metrics when the aggregator failed to start.
+	// Empty string ⇒ no aggregator was ever requested (the dashboard
+	// renders the neutral "not wired" copy). Non-empty ⇒ startup hit
+	// an error; the page renders an alert banner so the operator
+	// learns the metrics layer is broken instead of inferring that
+	// it's a deferred feature. server.go sets this from the slog
+	// warnings the startup pump emits.
+	MetricsErrorReason string
 }
 
 // tombstones returns the configured tombstone store. Internal helper —

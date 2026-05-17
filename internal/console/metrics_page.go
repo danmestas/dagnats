@@ -29,7 +29,13 @@ type MetricsView struct {
 	StepRows  []StepMetricsRow
 	Workflow  string // currently drilled-down workflow, empty == no drill
 	Available bool   // false when cfg.Metrics is nil
-	Generated time.Time
+	// ErrorReason, when non-empty, names the failure that prevented
+	// the aggregator from starting. The template renders an alert
+	// banner that distinguishes "metrics aggregator down" (operator
+	// must investigate) from "no aggregator wired" (intended
+	// configuration).
+	ErrorReason string
+	Generated   time.Time
 }
 
 // MetricsTile is one tile on the system-health row. Spark is the JSON
@@ -140,7 +146,11 @@ func buildMetricsView(
 	}
 	now := time.Now().UTC()
 	if cfg.Metrics == nil {
-		return MetricsView{Available: false, Generated: now}
+		return MetricsView{
+			Available:   false,
+			ErrorReason: cfg.MetricsErrorReason,
+			Generated:   now,
+		}
 	}
 	tiles := buildMetricsTiles(cfg.Metrics)
 	charts := buildMetricsCharts(cfg.Metrics)
