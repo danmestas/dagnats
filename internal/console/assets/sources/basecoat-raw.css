@@ -198,3 +198,17 @@ details[open] > .step-list-summary::before { transform: rotate(90deg); }
   50%      { opacity: 0.4; }
 }
 /* === end Phase 2: step list === */
+
+/* === Phase 2: print stylesheet === */
+@media print {
+  nav, .console-connection, .console-theme-toggle, .command-palette, .side-sheet { display: none !important; }
+  body { background: white !important; color: black; }
+  .tile, .card { box-shadow: none; border: 1px solid #999; page-break-inside: avoid; }
+  .step-list-row { page-break-inside: avoid; }
+  .tabs-list { display: none; }
+  .tabs-content { display: block !important; padding: 0; } /* show all tabs concatenated */
+  pre { white-space: pre-wrap; word-break: break-word; }
+  a { color: black; text-decoration: underline; }
+  a::after { content: " (" attr(href) ")"; font-size: 0.85em; color: #555; }
+}
+/* === end Phase 2: print === */
