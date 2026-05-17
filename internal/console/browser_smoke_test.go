@@ -245,3 +245,73 @@ func evalString(
 	// Fall back to the raw output stripped of surrounding quotes.
 	return strings.Trim(out, "\"")
 }
+
+// TestBrowser_basecoatPhase2Components verifies that every Phase 2
+// Basecoat component lands its init function on the
+// window.basecoat.<name> global after the bundle bootstraps.
+//
+// Methodology:
+//   - Boot Mount() with DAGNATS_FIXTURES=true so the
+//     /__fixtures__/<name> routes mount their minimal skeletons.
+//   - For each of tabs/sheet/tooltip/command, open the fixture page,
+//     wait for the bundle to apply, then eval `typeof
+//     window.basecoat.<name>`. Pass means the type is "object" or
+//     "function"; "undefined" means the component never registered.
+//   - At least 2 assertions per loop: the eval-type check AND a
+//     post-bootstrap data-<name>-initialized="true" sanity check on
+//     the fixture root so we know the init function actually ran on
+//     the skeleton, not just landed on the global.
+//   - Bounded: 30s total deadline. Each subprocess inherits a 10s
+//     timeout via the shared evalString helper.
+func TestBrowser_basecoatPhase2Components(t *testing.T) {
+	skipIfBrowserUnavailable(t)
+	t.Setenv("DAGNATS_FIXTURES", "true")
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	t.Cleanup(func() {
+		brCtx, brCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer brCancel()
+		runAgentBrowserAllowFail(t, brCtx, "close")
+	})
+
+	components := []struct {
+		name, initAttr string
+	}{
+		{"tabs", "data-tabs-initialized"},
+		{"sheet", "data-sheet-initialized"},
+		{"tooltip", "data-tooltip-initialized"},
+		{"command", "data-command-initialized"},
+	}
+	for _, c := range components {
+		runAgentBrowser(t, ctx, "open",
+			srv.URL+"/console/__fixtures__/"+c.name)
+		time.Sleep(750 * time.Millisecond)
+
+		got := evalString(t, ctx,
+			"typeof (window.basecoat && window.basecoat['"+c.name+"'])")
+		if got != "object" && got != "function" {
+			t.Errorf("%s: window.basecoat.%s type = %q, want object/function",
+				c.name, c.name, got)
+		}
+		// Sanity: the fixture root carries the per-component init
+		// flag once the registry has walked the DOM. If this is
+		// "false" the global landed but init never fired.
+		init := evalString(t, ctx,
+			"String(document.querySelector('."+c.name+"').getAttribute('"+
+				c.initAttr+"'))")
+		if init != "true" {
+			t.Errorf("%s: %s = %q, want \"true\"",
+				c.name, c.initAttr, init)
+		}
+	}
+}
