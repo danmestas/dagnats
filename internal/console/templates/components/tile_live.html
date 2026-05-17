@@ -1,0 +1,23 @@
+{{define "dashboard_tile"}}
+<a class="dashboard-tile tile-state-{{.State}}{{if .Empty}} is-empty{{end}}"
+   id="{{.DOMID}}"
+   href="{{.LinkHref}}"
+   aria-labelledby="{{.DOMID}}-title">
+  <header class="dashboard-tile-header">
+    <span class="dashboard-tile-title" id="{{.DOMID}}-title">{{.Title}}</span>
+    <span class="dashboard-tile-arrow" aria-hidden="true">&rarr;</span>
+  </header>
+  <p class="dashboard-tile-value">
+    <span class="dashboard-tile-number">{{.Value}}</span>
+    {{if .Unit}}<span class="dashboard-tile-unit">{{.Unit}}</span>{{end}}
+  </p>
+  {{if .Spark}}
+  <div class="dashboard-tile-spark"
+       data-sparkline="{{range $i, $v := .Spark}}{{if $i}},{{end}}{{$v}}{{end}}"
+       aria-hidden="true"></div>
+  {{end}}
+  {{if .Hint}}
+  <p class="dashboard-tile-hint">{{.Hint}}</p>
+  {{end}}
+</a>
+{{end}}

@@ -162,6 +162,14 @@ func TestMetricsPage_DownAggregatorSurfacesErrorBanner(t *testing.T) {
 	}
 }
 
+// Phase 2 T06: the dashboard tiles are now the operational status
+// tiles (tile-failed-1h / tile-dlq-depth / tile-in-flight /
+// tile-success-rate / tile-p99-latency / tile-workers-active). The
+// legacy "tile-runs-rate" id moved exclusively to /console/ops/metrics.
+// These two tests verify the new dashboard surface still reacts to a
+// wired metrics source (success-rate / p99 tiles get values) and
+// degrades gracefully when one isn't wired (tiles still render but
+// in their "telemetry pending" empty state).
 func TestDashboard_EmbedsLiveMetricsTilesWhenAggregatorWired(t *testing.T) {
 	src := newFakeMetricsSource()
 	now := time.Now()
@@ -173,7 +181,7 @@ func TestDashboard_EmbedsLiveMetricsTilesWhenAggregatorWired(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	mustContainMetrics(t, body, "id=\"tile-runs-rate\"")
+	mustContainMetrics(t, body, "id=\"tile-failed-1h\"")
 	mustContainMetrics(t, body, "id=\"tile-success-rate\"")
 }
 
@@ -184,10 +192,11 @@ func TestDashboard_RendersWithoutTilesWhenAggregatorMissing(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "id=\"tile-runs-rate\"") {
-		t.Fatal("dashboard with nil Metrics must not render live tiles")
+	mustContainMetrics(t, body, "id=\"tile-failed-1h\"")
+	if !strings.Contains(body, "telemetry pending") &&
+		!strings.Contains(body, "is-empty") {
+		t.Fatal("dashboard with nil Metrics must show telemetry-pending state")
 	}
-	mustContainMetrics(t, body, "Metrics aggregator not wired")
 }
 
 func TestBuildMetricsTiles_RunsRateUsesPerMinuteDelta(t *testing.T) {

@@ -318,9 +318,193 @@ html { scroll-behavior: smooth; }
   .tile, .card { box-shadow: none; border: 1px solid #999; page-break-inside: avoid; }
   .step-list-row { page-break-inside: avoid; }
   .tabs-list { display: none; }
+  /* HTML's `hidden` attribute beats `display: block` on specificity
+     unless we also explicitly target it. Both selectors stay so the
+     active panel renders too. */
+  [hidden].tabs-content,
+  .tabs-content[hidden] { display: block !important; padding: 0; }
   .tabs-content { display: block !important; padding: 0; } /* show all tabs concatenated */
   pre { white-space: pre-wrap; word-break: break-word; }
   a { color: black; text-decoration: underline; }
   a::after { content: " (" attr(href) ")"; font-size: 0.85em; color: #555; }
 }
 /* === end Phase 2: print === */
+
+/* === Phase 2: dashboard tile grid + recent panels (T06+T08) === */
+/* Uses the existing console palette vars defined in app.css:
+   --bg, --surface, --border, --text-primary, --text-secondary,
+   --accent, --accent-soft, --status-* — so the tiles inherit both
+   light + dark theming automatically. */
+.dashboard-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.dashboard-tile {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: transform 80ms ease-out, box-shadow 80ms ease-out, border-color 80ms ease-out;
+  position: relative;
+  min-height: 110px;
+}
+.dashboard-tile:hover,
+.dashboard-tile:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  border-color: var(--accent);
+  outline: none;
+}
+.dashboard-tile-header {
+  display: flex; justify-content: space-between; align-items: center;
+}
+.dashboard-tile-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.dashboard-tile-arrow {
+  font-size: 1rem;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  transition: opacity 80ms ease-out, transform 80ms ease-out;
+}
+.dashboard-tile:hover .dashboard-tile-arrow,
+.dashboard-tile:focus-visible .dashboard-tile-arrow {
+  opacity: 1;
+  transform: translateX(2px);
+  color: var(--accent);
+}
+.dashboard-tile-value {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 2.25rem;
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.dashboard-tile-unit {
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+  margin-left: 0.4rem;
+}
+.dashboard-tile-spark {
+  height: 24px;
+  background: var(--accent-soft);
+  border-radius: 3px;
+  opacity: 0.85;
+}
+.dashboard-tile-hint {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+.dashboard-tile.is-empty .dashboard-tile-value { color: var(--text-secondary); }
+.dashboard-tile.tile-state-good { border-left: 4px solid var(--status-completed); }
+.dashboard-tile.tile-state-amber { border-left: 4px solid var(--status-running); }
+.dashboard-tile.tile-state-amber .dashboard-tile-value { color: var(--status-running); }
+.dashboard-tile.tile-state-red { border-left: 4px solid var(--status-failed); }
+.dashboard-tile.tile-state-red .dashboard-tile-value { color: var(--status-failed); }
+
+.dashboard-recent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+.dashboard-recent-card {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-primary);
+}
+.dashboard-recent-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.dashboard-recent-header h2 {
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  margin: 0;
+  color: var(--text-primary);
+}
+.dashboard-recent-link {
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+.dashboard-recent-link:hover { text-decoration: underline; }
+.dashboard-recent-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 0.25rem;
+}
+.dashboard-recent-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-recent-item:last-child { border-bottom: none; }
+.dashboard-recent-when {
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.dashboard-recent-target,
+.dashboard-recent-runid {
+  color: var(--accent);
+  text-decoration: none;
+}
+.dashboard-recent-target:hover,
+.dashboard-recent-runid:hover { text-decoration: underline; }
+.dashboard-recent-actor { color: var(--text-primary); font-weight: 500; }
+.dashboard-recent-action {
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.82rem;
+}
+.dashboard-recent-msg {
+  grid-column: 1 / -1;
+  font-size: 0.8rem;
+  color: var(--status-failed);
+  margin: 0.35rem 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.dashboard-recent-empty {
+  color: var(--text-secondary);
+  font-style: italic;
+  margin: 0.5rem 0;
+}
+.dashboard-config-disclosure {
+  margin-top: 1.5rem;
+}
+.dashboard-config-disclosure summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 0.5rem 0;
+  font-size: 0.85rem;
+  user-select: none;
+}
+.dashboard-config-disclosure summary:hover { color: var(--accent); }
+.dashboard-config-disclosure[open] summary {
+  margin-bottom: 0.75rem;
+  color: var(--text-primary);
+}
+/* === end Phase 2: dashboard tile grid + recent panels === */

@@ -1,0 +1,60 @@
+{{define "recent_failures_card"}}
+<article id="recent-failures" class="dashboard-recent-card"
+         aria-labelledby="recent-failures-title">
+  <header class="dashboard-recent-header">
+    <h2 id="recent-failures-title">Recent failures</h2>
+    <a href="/console/runs?status=failed" class="dashboard-recent-link">
+      all failed runs &rarr;
+    </a>
+  </header>
+  {{if .}}
+  <ol class="dashboard-recent-list">
+    {{range .}}
+    <li class="dashboard-recent-item">
+      <time datetime="{{.When}}" class="dashboard-recent-when">{{.When}}</time>
+      <a class="dashboard-recent-target"
+         href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a>
+      <a class="dashboard-recent-runid"
+         href="/console/runs/{{.RunID}}"
+         title="{{.RunID}}">{{.RunIDShort}}</a>
+      {{if .ErrorMsg}}
+      <p class="dashboard-recent-msg">{{.ErrorMsg}}</p>
+      {{end}}
+    </li>
+    {{end}}
+  </ol>
+  {{else}}
+  <p class="dashboard-recent-empty">
+    No failed runs in the last 24 hours.
+  </p>
+  {{end}}
+</article>
+{{end}}
+
+{{define "recent_actions_card"}}
+<article id="recent-actions" class="dashboard-recent-card"
+         aria-labelledby="recent-actions-title">
+  <header class="dashboard-recent-header">
+    <h2 id="recent-actions-title">Recent operator actions</h2>
+    <a href="/console/ops/audit" class="dashboard-recent-link">
+      audit log &rarr;
+    </a>
+  </header>
+  {{if .}}
+  <ol class="dashboard-recent-list">
+    {{range .}}
+    <li class="dashboard-recent-item">
+      <time datetime="{{.When}}" class="dashboard-recent-when">{{.When}}</time>
+      <span class="dashboard-recent-actor">{{.Actor}}</span>
+      <span class="dashboard-recent-action">{{.Action}}</span>
+      <span class="dashboard-recent-target">{{.Target}}</span>
+    </li>
+    {{end}}
+  </ol>
+  {{else}}
+  <p class="dashboard-recent-empty">
+    No operator actions recorded yet.
+  </p>
+  {{end}}
+</article>
+{{end}}
