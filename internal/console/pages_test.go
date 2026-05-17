@@ -618,6 +618,12 @@ func TestRunsList_filtersByStatus(t *testing.T) {
 }
 
 func TestRunDetail_rendersEventTimelineAndStepGrid(t *testing.T) {
+	// Phase 2 (T03+T04+T05): the run detail page is now a tabs
+	// container. The Steps tab is the default-active panel and renders
+	// the step list partial; events live in a lazy-loaded tab. We
+	// assert the structural anchors that survive the restructure plus
+	// the per-step error message that surfaces on the (default-active)
+	// Steps tab.
 	fake := newFakeDS()
 	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
 	now := time.Now()
@@ -644,11 +650,8 @@ func TestRunDetail_rendersEventTimelineAndStepGrid(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, sub := range []string{
-		`id="run-detail-events"`,
-		`id="run-detail-steps"`,
-		"workflow.started",
-		"step.completed",
-		"step.failed",
+		`id="panel-events"`,
+		`id="panel-steps"`,
 		"boom",
 		`href="/console/workflows/alpha"`,
 		"first", "second",
@@ -663,9 +666,13 @@ func TestRunDetail_rendersEventTimelineAndStepGrid(t *testing.T) {
 // end-of-arc bug where every row appeared twice — once from the
 // server-rendered tbody and once from the SSE replay. The SSE URL
 // must carry ?from=<MaxEventSeq> so live updates resume past the
-// rendered prefix. We assert (positive) that each event id appears
-// exactly once in the rendered HTML and (negative) that the SSE
-// data-init URL carries the from= parameter.
+// rendered prefix.
+//
+// Phase 2: events now live behind a lazy-loaded tab. We assert the
+// SSE URL still carries ?from=<seq> on the initial page (so when the
+// operator opens the events tab the prefix is correct), and we hit
+// the events-tab fragment endpoint to verify each event id appears
+// exactly once inside the fragment HTML.
 func TestRunDetail_eventTimelineRowsUnique(t *testing.T) {
 	fake := newFakeDS()
 	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
@@ -698,16 +705,25 @@ func TestRunDetail_eventTimelineRowsUnique(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	for i := 0; i < 5; i++ {
-		needle := `id="run-event-row-` + strconv.Itoa(i) + `"`
-		if got := strings.Count(body, needle); got != 1 {
-			t.Errorf("row %s appeared %d times, want 1", needle, got)
-		}
-	}
 	// SSE must resume past the rendered prefix using ?from=<MaxSeq>.
 	if !strings.Contains(body, "/console/sse/runs/run-dup?from=15") {
 		t.Errorf("SSE data-init missing ?from=<seq>; body=\n%s",
 			body)
+	}
+	// Events-tab fragment must render every event id exactly once.
+	fragRR := httptest.NewRecorder()
+	h.ServeHTTP(fragRR, httptest.NewRequest(http.MethodGet,
+		"/console/api/run/run-dup/events-tab", nil))
+	if fragRR.Code != http.StatusOK {
+		t.Fatalf("events-tab status = %d, want 200", fragRR.Code)
+	}
+	fragBody := fragRR.Body.String()
+	for i := 0; i < 5; i++ {
+		needle := `id="run-event-row-` + strconv.Itoa(i) + `"`
+		if got := strings.Count(fragBody, needle); got != 1 {
+			t.Errorf("row %s appeared %d times in events-tab fragment, want 1",
+				needle, got)
+		}
 	}
 }
 
@@ -905,6 +921,165 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 			}
 			if m := atImport.FindStringSubmatch(body); m != nil {
 				t.Errorf("external URL in @import: %s", m[2])
+			}
+		})
+	}
+}
+
+// TestRunDetail_rendersTabs asserts the run detail page now renders
+// a four-tab container (Steps default-active, then Events, DAG,
+// Input/Output). Methodology: structural substring match against the
+// tablist; we don't pin exact Basecoat class names so the CSS layer
+// can evolve, but the ARIA structure is load-bearing — screen readers
+// and tests depend on it.
+func TestRunDetail_rendersTabs(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	fake.runs = []dag.WorkflowRun{
+		runWithSteps("run-tabs", "alpha", dag.RunStatusCompleted,
+			map[string]dag.StepState{
+				"first":  {Status: dag.StepStatusCompleted, Attempts: 1},
+				"second": {Status: dag.StepStatusCompleted, Attempts: 1},
+			}, time.Now().Add(-time.Minute)),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/runs/run-tabs", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, label := range []string{
+		">Steps<", ">Events<", ">DAG<", ">Input/Output<",
+	} {
+		if !strings.Contains(body, label) {
+			t.Errorf("missing tab label %q", label)
+		}
+	}
+	// Steps tab must be marked default-active. Match the aria-selected
+	// pair on the Steps button id without pinning attribute ordering.
+	if !strings.Contains(body, `id="tab-steps"`) ||
+		!strings.Contains(body, `aria-selected="true" aria-controls="panel-steps"`) {
+		t.Error("Steps tab is not the default-active tab")
+	}
+	for _, panelID := range []string{
+		`id="panel-steps"`, `id="panel-events"`,
+		`id="panel-dag"`, `id="panel-io"`,
+	} {
+		if !strings.Contains(body, panelID) {
+			t.Errorf("missing tab panel %q", panelID)
+		}
+	}
+}
+
+// TestRunDetail_failedRunShowsErrorBanner asserts that a failed run
+// renders the red error banner above the tabs with the failing step
+// id, error message, attempts, and a jump-to-step anchor link.
+func TestRunDetail_failedRunShowsErrorBanner(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{{
+		Name:    "demo",
+		Version: "v1",
+		Steps: []dag.StepDef{
+			{ID: "fetch", Task: "echo", Timeout: time.Minute},
+			{ID: "transform", Task: "echo", Timeout: time.Minute},
+		},
+	}}
+	fake.runs = []dag.WorkflowRun{
+		runWithSteps("run-failed", "demo", dag.RunStatusFailed,
+			map[string]dag.StepState{
+				"fetch": {Status: dag.StepStatusCompleted, Attempts: 1},
+				"transform": {Status: dag.StepStatusFailed,
+					Attempts: 3, Error: "boom"},
+			}, time.Now().Add(-time.Minute)),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/runs/run-failed", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		`class="alert alert-destructive run-error-banner"`,
+		"transform",
+		"boom",
+		`href="#step-row-transform"`,
+		"3 attempts",
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("error banner missing %q", sub)
+		}
+	}
+}
+
+// TestRunDetail_completedRunHasNoBanner is the negative-space partner:
+// a successful run must not render the failed-run banner.
+func TestRunDetail_completedRunHasNoBanner(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	fake.runs = []dag.WorkflowRun{
+		runWithSteps("run-ok", "alpha", dag.RunStatusCompleted,
+			map[string]dag.StepState{
+				"first":  {Status: dag.StepStatusCompleted, Attempts: 1},
+				"second": {Status: dag.StepStatusCompleted, Attempts: 1},
+			}, time.Now().Add(-time.Minute)),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/runs/run-ok", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "run-error-banner") {
+		t.Error("completed run should not show the failed-run banner")
+	}
+}
+
+// TestRunDetail_lazyTabFragments asserts the three lazy-load fragment
+// endpoints (events-tab, dag-tab, io-tab) return SSE patches that each
+// target the matching panel id with inner-mode content.
+func TestRunDetail_lazyTabFragments(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	now := time.Now()
+	fake.runs = []dag.WorkflowRun{
+		runWithSteps("run-lz", "alpha", dag.RunStatusCompleted,
+			map[string]dag.StepState{
+				"first": {Status: dag.StepStatusCompleted,
+					Attempts: 1, Output: []byte(`{"ok":1}`)},
+				"second": {Status: dag.StepStatusCompleted, Attempts: 1},
+			}, now.Add(-time.Minute)),
+	}
+	fake.events["run-lz"] = []api.RunEvent{
+		{Type: "workflow.started", RunID: "run-lz",
+			Timestamp: now.Add(-2 * time.Minute), Seq: 1},
+	}
+	h := mountWithFake(t, fake)
+	cases := []struct {
+		name, url, wantSelector string
+	}{
+		{"events", "/console/api/run/run-lz/events-tab", "panel-events"},
+		{"dag", "/console/api/run/run-lz/dag-tab", "panel-dag"},
+		{"io", "/console/api/run/run-lz/io-tab", "panel-io"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, httptest.NewRequest(
+				http.MethodGet, tc.url, nil))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s",
+					rr.Code, rr.Body.String())
+			}
+			body := rr.Body.String()
+			// SSE wire format includes the selector and event type.
+			if !strings.Contains(body, tc.wantSelector) {
+				t.Errorf("fragment missing selector %q; body=%s",
+					tc.wantSelector, body)
 			}
 		})
 	}

@@ -64,4 +64,6 @@ var assetsFS embed.FS
 //go:embed templates/fragments/metric_tile.html
 //go:embed templates/fragments/metrics_chart.html
 //go:embed templates/components/step_list.html
+//go:embed templates/components/run_error_banner.html
+//go:embed templates/components/run_tab_panels.html
 var templatesFS embed.FS

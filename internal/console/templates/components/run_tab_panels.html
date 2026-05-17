@@ -1,0 +1,61 @@
+{{define "run-events-tab"}}
+<article class="card" id="run-detail-events">
+  <header class="card-header"><h2>Event timeline</h2></header>
+  <div class="card-body">
+    <table class="table console-table">
+      <thead>
+        <tr><th>Time</th><th>Event</th><th>Step</th><th>Data</th></tr>
+      </thead>
+      <tbody id="run-events-body">
+        {{range .Events}}
+        <tr id="run-event-row-{{.Index}}">
+          <td class="console-mono">{{.Timestamp}}</td>
+          <td><span class="badge badge-outline">{{.Type}}</span></td>
+          <td class="console-mono">{{.StepID}}</td>
+          <td class="console-mono console-event-data">{{.DataPreview}}</td>
+        </tr>
+        {{else}}
+        <tr id="run-events-empty"><td colspan="4" class="console-empty">no events recorded</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</article>
+{{end}}
+
+{{define "run-dag-tab"}}
+<article class="card dagviz-card" id="run-detail-dag">
+  <header class="card-header"><h2>DAG (live)</h2></header>
+  <div class="card-body dagviz-card-body">
+    {{if .DAGSVG}}
+      {{.DAGSVG}}
+    {{else if .DAGFallback}}
+      <p class="dagviz-fallback">{{.DAGFallback}}</p>
+    {{else}}
+      <p class="console-empty">DAG visualisation unavailable.</p>
+    {{end}}
+  </div>
+</article>
+{{end}}
+
+{{define "run-io-tab"}}
+<article class="card" id="run-detail-input">
+  <header class="card-header"><h2>Run input</h2></header>
+  <div class="card-body">
+    {{if .Input}}
+    <pre class="console-pre"><code>{{.Input}}</code></pre>
+    {{else}}
+    <p class="console-empty">no input recorded</p>
+    {{end}}
+  </div>
+</article>
+
+{{if .HasOutput}}
+<article class="card" id="run-detail-output">
+  <header class="card-header"><h2>Run output</h2></header>
+  <div class="card-body">
+    <pre class="console-pre"><code>{{.Output}}</code></pre>
+  </div>
+</article>
+{{end}}
+{{end}}
