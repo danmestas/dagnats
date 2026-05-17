@@ -10,13 +10,26 @@
   </header>
 
   {{if not .Page.Available}}
-    <div class="console-notice console-notice-muted" role="status">
-      <h2>Metrics aggregator not wired</h2>
-      <p>
-        The console hasn't been given a metrics aggregator. Start dagnats with
-        the embedded TELEMETRY stream and re-load this page.
-      </p>
-    </div>
+    {{if .Page.ErrorReason}}
+      <div class="alert alert-error console-metrics-down" role="alert">
+        <strong>Metrics aggregator down</strong>
+        <p>
+          The TELEMETRY pump failed to start; charts and tiles are
+          unavailable until the aggregator recovers. Check the
+          dagnats server logs for the startup warning, then restart
+          dagnats once the underlying NATS stream is healthy.
+        </p>
+        <p class="console-mono console-pre console-pre-error">{{.Page.ErrorReason}}</p>
+      </div>
+    {{else}}
+      <div class="console-notice console-notice-muted" role="status">
+        <h2>Metrics aggregator not wired</h2>
+        <p>
+          The console hasn't been given a metrics aggregator. Start dagnats with
+          the embedded TELEMETRY stream and re-load this page.
+        </p>
+      </div>
+    {{end}}
   {{else}}
 
   <h2 class="console-section-subhead">System health</h2>

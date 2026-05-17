@@ -56,7 +56,7 @@ func TestOpsWorkers_rendersPlaceholderBanner(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "Engine telemetry") {
+	if !strings.Contains(body, "Worker telemetry is not yet wired") {
 		t.Fatalf("missing telemetry-gap callout: %s", body)
 	}
 	if !strings.Contains(body, "no workers reporting") {
@@ -74,7 +74,7 @@ func TestOpsLeases_rendersPlaceholderBanner(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "Lease telemetry") {
+	if !strings.Contains(body, "Lease telemetry is not yet wired") {
 		t.Fatalf("missing telemetry-gap callout: %s", body)
 	}
 	if !strings.Contains(body, "no leases reporting") {

@@ -802,6 +802,11 @@ type RunDetailView struct {
 	// error (cycle / too many steps).
 	DAGSVG      template.HTML
 	DAGFallback string
+	// MaxEventSeq is the highest JetStream stream sequence rendered
+	// into the static Events tbody. The SSE endpoint reads this from
+	// ?from=<seq> so the live stream resumes after the prefix and
+	// the operator doesn't see every event rendered twice.
+	MaxEventSeq uint64
 }
 
 // StepCard is one cell in the step status grid.
@@ -878,6 +883,7 @@ func buildRunDetail(
 	}
 	events, _ := ds.ListRunEvents(ctx, id, false)
 	view.Events = toEventRows(events)
+	view.MaxEventSeq = maxEventSeq(events)
 	view.Input = prettyJSON(run.Input)
 	out, errMsg := runOutputAndError(run)
 	if out != "" {
@@ -965,6 +971,20 @@ func stepCardsFor(
 		out = append(out, card)
 	}
 	return out
+}
+
+// maxEventSeq returns the highest JetStream stream sequence across
+// the rendered events, or 0 when the list is empty / Seq isn't
+// populated. The SSE handler uses this to skip the prefix that the
+// static render already painted into the tbody.
+func maxEventSeq(events []api.RunEvent) uint64 {
+	var max uint64
+	for _, e := range events {
+		if e.Seq > max {
+			max = e.Seq
+		}
+	}
+	return max
 }
 
 // toEventRows projects RunEvents → EventRow. Already chronologically

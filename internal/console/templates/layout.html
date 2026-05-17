@@ -8,17 +8,17 @@
   <link rel="stylesheet" href="/console/assets/app.css">
   <script>
     // Apply persisted theme before first paint to avoid the
-    // light → dark flash. app.js owns the toggle UI; this stub
-    // owns the early-render application only.
+    // light → dark flash. Theme attribute is set on <html> so the
+    // html element's background paints the chosen palette — setting
+    // it on <body> only leaves the html element resolving --bg from
+    // :root, which causes a two-tone scroll-bounce in light mode
+    // when the OS prefers dark. app.js owns the toggle UI; this
+    // stub owns the early-render application only.
     (function () {
       try {
         var t = localStorage.getItem("dagnats-console-theme");
         if (t === "light" || t === "dark") {
-          document.documentElement.setAttribute("data-pretheme", t);
-          document.addEventListener("DOMContentLoaded", function () {
-            document.body.setAttribute("data-theme", t);
-            document.documentElement.removeAttribute("data-pretheme");
-          });
+          document.documentElement.setAttribute("data-theme", t);
         }
       } catch (_) {}
     })();

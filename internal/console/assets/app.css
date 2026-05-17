@@ -79,7 +79,11 @@
   }
 }
 
-/* Operator-explicit overrides — beat the system preference. */
+/* Operator-explicit overrides — beat the system preference.
+   The theme attribute lives on <html> so html and body share the
+   palette. body[data-theme] selectors stay as fallbacks for any
+   legacy markup that still sets the attribute on body. */
+html[data-theme="light"],
 body[data-theme="light"] {
   --bg:               #F8F5EF;
   --surface:          #FFFCF6;
@@ -96,6 +100,7 @@ body[data-theme="light"] {
   --status-pending:   #5A6B7D;
 }
 
+html[data-theme="dark"],
 body[data-theme="dark"] {
   --bg:             #1A1814;
   --surface:        #252220;
@@ -549,6 +554,7 @@ body {
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='5'/><feColorMatrix values='0 0 0 0 0.1  0 0 0 0 0.08  0 0 0 0 0.06  0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
   background-blend-mode: multiply;
 }
+html[data-theme="dark"] body,
 body[data-theme="dark"] {
   background-image:
     radial-gradient(at 12% 8%, rgba(122, 142, 157, 0.05) 0,
@@ -559,7 +565,7 @@ body[data-theme="dark"] {
   background-blend-mode: screen;
 }
 @media (prefers-color-scheme: dark) {
-  body:not([data-theme="light"]):not([data-theme="dark"]) {
+  html:not([data-theme="light"]):not([data-theme="dark"]) body:not([data-theme="light"]):not([data-theme="dark"]) {
     background-image:
       radial-gradient(at 12% 8%, rgba(122, 142, 157, 0.05) 0,
                       transparent 65%),

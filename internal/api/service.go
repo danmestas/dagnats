@@ -116,7 +116,9 @@ var ErrDLQBodyMissing = errors.New(
 	"dlq entry body not preserved; replay unsupported",
 )
 
-// RunEvent is a history event for display.
+// RunEvent is a history event for display. Seq is the JetStream
+// stream sequence — used by the console SSE so live-stream resume
+// skips the prefix the initial server-render already showed.
 type RunEvent struct {
 	Type        string    `json:"type"`
 	RunID       string    `json:"run_id"`
@@ -124,6 +126,7 @@ type RunEvent struct {
 	Timestamp   time.Time `json:"timestamp"`
 	Data        string    `json:"data"`
 	TraceParent string    `json:"trace_parent,omitempty"`
+	Seq         uint64    `json:"seq,omitempty"`
 }
 
 // NewService binds the control plane to an active NATS connection.
@@ -1256,6 +1259,25 @@ func parseLegacyDLQ(
 // fetchMessages drains up to limit messages from sub within the
 // given total deadline. Returns on first NextMsg error (timeout or
 // stream exhaustion). Owns the timeout algebra so callers don't.
+//
+// The per-message timeout is two-tier:
+//
+//   - 100ms "warm" window for the first message — covers the
+//     consumer-creation roundtrip plus any backlog delivery. On
+//     loopback / LAN the first message lands in <10ms; 100ms is a
+//     generous ceiling that still cuts page-load TTFB by ~5x vs the
+//     original 500ms.
+//   - 5ms "tail" window for subsequent messages — once one message
+//     arrived the NATS client's local pending queue already holds
+//     the rest of the prefix (the server streams the full set on
+//     the consumer pull), so 5ms is plenty to drain the buffer
+//     and detect end-of-stream.
+//
+// Previously every fetchMessages call paid 500ms on both the first
+// and the tail, which taxed every page that walked a NATS
+// subscription synchronously (DLQ list, DLQ detail, run-detail
+// event timeline) by ~505ms TTFB even when there were no messages
+// to read.
 func fetchMessages(
 	sub *nats.Subscription, limit int, deadline time.Time,
 ) []*nats.Msg {
@@ -1265,14 +1287,18 @@ func fetchMessages(
 	if limit <= 0 {
 		panic("fetchMessages: limit must be positive")
 	}
-	const perMsg = 500 * time.Millisecond
+	const firstWait = 100 * time.Millisecond
+	const tailWait = 5 * time.Millisecond
 	msgs := make([]*nats.Msg, 0, limit)
 	for i := 0; i < limit; i++ {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-		timeout := perMsg
+		timeout := firstWait
+		if len(msgs) > 0 {
+			timeout = tailWait
+		}
 		if remaining < timeout {
 			timeout = remaining
 		}
@@ -1533,6 +1559,10 @@ func (s *Service) listRunEventsInner(
 		if !fullData && len(dataStr) > dataTruncateLen {
 			dataStr = dataStr[:dataTruncateLen]
 		}
+		var seq uint64
+		if md, err := msg.Metadata(); err == nil && md != nil {
+			seq = md.Sequence.Stream
+		}
 		events = append(events, RunEvent{
 			Type:        string(evt.Type),
 			RunID:       evt.RunID,
@@ -1540,6 +1570,7 @@ func (s *Service) listRunEventsInner(
 			Timestamp:   evt.Timestamp,
 			Data:        dataStr,
 			TraceParent: evt.TraceParent,
+			Seq:         seq,
 		})
 	}
 	return events, nil

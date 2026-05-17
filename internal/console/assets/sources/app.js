@@ -37,10 +37,14 @@ import "./basecoat.js";
   }
 
   function apply(mode) {
+    // Theme attribute lives on <html> so the html element paints the
+    // chosen palette. Setting it on <body> only leaves the html
+    // element's background resolving --bg from :root — which causes
+    // a two-tone scroll-bounce in light mode when the OS prefers dark.
     if (mode === "system") {
-      document.body.removeAttribute("data-theme");
+      document.documentElement.removeAttribute("data-theme");
     } else {
-      document.body.setAttribute("data-theme", mode);
+      document.documentElement.setAttribute("data-theme", mode);
     }
   }
 
