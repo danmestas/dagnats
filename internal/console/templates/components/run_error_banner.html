@@ -1,0 +1,15 @@
+{{define "run-error-banner"}}
+<div class="alert alert-destructive run-error-banner" role="alert">
+  <div class="run-error-icon" aria-hidden="true">&#x2717;</div>
+  <div class="run-error-body">
+    <h3 class="run-error-title">
+      Run failed at step <code>{{.FailedStepID}}</code>
+      {{if gt .FailedStepAttempts 1}}<span class="run-error-attempts">after {{.FailedStepAttempts}} attempts</span>{{end}}
+    </h3>
+    {{if .FailedStepError}}<p class="run-error-message">{{.FailedStepError}}</p>{{end}}
+    <div class="run-error-actions">
+      <a href="#step-row-{{.FailedStepID}}" class="btn btn-outline run-error-jump">Jump to step</a>
+    </div>
+  </div>
+</div>
+{{end}}

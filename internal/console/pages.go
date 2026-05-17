@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/starfederation/datastar-go/datastar"
+
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/console/dagviz"
@@ -814,6 +816,12 @@ func formatDuration(d time.Duration) string {
 }
 
 // RunDetailView powers /console/runs/<id>.
+//
+// Phase 2 (T03+T04+T05): the page is now a tabs container. Steps tab
+// is the default-active panel and renders the step list partial; the
+// Events / DAG / Input-Output panels lazy-load via fragment endpoints
+// on first click. FailedStep* fields populate the top-of-page error
+// banner when Status == "failed". StepRows feeds the step list partial.
 type RunDetailView struct {
 	RunID       string
 	RunIDShort  string
@@ -830,6 +838,7 @@ type RunDetailView struct {
 	HasError    bool
 	NotFound    bool
 	Steps       []StepCard
+	StepRows    []stepRow
 	Events      []EventRow
 	// DAGSVG is the live-state overlay rendering. Empty when the
 	// workflow def can't be loaded or when the renderer returned an
@@ -841,6 +850,13 @@ type RunDetailView struct {
 	// ?from=<seq> so the live stream resumes after the prefix and
 	// the operator doesn't see every event rendered twice.
 	MaxEventSeq uint64
+	// FailedStep* populate the run-error-banner when HasError is true
+	// and Status == "failed". Operators see them at the top of the
+	// page so debugging starts without a scroll. Empty / zero values
+	// suppress the banner (paired with HasError gating in template).
+	FailedStepID       string
+	FailedStepError    string
+	FailedStepAttempts int
 }
 
 // StepCard is one cell in the step status grid.
@@ -893,6 +909,139 @@ func servePageRunDetail(
 	})
 }
 
+// serveRunTabFragment routes /console/api/run/<id>/{events,dag,io}-tab
+// to the matching lazy-load handler. The route prefix is shared so a
+// single mux registration covers all three tabs; the suffix selects
+// which fragment to render. Unknown suffixes return 404.
+func serveRunTabFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("serveRunTabFragment: w is nil")
+	}
+	if r == nil {
+		panic("serveRunTabFragment: r is nil")
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/console/api/run/")
+	slash := strings.LastIndex(rest, "/")
+	if slash <= 0 || slash >= len(rest)-1 {
+		http.NotFound(w, r)
+		return
+	}
+	runID, suffix := rest[:slash], rest[slash+1:]
+	if runID == "" || strings.Contains(runID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	switch suffix {
+	case "events-tab":
+		serveRunEventsTabFragment(w, r, ts, cfg, runID)
+	case "dag-tab":
+		serveRunDAGTabFragment(w, r, ts, cfg, runID)
+	case "io-tab":
+		serveRunIOTabFragment(w, r, ts, cfg, runID)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// serveRunEventsTabFragment renders the events table for run id and
+// streams it back as one SSE PatchElements event targeting
+// #panel-events with inner-mode. The handler reuses buildRunDetail
+// so the rendered timeline matches what the page would have shown
+// had it been eager-rendered.
+func serveRunEventsTabFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config, runID string,
+) {
+	ds, ok := requireData(w, cfg, "run-events-tab")
+	if !ok {
+		return
+	}
+	view := buildRunDetail(r.Context(), ds, runID)
+	if view.NotFound {
+		http.NotFound(w, r)
+		return
+	}
+	emitTabFragment(w, r, ts, cfg, "run-events-tab", "panel-events", view)
+}
+
+// serveRunDAGTabFragment renders the live DAG visualisation for the
+// run. The body lives in the run-dag-tab template; we patch it into
+// #panel-dag inner. Why a fragment endpoint and not page-eager: the
+// DAG is the most expensive panel to render (SVG layout + node attrs)
+// and operators usually want the step list first; lazy is the win.
+func serveRunDAGTabFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config, runID string,
+) {
+	ds, ok := requireData(w, cfg, "run-dag-tab")
+	if !ok {
+		return
+	}
+	view := buildRunDetail(r.Context(), ds, runID)
+	if view.NotFound {
+		http.NotFound(w, r)
+		return
+	}
+	emitTabFragment(w, r, ts, cfg, "run-dag-tab", "panel-dag", view)
+}
+
+// serveRunIOTabFragment renders the run-level input + (when present)
+// output. T04's per-step I/O reuses this same data path but slots
+// each blob into the per-row body — the io-tab keeps the run-level
+// summary for backwards readability with PR 4's flat layout.
+func serveRunIOTabFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config, runID string,
+) {
+	ds, ok := requireData(w, cfg, "run-io-tab")
+	if !ok {
+		return
+	}
+	view := buildRunDetail(r.Context(), ds, runID)
+	if view.NotFound {
+		http.NotFound(w, r)
+		return
+	}
+	emitTabFragment(w, r, ts, cfg, "run-io-tab", "panel-io", view)
+}
+
+// emitTabFragment renders one named template against the view and
+// emits it as a Datastar PatchElements event scoped to panelID with
+// inner-mode. Lifted out of the three serve* handlers so the wire
+// format stays in one place — the four lines of SSE setup were the
+// only thing varying.
+func emitTabFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+	templateName, panelID string, view RunDetailView,
+) {
+	if templateName == "" {
+		panic("emitTabFragment: templateName is empty")
+	}
+	if panelID == "" {
+		panic("emitTabFragment: panelID is empty")
+	}
+	html, err := renderFragment(ts.base, templateName, view)
+	if err != nil {
+		cfg.Logger.Error("console: render tab fragment",
+			"template", templateName, "err", err)
+		http.Error(w, "render failed", http.StatusInternalServerError)
+		return
+	}
+	sse := datastar.NewSSE(w, r)
+	opts := []datastar.PatchElementOption{
+		datastar.WithSelectorID(panelID),
+		datastar.WithModeInner(),
+	}
+	if err := sse.PatchElements(html, opts...); err != nil {
+		cfg.Logger.Warn("console: tab patch elements",
+			"template", templateName, "err", err)
+	}
+}
+
 // buildRunDetail reads run snapshot + history events + workflow def
 // and assembles the view. Each data fetch is best-effort; partial
 // failures leave the affected section empty.
@@ -911,11 +1060,12 @@ func buildRunDetail(
 	}
 	view := runDetailBaseView(run)
 	def, defErr := ds.GetWorkflow(run.WorkflowID)
+	events, _ := ds.ListRunEvents(ctx, id, false)
 	if defErr == nil {
 		view.Steps = stepCardsFor(def, run)
 		view.DAGSVG, view.DAGFallback = renderLiveDAG(def, &run)
+		view.StepRows = BuildStepRows(&def, &run, events, nil, nil)
 	}
-	events, _ := ds.ListRunEvents(ctx, id, false)
 	view.Events = toEventRows(events)
 	view.MaxEventSeq = maxEventSeq(events)
 	view.Input = prettyJSON(run.Input)
@@ -928,7 +1078,40 @@ func buildRunDetail(
 		view.ErrorMsg = errMsg
 		view.HasError = true
 	}
+	if run.Status == dag.RunStatusFailed {
+		populateFailedStep(&view, def, run)
+	}
 	return view
+}
+
+// populateFailedStep fills the run-error-banner fields by finding the
+// first failed step in the workflow definition's declared order. We
+// preserve def order (not map iteration) so the banner points at the
+// step closest to the start of the workflow that actually failed —
+// matching the operator's mental model of where the run "broke".
+func populateFailedStep(
+	view *RunDetailView, def dag.WorkflowDef, run dag.WorkflowRun,
+) {
+	if view == nil {
+		panic("populateFailedStep: view is nil")
+	}
+	if len(def.Steps) == 0 {
+		return
+	}
+	for _, s := range def.Steps {
+		st, ok := run.Steps[s.ID]
+		if !ok {
+			continue
+		}
+		if st.Status != dag.StepStatusFailed {
+			continue
+		}
+		view.HasError = true
+		view.FailedStepID = s.ID
+		view.FailedStepError = st.Error
+		view.FailedStepAttempts = st.Attempts
+		return
+	}
 }
 
 // runDetailBaseView assembles the always-present header fields.

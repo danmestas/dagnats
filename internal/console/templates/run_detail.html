@@ -6,105 +6,56 @@
       <h1>Run {{.RunIDShort}}</h1>
       <p class="console-lede">No run snapshot found.</p>
     </header>
-    <p><a href="/console/runs">← back to runs</a></p>
+    <p><a href="/console/runs">&larr; back to runs</a></p>
   {{else}}
     <header class="console-section-header">
       <h1>Run <span class="console-mono">{{.RunIDShort}}</span></h1>
       <p class="console-lede">
         Workflow <a href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a>
-        — <span id="run-detail-status">{{template "status-badge" .Status}}</span>
-        — started <span class="console-mono">{{.StartedAt}}</span>
-        — duration {{.Duration}}
-        — trigger <span class="badge badge-outline">{{.TriggerKind}}</span>
+        &mdash; <span id="run-detail-status">{{template "status-badge" .Status}}</span>
+        &mdash; started <span class="console-mono">{{.StartedAt}}</span>
+        &mdash; duration {{.Duration}}
+        &mdash; trigger <span class="badge badge-outline">{{.TriggerKind}}</span>
       </p>
     </header>
 
-    {{if .HasError}}
-    <div class="alert alert-error" role="alert">
-      <strong>Last step error</strong>
-      <pre class="console-pre console-pre-error"><code>{{.ErrorMsg}}</code></pre>
+    {{if and .HasError .FailedStepID}}{{template "run-error-banner" .}}{{end}}
+
+    <div class="tabs run-detail-tabs" role="presentation">
+      <div role="tablist" aria-label="Run sections" class="tabs-list run-detail-tabs-list">
+        <button type="button" role="tab" id="tab-steps"
+                aria-selected="true" aria-controls="panel-steps"
+                class="tabs-trigger">Steps</button>
+        <button type="button" role="tab" id="tab-events"
+                aria-selected="false" aria-controls="panel-events"
+                class="tabs-trigger"
+                data-on:click__once="@get('/console/api/run/{{.RunID}}/events-tab')">Events</button>
+        <button type="button" role="tab" id="tab-dag"
+                aria-selected="false" aria-controls="panel-dag"
+                class="tabs-trigger"
+                data-on:click__once="@get('/console/api/run/{{.RunID}}/dag-tab')">DAG</button>
+        <button type="button" role="tab" id="tab-io"
+                aria-selected="false" aria-controls="panel-io"
+                class="tabs-trigger"
+                data-on:click__once="@get('/console/api/run/{{.RunID}}/io-tab')">Input/Output</button>
+      </div>
+      <div role="tabpanel" id="panel-steps" aria-labelledby="tab-steps"
+           class="tabs-content run-detail-panel">
+        {{template "step-list" (dict "Rows" .StepRows)}}
+      </div>
+      <div role="tabpanel" id="panel-events" aria-labelledby="tab-events"
+           class="tabs-content run-detail-panel" hidden>
+        <p class="tabs-loading">Loading events&hellip;</p>
+      </div>
+      <div role="tabpanel" id="panel-dag" aria-labelledby="tab-dag"
+           class="tabs-content run-detail-panel" hidden>
+        <p class="tabs-loading">Loading DAG&hellip;</p>
+      </div>
+      <div role="tabpanel" id="panel-io" aria-labelledby="tab-io"
+           class="tabs-content run-detail-panel" hidden>
+        <p class="tabs-loading">Loading input/output&hellip;</p>
+      </div>
     </div>
-    {{end}}
-
-    <article class="card dagviz-card" id="run-detail-dag">
-      <header class="card-header"><h2>DAG (live)</h2></header>
-      <div class="card-body dagviz-card-body">
-        {{if .DAGSVG}}
-          {{.DAGSVG}}
-        {{else if .DAGFallback}}
-          <p class="dagviz-fallback">{{.DAGFallback}}</p>
-        {{else}}
-          <p class="console-empty">DAG visualisation unavailable.</p>
-        {{end}}
-      </div>
-    </article>
-
-    <article class="card" id="run-detail-steps">
-      <header class="card-header"><h2>Step status</h2></header>
-      <div class="card-body">
-        <div class="console-step-grid">
-          {{range .Steps}}
-          <div id="step-card-{{.ID}}" class="console-step-card status-{{.Status}}{{if .Skipped}} is-skipped{{end}}">
-            <header>
-              <span class="console-step-icon">{{.Icon}}</span>
-              <span class="console-step-id">{{.ID}}</span>
-            </header>
-            <dl class="console-deflist">
-              <div><dt>status</dt><dd>{{.Status}}</dd></div>
-              <div><dt>attempts</dt><dd>{{.Attempts}}</dd></div>
-              {{if .Duration}}<div><dt>duration</dt><dd>{{.Duration}}</dd></div>{{end}}
-            </dl>
-            {{if .HasError}}
-            <p class="console-step-error">{{.ErrorMsg}}</p>
-            {{end}}
-          </div>
-          {{end}}
-        </div>
-      </div>
-    </article>
-
-    <article class="card" id="run-detail-events">
-      <header class="card-header"><h2>Event timeline</h2></header>
-      <div class="card-body">
-        <table class="table console-table">
-          <thead>
-            <tr><th>Time</th><th>Event</th><th>Step</th><th>Data</th></tr>
-          </thead>
-          <tbody id="run-events-body">
-            {{range .Events}}
-            <tr id="run-event-row-{{.Index}}">
-              <td class="console-mono">{{.Timestamp}}</td>
-              <td><span class="badge badge-outline">{{.Type}}</span></td>
-              <td class="console-mono">{{.StepID}}</td>
-              <td class="console-mono console-event-data">{{.DataPreview}}</td>
-            </tr>
-            {{else}}
-            <tr id="run-events-empty"><td colspan="4" class="console-empty">no events recorded</td></tr>
-            {{end}}
-          </tbody>
-        </table>
-      </div>
-    </article>
-
-    <article class="card" id="run-detail-input">
-      <header class="card-header"><h2>Run input</h2></header>
-      <div class="card-body">
-        {{if .Input}}
-        <pre class="console-pre"><code>{{.Input}}</code></pre>
-        {{else}}
-        <p class="console-empty">no input recorded</p>
-        {{end}}
-      </div>
-    </article>
-
-    {{if .HasOutput}}
-    <article class="card" id="run-detail-output">
-      <header class="card-header"><h2>Run output</h2></header>
-      <div class="card-body">
-        <pre class="console-pre"><code>{{.Output}}</code></pre>
-      </div>
-    </article>
-    {{end}}
   {{end}}
 </section>
 {{end}}{{end}}

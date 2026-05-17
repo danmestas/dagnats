@@ -145,6 +145,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/runs/", func(w http.ResponseWriter, r *http.Request) {
 		servePageRunDetail(w, r, ts, cfg)
 	})
+	mux.HandleFunc("/console/api/run/",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveRunTabFragment(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/api/fragments/workflows-list",
 		func(w http.ResponseWriter, r *http.Request) {
 			serveFragmentWorkflowsList(w, r, ts, cfg)
@@ -373,6 +377,7 @@ func loadTemplates() (*templateSet, error) {
 		"templates/layout.html",
 		"templates/disabled.html",
 		"templates/fragments/*.html",
+		"templates/components/*.html",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("parse base templates: %w", err)
@@ -410,7 +415,30 @@ func funcMap() template.FuncMap {
 		"pagerArgs":        pagerArgs,
 		"triggerKindGlyph": triggerKindGlyph,
 		"jsonArray":        jsonArrayHelper,
+		"dict":             dictHelper,
 	}
+}
+
+// dictHelper builds a map[string]any from alternating key/value
+// pairs so templates can pass struct-shaped data to nested partials
+// without defining one ad-hoc Go type per call site. Used by the
+// run-detail page to wrap StepRows into {Rows: ...} for the
+// step-list partial. Panics on odd argc / non-string keys — those
+// are programmer errors at template-author time.
+func dictHelper(args ...any) map[string]any {
+	if len(args)%2 != 0 {
+		panic("dictHelper: odd number of arguments")
+	}
+	out := make(map[string]any, len(args)/2)
+	const argMax = 64
+	for i := 0; i < len(args) && i < argMax; i += 2 {
+		key, ok := args[i].(string)
+		if !ok {
+			panic("dictHelper: non-string key")
+		}
+		out[key] = args[i+1]
+	}
+	return out
 }
 
 // jsonArrayHelper serialises a []float64 into a compact JSON array
