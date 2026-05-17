@@ -31,6 +31,97 @@ import (
 	"time"
 )
 
+// TestBrowser_connectionPillRecoveryHints asserts each degraded
+// connection-pill state surfaces an actionable recovery hint in
+// the title attribute (Norman's Error-recovery principle), and that
+// the offline + retries-failed states wire up a refresh click
+// handler. Drives the bundle's exposed __dagnatsConnection helper.
+//
+// Methodology:
+//   - Skip cleanly when agent-browser / Chrome unavailable, same as
+//     the datastar bootstrap test.
+//   - Boot the console via httptest, force each state via the bundle's
+//     `_forceState` helper, then read the pill's `title` + `onclick`.
+//   - Bounded: 30s deadline. Min 2 assertions per state.
+func TestBrowser_connectionPillRecoveryHints(t *testing.T) {
+	skipIfBrowserUnavailable(t)
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	runAgentBrowser(t, ctx, "open", srv.URL+"/console/")
+	t.Cleanup(func() {
+		brCtx, brCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer brCancel()
+		runAgentBrowserAllowFail(t, brCtx, "close")
+	})
+	time.Sleep(750 * time.Millisecond)
+
+	// Pin: the bundle exposes __dagnatsConnection — without it the
+	// pill JS never loaded and every later assertion is meaningless.
+	helper := evalString(t, ctx, "typeof window.__dagnatsConnection")
+	if helper != "object" {
+		t.Fatalf("__dagnatsConnection type=%q, want object — "+
+			"connection-state bundle not loaded", helper)
+	}
+
+	type pillCase struct {
+		state         string
+		wantInTitle   string
+		wantClickable bool
+	}
+	cases := []pillCase{
+		{"live", "Live (SSE healthy)", false},
+		{"idle", "No active stream for this page", false},
+		{"reconnecting", "refresh if it persists", false},
+		{"offline", "click to refresh", true},
+		{"retries-failed", "click to refresh", true},
+	}
+	const maxCases = 16
+	if len(cases) > maxCases {
+		t.Fatalf("test list exceeds maxCases (%d)", maxCases)
+	}
+	for _, c := range cases {
+		js := "window.__dagnatsConnection._forceState(" +
+			jsString(c.state) + ");" +
+			"document.getElementById('console-connection')" +
+			".getAttribute('title')"
+		title := evalString(t, ctx, js)
+		if !strings.Contains(title, c.wantInTitle) {
+			t.Errorf("state %q title=%q, missing hint %q",
+				c.state, title, c.wantInTitle)
+		}
+		clickType := evalString(t, ctx,
+			"typeof document.getElementById('console-connection').onclick")
+		isClickable := clickType == "function"
+		if isClickable != c.wantClickable {
+			t.Errorf("state %q clickable=%v (onclick=%q), want %v",
+				c.state, isClickable, clickType, c.wantClickable)
+		}
+	}
+}
+
+// jsString JSON-encodes a Go string for safe embedding into a JS
+// eval expression. Keeps the test honest if a future case adds a
+// quote or backslash.
+func jsString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		// json.Marshal of a Go string never fails — but TigerStyle
+		// says assert, not assume.
+		panic("jsString: marshal failed: " + err.Error())
+	}
+	return string(b)
+}
+
 // TestBrowser_datastarBootstraps asserts the console JS bundle wires
 // up Datastar's runtime on page load. Catches the PR 2 inertia bug.
 func TestBrowser_datastarBootstraps(t *testing.T) {
