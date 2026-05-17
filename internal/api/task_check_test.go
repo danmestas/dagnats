@@ -194,6 +194,36 @@ func TestCollectTaskTypes(t *testing.T) {
 	}
 }
 
+// TestCollectTaskTypesSkipsTypedSteps proves that typed steps (respond,
+// sleep, etc.) — which have no Task field — do not pollute the
+// collected task-type set with an empty string. Otherwise downstream
+// findMissingTypes reports a spurious "no active worker for task \"\""
+// warning at workflow-register time. Regression for issue #234.
+func TestCollectTaskTypesSkipsTypedSteps(t *testing.T) {
+	def := dag.WorkflowDef{
+		Name: "wf",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "greet", Type: dag.StepTypeNormal},
+			{ID: "r", Type: dag.StepTypeRespond},
+		},
+	}
+
+	// Positive: the normal task is collected.
+	types := collectTaskTypes(def)
+	if len(types) != 1 || types[0] != "greet" {
+		t.Fatalf("types = %v, want [greet]", types)
+	}
+
+	// Negative: the respond step's empty Task must not appear.
+	for _, ty := range types {
+		if ty == "" {
+			t.Fatalf(
+				"collectTaskTypes returned empty string for typed step",
+			)
+		}
+	}
+}
+
 func TestFindMissingTypes(t *testing.T) {
 	active := map[string]struct{}{
 		"greet": {},

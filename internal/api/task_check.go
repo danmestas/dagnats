@@ -43,6 +43,12 @@ func collectTaskTypes(def dag.WorkflowDef) []string {
 
 	seen := make(map[string]struct{}, len(def.Steps))
 	for _, step := range def.Steps {
+		// Typed steps (respond, sleep, approval, etc.) have no task
+		// dispatch — they execute in the engine, not on a worker.
+		// Skip them so the missing-worker check doesn't warn on "".
+		if step.Task == "" {
+			continue
+		}
 		seen[step.Task] = struct{}{}
 	}
 
