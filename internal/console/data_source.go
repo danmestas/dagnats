@@ -131,6 +131,25 @@ type DataSource interface {
 	GetKVEntry(
 		ctx context.Context, bucket, key string,
 	) (KVEntryView, error)
+
+	// SparklineData returns hourly activity buckets for one (kind, id)
+	// over the last `hours` hours, newest-bucket-last. Used by the
+	// workflows + triggers list pages to render a 24-hour at-a-glance
+	// sparkline column.
+	//
+	// Honesty contract: returns (nil, nil) when no data exists or the
+	// metrics aggregator is not wired. The template MUST hide the
+	// canvas in that case rather than rendering a flat-line that would
+	// lie about "all zeros." A non-nil slice always has exactly `hours`
+	// elements so the renderer can map index → hour offset trivially.
+	//
+	// kind is "workflow" or "trigger"; id is the workflow name or
+	// trigger ID. hours must be positive and ≤168 (one week) — the
+	// implementation panics on out-of-range input so misuse fails at
+	// the call site.
+	SparklineData(
+		ctx context.Context, kind, id string, hours int,
+	) ([]float64, error)
 }
 
 // RunUpdate is one observation on the workflow_runs KV bucket. Created
@@ -237,6 +256,11 @@ type apiServiceAdapter struct {
 	nc      *nats.Conn
 	auditKV jetstream.KeyValue
 	logger  *slog.Logger
+	// metrics is the read-side surface SparklineData buckets from.
+	// nil when the operator never wired an aggregator; the adapter
+	// then returns (nil, nil) so the renderer hides sparklines instead
+	// of drawing a misleading flat-line at zero.
+	metrics MetricsSource
 }
 
 // NewAPIDataSource returns a DataSource backed by the live api.Service.
@@ -258,6 +282,29 @@ func NewAPIDataSource(
 	return &apiServiceAdapter{
 		svc: svc, nc: nc, auditKV: auditKV, logger: logger,
 	}
+}
+
+// WithMetrics attaches a MetricsSource to the adapter. Returns the
+// receiver so callers can chain in the Config wiring. Pass nil to
+// detach; nil is the no-aggregator case and SparklineData will return
+// (nil, nil) so the renderer can honestly hide the sparkline column.
+//
+// Kept separate from NewAPIDataSource so the bug-fix landed in #245
+// (which surfaces aggregator-down state on /console/ops/metrics) can
+// keep its construction surface unchanged — adding a parameter would
+// have rippled into every test that built an adapter directly.
+func WithMetrics(ds DataSource, src MetricsSource) DataSource {
+	if ds == nil {
+		panic("WithMetrics: ds is nil")
+	}
+	a, ok := ds.(*apiServiceAdapter)
+	if !ok {
+		// Fakes (tests) carry their own metrics state; the helper is a
+		// no-op for them so wiring code can call it uniformly.
+		return ds
+	}
+	a.metrics = src
+	return a
 }
 
 func (a *apiServiceAdapter) ListWorkflows(
@@ -1004,6 +1051,104 @@ func (a *apiServiceAdapter) GetKVEntry(
 		Created:  entry.Created(),
 		IsJSON:   looksLikeJSON(val),
 	}, nil
+}
+
+// SparklineData reads the adapter's MetricsSource and buckets the
+// matching series into hours-many hourly slots. metrics is nil when
+// the operator hasn't wired the aggregator; we honour the honesty
+// contract and return (nil, nil) so the renderer hides the canvas.
+func (a *apiServiceAdapter) SparklineData(
+	ctx context.Context, kind, id string, hours int,
+) ([]float64, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.SparklineData: ctx is nil")
+	}
+	if kind == "" {
+		panic("apiServiceAdapter.SparklineData: kind is empty")
+	}
+	if id == "" {
+		panic("apiServiceAdapter.SparklineData: id is empty")
+	}
+	if hours <= 0 || hours > sparklineHoursMax {
+		panic("apiServiceAdapter.SparklineData: hours out of range")
+	}
+	if a.metrics == nil {
+		return nil, nil
+	}
+	name, labelKey, labelValue := sparklineMetricFor(kind)
+	if name == "" {
+		return nil, nil
+	}
+	series, ok := a.metrics.MetricSnapshot(name)
+	if !ok {
+		return nil, nil
+	}
+	buckets := bucketHourly(series.Points, labelKey, id, hours, time.Now())
+	if buckets == nil {
+		return nil, nil
+	}
+	// labelValue is reserved for future variants where the canonical
+	// id differs from the trigger/workflow id; today they match.
+	_ = labelValue
+	return buckets, nil
+}
+
+// sparklineHoursMax bounds the request window. 168h = one week — well
+// past what a list-row sparkline needs, but the upper bound is here
+// so a typo'd caller can't ask for a million-element slice.
+const sparklineHoursMax = 168
+
+// sparklineMetricFor maps a (kind) to the metric name + label dimension
+// to filter by. Returning the empty metric name signals "no sparkline
+// available for this kind" — the adapter then renders the empty state.
+// When the engine emits per-workflow or per-trigger metric names with
+// the id baked in, this helper is the single place to update.
+func sparklineMetricFor(kind string) (name, labelKey, labelValue string) {
+	switch kind {
+	case "workflow":
+		return "workflow.runs.completed", "workflow_id", ""
+	case "trigger":
+		return "trigger.fires.total", "trigger_id", ""
+	}
+	return "", "", ""
+}
+
+// bucketHourly drops each point matching labelKey==id into the hour
+// slot it lands in, counting how many fell into each slot. Returns nil
+// when no point matched — the honesty contract: empty data must look
+// empty, not flat-zero, in the renderer.
+func bucketHourly(
+	points []MetricPoint, labelKey, id string, hours int, now time.Time,
+) []float64 {
+	if hours <= 0 {
+		return nil
+	}
+	out := make([]float64, hours)
+	end := now.UTC().Truncate(time.Hour).Add(time.Hour)
+	start := end.Add(-time.Duration(hours) * time.Hour)
+	matched := false
+	for i := range points {
+		p := points[i]
+		if labelKey != "" && id != "" {
+			if p.Labels == nil || p.Labels[labelKey] != id {
+				continue
+			}
+		}
+		if p.Timestamp.Before(start) || !p.Timestamp.Before(end) {
+			continue
+		}
+		offset := p.Timestamp.UTC().Sub(start) / time.Hour
+		slot := int(offset)
+		if slot < 0 || slot >= hours {
+			continue
+		}
+		out[slot] += p.Value
+		matched = true
+	}
+	if !matched {
+		return nil
+	}
+	return out
 }
 
 // looksLikeJSON returns true when b begins with `{` or `[` after

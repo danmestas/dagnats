@@ -125,6 +125,11 @@ type WorkflowsListView struct {
 }
 
 // WorkflowRow is one workflow line on the list page.
+//
+// Sparkline carries hours-many activity buckets for the "Activity (24h)"
+// column. Nil when the metrics aggregator is unavailable or the
+// workflow has no recorded activity — the template renders the empty
+// state in that case (no flat-line lies about all-zeros).
 type WorkflowRow struct {
 	Name          string
 	Version       string
@@ -132,6 +137,7 @@ type WorkflowRow struct {
 	TriggerCount  int
 	LastRunTime   string
 	LastRunStatus string
+	Sparkline     []float64
 }
 
 // servePageWorkflowsList renders /console/workflows.
@@ -188,6 +194,7 @@ func buildWorkflowsView(
 	triggers, _ := ds.ListTriggers(ctx)
 	runs, _ := ds.ListRuns(ctx, "")
 	rows := assembleWorkflowRows(defs, triggers, runs)
+	attachWorkflowSparklines(ctx, ds, rows)
 	sortWorkflowRows(rows, sortKey)
 	total := len(rows)
 	start, end, hasNext := paginate(total, page, size)
@@ -256,6 +263,33 @@ func assembleWorkflowRows(
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// sparklineHours is the canonical request window for list-row
+// sparklines: 24 hourly buckets covering the trailing day. Lives here
+// so the trigger path and the workflow path agree on the resolution.
+const sparklineHours = 24
+
+// attachWorkflowSparklines fetches the 24h activity series for each
+// row and attaches it in place. Errors are swallowed — sparkline is a
+// progressive enhancement, not load-bearing — but logged via slog
+// elsewhere when DataSource surfaces them. Bounded loop by rows.
+func attachWorkflowSparklines(
+	ctx context.Context, ds DataSource, rows []WorkflowRow,
+) {
+	if ds == nil {
+		return
+	}
+	if ctx == nil {
+		panic("attachWorkflowSparklines: ctx is nil")
+	}
+	for i := range rows {
+		data, err := ds.SparklineData(ctx, "workflow", rows[i].Name, sparklineHours)
+		if err != nil {
+			continue
+		}
+		rows[i].Sparkline = data
+	}
 }
 
 // lastRunPerWorkflow picks the most-recent run for each workflow ID

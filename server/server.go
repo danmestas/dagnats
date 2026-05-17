@@ -559,15 +559,19 @@ func mountConsole(
 			"using random secret (restarts will rotate it). "+
 			"Set the env var for stable tokens across restarts.")
 	}
+	metricsSrc := console.AdaptAggregator(agg)
 	consoleCfg := console.Config{
-		HTTPAddr:           httpAddr,
-		AuthMode:           mode,
-		Password:           cfg.Password,
-		Build:              "dev",
-		Logger:             logger,
-		Data:               console.NewAPIDataSource(svc, nc, auditKV, logger),
+		HTTPAddr: httpAddr,
+		AuthMode: mode,
+		Password: cfg.Password,
+		Build:    "dev",
+		Logger:   logger,
+		Data: console.WithMetrics(
+			console.NewAPIDataSource(svc, nc, auditKV, logger),
+			metricsSrc,
+		),
 		ReadOnly:           readOnly,
-		Metrics:            console.AdaptAggregator(agg),
+		Metrics:            metricsSrc,
 		MetricsErrorReason: metricsErrorReason,
 	}
 	if !readOnly {

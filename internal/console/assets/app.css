@@ -1696,3 +1696,45 @@ body[data-theme="dark"] {
     page-break-before: always;
   }
 }
+
+/*
+ * Sparkline column on workflows + triggers lists. T13.
+ *
+ * Affordance: a small embedded chart in a fixed-width column. The
+ * column header carries the time range so the operator never has to
+ * guess what the line means.
+ *
+ * Signifier: a thin ink-soft stroke + faint fill — matches the e-ink
+ * palette but stays distinct from text so the eye registers it as a
+ * chart, not text decoration.
+ *
+ * Constraint (honesty): the template emits the canvas only when the
+ * row has data. The empty-state dot stands in for "no activity" so the
+ * column never lies with a flat-line at zero.
+ *
+ * Responsive: the column collapses on narrow viewports (<640px). The
+ * list pages were already wide and dropping the column protects the
+ * other columns from squeezing illegibly.
+ */
+.console-sparkline-col {
+  width: 76px;
+  text-align: right;
+  white-space: nowrap;
+}
+.console-sparkline {
+  display: inline-block;
+  vertical-align: middle;
+  width: 60px;
+  height: 16px;
+  color: var(--text-secondary);
+}
+.console-sparkline-col .muted {
+  color: var(--text-tertiary, var(--text-secondary));
+  font-size: 1.1rem;
+  opacity: 0.5;
+}
+@media (max-width: 640px) {
+  .console-sparkline-col {
+    display: none;
+  }
+}
