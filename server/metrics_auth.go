@@ -82,6 +82,61 @@ func LoadMetricsAuthConfigFromEnv(logger *slog.Logger) MetricsAuthConfig {
 	return cfg
 }
 
+// LogMetricsAuthStartup emits a single INFO line announcing the
+// resolved auth mode for /metrics, and escalates to WARN when the
+// listener is non-loopback AND the operator picked the open mode.
+// The WARN message is operator-actionable: it tells the reader that
+// the endpoint is open to anyone on the network, not just localhost.
+// Called from the server boot path immediately after
+// LoadMetricsAuthConfigFromEnv resolves.
+func LogMetricsAuthStartup(
+	logger *slog.Logger, cfg MetricsAuthConfig, httpAddr string,
+) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if httpAddr == "" {
+		panic("LogMetricsAuthStartup: httpAddr is empty")
+	}
+	mode := string(cfg.Mode)
+	if mode == "" {
+		mode = string(MetricsAuthLoopback)
+	}
+	if cfg.Mode == MetricsAuthNone && !isHTTPAddrLoopback(httpAddr) {
+		logger.Warn(
+			"metrics endpoint exposed without authentication — "+
+				"anyone on the network can scrape it",
+			"auth_mode", mode, "http_addr", httpAddr,
+		)
+		return
+	}
+	logger.Info("metrics endpoint",
+		"auth_mode", mode, "http_addr", httpAddr,
+	)
+}
+
+// isHTTPAddrLoopback reports whether the configured listen address
+// binds only to a loopback interface. An empty host (":8080") binds
+// to every interface and is therefore NOT loopback. Explicit
+// 127.0.0.1 or ::1 bindings are.
+func isHTTPAddrLoopback(httpAddr string) bool {
+	if httpAddr == "" {
+		panic("isHTTPAddrLoopback: httpAddr is empty")
+	}
+	host, _, err := net.SplitHostPort(httpAddr)
+	if err != nil {
+		host = httpAddr
+	}
+	if host == "" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return strings.EqualFold(host, "localhost")
+	}
+	return ip.IsLoopback()
+}
+
 // metricsAuthMiddleware wraps next with the gate. Pure function over
 // (cfg, next); test seams swap cfg without env mutation.
 func metricsAuthMiddleware(

@@ -1,8 +1,20 @@
 # ADR-014: Embedded Control Plane UI
 
-**Status:** Accepted
+**Status:** Accepted + Shipped (PRs 1–8 merged 2026-05-08 through 2026-05-17)
 **Deciders:** Dan Mestas
 **Companion to:** ADR-013 (HTTP trigger + respond step + Scalar `/docs`)
+
+> **Implementation note.** The arc shipped as eight PRs (#236–#244).
+> PR 5 split into 5a (PR 4 carryover: audit constants, trigger toggle,
+> live SSE, toast, CSRF) and 5b (ops views, DAG viz, DLQ soft-discard,
+> event bus); PR 7 split into 7 (metrics consolidation) and 7b
+> (per-step metric labels, deferred). PR 8 closed the arc with docs
+> + onboarding + empty-state polish + the anomaly-click → runs filter
+> wiring. Operator guide: [docs/console.md](../console.md). Contributor
+> guide: [docs/console-contributing.md](../console-contributing.md).
+> Deferred items (PR 5b workers/leases engine telemetry, PR 7b
+> per-step metric labels, PR 5b DAG SSE re-render, PR 7 live chart
+> Datastar-SSE push) are tracked in the PR 8 hand-off doc.
 
 ## Context
 

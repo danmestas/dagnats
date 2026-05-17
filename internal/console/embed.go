@@ -20,6 +20,7 @@ import "embed"
 //go:embed assets/sources/toast.js
 //go:embed assets/sources/count-chip.js
 //go:embed assets/sources/metrics.js
+//go:embed assets/sources/onboarding.js
 //go:embed assets/fonts/fraunces-latin.woff2
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
 var assetsFS embed.FS

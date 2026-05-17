@@ -519,9 +519,14 @@ func servePageRunsList(
 
 // RunsListView powers /console/runs.
 type RunsListView struct {
-	Workflow  string
-	Status    string
-	Range     string
+	Workflow string
+	Status   string
+	Range    string
+	// SinceUnix / UntilUnix scope the run list to an explicit time
+	// window (UTC seconds since epoch). Used by the anomaly-marker
+	// click on the metrics page. When non-zero they override Range.
+	SinceUnix int64
+	UntilUnix int64
 	Page      int
 	Size      int
 	HasNext   bool
@@ -547,6 +552,8 @@ func buildRunsView(
 	wf := firstQueryValue(q, "workflow")
 	status := firstQueryValue(q, "status")
 	rng := firstQueryValue(q, "range")
+	since := parseUnixSecsParam(firstQueryValue(q, "since"))
+	until := parseUnixSecsParam(firstQueryValue(q, "until"))
 	page, size := parsePageAndSize(firstQueryValue(q, "page"),
 		firstQueryValue(q, "size"))
 	runs, err := ds.ListRuns(ctx, wf)
@@ -554,13 +561,18 @@ func buildRunsView(
 		return RunsListView{}, fmt.Errorf("list runs: %w", err)
 	}
 	runs = filterRunsByStatus(runs, status)
-	runs = filterRunsByRange(runs, rng, time.Now())
+	if since > 0 || until > 0 {
+		runs = filterRunsByWindow(runs, since, until)
+	} else {
+		runs = filterRunsByRange(runs, rng, time.Now())
+	}
 	defs, _ := ds.ListWorkflows(ctx)
 	wfNames := workflowNamesFromDefs(defs)
 	total := len(runs)
 	start, end, hasNext := paginate(total, page, size)
 	view := RunsListView{
 		Workflow: wf, Status: status, Range: rng,
+		SinceUnix: since, UntilUnix: until,
 		Page: page, Size: size, Total: total,
 		HasNext: hasNext, HasPrev: page > 1,
 		NextPage: page + 1, PrevPage: page - 1,
@@ -568,6 +580,49 @@ func buildRunsView(
 		Rows:      toRunRows(runs[start:end]),
 	}
 	return view, nil
+}
+
+// parseUnixSecsParam parses a positive int64 from a URL query value;
+// returns 0 on parse error or empty / negative input. Used by the
+// runs-list since / until filter wired up from the anomaly-marker
+// click handler on the metrics page.
+func parseUnixSecsParam(raw string) int64 {
+	if raw == "" {
+		return 0
+	}
+	const maxLen = 20
+	if len(raw) > maxLen {
+		return 0
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
+}
+
+// filterRunsByWindow keeps runs whose CreatedAt falls between
+// [sinceUnix, untilUnix] inclusive. Either bound may be zero, in
+// which case it's treated as unbounded on that side. Paired with the
+// anomaly-marker click handler on the metrics dashboard.
+func filterRunsByWindow(
+	runs []dag.WorkflowRun, sinceUnix, untilUnix int64,
+) []dag.WorkflowRun {
+	if sinceUnix == 0 && untilUnix == 0 {
+		return runs
+	}
+	out := make([]dag.WorkflowRun, 0, len(runs))
+	for _, r := range runs {
+		ts := r.CreatedAt.Unix()
+		if sinceUnix > 0 && ts < sinceUnix {
+			continue
+		}
+		if untilUnix > 0 && ts > untilUnix {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // filterRunsByStatus narrows runs to those matching statusName.

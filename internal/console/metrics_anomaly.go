@@ -26,15 +26,28 @@ const AnomalyP99OverP50Ratio = 3.0
 // floor: we only mark anomalies once p50 crosses 1ms.
 const AnomalyMinP50Ms = 1.0
 
-// AnomalyMarker is one (timestamp, value, reason) tuple the
+// AnomalyMarker is one (timestamp, value, reason, window) tuple the
 // dashboard renders. Reason carries the human-readable explanation
 // the tooltip shows on hover; the µPlot point + paper-rust dot fills
-// the visual signifier.
+// the visual signifier. WindowStartSecs / WindowEndSecs bracket the
+// time slice the marker covers — the click handler turns these into
+// /console/runs?since=…&until=… so an operator can land on the runs
+// that overlap the anomaly without retyping a filter.
 type AnomalyMarker struct {
-	TimestampSecs float64
-	ValueMs       float64
-	Reason        string
+	TimestampSecs   float64
+	ValueMs         float64
+	Reason          string
+	WindowStartSecs float64
+	WindowEndSecs   float64
 }
+
+// AnomalyWindowHalfSecs is the half-width the click handler uses when
+// translating an anomaly marker into a runs filter window. 90 seconds
+// either side captures the runs that completed inside or adjacent to
+// the anomalous bucket without dragging in unrelated activity. Kept
+// as a named constant so the test, the renderer, and the JS client
+// all agree.
+const AnomalyWindowHalfSecs = 90
 
 // DetectAnomalies walks a histogram series and emits one marker per
 // point whose p99 / p50 ratio exceeds AnomalyP99OverP50Ratio. Bounded
@@ -56,11 +69,14 @@ func DetectAnomalies(points []MetricPoint) []AnomalyMarker {
 		if !isAnomalous(p50, p99) {
 			continue
 		}
+		ts := float64(p.Timestamp.Unix())
 		out = append(out, AnomalyMarker{
-			TimestampSecs: float64(p.Timestamp.Unix()),
+			TimestampSecs: ts,
 			ValueMs:       p99,
 			Reason: "p99 latency was " +
-				formatRatio(p99/p50) + "× p50 — investigate",
+				formatRatio(p99/p50) + "× p50 — click to inspect runs",
+			WindowStartSecs: ts - AnomalyWindowHalfSecs,
+			WindowEndSecs:   ts + AnomalyWindowHalfSecs,
 		})
 	}
 	return out

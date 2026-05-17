@@ -22,7 +22,10 @@
          data-chart-values='{{range .Series}}{{.Values}};{{end}}'
          data-chart-anomaly-x='{{range .Anomalies}}{{.TimestampSecs}},{{end}}'
          data-chart-anomaly-y='{{range .Anomalies}}{{.ValueMs}},{{end}}'
-         data-chart-anomaly-reasons='{{range $i, $a := .Anomalies}}{{if $i}}|{{end}}{{$a.Reason}}{{end}}'>
+         data-chart-anomaly-reasons='{{range $i, $a := .Anomalies}}{{if $i}}|{{end}}{{$a.Reason}}{{end}}'
+         data-chart-anomaly-since='{{range .Anomalies}}{{.WindowStartSecs}},{{end}}'
+         data-chart-anomaly-until='{{range .Anomalies}}{{.WindowEndSecs}},{{end}}'
+         data-chart-workflow='{{.WorkflowFilter}}'>
     </div>
     <div class="console-chart-legend" aria-label="series legend">
       {{range .Series}}
@@ -47,8 +50,13 @@
         completed faster. <strong>p95</strong> and <strong>p99</strong> are
         the tail: 95&nbsp;% / 99&nbsp;% of observations were faster. Anomaly
         markers (<span aria-hidden="true">&#9675;</span>) appear where p99
-        exceeded <strong>3&times; p50</strong> &mdash; possible tail-latency
-        events worth investigating.
+        exceeded
+        {{- if .AnomalyThresholdRatio -}}
+          <strong> {{printf "%g" .AnomalyThresholdRatio}}&times; p50</strong>
+        {{- else -}}
+          <strong> 3&times; p50</strong>
+        {{- end -}}
+        &mdash; click a marker to inspect runs from that window.
       </p>
     </details>
   {{end}}

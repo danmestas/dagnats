@@ -68,6 +68,14 @@ type MetricsChart struct {
 	// that don't have a latency-shape definition. The tooltip text
 	// lives on each marker so the client doesn't have to redo math.
 	Anomalies []AnomalyMarker
+	// AnomalyThresholdRatio is the p99/p50 ratio at which a marker
+	// fires. Surfaced into the template so the glossary text stays
+	// in sync with AnomalyP99OverP50Ratio — see metrics_anomaly.go.
+	AnomalyThresholdRatio float64
+	// WorkflowFilter narrows the anomaly-click navigation to a
+	// specific workflow when the chart is rendered inside a
+	// per-workflow drilldown. Empty for global charts (the default).
+	WorkflowFilter string
 }
 
 // ChartSeries is one line/area in a MetricsChart.
@@ -482,6 +490,7 @@ func buildLatencyChart(src MetricsSource) MetricsChart {
 		ID: "chart-latency", Title: "Snapshot save latency",
 		Description: "Engine snapshot persistence percentiles.",
 		Unit:        "ms", WindowLabel: "60m",
+		AnomalyThresholdRatio: AnomalyP99OverP50Ratio,
 	}
 	series, ok := src.MetricSnapshot("snapshot.save.duration_ms")
 	if !ok || len(series.Points) == 0 {

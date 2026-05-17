@@ -1569,3 +1569,124 @@ body[data-theme="dark"] {
     font-size: 11px;
   }
 }
+
+/* --- onboarding banner (PR 8) ----------------------------------
+ * Editorial-flavour first-run intro. Rendered once at /console/
+ * and dismissed via localStorage. Visually: light card, soft
+ * accent border, Fraunces title — quiet, not alarming. */
+.console-onboarding {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-tile);
+  padding: 18px 22px 14px 22px;
+  margin: 14px 0 24px 0;
+  max-width: 760px;
+}
+.console-onboarding-header h2 {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px 0;
+  color: var(--text-primary);
+}
+.console-onboarding-body p {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0 0 10px 0;
+  color: var(--text-primary);
+}
+.console-onboarding-body p:last-child {
+  margin-bottom: 0;
+}
+.console-onboarding-body strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.console-onboarding-footer {
+  margin-top: 12px;
+  text-align: right;
+}
+
+/* --- empty-state primary actions (PR 8) ----------------------- */
+.console-empty-action {
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-tile);
+  margin: 8px 0;
+}
+.console-empty-action p {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 6px 0;
+  color: var(--text-primary);
+}
+.console-empty-action p:last-child {
+  margin-bottom: 0;
+}
+.console-empty-action code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.console-empty-action-hint {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+/* --- 404 popular destinations (PR 8) -------------------------- */
+.console-popular-destinations {
+  margin-top: 14px;
+}
+.console-popular-destinations h3 {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0 0 6px 0;
+  color: var(--text-secondary);
+}
+.console-popular-destinations ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.console-popular-destinations a {
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+/* --- print stylesheet (PR 8 stretch) -------------------------- */
+@media print {
+  .console-header,
+  .console-onboarding,
+  .console-readonly-banner,
+  .console-filter-bar,
+  #theme-toggle,
+  .theme-toggle,
+  .console-connection,
+  footer.console-tile-footer {
+    display: none !important;
+  }
+  body, .console-main {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .console-pre, .console-mono, code {
+    background: transparent !important;
+  }
+  .console-step-card {
+    page-break-inside: avoid;
+  }
+  #run-detail-events {
+    page-break-before: always;
+  }
+}
