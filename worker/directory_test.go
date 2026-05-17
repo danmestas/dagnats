@@ -193,6 +193,73 @@ func TestNewDirectoryPanicsOnNilJS(t *testing.T) {
 	NewDirectory(nil)
 }
 
+// TestDirectoryListFiltersStaleEntries proves that List() omits
+// entries whose last Put is older than MaxWorkerStaleness. This is
+// the read-time guard against NATS KV not evicting old entries
+// promptly when a worker dies (the bucket TTL is best-effort and may
+// lag a worker's death by tens of seconds). Regression for #233.
+func TestDirectoryListFiltersStaleEntries(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	// Short staleness window so the test can demonstrate filtering
+	// without waiting the full production 60s. Restore afterwards.
+	prev := MaxWorkerStaleness
+	MaxWorkerStaleness = 50 * time.Millisecond
+	t.Cleanup(func() { MaxWorkerStaleness = prev })
+
+	dir := NewDirectory(js)
+
+	// Register a worker — its entry's Created() time is now.
+	stale := WorkerRegistration{
+		WorkerID:  "worker-stale",
+		TaskTypes: []string{"task-x"},
+		Language:  "go",
+		Transport: "nats",
+		MaxTasks:  1,
+	}
+	if err := dir.Register(stale); err != nil {
+		t.Fatalf("Register stale: %v", err)
+	}
+
+	// Wait past MaxWorkerStaleness so the entry counts as dead.
+	time.Sleep(150 * time.Millisecond)
+
+	// Register a second, fresh worker. Its Created() is fresh.
+	fresh := WorkerRegistration{
+		WorkerID:  "worker-fresh",
+		TaskTypes: []string{"task-y"},
+		Language:  "go",
+		Transport: "nats",
+		MaxTasks:  1,
+	}
+	if err := dir.Register(fresh); err != nil {
+		t.Fatalf("Register fresh: %v", err)
+	}
+
+	workers, err := dir.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// Positive: the fresh worker is returned.
+	// Negative: the stale worker is filtered out.
+	if len(workers) != 1 {
+		t.Fatalf("len(workers) = %d, want 1; got %+v",
+			len(workers), workers)
+	}
+	if workers[0].WorkerID != "worker-fresh" {
+		t.Fatalf("worker[0].WorkerID = %q, want %q",
+			workers[0].WorkerID, "worker-fresh")
+	}
+}
+
 func TestRegisterPanicsOnEmptyWorkerID(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc)

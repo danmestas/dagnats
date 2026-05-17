@@ -1842,9 +1842,14 @@ func (s *Service) listWorkersInner(
 	workers := make(
 		[]worker.WorkerRegistration, 0, len(keys),
 	)
+	cutoff := time.Now().Add(-worker.MaxWorkerStaleness)
 	for _, key := range keys {
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
+			continue
+		}
+		if worker.MaxWorkerStaleness > 0 &&
+			entry.Created().Before(cutoff) {
 			continue
 		}
 		var reg worker.WorkerRegistration

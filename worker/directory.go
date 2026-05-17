@@ -8,6 +8,18 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// MaxWorkerStaleness is the read-time cutoff used by List(): entries
+// whose last Put is older than this are treated as dead and filtered
+// out. The workers KV bucket has a 60s TTL, but NATS may delay
+// purging past the nominal TTL — this filter makes staleness
+// deterministic for callers (e.g. `dagnats workers list`) so a
+// SIGKILL'd worker stops appearing within MaxWorkerStaleness rather
+// than waiting for the next NATS cleanup pass. Matches the bucket
+// TTL so dead entries vanish promptly after the heartbeat would
+// have refreshed them. Variable rather than const so tests can
+// shrink the window.
+var MaxWorkerStaleness = 60 * time.Second
+
 // WorkerRegistration is the directory entry for a running worker.
 // The directory is observability-only — the engine never reads it.
 // Workers register on startup and maintain their entry via periodic
@@ -109,9 +121,14 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 		return nil, err
 	}
 	workers := make([]WorkerRegistration, 0, 32)
+	cutoff := time.Now().Add(-MaxWorkerStaleness)
 	for key := range keys.Keys() {
 		entry, err := d.kv.Get(ctx, key)
 		if err != nil {
+			continue
+		}
+		if MaxWorkerStaleness > 0 &&
+			entry.Created().Before(cutoff) {
 			continue
 		}
 		var reg WorkerRegistration
