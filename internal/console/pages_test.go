@@ -426,6 +426,64 @@ func (f *fakeDataSource) GetKVEntry(
 	}, nil
 }
 
+// Search mirrors the production adapter's contract over the fake's
+// in-memory slices. We keep the rules identical (substring for
+// workflows + triggers; prefix ≥4 chars for runs) so unit tests
+// exercise the same shape the real service hands the palette.
+func (f *fakeDataSource) Search(
+	_ context.Context, query string, limit int,
+) ([]SearchHit, error) {
+	if limit <= 0 {
+		panic("fakeDataSource.Search: limit must be positive")
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return nil, nil
+	}
+	hits := make([]SearchHit, 0, limit)
+	for i := 0; i < len(f.workflows) && len(hits) < limit; i++ {
+		wf := f.workflows[i]
+		if !strings.Contains(strings.ToLower(wf.Name), q) {
+			continue
+		}
+		hits = append(hits, SearchHit{
+			Kind: "workflow", ID: wf.Name, Label: wf.Name,
+			Subtitle: strconv.Itoa(len(wf.Steps)) + " steps",
+			Href:     "/console/workflows/" + wf.Name,
+		})
+	}
+	if len(q) >= runIDSearchMinChars {
+		for i := 0; i < len(f.runs) && len(hits) < limit; i++ {
+			run := f.runs[i]
+			if !strings.HasPrefix(strings.ToLower(run.RunID), q) {
+				continue
+			}
+			label := run.RunID
+			if len(label) > 12 {
+				label = label[:12] + "…"
+			}
+			hits = append(hits, SearchHit{
+				Kind: "run", ID: run.RunID, Label: label,
+				Subtitle: run.WorkflowID,
+				Href:     "/console/runs/" + run.RunID,
+			})
+		}
+	}
+	for i := 0; i < len(f.triggers) && len(hits) < limit; i++ {
+		tr := f.triggers[i]
+		if !strings.Contains(strings.ToLower(tr.ID), q) {
+			continue
+		}
+		kind, _ := triggerKindAndTarget(tr)
+		hits = append(hits, SearchHit{
+			Kind: "trigger", ID: tr.ID, Label: tr.ID,
+			Subtitle: kind,
+			Href:     "/console/triggers/" + tr.ID,
+		})
+	}
+	return hits, nil
+}
+
 type stringError string
 
 func (e stringError) Error() string { return string(e) }

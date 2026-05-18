@@ -1768,3 +1768,151 @@ body[data-theme="dark"] {
     display: none;
   }
 }
+
+/*
+ * Cmd+K command palette (T11). Classes are cmdk-* to dodge Basecoat's
+ * `.command-*` namespace (Basecoat ships a `.command-dialog` rule that
+ * sets opacity:0 and we'd inherit it). IDs stay on `command-*` since
+ * tests + JS look them up by id; the visual chrome lives on the cmdk
+ * classes alone.
+ *
+ * The overlay covers the viewport with a dim backdrop and centers a
+ * dialog near the top — keeping the focus line above the fold on every
+ * laptop screen. Hidden state is the native HTML hidden attribute so a
+ * misbehaving CSS chain can't leave the palette wedged open.
+ */
+.cmdk-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  pointer-events: none;
+}
+.cmdk-palette[hidden] { display: none; }
+.cmdk-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+}
+.cmdk-dialog {
+  position: relative;
+  pointer-events: auto;
+  width: min(620px, 92vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile, 8px);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  opacity: 1;
+}
+.cmdk-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: 1.1rem var(--font-sans, system-ui);
+  padding: 0.95rem 1.1rem;
+  outline: none;
+  border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
+}
+.cmdk-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+.cmdk-results {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.cmdk-result-row { margin: 0; padding: 0; }
+.cmdk-result {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.55rem 1.1rem;
+  text-decoration: none;
+  color: var(--text-primary);
+  border-left: 2px solid transparent;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+.cmdk-result:hover,
+.cmdk-result:focus {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  outline: none;
+}
+.cmdk-result-kind {
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  justify-self: start;
+}
+.cmdk-result-kind-workflow { color: var(--status-completed); }
+.cmdk-result-kind-run      { color: var(--status-running); }
+.cmdk-result-kind-trigger  { color: var(--accent); }
+.cmdk-result-label {
+  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-result-subtitle {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.cmdk-empty {
+  list-style: none;
+  padding: 0.95rem 1.1rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.cmdk-hint {
+  display: flex;
+  gap: 1rem;
+  padding: 0.55rem 1.1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  background: var(--bg);
+}
+.cmdk-hint kbd {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-primary);
+  margin: 0 0.15rem;
+}
+@media (max-width: 640px) {
+  .cmdk-palette { padding-top: 6vh; }
+  .cmdk-dialog { width: 96vw; }
+  .cmdk-result {
+    grid-template-columns: 4.5rem 1fr;
+    grid-template-rows: auto auto;
+  }
+  .cmdk-result-subtitle {
+    grid-column: 1 / -1;
+    padding-left: 5.2rem;
+  }
+  .cmdk-hint { flex-wrap: wrap; gap: 0.5rem; }
+}
