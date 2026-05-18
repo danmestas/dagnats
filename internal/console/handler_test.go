@@ -59,8 +59,7 @@ func TestServeDashboard_rendersLayoutAndNav(t *testing.T) {
 		`href="/console/runs"`,
 		`href="/console/triggers"`,
 		`href="/console/dlq"`,
-		`href="/console/ops/health"`,
-		`href="/console/help"`,
+		`href="/console/ops"`,
 		`href="/console/assets/basecoat.css"`,
 		`href="/console/assets/app.css"`,
 		`src="/console/assets/console.js"`,
@@ -222,5 +221,59 @@ func TestNoExternalURLs(t *testing.T) {
 				t.Errorf("external URL in @import: %s", m[2])
 			}
 		})
+	}
+}
+
+// TestAllNavLinksReturn200 regresses C1+C2 — every <a href> in the
+// rendered layout (nav, brand, mobile menu) must resolve to a real
+// route. Dead links like /console/ops/health and /console/help shipped
+// to operators and broke trust; this test guarantees no future PR
+// re-introduces an unrouted nav target.
+//
+// Methodology: render the dashboard, scrape every href that starts
+// with `/console`, GET each one, and assert the route is REGISTERED.
+// We accept any response that is not 404 — including 503 (route exists
+// but no DataSource is wired in this in-process test) — because the
+// audit's claim is "the route resolves", not "the route returns data".
+// A registered route returning 503 still proves the nav link is live.
+// Bounded loop: at most maxLinks links.
+func TestAllNavLinksReturn200(t *testing.T) {
+	h := newTestConsole(t)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want 200", rr.Code)
+	}
+
+	// Match href="/console/..."; tolerate single or double quotes.
+	hrefRE := regexp.MustCompile(`href=["'](\/console[^"'#?]*)["']`)
+	matches := hrefRE.FindAllStringSubmatch(rr.Body.String(), -1)
+	if len(matches) < 5 {
+		t.Fatalf("expected at least 5 nav links, found %d", len(matches))
+	}
+
+	seen := make(map[string]bool, len(matches))
+	const maxLinks = 64
+	checked := 0
+	for _, m := range matches {
+		if checked >= maxLinks {
+			t.Fatalf("exceeded link bound %d", maxLinks)
+		}
+		href := m[1]
+		if href == "" || seen[href] {
+			continue
+		}
+		seen[href] = true
+		checked++
+
+		sub := httptest.NewRecorder()
+		h.ServeHTTP(sub, httptest.NewRequest(http.MethodGet, href, nil))
+		if sub.Code == http.StatusNotFound {
+			t.Errorf("nav link %q returned 404 — dead route", href)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("checked zero nav links")
 	}
 }

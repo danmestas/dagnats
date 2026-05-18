@@ -780,6 +780,23 @@ func statusIcon(status string) string {
 	}
 }
 
+// outcomeIcon picks a unicode glyph for an audit-log outcome. The
+// outcome vocabulary (success / denied / error) is a superset of
+// statusIcon's run-status vocabulary, so it lives as its own helper
+// to keep statusIcon's switch lean. Multimodal cue per audit fix C4.
+func outcomeIcon(outcome string) string {
+	switch outcome {
+	case "success":
+		return "✓"
+	case "denied":
+		return "⊘"
+	case "error":
+		return "✗"
+	default:
+		return "○"
+	}
+}
+
 // triggerKindFromInput tries to identify how a run was started by
 // peeking at the wrapper json. Unwrapped inputs render as "manual".
 // Errors are swallowed: a malformed wrapper is operator-noise, not

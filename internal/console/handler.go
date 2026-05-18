@@ -427,6 +427,7 @@ func funcMap() template.FuncMap {
 	return template.FuncMap{
 		"join":             strings.Join,
 		"statusIcon":       statusIcon,
+		"outcomeIcon":      outcomeIcon,
 		"pagerArgs":        pagerArgs,
 		"triggerKindGlyph": triggerKindGlyph,
 		"jsonArray":        jsonArrayHelper,
