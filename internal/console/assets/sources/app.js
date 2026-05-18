@@ -18,6 +18,7 @@
 import "./datastar.js";
 import "./basecoat.js";
 import "./sparkline.js";
+import "./command_palette.js";
 
 // Theme toggle — three-state cycle: System (prefers-color-scheme) →
 // Light → Dark → System. State lives in localStorage; absence of

@@ -432,6 +432,12 @@ func (r *resumeRecorder) SparklineData(
 	return r.inner.SparklineData(ctx, kind, id, hours)
 }
 
+func (r *resumeRecorder) Search(
+	ctx context.Context, query string, limit int,
+) ([]SearchHit, error) {
+	return r.inner.Search(ctx, query, limit)
+}
+
 // readSSEUntil reads the SSE response body looking for
 // `event: datastar-patch-elements` headers and capturing the row id
 // payload substrings. Stops once want events have been seen OR the

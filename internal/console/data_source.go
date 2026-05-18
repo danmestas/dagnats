@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -150,6 +151,31 @@ type DataSource interface {
 	SparklineData(
 		ctx context.Context, kind, id string, hours int,
 	) ([]float64, error)
+
+	// Search returns up to `limit` cross-entity hits matching `query`.
+	// Powers the cmd+k command palette (T11): workflows match on name
+	// substring; triggers match on id substring; runs match on id
+	// prefix only when len(query) >= 4 (cardinality guard — run ids
+	// are uuids and a 3-char query would scan the world).
+	//
+	// Honesty contract: returns (nil, nil) when query is empty/blank.
+	// limit must be positive. Hits arrive in workflow → run → trigger
+	// order so the palette renders deterministic results; callers can
+	// re-sort if they want a different priority.
+	Search(ctx context.Context, query string, limit int) ([]SearchHit, error)
+}
+
+// SearchHit is one result row in the cmd+k command palette. Kind tags
+// the entity ("workflow" | "run" | "trigger") so the palette can show
+// a category badge; Label is the primary display string; Subtitle is
+// supporting context (step count, workflow id, trigger kind); Href is
+// where the palette navigates on selection.
+type SearchHit struct {
+	Kind     string
+	ID       string
+	Label    string
+	Subtitle string
+	Href     string
 }
 
 // RunUpdate is one observation on the workflow_runs KV bucket. Created
@@ -1097,6 +1123,151 @@ func (a *apiServiceAdapter) SparklineData(
 // past what a list-row sparkline needs, but the upper bound is here
 // so a typo'd caller can't ask for a million-element slice.
 const sparklineHoursMax = 168
+
+// runIDSearchMinChars is the minimum query length before Search will
+// scan run ids. Run ids are uuids (high cardinality) and any shorter
+// query would match an unreadable swarm of nonsense; the floor keeps
+// the palette honest about what it can find.
+const runIDSearchMinChars = 4
+
+// Search powers the cmd+k command palette. Workflows + triggers match
+// on lowercase substring; runs match on lowercase prefix (≥4 chars).
+// Caps the result slice at `limit` so the palette always renders a
+// bounded list — large worker fleets shouldn't cause the response to
+// balloon. See SearchHit godoc for the field contract.
+func (a *apiServiceAdapter) Search(
+	ctx context.Context, query string, limit int,
+) ([]SearchHit, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.Search: ctx is nil")
+	}
+	if limit <= 0 {
+		panic("apiServiceAdapter.Search: limit must be positive")
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return nil, nil
+	}
+	hits := make([]SearchHit, 0, limit)
+	hits = appendWorkflowHits(ctx, a.svc, q, limit, hits)
+	hits = appendRunHits(ctx, a.svc, q, limit, hits)
+	hits = appendTriggerHits(ctx, a.svc, q, limit, hits)
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits, nil
+}
+
+// appendWorkflowHits scans the workflow list and appends every match.
+// We bound the loop with limit so a worker fleet with 10k workflows
+// can't make one keystroke trigger a 10k-element response.
+func appendWorkflowHits(
+	ctx context.Context, svc *api.Service, q string,
+	limit int, hits []SearchHit,
+) []SearchHit {
+	if svc == nil {
+		return hits
+	}
+	wfs, err := svc.ListWorkflows(ctx)
+	if err != nil {
+		return hits
+	}
+	for i := 0; i < len(wfs) && len(hits) < limit; i++ {
+		wf := wfs[i]
+		if !strings.Contains(strings.ToLower(wf.Name), q) {
+			continue
+		}
+		hits = append(hits, SearchHit{
+			Kind:     "workflow",
+			ID:       wf.Name,
+			Label:    wf.Name,
+			Subtitle: fmt.Sprintf("%d steps", len(wf.Steps)),
+			Href:     "/console/workflows/" + wf.Name,
+		})
+	}
+	return hits
+}
+
+// appendRunHits scans recent runs for an id-prefix match. Runs are
+// uuids (high cardinality); the min-chars floor (runIDSearchMinChars)
+// keeps short queries from returning whatever happened to sort first.
+// We list-and-filter rather than calling GetRun directly so an operator
+// who knows only the first 4-8 chars of a run id still finds it.
+//
+// We try a direct GetRun first as a cheap path for the full-id case
+// (paste-the-whole-thing), then fall back to a prefix scan over the
+// recent runs list.
+func appendRunHits(
+	ctx context.Context, svc *api.Service, q string,
+	limit int, hits []SearchHit,
+) []SearchHit {
+	if svc == nil || len(q) < runIDSearchMinChars || len(hits) >= limit {
+		return hits
+	}
+	if run, err := svc.GetRun(ctx, q); err == nil {
+		hits = append(hits, makeRunHit(run))
+		return hits
+	}
+	runs, err := svc.ListRuns(ctx, "")
+	if err != nil {
+		return hits
+	}
+	for i := 0; i < len(runs) && len(hits) < limit; i++ {
+		if !strings.HasPrefix(strings.ToLower(runs[i].RunID), q) {
+			continue
+		}
+		hits = append(hits, makeRunHit(runs[i]))
+	}
+	return hits
+}
+
+// makeRunHit renders one run as a SearchHit row. Pulled out so both
+// the exact-match shortcut and the prefix-scan path produce identical
+// rows (same label trimming, same subtitle).
+func makeRunHit(run dag.WorkflowRun) SearchHit {
+	label := run.RunID
+	if len(label) > 12 {
+		label = label[:12] + "…"
+	}
+	return SearchHit{
+		Kind:     "run",
+		ID:       run.RunID,
+		Label:    label,
+		Subtitle: run.WorkflowID,
+		Href:     "/console/runs/" + run.RunID,
+	}
+}
+
+// appendTriggerHits walks the trigger list. Subtitle is the trigger
+// kind ("cron", "http", "subject", "webhook") because the kind is the
+// useful disambiguator when an operator searches for a trigger id.
+func appendTriggerHits(
+	ctx context.Context, svc *api.Service, q string,
+	limit int, hits []SearchHit,
+) []SearchHit {
+	if svc == nil {
+		return hits
+	}
+	trs, err := svc.ListTriggers(ctx)
+	if err != nil {
+		return hits
+	}
+	for i := 0; i < len(trs) && len(hits) < limit; i++ {
+		tr := trs[i]
+		if !strings.Contains(strings.ToLower(tr.ID), q) {
+			continue
+		}
+		kind, _ := triggerKindAndTarget(tr)
+		hits = append(hits, SearchHit{
+			Kind:     "trigger",
+			ID:       tr.ID,
+			Label:    tr.ID,
+			Subtitle: kind,
+			Href:     "/console/triggers/" + tr.ID,
+		})
+	}
+	return hits
+}
 
 // sparklineMetricFor maps a (kind) to the metric name + label dimension
 // to filter by. Returning the empty metric name signals "no sparkline

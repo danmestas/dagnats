@@ -1,0 +1,49 @@
+{{/*
+  command-palette — the cmd+k overlay. Two definitions:
+
+    1. command-palette (this overlay) is mounted by layout.html on
+       every console page; the cmd+k shortcut toggles its hidden
+       attribute. Datastar wires the debounced search via
+       data-on:input (canonical colon-form — the data-on-input
+       regression class is what T11 explicitly guards against).
+    2. command-results is the list-of-hits partial. The
+       /console/api/search endpoint executes this template against
+       []SearchHit and patches it into #command-results via SSE.
+
+  Class names use the cmdk-* prefix so they cannot collide with
+  Basecoat's vendored `.command-*` namespace (Basecoat ships a
+  `.command-dialog` rule that sets opacity:0 for its own popover
+  dance; we'd inherit that and the dialog would render invisibly).
+  IDs stay on `command-*` because tests + JS look those up by id.
+*/}}
+{{define "command-palette"}}
+<div id="command-palette" class="cmdk-palette" hidden
+     aria-hidden="true"
+     data-signals="{cmdquery: ''}">
+  <div class="cmdk-backdrop" data-command-backdrop></div>
+  <div class="cmdk-dialog" role="dialog" aria-modal="true"
+       aria-label="Search runs, workflows, triggers">
+    <input id="command-input" class="cmdk-input" type="search"
+           autocomplete="off" spellcheck="false"
+           placeholder="Search runs, workflows, triggers…"
+           data-bind:cmdquery
+           data-on:input__debounce.150ms="@get('/console/api/search?q='+$cmdquery)">
+    <ul id="command-results" class="cmdk-results" role="listbox"></ul>
+    <footer class="cmdk-hint" aria-hidden="true">
+      <span><kbd>↵</kbd> select</span>
+      <span><kbd>Esc</kbd> close</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+    </footer>
+  </div>
+</div>
+{{end}}
+
+{{define "command-results"}}
+{{range .}}<li class="cmdk-result-row" role="option">
+  <a class="cmdk-result" href="{{.Href}}">
+    <span class="cmdk-result-kind cmdk-result-kind-{{.Kind}}">{{.Kind}}</span>
+    <span class="cmdk-result-label">{{.Label}}</span>
+    <span class="cmdk-result-subtitle">{{.Subtitle}}</span>
+  </a>
+</li>{{else}}<li class="cmdk-empty" role="option" aria-disabled="true">No results.</li>{{end}}
+{{end}}
