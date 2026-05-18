@@ -508,3 +508,54 @@ html { scroll-behavior: smooth; }
   color: var(--text-primary);
 }
 /* === end Phase 2: dashboard tile grid + recent panels === */
+
+/* === Phase 2: glossary tooltips (T10, 2026-05-17) === */
+/*
+ * glo-* prefix avoids colliding with the generic .tooltip Basecoat
+ * block defined earlier in this file and with any vendor classes a
+ * future Basecoat update might ship. The wrapper is inline-flex so
+ * the dotted-underline cue sits flush with surrounding text.
+ */
+.glo-tooltip-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+  border-bottom: 1px dotted var(--muted, #8a7e68);
+}
+.glo-tooltip-target {
+  /* inherits color from context */
+}
+.glo-tooltip-popover {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background: var(--surface, #fffcf6);
+  color: var(--text-primary, #1f1b16);
+  border: 1px solid var(--border, #d6cfc0);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  max-width: 280px;
+  width: max-content;
+  z-index: 100;
+  transition: opacity 150ms ease, visibility 150ms ease;
+  pointer-events: none;
+  white-space: normal;
+  text-align: left;
+  font-weight: 400;
+}
+.glo-tooltip-wrapper:hover .glo-tooltip-popover,
+.glo-tooltip-wrapper:focus .glo-tooltip-popover,
+.glo-tooltip-wrapper:focus-within .glo-tooltip-popover {
+  visibility: visible;
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .glo-tooltip-popover { transition: none; }
+}
+/* === end Phase 2: glossary tooltips === */

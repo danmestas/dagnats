@@ -427,6 +427,80 @@ func funcMap() template.FuncMap {
 		"triggerKindGlyph": triggerKindGlyph,
 		"jsonArray":        jsonArrayHelper,
 		"dict":             dictHelper,
+		"tooltip":          tooltipHelper(),
+		"tooltipAs":        tooltipAsHelper(),
+		"tooltipText":      tooltipTextHelper,
+	}
+}
+
+// tooltipAsHelper renders the tooltip with a custom visible label
+// (e.g. "Leases" as the label, "lease" as the glossary key). Falls
+// back to the bare label when the term is unknown so missing entries
+// degrade gracefully.
+func tooltipAsHelper() func(label, term string) template.HTML {
+	const tmpl = `<span class="glo-tooltip-wrapper" tabindex="0">` +
+		`<span class="glo-tooltip-target">%s</span>` +
+		`<span class="glo-tooltip-popover" role="tooltip">%s</span>` +
+		`</span>`
+	return func(label, term string) template.HTML {
+		if label == "" {
+			return template.HTML("")
+		}
+		text, ok := GlossaryTooltip(term)
+		if !ok {
+			return template.HTML(template.HTMLEscapeString(label))
+		}
+		return template.HTML(fmt.Sprintf(tmpl,
+			template.HTMLEscapeString(label),
+			template.HTMLEscapeString(text),
+		))
+	}
+}
+
+// tooltipTextHelper returns the raw glossary definition for term so a
+// caller (e.g. the layout nav, where we want the tooltip on the link
+// element itself rather than a nested wrapper) can splice the text
+// into a popover span without rendering the full tooltipHelper
+// wrapper. Falls back to empty so missing terms degrade silently
+// rather than leaking "<no value>" into the DOM.
+func tooltipTextHelper(term string) string {
+	if term == "" {
+		return ""
+	}
+	text, ok := GlossaryTooltip(term)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+// tooltipHelper returns a template helper that wraps a glossary term
+// in the glo-tooltip-wrapper markup. Terms not in the glossary fall
+// back to the bare HTML-escaped label so accidental misuse degrades
+// gracefully to plain text rather than emitting an empty popover.
+//
+// The `glo-*` class prefix is deliberate: T11's command palette
+// collided with Basecoat's `.command-dialog { opacity: 0 }` rule and
+// had to be renamed mid-task. A custom prefix on glossary tooltips
+// avoids the same problem if Basecoat ships its own `.tooltip-*`
+// classes later.
+func tooltipHelper() func(term string) template.HTML {
+	const tmpl = `<span class="glo-tooltip-wrapper" tabindex="0">` +
+		`<span class="glo-tooltip-target">%s</span>` +
+		`<span class="glo-tooltip-popover" role="tooltip">%s</span>` +
+		`</span>`
+	return func(term string) template.HTML {
+		if term == "" {
+			return template.HTML("")
+		}
+		text, ok := GlossaryTooltip(term)
+		if !ok {
+			return template.HTML(template.HTMLEscapeString(term))
+		}
+		return template.HTML(fmt.Sprintf(tmpl,
+			template.HTMLEscapeString(term),
+			template.HTMLEscapeString(text),
+		))
 	}
 }
 
