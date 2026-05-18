@@ -570,8 +570,15 @@ type RunsListView struct {
 	NextPage  int
 	PrevPage  int
 	Total     int
-	Workflows []string
-	Rows      []RunRow
+	// FirstIndex / LastIndex are the 1-indexed bounds of the current
+	// page, used to render "Showing N–M of K runs" in the lede.
+	// When Total is 0 both fields are 0 and the template omits the
+	// range. Audit H3 — replaced raw "Total" count with a windowed
+	// lede so operators understand pagination is happening.
+	FirstIndex int
+	LastIndex  int
+	Workflows  []string
+	Rows       []RunRow
 }
 
 // buildRunsView assembles RunsListView from query params. Filters
@@ -592,6 +599,12 @@ func buildRunsView(
 	until := parseUnixSecsParam(firstQueryValue(q, "until"))
 	page, size := parsePageAndSize(firstQueryValue(q, "page"),
 		firstQueryValue(q, "size"))
+	// Audit H3 — runs page defaults to 50 per page (vs the global
+	// 20 default) so operators see one screenful of activity per
+	// page. Explicit ?size= still wins, clamped by parsePageAndSize.
+	if firstQueryValue(q, "size") == "" {
+		size = 50
+	}
 	runs, err := ds.ListRuns(ctx, wf)
 	if err != nil {
 		return RunsListView{}, fmt.Errorf("list runs: %w", err)
@@ -606,12 +619,18 @@ func buildRunsView(
 	wfNames := workflowNamesFromDefs(defs)
 	total := len(runs)
 	start, end, hasNext := paginate(total, page, size)
+	first, last := 0, 0
+	if total > 0 && end > start {
+		first = start + 1
+		last = end
+	}
 	view := RunsListView{
 		Workflow: wf, Status: status, Range: rng,
 		SinceUnix: since, UntilUnix: until,
 		Page: page, Size: size, Total: total,
 		HasNext: hasNext, HasPrev: page > 1,
 		NextPage: page + 1, PrevPage: page - 1,
+		FirstIndex: first, LastIndex: last,
 		Workflows: wfNames,
 		Rows:      toRunRows(runs[start:end]),
 	}

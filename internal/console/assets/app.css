@@ -2205,25 +2205,12 @@ body[data-theme="dark"] {
   margin: 0.5rem 0;
 }
 
-/* Polish — cmd+K backdrop scrim. The palette dialog already exists;
- * this adds a dim layer behind it so the dialog reads as modal. The
- * scrim is rendered as a sibling element keyed by the palette's open
- * state (data-open). When the palette closes, the scrim fades. */
+/* Polish — cmd+K backdrop scrim. Lighter scrim (0.2 + blur 2px)
+ * replaces the 0.55 black wash from the earlier T11 ship: full
+ * black-out felt heavier than a search box warrants and obscured
+ * page context. Inherits palette positioning. */
 .cmdk-backdrop {
-  position: fixed;
-  inset: 0;
   background: rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
-  z-index: 99;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease-out;
-}
-.cmdk-backdrop[data-open="true"] {
-  opacity: 1;
-  pointer-events: auto;
-}
-@media (prefers-reduced-motion: reduce) {
-  .cmdk-backdrop { transition: none; }
 }
