@@ -22,6 +22,7 @@ import "embed"
 //go:embed assets/sources/metrics.js
 //go:embed assets/sources/onboarding.js
 //go:embed assets/sources/sparkline.js
+//go:embed assets/sources/sheet.js
 //go:embed assets/fonts/fraunces-latin.woff2
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
 var assetsFS embed.FS
@@ -71,4 +72,5 @@ var assetsFS embed.FS
 //go:embed templates/components/dlq_action_modal.html
 //go:embed templates/components/command_palette.html
 //go:embed templates/components/tooltip.html
+//go:embed templates/components/side_sheet.html
 var templatesFS embed.FS

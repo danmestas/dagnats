@@ -7,8 +7,13 @@
     <td><span class="badge badge-outline">{{.TriggerKind}}</span></td>
     <td class="console-mono">{{.StartedAt}}</td>
     <td>{{.Duration}}</td>
+    <td>
+      <button type="button" class="btn btn-sm btn-outline"
+              data-sidesheet-target
+              data-on:click="@get('/console/api/runs/{{.RunID}}/sheet')">Inspect</button>
+    </td>
   </tr>
   {{else}}
-  <tr id="run-row-empty"><td colspan="6" class="console-empty">no runs match these filters</td></tr>
+  <tr id="run-row-empty"><td colspan="7" class="console-empty">no runs match these filters</td></tr>
   {{end}}
 </tbody>{{end}}

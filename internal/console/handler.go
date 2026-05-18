@@ -175,7 +175,11 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		})
 	mux.HandleFunc("/console/api/dlq/",
 		func(w http.ResponseWriter, r *http.Request) {
-			serveDLQConfirmFragment(w, r, ts, cfg)
+			dispatchDLQAPIFragment(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/api/runs/",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveRunSheet(w, r, ts, cfg)
 		})
 	mux.HandleFunc("/console/api/search",
 		func(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,107 @@
+{{/*
+  Phase 2 T12 — side sheet shell + per-section body partials.
+
+  The sheet wrapper is rendered into #sheet-outlet via a Datastar
+  PatchElements (inner mode). sheet.js flips .sidesheet-open the next
+  frame for the slide-in transition. Classes use the sidesheet-* prefix
+  to avoid the basecoat .sheet selector collision (Phase 2 T01 already
+  added a Basecoat-style .sheet that defaults to display:none).
+*/}}
+{{define "side-sheet"}}
+<div class="sidesheet-backdrop" data-sidesheet-close></div>
+<aside class="sidesheet" role="dialog" aria-labelledby="sidesheet-title"
+       aria-modal="true" data-sidesheet>
+  <header class="sidesheet-header">
+    <h2 id="sidesheet-title" class="sidesheet-title">{{.Title}}</h2>
+    <button type="button" class="sidesheet-close" aria-label="Close"
+            data-sidesheet-close>&times;</button>
+  </header>
+  <div class="sidesheet-body">
+    {{if eq .BodyTemplate "dlq-sheet-body"}}
+      {{template "dlq-sheet-body" .Data}}
+    {{else if eq .BodyTemplate "run-sheet-body"}}
+      {{template "run-sheet-body" .Data}}
+    {{end}}
+  </div>
+  <footer class="sidesheet-footer">
+    <a href="{{.FullPageHref}}" class="btn btn-outline">Open in full page</a>
+  </footer>
+</aside>
+{{end}}
+
+{{/*
+  dlq-sheet-body — read-only summary of one DLQ entry. Mutation actions
+  (Retry/Discard) stay on the row per T09; the sheet is for inspection
+  context only. .Data is a DLQDetailView.
+*/}}
+{{define "dlq-sheet-body"}}
+<dl class="console-deflist">
+  <div><dt>Reason class</dt>
+    <dd><span class="badge badge-failed">{{.ReasonClass}}</span></dd></div>
+  <div><dt>Failed at</dt>
+    <dd class="console-mono">{{.FailedAt}}</dd></div>
+  <div><dt>Delivery count</dt><dd>{{.Attempts}}</dd></div>
+  <div><dt>Workflow</dt>
+    <dd class="console-mono">
+      {{if .Workflow}}<a href="/console/workflows/{{.Workflow}}">{{.Workflow}}</a>
+      {{else}}<span class="muted">unknown</span>{{end}}
+    </dd></div>
+  <div><dt>Original run</dt>
+    <dd class="console-mono">
+      {{if .OriginalRunID}}<a href="/console/runs/{{.OriginalRunID}}">{{.OriginalRunIDS}}</a>
+      {{else}}<span class="muted">unknown</span>{{end}}
+    </dd></div>
+  <div><dt>Step id</dt>
+    <dd class="console-mono">
+      {{if .StepID}}{{.StepID}}{{else}}<span class="muted">&mdash;</span>{{end}}
+    </dd></div>
+  <div><dt>Task subject</dt><dd class="console-mono">{{.Task}}</dd></div>
+  <div><dt>Body preserved</dt>
+    <dd>{{if .BodyPreserved}}yes &mdash; retry-eligible
+        {{else}}<span class="muted">no &mdash; legacy entry</span>{{end}}</dd></div>
+</dl>
+<h3 class="sidesheet-section-title">Error message</h3>
+<pre class="console-pre console-pre-error"><code>{{.ReasonFull}}</code></pre>
+{{if .BodyPreview}}
+<h3 class="sidesheet-section-title">Original input</h3>
+<pre class="console-pre"><code>{{.BodyPreview}}</code></pre>
+{{end}}
+{{end}}
+
+{{/*
+  run-sheet-body — high-density run summary. .Data is RunDetailView.
+  Steps are listed as a compact table; the full step list is one click
+  away via the footer "Open in full page" link.
+*/}}
+{{define "run-sheet-body"}}
+<dl class="console-deflist">
+  <div><dt>Status</dt><dd>{{template "status-badge" .Status}}</dd></div>
+  <div><dt>Workflow</dt>
+    <dd class="console-mono">
+      <a href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a>
+    </dd></div>
+  <div><dt>Started</dt><dd class="console-mono">{{.StartedAt}}</dd></div>
+  <div><dt>Duration</dt><dd>{{.Duration}}</dd></div>
+  <div><dt>Trigger</dt>
+    <dd><span class="badge badge-outline">{{.TriggerKind}}</span></dd></div>
+</dl>
+{{if .HasError}}
+<h3 class="sidesheet-section-title">Error</h3>
+<pre class="console-pre console-pre-error"><code>{{.ErrorMsg}}</code></pre>
+{{end}}
+{{if .StepRows}}
+<h3 class="sidesheet-section-title">Steps</h3>
+<table class="table console-table">
+  <thead><tr><th>Step</th><th>State</th><th>Duration</th></tr></thead>
+  <tbody>
+    {{range .StepRows}}
+    <tr>
+      <td class="console-mono">{{.ID}}</td>
+      <td>{{.State}}</td>
+      <td class="console-mono">{{.Duration}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
