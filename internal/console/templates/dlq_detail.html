@@ -3,7 +3,7 @@
   <header class="console-section-header">
     <h1>Dead letter #{{.Sequence}}</h1>
     <p class="console-lede">
-      <span class="badge badge-failed">{{.ReasonClass}}</span>
+      <span class="badge badge-failed"><span class="status-icon" aria-hidden="true">✗</span> {{.ReasonClass}}</span>
       from
       {{if .Workflow}}<a href="/console/workflows/{{.Workflow}}" class="console-mono">{{.Workflow}}</a>{{else}}<span class="muted">unknown workflow</span>{{end}}
       —
@@ -16,7 +16,7 @@
     <header class="card-header"><h2>Failure</h2></header>
     <div class="card-body">
       <dl class="console-deflist">
-        <div><dt>Reason class</dt><dd><span class="badge badge-failed">{{.ReasonClass}}</span></dd></div>
+        <div><dt>Reason class</dt><dd><span class="badge badge-failed"><span class="status-icon" aria-hidden="true">✗</span> {{.ReasonClass}}</span></dd></div>
         <div><dt>Failed at</dt><dd class="console-mono">{{.FailedAt}}</dd></div>
         <div><dt>Delivery count</dt><dd>{{.Attempts}}</dd></div>
         <div><dt>Step id</dt><dd class="console-mono">{{if .StepID}}{{.StepID}}{{else}}<span class="muted">—</span>{{end}}</dd></div>

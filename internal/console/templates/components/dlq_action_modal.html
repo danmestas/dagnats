@@ -33,7 +33,7 @@
     <p id="dlq-confirm-error" class="muted" style="color: var(--status-failed); min-height: 1.2rem;"></p>
     <div class="console-modal-actions">
       <button type="button" id="dlq-confirm-cancel" class="btn btn-outline">Cancel</button>
-      <button type="button" id="dlq-confirm-go" class="btn btn-destructive">Confirm</button>
+      <button type="button" id="dlq-confirm-go" class="btn btn-destructive" data-action-default-class="btn-destructive">Confirm</button>
     </div>
   </div>
 </div>
@@ -82,6 +82,16 @@
         : "Retry " + target + ". The original input is re-injected as a fresh run.");
     input.value = "";
     errLine.textContent = "";
+    // Audit H9: the confirm button mirrors the action's tier — rust
+    // destructive for Discard, paper-indigo restorative for Retry.
+    // The two classes are mutually exclusive so we strip then add.
+    goBtn.classList.remove("btn-destructive");
+    goBtn.classList.remove("btn-restorative");
+    if (actionType === "discard") {
+      goBtn.classList.add("btn-destructive");
+    } else {
+      goBtn.classList.add("btn-restorative");
+    }
     modal.setAttribute("data-open", "true");
     setTimeout(function () { input.focus(); }, 0);
   }

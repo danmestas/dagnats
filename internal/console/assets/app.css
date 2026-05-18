@@ -1041,7 +1041,9 @@ body[data-theme="dark"] {
   transition: fill 200ms ease, stroke 200ms ease;
   filter: drop-shadow(0 1.5px 0 rgba(0, 0, 0, 0.06));
 }
-.dagviz-step:focus { outline: none; stroke: var(--accent); }
+/* :focus-visible (not :focus) keeps the keyboard ring without
+   flashing on mouse click — fix from ui-ux-pro-max audit C3. */
+.dagviz-step:focus-visible { stroke: var(--accent); }
 .dagviz-step:hover { stroke: var(--accent); }
 
 .dagviz-step-pending   { fill: var(--surface); }
@@ -1915,4 +1917,300 @@ body[data-theme="dark"] {
     padding-left: 5.2rem;
   }
   .cmdk-hint { flex-wrap: wrap; gap: 0.5rem; }
+}
+
+/* ======================================================================
+ * ui-ux-pro-max audit fix bundle (CRITICAL + HIGH).
+ * Loaded last so its overrides win against basecoat.css and earlier
+ * rules in this file. Sections referenced by audit finding id.
+ * ====================================================================== */
+
+/* C5 — Basecoat ships `.alert { display:grid }` which puts each child
+ * on its own auto row, so a multi-word <p> inside an alert wraps one
+ * word per line on narrow grid templates. Force block layout on the
+ * metrics-down alert so the explanation paragraph reads as prose. */
+.alert,
+.console-metrics-down,
+.console-metrics-down.alert {
+  display: block;
+}
+.console-metrics-down p {
+  margin: 0.25rem 0;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+.console-metrics-down .console-pre {
+  margin-top: 0.5rem;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* C3 — sitewide :focus-visible rings. Audit found keyboard users had
+ * no visual focus indicator on any interactive surface. Use the
+ * accent (paper-indigo) at 2px with offset so it's visible on both
+ * paper-light and ink-dark themes. */
+a:focus-visible,
+button:focus-visible,
+[role="tab"]:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible,
+.btn:focus-visible,
+.cmdk-result:focus-visible,
+.step-list-row summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.dashboard-tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* C6 + H1 + H2 — mobile breakpoint pass.
+ * - Hamburger via <details> shown ≤768px; desktop nav hidden.
+ * - All inputs ≥16px to suppress iOS Safari auto-zoom on focus.
+ * - .btn-sm bumped to 44pt min-height on touch widths so the DLQ row
+ *   pills meet WCAG 2.5.5 target size.
+ * - Container gutters tighten from 2rem to 1rem on mobile. */
+.console-nav-mobile {
+  display: none;
+  position: relative;
+}
+.console-nav-mobile-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+.console-nav-mobile-toggle::-webkit-details-marker { display: none; }
+.console-nav-mobile-panel {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 14rem;
+  padding: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.console-nav-mobile-panel a {
+  display: block;
+  padding: 0.6rem 0.75rem;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  min-height: 44px;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+.console-nav-mobile-panel a:hover,
+.console-nav-mobile-panel a.is-active {
+  color: var(--text-primary);
+  background: var(--accent-soft);
+  text-decoration: none;
+}
+.console-visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+
+@media (max-width: 768px) {
+  .console-nav-desktop { display: none; }
+  .console-nav-mobile { display: inline-block; }
+  /* iOS Safari zooms inputs whose computed font-size is <16px.
+     Bump all native control text to exactly 16px on mobile. */
+  input, select, textarea {
+    font-size: 16px;
+  }
+  /* WCAG 2.5.5 minimum touch target on mobile widths. */
+  .btn-sm {
+    min-height: 44px;
+    padding: 0.5rem 0.75rem;
+  }
+  /* Adaptive gutters — desktop 2rem, mobile 1rem. The header inner
+     and main content both apply this so chrome lines up with content. */
+  .console-header-inner,
+  .console-main {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}
+@media (min-width: 769px) {
+  .console-header-inner,
+  .console-main {
+    padding-left: 2rem;
+    padding-right: 2rem;
+  }
+}
+
+/* C4 — status-icon glyph helper. Provides multimodal cue (icon +
+ * color + label) so color-blind operators can still tell completed
+ * from running from failed. Used inside .status-icon span emitted
+ * by templates/fragments/status_badge.html. */
+.status-icon {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  font-weight: 700;
+  margin-right: 0.2em;
+}
+
+/* H4 — status text on light surface needs ≥4.5:1 contrast. Original
+ * paint mid-tones (#A88950 running, #6B7A56 completed, #807A6E skip)
+ * measured 2.6–3.4:1. These darker swatches stay in the e-ink family
+ * (warm-amber / leaf-green / stone-gray) but ≥4.5:1 against #F8F5EF. */
+html[data-theme="light"],
+body[data-theme="light"],
+:root {
+  --status-completed: #4F5A40;
+  --status-running:   #7A5E32;
+  --status-skipped:   #5C5750;
+}
+
+/* H5 — borders need ≥3:1 for UI components per WCAG 1.4.11. The
+ * #D6CFC0 paint dust on #F8F5EF measured 1.42:1 — darken to a token
+ * still in the warm-paper family but with enough separation. */
+html[data-theme="light"],
+body[data-theme="light"],
+:root {
+  --border: #B7AC97;
+}
+html[data-theme="dark"],
+body[data-theme="dark"] {
+  --border: #5A5249;
+}
+
+/* H6 — run-detail header hierarchy. The audit flagged
+ * "Workflow X — status — started — duration — trigger" as a wall of
+ * text with no visual layering. Split into title, meta row, and a
+ * definition list of times. */
+.run-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.run-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.6rem;
+  line-height: 1.2;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.run-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.run-meta .run-id {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.run-times {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.5rem 1.25rem;
+  margin: 0;
+  padding: 0;
+}
+.run-times div { display: flex; flex-direction: column; gap: 0.1rem; }
+.run-times dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.run-times dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.92rem;
+  color: var(--text-primary);
+}
+
+/* H7 — Events tab JSON. Long single-line JSON would overflow the
+ * panel; pre-wrap + break-word lets it reflow at the panel edge. */
+.run-event-json pre,
+.console-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.run-event-collapsible[open] > summary::after {
+  content: " (collapse)";
+  color: var(--text-secondary);
+  font-size: 0.85em;
+}
+.run-event-collapsible:not([open]) > summary::after {
+  content: " (expand)";
+  color: var(--text-secondary);
+  font-size: 0.85em;
+}
+
+/* H8 — Dashboard tile grid: explicit 3-col on wide, 2 on mid, 1 on
+ * narrow. Replaces basecoat's auto-fit which yielded a 4-col row
+ * with a half-empty bottom row when there were 5 tiles. */
+.dashboard-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+@media (max-width: 1024px) {
+  .dashboard-tile-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .dashboard-tile-grid { grid-template-columns: 1fr; }
+}
+
+/* H10 — table cell typography. Tabular-nums so ids and counts line
+ * up vertically; mono for the dedicated id / time columns. */
+.console-table td,
+.console-table th {
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+.console-table td.console-id-cell,
+.console-table td.console-time-cell {
+  font-family: var(--font-mono);
+}
+
+/* H3 — runs pagination chrome. The pager already exists; make sure
+ * its targets meet 44pt on mobile (matches .btn-sm bump above) and
+ * give the "Showing N–M of K runs" lede the right typography. */
+.console-pager-lede {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0.5rem 0;
+}
+
+/* Polish — cmd+K backdrop scrim. Lighter scrim (0.2 + blur 2px)
+ * replaces the 0.55 black wash from the earlier T11 ship: full
+ * black-out felt heavier than a search box warrants and obscured
+ * page context. Inherits palette positioning. */
+.cmdk-backdrop {
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
 }

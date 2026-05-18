@@ -4,7 +4,10 @@
          data-init="@get('/console/sse/runs', {openWhenHidden: true})">
   <header class="console-section-header">
     <h1>Runs</h1>
-    <p class="console-lede">{{.Total}} total. Live updates over SSE.</p>
+    <p class="console-lede">
+      {{if .Total}}Showing {{.FirstIndex}}&ndash;{{.LastIndex}} of {{.Total}} runs.{{else}}No runs match these filters.{{end}}
+      Live updates over SSE.
+    </p>
   </header>
 
   <form class="console-filter-bar" data-on:submit__prevent="$event.preventDefault()">

@@ -2,5 +2,14 @@
     <td class="console-mono">{{.Timestamp}}</td>
     <td><span class="badge badge-outline">{{.Type}}</span></td>
     <td class="console-mono">{{.StepID}}</td>
-    <td class="console-mono console-event-data">{{.DataPreview}}</td>
+    <td class="console-event-data run-event-json">
+      {{if gt (len .DataFull) 500}}
+      <details class="run-event-collapsible">
+        <summary class="console-mono">{{.DataPreview}}</summary>
+        <pre class="console-pre console-mono">{{.DataFull}}</pre>
+      </details>
+      {{else}}
+      <pre class="console-pre console-mono">{{.DataPreview}}</pre>
+      {{end}}
+    </td>
   </tr>{{end}}

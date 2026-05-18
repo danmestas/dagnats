@@ -36,15 +36,28 @@
         <span class="console-mark"></span>
         <span class="console-name">dagnats</span>
       </a>
-      <nav class="console-nav" aria-label="primary">
+      <nav class="console-nav console-nav-desktop" aria-label="primary">
         <a href="/console/"          class="{{if eq .Section "dashboard"}}is-active{{end}}">Dashboard</a>
         <a href="/console/workflows" class="{{if eq .Section "workflows"}}is-active{{end}}">Workflows</a>
         <a href="/console/runs"      class="{{if eq .Section "runs"}}is-active{{end}}">Runs</a>
         <a href="/console/triggers"  class="{{if eq .Section "triggers"}}is-active{{end}}">Triggers</a>
         <a href="/console/dlq"       class="glo-tooltip-wrapper {{if eq .Section "dlq"}}is-active{{end}}"><span class="glo-tooltip-target">DLQ</span><span class="glo-tooltip-popover" role="tooltip">{{tooltipText "DLQ"}}</span></a>
-        <a href="/console/ops/health" class="{{if eq .Section "ops"}}is-active{{end}}">Ops</a>
-        <a href="/console/help"      class="{{if eq .Section "help"}}is-active{{end}}">Help</a>
+        <a href="/console/ops"       class="{{if eq .Section "ops"}}is-active{{end}}">Ops</a>
       </nav>
+      <details class="console-nav-mobile" aria-label="primary navigation">
+        <summary class="console-nav-mobile-toggle" aria-label="Open navigation menu">
+          <span aria-hidden="true">≡</span>
+          <span class="console-visually-hidden">Menu</span>
+        </summary>
+        <nav class="console-nav-mobile-panel" aria-label="primary">
+          <a href="/console/"          class="{{if eq .Section "dashboard"}}is-active{{end}}">Dashboard</a>
+          <a href="/console/workflows" class="{{if eq .Section "workflows"}}is-active{{end}}">Workflows</a>
+          <a href="/console/runs"      class="{{if eq .Section "runs"}}is-active{{end}}">Runs</a>
+          <a href="/console/triggers"  class="{{if eq .Section "triggers"}}is-active{{end}}">Triggers</a>
+          <a href="/console/dlq"       class="{{if eq .Section "dlq"}}is-active{{end}}">DLQ</a>
+          <a href="/console/ops"       class="{{if eq .Section "ops"}}is-active{{end}}">Ops</a>
+        </nav>
+      </details>
       <div class="console-actor">
         {{if .Actor.Display}}<span title="{{.Actor.Source}}">{{.Actor.Display}}</span>{{end}}
       </div>
