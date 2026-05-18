@@ -1,0 +1,21 @@
+{{/*
+  tooltip — reusable glossary tooltip partial.
+
+  Inputs:
+    .Label — visible text (the jargon term)
+    .Text  — popover body (definition)
+
+  Most callers should prefer the `{{tooltip "TERM"}}` template helper
+  in handler.go, which looks up TERM in the glossary and renders this
+  same markup inline. The named partial is here for the rare case
+  where the popover text needs to differ from the glossary entry —
+  e.g. a context-specific elaboration on a generic term. CSS lives
+  under the `glo-*` prefix in basecoat-raw.css to avoid colliding
+  with any Basecoat-shipped `.tooltip` rules.
+*/}}
+{{define "tooltip"}}
+<span class="glo-tooltip-wrapper" tabindex="0">
+  <span class="glo-tooltip-target">{{.Label}}</span>
+  <span class="glo-tooltip-popover" role="tooltip">{{.Text}}</span>
+</span>
+{{end}}

@@ -41,7 +41,7 @@
         <a href="/console/workflows" class="{{if eq .Section "workflows"}}is-active{{end}}">Workflows</a>
         <a href="/console/runs"      class="{{if eq .Section "runs"}}is-active{{end}}">Runs</a>
         <a href="/console/triggers"  class="{{if eq .Section "triggers"}}is-active{{end}}">Triggers</a>
-        <a href="/console/dlq"       class="{{if eq .Section "dlq"}}is-active{{end}}">DLQ</a>
+        <a href="/console/dlq"       class="glo-tooltip-wrapper {{if eq .Section "dlq"}}is-active{{end}}"><span class="glo-tooltip-target">DLQ</span><span class="glo-tooltip-popover" role="tooltip">{{tooltipText "DLQ"}}</span></a>
         <a href="/console/ops/health" class="{{if eq .Section "ops"}}is-active{{end}}">Ops</a>
         <a href="/console/help"      class="{{if eq .Section "help"}}is-active{{end}}">Help</a>
       </nav>
