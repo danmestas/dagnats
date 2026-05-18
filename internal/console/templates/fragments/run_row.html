@@ -5,4 +5,9 @@
     <td><span class="badge badge-outline">{{.Row.TriggerKind}}</span></td>
     <td class="console-mono">{{.Row.StartedAt}}</td>
     <td>{{.Row.Duration}}</td>
+    <td>
+      <button type="button" class="btn btn-sm btn-outline"
+              data-sidesheet-target
+              data-on:click="@get('/console/api/runs/{{.Row.RunID}}/sheet')">Inspect</button>
+    </td>
   </tr>{{end}}

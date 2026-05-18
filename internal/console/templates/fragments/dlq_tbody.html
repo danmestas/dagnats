@@ -48,7 +48,9 @@
             {{if $readonly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to discard."{{else}}data-action-confirm="discard" data-confirm-seq="{{.Sequence}}"{{end}}>
       Discard
     </button>
-    <a class="btn btn-sm btn-outline" href="/console/dlq/{{.Sequence}}">Inspect</a>
+    <button type="button" class="btn btn-sm btn-outline"
+            data-sidesheet-target
+            data-on:click="@get('/console/api/dlq/{{.Sequence}}/sheet')">Inspect</button>
   </td>
 </tr>
 {{end}}

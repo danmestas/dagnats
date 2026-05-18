@@ -1483,3 +1483,190 @@ func serveSearch(
 		cfg.Logger.Warn("console: search patch elements", "err", patchErr)
 	}
 }
+
+// sheetView packages the fields the side-sheet shell template binds.
+// BodyTemplate is a switch key the shell uses to pick which inner
+// partial to render against Data; using a switch keeps html/template's
+// type-safe contract intact (calling {{template .X .Y}} dynamically
+// requires every name to be parse-time known).
+type sheetView struct {
+	Title        string
+	BodyTemplate string
+	Data         any
+	FullPageHref string
+}
+
+// dispatchDLQAPIFragment routes /console/api/dlq/<seq>/{confirm,sheet}
+// to the matching handler. Both endpoints share the prefix because
+// the mux is registered on /console/api/dlq/ as a catch-all; the
+// suffix selects the response shape. Unknown suffixes 404.
+func dispatchDLQAPIFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("dispatchDLQAPIFragment: w is nil")
+	}
+	if r == nil {
+		panic("dispatchDLQAPIFragment: r is nil")
+	}
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/confirm"):
+		serveDLQConfirmFragment(w, r, ts, cfg)
+	case strings.HasSuffix(r.URL.Path, "/sheet"):
+		serveDLQSheet(w, r, ts, cfg)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// serveDLQSheet renders /console/api/dlq/<seq>/sheet as a Datastar
+// PatchElements SSE event that patches the side-sheet markup into
+// #sheet-outlet (inner mode). The shell binds the dlq-sheet-body
+// partial against the DLQDetailView.
+func serveDLQSheet(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("serveDLQSheet: w is nil")
+	}
+	if r == nil {
+		panic("serveDLQSheet: r is nil")
+	}
+	if ts == nil {
+		panic("serveDLQSheet: ts is nil")
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	seqStr := sheetSeqFromPath(r.URL.Path, "/console/api/dlq/", "/sheet")
+	if seqStr == "" {
+		http.NotFound(w, r)
+		return
+	}
+	ds, ok := requireData(w, cfg, "dlq-sheet")
+	if !ok {
+		return
+	}
+	detail := buildDLQDetail(r.Context(), ds, seqStr)
+	if detail.NotFound {
+		http.NotFound(w, r)
+		return
+	}
+	view := sheetView{
+		Title:        "DLQ entry #" + seqStr,
+		BodyTemplate: "dlq-sheet-body",
+		Data:         detail,
+		FullPageHref: "/console/dlq/" + seqStr,
+	}
+	emitSheetFragment(w, r, ts, cfg, view, "dlq-sheet")
+}
+
+// serveRunSheet renders /console/api/runs/<id>/sheet as a Datastar
+// PatchElements event scoped to #sheet-outlet. The run id slug is
+// taken verbatim — empty / nested / unknown ids return 404 so the
+// operator's URL bar still tells the truth.
+func serveRunSheet(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("serveRunSheet: w is nil")
+	}
+	if r == nil {
+		panic("serveRunSheet: r is nil")
+	}
+	if ts == nil {
+		panic("serveRunSheet: ts is nil")
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id := sheetSlugFromPath(r.URL.Path, "/console/api/runs/", "/sheet")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	ds, ok := requireData(w, cfg, "run-sheet")
+	if !ok {
+		return
+	}
+	view := buildRunDetail(r.Context(), ds, id)
+	if view.NotFound {
+		http.NotFound(w, r)
+		return
+	}
+	sv := sheetView{
+		Title:        "Run " + shortRunID(id),
+		BodyTemplate: "run-sheet-body",
+		Data:         view,
+		FullPageHref: "/console/runs/" + id,
+	}
+	emitSheetFragment(w, r, ts, cfg, sv, "run-sheet")
+}
+
+// emitSheetFragment renders the side-sheet shell with the given view
+// and emits the result as a Datastar PatchElements event targeting
+// #sheet-outlet in inner mode. The label is included in slog warnings
+// so a render or write failure is easy to attribute.
+func emitSheetFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+	view sheetView, label string,
+) {
+	if ts == nil {
+		panic("emitSheetFragment: ts is nil")
+	}
+	if label == "" {
+		panic("emitSheetFragment: label is empty")
+	}
+	html, err := renderFragment(ts.base, "side-sheet", view)
+	if err != nil {
+		cfg.Logger.Error("console: render side-sheet",
+			"label", label, "err", err)
+		http.Error(w, "render failed", http.StatusInternalServerError)
+		return
+	}
+	sse := datastar.NewSSE(w, r)
+	patchErr := sse.PatchElements(html,
+		datastar.WithSelectorID("sheet-outlet"),
+		datastar.WithModeInner())
+	if patchErr != nil {
+		cfg.Logger.Warn("console: sheet patch elements",
+			"label", label, "err", patchErr)
+	}
+}
+
+// sheetSeqFromPath extracts the <seq> token from a URL of the shape
+// `<prefix><seq><suffix>`. Returns "" when the path doesn't match or
+// the seq contains a slash. The pure-string version is enough — the
+// caller validates the seq numerically when it looks up the entry.
+func sheetSeqFromPath(path, prefix, suffix string) string {
+	if path == "" || prefix == "" || suffix == "" {
+		return ""
+	}
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	if !strings.HasSuffix(rest, suffix) {
+		return ""
+	}
+	seq := strings.TrimSuffix(rest, suffix)
+	if seq == "" || strings.Contains(seq, "/") {
+		return ""
+	}
+	return seq
+}
+
+// sheetSlugFromPath is sheetSeqFromPath with run-id-friendly
+// validation. Same logic — kept distinct so the call sites read
+// clearly at the route layer.
+func sheetSlugFromPath(path, prefix, suffix string) string {
+	return sheetSeqFromPath(path, prefix, suffix)
+}
