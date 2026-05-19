@@ -2272,4 +2272,71 @@ body[data-theme="dark"] .console-table tbody td {
   .page { overflow-x: auto; }
 }
 
+/* ===== Tier A — close visible bugs from honest-qa screenshots =====
+ *
+ * Closing 5 visible bugs that the post-PR-265 audit missed: the
+ * QA skill was checking HTML text contrast but not SVG fills,
+ * pre/code blocks, interactive states, or text selection. These
+ * are now covered by skill v2 (Phase 1.10–1.14). What remains is
+ * fixing the CSS the new sweeps would have flagged.
+ */
+
+/* DAG canvas background — was var(--surface), same color as the
+ * step-node fill (var(--surface) for pending). Step rects were
+ * invisible against the canvas; only their stroke distinguished
+ * them. Use var(--bg) so the step fills (--surface, one shade
+ * lighter than bg) pop visibly in both themes. */
+.dagviz-card-body { background: var(--bg); }
+
+/* <pre>/<code> color override — Basecoat's --foreground default
+ * is oklch(0.145 0 0) (near-black) which leaks onto bare <pre>
+ * elements that don't pick up a class. JSON definition blocks
+ * rendered dark-on-dark in dark mode. Force our text-primary. */
+html[data-theme="dark"] pre,
+html[data-theme="dark"] code,
+body[data-theme="dark"] pre,
+body[data-theme="dark"] code {
+  color: var(--text-primary);
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]):not([data-theme="dark"]) pre,
+  html:not([data-theme="light"]):not([data-theme="dark"]) code,
+  body:not([data-theme="light"]):not([data-theme="dark"]) pre,
+  body:not([data-theme="light"]):not([data-theme="dark"]) code {
+    color: var(--text-primary);
+  }
+}
+
+/* Text selection — browser default in dark mode makes selected
+ * text invisible (the default selection bg is too close to dim
+ * foreground colors). Explicit rule gives WCAG-strong contrast
+ * in both themes. The accent token reads as paper-indigo in both
+ * palettes; pair with --bg so the selected text is the panel
+ * color on the indigo selection. */
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+::-moz-selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Table row hover — Basecoat's default hover utility leaks a
+ * faint white overlay in dark mode that drops cell text contrast
+ * to ~3:1. Define explicit hover bg using a darker overlay that
+ * preserves text-on-bg contrast above 4.5:1 in both themes. */
+.console-table tbody tr:hover {
+  background: var(--accent-soft);
+}
+
+/* Tab panel content — when a tab is active, its content area
+ * needs to inherit text-primary. Tabs that lazy-load via SSE
+ * patch a fragment into [role="tabpanel"]; without this rule the
+ * patched content could pick up a dim default. */
+[role="tabpanel"] {
+  color: var(--text-primary);
+}
+
+/* End Tier A bug-fix block. */
 /* End comprehensive UI fix bundle. */
