@@ -409,6 +409,32 @@ a:hover { text-decoration: underline; }
   border-color: var(--status-pending);
 }
 
+/* Status indicator (run status, step status) — per ADR-015 the
+   high-traffic status display drops the pill chip and shows just a
+   colored icon + plain text. Scans faster in tables; saves horizontal
+   space. Other .badge-* uses (version tags, trigger kind, audit
+   outcome, DLQ reason) keep the chip — those are standalone tags,
+   not row-scan targets. */
+.status {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+.status .status-icon {
+  font-size: 0.9em;
+  font-weight: 700;
+  line-height: 1;
+}
+.status-completed .status-icon { color: var(--status-completed); }
+.status-running   .status-icon { color: var(--status-running); }
+.status-failed    .status-icon { color: var(--status-failed); }
+.status-skipped   .status-icon,
+.status-cancelled .status-icon { color: var(--status-skipped); }
+.status-pending   .status-icon,
+.status-queued    .status-icon { color: var(--status-pending); }
+
 /* Alerts for validator warnings + run errors. */
 .alert {
   border: 1px solid var(--border);
