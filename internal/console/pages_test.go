@@ -1009,7 +1009,7 @@ func TestRunDetail_rendersTabs(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, label := range []string{
-		">Steps<", ">Events<", ">DAG<", ">Input/Output<",
+		">Steps<", ">Events<", ">Input/Output<",
 	} {
 		if !strings.Contains(body, label) {
 			t.Errorf("missing tab label %q", label)
@@ -1022,8 +1022,7 @@ func TestRunDetail_rendersTabs(t *testing.T) {
 		t.Error("Steps tab is not the default-active tab")
 	}
 	for _, panelID := range []string{
-		`id="panel-steps"`, `id="panel-events"`,
-		`id="panel-dag"`, `id="panel-io"`,
+		`id="panel-steps"`, `id="panel-events"`, `id="panel-io"`,
 	} {
 		if !strings.Contains(body, panelID) {
 			t.Errorf("missing tab panel %q", panelID)
@@ -1121,7 +1120,6 @@ func TestRunDetail_lazyTabFragments(t *testing.T) {
 		name, url, wantSelector string
 	}{
 		{"events", "/console/api/run/run-lz/events-tab", "panel-events"},
-		{"dag", "/console/api/run/run-lz/dag-tab", "panel-dag"},
 		{"io", "/console/api/run/run-lz/io-tab", "panel-io"},
 	}
 	for _, tc := range cases {

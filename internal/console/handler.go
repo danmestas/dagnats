@@ -243,10 +243,6 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			serveAPIMetricsChart(w, r, cfg)
 		})
-	mux.HandleFunc("/console/api/dag/static/",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageDAGStatic(w, r, cfg)
-		})
 	mux.HandleFunc("/console/assets/console.js", serveGzAsset("console.js.gz",
 		"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/assets/basecoat.css", serveGzAsset("basecoat.css.gz",

@@ -4,9 +4,6 @@ import (
 	"context"
 	"net/http"
 	"sort"
-	"strings"
-
-	"github.com/danmestas/dagnats/internal/console/dagviz"
 )
 
 // ops_pages.go owns the PR 5b operator pages under /console/ops:
@@ -333,64 +330,3 @@ func buildKVEntry(
 // firstQueryValue returns the first value for key in q, or "" when
 // missing. Pulled here so ops pages don't import pages.go's helpers.
 // (Already defined in pages.go; reuse via shared package scope.)
-
-// servePageDAGStatic renders an inline SVG fragment for one workflow.
-// Called from the workflow-detail template via {{template "dag-svg"}}
-// — keeping it as a server endpoint isn't strictly needed because the
-// rendering happens server-side at page assembly time. The function
-// lives here for symmetry with the live-run DAG endpoint, which IS a
-// dedicated HTTP route for the SSE patch flow.
-func servePageDAGStatic(
-	w http.ResponseWriter, r *http.Request,
-	cfg Config,
-) {
-	if w == nil {
-		panic("servePageDAGStatic: w is nil")
-	}
-	if r == nil {
-		panic("servePageDAGStatic: r is nil")
-	}
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	name := strings.TrimPrefix(r.URL.Path, "/console/api/dag/static/")
-	if name == "" || strings.Contains(name, "/") {
-		http.NotFound(w, r)
-		return
-	}
-	ds, ok := requireData(w, cfg, "dag-static")
-	if !ok {
-		return
-	}
-	def, err := ds.GetWorkflow(name)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	body, err := dagviz.Render(def, nil)
-	if err != nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(dagFallback(err))
-		return
-	}
-	w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(body)
-}
-
-// dagFallback returns an inline HTML message for the error cases the
-// renderer surfaces (cycle, too-many-steps). Kept tiny — the consuming
-// template renders the surrounding chrome.
-func dagFallback(err error) []byte {
-	msg := "DAG visualisation unavailable"
-	switch err {
-	case dagviz.ErrCycle:
-		msg = "Workflow has a cycle — visualisation skipped"
-	case dagviz.ErrTooManySteps:
-		msg = "Workflow exceeds 30-step visualisation cap — view as list"
-	}
-	return []byte(`<div class="dagviz-fallback">` + msg + `</div>`)
-}

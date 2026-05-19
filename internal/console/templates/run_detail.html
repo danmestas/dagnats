@@ -32,10 +32,6 @@
                 aria-selected="false" aria-controls="panel-events"
                 class="tabs-trigger"
                 data-on:click__once="@get('/console/api/run/{{.RunID}}/events-tab')">Events</button>
-        <button type="button" role="tab" id="tab-dag"
-                aria-selected="false" aria-controls="panel-dag"
-                class="tabs-trigger"
-                data-on:click__once="@get('/console/api/run/{{.RunID}}/dag-tab')">DAG</button>
         <button type="button" role="tab" id="tab-io"
                 aria-selected="false" aria-controls="panel-io"
                 class="tabs-trigger"
@@ -48,10 +44,6 @@
       <div role="tabpanel" id="panel-events" aria-labelledby="tab-events"
            class="tabs-content run-detail-panel" hidden>
         <p class="tabs-loading">Loading events&hellip;</p>
-      </div>
-      <div role="tabpanel" id="panel-dag" aria-labelledby="tab-dag"
-           class="tabs-content run-detail-panel" hidden>
-        <p class="tabs-loading">Loading DAG&hellip;</p>
       </div>
       <div role="tabpanel" id="panel-io" aria-labelledby="tab-io"
            class="tabs-content run-detail-panel" hidden>
