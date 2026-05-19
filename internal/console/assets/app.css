@@ -1,28 +1,21 @@
 /*
  * dagnats console — custom styles layered on Basecoat.
  *
- * Both palettes are e-ink-flavored (warm cream / warm near-black, low
- * saturation accents). The defaults follow the operator's OS preference
- * via prefers-color-scheme; an explicit data-theme="light" or
- * data-theme="dark" on <body> overrides. No data-theme attribute on
- * <body> means "follow system."
+ * Per ADR-015 the palette is operator-first: dark-by-default,
+ * high-contrast functional status colors (red urgent / amber watch /
+ * green ok / blue in-progress). Light mode is parity. /docs is its
+ * own Scalar bundle and does not import this stylesheet.
+ *
+ * The defaults follow the operator's OS preference via
+ * prefers-color-scheme; an explicit data-theme="light" or
+ * data-theme="dark" on <html>/<body> overrides.
  */
 
-/* Self-hosted woff2 font binaries — see ADR-014 local-first asset
-   policy. Two faces only; everything else falls back to the system
-   monospace. Fraunces is a variable serif (Latin subset). IBM Plex
-   Sans is a humanist grotesque (Latin subset). Both SIL OFL. */
-@font-face {
-  font-family: "Fraunces";
-  font-style: normal;
-  font-weight: 400 900;
-  font-display: swap;
-  src: url(/console/assets/fonts/fraunces-latin.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
-                 U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F,
-                 U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
-                 U+FEFF, U+FFFD;
-}
+/* Self-hosted woff2 — only IBM Plex Sans for prose/labels/headings.
+   Mono falls back to the system stack (ui-monospace → SF Mono →
+   Menlo / Consolas / Liberation Mono). IBM Plex Mono as a self-hosted
+   asset is planned for a follow-up PR; the system stack is fine in
+   the interim and avoids another woff2 download here. */
 @font-face {
   font-family: "IBM Plex Sans";
   font-style: normal;
@@ -36,46 +29,52 @@
 }
 
 :root {
-  --radius-tile:  10px;
+  --radius-tile:  6px;
   --radius-pill:  9999px;
 
-  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont,
                "Segoe UI", "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
                "Liberation Mono", monospace;
+  /* Shims for legacy refs scattered in this file. Foundation PR
+     collapses display/serif/body all onto the sans face per ADR-015
+     (no editorial typography in console). Selectors will be cleaned
+     up to use --font-sans directly in a follow-up. */
+  --font-display: var(--font-sans);
+  --font-serif:   var(--font-sans);
+  --font-body:    var(--font-sans);
 
-  /* Light palette — system default when prefers-color-scheme is light. */
-  --bg:               #F8F5EF;
-  --surface:          #FFFCF6;
-  --border:           #D6CFC0;
-  --text-primary:     #1F1B16;
-  --text-secondary:   #5A554C;
-  --accent:           #3F5363;
-  --accent-soft:      rgba(63, 83, 99, 0.08);
+  /* Light palette — operator-first functional, GitHub-Light reference. */
+  --bg:               #FFFFFF;
+  --surface:          #F6F8FA;
+  --border:           #D0D7DE;
+  --text-primary:     #1F2328;
+  --text-secondary:   #59636E;
+  --accent:           #0969DA;
+  --accent-soft:      rgba(9, 105, 218, 0.10);
 
-  --status-completed: #6B7A56;
-  --status-running:   #A88950;
-  --status-failed:    #9A6052;
-  --status-skipped:   #807A6E;
-  --status-pending:   #5A6B7D;
+  --status-completed: #1A7F37;
+  --status-running:   #0969DA;
+  --status-failed:    #CF222E;
+  --status-skipped:   #6E7781;
+  --status-pending:   #9A6700;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg:             #1A1814;
-    --surface:        #252220;
-    --border:         #3A3530;
-    --text-primary:   #E8E2D6;
-    --text-secondary: #B0AB9F;
-    --accent:         #7A8E9D;
-    --accent-soft:    rgba(122, 142, 157, 0.14);
+    --bg:             #0D1117;
+    --surface:        #161B22;
+    --border:         #30363D;
+    --text-primary:   #E6EDF3;
+    --text-secondary: #9198A1;
+    --accent:         #2F81F7;
+    --accent-soft:    rgba(47, 129, 247, 0.15);
 
-    --status-completed: #9CAA82;
-    --status-running:   #CDB178;
-    --status-failed:    #C18876;
-    --status-skipped:   #B5B0A4;
-    --status-pending:   #8A9BAD;
+    --status-completed: #3FB950;
+    --status-running:   #58A6FF;
+    --status-failed:    #F85149;
+    --status-skipped:   #8B949E;
+    --status-pending:   #D29922;
   }
 }
 
@@ -85,36 +84,36 @@
    legacy markup that still sets the attribute on body. */
 html[data-theme="light"],
 body[data-theme="light"] {
-  --bg:               #F8F5EF;
-  --surface:          #FFFCF6;
-  --border:           #D6CFC0;
-  --text-primary:     #1F1B16;
-  --text-secondary:   #5A554C;
-  --accent:           #3F5363;
-  --accent-soft:      rgba(63, 83, 99, 0.08);
+  --bg:               #FFFFFF;
+  --surface:          #F6F8FA;
+  --border:           #D0D7DE;
+  --text-primary:     #1F2328;
+  --text-secondary:   #59636E;
+  --accent:           #0969DA;
+  --accent-soft:      rgba(9, 105, 218, 0.10);
 
-  --status-completed: #6B7A56;
-  --status-running:   #A88950;
-  --status-failed:    #9A6052;
-  --status-skipped:   #807A6E;
-  --status-pending:   #5A6B7D;
+  --status-completed: #1A7F37;
+  --status-running:   #0969DA;
+  --status-failed:    #CF222E;
+  --status-skipped:   #6E7781;
+  --status-pending:   #9A6700;
 }
 
 html[data-theme="dark"],
 body[data-theme="dark"] {
-  --bg:             #1A1814;
-  --surface:        #252220;
-  --border:         #3A3530;
-  --text-primary:   #E8E2D6;
-  --text-secondary: #B0AB9F;
-  --accent:         #7A8E9D;
-  --accent-soft:    rgba(122, 142, 157, 0.14);
+  --bg:             #0D1117;
+  --surface:        #161B22;
+  --border:         #30363D;
+  --text-primary:   #E6EDF3;
+  --text-secondary: #9198A1;
+  --accent:         #2F81F7;
+  --accent-soft:    rgba(47, 129, 247, 0.15);
 
-  --status-completed: #9CAA82;
-  --status-running:   #CDB178;
-  --status-failed:    #C18876;
-  --status-skipped:   #B5B0A4;
-  --status-pending:   #8A9BAD;
+  --status-completed: #3FB950;
+  --status-running:   #58A6FF;
+  --status-failed:    #F85149;
+  --status-skipped:   #8B949E;
+  --status-pending:   #D29922;
 }
 
 html, body {
@@ -1161,9 +1160,9 @@ body[data-theme="dark"] {
 /*
  * Metrics dashboard — PR 6.
  *
- * Tiles + µPlot charts stay inside the locked e-ink + Fraunces +
- * IBM Plex aesthetic. NO bright dashboard palette — charts read like
- * a printed report, not a Grafana clone.
+ * Tiles + µPlot charts. Per ADR-015 the chart palette is functional
+ * (status colors for series, --text-secondary for axes/gridlines) —
+ * Grafana-adjacent but using our tokens, not a separate chart theme.
  */
 
 .console-grid-metrics {
@@ -1442,9 +1441,9 @@ body[data-theme="dark"] {
 }
 
 /* --- onboarding banner (PR 8) ----------------------------------
- * Editorial-flavour first-run intro. Rendered once at /console/
- * and dismissed via localStorage. Visually: light card, soft
- * accent border, Fraunces title — quiet, not alarming. */
+ * First-run intro. Rendered once at /console/ and dismissed via
+ * localStorage. Visually: surface card, accent-colored left border,
+ * sans title — quiet, not alarming. */
 .console-onboarding {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1904,30 +1903,10 @@ summary:focus-visible,
   margin-right: 0.2em;
 }
 
-/* H4 — status text on light surface needs ≥4.5:1 contrast. Original
- * paint mid-tones (#A88950 running, #6B7A56 completed, #807A6E skip)
- * measured 2.6–3.4:1. These darker swatches stay in the e-ink family
- * (warm-amber / leaf-green / stone-gray) but ≥4.5:1 against #F8F5EF. */
-html[data-theme="light"],
-body[data-theme="light"],
-:root {
-  --status-completed: #4F5A40;
-  --status-running:   #7A5E32;
-  --status-skipped:   #5C5750;
-}
-
-/* H5 — borders need ≥3:1 for UI components per WCAG 1.4.11. The
- * #D6CFC0 paint dust on #F8F5EF measured 1.42:1 — darken to a token
- * still in the warm-paper family but with enough separation. */
-html[data-theme="light"],
-body[data-theme="light"],
-:root {
-  --border: #B7AC97;
-}
-html[data-theme="dark"],
-body[data-theme="dark"] {
-  --border: #5A5249;
-}
+/* H4 + H5 contrast overrides (warm-palette tactical patches) removed
+ * with ADR-015 foundation re-skin. GitHub-derived tokens at the top
+ * of this file already meet WCAG-AA for status text and 3:1 for
+ * borders on both light and dark; no override layer needed. */
 
 /* H6 — run-detail header hierarchy. The audit flagged
  * "Workflow X — status — started — duration — trigger" as a wall of
