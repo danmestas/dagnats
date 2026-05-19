@@ -67,7 +67,7 @@
     --surface:        #252220;
     --border:         #3A3530;
     --text-primary:   #E8E2D6;
-    --text-secondary: #9B968B;
+    --text-secondary: #B0AB9F;
     --accent:         #7A8E9D;
     --accent-soft:    rgba(122, 142, 157, 0.14);
 
@@ -106,7 +106,7 @@ body[data-theme="dark"] {
   --surface:        #252220;
   --border:         #3A3530;
   --text-primary:   #E8E2D6;
-  --text-secondary: #9B968B;
+  --text-secondary: #B0AB9F;
   --accent:         #7A8E9D;
   --accent-soft:    rgba(122, 142, 157, 0.14);
 
@@ -2243,10 +2243,15 @@ body[data-theme="dark"] .console-table tbody td {
 
 /* Table-in-card horizontal overflow fix. PR #261's `.card` set
  * overflow-x: hidden, which CLIPS the right edge of any table
- * wider than the card (DLQ list at common laptop widths showed
- * the Inspect button cut off). Switch to auto so a scrollbar
- * appears instead. */
-.card { overflow-x: auto; }
+ * wider than the card. Switch to auto so a scrollbar appears
+ * instead. max-width:100% pins the card itself to its parent's
+ * width so the inner table scrolls internally instead of pushing
+ * the body's scrollWidth past the viewport — the workers + leases
+ * pages were overflowing 240px at 375px without this. */
+.card {
+  overflow-x: auto;
+  max-width: 100%;
+}
 
 /* Mobile theme toggle — the "System / Light / Dark" label
  * pushed the button off-screen at 375px. Below the mobile
@@ -2255,13 +2260,16 @@ body[data-theme="dark"] .console-table tbody td {
   .theme-toggle-label { display: none; }
 }
 
-/* Mobile table containers — every list page table is wider than
- * 375px and was overflowing the viewport. Wrap tables in their
- * card containers; .card overflow-x:auto above gives the scroll
- * affordance. Plus an explicit min-width so the table doesn't
- * compress to unusable widths. */
+/* Mobile table containers — list-page tables sitting inside a
+ * .card get min-width:600px so columns don't squash; the .card's
+ * overflow-x:auto + max-width:100% above scrolls the table inside
+ * the card without breaking viewport width. Tables NOT inside a
+ * .card (placeholder workers + leases) get their parent .page
+ * section to overflow-x:auto so the table scrolls internally
+ * rather than pushing body width past viewport. */
 @media (max-width: 768px) {
-  .console-table { min-width: 600px; }
+  .card > .console-table { min-width: 600px; }
+  .page { overflow-x: auto; }
 }
 
 /* End comprehensive UI fix bundle. */
