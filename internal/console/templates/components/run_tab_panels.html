@@ -23,21 +23,6 @@
 </article>
 {{end}}
 
-{{define "run-dag-tab"}}
-<article class="card dagviz-card" id="run-detail-dag">
-  <header class="card-header"><h2>DAG (live)</h2></header>
-  <div class="card-body dagviz-card-body">
-    {{if .DAGSVG}}
-      {{.DAGSVG}}
-    {{else if .DAGFallback}}
-      <p class="dagviz-fallback">{{.DAGFallback}}</p>
-    {{else}}
-      <p class="console-empty">DAG visualisation unavailable.</p>
-    {{end}}
-  </div>
-</article>
-{{end}}
-
 {{define "run-io-tab"}}
 <article class="card" id="run-detail-input">
   <header class="card-header"><h2>Run input</h2></header>
