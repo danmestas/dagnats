@@ -109,11 +109,18 @@ func newGeometry(layout LayoutResult) geometry {
 // viewBox is the natural canvas size; CSS classes pick up theme tints
 // from app.css. role="img" + aria-label make the picture announcable.
 func (g geometry) openSVG(buf *bytes.Buffer, name string) {
+	// Explicit width/height match viewBox so the SVG renders at its
+	// natural dimensions (180×64 step boxes) instead of stretching to
+	// fill the parent container. Wide DAGs scroll horizontally in the
+	// parent's overflow-x:auto container — better than scaling every
+	// node up proportionally on small DAGs.
 	fmt.Fprintf(buf,
 		`<svg xmlns="http://www.w3.org/2000/svg" `+
+			`width="%.0f" height="%.0f" `+
 			`viewBox="0 0 %.0f %.0f" preserveAspectRatio="xMidYMid meet" `+
 			`role="img" aria-label="DAG: workflow %s" class="dagviz">`,
-		g.canvasW, g.canvasH, html.EscapeString(name),
+		g.canvasW, g.canvasH, g.canvasW, g.canvasH,
+		html.EscapeString(name),
 	)
 }
 

@@ -7,12 +7,35 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/starfederation/datastar-go/datastar"
 )
+
+// devMode reflects DAGNATS_DEV=1 at process start. When true the asset
+// handlers send no-cache headers so CSS/JS bundle changes show up on
+// reload without manually busting the browser cache. Production keeps
+// the long-immutable cache for performance — the env var is only meant
+// for `go run ./cmd/dagnats` style dev workflows.
+//
+// This is a package-level var (read once at init) because evaluating
+// the env var on every asset request is pointless overhead and the
+// value cannot change at runtime — operators set it before starting
+// the binary.
+var devMode = os.Getenv("DAGNATS_DEV") == "1"
+
+// assetCacheHeader returns the Cache-Control value used by every asset
+// handler. Long+immutable in production, no-store + must-revalidate
+// in dev mode so source edits surface on browser reload.
+func assetCacheHeader() string {
+	if devMode {
+		return "no-store, must-revalidate"
+	}
+	return "public, max-age=31536000, immutable"
+}
 
 // Config carries the runtime state Mount needs to wire up the console.
 //
@@ -107,6 +130,9 @@ func Mount(cfg Config) http.Handler {
 	}
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = defaultHeartbeatInterval
+	}
+	if devMode {
+		cfg.Logger.Warn("console dev mode active — asset caching disabled (DAGNATS_DEV=1)")
 	}
 
 	mux := http.NewServeMux()
@@ -689,7 +715,7 @@ func serveGzAsset(name, contentType string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", assetCacheHeader())
 		_, _ = w.Write(body)
 	}
 }
@@ -718,8 +744,7 @@ func serveFontAsset() http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "font/woff2")
-		w.Header().Set("Cache-Control",
-			"public, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", assetCacheHeader())
 		_, _ = w.Write(body)
 	}
 }
@@ -755,7 +780,7 @@ func servePlainAssetAt(path, contentType string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", assetCacheHeader())
 		_, _ = w.Write(body)
 	}
 }

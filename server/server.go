@@ -242,13 +242,30 @@ func (s *Server) startComponents() error {
 // startHTTP creates and launches the HTTP server in a goroutine.
 // If the default port is taken, picks a free one automatically.
 // Returns a channel that receives any Serve error.
+// rootRedirectOr 302s exact-root requests to /console/ so operators
+// landing on the bare host get the UI instead of a "404 page not
+// found" from the REST catch-all. Any other path falls through to
+// the wrapped REST handler unchanged.
+func rootRedirectOr(rest http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/console/", http.StatusFound)
+			return
+		}
+		rest.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) startHTTP() (<-chan error, error) {
 	if s.svc == nil {
 		panic("startHTTP: svc is nil")
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", api.NewRESTHandler(s.svc))
+	// Bare-root GETs redirect to /console/ so operators landing on the
+	// host get the UI instead of a "404 page not found" from the REST
+	// catch-all. Other paths fall through to the REST handler unchanged.
+	mux.Handle("/", rootRedirectOr(api.NewRESTHandler(s.svc)))
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.Handle(
 		"/health/cluster",

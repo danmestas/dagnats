@@ -72,6 +72,11 @@
   </div>
   {{end}}
 
+  {{/* Pager rendered ABOVE the table so the operator can paginate
+       without scrolling past 50 rows. Same template, also rendered
+       at the bottom. */}}
+  {{template "pager" pagerArgs .Page .HasPrev .HasNext .PrevPage .NextPage "/console/runs"}}
+
   <div class="card">
     <table class="table console-table">
       <thead>
