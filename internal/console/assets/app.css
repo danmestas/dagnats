@@ -32,6 +32,18 @@
   --radius-tile:  6px;
   --radius-pill:  9999px;
 
+  /* Operator-density spacing scale per ADR-015. Use these for new
+     selectors and prefer them over raw rem/px for the high-traffic
+     density paths (table row padding, card padding, section gaps,
+     nav rhythm). Long-tail migration of the remaining hardcoded
+     values happens in a separate cleanup PR. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont,
                "Segoe UI", "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
@@ -162,12 +174,12 @@ a:hover { text-decoration: underline; }
 
 .console-nav {
   display: flex;
-  gap: 1rem;
+  gap: var(--space-3);
   font-size: 0.95rem;
 }
 .console-nav a {
   color: var(--text-secondary);
-  padding: 0.25rem 0.5rem;
+  padding: var(--space-1) var(--space-2);
   border-radius: 6px;
 }
 .console-nav a:hover { color: var(--text-primary); text-decoration: none; }
@@ -216,11 +228,11 @@ a:hover { text-decoration: underline; }
 .console-main {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 1.5rem 1.25rem 3rem;
+  padding: var(--space-4) var(--space-4) var(--space-6);
 }
 
 .console-section-header {
-  margin-bottom: 1.25rem;
+  margin-bottom: var(--space-3);
 }
 .console-section-header h1 {
   margin: 0 0 0.25rem;
@@ -321,11 +333,11 @@ a:hover { text-decoration: underline; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-tile);
-  margin-bottom: 1rem;
+  margin-bottom: var(--space-3);
   overflow: hidden;
 }
 .card-header {
-  padding: 0.75rem 1rem;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   background: var(--accent-soft);
 }
@@ -336,10 +348,11 @@ a:hover { text-decoration: underline; }
   color: var(--text-primary);
 }
 .card-body {
-  padding: 1rem;
+  padding: var(--space-3);
 }
 
-/* Tables. Avoid Basecoat's full reset — keep the e-ink-leaning look. */
+/* Tables. Operator-density paddings per ADR-015 — ~30% horizontal
+   and ~30% vertical tighter than the prior e-ink rhythm. */
 .console-table {
   width: 100%;
   border-collapse: collapse;
@@ -350,11 +363,11 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border);
-  padding: 0.55rem 0.8rem;
+  padding: var(--space-2) var(--space-3);
   background: var(--accent-soft);
 }
 .console-table tbody td {
-  padding: 0.55rem 0.8rem;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
@@ -1381,7 +1394,7 @@ body[data-theme="dark"] {
 .console-table-wrap {
   overflow-x: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-tile);
   background: var(--surface);
 }
 .console-table {
@@ -1392,7 +1405,7 @@ body[data-theme="dark"] {
 .console-table th,
 .console-table td {
   text-align: left;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 .console-table .console-num {
