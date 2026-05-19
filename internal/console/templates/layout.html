@@ -58,21 +58,23 @@
           <a href="/console/ops"       class="{{if eq .Section "ops"}}is-active{{end}}">Ops</a>
         </nav>
       </details>
-      <div class="console-actor">
-        {{if .Actor.Display}}<span title="{{.Actor.Source}}">{{.Actor.Display}}</span>{{end}}
+      <div class="console-header-utils">
+        <div class="console-actor">
+          {{if .Actor.Display}}<span title="{{.Actor.Source}}">{{.Actor.Display}}</span>{{end}}
+        </div>
+        <div id="console-connection" class="console-connection" data-state="idle"
+             role="status" aria-live="polite" aria-atomic="true"
+             title="No active stream for this page">
+          <span class="console-connection-dot" aria-hidden="true"></span>
+          <span class="console-connection-label">idle</span>
+        </div>
+        <button type="button" id="theme-toggle" class="theme-toggle"
+                data-theme-mode="system"
+                aria-label="Theme: system (click to cycle)">
+          <span class="theme-toggle-icon" aria-hidden="true"></span>
+          <span class="theme-toggle-label">System</span>
+        </button>
       </div>
-      <div id="console-connection" class="console-connection" data-state="idle"
-           role="status" aria-live="polite" aria-atomic="true"
-           title="No active stream for this page">
-        <span class="console-connection-dot" aria-hidden="true"></span>
-        <span class="console-connection-label">idle</span>
-      </div>
-      <button type="button" id="theme-toggle" class="theme-toggle"
-              data-theme-mode="system"
-              aria-label="Theme: system (click to cycle)">
-        <span class="theme-toggle-icon" aria-hidden="true"></span>
-        <span class="theme-toggle-label">System</span>
-      </button>
     </div>
   </header>
   <main class="console-main">
