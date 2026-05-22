@@ -141,9 +141,48 @@
     applyClickability(el, "idle");
   }
 
+  // attrObserver watches data-state attribute mutations on the pill
+  // element so the standard Datastar pattern — mutating data-*
+  // attributes from outside — propagates through the same render
+  // path as _forceState(). render() short-circuits when next ===
+  // currentState, so the observer firing in response to render()'s
+  // own setAttribute is a harmless no-op rather than a feedback loop.
+  let attrObserver = null;
+  function attachObserver() {
+    const el = pill();
+    if (!el) return;
+    if (typeof MutationObserver !== "function") return;
+    attrObserver = new MutationObserver(function (records) {
+      // Bounded: tests never produce more than a handful of records
+      // per tick, but cap defensively against pathological mutation
+      // bursts.
+      const max = 32;
+      const limit = records.length < max ? records.length : max;
+      for (let i = 0; i < limit; i++) {
+        const r = records[i];
+        if (r.type !== "attributes") continue;
+        if (r.attributeName !== "data-state") continue;
+        const next = el.getAttribute("data-state");
+        if (next === null) continue;
+        render(next);
+      }
+    });
+    attrObserver.observe(el, {
+      attributes: true,
+      attributeFilter: ["data-state"],
+    });
+  }
+
+  function detachObserver() {
+    if (attrObserver === null) return;
+    attrObserver.disconnect();
+    attrObserver = null;
+  }
+
   function init() {
     document.addEventListener("datastar-fetch", onFetch);
     initialRender();
+    attachObserver();
   }
 
   if (document.readyState === "loading") {
@@ -175,6 +214,9 @@
     },
     _dispatch: function (type) {
       onFetch(new CustomEvent("datastar-fetch", { detail: { type: type } }));
+    },
+    _disconnect: function () {
+      detachObserver();
     },
   };
 })();
