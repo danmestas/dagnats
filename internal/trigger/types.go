@@ -67,6 +67,31 @@ type TriggerEnvelope struct {
 	Data       json.RawMessage `json:"data,omitempty"`
 }
 
+// TriggerTypeDef defines an External trigger type contributed by a
+// worker (parent #273 Phase 2.1, audit-adjusted in #313). Stored in
+// the "trigger_types" KV bucket keyed by Name. The owning worker
+// (OwnerWorkerID matches worker.WorkerRegistration.WorkerID) is the
+// authority for both the trigger's config schema and its payload
+// schema.
+//
+// ConfigSchema and PayloadSchema are json.RawMessage rather than
+// string so they round-trip through json.Marshal/Unmarshal without
+// double-encoding (audit fix): Phase 2.2's santhosh-tekuri/jsonschema
+// validator and Phase 2.4's worker SDK can pass the bytes straight
+// through. Storing a string here would re-quote the schema each hop.
+//
+// This is a pure data shape — no behavior wiring lives here. The
+// registrar consumes TriggerTypeDef in Phase 2.3.
+type TriggerTypeDef struct {
+	Name          string          `json:"name"`
+	OwnerWorkerID string          `json:"owner_worker_id"`
+	Description   string          `json:"description"`
+	ConfigSchema  json.RawMessage `json:"config_schema"`
+	PayloadSchema json.RawMessage `json:"payload_schema"`
+	Version       string          `json:"version"`
+	RegisteredAt  time.Time       `json:"registered_at"`
+}
+
 // TriggerFire records a single trigger fire event for history
 // tracking. Published to TRIGGER_HISTORY stream.
 type TriggerFire struct {
