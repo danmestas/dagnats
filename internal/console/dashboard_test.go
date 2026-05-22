@@ -26,10 +26,11 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 )
 
-// TestDashboard_assemblesAllTiles verifies every operational tile key
-// shows up in the rendered dashboard and carries the contract fields
-// (LinkHref, Value, State). Positive: six tiles present. Negative: no
-// tile is missing a state class.
+// TestDashboard_assemblesAllTiles verifies every populated operational
+// tile key shows up in the rendered dashboard and carries the contract
+// fields (LinkHref, Value, State). The workers-active source isn't yet
+// emitted; the test seeds it so all six render. Positive: six tiles
+// present. Negative: no tile is missing a state class.
 func TestDashboard_assemblesAllTiles(t *testing.T) {
 	src := newFakeMetricsSource()
 	now := time.Now()
@@ -42,6 +43,7 @@ func TestDashboard_assemblesAllTiles(t *testing.T) {
 			{UpperBound: 10, Count: 10},
 		}, now,
 	)
+	src.addCounter("workers.active", 3, now)
 	fake := newFakeDS()
 	fake.runs = []dag.WorkflowRun{
 		{RunID: "r-1", WorkflowID: "demo",
@@ -69,6 +71,87 @@ func TestDashboard_assemblesAllTiles(t *testing.T) {
 	}
 	if !strings.Contains(body, "tile-state-") {
 		t.Error("dashboard missing tile state coloring class")
+	}
+}
+
+// TestDashboardEmptyMetricsRendersFourTiles asserts that when
+// MetricsSource is nil (or yields empty data for the three metric-
+// derived tiles), the dashboard drops the placeholders entirely and
+// renders four always-available tiles: failed-1h, dlq-depth, in-flight,
+// plus nothing else with the "telemetry pending" hint or is-empty
+// marker. Issue #284.
+func TestDashboardEmptyMetricsRendersFourTiles(t *testing.T) {
+	fake := newFakeDS()
+	cfg := dashTestCfg(t, fake, nil)
+	rec := dashGet(t, cfg, "/console/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	wantTileIDs := []string{
+		"tile-failed-1h", "tile-dlq-depth", "tile-in-flight",
+	}
+	for _, id := range wantTileIDs {
+		if !strings.Contains(body, "id=\""+id+"\"") {
+			t.Errorf("dashboard missing always-on tile id=%q", id)
+		}
+	}
+	dropTileIDs := []string{
+		"tile-success-rate", "tile-p99-latency", "tile-workers-active",
+	}
+	for _, id := range dropTileIDs {
+		if strings.Contains(body, "id=\""+id+"\"") {
+			t.Errorf("dashboard rendered placeholder tile id=%q with empty metrics", id)
+		}
+	}
+	if strings.Contains(body, "telemetry pending") {
+		t.Error("dashboard must not contain 'telemetry pending' placeholder copy")
+	}
+	if strings.Contains(body, "is-empty") {
+		t.Error("dashboard must not contain is-empty placeholder class")
+	}
+}
+
+// TestDashboardPopulatedMetricsRendersSixTiles asserts the full six-tile
+// surface when the MetricsSource has data for success-rate / p99 /
+// workers-active. Workers-active currently has no source — when its
+// signal lands, this test will need a corresponding seed. Until then,
+// the absence of a workers source means the populated path renders five.
+// Issue #284.
+func TestDashboardPopulatedMetricsRendersSixTiles(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now()
+	src.addCounter("workflow.runs.completed", 50, now)
+	src.addCounter("workflow.runs.failed", 1, now)
+	src.addHistogram(
+		"snapshot.save.duration_ms", 10,
+		[]MetricBucket{
+			{UpperBound: 5, Count: 5},
+			{UpperBound: 10, Count: 10},
+		}, now,
+	)
+	src.addCounter("workers.active", 3, now)
+	fake := newFakeDS()
+	cfg := dashTestCfg(t, fake, src)
+	rec := dashGet(t, cfg, "/console/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	wantTileIDs := []string{
+		"tile-failed-1h", "tile-dlq-depth", "tile-in-flight",
+		"tile-success-rate", "tile-p99-latency", "tile-workers-active",
+	}
+	for _, id := range wantTileIDs {
+		if !strings.Contains(body, "id=\""+id+"\"") {
+			t.Errorf("populated dashboard missing tile id=%q", id)
+		}
+	}
+	if strings.Contains(body, "telemetry pending") {
+		t.Error("populated dashboard must not contain 'telemetry pending'")
+	}
+	if strings.Contains(body, "is-empty") {
+		t.Error("populated dashboard must not render is-empty placeholders")
 	}
 }
 

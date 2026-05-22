@@ -11,22 +11,25 @@ import (
 // dashboard.go owns the Phase 2 dashboard view assembly. The legacy
 // "System overview" + "Heartbeat" tiles were a config skeleton — they
 // didn't answer the operator's #1 landing-page question, "is anything
-// on fire?". This file replaces them with six live operational tiles
-// (Failed-1h, DLQ depth, In-flight, Success rate, p99 latency, Workers
-// active) plus two recent panels (failures, operator actions). Tiles
-// link to filtered drill-down pages; SSE patching keeps them current.
+// on fire?". This file replaces them with up-to-six live operational
+// tiles (Failed-1h, DLQ depth, In-flight, plus Success rate / p99
+// latency / Workers active when MetricsSource has data for them) plus
+// two recent panels (failures, operator actions). Tiles link to
+// filtered drill-down pages; SSE patching keeps them current.
 //
-// The data assembly is intentionally tolerant — every read is best-
-// effort, every missing source degrades to an honest placeholder
-// tile. The dashboard never fails to render because one upstream is
-// silent; instead the affected tile carries an em-dash and the
-// "telemetry pending" hint.
+// Data assembly is best-effort: the always-on counters (failed-1h,
+// DLQ depth, in-flight) come from the data source and always render;
+// metric-derived tiles only render when MetricsSource yields data for
+// them. Issue #284 dropped the previous "telemetry pending" placeholder
+// path — empty tiles are now omitted entirely so the grid never shows
+// a row of broken-looking muted-dot cards next to working ones.
 
 // DashboardView is the binding the rebuilt dashboard.html template
-// consumes. Tiles is always six entries in deterministic order so the
-// CSS grid layout stays stable across re-renders. RecentFailures and
-// RecentActions hold the last few entries for the side-by-side panels
-// below the tile grid.
+// consumes. Tiles contains the three always-on counters plus any of
+// the three metric-derived tiles whose source has data; ordering is
+// deterministic so the CSS grid layout stays stable across re-renders.
+// RecentFailures and RecentActions hold the last few entries for the
+// side-by-side panels below the tile grid.
 type DashboardView struct {
 	Tiles            []DashboardTile
 	RecentFailures   []RecentFailureRow
@@ -51,7 +54,6 @@ type DashboardTile struct {
 	LinkHref  string
 	Hint      string
 	Delta     string
-	Empty     bool
 	UpdatedAt time.Time
 }
 
@@ -253,20 +255,32 @@ func readRecentActions(
 	return out
 }
 
-// assembleDashboardTiles produces the six tiles in display order. The
-// caller owns whether the metrics source is wired; we always emit a
-// tile per slot — empty/placeholder when the data source is silent.
+// assembleDashboardTiles produces the tile list in display order. The
+// first three tiles always render (they're driven by the data source,
+// not the metrics aggregator). The remaining three render only when
+// their metric has data — empty placeholders are dropped entirely
+// rather than shown as muted-dot "telemetry pending" cards next to
+// working tiles (issue #284).
 func assembleDashboardTiles(
 	src MetricsSource, c dashboardCounters,
 ) []DashboardTile {
-	return []DashboardTile{
+	const maxTileCount = 6
+	tiles := make([]DashboardTile, 0, maxTileCount)
+	tiles = append(tiles,
 		tileFailedLastHour(src, c.FailedLastHr),
 		tileDLQDepth(c.DLQDepth, dlqSparkFromSource(src)),
 		tileInFlight(c.InFlightCount),
-		tileSuccessRate(src),
-		tileP99Latency(src),
-		tileWorkersActive(),
+	)
+	if t, ok := tileSuccessRate(src); ok {
+		tiles = append(tiles, t)
 	}
+	if t, ok := tileP99Latency(src); ok {
+		tiles = append(tiles, t)
+	}
+	if t, ok := tileWorkersActive(src); ok {
+		tiles = append(tiles, t)
+	}
+	return tiles
 }
 
 // dlqSparkFromSource synthesises a DLQ sparkline from the metrics
@@ -350,31 +364,26 @@ func tileInFlight(count int) DashboardTile {
 }
 
 // tileSuccessRate reuses the existing tileFromSuccessRate builder but
-// rekeys it for the dashboard surface. Returns an empty tile when the
-// metrics aggregator hasn't seen any runs yet.
-func tileSuccessRate(src MetricsSource) DashboardTile {
-	t := DashboardTile{
-		Key: "success-rate", Title: "Success rate (1h)", Unit: "%",
-		LinkHref: "/console/ops/metrics",
-		Value:    "—",
-		State:    "good",
-		Empty:    true,
-		Hint:     "telemetry pending",
-	}
+// rekeys it for the dashboard surface. Second return is false when the
+// metrics aggregator hasn't seen any runs yet — caller drops the tile
+// rather than rendering a placeholder (issue #284).
+func tileSuccessRate(src MetricsSource) (DashboardTile, bool) {
 	if src == nil {
-		return t
+		return DashboardTile{}, false
 	}
 	inner := tileFromSuccessRate(src)
 	if inner.Empty {
-		return t
+		return DashboardTile{}, false
 	}
 	pct := parseFloatOrZero(inner.Value)
-	t.Empty = false
-	t.Value = inner.Value
-	t.Spark = inner.Spark
-	t.Hint = ""
-	t.State = successRateState(pct)
-	return t
+	t := DashboardTile{
+		Key: "success-rate", Title: "Success rate (1h)", Unit: "%",
+		LinkHref: "/console/ops/metrics",
+		Value:    inner.Value,
+		Spark:    inner.Spark,
+		State:    successRateState(pct),
+	}
+	return t, true
 }
 
 // successRateState classifies the percentage value into a state band.
@@ -390,34 +399,30 @@ func successRateState(pct float64) string {
 }
 
 // tileP99Latency reads the engine snapshot histogram and reports the
-// p99 latency. Empty placeholder when the histogram isn't populated.
-func tileP99Latency(src MetricsSource) DashboardTile {
-	t := DashboardTile{
-		Key: "p99-latency", Title: "p99 snapshot latency", Unit: "ms",
-		LinkHref: "/console/ops/metrics",
-		Value:    "—",
-		State:    "good",
-		Empty:    true,
-		Hint:     "telemetry pending",
-	}
+// p99 latency. Second return is false when the histogram isn't yet
+// populated — caller drops the tile rather than rendering a "telemetry
+// pending" placeholder (issue #284).
+func tileP99Latency(src MetricsSource) (DashboardTile, bool) {
 	if src == nil {
-		return t
+		return DashboardTile{}, false
 	}
 	series, ok := src.MetricSnapshot("snapshot.save.duration_ms")
 	if !ok || len(series.Points) == 0 {
-		return t
+		return DashboardTile{}, false
 	}
 	latest := series.Latest()
 	if latest.Count == 0 || len(latest.Buckets) == 0 {
-		return t
+		return DashboardTile{}, false
 	}
 	p99 := percentileFromBuckets(latest, 0.99)
-	t.Empty = false
-	t.Hint = ""
-	t.Value = formatNumber(p99)
-	t.Spark = sparkFromHistogramP50(series.Points, 24)
-	t.State = latencyTileState(p99)
-	return t
+	t := DashboardTile{
+		Key: "p99-latency", Title: "p99 snapshot latency", Unit: "ms",
+		LinkHref: "/console/ops/metrics",
+		Value:    formatNumber(p99),
+		Spark:    sparkFromHistogramP50(series.Points, 24),
+		State:    latencyTileState(p99),
+	}
+	return t, true
 }
 
 // latencyTileState classifies the p99 latency into a band. The
@@ -434,20 +439,27 @@ func latencyTileState(p99 float64) string {
 	return "red"
 }
 
-// tileWorkersActive is the placeholder tile for the worker-presence
-// counter. The engine's worker_heartbeats bucket isn't yet written
-// (audit confirmed). The tile reads "telemetry pending" until that
-// lands; operators see explicit non-rendering rather than a 0 that
-// implies "no workers" — which would be a false alarm.
-func tileWorkersActive() DashboardTile {
-	return DashboardTile{
+// tileWorkersActive reads the workers.active gauge. Second return is
+// false when the engine hasn't yet emitted the metric — caller drops
+// the tile rather than rendering a "telemetry pending" placeholder
+// (issue #284). Showing 0 here would be a false alarm ("no workers!")
+// when the real cause is just a missing telemetry source.
+func tileWorkersActive(src MetricsSource) (DashboardTile, bool) {
+	if src == nil {
+		return DashboardTile{}, false
+	}
+	series, ok := src.MetricSnapshot("workers.active")
+	if !ok || len(series.Points) == 0 {
+		return DashboardTile{}, false
+	}
+	latest := series.Latest()
+	t := DashboardTile{
 		Key: "workers-active", Title: "Workers active", Unit: "",
 		LinkHref: "/console/ops/workers",
-		Value:    "—",
+		Value:    formatNumber(latest.Value),
 		State:    "good",
-		Empty:    true,
-		Hint:     "telemetry pending",
 	}
+	return t, true
 }
 
 // parseFloatOrZero is a tiny helper for percentage tile state coloring.
