@@ -24,6 +24,13 @@ var MaxWorkerStaleness = 60 * time.Second
 // The directory is observability-only — the engine never reads it.
 // Workers register on startup and maintain their entry via periodic
 // heartbeat writes (the KV bucket has a 60s TTL).
+//
+// Identity & heartbeat fields (LastSeen, Pid, Hostname, Version) make
+// the existing workers bucket double as a heartbeat surface — avoiding
+// a parallel worker_heartbeats bucket (#289). LastSeen is stamped by
+// Register on every write, so each periodic heartbeat tick advances
+// it automatically. All four fields use omitempty so older payloads
+// written before this struct grew (zero-valued) deserialise cleanly.
 type WorkerRegistration struct {
 	WorkerID  string            `json:"worker_id"`
 	TaskTypes []string          `json:"task_types"`
@@ -31,6 +38,19 @@ type WorkerRegistration struct {
 	Transport string            `json:"transport"`
 	MaxTasks  int               `json:"max_tasks"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
+
+	// Identity — populated once at worker boot, stable for the life
+	// of the process.
+	Pid      int    `json:"pid,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
+	Version  string `json:"version,omitempty"`
+
+	// LastSeen is the wall-clock timestamp of the most recent write
+	// to the KV bucket. Register stamps this on every call, so the
+	// periodic heartbeat naturally refreshes it. Readers compare it
+	// to time.Now() to gauge worker liveness without depending on
+	// NATS KV's TTL-eviction latency.
+	LastSeen time.Time `json:"last_seen,omitempty"`
 }
 
 // Directory provides worker visibility via NATS KV.
@@ -72,6 +92,9 @@ func (d *Directory) Register(reg WorkerRegistration) error {
 	if d.kv == nil {
 		panic("Directory.Register: kv must not be nil")
 	}
+	// Stamp LastSeen on every write so each heartbeat tick advances
+	// it automatically; callers don't need to refresh the field.
+	reg.LastSeen = time.Now()
 	data, err := json.Marshal(reg)
 	if err != nil {
 		return err
