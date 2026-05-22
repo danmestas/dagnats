@@ -2,13 +2,11 @@
 <section class="console-section"
          data-signals="{}"
          data-on-load="@get('/console/sse/triggers', {openWhenHidden: true})">
-  <header class="console-section-header">
-    <h1>{{tooltipAs "Triggers" "trigger"}}</h1>
-    <p class="console-lede">
-      <span id="triggers-count" data-count="{{.Total}}">{{.Total}}</span> configured.
-      <span id="triggers-count-tick" data-last="0" hidden></span>
-    </p>
-  </header>
+  {{template "page-header" .Header}}
+  <p class="console-lede console-section-meta">
+    <span id="triggers-count" data-count="{{.Total}}">{{.Total}}</span> configured.
+    <span id="triggers-count-tick" data-last="0" hidden></span>
+  </p>
 
   <form class="console-filter-bar" method="GET" action="/console/triggers">
     <label class="console-field">

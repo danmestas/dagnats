@@ -2,14 +2,12 @@
 <section class="console-section"
          data-signals="{}"
          data-on-load="@get('/console/sse/dlq', {openWhenHidden: true})">
-  <header class="console-section-header">
-    <h1>Dead-letter queue</h1>
-    <p class="console-lede">
-      <span id="dlq-count" data-count="{{.Total}}">{{.Total}}</span>
-      {{if .Total}} entries awaiting operator decision.{{else}} — no entries, your workflows are healthy.{{end}}
-      <span id="dlq-count-tick" data-last="0" hidden></span>
-    </p>
-  </header>
+  {{template "page-header" .Header}}
+  <p class="console-lede console-section-meta">
+    <span id="dlq-count" data-count="{{.Total}}">{{.Total}}</span>
+    {{if .Total}} entries awaiting operator decision.{{else}} — no entries, your workflows are healthy.{{end}}
+    <span id="dlq-count-tick" data-last="0" hidden></span>
+  </p>
 
   <form class="console-filter-bar" method="GET" action="/console/dlq">
     <label class="console-field">

@@ -1,12 +1,7 @@
 {{define "content"}}{{with .Page}}
 <section class="console-section"
          data-signals="{workflowsFilter: '{{.Filter}}', workflowsSort: '{{.Sort}}'}">
-  <header class="console-section-header">
-    <h1>Workflows</h1>
-    <p class="console-lede">
-      Registered workflow definitions. {{.Total}} total.
-    </p>
-  </header>
+  {{template "page-header" .Header}}
 
   <form class="console-filter-bar" data-on:submit__prevent="$event.preventDefault()">
     <label class="console-field">

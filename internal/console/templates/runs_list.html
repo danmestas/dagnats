@@ -2,13 +2,11 @@
 <section class="console-section"
          data-signals="{runsWorkflow: '{{.Workflow}}', runsStatus: '{{.Status}}', runsRange: '{{.Range}}'}"
          data-init="@get('/console/sse/runs', {openWhenHidden: true})">
-  <header class="console-section-header">
-    <h1>Runs</h1>
-    <p class="console-lede">
-      {{if .Total}}Showing {{.FirstIndex}}&ndash;{{.LastIndex}} of {{.Total}} runs.{{else}}No runs match these filters.{{end}}
-      Live updates over SSE.
-    </p>
-  </header>
+  {{template "page-header" .Header}}
+  <p class="console-lede console-section-meta">
+    {{if .Total}}Showing {{.FirstIndex}}&ndash;{{.LastIndex}} of {{.Total}} runs.{{else}}No runs match these filters.{{end}}
+    Live updates over SSE.
+  </p>
 
   <form class="console-filter-bar" data-on:submit__prevent="$event.preventDefault()">
     <label class="console-field">
