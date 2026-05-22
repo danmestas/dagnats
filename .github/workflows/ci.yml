@@ -15,6 +15,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Datastar kebab-form lint
+        # Datastar v1 uses camelCase event handlers (data-on-keyup).
+        # The kebab + double-underscore form (data-on-keyup__) is a
+        # v0 holdover that silently no-ops on v1, which surfaces as
+        # "filter input doesn't filter" bugs. Guard every PR — not
+        # just code-touching ones — because templates are HTML, not
+        # Go, and a doc-only PR could still regress them.
+        run: |
+          if grep -rE 'data-on-[a-z]+__' internal/console/templates/; then
+            echo "::error::Kebab-form Datastar attributes found. Use camelCase form (data-on-keyup, not data-on-keyup__)."
+            exit 1
+          fi
+
       - name: Detect code changes
         id: filter
         # On PR events, query the API for the changed files and decide
