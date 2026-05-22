@@ -540,18 +540,39 @@ func mountConsole(
 	if mux == nil {
 		panic("mountConsole: mux is nil")
 	}
+	consoleCfg := buildConsoleConfig(
+		httpAddr, svc, nc, agg, metricsErrorReason)
+	handler := console.Mount(consoleCfg)
+	mux.Handle("/console/", handler)
+}
+
+// buildConsoleConfig assembles the console.Config the production
+// server passes to console.Mount. Extracted from mountConsole so the
+// wiring is testable without a live HTTP mux — issue #290's regression
+// guard pins MetricsSource to the engine's aggregator (when present)
+// so the dashboard's on-demand p99 + success-rate tiles have
+// histograms to read from.
+//
+// The function is the single source of truth for "what does the
+// console see in production?" — keep all environment lookups and
+// dependency adapter calls here so a test asserting cfg.Metrics != nil
+// also covers every other field the production wiring sets.
+func buildConsoleConfig(
+	httpAddr string, svc *api.Service, nc *nats.Conn,
+	agg *metrics.Aggregator, metricsErrorReason string,
+) console.Config {
 	if httpAddr == "" {
-		panic("mountConsole: httpAddr is empty")
+		panic("buildConsoleConfig: httpAddr is empty")
 	}
 	if svc == nil {
-		panic("mountConsole: svc is nil")
+		panic("buildConsoleConfig: svc is nil")
 	}
-	cfg := console.AuthConfig{
+	authCfg := console.AuthConfig{
 		HTTPAddr:    httpAddr,
 		ForwardAuth: os.Getenv("DAGNATS_CONSOLE_TRUST_FORWARDED_AUTH") == "true",
 		Password:    os.Getenv("DAGNATS_CONSOLE_PASSWORD"),
 	}
-	mode, err := console.ResolveAuthMode(cfg)
+	mode, err := console.ResolveAuthMode(authCfg)
 	if err != nil {
 		// Operator configured both forward-auth and basic-auth — the
 		// resolver returns AuthDisabled in that case alongside an
@@ -580,7 +601,7 @@ func mountConsole(
 	consoleCfg := console.Config{
 		HTTPAddr: httpAddr,
 		AuthMode: mode,
-		Password: cfg.Password,
+		Password: authCfg.Password,
 		Build:    "dev",
 		Logger:   logger,
 		Data: console.WithMetrics(
@@ -594,8 +615,7 @@ func mountConsole(
 	if !readOnly {
 		enableConsoleSoftDiscard(&consoleCfg, svc, logger)
 	}
-	handler := console.Mount(consoleCfg)
-	mux.Handle("/console/", handler)
+	return consoleCfg
 }
 
 // enableConsoleSoftDiscard wires the DLQ soft-discard tombstone path
