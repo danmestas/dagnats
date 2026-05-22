@@ -1,0 +1,32 @@
+{{/*
+  empty-state — shared educational empty body for every list page.
+  Reads an EmptyState (Icon, Title, Description, PrimaryAction,
+  ReadOnly). See internal/console/empty_state.go.
+
+  Information hierarchy mirrors iii's EmptyState component:
+  large dim icon → bold title → secondary description → optional
+  outline button. Visual styling is dagnats's Basecoat/Tailwind
+  tokens (see app.css "--- empty-state").
+*/}}
+{{define "empty-state"}}{{with .}}
+<div class="console-empty-state" data-component="empty-state">
+  {{if .Icon}}
+  <span class="console-empty-state-icon {{.Icon}}" data-kind="{{.Icon}}" aria-hidden="true"></span>
+  {{end}}
+  <h2 class="console-empty-state-title">{{.Title}}</h2>
+  <p class="console-empty-state-description">{{.Description}}</p>
+  {{with .PrimaryAction}}
+  {{if $.ReadOnly}}
+  <span class="btn btn-outline console-empty-state-action"
+        aria-disabled="true"
+        title="Console is read-only. Set CONSOLE_READ_ONLY=false to enable mutations.">
+    {{.Label}}
+  </span>
+  {{else}}
+  <a class="btn btn-outline console-empty-state-action" href="{{.Href}}">
+    {{.Label}}
+  </a>
+  {{end}}
+  {{end}}
+</div>
+{{end}}{{end}}

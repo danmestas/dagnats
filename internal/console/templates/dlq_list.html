@@ -41,10 +41,14 @@
         {{template "dlq-tbody" .}}
       </tbody>
     </table>
+    {{else if .EmptyState}}
+    <div class="card-body">
+      {{template "empty-state" .EmptyState}}
+    </div>
     {{else}}
     <div class="card-body">
       <p class="console-empty">
-        Your workflows are healthy. New dead letters will appear here.
+        No entries match the current filter.
       </p>
     </div>
     {{end}}
