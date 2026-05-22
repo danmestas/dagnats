@@ -192,10 +192,15 @@ func TestDashboard_RendersWithoutTilesWhenAggregatorMissing(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
+	// Always-on tile is present even with no aggregator.
 	mustContainMetrics(t, body, "id=\"tile-failed-1h\"")
-	if !strings.Contains(body, "telemetry pending") &&
-		!strings.Contains(body, "is-empty") {
-		t.Fatal("dashboard with nil Metrics must show telemetry-pending state")
+	// Issue #284: placeholders dropped entirely when metrics absent —
+	// no "telemetry pending" copy, no is-empty class.
+	if strings.Contains(body, "telemetry pending") {
+		t.Error("dashboard must not render 'telemetry pending' placeholder copy")
+	}
+	if strings.Contains(body, "is-empty") {
+		t.Error("dashboard must not render is-empty placeholder class")
 	}
 }
 
