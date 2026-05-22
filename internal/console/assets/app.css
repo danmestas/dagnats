@@ -1611,6 +1611,36 @@ body[data-theme="dark"] {
   }
 }
 
+/* --- print: force every run-detail tab panel visible (#283) ----
+ *
+ * Tailwind v4's preflight ships, inside @layer base, the rule
+ *   [hidden]:where(:not([hidden=until-found])) { display:none !important }
+ * Per CSS Cascade Level 5, !important declarations in a layer beat
+ * !important declarations from unlayered rules. So the existing
+ * unlayered `@media print { .tabs-content[hidden] { display:block
+ * !important } }` block at basecoat.css:325 LOSES the cascade to
+ * Tailwind's layered preflight, even though it's later in source
+ * order and uses !important.
+ *
+ * Fix: re-emit our override INSIDE @layer base. Within a single
+ * layer, later declarations win for !important. app.css loads after
+ * basecoat.css, so this rule comes after Tailwind's [hidden] inside
+ * @layer base — and wins.
+ *
+ * Selector switched to [role="tabpanel"][hidden] per #283's
+ * recommendation: matches every run-detail panel without coupling to
+ * the .tabs-content class. */
+@layer base {
+  @media print {
+    [role="tabpanel"][hidden] {
+      display: block !important;
+    }
+    [role="tablist"] {
+      display: none !important;
+    }
+  }
+}
+
 /*
  * Sparkline column on workflows + triggers lists. T13.
  *
