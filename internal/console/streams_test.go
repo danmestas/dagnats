@@ -233,8 +233,27 @@ func TestSSERunDetail_emitsHistoryPatches(t *testing.T) {
 	if !strings.Contains(payload, "step.completed") {
 		t.Errorf("missing step.completed in detail stream")
 	}
-	if !strings.Contains(payload, `id="step-card-first"`) {
-		t.Errorf("missing step-card patch for first")
+	// PR 3 (T03+T04+T05) restructured run-detail to render
+	// .step-list-row[data-step-id=<id>] rather than #step-card-<id>;
+	// the live patch must target the new row, not the retired card.
+	if !strings.Contains(payload, `data-step-id="first"`) {
+		t.Errorf("missing step-row patch payload (data-step-id) for first; payload=%s", payload)
+	}
+	if !strings.Contains(payload, `class="step-list-row"`) {
+		t.Errorf("missing step-row patch payload (class=step-list-row) for first; payload=%s", payload)
+	}
+	if !strings.Contains(payload, `data-state="completed"`) {
+		t.Errorf("missing data-state=completed in step-row patch for first; payload=%s", payload)
+	}
+	// Datastar serialises the selector + mode in the patch event; the
+	// row selector and outer mode must both appear on the wire so the
+	// browser replaces the existing row rather than (silently) doing
+	// nothing.
+	if !strings.Contains(payload, `selector .step-list-row[data-step-id`) &&
+		!strings.Contains(payload, `selector .step-list-row\[data-step-id`) &&
+		!strings.Contains(payload, `step-list-row[data-step-id=\"first\"]`) &&
+		!strings.Contains(payload, `step-list-row[data-step-id="first"]`) {
+		t.Errorf("missing .step-list-row[data-step-id=...] selector in patch payload; payload=%s", payload)
 	}
 }
 
