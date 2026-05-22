@@ -41,7 +41,7 @@ import (
 type ConfigPageView struct {
 	Header       PageHeader
 	Endpoints    []EndpointCard
-	Streams      []StreamRow
+	Streams      []ConfigStreamRow
 	KVBuckets    []KVBucketInfo
 	WorkerGroups []WorkerGroup
 	TriggerTypes []TriggerTypeRow
@@ -60,10 +60,10 @@ type EndpointCard struct {
 	Kind     string // "console" | "nats" | "otlp" | "monitor" | "bridge"
 }
 
-// StreamRow is one row in the JetStream streams table. Empty Size /
+// ConfigStreamRow is one row in the JetStream streams table. Empty Size /
 // Messages render as "—" so an unprovisioned stream doesn't lie about
 // zero state.
-type StreamRow struct {
+type ConfigStreamRow struct {
 	Name        string
 	Messages    uint64
 	Bytes       uint64
@@ -269,14 +269,14 @@ func buildEndpoints(cfg Config, snap ConfigSnapshot) []EndpointCard {
 
 // buildStreamRows converts ConfigSnapshot.Streams into render rows.
 // An empty input slice means the snapshot couldn't talk to
-// JetStream — the template renders the empty-state row. StreamRow
+// JetStream — the template renders the empty-state row. ConfigStreamRow
 // and StreamSnapshot share the same field layout so a direct
 // conversion suffices; keeping the two named types separates the
 // render contract from the DataSource contract.
-func buildStreamRows(snap ConfigSnapshot) []StreamRow {
-	out := make([]StreamRow, 0, len(snap.Streams))
+func buildStreamRows(snap ConfigSnapshot) []ConfigStreamRow {
+	out := make([]ConfigStreamRow, 0, len(snap.Streams))
 	for _, s := range snap.Streams {
-		out = append(out, StreamRow(s))
+		out = append(out, ConfigStreamRow(s))
 	}
 	return out
 }
@@ -434,7 +434,7 @@ func renderConfigYAML(
 
 // writeYAMLStreams emits the streams: section. Pulled out so
 // renderConfigYAML stays within the 70-line ceiling.
-func writeYAMLStreams(b *strings.Builder, rows []StreamRow) {
+func writeYAMLStreams(b *strings.Builder, rows []ConfigStreamRow) {
 	if len(rows) == 0 {
 		b.WriteString("  [] # JetStream account info unreachable\n")
 		return
