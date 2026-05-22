@@ -1439,23 +1439,46 @@ func isTaskSubject(subject string) bool {
 	return len(subject) >= 5 && subject[:5] == "task."
 }
 
+// DefaultRunsLimit is the row cap applied when callers invoke
+// ListRuns without an explicit limit. It preserves pre-#257 behavior
+// (the cap used to be hard-coded inside listRunsInner).
+const DefaultRunsLimit = 1000
+
+// MaxRunsLimitCeiling is the hard server-side ceiling. ListRunsWithLimit
+// clamps any caller-supplied limit at or below this value. Defense
+// against accidental OOM from "fetch everything" callers.
+const MaxRunsLimitCeiling = 10000
+
 // ListRuns retrieves all workflow runs, optionally filtered by workflow ID.
 // Returns runs sorted by CreatedAt descending (newest first).
+// Applies DefaultRunsLimit as the row cap; callers that need to raise
+// the cap should use ListRunsWithLimit.
 func (s *Service) ListRuns(
 	ctx context.Context, workflowFilter string,
 ) ([]dag.WorkflowRun, error) {
+	return s.ListRunsWithLimit(ctx, workflowFilter, DefaultRunsLimit)
+}
+
+// ListRunsWithLimit is the same as ListRuns but lets callers raise the
+// row cap up to MaxRunsLimitCeiling. limit <= 0 is treated as
+// DefaultRunsLimit; limit > MaxRunsLimitCeiling is clamped to the
+// ceiling (friendlier than a 400 error from a typo).
+func (s *Service) ListRunsWithLimit(
+	ctx context.Context, workflowFilter string, limit int,
+) ([]dag.WorkflowRun, error) {
 	if ctx == nil {
-		panic("ListRuns: ctx must not be nil")
+		panic("ListRunsWithLimit: ctx must not be nil")
 	}
 	if s.store == nil {
-		panic("ListRuns: store must not be nil")
+		panic("ListRunsWithLimit: store must not be nil")
 	}
+	effective := clampRunsLimit(limit)
 	var runs []dag.WorkflowRun
 	err := s.observed(ctx, "listRuns", nil,
 		func(ctx context.Context) error {
 			var innerErr error
 			runs, innerErr = s.listRunsInner(
-				ctx, workflowFilter,
+				ctx, workflowFilter, effective,
 			)
 			return innerErr
 		},
@@ -1463,9 +1486,22 @@ func (s *Service) ListRuns(
 	return runs, err
 }
 
-// listRunsInner retrieves all runs from the store, filters, and sorts.
+// clampRunsLimit normalises a caller-supplied limit. Non-positive
+// inputs collapse to DefaultRunsLimit; over-ceiling inputs clamp to
+// MaxRunsLimitCeiling.
+func clampRunsLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultRunsLimit
+	}
+	if limit > MaxRunsLimitCeiling {
+		return MaxRunsLimitCeiling
+	}
+	return limit
+}
+
+// listRunsInner retrieves up to limit runs from the store, filters, and sorts.
 func (s *Service) listRunsInner(
-	ctx context.Context, workflowFilter string,
+	ctx context.Context, workflowFilter string, limit int,
 ) ([]dag.WorkflowRun, error) {
 	if s.store == nil {
 		panic("listRunsInner: store must not be nil")
@@ -1473,8 +1509,10 @@ func (s *Service) listRunsInner(
 	if s.js == nil {
 		panic("listRunsInner: js must not be nil")
 	}
-	const maxRunsLimit = 1000
-	runs, err := s.store.ListAll(ctx, maxRunsLimit)
+	if limit <= 0 {
+		panic("listRunsInner: limit must be positive")
+	}
+	runs, err := s.store.ListAll(ctx, limit)
 	if err != nil {
 		return nil, err
 	}

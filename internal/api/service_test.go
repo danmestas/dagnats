@@ -619,6 +619,158 @@ func TestServiceListRunsFilterByWorkflow(t *testing.T) {
 	}
 }
 
+// TestServiceListRunsRespectsLimit asserts ListRunsWithLimit caps the
+// returned slice at the caller-supplied limit. We submit more runs
+// than the limit, wait for them all to surface, then request fewer.
+func TestServiceListRunsRespectsLimit(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc)
+	wb := dag.NewWorkflow("limit-test-wf")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	if err := svc.RegisterWorkflow(
+		context.Background(), wfDef,
+	); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+
+	const submitted = 5
+	for i := 0; i < submitted; i++ {
+		if _, err := svc.StartRun(
+			context.Background(), "limit-test-wf", nil,
+		); err != nil {
+			t.Fatalf("StartRun %d: %v", i, err)
+		}
+	}
+
+	// Wait until all submitted runs are visible in the store before
+	// asserting the cap — otherwise the cap could be coincidentally
+	// satisfied by the store still loading.
+	deadline := time.After(10 * time.Second)
+	for {
+		all, err := svc.ListRunsWithLimit(
+			context.Background(), "", 100,
+		)
+		if err != nil {
+			t.Fatalf("ListRunsWithLimit baseline: %v", err)
+		}
+		if len(all) >= submitted {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf(
+				"only %d/%d runs visible before deadline",
+				len(all), submitted,
+			)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	const want = 3
+	runs, err := svc.ListRunsWithLimit(
+		context.Background(), "", want,
+	)
+	if err != nil {
+		t.Fatalf("ListRunsWithLimit: %v", err)
+	}
+	if len(runs) != want {
+		t.Fatalf("len(runs) = %d, want %d", len(runs), want)
+	}
+	// Negative: results must still be newest-first (CreatedAt desc).
+	for i := 1; i < len(runs); i++ {
+		if runs[i].CreatedAt.After(runs[i-1].CreatedAt) {
+			t.Fatalf(
+				"runs not sorted desc: [%d]=%v before [%d]=%v",
+				i-1, runs[i-1].CreatedAt,
+				i, runs[i].CreatedAt,
+			)
+		}
+	}
+}
+
+// TestServiceListRunsCeiling asserts that an out-of-range limit is
+// clamped at MaxRunsLimitCeiling rather than rejected. Friendlier
+// for operators who typo a big number.
+func TestServiceListRunsCeiling(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	svc := NewService(nc)
+	// Positive: clampRunsLimit applied — call should succeed with a
+	// far-too-large limit (the store will be called with the
+	// ceiling, which is well below any panic threshold).
+	runs, err := svc.ListRunsWithLimit(
+		context.Background(), "", 20000,
+	)
+	if err != nil {
+		t.Fatalf(
+			"ListRunsWithLimit(20000) returned error: %v "+
+				"(want clamp, not failure)", err,
+		)
+	}
+	if len(runs) > MaxRunsLimitCeiling {
+		t.Fatalf(
+			"len(runs) = %d exceeds ceiling %d",
+			len(runs), MaxRunsLimitCeiling,
+		)
+	}
+
+	// Negative: a zero limit should fall back to DefaultRunsLimit,
+	// not panic. We don't assert the length (it depends on store
+	// contents) — only that the call returns cleanly.
+	if _, err := svc.ListRunsWithLimit(
+		context.Background(), "", 0,
+	); err != nil {
+		t.Fatalf("ListRunsWithLimit(0) returned error: %v", err)
+	}
+}
+
+// TestClampRunsLimit pins the clamp policy. Pure unit, no NATS.
+func TestClampRunsLimit(t *testing.T) {
+	cases := []struct {
+		in, want int
+	}{
+		{in: 0, want: DefaultRunsLimit},
+		{in: -1, want: DefaultRunsLimit},
+		{in: 1, want: 1},
+		{in: 500, want: 500},
+		{in: MaxRunsLimitCeiling, want: MaxRunsLimitCeiling},
+		{in: MaxRunsLimitCeiling + 1, want: MaxRunsLimitCeiling},
+		{in: 20000, want: MaxRunsLimitCeiling},
+	}
+	for _, c := range cases {
+		got := clampRunsLimit(c.in)
+		if got != c.want {
+			t.Errorf(
+				"clampRunsLimit(%d) = %d, want %d",
+				c.in, got, c.want,
+			)
+		}
+	}
+	// Negative: the policy must keep DefaultRunsLimit strictly
+	// below the ceiling — if those collapse, the "raise the limit"
+	// guidance is meaningless.
+	if DefaultRunsLimit >= MaxRunsLimitCeiling {
+		t.Fatalf(
+			"DefaultRunsLimit (%d) must be < MaxRunsLimitCeiling (%d)",
+			DefaultRunsLimit, MaxRunsLimitCeiling,
+		)
+	}
+}
+
 func TestServiceListRunEvents(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc)

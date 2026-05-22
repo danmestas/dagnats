@@ -56,7 +56,7 @@ var flagMap = map[string][]string{
 	"run.cancel": {"--json", "--last"},
 	"run.signal": {"--json", "--last"},
 	"run.list": {
-		"--json", "--scheduled",
+		"--json", "--limit=", "--scheduled",
 		"--status=", "--workflow=",
 	},
 	"run.events": {
