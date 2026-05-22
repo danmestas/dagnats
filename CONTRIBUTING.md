@@ -24,7 +24,7 @@ local development.
 ```
 make test       # full test suite
 make vet        # go vet
-make lint       # vet + go vet rules
+make lint       # gofmt + vet + staticcheck (matches CI)
 make fmt        # gofmt + goimports
 make serve      # build and run the dagnats server
 ```
