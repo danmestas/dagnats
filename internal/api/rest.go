@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,7 +207,9 @@ func handleListWorkflows(
 }
 
 // handleListRuns returns all workflow runs as a JSON array.
-// Supports optional ?workflow= query parameter for filtering.
+// Supports optional ?workflow= filter and ?limit= row cap. limit is
+// clamped at MaxRunsLimitCeiling server-side; omitted/invalid values
+// fall back to DefaultRunsLimit.
 func handleListRuns(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
@@ -217,7 +220,10 @@ func handleListRuns(
 		panic("handleListRuns: r must not be nil")
 	}
 	workflowFilter := r.URL.Query().Get("workflow")
-	runs, err := svc.ListRuns(r.Context(), workflowFilter)
+	limit := parseLimitQuery(r.URL.Query().Get("limit"))
+	runs, err := svc.ListRunsWithLimit(
+		r.Context(), workflowFilter, limit,
+	)
 	if err != nil {
 		http.Error(w, err.Error(),
 			http.StatusInternalServerError)
@@ -228,6 +234,24 @@ func handleListRuns(
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
 	}
+}
+
+// parseLimitQuery converts the raw ?limit= string into an int. Empty
+// or unparseable values yield 0, which ListRunsWithLimit treats as
+// "use DefaultRunsLimit". This keeps the REST surface forgiving — an
+// operator who types ?limit=abc gets the default, not a 400.
+func parseLimitQuery(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // handleStartRun decodes a startRunRequest and calls StartRun or

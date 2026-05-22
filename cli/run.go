@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -117,6 +118,11 @@ func printRunUsage() {
 		"  --state=STATE     filter by run state (%s); "+
 			"case-insensitive\n",
 		strings.Join(dag.RunStatusNames(), ", "),
+	)
+	fmt.Printf(
+		"  --limit=N         max rows to fetch "+
+			"(default %d, max %d)\n",
+		api.DefaultRunsLimit, api.MaxRunsLimitCeiling,
 	)
 	fmt.Println()
 	fmt.Println("Run IDs accept 8+ character prefixes.")
@@ -512,11 +518,18 @@ func runSignalCmd(args []string) {
 // runListFlags is the parsed shape of `dagnats run list` arguments.
 // state is the raw operator-supplied string; downstream callers parse
 // it via dag.ParseRunStatus so the valid-set lives in dag/, not here.
+// limit is the row cap; default api.DefaultRunsLimit, max
+// api.MaxRunsLimitCeiling, enforced by parseRunListFlags.
 type runListFlags struct {
 	workflow  string
 	state     string
 	scheduled bool
+	limit     int
 }
+
+// runListLimitMin is the lower bound on --limit accepted by
+// parseRunListFlags. Anything below this is a user error.
+const runListLimitMin = 1
 
 // parseRunListFlags is the single entry point for parsing the
 // `dagnats run list` flag set. It accepts both `--flag=value` and
@@ -533,7 +546,7 @@ func parseRunListFlags(args []string) (runListFlags, error) {
 	if len(args) > 100 {
 		panic("parseRunListFlags: args exceeds bound")
 	}
-	var out runListFlags
+	out := runListFlags{limit: api.DefaultRunsLimit}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -569,11 +582,54 @@ func parseRunListFlags(args []string) (runListFlags, error) {
 			}
 			i++
 			out.state = args[i]
+		case strings.HasPrefix(arg, "--limit="):
+			n, err := parseLimitFlag(
+				strings.TrimPrefix(arg, "--limit="),
+			)
+			if err != nil {
+				return out, err
+			}
+			out.limit = n
+		case arg == "--limit":
+			if i+1 >= len(args) {
+				return out, fmt.Errorf(
+					"--limit requires a value",
+				)
+			}
+			i++
+			n, err := parseLimitFlag(args[i])
+			if err != nil {
+				return out, err
+			}
+			out.limit = n
 		case arg == "--scheduled":
 			out.scheduled = true
 		}
 	}
 	return out, nil
+}
+
+// parseLimitFlag parses and validates the --limit value. Rejects
+// anything outside [runListLimitMin, api.MaxRunsLimitCeiling] with a
+// human-friendly error — the server clamps too, but failing early
+// here gives operators an immediate signal.
+func parseLimitFlag(raw string) (int, error) {
+	if raw == "" {
+		return 0, fmt.Errorf("--limit requires a value")
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"--limit must be an integer; got %q", raw,
+		)
+	}
+	if n < runListLimitMin || n > api.MaxRunsLimitCeiling {
+		return 0, fmt.Errorf(
+			"--limit must be between %d and %d; got %d",
+			runListLimitMin, api.MaxRunsLimitCeiling, n,
+		)
+	}
+	return n, nil
 }
 
 // runListCmd lists workflow runs with optional filtering.
@@ -608,7 +664,9 @@ func runListCmd(args []string) {
 		runScheduledList(svc, jsonOutput)
 		return
 	}
-	runActiveList(svc, flags.workflow, stateFilter, jsonOutput)
+	runActiveList(
+		svc, flags.workflow, stateFilter, flags.limit, jsonOutput,
+	)
 }
 
 // resolveStateFilter wraps dag.ParseRunStatus so callers get a
@@ -665,23 +723,31 @@ func runScheduledList(svc *api.Service, jsonOutput bool) {
 
 // runActiveList renders the non-scheduled `run list` view. Optional
 // stateFilter (nil = no filter) narrows the result client-side.
+// limit is the row cap passed to the service; when the server returns
+// exactly limit rows we emit a truncation notice on stderr (so JSON
+// pipelines see the notice on fd 2 and a clean array on fd 1).
 func runActiveList(
 	svc *api.Service,
 	workflowFilter string,
 	stateFilter *dag.RunStatus,
+	limit int,
 	jsonOutput bool,
 ) {
 	if svc == nil {
 		panic("runActiveList: svc must not be nil")
 	}
-	runs, err := svc.ListRuns(
-		context.Background(), workflowFilter,
+	if limit < runListLimitMin || limit > api.MaxRunsLimitCeiling {
+		panic("runActiveList: limit out of bounds")
+	}
+	runs, err := svc.ListRunsWithLimit(
+		context.Background(), workflowFilter, limit,
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list runs: %v\n", err)
 		exitFunc(1)
 		return
 	}
+	truncated := len(runs) >= limit
 	if stateFilter != nil {
 		want := *stateFilter
 		filtered := runs[:0]
@@ -691,6 +757,13 @@ func runActiveList(
 			}
 		}
 		runs = filtered
+	}
+	if truncated {
+		fmt.Fprintf(os.Stderr,
+			"Note: results truncated at --limit=%d. "+
+				"Raise --limit (max %d) or filter further.\n",
+			limit, api.MaxRunsLimitCeiling,
+		)
 	}
 	if jsonOutput {
 		if err := FormatJSON(os.Stdout, runs); err != nil {
