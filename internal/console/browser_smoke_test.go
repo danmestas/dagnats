@@ -109,6 +109,91 @@ func TestBrowser_connectionPillRecoveryHints(t *testing.T) {
 	}
 }
 
+// TestBrowser_connectionPillExternalMutation asserts that mutating
+// the pill's data-state attribute from outside the controller — the
+// standard Datastar pattern — propagates through the same render
+// path as the programmatic _forceState() call. Issue #285: the
+// controller used to ignore external attribute mutations, so any
+// server-driven state hand-off via data-state was inert.
+//
+// Methodology:
+//   - Boot the console via httptest, same as the recovery-hints test.
+//   - Reset state to idle, mutate data-state="error" via DOM
+//     setAttribute, yield briefly so the MutationObserver microtask
+//     fires, then read the rendered label.
+//   - Note "error" is the upstream Datastar attribute value; the
+//     controller normalises it via render()'s VALID gate. We use a
+//     state that IS valid ("reconnecting") for the assertion so the
+//     observer's full path is exercised, then re-verify the
+//     programmatic path still works.
+//   - Bounded: 30s deadline. 2 assertions (external mutation +
+//     regression guard for _forceState).
+func TestBrowser_connectionPillExternalMutation(t *testing.T) {
+	skipIfBrowserUnavailable(t)
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	runAgentBrowser(t, ctx, "open", srv.URL+"/console/")
+	t.Cleanup(func() {
+		brCtx, brCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer brCancel()
+		runAgentBrowserAllowFail(t, brCtx, "close")
+	})
+	time.Sleep(750 * time.Millisecond)
+
+	helper := evalString(t, ctx, "typeof window.__dagnatsConnection")
+	if helper != "object" {
+		t.Fatalf("__dagnatsConnection type=%q, want object — "+
+			"connection-state bundle not loaded", helper)
+	}
+
+	// Reset to a known idle baseline so the observer's transition
+	// out of idle is unambiguous.
+	evalString(t, ctx, "window.__dagnatsConnection._reset()")
+
+	// Assertion 1: external data-state mutation propagates.
+	// Use "reconnecting" — a VALID state distinct from idle so the
+	// render path's "Reconnecting" label change is observable.
+	runAgentBrowser(t, ctx, "eval",
+		"document.getElementById('console-connection')"+
+			".setAttribute('data-state', 'reconnecting')")
+	// MutationObserver fires on the microtask queue. A 100ms sleep
+	// is generous overkill and matches the cadence other browser
+	// tests in this file use.
+	time.Sleep(100 * time.Millisecond)
+	label := evalString(t, ctx,
+		"document.querySelector("+
+			"'#console-connection .console-connection-label').textContent")
+	if !strings.Contains(label, "reconnecting") {
+		t.Errorf("external data-state mutation: label=%q, "+
+			"want substring %q — MutationObserver path inert",
+			label, "reconnecting")
+	}
+
+	// Assertion 2: regression guard — the programmatic _forceState
+	// path still works after the refactor.
+	evalString(t, ctx, "window.__dagnatsConnection._reset()")
+	evalString(t, ctx,
+		"window.__dagnatsConnection._forceState('offline')")
+	time.Sleep(50 * time.Millisecond)
+	label2 := evalString(t, ctx,
+		"document.querySelector("+
+			"'#console-connection .console-connection-label').textContent")
+	if !strings.Contains(label2, "offline") {
+		t.Errorf("_forceState regression: label=%q, want substring %q",
+			label2, "offline")
+	}
+}
+
 // jsString JSON-encodes a Go string for safe embedding into a JS
 // eval expression. Keeps the test honest if a future case adds a
 // quote or backslash.
