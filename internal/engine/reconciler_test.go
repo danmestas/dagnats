@@ -7,7 +7,10 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -304,6 +307,176 @@ func TestReconciler_LeavesTerminalRunsAlone(t *testing.T) {
 			)
 		}
 	}
+}
+
+func TestReconcilerCapWarnSuppressedAcrossCycles(t *testing.T) {
+	// Issue #260: in steady state with the workflow_runs scan
+	// permanently saturated, the WARN about "scan hit cap"
+	// must only fire on the transition into cap (cold start
+	// or not-capped → capped). Subsequent cycles already in
+	// the capped state drop to DEBUG so operators can still
+	// distinguish "normally saturated" from "newly saturated".
+	prevCap := reconcileMaxRunsScan
+	reconcileMaxRunsScan = 3
+	t.Cleanup(func() { reconcileMaxRunsScan = prevCap })
+
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	wfDef := dag.WorkflowDef{
+		Name: "reconciler-cap", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "a", Task: "task-a",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	seedWorkflowDef(t, nc, wfDef)
+
+	orch := NewOrchestrator(nc)
+	ctx := context.Background()
+	// Seed 5 terminal runs (> cap of 3). Terminal so the
+	// reconciler scan picks them up but does not mutate them
+	// — we only care about cap-hit log behavior here.
+	for i := 0; i < 5; i++ {
+		run := dag.WorkflowRun{
+			RunID:      "cap-run-" + itoa(i),
+			WorkflowID: wfDef.Name,
+			Status:     dag.RunStatusCompleted,
+			CreatedAt: time.Now().UTC().
+				Add(-(reconcileMinAge + time.Minute)),
+			Steps: map[string]dag.StepState{
+				"a": {Status: dag.StepStatusCompleted},
+			},
+		}
+		if err := orch.store.Save(ctx, run); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	buf, restore := captureSlog(t)
+	defer restore()
+
+	for i := 0; i < 3; i++ {
+		orch.reconcileRunningRuns(ctx)
+	}
+
+	logs := buf.String()
+	warnCount := strings.Count(logs, `level=WARN`)
+	scanHitCount := strings.Count(logs, "scan hit cap")
+	if warnCount != 1 {
+		t.Errorf(
+			"want exactly 1 WARN line across 3 cycles, got %d.\nlogs:\n%s",
+			warnCount, logs,
+		)
+	}
+	if scanHitCount != 1 {
+		t.Errorf(
+			"want exactly 1 \"scan hit cap\" log, got %d",
+			scanHitCount,
+		)
+	}
+}
+
+func TestReconcilerCapClearedEmitsInfo(t *testing.T) {
+	// Issue #260: when the scan was capped on the previous
+	// cycle and is no longer capped on the current cycle,
+	// emit an INFO so operators see that the backlog drained.
+	prevCap := reconcileMaxRunsScan
+	reconcileMaxRunsScan = 3
+	t.Cleanup(func() { reconcileMaxRunsScan = prevCap })
+
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	wfDef := dag.WorkflowDef{
+		Name: "reconciler-cap-cleared", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "a", Task: "task-a",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	seedWorkflowDef(t, nc, wfDef)
+
+	orch := NewOrchestrator(nc)
+	ctx := context.Background()
+	// Drive cycle 1 into the capped state.
+	for i := 0; i < 5; i++ {
+		run := dag.WorkflowRun{
+			RunID:      "clear-run-" + itoa(i),
+			WorkflowID: wfDef.Name,
+			Status:     dag.RunStatusCompleted,
+			CreatedAt: time.Now().UTC().
+				Add(-(reconcileMinAge + time.Minute)),
+			Steps: map[string]dag.StepState{
+				"a": {Status: dag.StepStatusCompleted},
+			},
+		}
+		if err := orch.store.Save(ctx, run); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	orch.reconcileRunningRuns(ctx) // cycle 1: capped, WARN
+
+	// Drop the cap (simulate backlog draining) by raising the
+	// scan limit so the run set is now below cap.
+	reconcileMaxRunsScan = 100
+
+	buf, restore := captureSlog(t)
+	defer restore()
+
+	orch.reconcileRunningRuns(ctx) // cycle 2: not capped → INFO
+
+	logs := buf.String()
+	if !strings.Contains(logs, "scan-cap cleared") {
+		t.Errorf(
+			"want INFO \"scan-cap cleared\" in cycle 2 logs, got:\n%s",
+			logs,
+		)
+	}
+	if strings.Contains(logs, "scan hit cap") {
+		t.Errorf(
+			"recovery cycle must not re-emit cap-hit WARN; logs:\n%s",
+			logs,
+		)
+	}
+}
+
+// captureSlog swaps slog.Default with a TextHandler writing
+// into a buffer for the lifetime of the test. Returns the
+// buffer and a restore func. Captures all levels including
+// DEBUG so suppression assertions work.
+func captureSlog(t *testing.T) (*bytes.Buffer, func()) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	handler := slog.NewTextHandler(buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+	slog.SetDefault(slog.New(handler))
+	return buf, func() { slog.SetDefault(prev) }
+}
+
+// itoa is a tiny non-fmt int-to-decimal-string helper to keep
+// the test imports minimal. Bounded: input must be 0..9999.
+func itoa(n int) string {
+	if n < 0 || n > 9999 {
+		panic("itoa: out of range")
+	}
+	if n == 0 {
+		return "0"
+	}
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
 }
 
 // seedWorkflowDef writes a WorkflowDef into the workflow_defs

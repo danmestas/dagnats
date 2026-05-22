@@ -25,9 +25,8 @@ import (
 )
 
 const (
-	reconcileInterval    = 60 * time.Second
-	reconcileMinAge      = 5 * time.Minute
-	reconcileMaxRunsScan = 1000
+	reconcileInterval = 60 * time.Second
+	reconcileMinAge   = 5 * time.Minute
 
 	// reconcileWedgedReason is stamped on the synthetic
 	// StepState used when forcing a wedged run to terminal
@@ -35,6 +34,12 @@ const (
 	reconcileWedgedReason = "wedged: no in-flight work and " +
 		"no path to completion"
 )
+
+// reconcileMaxRunsScan caps the per-cycle workflow_runs scan.
+// var rather than const for test injection — tests lower it to
+// exercise the cap-hit transition logic without seeding 1000
+// runs. Production callers must not mutate.
+var reconcileMaxRunsScan = 1000
 
 // startReconciler launches the periodic janitor goroutine.
 // The loop exits when ctx is cancelled. Safe to call exactly
@@ -74,17 +79,7 @@ func (o *Orchestrator) reconcileRunningRuns(ctx context.Context) {
 			"reconciler: list runs", "error", err)
 		return
 	}
-	// If the scan hits the cap, oldest entries beyond the cap
-	// may never be reconciled. Surface this so operators can
-	// raise reconcileMaxRunsScan or otherwise address the
-	// backlog.
-	if len(runs) >= reconcileMaxRunsScan {
-		slog.WarnContext(ctx,
-			"reconciler: scan hit cap; older runs may "+
-				"not be reconciled this cycle",
-			"cap", reconcileMaxRunsScan,
-		)
-	}
+	o.logScanCapTransition(ctx, len(runs))
 	cutoff := time.Now().Add(-reconcileMinAge)
 	for _, run := range runs {
 		if run.Status != dag.RunStatusRunning {
@@ -96,6 +91,44 @@ func (o *Orchestrator) reconcileRunningRuns(ctx context.Context) {
 		}
 		o.reconcileOneRun(ctx, run.RunID)
 	}
+}
+
+// logScanCapTransition emits the scan-cap log line at a level
+// chosen by the cycle-over-cycle transition (#260):
+//   - not-capped → capped: WARN (operator-visible cold start /
+//     new saturation).
+//   - capped → still-capped: DEBUG (steady state; would be pure
+//     noise at WARN every cycle).
+//   - capped → not-capped: INFO (recovery edge; operators see
+//     when the backlog has drained).
+//   - not-capped → not-capped: nothing.
+//
+// Mutates o.capHitPrev. Called once per reconcile cycle from
+// the single reconciler goroutine.
+func (o *Orchestrator) logScanCapTransition(
+	ctx context.Context, runCount int,
+) {
+	capped := runCount >= reconcileMaxRunsScan
+	switch {
+	case capped && !o.capHitPrev:
+		slog.WarnContext(ctx,
+			"reconciler: scan hit cap; older runs may "+
+				"not be reconciled this cycle",
+			"cap", reconcileMaxRunsScan,
+		)
+	case capped && o.capHitPrev:
+		slog.DebugContext(ctx,
+			"reconciler: scan still at cap",
+			"cap", reconcileMaxRunsScan,
+		)
+	case !capped && o.capHitPrev:
+		slog.InfoContext(ctx,
+			"reconciler: scan-cap cleared",
+			"cap", reconcileMaxRunsScan,
+			"runs", runCount,
+		)
+	}
+	o.capHitPrev = capped
 }
 
 // reconcileOneRun inspects a single run under its per-run

@@ -56,6 +56,14 @@ type Orchestrator struct {
 	// reconcileCancel stops the periodic janitor goroutine. Set
 	// in Start, called in Stop. nil before Start / after Stop.
 	reconcileCancel context.CancelFunc
+
+	// capHitPrev tracks whether the previous reconcile cycle hit
+	// reconcileMaxRunsScan. Used to suppress the steady-state
+	// scan-cap WARN (#260): emit only on the not-capped → capped
+	// transition; drop to DEBUG while continuously capped; emit
+	// INFO on the capped → not-capped recovery edge. Accessed
+	// only from the single reconciler goroutine, no lock needed.
+	capHitPrev bool
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
