@@ -21,12 +21,19 @@ const maxActiveTriggers = 500
 // TriggerService coordinates all trigger types. It loads definitions
 // from the triggers KV bucket on startup and watches for live changes.
 //
+// ADR-016 made this a thin orchestrator: per-kind state lives on the
+// registrars, and addTrigger / removeTrigger are table dispatches
+// keyed by kind. The kind-specific maps (subjects, webhooks,
+// httpRoutes) remain as struct fields because their canonical owner
+// is the matching registrar — TriggerService holds the same map
+// reference so the in-package regression tests can observe pointer
+// identity (#217 / #221 / #223 watcher-replay guard) without
+// reaching through the registrar abstraction.
+//
 // httpRoutes maps method:path → HTTPHandler. The composite key matches
 // the routing key the HTTPRouter dispatches on; collision detection is
 // the ADR-013 "refuse second registration that conflicts on
-// (method, path)" rule. PR 3 may surface conflicts as registration-
-// time errors; PR 2 logs and skips so an unrelated KV update cannot
-// brick the trigger service.
+// (method, path)" rule.
 type TriggerService struct {
 	nc         *nats.Conn
 	js         jetstream.JetStream
@@ -35,6 +42,10 @@ type TriggerService struct {
 	subjects   map[string]*SubjectTrigger
 	webhooks   map[string]*WebhookHandler
 	httpRoutes map[string]*HTTPHandler
+	registrars map[string]TriggerRegistrar
+	subjectReg *subjectRegistrar
+	webhookReg *webhookRegistrar
+	httpReg    *httpRegistrar
 	// revisions tracks the highest KV revision applied for each
 	// trigger ID. The KV watcher (jetstream.WatchAll) opens with
 	// DeliverLastPerSubject and replays existing keys on startup —
@@ -48,6 +59,32 @@ type TriggerService struct {
 	cancel    context.CancelFunc
 	watcher   jetstream.KeyWatcher
 	mu        sync.RWMutex
+}
+
+// kind constants for the registrar dispatch table. Stringly typed
+// because the keys appear in JSON payloads and registry lookups; an
+// iota would not survive the wire crossing.
+const (
+	kindCron    = "cron"
+	kindSubject = "subject"
+	kindWebhook = "webhook"
+	kindHTTP    = "http"
+)
+
+// triggerKind returns the kind name for def, or "" if no kind field
+// is set. Used by addTrigger / removeTrigger to look up the registrar.
+func triggerKind(def TriggerDef) string {
+	switch {
+	case def.Cron != nil:
+		return kindCron
+	case def.Subject != nil:
+		return kindSubject
+	case def.Webhook != nil:
+		return kindWebhook
+	case def.HTTP != nil:
+		return kindHTTP
+	}
+	return ""
 }
 
 // NewTriggerService creates the service. KV buckets must exist.
@@ -82,7 +119,7 @@ func NewTriggerService(
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	return &TriggerService{
+	ts := &TriggerService{
 		nc:         nc,
 		js:         js,
 		triggerKV:  triggerKV,
@@ -93,7 +130,17 @@ func NewTriggerService(
 		revisions:  make(map[string]uint64),
 		ctx:        ctx,
 		cancel:     cancel,
-	}, nil
+	}
+	ts.subjectReg = newSubjectRegistrar(nc, ts.subjects, &ts.mu)
+	ts.webhookReg = newWebhookRegistrar(nc, ts.webhooks, &ts.mu)
+	ts.httpReg = newHTTPRegistrar(nc, ts.httpRoutes, &ts.mu)
+	ts.registrars = map[string]TriggerRegistrar{
+		kindCron:    newCronRegistrar(scheduler),
+		kindSubject: ts.subjectReg,
+		kindWebhook: ts.webhookReg,
+		kindHTTP:    ts.httpReg,
+	}
+	return ts, nil
 }
 
 // Start loads triggers from KV, starts all handlers, and begins
@@ -155,27 +202,12 @@ func (ts *TriggerService) TickNow() {
 }
 
 // WebhookHandler returns a unified HTTP handler for all webhook triggers.
-// Panics if service webhooks map is not initialized.
+// Proxies to the webhook registrar (ADR-016 deep ownership).
 func (ts *TriggerService) WebhookHandler() http.Handler {
-	if ts.webhooks == nil {
-		panic("WebhookHandler: webhooks map must not be nil")
+	if ts.webhookReg == nil {
+		panic("WebhookHandler: webhook registrar must not be nil")
 	}
-	if ts.subjects == nil {
-		panic("WebhookHandler: service not fully initialized")
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ts.mu.RLock()
-		handler, ok := ts.webhooks[r.URL.Path]
-		ts.mu.RUnlock()
-
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-
-		handler.ServeHTTP(w, r)
-	})
+	return ts.webhookReg.Handler()
 }
 
 // TriggerCount returns the current number of active triggers.
@@ -204,52 +236,16 @@ func (ts *TriggerService) TriggerCount() int {
 // the returned handler always reads the current httpRoutes map
 // under the service's RWMutex.
 //
-// Why a single http.Handler vs. one registration per route: the API
+// Proxies to the HTTP registrar (ADR-016 deep ownership). The API
 // server already owns a mux; layering a second one would create two
 // places to look when a route 404s. Returning a flat handler keeps
 // route ownership in the trigger service and the API mux's only job
 // is to forward "/api/*" (or whatever prefix) to this handler.
 func (ts *TriggerService) HTTPRouter() http.Handler {
-	if ts.httpRoutes == nil {
-		panic("HTTPRouter: httpRoutes map must not be nil")
+	if ts.httpReg == nil {
+		panic("HTTPRouter: http registrar must not be nil")
 	}
-	return http.HandlerFunc(func(
-		w http.ResponseWriter, r *http.Request,
-	) {
-		ts.serveHTTPRoute(w, r)
-	})
-}
-
-// serveHTTPRoute is the inner dispatch — split out so the closure
-// in HTTPRouter stays small and exempt from the 70-line rule.
-func (ts *TriggerService) serveHTTPRoute(
-	w http.ResponseWriter, r *http.Request,
-) {
-	ts.mu.RLock()
-	pathMethods := make(map[string]*HTTPHandler, 4)
-	for key, handler := range ts.httpRoutes {
-		if handler.def.HTTP == nil {
-			continue
-		}
-		if handler.def.HTTP.Path != r.URL.Path {
-			continue
-		}
-		pathMethods[handler.def.HTTP.Method] = handler
-		_ = key
-	}
-	ts.mu.RUnlock()
-
-	if len(pathMethods) == 0 {
-		http.NotFound(w, r)
-		return
-	}
-	handler, methodOK := pathMethods[r.Method]
-	if !methodOK {
-		http.Error(w, "method not allowed",
-			http.StatusMethodNotAllowed)
-		return
-	}
-	handler.ServeHTTP(w, r)
+	return ts.httpReg.Router()
 }
 
 func (ts *TriggerService) loadAllTriggers() error {
@@ -340,38 +336,18 @@ func (ts *TriggerService) addTrigger(def TriggerDef) error {
 		return nil
 	}
 
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-
-	switch {
-	case def.Cron != nil:
-		return ts.scheduler.AddTrigger(def)
-	case def.Subject != nil:
-		trigger, err := NewSubjectTrigger(ts.nc, def)
-		if err != nil {
-			return fmt.Errorf("NewSubjectTrigger: %w", err)
-		}
-		ts.subjects[def.ID] = trigger
-		return nil
-	case def.Webhook != nil:
-		handler := NewWebhookHandler(ts.nc, def)
-		if def.Webhook.Path != "" {
-			ts.webhooks[def.Webhook.Path] = handler
-		}
-		return nil
-	case def.HTTP != nil:
-		key := httpRouteKey(def.HTTP.Method, def.HTTP.Path)
-		if _, exists := ts.httpRoutes[key]; exists {
-			return fmt.Errorf(
-				"http trigger %q: route %s already registered",
-				def.ID, key,
-			)
-		}
-		ts.httpRoutes[key] = NewHTTPHandler(ts.nc, def)
-		return nil
+	kind := triggerKind(def)
+	if kind == "" {
+		return fmt.Errorf("no trigger type specified")
+	}
+	reg, ok := ts.registrars[kind]
+	if !ok {
+		return fmt.Errorf("unknown trigger kind: %s", kind)
 	}
 
-	return fmt.Errorf("no trigger type specified")
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return reg.Activate(ts.ctx, def)
 }
 
 // httpRouteKey is the composite map key for the (method, path) →
@@ -398,29 +374,15 @@ func (ts *TriggerService) removeTrigger(id string) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	_ = ts.scheduler.RemoveTrigger(id)
-
-	if st, ok := ts.subjects[id]; ok {
-		_ = st.Close()
-		delete(ts.subjects, id)
+	// We don't know which kind owns this id without keeping a side
+	// table — instead, ask each registrar to Deactivate. Each is
+	// idempotent for unknown ids (ADR-016 contract), so the wrong
+	// ones are no-ops. Cost is bounded: O(kinds * map walk per
+	// kind) and the registrar set is fixed at boot.
+	stub := TriggerDef{ID: id}
+	for _, reg := range ts.registrars {
+		_ = reg.Deactivate(ts.ctx, stub)
 	}
-
-	// For webhooks, we need to find by ID since map is keyed by path
-	for path, handler := range ts.webhooks {
-		if handler.def.ID == id {
-			delete(ts.webhooks, path)
-			break
-		}
-	}
-
-	// HTTP routes are keyed by "METHOD PATH"; locate by trigger ID.
-	for key, handler := range ts.httpRoutes {
-		if handler.def.ID == id {
-			delete(ts.httpRoutes, key)
-			break
-		}
-	}
-
 	return nil
 }
 
