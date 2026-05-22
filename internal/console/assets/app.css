@@ -2499,3 +2499,249 @@ body[data-theme="dark"] code {
   white-space: nowrap;
   border: 0;
 }
+
+/* /console/config — deployment self-portrait (#312, ADR-015 R3).
+   iii's strongest page; we mirror the adapter-first information
+   density (endpoints panel → JetStream pane → workers → triggers →
+   footer) while keeping every section understandable at a glance. */
+.page-config .console-section-header { margin-bottom: var(--space-3); }
+
+.config-endpoints {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+.config-endpoint-card {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+}
+.config-endpoint-card header { margin-bottom: var(--space-2); }
+.config-endpoint-title {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+.config-endpoint-subtitle {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin: 0;
+  margin-top: 2px;
+}
+.config-endpoint-url {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  margin: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.config-section-title {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin: var(--space-5) 0 var(--space-3);
+}
+.config-section-subtitle {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-2);
+}
+
+.config-jetstream {
+  margin-bottom: var(--space-5);
+}
+.config-jetstream-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+@media (min-width: 960px) {
+  .config-jetstream-grid {
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  }
+}
+.config-jetstream-pane {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  padding: var(--space-3);
+  background: var(--surface);
+}
+.config-streams-table th.num,
+.config-streams-table td.num,
+.config-buckets-table th.num,
+.config-buckets-table td.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+.config-streams-table .row-muted td {
+  color: var(--text-secondary);
+  opacity: 0.65;
+}
+
+.config-worker-pools {
+  margin-bottom: var(--space-5);
+}
+.config-worker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+.config-worker-card {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-completed);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+}
+.config-worker-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: var(--space-1);
+}
+.config-worker-name {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  margin: 0;
+  color: var(--text-primary);
+}
+.config-worker-count {
+  font-family: var(--font-sans);
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--status-completed);
+}
+.config-worker-meta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+.config-worker-empty {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin: 0;
+}
+.config-worker-empty code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  padding: 1px 4px;
+  background: var(--accent-soft);
+  border-radius: 3px;
+}
+
+.config-trigger-types { margin-bottom: var(--space-5); }
+.config-trigger-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-2);
+}
+.config-trigger-card {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+  align-items: flex-start;
+}
+.config-trigger-glyph {
+  font-size: 1rem;
+  line-height: 1.2;
+  color: var(--status-pending);
+}
+.config-trigger-body { flex: 1; min-width: 0; }
+.config-trigger-name {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  margin: 0;
+  color: var(--text-primary);
+}
+.config-trigger-desc {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin: 2px 0 0;
+}
+
+.config-build-footer {
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.config-build-fragment { font-family: var(--font-mono); }
+.config-build-sep { color: var(--border); }
+
+.config-yaml-modal {
+  margin-top: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+}
+.config-yaml-toggle {
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  list-style: none;
+}
+.config-yaml-toggle::-webkit-details-marker { display: none; }
+.config-yaml-toggle::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  transition: transform 0.15s ease;
+}
+.config-yaml-modal[open] .config-yaml-toggle::before {
+  transform: rotate(90deg);
+}
+.config-yaml-panel {
+  border-top: 1px solid var(--border);
+  padding: var(--space-3);
+}
+.config-yaml-header { margin-bottom: var(--space-2); }
+.config-yaml-header h3 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+.config-yaml-hint {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.config-yaml-body {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: var(--space-3);
+  overflow-x: auto;
+  white-space: pre;
+  margin: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}

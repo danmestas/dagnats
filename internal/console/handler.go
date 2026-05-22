@@ -223,6 +223,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageStreams(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/config",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageConfiguration(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/ops",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageOpsIndex(w, r, ts, cfg)
@@ -414,6 +418,7 @@ var pageContentFiles = map[string]string{
 	"kv-list":           "templates/kv_list.html",
 	"streams-list":      "templates/streams_list.html",
 	"metrics_dashboard": "templates/metrics_dashboard.html",
+	"configuration":     "templates/configuration.html",
 	"not-found":         "templates/not_found.html",
 }
 
