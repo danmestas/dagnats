@@ -211,13 +211,25 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			serveSearch(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/workers",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageWorkers(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/kv",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageKVInspector(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/streams",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageStreams(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/ops",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageOpsIndex(w, r, ts, cfg)
 		})
 	mux.HandleFunc("/console/ops/workers",
 		func(w http.ResponseWriter, r *http.Request) {
-			servePageWorkers(w, r, ts, cfg)
+			serveOpsWorkersRedirect(w, r)
 		})
 	mux.HandleFunc("/console/ops/leases",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +237,7 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		})
 	mux.HandleFunc("/console/ops/kv",
 		func(w http.ResponseWriter, r *http.Request) {
-			servePageKVInspector(w, r, ts, cfg)
+			serveOpsKVRedirect(w, r)
 		})
 	mux.HandleFunc("/console/ops/audit",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -397,9 +409,10 @@ var pageContentFiles = map[string]string{
 	"dlq-detail":        "templates/dlq_detail.html",
 	"audit-log":         "templates/audit_log.html",
 	"ops-index":         "templates/ops_index.html",
-	"ops-workers":       "templates/ops_workers.html",
+	"workers-list":      "templates/workers_list.html",
 	"ops-leases":        "templates/ops_leases.html",
-	"ops-kv":            "templates/ops_kv.html",
+	"kv-list":           "templates/kv_list.html",
+	"streams-list":      "templates/streams_list.html",
 	"metrics_dashboard": "templates/metrics_dashboard.html",
 	"not-found":         "templates/not_found.html",
 }

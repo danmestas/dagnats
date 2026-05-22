@@ -6,20 +6,21 @@ import (
 	"sort"
 )
 
-// ops_pages.go owns the PR 5b operator pages under /console/ops:
+// ops_pages.go owns the operator pages. After #311 the layout is:
 //
-//   /console/ops             — index (tiles linking to sub-pages)
-//   /console/ops/workers     — workers list (placeholder: engine
-//                              doesn't surface heartbeats yet)
-//   /console/ops/leases      — current leases (same placeholder gap)
-//   /console/ops/kv          — KV inspector (read-only)
+//   /console/workers         — workers list (placeholder telemetry)
+//   /console/kv              — KV inspector (read-only)
+//   /console/streams         — JetStream stream inventory (placeholder)
+//   /console/ops             — slim landing: Leases + Audit log + Metrics
+//   /console/ops/leases      — current leases (placeholder telemetry)
 //
 // Each list page mirrors the established pattern: handler → build
-// view → render. Templates live alongside the other ops pages.
+// view → render. Templates live alongside the other pages.
 
 // OpsIndexView is the binding for /console/ops.
 type OpsIndexView struct {
-	Tiles []OpsTile
+	Header PageHeader
+	Tiles  []OpsTile
 }
 
 // OpsTile is one summary tile on the ops index. Hint is a short
@@ -53,7 +54,9 @@ func servePageOpsIndex(
 	})
 }
 
-// buildOpsIndex assembles the four ops tiles. Counts come from the
+// buildOpsIndex assembles the slim post-#311 ops tiles: Leases, Audit
+// log, Metrics. Workers / KV / Streams are now top-level nav entries
+// and no longer surface as sub-tiles here. Counts come from the
 // DataSource when present; absent data leaves the metric blank rather
 // than throwing.
 func buildOpsIndex(
@@ -61,48 +64,60 @@ func buildOpsIndex(
 ) OpsIndexView {
 	tiles := []OpsTile{
 		{
-			Title: "Workers", Section: "ops-workers",
-			Href: "/console/ops/workers",
-			Hint: "active worker processes",
-		},
-		{
 			Title: "Leases", Section: "ops-leases",
 			Href: "/console/ops/leases",
 			Hint: "in-flight task leases",
-		},
-		{
-			Title: "KV inspector", Section: "ops-kv",
-			Href: "/console/ops/kv",
-			Hint: "browse engine state buckets",
 		},
 		{
 			Title: "Audit log", Section: "ops-audit",
 			Href: "/console/ops/audit",
 			Hint: "operator-action history",
 		},
+		{
+			Title: "Metrics", Section: "ops-metrics",
+			Href: "/console/ops/metrics",
+			Hint: "throughput, latency, per-workflow breakdown",
+		},
 	}
 	if ds == nil {
-		return OpsIndexView{Tiles: tiles}
+		return OpsIndexView{
+			Header: opsIndexHeader(),
+			Tiles:  tiles,
+		}
 	}
 	enrichOpsTiles(ctx, ds, tiles)
-	return OpsIndexView{Tiles: tiles}
+	return OpsIndexView{
+		Header: opsIndexHeader(),
+		Tiles:  tiles,
+	}
+}
+
+// opsIndexHeader builds the slim landing header. No tile strip — the
+// page itself is a tile grid, so a count strip on top would be
+// redundant. Subtitle nudges the operator toward the promoted nav
+// entries so they don't hunt under Ops for what used to live there.
+func opsIndexHeader() PageHeader {
+	h, err := NewPageHeader(PageHeader{
+		Title: "Ops",
+		Subtitle: "Lease audit, action history, metrics dashboard. " +
+			"Workers, KV, and Streams now live in the top nav.",
+	})
+	if err != nil {
+		return PageHeader{Title: "Ops"}
+	}
+	return h
 }
 
 // enrichOpsTiles fills the per-tile metric text from the DataSource.
-// Workers / Leases are placeholders — engine doesn't track them yet —
-// so we surface that fact explicitly rather than pretend with a 0.
+// Leases is a placeholder — engine doesn't track it yet — so we
+// surface that fact explicitly rather than pretend with a 0.
 func enrichOpsTiles(
 	ctx context.Context, ds DataSource, tiles []OpsTile,
 ) {
 	for i := range tiles {
 		switch tiles[i].Section {
-		case "ops-workers", "ops-leases":
+		case "ops-leases":
 			tiles[i].MetricText = "engine telemetry pending"
-		case "ops-kv":
-			buckets, err := ds.ListKVBuckets(ctx)
-			if err == nil {
-				tiles[i].MetricText = pluralize(len(buckets), "bucket")
-			}
 		case "ops-audit":
 			events, err := ds.ListAuditEvents(ctx, 100)
 			if err == nil {
@@ -146,16 +161,17 @@ func intToStr(n int) string {
 	return string(buf[idx:])
 }
 
-// WorkersListView powers /console/ops/workers. Today the engine does
+// WorkersListView powers /console/workers. Today the engine does
 // not surface worker heartbeats; we render a clear "telemetry gap"
 // banner + empty table rather than mislead with synthetic data.
 type WorkersListView struct {
+	Header  PageHeader
 	Workers []WorkerRow
 	Note    string
 }
 
 // WorkerRow shape kept for when the engine starts emitting
-// heartbeats. PR 5b leaves Workers empty.
+// heartbeats. Workers slice empty until that lands.
 type WorkerRow struct {
 	ID            string
 	Status        string
@@ -165,7 +181,7 @@ type WorkerRow struct {
 	TaskCount     int
 }
 
-// servePageWorkers renders /console/ops/workers.
+// servePageWorkers renders /console/workers.
 func servePageWorkers(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -177,15 +193,50 @@ func servePageWorkers(
 		panic("servePageWorkers: r is nil")
 	}
 	view := WorkersListView{
+		Header: buildWorkersHeader(nil),
 		Note: "Worker telemetry is not yet wired. " +
 			"This page surfaces the planned shape; data populates once " +
 			"the engine writes to the worker_heartbeats KV bucket.",
 	}
-	renderPage(w, r, ts, cfg, "ops-workers", pageData{
+	renderPage(w, r, ts, cfg, "workers-list", pageData{
 		Title:   "Workers",
-		Section: "ops",
+		Section: "workers",
 		Page:    view,
 	})
+}
+
+// buildWorkersHeader projects the workers row set into count tiles.
+// While telemetry is pending every count is 0 and the tile strip
+// reads as honest zero-state; once heartbeats land the math here
+// becomes meaningful without any template churn.
+func buildWorkersHeader(rows []WorkerRow) PageHeader {
+	active := 0
+	idle := 0
+	const rowsMax = 10_000
+	for i := 0; i < len(rows) && i < rowsMax; i++ {
+		switch rows[i].Status {
+		case "active", "running":
+			active++
+		case "idle":
+			idle++
+		}
+	}
+	tiles := []Tile{
+		{Label: "workers", Count: len(rows), Tone: ToneDefault},
+		{Label: "active", Count: active, Tone: ToneSuccess,
+			Tooltip: "Workers reporting heartbeats in the last cycle"},
+		{Label: "idle", Count: idle, Tone: ToneInfo,
+			Tooltip: "Connected workers with no lease in progress"},
+	}
+	h, err := NewPageHeader(PageHeader{
+		Title:    "Workers",
+		Subtitle: "Connected worker processes.",
+		Tiles:    tiles,
+	})
+	if err != nil {
+		return PageHeader{Title: "Workers"}
+	}
+	return h
 }
 
 // LeasesListView powers /console/ops/leases. Same telemetry gap as
@@ -230,10 +281,11 @@ func servePageLeases(
 	})
 }
 
-// KVInspectorView powers /console/ops/kv. Buckets is the left-rail
+// KVInspectorView powers /console/kv. Buckets is the left-rail
 // inventory; ActiveBucket is the currently-selected bucket; Keys is
 // its key list; Entry is the materialised value when ?key=<k> is set.
 type KVInspectorView struct {
+	Header       PageHeader
 	Buckets      []KVBucketInfo
 	ActiveBucket string
 	Keys         []string
@@ -253,7 +305,7 @@ type KVInspectorEntry struct {
 	NotFound    bool
 }
 
-// servePageKVInspector renders /console/ops/kv.
+// servePageKVInspector renders /console/kv.
 func servePageKVInspector(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -264,14 +316,14 @@ func servePageKVInspector(
 	if r == nil {
 		panic("servePageKVInspector: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "ops-kv")
+	ds, ok := requireData(w, cfg, "kv-list")
 	if !ok {
 		return
 	}
 	view := buildKVInspectorView(r.Context(), ds, r.URL.Query())
-	renderPage(w, r, ts, cfg, "ops-kv", pageData{
+	renderPage(w, r, ts, cfg, "kv-list", pageData{
 		Title:   "KV inspector",
-		Section: "ops",
+		Section: "kv",
 		Page:    view,
 	})
 }
@@ -284,7 +336,10 @@ func buildKVInspectorView(
 	ctx context.Context, ds DataSource, q map[string][]string,
 ) KVInspectorView {
 	buckets, _ := ds.ListKVBuckets(ctx)
-	view := KVInspectorView{Buckets: buckets}
+	view := KVInspectorView{
+		Header:  buildKVHeader(buckets),
+		Buckets: buckets,
+	}
 	active := firstQueryValue(q, "bucket")
 	if active == "" && len(buckets) > 0 {
 		active = buckets[0].Name
@@ -303,6 +358,33 @@ func buildKVInspectorView(
 	}
 	view.Entry = buildKVEntry(ctx, ds, active, key)
 	return view
+}
+
+// buildKVHeader projects the bucket inventory into the count tiles
+// shown above the bucket nav. "Keys" sums across every bucket — a
+// rough indicator of how much state the engine is holding — and
+// "buckets" is the cardinality.
+func buildKVHeader(buckets []KVBucketInfo) PageHeader {
+	totalKeys := 0
+	const bucketsMax = 1024
+	for i := 0; i < len(buckets) && i < bucketsMax; i++ {
+		totalKeys += buckets[i].Keys
+	}
+	tiles := []Tile{
+		{Label: "buckets", Count: len(buckets), Tone: ToneDefault},
+		{Label: "keys", Count: totalKeys, Tone: ToneInfo,
+			Tooltip: "Total keys across reachable buckets"},
+	}
+	h, err := NewPageHeader(PageHeader{
+		Title:             "KV inspector",
+		TitleGlossaryTerm: "KV",
+		Subtitle:          "Read-only inspection of JetStream KV buckets the engine uses.",
+		Tiles:             tiles,
+	})
+	if err != nil {
+		return PageHeader{Title: "KV inspector", TitleGlossaryTerm: "KV"}
+	}
+	return h
 }
 
 // buildKVEntry pulls one entry from the DataSource and converts it
@@ -325,6 +407,135 @@ func buildKVEntry(
 		out.ValuePretty = prettyJSON(entry.Value)
 	}
 	return out
+}
+
+// StreamsListView powers /console/streams. Today the console doesn't
+// query JetStream stream metadata directly — the DataSource surface
+// doesn't expose it — so we render the known engine streams from the
+// natsutil topology as a placeholder, with a callout calling out the
+// telemetry gap. Same shape as workers.
+type StreamsListView struct {
+	Header  PageHeader
+	Streams []StreamRow
+	Note    string
+}
+
+// StreamRow is one row on the streams list. Messages / Bytes /
+// Consumers stay "—" until the DataSource exposes JetStream metadata.
+type StreamRow struct {
+	Name      string
+	Subjects  string
+	Messages  string
+	Bytes     string
+	Consumers string
+	Purpose   string
+}
+
+// servePageStreams renders /console/streams.
+func servePageStreams(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("servePageStreams: w is nil")
+	}
+	if r == nil {
+		panic("servePageStreams: r is nil")
+	}
+	rows := knownEngineStreams()
+	view := StreamsListView{
+		Header:  buildStreamsHeader(rows),
+		Streams: rows,
+		Note: "Stream metadata is not yet wired through the DataSource. " +
+			"This page lists the JetStream streams the engine's natsutil " +
+			"topology creates; live message + consumer counts populate " +
+			"once a stream-info adapter lands.",
+	}
+	renderPage(w, r, ts, cfg, "streams-list", pageData{
+		Title:   "Streams",
+		Section: "streams",
+		Page:    view,
+	})
+}
+
+// knownEngineStreams returns the static inventory of JetStream
+// streams the engine creates via natsutil.SetupAll. The list is
+// hand-curated so operators have something to look at while the
+// stream-info adapter is unbuilt; the names match the SetupX helpers
+// in internal/natsutil/conn.go.
+func knownEngineStreams() []StreamRow {
+	return []StreamRow{
+		{Name: "TASKS", Subjects: "task.>", Messages: "—",
+			Bytes: "—", Consumers: "—",
+			Purpose: "Work-stealing task delivery"},
+		{Name: "STICKY_TASKS", Subjects: "sticky.>",
+			Messages: "—", Bytes: "—", Consumers: "—",
+			Purpose: "Worker-pinned task delivery"},
+		{Name: "TELEMETRY", Subjects: "telemetry.>",
+			Messages: "—", Bytes: "—", Consumers: "—",
+			Purpose: "Run / step metric events"},
+		{Name: "TRIGGER_HISTORY", Subjects: "trigger.history.>",
+			Messages: "—", Bytes: "—", Consumers: "—",
+			Purpose: "Trigger firing audit log"},
+		{Name: "HISTORY", Subjects: "history.>",
+			Messages: "—", Bytes: "—", Consumers: "—",
+			Purpose: "Per-run event timeline"},
+	}
+}
+
+// buildStreamsHeader assembles the count tile for the streams page.
+// While metadata is pending we have only the static cardinality;
+// once the adapter lands the tile gains "with consumers" / "lagging"
+// counts without any template churn.
+func buildStreamsHeader(rows []StreamRow) PageHeader {
+	tiles := []Tile{
+		{Label: "streams", Count: len(rows), Tone: ToneDefault,
+			Tooltip: "JetStream streams declared by the engine topology"},
+	}
+	h, err := NewPageHeader(PageHeader{
+		Title:    "Streams",
+		Subtitle: "JetStream streams backing the engine.",
+		Tiles:    tiles,
+	})
+	if err != nil {
+		return PageHeader{Title: "Streams"}
+	}
+	return h
+}
+
+// serveOpsWorkersRedirect 308-redirects /console/ops/workers to the
+// promoted top-level /console/workers. Operators who bookmarked the
+// old path get the new one without breaking; 308 preserves method +
+// body in case something other than a GET hits the URL.
+func serveOpsWorkersRedirect(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if w == nil {
+		panic("serveOpsWorkersRedirect: w is nil")
+	}
+	if r == nil {
+		panic("serveOpsWorkersRedirect: r is nil")
+	}
+	http.Redirect(w, r, "/console/workers", http.StatusPermanentRedirect)
+}
+
+// serveOpsKVRedirect 308-redirects /console/ops/kv to /console/kv,
+// preserving any ?bucket= and ?key= query parameters so deep links
+// continue to drop the operator in the right place.
+func serveOpsKVRedirect(
+	w http.ResponseWriter, r *http.Request,
+) {
+	if w == nil {
+		panic("serveOpsKVRedirect: w is nil")
+	}
+	if r == nil {
+		panic("serveOpsKVRedirect: r is nil")
+	}
+	target := "/console/kv"
+	if raw := r.URL.RawQuery; raw != "" {
+		target += "?" + raw
+	}
+	http.Redirect(w, r, target, http.StatusPermanentRedirect)
 }
 
 // firstQueryValue returns the first value for key in q, or "" when

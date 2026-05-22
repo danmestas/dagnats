@@ -455,7 +455,7 @@ func tileWorkersActive(src MetricsSource) (DashboardTile, bool) {
 	latest := series.Latest()
 	t := DashboardTile{
 		Key: "workers-active", Title: "Workers active", Unit: "",
-		LinkHref: "/console/ops/workers",
+		LinkHref: "/console/workers",
 		Value:    formatNumber(latest.Value),
 		State:    "good",
 	}

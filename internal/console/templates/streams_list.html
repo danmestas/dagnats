@@ -1,0 +1,40 @@
+{{define "content"}}
+<section class="page page-streams-list" data-page="streams-list">
+  {{template "page-header" .Page.Header}}
+
+  {{if .Page.Note}}
+  <aside class="callout callout-info" role="status">
+    <p>{{.Page.Note}}</p>
+  </aside>
+  {{end}}
+
+  <table class="table console-table" id="streams-table">
+    <thead>
+      <tr>
+        <th>Stream</th>
+        <th>Subjects</th>
+        <th>Messages</th>
+        <th>Bytes</th>
+        <th>Consumers</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody id="streams-tbody">
+      {{range .Page.Streams}}
+      <tr id="stream-row-{{.Name}}">
+        <td class="mono">{{.Name}}</td>
+        <td class="mono">{{.Subjects}}</td>
+        <td>{{.Messages}}</td>
+        <td>{{.Bytes}}</td>
+        <td>{{.Consumers}}</td>
+        <td>{{.Purpose}}</td>
+      </tr>
+      {{else}}
+      <tr class="empty-row">
+        <td colspan="6">no streams reachable — see callout above</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

@@ -1,12 +1,6 @@
 {{define "content"}}
-<section class="page page-ops-kv" data-page="ops-kv">
-  <header class="page-header">
-    <a class="page-back" href="/console/ops">← Ops</a>
-    <h1>{{tooltip "KV"}} inspector</h1>
-    <p class="page-subtitle">
-      Read-only inspection of JetStream KV buckets the engine uses.
-    </p>
-  </header>
+<section class="page page-kv-list" data-page="kv-list">
+  {{template "page-header" .Page.Header}}
 
   <div class="kv-layout">
     <nav class="kv-buckets" aria-label="KV buckets">
@@ -14,7 +8,7 @@
       <ul class="kv-bucket-list">
         {{range .Page.Buckets}}
         <li class="kv-bucket-item">
-          <a href="/console/ops/kv?bucket={{.Name}}"
+          <a href="/console/kv?bucket={{.Name}}"
              class="kv-bucket-link {{if eq .Name $.Page.ActiveBucket}}is-active{{end}}"
              title="{{.Description}}">
             <span class="kv-bucket-name">{{.Name}}</span>
@@ -37,7 +31,7 @@
       <ul class="kv-key-list">
         {{range .Page.Keys}}
         <li class="kv-key-item">
-          <a href="/console/ops/kv?bucket={{$.Page.ActiveBucket}}&key={{.}}"
+          <a href="/console/kv?bucket={{$.Page.ActiveBucket}}&key={{.}}"
              class="kv-key-link mono">{{.}}</a>
         </li>
         {{else}}
