@@ -41,6 +41,9 @@
         <a href="/console/workflows" class="{{if eq .Section "workflows"}}is-active{{end}}">Workflows</a>
         <a href="/console/runs"      class="{{if eq .Section "runs"}}is-active{{end}}">Runs</a>
         <a href="/console/triggers"  class="{{if eq .Section "triggers"}}is-active{{end}}">Triggers</a>
+        <a href="/console/workers"   class="{{if eq .Section "workers"}}is-active{{end}}">Workers</a>
+        <a href="/console/kv"        class="glo-tooltip-wrapper {{if eq .Section "kv"}}is-active{{end}}"><span class="glo-tooltip-target">KV</span><span class="glo-tooltip-popover" role="tooltip">{{tooltipText "KV"}}</span></a>
+        <a href="/console/streams"   class="{{if eq .Section "streams"}}is-active{{end}}">Streams</a>
         <a href="/console/dlq"       class="glo-tooltip-wrapper {{if eq .Section "dlq"}}is-active{{end}}"><span class="glo-tooltip-target">DLQ</span><span class="glo-tooltip-popover" role="tooltip">{{tooltipText "DLQ"}}</span></a>
         <a href="/console/ops"       class="{{if eq .Section "ops"}}is-active{{end}}">Ops</a>
       </nav>
@@ -54,6 +57,9 @@
           <a href="/console/workflows" class="{{if eq .Section "workflows"}}is-active{{end}}">Workflows</a>
           <a href="/console/runs"      class="{{if eq .Section "runs"}}is-active{{end}}">Runs</a>
           <a href="/console/triggers"  class="{{if eq .Section "triggers"}}is-active{{end}}">Triggers</a>
+          <a href="/console/workers"   class="{{if eq .Section "workers"}}is-active{{end}}">Workers</a>
+          <a href="/console/kv"        class="{{if eq .Section "kv"}}is-active{{end}}">KV</a>
+          <a href="/console/streams"   class="{{if eq .Section "streams"}}is-active{{end}}">Streams</a>
           <a href="/console/dlq"       class="{{if eq .Section "dlq"}}is-active{{end}}">DLQ</a>
           <a href="/console/ops"       class="{{if eq .Section "ops"}}is-active{{end}}">Ops</a>
         </nav>

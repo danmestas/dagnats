@@ -1,6 +1,7 @@
-// ops_pages_test.go covers the /console/ops surfaces PR 5b adds:
-// index, workers list (placeholder), leases list (placeholder), KV
-// inspector. Each test asserts both a positive substring AND a
+// ops_pages_test.go covers the operator pages: the slim /console/ops
+// index, /console/workers (placeholder), /console/ops/leases
+// (placeholder), /console/kv inspector, and /console/streams
+// (placeholder). Each test asserts both a positive substring AND a
 // boundary condition so the page can't drift silently.
 //
 // Methodology:
@@ -16,7 +17,7 @@ import (
 	"testing"
 )
 
-func TestOpsIndex_rendersFourTiles(t *testing.T) {
+func TestOpsIndex_rendersSlimTiles(t *testing.T) {
 	fake := newFakeDS()
 	fake.kvBuckets = []KVBucketInfo{
 		{Name: "triggers", Description: "triggers"},
@@ -35,23 +36,36 @@ func TestOpsIndex_rendersFourTiles(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, want := range []string{
-		"Workers", "Leases", "KV inspector", "Audit log",
+		"Leases", "Audit log", "Metrics",
 		"engine telemetry pending",
-		`href="/console/ops/workers"`,
-		`href="/console/ops/kv"`,
+		`href="/console/ops/leases"`,
+		`href="/console/ops/audit"`,
+		`href="/console/ops/metrics"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in ops index", want)
 		}
 	}
+	// Workers + KV must be gone from the Ops index — they are now
+	// top-level nav entries.
+	for _, gone := range []string{
+		`href="/console/ops/workers"`,
+		`href="/console/ops/kv"`,
+		`data-tile-section="ops-workers"`,
+		`data-tile-section="ops-kv"`,
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("ops index still references %q after promotion", gone)
+		}
+	}
 }
 
-func TestOpsWorkers_rendersPlaceholderBanner(t *testing.T) {
+func TestWorkersList_rendersPlaceholderBanner(t *testing.T) {
 	fake := newFakeDS()
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/workers", nil))
+		"/console/workers", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -61,6 +75,14 @@ func TestOpsWorkers_rendersPlaceholderBanner(t *testing.T) {
 	}
 	if !strings.Contains(body, "no workers reporting") {
 		t.Fatalf("missing zero-row label: %s", body)
+	}
+	// Workers must use the shared page_header tile partial post-#311.
+	if !strings.Contains(body, `data-component="page-header"`) {
+		t.Fatalf("workers page not using page-header partial: %s", body)
+	}
+	// The old "back to Ops" link must be gone — Workers is top-level.
+	if strings.Contains(body, "← Ops") {
+		t.Fatalf("workers page still carries back-to-Ops link")
 	}
 }
 
@@ -82,7 +104,7 @@ func TestOpsLeases_rendersPlaceholderBanner(t *testing.T) {
 	}
 }
 
-func TestOpsKV_renderBucketAndKeyList(t *testing.T) {
+func TestKVList_renderBucketAndKeyList(t *testing.T) {
 	fake := newFakeDS()
 	fake.kvBuckets = []KVBucketInfo{
 		{Name: "triggers", Description: "triggers", Keys: 2},
@@ -93,7 +115,7 @@ func TestOpsKV_renderBucketAndKeyList(t *testing.T) {
 	// Without selection — defaults to first bucket.
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/kv", nil))
+		"/console/kv", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -101,14 +123,22 @@ func TestOpsKV_renderBucketAndKeyList(t *testing.T) {
 	for _, want := range []string{
 		"KV inspector", "triggers", "cron-1", "hook-1",
 		"Pick a key on the left",
+		`data-component="page-header"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in KV inspector body", want)
 		}
 	}
+	if strings.Contains(body, "← Ops") {
+		t.Fatalf("KV page still carries back-to-Ops link")
+	}
+	// Internal bucket / key hrefs must point at the promoted path.
+	if !strings.Contains(body, `href="/console/kv?bucket=triggers"`) {
+		t.Errorf("missing bucket href under /console/kv: %s", body)
+	}
 }
 
-func TestOpsKV_selectKeyRendersValuePane(t *testing.T) {
+func TestKVList_selectKeyRendersValuePane(t *testing.T) {
 	fake := newFakeDS()
 	fake.kvBuckets = []KVBucketInfo{
 		{Name: "triggers", Description: "triggers", Keys: 1},
@@ -118,7 +148,7 @@ func TestOpsKV_selectKeyRendersValuePane(t *testing.T) {
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/kv?bucket=triggers&key=cron-1", nil))
+		"/console/kv?bucket=triggers&key=cron-1", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -136,18 +166,73 @@ func TestOpsKV_selectKeyRendersValuePane(t *testing.T) {
 	}
 }
 
-func TestOpsKV_missingKeyRendersNotFound(t *testing.T) {
+func TestKVList_missingKeyRendersNotFound(t *testing.T) {
 	fake := newFakeDS()
 	fake.kvBuckets = []KVBucketInfo{{Name: "triggers", Keys: 0}}
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/kv?bucket=triggers&key=missing", nil))
+		"/console/kv?bucket=triggers&key=missing", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
 	if !strings.Contains(body, "Key not found") {
 		t.Fatalf("missing not-found message: %s", body)
+	}
+}
+
+func TestStreamsList_rendersKnownEngineStreams(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/streams", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"Streams",
+		"Stream metadata is not yet wired",
+		"TASKS",
+		"STICKY_TASKS",
+		"TELEMETRY",
+		"TRIGGER_HISTORY",
+		"HISTORY",
+		`data-component="page-header"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in streams page", want)
+		}
+	}
+}
+
+func TestOpsWorkersRedirect_308ToPromoted(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/ops/workers", nil))
+	if rr.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status = %d, want 308", rr.Code)
+	}
+	if got := rr.Header().Get("Location"); got != "/console/workers" {
+		t.Fatalf("Location = %q, want /console/workers", got)
+	}
+}
+
+func TestOpsKVRedirect_308PreservesQuery(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/ops/kv?bucket=triggers&key=cron-1", nil))
+	if rr.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status = %d, want 308", rr.Code)
+	}
+	want := "/console/kv?bucket=triggers&key=cron-1"
+	if got := rr.Header().Get("Location"); got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
 	}
 }

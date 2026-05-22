@@ -1,11 +1,6 @@
 {{define "content"}}
 <section class="page page-ops" data-page="ops-index">
-  <header class="page-header">
-    <h1>Ops</h1>
-    <p class="page-subtitle">
-      Operational surfaces: workers, leases, KV inspector, audit log.
-    </p>
-  </header>
+  {{template "page-header" .Page.Header}}
 
   <div class="ops-tiles" role="list">
     {{range .Page.Tiles}}
