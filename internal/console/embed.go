@@ -74,4 +74,5 @@ var assetsFS embed.FS
 //go:embed templates/components/tooltip.html
 //go:embed templates/components/side_sheet.html
 //go:embed templates/components/page_header.html
+//go:embed templates/components/empty_state.html
 var templatesFS embed.FS

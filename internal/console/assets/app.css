@@ -1560,6 +1560,66 @@ body[data-theme="dark"] {
   color: var(--text-secondary);
 }
 
+/* --- shared empty-state partial (#310, R4) -------------------- *
+ * Centered icon → title → description → optional action stack.
+ * Mirrors iii's EmptyState information hierarchy (icon dominant,
+ * title bold, description secondary, action outline-button).
+ * Used on every list page when the row set is empty. The wider
+ * console-empty-action block (multi-paragraph tutorial with CLI
+ * snippets) sits below this stack on the workflows / runs / triggers
+ * pages — the new partial owns the "what is this page" frame, the
+ * tutorial owns the "how do I populate it" detail.
+ */
+.console-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  max-width: 320px;
+  margin: var(--space-6) auto;
+  padding: var(--space-6) var(--space-4);
+  gap: var(--space-2);
+}
+.console-empty-state-icon {
+  font-family: var(--font-mono);
+  font-size: 2.5rem;
+  line-height: 1;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  display: inline-block;
+  margin-bottom: var(--space-2);
+}
+/* Glyph slots — Unicode marks chosen to match each page's domain
+ * concept until a real icon set lands. Kept here (not inline in
+ * Go) so the visual palette stays editable in one file. */
+.console-empty-state-icon[data-kind="workflow"]::before { content: "⊞"; }
+.console-empty-state-icon[data-kind="run"]::before      { content: "▶"; }
+.console-empty-state-icon[data-kind="trigger"]::before  { content: "⚡"; }
+.console-empty-state-icon[data-kind="dlq"]::before      { content: "✓"; }
+.console-empty-state-title {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+.console-empty-state-description {
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+.console-empty-state-action {
+  margin-top: var(--space-3);
+}
+.console-empty-state-action[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 /* --- 404 popular destinations (PR 8) -------------------------- */
 .console-popular-destinations {
   margin-top: 14px;

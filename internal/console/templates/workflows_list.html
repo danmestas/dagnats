@@ -23,10 +23,11 @@
     </label>
   </form>
 
-  {{if and (eq .Total 0) (eq .Filter "")}}
+  {{if .EmptyState}}
+  {{template "empty-state" .EmptyState}}
   <div class="console-empty-action">
     <p>
-      No workflows registered yet. Define one as JSON and register it:
+      Define a workflow as JSON and register it:
     </p>
     <p><code>dagnats workflow register path/to/workflow.json</code></p>
     <p class="console-empty-action-hint">

@@ -110,18 +110,24 @@ func requireData(
 // WorkflowsListView is what the workflows-list template binds.
 // LastRunTime / LastRunStatus are derived per workflow at render
 // time from a single ListRuns scan; both empty when no runs exist.
+//
+// EmptyState is non-nil only on the first page with no filter and no
+// rows — the template renders the shared empty-state partial in that
+// case and skips it everywhere else (a filter that excluded all rows
+// is a "no match" condition, not an empty system).
 type WorkflowsListView struct {
-	Header   PageHeader
-	Filter   string
-	Sort     string
-	Page     int
-	Size     int
-	HasNext  bool
-	HasPrev  bool
-	NextPage int
-	PrevPage int
-	Total    int
-	Rows     []WorkflowRow
+	Header     PageHeader
+	Filter     string
+	Sort       string
+	Page       int
+	Size       int
+	HasNext    bool
+	HasPrev    bool
+	NextPage   int
+	PrevPage   int
+	Total      int
+	Rows       []WorkflowRow
+	EmptyState *EmptyState
 }
 
 // WorkflowRow is one workflow line on the list page.
@@ -160,6 +166,9 @@ func servePageWorkflowsList(
 		cfg.Logger.Error("console: workflows list", "err", err)
 		http.Error(w, "list workflows failed", http.StatusInternalServerError)
 		return
+	}
+	if view.EmptyState != nil {
+		view.EmptyState.ReadOnly = cfg.ReadOnly
 	}
 	renderPage(w, r, ts, cfg, "workflows-list", pageData{
 		Title:   "Workflows",
@@ -212,7 +221,30 @@ func buildWorkflowsView(
 		PrevPage: page - 1,
 		Rows:     rows[start:end],
 	}
+	if total == 0 && filter == "" {
+		view.EmptyState = newWorkflowsEmptyState()
+	}
 	return view, nil
+}
+
+// newWorkflowsEmptyState builds the EmptyState for the workflows list
+// when no workflows are registered. Returns nil on validation failure
+// (defensive — the strings here are static so the path is unreachable
+// in practice, but the contract says callers tolerate a nil partial).
+func newWorkflowsEmptyState() *EmptyState {
+	e, err := NewEmptyState(EmptyState{
+		Icon:        "workflow",
+		Title:       "No workflows registered",
+		Description: "Register a workflow definition to start scheduling runs.",
+		PrimaryAction: &EmptyStateAction{
+			Label: "Read the docs",
+			Href:  "/docs",
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return &e
 }
 
 // buildWorkflowsHeader projects the full row set into the count tiles
@@ -533,6 +565,9 @@ func servePageRunsList(
 		http.Error(w, "list runs failed", http.StatusInternalServerError)
 		return
 	}
+	if view.EmptyState != nil {
+		view.EmptyState.ReadOnly = cfg.ReadOnly
+	}
 	renderPage(w, r, ts, cfg, "runs-list", pageData{
 		Title:   "Runs",
 		Section: "runs",
@@ -567,6 +602,9 @@ type RunsListView struct {
 	LastIndex  int
 	Workflows  []string
 	Rows       []RunRow
+	// EmptyState is non-nil only when no filters are set and the run
+	// log is empty — first-time-operator state.
+	EmptyState *EmptyState
 }
 
 // buildRunsView assembles RunsListView from query params. Filters
@@ -623,7 +661,31 @@ func buildRunsView(
 		Workflows: wfNames,
 		Rows:      toRunRows(runs[start:end]),
 	}
+	if total == 0 && wf == "" && status == "" &&
+		(rng == "" || rng == "all") && since == 0 && until == 0 {
+		view.EmptyState = newRunsEmptyState()
+	}
 	return view, nil
+}
+
+// newRunsEmptyState builds the EmptyState for /console/runs when no
+// runs have been recorded and no filters are active. Mirrors the
+// runs page tutorial copy — point operators at the triggers page so
+// the system can drive itself.
+func newRunsEmptyState() *EmptyState {
+	e, err := NewEmptyState(EmptyState{
+		Icon:        "run",
+		Title:       "No runs yet",
+		Description: "Start a run from the CLI or configure a trigger to drive runs automatically.",
+		PrimaryAction: &EmptyStateAction{
+			Label: "Configure triggers",
+			Href:  "/console/triggers",
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return &e
 }
 
 // buildRunsHeader assembles the three count tiles shown above the

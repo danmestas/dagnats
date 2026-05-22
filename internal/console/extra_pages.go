@@ -59,11 +59,17 @@ func serveRunIDLookup(
 }
 
 // TriggersListView is the binding for /console/triggers.
+//
+// EmptyState is non-nil only when no triggers are configured and no
+// type filter is set — first-time-operator state. A filter that
+// excludes every row is a "no match" condition and the template
+// shows the empty tbody instead of the partial.
 type TriggersListView struct {
 	Header     PageHeader
 	TypeFilter string
 	Total      int
 	Rows       []TriggerRow
+	EmptyState *EmptyState
 }
 
 // TriggerRow is one row on the triggers list page. The Kind / Target
@@ -101,6 +107,9 @@ func servePageTriggersList(
 		return
 	}
 	view := buildTriggersView(r.Context(), ds, r.URL.Query())
+	if view.EmptyState != nil {
+		view.EmptyState.ReadOnly = cfg.ReadOnly
+	}
 	renderPage(w, r, ts, cfg, "triggers-list", pageData{
 		Title:   "Triggers",
 		Section: "triggers",
@@ -133,12 +142,36 @@ func buildTriggersView(
 		return rows[i].ID < rows[j].ID
 	})
 	attachTriggerSparklines(ctx, ds, rows)
-	return TriggersListView{
+	view := TriggersListView{
 		Header:     buildTriggersHeader(rows),
 		TypeFilter: typeFilter,
 		Total:      len(rows),
 		Rows:       rows,
 	}
+	if len(rows) == 0 && typeFilter == "" {
+		view.EmptyState = newTriggersEmptyState()
+	}
+	return view
+}
+
+// newTriggersEmptyState builds the EmptyState for /console/triggers
+// when no triggers are configured. The Zap glyph and the "Set up
+// HTTP, cron, or event triggers" copy are lifted from iii's
+// triggers.tsx:766 so the two consoles read in parallel.
+func newTriggersEmptyState() *EmptyState {
+	e, err := NewEmptyState(EmptyState{
+		Icon:        "trigger",
+		Title:       "No triggers configured",
+		Description: "Set up cron, webhook, NATS subject, or HTTP triggers to drive runs automatically.",
+		PrimaryAction: &EmptyStateAction{
+			Label: "Read trigger docs",
+			Href:  "/docs",
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return &e
 }
 
 // buildTriggersHeader projects the (already type-filtered) row set
@@ -416,6 +449,10 @@ func triggerConfigOf(t trigger.TriggerDef) any {
 }
 
 // DLQListView powers /console/dlq.
+//
+// EmptyState is non-nil only when no entries are present and no reason
+// filter is set. Unlike the other list pages this is a "good news"
+// empty state — the copy reflects that, no primary action.
 type DLQListView struct {
 	Header       PageHeader
 	ReasonFilter string
@@ -423,6 +460,7 @@ type DLQListView struct {
 	Rows         []DLQRow
 	ReadOnly     bool
 	CSRFToken    string
+	EmptyState   *EmptyState
 }
 
 // DLQRow is one row on the DLQ list page.
@@ -456,6 +494,9 @@ func servePageDLQList(
 	view := buildDLQView(r.Context(), ds, r.URL.Query())
 	view.ReadOnly = cfg.ReadOnly
 	view.CSRFToken = csrfTokenFor(r)
+	if view.EmptyState != nil {
+		view.EmptyState.ReadOnly = cfg.ReadOnly
+	}
 	renderPage(w, r, ts, cfg, "dlq-list", pageData{
 		Title:   "DLQ",
 		Section: "dlq",
@@ -485,12 +526,33 @@ func buildDLQView(
 		}
 		rows = append(rows, row)
 	}
-	return DLQListView{
+	view := DLQListView{
 		Header:       buildDLQHeader(rows),
 		ReasonFilter: reasonFilter,
 		Total:        len(rows),
 		Rows:         rows,
 	}
+	if len(rows) == 0 && reasonFilter == "" {
+		view.EmptyState = newDLQEmptyState()
+	}
+	return view
+}
+
+// newDLQEmptyState builds the EmptyState for an empty DLQ. The
+// "workflows are healthy" copy is preserved verbatim from the PR 5b
+// DLQ page (TestEmptyState_dlqStaysWithHealthyCopy depends on it).
+// No primary action — there's nothing for the operator to do, and
+// surfacing one would imply otherwise.
+func newDLQEmptyState() *EmptyState {
+	e, err := NewEmptyState(EmptyState{
+		Icon:        "dlq",
+		Title:       "Your workflows are healthy",
+		Description: "No dead letters. New entries will appear here when a workflow exhausts its retries.",
+	})
+	if err != nil {
+		return nil
+	}
+	return &e
 }
 
 // buildDLQHeader counts dead letters by replay eligibility for the
