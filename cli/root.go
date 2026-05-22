@@ -60,6 +60,8 @@ func Run(args []string) {
 		runSingletonCmd(args[2:])
 	case "clean":
 		runCleanCmd(args[2:])
+	case "demo":
+		runDemoCmd(args[2:])
 	case "completion":
 		runCompletionCmd(args[2:])
 	case "__complete":
@@ -91,6 +93,7 @@ func printUsage() {
 	fmt.Println("  metrics   view metric snapshots")
 	fmt.Println("  singleton list and release singleton locks")
 	fmt.Println("  clean     purge run data (for testing)")
+	fmt.Println("  demo      seed runs and drive them to terminal states")
 	fmt.Println("  observe   observability pipeline health")
 	fmt.Println("  sidecar   local observability sidecar")
 	fmt.Println(
