@@ -19,7 +19,7 @@
         {{.StatusLabel}}
       </span>
     </td>
-    <td class="console-sparkline-col">{{if .Sparkline}}<canvas class="console-sparkline" data-sparkline-id="trigger-{{.ID}}" data-sparkline-data="{{jsonArray .Sparkline}}" width="60" height="16" aria-label="Activity sparkline for {{.ID}}"></canvas>{{else}}<span class="muted" aria-label="no activity data">&middot;</span>{{end}}</td>
+    <td class="console-sparkline-col">{{if .Sparkline}}<canvas class="console-sparkline" data-sparkline-id="trigger-{{.ID}}" data-sparkline-data="{{jsonArray .Sparkline}}" width="60" height="16" aria-label="Activity sparkline for {{.ID}}"></canvas>{{end}}</td>
   </tr>
   {{end}}
 {{else}}
