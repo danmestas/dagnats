@@ -418,12 +418,16 @@ func (w *Worker) registerDirectory() {
 	for t := range w.handlers {
 		taskTypes = append(taskTypes, t)
 	}
+	ident := loadIdentity()
 	reg := WorkerRegistration{
 		WorkerID:  w.workerID,
 		TaskTypes: taskTypes,
 		Language:  "go",
 		Transport: "nats",
 		MaxTasks:  len(taskTypes),
+		Pid:       ident.pid,
+		Hostname:  ident.hostname,
+		Version:   ident.version,
 	}
 	_ = w.dir.Register(reg)
 	go w.heartbeatLoop(reg)
