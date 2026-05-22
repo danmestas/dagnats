@@ -175,7 +175,7 @@ func (o *Orchestrator) applyFragment(
 		}
 	}
 
-	if err := o.saveSnapshot(ctx, *run); err != nil {
+	if err := o.saveSnapshot(ctx, *run, stepDef.ID); err != nil {
 		return err
 	}
 
@@ -199,7 +199,7 @@ func (o *Orchestrator) finishPlannerNoSteps(
 	if dag.IsComplete(wfDef, completed) {
 		return o.completeWorkflow(ctx, run)
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)

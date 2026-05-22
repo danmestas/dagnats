@@ -82,7 +82,7 @@ func (o *Orchestrator) enqueueRespondStep(
 	state.Status = dag.StepStatusCompleted
 	state.Output = body
 	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run); err != nil {
+	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
 		return err
 	}
 

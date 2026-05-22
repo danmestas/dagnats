@@ -47,8 +47,14 @@ type approvalRequestedPayload struct {
 // provides its saveSnapshot method as the concrete callback.
 // Callers must not modify the run further after saveFn returns
 // successfully — the persisted state is the source of truth.
+//
+// stepID identifies the step whose state transition prompted
+// this save. It is forwarded into the snapshot.save.duration_ms
+// histogram as a label so per-step latency is observable. Pass
+// the empty string when the save is workflow-scoped rather than
+// step-scoped (e.g. workflow init / completion / failure).
 type SaveSnapshotFunc func(
-	ctx context.Context, run dag.WorkflowRun,
+	ctx context.Context, run dag.WorkflowRun, stepID string,
 ) error
 
 // Enqueue activates an approval gate: generates a token, stores
@@ -114,7 +120,7 @@ func (ag *ApprovalGate) activate(
 	state := run.Steps[step.ID]
 	state.Status = dag.StepStatusRunning
 	run.Steps[step.ID] = state
-	if err := saveFn(ctx, *run); err != nil {
+	if err := saveFn(ctx, *run, step.ID); err != nil {
 		return err
 	}
 
@@ -287,7 +293,7 @@ func (ag *ApprovalGate) HandleGranted(
 	if dag.IsComplete(wfDef, completed) {
 		return completeFn(ctx, run)
 	}
-	if err := saveFn(ctx, run); err != nil {
+	if err := saveFn(ctx, run, evt.StepID); err != nil {
 		return err
 	}
 	return enqueueFn(ctx, wfDef, run)
