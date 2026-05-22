@@ -45,6 +45,18 @@ make serve      # build and run the dagnats server
 - `examples/` — usage examples.
 - `e2e/`, `dagnatstest/`, `testutil/` — end-to-end tests and shared fixtures.
 
+## Basecoat namespace collisions
+
+The console pulls in [Basecoat](https://basecoatui.com) CSS, which ships
+namespace-greedy selectors like `.command-dialog { opacity: 0 }`. Reusing those
+class names for our own components causes Basecoat's reset rules to clobber
+ours (the command palette, glossary, and side-sheet each hit this during the
+Phase 2 console arc). The fix is to prefix any project-owned class that would
+otherwise collide: the existing escape hatches are `cmdk-*` (command palette),
+`glo-*` (glossary), and `sidesheet-*` (side sheet). When adding new components
+that overlap Basecoat's vocabulary, pick a similar short project-specific
+prefix rather than reusing the generic name.
+
 ## Submitting changes
 
 1. Open a feature branch off `main`. Direct commits to `main` are not accepted.
