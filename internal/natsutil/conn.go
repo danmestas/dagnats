@@ -149,6 +149,16 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 			Replicas: replicas,
 		},
 		{Bucket: "singleton_locks", Replicas: replicas},
+		// trigger_types: registry of External trigger type defs
+		// keyed by trigger-type Name. History 1 because callers
+		// only need the latest schema for validation (#313/#273
+		// Phase 2.1); no TTL — entries are stable definitions
+		// owned by long-lived workers.
+		{
+			Bucket:   "trigger_types",
+			History:  1,
+			Replicas: replicas,
+		},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")

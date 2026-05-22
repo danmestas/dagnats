@@ -278,6 +278,45 @@ func TestSetupAllCreatesRateLimitsKV(t *testing.T) {
 		"bucket = %q, want rate_limits", status.Bucket())
 }
 
+// TestTriggerTypesBucketExistsAtBoot verifies that SetupAll creates the
+// trigger_types KV bucket with TTL 0 and History 1 (parent #273 Phase
+// 2.1 / #313). Positive: bucket exists and Put/Get work. Negative:
+// TTL and History match the spec — guards against accidentally
+// shortening the bucket's lifetime or expanding its history.
+func TestTriggerTypesBucketExistsAtBoot(t *testing.T) {
+	s, nc := StartTestServer(t)
+	defer s.Shutdown()
+	defer nc.Close()
+
+	err := SetupAll(nc)
+	assert(t, err == nil, "SetupAll must succeed: %v", err)
+
+	js, err := jetstream.New(nc)
+	assert(t, err == nil, "jetstream.New must succeed: %v", err)
+
+	ctx := context.Background()
+
+	// Positive: trigger_types bucket exists and is usable.
+	kv, err := js.KeyValue(ctx, "trigger_types")
+	assert(t, err == nil,
+		"trigger_types KV bucket must exist: %v", err)
+	assert(t, kv != nil,
+		"trigger_types KV bucket must not be nil")
+
+	// Negative: bucket name, TTL, and History match the spec. TTL=0
+	// means entries are stable definitions; History=1 keeps only the
+	// latest schema per trigger type.
+	status, err := kv.Status(ctx)
+	assert(t, err == nil, "status must succeed: %v", err)
+	assert(t, status.Bucket() == "trigger_types",
+		"bucket = %q, want trigger_types", status.Bucket())
+	assert(t, status.TTL() == 0,
+		"trigger_types TTL must be 0, got %v", status.TTL())
+	assert(t, status.History() == 1,
+		"trigger_types History must be 1, got %d",
+		status.History())
+}
+
 func TestSetupStreams_Replicas(t *testing.T) {
 	_, nc := StartTestServer(t)
 	js, err := jetstream.New(nc)
