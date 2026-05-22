@@ -1,0 +1,19 @@
+{{define "run-step-row"}}<li class="step-list-row" data-step-id="{{.ID}}" data-state="{{.State}}">
+  <details {{if .ExpandedByDefault}}open{{end}}>
+    <summary class="step-list-summary">
+      <span class="step-status step-status-{{.State}}" aria-hidden="true">{{.Icon}}</span>
+      <span class="step-status-sr">{{.State}}</span>
+      <span class="step-name">{{.Name}}</span>
+      {{if .Duration}}<span class="step-duration" title="{{.DurationLong}}">{{.Duration}}</span>{{end}}
+      {{if gt .Attempts 1}}<span class="step-attempts" title="Attempt {{.Attempts}}">&times;{{.Attempts}}</span>{{end}}
+      {{if .RelativeStart}}<span class="step-relative">{{.RelativeStart}}</span>{{end}}
+    </summary>
+    <div class="step-list-body">
+      {{if .Error}}
+      <div class="step-error" role="alert">
+        <strong>Error:</strong> <span>{{.Error}}</span>
+      </div>
+      {{end}}
+    </div>
+  </details>
+</li>{{end}}

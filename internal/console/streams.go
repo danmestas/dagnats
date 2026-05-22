@@ -305,8 +305,9 @@ func getRunWorkflowID(
 	return run.WorkflowID
 }
 
-// pumpHistory translates history events into Datastar patches. Steps
-// patches go to #step-card-<id>; event rows append to #run-events-body.
+// pumpHistory translates history events into Datastar patches. Step
+// patches replace .step-list-row[data-step-id=<id>]; event rows append
+// to #run-events-body.
 func pumpHistory(
 	ctx context.Context,
 	sse *datastar.ServerSentEventGenerator,
@@ -338,7 +339,7 @@ func pumpHistory(
 }
 
 // emitHistoryPatch writes the event-row append and (when the event
-// carries a step id) a step-card replace. Two patches per event is
+// carries a step id) a step-row replace. Two patches per event is
 // fine; Datastar processes them in order and the browser renders
 // without flicker.
 func emitHistoryPatch(
@@ -352,7 +353,7 @@ func emitHistoryPatch(
 	if he.Event.StepID == "" {
 		return nil
 	}
-	return emitStepCardPatch(sse, tmpl, he, def)
+	return emitStepRowPatch(sse, tmpl, he, def)
 }
 
 // emitEventRowPatch appends one history row.
@@ -374,11 +375,15 @@ func emitEventRowPatch(
 	return sse.PatchElements(html, opts...)
 }
 
-// emitStepCardPatch replaces #step-card-<id> with a fresh card.
-// Looks up the step in def so the card title / position match the
-// page's static render. If the step isn't in def (engine emitted an
-// event for a step we don't know about), we silently no-op.
-func emitStepCardPatch(
+// emitStepRowPatch replaces the .step-list-row[data-step-id=<id>] node
+// with a freshly-rendered row reflecting the latest event. Looks up
+// the step in def so we only patch rows the page actually rendered.
+// If the step isn't in def (engine emitted an event for a step we
+// don't know about), we silently no-op.
+//
+// outer-mode replace by selector matches the row's CSS hooks
+// (data-state="..."), so basecoat rules light up without a JS handler.
+func emitStepRowPatch(
 	sse *datastar.ServerSentEventGenerator,
 	tmpl *template.Template, he HistoryEvent,
 	def dag.WorkflowDef,
@@ -390,12 +395,17 @@ func emitStepCardPatch(
 	if !defHasStep(def, stepID) {
 		return nil
 	}
-	card := stepCardFromEvent(he, stepID)
-	html, err := renderFragment(tmpl, "run-step-card", card)
+	row := stepRowFromEvent(he, stepID)
+	html, err := renderFragment(tmpl, "run-step-row", row)
 	if err != nil {
-		return fmt.Errorf("render run-step-card: %w", err)
+		return fmt.Errorf("render run-step-row: %w", err)
 	}
+	selector := fmt.Sprintf(
+		`.step-list-row[data-step-id=%q]`, stepID,
+	)
 	opts := []datastar.PatchElementOption{
+		datastar.WithSelector(selector),
+		datastar.WithMode(datastar.ElementPatchModeOuter),
 		datastar.WithPatchElementsEventID(
 			strconv.FormatUint(he.Seq, 10)),
 	}
@@ -403,7 +413,7 @@ func emitStepCardPatch(
 }
 
 // defHasStep tests for membership without an allocation. ≤70 lines
-// rule satisfied; pulled out so emitStepCardPatch stays small.
+// rule satisfied; pulled out so emitStepRowPatch stays small.
 func defHasStep(def dag.WorkflowDef, stepID string) bool {
 	if stepID == "" {
 		return false
@@ -416,23 +426,24 @@ func defHasStep(def dag.WorkflowDef, stepID string) bool {
 	return false
 }
 
-// stepCardFromEvent infers a card render from one event type. The
-// engine emits step.dispatched / step.completed / step.failed; we
-// translate to the matching status badge. For ambiguous events
-// (step.skipped etc.) we render a "pending" card — the next page
-// reload will reconcile to the correct snapshot.
-func stepCardFromEvent(he HistoryEvent, stepID string) StepCard {
-	status := stepStatusFromEvent(he.Event.Type)
-	card := StepCard{
-		ID:     stepID,
-		Status: status,
-		Icon:   statusIcon(status),
+// stepRowFromEvent infers a row render from one event type. The engine
+// emits step.dispatched / step.completed / step.failed; we translate
+// to the matching state. For ambiguous events (step.skipped etc.) we
+// render "pending" — the next full page reload reconciles to the
+// authoritative snapshot via BuildStepRows.
+func stepRowFromEvent(he HistoryEvent, stepID string) stepRow {
+	state := stepStatusFromEvent(he.Event.Type)
+	row := stepRow{
+		ID:    stepID,
+		Name:  stepID,
+		State: state,
+		Icon:  stepIcon(state),
 	}
-	if status == "failed" {
-		card.HasError = true
-		card.ErrorMsg = he.Event.Data
+	if state == "failed" {
+		row.Error = he.Event.Data
+		row.ExpandedByDefault = true
 	}
-	return card
+	return row
 }
 
 // stepStatusFromEvent picks a status string for a step.* event type.

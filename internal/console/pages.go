@@ -823,7 +823,6 @@ type RunDetailView struct {
 	ErrorMsg    string
 	HasError    bool
 	NotFound    bool
-	Steps       []StepCard
 	StepRows    []stepRow
 	Events      []EventRow
 	// MaxEventSeq is the highest JetStream stream sequence rendered
@@ -838,18 +837,6 @@ type RunDetailView struct {
 	FailedStepID       string
 	FailedStepError    string
 	FailedStepAttempts int
-}
-
-// StepCard is one cell in the step status grid.
-type StepCard struct {
-	ID       string
-	Status   string
-	Icon     string
-	Attempts int
-	Duration string
-	HasError bool
-	ErrorMsg string
-	Skipped  bool
 }
 
 // EventRow is one line of the run event timeline.
@@ -1020,7 +1007,6 @@ func buildRunDetail(
 	def, defErr := ds.GetWorkflow(run.WorkflowID)
 	events, _ := ds.ListRunEvents(ctx, id, false)
 	if defErr == nil {
-		view.Steps = stepCardsFor(def, run)
 		view.StepRows = BuildStepRows(&def, &run, events, nil, nil)
 	}
 	view.Events = toEventRows(events)
@@ -1112,39 +1098,6 @@ func runOutputAndError(run dag.WorkflowRun) (string, string) {
 		out = prettyJSON(outputBytes)
 	}
 	return out, lastErr
-}
-
-// stepCardsFor renders one card per step in the workflow definition,
-// merged with the live state in the run snapshot. An empty Steps
-// slice yields an empty card list — the template handles that.
-func stepCardsFor(
-	def dag.WorkflowDef, run dag.WorkflowRun,
-) []StepCard {
-	if len(def.Steps) == 0 {
-		return nil
-	}
-	out := make([]StepCard, 0, len(def.Steps))
-	for _, step := range def.Steps {
-		state, ok := run.Steps[step.ID]
-		card := StepCard{ID: step.ID}
-		if !ok {
-			card.Status = "pending"
-			card.Icon = statusIcon("pending")
-			out = append(out, card)
-			continue
-		}
-		statusStr := state.Status.String()
-		card.Status = statusStr
-		card.Icon = statusIcon(statusStr)
-		card.Attempts = state.Attempts
-		card.Skipped = state.Status == dag.StepStatusSkipped
-		if state.Status == dag.StepStatusFailed && state.Error != "" {
-			card.HasError = true
-			card.ErrorMsg = state.Error
-		}
-		out = append(out, card)
-	}
-	return out
 }
 
 // maxEventSeq returns the highest JetStream stream sequence across

@@ -54,7 +54,7 @@ var assetsFS embed.FS
 //go:embed templates/fragments/pager.html
 //go:embed templates/fragments/run_row.html
 //go:embed templates/fragments/run_event_row.html
-//go:embed templates/fragments/run_step_card.html
+//go:embed templates/fragments/run_step_row.html
 //go:embed templates/fragments/triggers_tbody.html
 //go:embed templates/fragments/dlq_tbody.html
 //go:embed templates/fragments/audit_tbody.html
