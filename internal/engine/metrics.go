@@ -5,6 +5,23 @@ package engine
 
 import "go.opentelemetry.io/otel/metric"
 
+// metricLabelAllowlist is a compile-time guard against label-
+// cardinality explosion on engine histograms and counters. Each
+// entry lists the labels an emit site is permitted to attach to
+// the named instrument. Metrics not listed here are unguarded —
+// they predate the allowlist; per the issue #280 audit, the
+// allowlist is scoped tightly to the high-leverage
+// snapshot.save histogram rather than gating every existing
+// metric (which would be a much larger surface change).
+//
+// Enforcement: TestSnapshotSaveEmitSiteOnlyUsesAllowlistedLabels
+// in metrics_test.go scans orchestrator.go's emit site and
+// asserts the recorded labels match this list exactly. Adding a
+// label without updating the allowlist fails the test.
+var metricLabelAllowlist = map[string][]string{
+	"snapshot.save.duration_ms": {"workflow", "step"},
+}
+
 // orchMetrics bundles the Orchestrator's pre-allocated metric
 // instruments. Created once in NewOrchestrator.
 //

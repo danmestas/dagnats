@@ -433,7 +433,7 @@ func TestApprovalGateNilReceiverIsNoOp(t *testing.T) {
 		},
 	}
 	saveFn := func(
-		ctx context.Context, r dag.WorkflowRun,
+		ctx context.Context, r dag.WorkflowRun, stepID string,
 	) error {
 		return nil
 	}
@@ -689,7 +689,7 @@ func TestApprovalStep_ZeroTimeoutReturnsError(t *testing.T) {
 	}
 
 	saveFn := func(
-		ctx context.Context, r dag.WorkflowRun,
+		ctx context.Context, r dag.WorkflowRun, stepID string,
 	) error {
 		return nil
 	}

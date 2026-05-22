@@ -484,7 +484,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 			// Create a failed run for visibility
 			run := dag.NewWorkflowRun(wfDef, evt.RunID)
 			run.Status = dag.RunStatusFailed
-			o.saveSnapshot(ctx, run)
+			o.saveSnapshot(ctx, run, "")
 			return fmt.Errorf("input validation: %w", err)
 		}
 	}
@@ -506,7 +506,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 		return nil
 	case admissionQueue:
 		run.Status = dag.RunStatusPending
-		if err := o.saveSnapshot(ctx, run); err != nil {
+		if err := o.saveSnapshot(ctx, run, ""); err != nil {
 			return fmt.Errorf("save pending run: %w", err)
 		}
 		return nil
@@ -517,7 +517,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 		deadline := time.Now().Add(wfDef.Timeout)
 		run.Deadline = &deadline
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return fmt.Errorf("save initial run: %w", err)
 	}
 	o.metrics.runsActive.Add(ctx, 1)
@@ -633,7 +633,7 @@ func (o *Orchestrator) persistFailedStartRun(
 		Steps:      map[string]dag.StepState{},
 		CreatedAt:  time.Now().UTC(),
 	}
-	if saveErr := o.saveSnapshot(ctx, failed); saveErr != nil {
+	if saveErr := o.saveSnapshot(ctx, failed, ""); saveErr != nil {
 		slog.ErrorContext(ctx,
 			"workflow.started: save failed-run snapshot",
 			"error", saveErr,
@@ -761,7 +761,7 @@ func (o *Orchestrator) handleStepCompleted(
 	if dag.IsComplete(wfDef, completed) {
 		return o.completeWorkflow(ctx, run)
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)
@@ -776,7 +776,7 @@ func (o *Orchestrator) completeWorkflow(
 		panic("completeWorkflow: RunID must not be empty")
 	}
 	run.Status = dag.RunStatusCompleted
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}
 	o.admission.ReleaseSingletonLock(ctx, run)
@@ -911,7 +911,7 @@ func (o *Orchestrator) transitionPendingToRunning(
 		deadline := time.Now().Add(wfDef.Timeout)
 		run.Deadline = &deadline
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return fmt.Errorf("save running run: %w", err)
 	}
 	o.metrics.runsActive.Add(ctx, 1)
@@ -973,7 +973,7 @@ func (o *Orchestrator) handleStepContinue(
 	}
 	run.Steps[evt.StepID] = state
 
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 		return err
 	}
 	return o.publishContinueTask(
@@ -1114,7 +1114,7 @@ func (o *Orchestrator) failLoopStep(
 	state.Error = reason
 	run.Steps[stepID] = state
 	run.Status = dag.RunStatusFailed
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, stepID); err != nil {
 		return err
 	}
 	wfAttr := metric.WithAttributes(
@@ -1319,7 +1319,7 @@ func (o *Orchestrator) dispatchRetriableFailure(
 	// recorded but never re-dispatched (issue #147).
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
 		run.Steps[evt.StepID] = state
-		if err := o.saveSnapshot(ctx, run); err != nil {
+		if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 			return err
 		}
 		return o.scheduleRetryBackoff(
@@ -1356,7 +1356,7 @@ func (o *Orchestrator) handleRetryAfter(
 	}
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
 		run.Steps[stepID] = *state
-		if err := o.saveSnapshot(ctx, *run); err != nil {
+		if err := o.saveSnapshot(ctx, *run, stepID); err != nil {
 			return err
 		}
 		return o.scheduleRetryAfter(
@@ -1590,7 +1590,7 @@ func (o *Orchestrator) failWorkflow(
 	state dag.StepState,
 ) error {
 	run.Status = dag.RunStatusFailed
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
 		return err
 	}
 	o.admission.ReleaseSingletonLock(ctx, run)
@@ -1677,7 +1677,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
 
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}
 	o.metrics.runsActive.Add(ctx, -1)
@@ -1858,7 +1858,7 @@ func (o *Orchestrator) createChildRun(
 		childRun.ParentStepID = parentStepID
 	}
 
-	if err := o.saveSnapshot(ctx, childRun); err != nil {
+	if err := o.saveSnapshot(ctx, childRun, ""); err != nil {
 		return err
 	}
 
@@ -1958,7 +1958,8 @@ func (o *Orchestrator) enqueueReady(
 		state.Status = dag.StepStatusQueued
 		run.Steps[step.ID] = state
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	// Multi-step batch — no single owning step, so pass "".
+	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}
 	o.publishStepQueuedEvents(ctx, run, ready)
@@ -2128,13 +2129,17 @@ func (o *Orchestrator) dispatchReadySteps(
 }
 
 // saveSnapshot saves the run state to KV and records the duration.
-// Records the duration with a workflow label so the per-workflow
-// drilldown table sees per-workflow snapshot latency rather than a
-// global aggregate. RunID is intentionally not attached — unbounded
-// cardinality would blow up the metrics store. See orchMetrics docs
-// for the label policy.
+// Records the duration with workflow + step labels so the
+// drilldown surface can split latency per (workflow, step) — the
+// step granularity is what lets operators isolate a single hot
+// step's KV-write pressure from the workflow's global average.
+// stepID may be empty when the save is not associated with a
+// specific step (workflow init, completion, failure, child run
+// spawn). RunID is intentionally not attached — unbounded
+// cardinality would blow up the metrics store. See orchMetrics
+// docs and metricLabelAllowlist for the label policy.
 func (o *Orchestrator) saveSnapshot(
-	ctx context.Context, run dag.WorkflowRun,
+	ctx context.Context, run dag.WorkflowRun, stepID string,
 ) error {
 	if run.RunID == "" {
 		panic("saveSnapshot: RunID must not be empty")
@@ -2148,6 +2153,7 @@ func (o *Orchestrator) saveSnapshot(
 	o.metrics.snapshotDuration.Record(ctx, elapsed,
 		metric.WithAttributes(
 			attribute.String("workflow", run.WorkflowID),
+			attribute.String("step", stepID),
 		),
 	)
 	return err
@@ -2280,7 +2286,7 @@ func (o *Orchestrator) enqueueSleepStep(
 	wakeAt := time.Now().Add(sleepCfg.Duration)
 	state.WakeAt = &wakeAt
 	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run); err != nil {
+	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
 		return err
 	}
 
@@ -2415,7 +2421,7 @@ func (o *Orchestrator) validateAndInitMapInstances(
 		}
 	}
 	run.Steps[step.ID] = state
-	return o.saveSnapshot(ctx, *run)
+	return o.saveSnapshot(ctx, *run, step.ID)
 }
 
 // publishMapTasks publishes one task per map item concurrently.
@@ -2463,7 +2469,7 @@ func (o *Orchestrator) handleMapInstanceCompleted(
 	run.Steps[baseID] = state
 
 	if !allMapInstancesDone(state.MapInstances) {
-		return o.saveSnapshot(ctx, run)
+		return o.saveSnapshot(ctx, run, baseID)
 	}
 
 	return o.collectMapOutputs(ctx, wfDef, run, baseID, state)
@@ -2507,7 +2513,7 @@ func (o *Orchestrator) collectMapOutputs(
 	if dag.IsComplete(wfDef, completed) {
 		return o.completeWorkflow(ctx, run)
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, baseID); err != nil {
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)
@@ -2566,7 +2572,7 @@ func (o *Orchestrator) failMapStep(
 
 	// No on-failure — fail the workflow.
 	run.Status = dag.RunStatusFailed
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, baseID); err != nil {
 		return err
 	}
 	wfAttr := metric.WithAttributes(
@@ -2606,7 +2612,7 @@ func (o *Orchestrator) runMapOnFailure(
 	ofState := run.Steps[onFailStep.ID]
 	ofState.Status = dag.StepStatusQueued
 	run.Steps[onFailStep.ID] = ofState
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, onFailStep.ID); err != nil {
 		return err
 	}
 	errorInput := []byte(fmt.Sprintf(
@@ -2696,7 +2702,7 @@ func (o *Orchestrator) startWaitForEvent(
 	state := run.Steps[step.ID]
 	state.Status = dag.StepStatusRunning
 	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run); err != nil {
+	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
 		return err
 	}
 
@@ -2799,7 +2805,7 @@ func (o *Orchestrator) handleWaitTimeout(
 	if dag.IsComplete(wfDef, completed) {
 		return o.completeWorkflow(ctx, run)
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)
@@ -2884,7 +2890,7 @@ func (o *Orchestrator) spawnChild(
 		state.ChildRunID = childRunID
 	}
 	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run); err != nil {
+	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
 		return err
 	}
 
@@ -2977,7 +2983,7 @@ func (o *Orchestrator) handleChildCompleted(
 	if dag.IsComplete(wfDef, completed) {
 		return o.completeWorkflow(ctx, run)
 	}
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 		return err
 	}
 	return o.enqueueReady(ctx, wfDef, run)
@@ -3234,7 +3240,7 @@ func (o *Orchestrator) handleStepStarted(
 		state.Attempts = evt.AttemptNumber
 	}
 	run.Steps[evt.StepID] = state
-	if err := o.saveSnapshot(ctx, run); err != nil {
+	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 		return err
 	}
 	// Schedule the per-step watchdog (issue #140). Every
@@ -3323,5 +3329,5 @@ func (o *Orchestrator) handleStepQueued(
 		state.Attempts = evt.AttemptNumber
 	}
 	run.Steps[evt.StepID] = state
-	return o.saveSnapshot(ctx, run)
+	return o.saveSnapshot(ctx, run, evt.StepID)
 }

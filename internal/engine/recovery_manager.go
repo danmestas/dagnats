@@ -231,7 +231,7 @@ func (rm *RecoveryManager) failAuxStep(
 		panic("failAuxStep: stepDef.ID must not be empty")
 	}
 	run.Status = dag.RunStatusCompensateFailed
-	if err := saveFn(ctx, run); err != nil {
+	if err := saveFn(ctx, run, stepDef.ID); err != nil {
 		return err
 	}
 	rm.runsActive.Add(ctx, -1)
@@ -276,7 +276,7 @@ func (rm *RecoveryManager) TryOnFailure(
 	ofState := run.Steps[onFailStep.ID]
 	ofState.Status = dag.StepStatusQueued
 	run.Steps[onFailStep.ID] = ofState
-	if err := saveFn(ctx, run); err != nil {
+	if err := saveFn(ctx, run, onFailStep.ID); err != nil {
 		return false, err
 	}
 	errorInput := []byte(fmt.Sprintf(
@@ -317,7 +317,8 @@ func (rm *RecoveryManager) StartCompensation(
 		state.Status = dag.StepStatusQueued
 		run.Steps[step.ID] = state
 	}
-	if err := saveFn(ctx, *run); err != nil {
+	// Compensation chain spans multiple steps — workflow-scoped save.
+	if err := saveFn(ctx, *run, ""); err != nil {
 		return err
 	}
 
@@ -381,7 +382,7 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 			step.ID, run.Steps[step.ID].Output,
 			failedStepID, failedError,
 		)
-		saveFn(ctx, *run)
+		saveFn(ctx, *run, step.Compensate)
 		rm.publisher.Publish(
 			ctx, run.RunID, compDef, input, 0,
 		)
@@ -390,7 +391,7 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 
 	// All compensate steps done — mark workflow Compensated
 	run.Status = dag.RunStatusCompensated
-	saveFn(ctx, *run)
+	saveFn(ctx, *run, "")
 	rm.runsActive.Add(ctx, -1)
 	return true
 }
