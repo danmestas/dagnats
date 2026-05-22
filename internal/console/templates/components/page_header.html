@@ -1,0 +1,27 @@
+{{/*
+  page-header — one uniform header for every list page in the console.
+  Reads a PageHeader (Title, IconClass, Subtitle, Tiles []Tile).
+  Each Tile.Tone is rendered via the typed TileTone.Class() method —
+  see internal/console/page_header.go.
+*/}}
+{{define "page-header"}}
+<header class="page-header console-section-header" data-component="page-header">
+  <div class="page-header-title-row">
+    {{if .IconClass}}<span class="page-header-icon {{.IconClass}}" aria-hidden="true"></span>{{end}}
+    {{if .TitleGlossaryTerm}}<h1>{{tooltipAs .Title .TitleGlossaryTerm}}</h1>{{else}}<h1>{{.Title}}</h1>{{end}}
+  </div>
+  {{if .Subtitle}}<p class="page-subtitle console-lede">{{.Subtitle}}</p>{{end}}
+  {{if .Tiles}}
+  <ul class="page-header-tiles" role="list">
+    {{range .Tiles}}
+    <li class="page-header-tile {{.Tone.Class}}" data-tone="{{.Tone}}">
+      {{if .Href}}<a class="page-header-tile-link" href="{{.Href}}"{{if .Tooltip}} title="{{.Tooltip}}"{{end}}>{{end}}
+      <span class="page-header-tile-count">{{.Count}}</span>
+      <span class="page-header-tile-label">{{.Label}}</span>
+      {{if .Href}}</a>{{else if .Tooltip}}<span class="sr-only">{{.Tooltip}}</span>{{end}}
+    </li>
+    {{end}}
+  </ul>
+  {{end}}
+</header>
+{{end}}

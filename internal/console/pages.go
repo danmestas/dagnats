@@ -111,6 +111,7 @@ func requireData(
 // LastRunTime / LastRunStatus are derived per workflow at render
 // time from a single ListRuns scan; both empty when no runs exist.
 type WorkflowsListView struct {
+	Header   PageHeader
 	Filter   string
 	Sort     string
 	Page     int
@@ -197,7 +198,9 @@ func buildWorkflowsView(
 	sortWorkflowRows(rows, sortKey)
 	total := len(rows)
 	start, end, hasNext := paginate(total, page, size)
+	header := buildWorkflowsHeader(rows)
 	view := WorkflowsListView{
+		Header:   header,
 		Filter:   filter,
 		Sort:     sortKey,
 		Page:     page,
@@ -210,6 +213,40 @@ func buildWorkflowsView(
 		Rows:     rows[start:end],
 	}
 	return view, nil
+}
+
+// buildWorkflowsHeader projects the full row set into the count tiles
+// shown above the workflows table. "Active" = at least one recorded
+// run; "Draft" = registered but never run. Counting happens before the
+// pagination slice so the totals reflect every workflow, not just the
+// current page.
+func buildWorkflowsHeader(rows []WorkflowRow) PageHeader {
+	active := 0
+	for i := range rows {
+		if rows[i].LastRunTime != "" {
+			active++
+		}
+	}
+	draft := len(rows) - active
+	tiles := []Tile{
+		{Label: "workflows", Count: len(rows), Tone: ToneDefault},
+		{Label: "active", Count: active, Tone: ToneSuccess,
+			Tooltip: "Workflows with at least one recorded run"},
+		{Label: "draft", Count: draft, Tone: ToneInfo,
+			Tooltip: "Registered workflows that have never run"},
+	}
+	h, err := NewPageHeader(PageHeader{
+		Title:    "Workflows",
+		Subtitle: "Registered workflow definitions.",
+		Tiles:    tiles,
+	})
+	if err != nil {
+		// Validation errors are programmer errors — the tone constants
+		// and labels above are static. Fall back to a bare header so a
+		// future bug surfaces in the request log, not as a 500.
+		return PageHeader{Title: "Workflows"}
+	}
+	return h
 }
 
 // filterWorkflows returns only definitions whose name contains the
@@ -505,6 +542,7 @@ func servePageRunsList(
 
 // RunsListView powers /console/runs.
 type RunsListView struct {
+	Header   PageHeader
 	Workflow string
 	Status   string
 	Range    string
@@ -575,6 +613,7 @@ func buildRunsView(
 		last = end
 	}
 	view := RunsListView{
+		Header:   buildRunsHeader(runs, time.Now()),
 		Workflow: wf, Status: status, Range: rng,
 		SinceUnix: since, UntilUnix: until,
 		Page: page, Size: size, Total: total,
@@ -585,6 +624,47 @@ func buildRunsView(
 		Rows:      toRunRows(runs[start:end]),
 	}
 	return view, nil
+}
+
+// buildRunsHeader assembles the three count tiles shown above the
+// runs table: in-the-last-hour / currently-running / failed-in-window.
+// The set is the already-filtered runs slice (matches the rows visible
+// to the operator); the hour bucket is anchored to the supplied now so
+// tests can pin the clock without flaking.
+func buildRunsHeader(runs []dag.WorkflowRun, now time.Time) PageHeader {
+	hourCutoff := now.Add(-time.Hour)
+	recent := 0
+	running := 0
+	failed := 0
+	const runsMax = 100_000 // safety bound per coding rules
+	for i := 0; i < len(runs) && i < runsMax; i++ {
+		r := runs[i]
+		if r.CreatedAt.After(hourCutoff) {
+			recent++
+		}
+		switch r.Status {
+		case dag.RunStatusRunning:
+			running++
+		case dag.RunStatusFailed:
+			failed++
+		}
+	}
+	tiles := []Tile{
+		{Label: "in last 1h", Count: recent, Tone: ToneDefault,
+			Tooltip: "Runs created within the past hour"},
+		{Label: "running", Count: running, Tone: ToneWarning,
+			Href: "/console/runs?status=running"},
+		{Label: "failed", Count: failed, Tone: ToneDanger,
+			Href: "/console/runs?status=failed"},
+	}
+	h, err := NewPageHeader(PageHeader{
+		Title: "Runs",
+		Tiles: tiles,
+	})
+	if err != nil {
+		return PageHeader{Title: "Runs"}
+	}
+	return h
 }
 
 // parseUnixSecsParam parses a positive int64 from a URL query value;

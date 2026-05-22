@@ -60,6 +60,7 @@ func serveRunIDLookup(
 
 // TriggersListView is the binding for /console/triggers.
 type TriggersListView struct {
+	Header     PageHeader
 	TypeFilter string
 	Total      int
 	Rows       []TriggerRow
@@ -133,10 +134,41 @@ func buildTriggersView(
 	})
 	attachTriggerSparklines(ctx, ds, rows)
 	return TriggersListView{
+		Header:     buildTriggersHeader(rows),
 		TypeFilter: typeFilter,
 		Total:      len(rows),
 		Rows:       rows,
 	}
+}
+
+// buildTriggersHeader projects the (already type-filtered) row set
+// into the three count tiles. "Active" = Enabled; "Disabled" =
+// !Enabled. Counting matches what the operator sees in the table.
+func buildTriggersHeader(rows []TriggerRow) PageHeader {
+	enabled := 0
+	for i := range rows {
+		if rows[i].Enabled {
+			enabled++
+		}
+	}
+	disabled := len(rows) - enabled
+	tiles := []Tile{
+		{Label: "triggers", Count: len(rows), Tone: ToneDefault},
+		{Label: "active", Count: enabled, Tone: ToneSuccess,
+			Tooltip: "Enabled triggers — firing on schedule"},
+		{Label: "disabled", Count: disabled, Tone: ToneInfo,
+			Tooltip: "Configured but not firing"},
+	}
+	h, err := NewPageHeader(PageHeader{
+		Title:             "Triggers",
+		TitleGlossaryTerm: "trigger",
+		Subtitle:          "Configured trigger sources.",
+		Tiles:             tiles,
+	})
+	if err != nil {
+		return PageHeader{Title: "Triggers", TitleGlossaryTerm: "trigger"}
+	}
+	return h
 }
 
 // attachTriggerSparklines mirrors attachWorkflowSparklines for trigger
@@ -385,6 +417,7 @@ func triggerConfigOf(t trigger.TriggerDef) any {
 
 // DLQListView powers /console/dlq.
 type DLQListView struct {
+	Header       PageHeader
 	ReasonFilter string
 	Total        int
 	Rows         []DLQRow
@@ -453,10 +486,42 @@ func buildDLQView(
 		rows = append(rows, row)
 	}
 	return DLQListView{
+		Header:       buildDLQHeader(rows),
 		ReasonFilter: reasonFilter,
 		Total:        len(rows),
 		Rows:         rows,
 	}
+}
+
+// buildDLQHeader counts dead letters by replay eligibility for the
+// header tile strip. A row is redrive-eligible when its task body was
+// preserved on the way into the queue; everything else is "expired"
+// (typically tombstoned soft-discards, or rows where the original
+// payload was dropped by retention).
+func buildDLQHeader(rows []DLQRow) PageHeader {
+	eligible := 0
+	for i := range rows {
+		if rows[i].BodyPreserved {
+			eligible++
+		}
+	}
+	expired := len(rows) - eligible
+	tiles := []Tile{
+		{Label: "entries", Count: len(rows), Tone: ToneDefault},
+		{Label: "redrive-eligible", Count: eligible, Tone: ToneSuccess,
+			Tooltip: "Task body preserved; can be replayed"},
+		{Label: "expired", Count: expired, Tone: ToneDanger,
+			Tooltip: "Body discarded; replay not available"},
+	}
+	h, err := NewPageHeader(PageHeader{
+		Title:    "Dead-letter queue",
+		Subtitle: "Entries awaiting operator decision.",
+		Tiles:    tiles,
+	})
+	if err != nil {
+		return PageHeader{Title: "Dead-letter queue"}
+	}
+	return h
 }
 
 // dlqRowFromView projects a DeadLetterView into a DLQRow.
