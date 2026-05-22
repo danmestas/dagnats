@@ -45,7 +45,14 @@ build: ## Build dev binaries to ./bin
 test: ## Run all tests with 600s timeout
 	go test ./... -timeout 600s -count=1
 
-lint: vet ## Run vet + staticcheck
+lint: vet ## Run gofmt + vet + staticcheck (matches CI)
+	@out=$$(gofmt -l .); \
+		if [ -n "$$out" ]; then \
+			echo "gofmt: the following files are not formatted:"; \
+			echo "$$out"; \
+			echo "run 'make fmt' to fix"; \
+			exit 1; \
+		fi
 	@which staticcheck > /dev/null 2>&1 || \
 		go install honnef.co/go/tools/cmd/staticcheck@latest
 	staticcheck ./...
