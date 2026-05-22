@@ -16,7 +16,19 @@ import (
 // trivial Basecoat component skeletons against the live asset bundle,
 // so it is acceptable to ship the route code in the binary as long as
 // the runtime gate stays default-off.
+//
+// Defense in depth: a single misconfigured DAGNATS_FIXTURES env in
+// production would otherwise expose the fixture surface. The explicit
+// DAGNATS_ENV=="production" short-circuit means even if the flag leaks
+// on, prod still refuses. We only fire the prod-block when DAGNATS_ENV
+// is set to "production" explicitly (rather than fail-closed on unset)
+// so the existing dev/test workflow — which never sets DAGNATS_ENV —
+// keeps working; production deploys are expected to set it.
 func fixturesEnabled() bool {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("DAGNATS_ENV")))
+	if env == "production" {
+		return false
+	}
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("DAGNATS_FIXTURES")))
 	if v == "" {
 		return false
