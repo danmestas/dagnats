@@ -25,6 +25,8 @@ import "embed"
 //go:embed assets/sources/sparkline.js
 //go:embed assets/sources/sheet.js
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
+//go:embed assets/fonts/ibm-plex-mono-latin-regular.woff2
+//go:embed assets/fonts/ibm-plex-mono-latin-bold.woff2
 var assetsFS embed.FS
 
 // templatesFS carries every Go html/template file the console renders.

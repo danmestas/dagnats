@@ -70,7 +70,7 @@
           <tbody>
             {{range .RecentRuns}}
             <tr>
-              <td class="console-mono"><a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a></td>
+              <td class="run-id"><a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a></td>
               <td>{{template "status-badge" .Status}}</td>
               <td class="console-mono">{{.StartedAt}}</td>
               <td>{{.Duration}}</td>

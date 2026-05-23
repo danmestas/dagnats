@@ -1,8 +1,8 @@
 {{define "runs-tbody"}}<tbody id="runs-tbody">
   {{range .Rows}}
   <tr id="run-row-{{.RunID}}">
-    <td class="console-mono"><a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a></td>
-    <td><a href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a></td>
+    <td class="run-id"><a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a></td>
+    <td class="workflow-id"><a href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a></td>
     <td>{{template "status-badge" .Status}}</td>
     <td><span class="badge badge-outline">{{.TriggerKind}}</span></td>
     <td class="console-mono">{{.StartedAt}}</td>
