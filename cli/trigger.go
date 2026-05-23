@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/danmestas/dagnats/internal/trigger"
@@ -268,6 +269,12 @@ func runTriggerDeleteCmd(args []string) {
 }
 
 // runTriggerDeleteCmdWithWriter deletes a trigger, writing to w.
+// Phase 4 / ADR-018: warns when the trigger is file-managed
+// (Source has the configfile.SourceFilePrefix). The file watcher
+// would otherwise resurrect the entry on the next reload — the
+// warning surfaces that intent before the operator is surprised.
+// Pass --force to bypass the prompt; default exits with code 2 on
+// a file-managed delete attempt.
 func runTriggerDeleteCmdWithWriter(args []string, w io.Writer) {
 	if w == nil {
 		panic("runTriggerDeleteCmdWithWriter: w must not be nil")
@@ -275,11 +282,12 @@ func runTriggerDeleteCmdWithWriter(args []string, w io.Writer) {
 
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
+	force, args := extractForceFlag(args)
 
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats trigger delete "+
-				"<trigger-id> [--json]")
+				"<trigger-id> [--force] [--json]")
 		os.Exit(1)
 	}
 	triggerID := args[0]
@@ -289,6 +297,17 @@ func runTriggerDeleteCmdWithWriter(args []string, w io.Writer) {
 
 	svc, nc := connectService()
 	defer nc.Close()
+
+	if !force {
+		if src, ok := triggerSource(svc, triggerID); ok &&
+			strings.HasPrefix(src, "file:") {
+			fmt.Fprintf(os.Stderr,
+				"refused: trigger %q is file-managed (source=%s)."+
+					" Remove it from the file or rerun with --force.\n",
+				triggerID, src)
+			os.Exit(2)
+		}
+	}
 
 	err := svc.DeleteTrigger(context.Background(), triggerID)
 	if err != nil {
@@ -303,6 +322,54 @@ func runTriggerDeleteCmdWithWriter(args []string, w io.Writer) {
 		return
 	}
 	fmt.Fprintf(w, "Trigger deleted: %s\n", triggerID)
+}
+
+// extractForceFlag pulls --force out of args. Returns the bool and
+// the remaining args. No-op when --force is absent.
+func extractForceFlag(args []string) (bool, []string) {
+	if args == nil {
+		return false, nil
+	}
+	if len(args) > 1000 {
+		panic("extractForceFlag: args exceeds max bound")
+	}
+	out := make([]string, 0, len(args))
+	found := false
+	for _, a := range args {
+		if a == "--force" || a == "-f" {
+			found = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return found, out
+}
+
+// triggerSource looks up the Source label on a trigger via
+// ListTriggers. Returns ("", false) if the trigger isn't found —
+// the caller treats that as "no warning needed, let the delete
+// path produce its own not-found error".
+func triggerSource(svc apiTriggerLister, id string) (string, bool) {
+	if id == "" {
+		panic("triggerSource: id must not be empty")
+	}
+	triggers, err := svc.ListTriggers(context.Background())
+	if err != nil {
+		return "", false
+	}
+	for _, t := range triggers {
+		if t.ID == id {
+			return t.Source, true
+		}
+	}
+	return "", false
+}
+
+// apiTriggerLister is the slice of api.Service this file needs.
+// Defined as an interface so tests can substitute without bringing
+// up an embedded NATS server.
+type apiTriggerLister interface {
+	ListTriggers(ctx context.Context) ([]trigger.TriggerDef, error)
 }
 
 // runTriggerEnableCmd enables a trigger via api.Service.

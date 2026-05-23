@@ -26,6 +26,13 @@ type TriggerDef struct {
 	HTTP       *HTTPConfig            `json:"http,omitempty"`
 	External   *ExternalTriggerConfig `json:"external,omitempty"`
 	Debounce   *DebounceConfig        `json:"debounce,omitempty"`
+	// Source labels who put the record into the triggers KV. Empty
+	// string means a legacy KV entry written before #358 — backward
+	// compatible because json.Unmarshal silently leaves zero values
+	// on missing fields. Known prefixes: "file:<basename>" (loader
+	// in internal/configfile), "kv" / "api" (default CLI + REST
+	// surfaces) may opt in later. Phase 4, #358 / ADR-018.
+	Source string `json:"source,omitempty"`
 }
 
 // ExternalTriggerConfig selects an External trigger by Kind (matches
