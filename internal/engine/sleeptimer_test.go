@@ -31,7 +31,7 @@ func TestSleepTimerFiresCompletion(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	st := NewSleepTimer(nc, js)
+	st := NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 	if err := st.Start(); err != nil {
 		t.Fatalf("SleepTimer.Start failed: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestSleepTimerDedupDuplicateSchedule(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	st := NewSleepTimer(nc, js)
+	st := NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 	if err := st.Start(); err != nil {
 		t.Fatalf("SleepTimer.Start failed: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestSleepTimerFiresRateRetry(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	st := NewSleepTimer(nc, js)
+	st := NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 	if err := st.Start(); err != nil {
 		t.Fatalf("SleepTimer.Start failed: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestSleepTimerStartsLazilyOnSchedule(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	st := NewSleepTimer(nc, js)
+	st := NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 	// Do NOT call Start() — Schedule should trigger it.
 
 	// Subscribe to history.lazy-run to catch the completion event.

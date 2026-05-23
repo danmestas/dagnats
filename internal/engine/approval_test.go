@@ -653,9 +653,10 @@ func TestApprovalStep_ZeroTimeoutReturnsError(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	sleepTimer := NewSleepTimer(nc, jsNew)
+	tp := natsutil.NewTracingPublisher(nc, jsNew)
+	sleepTimer := NewSleepTimer(nc, jsNew, tp)
 	ag := NewApprovalGate(
-		nc, jsNew, sleepTimer,
+		nc, jsNew, tp, sleepTimer,
 		noop.NewTracerProvider().Tracer("test"),
 	)
 

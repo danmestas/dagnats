@@ -261,7 +261,7 @@ func (ac *AdmissionController) publishWorkflowCancelledEvent(
 	if err != nil {
 		return
 	}
-	_, pubErr := ac.js.Publish(
+	_, pubErr := ac.tp.JSPublish(
 		context.Background(), evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)

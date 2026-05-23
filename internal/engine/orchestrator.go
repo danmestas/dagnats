@@ -35,8 +35,15 @@ import (
 // It is intentionally stateless between events — all run state lives in the
 // snapshot store (NATS KV), so the orchestrator can crash and resume safely.
 type Orchestrator struct {
-	nc         *nats.Conn
-	js         jetstream.JetStream
+	nc *nats.Conn
+	js jetstream.JetStream
+	// tp wraps nc + js so every publish auto-injects W3C trace context.
+	// Constructed once in NewOrchestrator and shared with every subsystem
+	// that publishes (TaskPublisher, RecoveryManager, ApprovalGate,
+	// Correlator, AdmissionController, SleepTimer). Per #334, raw
+	// JS or core NATS Publish/PublishMsg outside the wrapper are
+	// CI-lint forbidden.
+	tp         *natsutil.TracingPublisher
 	defKV      jetstream.KeyValue
 	store      *SnapshotStore
 	tracer     trace.Tracer
@@ -102,30 +109,32 @@ func NewOrchestrator(
 				err.Error(),
 		)
 	}
+	tp := natsutil.NewTracingPublisher(nc, js)
 	cm, _ := NewConcurrencyManagerSafe(js)
 	store := NewSnapshotStore(js)
 	singletonKV, _ := js.KeyValue(
 		context.Background(), "singleton_locks",
 	)
 	ac := NewAdmissionController(
-		nc, js, store, cm, singletonKV,
+		nc, js, tp, store, cm, singletonKV,
 	)
 	rl := NewRateLimiter(js)
 	m := otel.Meter("dagnats/engine")
 	om := newOrchMetrics(m)
 	pm := newPubMetrics(m)
 	tracer := otel.Tracer("dagnats/engine")
-	sleepTimer := NewSleepTimer(nc, js)
+	sleepTimer := NewSleepTimer(nc, js, tp)
 	stickyKV, _ := js.KeyValue(
 		context.Background(), "sticky_bindings",
 	)
 	sticky := NewStickyRouter(
-		stickyKV, js, sleepTimer, tracer,
+		stickyKV, js, tp, sleepTimer, tracer,
 		pm.stepEnqueue,
 	)
 	o := &Orchestrator{
 		nc:         nc,
 		js:         js,
+		tp:         tp,
 		defKV:      defKV,
 		store:      store,
 		tracer:     tracer,
@@ -159,19 +168,19 @@ func (o *Orchestrator) wireDependentSubsystems(
 		panic("wireDependentSubsystems: o.js must not be nil")
 	}
 	publisher := NewTaskPublisher(
-		o.js, rl, ac, o.sticky, o.sleepTimer, o.tracer,
+		o.js, o.tp, rl, ac, o.sticky, o.sleepTimer, o.tracer,
 		pm, o.loadRunAndDef,
 	)
 	o.publisher = publisher
 	o.recovery = NewRecoveryManager(
-		o.js, publisher, o.tracer,
+		o.js, o.tp, publisher, o.tracer,
 		om.runsActive, om.runsFailed,
 		om.dlqEntries, om.dlqDepth,
 	)
 	o.approval = NewApprovalGate(
-		o.nc, o.js, o.sleepTimer, o.tracer,
+		o.nc, o.js, o.tp, o.sleepTimer, o.tracer,
 	)
-	o.correlator = NewCorrelator(o.nc, o.js)
+	o.correlator = NewCorrelator(o.nc, o.js, o.tp)
 	// Wire the step timeout watchdog (issue #140). Hooking from the
 	// orchestrator side keeps SleepTimer free of a SnapshotStore
 	// dependency while still letting the fire path do staleness
@@ -1571,7 +1580,7 @@ func (o *Orchestrator) fireStepTimeout(tm TimerMessage) {
 		tm.RunID, tm.StepID, data,
 	)
 	evt.AttemptNumber = tm.Attempt
-	if err := publishLifecycleEvent(ctx, o.js, evt); err != nil {
+	if err := publishLifecycleEvent(ctx, o.tp, evt); err != nil {
 		slog.WarnContext(ctx,
 			"step timeout: publish step.failed",
 			"run_id", tm.RunID,
@@ -1751,7 +1760,7 @@ func (o *Orchestrator) publishCancelEvent(
 	if err != nil {
 		return
 	}
-	o.js.Publish(
+	o.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -1899,14 +1908,13 @@ func (o *Orchestrator) notifyParentIfChild(
 		Subject: evt.NATSSubject(),
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
-	observe.InjectTraceContext(ctx, msg, &evt)
-	data, err := evt.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal child event: %w", err)
+	// JSPublishMsgEvent marshals evt after injecting trace context;
+	// leave msg.Data empty so the persisted body carries TraceParent.
+	_ = payload // payload is folded into evt above
+	if _, err := o.tp.JSPublishMsgEvent(ctx, msg, &evt); err != nil {
+		return fmt.Errorf("publish child event: %w", err)
 	}
-	msg.Data = data
-	_, err = o.js.PublishMsg(ctx, msg)
-	return err
+	return nil
 }
 
 func errString(err error) string {
@@ -2055,7 +2063,7 @@ func (o *Orchestrator) publishStepQueuedEvents(
 			protocol.EventStepQueued, run.RunID, step.ID, nil,
 		)
 		qEvt.AttemptNumber = 1
-		if err := publishLifecycleEvent(ctx, o.js, qEvt); err != nil {
+		if err := publishLifecycleEvent(ctx, o.tp, qEvt); err != nil {
 			slog.ErrorContext(ctx, "failed to publish step.queued",
 				"error", err,
 				"run_id", run.RunID,
@@ -2203,7 +2211,7 @@ func (o *Orchestrator) publishWorkflowCompleted(
 			"marshal workflow.completed event: %w", err,
 		)
 	}
-	_, err = o.js.Publish(
+	_, err = o.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -2226,7 +2234,7 @@ func (o *Orchestrator) publishWorkflowFailed(
 			"marshal workflow.failed event: %w", err,
 		)
 	}
-	_, err = o.js.Publish(
+	_, err = o.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -2324,7 +2332,7 @@ func (o *Orchestrator) publishSleepStarted(
 	if err != nil {
 		return
 	}
-	o.js.Publish(
+	o.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -2763,7 +2771,7 @@ func (o *Orchestrator) publishWaitStarted(
 	if err != nil {
 		return
 	}
-	o.js.Publish(
+	o.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -2937,14 +2945,10 @@ func (o *Orchestrator) publishSpawnEvent(
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	observe.InjectTraceContext(ctx, msg, &evt)
-	data, err := evt.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal spawn event: %w", err)
+	if _, err := o.tp.JSPublishMsgEvent(ctx, msg, &evt); err != nil {
+		return fmt.Errorf("publish spawn event: %w", err)
 	}
-	msg.Data = data
-	_, err = o.js.PublishMsg(ctx, msg)
-	return err
+	return nil
 }
 
 // handleChildCompleted processes EventWorkflowChildCompleted: loads

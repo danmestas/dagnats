@@ -70,6 +70,37 @@ jobs:
         if: steps.filter.outputs.code == 'true'
         run: go vet ./...
 
+      - name: TracingPublisher wrapper lint
+        if: steps.filter.outputs.code == 'true'
+        # Forbid raw NATS publishes outside the TracingPublisher
+        # wrapper (#334). The wrapper auto-injects W3C trace context
+        # on every outbound message. Bypassing it leaves new publish
+        # sites silently un-traced, which is the regression vector
+        # the ADR-rejected audit-pass tried to address. The exclusion
+        # for internal/natsutil/publish.go is the wrapper's own body
+        # (where the underlying js.PublishMsg / nc.PublishMsg calls
+        # have to live). _test.go is excluded because tests legitimately
+        # use raw publishes to drive subjects we want to subscribe to.
+        #
+        # Deliberate escape hatch: jetstreamext.PublishMsgBatch (atomic
+        # batch) is OUTSIDE this wrapper's surface. See publishAtomicBatches
+        # in internal/engine/task_publish.go — trace context is injected
+        # per-message before the batch call. The grep pattern does not
+        # match jetstreamext.* so this exception is enforced by the
+        # pattern itself.
+        run: |
+          set -eu
+          # shellcheck disable=SC2046
+          if matches=$(grep -rnE 'js\.(Publish|PublishMsg)\b|nc\.(Publish|PublishMsg)\b' \
+              --include='*.go' \
+              --exclude='*_test.go' \
+              --exclude='publish.go' \
+              internal/ worker/); then
+            echo "::error::Raw NATS publish found. Use natsutil.TracingPublisher."
+            echo "$matches"
+            exit 1
+          fi
+
       - name: Staticcheck
         if: steps.filter.outputs.code == 'true'
         run: |

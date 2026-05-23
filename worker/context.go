@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -31,8 +32,13 @@ var errSignalKVNotConfigured = errors.New(
 )
 
 type taskContext struct {
-	nc           *nats.Conn
-	js           jetstream.JetStream
+	nc *nats.Conn
+	js jetstream.JetStream
+	// tp wraps nc + js for trace-context-injecting publish (#334).
+	// Built once in newTaskContext from the same nc/js pair so
+	// every step lifecycle event (started, completed, failed,
+	// continue) carries W3C trace context automatically.
+	tp           *natsutil.TracingPublisher
 	publishMsg   publishMsgFunc // injected by Worker for publishStarted
 	tracer       trace.Tracer
 	runID        string
@@ -69,9 +75,23 @@ func newTaskContext(
 	if ctx == nil {
 		panic("newTaskContext: ctx must not be nil")
 	}
+	// Build tp from whichever of nc/js is non-nil. Tests that pass
+	// only nc (PutStream-only) get a core-only wrapper; tests that
+	// pass only js (JetStream-only) get a JS-only wrapper.
+	// Production callers always pass both.
+	var tp *natsutil.TracingPublisher
+	switch {
+	case nc != nil && js != nil:
+		tp = natsutil.NewTracingPublisher(nc, js)
+	case nc != nil:
+		tp = natsutil.NewTracingPublisherCoreOnly(nc)
+	case js != nil:
+		tp = natsutil.NewTracingPublisherJSOnly(js)
+	}
 	return &taskContext{
 		nc:           nc,
 		js:           js,
+		tp:           tp,
 		tracer:       tracer,
 		runID:        payload.RunID,
 		stepID:       payload.StepID,
@@ -260,15 +280,9 @@ func (c *taskContext) Continue(output []byte) error {
 		Subject: evt.NATSSubject(),
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	observe.InjectTraceContext(c.ctx, outMsg, &evt)
-	data, err := evt.Marshal()
-	if err != nil {
-		return err
-	}
-	outMsg.Data = data
-	_, err = c.js.PublishMsg(
-		c.ctx, outMsg,
-	)
+	// JSPublishMsgEvent injects trace context, then marshals evt
+	// internally so the persisted body carries TraceParent.
+	_, err := c.tp.JSPublishMsgEvent(c.ctx, outMsg, &evt)
 	return err
 }
 
@@ -286,7 +300,7 @@ func (c *taskContext) PutStream(data []byte) error {
 	subject := fmt.Sprintf(
 		"stream.%s.%s", c.runID, c.stepID,
 	)
-	return c.nc.Publish(subject, data)
+	return c.tp.Publish(c.ctx, subject, data)
 }
 
 // publishEvent creates, traces, and publishes a step lifecycle
@@ -316,15 +330,9 @@ func (c *taskContext) publishEvent(
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	observe.InjectTraceContext(c.ctx, outMsg, &evt)
-	data, err := evt.Marshal()
-	if err != nil {
-		return err
-	}
-	outMsg.Data = data
-	_, err = c.js.PublishMsg(
-		c.ctx, outMsg,
-	)
+	// JSPublishMsgEvent injects trace context, then marshals evt
+	// internally so the persisted body carries TraceParent.
+	_, err := c.tp.JSPublishMsgEvent(c.ctx, outMsg, &evt)
 	return err
 }
 
@@ -514,7 +522,15 @@ func (c *taskContext) publishStarted(msg jetstream.Msg) error {
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	observe.InjectTraceContext(c.ctx, outMsg, &evt)
+	// Dual-write trace context onto the Event payload so post-restart
+	// replay still has the trace ID. Header injection happens inside
+	// the publishMsg seam (TracingPublisher.JSPublishMsg) — duplicated
+	// here only for the evt.TraceParent persistence side.
+	evt.TraceParent = ""
+	evt.TraceState = ""
+	syntheticHdr := nats.Header{}
+	syntheticMsg := &nats.Msg{Header: syntheticHdr}
+	observe.InjectTraceContext(c.ctx, syntheticMsg, &evt)
 	data, err := evt.Marshal()
 	if err != nil {
 		return err

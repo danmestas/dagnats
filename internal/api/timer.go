@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -169,13 +168,7 @@ func (tc *TimerConsumer) fireScheduledRun(
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	observe.InjectTraceContext(ctx, pubMsg, &evt)
-	data, err := evt.Marshal()
-	if err != nil {
-		return err
-	}
-	pubMsg.Data = data
-	_, err = tc.svc.js.PublishMsg(ctx, pubMsg)
+	_, err = tc.svc.tp.JSPublishMsgEvent(ctx, pubMsg, &evt)
 
 	span.SetAttributes(
 		attribute.String("run_id", sr.RunID),

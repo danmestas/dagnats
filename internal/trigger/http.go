@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/httpenvelope"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -67,10 +68,13 @@ type httpResponsePayload struct {
 // triggers. Bucket-level TTL governs entry lifetime — see conn.go.
 const idempotencyKVBucket = "http_idempotency"
 
-// HTTPHandler implements http.Handler for one HTTP trigger.
+// HTTPHandler implements http.Handler for one HTTP trigger. tp
+// wraps publish operations so W3C trace context auto-injects
+// into the workflow.started event header (#334).
 type HTTPHandler struct {
 	nc   *nats.Conn
 	js   jetstream.JetStream
+	tp   *natsutil.TracingPublisher
 	idkv jetstream.KeyValue // nil unless IdempotencyHeader is set
 	def  TriggerDef
 }
@@ -91,7 +95,12 @@ func NewHTTPHandler(nc *nats.Conn, def TriggerDef) *HTTPHandler {
 	if err != nil {
 		panic(fmt.Sprintf("NewHTTPHandler: jetstream.New: %v", err))
 	}
-	h := &HTTPHandler{nc: nc, js: js, def: def}
+	h := &HTTPHandler{
+		nc:  nc,
+		js:  js,
+		tp:  natsutil.NewTracingPublisher(nc, js),
+		def: def,
+	}
 	if def.HTTP.IdempotencyHeader != "" {
 		ctx, cancel := context.WithTimeout(
 			context.Background(), 5*time.Second,
@@ -511,7 +520,7 @@ func (h *HTTPHandler) publishTrigger(
 			msgID = "http-idem-" + h.def.ID + "-" + hv
 		}
 	}
-	_, err = h.js.Publish(
+	_, err = h.tp.JSPublish(
 		ctx, evt.NATSSubject(), evtBytes,
 		jetstream.WithMsgID(msgID),
 	)

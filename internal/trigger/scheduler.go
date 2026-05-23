@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -29,6 +30,7 @@ import (
 type Scheduler struct {
 	nc          *nats.Conn
 	js          jetstream.JetStream
+	tp          *natsutil.TracingPublisher
 	stateKV     jetstream.KeyValue
 	triggers    map[string]TriggerDef
 	mu          sync.RWMutex
@@ -60,6 +62,7 @@ func NewScheduler(nc *nats.Conn) (*Scheduler, error) {
 	return &Scheduler{
 		nc:        nc,
 		js:        js,
+		tp:        natsutil.NewTracingPublisher(nc, js),
 		stateKV:   kv,
 		triggers:  make(map[string]TriggerDef),
 		lastFired: make(map[string]time.Time),
@@ -427,7 +430,7 @@ func (s *Scheduler) fireWorkflow(
 	minuteTimestamp := now.Unix() / 60
 	msgID := fmt.Sprintf("trigger.%s.%d", def.ID, minuteTimestamp)
 
-	_, err = s.js.Publish(
+	_, err = s.tp.JSPublish(
 		ctx, evt.NATSSubject(), evtBytes,
 		jetstream.WithMsgID(msgID),
 	)
@@ -475,7 +478,7 @@ func (s *Scheduler) publishTriggerFire(
 		"trigger.%s.%d.fire", def.ID, minuteTimestamp,
 	)
 	subject := fmt.Sprintf("trigger.fire.%s", def.ID)
-	_, err = s.js.Publish(
+	_, err = s.tp.JSPublish(
 		context.Background(), subject, fireBytes,
 		jetstream.WithMsgID(fireMsgID),
 	)

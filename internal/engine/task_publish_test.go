@@ -85,7 +85,8 @@ func TestEnqueueReadySteps_AtomicPublish(t *testing.T) {
 			"b": {Status: dag.StepStatusPending},
 		},
 	}
-	err = enqueueReadySteps(context.Background(), js, wfDef, run)
+	tp := natsutil.NewTracingPublisher(nc, js)
+	err = enqueueReadySteps(context.Background(), js, tp, wfDef, run)
 	if err != nil {
 		t.Fatalf("enqueueReadySteps: %v", err)
 	}

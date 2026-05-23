@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/httpenvelope"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -21,10 +22,13 @@ import (
 
 // WebhookHandler implements http.Handler for webhook triggers.
 // Validates HMAC-SHA256 signatures, enforces 1 MB body limit, and publishes
-// workflow.started events to JetStream.
+// workflow.started events to JetStream. tp wraps the publish path so
+// W3C trace context auto-flows from the inbound request into the
+// workflow.started event header (#334).
 type WebhookHandler struct {
 	nc  *nats.Conn
 	js  jetstream.JetStream
+	tp  *natsutil.TracingPublisher
 	def TriggerDef
 }
 
@@ -50,6 +54,7 @@ func NewWebhookHandler(nc *nats.Conn, def TriggerDef) *WebhookHandler {
 	return &WebhookHandler{
 		nc:  nc,
 		js:  js,
+		tp:  natsutil.NewTracingPublisher(nc, js),
 		def: def,
 	}
 }
@@ -188,7 +193,7 @@ func (h *WebhookHandler) publishWorkflowEvent(
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
-	_, err = h.js.Publish(ctx, evt.NATSSubject(), evtBytes)
+	_, err = h.tp.JSPublish(ctx, evt.NATSSubject(), evtBytes)
 	if err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}

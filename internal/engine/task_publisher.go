@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/observe"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -39,8 +39,13 @@ func buildTaskMsg(
 
 // TaskPublisher handles all task dispatch: rate limiting,
 // concurrency acquisition, sticky routing, and NATS publish.
+// The pub field is the TracingPublisher wrapper (#334) — it
+// auto-injects W3C trace context on every outgoing message.
+// js is retained for non-publish JetStream operations
+// (atomic-batch publish via jetstreamext, KV access).
 type TaskPublisher struct {
 	js          jetstream.JetStream
+	pub         *natsutil.TracingPublisher
 	rateLimiter *RateLimiter
 	admission   *AdmissionController
 	sticky      *StickyRouter
@@ -59,8 +64,10 @@ type TaskPublisher struct {
 }
 
 // NewTaskPublisher creates a TaskPublisher with the given deps.
+// pub is required for trace-context-injecting publish (#334).
 func NewTaskPublisher(
 	js jetstream.JetStream,
+	pub *natsutil.TracingPublisher,
 	rateLimiter *RateLimiter,
 	admission *AdmissionController,
 	sticky *StickyRouter,
@@ -74,6 +81,9 @@ func NewTaskPublisher(
 	if js == nil {
 		panic("NewTaskPublisher: js must not be nil")
 	}
+	if pub == nil {
+		panic("NewTaskPublisher: pub must not be nil")
+	}
 	if tracer == nil {
 		panic("NewTaskPublisher: tracer must not be nil")
 	}
@@ -84,6 +94,7 @@ func NewTaskPublisher(
 	}
 	return &TaskPublisher{
 		js:            js,
+		pub:           pub,
 		rateLimiter:   rateLimiter,
 		admission:     admission,
 		sticky:        sticky,
@@ -347,8 +358,7 @@ func (tp *TaskPublisher) doPublish(
 	msgID := runID + "." + step.ID + ".queued"
 	subject := tp.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	observe.InjectTraceContext(ctx, msg, nil)
-	_, err = tp.js.PublishMsg(ctx, msg)
+	_, err = tp.pub.JSPublishMsg(ctx, msg)
 	if err != nil {
 		return err
 	}
@@ -401,8 +411,7 @@ func (tp *TaskPublisher) PublishIteration(
 	)
 	subject := tp.stepSubject(step, runID)
 	msg := buildTaskMsg(subject, data, msgID)
-	observe.InjectTraceContext(ctx, msg, nil)
-	_, err = tp.js.PublishMsg(ctx, msg)
+	_, err = tp.pub.JSPublishMsg(ctx, msg)
 	if err != nil {
 		return err
 	}

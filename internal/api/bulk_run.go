@@ -11,7 +11,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/runid"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
@@ -141,16 +140,8 @@ func (s *Service) publishBulkRuns(
 				"Nats-Msg-Id": {evt.NATSMsgID()},
 			},
 		}
-		observe.InjectTraceContext(ctx, msg, &evt)
-		data, err := evt.Marshal()
-		if err != nil {
-			return BulkRunResponse{
-				RunIDs: runIDs, Total: len(runIDs),
-			}, err
-		}
-		msg.Data = data
-		if _, err := s.js.PublishMsg(
-			ctx, msg,
+		if _, err := s.tp.JSPublishMsgEvent(
+			ctx, msg, &evt,
 		); err != nil {
 			return BulkRunResponse{
 				RunIDs: runIDs, Total: len(runIDs),
