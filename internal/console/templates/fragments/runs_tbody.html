@@ -12,8 +12,9 @@
               data-sidesheet-target
               data-on:click="@get('/console/api/runs/{{.RunID}}/sheet')">Inspect</button>
     </td>
+    {{template "row-chevron"}}
   </tr>
   {{else}}
-  <tr id="run-row-empty"><td colspan="7" class="console-empty">no runs match these filters</td></tr>
+  <tr id="run-row-empty"><td colspan="8" class="console-empty">no runs match these filters</td></tr>
   {{end}}
 </tbody>{{end}}
