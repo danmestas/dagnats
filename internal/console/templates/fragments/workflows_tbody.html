@@ -1,7 +1,7 @@
 {{define "workflows-tbody"}}{{$readonly := .ReadOnly}}{{$csrf := .CSRFToken}}<tbody id="workflows-tbody">
   {{range .Rows}}
   <tr>
-    <td><a href="/console/workflows/{{.Name}}">{{.Name}}</a></td>
+    <td class="workflow-id"><a href="/console/workflows/{{.Name}}">{{.Name}}</a></td>
     <td><span class="badge badge-outline">{{.Version}}</span></td>
     <td>{{.StepCount}}</td>
     <td>{{.TriggerCount}}</td>
