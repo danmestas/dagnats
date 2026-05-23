@@ -76,4 +76,5 @@ var assetsFS embed.FS
 //go:embed templates/components/side_sheet.html
 //go:embed templates/components/page_header.html
 //go:embed templates/components/empty_state.html
+//go:embed templates/components/row_chevron.html
 var templatesFS embed.FS

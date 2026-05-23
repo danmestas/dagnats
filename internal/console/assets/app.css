@@ -376,6 +376,31 @@ a:hover { text-decoration: underline; }
 }
 .console-table tbody tr:last-child td { border-bottom: 0; }
 
+/* Drill-affordance chevron on every drillable list row (#319, R7).
+   The chevron sits in a narrow rightmost cell, muted by default and
+   tracks with row hover by sliding 1-2px right + brightening. The
+   partial is dumb (single line, no logic) — tbodies that have inline
+   actions (DLQ retry/discard) simply do not include it. */
+.row-chevron-cell {
+  width: 1.5rem;
+  text-align: right;
+  color: var(--text-secondary);
+  padding-left: var(--space-1);
+  padding-right: var(--space-3);
+}
+.row-chevron {
+  display: inline-block;
+  font-size: 1.1em;
+  line-height: 1;
+  color: var(--text-secondary);
+  transition: transform 120ms ease-out, color 120ms ease-out;
+  will-change: transform;
+}
+.console-table tbody tr:hover .row-chevron {
+  transform: translateX(2px);
+  color: var(--text-primary);
+}
+
 /* Status badges. */
 .badge {
   display: inline-flex;
