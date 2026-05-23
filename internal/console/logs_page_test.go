@@ -31,6 +31,7 @@ import (
 // package. Tests seed it with the records they want to assert against.
 type fakeLogRing struct {
 	records []slog.Record
+	cleared int
 }
 
 func (f *fakeLogRing) Snapshot() []slog.Record {
@@ -45,6 +46,14 @@ func (f *fakeLogRing) Subscribe(_ context.Context) (<-chan slog.Record, func()) 
 	return ch, func() {}
 }
 
+// Clear resets the seeded records so the test assertions match the
+// behaviour the production ring promises (Snapshot() empty after
+// Clear). cleared is bumped so tests can assert the call ran.
+func (f *fakeLogRing) Clear() {
+	f.records = nil
+	f.cleared++
+}
+
 // mountWithLogRing builds a console handler with a LogTailSource
 // attached. fake is allowed to be nil for the empty-state path.
 func mountWithLogRing(t *testing.T, fake LogTailSource) http.Handler {
@@ -52,6 +61,33 @@ func mountWithLogRing(t *testing.T, fake LogTailSource) http.Handler {
 	return Mount(Config{
 		HTTPAddr: "127.0.0.1:0",
 		AuthMode: AuthLoopback,
+		Build:    "test",
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Data:     newFakeDS(),
+		LogRing:  fake,
+	})
+}
+
+// mountWithLogRingAuth boots the console under AuthForwarded so the
+// CSRF middleware fires — needed for the Clear endpoint tests that
+// must verify the token is enforced.
+func mountWithLogRingAuth(
+	t *testing.T, fake LogTailSource, mode AuthMode,
+) http.Handler {
+	t.Helper()
+	if _, _, err := LoadCSRFSecret(
+		"test-secret-fixed-32-bytes-fixed-",
+	); err != nil {
+		t.Fatalf("LoadCSRFSecret: %v", err)
+	}
+	password := ""
+	if mode == AuthBasic {
+		password = "pw"
+	}
+	return Mount(Config{
+		HTTPAddr: "10.0.0.1:9999",
+		AuthMode: mode,
+		Password: password,
 		Build:    "test",
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Data:     newFakeDS(),
@@ -205,5 +241,139 @@ func TestLogsPage_SeverityFilter(t *testing.T) {
 	}
 	if strings.Contains(got, "info msg") {
 		t.Fatalf("info row leaked through severity=warn")
+	}
+}
+
+// TestLogsPage_ExportEndpoint validates GET /console/logs/export
+// returns a non-empty plain-text body with one line per snapshot
+// entry. Methodology: seed 3 records, GET, count newline-terminated
+// lines, assert line count matches Snapshot() length and the first
+// line carries the level + source projection the brief specifies.
+func TestLogsPage_ExportEndpoint(t *testing.T) {
+	t.Parallel()
+	base := time.Now()
+	fake := &fakeLogRing{
+		records: []slog.Record{
+			seedRecord(base, -3*time.Second, slog.LevelInfo, "first"),
+			seedRecord(base, -2*time.Second, slog.LevelWarn, "second"),
+			seedRecord(base, -1*time.Second, slog.LevelError, "third"),
+		},
+	}
+	srv := httptest.NewServer(mountWithLogRing(t, fake))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/console/logs/export")
+	if err != nil {
+		t.Fatalf("GET /console/logs/export: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("Content-Type = %q, want text/plain", ct)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(body) == 0 {
+		t.Fatalf("export body is empty")
+	}
+	// Positive: line count matches snapshot length.
+	lines := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
+	if got, want := len(lines), len(fake.records); got != want {
+		t.Fatalf("line count = %d, want %d\nbody=%s", got, want, body)
+	}
+	// Positive: first line carries the level + message projection.
+	if !strings.Contains(lines[0], "[INFO]") || !strings.Contains(lines[0], "first") {
+		t.Fatalf("first line missing level/message: %q", lines[0])
+	}
+	// Negative space: format=json switches content type.
+	respJSON, err := http.Get(srv.URL + "/console/logs/export?format=json")
+	if err != nil {
+		t.Fatalf("GET export?format=json: %v", err)
+	}
+	defer respJSON.Body.Close()
+	if ct := respJSON.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("json Content-Type = %q, want application/json", ct)
+	}
+}
+
+// TestLogsPage_ClearEndpoint validates POST /console/logs/clear with a
+// loopback Mount (no CSRF) drains the ring and returns 204.
+// Methodology: seed 3 records, POST, verify Snapshot() is empty and
+// cleared counter bumped.
+func TestLogsPage_ClearEndpoint(t *testing.T) {
+	t.Parallel()
+	base := time.Now()
+	fake := &fakeLogRing{
+		records: []slog.Record{
+			seedRecord(base, -3*time.Second, slog.LevelInfo, "a"),
+			seedRecord(base, -2*time.Second, slog.LevelInfo, "b"),
+			seedRecord(base, -1*time.Second, slog.LevelInfo, "c"),
+		},
+	}
+	srv := httptest.NewServer(mountWithLogRing(t, fake))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/console/logs/clear",
+		"application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatalf("POST clear: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	// Positive: ring drained.
+	if got := len(fake.Snapshot()); got != 0 {
+		t.Fatalf("post-clear snapshot len = %d, want 0", got)
+	}
+	// Negative space: Clear() was called exactly once.
+	if fake.cleared != 1 {
+		t.Fatalf("cleared = %d, want 1", fake.cleared)
+	}
+}
+
+// TestLogsPage_ClearRequiresCSRF validates a non-loopback Mount
+// rejects POSTs without an X-CSRF-Token header. Methodology: boot
+// AuthForwarded, POST without token, assert 403 and Clear() never
+// ran.
+func TestLogsPage_ClearRequiresCSRF(t *testing.T) {
+	fake := &fakeLogRing{
+		records: []slog.Record{
+			seedRecord(time.Now(), 0, slog.LevelInfo, "only"),
+		},
+	}
+	h := mountWithLogRingAuth(t, fake, AuthForwarded)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/console/logs/clear", nil)
+	req.Header.Set("X-Forwarded-User", "alice")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "csrf_invalid") {
+		t.Fatalf("expected csrf_invalid; body=%s", rr.Body.String())
+	}
+	// Negative space: Clear() must NOT have run.
+	if fake.cleared != 0 {
+		t.Fatalf("Clear() ran despite missing CSRF: cleared=%d", fake.cleared)
+	}
+	// Positive: with a valid token, the call succeeds.
+	good := CSRFTokenForActor(Actor{User: "alice", Source: AuthForwarded})
+	if good == "" {
+		t.Fatalf("expected non-empty CSRF token")
+	}
+	rr2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/console/logs/clear", nil)
+	req2.Header.Set("X-Forwarded-User", "alice")
+	req2.Header.Set("X-CSRF-Token", good)
+	h.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusNoContent {
+		t.Fatalf("status with valid token = %d, want 204; body=%s",
+			rr2.Code, rr2.Body.String())
+	}
+	if fake.cleared != 1 {
+		t.Fatalf("cleared after valid POST = %d, want 1", fake.cleared)
 	}
 }

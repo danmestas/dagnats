@@ -49,6 +49,10 @@ type LogsPageView struct {
 	WiredUp        bool // false when cfg.LogRing is nil → empty state.
 	WiredUpNote    string
 	RetentionNote  string
+	// CSRFToken is the per-actor HMAC the Clear button POSTs back via
+	// the X-CSRF-Token header. Empty in loopback auth mode (the
+	// middleware bypasses CSRF there).
+	CSRFToken string
 }
 
 // LogRow is one rendered log line. The fields mirror what the
@@ -92,6 +96,7 @@ func servePageLogs(
 		panic("servePageLogs: r is nil")
 	}
 	view := buildLogsView(cfg, r.URL.Query())
+	view.CSRFToken = csrfTokenFor(r)
 	renderPage(w, r, ts, cfg, "logs", pageData{
 		Title:   "Logs",
 		Section: "logs",
@@ -296,6 +301,22 @@ func serveSSELogs(w http.ResponseWriter, r *http.Request, cfg Config) {
 			if !ok {
 				return
 			}
+			// Sentinel: Time.IsZero() means the ring was Clear()'d by
+			// an operator. Reset the tbody on every connected client so
+			// the live tail starts fresh.
+			if rec.Time.IsZero() {
+				if err := sse.PatchElements(`<tr class="empty-row">`+
+					`<td colspan="4">No entries. Live tail is active — `+
+					`entries appear here as the engine emits them.`+
+					`</td></tr>`,
+					datastar.WithSelectorID("logs-tbody"),
+					datastar.WithModeInner(),
+				); err != nil {
+					cfg.Logger.Warn("console: logs sse clear patch", "err", err)
+					return
+				}
+				continue
+			}
 			row := projectLogRecord(rec, time.Now())
 			if !logRowMatchesFilters(row, severity, traceID, search) {
 				continue
@@ -310,6 +331,117 @@ func serveSSELogs(w http.ResponseWriter, r *http.Request, cfg Config) {
 			}
 		}
 	}
+}
+
+// serveLogsExport streams the current Snapshot() as plain text or
+// JSON. One row per line: `<RFC3339> [<level>] <source>: <message>`.
+// JSON format emits a JSON array of objects with the same projection
+// the page table uses. Streamed via http.ResponseWriter directly so
+// even the 10k-entry maximum does not build the entire string in mem.
+func serveLogsExport(w http.ResponseWriter, r *http.Request, cfg Config) {
+	if w == nil {
+		panic("serveLogsExport: w is nil")
+	}
+	if r == nil {
+		panic("serveLogsExport: r is nil")
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if cfg.LogRing == nil {
+		http.Error(w, "log tail not wired", http.StatusServiceUnavailable)
+		return
+	}
+	records := cfg.LogRing.Snapshot()
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "json" {
+		serveLogsExportJSON(w, records)
+		return
+	}
+	serveLogsExportText(w, records)
+}
+
+// serveLogsExportText writes the records as one line per record. We
+// write directly to w to avoid building a buffer the size of the ring;
+// the projection runs per-record so peak heap stays small.
+func serveLogsExportText(w http.ResponseWriter, records []slog.Record) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="dagnats-logs.txt"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	const recordMax = 10_000 // matches logring.DefaultCapEntries.
+	now := time.Now()
+	for i := 0; i < len(records) && i < recordMax; i++ {
+		row := projectLogRecord(records[i], now)
+		line := records[i].Time.UTC().Format(time.RFC3339Nano) +
+			" [" + row.LevelText + "] " + row.Source + ": " +
+			row.Message + "\n"
+		if _, err := w.Write([]byte(line)); err != nil {
+			return
+		}
+	}
+}
+
+// serveLogsExportJSON writes records as a JSON array. Same projection
+// the page-render path uses so the exported shape is predictable.
+func serveLogsExportJSON(w http.ResponseWriter, records []slog.Record) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="dagnats-logs.json"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte("[")); err != nil {
+		return
+	}
+	const recordMax = 10_000
+	now := time.Now()
+	enc := json.NewEncoder(w)
+	for i := 0; i < len(records) && i < recordMax; i++ {
+		row := projectLogRecord(records[i], now)
+		if i > 0 {
+			if _, err := w.Write([]byte(",")); err != nil {
+				return
+			}
+		}
+		obj := map[string]any{
+			"time":     records[i].Time.UTC().Format(time.RFC3339Nano),
+			"level":    row.Level,
+			"source":   row.Source,
+			"message":  row.Message,
+			"trace_id": row.TraceID,
+		}
+		if err := enc.Encode(obj); err != nil {
+			return
+		}
+	}
+	_, _ = w.Write([]byte("]"))
+}
+
+// serveLogsClear drops every retained record via LogTailSource.Clear()
+// and returns 204. CSRF is enforced by the wrapping csrfMiddleware for
+// non-loopback auth modes. The Clear() implementation also broadcasts
+// a sentinel to subscribers so live SSE clients reset their tables.
+func serveLogsClear(w http.ResponseWriter, r *http.Request, cfg Config) {
+	if w == nil {
+		panic("serveLogsClear: w is nil")
+	}
+	if r == nil {
+		panic("serveLogsClear: r is nil")
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if cfg.LogRing == nil {
+		http.Error(w, "log tail not wired", http.StatusServiceUnavailable)
+		return
+	}
+	cfg.LogRing.Clear()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // renderLogRowHTML emits the same <tr> shape the initial pageload

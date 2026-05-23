@@ -25,6 +25,7 @@
     ns.__pauseBtn = root.querySelector("#logs-pause-resume");
     ns.__count = root.querySelector("#logs-count");
     ns.__filtersForm = root.querySelector("#logs-filters");
+    ns.__clearBtn = root.querySelector("#logs-clear");
 
     if (ns.__pauseBtn) {
       ns.__pauseBtn.addEventListener("click", function (e) {
@@ -36,7 +37,60 @@
         }
       });
     }
+    if (ns.__clearBtn) {
+      ns.__clearBtn.addEventListener("click", function (e) {
+        e.preventDefault();
+        ns.clearRing();
+      });
+    }
     ns.start();
+  };
+
+  // clearRing POSTs /console/logs/clear with the CSRF header pulled
+  // from the button data attribute. On 204 the SSE sentinel arrives
+  // and resets every connected client's tbody — including ours.
+  ns.clearRing = function () {
+    if (!ns.__clearBtn) return;
+    var token = ns.__clearBtn.getAttribute("data-csrf-token") || "";
+    var headers = { "Accept": "application/json" };
+    if (token) headers["X-CSRF-Token"] = token;
+    fetch("/console/logs/clear", {
+      method: "POST",
+      headers: headers,
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (resp.status !== 204 && !resp.ok) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: {
+            level: "error",
+            message: "clear failed: " + resp.status,
+          },
+        }));
+        return;
+      }
+      // Local fallback in case the SSE sentinel is delayed or the
+      // operator paused the live tail. The server's sentinel will
+      // arrive and re-render the empty-state row idempotently.
+      ns.resetTbody();
+    }).catch(function (err) {
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: "clear failed: " + (err && err.message || err),
+        },
+      }));
+    });
+  };
+
+  // resetTbody empties the rendered rows and shows the placeholder.
+  // Idempotent — safe to call from both the local POST callback and
+  // the SSE sentinel path.
+  ns.resetTbody = function () {
+    if (!ns.__tbody) return;
+    ns.__tbody.innerHTML =
+      '<tr class="empty-row"><td colspan="4">No entries. Live tail is ' +
+      'active — entries appear here as the engine emits them.</td></tr>';
+    if (ns.__count) ns.__count.textContent = "0 / 0";
   };
 
   ns.queryString = function () {

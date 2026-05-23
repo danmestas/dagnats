@@ -112,8 +112,15 @@ type LogTailSource interface {
 	// copy of every record currently retained.
 	Snapshot() []slog.Record
 	// Subscribe returns a channel that receives every record handled
-	// after the call. The cleanup func unsubscribes.
+	// after the call. The cleanup func unsubscribes. The ring may
+	// broadcast a sentinel slog.Record{} (Time.IsZero()==true) to
+	// signal that Clear() was called — SSE handlers translate that
+	// into a tbody reset for live operator browsers.
 	Subscribe(ctx context.Context) (<-chan slog.Record, func())
+	// Clear drops every retained record. Future records still flow
+	// through; only the retained buffer is wiped. Operator-driven
+	// via the Logs page Clear button.
+	Clear()
 }
 
 // tombstones returns the configured tombstone store. Internal helper —
@@ -249,6 +256,14 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/logs",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageLogs(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/logs/export",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveLogsExport(w, r, cfg)
+		})
+	mux.HandleFunc("/console/logs/clear",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveLogsClear(w, r, cfg)
 		})
 	mux.HandleFunc("/console/sse/logs",
 		func(w http.ResponseWriter, r *http.Request) {

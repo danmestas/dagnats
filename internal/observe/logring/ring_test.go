@@ -211,6 +211,56 @@ func TestLogRing_PassThrough(t *testing.T) {
 	}
 }
 
+func TestLogRing_Clear(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	h := NewWithOptions(silentInner(), Options{
+		CapEntries: 100,
+		MaxAge:     time.Hour,
+		Now:        func() time.Time { return now },
+	})
+	// Populate with a small batch.
+	for i := 0; i < 5; i++ {
+		_ = h.Handle(context.Background(), makeRecord(
+			now, time.Duration(i)*time.Millisecond,
+			"r", slog.LevelInfo,
+		))
+	}
+	if got := len(h.Snapshot()); got != 5 {
+		t.Fatalf("pre-clear Snapshot len = %d, want 5", got)
+	}
+	// Subscribe before Clear so we can verify the sentinel fans out.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, cleanup := h.Subscribe(ctx)
+	defer cleanup()
+	h.Clear()
+	// Positive: snapshot is now empty.
+	if got := len(h.Snapshot()); got != 0 {
+		t.Fatalf("post-clear Snapshot len = %d, want 0", got)
+	}
+	// Sentinel: subscriber receives a zero-time record signalling clear.
+	select {
+	case rec, ok := <-ch:
+		if !ok {
+			t.Fatalf("subscriber channel closed instead of clear sentinel")
+		}
+		if !rec.Time.IsZero() {
+			t.Fatalf("sentinel Time = %v, want zero", rec.Time)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("did not receive clear sentinel within 100ms")
+	}
+	// Negative space: future appends after Clear() still land in the ring.
+	_ = h.Handle(context.Background(), makeRecord(
+		now, 100*time.Millisecond, "after-clear", slog.LevelInfo,
+	))
+	snap := h.Snapshot()
+	if len(snap) != 1 || snap[0].Message != "after-clear" {
+		t.Fatalf("post-clear append failed: snap=%v", snap)
+	}
+}
+
 func TestLogRing_SubscribeContextCancelCleansUp(t *testing.T) {
 	t.Parallel()
 	h := NewWithOptions(silentInner(), Options{

@@ -30,7 +30,22 @@ type Handler interface {
 	// handler — fairness wins over delivery guarantees). The returned
 	// cleanup func unsubscribes and closes the channel; it is safe
 	// to call multiple times. Cancelling ctx also triggers cleanup.
+	//
+	// Clear() emits a sentinel record with Time.IsZero()==true to
+	// every active subscriber so SSE handlers can broadcast a tbody
+	// reset to the operator browsers without the ring widening its
+	// interface with a second channel. Consumers of Subscribe must
+	// either treat zero-time records as a clear signal or skip them.
 	Subscribe(ctx context.Context) (<-chan slog.Record, func())
+
+	// Clear drops every retained record. Future records still flow
+	// through Handle as normal; only the retained buffer is wiped.
+	// This is an operator-driven action — the console exposes a
+	// button that POSTs /console/logs/clear; nothing in the engine
+	// hot-path calls Clear. Implementations MUST also broadcast a
+	// sentinel slog.Record{} (zero value) to every active subscriber
+	// so live SSE clients can reset their tables in the same beat.
+	Clear()
 }
 
 // Default tuning constants. The package-level defaults are referenced
@@ -245,6 +260,28 @@ func (h *ringHandler) pruneByAgeLocked() {
 	}
 	if drop > 0 {
 		h.records = h.records[drop:]
+	}
+}
+
+// Clear drops every retained record and broadcasts a sentinel
+// slog.Record{} (Time.IsZero()) to every subscriber. SSE consumers
+// see the sentinel and reset their tbody so a clear initiated by
+// one operator surfaces in every connected client.
+func (h *ringHandler) Clear() {
+	if h == nil {
+		panic("ringHandler.Clear: receiver is nil")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = h.records[:0]
+	for id, ch := range h.subscribers {
+		select {
+		case ch <- slog.Record{}:
+		default:
+			// Slow subscriber. Drop the clear signal on their channel;
+			// they will reconcile on the next pageload Snapshot().
+			_ = id
+		}
 	}
 }
 

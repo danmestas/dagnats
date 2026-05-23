@@ -13,43 +13,50 @@
 
     <form class="logs-toolbar" method="GET" action="/console/logs"
           id="logs-filters">
-      <label class="logs-field">
-        <span>Severity</span>
-        <select name="severity" class="select" id="logs-severity">
-          <option value=""{{if eq .SeverityFilter ""}} selected{{end}}>All severities</option>
-          <option value="debug"{{if eq .SeverityFilter "debug"}} selected{{end}}>DEBUG</option>
-          <option value="info"{{if eq .SeverityFilter "info"}} selected{{end}}>INFO</option>
-          <option value="warn"{{if eq .SeverityFilter "warn"}} selected{{end}}>WARN</option>
-          <option value="error"{{if eq .SeverityFilter "error"}} selected{{end}}>ERROR</option>
-        </select>
-      </label>
-      <label class="logs-field logs-field-search">
-        <span>Search</span>
-        <input class="input" type="search" name="q"
-               id="logs-search"
-               value="{{.SearchFilter}}"
-               placeholder="Trace ID, source, or message..."
-               autocomplete="off">
-      </label>
-      <label class="logs-field logs-field-trace">
-        <span>Trace ID</span>
-        <input class="input mono" type="text" name="trace_id"
-               id="logs-trace-id"
-               value="{{.TraceIDFilter}}"
-               placeholder="32-hex"
-               autocomplete="off">
-      </label>
-      <button type="submit" class="btn btn-secondary">Apply</button>
-      <button type="button" class="btn btn-ghost"
-              id="logs-pause-resume"
-              data-paused="false"
-              aria-pressed="false">
-        <span data-pause-label>Pause</span>
-      </button>
+      <select name="severity" class="select logs-toolbar-severity"
+              id="logs-severity"
+              aria-label="Severity filter">
+        <option value=""{{if eq .SeverityFilter ""}} selected{{end}}>All severities</option>
+        <option value="debug"{{if eq .SeverityFilter "debug"}} selected{{end}}>DEBUG</option>
+        <option value="info"{{if eq .SeverityFilter "info"}} selected{{end}}>INFO</option>
+        <option value="warn"{{if eq .SeverityFilter "warn"}} selected{{end}}>WARN</option>
+        <option value="error"{{if eq .SeverityFilter "error"}} selected{{end}}>ERROR</option>
+      </select>
+      <input class="input logs-toolbar-search" type="search" name="q"
+             id="logs-search"
+             value="{{.SearchFilter}}"
+             placeholder="Search messages, sources, attrs..."
+             autocomplete="off"
+             aria-label="Search">
+      <input class="input mono logs-toolbar-trace" type="text" name="trace_id"
+             id="logs-trace-id"
+             value="{{.TraceIDFilter}}"
+             placeholder="trace_id (32-hex)"
+             autocomplete="off"
+             aria-label="Trace ID filter">
+      <div class="logs-toolbar-actions" role="group" aria-label="Log actions">
+        <button type="submit" class="btn btn-secondary">Apply</button>
+        <button type="button" class="btn btn-ghost"
+                id="logs-pause-resume"
+                data-paused="false"
+                aria-pressed="false">
+          <span data-pause-label>Pause</span>
+        </button>
+        <a class="btn btn-ghost"
+           id="logs-export"
+           href="/console/logs/export"
+           download="dagnats-logs.txt"
+           role="button">Export</a>
+        <button type="button" class="btn btn-ghost logs-action-clear"
+                id="logs-clear"
+                data-csrf-token="{{.CSRFToken}}">Clear</button>
+      </div>
     </form>
 
     {{if .SeverityCounts}}
-    <div class="logs-severity-chips" role="status" aria-label="Severity counts">
+    <div class="logs-severity-chip-strip"
+         role="status"
+         aria-label="Severity counts">
       {{range .SeverityCounts}}
       <span class="logs-chip logs-chip-{{.Level}}"
             data-level="{{.Level}}"
