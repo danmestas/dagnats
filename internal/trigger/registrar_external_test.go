@@ -11,6 +11,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -433,5 +434,305 @@ func TestExternalRegistrar_Q4_StickyOwnerReceivesTask(t *testing.T) {
 	// Negative: the unrelated kind's subscriber was NOT addressed.
 	if got := otherHits.Load(); got != 0 {
 		t.Fatalf("other kind received %d activations, want 0", got)
+	}
+}
+
+// putTriggerDef writes a TriggerDef directly into the triggers KV.
+// Test helper for the #351 version-bump tests.
+func putTriggerDef(t *testing.T, nc *nats.Conn, def TriggerDef) {
+	t.Helper()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 2*time.Second,
+	)
+	defer cancel()
+	kv, err := js.KeyValue(ctx, "triggers")
+	if err != nil {
+		t.Fatalf("KeyValue(triggers): %v", err)
+	}
+	data, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal def: %v", err)
+	}
+	if _, err := kv.Put(ctx, def.ID, data); err != nil {
+		t.Fatalf("triggers Put: %v", err)
+	}
+}
+
+// TestRegisterTriggerType_IdempotentWithVersion asserts the short-circuit
+// path (#351): identical Version on re-register skips the live-trigger
+// scan entirely. Verified by installing the scan counter and asserting
+// it is never invoked on the second ack.
+func TestRegisterTriggerType_IdempotentWithVersion(t *testing.T) {
+	nc, svc := startExternalSvc(t)
+
+	tdef := TriggerTypeDef{
+		Name:          "fs.watch",
+		OwnerWorkerID: "worker-fs-1",
+		ConfigSchema:  json.RawMessage(`{"type":"object"}`),
+		Version:       "1.0.0",
+		RegisteredAt:  time.Now().UTC(),
+	}
+	putTriggerType(t, nc, tdef)
+
+	req := RegisterTriggerTypeRequest{
+		Name:          tdef.Name,
+		OwnerWorkerID: tdef.OwnerWorkerID,
+	}
+	if resp := requestAck(t, nc, req); resp.Error != "" {
+		t.Fatalf("first ack errored: %q", resp.Error)
+	}
+
+	// Install the scan counter AFTER the first ack so the boot-time
+	// fire-existing scan does not pollute the count.
+	var scanCalls atomic.Int32
+	oldCounter := liveTriggersScanCounter
+	liveTriggersScanCounter = func() { scanCalls.Add(1) }
+	t.Cleanup(func() { liveTriggersScanCounter = oldCounter })
+
+	// Second ack with identical version: must short-circuit before any
+	// KV scan.
+	if resp := requestAck(t, nc, req); resp.Error != "" {
+		t.Fatalf("second ack errored: %q", resp.Error)
+	}
+	if got := scanCalls.Load(); got != 0 {
+		t.Fatalf("scan counter = %d on version-match short-circuit, "+
+			"want 0", got)
+	}
+
+	// Positive: registrar still installed; pointer identity preserved.
+	svc.mu.RLock()
+	reg := svc.registrars[externalKindPrefix+tdef.Name]
+	svc.mu.RUnlock()
+	if reg == nil {
+		t.Fatal("registrar disappeared after idempotent ack")
+	}
+	ext, ok := reg.(*externalRegistrar)
+	if !ok {
+		t.Fatalf("registrar is %T, want *externalRegistrar", reg)
+	}
+	if ext.version != "1.0.0" {
+		t.Fatalf("registrar.version = %q, want %q",
+			ext.version, "1.0.0")
+	}
+}
+
+// TestRegisterTriggerType_VersionBumpAllowedWhenNoLiveTriggers covers
+// the #351 happy-path overwrite: version differs, no live triggers
+// exist, registrar is replaced with the new version cleanly.
+func TestRegisterTriggerType_VersionBumpAllowedWhenNoLiveTriggers(
+	t *testing.T,
+) {
+	nc, svc := startExternalSvc(t)
+
+	tdef := TriggerTypeDef{
+		Name:          "fs.watch",
+		OwnerWorkerID: "worker-fs-1",
+		ConfigSchema:  json.RawMessage(`{"type":"object"}`),
+		Version:       "1.0.0",
+		RegisteredAt:  time.Now().UTC(),
+	}
+	putTriggerType(t, nc, tdef)
+	if resp := requestAck(t, nc, RegisterTriggerTypeRequest{
+		Name: tdef.Name, OwnerWorkerID: tdef.OwnerWorkerID,
+	}); resp.Error != "" {
+		t.Fatalf("v1 ack errored: %q", resp.Error)
+	}
+
+	// Bump version. Same schema bytes — only Version changes. With
+	// zero live triggers of this kind in the bucket, the second ack
+	// must succeed and the registrar must reflect the new version.
+	tdef.Version = "2.0.0"
+	putTriggerType(t, nc, tdef)
+	if resp := requestAck(t, nc, RegisterTriggerTypeRequest{
+		Name: tdef.Name, OwnerWorkerID: tdef.OwnerWorkerID,
+	}); resp.Error != "" {
+		t.Fatalf("v2 ack rejected with no live triggers: %q",
+			resp.Error)
+	}
+	svc.mu.RLock()
+	reg := svc.registrars[externalKindPrefix+tdef.Name]
+	svc.mu.RUnlock()
+	ext, ok := reg.(*externalRegistrar)
+	if !ok {
+		t.Fatalf("registrar is %T, want *externalRegistrar", reg)
+	}
+	if ext.version != "2.0.0" {
+		t.Fatalf("registrar.version = %q, want %q",
+			ext.version, "2.0.0")
+	}
+}
+
+// TestRegisterTriggerType_VersionBumpRejectedWithLiveTriggers covers
+// the #351 hard-error path: version differs and ≥1 live trigger of the
+// kind exists. Must reject with a clear error and leave the existing
+// registrar untouched.
+func TestRegisterTriggerType_VersionBumpRejectedWithLiveTriggers(
+	t *testing.T,
+) {
+	nc, svc := startExternalSvc(t)
+
+	const kind = "fs.watch"
+	// Stand up a fake owner worker so fireExistingEntries' Activate
+	// request has someone to talk to (otherwise it logs and skips,
+	// which is also fine — but the activate-reply makes the test
+	// less timing-sensitive).
+	sub, err := nc.Subscribe(
+		"_TRIGGER."+kind+".activate",
+		func(msg *nats.Msg) { _ = msg.Respond(nil) },
+	)
+	if err != nil {
+		t.Fatalf("subscribe activate: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	tdef := TriggerTypeDef{
+		Name:          kind,
+		OwnerWorkerID: "worker-fs-1",
+		ConfigSchema:  json.RawMessage(`{"type":"object"}`),
+		Version:       "1.0.0",
+		RegisteredAt:  time.Now().UTC(),
+	}
+	putTriggerType(t, nc, tdef)
+	if resp := requestAck(t, nc, RegisterTriggerTypeRequest{
+		Name: tdef.Name, OwnerWorkerID: tdef.OwnerWorkerID,
+	}); resp.Error != "" {
+		t.Fatalf("v1 ack errored: %q", resp.Error)
+	}
+
+	// Insert a live trigger of this kind.
+	putTriggerDef(t, nc, TriggerDef{
+		ID:         "live-1",
+		WorkflowID: "wf",
+		Enabled:    true,
+		External: &ExternalTriggerConfig{
+			Kind:   kind,
+			Config: json.RawMessage(`{"path":"/tmp"}`),
+		},
+	})
+
+	// Bump version. With ≥1 enabled live trigger, the ack must reject.
+	tdef.Version = "2.0.0"
+	putTriggerType(t, nc, tdef)
+	resp := requestAck(t, nc, RegisterTriggerTypeRequest{
+		Name: tdef.Name, OwnerWorkerID: tdef.OwnerWorkerID,
+	})
+	if resp.Error == "" {
+		t.Fatal("expected error on version bump with live triggers")
+	}
+	// Negative: the existing registrar must still be installed at the
+	// old version. Failed re-register cannot corrupt state.
+	svc.mu.RLock()
+	reg := svc.registrars[externalKindPrefix+tdef.Name]
+	svc.mu.RUnlock()
+	ext, ok := reg.(*externalRegistrar)
+	if !ok {
+		t.Fatalf("registrar is %T, want *externalRegistrar", reg)
+	}
+	if ext.version != "1.0.0" {
+		t.Fatalf("registrar.version = %q after failed bump, want %q",
+			ext.version, "1.0.0")
+	}
+}
+
+// TestHasLiveTriggersOfKind_EarlyReturn proves the scan stops at the
+// first matching entry rather than draining the whole bucket. We seed
+// 50 matching live triggers and assert the scan counter records exactly
+// 1 inspection.
+//
+// The KV's key-iteration order is unspecified, so the test only checks
+// the upper bound: scan stops at the first match, not "after key N".
+func TestHasLiveTriggersOfKind_EarlyReturn(t *testing.T) {
+	nc, svc := startExternalSvc(t)
+
+	const kind = "fs.watch"
+	for i := 0; i < 50; i++ {
+		id := fmt.Sprintf("live-%03d", i)
+		putTriggerDef(t, nc, TriggerDef{
+			ID:         id,
+			WorkflowID: "wf",
+			Enabled:    true,
+			External: &ExternalTriggerConfig{
+				Kind:   kind,
+				Config: json.RawMessage(`{}`),
+			},
+		})
+	}
+
+	var scanCalls atomic.Int32
+	oldCounter := liveTriggersScanCounter
+	liveTriggersScanCounter = func() { scanCalls.Add(1) }
+	t.Cleanup(func() { liveTriggersScanCounter = oldCounter })
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	has, err := svc.hasLiveTriggersOfKind(ctx, kind, liveTriggersScanMax)
+	if err != nil {
+		t.Fatalf("hasLiveTriggersOfKind: %v", err)
+	}
+	if !has {
+		t.Fatal("hasLiveTriggersOfKind = false, want true")
+	}
+	// Positive: scan stopped at the first match, so the counter is 1.
+	if got := scanCalls.Load(); got != 1 {
+		t.Fatalf("scan counter = %d, want 1 (early-return broken)", got)
+	}
+}
+
+// TestHasLiveTriggersOfKind_BoundedScan asserts the explicit scanMax
+// bound caps the inspection cost. We populate >scanMax non-matching
+// entries (different kind) and a small scanMax, then prove the scan
+// returns false within the bound. Running with the production
+// liveTriggersScanMax (10000) would make the test slow; we use a
+// smaller bound here — the bound is a parameter on
+// hasLiveTriggersOfKind precisely to make this testable.
+func TestHasLiveTriggersOfKind_BoundedScan(t *testing.T) {
+	nc, svc := startExternalSvc(t)
+
+	const kind = "fs.watch"
+	// Seed 50 entries of an UNRELATED kind. Scan must not return true.
+	for i := 0; i < 50; i++ {
+		id := fmt.Sprintf("other-%03d", i)
+		putTriggerDef(t, nc, TriggerDef{
+			ID:         id,
+			WorkflowID: "wf",
+			Enabled:    true,
+			External: &ExternalTriggerConfig{
+				Kind:   "other.kind",
+				Config: json.RawMessage(`{}`),
+			},
+		})
+	}
+
+	var scanCalls atomic.Int32
+	oldCounter := liveTriggersScanCounter
+	liveTriggersScanCounter = func() { scanCalls.Add(1) }
+	t.Cleanup(func() { liveTriggersScanCounter = oldCounter })
+
+	const scanMax = 10
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	has, err := svc.hasLiveTriggersOfKind(ctx, kind, scanMax)
+	if err != nil {
+		t.Fatalf("hasLiveTriggersOfKind: %v", err)
+	}
+	// Positive: no matching kind → no live triggers reported.
+	if has {
+		t.Fatal("hasLiveTriggersOfKind = true with no matching kind")
+	}
+	// Negative: the bound capped the scan. The counter must be at most
+	// scanMax (it's a strict upper bound). We allow equal to scanMax
+	// because the bound-check fires *after* the increment of the
+	// scanMax-th entry on the next iteration — see hasLiveTriggersOfKind.
+	if got := scanCalls.Load(); got > scanMax {
+		t.Fatalf("scan counter = %d, want ≤ %d (scanMax bound broken)",
+			got, scanMax)
 	}
 }

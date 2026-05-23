@@ -41,6 +41,17 @@ import (
 // RegisterTriggerType acknowledgements.
 const ackSubject = "_REGISTRY.trigger_types.ack"
 
+// liveTriggersScanMax bounds the KV scan that decides whether a
+// version-bump RegisterTriggerType is safe (#351). The scan returns
+// early on the first matching live trigger, so the bound only fires
+// when the bucket holds many irrelevant entries of other kinds.
+const liveTriggersScanMax = 10000
+
+// liveTriggersScanCounter is a test-only seam: when non-nil it is
+// incremented once per entry inspected by hasLiveTriggersOfKind. Tests
+// install one to prove the early-return contract.
+var liveTriggersScanCounter func()
+
 // RegisterTriggerTypeRequest is the wire shape workers send. Exported
 // so the worker SDK in Phase 2.4 can share the type.
 type RegisterTriggerTypeRequest struct {
@@ -164,6 +175,18 @@ func (ts *TriggerService) loadTriggerType(
 // first registration also fires Activate for any pre-existing matching
 // entries in the `triggers` KV bucket so worker restarts re-bind
 // in-flight triggers.
+//
+// Version semantics (#351, Phase 2.7):
+//   - same Owner + same Schema + same Version → idempotent no-op.
+//   - same Owner + same Schema + different Version + zero live
+//     triggers of that kind → registrar is replaced (overwrite ok).
+//   - same Owner + same Schema + different Version + ≥1 live trigger
+//     → hard error; operator must drain or migrate first.
+//
+// The KV scan is bounded (liveTriggersScanMax) and returns on the first
+// match, and it runs OUTSIDE ts.mu — releasing the lock before KV I/O
+// matches the #330 lock-ordering rule so KV latency can't pin the
+// registrars map.
 func (ts *TriggerService) installExternalRegistrar(
 	name string, tdef TriggerTypeDef,
 ) error {
@@ -178,35 +201,18 @@ func (ts *TriggerService) installExternalRegistrar(
 	ts.mu.Lock()
 	existing, ok := ts.registrars[key]
 	if ok {
-		// Idempotency: same kind already wired. Verify the bound
-		// owner matches; otherwise the worker fleet is in conflict
-		// and the operator needs to intervene.
 		existingExt, isExt := existing.(*externalRegistrar)
+		ts.mu.Unlock()
 		if !isExt {
-			ts.mu.Unlock()
 			return fmt.Errorf(
 				"registrar %q exists but is not external", key)
 		}
-		if existingExt.ownerWorkerID != tdef.OwnerWorkerID {
-			ts.mu.Unlock()
-			return fmt.Errorf(
-				"name %q already owned by %q (request from %q)",
-				name, existingExt.ownerWorkerID, tdef.OwnerWorkerID)
-		}
-		// Schema bytes must also match the original registration —
-		// workers re-registering with a different schema must drain
-		// in-flight triggers and unregister/re-register cleanly.
-		if !bytes.Equal(existingExt.configSchema, tdef.ConfigSchema) {
-			ts.mu.Unlock()
-			return fmt.Errorf(
-				"name %q schema mismatch on re-register", name)
-		}
-		ts.mu.Unlock()
-		return nil
+		return ts.reconcileExternalRegistrar(key, existingExt, tdef)
 	}
 
 	reg := newExternalRegistrar(
-		ts.nc, ts.triggerKV, name, tdef.OwnerWorkerID, tdef.ConfigSchema,
+		ts.nc, ts.triggerKV, name,
+		tdef.OwnerWorkerID, tdef.ConfigSchema, tdef.Version,
 	)
 	ts.registrars[key] = reg
 	ts.mu.Unlock()
@@ -216,6 +222,129 @@ func (ts *TriggerService) installExternalRegistrar(
 	// does not deadlock.
 	reg.fireExistingEntries(ts.ctx)
 	return nil
+}
+
+// reconcileExternalRegistrar handles re-registration of a kind whose
+// registrar already exists. Splits owner/schema conflict detection,
+// version short-circuit, and the bounded live-trigger scan into one
+// helper so installExternalRegistrar stays under the 70-line cap.
+//
+// Caller MUST NOT hold ts.mu — this function manages its own locking
+// and drops the lock around KV I/O (#330 lock-ordering rule).
+func (ts *TriggerService) reconcileExternalRegistrar(
+	key string, existing *externalRegistrar, tdef TriggerTypeDef,
+) error {
+	name := existing.kind
+	if existing.ownerWorkerID != tdef.OwnerWorkerID {
+		return fmt.Errorf(
+			"name %q already owned by %q (request from %q)",
+			name, existing.ownerWorkerID, tdef.OwnerWorkerID)
+	}
+	if !bytes.Equal(existing.configSchema, tdef.ConfigSchema) {
+		return fmt.Errorf(
+			"name %q schema mismatch on re-register", name)
+	}
+	if existing.version == tdef.Version {
+		// Short-circuit: identical version → no scan needed.
+		return nil
+	}
+
+	scanCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	hasLive, err := ts.hasLiveTriggersOfKind(
+		scanCtx, name, liveTriggersScanMax,
+	)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("scan live triggers for %q: %w", name, err)
+	}
+	if hasLive {
+		return fmt.Errorf(
+			"name %q version mismatch (existing=%q new=%q): "+
+				"live triggers of this kind exist; drain or "+
+				"migrate before re-registering",
+			name, existing.version, tdef.Version)
+	}
+	// No live triggers — replace the registrar with the new version.
+	ts.mu.Lock()
+	reg := newExternalRegistrar(
+		ts.nc, ts.triggerKV, name,
+		tdef.OwnerWorkerID, tdef.ConfigSchema, tdef.Version,
+	)
+	ts.registrars[key] = reg
+	ts.mu.Unlock()
+	reg.fireExistingEntries(ts.ctx)
+	return nil
+}
+
+// hasLiveTriggersOfKind streams the triggers KV bucket and returns true
+// on the first entry whose External.Kind equals kind AND Disabled is
+// false. Scan stops on first match (early return) or after scanMax
+// entries have been inspected, whichever comes first. The bound caps
+// worst-case latency when no entry matches.
+//
+// Disabled is read from the negation of TriggerDef.Enabled — the trigger
+// KV records the *enabled* flag, and "live" means enabled here.
+//
+// Test seam: when liveTriggersScanCounter is non-nil it is called once
+// per entry actually inspected (not per key listed) so tests can prove
+// the early-return semantics without a timing race.
+func (ts *TriggerService) hasLiveTriggersOfKind(
+	ctx context.Context, kind string, scanMax int,
+) (bool, error) {
+	if ctx == nil {
+		panic("hasLiveTriggersOfKind: ctx must not be nil")
+	}
+	if kind == "" {
+		panic("hasLiveTriggersOfKind: kind must not be empty")
+	}
+	if scanMax <= 0 {
+		panic("hasLiveTriggersOfKind: scanMax must be positive")
+	}
+	if ts.triggerKV == nil {
+		panic("hasLiveTriggersOfKind: triggerKV must not be nil")
+	}
+
+	lister, err := ts.triggerKV.ListKeys(ctx)
+	if err != nil {
+		return false, fmt.Errorf("list trigger keys: %w", err)
+	}
+	defer func() { _ = lister.Stop() }()
+
+	inspected := 0
+	for key := range lister.Keys() {
+		if inspected >= scanMax {
+			return false, nil
+		}
+		entry, err := ts.triggerKV.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return false, fmt.Errorf("get %q: %w", key, err)
+		}
+		inspected++
+		if liveTriggersScanCounter != nil {
+			liveTriggersScanCounter()
+		}
+		var def TriggerDef
+		if err := json.Unmarshal(entry.Value(), &def); err != nil {
+			// Malformed entries do not block a version bump; skip.
+			continue
+		}
+		if def.External == nil {
+			continue
+		}
+		if def.External.Kind != kind {
+			continue
+		}
+		if !def.Enabled {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // replyAck encodes the ackResponse and publishes it on msg.Reply.
