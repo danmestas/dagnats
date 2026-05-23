@@ -158,6 +158,128 @@ func executeTriggerToggle(
 	writeActionOK(w, triggerToggleBody(id, desired))
 }
 
+// dispatchWorkflows routes /console/workflows/<name> and
+// /console/workflows/<name>/<action>. Action paths are POST; everything
+// else falls through to the workflow-detail page renderer.
+func dispatchWorkflows(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("dispatchWorkflows: w is nil")
+	}
+	if r == nil {
+		panic("dispatchWorkflows: r is nil")
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/console/workflows/")
+	if rest == "" {
+		serveNotFound(w, r, ts, cfg)
+		return
+	}
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 1 {
+		servePageWorkflowDetail(w, r, ts, cfg)
+		return
+	}
+	name, action := parts[0], parts[1]
+	switch action {
+	case "run":
+		handleWorkflowRun(w, r, cfg, name)
+	default:
+		serveNotFound(w, r, ts, cfg)
+	}
+}
+
+// handleWorkflowRun executes a POST /console/workflows/<name>/run.
+// Scaffold matches the DLQ + trigger handlers: parse → check ReadOnly
+// → resolve the workflow → check runnability → call StartRun → emit
+// audit → respond. The handler is the sole owner of the runnability
+// re-check; the template only hides the affordance, defence-in-depth
+// lives here so a forged POST against an input-required workflow is
+// still rejected.
+func handleWorkflowRun(
+	w http.ResponseWriter, r *http.Request,
+	cfg Config, name string,
+) {
+	if w == nil {
+		panic("handleWorkflowRun: w is nil")
+	}
+	if r == nil {
+		panic("handleWorkflowRun: r is nil")
+	}
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if cfg.ReadOnly {
+		emitAuditBestEffort(r.Context(), cfg,
+			attemptOf(r, ActionWorkflowRun, name, OutcomeDenied,
+				map[string]any{"reason": "read_only"}))
+		writeReadOnly(w)
+		return
+	}
+	executeWorkflowRun(w, r, cfg, name)
+}
+
+// executeWorkflowRun owns the work past the ReadOnly gate. Pulled out
+// so the outer handler stays within the 70-line ceiling.
+func executeWorkflowRun(
+	w http.ResponseWriter, r *http.Request,
+	cfg Config, name string,
+) {
+	ds, ok := requireData(w, cfg, "workflow-run")
+	if !ok {
+		return
+	}
+	def, err := ds.GetWorkflow(name)
+	if err != nil {
+		emitAuditBestEffort(r.Context(), cfg,
+			attemptOf(r, ActionWorkflowRun, name, OutcomeFailed,
+				map[string]any{"reason": "not_found"}))
+		http.NotFound(w, r)
+		return
+	}
+	if !workflowRunnable(def) {
+		emitAuditBestEffort(r.Context(), cfg,
+			attemptOf(r, ActionWorkflowRun, name, OutcomeDenied,
+				map[string]any{"reason": "input_required"}))
+		http.Error(w, "workflow requires a typed input payload",
+			http.StatusBadRequest)
+		return
+	}
+	runID, err := ds.StartRun(r.Context(), name, nil)
+	if err != nil {
+		cfg.Logger.Error("console: workflow run start",
+			"workflow", name, "err", err)
+		emitAuditBestEffort(r.Context(), cfg,
+			attemptOf(r, ActionWorkflowRun, name, OutcomeFailed,
+				map[string]any{"error": err.Error()}))
+		http.Error(w, "start run failed: "+err.Error(),
+			http.StatusInternalServerError)
+		return
+	}
+	emitAuditBestEffort(r.Context(), cfg,
+		attemptOf(r, ActionWorkflowRun, name, OutcomeSuccess,
+			map[string]any{"run_id": runID}))
+	writeActionOK(w, workflowRunBody(name, runID))
+}
+
+// workflowRunBody returns the JSON response for a successful Run. The
+// toast carries the new run id + a deep link so the operator can click
+// straight to the run detail page; the level is `info` (no error) and
+// the message phrasing matches the DLQ-retry success copy for parity.
+func workflowRunBody(name, runID string) []byte {
+	const tmpl = `{"ok":true,"action":"run","workflow":%q,` +
+		`"run_id":%q,"toast":{"level":"info",` +
+		`"message":"Started %s","href":"/console/runs/%s"}}`
+	return []byte(fmt.Sprintf(tmpl, name, runID, name, runID))
+}
+
 // actionFromToggle picks the audit action constant for one toggle
 // direction. desired=true → enable; desired=false → disable.
 func actionFromToggle(desired bool) AuditAction {

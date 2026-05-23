@@ -46,7 +46,9 @@ func TestRowChevron_workflowsTbody_populatedRowHasChevron(t *testing.T) {
 }
 
 // TestRowChevron_workflowsTbody_emptyStateColspanBumped pins the
-// empty-row colspan bump from 7 → 8 to account for the chevron column.
+// empty-row colspan bump. The column count is 9: name, version,
+// steps, triggers, last-run, status, activity sparkline, Run cell
+// (#329), chevron.
 func TestRowChevron_workflowsTbody_emptyStateColspanBumped(t *testing.T) {
 	set, err := loadTemplates()
 	if err != nil {
@@ -57,11 +59,11 @@ func TestRowChevron_workflowsTbody_emptyStateColspanBumped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderFragment workflows-tbody: %v", err)
 	}
-	if !strings.Contains(html, `colspan="8"`) {
-		t.Errorf("workflows empty row must use colspan=8; got\n%s", html)
+	if !strings.Contains(html, `colspan="9"`) {
+		t.Errorf("workflows empty row must use colspan=9; got\n%s", html)
 	}
-	if strings.Contains(html, `colspan="7"`) {
-		t.Errorf("workflows empty row must not use stale colspan=7; got\n%s", html)
+	if strings.Contains(html, `colspan="8"`) {
+		t.Errorf("workflows empty row must not use stale colspan=8; got\n%s", html)
 	}
 }
 

@@ -41,6 +41,15 @@ const (
 	// stays grokkable without joining back to ListTriggers.
 	ActionTriggerEnable  AuditAction = "trigger.enable"
 	ActionTriggerDisable AuditAction = "trigger.disable"
+
+	// ActionWorkflowRun — operator started a fresh run from the
+	// inline Run button on the workflows list. Target is the
+	// workflow name; Data carries the new run id on success and
+	// the rejection reason ("read_only", "input_required",
+	// "engine_error") on the denied / failed paths. Scope is
+	// limited to no-input workflows for R8; the typed-input form
+	// path remains out of scope.
+	ActionWorkflowRun AuditAction = "workflow.run"
 )
 
 // String returns the action's wire form. Centralising the cast keeps
@@ -82,6 +91,7 @@ var auditActionsAll = []AuditAction{
 	ActionDLQUndoDiscard,
 	ActionTriggerEnable,
 	ActionTriggerDisable,
+	ActionWorkflowRun,
 }
 
 // AuditActionList returns a defensive copy of the registered action

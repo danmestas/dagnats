@@ -1,4 +1,4 @@
-{{define "workflows-tbody"}}<tbody id="workflows-tbody">
+{{define "workflows-tbody"}}{{$readonly := .ReadOnly}}{{$csrf := .CSRFToken}}<tbody id="workflows-tbody">
   {{range .Rows}}
   <tr>
     <td><a href="/console/workflows/{{.Name}}">{{.Name}}</a></td>
@@ -8,9 +8,49 @@
     <td class="console-mono">{{if .LastRunTime}}{{.LastRunTime}}{{else}}<span class="muted">never</span>{{end}}</td>
     <td>{{if .LastRunStatus}}{{template "status-badge" .LastRunStatus}}{{else}}<span class="muted">—</span>{{end}}</td>
     <td class="console-sparkline-col">{{if .Sparkline}}<canvas class="console-sparkline" data-sparkline-id="workflow-{{.Name}}" data-sparkline-data="{{jsonArray .Sparkline}}" width="60" height="16" aria-label="Activity sparkline for {{.Name}}"></canvas>{{end}}</td>
+    {{/*
+      Inline Run cell (#329 R8 Tier 2). Renders one of three states:
+        * Runnable + writable: a hidden POST form carrying the CSRF
+          token + workflow name, paired with a Run button wired to
+          run-confirm-modal via [data-action-confirm="run"].
+        * Runnable + read-only: button disabled with a tooltip that
+          names CONSOLE_READ_ONLY so the operator can self-diagnose.
+        * Not runnable (input schema with required props): button
+          disabled with a tooltip pointing at the detail page where
+          the typed-input form will land in a follow-up.
+    */}}
+    <td class="workflows-run-col">
+      {{if .Runnable}}
+        {{if $readonly}}
+        <button type="button" class="btn btn-sm btn-restorative"
+                disabled aria-disabled="true"
+                title="Console is read-only. Set CONSOLE_READ_ONLY=false to start runs.">
+          Run
+        </button>
+        {{else}}
+        <form method="POST" action="/console/workflows/{{.Name}}/run"
+              data-confirm-action="run"
+              data-confirm-seq="{{.Name}}"
+              data-confirm-target="{{.Name}}"
+              style="display:none;">
+          <input type="hidden" name="csrf_token" value="{{$csrf}}">
+        </form>
+        <button type="button" class="btn btn-sm btn-restorative"
+                data-action-confirm="run" data-confirm-seq="{{.Name}}">
+          Run
+        </button>
+        {{end}}
+      {{else}}
+      <button type="button" class="btn btn-sm btn-restorative"
+              disabled aria-disabled="true"
+              title="This workflow declares a required input — open the workflow detail page to start a run with a typed payload.">
+        Run
+      </button>
+      {{end}}
+    </td>
     {{template "row-chevron"}}
   </tr>
   {{else}}
-  <tr><td colspan="8" class="console-empty">no workflows match this filter</td></tr>
+  <tr><td colspan="9" class="console-empty">no workflows match this filter</td></tr>
   {{end}}
 </tbody>{{end}}

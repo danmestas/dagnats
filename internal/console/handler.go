@@ -160,7 +160,7 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		servePageWorkflowsList(w, r, ts, cfg)
 	})
 	mux.HandleFunc("/console/workflows/", func(w http.ResponseWriter, r *http.Request) {
-		servePageWorkflowDetail(w, r, ts, cfg)
+		dispatchWorkflows(w, r, ts, cfg)
 	})
 	mux.HandleFunc("/console/runs", func(w http.ResponseWriter, r *http.Request) {
 		servePageRunsList(w, r, ts, cfg)

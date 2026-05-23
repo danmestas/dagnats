@@ -54,6 +54,8 @@ func serveFragmentWorkflowsList(
 		http.Error(w, "list workflows failed", http.StatusInternalServerError)
 		return
 	}
+	view.ReadOnly = cfg.ReadOnly
+	view.CSRFToken = csrfTokenFor(r)
 	html, err := renderFragment(ts.base, "workflows-tbody", view)
 	if err != nil {
 		cfg.Logger.Error("console: render workflows fragment", "err", err)

@@ -78,6 +78,13 @@ type DataSource interface {
 	// toggle endpoint.
 	SetTriggerEnabled(ctx context.Context, triggerID string, enabled bool) error
 
+	// StartRun publishes a WorkflowStarted event for the named
+	// workflow with the supplied input payload. Returns the new run
+	// id on success. Used by the inline Run button on the workflows
+	// list (#329). The caller is responsible for the read-only and
+	// runnability checks; the DataSource owns only the publish.
+	StartRun(ctx context.Context, workflowName string, input []byte) (string, error)
+
 	// ListTriggerFires returns recent firings for one trigger, newest
 	// first. Empty + nil-error when no firings exist (zero state).
 	// limit must be positive; callers pass 25-50 for the recent-activity
@@ -561,6 +568,21 @@ func (a *apiServiceAdapter) SetTriggerEnabled(
 		panic("apiServiceAdapter.SetTriggerEnabled: triggerID is empty")
 	}
 	return a.svc.SetTriggerEnabled(ctx, triggerID, enabled)
+}
+
+func (a *apiServiceAdapter) StartRun(
+	ctx context.Context, workflowName string, input []byte,
+) (string, error) {
+	if a.svc == nil {
+		panic("apiServiceAdapter.StartRun: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.StartRun: ctx is nil")
+	}
+	if workflowName == "" {
+		panic("apiServiceAdapter.StartRun: workflowName is empty")
+	}
+	return a.svc.StartRun(ctx, workflowName, input)
 }
 
 func (a *apiServiceAdapter) ListTriggerFires(
