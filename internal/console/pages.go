@@ -37,8 +37,13 @@ type pageData struct {
 	Section  string
 	Actor    Actor
 	Overview overviewData
-	Page     any
-	ReadOnly bool
+	// BuildInfo carries the build/identity footer payload (R9,
+	// #320). renderPage populates it from cfg + a best-effort
+	// ConfigSnapshot so every page surfaces a uniform footer
+	// regardless of which handler renders the page.
+	BuildInfo BuildInfo
+	Page      any
+	ReadOnly  bool
 }
 
 // renderPage executes the shared `layout` template with the given
@@ -73,6 +78,7 @@ func renderPage(
 		AuthMode: cfg.AuthMode.String(),
 		Build:    cfg.Build,
 	}
+	pd.BuildInfo = buildBuildInfo(r.Context(), cfg)
 	pd.ReadOnly = cfg.ReadOnly
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "layout", pd); err != nil {
