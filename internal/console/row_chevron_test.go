@@ -149,7 +149,9 @@ func TestRowChevron_triggersTbody_populatedRowHasChevron(t *testing.T) {
 }
 
 // TestRowChevron_triggersTbody_emptyStateColspanBumped pins the empty-row
-// colspan bump from 6 → 7.
+// colspan bump tracking the column count. Bumped 6 → 7 when the
+// sparkline col landed; bumped 7 → 8 when the Fire-now action col
+// landed (#352).
 func TestRowChevron_triggersTbody_emptyStateColspanBumped(t *testing.T) {
 	set, err := loadTemplates()
 	if err != nil {
@@ -160,11 +162,11 @@ func TestRowChevron_triggersTbody_emptyStateColspanBumped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderFragment triggers-tbody: %v", err)
 	}
-	if !strings.Contains(html, `colspan="7"`) {
-		t.Errorf("triggers empty row must use colspan=7; got\n%s", html)
+	if !strings.Contains(html, `colspan="8"`) {
+		t.Errorf("triggers empty row must use colspan=8; got\n%s", html)
 	}
-	if strings.Contains(html, `colspan="6"`) {
-		t.Errorf("triggers empty row must not use stale colspan=6; got\n%s", html)
+	if strings.Contains(html, `colspan="7"`) {
+		t.Errorf("triggers empty row must not use stale colspan=7; got\n%s", html)
 	}
 }
 

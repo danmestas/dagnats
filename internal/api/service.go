@@ -978,6 +978,90 @@ func (s *Service) setTriggerEnabledInner(
 	return err
 }
 
+// ErrTriggerKindNotFireable is returned by FireTrigger when the
+// targeted trigger isn't a kind the manual fire-now path supports.
+// #352 scopes manual fires to cron + webhook triggers — subject and
+// HTTP triggers carry caller-bound input the console has no way to
+// synthesize, so a manual fire of them would produce a malformed run.
+var ErrTriggerKindNotFireable = errors.New(
+	"trigger kind not fireable from manual fire-now path",
+)
+
+// ErrTriggerDisabled is returned by FireTrigger when the operator
+// targets a trigger whose Enabled bit is false. The operator must
+// re-enable it first; firing a disabled trigger would write a fire
+// row history that contradicts the trigger's configured state.
+var ErrTriggerDisabled = errors.New(
+	"trigger is disabled; enable it before firing",
+)
+
+// FireTrigger publishes one workflow.started + TriggerFire history
+// record for the given trigger. Returns the run ID the workflow
+// orchestrator will observe so the operator can deep-link to the
+// run in the console (or the CLI can echo it to stdout). #352.
+//
+// Allowed kinds: cron + webhook. Other kinds return
+// ErrTriggerKindNotFireable so the handler can short-circuit to 400
+// rather than fire a partial run. Disabled triggers return
+// ErrTriggerDisabled.
+//
+// All transport / dedup logic lives in trigger.Fire — this method
+// just resolves the def from KV, validates kind / enabled, and
+// delegates. The dedup-msg-id strategy for SourceManual is the
+// nanosecond-unique form so consecutive operator clicks each produce
+// a distinct run.
+func (s *Service) FireTrigger(
+	ctx context.Context, triggerID string,
+) (string, error) {
+	if ctx == nil {
+		panic("FireTrigger: ctx must not be nil")
+	}
+	if triggerID == "" {
+		panic("FireTrigger: triggerID must not be empty")
+	}
+	var runID string
+	err := s.observed(ctx, "fireTrigger",
+		[]attribute.KeyValue{
+			attribute.String("trigger_id", triggerID),
+		},
+		func(ctx context.Context) error {
+			var innerErr error
+			runID, innerErr = s.fireTriggerInner(ctx, triggerID)
+			return innerErr
+		},
+	)
+	return runID, err
+}
+
+// fireTriggerInner is the un-observed core. Split out so the
+// observed() wrapper above stays at ≤70 lines under the project rule.
+func (s *Service) fireTriggerInner(
+	ctx context.Context, triggerID string,
+) (string, error) {
+	if s.triggerKV == nil {
+		return "", fmt.Errorf("triggers KV bucket not available")
+	}
+	entry, err := s.triggerKV.Get(ctx, triggerID)
+	if err != nil {
+		return "", fmt.Errorf(
+			"trigger %q not found: %w", triggerID, err,
+		)
+	}
+	var def trigger.TriggerDef
+	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		return "", fmt.Errorf("unmarshal trigger: %w", err)
+	}
+	if def.Cron == nil && def.Webhook == nil {
+		return "", ErrTriggerKindNotFireable
+	}
+	if !def.Enabled {
+		return "", ErrTriggerDisabled
+	}
+	return trigger.Fire(
+		ctx, s.tp, def, trigger.SourceManual, time.Now(),
+	)
+}
+
 // TriggerUpdates holds optional field overrides for UpdateTrigger.
 // Pointer fields distinguish "not provided" from "set to zero value".
 type TriggerUpdates struct {

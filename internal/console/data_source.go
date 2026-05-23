@@ -85,6 +85,15 @@ type DataSource interface {
 	// runnability checks; the DataSource owns only the publish.
 	StartRun(ctx context.Context, workflowName string, input []byte) (string, error)
 
+	// FireTrigger publishes one manual workflow.started + TriggerFire
+	// history record for the targeted trigger. Returns the new run id
+	// on success, api.ErrTriggerKindNotFireable for kinds the manual
+	// fire-now path doesn't support (subject / http), or
+	// api.ErrTriggerDisabled when the trigger's enabled bit is false.
+	// Used by POST /console/triggers/{id}/fire (#352); the caller is
+	// responsible for read-only, CSRF, and rate-limit gating.
+	FireTrigger(ctx context.Context, triggerID string) (string, error)
+
 	// ListTriggerFires returns recent firings for one trigger, newest
 	// first. Empty + nil-error when no firings exist (zero state).
 	// limit must be positive; callers pass 25-50 for the recent-activity
@@ -583,6 +592,21 @@ func (a *apiServiceAdapter) StartRun(
 		panic("apiServiceAdapter.StartRun: workflowName is empty")
 	}
 	return a.svc.StartRun(ctx, workflowName, input)
+}
+
+func (a *apiServiceAdapter) FireTrigger(
+	ctx context.Context, triggerID string,
+) (string, error) {
+	if a.svc == nil {
+		panic("apiServiceAdapter.FireTrigger: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.FireTrigger: ctx is nil")
+	}
+	if triggerID == "" {
+		panic("apiServiceAdapter.FireTrigger: triggerID is empty")
+	}
+	return a.svc.FireTrigger(ctx, triggerID)
 }
 
 func (a *apiServiceAdapter) ListTriggerFires(

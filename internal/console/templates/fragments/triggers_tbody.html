@@ -20,12 +20,15 @@
       </span>
     </td>
     <td class="console-sparkline-col">{{if .Sparkline}}<canvas class="console-sparkline" data-sparkline-id="trigger-{{.ID}}" data-sparkline-data="{{jsonArray .Sparkline}}" width="60" height="16" aria-label="Activity sparkline for {{.ID}}"></canvas>{{end}}</td>
+    <td class="trigger-action-cell">
+      {{if .CanFire}}<button type="button" class="btn btn-small trigger-fire-btn" data-trigger-id="{{.ID}}" aria-label="Fire trigger {{.ID}} now">Fire now</button>{{end}}
+    </td>
     {{template "row-chevron"}}
   </tr>
   {{end}}
 {{else}}
   <tr id="triggers-row-empty">
-    <td colspan="7" class="console-empty">
+    <td colspan="8" class="console-empty">
       No triggers match. Register a trigger via the CLI or the API.
     </td>
   </tr>

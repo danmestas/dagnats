@@ -48,6 +48,7 @@
           <th>Target</th>
           <th>Status</th>
           <th class="console-sparkline-col" aria-label="Activity, last 24 hours">Activity (24h)</th>
+          <th class="trigger-action-cell"><span class="sr-only">Fire</span></th>
           <th class="row-chevron-cell"><span class="sr-only">Open</span></th>
         </tr>
       </thead>
@@ -58,4 +59,61 @@
   </div>
 </section>
 <script src="/console/assets/uplot.min.js" defer></script>
+<script>
+(function () {
+  // #352 fire-now wiring for the table-row buttons. Event delegated
+  // on #triggers-tbody so SSE-patched rows pick up the handler without
+  // re-binding. The server returns 429 with Retry-After when the
+  // limiter trips; the toast bus surfaces the wait.
+  var tbody = document.getElementById("triggers-tbody");
+  if (!tbody) return;
+  var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+  var csrf = csrfMeta ? csrfMeta.getAttribute("content") : "";
+  tbody.addEventListener("click", function (evt) {
+    var btn = evt.target.closest(".trigger-fire-btn");
+    if (!btn) return;
+    var id = btn.getAttribute("data-trigger-id");
+    if (!id) return;
+    var orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "...";
+    fetch("/console/triggers/" + encodeURIComponent(id) + "/fire", {
+      method: "POST",
+      headers: {
+        "X-CSRF-Token": csrf,
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (resp.status === 429) {
+        var retry = resp.headers.get("Retry-After") || "?";
+        throw new Error("Rate limited — try again in " + retry + "s");
+      }
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("fire failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      btn.disabled = false;
+      btn.textContent = orig;
+      if (data && data.toast) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: data.toast,
+        }));
+      }
+    }).catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = orig;
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: (err && err.message) ? err.message : "fire failed",
+        },
+      }));
+    });
+  });
+})();
+</script>
 {{end}}{{end}}

@@ -89,6 +89,11 @@ type TriggerRow struct {
 	StatusIcon    string
 	LastFiredText string
 	Sparkline     []float64
+	// CanFire is true when the row's trigger kind supports manual
+	// fire-now (cron + webhook) AND the trigger is currently enabled
+	// (#352). The triggers_tbody template gates the Fire button on
+	// this flag.
+	CanFire bool
 }
 
 // servePageTriggersList renders /console/triggers.
@@ -234,6 +239,11 @@ func triggerRowFromDef(t trigger.TriggerDef) TriggerRow {
 		Target:   target,
 		Workflow: t.WorkflowID,
 		Enabled:  t.Enabled,
+		// #352: Fire-now is only meaningful for trigger kinds whose
+		// workflow input the operator doesn't need to synthesize.
+		// Subject + HTTP triggers carry caller-bound payloads;
+		// surfacing the affordance for them would be misleading.
+		CanFire: t.Enabled && fireKindAllows(kind),
 	}
 	if t.Enabled {
 		row.StatusLabel = "enabled"
@@ -262,6 +272,10 @@ type TriggerDetailView struct {
 	NextFireMethod string
 	ReadOnly       bool
 	CSRFToken      string
+	// CanFire mirrors TriggerRow.CanFire so the detail page can
+	// render the Fire-now affordance under "Operator actions" only
+	// for cron / webhook triggers that are currently enabled (#352).
+	CanFire bool
 }
 
 // TriggerFiringRow is one row in the "recent activity" panel. Empty
@@ -393,6 +407,7 @@ func populateTriggerDetail(t trigger.TriggerDef) TriggerDetailView {
 		Workflow:   t.WorkflowID,
 		Enabled:    t.Enabled,
 		ConfigJSON: string(cfgJSON),
+		CanFire:    t.Enabled && fireKindAllows(kind),
 	}
 	if t.Enabled {
 		view.StatusLabel = "enabled"

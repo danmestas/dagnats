@@ -79,6 +79,8 @@ func dispatchTriggers(
 	switch action {
 	case "toggle":
 		handleTriggerToggle(w, r, cfg, id)
+	case "fire":
+		handleTriggerFire(w, r, cfg, id)
 	default:
 		serveNotFound(w, r, ts, cfg)
 	}

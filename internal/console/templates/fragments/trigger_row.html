@@ -18,5 +18,10 @@
       {{.Row.StatusLabel}}
     </span>
   </td>
+  <td class="console-sparkline-col"></td>
+  <td class="trigger-action-cell">
+    {{if .Row.CanFire}}<button type="button" class="btn btn-small trigger-fire-btn" data-trigger-id="{{.Row.ID}}" aria-label="Fire trigger {{.Row.ID}} now">Fire now</button>{{end}}
+  </td>
+  {{template "row-chevron"}}
 </tr>
 {{end}}

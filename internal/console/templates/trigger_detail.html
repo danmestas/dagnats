@@ -63,6 +63,16 @@
                 {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to toggle triggers."{{end}}>
           {{if .Enabled}}Disable trigger{{else}}Enable trigger{{end}}
         </button>
+        {{if .CanFire}}
+        <button type="button"
+                id="trigger-fire-btn"
+                class="btn btn-primary"
+                data-trigger-id="{{.ID}}"
+                data-csrf="{{.CSRFToken}}"
+                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to fire triggers."{{end}}>
+          Fire now
+        </button>
+        {{end}}
       </div>
     </article>
 
@@ -154,6 +164,57 @@
         detail: {
           level: "error",
           message: (err && err.message) ? err.message : "toggle failed",
+        },
+      }));
+    });
+  });
+})();
+(function () {
+  // Trigger fire-now (#352): POST to /console/triggers/<id>/fire,
+  // surface the new run id via the central console:toast bus. The
+  // server returns 429 + Retry-After when the operator exceeds 10
+  // fires per 60s per trigger; the toast surfaces the wait.
+  var btn = document.getElementById("trigger-fire-btn");
+  if (!btn || btn.hasAttribute("disabled")) return;
+  btn.addEventListener("click", function () {
+    var id = btn.getAttribute("data-trigger-id");
+    var csrf = btn.getAttribute("data-csrf") || "";
+    var orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "...";
+    fetch("/console/triggers/" + encodeURIComponent(id) + "/fire", {
+      method: "POST",
+      headers: {
+        "X-CSRF-Token": csrf,
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (resp.status === 429) {
+        var retry = resp.headers.get("Retry-After") || "?";
+        throw new Error("Rate limited — try again in " + retry + "s");
+      }
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("fire failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      btn.disabled = false;
+      btn.textContent = orig;
+      if (data && data.toast) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: data.toast,
+        }));
+      }
+    }).catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = orig;
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: (err && err.message) ? err.message : "fire failed",
         },
       }));
     });
