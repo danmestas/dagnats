@@ -159,6 +159,20 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 			History:  1,
 			Replicas: replicas,
 		},
+		// services: metadata namespace for grouping task types
+		// under a logical service name (#321 / ADR-017 / #273
+		// Phase 3.1). Pure descriptive surface — no invocation
+		// gating, no heartbeat, no TTL. Deliberately separated
+		// from the `workers` bucket (#289): workers have a 60s
+		// TTL and a heartbeat loop; services are stable
+		// definitions that should persist across worker restarts.
+		// History 1 because last-write-wins on Put — readers
+		// only need the latest metadata.
+		{
+			Bucket:   "services",
+			History:  1,
+			Replicas: replicas,
+		},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")

@@ -19,8 +19,8 @@ import (
 // topLevelCommands lists every top-level command for static completion.
 var topLevelCommands = []string{
 	"clean", "completion", "config", "demo", "dev", "dlq", "init",
-	"logs", "metrics", "observe", "run", "serve", "sidecar",
-	"singleton", "status", "trace", "trigger", "workers",
+	"logs", "metrics", "observe", "run", "serve", "service",
+	"sidecar", "singleton", "status", "trace", "trigger", "workers",
 	"workflow",
 }
 
@@ -43,6 +43,9 @@ var subcommandMap = map[string][]string{
 	},
 	"singleton": {
 		"list", "release",
+	},
+	"service": {
+		"list",
 	},
 	"completion": {
 		"bash", "zsh",
@@ -94,6 +97,7 @@ var flagMap = map[string][]string{
 	"demo.seed": {
 		"--count=", "--include-failed", "--json", "--timeout=",
 	},
+	"service.list": {"--json"},
 }
 
 // dynamicCompletionCommands identifies argument positions that need

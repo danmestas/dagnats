@@ -58,6 +58,8 @@ func Run(args []string) {
 		runSidecarCmd(args[2:])
 	case "singleton":
 		runSingletonCmd(args[2:])
+	case "service":
+		runServiceCmd(args[2:])
 	case "clean":
 		runCleanCmd(args[2:])
 	case "demo":
@@ -92,6 +94,7 @@ func printUsage() {
 	fmt.Println("  trace     view and search trace spans")
 	fmt.Println("  metrics   view metric snapshots")
 	fmt.Println("  singleton list and release singleton locks")
+	fmt.Println("  service   list registered services")
 	fmt.Println("  clean     purge run data (for testing)")
 	fmt.Println("  demo      seed runs and drive them to terminal states")
 	fmt.Println("  observe   observability pipeline health")
