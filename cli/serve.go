@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/danmestas/dagnats/server"
 )
@@ -22,6 +24,11 @@ func runServeCmd(args []string) {
 
 	cfg, loadedPath, err := server.ConfigWithPath(configPath)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := applyServeFlagOverrides(args, &cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -46,14 +53,19 @@ func runServeCmd(args []string) {
 // printServeHelp prints usage for the serve command.
 func printServeHelp() {
 	fmt.Println("Usage: dagnats serve [--config=PATH]" +
-		" [--dry-run]")
+		" [--dry-run] [--nats-ws-port=N]" +
+		" [--nats-ws-no-tls]")
 	fmt.Println("Starts embedded NATS server with" +
 		" DagNats engine and API.")
 	fmt.Println()
 	fmt.Println("Flags:")
-	fmt.Println("  --config=PATH  path to config file")
-	fmt.Println("  --dry-run      validate config" +
+	fmt.Println("  --config=PATH       path to config file")
+	fmt.Println("  --dry-run           validate config" +
 		" without starting the server")
+	fmt.Println("  --nats-ws-port=N    NATS WebSocket port" +
+		" for browser clients (0 = off, default)")
+	fmt.Println("  --nats-ws-no-tls    run the WebSocket" +
+		" listener without TLS (dev only; ADR-020)")
 	fmt.Println()
 	fmt.Println("Config search order (when --config" +
 		" not specified):")
@@ -68,6 +80,53 @@ func printServeHelp() {
 	fmt.Println()
 	fmt.Println("Run 'dagnats config show'" +
 		" to see effective configuration.")
+}
+
+// applyServeFlagOverrides applies CLI flags that override the
+// resolved server.Config. Only flags introduced for the embedded
+// WebSocket listener are handled here today (see ADR-020); other
+// configuration still flows through file/env. Returns an error
+// on malformed flag values so the operator sees a clear message
+// instead of a silent default.
+func applyServeFlagOverrides(
+	args []string, cfg *server.Config,
+) error {
+	if args == nil {
+		panic("applyServeFlagOverrides: args must not be nil")
+	}
+	if cfg == nil {
+		panic("applyServeFlagOverrides: cfg must not be nil")
+	}
+	if len(args) > 1000 {
+		panic("applyServeFlagOverrides: args exceeds max bound")
+	}
+
+	for _, arg := range args {
+		switch {
+		case strings.HasPrefix(arg, "--nats-ws-port="):
+			val := strings.TrimPrefix(arg, "--nats-ws-port=")
+			port, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf(
+					"--nats-ws-port: %w", err)
+			}
+			cfg.NATSWebsocketPort = port
+		case arg == "--nats-ws-no-tls":
+			cfg.NATSWebsocketNoTLS = true
+		case strings.HasPrefix(arg, "--nats-ws-no-tls="):
+			val := strings.TrimPrefix(arg, "--nats-ws-no-tls=")
+			switch strings.ToLower(val) {
+			case "1", "true", "yes", "on":
+				cfg.NATSWebsocketNoTLS = true
+			case "0", "false", "no", "off":
+				cfg.NATSWebsocketNoTLS = false
+			default:
+				return fmt.Errorf(
+					"--nats-ws-no-tls: invalid %q", val)
+			}
+		}
+	}
+	return nil
 }
 
 // hasDryRunFlag checks if --dry-run is present in args.

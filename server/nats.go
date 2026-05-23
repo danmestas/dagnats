@@ -99,6 +99,34 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		}
 	}
 
+	// Configure the embedded NATS WebSocket listener for browser
+	// clients when an operator opts in via NATSWebsocketPort > 0.
+	// See ADR-020. Auth fields on WebsocketOpts are left zero so
+	// they inherit Options.Users / top-level auth — the issue
+	// contract is "no new auth model". Host reuses the TCP-port
+	// binding posture (127.0.0.1 standalone, 0.0.0.0 in leaf mode).
+	if cfg.NATSWebsocketPort > 0 {
+		if !cfg.NATSWebsocketNoTLS {
+			return nil, fmt.Errorf(
+				"nats_ws_port set but TLS not configured: " +
+					"pass --nats-ws-no-tls to opt into the " +
+					"explicit insecure dev mode, or wait for " +
+					"server TLS wiring",
+			)
+		}
+		opts.Websocket = natsserver.WebsocketOpts{
+			Host:  host,
+			Port:  cfg.NATSWebsocketPort,
+			NoTLS: cfg.NATSWebsocketNoTLS,
+		}
+		printStep(os.Stderr, fmt.Sprintf(
+			"WARNING: WebSocket listener on :%d running "+
+				"WITHOUT TLS — dev mode only, do not "+
+				"expose to untrusted networks",
+			cfg.NATSWebsocketPort,
+		))
+	}
+
 	ns, err := tryStartNATS(opts)
 	if err != nil && cfg.NATSPort == defaultNATSPort {
 		printStep(os.Stderr,
