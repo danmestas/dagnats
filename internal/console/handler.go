@@ -289,6 +289,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/assets/build-info-copy.js",
 		servePlainAssetAt("sources/build-info-copy.js",
 			"application/javascript; charset=utf-8"))
+	mux.HandleFunc("/console/assets/sidebar-collapse.js",
+		servePlainAssetAt("sources/sidebar-collapse.js",
+			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
 	})

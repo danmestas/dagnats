@@ -29,14 +29,24 @@
   <script src="/console/assets/count-chip.js" defer></script>
   <script src="/console/assets/onboarding.js" defer></script>
   <script src="/console/assets/build-info-copy.js" defer></script>
+  <script src="/console/assets/sidebar-collapse.js" defer></script>
 </head>
 <body>
-  <header class="console-header">
+  <header class="console-header" aria-expanded="true">
     <div class="console-header-inner">
-      <a href="/console/" class="console-brand">
-        <span class="console-mark"></span>
-        <span class="console-name">dagnats</span>
-      </a>
+      <div class="console-brand-row">
+        <a href="/console/" class="console-brand">
+          <span class="console-mark"></span>
+          <span class="console-name">dagnats</span>
+        </a>
+        <button type="button" id="sidebar-collapse-toggle"
+                class="sidebar-collapse-toggle"
+                aria-controls="console-header"
+                aria-expanded="true"
+                aria-label="Collapse sidebar">
+          <span class="sidebar-collapse-icon" aria-hidden="true"></span>
+        </button>
+      </div>
       <nav class="console-nav console-nav-desktop" aria-label="primary">
         <a href="/console/"          class="{{if eq .Section "dashboard"}}is-active{{end}}">Dashboard</a>
         <a href="/console/workflows" class="{{if eq .Section "workflows"}}is-active{{end}}">Workflows</a>
@@ -86,6 +96,9 @@
           <span class="theme-toggle-label">System</span>
         </button>
       </div>
+      <div class="build-info-footer-slot" data-slot="rail">
+        {{template "build-info-footer" .BuildInfo}}
+      </div>
     </div>
   </header>
   <main class="console-main">
@@ -101,7 +114,9 @@
     {{end}}
     {{template "content" .}}
   </main>
-  {{template "build-info-footer" .BuildInfo}}
+  <div class="build-info-footer-slot" data-slot="below-main">
+    {{template "build-info-footer" .BuildInfo}}
+  </div>
   {{template "command-palette" .}}
   <div id="sheet-outlet"></div>
 </body>

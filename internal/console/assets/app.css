@@ -2501,6 +2501,141 @@ body[data-theme="dark"] code {
   }
 }
 
+/* ---------------------------------------------------------------
+ * Rail collapse-to-icons + build-info footer slot (R6, #341)
+ *
+ * The same `.console-header` DOM is used at every viewport — the
+ * ≥1024px media query above re-renders it as a fixed left rail.
+ * At that width the brand row gains a collapse toggle; clicking it
+ * flips `aria-expanded="false"` on the rail (sidebar-collapse.js
+ * persists the choice). The collapsed rail is icon-only at ~56px
+ * width; nav labels and footer text fold away.
+ *
+ * The build-info footer (R9, #324) renders twice: once inside the
+ * rail's brand chrome, once below </main>. CSS shows exactly one
+ * per regime — rail-slot at ≥1024px, below-main copy at <1024px.
+ * Rendering both keeps the markup regime-agnostic; CSS owns the
+ * visual switch.
+ * --------------------------------------------------------------- */
+
+/* Default regimes (<1024px): rail-slot footer is hidden; the
+ * below-main copy carries identity. The collapse toggle itself is
+ * hidden — collapse only makes sense in rail mode. */
+.console-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+}
+.sidebar-collapse-toggle {
+  display: none;
+}
+.build-info-footer-slot[data-slot="rail"] {
+  display: none;
+}
+.build-info-footer-slot[data-slot="below-main"] {
+  display: block;
+}
+
+@media (min-width: 1024px) {
+  /* Rail regime — collapse toggle visible, rail-slot footer
+   * visible, below-main copy hidden. */
+  .console-header {
+    transition: width 120ms ease;
+  }
+  .sidebar-collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-button, 4px);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .sidebar-collapse-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+  }
+  .sidebar-collapse-toggle:focus-visible {
+    outline: 2px solid var(--focus, currentColor);
+    outline-offset: 2px;
+  }
+  /* Chevron glyph — pure CSS triangle. Points left when expanded
+   * ("click to collapse") and right when collapsed ("click to
+   * expand"). The flip uses the rail container's aria-expanded so
+   * the indicator and rail state stay in lockstep. */
+  .sidebar-collapse-icon {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-right: 5px solid currentColor;
+    transition: transform 120ms ease;
+  }
+  .console-header[aria-expanded="false"] .sidebar-collapse-icon {
+    transform: rotate(180deg);
+  }
+  .build-info-footer-slot[data-slot="rail"] {
+    display: block;
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border);
+  }
+  .build-info-footer-slot[data-slot="rail"] .build-info-footer {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+    font-size: 0.75rem;
+    line-height: 1.3;
+    color: var(--text-secondary);
+    padding: 0;
+    border: 0;
+  }
+  .build-info-footer-slot[data-slot="rail"] .build-info-sep {
+    display: none;
+  }
+  .build-info-footer-slot[data-slot="below-main"] {
+    display: none;
+  }
+
+  /* Collapsed rail — ~56px icon-only width. Labels in nav, brand
+   * name, utils (actor, connection-label, theme label), and the
+   * rail-slot footer fold away. Hover/focus could optionally
+   * re-expand on a future pass; for now the click toggle is the
+   * single affordance and the audit-locked spec asks for nothing
+   * more.
+   *
+   * Selectors keep the touch targets clickable (nav anchors, theme
+   * toggle button, connection pill) — only label spans disappear. */
+  .console-header[aria-expanded="false"] {
+    width: 56px;
+  }
+  .console-header[aria-expanded="false"] + .console-main,
+  .console-header[aria-expanded="false"] ~ .console-main {
+    margin-left: 56px;
+  }
+  .console-header[aria-expanded="false"] .console-name,
+  .console-header[aria-expanded="false"] .console-nav-desktop a,
+  .console-header[aria-expanded="false"] .console-connection-label,
+  .console-header[aria-expanded="false"] .theme-toggle-label,
+  .console-header[aria-expanded="false"] .console-actor,
+  .console-header[aria-expanded="false"]
+    .build-info-footer-slot[data-slot="rail"] {
+    display: none;
+  }
+  .console-main {
+    transition: margin-left 120ms ease;
+  }
+}
+
 /*
  * page-header partial — uniform header for every list page in the
  * console (#302, ADR-015 R5). Title row + optional subtitle + a strip
