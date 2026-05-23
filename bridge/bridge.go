@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
@@ -19,7 +20,14 @@ import (
 // Authentication: when DAGNATS_BRIDGE_TOKEN env var is set, all
 // requests must include Authorization: Bearer <token>. When unset,
 // all requests are allowed (development mode).
+//
+// Every outbound NATS publish goes through *natsutil.TracingPublisher
+// so W3C trace context (traceparent / tracestate) is auto-injected
+// onto the outgoing message. This continues distributed traces from
+// the inbound HTTP request into the NATS plane — without it, the
+// trace ID would terminate at the HTTP boundary for non-Go workers.
 type Bridge struct {
+	pub          *natsutil.TracingPublisher
 	nc           *nats.Conn
 	js           jetstream.JetStream
 	ackMap       *AckMap
@@ -34,15 +42,24 @@ type Bridge struct {
 	ackMapSize      metric.Int64UpDownCounter
 }
 
-// NewBridge creates a Bridge. Panics on nil nc — a programmer error.
-// Binds optional KV buckets for checkpoints (nil if not present).
-func NewBridge(nc *nats.Conn) *Bridge {
-	if nc == nil {
-		panic("NewBridge: nc must not be nil")
+// NewBridge creates a Bridge. Panics on nil pub — a programmer
+// error at startup. The TracingPublisher wraps both *nats.Conn
+// and jetstream.JetStream and is the only legal publish surface
+// inside this package (CI lint enforces this).
+//
+// Binds optional KV buckets for checkpoints and signals (nil if
+// not present).
+func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
+	if pub == nil {
+		panic("NewBridge: pub must not be nil")
 	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		panic("NewBridge: jetstream.New failed: " + err.Error())
+	nc := pub.NC()
+	js := pub.JS()
+	if nc == nil {
+		panic("NewBridge: pub.NC must not be nil")
+	}
+	if js == nil {
+		panic("NewBridge: pub.JS must not be nil")
 	}
 	ctx := context.Background()
 	checkpointKV, _ := js.KeyValue(ctx, "checkpoints")
@@ -55,6 +72,7 @@ func NewBridge(nc *nats.Conn) *Bridge {
 	)
 	ackSize, _ := m.Int64UpDownCounter("bridge.ackmap.size")
 	return &Bridge{
+		pub:             pub,
 		nc:              nc,
 		js:              js,
 		ackMap:          NewAckMap(),

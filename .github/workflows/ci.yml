@@ -95,7 +95,7 @@ jobs:
               --include='*.go' \
               --exclude='*_test.go' \
               --exclude='publish.go' \
-              internal/ worker/); then
+              internal/ worker/ bridge/); then
             echo "::error::Raw NATS publish found. Use natsutil.TracingPublisher."
             echo "$matches"
             exit 1

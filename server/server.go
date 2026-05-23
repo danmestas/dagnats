@@ -185,7 +185,17 @@ func (s *Server) startComponents() error {
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
 
-	s.bridge = bridge.NewBridge(s.nc)
+	bridgeJS, err := jetstream.New(s.nc)
+	if err != nil {
+		s.orch.Stop()
+		s.natsAPI.Stop()
+		s.telShutdown(context.Background())
+		s.nc.Close()
+		s.ns.Shutdown()
+		return fmt.Errorf("bridge jetstream init: %w", err)
+	}
+	bridgePub := natsutil.NewTracingPublisher(s.nc, bridgeJS)
+	s.bridge = bridge.NewBridge(bridgePub)
 	printStep(os.Stderr, "http bridge ready")
 
 	s.trig, err = trigger.NewTriggerService(s.nc)
