@@ -32,13 +32,14 @@ func runTriggerCmd(args []string) {
 		fmt.Println("  delete   delete a trigger")
 		fmt.Println("  enable   enable a trigger")
 		fmt.Println("  disable  disable a trigger")
+		fmt.Println("  fire     fire a cron/webhook trigger now")
 		fmt.Println("  test     validate a cron expression and show fire times")
 		fmt.Println("  history  show trigger fire history")
 		return
 	}
 	if len(args) == 0 {
 		fmt.Println("Usage: dagnats trigger " +
-			"<create|list|update|delete|enable|disable|test|history>" +
+			"<create|list|update|delete|enable|disable|fire|test|history>" +
 			" [--json]")
 		return
 	}
@@ -55,6 +56,8 @@ func runTriggerCmd(args []string) {
 		runTriggerEnableCmd(args[1:])
 	case "disable":
 		runTriggerDisableCmd(args[1:])
+	case "fire":
+		runTriggerFireCmd(args[1:])
 	case "test":
 		runTriggerTestCmd(args[1:])
 	case "history":
@@ -390,6 +393,58 @@ func runTriggerDisableCmdWithWriter(args []string, w io.Writer) {
 		return
 	}
 	fmt.Fprintf(w, "Trigger disabled: %s\n", triggerID)
+}
+
+// triggerFireResult is the JSON response for `dagnats trigger fire`.
+// Action is always "fired" on the success path; the run id surfaces
+// the new run so the caller can deep-link to the dashboard.
+type triggerFireResult struct {
+	TriggerID string `json:"trigger_id"`
+	Action    string `json:"action"`
+	RunID     string `json:"run_id"`
+}
+
+// runTriggerFireCmd forces one manual fire of the given trigger via
+// api.Service.FireTrigger (#352). Cron + webhook triggers are
+// supported; subject + http return the not-fireable error path.
+func runTriggerFireCmd(args []string) {
+	runTriggerFireCmdWithWriter(args, os.Stdout)
+}
+
+// runTriggerFireCmdWithWriter is the testable variant; writes its
+// human-mode line to w. JSON mode emits triggerFireResult through
+// FormatJSON. Both modes exit(1) on error after printing to stderr.
+func runTriggerFireCmdWithWriter(args []string, w io.Writer) {
+	if w == nil {
+		panic("runTriggerFireCmdWithWriter: w must not be nil")
+	}
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr,
+			"Usage: dagnats trigger fire <trigger-id> [--json]")
+		os.Exit(1)
+	}
+	triggerID := args[0]
+	if triggerID == "" {
+		panic("runTriggerFireCmdWithWriter: empty triggerID")
+	}
+	svc, nc := connectService()
+	defer nc.Close()
+	runID, err := svc.FireTrigger(
+		context.Background(), triggerID,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fire trigger: %v\n", err)
+		os.Exit(1)
+	}
+	if jsonOutput {
+		FormatJSON(w, triggerFireResult{
+			TriggerID: triggerID, Action: "fired", RunID: runID,
+		})
+		return
+	}
+	fmt.Fprintf(w, "Trigger fired: %s (run %s)\n", triggerID, runID)
 }
 
 // generateTriggerID creates a unique ID for a new trigger using crypto/rand.

@@ -2,15 +2,12 @@ package trigger
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/runid"
-	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
@@ -390,6 +387,8 @@ func (s *Scheduler) shouldFire(def TriggerDef, now time.Time) (bool, error) {
 }
 
 // fireWorkflow publishes workflow.started with TriggerEnvelope payload.
+// Delegates to the shared Fire helper (#352) so the manual fire path
+// in api.Service stays wire-identical to the cron tick path.
 // Uses Nats-Msg-Id for deduplication: trigger.{id}.{unix_minute}.
 func (s *Scheduler) fireWorkflow(
 	ctx context.Context, def TriggerDef, now time.Time,
@@ -403,84 +402,10 @@ func (s *Scheduler) fireWorkflow(
 	if def.WorkflowID == "" {
 		panic("fireWorkflow: def.WorkflowID is empty")
 	}
-
-	envelope := TriggerEnvelope{
-		Trigger:    "cron",
-		Source:     def.ID,
-		WorkflowID: def.WorkflowID,
-		Timestamp:  now.UTC(),
-	}
-	payloadBytes, err := json.Marshal(envelope)
-	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
-	}
-
-	runID := runid.New()
-	evt := protocol.NewWorkflowEvent(
-		protocol.EventWorkflowStarted,
-		runID,
-		payloadBytes,
-	)
-
-	evtBytes, err := evt.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal event: %w", err)
-	}
-
-	minuteTimestamp := now.Unix() / 60
-	msgID := fmt.Sprintf("trigger.%s.%d", def.ID, minuteTimestamp)
-
-	_, err = s.tp.JSPublish(
-		ctx, evt.NATSSubject(), evtBytes,
-		jetstream.WithMsgID(msgID),
-	)
-	if err != nil {
+	if _, err := Fire(ctx, s.tp, def, SourceCron, now); err != nil {
 		RecordFiring(ctx, TypeCron, OutcomeError)
-		return fmt.Errorf("publish: %w", err)
+		return err
 	}
-
-	if err := s.publishTriggerFire(def, runID, now); err != nil {
-		RecordFiring(ctx, TypeCron, OutcomeError)
-		return fmt.Errorf("publishTriggerFire: %w", err)
-	}
-
 	RecordFiring(ctx, TypeCron, OutcomeFired)
 	return nil
-}
-
-// publishTriggerFire records a TriggerFire event to the
-// TRIGGER_HISTORY stream for auditing and CLI display.
-// Uses dedup ID to prevent duplicate records.
-func (s *Scheduler) publishTriggerFire(
-	def TriggerDef, runID string, now time.Time,
-) error {
-	if def.ID == "" {
-		panic("publishTriggerFire: def.ID is empty")
-	}
-	if def.WorkflowID == "" {
-		panic(
-			"publishTriggerFire: def.WorkflowID is empty",
-		)
-	}
-	fire := TriggerFire{
-		TriggerID:  def.ID,
-		WorkflowID: def.WorkflowID,
-		RunID:      runID,
-		Source:     "cron",
-		FiredAt:    now.UTC(),
-	}
-	fireBytes, err := json.Marshal(fire)
-	if err != nil {
-		return fmt.Errorf("marshal trigger fire: %w", err)
-	}
-	minuteTimestamp := now.Unix() / 60
-	fireMsgID := fmt.Sprintf(
-		"trigger.%s.%d.fire", def.ID, minuteTimestamp,
-	)
-	subject := fmt.Sprintf("trigger.fire.%s", def.ID)
-	_, err = s.tp.JSPublish(
-		context.Background(), subject, fireBytes,
-		jetstream.WithMsgID(fireMsgID),
-	)
-	return err
 }

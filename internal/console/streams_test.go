@@ -415,6 +415,12 @@ func (r *resumeRecorder) StartRun(
 	return r.inner.StartRun(ctx, workflowName, input)
 }
 
+func (r *resumeRecorder) FireTrigger(
+	ctx context.Context, triggerID string,
+) (string, error) {
+	return r.inner.FireTrigger(ctx, triggerID)
+}
+
 func (r *resumeRecorder) ListTriggerFires(
 	ctx context.Context, triggerID string, limit int,
 ) ([]TriggerFireRow, error) {

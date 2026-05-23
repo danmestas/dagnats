@@ -76,6 +76,12 @@ type Config struct {
 	tomb           *dlqTombstoneStore
 	bus            *eventBusBinding
 
+	// fireLimit gates POST /console/triggers/{id}/fire (#352). Lazily
+	// allocated on first use via fireLimiter() so tests opt in by
+	// hitting the endpoint, and so the production wiring stays a
+	// one-line assignment in server.go.
+	fireLimit *fireRateLimiter
+
 	// Metrics, when non-nil, exposes the live metric aggregator to
 	// the dashboard tiles, the metrics page, and the per-metric SSE
 	// patcher. server.go wires this to a metrics.NewAggregator()
@@ -134,6 +140,21 @@ func (c *Config) tombstones() *dlqTombstoneStore {
 	return c.tomb
 }
 
+// fireLimiter returns the active per-trigger fire-now rate limiter.
+// Mount() seeds cfg.fireLimit before the routes register so the
+// pointer travels through every value-passed Config copy. server.go
+// (production) can override by assigning cfg.fireLimit before Mount.
+func (c *Config) fireLimiter() *fireRateLimiter {
+	if c == nil {
+		panic("Config.fireLimiter: c is nil")
+	}
+	if c.fireLimit == nil {
+		panic("Config.fireLimiter: limiter not initialised; " +
+			"Mount() should have seeded it")
+	}
+	return c.fireLimit
+}
+
 const defaultHeartbeatInterval = 5 * time.Second
 
 // Mount returns a fully configured http.Handler that serves every
@@ -160,6 +181,11 @@ func Mount(cfg Config) http.Handler {
 	}
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = defaultHeartbeatInterval
+	}
+	if cfg.fireLimit == nil {
+		cfg.fireLimit = newFireRateLimiter(
+			fireRateLimitDefault, fireRateWindowDefault,
+		)
 	}
 	if devMode {
 		cfg.Logger.Warn("console dev mode active — asset caching disabled (DAGNATS_DEV=1)")

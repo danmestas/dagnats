@@ -42,6 +42,14 @@ const (
 	ActionTriggerEnable  AuditAction = "trigger.enable"
 	ActionTriggerDisable AuditAction = "trigger.disable"
 
+	// ActionTriggerFireManual — operator clicked Fire-now on a cron
+	// or webhook trigger to force one immediate run (#352). Target is
+	// the trigger id; Data records the workflow id + the new run id
+	// on success, or the rejection reason ("read_only",
+	// "rate_limited", "not_fireable", "disabled", "engine_error") on
+	// the denied / failed paths.
+	ActionTriggerFireManual AuditAction = "trigger.fire.manual"
+
 	// ActionWorkflowRun — operator started a fresh run from the
 	// inline Run button on the workflows list. Target is the
 	// workflow name; Data carries the new run id on success and
@@ -91,6 +99,7 @@ var auditActionsAll = []AuditAction{
 	ActionDLQUndoDiscard,
 	ActionTriggerEnable,
 	ActionTriggerDisable,
+	ActionTriggerFireManual,
 	ActionWorkflowRun,
 }
 

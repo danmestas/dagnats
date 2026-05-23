@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -245,6 +246,60 @@ func TestBrowser_datastarBootstraps(t *testing.T) {
 	if applyType != "function" {
 		t.Fatalf("window.datastar.apply type = %q, want function "+
 			"— engine entrypoint missing from bundle", applyType)
+	}
+}
+
+// TestBrowser_fireNowButtonOnCronWebhookOnly drives a headless
+// browser against /console/triggers seeded with one trigger per kind
+// (cron + webhook + subject + http) and asserts the Fire-now button
+// is present only on cron + webhook rows (#352). Failure here would
+// mean the kind-gating either over-rendered (UX bait the server then
+// rejects) or under-rendered (operators can't fire-now).
+func TestBrowser_fireNowButtonOnCronWebhookOnly(t *testing.T) {
+	skipIfBrowserUnavailable(t)
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-FN", "alpha", "cron"),
+		sampleTrigger("hook-FN", "alpha", "webhook"),
+		sampleTrigger("subj-FN", "alpha", "subject"),
+		sampleTrigger("http-FN", "alpha", "http"),
+	}
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+	runAgentBrowser(t, ctx, "open", srv.URL+"/console/triggers")
+	t.Cleanup(func() {
+		brCtx, brCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer brCancel()
+		runAgentBrowserAllowFail(t, brCtx, "close")
+	})
+	time.Sleep(750 * time.Millisecond)
+	type wantCase struct {
+		id      string
+		wantBtn bool
+	}
+	cases := []wantCase{
+		{"cron-FN", true},
+		{"hook-FN", true},
+		{"subj-FN", false},
+		{"http-FN", false},
+	}
+	for _, c := range cases {
+		js := "Boolean(document.querySelector(" +
+			jsString(`.trigger-fire-btn[data-trigger-id="`+c.id+`"]`) +
+			"))"
+		got := evalString(t, ctx, js)
+		isPresent := got == "true"
+		if isPresent != c.wantBtn {
+			t.Errorf("trigger %q: Fire-now present=%v; want %v",
+				c.id, isPresent, c.wantBtn)
+		}
 	}
 }
 

@@ -72,6 +72,15 @@ type fakeDataSource struct {
 	startRunErr   error
 	startRunCalls []startRunCall
 
+	// #352 (FireTrigger fire-now button): manual fire observability.
+	// fireTriggerRunID is the stable id the fake returns on success;
+	// fireTriggerErr lets tests force the error path. fireTriggerCalls
+	// captures each invocation so tests can assert the (id) the handler
+	// passed through.
+	fireTriggerRunID string
+	fireTriggerErr   error
+	fireTriggerCalls []string
+
 	// #312 (config page): test seam for the ConfigSnapshot
 	// surface. Tests assign these directly to drive the page.
 	configSnap    ConfigSnapshot
@@ -327,6 +336,23 @@ func (f *fakeDataSource) SetTriggerEnabled(
 		}
 	}
 	return errNotFound("trigger", triggerID)
+}
+
+// FireTrigger records the manual fire call and returns the seeded id
+// / error. Tests that exercise the success path assign fireTriggerRunID;
+// tests that exercise kind / disabled / transport errors assign
+// fireTriggerErr.
+func (f *fakeDataSource) FireTrigger(
+	_ context.Context, triggerID string,
+) (string, error) {
+	if triggerID == "" {
+		panic("fakeDataSource.FireTrigger: empty triggerID")
+	}
+	f.fireTriggerCalls = append(f.fireTriggerCalls, triggerID)
+	if f.fireTriggerErr != nil {
+		return "", f.fireTriggerErr
+	}
+	return f.fireTriggerRunID, nil
 }
 
 func (f *fakeDataSource) ListTriggerFires(
