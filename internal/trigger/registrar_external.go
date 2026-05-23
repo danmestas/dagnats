@@ -81,6 +81,11 @@ type externalRegistrar struct {
 	// recompiles it; santhosh-tekuri does that on demand inside
 	// validate_external.go.
 	configSchema json.RawMessage
+	// version is the bound TriggerTypeDef.Version at registration time
+	// (#351). A re-register with a different Version is allowed only
+	// when no live triggers of this kind exist — otherwise existing
+	// in-flight triggers could observe a schema/payload break.
+	version string
 
 	mu     sync.Mutex
 	active map[string]TriggerDef
@@ -88,12 +93,15 @@ type externalRegistrar struct {
 
 // newExternalRegistrar constructs an ExternalRegistrar for kind owned
 // by ownerWorkerID. Panics on the usual programmer-error inputs.
+// version is the bound TriggerTypeDef.Version (#351); empty is tolerated
+// because not every test seed populates the field.
 func newExternalRegistrar(
 	nc *nats.Conn,
 	triggerKV jetstream.KeyValue,
 	kind string,
 	ownerWorkerID string,
 	configSchema json.RawMessage,
+	version string,
 ) *externalRegistrar {
 	if nc == nil {
 		panic("newExternalRegistrar: nc must not be nil")
@@ -116,6 +124,7 @@ func newExternalRegistrar(
 		kind:          kind,
 		ownerWorkerID: ownerWorkerID,
 		configSchema:  configSchema,
+		version:       version,
 		active:        make(map[string]TriggerDef),
 	}
 }
