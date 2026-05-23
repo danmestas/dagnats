@@ -409,6 +409,12 @@ func (r *resumeRecorder) SetTriggerEnabled(
 	return r.inner.SetTriggerEnabled(ctx, triggerID, enabled)
 }
 
+func (r *resumeRecorder) StartRun(
+	ctx context.Context, workflowName string, input []byte,
+) (string, error) {
+	return r.inner.StartRun(ctx, workflowName, input)
+}
+
 func (r *resumeRecorder) ListTriggerFires(
 	ctx context.Context, triggerID string, limit int,
 ) ([]TriggerFireRow, error) {

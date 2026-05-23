@@ -74,6 +74,7 @@ var assetsFS embed.FS
 //go:embed templates/components/tile_live.html
 //go:embed templates/components/recent_panels.html
 //go:embed templates/components/dlq_action_modal.html
+//go:embed templates/components/run_confirm_modal.html
 //go:embed templates/components/command_palette.html
 //go:embed templates/components/tooltip.html
 //go:embed templates/components/side_sheet.html

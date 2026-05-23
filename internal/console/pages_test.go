@@ -63,6 +63,14 @@ type fakeDataSource struct {
 	kvKeys    map[string][]string
 	kvEntries map[string][]byte
 
+	// #329 (R8 inline Run button): StartRun observability. Tests
+	// either let startRunID default to the empty string (the handler
+	// will still 200 with an empty payload echo) or assign a stable
+	// id so they can assert against the response body.
+	startRunID    string
+	startRunErr   error
+	startRunCalls []startRunCall
+
 	// #312 (config page): test seam for the ConfigSnapshot
 	// surface. Tests assign these directly to drive the page.
 	configSnap    ConfigSnapshot
@@ -86,6 +94,13 @@ type fakeDataSource struct {
 type triggerSetCall struct {
 	ID      string
 	Enabled bool
+}
+
+// startRunCall captures one StartRun invocation. Tests assert against
+// the (Workflow, Input) pair to confirm the handler delegated correctly.
+type startRunCall struct {
+	Workflow string
+	Input    []byte
 }
 
 func newFakeDS() *fakeDataSource {
@@ -268,6 +283,23 @@ func (f *fakeDataSource) EmitAuditEvent(
 ) error {
 	f.auditEvents = append([]AuditEvent{evt}, f.auditEvents...)
 	return nil
+}
+
+// StartRun records the call and returns the seeded id / error. Tests
+// that want a non-empty run id assign startRunID; the default empty
+// string still exercises the response shape and audit emission.
+func (f *fakeDataSource) StartRun(
+	_ context.Context, workflowName string, input []byte,
+) (string, error) {
+	if workflowName == "" {
+		panic("fakeDataSource.StartRun: workflowName is empty")
+	}
+	f.startRunCalls = append(f.startRunCalls,
+		startRunCall{Workflow: workflowName, Input: input})
+	if f.startRunErr != nil {
+		return "", f.startRunErr
+	}
+	return f.startRunID, nil
 }
 
 func (f *fakeDataSource) SetTriggerEnabled(

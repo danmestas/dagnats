@@ -134,6 +134,12 @@ type WorkflowsListView struct {
 	Total      int
 	Rows       []WorkflowRow
 	EmptyState *EmptyState
+
+	// ReadOnly + CSRFToken carry the per-actor state the inline Run
+	// button needs (#329). The template gates the affordance on
+	// ReadOnly and embeds the token in the per-row hidden form.
+	ReadOnly  bool
+	CSRFToken string
 }
 
 // WorkflowRow is one workflow line on the list page.
@@ -150,6 +156,13 @@ type WorkflowRow struct {
 	LastRunTime   string
 	LastRunStatus string
 	Sparkline     []float64
+
+	// Runnable is true when the workflow accepts an empty input —
+	// the inline Run button (#329) only fires for those. Workflows
+	// with a non-empty required-input schema render a disabled
+	// affordance with a tooltip pointing at the workflow detail
+	// page where typed-input forms will land in a follow-up.
+	Runnable bool
 }
 
 // servePageWorkflowsList renders /console/workflows.
@@ -173,6 +186,8 @@ func servePageWorkflowsList(
 		http.Error(w, "list workflows failed", http.StatusInternalServerError)
 		return
 	}
+	view.ReadOnly = cfg.ReadOnly
+	view.CSRFToken = csrfTokenFor(r)
 	if view.EmptyState != nil {
 		view.EmptyState.ReadOnly = cfg.ReadOnly
 	}
@@ -329,6 +344,7 @@ func assembleWorkflowRows(
 			Version:      d.Version,
 			StepCount:    len(d.Steps),
 			TriggerCount: triggerCount[d.Name],
+			Runnable:     workflowRunnable(d),
 		}
 		if lr, ok := lastRun[d.Name]; ok {
 			row.LastRunTime = lr.CreatedAt.UTC().Format(time.RFC3339)
@@ -337,6 +353,28 @@ func assembleWorkflowRows(
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// workflowRunnable reports whether the workflow can be started from
+// the inline Run button with an empty input payload. A workflow is
+// runnable when it declares no input schema OR declares a schema that
+// has no required properties — in both cases an empty `{}` payload
+// passes validation and the engine has everything it needs.
+//
+// The check is conservative: any JSON-parse failure on InputSchema
+// classifies the workflow as not-runnable so a malformed schema can't
+// silently allow the operator to start a run the engine will reject.
+func workflowRunnable(def dag.WorkflowDef) bool {
+	if len(def.InputSchema) == 0 {
+		return true
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
+		return false
+	}
+	return len(schema.Required) == 0
 }
 
 // sparklineHours is the canonical request window for list-row

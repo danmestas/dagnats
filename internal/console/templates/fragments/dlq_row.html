@@ -30,12 +30,13 @@
           style="display:none;">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     </form>
-    <button type="button" class="btn btn-sm btn-restorative"
+    {{/* btn-heavy bumps visual weight on the inline DLQ actions (#329). */}}
+    <button type="button" class="btn btn-sm btn-heavy btn-restorative"
             data-dlq-action="retry" data-dlq-seq="{{.Row.Sequence}}"
             {{if not .Row.BodyPreserved}}disabled aria-disabled="true" title="Legacy entry — body not preserved; retry unsupported"{{else if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to retry."{{else}}data-action-confirm="retry" data-confirm-seq="{{.Row.Sequence}}"{{end}}>
       Retry
     </button>
-    <button type="button" class="btn btn-sm btn-destructive"
+    <button type="button" class="btn btn-sm btn-heavy btn-destructive"
             data-dlq-action="discard" data-dlq-seq="{{.Row.Sequence}}"
             {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to discard."{{else}}data-action-confirm="discard" data-confirm-seq="{{.Row.Sequence}}"{{end}}>
       Discard

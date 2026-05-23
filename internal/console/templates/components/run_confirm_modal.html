@@ -1,0 +1,145 @@
+{{/*
+  run-confirm-modal — quick-confirm gate for the inline Run button on
+  the workflows list (#329, R8 Tier 2).
+
+  Shape is borrowed from dlq-action-modal but with the typed-confirm
+  input removed: the Run action is not destructive, and the audit log
+  + Cancel button + Esc-to-dismiss already give the operator a safety
+  net. A typed-confirm here would be friction without payoff.
+
+  Markup contract:
+    - The host page (workflows_list.html) emits one hidden <form
+      data-confirm-action="run" data-confirm-seq="<wf>"> per runnable
+      row. The form's action is POST /console/workflows/<wf>/run; the
+      CSRF token sits in a hidden input. data-confirm-target carries
+      the operator-facing label (the workflow name).
+    - Every [data-action-confirm="run"] button on the page is wired to
+      open this modal. The picker JS prefers an exact data-confirm-seq
+      match (multiple runnable rows on the page) and falls back to the
+      action alone (single Run button on a detail page).
+    - On confirm we submit the form via fetch so the response body can
+      shape the toast. The SSE row-removal contract that DLQ uses does
+      not apply here — the list page stays as-is; the toast carries
+      the new run id with a link to the run detail.
+
+  IDs are stable — tests target #run-confirm-modal explicitly.
+*/}}
+{{define "run-confirm-modal"}}
+<div id="run-confirm-modal" class="console-modal" role="dialog"
+     aria-modal="true" aria-labelledby="run-confirm-title">
+  <div class="console-modal-card">
+    <h2 id="run-confirm-title">Start a new run?</h2>
+    <p id="run-confirm-prompt" class="muted"></p>
+    <p class="muted">
+      A new run will be queued with an empty input. You can cancel it
+      from the runs list if needed.
+    </p>
+    <div class="console-modal-actions">
+      <button type="button" id="run-confirm-cancel" class="btn btn-outline">Cancel</button>
+      <button type="button" id="run-confirm-go" class="btn btn-restorative">Start run</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.getElementById("run-confirm-modal");
+  if (!modal) return;
+  if (modal.dataset.runWired === "true") return;
+  modal.dataset.runWired = "true";
+  var prompt = document.getElementById("run-confirm-prompt");
+  var goBtn = document.getElementById("run-confirm-go");
+  var cancelBtn = document.getElementById("run-confirm-cancel");
+  var pending = null;
+
+  // openFor selects the matching <form> by (actionType, optional seq).
+  // The list page emits one form per runnable row keyed on the
+  // workflow name; the picker prefers an exact seq match.
+  function openFor(actionType, seq) {
+    var form = null;
+    if (seq) {
+      form = document.querySelector(
+        "form[data-confirm-action='" + actionType +
+        "'][data-confirm-seq='" + seq + "']");
+    }
+    if (!form) {
+      form = document.querySelector(
+        "form[data-confirm-action='" + actionType + "']");
+    }
+    if (!form) return;
+    pending = { form: form, actionType: actionType };
+    var target = form.getAttribute("data-confirm-target") || "this workflow";
+    prompt.textContent = "Start a new run of " + target + ".";
+    modal.setAttribute("data-open", "true");
+    setTimeout(function () { goBtn.focus(); }, 0);
+  }
+
+  function close() {
+    pending = null;
+    modal.removeAttribute("data-open");
+  }
+
+  // submitAction posts the form via fetch so the response shapes the
+  // toast feedback. On success: dispatch console:toast with the body's
+  // toast payload. The list page stays put — the toast carries the new
+  // run id and a link to the run detail.
+  function submitAction(form) {
+    if (!form) return;
+    var token = "";
+    var csrf = form.querySelector("input[name=csrf_token]");
+    if (csrf) token = csrf.value || "";
+    close();
+    fetch(form.action, {
+      method: "POST",
+      headers: {
+        "X-CSRF-Token": token,
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("run failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      if (data && data.toast) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: data.toast,
+        }));
+      }
+    }).catch(function (err) {
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: (err && err.message) ? err.message : "run failed",
+        },
+      }));
+    });
+  }
+
+  // Wire every Run button on the page. data-confirm-seq disambiguates
+  // when there are multiple runnable rows; absent it the picker falls
+  // back to the action-only match.
+  document.querySelectorAll("[data-action-confirm='run']").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openFor(
+        "run",
+        btn.getAttribute("data-confirm-seq") || "");
+    });
+  });
+  cancelBtn.addEventListener("click", close);
+  goBtn.addEventListener("click", function () {
+    if (!pending) return;
+    submitAction(pending.form);
+  });
+  modal.addEventListener("click", function (e) {
+    if (e.target === modal) close();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal.getAttribute("data-open")) close();
+  });
+})();
+</script>
+{{end}}

@@ -815,6 +815,32 @@ body[data-theme="dark"] {
 }
 
 /*
+ * btn-heavy bumps padding + border weight on inline action buttons
+ * that need to claim more visual real estate than the default .btn-sm
+ * pill — currently the DLQ Retry / Discard pair (#329 R8). Pairs with
+ * btn-restorative / btn-destructive; the tier colors win, .btn-heavy
+ * adds the weight without redefining the palette.
+ */
+.btn-heavy {
+  padding: 0.32rem 0.85rem;
+  border-width: 2px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+/*
+ * Workflows Run column — narrow trailing slot before the chevron. The
+ * Run button needs enough breathing room that a disabled state still
+ * reads as "intentionally unavailable" rather than "broken", so we
+ * pad the cell horizontally rather than shrink-wrapping the button.
+ */
+.workflows-run-col {
+  text-align: right;
+  white-space: nowrap;
+  padding-right: 0.75rem;
+}
+
+/*
  * DLQ row Actions column — inline-flex so the three buttons hug each
  * other on desktop; wrap to a two-row layout on narrow screens so the
  * pills never overflow the column. The destructive pair stays at the

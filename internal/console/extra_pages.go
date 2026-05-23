@@ -935,6 +935,10 @@ func targetLinkFor(action, target string) string {
 	case string(ActionTriggerEnable),
 		string(ActionTriggerDisable):
 		return "/console/triggers/" + target
+	case string(ActionWorkflowRun):
+		// Target is the workflow name. Link to the detail page so the
+		// audit log row navigates back to the workflow's recent runs.
+		return "/console/workflows/" + target
 	}
 	return ""
 }
