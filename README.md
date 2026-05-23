@@ -196,3 +196,5 @@ We are grateful for the public writing and code these projects have shared.
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+
+The console bundles [IBM Plex](https://github.com/IBM/plex) fonts under the SIL Open Font License v1.1; see [`internal/console/assets/fonts/OFL.txt`](internal/console/assets/fonts/OFL.txt).

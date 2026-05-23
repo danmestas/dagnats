@@ -100,6 +100,25 @@ func TestServeFontAsset_monoFaces_servesWoff2(t *testing.T) {
 	}
 }
 
+// TestFontAssets_OFLLicensePresent enforces OFL §2 compliance: the
+// license text must travel with the binary. If the embed directive
+// is ever dropped the font files would ship without their license
+// and we'd be silently out of compliance — this test fails loudly
+// before that can land.
+func TestFontAssets_OFLLicensePresent(t *testing.T) {
+	body, err := fs.ReadFile(assetsFS, "assets/fonts/OFL.txt")
+	if err != nil {
+		t.Fatalf("read OFL.txt: %v", err)
+	}
+	if len(body) == 0 {
+		t.Fatalf("OFL.txt is empty — embed did not pick up the bytes")
+	}
+	if !strings.Contains(string(body), "SIL OPEN FONT LICENSE") {
+		t.Fatalf("OFL.txt missing 'SIL OPEN FONT LICENSE' marker; got %d bytes "+
+			"of unexpected content", len(body))
+	}
+}
+
 func TestAppCSS_referencesIBMPlexMonoFaces(t *testing.T) {
 	body, err := fs.ReadFile(assetsFS, "assets/app.css")
 	if err != nil {
