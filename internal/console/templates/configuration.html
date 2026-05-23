@@ -1,0 +1,172 @@
+{{define "content"}}{{$page := .Page}}
+<section class="console-section page-config" data-page="config">
+  {{template "page-header" $page.Header}}
+
+  {{/*
+    Endpoints panel — iii's "adapter-first" top section: each card
+    surfaces one externally-addressable thing this deployment serves.
+    Click-to-copy is wired by the count-chip.js asset (existing
+    pattern reused).
+  */}}
+  <div class="config-endpoints" aria-label="Endpoints">
+    {{range $page.Endpoints}}
+    <article class="config-endpoint-card" data-endpoint-kind="{{.Kind}}">
+      <header>
+        <h3 class="config-endpoint-title">{{.Title}}</h3>
+        <p class="config-endpoint-subtitle">{{.Subtitle}}</p>
+      </header>
+      <p class="config-endpoint-url mono" title="{{.URL}}">{{.URL}}</p>
+    </article>
+    {{end}}
+  </div>
+
+  {{/*
+    Streams + KV buckets — the JetStream account-info surface. One
+    grid, two columns: streams on the left, buckets on the right.
+    Empty state inside each table so the operator sees the planned
+    shape even when JetStream hasn't provisioned the resource yet.
+  */}}
+  <section class="config-jetstream">
+    <h2 class="config-section-title">JetStream resources</h2>
+    <div class="config-jetstream-grid">
+      <div class="config-jetstream-pane">
+        <h3 class="config-section-subtitle">Streams</h3>
+        <table class="table console-table config-streams-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="num">Msgs</th>
+              <th class="num">Bytes</th>
+              <th>Retention</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range $page.Streams}}
+            <tr {{if not .Provisioned}}class="row-muted"{{end}}>
+              <td class="mono">{{.Name}}</td>
+              <td class="num">{{if .Provisioned}}{{.Messages}}{{else}}—{{end}}</td>
+              <td class="num">{{if .Provisioned}}{{.Bytes}}{{else}}—{{end}}</td>
+              <td>{{if .Retention}}{{.Retention}}{{else}}—{{end}}</td>
+            </tr>
+            {{else}}
+            <tr class="empty-row">
+              <td colspan="4">JetStream account info unreachable</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      <div class="config-jetstream-pane">
+        <h3 class="config-section-subtitle">KV buckets</h3>
+        <table class="table console-table config-buckets-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="num">Keys</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range $page.KVBuckets}}
+            <tr>
+              <td class="mono">{{.Name}}</td>
+              <td class="num">{{.Keys}}</td>
+              <td>{{.Description}}</td>
+            </tr>
+            {{else}}
+            <tr class="empty-row">
+              <td colspan="3">no KV buckets reachable</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  {{/*
+    Worker pools — grouped by primary task-type per iii's "Worker
+    Pools" treatment. The per-process roster lives at
+    /console/ops/workers; this view answers "what kinds of work can
+    this deployment handle?".
+  */}}
+  <section class="config-worker-pools">
+    <h2 class="config-section-title">Worker pools</h2>
+    <div class="config-worker-grid">
+      {{range $page.WorkerGroups}}
+      <article class="config-worker-card">
+        <header>
+          <h3 class="config-worker-name mono">{{.Name}}</h3>
+          <span class="config-worker-count">{{.Count}}</span>
+        </header>
+        <p class="config-worker-meta">
+          {{.Count}} connected · last seen {{.LastSeen}}
+        </p>
+      </article>
+      {{else}}
+      <p class="config-worker-empty">
+        No workers registered. Workers populate this panel via the
+        <code>workers</code> KV bucket once they boot.
+      </p>
+      {{end}}
+    </div>
+  </section>
+
+  {{/*
+    Registered trigger types — currently the built-in 4. When #273
+    Phase 2 lands, the Go side will read from a registry instead and
+    this section will surface dynamically registered kinds.
+  */}}
+  <section class="config-trigger-types">
+    <h2 class="config-section-title">Registered trigger types</h2>
+    <div class="config-trigger-grid">
+      {{range $page.TriggerTypes}}
+      <article class="config-trigger-card">
+        <span class="config-trigger-glyph" aria-hidden="true">{{.Glyph}}</span>
+        <div class="config-trigger-body">
+          <h3 class="config-trigger-name mono">{{.Name}}</h3>
+          <p class="config-trigger-desc">{{.Description}}</p>
+        </div>
+      </article>
+      {{end}}
+    </div>
+  </section>
+
+  {{/*
+    Build-info footer — one line at the bottom of the page. Each
+    fragment is wrapped in a <span class="config-build-fragment"> so
+    a future "click to copy" enhancement can target individual
+    fields without rewriting the markup.
+  */}}
+  <footer class="config-build-footer" aria-label="Build">
+    <span class="config-build-fragment">dagnats {{$page.Build.DagnatsBuild}}</span>
+    <span class="config-build-sep" aria-hidden="true">·</span>
+    <span class="config-build-fragment">NATS server {{if $page.Build.NATSServerVersion}}{{$page.Build.NATSServerVersion}}{{else}}—{{end}}</span>
+    <span class="config-build-sep" aria-hidden="true">·</span>
+    <span class="config-build-fragment">{{$page.Build.GoVersion}}</span>
+  </footer>
+
+  {{/*
+    YAML export — disclosure-driven so the page works without JS.
+    The <details>/<summary> pair behaves as a modal-equivalent on
+    desktop and as an inline collapsible on mobile. Future PR can
+    promote this to a full overlay modal; the data shape already
+    matches.
+  */}}
+  <details class="config-yaml-modal" id="config-yaml-modal">
+    <summary class="config-yaml-toggle">
+      <span class="config-yaml-toggle-label">View deployment YAML</span>
+    </summary>
+    <article class="config-yaml-panel" role="region"
+             aria-label="Deployment YAML">
+      <header class="config-yaml-header">
+        <h3>Deployment snapshot</h3>
+        <p class="config-yaml-hint">
+          Observational shape — not a re-applyable manifest.
+        </p>
+      </header>
+      <pre class="config-yaml-body mono"><code>{{$page.YAMLExport}}</code></pre>
+    </article>
+  </details>
+</section>
+{{end}}

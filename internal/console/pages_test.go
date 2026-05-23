@@ -63,6 +63,11 @@ type fakeDataSource struct {
 	kvKeys    map[string][]string
 	kvEntries map[string][]byte
 
+	// #312 (config page): test seam for the ConfigSnapshot
+	// surface. Tests assign these directly to drive the page.
+	configSnap    ConfigSnapshot
+	configSnapErr error
+
 	// T13 (Phase 2): sparkline backing data. sparklineSeries is keyed
 	// by "kind/id" so the test can pre-seed deterministic hourly counts
 	// without going through the metrics aggregator.
@@ -424,6 +429,18 @@ func (f *fakeDataSource) GetKVEntry(
 		Bucket: bucket, Key: key, Value: val, Revision: 1,
 		IsJSON: looksLikeJSON(val),
 	}, nil
+}
+
+// ConfigSnapshot is the test seam for the /console/config page
+// (#312). The default zero value renders the empty-state shell;
+// tests assign configSnap directly to drive richer scenarios.
+func (f *fakeDataSource) ConfigSnapshot(
+	_ context.Context,
+) (ConfigSnapshot, error) {
+	if f.configSnapErr != nil {
+		return ConfigSnapshot{}, f.configSnapErr
+	}
+	return f.configSnap, nil
 }
 
 // Search mirrors the production adapter's contract over the fake's
@@ -962,6 +979,7 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 		"/console/ops/leases",
 		"/console/ops/audit",
 		"/console/ops/metrics",
+		"/console/config",
 	}
 	external := regexp.MustCompile(
 		`(?i)(src|href)\s*=\s*"((https?:)?//[^"]+)"`)

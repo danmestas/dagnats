@@ -457,6 +457,12 @@ func (r *resumeRecorder) Search(
 	return r.inner.Search(ctx, query, limit)
 }
 
+func (r *resumeRecorder) ConfigSnapshot(
+	ctx context.Context,
+) (ConfigSnapshot, error) {
+	return r.inner.ConfigSnapshot(ctx)
+}
+
 // readSSEUntil reads the SSE response body looking for
 // `event: datastar-patch-elements` headers and capturing the row id
 // payload substrings. Stops once want events have been seen OR the

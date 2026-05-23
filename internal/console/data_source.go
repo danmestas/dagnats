@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -13,9 +14,15 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// osGetenv is the default backing of osLookupEnv. Pulled out so the
+// variable assignment above can take a function value of the same
+// shape without an inline closure.
+func osGetenv(key string) string { return os.Getenv(key) }
 
 // DataSource is the read-only surface the console needs from the
 // running api.Service. Keeping it narrow lets tests substitute a fake
@@ -163,6 +170,45 @@ type DataSource interface {
 	// order so the palette renders deterministic results; callers can
 	// re-sort if they want a different priority.
 	Search(ctx context.Context, query string, limit int) ([]SearchHit, error)
+
+	// ConfigSnapshot returns the deployment self-portrait the /config
+	// page renders. Bundles workers (#289 directory), JetStream
+	// streams + KV buckets, and the NATS endpoint metadata in a
+	// single round-trip. Returns a zero-value snapshot + nil error
+	// when the underlying NATS connection isn't configured — the
+	// page degrades to empty-state cards rather than 500ing on a
+	// JetStream-unreachable deployment. #312.
+	ConfigSnapshot(ctx context.Context) (ConfigSnapshot, error)
+}
+
+// ConfigSnapshot is the resource inventory the /config page renders.
+// Counts that come from existing list calls (workflows, triggers,
+// DLQ) stay outside this snapshot — the page sources them via the
+// already-extant DataSource methods so we don't duplicate enumeration
+// into one place.
+//
+// Empty / zero-valued fields are the documented "unreachable" signal:
+// the page paints a clear empty state on a per-section basis.
+type ConfigSnapshot struct {
+	NATSURL           string
+	NATSServerVersion string
+	OTLPEndpoint      string
+	Streams           []StreamSnapshot
+	KVBuckets         []KVBucketInfo
+	Workers           []worker.WorkerRegistration
+}
+
+// StreamSnapshot is one JetStream stream entry. Retention is the
+// human-readable form ("limits", "interest", "workqueue") so the
+// renderer doesn't have to map jetstream.RetentionPolicy values.
+// Provisioned is false when the stream is listed as known but the
+// JetStream account couldn't confirm it — the row renders muted.
+type StreamSnapshot struct {
+	Name        string
+	Messages    uint64
+	Bytes       uint64
+	Retention   string
+	Provisioned bool
 }
 
 // SearchHit is one result row in the cmd+k command palette. Kind tags
@@ -1337,6 +1383,134 @@ func looksLikeJSON(b []byte) bool {
 	}
 	return false
 }
+
+// ConfigSnapshot fans out into JetStream + the workers directory to
+// assemble the /console/config view. Each section is best-effort: a
+// JetStream miss leaves Streams nil; an empty workers bucket leaves
+// Workers nil. The renderer paints empty-state copy per section.
+//
+// The adapter does NOT hard-fail on partial reachability — the
+// operator's expectation on /config is "show me what you can see",
+// not "fail loudly when one bucket is missing."
+func (a *apiServiceAdapter) ConfigSnapshot(
+	ctx context.Context,
+) (ConfigSnapshot, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ConfigSnapshot: ctx is nil")
+	}
+	snap := ConfigSnapshot{}
+	if a.nc != nil {
+		snap.NATSURL = a.nc.ConnectedUrl()
+		snap.NATSServerVersion = a.nc.ConnectedServerVersion()
+	}
+	snap.OTLPEndpoint = otlpEndpointFromEnv()
+	if buckets, err := a.ListKVBuckets(ctx); err == nil {
+		snap.KVBuckets = buckets
+	}
+	if a.nc != nil {
+		snap.Streams = listKnownStreams(ctx, a.nc)
+	}
+	if a.svc != nil {
+		if regs, err := a.svc.ListWorkers(ctx); err == nil {
+			snap.Workers = regs
+		}
+	}
+	return snap, nil
+}
+
+// otlpEndpointFromEnv reads the standard OTLP env vars. We keep the
+// console out of the OTEL initialization path (a separate observability
+// arc owns that); the env var read here is the same surface every
+// OTEL-instrumented Go process honours. Empty string ⇒ the section
+// hides on the page.
+func otlpEndpointFromEnv() string {
+	for _, v := range []string{
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+	} {
+		if got := osLookupEnv(v); got != "" {
+			return got
+		}
+	}
+	return ""
+}
+
+// listKnownStreams probes every stream natsutil provisions. Each
+// stream that can't be looked up renders as Provisioned=false so the
+// operator sees the planned shape even when one stream hasn't been
+// created yet (e.g. fresh boot). Bounded loop by the static list.
+func listKnownStreams(
+	ctx context.Context, nc *nats.Conn,
+) []StreamSnapshot {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil
+	}
+	known := configStreamNames()
+	out := make([]StreamSnapshot, 0, len(known))
+	for _, name := range known {
+		out = append(out, lookupStreamSnapshot(ctx, js, name))
+	}
+	return out
+}
+
+// lookupStreamSnapshot fetches one stream's info. Missing streams
+// surface as a row with Provisioned=false so the renderer can show
+// the planned-but-absent state.
+func lookupStreamSnapshot(
+	ctx context.Context, js jetstream.JetStream, name string,
+) StreamSnapshot {
+	stream, err := js.Stream(ctx, name)
+	if err != nil {
+		return StreamSnapshot{Name: name, Provisioned: false}
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return StreamSnapshot{Name: name, Provisioned: false}
+	}
+	return StreamSnapshot{
+		Name:        info.Config.Name,
+		Messages:    info.State.Msgs,
+		Bytes:       info.State.Bytes,
+		Retention:   retentionLabel(info.Config.Retention),
+		Provisioned: true,
+	}
+}
+
+// retentionLabel converts a JetStream retention enum into the
+// human-readable token the YAML export + table render. Unknown
+// values fall through to the enum's String() so a future addition
+// at least renders something rather than blank.
+func retentionLabel(r jetstream.RetentionPolicy) string {
+	switch r {
+	case jetstream.LimitsPolicy:
+		return "limits"
+	case jetstream.InterestPolicy:
+		return "interest"
+	case jetstream.WorkQueuePolicy:
+		return "workqueue"
+	}
+	return r.String()
+}
+
+// configStreamNames returns the streams the console expects to find.
+// Mirrors api.knownStreams (the cluster-health surface) but kept
+// local so the console doesn't reach into the api package's
+// unexported var. Adding a stream here surfaces it on /config.
+func configStreamNames() []string {
+	return []string{
+		"WORKFLOW_HISTORY",
+		"TASK_QUEUES",
+		"EVENTS",
+		"DEAD_LETTERS",
+		"SLEEP_TIMERS",
+	}
+}
+
+// osLookupEnv is a thin seam so tests can intercept env-var reads
+// without standing up the OS. Default delegates to os.Getenv; tests
+// reassign this package-level var to feed deterministic values.
+var osLookupEnv = osGetenv
 
 // parseHistoryEvent decodes one history message. Returns ok=false on
 // malformed JSON — the dropped event is logged at the caller's slog
