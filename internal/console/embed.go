@@ -22,6 +22,7 @@ import "embed"
 //go:embed assets/sources/metrics.js
 //go:embed assets/sources/onboarding.js
 //go:embed assets/sources/build-info-copy.js
+//go:embed assets/sources/sidebar-collapse.js
 //go:embed assets/sources/sparkline.js
 //go:embed assets/sources/sheet.js
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
