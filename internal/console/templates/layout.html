@@ -28,6 +28,7 @@
   <script src="/console/assets/toast.js" defer></script>
   <script src="/console/assets/count-chip.js" defer></script>
   <script src="/console/assets/onboarding.js" defer></script>
+  <script src="/console/assets/build-info-copy.js" defer></script>
 </head>
 <body>
   <header class="console-header">
@@ -98,6 +99,7 @@
     {{end}}
     {{template "content" .}}
   </main>
+  {{template "build-info-footer" .BuildInfo}}
   {{template "command-palette" .}}
   <div id="sheet-outlet"></div>
 </body>

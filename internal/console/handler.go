@@ -282,6 +282,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/assets/onboarding.js",
 		servePlainAssetAt("sources/onboarding.js",
 			"application/javascript; charset=utf-8"))
+	mux.HandleFunc("/console/assets/build-info-copy.js",
+		servePlainAssetAt("sources/build-info-copy.js",
+			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
 	})
@@ -363,7 +366,8 @@ func serveNotFound(
 			AuthMode: cfg.AuthMode.String(),
 			Build:    cfg.Build,
 		},
-		Page: notFoundView{Path: r.URL.Path},
+		BuildInfo: buildBuildInfo(r.Context(), cfg),
+		Page:      notFoundView{Path: r.URL.Path},
 	}
 	tmpl, ok := ts.pageTemplates["not-found"]
 	if !ok {
@@ -641,10 +645,14 @@ func pagerArgs(
 // older tests asserting on the wire-up don't regress, but the rebuilt
 // dashboard.html consults Page only.
 type dashboardData struct {
-	Title            string
-	Section          string
-	Actor            Actor
-	Overview         overviewData
+	Title    string
+	Section  string
+	Actor    Actor
+	Overview overviewData
+	// BuildInfo drives the R9 build/identity footer; populated by
+	// serveDashboard alongside Overview so the layout template
+	// sees the same field path it does for every other page.
+	BuildInfo        BuildInfo
 	ReadOnly         bool
 	MetricsTiles     []MetricsTile
 	MetricsAvailable bool
@@ -682,6 +690,7 @@ func serveDashboard(
 			AuthMode: cfg.AuthMode.String(),
 			Build:    cfg.Build,
 		},
+		BuildInfo:        buildBuildInfo(r.Context(), cfg),
 		ReadOnly:         cfg.ReadOnly,
 		MetricsAvailable: cfg.Metrics != nil,
 		Page:             view,

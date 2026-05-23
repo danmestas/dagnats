@@ -2770,3 +2770,46 @@ body[data-theme="dark"] code {
   max-height: 60vh;
   overflow-y: auto;
 }
+
+/*
+ * Build/identity footer (R9, #320). Full-width strip below <main>.
+ * Stays in normal document flow so short pages don't overlap content
+ * with an absolute/fixed position; on tall content the strip
+ * simply lives at the bottom of the scroll area.
+ *
+ * The host fragment is click-to-copy; cursor + outline cue advertise
+ * the affordance without leaning on tooltip-only discovery.
+ */
+.build-info-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2) var(--space-3);
+  margin: 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.build-info-fragment {
+  font-family: var(--font-mono);
+}
+.build-info-sep {
+  color: var(--border);
+}
+.build-info-host {
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 0 2px;
+}
+.build-info-host:hover,
+.build-info-host:focus-visible {
+  background: var(--bg);
+  color: var(--text-primary);
+  outline: none;
+}
+.build-info-host.is-copied {
+  color: var(--status-success, var(--text-primary));
+}

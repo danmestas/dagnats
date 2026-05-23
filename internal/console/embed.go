@@ -21,6 +21,7 @@ import "embed"
 //go:embed assets/sources/count-chip.js
 //go:embed assets/sources/metrics.js
 //go:embed assets/sources/onboarding.js
+//go:embed assets/sources/build-info-copy.js
 //go:embed assets/sources/sparkline.js
 //go:embed assets/sources/sheet.js
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
@@ -65,6 +66,7 @@ var assetsFS embed.FS
 //go:embed templates/fragments/dlq_row.html
 //go:embed templates/fragments/metric_tile.html
 //go:embed templates/fragments/metrics_chart.html
+//go:embed templates/fragments/build_info.html
 //go:embed templates/components/step_list.html
 //go:embed templates/components/run_error_banner.html
 //go:embed templates/components/run_tab_panels.html

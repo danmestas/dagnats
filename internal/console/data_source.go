@@ -196,6 +196,14 @@ type ConfigSnapshot struct {
 	Streams           []StreamSnapshot
 	KVBuckets         []KVBucketInfo
 	Workers           []worker.WorkerRegistration
+	// NATSEmbedded is true when the NATS server is the in-process
+	// embedded one this dagnats binary started, false when the
+	// connection is against an external server. The R9 build-info
+	// footer surfaces this so operators can tell at a glance whether
+	// they're looking at a self-contained deployment or a
+	// participant in a larger cluster. The adapter populates this
+	// from whether the engine owns the NATS lifecycle (#320).
+	NATSEmbedded bool
 }
 
 // StreamSnapshot is one JetStream stream entry. Retention is the
@@ -1402,6 +1410,11 @@ func (a *apiServiceAdapter) ConfigSnapshot(
 	if a.nc != nil {
 		snap.NATSURL = a.nc.ConnectedUrl()
 		snap.NATSServerVersion = a.nc.ConnectedServerVersion()
+		// dagnats today always starts its NATS in-process; the
+		// console always shows (embedded). When an external-NATS
+		// deployment mode lands, replace this with the engine's
+		// authoritative ownership flag — the field is the seam.
+		snap.NATSEmbedded = true
 	}
 	snap.OTLPEndpoint = otlpEndpointFromEnv()
 	if buckets, err := a.ListKVBuckets(ctx); err == nil {

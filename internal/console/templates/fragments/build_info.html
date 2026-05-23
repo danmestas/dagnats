@@ -1,0 +1,31 @@
+{{/*
+  Build/identity footer (R9, #320). One-line strip rendered below
+  <main> on every console page.
+
+  Content: `dagnats vX.Y.Z (abc1234) • nats://host (embedded) • N/M streams`.
+
+  Sources:
+    - .BuildInfo.DagnatsBuild — cfg.Build verbatim.
+    - .BuildInfo.HostLabel — NATS URL + optional "(embedded)" marker.
+    - .BuildInfo.StreamsLabel — provisioned/known stream count.
+
+  This footer is identity-only. Real-time connection status lives in
+  the header connection-pill; duplicating ONLINE/OFFLINE here is the
+  anti-pattern the audit rewrite of #320 removed.
+*/}}
+{{define "build-info-footer"}}
+<footer class="build-info-footer" aria-label="Build">
+  <span class="build-info-fragment">dagnats {{.DagnatsBuild}}</span>
+  {{with .HostLabel}}
+  <span class="build-info-sep" aria-hidden="true">•</span>
+  <span class="build-info-fragment build-info-host"
+        data-copy="{{$.NATSHost}}"
+        role="button" tabindex="0"
+        title="Click to copy">{{.}}</span>
+  {{end}}
+  {{with .StreamsLabel}}
+  <span class="build-info-sep" aria-hidden="true">•</span>
+  <span class="build-info-fragment">{{.}}</span>
+  {{end}}
+</footer>
+{{end}}
