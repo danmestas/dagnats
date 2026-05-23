@@ -124,6 +124,15 @@ type Worker struct {
 	// authoritative in-memory value; the KV write is best-effort.
 	workerStatusKV         jetstream.KeyValue
 	cancelledSkippedAtomic uint64
+
+	// triggerSubs holds NATS core subscriptions opened by
+	// WatchTriggers (#333). Lifetime tied to Worker.Stop() so callers
+	// don't manage a third lifecycle alongside Start/Stop. Guarded by
+	// triggerSubsMu because RegisterTriggerType/WatchTriggers may be
+	// called concurrently with Stop() in shutdown races (CLAUDE.md
+	// "kill-mid-test patterns + t.Cleanup safe" invariant).
+	triggerSubsMu sync.Mutex
+	triggerSubs   []*nats.Subscription
 }
 
 // WorkerOption configures optional Worker behavior.
@@ -800,6 +809,24 @@ func (w *Worker) Stop() {
 				slog.Warn(
 					"worker.Stop: directory deregister failed (non-fatal)",
 					"worker_id", w.workerID,
+					"error", err,
+				)
+			}
+		}
+		// Drain WatchTriggers subscriptions (#333). Held under
+		// triggerSubsMu so a late RegisterTriggerType/WatchTriggers
+		// caller racing shutdown does not append into a half-drained
+		// slice. Unsubscribe errors are best-effort like Deregister
+		// above — the connection is about to close.
+		w.triggerSubsMu.Lock()
+		subs := w.triggerSubs
+		w.triggerSubs = nil
+		w.triggerSubsMu.Unlock()
+		for _, sub := range subs {
+			if err := sub.Unsubscribe(); err != nil {
+				slog.Warn(
+					"worker.Stop: trigger sub unsubscribe failed (non-fatal)",
+					"subject", sub.Subject,
 					"error", err,
 				)
 			}
