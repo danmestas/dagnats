@@ -20,8 +20,8 @@ import (
 var topLevelCommands = []string{
 	"clean", "completion", "config", "demo", "dev", "dlq", "init",
 	"logs", "metrics", "observe", "run", "serve", "service",
-	"sidecar", "singleton", "status", "trace", "trigger", "workers",
-	"workflow",
+	"sidecar", "singleton", "status", "trace", "trigger",
+	"trigger-type", "workers", "workflow",
 }
 
 // subcommandMap maps parent commands to their subcommands.
@@ -46,6 +46,9 @@ var subcommandMap = map[string][]string{
 	},
 	"service": {
 		"list",
+	},
+	"trigger-type": {
+		"list", "describe",
 	},
 	"completion": {
 		"bash", "zsh",
@@ -97,7 +100,9 @@ var flagMap = map[string][]string{
 	"demo.seed": {
 		"--count=", "--include-failed", "--json", "--timeout=",
 	},
-	"service.list": {"--json"},
+	"service.list":          {"--json"},
+	"trigger-type.list":     {"--json"},
+	"trigger-type.describe": {"--json"},
 }
 
 // dynamicCompletionCommands identifies argument positions that need
