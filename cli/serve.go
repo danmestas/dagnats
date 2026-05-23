@@ -35,6 +35,12 @@ func runServeCmd(args []string) {
 
 	printConfigSource(os.Stderr, loadedPath)
 
+	// Phase 4 / ADR-018: surface the resolved config file path so
+	// Server.Run can drive a configfile.Watcher against the same
+	// dagnats.yaml. Empty when no file was found — Run treats that
+	// as "no file-managed declarative section, skip the watcher".
+	cfg.ConfigFilePath = loadedPath
+
 	srv := server.New(cfg)
 
 	if len(cfg.Workers) > 0 {
@@ -77,6 +83,9 @@ func printServeHelp() {
 	fmt.Println()
 	fmt.Println("Env: DAGNATS_DATA_DIR," +
 		" DAGNATS_HTTP_ADDR, DAGNATS_NATS_PORT")
+	fmt.Println()
+	fmt.Println("Workflows + triggers in the same dagnats.yaml are")
+	fmt.Println("hot-reloaded on file edit (ADR-018).")
 	fmt.Println()
 	fmt.Println("Run 'dagnats config show'" +
 		" to see effective configuration.")

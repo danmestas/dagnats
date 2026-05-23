@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/bridge"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/configfile"
 	"github.com/danmestas/dagnats/internal/console"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -53,7 +54,9 @@ type Server struct {
 	workerShims        []*WorkerShim
 	workers            []*worker.Worker
 	running            atomic.Bool
-	tempCreds          string // inline creds temp file; cleaned on shutdown
+	tempCreds          string              // inline creds temp file; cleaned on shutdown
+	cfgWatcher         *configfile.Watcher // hot-reload watcher (#358)
+	cfgWatcherCancel   context.CancelFunc  // cleanup paired with cfgWatcher
 }
 
 // New creates a Server with the given config. Panics if DataDir is empty.
@@ -247,7 +250,138 @@ func (s *Server) startComponents() error {
 	}
 	s.workerShims = nil // no ambiguous stale state
 
+	// Phase 4 / ADR-018: start the dagnats.yaml hot-reload watcher
+	// after all components are up. A failure here is logged and
+	// swallowed — the rest of the server is healthy without the
+	// declarative config layer, and refusing to start over a
+	// watcher problem would be worse than running without reload.
+	if err := s.startConfigWatcher(); err != nil {
+		slog.Warn("configfile watcher disabled",
+			"path", s.cfg.ConfigFilePath, "err", err)
+	}
+
 	return nil
+}
+
+// startConfigWatcher boots the configfile.Watcher and drives a
+// Diff+Apply pipeline on every reload. Returns nil when no config
+// file path was supplied (a missing dagnats.yaml is a normal mode,
+// not a failure). Per ADR-018 — file edits update workflows and
+// triggers without restart.
+func (s *Server) startConfigWatcher() error {
+	if s.cfg.ConfigFilePath == "" {
+		return nil
+	}
+	if s.nc == nil {
+		panic("startConfigWatcher: nats conn must not be nil")
+	}
+
+	js, err := jetstream.New(s.nc)
+	if err != nil {
+		return fmt.Errorf("jetstream.New: %w", err)
+	}
+	kvCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second)
+	defer cancel()
+	wfKV, err := js.KeyValue(kvCtx, "workflow_defs")
+	if err != nil {
+		return fmt.Errorf("workflow_defs KV: %w", err)
+	}
+	trKV, err := js.KeyValue(kvCtx, "triggers")
+	if err != nil {
+		return fmt.Errorf("triggers KV: %w", err)
+	}
+	kv := configfile.KVHandles{WorkflowDefs: wfKV, Triggers: trKV}
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	src := configfile.SourceLabel(
+		filepathBase(s.cfg.ConfigFilePath))
+
+	reload := func(cfg configfile.ConfigFile) error {
+		return applyConfigFile(runCtx, kv, cfg, src)
+	}
+
+	w, err := configfile.NewWatcher(
+		s.cfg.ConfigFilePath, reload, slog.Default())
+	if err != nil {
+		runCancel()
+		return fmt.Errorf("new watcher: %w", err)
+	}
+	if err := w.Start(runCtx); err != nil {
+		runCancel()
+		return fmt.Errorf("start watcher: %w", err)
+	}
+
+	// Best-effort initial apply so a freshly-started server picks
+	// up the file's declarations without waiting for the first edit.
+	if cfg, err := loadConfigFileSafe(s.cfg.ConfigFilePath); err == nil {
+		_ = reload(cfg)
+	}
+
+	s.cfgWatcher = w
+	s.cfgWatcherCancel = runCancel
+	printStep(os.Stderr, "configfile watcher started")
+	return nil
+}
+
+// applyConfigFile drives the convert → diff → apply pipeline. Pulled
+// out so the reload closure stays under the 70-line limit. Errors
+// from individual apply ops are logged via Apply's joined error and
+// returned up so the watcher logs the full failure.
+func applyConfigFile(
+	ctx context.Context, kv configfile.KVHandles,
+	cfg configfile.ConfigFile, sourceLabel string,
+) error {
+	desired := configfile.DesiredState{
+		Workflows: map[string]dag.WorkflowDef{},
+		Triggers:  map[string]trigger.TriggerDef{},
+	}
+	for _, wf := range cfg.Workflows {
+		desired.Workflows[wf.Name] = configfile.ToWorkflowDef(wf)
+	}
+	for _, tr := range cfg.Triggers {
+		desired.Triggers[tr.ID] =
+			configfile.ToTriggerDef(tr, sourceLabel)
+	}
+	current, err := configfile.ReadCurrent(ctx, kv, sourceLabel)
+	if err != nil {
+		return fmt.Errorf("read current: %w", err)
+	}
+	plan := configfile.Diff(current, desired)
+	if plan.Empty() {
+		return nil
+	}
+	return configfile.Apply(ctx, kv, plan)
+}
+
+// loadConfigFileSafe reads + parses the file once for the initial
+// apply. Returns a zero ConfigFile on any error — the caller treats
+// "couldn't load" as "no initial state" and waits for the next edit.
+func loadConfigFileSafe(path string) (configfile.ConfigFile, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return configfile.ConfigFile{}, err
+	}
+	defer f.Close()
+	cfg, err := configfile.Load(f)
+	if err != nil {
+		return configfile.ConfigFile{}, err
+	}
+	if err := configfile.Validate(cfg); err != nil {
+		return configfile.ConfigFile{}, err
+	}
+	return cfg, nil
+}
+
+// filepathBase returns the last path component. Pulled into a tiny
+// helper so the import surface stays small at the call site.
+func filepathBase(p string) string {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' || p[i] == '\\' {
+			return p[i+1:]
+		}
+	}
+	return p
 }
 
 // startHTTP creates and launches the HTTP server in a goroutine.
@@ -417,6 +551,18 @@ func (s *Server) shutdown() error {
 			if err := s.httpSrv.Shutdown(httpCtx); err != nil {
 				printStep(os.Stderr, "http shutdown error: "+err.Error())
 			}
+		}
+
+		// Stop the configfile watcher first so it can't fire one
+		// last reload while the rest of the components are
+		// tearing down (#358).
+		if s.cfgWatcher != nil {
+			s.cfgWatcher.Stop()
+			s.cfgWatcher = nil
+		}
+		if s.cfgWatcherCancel != nil {
+			s.cfgWatcherCancel()
+			s.cfgWatcherCancel = nil
 		}
 
 		printStep(os.Stderr, "stopping triggers...")

@@ -63,6 +63,14 @@ type Config struct {
 	// opt-in keeps operators from shipping cleartext to
 	// production by accident.
 	NATSWebsocketNoTLS bool `json:"nats_ws_no_tls"`
+
+	// ConfigFilePath is the absolute path of the dagnats.yaml that
+	// was loaded (empty when no file was found). Phase 4 / ADR-018:
+	// the server uses it to drive the configfile.Watcher for live
+	// reload of workflows and triggers declared in the same file.
+	// Not stored in the on-disk file itself — populated by the CLI
+	// from the resolved path after the file is loaded.
+	ConfigFilePath string `json:"-"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.
