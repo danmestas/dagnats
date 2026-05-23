@@ -155,6 +155,32 @@ func TestServiceListWorkflows(t *testing.T) {
 	}
 }
 
+// TestListWorkflows_EmptyBucket pins the contract that an empty
+// workflow_defs KV returns (empty slice, nil error). Issue #360:
+// the nats.go jetstream client returns ErrNoKeysFound from Keys()
+// on an empty bucket; listWorkflowsInner used to propagate that
+// up through three layers and surface as a 500 on /console/workflows
+// for any operator on a fresh data dir. Five sibling KV consumers
+// already swallow ErrNoKeysFound; this test guards the workflows
+// path against regressing to the outlier behaviour.
+func TestListWorkflows_EmptyBucket(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc)
+	defs, err := svc.ListWorkflows(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorkflows on empty bucket: %v", err)
+	}
+	if defs == nil {
+		t.Fatal("defs must not be nil on empty bucket")
+	}
+	if len(defs) != 0 {
+		t.Fatalf("len(defs) = %d, want 0", len(defs))
+	}
+}
+
 func TestServiceCancelRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc)

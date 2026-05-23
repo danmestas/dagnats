@@ -617,6 +617,14 @@ func (s *Service) listWorkflowsInner(
 	}
 	keys, err := s.defKV.Keys(ctx)
 	if err != nil {
+		// Empty bucket -- treat as the documented "no workflows
+		// registered" case so consumers (console, REST, NATS) get
+		// nil slice + nil error and can render empty-state. Mirrors
+		// the pattern used by ListTriggers, scheduled.go, and the
+		// engine snapshot store.
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return []dag.WorkflowDef{}, nil
+		}
 		return nil, err
 	}
 
