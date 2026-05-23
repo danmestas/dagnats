@@ -60,6 +60,8 @@ func Run(args []string) {
 		runSingletonCmd(args[2:])
 	case "service":
 		runServiceCmd(args[2:])
+	case "trigger-type":
+		runTriggerTypeCmd(args[2:])
 	case "clean":
 		runCleanCmd(args[2:])
 	case "demo":
@@ -95,6 +97,8 @@ func printUsage() {
 	fmt.Println("  metrics   view metric snapshots")
 	fmt.Println("  singleton list and release singleton locks")
 	fmt.Println("  service   list registered services")
+	fmt.Println(
+		"  trigger-type list, describe external trigger types")
 	fmt.Println("  clean     purge run data (for testing)")
 	fmt.Println("  demo      seed runs and drive them to terminal states")
 	fmt.Println("  observe   observability pipeline health")
