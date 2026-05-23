@@ -68,6 +68,13 @@ type fakeDataSource struct {
 	configSnap    ConfigSnapshot
 	configSnapErr error
 
+	// #328 (task-types page): optional override for the rows the
+	// fake returns from AggregateTaskTypes. Default behaviour derives
+	// rows from configSnap.Workers so most tests need no extra setup;
+	// tests that want a curated row set assign taskTypeRows directly.
+	taskTypeRows    []TaskTypeRow
+	taskTypeRowsErr error
+
 	// T13 (Phase 2): sparkline backing data. sparklineSeries is keyed
 	// by "kind/id" so the test can pre-seed deterministic hourly counts
 	// without going through the metrics aggregator.
@@ -441,6 +448,24 @@ func (f *fakeDataSource) ConfigSnapshot(
 		return ConfigSnapshot{}, f.configSnapErr
 	}
 	return f.configSnap, nil
+}
+
+// AggregateTaskTypes is the test seam for the /console/task-types
+// page (#328). Default behaviour mirrors the production adapter:
+// derive task-type rows from the worker registrations the test
+// pre-seeded on configSnap.Workers. Tests that want to override the
+// derivation (e.g. inject pre-computed rows) assign taskTypeRows or
+// taskTypeRowsErr directly.
+func (f *fakeDataSource) AggregateTaskTypes(
+	_ context.Context,
+) ([]TaskTypeRow, error) {
+	if f.taskTypeRowsErr != nil {
+		return nil, f.taskTypeRowsErr
+	}
+	if f.taskTypeRows != nil {
+		return append([]TaskTypeRow{}, f.taskTypeRows...), nil
+	}
+	return aggregateTaskTypesFromWorkers(f.configSnap.Workers), nil
 }
 
 // Search mirrors the production adapter's contract over the fake's

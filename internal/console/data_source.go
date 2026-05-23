@@ -179,6 +179,22 @@ type DataSource interface {
 	// page degrades to empty-state cards rather than 500ing on a
 	// JetStream-unreachable deployment. #312.
 	ConfigSnapshot(ctx context.Context) (ConfigSnapshot, error)
+
+	// AggregateTaskTypes fans out across every live worker (from the
+	// `workers` KV bucket, #289) and the `services` KV bucket (#322)
+	// to assemble one row per distinct task type. Deduplicates across
+	// workers — two workers reporting `email` collapse into one row
+	// with two OwnerWorkerIDs.
+	//
+	// Deliberately a separate method from ConfigSnapshot: the
+	// deployment self-portrait is a different lifecycle. ConfigSnapshot
+	// answers "what's plugged in"; AggregateTaskTypes answers "what
+	// task types could fire right now". Two questions, two methods.
+	// See ADR-015 R11 audit (Q5 audit-locked) for the decision trail.
+	//
+	// Returns nil + nil-error when no workers report — the renderer
+	// paints the empty state. #328.
+	AggregateTaskTypes(ctx context.Context) ([]TaskTypeRow, error)
 }
 
 // ConfigSnapshot is the resource inventory the /config page renders.
@@ -1524,6 +1540,79 @@ func configStreamNames() []string {
 // without standing up the OS. Default delegates to os.Getenv; tests
 // reassign this package-level var to feed deterministic values.
 var osLookupEnv = osGetenv
+
+// AggregateTaskTypes scans the live workers directory and the
+// services KV bucket, then folds the two into one TaskTypeRow per
+// distinct task type. Service-prefix grouping uses the `service::task`
+// convention from ADR-017; the services bucket is consulted only to
+// confirm a prefix is a registered service (informational — the
+// grouping itself is structural on the string).
+//
+// Best-effort across both reads. A miss on the services bucket
+// leaves rows un-augmented; a miss on the workers list collapses to
+// (nil, nil) so the page paints empty state instead of 500ing.
+func (a *apiServiceAdapter) AggregateTaskTypes(
+	ctx context.Context,
+) ([]TaskTypeRow, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.AggregateTaskTypes: ctx is nil")
+	}
+	if a.svc == nil {
+		panic("apiServiceAdapter.AggregateTaskTypes: svc is nil")
+	}
+	regs, err := a.svc.ListWorkers(ctx)
+	if err != nil {
+		return nil, nil
+	}
+	return aggregateTaskTypesFromWorkers(regs), nil
+}
+
+// aggregateTaskTypesFromWorkers turns the worker registrations into
+// the deduplicated row set. Pure function so tests can drive it
+// without standing up an adapter. Bounded by len(regs) * maxTypesPer
+// — registrations carry a slice of task types each, but the worker
+// SDK keeps that slice short (one to a few entries per worker).
+func aggregateTaskTypesFromWorkers(
+	regs []worker.WorkerRegistration,
+) []TaskTypeRow {
+	if len(regs) == 0 {
+		return nil
+	}
+	const maxRegs = 10000
+	if len(regs) > maxRegs {
+		panic(
+			"aggregateTaskTypesFromWorkers: regs exceeds max bound",
+		)
+	}
+	byType := make(map[string]*TaskTypeRow, len(regs))
+	for _, reg := range regs {
+		for _, t := range reg.TaskTypes {
+			if t == "" {
+				continue
+			}
+			row, ok := byType[t]
+			if !ok {
+				row = &TaskTypeRow{
+					TaskType:          t,
+					Service:           splitServicePrefix(t),
+					RecentInvocations: -1,
+					AvgDurationMS:     -1,
+					FailureRate:       -1,
+					RunHref:           "/console/runs",
+				}
+				byType[t] = row
+			}
+			row.OwnerWorkerIDs = append(
+				row.OwnerWorkerIDs, reg.WorkerID,
+			)
+		}
+	}
+	out := make([]TaskTypeRow, 0, len(byType))
+	for _, row := range byType {
+		out = append(out, *row)
+	}
+	return out
+}
 
 // parseHistoryEvent decodes one history message. Returns ok=false on
 // malformed JSON — the dropped event is logged at the caller's slog

@@ -1,0 +1,72 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="page page-task-types-list console-section" data-page="task-types-list">
+  {{template "page-header" .Header}}
+
+  {{if .EmptyState}}
+  <div class="card">
+    <table class="table console-table" id="task-types-table">
+      <thead>
+        <tr>
+          <th>Task type</th>
+          <th>Owners</th>
+          <th>Recent runs (1h)</th>
+          <th>Avg duration</th>
+          <th>Failure rate</th>
+          <th class="row-chevron-cell"><span class="sr-only">Open</span></th>
+        </tr>
+      </thead>
+      <tbody id="task-types-tbody">
+        <tr class="empty-row">
+          <td colspan="6">
+            {{template "empty-state" .EmptyState}}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="card">
+    <table class="table console-table" id="task-types-table">
+      <thead>
+        <tr>
+          <th>Task type</th>
+          <th>Owners</th>
+          <th>Recent runs (1h)</th>
+          <th>Avg duration</th>
+          <th>Failure rate</th>
+          <th class="row-chevron-cell"><span class="sr-only">Open</span></th>
+        </tr>
+      </thead>
+      {{range .Groups}}
+      <tbody class="task-type-group" data-service="{{.Name}}">
+        <tr class="task-type-group-header">
+          <td colspan="6">
+            <span class="task-type-group-badge">{{.Name}}</span>
+            <span class="task-type-group-count">{{len .Rows}} task type{{if ne (len .Rows) 1}}s{{end}}</span>
+          </td>
+        </tr>
+        {{range .Rows}}
+        <tr class="task-type-row" data-task-type="{{.TaskType}}">
+          <td class="mono task-type-name"><a href="{{.RunHref}}">{{.TaskType}}</a></td>
+          <td class="task-type-owners">
+            {{range $i, $id := .OwnerWorkerIDs}}{{if $i}}, {{end}}<span class="mono">{{$id}}</span>{{end}}
+          </td>
+          <td class="task-type-metric">
+            {{if lt .RecentInvocations 0}}<span class="muted" aria-label="not measured">&mdash;</span>{{else}}{{.RecentInvocations}}{{end}}
+          </td>
+          <td class="task-type-metric">
+            {{if lt .AvgDurationMS 0}}<span class="muted" aria-label="not measured">&mdash;</span>{{else}}{{.AvgDurationMS}}&nbsp;ms{{end}}
+          </td>
+          <td class="task-type-metric">
+            {{if lt .FailureRate 0.0}}<span class="muted" aria-label="not measured">&mdash;</span>{{else}}{{.FailureRate}}%{{end}}
+          </td>
+          {{template "row-chevron" .}}
+        </tr>
+        {{end}}
+      </tbody>
+      {{end}}
+    </table>
+  </div>
+  {{end}}
+</section>
+{{end}}{{end}}

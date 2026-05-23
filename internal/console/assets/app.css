@@ -1622,6 +1622,42 @@ body[data-theme="dark"] {
 .console-empty-state-icon[data-kind="run"]::before      { content: "▶"; }
 .console-empty-state-icon[data-kind="trigger"]::before  { content: "⚡"; }
 .console-empty-state-icon[data-kind="dlq"]::before      { content: "✓"; }
+.console-empty-state-icon[data-kind="task"]::before     { content: "</>"; }
+
+/* --- task-types list: service-prefix group headers + dim metric cells.
+ *     Each <tbody> becomes one service group; the first row inside is
+ *     the badge label, the rest are the actual task-type rows. */
+.task-type-group-header td {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+.task-type-group-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  margin-right: var(--space-3);
+}
+.task-type-group-count {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+.task-type-name a {
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.task-type-name a:hover { text-decoration: underline; }
+.task-type-metric { color: var(--text-secondary); }
+.task-type-metric .muted { color: var(--text-muted); }
 .console-empty-state-title {
   font-family: var(--font-sans);
   font-size: 1rem;

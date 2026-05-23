@@ -227,6 +227,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageConfiguration(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/task-types",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageTaskTypes(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/ops",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageOpsIndex(w, r, ts, cfg)
@@ -423,6 +427,7 @@ var pageContentFiles = map[string]string{
 	"streams-list":      "templates/streams_list.html",
 	"metrics_dashboard": "templates/metrics_dashboard.html",
 	"configuration":     "templates/configuration.html",
+	"task-types-list":   "templates/task_types_list.html",
 	"not-found":         "templates/not_found.html",
 }
 
