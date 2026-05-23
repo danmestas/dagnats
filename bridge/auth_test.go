@@ -19,7 +19,7 @@ func TestAuthRejectsWithoutToken(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := newTestBridge(t, nc)
 	b.token = "secret-token"
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
@@ -47,7 +47,7 @@ func TestAuthAcceptsCorrectToken(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := newTestBridge(t, nc)
 	b.token = "secret-token"
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
@@ -82,7 +82,7 @@ func TestAuthAllowsWhenNoTokenConfigured(t *testing.T) {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
 
-	b := NewBridge(nc)
+	b := newTestBridge(t, nc)
 	// token is empty — dev mode
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()

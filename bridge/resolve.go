@@ -12,6 +12,8 @@ import (
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // errResponseAlreadyWritten signals that the handler wrote the HTTP
@@ -49,7 +51,15 @@ func (b *Bridge) handleResolve(
 	if b.js == nil {
 		panic("handleResolve: js must not be nil")
 	}
-	ctx, span := b.tracer.Start(r.Context(), "bridge.resolve")
+	// Extract W3C trace context from inbound HTTP headers so the
+	// span we open is a child of the upstream caller's trace, not
+	// a brand-new root. Without this, TracingPublisher would still
+	// inject context — but it would carry a fresh trace_id, and
+	// the trace would not stitch across the HTTP-to-NATS boundary.
+	incoming := otel.GetTextMapPropagator().Extract(
+		r.Context(), propagation.HeaderCarrier(r.Header),
+	)
+	ctx, span := b.tracer.Start(incoming, "bridge.resolve")
 	defer span.End()
 
 	taskID := r.PathValue("id")
@@ -326,7 +336,7 @@ func (b *Bridge) resolveContinue(
 		return fmt.Errorf("marshal continue event: %w", err)
 	}
 	outMsg.Data = data
-	_, err = b.js.PublishMsg(ctx, outMsg)
+	_, err = b.pub.JSPublishMsg(ctx, outMsg)
 	if err != nil {
 		return fmt.Errorf("publish continue event: %w", err)
 	}
@@ -374,7 +384,7 @@ func (b *Bridge) resolveStream(
 	}
 	runID, stepID := splitTaskID(taskID)
 	subject := fmt.Sprintf("stream.%s.%s", runID, stepID)
-	if err := b.nc.Publish(subject, req.Data); err != nil {
+	if err := b.pub.Publish(ctx, subject, req.Data); err != nil {
 		return fmt.Errorf("publish stream: %w", err)
 	}
 	return msg.InProgress()
@@ -425,7 +435,7 @@ func (b *Bridge) publishEvent(
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	_, err = b.js.PublishMsg(ctx, msg)
+	_, err = b.pub.JSPublishMsg(ctx, msg)
 	return err
 }
 
