@@ -10,19 +10,34 @@ import (
 )
 
 // TriggerDef defines a single trigger. Exactly one of Cron, Subject,
-// Webhook, or HTTP must be non-nil. HTTP triggers (ADR-013) differ
-// from Webhook triggers in that the caller waits for a workflow
-// response; webhook callers are fire-and-forget. The shapes stay
-// distinct so the semantic contract cannot be mistaken at a glance.
+// Webhook, HTTP, or External must be non-nil. HTTP triggers (ADR-013)
+// differ from Webhook triggers in that the caller waits for a workflow
+// response; webhook callers are fire-and-forget. External triggers
+// (parent #273 Phase 2.2) defer the type identity to a worker-owned
+// TriggerTypeDef stored in the "trigger_types" KV bucket. The shapes
+// stay distinct so the semantic contract cannot be mistaken at a glance.
 type TriggerDef struct {
-	ID         string          `json:"id"`
-	WorkflowID string          `json:"workflow_id"`
-	Enabled    bool            `json:"enabled"`
-	Cron       *CronConfig     `json:"cron,omitempty"`
-	Subject    *SubjectConfig  `json:"subject,omitempty"`
-	Webhook    *WebhookConfig  `json:"webhook,omitempty"`
-	HTTP       *HTTPConfig     `json:"http,omitempty"`
-	Debounce   *DebounceConfig `json:"debounce,omitempty"`
+	ID         string                 `json:"id"`
+	WorkflowID string                 `json:"workflow_id"`
+	Enabled    bool                   `json:"enabled"`
+	Cron       *CronConfig            `json:"cron,omitempty"`
+	Subject    *SubjectConfig         `json:"subject,omitempty"`
+	Webhook    *WebhookConfig         `json:"webhook,omitempty"`
+	HTTP       *HTTPConfig            `json:"http,omitempty"`
+	External   *ExternalTriggerConfig `json:"external,omitempty"`
+	Debounce   *DebounceConfig        `json:"debounce,omitempty"`
+}
+
+// ExternalTriggerConfig selects an External trigger by Kind (matches
+// the Name field of a TriggerTypeDef registered in the "trigger_types"
+// KV bucket) and carries a Config payload that must validate against
+// that type's ConfigSchema. Validation happens via
+// trigger.ValidateWithKV; the existing trigger.Validate cannot
+// validate External configs because the schema lookup needs a KV
+// handle (parent #273 Phase 2.2).
+type ExternalTriggerConfig struct {
+	Kind   string          `json:"kind"`
+	Config json.RawMessage `json:"config"`
 }
 
 // DebounceConfig delays execution until events stop arriving.
