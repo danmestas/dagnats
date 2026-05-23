@@ -18,6 +18,7 @@ import (
 	"github.com/danmestas/dagnats/internal/console"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/observe/logring"
 	"github.com/danmestas/dagnats/internal/observe/metrics"
 	"github.com/danmestas/dagnats/internal/observe/prom"
 	"github.com/danmestas/dagnats/internal/openapi"
@@ -582,7 +583,15 @@ func buildConsoleConfig(
 	if mode == console.AuthDisabled {
 		printStep(os.Stderr, console.DisabledLogMessage)
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	// Install the bounded in-memory log ring as the engine's slog
+	// default so /console/logs (#342) sees every record. The ring is
+	// a pass-through — the stderr text handler keeps emitting log
+	// lines for stdout-aware deploys; the ring just retains the
+	// last 10k entries OR 30 minutes for the console live tail.
+	innerSlogHandler := slog.NewTextHandler(os.Stderr, nil)
+	ring := logring.New(innerSlogHandler)
+	logger := slog.New(ring)
+	slog.SetDefault(logger)
 	auditKV := openConsoleAuditKV(nc, logger)
 	readOnly := console.ReadOnlyFromEnv(os.Getenv("CONSOLE_READ_ONLY"))
 	if readOnly {
@@ -611,6 +620,7 @@ func buildConsoleConfig(
 		ReadOnly:           readOnly,
 		Metrics:            metricsSrc,
 		MetricsErrorReason: metricsErrorReason,
+		LogRing:            ring,
 	}
 	if !readOnly {
 		enableConsoleSoftDiscard(&consoleCfg, svc, logger)

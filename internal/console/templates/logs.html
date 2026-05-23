@@ -1,0 +1,157 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="page page-logs" data-page="logs" id="page-logs">
+  <header class="page-header logs-header">
+    <div class="logs-title-row">
+      <h1>Logs</h1>
+      <p class="logs-subtitle">{{.Header.Subtitle}}</p>
+      <span class="logs-count mono"
+            id="logs-count"
+            title="Showing {{.Rendered}} of {{.Total}} retained entries">
+        {{.Rendered}} / {{.Total}}
+      </span>
+    </div>
+
+    <form class="logs-toolbar" method="GET" action="/console/logs"
+          id="logs-filters">
+      <select name="severity" class="select logs-toolbar-severity"
+              id="logs-severity"
+              aria-label="Severity filter">
+        <option value=""{{if eq .SeverityFilter ""}} selected{{end}}>All severities</option>
+        <option value="debug"{{if eq .SeverityFilter "debug"}} selected{{end}}>DEBUG</option>
+        <option value="info"{{if eq .SeverityFilter "info"}} selected{{end}}>INFO</option>
+        <option value="warn"{{if eq .SeverityFilter "warn"}} selected{{end}}>WARN</option>
+        <option value="error"{{if eq .SeverityFilter "error"}} selected{{end}}>ERROR</option>
+      </select>
+      <input class="input logs-toolbar-search" type="search" name="q"
+             id="logs-search"
+             value="{{.SearchFilter}}"
+             placeholder="Search messages, sources, attrs..."
+             autocomplete="off"
+             aria-label="Search">
+      <input class="input mono logs-toolbar-trace" type="text" name="trace_id"
+             id="logs-trace-id"
+             value="{{.TraceIDFilter}}"
+             placeholder="trace_id (32-hex)"
+             autocomplete="off"
+             aria-label="Trace ID filter">
+      <div class="logs-toolbar-actions" role="group" aria-label="Log actions">
+        <button type="submit" class="btn btn-secondary">Apply</button>
+        <button type="button" class="btn btn-ghost"
+                id="logs-pause-resume"
+                data-paused="false"
+                aria-pressed="false">
+          <span data-pause-label>Pause</span>
+        </button>
+        <a class="btn btn-ghost"
+           id="logs-export"
+           href="/console/logs/export"
+           download="dagnats-logs.txt"
+           role="button">Export</a>
+        <button type="button" class="btn btn-ghost logs-action-clear"
+                id="logs-clear"
+                data-csrf-token="{{.CSRFToken}}">Clear</button>
+      </div>
+    </form>
+
+    {{if .SeverityCounts}}
+    <div class="logs-severity-chip-strip"
+         role="status"
+         aria-label="Severity counts">
+      {{range .SeverityCounts}}
+      <span class="logs-chip logs-chip-{{.Level}}"
+            data-level="{{.Level}}"
+            title="{{.Count}} {{.Level}} entries in current view">
+        <span class="logs-chip-dot" aria-hidden="true"></span>
+        <span class="logs-chip-label">{{.Level}}</span>
+        <span class="logs-chip-count mono">{{.Count}}</span>
+      </span>
+      {{end}}
+    </div>
+    {{end}}
+  </header>
+
+  {{if not .WiredUp}}
+  <aside class="callout callout-info" role="status" data-empty="logs-not-wired">
+    <h2>Log tail not wired</h2>
+    <p>{{.WiredUpNote}}</p>
+  </aside>
+  {{else}}
+  <div class="card logs-table-card">
+    <div class="logs-stream-controls" role="status"
+         id="logs-stream-status"
+         data-connection="connecting">
+      <span class="logs-stream-dot" aria-hidden="true"></span>
+      <span class="logs-stream-label">connecting...</span>
+    </div>
+    <table class="table console-table logs-table" id="logs-table">
+      <thead>
+        <tr>
+          <th class="logs-th-time">Time</th>
+          <th class="logs-th-level">Level</th>
+          <th class="logs-th-source">Source</th>
+          <th class="logs-th-message">Message</th>
+        </tr>
+      </thead>
+      <tbody id="logs-tbody">
+        {{range .Rows}}
+        <tr id="{{.ID}}" class="logs-row logs-row-{{.Level}}"
+            data-level="{{.Level}}" data-trace-id="{{.TraceID}}">
+          <td class="logs-time mono" title="{{.TimeRel}}">{{.Time}}</td>
+          <td class="logs-level">
+            <span class="logs-badge logs-badge-{{.Level}}">{{.LevelText}}</span>
+          </td>
+          <td class="logs-source mono">{{.Source}}</td>
+          <td class="logs-message">
+            {{.Message}}
+            {{if .TraceID}}
+            <span class="logs-trace mono">trace_id={{.TraceID}}</span>
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr class="empty-row">
+          <td colspan="4">
+            No entries match the current filters. Live tail is active —
+            entries appear here as the engine emits them.
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <footer class="logs-footer">
+    <div class="logs-top-sources">
+      <h2 class="logs-footer-title">Top sources</h2>
+      {{if .TopSources}}
+      <ol class="logs-top-sources-list">
+        {{range .TopSources}}
+        <li class="logs-top-source mono">
+          <span class="logs-top-source-name">{{.Source}}</span>
+          <span class="logs-top-source-count">{{.Count}}</span>
+        </li>
+        {{end}}
+      </ol>
+      {{else}}
+      <p class="logs-empty-hint">No entries in the current view yet.</p>
+      {{end}}
+    </div>
+    <p class="logs-retention-note">{{.RetentionNote}}</p>
+  </footer>
+  {{end}}
+</section>
+<script src="/console/assets/logs.js" defer></script>
+<script>
+  (function () {
+    function go() {
+      var root = document.getElementById('page-logs');
+      if (root && window.consoleLogs) { window.consoleLogs.boot(root); }
+    }
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      setTimeout(go, 0);
+    } else {
+      window.addEventListener('DOMContentLoaded', go);
+    }
+  })();
+</script>
+{{end}}{{end}}
