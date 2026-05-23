@@ -41,7 +41,13 @@
       <tbody class="task-type-group" data-service="{{.Name}}">
         <tr class="task-type-group-header">
           <td colspan="6">
+            {{if .ServiceDescription}}
+            <span class="task-type-group-badge">
+              {{template "tooltip" (dict "Label" .Name "Text" .ServiceDescription)}}
+            </span>
+            {{else}}
             <span class="task-type-group-badge">{{.Name}}</span>
+            {{end}}
             <span class="task-type-group-count">{{len .Rows}} task type{{if ne (len .Rows) 1}}s{{end}}</span>
           </td>
         </tr>

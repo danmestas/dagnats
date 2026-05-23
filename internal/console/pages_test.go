@@ -32,6 +32,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/trigger"
+	"github.com/danmestas/dagnats/worker"
 )
 
 // fakeDataSource is an in-memory DataSource that gives tests full
@@ -82,6 +83,12 @@ type fakeDataSource struct {
 	// tests that want a curated row set assign taskTypeRows directly.
 	taskTypeRows    []TaskTypeRow
 	taskTypeRowsErr error
+
+	// #335 (services cross-reference): pre-seeded ServiceDef list. The
+	// fake AggregateTaskTypes mirrors the production adapter — calls
+	// attachServiceDescriptions(rows, services) after the fold — so a
+	// test that wants tooltip rendering just sets this.
+	services []worker.ServiceDef
 
 	// T13 (Phase 2): sparkline backing data. sparklineSeries is keyed
 	// by "kind/id" so the test can pre-seed deterministic hourly counts
@@ -485,9 +492,10 @@ func (f *fakeDataSource) ConfigSnapshot(
 // AggregateTaskTypes is the test seam for the /console/task-types
 // page (#328). Default behaviour mirrors the production adapter:
 // derive task-type rows from the worker registrations the test
-// pre-seeded on configSnap.Workers. Tests that want to override the
-// derivation (e.g. inject pre-computed rows) assign taskTypeRows or
-// taskTypeRowsErr directly.
+// pre-seeded on configSnap.Workers and then cross-reference the
+// services list (#335) for Description metadata. Tests that want to
+// override the derivation (e.g. inject pre-computed rows) assign
+// taskTypeRows or taskTypeRowsErr directly.
 func (f *fakeDataSource) AggregateTaskTypes(
 	_ context.Context,
 ) ([]TaskTypeRow, error) {
@@ -497,7 +505,8 @@ func (f *fakeDataSource) AggregateTaskTypes(
 	if f.taskTypeRows != nil {
 		return append([]TaskTypeRow{}, f.taskTypeRows...), nil
 	}
-	return aggregateTaskTypesFromWorkers(f.configSnap.Workers), nil
+	rows := aggregateTaskTypesFromWorkers(f.configSnap.Workers)
+	return attachServiceDescriptions(rows, f.services), nil
 }
 
 // Search mirrors the production adapter's contract over the fake's

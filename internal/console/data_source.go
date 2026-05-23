@@ -1563,16 +1563,19 @@ func configStreamNames() []string {
 // reassign this package-level var to feed deterministic values.
 var osLookupEnv = osGetenv
 
-// AggregateTaskTypes scans the live workers directory and the
-// services KV bucket, then folds the two into one TaskTypeRow per
-// distinct task type. Service-prefix grouping uses the `service::task`
-// convention from ADR-017; the services bucket is consulted only to
-// confirm a prefix is a registered service (informational — the
-// grouping itself is structural on the string).
+// AggregateTaskTypes folds the live workers directory and the
+// `services` KV bucket (#322) into one TaskTypeRow per distinct task
+// type. Grouping itself is structural on the `service::task` substring
+// from ADR-017; the services bucket is consulted to attach each
+// registered service's Description onto every row in its group (#335).
+// Unknown service prefixes still group — they just carry an empty
+// description, which the renderer treats as "no tooltip" rather than
+// surfacing an empty popover.
 //
-// Best-effort across both reads. A miss on the services bucket
-// leaves rows un-augmented; a miss on the workers list collapses to
-// (nil, nil) so the page paints empty state instead of 500ing.
+// Best-effort across both reads. A miss on the workers list collapses
+// to (nil, nil) so the page paints empty state instead of 500ing. A
+// miss on the services bucket leaves rows un-augmented; the page
+// renders the groups without descriptions rather than failing.
 func (a *apiServiceAdapter) AggregateTaskTypes(
 	ctx context.Context,
 ) ([]TaskTypeRow, error) {
@@ -1586,7 +1589,63 @@ func (a *apiServiceAdapter) AggregateTaskTypes(
 	if err != nil {
 		return nil, nil
 	}
-	return aggregateTaskTypesFromWorkers(regs), nil
+	rows := aggregateTaskTypesFromWorkers(regs)
+	// Best-effort services cross-reference. The nc handle is the only
+	// path to JetStream from the adapter; when it's missing we skip
+	// the lookup and let rows render without descriptions rather than
+	// erroring the whole page.
+	if a.nc == nil {
+		return rows, nil
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return rows, nil
+	}
+	defs, err := worker.ListServices(js)
+	if err != nil {
+		return rows, nil
+	}
+	return attachServiceDescriptions(rows, defs), nil
+}
+
+// attachServiceDescriptions copies the Description field from each
+// registered ServiceDef onto every TaskTypeRow whose Service prefix
+// matches. Pure function so tests can drive it without a JetStream
+// handle. Rows whose Service is empty (the "(default)" bucket at
+// render time) or whose Service is not in defs are returned unchanged.
+//
+// Bounded by len(rows) — the rows slice is already capped at the
+// worker SDK's per-registration slice length × maxRegs in
+// aggregateTaskTypesFromWorkers, so an extra pass here is cheap.
+func attachServiceDescriptions(
+	rows []TaskTypeRow, defs []worker.ServiceDef,
+) []TaskTypeRow {
+	if len(rows) == 0 {
+		return rows
+	}
+	const maxDefs = 10000
+	if len(defs) > maxDefs {
+		panic("attachServiceDescriptions: defs exceeds max bound")
+	}
+	if len(defs) == 0 {
+		return rows
+	}
+	byName := make(map[string]string, len(defs))
+	for _, d := range defs {
+		if d.Name == "" {
+			continue
+		}
+		byName[d.Name] = d.Description
+	}
+	for i := range rows {
+		if rows[i].Service == "" {
+			continue
+		}
+		if desc, ok := byName[rows[i].Service]; ok {
+			rows[i].ServiceDescription = desc
+		}
+	}
+	return rows
 }
 
 // aggregateTaskTypesFromWorkers turns the worker registrations into
