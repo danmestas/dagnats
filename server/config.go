@@ -51,6 +51,18 @@ type Config struct {
 	MaxStoreBytes int64          `json:"max_store_bytes"`
 	Workers       []WorkerConfig `json:"workers"`
 	OTLPEndpoint  string         `json:"otlp_endpoint"`
+
+	// NATSWebsocketPort enables an embedded NATS WebSocket
+	// listener for browser clients when > 0. 0 (default)
+	// disables it — the safe production posture. See ADR-020.
+	NATSWebsocketPort int `json:"nats_ws_port"`
+
+	// NATSWebsocketNoTLS turns off TLS for the WebSocket
+	// listener. Until top-level NATS TLS is wired this is
+	// required when NATSWebsocketPort > 0; the explicit
+	// opt-in keeps operators from shipping cleartext to
+	// production by accident.
+	NATSWebsocketNoTLS bool `json:"nats_ws_no_tls"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.
@@ -308,6 +320,19 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.MaxStoreBytes = maxBytes
 		}
 	}
+	if val := os.Getenv("DAGNATS_NATS_WS_PORT"); val != "" {
+		if port, err := strconv.Atoi(val); err == nil {
+			cfg.NATSWebsocketPort = port
+		}
+	}
+	if val := os.Getenv("DAGNATS_NATS_WS_NO_TLS"); val != "" {
+		// Accept the conventional truthy values; anything
+		// else leaves the existing (false) default.
+		switch strings.ToLower(val) {
+		case "1", "true", "yes", "on":
+			cfg.NATSWebsocketNoTLS = true
+		}
+	}
 
 	if val := os.Getenv(
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -457,6 +482,22 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			return fmt.Errorf("invalid max_store_bytes: %w", err)
 		}
 		cfg.MaxStoreBytes = maxBytes
+	case "nats_ws_port":
+		port, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid nats_ws_port: %w", err)
+		}
+		cfg.NATSWebsocketPort = port
+	case "nats_ws_no_tls":
+		switch strings.ToLower(val) {
+		case "1", "true", "yes", "on":
+			cfg.NATSWebsocketNoTLS = true
+		case "0", "false", "no", "off", "":
+			cfg.NATSWebsocketNoTLS = false
+		default:
+			return fmt.Errorf(
+				"invalid nats_ws_no_tls: %q", val)
+		}
 	case "otlp_endpoint":
 		cfg.OTLPEndpoint = val
 	default:
