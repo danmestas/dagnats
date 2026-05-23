@@ -35,17 +35,19 @@ const maxActiveTriggers = 500
 // the ADR-013 "refuse second registration that conflicts on
 // (method, path)" rule.
 type TriggerService struct {
-	nc         *nats.Conn
-	js         jetstream.JetStream
-	triggerKV  jetstream.KeyValue
-	scheduler  *Scheduler
-	subjects   map[string]*SubjectTrigger
-	webhooks   map[string]*WebhookHandler
-	httpRoutes map[string]*HTTPHandler
-	registrars map[string]TriggerRegistrar
-	subjectReg *subjectRegistrar
-	webhookReg *webhookRegistrar
-	httpReg    *httpRegistrar
+	nc             *nats.Conn
+	js             jetstream.JetStream
+	triggerKV      jetstream.KeyValue
+	triggerTypesKV jetstream.KeyValue
+	scheduler      *Scheduler
+	subjects       map[string]*SubjectTrigger
+	webhooks       map[string]*WebhookHandler
+	httpRoutes     map[string]*HTTPHandler
+	registrars     map[string]TriggerRegistrar
+	subjectReg     *subjectRegistrar
+	webhookReg     *webhookRegistrar
+	httpReg        *httpRegistrar
+	ackSub         *nats.Subscription
 	// revisions tracks the highest KV revision applied for each
 	// trigger ID. The KV watcher (jetstream.WatchAll) opens with
 	// DeliverLastPerSubject and replays existing keys on startup —
@@ -73,6 +75,11 @@ const (
 
 // triggerKind returns the kind name for def, or "" if no kind field
 // is set. Used by addTrigger / removeTrigger to look up the registrar.
+//
+// External triggers fan out into a per-kind registrar keyed by
+// externalKindPrefix+External.Kind so an arbitrary number of worker-
+// contributed types can coexist without colliding with the built-in
+// constants above.
 func triggerKind(def TriggerDef) string {
 	switch {
 	case def.Cron != nil:
@@ -83,6 +90,8 @@ func triggerKind(def TriggerDef) string {
 		return kindWebhook
 	case def.HTTP != nil:
 		return kindHTTP
+	case def.External != nil:
+		return externalKindPrefix + def.External.Kind
 	}
 	return ""
 }
@@ -113,6 +122,21 @@ func NewTriggerService(
 		return nil, fmt.Errorf("triggers KV bucket: %w", err)
 	}
 
+	// trigger_types is optional at NewTriggerService time — older
+	// integration tests don't provision it. The ack endpoint refuses
+	// requests when triggerTypesKV is nil, but everything else
+	// continues to work for the cron/subject/webhook/http kinds.
+	triggerTypesKV, err := js.KeyValue(kvCtx, "trigger_types")
+	if err != nil {
+		// Treat "not found" as "no External support in this engine"
+		// rather than a fatal startup error. Other KV failures (auth,
+		// transport) still surface.
+		if !errors.Is(err, jetstream.ErrBucketNotFound) {
+			return nil, fmt.Errorf("trigger_types KV bucket: %w", err)
+		}
+		triggerTypesKV = nil
+	}
+
 	scheduler, err := NewScheduler(nc)
 	if err != nil {
 		return nil, fmt.Errorf("NewScheduler: %w", err)
@@ -120,16 +144,17 @@ func NewTriggerService(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ts := &TriggerService{
-		nc:         nc,
-		js:         js,
-		triggerKV:  triggerKV,
-		scheduler:  scheduler,
-		subjects:   make(map[string]*SubjectTrigger),
-		webhooks:   make(map[string]*WebhookHandler),
-		httpRoutes: make(map[string]*HTTPHandler),
-		revisions:  make(map[string]uint64),
-		ctx:        ctx,
-		cancel:     cancel,
+		nc:             nc,
+		js:             js,
+		triggerKV:      triggerKV,
+		triggerTypesKV: triggerTypesKV,
+		scheduler:      scheduler,
+		subjects:       make(map[string]*SubjectTrigger),
+		webhooks:       make(map[string]*WebhookHandler),
+		httpRoutes:     make(map[string]*HTTPHandler),
+		revisions:      make(map[string]uint64),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 	ts.subjectReg = newSubjectRegistrar(nc, ts.subjects, &ts.mu)
 	ts.webhookReg = newWebhookRegistrar(nc, ts.webhooks, &ts.mu)
@@ -164,6 +189,16 @@ func (ts *TriggerService) Start() error {
 		return fmt.Errorf("startKVWatcher: %w", err)
 	}
 
+	// _REGISTRY.trigger_types.ack micro endpoint (#327). Only wired
+	// when the trigger_types KV bucket exists; absence is treated as
+	// "no External trigger support in this engine" rather than a
+	// startup failure.
+	if ts.triggerTypesKV != nil {
+		if err := ts.startAckMicro(); err != nil {
+			return fmt.Errorf("startAckMicro: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -187,6 +222,9 @@ func (ts *TriggerService) Stop() {
 
 	if ts.watcher != nil {
 		ts.watcher.Stop()
+	}
+	if ts.ackSub != nil {
+		_ = ts.ackSub.Unsubscribe()
 	}
 }
 
@@ -328,7 +366,19 @@ func (ts *TriggerService) addTrigger(def TriggerDef) error {
 		panic("addTrigger: nc must not be nil")
 	}
 
-	if err := Validate(def); err != nil {
+	// External triggers need the trigger_types KV handle for schema
+	// validation; use ValidateWithKV when available. Non-External
+	// defs go through the cheaper KV-less Validate.
+	if def.External != nil && ts.triggerTypesKV != nil {
+		vctx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		if err := ValidateWithKV(vctx, ts.triggerTypesKV, def); err != nil {
+			cancel()
+			return fmt.Errorf("validate: %w", err)
+		}
+		cancel()
+	} else if err := Validate(def); err != nil {
 		return fmt.Errorf("validate: %w", err)
 	}
 
