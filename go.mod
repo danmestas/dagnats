@@ -3,6 +3,7 @@ module github.com/danmestas/dagnats
 go 1.26.2
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/nats-io/nats-server/v2 v2.12.6
 	github.com/nats-io/nats.go v1.50.0
 	github.com/nats-io/nuid v1.0.1
