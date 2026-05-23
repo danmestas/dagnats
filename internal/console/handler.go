@@ -2,6 +2,7 @@ package console
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -91,6 +92,28 @@ type Config struct {
 	// it's a deferred feature. server.go sets this from the slog
 	// warnings the startup pump emits.
 	MetricsErrorReason string
+
+	// LogRing, when non-nil, gives /console/logs a Snapshot() of
+	// recent engine slog records and a Subscribe() live tail. The
+	// production server wires this to a logring.Handler installed via
+	// slog.SetDefault — so every engine log line flows through it.
+	// Nil ⇒ the Logs page renders an "observability not wired"
+	// empty-state instead of returning 503 (the operator may still
+	// want the page to load to see the chrome and nav entry).
+	LogRing LogTailSource
+}
+
+// LogTailSource is the narrow surface /console/logs depends on. It is
+// satisfied by logring.Handler but expressed locally so the console
+// package never imports observe types — tests pass a fake here without
+// pulling slog records through the ring.
+type LogTailSource interface {
+	// Snapshot returns a freshly-allocated, time-ordered (oldest first)
+	// copy of every record currently retained.
+	Snapshot() []slog.Record
+	// Subscribe returns a channel that receives every record handled
+	// after the call. The cleanup func unsubscribes.
+	Subscribe(ctx context.Context) (<-chan slog.Record, func())
 }
 
 // tombstones returns the configured tombstone store. Internal helper —
@@ -223,6 +246,14 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageStreams(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/logs",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageLogs(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/sse/logs",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveSSELogs(w, r, cfg)
+		})
 	mux.HandleFunc("/console/config",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageConfiguration(w, r, ts, cfg)
@@ -291,6 +322,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/assets/sidebar-collapse.js",
 		servePlainAssetAt("sources/sidebar-collapse.js",
+			"application/javascript; charset=utf-8"))
+	mux.HandleFunc("/console/assets/logs.js",
+		servePlainAssetAt("sources/logs.js",
 			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
@@ -428,6 +462,7 @@ var pageContentFiles = map[string]string{
 	"ops-leases":        "templates/ops_leases.html",
 	"kv-list":           "templates/kv_list.html",
 	"streams-list":      "templates/streams_list.html",
+	"logs":              "templates/logs.html",
 	"metrics_dashboard": "templates/metrics_dashboard.html",
 	"configuration":     "templates/configuration.html",
 	"task-types-list":   "templates/task_types_list.html",

@@ -25,6 +25,7 @@ import "embed"
 //go:embed assets/sources/sidebar-collapse.js
 //go:embed assets/sources/sparkline.js
 //go:embed assets/sources/sheet.js
+//go:embed assets/sources/logs.js
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
 //go:embed assets/fonts/ibm-plex-mono-latin-regular.woff2
 //go:embed assets/fonts/ibm-plex-mono-latin-bold.woff2
@@ -51,6 +52,7 @@ var assetsFS embed.FS
 //go:embed templates/ops_leases.html
 //go:embed templates/kv_list.html
 //go:embed templates/streams_list.html
+//go:embed templates/logs.html
 //go:embed templates/metrics_dashboard.html
 //go:embed templates/configuration.html
 //go:embed templates/task_types_list.html
