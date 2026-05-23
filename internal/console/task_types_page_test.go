@@ -9,9 +9,15 @@
 //     the rendered page so a regression in either layer surfaces.
 //   - Empty-state behaviour mirrors the empty_states_test.go pattern:
 //     a tbody colspan row carrying the shared empty-state partial.
+//   - Services cross-reference (#335) is exercised via the pure
+//     attachServiceDescriptions helper (deterministic, no NATS) plus
+//     the rendered page so a regression in either layer surfaces.
 package console
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -229,6 +235,198 @@ func TestTaskTypesPage_EmptyState(t *testing.T) {
 	// Negative: no task rows must render when the source is empty.
 	if strings.Contains(body, `class="task-type-row"`) {
 		t.Errorf("empty deployment still rendered task rows")
+	}
+}
+
+// TestAggregateTaskTypes_AttachesServiceDescription asserts that when
+// a service is registered in the `services` KV bucket (#322), its
+// Description rides along onto every TaskTypeRow whose Service prefix
+// matches — and through groupTaskTypeRows, onto the group header (#335).
+// The cross-reference is informational only; grouping itself stays
+// structural on the `service::` substring.
+func TestAggregateTaskTypes_AttachesServiceDescription(t *testing.T) {
+	rows := aggregateTaskTypesFromWorkers([]worker.WorkerRegistration{
+		{
+			WorkerID:  "worker-billing",
+			TaskTypes: []string{"billing::charge", "billing::refund"},
+		},
+	})
+	defs := []worker.ServiceDef{
+		{Name: "billing", Description: "Payment processing"},
+	}
+	rows = attachServiceDescriptions(rows, defs)
+
+	// Positive: every row in the billing service carries the description.
+	for _, r := range rows {
+		if r.ServiceDescription != "Payment processing" {
+			t.Errorf(
+				"row %q ServiceDescription = %q, want %q",
+				r.TaskType, r.ServiceDescription,
+				"Payment processing",
+			)
+		}
+	}
+
+	// Positive: group header lifts the description from the rows.
+	groups := groupTaskTypeRows(rows)
+	if len(groups) != 1 || groups[0].Name != "billing" {
+		t.Fatalf("groups = %+v, want one 'billing' group",
+			groupNames(groups))
+	}
+	if groups[0].ServiceDescription != "Payment processing" {
+		t.Errorf(
+			"billing group ServiceDescription = %q, want %q",
+			groups[0].ServiceDescription, "Payment processing",
+		)
+	}
+}
+
+// TestAggregateTaskTypes_HandlesUnregisteredService asserts that a
+// task type whose service prefix is NOT in the `services` KV bucket
+// still groups under that prefix — just with an empty
+// ServiceDescription. No error, no surprise (#335).
+func TestAggregateTaskTypes_HandlesUnregisteredService(t *testing.T) {
+	rows := aggregateTaskTypesFromWorkers([]worker.WorkerRegistration{
+		{WorkerID: "w-x", TaskTypes: []string{"unregistered::foo"}},
+	})
+	// Empty services slice — nothing to cross-reference.
+	rows = attachServiceDescriptions(rows, nil)
+
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0].Service != "unregistered" {
+		t.Errorf("row Service = %q, want %q",
+			rows[0].Service, "unregistered")
+	}
+	if rows[0].ServiceDescription != "" {
+		t.Errorf("row ServiceDescription = %q, want empty",
+			rows[0].ServiceDescription)
+	}
+
+	groups := groupTaskTypeRows(rows)
+	if len(groups) != 1 || groups[0].Name != "unregistered" {
+		t.Fatalf("groups = %+v, want one 'unregistered' group",
+			groupNames(groups))
+	}
+	if groups[0].ServiceDescription != "" {
+		t.Errorf(
+			"unregistered group ServiceDescription = %q, want empty",
+			groups[0].ServiceDescription,
+		)
+	}
+}
+
+// TestAggregateTaskTypes_DocCommentMatchesImpl is a meta-test guarding
+// against doc/code drift on AggregateTaskTypes. The #331 reviewer
+// flagged a stale claim that the services KV was consulted only to
+// confirm a prefix was registered (informational, never read). #335
+// changes that — the bucket is read for Description metadata. This
+// test parses the file and asserts the doc comment mentions the
+// services KV cross-reference so any future drift surfaces here
+// before it surfaces in code review.
+func TestAggregateTaskTypes_DocCommentMatchesImpl(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(
+		fset, "data_source.go", nil, parser.ParseComments,
+	)
+	if err != nil {
+		t.Fatalf("parse data_source.go: %v", err)
+	}
+	var doc string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "AggregateTaskTypes" {
+			continue
+		}
+		if fn.Recv == nil || len(fn.Recv.List) == 0 {
+			continue
+		}
+		if fn.Doc == nil {
+			continue
+		}
+		doc = fn.Doc.Text()
+		break
+	}
+	if doc == "" {
+		t.Fatalf("AggregateTaskTypes method doc comment not found")
+	}
+	// Must mention the services KV cross-reference (the #335
+	// behaviour). A future PR that drops the cross-reference must
+	// also update this doc — and this test fails first.
+	wants := []string{"services", "KV", "Description"}
+	for _, want := range wants {
+		if !strings.Contains(doc, want) {
+			t.Errorf(
+				"AggregateTaskTypes doc missing %q; got:\n%s",
+				want, doc,
+			)
+		}
+	}
+	// Negative: the stale claim from #331 ("only to confirm a prefix
+	// is a registered service") must be gone — the bucket is now
+	// consulted for Description data, not presence.
+	if strings.Contains(doc, "only to confirm a prefix") {
+		t.Errorf(
+			"AggregateTaskTypes doc still carries the stale #331 claim; got:\n%s",
+			doc,
+		)
+	}
+}
+
+// TestTaskTypesPage_RendersServiceTooltip asserts the rendered DOM
+// surfaces a glossary-style tooltip on the group header carrying the
+// registered service's description (#335). Default groups (no service
+// registered) must NOT render the tooltip popover — the empty body
+// would lie about content the operator could read.
+func TestTaskTypesPage_RendersServiceTooltip(t *testing.T) {
+	fake := newFakeDS()
+	fake.configSnap = ConfigSnapshot{
+		Workers: []worker.WorkerRegistration{
+			{
+				WorkerID:  "w-pay",
+				TaskTypes: []string{"billing::charge"},
+				LastSeen:  time.Now(),
+			},
+			{
+				WorkerID:  "w-bare",
+				TaskTypes: []string{"email"},
+				LastSeen:  time.Now(),
+			},
+		},
+	}
+	fake.services = []worker.ServiceDef{
+		{Name: "billing", Description: "Payment processing"},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/task-types", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	wants := []string{
+		// Tooltip wrapper signals the popover lives on the group
+		// header — reuses the glossary tooltip CSS (glo-* prefix).
+		`glo-tooltip-wrapper`,
+		// Description text from the services KV is rendered into
+		// the popover.
+		"Payment processing",
+	}
+	for _, want := range wants {
+		if !strings.Contains(body, want) {
+			t.Errorf("task-types tooltip missing %q", want)
+		}
+	}
+
+	// Negative: the (default) group has no registered service, so
+	// the popover must NOT carry an empty body that would look like
+	// a bug to the operator.
+	if strings.Contains(body, `>Payment processing</span>`) &&
+		!strings.Contains(body, `data-service="billing"`) {
+		t.Errorf("popover rendered without its parent service group")
 	}
 }
 

@@ -47,9 +47,17 @@ type TaskTypesPageView struct {
 // TaskTypeGroup is one service-prefix bucket. Name is the service
 // prefix ("billing", "email", ...) or "(default)" for ungrouped.
 // Rows are the task types in that group, sorted by name.
+//
+// ServiceDescription is the Description field from the matching
+// `services` KV entry (#322 / #335). Empty when no service is
+// registered under Name — the row group still renders, just without
+// the operator-facing tooltip. Lifted from the first row in Rows
+// during groupTaskTypeRows; every row in a group carries the same
+// description, so picking any of them is fine.
 type TaskTypeGroup struct {
-	Name string
-	Rows []TaskTypeRow
+	Name               string
+	ServiceDescription string
+	Rows               []TaskTypeRow
 }
 
 // TaskTypeRow is one row in the registry table. TaskType is the full
@@ -71,6 +79,12 @@ type TaskTypeRow struct {
 	// /console/runs by task type once the runs page accepts that
 	// query param; for now it just lands on /console/runs.
 	RunHref string
+	// ServiceDescription mirrors the Description field on the
+	// matching `services` KV entry (#322 / #335). Empty when no
+	// service is registered under Service. Replicated on every
+	// row in a service group so groupTaskTypeRows can lift it
+	// onto the TaskTypeGroup header without a second lookup.
+	ServiceDescription string
 }
 
 // servePageTaskTypes renders /console/task-types.
@@ -185,7 +199,19 @@ func groupTaskTypeRows(rows []TaskTypeRow) []TaskTypeGroup {
 	}
 	out := make([]TaskTypeGroup, 0, len(buckets))
 	for name, rs := range buckets {
-		out = append(out, TaskTypeGroup{Name: name, Rows: rs})
+		// Description is replicated on every row in a group (set by
+		// attachServiceDescriptions in the adapter). Lifting from rs[0]
+		// is safe — buckets[name] is guaranteed non-empty because we
+		// only insert after walking a row through.
+		desc := ""
+		if len(rs) > 0 {
+			desc = rs[0].ServiceDescription
+		}
+		out = append(out, TaskTypeGroup{
+			Name:               name,
+			ServiceDescription: desc,
+			Rows:               rs,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return taskTypeGroupLess(out[i].Name, out[j].Name)

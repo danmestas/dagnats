@@ -29,6 +29,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/danmestas/dagnats/worker"
 )
 
 // TestBrowser_connectionPillRecoveryHints asserts each degraded
@@ -398,5 +400,84 @@ func TestBrowser_basecoatPhase2Components(t *testing.T) {
 			t.Errorf("%s: %s = %q, want \"true\"",
 				c.name, c.initAttr, init)
 		}
+	}
+}
+
+// TestBrowser_taskTypesServiceTooltip is the agent-browser visual
+// gate on #335. Boots a console with one workers KV registration
+// (billing::charge) plus one ServiceDef seed (billing, "Payment
+// processing") and asserts the /console/task-types page renders a
+// glossary-style tooltip whose popover carries the service
+// description.
+//
+// Methodology:
+//   - Skip cleanly when agent-browser / Chrome unavailable (same
+//     pattern as the other browser smoke tests in this file).
+//   - Boot via httptest; mount the fake DataSource with billing
+//     pre-seeded so the rendered DOM is deterministic.
+//   - Evaluate DOM directly (no hover-driven CSS state needed —
+//     the tooltip popover lives in the markup at all times; CSS
+//     toggles visibility, not presence).
+//   - At least 2 assertions: the wrapper element exists AND the
+//     popover text matches the seeded description.
+func TestBrowser_taskTypesServiceTooltip(t *testing.T) {
+	skipIfBrowserUnavailable(t)
+	fake := newFakeDS()
+	fake.configSnap = ConfigSnapshot{
+		Workers: []worker.WorkerRegistration{
+			{
+				WorkerID:  "w-pay",
+				TaskTypes: []string{"billing::charge"},
+				LastSeen:  time.Now(),
+			},
+		},
+	}
+	fake.services = []worker.ServiceDef{
+		{Name: "billing", Description: "Payment processing"},
+	}
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	runAgentBrowser(t, ctx, "open", srv.URL+"/console/task-types")
+	t.Cleanup(func() {
+		brCtx, brCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer brCancel()
+		runAgentBrowserAllowFail(t, brCtx, "close")
+	})
+	time.Sleep(750 * time.Millisecond)
+
+	// Positive: tooltip wrapper is present inside the billing
+	// group header. The selector chain anchors to the
+	// service-keyed tbody so a future test that adds extra groups
+	// can extend without colliding.
+	const groupSelector = "[data-service=\"billing\"] " +
+		".task-type-group-header"
+	wrapperType := evalString(t, ctx,
+		"typeof document.querySelector('"+groupSelector+
+			" .glo-tooltip-wrapper')")
+	if wrapperType != "object" {
+		t.Fatalf("tooltip wrapper not present on billing header "+
+			"(type=%q) — markup regression", wrapperType)
+	}
+
+	// Positive: popover carries the registered Description. We read
+	// the popover's innerHTML — textContent is reliable in Chrome
+	// regardless of CSS visibility, but innerHTML round-trips through
+	// the DOM serializer and surfaces the text even when the popover
+	// is offscreen by `visibility:hidden` until hover.
+	popoverHTML := evalString(t, ctx,
+		"String((document.querySelector('"+groupSelector+
+			" .glo-tooltip-popover')||{}).innerHTML||'').trim()")
+	if !strings.Contains(popoverHTML, "Payment processing") {
+		t.Errorf("popover innerHTML = %q, want it to contain %q",
+			popoverHTML, "Payment processing")
 	}
 }
