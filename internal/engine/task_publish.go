@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -28,15 +30,16 @@ func taskSubject(step dag.StepDef, runID string) string {
 }
 
 // publishWorkflowEvent publishes a workflow lifecycle event
-// (completed or failed) to the WORKFLOW_HISTORY stream.
+// (completed or failed) to the WORKFLOW_HISTORY stream via the
+// TracingPublisher so W3C trace context auto-attaches (#334).
 func publishWorkflowEvent(
 	ctx context.Context,
-	js jetstream.JetStream,
+	tp *natsutil.TracingPublisher,
 	eventType protocol.EventType,
 	runID string,
 ) error {
-	if js == nil {
-		panic("publishWorkflowEvent: js must not be nil")
+	if tp == nil {
+		panic("publishWorkflowEvent: tp must not be nil")
 	}
 	if runID == "" {
 		panic("publishWorkflowEvent: runID must not be empty")
@@ -46,7 +49,7 @@ func publishWorkflowEvent(
 	if err != nil {
 		return fmt.Errorf("marshal %s event: %w", eventType, err)
 	}
-	_, err = js.Publish(
+	_, err = tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -96,15 +99,23 @@ func collectReadyMessages(
 }
 
 // enqueueReadySteps resolves ready steps, publishes tasks, and
-// checks for workflow completion. Returns updated run state.
+// checks for workflow completion. Returns updated run state. tp
+// is the TracingPublisher wrapper; js is retained for the
+// atomic-batch publish via jetstreamext (PublishMsgBatch is not
+// on the TracingPublisher surface — trace context is pre-injected
+// per-message before the batch goes on the wire).
 func enqueueReadySteps(
 	ctx context.Context,
 	js jetstream.JetStream,
+	tp *natsutil.TracingPublisher,
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
 ) error {
 	if js == nil {
 		panic("enqueueReadySteps: js must not be nil")
+	}
+	if tp == nil {
+		panic("enqueueReadySteps: tp must not be nil")
 	}
 	if run == nil {
 		panic("enqueueReadySteps: run must not be nil")
@@ -126,7 +137,7 @@ func enqueueReadySteps(
 		if dag.IsComplete(wfDef, completed) {
 			run.Status = dag.RunStatusCompleted
 			return publishWorkflowEvent(
-				ctx, js, protocol.EventWorkflowCompleted,
+				ctx, tp, protocol.EventWorkflowCompleted,
 				run.RunID,
 			)
 		}
@@ -136,7 +147,7 @@ func enqueueReadySteps(
 	if dag.IsComplete(wfDef, completed) {
 		run.Status = dag.RunStatusCompleted
 		return publishWorkflowEvent(
-			ctx, js, protocol.EventWorkflowCompleted,
+			ctx, tp, protocol.EventWorkflowCompleted,
 			run.RunID,
 		)
 	}
@@ -175,6 +186,10 @@ func enqueueReadySteps(
 // publishAtomicBatches splits messages by stream prefix and
 // publishes each group as an atomic batch. Normal tasks go to
 // TASK_QUEUES (task.>), agent tasks to AGENT_TASKS (agent_task.>).
+// Each message has its W3C trace context injected before the batch
+// publish — jetstreamext.PublishMsgBatch is outside the
+// TracingPublisher surface, so injection happens here at the
+// boundary instead of inside the wrapper.
 func publishAtomicBatches(
 	ctx context.Context,
 	js jetstream.JetStream, msgs []*nats.Msg,
@@ -187,6 +202,10 @@ func publishAtomicBatches(
 	}
 	var taskMsgs, agentMsgs []*nats.Msg
 	for _, msg := range msgs {
+		if msg.Header == nil {
+			msg.Header = nats.Header{}
+		}
+		observe.InjectTraceContext(ctx, msg, nil)
 		if strings.HasPrefix(msg.Subject, "agent_task.") {
 			agentMsgs = append(agentMsgs, msg)
 		} else {

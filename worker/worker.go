@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -72,7 +73,8 @@ type HandlerFunc func(ctx TaskContext) error
 // Stored on the Worker (and threaded into taskContext) as a single-method
 // seam so tests can inject failures into publishStarted without a
 // growing interface or vendored fakes. Default value is the bound
-// w.js.PublishMsg method; tests override via withPublishMsgFunc.
+// w.tp.JSPublishMsg method (trace-context-injecting wrapper);
+// tests override via withPublishMsgFunc.
 type publishMsgFunc func(
 	ctx context.Context, msg *nats.Msg, opts ...jetstream.PublishOpt,
 ) (*jetstream.PubAck, error)
@@ -82,8 +84,14 @@ type publishMsgFunc func(
 // subscription; messages are ack'd after the handler returns so
 // failures are retried by JetStream's MaxDeliver policy.
 type Worker struct {
-	nc           *nats.Conn
-	js           jetstream.JetStream
+	nc *nats.Conn
+	js jetstream.JetStream
+	// tp wraps publish operations so step.started / completed /
+	// failed events carry W3C trace context (#334). publishMsg is
+	// retained as a test seam — withPublishMsgFunc overrides it to
+	// inject failures into publishStarted. Production code goes
+	// through tp.JSPublishMsg* on the publish path.
+	tp           *natsutil.TracingPublisher
 	publishMsg   publishMsgFunc
 	tracer       trace.Tracer
 	handlers     map[string]HandlerFunc
@@ -216,10 +224,17 @@ func NewWorker(
 	skipped, _ := m.Int64Counter(
 		"worker.tasks.cancelled_skipped",
 	)
+	tp := natsutil.NewTracingPublisher(nc, js)
 	w := &Worker{
-		nc:                    nc,
-		js:                    js,
-		publishMsg:            js.PublishMsg, // default; tests override via option
+		nc: nc,
+		js: js,
+		tp: tp,
+		// Default publishMsg routes through tp so the test seam still
+		// has the same surface but production code auto-injects trace
+		// context. Tests that supply withPublishMsgFunc replace this
+		// pointer with their own fake; that path bypasses tp but is
+		// only used for fault injection.
+		publishMsg:            tp.JSPublishMsg,
 		tracer:                otel.Tracer("dagnats/worker"),
 		handlers:              make(map[string]HandlerFunc),
 		workerID:              generateWorkerID(),

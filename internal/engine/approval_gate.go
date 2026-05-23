@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/trace"
@@ -29,15 +30,18 @@ import (
 type ApprovalGate struct {
 	nc         *nats.Conn
 	js         jetstream.JetStream
+	tp         *natsutil.TracingPublisher
 	sleepTimer *SleepTimer
 	tracer     trace.Tracer
 }
 
 // NewApprovalGate creates an ApprovalGate with the given
-// dependencies. All parameters are required.
+// dependencies. All parameters are required. tp injects W3C
+// trace context on every published approval event (#334).
 func NewApprovalGate(
 	nc *nats.Conn,
 	js jetstream.JetStream,
+	tp *natsutil.TracingPublisher,
 	sleepTimer *SleepTimer,
 	tracer trace.Tracer,
 ) *ApprovalGate {
@@ -46,6 +50,9 @@ func NewApprovalGate(
 	}
 	if js == nil {
 		panic("NewApprovalGate: js must not be nil")
+	}
+	if tp == nil {
+		panic("NewApprovalGate: tp must not be nil")
 	}
 	if sleepTimer == nil {
 		panic(
@@ -58,6 +65,7 @@ func NewApprovalGate(
 	return &ApprovalGate{
 		nc:         nc,
 		js:         js,
+		tp:         tp,
 		sleepTimer: sleepTimer,
 		tracer:     tracer,
 	}

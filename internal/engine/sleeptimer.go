@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -62,10 +63,13 @@ type DebounceHandler func(tm TimerMessage, seq uint64)
 type StepTimeoutHandler func(tm TimerMessage)
 
 // SleepTimer manages durable timers via NakWithDelay on the
-// SLEEP_TIMERS stream. Subscribes to sleep.> subjects.
+// SLEEP_TIMERS stream. Subscribes to sleep.> subjects. tp wraps
+// the publish path so every fire-* and re-publish carries W3C
+// trace context (#334).
 type SleepTimer struct {
 	nc            *nats.Conn
 	js            jetstream.JetStream
+	tp            *natsutil.TracingPublisher
 	cc            jetstream.ConsumeContext
 	onDebounce    DebounceHandler
 	onStepTimeout StepTimeoutHandler
@@ -73,9 +77,11 @@ type SleepTimer struct {
 }
 
 // NewSleepTimer creates a SleepTimer bound to the given connection.
-// Panics on nil nc or js — these are programmer errors.
+// Panics on nil nc, js, or tp — these are programmer errors.
 func NewSleepTimer(
-	nc *nats.Conn, js jetstream.JetStream,
+	nc *nats.Conn,
+	js jetstream.JetStream,
+	tp *natsutil.TracingPublisher,
 ) *SleepTimer {
 	if nc == nil {
 		panic("NewSleepTimer: nc must not be nil")
@@ -83,7 +89,10 @@ func NewSleepTimer(
 	if js == nil {
 		panic("NewSleepTimer: js must not be nil")
 	}
-	return &SleepTimer{nc: nc, js: js}
+	if tp == nil {
+		panic("NewSleepTimer: tp must not be nil")
+	}
+	return &SleepTimer{nc: nc, js: js, tp: tp}
 }
 
 // Start subscribes to sleep.> on the SLEEP_TIMERS stream.
@@ -195,7 +204,7 @@ func (st *SleepTimer) Schedule(ctx context.Context, msg TimerMessage) error {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	_, err = st.js.PublishMsg(ctx, natsMsg)
+	_, err = st.tp.JSPublishMsg(ctx, natsMsg)
 	return err
 }
 
@@ -221,7 +230,7 @@ func (st *SleepTimer) ScheduleDebounce(
 	subject := fmt.Sprintf(
 		"sleep.debounce.%s", msg.DebounceKey,
 	)
-	ack, err := st.js.Publish(ctx, subject, data)
+	ack, err := st.tp.JSPublish(ctx, subject, data)
 	if err != nil {
 		return 0, err
 	}
@@ -313,7 +322,7 @@ func (st *SleepTimer) fireSleepComplete(tm TimerMessage) {
 	if err != nil {
 		return
 	}
-	st.js.Publish(
+	st.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -341,7 +350,7 @@ func (st *SleepTimer) fireWaitTimeout(tm TimerMessage) {
 	if err != nil {
 		return
 	}
-	st.js.Publish(
+	st.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -371,7 +380,7 @@ func (st *SleepTimer) fireApprovalTimeout(tm TimerMessage) {
 	if err != nil {
 		return
 	}
-	st.js.Publish(
+	st.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -410,7 +419,7 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	st.js.PublishMsg(ctx, msg)
+	st.tp.JSPublishMsg(ctx, msg)
 }
 
 // fireRetryAfter re-publishes a task after a worker-requested retry
@@ -489,5 +498,5 @@ func (st *SleepTimer) republishTask(
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	st.js.PublishMsg(ctx, msg)
+	st.tp.JSPublishMsg(ctx, msg)
 }

@@ -22,7 +22,6 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/internal/trigger"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -38,8 +37,13 @@ import (
 // history stream. Run state is owned exclusively by the
 // orchestrator -- the service only reads snapshots.
 type Service struct {
-	nc            *nats.Conn
-	js            jetstream.JetStream
+	nc *nats.Conn
+	js jetstream.JetStream
+	// tp wraps publish operations so every workflow.started /
+	// task re-enqueue / scheduled run dispatch carries W3C trace
+	// context. Constructed once in NewService and shared with
+	// helpers (timer.go, scheduled.go, bulk_run.go). #334.
+	tp            *natsutil.TracingPublisher
 	defKV         jetstream.KeyValue
 	store         *engine.SnapshotStore
 	tracer        trace.Tracer
@@ -165,6 +169,7 @@ func NewService(nc *nats.Conn) *Service {
 	return &Service{
 		nc:              nc,
 		js:              js,
+		tp:              natsutil.NewTracingPublisher(nc, js),
 		defKV:           defKV,
 		store:           engine.NewSnapshotStore(js),
 		tracer:          otel.Tracer("dagnats/api"),
@@ -409,16 +414,10 @@ func (s *Service) startRunInner(
 		Subject: evt.NATSSubject(),
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
-	observe.InjectTraceContext(ctx, msg, &evt)
-	data, err := evt.Marshal()
-	if err != nil {
-		return "", err
-	}
-	msg.Data = data
-	_, err = s.js.PublishMsg(
-		ctx, msg,
-	)
-	if err != nil {
+	// JSPublishMsgEvent injects trace context, then re-marshals evt
+	// so the persisted body carries TraceParent. msg.Data must stay
+	// unset on entry.
+	if _, err := s.tp.JSPublishMsgEvent(ctx, msg, &evt); err != nil {
 		return "", err
 	}
 	// Store idempotency key mapping after successful publish.
@@ -683,7 +682,7 @@ func (s *Service) cancelRunInner(
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}
-	_, err = s.js.PublishMsg(ctx, msg)
+	_, err = s.tp.JSPublishMsg(ctx, msg)
 	return err
 }
 
@@ -1387,7 +1386,7 @@ func (s *Service) replayDeadLetterInner(
 		Data:    target.Body,
 		Header:  target.Headers,
 	}
-	if _, err := s.js.PublishMsg(ctx, msg); err != nil {
+	if _, err := s.tp.JSPublishMsg(ctx, msg); err != nil {
 		return fmt.Errorf("dlq replay: publish: %w", err)
 	}
 	return nil
@@ -1821,9 +1820,7 @@ func (s *Service) verifyAndPublish(
 			"Nats-Msg-Id": {evt.NATSMsgID()},
 		},
 	}
-	_, err = s.js.PublishMsg(
-		ctx, msg,
-	)
+	_, err = s.tp.JSPublishMsg(ctx, msg)
 	return err
 }
 

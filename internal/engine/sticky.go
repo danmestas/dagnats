@@ -11,7 +11,6 @@ import (
 	"fmt"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
@@ -134,8 +133,7 @@ func (sr *StickyRouter) PublishTask(
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
-	observe.InjectTraceContext(ctx, stickyMsg, nil)
-	_, err = sr.js.PublishMsg(ctx, stickyMsg)
+	_, err = sr.tp.JSPublishMsg(ctx, stickyMsg)
 	if err != nil {
 		return fmt.Errorf("publish sticky task: %w", err)
 	}

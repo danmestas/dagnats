@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -62,6 +63,7 @@ const (
 // workflow is already in a terminal failure state.
 type RecoveryManager struct {
 	js        jetstream.JetStream
+	tp        *natsutil.TracingPublisher
 	publisher *TaskPublisher
 	tracer    trace.Tracer
 
@@ -84,6 +86,7 @@ type RecoveryManager struct {
 // nil-guards before recording.
 func NewRecoveryManager(
 	js jetstream.JetStream,
+	tp *natsutil.TracingPublisher,
 	publisher *TaskPublisher,
 	tracer trace.Tracer,
 	runsActive metric.Int64UpDownCounter,
@@ -93,6 +96,9 @@ func NewRecoveryManager(
 ) *RecoveryManager {
 	if js == nil {
 		panic("NewRecoveryManager: js must not be nil")
+	}
+	if tp == nil {
+		panic("NewRecoveryManager: tp must not be nil")
 	}
 	if publisher == nil {
 		panic(
@@ -106,6 +112,7 @@ func NewRecoveryManager(
 	}
 	return &RecoveryManager{
 		js:         js,
+		tp:         tp,
 		publisher:  publisher,
 		tracer:     tracer,
 		runsActive: runsActive,
@@ -473,7 +480,7 @@ func (rm *RecoveryManager) PublishDeadLetter(
 		Data:    body,
 		Header:  header,
 	}
-	_, err = rm.js.PublishMsg(ctx, msg)
+	_, err = rm.tp.JSPublishMsg(ctx, msg)
 	rm.recordDLQObservation(ctx, run.WorkflowID, state, err)
 }
 

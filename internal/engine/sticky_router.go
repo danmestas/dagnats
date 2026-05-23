@@ -7,15 +7,19 @@
 package engine
 
 import (
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// StickyRouter owns the lifecycle of run-to-worker bindings.
+// StickyRouter owns the lifecycle of run-to-worker bindings. tp
+// wraps publish operations so sticky task fans carry W3C trace
+// context (#334).
 type StickyRouter struct {
 	kv               jetstream.KeyValue
 	js               jetstream.JetStream
+	tp               *natsutil.TracingPublisher
 	sleepTimer       *SleepTimer
 	tracer           trace.Tracer
 	stepEnqueueCount metric.Int64Counter
@@ -26,6 +30,7 @@ type StickyRouter struct {
 func NewStickyRouter(
 	kv jetstream.KeyValue,
 	js jetstream.JetStream,
+	tp *natsutil.TracingPublisher,
 	sleepTimer *SleepTimer,
 	tracer trace.Tracer,
 	stepEnqueueCount metric.Int64Counter,
@@ -36,12 +41,16 @@ func NewStickyRouter(
 	if js == nil {
 		panic("NewStickyRouter: js must not be nil when kv is set")
 	}
+	if tp == nil {
+		panic("NewStickyRouter: tp must not be nil when kv is set")
+	}
 	if tracer == nil {
 		panic("NewStickyRouter: tracer must not be nil")
 	}
 	return &StickyRouter{
 		kv:               kv,
 		js:               js,
+		tp:               tp,
 		sleepTimer:       sleepTimer,
 		tracer:           tracer,
 		stepEnqueueCount: stepEnqueueCount,

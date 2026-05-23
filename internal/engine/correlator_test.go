@@ -30,7 +30,7 @@ func TestCorrelatorMatchesEvent(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	c := NewCorrelator(nc, jsNew)
+	c := NewCorrelator(nc, jsNew, natsutil.NewTracingPublisher(nc, jsNew))
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestCorrelatorIgnoresNonMatchingEvent(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	c := NewCorrelator(nc, jsNew)
+	c := NewCorrelator(nc, jsNew, natsutil.NewTracingPublisher(nc, jsNew))
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestCorrelatorRemoveWaitersForRun(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	c := NewCorrelator(nc, jsNew)
+	c := NewCorrelator(nc, jsNew, natsutil.NewTracingPublisher(nc, jsNew))
 	if err := c.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestCorrelatorLazyStart(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	c := NewCorrelator(nc, jsNew)
+	c := NewCorrelator(nc, jsNew, natsutil.NewTracingPublisher(nc, jsNew))
 	defer c.Stop()
 
 	// Register a waiter WITHOUT calling Start() first.

@@ -9,8 +9,9 @@ import (
 
 // StartTestServer starts an embedded NATS server with JetStream enabled
 // and returns both the server and a connected client. The server and connection
-// are automatically shut down via t.Cleanup when the test ends.
-func StartTestServer(t *testing.T) (*natsserver.Server, *nats.Conn) {
+// are automatically shut down via t.Cleanup when the test ends. Accepts
+// testing.TB so the same helper works for *testing.T and *testing.B.
+func StartTestServer(t testing.TB) (*natsserver.Server, *nats.Conn) {
 	t.Helper()
 	opts := &natsserver.Options{
 		Host:      "127.0.0.1",

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -15,10 +16,13 @@ import (
 
 // SubjectTrigger subscribes to a NATS subject and publishes workflow.started
 // events for each incoming message. The original message payload is embedded
-// in the TriggerEnvelope.
+// in the TriggerEnvelope. tp wraps the fire-event publish so W3C trace
+// context auto-flows from the inbound message into the resulting
+// workflow.started header (#334).
 type SubjectTrigger struct {
 	nc       *nats.Conn
 	js       jetstream.JetStream
+	tp       *natsutil.TracingPublisher
 	def      TriggerDef
 	sub      *nats.Subscription
 	done     chan struct{}
@@ -63,6 +67,7 @@ func NewSubjectTrigger(
 	trigger := &SubjectTrigger{
 		nc:   nc,
 		js:   js,
+		tp:   natsutil.NewTracingPublisher(nc, js),
 		def:  def,
 		done: make(chan struct{}),
 	}
@@ -187,7 +192,7 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 		context.Background(), 5*time.Second,
 	)
 	defer pubCancel()
-	if _, err := s.js.Publish(
+	if _, err := s.tp.JSPublish(
 		pubCtx, evt.NATSSubject(), evtBytes,
 	); err != nil {
 		slog.Error("publish workflow event",

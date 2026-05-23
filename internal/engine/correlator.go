@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -41,10 +42,13 @@ type EventWaiter struct {
 }
 
 // Correlator watches the EVENTS stream and matches incoming events
-// against waiters stored in the event_waiters KV bucket.
+// against waiters stored in the event_waiters KV bucket. tp wraps
+// match-event publish so W3C trace context flows from the matched
+// EVENT to the resulting history record (#334).
 type Correlator struct {
 	nc       *nats.Conn
 	js       jetstream.JetStream
+	tp       *natsutil.TracingPublisher
 	waiterKV jetstream.KeyValue
 
 	mu      sync.RWMutex
@@ -56,15 +60,20 @@ type Correlator struct {
 }
 
 // NewCorrelator creates a Correlator bound to the given connection.
-// Panics on nil nc or js — these are programmer errors.
+// Panics on nil nc, js, or tp — these are programmer errors.
 func NewCorrelator(
-	nc *nats.Conn, js jetstream.JetStream,
+	nc *nats.Conn,
+	js jetstream.JetStream,
+	tp *natsutil.TracingPublisher,
 ) *Correlator {
 	if nc == nil {
 		panic("NewCorrelator: nc must not be nil")
 	}
 	if js == nil {
 		panic("NewCorrelator: js must not be nil")
+	}
+	if tp == nil {
+		panic("NewCorrelator: tp must not be nil")
 	}
 	kv, err := js.KeyValue(
 		context.Background(), "event_waiters",
@@ -78,6 +87,7 @@ func NewCorrelator(
 	return &Correlator{
 		nc:       nc,
 		js:       js,
+		tp:       tp,
 		waiterKV: kv,
 		waiters:  make(map[string][]EventWaiter),
 	}
@@ -389,7 +399,7 @@ func (c *Correlator) publishMatchEvent(
 	if err != nil {
 		return
 	}
-	c.js.Publish(
+	c.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
@@ -413,7 +423,7 @@ func (c *Correlator) publishCancelEvent(
 	if err != nil {
 		return
 	}
-	c.js.Publish(
+	c.tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)

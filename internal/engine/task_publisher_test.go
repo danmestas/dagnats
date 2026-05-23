@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/metric"
@@ -92,8 +93,10 @@ func TestDoPublishMetricNotIncrementedOnFailure(t *testing.T) {
 	counter := &recordingCounter{}
 	tracer := tracenoop.NewTracerProvider().Tracer("test")
 
+	failJS := &failingJS{}
 	tp := &TaskPublisher{
-		js:     &failingJS{},
+		js:     failJS,
+		pub:    natsutil.NewTracingPublisherJSOnly(failJS),
 		tracer: tracer,
 		metrics: pubMetrics{
 			stepEnqueue:      counter,
@@ -146,8 +149,10 @@ func TestDoPublishMetricIncrementedOnSuccess(t *testing.T) {
 	counter := &recordingCounter{}
 	tracer := tracenoop.NewTracerProvider().Tracer("test")
 
+	okJS := &succeedingJS{}
 	tp := &TaskPublisher{
-		js:     &succeedingJS{},
+		js:     okJS,
+		pub:    natsutil.NewTracingPublisherJSOnly(okJS),
 		tracer: tracer,
 		metrics: pubMetrics{
 			stepEnqueue:      counter,
@@ -191,8 +196,10 @@ func TestPublishIterationMetricNotIncrementedOnFailure(
 	counter := &recordingCounter{}
 	tracer := tracenoop.NewTracerProvider().Tracer("test")
 
+	failJS := &failingJS{}
 	tp := &TaskPublisher{
-		js:     &failingJS{},
+		js:     failJS,
+		pub:    natsutil.NewTracingPublisherJSOnly(failJS),
 		tracer: tracer,
 		metrics: pubMetrics{
 			stepEnqueue:      counter,

@@ -8,26 +8,32 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // AdmissionController owns the admission pipeline: singleton
-// locks, concurrency limits, and priority resolution.
+// locks, concurrency limits, and priority resolution. tp is the
+// TracingPublisher used to publish cancel events with W3C trace
+// context attached (#334); js stays for non-publish JetStream ops.
 type AdmissionController struct {
 	nc          *nats.Conn
 	js          jetstream.JetStream
+	tp          *natsutil.TracingPublisher
 	store       *SnapshotStore
 	concurrency *ConcurrencyManager
 	singletonKV jetstream.KeyValue
 }
 
 // NewAdmissionController creates an AdmissionController with
-// the given dependencies. nc and js are required for publishing
-// cancel events. concurrency and singletonKV may be nil.
+// the given dependencies. nc, js, and tp are required for
+// publishing cancel events with trace propagation.
+// concurrency and singletonKV may be nil.
 func NewAdmissionController(
 	nc *nats.Conn,
 	js jetstream.JetStream,
+	tp *natsutil.TracingPublisher,
 	store *SnapshotStore,
 	concurrency *ConcurrencyManager,
 	singletonKV jetstream.KeyValue,
@@ -42,9 +48,15 @@ func NewAdmissionController(
 			"NewAdmissionController: js must not be nil",
 		)
 	}
+	if tp == nil {
+		panic(
+			"NewAdmissionController: tp must not be nil",
+		)
+	}
 	return &AdmissionController{
 		nc:          nc,
 		js:          js,
+		tp:          tp,
 		store:       store,
 		concurrency: concurrency,
 		singletonKV: singletonKV,

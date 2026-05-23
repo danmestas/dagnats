@@ -207,13 +207,13 @@ func (ag *ApprovalGate) publishRequested(
 	if err != nil {
 		return
 	}
-	ag.js.Publish(
+	ag.tp.JSPublish(
 		ctx, evt.NATSSubject(), evtData,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)
 
 	// Publish notification to the configured subject.
-	ag.nc.Publish(cfg.Subject, data)
+	ag.tp.Publish(ctx, cfg.Subject, data)
 }
 
 // scheduleTimeout schedules a durable timer that fires an

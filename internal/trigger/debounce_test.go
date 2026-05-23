@@ -21,7 +21,7 @@ func TestDebounceAbsorbsEvents(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := jetstream.New(nc)
-	st := engine.NewSleepTimer(nc, js)
+	st := engine.NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 
 	d, err := NewDebouncer(js, st)
 	if err != nil {
@@ -75,7 +75,7 @@ func TestDebounceFiresOnHardTimeout(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := jetstream.New(nc)
-	st := engine.NewSleepTimer(nc, js)
+	st := engine.NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 
 	d, err := NewDebouncer(js, st)
 	if err != nil {
@@ -127,7 +127,7 @@ func TestDebounceNoConfig(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := jetstream.New(nc)
-	st := engine.NewSleepTimer(nc, js)
+	st := engine.NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 
 	d, err := NewDebouncer(js, st)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestHandleTimerFireStaleRejection(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := jetstream.New(nc)
-	st := engine.NewSleepTimer(nc, js)
+	st := engine.NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 
 	d, err := NewDebouncer(js, st)
 	if err != nil {

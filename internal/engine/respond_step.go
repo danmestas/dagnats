@@ -26,8 +26,8 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/httpenvelope"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -73,7 +73,7 @@ func (o *Orchestrator) enqueueRespondStep(
 	}
 
 	if err := publishRespondPayload(
-		ctx, o.nc, run.RunID, cfg, body,
+		ctx, o.tp, run.RunID, cfg, body,
 	); err != nil {
 		return fmt.Errorf("publishRespondPayload: %w", err)
 	}
@@ -86,7 +86,7 @@ func (o *Orchestrator) enqueueRespondStep(
 		return err
 	}
 
-	return publishRespondStepCompleted(ctx, o.js, run.RunID, step.ID, body)
+	return publishRespondStepCompleted(ctx, o.tp, run.RunID, step.ID, body)
 }
 
 // resolveRespondBody picks the body bytes per RespondConfig.BodyFrom:
@@ -168,12 +168,15 @@ func pickUpstreamOutput(
 // publishRespondPayload emits the response envelope to the per-run
 // response subject via plain NATS (not JetStream — the response is
 // ephemeral; the originating API handler is the only subscriber).
+// Goes through TracingPublisher so the response envelope carries the
+// caller's W3C trace context (#334), letting the API handler match
+// the response back to its originating request span.
 func publishRespondPayload(
-	ctx context.Context, nc *nats.Conn,
+	ctx context.Context, tp *natsutil.TracingPublisher,
 	runID string, cfg dag.RespondConfig, body []byte,
 ) error {
-	if nc == nil {
-		panic("publishRespondPayload: nc must not be nil")
+	if tp == nil {
+		panic("publishRespondPayload: tp must not be nil")
 	}
 	if runID == "" {
 		panic("publishRespondPayload: runID must not be empty")
@@ -192,8 +195,7 @@ func publishRespondPayload(
 	if err != nil {
 		return fmt.Errorf("marshal respond payload: %w", err)
 	}
-	_ = ctx
-	return nc.Publish(httpenvelope.ResponseSubject(runID), data)
+	return tp.Publish(ctx, httpenvelope.ResponseSubject(runID), data)
 }
 
 // publishRespondStepCompleted emits a step.completed event on the
@@ -202,11 +204,11 @@ func publishRespondPayload(
 // response goes on the wire — any subsequent steps in the DAG run
 // afterward; the HTTP client has already received its reply.
 func publishRespondStepCompleted(
-	ctx context.Context, js jetstream.JetStream,
+	ctx context.Context, tp *natsutil.TracingPublisher,
 	runID string, stepID string, output []byte,
 ) error {
-	if js == nil {
-		panic("publishRespondStepCompleted: js must not be nil")
+	if tp == nil {
+		panic("publishRespondStepCompleted: tp must not be nil")
 	}
 	if runID == "" {
 		panic("publishRespondStepCompleted: runID must not be empty")
@@ -219,7 +221,7 @@ func publishRespondStepCompleted(
 	if err != nil {
 		return fmt.Errorf("marshal step.completed: %w", err)
 	}
-	_, err = js.Publish(
+	_, err = tp.JSPublish(
 		ctx, evt.NATSSubject(), data,
 		jetstream.WithMsgID(evt.NATSMsgID()),
 	)

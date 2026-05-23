@@ -154,9 +154,7 @@ func (s *Service) scheduleRunInner(
 			"Nats-Msg-Id": {"scheduled." + runID},
 		},
 	}
-	_, err = s.js.PublishMsg(
-		ctx, timerMsg,
-	)
+	_, err = s.tp.JSPublishMsg(ctx, timerMsg)
 	if err != nil {
 		return "", fmt.Errorf("publish timer: %w", err)
 	}
