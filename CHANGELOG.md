@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.2] - 2026-06-03
+
+A large console (web UI) and engine release — ~77 commits since `v0.0.1`.
+
+### Added
+
+Console / web UI:
+
+- Logs page with trace-ID search; Task Types registry page; Configuration self-portrait page.
+- Workers / KV / Streams promoted to top-level navigation; collapse-to-icons rail with footer strip.
+- Fire-now trigger button backed by a `FireTrigger` HTTP endpoint; inline Run button on workflow rows.
+- Page-header partials with tile counters, empty-state partials, drill chevrons, build/identity footers.
+- IBM Plex Sans/Mono typography (bundled OFL-1.1).
+- NATS WebSocket listener for browser clients (live UI updates).
+
+Engine / triggers / workers:
+
+- `dagnats.yaml` configuration file with hot-reload.
+- Trigger-type system: external trigger variant + schema validation, trigger-type versioning, `trigger_types` KV bucket + `TriggerTypeDef`, `RegisterTriggerType` / `WatchTriggers` SDK, `trigger-type list/describe` CLI, and `ExternalRegistrar`.
+- Services registry: `services` KV + `RegisterService` SDK.
+- `WorkerRegistration` enriched with identity + heartbeat fields.
+- filewatcher external-trigger example.
+
+### Changed
+
+- Observability: raw publishes routed through `TracingPublisher`; handler-extractor wrapper.
+- `TriggerRegistrar` interface + table-driven trigger dispatch.
+
+### Fixed
+
+- Numerous console fixes: dashboard tile rendering on empty metrics, run-detail SSE patches, connection-pill state, CSP fixture gating, print CSS, and empty-bucket workflow listing.
+
 ## [0.0.1] - 2026-05-03
 
 Initial public release of `dagnats`, a workflow orchestration engine combining
