@@ -8,7 +8,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// UI serves the web interface under /ui/.
+// UI serves the legacy /ui/ route, which now permanently redirects to
+// the operator console at /console/. The route stays registered so old
+// bookmarks resolve forward (issue #365).
 type UI struct {
 	svc *api.Service
 	nc  *nats.Conn
@@ -37,14 +39,14 @@ func (u *UI) Handler() http.Handler {
 	return http.StripPrefix(
 		"/ui",
 		http.HandlerFunc(
-			func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set(
-					"Content-Type",
-					"text/html; charset=utf-8",
-				)
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(
-					[]byte("DagNats UI — coming soon"),
+			func(w http.ResponseWriter, r *http.Request) {
+				// The real console lives at /console/. /ui is a
+				// retired stub: permanently redirect so cached
+				// bookmarks land on the live UI (issue #365).
+				http.Redirect(
+					w, r,
+					"/console/",
+					http.StatusMovedPermanently,
 				)
 			}),
 	)
