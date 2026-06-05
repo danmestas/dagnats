@@ -21,30 +21,24 @@ const logBatchMax = 10_000
 
 // LogExporter implements sdklog.Exporter by publishing each log
 // record as JSON to NATS JetStream. Subject pattern:
-// telemetry.logs.{serviceName}.{severity}.
+// telemetry.logs.{serviceName}.{severity}. Derives serviceName from
+// the record's Resource (attached by LoggerProvider) for consistency
+// with SpanExporter/MetricExporter and to honor resource from env/cfg.
 type LogExporter struct {
-	pub         *Publisher
-	serviceName string
-	seq         atomic.Uint64
+	pub *Publisher
+	seq atomic.Uint64
 }
 
 // NewLogExporter creates a LogExporter backed by the given
-// JetStream connection. serviceName identifies the producing
-// service since log records may lack a Resource.
+// JetStream connection.
 func NewLogExporter(
-	js jetstream.JetStream, serviceName string,
+	js jetstream.JetStream,
 ) *LogExporter {
 	if js == nil {
 		panic("NewLogExporter: js must not be nil")
 	}
-	if serviceName == "" {
-		panic(
-			"NewLogExporter: serviceName must not be empty",
-		)
-	}
 	return &LogExporter{
-		pub:         NewPublisher(js),
-		serviceName: serviceName,
+		pub: NewPublisher(js),
 	}
 }
 
@@ -108,6 +102,8 @@ func (e *LogExporter) exportOne(
 	severity := normalizeSeverity(r.SeverityText())
 	attrs := extractLogAttrs(r)
 
+	svc := serviceNameFromResource(r.Resource())
+
 	rec := logRecord{
 		Timestamp: r.Timestamp().UTC().Format(
 			time.RFC3339Nano,
@@ -115,7 +111,7 @@ func (e *LogExporter) exportOne(
 		Severity:    severity,
 		Body:        r.Body().AsString(),
 		Attributes:  attrs,
-		ServiceName: e.serviceName,
+		ServiceName: svc,
 	}
 
 	tid := r.TraceID()
@@ -133,7 +129,7 @@ func (e *LogExporter) exportOne(
 	}
 
 	subject := fmt.Sprintf(
-		"telemetry.logs.%s.%s", e.serviceName, severity,
+		"telemetry.logs.%s.%s", svc, severity,
 	)
 
 	// Dedup ID: timestamp nanos + monotonic sequence to

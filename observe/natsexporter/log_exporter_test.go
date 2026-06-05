@@ -23,7 +23,7 @@ func TestLogExporter_Export(t *testing.T) {
 	_, nc := startNATS(t)
 	js := setupStream(t, nc)
 
-	exporter := NewLogExporter(js, "log-test-svc")
+	exporter := NewLogExporter(js)
 
 	res := resource.NewSchemaless(
 		attribute.String("service.name", "log-test-svc"),
@@ -129,7 +129,7 @@ func TestLogExporter_DefaultSeverity(t *testing.T) {
 	_, nc := startNATS(t)
 	js := setupStream(t, nc)
 
-	exporter := NewLogExporter(js, "default-sev-svc")
+	exporter := NewLogExporter(js)
 
 	res := resource.NewSchemaless(
 		attribute.String(
