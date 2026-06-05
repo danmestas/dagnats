@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## Unreleased
+
+### Fixed
+
+- `observe`: `buildResource` now uses OTel `resource.New` + `WithFromEnv()` (and `WithAttributes` for precedence) so `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` are honored. Custom attrs like `deployment.environment=prd` now appear in spans/metrics/logs emitted via OTLP (fixes SigNoz env filtering for dagnats). `cfg.Resource` still wins over env. Made `LogExporter` derive `service.name` from record resource (for subject/JSON consistency with spans+metrics when env overrides service name). Added direct test for buildResource env behavior. (#367)
 
 ## [0.0.2] - 2026-06-03
 

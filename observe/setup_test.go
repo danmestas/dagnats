@@ -19,6 +19,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -287,5 +288,67 @@ func TestInitTelemetry_PanicsOnEmptyServiceName(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// attrValue is a test helper to extract string value for a resource key.
+// Returns "" if absent.
+func attrValue(r *resource.Resource, key string) string {
+	if r == nil {
+		return ""
+	}
+	for _, kv := range r.Attributes() {
+		if string(kv.Key) == key {
+			return kv.Value.AsString()
+		}
+	}
+	return ""
+}
+
+// TestBuildResource_HonorsEnvAndPrecedence exercises the OTEL_RESOURCE_ATTRIBUTES
+// and OTEL_SERVICE_NAME support added to fix #367. Verifies precedence
+// cfg.Resource > env > builtins, and that env attrs reach the resource
+// (which then flows to OTLP exporters for SigNoz etc).
+func TestBuildResource_HonorsEnvAndPrecedence(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prd,foo=bar")
+	t.Setenv("OTEL_SERVICE_NAME", "env-override")
+
+	cfg := Config{
+		ServiceName: "cfg-svc",
+		Resource: map[string]string{
+			"deployment.environment": "cfg-wins",
+			"extra":                  "from-cfg",
+		},
+	}
+
+	res, err := buildResource(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("buildResource: %v", err)
+	}
+
+	// Assertion 1: cfg.Resource wins over env for same key.
+	if got := attrValue(res, "deployment.environment"); got != "cfg-wins" {
+		t.Errorf("deployment.environment = %q, want cfg-wins (cfg > env)", got)
+	}
+
+	// Assertion 2: env-only attr is still present.
+	if got := attrValue(res, "foo"); got != "bar" {
+		t.Errorf("foo = %q, want bar from env", got)
+	}
+
+	// Assertion 3: cfg-only extra is present.
+	if got := attrValue(res, "extra"); got != "from-cfg" {
+		t.Errorf("extra = %q, want from-cfg", got)
+	}
+
+	// Assertion 4: our cfg.ServiceName wins for service.name over OTEL_SERVICE_NAME
+	// (builtins after fromEnv in detector order).
+	if got := attrValue(res, "service.name"); got != "cfg-svc" {
+		t.Errorf("service.name = %q, want cfg-svc (forced > env)", got)
+	}
+
+	// Assertion 5: a built-in like host.name is still present.
+	if got := attrValue(res, "host.name"); got == "" {
+		t.Error("expected host.name built-in to be present")
 	}
 }

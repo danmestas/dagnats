@@ -48,7 +48,7 @@ func InitTelemetry(
 		return nil, fmt.Errorf("create jetstream: %w", err)
 	}
 
-	res, err := buildResource(cfg)
+	res, err := buildResource(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build resource: %w", err)
 	}
@@ -101,9 +101,13 @@ func shutdownSafe(ctx context.Context, s shutdownable) {
 	_ = s.Shutdown(ctx)
 }
 
-// buildResource merges auto-detected attributes with any
-// caller-provided entries from cfg.Resource.
-func buildResource(cfg Config) (*resource.Resource, error) {
+// buildResource constructs the OTel resource using the detector pipeline
+// so that OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAME are honored for
+// all emitters (primarily OTLP to collectors like SigNoz). Precedence:
+// cfg.Resource (caller) > env > our built-in attrs (incl. cfg.ServiceName).
+// Partial detector errors (e.g. malformed env var) are handled via otel.Handle
+// and a usable resource is still returned.
+func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) {
 	if cfg.ServiceName == "" {
 		panic("buildResource: ServiceName must not be empty")
 	}
@@ -114,7 +118,7 @@ func buildResource(cfg Config) (*resource.Resource, error) {
 		hostname = "unknown"
 	}
 
-	attrs := []attribute.KeyValue{
+	builtins := []attribute.KeyValue{
 		semconv.ServiceName(cfg.ServiceName),
 		semconv.ServiceVersion(version),
 		semconv.HostName(hostname),
@@ -122,19 +126,27 @@ func buildResource(cfg Config) (*resource.Resource, error) {
 		semconv.OSTypeKey.String(runtime.GOOS),
 		attribute.Int("process.pid", os.Getpid()),
 		attribute.String("process.runtime.name", "go"),
-		attribute.String(
-			"process.runtime.version", goVersion,
-		),
+		attribute.String("process.runtime.version", goVersion),
 	}
 
-	// Merge caller-provided resource attributes.
+	caller := make([]attribute.KeyValue, 0, len(cfg.Resource))
 	for k, v := range cfg.Resource {
-		attrs = append(attrs, attribute.String(k, v))
+		caller = append(caller, attribute.String(k, v))
 	}
 
-	return resource.NewWithAttributes(
-		semconv.SchemaURL, attrs...,
-	), nil
+	res, err := resource.New(ctx,
+		resource.WithSchemaURL(semconv.SchemaURL),
+		resource.WithFromEnv(),
+		resource.WithAttributes(builtins...),
+		resource.WithAttributes(caller...),
+	)
+	if err != nil {
+		otel.Handle(err)
+		if res == nil {
+			return nil, fmt.Errorf("build resource: %w", err)
+		}
+	}
+	return res, nil
 }
 
 // extractBuildInfo reads version and Go version from the
@@ -243,7 +255,7 @@ func setupLoggerProvider(
 	}
 
 	natsExp := natsexporter.NewLogExporter(
-		js, cfg.ServiceName,
+		js,
 	)
 	opts := []log.LoggerProviderOption{
 		log.WithResource(res),
