@@ -7,6 +7,7 @@ package dag
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -225,6 +226,71 @@ func TestValidateSubWorkflow_RejectsEmptyWorkflow(t *testing.T) {
 	// Negative: non-empty error message.
 	if err.Error() == "" {
 		t.Fatal("error message should not be empty")
+	}
+}
+
+func TestValidate_SubWorkflowWithoutTask_Passes(t *testing.T) {
+	// Regression for #369: a sub_workflow step carries no task because it
+	// references a child workflow by name through its config. Validation
+	// must pass without panicking.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Validate panicked on task-less sub_workflow: %v", r)
+		}
+	}()
+	def := WorkflowDef{
+		Name:    "parent-wf",
+		Version: "1",
+		Steps: []StepDef{
+			{
+				ID:   "spawn",
+				Task: "",
+				Type: StepTypeSubWorkflow,
+				Config: MarshalConfig(
+					&SubWorkflowConfig{Workflow: "child-wf"},
+				),
+			},
+		},
+	}
+	err := Validate(def)
+	// Positive: a well-formed task-less sub_workflow validates cleanly.
+	if err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestValidate_SubWorkflowMissingWorkflowName_ReturnsError(t *testing.T) {
+	// Regression for #369: a task-less sub_workflow missing its referenced
+	// workflow name must fail with a RETURNED error, not a panic.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Validate panicked instead of returning error: %v", r)
+		}
+	}()
+	def := WorkflowDef{
+		Name:    "parent-wf",
+		Version: "1",
+		Steps: []StepDef{
+			{
+				ID:   "spawn",
+				Task: "",
+				Type: StepTypeSubWorkflow,
+				Config: MarshalConfig(
+					&SubWorkflowConfig{Workflow: ""},
+				),
+			},
+		},
+	}
+	err := Validate(def)
+	// Positive: validation returns an error for the missing workflow name.
+	if err == nil {
+		t.Fatal("expected validation error for empty Workflow name")
+	}
+	// Negative space: the error references the offending step and the
+	// missing field, proving it failed for the right reason.
+	msg := err.Error()
+	if !strings.Contains(msg, "spawn") || !strings.Contains(msg, "Workflow") {
+		t.Fatalf("error %q should reference step ID and Workflow", msg)
 	}
 }
 
