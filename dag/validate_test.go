@@ -350,7 +350,7 @@ func TestValidateMapStepRequiresMapConfig(t *testing.T) {
 
 func TestValidateEmptyTaskForTaskRequiringTypes(t *testing.T) {
 	// Test that step types requiring a Task field panic when Task is empty.
-	// This preserves existing behavior for Normal, AgentLoop, SubWorkflow, Agent, Map.
+	// This preserves existing behavior for Normal, AgentLoop, Agent, Map.
 	taskRequiringTypes := []struct {
 		name     string
 		stepType StepType
@@ -360,7 +360,6 @@ func TestValidateEmptyTaskForTaskRequiringTypes(t *testing.T) {
 		{"Normal", StepTypeNormal, nil, nil},
 		{"AgentLoop", StepTypeAgentLoop,
 			MarshalConfig(&AgentLoopConfig{MaxIterations: 5}), nil},
-		{"SubWorkflow", StepTypeSubWorkflow, nil, nil},
 		{"Agent", StepTypeAgent, nil, nil},
 		{"Map", StepTypeMap,
 			MarshalConfig(&MapConfig{MaxItems: 100}),
@@ -412,14 +411,20 @@ func TestStepRequiresTask(t *testing.T) {
 	taskTypes := []StepType{
 		StepTypeNormal,
 		StepTypeAgentLoop,
-		StepTypeSubWorkflow,
 		StepTypeAgent,
 		StepTypeMap,
+		StepTypePlanner,
 	}
 	for _, st := range taskTypes {
 		if !stepRequiresTask(st) {
 			t.Errorf("stepRequiresTask(%s) = false, want true", st)
 		}
+	}
+
+	// SubWorkflow references a child workflow by name through its config
+	// and carries no task, so it must not be in the require-task set.
+	if stepRequiresTask(StepTypeSubWorkflow) {
+		t.Errorf("stepRequiresTask(SubWorkflow) = true, want false")
 	}
 
 	// Negative: invalid/future step types return false (graceful degradation)

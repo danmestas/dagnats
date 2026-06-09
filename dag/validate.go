@@ -171,13 +171,15 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 }
 
 // stepRequiresTask returns true for step types that must have a non-empty Task field.
-// Future step types like Sleep and WaitForEvent won't require a task.
+// SubWorkflow carries no task because it references a child workflow by name through
+// its config, so it joins the no-task types alongside Sleep, WaitForEvent, Approval.
 func stepRequiresTask(t StepType) bool {
 	switch t {
-	case StepTypeNormal, StepTypeAgentLoop, StepTypeSubWorkflow,
+	case StepTypeNormal, StepTypeAgentLoop,
 		StepTypeAgent, StepTypeMap, StepTypePlanner:
 		return true
-	case StepTypeSleep, StepTypeWaitForEvent, StepTypeApproval:
+	case StepTypeSleep, StepTypeWaitForEvent, StepTypeApproval,
+		StepTypeSubWorkflow:
 		return false
 	default:
 		return false
