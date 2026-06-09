@@ -46,98 +46,170 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 
 	// Configure leaf node if remotes specified
 	if len(cfg.LeafRemotes) > 0 {
-		remotes := make([]*natsserver.RemoteLeafOpts, 0, len(cfg.LeafRemotes))
-		for _, remote := range cfg.LeafRemotes {
-			remoteURL, err := url.Parse(remote)
-			if err != nil {
-				return nil, fmt.Errorf("parse leaf remote %q: %w", remote, err)
-			}
-			remote := &natsserver.RemoteLeafOpts{
-				URLs: []*url.URL{remoteURL},
-			}
-			if cfg.LeafCredentials != "" {
-				remote.Credentials = cfg.LeafCredentials
-			}
-			remotes = append(remotes, remote)
-		}
-		opts.LeafNode = natsserver.LeafNodeOpts{
-			Remotes: remotes,
+		err := configureLeafNode(opts, cfg)
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	// Configure embedded cluster if cluster routes specified.
-	// Cluster mode is mutually exclusive with leaf mode; validation in
-	// server/config.go panics if both are set.
-	//
-	// Note: Routes lives on Options (not ClusterOpts) in nats-server v2.
-	// Cluster authorization explicitly rejects token-based auth, so the
-	// "auth token" is wired into Cluster.Username (single shared secret;
-	// Password left empty), which matches how operators typically encode
-	// a bearer-like cluster credential.
 	if len(cfg.NATSClusterRoutes) > 0 {
-		parsedRoutes, err := parseClusterRoutes(cfg.NATSClusterRoutes)
+		err := configureCluster(opts, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("parse cluster routes: %w", err)
-		}
-		opts.Cluster = natsserver.ClusterOpts{
-			Name: cfg.NATSClusterName,
-			Host: "0.0.0.0",
-			Port: defaultClusterPort,
-		}
-		opts.Routes = parsedRoutes
-		// JetStream clustering requires a unique server_name per node.
-		// Derive a stable-but-unique name from the cluster name and pid
-		// so multi-node tests don't collide; operators can override later
-		// once a deployment-aware name source is wired in.
-		if opts.ServerName == "" {
-			opts.ServerName = fmt.Sprintf(
-				"%s-%d", cfg.NATSClusterName, os.Getpid(),
-			)
-		}
-		if cfg.NATSClusterAuthToken != "" {
-			opts.Cluster.Username = cfg.NATSClusterAuthToken
+			return nil, err
 		}
 	}
 
 	// Configure the embedded NATS WebSocket listener for browser
 	// clients when an operator opts in via NATSWebsocketPort > 0.
-	// See ADR-020. Auth fields on WebsocketOpts are left zero so
-	// they inherit Options.Users / top-level auth — the issue
-	// contract is "no new auth model". Host reuses the TCP-port
-	// binding posture (127.0.0.1 standalone, 0.0.0.0 in leaf mode).
 	if cfg.NATSWebsocketPort > 0 {
-		if !cfg.NATSWebsocketNoTLS {
-			return nil, fmt.Errorf(
-				"nats_ws_port set but TLS not configured: " +
-					"pass --nats-ws-no-tls to opt into the " +
-					"explicit insecure dev mode, or wait for " +
-					"server TLS wiring",
-			)
+		err := configureWebsocket(opts, cfg, host)
+		if err != nil {
+			return nil, err
 		}
-		opts.Websocket = natsserver.WebsocketOpts{
-			Host:  host,
-			Port:  cfg.NATSWebsocketPort,
-			NoTLS: cfg.NATSWebsocketNoTLS,
-		}
-		printStep(os.Stderr, fmt.Sprintf(
-			"WARNING: WebSocket listener on :%d running "+
-				"WITHOUT TLS — dev mode only, do not "+
-				"expose to untrusted networks",
-			cfg.NATSWebsocketPort,
-		))
 	}
 
 	ns, err := tryStartNATS(opts)
 	if err != nil && cfg.NATSPort == defaultNATSPort {
-		printStep(os.Stderr,
-			fmt.Sprintf("port %d in use, picking a free port", cfg.NATSPort))
-		opts.Port = -1
-		ns, err = tryStartNATS(opts)
+		return startNATSWithPortFallback(opts, cfg)
 	}
 	if err != nil {
 		return nil, err
 	}
 	return ns, nil
+}
+
+// startNATSWithPortFallback handles the default-port conflict branch of
+// startNATS: it either fails fast (when cfg.FailOnPortConflict) or retries
+// on an ephemeral port (opts.Port = -1). Extracted to keep startNATS under
+// the 70-line limit (#370).
+func startNATSWithPortFallback(
+	opts *natsserver.Options, cfg Config,
+) (*natsserver.Server, error) {
+	if opts == nil {
+		panic("startNATSWithPortFallback: opts must not be nil")
+	}
+	if cfg.NATSPort != defaultNATSPort {
+		panic("startNATSWithPortFallback: only valid for the default port")
+	}
+
+	if cfg.FailOnPortConflict {
+		return nil, fmt.Errorf(
+			"NATS port %d in use (another process likely "+
+				"holds it); --fail-on-port-conflict is set, "+
+				"refusing to fall back", cfg.NATSPort)
+	}
+	printWarning(os.Stderr, fmt.Sprintf(
+		"NATS port %d in use, picking a free port", cfg.NATSPort))
+	opts.Port = -1
+	return tryStartNATS(opts)
+}
+
+// configureLeafNode wires cfg.LeafRemotes into opts.LeafNode. Extracted
+// from startNATS to keep it under the 70-line limit (#370); behavior is
+// unchanged. Caller guards on len(cfg.LeafRemotes) > 0.
+func configureLeafNode(opts *natsserver.Options, cfg Config) error {
+	if opts == nil {
+		panic("configureLeafNode: opts must not be nil")
+	}
+	if len(cfg.LeafRemotes) == 0 {
+		panic("configureLeafNode: no leaf remotes")
+	}
+
+	remotes := make([]*natsserver.RemoteLeafOpts, 0, len(cfg.LeafRemotes))
+	for _, remote := range cfg.LeafRemotes {
+		remoteURL, err := url.Parse(remote)
+		if err != nil {
+			return fmt.Errorf("parse leaf remote %q: %w", remote, err)
+		}
+		leaf := &natsserver.RemoteLeafOpts{
+			URLs: []*url.URL{remoteURL},
+		}
+		if cfg.LeafCredentials != "" {
+			leaf.Credentials = cfg.LeafCredentials
+		}
+		remotes = append(remotes, leaf)
+	}
+	opts.LeafNode = natsserver.LeafNodeOpts{Remotes: remotes}
+	return nil
+}
+
+// configureCluster wires cfg.NATSClusterRoutes into opts.Cluster/Routes.
+// Cluster mode is mutually exclusive with leaf mode; config validation
+// panics if both are set. Routes lives on Options (not ClusterOpts) in
+// nats-server v2. Cluster authorization rejects token-based auth, so the
+// auth token is wired into Cluster.Username (single shared secret;
+// Password left empty). Extracted from startNATS to keep it under the
+// 70-line limit (#370); behavior is unchanged.
+func configureCluster(opts *natsserver.Options, cfg Config) error {
+	if opts == nil {
+		panic("configureCluster: opts must not be nil")
+	}
+	if len(cfg.NATSClusterRoutes) == 0 {
+		panic("configureCluster: no cluster routes")
+	}
+
+	parsedRoutes, err := parseClusterRoutes(cfg.NATSClusterRoutes)
+	if err != nil {
+		return fmt.Errorf("parse cluster routes: %w", err)
+	}
+	opts.Cluster = natsserver.ClusterOpts{
+		Name: cfg.NATSClusterName,
+		Host: "0.0.0.0",
+		Port: defaultClusterPort,
+	}
+	opts.Routes = parsedRoutes
+	// JetStream clustering requires a unique server_name per node. Derive
+	// a stable-but-unique name from the cluster name and pid so multi-node
+	// tests don't collide; operators can override later once a
+	// deployment-aware name source is wired in.
+	if opts.ServerName == "" {
+		opts.ServerName = fmt.Sprintf(
+			"%s-%d", cfg.NATSClusterName, os.Getpid(),
+		)
+	}
+	if cfg.NATSClusterAuthToken != "" {
+		opts.Cluster.Username = cfg.NATSClusterAuthToken
+	}
+	return nil
+}
+
+// configureWebsocket wires the embedded NATS WebSocket listener (ADR-020)
+// into opts when an operator opts in via NATSWebsocketPort > 0. Auth
+// fields are left zero so they inherit Options.Users / top-level auth —
+// the contract is "no new auth model". Host reuses the TCP-port binding
+// posture (127.0.0.1 standalone, 0.0.0.0 in leaf mode). Extracted from
+// startNATS to keep it under the 70-line limit (#370).
+func configureWebsocket(
+	opts *natsserver.Options, cfg Config, host string,
+) error {
+	if opts == nil {
+		panic("configureWebsocket: opts must not be nil")
+	}
+	if cfg.NATSWebsocketPort <= 0 {
+		panic("configureWebsocket: NATSWebsocketPort not set")
+	}
+
+	if !cfg.NATSWebsocketNoTLS {
+		return fmt.Errorf(
+			"nats_ws_port set but TLS not configured: " +
+				"pass --nats-ws-no-tls to opt into the " +
+				"explicit insecure dev mode, or wait for " +
+				"server TLS wiring",
+		)
+	}
+	opts.Websocket = natsserver.WebsocketOpts{
+		Host:  host,
+		Port:  cfg.NATSWebsocketPort,
+		NoTLS: cfg.NATSWebsocketNoTLS,
+	}
+	printStep(os.Stderr, fmt.Sprintf(
+		"WARNING: WebSocket listener on :%d running "+
+			"WITHOUT TLS — dev mode only, do not "+
+			"expose to untrusted networks",
+		cfg.NATSWebsocketPort,
+	))
+	return nil
 }
 
 func tryStartNATS(opts *natsserver.Options) (*natsserver.Server, error) {

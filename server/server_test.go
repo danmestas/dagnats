@@ -572,3 +572,96 @@ func TestServer_NATSAPIRespondsAfterReady(t *testing.T) {
 		t.Fatal("Run() did not return within 20s")
 	}
 }
+
+// #370: the HTTP auto-fallback must preserve the configured bind host
+// instead of widening to all interfaces (the old hardcoded ":0"). A
+// loopback config that falls back must STAY loopback so the console
+// gate keeps the console enabled.
+func TestLoopbackEphemeralAddr_PreservesLoopbackHost(t *testing.T) {
+	got := loopbackEphemeralAddr("127.0.0.1:8080")
+
+	// Positive: host preserved, port reset to 0.
+	if got != "127.0.0.1:0" {
+		t.Fatalf("loopbackEphemeralAddr = %q, want 127.0.0.1:0", got)
+	}
+	if !isHTTPAddrLoopback(got) {
+		t.Fatalf("fallback addr %q must stay loopback", got)
+	}
+}
+
+func TestLoopbackEphemeralAddr_DoesNotWidenToAllInterfaces(t *testing.T) {
+	got := loopbackEphemeralAddr("127.0.0.1:8080")
+
+	// Negative space: the bug was a ":0" all-interfaces bind. The
+	// fallback must never produce that for a loopback config.
+	if got == ":0" {
+		t.Fatal("fallback widened to all interfaces (:0); bug not fixed")
+	}
+	if !isHTTPAddrLoopback(got) {
+		t.Fatalf("fallback addr %q must stay loopback", got)
+	}
+
+	// Malformed input falls back to raw+:0 — must stay non-empty so
+	// the caller's net.Listen still gets a usable string.
+	malformed := loopbackEphemeralAddr("not-an-addr")
+	if malformed == "" {
+		t.Fatal("loopbackEphemeralAddr returned empty for malformed input")
+	}
+}
+
+// TestStartHTTP_FallbackPreservesLoopbackAndKeepsConsole boots a full
+// Server with the default loopback HTTPAddr while a real listener holds
+// 127.0.0.1:8080, forcing the auto-fallback. It pins #370's fix: the
+// fallback listener stays loopback (so the console gate is satisfied)
+// and the console route is reachable (not the AuthDisabled 503 path).
+func TestStartHTTP_FallbackPreservesLoopbackAndKeepsConsole(t *testing.T) {
+	held, err := net.Listen("tcp", defaultHTTPAddr)
+	if err != nil {
+		t.Skipf("cannot hold %s: %v", defaultHTTPAddr, err)
+	}
+	defer held.Close()
+
+	cfg := DefaultConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.NATSPort = -1
+	cfg.HTTPAddr = defaultHTTPAddr // force the conflict + fallback
+	cfg.FailOnPortConflict = false
+
+	srv := New(cfg)
+	if srv == nil {
+		panic("New() returned nil")
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+	defer func() {
+		srv.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(20 * time.Second):
+			t.Fatal("Run() did not return within 20s")
+		}
+	}()
+	waitForReady(t, srv.cfg.HTTPAddr)
+
+	// Assert 1: the fallback addr stays loopback on an ephemeral port.
+	if !isHTTPAddrLoopback(srv.cfg.HTTPAddr) {
+		t.Fatalf("fallback addr %q is not loopback", srv.cfg.HTTPAddr)
+	}
+	if srv.cfg.HTTPAddr == defaultHTTPAddr {
+		t.Fatalf("expected an ephemeral fallback port, got %s",
+			srv.cfg.HTTPAddr)
+	}
+
+	// Assert 2 (negative space on the bug): the console is reachable,
+	// not the AuthDisabled 503. A loopback bind keeps the gate open.
+	consoleURL := fmt.Sprintf("http://%s/console/", srv.cfg.HTTPAddr)
+	resp, err := http.Get(consoleURL)
+	if err != nil {
+		t.Fatalf("GET /console/: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		t.Fatalf("console disabled (503) after loopback fallback; "+
+			"bind scope widened (addr=%s)", srv.cfg.HTTPAddr)
+	}
+}

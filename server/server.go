@@ -401,6 +401,38 @@ func rootRedirectOr(rest http.Handler) http.Handler {
 	})
 }
 
+// listenHTTPWithFallback binds addr, and on a default-address conflict
+// either fails fast (failFast) or retries on an ephemeral port that
+// PRESERVES the configured bind host (loopback stays loopback), so the
+// fallback never widens the bind scope and trips the console's
+// non-loopback auth gate. Extracted to keep startHTTP under the 70-line
+// limit (#370).
+func listenHTTPWithFallback(
+	addr string, failFast bool,
+) (net.Listener, error) {
+	if addr == "" {
+		panic("listenHTTPWithFallback: addr is empty")
+	}
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil && addr == defaultHTTPAddr {
+		if failFast {
+			return nil, fmt.Errorf(
+				"HTTP address %s in use (another process likely "+
+					"holds it); --fail-on-port-conflict is set, "+
+					"refusing to fall back", addr)
+		}
+		fallbackAddr := loopbackEphemeralAddr(addr)
+		printWarning(os.Stderr, fmt.Sprintf(
+			"%s in use, picking a free port on the same host", addr))
+		ln, err = net.Listen("tcp", fallbackAddr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listen HTTP: %w", err)
+	}
+	return ln, nil
+}
+
 func (s *Server) startHTTP() (<-chan error, error) {
 	if s.svc == nil {
 		panic("startHTTP: svc is nil")
@@ -442,14 +474,9 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	mux.Handle("/docs", docsHandler)
 	mux.Handle("/docs/", docsHandler)
 
-	ln, err := net.Listen("tcp", s.cfg.HTTPAddr)
-	if err != nil && s.cfg.HTTPAddr == defaultHTTPAddr {
-		printStep(os.Stderr,
-			fmt.Sprintf("%s in use, picking a free port", s.cfg.HTTPAddr))
-		ln, err = net.Listen("tcp", ":0")
-	}
+	ln, err := listenHTTPWithFallback(s.cfg.HTTPAddr, s.cfg.FailOnPortConflict)
 	if err != nil {
-		return nil, fmt.Errorf("listen HTTP: %w", err)
+		return nil, err
 	}
 	s.cfg.HTTPAddr = ln.Addr().String()
 

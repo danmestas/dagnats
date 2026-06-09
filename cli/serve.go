@@ -60,7 +60,7 @@ func runServeCmd(args []string) {
 func printServeHelp() {
 	fmt.Println("Usage: dagnats serve [--config=PATH]" +
 		" [--dry-run] [--nats-ws-port=N]" +
-		" [--nats-ws-no-tls]")
+		" [--nats-ws-no-tls] [--fail-on-port-conflict]")
 	fmt.Println("Starts embedded NATS server with" +
 		" DagNats engine and API.")
 	fmt.Println()
@@ -72,6 +72,10 @@ func printServeHelp() {
 		" for browser clients (0 = off, default)")
 	fmt.Println("  --nats-ws-no-tls    run the WebSocket" +
 		" listener without TLS (dev only; ADR-020)")
+	fmt.Println("  --fail-on-port-conflict   exit non-zero on a" +
+		" port conflict instead")
+	fmt.Println("                            of auto-falling-back" +
+		" to a free port")
 	fmt.Println()
 	fmt.Println("Config search order (when --config" +
 		" not specified):")
@@ -132,6 +136,19 @@ func applyServeFlagOverrides(
 			default:
 				return fmt.Errorf(
 					"--nats-ws-no-tls: invalid %q", val)
+			}
+		case arg == "--fail-on-port-conflict":
+			cfg.FailOnPortConflict = true
+		case strings.HasPrefix(arg, "--fail-on-port-conflict="):
+			val := strings.TrimPrefix(arg, "--fail-on-port-conflict=")
+			switch strings.ToLower(val) {
+			case "1", "true", "yes", "on":
+				cfg.FailOnPortConflict = true
+			case "0", "false", "no", "off":
+				cfg.FailOnPortConflict = false
+			default:
+				return fmt.Errorf(
+					"--fail-on-port-conflict: invalid %q", val)
 			}
 		}
 	}
