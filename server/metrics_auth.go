@@ -137,6 +137,27 @@ func isHTTPAddrLoopback(httpAddr string) bool {
 	return ip.IsLoopback()
 }
 
+// loopbackEphemeralAddr returns the configured address's host re-joined
+// with port 0, so an HTTP auto-fallback keeps the original bind scope
+// (e.g. "127.0.0.1:8080" -> "127.0.0.1:0") instead of widening to all
+// interfaces via ":0". On a malformed addr it falls back to the raw
+// string with ":0" — preserving prior non-crashing behavior for the
+// unparseable case (#370).
+func loopbackEphemeralAddr(httpAddr string) string {
+	if httpAddr == "" {
+		panic("loopbackEphemeralAddr: httpAddr is empty")
+	}
+	host, _, err := net.SplitHostPort(httpAddr)
+	if err != nil {
+		host = httpAddr
+	}
+	out := net.JoinHostPort(host, "0")
+	if out == "" {
+		panic("loopbackEphemeralAddr: join produced empty addr")
+	}
+	return out
+}
+
 // metricsAuthMiddleware wraps next with the gate. Pure function over
 // (cfg, next); test seams swap cfg without env mutation.
 func metricsAuthMiddleware(

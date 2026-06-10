@@ -79,3 +79,77 @@ func TestServeDryRun_OutputContainsExpectedSections(t *testing.T) {
 		t.Fatal("output should contain 'Config OK' or 'Config INVALID'")
 	}
 }
+
+// #370: --fail-on-port-conflict opts startup into a hard failure on a
+// default-port conflict instead of the silent auto-fallback.
+func TestApplyServeFlagOverrides_FailOnPortConflictPresent(t *testing.T) {
+	cfg := server.DefaultConfig()
+
+	// Positive: the bare flag sets the field true.
+	if err := applyServeFlagOverrides(
+		[]string{"--fail-on-port-conflict"}, &cfg,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.FailOnPortConflict {
+		t.Fatal("expected FailOnPortConflict true after bare flag")
+	}
+
+	// Positive: the bare flag among other flags also sets true.
+	cfg2 := server.DefaultConfig()
+	if err := applyServeFlagOverrides(
+		[]string{"--nats-ws-port=9222", "--fail-on-port-conflict"},
+		&cfg2,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg2.FailOnPortConflict {
+		t.Fatal("expected FailOnPortConflict true among other flags")
+	}
+}
+
+func TestApplyServeFlagOverrides_FailOnPortConflictAbsent(t *testing.T) {
+	cfg := server.DefaultConfig()
+
+	// Negative space: unrelated flags leave the field false.
+	if err := applyServeFlagOverrides(
+		[]string{"--nats-ws-no-tls"}, &cfg,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.FailOnPortConflict {
+		t.Fatal("FailOnPortConflict should stay false when absent")
+	}
+
+	// Negative space: explicit =false sets/leaves the field false.
+	cfg2 := server.DefaultConfig()
+	if err := applyServeFlagOverrides(
+		[]string{"--fail-on-port-conflict=false"}, &cfg2,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg2.FailOnPortConflict {
+		t.Fatal("FailOnPortConflict should be false for =false")
+	}
+}
+
+func TestApplyServeFlagOverrides_FailOnPortConflictInvalid(t *testing.T) {
+	cfg := server.DefaultConfig()
+
+	// Positive: a garbage value RETURNS an error (never panics) and
+	// names the flag — user input is validated, not asserted.
+	err := applyServeFlagOverrides(
+		[]string{"--fail-on-port-conflict=maybe"}, &cfg,
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid flag value")
+	}
+	if !strings.Contains(err.Error(), "fail-on-port-conflict") {
+		t.Fatalf("error should name the flag, got: %v", err)
+	}
+
+	// Negative space: the field is unchanged on the error path.
+	if cfg.FailOnPortConflict {
+		t.Fatal("FailOnPortConflict should be unchanged on error")
+	}
+}

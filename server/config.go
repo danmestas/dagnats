@@ -64,6 +64,14 @@ type Config struct {
 	// production by accident.
 	NATSWebsocketNoTLS bool `json:"nats_ws_no_tls"`
 
+	// FailOnPortConflict makes startup return an error (non-zero exit)
+	// instead of auto-falling-back to an ephemeral port when the default
+	// NATS port or default HTTP address is already in use. Default false
+	// keeps auto-fallback as the documented behavior (#370). Opt-in for
+	// operators who want a hard failure when a stale server holds the
+	// port.
+	FailOnPortConflict bool `json:"fail_on_port_conflict"`
+
 	// ConfigFilePath is the absolute path of the dagnats.yaml that
 	// was loaded (empty when no file was found). Phase 4 / ADR-018:
 	// the server uses it to drive the configfile.Watcher for live

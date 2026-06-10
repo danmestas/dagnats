@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/console"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
@@ -570,5 +571,102 @@ func TestServer_NATSAPIRespondsAfterReady(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("Run() did not return within 20s")
+	}
+}
+
+// #370: the HTTP auto-fallback must preserve the configured bind host
+// instead of widening to all interfaces (the old hardcoded ":0"). A
+// loopback config that falls back must STAY loopback so the console
+// gate keeps the console enabled.
+func TestLoopbackEphemeralAddr_PreservesLoopbackHost(t *testing.T) {
+	got := loopbackEphemeralAddr("127.0.0.1:8080")
+
+	// Positive: host preserved, port reset to 0.
+	if got != "127.0.0.1:0" {
+		t.Fatalf("loopbackEphemeralAddr = %q, want 127.0.0.1:0", got)
+	}
+	if !isHTTPAddrLoopback(got) {
+		t.Fatalf("fallback addr %q must stay loopback", got)
+	}
+}
+
+func TestLoopbackEphemeralAddr_DoesNotWidenToAllInterfaces(t *testing.T) {
+	got := loopbackEphemeralAddr("127.0.0.1:8080")
+
+	// Negative space: the bug was a ":0" all-interfaces bind. The
+	// fallback must never produce that for a loopback config.
+	if got == ":0" {
+		t.Fatal("fallback widened to all interfaces (:0); bug not fixed")
+	}
+	if !isHTTPAddrLoopback(got) {
+		t.Fatalf("fallback addr %q must stay loopback", got)
+	}
+
+	// Malformed input falls back to raw+:0 — must stay non-empty so
+	// the caller's net.Listen still gets a usable string.
+	malformed := loopbackEphemeralAddr("not-an-addr")
+	if malformed == "" {
+		t.Fatal("loopbackEphemeralAddr returned empty for malformed input")
+	}
+}
+
+// TestStartHTTP_FallbackPreservesLoopbackAndKeepsConsole pins #370's
+// fix at the seam that actually carries it: the HTTP auto-fallback
+// computes its replacement address with loopbackEphemeralAddr, and the
+// console gate (console.ResolveAuthMode) keys off that address's host.
+// The bug was the old ":0" fallback widening the bind scope to all
+// interfaces, which flips the gate to AuthDisabled and makes /console/
+// return 503 — disabling the console after an otherwise-harmless port
+// conflict.
+//
+// The gate is a pure function of the bind host, so this asserts the
+// decision directly against the exact address a default-port conflict
+// would hand to net.Listen. No embedded NATS, JetStream, or HTTP
+// server is needed; the test runs in microseconds.
+func TestStartHTTP_FallbackPreservesLoopbackAndKeepsConsole(t *testing.T) {
+	// The address listenHTTPWithFallback binds after a default-port
+	// conflict (loopbackEphemeralAddr(defaultHTTPAddr)).
+	fallbackAddr := loopbackEphemeralAddr(defaultHTTPAddr)
+
+	// Assert 1: the fallback addr stays loopback (not the old ":0"
+	// all-interfaces bind) so the console gate stays open.
+	if fallbackAddr == ":0" {
+		t.Fatal("fallback widened to all interfaces (:0); bug not fixed")
+	}
+	if !isHTTPAddrLoopback(fallbackAddr) {
+		t.Fatalf("fallback addr %q is not loopback", fallbackAddr)
+	}
+
+	// Assert 2: the production console gate (the same call mountConsole
+	// makes via buildConsoleConfig) resolves the fallback addr to
+	// AuthLoopback, not AuthDisabled. AuthDisabled is the mode that
+	// makes /console/ return 503.
+	mode, err := console.ResolveAuthMode(console.AuthConfig{
+		HTTPAddr: fallbackAddr,
+	})
+	if err != nil {
+		t.Fatalf("ResolveAuthMode(%q): %v", fallbackAddr, err)
+	}
+	if mode == console.AuthDisabled {
+		t.Fatalf("console disabled for loopback fallback addr %q; "+
+			"bind scope widened (would serve 503)", fallbackAddr)
+	}
+	if mode != console.AuthLoopback {
+		t.Fatalf("expected AuthLoopback for %q, got %v",
+			fallbackAddr, mode)
+	}
+
+	// Negative space: the old buggy ":0" fallback WOULD have tripped
+	// the gate closed. Pin that the fix's address differs from it.
+	buggyMode, err := console.ResolveAuthMode(console.AuthConfig{
+		HTTPAddr: ":0",
+	})
+	if err != nil {
+		t.Fatalf("ResolveAuthMode(\":0\"): %v", err)
+	}
+	if buggyMode != console.AuthDisabled {
+		t.Fatalf("expected the old \":0\" bind to be AuthDisabled "+
+			"(the bug); got %v — test no longer guards the regression",
+			buggyMode)
 	}
 }

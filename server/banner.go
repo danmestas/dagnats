@@ -105,3 +105,19 @@ func printStep(w io.Writer, msg string) {
 	fmt.Fprintf(w, "   %s%s•%s %s%s%s\n",
 		grvOr, ansiB, ansiR, grvGray, msg, ansiR)
 }
+
+// printWarning writes a visually distinct warning line, louder than a
+// normal startup step (printStep), so an auto-fallback on a port
+// conflict is not mistaken for clean startup (#370). It uses a bold
+// "⚠ WARNING" label in orange rather than printStep's dim "•" bullet.
+func printWarning(w io.Writer, msg string) {
+	if w == nil {
+		panic("printWarning: w must not be nil")
+	}
+	if msg == "" {
+		panic("printWarning: msg must not be empty")
+	}
+
+	fmt.Fprintf(w, "   %s%s⚠ WARNING%s %s%s%s%s\n",
+		grvOr, ansiB, ansiR, grvOr, ansiB, msg, ansiR)
+}

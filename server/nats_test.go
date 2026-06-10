@@ -119,6 +119,48 @@ func TestStartNATS_FallsBackWhenDefaultPortTaken(t *testing.T) {
 	nc.Close()
 }
 
+// #370: with FailOnPortConflict set, a default-port conflict must
+// RETURN a clear error instead of silently falling back to a free port.
+func TestStartNATS_FailOnPortConflictReturnsError(t *testing.T) {
+	ln, err := net.Listen("tcp", fmt.Sprintf(
+		"127.0.0.1:%d", defaultNATSPort))
+	if err != nil {
+		t.Skipf("cannot bind default port %d: %v",
+			defaultNATSPort, err)
+	}
+	defer ln.Close()
+
+	cfg := Config{
+		DataDir:            t.TempDir(),
+		NATSPort:           defaultNATSPort,
+		MaxStoreBytes:      1 << 30,
+		FailOnPortConflict: true,
+	}
+
+	ns, err := startNATS(cfg)
+
+	// Assert 1: the conflict is surfaced as an error, not a fallback.
+	if err == nil {
+		if ns != nil {
+			ns.Shutdown()
+		}
+		t.Fatal("expected error with FailOnPortConflict set")
+	}
+
+	// Assert 2 (negative space): no server was started, and the error
+	// names the port and explains it is in use.
+	if ns != nil {
+		ns.Shutdown()
+		t.Fatal("expected nil server on fail-fast")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, fmt.Sprintf("%d", defaultNATSPort)) ||
+		!strings.Contains(msg, "in use") {
+		t.Fatalf("error should name port %d and 'in use', got: %v",
+			defaultNATSPort, err)
+	}
+}
+
 func TestStartNATS_ExplicitPortFailsHard(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:14222")
 	if err != nil {
