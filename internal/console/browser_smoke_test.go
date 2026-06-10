@@ -315,9 +315,31 @@ func skipIfBrowserUnavailable(t *testing.T) {
 	}
 }
 
-// runAgentBrowser shells out to `agent-browser <args...>`. The CLI's
-// stderr surfaces test diagnostics via t.Log so failures are easy to
-// triage. We fail the test on any non-zero exit.
+// browserSession derives an agent-browser session name unique to the
+// running test. Each browser smoke test shares one process-global
+// agent-browser CLI; without an isolated session every test drives the
+// same default Chrome session, so one test's cleanup `close` can tear
+// the session down underneath the next test's `open` — surfacing as a
+// flaky `agent-browser open ... exit status 1` in the full parallel
+// suite. A per-test session name removes the shared resource entirely.
+// Session names must be filesystem-safe (the CLI keys profile dirs by
+// name), so slashes from subtest names are normalised to dashes.
+func browserSession(t *testing.T) string {
+	t.Helper()
+	if t.Name() == "" {
+		t.Fatalf("browserSession: test name is empty")
+	}
+	name := "dagnats-" + strings.ReplaceAll(t.Name(), "/", "-")
+	if name == "dagnats-" {
+		t.Fatalf("browserSession: derived name is empty")
+	}
+	return name
+}
+
+// runAgentBrowser shells out to `agent-browser <args...>` pinned to the
+// test's isolated session. The CLI's stderr surfaces test diagnostics
+// via t.Log so failures are easy to triage. We fail the test on any
+// non-zero exit.
 func runAgentBrowser(
 	t *testing.T, ctx context.Context, args ...string,
 ) string {
@@ -325,13 +347,15 @@ func runAgentBrowser(
 	if len(args) == 0 {
 		t.Fatalf("runAgentBrowser: no args")
 	}
-	cmd := exec.CommandContext(ctx, "agent-browser", args...)
+	full := append([]string{args[0], "--session", browserSession(t)},
+		args[1:]...)
+	cmd := exec.CommandContext(ctx, "agent-browser", full...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("agent-browser %s: %v\nstdout: %s\nstderr: %s",
-			strings.Join(args, " "), err,
+			strings.Join(full, " "), err,
 			stdout.String(), stderr.String())
 	}
 	return stdout.String()
@@ -339,7 +363,8 @@ func runAgentBrowser(
 
 // runAgentBrowserAllowFail mirrors runAgentBrowser but logs rather
 // than fails — used in cleanup so a stuck browser doesn't poison
-// every subsequent test.
+// every subsequent test. Pinned to the same isolated session so a
+// test only ever closes its own browser, never a sibling's.
 func runAgentBrowserAllowFail(
 	t *testing.T, ctx context.Context, args ...string,
 ) {
@@ -347,10 +372,12 @@ func runAgentBrowserAllowFail(
 	if len(args) == 0 {
 		return
 	}
-	cmd := exec.CommandContext(ctx, "agent-browser", args...)
+	full := append([]string{args[0], "--session", browserSession(t)},
+		args[1:]...)
+	cmd := exec.CommandContext(ctx, "agent-browser", full...)
 	if err := cmd.Run(); err != nil {
 		t.Logf("agent-browser %s (cleanup): %v",
-			strings.Join(args, " "), err)
+			strings.Join(full, " "), err)
 	}
 }
 
