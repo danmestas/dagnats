@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/console"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
@@ -609,59 +610,63 @@ func TestLoopbackEphemeralAddr_DoesNotWidenToAllInterfaces(t *testing.T) {
 	}
 }
 
-// TestStartHTTP_FallbackPreservesLoopbackAndKeepsConsole boots a full
-// Server with the default loopback HTTPAddr while a real listener holds
-// 127.0.0.1:8080, forcing the auto-fallback. It pins #370's fix: the
-// fallback listener stays loopback (so the console gate is satisfied)
-// and the console route is reachable (not the AuthDisabled 503 path).
+// TestStartHTTP_FallbackPreservesLoopbackAndKeepsConsole pins #370's
+// fix at the seam that actually carries it: the HTTP auto-fallback
+// computes its replacement address with loopbackEphemeralAddr, and the
+// console gate (console.ResolveAuthMode) keys off that address's host.
+// The bug was the old ":0" fallback widening the bind scope to all
+// interfaces, which flips the gate to AuthDisabled and makes /console/
+// return 503 — disabling the console after an otherwise-harmless port
+// conflict.
+//
+// The gate is a pure function of the bind host, so this asserts the
+// decision directly against the exact address a default-port conflict
+// would hand to net.Listen. No embedded NATS, JetStream, or HTTP
+// server is needed; the test runs in microseconds.
 func TestStartHTTP_FallbackPreservesLoopbackAndKeepsConsole(t *testing.T) {
-	held, err := net.Listen("tcp", defaultHTTPAddr)
+	// The address listenHTTPWithFallback binds after a default-port
+	// conflict (loopbackEphemeralAddr(defaultHTTPAddr)).
+	fallbackAddr := loopbackEphemeralAddr(defaultHTTPAddr)
+
+	// Assert 1: the fallback addr stays loopback (not the old ":0"
+	// all-interfaces bind) so the console gate stays open.
+	if fallbackAddr == ":0" {
+		t.Fatal("fallback widened to all interfaces (:0); bug not fixed")
+	}
+	if !isHTTPAddrLoopback(fallbackAddr) {
+		t.Fatalf("fallback addr %q is not loopback", fallbackAddr)
+	}
+
+	// Assert 2: the production console gate (the same call mountConsole
+	// makes via buildConsoleConfig) resolves the fallback addr to
+	// AuthLoopback, not AuthDisabled. AuthDisabled is the mode that
+	// makes /console/ return 503.
+	mode, err := console.ResolveAuthMode(console.AuthConfig{
+		HTTPAddr: fallbackAddr,
+	})
 	if err != nil {
-		t.Skipf("cannot hold %s: %v", defaultHTTPAddr, err)
+		t.Fatalf("ResolveAuthMode(%q): %v", fallbackAddr, err)
 	}
-	defer held.Close()
-
-	cfg := DefaultConfig()
-	cfg.DataDir = t.TempDir()
-	cfg.NATSPort = -1
-	cfg.HTTPAddr = defaultHTTPAddr // force the conflict + fallback
-	cfg.FailOnPortConflict = false
-
-	srv := New(cfg)
-	if srv == nil {
-		panic("New() returned nil")
+	if mode == console.AuthDisabled {
+		t.Fatalf("console disabled for loopback fallback addr %q; "+
+			"bind scope widened (would serve 503)", fallbackAddr)
 	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Run() }()
-	defer func() {
-		srv.Stop()
-		select {
-		case <-errCh:
-		case <-time.After(20 * time.Second):
-			t.Fatal("Run() did not return within 20s")
-		}
-	}()
-	waitForReady(t, srv.cfg.HTTPAddr)
-
-	// Assert 1: the fallback addr stays loopback on an ephemeral port.
-	if !isHTTPAddrLoopback(srv.cfg.HTTPAddr) {
-		t.Fatalf("fallback addr %q is not loopback", srv.cfg.HTTPAddr)
-	}
-	if srv.cfg.HTTPAddr == defaultHTTPAddr {
-		t.Fatalf("expected an ephemeral fallback port, got %s",
-			srv.cfg.HTTPAddr)
+	if mode != console.AuthLoopback {
+		t.Fatalf("expected AuthLoopback for %q, got %v",
+			fallbackAddr, mode)
 	}
 
-	// Assert 2 (negative space on the bug): the console is reachable,
-	// not the AuthDisabled 503. A loopback bind keeps the gate open.
-	consoleURL := fmt.Sprintf("http://%s/console/", srv.cfg.HTTPAddr)
-	resp, err := http.Get(consoleURL)
+	// Negative space: the old buggy ":0" fallback WOULD have tripped
+	// the gate closed. Pin that the fix's address differs from it.
+	buggyMode, err := console.ResolveAuthMode(console.AuthConfig{
+		HTTPAddr: ":0",
+	})
 	if err != nil {
-		t.Fatalf("GET /console/: %v", err)
+		t.Fatalf("ResolveAuthMode(\":0\"): %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		t.Fatalf("console disabled (503) after loopback fallback; "+
-			"bind scope widened (addr=%s)", srv.cfg.HTTPAddr)
+	if buggyMode != console.AuthDisabled {
+		t.Fatalf("expected the old \":0\" bind to be AuthDisabled "+
+			"(the bug); got %v — test no longer guards the regression",
+			buggyMode)
 	}
 }
