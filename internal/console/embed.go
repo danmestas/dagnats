@@ -29,7 +29,12 @@ import "embed"
 //go:embed assets/fonts/ibm-plex-sans-latin.woff2
 //go:embed assets/fonts/ibm-plex-mono-latin-regular.woff2
 //go:embed assets/fonts/ibm-plex-mono-latin-bold.woff2
+//go:embed assets/fonts/ioskeley-mono-latin-regular.woff2
+//go:embed assets/fonts/ioskeley-mono-latin-bold.woff2
+//go:embed assets/fonts/datatype.woff2
 //go:embed assets/fonts/OFL.txt
+//go:embed assets/fonts/OFL-IoskeleyMono.txt
+//go:embed assets/fonts/OFL-Datatype.txt
 var assetsFS embed.FS
 
 // templatesFS carries every Go html/template file the console renders.

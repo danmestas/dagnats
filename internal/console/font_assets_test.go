@@ -12,13 +12,17 @@
 //     embedded bytes. font-display:swap relies on the browser
 //     fetching the binary; if the route ever 404s the operator just
 //     sees the system fallback with no warning.
-//   - CSS wiring check: app.css references both new mono faces at
+//   - CSS wiring check: app.css references the mono + spark faces at
 //     the /console/assets/fonts/ paths the handler serves, and
-//     --font-mono lists IBM Plex Mono ahead of the system stack.
+//     --font-mono lists IoskeleyMono ahead of IBM Plex Mono and the
+//     system stack (the IBM Plex faces stay embedded as the fallback).
 //
-// The mono assets land at:
-//   - assets/fonts/ibm-plex-mono-latin-regular.woff2
-//   - assets/fonts/ibm-plex-mono-latin-bold.woff2
+// The typography assets land at:
+//   - assets/fonts/ibm-plex-mono-latin-regular.woff2  (fallback)
+//   - assets/fonts/ibm-plex-mono-latin-bold.woff2     (fallback)
+//   - assets/fonts/ioskeley-mono-latin-regular.woff2  (primary data face)
+//   - assets/fonts/ioskeley-mono-latin-bold.woff2     (primary data face)
+//   - assets/fonts/datatype.woff2                     (inline sparklines)
 package console
 
 import (
@@ -71,11 +75,55 @@ func min4(n int) int {
 	return 4
 }
 
+// ioskeleyFaceCeilingBytes is the per-face ceiling for the IoskeleyMono
+// subset (Iosevka-derived, a richer glyph set than Plex so a higher
+// bound), and datatypeCeilingBytes bounds the whole Datatype face —
+// vendored un-subset because its chart ligature lookups must survive.
+// Both ceilings exist to flag a gross over-inclusion before bytes hit
+// operator browsers, not to track the exact shipping size.
+const (
+	ioskeleyFaceCeilingBytes = 64 * 1024
+	datatypeCeilingBytes     = 96 * 1024
+)
+
+func TestFontAssets_newFaces_underCeiling(t *testing.T) {
+	cases := []struct {
+		name    string
+		ceiling int
+	}{
+		{"assets/fonts/ioskeley-mono-latin-regular.woff2", ioskeleyFaceCeilingBytes},
+		{"assets/fonts/ioskeley-mono-latin-bold.woff2", ioskeleyFaceCeilingBytes},
+		{"assets/fonts/datatype.woff2", datatypeCeilingBytes},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := fs.ReadFile(assetsFS, tc.name)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.name, err)
+			}
+			if len(body) == 0 {
+				t.Fatalf("%s is empty — embed did not pick up the bytes", tc.name)
+			}
+			if len(body) > tc.ceiling {
+				t.Fatalf("%s = %d bytes, want <= %d (over-inclusion?)",
+					tc.name, len(body), tc.ceiling)
+			}
+			if len(body) < 4 || string(body[:4]) != "wOF2" {
+				t.Fatalf("%s missing wOF2 magic; got %x",
+					tc.name, body[:min4(len(body))])
+			}
+		})
+	}
+}
+
 func TestServeFontAsset_monoFaces_servesWoff2(t *testing.T) {
 	h := newTestConsole(t)
 	cases := []string{
 		"/console/assets/fonts/ibm-plex-mono-latin-regular.woff2",
 		"/console/assets/fonts/ibm-plex-mono-latin-bold.woff2",
+		"/console/assets/fonts/ioskeley-mono-latin-regular.woff2",
+		"/console/assets/fonts/ioskeley-mono-latin-bold.woff2",
+		"/console/assets/fonts/datatype.woff2",
 	}
 	for _, path := range cases {
 		t.Run(path, func(t *testing.T) {
@@ -106,33 +154,56 @@ func TestServeFontAsset_monoFaces_servesWoff2(t *testing.T) {
 // and we'd be silently out of compliance — this test fails loudly
 // before that can land.
 func TestFontAssets_OFLLicensePresent(t *testing.T) {
-	body, err := fs.ReadFile(assetsFS, "assets/fonts/OFL.txt")
-	if err != nil {
-		t.Fatalf("read OFL.txt: %v", err)
+	// Every vendored OFL face must travel with its license text. IBM
+	// Plex ships under OFL.txt; IoskeleyMono and Datatype carry their
+	// own license files alongside.
+	cases := []string{
+		"assets/fonts/OFL.txt",
+		"assets/fonts/OFL-IoskeleyMono.txt",
+		"assets/fonts/OFL-Datatype.txt",
 	}
-	if len(body) == 0 {
-		t.Fatalf("OFL.txt is empty — embed did not pick up the bytes")
-	}
-	if !strings.Contains(string(body), "SIL OPEN FONT LICENSE") {
-		t.Fatalf("OFL.txt missing 'SIL OPEN FONT LICENSE' marker; got %d bytes "+
-			"of unexpected content", len(body))
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			body, err := fs.ReadFile(assetsFS, name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			if len(body) == 0 {
+				t.Fatalf("%s is empty — embed did not pick up the bytes", name)
+			}
+			if !strings.Contains(strings.ToUpper(string(body)), "SIL OPEN FONT LICENSE") {
+				t.Fatalf("%s missing 'SIL OPEN FONT LICENSE' marker; got %d bytes "+
+					"of unexpected content", name, len(body))
+			}
+		})
 	}
 }
 
-func TestAppCSS_referencesIBMPlexMonoFaces(t *testing.T) {
+func TestAppCSS_referencesTypographyFaces(t *testing.T) {
 	body, err := fs.ReadFile(assetsFS, "assets/app.css")
 	if err != nil {
 		t.Fatalf("read app.css: %v", err)
 	}
 	css := string(body)
 	wantSubs := []string{
+		// IoskeleyMono is the primary data face: its @font-face must
+		// be declared, both weights served from the fonts path, and
+		// --font-mono must list it ahead of IBM Plex Mono + the system
+		// stack so the subset face wins on identifier elements.
+		`font-family: "IoskeleyMono"`,
+		`/console/assets/fonts/ioskeley-mono-latin-regular.woff2`,
+		`/console/assets/fonts/ioskeley-mono-latin-bold.woff2`,
+		`--font-mono: "IoskeleyMono"`,
+		// IBM Plex Mono stays embedded + referenced as the fallback
+		// face behind IoskeleyMono.
 		`font-family: "IBM Plex Mono"`,
 		`/console/assets/fonts/ibm-plex-mono-latin-regular.woff2`,
 		`/console/assets/fonts/ibm-plex-mono-latin-bold.woff2`,
-		// --font-mono must list IBM Plex Mono ahead of the system
-		// monospace fallbacks so the subset face wins on identifier
-		// elements once the woff2 streams in.
-		`--font-mono: "IBM Plex Mono"`,
+		// Datatype drives inline OpenType-ligature sparklines via the
+		// --font-spark token + the .console-spark class.
+		`font-family: "Datatype"`,
+		`/console/assets/fonts/datatype.woff2`,
+		`--font-spark: "Datatype"`,
 	}
 	for _, sub := range wantSubs {
 		if !strings.Contains(css, sub) {
