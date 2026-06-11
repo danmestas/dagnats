@@ -1,0 +1,56 @@
+{{define "content"}}
+<section class="page page-consumers-list" data-page="consumers-list">
+  {{template "page-header" .Page.Header}}
+
+  <aside class="callout callout-info" role="status">
+    <p>
+      Durable consumers NATS tracks for the engine. Lag (delivered −
+      ack-floor) and pending with zero waiting pulls are the work-queue
+      health signals.
+    </p>
+  </aside>
+
+  {{if .Page.Note}}
+  <aside class="callout callout-warning" role="status">
+    <p>{{.Page.Note}}</p>
+  </aside>
+  {{end}}
+
+  <table class="table console-table" id="consumers-table">
+    <thead>
+      <tr>
+        <th>Consumer</th>
+        <th>Stream</th>
+        <th>Filter</th>
+        <th>Ack</th>
+        <th>Pending</th>
+        <th>Ack-pending</th>
+        <th>Waiting</th>
+        <th>Redelivered</th>
+        <th>Lag</th>
+        <th>AckWait</th>
+      </tr>
+    </thead>
+    <tbody id="consumers-tbody">
+      {{range .Page.Consumers}}
+      <tr id="consumer-row-{{.Name}}">
+        <td class="mono">{{.Name}}{{if .Stalled}} <span class="badge badge-failed" title="pending with no waiting pulls — no worker is consuming">⚠ no pullers</span>{{end}}</td>
+        <td class="mono">{{.Stream}}</td>
+        <td class="mono">{{.Filter}}</td>
+        <td>{{.AckPolicy}}</td>
+        <td>{{.NumPending}}</td>
+        <td>{{.NumAckPending}}</td>
+        <td>{{.NumWaiting}}</td>
+        <td>{{.NumRedelivered}}</td>
+        <td>{{if gt .Lag 0}}<span class="status-failed">{{.Lag}}</span>{{else}}{{.Lag}}{{end}}</td>
+        <td>{{.AckWait}}</td>
+      </tr>
+      {{else}}
+      <tr class="empty-row">
+        <td colspan="10">no consumers on the known streams yet</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
