@@ -287,6 +287,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageServer(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/connections",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageConnections(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/logs",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageLogs(w, r, ts, cfg)
@@ -513,6 +517,7 @@ var pageContentFiles = map[string]string{
 	"streams-list":      "templates/streams_list.html",
 	"consumers-list":    "templates/consumers_list.html",
 	"server":            "templates/server.html",
+	"connections":       "templates/connections.html",
 	"logs":              "templates/logs.html",
 	"metrics_dashboard": "templates/metrics_dashboard.html",
 	"configuration":     "templates/configuration.html",

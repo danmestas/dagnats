@@ -16,6 +16,7 @@ import (
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -228,6 +229,13 @@ type DataSource interface {
 	// health (no error), and an unwired connection returns the zero
 	// value + nil so the renderer paints empty fields rather than 500ing.
 	ServerHealth(ctx context.Context) (ServerHealth, error)
+
+	// ListConnections returns the embedded NATS server's live client
+	// connections for the /console/connections page, read in-process via
+	// Connz(). Degrades gracefully: when no server handle is wired the
+	// adapter returns (nil, nil) so the renderer paints the empty state
+	// rather than 500ing.
+	ListConnections(ctx context.Context) ([]ConnRow, error)
 }
 
 // ConsumerRow is a single JetStream consumer's operational state for the
@@ -271,6 +279,55 @@ type ServerHealth struct {
 	ConsumersMax  int
 	APITotal      uint64
 	APIErrors     uint64
+}
+
+// ConnRow is one connected NATS client for the console Connections
+// page. PendingBytes is the slow-consumer signal (outbound bytes queued
+// for a client that is not reading fast enough).
+type ConnRow struct {
+	CID          uint64
+	Name         string
+	Kind         string
+	Lang         string
+	Version      string
+	RTT          string
+	Uptime       string
+	Idle         string
+	Subs         uint32
+	PendingBytes int
+	InMsgs       int64
+	OutMsgs      int64
+}
+
+// NATSServerStats exposes the embedded server's in-process monitoring
+// snapshots to the console. *natsserver.Server satisfies it; tests
+// supply a fake. Only Connz is needed today; Varz/Jsz can be added when
+// the Server page is enriched with live traffic + storage headroom.
+type NATSServerStats interface {
+	Connz(*natsserver.ConnzOptions) (*natsserver.Connz, error)
+}
+
+// connRowFrom maps one Connz ConnInfo onto a ConnRow. Pure; panics on a
+// nil info so a malformed Connz snapshot fails loudly rather than
+// silently dropping a row.
+func connRowFrom(info *natsserver.ConnInfo) ConnRow {
+	if info == nil {
+		panic("connRowFrom: info is nil")
+	}
+	return ConnRow{
+		CID:          info.Cid,
+		Name:         info.Name,
+		Kind:         info.Kind,
+		Lang:         info.Lang,
+		Version:      info.Version,
+		RTT:          info.RTT,
+		Uptime:       info.Uptime,
+		Idle:         info.Idle,
+		Subs:         info.NumSubs,
+		PendingBytes: info.Pending,
+		InMsgs:       info.InMsgs,
+		OutMsgs:      info.OutMsgs,
+	}
 }
 
 // storePct is the integer percentage of used over max, guarded against a
@@ -509,6 +566,10 @@ type apiServiceAdapter struct {
 	// then returns (nil, nil) so the renderer hides sparklines instead
 	// of drawing a misleading flat-line at zero.
 	metrics MetricsSource
+	// stats is the embedded server's in-process monitoring surface used
+	// by ListConnections. nil when no server handle was wired; the
+	// adapter then returns (nil, nil) so the page paints empty state.
+	stats NATSServerStats
 }
 
 // NewAPIDataSource returns a DataSource backed by the live api.Service.
@@ -552,6 +613,27 @@ func WithMetrics(ds DataSource, src MetricsSource) DataSource {
 		return ds
 	}
 	a.metrics = src
+	return a
+}
+
+// WithServerStats attaches a NATSServerStats (the embedded server's
+// in-process monitoring surface) to the adapter. Returns the receiver so
+// callers can chain in the Config wiring. Pass nil to detach; nil is the
+// no-server case and ListConnections will return (nil, nil) so the page
+// paints empty state rather than 500ing.
+//
+// Mirrors WithMetrics: kept separate from NewAPIDataSource so the
+// construction surface stays unchanged for the many tests that build an
+// adapter directly. A no-op for fakes (tests carry their own state).
+func WithServerStats(ds DataSource, stats NATSServerStats) DataSource {
+	if ds == nil {
+		panic("WithServerStats: ds is nil")
+	}
+	a, ok := ds.(*apiServiceAdapter)
+	if !ok {
+		return ds
+	}
+	a.stats = stats
 	return a
 }
 
@@ -1796,6 +1878,34 @@ func (a *apiServiceAdapter) ServerHealth(
 	health.APITotal = info.API.Total
 	health.APIErrors = info.API.Errors
 	return health, nil
+}
+
+// ListConnections folds the embedded server's live client connections
+// into ConnRows via an in-process Connz() snapshot. An unwired server
+// handle degrades to (nil, nil) so the page paints empty state instead
+// of 500ing; a Connz read failure errors so the operator learns the
+// monitoring read broke. Bounded by the connection list Connz returns.
+func (a *apiServiceAdapter) ListConnections(
+	ctx context.Context,
+) ([]ConnRow, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ListConnections: ctx is nil")
+	}
+	if a == nil {
+		panic("apiServiceAdapter.ListConnections: receiver is nil")
+	}
+	if a.stats == nil {
+		return nil, nil
+	}
+	cz, err := a.stats.Connz(&natsserver.ConnzOptions{Subscriptions: false})
+	if err != nil {
+		return nil, fmt.Errorf("connz: %w", err)
+	}
+	rows := make([]ConnRow, 0, len(cz.Conns))
+	for _, info := range cz.Conns {
+		rows = append(rows, connRowFrom(info))
+	}
+	return rows, nil
 }
 
 // osLookupEnv is a thin seam so tests can intercept env-var reads
