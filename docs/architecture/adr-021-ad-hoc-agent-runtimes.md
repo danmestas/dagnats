@@ -1,6 +1,6 @@
 # ADR-021: Ad-hoc agent runtimes — a scoped generative control-plane capability
 
-Status: Proposed (Draft / RFC).
+Status: accepted (2026-06-10, #375).
 Deciders: TBD
 Depends on: ADR-001 (agent-harness-gaps), ADR-002 (durable-agent-loop), ADR-012 (engine-resolves-workflow-def), ADR-017 (services-namespace)
 
