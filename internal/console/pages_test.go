@@ -103,6 +103,10 @@ type fakeDataSource struct {
 	// by "kind/id" so the test can pre-seed deterministic hourly counts
 	// without going through the metrics aggregator.
 	sparklineSeries map[string][]float64
+
+	// Consumers page backing data. Tests assign ConsumerRows directly
+	// so the page renders without a JetStream consumer existing.
+	consumers []ConsumerRow
 }
 
 // triggerSetCall captures one SetTriggerEnabled invocation so tests can
@@ -436,6 +440,12 @@ func (f *fakeDataSource) ListKVBuckets(
 	_ context.Context,
 ) ([]KVBucketInfo, error) {
 	return append([]KVBucketInfo{}, f.kvBuckets...), nil
+}
+
+func (f *fakeDataSource) ListConsumers(
+	_ context.Context,
+) ([]ConsumerRow, error) {
+	return append([]ConsumerRow{}, f.consumers...), nil
 }
 
 func (f *fakeDataSource) ListKVKeys(

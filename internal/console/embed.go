@@ -57,6 +57,7 @@ var assetsFS embed.FS
 //go:embed templates/ops_leases.html
 //go:embed templates/kv_list.html
 //go:embed templates/streams_list.html
+//go:embed templates/consumers_list.html
 //go:embed templates/logs.html
 //go:embed templates/metrics_dashboard.html
 //go:embed templates/configuration.html

@@ -445,6 +445,12 @@ func (r *resumeRecorder) ListKVBuckets(
 	return r.inner.ListKVBuckets(ctx)
 }
 
+func (r *resumeRecorder) ListConsumers(
+	ctx context.Context,
+) ([]ConsumerRow, error) {
+	return r.inner.ListConsumers(ctx)
+}
+
 func (r *resumeRecorder) ListKVKeys(
 	ctx context.Context, bucket, cursor string, limit int,
 ) ([]string, string, error) {

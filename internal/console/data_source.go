@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -211,6 +212,101 @@ type DataSource interface {
 	// Returns nil + nil-error when no workers report — the renderer
 	// paints the empty state. #328.
 	AggregateTaskTypes(ctx context.Context) ([]TaskTypeRow, error)
+
+	// ListConsumers returns every JetStream consumer on the engine's
+	// known streams, one ConsumerRow each, for the /console/consumers
+	// page. A stream that isn't provisioned yet is skipped silently —
+	// the page lists what exists. Returns nil + nil-error when NATS
+	// isn't wired so the renderer paints the empty state instead of
+	// 500ing.
+	ListConsumers(ctx context.Context) ([]ConsumerRow, error)
+}
+
+// ConsumerRow is a single JetStream consumer's operational state for the
+// console Consumers page. Lag = Delivered-AckFloor; Stalled flags a
+// backlog with no waiting pulls (pending>0 && waiting==0) — the
+// work-queue "no worker is consuming" signal.
+type ConsumerRow struct {
+	Stream         string
+	Name           string
+	Filter         string
+	AckPolicy      string
+	NumPending     uint64
+	NumAckPending  int
+	NumWaiting     int
+	NumRedelivered int
+	Delivered      uint64
+	AckFloor       uint64
+	Lag            uint64
+	AckWait        string
+	MaxDeliver     string
+	Stalled        bool
+}
+
+// consumerRowFrom maps one JetStream ConsumerInfo onto a ConsumerRow.
+// Pure: the stream name comes from the caller's loop variable, not the
+// info, so the page can label each row with the stream it iterated.
+func consumerRowFrom(stream string, info *jetstream.ConsumerInfo) ConsumerRow {
+	if info == nil {
+		panic("consumerRowFrom: info is nil")
+	}
+	if stream == "" {
+		panic("consumerRowFrom: stream is empty")
+	}
+	delivered := info.Delivered.Stream
+	ackFloor := info.AckFloor.Stream
+	var lag uint64
+	if delivered > ackFloor {
+		lag = delivered - ackFloor
+	}
+	ackWait := "—"
+	if info.Config.AckWait > 0 {
+		ackWait = info.Config.AckWait.String()
+	}
+	return ConsumerRow{
+		Stream:         stream,
+		Name:           info.Name,
+		Filter:         consumerFilterLabel(info.Config),
+		AckPolicy:      ackPolicyLabel(info.Config.AckPolicy),
+		NumPending:     info.NumPending,
+		NumAckPending:  info.NumAckPending,
+		NumWaiting:     info.NumWaiting,
+		NumRedelivered: info.NumRedelivered,
+		Delivered:      delivered,
+		AckFloor:       ackFloor,
+		Lag:            lag,
+		AckWait:        ackWait,
+		MaxDeliver:     strconv.Itoa(info.Config.MaxDeliver),
+		Stalled:        info.NumPending > 0 && info.NumWaiting == 0,
+	}
+}
+
+// consumerFilterLabel renders the subject filter for a consumer. A
+// single FilterSubject wins; a multi-subject filter joins on ", ";
+// an unfiltered consumer renders the em-dash placeholder.
+func consumerFilterLabel(cfg jetstream.ConsumerConfig) string {
+	if cfg.FilterSubject != "" {
+		return cfg.FilterSubject
+	}
+	if len(cfg.FilterSubjects) > 0 {
+		return strings.Join(cfg.FilterSubjects, ", ")
+	}
+	return "—"
+}
+
+// ackPolicyLabel maps the JetStream ack policy enum to the operator
+// token the table renders. Unknown policies fall through to the
+// em-dash so a future enum addition renders something neutral.
+func ackPolicyLabel(p jetstream.AckPolicy) string {
+	switch p {
+	case jetstream.AckExplicitPolicy:
+		return "explicit"
+	case jetstream.AckNonePolicy:
+		return "none"
+	case jetstream.AckAllPolicy:
+		return "all"
+	}
+	return "—"
 }
 
 // ConfigSnapshot is the resource inventory the /config page renders.
@@ -1580,6 +1676,39 @@ func configStreamNames() []string {
 		"DEAD_LETTERS",
 		"SLEEP_TIMERS",
 	}
+}
+
+// ListConsumers walks every known stream and folds its JetStream
+// consumers into ConsumerRows. A stream that isn't provisioned yet is
+// skipped (its Stream() lookup errors) so the page lists what exists
+// rather than surfacing phantom rows. Bounded by the static stream
+// list and JetStream's paged consumer lister. Only a jetstream.New
+// failure errors; nc-not-wired degrades to (nil, nil).
+func (a *apiServiceAdapter) ListConsumers(
+	ctx context.Context,
+) ([]ConsumerRow, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ListConsumers: ctx is nil")
+	}
+	if a.nc == nil {
+		return nil, nil
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream init: %w", err)
+	}
+	out := make([]ConsumerRow, 0)
+	for _, name := range configStreamNames() {
+		stream, err := js.Stream(ctx, name)
+		if err != nil {
+			continue
+		}
+		lister := stream.ListConsumers(ctx)
+		for info := range lister.Info() {
+			out = append(out, consumerRowFrom(name, info))
+		}
+	}
+	return out, nil
 }
 
 // osLookupEnv is a thin seam so tests can intercept env-var reads
