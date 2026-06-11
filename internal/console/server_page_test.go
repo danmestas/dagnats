@@ -88,6 +88,91 @@ func TestServePageServer_apiErrorsNotAlarmed(t *testing.T) {
 	}
 }
 
+func TestServePageServer_richStatsView(t *testing.T) {
+	// HasStats:true drives the rich view: real storage ceiling (the Jsz
+	// Config.MaxStore, not the unlimited account tier), uptime, and the
+	// Traffic + Host cards that only exist when the embedded server's
+	// Varz/Jsz were read.
+	fake := newFakeDS()
+	fake.serverHealth = ServerHealth{
+		HasStats:      true,
+		ServerName:    "x",
+		ServerVersion: "2.12.6",
+		Uptime:        "4h12m",
+		Connections:   7,
+		Subscriptions: 128,
+		StoreUsed:     2 << 30,
+		StoreMax:      10 << 30,
+		StorePct:      20,
+		MemoryUsed:    100 << 20,
+		MemoryMax:     1 << 30,
+		SlowConsumers: 0,
+		MemBytes:      180 << 20,
+		CPUPercent:    3.4,
+		Cores:         8,
+	}
+	handler := mountWithFake(t, fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/console/server", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"4h12m",                  // uptime in the Identity card
+		">7<",                    // connections tile / Traffic row
+		"20%",                    // real storage headroom percentage
+		"of",                     // storage shows "{used} of {max}", a real ceiling
+		"Traffic", "Host", "128", // Traffic + Host card content
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rich body missing %q", want)
+		}
+	}
+	// The real ceiling means the unlimited-tier copy must NOT appear.
+	if strings.Contains(body, "no account limit") {
+		t.Errorf("rich view should show a real store ceiling, not the unlimited copy")
+	}
+}
+
+func TestServePageServer_slowConsumersAlarm(t *testing.T) {
+	// Slow consumers are a real alarm: a non-zero count gets the danger
+	// class; zero does not.
+	fake := newFakeDS()
+	fake.serverHealth = ServerHealth{
+		HasStats: true, ServerName: "x", SlowConsumers: 3,
+	}
+	handler := mountWithFake(t, fake)
+	req := httptest.NewRequest(http.MethodGet, "/console/server", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "3") {
+		t.Errorf("body missing the slow-consumer count")
+	}
+	if !strings.Contains(body, "status-failed") {
+		t.Errorf("non-zero slow consumers must apply the danger class")
+	}
+
+	// Zero slow consumers: no danger class on the value.
+	clean := newFakeDS()
+	clean.serverHealth = ServerHealth{
+		HasStats: true, ServerName: "x", SlowConsumers: 0,
+	}
+	handler2 := mountWithFake(t, clean)
+	rec2 := httptest.NewRecorder()
+	handler2.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/console/server", nil))
+	if strings.Contains(rec2.Body.String(), "status-failed") {
+		t.Errorf("zero slow consumers must not apply the danger class")
+	}
+}
+
 func TestServerHealthPct(t *testing.T) {
 	// 2GiB of 10GiB rounds (integer-truncates) to 20%.
 	if got := storePct(2<<30, 10<<30); got != 20 {

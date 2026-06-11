@@ -21,6 +21,13 @@ type ServerHealthView struct {
 	StoreMaxHuman   string
 	MemoryUsedHuman string
 	MemoryMaxHuman  string
+
+	// Traffic + host byte strings, populated on the rich (HasStats) path.
+	// In/OutBytes and Mem are int64 from Varz; humanBytesSigned clamps a
+	// negative to 0 B before humanizing.
+	InBytesHuman  string
+	OutBytesHuman string
+	MemHuman      string
 }
 
 // servePageServer renders /console/server. A ServerHealth read failure
@@ -57,6 +64,9 @@ func servePageServer(
 		StoreMaxHuman:   humanBytesMax(health.StoreMax),
 		MemoryUsedHuman: humanBytes(health.MemoryUsed),
 		MemoryMaxHuman:  humanBytesMax(health.MemoryMax),
+		InBytesHuman:    humanBytesSigned(health.InBytes),
+		OutBytesHuman:   humanBytesSigned(health.OutBytes),
+		MemHuman:        humanBytesSigned(health.MemBytes),
 	}
 	renderPage(w, r, ts, cfg, "server", pageData{
 		Title:   "Server",
@@ -65,16 +75,59 @@ func servePageServer(
 	})
 }
 
-// buildServerHeader assembles the count strip for the server page:
-// stream + consumer account totals and cumulative API activity. These
-// are neutral facts, not alarms — the account has no configured tier
-// ceiling here (limits are unlimited), and API errors are cumulative
-// since boot and dominated by benign "not found" startup probes, so
-// neither is surfaced as a danger signal. The storage-headroom alarm
-// (used vs the server-wide store ceiling) and live traffic land with
-// the Varz/Jsz enrichment, which needs the embedded server handle.
+// buildServerHeader assembles the count strip for the server page. When
+// the embedded server's stats were read (HasStats) it surfaces the real
+// alarms: storage headroom (danger at >=85%) and slow consumers (danger
+// at any non-zero count — a disconnected-because-slow client is a real
+// problem), alongside live connection + subscription counts. Without the
+// stats handle it falls back to the neutral lean strip (stream + consumer
+// account totals and cumulative API activity) — facts, not alarms, since
+// the account tier is unlimited and API errors are dominated by benign
+// startup probes.
 func buildServerHeader(h ServerHealth) PageHeader {
-	tiles := []Tile{
+	subtitle := "Embedded NATS server identity and JetStream account stats."
+	tiles := leanServerTiles(h)
+	if h.HasStats {
+		subtitle = "Embedded NATS server health — identity, JetStream capacity, live traffic."
+		tiles = richServerTiles(h)
+	}
+	header, err := NewPageHeader(PageHeader{
+		Title:    "Server",
+		Subtitle: subtitle,
+		Tiles:    tiles,
+	})
+	if err != nil {
+		return PageHeader{Title: "Server"}
+	}
+	return header
+}
+
+// richServerTiles is the HasStats count strip: storage headroom and slow
+// consumers as real alarms, plus live connection + subscription counts.
+func richServerTiles(h ServerHealth) []Tile {
+	storeTone := ToneInfo
+	if h.StorePct >= 85 {
+		storeTone = ToneDanger
+	}
+	slowTone := ToneSuccess
+	if h.SlowConsumers > 0 {
+		slowTone = ToneDanger
+	}
+	return []Tile{
+		{Label: "storage %", Count: h.StorePct, Tone: storeTone,
+			Tooltip: "Store used vs the server-wide JetStream ceiling"},
+		{Label: "connections", Count: h.Connections, Tone: ToneInfo,
+			Tooltip: "Live client connections to this server"},
+		{Label: "subscriptions", Count: int(h.Subscriptions), Tone: ToneInfo,
+			Tooltip: "Active subscriptions across all connections"},
+		{Label: "slow consumers", Count: int(h.SlowConsumers), Tone: slowTone,
+			Tooltip: "Clients disconnected since boot for being slow consumers"},
+	}
+}
+
+// leanServerTiles is the no-stats fallback strip: neutral account facts.
+func leanServerTiles(h ServerHealth) []Tile {
+	return []Tile{
 		{Label: "streams", Count: h.Streams, Tone: ToneInfo,
 			Tooltip: "Streams on this JetStream account (includes KV-backing streams)"},
 		{Label: "consumers", Count: h.Consumers, Tone: ToneInfo,
@@ -82,15 +135,6 @@ func buildServerHeader(h ServerHealth) PageHeader {
 		{Label: "API calls", Count: int(h.APITotal), Tone: ToneDefault,
 			Tooltip: "JetStream API calls since boot (cumulative)"},
 	}
-	header, err := NewPageHeader(PageHeader{
-		Title:    "Server",
-		Subtitle: "Embedded NATS server identity and JetStream account stats.",
-		Tiles:    tiles,
-	})
-	if err != nil {
-		return PageHeader{Title: "Server"}
-	}
-	return header
 }
 
 // humanBytes renders a byte count as a compact IEC string (KiB/MiB/…),
@@ -108,6 +152,16 @@ func humanBytes(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// humanBytesSigned humanizes a signed byte count (Varz reports In/Out
+// bytes and resident memory as int64), clamping a negative to zero so a
+// transient negative never renders as a humanized negative.
+func humanBytesSigned(n int64) string {
+	if n < 0 {
+		return humanBytes(0)
+	}
+	return humanBytes(uint64(n))
 }
 
 // humanBytesMax renders a tier ceiling: a non-positive max means the
