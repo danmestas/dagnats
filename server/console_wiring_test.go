@@ -57,7 +57,7 @@ func TestProductionMountReceivesNonNilMetricsSource(t *testing.T) {
 
 	consoleCfg := buildConsoleConfig(
 		srv.cfg.HTTPAddr, srv.svc, srv.nc,
-		srv.metricsAgg, srv.metricsErrorReason,
+		srv.metricsAgg, srv.metricsErrorReason, srv.ns,
 	)
 	if consoleCfg.Metrics == nil {
 		t.Fatal("buildConsoleConfig returned nil Metrics — the " +

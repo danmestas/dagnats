@@ -1,0 +1,56 @@
+{{define "content"}}
+<section class="page page-connections" data-page="connections">
+  {{template "page-header" .Page.Header}}
+
+  <aside class="callout callout-info" role="status">
+    <p>
+      Live client connections to the embedded NATS server (/connz). Pending
+      bytes is the slow-consumer signal — outbound bytes queued for a client
+      that is not reading fast enough.
+    </p>
+  </aside>
+
+  {{if .Page.Note}}
+  <aside class="callout callout-warning" role="status">
+    <p>{{.Page.Note}}</p>
+  </aside>
+  {{end}}
+
+  <table class="table console-table" id="connections-table">
+    <thead>
+      <tr>
+        <th>CID</th>
+        <th>Client</th>
+        <th>Kind</th>
+        <th>Lang/ver</th>
+        <th>RTT</th>
+        <th>Uptime</th>
+        <th>Idle</th>
+        <th>Subs</th>
+        <th>Pending</th>
+        <th>In/Out msgs</th>
+      </tr>
+    </thead>
+    <tbody id="connections-tbody">
+      {{range .Page.Conns}}
+      <tr id="connection-row-{{.CID}}">
+        <td class="mono">{{.CID}}</td>
+        <td class="mono">{{if .Name}}{{.Name}}{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{.Kind}}</td>
+        <td>{{.Lang}} {{.Version}}</td>
+        <td class="mono">{{.RTT}}</td>
+        <td>{{.Uptime}}</td>
+        <td>{{.Idle}}</td>
+        <td>{{.Subs}}</td>
+        <td>{{.PendingBytes}} B</td>
+        <td>{{.InMsgs}} / {{.OutMsgs}}</td>
+      </tr>
+      {{else}}
+      <tr class="empty-row">
+        <td colspan="10">no client connections to the embedded server yet</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

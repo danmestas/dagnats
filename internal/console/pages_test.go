@@ -113,6 +113,10 @@ type fakeDataSource struct {
 	// nats.Conn or JetStream account.
 	serverHealth    ServerHealth
 	serverHealthErr error
+
+	// Connections page backing data. Tests assign ConnRows directly so
+	// the page renders without a live embedded server's Connz().
+	connections []ConnRow
 }
 
 // triggerSetCall captures one SetTriggerEnabled invocation so tests can
@@ -458,6 +462,12 @@ func (f *fakeDataSource) ServerHealth(
 	_ context.Context,
 ) (ServerHealth, error) {
 	return f.serverHealth, f.serverHealthErr
+}
+
+func (f *fakeDataSource) ListConnections(
+	_ context.Context,
+) ([]ConnRow, error) {
+	return append([]ConnRow{}, f.connections...), nil
 }
 
 func (f *fakeDataSource) ListKVKeys(
