@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/observe/spanread"
 	"github.com/nats-io/nats.go/jetstream"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -78,195 +79,12 @@ func TestExtractTraceIDInvalid(t *testing.T) {
 	}
 }
 
-// --- Span parsing tests ---
-
-func TestParseSpan(t *testing.T) {
-	traceID := make([]byte, 16)
-	traceID[0] = 0xab
-	spanID := make([]byte, 8)
-	spanID[0] = 0xcd
-
-	sp := &tracepb.Span{
-		TraceId:           traceID,
-		SpanId:            spanID,
-		Name:              "test.operation",
-		StartTimeUnixNano: 1000000000,
-		EndTimeUnixNano:   1050000000,
-		Status: &tracepb.Status{
-			Code: tracepb.Status_STATUS_CODE_OK,
-		},
-	}
-	data, err := protojson.Marshal(sp)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	parsed, err := parseSpan(data)
-
-	// Positive: should parse without error
-	if err != nil {
-		t.Fatalf("parseSpan: %v", err)
-	}
-
-	// Positive: name should match
-	if parsed.Name != "test.operation" {
-		t.Fatalf("expected test.operation, got %q", parsed.Name)
-	}
-
-	// Negative: trace ID should not be empty
-	if len(parsed.TraceId) == 0 {
-		t.Fatal("trace ID should not be empty")
-	}
-}
-
-func TestParseSpanInvalid(t *testing.T) {
-	_, err := parseSpan([]byte("not json"))
-
-	// Positive: should return an error
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-
-	// Negative: error message should not be empty
-	if err.Error() == "" {
-		t.Fatal("error message should not be empty")
-	}
-}
-
 // --- Span helper tests ---
-
-func TestSpanHexIDs(t *testing.T) {
-	traceID := []byte{
-		0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
-		0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
-	}
-	spanID := []byte{
-		0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-	}
-	parentID := []byte{
-		0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
-	}
-
-	sp := &tracepb.Span{
-		TraceId:      traceID,
-		SpanId:       spanID,
-		ParentSpanId: parentID,
-	}
-
-	tid := spanHexTraceID(sp)
-	// Positive: should be hex-encoded
-	if tid != hex.EncodeToString(traceID) {
-		t.Fatalf("trace ID mismatch: %q", tid)
-	}
-
-	sid := spanHexSpanID(sp)
-	// Positive: should be hex-encoded
-	if sid != hex.EncodeToString(spanID) {
-		t.Fatalf("span ID mismatch: %q", sid)
-	}
-
-	pid := spanHexParentID(sp)
-	// Positive: should be hex-encoded
-	if pid != hex.EncodeToString(parentID) {
-		t.Fatalf("parent ID mismatch: %q", pid)
-	}
-
-	// Negative: no parent should return empty
-	noParent := &tracepb.Span{
-		TraceId: traceID,
-		SpanId:  spanID,
-	}
-	if spanHexParentID(noParent) != "" {
-		t.Fatal("no parent should return empty string")
-	}
-}
-
-func TestSpanDurationMs(t *testing.T) {
-	sp := &tracepb.Span{
-		StartTimeUnixNano: 1_000_000_000,
-		EndTimeUnixNano:   1_050_000_000,
-	}
-
-	dur := spanDurationMs(sp)
-
-	// Positive: 50ms difference
-	if dur != 50 {
-		t.Fatalf("expected 50ms, got %d", dur)
-	}
-
-	// Negative: should not be negative
-	if dur < 0 {
-		t.Fatal("duration must not be negative")
-	}
-}
-
-func TestSpanDurationMsZero(t *testing.T) {
-	sp := &tracepb.Span{
-		StartTimeUnixNano: 1_000_000_000,
-		EndTimeUnixNano:   1_000_000_000,
-	}
-
-	dur := spanDurationMs(sp)
-
-	// Positive: equal times should yield 0
-	if dur != 0 {
-		t.Fatalf("expected 0ms, got %d", dur)
-	}
-
-	// Negative: should not be negative
-	if dur < 0 {
-		t.Fatal("duration must not be negative")
-	}
-}
-
-func TestSpanStatusLabel(t *testing.T) {
-	tests := []struct {
-		name   string
-		status *tracepb.Status
-		want   string
-	}{
-		{
-			"ok",
-			&tracepb.Status{
-				Code: tracepb.Status_STATUS_CODE_OK,
-			},
-			"ok",
-		},
-		{
-			"error",
-			&tracepb.Status{
-				Code: tracepb.Status_STATUS_CODE_ERROR,
-			},
-			"error",
-		},
-		{
-			"unset",
-			&tracepb.Status{
-				Code: tracepb.Status_STATUS_CODE_UNSET,
-			},
-			"unset",
-		},
-		{"nil status", nil, "unset"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sp := &tracepb.Span{Status: tt.status}
-			got := spanStatusLabel(sp)
-
-			// Positive: should match expected
-			if got != tt.want {
-				t.Fatalf("expected %q, got %q",
-					tt.want, got)
-			}
-
-			// Negative: should not be empty
-			if got == "" {
-				t.Fatal("status label must not be empty")
-			}
-		})
-	}
-}
+//
+// The pure span parsing / hex / duration / status / tree-building
+// helpers now live in internal/observe/spanread and are unit-tested
+// there. The CLI tests below cover the CLI-only surface (isRootSpan,
+// flag parsing, search aggregation) plus end-to-end output.
 
 func TestIsRootSpan(t *testing.T) {
 	root := &tracepb.Span{
@@ -285,111 +103,6 @@ func TestIsRootSpan(t *testing.T) {
 	// Negative: span with parent is not root
 	if isRootSpan(child) {
 		t.Fatal("span with parent should not be root")
-	}
-}
-
-// --- Tree building tests ---
-
-func TestBuildSpanTrees(t *testing.T) {
-	traceID := []byte{
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-	}
-	rootSID := []byte{0x01, 0, 0, 0, 0, 0, 0, 0}
-	childSID1 := []byte{0x02, 0, 0, 0, 0, 0, 0, 0}
-	childSID2 := []byte{0x03, 0, 0, 0, 0, 0, 0, 0}
-
-	spans := []*tracepb.Span{
-		{
-			TraceId:           traceID,
-			SpanId:            rootSID,
-			Name:              "root",
-			StartTimeUnixNano: 1000,
-			EndTimeUnixNano:   5000,
-		},
-		{
-			TraceId:           traceID,
-			SpanId:            childSID1,
-			ParentSpanId:      rootSID,
-			Name:              "child-a",
-			StartTimeUnixNano: 2000,
-			EndTimeUnixNano:   3000,
-		},
-		{
-			TraceId:           traceID,
-			SpanId:            childSID2,
-			ParentSpanId:      rootSID,
-			Name:              "child-b",
-			StartTimeUnixNano: 3000,
-			EndTimeUnixNano:   4000,
-		},
-	}
-
-	trees := buildSpanTrees(spans)
-	tid := hex.EncodeToString(traceID)
-
-	// Positive: should have one trace
-	if len(trees) != 1 {
-		t.Fatalf("expected 1 trace, got %d", len(trees))
-	}
-
-	roots := trees[tid]
-	// Positive: should have one root
-	if len(roots) != 1 {
-		t.Fatalf("expected 1 root, got %d", len(roots))
-	}
-
-	// Positive: root should have 2 children
-	if len(roots[0].Children) != 2 {
-		t.Fatalf("expected 2 children, got %d",
-			len(roots[0].Children))
-	}
-
-	// Positive: children sorted by start time
-	if roots[0].Children[0].Span.Name != "child-a" {
-		t.Fatalf("first child should be child-a, got %q",
-			roots[0].Children[0].Span.Name)
-	}
-
-	// Negative: root should not have a parent
-	if spanHexParentID(roots[0].Span) != "" {
-		t.Fatal("root should not have a parent span ID")
-	}
-}
-
-func TestBuildSpanTreesMultipleTraces(t *testing.T) {
-	tid1 := []byte{
-		0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-	}
-	tid2 := []byte{
-		0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
-	}
-
-	spans := []*tracepb.Span{
-		{
-			TraceId: tid1,
-			SpanId:  []byte{0x0a, 0, 0, 0, 0, 0, 0, 0},
-			Name:    "trace1-root",
-		},
-		{
-			TraceId: tid2,
-			SpanId:  []byte{0x0b, 0, 0, 0, 0, 0, 0, 0},
-			Name:    "trace2-root",
-		},
-	}
-
-	trees := buildSpanTrees(spans)
-
-	// Positive: should have two distinct traces
-	if len(trees) != 2 {
-		t.Fatalf("expected 2 traces, got %d", len(trees))
-	}
-
-	// Negative: neither trace should be empty
-	for tid, roots := range trees {
-		if len(roots) == 0 {
-			t.Fatalf("trace %s has no roots", tid)
-		}
 	}
 }
 
@@ -548,7 +261,16 @@ func TestCollectRunSpansIntegration(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	collected := collectRunSpans(js, runID)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	collected, collectErr := spanread.CollectRunSpans(
+		ctx, js, runID, spanread.MaxSpans,
+	)
+	if collectErr != nil {
+		t.Fatalf("CollectRunSpans: %v", collectErr)
+	}
 
 	// Positive: should collect all 3 spans
 	if len(collected) != 3 {
@@ -631,8 +353,17 @@ func TestCollectRunSpansBuildTree(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	collected := collectRunSpans(js, runID)
-	trees := buildSpanTrees(collected)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	collected, collectErr := spanread.CollectRunSpans(
+		ctx, js, runID, spanread.MaxSpans,
+	)
+	if collectErr != nil {
+		t.Fatalf("CollectRunSpans: %v", collectErr)
+	}
+	trees := spanread.BuildSpanTrees(collected)
 
 	tid := hex.EncodeToString(traceID)
 

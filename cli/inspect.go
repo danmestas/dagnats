@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/observe/spanread"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -135,7 +137,14 @@ func gatherInspectData(
 		d.Spans = []*tracepb.Span{}
 		js, jsErr := jetstream.New(nc)
 		if jsErr == nil {
-			if spans := collectRunSpans(js, runID); len(spans) > 0 {
+			traceCtx, cancel := context.WithTimeout(
+				ctx, 5*time.Second,
+			)
+			spans, spansErr := spanread.CollectRunSpans(
+				traceCtx, js, runID, spanread.MaxSpans,
+			)
+			cancel()
+			if spansErr == nil && len(spans) > 0 {
 				d.Spans = spans
 			}
 		}
@@ -366,12 +375,12 @@ func convertSpans(
 	result := make([]inspectSpan, 0, len(spans))
 	for _, sp := range spans {
 		result = append(result, inspectSpan{
-			TraceID:    spanHexTraceID(sp),
-			SpanID:     spanHexSpanID(sp),
-			ParentID:   spanHexParentID(sp),
+			TraceID:    spanread.HexTraceID(sp),
+			SpanID:     spanread.HexSpanID(sp),
+			ParentID:   spanread.HexParentID(sp),
 			Name:       sp.Name,
-			DurationMs: spanDurationMs(sp),
-			Status:     spanStatusLabel(sp),
+			DurationMs: spanread.DurationMs(sp),
+			Status:     spanread.StatusLabel(sp),
 		})
 	}
 	return result

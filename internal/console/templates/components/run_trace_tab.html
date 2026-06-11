@@ -1,0 +1,36 @@
+{{define "run-trace-tab"}}
+<article class="card" id="run-detail-trace">
+  <header class="card-header"><h2>Span trace</h2></header>
+  <div class="card-body">
+    {{if .}}
+    <table class="table console-table">
+      <thead>
+        <tr><th>Span</th><th>Duration</th><th>Status</th></tr>
+      </thead>
+      <tbody id="run-trace-body">
+        {{range .}}
+        <tr id="run-trace-row-{{.SpanID}}">
+          <td class="console-mono">
+            <span class="trace-span" data-depth="{{.Depth}}"
+                  style="padding-left:{{mul .Depth 1}}rem">{{.Name}}</span>
+          </td>
+          <td class="console-mono">{{printf "%.0f" .DurationMs}}ms</td>
+          <td>
+            {{if eq .Status "error"}}
+            <span class="badge status-failed">error</span>
+            {{else if eq .Status "ok"}}
+            <span class="badge status-ok">ok</span>
+            {{else}}
+            <span class="badge badge-outline">unset</span>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="console-empty">No spans recorded for this run (it may not have produced telemetry, or the trace has aged out).</p>
+    {{end}}
+  </div>
+</article>
+{{end}}

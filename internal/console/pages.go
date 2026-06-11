@@ -1093,8 +1093,58 @@ func serveRunTabFragment(
 		serveRunEventsTabFragment(w, r, ts, cfg, runID)
 	case "io-tab":
 		serveRunIOTabFragment(w, r, ts, cfg, runID)
+	case "trace-tab":
+		serveRunTraceTabFragment(w, r, ts, cfg, runID)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+// serveRunTraceTabFragment reads the run's span trace and streams the
+// rendered span tree back as one SSE PatchElements event targeting
+// #panel-trace with inner-mode — mirroring the events / io tab
+// fragments. An empty trace renders the honest empty-state copy rather
+// than a fabricated span; a read error logs + paints the empty state so
+// the tab degrades instead of 500ing.
+func serveRunTraceTabFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config, runID string,
+) {
+	ds, ok := requireData(w, cfg, "run-trace-tab")
+	if !ok {
+		return
+	}
+	rows, err := ds.GetRunTrace(r.Context(), runID)
+	if err != nil {
+		cfg.Logger.Warn("console: get run trace",
+			"run", runID, "err", err)
+		rows = nil
+	}
+	emitTraceTabFragment(w, r, ts, cfg, rows)
+}
+
+// emitTraceTabFragment renders the run-trace-tab template against the
+// rows and patches #panel-trace inner. Kept separate from
+// emitTabFragment because the trace tab renders against []TraceRow
+// rather than RunDetailView.
+func emitTraceTabFragment(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config, rows []TraceRow,
+) {
+	html, err := renderFragment(ts.base, "run-trace-tab", rows)
+	if err != nil {
+		cfg.Logger.Error("console: render trace tab fragment",
+			"err", err)
+		http.Error(w, "render failed", http.StatusInternalServerError)
+		return
+	}
+	sse := datastar.NewSSE(w, r)
+	opts := []datastar.PatchElementOption{
+		datastar.WithSelectorID("panel-trace"),
+		datastar.WithModeInner(),
+	}
+	if err := sse.PatchElements(html, opts...); err != nil {
+		cfg.Logger.Warn("console: trace tab patch elements", "err", err)
 	}
 }
 
