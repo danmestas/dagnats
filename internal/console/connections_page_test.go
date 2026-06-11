@@ -132,15 +132,26 @@ func TestConnRowFrom_nilPanics(t *testing.T) {
 	_ = connRowFrom(nil)
 }
 
-// fakeServerStats is a tiny NATSServerStats that returns a canned Connz
-// snapshot so the adapter's fold can be exercised without a live server.
+// fakeServerStats is a tiny NATSServerStats that returns canned Connz /
+// Varz / Jsz snapshots so the adapter's folds can be exercised without a
+// live server. varz/jsz are nil unless a test seeds them.
 type fakeServerStats struct {
-	cz  *natsserver.Connz
-	err error
+	cz   *natsserver.Connz
+	err  error
+	varz *natsserver.Varz
+	jsz  *natsserver.JSInfo
 }
 
 func (f fakeServerStats) Connz(*natsserver.ConnzOptions) (*natsserver.Connz, error) {
 	return f.cz, f.err
+}
+
+func (f fakeServerStats) Varz(*natsserver.VarzOptions) (*natsserver.Varz, error) {
+	return f.varz, nil
+}
+
+func (f fakeServerStats) Jsz(*natsserver.JSzOptions) (*natsserver.JSInfo, error) {
+	return f.jsz, nil
 }
 
 func TestAdapterListConnections_viaFakeStats(t *testing.T) {
@@ -172,5 +183,54 @@ func TestAdapterListConnections_viaFakeStats(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("nil-stats ListConnections: got %v, want nil", got)
+	}
+}
+
+func TestAdapterServerHealth_viaFakeStats(t *testing.T) {
+	// With a stats handle present, ServerHealth reads the REAL ceiling and
+	// traffic from Varz/Jsz: HasStats is true, StoreMax comes from
+	// Jsz.Config.MaxStore (not the unlimited account tier), and uptime
+	// maps off Varz.
+	stats := fakeServerStats{
+		varz: &natsserver.Varz{
+			Version: "2.12.6", Uptime: "4h12m", Connections: 7,
+			Subscriptions: 128, SlowConsumers: 0, Mem: 180 << 20,
+			CPU: 3.4, Cores: 8,
+		},
+		jsz: &natsserver.JSInfo{
+			Streams:   5,
+			Consumers: 6,
+			Config:    natsserver.JetStreamConfig{MaxStore: 10 << 30, MaxMemory: 1 << 30},
+		},
+	}
+	stats.jsz.Store = 2 << 30
+	stats.jsz.Memory = 100 << 20
+
+	ds := WithServerStats(&apiServiceAdapter{}, stats)
+	a := ds.(*apiServiceAdapter)
+	h, err := a.ServerHealth(context.Background())
+	if err != nil {
+		t.Fatalf("ServerHealth: %v", err)
+	}
+	if !h.HasStats {
+		t.Errorf("HasStats: got false, want true")
+	}
+	if h.Uptime != "4h12m" {
+		t.Errorf("Uptime: got %q, want 4h12m", h.Uptime)
+	}
+	if h.Connections != 7 {
+		t.Errorf("Connections: got %d, want 7", h.Connections)
+	}
+	if h.StoreMax != 10<<30 {
+		t.Errorf("StoreMax: got %d, want %d (Jsz ceiling)", h.StoreMax, int64(10<<30))
+	}
+	if h.StoreUsed != 2<<30 {
+		t.Errorf("StoreUsed: got %d, want %d", h.StoreUsed, uint64(2<<30))
+	}
+	if h.StorePct != 20 {
+		t.Errorf("StorePct: got %d, want 20", h.StorePct)
+	}
+	if h.Cores != 8 {
+		t.Errorf("Cores: got %d, want 8", h.Cores)
 	}
 }

@@ -3,9 +3,15 @@
   {{template "page-header" .Page.Header}}
 
   <aside class="callout callout-info" role="status">
+    {{if .Page.Health.HasStats}}
+    <p>Embedded NATS server health — identity, JetStream capacity, and live
+      traffic read straight from the in-process server. Storage is shown
+      against the real server-wide ceiling.</p>
+    {{else}}
     <p>The embedded NATS server's identity and JetStream account stats — stream
       and consumer totals plus cumulative usage. This account has no configured
       tier ceiling, so usage is shown without a headroom percentage.</p>
+    {{end}}
   </aside>
 
   {{if .Page.Note}}
@@ -20,6 +26,7 @@
       <dl class="console-deflist">
         <div><dt>Server name</dt><dd>{{.Page.Health.ServerName}}</dd></div>
         <div><dt>Version</dt><dd>{{.Page.Health.ServerVersion}}</dd></div>
+        {{if .Page.Health.HasStats}}<div><dt>Uptime</dt><dd>{{.Page.Health.Uptime}}</dd></div>{{end}}
         <div><dt>NATS URL</dt><dd class="console-mono">{{.Page.Health.NATSURL}}</dd></div>
         <div><dt>JetStream domain</dt><dd>{{if .Page.Health.Domain}}{{.Page.Health.Domain}}{{else}}—{{end}}</dd></div>
       </dl>
@@ -54,5 +61,34 @@
       </dl>
     </div>
   </article>
+
+  {{if .Page.Health.HasStats}}
+  <article class="card">
+    <header class="card-header"><h2>Traffic</h2></header>
+    <div class="card-body">
+      <dl class="console-deflist">
+        <div><dt>Connections</dt><dd>{{.Page.Health.Connections}}</dd></div>
+        <div><dt>Subscriptions</dt><dd>{{.Page.Health.Subscriptions}}</dd></div>
+        <div><dt>Messages in / out</dt><dd>{{.Page.Health.InMsgs}} / {{.Page.Health.OutMsgs}}</dd></div>
+        <div><dt>Bytes in / out</dt><dd>{{.Page.InBytesHuman}} / {{.Page.OutBytesHuman}}</dd></div>
+        <div>
+          <dt>Slow consumers</dt>
+          <dd>{{if gt .Page.Health.SlowConsumers 0}}<span class="status-failed">{{.Page.Health.SlowConsumers}}</span>{{else}}{{.Page.Health.SlowConsumers}}{{end}}</dd>
+        </div>
+      </dl>
+    </div>
+  </article>
+
+  <article class="card">
+    <header class="card-header"><h2>Host</h2></header>
+    <div class="card-body">
+      <dl class="console-deflist">
+        <div><dt>Resident memory</dt><dd>{{.Page.MemHuman}}</dd></div>
+        <div><dt>CPU</dt><dd>{{printf "%.1f" .Page.Health.CPUPercent}}%</dd></div>
+        <div><dt>Cores</dt><dd>{{.Page.Health.Cores}}</dd></div>
+      </dl>
+    </div>
+  </article>
+  {{end}}
 </section>
 {{end}}

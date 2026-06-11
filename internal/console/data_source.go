@@ -259,10 +259,17 @@ type ConsumerRow struct {
 	Stalled        bool
 }
 
-// ServerHealth is the embedded NATS server identity + JetStream account
-// capacity for the console Server page. Capacity comes from
-// js.AccountInfo(); identity from the live nats.Conn. Max fields of -1
-// mean "unlimited" (no configured tier ceiling).
+// ServerHealth is the embedded NATS server identity + JetStream capacity
+// (and, when a server-stats handle is wired, live traffic + host) for the
+// console Server page. Identity comes from the live nats.Conn. Capacity
+// comes from either the embedded server's Jsz snapshot (real ceiling) or,
+// when no stats handle is wired, js.AccountInfo() (account tier, usually
+// unlimited). Max fields of -1 mean "unlimited" (no configured ceiling).
+//
+// HasStats is true only when the Jsz snapshot was read, which is what
+// drives the template between the rich (Varz/Jsz) view and the lean
+// AccountInfo fallback. The Varz-sourced fields (Uptime, Connections,
+// traffic, host) are meaningful only when HasStats is true.
 type ServerHealth struct {
 	ServerName    string
 	ServerVersion string
@@ -279,6 +286,23 @@ type ServerHealth struct {
 	ConsumersMax  int
 	APITotal      uint64
 	APIErrors     uint64
+
+	// HasStats is true when the embedded server's Jsz snapshot was read,
+	// so the template can switch to the rich view. The fields below are
+	// populated from Varz/Jsz and are zero on the lean (nil-stats) path.
+	HasStats      bool
+	Uptime        string
+	Connections   int
+	TotalConns    uint64
+	Subscriptions uint32
+	InMsgs        int64
+	OutMsgs       int64
+	InBytes       int64
+	OutBytes      int64
+	SlowConsumers int64
+	MemBytes      int64
+	CPUPercent    float64
+	Cores         int
 }
 
 // ConnRow is one connected NATS client for the console Connections
@@ -301,10 +325,12 @@ type ConnRow struct {
 
 // NATSServerStats exposes the embedded server's in-process monitoring
 // snapshots to the console. *natsserver.Server satisfies it; tests
-// supply a fake. Only Connz is needed today; Varz/Jsz can be added when
-// the Server page is enriched with live traffic + storage headroom.
+// supply a fake. Connz backs the Connections page; Varz/Jsz back the
+// Server page's live traffic, host, and real storage-headroom view.
 type NATSServerStats interface {
 	Connz(*natsserver.ConnzOptions) (*natsserver.Connz, error)
+	Varz(*natsserver.VarzOptions) (*natsserver.Varz, error)
+	Jsz(*natsserver.JSzOptions) (*natsserver.JSInfo, error)
 }
 
 // connRowFrom maps one Connz ConnInfo onto a ConnRow. Pure; panics on a
@@ -1833,13 +1859,16 @@ func (a *apiServiceAdapter) ListConsumers(
 	return out, nil
 }
 
-// ServerHealth reads the embedded NATS server identity off the live
-// connection and folds in the JetStream account capacity from
-// js.AccountInfo(). Two layers of graceful degradation: an unwired
-// connection returns the zero value, and an AccountInfo failure returns
-// identity-only health — neither errors, so a JetStream hiccup paints a
-// partial page instead of a 500. Max fields of -1 surface as "unlimited"
-// at the template.
+// ServerHealth reads the embedded NATS server's identity off the live
+// connection, then its capacity from one of two sources. When a
+// server-stats handle is wired it reads the REAL ceiling + live traffic +
+// host from Varz/Jsz (HasStats=true); otherwise it falls back to the
+// JetStream account capacity from js.AccountInfo() (HasStats=false), whose
+// tier is usually unlimited. Identity is taken from the connection when
+// present so both paths still label the server. Graceful degradation: an
+// unwired everything returns the zero value, and a capacity read failure
+// returns identity-only health — neither errors, so a hiccup paints a
+// partial page instead of a 500.
 func (a *apiServiceAdapter) ServerHealth(
 	ctx context.Context,
 ) (ServerHealth, error) {
@@ -1849,35 +1878,122 @@ func (a *apiServiceAdapter) ServerHealth(
 	if a == nil {
 		panic("apiServiceAdapter.ServerHealth: receiver is nil")
 	}
-	if a.nc == nil {
+	if a.nc == nil && a.stats == nil {
 		return ServerHealth{}, nil
 	}
-	health := ServerHealth{
-		ServerName:    a.nc.ConnectedServerName(),
-		ServerVersion: a.nc.ConnectedServerVersion(),
-		NATSURL:       a.nc.ConnectedUrl(),
+	health := ServerHealth{}
+	if a.nc != nil {
+		health.ServerName = a.nc.ConnectedServerName()
+		health.ServerVersion = a.nc.ConnectedServerVersion()
+		health.NATSURL = a.nc.ConnectedUrl()
+	}
+	if a.stats != nil {
+		a.serverHealthFromStats(&health)
+		return health, nil
+	}
+	a.serverHealthFromAccount(ctx, &health)
+	return health, nil
+}
+
+// serverHealthFromStats reads the embedded server's Varz + Jsz snapshots
+// and folds them into health, preferring the real per-server ceiling and
+// live traffic. Each read degrades independently: a Varz error skips the
+// traffic/host half, and HasStats is set only when Jsz (the capacity
+// half) succeeds.
+func (a *apiServiceAdapter) serverHealthFromStats(h *ServerHealth) {
+	if h == nil {
+		panic("apiServiceAdapter.serverHealthFromStats: h is nil")
+	}
+	if a.stats == nil {
+		panic("apiServiceAdapter.serverHealthFromStats: stats is nil")
+	}
+	if varz, err := a.stats.Varz(nil); err == nil && varz != nil {
+		serverHealthFromVarz(h, varz)
+	}
+	if jsz, err := a.stats.Jsz(&natsserver.JSzOptions{}); err == nil && jsz != nil {
+		serverHealthFromJsz(h, jsz)
+		h.HasStats = true
+	}
+}
+
+// serverHealthFromVarz maps the process-wide Varz snapshot (identity,
+// uptime, live traffic, host) onto health. Pure; panics on nil so a
+// malformed read fails loudly.
+func serverHealthFromVarz(h *ServerHealth, v *natsserver.Varz) {
+	if h == nil || v == nil {
+		panic("serverHealthFromVarz: nil arg")
+	}
+	if v.Version != "" {
+		h.ServerVersion = v.Version
+	}
+	h.Uptime = v.Uptime
+	h.Connections = v.Connections
+	h.TotalConns = v.TotalConnections
+	h.Subscriptions = v.Subscriptions
+	h.InMsgs = v.InMsgs
+	h.OutMsgs = v.OutMsgs
+	h.InBytes = v.InBytes
+	h.OutBytes = v.OutBytes
+	h.SlowConsumers = v.SlowConsumers
+	h.MemBytes = v.Mem
+	h.CPUPercent = v.CPU
+	h.Cores = v.Cores
+}
+
+// serverHealthFromJsz maps the JetStream Jsz snapshot (real per-server
+// storage/memory ceiling and counts) onto health. Pure; panics on nil so
+// a malformed read fails loudly.
+func serverHealthFromJsz(h *ServerHealth, j *natsserver.JSInfo) {
+	if h == nil || j == nil {
+		panic("serverHealthFromJsz: nil arg")
+	}
+	h.Domain = j.Config.Domain
+	h.StoreUsed = j.Store
+	h.StoreMax = j.Config.MaxStore
+	h.StorePct = storePct(j.Store, j.Config.MaxStore)
+	h.MemoryUsed = j.Memory
+	h.MemoryMax = j.Config.MaxMemory
+	h.Streams = j.Streams
+	h.StreamsMax = -1
+	h.Consumers = j.Consumers
+	h.ConsumersMax = -1
+	h.APITotal = j.API.Total
+	h.APIErrors = j.API.Errors
+}
+
+// serverHealthFromAccount is the lean fallback when no server-stats handle
+// is wired: capacity comes from js.AccountInfo() (tier, usually
+// unlimited). HasStats stays false so the template paints the lean view. A
+// JetStream failure leaves identity-only health.
+func (a *apiServiceAdapter) serverHealthFromAccount(
+	ctx context.Context, h *ServerHealth,
+) {
+	if h == nil {
+		panic("apiServiceAdapter.serverHealthFromAccount: h is nil")
+	}
+	if a.nc == nil {
+		return
 	}
 	js, err := jetstream.New(a.nc)
 	if err != nil {
-		return health, nil
+		return
 	}
 	info, err := js.AccountInfo(ctx)
 	if err != nil {
-		return health, nil
+		return
 	}
-	health.Domain = info.Domain
-	health.MemoryUsed = info.Memory
-	health.MemoryMax = info.Limits.MaxMemory
-	health.StoreUsed = info.Store
-	health.StoreMax = info.Limits.MaxStore
-	health.StorePct = storePct(info.Store, info.Limits.MaxStore)
-	health.Streams = info.Streams
-	health.StreamsMax = info.Limits.MaxStreams
-	health.Consumers = info.Consumers
-	health.ConsumersMax = info.Limits.MaxConsumers
-	health.APITotal = info.API.Total
-	health.APIErrors = info.API.Errors
-	return health, nil
+	h.Domain = info.Domain
+	h.MemoryUsed = info.Memory
+	h.MemoryMax = info.Limits.MaxMemory
+	h.StoreUsed = info.Store
+	h.StoreMax = info.Limits.MaxStore
+	h.StorePct = storePct(info.Store, info.Limits.MaxStore)
+	h.Streams = info.Streams
+	h.StreamsMax = info.Limits.MaxStreams
+	h.Consumers = info.Consumers
+	h.ConsumersMax = info.Limits.MaxConsumers
+	h.APITotal = info.API.Total
+	h.APIErrors = info.API.Errors
 }
 
 // ListConnections folds the embedded server's live client connections
