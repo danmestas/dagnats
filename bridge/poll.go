@@ -163,7 +163,7 @@ func (b *Bridge) fetchForType(
 	}
 	tasks := make([]pollResponse, 0, count)
 	for msg := range fetchResult.Messages() {
-		resp, ok := b.processPolledMsg(msg)
+		resp, ok := b.processPolledMsg(ctx, msg)
 		if ok {
 			tasks = append(tasks, resp)
 		}
@@ -171,10 +171,27 @@ func (b *Bridge) fetchForType(
 	return tasks
 }
 
-// processPolledMsg unmarshals a NATS message into a poll response
-// and stores it in the ackMap for later resolution.
+// taskAttemptCountMax bounds the attempt number accepted from a
+// polled task message. The engine caps retries via RetryPolicy
+// MaxAttempts and NATS redeliveries via consumer limits; an attempt
+// beyond this bound means a corrupted payload, and rejecting it
+// beats minting unbounded per-attempt msg-ids.
+const taskAttemptCountMax = 100_000
+
+// processPolledMsg unmarshals a NATS message into a poll response,
+// publishes step.started for the attempt, and stores the message in
+// the ackMap for later resolution.
+//
+// step.started must land before the task is handed to the HTTP
+// worker: the engine's handleStepStarted max()es AttemptNumber into
+// run.Steps[id].Attempts, which scheduleRetryBackoff uses to build
+// per-attempt SLEEP_TIMERS msg-ids. Without it, bridge-executed
+// steps pin Attempts at 1 and retry #2's timer is JetStream-deduped
+// — the run hangs and never dead-letters (issue #381). On publish
+// failure the message is NAKed, not handed out, so the engine never
+// sees a resolve for an attempt it never saw start.
 func (b *Bridge) processPolledMsg(
-	msg jetstream.Msg,
+	ctx context.Context, msg jetstream.Msg,
 ) (pollResponse, bool) {
 	if msg == nil {
 		panic("processPolledMsg: msg must not be nil")
@@ -187,6 +204,22 @@ func (b *Bridge) processPolledMsg(
 		msg.Ack()
 		return pollResponse{}, false
 	}
+	if payload.RunID == "" || payload.StepID == "" {
+		msg.Ack() // Malformed task — same disposition as bad JSON.
+		return pollResponse{}, false
+	}
+	attemptNumber, err := taskAttemptNumber(msg, payload.Attempt)
+	if err != nil {
+		nakPolledMsg(ctx, msg, "derive attempt number", err)
+		return pollResponse{}, false
+	}
+	err = b.publishStepStarted(
+		ctx, payload.RunID, payload.StepID, attemptNumber,
+	)
+	if err != nil {
+		nakPolledMsg(ctx, msg, "publish step.started", err)
+		return pollResponse{}, false
+	}
 	taskID := payload.RunID + "." + payload.StepID
 	b.ackMap.Store(taskID, msg)
 	resp := pollResponse{
@@ -194,10 +227,98 @@ func (b *Bridge) processPolledMsg(
 		RunID:     payload.RunID,
 		StepID:    payload.StepID,
 		Iteration: payload.Iteration,
-		Attempt:   payload.Attempt,
+		Attempt:   attemptNumber,
 		Input:     payload.Input,
 	}
 	return resp, true
+}
+
+// taskAttemptNumber derives the 1-based attempt number for a polled
+// task message. Preference order mirrors the native worker's
+// publishStarted (worker/context.go): payload.Attempt when set — the
+// engine's SLEEP_TIMERS re-publish carries it, and the fresh message's
+// NumDelivered=1 would lose the count — else NATS NumDelivered, which
+// is correct for in-place redelivery of the original dispatch.
+func taskAttemptNumber(
+	msg jetstream.Msg, payloadAttempt int,
+) (int, error) {
+	if msg == nil {
+		panic("taskAttemptNumber: msg must not be nil")
+	}
+	if payloadAttempt < 0 {
+		// The engine never writes a negative attempt — corrupt data.
+		panic("taskAttemptNumber: payloadAttempt must not be negative")
+	}
+	attemptNumber := payloadAttempt
+	if attemptNumber == 0 {
+		meta, err := msg.Metadata()
+		if err != nil {
+			return 0, fmt.Errorf("read msg metadata: %w", err)
+		}
+		attemptNumber = int(meta.NumDelivered)
+	}
+	if attemptNumber < 1 || attemptNumber > taskAttemptCountMax {
+		return 0, fmt.Errorf(
+			"attempt %d outside [1, %d]",
+			attemptNumber, taskAttemptCountMax,
+		)
+	}
+	return attemptNumber, nil
+}
+
+// publishStepStarted publishes step.started carrying AttemptNumber —
+// the bridge-side mirror of the native worker's publishStarted. The
+// AttemptNumber rides into Event.NATSMsgID so each attempt's
+// lifecycle events stay distinct under JetStream dedup.
+func (b *Bridge) publishStepStarted(
+	ctx context.Context,
+	runID, stepID string,
+	attemptNumber int,
+) error {
+	if ctx == nil {
+		panic("publishStepStarted: ctx must not be nil")
+	}
+	if attemptNumber < 1 {
+		panic("publishStepStarted: attemptNumber must be >= 1")
+	}
+	if attemptNumber > taskAttemptCountMax {
+		panic(
+			"publishStepStarted: attemptNumber exceeds taskAttemptCountMax",
+		)
+	}
+	// NewStepEvent asserts non-empty runID / stepID.
+	evt := protocol.NewStepEvent(
+		protocol.EventStepStarted, runID, stepID, nil,
+	)
+	evt.AttemptNumber = attemptNumber
+	return b.publishEvent(ctx, evt)
+}
+
+// nakPolledMsg returns a message to the queue when the bridge could
+// not safely hand it to a poller. NAK (not ack): the attempt must
+// redeliver rather than be silently consumed.
+func nakPolledMsg(
+	ctx context.Context,
+	msg jetstream.Msg,
+	cause string,
+	causeErr error,
+) {
+	if msg == nil {
+		panic("nakPolledMsg: msg must not be nil")
+	}
+	if cause == "" {
+		panic("nakPolledMsg: cause must not be empty")
+	}
+	slog.WarnContext(ctx, "polled task returned to queue",
+		"cause", cause,
+		"error", causeErr,
+	)
+	if err := msg.Nak(); err != nil {
+		slog.WarnContext(ctx, "nak polled task failed",
+			"cause", cause,
+			"error", err,
+		)
+	}
 }
 
 // writePollResponse encodes the tasks as a JSON array.

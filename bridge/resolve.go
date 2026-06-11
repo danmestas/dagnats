@@ -193,10 +193,15 @@ func (b *Bridge) resolveComplete(
 	if msg == nil {
 		panic("resolveComplete: msg must not be nil")
 	}
+	attemptNumber, err := resolveAttemptNumber(msg)
+	if err != nil {
+		return fmt.Errorf("derive attempt number: %w", err)
+	}
 	runID, stepID := splitTaskID(taskID)
 	evt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, runID, stepID, req.Output,
 	)
+	evt.AttemptNumber = attemptNumber
 	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish complete event: %w", err)
 	}
@@ -222,6 +227,10 @@ func (b *Bridge) resolveFail(
 	if msg == nil {
 		panic("resolveFail: msg must not be nil")
 	}
+	attemptNumber, err := resolveAttemptNumber(msg)
+	if err != nil {
+		return fmt.Errorf("derive attempt number: %w", err)
+	}
 	runID, stepID := splitTaskID(taskID)
 	failureType := protocol.FailureType(req.FailureType)
 	if failureType == "" {
@@ -239,6 +248,7 @@ func (b *Bridge) resolveFail(
 	evt := protocol.NewStepEvent(
 		protocol.EventStepFailed, runID, stepID, payloadData,
 	)
+	evt.AttemptNumber = attemptNumber
 	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish fail event: %w", err)
 	}
@@ -437,6 +447,30 @@ func (b *Bridge) publishEvent(
 	}
 	_, err = b.pub.JSPublishMsg(ctx, msg)
 	return err
+}
+
+// resolveAttemptNumber derives the attempt number for a task being
+// resolved, from the original polled message held in the ackMap.
+// step.completed / step.failed msg-ids embed AttemptNumber: without
+// it, a retrying step's 2nd..Nth step.failed dedups against the 1st
+// in the history stream and the engine never sees the later
+// failures (issue #381).
+func resolveAttemptNumber(msg jetstream.Msg) (int, error) {
+	if msg == nil {
+		panic("resolveAttemptNumber: msg must not be nil")
+	}
+	var payload protocol.TaskPayload
+	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
+		return 0, fmt.Errorf("unmarshal task payload: %w", err)
+	}
+	attemptNumber, err := taskAttemptNumber(msg, payload.Attempt)
+	if err != nil {
+		return 0, err
+	}
+	if attemptNumber < 1 {
+		panic("resolveAttemptNumber: attempt must be >= 1")
+	}
+	return attemptNumber, nil
 }
 
 // splitTaskID splits a task ID into runID and stepID.

@@ -1421,6 +1421,13 @@ func (o *Orchestrator) scheduleRetryAfter(
 	})
 }
 
+// retryAttemptCountMax bounds the attempt counter consumed by the
+// retry scheduling path. Attempts is normally capped by the retry
+// policy's MaxAttempts; a value beyond this bound means corrupted
+// run state, and failing loudly beats minting unbounded timer
+// msg-ids. Mirrors the bridge's taskAttemptCountMax.
+const retryAttemptCountMax = 100_000
+
 // scheduleRetryBackoff schedules a timer that re-publishes the task
 // after the policy-derived delay. Mirrors scheduleRetryAfter; the
 // only difference is the delay source (dag.CalculateDelay vs the
@@ -1452,6 +1459,9 @@ func (o *Orchestrator) scheduleRetryBackoff(
 	attempts := run.Steps[stepID].Attempts
 	if attempts < 1 {
 		panic("scheduleRetryBackoff: attempts must be >= 1")
+	}
+	if attempts > retryAttemptCountMax {
+		panic("scheduleRetryBackoff: attempts exceeds retryAttemptCountMax")
 	}
 	delay := dag.CalculateDelay(*policy, attempts)
 	delayMs := delay.Milliseconds()
@@ -3239,9 +3249,16 @@ func (o *Orchestrator) handleStepStarted(
 		return nil
 	}
 
+	attemptCountBefore := state.Attempts
 	state.Status = dag.StepStatusRunning
 	if evt.AttemptNumber > state.Attempts {
 		state.Attempts = evt.AttemptNumber
+	}
+	// Postcondition: the max() rule above is what keeps per-attempt
+	// retry timer msg-ids distinct (#381) — a regression to "assign"
+	// would let out-of-order step.started decrement the counter.
+	if state.Attempts < attemptCountBefore {
+		panic("handleStepStarted: Attempts must be non-decreasing")
 	}
 	run.Steps[evt.StepID] = state
 	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
@@ -3328,9 +3345,15 @@ func (o *Orchestrator) handleStepQueued(
 		// Already past Queued — don't roll back.
 		return nil
 	}
+	attemptCountBefore := state.Attempts
 	state.Status = dag.StepStatusQueued
 	if evt.AttemptNumber > state.Attempts {
 		state.Attempts = evt.AttemptNumber
+	}
+	// Postcondition: same max()-rule guard as handleStepStarted —
+	// Attempts is the input to per-attempt retry timer msg-ids (#381).
+	if state.Attempts < attemptCountBefore {
+		panic("handleStepQueued: Attempts must be non-decreasing")
 	}
 	run.Steps[evt.StepID] = state
 	return o.saveSnapshot(ctx, run, evt.StepID)

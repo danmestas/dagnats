@@ -117,13 +117,28 @@ func TestBridgeInboundTraceparentInjectedOnPublish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("consumer: %v", err)
 	}
-	fetched, err := cons.Fetch(1, jetstream.FetchMaxWait(2*time.Second))
+	fetched, err := cons.Fetch(
+		historyEventScanMax, jetstream.FetchMaxWait(2*time.Second),
+	)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	msg, ok := <-fetched.Messages()
-	if !ok {
-		t.Fatal("no history message received")
+	// Since #381 the bridge also publishes step.started at poll time
+	// (whose poll request carries no inbound trace) — scan for the
+	// resolve's step.completed, the message this test is about.
+	var msg jetstream.Msg
+	for m := range fetched.Messages() {
+		var scanned protocol.Event
+		if err := json.Unmarshal(m.Data(), &scanned); err != nil {
+			t.Fatalf("unmarshal scanned event: %v", err)
+		}
+		if scanned.Type == protocol.EventStepCompleted {
+			msg = m
+			break
+		}
+	}
+	if msg == nil {
+		t.Fatal("no step.completed history message received")
 	}
 
 	// Assertion 1 (positive): traceparent header present.

@@ -71,12 +71,21 @@ func publishAndPollTask(
 	return tasks[0].TaskID
 }
 
-// consumeHistoryEvent reads a single event from the history stream
-// for the given run via the new jetstream API.
+// historyEventScanMax bounds how many history events a test scans
+// while looking for the wanted event type.
+const historyEventScanMax = 16
+
+// consumeHistoryEvent reads events from the history stream for the
+// given run until one of wantType arrives, via the new jetstream
+// API. Filtering by type is required since #381: polling the bridge
+// publishes step.started before any resolve event lands, so "first
+// event" no longer identifies the resolve outcome. Bounded: scans
+// at most historyEventScanMax events within timeout.
 func consumeHistoryEvent(
 	t *testing.T,
 	nc *nats.Conn,
 	runID string,
+	wantType protocol.EventType,
 	timeout time.Duration,
 ) protocol.Event {
 	t.Helper()
@@ -101,23 +110,25 @@ func consumeHistoryEvent(
 		t.Fatalf("CreateOrUpdateConsumer failed: %v", err)
 	}
 	fetchResult, err := cons.Fetch(
-		1, jetstream.FetchMaxWait(timeout),
+		historyEventScanMax, jetstream.FetchMaxWait(timeout),
 	)
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
-	msg, ok := <-fetchResult.Messages()
-	if !ok {
-		if fetchResult.Error() != nil {
-			t.Fatalf("fetch error: %v", fetchResult.Error())
+	for msg := range fetchResult.Messages() {
+		var evt protocol.Event
+		if err := json.Unmarshal(msg.Data(), &evt); err != nil {
+			t.Fatalf("unmarshal event failed: %v", err)
 		}
-		t.Fatal("no history event received")
+		if evt.Type == wantType {
+			return evt
+		}
 	}
-	var evt protocol.Event
-	if err := json.Unmarshal(msg.Data(), &evt); err != nil {
-		t.Fatalf("unmarshal event failed: %v", err)
+	if fetchResult.Error() != nil {
+		t.Fatalf("fetch error: %v", fetchResult.Error())
 	}
-	return evt
+	t.Fatalf("no %s event received for run %s", wantType, runID)
+	return protocol.Event{}
 }
 
 func TestResolveComplete(t *testing.T) {
@@ -158,7 +169,9 @@ func TestResolveComplete(t *testing.T) {
 	}
 
 	// Verify event on history stream
-	evt := consumeHistoryEvent(t, nc, "run-c", 2*time.Second)
+	evt := consumeHistoryEvent(
+		t, nc, "run-c", protocol.EventStepCompleted, 2*time.Second,
+	)
 	if evt.Type != protocol.EventStepCompleted {
 		t.Fatalf(
 			"expected step.completed, got %s", evt.Type,
@@ -203,7 +216,9 @@ func TestResolveFail(t *testing.T) {
 	}
 
 	// Verify fail event on history stream
-	evt := consumeHistoryEvent(t, nc, "run-f", 2*time.Second)
+	evt := consumeHistoryEvent(
+		t, nc, "run-f", protocol.EventStepFailed, 2*time.Second,
+	)
 	if evt.Type != protocol.EventStepFailed {
 		t.Fatalf("expected step.failed, got %s", evt.Type)
 	}
@@ -610,7 +625,9 @@ func TestResolveFailWithFailureType(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	evt := consumeHistoryEvent(t, nc, "run-bf", 3*time.Second)
+	evt := consumeHistoryEvent(
+		t, nc, "run-bf", protocol.EventStepFailed, 3*time.Second,
+	)
 	if evt.Type != protocol.EventStepFailed {
 		t.Fatalf("event type = %q, want step.failed", evt.Type)
 	}
@@ -647,7 +664,9 @@ func TestResolveFailDefaultsToRetriable(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	evt := consumeHistoryEvent(t, nc, "run-bfd", 3*time.Second)
+	evt := consumeHistoryEvent(
+		t, nc, "run-bfd", protocol.EventStepFailed, 3*time.Second,
+	)
 	var payload protocol.StepFailedPayload
 	json.Unmarshal(evt.Payload, &payload)
 	if payload.FailureType != protocol.FailureTypeRetriable {
@@ -858,7 +877,9 @@ func TestResolveContinuePublishesEvent(t *testing.T) {
 	}
 
 	// Verify continue event published
-	evt := consumeHistoryEvent(t, nc, "run-cont", 5*time.Second)
+	evt := consumeHistoryEvent(
+		t, nc, "run-cont", protocol.EventStepContinue, 5*time.Second,
+	)
 	if evt.Type != protocol.EventStepContinue {
 		t.Errorf("event type = %s, want %s",
 			evt.Type, protocol.EventStepContinue)
