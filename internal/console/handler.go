@@ -291,6 +291,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageConnections(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/concurrency",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageConcurrency(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/logs",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageLogs(w, r, ts, cfg)
@@ -518,6 +522,7 @@ var pageContentFiles = map[string]string{
 	"consumers-list":    "templates/consumers_list.html",
 	"server":            "templates/server.html",
 	"connections":       "templates/connections.html",
+	"concurrency":       "templates/concurrency.html",
 	"logs":              "templates/logs.html",
 	"metrics_dashboard": "templates/metrics_dashboard.html",
 	"configuration":     "templates/configuration.html",

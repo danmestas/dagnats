@@ -236,6 +236,16 @@ type DataSource interface {
 	// adapter returns (nil, nil) so the renderer paints the empty state
 	// rather than 500ing.
 	ListConnections(ctx context.Context) ([]ConnRow, error)
+
+	// AdmissionState returns the engine's read-side admission-gate
+	// snapshot for the /console/concurrency page: which singleton locks
+	// are currently held (singleton_locks bucket) and which task types
+	// have live in-flight concurrency counters (concurrency_tasks
+	// bucket). Both gate buckets are empty on an idle engine — the gates
+	// are lazy — so the zero value is a first-class result. Degrades
+	// gracefully: a missing bucket yields an empty section rather than a
+	// whole-page failure, and a malformed KV value is skipped, not fatal.
+	AdmissionState(ctx context.Context) (AdmissionState, error)
 }
 
 // ConsumerRow is a single JetStream consumer's operational state for the
@@ -891,6 +901,171 @@ func triggerFireRowFromEntry(e api.TriggerFireEntry) TriggerFireRow {
 		Status:     e.Status,
 		Duration:   e.Duration,
 	}
+}
+
+// LockRow is a held singleton lock on the Concurrency page.
+type LockRow struct {
+	Key    string // workflow name, or workflow.<keypath-value> when keyed
+	Scope  string // "workflow" | "keyed"
+	HeldBy string // run id holding the lock
+}
+
+// SlotRow is a live per-task-type in-flight concurrency counter.
+type SlotRow struct {
+	Name     string // task type (concurrency_tasks key with the "task." prefix stripped)
+	InFlight int
+}
+
+// AdmissionState is the read-side snapshot for /console/concurrency:
+// which singleton locks are held and which task types have in-flight
+// concurrency counters. Empty on an idle engine (gates are lazy).
+type AdmissionState struct {
+	Locks     []LockRow
+	TaskSlots []SlotRow
+}
+
+// admissionLocksBucket / admissionTasksBucket are the engine KV buckets
+// the Concurrency page reads. admissionTaskPrefix is stripped from each
+// concurrency_tasks key (e.g. "task.email" -> "email") to recover the
+// task type. These mirror the engine's bucket layout; the console reads
+// the wire shape and never imports engine internals.
+const (
+	admissionLocksBucket = "singleton_locks"
+	admissionTasksBucket = "concurrency_tasks"
+	admissionTaskPrefix  = "task."
+	// admissionKeyMax bounds the per-bucket key scan so a runaway bucket
+	// can't unbound the page render.
+	admissionKeyMax = 500
+)
+
+// parseLockRunID extracts the run id holding a singleton lock from its
+// JSON value ({"run_id":"..."}). An empty run_id is valid (returns ""
+// + nil); malformed JSON returns an error rather than panicking.
+func parseLockRunID(b []byte) (string, error) {
+	if b == nil {
+		panic("parseLockRunID: value is nil")
+	}
+	var v struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return "", fmt.Errorf("parse lock value: %w", err)
+	}
+	return v.RunID, nil
+}
+
+// parseCounterValue parses a concurrency_tasks counter value: a raw
+// ASCII decimal string (e.g. "3"). Non-numeric input returns an error.
+func parseCounterValue(b []byte) (int, error) {
+	if b == nil {
+		panic("parseCounterValue: value is nil")
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0, fmt.Errorf("parse counter value: %w", err)
+	}
+	return n, nil
+}
+
+// lockScopeOf classifies a singleton-lock key: a key carrying a keypath
+// value is "<workflow>.<value>" (keyed scope); a bare workflow name is
+// workflow scope.
+func lockScopeOf(key string) string {
+	if strings.Contains(key, ".") {
+		return "keyed"
+	}
+	return "workflow"
+}
+
+// buildAdmissionState assembles an AdmissionState from already-read KV
+// bytes: locks maps singleton_locks key -> JSON value, taskCounters maps
+// concurrency_tasks key -> decimal counter value. Malformed values are
+// skipped (not fatal) so one corrupt entry can't blank the whole page.
+func buildAdmissionState(
+	locks map[string][]byte, taskCounters map[string][]byte,
+) AdmissionState {
+	if locks == nil {
+		panic("buildAdmissionState: locks map is nil")
+	}
+	if taskCounters == nil {
+		panic("buildAdmissionState: taskCounters map is nil")
+	}
+	state := AdmissionState{
+		Locks:     make([]LockRow, 0, len(locks)),
+		TaskSlots: make([]SlotRow, 0, len(taskCounters)),
+	}
+	for key, value := range locks {
+		runID, err := parseLockRunID(value)
+		if err != nil {
+			continue
+		}
+		state.Locks = append(state.Locks, LockRow{
+			Key: key, Scope: lockScopeOf(key), HeldBy: runID,
+		})
+	}
+	for key, value := range taskCounters {
+		count, err := parseCounterValue(value)
+		if err != nil {
+			continue
+		}
+		name := strings.TrimPrefix(key, admissionTaskPrefix)
+		state.TaskSlots = append(state.TaskSlots, SlotRow{
+			Name: name, InFlight: count,
+		})
+	}
+	return state
+}
+
+// AdmissionState reads the two admission-gate KV buckets and assembles
+// the /console/concurrency snapshot. A missing bucket degrades to an
+// empty section (readBucketValues returns an empty map, not an error);
+// a malformed value is skipped by buildAdmissionState.
+func (a *apiServiceAdapter) AdmissionState(
+	ctx context.Context,
+) (AdmissionState, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.AdmissionState: ctx is nil")
+	}
+	if a == nil {
+		panic("apiServiceAdapter.AdmissionState: adapter is nil")
+	}
+	locks, err := a.readBucketValues(ctx, admissionLocksBucket)
+	if err != nil {
+		return AdmissionState{}, fmt.Errorf("read locks bucket: %w", err)
+	}
+	tasks, err := a.readBucketValues(ctx, admissionTasksBucket)
+	if err != nil {
+		return AdmissionState{}, fmt.Errorf("read tasks bucket: %w", err)
+	}
+	return buildAdmissionState(locks, tasks), nil
+}
+
+// readBucketValues reads up to admissionKeyMax key/value pairs from one
+// bucket using the existing ListKVKeys + GetKVEntry plumbing. A missing
+// key (ErrKVNotFound, racing a delete) is skipped; an absent bucket
+// surfaces as an empty key list, so this returns an empty map + nil.
+func (a *apiServiceAdapter) readBucketValues(
+	ctx context.Context, bucket string,
+) (map[string][]byte, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.readBucketValues: ctx is nil")
+	}
+	if bucket == "" {
+		panic("apiServiceAdapter.readBucketValues: bucket is empty")
+	}
+	keys, _, err := a.ListKVKeys(ctx, bucket, "", admissionKeyMax)
+	if err != nil {
+		return nil, fmt.Errorf("list keys: %w", err)
+	}
+	out := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		entry, getErr := a.GetKVEntry(ctx, bucket, key)
+		if getErr != nil {
+			continue
+		}
+		out[key] = entry.Value
+	}
+	return out, nil
 }
 
 // WatchRuns opens a KV watcher against the workflow_runs bucket and

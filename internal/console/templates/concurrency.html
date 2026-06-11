@@ -1,0 +1,75 @@
+{{define "content"}}
+<section class="page page-concurrency" data-page="concurrency">
+  {{template "page-header" .Page.Header}}
+
+  <aside class="callout callout-info" role="status">
+    <p>
+      Admission control — the gates that decide whether a task runs now,
+      waits, or is shed. Singleton locks held and live task-concurrency
+      counters, read from KV.
+    </p>
+  </aside>
+
+  {{if .Page.Note}}
+  <aside class="callout callout-warning" role="status">
+    <p>{{.Page.Note}}</p>
+  </aside>
+  {{end}}
+
+  <div class="card">
+    <h2>Singleton locks</h2>
+    <table class="table console-table" id="locks-table">
+      <thead>
+        <tr>
+          <th>Lock key</th>
+          <th>Scope</th>
+          <th>Held by</th>
+        </tr>
+      </thead>
+      <tbody id="locks-tbody">
+        {{range .Page.State.Locks}}
+        <tr>
+          <td class="mono">{{.Key}}</td>
+          <td><span class="badge">{{.Scope}}</span></td>
+          <td class="mono">{{.HeldBy}}</td>
+        </tr>
+        {{else}}
+        <tr class="empty-row">
+          <td colspan="3">No singleton locks held.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Task concurrency</h2>
+    <table class="table console-table" id="task-slots-table">
+      <thead>
+        <tr>
+          <th>Task type</th>
+          <th>In-flight</th>
+        </tr>
+      </thead>
+      <tbody id="task-slots-tbody">
+        {{range .Page.State.TaskSlots}}
+        <tr>
+          <td class="mono">{{.Name}}</td>
+          <td>{{.InFlight}}</td>
+        </tr>
+        {{else}}
+        <tr class="empty-row">
+          <td colspan="2">No task-concurrency contention.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="dn-srcline muted">
+    Additional admission gates — token-bucket rate limits (rate_limits) and
+    trigger debounce (debounce_state) — are tracked in KV and will surface
+    here in a follow-up.
+  </p>
+</section>
+{{end}}
