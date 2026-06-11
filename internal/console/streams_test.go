@@ -463,6 +463,12 @@ func (r *resumeRecorder) ListConnections(
 	return r.inner.ListConnections(ctx)
 }
 
+func (r *resumeRecorder) AdmissionState(
+	ctx context.Context,
+) (AdmissionState, error) {
+	return r.inner.AdmissionState(ctx)
+}
+
 func (r *resumeRecorder) ListKVKeys(
 	ctx context.Context, bucket, cursor string, limit int,
 ) ([]string, string, error) {

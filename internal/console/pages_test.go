@@ -117,6 +117,10 @@ type fakeDataSource struct {
 	// Connections page backing data. Tests assign ConnRows directly so
 	// the page renders without a live embedded server's Connz().
 	connections []ConnRow
+
+	// Concurrency page backing data. Tests assign an AdmissionState
+	// directly so the page renders without reading the engine KV gates.
+	admission AdmissionState
 }
 
 // triggerSetCall captures one SetTriggerEnabled invocation so tests can
@@ -468,6 +472,12 @@ func (f *fakeDataSource) ListConnections(
 	_ context.Context,
 ) ([]ConnRow, error) {
 	return append([]ConnRow{}, f.connections...), nil
+}
+
+func (f *fakeDataSource) AdmissionState(
+	_ context.Context,
+) (AdmissionState, error) {
+	return f.admission, nil
 }
 
 func (f *fakeDataSource) ListKVKeys(
