@@ -107,6 +107,12 @@ type fakeDataSource struct {
 	// Consumers page backing data. Tests assign ConsumerRows directly
 	// so the page renders without a JetStream consumer existing.
 	consumers []ConsumerRow
+
+	// Server page backing data. Tests assign a ServerHealth (and an
+	// optional error seam) directly so the page renders without a live
+	// nats.Conn or JetStream account.
+	serverHealth    ServerHealth
+	serverHealthErr error
 }
 
 // triggerSetCall captures one SetTriggerEnabled invocation so tests can
@@ -446,6 +452,12 @@ func (f *fakeDataSource) ListConsumers(
 	_ context.Context,
 ) ([]ConsumerRow, error) {
 	return append([]ConsumerRow{}, f.consumers...), nil
+}
+
+func (f *fakeDataSource) ServerHealth(
+	_ context.Context,
+) (ServerHealth, error) {
+	return f.serverHealth, f.serverHealthErr
 }
 
 func (f *fakeDataSource) ListKVKeys(

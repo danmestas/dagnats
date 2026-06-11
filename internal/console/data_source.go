@@ -220,6 +220,14 @@ type DataSource interface {
 	// isn't wired so the renderer paints the empty state instead of
 	// 500ing.
 	ListConsumers(ctx context.Context) ([]ConsumerRow, error)
+
+	// ServerHealth returns the embedded NATS server's identity and its
+	// JetStream account capacity for the /console/server page. Identity
+	// comes from the live connection; capacity from js.AccountInfo().
+	// Degrades gracefully: an AccountInfo failure returns identity-only
+	// health (no error), and an unwired connection returns the zero
+	// value + nil so the renderer paints empty fields rather than 500ing.
+	ServerHealth(ctx context.Context) (ServerHealth, error)
 }
 
 // ConsumerRow is a single JetStream consumer's operational state for the
@@ -241,6 +249,38 @@ type ConsumerRow struct {
 	AckWait        string
 	MaxDeliver     string
 	Stalled        bool
+}
+
+// ServerHealth is the embedded NATS server identity + JetStream account
+// capacity for the console Server page. Capacity comes from
+// js.AccountInfo(); identity from the live nats.Conn. Max fields of -1
+// mean "unlimited" (no configured tier ceiling).
+type ServerHealth struct {
+	ServerName    string
+	ServerVersion string
+	NATSURL       string
+	Domain        string
+	MemoryUsed    uint64
+	MemoryMax     int64
+	StoreUsed     uint64
+	StoreMax      int64
+	StorePct      int
+	Streams       int
+	StreamsMax    int
+	Consumers     int
+	ConsumersMax  int
+	APITotal      uint64
+	APIErrors     uint64
+}
+
+// storePct is the integer percentage of used over max, guarded against a
+// non-positive max (unlimited tier = -1, or a zero ceiling) so the page
+// reports 0% headroom-pressure rather than dividing by zero.
+func storePct(used uint64, max int64) int {
+	if max <= 0 {
+		return 0
+	}
+	return int(used * 100 / uint64(max))
 }
 
 // consumerRowFrom maps one JetStream ConsumerInfo onto a ConsumerRow.
@@ -1709,6 +1749,53 @@ func (a *apiServiceAdapter) ListConsumers(
 		}
 	}
 	return out, nil
+}
+
+// ServerHealth reads the embedded NATS server identity off the live
+// connection and folds in the JetStream account capacity from
+// js.AccountInfo(). Two layers of graceful degradation: an unwired
+// connection returns the zero value, and an AccountInfo failure returns
+// identity-only health — neither errors, so a JetStream hiccup paints a
+// partial page instead of a 500. Max fields of -1 surface as "unlimited"
+// at the template.
+func (a *apiServiceAdapter) ServerHealth(
+	ctx context.Context,
+) (ServerHealth, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ServerHealth: ctx is nil")
+	}
+	if a == nil {
+		panic("apiServiceAdapter.ServerHealth: receiver is nil")
+	}
+	if a.nc == nil {
+		return ServerHealth{}, nil
+	}
+	health := ServerHealth{
+		ServerName:    a.nc.ConnectedServerName(),
+		ServerVersion: a.nc.ConnectedServerVersion(),
+		NATSURL:       a.nc.ConnectedUrl(),
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return health, nil
+	}
+	info, err := js.AccountInfo(ctx)
+	if err != nil {
+		return health, nil
+	}
+	health.Domain = info.Domain
+	health.MemoryUsed = info.Memory
+	health.MemoryMax = info.Limits.MaxMemory
+	health.StoreUsed = info.Store
+	health.StoreMax = info.Limits.MaxStore
+	health.StorePct = storePct(info.Store, info.Limits.MaxStore)
+	health.Streams = info.Streams
+	health.StreamsMax = info.Limits.MaxStreams
+	health.Consumers = info.Consumers
+	health.ConsumersMax = info.Limits.MaxConsumers
+	health.APITotal = info.API.Total
+	health.APIErrors = info.API.Errors
+	return health, nil
 }
 
 // osLookupEnv is a thin seam so tests can intercept env-var reads
