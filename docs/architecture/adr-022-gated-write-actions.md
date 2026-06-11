@@ -1,6 +1,6 @@
 # ADR-022: Gated write actions (operator-facing infrastructure mutations)
 
-**Status:** Accepted (2026-06-11, #<PR>)
+**Status:** Accepted (2026-06-11, #382)
 **Deciders:** Dan Mestas
 **Depends on:** ADR-014 (control-plane-ui), ADR-021 (ad-hoc-agent-runtimes)
 
