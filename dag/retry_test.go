@@ -243,3 +243,47 @@ func TestCalculateDelayDefaultFallback(t *testing.T) {
 		t.Fatalf("capped delay = %v, want 3s", d)
 	}
 }
+
+func TestValidateBoundsRetryMaxAttempts(t *testing.T) {
+	makeDef := func() WorkflowDef {
+		return WorkflowDef{
+			Name: "rb-bound", Version: "1",
+			Steps: []StepDef{
+				{ID: "s", Task: "t", Type: StepTypeNormal},
+			},
+		}
+	}
+
+	// Positive space: a policy at the bound is accepted.
+	atBound := makeDef()
+	atBound.DefaultRetry = &RetryPolicy{
+		MaxAttempts: RetryAttemptCountMax,
+	}
+	if err := Validate(atBound); err != nil {
+		t.Fatalf("Validate at bound: %v, want nil", err)
+	}
+
+	// Negative space: one past the bound is rejected for every
+	// policy source ResolveRetryPolicy consults.
+	overDefault := makeDef()
+	overDefault.DefaultRetry = &RetryPolicy{
+		MaxAttempts: RetryAttemptCountMax + 1,
+	}
+	if err := Validate(overDefault); err == nil {
+		t.Fatal("Validate accepted oversized DefaultRetry.MaxAttempts")
+	}
+
+	overStep := makeDef()
+	overStep.Steps[0].Retry = &RetryPolicy{
+		MaxAttempts: RetryAttemptCountMax + 1,
+	}
+	if err := Validate(overStep); err == nil {
+		t.Fatal("Validate accepted oversized step Retry.MaxAttempts")
+	}
+
+	overLegacy := makeDef()
+	overLegacy.Steps[0].Retries = RetryAttemptCountMax + 1
+	if err := Validate(overLegacy); err == nil {
+		t.Fatal("Validate accepted oversized legacy step Retries")
+	}
+}

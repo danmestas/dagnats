@@ -45,6 +45,13 @@ func (s *RetryStrategy) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("unknown RetryStrategy: %q", str)
 }
 
+// RetryAttemptCountMax bounds MaxAttempts on any retry policy.
+// Validate rejects larger values at definition time so the engine's
+// retry scheduler can assert the bound as a true unreachable
+// invariant rather than a config-reachable one (see
+// internal/engine scheduleRetryBackoff).
+const RetryAttemptCountMax = 100_000
+
 // RetryPolicy configures retry behavior for a step or as a workflow
 // default. MaxAttempts=0 means no retries.
 type RetryPolicy struct {

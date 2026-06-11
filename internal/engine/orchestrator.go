@@ -1453,6 +1453,13 @@ func (o *Orchestrator) scheduleRetryBackoff(
 	if attempts < 1 {
 		panic("scheduleRetryBackoff: attempts must be >= 1")
 	}
+	// Unreachable for any def that passed dag.Validate (it bounds
+	// every policy's MaxAttempts); tripping it means corrupted run
+	// state, and failing loudly beats minting unbounded timer
+	// msg-ids. The bridge's taskAttemptCountMax mirrors this bound.
+	if attempts > dag.RetryAttemptCountMax {
+		panic("scheduleRetryBackoff: attempts exceeds RetryAttemptCountMax")
+	}
 	delay := dag.CalculateDelay(*policy, attempts)
 	delayMs := delay.Milliseconds()
 	if delayMs < 1 {
@@ -3239,9 +3246,16 @@ func (o *Orchestrator) handleStepStarted(
 		return nil
 	}
 
+	attemptCountBefore := state.Attempts
 	state.Status = dag.StepStatusRunning
 	if evt.AttemptNumber > state.Attempts {
 		state.Attempts = evt.AttemptNumber
+	}
+	// Postcondition: the max() rule above is what keeps per-attempt
+	// retry timer msg-ids distinct (#381) — a regression to "assign"
+	// would let out-of-order step.started decrement the counter.
+	if state.Attempts < attemptCountBefore {
+		panic("handleStepStarted: Attempts must be non-decreasing")
 	}
 	run.Steps[evt.StepID] = state
 	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
@@ -3328,9 +3342,15 @@ func (o *Orchestrator) handleStepQueued(
 		// Already past Queued — don't roll back.
 		return nil
 	}
+	attemptCountBefore := state.Attempts
 	state.Status = dag.StepStatusQueued
 	if evt.AttemptNumber > state.Attempts {
 		state.Attempts = evt.AttemptNumber
+	}
+	// Postcondition: same max()-rule guard as handleStepStarted —
+	// Attempts is the input to per-attempt retry timer msg-ids (#381).
+	if state.Attempts < attemptCountBefore {
+		panic("handleStepQueued: Attempts must be non-decreasing")
 	}
 	run.Steps[evt.StepID] = state
 	return o.saveSnapshot(ctx, run, evt.StepID)

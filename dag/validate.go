@@ -24,6 +24,10 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validateRetryPolicies(def); err != nil {
+		return err
+	}
+
 	if err := validateIdempotencyKey(def.IdempotencyKey); err != nil {
 		return err
 	}
@@ -45,6 +49,45 @@ func Validate(def WorkflowDef) error {
 	}
 
 	return detectCycle(def.Steps)
+}
+
+// validateRetryPolicies bounds MaxAttempts on the workflow default
+// and per-step retry policies (including the legacy Retries field,
+// which ResolveRetryPolicy turns into MaxAttempts). Rejecting
+// oversized values here makes the engine's
+// "attempts exceeds RetryAttemptCountMax" panic unreachable.
+func validateRetryPolicies(def WorkflowDef) error {
+	if len(def.Steps) == 0 {
+		panic("validateRetryPolicies: called with empty steps")
+	}
+	if def.Name == "" {
+		panic("validateRetryPolicies: workflow name is empty")
+	}
+	if def.DefaultRetry != nil &&
+		def.DefaultRetry.MaxAttempts > RetryAttemptCountMax {
+		return fmt.Errorf(
+			"workflow %q DefaultRetry.MaxAttempts is %d (max %d)",
+			def.Name, def.DefaultRetry.MaxAttempts,
+			RetryAttemptCountMax,
+		)
+	}
+	for _, step := range def.Steps {
+		if step.Retry != nil &&
+			step.Retry.MaxAttempts > RetryAttemptCountMax {
+			return fmt.Errorf(
+				"step %q Retry.MaxAttempts is %d (max %d)",
+				step.ID, step.Retry.MaxAttempts,
+				RetryAttemptCountMax,
+			)
+		}
+		if step.Retries > RetryAttemptCountMax {
+			return fmt.Errorf(
+				"step %q Retries is %d (max %d)",
+				step.ID, step.Retries, RetryAttemptCountMax,
+			)
+		}
+	}
+	return nil
 }
 
 // validateStepIDs ensures every step has a unique ID.
