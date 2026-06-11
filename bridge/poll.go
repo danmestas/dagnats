@@ -201,11 +201,19 @@ func (b *Bridge) processPolledMsg(
 	}
 	var payload protocol.TaskPayload
 	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
-		msg.Ack()
+		// Bad JSON — consume it; redelivery cannot fix the body.
+		if ackErr := msg.Ack(); ackErr != nil {
+			slog.WarnContext(ctx, "ack malformed task failed",
+				"error", ackErr)
+		}
 		return pollResponse{}, false
 	}
 	if payload.RunID == "" || payload.StepID == "" {
-		msg.Ack() // Malformed task — same disposition as bad JSON.
+		// Malformed task — same disposition as bad JSON.
+		if ackErr := msg.Ack(); ackErr != nil {
+			slog.WarnContext(ctx, "ack malformed task failed",
+				"error", ackErr)
+		}
 		return pollResponse{}, false
 	}
 	attemptNumber, err := taskAttemptNumber(msg, payload.Attempt)
@@ -294,9 +302,16 @@ func (b *Bridge) publishStepStarted(
 	return b.publishEvent(ctx, evt)
 }
 
+// nakPolledTaskRetryDelay paces redelivery of a task the bridge
+// could not hand out. 5s matches the engine's consumer-error NAK
+// precedent (orchestrator / api timer paths).
+const nakPolledTaskRetryDelay = 5 * time.Second
+
 // nakPolledMsg returns a message to the queue when the bridge could
 // not safely hand it to a poller. NAK (not ack): the attempt must
-// redeliver rather than be silently consumed.
+// redeliver rather than be silently consumed. Delayed: a bare NAK
+// under a persistent history-publish failure would tight-loop
+// redeliveries and inflate NumDelivered-derived attempt counts.
 func nakPolledMsg(
 	ctx context.Context,
 	msg jetstream.Msg,
@@ -313,7 +328,7 @@ func nakPolledMsg(
 		"cause", cause,
 		"error", causeErr,
 	)
-	if err := msg.Nak(); err != nil {
+	if err := msg.NakWithDelay(nakPolledTaskRetryDelay); err != nil {
 		slog.WarnContext(ctx, "nak polled task failed",
 			"cause", cause,
 			"error", err,

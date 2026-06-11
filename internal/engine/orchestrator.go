@@ -1421,13 +1421,6 @@ func (o *Orchestrator) scheduleRetryAfter(
 	})
 }
 
-// retryAttemptCountMax bounds the attempt counter consumed by the
-// retry scheduling path. Attempts is normally capped by the retry
-// policy's MaxAttempts; a value beyond this bound means corrupted
-// run state, and failing loudly beats minting unbounded timer
-// msg-ids. Mirrors the bridge's taskAttemptCountMax.
-const retryAttemptCountMax = 100_000
-
 // scheduleRetryBackoff schedules a timer that re-publishes the task
 // after the policy-derived delay. Mirrors scheduleRetryAfter; the
 // only difference is the delay source (dag.CalculateDelay vs the
@@ -1460,8 +1453,12 @@ func (o *Orchestrator) scheduleRetryBackoff(
 	if attempts < 1 {
 		panic("scheduleRetryBackoff: attempts must be >= 1")
 	}
-	if attempts > retryAttemptCountMax {
-		panic("scheduleRetryBackoff: attempts exceeds retryAttemptCountMax")
+	// Unreachable for any def that passed dag.Validate (it bounds
+	// every policy's MaxAttempts); tripping it means corrupted run
+	// state, and failing loudly beats minting unbounded timer
+	// msg-ids. The bridge's taskAttemptCountMax mirrors this bound.
+	if attempts > dag.RetryAttemptCountMax {
+		panic("scheduleRetryBackoff: attempts exceeds RetryAttemptCountMax")
 	}
 	delay := dag.CalculateDelay(*policy, attempts)
 	delayMs := delay.Milliseconds()
