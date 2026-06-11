@@ -50,6 +50,38 @@
                  U+2100-214F, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/* IoskeleyMono (Iosevka-derived, Berkeley-Mono-adjacent) is the data
+   face — run/trace IDs, timestamps, durations, JSON. SIL OFL 1.1,
+   vendored locally and subset to Latin + numerics + box/arrow glyphs.
+   Falls back to the system monospace stack while the woff2 streams. */
+@font-face {
+  font-family: "IoskeleyMono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/console/assets/fonts/ioskeley-mono-latin-regular.woff2) format("woff2");
+}
+@font-face {
+  font-family: "IoskeleyMono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(/console/assets/fonts/ioskeley-mono-latin-bold.woff2) format("woff2");
+}
+
+/* Datatype turns text expressions like {l:30,60,40} into inline charts
+   via OpenType ligatures — zero JS, scales with font-size. SIL OFL 1.1,
+   vendored whole (its chart glyphs/lookups must not be subset away).
+   Used for dense per-row/inline sparklines where uPlot is overkill;
+   uPlot stays for the larger metric charts. */
+@font-face {
+  font-family: "Datatype";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/console/assets/fonts/datatype.woff2) format("woff2");
+}
+
 :root {
   --radius-tile:  6px;
   --radius-pill:  9999px;
@@ -68,8 +100,10 @@
 
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont,
                "Segoe UI", "Helvetica Neue", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono",
-               Menlo, Consolas, "Liberation Mono", monospace;
+  --font-mono: "IoskeleyMono", "IBM Plex Mono", ui-monospace, SFMono-Regular,
+               "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* Datatype face for inline OpenType-ligature sparklines. */
+  --font-spark: "Datatype", var(--font-mono);
   /* Shims for legacy refs scattered in this file. Foundation PR
      collapses display/serif/body all onto the sans face per ADR-015
      (no editorial typography in console). Selectors will be cleaned
@@ -84,8 +118,8 @@
   --border:           #D0D7DE;
   --text-primary:     #1F2328;
   --text-secondary:   #59636E;
-  --accent:           #0969DA;
-  --accent-soft:      rgba(9, 105, 218, 0.10);
+  --accent:           #117E68;
+  --accent-soft:      rgba(17, 126, 104, 0.10);
 
   --status-completed: #1A7F37;
   --status-running:   #0969DA;
@@ -96,13 +130,13 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg:             #0D1117;
-    --surface:        #161B22;
-    --border:         #30363D;
-    --text-primary:   #E6EDF3;
-    --text-secondary: #9198A1;
-    --accent:         #2F81F7;
-    --accent-soft:    rgba(47, 129, 247, 0.15);
+    --bg:             #0B0D10;
+    --surface:        #14181D;
+    --border:         #232A33;
+    --text-primary:   #E6E9EE;
+    --text-secondary: #8B939F;
+    --accent:         #4EC9B0;
+    --accent-soft:    rgba(78, 201, 176, 0.14);
 
     --status-completed: #3FB950;
     --status-running:   #58A6FF;
@@ -123,8 +157,8 @@ body[data-theme="light"] {
   --border:           #D0D7DE;
   --text-primary:     #1F2328;
   --text-secondary:   #59636E;
-  --accent:           #0969DA;
-  --accent-soft:      rgba(9, 105, 218, 0.10);
+  --accent:           #117E68;
+  --accent-soft:      rgba(17, 126, 104, 0.10);
 
   --status-completed: #1A7F37;
   --status-running:   #0969DA;
@@ -135,13 +169,13 @@ body[data-theme="light"] {
 
 html[data-theme="dark"],
 body[data-theme="dark"] {
-  --bg:             #0D1117;
-  --surface:        #161B22;
-  --border:         #30363D;
-  --text-primary:   #E6EDF3;
-  --text-secondary: #9198A1;
-  --accent:         #2F81F7;
-  --accent-soft:    rgba(47, 129, 247, 0.15);
+  --bg:             #0B0D10;
+  --surface:        #14181D;
+  --border:         #232A33;
+  --text-primary:   #E6E9EE;
+  --text-secondary: #8B939F;
+  --accent:         #4EC9B0;
+  --accent-soft:    rgba(78, 201, 176, 0.14);
 
   --status-completed: #3FB950;
   --status-running:   #58A6FF;
@@ -277,7 +311,6 @@ a:hover { text-decoration: underline; }
 
 .console-tile {
   background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
   padding: 1.1rem 1.2rem;
 }
@@ -323,6 +356,18 @@ a:hover { text-decoration: underline; }
   font-family: var(--font-mono);
 }
 
+/* Datatype inline sparkline — render a chart expression like
+   {l:30,60,40,80} as text; the font's OpenType ligatures draw the
+   chart. currentColor lets callers tint via the status palette. Scales
+   with font-size; line-height:1 keeps it on the text baseline. uPlot
+   stays for the larger metric charts; this is for dense inline trends. */
+.console-spark {
+  font-family: var(--font-spark);
+  font-feature-settings: "calt" 1, "liga" 1;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .status-completed { color: var(--status-completed); }
 .status-running   { color: var(--status-running); }
 .status-failed    { color: var(--status-failed); }
@@ -338,7 +383,6 @@ a:hover { text-decoration: underline; }
   margin-bottom: 1rem;
   padding: 0.75rem 1rem;
   background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
 }
 .console-field {
@@ -368,7 +412,6 @@ a:hover { text-decoration: underline; }
 /* Card shell for list / detail containers. */
 .card {
   background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
   margin-bottom: var(--space-3);
   overflow: hidden;
@@ -712,8 +755,6 @@ body[data-theme="dark"] {
   letter-spacing: 0.04em;
 }
 .console-section-header .console-lede {
-  border-left: 2px solid var(--border);
-  padding-left: 0.65rem;
   margin-top: 0.5rem;
 }
 
@@ -1581,8 +1622,6 @@ body[data-theme="dark"] {
  * sans title — quiet, not alarming. */
 .console-onboarding {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
   border-radius: var(--radius-tile);
   padding: 18px 22px 14px 22px;
   margin: 14px 0 24px 0;
@@ -2058,6 +2097,23 @@ summary:focus-visible,
 .dashboard-tile:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Redesign override: borderless radiused tiles. The dashboard tiles
+   (defined in the Basecoat bundle) ship a 1px frame plus a colored
+   left-accent bar per state. The redesign drops both — no colored edge
+   on a radiused block — and carries tone on the metric value color
+   instead. app.css loads after basecoat.css so these win. */
+.dashboard-tile {
+  border: 0;
+}
+.dashboard-tile.tile-state-good,
+.dashboard-tile.tile-state-amber,
+.dashboard-tile.tile-state-red {
+  border-left: 0;
+}
+.dashboard-tile.tile-state-good .dashboard-tile-value {
+  color: var(--status-completed);
 }
 
 /* C6 + H1 + H2 — mobile breakpoint pass.
@@ -2686,7 +2742,6 @@ body[data-theme="dark"] code {
   justify-content: center;
   min-width: 120px;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
   background: var(--surface);
   font-family: var(--font-sans);
@@ -2717,30 +2772,17 @@ body[data-theme="dark"] code {
   color: var(--text-secondary);
   margin-top: 2px;
 }
-.tile-tone-default {
-  /* default — no accent edge, neutral chrome. */
-  border-color: var(--border);
-}
-.tile-tone-success {
-  border-left: 3px solid var(--status-completed);
-}
+/* Tone is carried by the metric count color, not a left-accent bar —
+   borderless radiused tiles per the redesign (no colored edge on a
+   radiused block). */
 .tile-tone-success .page-header-tile-count {
   color: var(--status-completed);
-}
-.tile-tone-warning {
-  border-left: 3px solid var(--status-pending);
 }
 .tile-tone-warning .page-header-tile-count {
   color: var(--status-pending);
 }
-.tile-tone-danger {
-  border-left: 3px solid var(--status-failed);
-}
 .tile-tone-danger .page-header-tile-count {
   color: var(--status-failed);
-}
-.tile-tone-info {
-  border-left: 3px solid var(--status-running);
 }
 .tile-tone-info .page-header-tile-count {
   color: var(--status-running);
