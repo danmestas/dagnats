@@ -1,0 +1,58 @@
+{{define "content"}}
+<section class="page page-server" data-page="server">
+  {{template "page-header" .Page.Header}}
+
+  <aside class="callout callout-info" role="status">
+    <p>The embedded NATS server's identity and JetStream account stats — stream
+      and consumer totals plus cumulative usage. This account has no configured
+      tier ceiling, so usage is shown without a headroom percentage.</p>
+  </aside>
+
+  {{if .Page.Note}}
+  <aside class="callout callout-warning" role="status">
+    <p>{{.Page.Note}}</p>
+  </aside>
+  {{end}}
+
+  <article class="card">
+    <header class="card-header"><h2>Identity</h2></header>
+    <div class="card-body">
+      <dl class="console-deflist">
+        <div><dt>Server name</dt><dd>{{.Page.Health.ServerName}}</dd></div>
+        <div><dt>Version</dt><dd>{{.Page.Health.ServerVersion}}</dd></div>
+        <div><dt>NATS URL</dt><dd class="console-mono">{{.Page.Health.NATSURL}}</dd></div>
+        <div><dt>JetStream domain</dt><dd>{{if .Page.Health.Domain}}{{.Page.Health.Domain}}{{else}}—{{end}}</dd></div>
+      </dl>
+    </div>
+  </article>
+
+  <article class="card">
+    <header class="card-header"><h2>JetStream account</h2></header>
+    <div class="card-body">
+      <dl class="console-deflist">
+        <div>
+          <dt>Storage</dt>
+          <dd>{{if gt .Page.Health.StoreMax 0}}{{.Page.StoreUsedHuman}} of {{.Page.StoreMaxHuman}} ({{.Page.Health.StorePct}}%){{else}}{{.Page.StoreUsedHuman}} used <span class="muted">· no account limit</span>{{end}}</dd>
+        </div>
+        <div>
+          <dt>Memory</dt>
+          <dd>{{if gt .Page.Health.MemoryMax 0}}{{.Page.MemoryUsedHuman}} of {{.Page.MemoryMaxHuman}}{{else}}{{.Page.MemoryUsedHuman}} used <span class="muted">· no account limit</span>{{end}}</dd>
+        </div>
+        <div>
+          <dt>Streams</dt>
+          <dd>{{.Page.Health.Streams}} <span class="muted">/ {{if lt .Page.Health.StreamsMax 0}}∞{{else}}{{.Page.Health.StreamsMax}}{{end}}</span></dd>
+        </div>
+        <div>
+          <dt>Consumers</dt>
+          <dd>{{.Page.Health.Consumers}} <span class="muted">/ {{if lt .Page.Health.ConsumersMax 0}}∞{{else}}{{.Page.Health.ConsumersMax}}{{end}}</span></dd>
+        </div>
+        <div>
+          <dt>API calls</dt>
+          <dd>{{.Page.Health.APITotal}} total · {{.Page.Health.APIErrors}} errors
+            <span class="muted">(cumulative since boot; includes benign not-found probes)</span></dd>
+        </div>
+      </dl>
+    </div>
+  </article>
+</section>
+{{end}}

@@ -283,6 +283,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageConsumers(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/server",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageServer(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/logs",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageLogs(w, r, ts, cfg)
@@ -508,6 +512,7 @@ var pageContentFiles = map[string]string{
 	"kv-list":           "templates/kv_list.html",
 	"streams-list":      "templates/streams_list.html",
 	"consumers-list":    "templates/consumers_list.html",
+	"server":            "templates/server.html",
 	"logs":              "templates/logs.html",
 	"metrics_dashboard": "templates/metrics_dashboard.html",
 	"configuration":     "templates/configuration.html",

@@ -451,6 +451,12 @@ func (r *resumeRecorder) ListConsumers(
 	return r.inner.ListConsumers(ctx)
 }
 
+func (r *resumeRecorder) ServerHealth(
+	ctx context.Context,
+) (ServerHealth, error) {
+	return r.inner.ServerHealth(ctx)
+}
+
 func (r *resumeRecorder) ListKVKeys(
 	ctx context.Context, bucket, cursor string, limit int,
 ) ([]string, string, error) {
