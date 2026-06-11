@@ -571,6 +571,11 @@ func loadTemplates() (*templateSet, error) {
 // packs the pager template's positional inputs into a struct so the
 // template stays readable. triggerKindGlyph supplies the per-kind
 // header icon for triggers list / detail.
+// mulHelper multiplies two integers for template arithmetic. Used by
+// the run-trace tab to convert a span's tree depth into a CSS indent
+// (depth * rem) without baking the math into Go-side rendering.
+func mulHelper(a, b int) int { return a * b }
+
 func funcMap() template.FuncMap {
 	return template.FuncMap{
 		"join":             strings.Join,
@@ -580,6 +585,7 @@ func funcMap() template.FuncMap {
 		"triggerKindGlyph": triggerKindGlyph,
 		"jsonArray":        jsonArrayHelper,
 		"dict":             dictHelper,
+		"mul":              mulHelper,
 		"tooltip":          tooltipHelper(),
 		"tooltipAs":        tooltipAsHelper(),
 		"tooltipText":      tooltipTextHelper,

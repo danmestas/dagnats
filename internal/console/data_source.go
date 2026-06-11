@@ -246,6 +246,14 @@ type DataSource interface {
 	// gracefully: a missing bucket yields an empty section rather than a
 	// whole-page failure, and a malformed KV value is skipped, not fatal.
 	AdmissionState(ctx context.Context) (AdmissionState, error)
+
+	// GetRunTrace reads the OTLP spans for one run from the TELEMETRY
+	// stream and flattens them into a pre-order span tree the console
+	// Trace tab renders. Returns (nil, nil) when no spans exist (the
+	// run produced no telemetry or it aged out) or when the underlying
+	// NATS connection isn't wired — callers paint the empty state
+	// rather than 500ing. The web counterpart of `dagnats trace <id>`.
+	GetRunTrace(ctx context.Context, runID string) ([]TraceRow, error)
 }
 
 // ConsumerRow is a single JetStream consumer's operational state for the

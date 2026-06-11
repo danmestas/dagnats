@@ -6,7 +6,6 @@ package cli
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -14,9 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/observe/spanread"
 	"github.com/nats-io/nats.go/jetstream"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // extractTraceID pulls the trace ID from a W3C traceparent string.
@@ -117,7 +116,18 @@ func runTraceViewCmd(args []string) {
 		os.Exit(1)
 	}
 
-	spans := collectRunSpans(js, runID)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), traceViewTimeout,
+	)
+	defer cancel()
+
+	spans, collectErr := spanread.CollectRunSpans(
+		ctx, js, runID, traceViewSpanMax,
+	)
+	if collectErr != nil {
+		fmt.Fprintf(os.Stderr, "consumer: %v\n", collectErr)
+		os.Exit(1)
+	}
 	if len(spans) == 0 {
 		fmt.Fprintln(os.Stderr, "No spans found for run.")
 		os.Exit(1)
@@ -131,198 +141,7 @@ func runTraceViewCmd(args []string) {
 	printSpanTrees(spans)
 }
 
-// collectRunSpans reads all spans for a run from the TELEMETRY
-// stream. Bounded by traceViewTimeout and traceViewSpanMax.
-func collectRunSpans(
-	js jetstream.JetStream, runID string,
-) []*tracepb.Span {
-	if js == nil {
-		panic("collectRunSpans: js must not be nil")
-	}
-	if runID == "" {
-		panic("collectRunSpans: runID must not be empty")
-	}
-
-	ctx, cancel := context.WithTimeout(
-		context.Background(), traceViewTimeout,
-	)
-	defer cancel()
-
-	subject := "telemetry.spans.*." + runID
-	cons, err := js.OrderedConsumer(
-		ctx, "TELEMETRY",
-		jetstream.OrderedConsumerConfig{
-			FilterSubjects: []string{subject},
-			DeliverPolicy:  jetstream.DeliverAllPolicy,
-		},
-	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "consumer: %v\n", err)
-		return nil
-	}
-
-	spans := make([]*tracepb.Span, 0, 128)
-	for i := 0; i < traceViewSpanMax; i++ {
-		msg, fetchErr := cons.Next(
-			jetstream.FetchMaxWait(time.Second),
-		)
-		if fetchErr != nil {
-			break
-		}
-		sp, parseErr := parseSpan(msg.Data())
-		if parseErr != nil {
-			continue
-		}
-		spans = append(spans, sp)
-	}
-	return spans
-}
-
-// parseSpan deserializes OTLP proto JSON into a tracepb.Span.
-func parseSpan(data []byte) (*tracepb.Span, error) {
-	if data == nil {
-		panic("parseSpan: data must not be nil")
-	}
-	if len(data) > 1<<20 {
-		panic("parseSpan: data exceeds 1MB bound")
-	}
-	sp := &tracepb.Span{}
-	err := protojson.Unmarshal(data, sp)
-	return sp, err
-}
-
-// spanHexTraceID returns the hex-encoded trace ID string.
-func spanHexTraceID(sp *tracepb.Span) string {
-	if sp == nil {
-		panic("spanHexTraceID: span must not be nil")
-	}
-	return hex.EncodeToString(sp.TraceId)
-}
-
-// spanHexSpanID returns the hex-encoded span ID string.
-func spanHexSpanID(sp *tracepb.Span) string {
-	if sp == nil {
-		panic("spanHexSpanID: span must not be nil")
-	}
-	return hex.EncodeToString(sp.SpanId)
-}
-
-// spanHexParentID returns the hex-encoded parent span ID, or "".
-func spanHexParentID(sp *tracepb.Span) string {
-	if sp == nil {
-		panic("spanHexParentID: span must not be nil")
-	}
-	if len(sp.ParentSpanId) == 0 {
-		return ""
-	}
-	return hex.EncodeToString(sp.ParentSpanId)
-}
-
-// spanDurationMs computes span duration in milliseconds.
-func spanDurationMs(sp *tracepb.Span) int64 {
-	if sp == nil {
-		panic("spanDurationMs: span must not be nil")
-	}
-	startNs := int64(sp.StartTimeUnixNano)
-	endNs := int64(sp.EndTimeUnixNano)
-	if endNs <= startNs {
-		return 0
-	}
-	return (endNs - startNs) / 1_000_000
-}
-
-// spanStatusLabel returns "ok", "error", or "unset".
-func spanStatusLabel(sp *tracepb.Span) string {
-	if sp == nil {
-		panic("spanStatusLabel: span must not be nil")
-	}
-	if sp.Status == nil {
-		return "unset"
-	}
-	switch sp.Status.Code {
-	case tracepb.Status_STATUS_CODE_OK:
-		return "ok"
-	case tracepb.Status_STATUS_CODE_ERROR:
-		return "error"
-	default:
-		return "unset"
-	}
-}
-
 // --- Tree building and display ---
-
-// spanNode is a tree node wrapping a span with children.
-type spanNode struct {
-	Span     *tracepb.Span
-	Children []*spanNode
-}
-
-// buildSpanTrees groups spans by trace ID, links parent/child,
-// and returns root nodes sorted by start time.
-func buildSpanTrees(
-	spans []*tracepb.Span,
-) map[string][]*spanNode {
-	if len(spans) > traceViewSpanMax {
-		panic("buildSpanTrees: spans exceeds max bound")
-	}
-
-	// Index all nodes by spanID.
-	nodeMap := make(map[string]*spanNode, len(spans))
-	for _, sp := range spans {
-		sid := spanHexSpanID(sp)
-		nodeMap[sid] = &spanNode{Span: sp}
-	}
-
-	// Group roots by traceID.
-	traceRoots := make(map[string][]*spanNode)
-	for _, sp := range spans {
-		sid := spanHexSpanID(sp)
-		pid := spanHexParentID(sp)
-		tid := spanHexTraceID(sp)
-		node := nodeMap[sid]
-
-		if pid != "" {
-			if parent, ok := nodeMap[pid]; ok {
-				parent.Children = append(
-					parent.Children, node,
-				)
-				continue
-			}
-		}
-		traceRoots[tid] = append(traceRoots[tid], node)
-	}
-
-	// Sort children by start time at each level.
-	for _, node := range nodeMap {
-		sortNodeChildren(node)
-	}
-	// Sort roots by start time.
-	for tid := range traceRoots {
-		sortNodes(traceRoots[tid])
-	}
-	return traceRoots
-}
-
-// sortNodes sorts span nodes by start time ascending.
-func sortNodes(nodes []*spanNode) {
-	if len(nodes) > traceViewSpanMax {
-		panic("sortNodes: nodes exceeds max bound")
-	}
-	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].Span.StartTimeUnixNano <
-			nodes[j].Span.StartTimeUnixNano
-	})
-}
-
-// sortNodeChildren sorts a node's children by start time.
-func sortNodeChildren(node *spanNode) {
-	if node == nil {
-		panic("sortNodeChildren: node must not be nil")
-	}
-	if len(node.Children) > 1 {
-		sortNodes(node.Children)
-	}
-}
 
 // printSpanTrees renders all trace trees to stdout.
 func printSpanTrees(spans []*tracepb.Span) {
@@ -333,7 +152,7 @@ func printSpanTrees(spans []*tracepb.Span) {
 		panic("printSpanTrees: spans exceeds max bound")
 	}
 
-	trees := buildSpanTrees(spans)
+	trees := spanread.BuildSpanTrees(spans)
 	traceIDs := sortedTraceIDs(trees)
 
 	for _, tid := range traceIDs {
@@ -353,7 +172,7 @@ func printSpanTrees(spans []*tracepb.Span) {
 
 // sortedTraceIDs returns trace IDs sorted alphabetically.
 func sortedTraceIDs(
-	trees map[string][]*spanNode,
+	trees map[string][]*spanread.SpanNode,
 ) []string {
 	if len(trees) > traceSearchMax {
 		panic("sortedTraceIDs: trees exceeds max bound")
@@ -368,7 +187,7 @@ func sortedTraceIDs(
 
 // printNode renders a single tree node with box-drawing lines.
 func printNode(
-	node *spanNode, prefix string, isLast bool,
+	node *spanread.SpanNode, prefix string, isLast bool,
 ) {
 	if node == nil {
 		panic("printNode: node must not be nil")
@@ -380,8 +199,8 @@ func printNode(
 	}
 
 	sp := node.Span
-	dur := spanDurationMs(sp)
-	status := spanStatusLabel(sp)
+	dur := spanread.DurationMs(sp)
+	status := spanread.StatusLabel(sp)
 	statusColored := colorTraceStatus(status)
 
 	fmt.Printf("%s%s%s (%dms) [%s]\n",
@@ -438,12 +257,12 @@ func printSpansJSON(spans []*tracepb.Span) {
 			0, startNs,
 		).UTC().Format(time.RFC3339Nano)
 		out = append(out, jsonSpan{
-			TraceID:    spanHexTraceID(sp),
-			SpanID:     spanHexSpanID(sp),
-			ParentID:   spanHexParentID(sp),
+			TraceID:    spanread.HexTraceID(sp),
+			SpanID:     spanread.HexSpanID(sp),
+			ParentID:   spanread.HexParentID(sp),
 			Name:       sp.Name,
-			DurationMs: spanDurationMs(sp),
-			Status:     spanStatusLabel(sp),
+			DurationMs: spanread.DurationMs(sp),
+			Status:     spanread.StatusLabel(sp),
 			StartTime:  startTime,
 		})
 	}
@@ -636,11 +455,11 @@ func collectSearchResults(
 		if fetchErr != nil {
 			break
 		}
-		sp, parseErr := parseSpan(msg.Data())
+		sp, parseErr := spanread.ParseSpan(msg.Data())
 		if parseErr != nil {
 			continue
 		}
-		tid := spanHexTraceID(sp)
+		tid := spanread.HexTraceID(sp)
 		info, exists := traces[tid]
 		if !exists {
 			info = &traceInfo{}
@@ -683,8 +502,8 @@ func filterAndSortResults(
 		}
 		if info.root != nil {
 			result.RootName = info.root.Name
-			result.DurationMs = spanDurationMs(info.root)
-			result.Status = spanStatusLabel(info.root)
+			result.DurationMs = spanread.DurationMs(info.root)
+			result.Status = spanread.StatusLabel(info.root)
 			startNs := int64(info.root.StartTimeUnixNano)
 			result.StartTime = time.Unix(
 				0, startNs,

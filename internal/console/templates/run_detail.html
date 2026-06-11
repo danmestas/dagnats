@@ -36,6 +36,10 @@
                 aria-selected="false" aria-controls="panel-io"
                 class="tabs-trigger"
                 data-on:click__once="@get('/console/api/run/{{.RunID}}/io-tab')">Input/Output</button>
+        <button type="button" role="tab" id="tab-trace"
+                aria-selected="false" aria-controls="panel-trace"
+                class="tabs-trigger"
+                data-on:click__once="@get('/console/api/run/{{.RunID}}/trace-tab')">Trace</button>
       </div>
       <div role="tabpanel" id="panel-steps" aria-labelledby="tab-steps"
            class="tabs-content run-detail-panel">
@@ -48,6 +52,10 @@
       <div role="tabpanel" id="panel-io" aria-labelledby="tab-io"
            class="tabs-content run-detail-panel" hidden>
         <p class="tabs-loading">Loading input/output&hellip;</p>
+      </div>
+      <div role="tabpanel" id="panel-trace" aria-labelledby="tab-trace"
+           class="tabs-content run-detail-panel" hidden>
+        <p class="tabs-loading">Loading trace&hellip;</p>
       </div>
     </div>
   {{end}}

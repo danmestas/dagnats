@@ -121,6 +121,11 @@ type fakeDataSource struct {
 	// Concurrency page backing data. Tests assign an AdmissionState
 	// directly so the page renders without reading the engine KV gates.
 	admission AdmissionState
+
+	// Run-trace tab backing data. Tests assign runTrace directly to
+	// drive the Trace tab; runTraceErr forces the read-error path.
+	runTrace    []TraceRow
+	runTraceErr error
 }
 
 // triggerSetCall captures one SetTriggerEnabled invocation so tests can
@@ -232,6 +237,18 @@ func (f *fakeDataSource) ListTriggers(
 	_ context.Context,
 ) ([]trigger.TriggerDef, error) {
 	return append([]trigger.TriggerDef{}, f.triggers...), nil
+}
+
+func (f *fakeDataSource) GetRunTrace(
+	_ context.Context, runID string,
+) ([]TraceRow, error) {
+	if runID == "" {
+		panic("fakeDataSource.GetRunTrace: empty runID")
+	}
+	if f.runTraceErr != nil {
+		return nil, f.runTraceErr
+	}
+	return append([]TraceRow{}, f.runTrace...), nil
 }
 
 // WatchRuns and WatchRunHistory let the fake satisfy the streaming
