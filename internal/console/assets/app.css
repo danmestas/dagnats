@@ -1161,13 +1161,12 @@ body[data-theme="dark"] {
   display: block;
   padding: 18px 16px;
   background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: 6px;
   text-decoration: none;
-  transition: transform 160ms ease, border-color 160ms ease;
+  transition: transform 160ms ease, background-color 160ms ease;
 }
 .ops-tile:hover {
-  border-color: var(--accent);
+  background: var(--accent-soft);
   transform: translateY(-1px);
   text-decoration: none;
 }
@@ -1193,9 +1192,7 @@ body[data-theme="dark"] {
 .callout {
   margin: 12px 0;
   padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--radius-tile);
   background: var(--accent-soft);
   color: var(--text-primary);
 }
@@ -1256,8 +1253,7 @@ body[data-theme="dark"] {
 }
 .kv-bucket-link.is-active {
   background: var(--accent-soft);
-  border-left: 2px solid var(--accent);
-  padding-left: 6px;
+  color: var(--text-primary);
 }
 .kv-bucket-count {
   font-family: var(--font-mono);
@@ -1349,7 +1345,6 @@ body[data-theme="dark"] {
 }
 .console-metric-tile {
   background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px 16px 16px 16px;
   display: flex;
@@ -1431,7 +1426,6 @@ body[data-theme="dark"] {
 }
 .console-chart {
   background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px 16px 16px 16px;
 }
@@ -1556,7 +1550,6 @@ body[data-theme="dark"] {
 
 .console-table-wrap {
   overflow-x: auto;
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
   background: var(--surface);
 }
@@ -2901,8 +2894,6 @@ body[data-theme="dark"] code {
 }
 .config-worker-card {
   padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--status-completed);
   border-radius: var(--radius-tile);
   background: var(--surface);
 }
