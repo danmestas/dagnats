@@ -100,6 +100,13 @@
         </nav>
       </details>
       <div class="console-header-utils">
+        {{if .ReadOnly}}
+        <span class="console-mode-pill" role="status"
+              title="Mutations are disabled (CONSOLE_READ_ONLY is set on the server)">
+          <span class="console-mode-pill-dot" aria-hidden="true"></span>
+          Read-only
+        </span>
+        {{end}}
         <div class="console-actor">
           {{if .Actor.Display}}<span title="{{.Actor.Source}}">{{.Actor.Display}}</span>{{end}}
         </div>
