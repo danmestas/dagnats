@@ -433,15 +433,16 @@ a:hover { text-decoration: underline; }
   overflow: hidden;
 }
 .card-header {
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border);
-  background: var(--accent-soft);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+  background: transparent;
 }
 .card-header h2 {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.72rem;
   font-weight: 600;
-  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
 }
 .card-body {
   padding: var(--space-3);
@@ -558,16 +559,12 @@ a:hover { text-decoration: underline; }
 
 /* Alerts for validator warnings + run errors. */
 .alert {
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
   background: var(--surface);
   padding: 0.75rem 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
 }
 .alert strong { display: block; margin-bottom: 0.25rem; }
-.alert-warning { border-left-color: var(--status-running); }
-.alert-error   { border-left-color: var(--status-failed); }
 .alert ul.console-list { margin: 0.25rem 0 0; padding-left: 1.25rem; }
 
 /* Pre blocks (JSON viewer). Wrap so long lines never trigger
@@ -593,10 +590,9 @@ a:hover { text-decoration: underline; }
   gap: 0.75rem;
 }
 .console-step-card {
-  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.65rem 0.8rem;
-  background: var(--bg);
+  background: var(--surface);
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -609,14 +605,9 @@ a:hover { text-decoration: underline; }
 }
 .console-step-icon { font-size: 1rem; }
 .console-step-id { font-family: var(--font-mono); }
-.console-step-card.status-completed { border-color: var(--status-completed); }
-.console-step-card.status-running   { border-color: var(--status-running); }
-.console-step-card.status-failed    { border-color: var(--status-failed); }
-.console-step-card.status-pending   { border-color: var(--status-pending); }
 .console-step-card.is-skipped {
-  border-style: dashed;
-  border-color: var(--status-skipped);
   color: var(--text-secondary);
+  opacity: 0.75;
 }
 .console-step-card .console-step-error {
   margin: 0;
@@ -685,7 +676,6 @@ a:hover { text-decoration: underline; }
  */
 .console-section-header h1,
 .console-tile header h2,
-.card-header h2,
 .console-brand .console-name {
   font-family: var(--font-display);
   font-weight: 500;
@@ -1209,7 +1199,7 @@ body[data-theme="dark"] {
   margin: 12px 0;
   padding: 12px 14px;
   border-radius: var(--radius-tile);
-  background: var(--accent-soft);
+  background: var(--surface);
   color: var(--text-primary);
 }
 .callout p { margin: 0; font-size: 14px; }
@@ -2125,6 +2115,18 @@ summary:focus-visible,
   color: var(--status-completed);
 }
 
+/* Redesign override: the run-detail error banner and the inline
+   step-error box ship a status-colored left-accent bar from the Basecoat
+   bundle (.run-error-banner 4px, .step-error 3px). The redesign drops the
+   colored edge on these radiused blocks — the failure is already carried
+   by the red text + the status pill. app.css loads after basecoat. */
+.run-error-banner {
+  border-left: 0;
+}
+.step-error {
+  border-left: 0;
+}
+
 /* C6 + H1 + H2 — mobile breakpoint pass.
  * - Hamburger via <details> shown ≤768px; desktop nav hidden.
  * - All inputs ≥16px to suppress iOS Safari auto-zoom on focus.
@@ -2826,7 +2828,6 @@ body[data-theme="dark"] code {
 }
 .config-endpoint-card {
   padding: var(--space-3);
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
   background: var(--surface);
 }
@@ -2886,7 +2887,6 @@ body[data-theme="dark"] code {
   }
 }
 .config-jetstream-pane {
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
   padding: var(--space-3);
   background: var(--surface);
@@ -2963,7 +2963,6 @@ body[data-theme="dark"] code {
   display: flex;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
   background: var(--surface);
   align-items: flex-start;
@@ -3247,9 +3246,8 @@ body[data-theme="dark"] code {
   position: relative;
   padding: 0;
   overflow: hidden;
-  border: 1px solid var(--border);
   border-radius: var(--radius-tile);
-  background: var(--bg);
+  background: var(--surface);
 }
 .logs-stream-controls {
   display: inline-flex;
