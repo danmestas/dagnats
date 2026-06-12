@@ -8,32 +8,13 @@
     </p>
   </header>
 
-  <aside id="console-onboarding" class="console-onboarding" hidden
-         role="region" aria-labelledby="console-onboarding-title">
-    <header class="console-onboarding-header">
-      <h2 id="console-onboarding-title">Welcome to the dagnats console</h2>
-    </header>
-    <div class="console-onboarding-body">
-      <p>
-        This console is a live window onto the NATS state the engine
-        is already keeping &mdash; not a separate database. Tiles
-        update without refresh as workflows run, triggers fire, and
-        dead-letters accumulate.
-      </p>
-      <p>
-        <strong>Tiles up top:</strong> the operational snapshot. Click
-        any tile to drill into the matching list.
-      </p>
-      <p>
-        <strong>Recent panels:</strong> the last few failures and the
-        last few operator actions, side by side.
-      </p>
-    </div>
-    <footer class="console-onboarding-footer">
-      <button type="button" id="console-onboarding-dismiss"
-              class="btn">Got it</button>
-    </footer>
-  </aside>
+  <p class="dashboard-explainer">
+    <b>Workers</b> register <b>Functions</b> &middot;
+    <b>Triggers</b> fire <b>Workflows</b> &middot; a
+    <b>Workflow</b> is a DAG of steps that each call a
+    <b>Function</b> &middot; every firing is a <b>Run</b> you can
+    watch live and replay.
+  </p>
 
   <div class="dashboard-tile-grid" aria-label="Operational status">
     {{range .Tiles}}{{template "dashboard_tile" .}}{{end}}

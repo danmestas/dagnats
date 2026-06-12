@@ -1,20 +1,26 @@
 // internal/console/onboarding_test.go
-// Methodology: render /console/ via the existing fake DataSource and
-// assert the onboarding aside is present (hidden) in the layout +
-// the onboarding.js asset is referenced. The actual show / hide is
-// pure JS — the browser_smoke_test covers the localStorage gating
-// when an operator runs the agent-browser harness.
+// Batch 9 (ITEM 2) replaced the dismissible "Welcome to the dagnats
+// console" onboarding card with a slim, persistent one-line explainer
+// bar carrying the mockup's exact "Workers register Functions ·
+// Triggers fire Workflows · ..." copy.
+//
+// Methodology: render /console/ via the fake DataSource and assert the
+// explainer bar (with bold keywords) is present and the old welcome
+// card + its dismiss button + its now-dead JS reference are gone.
 package console
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-func TestOnboardingBannerRenderedOnDashboard(t *testing.T) {
+// TestDashboardExplainerReplacesWelcomeCard pins the exact explainer
+// copy + bolded keywords and asserts the dismissible welcome card is
+// gone. Positive: explainer present with bold Workers/Functions/Run.
+// Negative: no onboarding aside / dismiss button / onboarding.js.
+func TestDashboardExplainerReplacesWelcomeCard(t *testing.T) {
 	fake := newFakeDS()
 	h := mountWithFake(t, fake)
 	rec := httptest.NewRecorder()
@@ -25,54 +31,31 @@ func TestOnboardingBannerRenderedOnDashboard(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `id="console-onboarding"`) {
-		t.Errorf("dashboard missing onboarding aside element")
-	}
-	if !strings.Contains(body, `id="console-onboarding-dismiss"`) {
-		t.Errorf("dashboard missing onboarding dismiss button")
-	}
-	if !strings.Contains(body, "Welcome to the dagnats console") {
-		t.Errorf("onboarding header copy not rendered")
-	}
-	// Ships hidden by default; the JS makes it visible only when
-	// localStorage doesn't carry the dismiss flag.
-	if !strings.Contains(body, `hidden`) {
-		t.Errorf("onboarding aside must start hidden")
-	}
-}
 
-func TestOnboardingAssetReferencedByLayout(t *testing.T) {
-	fake := newFakeDS()
-	h := mountWithFake(t, fake)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(
-		http.MethodGet, "/console/", nil,
-	))
-	if !strings.Contains(rec.Body.String(),
-		"/console/assets/onboarding.js") {
-		t.Errorf("layout missing /console/assets/onboarding.js script tag")
+	if !strings.Contains(body, `class="dashboard-explainer"`) {
+		t.Errorf("dashboard missing the slim explainer bar")
 	}
-}
-
-func TestOnboardingAssetServed(t *testing.T) {
-	fake := newFakeDS()
-	h := mountWithFake(t, fake)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(
-		http.MethodGet, "/console/assets/onboarding.js", nil,
-	))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("onboarding.js status = %d, want 200", rec.Code)
+	// Exact mockup phrasing fragments (bold keywords + connectives).
+	for _, frag := range []string{
+		"<b>Workers</b> register", "<b>Functions</b>",
+		"<b>Triggers</b> fire", "<b>Workflows</b>",
+		"<b>Workflow</b> is a DAG of steps",
+		"call a\n    <b>Function</b>", "every firing is a <b>Run</b>",
+		"watch live and replay",
+	} {
+		if !strings.Contains(body, frag) {
+			t.Errorf("explainer missing fragment %q", frag)
+		}
 	}
-	body, err := io.ReadAll(rec.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
+	// Negative space: the dismissible welcome card and its wiring are
+	// fully removed (no dead affordance).
+	if strings.Contains(body, "Welcome to the dagnats console") {
+		t.Errorf("welcome card copy must be removed")
 	}
-	asStr := string(body)
-	if !strings.Contains(asStr, "dagnats-console-onboarded") {
-		t.Errorf("onboarding.js missing the localStorage key constant")
+	if strings.Contains(body, `id="console-onboarding-dismiss"`) {
+		t.Errorf("onboarding dismiss button must be removed")
 	}
-	if !strings.Contains(asStr, "console-onboarding-dismiss") {
-		t.Errorf("onboarding.js missing the dismiss button id")
+	if strings.Contains(body, "/console/assets/onboarding.js") {
+		t.Errorf("dead onboarding.js reference must be removed")
 	}
 }
