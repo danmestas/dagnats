@@ -257,14 +257,19 @@ func triggerRowFromDef(t trigger.TriggerDef) TriggerRow {
 
 // TriggerDetailView powers /console/triggers/<id>.
 type TriggerDetailView struct {
-	ID             string
-	Kind           string
-	Target         string
-	Workflow       string
-	Enabled        bool
-	StatusLabel    string
-	StatusIcon     string
-	ConfigJSON     string
+	ID          string
+	Kind        string
+	Target      string
+	Workflow    string
+	Enabled     bool
+	StatusLabel string
+	StatusIcon  string
+	ConfigJSON  string
+	// Config is the shared stat-card the detail page renders for the
+	// trigger's Type / Target / Next-fire facts — the same component the
+	// stream-detail view uses, so the two pages don't duplicate the
+	// card + deflist markup (Ousterhout reuse, Batch 6).
+	Config         StatCard
 	SignatureOn    bool
 	NotFound       bool
 	RecentFirings  []TriggerFiringRow
@@ -423,6 +428,15 @@ func populateTriggerDetail(t trigger.TriggerDef) TriggerDetailView {
 		view.SignatureOn = true
 	}
 	view.NextFireText, view.NextFireMethod = triggerNextFire(t)
+	view.Config = StatCard{
+		Title: "Configuration",
+		Stats: []StatRow{
+			{Label: "Type", Value: statValueOr(kind)},
+			{Label: "Target", Value: statValueOr(target), Mono: true},
+			{Label: "Workflow", Value: statValueOr(t.WorkflowID), Mono: true},
+			{Label: "Next fire", Value: statValueOr(view.NextFireText)},
+		},
+	}
 	return view
 }
 

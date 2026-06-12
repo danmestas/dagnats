@@ -1,0 +1,21 @@
+{{/*
+  stat-card — a titled section card holding a definition list of
+  label/value stat rows. Shared by the stream-detail and trigger-detail
+  views (Batch 6) so the two pages don't duplicate card + deflist
+  markup. Reads a StatCard (Title, Stats []StatRow) — see
+  internal/console/stat_card.go. Each StatRow renders its Value verbatim;
+  callers pass "—" for unknown/absent fields so the card never fabricates
+  data.
+*/}}
+{{define "stat-card"}}{{with .}}
+<article class="card" data-component="stat-card">
+  <header class="card-header"><h2>{{.Title}}</h2></header>
+  <div class="card-body">
+    <dl class="console-deflist">
+      {{range .Stats}}
+      <div><dt>{{.Label}}</dt><dd class="{{if .Mono}}console-mono {{end}}stat-value">{{.Value}}</dd></div>
+      {{end}}
+    </dl>
+  </div>
+</article>
+{{end}}{{end}}

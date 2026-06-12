@@ -484,6 +484,23 @@ a:hover { text-decoration: underline; }
   margin-bottom: var(--space-3);
   overflow: hidden;
 }
+/* stream-detail-cards — Config + State stat-cards sit side by side on
+ * wide viewports and stack on narrow ones. The shared stat-card markup
+ * (templates/components/stat_card.html) is regime-agnostic; this grid
+ * owns only the two-up layout for the stream detail view. */
+.stream-detail-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+@media (min-width: 768px) {
+  .stream-detail-cards {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.stream-detail-cards > .card {
+  margin-bottom: 0;
+}
 .card-header {
   padding: var(--space-3) var(--space-3) var(--space-1);
   background: transparent;
@@ -2772,6 +2789,7 @@ body[data-theme="dark"] code {
   }
   .console-header[aria-expanded="false"] .console-name,
   .console-header[aria-expanded="false"] .console-nav-desktop a,
+  .console-header[aria-expanded="false"] .console-nav-group,
   .console-header[aria-expanded="false"] .console-connection-label,
   .console-header[aria-expanded="false"] .theme-toggle-label,
   .console-header[aria-expanded="false"] .console-actor,
@@ -2779,8 +2797,31 @@ body[data-theme="dark"] code {
     .build-info-footer-slot[data-slot="rail"] {
     display: none;
   }
+  /* Collapsed brand chrome — stack the brand row so the "://" glyph
+   * mark and the collapse toggle stack vertically and both fit inside
+   * the 56px rail. The expanded layout is a `space-between` row, which
+   * cannot fit a 27px glyph + 24px toggle within 56px (minus padding)
+   * and used to overflow the rail (scrollWidth 88 vs clientWidth 55),
+   * pushing the toggle off-screen. Reducing the inner horizontal
+   * padding reclaims the width the icons need. */
+  .console-header[aria-expanded="false"] .console-header-inner {
+    padding-left: var(--space-2);
+    padding-right: var(--space-2);
+    align-items: center;
+  }
+  .console-header[aria-expanded="false"] .console-brand-row {
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .console-header[aria-expanded="false"] .console-brand {
+    justify-content: center;
+  }
   .console-header[aria-expanded="false"] .console-glyph {
-    display: inline;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .console-main {
     transition: margin-left 120ms ease;

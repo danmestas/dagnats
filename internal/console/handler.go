@@ -279,6 +279,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageStreams(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/streams/",
+		func(w http.ResponseWriter, r *http.Request) {
+			dispatchStreams(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/consumers",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageConsumers(w, r, ts, cfg)
@@ -558,6 +562,7 @@ var pageContentFiles = map[string]string{
 	"ops-leases":        "templates/ops_leases.html",
 	"kv-list":           "templates/kv_list.html",
 	"streams-list":      "templates/streams_list.html",
+	"stream-detail":     "templates/stream_detail.html",
 	"consumers-list":    "templates/consumers_list.html",
 	"server":            "templates/server.html",
 	"connections":       "templates/connections.html",
