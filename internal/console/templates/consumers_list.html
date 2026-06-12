@@ -38,11 +38,17 @@
         <td class="mono">{{.Stream}}</td>
         <td class="mono">{{.Filter}}</td>
         <td>{{.AckPolicy}}</td>
-        <td>{{.NumPending}}</td>
+        {{/* On an explicit-ack work consumer, a non-zero pending or lag
+             means work is queued and not draining — red. Redelivered
+             work means at least one delivery failed and retried — amber.
+             Non-work consumers (ack-none/all) and zero values stay
+             nominal so the color tracks a real backlog, not steady
+             state. */}}
+        <td>{{if and (eq .AckPolicy "explicit") (gt .NumPending 0)}}<span class="status-failed">{{.NumPending}}</span>{{else}}{{.NumPending}}{{end}}</td>
         <td>{{.NumAckPending}}</td>
         <td>{{.NumWaiting}}</td>
-        <td>{{.NumRedelivered}}</td>
-        <td>{{if gt .Lag 0}}<span class="status-failed">{{.Lag}}</span>{{else}}{{.Lag}}{{end}}</td>
+        <td>{{if gt .NumRedelivered 0}}<span class="status-pending">{{.NumRedelivered}}</span>{{else}}{{.NumRedelivered}}{{end}}</td>
+        <td>{{if and (eq .AckPolicy "explicit") (gt .Lag 0)}}<span class="status-failed">{{.Lag}}</span>{{else}}{{.Lag}}{{end}}</td>
         <td>{{.AckWait}}</td>
       </tr>
       {{else}}

@@ -64,7 +64,10 @@
             {{if lt .AvgDurationMS 0}}<span class="muted" aria-label="not measured">&mdash;</span>{{else}}{{.AvgDurationMS}}&nbsp;ms{{end}}
           </td>
           <td class="task-type-metric">
-            {{if lt .FailureRate 0.0}}<span class="muted" aria-label="not measured">&mdash;</span>{{else}}{{.FailureRate}}%{{end}}
+            {{/* -1 is the unmeasured sentinel (em-dash, no color). A real
+                 failure rate above zero is a genuine problem signal — red.
+                 A measured zero stays nominal. */}}
+            {{if lt .FailureRate 0.0}}<span class="muted" aria-label="not measured">&mdash;</span>{{else if gt .FailureRate 0.0}}<span class="status-failed">{{.FailureRate}}%</span>{{else}}{{.FailureRate}}%{{end}}
           </td>
           {{template "row-chevron" .}}
         </tr>
