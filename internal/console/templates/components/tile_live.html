@@ -11,11 +11,7 @@
     <span class="dashboard-tile-number">{{.Value}}</span>
     {{if .Unit}}<span class="dashboard-tile-unit">{{.Unit}}</span>{{end}}
   </p>
-  {{if .Spark}}
-  <div class="dashboard-tile-spark"
-       data-sparkline="{{range $i, $v := .Spark}}{{if $i}},{{end}}{{$v}}{{end}}"
-       aria-hidden="true"></div>
-  {{end}}
+  {{if .Spark}}{{with sparkExpr .Spark}}<span class="console-spark dashboard-tile-spark" aria-hidden="true">{{.}}</span>{{end}}{{end}}
   {{if .Hint}}
   <p class="dashboard-tile-hint">{{.Hint}}</p>
   {{end}}
