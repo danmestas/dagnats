@@ -66,10 +66,62 @@
     </table>
   </div>
 
+  <div class="card">
+    <h2>Rate limits</h2>
+    <table class="table console-table" id="rate-limits-table">
+      <thead>
+        <tr>
+          <th>Limiter</th>
+          <th>Tokens</th>
+          <th>Limit</th>
+          <th>Period</th>
+        </tr>
+      </thead>
+      <tbody id="rate-limits-tbody">
+        {{range .Page.State.RateLimits}}
+        <tr>
+          <td class="mono">{{.Key}}</td>
+          <td>{{.Tokens}}</td>
+          <td>{{.Limit}}</td>
+          <td>{{.Period}}</td>
+        </tr>
+        {{else}}
+        <tr class="empty-row">
+          <td colspan="4">No rate limiters active.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Debounce</h2>
+    <table class="table console-table" id="debounce-table">
+      <thead>
+        <tr>
+          <th>Trigger</th>
+          <th>Timer seq</th>
+        </tr>
+      </thead>
+      <tbody id="debounce-tbody">
+        {{range .Page.State.Debouncers}}
+        <tr>
+          <td class="mono">{{.Trigger}}</td>
+          <td>{{.TimerSeq}}</td>
+        </tr>
+        {{else}}
+        <tr class="empty-row">
+          <td colspan="2">No open debounce windows.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
   <p class="dn-srcline muted">
-    Additional admission gates — token-bucket rate limits (rate_limits) and
-    trigger debounce (debounce_state) — are tracked in KV and will surface
-    here in a follow-up.
+    Every admission gate above is lazy — singleton locks, task-concurrency
+    counters, rate-limit token buckets (rate_limits), and trigger-debounce
+    windows (debounce_state) are empty in KV until a workflow hits contention.
   </p>
 </section>
 {{end}}

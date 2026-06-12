@@ -924,12 +924,31 @@ type SlotRow struct {
 	InFlight int
 }
 
+// RateLimitRow is a token-bucket rate limiter on the Concurrency page.
+// Tokens is the current balance; Limit/Period the refill config.
+type RateLimitRow struct {
+	Key    string
+	Tokens int
+	Limit  int
+	Period string // humanized period_ns
+}
+
+// DebounceRow is an open trigger-debounce window.
+type DebounceRow struct {
+	Trigger  string
+	TimerSeq uint64
+}
+
 // AdmissionState is the read-side snapshot for /console/concurrency:
-// which singleton locks are held and which task types have in-flight
-// concurrency counters. Empty on an idle engine (gates are lazy).
+// which singleton locks are held, which task types have in-flight
+// concurrency counters, and the two lazy admission gates — token-bucket
+// rate limits and open trigger-debounce windows. Empty on an idle engine
+// (every gate is lazy — populated only under contention).
 type AdmissionState struct {
-	Locks     []LockRow
-	TaskSlots []SlotRow
+	Locks      []LockRow
+	TaskSlots  []SlotRow
+	RateLimits []RateLimitRow
+	Debouncers []DebounceRow
 }
 
 // admissionLocksBucket / admissionTasksBucket are the engine KV buckets
@@ -938,9 +957,11 @@ type AdmissionState struct {
 // task type. These mirror the engine's bucket layout; the console reads
 // the wire shape and never imports engine internals.
 const (
-	admissionLocksBucket = "singleton_locks"
-	admissionTasksBucket = "concurrency_tasks"
-	admissionTaskPrefix  = "task."
+	admissionLocksBucket    = "singleton_locks"
+	admissionTasksBucket    = "concurrency_tasks"
+	admissionRateLimitsBkt  = "rate_limits"
+	admissionDebounceBucket = "debounce_state"
+	admissionTaskPrefix     = "task."
 	// admissionKeyMax bounds the per-bucket key scan so a runaway bucket
 	// can't unbound the page render.
 	admissionKeyMax = 500
@@ -975,6 +996,42 @@ func parseCounterValue(b []byte) (int, error) {
 	return n, nil
 }
 
+// parseRateLimit decodes a rate_limits token-bucket value
+// ({"tokens":..,"limit":..,"period_ns":..}). period_ns is humanized via
+// time.Duration. The caller sets the row Key from the KV key. Malformed
+// JSON returns an error rather than panicking so one corrupt entry is
+// skipped, not fatal.
+func parseRateLimit(b []byte) (tokens, limit int, period string, err error) {
+	if b == nil {
+		panic("parseRateLimit: value is nil")
+	}
+	var v struct {
+		Tokens   int   `json:"tokens"`
+		Limit    int   `json:"limit"`
+		PeriodNs int64 `json:"period_ns"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return 0, 0, "", fmt.Errorf("parse rate-limit value: %w", err)
+	}
+	return v.Tokens, v.Limit, time.Duration(v.PeriodNs).String(), nil
+}
+
+// parseDebounce decodes a debounce_state value, surfacing only the
+// timer_seq field the page renders. Malformed JSON returns an error so
+// the entry is skipped rather than blanking the page.
+func parseDebounce(b []byte) (timerSeq uint64, err error) {
+	if b == nil {
+		panic("parseDebounce: value is nil")
+	}
+	var v struct {
+		TimerSeq uint64 `json:"timer_seq"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return 0, fmt.Errorf("parse debounce value: %w", err)
+	}
+	return v.TimerSeq, nil
+}
+
 // lockScopeOf classifies a singleton-lock key: a key carrying a keypath
 // value is "<workflow>.<value>" (keyed scope); a bare workflow name is
 // workflow scope.
@@ -987,10 +1044,12 @@ func lockScopeOf(key string) string {
 
 // buildAdmissionState assembles an AdmissionState from already-read KV
 // bytes: locks maps singleton_locks key -> JSON value, taskCounters maps
-// concurrency_tasks key -> decimal counter value. Malformed values are
-// skipped (not fatal) so one corrupt entry can't blank the whole page.
+// concurrency_tasks key -> decimal counter value, rateLimits maps
+// rate_limits key -> token-bucket JSON, debouncers maps debounce_state
+// key -> debounce JSON. Malformed values are skipped (not fatal) so one
+// corrupt entry can't blank the whole page.
 func buildAdmissionState(
-	locks map[string][]byte, taskCounters map[string][]byte,
+	locks, taskCounters, rateLimits, debouncers map[string][]byte,
 ) AdmissionState {
 	if locks == nil {
 		panic("buildAdmissionState: locks map is nil")
@@ -998,9 +1057,17 @@ func buildAdmissionState(
 	if taskCounters == nil {
 		panic("buildAdmissionState: taskCounters map is nil")
 	}
+	if rateLimits == nil {
+		panic("buildAdmissionState: rateLimits map is nil")
+	}
+	if debouncers == nil {
+		panic("buildAdmissionState: debouncers map is nil")
+	}
 	state := AdmissionState{
-		Locks:     make([]LockRow, 0, len(locks)),
-		TaskSlots: make([]SlotRow, 0, len(taskCounters)),
+		Locks:      make([]LockRow, 0, len(locks)),
+		TaskSlots:  make([]SlotRow, 0, len(taskCounters)),
+		RateLimits: buildRateLimits(rateLimits),
+		Debouncers: buildDebouncers(debouncers),
 	}
 	for key, value := range locks {
 		runID, err := parseLockRunID(value)
@@ -1024,6 +1091,43 @@ func buildAdmissionState(
 	return state
 }
 
+// buildRateLimits projects rate_limits KV bytes into RateLimitRows,
+// skipping malformed values. The Key is the raw KV key (e.g.
+// "<taskType>._global"); the parser owns the token-bucket fields.
+func buildRateLimits(rateLimits map[string][]byte) []RateLimitRow {
+	if rateLimits == nil {
+		panic("buildRateLimits: rateLimits map is nil")
+	}
+	rows := make([]RateLimitRow, 0, len(rateLimits))
+	for key, value := range rateLimits {
+		tokens, limit, period, err := parseRateLimit(value)
+		if err != nil {
+			continue
+		}
+		rows = append(rows, RateLimitRow{
+			Key: key, Tokens: tokens, Limit: limit, Period: period,
+		})
+	}
+	return rows
+}
+
+// buildDebouncers projects debounce_state KV bytes into DebounceRows,
+// skipping malformed values. The Trigger is the raw KV key.
+func buildDebouncers(debouncers map[string][]byte) []DebounceRow {
+	if debouncers == nil {
+		panic("buildDebouncers: debouncers map is nil")
+	}
+	rows := make([]DebounceRow, 0, len(debouncers))
+	for key, value := range debouncers {
+		timerSeq, err := parseDebounce(value)
+		if err != nil {
+			continue
+		}
+		rows = append(rows, DebounceRow{Trigger: key, TimerSeq: timerSeq})
+	}
+	return rows
+}
+
 // AdmissionState reads the two admission-gate KV buckets and assembles
 // the /console/concurrency snapshot. A missing bucket degrades to an
 // empty section (readBucketValues returns an empty map, not an error);
@@ -1045,7 +1149,15 @@ func (a *apiServiceAdapter) AdmissionState(
 	if err != nil {
 		return AdmissionState{}, fmt.Errorf("read tasks bucket: %w", err)
 	}
-	return buildAdmissionState(locks, tasks), nil
+	rateLimits, err := a.readBucketValues(ctx, admissionRateLimitsBkt)
+	if err != nil {
+		return AdmissionState{}, fmt.Errorf("read rate-limits bucket: %w", err)
+	}
+	debouncers, err := a.readBucketValues(ctx, admissionDebounceBucket)
+	if err != nil {
+		return AdmissionState{}, fmt.Errorf("read debounce bucket: %w", err)
+	}
+	return buildAdmissionState(locks, tasks, rateLimits, debouncers), nil
 }
 
 // readBucketValues reads up to admissionKeyMax key/value pairs from one
