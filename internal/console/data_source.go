@@ -214,6 +214,17 @@ type DataSource interface {
 	// paints the empty state. #328.
 	AggregateTaskTypes(ctx context.Context) ([]TaskTypeRow, error)
 
+	// ListWorkerRows folds the live `workers` KV directory into one
+	// projected row per registered worker for the /console/workers
+	// page: id, task types, host, last-seen, and a derived liveness
+	// status (active when LastSeen is within worker.MaxWorkerStaleness,
+	// stale otherwise). Reuses the same ListWorkers read that backs
+	// AggregateTaskTypes — no second directory round-trip.
+	//
+	// Returns nil + nil-error when no workers are registered so the
+	// renderer paints the honest empty state rather than 500ing.
+	ListWorkerRows(ctx context.Context) ([]WorkerStatusRow, error)
+
 	// ListConsumers returns every JetStream consumer on the engine's
 	// known streams, one ConsumerRow each, for the /console/consumers
 	// page. A stream that isn't provisioned yet is skipped silently —
@@ -482,10 +493,25 @@ type ConfigSnapshot struct {
 // JetStream account couldn't confirm it — the row renders muted.
 type StreamSnapshot struct {
 	Name        string
+	Subjects    []string
 	Messages    uint64
 	Bytes       uint64
+	Consumers   int
 	Retention   string
 	Provisioned bool
+}
+
+// WorkerStatusRow is one projected row on the /console/workers page.
+// Every field is read straight from the worker's KV registration —
+// no synthetic columns. Status is "active" when the worker's LastSeen
+// is within worker.MaxWorkerStaleness of now, "stale" otherwise.
+// TaskTypes is the comma-joined task-type list the worker advertised.
+type WorkerStatusRow struct {
+	WorkerID  string
+	TaskTypes string
+	Host      string
+	LastSeen  string
+	Status    string
 }
 
 // SearchHit is one result row in the cmd+k command palette. Kind tags
@@ -2084,8 +2110,10 @@ func lookupStreamSnapshot(
 	}
 	return StreamSnapshot{
 		Name:        info.Config.Name,
+		Subjects:    info.Config.Subjects,
 		Messages:    info.State.Msgs,
 		Bytes:       info.State.Bytes,
+		Consumers:   info.State.Consumers,
 		Retention:   retentionLabel(info.Config.Retention),
 		Provisioned: true,
 	}
@@ -2452,6 +2480,62 @@ func aggregateTaskTypesFromWorkers(
 	out := make([]TaskTypeRow, 0, len(byType))
 	for _, row := range byType {
 		out = append(out, *row)
+	}
+	return out
+}
+
+// ListWorkerRows reads the live worker directory and projects each
+// registration into a render row. Reuses ListWorkers — the same read
+// AggregateTaskTypes folds — so the workers page and the functions
+// page share one directory round-trip's worth of cost. A read miss
+// collapses to (nil, nil) so the page paints empty state.
+func (a *apiServiceAdapter) ListWorkerRows(
+	ctx context.Context,
+) ([]WorkerStatusRow, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ListWorkerRows: ctx is nil")
+	}
+	if a.svc == nil {
+		panic("apiServiceAdapter.ListWorkerRows: svc is nil")
+	}
+	regs, err := a.svc.ListWorkers(ctx)
+	if err != nil {
+		return nil, nil
+	}
+	return workerRowsFromRegistrations(regs, time.Now()), nil
+}
+
+// workerRowsFromRegistrations projects worker registrations into render
+// rows. Pure function so tests can drive it without an adapter. now is
+// passed in so liveness classification is deterministic under test.
+// Bounded by len(regs).
+func workerRowsFromRegistrations(
+	regs []worker.WorkerRegistration, now time.Time,
+) []WorkerStatusRow {
+	if len(regs) == 0 {
+		return nil
+	}
+	const maxRegs = 10000
+	if len(regs) > maxRegs {
+		panic("workerRowsFromRegistrations: regs exceeds max bound")
+	}
+	out := make([]WorkerStatusRow, 0, len(regs))
+	for _, reg := range regs {
+		status := "active"
+		lastSeen := ""
+		if !reg.LastSeen.IsZero() {
+			lastSeen = reg.LastSeen.UTC().Format(time.RFC3339)
+			if now.Sub(reg.LastSeen) > worker.MaxWorkerStaleness {
+				status = "stale"
+			}
+		}
+		out = append(out, WorkerStatusRow{
+			WorkerID:  reg.WorkerID,
+			TaskTypes: strings.Join(reg.TaskTypes, ", "),
+			Host:      reg.Hostname,
+			LastSeen:  lastSeen,
+			Status:    status,
+		})
 	}
 	return out
 }

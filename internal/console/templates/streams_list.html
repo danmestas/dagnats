@@ -2,12 +2,6 @@
 <section class="page page-streams-list" data-page="streams-list">
   {{template "page-header" .Page.Header}}
 
-  {{if .Page.Note}}
-  <aside class="callout callout-info" role="status">
-    <p>{{.Page.Note}}</p>
-  </aside>
-  {{end}}
-
   <table class="table console-table" id="streams-table">
     <thead>
       <tr>
@@ -16,7 +10,6 @@
         <th>Messages</th>
         <th>Bytes</th>
         <th>Consumers</th>
-        <th>Purpose</th>
       </tr>
     </thead>
     <tbody id="streams-tbody">
@@ -27,11 +20,10 @@
         <td>{{.Messages}}</td>
         <td>{{.Bytes}}</td>
         <td>{{.Consumers}}</td>
-        <td class="muted">{{.Purpose}}</td>
       </tr>
       {{else}}
       <tr class="empty-row">
-        <td colspan="6">no streams reachable — see callout above</td>
+        <td colspan="5">No JetStream streams reachable.</td>
       </tr>
       {{end}}
     </tbody>

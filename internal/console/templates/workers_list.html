@@ -2,36 +2,28 @@
 <section class="page page-workers-list" data-page="workers-list">
   {{template "page-header" .Page.Header}}
 
-  {{if .Page.Note}}
-  <aside class="callout callout-info" role="status">
-    <p>{{.Page.Note}}</p>
-  </aside>
-  {{end}}
-
   <table class="table console-table" id="workers-table">
     <thead>
       <tr>
         <th>Worker</th>
+        <th>Task types</th>
+        <th>Host</th>
+        <th>Last seen</th>
         <th>Status</th>
-        <th>Last heartbeat</th>
-        <th>Current lease</th>
-        <th>Uptime</th>
-        <th>Tasks</th>
       </tr>
     </thead>
     <tbody id="workers-tbody">
       {{range .Page.Workers}}
-      <tr id="worker-row-{{.ID}}">
-        <td class="mono">{{.ID}}</td>
+      <tr id="worker-row-{{.WorkerID}}">
+        <td class="mono">{{.WorkerID}}</td>
+        <td>{{.TaskTypes}}</td>
+        <td>{{.Host}}</td>
+        <td>{{.LastSeen}}</td>
         <td>{{.Status}}</td>
-        <td>{{.LastHeartbeat}}</td>
-        <td>{{.CurrentLease}}</td>
-        <td>{{.Uptime}}</td>
-        <td>{{.TaskCount}}</td>
       </tr>
       {{else}}
       <tr class="empty-row">
-        <td colspan="6">no workers reporting — see callout above</td>
+        <td colspan="5">No workers currently registered.</td>
       </tr>
       {{end}}
     </tbody>
