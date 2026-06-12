@@ -1126,10 +1126,9 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 		"/console/streams",
 		"/console/dlq",
 		"/console/dlq/42",
-		"/console/ops",
-		"/console/ops/leases",
-		"/console/ops/audit",
-		"/console/ops/metrics",
+		"/console/leases",
+		"/console/audit",
+		"/console/metrics",
 		"/console/config",
 	}
 	external := regexp.MustCompile(

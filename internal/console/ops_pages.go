@@ -6,160 +6,16 @@ import (
 	"sort"
 )
 
-// ops_pages.go owns the operator pages. After #311 the layout is:
+// ops_pages.go owns the operator pages. After the B3 nav/IA pass the
+// Ops hub is gone; its children are promoted to top-level routes:
 //
 //   /console/workers         — workers list (placeholder telemetry)
 //   /console/kv              — KV inspector (read-only)
 //   /console/streams         — JetStream stream inventory (placeholder)
-//   /console/ops             — slim landing: Leases + Audit log + Metrics
-//   /console/ops/leases      — current leases (placeholder telemetry)
+//   /console/leases          — current leases (placeholder telemetry)
 //
 // Each list page mirrors the established pattern: handler → build
 // view → render. Templates live alongside the other pages.
-
-// OpsIndexView is the binding for /console/ops.
-type OpsIndexView struct {
-	Header PageHeader
-	Tiles  []OpsTile
-}
-
-// OpsTile is one summary tile on the ops index. Hint is a short
-// secondary string under the tile's metric so the operator gets
-// orientation without needing to click through.
-type OpsTile struct {
-	Title      string
-	Section    string
-	Href       string
-	MetricText string
-	Hint       string
-	Disabled   bool
-}
-
-// servePageOpsIndex renders /console/ops with tiles per sub-page.
-func servePageOpsIndex(
-	w http.ResponseWriter, r *http.Request,
-	ts *templateSet, cfg Config,
-) {
-	if w == nil {
-		panic("servePageOpsIndex: w is nil")
-	}
-	if r == nil {
-		panic("servePageOpsIndex: r is nil")
-	}
-	view := buildOpsIndex(r.Context(), cfg.Data)
-	renderPage(w, r, ts, cfg, "ops-index", pageData{
-		Title:   "Ops",
-		Section: "ops",
-		Page:    view,
-	})
-}
-
-// buildOpsIndex assembles the slim post-#311 ops tiles: Leases, Audit
-// log, Metrics. Workers / KV / Streams are now top-level nav entries
-// and no longer surface as sub-tiles here. Counts come from the
-// DataSource when present; absent data leaves the metric blank rather
-// than throwing.
-func buildOpsIndex(
-	ctx context.Context, ds DataSource,
-) OpsIndexView {
-	tiles := []OpsTile{
-		{
-			Title: "Leases", Section: "ops-leases",
-			Href: "/console/ops/leases",
-			Hint: "in-flight task leases",
-		},
-		{
-			Title: "Audit log", Section: "ops-audit",
-			Href: "/console/ops/audit",
-			Hint: "operator-action history",
-		},
-		{
-			Title: "Metrics", Section: "ops-metrics",
-			Href: "/console/ops/metrics",
-			Hint: "throughput, latency, per-workflow breakdown",
-		},
-	}
-	if ds == nil {
-		return OpsIndexView{
-			Header: opsIndexHeader(),
-			Tiles:  tiles,
-		}
-	}
-	enrichOpsTiles(ctx, ds, tiles)
-	return OpsIndexView{
-		Header: opsIndexHeader(),
-		Tiles:  tiles,
-	}
-}
-
-// opsIndexHeader builds the slim landing header. No tile strip — the
-// page itself is a tile grid, so a count strip on top would be
-// redundant. Subtitle nudges the operator toward the promoted nav
-// entries so they don't hunt under Ops for what used to live there.
-func opsIndexHeader() PageHeader {
-	h, err := NewPageHeader(PageHeader{
-		Title: "Ops",
-		Subtitle: "Lease audit, action history, metrics dashboard. " +
-			"Workers, KV, and Streams now live in the top nav.",
-	})
-	if err != nil {
-		return PageHeader{Title: "Ops"}
-	}
-	return h
-}
-
-// enrichOpsTiles fills the per-tile metric text from the DataSource.
-// Leases is a placeholder — engine doesn't track it yet — so we
-// surface that fact explicitly rather than pretend with a 0.
-func enrichOpsTiles(
-	ctx context.Context, ds DataSource, tiles []OpsTile,
-) {
-	for i := range tiles {
-		switch tiles[i].Section {
-		case "ops-leases":
-			tiles[i].MetricText = "engine telemetry pending"
-		case "ops-audit":
-			events, err := ds.ListAuditEvents(ctx, 100)
-			if err == nil {
-				tiles[i].MetricText = pluralize(len(events), "event")
-			}
-		}
-	}
-}
-
-// pluralize renders "1 bucket" / "5 buckets" without bringing in a
-// dependency. Used for tile metric copy.
-func pluralize(n int, singular string) string {
-	if n == 1 {
-		return "1 " + singular
-	}
-	return intToStr(n) + " " + singular + "s"
-}
-
-// intToStr is a tiny integer formatter to avoid pulling in fmt for
-// the simple decimal case.
-func intToStr(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	const digits = "0123456789"
-	var buf [16]byte
-	idx := len(buf)
-	for n > 0 {
-		idx--
-		buf[idx] = digits[n%10]
-		n /= 10
-	}
-	if neg {
-		idx--
-		buf[idx] = '-'
-	}
-	return string(buf[idx:])
-}
 
 // WorkersListView powers /console/workers. Today the engine does
 // not surface worker heartbeats; we render a clear "telemetry gap"
@@ -239,7 +95,7 @@ func buildWorkersHeader(rows []WorkerRow) PageHeader {
 	return h
 }
 
-// LeasesListView powers /console/ops/leases. Same telemetry gap as
+// LeasesListView powers /console/leases. Same telemetry gap as
 // workers — surfaces the shape so operators recognise the eventual
 // fill.
 type LeasesListView struct {
@@ -258,7 +114,7 @@ type LeaseRow struct {
 	NearExpiry bool
 }
 
-// servePageLeases renders /console/ops/leases.
+// servePageLeases renders /console/leases.
 func servePageLeases(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -276,7 +132,7 @@ func servePageLeases(
 	}
 	renderPage(w, r, ts, cfg, "ops-leases", pageData{
 		Title:   "Leases",
-		Section: "ops",
+		Section: "leases",
 		Page:    view,
 	})
 }

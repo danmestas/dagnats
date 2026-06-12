@@ -1,8 +1,9 @@
-// ops_pages_test.go covers the operator pages: the slim /console/ops
-// index, /console/workers (placeholder), /console/ops/leases
+// ops_pages_test.go covers the operator pages after the Ops hub was
+// dissolved (B3 nav/IA): the retired /console/ops landing now
+// 301-redirects, while /console/workers (placeholder), /console/leases
 // (placeholder), /console/kv inspector, and /console/streams
-// (placeholder). Each test asserts both a positive substring AND a
-// boundary condition so the page can't drift silently.
+// (placeholder) carry the content. Each test asserts both a positive
+// substring AND a boundary condition so the page can't drift silently.
 //
 // Methodology:
 //   - In-memory fakeDataSource feeds page renders.
@@ -17,46 +18,20 @@ import (
 	"testing"
 )
 
-func TestOpsIndex_rendersSlimTiles(t *testing.T) {
+// TestOpsHubDissolved_redirectsToDashboard asserts the retired Ops
+// landing 301-redirects to the dashboard (the B3 nav/IA pass removed
+// the hub and promoted its children to top level).
+func TestOpsHubDissolved_redirectsToDashboard(t *testing.T) {
 	fake := newFakeDS()
-	fake.kvBuckets = []KVBucketInfo{
-		{Name: "triggers", Description: "triggers"},
-		{Name: "workflow_runs", Description: "runs"},
-	}
-	fake.auditEvents = []AuditEvent{{
-		Actor: "operator", Action: "dlq.retry",
-		Target: "1", Outcome: "success",
-	}}
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
 		"/console/ops", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
+	if rr.Code != http.StatusMovedPermanently {
+		t.Fatalf("status = %d, want 301", rr.Code)
 	}
-	body := rr.Body.String()
-	for _, want := range []string{
-		"Leases", "Audit log", "Metrics",
-		"engine telemetry pending",
-		`href="/console/ops/leases"`,
-		`href="/console/ops/audit"`,
-		`href="/console/ops/metrics"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("missing %q in ops index", want)
-		}
-	}
-	// Workers + KV must be gone from the Ops index — they are now
-	// top-level nav entries.
-	for _, gone := range []string{
-		`href="/console/ops/workers"`,
-		`href="/console/ops/kv"`,
-		`data-tile-section="ops-workers"`,
-		`data-tile-section="ops-kv"`,
-	} {
-		if strings.Contains(body, gone) {
-			t.Errorf("ops index still references %q after promotion", gone)
-		}
+	if got := rr.Header().Get("Location"); got != "/console/" {
+		t.Fatalf("Location = %q, want /console/", got)
 	}
 }
 
@@ -91,7 +66,7 @@ func TestOpsLeases_rendersPlaceholderBanner(t *testing.T) {
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/leases", nil))
+		"/console/leases", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}

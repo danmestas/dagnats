@@ -244,6 +244,24 @@ a:hover { text-decoration: underline; }
   background: var(--accent-soft);
 }
 
+/* Leading glyph signifier on each nav item (Norman: a small affordance
+   cue that pre-names the destination). Fixed-width so labels align in
+   the vertical layouts; muted so the glyph reads as ornament, not as a
+   competing label. */
+.console-nav-glyph {
+  display: inline-block;
+  width: 1.15em;
+  margin-right: var(--space-1);
+  text-align: center;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+.console-nav a.is-active .console-nav-glyph,
+.console-nav-mobile-panel a.is-active .console-nav-glyph {
+  color: var(--text-primary);
+  opacity: 1;
+}
+
 /* Section labels (Inventory / Activity / System) inside the nav. Hidden
    by default so the medium-width horizontal top bar stays a flat row;
    shown only in the vertical layouts (mobile panel + the wide sidebar),

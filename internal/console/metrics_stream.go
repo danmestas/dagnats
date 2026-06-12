@@ -148,7 +148,7 @@ func tileForMetric(
 	case "snapshot.save.duration_ms":
 		return tileFromHistogramP50(src,
 			"snapshot.save.duration_ms", "tile-snapshot-p50",
-			"Snapshot p50", "ms", "/console/ops/metrics"), true
+			"Snapshot p50", "ms", "/console/metrics"), true
 	}
 	return MetricsTile{}, false
 }

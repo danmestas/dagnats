@@ -319,9 +319,30 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageTaskTypes(w, r, ts, cfg)
 		})
+	// /console/functions is the user-facing route for the page formerly
+	// labelled "Task Types"; the legacy path stays mounted for bookmarks.
+	mux.HandleFunc("/console/functions",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageTaskTypes(w, r, ts, cfg)
+		})
+	// Promoted top-level routes (B3 nav/IA). The Ops hub is gone; its
+	// children now live at the top level. The old /console/ops* paths
+	// 301-redirect below so bookmarks survive.
+	mux.HandleFunc("/console/metrics",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageMetrics(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/audit",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageAuditLog(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/leases",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageLeases(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/ops",
 		func(w http.ResponseWriter, r *http.Request) {
-			servePageOpsIndex(w, r, ts, cfg)
+			redirectMovedPermanently(w, r, "/console/")
 		})
 	mux.HandleFunc("/console/ops/workers",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -329,7 +350,7 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		})
 	mux.HandleFunc("/console/ops/leases",
 		func(w http.ResponseWriter, r *http.Request) {
-			servePageLeases(w, r, ts, cfg)
+			redirectMovedPermanently(w, r, "/console/leases")
 		})
 	mux.HandleFunc("/console/ops/kv",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -337,11 +358,11 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		})
 	mux.HandleFunc("/console/ops/audit",
 		func(w http.ResponseWriter, r *http.Request) {
-			servePageAuditLog(w, r, ts, cfg)
+			redirectMovedPermanently(w, r, "/console/audit")
 		})
 	mux.HandleFunc("/console/ops/metrics",
 		func(w http.ResponseWriter, r *http.Request) {
-			servePageMetrics(w, r, ts, cfg)
+			redirectMovedPermanently(w, r, "/console/metrics")
 		})
 	mux.HandleFunc("/console/sse/metrics",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -437,6 +458,24 @@ func dispatchRoot(
 	serveDashboard(w, r, ts, cfg)
 }
 
+// redirectMovedPermanently 301-redirects to target, preserving any
+// query string so deep links keep their parameters. Used for the
+// retired /console/ops* paths after the Ops hub was dissolved.
+func redirectMovedPermanently(
+	w http.ResponseWriter, r *http.Request, target string,
+) {
+	if w == nil {
+		panic("redirectMovedPermanently: w is nil")
+	}
+	if r == nil {
+		panic("redirectMovedPermanently: r is nil")
+	}
+	if raw := r.URL.RawQuery; raw != "" {
+		target += "?" + raw
+	}
+	http.Redirect(w, r, target, http.StatusMovedPermanently)
+}
+
 // serveNotFound renders the layout-wrapped 404 page. Used in place of
 // http.NotFound across the console so the operator always keeps the
 // header + a clear path back to the dashboard. Sets X-Robots-Tag:
@@ -515,7 +554,6 @@ var pageContentFiles = map[string]string{
 	"dlq-list":          "templates/dlq_list.html",
 	"dlq-detail":        "templates/dlq_detail.html",
 	"audit-log":         "templates/audit_log.html",
-	"ops-index":         "templates/ops_index.html",
 	"workers-list":      "templates/workers_list.html",
 	"ops-leases":        "templates/ops_leases.html",
 	"kv-list":           "templates/kv_list.html",

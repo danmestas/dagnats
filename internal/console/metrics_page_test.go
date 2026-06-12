@@ -1,4 +1,4 @@
-// metrics_page_test.go covers the /console/ops/metrics page and the
+// metrics_page_test.go covers the /console/metrics page and the
 // shared tile/chart builders. The dashboard tiles on /console/ are
 // covered indirectly via the same builders.
 //
@@ -114,7 +114,7 @@ func TestMetricsPage_RendersWithSeededTilesAndCharts(t *testing.T) {
 		}, now,
 	)
 	cfg := makeMetricsCfg(t, src)
-	rec := exerciseMetrics(t, cfg, "/console/ops/metrics")
+	rec := exerciseMetrics(t, cfg, "/console/metrics")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -127,7 +127,7 @@ func TestMetricsPage_RendersWithSeededTilesAndCharts(t *testing.T) {
 
 func TestMetricsPage_EmptyAggregatorRendersExplicitState(t *testing.T) {
 	cfg := makeMetricsCfg(t, nil)
-	rec := exerciseMetrics(t, cfg, "/console/ops/metrics")
+	rec := exerciseMetrics(t, cfg, "/console/metrics")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -150,7 +150,7 @@ func TestMetricsPage_EmptyAggregatorRendersExplicitState(t *testing.T) {
 func TestMetricsPage_DownAggregatorSurfacesErrorBanner(t *testing.T) {
 	cfg := makeMetricsCfg(t, nil)
 	cfg.MetricsErrorReason = "pump start failed: stream missing"
-	rec := exerciseMetrics(t, cfg, "/console/ops/metrics")
+	rec := exerciseMetrics(t, cfg, "/console/metrics")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -165,7 +165,7 @@ func TestMetricsPage_DownAggregatorSurfacesErrorBanner(t *testing.T) {
 // Phase 2 T06: the dashboard tiles are now the operational status
 // tiles (tile-failed-1h / tile-dlq-depth / tile-in-flight /
 // tile-success-rate / tile-p99-latency / tile-workers-active). The
-// legacy "tile-runs-rate" id moved exclusively to /console/ops/metrics.
+// legacy "tile-runs-rate" id moved exclusively to /console/metrics.
 // These two tests verify the new dashboard surface still reacts to a
 // wired metrics source (success-rate / p99 tiles get values) and
 // degrades gracefully when one isn't wired (tiles still render but

@@ -1,6 +1,8 @@
 // internal/console/end_of_arc_smoke_test.go
 // Methodology: PR 8 closed the control-plane arc (PRs 1-8); #311
-// promoted Workers / KV / Streams out of /console/ops. This smoke
+// promoted Workers / KV / Streams out of /console/ops, and the B3
+// nav/IA pass dissolved the Ops hub entirely (Metrics / Audit / Leases
+// promoted to top level, old paths now 301-redirect). This smoke
 // test boots a Mount with a fake DataSource and hits every page
 // rendered across the arc, asserting:
 //   - no 500 anywhere (sanity over the full surface),
@@ -37,11 +39,16 @@ func TestEndOfArc_everyPageReturnsValidHTML(t *testing.T) {
 		{"/console/kv", http.StatusOK},
 		{"/console/streams", http.StatusOK},
 		{"/console/dlq", http.StatusOK},
-		{"/console/ops", http.StatusOK},
-		{"/console/ops/leases", http.StatusOK},
-		{"/console/ops/audit", http.StatusOK},
-		{"/console/ops/metrics", http.StatusOK},
-		// Old paths now 308-redirect to the promoted top-level entries.
+		{"/console/leases", http.StatusOK},
+		{"/console/audit", http.StatusOK},
+		{"/console/metrics", http.StatusOK},
+		// The Ops hub is dissolved; its old paths 301-redirect to the
+		// promoted top-level entries (bookmark preservation).
+		{"/console/ops", http.StatusMovedPermanently},
+		{"/console/ops/leases", http.StatusMovedPermanently},
+		{"/console/ops/audit", http.StatusMovedPermanently},
+		{"/console/ops/metrics", http.StatusMovedPermanently},
+		// Workers / KV were promoted earlier; they 308-redirect.
 		{"/console/ops/workers", http.StatusPermanentRedirect},
 		{"/console/ops/kv", http.StatusPermanentRedirect},
 		// Unknown path → layout-wrapped 404.
@@ -61,7 +68,8 @@ func TestEndOfArc_everyPageReturnsValidHTML(t *testing.T) {
 		}
 		// Redirects have no body chrome to validate; the per-handler
 		// tests assert the Location header explicitly.
-		if rec.Code == http.StatusPermanentRedirect {
+		if rec.Code == http.StatusPermanentRedirect ||
+			rec.Code == http.StatusMovedPermanently {
 			continue
 		}
 		body := rec.Body.String()
