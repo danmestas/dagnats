@@ -660,7 +660,7 @@ func TestAuditLogView_rendersRecentEvents(t *testing.T) {
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/audit", nil))
+		"/console/audit", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -689,7 +689,7 @@ func TestAuditLogView_actorFilter(t *testing.T) {
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/audit?actor=alice", nil))
+		"/console/audit?actor=alice", nil))
 	body := rr.Body.String()
 	if !strings.Contains(body, "alice") {
 		t.Errorf("expected alice in filtered list")
@@ -766,7 +766,7 @@ func TestReadOnlyMiddleware_allowsGET(t *testing.T) {
 	h := mountWithFakeRO(t, fake, true)
 	for _, path := range []string{
 		"/console/", "/console/workflows", "/console/runs",
-		"/console/triggers", "/console/dlq", "/console/ops/audit",
+		"/console/triggers", "/console/dlq", "/console/audit",
 	} {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
@@ -1220,7 +1220,7 @@ func TestAuditView_rangeFilter1h(t *testing.T) {
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/audit?range=1h", nil))
+		"/console/audit?range=1h", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -1242,7 +1242,7 @@ func TestAuditView_targetLinksDLQ(t *testing.T) {
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/audit", nil))
+		"/console/audit", nil))
 	body := rr.Body.String()
 	if !strings.Contains(body, `href="/console/dlq/555"`) {
 		t.Errorf("expected DLQ target link; body=%s", body)
@@ -1260,7 +1260,7 @@ func TestAuditView_targetLinksTrigger(t *testing.T) {
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/audit", nil))
+		"/console/audit", nil))
 	body := rr.Body.String()
 	if !strings.Contains(body, `href="/console/triggers/cron-x"`) {
 		t.Errorf("expected trigger target link; body=%s", body)
@@ -1275,7 +1275,7 @@ func TestAuditView_actionDropdownIncludesAllConstants(t *testing.T) {
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/ops/audit", nil))
+		"/console/audit", nil))
 	body := rr.Body.String()
 	for _, a := range AuditActionList() {
 		if !strings.Contains(body, string(a)) {

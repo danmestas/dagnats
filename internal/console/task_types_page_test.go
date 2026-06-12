@@ -162,12 +162,13 @@ func TestTaskTypesPage_RendersAllSections(t *testing.T) {
 	}
 	body := rr.Body.String()
 	wants := []string{
-		// Page chrome.
-		"<title>Task Types",
+		// Page chrome. The page is now labelled "Functions" (B3 nav/IA)
+		// though the legacy /console/task-types route still serves it.
+		"<title>Functions",
 		`data-page="task-types-list"`,
 		// Header tile strip.
 		`page-header-tile`,
-		`TASK TYPES`, `SERVICES`,
+		`FUNCTIONS`, `SERVICES`,
 		// Table chrome.
 		`id="task-types-table"`,
 		`<th>Task type</th>`,
@@ -185,8 +186,9 @@ func TestTaskTypesPage_RendersAllSections(t *testing.T) {
 		"w1", "w2",
 		// Em-dash on the three unmeasured metric columns.
 		"&mdash;",
-		// Top-nav link must reflect the active section.
-		`href="/console/task-types"`,
+		// Top-nav link must reflect the active section (renamed to
+		// Functions in the B3 nav/IA pass).
+		`href="/console/functions"`,
 	}
 	for _, want := range wants {
 		if !strings.Contains(body, want) {

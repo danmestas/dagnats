@@ -99,7 +99,12 @@ func TestTooltipHelper_unknownTermFallsBackToPlainLabel(t *testing.T) {
 	}
 }
 
-func TestNavDLQHasTooltip(t *testing.T) {
+// TestNavDLQIsPlainLink asserts the DLQ + KV nav items are plain
+// anchors after the B3 nav/IA pass — the glo-tooltip-wrapper
+// mystery-meat (help-cursor + hover popover, a broken signifier
+// versus every other nav item) was removed. The glossary tooltip
+// still lives on in-page headers; it just no longer wraps nav links.
+func TestNavDLQIsPlainLink(t *testing.T) {
 	set, err := loadTemplates()
 	if err != nil {
 		t.Fatalf("loadTemplates: %v", err)
@@ -127,12 +132,20 @@ func TestNavDLQHasTooltip(t *testing.T) {
 		t.Fatalf("execute layout: %v", err)
 	}
 	html := buf.String()
-	if !strings.Contains(html, `glo-tooltip-wrapper`) {
-		t.Errorf("layout missing glo-tooltip-wrapper around DLQ nav")
-	}
-	if !strings.Contains(html, `Dead-letter queue`) {
-		t.Errorf("layout missing DLQ glossary text; got\n%s",
+	// The nav must not wrap any link in the glossary tooltip mystery-meat.
+	if strings.Contains(html, `glo-tooltip-wrapper`) {
+		t.Errorf("nav still wraps a link in glo-tooltip-wrapper; got\n%s",
 			truncateForLog(html))
+	}
+	// DLQ + KV must be present as plain anchors with the shared glyph link.
+	for _, want := range []string{
+		`href="/console/dlq"`,
+		`href="/console/kv"`,
+		"console-nav-glyph-link",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("nav missing %q; got\n%s", want, truncateForLog(html))
+		}
 	}
 }
 

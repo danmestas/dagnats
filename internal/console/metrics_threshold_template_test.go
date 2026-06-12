@@ -26,7 +26,7 @@ func TestMetricsTemplateRendersAnomalyThresholdConstant(t *testing.T) {
 			{UpperBound: 10, Count: 5},
 		}, now)
 	cfg := makeMetricsCfg(t, src)
-	rec := exerciseMetrics(t, cfg, "/console/ops/metrics")
+	rec := exerciseMetrics(t, cfg, "/console/metrics")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("metrics page status = %d, want 200", rec.Code)
 	}
@@ -55,7 +55,7 @@ func TestMetricsTemplateRendersAnomalyClickHint(t *testing.T) {
 			{UpperBound: 10, Count: 5},
 		}, now)
 	cfg := makeMetricsCfg(t, src)
-	rec := exerciseMetrics(t, cfg, "/console/ops/metrics")
+	rec := exerciseMetrics(t, cfg, "/console/metrics")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}

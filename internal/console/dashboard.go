@@ -378,7 +378,7 @@ func tileSuccessRate(src MetricsSource) (DashboardTile, bool) {
 	pct := parseFloatOrZero(inner.Value)
 	t := DashboardTile{
 		Key: "success-rate", Title: "Success rate (1h)", Unit: "%",
-		LinkHref: "/console/ops/metrics",
+		LinkHref: "/console/metrics",
 		Value:    inner.Value,
 		Spark:    inner.Spark,
 		State:    successRateState(pct),
@@ -417,7 +417,7 @@ func tileP99Latency(src MetricsSource) (DashboardTile, bool) {
 	p99 := percentileFromBuckets(latest, 0.99)
 	t := DashboardTile{
 		Key: "p99-latency", Title: "p99 snapshot latency", Unit: "ms",
-		LinkHref: "/console/ops/metrics",
+		LinkHref: "/console/metrics",
 		Value:    formatNumber(p99),
 		Spark:    sparkFromHistogramP50(series.Points, 24),
 		State:    latencyTileState(p99),

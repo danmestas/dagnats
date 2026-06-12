@@ -796,7 +796,7 @@ func csrfTokenFor(r *http.Request) string {
 	return CSRFTokenForActor(actor)
 }
 
-// AuditLogView powers /console/ops/audit.
+// AuditLogView powers /console/audit.
 type AuditLogView struct {
 	ActorFilter  string
 	ActionFilter string
@@ -818,7 +818,7 @@ type AuditRow struct {
 	DataJSON   string
 }
 
-// servePageAuditLog renders /console/ops/audit.
+// servePageAuditLog renders /console/audit.
 func servePageAuditLog(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -836,7 +836,7 @@ func servePageAuditLog(
 	view := buildAuditView(r.Context(), ds, r.URL.Query())
 	renderPage(w, r, ts, cfg, "audit-log", pageData{
 		Title:   "Audit log",
-		Section: "ops",
+		Section: "audit",
 		Page:    view,
 	})
 }

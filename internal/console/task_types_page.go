@@ -107,8 +107,8 @@ func servePageTaskTypes(
 		view.EmptyState.ReadOnly = cfg.ReadOnly
 	}
 	renderPage(w, r, ts, cfg, "task-types-list", pageData{
-		Title:   "Task Types",
-		Section: "task-types",
+		Title:   "Functions",
+		Section: "functions",
 		Page:    view,
 	})
 }
@@ -139,15 +139,15 @@ func buildTaskTypesView(
 // table.
 func taskTypesHeader(taskTypes, groups int) PageHeader {
 	header, err := NewPageHeader(PageHeader{
-		Title:    "Task Types",
+		Title:    "Functions",
 		Subtitle: "Every task type any live worker handles.",
 		Tiles: []Tile{
-			{Label: "TASK TYPES", Count: taskTypes, Tone: ToneDefault},
+			{Label: "FUNCTIONS", Count: taskTypes, Tone: ToneDefault},
 			{Label: "SERVICES", Count: groups, Tone: ToneInfo},
 		},
 	})
 	if err != nil {
-		return PageHeader{Title: "Task Types"}
+		return PageHeader{Title: "Functions"}
 	}
 	return header
 }

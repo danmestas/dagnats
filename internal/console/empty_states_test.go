@@ -67,7 +67,7 @@ func TestEmptyState_triggersShowsCreateCTA(t *testing.T) {
 }
 
 func TestEmptyState_auditShowsTryActionsCTA(t *testing.T) {
-	body := renderPath(t, "/console/ops/audit")
+	body := renderPath(t, "/console/audit")
 	if !strings.Contains(body, "console-empty-action") {
 		t.Errorf("audit empty state missing CTA block")
 	}
@@ -266,8 +266,8 @@ func TestNotFound_listsPopularDestinations(t *testing.T) {
 		"/console/runs",
 		"/console/triggers",
 		"/console/dlq",
-		"/console/ops/metrics",
-		"/console/ops/audit",
+		"/console/metrics",
+		"/console/audit",
 	} {
 		if !strings.Contains(body, link) {
 			t.Errorf("404 popular destinations missing %s", link)

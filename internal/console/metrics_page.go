@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// metrics_page.go owns the /console/ops/metrics page: the in-console
+// metrics_page.go owns the /console/metrics page: the in-console
 // metrics dashboard with system-health tiles, throughput / latency
 // charts, and a per-workflow breakdown. Live updates run via
 // /console/sse/metrics; this file holds only the initial render path.
@@ -111,9 +111,9 @@ type StepMetricsRow struct {
 	P95LatencyMs float64
 }
 
-// servePageMetrics renders /console/ops/metrics. Implements the same
-// shape as servePageOpsIndex: build view, render, exit. Live updates
-// arrive on /console/sse/metrics (registered separately).
+// servePageMetrics renders /console/metrics. Builds the view, renders,
+// exits. Live updates arrive on /console/sse/metrics (registered
+// separately).
 func servePageMetrics(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -129,7 +129,7 @@ func servePageMetrics(
 	view := buildMetricsView(r.Context(), cfg, workflow)
 	pd := pageData{
 		Title:   "Metrics",
-		Section: "ops",
+		Section: "metrics",
 		Page:    view,
 	}
 	renderPage(w, r, ts, cfg, "metrics_dashboard", pd)
@@ -181,7 +181,7 @@ func buildMetricsTiles(src MetricsSource) []MetricsTile {
 		tileFromSuccessRate(src),
 		tileFromHistogramP50(src,
 			"snapshot.save.duration_ms", "tile-snapshot-p50",
-			"Snapshot p50", "ms", "/console/ops/metrics"),
+			"Snapshot p50", "ms", "/console/metrics"),
 		tileFromCounter(src,
 			"workflow.runs.failed", "tile-failed",
 			"Runs failed", "runs", "/console/dlq"),

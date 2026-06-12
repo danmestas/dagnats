@@ -196,10 +196,10 @@ func configTiles(
 		{Label: "TRIGGERS", Count: trg, Tone: ToneInfo,
 			Href: "/console/triggers"},
 		{Label: "WORKERS", Count: len(snap.Workers), Tone: ToneSuccess,
-			Href: "/console/ops/workers"},
+			Href: "/console/workers"},
 		{Label: "STREAMS", Count: len(snap.Streams), Tone: ToneDefault},
 		{Label: "KV BUCKETS", Count: len(snap.KVBuckets), Tone: ToneDefault,
-			Href: "/console/ops/kv"},
+			Href: "/console/kv"},
 		{Label: "DLQ", Count: dlq, Tone: dlqTone(dlq),
 			Href: "/console/dlq"},
 	}
