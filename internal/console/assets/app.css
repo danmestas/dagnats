@@ -1712,44 +1712,6 @@ body[data-theme="dark"] {
   }
 }
 
-/* --- onboarding banner (PR 8) ----------------------------------
- * First-run intro. Rendered once at /console/ and dismissed via
- * localStorage. Visually: surface card, accent-colored left border,
- * sans title — quiet, not alarming. */
-.console-onboarding {
-  background: var(--surface);
-  border-radius: var(--radius-tile);
-  padding: 18px 22px 14px 22px;
-  margin: 14px 0 24px 0;
-  max-width: 760px;
-}
-.console-onboarding-header h2 {
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  margin: 0 0 8px 0;
-  color: var(--text-primary);
-}
-.console-onboarding-body p {
-  font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.55;
-  margin: 0 0 10px 0;
-  color: var(--text-primary);
-}
-.console-onboarding-body p:last-child {
-  margin-bottom: 0;
-}
-.console-onboarding-body strong {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.console-onboarding-footer {
-  margin-top: 12px;
-  text-align: right;
-}
-
 /* --- empty-state primary actions (PR 8) ----------------------- */
 .console-empty-action {
   padding: 14px 16px;
@@ -1903,7 +1865,6 @@ body[data-theme="dark"] {
 /* --- print stylesheet (PR 8 stretch) -------------------------- */
 @media print {
   .console-header,
-  .console-onboarding,
   .console-readonly-banner,
   .console-filter-bar,
   #theme-toggle,
@@ -3598,4 +3559,88 @@ body[data-theme="dark"] code {
   font-size: 1.3rem;
   color: var(--accent);
   line-height: 1;
+}
+
+/* ---------------------------------------------------------------- */
+/* Batch 9 — compact dashboard, slim explainer, nav badges.         */
+/* The MagicPath mockup renders the dashboard top strip as four     */
+/* compact tiles (a big tone-colored number + a small uppercase     */
+/* label) instead of the bulky "click to drill" cards. These        */
+/* overrides win because app.css loads after basecoat.css.          */
+/* ---------------------------------------------------------------- */
+
+/* Compact tile: number + label, no min-height block, no hint prose,
+   no hover arrow. Four tiles fit one row on wide screens. */
+.dashboard-tile-grid {
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+  margin: 0.75rem 0 1.25rem;
+}
+@media (max-width: 1024px) {
+  .dashboard-tile-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .dashboard-tile-grid { grid-template-columns: 1fr; }
+}
+.dashboard-tile {
+  gap: 0.15rem;
+  min-height: 0;
+  padding: 0.65rem 0.85rem;
+}
+.dashboard-tile-header {
+  order: 2;
+}
+/* The drill arrow is redundant on a compact tile; the value leads. */
+.dashboard-tile-arrow {
+  display: none;
+}
+.dashboard-tile-value {
+  font-size: 1.7rem;
+  line-height: 1.05;
+  order: 1;
+}
+/* Label below the value: small, uppercase, muted — mirrors .dn-l. */
+.dashboard-tile .dashboard-tile-title {
+  font-size: 0.66rem;
+  letter-spacing: 0.05em;
+}
+.dashboard-tile-unit { display: none; }
+.dashboard-tile-spark { order: 3; }
+
+/* Slim, persistent explainer bar replacing the dismissible welcome
+   card. ~9px/16px padding + 12px copy per the mockup; keywords bold
+   in --text-primary, the rest in --text-secondary. */
+.dashboard-explainer {
+  margin: 0 0 0.85rem;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.dashboard-explainer b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Nav count badge — a small pill after the nav label. Hidden until
+   the nav-counts.js client fills a real count (honesty: no count =
+   no badge). Tone matches the muted chrome, brightening on active. */
+.console-nav-badge {
+  display: inline-block;
+  margin-left: auto;
+  min-width: 1.25rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  text-align: center;
+}
+.console-nav-glyph-link.is-active .console-nav-badge {
+  color: var(--accent);
 }

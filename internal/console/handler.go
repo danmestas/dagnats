@@ -267,6 +267,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			serveSearch(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/api/nav-counts",
+		func(w http.ResponseWriter, r *http.Request) {
+			serveNavCounts(w, r, cfg)
+		})
 	mux.HandleFunc("/console/workers",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageWorkers(w, r, ts, cfg)
@@ -396,14 +400,14 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	mux.HandleFunc("/console/assets/metrics.js",
 		servePlainAssetAt("sources/metrics.js",
 			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/onboarding.js",
-		servePlainAssetAt("sources/onboarding.js",
-			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/assets/build-info-copy.js",
 		servePlainAssetAt("sources/build-info-copy.js",
 			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/assets/sidebar-collapse.js",
 		servePlainAssetAt("sources/sidebar-collapse.js",
+			"application/javascript; charset=utf-8"))
+	mux.HandleFunc("/console/assets/nav-counts.js",
+		servePlainAssetAt("sources/nav-counts.js",
 			"application/javascript; charset=utf-8"))
 	mux.HandleFunc("/console/assets/logs.js",
 		servePlainAssetAt("sources/logs.js",

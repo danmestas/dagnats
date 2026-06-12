@@ -20,9 +20,9 @@ import "embed"
 //go:embed assets/sources/toast.js
 //go:embed assets/sources/count-chip.js
 //go:embed assets/sources/metrics.js
-//go:embed assets/sources/onboarding.js
 //go:embed assets/sources/build-info-copy.js
 //go:embed assets/sources/sidebar-collapse.js
+//go:embed assets/sources/nav-counts.js
 //go:embed assets/sources/sparkline.js
 //go:embed assets/sources/sheet.js
 //go:embed assets/sources/logs.js

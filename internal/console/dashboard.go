@@ -306,7 +306,6 @@ func tileFailedLastHour(src MetricsSource, count int) DashboardTile {
 		LinkHref: "/console/runs?status=failed&range=1h",
 		Value:    strconv.Itoa(count),
 		State:    failedTileState(count),
-		Hint:     "click to drill",
 	}
 	if src != nil {
 		if series, ok := src.MetricSnapshot("workflow.runs.failed"); ok {
@@ -337,7 +336,6 @@ func tileDLQDepth(depth int, spark []float64) DashboardTile {
 		Value:    strconv.Itoa(depth),
 		State:    dlqTileState(depth),
 		Spark:    spark,
-		Hint:     "click to drill",
 	}
 }
 
@@ -359,7 +357,6 @@ func tileInFlight(count int) DashboardTile {
 		LinkHref: "/console/runs?status=running",
 		Value:    strconv.Itoa(count),
 		State:    "good",
-		Hint:     "click to drill",
 	}
 }
 
