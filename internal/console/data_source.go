@@ -492,12 +492,29 @@ type ConfigSnapshot struct {
 // Provisioned is false when the stream is listed as known but the
 // JetStream account couldn't confirm it — the row renders muted.
 type StreamSnapshot struct {
-	Name        string
-	Subjects    []string
-	Messages    uint64
-	Bytes       uint64
-	Consumers   int
-	Retention   string
+	Name      string
+	Subjects  []string
+	Messages  uint64
+	Bytes     uint64
+	Consumers int
+	Retention string
+
+	// Storage / Replicas / MaxAge / MaxBytes / MaxMsgs / FirstSeq /
+	// LastSeq carry the richer per-stream config + state the detail
+	// view (#B6 ITEM 1) renders. They come from the same stream.Info()
+	// call lookupStreamSnapshot already makes — no second round-trip.
+	// Storage is the human token ("file" | "memory"); MaxAge is the
+	// humanized duration ("24h0m0s") or "" when unbounded; MaxBytes /
+	// MaxMsgs are the raw JetStream values (-1 means unlimited). The
+	// list page ignores these; only the detail view reads them.
+	Storage  string
+	Replicas int
+	MaxAge   string
+	MaxBytes int64
+	MaxMsgs  int64
+	FirstSeq uint64
+	LastSeq  uint64
+
 	Provisioned bool
 }
 
@@ -2115,8 +2132,38 @@ func lookupStreamSnapshot(
 		Bytes:       info.State.Bytes,
 		Consumers:   info.State.Consumers,
 		Retention:   retentionLabel(info.Config.Retention),
+		Storage:     storageLabel(info.Config.Storage),
+		Replicas:    info.Config.Replicas,
+		MaxAge:      maxAgeLabel(info.Config.MaxAge),
+		MaxBytes:    info.Config.MaxBytes,
+		MaxMsgs:     info.Config.MaxMsgs,
+		FirstSeq:    info.State.FirstSeq,
+		LastSeq:     info.State.LastSeq,
 		Provisioned: true,
 	}
+}
+
+// storageLabel maps the JetStream storage enum to the operator token
+// the detail view renders. Unknown values fall through to String() so
+// a future backend at least renders something rather than blank.
+func storageLabel(s jetstream.StorageType) string {
+	switch s {
+	case jetstream.FileStorage:
+		return "file"
+	case jetstream.MemoryStorage:
+		return "memory"
+	}
+	return s.String()
+}
+
+// maxAgeLabel humanizes a stream's MaxAge. Zero means "no age limit"
+// — we return "" so the detail view can render an honest "—" rather
+// than the misleading "0s".
+func maxAgeLabel(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return d.String()
 }
 
 // retentionLabel converts a JetStream retention enum into the

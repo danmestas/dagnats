@@ -370,6 +370,150 @@ func buildStreamsHeader(rows []StreamRow) PageHeader {
 	return h
 }
 
+// StreamDetailView powers /console/streams/{name}. NotFound is true when
+// the name isn't one of the engine's known streams (or the stream is
+// known-but-unprovisioned). Config / State are the two shared stat-cards;
+// Consumers is the filtered "consumers on this stream" table. Every value
+// is read from the same ConfigSnapshot the list page uses plus a filtered
+// ListConsumers — no second stream-info round-trip, no fabricated data.
+type StreamDetailView struct {
+	Name        string
+	NotFound    bool
+	Provisioned bool
+	Config      StatCard
+	State       StatCard
+	Consumers   []ConsumerRow
+}
+
+// dispatchStreams routes /console/streams/<name> to the read-only detail
+// view. The trailing-slash prefix lands here; an empty name 404s.
+func dispatchStreams(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("dispatchStreams: w is nil")
+	}
+	if r == nil {
+		panic("dispatchStreams: r is nil")
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/console/streams/")
+	if name == "" || strings.Contains(name, "/") {
+		serveNotFound(w, r, ts, cfg)
+		return
+	}
+	servePageStreamDetail(w, r, ts, cfg, name)
+}
+
+// servePageStreamDetail renders the read-only detail for one stream. A
+// snapshot miss or unknown name degrades to the honest not-found state
+// within the page chrome — the view is observational and never 500s.
+func servePageStreamDetail(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config, name string,
+) {
+	if w == nil {
+		panic("servePageStreamDetail: w is nil")
+	}
+	if name == "" {
+		panic("servePageStreamDetail: name is empty")
+	}
+	ds, ok := requireData(w, cfg, "stream-detail")
+	if !ok {
+		return
+	}
+	snap, _ := ds.ConfigSnapshot(r.Context())
+	view := buildStreamDetail(snap.Streams, name)
+	if view.Provisioned {
+		consumers, _ := ds.ListConsumers(r.Context())
+		view.Consumers = consumersForStream(consumers, name)
+	}
+	renderPage(w, r, ts, cfg, "stream-detail", pageData{
+		Title:   "Stream " + name,
+		Section: "streams",
+		Page:    view,
+	})
+}
+
+// buildStreamDetail projects one named StreamSnapshot into the detail
+// view. An absent or unprovisioned stream returns NotFound so the page
+// renders the honest empty state rather than a fabricated row.
+func buildStreamDetail(snaps []StreamSnapshot, name string) StreamDetailView {
+	const snapsMax = 1024
+	for i := 0; i < len(snaps) && i < snapsMax; i++ {
+		if snaps[i].Name != name {
+			continue
+		}
+		s := snaps[i]
+		if !s.Provisioned {
+			return StreamDetailView{Name: name, NotFound: true}
+		}
+		return StreamDetailView{
+			Name:        name,
+			Provisioned: true,
+			Config:      streamConfigCard(s),
+			State:       streamStateCard(s),
+		}
+	}
+	return StreamDetailView{Name: name, NotFound: true}
+}
+
+// streamConfigCard builds the Config stat-card from a provisioned
+// snapshot. Fields the snapshot can't supply render the honest dash via
+// statValueOr; -1 ceilings render as the unlimited glyph.
+func streamConfigCard(s StreamSnapshot) StatCard {
+	return StatCard{
+		Title: "Configuration",
+		Stats: []StatRow{
+			{Label: "Subjects", Value: statValueOr(strings.Join(s.Subjects, ", ")), Mono: true},
+			{Label: "Retention", Value: statValueOr(s.Retention)},
+			{Label: "Storage", Value: statValueOr(s.Storage)},
+			{Label: "Replicas", Value: strconv.Itoa(s.Replicas)},
+			{Label: "Max age", Value: statValueOr(s.MaxAge)},
+			{Label: "Max bytes", Value: maxCountLabel(s.MaxBytes), Mono: true},
+			{Label: "Max messages", Value: maxCountLabel(s.MaxMsgs), Mono: true},
+		},
+	}
+}
+
+// streamStateCard builds the State stat-card from a provisioned snapshot.
+func streamStateCard(s StreamSnapshot) StatCard {
+	return StatCard{
+		Title: "State",
+		Stats: []StatRow{
+			{Label: "Messages", Value: strconv.FormatUint(s.Messages, 10), Mono: true},
+			{Label: "Bytes", Value: humanBytes(s.Bytes), Mono: true},
+			{Label: "First seq", Value: strconv.FormatUint(s.FirstSeq, 10), Mono: true},
+			{Label: "Last seq", Value: strconv.FormatUint(s.LastSeq, 10), Mono: true},
+			{Label: "Consumers", Value: strconv.Itoa(s.Consumers)},
+		},
+	}
+}
+
+// maxCountLabel renders a JetStream max-* ceiling: -1 (or any
+// non-positive) means unlimited, shown as the infinity glyph rather than
+// a misleading negative number.
+func maxCountLabel(max int64) string {
+	if max <= 0 {
+		return "∞"
+	}
+	return strconv.FormatInt(max, 10)
+}
+
+// consumersForStream filters the global consumer list to one stream.
+// Bounded by len(rows); returns a freshly-allocated slice so the caller
+// owns it.
+func consumersForStream(rows []ConsumerRow, stream string) []ConsumerRow {
+	const rowsMax = 10_000
+	out := make([]ConsumerRow, 0, len(rows))
+	for i := 0; i < len(rows) && i < rowsMax; i++ {
+		if rows[i].Stream == stream {
+			out = append(out, rows[i])
+		}
+	}
+	return out
+}
+
 // serveOpsWorkersRedirect 308-redirects /console/ops/workers to the
 // promoted top-level /console/workers. Operators who bookmarked the
 // old path get the new one without breaking; 308 preserves method +

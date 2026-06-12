@@ -31,14 +31,11 @@
     </div>
     {{end}}
 
+    {{template "stat-card" .Config}}
+
     <article class="card">
-      <header class="card-header"><h2>Configuration</h2></header>
+      <header class="card-header"><h2>Raw configuration</h2></header>
       <div class="card-body">
-        <dl class="console-deflist">
-          <div><dt>Type</dt><dd>{{.Kind}}</dd></div>
-          <div><dt>Target</dt><dd class="console-mono">{{.Target}}</dd></div>
-          <div><dt>Next fire</dt><dd>{{.NextFireText}}</dd></div>
-        </dl>
         <pre class="console-pre"><code>{{.ConfigJSON}}</code></pre>
       </div>
     </article>

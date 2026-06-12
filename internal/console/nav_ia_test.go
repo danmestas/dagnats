@@ -167,6 +167,10 @@ func TestNavIA_navCrawlNo404(t *testing.T) {
 		"/console/audit",
 		"/console/leases",
 		"/console/config",
+		// Batch 6 detail routes: even with an empty fake these render the
+		// honest not-found state at 200, never a 404.
+		"/console/streams/WORKFLOW_HISTORY",
+		"/console/triggers/cron-1",
 	} {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))

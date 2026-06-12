@@ -1,0 +1,57 @@
+{{define "content"}}{{with .Page}}
+<section class="page page-stream-detail" data-page="stream-detail">
+  {{if .NotFound}}
+    <header class="console-section-header">
+      <h1>Stream {{.Name}}</h1>
+      <p class="console-lede">No stream named <code>{{.Name}}</code> is provisioned on this engine.</p>
+    </header>
+    <p><a class="btn btn-outline" href="/console/streams">&larr; back to streams</a></p>
+  {{else}}
+    <header class="console-section-header" data-component="page-header">
+      <div class="page-header-title-row">
+        <h1 class="console-mono">{{.Name}}</h1>
+      </div>
+      <p class="page-subtitle console-lede">JetStream stream — read-only inventory.</p>
+    </header>
+
+    <div class="stream-detail-cards">
+      {{template "stat-card" .Config}}
+      {{template "stat-card" .State}}
+    </div>
+
+    <article class="card" data-component="stream-consumers">
+      <header class="card-header"><h2>Consumers on this stream</h2></header>
+      <div class="card-body">
+        {{if .Consumers}}
+        <table class="table console-table">
+          <thead>
+            <tr>
+              <th>Consumer</th>
+              <th>Filter</th>
+              <th>Ack</th>
+              <th>Pending</th>
+              <th>Lag</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Consumers}}
+            <tr id="stream-consumer-{{.Name}}">
+              <td class="console-mono">{{.Name}}</td>
+              <td class="console-mono">{{.Filter}}</td>
+              <td>{{.AckPolicy}}</td>
+              <td>{{.NumPending}}</td>
+              <td>{{.Lag}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+        {{else}}
+        <p class="console-empty">No consumers are bound to this stream yet.</p>
+        {{end}}
+      </div>
+    </article>
+
+    <p><a class="btn btn-outline" href="/console/streams">&larr; back to streams</a></p>
+  {{end}}
+</section>
+{{end}}{{end}}

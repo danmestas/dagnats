@@ -10,20 +10,22 @@
         <th>Messages</th>
         <th>Bytes</th>
         <th>Consumers</th>
+        <th class="row-chevron-cell"><span class="sr-only">Open</span></th>
       </tr>
     </thead>
     <tbody id="streams-tbody">
       {{range .Page.Streams}}
       <tr id="stream-row-{{.Name}}">
-        <td class="mono">{{.Name}}</td>
+        <td class="mono"><a href="/console/streams/{{.Name}}">{{.Name}}</a></td>
         <td class="mono">{{.Subjects}}</td>
         <td>{{.Messages}}</td>
         <td>{{.Bytes}}</td>
         <td>{{.Consumers}}</td>
+        {{template "row-chevron"}}
       </tr>
       {{else}}
       <tr class="empty-row">
-        <td colspan="5">No JetStream streams reachable.</td>
+        <td colspan="6">No JetStream streams reachable.</td>
       </tr>
       {{end}}
     </tbody>
