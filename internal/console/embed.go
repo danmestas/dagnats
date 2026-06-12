@@ -47,6 +47,7 @@ var assetsFS embed.FS
 //go:embed templates/workflow_detail.html
 //go:embed templates/runs_list.html
 //go:embed templates/run_detail.html
+//go:embed templates/run_trace.html
 //go:embed templates/triggers_list.html
 //go:embed templates/trigger_detail.html
 //go:embed templates/dlq_list.html
@@ -87,6 +88,7 @@ var assetsFS embed.FS
 //go:embed templates/components/run_error_banner.html
 //go:embed templates/components/run_tab_panels.html
 //go:embed templates/components/run_trace_tab.html
+//go:embed templates/components/trace_tree.html
 //go:embed templates/components/tile_live.html
 //go:embed templates/components/recent_panels.html
 //go:embed templates/components/dlq_action_modal.html

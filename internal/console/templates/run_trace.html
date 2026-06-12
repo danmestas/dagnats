@@ -1,0 +1,19 @@
+{{define "content"}}{{with .Page}}
+<section class="console-section">
+  <header class="console-section-header">
+    <h1>Trace</h1>
+    <p class="console-lede console-mono">{{.RunID}}</p>
+    <p><a href="/console/runs/{{.RunID}}">&larr; back to run {{.RunIDShort}}</a></p>
+  </header>
+
+  {{if .Note}}
+  <aside class="callout callout-warning" role="status">{{.Note}}</aside>
+  {{end}}
+
+  <article class="card">
+    <div class="card-body">
+      {{template "trace-tree" .Rows}}
+    </div>
+  </article>
+</section>
+{{end}}{{end}}
