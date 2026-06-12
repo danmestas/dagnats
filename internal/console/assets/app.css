@@ -242,9 +242,22 @@ a:hover { text-decoration: underline; }
   padding: var(--space-1) var(--space-2);
   border-radius: 6px;
 }
-.console-nav a:hover { color: var(--text-primary); text-decoration: none; }
+/* Hover on a non-active nav item gives a faint surface raise (distinct
+   from the accent-tinted .is-active state, so hovering reads as "you can
+   go here" rather than "you are here"). transition keeps it smooth. */
+.console-nav a {
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.console-nav a:hover {
+  color: var(--text-primary);
+  text-decoration: none;
+  background: var(--surface);
+}
 .console-nav a.is-active {
   color: var(--text-primary);
+  background: var(--accent-soft);
+}
+.console-nav a.is-active:hover {
   background: var(--accent-soft);
 }
 
@@ -529,7 +542,12 @@ a:hover { text-decoration: underline; }
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border);
   padding: var(--space-2) var(--space-3);
-  background: var(--accent-soft);
+  /* Unconditionally transparent: the page background shows through and
+     the bottom border is the only separator. An earlier --accent-soft
+     fill read as a bright tinted bar in light/system themes (and was
+     near-invisible in dark), which forced a fragile theme-scoped
+     transparent override + media variant. One rule covers every theme. */
+  background: transparent;
 }
 .console-table tbody td {
   padding: var(--space-2) var(--space-3);
@@ -2166,15 +2184,37 @@ button:focus-visible,
 summary:focus-visible,
 [tabindex]:focus-visible,
 .btn:focus-visible,
+.theme-toggle:focus-visible,
+.console-nav a:focus-visible,
+.dashboard-tile:focus-visible,
 .cmdk-result:focus-visible,
 .step-list-row summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 3px;
 }
-.dashboard-tile:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+
+/* B8 interaction states — pressed (:active) + hover polish. Recon found
+ * zero :active states sitewide; a pressed signifier (Norman) confirms a
+ * click landed. Buttons + chips + the theme toggle nudge down 1px and
+ * dim slightly; transitions stay short (120ms) so feedback feels crisp,
+ * not laggy. Hover/active share the existing per-variant hover bg. */
+.btn,
+.theme-toggle,
+.page-header-tile-link {
+  transition: background-color 120ms ease, border-color 120ms ease,
+    color 120ms ease, transform 120ms ease;
+}
+.btn:active,
+.theme-toggle:active,
+.page-header-tile-link:active {
+  transform: translateY(1px);
+  filter: brightness(0.96);
+}
+.btn.is-disabled:active,
+.btn:disabled:active {
+  transform: none;
+  filter: none;
 }
 
 /* Redesign override: borderless radiused tiles. The dashboard tiles
@@ -2456,23 +2496,10 @@ summary:focus-visible,
  * instead of principle-scoring audits.
  * ========================================================= */
 
-/* Dark-mode table header readability. The earlier rule used
- * --accent-soft (a 14%-opacity blue tint) as the header background
- * with --text-secondary as the foreground; in dark mode that
- * computes to ~1.15:1 contrast — essentially invisible. Drop the
- * background tint and brighten the header text. */
-html[data-theme="dark"] .console-table thead th,
-body[data-theme="dark"] .console-table thead th {
-  background: transparent;
-  color: var(--text-primary);
-}
-@media (prefers-color-scheme: dark) {
-  html:not([data-theme="light"]):not([data-theme="dark"]) .console-table thead th,
-  body:not([data-theme="light"]):not([data-theme="dark"]) .console-table thead th {
-    background: transparent;
-    color: var(--text-primary);
-  }
-}
+/* Header readability is now handled by the unconditional transparent
+ * `.console-table thead th` base rule (no tinted bar in any theme); the
+ * former theme-scoped + media-variant transparent overrides were
+ * removed so there is one source of truth for the header background. */
 
 /* Dark-mode table cell text override — Basecoat's default
  * --foreground token leaks `oklch(0.145 ...)` (near-black) into
@@ -3224,11 +3251,15 @@ body[data-theme="dark"] code {
   border-radius: 2px;
   padding: 0 2px;
 }
-.build-info-host:hover,
+.build-info-host:hover {
+  background: var(--bg);
+  color: var(--text-primary);
+}
+/* Keyboard focus keeps the shared accent ring (do not strip the
+   outline without a replacement); hover-equivalent surface on focus. */
 .build-info-host:focus-visible {
   background: var(--bg);
   color: var(--text-primary);
-  outline: none;
 }
 .build-info-host.is-copied {
   color: var(--status-success, var(--text-primary));
