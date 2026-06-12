@@ -19,6 +19,7 @@
       </span>
     {{end}}
   </p>
+  {{if and (not .Empty) .Spark}}{{with sparkExpr .Spark}}<span class="console-spark console-metric-tile-spark" aria-hidden="true">{{.}}</span>{{end}}{{end}}
   {{if .Empty}}
     <p class="console-metric-tile-empty">no data yet</p>
   {{else}}

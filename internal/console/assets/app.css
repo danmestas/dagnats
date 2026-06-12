@@ -3416,3 +3416,21 @@ body[data-theme="dark"] code {
   color: var(--text-secondary);
   font-style: italic;
 }
+
+/* Datatype font sparklines in tile contexts: the base .console-spark
+   sets the family + ligature features; these size and place the inline
+   trend line. Teal accent matches the rest of the console chrome. */
+.dashboard-tile-spark.console-spark {
+  display: block;
+  margin-top: var(--space-2);
+  font-size: 1.6rem;
+  color: var(--accent);
+  line-height: 1;
+}
+.console-metric-tile-spark.console-spark {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.3rem;
+  color: var(--accent);
+  line-height: 1;
+}

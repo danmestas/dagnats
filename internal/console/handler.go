@@ -584,6 +584,7 @@ func funcMap() template.FuncMap {
 		"pagerArgs":        pagerArgs,
 		"triggerKindGlyph": triggerKindGlyph,
 		"jsonArray":        jsonArrayHelper,
+		"sparkExpr":        SparkExpr,
 		"dict":             dictHelper,
 		"mul":              mulHelper,
 		"tooltip":          tooltipHelper(),
