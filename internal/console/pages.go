@@ -899,10 +899,16 @@ func runRowFromRun(r dag.WorkflowRun) RunRow {
 		TriggerKind: triggerKindFromInput(r.Input),
 		StartedAt:   r.CreatedAt.UTC().Format(time.RFC3339),
 	}
+	// The runs list reads only the run snapshot — no per-run history —
+	// so terminal runs have no end timestamp here. Show the honest "—"
+	// rather than a synthetic value; the run-detail page derives the
+	// real terminal duration from the run's history events. In-flight
+	// runs render a labelled elapsed time so it can't be mistaken for a
+	// final duration.
 	if r.Status.IsTerminal() {
-		row.Duration = "n/a"
+		row.Duration = "—"
 	} else {
-		row.Duration = formatDuration(time.Since(r.CreatedAt))
+		row.Duration = formatDuration(time.Since(r.CreatedAt)) + " elapsed"
 	}
 	return row
 }
@@ -1320,6 +1326,7 @@ func buildRunDetail(
 	view := runDetailBaseView(run)
 	def, defErr := ds.GetWorkflow(run.WorkflowID)
 	events, _ := ds.ListRunEvents(ctx, id, false)
+	view.Duration = runDuration(run, events, time.Now())
 	if defErr == nil {
 		view.StepRows = BuildStepRows(&def, &run, events, nil, nil)
 	}
@@ -1383,12 +1390,46 @@ func runDetailBaseView(run dag.WorkflowRun) RunDetailView {
 		TriggerKind: triggerKindFromInput(run.Input),
 		StartedAt:   run.CreatedAt.UTC().Format(time.RFC3339),
 	}
+	// buildRunDetail overwrites Duration once it has read the run's
+	// history events (the terminal timestamp source). This base value
+	// is the honest fallback used only when events are absent: a
+	// labelled elapsed for in-flight runs, "—" for terminal runs whose
+	// end timestamp can't be recovered.
 	if run.Status.IsTerminal() {
-		v.Duration = "n/a"
+		v.Duration = "—"
 	} else {
-		v.Duration = formatDuration(time.Since(run.CreatedAt))
+		v.Duration = formatDuration(time.Since(run.CreatedAt)) + " elapsed"
 	}
 	return v
+}
+
+// runDuration computes the rendered duration for the run-detail header.
+// Terminal runs use (last event timestamp − CreatedAt): the terminal
+// workflow event the engine already records is the real end time.
+// In-flight runs render a labelled elapsed (now − CreatedAt). When the
+// timestamps are genuinely absent — a terminal run with no usable
+// events, or a zero CreatedAt — the honest "—" is returned rather than
+// a fabricated value. Bounded by len(events).
+func runDuration(
+	run dag.WorkflowRun, events []api.RunEvent, now time.Time,
+) string {
+	if run.CreatedAt.IsZero() {
+		return "—"
+	}
+	if !run.Status.IsTerminal() {
+		return formatDuration(now.Sub(run.CreatedAt)) + " elapsed"
+	}
+	const eventsMax = 1_000_000
+	var latest time.Time
+	for i := 0; i < len(events) && i < eventsMax; i++ {
+		if events[i].Timestamp.After(latest) {
+			latest = events[i].Timestamp
+		}
+	}
+	if latest.IsZero() || latest.Before(run.CreatedAt) {
+		return "—"
+	}
+	return formatDuration(latest.Sub(run.CreatedAt))
 }
 
 // runOutputAndError returns the rendered output JSON (if any) and

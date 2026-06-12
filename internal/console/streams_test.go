@@ -511,6 +511,12 @@ func (r *resumeRecorder) AggregateTaskTypes(
 	return r.inner.AggregateTaskTypes(ctx)
 }
 
+func (r *resumeRecorder) ListWorkerRows(
+	ctx context.Context,
+) ([]WorkerStatusRow, error) {
+	return r.inner.ListWorkerRows(ctx)
+}
+
 // readSSEUntil reads the SSE response body looking for
 // `event: datastar-patch-elements` headers and capturing the row id
 // payload substrings. Stops once want events have been seen OR the

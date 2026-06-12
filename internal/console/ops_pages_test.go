@@ -16,6 +16,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/danmestas/dagnats/worker"
 )
 
 // TestOpsHubDissolved_redirectsToDashboard asserts the retired Ops
@@ -35,7 +38,10 @@ func TestOpsHubDissolved_redirectsToDashboard(t *testing.T) {
 	}
 }
 
-func TestWorkersList_rendersPlaceholderBanner(t *testing.T) {
+// TestWorkersList_emptyStateNoWorkers asserts that with zero workers
+// registered the page paints an honest empty state and no longer
+// carries the retired "not yet wired" / wrong-bucket callout.
+func TestWorkersList_emptyStateNoWorkers(t *testing.T) {
 	fake := newFakeDS()
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
@@ -45,19 +51,66 @@ func TestWorkersList_rendersPlaceholderBanner(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "Worker telemetry is not yet wired") {
-		t.Fatalf("missing telemetry-gap callout: %s", body)
+	// Positive: honest empty state.
+	if !strings.Contains(body, "No workers currently registered") {
+		t.Fatalf("missing honest empty state: %s", body)
 	}
-	if !strings.Contains(body, "no workers reporting") {
-		t.Fatalf("missing zero-row label: %s", body)
+	// Negative space: the retired stub copy + wrong bucket name are gone.
+	if strings.Contains(body, "not yet wired") {
+		t.Fatalf("workers page still carries retired not-wired callout")
 	}
-	// Workers must use the shared page_header tile partial post-#311.
+	if strings.Contains(body, "worker_heartbeats") {
+		t.Fatalf("workers page still names the wrong KV bucket")
+	}
 	if !strings.Contains(body, `data-component="page-header"`) {
 		t.Fatalf("workers page not using page-header partial: %s", body)
 	}
-	// The old "back to Ops" link must be gone — Workers is top-level.
-	if strings.Contains(body, "← Ops") {
-		t.Fatalf("workers page still carries back-to-Ops link")
+}
+
+// TestWorkersList_rendersRealWorkers feeds two worker registrations
+// through the fake's ListWorkers seam and asserts the real id / task
+// types / host / last-seen / status reach the page — and that no stub
+// callout remains.
+func TestWorkersList_rendersRealWorkers(t *testing.T) {
+	fake := newFakeDS()
+	now := time.Now()
+	fake.configSnap.Workers = []worker.WorkerRegistration{
+		{
+			WorkerID:  "wk-alpha",
+			TaskTypes: []string{"email", "render"},
+			Hostname:  "host-1",
+			LastSeen:  now,
+		},
+		{
+			WorkerID:  "wk-stale",
+			TaskTypes: []string{"crunch"},
+			Hostname:  "host-2",
+			LastSeen:  now.Add(-5 * time.Minute),
+		},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/workers", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	// Positive: both worker ids + real metadata reach the table.
+	for _, want := range []string{
+		"wk-alpha", "wk-stale", "host-1", "host-2", "email", "render",
+		"active", "stale",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in workers page", want)
+		}
+	}
+	// Negative space: no stub callout, no fake empty state.
+	if strings.Contains(body, "not yet wired") {
+		t.Fatalf("workers page still carries retired not-wired callout")
+	}
+	if strings.Contains(body, "No workers currently registered") {
+		t.Fatalf("workers page shows empty state despite real workers")
 	}
 }
 
@@ -157,8 +210,19 @@ func TestKVList_missingKeyRendersNotFound(t *testing.T) {
 	}
 }
 
-func TestStreamsList_rendersKnownEngineStreams(t *testing.T) {
+// TestStreamsList_rendersRealSnapshot feeds a ConfigSnapshot with live
+// stream metadata and asserts the real Messages / Bytes / Consumers
+// reach the page — and that the retired "not yet wired" callout is gone.
+func TestStreamsList_rendersRealSnapshot(t *testing.T) {
 	fake := newFakeDS()
+	fake.configSnap.Streams = []StreamSnapshot{
+		{
+			Name: "WORKFLOW_HISTORY", Subjects: []string{"history.>"},
+			Messages: 1234, Bytes: 2048, Consumers: 3,
+			Retention: "limits", Provisioned: true,
+		},
+		{Name: "TASK_QUEUES", Provisioned: false},
+	}
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
@@ -167,19 +231,19 @@ func TestStreamsList_rendersKnownEngineStreams(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
+	// Positive: real stream names + counts reach the table. Bytes are
+	// humanized (2048 → "2.0 KiB"); messages + consumers render raw.
 	for _, want := range []string{
-		"Streams",
-		"Stream metadata is not yet wired",
-		"TASKS",
-		"STICKY_TASKS",
-		"TELEMETRY",
-		"TRIGGER_HISTORY",
-		"HISTORY",
-		`data-component="page-header"`,
+		"Streams", "WORKFLOW_HISTORY", "TASK_QUEUES", "history.&gt;",
+		"1234", "2.0 KiB", `data-component="page-header"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in streams page", want)
 		}
+	}
+	// Negative space: the retired stub callout is gone.
+	if strings.Contains(body, "not yet wired") {
+		t.Fatalf("streams page still carries retired not-wired callout")
 	}
 }
 

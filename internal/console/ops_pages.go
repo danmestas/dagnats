@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // ops_pages.go owns the operator pages. After the B3 nav/IA pass the
@@ -17,27 +19,18 @@ import (
 // Each list page mirrors the established pattern: handler → build
 // view → render. Templates live alongside the other pages.
 
-// WorkersListView powers /console/workers. Today the engine does
-// not surface worker heartbeats; we render a clear "telemetry gap"
-// banner + empty table rather than mislead with synthetic data.
+// WorkersListView powers /console/workers. Rows are read live from
+// the `workers` KV directory (the engine's heartbeat surface, #289).
+// When zero workers are registered the page paints an honest empty
+// state rather than a synthetic placeholder.
 type WorkersListView struct {
 	Header  PageHeader
-	Workers []WorkerRow
-	Note    string
+	Workers []WorkerStatusRow
 }
 
-// WorkerRow shape kept for when the engine starts emitting
-// heartbeats. Workers slice empty until that lands.
-type WorkerRow struct {
-	ID            string
-	Status        string
-	LastHeartbeat string
-	CurrentLease  string
-	Uptime        string
-	TaskCount     int
-}
-
-// servePageWorkers renders /console/workers.
+// servePageWorkers renders /console/workers off the live worker
+// directory. A read miss degrades to the empty state — the page is
+// observational and never blocks.
 func servePageWorkers(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -48,11 +41,14 @@ func servePageWorkers(
 	if r == nil {
 		panic("servePageWorkers: r is nil")
 	}
+	ds, ok := requireData(w, cfg, "workers-list")
+	if !ok {
+		return
+	}
+	rows, _ := ds.ListWorkerRows(r.Context())
 	view := WorkersListView{
-		Header: buildWorkersHeader(nil),
-		Note: "Worker telemetry is not yet wired. " +
-			"This page surfaces the planned shape; data populates once " +
-			"the engine writes to the worker_heartbeats KV bucket.",
+		Header:  buildWorkersHeader(rows),
+		Workers: rows,
 	}
 	renderPage(w, r, ts, cfg, "workers-list", pageData{
 		Title:   "Workers",
@@ -61,28 +57,28 @@ func servePageWorkers(
 	})
 }
 
-// buildWorkersHeader projects the workers row set into count tiles.
-// While telemetry is pending every count is 0 and the tile strip
-// reads as honest zero-state; once heartbeats land the math here
-// becomes meaningful without any template churn.
-func buildWorkersHeader(rows []WorkerRow) PageHeader {
+// buildWorkersHeader projects the live worker rows into count tiles:
+// total registered plus how many are reporting fresh heartbeats vs.
+// stale. Both counts are read straight from the directory's liveness
+// classification, so the strip never lies about who is alive.
+func buildWorkersHeader(rows []WorkerStatusRow) PageHeader {
 	active := 0
-	idle := 0
+	stale := 0
 	const rowsMax = 10_000
 	for i := 0; i < len(rows) && i < rowsMax; i++ {
 		switch rows[i].Status {
-		case "active", "running":
+		case "active":
 			active++
-		case "idle":
-			idle++
+		case "stale":
+			stale++
 		}
 	}
 	tiles := []Tile{
 		{Label: "workers", Count: len(rows), Tone: ToneDefault},
 		{Label: "active", Count: active, Tone: ToneSuccess,
-			Tooltip: "Workers reporting heartbeats in the last cycle"},
-		{Label: "idle", Count: idle, Tone: ToneInfo,
-			Tooltip: "Connected workers with no lease in progress"},
+			Tooltip: "Workers whose heartbeat is within the staleness window"},
+		{Label: "stale", Count: stale, Tone: ToneWarning,
+			Tooltip: "Workers whose last heartbeat is past the staleness window"},
 	}
 	h, err := NewPageHeader(PageHeader{
 		Title:    "Workers",
@@ -265,29 +261,31 @@ func buildKVEntry(
 	return out
 }
 
-// StreamsListView powers /console/streams. Today the console doesn't
-// query JetStream stream metadata directly — the DataSource surface
-// doesn't expose it — so we render the known engine streams from the
-// natsutil topology as a placeholder, with a callout calling out the
-// telemetry gap. Same shape as workers.
+// StreamsListView powers /console/streams. Rows are read live from
+// ConfigSnapshot — the same JetStream stream-info read that backs the
+// /config page — so message / byte / consumer counts are real. An
+// unprovisioned (planned-but-absent) stream renders muted "—" cells
+// rather than a synthetic zero.
 type StreamsListView struct {
 	Header  PageHeader
 	Streams []StreamRow
-	Note    string
 }
 
-// StreamRow is one row on the streams list. Messages / Bytes /
-// Consumers stay "—" until the DataSource exposes JetStream metadata.
+// StreamRow is one row on the streams list. Subjects / Messages /
+// Bytes / Consumers carry the live values from StreamSnapshot;
+// unprovisioned streams render "—" for the count cells so they don't
+// lie about zero state.
 type StreamRow struct {
 	Name      string
 	Subjects  string
 	Messages  string
 	Bytes     string
 	Consumers string
-	Purpose   string
 }
 
-// servePageStreams renders /console/streams.
+// servePageStreams renders /console/streams off the live config
+// snapshot. A snapshot miss degrades to the empty state — the page is
+// observational and never blocks.
 func servePageStreams(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -298,14 +296,15 @@ func servePageStreams(
 	if r == nil {
 		panic("servePageStreams: r is nil")
 	}
-	rows := knownEngineStreams()
+	ds, ok := requireData(w, cfg, "streams-list")
+	if !ok {
+		return
+	}
+	snap, _ := ds.ConfigSnapshot(r.Context())
+	rows := streamRowsFromSnapshots(snap.Streams)
 	view := StreamsListView{
 		Header:  buildStreamsHeader(rows),
 		Streams: rows,
-		Note: "Stream metadata is not yet wired through the DataSource. " +
-			"This page lists the JetStream streams the engine's natsutil " +
-			"topology creates; live message + consumer counts populate " +
-			"once a stream-info adapter lands.",
 	}
 	renderPage(w, r, ts, cfg, "streams-list", pageData{
 		Title:   "Streams",
@@ -314,39 +313,51 @@ func servePageStreams(
 	})
 }
 
-// knownEngineStreams returns the static inventory of JetStream
-// streams the engine creates via natsutil.SetupAll. The list is
-// hand-curated so operators have something to look at while the
-// stream-info adapter is unbuilt; the names match the SetupX helpers
-// in internal/natsutil/conn.go.
-func knownEngineStreams() []StreamRow {
-	return []StreamRow{
-		{Name: "TASKS", Subjects: "task.>", Messages: "—",
-			Bytes: "—", Consumers: "—",
-			Purpose: "Work-stealing task delivery"},
-		{Name: "STICKY_TASKS", Subjects: "sticky.>",
-			Messages: "—", Bytes: "—", Consumers: "—",
-			Purpose: "Worker-pinned task delivery"},
-		{Name: "TELEMETRY", Subjects: "telemetry.>",
-			Messages: "—", Bytes: "—", Consumers: "—",
-			Purpose: "Run / step metric events"},
-		{Name: "TRIGGER_HISTORY", Subjects: "trigger.history.>",
-			Messages: "—", Bytes: "—", Consumers: "—",
-			Purpose: "Trigger firing audit log"},
-		{Name: "HISTORY", Subjects: "history.>",
-			Messages: "—", Bytes: "—", Consumers: "—",
-			Purpose: "Per-run event timeline"},
+// streamRowsFromSnapshots projects the live StreamSnapshot set into
+// render rows. Provisioned streams show real counts; unprovisioned
+// ones show "—" so the planned-but-absent state is honest. Bounded by
+// len(snaps).
+func streamRowsFromSnapshots(snaps []StreamSnapshot) []StreamRow {
+	const snapsMax = 1024
+	if len(snaps) > snapsMax {
+		panic("streamRowsFromSnapshots: snaps exceeds max bound")
 	}
+	out := make([]StreamRow, 0, len(snaps))
+	for _, s := range snaps {
+		row := StreamRow{
+			Name:      s.Name,
+			Subjects:  strings.Join(s.Subjects, ", "),
+			Messages:  "—",
+			Bytes:     "—",
+			Consumers: "—",
+		}
+		if s.Provisioned {
+			row.Messages = strconv.FormatUint(s.Messages, 10)
+			row.Bytes = humanBytes(s.Bytes)
+			row.Consumers = strconv.Itoa(s.Consumers)
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
-// buildStreamsHeader assembles the count tile for the streams page.
-// While metadata is pending we have only the static cardinality;
-// once the adapter lands the tile gains "with consumers" / "lagging"
-// counts without any template churn.
+// buildStreamsHeader assembles the count tiles for the streams page:
+// total known streams plus how many are actually provisioned in the
+// JetStream account right now. Both counts come straight from the
+// live snapshot.
 func buildStreamsHeader(rows []StreamRow) PageHeader {
+	provisioned := 0
+	const rowsMax = 1024
+	for i := 0; i < len(rows) && i < rowsMax; i++ {
+		if rows[i].Messages != "—" {
+			provisioned++
+		}
+	}
 	tiles := []Tile{
 		{Label: "streams", Count: len(rows), Tone: ToneDefault,
 			Tooltip: "JetStream streams declared by the engine topology"},
+		{Label: "provisioned", Count: provisioned, Tone: ToneSuccess,
+			Tooltip: "Streams confirmed present in the JetStream account"},
 	}
 	h, err := NewPageHeader(PageHeader{
 		Title:    "Streams",

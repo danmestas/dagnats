@@ -269,14 +269,20 @@ func buildEndpoints(cfg Config, snap ConfigSnapshot) []EndpointCard {
 
 // buildStreamRows converts ConfigSnapshot.Streams into render rows.
 // An empty input slice means the snapshot couldn't talk to
-// JetStream — the template renders the empty-state row. ConfigStreamRow
-// and StreamSnapshot share the same field layout so a direct
-// conversion suffices; keeping the two named types separates the
-// render contract from the DataSource contract.
+// JetStream — the template renders the empty-state row. The config
+// page renders a subset of the snapshot fields (name, counts,
+// retention, provisioned); subjects + consumer counts surface on the
+// dedicated /console/streams page instead.
 func buildStreamRows(snap ConfigSnapshot) []ConfigStreamRow {
 	out := make([]ConfigStreamRow, 0, len(snap.Streams))
 	for _, s := range snap.Streams {
-		out = append(out, ConfigStreamRow(s))
+		out = append(out, ConfigStreamRow{
+			Name:        s.Name,
+			Messages:    s.Messages,
+			Bytes:       s.Bytes,
+			Retention:   s.Retention,
+			Provisioned: s.Provisioned,
+		})
 	}
 	return out
 }

@@ -594,6 +594,16 @@ func (f *fakeDataSource) AggregateTaskTypes(
 	return attachServiceDescriptions(rows, f.services), nil
 }
 
+// ListWorkerRows is the test seam for the /console/workers page.
+// Mirrors the production adapter: project the worker registrations the
+// test pre-seeded on configSnap.Workers into render rows. now is fixed
+// to time.Now() so liveness classification matches wall-clock tests.
+func (f *fakeDataSource) ListWorkerRows(
+	_ context.Context,
+) ([]WorkerStatusRow, error) {
+	return workerRowsFromRegistrations(f.configSnap.Workers, time.Now()), nil
+}
+
 // Search mirrors the production adapter's contract over the fake's
 // in-memory slices. We keep the rules identical (substring for
 // workflows + triggers; prefix ≥4 chars for runs) so unit tests
