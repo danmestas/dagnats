@@ -81,7 +81,11 @@
         {{range .Page.State.RateLimits}}
         <tr>
           <td class="mono">{{.Key}}</td>
-          <td>{{.Tokens}}</td>
+          {{/* Zero tokens means the bucket is exhausted — every task
+               under this limiter is being throttled right now. Amber
+               (a warning, not a failure): work is shed-to-wait, not
+               dropped. A non-zero balance stays nominal. */}}
+          <td>{{if le .Tokens 0}}<span class="status-pending">{{.Tokens}}</span>{{else}}{{.Tokens}}{{end}}</td>
           <td>{{.Limit}}</td>
           <td>{{.Period}}</td>
         </tr>

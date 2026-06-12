@@ -4,7 +4,9 @@
   <td class="console-mono">
     <a href="/console/dlq/{{.Row.Sequence}}">#{{.Row.Sequence}}</a>
   </td>
-  <td title="{{.Row.ReasonFull}}">{{.Row.ReasonShort}}</td>
+  {{/* Every DLQ entry is a real, terminal failure by definition — the
+       reason is the failure class, so it reads red honestly. */}}
+  <td class="status-failed" title="{{.Row.ReasonFull}}">{{.Row.ReasonShort}}</td>
   <td class="console-mono">
     {{if .Row.Workflow}}<a href="/console/workflows/{{.Row.Workflow}}">{{.Row.Workflow}}</a>{{else}}<span class="muted">&mdash;</span>{{end}}
   </td>

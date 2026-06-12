@@ -353,7 +353,7 @@ a:hover { text-decoration: underline; }
   color: var(--text-secondary);
   font-weight: 500;
 }
-.console-deflist dd { margin: 0; }
+.console-deflist dd { margin: 0; font-family: var(--font-mono); }
 
 .console-mono {
   font-family: var(--font-mono);
@@ -1390,7 +1390,7 @@ body[data-theme="dark"] {
 }
 .console-metric-tile-value {
   margin: 0;
-  font-family: var(--font-serif);
+  font-family: var(--font-mono);
   font-size: 28px;
   font-weight: 600;
   color: var(--text-primary);
@@ -2492,6 +2492,20 @@ body[data-theme="dark"] code {
   background: var(--accent-soft);
 }
 
+/* Data-cell typography (theme T3). The MagicPath prototype renders
+ * every table data cell — IDs, counts, durations, timestamps,
+ * statuses — in the IoskeleyMono (--font-mono) face. Default all
+ * body cells to mono; genuinely prose cells (long error messages,
+ * descriptions) opt back out by tagging the cell .muted, which the
+ * rule below returns to the proportional sans face. Header cells
+ * (thead th) stay sans — they are labels, not data. */
+.console-table tbody td {
+  font-family: var(--font-mono);
+}
+.console-table tbody td.muted {
+  font-family: var(--font-sans);
+}
+
 /* Tab panel content — when a tab is active, its content area
  * needs to inherit text-primary. Tabs that lazy-load via SSE
  * patch a fragment into [role="tabpanel"]; without this rule the
@@ -2774,6 +2788,7 @@ body[data-theme="dark"] code {
   text-decoration: underline;
 }
 .page-header-tile-count {
+  font-family: var(--font-mono);
   font-size: 1.5rem;
   font-weight: 600;
   font-feature-settings: "tnum" 1, "lnum" 1;
