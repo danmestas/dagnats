@@ -244,6 +244,22 @@ a:hover { text-decoration: underline; }
   background: var(--accent-soft);
 }
 
+/* Section labels (Inventory / Activity / System) inside the nav. Hidden
+   by default so the medium-width horizontal top bar stays a flat row;
+   shown only in the vertical layouts (mobile panel + the wide sidebar),
+   where grouping aids scanning. */
+.console-nav-group {
+  display: none;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  opacity: 0.65;
+  padding: var(--space-3) var(--space-2) var(--space-1);
+  user-select: none;
+}
+
 .console-header-utils {
   display: contents;
 }
@@ -2165,6 +2181,8 @@ summary:focus-visible,
   background: var(--accent-soft);
   text-decoration: none;
 }
+/* The mobile panel is always vertical, so the section labels show. */
+.console-nav-mobile-panel .console-nav-group { display: block; }
 .console-visually-hidden {
   position: absolute;
   width: 1px; height: 1px;
@@ -2525,6 +2543,8 @@ body[data-theme="dark"] code {
     display: block;
     padding: var(--space-2) var(--space-3);
   }
+  /* Vertical sidebar: show the Inventory / Activity / System labels. */
+  .console-nav-desktop .console-nav-group { display: block; }
   .console-header-utils {
     display: flex;
     flex-direction: column;
