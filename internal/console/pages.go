@@ -1035,6 +1035,84 @@ type EventRow struct {
 	DataFull    string
 }
 
+// dispatchRuns routes the catch-all /console/runs/ prefix. A trailing
+// `/trace` segment renders the standalone full-page span tree; anything
+// else falls through to the run-detail page. The suffix dispatch mirrors
+// dispatchDLQ / dispatchTriggers so the run-detail handler keeps its
+// "no slash in id" invariant — only the /trace branch carries a nested
+// path.
+func dispatchRuns(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("dispatchRuns: w is nil")
+	}
+	if r == nil {
+		panic("dispatchRuns: r is nil")
+	}
+	if strings.HasSuffix(r.URL.Path, "/trace") {
+		servePageRunTrace(w, r, ts, cfg)
+		return
+	}
+	servePageRunDetail(w, r, ts, cfg)
+}
+
+// RunTraceView powers the standalone /console/runs/<id>/trace page. It
+// carries the run id (full + short) for the page header and back-link,
+// the flattened span rows the shared trace-tree component renders, and
+// an optional Note surfaced when the trace read degraded.
+type RunTraceView struct {
+	RunID      string
+	RunIDShort string
+	Rows       []TraceRow
+	Note       string
+}
+
+// servePageRunTrace renders /console/runs/<id>/trace as a deep-linkable
+// full page. It reuses GetRunTrace — the same read the lazy Trace tab
+// uses — and degrades a read error to an empty tree plus a Note rather
+// than a 500, so the page never lies about telemetry it couldn't load.
+func servePageRunTrace(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("servePageRunTrace: w is nil")
+	}
+	if r == nil {
+		panic("servePageRunTrace: r is nil")
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/console/runs/")
+	runID := strings.TrimSuffix(rest, "/trace")
+	if runID == "" || strings.Contains(runID, "/") {
+		serveNotFound(w, r, ts, cfg)
+		return
+	}
+	ds, ok := requireData(w, cfg, "run-trace")
+	if !ok {
+		return
+	}
+	var note string
+	rows, err := ds.GetRunTrace(r.Context(), runID)
+	if err != nil {
+		cfg.Logger.Warn("console: get run trace",
+			"run", runID, "err", err)
+		rows = nil
+		note = "Trace read failed; showing no spans."
+	}
+	renderPage(w, r, ts, cfg, "run-trace", pageData{
+		Title:   "Trace",
+		Section: "runs",
+		Page: RunTraceView{
+			RunID:      runID,
+			RunIDShort: shortRunID(runID),
+			Rows:       rows,
+			Note:       note,
+		},
+	})
+}
+
 // servePageRunDetail renders /console/runs/<id>.
 func servePageRunDetail(
 	w http.ResponseWriter, r *http.Request,

@@ -225,7 +225,7 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		serveRunIDLookup(w, r, ts, cfg)
 	})
 	mux.HandleFunc("/console/runs/", func(w http.ResponseWriter, r *http.Request) {
-		servePageRunDetail(w, r, ts, cfg)
+		dispatchRuns(w, r, ts, cfg)
 	})
 	mux.HandleFunc("/console/api/run/",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -509,6 +509,7 @@ var pageContentFiles = map[string]string{
 	"workflow-detail":   "templates/workflow_detail.html",
 	"runs-list":         "templates/runs_list.html",
 	"run-detail":        "templates/run_detail.html",
+	"run-trace":         "templates/run_trace.html",
 	"triggers-list":     "templates/triggers_list.html",
 	"trigger-detail":    "templates/trigger_detail.html",
 	"dlq-list":          "templates/dlq_list.html",
