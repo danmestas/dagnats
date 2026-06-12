@@ -67,6 +67,8 @@ func buildConcurrencyHeader(s AdmissionState) PageHeader {
 			Tooltip: "Singleton locks currently held across all workflows"},
 		{Label: "tasks in-flight", Count: inFlightTotal, Tone: ToneInfo,
 			Tooltip: "Sum of live per-task-type concurrency counters"},
+		{Label: "rate-limited", Count: len(s.RateLimits), Tone: ToneInfo,
+			Tooltip: "Task types with an active token-bucket rate limiter"},
 	}
 	header, err := NewPageHeader(PageHeader{
 		Title:    "Concurrency",
