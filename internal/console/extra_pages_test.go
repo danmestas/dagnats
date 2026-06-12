@@ -1225,7 +1225,8 @@ func TestAuditView_rangeFilter1h(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "100") || strings.Contains(body, "200") {
+	if !strings.Contains(body, "/console/dlq/100") ||
+		strings.Contains(body, "/console/dlq/200") {
 		t.Errorf("range filter failed: body=%s", body)
 	}
 }

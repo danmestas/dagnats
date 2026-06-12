@@ -48,27 +48,27 @@
         </button>
       </div>
       <nav class="console-nav console-nav-desktop" aria-label="primary">
-        <a href="/console/"          class="console-nav-glyph-link {{if eq .Section "dashboard"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">▤</span>Dashboard</a>
+        <a href="/console/"          aria-label="Dashboard" title="Dashboard" class="console-nav-glyph-link {{if eq .Section "dashboard"}}is-active{{end}}">{{template "nav-icon-dashboard"}}<span class="console-nav-label">Dashboard</span></a>
         <div class="console-nav-group" aria-hidden="true">Inventory</div>
-        <a href="/console/workflows" class="console-nav-glyph-link {{if eq .Section "workflows"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⌗</span>Workflows</a>
-        <a href="/console/functions" class="console-nav-glyph-link {{if eq .Section "functions"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">𝑓</span>Functions</a>
-        <a href="/console/workers"   class="console-nav-glyph-link {{if eq .Section "workers"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⚙</span>Workers</a>
-        <a href="/console/triggers"  class="console-nav-glyph-link {{if eq .Section "triggers"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⏱</span>Triggers</a>
+        <a href="/console/workflows" aria-label="Workflows" title="Workflows" class="console-nav-glyph-link {{if eq .Section "workflows"}}is-active{{end}}">{{template "nav-icon-workflows"}}<span class="console-nav-label">Workflows</span></a>
+        <a href="/console/functions" aria-label="Functions" title="Functions" class="console-nav-glyph-link {{if eq .Section "functions"}}is-active{{end}}">{{template "nav-icon-functions"}}<span class="console-nav-label">Functions</span></a>
+        <a href="/console/workers"   aria-label="Workers" title="Workers" class="console-nav-glyph-link {{if eq .Section "workers"}}is-active{{end}}">{{template "nav-icon-workers"}}<span class="console-nav-label">Workers</span></a>
+        <a href="/console/triggers"  aria-label="Triggers" title="Triggers" class="console-nav-glyph-link {{if eq .Section "triggers"}}is-active{{end}}">{{template "nav-icon-triggers"}}<span class="console-nav-label">Triggers</span></a>
         <div class="console-nav-group" aria-hidden="true">Activity</div>
-        <a href="/console/runs"      class="console-nav-glyph-link {{if eq .Section "runs"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">▸</span>Runs</a>
-        <a href="/console/dlq"       class="console-nav-glyph-link {{if eq .Section "dlq"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">☠</span>DLQ</a>
-        <a href="/console/logs"      class="console-nav-glyph-link {{if eq .Section "logs"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">≣</span>Logs</a>
-        <a href="/console/metrics"   class="console-nav-glyph-link {{if eq .Section "metrics"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">◧</span>Metrics</a>
+        <a href="/console/runs"      aria-label="Runs" title="Runs" class="console-nav-glyph-link {{if eq .Section "runs"}}is-active{{end}}">{{template "nav-icon-runs"}}<span class="console-nav-label">Runs</span></a>
+        <a href="/console/dlq"       aria-label="DLQ" title="DLQ" class="console-nav-glyph-link {{if eq .Section "dlq"}}is-active{{end}}">{{template "nav-icon-dlq"}}<span class="console-nav-label">DLQ</span></a>
+        <a href="/console/logs"      aria-label="Logs" title="Logs" class="console-nav-glyph-link {{if eq .Section "logs"}}is-active{{end}}">{{template "nav-icon-logs"}}<span class="console-nav-label">Logs</span></a>
+        <a href="/console/metrics"   aria-label="Metrics" title="Metrics" class="console-nav-glyph-link {{if eq .Section "metrics"}}is-active{{end}}">{{template "nav-icon-metrics"}}<span class="console-nav-label">Metrics</span></a>
         <div class="console-nav-group" aria-hidden="true">System</div>
-        <a href="/console/server"    class="console-nav-glyph-link {{if eq .Section "server"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">◎</span>Server</a>
-        <a href="/console/connections" class="console-nav-glyph-link {{if eq .Section "connections"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">🔌</span>Connections</a>
-        <a href="/console/streams"   class="console-nav-glyph-link {{if eq .Section "streams"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">≋</span>Streams</a>
-        <a href="/console/consumers" class="console-nav-glyph-link {{if eq .Section "consumers"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⇄</span>Consumers</a>
-        <a href="/console/concurrency" class="console-nav-glyph-link {{if eq .Section "concurrency"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">◫</span>Concurrency</a>
-        <a href="/console/kv"        class="console-nav-glyph-link {{if eq .Section "kv"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">🗝</span>KV</a>
-        <a href="/console/audit"     class="console-nav-glyph-link {{if eq .Section "audit"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">✦</span>Audit</a>
-        <a href="/console/leases"    class="console-nav-glyph-link {{if eq .Section "leases"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⊟</span>Leases</a>
-        <a href="/console/config"    class="console-nav-glyph-link {{if eq .Section "config"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">◷</span>Config</a>
+        <a href="/console/server"    aria-label="Server" title="Server" class="console-nav-glyph-link {{if eq .Section "server"}}is-active{{end}}">{{template "nav-icon-server"}}<span class="console-nav-label">Server</span></a>
+        <a href="/console/connections" aria-label="Connections" title="Connections" class="console-nav-glyph-link {{if eq .Section "connections"}}is-active{{end}}">{{template "nav-icon-connections"}}<span class="console-nav-label">Connections</span></a>
+        <a href="/console/streams"   aria-label="Streams" title="Streams" class="console-nav-glyph-link {{if eq .Section "streams"}}is-active{{end}}">{{template "nav-icon-streams"}}<span class="console-nav-label">Streams</span></a>
+        <a href="/console/consumers" aria-label="Consumers" title="Consumers" class="console-nav-glyph-link {{if eq .Section "consumers"}}is-active{{end}}">{{template "nav-icon-consumers"}}<span class="console-nav-label">Consumers</span></a>
+        <a href="/console/concurrency" aria-label="Concurrency" title="Concurrency" class="console-nav-glyph-link {{if eq .Section "concurrency"}}is-active{{end}}">{{template "nav-icon-concurrency"}}<span class="console-nav-label">Concurrency</span></a>
+        <a href="/console/kv"        aria-label="KV" title="KV" class="console-nav-glyph-link {{if eq .Section "kv"}}is-active{{end}}">{{template "nav-icon-kv"}}<span class="console-nav-label">KV</span></a>
+        <a href="/console/audit"     aria-label="Audit" title="Audit" class="console-nav-glyph-link {{if eq .Section "audit"}}is-active{{end}}">{{template "nav-icon-audit"}}<span class="console-nav-label">Audit</span></a>
+        <a href="/console/leases"    aria-label="Leases" title="Leases" class="console-nav-glyph-link {{if eq .Section "leases"}}is-active{{end}}">{{template "nav-icon-leases"}}<span class="console-nav-label">Leases</span></a>
+        <a href="/console/config"    aria-label="Config" title="Config" class="console-nav-glyph-link {{if eq .Section "config"}}is-active{{end}}">{{template "nav-icon-config"}}<span class="console-nav-label">Config</span></a>
       </nav>
       <details class="console-nav-mobile" aria-label="primary navigation">
         <summary class="console-nav-mobile-toggle" aria-label="Open navigation menu">
@@ -76,27 +76,27 @@
           <span class="console-visually-hidden">Menu</span>
         </summary>
         <nav class="console-nav-mobile-panel" aria-label="primary">
-          <a href="/console/"          class="console-nav-glyph-link {{if eq .Section "dashboard"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">▤</span>Dashboard</a>
+          <a href="/console/"          aria-label="Dashboard" title="Dashboard" class="console-nav-glyph-link {{if eq .Section "dashboard"}}is-active{{end}}">{{template "nav-icon-dashboard"}}<span class="console-nav-label">Dashboard</span></a>
           <div class="console-nav-group" aria-hidden="true">Inventory</div>
-          <a href="/console/workflows" class="console-nav-glyph-link {{if eq .Section "workflows"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⌗</span>Workflows</a>
-          <a href="/console/functions" class="console-nav-glyph-link {{if eq .Section "functions"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">𝑓</span>Functions</a>
-          <a href="/console/workers"   class="console-nav-glyph-link {{if eq .Section "workers"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⚙</span>Workers</a>
-          <a href="/console/triggers"  class="console-nav-glyph-link {{if eq .Section "triggers"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⏱</span>Triggers</a>
+          <a href="/console/workflows" aria-label="Workflows" title="Workflows" class="console-nav-glyph-link {{if eq .Section "workflows"}}is-active{{end}}">{{template "nav-icon-workflows"}}<span class="console-nav-label">Workflows</span></a>
+          <a href="/console/functions" aria-label="Functions" title="Functions" class="console-nav-glyph-link {{if eq .Section "functions"}}is-active{{end}}">{{template "nav-icon-functions"}}<span class="console-nav-label">Functions</span></a>
+          <a href="/console/workers"   aria-label="Workers" title="Workers" class="console-nav-glyph-link {{if eq .Section "workers"}}is-active{{end}}">{{template "nav-icon-workers"}}<span class="console-nav-label">Workers</span></a>
+          <a href="/console/triggers"  aria-label="Triggers" title="Triggers" class="console-nav-glyph-link {{if eq .Section "triggers"}}is-active{{end}}">{{template "nav-icon-triggers"}}<span class="console-nav-label">Triggers</span></a>
           <div class="console-nav-group" aria-hidden="true">Activity</div>
-          <a href="/console/runs"      class="console-nav-glyph-link {{if eq .Section "runs"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">▸</span>Runs</a>
-          <a href="/console/dlq"       class="console-nav-glyph-link {{if eq .Section "dlq"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">☠</span>DLQ</a>
-          <a href="/console/logs"      class="console-nav-glyph-link {{if eq .Section "logs"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">≣</span>Logs</a>
-          <a href="/console/metrics"   class="console-nav-glyph-link {{if eq .Section "metrics"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">◧</span>Metrics</a>
+          <a href="/console/runs"      aria-label="Runs" title="Runs" class="console-nav-glyph-link {{if eq .Section "runs"}}is-active{{end}}">{{template "nav-icon-runs"}}<span class="console-nav-label">Runs</span></a>
+          <a href="/console/dlq"       aria-label="DLQ" title="DLQ" class="console-nav-glyph-link {{if eq .Section "dlq"}}is-active{{end}}">{{template "nav-icon-dlq"}}<span class="console-nav-label">DLQ</span></a>
+          <a href="/console/logs"      aria-label="Logs" title="Logs" class="console-nav-glyph-link {{if eq .Section "logs"}}is-active{{end}}">{{template "nav-icon-logs"}}<span class="console-nav-label">Logs</span></a>
+          <a href="/console/metrics"   aria-label="Metrics" title="Metrics" class="console-nav-glyph-link {{if eq .Section "metrics"}}is-active{{end}}">{{template "nav-icon-metrics"}}<span class="console-nav-label">Metrics</span></a>
           <div class="console-nav-group" aria-hidden="true">System</div>
-          <a href="/console/server"    class="console-nav-glyph-link {{if eq .Section "server"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">◎</span>Server</a>
-          <a href="/console/connections" class="console-nav-glyph-link {{if eq .Section "connections"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">🔌</span>Connections</a>
-          <a href="/console/streams"   class="console-nav-glyph-link {{if eq .Section "streams"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">≋</span>Streams</a>
-          <a href="/console/consumers" class="console-nav-glyph-link {{if eq .Section "consumers"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⇄</span>Consumers</a>
-          <a href="/console/concurrency" class="console-nav-glyph-link {{if eq .Section "concurrency"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">◫</span>Concurrency</a>
-          <a href="/console/kv"        class="console-nav-glyph-link {{if eq .Section "kv"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">🗝</span>KV</a>
-          <a href="/console/audit"     class="console-nav-glyph-link {{if eq .Section "audit"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">✦</span>Audit</a>
-          <a href="/console/leases"    class="console-nav-glyph-link {{if eq .Section "leases"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">⊟</span>Leases</a>
-          <a href="/console/config"    class="console-nav-glyph-link {{if eq .Section "config"}}is-active{{end}}"><span class="console-nav-glyph" aria-hidden="true">◷</span>Config</a>
+          <a href="/console/server"    aria-label="Server" title="Server" class="console-nav-glyph-link {{if eq .Section "server"}}is-active{{end}}">{{template "nav-icon-server"}}<span class="console-nav-label">Server</span></a>
+          <a href="/console/connections" aria-label="Connections" title="Connections" class="console-nav-glyph-link {{if eq .Section "connections"}}is-active{{end}}">{{template "nav-icon-connections"}}<span class="console-nav-label">Connections</span></a>
+          <a href="/console/streams"   aria-label="Streams" title="Streams" class="console-nav-glyph-link {{if eq .Section "streams"}}is-active{{end}}">{{template "nav-icon-streams"}}<span class="console-nav-label">Streams</span></a>
+          <a href="/console/consumers" aria-label="Consumers" title="Consumers" class="console-nav-glyph-link {{if eq .Section "consumers"}}is-active{{end}}">{{template "nav-icon-consumers"}}<span class="console-nav-label">Consumers</span></a>
+          <a href="/console/concurrency" aria-label="Concurrency" title="Concurrency" class="console-nav-glyph-link {{if eq .Section "concurrency"}}is-active{{end}}">{{template "nav-icon-concurrency"}}<span class="console-nav-label">Concurrency</span></a>
+          <a href="/console/kv"        aria-label="KV" title="KV" class="console-nav-glyph-link {{if eq .Section "kv"}}is-active{{end}}">{{template "nav-icon-kv"}}<span class="console-nav-label">KV</span></a>
+          <a href="/console/audit"     aria-label="Audit" title="Audit" class="console-nav-glyph-link {{if eq .Section "audit"}}is-active{{end}}">{{template "nav-icon-audit"}}<span class="console-nav-label">Audit</span></a>
+          <a href="/console/leases"    aria-label="Leases" title="Leases" class="console-nav-glyph-link {{if eq .Section "leases"}}is-active{{end}}">{{template "nav-icon-leases"}}<span class="console-nav-label">Leases</span></a>
+          <a href="/console/config"    aria-label="Config" title="Config" class="console-nav-glyph-link {{if eq .Section "config"}}is-active{{end}}">{{template "nav-icon-config"}}<span class="console-nav-label">Config</span></a>
         </nav>
       </details>
       <div class="console-header-utils">

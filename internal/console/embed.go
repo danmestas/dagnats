@@ -100,4 +100,5 @@ var assetsFS embed.FS
 //go:embed templates/components/empty_state.html
 //go:embed templates/components/row_chevron.html
 //go:embed templates/components/stat_card.html
+//go:embed templates/components/nav_icons.html
 var templatesFS embed.FS

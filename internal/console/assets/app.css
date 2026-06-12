@@ -248,22 +248,21 @@ a:hover { text-decoration: underline; }
   background: var(--accent-soft);
 }
 
-/* Leading glyph signifier on each nav item (Norman: a small affordance
-   cue that pre-names the destination). Fixed-width so labels align in
-   the vertical layouts; muted so the glyph reads as ornament, not as a
-   competing label. */
-.console-nav-glyph {
-  display: inline-block;
-  width: 1.15em;
-  margin-right: var(--space-1);
-  text-align: center;
-  color: var(--text-secondary);
-  opacity: 0.7;
+/* Leading Lucide icon on each nav item (Norman: a small affordance cue
+   that pre-names the destination). The SVG inherits the link color via
+   stroke="currentColor", so the .is-active accent flows through without
+   a per-state override. flex:none keeps the 18px box from shrinking when
+   the label wraps; the nav link is a flex row so icon + label sit inline
+   (expanded) and the icon centers alone (collapsed rail). */
+.console-nav-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
 }
-.console-nav a.is-active .console-nav-glyph,
-.console-nav-mobile-panel a.is-active .console-nav-glyph {
-  color: var(--text-primary);
-  opacity: 1;
+.console-nav-glyph-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 /* Section labels (Inventory / Activity / System) inside the nav. Hidden
@@ -2636,7 +2635,9 @@ body[data-theme="dark"] code {
     font-size: 0.95rem;
   }
   .console-nav-desktop a {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     padding: var(--space-2) var(--space-3);
   }
   /* Vertical sidebar: show the Inventory / Activity / System labels. */
@@ -2787,8 +2788,12 @@ body[data-theme="dark"] code {
   .console-header[aria-expanded="false"] ~ .console-main {
     margin-left: 56px;
   }
+  /* Collapsed rail folds away text-only chrome: the brand name, nav
+   * section dividers, nav LABEL spans (but NOT the nav links — they stay
+   * as an icon rail), the connection/theme labels, the actor, and the
+   * rail-slot footer. */
   .console-header[aria-expanded="false"] .console-name,
-  .console-header[aria-expanded="false"] .console-nav-desktop a,
+  .console-header[aria-expanded="false"] .console-nav-label,
   .console-header[aria-expanded="false"] .console-nav-group,
   .console-header[aria-expanded="false"] .console-connection-label,
   .console-header[aria-expanded="false"] .theme-toggle-label,
@@ -2796,6 +2801,15 @@ body[data-theme="dark"] code {
   .console-header[aria-expanded="false"]
     .build-info-footer-slot[data-slot="rail"] {
     display: none;
+  }
+  /* Icon-only rail: each nav link stays visible, centering its single
+   * Lucide icon in the ~56px width. The .is-active accent (background +
+   * currentColor stroke) carries through unchanged. */
+  .console-header[aria-expanded="false"] .console-nav-desktop a {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+    gap: 0;
   }
   /* Collapsed brand chrome — stack the brand row so the "://" glyph
    * mark and the collapse toggle stack vertically and both fit inside
