@@ -287,6 +287,36 @@ a:hover { text-decoration: underline; }
   font-size: 0.9rem;
 }
 
+/*
+ * Read-only mode pill — a persistent STATUS signifier in the top-bar
+ * chrome (remediation T5 partial). Renders only when CONSOLE_READ_ONLY
+ * is set on the server; it is NOT an interactive toggle (the operator
+ * cannot flip a deployment env from the browser). Amber/muted tone via
+ * --status-pending so the mode reads as a quiet caution, not an alarm.
+ */
+.console-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--status-pending) 55%, var(--border));
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--status-pending) 12%, var(--surface));
+  color: var(--status-pending);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  line-height: 1;
+}
+.console-mode-pill-dot {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--status-pending);
+}
+
 /* Theme toggle — cycles System → Light → Dark via JS in app.js. */
 .theme-toggle {
   appearance: none;

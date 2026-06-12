@@ -122,27 +122,50 @@ func buildTaskTypesView(
 	rows, err := ds.AggregateTaskTypes(ctx)
 	if err != nil || len(rows) == 0 {
 		return TaskTypesPageView{
-			Header:     taskTypesHeader(0, 0),
+			Header:     taskTypesHeader(0, 0, 0),
 			EmptyState: taskTypesEmptyState(),
 		}
 	}
 	groups := groupTaskTypeRows(rows)
 	return TaskTypesPageView{
-		Header: taskTypesHeader(len(rows), len(groups)),
+		Header: taskTypesHeader(len(rows), len(groups), distinctWorkerCount(rows)),
 		Groups: groups,
 	}
 }
 
-// taskTypesHeader builds the page header strip. Two tiles: total
-// task-type count + service-group count. Operator can see at a glance
-// "how many handlers" and "how many namespaces" without scanning the
-// table.
-func taskTypesHeader(taskTypes, groups int) PageHeader {
+// distinctWorkerCount counts the unique worker IDs across every
+// function row. OwnerWorkerIDs is already on each row (the aggregation
+// derives it from the live worker registrations), so this is an honest
+// count over data the page fetched — not a synthetic placeholder. A
+// worker that handles two functions is counted once.
+func distinctWorkerCount(rows []TaskTypeRow) int {
+	const rowsMax = 10000
+	seen := make(map[string]struct{})
+	for i := 0; i < len(rows) && i < rowsMax; i++ {
+		for _, id := range rows[i].OwnerWorkerIDs {
+			if id == "" {
+				continue
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+// taskTypesHeader builds the page header strip. Three tiles: total
+// task-type count, service-group count, and distinct worker count.
+// Operator can see at a glance "how many handlers", "how many
+// namespaces", and "how many workers back them" without scanning the
+// table. FAIL RATE 24h is intentionally absent — the page does not
+// fetch a per-function failure histogram, so a tile would lie.
+func taskTypesHeader(taskTypes, groups, workers int) PageHeader {
 	header, err := NewPageHeader(PageHeader{
 		Title:    "Functions",
 		Subtitle: "Every task type any live worker handles.",
 		Tiles: []Tile{
 			{Label: "FUNCTIONS", Count: taskTypes, Tone: ToneDefault},
+			{Label: "WORKERS", Count: workers, Tone: ToneSuccess,
+				Tooltip: "Distinct workers registered to handle these functions"},
 			{Label: "SERVICES", Count: groups, Tone: ToneInfo},
 		},
 	})
