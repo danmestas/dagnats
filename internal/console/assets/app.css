@@ -220,11 +220,15 @@ a:hover { text-decoration: underline; }
   color: var(--text-primary);
 }
 .console-brand:hover { text-decoration: none; }
-.console-mark {
-  width: 16px; height: 16px;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-  display: inline-block;
+/* Collapsed-rail mark: the bare "://" scheme glyph stands in for the
+   wordmark when the sidebar collapses and .console-name is hidden. */
+.console-glyph {
+  display: none;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  color: var(--accent);
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
 }
 .console-name { letter-spacing: 0.02em; }
 
@@ -723,13 +727,24 @@ a:hover { text-decoration: underline; }
  * sizes without going decorative.
  */
 .console-section-header h1,
-.console-tile header h2,
-.console-brand .console-name {
+.console-tile header h2 {
   font-family: var(--font-display);
   font-weight: 500;
   font-feature-settings: "ss01" on, "calt" on, "kern" on;
   letter-spacing: -0.01em;
 }
+/* Brand wordmark: dagnats:// set in the IoskeleyMono data face, no dot.
+   "nats" carries the accent, "://" the muted scheme tail. Ligatures are
+   off so "://" stays literal rather than collapsing into one glyph. */
+.console-brand .console-name {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 1.18rem;
+  letter-spacing: 0;
+  font-feature-settings: "liga" off, "calt" off;
+}
+.console-name-nats { color: var(--accent); }
+.console-name-scheme { color: var(--text-secondary); }
 .console-section-header h1 {
   font-size: 1.75rem;
   font-weight: 600;
@@ -2763,6 +2778,9 @@ body[data-theme="dark"] code {
   .console-header[aria-expanded="false"]
     .build-info-footer-slot[data-slot="rail"] {
     display: none;
+  }
+  .console-header[aria-expanded="false"] .console-glyph {
+    display: inline;
   }
   .console-main {
     transition: margin-left 120ms ease;
