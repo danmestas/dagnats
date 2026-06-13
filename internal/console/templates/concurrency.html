@@ -16,8 +16,21 @@
   </aside>
   {{end}}
 
+  {{if .Page.Starved}}
+  <aside class="callout callout-warning" role="status">
+    <p>
+      Rate-limit pressure — at least one token bucket last recorded an empty
+      balance (tokens 0). This is a lagging last-write snapshot of the
+      rate_limits KV, captured at that limiter's last successful acquire; the
+      bucket may have refilled since (the engine persists the balance only on
+      acquire, with no background refiller). Treat it as "this limiter drained
+      at some point", not as live proof of current throttling.
+    </p>
+  </aside>
+  {{end}}
+
   <div class="card">
-    <h2>Singleton locks</h2>
+    <header class="card-header"><h2>Singleton locks</h2></header>
     <table class="table console-table" id="locks-table">
       <thead>
         <tr>
@@ -43,7 +56,7 @@
   </div>
 
   <div class="card">
-    <h2>Task concurrency</h2>
+    <header class="card-header"><h2>Task concurrency</h2></header>
     <table class="table console-table" id="task-slots-table">
       <thead>
         <tr>
@@ -67,7 +80,7 @@
   </div>
 
   <div class="card">
-    <h2>Rate limits</h2>
+    <header class="card-header"><h2>Rate limits</h2></header>
     <table class="table console-table" id="rate-limits-table">
       <thead>
         <tr>
@@ -81,10 +94,12 @@
         {{range .Page.State.RateLimits}}
         <tr>
           <td class="mono">{{.Key}}</td>
-          {{/* Zero tokens means the bucket is exhausted — every task
-               under this limiter is being throttled right now. Amber
-               (a warning, not a failure): work is shed-to-wait, not
-               dropped. A non-zero balance stays nominal. */}}
+          {{/* Zero tokens is the last-recorded balance at this limiter's
+               last successful acquire — the bucket drained at that point.
+               Amber (a warning, not a failure): a drained bucket sheds to
+               wait, not drop. This is a lagging snapshot (no background
+               refiller persists the balance), so it may have refilled
+               since; a non-zero balance stays nominal. */}}
           <td>{{if le .Tokens 0}}<span class="status-pending">{{.Tokens}}</span>{{else}}{{.Tokens}}{{end}}</td>
           <td>{{.Limit}}</td>
           <td>{{.Period}}</td>
@@ -99,7 +114,7 @@
   </div>
 
   <div class="card">
-    <h2>Debounce</h2>
+    <header class="card-header"><h2>Debounce</h2></header>
     <table class="table console-table" id="debounce-table">
       <thead>
         <tr>
@@ -120,6 +135,17 @@
         {{end}}
       </tbody>
     </table>
+  </div>
+
+  <div class="card">
+    <header class="card-header"><h2>Blocked runs</h2></header>
+    <p class="dn-srcline muted">
+      The engine does not emit which gate a given run is waiting on — neither
+      the admission-gate KV nor a run's state carries the run-to-gate blocking
+      relationship, and there is no "blocked" run or step status to join on.
+      Rather than fabricate that linkage, this section is intentionally
+      omitted until the engine emits a wait-queue.
+    </p>
   </div>
 
   <p class="dn-srcline muted">
