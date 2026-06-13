@@ -1,8 +1,9 @@
 // internal/console/end_of_arc_smoke_test.go
 // Methodology: PR 8 closed the control-plane arc (PRs 1-8); #311
 // promoted Workers / KV / Streams out of /console/ops, and the B3
-// nav/IA pass dissolved the Ops hub entirely (Metrics / Audit / Leases
-// promoted to top level, old paths now 301-redirect). This smoke
+// nav/IA pass dissolved the Ops hub entirely (Metrics / Audit
+// promoted to top level, old paths now 301-redirect; the Leases
+// placeholder was removed, so /console/leases now 404s). This smoke
 // test boots a Mount with a fake DataSource and hits every page
 // rendered across the arc, asserting:
 //   - no 500 anywhere (sanity over the full surface),
@@ -39,7 +40,9 @@ func TestEndOfArc_everyPageReturnsValidHTML(t *testing.T) {
 		{"/console/kv", http.StatusOK},
 		{"/console/streams", http.StatusOK},
 		{"/console/dlq", http.StatusOK},
-		{"/console/leases", http.StatusOK},
+		// Leases was removed (no engine feed, no mockup peer); the route
+		// is gone, so it falls through to the 404 handler.
+		{"/console/leases", http.StatusNotFound},
 		{"/console/audit", http.StatusOK},
 		{"/console/metrics", http.StatusOK},
 		// The Ops hub is dissolved; its old paths 301-redirect to the

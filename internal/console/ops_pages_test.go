@@ -1,9 +1,9 @@
 // ops_pages_test.go covers the operator pages after the Ops hub was
 // dissolved (B3 nav/IA): the retired /console/ops landing now
-// 301-redirects, while /console/workers (placeholder), /console/leases
-// (placeholder), /console/kv inspector, and /console/streams
-// (placeholder) carry the content. Each test asserts both a positive
-// substring AND a boundary condition so the page can't drift silently.
+// 301-redirects, while /console/workers (placeholder), /console/kv
+// inspector, and /console/streams (placeholder) carry the content.
+// Each test asserts both a positive substring AND a boundary condition
+// so the page can't drift silently.
 //
 // Methodology:
 //   - In-memory fakeDataSource feeds page renders.
@@ -114,21 +114,27 @@ func TestWorkersList_rendersRealWorkers(t *testing.T) {
 	}
 }
 
-func TestOpsLeases_rendersPlaceholderBanner(t *testing.T) {
+// TestLeases_routeRemoved is the honesty assertion: the Leases surface
+// had no engine feed and no mockup counterpart, so it was removed.
+// /console/leases must now 404 (the route is gone) and the redirect of
+// the legacy /console/ops/leases must land on /console/concurrency, the
+// real admission-backed surface that owns lock / slot / rate-limit
+// telemetry.
+func TestLeases_routeRemoved(t *testing.T) {
 	fake := newFakeDS()
 	h := mountWithFake(t, fake)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
 		"/console/leases", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("GET /console/leases: status = %d, want 404", rr.Code)
 	}
-	body := rr.Body.String()
-	if !strings.Contains(body, "Lease telemetry is not yet wired") {
-		t.Fatalf("missing telemetry-gap callout: %s", body)
-	}
-	if !strings.Contains(body, "no leases reporting") {
-		t.Fatalf("missing zero-row label: %s", body)
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/ops/leases", nil))
+	if got := rr.Header().Get("Location"); got != "/console/concurrency" {
+		t.Fatalf("ops/leases redirect Location = %q, want /console/concurrency",
+			got)
 	}
 }
 

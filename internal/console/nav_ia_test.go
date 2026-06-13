@@ -1,8 +1,11 @@
 // nav_ia_test.go covers the B3 nav/IA remediation: the Ops hub is
-// removed and its children (Metrics / Audit / Leases) are promoted to
+// removed and its surviving children (Metrics / Audit) are promoted to
 // top-level routes, the old /console/ops* paths 301-redirect to their
 // new homes, and the primary nav carries the regraded 3-layer rail
 // with leading glyph signifiers and no mystery-meat tooltip wrappers.
+// The Leases surface was removed entirely (no engine feed, no mockup
+// counterpart); /console/leases now 404s and /console/ops/leases
+// 301-redirects to the data-backed /console/concurrency.
 //
 // Methodology:
 //   - In-memory fakeDataSource feeds page renders.
@@ -25,7 +28,6 @@ func TestNavIA_promotedTopLevelRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/console/metrics",
 		"/console/audit",
-		"/console/leases",
 	} {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
@@ -51,7 +53,7 @@ func TestNavIA_oldOpsPathsRedirect(t *testing.T) {
 		{"/console/ops", "/console/"},
 		{"/console/ops/metrics", "/console/metrics"},
 		{"/console/ops/audit", "/console/audit"},
-		{"/console/ops/leases", "/console/leases"},
+		{"/console/ops/leases", "/console/concurrency"},
 	}
 	for _, c := range cases {
 		rr := httptest.NewRecorder()
@@ -87,7 +89,6 @@ func TestNavIA_promotedRoutesHighlightNav(t *testing.T) {
 	}{
 		{"/console/metrics", `href="/console/metrics"`},
 		{"/console/audit", `href="/console/audit"`},
-		{"/console/leases", `href="/console/leases"`},
 	}
 	for _, c := range cases {
 		rr := httptest.NewRecorder()
@@ -124,7 +125,6 @@ func TestNavIA_navSetNoOpsItem(t *testing.T) {
 	for _, want := range []string{
 		`href="/console/metrics"`,
 		`href="/console/audit"`,
-		`href="/console/leases"`,
 		`href="/console/functions"`,
 		"console-nav-glyph",
 	} {
@@ -134,6 +134,7 @@ func TestNavIA_navSetNoOpsItem(t *testing.T) {
 	}
 	for _, gone := range []string{
 		`href="/console/ops"`,
+		`href="/console/leases"`,
 		"glo-tooltip-wrapper",
 		">Task Types<",
 	} {
@@ -165,7 +166,6 @@ func TestNavIA_navCrawlNo404(t *testing.T) {
 		"/console/concurrency",
 		"/console/kv",
 		"/console/audit",
-		"/console/leases",
 		"/console/config",
 		// Batch 6 detail routes: even with an empty fake these render the
 		// honest not-found state at 200, never a 404.

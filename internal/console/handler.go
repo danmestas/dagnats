@@ -344,10 +344,6 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageAuditLog(w, r, ts, cfg)
 		})
-	mux.HandleFunc("/console/leases",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageLeases(w, r, ts, cfg)
-		})
 	mux.HandleFunc("/console/ops",
 		func(w http.ResponseWriter, r *http.Request) {
 			redirectMovedPermanently(w, r, "/console/")
@@ -356,9 +352,12 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			serveOpsWorkersRedirect(w, r)
 		})
+	// The Leases page was removed (no engine feed, no mockup peer). Its
+	// admission-layer concepts live on /console/concurrency, so the
+	// legacy bookmark lands on that real, data-backed surface.
 	mux.HandleFunc("/console/ops/leases",
 		func(w http.ResponseWriter, r *http.Request) {
-			redirectMovedPermanently(w, r, "/console/leases")
+			redirectMovedPermanently(w, r, "/console/concurrency")
 		})
 	mux.HandleFunc("/console/ops/kv",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -563,7 +562,6 @@ var pageContentFiles = map[string]string{
 	"dlq-detail":        "templates/dlq_detail.html",
 	"audit-log":         "templates/audit_log.html",
 	"workers-list":      "templates/workers_list.html",
-	"ops-leases":        "templates/ops_leases.html",
 	"kv-list":           "templates/kv_list.html",
 	"streams-list":      "templates/streams_list.html",
 	"stream-detail":     "templates/stream_detail.html",

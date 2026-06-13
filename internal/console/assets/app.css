@@ -1301,8 +1301,6 @@ body[data-theme="dark"] {
 }
 .callout p { margin: 0; font-size: 14px; }
 
-.row-near-expiry { background: color-mix(in srgb, var(--status-running) 14%, transparent); }
-
 /*
  * KV inspector layout: 3-column on wide screens (buckets / keys /
  * value). Collapses to stacked sections on narrow viewports.
@@ -2482,8 +2480,8 @@ body[data-theme="dark"] .console-table tbody td {
  * wider than the card. Switch to auto so a scrollbar appears
  * instead. max-width:100% pins the card itself to its parent's
  * width so the inner table scrolls internally instead of pushing
- * the body's scrollWidth past the viewport — the workers + leases
- * pages were overflowing 240px at 375px without this. */
+ * the body's scrollWidth past the viewport — the workers page was
+ * overflowing 240px at 375px without this. */
 .card {
   overflow-x: auto;
   max-width: 100%;
@@ -2500,7 +2498,7 @@ body[data-theme="dark"] .console-table tbody td {
  * .card get min-width:600px so columns don't squash; the .card's
  * overflow-x:auto + max-width:100% above scrolls the table inside
  * the card without breaking viewport width. Tables NOT inside a
- * .card (placeholder workers + leases) get their parent .page
+ * .card (the placeholder workers page) get their parent .page
  * section to overflow-x:auto so the table scrolls internally
  * rather than pushing body width past viewport. */
 @media (max-width: 768px) {

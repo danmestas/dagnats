@@ -1136,7 +1136,6 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 		"/console/streams",
 		"/console/dlq",
 		"/console/dlq/42",
-		"/console/leases",
 		"/console/audit",
 		"/console/metrics",
 		"/console/config",

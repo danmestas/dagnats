@@ -61,7 +61,6 @@ func TestServeDashboard_rendersLayoutAndNav(t *testing.T) {
 		`href="/console/dlq"`,
 		`href="/console/metrics"`,
 		`href="/console/audit"`,
-		`href="/console/leases"`,
 		`href="/console/assets/basecoat.css"`,
 		`href="/console/assets/app.css"`,
 		`src="/console/assets/console.js"`,
