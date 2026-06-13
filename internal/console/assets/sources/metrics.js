@@ -229,6 +229,33 @@
     };
   }
 
+  // buildZoomFlagHook returns a uPlot setScale hook that tracks whether
+  // the operator has an active manual x-zoom. The hook fires on every
+  // x-scale change — drag-zoom, double-click reset, and our own re-pin.
+  // We set canvas.__userZoomed when the current x-domain differs from
+  // the server-pinned full window, and clear it when it snaps back. The
+  // SSE refresh path consults this flag and skips its forced re-pin
+  // while a zoom is active, so a live chart stays zoomable.
+  function buildZoomFlagHook(canvas) {
+    return function (u, key) {
+      if (key !== "x") {
+        return;
+      }
+      const scale = u.scales.x;
+      const pinMin = canvas.__chartXMin;
+      const pinMax = canvas.__chartXMax;
+      if (!Number.isFinite(pinMin) || !Number.isFinite(pinMax) ||
+          !Number.isFinite(scale.min) || !Number.isFinite(scale.max)) {
+        return;
+      }
+      // Tolerance of one second absorbs float jitter from valToPos.
+      const atFullWindow =
+        Math.abs(scale.min - pinMin) <= 1 &&
+        Math.abs(scale.max - pinMax) <= 1;
+      canvas.__userZoomed = !atFullWindow;
+    };
+  }
+
   function buildOptions(canvas, seriesMeta, unit) {
     const series = [
       { label: "Time" },
@@ -243,7 +270,7 @@
         points: { show: false },
       });
     }
-    return {
+    const opts = {
       width: Math.max(canvas.clientWidth, 320),
       height: 220,
       cursor: { drag: { x: true, y: false } },
@@ -262,8 +289,19 @@
           buildAnomalyHook(canvas),
           buildHighlightHook(canvas),
         ],
+        setScale: [
+          buildZoomFlagHook(canvas),
+        ],
       },
     };
+    // Pin the x-domain to the server-clamped recent window so µPlot
+    // stops auto-extrapolating future ticks under sparse data.
+    const xmin = canvas.__chartXMin;
+    const xmax = canvas.__chartXMax;
+    if (Number.isFinite(xmin) && Number.isFinite(xmax) && xmax > xmin) {
+      opts.scales = { x: { range: [xmin, xmax] } };
+    }
+    return opts;
   }
 
   function initChart(canvas) {
@@ -291,8 +329,11 @@
       canvas.dataset.chartAnomalyUntil || "",
     );
     canvas.__chartWorkflow = canvas.dataset.chartWorkflow || "";
+    canvas.__chartXMin = parseFloat(canvas.dataset.chartXmin);
+    canvas.__chartXMax = parseFloat(canvas.dataset.chartXmax);
     canvas.__lastFetch = 0;
     canvas.__lastSetData = 0;
+    canvas.__userZoomed = false;
     const data = [xs];
     const MAX = 16;
     for (let i = 0; i < series.length && i < MAX; i++) {
@@ -537,8 +578,31 @@
       }
     }
     canvas.__lastSetData = Date.now();
+    const xmin = Number(payload.xmin);
+    const xmax = Number(payload.xmax);
+    if (Number.isFinite(xmin) && Number.isFinite(xmax) && xmax > xmin) {
+      canvas.__chartXMin = xmin;
+      canvas.__chartXMax = xmax;
+    }
     try {
-      canvas.__uplot.setData(data);
+      // Only re-pin the x-domain to the server window when the operator
+      // has NOT manually drag-zoomed. Forcing setScale every 4Hz tick
+      // would snap an active zoom back to the full window, making the
+      // drag-zoom affordance dead on a live chart.
+      if (!canvas.__userZoomed &&
+          typeof canvas.__uplot.setScale === "function" &&
+          Number.isFinite(canvas.__chartXMin) &&
+          Number.isFinite(canvas.__chartXMax) &&
+          canvas.__chartXMax > canvas.__chartXMin) {
+        canvas.__uplot.setScale("x", {
+          min: canvas.__chartXMin,
+          max: canvas.__chartXMax,
+        });
+      }
+      // resetScales=false while zoomed keeps the operator's drag-zoom
+      // window across the data swap; otherwise let uPlot honor the
+      // pinned init range.
+      canvas.__uplot.setData(data, !canvas.__userZoomed);
     } catch (err) {
       console.warn("metrics.js: setData failed", err);
     }

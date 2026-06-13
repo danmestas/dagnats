@@ -18,6 +18,8 @@
          data-chart-id="{{.ID}}"
          data-chart-unit="{{.Unit}}"
          data-chart-x="{{.XAxis}}"
+         data-chart-xmin="{{.XMin}}"
+         data-chart-xmax="{{.XMax}}"
          data-chart-series='{{range .Series}}{{.Label}}|{{.Stroke}};{{end}}'
          data-chart-values='{{range .Series}}{{.Values}};{{end}}'
          data-chart-anomaly-x='{{range .Anomalies}}{{.TimestampSecs}},{{end}}'

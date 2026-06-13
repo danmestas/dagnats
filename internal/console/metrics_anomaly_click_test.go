@@ -66,3 +66,37 @@ func TestMetricsAsset_exportsAnomalyURLForBuilder(t *testing.T) {
 		t.Errorf("metrics.js missing status=failed default")
 	}
 }
+
+// TestMetricsAsset_zoomSurvivesLiveRefresh guards the drag-zoom
+// affordance: the SSE refresh path (applySetData) must NOT re-pin the
+// x-scale while the user has an active manual zoom. The chart cursor is
+// drag-zoomable on x; a forced setScale on every 4Hz tick would snap the
+// user's zoom back to the server window within ~250ms, making zoom dead.
+// Positive: a userZoomed guard exists and gates the forced setScale.
+// Negative: applySetData must not call setScale("x", ...) without first
+// checking the zoom flag.
+func TestMetricsAsset_zoomSurvivesLiveRefresh(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet, "/console/assets/metrics.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metrics.js status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// The zoom flag must exist and be wired into the cursor/scale hook.
+	if !strings.Contains(body, "__userZoomed") {
+		t.Errorf("metrics.js missing __userZoomed guard flag")
+	}
+	// The forced re-pin in applySetData must be gated on the flag being
+	// false, never unconditional.
+	if !strings.Contains(body, "!canvas.__userZoomed") {
+		t.Errorf("metrics.js forced setScale not gated on !__userZoomed")
+	}
+	// A setScale hook must clear the flag when x returns to the pinned
+	// full window (zoom reset / double-click), so live refresh resumes.
+	if !strings.Contains(body, "setScale:") {
+		t.Errorf("metrics.js missing setScale hook to detect zoom reset")
+	}
+}

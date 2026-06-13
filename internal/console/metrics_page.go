@@ -69,6 +69,12 @@ type MetricsChart struct {
 	Series      []ChartSeries
 	Empty       bool
 	WindowLabel string
+	// XMin/XMax pin the explicit x-domain (seconds-since-epoch) the
+	// client hands µPlot's scales.x.range. Clamping the domain at the
+	// source stops sparse data + unset-timestamp points from letting
+	// the auto-ranger extrapolate future ticks (e.g. "Dec 2027").
+	XMin float64
+	XMax float64
 	// Anomalies carries the muted-rust point overlays the µPlot
 	// renderer draws on top of the regular series. Empty for charts
 	// that don't have a latency-shape definition. The tooltip text
@@ -153,6 +159,8 @@ func buildMetricsView(
 		}
 	}
 	tiles := buildMetricsTiles(cfg.Metrics)
+	tiles = appendSeriesTiles(tiles, cfg.Metrics)
+	tiles = appendDLQDepthTile(ctx, tiles, cfg)
 	charts := buildMetricsCharts(cfg.Metrics)
 	wfs := buildWorkflowRows(cfg.Metrics)
 	steps := buildStepRows(cfg.Metrics, workflow)
@@ -187,6 +195,75 @@ func buildMetricsTiles(src MetricsSource) []MetricsTile {
 			"Runs failed", "runs", "/console/dlq"),
 	}
 	return tiles
+}
+
+// appendSeriesTiles appends the mockup's SeriesCards for series the
+// aggregator actually holds. Each tile carries the real OTel metric
+// name (data-metric) so the card maps back to its instrument. The
+// existence guard mirrors the dashboard's drop-empty-tiles stance:
+// render only when the snapshot truly has points, never a placeholder.
+func appendSeriesTiles(
+	tiles []MetricsTile, src MetricsSource,
+) []MetricsTile {
+	if src == nil {
+		return tiles
+	}
+	if hasMetricPoints(src, "workflow.runs.active") {
+		tiles = append(tiles, tileFromCounter(src,
+			"workflow.runs.active", "tile-runs-active",
+			"Active runs", "runs", "/console/runs?status=running"))
+	}
+	if hasMetricPoints(src, "task.concurrency.acquired") {
+		tiles = append(tiles, tileFromCounter(src,
+			"task.concurrency.acquired", "tile-concurrency-acquired",
+			"Concurrency acquired", "tasks", "/console/concurrency"))
+	}
+	if hasMetricPoints(src, "step.enqueue.count") {
+		tiles = append(tiles, tileFromCounter(src,
+			"step.enqueue.count", "tile-step-enqueue",
+			"Step enqueue", "steps", "/console/runs"))
+	}
+	return tiles
+}
+
+// hasMetricPoints reports whether the aggregator holds at least one
+// point for name. Used to keep conditional SeriesCards honest: a
+// series the telemetry pump doesn't deliver yields no tile at all.
+func hasMetricPoints(src MetricsSource, name string) bool {
+	if src == nil {
+		return false
+	}
+	series, ok := src.MetricSnapshot(name)
+	return ok && len(series.Points) > 0
+}
+
+// appendDLQDepthTile appends the DLQ depth tile read from cfg.Data via
+// ListDeadLetters — the same proven path readDashboardCounters uses.
+// Depth comes from the DEAD_LETTERS stream, not a metrics counter, so
+// the tile is omitted entirely when no data source is wired.
+func appendDLQDepthTile(
+	ctx context.Context, tiles []MetricsTile, cfg Config,
+) []MetricsTile {
+	if ctx == nil {
+		panic("appendDLQDepthTile: ctx is nil")
+	}
+	if cfg.Data == nil {
+		return tiles
+	}
+	rctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	entries, err := cfg.Data.ListDeadLetters(rctx, 200)
+	if err != nil {
+		return tiles
+	}
+	tile := MetricsTile{
+		ID: "tile-dlq-depth", Title: "DLQ depth", Unit: "entries",
+		Href: "/console/dlq", MetricID: "DEAD_LETTERS stream",
+		Value: fmt.Sprintf("%d", len(entries)),
+		Spark: dlqSparkFromSource(cfg.Metrics),
+		Trend: "flat",
+	}
+	return append(tiles, tile)
 }
 
 // tileFromCounter builds a tile showing the latest value of a counter
@@ -484,6 +561,7 @@ func buildThroughputChart(src MetricsSource) MetricsChart {
 		completedY = padFront(completedY, len(xs)-len(completedY))
 	}
 	out.XAxis = xs
+	out.XMin, out.XMax = clampChartWindow(xs, time.Now().UTC())
 	out.Series = []ChartSeries{
 		{Label: "Completed", Values: completedY, Stroke: "paper-indigo"},
 		{Label: "Failed", Values: failedY, Stroke: "muted-rust"},
@@ -512,10 +590,11 @@ func buildLatencyChart(src MetricsSource) MetricsChart {
 	p95 := make([]float64, 0, len(series.Points))
 	p99 := make([]float64, 0, len(series.Points))
 	for _, p := range series.Points {
-		if p.Count == 0 {
+		x := float64(p.Timestamp.Unix())
+		if p.Count == 0 || x <= 0 {
 			continue
 		}
-		xs = append(xs, float64(p.Timestamp.Unix()))
+		xs = append(xs, x)
 		p50 = append(p50, percentileFromBuckets(p, 0.50))
 		p95 = append(p95, percentileFromBuckets(p, 0.95))
 		p99 = append(p99, percentileFromBuckets(p, 0.99))
@@ -525,6 +604,7 @@ func buildLatencyChart(src MetricsSource) MetricsChart {
 		return out
 	}
 	out.XAxis = xs
+	out.XMin, out.XMax = clampChartWindow(xs, time.Now().UTC())
 	out.Series = []ChartSeries{
 		{Label: "p50", Values: p50, Stroke: "paper-indigo"},
 		{Label: "p95", Values: p95, Stroke: "warm-clay"},
@@ -535,15 +615,61 @@ func buildLatencyChart(src MetricsSource) MetricsChart {
 }
 
 // xyFromPoints renders a MetricPoint slice into parallel (x, y)
-// arrays for µPlot consumption.
+// arrays for µPlot consumption. Points whose timestamp is epoch-junk
+// (x <= 0, e.g. an unset time.Time yielding the year-1 sentinel) are
+// dropped so they can't poison the chart's auto-ranged domain.
 func xyFromPoints(points []MetricPoint) ([]float64, []float64) {
 	xs := make([]float64, 0, len(points))
 	ys := make([]float64, 0, len(points))
 	for _, p := range points {
-		xs = append(xs, float64(p.Timestamp.Unix()))
+		x := float64(p.Timestamp.Unix())
+		if x <= 0 {
+			continue
+		}
+		xs = append(xs, x)
 		ys = append(ys, p.Value)
 	}
 	return xs, ys
+}
+
+// chartWindowSecs is the visible span of the "60m" window charts.
+const chartWindowSecs = 3600
+
+// clampChartWindow derives the explicit [lo, hi] x-domain the client
+// pins µPlot to. It drops epoch-junk and pre-window stale points
+// before computing the range so a single unset-timestamp sample can't
+// stretch the axis back to year 1 or forward past now. With no valid
+// points it returns a recent window ending at now so the axis still
+// renders a sane minute rather than a degenerate point.
+func clampChartWindow(xs []float64, now time.Time) (float64, float64) {
+	if now.IsZero() {
+		panic("clampChartWindow: now is zero")
+	}
+	nowSecs := float64(now.Unix())
+	floor := nowSecs - (chartWindowSecs + 60)
+	minValid, maxValid := 0.0, 0.0
+	found := false
+	for _, x := range xs {
+		if x <= 0 || x < floor {
+			continue
+		}
+		if !found || x < minValid {
+			minValid = x
+		}
+		if !found || x > maxValid {
+			maxValid = x
+		}
+		found = true
+	}
+	if !found {
+		return nowSecs - 60, nowSecs
+	}
+	hi := math.Min(maxValid, nowSecs)
+	lo := math.Max(minValid, hi-chartWindowSecs)
+	if lo >= hi {
+		lo = hi - 60
+	}
+	return lo, hi
 }
 
 // padFront prepends n zero values to xs so two parallel arrays end

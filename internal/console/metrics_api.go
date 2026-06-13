@@ -19,6 +19,8 @@ import (
 type chartDataPayload struct {
 	ID        string               `json:"id"`
 	XAxis     []float64            `json:"x"`
+	XMin      float64              `json:"xmin"`
+	XMax      float64              `json:"xmax"`
 	Series    []chartSeriesPayload `json:"series"`
 	Anomalies []AnomalyMarker      `json:"anomalies,omitempty"`
 	Empty     bool                 `json:"empty,omitempty"`
@@ -109,8 +111,8 @@ func buildChartByID(
 // spinning up an HTTP fixture.
 func chartFromMetrics(c MetricsChart) chartDataPayload {
 	out := chartDataPayload{
-		ID: c.ID, XAxis: c.XAxis, Empty: c.Empty,
-		Anomalies: c.Anomalies,
+		ID: c.ID, XAxis: c.XAxis, XMin: c.XMin, XMax: c.XMax,
+		Empty: c.Empty, Anomalies: c.Anomalies,
 	}
 	out.Series = make([]chartSeriesPayload, 0, len(c.Series))
 	for _, s := range c.Series {
