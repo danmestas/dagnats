@@ -142,6 +142,22 @@ type fakeDataSource struct {
 	// drive the Trace tab; runTraceErr forces the read-error path.
 	runTrace    []TraceRow
 	runTraceErr error
+
+	// Run Signal / Cancel observability. cancelRunCalls records each
+	// CancelRun(runID); signalCalls records each SendSignal invocation.
+	// The *Err seams force the failure path.
+	cancelRunCalls []string
+	cancelRunErr   error
+	signalCalls    []signalCall
+	signalErr      error
+}
+
+// signalCall captures one SendSignal invocation so tests can assert the
+// (runID, name, data) the handler passed through.
+type signalCall struct {
+	RunID string
+	Name  string
+	Data  []byte
 }
 
 // triggerSetCall captures one SetTriggerEnabled invocation so tests can
@@ -467,6 +483,35 @@ func (f *fakeDataSource) FireTrigger(
 		return "", f.fireTriggerErr
 	}
 	return f.fireTriggerRunID, nil
+}
+
+// CancelRun records the call and returns the seeded error. Tests that
+// exercise the success path leave cancelRunErr nil.
+func (f *fakeDataSource) CancelRun(
+	_ context.Context, runID string,
+) error {
+	if runID == "" {
+		panic("fakeDataSource.CancelRun: empty runID")
+	}
+	f.cancelRunCalls = append(f.cancelRunCalls, runID)
+	return f.cancelRunErr
+}
+
+// SendSignal records the call and returns the seeded error. The data is
+// copied so a caller reusing the buffer can't mutate the recorded value.
+func (f *fakeDataSource) SendSignal(
+	_ context.Context, runID, name string, data []byte,
+) error {
+	if runID == "" {
+		panic("fakeDataSource.SendSignal: empty runID")
+	}
+	if name == "" {
+		panic("fakeDataSource.SendSignal: empty name")
+	}
+	f.signalCalls = append(f.signalCalls, signalCall{
+		RunID: runID, Name: name, Data: append([]byte{}, data...),
+	})
+	return f.signalErr
 }
 
 func (f *fakeDataSource) ListTriggerFires(

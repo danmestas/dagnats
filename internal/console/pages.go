@@ -1099,6 +1099,16 @@ type RunDetailView struct {
 	FailedStepID       string
 	FailedStepError    string
 	FailedStepAttempts int
+
+	// ReadOnly mirrors cfg.ReadOnly so the template can disable the
+	// Signal / Cancel controls with the standard read-only signifier.
+	// CSRFToken is the per-actor token the action fetches send via the
+	// X-CSRF-Token header. CanCancel is false for terminal runs so the
+	// Cancel button (and the Signal form) are not rendered against a run
+	// that can no longer act on them — single-sourced on IsTerminal().
+	ReadOnly  bool
+	CSRFToken string
+	CanCancel bool
 }
 
 // EventRow is one line of the run event timeline.
@@ -1111,12 +1121,12 @@ type EventRow struct {
 	DataFull    string
 }
 
-// dispatchRuns routes the catch-all /console/runs/ prefix. A trailing
-// `/trace` segment renders the standalone full-page span tree; anything
-// else falls through to the run-detail page. The suffix dispatch mirrors
-// dispatchDLQ / dispatchTriggers so the run-detail handler keeps its
-// "no slash in id" invariant — only the /trace branch carries a nested
-// path.
+// dispatchRuns routes the catch-all /console/runs/ prefix as
+// /<id> or /<id>/<action>. The single-segment case renders the
+// run-detail page; the action segments dispatch to the trace page or
+// the cancel / signal mutation handlers. Mirrors dispatchTriggers'
+// SplitN dispatch so the run-detail handler keeps its "no slash in id"
+// invariant — only the nested-action branches carry a second segment.
 func dispatchRuns(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -1127,11 +1137,27 @@ func dispatchRuns(
 	if r == nil {
 		panic("dispatchRuns: r is nil")
 	}
-	if strings.HasSuffix(r.URL.Path, "/trace") {
-		servePageRunTrace(w, r, ts, cfg)
+	rest := strings.TrimPrefix(r.URL.Path, "/console/runs/")
+	if rest == "" {
+		serveNotFound(w, r, ts, cfg)
 		return
 	}
-	servePageRunDetail(w, r, ts, cfg)
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 1 {
+		servePageRunDetail(w, r, ts, cfg)
+		return
+	}
+	runID, action := parts[0], parts[1]
+	switch action {
+	case "trace":
+		servePageRunTrace(w, r, ts, cfg)
+	case "cancel":
+		handleRunCancel(w, r, cfg, runID)
+	case "signal":
+		handleRunSignal(w, r, cfg, runID)
+	default:
+		serveNotFound(w, r, ts, cfg)
+	}
 }
 
 // RunTraceView powers the standalone /console/runs/<id>/trace page. It
@@ -1210,6 +1236,8 @@ func servePageRunDetail(
 		return
 	}
 	view := buildRunDetail(r.Context(), ds, id)
+	view.ReadOnly = cfg.ReadOnly
+	view.CSRFToken = csrfTokenFor(r)
 	renderPage(w, r, ts, cfg, "run-detail", pageData{
 		Title:   "Run " + shortRunID(id),
 		Section: "runs",
@@ -1415,6 +1443,7 @@ func buildRunDetail(
 	if run.Status == dag.RunStatusFailed {
 		populateFailedStep(&view, def, run)
 	}
+	view.CanCancel = !run.Status.IsTerminal()
 	return view
 }
 

@@ -19,7 +19,50 @@
         <div><dt>Duration</dt><dd>{{.Duration}}</dd></div>
         <div><dt>Trigger</dt><dd>{{.TriggerKind}}</dd></div>
       </dl>
+      <div class="run-actions">
+        <a class="btn btn-primary" href="/console/runs/{{.RunID}}/trace">View trace &rarr;</a>
+        {{if .CanCancel}}
+        <button type="button"
+                id="run-signal-btn"
+                class="btn"
+                data-run-id="{{.RunID}}"
+                data-csrf="{{.CSRFToken}}"
+                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to signal runs."{{end}}>
+          Signal
+        </button>
+        <button type="button"
+                id="run-cancel-btn"
+                class="btn btn-destructive"
+                data-run-id="{{.RunID}}"
+                data-csrf="{{.CSRFToken}}"
+                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to cancel runs."{{end}}>
+          Cancel
+        </button>
+        {{end}}
+      </div>
     </header>
+
+    {{if .CanCancel}}
+    <div id="run-signal-form" class="card" hidden>
+      <header class="card-header"><h2>Send signal</h2></header>
+      <div class="card-body">
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input type="text" id="run-signal-name" class="input"
+                 placeholder="approve" autocomplete="off">
+        </label>
+        <label class="field">
+          <span class="field-label">Payload (optional JSON)</span>
+          <textarea id="run-signal-data" class="input" rows="4"
+                    placeholder='{"reason":"..."}'></textarea>
+        </label>
+        <div class="run-signal-actions">
+          <button type="button" id="run-signal-cancel" class="btn btn-outline">Close</button>
+          <button type="button" id="run-signal-send" class="btn btn-primary">Send</button>
+        </div>
+      </div>
+    </div>
+    {{end}}
 
     {{if and .HasError .FailedStepID}}{{template "run-error-banner" .}}{{end}}
 
@@ -63,4 +106,109 @@
     </div>
   {{end}}
 </section>
+
+<script>
+(function () {
+  // Run cancel: confirm, then POST /console/runs/<id>/cancel. The CSRF
+  // token rides the X-CSRF-Token header (the transport non-loopback auth
+  // modes require). Cancellation is async on the engine, so the toast
+  // the server returns says "requested", not "cancelled".
+  var btn = document.getElementById("run-cancel-btn");
+  if (!btn || btn.hasAttribute("disabled")) return;
+  btn.addEventListener("click", function () {
+    var id = btn.getAttribute("data-run-id");
+    var csrf = btn.getAttribute("data-csrf") || "";
+    if (!window.confirm("Cancel run " + id + "?")) return;
+    btn.disabled = true;
+    fetch("/console/runs/" + encodeURIComponent(id) + "/cancel", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf, "Accept": "application/json" },
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("cancel failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      btn.disabled = false;
+      if (data && data.toast) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: data.toast,
+        }));
+      }
+    }).catch(function (err) {
+      btn.disabled = false;
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: (err && err.message) ? err.message : "cancel failed",
+        },
+      }));
+    });
+  });
+})();
+(function () {
+  // Run signal: toggle the inline form, then POST name + optional JSON
+  // payload as form-encoded to /console/runs/<id>/signal. CSRF token is
+  // sent via the X-CSRF-Token header (same as trigger edit) so the
+  // request is accepted under non-loopback auth.
+  var btn = document.getElementById("run-signal-btn");
+  var form = document.getElementById("run-signal-form");
+  if (!btn || !form || btn.hasAttribute("disabled")) return;
+  var nameInput = document.getElementById("run-signal-name");
+  var dataInput = document.getElementById("run-signal-data");
+  var sendBtn = document.getElementById("run-signal-send");
+  var closeBtn = document.getElementById("run-signal-cancel");
+
+  function toast(detail) {
+    document.dispatchEvent(new CustomEvent("console:toast", { detail: detail }));
+  }
+  btn.addEventListener("click", function () {
+    form.hidden = !form.hidden;
+    if (!form.hidden && nameInput) nameInput.focus();
+  });
+  closeBtn.addEventListener("click", function () { form.hidden = true; });
+  sendBtn.addEventListener("click", function () {
+    var id = btn.getAttribute("data-run-id");
+    var csrf = btn.getAttribute("data-csrf") || "";
+    var name = (nameInput.value || "").trim();
+    if (!name) {
+      toast({ level: "error", message: "Signal name is required" });
+      return;
+    }
+    var body = new URLSearchParams();
+    body.set("name", name);
+    body.set("data", dataInput.value || "");
+    sendBtn.disabled = true;
+    fetch("/console/runs/" + encodeURIComponent(id) + "/signal", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-CSRF-Token": csrf,
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+      body: body.toString(),
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("signal failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      sendBtn.disabled = false;
+      form.hidden = true;
+      nameInput.value = "";
+      dataInput.value = "";
+      if (data && data.toast) toast(data.toast);
+    }).catch(function (err) {
+      sendBtn.disabled = false;
+      toast({ level: "error", message: (err && err.message) || "signal failed" });
+    });
+  });
+})();
+</script>
 {{end}}{{end}}

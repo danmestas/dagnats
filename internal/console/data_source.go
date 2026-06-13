@@ -120,6 +120,19 @@ type DataSource interface {
 	// responsible for read-only, CSRF, and rate-limit gating.
 	FireTrigger(ctx context.Context, triggerID string) (string, error)
 
+	// CancelRun publishes a workflow.cancelled event for the run.
+	// Cancellation is asynchronous: success means the event was
+	// accepted, not that the run has stopped. Used by POST
+	// /console/runs/{id}/cancel; the caller is responsible for the
+	// read-only, CSRF, and terminality checks.
+	CancelRun(ctx context.Context, runID string) error
+
+	// SendSignal writes one named signal to the signals KV bucket at
+	// {runID}.{name}. data may be empty. Used by POST
+	// /console/runs/{id}/signal; the caller is responsible for the
+	// read-only, CSRF, payload-validation, and run-existence checks.
+	SendSignal(ctx context.Context, runID, name string, data []byte) error
+
 	// ListTriggerFires returns recent firings for one trigger, newest
 	// first. Empty + nil-error when no firings exist (zero state).
 	// limit must be positive; callers pass 25-50 for the recent-activity
@@ -1054,6 +1067,39 @@ func (a *apiServiceAdapter) FireTrigger(
 		panic("apiServiceAdapter.FireTrigger: triggerID is empty")
 	}
 	return a.svc.FireTrigger(ctx, triggerID)
+}
+
+func (a *apiServiceAdapter) CancelRun(
+	ctx context.Context, runID string,
+) error {
+	if a.svc == nil {
+		panic("apiServiceAdapter.CancelRun: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.CancelRun: ctx is nil")
+	}
+	if runID == "" {
+		panic("apiServiceAdapter.CancelRun: runID is empty")
+	}
+	return a.svc.CancelRun(ctx, runID)
+}
+
+func (a *apiServiceAdapter) SendSignal(
+	ctx context.Context, runID, name string, data []byte,
+) error {
+	if a.svc == nil {
+		panic("apiServiceAdapter.SendSignal: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.SendSignal: ctx is nil")
+	}
+	if runID == "" {
+		panic("apiServiceAdapter.SendSignal: runID is empty")
+	}
+	if name == "" {
+		panic("apiServiceAdapter.SendSignal: name is empty")
+	}
+	return a.svc.SendSignal(ctx, runID, name, data)
 }
 
 func (a *apiServiceAdapter) ListTriggerFires(
