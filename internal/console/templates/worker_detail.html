@@ -1,0 +1,57 @@
+{{define "content"}}{{with .Page}}
+<section class="page page-worker-detail" data-page="worker-detail">
+  {{if .NotFound}}
+    <header class="console-section-header">
+      <h1>Worker {{.WorkerID}}</h1>
+      <p class="console-lede">No worker named <code>{{.WorkerID}}</code> is registered on this engine.</p>
+    </header>
+    <p><a class="btn btn-outline" href="/console/workers">&larr; back to workers</a></p>
+  {{else}}
+    <header class="console-section-header" data-component="page-header">
+      <div class="page-header-title-row">
+        <h1 class="console-mono">{{.WorkerID}}</h1>
+      </div>
+      <p class="page-subtitle console-lede">Worker — read-only registration snapshot.</p>
+    </header>
+
+    <div class="worker-detail-cards">
+      {{template "stat-card" .Identity}}
+    </div>
+
+    <article class="card" data-component="worker-functions">
+      <header class="card-header"><h2>Registered functions</h2></header>
+      <div class="card-body">
+        {{if .Functions}}
+        <table class="table console-table">
+          <thead>
+            <tr>
+              <th>Function</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Functions}}
+            <tr>
+              <td class="console-mono">{{.Function}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+        {{else}}
+        <p class="console-empty">This worker advertised no task types.</p>
+        {{end}}
+      </div>
+    </article>
+
+    <article class="card" data-component="worker-howto">
+      <header class="card-header"><h2>How this worker runs tasks</h2></header>
+      <div class="card-body">
+        <p class="console-lede">A worker pulls tasks for its registered functions,
+        executes them, and acks before AckWait elapses. On crash the in-flight task
+        redelivers to another worker after AckWait.</p>
+      </div>
+    </article>
+
+    <p><a class="btn btn-outline" href="/console/workers">&larr; back to workers</a></p>
+  {{end}}
+</section>
+{{end}}{{end}}

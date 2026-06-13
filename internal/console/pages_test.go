@@ -604,6 +604,16 @@ func (f *fakeDataSource) ListWorkerRows(
 	return workerRowsFromRegistrations(f.configSnap.Workers, time.Now()), nil
 }
 
+// WorkerDetail is the test seam for /console/workers/{id}. Mirrors the
+// production adapter: project the same configSnap.Workers the list page
+// reads, matching by id, with now fixed to wall-clock so liveness
+// classification matches the list page.
+func (f *fakeDataSource) WorkerDetail(
+	_ context.Context, id string,
+) (WorkerDetail, error) {
+	return workerDetailFromRegistrations(f.configSnap.Workers, id, time.Now()), nil
+}
+
 // Search mirrors the production adapter's contract over the fake's
 // in-memory slices. We keep the rules identical (substring for
 // workflows + triggers; prefix ≥4 chars for runs) so unit tests

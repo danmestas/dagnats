@@ -10,20 +10,22 @@
         <th>Host</th>
         <th>Last seen</th>
         <th>Status</th>
+        <th class="row-chevron-cell"><span class="sr-only">Open</span></th>
       </tr>
     </thead>
     <tbody id="workers-tbody">
       {{range .Page.Workers}}
       <tr id="worker-row-{{.WorkerID}}">
-        <td class="mono">{{.WorkerID}}</td>
+        <td class="mono"><a href="/console/workers/{{.WorkerID}}">{{.WorkerID}}</a></td>
         <td>{{.TaskTypes}}</td>
         <td>{{.Host}}</td>
         <td>{{.LastSeen}}</td>
         <td>{{.Status}}</td>
+        {{template "row-chevron"}}
       </tr>
       {{else}}
       <tr class="empty-row">
-        <td colspan="5">No workers currently registered.</td>
+        <td colspan="6">No workers currently registered.</td>
       </tr>
       {{end}}
     </tbody>

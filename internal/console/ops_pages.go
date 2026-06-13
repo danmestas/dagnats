@@ -457,6 +457,105 @@ func maxCountLabel(max int64) string {
 	return strconv.FormatInt(max, 10)
 }
 
+// WorkerDetailView powers the read-only /console/workers/{id} page.
+// NotFound flags an unknown worker id (renders the honest not-found
+// state, still 200 with chrome). Identity is the registration stat-card;
+// Functions is the registered task-type table. The mockup's counter
+// tiles, in-flight tasks table, and Drain/Resume/Decommission actions
+// are deliberately absent — no backing telemetry or mutation exists.
+type WorkerDetailView struct {
+	WorkerID  string
+	NotFound  bool
+	Identity  StatCard
+	Functions []WorkerFunctionRow
+}
+
+// dispatchWorkers routes /console/workers/<id> to the read-only detail
+// view. The trailing-slash prefix lands here; an empty or embedded-slash
+// id 404s (mirrors dispatchStreams).
+func dispatchWorkers(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("dispatchWorkers: w is nil")
+	}
+	if r == nil {
+		panic("dispatchWorkers: r is nil")
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/console/workers/")
+	if id == "" || strings.Contains(id, "/") {
+		serveNotFound(w, r, ts, cfg)
+		return
+	}
+	servePageWorkerDetail(w, r, ts, cfg, id)
+}
+
+// servePageWorkerDetail renders the read-only detail for one worker. A
+// read miss or unknown id degrades to the honest not-found state within
+// the page chrome — the view is observational and never 500s.
+func servePageWorkerDetail(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config, id string,
+) {
+	if w == nil {
+		panic("servePageWorkerDetail: w is nil")
+	}
+	if id == "" {
+		panic("servePageWorkerDetail: id is empty")
+	}
+	ds, ok := requireData(w, cfg, "worker-detail")
+	if !ok {
+		return
+	}
+	detail, _ := ds.WorkerDetail(r.Context(), id)
+	view := buildWorkerDetail(detail, id)
+	renderPage(w, r, ts, cfg, "worker-detail", pageData{
+		Title:   "Worker " + id,
+		Section: "workers",
+		Page:    view,
+	})
+}
+
+// buildWorkerDetail projects one WorkerDetail into the detail view. An
+// absent worker returns NotFound so the page renders the honest empty
+// state rather than a fabricated identity card.
+func buildWorkerDetail(detail WorkerDetail, id string) WorkerDetailView {
+	if id == "" {
+		panic("buildWorkerDetail: id is empty")
+	}
+	if !detail.Found {
+		return WorkerDetailView{WorkerID: id, NotFound: true}
+	}
+	return WorkerDetailView{
+		WorkerID:  detail.WorkerID,
+		Identity:  workerIdentityCard(detail),
+		Functions: detail.Functions,
+	}
+}
+
+// workerIdentityCard builds the Identity stat-card from a registration.
+// Only real registration fields appear; empties render the honest dash
+// via statValueOr. There is no "Group" field in the wire schema, so the
+// task-type list is labelled "Task types" rather than inventing a group.
+func workerIdentityCard(detail WorkerDetail) StatCard {
+	return StatCard{
+		Title: "Identity",
+		Stats: []StatRow{
+			{Label: "Worker id", Value: statValueOr(detail.WorkerID), Mono: true},
+			{Label: "Task types", Value: statValueOr(detail.TaskTypes), Mono: true},
+			{Label: "Host", Value: statValueOr(detail.Host), Mono: true},
+			{Label: "Last heartbeat", Value: statValueOr(detail.LastSeen)},
+			{Label: "Status", Value: statValueOr(detail.Status)},
+			{Label: "Language", Value: statValueOr(detail.Language)},
+			{Label: "Transport", Value: statValueOr(detail.Transport)},
+			{Label: "Max tasks", Value: statValueOr(detail.MaxTasks)},
+			{Label: "Pid", Value: statValueOr(detail.Pid), Mono: true},
+			{Label: "Version", Value: statValueOr(detail.Version), Mono: true},
+		},
+	}
+}
+
 // consumersForStream filters the global consumer list to one stream.
 // Bounded by len(rows); returns a freshly-allocated slice so the caller
 // owns it.
