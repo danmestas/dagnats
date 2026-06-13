@@ -68,6 +68,21 @@ const (
 	// limited to no-input workflows for R8; the typed-input form
 	// path remains out of scope.
 	ActionWorkflowRun AuditAction = "workflow.run"
+
+	// ActionRunCancel — operator requested cancellation of a
+	// non-terminal run. Target is the run id; Data carries the
+	// rejection reason ("read_only", "terminal", "not_found",
+	// "engine_error") on the denied / failed paths. Cancellation is
+	// asynchronous, so a success row means the cancel event was
+	// accepted, not that the run has stopped.
+	ActionRunCancel AuditAction = "run.cancel"
+
+	// ActionRunSignal — operator sent a named signal to a run. Target
+	// is the run id; Data carries the signal name on success, or the
+	// rejection reason ("read_only", "invalid", "invalid_json",
+	// "terminal", "not_found", "engine_error") on the denied / failed
+	// paths.
+	ActionRunSignal AuditAction = "run.signal"
 )
 
 // String returns the action's wire form. Centralising the cast keeps
@@ -114,6 +129,8 @@ var auditActionsAll = []AuditAction{
 	ActionTriggerUpdate,
 	ActionTriggerDelete,
 	ActionWorkflowRun,
+	ActionRunCancel,
+	ActionRunSignal,
 }
 
 // AuditActionList returns a defensive copy of the registered action

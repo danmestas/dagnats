@@ -334,6 +334,18 @@ func (r *resumeRecorder) ListRunEvents(
 	return r.inner.ListRunEvents(ctx, runID, full)
 }
 
+func (r *resumeRecorder) CancelRun(
+	ctx context.Context, runID string,
+) error {
+	return r.inner.CancelRun(ctx, runID)
+}
+
+func (r *resumeRecorder) SendSignal(
+	ctx context.Context, runID, name string, data []byte,
+) error {
+	return r.inner.SendSignal(ctx, runID, name, data)
+}
+
 func (r *resumeRecorder) ListTriggers(
 	ctx context.Context,
 ) ([]trigger.TriggerDef, error) {
