@@ -13,6 +13,14 @@ type ConcurrencyView struct {
 	Header PageHeader
 	State  AdmissionState
 	Note   string
+	// Starved is true when at least one rate limiter's token bucket last
+	// recorded an empty balance (Tokens <= 0). This is a lagging last-write
+	// snapshot, not a live alarm: the engine persists the balance only on a
+	// successful acquire and runs no background refiller, so a bucket that
+	// drained once and went idle reads zero indefinitely even after it would
+	// have refilled. The rate-limit callout renders only when it is set and is
+	// worded as a snapshot, never as proof of live shedding.
+	Starved bool
 }
 
 // servePageConcurrency renders /console/concurrency. An AdmissionState
@@ -42,15 +50,34 @@ func servePageConcurrency(
 			"the locks and counters are empty until the read succeeds."
 	}
 	view := ConcurrencyView{
-		Header: buildConcurrencyHeader(state),
-		State:  state,
-		Note:   note,
+		Header:  buildConcurrencyHeader(state),
+		State:   state,
+		Note:    note,
+		Starved: anyRateLimitExhausted(state),
 	}
 	renderPage(w, r, ts, cfg, "concurrency", pageData{
 		Title:   "Concurrency",
 		Section: "concurrency",
 		Page:    view,
 	})
+}
+
+// anyRateLimitExhausted reports whether any rate limiter's last-recorded token
+// balance is empty (Tokens <= 0). The rate_limits KV value is written only on a
+// successful acquire (engine/ratelimit.go saveBucket) and no background
+// refiller updates it, so a true result means "this limiter drained at its last
+// acquire", NOT "tasks are being shed right now" — a drained-then-idle bucket
+// reads zero indefinitely. Callers must word the signal as a lagging snapshot.
+func anyRateLimitExhausted(s AdmissionState) bool {
+	if s.RateLimits == nil {
+		return false
+	}
+	for i := range s.RateLimits {
+		if s.RateLimits[i].Tokens <= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // buildConcurrencyHeader assembles the count strip for the concurrency
