@@ -7,7 +7,9 @@
     <td>{{.TriggerCount}}</td>
     <td class="console-mono">{{if .LastRunTime}}{{.LastRunTime}}{{else}}<span class="muted">never</span>{{end}}</td>
     <td>{{if .LastRunStatus}}{{template "status-badge" .LastRunStatus}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td class="console-mono" data-runs24h="{{.Runs24h}}">{{.Runs24h}}</td>
     <td class="console-sparkline-col">{{if .Sparkline}}<canvas class="console-sparkline" data-sparkline-id="workflow-{{.Name}}" data-sparkline-data="{{jsonArray .Sparkline}}" width="60" height="16" aria-label="Activity sparkline for {{.Name}}"></canvas>{{end}}</td>
+    <td>{{if .TriggerKind}}<span class="badge badge-outline">{{.TriggerKind}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
     {{/*
       Inline Run cell (#329 R8 Tier 2). Renders one of three states:
         * Runnable + writable: a hidden POST form carrying the CSRF
@@ -51,6 +53,6 @@
     {{template "row-chevron"}}
   </tr>
   {{else}}
-  <tr><td colspan="9" class="console-empty">no workflows match this filter</td></tr>
+  <tr><td colspan="11" class="console-empty">no workflows match this filter</td></tr>
   {{end}}
 </tbody>{{end}}

@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -321,6 +322,22 @@ type StreamRow struct {
 	Messages  string
 	Bytes     string
 	Consumers string
+
+	// Retention / Storage are the human tokens ("workqueue" | "limits"
+	// | "interest", "memory" | "file") rendered as pills. RetentionHot /
+	// StorageHot flag the load-bearing variants (workqueue retention,
+	// memory storage) so the template can highlight them. Seq is the
+	// "firstSeq–lastSeq" range. Deleted is the NumDeleted count;
+	// DeletedNonZero drives the danger tone when the stream has holes.
+	// All carry "—" on unprovisioned rows so a planned-but-absent stream
+	// never lies about zero state.
+	Retention      string
+	RetentionHot   bool
+	Storage        string
+	StorageHot     bool
+	Seq            string
+	Deleted        string
+	DeletedNonZero bool
 }
 
 // servePageStreams renders /console/streams off the live config
@@ -370,11 +387,22 @@ func streamRowsFromSnapshots(snaps []StreamSnapshot) []StreamRow {
 			Messages:  "—",
 			Bytes:     "—",
 			Consumers: "—",
+			Retention: "—",
+			Storage:   "—",
+			Seq:       "—",
+			Deleted:   "—",
 		}
 		if s.Provisioned {
 			row.Messages = strconv.FormatUint(s.Messages, 10)
 			row.Bytes = humanBytes(s.Bytes)
 			row.Consumers = strconv.Itoa(s.Consumers)
+			row.Retention = s.Retention
+			row.RetentionHot = s.Retention == "workqueue"
+			row.Storage = s.Storage
+			row.StorageHot = s.Storage == "memory"
+			row.Seq = fmt.Sprintf("%d–%d", s.FirstSeq, s.LastSeq)
+			row.Deleted = strconv.Itoa(s.NumDeleted)
+			row.DeletedNonZero = s.NumDeleted > 0
 		}
 		out = append(out, row)
 	}

@@ -47,6 +47,44 @@ func TestSparkline_returns24Points(t *testing.T) {
 	}
 }
 
+// TestSparkline_matchesEngineWorkflowLabel exercises the REAL adapter
+// read path (apiServiceAdapter.SparklineData → sparklineMetricFor →
+// bucketHourly) against a metric point labeled the way the engine
+// actually emits it. The orchestrator emits workflow.runs.completed with
+// attribute key "workflow" (orchestrator.go:794, attribute.String(
+// "workflow", run.WorkflowID)), so the console's label-key filter must
+// agree. This guards the bug where sparklineMetricFor returned the
+// nonexistent key "workflow_id", matching nothing and silently returning
+// nil for every workflow — a dead Activity(24h) canvas in production.
+func TestSparkline_matchesEngineWorkflowLabel(t *testing.T) {
+	const hours = 24
+	src := newFakeMetricsSource()
+	now := time.Now().UTC()
+	// Engine attribute key is "workflow", value is the workflow ID.
+	src.addCounterLabeled(
+		"workflow.runs.completed", 7, now.Add(-30*time.Minute),
+		map[string]string{"workflow": "demo"},
+	)
+	ds := WithMetrics(&apiServiceAdapter{}, src)
+
+	data, err := ds.SparklineData(context.Background(), "workflow", "demo", hours)
+	if err != nil {
+		t.Fatalf("SparklineData: %v", err)
+	}
+	if len(data) != hours {
+		t.Fatalf("len(data) = %d, want %d (nil means the label key "+
+			"did not match the engine's emitted key)", len(data), hours)
+	}
+	var sum float64
+	for _, v := range data {
+		sum += v
+	}
+	if sum != 7 {
+		t.Errorf("bucket sum = %v, want 7 (the seeded point must land "+
+			"in a slot, not be filtered out)", sum)
+	}
+}
+
 // TestSparkline_emptyReturnsNil pins the empty-state honesty contract:
 // when no data exists for (kind,id), SparklineData must return nil so
 // the renderer can hide the canvas rather than draw a flat-line that

@@ -595,6 +595,19 @@ a:hover { text-decoration: underline; }
   background: var(--bg);
 }
 .badge-outline { background: transparent; }
+/* stream-pill-hot highlights the load-bearing stream config variants on
+   the streams list — workqueue retention and memory storage — the same
+   semantic signal the design mockup gives those pills. Reuses the
+   pending/warning token so no new color enters the palette. */
+.badge.stream-pill-hot {
+  color: var(--status-pending);
+  border-color: var(--status-pending);
+}
+/* stream-deleted-nonzero tints the Deleted cell when a stream carries
+   interior holes (NumDeleted > 0) — a danger signal, muted when zero. */
+.console-table tbody td.stream-deleted-nonzero {
+  color: var(--status-failed);
+}
 .badge .status-icon { font-size: 0.85em; line-height: 1; }
 .badge-completed {
   color: var(--status-completed);

@@ -157,6 +157,16 @@ type WorkflowRow struct {
 	LastRunStatus string
 	Sparkline     []float64
 
+	// Runs24h counts the workflow's runs whose CreatedAt falls within
+	// the trailing 24h, folded from the same ListRuns the page already
+	// reads — so the value is a real, complete count (zero is honest,
+	// unlike the absent-metric case). TriggerKind is the kind of the
+	// workflow's first trigger ("cron" | "subject" | "http" | "webhook"),
+	// derived via triggerKindAndTarget; empty when the workflow has no
+	// trigger so the template can render an honest dash.
+	Runs24h     int
+	TriggerKind string
+
 	// Runnable is true when the workflow accepts an empty input —
 	// the inline Run button (#329) only fires for those. Workflows
 	// with a non-empty required-input schema render a disabled
@@ -336,6 +346,8 @@ func assembleWorkflowRows(
 	for _, t := range triggers {
 		triggerCount[t.WorkflowID]++
 	}
+	triggerKind := firstTriggerKindPerWorkflow(triggers)
+	runs24h := runCountWithin(runs, sparklineHours*time.Hour, time.Now())
 	lastRun := lastRunPerWorkflow(runs)
 	rows := make([]WorkflowRow, 0, len(defs))
 	for _, d := range defs {
@@ -344,6 +356,8 @@ func assembleWorkflowRows(
 			Version:      d.Version,
 			StepCount:    len(d.Steps),
 			TriggerCount: triggerCount[d.Name],
+			Runs24h:      runs24h[d.Name],
+			TriggerKind:  triggerKind[d.Name],
 			Runnable:     workflowRunnable(d),
 		}
 		if lr, ok := lastRun[d.Name]; ok {
@@ -353,6 +367,57 @@ func assembleWorkflowRows(
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// firstTriggerKindPerWorkflow maps each workflow ID to the kind of its
+// first trigger (in iteration order), reusing triggerKindAndTarget so
+// the kind labels match every other surface. Workflows with no trigger
+// are simply absent from the map. A nil triggers slice yields an empty
+// map. Bounded by len(triggers).
+func firstTriggerKindPerWorkflow(
+	triggers []trigger.TriggerDef,
+) map[string]string {
+	const triggersMax = 4096
+	if len(triggers) > triggersMax {
+		panic("firstTriggerKindPerWorkflow: triggers exceeds max bound")
+	}
+	out := make(map[string]string, len(triggers))
+	for i := 0; i < len(triggers); i++ {
+		t := triggers[i]
+		if _, seen := out[t.WorkflowID]; seen {
+			continue
+		}
+		kind, _ := triggerKindAndTarget(t)
+		out[t.WorkflowID] = kind
+	}
+	return out
+}
+
+// runCountWithin folds runs into a per-workflow count of those whose
+// CreatedAt lands within the trailing window ending at now. The runs
+// slice is the complete ListRuns read, so the resulting count is real —
+// zero means "no runs in window", never "no data".
+//
+// The loop caps at runsMax rather than panicking: this fold backs the
+// /console/workflows page, which reads the same unbounded ListRuns the
+// /console/runs page does. buildRunsHeader truncates at runsMax, so a
+// deployment with >runsMax total runs must degrade /workflows to an
+// undercount the same way — never a 500. Same data, same bound, same
+// failure mode.
+func runCountWithin(
+	runs []dag.WorkflowRun, window time.Duration, now time.Time,
+) map[string]int {
+	if window <= 0 {
+		panic("runCountWithin: window must be positive")
+	}
+	cutoff := now.Add(-window)
+	out := make(map[string]int, len(runs))
+	for i := 0; i < len(runs) && i < runsMax; i++ {
+		if runs[i].CreatedAt.After(cutoff) {
+			out[runs[i].WorkflowID]++
+		}
+	}
+	return out
 }
 
 // workflowRunnable reports whether the workflow can be started from
@@ -381,6 +446,12 @@ func workflowRunnable(def dag.WorkflowDef) bool {
 // sparklines: 24 hourly buckets covering the trailing day. Lives here
 // so the trigger path and the workflow path agree on the resolution.
 const sparklineHours = 24
+
+// runsMax is the safety bound on every fold over the ListRuns slice
+// (the runs table header and the workflows-page run counts). Folds cap
+// at this many runs and degrade to an undercount rather than panic, so
+// a deployment with more total runs never 500s a list page.
+const runsMax = 100_000
 
 // attachWorkflowSparklines fetches the 24h activity series for each
 // row and attaches it in place. Errors are swallowed — sparkline is a
@@ -742,7 +813,6 @@ func buildRunsHeader(runs []dag.WorkflowRun, now time.Time) PageHeader {
 	recent := 0
 	running := 0
 	failed := 0
-	const runsMax = 100_000 // safety bound per coding rules
 	for i := 0; i < len(runs) && i < runsMax; i++ {
 		r := runs[i]
 		if r.CreatedAt.After(hourCutoff) {

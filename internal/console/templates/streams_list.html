@@ -7,8 +7,12 @@
       <tr>
         <th>Stream</th>
         <th>Subjects</th>
+        <th>Retention</th>
+        <th>Storage</th>
         <th>Messages</th>
         <th>Bytes</th>
+        <th>Seq</th>
+        <th>Deleted</th>
         <th>Consumers</th>
         <th class="row-chevron-cell"><span class="sr-only">Open</span></th>
       </tr>
@@ -18,14 +22,18 @@
       <tr id="stream-row-{{.Name}}">
         <td class="mono"><a href="/console/streams/{{.Name}}">{{.Name}}</a></td>
         <td class="mono">{{.Subjects}}</td>
+        <td>{{if eq .Retention "—"}}<span class="muted">—</span>{{else}}<span class="badge badge-outline{{if .RetentionHot}} stream-pill-hot{{end}}">{{.Retention}}</span>{{end}}</td>
+        <td>{{if eq .Storage "—"}}<span class="muted">—</span>{{else}}<span class="badge badge-outline{{if .StorageHot}} stream-pill-hot{{end}}">{{.Storage}}</span>{{end}}</td>
         <td>{{.Messages}}</td>
         <td>{{.Bytes}}</td>
+        <td class="mono">{{.Seq}}</td>
+        <td class="mono{{if .DeletedNonZero}} stream-deleted-nonzero{{end}}">{{.Deleted}}</td>
         <td>{{.Consumers}}</td>
         {{template "row-chevron"}}
       </tr>
       {{else}}
       <tr class="empty-row">
-        <td colspan="6">No JetStream streams reachable.</td>
+        <td colspan="10">No JetStream streams reachable.</td>
       </tr>
       {{end}}
     </tbody>

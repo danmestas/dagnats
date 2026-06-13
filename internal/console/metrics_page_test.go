@@ -63,6 +63,17 @@ func (f *fakeMetricsSource) addCounter(name string, value float64, ts time.Time)
 	}
 }
 
+func (f *fakeMetricsSource) addCounterLabeled(
+	name string, value float64, ts time.Time, labels map[string]string,
+) {
+	pts := append(f.series[name].Points, MetricPoint{
+		Value: value, Timestamp: ts, Labels: labels,
+	})
+	f.series[name] = MetricSeries{
+		Name: name, Kind: "counter", Points: pts,
+	}
+}
+
 func (f *fakeMetricsSource) addHistogram(
 	name string, count uint64, buckets []MetricBucket, ts time.Time,
 ) {
