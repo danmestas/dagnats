@@ -1,0 +1,119 @@
+{{define "content"}}{{with .Page}}
+<section class="page page-function-detail console-section" data-page="function-detail">
+  {{if .NotFound}}
+    <header class="console-section-header">
+      <h1>Function {{.Function}}</h1>
+      <p class="console-lede">No function named <code>{{.Function}}</code> is registered on this engine.</p>
+    </header>
+    <p><a class="btn btn-outline" href="/console/functions">&lsaquo; Functions</a></p>
+  {{else}}
+    <p><a class="btn btn-outline" href="/console/functions">&lsaquo; Functions</a></p>
+
+    <header class="console-section-header" data-component="page-header">
+      <div class="page-header-title-row">
+        <h1 class="console-mono">{{.Function}}</h1>
+        <span class="badge {{if eq .Health "healthy"}}badge-completed{{else}}badge-skipped{{end}}">{{.Health}}</span>
+      </div>
+      {{if .Service}}
+      <p class="page-subtitle console-lede">Function in service <span class="console-mono">{{.Service}}</span> — read-only.</p>
+      {{else}}
+      <p class="page-subtitle console-lede">Function — read-only.</p>
+      {{end}}
+    </header>
+
+    <h2 class="console-section-subhead">Contract</h2>
+    <div class="function-contract-grid">
+      <article class="card" data-component="function-input-schema">
+        <header class="card-header"><h2>Input schema{{if .SchemaSourceWorkflow}} <span class="muted">from workflow {{.SchemaSourceWorkflow}}</span>{{end}}</h2></header>
+        <div class="card-body">
+          {{if .InputSchema}}
+          <pre class="console-pre"><code>{{.InputSchema}}</code></pre>
+          {{else}}
+          <p class="console-empty">No schema registered</p>
+          {{end}}
+        </div>
+      </article>
+      <article class="card" data-component="function-output-schema">
+        <header class="card-header"><h2>Output schema{{if .SchemaSourceWorkflow}} <span class="muted">from workflow {{.SchemaSourceWorkflow}}</span>{{end}}</h2></header>
+        <div class="card-body">
+          {{if .OutputSchema}}
+          <pre class="console-pre"><code>{{.OutputSchema}}</code></pre>
+          {{else}}
+          <p class="console-empty">No schema registered</p>
+          {{end}}
+        </div>
+      </article>
+    </div>
+
+    <h2 class="console-section-subhead">Providers</h2>
+    <article class="card" data-component="function-providers">
+      <div class="card-body">
+        {{if .Providers}}
+        <table class="table console-table">
+          <thead>
+            <tr>
+              <th>Worker id</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Providers}}
+            <tr>
+              <td class="console-mono"><a href="/console/workers/{{.WorkerID}}">{{.WorkerID}}</a></td>
+              <td>{{.Status}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+        {{else}}
+        <div class="alert" role="status">
+          <strong>No worker is serving this function.</strong>
+          Deploy one (see Workers). Tasks for <span class="console-mono">{{.Function}}</span> queue and wait for a provider.
+        </div>
+        {{end}}
+        {{if and .Providers (eq .Health "no worker")}}
+        <div class="alert" role="status">
+          <strong>No live worker is serving this function.</strong>
+          Tasks for <span class="console-mono">{{.Function}}</span> queue and wait for a provider.
+        </div>
+        {{end}}
+      </div>
+    </article>
+
+    <h2 class="console-section-subhead">Recent invocations</h2>
+    <article class="card" data-component="function-invocations">
+      <div class="card-body">
+        <table class="table console-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Run id</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{if .Invocations}}
+            {{range .Invocations}}
+            <tr>
+              <td class="muted console-mono">{{.StartedAt}}</td>
+              <td class="console-mono"><a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a></td>
+              <td>{{template "status-badge" .Status}}</td>
+            </tr>
+            {{end}}
+            {{else}}
+            <tr class="empty-row">
+              <td colspan="3"><p class="console-empty">No runs have exercised this function yet.</p></td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <p class="function-detail-footer">
+      <a class="btn btn-outline" href="/console/runs">View runs &rarr;</a>
+      <a class="btn btn-outline" href="/console/dlq">View DLQ entries &rarr;</a>
+    </p>
+  {{end}}
+</section>
+{{end}}{{end}}

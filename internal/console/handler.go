@@ -337,6 +337,12 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageTaskTypes(w, r, ts, cfg)
 		})
+	// The trailing-slash subtree drills into one function's read-only
+	// detail; Go's ServeMux routes it separately from the exact path above.
+	mux.HandleFunc("/console/functions/",
+		func(w http.ResponseWriter, r *http.Request) {
+			dispatchFunctions(w, r, ts, cfg)
+		})
 	// Promoted top-level routes (B3 nav/IA). The Ops hub is gone; its
 	// children now live at the top level. The old /console/ops* paths
 	// 301-redirect below so bookmarks survive.
@@ -578,6 +584,7 @@ var pageContentFiles = map[string]string{
 	"metrics_dashboard": "templates/metrics_dashboard.html",
 	"configuration":     "templates/configuration.html",
 	"task-types-list":   "templates/task_types_list.html",
+	"function-detail":   "templates/function_detail.html",
 	"not-found":         "templates/not_found.html",
 }
 
