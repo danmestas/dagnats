@@ -659,6 +659,10 @@ type KVBucketInfo struct {
 	Name        string
 	Description string
 	Keys        int
+	// TTL is the bucket's configured per-key time-to-live, read live
+	// from kv.Status().TTL(). Zero means no TTL is configured (or the
+	// bucket is unreachable) — rendered as an honest dash, never as 0s.
+	TTL time.Duration
 }
 
 // KVEntryView is the materialised value of one KV key. Revision lets
@@ -1709,11 +1713,30 @@ func dlqUpdateFrom(
 // kvBucketsKnown is the list the console exposes by default. Adding a
 // bucket here surfaces it in the side nav; missing buckets are
 // silently skipped (the engine may not have created them yet).
+// kvBucketsKnown mirrors the canonical set the engine provisions in
+// natsutil.SetupKVBuckets, plus the console-owned audit bucket. Each
+// Description is a static, honest purpose label (the buckets are a
+// finite hand-curated set, exactly like knownEngineStreams). dead_letters
+// is deliberately ABSENT: it is a JetStream stream subject, not a KV
+// bucket, so it can never carry a live status read.
 var kvBucketsKnown = []KVBucketInfo{
 	{Name: "workflow_defs", Description: "registered workflow definitions"},
 	{Name: "workflow_runs", Description: "live workflow run snapshots"},
+	{Name: "scheduled_runs", Description: "pending scheduled run records"},
+	{Name: "workers", Description: "worker heartbeats (TTL'd registry)"},
+	{Name: "worker_status", Description: "per-worker counter snapshots"},
+	{Name: "event_waiters", Description: "runs parked on external events"},
+	{Name: "rate_limits", Description: "rate-limit token state"},
+	{Name: "concurrency_tasks", Description: "concurrency lease bookkeeping"},
+	{Name: "approval_tokens", Description: "human-approval tokens"},
+	{Name: "debounce_state", Description: "trigger debounce windows"},
+	{Name: "idempotency_keys", Description: "task idempotency keys"},
+	{Name: "http_idempotency", Description: "HTTP trigger idempotency map"},
+	{Name: "sticky_bindings", Description: "sticky task→worker bindings"},
+	{Name: "singleton_locks", Description: "singleton-run lock holders"},
+	{Name: "trigger_types", Description: "external trigger type registry"},
 	{Name: "triggers", Description: "registered trigger definitions"},
-	{Name: "dead_letters", Description: "DLQ projection (auxiliary)"},
+	{Name: "services", Description: "logical service metadata"},
 	{Name: AuditBucket, Description: "console audit log"},
 }
 
@@ -1755,6 +1778,7 @@ func kvBucketCount(
 		return info
 	}
 	info.Keys = int(status.Values())
+	info.TTL = status.TTL()
 	return info
 }
 

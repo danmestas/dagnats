@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ops_pages.go owns the operator pages. After the B3 nav/IA pass the
@@ -99,6 +100,19 @@ type KVInspectorView struct {
 	ActiveBucket string
 	Keys         []string
 	Entry        *KVInspectorEntry
+	// Catalog is the flat bucket table rendered above the 3-pane
+	// inspector. Every row is backed by a live ListKVBuckets read.
+	Catalog []KVCatalogRow
+}
+
+// KVCatalogRow is one row of the KV catalog table. Bucket / Keys / TTL
+// are read live; Purpose is the static per-bucket label. TTL is the
+// pre-formatted display string ("24h", "—") so the template stays dumb.
+type KVCatalogRow struct {
+	Bucket  string
+	TTL     string
+	Keys    int
+	Purpose string
 }
 
 // KVInspectorEntry is one rendered KV value pane. ValuePretty is the
@@ -148,6 +162,7 @@ func buildKVInspectorView(
 	view := KVInspectorView{
 		Header:  buildKVHeader(buckets),
 		Buckets: buckets,
+		Catalog: buildKVCatalogRows(buckets),
 	}
 	active := firstQueryValue(q, "bucket")
 	if active == "" && len(buckets) > 0 {
@@ -175,14 +190,20 @@ func buildKVInspectorView(
 // "buckets" is the cardinality.
 func buildKVHeader(buckets []KVBucketInfo) PageHeader {
 	totalKeys := 0
+	ttlBounded := 0
 	const bucketsMax = 1024
 	for i := 0; i < len(buckets) && i < bucketsMax; i++ {
 		totalKeys += buckets[i].Keys
+		if buckets[i].TTL > 0 {
+			ttlBounded++
+		}
 	}
 	tiles := []Tile{
 		{Label: "buckets", Count: len(buckets), Tone: ToneDefault},
 		{Label: "keys", Count: totalKeys, Tone: ToneInfo,
 			Tooltip: "Total keys across reachable buckets"},
+		{Label: "TTL set", Count: ttlBounded, Tone: ToneInfo,
+			Tooltip: "Buckets with a TTL configured (reachable)"},
 	}
 	h, err := NewPageHeader(PageHeader{
 		Title:             "KV inspector",
@@ -194,6 +215,68 @@ func buildKVHeader(buckets []KVBucketInfo) PageHeader {
 		return PageHeader{Title: "KV inspector", TitleGlossaryTerm: "KV"}
 	}
 	return h
+}
+
+// buildKVCatalogRows projects the live bucket inventory into catalog
+// rows. TTL is humanized (0 → "—"); Purpose is the static description
+// (empty → "—" rather than a fabricated label). Bounded by len(buckets).
+func buildKVCatalogRows(buckets []KVBucketInfo) []KVCatalogRow {
+	const bucketsMax = 1024
+	if len(buckets) > bucketsMax {
+		panic("buildKVCatalogRows: buckets exceeds max bound")
+	}
+	out := make([]KVCatalogRow, 0, len(buckets))
+	for _, b := range buckets {
+		purpose := b.Description
+		if purpose == "" {
+			purpose = "—"
+		}
+		out = append(out, KVCatalogRow{
+			Bucket:  b.Name,
+			TTL:     humanDuration(b.TTL),
+			Keys:    b.Keys,
+			Purpose: purpose,
+		})
+	}
+	return out
+}
+
+// humanDuration renders a TTL as a compact operator-readable string.
+// Zero (no TTL configured / unreachable) renders an honest "—", never
+// "0s". Otherwise it emits up to two coarse units (d/h/m/s), modelled on
+// humanBytes' base-case + scaling shape in server_page.go.
+func humanDuration(d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	days := int(d / (24 * time.Hour))
+	hours := int(d/time.Hour) % 24
+	minutes := int(d/time.Minute) % 60
+	seconds := int(d/time.Second) % 60
+	// A lone day (24h, no remainder) reads more naturally as "24h" to an
+	// operator; days only lead the string once they stack (>=2 days) or
+	// carry an hour remainder. Below a day we fall through to h/m/s.
+	if days >= 2 || (days == 1 && hours > 0) {
+		out := strconv.Itoa(days) + "d"
+		if hours > 0 {
+			out += strconv.Itoa(hours) + "h"
+		}
+		return out
+	}
+	units := []struct {
+		value int
+		label string
+	}{{int(d / time.Hour), "h"}, {minutes, "m"}, {seconds, "s"}}
+	out := ""
+	emitted := 0
+	for _, u := range units {
+		if u.value == 0 || emitted >= 2 {
+			continue
+		}
+		out += strconv.Itoa(u.value) + u.label
+		emitted++
+	}
+	return out
 }
 
 // buildKVEntry pulls one entry from the DataSource and converts it
