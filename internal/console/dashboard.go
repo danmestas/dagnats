@@ -54,6 +54,8 @@ type DashboardTile struct {
 	LinkHref  string
 	Hint      string
 	Delta     string
+	DeltaDir  string
+	DeltaTone string
 	UpdatedAt time.Time
 }
 
@@ -264,7 +266,7 @@ func readRecentActions(
 func assembleDashboardTiles(
 	src MetricsSource, c dashboardCounters,
 ) []DashboardTile {
-	const maxTileCount = 6
+	const maxTileCount = 9
 	tiles := make([]DashboardTile, 0, maxTileCount)
 	tiles = append(tiles,
 		tileFailedLastHour(src, c.FailedLastHr),
@@ -278,6 +280,15 @@ func assembleDashboardTiles(
 		tiles = append(tiles, t)
 	}
 	if t, ok := tileWorkersActive(src); ok {
+		tiles = append(tiles, t)
+	}
+	if t, ok := tileThroughput(src); ok {
+		tiles = append(tiles, t)
+	}
+	if t, ok := tileP50Latency(src); ok {
+		tiles = append(tiles, t)
+	}
+	if t, ok := tileErrorRate(src); ok {
 		tiles = append(tiles, t)
 	}
 	return tiles
@@ -457,6 +468,163 @@ func tileWorkersActive(src MetricsSource) (DashboardTile, bool) {
 		State:    "good",
 	}
 	return t, true
+}
+
+// tileThroughput derives runs-per-second from the workflow.runs.completed
+// counter over the aggregator window. perMinuteRate needs >=2 points
+// with a positive time delta; with fewer the rate is unknowable, so we
+// honest-omit (second return false) rather than show a fabricated 0/s.
+//
+// No delta badge: the only history available is the cumulative counter,
+// whose raw change ("▲ 120") is unitless beside a per-second value and
+// would mislead. A meaningful rate-over-rate percent delta needs a prior-
+// window rate the aggregator does not expose yet, so we honest-omit the
+// badge (consistent with the rest of the telemetry surface).
+func tileThroughput(src MetricsSource) (DashboardTile, bool) {
+	if src == nil {
+		return DashboardTile{}, false
+	}
+	series, ok := src.MetricSnapshot("workflow.runs.completed")
+	if !ok || len(series.Points) < 2 {
+		return DashboardTile{}, false
+	}
+	perSecond := perMinuteRate(series.Points) / 60
+	t := DashboardTile{
+		Key: "throughput", Title: "Throughput",
+		Value:    formatNumber(perSecond),
+		Unit:     "/s",
+		LinkHref: "/console/runs",
+		Spark:    sparkFromPoints(series.Points, 24),
+		State:    "good",
+	}
+	return t, true
+}
+
+// tileErrorRate derives failed/(completed+failed) over the window from
+// the same counter pair tileSuccessRate reads. Second return is false
+// when neither counter has data — honest-omit, no fabricated 0%.
+func tileErrorRate(src MetricsSource) (DashboardTile, bool) {
+	if src == nil {
+		return DashboardTile{}, false
+	}
+	completed, okC := src.MetricSnapshot("workflow.runs.completed")
+	failed, okF := src.MetricSnapshot("workflow.runs.failed")
+	if !okC && !okF {
+		return DashboardTile{}, false
+	}
+	c, f := completed.Latest().Value, failed.Latest().Value
+	if c+f <= 0 {
+		return DashboardTile{}, false
+	}
+	rate := 100 * f / (c + f)
+	delta, dir := computeDelta(failed.Points, "")
+	t := DashboardTile{
+		Key: "error-rate", Title: "Error rate",
+		Value:    formatNumber(rate),
+		Unit:     "%",
+		LinkHref: "/console/runs?status=failed",
+		Spark:    sparkFromPoints(failed.Points, 24),
+		Delta:    delta, DeltaDir: dir, DeltaTone: errorRateDeltaTone(dir),
+		State: errorRateState(rate),
+	}
+	return t, true
+}
+
+// errorRateState is the inverse of successRateState: a rising error
+// rate is bad. <1% good, 1-5% amber, >5% red.
+func errorRateState(rate float64) string {
+	if rate < 1 {
+		return "good"
+	}
+	if rate <= 5 {
+		return "amber"
+	}
+	return "red"
+}
+
+// errorRateDeltaTone maps the raw failed-count movement to a semantic
+// color tone for the error-rate badge, leaving the glyph untouched. A
+// rising error count ("up") is bad (coral); a falling one is good (teal).
+// DeltaDir still carries the raw direction and drives the ▲/▼ glyph, so
+// the badge reads ▼ + teal for falling errors — matching the mockup and
+// the data. Glyph and color are now two fields, never one inverted token.
+func errorRateDeltaTone(rawDir string) string {
+	switch rawDir {
+	case "up":
+		return "bad"
+	case "down":
+		return "good"
+	default:
+		return ""
+	}
+}
+
+// deltaToneClass picks the color-class suffix for a trend badge. An
+// explicit tone ("good"/"bad", set by cards whose color sense differs
+// from their glyph, like error-rate) wins. Otherwise the raw direction
+// drives it: up reads good (teal), down reads bad (coral). The glyph is
+// rendered separately from DeltaDir, so color and arrow are decoupled.
+func deltaToneClass(dir, tone string) string {
+	if tone != "" {
+		return tone
+	}
+	if dir == "down" {
+		return "bad"
+	}
+	return "good"
+}
+
+// tileP50Latency mirrors tileP99Latency over the same snapshot histogram
+// but reports the median. Honest-omit when the histogram is sparse.
+func tileP50Latency(src MetricsSource) (DashboardTile, bool) {
+	if src == nil {
+		return DashboardTile{}, false
+	}
+	series, ok := src.MetricSnapshot("snapshot.save.duration_ms")
+	if !ok || len(series.Points) == 0 {
+		return DashboardTile{}, false
+	}
+	latest := series.Latest()
+	if latest.Count == 0 || len(latest.Buckets) == 0 {
+		return DashboardTile{}, false
+	}
+	p50 := percentileFromBuckets(latest, 0.50)
+	t := DashboardTile{
+		Key: "p50-latency", Title: "p50 snapshot latency", Unit: "ms",
+		LinkHref: "/console/metrics",
+		Value:    formatNumber(p50),
+		Spark:    sparkFromHistogramP50(series.Points, 24),
+		State:    latencyTileState(p50),
+	}
+	return t, true
+}
+
+// computeDelta reports the trend of a counter series as a magnitude
+// string plus a single direction token ("up"/"down"/""). Direction is
+// the one source of truth — both the template glyph and the color class
+// derive from it, so they can never disagree. With fewer than two points
+// there is no history and we return ("", "") so the badge is suppressed
+// (no fabricated trend). The suffix is appended to the magnitude (e.g.
+// "%" or "" for a count); the leading sign glyph is the template's job.
+func computeDelta(points []MetricPoint, suffix string) (string, string) {
+	if len(points) < 2 {
+		return "", ""
+	}
+	first := points[0].Value
+	last := points[len(points)-1].Value
+	change := last - first
+	if change == 0 {
+		return "", ""
+	}
+	dir := "up"
+	if change < 0 {
+		dir = "down"
+	}
+	magnitude := change
+	if magnitude < 0 {
+		magnitude = -magnitude
+	}
+	return formatNumber(magnitude) + suffix, dir
 }
 
 // parseFloatOrZero is a tiny helper for percentage tile state coloring.

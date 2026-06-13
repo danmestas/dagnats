@@ -3724,6 +3724,21 @@ body[data-theme="dark"] code {
 .dashboard-tile-unit { display: none; }
 .dashboard-tile-spark { order: 3; }
 
+/* Trend badge trailing the value (mockup .dn-sdelta). The glyph derives
+   from DeltaDir (raw movement); the color derives from a separate tone
+   ("good"/"bad") so a card whose color sense differs from its arrow —
+   error-rate, where falling errors are good — can render ▼ + teal. Good
+   reads teal/green, bad reads coral. */
+.dashboard-tile-delta {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-left: 0.4rem;
+  vertical-align: middle;
+}
+.dashboard-tile-delta-good { color: var(--status-completed); }
+.dashboard-tile-delta-bad { color: var(--status-failed); }
+
 /* Slim, persistent explainer bar replacing the dismissible welcome
    card. ~9px/16px padding + 12px copy per the mockup; keywords bold
    in --text-primary, the rest in --text-secondary. */

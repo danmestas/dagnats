@@ -10,6 +10,7 @@
   <p class="dashboard-tile-value">
     <span class="dashboard-tile-number">{{.Value}}</span>
     {{if .Unit}}<span class="dashboard-tile-unit">{{.Unit}}</span>{{end}}
+    {{if .Delta}}<span class="dashboard-tile-delta dashboard-tile-delta-{{deltaTone .DeltaDir .DeltaTone}}">{{if eq .DeltaDir "up"}}▲{{else}}▼{{end}} {{.Delta}}</span>{{end}}
   </p>
   {{if .Spark}}{{with sparkExpr .Spark}}<span class="console-spark dashboard-tile-spark" aria-hidden="true">{{.}}</span>{{end}}{{end}}
   {{if .Hint}}
