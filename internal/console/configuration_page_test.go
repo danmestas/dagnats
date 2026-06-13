@@ -82,6 +82,11 @@ func TestConfigurationPage_RendersAllSections(t *testing.T) {
 		`page-header-tile`,
 		`WORKFLOWS`, `TRIGGERS`, `WORKERS`,
 		`STREAMS`, `KV BUCKETS`, `DLQ`,
+		// Access posture card (auth mode + read-only).
+		`Access posture`,
+		`data-card="access-posture"`,
+		// Engine invariants table.
+		`class="config-invariants"`,
 		// Section 2: endpoints panel.
 		`config-endpoints`,
 		`nats://127.0.0.1:4222`,

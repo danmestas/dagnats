@@ -39,14 +39,48 @@ import (
 // renders. Header carries the counts strip via the shared page-header
 // partial; the per-section slices fill the rest.
 type ConfigPageView struct {
-	Header       PageHeader
-	Endpoints    []EndpointCard
-	Streams      []ConfigStreamRow
-	KVBuckets    []KVBucketInfo
-	WorkerGroups []WorkerGroup
-	TriggerTypes []TriggerTypeRow
-	Build        BuildFooter
-	YAMLExport   string
+	Header        PageHeader
+	AccessPosture AccessPostureView
+	Endpoints     []EndpointCard
+	Streams       []ConfigStreamRow
+	KVBuckets     []KVBucketInfo
+	WorkerGroups  []WorkerGroup
+	TriggerTypes  []TriggerTypeRow
+	Invariants    []InvariantRow
+	Build         BuildFooter
+	YAMLExport    string
+}
+
+// AccessPostureView is the static counterpart to the Audit log: it
+// reports the auth gate the console resolved at startup and whether
+// mutations are disabled. Every field is read from the Config the handler
+// already holds (cfg.AuthMode, cfg.ReadOnly) — no DataSource round-trip,
+// no fabricated runtime state.
+type AccessPostureView struct {
+	Modes       []AuthModePill
+	ActiveNote  string // actor-source note keyed off the active AuthMode
+	ReadOnly    bool
+	ReadOnlyEnv string // "CONSOLE_READ_ONLY"
+	AuditHref   string // "/console/audit" — a real, navigable route
+	SourceRef   string // "console/auth.go" — header provenance label
+}
+
+// AuthModePill is one chip in the auth-mode strip. Active marks the mode
+// the console actually resolved (exactly one is active).
+type AuthModePill struct {
+	Label  string
+	Active bool
+}
+
+// InvariantRow is one row in the engine-invariants table — a compile-time
+// constant the engine enforces, surfaced as reference documentation. Tone
+// types the Source pill; Source is always "hardcoded" for these.
+type InvariantRow struct {
+	Constant string
+	Value    string
+	Governs  string
+	Source   string
+	Tone     TileTone
 }
 
 // EndpointCard is one card in the endpoints panel. URL is the
@@ -129,11 +163,13 @@ func servePageConfiguration(
 func buildConfigView(ctx context.Context, cfg Config) ConfigPageView {
 	snap := fetchConfigSnapshot(ctx, cfg.Data)
 	view := ConfigPageView{
-		Endpoints:    buildEndpoints(cfg, snap),
-		Streams:      buildStreamRows(snap),
-		KVBuckets:    snap.KVBuckets,
-		WorkerGroups: groupWorkers(snap.Workers),
-		TriggerTypes: builtInTriggerTypes(),
+		AccessPosture: buildAccessPosture(cfg),
+		Endpoints:     buildEndpoints(cfg, snap),
+		Streams:       buildStreamRows(snap),
+		KVBuckets:     snap.KVBuckets,
+		WorkerGroups:  groupWorkers(snap.Workers),
+		TriggerTypes:  builtInTriggerTypes(),
+		Invariants:    engineInvariants(),
 		Build: BuildFooter{
 			DagnatsBuild:      cfg.Build,
 			NATSServerVersion: snap.NATSServerVersion,
@@ -385,6 +421,100 @@ func builtInTriggerTypes() []TriggerTypeRow {
 		{Name: "http", Description: "Fire on an HTTP route match.",
 			Glyph: triggerKindGlyph("http")},
 	}
+}
+
+// buildAccessPosture renders the access-posture card from the Config the
+// handler already holds. The four-mode strip iterates the AuthMode enum in
+// declaration order and marks the resolved mode active; the actor note is
+// keyed off that mode. All data is config the console already knows — no
+// read, no fabrication.
+func buildAccessPosture(cfg Config) AccessPostureView {
+	modes := []AuthMode{
+		AuthLoopback, AuthForwarded, AuthBasic, AuthDisabled,
+	}
+	if len(modes) != 4 {
+		panic("buildAccessPosture: AuthMode set drifted from 4")
+	}
+	pills := make([]AuthModePill, 0, len(modes))
+	for _, m := range modes {
+		pills = append(pills, AuthModePill{
+			Label:  m.String(),
+			Active: m == cfg.AuthMode,
+		})
+	}
+	return AccessPostureView{
+		Modes:       pills,
+		ActiveNote:  authActorNote(cfg.AuthMode),
+		ReadOnly:    cfg.ReadOnly,
+		ReadOnlyEnv: "CONSOLE_READ_ONLY",
+		AuditHref:   "/console/audit",
+		SourceRef:   "console/auth.go",
+	}
+}
+
+// authActorNote returns the one-line actor-source note for the active auth
+// mode. Wording is grounded in the AuthMode doc comments (auth.go:17-28),
+// not invented.
+func authActorNote(mode AuthMode) string {
+	switch mode {
+	case AuthLoopback:
+		return "actor implicit (loopback bind)"
+	case AuthForwarded:
+		return "actor from X-Forwarded-User"
+	case AuthBasic:
+		return `actor is "console"`
+	case AuthDisabled:
+		return "no auth — listener refuses to serve"
+	default:
+		return "unknown auth mode"
+	}
+}
+
+// engineInvariants returns the static engine-invariants table: the
+// compile-time constants the engine enforces, surfaced as reference
+// documentation. Each value is cited to its source so the table stays
+// auditable. AckWait is split into two scoped rows because the worker task
+// consumer (5m, worker/consumer_naming.go:14) and the WORKFLOW_HISTORY
+// consumer (30s default, internal/natsutil/conn.go:53-54) differ — a
+// single bare "AckWait" row would fabricate one of them.
+func engineInvariants() []InvariantRow {
+	const src = "hardcoded"
+	rows := []InvariantRow{
+		{"AckWait (WORKFLOW_HISTORY consumer)", "30s",
+			"history consumer ack timeout (conn.go:53-54)", src, ToneDefault},
+		{"AckWait (worker task consumer)", "5m (default)",
+			"task consumer ack timeout (consumer_naming.go:14)", src, ToneDefault},
+		{"MaxDeliver", "-1 (unlimited)",
+			"engine retries via NakWithDelay, not redelivery cap (worker.go:577)",
+			src, ToneDefault},
+		{"WORKFLOW_HISTORY dedup", "5s",
+			"duplicate-publish window on history.> (conn.go:31)", src, ToneDefault},
+		{"DEAD_LETTERS dedup", "24h",
+			"dead-letter dedup window (conn.go:63)", src, ToneDefault},
+		{"TELEMETRY retention", "7 days / 1 GiB",
+			"telemetry stream age/size cap (conn.go:228-229)", src, ToneDefault},
+		{"TELEMETRY dedup", "5s",
+			"telemetry duplicate window (conn.go:230)", src, ToneDefault},
+		{"workers KV TTL", "60s",
+			"worker heartbeat liveness — expiry = stale (conn.go:106)", src,
+			ToneDefault},
+		{"worker_status KV TTL", "120s",
+			"per-worker counter snapshot expiry (conn.go:112)", src, ToneDefault},
+		{"idempotency_keys TTL", "24h",
+			"generic idempotency replay window (conn.go:131)", src, ToneDefault},
+		{"http_idempotency TTL", "1h",
+			"HTTP trigger dedup window (conn.go:143)", src, ToneDefault},
+		{"approval_tokens TTL", "168h (7d)",
+			"human-approval token expiry (conn.go:121)", src, ToneDefault},
+		{"sticky_bindings TTL", "25h",
+			"worker affinity lifetime (conn.go:148)", src, ToneDefault},
+		{"debounce_state TTL", "14d",
+			"trigger debounce timer cleanup (conn.go:126)", src, ToneDefault},
+	}
+	if len(rows) != 14 {
+		panic("engineInvariants: row count drifted")
+	}
+	return rows
 }
 
 // renderConfigYAML produces the deployment-shape YAML the export
