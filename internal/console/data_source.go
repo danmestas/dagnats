@@ -81,6 +81,29 @@ type DataSource interface {
 	// toggle endpoint.
 	SetTriggerEnabled(ctx context.Context, triggerID string, enabled bool) error
 
+	// CreateTrigger writes a fully-formed trigger definition. The caller
+	// is responsible for validating the def (non-empty ID + WorkflowID,
+	// a populated per-kind sub-config) before calling — the underlying
+	// api.Service panics on an empty ID / WorkflowID as a programmer-
+	// error invariant. Returns an error on validation / route-conflict /
+	// KV-write failure. Used by POST /console/triggers (add).
+	CreateTrigger(ctx context.Context, def trigger.TriggerDef) error
+
+	// UpdateTrigger applies the config-only overrides in updates to an
+	// existing trigger. Only the non-nil fields are written; type,
+	// target workflow, and the enabled bit are NOT mutable here (the
+	// toggle endpoint owns enabled). Returns an error when the trigger
+	// isn't found or the write fails. Used by POST
+	// /console/triggers/{id}/edit.
+	UpdateTrigger(
+		ctx context.Context, triggerID string, updates api.TriggerUpdates,
+	) error
+
+	// DeleteTrigger removes one trigger by id. Returns an error when the
+	// trigger isn't found or the KV delete fails. Used by POST
+	// /console/triggers/{id}/delete.
+	DeleteTrigger(ctx context.Context, triggerID string) error
+
 	// StartRun publishes a WorkflowStarted event for the named
 	// workflow with the supplied input payload. Returns the new run
 	// id on success. Used by the inline Run button on the workflows
@@ -959,6 +982,48 @@ func (a *apiServiceAdapter) SetTriggerEnabled(
 		panic("apiServiceAdapter.SetTriggerEnabled: triggerID is empty")
 	}
 	return a.svc.SetTriggerEnabled(ctx, triggerID, enabled)
+}
+
+func (a *apiServiceAdapter) CreateTrigger(
+	ctx context.Context, def trigger.TriggerDef,
+) error {
+	if a.svc == nil {
+		panic("apiServiceAdapter.CreateTrigger: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.CreateTrigger: ctx is nil")
+	}
+	return a.svc.CreateTrigger(ctx, def)
+}
+
+func (a *apiServiceAdapter) UpdateTrigger(
+	ctx context.Context, triggerID string, updates api.TriggerUpdates,
+) error {
+	if a.svc == nil {
+		panic("apiServiceAdapter.UpdateTrigger: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.UpdateTrigger: ctx is nil")
+	}
+	if triggerID == "" {
+		panic("apiServiceAdapter.UpdateTrigger: triggerID is empty")
+	}
+	return a.svc.UpdateTrigger(ctx, triggerID, updates)
+}
+
+func (a *apiServiceAdapter) DeleteTrigger(
+	ctx context.Context, triggerID string,
+) error {
+	if a.svc == nil {
+		panic("apiServiceAdapter.DeleteTrigger: svc is nil")
+	}
+	if ctx == nil {
+		panic("apiServiceAdapter.DeleteTrigger: ctx is nil")
+	}
+	if triggerID == "" {
+		panic("apiServiceAdapter.DeleteTrigger: triggerID is empty")
+	}
+	return a.svc.DeleteTrigger(ctx, triggerID)
 }
 
 func (a *apiServiceAdapter) StartRun(

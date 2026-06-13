@@ -81,6 +81,10 @@ func dispatchTriggers(
 		handleTriggerToggle(w, r, cfg, id)
 	case "fire":
 		handleTriggerFire(w, r, cfg, id)
+	case "edit":
+		handleTriggerEdit(w, r, cfg, id)
+	case "delete":
+		handleTriggerDelete(w, r, cfg, id)
 	default:
 		serveNotFound(w, r, ts, cfg)
 	}

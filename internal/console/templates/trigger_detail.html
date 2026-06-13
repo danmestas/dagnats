@@ -70,8 +70,29 @@
           Fire now
         </button>
         {{end}}
+        <button type="button"
+                id="trigger-edit-btn"
+                class="btn trigger-edit-btn"
+                data-trigger-id="{{.ID}}"
+                data-kind="{{.Kind}}"
+                data-target="{{.Target}}"
+                data-workflow="{{.Workflow}}"
+                data-can-edit-config="{{.CanEditConfig}}"
+                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to edit triggers."{{end}}>
+          Edit
+        </button>
+        <button type="button"
+                id="trigger-delete-btn"
+                class="btn btn-destructive trigger-delete-btn"
+                data-trigger-id="{{.ID}}"
+                data-csrf="{{.CSRFToken}}"
+                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to delete triggers."{{end}}>
+          Delete
+        </button>
       </div>
     </article>
+
+    {{template "trigger-modal" .}}
 
     <article class="card">
       <header class="card-header"><h2>Recent activity</h2></header>
@@ -212,6 +233,144 @@
         detail: {
           level: "error",
           message: (err && err.message) ? err.message : "fire failed",
+        },
+      }));
+    });
+  });
+})();
+(function () {
+  // Edit modal (detail page): open the shared #trigger-modal in "edit"
+  // mode pre-populated from the Edit button's data-* attributes. Type
+  // and Target-workflow are read-only (api.TriggerUpdates cannot change
+  // them); the config input is disabled for http kind (no Update field).
+  // Save POSTs the editable config field to /console/triggers/<id>/edit.
+  var modal = document.getElementById("trigger-modal");
+  var editBtn = document.getElementById("trigger-edit-btn");
+  if (!modal || !editBtn || editBtn.hasAttribute("disabled")) return;
+  var typeSel = document.getElementById("trigger-modal-type");
+  var cancelBtn = document.getElementById("trigger-modal-cancel");
+  var saveBtn = document.getElementById("trigger-modal-save");
+
+  function toast(detail) {
+    document.dispatchEvent(new CustomEvent("console:toast", { detail: detail }));
+  }
+  function configInputFor(kind) {
+    var field = modal.querySelector('[data-config-field="' + kind + '"]');
+    return field ? field.querySelector("input") : null;
+  }
+  function openEdit() {
+    var id = editBtn.getAttribute("data-trigger-id");
+    var kind = editBtn.getAttribute("data-kind");
+    var target = editBtn.getAttribute("data-target") || "";
+    var workflow = editBtn.getAttribute("data-workflow") || "";
+    var canEdit = editBtn.getAttribute("data-can-edit-config") === "true";
+    modal.setAttribute("data-mode", "edit");
+    modal.setAttribute("data-trigger-id", id);
+    document.getElementById("trigger-modal-title").textContent =
+      "Edit trigger " + id;
+    var idRow = document.getElementById("trigger-modal-id").closest("[data-field]");
+    if (idRow) idRow.hidden = true;
+    typeSel.value = kind;
+    typeSel.disabled = true;
+    var wfSel = document.getElementById("trigger-modal-workflow");
+    wfSel.value = workflow;
+    wfSel.disabled = true;
+    var enabledRow = modal.querySelector('[data-field="enabled"]');
+    if (enabledRow) enabledRow.hidden = true;
+    modal.querySelectorAll("[data-config-field]").forEach(function (el) {
+      el.hidden = el.getAttribute("data-config-field") !== kind;
+    });
+    var secret = modal.querySelector('[data-field="secret"]');
+    if (secret) secret.hidden = kind !== "webhook";
+    var input = configInputFor(kind);
+    if (input) {
+      input.value = target;
+      input.disabled = !canEdit;
+    }
+    saveBtn.disabled = !canEdit;
+    modal.hidden = false;
+  }
+  function close() { modal.hidden = true; }
+  function save() {
+    var id = modal.getAttribute("data-trigger-id");
+    var kind = typeSel.value;
+    var input = configInputFor(kind);
+    var form = new URLSearchParams();
+    form.set("type", kind);
+    form.set("config", input ? input.value.trim() : "");
+    if (kind === "webhook") {
+      form.set("secret", document.getElementById("trigger-modal-secret").value);
+    }
+    saveBtn.disabled = true;
+    fetch("/console/triggers/" + encodeURIComponent(id) + "/edit", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-CSRF-Token": modal.getAttribute("data-csrf") || "",
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+      body: form.toString(),
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("edit failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      saveBtn.disabled = false;
+      close();
+      if (data && data.toast) toast(data.toast);
+      window.setTimeout(function () { window.location.reload(); }, 400);
+    }).catch(function (err) {
+      saveBtn.disabled = false;
+      toast({ level: "error", message: (err && err.message) || "edit failed" });
+    });
+  }
+  editBtn.addEventListener("click", openEdit);
+  cancelBtn.addEventListener("click", close);
+  saveBtn.addEventListener("click", save);
+  modal.addEventListener("click", function (e) {
+    if (e.target === modal) close();
+  });
+})();
+(function () {
+  // Delete (detail page): confirm, then POST /console/triggers/<id>/delete
+  // and redirect back to the list on success.
+  var btn = document.getElementById("trigger-delete-btn");
+  if (!btn || btn.hasAttribute("disabled")) return;
+  btn.addEventListener("click", function () {
+    var id = btn.getAttribute("data-trigger-id");
+    var csrf = btn.getAttribute("data-csrf") || "";
+    if (!window.confirm("Delete trigger " + id + "? This cannot be undone.")) {
+      return;
+    }
+    btn.disabled = true;
+    fetch("/console/triggers/" + encodeURIComponent(id) + "/delete", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf, "Accept": "application/json" },
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("delete failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      if (data && data.toast) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: data.toast,
+        }));
+      }
+      window.location.href = (data && data.redirect) || "/console/triggers";
+    }).catch(function (err) {
+      btn.disabled = false;
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: (err && err.message) ? err.message : "delete failed",
         },
       }));
     });
