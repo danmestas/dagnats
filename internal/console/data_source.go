@@ -537,6 +537,13 @@ type StreamSnapshot struct {
 	FirstSeq uint64
 	LastSeq  uint64
 
+	// NumDeleted is info.State.NumDeleted from the same stream.Info()
+	// call — the count of messages purged from the interior of the
+	// stream (gaps between FirstSeq and LastSeq). The streams list
+	// surfaces it; a non-zero value is a danger-toned signal that the
+	// stream has holes. JetStream types it as a plain int.
+	NumDeleted int
+
 	Provisioned bool
 }
 
@@ -2062,12 +2069,22 @@ func appendTriggerHits(
 // available for this kind" — the adapter then renders the empty state.
 // When the engine emits per-workflow or per-trigger metric names with
 // the id baked in, this helper is the single place to update.
+//
+// The label key MUST match the attribute key the engine emits. The
+// orchestrator tags workflow.runs.completed with attribute.String(
+// "workflow", run.WorkflowID) (engine/orchestrator.go:794), so the
+// filter key is "workflow", not "workflow_id" — the latter matched
+// nothing and left the Activity(24h) canvas structurally dead.
+//
+// "trigger" has no backing metric yet: the engine does not emit a
+// trigger.fires counter, so this returns the empty metric name and the
+// trigger sparkline honestly renders its empty state until the engine
+// grows that instrument (at which point fill in the real name + the
+// attribute key it actually emits).
 func sparklineMetricFor(kind string) (name, labelKey, labelValue string) {
 	switch kind {
 	case "workflow":
-		return "workflow.runs.completed", "workflow_id", ""
-	case "trigger":
-		return "trigger.fires.total", "trigger_id", ""
+		return "workflow.runs.completed", "workflow", ""
 	}
 	return "", "", ""
 }
@@ -2229,6 +2246,7 @@ func lookupStreamSnapshot(
 		MaxMsgs:     info.Config.MaxMsgs,
 		FirstSeq:    info.State.FirstSeq,
 		LastSeq:     info.State.LastSeq,
+		NumDeleted:  info.State.NumDeleted,
 		Provisioned: true,
 	}
 }

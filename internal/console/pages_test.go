@@ -1425,3 +1425,33 @@ func TestPrintCSS_includesMediaPrintBlock(t *testing.T) {
 		t.Error("print block must not re-enable nav inside @media print")
 	}
 }
+
+// TestRunCountWithin_capsInsteadOfPanicking pins the availability
+// contract: the fold over the unbounded ListRuns slice that backs
+// /console/workflows must degrade to a capped undercount, never a
+// panic (500), when total runs exceed runsMax — matching the runs
+// table header's truncation on the same data.
+func TestRunCountWithin_capsInsteadOfPanicking(t *testing.T) {
+	now := time.Now()
+	overCap := runsMax + 10
+	runs := make([]dag.WorkflowRun, overCap)
+	for i := range runs {
+		runs[i] = dag.WorkflowRun{
+			WorkflowID: "wf",
+			CreatedAt:  now.Add(-time.Minute),
+		}
+	}
+
+	out := runCountWithin(runs, sparklineHours*time.Hour, now)
+
+	// Positive space: it counted, capped at runsMax (undercount, not 500).
+	if out["wf"] != runsMax {
+		t.Errorf("count = %d, want %d (capped, not full %d)",
+			out["wf"], runsMax, overCap)
+	}
+	// Negative space: no run outside the window leaked in.
+	old := []dag.WorkflowRun{{WorkflowID: "wf", CreatedAt: now.Add(-48 * time.Hour)}}
+	if got := runCountWithin(old, sparklineHours*time.Hour, now); got["wf"] != 0 {
+		t.Errorf("out-of-window count = %d, want 0", got["wf"])
+	}
+}
