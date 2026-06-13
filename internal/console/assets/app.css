@@ -3177,6 +3177,125 @@ body[data-theme="dark"] code {
   overflow-y: auto;
 }
 
+/* Access-posture card + engine-invariants table (#312 R3 follow-on).
+   Pills reuse the shared tile-tone-* palette for color (page_header.go
+   TileTone.Class); the rules here are layout-only, no new color tokens. */
+.config-access {
+  margin-bottom: var(--space-5);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+  padding: var(--space-3);
+}
+.config-access-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.config-access-head .config-section-title { margin: 0; }
+.config-access-ref {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.config-access-body { margin-top: var(--space-3); }
+.config-access-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.config-access-label {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+.config-access-note {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.config-access-env {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 1px 5px;
+  background: var(--accent-soft);
+  border-radius: 3px;
+  color: var(--text-primary);
+}
+.config-access-explain {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.config-modepill,
+.config-pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.config-modepill.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+/* Read-only / source pills borrow the tile-tone count color for their
+   text + border so they inherit the established status palette. */
+.config-pill.tile-tone-success {
+  color: var(--status-completed);
+  border-color: var(--status-completed);
+}
+.config-pill.tile-tone-warning {
+  color: var(--status-pending);
+  border-color: var(--status-pending);
+}
+.config-pill.tile-tone-default {
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.config-link-chip {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 1px 8px;
+  border-radius: 4px;
+}
+.config-link-chip:hover {
+  background: var(--accent-soft);
+  text-decoration: underline;
+}
+.config-invariants { margin-bottom: var(--space-5); }
+.config-invariants-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-5) 0 var(--space-3);
+}
+.config-invariants-head .config-section-title { margin: 0; }
+.config-invariants-ref {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.config-invariant-value { color: var(--accent); }
+.config-invariants-note {
+  margin: var(--space-3) 0 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
 /*
  * Build/identity footer (R9, #320). Full-width strip below <main>.
  * Stays in normal document flow so short pages don't overlap content

@@ -3,6 +3,45 @@
   {{template "page-header" $page.Header}}
 
   {{/*
+    Access posture — the static counterpart to the Audit log. Reports the
+    auth gate the console resolved at startup (cfg.AuthMode) and whether
+    mutations are disabled (cfg.ReadOnly). Both come from the Config the
+    handler already holds; the audit chip links a real, navigable route.
+  */}}
+  {{$ap := $page.AccessPosture}}
+  <section class="config-access" data-card="access-posture"
+           aria-label="Access posture">
+    <header class="config-access-head">
+      <h2 class="config-section-title">Access posture</h2>
+      <span class="config-access-ref mono">{{$ap.SourceRef}}</span>
+    </header>
+    <div class="config-access-body">
+      <div class="config-access-row">
+        <span class="config-access-label">Auth mode</span>
+        {{range $ap.Modes}}
+        <span class="config-modepill {{if .Active}}is-active{{end}}">{{.Label}}</span>
+        {{end}}
+        <span class="config-access-note mono">· {{$ap.ActiveNote}}</span>
+      </div>
+      <div class="config-access-row">
+        <span class="config-access-label">Read-only</span>
+        {{if $ap.ReadOnly}}
+        <span class="config-pill tile-tone-warning">on</span>
+        {{else}}
+        <span class="config-pill tile-tone-success">off</span>
+        {{end}}
+        <span class="config-access-env mono">{{$ap.ReadOnlyEnv}}</span>
+        <a class="config-link-chip" href="{{$ap.AuditHref}}">→ Audit log</a>
+      </div>
+      <p class="config-access-explain muted">
+        Same identity model that attributes the Audit log. When read-only
+        is on, mutating endpoints return 405 and emit an audit event with
+        outcome=denied.
+      </p>
+    </div>
+  </section>
+
+  {{/*
     Endpoints panel — iii's "adapter-first" top section: each card
     surfaces one externally-addressable thing this deployment serves.
     Click-to-copy is wired by the count-chip.js asset (existing
@@ -110,6 +149,47 @@
       </p>
       {{end}}
     </div>
+  </section>
+
+  {{/*
+    Engine invariants — the fixed contract. Static reference
+    documentation of the engine's compile-time constants (consumer
+    AckWait, KV TTLs, stream dedup windows), each cited to its source in
+    the Go view. These are not runtime data and not config — the footer
+    note says so. AckWait is split per-consumer so neither value is
+    misattributed.
+  */}}
+  <section class="config-invariants">
+    <div class="config-invariants-head">
+      <h2 class="config-section-title">Engine invariants</h2>
+      <span class="config-invariants-ref mono">
+        fixed contract · compile-time constants
+      </span>
+    </div>
+    <table class="table console-table config-invariants-table">
+      <thead>
+        <tr>
+          <th>Constant</th>
+          <th>Value</th>
+          <th>Governs</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range $page.Invariants}}
+        <tr>
+          <td class="mono">{{.Constant}}</td>
+          <td class="mono config-invariant-value">{{.Value}}</td>
+          <td class="muted">{{.Governs}}</td>
+          <td><span class="config-pill {{.Tone.Class}}">{{.Source}}</span></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    <p class="config-invariants-note muted">
+      Compile-time constants, not config. Graduating any to runtime
+      config is a roadmap item.
+    </p>
   </section>
 
   {{/*
