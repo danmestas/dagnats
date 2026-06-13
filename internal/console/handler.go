@@ -279,6 +279,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			dispatchWorkers(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/services",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageServices(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/kv",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageKVInspector(w, r, ts, cfg)
@@ -572,6 +576,7 @@ var pageContentFiles = map[string]string{
 	"dlq-detail":        "templates/dlq_detail.html",
 	"audit-log":         "templates/audit_log.html",
 	"workers-list":      "templates/workers_list.html",
+	"services-list":     "templates/services_list.html",
 	"worker-detail":     "templates/worker_detail.html",
 	"kv-list":           "templates/kv_list.html",
 	"streams-list":      "templates/streams_list.html",

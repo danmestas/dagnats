@@ -54,6 +54,7 @@ var assetsFS embed.FS
 //go:embed templates/dlq_detail.html
 //go:embed templates/audit_log.html
 //go:embed templates/workers_list.html
+//go:embed templates/services_list.html
 //go:embed templates/kv_list.html
 //go:embed templates/streams_list.html
 //go:embed templates/stream_detail.html
