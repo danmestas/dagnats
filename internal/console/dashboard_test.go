@@ -155,6 +155,240 @@ func TestDashboardPopulatedMetricsRendersSixTiles(t *testing.T) {
 	}
 }
 
+// TestDashboard_throughputCardRendersWhenSeeded seeds two distinct-
+// timestamp workflow.runs.completed points so perMinuteRate has a real
+// gap to divide by, and asserts the throughput sparkcard renders with a
+// "/s" unit and a non-empty sparkline. Negative: a single-point series
+// (no rate computable) omits the tile entirely (honest-omit).
+func TestDashboard_throughputCardRendersWhenSeeded(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now()
+	src.addCounter("workflow.runs.completed", 10, now.Add(-10*time.Minute))
+	src.addCounter("workflow.runs.completed", 130, now)
+	cfg := dashTestCfg(t, newFakeDS(), src)
+	rec := dashGet(t, cfg, "/console/")
+	body := rec.Body.String()
+	if !strings.Contains(body, "id=\"tile-throughput\"") {
+		t.Error("dashboard missing throughput tile when seeded with 2 points")
+	}
+	if !strings.Contains(body, "/console/runs\"") {
+		t.Error("throughput tile must link to /console/runs")
+	}
+
+	one := newFakeMetricsSource()
+	one.addCounter("workflow.runs.completed", 10, now)
+	rec2 := dashGet(t, dashTestCfg(t, newFakeDS(), one), "/console/")
+	if strings.Contains(rec2.Body.String(), "id=\"tile-throughput\"") {
+		t.Error("throughput tile must be omitted with <2 points (no rate)")
+	}
+}
+
+// TestDashboard_errorRateCardRendersWhenSeeded seeds the same counter
+// pair tileSuccessRate reads and asserts the error-rate sparkcard
+// renders, linking to the failed-runs filter. Negative: when both
+// counters are absent the tile is omitted (mirror of the empty case).
+func TestDashboard_errorRateCardRendersWhenSeeded(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now()
+	src.addCounter("workflow.runs.completed", 50, now)
+	src.addCounter("workflow.runs.failed", 3, now)
+	cfg := dashTestCfg(t, newFakeDS(), src)
+	rec := dashGet(t, cfg, "/console/")
+	body := rec.Body.String()
+	if !strings.Contains(body, "id=\"tile-error-rate\"") {
+		t.Error("dashboard missing error-rate tile when seeded")
+	}
+	if !strings.Contains(body, "status=failed") {
+		t.Error("error-rate tile must link to the failed-runs filter")
+	}
+
+	empty := dashGet(t, dashTestCfg(t, newFakeDS(), newFakeMetricsSource()), "/console/")
+	if strings.Contains(empty.Body.String(), "id=\"tile-error-rate\"") {
+		t.Error("error-rate tile must be omitted when counters are absent")
+	}
+}
+
+// TestDashboard_p50CardRendersWhenHistogramSeeded seeds the snapshot
+// latency histogram and asserts the p50 sparkcard renders. Negative:
+// an empty histogram omits the tile (honest-omit, not fabricated).
+func TestDashboard_p50CardRendersWhenHistogramSeeded(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now()
+	src.addHistogram(
+		"snapshot.save.duration_ms", 10,
+		[]MetricBucket{
+			{UpperBound: 5, Count: 5},
+			{UpperBound: 10, Count: 10},
+		}, now,
+	)
+	cfg := dashTestCfg(t, newFakeDS(), src)
+	rec := dashGet(t, cfg, "/console/")
+	if !strings.Contains(rec.Body.String(), "id=\"tile-p50-latency\"") {
+		t.Error("dashboard missing p50-latency tile when histogram seeded")
+	}
+
+	empty := dashGet(t, dashTestCfg(t, newFakeDS(), newFakeMetricsSource()), "/console/")
+	if strings.Contains(empty.Body.String(), "id=\"tile-p50-latency\"") {
+		t.Error("p50-latency tile must be omitted when histogram empty")
+	}
+}
+
+// TestDashboard_deltaBadgeRendersWithHistory seeds a two-point failed
+// series so the error-rate tile's computeDelta has prior history, and
+// asserts the trend badge renders with a direction glyph. (Throughput
+// no longer carries a delta — its only history is a cumulative counter
+// whose raw change is meaningless beside a /s value, so it honest-omits.)
+// Negative: a single-point series renders no delta span.
+func TestDashboard_deltaBadgeRendersWithHistory(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now()
+	src.addCounter("workflow.runs.completed", 10, now.Add(-10*time.Minute))
+	src.addCounter("workflow.runs.completed", 130, now)
+	src.addCounter("workflow.runs.failed", 1, now.Add(-10*time.Minute))
+	src.addCounter("workflow.runs.failed", 4, now)
+	rec := dashGet(t, dashTestCfg(t, newFakeDS(), src), "/console/")
+	body := rec.Body.String()
+	if !strings.Contains(body, "dashboard-tile-delta") {
+		t.Error("delta badge must render when the window has >=2 points")
+	}
+	if !strings.Contains(body, "▲") && !strings.Contains(body, "▼") {
+		t.Error("delta badge must carry an up/down direction glyph")
+	}
+
+	one := newFakeMetricsSource()
+	one.addCounter("workflow.runs.completed", 10, now)
+	one.addCounter("workflow.runs.failed", 1, now)
+	rec2 := dashGet(t, dashTestCfg(t, newFakeDS(), one), "/console/")
+	// The single-point error-rate tile renders but carries no delta.
+	if strings.Contains(rec2.Body.String(), "dashboard-tile-delta") {
+		t.Error("delta badge must be omitted for a single-point series")
+	}
+}
+
+// TestDashboard_telemetryCardsNoDoubledUnit pins the throughput and
+// error-rate tiles to the bare-number-in-Value + unit-in-Unit convention
+// shared with success-rate/p99. The value span must NOT carry the unit
+// suffix, so "/s /s" and "% %" can never render.
+func TestDashboard_telemetryCardsNoDoubledUnit(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now()
+	src.addCounter("workflow.runs.completed", 12, now.Add(-10*time.Minute))
+	src.addCounter("workflow.runs.completed", 130, now)
+	src.addCounter("workflow.runs.failed", 2, now.Add(-10*time.Minute))
+	src.addCounter("workflow.runs.failed", 5, now)
+	body := dashGet(t, dashTestCfg(t, newFakeDS(), src), "/console/").Body.String()
+	if strings.Contains(body, "/s</span>\n    <span class=\"dashboard-tile-unit\">/s") {
+		t.Error("throughput value must not carry a /s suffix beside the /s unit")
+	}
+	// A doubled unit shows up as the unit token appearing twice in a row.
+	if strings.Count(body, "/s") >= 1 && strings.Contains(body, "/s /s") {
+		t.Error("throughput must not render a doubled /s unit")
+	}
+	if strings.Contains(body, "% %") {
+		t.Error("error rate must not render a doubled % unit")
+	}
+}
+
+// TestDashboard_errorRateGlyphTracksRawMovementColorInverts pins the
+// error-rate badge to the mockup contract: the glyph follows the raw
+// failed-count movement (rising errors => ▲), while the color sense
+// inverts (rising errors => coral/"bad"). A rising-error series must
+// render ▲ with the bad-tone color class, never a down arrow.
+func TestDashboard_errorRateGlyphTracksRawMovementColorInverts(t *testing.T) {
+	now := time.Now()
+	rising := newFakeMetricsSource()
+	rising.addCounter("workflow.runs.completed", 100, now.Add(-10*time.Minute))
+	rising.addCounter("workflow.runs.completed", 100, now)
+	rising.addCounter("workflow.runs.failed", 1, now.Add(-10*time.Minute))
+	rising.addCounter("workflow.runs.failed", 9, now)
+	body := dashGet(t, dashTestCfg(t, newFakeDS(), rising), "/console/").Body.String()
+	errCard := sliceErrorRateCard(t, body)
+	if !strings.Contains(errCard, "▲") {
+		t.Errorf("rising error count must render ▲ (raw movement up); card=%q", errCard)
+	}
+	if strings.Contains(errCard, "▼") {
+		t.Errorf("rising error count must NOT render ▼; card=%q", errCard)
+	}
+	if !strings.Contains(errCard, "dashboard-tile-delta-bad") {
+		t.Errorf("rising error rate must color the badge bad/coral; card=%q", errCard)
+	}
+
+	falling := newFakeMetricsSource()
+	falling.addCounter("workflow.runs.completed", 100, now.Add(-10*time.Minute))
+	falling.addCounter("workflow.runs.completed", 100, now)
+	falling.addCounter("workflow.runs.failed", 10, now.Add(-10*time.Minute))
+	falling.addCounter("workflow.runs.failed", 2, now)
+	body2 := dashGet(t, dashTestCfg(t, newFakeDS(), falling), "/console/").Body.String()
+	errCard2 := sliceErrorRateCard(t, body2)
+	if !strings.Contains(errCard2, "▼") {
+		t.Errorf("falling error count must render ▼ (raw movement down); card=%q", errCard2)
+	}
+	if !strings.Contains(errCard2, "dashboard-tile-delta-good") {
+		t.Errorf("falling error rate must color the badge good/teal; card=%q", errCard2)
+	}
+}
+
+// TestDashboard_throughputHasNoMeaninglessCountDelta guards against the
+// old behavior where the throughput badge showed the raw cumulative
+// counter change (e.g. "▲ 118") beside a per-second value. The throughput
+// tile must render but carry no delta badge until a meaningful rate-over-
+// rate delta exists (honest-omit).
+func TestDashboard_throughputHasNoMeaninglessCountDelta(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now()
+	src.addCounter("workflow.runs.completed", 10, now.Add(-10*time.Minute))
+	src.addCounter("workflow.runs.completed", 130, now)
+	body := dashGet(t, dashTestCfg(t, newFakeDS(), src), "/console/").Body.String()
+	tput := sliceTile(t, body, "tile-throughput")
+	if strings.Contains(tput, "dashboard-tile-delta") {
+		t.Errorf("throughput must not show a raw-count delta badge; card=%q", tput)
+	}
+	if strings.Contains(tput, "120") {
+		t.Errorf("throughput must not render the cumulative counter change; card=%q", tput)
+	}
+}
+
+// sliceErrorRateCard returns the error-rate tile anchor substring.
+func sliceErrorRateCard(t *testing.T, body string) string {
+	return sliceTile(t, body, "tile-error-rate")
+}
+
+// sliceTile returns the <a> ... </a> substring for the tile with the
+// given DOM id, so per-card assertions don't leak across tiles.
+func sliceTile(t *testing.T, body, domID string) string {
+	t.Helper()
+	marker := "id=\"" + domID + "\""
+	i := strings.Index(body, marker)
+	if i < 0 {
+		t.Fatalf("tile %q not present in body", domID)
+	}
+	start := strings.LastIndex(body[:i], "<a ")
+	if start < 0 {
+		t.Fatalf("tile %q anchor open not found", domID)
+	}
+	end := strings.Index(body[start:], "</a>")
+	if end < 0 {
+		t.Fatalf("tile %q anchor close not found", domID)
+	}
+	return body[start : start+end+len("</a>")]
+}
+
+// TestDashboard_telemetryCardsAbsentWithEmptyMetrics extends the empty-
+// metrics guard to the three new telemetry tiles: none may render when
+// the aggregator yields nothing (honest-omit, issue #284).
+func TestDashboard_telemetryCardsAbsentWithEmptyMetrics(t *testing.T) {
+	cfg := dashTestCfg(t, newFakeDS(), nil)
+	rec := dashGet(t, cfg, "/console/")
+	body := rec.Body.String()
+	for _, id := range []string{
+		"tile-throughput", "tile-p50-latency", "tile-error-rate",
+	} {
+		if strings.Contains(body, "id=\""+id+"\"") {
+			t.Errorf("telemetry tile id=%q must be absent with nil metrics", id)
+		}
+	}
+}
+
 // TestDashboard_failedTileLinksToFilteredRuns asserts the Failed-1h
 // tile's anchor points at the runs list filtered to status=failed and
 // range=1h, the operator's natural drill path on a red tile.

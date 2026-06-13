@@ -648,6 +648,7 @@ func funcMap() template.FuncMap {
 		"triggerKindGlyph": triggerKindGlyph,
 		"jsonArray":        jsonArrayHelper,
 		"sparkExpr":        SparkExpr,
+		"deltaTone":        deltaToneClass,
 		"dict":             dictHelper,
 		"mul":              mulHelper,
 		"tooltip":          tooltipHelper(),
