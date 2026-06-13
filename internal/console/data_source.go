@@ -265,6 +265,16 @@ type DataSource interface {
 	// NATS connection isn't wired — callers paint the empty state
 	// rather than 500ing. The web counterpart of `dagnats trace <id>`.
 	GetRunTrace(ctx context.Context, runID string) ([]TraceRow, error)
+
+	// WorkerDetail reads one worker's full KV registration for the
+	// read-only /console/workers/{id} detail page. Surfaces the fields
+	// the lossy WorkerStatusRow list projection drops (Language,
+	// Transport, MaxTasks, Pid, Version) plus the registered task types.
+	// Reuses the same ListWorkers round-trip that backs ListWorkerRows —
+	// no second directory read. An unknown id (or a read miss) returns
+	// WorkerDetail{Found:false} + nil so the page paints the honest
+	// not-found state rather than 500ing.
+	WorkerDetail(ctx context.Context, id string) (WorkerDetail, error)
 }
 
 // ConsumerRow is a single JetStream consumer's operational state for the
@@ -529,6 +539,36 @@ type WorkerStatusRow struct {
 	Host      string
 	LastSeen  string
 	Status    string
+}
+
+// WorkerFunctionRow is one registered task type on a worker's detail
+// page. Only the name is backed by the registration — the engine emits
+// no per-(worker,function) telemetry, so there are deliberately no
+// stat columns here (Norman honesty: no permanently-empty counters).
+type WorkerFunctionRow struct {
+	Function string
+}
+
+// WorkerDetail is the full KV registration for one worker, projected
+// for the read-only /console/workers/{id} page. Every field is read
+// straight from worker.WorkerRegistration — no synthetic columns. The
+// detail page surfaces Language/Transport/MaxTasks/Pid/Version, which
+// the WorkerStatusRow list projection drops. Status is "active" when
+// LastSeen is within worker.MaxWorkerStaleness of now, "stale"
+// otherwise. Found is false when the id isn't registered.
+type WorkerDetail struct {
+	Found     bool
+	WorkerID  string
+	TaskTypes string
+	Host      string
+	LastSeen  string
+	Status    string
+	Language  string
+	Transport string
+	MaxTasks  string
+	Pid       string
+	Version   string
+	Functions []WorkerFunctionRow
 }
 
 // SearchHit is one result row in the cmd+k command palette. Kind tags
@@ -2585,6 +2625,103 @@ func workerRowsFromRegistrations(
 		})
 	}
 	return out
+}
+
+// WorkerDetail scans the live worker directory for one id and projects
+// its full registration. Reuses ListWorkers — the same read that backs
+// ListWorkerRows — so the detail page costs no extra directory round
+// trip. A read miss or unknown id collapses to Found:false + nil so the
+// handler paints the honest not-found state.
+func (a *apiServiceAdapter) WorkerDetail(
+	ctx context.Context, id string,
+) (WorkerDetail, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.WorkerDetail: ctx is nil")
+	}
+	if a.svc == nil {
+		panic("apiServiceAdapter.WorkerDetail: svc is nil")
+	}
+	regs, err := a.svc.ListWorkers(ctx)
+	if err != nil {
+		return WorkerDetail{Found: false}, nil
+	}
+	return workerDetailFromRegistrations(regs, id, time.Now()), nil
+}
+
+// workerDetailFromRegistrations finds the registration matching id and
+// projects it into a detail view. Pure function so tests can drive it
+// without an adapter; now is passed in so liveness classification is
+// deterministic under test. Bounded by len(regs). An absent id returns
+// WorkerDetail{Found:false}.
+func workerDetailFromRegistrations(
+	regs []worker.WorkerRegistration, id string, now time.Time,
+) WorkerDetail {
+	if id == "" {
+		panic("workerDetailFromRegistrations: id is empty")
+	}
+	const maxRegs = 10000
+	if len(regs) > maxRegs {
+		panic("workerDetailFromRegistrations: regs exceeds max bound")
+	}
+	for i := 0; i < len(regs); i++ {
+		if regs[i].WorkerID != id {
+			continue
+		}
+		return projectWorkerDetail(regs[i], now)
+	}
+	return WorkerDetail{Found: false, WorkerID: id}
+}
+
+// projectWorkerDetail maps a single registration into the detail view,
+// classifying liveness against now and dashing fields the registration
+// can't supply (a zero Pid/MaxTasks is not a meaningful value). Bounded
+// by len(reg.TaskTypes).
+func projectWorkerDetail(
+	reg worker.WorkerRegistration, now time.Time,
+) WorkerDetail {
+	if reg.WorkerID == "" {
+		panic("projectWorkerDetail: WorkerID is empty")
+	}
+	status := "active"
+	lastSeen := ""
+	if !reg.LastSeen.IsZero() {
+		lastSeen = reg.LastSeen.UTC().Format(time.RFC3339)
+		if now.Sub(reg.LastSeen) > worker.MaxWorkerStaleness {
+			status = "stale"
+		}
+	}
+	const typesMax = 10000
+	if len(reg.TaskTypes) > typesMax {
+		panic("projectWorkerDetail: TaskTypes exceeds max bound")
+	}
+	functions := make([]WorkerFunctionRow, 0, len(reg.TaskTypes))
+	for _, taskType := range reg.TaskTypes {
+		functions = append(functions, WorkerFunctionRow{Function: taskType})
+	}
+	return WorkerDetail{
+		Found:     true,
+		WorkerID:  reg.WorkerID,
+		TaskTypes: strings.Join(reg.TaskTypes, ", "),
+		Host:      reg.Hostname,
+		LastSeen:  lastSeen,
+		Status:    status,
+		Language:  reg.Language,
+		Transport: reg.Transport,
+		MaxTasks:  positiveIntOrEmpty(reg.MaxTasks),
+		Pid:       positiveIntOrEmpty(reg.Pid),
+		Version:   reg.Version,
+		Functions: functions,
+	}
+}
+
+// positiveIntOrEmpty stringifies n when positive, else returns "" so the
+// view layer's statValueOr renders the honest dash. A zero Pid/MaxTasks
+// reflects "not reported", not a real value worth printing.
+func positiveIntOrEmpty(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 // parseHistoryEvent decodes one history message. Returns ok=false on

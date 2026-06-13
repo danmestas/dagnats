@@ -517,6 +517,12 @@ func (r *resumeRecorder) ListWorkerRows(
 	return r.inner.ListWorkerRows(ctx)
 }
 
+func (r *resumeRecorder) WorkerDetail(
+	ctx context.Context, id string,
+) (WorkerDetail, error) {
+	return r.inner.WorkerDetail(ctx, id)
+}
+
 // readSSEUntil reads the SSE response body looking for
 // `event: datastar-patch-elements` headers and capturing the row id
 // payload substrings. Stops once want events have been seen OR the
