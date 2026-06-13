@@ -171,7 +171,7 @@ func buildConfigView(ctx context.Context, cfg Config) ConfigPageView {
 		TriggerTypes:  builtInTriggerTypes(),
 		Invariants:    engineInvariants(),
 		Build: BuildFooter{
-			DagnatsBuild:      cfg.Build,
+			DagnatsBuild:      consoleBuildLabel(cfg.Build),
 			NATSServerVersion: snap.NATSServerVersion,
 			GoVersion:         runtime.Version(),
 		},
