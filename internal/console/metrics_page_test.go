@@ -10,6 +10,7 @@
 package console
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"math"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // mustContainMetrics is a local assertion helper. Named with a suffix
@@ -276,6 +279,163 @@ func TestSparkFromPoints_DownsamplesToBins(t *testing.T) {
 	if spark[9] < 80 {
 		t.Fatalf("spark[9] = %v, want ≥80", spark[9])
 	}
+}
+
+// TestClampChartWindow_DropsEpochJunkAndFutureTicks pins the helper
+// that keeps the rendered x-axis inside the real recent window. The
+// adversarial inputs mix epoch junk (0), a year-1 unset-timestamp
+// (time.Time{}.Unix()), and two sane recent points. Positive: the
+// clamped domain hugs the recent points. Negative: lo must not drop
+// to the year-1 sentinel and hi must not exceed now.
+func TestClampChartWindow_DropsEpochJunkAndFutureTicks(t *testing.T) {
+	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+	year1 := float64(time.Time{}.Unix())
+	xs := []float64{
+		0,
+		year1,
+		float64(now.Add(-30 * time.Minute).Unix()),
+		float64(now.Unix()),
+	}
+	lo, hi := clampChartWindow(xs, now)
+	if hi > float64(now.Unix()) {
+		t.Fatalf("hi = %v, must not exceed now %v", hi, now.Unix())
+	}
+	if lo <= 0 || lo <= year1 {
+		t.Fatalf("lo = %v, must drop epoch/year-1 junk", lo)
+	}
+	if hi-lo > 3600 {
+		t.Fatalf("span = %v, want <= 3600s", hi-lo)
+	}
+	if lo > hi {
+		t.Fatalf("lo %v must not exceed hi %v", lo, hi)
+	}
+}
+
+// TestBuildThroughputChart_SparseDataStaysInRecentWindow is the
+// load-bearing regression for the time-axis bug: sparse counter points
+// plus one adversarial unset-timestamp point must not poison the
+// rendered domain. Positive: XMin/XMax hug the real recent window.
+// Negative: no XAxis entry is <= 0 (year-1 contamination dropped) and
+// XMax never reaches into the future.
+func TestBuildThroughputChart_SparseDataStaysInRecentWindow(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now().UTC()
+	src.addCounter("workflow.runs.completed", 3,
+		now.Add(-2*time.Minute))
+	src.addCounter("workflow.runs.completed", 5, now)
+	// Adversarial: a point with an unset Timestamp (year 1).
+	src.addCounter("workflow.runs.completed", 4, time.Time{})
+	chart := buildThroughputChart(src)
+	for i, x := range chart.XAxis {
+		if x <= 0 {
+			t.Fatalf("XAxis[%d] = %v, must drop x <= 0", i, x)
+		}
+	}
+	if chart.XMax > float64(now.Unix())+1 {
+		t.Fatalf("XMax = %v, must not exceed now %v",
+			chart.XMax, now.Unix())
+	}
+	if chart.XMin < chart.XMax-3600 {
+		t.Fatalf("XMin = %v, want >= XMax-3600 (%v)",
+			chart.XMin, chart.XMax-3600)
+	}
+	if chart.XMax-chart.XMin > 3600 {
+		t.Fatalf("span = %v, want <= 3600s", chart.XMax-chart.XMin)
+	}
+}
+
+// TestBuildMetricsView_DLQDepthTileFromDataSource verifies the DLQ
+// depth tile reads its value from cfg.Data via ListDeadLetters (the
+// proven dashboard read), not from a metrics counter. Positive: the
+// tile value equals the dead-letter count. Negative: with nil cfg.Data
+// the tile is omitted entirely (honest: no source wired).
+func TestBuildMetricsView_DLQDepthTileFromDataSource(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now().UTC()
+	src.addCounter("workflow.runs.completed", 5, now)
+	src.addCounter("workflow.runs.failed", 2, now)
+	ds := newFakeDS()
+	ds.deadLetters = []api.DeadLetterView{
+		{DeadLetter: api.DeadLetter{Sequence: 1}},
+		{DeadLetter: api.DeadLetter{Sequence: 2}},
+		{DeadLetter: api.DeadLetter{Sequence: 3}},
+	}
+	cfg := makeMetricsCfg(t, src)
+	cfg.Data = ds
+	view := buildMetricsView(context.Background(), cfg, "")
+	tile, ok := findTile(view.Tiles, "tile-dlq-depth")
+	if !ok {
+		t.Fatal("dlq-depth tile missing when cfg.Data wired")
+	}
+	if tile.Value != "3" {
+		t.Fatalf("dlq tile Value = %q, want 3", tile.Value)
+	}
+	cfg.Data = nil
+	view = buildMetricsView(context.Background(), cfg, "")
+	if _, ok := findTile(view.Tiles, "tile-dlq-depth"); ok {
+		t.Fatal("dlq-depth tile must be omitted with nil cfg.Data")
+	}
+}
+
+// TestBuildMetricsView_RunsActiveTileConditional verifies the
+// runs.active SeriesCard renders only when the aggregator actually
+// holds the series. Positive: present + labelled with the real OTel
+// name when seeded. Negative: omitted (not an empty tile) when absent.
+func TestBuildMetricsView_RunsActiveTileConditional(t *testing.T) {
+	now := time.Now().UTC()
+	withActive := newFakeMetricsSource()
+	withActive.addCounter("workflow.runs.completed", 5, now)
+	withActive.addCounter("workflow.runs.active", 4, now)
+	cfg := makeMetricsCfg(t, withActive)
+	view := buildMetricsView(context.Background(), cfg, "")
+	tile, ok := findTile(view.Tiles, "tile-runs-active")
+	if !ok {
+		t.Fatal("runs-active tile missing when series seeded")
+	}
+	if tile.MetricID != "workflow.runs.active" {
+		t.Fatalf("MetricID = %q, want workflow.runs.active",
+			tile.MetricID)
+	}
+	noActive := newFakeMetricsSource()
+	noActive.addCounter("workflow.runs.completed", 5, now)
+	cfg = makeMetricsCfg(t, noActive)
+	view = buildMetricsView(context.Background(), cfg, "")
+	if _, ok := findTile(view.Tiles, "tile-runs-active"); ok {
+		t.Fatal("runs-active tile must be omitted when series absent")
+	}
+}
+
+// TestMetricsPage_OmitsUnbackedAffordances guards the honesty
+// decisions: no anomaly callout banner (no live anomaly datum), no
+// Prometheus button (endpoint is loopback-gated on the engine
+// listener, cross-origin from the console).
+func TestMetricsPage_OmitsUnbackedAffordances(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now().UTC()
+	src.addCounter("workflow.runs.completed", 5, now)
+	cfg := makeMetricsCfg(t, src)
+	rec := exerciseMetrics(t, cfg, "/console/metrics")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "Anomaly · snapshot.save.duration_ms") {
+		t.Error("must not render the fixture anomaly callout banner")
+	}
+	if strings.Contains(body, "GET /metrics") {
+		t.Error("must not render Prometheus button (cross-origin gate)")
+	}
+}
+
+// findTile returns the tile with the given ID, mirroring the
+// conditional-append shape the view builder uses.
+func findTile(tiles []MetricsTile, id string) (MetricsTile, bool) {
+	for _, tile := range tiles {
+		if tile.ID == id {
+			return tile, true
+		}
+	}
+	return MetricsTile{}, false
 }
 
 // makeMetricsCfg builds a Config wired up with the metrics source +

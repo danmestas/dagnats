@@ -72,8 +72,8 @@
               </td>
               <td class="console-num">{{.Completed1h}}</td>
               <td class="console-num">{{.Failed1h}}</td>
-              <td class="console-num">{{printf "%.1f" .P50LatencyMs}}</td>
-              <td class="console-num">{{printf "%.1f" .P95LatencyMs}}</td>
+              <td class="console-num">{{if gt .P50LatencyMs 0.0}}{{printf "%.1f" .P50LatencyMs}}{{else}}&mdash;{{end}}</td>
+              <td class="console-num">{{if gt .P95LatencyMs 0.0}}{{printf "%.1f" .P95LatencyMs}}{{else}}&mdash;{{end}}</td>
             </tr>
           {{end}}
         </tbody>
@@ -102,8 +102,8 @@
               <td>{{.Step}}</td>
               <td class="console-num">{{.Completed1h}}</td>
               <td class="console-num">{{.Failed1h}}</td>
-              <td class="console-num">{{printf "%.1f" .P50LatencyMs}}</td>
-              <td class="console-num">{{printf "%.1f" .P95LatencyMs}}</td>
+              <td class="console-num">{{if gt .P50LatencyMs 0.0}}{{printf "%.1f" .P50LatencyMs}}{{else}}&mdash;{{end}}</td>
+              <td class="console-num">{{if gt .P95LatencyMs 0.0}}{{printf "%.1f" .P95LatencyMs}}{{else}}&mdash;{{end}}</td>
             </tr>
           {{end}}
         </tbody>
