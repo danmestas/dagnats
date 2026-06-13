@@ -216,6 +216,140 @@ func TestKVList_missingKeyRendersNotFound(t *testing.T) {
 	}
 }
 
+// kvCatalogMethodology: the catalog table renders ONLY data read live
+// from the DataSource — bucket name, real key count, live TTL, and a
+// static per-bucket purpose label. Each test seeds fake.kvBuckets and
+// asserts both a backed datum AND a negative-space guard (no fabricated
+// value, no dead Purge affordance) so the honesty contract can't drift.
+
+func TestKVCatalog_rendersBackedColumns(t *testing.T) {
+	fake := newFakeDS()
+	fake.kvBuckets = []KVBucketInfo{
+		{Name: "idempotency_keys", Keys: 3, TTL: 24 * time.Hour,
+			Description: "HTTP idempotency keys"},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/kv", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"console-table", "idempotency_keys", "24h", "HTTP idempotency keys",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("KV catalog missing %q in body", want)
+		}
+	}
+	// Negative space: key count is the real 3, not a fabricated number.
+	if !strings.Contains(body, ">3<") {
+		t.Errorf("KV catalog missing real key count 3: %s", body)
+	}
+}
+
+func TestKVCatalog_zeroTTLShowsDash(t *testing.T) {
+	fake := newFakeDS()
+	fake.kvBuckets = []KVBucketInfo{
+		{Name: "workflow_defs", Keys: 5, TTL: 0, Description: "defs"},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/kv", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, "—") {
+		t.Errorf("zero TTL must render an em-dash: %s", body)
+	}
+	// Negative space: never fabricate "0s" for a bucket with no TTL.
+	if strings.Contains(body, "0s") {
+		t.Errorf("zero TTL must not render 0s: %s", body)
+	}
+}
+
+func TestKVCatalog_crosslinksToInspector(t *testing.T) {
+	fake := newFakeDS()
+	fake.kvBuckets = []KVBucketInfo{
+		{Name: "idempotency_keys", Keys: 1, Description: "x"},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/kv", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, `href="/console/kv?bucket=idempotency_keys"`) {
+		t.Errorf("catalog row must crosslink to the inspector: %s", body)
+	}
+}
+
+func TestKVCatalog_noPurgeAffordance(t *testing.T) {
+	fake := newFakeDS()
+	fake.kvBuckets = []KVBucketInfo{
+		{Name: "idempotency_keys", Keys: 1, Description: "x"},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/kv", nil))
+	body := rr.Body.String()
+	// Dead-affordance guard: no Purge button / confirm scaffolding exists.
+	for _, banned := range []string{"Purge", "requireTyped"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("catalog must not carry dead affordance %q: %s",
+				banned, body)
+		}
+	}
+}
+
+func TestKVCatalog_unknownBucketGenericPurpose(t *testing.T) {
+	fake := newFakeDS()
+	fake.kvBuckets = []KVBucketInfo{
+		{Name: "mystery_bucket", Keys: 0, Description: ""},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/kv", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, "mystery_bucket") {
+		t.Errorf("catalog must list the unknown bucket: %s", body)
+	}
+	// Negative space: empty description must render a dash, not invented text.
+	if !strings.Contains(body, "—") {
+		t.Errorf("empty purpose must render an em-dash: %s", body)
+	}
+}
+
+func TestKVHeader_ttlBoundedTileIsReal(t *testing.T) {
+	fake := newFakeDS()
+	fake.kvBuckets = []KVBucketInfo{
+		{Name: "idempotency_keys", Keys: 1, TTL: 24 * time.Hour},
+		{Name: "workflow_defs", Keys: 1, TTL: 0},
+	}
+	view := buildKVInspectorView(t.Context(), fake, map[string][]string{})
+	got := -1
+	for _, tile := range view.Header.Tiles {
+		if tile.Label == "TTL set" {
+			got = tile.Count
+		}
+	}
+	if got != 1 {
+		t.Fatalf("TTL set tile count = %d, want 1", got)
+	}
+}
+
+func TestHumanDuration(t *testing.T) {
+	cases := map[time.Duration]string{
+		0:                "—",
+		24 * time.Hour:   "24h",
+		168 * time.Hour:  "7d",
+		90 * time.Minute: "1h30m",
+		45 * time.Second: "45s",
+		25 * time.Hour:   "1d1h",
+	}
+	for in, want := range cases {
+		if got := humanDuration(in); got != want {
+			t.Errorf("humanDuration(%v) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestStreamsList_rendersRealSnapshot feeds a ConfigSnapshot with live
 // stream metadata and asserts the real Messages / Bytes / Consumers
 // reach the page — and that the retired "not yet wired" callout is gone.

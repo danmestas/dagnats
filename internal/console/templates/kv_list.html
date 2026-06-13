@@ -2,6 +2,35 @@
 <section class="page page-kv-list" data-page="kv-list">
   {{template "page-header" .Page.Header}}
 
+  <table class="table console-table kv-catalog" id="kv-catalog-table">
+    <thead>
+      <tr>
+        <th>Bucket</th>
+        <th>TTL</th>
+        <th>Keys</th>
+        <th>Purpose</th>
+        <th>Inspect</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Page.Catalog}}
+      <tr id="kv-catalog-row-{{.Bucket}}">
+        <td class="mono">
+          <a href="/console/kv?bucket={{.Bucket}}">{{.Bucket}}</a>
+        </td>
+        <td class="mono">{{.TTL}}</td>
+        <td>{{.Keys}}</td>
+        <td>{{.Purpose}}</td>
+        <td><a href="/console/kv?bucket={{.Bucket}}">Inspect</a></td>
+      </tr>
+      {{else}}
+      <tr class="empty-row">
+        <td colspan="5">No KV buckets reachable.</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+
   <div class="kv-layout">
     <nav class="kv-buckets" aria-label="KV buckets">
       <h2 class="kv-section-title">Buckets</h2>
