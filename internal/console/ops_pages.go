@@ -14,7 +14,6 @@ import (
 //   /console/workers         — workers list (placeholder telemetry)
 //   /console/kv              — KV inspector (read-only)
 //   /console/streams         — JetStream stream inventory (placeholder)
-//   /console/leases          — current leases (placeholder telemetry)
 //
 // Each list page mirrors the established pattern: handler → build
 // view → render. Templates live alongside the other pages.
@@ -89,48 +88,6 @@ func buildWorkersHeader(rows []WorkerStatusRow) PageHeader {
 		return PageHeader{Title: "Workers"}
 	}
 	return h
-}
-
-// LeasesListView powers /console/leases. Same telemetry gap as
-// workers — surfaces the shape so operators recognise the eventual
-// fill.
-type LeasesListView struct {
-	Leases []LeaseRow
-	Note   string
-}
-
-// LeaseRow shape for when the engine surfaces leases. Empty for now.
-type LeaseRow struct {
-	ID         string
-	Worker     string
-	Workflow   string
-	Step       string
-	Acquired   string
-	Expires    string
-	NearExpiry bool
-}
-
-// servePageLeases renders /console/leases.
-func servePageLeases(
-	w http.ResponseWriter, r *http.Request,
-	ts *templateSet, cfg Config,
-) {
-	if w == nil {
-		panic("servePageLeases: w is nil")
-	}
-	if r == nil {
-		panic("servePageLeases: r is nil")
-	}
-	view := LeasesListView{
-		Note: "Lease telemetry is not yet wired. " +
-			"Today, leases are tracked internally by the engine's admission " +
-			"layer but not surfaced to the console.",
-	}
-	renderPage(w, r, ts, cfg, "ops-leases", pageData{
-		Title:   "Leases",
-		Section: "leases",
-		Page:    view,
-	})
 }
 
 // KVInspectorView powers /console/kv. Buckets is the left-rail
