@@ -10,8 +10,9 @@
 // Honesty contract: a source that errors is OMITTED from the payload
 // entirely. The client renders a badge only for a key that is present,
 // so an unavailable count shows no badge rather than a fabricated 0.
-// Services + Traces are intentionally absent — they have no data /
-// route yet, and a zero-backed badge there would be a dead affordance.
+// Services is now wired (a real /console/services route + the `services`
+// KV read). Traces remains intentionally absent — it has no data / route
+// yet, and a zero-backed badge there would be a dead affordance.
 package console
 
 import (
@@ -77,6 +78,9 @@ func readNavListCounts(
 	}
 	if v, err := ds.ListKVBuckets(ctx); err == nil {
 		counts["kv"] = len(v)
+	}
+	if v, err := ds.ListServiceRows(ctx); err == nil {
+		counts["services"] = len(v)
 	}
 }
 

@@ -346,6 +346,12 @@ func (r *resumeRecorder) GetRunTrace(
 	return r.inner.GetRunTrace(ctx, runID)
 }
 
+func (r *resumeRecorder) ListServiceRows(
+	ctx context.Context,
+) ([]ServiceRow, error) {
+	return r.inner.ListServiceRows(ctx)
+}
+
 // mountConsoleWithDS mounts the console with an arbitrary DataSource.
 // Mirror of mountWithFake but typed against the full interface so the
 // resumeRecorder can substitute for the fake transparently.

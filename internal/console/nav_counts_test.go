@@ -10,9 +10,9 @@
 //   - Positive space: the Verdict-A nav items (Workflows, Functions,
 //     Workers, Triggers, Runs, DLQ, Connections, Streams, Consumers, KV)
 //     report their real counts.
-//   - Negative space: Services + Traces carry NO count (no data/route)
-//     and an errored/unavailable source omits its key rather than
-//     reporting a fabricated 0.
+//   - Negative space: Traces carries NO count (no data/route) and an
+//     errored/unavailable source omits its key rather than reporting a
+//     fabricated 0. (Services is now a real route + count.)
 //   - Min 2 assertions per test.
 package console
 
@@ -105,9 +105,9 @@ func TestNavCountsReportsRealAItemCounts(t *testing.T) {
 			t.Errorf("nav-counts[%q] = %d, want %d", key, got, n)
 		}
 	}
-	if _, ok := counts["services"]; ok {
-		t.Errorf("nav-counts must NOT include services (no data/route)")
-	}
+	// Services now has a route + data; with none seeded its count is 0
+	// (present-but-zero, not omitted — the read succeeded on an empty
+	// bucket). Detailed services coverage lives in services_page_test.go.
 	if _, ok := counts["traces"]; ok {
 		t.Errorf("nav-counts must NOT include traces (no data/route)")
 	}
@@ -155,9 +155,9 @@ func TestNavBadgePlaceholdersInLayout(t *testing.T) {
 			t.Errorf("layout missing nav badge placeholder for %q", key)
 		}
 	}
-	if strings.Contains(body, `data-nav-count="services"`) {
-		t.Errorf("layout must not carry a services nav badge")
-	}
+	// Services is now a real route + data source, so it carries a badge
+	// placeholder like the other System-group items (verified in
+	// services_page_test.go). Traces remains absent (no data/route yet).
 	if strings.Contains(body, `data-nav-count="traces"`) {
 		t.Errorf("layout must not carry a traces nav badge")
 	}

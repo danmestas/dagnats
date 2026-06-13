@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -224,6 +225,17 @@ type DataSource interface {
 	// Returns nil + nil-error when no workers are registered so the
 	// renderer paints the honest empty state rather than 500ing.
 	ListWorkerRows(ctx context.Context) ([]WorkerStatusRow, error)
+
+	// ListServiceRows reads the `services` KV bucket and projects each
+	// registration into a roster row for the /console/services page.
+	// Reuses worker.ListServices — the same read AggregateTaskTypes folds
+	// for descriptions — so no new bucket is introduced. Rows carry only
+	// the three fields the registration emits (see ServiceRow); no
+	// synthetic liveness/version columns.
+	//
+	// Returns nil + nil-error on an unwired connection or a read miss so
+	// the renderer paints the honest empty state rather than 500ing.
+	ListServiceRows(ctx context.Context) ([]ServiceRow, error)
 
 	// ListConsumers returns every JetStream consumer on the engine's
 	// known streams, one ConsumerRow each, for the /console/consumers
@@ -539,6 +551,20 @@ type WorkerStatusRow struct {
 	Host      string
 	LastSeen  string
 	Status    string
+}
+
+// ServiceRow is one entry in the /console/services roster. It carries
+// ONLY the fields the `services` KV registration actually emits
+// (worker.ServiceDef: Name, Description, RegisteredAt). There are no
+// kind/version/instances/status columns because the bucket emits none —
+// services are a persistent metadata namespace with TTL=0 and no
+// heartbeat (worker/services.go), so any liveness/version column would
+// be fabricated. Registered is the RFC3339 RegisteredAt or the honest
+// dash when zero; Note is the Description or the honest dash when empty.
+type ServiceRow struct {
+	Name       string
+	Registered string
+	Note       string
 }
 
 // WorkerFunctionRow is one registered task type on a worker's detail
@@ -2522,6 +2548,63 @@ func attachServiceDescriptions(
 		}
 	}
 	return rows
+}
+
+// ListServiceRows reads the `services` KV bucket via worker.ListServices
+// and projects each entry into a roster row. Mirrors the best-effort
+// guard ladder of AggregateTaskTypes: a nil connection or any read
+// failure collapses to (nil, nil) so the page paints empty state and
+// never 500s. The bucket is metadata only — never authoritative — so a
+// degraded read is a non-event.
+func (a *apiServiceAdapter) ListServiceRows(
+	ctx context.Context,
+) ([]ServiceRow, error) {
+	if ctx == nil {
+		panic("apiServiceAdapter.ListServiceRows: ctx is nil")
+	}
+	if a.svc == nil {
+		panic("apiServiceAdapter.ListServiceRows: svc is nil")
+	}
+	if a.nc == nil {
+		return nil, nil
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return nil, nil
+	}
+	defs, err := worker.ListServices(js)
+	if err != nil {
+		return nil, nil
+	}
+	return serviceRowsFromDefs(defs), nil
+}
+
+// serviceRowsFromDefs projects service definitions into render rows.
+// Pure function so tests can drive it without a JetStream handle,
+// matching the workerRowsFromRegistrations precedent. Sorts by Name for
+// a deterministic render. Empty Description / zero RegisteredAt render
+// the honest dash. Always returns a non-nil slice. Bounded by len(defs).
+func serviceRowsFromDefs(defs []worker.ServiceDef) []ServiceRow {
+	const maxDefs = 10000
+	if len(defs) > maxDefs {
+		panic("serviceRowsFromDefs: defs exceeds max bound")
+	}
+	out := make([]ServiceRow, 0, len(defs))
+	for _, d := range defs {
+		registered := dash
+		if !d.RegisteredAt.IsZero() {
+			registered = d.RegisteredAt.UTC().Format(time.RFC3339)
+		}
+		out = append(out, ServiceRow{
+			Name:       d.Name,
+			Registered: registered,
+			Note:       statValueOr(d.Description),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 // aggregateTaskTypesFromWorkers turns the worker registrations into

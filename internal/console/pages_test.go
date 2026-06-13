@@ -96,8 +96,12 @@ type fakeDataSource struct {
 	// #335 (services cross-reference): pre-seeded ServiceDef list. The
 	// fake AggregateTaskTypes mirrors the production adapter — calls
 	// attachServiceDescriptions(rows, services) after the fold — so a
-	// test that wants tooltip rendering just sets this.
-	services []worker.ServiceDef
+	// test that wants tooltip rendering just sets this. The services
+	// roster page (ListServiceRows) projects this same slice via the
+	// production serviceRowsFromDefs. serviceRowsErr forces the read-
+	// error path (omit-on-error nav-count contract).
+	services       []worker.ServiceDef
+	serviceRowsErr error
 
 	// T13 (Phase 2): sparkline backing data. sparklineSeries is keyed
 	// by "kind/id" so the test can pre-seed deterministic hourly counts
@@ -602,6 +606,19 @@ func (f *fakeDataSource) ListWorkerRows(
 	_ context.Context,
 ) ([]WorkerStatusRow, error) {
 	return workerRowsFromRegistrations(f.configSnap.Workers, time.Now()), nil
+}
+
+// ListServiceRows is the test seam for the /console/services page.
+// Mirrors the production adapter: project the pre-seeded services slice
+// through serviceRowsFromDefs. serviceRowsErr forces the error path so
+// tests can assert the omit-on-error nav-count contract.
+func (f *fakeDataSource) ListServiceRows(
+	_ context.Context,
+) ([]ServiceRow, error) {
+	if f.serviceRowsErr != nil {
+		return nil, f.serviceRowsErr
+	}
+	return serviceRowsFromDefs(f.services), nil
 }
 
 // WorkerDetail is the test seam for /console/workers/{id}. Mirrors the

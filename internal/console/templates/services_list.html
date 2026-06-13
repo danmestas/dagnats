@@ -1,0 +1,28 @@
+{{define "content"}}
+<section class="page page-services-list" data-page="services-list">
+  {{template "page-header" .Page.Header}}
+
+  <table class="table console-table" id="services-table">
+    <thead>
+      <tr>
+        <th>Service</th>
+        <th>Registered</th>
+        <th>Note</th>
+      </tr>
+    </thead>
+    <tbody id="services-tbody">
+      {{range .Page.Services}}
+      <tr>
+        <td class="mono">{{.Name}}</td>
+        <td>{{.Registered}}</td>
+        <td>{{.Note}}</td>
+      </tr>
+      {{else}}
+      <tr class="empty-row">
+        <td colspan="3">No services registered.</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
