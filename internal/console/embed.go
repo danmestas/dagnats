@@ -78,6 +78,7 @@ var assetsFS embed.FS
 //go:embed templates/fragments/run_event_row.html
 //go:embed templates/fragments/run_step_row.html
 //go:embed templates/fragments/triggers_tbody.html
+//go:embed templates/fragments/trigger_modal.html
 //go:embed templates/fragments/dlq_tbody.html
 //go:embed templates/fragments/audit_tbody.html
 //go:embed templates/fragments/connection_pill.html

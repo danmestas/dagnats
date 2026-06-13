@@ -22,6 +22,7 @@
     <td class="console-sparkline-col">{{if .Sparkline}}<canvas class="console-sparkline" data-sparkline-id="trigger-{{.ID}}" data-sparkline-data="{{jsonArray .Sparkline}}" width="60" height="16" aria-label="Activity sparkline for {{.ID}}"></canvas>{{end}}</td>
     <td class="trigger-action-cell">
       {{if .CanFire}}<button type="button" class="btn btn-small trigger-fire-btn" data-trigger-id="{{.ID}}" aria-label="Fire trigger {{.ID}} now">Fire now</button>{{end}}
+      <a class="btn btn-small btn-outline trigger-edit-btn" href="/console/triggers/{{.ID}}" data-edit-id="{{.ID}}" data-kind="{{.Kind}}" aria-label="Edit trigger {{.ID}}">Edit</a>
     </td>
     {{template "row-chevron"}}
   </tr>

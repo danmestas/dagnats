@@ -6,6 +6,10 @@
   <p class="console-lede console-section-meta">
     <span id="triggers-count" data-count="{{.Total}}">{{.Total}}</span> configured.
     <span id="triggers-count-tick" data-last="0" hidden></span>
+    <button type="button" class="btn trigger-add-btn"
+            {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to add triggers."{{end}}>
+      + Add trigger
+    </button>
   </p>
 
   <form class="console-filter-bar" method="GET" action="/console/triggers">
@@ -45,7 +49,7 @@
           <th>Type</th>
           <th>ID</th>
           <th>Workflow</th>
-          <th>Target</th>
+          <th>Config</th>
           <th>Status</th>
           <th class="console-sparkline-col" aria-label="Activity, last 24 hours">Activity (24h)</th>
           <th class="trigger-action-cell"><span class="sr-only">Fire</span></th>
@@ -57,6 +61,7 @@
       </tbody>
     </table>
   </div>
+  {{template "trigger-modal" .}}
 </section>
 <script src="/console/assets/uplot.min.js" defer></script>
 <script>
@@ -113,6 +118,102 @@
         },
       }));
     });
+  });
+})();
+</script>
+<script>
+(function () {
+  // Add-trigger modal wiring. The shared #trigger-modal partial is
+  // mode-switched: this page opens it in "add" mode (every field
+  // editable) and POSTs the form to /console/triggers. The detail page
+  // reuses the same partial in "edit" mode. CSRF token comes from the
+  // modal's data-csrf attribute (same value the meta tag carries).
+  var modal = document.getElementById("trigger-modal");
+  var addBtn = document.querySelector(".trigger-add-btn");
+  if (!modal || !addBtn || addBtn.hasAttribute("disabled")) return;
+  var typeSel = document.getElementById("trigger-modal-type");
+  var cancelBtn = document.getElementById("trigger-modal-cancel");
+  var saveBtn = document.getElementById("trigger-modal-save");
+
+  function toast(detail) {
+    document.dispatchEvent(new CustomEvent("console:toast", { detail: detail }));
+  }
+  function showConfigField() {
+    var kind = typeSel.value;
+    modal.querySelectorAll("[data-config-field]").forEach(function (el) {
+      el.hidden = el.getAttribute("data-config-field") !== kind;
+    });
+    var secret = modal.querySelector('[data-field="secret"]');
+    if (secret) secret.hidden = kind !== "webhook";
+  }
+  function openAdd() {
+    modal.setAttribute("data-mode", "add");
+    document.getElementById("trigger-modal-title").textContent = "Add trigger";
+    modal.querySelector("#trigger-modal-form").reset();
+    typeSel.disabled = false;
+    document.getElementById("trigger-modal-workflow").disabled = false;
+    document.getElementById("trigger-modal-id").closest("[data-field]").hidden = false;
+    var enabledRow = modal.querySelector('[data-field="enabled"]');
+    if (enabledRow) enabledRow.hidden = false;
+    showConfigField();
+    modal.hidden = false;
+  }
+  function close() { modal.hidden = true; }
+  function activeConfigInput() {
+    var field = modal.querySelector(
+      '[data-config-field="' + typeSel.value + '"]:not([hidden])');
+    return field ? field.querySelector("input") : null;
+  }
+  function save() {
+    var input = activeConfigInput();
+    var form = new URLSearchParams();
+    form.set("id", document.getElementById("trigger-modal-id").value.trim());
+    form.set("workflow_id", document.getElementById("trigger-modal-workflow").value);
+    form.set("type", typeSel.value);
+    form.set("config", input ? input.value.trim() : "");
+    if (typeSel.value === "http") {
+      form.set("http_method",
+        document.getElementById("trigger-modal-http-method").value);
+    }
+    if (typeSel.value === "webhook") {
+      form.set("secret", document.getElementById("trigger-modal-secret").value);
+    }
+    if (document.getElementById("trigger-modal-enabled").checked) {
+      form.set("enabled", "on");
+    }
+    saveBtn.disabled = true;
+    fetch("/console/triggers", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-CSRF-Token": modal.getAttribute("data-csrf") || "",
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+      body: form.toString(),
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("create failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      saveBtn.disabled = false;
+      close();
+      if (data && data.toast) toast(data.toast);
+      window.setTimeout(function () { window.location.reload(); }, 400);
+    }).catch(function (err) {
+      saveBtn.disabled = false;
+      toast({ level: "error", message: (err && err.message) || "create failed" });
+    });
+  }
+  addBtn.addEventListener("click", openAdd);
+  cancelBtn.addEventListener("click", close);
+  saveBtn.addEventListener("click", save);
+  typeSel.addEventListener("change", showConfigField);
+  modal.addEventListener("click", function (e) {
+    if (e.target === modal) close();
   });
 })();
 </script>

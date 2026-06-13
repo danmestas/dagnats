@@ -70,6 +70,12 @@ type TriggersListView struct {
 	Total      int
 	Rows       []TriggerRow
 	EmptyState *EmptyState
+	// Workflows is the projected name list the Add-trigger modal's
+	// target-workflow select renders. ReadOnly + CSRFToken gate and
+	// authenticate the modal's POST exactly like the detail page.
+	Workflows []string
+	ReadOnly  bool
+	CSRFToken string
 }
 
 // TriggerRow is one row on the triggers list page. The Kind / Target
@@ -112,6 +118,9 @@ func servePageTriggersList(
 		return
 	}
 	view := buildTriggersView(r.Context(), ds, r.URL.Query())
+	view.ReadOnly = cfg.ReadOnly
+	view.CSRFToken = csrfTokenFor(r)
+	view.Workflows = workflowNames(r.Context(), ds)
 	if view.EmptyState != nil {
 		view.EmptyState.ReadOnly = cfg.ReadOnly
 	}
@@ -157,6 +166,27 @@ func buildTriggersView(
 		view.EmptyState = newTriggersEmptyState()
 	}
 	return view
+}
+
+// workflowNames projects ListWorkflows into the name-only slice the
+// trigger modal's target-workflow select consumes, keeping the template
+// dumb. A read error degrades to an empty list — the modal still opens
+// (the operator can type a workflow id on the API side later) and no
+// page 500s on an unwired connection.
+func workflowNames(ctx context.Context, ds DataSource) []string {
+	if ds == nil {
+		panic("workflowNames: ds is nil")
+	}
+	defs, err := ds.ListWorkflows(ctx)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(defs))
+	for i := range defs {
+		names = append(names, defs[i].Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // newTriggersEmptyState builds the EmptyState for /console/triggers
@@ -281,6 +311,13 @@ type TriggerDetailView struct {
 	// render the Fire-now affordance under "Operator actions" only
 	// for cron / webhook triggers that are currently enabled (#352).
 	CanFire bool
+	// Workflows is the name list the shared Edit modal renders in its
+	// (read-only) target-workflow display. CanEditConfig is true only
+	// for kinds api.TriggerUpdates can patch (cron / subject / webhook);
+	// false for http — that kind has no Update field, so the Edit
+	// modal's config input is honestly disabled rather than no-op'd.
+	Workflows     []string
+	CanEditConfig bool
 }
 
 // TriggerFiringRow is one row in the "recent activity" panel. Empty
@@ -317,6 +354,7 @@ func servePageTriggerDetail(
 	view := buildTriggerDetail(r.Context(), ds, id)
 	view.ReadOnly = cfg.ReadOnly
 	view.CSRFToken = csrfTokenFor(r)
+	view.Workflows = workflowNames(r.Context(), ds)
 	renderPage(w, r, ts, cfg, "trigger-detail", pageData{
 		Title:   "Trigger " + id,
 		Section: "triggers",
@@ -413,6 +451,9 @@ func populateTriggerDetail(t trigger.TriggerDef) TriggerDetailView {
 		Enabled:    t.Enabled,
 		ConfigJSON: string(cfgJSON),
 		CanFire:    t.Enabled && fireKindAllows(kind),
+		// api.TriggerUpdates patches cron / subject / webhook config
+		// only; http has no Update field (honest disable).
+		CanEditConfig: t.Cron != nil || t.Subject != nil || t.Webhook != nil,
 	}
 	if t.Enabled {
 		view.StatusLabel = "enabled"

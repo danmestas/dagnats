@@ -50,6 +50,16 @@ const (
 	// the denied / failed paths.
 	ActionTriggerFireManual AuditAction = "trigger.fire.manual"
 
+	// ActionTriggerCreate / ActionTriggerUpdate / ActionTriggerDelete —
+	// operator added, edited, or removed a trigger via the console CRUD
+	// surface. Target is the trigger id; Data records the kind on
+	// create, the patched config fields on update, and the rejection
+	// reason ("read_only", "invalid", "not_found", "engine_error") on
+	// the denied / failed paths.
+	ActionTriggerCreate AuditAction = "trigger.create"
+	ActionTriggerUpdate AuditAction = "trigger.update"
+	ActionTriggerDelete AuditAction = "trigger.delete"
+
 	// ActionWorkflowRun — operator started a fresh run from the
 	// inline Run button on the workflows list. Target is the
 	// workflow name; Data carries the new run id on success and
@@ -100,6 +110,9 @@ var auditActionsAll = []AuditAction{
 	ActionTriggerEnable,
 	ActionTriggerDisable,
 	ActionTriggerFireManual,
+	ActionTriggerCreate,
+	ActionTriggerUpdate,
+	ActionTriggerDelete,
 	ActionWorkflowRun,
 }
 

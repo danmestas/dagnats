@@ -1,0 +1,88 @@
+{{define "trigger-modal"}}
+{{/*
+  Shared Add / Edit modal. Mode is switched by JS (data-mode="add"|"edit")
+  on #trigger-modal. The list page opens it in add mode; the detail page
+  pre-populates from data-* attributes and opens it in edit mode. In edit
+  mode the Type + Target-workflow selects are disabled (api.TriggerUpdates
+  cannot change them) and the Enabled checkbox is hidden (the /toggle
+  endpoint owns that bit). One component, two modes — no duplicate markup.
+*/}}
+<div id="trigger-modal" class="console-modal-overlay" hidden
+     data-mode="add" data-csrf="{{.CSRFToken}}">
+  <div class="console-modal card" role="dialog" aria-modal="true"
+       aria-labelledby="trigger-modal-title">
+    <header class="card-header">
+      <h2 id="trigger-modal-title">Add trigger</h2>
+    </header>
+    <div class="card-body">
+      <form id="trigger-modal-form">
+        <label class="console-field" data-field="id">
+          <span>Trigger id</span>
+          <input class="input" name="id" id="trigger-modal-id"
+                 placeholder="my-trigger" autocomplete="off">
+        </label>
+        <label class="console-field">
+          <span>Type</span>
+          <select class="select" name="type" id="trigger-modal-type">
+            <option value="cron">cron</option>
+            <option value="subject">subject</option>
+            <option value="webhook">webhook</option>
+            <option value="http">http</option>
+          </select>
+        </label>
+        <label class="console-field">
+          <span>Target workflow</span>
+          <select class="select" name="workflow_id" id="trigger-modal-workflow">
+            {{range .Workflows}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+        </label>
+        <label class="console-field" data-config-field="cron">
+          <span>Cron expression</span>
+          <input class="input" name="config" id="trigger-modal-config-cron"
+                 placeholder="*/5 * * * *" autocomplete="off">
+        </label>
+        <label class="console-field" data-config-field="subject" hidden>
+          <span>NATS subject</span>
+          <input class="input" id="trigger-modal-config-subject"
+                 placeholder="photos.incoming.*" autocomplete="off">
+        </label>
+        <label class="console-field" data-config-field="webhook" hidden>
+          <span>Webhook path</span>
+          <input class="input" id="trigger-modal-config-webhook"
+                 placeholder="/hooks/..." autocomplete="off">
+        </label>
+        <div class="console-field" data-config-field="http" hidden>
+          <span>HTTP endpoint</span>
+          <div class="console-field-row">
+            <select class="select" name="http_method" id="trigger-modal-http-method">
+              <option value="POST">POST</option>
+              <option value="GET">GET</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+            <input class="input" id="trigger-modal-config-http"
+                   placeholder="/api/echo" autocomplete="off">
+          </div>
+        </div>
+        <label class="console-field" data-field="secret" hidden>
+          <span>Webhook secret (optional)</span>
+          <input class="input" name="secret" id="trigger-modal-secret"
+                 autocomplete="off">
+        </label>
+        <label class="console-checkrow" data-field="enabled">
+          <input type="checkbox" name="enabled" id="trigger-modal-enabled" checked>
+          <span>Enabled</span>
+        </label>
+      </form>
+    </div>
+    <footer class="card-footer console-modal-foot">
+      <button type="button" class="btn btn-outline" id="trigger-modal-cancel">
+        Cancel
+      </button>
+      <button type="button" class="btn btn-primary" id="trigger-modal-save">
+        Save
+      </button>
+    </footer>
+  </div>
+</div>
+{{end}}

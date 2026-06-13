@@ -421,6 +421,24 @@ func (r *resumeRecorder) SetTriggerEnabled(
 	return r.inner.SetTriggerEnabled(ctx, triggerID, enabled)
 }
 
+func (r *resumeRecorder) CreateTrigger(
+	ctx context.Context, def trigger.TriggerDef,
+) error {
+	return r.inner.CreateTrigger(ctx, def)
+}
+
+func (r *resumeRecorder) UpdateTrigger(
+	ctx context.Context, triggerID string, updates api.TriggerUpdates,
+) error {
+	return r.inner.UpdateTrigger(ctx, triggerID, updates)
+}
+
+func (r *resumeRecorder) DeleteTrigger(
+	ctx context.Context, triggerID string,
+) error {
+	return r.inner.DeleteTrigger(ctx, triggerID)
+}
+
 func (r *resumeRecorder) StartRun(
 	ctx context.Context, workflowName string, input []byte,
 ) (string, error) {

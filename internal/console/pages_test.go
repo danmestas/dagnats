@@ -59,6 +59,18 @@ type fakeDataSource struct {
 	triggerUpdates  chan TriggerUpdate
 	dlqUpdates      chan DLQUpdate
 
+	// Trigger CRUD observability (Add / Edit / Delete). Each slice
+	// records one invocation; the *Err seams force the failure path.
+	// On success the methods mutate f.triggers so subsequent
+	// ListTriggers reflects the change.
+	createTriggerCalls []trigger.TriggerDef
+	createTriggerErr   error
+	listTriggerCalls   int
+	updateTriggerCalls []updateTriggerCall
+	updateTriggerErr   error
+	deleteTriggerCalls []string
+	deleteTriggerErr   error
+
 	// PR 5b additions: KV inspector backing data.
 	kvBuckets []KVBucketInfo
 	kvKeys    map[string][]string
@@ -240,6 +252,7 @@ func (f *fakeDataSource) ListRunEvents(
 func (f *fakeDataSource) ListTriggers(
 	_ context.Context,
 ) ([]trigger.TriggerDef, error) {
+	f.listTriggerCalls++
 	return append([]trigger.TriggerDef{}, f.triggers...), nil
 }
 
@@ -371,6 +384,68 @@ func (f *fakeDataSource) SetTriggerEnabled(
 	for i := range f.triggers {
 		if f.triggers[i].ID == triggerID {
 			f.triggers[i].Enabled = enabled
+			return nil
+		}
+	}
+	return errNotFound("trigger", triggerID)
+}
+
+// updateTriggerCall captures one UpdateTrigger invocation so tests can
+// assert the (id, updates) pair the handler delegated.
+type updateTriggerCall struct {
+	ID      string
+	Updates api.TriggerUpdates
+}
+
+func (f *fakeDataSource) CreateTrigger(
+	_ context.Context, def trigger.TriggerDef,
+) error {
+	if def.ID == "" {
+		panic("fakeDataSource.CreateTrigger: empty def.ID")
+	}
+	if def.WorkflowID == "" {
+		panic("fakeDataSource.CreateTrigger: empty def.WorkflowID")
+	}
+	f.createTriggerCalls = append(f.createTriggerCalls, def)
+	if f.createTriggerErr != nil {
+		return f.createTriggerErr
+	}
+	f.triggers = append(f.triggers, def)
+	return nil
+}
+
+func (f *fakeDataSource) UpdateTrigger(
+	_ context.Context, triggerID string, updates api.TriggerUpdates,
+) error {
+	if triggerID == "" {
+		panic("fakeDataSource.UpdateTrigger: empty triggerID")
+	}
+	f.updateTriggerCalls = append(f.updateTriggerCalls,
+		updateTriggerCall{ID: triggerID, Updates: updates})
+	if f.updateTriggerErr != nil {
+		return f.updateTriggerErr
+	}
+	for i := range f.triggers {
+		if f.triggers[i].ID == triggerID {
+			return nil
+		}
+	}
+	return errNotFound("trigger", triggerID)
+}
+
+func (f *fakeDataSource) DeleteTrigger(
+	_ context.Context, triggerID string,
+) error {
+	if triggerID == "" {
+		panic("fakeDataSource.DeleteTrigger: empty triggerID")
+	}
+	f.deleteTriggerCalls = append(f.deleteTriggerCalls, triggerID)
+	if f.deleteTriggerErr != nil {
+		return f.deleteTriggerErr
+	}
+	for i := range f.triggers {
+		if f.triggers[i].ID == triggerID {
+			f.triggers = append(f.triggers[:i], f.triggers[i+1:]...)
 			return nil
 		}
 	}

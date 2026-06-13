@@ -241,7 +241,15 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		})
 	mux.HandleFunc("/console/triggers",
 		func(w http.ResponseWriter, r *http.Request) {
-			servePageTriggersList(w, r, ts, cfg)
+			switch r.Method {
+			case http.MethodPost:
+				handleTriggerCreate(w, r, cfg)
+			case http.MethodGet, http.MethodHead:
+				servePageTriggersList(w, r, ts, cfg)
+			default:
+				w.Header().Set("Allow", "GET, POST")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
 		})
 	mux.HandleFunc("/console/triggers/",
 		func(w http.ResponseWriter, r *http.Request) {
