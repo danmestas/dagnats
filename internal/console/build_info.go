@@ -23,7 +23,23 @@ package console
 import (
 	"context"
 	"fmt"
+	"strings"
 )
+
+// consoleBuildLabel normalizes the build identity for display. The
+// server stamps cfg.Build from the binary's ldflags revision — a
+// `git describe` string that embeds the short commit on dirty/ahead
+// builds and is the bare tag on a clean release. A blank build (the
+// un-stamped local case) degrades to the honest literal "dev" rather
+// than rendering a dangling empty segment; every real value is
+// surfaced verbatim so the commit it carries is never mangled or
+// fabricated.
+func consoleBuildLabel(build string) string {
+	if strings.TrimSpace(build) == "" {
+		return "dev"
+	}
+	return build
+}
 
 // BuildInfo is the data the build-info footer template binds.
 //
@@ -60,7 +76,7 @@ func buildBuildInfo(ctx context.Context, cfg Config) BuildInfo {
 	if ctx == nil {
 		panic("buildBuildInfo: ctx is nil")
 	}
-	info := BuildInfo{DagnatsBuild: cfg.Build}
+	info := BuildInfo{DagnatsBuild: consoleBuildLabel(cfg.Build)}
 	if cfg.Data == nil {
 		return info
 	}
