@@ -75,9 +75,8 @@ type TaskTypeRow struct {
 	RecentInvocations int
 	AvgDurationMS     int
 	FailureRate       float64
-	// RunHref is the click-through target for the row. Filters
-	// /console/runs by task type once the runs page accepts that
-	// query param; for now it just lands on /console/runs.
+	// RunHref is the click-through target for the row chevron — the
+	// per-function read-only detail page at /console/functions/<name>.
 	RunHref string
 	// ServiceDescription mirrors the Description field on the
 	// matching `services` KV entry (#322 / #335). Empty when no

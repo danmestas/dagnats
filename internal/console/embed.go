@@ -66,6 +66,7 @@ var assetsFS embed.FS
 //go:embed templates/metrics_dashboard.html
 //go:embed templates/configuration.html
 //go:embed templates/task_types_list.html
+//go:embed templates/function_detail.html
 //go:embed templates/not_found.html
 //go:embed templates/fragments/heartbeat.html
 //go:embed templates/fragments/workflows_tbody.html

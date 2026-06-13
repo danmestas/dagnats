@@ -2555,7 +2555,7 @@ func aggregateTaskTypesFromWorkers(
 					RecentInvocations: -1,
 					AvgDurationMS:     -1,
 					FailureRate:       -1,
-					RunHref:           "/console/runs",
+					RunHref:           "/console/functions/" + t,
 				}
 				byType[t] = row
 			}
