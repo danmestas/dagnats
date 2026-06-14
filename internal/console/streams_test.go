@@ -239,8 +239,13 @@ func TestSSERunDetail_emitsHistoryPatches(t *testing.T) {
 	if !strings.Contains(payload, `data-step-id="first"`) {
 		t.Errorf("missing step-row patch payload (data-step-id) for first; payload=%s", payload)
 	}
-	if !strings.Contains(payload, `class="step-list-row"`) {
-		t.Errorf("missing step-row patch payload (class=step-list-row) for first; payload=%s", payload)
+	// Mockup reshape: the Timeline tab renders gantt rows that keep the
+	// .step-list-row hook AND carry .timeline-row, so the SSE outer-replace
+	// (which targets .step-list-row[data-step-id]) lands on the gantt row
+	// and live per-step state updates survive the restructure. Assert the
+	// patched node is the gantt-compatible row, not a plain step-list <li>.
+	if !strings.Contains(payload, `class="step-list-row timeline-row"`) {
+		t.Errorf("step-row patch must render the timeline-row hook node; payload=%s", payload)
 	}
 	if !strings.Contains(payload, `data-state="completed"`) {
 		t.Errorf("missing data-state=completed in step-row patch for first; payload=%s", payload)

@@ -137,6 +137,65 @@ func TestStepList_buildRowsHandlesNoEvents(t *testing.T) {
 	}
 }
 
+// TestComputeTimelineGeometry_offsetWidthFromEvents asserts the gantt
+// geometry helper projects each step's first/last event onto a percent
+// offset + width relative to the run window [runStart, runStart+total].
+// Methodology: two steps with known event spans inside a 100s window;
+// positive (correct percentages) and negative space (a step with no
+// events gets zero geometry — the timeline falls back to the step list
+// row rather than fabricating a bar).
+func TestComputeTimelineGeometry_offsetWidthFromEvents(t *testing.T) {
+	runStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	total := 100 * time.Second
+	rows := []stepRow{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	events := []api.RunEvent{
+		// step a spans 10s..30s -> offset 10%, width 20%.
+		{StepID: "a", Timestamp: runStart.Add(10 * time.Second)},
+		{StepID: "a", Timestamp: runStart.Add(30 * time.Second)},
+		// step b spans 40s..90s -> offset 40%, width 50%.
+		{StepID: "b", Timestamp: runStart.Add(40 * time.Second)},
+		{StepID: "b", Timestamp: runStart.Add(90 * time.Second)},
+		// step c: no events -> zero geometry.
+	}
+	out := computeTimelineGeometry(rows, events, runStart, total)
+	if len(out) != 3 {
+		t.Fatalf("rows: %d want 3", len(out))
+	}
+	if got := out[0].OffsetPct; got < 9.9 || got > 10.1 {
+		t.Errorf("a offset = %v want ~10", got)
+	}
+	if got := out[0].WidthPct; got < 19.9 || got > 20.1 {
+		t.Errorf("a width = %v want ~20", got)
+	}
+	if got := out[1].OffsetPct; got < 39.9 || got > 40.1 {
+		t.Errorf("b offset = %v want ~40", got)
+	}
+	if got := out[1].WidthPct; got < 49.9 || got > 50.1 {
+		t.Errorf("b width = %v want ~50", got)
+	}
+	// Negative space: stepless row keeps zero geometry (no fabricated bar).
+	if out[2].OffsetPct != 0 || out[2].WidthPct != 0 {
+		t.Errorf("c geometry = (%v,%v) want zero", out[2].OffsetPct, out[2].WidthPct)
+	}
+}
+
+// TestComputeTimelineGeometry_zeroTotalIsHonest asserts a zero/negative
+// run window yields zero geometry for every row — never a divide-by-zero
+// or a fabricated full-width bar.
+func TestComputeTimelineGeometry_zeroTotalIsHonest(t *testing.T) {
+	runStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rows := []stepRow{{ID: "a"}}
+	events := []api.RunEvent{
+		{StepID: "a", Timestamp: runStart.Add(time.Second)},
+		{StepID: "a", Timestamp: runStart.Add(2 * time.Second)},
+	}
+	out := computeTimelineGeometry(rows, events, runStart, 0)
+	if out[0].OffsetPct != 0 || out[0].WidthPct != 0 {
+		t.Errorf("zero-total geometry = (%v,%v) want zero",
+			out[0].OffsetPct, out[0].WidthPct)
+	}
+}
+
 // TestStepList_handlesNilRun asserts that omitting the run entirely
 // renders every step as pending — the same partial powers the static
 // workflow-definition page where no run exists.

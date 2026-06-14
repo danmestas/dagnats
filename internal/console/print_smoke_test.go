@@ -17,11 +17,12 @@
 //     CI sets DAGNATS_SKIP_BROWSER_SMOKE=1. Print verification is a
 //     smoke test, not a hard CI gate.
 //   - Boot the console via httptest.Server with a fake data source
-//     seeded with a known run. The Steps panel is server-rendered;
-//     Events + Input/Output panels carry placeholder text from the
-//     run_detail.html template (`Loading events`, `Loading input`)
-//     because they lazy-load via SSE. All three placeholders are
-//     unique strings we can search for in the PDF.
+//     seeded with a known run. After the mockup reshape the run detail
+//     page has three panels: Events (eager, server-rendered rows),
+//     Input/Output (lazy — placeholder text `Loading input/output…`),
+//     and Timeline (server-rendered gantt of the step list). We seed a
+//     known event type and step names so each panel contributes a unique
+//     string we can search for in the PDF.
 //   - Drive Chrome with `--headless --print-to-pdf`. Chrome
 //     automatically emulates print media for this mode, which is
 //     exactly the cascade we need to verify.
@@ -84,21 +85,31 @@ func TestPrintCSS_allRunDetailTabsRender(t *testing.T) {
 		t.Skipf("pdftotext not installed: %v", err)
 	}
 
-	// Seed a fake run with a unique marker on the steps panel. The
-	// Events + Input/Output panels render placeholder text from
-	// run_detail.html — those strings (`Loading events`,
-	// `Loading input/output`) are our markers for the lazy-loaded
-	// panels.
+	// Seed a fake run whose three panels each emit a unique marker. The
+	// Events panel is eager: the seeded event type `workflow.started`
+	// renders into the default-active panel. The Timeline panel (hidden
+	// until clicked) server-renders the step list, so the step name
+	// `panel-marker-timeline` is our marker for that panel reaching the
+	// print PDF. The Input/Output panel stays lazy and carries the
+	// `Loading input/output…` placeholder.
 	fake := newFakeDS()
-	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	fake.workflows = []dag.WorkflowDef{
+		{
+			Name:    "alpha",
+			Version: "v1",
+			Steps: []dag.StepDef{
+				{ID: "panel-marker-timeline", Task: "echo",
+					Timeout: time.Minute},
+			},
+		},
+	}
 	now := time.Now()
 	run := runWithSteps("run-print", "alpha",
 		dag.RunStatusFailed,
 		map[string]dag.StepState{
-			"first": {
+			"panel-marker-timeline": {
 				Status:   dag.StepStatusFailed,
 				Attempts: 1,
-				Error:    "panel-marker-steps",
 			},
 		},
 		now.Add(-time.Minute),
@@ -174,19 +185,19 @@ func TestPrintCSS_allRunDetailTabsRender(t *testing.T) {
 	body := string(raw)
 	t.Logf("pdf text (%d bytes):\n%s", len(body), body)
 
-	// Per-panel markers. Steps panel: the step error string we seeded
-	// above is server-rendered into the (default-active) panel.
-	// Events + Input/Output panels: the inline run_detail.html template
-	// emits these placeholder strings into the hidden panels — they
-	// are exactly what we expect a printout to capture for tabs that
-	// haven't yet been clicked.
+	// Per-panel markers after the mockup reshape. Events panel: eager,
+	// so the seeded event type renders directly into the default-active
+	// panel. IO panel: still lazy, so its `Loading input/output…`
+	// placeholder is the marker. Timeline panel: hidden until clicked,
+	// but the print rule must expand it — the server-rendered step name
+	// is the marker proving the hidden panel reached the PDF.
 	markers := []struct {
 		name string
 		want string
 	}{
-		{"steps-panel", "panel-marker-steps"},
-		{"events-panel", "Loading events"},
+		{"events-panel", "workflow.started"},
 		{"io-panel", "Loading input"},
+		{"timeline-panel", "panel-marker-timeline"},
 	}
 	for _, m := range markers {
 		if !strings.Contains(body, m.want) {

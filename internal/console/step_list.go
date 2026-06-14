@@ -46,6 +46,12 @@ type stepRow struct {
 	Output            string
 	Events            []stepEvent
 	ExpandedByDefault bool
+	// OffsetPct / WidthPct position the step's gantt bar on the Timeline
+	// tab as percentages of the run window. Both zero = no usable event
+	// span; the timeline renders such a step as a step-list fallback row
+	// rather than a fabricated bar (honest empty geometry).
+	OffsetPct float64
+	WidthPct  float64
 }
 
 // stepEvent is one entry in a step's filtered event timeline. T04
@@ -222,6 +228,73 @@ func durationFromEvents(
 	}
 	d := last.Sub(first)
 	return humanizeDuration(d), fmt.Sprintf("%dms", d.Milliseconds())
+}
+
+// computeTimelineGeometry overlays gantt geometry onto rows: for each
+// row, the step's first/last event timestamp is projected onto the run
+// window [runStart, runStart+total] as percent offset + width. A step
+// with no events, or a zero/negative window, keeps zero geometry so the
+// template renders an honest step-list fallback rather than a fabricated
+// bar. Bounded by len(events) per row; mutates and returns rows.
+func computeTimelineGeometry(
+	rows []stepRow, events []api.RunEvent,
+	runStart time.Time, total time.Duration,
+) []stepRow {
+	if total <= 0 || runStart.IsZero() {
+		return rows
+	}
+	const rowsMax = 100_000
+	totalSeconds := total.Seconds()
+	for i := 0; i < len(rows) && i < rowsMax; i++ {
+		first, last := stepEventSpan(events, rows[i].ID)
+		if first.IsZero() || last.IsZero() {
+			continue
+		}
+		offset := first.Sub(runStart).Seconds() / totalSeconds * 100
+		width := last.Sub(first).Seconds() / totalSeconds * 100
+		rows[i].OffsetPct = clampPct(offset)
+		rows[i].WidthPct = clampPct(width)
+	}
+	return rows
+}
+
+// stepEventSpan returns the earliest and latest event timestamps for a
+// step id. Zero times when the step produced no events. Mirrors the
+// scan in durationFromEvents but returns the raw bounds so the geometry
+// helper can offset them against the run start.
+func stepEventSpan(
+	events []api.RunEvent, stepID string,
+) (time.Time, time.Time) {
+	if stepID == "" {
+		panic("stepEventSpan: stepID is empty")
+	}
+	var first, last time.Time
+	const eventsMax = 1_000_000
+	for i := 0; i < len(events) && i < eventsMax; i++ {
+		if events[i].StepID != stepID {
+			continue
+		}
+		ts := events[i].Timestamp
+		if first.IsZero() || ts.Before(first) {
+			first = ts
+		}
+		if last.IsZero() || ts.After(last) {
+			last = ts
+		}
+	}
+	return first, last
+}
+
+// clampPct bounds a percentage to [0, 100] so a slightly-out-of-window
+// timestamp (clock skew) can never render a bar off the track.
+func clampPct(p float64) float64 {
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return p
 }
 
 // humanizeDuration renders a duration in a compact operator-friendly

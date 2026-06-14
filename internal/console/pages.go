@@ -1427,6 +1427,9 @@ func buildRunDetail(
 	view.Duration = runDuration(run, events, time.Now())
 	if defErr == nil {
 		view.StepRows = BuildStepRows(&def, &run, events, nil, nil)
+		view.StepRows = computeTimelineGeometry(
+			view.StepRows, events, run.CreatedAt,
+			runWindow(run, events, time.Now()))
 	}
 	view.Events = toEventRows(events)
 	view.MaxEventSeq = maxEventSeq(events)
@@ -1529,6 +1532,33 @@ func runDuration(
 		return "—"
 	}
 	return formatDuration(latest.Sub(run.CreatedAt))
+}
+
+// runWindow is the gantt denominator: the total span the Timeline tab
+// lays steps out against. Terminal runs use (last event − CreatedAt);
+// in-flight runs use (now − CreatedAt). Returns zero when the window
+// can't be derived honestly — computeTimelineGeometry then skips bars.
+// Bounded by len(events).
+func runWindow(
+	run dag.WorkflowRun, events []api.RunEvent, now time.Time,
+) time.Duration {
+	if run.CreatedAt.IsZero() {
+		return 0
+	}
+	if !run.Status.IsTerminal() {
+		return now.Sub(run.CreatedAt)
+	}
+	const eventsMax = 1_000_000
+	var latest time.Time
+	for i := 0; i < len(events) && i < eventsMax; i++ {
+		if events[i].Timestamp.After(latest) {
+			latest = events[i].Timestamp
+		}
+	}
+	if latest.IsZero() || latest.Before(run.CreatedAt) {
+		return 0
+	}
+	return latest.Sub(run.CreatedAt)
 }
 
 // runOutputAndError returns the rendered output JSON (if any) and

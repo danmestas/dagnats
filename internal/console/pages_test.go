@@ -1001,12 +1001,11 @@ func TestRunsList_filtersByStatus(t *testing.T) {
 }
 
 func TestRunDetail_rendersEventTimelineAndStepGrid(t *testing.T) {
-	// Phase 2 (T03+T04+T05): the run detail page is now a tabs
-	// container. The Steps tab is the default-active panel and renders
-	// the step list partial; events live in a lazy-loaded tab. We
-	// assert the structural anchors that survive the restructure plus
-	// the per-step error message that surfaces on the (default-active)
-	// Steps tab.
+	// Mockup reshape: the run detail page is a tabs container with
+	// Events default-active (eager) and the step list living under the
+	// Timeline panel. We assert the structural anchors that survive the
+	// restructure plus the per-step error message that surfaces on the
+	// Timeline tab.
 	fake := newFakeDS()
 	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
 	now := time.Now()
@@ -1034,7 +1033,7 @@ func TestRunDetail_rendersEventTimelineAndStepGrid(t *testing.T) {
 	body := rr.Body.String()
 	for _, sub := range []string{
 		`id="panel-events"`,
-		`id="panel-steps"`,
+		`id="panel-timeline"`,
 		"boom",
 		`href="/console/workflows/alpha"`,
 		"first", "second",
@@ -1309,12 +1308,13 @@ func TestNoExternalURLs_allPages(t *testing.T) {
 	}
 }
 
-// TestRunDetail_rendersTabs asserts the run detail page now renders
-// a four-tab container (Steps default-active, then Events, DAG,
-// Input/Output). Methodology: structural substring match against the
+// TestRunDetail_rendersTabs asserts the run detail page renders the
+// mockup's three-tab container (Events default-active, then IO,
+// Timeline). Methodology: structural substring match against the
 // tablist; we don't pin exact Basecoat class names so the CSS layer
 // can evolve, but the ARIA structure is load-bearing — screen readers
-// and tests depend on it.
+// and tests depend on it. The retired Steps/Trace tabs must be absent
+// (Steps absorbed into Timeline; Trace is now an action).
 func TestRunDetail_rendersTabs(t *testing.T) {
 	fake := newFakeDS()
 	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
@@ -1334,24 +1334,239 @@ func TestRunDetail_rendersTabs(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, label := range []string{
-		">Steps<", ">Events<", ">Input/Output<",
+		">Events<", ">IO<", ">Timeline<",
 	} {
 		if !strings.Contains(body, label) {
 			t.Errorf("missing tab label %q", label)
 		}
 	}
-	// Steps tab must be marked default-active. Match the aria-selected
-	// pair on the Steps button id without pinning attribute ordering.
-	if !strings.Contains(body, `id="tab-steps"`) ||
-		!strings.Contains(body, `aria-selected="true" aria-controls="panel-steps"`) {
-		t.Error("Steps tab is not the default-active tab")
+	// Events tab must be marked default-active. Match the aria-selected
+	// pair on the Events button id without pinning attribute ordering.
+	if !strings.Contains(body, `id="tab-events"`) ||
+		!strings.Contains(body, `aria-selected="true" aria-controls="panel-events"`) {
+		t.Error("Events tab is not the default-active tab")
 	}
 	for _, panelID := range []string{
-		`id="panel-steps"`, `id="panel-events"`, `id="panel-io"`,
+		`id="panel-events"`, `id="panel-io"`, `id="panel-timeline"`,
 	} {
 		if !strings.Contains(body, panelID) {
 			t.Errorf("missing tab panel %q", panelID)
 		}
+	}
+	// Negative space: the retired tabs must be gone.
+	for _, gone := range []string{
+		`id="tab-steps"`, `id="panel-steps"`,
+		`id="tab-trace"`, `id="panel-trace"`,
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("retired tab artifact still present: %q", gone)
+		}
+	}
+}
+
+// TestRunDetail_headerCompactIdentity asserts the mockup's compact
+// single-line identity header: run id rendered mono/accent, status
+// badge, a workflow link, duration + started inline, a "Runs" back
+// link, and the trailing trigger meta — all real data reflowed. The
+// retired STARTED/DURATION/TRIGGER <dl> stat block must be gone.
+func TestRunDetail_headerCompactIdentity(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	fake.runs = []dag.WorkflowRun{
+		runWithSteps("run-hdr", "alpha", dag.RunStatusCompleted,
+			map[string]dag.StepState{
+				"first": {Status: dag.StepStatusCompleted, Attempts: 1},
+			}, time.Now().Add(-time.Minute)),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/runs/run-hdr", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		`class="run-id console-mono"`, // full id, mono/accent
+		`run-hdr`,                     // the full run id is rendered
+		`id="run-detail-status"`,      // status badge wrapper kept
+		`href="/console/workflows/alpha"`,
+		`class="run-back"`, // styled back anchor
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("compact header missing %q", sub)
+		}
+	}
+	// Negative space: the old <dl> stat block must be gone.
+	if strings.Contains(body, `class="run-times"`) {
+		t.Error("retired run-times stat block still rendered")
+	}
+}
+
+// TestRunDetail_viewTraceAction asserts the Trace tab became a "View
+// trace" action in the action bar pointing at /console/traces/<runID>
+// (the standalone traces page), and that Signal/Cancel still render for
+// a running run.
+func TestRunDetail_viewTraceAction(t *testing.T) {
+	fake := newFakeDS()
+	fake.runs = []dag.WorkflowRun{runningRun("run-1")}
+	body := renderRunDetail(t, fake, false, "run-1")
+	if !strings.Contains(body, `href="/console/traces/run-1"`) {
+		t.Errorf("missing View trace action href; body=%s", body)
+	}
+	for _, sub := range []string{`id="run-signal-btn"`, `id="run-cancel-btn"`} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("action bar missing %q", sub)
+		}
+	}
+	// Negative space: no Trace tab/panel.
+	if strings.Contains(body, `id="tab-trace"`) {
+		t.Error("Trace tab must not render; it is now an action")
+	}
+}
+
+// TestRunDetail_eventsTabDefaultRendersServerSide asserts the Events
+// tab is eager (default landing): event rows render in the initial page
+// response with the mockup column headers Timestamp / Type / Step /
+// Message — no lazy fetch round-trip required.
+func TestRunDetail_eventsTabDefaultRendersServerSide(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	now := time.Now()
+	run := runWithSteps("run-ev", "alpha", dag.RunStatusCompleted,
+		map[string]dag.StepState{
+			"first": {Status: dag.StepStatusCompleted, Attempts: 1},
+		}, now.Add(-time.Minute))
+	fake.runs = []dag.WorkflowRun{run}
+	fake.events["run-ev"] = []api.RunEvent{
+		{Type: "workflow.started", RunID: "run-ev",
+			Timestamp: now.Add(-2 * time.Minute), Seq: 1},
+		{Type: "step.completed", RunID: "run-ev", StepID: "first",
+			Timestamp: now.Add(-90 * time.Second), Data: `{"out":1}`, Seq: 2},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/runs/run-ev", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		"<th>Timestamp</th>", "<th>Type</th>",
+		"<th>Step</th>", "<th>Message</th>",
+		"workflow.started", "step.completed",
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("eager events tab missing %q", sub)
+		}
+	}
+}
+
+// TestRunDetail_timelineTabRendersBars asserts the Timeline tab renders
+// per-step gantt bars positioned with inline style percentages, that a
+// failed step carries the fail class, and that the bar rows keep the
+// .step-list-row[data-step-id] SSE hook so live per-step patches still
+// land. The empty-steps negative case is covered separately.
+func TestRunDetail_timelineTabRendersBars(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	now := time.Now()
+	run := runWithSteps("run-tl", "alpha", dag.RunStatusFailed,
+		map[string]dag.StepState{
+			"first":  {Status: dag.StepStatusCompleted, Attempts: 1},
+			"second": {Status: dag.StepStatusFailed, Attempts: 1, Error: "boom"},
+		}, now.Add(-100*time.Second))
+	fake.runs = []dag.WorkflowRun{run}
+	fake.events["run-tl"] = []api.RunEvent{
+		{Type: "workflow.started", RunID: "run-tl",
+			Timestamp: now.Add(-100 * time.Second)},
+		{Type: "step.started", RunID: "run-tl", StepID: "first",
+			Timestamp: now.Add(-90 * time.Second)},
+		{Type: "step.completed", RunID: "run-tl", StepID: "first",
+			Timestamp: now.Add(-70 * time.Second)},
+		{Type: "step.started", RunID: "run-tl", StepID: "second",
+			Timestamp: now.Add(-60 * time.Second)},
+		{Type: "step.failed", RunID: "run-tl", StepID: "second",
+			Timestamp: now.Add(-10 * time.Second), Data: "boom"},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/runs/run-tl", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		"timeline-bar",                      // gantt bars present
+		"width:",                            // inline geometry
+		"step-state-failed",                 // failed step fail class
+		`data-step-id="first"`,              // SSE hook preserved
+		`class="step-list-row timeline-row`, // gantt row is the hook node
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("timeline tab missing %q; body=%s", sub, body)
+		}
+	}
+}
+
+// TestRunDetail_timelineEmptyState asserts a run whose workflow has no
+// declared steps shows an honest empty-state in the Timeline panel
+// rather than a fabricated bar.
+func TestRunDetail_timelineEmptyState(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{{Name: "empty"}}
+	fake.runs = []dag.WorkflowRun{{
+		RunID: "run-empty", WorkflowID: "empty",
+		Status: dag.RunStatusCompleted, CreatedAt: time.Now().Add(-time.Minute),
+	}}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/runs/run-empty", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "no steps recorded") {
+		t.Errorf("empty timeline missing honest empty-state; body=%s", body)
+	}
+	if strings.Contains(body, "timeline-bar") {
+		t.Error("empty timeline must not fabricate a bar")
+	}
+}
+
+// TestRunDetail_ioTabTwoColumn asserts the IO tab fragment renders the
+// two-column grid with Input/Output card titles, and that the Output
+// card is omitted (honest empty-state) when the run produced no output.
+func TestRunDetail_ioTabTwoColumn(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	now := time.Now()
+	// No step output -> HasOutput false -> Output card omitted.
+	fake.runs = []dag.WorkflowRun{
+		runWithSteps("run-io", "alpha", dag.RunStatusCompleted,
+			map[string]dag.StepState{
+				"first": {Status: dag.StepStatusCompleted, Attempts: 1},
+			}, now.Add(-time.Minute)),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/api/run/run-io/io-tab", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{"run-io-grid", ">Input<"} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("io tab missing %q", sub)
+		}
+	}
+	// Negative space: no Output card when the run has no output.
+	if strings.Contains(body, `id="run-detail-output"`) {
+		t.Error("output card must be omitted when run has no output")
 	}
 }
 
