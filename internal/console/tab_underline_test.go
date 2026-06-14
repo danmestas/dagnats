@@ -59,6 +59,15 @@ func TestAppCSS_runDetailTabsAreUnderlineNotPill(t *testing.T) {
 	if !strings.Contains(tab, "border-bottom: 2px solid transparent") {
 		t.Errorf(`[role="tab"] must reserve a 2px transparent underline slot`)
 	}
+	// Basecoat paints [role=tab] with flex:1 (equal-width segmented tabs that
+	// spread full-width). The mockup clusters the tabs left at their natural
+	// width — so the override must reset flex to a non-growing value.
+	if !strings.Contains(tab, "flex: 0 0 auto") {
+		t.Errorf(`[role="tab"] must reset Basecoat flex:1 (flex: 0 0 auto) so tabs cluster left, not spread full-width`)
+	}
+	if !strings.Contains(container, "justify-content: flex-start") {
+		t.Errorf(".run-detail-tabs-list must left-align the tab cluster (justify-content: flex-start)")
+	}
 
 	// Active tab: teal text + teal underline, NO white inner pill, NO shadow.
 	active := cssBlock(t, css, `.run-detail-tabs-list [role="tab"][aria-selected="true"]`)
