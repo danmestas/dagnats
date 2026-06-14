@@ -49,6 +49,15 @@ type demoSeedFlags struct {
 	includeFailed bool
 	timeout       time.Duration
 	json          bool
+	// keepAlive switches to the continuous rich generator: it keeps
+	// an in-process worker registered and trickles new runs across a
+	// set of demo workflows until maxRuns or a Ctrl-C/cancel fires.
+	keepAlive bool
+	// maxRuns caps total runs started in keep-alive mode. Zero means
+	// the keep-alive default.
+	maxRuns int
+	// interval is the delay between keep-alive generator batches.
+	interval time.Duration
 }
 
 // parseDemoSeedFlags extracts flags from args.
@@ -70,6 +79,28 @@ func parseDemoSeedFlags(args []string) (demoSeedFlags, error) {
 			f.includeFailed = true
 		case arg == "--json":
 			f.json = true
+		case arg == "--keep-alive", arg == "--rich":
+			f.keepAlive = true
+		case strings.HasPrefix(arg, "--max-runs="):
+			val := strings.TrimPrefix(arg, "--max-runs=")
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 || n > demoKeepAliveMaxRunsCeil {
+				return f, fmt.Errorf(
+					"invalid --max-runs=%q: must be 1..%d",
+					val, demoKeepAliveMaxRunsCeil,
+				)
+			}
+			f.maxRuns = n
+		case strings.HasPrefix(arg, "--interval="):
+			val := strings.TrimPrefix(arg, "--interval=")
+			d, err := time.ParseDuration(val)
+			if err != nil || d < 100*time.Millisecond ||
+				d > 60*time.Second {
+				return f, fmt.Errorf(
+					"invalid --interval=%q: must be 100ms..60s", val,
+				)
+			}
+			f.interval = d
 		case strings.HasPrefix(arg, "--count="):
 			val := strings.TrimPrefix(arg, "--count=")
 			n, err := strconv.Atoi(val)
@@ -110,6 +141,11 @@ func runDemoSeedCmd(args []string) {
 
 	svc, nc := connectService()
 	defer nc.Close()
+
+	if f.keepAlive {
+		runDemoKeepAliveCmd(svc, nc, f)
+		return
+	}
 
 	result, err := runDemoSeed(svc, nc, demoSeedOptions{
 		count:         f.count,
@@ -173,4 +209,15 @@ func printDemoSeedUsage() {
 	fmt.Println("  --timeout=DUR       max wait for all runs to" +
 		" terminate (default 5s, max 60s)")
 	fmt.Println("  --json              emit terminal counts as JSON")
+	fmt.Println()
+	fmt.Println("Keep-alive mode (rich, continuous demo data):")
+	fmt.Println("  --keep-alive        register several demo" +
+		" workflows + cron triggers, keep an in-process worker")
+	fmt.Println("                      running, and trickle new runs" +
+		" until --max-runs or Ctrl-C")
+	fmt.Println("  --rich              alias for --keep-alive")
+	fmt.Println("  --max-runs=N        cap total runs in keep-alive" +
+		" mode (default 300, max 100000)")
+	fmt.Println("  --interval=DUR      delay between generator" +
+		" batches (default 3s, range 100ms..60s)")
 }
