@@ -1,0 +1,30 @@
+{{define "content"}}{{with .Page}}
+<section class="console-section" data-page="trace-detail">
+  <header class="console-section-header">
+    <h1>Trace</h1>
+    {{if .TraceID}}
+    <p class="console-lede console-mono">{{.TraceID}}</p>
+    {{else}}
+    <p class="console-lede console-mono">{{.RunID}}</p>
+    {{end}}
+    <p class="console-section-meta">
+      <a href="/console/traces">&larr; Traces</a>
+      {{if .WorkflowID}}<span>&middot; workflow <span class="console-mono">{{.WorkflowID}}</span></span>{{end}}
+      {{if eq .Status "failed"}}<span class="badge status-failed">failed</span>
+      {{else if eq .Status "completed"}}<span class="badge status-ok">completed</span>
+      {{else if .Status}}<span class="badge badge-outline">{{.Status}}</span>{{end}}
+      <span>&middot; <a href="/console/runs/{{.RunID}}">open run {{.RunIDShort}}</a></span>
+    </p>
+  </header>
+
+  {{if .Note}}
+  <aside class="callout callout-warning" role="status">{{.Note}}</aside>
+  {{end}}
+
+  <article class="card">
+    <div class="card-body">
+      {{template "trace-tree" .Rows}}
+    </div>
+  </article>
+</section>
+{{end}}{{end}}

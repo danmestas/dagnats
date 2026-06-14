@@ -48,6 +48,8 @@ var assetsFS embed.FS
 //go:embed templates/runs_list.html
 //go:embed templates/run_detail.html
 //go:embed templates/run_trace.html
+//go:embed templates/traces_list.html
+//go:embed templates/trace_detail.html
 //go:embed templates/triggers_list.html
 //go:embed templates/trigger_detail.html
 //go:embed templates/dlq_list.html

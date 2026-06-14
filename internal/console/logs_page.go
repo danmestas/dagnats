@@ -474,9 +474,15 @@ func renderLogRowHTML(row LogRow) string {
 	b.WriteString(`<td class="logs-message">`)
 	b.WriteString(htmlEscape(row.Message))
 	if row.TraceID != "" {
-		b.WriteString(` <span class="logs-trace mono">trace_id=`)
+		// Link to the Traces lookup so an operator can pivot from a log
+		// line to its run's span tree. The lookup is keyed on trace id;
+		// the run is one click away on the resulting page (one trace per
+		// run, the Traces list is the runs the console already reads).
+		b.WriteString(` <a class="logs-trace mono" href="/console/traces?trace_id=`)
 		b.WriteString(htmlEscape(row.TraceID))
-		b.WriteString(`</span>`)
+		b.WriteString(`">trace_id=`)
+		b.WriteString(htmlEscape(row.TraceID))
+		b.WriteString(`</a>`)
 	}
 	b.WriteString(`</td>`)
 	b.WriteString(`</tr>`)
