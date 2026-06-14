@@ -486,7 +486,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 		s.metricsErrorReason,
 	)
 	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc,
-		s.metricsAgg, s.metricsErrorReason, s.ns)
+		s.metricsAgg, s.metricsErrorReason, s.ns, s.cfg.Build)
 
 	s.httpSrv = &http.Server{Handler: mux}
 
@@ -720,13 +720,13 @@ func mountConsole(
 	mux *http.ServeMux, httpAddr string,
 	svc *api.Service, nc *nats.Conn,
 	agg *metrics.Aggregator, metricsErrorReason string,
-	ns *natsserver.Server,
+	ns *natsserver.Server, build string,
 ) {
 	if mux == nil {
 		panic("mountConsole: mux is nil")
 	}
 	consoleCfg := buildConsoleConfig(
-		httpAddr, svc, nc, agg, metricsErrorReason, ns)
+		httpAddr, svc, nc, agg, metricsErrorReason, ns, build)
 	handler := console.Mount(consoleCfg)
 	mux.Handle("/console/", handler)
 }
@@ -745,7 +745,7 @@ func mountConsole(
 func buildConsoleConfig(
 	httpAddr string, svc *api.Service, nc *nats.Conn,
 	agg *metrics.Aggregator, metricsErrorReason string,
-	ns *natsserver.Server,
+	ns *natsserver.Server, build string,
 ) console.Config {
 	if httpAddr == "" {
 		panic("buildConsoleConfig: httpAddr is empty")
@@ -796,7 +796,7 @@ func buildConsoleConfig(
 		HTTPAddr: httpAddr,
 		AuthMode: mode,
 		Password: authCfg.Password,
-		Build:    "dev",
+		Build:    build,
 		Logger:   logger,
 		Data: console.WithServerStats(
 			console.WithMetrics(
