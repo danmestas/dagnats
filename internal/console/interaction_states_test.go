@@ -73,6 +73,25 @@ func TestTableHeader_unconditionalTransparent(t *testing.T) {
 	}
 }
 
+// TestTableHeader_noHoverHighlight asserts the non-interactive header row
+// does not light up on hover. Basecoat's unscoped `.table tr:hover` paints
+// a --color-muted bar that shows through the transparent th cells; the
+// console must neutralize the header-row hover.
+func TestTableHeader_noHoverHighlight(t *testing.T) {
+	css := servedAppCSS(t)
+	idx := strings.Index(css, ".console-table thead tr:hover")
+	if idx < 0 {
+		t.Fatalf("app.css missing the thead tr:hover neutralizer (Basecoat .table tr:hover would brighten the header)")
+	}
+	end := strings.Index(css[idx:], "}")
+	if end < 0 {
+		t.Fatalf("thead tr:hover rule has no closing brace")
+	}
+	if !strings.Contains(css[idx:idx+end], "background: transparent") {
+		t.Errorf("thead tr:hover must reset the background to transparent")
+	}
+}
+
 // TestInteractionStates_focusAndActive asserts a consolidated
 // :focus-visible ring rule exists and that buttons carry a pressed
 // (:active) state — previously missing entirely.

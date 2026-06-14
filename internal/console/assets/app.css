@@ -2650,6 +2650,15 @@ body[data-theme="dark"] code {
 .console-table tbody tr:hover {
   background: var(--accent-soft);
 }
+/* Basecoat's `.table tr:hover` is unscoped and also lights up the HEADER
+ * row (a light --color-muted bar showing through the transparent th cells)
+ * on hover. The header is not interactive — kill its hover bg. The thead
+ * selector outweighs the bare `.table tr:hover` so this wins without
+ * !important. */
+.console-table thead tr:hover,
+.console-table thead tr:hover th {
+  background: transparent;
+}
 
 /* Data-cell typography (theme T3). The MagicPath prototype renders
  * every table data cell — IDs, counts, durations, timestamps,
@@ -3891,6 +3900,7 @@ body[data-theme="dark"] code {
 }
 .run-detail-tabs-list {
   display: flex;
+  justify-content: flex-start;
   gap: 0.25rem;
   height: auto;
   width: auto;
@@ -3905,6 +3915,7 @@ body[data-theme="dark"] code {
 }
 .run-detail-tabs-list [role="tab"] {
   appearance: none;
+  flex: 0 0 auto;
   height: auto;
   padding: 0.625rem 1rem;
   font: inherit;
