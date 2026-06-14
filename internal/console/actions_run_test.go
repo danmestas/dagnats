@@ -353,7 +353,7 @@ func TestRunDetail_rendersSignalAndCancelForRunningRun(t *testing.T) {
 	for _, sub := range []string{
 		`id="run-cancel-btn"`,
 		`id="run-signal-btn"`,
-		`href="/console/runs/run-1/trace"`,
+		`href="/console/traces/run-1"`,
 	} {
 		if !strings.Contains(body, sub) {
 			t.Errorf("running run detail missing %q", sub)
@@ -380,7 +380,7 @@ func TestRunDetail_omitsCancelForTerminalRun(t *testing.T) {
 		t.Errorf("terminal run wrongly renders Signal button")
 	}
 	// The trace link stays — it's a real, always-available read surface.
-	if !strings.Contains(body, `href="/console/runs/run-1/trace"`) {
+	if !strings.Contains(body, `href="/console/traces/run-1"`) {
 		t.Errorf("terminal run missing trace link")
 	}
 }

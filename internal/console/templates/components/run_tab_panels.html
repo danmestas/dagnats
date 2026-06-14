@@ -4,7 +4,7 @@
   <div class="card-body">
     <table class="table console-table">
       <thead>
-        <tr><th>Time</th><th>Event</th><th>Step</th><th>Data</th></tr>
+        <tr><th>Timestamp</th><th>Type</th><th>Step</th><th>Message</th></tr>
       </thead>
       <tbody id="run-events-body">
         {{range .Events}}
@@ -24,23 +24,54 @@
 {{end}}
 
 {{define "run-io-tab"}}
-<article class="card" id="run-detail-input">
-  <header class="card-header"><h2>Run input</h2></header>
+<div class="run-io-grid">
+  <article class="card" id="run-detail-input">
+    <header class="card-header"><h2>Input</h2></header>
+    <div class="card-body">
+      {{if .Input}}
+      <pre class="console-pre"><code>{{.Input}}</code></pre>
+      {{else}}
+      <p class="console-empty">no input recorded</p>
+      {{end}}
+    </div>
+  </article>
+
+  {{if .HasOutput}}
+  <article class="card" id="run-detail-output">
+    <header class="card-header"><h2>Output</h2></header>
+    <div class="card-body">
+      <pre class="console-pre"><code>{{.Output}}</code></pre>
+    </div>
+  </article>
+  {{end}}
+</div>
+{{end}}
+
+{{define "run-timeline-tab"}}
+<article class="card" id="run-detail-timeline">
+  <header class="card-header"><h2>Step timeline{{if .Duration}} &middot; {{.Duration}} total{{end}}</h2></header>
   <div class="card-body">
-    {{if .Input}}
-    <pre class="console-pre"><code>{{.Input}}</code></pre>
+    {{if .StepRows}}
+    <ol class="step-timeline" role="list">
+      {{range .StepRows}}
+      <li class="step-list-row timeline-row" data-step-id="{{.ID}}" data-state="{{.State}}">
+        <span class="timeline-name">
+          <span class="step-status step-status-{{.State}}" aria-hidden="true">{{.Icon}}</span>
+          <span class="step-name">{{.Name}}</span>
+        </span>
+        <span class="timeline-track">
+          {{if gt .WidthPct 0.0}}
+          <span class="timeline-bar{{if eq .State "failed"}} step-state-failed dn-fail{{end}}"
+                style="left:{{printf "%.2f" .OffsetPct}}%;width:{{printf "%.2f" .WidthPct}}%"></span>
+          {{end}}
+        </span>
+        <span class="timeline-dur console-mono">{{if .Duration}}{{.Duration}}{{else}}&mdash;{{end}}</span>
+      </li>
+      {{end}}
+    </ol>
     {{else}}
-    <p class="console-empty">no input recorded</p>
+    <p class="console-empty">no steps recorded</p>
     {{end}}
   </div>
 </article>
-
-{{if .HasOutput}}
-<article class="card" id="run-detail-output">
-  <header class="card-header"><h2>Run output</h2></header>
-  <div class="card-body">
-    <pre class="console-pre"><code>{{.Output}}</code></pre>
-  </div>
-</article>
-{{end}}
 {{end}}

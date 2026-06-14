@@ -2340,58 +2340,139 @@ summary:focus-visible,
   gap: 0.5rem;
   margin-bottom: 1rem;
 }
-.run-title {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 1.6rem;
-  line-height: 1.2;
-  margin: 0;
-  letter-spacing: -0.01em;
-}
-/* The h1 wraps an anchor that jumps to the workflow definition.
-   Default link styling paints the page heading bright accent —
-   inherit the primary text color instead and only signal
-   interactivity on hover. */
-.run-title a {
-  color: inherit;
+/* Mockup compact run-detail header. A "‹ Runs" back link (styled to
+   look like the mockup button but kept a real anchor), a small "Run"
+   eyebrow, then a single inline identity line:
+   run-id · status · workflow · duration · started · trigger. */
+.run-back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
   text-decoration: none;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  margin-bottom: 0.25rem;
 }
-.run-title a:hover {
-  text-decoration: underline;
+.run-back:hover {
+  color: var(--text-primary);
+  background: var(--accent-soft);
 }
-.run-meta {
+.console-eyebrow {
+  margin: 0;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+.run-identity {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
+  flex-wrap: wrap;
   font-size: 0.95rem;
   color: var(--text-secondary);
+}
+.run-identity .run-id {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--accent);
+  word-break: break-all;
+}
+.run-identity-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   flex-wrap: wrap;
 }
-.run-meta .run-id {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+.run-identity-meta a {
   color: var(--text-primary);
+  text-decoration: none;
 }
-.run-times {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: 0.5rem 1.25rem;
-  margin: 0;
-  padding: 0;
-}
-.run-times div { display: flex; flex-direction: column; gap: 0.1rem; }
-.run-times dt {
-  font-size: 0.72rem;
+.run-identity-meta a:hover { text-decoration: underline; }
+.run-identity-sep { color: var(--text-secondary); }
+.run-trigger-meta {
+  font-size: 0.8rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   color: var(--text-secondary);
 }
-.run-times dd {
+
+/* IO tab: two equal columns of Input / Output cards, collapsing to a
+   single column on narrow viewports. */
+.run-io-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3, 1rem);
+}
+@media (max-width: 720px) {
+  .run-io-grid { grid-template-columns: 1fr; }
+}
+
+/* Timeline tab gantt. Each row keeps the .step-list-row[data-step-id]
+   hook so the SSE step-row patch (outer-replace) still lands on it.
+   The bar's left/width come from inline style percentages computed in
+   computeTimelineGeometry; steps with no usable span render no bar. */
+.step-timeline {
+  list-style: none;
   margin: 0;
-  font-family: var(--font-mono);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.timeline-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 14rem) 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+.timeline-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.timeline-name .step-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-track {
+  position: relative;
+  height: 0.7rem;
+  background: var(--accent-soft);
+  border-radius: var(--radius-tile);
+  overflow: hidden;
+}
+.timeline-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  background: var(--accent);
+  border-radius: var(--radius-tile);
+}
+.timeline-bar.step-state-failed {
+  background: var(--status-failed);
+}
+.timeline-dur {
   font-variant-numeric: tabular-nums;
-  font-size: 0.92rem;
-  color: var(--text-primary);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+.timeline-error {
+  grid-column: 1 / -1;
+  font-size: 0.8rem;
+  color: var(--status-failed);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* H7 — Events tab JSON. Long single-line JSON would overflow the

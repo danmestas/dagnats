@@ -203,12 +203,13 @@ type rowPatch struct {
 }
 
 // serveSSERunDetail streams events for one run. Two emission targets:
-//   - #run-detail-events tbody — append rows as new history arrives.
-//   - #run-detail-steps — replace the per-step card when a step.* event
-//     names the step.
+//   - #run-events-body tbody — append rows as new history arrives.
+//   - .step-list-row[data-step-id] — outer-replace the per-step row
+//     (now the Timeline tab's gantt row, which keeps that hook) when a
+//     step.* event names the step.
 //
-// Run-terminal events also patch the header status badge so the
-// operator sees the run wrap up without refreshing.
+// There is no header status-badge patch today; the badge updates on the
+// next full page load. Wiring a live badge patch is future work.
 func serveSSERunDetail(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
