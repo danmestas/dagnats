@@ -255,6 +255,14 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			dispatchTriggers(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/traces",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageTracesList(w, r, ts, cfg)
+		})
+	mux.HandleFunc("/console/traces/",
+		func(w http.ResponseWriter, r *http.Request) {
+			dispatchTraces(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/dlq",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageDLQList(w, r, ts, cfg)
@@ -578,6 +586,8 @@ var pageContentFiles = map[string]string{
 	"runs-list":         "templates/runs_list.html",
 	"run-detail":        "templates/run_detail.html",
 	"run-trace":         "templates/run_trace.html",
+	"traces-list":       "templates/traces_list.html",
+	"trace-detail":      "templates/trace_detail.html",
 	"triggers-list":     "templates/triggers_list.html",
 	"trigger-detail":    "templates/trigger_detail.html",
 	"dlq-list":          "templates/dlq_list.html",

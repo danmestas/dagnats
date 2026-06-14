@@ -104,7 +104,7 @@
           <td class="logs-message">
             {{.Message}}
             {{if .TraceID}}
-            <span class="logs-trace mono">trace_id={{.TraceID}}</span>
+            <a class="logs-trace mono" href="/console/traces?trace_id={{.TraceID}}">trace_id={{.TraceID}}</a>
             {{end}}
           </td>
         </tr>

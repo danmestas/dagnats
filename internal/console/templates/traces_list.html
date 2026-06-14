@@ -1,0 +1,72 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="console-section" data-page="traces-list">
+  {{template "page-header" .Header}}
+  <p class="console-lede console-mono">
+    OTLP spans &middot; telemetry.spans.&#123;service&#125;.&#123;runID&#125;
+    &middot; one trace per run (W3C traceparent)
+  </p>
+
+  {{if .TraceIDLookup}}
+  <aside class="callout callout-info" role="status">
+    <p>
+      Looked up by trace id <span class="console-mono">{{.TraceIDLookup}}</span>.
+      Each run carries one trace; open a run below to see its span tree.
+    </p>
+  </aside>
+  {{end}}
+
+  <form class="console-filter-bar" method="GET" action="/console/traces"
+        aria-label="Filter traces">
+    <label class="console-field">
+      <span>Status</span>
+      <select class="select" name="status" onchange="this.form.submit()">
+        <option value=""{{if eq .StatusFilter ""}} selected{{end}}>any</option>
+        <option value="pending"{{if eq .StatusFilter "pending"}} selected{{end}}>pending</option>
+        <option value="running"{{if eq .StatusFilter "running"}} selected{{end}}>running</option>
+        <option value="completed"{{if eq .StatusFilter "completed"}} selected{{end}}>completed</option>
+        <option value="failed"{{if eq .StatusFilter "failed"}} selected{{end}}>failed</option>
+        <option value="cancelled"{{if eq .StatusFilter "cancelled"}} selected{{end}}>cancelled</option>
+      </select>
+    </label>
+  </form>
+
+  <div class="card">
+    <table class="table console-table" id="traces-table">
+      <thead>
+        <tr>
+          <th>Run</th>
+          <th>Workflow</th>
+          <th>Steps</th>
+          <th>Status</th>
+          <th>Started</th>
+        </tr>
+      </thead>
+      <tbody id="traces-tbody">
+        {{range .Rows}}
+        <tr id="trace-row-{{.RunID}}">
+          <td class="console-mono">
+            <a href="/console/traces/{{.RunID}}" title="{{.RunID}}">{{.RunIDShort}}</a>
+          </td>
+          <td class="console-mono">{{.WorkflowID}}</td>
+          <td class="console-mono">{{.StepCount}}</td>
+          <td>
+            {{if eq .Status "failed"}}
+            <span class="badge status-failed">failed</span>
+            {{else if eq .Status "completed"}}
+            <span class="badge status-ok">completed</span>
+            {{else}}
+            <span class="badge badge-outline">{{.Status}}</span>
+            {{end}}
+          </td>
+          <td class="console-mono console-dim">{{.Started}}</td>
+        </tr>
+        {{else}}
+        <tr class="empty-row">
+          <td colspan="5">No traces yet. Runs that carry a W3C traceparent appear here, one row per run.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}{{end}}
