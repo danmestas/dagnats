@@ -72,6 +72,13 @@ type Config struct {
 	// port.
 	FailOnPortConflict bool `json:"fail_on_port_conflict"`
 
+	// Build is the binary's version/revision string, threaded from
+	// cli.Version by the serve command (ldflags-stamped). Empty for
+	// un-stamped local builds — the console footer degrades empty to
+	// the honest "dev" marker (consoleBuildLabel). Not persisted to
+	// dagnats.yaml; it is link-time identity, not user config.
+	Build string `json:"-"`
+
 	// ConfigFilePath is the absolute path of the dagnats.yaml that
 	// was loaded (empty when no file was found). Phase 4 / ADR-018:
 	// the server uses it to drive the configfile.Watcher for live

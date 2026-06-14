@@ -41,6 +41,11 @@ func runServeCmd(args []string) {
 	// as "no file-managed declarative section, skip the watcher".
 	cfg.ConfigFilePath = loadedPath
 
+	// Thread the ldflags-stamped version into the served console
+	// footer + build-info. Empty when un-stamped — the console
+	// degrades it to the honest "dev" marker (consoleBuildLabel).
+	cfg.Build = Version
+
 	srv := server.New(cfg)
 
 	if len(cfg.Workers) > 0 {

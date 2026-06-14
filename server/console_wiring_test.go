@@ -58,11 +58,30 @@ func TestProductionMountReceivesNonNilMetricsSource(t *testing.T) {
 	consoleCfg := buildConsoleConfig(
 		srv.cfg.HTTPAddr, srv.svc, srv.nc,
 		srv.metricsAgg, srv.metricsErrorReason, srv.ns,
+		"v9.9.9-test",
 	)
 	if consoleCfg.Metrics == nil {
 		t.Fatal("buildConsoleConfig returned nil Metrics — the " +
 			"production Mount() would receive a placeholder source " +
 			"(issue #290 regression)")
+	}
+	// Build-stamp threading: the ldflags version handed in must reach
+	// the console verbatim (it carries the commit). Previously the
+	// server hardcoded "dev", so deployed binaries always lied.
+	if consoleCfg.Build != "v9.9.9-test" {
+		t.Fatalf("buildConsoleConfig dropped Build: got %q, want %q",
+			consoleCfg.Build, "v9.9.9-test")
+	}
+	// Negative space: an empty build threads through as empty so the
+	// console-side consoleBuildLabel degrades it to the honest "dev".
+	emptyCfg := buildConsoleConfig(
+		srv.cfg.HTTPAddr, srv.svc, srv.nc,
+		srv.metricsAgg, srv.metricsErrorReason, srv.ns,
+		"",
+	)
+	if emptyCfg.Build != "" {
+		t.Fatalf("empty build must thread through verbatim: got %q",
+			emptyCfg.Build)
 	}
 
 	// Liveness: ingest a metric into the canonical aggregator and
