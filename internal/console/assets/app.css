@@ -3870,3 +3870,71 @@ body[data-theme="dark"] code {
 .console-nav-glyph-link.is-active .console-nav-badge {
   color: var(--accent);
 }
+
+/* Run-detail tab group: underline tabs, NOT the Basecoat pill.
+   The vendored bundle paints .tabs [role=tablist] as a muted segmented
+   pill (background-color:var(--color-muted) + border-radius) and the
+   active [role=tab][aria-selected=true] as a raised white inner pill
+   (background-color:var(--color-background) + box-shadow). Those rules
+   sit inside @layer components in basecoat.css; these rules are UNLAYERED
+   so they win on cascade-layer precedence alone (no !important, no
+   inflated specificity). We target [role="tab"] directly because the
+   vendored base/active rules key off the ARIA role, not the .tabs-trigger
+   class. This is the single owner of run-detail tab styling — the matching
+   block was removed from basecoat.css to avoid two competing definitions.
+   Mockup parity: ConsoleViewsObserve.tsx .dn-tabs/.dn-tab/.dn-active —
+   transparent rail, muted inactive, teal active text + teal underline. */
+.run-detail-tabs {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+}
+.run-detail-tabs-list {
+  display: flex;
+  gap: 0.25rem;
+  height: auto;
+  width: auto;
+  padding: 0 0.25rem;
+  margin-bottom: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+  overflow-x: auto;
+}
+.run-detail-tabs-list [role="tab"] {
+  appearance: none;
+  height: auto;
+  padding: 0.625rem 1rem;
+  font: inherit;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  box-shadow: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.run-detail-tabs-list [role="tab"]:hover {
+  color: var(--text-primary);
+}
+.run-detail-tabs-list [role="tab"][aria-selected="true"] {
+  color: var(--accent);
+  background: transparent;
+  border-bottom-color: var(--accent);
+  box-shadow: none;
+}
+.run-detail-tabs-list [role="tab"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 480px) {
+  .run-detail-tabs-list [role="tab"] {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+  }
+}
