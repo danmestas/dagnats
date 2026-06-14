@@ -274,7 +274,10 @@
       width: Math.max(canvas.clientWidth, 320),
       height: 220,
       cursor: { drag: { x: true, y: false } },
-      legend: { live: true },
+      // The template renders its own accessible .console-chart-legend;
+      // uPlot ships no legend CSS here, so its DOM legend would stack as
+      // unstyled "Time / Completed / Failed" text over the plot. Suppress it.
+      legend: { show: false },
       axes: [
         { stroke: strokeFor("warm-near-black") },
         {

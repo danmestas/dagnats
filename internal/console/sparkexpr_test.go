@@ -123,7 +123,7 @@ func renderSparkDefine(
 func TestDashboardTileRendersDatatypeSpark(t *testing.T) {
 	tile := DashboardTile{
 		Key: "k", Title: "T", Value: "1",
-		Spark: []float64{10, 30, 20, 50},
+		Spark: []float64{10, 30, 20, 50}, Sparkline: true,
 	}
 	out := renderSparkDefine(t, "dashboard_tile", tile)
 	if !strings.Contains(out, `class="console-spark`) {

@@ -44,6 +44,13 @@ type DashboardView struct {
 // selector); State drives the threshold-based coloring class
 // ("good" / "amber" / "red"). Spark is a 24-hour activity series; Hint
 // carries the small explanation text below the value.
+//
+// Sparkline gates whether the tile renders its Spark at all. Per the
+// mockup, the four STATUS tiles (failed-1h / dlq-depth / in-flight /
+// success-rate) are plain number+label cells with NO sparkline; only
+// the telemetry cards (throughput / error-rate / p50 latency) set it
+// true, and even then the Spark is honest-omitted below two real
+// points so it can never degenerate into a solid filled block.
 type DashboardTile struct {
 	Key       string
 	Title     string
@@ -51,6 +58,7 @@ type DashboardTile struct {
 	Unit      string
 	State     string
 	Spark     []float64
+	Sparkline bool
 	LinkHref  string
 	Hint      string
 	Delta     string
@@ -269,8 +277,8 @@ func assembleDashboardTiles(
 	const maxTileCount = 9
 	tiles := make([]DashboardTile, 0, maxTileCount)
 	tiles = append(tiles,
-		tileFailedLastHour(src, c.FailedLastHr),
-		tileDLQDepth(c.DLQDepth, dlqSparkFromSource(src)),
+		tileFailedLastHour(c.FailedLastHr),
+		tileDLQDepth(c.DLQDepth),
 		tileInFlight(c.InFlightCount),
 	)
 	if t, ok := tileSuccessRate(src); ok {
@@ -294,36 +302,17 @@ func assembleDashboardTiles(
 	return tiles
 }
 
-// dlqSparkFromSource synthesises a DLQ sparkline from the metrics
-// aggregator's runs.failed counter — failed runs are the dominant
-// driver of DLQ growth, so we reuse that history when the dedicated
-// dlq.depth metric isn't yet emitted by the engine.
-func dlqSparkFromSource(src MetricsSource) []float64 {
-	if src == nil {
-		return nil
-	}
-	series, ok := src.MetricSnapshot("workflow.runs.failed")
-	if !ok || len(series.Points) == 0 {
-		return nil
-	}
-	return sparkFromPoints(series.Points, 24)
-}
-
 // tileFailedLastHour builds the Failed-1h tile. State coloring
 // follows the audit's thresholds: 0 = good, 1-4 = amber, 5+ = red.
-func tileFailedLastHour(src MetricsSource, count int) DashboardTile {
-	t := DashboardTile{
+// It is a STATUS tile — number + label only, no sparkline (per the
+// mockup, sparks live only on the telemetry cards).
+func tileFailedLastHour(count int) DashboardTile {
+	return DashboardTile{
 		Key: "failed-1h", Title: "Failed runs (1h)", Unit: "runs",
 		LinkHref: "/console/runs?status=failed&range=1h",
 		Value:    strconv.Itoa(count),
 		State:    failedTileState(count),
 	}
-	if src != nil {
-		if series, ok := src.MetricSnapshot("workflow.runs.failed"); ok {
-			t.Spark = sparkFromPoints(series.Points, 24)
-		}
-	}
-	return t
 }
 
 // failedTileState classifies a failed-count into a state color band.
@@ -339,14 +328,14 @@ func failedTileState(count int) string {
 
 // tileDLQDepth builds the DLQ depth tile. Coloring follows: 0 = good,
 // 1-9 = amber, 10+ = red. Even one DLQ entry warrants operator
-// attention so we don't ship green-on-1.
-func tileDLQDepth(depth int, spark []float64) DashboardTile {
+// attention so we don't ship green-on-1. STATUS tile: number + label
+// only, no sparkline (the mockup's DLQ tile carries none).
+func tileDLQDepth(depth int) DashboardTile {
 	return DashboardTile{
 		Key: "dlq-depth", Title: "DLQ depth", Unit: "entries",
 		LinkHref: "/console/dlq",
 		Value:    strconv.Itoa(depth),
 		State:    dlqTileState(depth),
-		Spark:    spark,
 	}
 }
 
@@ -388,7 +377,6 @@ func tileSuccessRate(src MetricsSource) (DashboardTile, bool) {
 		Key: "success-rate", Title: "Success rate (1h)", Unit: "%",
 		LinkHref: "/console/metrics",
 		Value:    inner.Value,
-		Spark:    inner.Spark,
 		State:    successRateState(pct),
 	}
 	return t, true
@@ -491,11 +479,12 @@ func tileThroughput(src MetricsSource) (DashboardTile, bool) {
 	perSecond := perMinuteRate(series.Points) / 60
 	t := DashboardTile{
 		Key: "throughput", Title: "Throughput",
-		Value:    formatNumber(perSecond),
-		Unit:     "/s",
-		LinkHref: "/console/runs",
-		Spark:    sparkFromPoints(series.Points, 24),
-		State:    "good",
+		Value:     formatNumber(perSecond),
+		Unit:      "/s",
+		LinkHref:  "/console/runs",
+		Spark:     sparkFromPoints(series.Points, 24),
+		Sparkline: true,
+		State:     "good",
 	}
 	return t, true
 }
@@ -520,12 +509,17 @@ func tileErrorRate(src MetricsSource) (DashboardTile, bool) {
 	delta, dir := computeDelta(failed.Points, "")
 	t := DashboardTile{
 		Key: "error-rate", Title: "Error rate",
-		Value:    formatNumber(rate),
-		Unit:     "%",
-		LinkHref: "/console/runs?status=failed",
-		Spark:    sparkFromPoints(failed.Points, 24),
-		Delta:    delta, DeltaDir: dir, DeltaTone: errorRateDeltaTone(dir),
+		Value:     formatNumber(rate),
+		Unit:      "%",
+		LinkHref:  "/console/runs?status=failed",
+		Sparkline: true,
+		Delta:     delta, DeltaDir: dir, DeltaTone: errorRateDeltaTone(dir),
 		State: errorRateState(rate),
+	}
+	// Honest-omit floor: a single failed point cannot form a trend
+	// line, so leave Spark nil rather than render a flat block.
+	if len(failed.Points) >= 2 {
+		t.Spark = sparkFromPoints(failed.Points, 24)
 	}
 	return t, true
 }
@@ -591,10 +585,14 @@ func tileP50Latency(src MetricsSource) (DashboardTile, bool) {
 	p50 := percentileFromBuckets(latest, 0.50)
 	t := DashboardTile{
 		Key: "p50-latency", Title: "p50 snapshot latency", Unit: "ms",
-		LinkHref: "/console/metrics",
-		Value:    formatNumber(p50),
-		Spark:    sparkFromHistogramP50(series.Points, 24),
-		State:    latencyTileState(p50),
+		LinkHref:  "/console/metrics",
+		Value:     formatNumber(p50),
+		Sparkline: true,
+		State:     latencyTileState(p50),
+	}
+	// Honest-omit floor: <2 histogram samples cannot form a trend line.
+	if len(series.Points) >= 2 {
+		t.Spark = sparkFromHistogramP50(series.Points, 24)
 	}
 	return t, true
 }

@@ -260,10 +260,25 @@ func appendDLQDepthTile(
 		ID: "tile-dlq-depth", Title: "DLQ depth", Unit: "entries",
 		Href: "/console/dlq", MetricID: "DEAD_LETTERS stream",
 		Value: fmt.Sprintf("%d", len(entries)),
-		Spark: dlqSparkFromSource(cfg.Metrics),
+		Spark: dlqSparkFromMetrics(cfg.Metrics),
 		Trend: "flat",
 	}
 	return append(tiles, tile)
+}
+
+// dlqSparkFromMetrics synthesises a DLQ sparkline for the metrics-page
+// tile from the runs.failed counter — failed runs drive DLQ growth, so
+// we reuse that history until a dedicated dlq.depth metric exists. Gated
+// on >=2 points so a single sample can't render a flat block.
+func dlqSparkFromMetrics(src MetricsSource) []float64 {
+	if src == nil {
+		return nil
+	}
+	series, ok := src.MetricSnapshot("workflow.runs.failed")
+	if !ok || len(series.Points) < 2 {
+		return nil
+	}
+	return sparkFromPoints(series.Points, 24)
 }
 
 // tileFromCounter builds a tile showing the latest value of a counter
@@ -538,7 +553,13 @@ func buildMetricsCharts(src MetricsSource) []MetricsChart {
 	}
 }
 
-// buildThroughputChart renders the runs-by-outcome stacked-line.
+// buildThroughputChart renders the runs-by-outcome lines on a single
+// unified, sorted timestamp axis. The two cumulative counters
+// (completed, failed) rarely share identical sample times, so we merge
+// them onto the union of their timestamps and carry the last seen value
+// forward for the side that has no sample at a given instant — the
+// correct semantic for a monotonic counter. The previous length-only
+// padFront misaligned the shorter series onto the wrong timestamps.
 func buildThroughputChart(src MetricsSource) MetricsChart {
 	out := MetricsChart{
 		ID: "chart-throughput", Title: "Run throughput",
@@ -551,14 +572,10 @@ func buildThroughputChart(src MetricsSource) MetricsChart {
 		out.Empty = true
 		return out
 	}
-	xs, completedY := xyFromPoints(comp.Points)
-	_, failedY := xyFromPoints(fail.Points)
-	// Align lengths when one series is shorter.
-	if len(failedY) < len(xs) {
-		failedY = padFront(failedY, len(xs)-len(failedY))
-	}
-	if len(completedY) < len(xs) {
-		completedY = padFront(completedY, len(xs)-len(completedY))
+	xs, completedY, failedY := mergeCounterAxis(comp.Points, fail.Points)
+	if len(xs) == 0 {
+		out.Empty = true
+		return out
 	}
 	out.XAxis = xs
 	out.XMin, out.XMax = clampChartWindow(xs, time.Now().UTC())
@@ -566,10 +583,77 @@ func buildThroughputChart(src MetricsSource) MetricsChart {
 		{Label: "Completed", Values: completedY, Stroke: "paper-indigo"},
 		{Label: "Failed", Values: failedY, Stroke: "muted-rust"},
 	}
-	if len(xs) == 0 {
-		out.Empty = true
-	}
 	return out
+}
+
+// mergeCounterAxis merges two counter point-slices onto the sorted
+// union of their (epoch-junk-filtered) timestamps, returning the shared
+// x-axis plus the two value series aligned to it. A side with no sample
+// at a timestamp carries its last seen value forward (cumulative-counter
+// semantic); before any sample it reads 0. Bounded by the input lengths.
+func mergeCounterAxis(
+	a, b []MetricPoint,
+) ([]float64, []float64, []float64) {
+	const maxPoints = 8192
+	byTime := make(map[int64]struct{ a, b float64 })
+	haveA := make(map[int64]bool)
+	haveB := make(map[int64]bool)
+	collectCounterPoints(a, byTime, haveA, true)
+	collectCounterPoints(b, byTime, haveB, false)
+	stamps := make([]int64, 0, len(byTime))
+	for ts := range byTime {
+		stamps = append(stamps, ts)
+		if len(stamps) >= maxPoints {
+			break
+		}
+	}
+	sort.Slice(stamps, func(i, j int) bool { return stamps[i] < stamps[j] })
+	xs := make([]float64, 0, len(stamps))
+	aY := make([]float64, 0, len(stamps))
+	bY := make([]float64, 0, len(stamps))
+	lastA, lastB := 0.0, 0.0
+	for _, ts := range stamps {
+		v := byTime[ts]
+		if haveA[ts] {
+			lastA = v.a
+		}
+		if haveB[ts] {
+			lastB = v.b
+		}
+		xs = append(xs, float64(ts))
+		aY = append(aY, lastA)
+		bY = append(bY, lastB)
+	}
+	return xs, aY, bY
+}
+
+// collectCounterPoints folds one point-slice into the shared maps.
+// isA selects which slot of the merged value pair to write. Epoch-junk
+// timestamps (x <= 0, e.g. an unset time.Time year-1 sentinel) are
+// dropped so they cannot poison the chart's domain.
+func collectCounterPoints(
+	points []MetricPoint,
+	byTime map[int64]struct{ a, b float64 },
+	have map[int64]bool,
+	isA bool,
+) {
+	if byTime == nil || have == nil {
+		panic("collectCounterPoints: nil map")
+	}
+	for _, p := range points {
+		ts := p.Timestamp.Unix()
+		if ts <= 0 {
+			continue
+		}
+		cur := byTime[ts]
+		if isA {
+			cur.a = p.Value
+		} else {
+			cur.b = p.Value
+		}
+		byTime[ts] = cur
+		have[ts] = true
+	}
 }
 
 // buildLatencyChart renders snapshot save duration p50/p95/p99 lines.
@@ -614,24 +698,6 @@ func buildLatencyChart(src MetricsSource) MetricsChart {
 	return out
 }
 
-// xyFromPoints renders a MetricPoint slice into parallel (x, y)
-// arrays for µPlot consumption. Points whose timestamp is epoch-junk
-// (x <= 0, e.g. an unset time.Time yielding the year-1 sentinel) are
-// dropped so they can't poison the chart's auto-ranged domain.
-func xyFromPoints(points []MetricPoint) ([]float64, []float64) {
-	xs := make([]float64, 0, len(points))
-	ys := make([]float64, 0, len(points))
-	for _, p := range points {
-		x := float64(p.Timestamp.Unix())
-		if x <= 0 {
-			continue
-		}
-		xs = append(xs, x)
-		ys = append(ys, p.Value)
-	}
-	return xs, ys
-}
-
 // chartWindowSecs is the visible span of the "60m" window charts.
 const chartWindowSecs = 3600
 
@@ -670,25 +736,6 @@ func clampChartWindow(xs []float64, now time.Time) (float64, float64) {
 		lo = hi - 60
 	}
 	return lo, hi
-}
-
-// padFront prepends n zero values to xs so two parallel arrays end
-// the same length. Used by stacked-line charts where one outcome
-// might have arrived later than another.
-func padFront(xs []float64, n int) []float64 {
-	if n <= 0 {
-		return xs
-	}
-	const padMax = 4096
-	if n > padMax {
-		n = padMax
-	}
-	out := make([]float64, 0, len(xs)+n)
-	for i := 0; i < n; i++ {
-		out = append(out, 0)
-	}
-	out = append(out, xs...)
-	return out
 }
 
 // buildWorkflowRows aggregates per-workflow stats from the workflow
