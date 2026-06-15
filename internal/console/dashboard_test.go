@@ -28,14 +28,25 @@ import (
 
 // TestDashboard_assemblesAllTiles verifies every populated operational
 // tile key shows up in the rendered dashboard and carries the contract
-// fields (LinkHref, Value, State). The workers-active source isn't yet
-// emitted; the test seeds it so all six render. Positive: six tiles
-// present. Negative: no tile is missing a state class.
+// fields (LinkHref, Value, State). Per the mockup the dashboard renders
+// four status tiles + three telemetry sparkcards; p99-latency and
+// workers-active are NOT mockup dashboard cards and must be absent even
+// when their sources are seeded. Positive: status + telemetry keys
+// present. Negative: p99/workers absent and no tile lacks a state class.
 func TestDashboard_assemblesAllTiles(t *testing.T) {
 	src := newFakeMetricsSource()
 	now := time.Now()
+	src.addCounter("workflow.runs.completed", 10, now.Add(-10*time.Minute))
 	src.addCounter("workflow.runs.completed", 25, now)
+	src.addCounter("workflow.runs.failed", 1, now.Add(-10*time.Minute))
 	src.addCounter("workflow.runs.failed", 2, now)
+	src.addHistogram(
+		"snapshot.save.duration_ms", 10,
+		[]MetricBucket{
+			{UpperBound: 5, Count: 5},
+			{UpperBound: 10, Count: 10},
+		}, now.Add(-10*time.Minute),
+	)
 	src.addHistogram(
 		"snapshot.save.duration_ms", 10,
 		[]MetricBucket{
@@ -62,11 +73,17 @@ func TestDashboard_assemblesAllTiles(t *testing.T) {
 	body := rec.Body.String()
 	wantTileIDs := []string{
 		"tile-failed-1h", "tile-dlq-depth", "tile-in-flight",
-		"tile-success-rate", "tile-p99-latency", "tile-workers-active",
+		"tile-success-rate", "tile-throughput", "tile-p50-latency",
+		"tile-error-rate",
 	}
 	for _, id := range wantTileIDs {
 		if !strings.Contains(body, "id=\""+id+"\"") {
 			t.Errorf("dashboard missing tile id=%q", id)
+		}
+	}
+	for _, id := range []string{"tile-p99-latency", "tile-workers-active"} {
+		if strings.Contains(body, "id=\""+id+"\"") {
+			t.Errorf("dashboard must not render tile id=%q (not in mockup)", id)
 		}
 	}
 	if !strings.Contains(body, "tile-state-") {
@@ -112,17 +129,24 @@ func TestDashboardEmptyMetricsRendersFourTiles(t *testing.T) {
 	}
 }
 
-// TestDashboardPopulatedMetricsRendersSixTiles asserts the full six-tile
-// surface when the MetricsSource has data for success-rate / p99 /
-// workers-active. Workers-active currently has no source — when its
-// signal lands, this test will need a corresponding seed. Until then,
-// the absence of a workers source means the populated path renders five.
-// Issue #284.
-func TestDashboardPopulatedMetricsRendersSixTiles(t *testing.T) {
+// TestDashboardPopulatedMetricsRendersStatusAndTelemetry asserts the full
+// status + telemetry surface when the MetricsSource has data: four status
+// tiles (failed-1h, dlq-depth, in-flight, success-rate) and three telemetry
+// sparkcards (throughput, p50-latency, error-rate). p99-latency and
+// workers-active are not mockup dashboard cards and stay absent. Issue #284.
+func TestDashboardPopulatedMetricsRendersStatusAndTelemetry(t *testing.T) {
 	src := newFakeMetricsSource()
 	now := time.Now()
+	src.addCounter("workflow.runs.completed", 10, now.Add(-10*time.Minute))
 	src.addCounter("workflow.runs.completed", 50, now)
 	src.addCounter("workflow.runs.failed", 1, now)
+	src.addHistogram(
+		"snapshot.save.duration_ms", 10,
+		[]MetricBucket{
+			{UpperBound: 5, Count: 5},
+			{UpperBound: 10, Count: 10},
+		}, now.Add(-10*time.Minute),
+	)
 	src.addHistogram(
 		"snapshot.save.duration_ms", 10,
 		[]MetricBucket{
@@ -140,11 +164,17 @@ func TestDashboardPopulatedMetricsRendersSixTiles(t *testing.T) {
 	body := rec.Body.String()
 	wantTileIDs := []string{
 		"tile-failed-1h", "tile-dlq-depth", "tile-in-flight",
-		"tile-success-rate", "tile-p99-latency", "tile-workers-active",
+		"tile-success-rate", "tile-throughput", "tile-p50-latency",
+		"tile-error-rate",
 	}
 	for _, id := range wantTileIDs {
 		if !strings.Contains(body, "id=\""+id+"\"") {
 			t.Errorf("populated dashboard missing tile id=%q", id)
+		}
+	}
+	for _, id := range []string{"tile-p99-latency", "tile-workers-active"} {
+		if strings.Contains(body, "id=\""+id+"\"") {
+			t.Errorf("populated dashboard must not render tile id=%q", id)
 		}
 	}
 	if strings.Contains(body, "telemetry pending") {
@@ -345,6 +375,119 @@ func TestDashboard_throughputHasNoMeaninglessCountDelta(t *testing.T) {
 	}
 	if strings.Contains(tput, "120") {
 		t.Errorf("throughput must not render the cumulative counter change; card=%q", tput)
+	}
+}
+
+// TestDashboard_tilesSplitIntoStatusAndTelemetryRows pins the mockup's
+// two-row layout: StatusTiles holds the four number+label status cells in
+// order (failed-1h, dlq-depth, in-flight, success-rate) and TelemetryTiles
+// holds the three sparkcards in order (throughput, p50-latency, error-rate).
+// Neither p99-latency nor workers-active appears anywhere — they are not in
+// the mockup dashboard. Positive: both slices carry their expected keys in
+// order. Negative: the dropped keys are absent from both slices.
+func TestDashboard_tilesSplitIntoStatusAndTelemetryRows(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now().UTC()
+	src.addCounter("workflow.runs.completed", 10, now.Add(-10*time.Minute))
+	src.addCounter("workflow.runs.completed", 130, now)
+	src.addCounter("workflow.runs.failed", 1, now.Add(-10*time.Minute))
+	src.addCounter("workflow.runs.failed", 4, now)
+	src.addHistogram(
+		"snapshot.save.duration_ms", 10,
+		[]MetricBucket{{UpperBound: 5, Count: 5}, {UpperBound: 10, Count: 10}},
+		now.Add(-10*time.Minute),
+	)
+	src.addHistogram(
+		"snapshot.save.duration_ms", 10,
+		[]MetricBucket{{UpperBound: 5, Count: 5}, {UpperBound: 10, Count: 10}},
+		now,
+	)
+	src.addCounter("workers.active", 3, now)
+
+	cfg := dashTestCfg(t, newFakeDS(), src)
+	view := buildDashboardView(context.Background(), cfg)
+
+	wantStatus := []string{"failed-1h", "dlq-depth", "in-flight", "success-rate"}
+	if got := tileKeys(view.StatusTiles); !equalStrings(got, wantStatus) {
+		t.Errorf("StatusTiles keys = %v, want %v", got, wantStatus)
+	}
+	wantTelemetry := []string{"throughput", "p50-latency", "error-rate"}
+	if got := tileKeys(view.TelemetryTiles); !equalStrings(got, wantTelemetry) {
+		t.Errorf("TelemetryTiles keys = %v, want %v", got, wantTelemetry)
+	}
+	all := append(tileKeys(view.StatusTiles), tileKeys(view.TelemetryTiles)...)
+	for _, dropped := range []string{"p99-latency", "workers-active"} {
+		for _, k := range all {
+			if k == dropped {
+				t.Errorf("tile %q must not appear in the dashboard (not in mockup)", dropped)
+			}
+		}
+	}
+}
+
+// tileKeys projects a tile slice to its Key list for order assertions.
+func tileKeys(tiles []DashboardTile) []string {
+	out := make([]string, 0, len(tiles))
+	for _, t := range tiles {
+		out = append(out, t.Key)
+	}
+	return out
+}
+
+// equalStrings compares two string slices element-wise.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestDashboard_throughputNonNegativeAcrossLabelSlots is the regression
+// guard for the "-0.0" throughput bug. workflow.runs.completed is emitted
+// per-workflow label; the aggregator merges every label slot into ONE
+// points slice sorted by timestamp. With two workflows whose cumulative
+// counters interleave in time, the raw first point (workflow A, low) and
+// raw last point (workflow B, lower still) belong to DIFFERENT label
+// slots, so perMinuteRate(points) sees a negative delta and emits a
+// negative/"-0.0" rate. The fix derives throughput from the total
+// completed across all label slots, which is monotonic and can never go
+// negative. Positive: a real workload yields a non-negative rate. Negative:
+// the value must never carry a leading "-".
+func TestDashboard_throughputNonNegativeAcrossLabelSlots(t *testing.T) {
+	src := newFakeMetricsSource()
+	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	wfA := map[string]string{"workflow": "alpha"}
+	wfB := map[string]string{"workflow": "bravo"}
+	// Sorted-by-timestamp the merged slice is:
+	//   t0 alpha=5, t1 bravo=80, t2 alpha=120, t3 bravo=2
+	// so points[0]=alpha:5 and points[last]=bravo:2 straddle label slots
+	// and last-first = 2-5 = -3 -> negative rate under the old code.
+	src.addCounterLabeled("workflow.runs.completed", 5, base, wfA)
+	src.addCounterLabeled("workflow.runs.completed", 80, base.Add(1*time.Minute), wfB)
+	src.addCounterLabeled("workflow.runs.completed", 120, base.Add(2*time.Minute), wfA)
+	src.addCounterLabeled("workflow.runs.completed", 2, base.Add(3*time.Minute), wfB)
+
+	// Document the bug: the raw-points path goes negative.
+	series, _ := src.MetricSnapshot("workflow.runs.completed")
+	if rawRate := perMinuteRate(series.Points); rawRate >= 0 {
+		t.Fatalf("fixture invalid: raw perMinuteRate = %v, want negative to "+
+			"prove the straddle bug", rawRate)
+	}
+
+	tile, ok := tileThroughput(src)
+	if !ok {
+		t.Fatal("throughput tile must render with a multi-label series")
+	}
+	if strings.HasPrefix(tile.Value, "-") {
+		t.Errorf("throughput Value = %q must never be negative", tile.Value)
+	}
+	if parseFloatOrZero(tile.Value) < 0 {
+		t.Errorf("throughput rate = %q parsed negative", tile.Value)
 	}
 }
 

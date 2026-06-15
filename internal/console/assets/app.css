@@ -3818,17 +3818,23 @@ body[data-theme="dark"] code {
 /* ---------------------------------------------------------------- */
 
 /* Compact tile: number + label, no min-height block, no hint prose,
-   no hover arrow. Four tiles fit one row on wide screens. */
+   no hover arrow. Two deterministic rows per the mockup: a 4-up STATUS
+   row (number+label cells) and a 3-up TELEMETRY row (sparkcards). Fixed
+   column counts replace basecoat's auto-fit so neither row ever wraps
+   into a ragged 4+2 grid; they collapse responsively on narrow screens. */
 .dashboard-tile-grid {
-  grid-template-columns: repeat(4, 1fr);
   gap: 0.75rem;
   margin: 0.75rem 0 1.25rem;
 }
+.dashboard-status-row { grid-template-columns: repeat(4, 1fr); }
+.dashboard-telemetry-row { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 1024px) {
-  .dashboard-tile-grid { grid-template-columns: repeat(2, 1fr); }
+  .dashboard-status-row { grid-template-columns: repeat(2, 1fr); }
+  .dashboard-telemetry-row { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 600px) {
-  .dashboard-tile-grid { grid-template-columns: 1fr; }
+  .dashboard-status-row,
+  .dashboard-telemetry-row { grid-template-columns: 1fr; }
 }
 .dashboard-tile {
   gap: 0.15rem;

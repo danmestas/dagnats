@@ -8,6 +8,11 @@
     </p>
   </header>
 
+  <div class="dashboard-tile-grid dashboard-status-row"
+       aria-label="Operational status">
+    {{range .StatusTiles}}{{template "dashboard_tile" .}}{{end}}
+  </div>
+
   <p class="dashboard-explainer">
     <b>Workers</b> register <b>Functions</b> &middot;
     <b>Triggers</b> fire <b>Workflows</b> &middot; a
@@ -16,9 +21,12 @@
     watch live and replay.
   </p>
 
-  <div class="dashboard-tile-grid" aria-label="Operational status">
-    {{range .Tiles}}{{template "dashboard_tile" .}}{{end}}
+  {{if .TelemetryTiles}}
+  <div class="dashboard-tile-grid dashboard-telemetry-row"
+       aria-label="Telemetry">
+    {{range .TelemetryTiles}}{{template "dashboard_tile" .}}{{end}}
   </div>
+  {{end}}
 
   <div class="dashboard-recent-grid">
     {{template "recent_failures_card" .RecentFailures}}

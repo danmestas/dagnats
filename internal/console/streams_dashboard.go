@@ -265,7 +265,7 @@ func flushDirtyTiles(
 		return nil
 	}
 	view := buildDashboardView(ctx, cfg)
-	for _, tile := range view.Tiles {
+	for _, tile := range view.AllTiles() {
 		if !state.tilesDirty[tile.Key] {
 			continue
 		}

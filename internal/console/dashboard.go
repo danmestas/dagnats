@@ -2,7 +2,9 @@ package console
 
 import (
 	"context"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -11,11 +13,13 @@ import (
 // dashboard.go owns the Phase 2 dashboard view assembly. The legacy
 // "System overview" + "Heartbeat" tiles were a config skeleton — they
 // didn't answer the operator's #1 landing-page question, "is anything
-// on fire?". This file replaces them with up-to-six live operational
-// tiles (Failed-1h, DLQ depth, In-flight, plus Success rate / p99
-// latency / Workers active when MetricsSource has data for them) plus
-// two recent panels (failures, operator actions). Tiles link to
-// filtered drill-down pages; SSE patching keeps them current.
+// on fire?". This file replaces them with two live tile rows matching
+// the mockup: a STATUS row (Failed-1h, DLQ depth, In-flight, plus
+// Success rate when MetricsSource has run data) of plain number+label
+// cells, and a TELEMETRY row of sparkcards (Throughput, p50 latency,
+// Error rate) — plus two recent panels (failures, operator actions).
+// Tiles link to filtered drill-down pages; SSE patching keeps them
+// current.
 //
 // Data assembly is best-effort: the always-on counters (failed-1h,
 // DLQ depth, in-flight) come from the data source and always render;
@@ -25,18 +29,33 @@ import (
 // a row of broken-looking muted-dot cards next to working ones.
 
 // DashboardView is the binding the rebuilt dashboard.html template
-// consumes. Tiles contains the three always-on counters plus any of
-// the three metric-derived tiles whose source has data; ordering is
-// deterministic so the CSS grid layout stays stable across re-renders.
-// RecentFailures and RecentActions hold the last few entries for the
-// side-by-side panels below the tile grid.
+// consumes. Per the mockup the tiles render as two distinct rows:
+// StatusTiles is the row of number+label status cells (failed-1h,
+// dlq-depth, in-flight, plus success-rate when the metrics source has
+// data) with NO sparkline; TelemetryTiles is the row of sparkcards
+// (throughput, p50-latency, error-rate) that render only when their
+// metric has data. Ordering within each slice is deterministic so the
+// CSS grid layout stays stable across re-renders. RecentFailures and
+// RecentActions hold the last few entries for the side-by-side panels
+// below the tile rows.
 type DashboardView struct {
-	Tiles            []DashboardTile
+	StatusTiles      []DashboardTile
+	TelemetryTiles   []DashboardTile
 	RecentFailures   []RecentFailureRow
 	RecentActions    []RecentActionRow
 	Overview         overviewData
 	Actor            Actor
 	MetricsAvailable bool
+}
+
+// AllTiles concatenates the status and telemetry rows in display order.
+// The SSE flush path iterates this so a single dirty-tile loop covers
+// both rows without knowing which row a key lives in.
+func (v DashboardView) AllTiles() []DashboardTile {
+	out := make([]DashboardTile, 0, len(v.StatusTiles)+len(v.TelemetryTiles))
+	out = append(out, v.StatusTiles...)
+	out = append(out, v.TelemetryTiles...)
+	return out
 }
 
 // DashboardTile is one operational tile on the at-a-glance grid. Key
@@ -113,7 +132,8 @@ func buildDashboardView(
 		},
 	}
 	counters := readDashboardCounters(ctx, cfg)
-	view.Tiles = assembleDashboardTiles(cfg.Metrics, counters)
+	view.StatusTiles = assembleStatusTiles(cfg.Metrics, counters)
+	view.TelemetryTiles = assembleTelemetryTiles(cfg.Metrics)
 	view.RecentFailures = readRecentFailures(ctx, cfg.Data, recentFailuresMax)
 	view.RecentActions = readRecentActions(ctx, cfg.Data, recentActionsMax)
 	return view
@@ -265,17 +285,17 @@ func readRecentActions(
 	return out
 }
 
-// assembleDashboardTiles produces the tile list in display order. The
-// first three tiles always render (they're driven by the data source,
-// not the metrics aggregator). The remaining three render only when
-// their metric has data — empty placeholders are dropped entirely
-// rather than shown as muted-dot "telemetry pending" cards next to
-// working tiles (issue #284).
-func assembleDashboardTiles(
+// assembleStatusTiles produces the STATUS row in display order: the three
+// always-on counters (failed-1h, dlq-depth, in-flight) driven by the data
+// source, plus success-rate when the metrics aggregator has run data.
+// Empty placeholders are dropped entirely rather than shown as muted-dot
+// "telemetry pending" cards (issue #284). These are plain number+label
+// cells with NO sparkline, matching the mockup's top status row.
+func assembleStatusTiles(
 	src MetricsSource, c dashboardCounters,
 ) []DashboardTile {
-	const maxTileCount = 9
-	tiles := make([]DashboardTile, 0, maxTileCount)
+	const maxStatusTiles = 4
+	tiles := make([]DashboardTile, 0, maxStatusTiles)
 	tiles = append(tiles,
 		tileFailedLastHour(c.FailedLastHr),
 		tileDLQDepth(c.DLQDepth),
@@ -284,12 +304,17 @@ func assembleDashboardTiles(
 	if t, ok := tileSuccessRate(src); ok {
 		tiles = append(tiles, t)
 	}
-	if t, ok := tileP99Latency(src); ok {
-		tiles = append(tiles, t)
-	}
-	if t, ok := tileWorkersActive(src); ok {
-		tiles = append(tiles, t)
-	}
+	return tiles
+}
+
+// assembleTelemetryTiles produces the TELEMETRY row in display order:
+// throughput, p50-latency, error-rate — the three sparkcards from the
+// mockup. Each renders only when its metric has data (honest-omit). The
+// mockup dashboard carries no p99-latency or workers-active card, so those
+// builders are intentionally not wired here.
+func assembleTelemetryTiles(src MetricsSource) []DashboardTile {
+	const maxTelemetryTiles = 3
+	tiles := make([]DashboardTile, 0, maxTelemetryTiles)
 	if t, ok := tileThroughput(src); ok {
 		tiles = append(tiles, t)
 	}
@@ -394,68 +419,19 @@ func successRateState(pct float64) string {
 	return "red"
 }
 
-// tileP99Latency reads the engine snapshot histogram and reports the
-// p99 latency. Second return is false when the histogram isn't yet
-// populated — caller drops the tile rather than rendering a "telemetry
-// pending" placeholder (issue #284).
-func tileP99Latency(src MetricsSource) (DashboardTile, bool) {
-	if src == nil {
-		return DashboardTile{}, false
-	}
-	series, ok := src.MetricSnapshot("snapshot.save.duration_ms")
-	if !ok || len(series.Points) == 0 {
-		return DashboardTile{}, false
-	}
-	latest := series.Latest()
-	if latest.Count == 0 || len(latest.Buckets) == 0 {
-		return DashboardTile{}, false
-	}
-	p99 := percentileFromBuckets(latest, 0.99)
-	t := DashboardTile{
-		Key: "p99-latency", Title: "p99 snapshot latency", Unit: "ms",
-		LinkHref: "/console/metrics",
-		Value:    formatNumber(p99),
-		Spark:    sparkFromHistogramP50(series.Points, 24),
-		State:    latencyTileState(p99),
-	}
-	return t, true
-}
-
-// latencyTileState classifies the p99 latency into a band. The
+// latencyTileState classifies a latency value into a band. The
 // thresholds are coarse on purpose: anything under 100ms is healthy,
 // up to 500ms is amber, beyond is red. Operators tune this later when
 // the engine emits per-step labels and we know the real distribution.
-func latencyTileState(p99 float64) string {
-	if p99 < 100 {
+// Drives the p50-latency telemetry card's state coloring.
+func latencyTileState(latencyMs float64) string {
+	if latencyMs < 100 {
 		return "good"
 	}
-	if p99 < 500 {
+	if latencyMs < 500 {
 		return "amber"
 	}
 	return "red"
-}
-
-// tileWorkersActive reads the workers.active gauge. Second return is
-// false when the engine hasn't yet emitted the metric — caller drops
-// the tile rather than rendering a "telemetry pending" placeholder
-// (issue #284). Showing 0 here would be a false alarm ("no workers!")
-// when the real cause is just a missing telemetry source.
-func tileWorkersActive(src MetricsSource) (DashboardTile, bool) {
-	if src == nil {
-		return DashboardTile{}, false
-	}
-	series, ok := src.MetricSnapshot("workers.active")
-	if !ok || len(series.Points) == 0 {
-		return DashboardTile{}, false
-	}
-	latest := series.Latest()
-	t := DashboardTile{
-		Key: "workers-active", Title: "Workers active", Unit: "",
-		LinkHref: "/console/workers",
-		Value:    formatNumber(latest.Value),
-		State:    "good",
-	}
-	return t, true
 }
 
 // tileThroughput derives runs-per-second from the workflow.runs.completed
@@ -476,7 +452,11 @@ func tileThroughput(src MetricsSource) (DashboardTile, bool) {
 	if !ok || len(series.Points) < 2 {
 		return DashboardTile{}, false
 	}
-	perSecond := perMinuteRate(series.Points) / 60
+	total := totalCounterSeries(series.Points)
+	if len(total) < 2 {
+		return DashboardTile{}, false
+	}
+	perSecond := perMinuteRate(total) / 60
 	t := DashboardTile{
 		Key: "throughput", Title: "Throughput",
 		Value:     formatNumber(perSecond),
@@ -487,6 +467,64 @@ func tileThroughput(src MetricsSource) (DashboardTile, bool) {
 		State:     "good",
 	}
 	return t, true
+}
+
+// totalCounterSeries collapses a multi-label cumulative-counter point
+// slice into a single total-cumulative-per-timestamp series. The input
+// is the aggregator's merged points: every label slot's observations
+// interleaved and sorted by timestamp. At each distinct timestamp the
+// total is the sum of the latest-seen cumulative value of every distinct
+// label slot (carry-forward — a slot keeps its last value until it next
+// reports). Because each slot's counter is monotonic, the carried-forward
+// sum is monotonic too, so perMinuteRate over the result can never go
+// negative — defining the "-0.0 throughput" bug out of existence (it came
+// from straddling raw first/last points across DIFFERENT label slots).
+func totalCounterSeries(points []MetricPoint) []MetricPoint {
+	if len(points) == 0 {
+		return nil
+	}
+	latest := make(map[string]float64, len(points))
+	out := make([]MetricPoint, 0, len(points))
+	var i int
+	for i < len(points) {
+		ts := points[i].Timestamp
+		// Fold every point sharing this timestamp into the carry map
+		// before snapshotting, so same-instant slots all count once.
+		for i < len(points) && points[i].Timestamp.Equal(ts) {
+			latest[counterLabelKey(points[i].Labels)] = points[i].Value
+			i++
+		}
+		var total float64
+		for _, v := range latest {
+			total += v
+		}
+		out = append(out, MetricPoint{Timestamp: ts, Value: total})
+	}
+	return out
+}
+
+// counterLabelKey builds a stable slot key from a point's Labels map. The
+// previous metricLabelKey helper was reverted, so this is a minimal local
+// keyer: sorted "k=v;" pairs so two points with the same labels in any map
+// iteration order hash to the same slot. Empty labels collapse to "" (the
+// single unlabeled slot).
+func counterLabelKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(labels[k])
+		b.WriteByte(';')
+	}
+	return b.String()
 }
 
 // tileErrorRate derives failed/(completed+failed) over the window from
@@ -568,8 +606,8 @@ func deltaToneClass(dir, tone string) string {
 	return "good"
 }
 
-// tileP50Latency mirrors tileP99Latency over the same snapshot histogram
-// but reports the median. Honest-omit when the histogram is sparse.
+// tileP50Latency reads the snapshot histogram and reports the median
+// (p50) as a telemetry sparkcard. Honest-omit when the histogram is sparse.
 func tileP50Latency(src MetricsSource) (DashboardTile, bool) {
 	if src == nil {
 		return DashboardTile{}, false
