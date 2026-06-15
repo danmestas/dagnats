@@ -272,14 +272,19 @@
     }
     const opts = {
       width: Math.max(canvas.clientWidth, 320),
-      height: 220,
+      height: 240,
       cursor: { drag: { x: true, y: false } },
       // The template renders its own accessible .console-chart-legend;
       // uPlot ships no legend CSS here, so its DOM legend would stack as
       // unstyled "Time / Completed / Failed" text over the plot. Suppress it.
       legend: { show: false },
       axes: [
-        { stroke: strokeFor("warm-near-black") },
+        // size reserves vertical room for the time axis. uPlot renders
+        // a two-row time axis (incremental ticks + an absolute date row);
+        // the default ~50px band crams the date row flush against the
+        // canvas bottom edge. 64px gives the date row clearance so it
+        // reads as part of the chart, not spilling past it.
+        { stroke: strokeFor("warm-near-black"), size: 64 },
         {
           stroke: strokeFor("warm-near-black"),
           label: unit || "",

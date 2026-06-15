@@ -1569,7 +1569,10 @@ body[data-theme="dark"] {
   color: var(--text-secondary);
 }
 .console-chart-canvas {
-  min-height: 220px;
+  /* Must match the uPlot `height` in metrics.js (240) so the container
+     reserves exactly the chart's rendered height — a smaller min-height
+     would clip the two-row time axis at the bottom edge. */
+  min-height: 240px;
   position: relative;
 }
 /* Minimal uPlot layout primitives. uPlot ships no CSS in this bundle,
