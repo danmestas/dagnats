@@ -32,9 +32,13 @@ func TestStatusTilesCarryNoSparkline(t *testing.T) {
 	src.addCounter("workflow.runs.completed", 10, now.Add(-30*time.Minute))
 	src.addCounter("workflow.runs.completed", 130, now)
 
-	tiles := assembleDashboardTiles(src, dashboardCounters{
+	counters := dashboardCounters{
 		InFlightCount: 2, DLQDepth: 3, FailedLastHr: 4,
-	})
+	}
+	tiles := append(
+		assembleStatusTiles(src, counters),
+		assembleTelemetryTiles(src)...,
+	)
 
 	status := map[string]bool{
 		"failed-1h": true, "dlq-depth": true,
