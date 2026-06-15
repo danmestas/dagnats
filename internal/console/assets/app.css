@@ -121,9 +121,9 @@
   --accent:           #117E68;
   --accent-soft:      rgba(17, 126, 104, 0.10);
 
-  --status-completed: #1A7F37;
+  --status-completed: #2E9D58;
   --status-running:   #0969DA;
-  --status-failed:    #CF222E;
+  --status-failed:    #D14A52;
   --status-skipped:   #6E7781;
   --status-pending:   #9A6700;
 }
@@ -138,9 +138,9 @@
     --accent:         #4EC9B0;
     --accent-soft:    rgba(78, 201, 176, 0.14);
 
-    --status-completed: #3FB950;
+    --status-completed: #62C875;
     --status-running:   #58A6FF;
-    --status-failed:    #F85149;
+    --status-failed:    #FF8A93;
     --status-skipped:   #8B949E;
     --status-pending:   #D29922;
   }
@@ -160,9 +160,9 @@ body[data-theme="light"] {
   --accent:           #117E68;
   --accent-soft:      rgba(17, 126, 104, 0.10);
 
-  --status-completed: #1A7F37;
+  --status-completed: #2E9D58;
   --status-running:   #0969DA;
-  --status-failed:    #CF222E;
+  --status-failed:    #D14A52;
   --status-skipped:   #6E7781;
   --status-pending:   #9A6700;
 }
@@ -177,9 +177,9 @@ body[data-theme="dark"] {
   --accent:         #4EC9B0;
   --accent-soft:    rgba(78, 201, 176, 0.14);
 
-  --status-completed: #3FB950;
+  --status-completed: #62C875;
   --status-running:   #58A6FF;
-  --status-failed:    #F85149;
+  --status-failed:    #FF8A93;
   --status-skipped:   #8B949E;
   --status-pending:   #D29922;
 }
@@ -417,7 +417,10 @@ a:hover { text-decoration: underline; }
   color: var(--text-secondary);
   font-weight: 500;
 }
-.console-deflist dd { margin: 0; font-family: var(--font-mono); }
+/* color is explicit: without it the value inherits Tailwind/basecoat's
+   unlayered default foreground (oklch(0.145 0 0)) and renders near-black
+   on the dark surface. The value must read brighter than its muted dt. */
+.console-deflist dd { margin: 0; font-family: var(--font-mono); color: var(--text-primary); }
 
 .console-mono {
   font-family: var(--font-mono);
