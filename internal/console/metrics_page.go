@@ -160,6 +160,7 @@ func buildMetricsView(
 	}
 	tiles := buildMetricsTiles(cfg.Metrics)
 	tiles = appendSeriesTiles(tiles, cfg.Metrics)
+	tiles = appendActiveRunsTile(ctx, tiles, cfg)
 	tiles = appendDLQDepthTile(ctx, tiles, cfg)
 	charts := buildMetricsCharts(cfg.Metrics)
 	wfs := buildWorkflowRows(cfg.Metrics)
@@ -208,11 +209,13 @@ func appendSeriesTiles(
 	if src == nil {
 		return tiles
 	}
-	if hasMetricPoints(src, "workflow.runs.active") {
-		tiles = append(tiles, tileFromCounter(src,
-			"workflow.runs.active", "tile-runs-active",
-			"Active runs", "runs", "/console/runs?status=running"))
-	}
+	// "Active runs" is intentionally NOT sourced from the
+	// workflow.runs.active UpDownCounter: that gauge's emit sites are
+	// asymmetric (increments unlabeled, most decrements workflow-
+	// labeled) and the aggregator merges all label slots into one
+	// name-keyed series, so its reduced value drifts negative — an
+	// in-flight count can never be negative. appendActiveRunsTile reads
+	// the authoritative running-run count from cfg.Data instead.
 	if hasMetricPoints(src, "task.concurrency.acquired") {
 		tiles = append(tiles, tileFromCounter(src,
 			"task.concurrency.acquired", "tile-concurrency-acquired",
@@ -235,6 +238,39 @@ func hasMetricPoints(src MetricsSource, name string) bool {
 	}
 	series, ok := src.MetricSnapshot(name)
 	return ok && len(series.Points) > 0
+}
+
+// appendActiveRunsTile appends the "Active runs" tile sourced from the
+// authoritative run state (count of runs in RUNNING status) via
+// cfg.Data — the same path the dashboard's in-flight tile uses
+// (countRunsForTiles). This deliberately replaces the
+// workflow.runs.active UpDownCounter, whose asymmetric emit sites make
+// its aggregated value drift negative; an in-flight count is a
+// non-negative quantity, so we read it from real state. Omitted
+// entirely when no data source is wired or the read fails.
+func appendActiveRunsTile(
+	ctx context.Context, tiles []MetricsTile, cfg Config,
+) []MetricsTile {
+	if ctx == nil {
+		panic("appendActiveRunsTile: ctx is nil")
+	}
+	if cfg.Data == nil {
+		return tiles
+	}
+	rctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	runs, err := cfg.Data.ListRuns(rctx, "")
+	if err != nil {
+		return tiles
+	}
+	inFlight, _ := countRunsForTiles(runs, time.Now())
+	tile := MetricsTile{
+		ID: "tile-runs-active", Title: "Active runs", Unit: "runs",
+		Href: "/console/runs?status=running", MetricID: "runs in RUNNING state",
+		Value: fmt.Sprintf("%d", inFlight),
+		Trend: "flat",
+	}
+	return append(tiles, tile)
 }
 
 // appendDLQDepthTile appends the DLQ depth tile read from cfg.Data via

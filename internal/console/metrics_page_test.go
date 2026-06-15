@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 )
 
@@ -388,31 +389,53 @@ func TestBuildMetricsView_DLQDepthTileFromDataSource(t *testing.T) {
 	}
 }
 
-// TestBuildMetricsView_RunsActiveTileConditional verifies the
-// runs.active SeriesCard renders only when the aggregator actually
-// holds the series. Positive: present + labelled with the real OTel
-// name when seeded. Negative: omitted (not an empty tile) when absent.
-func TestBuildMetricsView_RunsActiveTileConditional(t *testing.T) {
+// TestBuildMetricsView_ActiveRunsTileFromRunState pins the fix for the
+// negative "Active runs" tile. The tile must source its value from the
+// authoritative run state (count of RUNNING runs via cfg.Data), NOT the
+// workflow.runs.active UpDownCounter — whose asymmetric emit sites make
+// its aggregated value drift negative (the bug: it showed e.g. "-79").
+// Positive: the value equals the count of running runs and is never
+// negative, regardless of what the gauge holds. Negative: with nil
+// cfg.Data the tile is omitted (honest: no authoritative source).
+func TestBuildMetricsView_ActiveRunsTileFromRunState(t *testing.T) {
 	now := time.Now().UTC()
-	withActive := newFakeMetricsSource()
-	withActive.addCounter("workflow.runs.completed", 5, now)
-	withActive.addCounter("workflow.runs.active", 4, now)
-	cfg := makeMetricsCfg(t, withActive)
+	src := newFakeMetricsSource()
+	src.addCounter("workflow.runs.completed", 5, now)
+	// Seed the gauge with a negative value to prove it does NOT drive
+	// the tile: the run-state count must win.
+	src.addCounter("workflow.runs.active", -79, now)
+
+	ds := newFakeDS()
+	done := runningRun("run-done")
+	done.Status = dag.RunStatusCompleted
+	ds.runs = []dag.WorkflowRun{
+		runningRun("run-1"), runningRun("run-2"), done,
+	}
+	cfg := makeMetricsCfg(t, src)
+	cfg.Data = ds
+
 	view := buildMetricsView(context.Background(), cfg, "")
 	tile, ok := findTile(view.Tiles, "tile-runs-active")
 	if !ok {
-		t.Fatal("runs-active tile missing when series seeded")
+		t.Fatal("runs-active tile missing when cfg.Data wired")
 	}
-	if tile.MetricID != "workflow.runs.active" {
-		t.Fatalf("MetricID = %q, want workflow.runs.active",
-			tile.MetricID)
+	// Positive space: 2 running runs (the succeeded one excluded).
+	if tile.Value != "2" {
+		t.Fatalf("Value = %q, want \"2\" (count of RUNNING runs)", tile.Value)
 	}
-	noActive := newFakeMetricsSource()
-	noActive.addCounter("workflow.runs.completed", 5, now)
-	cfg = makeMetricsCfg(t, noActive)
+	// Negative space: never reflects the gauge's negative cumulative.
+	if strings.HasPrefix(tile.Value, "-") {
+		t.Fatalf("Value = %q must not be negative", tile.Value)
+	}
+	if tile.MetricID != "runs in RUNNING state" {
+		t.Fatalf("MetricID = %q, want \"runs in RUNNING state\"", tile.MetricID)
+	}
+
+	// With no data source the tile is omitted entirely.
+	cfg.Data = nil
 	view = buildMetricsView(context.Background(), cfg, "")
 	if _, ok := findTile(view.Tiles, "tile-runs-active"); ok {
-		t.Fatal("runs-active tile must be omitted when series absent")
+		t.Fatal("runs-active tile must be omitted with nil cfg.Data")
 	}
 }
 
