@@ -26,6 +26,25 @@ import (
 	"testing"
 )
 
+// TestAppCSS_deflistValuesAreReadable pins the fix for the worker /
+// stream / trigger detail "IDENTITY" cards rendering their values in
+// near-black. The value <dd> sets only a font-family, so without an
+// explicit color it inherits Tailwind/basecoat's unlayered default
+// foreground (oklch(0.145 0 0)) — black on the dark surface. The value
+// must carry the primary text color so it reads brighter than its muted
+// <dt> label.
+func TestAppCSS_deflistValuesAreReadable(t *testing.T) {
+	body, err := fs.ReadFile(assetsFS, "assets/app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	css := normalizeWhitespace(string(body))
+	want := ".console-deflist dd { margin: 0; font-family: var(--font-mono); color: var(--text-primary); }"
+	if !strings.Contains(css, want) {
+		t.Errorf("app.css deflist dd must set a readable color; want rule %q", want)
+	}
+}
+
 func TestAppCSS_dataCellsRenderMono(t *testing.T) {
 	body, err := fs.ReadFile(assetsFS, "assets/app.css")
 	if err != nil {
@@ -42,7 +61,7 @@ func TestAppCSS_dataCellsRenderMono(t *testing.T) {
 	// Definition-list value cells (Server identity + capacity, dlq/trigger
 	// detail) are data too — they must render mono via .console-deflist dd,
 	// not only <table> cells (the gap that left the Server page in sans).
-	wantDL := ".console-deflist dd { margin: 0; font-family: var(--font-mono); }"
+	wantDL := ".console-deflist dd { margin: 0; font-family: var(--font-mono); color: var(--text-primary); }"
 	if !strings.Contains(css, wantDL) {
 		t.Errorf("app.css missing the deflist data-cell mono rule %q", wantDL)
 	}
