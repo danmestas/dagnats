@@ -306,7 +306,7 @@ func serveSSELogs(w http.ResponseWriter, r *http.Request, cfg Config) {
 			// the live tail starts fresh.
 			if rec.Time.IsZero() {
 				if err := sse.PatchElements(`<tr class="empty-row">`+
-					`<td colspan="4">No entries. Live tail is active — `+
+					`<td colspan="5">No entries. Live tail is active — `+
 					`entries appear here as the engine emits them.`+
 					`</td></tr>`,
 					datastar.WithSelectorID("logs-tbody"),
@@ -471,19 +471,23 @@ func renderLogRowHTML(row LogRow) string {
 	b.WriteString(`<td class="logs-source mono">`)
 	b.WriteString(htmlEscape(row.Source))
 	b.WriteString(`</td>`)
-	b.WriteString(`<td class="logs-message">`)
-	b.WriteString(htmlEscape(row.Message))
+	// Dedicated Trace ID column. Link to the Traces lookup so an operator
+	// can pivot from a log line to its run's span tree; the lookup is
+	// keyed on trace id (one trace per run). An em-dash fills the cell
+	// when the record carried no trace id so the column stays aligned.
+	b.WriteString(`<td class="logs-trace-cell mono">`)
 	if row.TraceID != "" {
-		// Link to the Traces lookup so an operator can pivot from a log
-		// line to its run's span tree. The lookup is keyed on trace id;
-		// the run is one click away on the resulting page (one trace per
-		// run, the Traces list is the runs the console already reads).
-		b.WriteString(` <a class="logs-trace mono" href="/console/traces?trace_id=`)
+		b.WriteString(`<a class="logs-trace mono" href="/console/traces?trace_id=`)
 		b.WriteString(htmlEscape(row.TraceID))
-		b.WriteString(`">trace_id=`)
+		b.WriteString(`">`)
 		b.WriteString(htmlEscape(row.TraceID))
 		b.WriteString(`</a>`)
+	} else {
+		b.WriteString(`<span class="logs-trace-empty" aria-hidden="true">&mdash;</span>`)
 	}
+	b.WriteString(`</td>`)
+	b.WriteString(`<td class="logs-message">`)
+	b.WriteString(htmlEscape(row.Message))
 	b.WriteString(`</td>`)
 	b.WriteString(`</tr>`)
 	return b.String()
