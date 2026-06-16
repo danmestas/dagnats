@@ -45,6 +45,39 @@ func TestRender_CounterEmitsHelpTypeAndTotalSuffix(t *testing.T) {
 	mustContain(t, out, "workflow_runs_completed_total 7")
 }
 
+// TestRender_CumulativeCounterRendersLatestNoDoubleCount pins the
+// consumer side of the delta→cumulative temporality switch. The
+// exporter now publishes cumulative counter totals; the prom renderer
+// reads s.Latest().Value directly and must emit exactly that latest
+// total — it must NOT sum successive samples (which would double-count
+// under cumulative). Positive: two cumulative samples (10 then 25)
+// render as 25. Negative: the sum 35 must never appear.
+func TestRender_CumulativeCounterRendersLatestNoDoubleCount(t *testing.T) {
+	agg := metrics.NewAggregator(silentLogger())
+	defer agg.Close()
+	meta := metrics.Series{
+		Name: "workflow.runs.completed", Kind: metrics.KindCounter,
+	}
+	base := time.Now()
+	if err := agg.Ingest(meta, metrics.Point{Value: 10, Timestamp: base}); err != nil {
+		t.Fatalf("ingest first: %v", err)
+	}
+	if err := agg.Ingest(meta, metrics.Point{
+		Value: 25, Timestamp: base.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("ingest second: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Render(&buf, agg); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := buf.String()
+	mustContain(t, out, "workflow_runs_completed_total 25")
+	if strings.Contains(out, "workflow_runs_completed_total 35") {
+		t.Fatalf("cumulative counter double-counted (summed deltas):\n%s", out)
+	}
+}
+
 func TestRender_GaugeNoTotalSuffix(t *testing.T) {
 	agg := metrics.NewAggregator(silentLogger())
 	defer agg.Close()

@@ -461,6 +461,61 @@ func TestMetricsPage_OmitsUnbackedAffordances(t *testing.T) {
 	}
 }
 
+// TestBuildThroughputChart_CollapsesMultiLabelToSummedMonotonic is the
+// load-bearing regression for the "counter decreases 13→7 / no graphs"
+// symptom. The aggregator keys a counter series by NAME only, so a
+// labeled completed counter (e.g. per workflow) lands as interleaved
+// multi-label points in one slice. Feeding those raw to mergeCounterAxis
+// carries forward whichever label slot reported last — so a lower-valued
+// slot's later timestamp drags the rendered "Completed" line DOWN.
+//
+// The fix collapses each series with totalCounterSeries (the same reducer
+// the dashboard throughput tile uses) before merging. Positive: the
+// Completed series equals the per-timestamp SUM of every label slot and
+// is monotonically non-decreasing. Negative: the raw path would show a
+// decrease, so we assert no adjacent step goes down.
+func TestBuildThroughputChart_CollapsesMultiLabelToSummedMonotonic(t *testing.T) {
+	src := newFakeMetricsSource()
+	now := time.Now().UTC()
+	wfA := map[string]string{"workflow": "a"}
+	wfB := map[string]string{"workflow": "b"}
+	// Interleaved multi-label cumulative counters. Each slot is
+	// individually monotonic, but their timestamps interleave so the
+	// raw carry-forward of a single slot is NOT monotonic across slots.
+	src.addCounterLabeled("workflow.runs.completed", 5, now.Add(-40*time.Minute), wfA)
+	src.addCounterLabeled("workflow.runs.completed", 3, now.Add(-30*time.Minute), wfB)
+	src.addCounterLabeled("workflow.runs.completed", 8, now.Add(-20*time.Minute), wfA)
+	src.addCounterLabeled("workflow.runs.completed", 7, now.Add(-10*time.Minute), wfB)
+	src.addCounterLabeled("workflow.runs.failed", 1, now.Add(-15*time.Minute), wfA)
+
+	chart := buildThroughputChart(src)
+	if chart.Empty {
+		t.Fatal("chart must not be empty with seeded multi-label points")
+	}
+	var completed []float64
+	for _, s := range chart.Series {
+		if s.Label == "Completed" {
+			completed = s.Values
+		}
+	}
+	if len(completed) == 0 {
+		t.Fatal("Completed series missing or empty")
+	}
+	// Positive: monotonically non-decreasing — the whole point of the fix.
+	for i := 1; i < len(completed); i++ {
+		if completed[i] < completed[i-1] {
+			t.Fatalf("Completed[%d]=%v < Completed[%d]=%v: series decreased",
+				i, completed[i], i-1, completed[i-1])
+		}
+	}
+	// Positive: the final value is the SUM of both slots' latest values
+	// (8 from A + 7 from B = 15), not a single slot's value.
+	last := completed[len(completed)-1]
+	if math.Abs(last-15) > 1e-6 {
+		t.Fatalf("final Completed = %v, want 15 (sum of both label slots)", last)
+	}
+}
+
 // findTile returns the tile with the given ID, mirroring the
 // conditional-append shape the view builder uses.
 func findTile(tiles []MetricsTile, id string) (MetricsTile, bool) {

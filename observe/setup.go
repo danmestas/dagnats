@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -220,9 +221,16 @@ func setupMeterProvider(
 	}
 
 	natsExp := natsexporter.NewMetricExporter(js)
+	// Collect every 10s rather than the SDK's 60s default: the console
+	// charts need a dense-enough cumulative series to draw a meaningful
+	// line over the recent window. One point/minute leaves the graphs
+	// near-empty on a fresh process.
+	const natsMetricInterval = 10 * time.Second
 	opts := []metric.Option{
 		metric.WithResource(res),
-		metric.WithReader(metric.NewPeriodicReader(natsExp)),
+		metric.WithReader(metric.NewPeriodicReader(
+			natsExp, metric.WithInterval(natsMetricInterval),
+		)),
 	}
 
 	if cfg.OTLPEndpoint != "" {
