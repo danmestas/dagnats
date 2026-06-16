@@ -156,6 +156,63 @@ func TestPump_LiveRecordsTriggerSubscribers(t *testing.T) {
 	}
 }
 
+// TestPump_RestartAgainstSameStream is the restart-resilience
+// regression: a second StartPump against the same TELEMETRY stream
+// must succeed (an ephemeral consumer has no immutable durable state
+// to conflict on) and resume ingesting. The old durable code returned
+// nats error 10012 "start time can not be updated" on the second call,
+// which silently disabled the aggregator across engine restarts.
+func TestPump_RestartAgainstSameStream(t *testing.T) {
+	_, nc := startEmbeddedNATS(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	setupTelemetryStream(t, js)
+
+	agg := NewAggregator(silentLogger())
+	defer agg.Close()
+
+	// First pump lifecycle: start, then stop cleanly.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	stop1, err := agg.StartPump(ctx1, js)
+	if err != nil {
+		t.Fatalf("first StartPump: %v", err)
+	}
+	stop1()
+
+	// No durable should linger after startup — the legacy durable is
+	// best-effort deleted, and the ephemeral consumer carries no name.
+	if _, err := js.Consumer(
+		context.Background(), "TELEMETRY", PumpConsumerName,
+	); err == nil {
+		t.Fatalf("legacy durable %q still present after startup", PumpConsumerName)
+	}
+
+	// Second pump lifecycle against the SAME stream: must NOT error.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	stop2, err := agg.StartPump(ctx2, js)
+	if err != nil {
+		t.Fatalf("second StartPump returned error (restart regression): %v", err)
+	}
+	defer stop2()
+
+	// And the restarted pump still ingests freshly published records.
+	publishMetricRecord(t, js, "after_restart_counter", 7)
+	if !waitForSeries(agg, "after_restart_counter", 2*time.Second) {
+		t.Fatal("restarted pump did not ingest record within 2s")
+	}
+	got, ok := agg.Snapshot("after_restart_counter")
+	if !ok {
+		t.Fatal("Snapshot reported missing series after restart")
+	}
+	if got.Latest().Value != 7 {
+		t.Fatalf("Latest.Value = %v, want 7", got.Latest().Value)
+	}
+}
+
 // waitForSeries polls Snapshot until the named series exists or the
 // deadline expires. Returns true on success. Bounded loop count.
 func waitForSeries(
