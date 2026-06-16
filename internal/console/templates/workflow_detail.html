@@ -11,6 +11,7 @@
       <h1>{{.Name}}</h1>
       <p class="console-lede">
         <span class="badge badge-outline">version {{.Version}}</span>
+        <span class="console-meta-sep">{{.StepCount}} steps · DAG</span>
       </p>
     </header>
 
@@ -26,9 +27,28 @@
     {{end}}
 
     <article class="card">
-      <header class="card-header"><h2>Definition</h2></header>
+      <header class="card-header"><h2>Steps</h2></header>
       <div class="card-body">
-        <pre class="console-pre"><code>{{.Definition}}</code></pre>
+        {{if .Steps}}
+        <ol class="console-steps">
+          {{range .Steps}}
+          <li class="console-step">
+            <span class="console-step-num">{{.Num}}</span>
+            <span class="console-step-name console-mono">{{.Name}}</span>
+            <span class="console-step-type console-step-type-{{.TypeClass}}">{{.TypeLabel}}</span>
+            <span class="console-step-dep">
+              {{if .IsEntry}}entry{{else}}depends_on <code>{{range $i, $d := .DependsOn}}{{if $i}}, {{end}}{{$d}}{{end}}</code>{{end}}
+            </span>
+          </li>
+          {{end}}
+        </ol>
+        {{else}}
+        <p class="console-empty">no steps defined</p>
+        {{end}}
+        <details class="console-rawdef">
+          <summary>Raw definition</summary>
+          <pre class="console-pre"><code>{{.Definition}}</code></pre>
+        </details>
       </div>
     </article>
 
