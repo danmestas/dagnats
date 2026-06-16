@@ -2,6 +2,11 @@
 <section class="page page-workers-list" data-page="workers-list">
   {{template "page-header" .Page.Header}}
 
+  <div class="card">
+    <header class="card-header">
+      <h2>Connected workers</h2>
+      <span class="card-caption">heartbeats via workers KV</span>
+    </header>
   <table class="table console-table" id="workers-table">
     <thead>
       <tr>
@@ -30,5 +35,6 @@
       {{end}}
     </tbody>
   </table>
+  </div>
 </section>
 {{end}}

@@ -338,6 +338,14 @@ type StreamRow struct {
 	Seq            string
 	Deleted        string
 	DeletedNonZero bool
+
+	// Policy is the stream's retention-window summary the mockup's
+	// "Policy" column renders. It carries the humanized MaxAge ("168h0m0s")
+	// when the stream is age-bounded and "—" when unbounded. The mockup
+	// pairs max-age with a dedup window, but the StreamSnapshot does not
+	// carry a duplicate-window field, so only the max-age half is shown —
+	// no fabricated dedup value.
+	Policy string
 }
 
 // servePageStreams renders /console/streams off the live config
@@ -391,6 +399,7 @@ func streamRowsFromSnapshots(snaps []StreamSnapshot) []StreamRow {
 			Storage:   "—",
 			Seq:       "—",
 			Deleted:   "—",
+			Policy:    "—",
 		}
 		if s.Provisioned {
 			row.Messages = strconv.FormatUint(s.Messages, 10)
@@ -403,6 +412,9 @@ func streamRowsFromSnapshots(snaps []StreamSnapshot) []StreamRow {
 			row.Seq = fmt.Sprintf("%d–%d", s.FirstSeq, s.LastSeq)
 			row.Deleted = strconv.Itoa(s.NumDeleted)
 			row.DeletedNonZero = s.NumDeleted > 0
+			if s.MaxAge != "" {
+				row.Policy = s.MaxAge
+			}
 		}
 		out = append(out, row)
 	}

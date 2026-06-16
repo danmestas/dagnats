@@ -14,6 +14,7 @@
         <th>Seq</th>
         <th>Deleted</th>
         <th>Consumers</th>
+        <th>Policy</th>
         <th class="row-chevron-cell"><span class="sr-only">Open</span></th>
       </tr>
     </thead>
@@ -29,11 +30,12 @@
         <td class="mono">{{.Seq}}</td>
         <td class="mono{{if .DeletedNonZero}} stream-deleted-nonzero{{end}}">{{.Deleted}}</td>
         <td>{{.Consumers}}</td>
+        <td class="mono{{if eq .Policy "—"}} muted{{end}}">{{.Policy}}</td>
         {{template "row-chevron"}}
       </tr>
       {{else}}
       <tr class="empty-row">
-        <td colspan="10">No JetStream streams reachable.</td>
+        <td colspan="11">No JetStream streams reachable.</td>
       </tr>
       {{end}}
     </tbody>
