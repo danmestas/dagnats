@@ -60,13 +60,19 @@ func (e *MetricExporter) Export(
 	return nil
 }
 
-// Temporality returns delta temporality — each export contains
-// only the change since last collection. Implements
+// Temporality returns cumulative temporality — each export carries the
+// running total since process start, not the per-interval change. The
+// entire downstream stack assumes monotonic cumulative counters: the
+// aggregator stores each point as-is, the Prometheus exporter renders
+// the latest value directly, and the console chart path runs
+// carry-forward / last-minus-first rate math. Delta temporality (the
+// prior value) fed those consumers per-interval deltas, producing the
+// "counter decreases 13→7 / no graphs" symptom. Implements
 // sdkmetric.Exporter.
 func (e *MetricExporter) Temporality(
 	_ metric.InstrumentKind,
 ) metricdata.Temporality {
-	return metricdata.DeltaTemporality
+	return metricdata.CumulativeTemporality
 }
 
 // Aggregation returns the default aggregation for each

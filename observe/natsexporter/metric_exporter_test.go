@@ -14,10 +14,41 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 
 	otelmetric "go.opentelemetry.io/otel/metric"
 )
+
+// TestMetricExporter_Temporality pins the producer/consumer contract:
+// the whole console metrics stack (aggregator stores-as-is, prom renders
+// the latest value, the chart path runs last-minus-first / carry-forward
+// math) assumes cumulative, monotonic counters. The exporter therefore
+// MUST declare cumulative temporality — delta (per-interval change)
+// produced the "counter decreases 13→7 / no graphs" symptom. Positive:
+// every instrument kind reports CumulativeTemporality. Negative: none
+// reports DeltaTemporality.
+func TestMetricExporter_Temporality(t *testing.T) {
+	exporter := &MetricExporter{}
+	kinds := []metric.InstrumentKind{
+		metric.InstrumentKindCounter,
+		metric.InstrumentKindUpDownCounter,
+		metric.InstrumentKindHistogram,
+		metric.InstrumentKindGauge,
+		metric.InstrumentKindObservableCounter,
+		metric.InstrumentKindObservableUpDownCounter,
+		metric.InstrumentKindObservableGauge,
+	}
+	for _, k := range kinds {
+		got := exporter.Temporality(k)
+		if got != metricdata.CumulativeTemporality {
+			t.Errorf("Temporality(%v) = %v, want Cumulative", k, got)
+		}
+		if got == metricdata.DeltaTemporality {
+			t.Errorf("Temporality(%v) = Delta, must not be delta", k)
+		}
+	}
+}
 
 func TestMetricExporter_Export(t *testing.T) {
 	_, nc := startNATS(t)

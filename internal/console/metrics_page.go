@@ -596,6 +596,12 @@ func buildMetricsCharts(src MetricsSource) []MetricsChart {
 // forward for the side that has no sample at a given instant — the
 // correct semantic for a monotonic counter. The previous length-only
 // padFront misaligned the shorter series onto the wrong timestamps.
+//
+// The aggregator keys a counter series by NAME only, so a labeled
+// counter (e.g. per workflow) arrives as interleaved multi-label points
+// in one slice. totalCounterSeries collapses each into a single summed,
+// monotonic series before the merge — otherwise carrying forward a
+// single label slot drags the rendered line down (the "13→7" bug).
 func buildThroughputChart(src MetricsSource) MetricsChart {
 	out := MetricsChart{
 		ID: "chart-throughput", Title: "Run throughput",
@@ -608,7 +614,9 @@ func buildThroughputChart(src MetricsSource) MetricsChart {
 		out.Empty = true
 		return out
 	}
-	xs, completedY, failedY := mergeCounterAxis(comp.Points, fail.Points)
+	compTotal := totalCounterSeries(comp.Points)
+	failTotal := totalCounterSeries(fail.Points)
+	xs, completedY, failedY := mergeCounterAxis(compTotal, failTotal)
 	if len(xs) == 0 {
 		out.Empty = true
 		return out
