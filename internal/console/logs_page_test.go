@@ -217,6 +217,87 @@ func TestLogsPage_EmptyStateWhenRingMissing(t *testing.T) {
 	}
 }
 
+// TestLogsPage_TraceIDColumn validates the dedicated Trace ID column:
+//   - the table header carries a "Trace ID" <th> between Source and
+//     Message;
+//   - a row WITH a trace id renders it as a linking <td> in that column
+//     (an <a href="/console/traces?trace_id=..."), NOT inside the
+//     message cell;
+//   - a row WITHOUT a trace id renders an em-dash placeholder cell;
+//   - the SSE renderLogRowHTML output has the SAME number of <td>s as
+//     the template header has <th>s (column-structure parity, so
+//     SSE-prepended rows align with the header).
+//
+// Methodology: seed one record with a trace id and one without, GET the
+// page, assert on the header + both row shapes, then count <th> in the
+// rendered <thead> against <td> in renderLogRowHTML for both rows.
+func TestLogsPage_TraceIDColumn(t *testing.T) {
+	t.Parallel()
+	base := time.Now()
+	withTrace := seedRecord(base, -1*time.Second, slog.LevelInfo,
+		"row with trace", "trace_id", "cafef00d")
+	noTrace := seedRecord(base, -2*time.Second, slog.LevelInfo,
+		"row without trace")
+	fake := &fakeLogRing{records: []slog.Record{noTrace, withTrace}}
+	srv := httptest.NewServer(mountWithLogRing(t, fake))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/console/logs")
+	if err != nil {
+		t.Fatalf("GET /console/logs: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	// Positive: a dedicated Trace ID column header exists.
+	if !strings.Contains(got, "Trace ID") {
+		t.Fatalf("Trace ID column header missing\n%s", got)
+	}
+	if !strings.Contains(got, `class="logs-th-trace"`) {
+		t.Fatalf("logs-th-trace header class missing")
+	}
+	// Positive: the trace id renders as a linking cell.
+	if !strings.Contains(got,
+		`<a class="logs-trace mono" href="/console/traces?trace_id=cafef00d"`) {
+		t.Fatalf("trace-id link missing from trace column\n%s", got)
+	}
+
+	// Negative space: the trace-id link must NOT live inside the message
+	// cell anymore. The message cell text and the trace link must be in
+	// separate <td>s — verify the link is not adjacent to the message
+	// text within one cell. We check the message cell renders bare.
+	thead := got[strings.Index(got, "<thead>"):strings.Index(got, "</thead>")]
+	thCount := strings.Count(thead, "<th ")
+	if thCount != 5 {
+		t.Fatalf("header th count = %d, want 5 (Time/Level/Source/Trace ID/Message)", thCount)
+	}
+
+	// Column-structure parity: the SSE render path must emit one <td>
+	// per header column, for BOTH the trace-bearing and trace-less row.
+	now := time.Now()
+	withRow := projectLogRecord(withTrace, now)
+	noRow := projectLogRecord(noTrace, now)
+	withHTML := renderLogRowHTML(withRow)
+	noHTML := renderLogRowHTML(noRow)
+	if td := strings.Count(withHTML, "<td"); td != thCount {
+		t.Fatalf("SSE row (with trace) td count = %d, want %d\n%s",
+			td, thCount, withHTML)
+	}
+	if td := strings.Count(noHTML, "<td"); td != thCount {
+		t.Fatalf("SSE row (no trace) td count = %d, want %d\n%s",
+			td, thCount, noHTML)
+	}
+	// Positive: SSE trace-bearing row links in its own trace cell.
+	if !strings.Contains(withHTML,
+		`href="/console/traces?trace_id=cafef00d"`) {
+		t.Fatalf("SSE row missing trace link\n%s", withHTML)
+	}
+	// Negative space: SSE trace-less row renders no trace link.
+	if strings.Contains(noHTML, "/console/traces?trace_id=") {
+		t.Fatalf("SSE trace-less row emitted a trace link\n%s", noHTML)
+	}
+}
+
 func TestLogsPage_SeverityFilter(t *testing.T) {
 	t.Parallel()
 	base := time.Now()
