@@ -94,8 +94,10 @@ func TestStreamsList_restoredColumns(t *testing.T) {
 	if !strings.Contains(body, "PLANNED_BUT_ABSENT") {
 		t.Fatalf("unprovisioned stream row missing")
 	}
-	// Negative space: no synthetic Policy / atomic-publish label leaks.
-	for _, banned := range []string{"atomic-publish", "Policy"} {
+	// Negative space: no synthetic atomic-publish label leaks. (The Policy
+	// column is now backed by the real stream max-age, so it is no longer
+	// banned here; the max-age rendering is covered by its own test.)
+	for _, banned := range []string{"atomic-publish"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("streams page leaked synthetic label %q", banned)
 		}

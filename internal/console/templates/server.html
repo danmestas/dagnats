@@ -39,7 +39,7 @@
       <dl class="console-deflist">
         <div>
           <dt>Storage</dt>
-          <dd>{{if gt .Page.Health.StoreMax 0}}{{.Page.StoreUsedHuman}} of {{.Page.StoreMaxHuman}} ({{.Page.Health.StorePct}}%){{else}}{{.Page.StoreUsedHuman}} used <span class="muted">· no account limit</span>{{end}}</dd>
+          <dd>{{if gt .Page.Health.StoreMax 0}}<span class="server-storage-cell"><span class="server-storage-gauge" style="--storage-pct: {{.Page.Health.StorePct}}" role="img" aria-label="JetStream storage {{.Page.Health.StorePct}} percent used"></span><span>{{.Page.StoreUsedHuman}} of {{.Page.StoreMaxHuman}} ({{.Page.Health.StorePct}}%)</span></span>{{else}}{{.Page.StoreUsedHuman}} used <span class="muted">· no account limit</span>{{end}}</dd>
         </div>
         <div>
           <dt>Memory</dt>
