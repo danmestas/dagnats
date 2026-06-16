@@ -13,6 +13,47 @@
         <span class="badge badge-outline">version {{.Version}}</span>
         <span class="console-meta-sep">{{.StepCount}} steps · DAG</span>
       </p>
+      {{/*
+        Header Run action (console-wf-detail-run). Reuses the EXISTING
+        run route + gating from the workflows-list inline button (#329).
+        Three states mirror workflows_tbody.html exactly:
+          * Runnable + writable: hidden POST form carrying the CSRF
+            token, paired with a Run button wired to run-confirm-modal.
+          * Runnable + read-only: disabled with a CONSOLE_READ_ONLY
+            tooltip so the operator can self-diagnose.
+          * Not runnable (required input schema): disabled with a
+            tooltip naming the reason. No Edit button — no edit
+            capability exists yet (honest omit).
+      */}}
+      <div class="console-section-actions">
+        {{if .Runnable}}
+          {{if .ReadOnly}}
+          <button type="button" class="btn btn-restorative"
+                  disabled aria-disabled="true"
+                  title="Console is read-only. Set CONSOLE_READ_ONLY=false to start runs.">
+            ▸ Run workflow
+          </button>
+          {{else}}
+          <form method="POST" action="/console/workflows/{{.Name}}/run"
+                data-confirm-action="run"
+                data-confirm-seq="{{.Name}}"
+                data-confirm-target="{{.Name}}"
+                style="display:none;">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          </form>
+          <button type="button" class="btn btn-restorative"
+                  data-action-confirm="run" data-confirm-seq="{{.Name}}">
+            ▸ Run workflow
+          </button>
+          {{end}}
+        {{else}}
+        <button type="button" class="btn btn-restorative"
+                disabled aria-disabled="true"
+                title="This workflow declares a required input — typed-input runs are not yet supported from the console.">
+          ▸ Run workflow
+        </button>
+        {{end}}
+      </div>
     </header>
 
     {{if .Warnings}}

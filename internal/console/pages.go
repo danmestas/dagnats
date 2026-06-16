@@ -523,6 +523,14 @@ type WorkflowDetailView struct {
 	Triggers       []TriggerLine
 	RecentRuns     []RunRow
 	NotFound       bool
+	// Runnable mirrors WorkflowRow.Runnable on the list: true when the
+	// workflow can be started from the console with no typed input.
+	// Computed in buildWorkflowDetail via workflowRunnable(def).
+	Runnable bool
+	// ReadOnly and CSRFToken power the header Run button. Populated by
+	// servePageWorkflowDetail post-build, mirroring the list handler.
+	ReadOnly  bool
+	CSRFToken string
 }
 
 // WorkflowStepRow is one node in the rendered step-DAG. Num is the
@@ -567,6 +575,8 @@ func servePageWorkflowDetail(
 		return
 	}
 	view := buildWorkflowDetail(r.Context(), ds, name)
+	view.ReadOnly = cfg.ReadOnly
+	view.CSRFToken = csrfTokenFor(r)
 	renderPage(w, r, ts, cfg, "workflow-detail", pageData{
 		Title:   "Workflow " + name,
 		Section: "workflows",
@@ -615,6 +625,7 @@ func buildWorkflowDetail(
 		Warnings:   warnings,
 		Triggers:   attached,
 		RecentRuns: toRunRows(runs),
+		Runnable:   workflowRunnable(def),
 	}
 	return view
 }
