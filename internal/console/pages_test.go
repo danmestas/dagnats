@@ -956,6 +956,104 @@ func TestWorkflowDetail_rendersDefinitionAndWarnings(t *testing.T) {
 	}
 }
 
+func TestWorkflowDetail_buildsStepDAG(t *testing.T) {
+	ds := newFakeDS()
+	ds.workflows = []dag.WorkflowDef{{
+		Name:    "pipe",
+		Version: "v2",
+		Steps: []dag.StepDef{
+			{ID: "fetch", Task: "fetch", Type: dag.StepTypeNormal},
+			{ID: "think", Task: "think", Type: dag.StepTypeAgent,
+				DependsOn: []string{"fetch"}},
+			{ID: "fan", Task: "fan", Type: dag.StepTypeMap,
+				DependsOn: []string{"fetch", "think"}},
+		},
+	}}
+	view := buildWorkflowDetail(context.Background(), ds, "pipe")
+
+	if view.StepCount != 3 {
+		t.Fatalf("StepCount = %d, want 3", view.StepCount)
+	}
+	if len(view.Steps) != 3 {
+		t.Fatalf("Steps len = %d, want 3", len(view.Steps))
+	}
+	first := view.Steps[0]
+	if first.Num != 1 || first.Name != "fetch" {
+		t.Errorf("step[0] = {Num:%d Name:%q}, want {1 fetch}", first.Num, first.Name)
+	}
+	if first.TypeLabel != "normal" {
+		t.Errorf("step[0].TypeLabel = %q, want normal", first.TypeLabel)
+	}
+	if !first.IsEntry {
+		t.Errorf("step[0].IsEntry = false, want true (no deps)")
+	}
+	second := view.Steps[1]
+	if second.Num != 2 || second.TypeLabel != "agent" {
+		t.Errorf("step[1] = {Num:%d TypeLabel:%q}, want {2 agent}",
+			second.Num, second.TypeLabel)
+	}
+	if second.IsEntry {
+		t.Errorf("step[1].IsEntry = true, want false (has deps)")
+	}
+	if len(second.DependsOn) != 1 || second.DependsOn[0] != "fetch" {
+		t.Errorf("step[1].DependsOn = %v, want [fetch]", second.DependsOn)
+	}
+	third := view.Steps[2]
+	if third.TypeLabel != "map" {
+		t.Errorf("step[2].TypeLabel = %q, want map", third.TypeLabel)
+	}
+	if len(third.DependsOn) != 2 {
+		t.Errorf("step[2].DependsOn = %v, want 2 deps", third.DependsOn)
+	}
+}
+
+func TestWorkflowDetail_rendersStepDAGAndDemotesJSON(t *testing.T) {
+	ds := newFakeDS()
+	ds.workflows = []dag.WorkflowDef{{
+		Name:    "pipe",
+		Version: "v2",
+		Steps: []dag.StepDef{
+			{ID: "fetch", Task: "fetch", Type: dag.StepTypeNormal},
+			{ID: "think", Task: "think", Type: dag.StepTypeAgent,
+				DependsOn: []string{"fetch"}},
+		},
+	}}
+	h := mountWithFake(t, ds)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/workflows/pipe", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"console-steps", "console-step", "2 steps", "depends_on",
+		"console-step-type", "fetch", "think", "entry",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("step DAG body missing %q", want)
+		}
+	}
+	// Raw JSON must be demoted into a collapsible <details>, not the
+	// primary card. The JSON content (escaped or raw) must still be present.
+	if !strings.Contains(body, "<details") {
+		t.Errorf("raw definition JSON not wrapped in <details>")
+	}
+	detailsIdx := strings.Index(body, "<details")
+	jsonRawIdx := strings.Index(body, `"name": "pipe"`)
+	jsonEscIdx := strings.Index(body, `&#34;name&#34;: &#34;pipe&#34;`)
+	jsonIdx := jsonRawIdx
+	if jsonIdx < 0 {
+		jsonIdx = jsonEscIdx
+	}
+	if jsonIdx < 0 {
+		t.Fatalf("definition JSON (escaped or raw) absent from page")
+	}
+	if jsonIdx < detailsIdx {
+		t.Errorf("definition JSON appears before <details>; not demoted")
+	}
+}
+
 func TestRunsList_filtersByStatus(t *testing.T) {
 	fake := newFakeDS()
 	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}

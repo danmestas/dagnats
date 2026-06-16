@@ -517,10 +517,24 @@ type WorkflowDetailView struct {
 	Version        string
 	RegisteredHint string
 	Definition     string
+	StepCount      int
+	Steps          []WorkflowStepRow
 	Warnings       []dag.Warning
 	Triggers       []TriggerLine
 	RecentRuns     []RunRow
 	NotFound       bool
+}
+
+// WorkflowStepRow is one node in the rendered step-DAG. Num is the
+// 1-based position; IsEntry is true when the step has no dependencies.
+// TypeClass is a CSS-safe suffix for coloring the type pill.
+type WorkflowStepRow struct {
+	Num       int
+	Name      string
+	TypeLabel string
+	TypeClass string
+	DependsOn []string
+	IsEntry   bool
 }
 
 // TriggerLine is one trigger entry under a workflow. The kind/target
@@ -591,15 +605,43 @@ func buildWorkflowDetail(
 		}
 	}
 	warnings := dag.ValidateRespondReachability(def, hasHTTP)
+	steps := workflowStepRows(def.Steps)
 	view := WorkflowDetailView{
 		Name:       name,
 		Version:    def.Version,
 		Definition: string(defJSON),
+		StepCount:  len(steps),
+		Steps:      steps,
 		Warnings:   warnings,
 		Triggers:   attached,
 		RecentRuns: toRunRows(runs),
 	}
 	return view
+}
+
+// workflowStepRows projects definition steps into render rows for the
+// numbered step-DAG. A nil steps slice is a valid empty input — a
+// workflow with no steps renders an empty DAG, not a panic.
+func workflowStepRows(steps []dag.StepDef) []WorkflowStepRow {
+	if steps == nil {
+		return nil
+	}
+	out := make([]WorkflowStepRow, 0, len(steps))
+	for i := range steps {
+		label := steps[i].Type.String()
+		out = append(out, WorkflowStepRow{
+			Num:       i + 1,
+			Name:      steps[i].ID,
+			TypeLabel: label,
+			TypeClass: label,
+			DependsOn: steps[i].DependsOn,
+			IsEntry:   len(steps[i].DependsOn) == 0,
+		})
+	}
+	if len(out) != len(steps) {
+		panic("workflowStepRows: row count diverged from step count")
+	}
+	return out
 }
 
 // triggerLinesFor narrows triggers to those attached to workflowName

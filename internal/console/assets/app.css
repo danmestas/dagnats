@@ -719,6 +719,103 @@ a:hover { text-decoration: underline; }
   word-break: break-word;
 }
 
+/* Numbered step-DAG on workflow detail: nodes with connectors. */
+.console-meta-sep {
+  margin-left: 0.6rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+.console-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.console-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+/* Connector edge between consecutive nodes. */
+.console-step:not(:last-child) {
+  margin-bottom: 1.1rem;
+}
+.console-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 1.35rem;
+  top: 100%;
+  width: 2px;
+  height: 1.1rem;
+  background: var(--border);
+}
+.console-step-num {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.console-step-name {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+.console-step-type {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+.console-step-type-agent,
+.console-step-type-agent_loop,
+.console-step-type-planner {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.console-step-type-sub_workflow,
+.console-step-type-map {
+  border-color: var(--status-running);
+  color: var(--status-running);
+}
+.console-step-dep {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+.console-step-dep code {
+  color: var(--text);
+}
+.console-rawdef {
+  margin-top: 1rem;
+}
+.console-rawdef summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  user-select: none;
+}
+.console-rawdef summary:hover {
+  color: var(--accent);
+}
+.console-rawdef .console-pre {
+  margin-top: 0.6rem;
+}
+
 /* Pagination control. */
 .console-pager {
   display: flex;
