@@ -16,20 +16,27 @@ import (
 // in observe/natsexporter/metric_exporter.go.
 const PumpSubject = "telemetry.metrics.>"
 
-// PumpConsumerName is the durable consumer name the aggregator
-// installs on the TELEMETRY stream. Durable so a console restart
-// resumes from the last-acked offset rather than replaying 7 days of
-// history.
+// PumpConsumerName is the legacy durable consumer name. The pump no
+// longer creates a durable (see pumpInstallConsumer for why); this
+// const survives only so startup can best-effort delete a pre-existing
+// durable left by older builds, cleaning up the broken-on-restart
+// state on upgrade.
 const PumpConsumerName = "console_metrics_aggregator"
 
 // PumpBatchMax is the upper bound on messages fetched per pull. Caps
 // per-iteration memory; the pump loop iterates until ctx is done.
 const PumpBatchMax = 500
 
-// PumpReplayWindow is how far back the pump replays on first start.
+// PumpReplayWindow is how far back the pump replays on each start.
 // 1 hour balances "dashboard recovers after restart" against "we
 // don't redownload 24h of history every boot".
 const PumpReplayWindow = 1 * time.Hour
+
+// PumpInactiveThreshold tells the server to reap the ephemeral pump
+// consumer this long after the process stops fetching (i.e. after the
+// engine exits). Bounded so a crashed/restarted engine never leaves
+// orphan consumers accumulating on TELEMETRY across restarts.
+const PumpInactiveThreshold = 5 * time.Minute
 
 // metricRecord mirrors the JSON shape observe/natsexporter publishes.
 // The aggregator deliberately decodes this lightweight copy rather
@@ -78,8 +85,18 @@ func (a *Aggregator) StartPump(
 	return func() { cancel(); <-done }, nil
 }
 
-// pumpInstallConsumer creates or updates the durable consumer. Returns
-// the consumer handle ready for Fetch loops.
+// pumpInstallConsumer creates the ephemeral pull consumer the pump
+// reads from. Returns the consumer handle ready for Fetch loops.
+//
+// The consumer is EPHEMERAL (no Durable) on purpose. A durable with
+// DeliverByStartTimePolicy + OptStartTime breaks on restart: those
+// fields are immutable, so CreateOrUpdateConsumer against an existing
+// durable fails with "start time can not be updated" (nats 10012) and
+// the aggregator silently disables itself. AckNonePolicy meant the
+// durable never tracked offsets either, so its "resume from last-acked
+// offset" rationale never actually applied. An ephemeral consumer
+// replaying the recent window on each start gives the intended
+// behavior with no durable state to conflict on.
 func pumpInstallConsumer(
 	ctx context.Context, js jetstream.JetStream,
 ) (jetstream.Consumer, error) {
@@ -89,17 +106,25 @@ func pumpInstallConsumer(
 	if js == nil {
 		panic("pumpInstallConsumer: js is nil")
 	}
+	// Upgrade path: best-effort delete a durable left by older builds
+	// so deployments carrying the broken-on-restart durable get
+	// cleaned up. A missing consumer is the expected steady state.
+	if err := js.DeleteConsumer(
+		ctx, "TELEMETRY", PumpConsumerName,
+	); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return nil, fmt.Errorf("metrics pump: delete legacy durable: %w", err)
+	}
 	startTime := time.Now().Add(-PumpReplayWindow)
 	cfg := jetstream.ConsumerConfig{
-		Durable:         PumpConsumerName,
-		AckPolicy:       jetstream.AckNonePolicy,
-		FilterSubject:   PumpSubject,
-		DeliverPolicy:   jetstream.DeliverByStartTimePolicy,
-		OptStartTime:    &startTime,
-		MaxAckPending:   -1,
-		MaxRequestBatch: PumpBatchMax,
+		AckPolicy:         jetstream.AckNonePolicy,
+		FilterSubject:     PumpSubject,
+		DeliverPolicy:     jetstream.DeliverByStartTimePolicy,
+		OptStartTime:      &startTime,
+		MaxAckPending:     -1,
+		MaxRequestBatch:   PumpBatchMax,
+		InactiveThreshold: PumpInactiveThreshold,
 	}
-	cons, err := js.CreateOrUpdateConsumer(ctx, "TELEMETRY", cfg)
+	cons, err := js.CreateConsumer(ctx, "TELEMETRY", cfg)
 	if err != nil {
 		return nil, fmt.Errorf("metrics pump: consumer: %w", err)
 	}
