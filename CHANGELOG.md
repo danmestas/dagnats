@@ -6,9 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+## [0.0.3] - 2026-06-16
+
+A console (web UI) release — ~60 commits since `v0.0.2`, bringing the operator
+console into fidelity with the design mockup and fixing two observability
+correctness/resilience bugs.
+
+### Added
+
+Console / web UI:
+
+- New pages: **Server** (NATS identity + JetStream account, live Varz/Jsz), **Connections** (`/connz`), **Consumers** (work-queue health), **Concurrency** (admission-control: slot pools, singleton locks, rate-limit + debounce gates), **Services** roster, **Traces** (cross-run + deep-linkable) with a per-run Trace tab, read-only **Worker detail** and **Function detail**, **KV** catalog + value inspector, **Config** self-portrait (access posture + engine invariants).
+- **Dashboard** reshaped to the mockup: two-row layout (status tiles + telemetry sparkcards for throughput / p50 / error rate), recent-failures table, datatype sparklines, nav badges.
+- **Workflow detail**: numbered step-DAG (type pills + `depends_on` edges) and a **Run workflow** action.
+- **Logs**: dedicated Trace-ID column linking to traces.
+- **Triggers** Add / Edit / Delete and per-run **Signal / Cancel** actions (existing API, read-only gated).
+- Design foundation: teal / IoskeleyMono / borderless cards, Lucide SVG nav icons + collapse-to-icon rail, `dagnats://` wordmark, muted status palette matched to the mockup, IA grouped into Inventory / Activity / System.
+- `dagnats demo seed --keep-alive`: rich demo mode for populating a console for review (#425).
+
+### Changed
+
+- **Metric export is now cumulative temporality** (was delta) with a 10s NATS reader interval, so the console's rate/sparkline/chart math (which assumes monotonic counters) renders correctly (#434).
+- Real ldflags build-stamp surfaced in the console footer (#420).
+- Nav IA reorganised; the Leases page and the Ops hub were removed/consolidated.
+
 ### Fixed
 
-- `observe`: `buildResource` now uses OTel `resource.New` + `WithFromEnv()` (and `WithAttributes` for precedence) so `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` are honored. Custom attrs like `deployment.environment=prd` now appear in spans/metrics/logs emitted via OTLP (fixes SigNoz env filtering for dagnats). `cfg.Resource` still wins over env. Made `LogExporter` derive `service.name` from record resource (for subject/JSON consistency with spans+metrics when env overrides service name). Added direct test for buildResource env behavior. (#367)
+- **Metrics pump now uses an ephemeral consumer** — a durable consumer with an immutable start-time previously failed (`nats 10012`) on every engine restart and silently disabled all console metrics; restarts now keep the observability surface alive, and the legacy durable is cleaned up on upgrade (#435).
+- Active-runs tile no longer shows a negative count (sourced from real run state) (#427); dashboard throughput no longer renders `-0.0`; the broken/garbled metrics throughput chart now draws correctly (#426, #429).
+- Readable detail-page values (no longer near-black on dark) (#428); transparent table headers + consistent hover/focus/active states (#405); run-detail underline tabs (#423, #424).
+- `observe`: `buildResource` honors `OTEL_RESOURCE_ATTRIBUTES` / `OTEL_SERVICE_NAME` via `resource.New` + `WithFromEnv()` (`cfg.Resource` still wins); `LogExporter` derives `service.name` from the record resource (#367, #368).
+- `dag`: `sub_workflow` treated as a no-task step type (#371); `serve` fail-fast flag + loopback-preserving port fallback (#372); retired `/ui` stub redirects to `/console/` (301) (#366); HTTP-bridge workers propagate `AttemptNumber` so retry backoff + dead-lettering work (#384).
+
+### Honesty discipline
+
+- Mockup features lacking backing data were **omitted, not fabricated** (e.g. per-entity stat tiles, Services instance/version columns, snapshot-p50). Traces-list trace-id/service/duration and trace-detail waterfall geometry remain engine-gated and intentionally unbuilt.
 
 ## [0.0.2] - 2026-06-03
 
