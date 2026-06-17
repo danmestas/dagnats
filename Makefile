@@ -43,7 +43,16 @@ build: ## Build dev binaries to ./bin
 	go build -trimpath -ldflags="$(LDFLAGS)" -o bin/dagnats-engine ./cmd/dagnats-engine
 
 test: ## Run all tests with 600s timeout
-	go test ./... -timeout 600s -count=1
+	# -p 4 bounds package-level parallelism. The suite stands up many
+	# embedded NATS servers (engine, trigger, server, sidecar, and the
+	# e2e superclusters spin up several each). At the default GOMAXPROCS
+	# parallelism a high-core machine over-subscribes them — NATS
+	# connects time out (~2s), workers miss their 5s start window, and
+	# synchronous workflows blow their wait ceiling, so unrelated tests
+	# flake non-deterministically (and `make release` flaps). Capping at
+	# 4 concurrent packages keeps the gate deterministic; low-core CI
+	# runners were already effectively bounded, so this is a no-op there.
+	go test ./... -p 4 -timeout 600s -count=1
 
 lint: vet ## Run gofmt + vet + staticcheck (matches CI)
 	@out=$$(gofmt -l .); \
