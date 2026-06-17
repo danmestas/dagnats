@@ -2688,6 +2688,19 @@ summary:focus-visible,
 .trace-span-detail > summary::-webkit-details-marker {
   display: none;
 }
+/* Disclosure caret — the native marker is suppressed above, so paint
+ * the same ▸/▾ affordance the .config-yaml-toggle <details> uses so the
+ * span name reads as expandable. Rotates to ▾ when [open]. */
+.trace-span-detail > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
+}
+.trace-span-detail[open] > summary::before {
+  transform: rotate(90deg);
+}
 .trace-kv {
   margin: 0.35rem 0 0.1rem;
   display: grid;
