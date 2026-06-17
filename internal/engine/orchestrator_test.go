@@ -360,6 +360,220 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	}
 }
 
+func TestOrchestratorPersistsTraceParentOnStart(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{Name: "tp-step", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-tp", defData)
+	startEvt.TraceParent = tp
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	waitForStepStatus(t, orch.store, "run-tp", "a",
+		dag.StepStatusQueued, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "run-tp")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Positive: the run carries the inbound traceparent.
+	if run.TraceParent != tp {
+		t.Fatalf("TraceParent = %q, want %q", run.TraceParent, tp)
+	}
+}
+
+func TestOrchestratorEmptyTraceParentStaysEmpty(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{Name: "tp-empty", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-tpe", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	waitForStepStatus(t, orch.store, "run-tpe", "a",
+		dag.StepStatusQueued, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "run-tpe")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Negative: no inbound traceparent => no fabricated trace context.
+	if run.TraceParent != "" {
+		t.Fatalf("TraceParent = %q, want empty", run.TraceParent)
+	}
+}
+
+func TestOrchestratorSetsCompletedAtOnCompletion(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{Name: "ca-step", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-ca", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	waitForStepStatus(t, orch.store, "run-ca", "a",
+		dag.StepStatusQueued, 5*time.Second)
+	compEvt := protocol.NewStepEvent(protocol.EventStepCompleted, "run-ca", "a", []byte(`"done"`))
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	waitForRunStatus(t, orch.store, "run-ca",
+		dag.RunStatusCompleted, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "run-ca")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Positive: completion stamps CompletedAt after CreatedAt.
+	if run.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on completed run")
+	}
+	if !run.CompletedAt.After(run.CreatedAt) {
+		t.Fatalf("CompletedAt %v not after CreatedAt %v",
+			run.CompletedAt, run.CreatedAt)
+	}
+}
+
+func TestOrchestratorSetsCompletedAtOnFailure(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	// No retry policy: a single step failure fails the run permanently.
+	wfDef := dag.WorkflowDef{Name: "ca-fail", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-cf", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	waitForStepStatus(t, orch.store, "run-cf", "a",
+		dag.StepStatusQueued, 5*time.Second)
+	startedEvt := protocol.NewStepEvent(protocol.EventStepStarted, "run-cf", "a", nil)
+	startedEvt.AttemptNumber = 1
+	startedData, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startedEvt.NATSSubject(), startedData,
+		nats.MsgId(startedEvt.NATSMsgID()))
+	time.Sleep(50 * time.Millisecond)
+	failEvt := protocol.NewStepEvent(protocol.EventStepFailed, "run-cf", "a", []byte(`"boom"`))
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, failEvt.NATSSubject(), failData,
+		nats.MsgId(failEvt.NATSMsgID()))
+
+	waitForRunStatus(t, orch.store, "run-cf",
+		dag.RunStatusFailed, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "run-cf")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Positive: a permanently-failed run stamps a completion timestamp so
+	// the Traces list reports an honest duration for terminal-failed runs.
+	if run.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on failed run")
+	}
+	// Negative: the stamp falls after the run's creation, never before.
+	if run.CompletedAt.Before(run.CreatedAt) {
+		t.Fatalf("CompletedAt %v before CreatedAt %v",
+			run.CompletedAt, run.CreatedAt)
+	}
+}
+
 func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 
@@ -723,6 +937,75 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("workflow should be cancelled within 3s")
+}
+
+func TestOrchestratorSetsCompletedAtOnCancellation(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name: "cancel-ca", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "slow-task", Type: dag.StepTypeNormal},
+		},
+	}
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, "cancel-ca", defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "cancel-ca-1", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
+		Subject: startEvt.NATSSubject(), Data: startData,
+		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+	})
+	waitForRunStatus(t, orch.store, "cancel-ca-1",
+		dag.RunStatusRunning, 5*time.Second)
+
+	cancelEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowCancelled, "cancel-ca-1", nil)
+	cancelData, err := cancelEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
+		Subject: cancelEvt.NATSSubject(), Data: cancelData,
+		Header: nats.Header{"Nats-Msg-Id": {cancelEvt.NATSMsgID()}},
+	})
+	waitForRunStatus(t, orch.store, "cancel-ca-1",
+		dag.RunStatusCancelled, 5*time.Second)
+
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "cancel-ca-1")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Positive: cancellation stamps CompletedAt so a terminal-cancelled run
+	// reports an honest duration rather than an asymmetric em-dash.
+	if run.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on cancelled run")
+	}
+	// Negative: the stamp falls after the run's creation, never before.
+	if run.CompletedAt.Before(run.CreatedAt) {
+		t.Fatalf("CompletedAt %v before CreatedAt %v",
+			run.CompletedAt, run.CreatedAt)
+	}
 }
 
 func TestOrchestratorRetriesWithPolicy(t *testing.T) {
@@ -1607,6 +1890,17 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 			"expected RunStatusFailed for invalid input, got %s",
 			run.Status,
 		)
+	}
+	// Positive: a schema-validation failure is terminal, so the run
+	// stamps CompletedAt — the Traces "Duration" must not render an
+	// em-dash for a run that has finished.
+	if run.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on schema-failed run")
+	}
+	// Negative: the stamp never precedes the run's creation.
+	if run.CompletedAt.Before(run.CreatedAt) {
+		t.Fatalf("CompletedAt %v before CreatedAt %v",
+			run.CompletedAt, run.CreatedAt)
 	}
 
 	// No task should be enqueued
@@ -2971,6 +3265,17 @@ func TestOrchestratorMapStepFailFast(t *testing.T) {
 				t.Fatalf("instance[1] = %v, want Failed",
 					inst[1].Status)
 			}
+			// Positive: failing a map step with no on-failure
+			// handler is terminal, so CompletedAt is stamped —
+			// the Traces "Duration" reports an honest value.
+			if run.CompletedAt == nil {
+				t.Fatal("CompletedAt = nil, want non-nil on map-failed run")
+			}
+			// Negative: the stamp never precedes creation.
+			if run.CompletedAt.Before(run.CreatedAt) {
+				t.Fatalf("CompletedAt %v before CreatedAt %v",
+					run.CompletedAt, run.CreatedAt)
+			}
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -3828,5 +4133,131 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 		t.Fatalf(
 			"attempts = %d, want 1", stepState.Attempts,
 		)
+	}
+}
+
+func TestMarkTerminalStampsStatusAndCompletedAt(t *testing.T) {
+	// Methodology: pure unit test for the single terminal-transition
+	// funnel. Every terminal status must set both Status and a non-nil
+	// CompletedAt; a non-terminal status must panic so no caller can
+	// route a still-running transition through the helper.
+	terminal := []dag.RunStatus{
+		dag.RunStatusCompleted,
+		dag.RunStatusFailed,
+		dag.RunStatusCancelled,
+		dag.RunStatusCompensated,
+	}
+	for _, status := range terminal {
+		run := markTerminal(
+			dag.WorkflowRun{RunID: "r1"}, status,
+		)
+		// Positive: status applied and CompletedAt stamped.
+		if run.Status != status {
+			t.Fatalf("Status = %v, want %v", run.Status, status)
+		}
+		if run.CompletedAt == nil {
+			t.Fatalf("CompletedAt = nil for terminal status %v", status)
+		}
+	}
+
+	// Negative: a non-terminal status panics (programmer error).
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("markTerminal(Running) should panic")
+			}
+		}()
+		markTerminal(dag.WorkflowRun{RunID: "r1"}, dag.RunStatusRunning)
+	}()
+
+	// Negative: an empty RunID panics.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("markTerminal with empty RunID should panic")
+			}
+		}()
+		markTerminal(dag.WorkflowRun{}, dag.RunStatusCompleted)
+	}()
+}
+
+func TestOrchestratorLoopStepFailureStampsCompletedAt(t *testing.T) {
+	// Methodology: an agent-loop step with MaxIterations=1 fails the
+	// workflow on the first step.continue (iterations 1 >= max). This
+	// drives the failLoopStep terminal path. Verify the failed run
+	// stamps CompletedAt so the Traces "Duration" is honest.
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{
+		Name: "loop-fail", Version: "1",
+		Steps: []dag.StepDef{{
+			ID:   "looped",
+			Task: "loop-task",
+			Type: dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{
+				MaxIterations: 1,
+			}),
+		}},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "loop-fail-run", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Drain the initial loop task.
+	taskSub, _ := js.PullSubscribe(
+		"task.loop-task.*", "", nats.BindStream("TASK_QUEUES"))
+	msgs, err := taskSub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch initial loop task failed: %v", err)
+	}
+	msgs[0].Ack()
+
+	// step.continue pushes iterations to 1, exceeding MaxIterations=1.
+	cont := protocol.NewStepEvent(
+		protocol.EventStepContinue, "loop-fail-run", "looped", nil)
+	contData, err := cont.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, cont.NATSSubject(), contData,
+		nats.MsgId(cont.NATSMsgID()))
+
+	waitForRunStatus(t, orch.store, "loop-fail-run",
+		dag.RunStatusFailed, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "loop-fail-run")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Positive: a loop-step failure is terminal, so CompletedAt is
+	// stamped — the Traces "Duration" must not render an em-dash.
+	if run.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on loop-failed run")
+	}
+	// Negative: the stamp never precedes the run's creation.
+	if run.CompletedAt.Before(run.CreatedAt) {
+		t.Fatalf("CompletedAt %v before CreatedAt %v",
+			run.CompletedAt, run.CreatedAt)
 	}
 }

@@ -35,9 +35,11 @@
       <thead>
         <tr>
           <th>Run</th>
+          <th>Trace ID</th>
           <th>Workflow</th>
           <th>Steps</th>
           <th>Status</th>
+          <th>Duration</th>
           <th>Started</th>
         </tr>
       </thead>
@@ -47,6 +49,7 @@
           <td class="console-mono">
             <a href="/console/traces/{{.RunID}}" title="{{.RunID}}">{{.RunIDShort}}</a>
           </td>
+          <td class="console-mono">{{if .TraceID}}{{.TraceID}}{{else}}&mdash;{{end}}</td>
           <td class="console-mono">{{.WorkflowID}}</td>
           <td class="console-mono">{{.StepCount}}</td>
           <td>
@@ -58,11 +61,12 @@
             <span class="badge badge-outline">{{.Status}}</span>
             {{end}}
           </td>
+          <td class="console-mono">{{if .Duration}}{{.Duration}}{{else}}&mdash;{{end}}</td>
           <td class="console-mono console-dim">{{.Started}}</td>
         </tr>
         {{else}}
         <tr class="empty-row">
-          <td colspan="5">No traces yet. Runs that carry a W3C traceparent appear here, one row per run.</td>
+          <td colspan="7">No traces yet. Runs that carry a W3C traceparent appear here, one row per run.</td>
         </tr>
         {{end}}
       </tbody>

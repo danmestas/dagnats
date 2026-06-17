@@ -69,6 +69,17 @@ func TestOrchestrator_EmptyWorkflowDefDoesNotCrash(t *testing.T) {
 		t.Fatalf("WorkflowID = %q, want %q",
 			failedRun.WorkflowID, "empty-wf")
 	}
+	// Positive: a failed-start run is terminal, so it stamps
+	// CompletedAt — the Traces "Duration" must report an honest
+	// value, not an em-dash, for a run that has finished.
+	if failedRun.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on failed-start run")
+	}
+	// Negative: the stamp never precedes the run's creation.
+	if failedRun.CompletedAt.Before(failedRun.CreatedAt) {
+		t.Fatalf("CompletedAt %v before CreatedAt %v",
+			failedRun.CompletedAt, failedRun.CreatedAt)
+	}
 
 	validDef := dag.WorkflowDef{
 		Name: "valid-wf", Version: "1",

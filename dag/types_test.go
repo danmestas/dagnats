@@ -422,6 +422,57 @@ func TestWorkflowRunDeadlineJSON(t *testing.T) {
 	}
 }
 
+func TestWorkflowRunTraceParentAndCompletedAtJSON(t *testing.T) {
+	completed := time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC)
+	tp := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	run := WorkflowRun{
+		RunID: "r1", WorkflowID: "wf", Status: RunStatusCompleted,
+		Steps: map[string]StepState{}, CreatedAt: time.Now().UTC(),
+		TraceParent: tp, CompletedAt: &completed,
+	}
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got WorkflowRun
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Positive: both fields round-trip.
+	if got.TraceParent != tp {
+		t.Fatalf("TraceParent = %q, want %q", got.TraceParent, tp)
+	}
+	if got.CompletedAt == nil || !got.CompletedAt.Equal(completed) {
+		t.Fatalf("CompletedAt = %v, want %v", got.CompletedAt, completed)
+	}
+
+	// Negative: a legacy blob lacking both keys unmarshals to ""/nil.
+	legacy := []byte(`{"run_id":"r2","workflow_id":"wf",` +
+		`"status":"pending","steps":{},"created_at":"2026-06-01T00:00:00Z"}`)
+	var legacyRun WorkflowRun
+	if err := json.Unmarshal(legacy, &legacyRun); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacyRun.TraceParent != "" {
+		t.Fatalf("legacy TraceParent = %q, want empty", legacyRun.TraceParent)
+	}
+	if legacyRun.CompletedAt != nil {
+		t.Fatalf("legacy CompletedAt = %v, want nil", legacyRun.CompletedAt)
+	}
+
+	// Negative: zero-value run omits both keys.
+	zero := WorkflowRun{RunID: "r3", WorkflowID: "wf",
+		Status: RunStatusPending, Steps: map[string]StepState{},
+		CreatedAt: time.Now().UTC()}
+	zeroData, _ := json.Marshal(zero)
+	if bytes.Contains(zeroData, []byte(`"trace_parent"`)) {
+		t.Fatalf("empty TraceParent should be omitted")
+	}
+	if bytes.Contains(zeroData, []byte(`"completed_at"`)) {
+		t.Fatalf("nil CompletedAt should be omitted")
+	}
+}
+
 func TestStepTypeMapStringAndJSON(t *testing.T) {
 	// Positive: string representation
 	if got := StepTypeMap.String(); got != "map" {

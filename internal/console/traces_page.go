@@ -31,9 +31,11 @@ type TraceListRow struct {
 	RunID      string
 	RunIDShort string
 	WorkflowID string
+	TraceID    string
 	Status     string
 	StepCount  int
 	Started    string
+	Duration   string
 }
 
 // TracesListView powers /console/traces. StatusFilter / TraceIDFilter
@@ -125,12 +127,24 @@ func traceRowsFromRuns(
 			RunID:      run.RunID,
 			RunIDShort: shortRunID(run.RunID),
 			WorkflowID: run.WorkflowID,
+			TraceID:    parseW3CTraceID(run.TraceParent),
 			Status:     statusStr,
 			StepCount:  len(run.Steps),
 			Started:    run.CreatedAt.UTC().Format(time.RFC3339),
+			Duration:   formatRunDuration(run),
 		})
 	}
 	return rows
+}
+
+// formatRunDuration returns the run's completed-minus-created span rounded
+// to the millisecond, or "" when the run has not completed. An in-flight
+// run (CompletedAt nil) reports no duration rather than a fabricated "0s".
+func formatRunDuration(run dag.WorkflowRun) string {
+	if run.CompletedAt == nil {
+		return ""
+	}
+	return run.CompletedAt.Sub(run.CreatedAt).Round(time.Millisecond).String()
 }
 
 // dispatchTraces splits /console/traces/<runID> into the detail view.
