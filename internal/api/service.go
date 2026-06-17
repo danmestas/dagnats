@@ -2111,8 +2111,12 @@ func (s *Service) enrichFireStatus(
 		return "", 0
 	}
 	var dur time.Duration
-	if run.Status != dag.RunStatusPending &&
+	if run.CompletedAt != nil {
+		dur = run.CompletedAt.Sub(run.CreatedAt)
+	} else if run.Status != dag.RunStatusPending &&
 		run.Status != dag.RunStatusRunning {
+		// Terminal but pre-#443 snapshot w/ no CompletedAt:
+		// best-effort fallback to wall-clock age.
 		dur = time.Since(run.CreatedAt)
 	}
 	return run.Status.String(), dur
