@@ -505,7 +505,7 @@ func TestOrchestratorSetsCompletedAtOnCompletion(t *testing.T) {
 	}
 }
 
-func TestOrchestratorFailedRunHasNilCompletedAt(t *testing.T) {
+func TestOrchestratorSetsCompletedAtOnFailure(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -562,9 +562,15 @@ func TestOrchestratorFailedRunHasNilCompletedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	// Negative: a failed run never carries a completion timestamp.
-	if run.CompletedAt != nil {
-		t.Fatalf("CompletedAt = %v, want nil on failed run", run.CompletedAt)
+	// Positive: a permanently-failed run stamps a completion timestamp so
+	// the Traces list reports an honest duration for terminal-failed runs.
+	if run.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on failed run")
+	}
+	// Negative: the stamp falls after the run's creation, never before.
+	if run.CompletedAt.Before(run.CreatedAt) {
+		t.Fatalf("CompletedAt %v before CreatedAt %v",
+			run.CompletedAt, run.CreatedAt)
 	}
 }
 
@@ -931,6 +937,75 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("workflow should be cancelled within 3s")
+}
+
+func TestOrchestratorSetsCompletedAtOnCancellation(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	wfDef := dag.WorkflowDef{
+		Name: "cancel-ca", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "slow-task", Type: dag.StepTypeNormal},
+		},
+	}
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, "cancel-ca", defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "cancel-ca-1", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
+		Subject: startEvt.NATSSubject(), Data: startData,
+		Header: nats.Header{"Nats-Msg-Id": {startEvt.NATSMsgID()}},
+	})
+	waitForRunStatus(t, orch.store, "cancel-ca-1",
+		dag.RunStatusRunning, 5*time.Second)
+
+	cancelEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowCancelled, "cancel-ca-1", nil)
+	cancelData, err := cancelEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublishMsg(t, js, &nats.Msg{
+		Subject: cancelEvt.NATSSubject(), Data: cancelData,
+		Header: nats.Header{"Nats-Msg-Id": {cancelEvt.NATSMsgID()}},
+	})
+	waitForRunStatus(t, orch.store, "cancel-ca-1",
+		dag.RunStatusCancelled, 5*time.Second)
+
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "cancel-ca-1")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Positive: cancellation stamps CompletedAt so a terminal-cancelled run
+	// reports an honest duration rather than an asymmetric em-dash.
+	if run.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on cancelled run")
+	}
+	// Negative: the stamp falls after the run's creation, never before.
+	if run.CompletedAt.Before(run.CreatedAt) {
+		t.Fatalf("CompletedAt %v before CreatedAt %v",
+			run.CompletedAt, run.CreatedAt)
+	}
 }
 
 func TestOrchestratorRetriesWithPolicy(t *testing.T) {

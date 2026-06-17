@@ -1611,6 +1611,8 @@ func (o *Orchestrator) failWorkflow(
 	state dag.StepState,
 ) error {
 	run.Status = dag.RunStatusFailed
+	now := time.Now().UTC()
+	run.CompletedAt = &now
 	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
 		return err
 	}
@@ -1698,6 +1700,8 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
 
+	now := time.Now().UTC()
+	run.CompletedAt = &now
 	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}
