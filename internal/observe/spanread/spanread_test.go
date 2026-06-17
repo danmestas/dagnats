@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"testing"
 
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -143,5 +144,35 @@ func TestHelpers_onKnownSpan(t *testing.T) {
 	if StatusLabel(rootless) != "unset" {
 		t.Fatalf("expected unset status, got %q",
 			StatusLabel(rootless))
+	}
+}
+
+func TestSpanAttr_readsStringAttribute(t *testing.T) {
+	const traceHex = "4142434445464748494a4b4c4d4e4f50"
+	sp := makeSpan(traceHex, "b2b2b2b2b2b2b2b2", "",
+		"attrs", 0, tracepb.Status_STATUS_CODE_OK)
+	strAttr := func(key, val string) *commonpb.KeyValue {
+		return &commonpb.KeyValue{
+			Key: key,
+			Value: &commonpb.AnyValue{
+				Value: &commonpb.AnyValue_StringValue{StringValue: val},
+			},
+		}
+	}
+	sp.Attributes = []*commonpb.KeyValue{
+		strAttr("run_id", "run-xyz"),
+		strAttr("workflow", "image-pipeline"),
+	}
+
+	if got := SpanAttr(sp, "run_id"); got != "run-xyz" {
+		t.Fatalf("SpanAttr run_id = %q, want run-xyz", got)
+	}
+	if got := SpanAttr(sp, "workflow"); got != "image-pipeline" {
+		t.Fatalf("SpanAttr workflow = %q, want image-pipeline", got)
+	}
+	// Negative space: an absent attribute returns the empty string, never
+	// a fabricated value, so the template can honestly omit the row.
+	if got := SpanAttr(sp, "step_id"); got != "" {
+		t.Fatalf("SpanAttr step_id = %q, want empty", got)
 	}
 }

@@ -2,14 +2,45 @@
 {{if .}}
 <table class="table console-table">
   <thead>
-    <tr><th>Span</th><th>Duration</th><th>Status</th></tr>
+    <tr><th>Span</th><th>Timeline</th><th>Duration</th><th>Status</th></tr>
   </thead>
   <tbody id="run-trace-body">
     {{range .}}
-    <tr id="run-trace-row-{{.SpanID}}">
+    <tr id="run-trace-row-{{.SpanID}}" class="trace-row"
+        data-span-id="{{.SpanID}}" tabindex="0">
       <td class="console-mono">
-        <span class="trace-span" data-depth="{{.Depth}}"
-              style="padding-left:{{mul .Depth 1}}rem">{{.Name}}</span>
+        <details class="trace-span-detail" data-depth="{{.Depth}}"
+                 style="padding-left:{{mul .Depth 1}}rem">
+          <summary class="trace-span">{{.Name}}</summary>
+          <dl class="trace-kv">
+            <div class="trace-kv-row"><dt>span_id</dt><dd>{{.SpanID}}</dd></div>
+            {{if .ParentSpanID}}
+            <div class="trace-kv-row"><dt>parent_span_id</dt><dd>{{.ParentSpanID}}</dd></div>
+            {{end}}
+            <div class="trace-kv-row"><dt>duration</dt><dd>{{printf "%.0f" .DurationMs}}ms</dd></div>
+            <div class="trace-kv-row"><dt>status</dt><dd>{{.Status}}</dd></div>
+            {{if .Workflow}}
+            <div class="trace-kv-row"><dt>workflow</dt><dd>{{.Workflow}}</dd></div>
+            {{end}}
+            {{if .StepID}}
+            <div class="trace-kv-row"><dt>step_id</dt><dd>{{.StepID}}</dd></div>
+            {{end}}
+            {{if .TaskName}}
+            <div class="trace-kv-row"><dt>task_name</dt><dd>{{.TaskName}}</dd></div>
+            {{end}}
+            {{if .RunID}}
+            <div class="trace-kv-row"><dt>run_id</dt><dd>{{.RunID}}</dd></div>
+            {{end}}
+          </dl>
+        </details>
+      </td>
+      <td>
+        <div class="timeline-track">
+          {{if gt .WidthPct 0.0}}
+          <div class="timeline-bar{{if eq .Status "error"}} step-state-failed{{end}}"
+               style="left:{{printf "%.1f" .OffsetPct}}%;width:{{printf "%.1f" .WidthPct}}%"></div>
+          {{end}}
+        </div>
       </td>
       <td class="console-mono">{{printf "%.0f" .DurationMs}}ms</td>
       <td>

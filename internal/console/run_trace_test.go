@@ -15,6 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/observe/spanread"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
@@ -179,5 +180,94 @@ func TestFlattenSpanTree(t *testing.T) {
 	// Negative: the error child surfaces its status, not the root's ok.
 	if rows[1].Status != "error" {
 		t.Fatalf("kid-early status = %q, want error", rows[1].Status)
+	}
+}
+
+// TestFlattenSpanTreeGeometry pins the waterfall geometry: a child sitting
+// at the trace midpoint must land at OffsetPct ~50 with a WidthPct that
+// is a faithful proportion of the trace span (not merely > 0), and the
+// KV attribute fields must round-trip the real span attributes — with an
+// honest empty string for any attribute the span does not carry.
+func TestFlattenSpanTreeGeometry(t *testing.T) {
+	const traceHex = "0102030405060708090a0b0c0d0e0f10"
+	mk := func(spanHex, parentHex, name string, start, end uint64,
+		attrs []*commonpb.KeyValue) *tracepb.Span {
+		tid, _ := hex.DecodeString(traceHex)
+		sid, _ := hex.DecodeString(spanHex)
+		var pid []byte
+		if parentHex != "" {
+			pid, _ = hex.DecodeString(parentHex)
+		}
+		return &tracepb.Span{
+			TraceId: tid, SpanId: sid, ParentSpanId: pid, Name: name,
+			StartTimeUnixNano: start, EndTimeUnixNano: end,
+			Status:     &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
+			Attributes: attrs,
+		}
+	}
+	strKV := func(key, val string) *commonpb.KeyValue {
+		return &commonpb.KeyValue{Key: key, Value: &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_StringValue{StringValue: val}}}
+	}
+	// Trace window [0, 4ms]. Root spans the full window.
+	root := mk("a1a1a1a1a1a1a1a1", "", "root", 0, 4_000_000, nil)
+	// Child sits at the midpoint: start 2ms, end 3ms → offset 50%, width 25%.
+	child := mk("b1b1b1b1b1b1b1b1", "a1a1a1a1a1a1a1a1", "mid",
+		2_000_000, 3_000_000, []*commonpb.KeyValue{
+			strKV("run_id", "run-xyz"), strKV("step_id", "resize"),
+			strKV("task_name", "resize.task"), strKV("workflow", "image-pipeline"),
+		})
+
+	trees := spanread.BuildSpanTrees([]*tracepb.Span{root, child})
+	rows := flattenSpanTree(trees)
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	mid := rows[1]
+	if mid.Name != "mid" {
+		t.Fatalf("row[1].Name = %q, want mid", mid.Name)
+	}
+	// Offset within tolerance of the midpoint.
+	if diff := mid.OffsetPct - 50.0; diff > 0.5 || diff < -0.5 {
+		t.Fatalf("OffsetPct = %v, want ~50", mid.OffsetPct)
+	}
+	// Width is a faithful proportion (1ms of a 4ms trace = 25%), not just >0.
+	if diff := mid.WidthPct - 25.0; diff > 0.5 || diff < -0.5 {
+		t.Fatalf("WidthPct = %v, want ~25", mid.WidthPct)
+	}
+	// ParentSpanID and KV attributes round-trip from the real span.
+	if mid.ParentSpanID != "a1a1a1a1a1a1a1a1" {
+		t.Fatalf("ParentSpanID = %q", mid.ParentSpanID)
+	}
+	if mid.RunID != "run-xyz" || mid.StepID != "resize" ||
+		mid.TaskName != "resize.task" || mid.Workflow != "image-pipeline" {
+		t.Fatalf("KV mismatch: %+v", mid)
+	}
+	// Negative: the root carries none of those attributes → empty strings.
+	if rows[0].RunID != "" || rows[0].StepID != "" ||
+		rows[0].TaskName != "" || rows[0].Workflow != "" {
+		t.Fatalf("root must not fabricate KV attrs: %+v", rows[0])
+	}
+}
+
+// TestFlattenSpanTreeInFlightGeometry: an in-flight span (EndTimeUnixNano
+// == 0) has no honest duration, so its bar geometry must be (0,0) — the
+// template then omits the bar rather than drawing a fabricated one.
+func TestFlattenSpanTreeInFlightGeometry(t *testing.T) {
+	const traceHex = "0102030405060708090a0b0c0d0e0f10"
+	tid, _ := hex.DecodeString(traceHex)
+	sid, _ := hex.DecodeString("c1c1c1c1c1c1c1c1")
+	inflight := &tracepb.Span{
+		TraceId: tid, SpanId: sid, Name: "running",
+		StartTimeUnixNano: 1_000_000, EndTimeUnixNano: 0,
+		Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_UNSET},
+	}
+	rows := flattenSpanTree(spanread.BuildSpanTrees([]*tracepb.Span{inflight}))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].OffsetPct != 0 || rows[0].WidthPct != 0 {
+		t.Fatalf("in-flight span must have zero geometry, got off=%v w=%v",
+			rows[0].OffsetPct, rows[0].WidthPct)
 	}
 }

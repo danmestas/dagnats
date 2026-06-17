@@ -206,8 +206,10 @@ func TestTraceDetailReusesTreeComponent(t *testing.T) {
 	fake := newFakeDS()
 	fake.runs = seedTraceRuns()
 	fake.runTrace = []TraceRow{
-		{Depth: 0, Name: "image-pipeline", DurationMs: 120, Status: "ok", SpanID: "s1"},
-		{Depth: 1, Name: "resize", DurationMs: 40, Status: "ok", SpanID: "s2"},
+		{Depth: 0, Name: "image-pipeline", DurationMs: 120, Status: "ok",
+			SpanID: "s1", OffsetPct: 0, WidthPct: 100},
+		{Depth: 1, Name: "resize", DurationMs: 40, Status: "ok",
+			SpanID: "s2", OffsetPct: 20, WidthPct: 60},
 	}
 	h := mountWithFakeRO(t, fake, false)
 	rec := httptest.NewRecorder()
@@ -229,10 +231,104 @@ func TestTraceDetailReusesTreeComponent(t *testing.T) {
 			t.Errorf("detail body missing %q", want)
 		}
 	}
-	// Negative: no fabricated Gantt geometry attributes.
-	if strings.Contains(body, "offsetPct") || strings.Contains(body, "widthPct") {
-		t.Errorf("detail must not fabricate waterfall bar geometry")
+	// Positive: the geometry-bearing child renders a real waterfall bar
+	// with its computed proportions and a clickable span-id handle.
+	for _, want := range []string{
+		"width:60.0%", "left:20.0%", `data-span-id=`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail body missing waterfall geometry %q", want)
+		}
 	}
+}
+
+// TestTraceDetailZeroGeometryOmitsBar feeds one zero-geometry span (no
+// honest duration) alongside a geometry-bearing sibling. The body must
+// render a timeline bar for the sibling but NOT for the zero span —
+// proving the template can emit a bar and honestly omits one, rather than
+// being globally bar-less.
+func TestTraceDetailZeroGeometryOmitsBar(t *testing.T) {
+	fake := newFakeDS()
+	fake.runs = seedTraceRuns()
+	fake.runTrace = []TraceRow{
+		{Depth: 0, Name: "running", DurationMs: 0, Status: "unset",
+			SpanID: "zero", OffsetPct: 0, WidthPct: 0},
+		{Depth: 0, Name: "done", DurationMs: 50, Status: "ok",
+			SpanID: "nonzero", OffsetPct: 10, WidthPct: 40},
+	}
+	h := mountWithFakeRO(t, fake, false)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet, "/console/traces/run-aaaaaaaaaaaa-1", nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// Positive: the sibling with geometry renders a bar.
+	if !strings.Contains(body, "width:40.0%") {
+		t.Errorf("geometry-bearing sibling must render a bar; body=%s", body)
+	}
+	zeroRow := traceBarBetween(body, "run-trace-row-zero")
+	if strings.Contains(zeroRow, "timeline-bar") {
+		t.Errorf("zero-geometry span must omit its bar; row=%s", zeroRow)
+	}
+	nonZeroRow := traceBarBetween(body, "run-trace-row-nonzero")
+	if !strings.Contains(nonZeroRow, "timeline-bar") {
+		t.Errorf("non-zero span must keep its bar; row=%s", nonZeroRow)
+	}
+}
+
+// TestTraceDetailSpanKV: a span carrying real attributes must surface a
+// clickable span-detail block exposing them, and a span missing an
+// attribute must omit that KV row entirely rather than print a blank or
+// fabricated value.
+func TestTraceDetailSpanKV(t *testing.T) {
+	fake := newFakeDS()
+	fake.runs = seedTraceRuns()
+	fake.runTrace = []TraceRow{
+		{Depth: 0, Name: "resize", DurationMs: 40, Status: "ok",
+			SpanID: "s2", ParentSpanID: "s1", OffsetPct: 20, WidthPct: 60,
+			RunID: "run-xyz", StepID: "resize-step", Workflow: "image-pipeline"},
+	}
+	h := mountWithFakeRO(t, fake, false)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet, "/console/traces/run-aaaaaaaaaaaa-1", nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// Positive: backed KV attributes surface in the span-detail block.
+	for _, want := range []string{
+		"span_id", "parent_span_id", "run-xyz", "resize-step",
+		"image-pipeline",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("span detail missing %q; body=%s", want, body)
+		}
+	}
+	// Negative: task_name was absent on the span, so the task_id/task_name
+	// KV label must NOT appear (no fabricated/blank row).
+	if strings.Contains(body, "task_name") || strings.Contains(body, "task_id") {
+		t.Errorf("absent task attribute must be omitted, not blanked")
+	}
+}
+
+// traceBarBetween returns the HTML slice for a single trace row keyed on
+// its row id, so a per-row assertion can't be fooled by a sibling's bar.
+func traceBarBetween(body, rowID string) string {
+	start := strings.Index(body, rowID)
+	if start < 0 {
+		return ""
+	}
+	rest := body[start:]
+	end := strings.Index(rest, "</tr>")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
 }
 
 func TestTraceDetailReadErrorDegrades(t *testing.T) {

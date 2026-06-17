@@ -11,16 +11,29 @@ import (
 
 	"github.com/danmestas/dagnats/internal/observe/spanread"
 	"github.com/nats-io/nats.go/jetstream"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// TraceRow is one span flattened into the console run-trace tree:
-// Depth indents the name; DurationMs / Status come from the span.
+// TraceRow is one span flattened into the console run-trace tree. Depth
+// indents the name; DurationMs / Status come from the span. OffsetPct /
+// WidthPct place the span's waterfall bar within the trace window (both
+// 0 when the span has no honest duration — the template then omits the
+// bar). ParentSpanID and the KV fields back the clickable span-detail
+// panel; each KV field is the empty string when the span carries no such
+// attribute, so the panel honestly omits a missing datum.
 type TraceRow struct {
-	Depth      int
-	Name       string
-	DurationMs float64
-	Status     string // "ok" | "error" | "unset"
-	SpanID     string
+	Depth        int
+	Name         string
+	DurationMs   float64
+	Status       string // "ok" | "error" | "unset"
+	SpanID       string
+	ParentSpanID string
+	OffsetPct    float64
+	WidthPct     float64
+	RunID        string
+	StepID       string
+	TaskName     string
+	Workflow     string
 }
 
 // traceFlattenMax bounds the flatten loop so a malformed tree (which
@@ -56,55 +69,102 @@ func (a *apiServiceAdapter) GetRunTrace(
 	return flattenSpanTree(roots), nil
 }
 
-// flattenSpanTree walks every trace's span tree in pre-order and emits
-// one TraceRow per span with its tree depth. Roots across distinct
-// trace IDs are emitted in start-time order; within a subtree, children
-// appear in start-time order (the builder already sorted them). Uses an
-// explicit stack — no recursion — per the repo's no-recursion rule.
+// flatSpan is one pre-flattened span carrying its pre-order tree depth.
+type flatSpan struct {
+	node  *spanread.SpanNode
+	depth int
+}
+
+// flattenSpanTree walks every trace's span tree in pre-order once into a
+// flat slice (explicit stack, no recursion), derives the trace window
+// from that single pass, then emits one TraceRow per span carrying its
+// depth and waterfall geometry. Roots across distinct trace IDs are
+// emitted in start-time order; within a subtree, children appear in
+// start-time order (the builder already sorted them).
 func flattenSpanTree(
 	roots map[string][]*spanread.SpanNode,
 ) []TraceRow {
+	flat := preflatten(roots)
+	var traceStart, traceEnd uint64
+	for i := 0; i < len(flat); i++ {
+		sp := flat[i].node.Span
+		if i == 0 || sp.StartTimeUnixNano < traceStart {
+			traceStart = sp.StartTimeUnixNano
+		}
+		if sp.EndTimeUnixNano > traceEnd { // 0 (in-flight) never extends it
+			traceEnd = sp.EndTimeUnixNano
+		}
+	}
+	rows := make([]TraceRow, 0, len(flat))
+	for i := 0; i < len(flat); i++ {
+		sp := flat[i].node.Span
+		offset, width := spanGeometry(sp, traceStart, traceEnd)
+		rows = append(rows, TraceRow{
+			Depth:        flat[i].depth,
+			Name:         sp.Name,
+			DurationMs:   float64(spanread.DurationMs(sp)),
+			Status:       spanread.StatusLabel(sp),
+			SpanID:       spanread.HexSpanID(sp),
+			ParentSpanID: spanread.HexParentID(sp),
+			OffsetPct:    offset,
+			WidthPct:     width,
+			RunID:        spanread.SpanAttr(sp, "run_id"),
+			StepID:       spanread.SpanAttr(sp, "step_id"),
+			TaskName:     spanread.SpanAttr(sp, "task_name"),
+			Workflow:     spanread.SpanAttr(sp, "workflow"),
+		})
+	}
+	return rows
+}
+
+// preflatten pre-orders every trace's roots (start-time sorted) into one
+// bounded flat slice via an explicit stack — no recursion, no second walk.
+func preflatten(roots map[string][]*spanread.SpanNode) []flatSpan {
 	allRoots := make([]*spanread.SpanNode, 0, len(roots))
 	for _, nodes := range roots {
 		allRoots = append(allRoots, nodes...)
 	}
 	if len(allRoots) > traceFlattenMax {
-		panic("flattenSpanTree: roots exceeds max bound")
+		panic("preflatten: roots exceeds max bound")
 	}
 	sort.SliceStable(allRoots, func(i, j int) bool {
 		return allRoots[i].Span.StartTimeUnixNano <
 			allRoots[j].Span.StartTimeUnixNano
 	})
-
-	type frame struct {
-		node  *spanread.SpanNode
-		depth int
+	stack := make([]flatSpan, 0, traceFlattenMax)
+	for i := len(allRoots) - 1; i >= 0; i-- { // reverse push → sorted pop
+		stack = append(stack, flatSpan{node: allRoots[i], depth: 0})
 	}
-	// Seed the stack so roots pop in start-time order (reverse push).
-	stack := make([]frame, 0, traceFlattenMax)
-	for i := len(allRoots) - 1; i >= 0; i-- {
-		stack = append(stack, frame{node: allRoots[i], depth: 0})
-	}
-
-	rows := make([]TraceRow, 0, len(allRoots))
+	flat := make([]flatSpan, 0, len(allRoots))
 	for i := 0; i < traceFlattenMax && len(stack) > 0; i++ {
 		top := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		sp := top.node.Span
-		rows = append(rows, TraceRow{
-			Depth:      top.depth,
-			Name:       sp.Name,
-			DurationMs: float64(spanread.DurationMs(sp)),
-			Status:     spanread.StatusLabel(sp),
-			SpanID:     spanread.HexSpanID(sp),
-		})
-		// Reverse push so children pop in their sorted order.
+		flat = append(flat, top)
 		kids := top.node.Children
 		for k := len(kids) - 1; k >= 0; k-- {
-			stack = append(stack, frame{
-				node: kids[k], depth: top.depth + 1,
-			})
+			stack = append(stack, flatSpan{node: kids[k], depth: top.depth + 1})
 		}
 	}
-	return rows
+	return flat
+}
+
+// spanGeometry maps a span onto the [traceStart, traceEnd] window as a
+// (offsetPct, widthPct) pair. Returns (0, 0) when the trace window is
+// empty or the span has no honest duration (mirrors DurationMs's guard),
+// so an in-flight or zero-width span draws no fabricated bar. Both values
+// are clamped to [0, 100].
+func spanGeometry(sp *tracepb.Span, traceStart, traceEnd uint64) (float64, float64) {
+	if sp == nil {
+		panic("spanGeometry: span must not be nil")
+	}
+	if traceEnd <= traceStart {
+		return 0, 0
+	}
+	if sp.EndTimeUnixNano <= sp.StartTimeUnixNano {
+		return 0, 0
+	}
+	window := float64(traceEnd - traceStart)
+	offset := float64(sp.StartTimeUnixNano-traceStart) / window * 100
+	width := float64(sp.EndTimeUnixNano-sp.StartTimeUnixNano) / window * 100
+	return clampPct(offset), clampPct(width)
 }
