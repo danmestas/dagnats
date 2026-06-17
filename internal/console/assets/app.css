@@ -2677,6 +2677,49 @@ summary:focus-visible,
   white-space: nowrap;
 }
 
+/* trace-waterfall — the run-trace tab / trace-detail span tree. Each span
+ * name is a native <details>; expanding it reveals the span's backed KV
+ * attributes. The Timeline column reuses .timeline-track / .timeline-bar
+ * so the waterfall and the run-detail step timeline share one bar style. */
+.trace-span-detail > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.trace-span-detail > summary::-webkit-details-marker {
+  display: none;
+}
+/* Disclosure caret — the native marker is suppressed above, so paint
+ * the same ▸/▾ affordance the .config-yaml-toggle <details> uses so the
+ * span name reads as expandable. Rotates to ▾ when [open]. */
+.trace-span-detail > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
+}
+.trace-span-detail[open] > summary::before {
+  transform: rotate(90deg);
+}
+.trace-kv {
+  margin: 0.35rem 0 0.1rem;
+  display: grid;
+  gap: 0.1rem;
+}
+.trace-kv-row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 9rem) 1fr;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+}
+.trace-kv-row dt {
+  color: var(--text-secondary);
+}
+.trace-kv-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 /* H7 — Events tab JSON. Long single-line JSON would overflow the
  * panel; pre-wrap + break-word lets it reflow at the panel edge. */
 .run-event-json pre,

@@ -120,6 +120,27 @@ func DurationMs(sp *tracepb.Span) int64 {
 	return (endNs - startNs) / 1_000_000
 }
 
+// SpanAttr returns the string value of the span attribute named key, or
+// "" when the span carries no such attribute (or it is not a string).
+// The empty return lets callers honestly omit a missing datum rather
+// than fabricate one. Bounded by MaxSpans on the attribute count so a
+// malformed span cannot spin the scan unbounded.
+func SpanAttr(sp *tracepb.Span, key string) string {
+	if sp == nil {
+		panic("SpanAttr: span must not be nil")
+	}
+	if key == "" {
+		panic("SpanAttr: key must not be empty")
+	}
+	attrs := sp.Attributes
+	for i := 0; i < len(attrs) && i < MaxSpans; i++ {
+		if attrs[i] != nil && attrs[i].Key == key {
+			return attrs[i].GetValue().GetStringValue()
+		}
+	}
+	return ""
+}
+
 // StatusLabel returns "ok", "error", or "unset".
 func StatusLabel(sp *tracepb.Span) string {
 	if sp == nil {
