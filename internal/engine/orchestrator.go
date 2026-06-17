@@ -493,7 +493,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 			// Create a failed run for visibility
 			run := dag.NewWorkflowRun(wfDef, evt.RunID)
 			run.TraceParent = evt.TraceParent
-			run.Status = dag.RunStatusFailed
+			run = markTerminal(run, dag.RunStatusFailed)
 			o.saveSnapshot(ctx, run, "")
 			return fmt.Errorf("input validation: %w", err)
 		}
@@ -637,14 +637,13 @@ func (o *Orchestrator) persistFailedStartRun(
 		"run_id", evt.RunID,
 		"workflow_id", workflowID,
 	)
-	failed := dag.WorkflowRun{
+	failed := markTerminal(dag.WorkflowRun{
 		RunID:       evt.RunID,
 		WorkflowID:  workflowID,
-		Status:      dag.RunStatusFailed,
 		Steps:       map[string]dag.StepState{},
 		CreatedAt:   time.Now().UTC(),
 		TraceParent: evt.TraceParent,
-	}
+	}, dag.RunStatusFailed)
 	if saveErr := o.saveSnapshot(ctx, failed, ""); saveErr != nil {
 		slog.ErrorContext(ctx,
 			"workflow.started: save failed-run snapshot",
@@ -779,6 +778,28 @@ func (o *Orchestrator) handleStepCompleted(
 	return o.enqueueReady(ctx, wfDef, run)
 }
 
+// markTerminal sets a run's terminal status and stamps CompletedAt in
+// one place so no terminal transition can record a finished run while
+// leaving CompletedAt nil (which would render the Traces "Duration" as
+// an em-dash for a run that has actually finished). Every terminal
+// path — complete, fail, loop-step fail, map-step fail, schema-
+// validation fail, failed-start — funnels its status change through
+// here. Returns the mutated copy because runs are passed by value.
+func markTerminal(
+	run dag.WorkflowRun, status dag.RunStatus,
+) dag.WorkflowRun {
+	if run.RunID == "" {
+		panic("markTerminal: RunID must not be empty")
+	}
+	if !status.IsTerminal() {
+		panic("markTerminal: status must be terminal")
+	}
+	run.Status = status
+	now := time.Now().UTC()
+	run.CompletedAt = &now
+	return run
+}
+
 // completeWorkflow marks the run complete, saves, publishes the event,
 // adjusts metrics, and releases concurrency slot.
 func (o *Orchestrator) completeWorkflow(
@@ -787,9 +808,7 @@ func (o *Orchestrator) completeWorkflow(
 	if run.RunID == "" {
 		panic("completeWorkflow: RunID must not be empty")
 	}
-	run.Status = dag.RunStatusCompleted
-	now := time.Now().UTC()
-	run.CompletedAt = &now
+	run = markTerminal(run, dag.RunStatusCompleted)
 	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}
@@ -1127,7 +1146,7 @@ func (o *Orchestrator) failLoopStep(
 	state.Status = dag.StepStatusFailed
 	state.Error = reason
 	run.Steps[stepID] = state
-	run.Status = dag.RunStatusFailed
+	run = markTerminal(run, dag.RunStatusFailed)
 	if err := o.saveSnapshot(ctx, run, stepID); err != nil {
 		return err
 	}
@@ -1610,9 +1629,7 @@ func (o *Orchestrator) failWorkflow(
 	stepDef dag.StepDef,
 	state dag.StepState,
 ) error {
-	run.Status = dag.RunStatusFailed
-	now := time.Now().UTC()
-	run.CompletedAt = &now
+	run = markTerminal(run, dag.RunStatusFailed)
 	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
 		return err
 	}
@@ -1675,7 +1692,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		return nil
 	}
 
-	run.Status = dag.RunStatusCancelled
+	run = markTerminal(run, dag.RunStatusCancelled)
 	for id, state := range run.Steps {
 		if state.Status == dag.StepStatusQueued ||
 			state.Status == dag.StepStatusRunning ||
@@ -1700,8 +1717,6 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
 
-	now := time.Now().UTC()
-	run.CompletedAt = &now
 	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}
@@ -2595,7 +2610,7 @@ func (o *Orchestrator) failMapStep(
 	}
 
 	// No on-failure — fail the workflow.
-	run.Status = dag.RunStatusFailed
+	run = markTerminal(run, dag.RunStatusFailed)
 	if err := o.saveSnapshot(ctx, run, baseID); err != nil {
 		return err
 	}

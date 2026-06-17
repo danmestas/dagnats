@@ -396,8 +396,10 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 		return true
 	}
 
-	// All compensate steps done — mark workflow Compensated
-	run.Status = dag.RunStatusCompensated
+	// All compensate steps done — mark workflow Compensated. Route
+	// through markTerminal so the terminal snapshot carries an honest
+	// CompletedAt like every other terminal path.
+	*run = markTerminal(*run, dag.RunStatusCompensated)
 	saveFn(ctx, *run, "")
 	rm.runsActive.Add(ctx, -1)
 	return true
