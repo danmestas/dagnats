@@ -215,7 +215,11 @@ func (a *Aggregator) pumpHandleMessage(msg jetstream.Msg) {
 	}
 	series, point, ok := decodeRecord(rec)
 	if !ok {
-		// decodeRecord already logged; nothing more to say.
+		// decodeRecord is logging-free (keeps otel_decode.go NATS- and
+		// log-free); surface the drop here so a silently-undecoded
+		// metric kind is visible instead of vanishing.
+		a.logger.Warn("metrics pump: undecoded record",
+			"name", rec.Name, "subject", msg.Subject())
 		return
 	}
 	if err := a.Ingest(series, point); err != nil {

@@ -68,7 +68,8 @@ func publishMetricRecord(
 ) {
 	t.Helper()
 	data := json.RawMessage(fmt.Sprintf(
-		`{"DataPoints":[{"Int":%d}],"Temporality":1,"IsMonotonic":true}`, value,
+		`{"DataPoints":[{"Int":%d}],"Temporality":"CumulativeTemporality","IsMonotonic":true}`,
+		value,
 	))
 	rec := metricRecord{
 		Name:        name,

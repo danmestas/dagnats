@@ -263,6 +263,36 @@ func TestDashboard_p50CardRendersWhenHistogramSeeded(t *testing.T) {
 	}
 }
 
+// TestTileP50Latency_neutralStateForNormalSnapshotSave guards the Norman
+// finding: the snapshot-save p50 tile must NOT inherit the run-latency
+// alarm bands (good <100ms / amber <500ms / red >=500ms). A 200ms
+// object-store snapshot save is perfectly healthy I/O, but those bands
+// would render it amber and a 600ms save red — falsely alarming the
+// operator over normal disk/object-store latency. Snapshot save is an
+// informational latency with no SLO, so it must carry a non-alarming
+// state. Positive: a 200ms save is not amber/red. Negative: a 600ms save
+// is likewise not amber/red (the upper band must not fire either).
+func TestTileP50Latency_neutralStateForNormalSnapshotSave(t *testing.T) {
+	for _, p50 := range []float64{200, 600} {
+		src := newFakeMetricsSource()
+		now := time.Now()
+		// A single bucket resolves p50 to its upper bound, so the tile's
+		// computed p50 equals the band-tripping value under test.
+		src.addHistogram(
+			"snapshot.save.duration_ms", 10,
+			[]MetricBucket{{UpperBound: p50, Count: 10}}, now,
+		)
+		tile, ok := tileP50Latency(src)
+		if !ok {
+			t.Fatalf("p50=%.0f: tile must render for a seeded histogram", p50)
+		}
+		if tile.State == "amber" || tile.State == "red" {
+			t.Errorf("p50=%.0f: snapshot-save tile carries alarming "+
+				"run-latency state %q; want neutral", p50, tile.State)
+		}
+	}
+}
+
 // TestDashboard_deltaBadgeRendersWithHistory seeds a two-point failed
 // series so the error-rate tile's computeDelta has prior history, and
 // asserts the trend badge renders with a direction glyph. (Throughput

@@ -21,7 +21,7 @@ func TestDecodeSum_ExtractsValueAndLabels(t *testing.T) {
 			],
 			"Int": 42
 		}],
-		"Temporality": 1,
+		"Temporality": "CumulativeTemporality",
 		"IsMonotonic": true
 	}`)
 	pt, ok := decodeSum(raw)
@@ -54,6 +54,50 @@ func TestDecodeSum_RejectsEmptyDataPoints(t *testing.T) {
 	}
 	if _, ok := decodeSum(nil); ok {
 		t.Fatal("decodeSum must reject nil")
+	}
+}
+
+func TestDecodeSum_AcceptsRealSDKTemporality(t *testing.T) {
+	// The OTel SDK serialises Temporality via MarshalText, so the wire
+	// form is a string ("CumulativeTemporality"), not the int our older
+	// fixtures used. A Temporality typed as int fails json.Unmarshal on
+	// the real payload, dropping every counter on the floor.
+	raw := []byte(`{
+		"DataPoints": [{"Int": 9}],
+		"Temporality": "CumulativeTemporality",
+		"IsMonotonic": true
+	}`)
+	pt, ok := decodeSum(raw)
+	if !ok {
+		t.Fatal("decodeSum rejected a real SDK Sum payload (string Temporality)")
+	}
+	if pt.Value != 9 {
+		t.Fatalf("Value = %v, want 9", pt.Value)
+	}
+}
+
+func TestDecodeHistogram_AcceptsRealSDKTemporality(t *testing.T) {
+	// Same string-Temporality regression as Sum, but for histograms —
+	// this is the path the snapshot p50 metric rides, so a decode
+	// failure here is exactly why p50 never reached the console.
+	raw := []byte(`{
+		"DataPoints": [{
+			"Count": 5,
+			"Sum": 2.5,
+			"Bounds": [0.1, 0.5],
+			"BucketCounts": [1, 2, 2]
+		}],
+		"Temporality": "CumulativeTemporality"
+	}`)
+	pt, ok := decodeHistogram(raw)
+	if !ok {
+		t.Fatal("decodeHistogram rejected a real SDK Histogram payload (string Temporality)")
+	}
+	if pt.Count != 5 {
+		t.Fatalf("Count = %d, want 5", pt.Count)
+	}
+	if len(pt.Buckets) != 3 {
+		t.Fatalf("len Buckets = %d, want 3", len(pt.Buckets))
 	}
 }
 
@@ -120,7 +164,7 @@ func TestDecodeRecord_DispatchesByDataShape(t *testing.T) {
 		Name: "test_counter",
 		Data: []byte(`{
 			"DataPoints": [{"Int": 5}],
-			"Temporality": 1,
+			"Temporality": "CumulativeTemporality",
 			"IsMonotonic": true
 		}`),
 	}
@@ -131,8 +175,9 @@ func TestDecodeRecord_DispatchesByDataShape(t *testing.T) {
 	if series.Name != "test_counter" {
 		t.Fatalf("Name = %q", series.Name)
 	}
-	// Both sum and gauge match the {DataPoints:[{Int}]} shape; the
-	// decoder tries sum first so we expect KindCounter.
+	// The Int data-point shape matches both sum and gauge. Sum now
+	// decodes directly via json.RawMessage Temporality, and decodeRecord
+	// still attempts sum before gauge, so KindCounter holds.
 	if series.Kind != KindCounter {
 		t.Fatalf("Kind = %q, want counter", series.Kind)
 	}
