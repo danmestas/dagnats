@@ -419,21 +419,6 @@ func successRateState(pct float64) string {
 	return "red"
 }
 
-// latencyTileState classifies a latency value into a band. The
-// thresholds are coarse on purpose: anything under 100ms is healthy,
-// up to 500ms is amber, beyond is red. Operators tune this later when
-// the engine emits per-step labels and we know the real distribution.
-// Drives the p50-latency telemetry card's state coloring.
-func latencyTileState(latencyMs float64) string {
-	if latencyMs < 100 {
-		return "good"
-	}
-	if latencyMs < 500 {
-		return "amber"
-	}
-	return "red"
-}
-
 // tileThroughput derives runs-per-second from the workflow.runs.completed
 // counter over the aggregator window. perMinuteRate needs >=2 points
 // with a positive time delta; with fewer the rate is unknowable, so we
@@ -626,7 +611,15 @@ func tileP50Latency(src MetricsSource) (DashboardTile, bool) {
 		LinkHref:  "/console/metrics",
 		Value:     formatNumber(p50),
 		Sparkline: true,
-		State:     latencyTileState(p50),
+		// Snapshot-save duration is an informational object-store I/O
+		// latency with no health SLO, so it carries no alarm band. The
+		// run-latency thresholds (good <100ms / amber <500ms / red) are
+		// calibrated for request/run latency and would falsely flag a
+		// normal 200ms save as amber and a 600ms save as red (Norman
+		// finding). Neutral has no tile-state CSS rule, so the tile
+		// renders without a colored border — honest for a metric that is
+		// not a health signal.
+		State: "neutral",
 	}
 	// Honest-omit floor: <2 histogram samples cannot form a trend line.
 	if len(series.Points) >= 2 {
