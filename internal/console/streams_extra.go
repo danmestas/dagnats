@@ -80,7 +80,9 @@ func pumpTriggerUpdates(
 			if !ok {
 				return
 			}
-			if err := emitTriggerPatch(sse, tmpl, update); err != nil {
+			if err := emitTriggerPatch(
+				sse, tmpl, update, cfg.ReadOnly,
+			); err != nil {
 				cfg.Logger.Warn("console: sse triggers emit",
 					"trigger_id", update.Def.ID, "err", err)
 				return
@@ -95,7 +97,7 @@ func pumpTriggerUpdates(
 // remove-only.
 func emitTriggerPatch(
 	sse *datastar.ServerSentEventGenerator,
-	tmpl *template.Template, update TriggerUpdate,
+	tmpl *template.Template, update TriggerUpdate, readOnly bool,
 ) error {
 	if update.Def.ID == "" {
 		return nil
@@ -106,9 +108,10 @@ func emitTriggerPatch(
 	}
 	row := triggerRowFromDef(update.Def)
 	html, err := renderFragment(tmpl, "trigger-row", triggerRowPatch{
-		Row:    row,
-		Fresh:  true,
-		PutSeq: update.Seq,
+		Row:      row,
+		Fresh:    true,
+		PutSeq:   update.Seq,
+		ReadOnly: readOnly,
 	})
 	if err != nil {
 		return fmt.Errorf("render trigger-row: %w", err)
@@ -130,9 +133,10 @@ func emitTriggerPatch(
 
 // triggerRowPatch is the template binding for the trigger-row fragment.
 type triggerRowPatch struct {
-	Row    TriggerRow
-	Fresh  bool
-	PutSeq uint64
+	Row      TriggerRow
+	Fresh    bool
+	PutSeq   uint64
+	ReadOnly bool
 }
 
 // removePatch issues one Datastar remove against selector. Returns nil

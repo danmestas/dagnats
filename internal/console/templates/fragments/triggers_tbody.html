@@ -14,9 +14,16 @@
     </td>
     <td class="console-mono">{{.Target}}</td>
     <td>
-      <span class="badge {{if .Enabled}}badge-completed{{else}}badge-skipped{{end}}">
-        <span class="status-icon" aria-hidden="true">{{.StatusIcon}}</span>
-        {{.StatusLabel}}
+      <span class="dn-switch{{if .Enabled}} dn-on{{end}}"
+            role="switch"
+            tabindex="0"
+            aria-checked="{{.Enabled}}"
+            aria-label="{{if .Enabled}}Disable{{else}}Enable{{end}} trigger {{.ID}}"
+            data-trigger-toggle="{{.ID}}"
+            data-trigger-current="{{.Enabled}}"
+            {{if $.ReadOnly}}aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to toggle triggers."{{end}}>
+        <span class="dn-knob" aria-hidden="true"></span>
+        <span class="sr-only">{{.StatusLabel}}</span>
       </span>
     </td>
     <td class="console-sparkline-col">{{if .Sparkline}}<canvas class="console-sparkline" data-sparkline-id="trigger-{{.ID}}" data-sparkline-data="{{jsonArray .Sparkline}}" width="60" height="16" aria-label="Activity sparkline for {{.ID}}"></canvas>{{end}}</td>

@@ -852,13 +852,23 @@ func csrfTokenFor(r *http.Request) string {
 }
 
 // AuditLogView powers /console/audit.
+//
+// DeniedCount is the number of denied-outcome rows among the visible
+// (post-filter) set; the template renders the amber callout only when
+// it is positive, so the warning is never a false alarm. AuthLabel is
+// cfg.AuthMode.String() — the identity gate that produced the actors.
+// Outcomes is the static filter-chip vocabulary (all/success/...).
 type AuditLogView struct {
-	ActorFilter  string
-	ActionFilter string
-	RangeFilter  string
-	Total        int
-	Rows         []AuditRow
-	Actions      []AuditAction
+	ActorFilter   string
+	ActionFilter  string
+	RangeFilter   string
+	OutcomeFilter string
+	Total         int
+	Rows          []AuditRow
+	Actions       []AuditAction
+	Outcomes      []string
+	DeniedCount   int
+	AuthLabel     string
 }
 
 // AuditRow is one rendered audit-log entry.
@@ -889,6 +899,7 @@ func servePageAuditLog(
 		return
 	}
 	view := buildAuditView(r.Context(), ds, r.URL.Query())
+	view.AuthLabel = cfg.AuthMode.String()
 	renderPage(w, r, ts, cfg, "audit-log", pageData{
 		Title:   "Audit log",
 		Section: "audit",
@@ -912,23 +923,35 @@ func buildAuditView(
 	actorFilter := firstQueryValue(q, "actor")
 	actionFilter := firstQueryValue(q, "action")
 	rangeFilter := firstQueryValue(q, "range")
+	outcomeFilter := firstQueryValue(q, "outcome")
 	now := time.Now()
 	rows := make([]AuditRow, 0, len(events))
+	deniedCount := 0
 	for _, e := range events {
 		if !auditMatchesFilters(
-			e, actorFilter, actionFilter, rangeFilter, now,
+			e, actorFilter, actionFilter, rangeFilter, outcomeFilter, now,
 		) {
 			continue
+		}
+		if e.Outcome == string(OutcomeDenied) {
+			deniedCount++
 		}
 		rows = append(rows, auditRowFromEvent(e))
 	}
 	return AuditLogView{
-		ActorFilter:  actorFilter,
-		ActionFilter: actionFilter,
-		RangeFilter:  rangeFilter,
-		Total:        len(rows),
-		Rows:         rows,
-		Actions:      AuditActionList(),
+		ActorFilter:   actorFilter,
+		ActionFilter:  actionFilter,
+		RangeFilter:   rangeFilter,
+		OutcomeFilter: outcomeFilter,
+		Total:         len(rows),
+		Rows:          rows,
+		Actions:       AuditActionList(),
+		Outcomes: []string{
+			string(OutcomeSuccess),
+			string(OutcomeDenied),
+			string(OutcomeFailed),
+		},
+		DeniedCount: deniedCount,
 	}
 }
 
@@ -936,12 +959,15 @@ func buildAuditView(
 // one AuditEvent. Returns true when the event survives all three.
 // Empty filter values pass through unchanged.
 func auditMatchesFilters(
-	e AuditEvent, actor, action, rng string, now time.Time,
+	e AuditEvent, actor, action, rng, outcome string, now time.Time,
 ) bool {
 	if actor != "" && e.Actor != actor {
 		return false
 	}
 	if action != "" && e.Action != action {
+		return false
+	}
+	if outcome != "" && e.Outcome != outcome {
 		return false
 	}
 	if !auditTimeInRange(e.Time, rng, now) {

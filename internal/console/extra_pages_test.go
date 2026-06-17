@@ -1321,5 +1321,186 @@ func TestClassifyDLQReason(t *testing.T) {
 	}
 }
 
+// TestTriggersList_inlineToggleControl asserts each list row renders an
+// interactive enable/disable switch wired to the existing toggle route,
+// carrying the trigger id + its current enabled state. Methodology: seed
+// one enabled + one disabled cron trigger, GET /console/triggers, look
+// for the per-row switch markup and the toggle endpoint reference.
+func TestTriggersList_inlineToggleControl(t *testing.T) {
+	fake := newFakeDS()
+	enabled := sampleTrigger("cron-on", "alpha", "cron")
+	disabled := sampleTrigger("cron-off", "alpha", "cron")
+	disabled.Enabled = false
+	fake.triggers = []trigger.TriggerDef{enabled, disabled}
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/triggers", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		`class="dn-switch dn-on"`,
+		`data-trigger-toggle="cron-on"`,
+		`data-trigger-toggle="cron-off"`,
+		`data-trigger-current="true"`,
+		`data-trigger-current="false"`,
+		`role="switch"`,
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("missing %q in triggers list toggle markup", sub)
+		}
+	}
+	// The disabled row's switch must NOT carry the dn-on modifier.
+	if strings.Count(body, "dn-switch dn-on") != 1 {
+		t.Errorf("expected exactly one dn-on switch (the enabled row)")
+	}
+}
+
+// TestTriggersList_inlineToggleReadOnly asserts the inline switch is
+// disabled (non-interactive) when the console is read-only, mirroring
+// the gating other inline actions use.
+func TestTriggersList_inlineToggleReadOnly(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-ro", "alpha", "cron"),
+	}
+	h := mountWithFakeRO(t, fake, true)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/triggers", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `aria-disabled="true"`) {
+		t.Errorf("expected read-only switch to carry aria-disabled")
+	}
+	if !strings.Contains(body, "data-trigger-toggle=") {
+		t.Errorf("expected switch markup even when read-only")
+	}
+}
+
+// TestAuditLog_outcomeFilter narrows by outcome query param. Methodology:
+// seed a success + a denied event, GET ?outcome=denied, assert only the
+// denied row's distinguishing target renders.
+func TestAuditLog_outcomeFilter(t *testing.T) {
+	fake := newFakeDS()
+	fake.auditEvents = []AuditEvent{
+		{Time: time.Now(), Actor: "alice", Action: "trigger.enable",
+			Target: "ok-target", Outcome: string(OutcomeSuccess)},
+		{Time: time.Now(), Actor: "bob", Action: "trigger.disable",
+			Target: "denied-target", Outcome: string(OutcomeDenied)},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/audit?outcome=denied", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "denied-target") {
+		t.Errorf("expected denied row in outcome=denied filter")
+	}
+	if strings.Contains(body, "ok-target") {
+		t.Errorf("did not expect success row in outcome=denied filter")
+	}
+	// The filter control itself must render the four outcome options.
+	for _, sub := range []string{
+		`name="outcome"`, ">success<", ">denied<", ">failed<",
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("missing outcome filter option %q", sub)
+		}
+	}
+}
+
+// TestAuditLog_deniedCallout renders an amber callout with the count
+// when denied rows are present, and omits it when none are.
+func TestAuditLog_deniedCallout(t *testing.T) {
+	fake := newFakeDS()
+	fake.auditEvents = []AuditEvent{
+		{Time: time.Now(), Actor: "alice", Action: "trigger.disable",
+			Target: "t1", Outcome: string(OutcomeDenied)},
+		{Time: time.Now(), Actor: "bob", Action: "dlq.retry",
+			Target: "t2", Outcome: string(OutcomeDenied)},
+		{Time: time.Now(), Actor: "carol", Action: "run.cancel",
+			Target: "t3", Outcome: string(OutcomeSuccess)},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/audit", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, "dn-callout") {
+		t.Errorf("expected denied callout with denied rows present")
+	}
+	if !strings.Contains(body, "2 denied") {
+		t.Errorf("expected denied count of 2 in callout, body=%q",
+			calloutSnippet(body))
+	}
+}
+
+// TestAuditLog_deniedCalloutOmittedAtZero asserts no callout renders when
+// the visible rows contain no denied outcomes — honest empty state.
+func TestAuditLog_deniedCalloutOmittedAtZero(t *testing.T) {
+	fake := newFakeDS()
+	fake.auditEvents = []AuditEvent{
+		{Time: time.Now(), Actor: "alice", Action: "run.cancel",
+			Target: "t1", Outcome: string(OutcomeSuccess)},
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/audit", nil))
+	body := rr.Body.String()
+	if strings.Contains(body, "dn-callout") {
+		t.Errorf("did not expect denied callout when zero denied rows")
+	}
+}
+
+// TestAuditLog_identityBanner surfaces the console auth mode so the
+// operator knows which identity gate produced the recorded actors.
+func TestAuditLog_identityBanner(t *testing.T) {
+	fake := newFakeDS()
+	fake.auditEvents = []AuditEvent{
+		{Time: time.Now(), Actor: "alice", Action: "run.cancel",
+			Target: "t1", Outcome: string(OutcomeSuccess)},
+	}
+	// AuthForwarded → "forward-auth" label; non-loopback needs CSRF
+	// secret loaded by mountWithFakeAuth.
+	h := mountWithFakeAuth(t, fake, AuthForwarded)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/console/audit", nil)
+	req.Header.Set("X-Forwarded-User", "alice")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "dn-idbanner") {
+		t.Errorf("expected identity banner element")
+	}
+	if !strings.Contains(body, "forward-auth") {
+		t.Errorf("expected forward-auth mode in identity banner")
+	}
+}
+
+// calloutSnippet returns a small window around the first dn-callout for
+// failure messages — keeps the assertion output readable.
+func calloutSnippet(body string) string {
+	i := strings.Index(body, "dn-callout")
+	if i < 0 {
+		return "(no callout)"
+	}
+	end := i + 120
+	if end > len(body) {
+		end = len(body)
+	}
+	return body[i:end]
+}
+
 // Silence unused-import linter when nothing exercises io in this file.
 var _ = io.Discard

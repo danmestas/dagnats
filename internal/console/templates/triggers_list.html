@@ -74,7 +74,65 @@
   if (!tbody) return;
   var csrfMeta = document.querySelector('meta[name="csrf-token"]');
   var csrf = csrfMeta ? csrfMeta.getAttribute("content") : "";
+  // Inline enable/disable switch: delegated on #triggers-tbody so
+  // SSE-patched rows pick up the handler without re-binding. POSTs to
+  // the existing /console/triggers/<id>/toggle route (read-then-flip on
+  // the server); the response carries the new enabled state + a toast.
+  function handleSwitch(sw) {
+    if (sw.getAttribute("aria-disabled") === "true") return;
+    var id = sw.getAttribute("data-trigger-toggle");
+    if (!id || sw.dataset.busy === "1") return;
+    sw.dataset.busy = "1";
+    fetch("/console/triggers/" + encodeURIComponent(id) + "/toggle", {
+      method: "POST",
+      headers: {
+        "X-CSRF-Token": csrf,
+        "Accept": "application/json",
+      },
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (t) {
+          throw new Error("toggle failed: " + resp.status + " " + t);
+        });
+      }
+      return resp.json();
+    }).then(function (data) {
+      var enabled = !!data.enabled;
+      sw.classList.toggle("dn-on", enabled);
+      sw.setAttribute("aria-checked", enabled ? "true" : "false");
+      sw.setAttribute("data-trigger-current", enabled ? "true" : "false");
+      sw.setAttribute("aria-label",
+        (enabled ? "Disable" : "Enable") + " trigger " + id);
+      sw.dataset.busy = "";
+      if (data && data.toast) {
+        document.dispatchEvent(new CustomEvent("console:toast", {
+          detail: data.toast,
+        }));
+      }
+    }).catch(function (err) {
+      sw.dataset.busy = "";
+      document.dispatchEvent(new CustomEvent("console:toast", {
+        detail: {
+          level: "error",
+          message: (err && err.message) ? err.message : "toggle failed",
+        },
+      }));
+    });
+  }
+  tbody.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Enter" && evt.key !== " ") return;
+    var sw = evt.target.closest(".dn-switch[data-trigger-toggle]");
+    if (!sw) return;
+    evt.preventDefault();
+    handleSwitch(sw);
+  });
   tbody.addEventListener("click", function (evt) {
+    var sw = evt.target.closest(".dn-switch[data-trigger-toggle]");
+    if (sw) {
+      handleSwitch(sw);
+      return;
+    }
     var btn = evt.target.closest(".trigger-fire-btn");
     if (!btn) return;
     var id = btn.getAttribute("data-trigger-id");
