@@ -330,6 +330,8 @@ type WorkflowRun struct {
 	Deadline       *time.Time           `json:"deadline,omitempty"`
 	PriorityOffset int                  `json:"priority_offset,omitempty"`
 	SingletonKey   string               `json:"singleton_key,omitempty"`
+	TraceParent    string               `json:"trace_parent,omitempty"`
+	CompletedAt    *time.Time           `json:"completed_at,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.

@@ -492,6 +492,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 		if err := dag.ValidateSchema(wfDef.InputSchema, input); err != nil {
 			// Create a failed run for visibility
 			run := dag.NewWorkflowRun(wfDef, evt.RunID)
+			run.TraceParent = evt.TraceParent
 			run.Status = dag.RunStatusFailed
 			o.saveSnapshot(ctx, run, "")
 			return fmt.Errorf("input validation: %w", err)
@@ -499,6 +500,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	}
 
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
+	run.TraceParent = evt.TraceParent
 	run.Input = input
 
 	admission, admitErr := o.admission.Admit(ctx, wfDef, run, input)
@@ -636,11 +638,12 @@ func (o *Orchestrator) persistFailedStartRun(
 		"workflow_id", workflowID,
 	)
 	failed := dag.WorkflowRun{
-		RunID:      evt.RunID,
-		WorkflowID: workflowID,
-		Status:     dag.RunStatusFailed,
-		Steps:      map[string]dag.StepState{},
-		CreatedAt:  time.Now().UTC(),
+		RunID:       evt.RunID,
+		WorkflowID:  workflowID,
+		Status:      dag.RunStatusFailed,
+		Steps:       map[string]dag.StepState{},
+		CreatedAt:   time.Now().UTC(),
+		TraceParent: evt.TraceParent,
 	}
 	if saveErr := o.saveSnapshot(ctx, failed, ""); saveErr != nil {
 		slog.ErrorContext(ctx,
@@ -785,6 +788,8 @@ func (o *Orchestrator) completeWorkflow(
 		panic("completeWorkflow: RunID must not be empty")
 	}
 	run.Status = dag.RunStatusCompleted
+	now := time.Now().UTC()
+	run.CompletedAt = &now
 	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}

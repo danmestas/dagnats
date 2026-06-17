@@ -360,6 +360,214 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	}
 }
 
+func TestOrchestratorPersistsTraceParentOnStart(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{Name: "tp-step", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-tp", defData)
+	startEvt.TraceParent = tp
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	waitForStepStatus(t, orch.store, "run-tp", "a",
+		dag.StepStatusQueued, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "run-tp")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Positive: the run carries the inbound traceparent.
+	if run.TraceParent != tp {
+		t.Fatalf("TraceParent = %q, want %q", run.TraceParent, tp)
+	}
+}
+
+func TestOrchestratorEmptyTraceParentStaysEmpty(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{Name: "tp-empty", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-tpe", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	waitForStepStatus(t, orch.store, "run-tpe", "a",
+		dag.StepStatusQueued, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "run-tpe")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Negative: no inbound traceparent => no fabricated trace context.
+	if run.TraceParent != "" {
+		t.Fatalf("TraceParent = %q, want empty", run.TraceParent)
+	}
+}
+
+func TestOrchestratorSetsCompletedAtOnCompletion(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{Name: "ca-step", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-ca", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	waitForStepStatus(t, orch.store, "run-ca", "a",
+		dag.StepStatusQueued, 5*time.Second)
+	compEvt := protocol.NewStepEvent(protocol.EventStepCompleted, "run-ca", "a", []byte(`"done"`))
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	waitForRunStatus(t, orch.store, "run-ca",
+		dag.RunStatusCompleted, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "run-ca")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Positive: completion stamps CompletedAt after CreatedAt.
+	if run.CompletedAt == nil {
+		t.Fatal("CompletedAt = nil, want non-nil on completed run")
+	}
+	if !run.CompletedAt.After(run.CreatedAt) {
+		t.Fatalf("CompletedAt %v not after CreatedAt %v",
+			run.CompletedAt, run.CreatedAt)
+	}
+}
+
+func TestOrchestratorFailedRunHasNilCompletedAt(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	// No retry policy: a single step failure fails the run permanently.
+	wfDef := dag.WorkflowDef{Name: "ca-fail", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(protocol.EventWorkflowStarted, "run-cf", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	waitForStepStatus(t, orch.store, "run-cf", "a",
+		dag.StepStatusQueued, 5*time.Second)
+	startedEvt := protocol.NewStepEvent(protocol.EventStepStarted, "run-cf", "a", nil)
+	startedEvt.AttemptNumber = 1
+	startedData, err := startedEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startedEvt.NATSSubject(), startedData,
+		nats.MsgId(startedEvt.NATSMsgID()))
+	time.Sleep(50 * time.Millisecond)
+	failEvt := protocol.NewStepEvent(protocol.EventStepFailed, "run-cf", "a", []byte(`"boom"`))
+	failData, err := failEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, failEvt.NATSSubject(), failData,
+		nats.MsgId(failEvt.NATSMsgID()))
+
+	waitForRunStatus(t, orch.store, "run-cf",
+		dag.RunStatusFailed, 5*time.Second)
+	store := NewSnapshotStore(jsNew)
+	run, err := store.Load(context.Background(), "run-cf")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	// Negative: a failed run never carries a completion timestamp.
+	if run.CompletedAt != nil {
+		t.Fatalf("CompletedAt = %v, want nil on failed run", run.CompletedAt)
+	}
+}
+
 func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 

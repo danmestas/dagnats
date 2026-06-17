@@ -98,6 +98,88 @@ func TestTracesListEmptyState(t *testing.T) {
 	}
 }
 
+func TestTracesListRendersTraceIDAndDurationColumns(t *testing.T) {
+	fake := newFakeDS()
+	fake.runs = seedTraceRuns()
+	h := mountWithFakeRO(t, fake, false)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet, "/console/traces", nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// Positive: the new column headers render.
+	for _, want := range []string{"<th>Trace ID</th>", "<th>Duration</th>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing header %q", want)
+		}
+	}
+	// Negative space: seedTraceRuns carries no traceparent and no
+	// CompletedAt, so both new columns render an honest em-dash — never a
+	// fabricated trace id or "0s" duration.
+	if !strings.Contains(body, "&mdash;") {
+		t.Errorf("body missing em-dash for empty trace id / duration")
+	}
+	if strings.Contains(body, ">0s<") {
+		t.Errorf("body fabricated a 0s duration for a run with no CompletedAt")
+	}
+}
+
+func TestTraceRowsTraceIDAndDuration(t *testing.T) {
+	const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	completed := created.Add(1500 * time.Millisecond)
+
+	t.Run("completed run carries trace id and duration", func(t *testing.T) {
+		runs := []dag.WorkflowRun{{
+			RunID: "run-x", WorkflowID: "wf", Status: dag.RunStatusCompleted,
+			Steps: map[string]dag.StepState{"a": {}}, CreatedAt: created,
+			TraceParent: tp, CompletedAt: &completed,
+		}}
+		rows := traceRowsFromRuns(runs, "")
+		if len(rows) != 1 {
+			t.Fatalf("rows = %d, want 1", len(rows))
+		}
+		// Positive: trace id is the 32-hex extracted from the traceparent.
+		if rows[0].TraceID != "0af7651916cd43dd8448eb211c80319c" {
+			t.Fatalf("TraceID = %q, want extracted 32-hex", rows[0].TraceID)
+		}
+		// Positive: duration is the rounded completed-minus-created span.
+		if rows[0].Duration != "1.5s" {
+			t.Fatalf("Duration = %q, want %q", rows[0].Duration, "1.5s")
+		}
+	})
+
+	t.Run("run without traceparent has empty trace id", func(t *testing.T) {
+		runs := []dag.WorkflowRun{{
+			RunID: "run-y", WorkflowID: "wf", Status: dag.RunStatusCompleted,
+			Steps: map[string]dag.StepState{"a": {}}, CreatedAt: created,
+			CompletedAt: &completed,
+		}}
+		rows := traceRowsFromRuns(runs, "")
+		// Negative: no traceparent => no fabricated trace id.
+		if rows[0].TraceID != "" {
+			t.Fatalf("TraceID = %q, want empty", rows[0].TraceID)
+		}
+	})
+
+	t.Run("running run shows empty duration, never 0s", func(t *testing.T) {
+		runs := []dag.WorkflowRun{{
+			RunID: "run-z", WorkflowID: "wf", Status: dag.RunStatusRunning,
+			Steps: map[string]dag.StepState{"a": {}}, CreatedAt: created,
+			TraceParent: tp,
+		}}
+		rows := traceRowsFromRuns(runs, "")
+		// Negative: an in-flight run (CompletedAt nil) reports no duration
+		// at all — never a fabricated "0s".
+		if rows[0].Duration != "" {
+			t.Fatalf("Duration = %q, want empty for running run", rows[0].Duration)
+		}
+	})
+}
+
 func TestTracesListStatusFilter(t *testing.T) {
 	fake := newFakeDS()
 	fake.runs = seedTraceRuns()
