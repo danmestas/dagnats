@@ -13,9 +13,16 @@
   </td>
   <td class="console-mono">{{.Row.Target}}</td>
   <td>
-    <span class="badge {{if .Row.Enabled}}badge-completed{{else}}badge-skipped{{end}}">
-      <span class="status-icon" aria-hidden="true">{{.Row.StatusIcon}}</span>
-      {{.Row.StatusLabel}}
+    <span class="dn-switch{{if .Row.Enabled}} dn-on{{end}}"
+          role="switch"
+          tabindex="0"
+          aria-checked="{{.Row.Enabled}}"
+          aria-label="{{if .Row.Enabled}}Disable{{else}}Enable{{end}} trigger {{.Row.ID}}"
+          data-trigger-toggle="{{.Row.ID}}"
+          data-trigger-current="{{.Row.Enabled}}"
+          {{if .ReadOnly}}aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to toggle triggers."{{end}}>
+      <span class="dn-knob" aria-hidden="true"></span>
+      <span class="sr-only">{{.Row.StatusLabel}}</span>
     </span>
   </td>
   <td class="console-sparkline-col"></td>

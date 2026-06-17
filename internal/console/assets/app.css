@@ -1415,6 +1415,89 @@ body[data-theme="dark"] {
 .callout p { margin: 0; font-size: 14px; }
 
 /*
+ * Inline enable/disable switch for the triggers list (and SSE-patched
+ * rows). A clickable pill with a sliding knob — the interactive
+ * counterpart to the static status badge. POSTs to the existing
+ * /console/triggers/<id>/toggle route via delegated JS. The read-only
+ * variant carries aria-disabled and the JS short-circuits on it.
+ */
+.dn-switch {
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.35));
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+  vertical-align: middle;
+}
+.dn-switch .dn-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform 120ms ease, background 120ms ease;
+}
+.dn-switch.dn-on {
+  background: var(--accent-positive, #2f9e44);
+  border-color: var(--accent-positive, #2f9e44);
+}
+.dn-switch.dn-on .dn-knob {
+  transform: translateX(16px);
+  background: #fff;
+}
+.dn-switch:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent, #4c8bf5));
+  outline-offset: 2px;
+}
+.dn-switch:active .dn-knob { transform: translateX(1px); }
+.dn-switch.dn-on:active .dn-knob { transform: translateX(15px); }
+.dn-switch[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/*
+ * Audit page: amber denied-attempts callout, identity banner, and the
+ * outcome filter chips. The callout only renders when denied rows are
+ * present (server-side), so the amber tone is never a false alarm.
+ */
+.dn-callout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-tile);
+  border: 1px solid var(--accent-watch, #e8a33d);
+  background: color-mix(in srgb, var(--accent-watch, #e8a33d) 12%, transparent);
+  color: var(--text-primary);
+}
+.dn-callout .dn-cicon {
+  color: var(--accent-watch, #e8a33d);
+  font-size: 16px;
+  line-height: 1.3;
+}
+.dn-callout .dn-ctitle { font-weight: 600; font-size: 14px; }
+.dn-callout .dn-cbody {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.dn-idbanner {
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.dn-idbanner b { color: var(--text-primary); }
+
+/*
  * KV inspector layout: 3-column on wide screens (buckets / keys /
  * value). Collapses to stacked sections on narrow viewports.
  */

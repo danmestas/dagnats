@@ -7,6 +7,27 @@
     </p>
   </header>
 
+  {{if .AuthLabel}}
+  <div class="dn-srcline dn-idbanner">
+    Identity: <b>{{.AuthLabel}}</b> &mdash; the gate that authenticated the
+    actors below. Every state-changing console action is recorded here.
+  </div>
+  {{end}}
+
+  {{if .DeniedCount}}
+  <div class="dn-callout" role="status">
+    <span class="dn-cicon" aria-hidden="true">&#9888;</span>
+    <div style="flex:1;">
+      <div class="dn-ctitle">{{.DeniedCount}} denied &mdash; mutations attempted while read-only</div>
+      <div class="dn-cbody">
+        {{.DeniedCount}} mutation{{if ne .DeniedCount 1}}s were{{else}} was{{end}}
+        blocked (CONSOLE_READ_ONLY). The audit trail records blocked
+        attempts, not just what succeeded.
+      </div>
+    </div>
+  </div>
+  {{end}}
+
   <form class="console-filter-bar" method="GET" action="/console/audit">
     <label class="console-field">
       <span>Actor</span>
@@ -23,6 +44,15 @@
       </select>
     </label>
     <label class="console-field">
+      <span>Outcome</span>
+      <select class="select" name="outcome" onchange="this.form.submit()">
+        <option value=""{{if eq .OutcomeFilter ""}} selected{{end}}>all</option>
+        {{range .Outcomes}}
+        <option value="{{.}}"{{if eq $page.OutcomeFilter (printf "%s" .)}} selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="console-field">
       <span>Range</span>
       <select class="select" name="range" onchange="this.form.submit()">
         <option value=""{{if eq .RangeFilter ""}} selected{{end}}>all</option>
@@ -34,7 +64,7 @@
     <button type="submit" class="btn">Filter</button>
   </form>
 
-  {{if and (eq .Total 0) (eq .ActorFilter "") (eq .ActionFilter "") (eq .RangeFilter "")}}
+  {{if and (eq .Total 0) (eq .ActorFilter "") (eq .ActionFilter "") (eq .RangeFilter "") (eq .OutcomeFilter "")}}
   <div class="console-empty-action">
     <p>
       Operator actions appear here as they happen &mdash; trigger
