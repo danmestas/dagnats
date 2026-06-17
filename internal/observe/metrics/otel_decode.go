@@ -32,7 +32,7 @@ type otelGauge struct {
 // otelSum is the JSON shape of metricdata.Sum[T].
 type otelSum struct {
 	DataPoints  []otelDataPoint `json:"DataPoints"`
-	Temporality int             `json:"Temporality"`
+	Temporality json.RawMessage `json:"Temporality"`
 	IsMonotonic bool            `json:"IsMonotonic"`
 }
 
@@ -50,7 +50,7 @@ type otelHistogramDP struct {
 // otelHistogram is the JSON shape of metricdata.Histogram[T].
 type otelHistogram struct {
 	DataPoints  []otelHistogramDP `json:"DataPoints"`
-	Temporality int               `json:"Temporality"`
+	Temporality json.RawMessage   `json:"Temporality"`
 }
 
 // decodeSum attempts to read a counter / sum data point from raw JSON.
