@@ -151,8 +151,10 @@ func preflatten(roots map[string][]*spanread.SpanNode) []flatSpan {
 // spanGeometry maps a span onto the [traceStart, traceEnd] window as a
 // (offsetPct, widthPct) pair. Returns (0, 0) when the trace window is
 // empty or the span has no honest duration (mirrors DurationMs's guard),
-// so an in-flight or zero-width span draws no fabricated bar. Both values
-// are clamped to [0, 100].
+// so an in-flight or zero-width span draws no fabricated bar. Offset is
+// clamped to [0, 100] and width is clipped so offset+width never exceeds
+// 100 — a bar whose raw extent overshoots the window stays inside the
+// track's right edge rather than painting past it.
 func spanGeometry(sp *tracepb.Span, traceStart, traceEnd uint64) (float64, float64) {
 	if sp == nil {
 		panic("spanGeometry: span must not be nil")
@@ -164,7 +166,10 @@ func spanGeometry(sp *tracepb.Span, traceStart, traceEnd uint64) (float64, float
 		return 0, 0
 	}
 	window := float64(traceEnd - traceStart)
-	offset := float64(sp.StartTimeUnixNano-traceStart) / window * 100
-	width := float64(sp.EndTimeUnixNano-sp.StartTimeUnixNano) / window * 100
-	return clampPct(offset), clampPct(width)
+	offset := clampPct(float64(sp.StartTimeUnixNano-traceStart) / window * 100)
+	width := clampPct(float64(sp.EndTimeUnixNano-sp.StartTimeUnixNano) / window * 100)
+	if offset+width > 100 { // clip the bar to the track's right edge
+		width = 100 - offset
+	}
+	return offset, width
 }

@@ -271,3 +271,31 @@ func TestFlattenSpanTreeInFlightGeometry(t *testing.T) {
 			rows[0].OffsetPct, rows[0].WidthPct)
 	}
 }
+
+// TestSpanGeometryClipsToEdge pins the Phase-4 reinforcement: a bar whose
+// offset plus width would exceed 100 must stay inside the track's right
+// edge. A span at offset 80 with a raw width of 60 (a malformed tree where
+// a child overshoots the derived window) must be clipped to width 20 so
+// offset+width == 100, never painting past the edge.
+func TestSpanGeometryClipsToEdge(t *testing.T) {
+	tid, _ := hex.DecodeString("0102030405060708090a0b0c0d0e0f10")
+	sid, _ := hex.DecodeString("d1d1d1d1d1d1d1d1")
+	// Window [0, 100ms]; span [80ms, 140ms] → offset 80, raw width 60.
+	sp := &tracepb.Span{
+		TraceId: tid, SpanId: sid, Name: "overshoot",
+		StartTimeUnixNano: 80_000_000, EndTimeUnixNano: 140_000_000,
+		Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
+	}
+	offset, width := spanGeometry(sp, 0, 100_000_000)
+	if diff := offset - 80.0; diff > 0.5 || diff < -0.5 {
+		t.Fatalf("OffsetPct = %v, want ~80", offset)
+	}
+	// Negative space: the bar must not paint past the edge.
+	if offset+width > 100.0+0.001 {
+		t.Fatalf("offset+width = %v, must stay <= 100", offset+width)
+	}
+	// Positive: the clip leaves the visible remainder, not zero width.
+	if diff := width - 20.0; diff > 0.5 || diff < -0.5 {
+		t.Fatalf("WidthPct = %v, want ~20 (clipped to edge)", width)
+	}
+}
