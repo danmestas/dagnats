@@ -9,6 +9,27 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// Durability windows for the history/event streams (issue #441). These
+// streams are the real storage grower; aging them is recovery-safe because
+// recovery is snapshot-first (the workflow_runs KV is authoritative and has
+// no TTL). A window only needs to exceed (max orchestrator downtime + max run
+// duration); a shorter window risks at most a reconciler-recoverable run
+// stall, never data loss. max_age is the retention bound. A byte ceiling
+// proportional to JetStreamMaxStore is a possible follow-up; absolute
+// MaxBytes ceilings don't scale across host/cluster store budgets (an
+// absolute sum exceeding JetStreamMaxStore fails stream creation, err 10047).
+const (
+	// historyMaxAge bounds WORKFLOW_HISTORY (run step events). 30d is well
+	// past any plausible downtime+run-duration sum for an LLM pipeline.
+	historyMaxAge = 30 * 24 * time.Hour
+	// eventsMaxAge bounds EVENTS (workflow signal/event log). Events are
+	// consumed promptly; 14d is generous slack for replay/debug.
+	eventsMaxAge = 14 * 24 * time.Hour
+	// deadLettersMaxAge bounds DEAD_LETTERS. 30d gives operators a month to
+	// triage a failed run before its dead-letter record ages out.
+	deadLettersMaxAge = 30 * 24 * time.Hour
+)
+
 // SetupStreams creates the core JetStream streams required by
 // DagNats. WORKFLOW_HISTORY uses a 5s dedup window.
 // TASK_QUEUES uses WorkQueuePolicy for exactly-once delivery.
@@ -29,6 +50,7 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Retention:  jetstream.LimitsPolicy,
 			Storage:    jetstream.FileStorage,
 			Duplicates: 5_000_000_000,
+			MaxAge:     historyMaxAge,
 			Replicas:   replicas,
 		},
 		{
@@ -36,13 +58,16 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Subjects:  []string{"task.>"},
 			Retention: jetstream.WorkQueuePolicy,
 			Storage:   jetstream.FileStorage,
-			Replicas:  replicas,
+			// NO MaxAge: un-acked work-queue messages are live tasks;
+			// an age bound would silently delete pending work (#441).
+			Replicas: replicas,
 		},
 		{
 			Name:      "EVENTS",
 			Subjects:  []string{"event.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
+			MaxAge:    eventsMaxAge,
 			Replicas:  replicas,
 		},
 		{
@@ -61,6 +86,7 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			// conservative; cost is small (header-only state per
 			// dedup-id).
 			Duplicates: 24 * time.Hour,
+			MaxAge:     deadLettersMaxAge,
 			Replicas:   replicas,
 		},
 		{
@@ -68,7 +94,9 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Subjects:  []string{"sleep.>", "scheduled.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
-			Replicas:  replicas,
+			// NO MaxAge: holds pending future sleep messages; an age
+			// bound would drop un-fired timers (#441).
+			Replicas: replicas,
 		},
 	}
 	if len(streams) == 0 {

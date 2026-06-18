@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -32,16 +33,23 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		host = "0.0.0.0"
 	}
 
+	// Apply the soft Go memory limit (GOMEMLIMIT equivalent) so the runtime
+	// GCs harder and returns heap to the OS near the ceiling (#441). Skipped
+	// when GOMEMLIMIT is already set by the operator (their value wins).
+	_, goMemLimitSet := os.LookupEnv("GOMEMLIMIT")
+	applyGoMemoryLimit(cfg.MaxMemoryBytes, goMemLimitSet)
+
 	// Build server options
 	opts := &natsserver.Options{
-		Host:              host,
-		Port:              cfg.NATSPort,
-		HTTPPort:          cfg.MonitorPort,
-		JetStream:         true,
-		StoreDir:          cfg.DataDir,
-		JetStreamMaxStore: cfg.MaxStoreBytes,
-		NoLog:             true,
-		NoSigs:            true,
+		Host:               host,
+		Port:               cfg.NATSPort,
+		HTTPPort:           cfg.MonitorPort,
+		JetStream:          true,
+		StoreDir:           cfg.DataDir,
+		JetStreamMaxStore:  cfg.MaxStoreBytes,
+		JetStreamMaxMemory: cfg.MaxMemoryBytes,
+		NoLog:              true,
+		NoSigs:             true,
 	}
 
 	// Configure leaf node if remotes specified
@@ -210,6 +218,22 @@ func configureWebsocket(
 		cfg.NATSWebsocketPort,
 	))
 	return nil
+}
+
+// applyGoMemoryLimit sets the soft Go memory limit (the GOMEMLIMIT
+// equivalent) from the configured ceiling so the runtime GCs harder and
+// returns heap to the OS as it approaches the limit (#441). It is a no-op
+// when limitBytes <= 0 (never force a 0 limit — that pins the GC running
+// continuously) or when envSet is true (an explicit GOMEMLIMIT wins).
+func applyGoMemoryLimit(limitBytes int64, envSet bool) {
+	if limitBytes < 0 {
+		panic(fmt.Sprintf(
+			"applyGoMemoryLimit: negative limit %d", limitBytes))
+	}
+	if limitBytes == 0 || envSet {
+		return
+	}
+	debug.SetMemoryLimit(limitBytes)
 }
 
 func tryStartNATS(opts *natsserver.Options) (*natsserver.Server, error) {
