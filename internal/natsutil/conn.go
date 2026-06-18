@@ -9,6 +9,57 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// Durability windows for the history/event streams (issue #441). These
+// streams are the real storage grower; aging them is recovery-safe because
+// recovery is snapshot-first (the workflow_runs KV is authoritative and has
+// no TTL). A window only needs to exceed (max orchestrator downtime + max run
+// duration); a shorter window risks at most a reconciler-recoverable run
+// stall, never data loss. max_age is the PRIMARY lever — the MaxBytes
+// ceilings below are a backstop against runaway growth.
+const (
+	// historyMaxAge bounds WORKFLOW_HISTORY (run step events). 30d is well
+	// past any plausible downtime+run-duration sum for an LLM pipeline.
+	historyMaxAge = 30 * 24 * time.Hour
+	// eventsMaxAge bounds EVENTS (workflow signal/event log). Events are
+	// consumed promptly; 14d is generous slack for replay/debug.
+	eventsMaxAge = 14 * 24 * time.Hour
+	// deadLettersMaxAge bounds DEAD_LETTERS. 30d gives operators a month to
+	// triage a failed run before its dead-letter record ages out.
+	deadLettersMaxAge = 30 * 24 * time.Hour
+)
+
+// Per-stream byte ceilings (issue #441). Host-dependent in principle, but a
+// conservative named default prevents the observed runaway (1.2GB with zero
+// live messages) without being so tight it evicts in-flight history a live
+// orchestrator still needs. The ceiling is a backstop; max_age is the primary
+// lever. Tunable later via config if a busy deployment needs more headroom.
+//
+// HARD CONSTRAINT: JetStream rejects stream creation (err 10047,
+// "insufficient storage resources available") when the SUM of every file
+// stream's MaxBytes exceeds JetStreamMaxStore. The defaults below plus the
+// TELEMETRY stream (1 GiB) sum to ~8.5 GiB, comfortably under the 10 GiB
+// defaultMaxStoreBytes. Raising any ceiling requires raising MaxStoreBytes in
+// step, or stream creation will fail at boot.
+const (
+	// historyMaxBytes caps WORKFLOW_HISTORY (the dominant grower). 3 GiB
+	// holds a large backlog of step events well beyond the 30d window.
+	historyMaxBytes = 3 << 30
+	// eventsMaxBytes caps EVENTS. 1 GiB is ample for the event log.
+	eventsMaxBytes = 1 << 30
+	// deadLettersMaxBytes caps DEAD_LETTERS. 512 MiB; dead letters are rare.
+	deadLettersMaxBytes = 512 << 20
+	// triggerHistoryMaxBytes caps TRIGGER_HISTORY. 512 MiB; trigger fires
+	// are small header-shaped records.
+	triggerHistoryMaxBytes = 512 << 20
+	// taskQueuesMaxBytes caps TASK_QUEUES (work queue). A backstop only —
+	// NO max_age here, that would silently delete un-acked (live) tasks.
+	// 2 GiB allows a deep pending-task backlog before the ceiling bites.
+	taskQueuesMaxBytes = 2 << 30
+	// sleepTimersMaxBytes caps SLEEP_TIMERS. NO max_age — these are pending
+	// future timers; aging would drop un-fired ones. 512 MiB ceiling only.
+	sleepTimersMaxBytes = 512 << 20
+)
+
 // SetupStreams creates the core JetStream streams required by
 // DagNats. WORKFLOW_HISTORY uses a 5s dedup window.
 // TASK_QUEUES uses WorkQueuePolicy for exactly-once delivery.
@@ -29,6 +80,8 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Retention:  jetstream.LimitsPolicy,
 			Storage:    jetstream.FileStorage,
 			Duplicates: 5_000_000_000,
+			MaxAge:     historyMaxAge,
+			MaxBytes:   historyMaxBytes,
 			Replicas:   replicas,
 		},
 		{
@@ -36,13 +89,18 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Subjects:  []string{"task.>"},
 			Retention: jetstream.WorkQueuePolicy,
 			Storage:   jetstream.FileStorage,
-			Replicas:  replicas,
+			// NO MaxAge: un-acked work-queue messages are live tasks;
+			// an age bound would silently delete pending work (#441).
+			MaxBytes: taskQueuesMaxBytes,
+			Replicas: replicas,
 		},
 		{
 			Name:      "EVENTS",
 			Subjects:  []string{"event.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
+			MaxAge:    eventsMaxAge,
+			MaxBytes:  eventsMaxBytes,
 			Replicas:  replicas,
 		},
 		{
@@ -61,6 +119,8 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			// conservative; cost is small (header-only state per
 			// dedup-id).
 			Duplicates: 24 * time.Hour,
+			MaxAge:     deadLettersMaxAge,
+			MaxBytes:   deadLettersMaxBytes,
 			Replicas:   replicas,
 		},
 		{
@@ -68,7 +128,10 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Subjects:  []string{"sleep.>", "scheduled.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
-			Replicas:  replicas,
+			// NO MaxAge: holds pending future sleep messages; an age
+			// bound would drop un-fired timers (#441). Ceiling only.
+			MaxBytes: sleepTimersMaxBytes,
+			Replicas: replicas,
 		},
 	}
 	if len(streams) == 0 {
@@ -257,6 +320,7 @@ func SetupTriggerHistoryStream(
 		Retention: jetstream.LimitsPolicy,
 		Storage:   jetstream.FileStorage,
 		MaxAge:    30 * 24 * time.Hour,
+		MaxBytes:  triggerHistoryMaxBytes,
 		Discard:   jetstream.DiscardOld,
 	}
 	if cfg.Name == "" {

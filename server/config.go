@@ -20,10 +20,16 @@ const (
 	defaultHTTPAddr      = "127.0.0.1:8080"
 	defaultNATSPort      = 4222
 	defaultMaxStoreBytes = 10 << 30 // 10 GiB
-	maxLeafRemotes       = 10
-	maxClusterRoutes     = 10
-	maxConfigFileLines   = 300
-	maxWorkerConfigs     = 50
+	// defaultMaxMemoryBytes caps the JetStream in-memory store and is also
+	// applied as the soft Go memory limit (GOMEMLIMIT) at startup so the
+	// runtime GCs harder and returns heap to the OS near the ceiling (#441).
+	// 1 GiB is safe for a typical host; tunable via DAGNATS_MAX_MEMORY_BYTES
+	// or the max_memory_bytes config key.
+	defaultMaxMemoryBytes = 1 << 30 // 1 GiB
+	maxLeafRemotes        = 10
+	maxClusterRoutes      = 10
+	maxConfigFileLines    = 300
+	maxWorkerConfigs      = 50
 )
 
 // WorkerConfig defines a config-driven embedded worker handler.
@@ -47,10 +53,15 @@ type Config struct {
 	NATSClusterAuthToken  string   `json:"nats_cluster_auth_token"`
 	NATSJetStreamReplicas int      `json:"nats_jetstream_replicas"`
 
-	MonitorPort   int            `json:"monitor_port"`
-	MaxStoreBytes int64          `json:"max_store_bytes"`
-	Workers       []WorkerConfig `json:"workers"`
-	OTLPEndpoint  string         `json:"otlp_endpoint"`
+	MonitorPort   int   `json:"monitor_port"`
+	MaxStoreBytes int64 `json:"max_store_bytes"`
+	// MaxMemoryBytes caps the JetStream in-memory store
+	// (JetStreamMaxMemory) and is applied as the soft Go memory limit at
+	// startup (#441). Defaults to defaultMaxMemoryBytes; <= 0 disables the
+	// JetStream cap and the Go limit.
+	MaxMemoryBytes int64          `json:"max_memory_bytes"`
+	Workers        []WorkerConfig `json:"workers"`
+	OTLPEndpoint   string         `json:"otlp_endpoint"`
 
 	// NATSWebsocketPort enables an embedded NATS WebSocket
 	// listener for browser clients when > 0. 0 (default)
@@ -118,11 +129,12 @@ func DefaultConfig() Config {
 	}
 
 	return Config{
-		DataDir:       dataDir,
-		HTTPAddr:      defaultHTTPAddr,
-		NATSPort:      defaultNATSPort,
-		LeafRemotes:   nil,
-		MaxStoreBytes: defaultMaxStoreBytes,
+		DataDir:        dataDir,
+		HTTPAddr:       defaultHTTPAddr,
+		NATSPort:       defaultNATSPort,
+		LeafRemotes:    nil,
+		MaxStoreBytes:  defaultMaxStoreBytes,
+		MaxMemoryBytes: defaultMaxMemoryBytes,
 	}
 }
 
@@ -343,6 +355,11 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.MaxStoreBytes = maxBytes
 		}
 	}
+	if val := os.Getenv("DAGNATS_MAX_MEMORY_BYTES"); val != "" {
+		if maxBytes, err := strconv.ParseInt(val, 10, 64); err == nil {
+			cfg.MaxMemoryBytes = maxBytes
+		}
+	}
 	if val := os.Getenv("DAGNATS_NATS_WS_PORT"); val != "" {
 		if port, err := strconv.Atoi(val); err == nil {
 			cfg.NATSWebsocketPort = port
@@ -505,6 +522,12 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			return fmt.Errorf("invalid max_store_bytes: %w", err)
 		}
 		cfg.MaxStoreBytes = maxBytes
+	case "max_memory_bytes":
+		maxBytes, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid max_memory_bytes: %w", err)
+		}
+		cfg.MaxMemoryBytes = maxBytes
 	case "nats_ws_port":
 		port, err := strconv.Atoi(val)
 		if err != nil {
