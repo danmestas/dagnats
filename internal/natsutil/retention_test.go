@@ -1,8 +1,8 @@
 // natsutil/retention_test.go
 // Tests for JetStream stream retention bounds (issue #441): the history
-// streams are unbounded and are the real storage grower. Each test starts
-// an embedded NATS server, provisions the streams, and asserts the
-// MaxAge/MaxBytes durability bounds — plus the negative space that
+// streams are the real storage grower. Each test starts an embedded NATS
+// server, provisions the streams, and asserts the MaxAge durability bound
+// (max_age is the retention lever) — plus the negative space that
 // TASK_QUEUES and SLEEP_TIMERS carry NO age bound (aging them would drop
 // live un-acked tasks / un-fired timers).
 // Bounded 5-second timeout on all operations.
@@ -47,16 +47,12 @@ func streamConfigByName(
 func TestWorkflowHistoryBounds(t *testing.T) {
 	cfg := streamConfigByName(t, "WORKFLOW_HISTORY")
 
-	// Positive: 30-day age window + a byte ceiling backstop.
+	// Positive: 30-day age window is the retention bound.
 	if cfg.MaxAge != historyMaxAge {
 		t.Fatalf("MaxAge = %v, want %v", cfg.MaxAge, historyMaxAge)
 	}
 	if cfg.MaxAge != 30*24*time.Hour {
 		t.Fatalf("MaxAge = %v, want 30d", cfg.MaxAge)
-	}
-	// Negative: a ceiling must be present (not unbounded).
-	if cfg.MaxBytes <= 0 {
-		t.Fatalf("MaxBytes = %d, want a positive ceiling", cfg.MaxBytes)
 	}
 }
 
@@ -69,9 +65,6 @@ func TestEventsBounds(t *testing.T) {
 	if cfg.MaxAge != 14*24*time.Hour {
 		t.Fatalf("MaxAge = %v, want 14d", cfg.MaxAge)
 	}
-	if cfg.MaxBytes <= 0 {
-		t.Fatalf("MaxBytes = %d, want a positive ceiling", cfg.MaxBytes)
-	}
 }
 
 func TestDeadLettersBounds(t *testing.T) {
@@ -82,9 +75,6 @@ func TestDeadLettersBounds(t *testing.T) {
 	}
 	if cfg.MaxAge != 30*24*time.Hour {
 		t.Fatalf("MaxAge = %v, want 30d", cfg.MaxAge)
-	}
-	if cfg.MaxBytes <= 0 {
-		t.Fatalf("MaxBytes = %d, want a positive ceiling", cfg.MaxBytes)
 	}
 }
 
@@ -98,24 +88,17 @@ func TestTriggerHistoryBounds(t *testing.T) {
 	if cfg.Discard != jetstream.DiscardOld {
 		t.Fatalf("Discard = %v, want DiscardOld (unchanged)", cfg.Discard)
 	}
-	// Positive: byte ceiling now present.
-	if cfg.MaxBytes <= 0 {
-		t.Fatalf("MaxBytes = %d, want a positive ceiling", cfg.MaxBytes)
-	}
 }
 
 // TestTaskQueuesNoAgeBound is the hard negative-space guard: a MaxAge on a
-// work-queue stream silently deletes un-acked (live) tasks. The ceiling is
-// fine; the age bound is forbidden.
+// work-queue stream silently deletes un-acked (live) tasks. The age bound is
+// forbidden.
 func TestTaskQueuesNoAgeBound(t *testing.T) {
 	cfg := streamConfigByName(t, "TASK_QUEUES")
 
 	if cfg.MaxAge != 0 {
 		t.Fatalf("TASK_QUEUES MaxAge = %v, want 0 (un-acked work is live)",
 			cfg.MaxAge)
-	}
-	if cfg.MaxBytes <= 0 {
-		t.Fatalf("MaxBytes = %d, want a positive ceiling", cfg.MaxBytes)
 	}
 }
 
@@ -127,8 +110,5 @@ func TestSleepTimersNoAgeBound(t *testing.T) {
 	if cfg.MaxAge != 0 {
 		t.Fatalf("SLEEP_TIMERS MaxAge = %v, want 0 (pending timers are live)",
 			cfg.MaxAge)
-	}
-	if cfg.MaxBytes <= 0 {
-		t.Fatalf("MaxBytes = %d, want a positive ceiling", cfg.MaxBytes)
 	}
 }
