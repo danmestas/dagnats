@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+## [0.0.4] - 2026-06-18
+
+A bug-fix + console-completion release — 9 PRs since `v0.0.3`. Resolves two
+firestorm production bugs (unbounded JetStream/heap growth; cron fire-record
+"zombie" duration) and completes the engine-gated console telemetry/trace
+surfaces (p50, Trace-ID/duration, waterfall).
+
+### Added
+
+Console / web UI:
+
+- **Trace detail**: a span **waterfall** (per-span offset/width geometry from the existing span data) + a clickable **span-detail KV panel** (span/parent/workflow/step/task/run id + status), with a disclosure caret (#444).
+- **Traces list**: real **Trace ID** + **Duration** columns (#443).
+- **Triggers list**: inline **enable/disable toggle** (reusing the existing toggle route, read-only-gated) (#439).
+- **Audit page**: **outcome filter** (success/denied/failed), a **denied-attempts callout**, and an **identity/auth-mode banner** (#439).
+
+### Changed
+
+- **Run completion is now honest across every terminal path.** `dag.WorkflowRun` gains `TraceParent` + `CompletedAt`; all 8 terminal transitions (complete/fail/cancel/loop-fail/map-fail/schema-fail/failed-start/compensated) funnel through a single `markTerminal` helper that stamps `CompletedAt` — no path can forget it (#443).
+- **JetStream streams are now bounded.** History streams get `max_age` (WORKFLOW_HISTORY 30d, EVENTS 14d, DEAD_LETTERS 30d) + proportional `max_bytes` ceilings (a fraction of `JetStreamMaxStore`, so they scale from a 2 GiB host to 10 GiB+); `TASK_QUEUES`/`SLEEP_TIMERS` keep **no `max_age`** (they hold live/pending work) (#441, #446, #447).
+- Embedded NATS server now sets `JetStreamMaxMemory` + a soft `GOMEMLIMIT` (`debug.SetMemoryLimit`) via a new `MaxMemoryBytes` config / `DAGNATS_MAX_MEMORY_BYTES` env, so the Go heap returns to the OS (#446).
+- The snapshot-p50 tile is **neutral-colored** (snapshot-save isn't a run-latency SLO) (#442).
+- The full test suite runs at bounded package parallelism (`-p 4`) so it's deterministic on high-core machines (#437).
+
+### Fixed
+
+- **JetStream store + heap grew unbounded under workqueue churn** (firestorm #441): the real cause was *unbounded history streams* (not the workqueue, which deletes on ack). Now bounded by `max_age` + proportional `max_bytes` + a memory limit. Verified recovery-safe (the orchestrator is snapshot-first; the `workflow_runs` KV is authoritative).
+- **Cron fire-record duration ticked up forever** after a run completed / engine restart (firestorm #440): `enrichFireStatus` computed `time.Since(CreatedAt)`; now frozen at `CompletedAt − CreatedAt`.
+- **Snapshot p50 never reached the console**: the metrics aggregator typed OTel `Temporality` as `int`, but the SDK serializes it as a string — so every histogram/sum record failed to decode and was silently dropped. Fixed the decoder (#442).
+
+### Documentation
+
+- Preserved the console design mockup (the deleted MagicPath source) in-repo under `docs/design/mockup/` so it's version-controlled and backed up (#438).
+
 ## [0.0.3] - 2026-06-16
 
 A console (web UI) release — ~60 commits since `v0.0.2`, bringing the operator
