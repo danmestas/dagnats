@@ -27,10 +27,10 @@ func streamConfigByName(
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	if err := SetupStreams(js, 1); err != nil {
+	if err := SetupStreams(js, 1, 0); err != nil {
 		t.Fatalf("SetupStreams: %v", err)
 	}
-	if err := SetupTriggerHistoryStream(js); err != nil {
+	if err := SetupTriggerHistoryStream(js, 0); err != nil {
 		t.Fatalf("SetupTriggerHistoryStream: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(

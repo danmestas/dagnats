@@ -63,7 +63,9 @@ func (s *SuperclusterTopology) Setup(
 	t *testing.T, nc *nats.Conn,
 ) {
 	t.Helper()
-	if err := natsutil.SetupAll(nc); err != nil {
+	if err := natsutil.SetupAll(
+		nc, natsutil.WithStoreBudget(clusterStoreBudgetBytes),
+	); err != nil {
 		t.Fatalf("supercluster Setup: %v", err)
 	}
 }

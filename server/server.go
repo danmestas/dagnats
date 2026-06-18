@@ -156,6 +156,7 @@ func (s *Server) startComponents() error {
 			Routes:           s.cfg.NATSClusterRoutes,
 			ReplicasOverride: s.cfg.NATSJetStreamReplicas,
 		}),
+		natsutil.WithStoreBudget(s.cfg.MaxStoreBytes),
 	)
 	if err != nil {
 		s.nc.Close()

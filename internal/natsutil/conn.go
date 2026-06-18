@@ -14,10 +14,7 @@ import (
 // recovery is snapshot-first (the workflow_runs KV is authoritative and has
 // no TTL). A window only needs to exceed (max orchestrator downtime + max run
 // duration); a shorter window risks at most a reconciler-recoverable run
-// stall, never data loss. max_age is the retention bound. A byte ceiling
-// proportional to JetStreamMaxStore is a possible follow-up; absolute
-// MaxBytes ceilings don't scale across host/cluster store budgets (an
-// absolute sum exceeding JetStreamMaxStore fails stream creation, err 10047).
+// stall, never data loss. max_age is the retention bound.
 const (
 	// historyMaxAge bounds WORKFLOW_HISTORY (run step events). 30d is well
 	// past any plausible downtime+run-duration sum for an LLM pipeline.
@@ -30,10 +27,70 @@ const (
 	deadLettersMaxAge = 30 * 24 * time.Hour
 )
 
+// Proportional per-stream byte ceilings (#441 follow-up). Each file-based
+// JetStream stream gets a MaxBytes sized as a fraction of the configured
+// JetStreamMaxStore budget. Absolute MaxBytes ceilings don't scale across
+// host/cluster store budgets: an absolute sum exceeding JetStreamMaxStore
+// fails stream creation (err 10047 insufficient storage resources), which
+// is exactly what broke the 2 GiB e2e cluster. Sizing each ceiling as a
+// fraction keeps the sum a fixed share of the budget on ANY host — the
+// 2 GiB test cluster and a 10 GiB+ prod node alike.
+//
+// The fractions sum to 0.80, leaving ~20% headroom under the budget.
+// Dominant growers are weighted higher (WORKFLOW_HISTORY largest, then
+// EVENTS/TASK_QUEUES), smaller for the low-volume streams. TASK_QUEUES and
+// SLEEP_TIMERS hold live/pending work so they carry NO max_age, but a byte
+// ceiling on a work-queue is safe and gives the backstop its teeth.
+//
+//	WORKFLOW_HISTORY  0.30   run step events — the real grower
+//	EVENTS            0.15   workflow signal/event log
+//	TASK_QUEUES       0.12   live task backstop
+//	TELEMETRY         0.10   spans/metrics/logs (was an absolute 1 GiB)
+//	DEAD_LETTERS      0.05   failed-run records
+//	TRIGGER_HISTORY   0.04   trigger fire log
+//	SLEEP_TIMERS      0.04   pending timer backstop
+//	------------------------
+//	total             0.80
+const (
+	fractionWorkflowHistory = 0.30
+	fractionEvents          = 0.15
+	fractionTaskQueues      = 0.12
+	fractionTelemetry       = 0.10
+	fractionDeadLetters     = 0.05
+	fractionTriggerHistory  = 0.04
+	fractionSleepTimers     = 0.04
+)
+
+// defaultMaxStoreBytes is the fallback store budget used by callers that
+// cannot easily obtain the real JetStreamMaxStore (test helpers). 10 GiB
+// matches server.defaultMaxStoreBytes; the proportional ceilings derived
+// from it stay well under any realistic host store.
+const defaultMaxStoreBytes int64 = 10 << 30
+
+// proportionalMaxBytes returns floor(budget*fraction), or 0 when the budget
+// is unset (<= 0) so the caller skips MaxBytes entirely (no ceiling) rather
+// than setting an invalid 0-byte cap.
+func proportionalMaxBytes(maxStoreBytes int64, fraction float64) int64 {
+	if maxStoreBytes <= 0 {
+		return 0
+	}
+	if fraction <= 0 || fraction >= 1 {
+		panic(fmt.Sprintf(
+			"proportionalMaxBytes: fraction out of range: %v", fraction,
+		))
+	}
+	return int64(float64(maxStoreBytes) * fraction)
+}
+
 // SetupStreams creates the core JetStream streams required by
 // DagNats. WORKFLOW_HISTORY uses a 5s dedup window.
 // TASK_QUEUES uses WorkQueuePolicy for exactly-once delivery.
-func SetupStreams(js jetstream.JetStream, replicas int) error {
+// maxStoreBytes is the JetStreamMaxStore budget; each file stream gets a
+// MaxBytes sized as a fraction of it (see the fraction table). A budget of
+// 0 (or less) disables the byte ceilings.
+func SetupStreams(
+	js jetstream.JetStream, replicas int, maxStoreBytes int64,
+) error {
 	if js == nil {
 		panic("SetupStreams: js must not be nil")
 	}
@@ -51,7 +108,10 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Storage:    jetstream.FileStorage,
 			Duplicates: 5_000_000_000,
 			MaxAge:     historyMaxAge,
-			Replicas:   replicas,
+			MaxBytes: proportionalMaxBytes(
+				maxStoreBytes, fractionWorkflowHistory,
+			),
+			Replicas: replicas,
 		},
 		{
 			Name:      "TASK_QUEUES",
@@ -60,6 +120,11 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Storage:   jetstream.FileStorage,
 			// NO MaxAge: un-acked work-queue messages are live tasks;
 			// an age bound would silently delete pending work (#441).
+			// A byte ceiling is safe — it caps the workqueue without
+			// dropping by time.
+			MaxBytes: proportionalMaxBytes(
+				maxStoreBytes, fractionTaskQueues,
+			),
 			Replicas: replicas,
 		},
 		{
@@ -68,7 +133,10 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
 			MaxAge:    eventsMaxAge,
-			Replicas:  replicas,
+			MaxBytes: proportionalMaxBytes(
+				maxStoreBytes, fractionEvents,
+			),
+			Replicas: replicas,
 		},
 		{
 			Name:      "DEAD_LETTERS",
@@ -87,7 +155,10 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			// dedup-id).
 			Duplicates: 24 * time.Hour,
 			MaxAge:     deadLettersMaxAge,
-			Replicas:   replicas,
+			MaxBytes: proportionalMaxBytes(
+				maxStoreBytes, fractionDeadLetters,
+			),
+			Replicas: replicas,
 		},
 		{
 			Name:      "SLEEP_TIMERS",
@@ -95,7 +166,11 @@ func SetupStreams(js jetstream.JetStream, replicas int) error {
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
 			// NO MaxAge: holds pending future sleep messages; an age
-			// bound would drop un-fired timers (#441).
+			// bound would drop un-fired timers (#441). A byte ceiling
+			// is safe — it caps storage without dropping by time.
+			MaxBytes: proportionalMaxBytes(
+				maxStoreBytes, fractionSleepTimers,
+			),
 			Replicas: replicas,
 		},
 	}
@@ -243,18 +318,25 @@ func SetupStickyStream(js jetstream.JetStream) error {
 
 // SetupTelemetryStream creates the TELEMETRY stream for all
 // observability signals (spans, metrics, logs). 7-day retention,
-// 1GB cap, 5s dedup window.
-func SetupTelemetryStream(js jetstream.JetStream) error {
+// proportional byte ceiling, 5s dedup window. maxStoreBytes is the
+// JetStreamMaxStore budget; the byte ceiling is a fraction of it (was an
+// absolute 1 GiB cap, which is 50% of the 2 GiB test cluster — folded into
+// the proportional scheme). A budget of 0 disables the ceiling.
+func SetupTelemetryStream(
+	js jetstream.JetStream, maxStoreBytes int64,
+) error {
 	if js == nil {
 		panic("SetupTelemetryStream: js must not be nil")
 	}
 	cfg := jetstream.StreamConfig{
-		Name:       "TELEMETRY",
-		Subjects:   []string{"telemetry.>"},
-		Retention:  jetstream.LimitsPolicy,
-		Storage:    jetstream.FileStorage,
-		MaxAge:     7 * 24 * time.Hour,
-		MaxBytes:   1 << 30,
+		Name:      "TELEMETRY",
+		Subjects:  []string{"telemetry.>"},
+		Retention: jetstream.LimitsPolicy,
+		Storage:   jetstream.FileStorage,
+		MaxAge:    7 * 24 * time.Hour,
+		MaxBytes: proportionalMaxBytes(
+			maxStoreBytes, fractionTelemetry,
+		),
 		Duplicates: 5 * time.Second,
 	}
 	if cfg.Name == "" {
@@ -271,8 +353,10 @@ func SetupTelemetryStream(js jetstream.JetStream) error {
 // SetupTriggerHistoryStream creates the TRIGGER_HISTORY stream
 // for recording trigger fire events. 30-day retention, file
 // storage, discard oldest messages when limits are reached.
+// maxStoreBytes is the JetStreamMaxStore budget; the byte ceiling is a
+// fraction of it. A budget of 0 disables the ceiling.
 func SetupTriggerHistoryStream(
-	js jetstream.JetStream,
+	js jetstream.JetStream, maxStoreBytes int64,
 ) error {
 	if js == nil {
 		panic(
@@ -285,7 +369,10 @@ func SetupTriggerHistoryStream(
 		Retention: jetstream.LimitsPolicy,
 		Storage:   jetstream.FileStorage,
 		MaxAge:    30 * 24 * time.Hour,
-		Discard:   jetstream.DiscardOld,
+		MaxBytes: proportionalMaxBytes(
+			maxStoreBytes, fractionTriggerHistory,
+		),
+		Discard: jetstream.DiscardOld,
 	}
 	if cfg.Name == "" {
 		panic(
@@ -313,9 +400,22 @@ type KVConfig struct {
 type SetupOption func(*setupOptions)
 
 type setupOptions struct {
-	streams []StreamConfig
-	kvs     []KVConfig
-	cluster ClusterOptions
+	streams       []StreamConfig
+	kvs           []KVConfig
+	cluster       ClusterOptions
+	maxStoreBytes int64
+}
+
+// WithStoreBudget sets the JetStreamMaxStore budget SetupAll uses to size
+// each file stream's proportional MaxBytes ceiling. When unset (or 0), the
+// default budget (defaultMaxStoreBytes) is used so callers that cannot
+// easily obtain the real budget still get sane ceilings. The server passes
+// its configured MaxStoreBytes; the e2e harness passes its smaller cluster
+// budget so the proportional sizing fits the test store.
+func WithStoreBudget(maxStoreBytes int64) SetupOption {
+	return func(o *setupOptions) {
+		o.maxStoreBytes = maxStoreBytes
+	}
 }
 
 // WithStreams adds extra JetStream streams to provision.
@@ -357,6 +457,11 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	for _, opt := range opts {
 		opt(&options)
 	}
+	// A caller that did not declare a budget still gets proportional
+	// ceilings off the default budget, never a 0 (uncapped) store.
+	if options.maxStoreBytes <= 0 {
+		options.maxStoreBytes = defaultMaxStoreBytes
+	}
 
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -379,19 +484,21 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	replicas := DeriveReplicas(
 		options.cluster.Routes, options.cluster.ReplicasOverride,
 	)
-	if err := SetupStreams(js, replicas); err != nil {
+	if err := SetupStreams(js, replicas, options.maxStoreBytes); err != nil {
 		return err
 	}
 	if err := SetupKVBuckets(js, replicas); err != nil {
 		return err
 	}
-	if err := SetupTelemetryStream(js); err != nil {
+	if err := SetupTelemetryStream(js, options.maxStoreBytes); err != nil {
 		return err
 	}
 	if err := SetupStickyStream(js); err != nil {
 		return err
 	}
-	if err := SetupTriggerHistoryStream(js); err != nil {
+	if err := SetupTriggerHistoryStream(
+		js, options.maxStoreBytes,
+	); err != nil {
 		return err
 	}
 

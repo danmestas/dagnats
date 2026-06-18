@@ -32,7 +32,7 @@ func TestSetupStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
 	}
-	err = SetupStreams(js, 1)
+	err = SetupStreams(js, 1, 0)
 	if err != nil {
 		t.Fatalf("SetupStreams failed: %v", err)
 	}
@@ -90,7 +90,8 @@ func TestSetupTelemetryStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	err = SetupTelemetryStream(js)
+	const budget = int64(2 * 1024 * 1024 * 1024)
+	err = SetupTelemetryStream(js, budget)
 	if err != nil {
 		t.Fatalf("SetupTelemetryStream: %v", err)
 	}
@@ -103,8 +104,12 @@ func TestSetupTelemetryStream(t *testing.T) {
 	if info.Config.MaxAge != 7*24*time.Hour {
 		t.Fatalf("MaxAge = %v, want 7d", info.Config.MaxAge)
 	}
-	if info.Config.MaxBytes != 1<<30 {
-		t.Fatalf("MaxBytes = %d, want 1GB", info.Config.MaxBytes)
+	// Proportional ceiling: a fraction of the budget, not the old
+	// absolute 1 GiB cap.
+	wantBytes := proportionalMaxBytes(budget, fractionTelemetry)
+	if info.Config.MaxBytes != wantBytes {
+		t.Fatalf("MaxBytes = %d, want %d (budget*%.2f)",
+			info.Config.MaxBytes, wantBytes, fractionTelemetry)
 	}
 }
 
@@ -324,7 +329,7 @@ func TestSetupStreams_Replicas(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	if err := SetupStreams(js, 1); err != nil {
+	if err := SetupStreams(js, 1, 0); err != nil {
 		t.Fatalf("SetupStreams: %v", err)
 	}
 
@@ -347,7 +352,7 @@ func TestEnableAtomicPublish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	if err := SetupStreams(js, 1); err != nil {
+	if err := SetupStreams(js, 1, 0); err != nil {
 		t.Fatalf("SetupStreams: %v", err)
 	}
 
