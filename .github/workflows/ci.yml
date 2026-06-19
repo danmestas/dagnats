@@ -119,6 +119,13 @@ jobs:
         env:
           E2E_TOPOLOGY: embedded
 
+      - name: dagnats-ci module
+        if: steps.filter.outputs.code == 'true'
+        # The root `go test ./...` does not descend into nested modules.
+        # This step exercises the dagnats-ci module independently so its
+        # compiler, webhook, and event-parsing tests always run on CI.
+        run: cd dagnats-ci && go build ./... && go vet ./... && go test ./... -count=1
+
       - name: Assert main dagnats binary is CGO-free
         if: steps.filter.outputs.code == 'true'
         # The main dagnats binary must stay pure-Go even after #188
