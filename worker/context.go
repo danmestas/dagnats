@@ -46,6 +46,7 @@ type taskContext struct {
 	iteration    int
 	attempt      int
 	input        []byte
+	metadata     map[string]string
 	ctx          context.Context
 	span         trace.Span
 	msg          jetstream.Msg
@@ -98,6 +99,7 @@ func newTaskContext(
 		iteration:    payload.Iteration,
 		attempt:      payload.Attempt,
 		input:        payload.Input,
+		metadata:     payload.Metadata,
 		ctx:          ctx,
 		span:         span,
 		msg:          msg,
@@ -106,11 +108,12 @@ func newTaskContext(
 	}
 }
 
-func (c *taskContext) Input() []byte            { return c.input }
-func (c *taskContext) RunID() string            { return c.runID }
-func (c *taskContext) StepID() string           { return c.stepID }
-func (c *taskContext) RetryCount() int          { return c.attempt }
-func (c *taskContext) Context() context.Context { return c.ctx }
+func (c *taskContext) Input() []byte               { return c.input }
+func (c *taskContext) RunID() string               { return c.runID }
+func (c *taskContext) StepID() string              { return c.stepID }
+func (c *taskContext) RetryCount() int             { return c.attempt }
+func (c *taskContext) Metadata() map[string]string { return c.metadata }
+func (c *taskContext) Context() context.Context    { return c.ctx }
 
 // Complete publishes a step.completed event with trace context.
 func (c *taskContext) Complete(output []byte) error {

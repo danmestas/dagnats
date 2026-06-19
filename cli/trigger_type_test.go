@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/dagnatsext"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/worker"
@@ -301,7 +302,7 @@ func TestRunTriggerTypeListCmd_EndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 2*time.Second)
 	defer cancel()
-	def := trigger.TriggerTypeDef{
+	def := dagnatsext.TriggerTypeDef{
 		Name:         "fs.watch",
 		Description:  "Filesystem watcher",
 		ConfigSchema: schemaBytes,
@@ -376,7 +377,7 @@ func TestRunTriggerTypeListCmd_JSON(t *testing.T) {
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 2*time.Second)
 	defer cancel()
-	if err := w.RegisterTriggerType(ctx, trigger.TriggerTypeDef{
+	if err := w.RegisterTriggerType(ctx, dagnatsext.TriggerTypeDef{
 		Name:         "fs.watch",
 		Description:  "Filesystem watcher",
 		ConfigSchema: schemaBytes,
@@ -419,7 +420,7 @@ func TestRunTriggerTypeDescribeCmd_EndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 2*time.Second)
 	defer cancel()
-	def := trigger.TriggerTypeDef{
+	def := dagnatsext.TriggerTypeDef{
 		Name:        "fs.watch",
 		Description: "Filesystem watcher",
 		ConfigSchema: json.RawMessage(
