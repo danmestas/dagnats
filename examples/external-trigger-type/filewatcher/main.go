@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/danmestas/dagnats/dagnatsext"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/protocol"
@@ -172,7 +173,7 @@ func (s *Service) start(ctx context.Context) error {
 		panic("start: worker must not be nil")
 	}
 
-	def := trigger.TriggerTypeDef{
+	def := dagnatsext.TriggerTypeDef{
 		Name:          filewatcherKind,
 		OwnerWorkerID: filewatcherWorkerID,
 		Description:   "Fires when a filesystem path changes (fsnotify)",
@@ -214,13 +215,13 @@ func (s *Service) stop() {
 // path. Idempotent: re-activating an already-watched trigger ID is a
 // no-op (engine fires Activate again on catch-up scans).
 func (s *Service) onActivate(
-	ctx context.Context, def trigger.TriggerDef,
+	ctx context.Context, def dagnatsext.TriggerDef,
 ) error {
 	if def.ID == "" {
 		return fmt.Errorf("onActivate: def.ID must not be empty")
 	}
-	if def.External == nil {
-		return fmt.Errorf("onActivate: def.External must not be nil")
+	if len(def.External.Config) == 0 {
+		return fmt.Errorf("onActivate: def.External.Config must not be empty")
 	}
 
 	var cfg filewatcherConfig
@@ -272,7 +273,7 @@ func (s *Service) onActivate(
 // unknown trigger is nil so the worker doesn't surface stale-state
 // errors back to the engine.
 func (s *Service) onDeactivate(
-	_ context.Context, def trigger.TriggerDef,
+	_ context.Context, def dagnatsext.TriggerDef,
 ) error {
 	if def.ID == "" {
 		return fmt.Errorf("onDeactivate: def.ID must not be empty")

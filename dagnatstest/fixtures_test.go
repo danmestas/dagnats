@@ -306,11 +306,12 @@ type stubTaskContext struct {
 	failed    bool
 }
 
-func (s *stubTaskContext) Context() context.Context { return context.Background() }
-func (s *stubTaskContext) Input() []byte            { return s.input }
-func (s *stubTaskContext) RunID() string            { return "stub-run" }
-func (s *stubTaskContext) StepID() string           { return "stub-step" }
-func (s *stubTaskContext) RetryCount() int          { return 0 }
+func (s *stubTaskContext) Context() context.Context    { return context.Background() }
+func (s *stubTaskContext) Input() []byte               { return s.input }
+func (s *stubTaskContext) RunID() string               { return "stub-run" }
+func (s *stubTaskContext) StepID() string              { return "stub-step" }
+func (s *stubTaskContext) RetryCount() int             { return 0 }
+func (s *stubTaskContext) Metadata() map[string]string { return nil }
 
 func (s *stubTaskContext) Complete(out []byte) error {
 	s.completed = true

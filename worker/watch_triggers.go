@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/danmestas/dagnats/dagnatsext"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -53,7 +54,7 @@ const catchupGetTimeout = 2 * time.Second
 // triggerHandler is a worker callback for activate/deactivate events.
 // Empty-body reply on success; error becomes a JSON {"error":"..."}
 // reply per the engine's requestOwner contract.
-type triggerHandler func(ctx context.Context, def trigger.TriggerDef) error
+type triggerHandler func(ctx context.Context, def dagnatsext.TriggerDef) error
 
 // WatchTriggers subscribes to `_TRIGGER.<kind>.activate` and
 // `_TRIGGER.<kind>.deactivate`, decodes each request into a
@@ -160,11 +161,11 @@ func (w *Worker) handleTriggerEvent(
 		replyTriggerEvent(msg, fmt.Errorf("trigger_id must not be empty"))
 		return
 	}
-	def := trigger.TriggerDef{
+	def := dagnatsext.TriggerDef{
 		ID:         payload.TriggerID,
 		WorkflowID: payload.WorkflowID,
 		Enabled:    true,
-		External: &trigger.ExternalTriggerConfig{
+		External: dagnatsext.ExternalTriggerConfig{
 			Kind:   kind,
 			Config: payload.Config,
 		},
@@ -274,21 +275,32 @@ func (w *Worker) catchUpOne(
 			"kind", kind, "key", key, "error", err)
 		return
 	}
-	var def trigger.TriggerDef
-	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+	var richDef trigger.TriggerDef
+	if err := json.Unmarshal(entry.Value(), &richDef); err != nil {
 		slog.Warn("WatchTriggers: catch-up decode failed",
 			"kind", kind, "key", key, "error", err)
 		return
 	}
-	if def.External == nil || def.External.Kind != kind {
+	if richDef.External == nil || richDef.External.Kind != kind {
 		return
 	}
-	if !def.Enabled {
+	if !richDef.Enabled {
 		return
 	}
-	if err := onActivate(ctx, def); err != nil {
+	// Convert the rich internal TriggerDef to the slim public view
+	// delivered to the handler. trigger.ExternalTriggerConfig is a type
+	// alias for dagnatsext.ExternalTriggerConfig, so the deref copies the
+	// value directly with no JSON re-encoding. Safe to deref: the
+	// richDef.External == nil case returned above.
+	extDef := dagnatsext.TriggerDef{
+		ID:         richDef.ID,
+		WorkflowID: richDef.WorkflowID,
+		Enabled:    richDef.Enabled,
+		External:   *richDef.External,
+	}
+	if err := onActivate(ctx, extDef); err != nil {
 		slog.Warn("WatchTriggers: catch-up onActivate returned error",
-			"kind", kind, "trigger_id", def.ID, "error", err)
+			"kind", kind, "trigger_id", richDef.ID, "error", err)
 	}
 }
 

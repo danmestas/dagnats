@@ -5,8 +5,9 @@
 package trigger
 
 import (
-	"encoding/json"
 	"time"
+
+	"github.com/danmestas/dagnats/dagnatsext"
 )
 
 // TriggerDef defines a single trigger. Exactly one of Cron, Subject,
@@ -42,10 +43,7 @@ type TriggerDef struct {
 // trigger.ValidateWithKV; the existing trigger.Validate cannot
 // validate External configs because the schema lookup needs a KV
 // handle (parent #273 Phase 2.2).
-type ExternalTriggerConfig struct {
-	Kind   string          `json:"kind"`
-	Config json.RawMessage `json:"config"`
-}
+type ExternalTriggerConfig = dagnatsext.ExternalTriggerConfig
 
 // DebounceConfig delays execution until events stop arriving.
 // Period resets on each new event. Timeout is the hard upper bound
@@ -81,13 +79,7 @@ type WebhookConfig struct {
 // orchestrator resolves the WorkflowDef from workflow_defs KV at
 // handle time. Including it here keeps the trigger publish paths
 // free of KV lookups (#167).
-type TriggerEnvelope struct {
-	Trigger    string          `json:"trigger"`
-	Source     string          `json:"source"`
-	WorkflowID string          `json:"workflow_id"`
-	Timestamp  time.Time       `json:"timestamp"`
-	Data       json.RawMessage `json:"data,omitempty"`
-}
+type TriggerEnvelope = dagnatsext.TriggerEnvelope
 
 // TriggerTypeDef defines an External trigger type contributed by a
 // worker (parent #273 Phase 2.1, audit-adjusted in #313). Stored in
@@ -104,15 +96,7 @@ type TriggerEnvelope struct {
 //
 // This is a pure data shape — no behavior wiring lives here. The
 // registrar consumes TriggerTypeDef in Phase 2.3.
-type TriggerTypeDef struct {
-	Name          string          `json:"name"`
-	OwnerWorkerID string          `json:"owner_worker_id"`
-	Description   string          `json:"description"`
-	ConfigSchema  json.RawMessage `json:"config_schema"`
-	PayloadSchema json.RawMessage `json:"payload_schema"`
-	Version       string          `json:"version"`
-	RegisteredAt  time.Time       `json:"registered_at"`
-}
+type TriggerTypeDef = dagnatsext.TriggerTypeDef
 
 // TriggerFire records a single trigger fire event for history
 // tracking. Published to TRIGGER_HISTORY stream.

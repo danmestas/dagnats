@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/dagnatsext"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
@@ -86,12 +87,12 @@ func TestWatchTriggers_CatchUpOnStart(t *testing.T) {
 	)
 	defer cancel()
 	err := w.WatchTriggers(ctx, kind,
-		func(_ context.Context, def trigger.TriggerDef) error {
+		func(_ context.Context, def dagnatsext.TriggerDef) error {
 			activates.Add(1)
 			seen <- def.ID
 			return nil
 		},
-		func(_ context.Context, _ trigger.TriggerDef) error { return nil },
+		func(_ context.Context, _ dagnatsext.TriggerDef) error { return nil },
 	)
 	if err != nil {
 		t.Fatalf("WatchTriggers: %v", err)
@@ -162,11 +163,11 @@ func TestWatchTriggers_BoundedCatchUp(t *testing.T) {
 	)
 	defer cancelWatch()
 	err = w.WatchTriggers(watchCtx, kind,
-		func(_ context.Context, _ trigger.TriggerDef) error {
+		func(_ context.Context, _ dagnatsext.TriggerDef) error {
 			activates.Add(1)
 			return nil
 		},
-		func(_ context.Context, _ trigger.TriggerDef) error { return nil },
+		func(_ context.Context, _ dagnatsext.TriggerDef) error { return nil },
 	)
 	if err != nil {
 		t.Fatalf("WatchTriggers: %v", err)
@@ -190,7 +191,7 @@ func TestWatchTriggers_LiveActivate(t *testing.T) {
 		context.Background(), 2*time.Second,
 	)
 	defer cancelAck()
-	if err := w.RegisterTriggerType(ackCtx, trigger.TriggerTypeDef{
+	if err := w.RegisterTriggerType(ackCtx, dagnatsext.TriggerTypeDef{
 		Name:         kind,
 		ConfigSchema: json.RawMessage(`{"type":"object"}`),
 		Version:      "1.0.0",
@@ -199,18 +200,18 @@ func TestWatchTriggers_LiveActivate(t *testing.T) {
 	}
 
 	var liveHits atomic.Int32
-	done := make(chan trigger.TriggerDef, 4)
+	done := make(chan dagnatsext.TriggerDef, 4)
 	watchCtx, cancelWatch := context.WithTimeout(
 		context.Background(), 5*time.Second,
 	)
 	defer cancelWatch()
 	err := w.WatchTriggers(watchCtx, kind,
-		func(_ context.Context, def trigger.TriggerDef) error {
+		func(_ context.Context, def dagnatsext.TriggerDef) error {
 			liveHits.Add(1)
 			done <- def
 			return nil
 		},
-		func(_ context.Context, _ trigger.TriggerDef) error { return nil },
+		func(_ context.Context, _ dagnatsext.TriggerDef) error { return nil },
 	)
 	if err != nil {
 		t.Fatalf("WatchTriggers: %v", err)
@@ -233,8 +234,8 @@ func TestWatchTriggers_LiveActivate(t *testing.T) {
 		if def.ID != "live-1" {
 			t.Fatalf("def.ID = %q, want live-1", def.ID)
 		}
-		if def.External == nil || def.External.Kind != kind {
-			t.Fatalf("def.External missing or wrong kind: %#v",
+		if def.External.Kind != kind {
+			t.Fatalf("def.External wrong kind: %#v",
 				def.External)
 		}
 	case <-time.After(2 * time.Second):
@@ -251,7 +252,7 @@ func TestWatchTriggers_LiveDeactivate(t *testing.T) {
 		context.Background(), 2*time.Second,
 	)
 	defer cancelAck()
-	if err := w.RegisterTriggerType(ackCtx, trigger.TriggerTypeDef{
+	if err := w.RegisterTriggerType(ackCtx, dagnatsext.TriggerTypeDef{
 		Name:         kind,
 		ConfigSchema: json.RawMessage(`{"type":"object"}`),
 		Version:      "1.0.0",
@@ -260,20 +261,20 @@ func TestWatchTriggers_LiveDeactivate(t *testing.T) {
 	}
 
 	activated := make(chan struct{}, 1)
-	deactivated := make(chan trigger.TriggerDef, 1)
+	deactivated := make(chan dagnatsext.TriggerDef, 1)
 	watchCtx, cancelWatch := context.WithTimeout(
 		context.Background(), 5*time.Second,
 	)
 	defer cancelWatch()
 	err := w.WatchTriggers(watchCtx, kind,
-		func(_ context.Context, _ trigger.TriggerDef) error {
+		func(_ context.Context, _ dagnatsext.TriggerDef) error {
 			select {
 			case activated <- struct{}{}:
 			default:
 			}
 			return nil
 		},
-		func(_ context.Context, def trigger.TriggerDef) error {
+		func(_ context.Context, def dagnatsext.TriggerDef) error {
 			deactivated <- def
 			return nil
 		},
@@ -338,8 +339,8 @@ func TestWorkerStop_UnsubscribesTriggerSubs(t *testing.T) {
 	)
 	defer cancel()
 	if err := w.WatchTriggers(ctx, "fs.stop",
-		func(_ context.Context, _ trigger.TriggerDef) error { return nil },
-		func(_ context.Context, _ trigger.TriggerDef) error { return nil },
+		func(_ context.Context, _ dagnatsext.TriggerDef) error { return nil },
+		func(_ context.Context, _ dagnatsext.TriggerDef) error { return nil },
 	); err != nil {
 		t.Fatalf("WatchTriggers: %v", err)
 	}
@@ -388,7 +389,7 @@ func TestWatchTriggers_Q4_EndToEndStickyOwner(t *testing.T) {
 		context.Background(), 2*time.Second,
 	)
 	defer cancelReg()
-	if err := w.RegisterTriggerType(regCtx, trigger.TriggerTypeDef{
+	if err := w.RegisterTriggerType(regCtx, dagnatsext.TriggerTypeDef{
 		Name:         kind,
 		ConfigSchema: json.RawMessage(`{"type":"object"}`),
 		Version:      "1.0.0",
@@ -396,17 +397,17 @@ func TestWatchTriggers_Q4_EndToEndStickyOwner(t *testing.T) {
 		t.Fatalf("RegisterTriggerType: %v", err)
 	}
 
-	delivered := make(chan trigger.TriggerDef, 1)
+	delivered := make(chan dagnatsext.TriggerDef, 1)
 	watchCtx, cancelWatch := context.WithTimeout(
 		context.Background(), 5*time.Second,
 	)
 	defer cancelWatch()
 	if err := w.WatchTriggers(watchCtx, kind,
-		func(_ context.Context, def trigger.TriggerDef) error {
+		func(_ context.Context, def dagnatsext.TriggerDef) error {
 			delivered <- def
 			return nil
 		},
-		func(_ context.Context, _ trigger.TriggerDef) error { return nil },
+		func(_ context.Context, _ dagnatsext.TriggerDef) error { return nil },
 	); err != nil {
 		t.Fatalf("WatchTriggers: %v", err)
 	}
@@ -431,8 +432,7 @@ func TestWatchTriggers_Q4_EndToEndStickyOwner(t *testing.T) {
 			t.Fatalf("def.WorkflowID = %q, want wf-q4",
 				def.WorkflowID)
 		}
-		if def.External == nil ||
-			string(def.External.Config) != `{"path":"/q4"}` {
+		if string(def.External.Config) != `{"path":"/q4"}` {
 			t.Fatalf("def.External.Config mismatch: %#v",
 				def.External)
 		}
@@ -445,6 +445,84 @@ func TestWatchTriggers_Q4_EndToEndStickyOwner(t *testing.T) {
 	select {
 	case extra := <-delivered:
 		t.Fatalf("unexpected second delivery: %#v", extra)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestWatchTriggers_PublicSeamEndToEnd proves the public extension seam
+// (dagnatsext) end to end: RegisterTriggerType accepts a dagnatsext.TriggerTypeDef
+// and WatchTriggers delivers a dagnatsext.TriggerDef carrying the correct
+// ID and External.Kind to the handler without importing internal/trigger.
+//
+// Positive: handler receives the expected ID and External.Kind.
+// Negative: a non-matching kind does not fire.
+func TestWatchTriggers_PublicSeamEndToEnd(t *testing.T) {
+	w := startWorkerForTriggers(t)
+	const kind = "seam.test"
+	const otherKind = "seam.other"
+
+	regCtx, cancelReg := context.WithTimeout(
+		context.Background(), 2*time.Second,
+	)
+	defer cancelReg()
+	// Register using the public dagnatsext type — no internal/trigger import
+	// required by callers.
+	if err := w.RegisterTriggerType(regCtx, dagnatsext.TriggerTypeDef{
+		Name:         kind,
+		ConfigSchema: json.RawMessage(`{"type":"object"}`),
+		Version:      "1.0.0",
+	}); err != nil {
+		t.Fatalf("RegisterTriggerType: %v", err)
+	}
+
+	received := make(chan dagnatsext.TriggerDef, 2)
+	watchCtx, cancelWatch := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancelWatch()
+	if err := w.WatchTriggers(watchCtx, kind,
+		func(_ context.Context, def dagnatsext.TriggerDef) error {
+			received <- def
+			return nil
+		},
+		func(_ context.Context, _ dagnatsext.TriggerDef) error { return nil },
+	); err != nil {
+		t.Fatalf("WatchTriggers: %v", err)
+	}
+
+	// Insert matching trigger. putTrigger writes the rich internal type to KV
+	// (the engine side); the worker SDK delivers the slim public view.
+	putTrigger(t, w, trigger.TriggerDef{
+		ID: "seam-1", WorkflowID: "wf-seam", Enabled: true,
+		External: &trigger.ExternalTriggerConfig{
+			Kind: kind, Config: json.RawMessage(`{"path":"/seam"}`),
+		},
+	})
+	// Also insert a trigger of a different kind — must not fire.
+	putTrigger(t, w, trigger.TriggerDef{
+		ID: "seam-other", WorkflowID: "wf-other", Enabled: true,
+		External: &trigger.ExternalTriggerConfig{
+			Kind: otherKind, Config: json.RawMessage(`{}`),
+		},
+	})
+
+	// Positive: handler receives a dagnatsext.TriggerDef with correct ID + Kind.
+	select {
+	case def := <-received:
+		if def.ID != "seam-1" {
+			t.Fatalf("def.ID = %q, want seam-1", def.ID)
+		}
+		if def.External.Kind != kind {
+			t.Fatalf("def.External.Kind = %q, want %q",
+				def.External.Kind, kind)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("public seam: activate not received within 2s")
+	}
+	// Negative: the non-matching kind must not fire the handler.
+	select {
+	case extra := <-received:
+		t.Fatalf("unexpected delivery for non-matching kind: %#v", extra)
 	case <-time.After(200 * time.Millisecond):
 	}
 }

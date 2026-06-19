@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/danmestas/dagnats/dagnatsext"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
 
@@ -52,7 +53,7 @@ const registerAckSubject = "_REGISTRY.trigger_types.ack"
 // Name + same OwnerWorkerID + same ConfigSchema → nil. Schema drift
 // → error. Owner drift → error.
 func (w *Worker) RegisterTriggerType(
-	ctx context.Context, def trigger.TriggerTypeDef,
+	ctx context.Context, def dagnatsext.TriggerTypeDef,
 ) error {
 	if w.nc == nil {
 		panic("RegisterTriggerType: worker.nc must not be nil")

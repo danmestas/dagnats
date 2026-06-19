@@ -17,6 +17,10 @@ type TaskPayload struct {
 	Iteration int             `json:"iteration,omitempty"`
 	Attempt   int             `json:"attempt,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
+	// Metadata is static per-step config copied from StepDef.Metadata,
+	// delivered to workers via TaskContext.Metadata(). Nil when the step
+	// declared no metadata.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // TaskResolution is the wire format for HTTP bridge resolve actions.

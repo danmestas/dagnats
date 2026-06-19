@@ -66,10 +66,11 @@ func (m *MockTaskContext) Context() context.Context {
 	return context.Background()
 }
 
-func (m *MockTaskContext) Input() []byte   { return m.InputData }
-func (m *MockTaskContext) RunID() string   { return m.RunIDValue }
-func (m *MockTaskContext) StepID() string  { return m.StepIDValue }
-func (m *MockTaskContext) RetryCount() int { return m.RetryCountVal }
+func (m *MockTaskContext) Input() []byte               { return m.InputData }
+func (m *MockTaskContext) RunID() string               { return m.RunIDValue }
+func (m *MockTaskContext) StepID() string              { return m.StepIDValue }
+func (m *MockTaskContext) RetryCount() int             { return m.RetryCountVal }
+func (m *MockTaskContext) Metadata() map[string]string { return nil }
 
 func (m *MockTaskContext) Complete(output []byte) error {
 	m.mu.Lock()

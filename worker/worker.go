@@ -40,6 +40,9 @@ type TaskContext interface {
 	RunID() string
 	StepID() string
 	RetryCount() int
+	// Metadata returns static per-step metadata from the workflow step
+	// definition; nil if the step declared none.
+	Metadata() map[string]string
 	Context() context.Context
 
 	// Step completion — call exactly one per execution

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/dagnatsext"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
@@ -57,7 +58,7 @@ func TestRegisterTriggerType_RoundTrip(t *testing.T) {
 	)
 	defer cancel()
 
-	def := trigger.TriggerTypeDef{
+	def := dagnatsext.TriggerTypeDef{
 		Name:         "fs.watch",
 		Description:  "Filesystem watcher",
 		ConfigSchema: json.RawMessage(`{"type":"object"}`),
@@ -99,7 +100,7 @@ func TestRegisterTriggerType_Idempotent(t *testing.T) {
 	)
 	defer cancel()
 
-	def := trigger.TriggerTypeDef{
+	def := dagnatsext.TriggerTypeDef{
 		Name:         "fs.watch",
 		Description:  "Filesystem watcher",
 		ConfigSchema: json.RawMessage(`{"type":"object"}`),

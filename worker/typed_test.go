@@ -21,15 +21,16 @@ type mockTaskContext struct {
 	failErr   error
 }
 
-func (m *mockTaskContext) Input() []byte            { return m.input }
-func (m *mockTaskContext) RunID() string            { return "mock-run" }
-func (m *mockTaskContext) StepID() string           { return "mock-step" }
-func (m *mockTaskContext) RetryCount() int          { return 0 }
-func (m *mockTaskContext) Context() context.Context { return context.Background() }
-func (m *mockTaskContext) Heartbeat() error         { return nil }
-func (m *mockTaskContext) PutStream([]byte) error   { return nil }
-func (m *mockTaskContext) Checkpoint([]byte) error  { return nil }
-func (m *mockTaskContext) Continue([]byte) error    { return nil }
+func (m *mockTaskContext) Input() []byte               { return m.input }
+func (m *mockTaskContext) RunID() string               { return "mock-run" }
+func (m *mockTaskContext) StepID() string              { return "mock-step" }
+func (m *mockTaskContext) RetryCount() int             { return 0 }
+func (m *mockTaskContext) Metadata() map[string]string { return nil }
+func (m *mockTaskContext) Context() context.Context    { return context.Background() }
+func (m *mockTaskContext) Heartbeat() error            { return nil }
+func (m *mockTaskContext) PutStream([]byte) error      { return nil }
+func (m *mockTaskContext) Checkpoint([]byte) error     { return nil }
+func (m *mockTaskContext) Continue([]byte) error       { return nil }
 
 func (m *mockTaskContext) LoadCheckpoint() ([]byte, error) {
 	return nil, nil
