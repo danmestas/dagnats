@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -9,7 +10,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// errUnknownConfigKey marks a config-file key the parser does not
+// recognize. loadConfigFile tolerates these (logs a warning) for
+// forward-compat, but propagates every other applyConfigValue error
+// as a hard load failure.
+var errUnknownConfigKey = errors.New("unknown config key")
 
 const (
 	// defaultHTTPAddr binds only to loopback by default so the embedded
@@ -62,6 +70,15 @@ type Config struct {
 	MaxMemoryBytes int64          `json:"max_memory_bytes"`
 	Workers        []WorkerConfig `json:"workers"`
 	OTLPEndpoint   string         `json:"otlp_endpoint"`
+
+	// RunsMaxAge is the opt-in run-retention window for the
+	// workflow_runs KV (#453). Zero (the default) DISABLES pruning
+	// entirely — upgrading never silently deletes anyone's runs.
+	// When > 0, terminal runs older than this are dropped
+	// (delete-only) by the orchestrator's background sweeper. Set
+	// via DAGNATS_RUNS_MAX_AGE, which accepts a Go duration ("720h")
+	// or a d/w suffix ("30d", "2w") for operator ergonomics.
+	RunsMaxAge time.Duration `json:"runs_max_age"`
 
 	// NATSWebsocketPort enables an embedded NATS WebSocket
 	// listener for browser clients when > 0. 0 (default)
@@ -171,6 +188,10 @@ func ConfigWithPath(
 	}
 
 	applyEnvOverrides(&cfg)
+
+	if err := applyRunsMaxAgeEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
 
 	if len(cfg.Workers) > 0 {
 		if err := validateWorkerConfigs(cfg.Workers); err != nil {
@@ -405,6 +426,57 @@ func applyEnvOverrides(cfg *Config) {
 	}
 }
 
+// applyRunsMaxAgeEnv resolves DAGNATS_RUNS_MAX_AGE into cfg.RunsMaxAge (#453).
+// Unset or empty leaves the disabled default. An explicit "0" stays disabled.
+// A valid window enables the sweeper; an invalid value is a hard error so a
+// typo fails fast at config load rather than silently disabling retention.
+func applyRunsMaxAgeEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyRunsMaxAgeEnv: cfg is nil")
+	}
+	val := os.Getenv("DAGNATS_RUNS_MAX_AGE")
+	if val == "" {
+		return nil
+	}
+	dur, err := parseRetentionDuration(val)
+	if err != nil {
+		return fmt.Errorf("invalid DAGNATS_RUNS_MAX_AGE %q: %w", val, err)
+	}
+	if dur < 0 {
+		return fmt.Errorf(
+			"invalid DAGNATS_RUNS_MAX_AGE %q: must not be negative", val,
+		)
+	}
+	cfg.RunsMaxAge = dur
+	return nil
+}
+
+// parseRetentionDuration parses a retention window. It accepts any Go
+// duration string ("720h", "30m") plus the operator-friendly "<n>d" (days)
+// and "<n>w" (weeks) suffixes. The numeric portion must be a non-negative
+// integer for the d/w forms.
+func parseRetentionDuration(val string) (time.Duration, error) {
+	if val == "" {
+		panic("parseRetentionDuration: val must not be empty")
+	}
+	last := val[len(val)-1]
+	if last != 'd' && last != 'w' {
+		return time.ParseDuration(val)
+	}
+	count, err := strconv.Atoi(val[:len(val)-1])
+	if err != nil {
+		return 0, fmt.Errorf("bad %c-suffixed duration: %w", last, err)
+	}
+	if count < 0 {
+		return 0, fmt.Errorf("duration must not be negative")
+	}
+	unit := 24 * time.Hour
+	if last == 'w' {
+		unit = 7 * 24 * time.Hour
+	}
+	return time.Duration(count) * unit, nil
+}
+
 // loadConfigFile reads a simple key: value config file and applies it to cfg.
 // Missing file is not an error. Unknown keys are logged as warnings.
 // File is bounded at maxConfigFileLines lines.
@@ -448,7 +520,16 @@ func loadConfigFile(path string, cfg *Config) error {
 		val := strings.TrimSpace(parts[1])
 
 		if err := applyConfigValue(key, val, lineNum, cfg); err != nil {
-			log.Printf("Warning: line %d: %v", lineNum, err)
+			// Unknown keys are tolerated (forward-compat with newer
+			// config schemas); a KNOWN key with an invalid value is a
+			// hard error so a typo fails fast at load instead of
+			// silently falling back to the default (matches the env
+			// path for runs_max_age etc.).
+			if errors.Is(err, errUnknownConfigKey) {
+				log.Printf("Warning: line %d: %v", lineNum, err)
+				continue
+			}
+			return fmt.Errorf("config line %d: %w", lineNum, err)
 		}
 	}
 
@@ -528,6 +609,16 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			return fmt.Errorf("invalid max_memory_bytes: %w", err)
 		}
 		cfg.MaxMemoryBytes = maxBytes
+	case "runs_max_age":
+		dur, err := parseRetentionDuration(val)
+		if err != nil {
+			return fmt.Errorf("invalid runs_max_age: %w", err)
+		}
+		if dur < 0 {
+			return fmt.Errorf(
+				"invalid runs_max_age: must not be negative")
+		}
+		cfg.RunsMaxAge = dur
 	case "nats_ws_port":
 		port, err := strconv.Atoi(val)
 		if err != nil {
@@ -550,7 +641,7 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		if strings.HasPrefix(key, "worker.") {
 			return applyWorkerConfigValue(key, val, cfg)
 		}
-		return fmt.Errorf("unknown config key: %s", key)
+		return fmt.Errorf("%w: %s", errUnknownConfigKey, key)
 	}
 
 	return nil

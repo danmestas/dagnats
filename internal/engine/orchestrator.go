@@ -64,6 +64,13 @@ type Orchestrator struct {
 	// in Start, called in Stop. nil before Start / after Stop.
 	reconcileCancel context.CancelFunc
 
+	// runsMaxAge is the opt-in run-retention window (#453). Zero
+	// (the default) disables the sweeper entirely: the prune ticker
+	// is not even started, so upgrading never silently deletes runs.
+	// When > 0, terminal runs whose CompletedAt is older than this
+	// are dropped (delete-only) by the background prune pass.
+	runsMaxAge time.Duration
+
 	// capHitPrev tracks whether the previous reconcile cycle hit
 	// reconcileMaxRunsScan. Used to suppress the steady-state
 	// scan-cap WARN (#260): emit only on the not-capped → capped
@@ -83,6 +90,19 @@ func WithStepRoutes(
 ) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.publisher.stepRoutes = routes
+	}
+}
+
+// WithRunsMaxAge enables the opt-in run-retention sweeper (#453) with the
+// given window. A zero or negative window leaves the sweeper disabled (the
+// default), so the prune ticker is never started and no runs are deleted.
+// When positive, terminal runs whose CompletedAt is older than maxAge are
+// dropped by the background prune pass.
+func WithRunsMaxAge(maxAge time.Duration) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if maxAge > 0 {
+			o.runsMaxAge = maxAge
+		}
 	}
 }
 
@@ -250,6 +270,13 @@ func (o *Orchestrator) Start() {
 	)
 	o.reconcileCancel = cancel
 	o.startReconciler(reconcileCtx)
+
+	// Opt-in run-retention sweeper (#453). Started ONLY when a
+	// retention window is configured — when runsMaxAge is zero the
+	// ticker never runs, the headline OFF-by-default safety property.
+	if o.runsMaxAge > 0 {
+		o.startRunPruner(reconcileCtx)
+	}
 }
 
 // Stop drains and unsubscribes from the history stream.
