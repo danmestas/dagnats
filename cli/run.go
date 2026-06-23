@@ -71,6 +71,8 @@ func runRunCmd(args []string) {
 		runSignalCmd(args[1:])
 	case "list":
 		runListCmd(args[1:])
+	case "count":
+		runCountCmd(args[1:])
 	case "events":
 		runEventsCmd(args[1:])
 	case "inspect":
@@ -99,6 +101,7 @@ func printRunUsage() {
 	fmt.Println("  retry-all   retry failed runs in bulk")
 	fmt.Println("  signal      send a signal to a run")
 	fmt.Println("  list     list workflow runs")
+	fmt.Println("  count    count workflow runs (no rows)")
 	fmt.Println("  events   show run event history")
 	fmt.Println("  watch    watch a run until completion")
 	fmt.Println("  output   print final output of a completed run")
@@ -124,6 +127,11 @@ func printRunUsage() {
 			"(default %d, max %d)\n",
 		api.DefaultRunsLimit, api.MaxRunsLimitCeiling,
 	)
+	fmt.Println(
+		"  --since=WHEN      keep runs created since WHEN " +
+			"(duration like 24h, or RFC3339)")
+	fmt.Println()
+	fmt.Println("`run count` accepts --workflow / --state / --since.")
 	fmt.Println()
 	fmt.Println("Run IDs accept 8+ character prefixes.")
 }
@@ -525,6 +533,9 @@ type runListFlags struct {
 	state     string
 	scheduled bool
 	limit     int
+	// since is the raw --since value (duration or RFC3339). Empty
+	// means "no age filter"; parseSinceFlag turns it into a cutoff.
+	since string
 }
 
 // runListLimitMin is the lower bound on --limit accepted by
@@ -553,60 +564,95 @@ func parseRunListFlags(args []string) (runListFlags, error) {
 		case strings.HasPrefix(arg, "--workflow="):
 			out.workflow = strings.TrimPrefix(arg, "--workflow=")
 		case arg == "--workflow":
-			if i+1 >= len(args) {
-				return out, fmt.Errorf(
-					"--workflow requires a value",
-				)
+			if err := takeFlagValue(args, &i, &out.workflow); err != nil {
+				return out, err
 			}
-			i++
-			out.workflow = args[i]
 		case strings.HasPrefix(arg, "--state="):
 			out.state = strings.TrimPrefix(arg, "--state=")
 		case arg == "--state":
-			if i+1 >= len(args) {
-				return out, fmt.Errorf(
-					"--state requires a value",
-				)
+			if err := takeFlagValue(args, &i, &out.state); err != nil {
+				return out, err
 			}
-			i++
-			out.state = args[i]
+		// Silent --status alias retained for back-compat with
+		// existing scripts. Canonical form is --state.
 		case strings.HasPrefix(arg, "--status="):
-			// Silent alias retained for back-compat with
-			// existing scripts. Canonical form is --state.
 			out.state = strings.TrimPrefix(arg, "--status=")
 		case arg == "--status":
-			if i+1 >= len(args) {
-				return out, fmt.Errorf(
-					"--status requires a value",
-				)
+			if err := takeFlagValue(args, &i, &out.state); err != nil {
+				return out, err
 			}
-			i++
-			out.state = args[i]
 		case strings.HasPrefix(arg, "--limit="):
-			n, err := parseLimitFlag(
-				strings.TrimPrefix(arg, "--limit="),
-			)
-			if err != nil {
+			if err := setLimit(&out,
+				strings.TrimPrefix(arg, "--limit=")); err != nil {
 				return out, err
 			}
-			out.limit = n
 		case arg == "--limit":
-			if i+1 >= len(args) {
-				return out, fmt.Errorf(
-					"--limit requires a value",
-				)
-			}
-			i++
-			n, err := parseLimitFlag(args[i])
-			if err != nil {
+			var raw string
+			if err := takeFlagValue(args, &i, &raw); err != nil {
 				return out, err
 			}
-			out.limit = n
+			if err := setLimit(&out, raw); err != nil {
+				return out, err
+			}
+		case strings.HasPrefix(arg, "--since="):
+			out.since = strings.TrimPrefix(arg, "--since=")
+		case arg == "--since":
+			if err := takeFlagValue(args, &i, &out.since); err != nil {
+				return out, err
+			}
 		case arg == "--scheduled":
 			out.scheduled = true
 		}
 	}
 	return out, nil
+}
+
+// takeFlagValue consumes the next arg as the value for a "--flag value"
+// two-token flag, advancing the loop index. Errors when the flag is the
+// final token (no value follows). dst receives the consumed value.
+func takeFlagValue(args []string, i *int, dst *string) error {
+	if i == nil || dst == nil {
+		panic("takeFlagValue: i and dst must not be nil")
+	}
+	if *i+1 >= len(args) {
+		return fmt.Errorf("%s requires a value", args[*i])
+	}
+	*i++
+	*dst = args[*i]
+	return nil
+}
+
+// setLimit parses, validates, and stores a --limit value on out.
+func setLimit(out *runListFlags, raw string) error {
+	if out == nil {
+		panic("setLimit: out must not be nil")
+	}
+	n, err := parseLimitFlag(raw)
+	if err != nil {
+		return err
+	}
+	out.limit = n
+	return nil
+}
+
+// parseSinceFlag turns a --since value into an absolute cutoff. It
+// tries a Go duration first ("30m", "24h" → now - dur), then an
+// RFC3339 timestamp, and finally errors with the flag named. An
+// empty input is "no filter" and yields the zero time, no error.
+func parseSinceFlag(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	if dur, err := time.ParseDuration(raw); err == nil {
+		return time.Now().Add(-dur), nil
+	}
+	if abs, err := time.Parse(time.RFC3339, raw); err == nil {
+		return abs, nil
+	}
+	return time.Time{}, fmt.Errorf(
+		"--since must be a duration (30m, 24h) or RFC3339 "+
+			"timestamp; got %q", raw,
+	)
 }
 
 // parseLimitFlag parses and validates the --limit value. Rejects
@@ -656,6 +702,12 @@ func runListCmd(args []string) {
 		exitFunc(1)
 		return
 	}
+	sinceTime, err := parseSinceFlag(flags.since)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		exitFunc(1)
+		return
+	}
 
 	svc, nc := connectService()
 	defer nc.Close()
@@ -664,9 +716,77 @@ func runListCmd(args []string) {
 		runScheduledList(svc, jsonOutput)
 		return
 	}
-	runActiveList(
-		svc, flags.workflow, stateFilter, flags.limit, jsonOutput,
-	)
+	filter := api.RunsFilter{
+		Workflow: flags.workflow,
+		State:    stateFilter,
+		Since:    sinceTime,
+	}
+	runActiveList(svc, filter, flags.limit, jsonOutput)
+}
+
+// runCountResult is the JSON wire shape for `run count --json`.
+type runCountResult struct {
+	Count int `json:"count"`
+}
+
+// runCountCmd reports the aggregate number of runs matching the
+// optional --workflow / --state / --since filters, without
+// materializing or printing any rows (#452). A bare count (no
+// filters) uses the cheap keys-only store path.
+func runCountCmd(args []string) {
+	if args == nil {
+		panic("runCountCmd: args must not be nil")
+	}
+	if len(args) > 100 {
+		panic("runCountCmd: args exceeds max bound")
+	}
+
+	jsonOutput := HasJSONFlag(args)
+	args = StripJSONFlag(args)
+
+	flags, parseErr := parseRunListFlags(args)
+	if parseErr != nil {
+		fmt.Fprintln(os.Stderr, parseErr.Error())
+		exitFunc(1)
+		return
+	}
+	stateFilter, err := resolveStateFilter(flags.state)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		exitFunc(1)
+		return
+	}
+	sinceTime, err := parseSinceFlag(flags.since)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		exitFunc(1)
+		return
+	}
+
+	svc, nc := connectService()
+	defer nc.Close()
+
+	filter := api.RunsFilter{
+		Workflow: flags.workflow,
+		State:    stateFilter,
+		Since:    sinceTime,
+	}
+	count, err := svc.CountRuns(context.Background(), filter)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "count runs: %v\n", err)
+		exitFunc(1)
+		return
+	}
+	if jsonOutput {
+		if err := FormatJSON(
+			os.Stdout, runCountResult{Count: count},
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
+			exitFunc(1)
+		}
+		return
+	}
+	fmt.Println(count)
 }
 
 // resolveStateFilter wraps dag.ParseRunStatus so callers get a
@@ -721,15 +841,39 @@ func runScheduledList(svc *api.Service, jsonOutput bool) {
 	tw.Flush()
 }
 
-// runActiveList renders the non-scheduled `run list` view. Optional
-// stateFilter (nil = no filter) narrows the result client-side.
-// limit is the row cap passed to the service; when the server returns
-// exactly limit rows we emit a truncation notice on stderr (so JSON
-// pipelines see the notice on fd 2 and a clean array on fd 1).
+// runListEnvelope is the #452 JSON wire shape for `run list --json`.
+// It replaces the prior bare array so pipelines can read the true
+// total and truncation flag. runs is never nil (empty -> []).
+type runListEnvelope struct {
+	Runs      []dag.WorkflowRun `json:"runs"`
+	Total     int               `json:"total"`
+	Returned  int               `json:"returned"`
+	Truncated bool              `json:"truncated"`
+}
+
+// newRunListEnvelope builds the envelope, normalising a nil run slice
+// to an empty array so the JSON "runs" key is always present.
+func newRunListEnvelope(
+	runs []dag.WorkflowRun, total, returned int,
+) runListEnvelope {
+	if runs == nil {
+		runs = []dag.WorkflowRun{}
+	}
+	return runListEnvelope{
+		Runs:      runs,
+		Total:     total,
+		Returned:  returned,
+		Truncated: total > returned,
+	}
+}
+
+// runActiveList renders the non-scheduled `run list` view. The service
+// returns an honest envelope (true total + truncation), so the notice
+// and the human "showing N of M" line reflect total>returned rather
+// than the prior len(runs)==limit heuristic (#452).
 func runActiveList(
 	svc *api.Service,
-	workflowFilter string,
-	stateFilter *dag.RunStatus,
+	filter api.RunsFilter,
 	limit int,
 	jsonOutput bool,
 ) {
@@ -739,45 +883,36 @@ func runActiveList(
 	if limit < runListLimitMin || limit > api.MaxRunsLimitCeiling {
 		panic("runActiveList: limit out of bounds")
 	}
-	runs, err := svc.ListRunsWithLimit(
-		context.Background(), workflowFilter, limit,
+	env, err := svc.ListRunsEnvelope(
+		context.Background(), filter, limit,
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list runs: %v\n", err)
 		exitFunc(1)
 		return
 	}
-	truncated := len(runs) >= limit
-	if stateFilter != nil {
-		want := *stateFilter
-		filtered := runs[:0]
-		for _, r := range runs {
-			if r.Status == want {
-				filtered = append(filtered, r)
-			}
-		}
-		runs = filtered
-	}
-	if truncated {
+	out := newRunListEnvelope(env.Runs, env.Total, env.Returned)
+	if out.Truncated {
 		fmt.Fprintf(os.Stderr,
-			"Note: results truncated at --limit=%d. "+
-				"Raise --limit (max %d) or filter further.\n",
-			limit, api.MaxRunsLimitCeiling,
+			"Note: results truncated at --limit=%d (showing %d "+
+				"of %d). Raise --limit (max %d) or filter further.\n",
+			limit, out.Returned, out.Total, api.MaxRunsLimitCeiling,
 		)
 	}
 	if jsonOutput {
-		if err := FormatJSON(os.Stdout, runs); err != nil {
+		if err := FormatJSON(os.Stdout, out); err != nil {
 			fmt.Fprintf(os.Stderr,
 				"format json: %v\n", err)
 			exitFunc(1)
 		}
 		return
 	}
-	if len(runs) == 0 {
+	if len(out.Runs) == 0 {
 		fmt.Println("No runs found.")
 		return
 	}
-	printRunTable(runs)
+	printRunTable(out.Runs)
+	fmt.Printf("\nshowing %d of %d\n", out.Returned, out.Total)
 }
 
 // printRunTable writes a formatted table of workflow runs to stdout.
