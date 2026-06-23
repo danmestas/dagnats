@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -59,6 +60,132 @@ func (s *SnapshotStore) Save(ctx context.Context, run dag.WorkflowRun) error {
 		ctx, "run."+run.RunID, data,
 	)
 	return err
+}
+
+// Delete removes the snapshot for the given run ID under key "run.<RunID>".
+// Idempotent at the NATS layer — deleting an absent key is not an error.
+// Drop-only retention (#453) is built on this; there is no archive path.
+func (s *SnapshotStore) Delete(ctx context.Context, runID string) error {
+	if s.kv == nil {
+		panic("SnapshotStore.Delete: kv bucket must not be nil")
+	}
+	if runID == "" {
+		panic("SnapshotStore.Delete: runID must not be empty")
+	}
+	return s.kv.Delete(ctx, "run."+runID)
+}
+
+// PruneTerminal is the opt-in, drop-only run-retention sweep (#453). It
+// deletes a run ONLY IF it is terminal AND its CompletedAt is strictly
+// older than olderThan. Non-terminal runs (even ancient ones) and terminal
+// runs younger than the window are never touched. At most maxPrune runs are
+// deleted per call; the key scan is bounded by runKeyScanMax. Returns the
+// number of runs deleted.
+//
+// Callers must guarantee retention is enabled (olderThan > 0) before
+// invoking — both bounds are asserted as programmer errors.
+//
+// Fail-safe by construction: it runs in two phases. Phase one scans keys
+// and loads each candidate to build a bounded delete list (≤ maxPrune),
+// returning an error BEFORE any deletion if a value is corrupt or a Get
+// fails. Phase two then deletes the collected keys. So a corrupt run.*
+// value aborts the whole pass with zero deletions, regardless of scan
+// order — the sweeper never commits a partial prune. The candidate buffer
+// is bounded by maxPrune, so the full ~146k-value population is never
+// materialized at once.
+func (s *SnapshotStore) PruneTerminal(
+	ctx context.Context, olderThan time.Duration, maxPrune int,
+) (int, error) {
+	if olderThan <= 0 {
+		panic("SnapshotStore.PruneTerminal: olderThan must be positive")
+	}
+	if maxPrune <= 0 {
+		panic("SnapshotStore.PruneTerminal: maxPrune must be positive")
+	}
+	cutoff := time.Now().Add(-olderThan)
+	doomed, err := s.collectPrunable(ctx, cutoff, maxPrune)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, key := range doomed {
+		if err := s.kv.Delete(ctx, key); err != nil {
+			return deleted, err
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
+// collectPrunable scans run.* keys and returns up to maxPrune keys whose
+// runs are terminal with a CompletedAt strictly before cutoff. Returns an
+// error on any corrupt value or Get failure (so the caller deletes nothing
+// on a bad read). A key that vanished between scan and load is skipped.
+func (s *SnapshotStore) collectPrunable(
+	ctx context.Context, cutoff time.Time, maxPrune int,
+) ([]string, error) {
+	if cutoff.IsZero() {
+		panic("SnapshotStore.collectPrunable: cutoff must not be zero")
+	}
+	if maxPrune <= 0 {
+		panic("SnapshotStore.collectPrunable: maxPrune must be positive")
+	}
+	keys, err := s.kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(keys) > runKeyScanMax {
+		panic("SnapshotStore.collectPrunable: key set exceeds bound")
+	}
+	doomed := make([]string, 0, maxPrune)
+	for _, key := range keys {
+		if len(doomed) >= maxPrune {
+			break
+		}
+		if !isRunKey(key) {
+			continue
+		}
+		drop, err := s.isPrunable(ctx, key, cutoff)
+		if err != nil {
+			return nil, err
+		}
+		if drop {
+			doomed = append(doomed, key)
+		}
+	}
+	return doomed, nil
+}
+
+// isPrunable loads one snapshot key and reports whether the run is terminal
+// with a CompletedAt strictly before cutoff. A key that vanished between
+// scan and load is treated as already-gone (no error, not prunable).
+func (s *SnapshotStore) isPrunable(
+	ctx context.Context, key string, cutoff time.Time,
+) (bool, error) {
+	if key == "" {
+		panic("SnapshotStore.isPrunable: key must not be empty")
+	}
+	if cutoff.IsZero() {
+		panic("SnapshotStore.isPrunable: cutoff must not be zero")
+	}
+	entry, err := s.kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	var run dag.WorkflowRun
+	if err := json.Unmarshal(entry.Value(), &run); err != nil {
+		return false, err
+	}
+	if !run.Status.IsTerminal() || run.CompletedAt == nil {
+		return false, nil
+	}
+	return run.CompletedAt.Before(cutoff), nil
 }
 
 // Load retrieves and deserializes the WorkflowRun for the given run ID.

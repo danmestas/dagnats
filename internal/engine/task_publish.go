@@ -136,7 +136,7 @@ func enqueueReadySteps(
 	if len(skipped) > 0 {
 		completed = completedSet(*run)
 		if dag.IsComplete(wfDef, completed) {
-			run.Status = dag.RunStatusCompleted
+			*run = markTerminal(*run, dag.RunStatusCompleted)
 			return publishWorkflowEvent(
 				ctx, tp, protocol.EventWorkflowCompleted,
 				run.RunID,
@@ -146,7 +146,7 @@ func enqueueReadySteps(
 
 	// Check completion before looking for ready steps
 	if dag.IsComplete(wfDef, completed) {
-		run.Status = dag.RunStatusCompleted
+		*run = markTerminal(*run, dag.RunStatusCompleted)
 		return publishWorkflowEvent(
 			ctx, tp, protocol.EventWorkflowCompleted,
 			run.RunID,

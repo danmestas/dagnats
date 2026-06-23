@@ -237,7 +237,11 @@ func (rm *RecoveryManager) failAuxStep(
 	if stepDef.ID == "" {
 		panic("failAuxStep: stepDef.ID must not be empty")
 	}
-	run.Status = dag.RunStatusCompensateFailed
+	// Route through markTerminal so CompensateFailed (a terminal
+	// status) records an honest CompletedAt rather than nil — both for
+	// #443's duration/trace surfaces and so the run is reachable by the
+	// #453 retention sweeper instead of leaking past it forever.
+	run = markTerminal(run, dag.RunStatusCompensateFailed)
 	if err := saveFn(ctx, run, stepDef.ID); err != nil {
 		return err
 	}

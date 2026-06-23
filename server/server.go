@@ -185,7 +185,9 @@ func (s *Server) startComponents() error {
 	s.natsAPI.Start()
 	printStep(os.Stderr, "nats api started")
 
-	s.orch = engine.NewOrchestrator(s.nc)
+	s.orch = engine.NewOrchestrator(
+		s.nc, engine.WithRunsMaxAge(s.cfg.RunsMaxAge),
+	)
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
 

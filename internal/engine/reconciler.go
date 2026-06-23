@@ -41,6 +41,17 @@ const (
 // runs. Production callers must not mutate.
 var reconcileMaxRunsScan = 1000
 
+// prunePassInterval is the cadence of the opt-in run-retention
+// sweeper (#453). var rather than const for test injection —
+// tests lower it so the background pass fires without waiting the
+// production default. Production callers must not mutate.
+var prunePassInterval = 10 * time.Minute
+
+// pruneMaxRunsScan caps deletions per prune pass so a single sweep
+// never blocks the goroutine on an unbounded delete storm. The next
+// pass picks up where this one stopped.
+const pruneMaxRunsScan = 10_000
+
 // startReconciler launches the periodic janitor goroutine.
 // The loop exits when ctx is cancelled. Safe to call exactly
 // once — the orchestrator's Start guards this with the cc nil
@@ -61,6 +72,58 @@ func (o *Orchestrator) startReconciler(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// startRunPruner launches the opt-in run-retention sweeper
+// goroutine (#453). The loop exits when ctx is cancelled (from
+// Stop). Callers must only invoke this when o.runsMaxAge > 0 —
+// Start guards that, so the ticker never runs in the default
+// OFF-by-default posture.
+func (o *Orchestrator) startRunPruner(ctx context.Context) {
+	if ctx == nil {
+		panic("startRunPruner: ctx must not be nil")
+	}
+	if o.runsMaxAge <= 0 {
+		panic("startRunPruner: runsMaxAge must be positive")
+	}
+	go func() {
+		ticker := time.NewTicker(prunePassInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				o.pruneTerminalRuns(ctx)
+			}
+		}
+	}()
+}
+
+// pruneTerminalRuns runs one drop-only retention pass and logs the
+// deleted count. Bounded by pruneMaxRunsScan deletions per pass.
+func (o *Orchestrator) pruneTerminalRuns(ctx context.Context) {
+	if ctx == nil {
+		panic("pruneTerminalRuns: ctx must not be nil")
+	}
+	if o.runsMaxAge <= 0 {
+		panic("pruneTerminalRuns: runsMaxAge must be positive")
+	}
+	deleted, err := o.store.PruneTerminal(
+		ctx, o.runsMaxAge, pruneMaxRunsScan,
+	)
+	if err != nil {
+		slog.ErrorContext(ctx,
+			"pruner: prune terminal runs", "error", err)
+		return
+	}
+	if deleted > 0 {
+		slog.InfoContext(ctx,
+			"pruner: dropped aged terminal runs",
+			"deleted", deleted,
+			"max_age", o.runsMaxAge.String(),
+		)
+	}
 }
 
 // reconcileRunningRuns walks the workflow_runs KV for entries
