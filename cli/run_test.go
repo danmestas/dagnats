@@ -310,24 +310,39 @@ func TestRunListJSONOutput(t *testing.T) {
 		},
 	}
 
+	// #452: `run list --json` emits an envelope, not a bare array.
+	env := newRunListEnvelope(runs, len(runs), len(runs))
 	var buf strings.Builder
-	err := FormatJSON(&buf, runs)
+	err := FormatJSON(&buf, env)
 	if err != nil {
 		t.Fatalf("FormatJSON failed: %v", err)
 	}
 	output := buf.String()
 
-	// Positive: output should contain both run IDs
+	// Positive: output should contain both run IDs and the envelope
+	// wire keys (literal-key assertions on the wire format).
 	if !strings.Contains(output, "list-1") {
 		t.Fatal("JSON output should contain first run ID")
 	}
 	if !strings.Contains(output, "list-2") {
 		t.Fatal("JSON output should contain second run ID")
 	}
+	for _, key := range []string{
+		"\"runs\"", "\"total\"", "\"returned\"", "\"truncated\"",
+	} {
+		if !strings.Contains(output, key) {
+			t.Fatalf("envelope must carry %s key:\n%s", key, output)
+		}
+	}
 
-	// Negative: output should not contain table headers
+	// Negative: output should not contain table headers, and the
+	// envelope's top level must not be a bare array.
 	if strings.Contains(output, "RUN_ID") {
 		t.Fatal("JSON output should not contain table headers")
+	}
+	if strings.HasPrefix(strings.TrimSpace(output), "[") {
+		t.Fatalf("top level must be an object, not an array:\n%s",
+			output)
 	}
 }
 

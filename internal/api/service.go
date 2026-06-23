@@ -1622,6 +1622,191 @@ func (s *Service) listRunsInner(
 	return runs, nil
 }
 
+// RunsFilter narrows a run-list or count query. The zero value matches
+// every run. Workflow filters by WorkflowID; State (nil = any) filters
+// by run status; Since (zero = any age) keeps runs with CreatedAt at
+// or after the cutoff.
+type RunsFilter struct {
+	Workflow string
+	State    *dag.RunStatus
+	Since    time.Time
+}
+
+// isEmpty reports whether the filter matches every run (the zero
+// value). We avoid `f == (RunsFilter{})` because time.Time `==` is a
+// stdlib footgun — it compares the wall-clock + monotonic + location
+// fields, so two "zero" times can compare unequal. IsZero is correct.
+func (f RunsFilter) isEmpty() bool {
+	return f.Workflow == "" && f.State == nil && f.Since.IsZero()
+}
+
+// matches reports whether a single run satisfies the filter.
+func (f RunsFilter) matches(run dag.WorkflowRun) bool {
+	if f.Workflow != "" && run.WorkflowID != f.Workflow {
+		return false
+	}
+	if f.State != nil && run.Status != *f.State {
+		return false
+	}
+	if !f.Since.IsZero() && run.CreatedAt.Before(f.Since) {
+		return false
+	}
+	return true
+}
+
+// RunsEnvelope is the honest shape returned by ListRunsEnvelope: the
+// (already-truncated) Runs window plus the true Total matching the
+// filter, the Returned count, and whether Total exceeded the window.
+type RunsEnvelope struct {
+	Runs      []dag.WorkflowRun
+	Total     int
+	Returned  int
+	Truncated bool
+}
+
+// runReader is the read surface ListRunsEnvelope and CountRuns need
+// from the store: the globally-sorted latest-N window (ListRecent) and
+// an exact keys-only population count (CountAll). *engine.SnapshotStore
+// satisfies it; the seam keeps the envelope/count logic unit-testable.
+//
+// NOTE: this deliberately uses ListRecent, NOT the cheap order-agnostic
+// ListAll — the #452 surface needs the genuine most-recent N. Other
+// callers (reconciler, bulk retry/cancel, REST list) keep using
+// ListAll directly and are unaffected by this seam.
+type runReader interface {
+	ListRecent(ctx context.Context, limit int) ([]dag.WorkflowRun, error)
+	CountAll(ctx context.Context) (int, error)
+}
+
+// ListRunsEnvelope returns the newest matching runs capped at limit,
+// alongside the total so callers can report "showing N of M" and
+// truncation honestly (#452).
+//
+// For an UNFILTERED query the total is the exact population from the
+// cheap keys-only CountAll path — so "showing 1000 of 146046" is the
+// real figure, not the ceiling-capped window size.
+//
+// For a FILTERED query (state/since/workflow) the total is the count
+// of matches WITHIN the most-recent MaxRunsLimitCeiling window: a true
+// full-population filtered count is not cheaply available without a
+// secondary index, so a filtered total may undercount matches older
+// than that window. The exact filtered count lands with the #453
+// time-ordered index work.
+func (s *Service) ListRunsEnvelope(
+	ctx context.Context, filter RunsFilter, limit int,
+) (RunsEnvelope, error) {
+	if ctx == nil {
+		panic("ListRunsEnvelope: ctx must not be nil")
+	}
+	if s.store == nil {
+		panic("ListRunsEnvelope: store must not be nil")
+	}
+	effective := clampRunsLimit(limit)
+	var env RunsEnvelope
+	err := s.observed(ctx, "listRunsEnvelope", nil,
+		func(ctx context.Context) error {
+			var innerErr error
+			env, innerErr = listRunsEnvelopeFrom(ctx, s.store, filter, effective)
+			return innerErr
+		},
+	)
+	return env, err
+}
+
+// listRunsEnvelopeFrom fetches the globally-sorted latest-N window,
+// truncates it to limit for the returned rows, and derives the total
+// per the ListRunsEnvelope contract (exact CountAll when unfiltered,
+// in-window match count when filtered).
+func listRunsEnvelopeFrom(
+	ctx context.Context, store runReader, filter RunsFilter, limit int,
+) (RunsEnvelope, error) {
+	if store == nil {
+		panic("listRunsEnvelopeFrom: store must not be nil")
+	}
+	if limit <= 0 {
+		panic("listRunsEnvelopeFrom: limit must be positive")
+	}
+	all, err := store.ListRecent(ctx, MaxRunsLimitCeiling)
+	if err != nil {
+		return RunsEnvelope{}, err
+	}
+	matched := make([]dag.WorkflowRun, 0, len(all))
+	for _, run := range all {
+		if filter.matches(run) {
+			matched = append(matched, run)
+		}
+	}
+	total := len(matched)
+	if filter.isEmpty() {
+		// Exact population — not the ceiling-capped window length.
+		total, err = store.CountAll(ctx)
+		if err != nil {
+			return RunsEnvelope{}, err
+		}
+	}
+	if len(matched) > limit {
+		matched = matched[:limit]
+	}
+	return RunsEnvelope{
+		Runs:      matched,
+		Total:     total,
+		Returned:  len(matched),
+		Truncated: total > len(matched),
+	}, nil
+}
+
+// CountRuns returns the number of runs matching the filter without
+// materializing rows (#452).
+//
+// An UNFILTERED count uses the cheap keys-only CountAll path and is
+// exact for the whole population. A FILTERED count fetches the most-
+// recent MaxRunsLimitCeiling window and applies the filter in memory,
+// so it may undercount matches older than that window — the exact
+// filtered count lands with the #453 time-ordered index work.
+func (s *Service) CountRuns(
+	ctx context.Context, filter RunsFilter,
+) (int, error) {
+	if ctx == nil {
+		panic("CountRuns: ctx must not be nil")
+	}
+	if s.store == nil {
+		panic("CountRuns: store must not be nil")
+	}
+	var count int
+	err := s.observed(ctx, "countRuns", nil,
+		func(ctx context.Context) error {
+			var innerErr error
+			count, innerErr = countRunsFrom(ctx, s.store, filter)
+			return innerErr
+		},
+	)
+	return count, err
+}
+
+// countRunsFrom is the unobserved body of CountRuns, parameterised on
+// runReader so the filter math is unit-testable without a live store.
+func countRunsFrom(
+	ctx context.Context, store runReader, filter RunsFilter,
+) (int, error) {
+	if store == nil {
+		panic("countRunsFrom: store must not be nil")
+	}
+	if filter.isEmpty() {
+		return store.CountAll(ctx)
+	}
+	all, err := store.ListRecent(ctx, MaxRunsLimitCeiling)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, run := range all {
+		if filter.matches(run) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // ListRunEvents retrieves history events for a given run.
 // Data field truncated to 200 chars unless fullData is true.
 func (s *Service) ListRunEvents(

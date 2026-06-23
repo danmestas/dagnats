@@ -110,10 +110,10 @@ func itoa(n int) string {
 }
 
 // TestRunListPrintsTruncationNotice drives real runs through the CLI
-// fixture, requests --limit=N where N == number of runs, and asserts
-// the truncation notice lands on stderr. The notice fires when the
-// service returns exactly --limit rows (the only signal the client
-// has that the server may have more).
+// fixture and asserts the truncation notice fires ONLY when the true
+// total exceeds the returned window (total > returned), not merely
+// when len(runs) == limit. #452 fixed the prior latent bug where an
+// exact-fit limit (limit == total) spuriously emitted the notice.
 func TestRunListPrintsTruncationNotice(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	h := dagnatstest.NewHarness(t)
@@ -122,11 +122,10 @@ func TestRunListPrintsTruncationNotice(t *testing.T) {
 
 	runs.SubmitAndAdvanceTo(t, "completed", 3)
 
-	// Positive: --limit=3 with 3 runs returns the rows AND prints
-	// the truncation notice — the client can't tell whether more
-	// exist server-side, so the notice is the safe signal.
+	// Positive: --limit=2 against 3 runs genuinely truncates (3 > 2),
+	// so the notice fires and rows still land on stdout.
 	stdout, stderr := cli.RunSplit(
-		t, "run", "list", "--limit=3",
+		t, "run", "list", "--limit=2",
 	)
 	if !strings.Contains(stderr, "truncated") {
 		t.Fatalf(
@@ -134,13 +133,12 @@ func TestRunListPrintsTruncationNotice(t *testing.T) {
 			stderr,
 		)
 	}
-	if !strings.Contains(stderr, "--limit=3") {
+	if !strings.Contains(stderr, "--limit=2") {
 		t.Fatalf(
 			"notice should echo the requested limit; got:\n%s",
 			stderr,
 		)
 	}
-	// Sanity: rows still land on stdout (the JSON-pipeline contract).
 	if !strings.Contains(stdout, "completed") {
 		t.Fatalf(
 			"stdout should still contain run rows; got:\n%s",
@@ -148,7 +146,19 @@ func TestRunListPrintsTruncationNotice(t *testing.T) {
 		)
 	}
 
-	// Negative: with a comfortable headroom, no notice is emitted.
+	// Negative: an exact-fit limit (limit == total) is NOT truncated
+	// under the honest total>returned predicate — no notice.
+	_, stderrExact := cli.RunSplit(
+		t, "run", "list", "--limit=3",
+	)
+	if strings.Contains(stderrExact, "truncated") {
+		t.Fatalf(
+			"exact-fit limit must not emit truncation notice; got:\n%s",
+			stderrExact,
+		)
+	}
+
+	// Negative: with comfortable headroom, no notice either.
 	_, stderrBig := cli.RunSplit(
 		t, "run", "list", "--limit=100",
 	)
