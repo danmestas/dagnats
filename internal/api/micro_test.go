@@ -50,7 +50,7 @@ func TestMicroPingRespondsAfterStartTimesOutAfterStop(t *testing.T) {
 	}
 }
 
-func TestMicroInfoListsExactlyFiveEndpointSubjects(t *testing.T) {
+func TestMicroInfoListsExactlySixEndpointSubjects(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
@@ -67,14 +67,15 @@ func TestMicroInfoListsExactlyFiveEndpointSubjects(t *testing.T) {
 		t.Fatalf("unmarshal info: %v", err)
 	}
 
-	// The original three (#456) plus the two additive control-plane
-	// runtime endpoints (#376).
+	// The original three (#456), the two control-plane runtime endpoints
+	// (#376), plus the additive budget read (#378).
 	want := map[string]bool{
 		"api.workflows.register": true,
 		"api.runs.start":         true,
 		"api.runs.get":           true,
 		"api.runtimes.register":  true,
 		"api.runs.spawn":         true,
+		"api.runtimes.budget":    true,
 	}
 	got := make(map[string]bool, len(info.Endpoints))
 	for _, ep := range info.Endpoints {

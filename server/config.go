@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/danmestas/dagnats/internal/engine"
 )
 
 // errUnknownConfigKey marks a config-file key the parser does not
@@ -38,6 +40,13 @@ const (
 	maxClusterRoutes      = 10
 	maxConfigFileLines    = 300
 	maxWorkerConfigs      = 50
+
+	// Per-runtime bound defaults (ADR-021 Phase A, #378). MaxGenerationDepth
+	// has no const here — its default is engine.MaxNestingDepth so the depth
+	// cap reuses the single existing mechanism rather than forking a value.
+	defaultMaxActiveRunsPerRoot         = 100
+	defaultMaxDefsPerRoot               = 500
+	defaultMaxRegistersPerMinutePerRoot = 60
 )
 
 // WorkerConfig defines a config-driven embedded worker handler.
@@ -79,6 +88,24 @@ type Config struct {
 	// via DAGNATS_RUNS_MAX_AGE, which accepts a Go duration ("720h")
 	// or a d/w suffix ("30d", "2w") for operator ergonomics.
 	RunsMaxAge time.Duration `json:"runs_max_age"`
+
+	// Per-runtime safety bounds (ADR-021 Phase A, #378). These cap a
+	// single spawn-tree's resource use so a runaway agent loop cannot
+	// fork-bomb the orchestrator. Zero means DEFAULT, not "unlimited" — it
+	// resolves to the default consts in internal/api at service
+	// construction (additive: an old config file silently inherits the
+	// defaults; a safety layer has no "off" switch). #380 owns grant
+	// policy; #378 only reads these numeric values.
+	//
+	// MaxActiveRunsPerRoot caps non-terminal runs sharing a tree-root.
+	// MaxDefsPerRoot caps ephemeral defs registered under a tree-root.
+	// MaxGenerationDepth caps spawn-chain nesting depth (reuses the
+	// existing depth check; default equals engine.MaxNestingDepth).
+	// MaxRegistersPerMinutePerRoot rate-limits runtime def registration.
+	MaxActiveRunsPerRoot         int `json:"max_active_runs_per_root"`
+	MaxDefsPerRoot               int `json:"max_defs_per_root"`
+	MaxGenerationDepth           int `json:"max_generation_depth"`
+	MaxRegistersPerMinutePerRoot int `json:"max_registers_per_minute_per_root"`
 
 	// NATSWebsocketPort enables an embedded NATS WebSocket
 	// listener for browser clients when > 0. 0 (default)
@@ -146,12 +173,16 @@ func DefaultConfig() Config {
 	}
 
 	return Config{
-		DataDir:        dataDir,
-		HTTPAddr:       defaultHTTPAddr,
-		NATSPort:       defaultNATSPort,
-		LeafRemotes:    nil,
-		MaxStoreBytes:  defaultMaxStoreBytes,
-		MaxMemoryBytes: defaultMaxMemoryBytes,
+		DataDir:                      dataDir,
+		HTTPAddr:                     defaultHTTPAddr,
+		NATSPort:                     defaultNATSPort,
+		LeafRemotes:                  nil,
+		MaxStoreBytes:                defaultMaxStoreBytes,
+		MaxMemoryBytes:               defaultMaxMemoryBytes,
+		MaxActiveRunsPerRoot:         defaultMaxActiveRunsPerRoot,
+		MaxDefsPerRoot:               defaultMaxDefsPerRoot,
+		MaxGenerationDepth:           engine.MaxNestingDepth,
+		MaxRegistersPerMinutePerRoot: defaultMaxRegistersPerMinutePerRoot,
 	}
 }
 
@@ -190,6 +221,10 @@ func ConfigWithPath(
 	applyEnvOverrides(&cfg)
 
 	if err := applyRunsMaxAgeEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+
+	if err := applyRuntimeBoundsEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
 
@@ -451,6 +486,51 @@ func applyRunsMaxAgeEnv(cfg *Config) error {
 	return nil
 }
 
+// applyRuntimeBoundsEnv resolves the four per-runtime bound env vars (#378)
+// through the SAME validating parsers the config-file path uses, so a
+// negative value or a depth above the engine ceiling is a hard load error
+// rather than a silent pass that would disable the cap (negatives) or open
+// the ghost-run hole (loose depth). Unset vars leave the resolved defaults.
+func applyRuntimeBoundsEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyRuntimeBoundsEnv: cfg is nil")
+	}
+	type boundEnv struct {
+		env   string
+		parse func(string) (int, error)
+		set   func(*Config, int)
+	}
+	atoi := func(key string) func(string) (int, error) {
+		return func(v string) (int, error) { return atoiNonNegative(v, key) }
+	}
+	binds := []boundEnv{
+		{"DAGNATS_MAX_ACTIVE_RUNS_PER_ROOT",
+			atoi("max_active_runs_per_root"),
+			func(c *Config, n int) { c.MaxActiveRunsPerRoot = n }},
+		{"DAGNATS_MAX_DEFS_PER_ROOT",
+			atoi("max_defs_per_root"),
+			func(c *Config, n int) { c.MaxDefsPerRoot = n }},
+		{"DAGNATS_MAX_GENERATION_DEPTH",
+			parseGenerationDepth,
+			func(c *Config, n int) { c.MaxGenerationDepth = n }},
+		{"DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT",
+			atoi("max_registers_per_minute_per_root"),
+			func(c *Config, n int) { c.MaxRegistersPerMinutePerRoot = n }},
+	}
+	for _, b := range binds {
+		val := os.Getenv(b.env)
+		if val == "" {
+			continue
+		}
+		n, err := b.parse(val)
+		if err != nil {
+			return fmt.Errorf("env %s: %w", b.env, err)
+		}
+		b.set(cfg, n)
+	}
+	return nil
+}
+
 // parseRetentionDuration parses a retention window. It accepts any Go
 // duration string ("720h", "30m") plus the operator-friendly "<n>d" (days)
 // and "<n>w" (weeks) suffixes. The numeric portion must be a non-negative
@@ -619,6 +699,30 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 				"invalid runs_max_age: must not be negative")
 		}
 		cfg.RunsMaxAge = dur
+	case "max_active_runs_per_root":
+		n, err := atoiNonNegative(val, "max_active_runs_per_root")
+		if err != nil {
+			return err
+		}
+		cfg.MaxActiveRunsPerRoot = n
+	case "max_defs_per_root":
+		n, err := atoiNonNegative(val, "max_defs_per_root")
+		if err != nil {
+			return err
+		}
+		cfg.MaxDefsPerRoot = n
+	case "max_generation_depth":
+		n, err := parseGenerationDepth(val)
+		if err != nil {
+			return err
+		}
+		cfg.MaxGenerationDepth = n
+	case "max_registers_per_minute_per_root":
+		n, err := atoiNonNegative(val, "max_registers_per_minute_per_root")
+		if err != nil {
+			return err
+		}
+		cfg.MaxRegistersPerMinutePerRoot = n
 	case "nats_ws_port":
 		port, err := strconv.Atoi(val)
 		if err != nil {
@@ -645,6 +749,45 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 	}
 
 	return nil
+}
+
+// atoiNonNegative parses a non-negative int config value, rejecting both
+// malformed and negative input with a key-named wrapped error. A negative
+// bound is meaningless (it would treat every request as over-quota); a
+// hard error at load time fails fast on the typo rather than silently
+// bricking runtime registration.
+func atoiNonNegative(val, key string) (int, error) {
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("invalid %s: must not be negative", key)
+	}
+	return n, nil
+}
+
+// parseGenerationDepth parses max_generation_depth and rejects loosening
+// past the orchestrator's hard ceiling. The orchestrator's handleWorkflowSpawn
+// enforces engine.MaxNestingDepth unconditionally; config that exceeds it
+// would make the API spawn-gate pass while the orchestrator silently drops
+// the spawn — handing the caller a runID for a run that is never created
+// (a ghost run). So config may only TIGHTEN: a value in 0..engine.MaxNestingDepth
+// is accepted (0 means "unset" and resolves to the ceiling default later);
+// anything above the ceiling is rejected. The API gate and the orchestrator
+// ceiling can then never diverge.
+func parseGenerationDepth(val string) (int, error) {
+	n, err := atoiNonNegative(val, "max_generation_depth")
+	if err != nil {
+		return 0, err
+	}
+	if n > engine.MaxNestingDepth {
+		return 0, fmt.Errorf(
+			"invalid max_generation_depth: %d exceeds engine ceiling %d "+
+				"(config may only tighten the cap, not loosen it)",
+			n, engine.MaxNestingDepth)
+	}
+	return n, nil
 }
 
 // applyWorkerConfigValue parses a worker.{task}.{field} key.

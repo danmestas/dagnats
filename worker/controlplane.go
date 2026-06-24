@@ -35,11 +35,19 @@ import (
 // runtime and launch a child run of it. nil unless the step declared the
 // "control-plane" capability AND the deployment granted it — always
 // nil-check before use.
+//
+// Adding a method here EXTENDS the public interface: any external
+// implementation (mock or alternate handle) must add it too. Budget() was
+// added in #378; there are no external implementations in-repo, so this is
+// source-compatible here, but downstream embedders must update their mocks.
 type ControlPlane interface {
 	// RegisterWorkflow validates def and persists it under a
-	// server-computed scoped name, returning that name. Promote is
-	// reserved (Tier 1 rejects Promote==true). The returned scopedName is
-	// what StartRun expects as its name argument.
+	// server-computed scoped name, returning that name. opts.Promote is
+	// WIRED (#377): true registers under the reaper-immune "promoted.*"
+	// namespace. Promotion is currently UNGOVERNED — promoted defs bypass
+	// the #378 quota + rate limits and have no authorization gate; #380
+	// owns that grant policy. The returned scopedName is what StartRun
+	// expects as its name argument.
 	RegisterWorkflow(
 		ctx context.Context, def dag.WorkflowDef, opts RegisterOpts,
 	) (scopedName string, err error)
@@ -50,6 +58,23 @@ type ControlPlane interface {
 	StartRun(
 		ctx context.Context, name string, input []byte,
 	) (runID string, err error)
+
+	// Budget reports the owning tree's current-vs-max for the two quota
+	// dimensions (active runs, registered defs), computed by the same
+	// server-side scan that enforces the quotas. A gated handler reads it
+	// to self-throttle before hitting a KindQuotaExceeded reply (#378).
+	Budget(ctx context.Context) (RuntimeBudget, error)
+}
+
+// RuntimeBudget is the server-computed snapshot of a spawn tree's quota
+// usage (#378). It carries real, scan-backed numbers — not a stub. Token /
+// compute metering is deferred (#378 P3), so no such field exists here; a
+// zero-valued field would lie about being tracked.
+type RuntimeBudget struct {
+	ActiveRuns        int `json:"active_runs"`
+	MaxActiveRuns     int `json:"max_active_runs"`
+	RegisteredDefs    int `json:"registered_defs"`
+	MaxRegisteredDefs int `json:"max_registered_defs"`
 }
 
 // RegisterOpts carries optional knobs for RegisterWorkflow. Promote
@@ -57,8 +82,10 @@ type ControlPlane interface {
 // namespace instead of the ephemeral "agent.<root>.*" namespace (#377).
 // The worker forwards the flag; the server owns the namespace shape.
 // Authorization for promotion is deferred to #380 — until then any caller
-// may promote, and ErrPromotionUnsupported/KindPromotionUnsupported
-// remain defined as the seam #380 will reactivate.
+// may promote, promoted defs are NOT subject to the #378 quota / rate
+// limits (those bound only root-scoped ephemeral defs), and
+// ErrPromotionUnsupported/KindPromotionUnsupported remain defined as the
+// seam #380 will reactivate.
 type RegisterOpts struct {
 	Promote bool
 }
@@ -76,6 +103,11 @@ const (
 	KindTransport            ControlPlaneErrorKind = "transport"
 	KindDenied               ControlPlaneErrorKind = "denied"
 	KindDepthExceeded        ControlPlaneErrorKind = "depth_exceeded"
+	// Additive safety-limit kinds (#378). KindQuotaExceeded covers both the
+	// active-run and the def quota; KindRateLimited covers the register
+	// rate limit. A gated handler branches on these to back off.
+	KindQuotaExceeded ControlPlaneErrorKind = "quota_exceeded"
+	KindRateLimited   ControlPlaneErrorKind = "rate_limited"
 )
 
 // ControlPlaneError is the single structured error type every boundary
@@ -111,6 +143,8 @@ var (
 	ErrTransport        = &ControlPlaneError{Kind: KindTransport}
 	ErrDenied           = &ControlPlaneError{Kind: KindDenied}
 	ErrDepthExceeded    = &ControlPlaneError{Kind: KindDepthExceeded}
+	ErrQuotaExceeded    = &ControlPlaneError{Kind: KindQuotaExceeded}
+	ErrRateLimited      = &ControlPlaneError{Kind: KindRateLimited}
 )
 
 // Is lets errors.Is match by Kind, so callers can write
@@ -130,6 +164,7 @@ func (e *ControlPlaneError) Is(target error) bool {
 const (
 	subjectRuntimesRegister = "api.runtimes.register"
 	subjectRunsSpawn        = "api.runs.spawn"
+	subjectRuntimesBudget   = "api.runtimes.budget"
 )
 
 // requestTimeout bounds every control-plane round-trip. A handler that
@@ -168,6 +203,20 @@ type runSpawnRequest struct {
 // runSpawnReply is the wire reply for api.runs.spawn.
 type runSpawnReply struct {
 	RunID string                `json:"run_id,omitempty"`
+	Error string                `json:"error,omitempty"`
+	Kind  ControlPlaneErrorKind `json:"kind,omitempty"`
+}
+
+// runtimeBudgetRequest is the wire request for api.runtimes.budget. The
+// server resolves the tree root from owner_run_id before scanning.
+type runtimeBudgetRequest struct {
+	OwnerRunID string `json:"owner_run_id"`
+}
+
+// runtimeBudgetReply is the wire reply for api.runtimes.budget: the budget
+// snapshot inline plus the standard {error, kind} envelope.
+type runtimeBudgetReply struct {
+	RuntimeBudget
 	Error string                `json:"error,omitempty"`
 	Kind  ControlPlaneErrorKind `json:"kind,omitempty"`
 }
@@ -276,6 +325,35 @@ func (c *workerControlPlane) StartRun(
 		}
 	}
 	return reply.RunID, nil
+}
+
+// Budget asks the server for the owning tree's quota usage. The owner run
+// is bound at grant time; a handler only needs the snapshot. A reply
+// envelope error maps to a typed *ControlPlaneError (KindTransport by
+// default when the server omits a kind).
+func (c *workerControlPlane) Budget(
+	ctx context.Context,
+) (RuntimeBudget, error) {
+	if ctx == nil {
+		panic("Budget: ctx must not be nil")
+	}
+	if c == nil || c.nc == nil {
+		panic("Budget: receiver must not be nil")
+	}
+	req := runtimeBudgetRequest{OwnerRunID: c.ownerRunID}
+	reply, err := requestAPI[runtimeBudgetReply](
+		ctx, c.nc, subjectRuntimesBudget, req, "Budget",
+	)
+	if err != nil {
+		return RuntimeBudget{}, err
+	}
+	if reply.Error != "" {
+		return RuntimeBudget{}, &ControlPlaneError{
+			Kind: orDefault(reply.Kind, KindTransport),
+			Op:   "Budget", Message: reply.Error,
+		}
+	}
+	return reply.RuntimeBudget, nil
 }
 
 // validateScopedName guards the StartRun name argument: a name that is

@@ -104,6 +104,10 @@ func (n *NATSAPI) Start() {
 		{"runtimes-register", "api.runtimes.register",
 			n.handleRuntimeRegister},
 		{"runs-spawn", "api.runs.spawn", n.handleRunSpawn},
+		// Budget read (#378): real scan-backed quota usage so a gated
+		// handler can self-throttle before tripping quota_exceeded.
+		{"runtimes-budget", "api.runtimes.budget",
+			n.handleRuntimesBudget},
 	}
 	for _, e := range endpoints {
 		// Without a queue group, every running INSTANCE receives each
@@ -273,6 +277,48 @@ func (n *NATSAPI) handleRunSpawn(req micro.Request) {
 		return
 	}
 	n.reply(req, map[string]string{"run_id": runID})
+}
+
+// handleRuntimesBudget resolves the owner run's tree root, scans the
+// active-run and def counts, and replies with the budget snapshot or a
+// {error, kind} envelope. The reply body is the worker's runtimeBudgetReply
+// shape (budget fields inline + error/kind) so the handle unmarshals it
+// directly into a typed RuntimeBudget.
+func (n *NATSAPI) handleRuntimesBudget(req micro.Request) {
+	if req == nil {
+		panic("handleRuntimesBudget: req must not be nil")
+	}
+	if n.svc == nil {
+		panic("handleRuntimesBudget: svc must not be nil")
+	}
+	var r struct {
+		OwnerRunID string `json:"owner_run_id"`
+	}
+	if err := json.Unmarshal(req.Data(), &r); err != nil {
+		n.replyBudgetError(req, err.Error(), "transport")
+		return
+	}
+	budget, kind, err := n.svc.Budget(context.Background(), r.OwnerRunID)
+	if err != nil {
+		n.replyBudgetError(req, err.Error(), kind)
+		return
+	}
+	n.reply(req, struct {
+		ActiveRuns        int `json:"active_runs"`
+		MaxActiveRuns     int `json:"max_active_runs"`
+		RegisteredDefs    int `json:"registered_defs"`
+		MaxRegisteredDefs int `json:"max_registered_defs"`
+	}{
+		ActiveRuns:        budget.ActiveRuns,
+		MaxActiveRuns:     budget.MaxActiveRuns,
+		RegisteredDefs:    budget.RegisteredDefs,
+		MaxRegisteredDefs: budget.MaxRegisteredDefs,
+	})
+}
+
+// replyBudgetError sends the {error, kind} envelope for a budget failure.
+func (n *NATSAPI) replyBudgetError(req micro.Request, msg, kind string) {
+	n.reply(req, map[string]string{"error": msg, "kind": kind})
 }
 
 // reply marshals payload to JSON and sends it as a reply. We use

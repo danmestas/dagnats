@@ -34,6 +34,18 @@ type cpHarness struct {
 
 func newCPHarness(t *testing.T, gated bool) *cpHarness {
 	t.Helper()
+	// Default limits ({}) resolve to the production defaults — the existing
+	// tests assert today's behavior, which the defaults preserve.
+	return newCPHarnessWithLimits(t, gated, RuntimeLimits{})
+}
+
+// newCPHarnessWithLimits is newCPHarness with explicit per-runtime bounds
+// (#378). The quota/rate/depth tests pass reduced limits to trip the caps
+// with a handful of registers/spawns instead of hundreds.
+func newCPHarnessWithLimits(
+	t *testing.T, gated bool, limits RuntimeLimits,
+) *cpHarness {
+	t.Helper()
 	_, nc := natsutil.StartTestServer(t)
 	// Size the per-stream MaxBytes ceilings off a small budget so the sum
 	// fits a disk-constrained sandbox; the default 10 GiB budget can make
@@ -48,7 +60,7 @@ func newCPHarness(t *testing.T, gated bool) *cpHarness {
 	orch.Start()
 	t.Cleanup(orch.Stop)
 
-	svc := NewService(nc)
+	svc := NewServiceWithLimits(nc, limits)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
 	natsAPI.Start()
 	t.Cleanup(natsAPI.Stop)
