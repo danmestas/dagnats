@@ -47,7 +47,7 @@ func TestHTTPRouterLoadsHTTPTriggerFromKV(t *testing.T) {
 		t.Fatalf("KV.Put: %v", err)
 	}
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestHTTPRouterReregisterReplacesPriorRoute(t *testing.T) {
 	js, _ := nc.JetStream()
 	trigKV, _ := js.KeyValue("triggers")
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}

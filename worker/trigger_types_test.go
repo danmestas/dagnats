@@ -36,7 +36,7 @@ func startWorkerForTriggers(t *testing.T) *Worker {
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc, err := trigger.NewTriggerService(nc)
+	svc, err := trigger.NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 )
 
 const maxActiveTriggers = 500
@@ -47,7 +48,10 @@ type TriggerService struct {
 	subjectReg     *subjectRegistrar
 	webhookReg     *webhookRegistrar
 	httpReg        *httpRegistrar
-	ackSub         *nats.Subscription
+	ackMicro       micro.Service
+	// build is the binary's build string, threaded into the
+	// dagnats-trigger micro service version (#449 Phase 2b).
+	build string
 	// revisions tracks the highest KV revision applied for each
 	// trigger ID. The KV watcher (jetstream.WatchAll) opens with
 	// DeliverLastPerSubject and replays existing keys on startup —
@@ -96,10 +100,12 @@ func triggerKind(def TriggerDef) string {
 	return ""
 }
 
-// NewTriggerService creates the service. KV buckets must exist.
+// NewTriggerService creates the service. KV buckets must exist. build is
+// the binary's build string, threaded into the dagnats-trigger micro
+// service version (#449 Phase 2b); it is sanitized to a valid SemVer.
 // Panics if nc is nil or nc is not connected (programmer error).
 func NewTriggerService(
-	nc *nats.Conn,
+	nc *nats.Conn, build string,
 ) (*TriggerService, error) {
 	if nc == nil {
 		panic("NewTriggerService: nc must not be nil")
@@ -155,6 +161,7 @@ func NewTriggerService(
 		revisions:      make(map[string]uint64),
 		ctx:            ctx,
 		cancel:         cancel,
+		build:          build,
 	}
 	ts.subjectReg = newSubjectRegistrar(nc, ts.subjects, &ts.mu)
 	ts.webhookReg = newWebhookRegistrar(nc, ts.webhooks, &ts.mu)
@@ -223,8 +230,10 @@ func (ts *TriggerService) Stop() {
 	if ts.watcher != nil {
 		ts.watcher.Stop()
 	}
-	if ts.ackSub != nil {
-		_ = ts.ackSub.Unsubscribe()
+	if ts.ackMicro != nil {
+		if err := ts.ackMicro.Stop(); err != nil {
+			slog.Warn("trigger micro stop: drain failed", "error", err)
+		}
 	}
 }
 

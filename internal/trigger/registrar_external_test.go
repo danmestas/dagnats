@@ -36,7 +36,7 @@ func startExternalSvc(t *testing.T) (*nats.Conn, *TriggerService) {
 	); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}

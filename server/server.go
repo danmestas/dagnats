@@ -204,7 +204,7 @@ func (s *Server) startComponents() error {
 	s.bridge = bridge.NewBridge(bridgePub)
 	printStep(os.Stderr, "http bridge ready")
 
-	s.trig, err = trigger.NewTriggerService(s.nc)
+	s.trig, err = trigger.NewTriggerService(s.nc, s.cfg.Build)
 	if err != nil {
 		s.orch.Stop()
 		s.natsAPI.Stop()

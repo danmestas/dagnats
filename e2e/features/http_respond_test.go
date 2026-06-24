@@ -62,7 +62,7 @@ func TestHTTPRespondHappyPath(t *testing.T) {
 		t.Cleanup(orch.Stop)
 
 		// Start the trigger service so the HTTPHandler is registered.
-		ts, err := trigger.NewTriggerService(nc)
+		ts, err := trigger.NewTriggerService(nc, "1.0.0")
 		if err != nil {
 			t.Fatalf("NewTriggerService: %v", err)
 		}

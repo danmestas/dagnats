@@ -128,7 +128,7 @@ func TestE2ECronTriggerDispatchesFirstTask(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc, err := trigger.NewTriggerService(nc)
+	svc, err := trigger.NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestE2ESubjectTriggerDispatchesFirstTask(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc, err := trigger.NewTriggerService(nc)
+	svc, err := trigger.NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestE2EWebhookTriggerDispatchesFirstTask(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	svc, err := trigger.NewTriggerService(nc)
+	svc, err := trigger.NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
