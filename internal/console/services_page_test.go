@@ -97,18 +97,27 @@ func TestServePageServices_rendersRoster(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"trigger-svc", "fires scheduled workflows",
-		// Real column headers backed by the KV registration.
+		// Real column headers. Service/Registered/Note from KV;
+		// Version/Instances/Status from $SRV discovery (asserted below).
 		">Service<", ">Registered<", ">Note<",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
 		}
 	}
-	// Negative space: columns the KV does not carry must NOT be rendered
-	// as headers — rendering them would fabricate liveness/version data.
+	// Version / Instances / Status are now LIVE columns backed by $SRV
+	// discovery (#449 Phase 2a). The fake projects KV rows only (no NATS
+	// responder), so they render the honest dash here.
+	for _, want := range []string{">Version<", ">Instances<", ">Status<"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing live column header %q", want)
+		}
+	}
+	// Negative space: columns with no honest backing must NOT be rendered
+	// as headers — rendering them would fabricate data. LastSeen carries
+	// no $SRV last-activity timestamp; Kind/Commit are unbacked.
 	for _, absent := range []string{
-		">Kind<", ">Version<", ">Commit<", ">Instances<",
-		">Status<", ">Last seen<",
+		">Kind<", ">Commit<", ">Last seen<",
 	} {
 		if strings.Contains(body, absent) {
 			t.Errorf("body fabricates omitted column header %q", absent)
@@ -211,5 +220,145 @@ func TestNavCountsIncludesServices(t *testing.T) {
 	errCounts := navCountsBody(t, errFake)
 	if _, ok := errCounts["services"]; ok {
 		t.Errorf("services must be omitted when ListServiceRows errors")
+	}
+}
+
+// TestMergeDiscovery_nilMapAllDash asserts that when discovery
+// transport-failed entirely (nil map) every live column degrades to the
+// honest dash — we cannot distinguish online from stale, so we claim
+// neither.
+func TestMergeDiscovery_nilMapAllDash(t *testing.T) {
+	rows := []ServiceRow{{Name: "svc-a", Registered: "x", Note: "n"}}
+	out := mergeDiscovery(rows, nil)
+	if len(out) != 1 {
+		t.Fatalf("rows len: got %d, want 1", len(out))
+	}
+	if out[0].Version != dash || out[0].Instances != dash {
+		t.Errorf("nil discovery: Version=%q Instances=%q, want both dash",
+			out[0].Version, out[0].Instances)
+	}
+	if out[0].Status != dash {
+		t.Errorf("nil discovery Status: got %q, want dash", out[0].Status)
+	}
+}
+
+// TestMergeDiscovery_unionSynthesizesDiscoveryOnly asserts a service seen
+// only via $SRV (not in the KV roster) gets a synthesized row — this is
+// what makes dagnats-api (which does not self-register in KV) appear.
+func TestMergeDiscovery_unionSynthesizesDiscoveryOnly(t *testing.T) {
+	rows := []ServiceRow{{Name: "rostered", Registered: "x"}}
+	d := map[string]serviceDiscovery{
+		"dagnats-api": {
+			Name: "dagnats-api", Version: "0.9.0", Instances: 1,
+			HadStats: true, NumErrors: 0,
+		},
+	}
+	out := mergeDiscovery(rows, d)
+	if len(out) != 2 {
+		t.Fatalf("union rows: got %d, want 2", len(out))
+	}
+	var synth *ServiceRow
+	for i := range out {
+		if out[i].Name == "dagnats-api" {
+			synth = &out[i]
+		}
+	}
+	if synth == nil {
+		t.Fatalf("discovery-only service not synthesized: %+v", out)
+	}
+	if synth.Status != "online" || synth.Version != "0.9.0" {
+		t.Errorf("synth row: Status=%q Version=%q, want online/0.9.0",
+			synth.Status, synth.Version)
+	}
+	if !strings.Contains(synth.Note, "discovered") {
+		t.Errorf("synth Note: got %q, want a discovered-via-$SRV note",
+			synth.Note)
+	}
+}
+
+// TestMergeDiscovery_statusMapping asserts the honest Status mapping:
+// STATS+0 errors -> online; STATS+errors -> degraded; PING-but-no-STATS
+// -> unknown (neutral, never online); rostered-but-no-PING -> stale.
+func TestMergeDiscovery_statusMapping(t *testing.T) {
+	rows := []ServiceRow{
+		{Name: "online-svc"},
+		{Name: "degraded-svc"},
+		{Name: "unknown-svc"},
+		{Name: "stale-svc"},
+	}
+	d := map[string]serviceDiscovery{
+		"online-svc": {
+			Name: "online-svc", Instances: 1, HadStats: true, NumErrors: 0,
+		},
+		"degraded-svc": {
+			Name: "degraded-svc", Instances: 1, HadStats: true, NumErrors: 1,
+		},
+		"unknown-svc": {
+			Name: "unknown-svc", Instances: 1, HadStats: false,
+		},
+	}
+	out := mergeDiscovery(rows, d)
+	byName := map[string]ServiceRow{}
+	for _, r := range out {
+		byName[r.Name] = r
+	}
+	if byName["online-svc"].Status != "online" {
+		t.Errorf("STATS+0 errors: got %q, want online", byName["online-svc"].Status)
+	}
+	if byName["degraded-svc"].Status != "degraded" {
+		t.Errorf("errors>0: got %q, want degraded", byName["degraded-svc"].Status)
+	}
+	if byName["unknown-svc"].Status != "unknown" {
+		t.Errorf("no STATS: got %q, want unknown (never online)",
+			byName["unknown-svc"].Status)
+	}
+	if byName["stale-svc"].Status != "stale" {
+		t.Errorf("rostered no PING: got %q, want stale", byName["stale-svc"].Status)
+	}
+	// Meaningful negative: a degraded (PING+STATS) service must not be
+	// misclassified as stale (which means no PING responder at all).
+	if byName["degraded-svc"].Status == "stale" {
+		t.Errorf("degraded service misclassified as stale")
+	}
+}
+
+// TestMergeDiscovery_statsWithoutPingNotOnline guards the honesty bug
+// where a STATS reply with no confirmed PING responder (Instances == 0)
+// would otherwise be claimed "online" with zero confirmed liveness. The
+// row must NOT be online and its Instances must be dashed.
+func TestMergeDiscovery_statsWithoutPingNotOnline(t *testing.T) {
+	rows := []ServiceRow{{Name: "ghost"}}
+	d := map[string]serviceDiscovery{
+		// HadStats but Instances == 0: STATS arrived without a PING.
+		"ghost": {Name: "ghost", Version: "1.0.0", Instances: 0, HadStats: true},
+	}
+	out := mergeDiscovery(rows, d)
+	if len(out) != 1 {
+		t.Fatalf("rows len: got %d, want 1", len(out))
+	}
+	if out[0].Status == "online" {
+		t.Errorf("zero confirmed instances falsely claimed online")
+	}
+	if out[0].Instances != dash {
+		t.Errorf("Instances: got %q, want dash (no confirmed responder)",
+			out[0].Instances)
+	}
+}
+
+// TestTotalInstances_sumsNumericCells exercises the numeric-sum path:
+// dashed cells contribute nothing, numeric cells sum.
+func TestTotalInstances_sumsNumericCells(t *testing.T) {
+	rows := []ServiceRow{
+		{Name: "a", Instances: "1"},
+		{Name: "b", Instances: "2"},
+		{Name: "c", Instances: dash},
+	}
+	if got := totalInstances(rows); got != 3 {
+		t.Errorf("totalInstances: got %d, want 3", got)
+	}
+	// Negative space: an all-dashed roster sums to zero, not a guess.
+	allDash := []ServiceRow{{Name: "x", Instances: dash}}
+	if got := totalInstances(allDash); got != 0 {
+		t.Errorf("all-dash totalInstances: got %d, want 0", got)
 	}
 }
