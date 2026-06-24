@@ -66,6 +66,12 @@ type TaskContext interface {
 		name string, timeout time.Duration,
 	) ([]byte, error)
 	SendSignal(runID, name string, data []byte) error
+
+	// ControlPlane returns the runtime control-plane handle for this
+	// step, or nil. It is nil unless the step declared the
+	// "control-plane" capability AND the deployment granted one via
+	// WithControlPlane — deny-by-default. Always nil-check before use.
+	ControlPlane() ControlPlane
 }
 
 // HandlerFunc is the function signature for task handlers
@@ -144,6 +150,12 @@ type Worker struct {
 	// "kill-mid-test patterns + t.Cleanup safe" invariant).
 	triggerSubsMu sync.Mutex
 	triggerSubs   []*nats.Subscription
+
+	// controlPlane is the deployment-wired runtime control-plane handle.
+	// nil unless WithControlPlane was passed (the Tier-1 grant). Even
+	// when non-nil, a per-step handle is granted only to steps that
+	// declared the "control-plane" capability — see startTaskSpan.
+	controlPlane ControlPlane
 }
 
 // WorkerOption configures optional Worker behavior.
@@ -189,6 +201,35 @@ func withPublishMsgFunc(fn publishMsgFunc) WorkerOption {
 		panic("withPublishMsgFunc: fn must not be nil")
 	}
 	return func(w *Worker) { w.publishMsg = fn }
+}
+
+// WithControlPlane grants this worker the runtime control plane: gated
+// steps (those declaring the "control-plane" capability) will receive a
+// per-step handle via TaskContext.ControlPlane(). Without this option
+// the field stays nil and every step's ControlPlane() returns nil —
+// deny-by-default is structural, not a runtime check. Panics if cp is
+// nil (a deployment that wires the grant must supply a real handle).
+func WithControlPlane(cp ControlPlane) WorkerOption {
+	if cp == nil {
+		panic("WithControlPlane: cp must not be nil")
+	}
+	return func(w *Worker) { w.controlPlane = cp }
+}
+
+// controlPlaneCapability is the literal capability a step must declare in
+// RequiredCapabilities to be granted a control-plane handle.
+const controlPlaneCapability = "control-plane"
+
+// stepDeclaresControlPlane reports whether the task payload's declared
+// capabilities include the control-plane capability. Pure helper so the
+// gate condition stays readable and testable.
+func stepDeclaresControlPlane(payload protocol.TaskPayload) bool {
+	for _, capability := range payload.RequiredCapabilities {
+		if capability == controlPlaneCapability {
+			return true
+		}
+	}
+	return false
 }
 
 // generateWorkerID creates a unique worker ID using crypto/rand.
@@ -884,6 +925,16 @@ func (w *Worker) startTaskSpan(
 	)
 	tc.workerID = w.workerID
 	tc.publishMsg = w.publishMsg
+	// Deny-by-default gate: grant a control-plane handle only when the
+	// deployment wired one (w.controlPlane != nil) AND this step declared
+	// the capability. Both conditions must hold; either alone leaves the
+	// handle nil. Scoped to this step's run + step so server-side lineage
+	// and namespacing attach to the right owner.
+	if w.controlPlane != nil && stepDeclaresControlPlane(payload) {
+		tc.controlPlane = newControlPlaneFor(
+			w.nc, payload.RunID, payload.StepID,
+		)
+	}
 	return ctx, span, tc
 }
 

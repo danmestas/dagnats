@@ -1,0 +1,13 @@
+{
+  "$schema": "../../docs/workflow-schema.json",
+  "name": "planner",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "plan",
+      "task": "plan-task",
+      "type": "normal",
+      "required_capabilities": ["control-plane"]
+    }
+  ]
+}

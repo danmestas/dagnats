@@ -54,6 +54,10 @@ type taskContext struct {
 	signalKV     jetstream.KeyValue
 	paused       bool   // set by Pause() to prevent double-ack
 	workerID     string // included in completion events for sticky routing
+	// controlPlane is the per-step runtime control-plane handle, set by
+	// startTaskSpan only for gated steps. nil by default — deny-by-default
+	// is the zero value, so an ungated step can never reach it.
+	controlPlane ControlPlane
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -114,6 +118,10 @@ func (c *taskContext) StepID() string              { return c.stepID }
 func (c *taskContext) RetryCount() int             { return c.attempt }
 func (c *taskContext) Metadata() map[string]string { return c.metadata }
 func (c *taskContext) Context() context.Context    { return c.ctx }
+
+// ControlPlane returns the per-step control-plane handle, or nil when
+// the step was not gated. nil is the deny-by-default zero value.
+func (c *taskContext) ControlPlane() ControlPlane { return c.controlPlane }
 
 // Complete publishes a step.completed event with trace context.
 func (c *taskContext) Complete(output []byte) error {

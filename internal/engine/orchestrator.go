@@ -1824,7 +1824,15 @@ func (o *Orchestrator) publishCancelEvent(
 	)
 }
 
-const maxNestingDepth = 3
+// MaxNestingDepth caps how deeply runs may spawn children. Exported so
+// the api control-plane spawn endpoint can enforce the SAME cap
+// synchronously before publishing a spawn event — there is exactly one
+// depth-checked spawn path, and this is its single source of truth.
+const MaxNestingDepth = 3
+
+// maxNestingDepth is the package-internal alias retained so the existing
+// orchestrator call sites read unchanged.
+const maxNestingDepth = MaxNestingDepth
 
 // nestingDepth walks the parent chain to compute current depth.
 // Returns 0 for top-level runs, 1 for first child, etc.

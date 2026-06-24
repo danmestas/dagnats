@@ -72,6 +72,11 @@ func (m *MockTaskContext) StepID() string              { return m.StepIDValue }
 func (m *MockTaskContext) RetryCount() int             { return m.RetryCountVal }
 func (m *MockTaskContext) Metadata() map[string]string { return nil }
 
+// ControlPlane returns nil: the mock is ungated by default, matching the
+// deny-by-default contract. Tests that need a granted handle set it
+// explicitly via their own double.
+func (m *MockTaskContext) ControlPlane() worker.ControlPlane { return nil }
+
 func (m *MockTaskContext) Complete(output []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

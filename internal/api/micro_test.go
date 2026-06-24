@@ -50,7 +50,7 @@ func TestMicroPingRespondsAfterStartTimesOutAfterStop(t *testing.T) {
 	}
 }
 
-func TestMicroInfoListsExactlyThreeEndpointSubjects(t *testing.T) {
+func TestMicroInfoListsExactlyFiveEndpointSubjects(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
@@ -67,23 +67,27 @@ func TestMicroInfoListsExactlyThreeEndpointSubjects(t *testing.T) {
 		t.Fatalf("unmarshal info: %v", err)
 	}
 
+	// The original three (#456) plus the two additive control-plane
+	// runtime endpoints (#376).
 	want := map[string]bool{
 		"api.workflows.register": true,
 		"api.runs.start":         true,
 		"api.runs.get":           true,
+		"api.runtimes.register":  true,
+		"api.runs.spawn":         true,
 	}
 	got := make(map[string]bool, len(info.Endpoints))
 	for _, ep := range info.Endpoints {
 		got[ep.Subject] = true
 	}
 
-	// Positive: the three control-plane subjects are present.
+	// Positive: every expected subject is present.
 	for subject := range want {
 		if !got[subject] {
 			t.Fatalf("INFO missing endpoint subject %q", subject)
 		}
 	}
-	// Negative: no unexpected subjects beyond the three.
+	// Negative: no unexpected subjects beyond the five.
 	if len(info.Endpoints) != len(want) {
 		t.Fatalf(
 			"endpoint count = %d, want %d (subjects: %v)",

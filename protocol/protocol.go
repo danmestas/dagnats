@@ -21,6 +21,10 @@ type TaskPayload struct {
 	// delivered to workers via TaskContext.Metadata(). Nil when the step
 	// declared no metadata.
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// RequiredCapabilities is copied verbatim from StepDef.RequiredCapabilities
+	// at enqueue time. The worker reads it to gate capability handles (e.g.
+	// the control plane). Nil = no capabilities declared (today's behavior).
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 }
 
 // TaskResolution is the wire format for HTTP bridge resolve actions.

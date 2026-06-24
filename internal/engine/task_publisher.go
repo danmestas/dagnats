@@ -345,11 +345,12 @@ func (tp *TaskPublisher) doPublish(
 	)
 	defer span.End()
 	payload := protocol.TaskPayload{
-		TaskID:  runID + "." + step.ID,
-		RunID:   runID,
-		StepID:  step.ID,
-		Attempt: attempt,
-		Input:   input,
+		TaskID:               runID + "." + step.ID,
+		RunID:                runID,
+		StepID:               step.ID,
+		Attempt:              attempt,
+		Input:                input,
+		RequiredCapabilities: step.RequiredCapabilities,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
