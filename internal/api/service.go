@@ -57,6 +57,24 @@ type Service struct {
 	requestCount    metric.Int64Counter
 	requestDuration metric.Float64Histogram
 	errorCount      metric.Int64Counter
+
+	// Per-runtime safety bounds (ADR-021 Phase A, #378). limits holds the
+	// resolved quota/depth values; registerLimiter throttles runtime def
+	// registration per tree-root (reuses engine.RateLimiter — nil-safe when
+	// the rate_limits bucket is absent). Both are set in NewServiceWithLimits.
+	limits          RuntimeLimits
+	registerLimiter *engine.RateLimiter
+}
+
+// RuntimeLimits carries the resolved per-runtime safety bounds the control
+// plane enforces (#378). Zero fields resolve to the default consts in
+// runtimes.go at construction, so an old caller (or a zero-value struct)
+// inherits the safe defaults rather than disabling the caps.
+type RuntimeLimits struct {
+	MaxActiveRunsPerRoot         int
+	MaxDefsPerRoot               int
+	MaxGenerationDepth           int
+	MaxRegistersPerMinutePerRoot int
 }
 
 // DeadLetter represents a message that failed processing. The
@@ -137,20 +155,29 @@ type RunEvent struct {
 // Panics if JetStream init fails or the workflow_defs bucket does
 // not exist -- callers must call natsutil.SetupAll first.
 func NewService(nc *nats.Conn) *Service {
+	return NewServiceWithLimits(nc, RuntimeLimits{})
+}
+
+// NewServiceWithLimits is NewService with explicit per-runtime safety
+// bounds (#378). Zero fields in limits resolve to the default consts so a
+// caller passing RuntimeLimits{} gets the safe defaults. The register
+// rate-limiter is constructed once here via engine.NewRateLimiter — nil
+// (an honest no-op) when the rate_limits bucket is absent.
+func NewServiceWithLimits(nc *nats.Conn, limits RuntimeLimits) *Service {
 	if nc == nil {
-		panic("NewService: nc must not be nil")
+		panic("NewServiceWithLimits: nc must not be nil")
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
 		panic(
-			"NewService: jetstream.New: " + err.Error(),
+			"NewServiceWithLimits: jetstream.New: " + err.Error(),
 		)
 	}
 	ctx := context.Background()
 	defKV, err := js.KeyValue(ctx, "workflow_defs")
 	if err != nil {
 		panic(
-			"NewService: workflow_defs bucket not found: " +
+			"NewServiceWithLimits: workflow_defs bucket not found: " +
 				err.Error(),
 		)
 	}
@@ -169,6 +196,8 @@ func NewService(nc *nats.Conn) *Service {
 	return &Service{
 		nc:              nc,
 		js:              js,
+		limits:          resolveRuntimeLimits(limits),
+		registerLimiter: engine.NewRateLimiter(js),
 		tp:              natsutil.NewTracingPublisher(nc, js),
 		defKV:           defKV,
 		store:           engine.NewSnapshotStore(js),

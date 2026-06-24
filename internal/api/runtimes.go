@@ -23,14 +23,18 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Wire kinds the control-plane endpoints emit. They mirror the worker's
@@ -42,7 +46,41 @@ const (
 	cpKindUnresolvableName = "unresolvable_name"
 	cpKindTransport        = "transport"
 	cpKindDepthExceeded    = "depth_exceeded"
+	// Additive safety-limit kinds (#378). cpKindQuotaExceeded covers both
+	// the active-run and the def quota; cpKindRateLimited covers the
+	// register rate limit. Both mirror the worker ControlPlaneErrorKind
+	// strings so the reply maps back without a translation table.
+	cpKindQuotaExceeded = "quota_exceeded"
+	cpKindRateLimited   = "rate_limited"
 )
+
+const (
+	// Default per-runtime bounds (#378). NewServiceWithLimits resolves a
+	// zero RuntimeLimits field to its default here, so a zero-value struct
+	// inherits the safe caps rather than disabling them. The depth default
+	// is engine.MaxNestingDepth — the existing cap is reused, not forked.
+	// Exported so the server config layer asserts its own defaults match
+	// (drift guard, #378) — the two must stay in lock-step.
+	DefaultMaxActiveRunsPerRoot         = 100
+	DefaultMaxDefsPerRoot               = 500
+	DefaultMaxRegistersPerMinutePerRoot = 60
+
+	// runtimeRunScanMax bounds the active-run quota scan (TigerStyle:
+	// every loop has a fixed upper bound). A tree with more runs than this
+	// is already far past any sane quota; the scan returns an error rather
+	// than silently undercounting.
+	runtimeRunScanMax = 10_000
+
+	// runtimeDefScanMax symmetrically bounds the def quota scan. defKV.Keys
+	// returns ALL defs (every tree's), so the bound is on the returned key
+	// slice, not on tree-local defs. Exceeding it returns an error on the
+	// request path (never a panic).
+	runtimeDefScanMax = 100_000
+)
+
+// registerRatePeriod is the window the register rate limit refills over.
+// One minute matches the per-minute config knob (MaxRegistersPerMinutePerRoot).
+const registerRatePeriod = time.Minute
 
 // scopeName is the single server-side source of truth for runtime
 // workflow naming. root is the namespace root — the true tree-root run of
@@ -58,13 +96,49 @@ const (
 // token. The 'agent.' prefix keeps the namespace visible and lets
 // validateRuntimeName reject any author name that tries to forge it.
 func scopeName(root, name string) string {
-	if root == "" {
-		panic("scopeName: root must not be empty")
-	}
 	if name == "" {
 		panic("scopeName: name must not be empty")
 	}
-	return "agent." + root + "." + name
+	return scopePrefix(root) + name
+}
+
+// scopePrefix is the single source of truth for a tree-root's namespace
+// prefix. Both scopeName (the register/spawn key formula) and
+// countDefsForRoot (the def-quota scan) derive from it, so a change to the
+// namespace shape touches exactly one place.
+func scopePrefix(root string) string {
+	if root == "" {
+		panic("scopePrefix: root must not be empty")
+	}
+	return "agent." + root + "."
+}
+
+// resolveRuntimeLimits fills zero fields with the default consts so a
+// zero-value RuntimeLimits inherits the safe caps. Negative values are a
+// config-layer concern (server/config.go rejects them); this resolver only
+// supplies defaults for the unset (zero) case.
+//
+// The generation-depth limit is CLAMPED to engine.MaxNestingDepth: the
+// orchestrator's handleWorkflowSpawn enforces that ceiling unconditionally,
+// so a higher API gate would pass a spawn the orchestrator silently drops —
+// handing back a runID for a run never created (a ghost run). Clamping here
+// is defense-in-depth alongside server/config.go's load-time rejection, so a
+// programmatic caller of NewServiceWithLimits cannot open the hole either.
+// The gate can tighten below the ceiling, never above it.
+func resolveRuntimeLimits(in RuntimeLimits) RuntimeLimits {
+	if in.MaxActiveRunsPerRoot == 0 {
+		in.MaxActiveRunsPerRoot = DefaultMaxActiveRunsPerRoot
+	}
+	if in.MaxDefsPerRoot == 0 {
+		in.MaxDefsPerRoot = DefaultMaxDefsPerRoot
+	}
+	if in.MaxGenerationDepth == 0 || in.MaxGenerationDepth > engine.MaxNestingDepth {
+		in.MaxGenerationDepth = engine.MaxNestingDepth
+	}
+	if in.MaxRegistersPerMinutePerRoot == 0 {
+		in.MaxRegistersPerMinutePerRoot = DefaultMaxRegistersPerMinutePerRoot
+	}
+	return in
 }
 
 // RegisterRuntimeWorkflow validates ownerRunID and def.Name, scopes the
@@ -99,6 +173,17 @@ func (s *Service) RegisterRuntimeWorkflow(
 		if err != nil {
 			return "", kind, err
 		}
+		// The #378 safety limits (def quota + register rate limit) are
+		// applied here ONLY for root-scoped ephemeral defs. The promote==true
+		// path deliberately falls through WITHOUT admission control: promoted
+		// defs are not root-scoped, so there is no tree to count against yet.
+		// This is a TRACKED, intentional gap — promoted-def registration is
+		// currently unbounded and unauthorized, pending #380's grant policy
+		// (which owns both authorization and any promote-namespace quota). Do
+		// not re-gate promotion here; that would revert #377's wiring.
+		if kind, err := s.checkRegisterAdmission(ctx, root); err != nil {
+			return "", kind, err
+		}
 		scoped = scopeName(root, def.Name)
 	}
 	// Persist under the scoped key, not the author-supplied name, so the
@@ -116,6 +201,46 @@ func (s *Service) RegisterRuntimeWorkflow(
 		return "", cpKindTransport, err
 	}
 	return scoped, "", nil
+}
+
+// checkRegisterAdmission gates a root-scoped runtime register against the
+// two safety limits, in cheapest-first order: the register rate limit
+// (KV CAS, no scan) then the def quota (a bounded KV key scan). Returns
+// ("", nil) when admitted; otherwise a (kind, error) pair the caller echoes
+// in the typed reply. A rate-limiter transport failure maps to
+// cpKindTransport, not a silent allow — the limiter is a safety control.
+func (s *Service) checkRegisterAdmission(
+	ctx context.Context, root string,
+) (string, error) {
+	if ctx == nil {
+		panic("checkRegisterAdmission: ctx must not be nil")
+	}
+	if root == "" {
+		panic("checkRegisterAdmission: root must not be empty")
+	}
+	allowed, _, err := s.registerLimiter.Allow(
+		ctx, "runtime_register", root,
+		s.limits.MaxRegistersPerMinutePerRoot, registerRatePeriod, 1,
+	)
+	if err != nil {
+		return cpKindTransport,
+			fmt.Errorf("register rate limit check: %w", err)
+	}
+	if !allowed {
+		return cpKindRateLimited, fmt.Errorf(
+			"register rate limit exceeded for root %q (%d/min)",
+			root, s.limits.MaxRegistersPerMinutePerRoot)
+	}
+	count, err := s.countDefsForRoot(ctx, root)
+	if err != nil {
+		return cpKindTransport, fmt.Errorf("def quota check: %w", err)
+	}
+	if count >= s.limits.MaxDefsPerRoot {
+		return cpKindQuotaExceeded, fmt.Errorf(
+			"def quota exceeded for root %q (%d >= %d)",
+			root, count, s.limits.MaxDefsPerRoot)
+	}
+	return "", nil
 }
 
 // resolveRootRunID derives the true tree-root run ID for ownerRunID by
@@ -214,7 +339,25 @@ func (s *Service) SpawnChildRun(
 	if s.spawnDepthExceeded(ctx, parentRunID) {
 		return "", cpKindDepthExceeded,
 			fmt.Errorf("max nesting depth %d exceeded",
-				engine.MaxNestingDepth)
+				s.limits.MaxGenerationDepth)
+	}
+	// Active-run quota is best-effort (count-then-act TOCTOU): a small
+	// concurrent burst may exceed by the in-flight count. The cap bounds
+	// runaway generation, not exact occupancy. Resolve the spawn's tree
+	// root from the parent before counting so the quota is per-tree.
+	root, kind, err := s.resolveRootRunID(ctx, parentRunID)
+	if err != nil {
+		return "", kind, err
+	}
+	active, err := s.countActiveRunsForRoot(ctx, root)
+	if err != nil {
+		return "", cpKindTransport,
+			fmt.Errorf("active-run quota check: %w", err)
+	}
+	if active >= s.limits.MaxActiveRunsPerRoot {
+		return "", cpKindQuotaExceeded, fmt.Errorf(
+			"active-run quota exceeded for root %q (%d >= %d)",
+			root, active, s.limits.MaxActiveRunsPerRoot)
 	}
 	childRunID := runid.New()
 	if err := s.publishSpawn(
@@ -226,19 +369,24 @@ func (s *Service) SpawnChildRun(
 }
 
 // spawnDepthExceeded reports whether a child of parentRunID would breach
-// the cap. Mirrors orchestrator.nestingDepth + its depth+1 >= max test so
-// both spawn entrypoints reject at the identical boundary. A store-load
-// error breaks the walk (treated as the chain root), matching the
-// orchestrator's behavior of stopping the walk on error.
+// the configured generation-depth cap. The bound is s.limits.MaxGenerationDepth
+// (default engine.MaxNestingDepth) — the SAME mechanism the orchestrator
+// applies, made configurable rather than forked into a second cap (#378 D1).
+// A store-load error breaks the walk (treated as the chain root), matching
+// the orchestrator's behavior of stopping the walk on error.
 func (s *Service) spawnDepthExceeded(
 	ctx context.Context, parentRunID string,
 ) bool {
 	if s.store == nil {
 		panic("spawnDepthExceeded: store must not be nil")
 	}
+	maxDepth := s.limits.MaxGenerationDepth
+	if maxDepth <= 0 {
+		panic("spawnDepthExceeded: MaxGenerationDepth must be positive")
+	}
 	depth := 0
 	currentID := parentRunID
-	for i := 0; i < engine.MaxNestingDepth+1; i++ {
+	for i := 0; i < maxDepth+1; i++ {
 		run, err := s.store.Load(ctx, currentID)
 		if err != nil || run.ParentRunID == "" {
 			break
@@ -246,7 +394,110 @@ func (s *Service) spawnDepthExceeded(
 		depth++
 		currentID = run.ParentRunID
 	}
-	return depth+1 >= engine.MaxNestingDepth
+	return depth+1 >= maxDepth
+}
+
+// countActiveRunsForRoot returns the number of non-terminal runs sharing
+// root's spawn tree, via a single bounded ListAll scan (D2: no separate KV
+// counter — a counter would drift from truth and spread complexity). The
+// count is a point-in-time read; the quota that consumes it is best-effort
+// (see SpawnChildRun). ErrNoKeysFound resolves to 0.
+func (s *Service) countActiveRunsForRoot(
+	ctx context.Context, root string,
+) (int, error) {
+	if ctx == nil {
+		panic("countActiveRunsForRoot: ctx must not be nil")
+	}
+	if root == "" {
+		panic("countActiveRunsForRoot: root must not be empty")
+	}
+	runs, err := s.store.ListAll(ctx, runtimeRunScanMax)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	count := 0
+	for i := range runs {
+		if engine.RootRunIDOf(runs[i]) == root &&
+			!runs[i].Status.IsTerminal() {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// countDefsForRoot returns the number of ephemeral defs registered under
+// root's namespace, via a bounded defKV.Keys scan (D2). The bound is on the
+// returned key slice (Keys returns every tree's defs) and symmetric with the
+// run scan: a slice larger than runtimeDefScanMax returns an error on the
+// request path rather than panicking. ErrNoKeysFound resolves to 0.
+func (s *Service) countDefsForRoot(
+	ctx context.Context, root string,
+) (int, error) {
+	if ctx == nil {
+		panic("countDefsForRoot: ctx must not be nil")
+	}
+	if root == "" {
+		panic("countDefsForRoot: root must not be empty")
+	}
+	keys, err := s.defKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if len(keys) > runtimeDefScanMax {
+		return 0, fmt.Errorf(
+			"def key scan exceeded bound (%d > %d)",
+			len(keys), runtimeDefScanMax)
+	}
+	prefix := scopePrefix(root)
+	count := 0
+	for _, key := range keys {
+		if strings.HasPrefix(key, prefix) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// Budget reports the current-vs-max for the two quota dimensions a runtime
+// can hit, computed by the SAME scan code that enforces them (so the number
+// an agent reads matches the number the gate checks). Lets the durable agent
+// loop self-throttle before tripping a quota_exceeded reply. Token/compute
+// metering is deferred (#378 P3) — those fields are intentionally absent.
+// Returns the typed kind on resolve/scan failure, "" on success.
+func (s *Service) Budget(
+	ctx context.Context, ownerRunID string,
+) (worker.RuntimeBudget, string, error) {
+	if ctx == nil {
+		panic("Budget: ctx must not be nil")
+	}
+	if ownerRunID == "" {
+		return worker.RuntimeBudget{}, cpKindNamespace,
+			fmt.Errorf("owner run ID must not be empty")
+	}
+	root, kind, err := s.resolveRootRunID(ctx, ownerRunID)
+	if err != nil {
+		return worker.RuntimeBudget{}, kind, err
+	}
+	active, err := s.countActiveRunsForRoot(ctx, root)
+	if err != nil {
+		return worker.RuntimeBudget{}, cpKindTransport, err
+	}
+	defs, err := s.countDefsForRoot(ctx, root)
+	if err != nil {
+		return worker.RuntimeBudget{}, cpKindTransport, err
+	}
+	return worker.RuntimeBudget{
+		ActiveRuns:        active,
+		MaxActiveRuns:     s.limits.MaxActiveRunsPerRoot,
+		RegisteredDefs:    defs,
+		MaxRegisteredDefs: s.limits.MaxDefsPerRoot,
+	}, "", nil
 }
 
 // publishSpawn emits the EventWorkflowSpawn the orchestrator consumes.

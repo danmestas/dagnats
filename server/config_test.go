@@ -9,8 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/engine"
 )
 
 func TestDefaultConfig_HasPlatformDataDir(t *testing.T) {
@@ -576,5 +580,186 @@ func TestValidateClusterConfig(t *testing.T) {
 
 			validateClusterConfig(&cfg)
 		})
+	}
+}
+
+// TestRuntimeBounds_Defaults proves the per-runtime bound defaults (#378)
+// resolve to the ratified values and that the depth default is the SAME
+// value as engine.MaxNestingDepth — guarding the const->config reuse so a
+// future bump of MaxNestingDepth keeps the default in lock-step.
+func TestRuntimeBounds_Defaults(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.MaxActiveRunsPerRoot != 100 {
+		t.Errorf("MaxActiveRunsPerRoot = %d, want 100", cfg.MaxActiveRunsPerRoot)
+	}
+	if cfg.MaxDefsPerRoot != 500 {
+		t.Errorf("MaxDefsPerRoot = %d, want 500", cfg.MaxDefsPerRoot)
+	}
+	if cfg.MaxRegistersPerMinutePerRoot != 60 {
+		t.Errorf("MaxRegistersPerMinutePerRoot = %d, want 60",
+			cfg.MaxRegistersPerMinutePerRoot)
+	}
+	// The depth default must equal the existing engine cap — not a forked
+	// literal. A literal 3 here would silently drift if the engine const
+	// changes.
+	if cfg.MaxGenerationDepth != engine.MaxNestingDepth {
+		t.Errorf("MaxGenerationDepth = %d, want engine.MaxNestingDepth (%d)",
+			cfg.MaxGenerationDepth, engine.MaxNestingDepth)
+	}
+}
+
+// TestRuntimeBounds_EnvOverride proves each of the four numeric bounds is
+// overridable via its DAGNATS_* env var.
+func TestRuntimeBounds_EnvOverride(t *testing.T) {
+	t.Setenv("DAGNATS_MAX_ACTIVE_RUNS_PER_ROOT", "7")
+	t.Setenv("DAGNATS_MAX_DEFS_PER_ROOT", "9")
+	// Depth can only TIGHTEN (<= engine ceiling); 2 is a valid override.
+	t.Setenv("DAGNATS_MAX_GENERATION_DEPTH", "2")
+	t.Setenv("DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT", "13")
+
+	cfg := ConfigFromEnv()
+
+	if cfg.MaxActiveRunsPerRoot != 7 {
+		t.Errorf("MaxActiveRunsPerRoot = %d, want 7", cfg.MaxActiveRunsPerRoot)
+	}
+	if cfg.MaxDefsPerRoot != 9 {
+		t.Errorf("MaxDefsPerRoot = %d, want 9", cfg.MaxDefsPerRoot)
+	}
+	if cfg.MaxGenerationDepth != 2 {
+		t.Errorf("MaxGenerationDepth = %d, want 2", cfg.MaxGenerationDepth)
+	}
+	if cfg.MaxRegistersPerMinutePerRoot != 13 {
+		t.Errorf("MaxRegistersPerMinutePerRoot = %d, want 13",
+			cfg.MaxRegistersPerMinutePerRoot)
+	}
+	// Negative: a default value would mean the env var was ignored.
+	if cfg.MaxActiveRunsPerRoot == defaultMaxActiveRunsPerRoot {
+		t.Error("MaxActiveRunsPerRoot still holds the default")
+	}
+}
+
+// TestRuntimeBounds_FileOverrideAndNegativeRejected proves the config-file
+// path parses all four keys and REJECTS a negative value with a hard error.
+func TestRuntimeBounds_FileOverrideAndNegativeRejected(t *testing.T) {
+	cases := []struct {
+		key, val string
+		check    func(t *testing.T, c *Config)
+	}{
+		{"max_active_runs_per_root", "12", func(t *testing.T, c *Config) {
+			if c.MaxActiveRunsPerRoot != 12 {
+				t.Errorf("MaxActiveRunsPerRoot = %d", c.MaxActiveRunsPerRoot)
+			}
+		}},
+		{"max_defs_per_root", "34", func(t *testing.T, c *Config) {
+			if c.MaxDefsPerRoot != 34 {
+				t.Errorf("MaxDefsPerRoot = %d", c.MaxDefsPerRoot)
+			}
+		}},
+		{"max_generation_depth", "2", func(t *testing.T, c *Config) {
+			if c.MaxGenerationDepth != 2 {
+				t.Errorf("MaxGenerationDepth = %d", c.MaxGenerationDepth)
+			}
+		}},
+		{"max_registers_per_minute_per_root", "6", func(t *testing.T, c *Config) {
+			if c.MaxRegistersPerMinutePerRoot != 6 {
+				t.Errorf("MaxRegistersPerMinutePerRoot = %d",
+					c.MaxRegistersPerMinutePerRoot)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		var cfg Config
+		if err := applyConfigValue(tc.key, tc.val, 1, &cfg); err != nil {
+			t.Fatalf("applyConfigValue(%s, %s): %v", tc.key, tc.val, err)
+		}
+		tc.check(t, &cfg)
+	}
+
+	// Negative space: a negative value is rejected on every key.
+	for _, key := range []string{
+		"max_active_runs_per_root", "max_defs_per_root",
+		"max_generation_depth", "max_registers_per_minute_per_root",
+	} {
+		var cfg Config
+		if err := applyConfigValue(key, "-1", 1, &cfg); err == nil {
+			t.Fatalf("applyConfigValue(%s, -1) accepted a negative value", key)
+		}
+	}
+}
+
+// TestRuntimeBounds_DepthConfigLooseningRejected proves config/env can only
+// TIGHTEN the generation-depth cap, never loosen it past the orchestrator's
+// hard ceiling (engine.MaxNestingDepth). A loose value would make the API
+// spawn-gate pass while handleWorkflowSpawn silently drops the spawn — a
+// ghost run (caller gets a runID for a run that is never created). Both the
+// file path and the env path must reject loosening at load.
+func TestRuntimeBounds_DepthConfigLooseningRejected(t *testing.T) {
+	loose := engine.MaxNestingDepth + 5
+
+	// File path: applyConfigValue rejects a value above the ceiling.
+	var cfg Config
+	err := applyConfigValue(
+		"max_generation_depth", strconv.Itoa(loose), 1, &cfg,
+	)
+	if err == nil {
+		t.Fatalf("applyConfigValue accepted max_generation_depth=%d "+
+			"(ceiling %d)", loose, engine.MaxNestingDepth)
+	}
+
+	// Exactly the ceiling is allowed (tighten-to-equal is fine).
+	var atCeiling Config
+	if err := applyConfigValue(
+		"max_generation_depth", strconv.Itoa(engine.MaxNestingDepth), 1,
+		&atCeiling,
+	); err != nil {
+		t.Fatalf("applyConfigValue rejected the ceiling value: %v", err)
+	}
+
+	// Env path: a loose env value is a hard load error (not a silent pass).
+	t.Setenv("DAGNATS_MAX_GENERATION_DEPTH", strconv.Itoa(loose))
+	if _, _, err := ConfigWithPath(""); err == nil {
+		t.Fatalf("ConfigWithPath accepted env DAGNATS_MAX_GENERATION_DEPTH=%d",
+			loose)
+	}
+}
+
+// TestRuntimeBounds_EnvNegativeRejected proves a negative env value is a
+// hard load error rather than silently flowing through and DISABLING the
+// cap (count >= negative is always false).
+func TestRuntimeBounds_EnvNegativeRejected(t *testing.T) {
+	for _, env := range []string{
+		"DAGNATS_MAX_ACTIVE_RUNS_PER_ROOT",
+		"DAGNATS_MAX_DEFS_PER_ROOT",
+		"DAGNATS_MAX_GENERATION_DEPTH",
+		"DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT",
+	} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv(env, "-1")
+			if _, _, err := ConfigWithPath(""); err == nil {
+				t.Fatalf("ConfigWithPath accepted %s=-1 (disables the cap)", env)
+			}
+		})
+	}
+}
+
+// TestRuntimeBounds_DefaultConstsMatchAPILayer guards against drift between
+// the server-side default consts and the internal/api defaults that
+// NewServiceWithLimits falls back to. The two must stay in lock-step or a
+// config-default and a service-default would silently disagree.
+func TestRuntimeBounds_DefaultConstsMatchAPILayer(t *testing.T) {
+	if defaultMaxActiveRunsPerRoot != api.DefaultMaxActiveRunsPerRoot {
+		t.Errorf("server defaultMaxActiveRunsPerRoot=%d != api=%d",
+			defaultMaxActiveRunsPerRoot, api.DefaultMaxActiveRunsPerRoot)
+	}
+	if defaultMaxDefsPerRoot != api.DefaultMaxDefsPerRoot {
+		t.Errorf("server defaultMaxDefsPerRoot=%d != api=%d",
+			defaultMaxDefsPerRoot, api.DefaultMaxDefsPerRoot)
+	}
+	if defaultMaxRegistersPerMinutePerRoot !=
+		api.DefaultMaxRegistersPerMinutePerRoot {
+		t.Errorf("server defaultMaxRegistersPerMinutePerRoot=%d != api=%d",
+			defaultMaxRegistersPerMinutePerRoot,
+			api.DefaultMaxRegistersPerMinutePerRoot)
 	}
 }

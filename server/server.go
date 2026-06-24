@@ -180,7 +180,12 @@ func (s *Server) startComponents() error {
 	s.telShutdown = telShutdown
 	printStep(os.Stderr, "telemetry initialized")
 
-	s.svc = api.NewService(s.nc)
+	s.svc = api.NewServiceWithLimits(s.nc, api.RuntimeLimits{
+		MaxActiveRunsPerRoot:         s.cfg.MaxActiveRunsPerRoot,
+		MaxDefsPerRoot:               s.cfg.MaxDefsPerRoot,
+		MaxGenerationDepth:           s.cfg.MaxGenerationDepth,
+		MaxRegistersPerMinutePerRoot: s.cfg.MaxRegistersPerMinutePerRoot,
+	})
 	s.natsAPI = api.NewNATSAPI(s.svc, s.nc, s.cfg.Build)
 	s.natsAPI.Start()
 	printStep(os.Stderr, "nats api started")
