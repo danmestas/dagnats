@@ -2,16 +2,17 @@ package console
 
 import (
 	"net/http"
+	"strconv"
 )
 
-// services_page.go owns the /console/services roster page. Services are
-// a persistent metadata namespace (the `services` KV bucket, TTL=0, no
-// heartbeat — worker/services.go), so this page is a pure read of that
-// bucket projected into a roster table. It is deliberately NOT a
-// liveness surface: there is no status pill, no instance count, and no
-// per-service detail drill-in, because the registration carries none of
-// that data and synthesizing it would lie. Per-endpoint $SRV.STATS
-// arrive with nats-micro adoption.
+// services_page.go owns the /console/services roster page. It unions
+// the `services` KV roster (worker/services.go) with LIVE $SRV.PING /
+// $SRV.STATS discovery (#449 Phase 2a): the Version / Instances / Status
+// columns are folded from real micro responders, and a service seen only
+// via $SRV (e.g. dagnats-api, which does not self-register in KV) gets a
+// synthesized row. HONESTY holds: a service with no STATS is "unknown"
+// (never falsely "online"), and when discovery is unavailable every live
+// column dashes rather than fabricating liveness.
 
 // ServicesListView powers /console/services. Services is the roster read
 // live from the `services` KV bucket. When zero services are registered
@@ -50,23 +51,45 @@ func servePageServices(
 	})
 }
 
-// buildServicesHeader projects the roster into a single honest count
-// tile. There is no "instances" tile — the bucket carries no instance
-// count, so fabricating one would lie. The subtitle states the honest
-// constraint: services are a metadata namespace, not a heartbeat surface.
+// buildServicesHeader projects the roster into two honest count tiles:
+// the service count and the live-instances total summed from the
+// discovery-backed Instances column. The instances tile is now honest
+// because Instances is real $SRV data — a dashed (unbacked) cell
+// contributes nothing to the sum.
 func buildServicesHeader(rows []ServiceRow) PageHeader {
 	tiles := []Tile{
 		{Label: "services", Count: len(rows), Tone: ToneDefault},
+		{Label: "instances", Count: totalInstances(rows), Tone: ToneDefault},
 	}
 	h, err := NewPageHeader(PageHeader{
 		Title: "Services",
-		Subtitle: "Registered service metadata. A persistent namespace, " +
-			"not a heartbeat surface; per-endpoint $SRV stats arrive with " +
-			"nats-micro adoption.",
+		Subtitle: "Service roster unioned with live $SRV discovery. " +
+			"Version, instances, and status are folded from real micro " +
+			"responders; unbacked cells show a dash, not a guess.",
 		Tiles: tiles,
 	})
 	if err != nil {
 		return PageHeader{Title: "Services"}
 	}
 	return h
+}
+
+// totalInstances sums the numeric Instances cells across the roster.
+// Dashed (discovery-unavailable / stale) cells are not numbers and so
+// contribute nothing — the tile counts only live, attributable
+// instances. Bounded by len(rows).
+func totalInstances(rows []ServiceRow) int {
+	const maxRows = 20000
+	if len(rows) > maxRows {
+		panic("totalInstances: rows exceeds max bound")
+	}
+	total := 0
+	for _, row := range rows {
+		n, err := strconv.Atoi(row.Instances)
+		if err != nil {
+			continue
+		}
+		total += n
+	}
+	return total
 }

@@ -20,6 +20,7 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 )
 
 // osGetenv is the default backing of osLookupEnv. Pulled out so the
@@ -596,18 +597,29 @@ type WorkerStatusRow struct {
 	Status    string
 }
 
-// ServiceRow is one entry in the /console/services roster. It carries
-// ONLY the fields the `services` KV registration actually emits
-// (worker.ServiceDef: Name, Description, RegisteredAt). There are no
-// kind/version/instances/status columns because the bucket emits none —
-// services are a persistent metadata namespace with TTL=0 and no
-// heartbeat (worker/services.go), so any liveness/version column would
-// be fabricated. Registered is the RFC3339 RegisteredAt or the honest
-// dash when zero; Note is the Description or the honest dash when empty.
+// ServiceRow is one entry in the /console/services roster. Name,
+// Registered, and Note come from the `services` KV registration
+// (worker.ServiceDef). Version, Instances, and Status are LIVE columns
+// folded from $SRV.PING / $SRV.STATS discovery (#449 Phase 2a): they
+// carry the honest dash when discovery is unavailable (nil map) and a
+// real value when a micro responder answers.
+//
+// Deliberately OMITTED columns (HONESTY — no fabricated data):
+//   - LastSeen: $SRV carries no service-level last-activity timestamp,
+//     so the column would always dash. Revisit when a real signal lands.
+//   - Kind / Commit: the registration and $SRV reply carry neither;
+//     synthesizing them would lie.
+//
+// Registered is the RFC3339 RegisteredAt or dash when zero; Note is the
+// Description, the honest dash when empty, or a "discovered via $SRV"
+// note for a service seen only in discovery (not in the KV roster).
 type ServiceRow struct {
 	Name       string
 	Registered string
 	Note       string
+	Version    string
+	Instances  string
+	Status     string
 }
 
 // WorkerFunctionRow is one registered task type on a worker's detail
@@ -2729,7 +2741,15 @@ func (a *apiServiceAdapter) ListServiceRows(
 	if err != nil {
 		return nil, nil
 	}
-	return serviceRowsFromDefs(defs), nil
+	rows := serviceRowsFromDefs(defs)
+	// Best-effort live enrichment: a discovery timeout or transport
+	// failure NEVER fails the page. A nil map makes mergeDiscovery dash
+	// every live column rather than 500.
+	discovered, derr := discoverMicroServices(a.nc, discoverWindow)
+	if derr != nil {
+		discovered = nil
+	}
+	return mergeDiscovery(rows, discovered), nil
 }
 
 // serviceRowsFromDefs projects service definitions into render rows.
@@ -2744,6 +2764,9 @@ func serviceRowsFromDefs(defs []worker.ServiceDef) []ServiceRow {
 	}
 	out := make([]ServiceRow, 0, len(defs))
 	for _, d := range defs {
+		if d.Name == "" {
+			panic("serviceRowsFromDefs: ServiceDef has empty Name")
+		}
 		registered := dash
 		if !d.RegisteredAt.IsZero() {
 			registered = d.RegisteredAt.UTC().Format(time.RFC3339)
@@ -2758,6 +2781,262 @@ func serviceRowsFromDefs(defs []worker.ServiceDef) []ServiceRow {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+// discoverWindow bounds how long discoverMicroServices waits for $SRV
+// replies per verb. A drain to this deadline is the SUCCESS path.
+const discoverWindow = 200 * time.Millisecond
+
+// discoverRepliesMax caps the per-verb drain loop so a flood of
+// responders can never spin the loop unbounded.
+const discoverRepliesMax = 1000
+
+// drainPollMin is the per-message poll budget used AFTER the shared
+// window deadline passes, to sweep replies already buffered on the
+// socket (e.g. STATS queued while PING drained) without re-introducing a
+// full window of blocking wait. Small enough that the post-deadline
+// sweep adds negligible wall-time, non-zero so a buffered message is
+// returned rather than spuriously timed out.
+const drainPollMin = 2 * time.Millisecond
+
+// serviceDiscovery is the folded $SRV view of one micro service Name.
+// Instances counts distinct PING responders; HadStats records whether a
+// STATS reply arrived (the Status mapping refuses to claim "online"
+// without it). NumErrors is the max endpoint error count across STATS
+// replies.
+type serviceDiscovery struct {
+	Name      string
+	Version   string
+	Instances int
+	Started   time.Time
+	NumErrors int
+	HadStats  bool
+}
+
+// discoverMicroServices broadcasts $SRV.PING and $SRV.STATS over nc and
+// folds the replies by service Name. Both requests are published up
+// front and drained against ONE shared deadline, so the page goroutine
+// stalls at most `window` total (not window-per-verb) AND both reply
+// kinds arrive within the same window — neither verb starves the other.
+// A drain timeout is the success path: it returns the collected map and
+// nil. It returns (nil, err) ONLY on a subscribe / publish / flush
+// transport failure — the caller treats that as "discovery unavailable"
+// and dashes the live columns. The caller guards nc != nil, so a nil nc
+// here is a programmer error.
+func discoverMicroServices(
+	nc *nats.Conn, window time.Duration,
+) (map[string]serviceDiscovery, error) {
+	if nc == nil {
+		panic("discoverMicroServices: nc is nil")
+	}
+	if window <= 0 {
+		panic("discoverMicroServices: window must be positive")
+	}
+	pingSub, err := publishVerb(nc, micro.PingVerb)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = pingSub.Unsubscribe() }()
+	statsSub, err := publishVerb(nc, micro.StatsVerb)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = statsSub.Unsubscribe() }()
+	if err := nc.Flush(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]serviceDiscovery)
+	deadline := time.Now().Add(window)
+	drainDiscovery(pingSub, statsSub, deadline, out)
+	return out, nil
+}
+
+// publishVerb subscribes a fresh inbox and broadcasts one $SRV control
+// request for verb, returning the sync subscription the caller drains.
+// The caller owns Unsubscribe. Subjects come from micro.ControlSubject
+// (never hardcoded).
+func publishVerb(
+	nc *nats.Conn, verb micro.Verb,
+) (*nats.Subscription, error) {
+	if nc == nil {
+		panic("publishVerb: nc is nil")
+	}
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		return nil, err
+	}
+	subject, err := micro.ControlSubject(verb, "", "")
+	if err != nil {
+		_ = sub.Unsubscribe()
+		return nil, err
+	}
+	if err := nc.PublishRequest(subject, inbox, nil); err != nil {
+		_ = sub.Unsubscribe()
+		return nil, err
+	}
+	return sub, nil
+}
+
+// drainDiscovery folds PING then STATS replies into out until the shared
+// deadline or discoverRepliesMax per stream. PING is drained first so an
+// entry exists before its STATS reply folds in (STATS without a prior
+// PING cannot prove liveness and is ignored). Both share the single
+// window deadline. Bounded by discoverRepliesMax on each stream.
+func drainDiscovery(
+	pingSub, statsSub *nats.Subscription,
+	deadline time.Time, out map[string]serviceDiscovery,
+) {
+	if pingSub == nil || statsSub == nil {
+		panic("drainDiscovery: nil subscription")
+	}
+	if out == nil {
+		panic("drainDiscovery: nil out map")
+	}
+	drainStream(pingSub, deadline, func(data []byte) {
+		var p micro.Ping
+		if json.Unmarshal(data, &p) != nil {
+			return
+		}
+		entry := out[p.Name]
+		entry.Name = p.Name
+		entry.Version = p.Version
+		entry.Instances++
+		out[p.Name] = entry
+	})
+	drainStream(statsSub, deadline, func(data []byte) {
+		var s micro.Stats
+		if json.Unmarshal(data, &s) != nil {
+			return
+		}
+		entry, seen := out[s.Name]
+		if !seen {
+			return
+		}
+		entry.HadStats = true
+		entry.Started = s.Started
+		for _, ep := range s.Endpoints {
+			if ep != nil && ep.NumErrors > entry.NumErrors {
+				entry.NumErrors = ep.NumErrors
+			}
+		}
+		out[s.Name] = entry
+	})
+}
+
+// drainStream feeds each reply body on sub to fold. While the shared
+// deadline is in the future it blocks up to the remaining budget per
+// message; once the deadline passes it switches to a non-blocking sweep
+// (drainPollMin) that consumes replies already buffered on the socket
+// without waiting. This keeps the combined blocking wait across streams
+// bounded by one window total, yet never drops a reply that arrived
+// before the deadline but was queued behind another stream's drain.
+// Bounded by discoverRepliesMax.
+func drainStream(
+	sub *nats.Subscription, deadline time.Time, fold func(data []byte),
+) {
+	if sub == nil {
+		panic("drainStream: nil subscription")
+	}
+	if fold == nil {
+		panic("drainStream: nil fold")
+	}
+	for received := 0; received < discoverRepliesMax; received++ {
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			wait = drainPollMin
+		}
+		msg, err := sub.NextMsg(wait)
+		if err != nil {
+			break
+		}
+		fold(msg.Data)
+	}
+}
+
+// mergeDiscovery joins KV roster rows with $SRV discovery by Name,
+// filling the live Version / Instances / Status columns and appending a
+// synthesized row for each discovered-but-unrostered service (the union
+// that makes dagnats-api — which does not self-register in KV — appear).
+// Pure: testable without NATS, mirroring serviceRowsFromDefs. When d is
+// nil (discovery unavailable) every live column is the honest dash, since
+// we cannot distinguish online from stale. Bounded by len(rows)+len(d).
+func mergeDiscovery(
+	rows []ServiceRow, d map[string]serviceDiscovery,
+) []ServiceRow {
+	const maxRows = 20000
+	if len(rows)+len(d) > maxRows {
+		panic("mergeDiscovery: rows+discovery exceeds max bound")
+	}
+	for name, disc := range d {
+		if name == "" || disc.Name == "" {
+			panic("mergeDiscovery: discovery entry has empty Name")
+		}
+	}
+	out := make([]ServiceRow, 0, len(rows)+len(d))
+	for _, row := range rows {
+		out = append(out, applyDiscovery(row, d))
+	}
+	if d == nil {
+		return out
+	}
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		seen[row.Name] = struct{}{}
+	}
+	extra := make([]ServiceRow, 0, len(d))
+	for name := range d {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		extra = append(extra, applyDiscovery(ServiceRow{
+			Name:       name,
+			Registered: dash,
+			Note:       "discovered via $SRV",
+		}, d))
+	}
+	sort.Slice(extra, func(i, j int) bool { return extra[i].Name < extra[j].Name })
+	return append(out, extra...)
+}
+
+// applyDiscovery fills one row's live columns from the discovery map. A
+// nil map dashes every live column. A rostered name with no PING
+// responder is "stale". A discovery entry with zero confirmed instances
+// (e.g. a STATS reply that slipped in without a PING) carries no proven
+// liveness, so it dashes Instances and degrades to "unknown" — never
+// "online". With ≥1 confirmed instance: no STATS -> "unknown" (neutral);
+// STATS with errors -> "degraded"; STATS with zero errors -> "online".
+func applyDiscovery(
+	row ServiceRow, d map[string]serviceDiscovery,
+) ServiceRow {
+	if d == nil {
+		row.Version, row.Instances, row.Status = dash, dash, dash
+		return row
+	}
+	disc, ok := d[row.Name]
+	if !ok {
+		row.Version, row.Instances, row.Status = dash, dash, "stale"
+		return row
+	}
+	// Zero confirmed PING responders: refuse to claim health. Dash the
+	// count and fall back to unknown — defense-in-depth behind the fold's
+	// STATS-without-PING guard.
+	if disc.Instances <= 0 {
+		row.Version = statValueOr(disc.Version)
+		row.Instances, row.Status = dash, "unknown"
+		return row
+	}
+	row.Version = statValueOr(disc.Version)
+	row.Instances = strconv.Itoa(disc.Instances)
+	switch {
+	case !disc.HadStats:
+		row.Status = "unknown"
+	case disc.NumErrors > 0:
+		row.Status = "degraded"
+	default:
+		row.Status = "online"
+	}
+	return row
 }
 
 // aggregateTaskTypesFromWorkers turns the worker registrations into

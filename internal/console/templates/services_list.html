@@ -6,6 +6,9 @@
     <thead>
       <tr>
         <th>Service</th>
+        <th>Version</th>
+        <th>Instances</th>
+        <th>Status</th>
         <th>Registered</th>
         <th>Note</th>
       </tr>
@@ -14,12 +17,21 @@
       {{range .Page.Services}}
       <tr>
         <td class="mono">{{.Name}}</td>
+        <td>{{.Version}}</td>
+        <td>{{.Instances}}</td>
+        <td>
+          {{if eq .Status "online"}}<span class="badge badge-completed">online</span>
+          {{else if eq .Status "degraded"}}<span class="badge badge-failed">degraded</span>
+          {{else if eq .Status "stale"}}<span class="badge badge-failed">stale</span>
+          {{else if eq .Status "unknown"}}<span class="badge">unknown</span>
+          {{else}}{{.Status}}{{end}}
+        </td>
         <td>{{.Registered}}</td>
         <td>{{.Note}}</td>
       </tr>
       {{else}}
       <tr class="empty-row">
-        <td colspan="3">No services registered.</td>
+        <td colspan="6">No services registered.</td>
       </tr>
       {{end}}
     </tbody>
