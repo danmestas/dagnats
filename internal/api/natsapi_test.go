@@ -5,12 +5,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go"
 )
 
 func TestNATSAPIRegisterAndStartRun(t *testing.T) {
@@ -22,7 +24,7 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 	defer orch.Stop()
 
 	svc := NewService(nc)
-	natsAPI := NewNATSAPI(svc, nc)
+	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -99,7 +101,7 @@ func TestNewNATSAPIPanicsNilSvc(t *testing.T) {
 			t.Fatal("expected panic for nil svc")
 		}
 	}()
-	NewNATSAPI(nil, nc)
+	NewNATSAPI(nil, nc, "1.0.0")
 }
 
 func TestNewNATSAPIPanicsNilNC(t *testing.T) {
@@ -112,14 +114,14 @@ func TestNewNATSAPIPanicsNilNC(t *testing.T) {
 			t.Fatal("expected panic for nil nc")
 		}
 	}()
-	NewNATSAPI(svc, nil)
+	NewNATSAPI(svc, nil, "1.0.0")
 }
 
 func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
-	natsAPI := NewNATSAPI(svc, nc)
+	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -135,7 +137,9 @@ func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
 		t.Fatalf("Request to register failed: %v", err)
 	}
 	var resp map[string]string
-	json.Unmarshal(reply.Data, &resp)
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp["status"] != "registered" {
 		t.Fatalf("status = %q, want registered", resp["status"])
 	}
@@ -150,7 +154,9 @@ func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request to start failed: %v", err)
 	}
-	json.Unmarshal(reply.Data, &resp)
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp["run_id"] == "" {
 		t.Fatal("expected non-empty run_id in reply")
 	}
@@ -160,7 +166,7 @@ func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
-	natsAPI := NewNATSAPI(svc, nc)
+	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -174,7 +180,9 @@ func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 	var resp map[string]string
-	json.Unmarshal(reply.Data, &resp)
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp["error"] == "" {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -188,7 +196,9 @@ func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	json.Unmarshal(reply.Data, &resp)
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp["error"] == "" {
 		t.Fatal("expected error for empty steps")
 	}
@@ -198,7 +208,7 @@ func TestNATSAPIHandleStartRunInvalidJSON(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
-	natsAPI := NewNATSAPI(svc, nc)
+	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -212,7 +222,9 @@ func TestNATSAPIHandleStartRunInvalidJSON(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 	var resp map[string]string
-	json.Unmarshal(reply.Data, &resp)
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp["error"] == "" {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -227,7 +239,9 @@ func TestNATSAPIHandleStartRunInvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	json.Unmarshal(reply.Data, &resp)
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp["error"] == "" {
 		t.Fatal("expected error for unknown workflow")
 	}
@@ -237,7 +251,7 @@ func TestNATSAPIHandleGetRunNotFound(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
-	natsAPI := NewNATSAPI(svc, nc)
+	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -251,7 +265,9 @@ func TestNATSAPIHandleGetRunNotFound(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 	var resp map[string]string
-	json.Unmarshal(reply.Data, &resp)
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp["error"] == "" {
 		t.Fatal("expected error for nonexistent run")
 	}
@@ -265,33 +281,42 @@ func TestNATSAPIHandleGetRunNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	json.Unmarshal(reply.Data, &resp)
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp["error"] == "" {
 		t.Fatal("expected error for another nonexistent run")
 	}
 }
 
-func TestNATSAPIStopUnsubscribes(t *testing.T) {
+// TestNATSAPIStopDrainsService verifies Stop() tears down the micro
+// service behaviorally -- a live request succeeds before Stop, and the
+// same request times out after Stop -- without reaching into internals.
+func TestNATSAPIStopDrainsService(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
-	natsAPI := NewNATSAPI(svc, nc)
+	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
 	natsAPI.Start()
 
-	// Positive: subscriptions exist before Stop.
-	if len(natsAPI.subs) == 0 {
-		t.Fatal("expected subscriptions after Start")
+	// Positive: a request gets a live reply while the service is up.
+	reply, err := nc.Request(
+		"api.runs.get", []byte("no-such-run"), 2*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("expected live reply before Stop: %v", err)
+	}
+	if len(reply.Data) == 0 {
+		t.Fatal("expected non-empty reply before Stop")
 	}
 
 	natsAPI.Stop()
 
-	// Negative: after Stop, requests should time out (no handler).
-	_, err := nc.Request(
-		"api.workflows.register",
-		[]byte("{}"),
-		200*time.Millisecond,
+	// Negative: after Stop the subject has no handler -> timeout.
+	_, err = nc.Request(
+		"api.runs.get", []byte("no-such-run"), 200*time.Millisecond,
 	)
-	if err == nil {
-		t.Fatal("expected timeout after Stop")
+	if !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, nats.ErrNoResponders) {
+		t.Fatalf("expected timeout/no-responders after Stop, got %v", err)
 	}
 }
