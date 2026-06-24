@@ -32,6 +32,24 @@ const SourceFilePrefix = "file:"
 type ConfigFile struct {
 	Workflows []WorkflowYAML `yaml:"workflows,omitempty"`
 	Triggers  []TriggerYAML  `yaml:"triggers,omitempty"`
+	Policy    *PolicyYAML    `yaml:"policy,omitempty"`
+}
+
+// PolicyYAML carries the declarative authorization policy. Currently only
+// the control-plane grant is modeled; the wrapper leaves room for future
+// policy domains (e.g. trigger authorization) without reshaping ConfigFile.
+type PolicyYAML struct {
+	ControlPlane *ControlPlaneGrantYAML `yaml:"control_plane,omitempty"`
+}
+
+// ControlPlaneGrantYAML lists the workflows allowed to receive a
+// ControlPlane handle (Grant) and the subset additionally allowed to
+// promote runtime-defined workflows to the durable catalog (Promote).
+// Deny-by-default: a workflow absent from Grant gets no handle. Promote
+// must be a subset of Grant (enforced by Validate).
+type ControlPlaneGrantYAML struct {
+	Grant   []string `yaml:"grant"`
+	Promote []string `yaml:"promote"`
 }
 
 // WorkflowYAML mirrors the public surface of dag.WorkflowDef in

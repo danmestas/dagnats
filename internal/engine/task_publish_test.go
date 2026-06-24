@@ -27,7 +27,7 @@ func TestCollectReadyMessages(t *testing.T) {
 			"b": {Status: dag.StepStatusQueued, Attempts: 1},
 		},
 	}
-	msgs, err := collectReadyMessages("run-1", steps, run)
+	msgs, err := collectReadyMessages("run-1", steps, run, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestCollectReadyMessages(t *testing.T) {
 		t.Errorf("msg[1] attempt = %d, want 1", p.Attempt)
 	}
 	// Negative: empty steps produces empty slice
-	empty, err := collectReadyMessages("run-1", nil, run)
+	empty, err := collectReadyMessages("run-1", nil, run, nil)
 	if err != nil {
 		t.Fatalf("empty steps error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestEnqueueReadySteps_AtomicPublish(t *testing.T) {
 		},
 	}
 	tp := natsutil.NewTracingPublisher(nc, js)
-	err = enqueueReadySteps(context.Background(), js, tp, wfDef, run)
+	err = enqueueReadySteps(context.Background(), js, tp, wfDef, run, nil)
 	if err != nil {
 		t.Fatalf("enqueueReadySteps: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestCollectReadyMessages_Metadata(t *testing.T) {
 			"no-meta":   {Status: dag.StepStatusQueued, Attempts: 0},
 		},
 	}
-	msgs, err := collectReadyMessages("run-meta", steps, run)
+	msgs, err := collectReadyMessages("run-meta", steps, run, nil)
 	if err != nil {
 		t.Fatalf("collectReadyMessages: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -61,6 +62,13 @@ type TaskPublisher struct {
 	loadRunAndDef func(
 		ctx context.Context, runID string,
 	) (dag.WorkflowDef, dag.WorkflowRun, error)
+
+	// grantPolicy is the hot-reloadable capability-grant policy (#380),
+	// shared with the Orchestrator via WithGrantPolicyHolder. doPublish
+	// strips the control-plane capability from a step whose workflow is not
+	// granted, so an ungranted step's task message never carries it and the
+	// worker withholds the handle. nil holder Loads nil → deny-by-default.
+	grantPolicy *GrantPolicyHolder
 }
 
 // NewTaskPublisher creates a TaskPublisher with the given deps.
@@ -114,6 +122,8 @@ func (tp *TaskPublisher) Publish(
 	step dag.StepDef,
 	input []byte,
 	attempt int,
+	workflowName string,
+	dispatchNonce string,
 ) error {
 	if runID == "" {
 		panic("TaskPublisher.Publish: runID must not be empty")
@@ -125,7 +135,7 @@ func (tp *TaskPublisher) Publish(
 	// Check rate limit before concurrency acquisition so we
 	// don't hold a concurrency slot while waiting for tokens.
 	if delayed, err := tp.checkRateLimit(
-		ctx, step, runID, input,
+		ctx, step, runID, input, workflowName, dispatchNonce,
 	); err != nil {
 		return err
 	} else if delayed {
@@ -144,7 +154,7 @@ func (tp *TaskPublisher) Publish(
 		if !acquired {
 			tp.metrics.taskConcRejected.Add(ctx, 1)
 			return tp.scheduleConcurrencyRetry(
-				ctx, step, runID, input,
+				ctx, step, runID, input, workflowName, dispatchNonce,
 			)
 		}
 		tp.metrics.taskConcAcquired.Add(ctx, 1)
@@ -158,12 +168,35 @@ func (tp *TaskPublisher) Publish(
 		if loadErr == nil && wfDef.Sticky != dag.StickyNone {
 			return tp.sticky.PublishTask(
 				ctx, runID, step, input, attempt,
-				workerID, wfDef.Sticky,
+				workerID, wfDef.Sticky, dispatchNonce,
 			)
 		}
 	}
 
-	return tp.doPublish(ctx, runID, step, input, attempt)
+	return tp.doPublish(
+		ctx, runID, step, input, attempt, workflowName, dispatchNonce,
+	)
+}
+
+// dispatchMeta carries the per-dispatch grant decision (#380) through the
+// rate-limit / concurrency retry-scheduling chain so the timer fire can
+// re-publish a TaskPayload that still honors the grant policy. nonce is the
+// run-binding token; caps are the ALREADY-STRIPPED effective capabilities
+// (effectiveCapabilities applied once at the dispatch call site).
+type dispatchMeta struct {
+	workflowName string
+	nonce        string
+}
+
+// nonceOrMint returns the given nonce, or a fresh one when it is empty. It
+// is the last-line guard at the TaskPayload build choke points (#380): every
+// dispatch carries a non-empty run-binding nonce, so VerifyDispatch never
+// over-denies a legitimate granted handler because a path forgot to stamp.
+func nonceOrMint(nonce string) string {
+	if nonce == "" {
+		return runid.New()
+	}
+	return nonce
 }
 
 // checkRateLimit evaluates rate limits for the step. Returns
@@ -171,6 +204,7 @@ func (tp *TaskPublisher) Publish(
 func (tp *TaskPublisher) checkRateLimit(
 	ctx context.Context,
 	step dag.StepDef, runID string, input []byte,
+	workflowName, nonce string,
 ) (bool, error) {
 	if tp.rateLimiter == nil {
 		return false, nil
@@ -181,16 +215,12 @@ func (tp *TaskPublisher) checkRateLimit(
 				"step.Task must not be empty",
 		)
 	}
-
+	meta := dispatchMeta{workflowName: workflowName, nonce: nonce}
 	if step.RateLimit != nil {
-		return tp.applyGlobalRateLimit(
-			ctx, step, runID, input,
-		)
+		return tp.applyGlobalRateLimit(ctx, step, runID, input, meta)
 	}
 	if step.KeyedRateLimit != nil {
-		return tp.applyKeyedRateLimit(
-			ctx, step, runID, input,
-		)
+		return tp.applyKeyedRateLimit(ctx, step, runID, input, meta)
 	}
 	return false, nil
 }
@@ -199,7 +229,7 @@ func (tp *TaskPublisher) checkRateLimit(
 // task type and schedules a retry if tokens are exhausted.
 func (tp *TaskPublisher) applyGlobalRateLimit(
 	ctx context.Context,
-	step dag.StepDef, runID string, input []byte,
+	step dag.StepDef, runID string, input []byte, meta dispatchMeta,
 ) (bool, error) {
 	if step.RateLimit == nil {
 		panic(
@@ -222,7 +252,7 @@ func (tp *TaskPublisher) applyGlobalRateLimit(
 		return false, nil
 	}
 	return true, tp.scheduleRateRetry(
-		ctx, step, runID, input, retryAfter,
+		ctx, step, runID, input, retryAfter, meta,
 	)
 }
 
@@ -230,7 +260,7 @@ func (tp *TaskPublisher) applyGlobalRateLimit(
 // task and schedules a retry if tokens are exhausted.
 func (tp *TaskPublisher) applyKeyedRateLimit(
 	ctx context.Context,
-	step dag.StepDef, runID string, input []byte,
+	step dag.StepDef, runID string, input []byte, meta dispatchMeta,
 ) (bool, error) {
 	if step.KeyedRateLimit == nil {
 		panic(
@@ -262,15 +292,17 @@ func (tp *TaskPublisher) applyKeyedRateLimit(
 		return false, nil
 	}
 	return true, tp.scheduleRateRetry(
-		ctx, step, runID, input, retryAfter,
+		ctx, step, runID, input, retryAfter, meta,
 	)
 }
 
 // scheduleRateRetry schedules a timer to re-attempt task dispatch
-// after the rate limit window allows more tokens.
+// after the rate limit window allows more tokens. The grant decision
+// (stripped caps + run-binding nonce) rides the TimerMessage so the
+// timer fire re-publishes a policy-honoring, run-bound TaskPayload (#380).
 func (tp *TaskPublisher) scheduleRateRetry(
 	ctx context.Context, step dag.StepDef, runID string,
-	input []byte, retryAfter time.Duration,
+	input []byte, retryAfter time.Duration, meta dispatchMeta,
 ) error {
 	if runID == "" {
 		panic("scheduleRateRetry: runID must not be empty")
@@ -283,20 +315,28 @@ func (tp *TaskPublisher) scheduleRateRetry(
 		durationMs = 100
 	}
 	return tp.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionRateRetry,
-		RunID:      runID,
-		StepID:     step.ID,
-		DurationMs: durationMs,
-		TaskType:   step.Task,
-		Input:      input,
+		Action:        TimerActionRateRetry,
+		RunID:         runID,
+		StepID:        step.ID,
+		DurationMs:    durationMs,
+		TaskType:      step.Task,
+		Input:         input,
+		DispatchNonce: meta.nonce,
+		RequiredCapabilities: effectiveCapabilities(
+			step.RequiredCapabilities, meta.workflowName,
+			tp.grantPolicy.Load(),
+		),
 	})
 }
 
 // scheduleConcurrencyRetry schedules a timer to re-attempt
-// task dispatch after the task concurrency slot frees up.
+// task dispatch after the task concurrency slot frees up. The grant
+// decision (stripped caps + run-binding nonce) rides the TimerMessage so
+// the timer fire re-publishes a policy-honoring, run-bound TaskPayload (#380).
 func (tp *TaskPublisher) scheduleConcurrencyRetry(
 	ctx context.Context,
 	step dag.StepDef, runID string, input []byte,
+	workflowName, nonce string,
 ) error {
 	if runID == "" {
 		panic(
@@ -311,22 +351,34 @@ func (tp *TaskPublisher) scheduleConcurrencyRetry(
 		)
 	}
 	return tp.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionTaskConcurRetry,
-		RunID:      runID,
-		StepID:     step.ID,
-		DurationMs: 1000,
-		TaskType:   step.Task,
-		Input:      input,
+		Action:        TimerActionTaskConcurRetry,
+		RunID:         runID,
+		StepID:        step.ID,
+		DurationMs:    1000,
+		TaskType:      step.Task,
+		Input:         input,
+		DispatchNonce: nonce,
+		RequiredCapabilities: effectiveCapabilities(
+			step.RequiredCapabilities, workflowName, tp.grantPolicy.Load(),
+		),
 	})
 }
 
-// doPublish performs the actual NATS publish for a task message.
+// doPublish performs the actual NATS publish for a task message. It is the
+// deny-by-default grant gate at the payload source (#380): the step's
+// RequiredCapabilities are passed through effectiveCapabilities, which
+// strips the control-plane capability when workflowName is not granted, so
+// the message a worker receives never carries a capability the policy
+// withholds. dispatchNonce rides the payload for server-side run-binding;
+// it was stamped on the step's StepState in the same snapshot write.
 func (tp *TaskPublisher) doPublish(
 	ctx context.Context,
 	runID string,
 	step dag.StepDef,
 	input []byte,
 	attempt int,
+	workflowName string,
+	dispatchNonce string,
 ) error {
 	if runID == "" {
 		panic("doPublish: runID must not be empty")
@@ -345,12 +397,18 @@ func (tp *TaskPublisher) doPublish(
 	)
 	defer span.End()
 	payload := protocol.TaskPayload{
-		TaskID:               runID + "." + step.ID,
-		RunID:                runID,
-		StepID:               step.ID,
-		Attempt:              attempt,
-		Input:                input,
-		RequiredCapabilities: step.RequiredCapabilities,
+		TaskID:  runID + "." + step.ID,
+		RunID:   runID,
+		StepID:  step.ID,
+		Attempt: attempt,
+		Input:   input,
+		RequiredCapabilities: effectiveCapabilities(
+			step.RequiredCapabilities, workflowName, tp.grantPolicy.Load(),
+		),
+		// Defensive: mint a nonce if the caller passed none, so a future
+		// new dispatch path that forgets to thread one cannot silently
+		// produce an unverifiable (always-denied) dispatch (#380).
+		DispatchNonce: nonceOrMint(dispatchNonce),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -375,6 +433,8 @@ func (tp *TaskPublisher) PublishIteration(
 	step dag.StepDef,
 	input []byte,
 	iteration int,
+	workflowName string,
+	dispatchNonce string,
 ) error {
 	if runID == "" {
 		panic(
@@ -396,12 +456,20 @@ func (tp *TaskPublisher) PublishIteration(
 		),
 	)
 	defer span.End()
+	// The agent-loop Continue re-enqueue (#380): re-apply the grant strip so a
+	// granted loop keeps its control-plane capability across iterations, and
+	// stamp the run-binding nonce so the iteration's control-plane calls pass
+	// VerifyDispatch. A nil holder Loads nil → deny-by-default.
 	payload := protocol.TaskPayload{
 		TaskID:    runID + "." + step.ID,
 		RunID:     runID,
 		StepID:    step.ID,
 		Iteration: iteration,
 		Input:     input,
+		RequiredCapabilities: effectiveCapabilities(
+			step.RequiredCapabilities, workflowName, tp.grantPolicy.Load(),
+		),
+		DispatchNonce: nonceOrMint(dispatchNonce),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -481,9 +549,14 @@ func (tp *TaskPublisher) PublishBatch(
 			)
 		}
 		attempt := run.Steps[step.ID].Attempts
+		// The grant strip keys on the workflow name; the run-binding nonce
+		// was stamped onto the step state by enqueueReady and rides the
+		// in-memory snapshot here (no re-load per task).
+		nonce := run.Steps[step.ID].DispatchNonce
 		g.Go(func() error {
 			return tp.Publish(
 				ctx, runID, step, input, attempt,
+				run.WorkflowID, nonce,
 			)
 		})
 	}

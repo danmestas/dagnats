@@ -10,6 +10,65 @@ import (
 	"testing"
 )
 
+func TestLoadPolicyRoundTrips(t *testing.T) {
+	src := `
+policy:
+  control_plane:
+    grant: [planner, supervisor]
+    promote: [supervisor]
+`
+	cfg, err := Load(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Policy == nil || cfg.Policy.ControlPlane == nil {
+		t.Fatal("policy.control_plane must round-trip")
+	}
+	cp := cfg.Policy.ControlPlane
+	if len(cp.Grant) != 2 || cp.Grant[0] != "planner" || cp.Grant[1] != "supervisor" {
+		t.Fatalf("grant = %v, want [planner supervisor]", cp.Grant)
+	}
+	if len(cp.Promote) != 1 || cp.Promote[0] != "supervisor" {
+		t.Fatalf("promote = %v, want [supervisor]", cp.Promote)
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidateRejectsPromoteNotInGrant(t *testing.T) {
+	cfg := ConfigFile{Policy: &PolicyYAML{ControlPlane: &ControlPlaneGrantYAML{
+		Grant:   []string{"planner"},
+		Promote: []string{"supervisor"}, // not in grant
+	}}}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("Validate must reject promote entry not in grant")
+	}
+	// Negative space: promote ⊆ grant validates.
+	cfg.Policy.ControlPlane.Promote = []string{"planner"}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate must accept promote ⊆ grant: %v", err)
+	}
+}
+
+func TestValidateRejectsPolicyDuplicates(t *testing.T) {
+	cfg := ConfigFile{Policy: &PolicyYAML{ControlPlane: &ControlPlaneGrantYAML{
+		Grant: []string{"planner", "planner"},
+	}}}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("Validate must reject duplicate grant entries")
+	}
+}
+
+func TestValidateRejectsPolicyEmptyString(t *testing.T) {
+	cfg := ConfigFile{Policy: &PolicyYAML{ControlPlane: &ControlPlaneGrantYAML{
+		Grant: []string{"planner", ""},
+	}}}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("Validate must reject empty grant entry")
+	}
+}
+
 func TestLoadValidYAML(t *testing.T) {
 	src := `
 workflows:

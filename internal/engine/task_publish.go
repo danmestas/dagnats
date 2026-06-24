@@ -8,6 +8,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -57,11 +58,15 @@ func publishWorkflowEvent(
 }
 
 // collectReadyMessages builds NATS messages for ready steps
-// without publishing. Returns messages grouped by step.
+// without publishing. Returns messages grouped by step. The grant policy
+// (#380) strips the control-plane capability from any step whose workflow
+// is not granted, and each step's already-stamped DispatchNonce rides the
+// payload for server-side run-binding. A nil policy denies (deny-by-default).
 func collectReadyMessages(
 	runID string,
 	ready []dag.StepDef,
 	run *dag.WorkflowRun,
+	grant *GrantPolicy,
 ) ([]*nats.Msg, error) {
 	if runID == "" {
 		panic("collectReadyMessages: runID must not be empty")
@@ -79,13 +84,16 @@ func collectReadyMessages(
 		}
 		attempt := run.Steps[step.ID].Attempts
 		payload := protocol.TaskPayload{
-			TaskID:               runID + "." + step.ID,
-			RunID:                runID,
-			StepID:               step.ID,
-			Attempt:              attempt,
-			Input:                input,
-			Metadata:             step.Metadata,
-			RequiredCapabilities: step.RequiredCapabilities,
+			TaskID:   runID + "." + step.ID,
+			RunID:    runID,
+			StepID:   step.ID,
+			Attempt:  attempt,
+			Input:    input,
+			Metadata: step.Metadata,
+			RequiredCapabilities: effectiveCapabilities(
+				step.RequiredCapabilities, run.WorkflowID, grant,
+			),
+			DispatchNonce: run.Steps[step.ID].DispatchNonce,
 		}
 		data, err := json.Marshal(payload)
 		if err != nil {
@@ -112,6 +120,7 @@ func enqueueReadySteps(
 	tp *natsutil.TracingPublisher,
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
+	grant *GrantPolicy,
 ) error {
 	if js == nil {
 		panic("enqueueReadySteps: js must not be nil")
@@ -171,10 +180,11 @@ func enqueueReadySteps(
 	for _, step := range ready {
 		state := run.Steps[step.ID]
 		state.Status = dag.StepStatusQueued
+		state.DispatchNonce = runid.New()
 		run.Steps[step.ID] = state
 	}
 
-	msgs, err := collectReadyMessages(run.RunID, ready, run)
+	msgs, err := collectReadyMessages(run.RunID, ready, run, grant)
 	if err != nil {
 		return err
 	}

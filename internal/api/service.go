@@ -64,6 +64,32 @@ type Service struct {
 	// the rate_limits bucket is absent). Both are set in NewServiceWithLimits.
 	limits          RuntimeLimits
 	registerLimiter *engine.RateLimiter
+
+	// grantPolicy holds the hot-reloadable capability-grant policy (#380).
+	// Used to authorize promotion (AllowsPromote). nil → deny-by-default.
+	grantPolicy *engine.GrantPolicyHolder
+	// auditKV is the console_audit bucket the control plane emits action
+	// rows into (best-effort; nil-tolerant). logger backs the best-effort
+	// audit warn path.
+	auditKV jetstream.KeyValue
+	logger  *slog.Logger
+}
+
+// ServiceOption configures optional Service behavior (#380). Additive: a
+// caller passing no options gets today's behavior with deny-by-default grant.
+type ServiceOption func(*Service)
+
+// WithGrantPolicyHolder wires the capability-grant policy holder so the
+// service authorizes promotion via the same policy the engine grants the
+// control-plane handle with (#380).
+func WithGrantPolicyHolder(holder *engine.GrantPolicyHolder) ServiceOption {
+	return func(s *Service) { s.grantPolicy = holder }
+}
+
+// WithAuditKV wires the console_audit KV bucket so the control plane emits
+// audit rows (#380). nil is tolerated — auditkv.Emit warns and continues.
+func WithAuditKV(kv jetstream.KeyValue) ServiceOption {
+	return func(s *Service) { s.auditKV = kv }
 }
 
 // RuntimeLimits carries the resolved per-runtime safety bounds the control
@@ -163,7 +189,9 @@ func NewService(nc *nats.Conn) *Service {
 // caller passing RuntimeLimits{} gets the safe defaults. The register
 // rate-limiter is constructed once here via engine.NewRateLimiter — nil
 // (an honest no-op) when the rate_limits bucket is absent.
-func NewServiceWithLimits(nc *nats.Conn, limits RuntimeLimits) *Service {
+func NewServiceWithLimits(
+	nc *nats.Conn, limits RuntimeLimits, opts ...ServiceOption,
+) *Service {
 	if nc == nil {
 		panic("NewServiceWithLimits: nc must not be nil")
 	}
@@ -193,7 +221,7 @@ func NewServiceWithLimits(nc *nats.Conn, limits RuntimeLimits) *Service {
 		"api.request.duration_ms",
 	)
 	errCount, _ := m.Int64Counter("api.errors")
-	return &Service{
+	svc := &Service{
 		nc:              nc,
 		js:              js,
 		limits:          resolveRuntimeLimits(limits),
@@ -210,7 +238,12 @@ func NewServiceWithLimits(nc *nats.Conn, limits RuntimeLimits) *Service {
 		requestCount:    reqCount,
 		requestDuration: reqDur,
 		errorCount:      errCount,
+		logger:          slog.Default(),
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // RegisterWorkflow validates and persists a workflow definition under

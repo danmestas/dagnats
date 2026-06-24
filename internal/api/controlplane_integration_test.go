@@ -18,18 +18,21 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // cpHarness boots orchestrator + service + NATS API and returns the conn.
 // Caller registers handlers on the returned worker and calls Start.
 type cpHarness struct {
-	nc  *nats.Conn
-	svc *Service
-	w   *worker.Worker
+	nc    *nats.Conn
+	svc   *Service
+	w     *worker.Worker
+	grant *engine.GrantPolicyHolder
 }
 
 func newCPHarness(t *testing.T, gated bool) *cpHarness {
@@ -41,9 +44,39 @@ func newCPHarness(t *testing.T, gated bool) *cpHarness {
 
 // newCPHarnessWithLimits is newCPHarness with explicit per-runtime bounds
 // (#378). The quota/rate/depth tests pass reduced limits to trip the caps
-// with a handful of registers/spawns instead of hundreds.
+// with a handful of registers/spawns instead of hundreds. It seeds a
+// PERMISSIVE grant policy granting the test workflows ("planner") so the
+// legacy gated handlers still receive a handle — deny-by-default is the
+// production default, but these pre-#380 tests assume a grant (#380 test 7).
 func newCPHarnessWithLimits(
 	t *testing.T, gated bool, limits RuntimeLimits,
+) *cpHarness {
+	t.Helper()
+	// Grant the workflow names the legacy tests use, and authorize promote
+	// for the names they promote ("tool"), so deny-by-default (the #380
+	// production default) does not break the pre-#380 gated paths.
+	return newCPHarnessFull(t, gated, limits,
+		engine.NewGrantPolicy(
+			[]string{"planner", "tool"}, []string{"tool"}))
+}
+
+// newCPHarnessWithGrant boots the harness with an EXPLICIT grant policy
+// (grant + promote lists) so the #380 grant/promote/audit tests can assert
+// deny-by-default, stripping, and promotion authorization directly.
+func newCPHarnessWithGrant(
+	t *testing.T, grant, promote []string,
+) *cpHarness {
+	t.Helper()
+	return newCPHarnessFull(t, true, RuntimeLimits{},
+		engine.NewGrantPolicy(grant, promote))
+}
+
+// newCPHarnessFull is the shared boot path: it wires a grant-policy holder
+// into BOTH the orchestrator (which shares it with the TaskPublisher for the
+// enqueue-time capability strip) AND the api service (for promotion
+// authorization), plus the console_audit KV for the audit-trail assertions.
+func newCPHarnessFull(
+	t *testing.T, gated bool, limits RuntimeLimits, policy *engine.GrantPolicy,
 ) *cpHarness {
 	t.Helper()
 	_, nc := natsutil.StartTestServer(t)
@@ -56,11 +89,23 @@ func newCPHarnessWithLimits(
 	); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	orch := engine.NewOrchestrator(nc)
+	holder := &engine.GrantPolicyHolder{}
+	holder.Store(policy)
+
+	orch := engine.NewOrchestrator(nc, engine.WithGrantPolicyHolder(holder))
 	orch.Start()
 	t.Cleanup(orch.Stop)
 
-	svc := NewServiceWithLimits(nc, limits)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	auditKV, err := auditkv.NewKV(context.Background(), js)
+	if err != nil {
+		t.Fatalf("audit KV: %v", err)
+	}
+	svc := NewServiceWithLimits(nc, limits,
+		WithGrantPolicyHolder(holder), WithAuditKV(auditKV))
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
 	natsAPI.Start()
 	t.Cleanup(natsAPI.Stop)
@@ -72,7 +117,7 @@ func newCPHarnessWithLimits(
 		))
 	}
 	w := worker.NewWorker(nc, opts...)
-	return &cpHarness{nc: nc, svc: svc, w: w}
+	return &cpHarness{nc: nc, svc: svc, w: w, grant: holder}
 }
 
 // childDef is the ephemeral def a planner registers at runtime.

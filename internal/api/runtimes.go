@@ -25,10 +25,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
@@ -52,6 +54,10 @@ const (
 	// strings so the reply maps back without a translation table.
 	cpKindQuotaExceeded = "quota_exceeded"
 	cpKindRateLimited   = "rate_limited"
+	// cpKindDenied is the authorization-denied kind (#380). Mirrors the
+	// worker's KindDenied. Returned when a promotion is attempted by a
+	// workflow not on the grant policy's promote list.
+	cpKindDenied = "denied"
 )
 
 const (
@@ -146,6 +152,15 @@ func resolveRuntimeLimits(in RuntimeLimits) RuntimeLimits {
 // under the scoped key. Returns the scoped name on success. The returned
 // kind is "" on success; otherwise it is one of the cpKind* strings.
 //
+// Grant-gate asymmetry (#380): the NON-promote register/spawn path carries
+// NO server-side control-plane grant check. The grant is enforced UPSTREAM
+// at the enqueue payload source — effectiveCapabilities strips the
+// control-plane capability from an ungranted step, so the worker never
+// receives a handle and never reaches this method. Adding a redundant grant
+// check here would be belt-on-belt; do not "fix" the apparent gap. Only
+// PROMOTION (which a granted worker requests explicitly) is authorized
+// here, via authorizePromotion.
+//
 // When promote is true the def is registered under the reaper-immune
 // "promoted.<name>" namespace (no agent. prefix → the ephemeral-def
 // reaper's prefix gate never touches it). #377 wires the namespace only;
@@ -168,19 +183,24 @@ func (s *Service) RegisterRuntimeWorkflow(
 		return "", cpKindNamespace, err
 	}
 	scoped := promotedName(def.Name)
-	if !promote {
+	if promote {
+		// Promotion is now GOVERNED (#380): only a workflow on the grant
+		// policy's promote list may promote. The check keys on the author
+		// name (def.Name, already validated above) — the same name the grant
+		// policy lists. Deny-by-default: a nil policy denies. This replaces
+		// the #378 "ungoverned" tracked gap.
+		if kind, err := s.authorizePromotion(def.Name); err != nil {
+			s.emitRuntimeAudit(ctx, "runtime.promote", def.Name,
+				"denied", ownerRunID, "not_authorized")
+			return "", kind, err
+		}
+	} else {
 		root, kind, err := s.resolveRootRunID(ctx, ownerRunID)
 		if err != nil {
 			return "", kind, err
 		}
 		// The #378 safety limits (def quota + register rate limit) are
-		// applied here ONLY for root-scoped ephemeral defs. The promote==true
-		// path deliberately falls through WITHOUT admission control: promoted
-		// defs are not root-scoped, so there is no tree to count against yet.
-		// This is a TRACKED, intentional gap — promoted-def registration is
-		// currently unbounded and unauthorized, pending #380's grant policy
-		// (which owns both authorization and any promote-namespace quota). Do
-		// not re-gate promotion here; that would revert #377's wiring.
+		// applied here ONLY for root-scoped ephemeral defs.
 		if kind, err := s.checkRegisterAdmission(ctx, root); err != nil {
 			return "", kind, err
 		}
@@ -200,7 +220,116 @@ func (s *Service) RegisterRuntimeWorkflow(
 	if _, err := s.defKV.Put(ctx, scoped, data); err != nil {
 		return "", cpKindTransport, err
 	}
+	action := "runtime.register"
+	if promote {
+		action = "runtime.promote"
+	}
+	s.emitRuntimeAudit(ctx, action, scoped, "success", ownerRunID, "")
 	return scoped, "", nil
+}
+
+// emitRuntimeAudit writes one control-plane audit row best-effort (#380).
+// Actor is "runtime:<ownerRunID>" — the run that acted. Errors are logged
+// and swallowed: an audit gap must never fail the control-plane operation.
+func (s *Service) emitRuntimeAudit(
+	ctx context.Context, action, target, outcome,
+	ownerRunID, reason string,
+) {
+	data := map[string]any{"owner_run_id": ownerRunID}
+	if reason != "" {
+		data["reason"] = reason
+	}
+	evt := auditkv.AuditEvent{
+		Actor:   "runtime:" + ownerRunID,
+		Action:  action,
+		Target:  target,
+		Data:    data,
+		Outcome: outcome,
+	}
+	if err := auditkv.Emit(ctx, s.auditKV, s.auditLogger(), evt); err != nil {
+		s.auditLogger().Warn("control-plane audit emit failed",
+			"action", action, "error", err)
+	}
+}
+
+// auditLogger returns the service logger or the default, never nil — the
+// audit emitter panics on a nil logger.
+func (s *Service) auditLogger() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
+}
+
+// authorizePromotion checks the grant policy's promote list for the author
+// name (#380). Deny-by-default: a nil holder/policy denies. Returns
+// ("", nil) when authorized; otherwise (cpKindDenied, error).
+func (s *Service) authorizePromotion(authorName string) (string, error) {
+	if authorName == "" {
+		panic("authorizePromotion: authorName must not be empty")
+	}
+	// Holder.Load is nil-safe: an unwired holder → nil holder → nil policy →
+	// AllowsPromote returns false. Every layer fails closed (deny-by-default).
+	if s.grantPolicy.Load().AllowsPromote(authorName) {
+		return "", nil
+	}
+	return cpKindDenied, fmt.Errorf(
+		"workflow %q is not authorized to promote", authorName)
+}
+
+// VerifyDispatch proves the caller received the exact dispatch it claims:
+// it loads the owner run and checks the echoed nonce equals the stamped
+// StepState.DispatchNonce for ownerStepID, AND (defense-in-depth) that the
+// owner run is non-terminal with that step Running. A sibling-run worker
+// cannot forge another run's nonce — the nonce never left that dispatch.
+// Returns ("", nil) on success; (cpKindNamespace, error) on any mismatch.
+// An empty ownerStepID/nonce is a denial: a control-plane request must
+// carry the run-binding proof (#380, Fix 1).
+func (s *Service) VerifyDispatch(
+	ctx context.Context, ownerRunID, ownerStepID, nonce string,
+) (string, error) {
+	if ctx == nil {
+		panic("VerifyDispatch: ctx must not be nil")
+	}
+	if s.store == nil {
+		panic("VerifyDispatch: store must not be nil")
+	}
+	if ownerRunID == "" || ownerStepID == "" || nonce == "" {
+		return cpKindNamespace, fmt.Errorf(
+			"dispatch proof required (run/step/nonce must be non-empty)")
+	}
+	run, err := s.store.Load(ctx, ownerRunID)
+	if err != nil {
+		return cpKindNamespace, fmt.Errorf(
+			"verify dispatch: load owner run %q: %w", ownerRunID, err)
+	}
+	if run.Status.IsTerminal() {
+		return cpKindNamespace, fmt.Errorf(
+			"verify dispatch: owner run %q is terminal", ownerRunID)
+	}
+	state, ok := run.Steps[ownerStepID]
+	if !ok {
+		return cpKindNamespace, fmt.Errorf(
+			"verify dispatch: owner step %q not found", ownerStepID)
+	}
+	// Defense-in-depth: the owning step must be in an active dispatch state.
+	// Both Queued and Running are valid — a worker can call the control
+	// plane after picking up the task but before the orchestrator has
+	// processed its step.started event (an async race). A step in any other
+	// state (Completed/Failed/Skipped) is not a live dispatch. The nonce
+	// match below is the load-bearing binding; this is belt-and-suspenders.
+	if state.Status != dag.StepStatusRunning &&
+		state.Status != dag.StepStatusQueued {
+		return cpKindNamespace, fmt.Errorf(
+			"verify dispatch: owner step %q not in an active state",
+			ownerStepID)
+	}
+	if state.DispatchNonce == "" || state.DispatchNonce != nonce {
+		return cpKindNamespace, fmt.Errorf(
+			"verify dispatch: nonce mismatch for run %q step %q",
+			ownerRunID, ownerStepID)
+	}
+	return "", nil
 }
 
 // checkRegisterAdmission gates a root-scoped runtime register against the
@@ -365,6 +494,8 @@ func (s *Service) SpawnChildRun(
 	); err != nil {
 		return "", cpKindTransport, err
 	}
+	s.emitRuntimeAudit(ctx, "runtime.spawn", childWorkflow,
+		"success", parentRunID, "")
 	return childRunID, "", nil
 }
 
