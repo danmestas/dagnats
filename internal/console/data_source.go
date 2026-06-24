@@ -75,6 +75,23 @@ type DataSource interface {
 	// log + continue rather than fail the operator action.
 	EmitAuditEvent(ctx context.Context, evt AuditEvent) error
 
+	// ListAgentRuntimes returns up to limit spawn-tree rows for the
+	// /console/agents provenance page (#379, ADR-021 Phase A). The
+	// lineage is reconstructed from existing run snapshots
+	// (RootRunID / ParentRunID) — NO new event type is minted. A lone
+	// top-level run is NOT a runtime and is omitted. Budget per root
+	// is read from the #378 control plane; a failed Budget read
+	// degrades that row (BudgetOK=false) rather than failing the page.
+	// Returns nil + nil-error on an empty / unconfigured store.
+	ListAgentRuntimes(ctx context.Context, limit int) ([]AgentRuntimeRow, error)
+
+	// AgentRuntime re-projects a single spawn-tree by its tree-root run
+	// ID — the single-root path the SSE pump uses to avoid a full
+	// re-scan on each run update. Returns (row, true, nil) when root
+	// names an actual runtime, (zero, false, nil) when root is a lone
+	// non-tree run, and a non-nil error only on a store read failure.
+	AgentRuntime(ctx context.Context, root string) (AgentRuntimeRow, bool, error)
+
 	// SetTriggerEnabled flips a single trigger's enabled bit. The
 	// caller is responsible for emitting the audit event; the
 	// DataSource only owns the mutation. Returns an error when the

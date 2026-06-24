@@ -150,6 +150,13 @@ type fakeDataSource struct {
 	cancelRunErr   error
 	signalCalls    []signalCall
 	signalErr      error
+
+	// #379 (agent runtimes): pre-seeded provenance rows. agentRuntimes
+	// backs the list page; agentRuntimeByRoot backs the single-root SSE
+	// re-projection. agentRuntimesErr forces the list read-error path.
+	agentRuntimes      []AgentRuntimeRow
+	agentRuntimesErr   error
+	agentRuntimeByRoot map[string]AgentRuntimeRow
 }
 
 // signalCall captures one SendSignal invocation so tests can assert the
@@ -367,6 +374,38 @@ func (f *fakeDataSource) EmitAuditEvent(
 ) error {
 	f.auditEvents = append([]AuditEvent{evt}, f.auditEvents...)
 	return nil
+}
+
+func (f *fakeDataSource) ListAgentRuntimes(
+	ctx context.Context, limit int,
+) ([]AgentRuntimeRow, error) {
+	if ctx == nil {
+		panic("fakeDataSource.ListAgentRuntimes: ctx is nil")
+	}
+	if limit <= 0 {
+		panic("fakeDataSource.ListAgentRuntimes: limit must be positive")
+	}
+	if f.agentRuntimesErr != nil {
+		return nil, f.agentRuntimesErr
+	}
+	out := append([]AgentRuntimeRow{}, f.agentRuntimes...)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeDataSource) AgentRuntime(
+	ctx context.Context, root string,
+) (AgentRuntimeRow, bool, error) {
+	if ctx == nil {
+		panic("fakeDataSource.AgentRuntime: ctx is nil")
+	}
+	if root == "" {
+		return AgentRuntimeRow{}, false, nil
+	}
+	row, ok := f.agentRuntimeByRoot[root]
+	return row, ok, nil
 }
 
 // StartRun records the call and returns the seeded id / error. Tests
