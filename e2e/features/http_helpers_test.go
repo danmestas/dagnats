@@ -74,7 +74,7 @@ func startHTTPE2EStack(
 	orch.Start()
 	t.Cleanup(orch.Stop)
 
-	ts, err := trigger.NewTriggerService(nc)
+	ts, err := trigger.NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("startHTTPE2EStack: NewTriggerService: %v", err)
 	}

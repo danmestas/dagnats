@@ -53,7 +53,7 @@ func TestWebhookTrigger(t *testing.T) {
 			t.Fatalf("RegisterWorkflow: %v", err)
 		}
 
-		ts, err := trigger.NewTriggerService(nc)
+		ts, err := trigger.NewTriggerService(nc, "1.0.0")
 		if err != nil {
 			t.Fatalf("NewTriggerService: %v", err)
 		}

@@ -29,17 +29,41 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"log/slog"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 )
 
 // ackSubject is the NATS subject the engine listens on for worker
 // RegisterTriggerType acknowledgements.
 const ackSubject = "_REGISTRY.trigger_types.ack"
+
+// microServiceName is the registered nats-micro service name and the
+// suffix on $SRV.{PING,INFO,STATS}.<name> control subjects (#449).
+const microServiceName = "dagnats-trigger"
+
+// microVersionRegexp mirrors the SemVer pattern micro enforces in
+// Config.valid (nats.go@v1.50.0/micro/service.go). We validate the build
+// string ourselves so we can substitute a safe sentinel instead of
+// letting AddService fail on an un-stamped build. Compiled once as a
+// package-level var. Copied (not imported) from internal/api so the
+// trigger package does not depend on the api package.
+var microVersionRegexp = regexp.MustCompile(
+	`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)` +
+		`(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)` +
+		`(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?` +
+		`(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$`,
+)
+
+// microVersionDevSentinel is used whenever the build string is not a
+// valid SemVer core (incl. "dev", "", git-describe output, v-prefixed
+// tags). It is a valid SemVer pre-release form, so it keeps "this is a
+// dev build" visible in $SRV.INFO without breaking discovery.
+const microVersionDevSentinel = "0.0.0-dev"
 
 // liveTriggersScanMax bounds the KV scan that decides whether a
 // version-bump RegisterTriggerType is safe (#351). The scan returns
@@ -65,65 +89,97 @@ type ackResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// startAckMicro subscribes to `_REGISTRY.trigger_types.ack` and binds
-// the handler to ts. Stores the subscription on ts.ackSub so Stop can
-// drain it. Returns the subscribe error verbatim.
+// startAckMicro registers the "dagnats-trigger" nats-micro service and
+// binds the single ack endpoint on `_REGISTRY.trigger_types.ack`. Stores
+// the service on ts.ackMicro so Stop can drain it. The endpoint uses
+// WithEndpointQueueGroupDisabled so every engine instance receives each
+// message — preserving the pre-micro raw-subscribe fan-out. On any
+// AddService/AddEndpoint failure the half-built service is Stopped before
+// the wrapped error is returned.
 func (ts *TriggerService) startAckMicro() error {
 	if ts.nc == nil {
 		panic("startAckMicro: nc must not be nil")
 	}
-	sub, err := ts.nc.Subscribe(ackSubject, ts.handleAck)
-	if err != nil {
-		return fmt.Errorf("subscribe %s: %w", ackSubject, err)
+	if ts.ackMicro != nil {
+		panic("startAckMicro: already started")
 	}
-	ts.ackSub = sub
+	srv, err := micro.AddService(ts.nc, micro.Config{
+		Name:    microServiceName,
+		Version: microVersion(ts.build),
+		Description: "DagNats trigger-type registration " +
+			"acknowledgement protocol",
+	})
+	if err != nil {
+		return fmt.Errorf("micro.AddService %s: %w",
+			microServiceName, err)
+	}
+	if err := srv.AddEndpoint(
+		"ack", micro.HandlerFunc(ts.handleAckMicro),
+		micro.WithEndpointSubject(ackSubject),
+		micro.WithEndpointQueueGroupDisabled(),
+	); err != nil {
+		_ = srv.Stop()
+		return fmt.Errorf("AddEndpoint %s: %w", ackSubject, err)
+	}
+	ts.ackMicro = srv
 	return nil
 }
 
-// handleAck decodes the request, validates the trigger_types KV record,
-// and allocates an externalRegistrar in ts.registrars under the
+// microVersion returns a SemVer string micro.AddService will accept. A
+// valid SemVer build passes through unchanged; anything else (incl.
+// "dev", "", git-describe, v-prefixed tags) collapses to the dev
+// sentinel so an un-stamped build never fails service registration.
+func microVersion(build string) string {
+	if microVersionRegexp.MatchString(build) {
+		return build
+	}
+	return microVersionDevSentinel
+}
+
+// handleAckMicro decodes the request, validates the trigger_types KV
+// record, and allocates an externalRegistrar in ts.registrars under the
 // "external::<name>" key. Reply is empty bytes on success or a JSON
 // error envelope on failure. Never panics on bad wire input — workers
 // must surface boot failures cleanly.
-func (ts *TriggerService) handleAck(msg *nats.Msg) {
-	if msg == nil {
-		panic("handleAck: msg must not be nil")
+func (ts *TriggerService) handleAckMicro(req micro.Request) {
+	if req == nil {
+		panic("handleAckMicro: req must not be nil")
 	}
 	if ts.triggerTypesKV == nil {
-		ts.replyAck(msg, fmt.Errorf("trigger_types KV not initialised"))
+		ts.replyAckMicro(req, fmt.Errorf("trigger_types KV not initialised"))
 		return
 	}
 
-	var req RegisterTriggerTypeRequest
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		ts.replyAck(msg, fmt.Errorf("decode request: %w", err))
+	var r RegisterTriggerTypeRequest
+	if err := json.Unmarshal(req.Data(), &r); err != nil {
+		ts.replyAckMicro(req, fmt.Errorf("decode request: %w", err))
 		return
 	}
-	if req.Name == "" {
-		ts.replyAck(msg, fmt.Errorf("name must not be empty"))
+	if r.Name == "" {
+		ts.replyAckMicro(req, fmt.Errorf("name must not be empty"))
 		return
 	}
-	if req.OwnerWorkerID == "" {
-		ts.replyAck(msg, fmt.Errorf("owner_worker_id must not be empty"))
+	if r.OwnerWorkerID == "" {
+		ts.replyAckMicro(req, fmt.Errorf("owner_worker_id must not be empty"))
 		return
 	}
 
-	tdef, err := ts.loadTriggerType(req.Name)
+	tdef, err := ts.loadTriggerType(r.Name)
 	if err != nil {
-		ts.replyAck(msg, err)
+		ts.replyAckMicro(req, err)
 		return
 	}
-	if tdef.OwnerWorkerID != req.OwnerWorkerID {
-		ts.replyAck(msg, fmt.Errorf(
+	if tdef.OwnerWorkerID != r.OwnerWorkerID {
+		ts.replyAckMicro(req, fmt.Errorf(
 			"name %q owner mismatch: KV=%q request=%q",
-			req.Name, tdef.OwnerWorkerID, req.OwnerWorkerID))
+			r.Name, tdef.OwnerWorkerID, r.OwnerWorkerID))
 		return
 	}
-	if err := ts.installExternalRegistrar(req.Name, tdef); err != nil {
-		ts.replyAck(msg, err)
+	if err := ts.installExternalRegistrar(r.Name, tdef); err != nil {
+		ts.replyAckMicro(req, err)
 		return
 	}
-	ts.replyAck(msg, nil)
+	ts.replyAckMicro(req, nil)
 }
 
 // loadTriggerType reads the TriggerTypeDef from the trigger_types KV
@@ -347,28 +403,25 @@ func (ts *TriggerService) hasLiveTriggersOfKind(
 	return false, nil
 }
 
-// replyAck encodes the ackResponse and publishes it on msg.Reply.
-// Logs respond failures — there is nothing actionable for the engine
-// to do when the reply path is gone.
-func (ts *TriggerService) replyAck(msg *nats.Msg, err error) {
-	if msg == nil {
-		panic("replyAck: msg must not be nil")
-	}
-	if msg.Reply == "" {
-		if err != nil {
-			slog.Warn("ack with no reply subject",
-				"error", err)
-		}
-		return
+// replyAckMicro replies with the IDENTICAL wire shape as the pre-micro
+// path: empty bytes on success, a JSON {"error":"..."} envelope on
+// failure, both sent via req.Respond. We deliberately do NOT use
+// req.Error — that would set Nats-Service-Error headers and change what
+// callers parse; the bytes must match exactly so existing wire-level
+// tests pass unchanged. Logs respond failures — there is nothing
+// actionable for the engine to do when the reply path is gone.
+func (ts *TriggerService) replyAckMicro(req micro.Request, err error) {
+	if req == nil {
+		panic("replyAckMicro: req must not be nil")
 	}
 	if err == nil {
-		if rerr := msg.Respond(nil); rerr != nil {
+		if rerr := req.Respond(nil); rerr != nil {
 			slog.Warn("ack respond", "error", rerr)
 		}
 		return
 	}
 	body, _ := json.Marshal(ackResponse{Error: err.Error()})
-	if rerr := msg.Respond(body); rerr != nil {
+	if rerr := req.Respond(body); rerr != nil {
 		slog.Warn("ack respond error", "error", rerr)
 	}
 }

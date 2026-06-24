@@ -42,7 +42,7 @@ func TestServiceLoadsCronFromKV(t *testing.T) {
 		nats.AckExplicit(), nats.DeliverAll())
 
 	// Start service
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestServiceLiveReloadFromKV(t *testing.T) {
 	trigKV, _ := js.KeyValue("triggers")
 
 	// Start service with no triggers
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestServiceWebhookHandlerReturnsNonNil(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestServiceTickNowFiresTrigger(t *testing.T) {
 	sub, _ := js.SubscribeSync("history.>",
 		nats.AckExplicit(), nats.DeliverAll())
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestServiceLoadsWebhookFromKV(t *testing.T) {
 	defData, _ := json.Marshal(def)
 	trigKV.Put("wh-t1", defData)
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestServiceStopIdempotent(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestServiceDisabledTriggerNotLoaded(t *testing.T) {
 	defData, _ := json.Marshal(def)
 	trigKV.Put("dis-t1", defData)
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestServiceRespectsMaxTriggers(t *testing.T) {
 		trigKV.Put(def.ID, defData)
 	}
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestServiceWatcherReplayPreservesSubjectSubscription(t *testing.T) {
 		t.Fatalf("put def: %v", err)
 	}
 
-	svc, err := NewTriggerService(nc)
+	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {
 		t.Fatalf("NewTriggerService: %v", err)
 	}
