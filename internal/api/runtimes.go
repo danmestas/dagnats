@@ -45,10 +45,11 @@ const (
 )
 
 // scopeName is the single server-side source of truth for runtime
-// workflow naming. root is the namespace root — currently the owning run
-// ID; #377 will swap this for the true tree-root run without changing the
-// shape callers see. Keeping the formula in one function means the
-// register endpoint and any future resolver agree by construction.
+// workflow naming. root is the namespace root — the true tree-root run of
+// the owning run's spawn lineage (resolveRootRunID derives it server-side
+// from the worker-supplied owner run; #377). Keeping the formula in one
+// function means the register endpoint and any future resolver agree by
+// construction.
 //
 // The scoped name doubles as the workflow_defs KV key AND the
 // child_workflow the spawn lookup resolves, so it MUST satisfy the NATS
@@ -70,8 +71,14 @@ func scopeName(root, name string) string {
 // name server-side, runs the existing dag.Validate, and persists the def
 // under the scoped key. Returns the scoped name on success. The returned
 // kind is "" on success; otherwise it is one of the cpKind* strings.
+//
+// When promote is true the def is registered under the reaper-immune
+// "promoted.<name>" namespace (no agent. prefix → the ephemeral-def
+// reaper's prefix gate never touches it). #377 wires the namespace only;
+// authorization for promotion is deferred to #380.
 func (s *Service) RegisterRuntimeWorkflow(
 	ctx context.Context, def dag.WorkflowDef, ownerRunID string,
+	promote bool,
 ) (string, string, error) {
 	if ctx == nil {
 		panic("RegisterRuntimeWorkflow: ctx must not be nil")
@@ -86,7 +93,14 @@ func (s *Service) RegisterRuntimeWorkflow(
 	if err := validateRuntimeName(def.Name); err != nil {
 		return "", cpKindNamespace, err
 	}
-	scoped := scopeName(ownerRunID, def.Name)
+	scoped := promotedName(def.Name)
+	if !promote {
+		root, kind, err := s.resolveRootRunID(ctx, ownerRunID)
+		if err != nil {
+			return "", kind, err
+		}
+		scoped = scopeName(root, def.Name)
+	}
 	// Persist under the scoped key, not the author-supplied name, so the
 	// def is addressable only via the namespaced identity.
 	def.Name = scoped
@@ -102,6 +116,48 @@ func (s *Service) RegisterRuntimeWorkflow(
 		return "", cpKindTransport, err
 	}
 	return scoped, "", nil
+}
+
+// resolveRootRunID derives the true tree-root run ID for ownerRunID by
+// loading the owning run and applying engine.RootRunIDOf — the same root
+// rule the orchestrator stamps at run creation. The worker sends only
+// owner_run_id; the server walks to the root, so a worker cannot forge a
+// namespace by claiming a different root (forge-proof).
+//
+// Ousterhout fix 4: a load miss here is a REAL error, not a race. The
+// register handler runs inside a live owning run, so its snapshot must
+// exist; a miss returns cpKindNamespace rather than silently self-rooting
+// (which would mis-scope the def into an orphan namespace).
+func (s *Service) resolveRootRunID(
+	ctx context.Context, ownerRunID string,
+) (string, string, error) {
+	if ctx == nil {
+		panic("resolveRootRunID: ctx must not be nil")
+	}
+	if ownerRunID == "" {
+		panic("resolveRootRunID: ownerRunID must not be empty")
+	}
+	if s.store == nil {
+		panic("resolveRootRunID: store must not be nil")
+	}
+	run, err := s.store.Load(ctx, ownerRunID)
+	if err != nil {
+		return "", cpKindNamespace,
+			fmt.Errorf("resolve root for owner run %q: %w",
+				ownerRunID, err)
+	}
+	return engine.RootRunIDOf(run), "", nil
+}
+
+// promotedName scopes a promoted def under the reaper-immune "promoted."
+// namespace (#377). It carries NO agent. prefix, so the ephemeral-def
+// reaper's prefix gate never selects it. Authorization for promotion is
+// deferred to #380; this function only fixes the namespace shape.
+func promotedName(name string) string {
+	if name == "" {
+		panic("promotedName: name must not be empty")
+	}
+	return "promoted." + name
 }
 
 // validateRuntimeName rejects names that would corrupt the scope key or

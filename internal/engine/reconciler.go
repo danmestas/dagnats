@@ -16,10 +16,14 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -51,6 +55,23 @@ var prunePassInterval = 10 * time.Minute
 // never blocks the goroutine on an unbounded delete storm. The next
 // pass picks up where this one stopped.
 const pruneMaxRunsScan = 10_000
+
+// ephemeralDefPrefix is the ONLY def-key prefix the reaper may touch
+// (#377). A scoped runtime def is keyed "agent.<root>.<name>"; promoted
+// defs ("promoted.*") and ordinary author defs carry no agent. prefix,
+// so the prefix gate alone renders them reaper-invisible.
+const ephemeralDefPrefix = "agent."
+
+// defReaperMaxScan bounds the workflow_defs key set a single reaper pass
+// will tolerate. A def population beyond this points to a leak; we panic
+// rather than silently degrade, mirroring runKeyScanMax.
+const defReaperMaxScan = 1_000_000
+
+// defReaperMaxDelete caps deletions per reaper pass so a single sweep
+// never blocks the goroutine on an unbounded delete storm. The next pass
+// picks up where this one stopped. Passed as a parameter to the pass fn
+// (Ousterhout fix 5) rather than read from a mutable package var.
+const defReaperMaxDelete = 10_000
 
 // startReconciler launches the periodic janitor goroutine.
 // The loop exits when ctx is cancelled. Safe to call exactly
@@ -124,6 +145,179 @@ func (o *Orchestrator) pruneTerminalRuns(ctx context.Context) {
 			"max_age", o.runsMaxAge.String(),
 		)
 	}
+}
+
+// startDefReaper launches the opt-in ephemeral-def reaper goroutine
+// (#377). The loop exits when ctx is cancelled (from Stop). Callers must
+// only invoke this when o.defReaperGrace > 0 — Start guards that AND the
+// runsMaxAge >= defReaperGrace orphan-safety invariant, so the ticker
+// never runs in the default OFF-by-default posture.
+func (o *Orchestrator) startDefReaper(ctx context.Context) {
+	if ctx == nil {
+		panic("startDefReaper: ctx must not be nil")
+	}
+	if o.defReaperGrace <= 0 {
+		panic("startDefReaper: defReaperGrace must be positive")
+	}
+	go func() {
+		ticker := time.NewTicker(prunePassInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				o.reapEphemeralDefs(ctx, defReaperMaxDelete)
+			}
+		}
+	}()
+}
+
+// reapEphemeralDefs runs one two-phase ephemeral-def GC pass (#377),
+// mirroring the run-pruner's collect-then-delete shape. Phase 1 collects
+// reapable keys (fail-safe: any read error aborts the pass with zero
+// collected); phase 2 deletes them, bounded by maxDelete. Logs the count.
+func (o *Orchestrator) reapEphemeralDefs(
+	ctx context.Context, maxDelete int,
+) {
+	if ctx == nil {
+		panic("reapEphemeralDefs: ctx must not be nil")
+	}
+	if maxDelete <= 0 {
+		panic("reapEphemeralDefs: maxDelete must be positive")
+	}
+	doomed, err := o.collectReapable(ctx, maxDelete)
+	if err != nil {
+		slog.ErrorContext(ctx,
+			"def-reaper: collect reapable defs", "error", err)
+		return // phase 1 failed → zero deletions (fail-safe)
+	}
+	deleted := 0
+	for _, key := range doomed {
+		if err := o.defKV.Delete(ctx, key); err != nil {
+			slog.ErrorContext(ctx,
+				"def-reaper: delete def", "key", key, "error", err)
+			break
+		}
+		deleted++
+	}
+	if deleted > 0 {
+		slog.InfoContext(ctx,
+			"def-reaper: dropped ephemeral defs",
+			"deleted", deleted,
+			"grace", o.defReaperGrace.String(),
+		)
+	}
+}
+
+// collectReapable is phase 1 of the def-reaper (#377): scan workflow_defs,
+// select up to maxDelete agent.-prefixed keys whose tree-root run is
+// terminal+grace-elapsed (or a true orphan). FAIL-SAFE, exactly like
+// collectPrunable: on ANY read/load error it ABORTS the whole pass
+// returning the error with ZERO collected — it never `continue`s past a
+// bad read, so a transient store fault can never trigger a partial sweep.
+func (o *Orchestrator) collectReapable(
+	ctx context.Context, maxDelete int,
+) ([]string, error) {
+	if ctx == nil {
+		panic("collectReapable: ctx must not be nil")
+	}
+	if maxDelete <= 0 {
+		panic("collectReapable: maxDelete must be positive")
+	}
+	keys, err := o.defKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil // empty bucket → nothing to reap
+		}
+		return nil, err
+	}
+	if len(keys) > defReaperMaxScan {
+		// A pathological key population is a fail-safe condition, not a
+		// programmer error: return it through the pass's error contract so
+		// the caller aborts with zero deletions rather than killing the
+		// reaper goroutine (and the process) on a 1M-key bucket.
+		return nil, fmt.Errorf(
+			"def key set exceeds bound (%d)", defReaperMaxScan)
+	}
+	doomed := make([]string, 0, maxDelete)
+	for _, key := range keys {
+		if len(doomed) >= maxDelete {
+			break
+		}
+		root, ok := rootFromDefKey(key)
+		if !ok {
+			continue // non-agent. or malformed → never swept
+		}
+		reap, err := o.defShouldBeReaped(ctx, root)
+		if err != nil {
+			return nil, err // ANY load error → abort WHOLE pass
+		}
+		if reap {
+			doomed = append(doomed, key)
+		}
+	}
+	return doomed, nil
+}
+
+// rootFromDefKey parses an ephemeral def key "agent.<root>.<name>" and
+// returns its <root>. ok is false for any non-conforming key — a missing
+// agent. prefix, an empty root, or fewer than three dot-separated
+// segments — so such keys are never swept. Pure, total, no panic (#377).
+func rootFromDefKey(key string) (string, bool) {
+	if !strings.HasPrefix(key, ephemeralDefPrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(key, ephemeralDefPrefix)
+	// rest must be "<root>.<name>" with a non-empty root and a non-empty
+	// name; SplitN(.,2) isolates the root as the first segment.
+	parts := strings.SplitN(rest, ".", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	root, name := parts[0], parts[1]
+	if root == "" || name == "" {
+		return "", false
+	}
+	return root, true
+}
+
+// defShouldBeReaped decides whether the def for tree-root `root` is GC
+// eligible (#377). Load the root run:
+//   - ErrRunNotFound → true orphan; under the Start-time invariant
+//     (runsMaxAge >= defReaperGrace) a missing root means BOTH the run-
+//     retention and def-grace windows elapsed, so it is safe to reap.
+//   - other load error → propagate (collect phase aborts the pass).
+//   - ParentRunID != "" → never sweep a non-root (defense in depth).
+//   - !IsTerminal() → root still live, keep.
+//   - CompletedAt == nil → terminal but unstamped, keep.
+//   - else → reap iff time since completion exceeds the grace.
+func (o *Orchestrator) defShouldBeReaped(
+	ctx context.Context, root string,
+) (bool, error) {
+	if ctx == nil {
+		panic("defShouldBeReaped: ctx must not be nil")
+	}
+	if root == "" {
+		panic("defShouldBeReaped: root must not be empty")
+	}
+	run, err := o.store.Load(ctx, root)
+	if err != nil {
+		if errors.Is(err, ErrRunNotFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	if run.ParentRunID != "" {
+		return false, nil
+	}
+	if !run.Status.IsTerminal() {
+		return false, nil
+	}
+	if run.CompletedAt == nil {
+		return false, nil
+	}
+	return time.Since(*run.CompletedAt) > o.defReaperGrace, nil
 }
 
 // reconcileRunningRuns walks the workflow_runs KV for entries

@@ -37,26 +37,6 @@ func TestControlPlane_NewPanicsOnNilConn(t *testing.T) {
 	NewControlPlane(nil)
 }
 
-func TestControlPlane_PromoteUnsupported(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
-	cp := newControlPlaneFor(nc, "owner-run", "step-1")
-
-	name, err := cp.RegisterWorkflow(
-		context.Background(), validDef(), RegisterOpts{Promote: true},
-	)
-	if !errors.Is(err, ErrPromotionUnsupported) {
-		t.Fatalf("expected ErrPromotionUnsupported, got %v", err)
-	}
-	if name != "" {
-		t.Fatalf("expected empty scopedName on rejection, got %q", name)
-	}
-	var cpErr *ControlPlaneError
-	if !errors.As(err, &cpErr) ||
-		cpErr.Kind != KindPromotionUnsupported {
-		t.Fatalf("expected KindPromotionUnsupported, got %v", err)
-	}
-}
-
 func TestControlPlane_NamespaceNameRejectedOnRegister(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	cp := newControlPlaneFor(nc, "owner-run", "step-1")

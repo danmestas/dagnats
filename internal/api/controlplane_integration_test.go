@@ -336,9 +336,12 @@ func TestControlPlane_DepthCapEnforced(t *testing.T) {
 	h := newCPHarness(t, true)
 
 	// Register the def the spawn will target so the depth check (not the
-	// missing-def check) is what rejects.
+	// missing-def check) is what rejects. resolveRootRunID now loads the
+	// owner run, so seed a top-level "owner-seed" run first (#377 fix-4:
+	// a load miss is a real error, not a silent self-root).
+	seedRootRun(t, h.svc, "owner-seed")
 	if _, _, err := h.svc.RegisterRuntimeWorkflow(
-		context.Background(), childDef(), "owner-seed",
+		context.Background(), childDef(), "owner-seed", false,
 	); err != nil {
 		t.Fatalf("seed register: %v", err)
 	}
@@ -425,6 +428,174 @@ func TestControlPlane_DepthCapEnforcedFullWirePath(t *testing.T) {
 	}
 }
 
+// seedRootRun persists a top-level (self-rooting) running run snapshot so
+// resolveRootRunID can load it. Used where a test calls
+// RegisterRuntimeWorkflow directly without first starting a real run.
+func seedRootRun(t *testing.T, svc *Service, runID string) {
+	t.Helper()
+	store := engine.NewSnapshotStore(svc.js)
+	def := dag.WorkflowDef{
+		Name: "seed", Version: "1",
+		Steps: []dag.StepDef{{ID: "s", Task: "t", Type: dag.StepTypeNormal}},
+	}
+	run := dag.NewWorkflowRun(def, runID)
+	run.RootRunID = runID
+	run.Status = dag.RunStatusRunning
+	if err := store.Save(context.Background(), run); err != nil {
+		t.Fatalf("seed root run %q: %v", runID, err)
+	}
+}
+
+// TestControlPlane_SharedRootAcrossLineage proves #377's tree-root
+// namespacing: a top-level run and a child run that each register an
+// ephemeral def both scope under the SAME root (the top-level run ID), and
+// the depth cap still rejects beyond the bound (regression).
+func TestControlPlane_SharedRootAcrossLineage(t *testing.T) {
+	h := newCPHarness(t, true)
+
+	// Top-level run "top" (self-rooting) and a child run "kid" whose parent
+	// is "top". createChildRun would stamp kid.RootRunID = root("top") =
+	// "top"; we seed that lineage directly to drive the resolver.
+	store := engine.NewSnapshotStore(h.svc.js)
+	def := dag.WorkflowDef{
+		Name: "lin", Version: "1",
+		Steps: []dag.StepDef{{ID: "s", Task: "t", Type: dag.StepTypeNormal}},
+	}
+	top := dag.NewWorkflowRun(def, "top")
+	top.RootRunID = "top"
+	top.Status = dag.RunStatusRunning
+	if err := store.Save(context.Background(), top); err != nil {
+		t.Fatalf("save top: %v", err)
+	}
+	kid := dag.NewWorkflowRun(def, "kid")
+	kid.ParentRunID = "top"
+	kid.RootRunID = "top" // inherited from parent (#377)
+	kid.Status = dag.RunStatusRunning
+	if err := store.Save(context.Background(), kid); err != nil {
+		t.Fatalf("save kid: %v", err)
+	}
+
+	topScoped, _, err := h.svc.RegisterRuntimeWorkflow(
+		context.Background(), childDef(), "top", false,
+	)
+	if err != nil {
+		t.Fatalf("register from top: %v", err)
+	}
+	kidDef := childDef()
+	kidDef.Name = "other-step"
+	kidScoped, _, err := h.svc.RegisterRuntimeWorkflow(
+		context.Background(), kidDef, "kid", false,
+	)
+	if err != nil {
+		t.Fatalf("register from kid: %v", err)
+	}
+
+	if topScoped != "agent.top.do-step" {
+		t.Fatalf("top scoped = %q, want agent.top.do-step", topScoped)
+	}
+	// The child's def scopes under the SAME root "top", not under "kid".
+	if kidScoped != "agent.top.other-step" {
+		t.Fatalf("kid scoped = %q, want agent.top.other-step "+
+			"(shared root)", kidScoped)
+	}
+
+	// Regression: the depth cap still rejects a spawn beyond the bound.
+	deepest := buildRunChain(t, h.svc, engine.MaxNestingDepth)
+	_, kind, err := h.svc.SpawnChildRun(
+		context.Background(), topScoped, deepest, "anchor", nil,
+	)
+	if err == nil || kind != cpKindDepthExceeded {
+		t.Fatalf("expected depth rejection, got kind=%q err=%v", kind, err)
+	}
+}
+
+// TestControlPlane_PromotionSurvivesReaper proves #377 Part C: a gated
+// handler's RegisterWorkflow(opts{Promote:true}) returns a "promoted."-
+// prefixed name over the full wire path (no ErrPromotionUnsupported), and
+// the resulting def is reaper-invisible because its key carries no agent.
+// prefix — the only keys the reaper's prefix gate selects.
+func TestControlPlane_PromotionSurvivesReaper(t *testing.T) {
+	h := newCPHarness(t, true)
+
+	nameCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	h.w.Handle("plan-task", func(ctx worker.TaskContext) error {
+		cp := ctx.ControlPlane()
+		name, err := cp.RegisterWorkflow(
+			ctx.Context(), promoteDef(),
+			worker.RegisterOpts{Promote: true},
+		)
+		nameCh <- name
+		errCh <- err
+		return ctx.Complete(nil)
+	})
+	h.w.Start()
+	t.Cleanup(h.w.Stop)
+
+	if err := h.svc.RegisterWorkflow(
+		context.Background(), plannerDef(),
+	); err != nil {
+		t.Fatalf("register planner: %v", err)
+	}
+	parentRunID, err := h.svc.StartRun(context.Background(), "planner", nil)
+	if err != nil {
+		t.Fatalf("start planner: %v", err)
+	}
+	waitRunStatus(t, h.svc, parentRunID, dag.RunStatusCompleted)
+
+	select {
+	case got := <-errCh:
+		if got != nil {
+			t.Fatalf("promote register errored: %v", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handler never reported")
+	}
+	name := <-nameCh
+	if name != "promoted.tool" {
+		t.Fatalf("promoted name = %q, want promoted.tool", name)
+	}
+
+	// Survivor: the def exists, and rootFromDefKey rejects its key (no
+	// agent. prefix) so a reaper pass would never select it.
+	if _, err := h.svc.GetWorkflow("promoted.tool"); err != nil {
+		t.Fatalf("promoted def missing from KV: %v", err)
+	}
+}
+
+// promoteDef is the def a gated handler promotes to the reaper-immune
+// "promoted." namespace.
+func promoteDef() dag.WorkflowDef {
+	return dag.WorkflowDef{
+		Name: "tool", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "work", Task: "child-work", Type: dag.StepTypeNormal},
+		},
+	}
+}
+
+// TestControlPlane_ResolveRootMissingReturnsTypedError proves #377 fix-4: a
+// resolveRootRunID load-miss returns a typed cpKindNamespace error rather
+// than silently self-rooting.
+func TestControlPlane_ResolveRootMissingReturnsTypedError(t *testing.T) {
+	h := newCPHarness(t, true)
+
+	// No run snapshot exists for "ghost".
+	scoped, kind, err := h.svc.RegisterRuntimeWorkflow(
+		context.Background(), childDef(), "ghost", false,
+	)
+	if err == nil {
+		t.Fatalf("expected error on missing owner run, got scoped %q", scoped)
+	}
+	if kind != cpKindNamespace {
+		t.Fatalf("kind = %q, want %q", kind, cpKindNamespace)
+	}
+	// Negative space: nothing was written under any namespace.
+	if scoped != "" {
+		t.Fatalf("expected empty scoped on miss, got %q", scoped)
+	}
+}
+
 // buildRunChain persists a linked chain of run snapshots of the given
 // length and returns the deepest run's ID. Each run's ParentRunID points
 // at the previous, so nestingDepth(deepest) == length-? — we build enough
@@ -437,12 +608,17 @@ func buildRunChain(t *testing.T, svc *Service, length int) string {
 		Steps: []dag.StepDef{{ID: "s", Task: "t", Type: dag.StepTypeNormal}},
 	}
 	prev := ""
+	root := ""
 	var deepest string
 	for i := 0; i < length; i++ {
 		runID := "chain-run-" + string(rune('a'+i))
 		run := dag.NewWorkflowRun(def, runID)
 		run.Status = dag.RunStatusRunning
 		run.ParentRunID = prev
+		if root == "" {
+			root = runID // the head of the chain is its own tree-root
+		}
+		run.RootRunID = root // descendants share the root (#377 prod shape)
 		if err := store.Save(context.Background(), run); err != nil {
 			t.Fatalf("save chain run %d: %v", i, err)
 		}
