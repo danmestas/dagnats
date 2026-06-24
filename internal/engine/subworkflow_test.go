@@ -769,6 +769,7 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 	// Level 1: mid-run (parentRunID="root-run")
 	// Level 2: deep-run (parentRunID="mid-run")
 	rootRun := dag.NewWorkflowRun(leafDef, "root-run")
+	rootRun.RootRunID = "root-run" // head of the chain self-roots (#377)
 	rootRun.Status = dag.RunStatusRunning
 	if err := store.Save(context.Background(), rootRun); err != nil {
 		t.Fatalf("save root run: %v", err)
@@ -776,6 +777,7 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 
 	midRun := dag.NewWorkflowRun(leafDef, "mid-run")
 	midRun.ParentRunID = "root-run"
+	midRun.RootRunID = "root-run" // descendants share the tree-root (#377)
 	midRun.Status = dag.RunStatusRunning
 	if err := store.Save(context.Background(), midRun); err != nil {
 		t.Fatalf("save mid run: %v", err)
@@ -783,6 +785,7 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 
 	deepRun := dag.NewWorkflowRun(leafDef, "deep-run")
 	deepRun.ParentRunID = "mid-run"
+	deepRun.RootRunID = "root-run" // descendants share the tree-root (#377)
 	deepRun.Status = dag.RunStatusRunning
 	if err := store.Save(context.Background(), deepRun); err != nil {
 		t.Fatalf("save deep run: %v", err)

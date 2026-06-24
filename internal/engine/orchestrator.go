@@ -71,6 +71,13 @@ type Orchestrator struct {
 	// are dropped (delete-only) by the background prune pass.
 	runsMaxAge time.Duration
 
+	// defReaperGrace is the opt-in ephemeral-def garbage-collection
+	// window (#377). Zero (the default) disables the reaper entirely:
+	// the reaper ticker is not even started. When > 0, a def under the
+	// reaper-eligible prefix is dropped once its tree-root run has been
+	// terminal for longer than this grace.
+	defReaperGrace time.Duration
+
 	// capHitPrev tracks whether the previous reconcile cycle hit
 	// reconcileMaxRunsScan. Used to suppress the steady-state
 	// scan-cap WARN (#260): emit only on the not-capped → capped
@@ -102,6 +109,19 @@ func WithRunsMaxAge(maxAge time.Duration) OrchestratorOption {
 	return func(o *Orchestrator) {
 		if maxAge > 0 {
 			o.runsMaxAge = maxAge
+		}
+	}
+}
+
+// WithDefReaperGrace enables the opt-in ephemeral-def reaper (#377) with the
+// given grace window. A zero or negative grace leaves the reaper disabled
+// (the default), so the reaper ticker is never started and no defs are
+// deleted. When positive, ephemeral defs whose tree-root run has been
+// terminal longer than grace are garbage-collected by the background pass.
+func WithDefReaperGrace(grace time.Duration) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if grace > 0 {
+			o.defReaperGrace = grace
 		}
 	}
 }
@@ -276,6 +296,26 @@ func (o *Orchestrator) Start() {
 	// ticker never runs, the headline OFF-by-default safety property.
 	if o.runsMaxAge > 0 {
 		o.startRunPruner(reconcileCtx)
+	}
+
+	// Opt-in ephemeral-def reaper (#377). Started ONLY when a grace is
+	// configured — when defReaperGrace is zero the ticker never runs.
+	//
+	// CRITICAL invariant (Ousterhout fix 1): the run snapshot MUST
+	// outlive the def-grace window. The reaper treats a missing root run
+	// as a true orphan and sweeps its def; if the run-pruner could delete
+	// a root run BEFORE the def's grace elapsed, the reaper would observe
+	// a false orphan and reap a def whose tree had not yet aged out. With
+	// runsMaxAge >= defReaperGrace the run always survives at least as
+	// long as the def-grace, so a missing root genuinely means both
+	// windows elapsed. runsMaxAge == 0 (pruner off) trivially satisfies
+	// this — the run never disappears under the reaper.
+	if o.defReaperGrace > 0 {
+		if o.runsMaxAge != 0 && o.runsMaxAge < o.defReaperGrace {
+			panic("Start: runsMaxAge must be 0 or >= defReaperGrace " +
+				"(orphan-sweep safety invariant, #377)")
+		}
+		o.startDefReaper(reconcileCtx)
 	}
 }
 
@@ -520,6 +560,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 			// Create a failed run for visibility
 			run := dag.NewWorkflowRun(wfDef, evt.RunID)
 			run.TraceParent = evt.TraceParent
+			run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
 			run = markTerminal(run, dag.RunStatusFailed)
 			o.saveSnapshot(ctx, run, "")
 			return fmt.Errorf("input validation: %w", err)
@@ -528,6 +569,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
 	run.TraceParent = evt.TraceParent
+	run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
 	run.Input = input
 
 	admission, admitErr := o.admission.Admit(ctx, wfDef, run, input)
@@ -825,6 +867,26 @@ func markTerminal(
 	now := time.Now().UTC()
 	run.CompletedAt = &now
 	return run
+}
+
+// RootRunIDOf is the SINGLE definition of a run's tree-root (#377):
+// run.RootRunID when set, else run.RunID (the run self-roots). Legacy
+// snapshots predating the RootRunID field deserialize to "" and so
+// self-root, which is correct for any top-level run. Pure and total
+// modulo the RunID invariant. Exported so the control-plane register
+// path (internal/api) derives the root by the identical rule.
+func RootRunIDOf(run dag.WorkflowRun) string {
+	// Exactly one programmer-error precondition: a run with no RunID is
+	// malformed and could not have a meaningful root. There is no second
+	// invariant to assert — RootRunID is a free-form optional field, so
+	// any value (including "") is valid input handled by the fallback.
+	if run.RunID == "" {
+		panic("RootRunIDOf: RunID must not be empty")
+	}
+	if run.RootRunID != "" {
+		return run.RootRunID
+	}
+	return run.RunID
 }
 
 // completeWorkflow marks the run complete, saves, publishes the event,
@@ -1931,6 +1993,27 @@ func (o *Orchestrator) createChildRun(
 	if !detach {
 		childRun.ParentRunID = parentRunID
 		childRun.ParentStepID = parentStepID
+		// Inherit the tree-root from the parent so every run in a spawn
+		// tree carries the same RootRunID (#377). O(1) parent load — the
+		// root rule is transitive, so the parent already holds the root.
+		// A genuinely-missing parent (ErrRunNotFound) means this child
+		// heads a new tree, so it self-roots — mirroring nestingDepth,
+		// which treats a missing parent as the chain root. Only a real
+		// store fault (not a miss) propagates as a wrapped error.
+		parent, err := o.store.Load(ctx, parentRunID)
+		switch {
+		case err == nil:
+			childRun.RootRunID = RootRunIDOf(parent)
+		case errors.Is(err, ErrRunNotFound):
+			childRun.RootRunID = childRunID
+		default:
+			return fmt.Errorf(
+				"load parent run %q for root derivation: %w",
+				parentRunID, err,
+			)
+		}
+	} else {
+		childRun.RootRunID = childRunID // detached child self-roots (#377)
 	}
 
 	if err := o.saveSnapshot(ctx, childRun, ""); err != nil {

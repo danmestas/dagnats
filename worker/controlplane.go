@@ -52,10 +52,13 @@ type ControlPlane interface {
 	) (runID string, err error)
 }
 
-// RegisterOpts carries optional knobs for RegisterWorkflow. Promote is a
-// RESERVED field: Tier 1 rejects Promote==true with
-// ErrPromotionUnsupported rather than silently ignoring it, so callers
-// learn the capability is deferred (#378) instead of assuming it worked.
+// RegisterOpts carries optional knobs for RegisterWorkflow. Promote
+// requests the def be registered under the reaper-immune "promoted.*"
+// namespace instead of the ephemeral "agent.<root>.*" namespace (#377).
+// The worker forwards the flag; the server owns the namespace shape.
+// Authorization for promotion is deferred to #380 — until then any caller
+// may promote, and ErrPromotionUnsupported/KindPromotionUnsupported
+// remain defined as the seam #380 will reactivate.
 type RegisterOpts struct {
 	Promote bool
 }
@@ -144,6 +147,7 @@ const nameMaxLength = 256
 type runtimeRegisterRequest struct {
 	Def        dag.WorkflowDef `json:"def"`
 	OwnerRunID string          `json:"owner_run_id"`
+	Promote    bool            `json:"promote"`
 }
 
 // runtimeRegisterReply is the wire reply for api.runtimes.register.
@@ -218,13 +222,12 @@ func (c *workerControlPlane) RegisterWorkflow(
 	if c == nil || c.nc == nil {
 		panic("RegisterWorkflow: receiver must not be nil")
 	}
-	if opts.Promote {
-		return "", ErrPromotionUnsupported
-	}
 	if err := validateAuthorName(def.Name); err != nil {
 		return "", err
 	}
-	req := runtimeRegisterRequest{Def: def, OwnerRunID: c.ownerRunID}
+	req := runtimeRegisterRequest{
+		Def: def, OwnerRunID: c.ownerRunID, Promote: opts.Promote,
+	}
 	reply, err := requestAPI[runtimeRegisterReply](
 		ctx, c.nc, subjectRuntimesRegister, req, "RegisterWorkflow",
 	)

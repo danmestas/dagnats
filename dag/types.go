@@ -325,20 +325,25 @@ type StepState struct {
 // Steps maps step ID to its current StepState; initialized to pending for all steps.
 // Input preserves the original user-supplied payload so retries can reuse it.
 type WorkflowRun struct {
-	RunID          string               `json:"run_id"`
-	WorkflowID     string               `json:"workflow_id"`
-	Status         RunStatus            `json:"status"`
-	Steps          map[string]StepState `json:"steps"`
-	Input          json.RawMessage      `json:"input,omitempty"`
-	CreatedAt      time.Time            `json:"created_at"`
-	DynamicSteps   []StepDef            `json:"dynamic_steps,omitempty"`
-	ParentRunID    string               `json:"parent_run_id,omitempty"`
-	ParentStepID   string               `json:"parent_step_id,omitempty"`
-	Deadline       *time.Time           `json:"deadline,omitempty"`
-	PriorityOffset int                  `json:"priority_offset,omitempty"`
-	SingletonKey   string               `json:"singleton_key,omitempty"`
-	TraceParent    string               `json:"trace_parent,omitempty"`
-	CompletedAt    *time.Time           `json:"completed_at,omitempty"`
+	RunID        string               `json:"run_id"`
+	WorkflowID   string               `json:"workflow_id"`
+	Status       RunStatus            `json:"status"`
+	Steps        map[string]StepState `json:"steps"`
+	Input        json.RawMessage      `json:"input,omitempty"`
+	CreatedAt    time.Time            `json:"created_at"`
+	DynamicSteps []StepDef            `json:"dynamic_steps,omitempty"`
+	ParentRunID  string               `json:"parent_run_id,omitempty"`
+	// RootRunID is the run ID of the tree-root for this run's lineage —
+	// the same value for every run in a spawn tree (#377). Server-derived,
+	// never worker-supplied. Additive: legacy snapshots deserialize to ""
+	// and a run with RootRunID=="" self-roots (see rootRunIDOf).
+	RootRunID      string     `json:"root_run_id,omitempty"`
+	ParentStepID   string     `json:"parent_step_id,omitempty"`
+	Deadline       *time.Time `json:"deadline,omitempty"`
+	PriorityOffset int        `json:"priority_offset,omitempty"`
+	SingletonKey   string     `json:"singleton_key,omitempty"`
+	TraceParent    string     `json:"trace_parent,omitempty"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.

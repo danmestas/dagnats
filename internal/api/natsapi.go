@@ -220,6 +220,7 @@ func (n *NATSAPI) handleRuntimeRegister(req micro.Request) {
 	var r struct {
 		Def        dag.WorkflowDef `json:"def"`
 		OwnerRunID string          `json:"owner_run_id"`
+		Promote    bool            `json:"promote"`
 	}
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		n.reply(req, map[string]string{
@@ -228,7 +229,7 @@ func (n *NATSAPI) handleRuntimeRegister(req micro.Request) {
 		return
 	}
 	scoped, kind, err := n.svc.RegisterRuntimeWorkflow(
-		context.Background(), r.Def, r.OwnerRunID,
+		context.Background(), r.Def, r.OwnerRunID, r.Promote,
 	)
 	if err != nil {
 		n.reply(req, map[string]string{
