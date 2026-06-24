@@ -1,0 +1,13 @@
+{{/* agent-tree-rows — the SSE patch target body for one spawn tree.
+     Flat range over the BFS-ordered tree (no recursion); Depth drives
+     the visual indent. Lives on ts.base so the SSE pump can render it
+     for the single-root re-projection. Re-rendered inner on each
+     tree-member RunUpdate. */}}
+{{define "agent-tree-rows"}}{{range .Tree}}
+<tr class="console-agent-tree-row" data-depth="{{.Depth}}" id="agent-node-{{.RunID}}">
+  <td><span class="console-agent-indent" style="--agent-depth: {{.Depth}};"></span><a href="/console/runs/{{.RunID}}">{{.RunID}}</a></td>
+  <td>{{.WorkflowID}}</td>
+  <td>{{template "status-badge" .Status}}</td>
+  <td>{{if .SpawnedByRuntime}}<span class="badge agent-runtime-tag" title="Spawned by a runtime via the control plane (runtime.spawn audit row)">runtime</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+</tr>
+{{end}}{{end}}

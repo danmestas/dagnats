@@ -327,6 +327,10 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageConcurrency(w, r, ts, cfg)
 		})
+	mux.HandleFunc("/console/agents",
+		func(w http.ResponseWriter, r *http.Request) {
+			servePageAgentRuntimes(w, r, ts, cfg)
+		})
 	mux.HandleFunc("/console/logs",
 		func(w http.ResponseWriter, r *http.Request) {
 			servePageLogs(w, r, ts, cfg)
@@ -452,6 +456,9 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	})
 	mux.HandleFunc("/console/sse/runs/", func(w http.ResponseWriter, r *http.Request) {
 		serveSSERunDetail(w, r, ts, cfg)
+	})
+	mux.HandleFunc("/console/sse/agents", func(w http.ResponseWriter, r *http.Request) {
+		serveSSEAgents(w, r, ts, cfg)
 	})
 	mux.HandleFunc("/console/sse/triggers", func(w http.ResponseWriter, r *http.Request) {
 		serveSSETriggers(w, r, ts, cfg)
@@ -603,6 +610,7 @@ var pageContentFiles = map[string]string{
 	"server":            "templates/server.html",
 	"connections":       "templates/connections.html",
 	"concurrency":       "templates/concurrency.html",
+	"agent-runtimes":    "templates/agent_runtimes.html",
 	"logs":              "templates/logs.html",
 	"metrics_dashboard": "templates/metrics_dashboard.html",
 	"configuration":     "templates/configuration.html",

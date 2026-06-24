@@ -432,6 +432,18 @@ func (r *resumeRecorder) EmitAuditEvent(
 	return r.inner.EmitAuditEvent(ctx, evt)
 }
 
+func (r *resumeRecorder) ListAgentRuntimes(
+	ctx context.Context, limit int,
+) ([]AgentRuntimeRow, error) {
+	return r.inner.ListAgentRuntimes(ctx, limit)
+}
+
+func (r *resumeRecorder) AgentRuntime(
+	ctx context.Context, root string,
+) (AgentRuntimeRow, bool, error) {
+	return r.inner.AgentRuntime(ctx, root)
+}
+
 func (r *resumeRecorder) SetTriggerEnabled(
 	ctx context.Context, triggerID string, enabled bool,
 ) error {

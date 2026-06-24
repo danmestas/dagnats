@@ -65,6 +65,7 @@ var assetsFS embed.FS
 //go:embed templates/server.html
 //go:embed templates/connections.html
 //go:embed templates/concurrency.html
+//go:embed templates/agent_runtimes.html
 //go:embed templates/logs.html
 //go:embed templates/metrics_dashboard.html
 //go:embed templates/configuration.html
@@ -74,6 +75,7 @@ var assetsFS embed.FS
 //go:embed templates/fragments/heartbeat.html
 //go:embed templates/fragments/workflows_tbody.html
 //go:embed templates/fragments/runs_tbody.html
+//go:embed templates/fragments/agent_tree_rows.html
 //go:embed templates/fragments/status_badge.html
 //go:embed templates/fragments/pager.html
 //go:embed templates/fragments/run_row.html

@@ -1,0 +1,51 @@
+{{define "content"}}{{$page := .Page}}{{with $page}}
+<section class="console-section" data-on-load="@get('/console/sse/agents')">
+  {{template "page-header" .Header}}
+  <p class="console-lede console-section-meta">
+    Spawn-tree provenance reconstructed from run snapshots
+    (root &middot; parent &middot; generation) — no synthetic events. Live updates over SSE.
+  </p>
+
+  {{if not .Runtimes}}
+  {{template "empty-state" dict
+    "Icon" ""
+    "Title" "No agent runtimes yet"
+    "Description" "A runtime appears here once a run spawns at least one child run via the control plane. A lone top-level run is not a runtime."
+  }}
+  {{else}}
+  {{range .Runtimes}}
+  <div class="card console-agent-runtime">
+    <div class="console-agent-runtime-head">
+      <h2 class="console-agent-runtime-title">{{.RootWorkflow}}</h2>
+      <a class="console-agent-runtime-root" href="/console/runs/{{.RootRunID}}">{{.RootRunID}}</a>
+      {{template "status-badge" .RootStatus}}
+      <span class="console-agent-runtime-meta">{{.TotalRuns}} runs &middot; gen {{.Generations}}</span>
+    </div>
+
+    {{if .BudgetOK}}
+    {{/* Budget block renders ONLY when engine-backed. An unbacked
+         budget omits this entire block — never a fabricated 0/0. */}}
+    <dl class="console-agent-budget" data-component="agent-budget">
+      <div><dt>Active runs</dt><dd>{{.Budget.ActiveRuns}} / {{.Budget.MaxActiveRuns}}</dd></div>
+      <div><dt>Registered defs</dt><dd>{{.Budget.RegisteredDefs}} / {{.Budget.MaxRegisteredDefs}}</dd></div>
+    </dl>
+    {{end}}
+
+    <table class="table console-table console-agent-tree">
+      <thead>
+        <tr>
+          <th>Run id</th>
+          <th>Workflow</th>
+          <th>Status</th>
+          <th>Origin</th>
+        </tr>
+      </thead>
+      <tbody id="agent-tree-{{.RootRunID}}">
+        {{template "agent-tree-rows" .}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{end}}
+</section>
+{{end}}{{end}}
