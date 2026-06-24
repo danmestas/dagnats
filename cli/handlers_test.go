@@ -38,7 +38,8 @@ func (f *fakeTaskContext) RetryCount() int {
 	return f.retryCount
 }
 
-func (f *fakeTaskContext) Metadata() map[string]string { return nil }
+func (f *fakeTaskContext) Metadata() map[string]string       { return nil }
+func (f *fakeTaskContext) ControlPlane() worker.ControlPlane { return nil }
 
 func (f *fakeTaskContext) Complete(
 	output []byte,

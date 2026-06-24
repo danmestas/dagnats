@@ -79,12 +79,13 @@ func collectReadyMessages(
 		}
 		attempt := run.Steps[step.ID].Attempts
 		payload := protocol.TaskPayload{
-			TaskID:   runID + "." + step.ID,
-			RunID:    runID,
-			StepID:   step.ID,
-			Attempt:  attempt,
-			Input:    input,
-			Metadata: step.Metadata,
+			TaskID:               runID + "." + step.ID,
+			RunID:                runID,
+			StepID:               step.ID,
+			Attempt:              attempt,
+			Input:                input,
+			Metadata:             step.Metadata,
+			RequiredCapabilities: step.RequiredCapabilities,
 		}
 		data, err := json.Marshal(payload)
 		if err != nil {

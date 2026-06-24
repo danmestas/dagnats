@@ -256,6 +256,13 @@ type StepDef struct {
 	KeyedRateLimit     *KeyedRateLimit   `json:"keyed_rate_limit,omitempty"`
 	MaxTaskConcurrency int               `json:"max_task_concurrency,omitempty"`
 	Singleton          bool              `json:"singleton,omitempty"`
+	// RequiredCapabilities names runtime capabilities the step's handler
+	// requires (e.g. "control-plane"). The orchestrator copies these into
+	// the TaskPayload at enqueue time; the worker uses them to decide
+	// whether to grant a gated handle. Zero value (nil) = no capabilities
+	// declared, which is today's behavior. Additive — omitempty keeps old
+	// defs byte-identical on the wire.
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 }
 
 // WorkflowDef is the immutable schema for a workflow. Stored once, referenced

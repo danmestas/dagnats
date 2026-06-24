@@ -134,6 +134,11 @@
         "compensate": {
           "type": "string",
           "description": "Step ID for saga compensation"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Runtime capabilities the handler requires (e.g. 'control-plane'). Gates capability handles on TaskContext."
         }
       }
     },

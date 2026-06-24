@@ -66,7 +66,7 @@ func NewNATSAPI(
 	return &NATSAPI{svc: svc, nc: nc, version: version}
 }
 
-// Start registers the micro service and its three endpoints. Panics on
+// Start registers the micro service and its endpoints. Panics on
 // any AddService/AddEndpoint error -- the endpoint set is static, so a
 // failure is an unrecoverable programmer error. Panics on double-start.
 func (n *NATSAPI) Start() {
@@ -99,6 +99,11 @@ func (n *NATSAPI) Start() {
 		{"register", "api.workflows.register", n.handleRegister},
 		{"start", "api.runs.start", n.handleStartRun},
 		{"get", "api.runs.get", n.handleGetRun},
+		// Additive control-plane endpoints (#376). Existing subjects
+		// above are unchanged.
+		{"runtimes-register", "api.runtimes.register",
+			n.handleRuntimeRegister},
+		{"runs-spawn", "api.runs.spawn", n.handleRunSpawn},
 	}
 	for _, e := range endpoints {
 		// Without a queue group, every running INSTANCE receives each
@@ -200,6 +205,73 @@ func (n *NATSAPI) handleGetRun(req micro.Request) {
 		return
 	}
 	req.Respond(data) //nolint:errcheck -- reply failure is non-fatal
+}
+
+// handleRuntimeRegister unmarshals a runtime-register request, scopes +
+// validates + persists the def server-side, and replies with the scoped
+// name or a {error, kind} envelope the worker maps to a typed error.
+func (n *NATSAPI) handleRuntimeRegister(req micro.Request) {
+	if req == nil {
+		panic("handleRuntimeRegister: req must not be nil")
+	}
+	if n.svc == nil {
+		panic("handleRuntimeRegister: svc must not be nil")
+	}
+	var r struct {
+		Def        dag.WorkflowDef `json:"def"`
+		OwnerRunID string          `json:"owner_run_id"`
+	}
+	if err := json.Unmarshal(req.Data(), &r); err != nil {
+		n.reply(req, map[string]string{
+			"error": err.Error(), "kind": "transport",
+		})
+		return
+	}
+	scoped, kind, err := n.svc.RegisterRuntimeWorkflow(
+		context.Background(), r.Def, r.OwnerRunID,
+	)
+	if err != nil {
+		n.reply(req, map[string]string{
+			"error": err.Error(), "kind": kind,
+		})
+		return
+	}
+	n.reply(req, map[string]string{"scoped_name": scoped})
+}
+
+// handleRunSpawn unmarshals a spawn request and launches a child run via
+// the EventWorkflowSpawn path. Replies with the child run ID or a
+// {error, kind} envelope (e.g. depth_exceeded).
+func (n *NATSAPI) handleRunSpawn(req micro.Request) {
+	if req == nil {
+		panic("handleRunSpawn: req must not be nil")
+	}
+	if n.svc == nil {
+		panic("handleRunSpawn: svc must not be nil")
+	}
+	var r struct {
+		ChildWorkflow string          `json:"child_workflow"`
+		ParentRunID   string          `json:"parent_run_id"`
+		ParentStepID  string          `json:"parent_step_id"`
+		Input         json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(req.Data(), &r); err != nil {
+		n.reply(req, map[string]string{
+			"error": err.Error(), "kind": "transport",
+		})
+		return
+	}
+	runID, kind, err := n.svc.SpawnChildRun(
+		context.Background(), r.ChildWorkflow,
+		r.ParentRunID, r.ParentStepID, r.Input,
+	)
+	if err != nil {
+		n.reply(req, map[string]string{
+			"error": err.Error(), "kind": kind,
+		})
+		return
+	}
+	n.reply(req, map[string]string{"run_id": runID})
 }
 
 // reply marshals payload to JSON and sends it as a reply. We use
