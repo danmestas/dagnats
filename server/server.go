@@ -181,7 +181,7 @@ func (s *Server) startComponents() error {
 	printStep(os.Stderr, "telemetry initialized")
 
 	s.svc = api.NewService(s.nc)
-	s.natsAPI = api.NewNATSAPI(s.svc, s.nc)
+	s.natsAPI = api.NewNATSAPI(s.svc, s.nc, s.cfg.Build)
 	s.natsAPI.Start()
 	printStep(os.Stderr, "nats api started")
 

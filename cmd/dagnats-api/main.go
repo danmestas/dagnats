@@ -41,8 +41,11 @@ func main() {
 	}
 	defer telShutdown(context.Background())
 	svc := api.NewService(nc)
-	natsAPI := api.NewNATSAPI(svc, nc)
+	natsAPI := api.NewNATSAPI(svc, nc, cli.Version)
 	natsAPI.Start()
+	// Must stay registered AFTER `defer nc.Close()` above: LIFO ordering
+	// makes this run FIRST, so micro drains while the connection is still
+	// open. Do not insert an nc.Drain()/nc.Close() defer below this line.
 	defer natsAPI.Stop()
 	handler := api.NewRESTHandler(svc)
 	addr := cli.GetEnvWithFallback(
