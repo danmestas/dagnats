@@ -87,6 +87,7 @@ func (sr *StickyRouter) PublishTask(
 	attempt int,
 	workerID string,
 	strategy dag.StickyStrategy,
+	dispatchNonce string,
 ) error {
 	if sr == nil {
 		panic("StickyRouter.PublishTask: called on nil receiver")
@@ -112,11 +113,12 @@ func (sr *StickyRouter) PublishTask(
 
 	// Build the task payload
 	payload := protocol.TaskPayload{
-		TaskID:  runID + "." + step.ID,
-		RunID:   runID,
-		StepID:  step.ID,
-		Attempt: attempt,
-		Input:   input,
+		TaskID:        runID + "." + step.ID,
+		RunID:         runID,
+		StepID:        step.ID,
+		Attempt:       attempt,
+		Input:         input,
+		DispatchNonce: dispatchNonce,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -150,6 +152,10 @@ func (sr *StickyRouter) PublishTask(
 			TaskType:   step.Task,
 			Input:      input,
 			Attempt:    attempt,
+			// Carry the run-binding nonce so the fallback re-publish (#380)
+			// stays run-bound. Sticky steps carry no control-plane capability,
+			// so no caps need stripping here.
+			DispatchNonce: dispatchNonce,
 		})
 	}
 

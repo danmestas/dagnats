@@ -48,6 +48,17 @@ type TimerMessage struct {
 	Attempt     int             `json:"attempt,omitempty"`
 	TriggerID   string          `json:"trigger_id,omitempty"`
 	DebounceKey string          `json:"debounce_key,omitempty"`
+	// DispatchNonce + RequiredCapabilities carry the per-dispatch grant
+	// decision (#380) across the durable timer boundary: the task-dispatch
+	// caller (Publish / sticky) strips the caps via effectiveCapabilities and
+	// mints the run-binding nonce at SCHEDULING time, so the timer fire can
+	// re-publish a TaskPayload that still honors the grant policy WITHOUT the
+	// SleepTimer needing the policy itself. A timer that re-publishes a task
+	// dispatch (rate_retry / retry_after / retry_backoff / sticky-fallback)
+	// must set these; non-dispatch timers leave them empty. Additive,
+	// omitempty: legacy timer messages deserialize to "".
+	DispatchNonce        string   `json:"dispatch_nonce,omitempty"`
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 }
 
 // DebounceHandler is called when a debounce timer fires. The seq
@@ -406,6 +417,11 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 		RunID:  tm.RunID,
 		StepID: tm.StepID,
 		Input:  tm.Input,
+		// Carry the grant decision + run-binding nonce stamped at scheduling
+		// time (#380) so a rate-retried granted step still passes
+		// VerifyDispatch and keeps its control-plane capability.
+		RequiredCapabilities: tm.RequiredCapabilities,
+		DispatchNonce:        nonceOrMint(tm.DispatchNonce),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -484,6 +500,10 @@ func (st *SleepTimer) republishTask(
 		StepID:  tm.StepID,
 		Input:   tm.Input,
 		Attempt: tm.Attempt + 1,
+		// Carry the grant decision + run-binding nonce stamped at scheduling
+		// time (#380) so a retried granted step still passes VerifyDispatch.
+		RequiredCapabilities: tm.RequiredCapabilities,
+		DispatchNonce:        nonceOrMint(tm.DispatchNonce),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

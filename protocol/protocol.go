@@ -25,6 +25,13 @@ type TaskPayload struct {
 	// at enqueue time. The worker reads it to gate capability handles (e.g.
 	// the control plane). Nil = no capabilities declared (today's behavior).
 	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
+	// DispatchNonce is the per-dispatch run-binding token (#380, ADR-021
+	// Phase A). The engine stamps the same value on StepState.DispatchNonce
+	// and here. The worker carries it on control-plane requests so the
+	// server can verify the caller received this exact dispatch. Additive,
+	// omitempty: legacy payloads deserialize to "" and the server rejects an
+	// empty/mismatched nonce on the control-plane path.
+	DispatchNonce string `json:"dispatch_nonce,omitempty"`
 }
 
 // TaskResolution is the wire format for HTTP bridge resolve actions.

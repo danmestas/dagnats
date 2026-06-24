@@ -2,119 +2,52 @@ package console
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/danmestas/dagnats/internal/auditkv"
 )
 
-// audit.go owns the operator-action audit emitter and reader. ADR-014
-// settled on a JetStream KV bucket (console_audit) keyed by
-// <RFC3339-nanos>-<random>; values are JSON-serialised AuditEvent
-// structs. 90-day TTL caps storage. The reader walks the bucket and
-// returns events sorted newest-first.
+// audit.go owns the operator-action audit reader. The schema, bucket, key
+// builder, and emit path now live in the internal/auditkv leaf package so
+// the engine and api can emit against the SAME shape without importing
+// console. This file aliases those symbols and keeps the bucket reader
+// (which is console-specific render plumbing). ADR-014.
 
-// AuditEvent records one operator action against the control plane.
-// Time is server-side wall clock (UTC). Actor comes from the
-// console.Actor in context; Action is a short verb tag; Target names
-// the affected entity; Data carries action-specific structured fields.
-// Outcome is one of "success", "denied", "failed".
-type AuditEvent struct {
-	Time    time.Time      `json:"time"`
-	Actor   string         `json:"actor"`
-	Action  string         `json:"action"`
-	Target  string         `json:"target"`
-	Data    map[string]any `json:"data,omitempty"`
-	Outcome string         `json:"outcome"`
-}
+// AuditEvent records one operator action against the control plane. The
+// shape is owned by internal/auditkv; this alias preserves the console
+// call sites and the wire format read by the Audit page.
+type AuditEvent = auditkv.AuditEvent
 
-// AuditBucket is the JetStream KV bucket name. Created at engine
-// startup; absent buckets cause Emit to slog.Warn and continue —
-// audit gaps must never block operator actions.
-const AuditBucket = "console_audit"
+// AuditBucket is the JetStream KV bucket name (auditkv.Bucket).
+const AuditBucket = auditkv.Bucket
 
-// AuditTTL is the KV bucket TTL. 90 days per ADR-014's metrics
-// retention sibling; long enough for a quarterly audit.
-const AuditTTL = 90 * 24 * time.Hour
+// AuditTTL is the KV bucket TTL (auditkv.TTL).
+const AuditTTL = auditkv.TTL
 
-// NewAuditKV opens the console_audit KV bucket on the given JetStream
-// handle, creating it if missing. Idempotent — safe to call from any
-// path that already has a JetStream connection.
+// NewAuditKV opens the console_audit KV bucket, delegating to auditkv.
 func NewAuditKV(
 	ctx context.Context, js jetstream.JetStream,
 ) (jetstream.KeyValue, error) {
-	if ctx == nil {
-		panic("NewAuditKV: ctx is nil")
-	}
-	if js == nil {
-		panic("NewAuditKV: js is nil")
-	}
-	cfg := jetstream.KeyValueConfig{
-		Bucket: AuditBucket,
-		TTL:    AuditTTL,
-	}
-	kv, err := js.CreateOrUpdateKeyValue(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("create audit bucket: %w", err)
-	}
-	return kv, nil
+	return auditkv.NewKV(ctx, js)
 }
 
-// emitAuditEventInner writes evt into the console_audit bucket. Returns
-// nil + warning-slog when the bucket isn't configured. Keys are
-// <RFC3339-nanos>-<6 hex bytes> so they sort chronologically inside the
-// KV — the reader can list keys and walk them in order.
+// emitAuditEventInner writes evt into the console_audit bucket via the
+// shared auditkv emitter. Best-effort: nil kv warns and returns nil.
 func emitAuditEventInner(
 	ctx context.Context, kv jetstream.KeyValue,
 	logger *slog.Logger, evt AuditEvent,
 ) error {
-	if ctx == nil {
-		panic("emitAuditEventInner: ctx is nil")
-	}
-	if logger == nil {
-		panic("emitAuditEventInner: logger is nil")
-	}
-	if kv == nil {
-		logger.Warn("console: audit bucket not configured, dropping event",
-			"action", evt.Action, "target", evt.Target)
-		return nil
-	}
-	if evt.Time.IsZero() {
-		evt.Time = time.Now().UTC()
-	}
-	body, err := json.Marshal(evt)
-	if err != nil {
-		return fmt.Errorf("marshal audit: %w", err)
-	}
-	key, err := auditKeyFor(evt.Time)
-	if err != nil {
-		return fmt.Errorf("audit key: %w", err)
-	}
-	if _, err := kv.Put(ctx, key, body); err != nil {
-		return fmt.Errorf("audit put: %w", err)
-	}
-	return nil
+	return auditkv.Emit(ctx, kv, logger, evt)
 }
 
-// auditKeyFor builds the storage key for an audit event. Format:
-// <RFC3339-nanos>-<6-hex-bytes>. The wall-clock prefix orders the
-// bucket; the random suffix prevents collisions when two emits land
-// in the same nanosecond.
+// auditKeyFor builds the storage key for an audit event (auditkv.KeyFor).
 func auditKeyFor(t time.Time) (string, error) {
-	if t.IsZero() {
-		return "", errors.New("zero timestamp")
-	}
-	var buf [6]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("rand: %w", err)
-	}
-	prefix := t.UTC().Format("20060102T150405.000000000Z07")
-	return prefix + "-" + hex.EncodeToString(buf[:]), nil
+	return auditkv.KeyFor(t)
 }
 
 // listAuditEventsInner reads up to limit recent audit events from the

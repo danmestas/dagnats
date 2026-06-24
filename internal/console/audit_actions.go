@@ -83,6 +83,33 @@ const (
 	// "terminal", "not_found", "engine_error") on the denied / failed
 	// paths.
 	ActionRunSignal AuditAction = "run.signal"
+
+	// ActionGrantControlPlane — the orchestrator stamped (or stripped)
+	// the control-plane capability on a dispatched step per the grant
+	// policy (#380, ADR-021). Actor is "orchestrator"; Target is the
+	// workflow name; Outcome is "success" when granted, "denied" when
+	// stripped. Emitted engine-side, not from a console operator action.
+	ActionGrantControlPlane AuditAction = "grant.control_plane"
+
+	// ActionRuntimeRegister — a control-plane-bearing run registered a
+	// runtime-defined workflow. Actor is "runtime:<owner_run_id>";
+	// Target is the scoped workflow name; Data carries root/owner run
+	// ids. Outcome "denied" on namespace/quota rejection.
+	ActionRuntimeRegister AuditAction = "runtime.register"
+
+	// ActionRuntimeSpawn — a run spawned a child run via the control
+	// plane. Same actor/target shape as ActionRuntimeRegister.
+	ActionRuntimeSpawn AuditAction = "runtime.spawn"
+
+	// ActionRuntimePromote — a run promoted a runtime-defined workflow
+	// to the durable catalog. Governed by the grant policy's promote
+	// list (#380); Outcome "denied" when the workflow is not authorized.
+	ActionRuntimePromote AuditAction = "runtime.promote"
+
+	// ActionRuntimeBudget — a run queried its tree's quota budget over the
+	// control plane. Only the nonce-denied path emits a row (outcome
+	// "denied"); a successful read is not audited (it mutates nothing).
+	ActionRuntimeBudget AuditAction = "runtime.budget"
 )
 
 // String returns the action's wire form. Centralising the cast keeps
@@ -131,6 +158,11 @@ var auditActionsAll = []AuditAction{
 	ActionWorkflowRun,
 	ActionRunCancel,
 	ActionRunSignal,
+	ActionGrantControlPlane,
+	ActionRuntimeRegister,
+	ActionRuntimeSpawn,
+	ActionRuntimePromote,
+	ActionRuntimeBudget,
 }
 
 // AuditActionList returns a defensive copy of the registered action

@@ -319,6 +319,15 @@ type StepState struct {
 	MapInstances  []MapInstanceState `json:"map_instances,omitempty"`
 	WakeAt        *time.Time         `json:"wake_at,omitempty"`
 	ChildRunID    string             `json:"child_run_id,omitempty"`
+	// DispatchNonce is a fresh random token stamped each time this step is
+	// dispatched to a worker (#380, ADR-021 Phase A). It rides this snapshot
+	// write — no extra KV write. The same value is placed on the
+	// TaskPayload; the worker echoes it back on control-plane requests. The
+	// server verifies the echoed nonce equals this value, proving the caller
+	// is the worker that received this exact dispatch — a sibling-run worker
+	// cannot forge another run's nonce. A retry re-stamps a fresh nonce.
+	// Additive: legacy snapshots deserialize to "".
+	DispatchNonce string `json:"dispatch_nonce,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

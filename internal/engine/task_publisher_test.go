@@ -118,7 +118,7 @@ func TestDoPublishMetricNotIncrementedOnFailure(t *testing.T) {
 	}
 
 	err := tp.doPublish(
-		context.Background(), "run-1", step, []byte(`{}`), 1,
+		context.Background(), "run-1", step, []byte(`{}`), 1, "", "",
 	)
 
 	// doPublish must return an error on failed publish.
@@ -174,7 +174,7 @@ func TestDoPublishMetricIncrementedOnSuccess(t *testing.T) {
 	}
 
 	err := tp.doPublish(
-		context.Background(), "run-1", step, []byte(`{}`), 1,
+		context.Background(), "run-1", step, []byte(`{}`), 1, "", "",
 	)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -221,7 +221,7 @@ func TestPublishIterationMetricNotIncrementedOnFailure(
 	}
 
 	err := tp.PublishIteration(
-		context.Background(), "run-1", step, []byte(`{}`), 1,
+		context.Background(), "run-1", step, []byte(`{}`), 1, "", "",
 	)
 	if err == nil {
 		t.Fatal(

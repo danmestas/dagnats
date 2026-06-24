@@ -932,7 +932,7 @@ func (w *Worker) startTaskSpan(
 	// and namespacing attach to the right owner.
 	if w.controlPlane != nil && stepDeclaresControlPlane(payload) {
 		tc.controlPlane = newControlPlaneFor(
-			w.nc, payload.RunID, payload.StepID,
+			w.nc, payload.RunID, payload.StepID, payload.DispatchNonce,
 		)
 	}
 	return ctx, span, tc

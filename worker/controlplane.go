@@ -44,10 +44,11 @@ type ControlPlane interface {
 	// RegisterWorkflow validates def and persists it under a
 	// server-computed scoped name, returning that name. opts.Promote is
 	// WIRED (#377): true registers under the reaper-immune "promoted.*"
-	// namespace. Promotion is currently UNGOVERNED — promoted defs bypass
-	// the #378 quota + rate limits and have no authorization gate; #380
-	// owns that grant policy. The returned scopedName is what StartRun
-	// expects as its name argument.
+	// namespace. Promotion is GOVERNED (#380): the server authorizes it
+	// against the grant policy's promote list (keyed on the author name) and
+	// returns KindDenied when the workflow is not authorized. Promoted defs
+	// still bypass the #378 root-scoped quota/rate limits (they have no
+	// owning tree). The returned scopedName is what StartRun expects.
 	RegisterWorkflow(
 		ctx context.Context, def dag.WorkflowDef, opts RegisterOpts,
 	) (scopedName string, err error)
@@ -81,11 +82,10 @@ type RuntimeBudget struct {
 // requests the def be registered under the reaper-immune "promoted.*"
 // namespace instead of the ephemeral "agent.<root>.*" namespace (#377).
 // The worker forwards the flag; the server owns the namespace shape.
-// Authorization for promotion is deferred to #380 — until then any caller
-// may promote, promoted defs are NOT subject to the #378 quota / rate
-// limits (those bound only root-scoped ephemeral defs), and
-// ErrPromotionUnsupported/KindPromotionUnsupported remain defined as the
-// seam #380 will reactivate.
+// Authorization for promotion is GOVERNED by the grant policy's promote
+// list (#380): an unauthorized caller gets KindDenied. Promoted defs remain
+// outside the #378 root-scoped quota / rate limits (those bound only
+// root-scoped ephemeral defs).
 type RegisterOpts struct {
 	Promote bool
 }
@@ -183,6 +183,11 @@ type runtimeRegisterRequest struct {
 	Def        dag.WorkflowDef `json:"def"`
 	OwnerRunID string          `json:"owner_run_id"`
 	Promote    bool            `json:"promote"`
+	// OwnerStepID + Nonce carry the per-dispatch run-binding proof (#380):
+	// the server indexes the owner run's step by OwnerStepID and verifies
+	// Nonce equals the stamped StepState.DispatchNonce. Additive, omitempty.
+	OwnerStepID string `json:"owner_step_id,omitempty"`
+	Nonce       string `json:"nonce,omitempty"`
 }
 
 // runtimeRegisterReply is the wire reply for api.runtimes.register.
@@ -198,6 +203,10 @@ type runSpawnRequest struct {
 	ParentRunID   string          `json:"parent_run_id"`
 	ParentStepID  string          `json:"parent_step_id"`
 	Input         json.RawMessage `json:"input,omitempty"`
+	// Nonce carries the per-dispatch run-binding proof (#380): the server
+	// verifies it against the parent run's ParentStepID DispatchNonce.
+	// Additive, omitempty.
+	Nonce string `json:"nonce,omitempty"`
 }
 
 // runSpawnReply is the wire reply for api.runs.spawn.
@@ -211,6 +220,11 @@ type runSpawnReply struct {
 // server resolves the tree root from owner_run_id before scanning.
 type runtimeBudgetRequest struct {
 	OwnerRunID string `json:"owner_run_id"`
+	// OwnerStepID + Nonce carry the per-dispatch run-binding proof (#380),
+	// so even a read-only budget query proves it came from this dispatch.
+	// Additive, omitempty.
+	OwnerStepID string `json:"owner_step_id,omitempty"`
+	Nonce       string `json:"nonce,omitempty"`
 }
 
 // runtimeBudgetReply is the wire reply for api.runtimes.budget: the budget
@@ -222,11 +236,17 @@ type runtimeBudgetReply struct {
 }
 
 // workerControlPlane is the production ControlPlane: a thin NATS
-// request/reply client scoped to one owning run + step.
+// request/reply client scoped to one owning run + step. dispatchNonce is
+// the per-dispatch run-binding token (#380) the worker received on the
+// TaskPayload; it travels on every control-plane request so the server can
+// verify the caller actually received this dispatch (a sibling-run worker
+// cannot forge another run's nonce). It flows internally via
+// TaskPayload→handle→wire — the public ControlPlane interface is unchanged.
 type workerControlPlane struct {
-	nc         *nats.Conn
-	ownerRunID string
-	stepID     string
+	nc            *nats.Conn
+	ownerRunID    string
+	stepID        string
+	dispatchNonce string
 }
 
 // NewControlPlane constructs a ControlPlane bound to nc. The owning run
@@ -247,7 +267,7 @@ func NewControlPlane(nc *nats.Conn) ControlPlane {
 // nil nc or empty ownerRunID — both are programmer errors (the gate only
 // fires with a non-nil worker connection and a populated payload).
 func newControlPlaneFor(
-	nc *nats.Conn, ownerRunID, stepID string,
+	nc *nats.Conn, ownerRunID, stepID, dispatchNonce string,
 ) *workerControlPlane {
 	if nc == nil {
 		panic("newControlPlaneFor: nc must not be nil")
@@ -257,6 +277,7 @@ func newControlPlaneFor(
 	}
 	return &workerControlPlane{
 		nc: nc, ownerRunID: ownerRunID, stepID: stepID,
+		dispatchNonce: dispatchNonce,
 	}
 }
 
@@ -276,6 +297,7 @@ func (c *workerControlPlane) RegisterWorkflow(
 	}
 	req := runtimeRegisterRequest{
 		Def: def, OwnerRunID: c.ownerRunID, Promote: opts.Promote,
+		OwnerStepID: c.stepID, Nonce: c.dispatchNonce,
 	}
 	reply, err := requestAPI[runtimeRegisterReply](
 		ctx, c.nc, subjectRuntimesRegister, req, "RegisterWorkflow",
@@ -311,6 +333,7 @@ func (c *workerControlPlane) StartRun(
 		ParentRunID:   c.ownerRunID,
 		ParentStepID:  c.stepID,
 		Input:         json.RawMessage(input),
+		Nonce:         c.dispatchNonce,
 	}
 	reply, err := requestAPI[runSpawnReply](
 		ctx, c.nc, subjectRunsSpawn, req, "StartRun",
@@ -340,7 +363,10 @@ func (c *workerControlPlane) Budget(
 	if c == nil || c.nc == nil {
 		panic("Budget: receiver must not be nil")
 	}
-	req := runtimeBudgetRequest{OwnerRunID: c.ownerRunID}
+	req := runtimeBudgetRequest{
+		OwnerRunID: c.ownerRunID, OwnerStepID: c.stepID,
+		Nonce: c.dispatchNonce,
+	}
 	reply, err := requestAPI[runtimeBudgetReply](
 		ctx, c.nc, subjectRuntimesBudget, req, "Budget",
 	)

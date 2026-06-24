@@ -222,9 +222,11 @@ func (n *NATSAPI) handleRuntimeRegister(req micro.Request) {
 		panic("handleRuntimeRegister: svc must not be nil")
 	}
 	var r struct {
-		Def        dag.WorkflowDef `json:"def"`
-		OwnerRunID string          `json:"owner_run_id"`
-		Promote    bool            `json:"promote"`
+		Def         dag.WorkflowDef `json:"def"`
+		OwnerRunID  string          `json:"owner_run_id"`
+		Promote     bool            `json:"promote"`
+		OwnerStepID string          `json:"owner_step_id"`
+		Nonce       string          `json:"nonce"`
 	}
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		n.reply(req, map[string]string{
@@ -232,8 +234,31 @@ func (n *NATSAPI) handleRuntimeRegister(req micro.Request) {
 		})
 		return
 	}
+	// Per-dispatch run-binding (#380, Fix 1): the worker must prove it
+	// received this exact dispatch. A forged/empty nonce → namespace denial,
+	// before any def is written. Applies to BOTH register and promote — the
+	// worker is always executing a real, gated dispatch when it calls the
+	// control plane, so it can always echo the nonce. Promotion AUTHORIZATION
+	// (the grant policy's promote list) is enforced separately in the service.
+	// Label the denial with the action the caller actually requested — a
+	// nonce-denied PROMOTE is audited as runtime.promote, not register.
+	deniedAction := "runtime.register"
+	if r.Promote {
+		deniedAction = "runtime.promote"
+	}
+	ctx := context.Background()
+	if kind, verr := n.svc.VerifyDispatch(
+		ctx, r.OwnerRunID, r.OwnerStepID, r.Nonce,
+	); verr != nil {
+		n.svc.emitRuntimeAudit(ctx, deniedAction, r.Def.Name,
+			"denied", r.OwnerRunID, "nonce_mismatch")
+		n.reply(req, map[string]string{
+			"error": verr.Error(), "kind": kind,
+		})
+		return
+	}
 	scoped, kind, err := n.svc.RegisterRuntimeWorkflow(
-		context.Background(), r.Def, r.OwnerRunID, r.Promote,
+		ctx, r.Def, r.OwnerRunID, r.Promote,
 	)
 	if err != nil {
 		n.reply(req, map[string]string{
@@ -259,6 +284,7 @@ func (n *NATSAPI) handleRunSpawn(req micro.Request) {
 		ParentRunID   string          `json:"parent_run_id"`
 		ParentStepID  string          `json:"parent_step_id"`
 		Input         json.RawMessage `json:"input"`
+		Nonce         string          `json:"nonce"`
 	}
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		n.reply(req, map[string]string{
@@ -266,8 +292,21 @@ func (n *NATSAPI) handleRunSpawn(req micro.Request) {
 		})
 		return
 	}
+	// Per-dispatch run-binding (#380, Fix 1): verify the spawn caller
+	// received this dispatch before launching a child run.
+	ctx := context.Background()
+	if kind, verr := n.svc.VerifyDispatch(
+		ctx, r.ParentRunID, r.ParentStepID, r.Nonce,
+	); verr != nil {
+		n.svc.emitRuntimeAudit(ctx, "runtime.spawn", r.ChildWorkflow,
+			"denied", r.ParentRunID, "nonce_mismatch")
+		n.reply(req, map[string]string{
+			"error": verr.Error(), "kind": kind,
+		})
+		return
+	}
 	runID, kind, err := n.svc.SpawnChildRun(
-		context.Background(), r.ChildWorkflow,
+		ctx, r.ChildWorkflow,
 		r.ParentRunID, r.ParentStepID, r.Input,
 	)
 	if err != nil {
@@ -292,13 +331,26 @@ func (n *NATSAPI) handleRuntimesBudget(req micro.Request) {
 		panic("handleRuntimesBudget: svc must not be nil")
 	}
 	var r struct {
-		OwnerRunID string `json:"owner_run_id"`
+		OwnerRunID  string `json:"owner_run_id"`
+		OwnerStepID string `json:"owner_step_id"`
+		Nonce       string `json:"nonce"`
 	}
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		n.replyBudgetError(req, err.Error(), "transport")
 		return
 	}
-	budget, kind, err := n.svc.Budget(context.Background(), r.OwnerRunID)
+	// Per-dispatch run-binding (#380, Fix 1): even a read-only budget query
+	// must prove it came from this dispatch.
+	ctx := context.Background()
+	if kind, verr := n.svc.VerifyDispatch(
+		ctx, r.OwnerRunID, r.OwnerStepID, r.Nonce,
+	); verr != nil {
+		n.svc.emitRuntimeAudit(ctx, "runtime.budget", r.OwnerRunID,
+			"denied", r.OwnerRunID, "nonce_mismatch")
+		n.replyBudgetError(req, verr.Error(), kind)
+		return
+	}
+	budget, kind, err := n.svc.Budget(ctx, r.OwnerRunID)
 	if err != nil {
 		n.replyBudgetError(req, err.Error(), kind)
 		return

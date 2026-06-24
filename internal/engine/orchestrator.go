@@ -18,6 +18,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -85,6 +86,12 @@ type Orchestrator struct {
 	// INFO on the capped → not-capped recovery edge. Accessed
 	// only from the single reconciler goroutine, no lock needed.
 	capHitPrev bool
+
+	// grantPolicy holds the hot-reloadable capability-grant policy (#380).
+	// nil (the default) denies every control-plane grant — deny-by-default.
+	// Shared with the TaskPublisher so the enqueue path strips the
+	// control-plane capability from any step whose workflow is not granted.
+	grantPolicy *GrantPolicyHolder
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -97,6 +104,20 @@ func WithStepRoutes(
 ) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.publisher.stepRoutes = routes
+	}
+}
+
+// WithGrantPolicyHolder wires the hot-reloadable capability-grant policy
+// (#380). The orchestrator shares the holder with its TaskPublisher so the
+// enqueue path strips the control-plane capability from a step whose
+// workflow is not granted. A nil holder (the default, when this option is
+// not supplied) means every grant is denied — deny-by-default.
+func WithGrantPolicyHolder(holder *GrantPolicyHolder) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.grantPolicy = holder
+		if o.publisher != nil {
+			o.publisher.grantPolicy = holder
+		}
 	}
 }
 
@@ -1093,6 +1114,11 @@ func (o *Orchestrator) handleStepContinue(
 			ctx, run, evt.StepID, state, reason,
 		)
 	}
+	// Re-stamp a fresh per-dispatch nonce for this iteration (#380): it rides
+	// this snapshot save (no extra write) and is threaded onto the
+	// PublishIteration payload so the iteration's control-plane calls bind to
+	// this dispatch.
+	state.DispatchNonce = runid.New()
 	run.Steps[evt.StepID] = state
 
 	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
@@ -1124,14 +1150,18 @@ func (o *Orchestrator) publishContinueTask(
 		)
 	}
 	loopCfg, _ := dag.ParseAgentLoopConfig(stepDef)
+	// state.DispatchNonce was stamped fresh by handleContinue before the
+	// snapshot save, so it is already persisted; thread it (with the run's
+	// workflow name) through both the delayed and immediate re-enqueue (#380).
 	if loopCfg.LoopDelay > 0 {
 		return o.scheduleDelayedIteration(
-			ctx, run.RunID, stepDef, input,
-			state.Iterations, loopCfg.LoopDelay,
+			ctx, run.RunID, run.WorkflowID, stepDef, input,
+			state.Iterations, loopCfg.LoopDelay, state.DispatchNonce,
 		)
 	}
 	return o.publisher.PublishIteration(
 		ctx, run.RunID, stepDef, input, state.Iterations,
+		run.WorkflowID, state.DispatchNonce,
 	)
 }
 
@@ -1140,10 +1170,12 @@ func (o *Orchestrator) publishContinueTask(
 func (o *Orchestrator) scheduleDelayedIteration(
 	ctx context.Context,
 	runID string,
+	workflowName string,
 	stepDef dag.StepDef,
 	input []byte,
 	iteration int,
 	delay time.Duration,
+	dispatchNonce string,
 ) error {
 	if runID == "" {
 		panic(
@@ -1164,6 +1196,7 @@ func (o *Orchestrator) scheduleDelayedIteration(
 		case <-timer.C:
 			pubErr := o.publisher.PublishIteration(
 				ctx, runID, stepDef, input, iteration,
+				workflowName, dispatchNonce,
 			)
 			if pubErr != nil {
 				slog.ErrorContext(ctx,
@@ -2113,6 +2146,10 @@ func (o *Orchestrator) enqueueReady(
 	for _, step := range ready {
 		state := run.Steps[step.ID]
 		state.Status = dag.StepStatusQueued
+		// Stamp a fresh per-dispatch nonce (#380): it rides this snapshot
+		// write (no extra KV write) and is mirrored onto the TaskPayload in
+		// PublishBatch so the worker can prove it received this dispatch.
+		state.DispatchNonce = runid.New()
 		run.Steps[step.ID] = state
 	}
 	// Multi-step batch — no single owning step, so pass "".
@@ -2593,9 +2630,15 @@ func (o *Orchestrator) publishMapTasks(
 		i, item := i, item
 		instanceStep := step
 		instanceStep.ID = mapInstanceID(step.ID, i)
+		// Map instances are data-parallel work items that never hold a
+		// control-plane handle: an empty workflow name strips any declared
+		// control-plane capability (deny-by-default), and a fresh nonce keeps
+		// the run-binding field populated though instances do not call the
+		// control plane (#380).
+		nonce := runid.New()
 		g.Go(func() error {
 			return o.publisher.Publish(
-				ctx, runID, instanceStep, item, 0,
+				ctx, runID, instanceStep, item, 0, "", nonce,
 			)
 		})
 	}
@@ -2768,6 +2811,7 @@ func (o *Orchestrator) runMapOnFailure(
 	}
 	ofState := run.Steps[onFailStep.ID]
 	ofState.Status = dag.StepStatusQueued
+	ofState.DispatchNonce = runid.New()
 	run.Steps[onFailStep.ID] = ofState
 	if err := o.saveSnapshot(ctx, run, onFailStep.ID); err != nil {
 		return err
@@ -2778,6 +2822,7 @@ func (o *Orchestrator) runMapOnFailure(
 	))
 	return o.publisher.Publish(
 		ctx, run.RunID, onFailStep, errorInput, 0,
+		run.WorkflowID, ofState.DispatchNonce,
 	)
 }
 

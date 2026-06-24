@@ -99,7 +99,63 @@ func Validate(cfg ConfigFile) error {
 	if err := validateTriggers(cfg.Triggers); err != nil {
 		return err
 	}
+	if err := validatePolicy(cfg.Policy); err != nil {
+		return err
+	}
 	return crossValidate(cfg)
+}
+
+// validatePolicy enforces the control-plane grant invariants: both lists
+// bounded at maxEntries (TigerStyle), no duplicates, no empty strings, and
+// every promote entry present in grant (you cannot promote what you cannot
+// reach). A nil policy is valid — deny-by-default needs no declaration.
+func validatePolicy(p *PolicyYAML) error {
+	if p == nil || p.ControlPlane == nil {
+		return nil
+	}
+	cp := p.ControlPlane
+	grant, err := validateGrantList("grant", cp.Grant)
+	if err != nil {
+		return err
+	}
+	if _, err := validateGrantList("promote", cp.Promote); err != nil {
+		return err
+	}
+	for _, name := range cp.Promote {
+		if _, ok := grant[name]; !ok {
+			return fmt.Errorf(
+				"policy.control_plane.promote %q not in grant", name,
+			)
+		}
+	}
+	return nil
+}
+
+// validateGrantList bounds the list, rejects empty strings and duplicates,
+// and returns the names as a set for subset checks. The bound is a hard
+// upper limit so a malformed file cannot allocate unboundedly.
+func validateGrantList(field string, names []string) (map[string]struct{}, error) {
+	if len(names) > maxEntries {
+		return nil, fmt.Errorf(
+			"policy.control_plane.%s exceeds max %d entries",
+			field, maxEntries,
+		)
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "" {
+			return nil, fmt.Errorf(
+				"policy.control_plane.%s contains an empty name", field,
+			)
+		}
+		if _, dup := set[name]; dup {
+			return nil, fmt.Errorf(
+				"policy.control_plane.%s duplicate name %q", field, name,
+			)
+		}
+		set[name] = struct{}{}
+	}
+	return set, nil
 }
 
 // validateWorkflows enforces the per-workflow invariants: name

@@ -15,6 +15,7 @@ import (
 	"github.com/danmestas/dagnats/bridge"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/configfile"
 	"github.com/danmestas/dagnats/internal/console"
 	"github.com/danmestas/dagnats/internal/engine"
@@ -57,6 +58,12 @@ type Server struct {
 	tempCreds          string              // inline creds temp file; cleaned on shutdown
 	cfgWatcher         *configfile.Watcher // hot-reload watcher (#358)
 	cfgWatcherCancel   context.CancelFunc  // cleanup paired with cfgWatcher
+	// grantHolder holds the hot-reloadable capability-grant policy (#380),
+	// shared with the orchestrator (enqueue-time capability strip) and the
+	// api service (promotion authorization). The configfile reload closure
+	// stores the policy from cfg.Policy.ControlPlane; the existing watcher
+	// re-invokes reload, so the grant flips live with no new machinery.
+	grantHolder *engine.GrantPolicyHolder
 }
 
 // New creates a Server with the given config. Panics if DataDir is empty.
@@ -180,18 +187,32 @@ func (s *Server) startComponents() error {
 	s.telShutdown = telShutdown
 	printStep(os.Stderr, "telemetry initialized")
 
+	// One grant-policy holder shared by the api service (promotion auth) and
+	// the orchestrator (enqueue-time capability strip). Unset → deny-by-
+	// default until the configfile reload supplies cfg.Policy.ControlPlane.
+	s.grantHolder = &engine.GrantPolicyHolder{}
+
+	// Open the console_audit bucket (nil-tolerant) so the control plane can
+	// emit audit rows; a failure here must not block server startup.
+	auditJS, auditErr := jetstream.New(s.nc)
+	var auditKV jetstream.KeyValue
+	if auditErr == nil {
+		auditKV, _ = auditkv.NewKV(context.Background(), auditJS)
+	}
+
 	s.svc = api.NewServiceWithLimits(s.nc, api.RuntimeLimits{
 		MaxActiveRunsPerRoot:         s.cfg.MaxActiveRunsPerRoot,
 		MaxDefsPerRoot:               s.cfg.MaxDefsPerRoot,
 		MaxGenerationDepth:           s.cfg.MaxGenerationDepth,
 		MaxRegistersPerMinutePerRoot: s.cfg.MaxRegistersPerMinutePerRoot,
-	})
+	}, api.WithGrantPolicyHolder(s.grantHolder), api.WithAuditKV(auditKV))
 	s.natsAPI = api.NewNATSAPI(s.svc, s.nc, s.cfg.Build)
 	s.natsAPI.Start()
 	printStep(os.Stderr, "nats api started")
 
 	s.orch = engine.NewOrchestrator(
 		s.nc, engine.WithRunsMaxAge(s.cfg.RunsMaxAge),
+		engine.WithGrantPolicyHolder(s.grantHolder),
 	)
 	s.orch.Start()
 	printStep(os.Stderr, "orchestrator started")
@@ -306,6 +327,12 @@ func (s *Server) startConfigWatcher() error {
 		filepathBase(s.cfg.ConfigFilePath))
 
 	reload := func(cfg configfile.ConfigFile) error {
+		// Apply the capability-grant policy live (#380): a nil/absent
+		// policy section Stores a deny-everything policy (empty lists), so
+		// removing the section from the file reverts to deny-by-default on
+		// the next reload. The configfile watcher re-invokes this closure
+		// on every edit, so no extra watch machinery is needed.
+		s.applyGrantPolicy(cfg.Policy)
 		return applyConfigFile(runCtx, kv, cfg, src)
 	}
 
@@ -330,6 +357,23 @@ func (s *Server) startConfigWatcher() error {
 	s.cfgWatcherCancel = runCancel
 	printStep(os.Stderr, "configfile watcher started")
 	return nil
+}
+
+// applyGrantPolicy stores the capability-grant policy from the configfile
+// into the shared holder (#380). A nil policy section (or nil holder, before
+// Start wires it) Stores an empty deny-everything policy — deny-by-default.
+// Validate has already enforced promote ⊆ grant, no dups, no empties, so the
+// lists are safe to hand straight to NewGrantPolicy.
+func (s *Server) applyGrantPolicy(p *configfile.PolicyYAML) {
+	if s.grantHolder == nil {
+		return
+	}
+	var grant, promote []string
+	if p != nil && p.ControlPlane != nil {
+		grant = p.ControlPlane.Grant
+		promote = p.ControlPlane.Promote
+	}
+	s.grantHolder.Store(engine.NewGrantPolicy(grant, promote))
 }
 
 // applyConfigFile drives the convert → diff → apply pipeline. Pulled

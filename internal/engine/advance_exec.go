@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/runid"
 )
 
 // executeSideEffects applies the effects produced by Advance to the
@@ -73,8 +74,17 @@ func (o *Orchestrator) executeOneEffect(
 
 	switch e := effect.(type) {
 	case EnqueueTask:
+		// Reuse the nonce the snapshot carries for this step; if the
+		// planner-driven path did not stamp one, mint a fresh nonce so the
+		// dispatch is still run-bound (#380). The grant strip keys on the
+		// run's workflow name.
+		nonce := run.Steps[e.Step.ID].DispatchNonce
+		if nonce == "" {
+			nonce = runid.New()
+		}
 		return o.publisher.Publish(
 			ctx, run.RunID, e.Step, e.Input, 0,
+			run.WorkflowID, nonce,
 		)
 	case CompleteWorkflow:
 		return o.completeWorkflow(ctx, run)
