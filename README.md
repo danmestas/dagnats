@@ -2,7 +2,7 @@
 
 DAG-based workflow engine built on NATS for autonomous LLM coding pipelines.
 
-Combines Hatchet-style DAG orchestration with Temporal-style durable execution, using NATS JetStream as the sole infrastructure dependency. Define workflows as directed acyclic graphs, register worker handlers, and let the engine handle task distribution, retries, event sourcing, and state recovery.
+Combines Hatchet-style DAG orchestration with Temporal-style durable execution, using NATS JetStream as the sole infrastructure dependency. Define workflows as directed acyclic graphs, register worker handlers, and let the engine handle task distribution, retries, event sourcing, and state recovery. Gated tasks can also **author and launch workflows at runtime** (agent runtimes), and the internal control plane is discoverable via nats-micro.
 
 ## Quick Start
 
@@ -64,6 +64,8 @@ w.Start()
 ## How it works
 
 Workflows are DAGs. The orchestrator subscribes to a NATS history stream and advances the DAG one event at a time, reading and writing run state to a KV bucket. Workers pull tasks from a durable JetStream consumer, execute handlers, and publish results back as events. Retries, step timeouts, and concurrency limits are scheduled by the engine through durable NATS primitives — no timer service, no external database, no Redis.
+
+Agent runtimes allow granted task handlers to access a `ControlPlane` capability, register new workflow definitions at runtime, and spawn child workflows. Capability grants are deny-by-default and enforced via policy configuration. The internal control plane endpoints run as nats-micro services, making them discoverable and observable via standard NATS tooling (`nats micro ls`).
 
 `dagnats serve` covers single-machine deployments. For leaf-node and distributed topologies, see the [Production guide](docs/production.md#deployment-topologies). Architecture decisions are recorded in [docs/architecture/](docs/architecture/) (ADR-006 onwards).
 
@@ -146,6 +148,7 @@ Created by `natsutil.SetupAll(nc)`:
 | KV | signals | Cross-workflow signals |
 | KV | checkpoints | Worker step state |
 | KV | concurrency_runs | Per-workflow counters |
+| KV | console_audit | Console audit log (operator + control-plane actions) |
 | KV | http_idempotency | HTTP trigger idempotency-key → run_id and stored response payloads (1h TTL) |
 
 ## Testing
@@ -180,6 +183,8 @@ see [docs/console.md](docs/console.md).
 | [Production](docs/production.md) | Deployment, security, tuning, observability |
 | [Workflow Schema](docs/workflow-schema.md) | JSON schema reference |
 | [AGENTS.md](AGENTS.md) | Conventions for coding agents (Codex, Cursor, Claude Code) |
+| [Agent Runtimes](docs/site/content/docs/ai-patterns/runtime-generated-workflows.md) | Runtime-generated workflows and agent runtime patterns |
+| [Service Discovery](docs/site/content/docs/operations/service-discovery.md) | nats-micro control plane endpoints |
 
 For coding agents and LLM tools: a curated [`llms.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms.txt) and a full-content [`llms-full.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms-full.txt) are regenerated on every commit.
 

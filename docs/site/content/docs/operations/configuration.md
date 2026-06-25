@@ -127,6 +127,38 @@ SUAM...
 ------END USER NKEY SEED------" dagnats serve
 ```
 
+## Control plane policy
+
+By default, task handlers cannot access the control plane. To allow a task to register and spawn workflows at runtime, declare `capabilities: ["control-plane"]` in the workflow definition and grant the workflow via deployment policy.
+
+The `policy.control_plane.grant` and `policy.control_plane.promote` settings are hot-reloadable and default to deny-by-default (empty or absent = no workflow has control-plane access).
+
+```yaml
+policy:
+  control_plane:
+    grant:   [planner, supervisor]
+    promote: [supervisor]
+```
+
+- `grant` — workflows allowed to access the control plane (list of workflow names)
+- `promote` — subset of `grant` that can spawn higher-privilege workflows; must be a subset
+
+See [Runtime-Generated Workflows]({{< ref "/docs/ai-patterns/runtime-generated-workflows" >}}) for agent-runtime patterns and [Service discovery]({{< ref "/docs/operations/service-discovery" >}}) for how the control plane is exposed.
+
+## Agent-runtime limits & retention
+
+Agent runtimes (runtime-generated workflows) are bounded per generation tree (root run). The following limits are enforced at capability boundaries and return errors the agent loop can handle:
+
+| Config Key | Environment Variable | Default | Meaning |
+|------------|----------------------|---------|---------|
+| `max_active_runs_per_root` | `DAGNATS_MAX_ACTIVE_RUNS_PER_ROOT` | `100` | Maximum non-terminal runs per root |
+| `max_defs_per_root` | `DAGNATS_MAX_DEFS_PER_ROOT` | `500` | Maximum ephemeral workflow definitions per root |
+| `max_generation_depth` | `DAGNATS_MAX_GENERATION_DEPTH` | `3` | Maximum spawn nesting depth (clamped to engine ceiling) |
+| `max_registers_per_minute_per_root` | `DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT` | `60` | Registration rate-limit per root tree |
+| `runs_max_age` | `DAGNATS_RUNS_MAX_AGE` | unset (disabled) | Optional run-retention window; Go duration format (e.g. `"720h"`); when set, terminal runs older than the window are pruned |
+
+`runs_max_age` is opt-in — when unset, run retention is unlimited. Negative values are rejected at load time. The `max_generation_depth` limit is clamped to the engine ceiling and any value exceeding it is rejected at config load.
+
 ## Viewing Effective Config
 
 ```bash

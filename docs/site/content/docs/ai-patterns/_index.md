@@ -12,5 +12,6 @@ weight: 8
   {{< card link="overview" title="Overview" >}}
   {{< card link="planner-pattern" title="Planner Pattern" >}}
   {{< card link="prompt-and-response-schemas" title="Prompt and Response Schemas" >}}
+  {{< card link="runtime-generated-workflows" title="Runtime-Generated Workflows" >}}
   {{< card link="tool-use-as-steps" title="Tool Use as Steps" >}}
 {{< /cards >}}

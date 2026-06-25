@@ -8,5 +8,6 @@ weight: 11
   {{< card link="deployment-models" title="Deployment Models" >}}
   {{< card link="nats-infrastructure" title="NATS Infrastructure" >}}
   {{< card link="production-checklist" title="Production Checklist" >}}
+  {{< card link="service-discovery" title="Service Discovery" >}}
   {{< card link="troubleshooting" title="Troubleshooting" >}}
 {{< /cards >}}
