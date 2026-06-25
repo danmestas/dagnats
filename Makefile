@@ -151,6 +151,13 @@ build-release: clean ## Build cross-platform release binaries + tarballs into ./
 # need only Docker. The cmd/dagnats-mcp-duckdb directory is its
 # own Go module, so the build runs from inside that subdir.
 # See #188.
+#
+# The two linux builds pass go build -buildvcs=false: the repo is bind-mounted
+# into the container, which runs as root while /src is owned by the host/runner
+# uid, so Go's default VCS stamping shells out to git and trips its "dubious
+# ownership" guard (exit 128, #466). The mcp-duckdb binary needs no embedded git
+# revision, so disabling the stamp is the clean fix. The darwin builds run
+# natively (git is trusted) and keep the default.
 MCPDUCKDB_BUILDER_IMG := golang:1.26-bookworm
 MCPDUCKDB_PKGNAME := dagnats-mcp-duckdb-linux-amd64
 build-mcp-duckdb-linux-amd64: ## Build dagnats-mcp-duckdb linux/amd64 tarball
@@ -160,7 +167,7 @@ build-mcp-duckdb-linux-amd64: ## Build dagnats-mcp-duckdb linux/amd64 tarball
 	  -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=amd64 \
 	  -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
 	  $(MCPDUCKDB_BUILDER_IMG) \
-	  go build -trimpath -ldflags="-s -w" \
+	  go build -trimpath -buildvcs=false -ldflags="-s -w" \
 	    -o "/src/$(DIST)/$(MCPDUCKDB_PKGNAME)/dagnats-mcp-duckdb" .
 	@cp LICENSE README.md "$(DIST)/$(MCPDUCKDB_PKGNAME)/" 2>/dev/null || true
 	@(cd $(DIST) && tar czf "$(MCPDUCKDB_PKGNAME).tar.gz" "$(MCPDUCKDB_PKGNAME)")
@@ -184,7 +191,7 @@ build-mcp-duckdb-linux-arm64: ## Build dagnats-mcp-duckdb linux/arm64 tarball
 	  -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=arm64 \
 	  -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
 	  $(MCPDUCKDB_BUILDER_IMG) \
-	  go build -trimpath -ldflags="-s -w" \
+	  go build -trimpath -buildvcs=false -ldflags="-s -w" \
 	    -o "/src/$(DIST)/$(MCPDUCKDB_LINUX_ARM64_PKGNAME)/dagnats-mcp-duckdb" .
 	@cp LICENSE README.md "$(DIST)/$(MCPDUCKDB_LINUX_ARM64_PKGNAME)/" 2>/dev/null || true
 	@(cd $(DIST) && \
