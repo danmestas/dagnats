@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+## [0.0.5] - 2026-06-25
+
+A feature release — 14 PRs since `v0.0.4`. Two headlines: **runtime-generated
+workflows** (agent runtimes, ADR-021 Phase A) — gated task handlers can author
+and launch brand-new DAGs at runtime, bounded on every axis — and **nats-micro
+service discovery** for the internal control plane. Also lands honest run
+listing, opt-in run retention, and the `dagnats-ci` add-on scaffold.
+
+### Added
+
+Agent runtimes (ADR-021 Phase A) — runtime-generated workflows:
+
+- **`ControlPlane` handle** on gated task handlers: `RegisterWorkflow` authors an ephemeral workflow def at runtime and `StartRun` launches a child run of it, so an LLM planner can compose known tools into a *novel* DAG and execute it durably — crash-recoverable like any other run. Opt-in and deny-by-default (#459, #376).
+- **Generation-tree lineage**: every spawned run is namespaced under its root run (`agent.<root>.*`); a bounded, idempotent reaper GCs ephemeral defs after the root run is terminal, plus promotion wiring for durable (`promoted.*`) defs (#460, #377).
+- **Per-runtime safety bounds**: per-tree quotas (max active runs, max ephemeral defs), a generation-depth cap (≤ the engine nesting ceiling), a register rate limit, and a `Budget()` method so a handler can self-throttle *before* hitting a quota (#461, #378).
+- **Capability-grant security model**: deny-by-default `policy.control_plane.grant` / `promote` lists, a per-dispatch **nonce** binding each request to the run the worker is actually executing, promotion authorization, and an audit record for every grant decision and control-plane mutation (#462, #380).
+- **Console → Agent runtimes** view: per-tree generation lineage, per-runtime budget consumption, and run **provenance** (a "runtime" tag on agent-spawned runs), live over SSE (#463, #379).
+
+Service discovery (nats-micro):
+
+- The internal control plane now runs as discoverable **`micro.Service`s** — `dagnats-api` (#456) and `dagnats-trigger` (#458) — answering the reserved `$SRV.PING` / `$SRV.INFO` / `$SRV.STATS` protocol, with a live **Console → Services** page sourced from `$SRV` discovery rather than a static registry (#457). All under the `#449` umbrella.
+
+Other:
+
+- **Run retention**: opt-in, drop-only retention sweeper (`runs_max_age` / `DAGNATS_RUNS_MAX_AGE`, disabled by default) (#455, #453).
+- **`dagnats-ci` add-on module**: scaffold with a `ci.yml` compiler + webhook core, as its own nested Go module (#451).
+- **Public `dagnatsext` worker seam** + per-step task metadata (#450).
+- **Docs**: runtime-generated-workflows + service-discovery guides, README + configuration refresh, and ADR-021 Phase A implementation status (#464); auto-generated SDK reference docs refreshed with a CI drift guard that pins gomarkdoc's source-link ref so output is reproducible on CI's detached-HEAD checkout (#465).
+
+### Changed
+
+- The control-plane request/reply **subjects are unchanged** by the nats-micro adoption — every existing caller keeps working. The `micro.Service` wrapper only adds the discovery + per-endpoint statistics surface, and fan-out is preserved (no queue group, matching the prior plain-subscribe behavior) (#456, #457, #458).
+
+### Fixed
+
+- **CLI `run list` is now honest**: a globally time-ordered listing across all workflows, plus a run count and a `--since` filter, instead of the previous per-workflow truncated view (#454, #452).
+
 ## [0.0.4] - 2026-06-18
 
 A bug-fix + console-completion release — 9 PRs since `v0.0.3`. Resolves two
