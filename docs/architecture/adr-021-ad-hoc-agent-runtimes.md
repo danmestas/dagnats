@@ -1,8 +1,25 @@
 # ADR-021: Ad-hoc agent runtimes — a scoped generative control-plane capability
 
-Status: accepted (2026-06-10, #375).
+Status: accepted (2026-06-10, #375); Phase A implemented & shipped (2026-06-25).
 Deciders: TBD
 Depends on: ADR-001 (agent-harness-gaps), ADR-002 (durable-agent-loop), ADR-012 (engine-resolves-workflow-def), ADR-017 (services-namespace)
+
+## Implementation status — Phase A (complete)
+
+Phase A delivers the core capability scoped to ad-hoc runtime workflow registration and spawning. All five PRs are merged:
+
+| Issue | PR | Component |
+|-------|----|----|
+| #376 | #459 | Core: ControlPlane capability interface + TaskContext integration |
+| #377 | #460 | Engine: runtime registration + spawn bounds enforcement |
+| #378 | #461 | Policy: hot-reloadable control_plane.grant/promote |
+| #379 | #463 | Configuration: new limits (max_active_runs_per_root, max_defs_per_root, etc.) |
+| #380 | #462 | Observability: audit KV (console_audit) for control-plane actions |
+| #449 | #456, #457, #458 | nats-micro adoption for internal services |
+
+One refinement emerged during Phase A: **server-side namespace authorization is enforced via a per-dispatch nonce** that binds each ControlPlane request to the run the worker is executing. This is stronger than the original proposal and prevents a handler from operating outside its delegated run scope.
+
+See the companion [agent-runtimes-provenance.md](agent-runtimes-provenance.md) for implementation notes and design trade-offs.
 
 ## Context
 

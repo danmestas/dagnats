@@ -21,6 +21,11 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `nats_jetstream_replicas` | int      | `0` (auto-derive)                                  | `0` (auto-derive)                        |
 | `monitor_port`            | int      | (none)                                             | (none)                                   |
 | `max_store_bytes`         | int64    | `10737418240` (10 GiB)                             | `10737418240` (10 GiB)                   |
+| `max_active_runs_per_root` | int     | `100`                                              | `100`                                    |
+| `max_defs_per_root`       | int      | `500`                                              | `500`                                    |
+| `max_generation_depth`    | int      | `3`                                                | `3`                                      |
+| `max_registers_per_minute_per_root` | int | `60`                                         | `60`                                     |
+| `runs_max_age`            | string   | unset (disabled)                                   | unset (disabled)                         |
 | `otlp_endpoint`           | string   | (none)                                             | (none)                                   |
 
 ### Embedded cluster mode
@@ -49,6 +54,11 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0`=auto |
 | `DAGNATS_MONITOR_PORT`    | `monitor_port`    | NATS monitoring HTTP port        |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |
+| `DAGNATS_MAX_ACTIVE_RUNS_PER_ROOT` | `max_active_runs_per_root` | Must be a positive integer |
+| `DAGNATS_MAX_DEFS_PER_ROOT` | `max_defs_per_root` | Must be a positive integer |
+| `DAGNATS_MAX_GENERATION_DEPTH` | `max_generation_depth` | Must be a positive integer; clamped to engine ceiling |
+| `DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT` | `max_registers_per_minute_per_root` | Must be a positive integer |
+| `DAGNATS_RUNS_MAX_AGE` | `runs_max_age` | Go duration format or unset; negatives rejected |
 
 ### Triggers
 
@@ -59,6 +69,26 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 When `DAGNATS_WEBHOOK_SECRET` is set and no `--secret` flag is provided
 to `dagnats trigger create`, the env var value is used. The `--secret`
 flag always takes precedence. This keeps secrets out of shell history.
+
+### Control plane policy
+
+The `policy.control_plane` block gates which workflows can access the control plane. Two policy keys exist:
+
+- `policy.control_plane.grant` (list of workflow names) — workflows allowed to register and spawn workflows at runtime
+- `policy.control_plane.promote` (list of workflow names) — subset of `grant`; workflows that can spawn higher-privilege workflows
+
+Both keys have no environment variable override. Empty or absent = deny-by-default (no workflow has access). The policy is hot-reloadable.
+
+Example `dagnats.yaml`:
+
+```yaml
+policy:
+  control_plane:
+    grant:   [planner, supervisor]
+    promote: [supervisor]
+```
+
+The constraint `promote ⊆ grant` is enforced at config load.
 
 ### Observability
 
