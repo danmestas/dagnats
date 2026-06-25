@@ -107,6 +107,25 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
           staticcheck ./...
 
+      - name: Generated SDK docs up to date
+        if: steps.filter.outputs.code == 'true'
+        # The reference/sdk/*/api.md files are gomarkdoc output checked into
+        # the repo (docs-gen-sdk). Nothing else regenerates them and the
+        # Cloudflare docs build only deploys committed content, so they rot
+        # silently as the Go public API drifts. Regenerate here and fail if the
+        # tree changes, with the fix in the error message. gomarkdoc is pinned,
+        # and the Makefile pins its source-link ref (--repository.* overrides) so
+        # output is identical to the committed files even on CI's detached-HEAD
+        # checkout, where auto-detection would otherwise emit commit-SHA links.
+        run: |
+          go install github.com/princjef/gomarkdoc/cmd/gomarkdoc@v1.1.0
+          make docs-gen-sdk
+          if ! git diff --quiet docs/site/content/docs/reference/sdk/; then
+            echo "::error::Generated SDK reference docs are stale. Run 'make docs-gen-sdk' and commit the result."
+            git --no-pager diff --stat docs/site/content/docs/reference/sdk/
+            exit 1
+          fi
+
       - name: Test
         if: steps.filter.outputs.code == 'true'
         # 600s matches the Makefile's `make test` timeout. The worker

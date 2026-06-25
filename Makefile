@@ -86,16 +86,26 @@ docs-serve:
 docs-build:
 	hugo -s docs/site -d ../../dist
 
+# gomarkdoc embeds "View Source" links whose ref it auto-detects from git state.
+# On a named branch it emits blob/main links; on CI's detached-HEAD PR checkout
+# it falls back to commit-SHA links — so bare output drifts every commit and the
+# drift guard below could never pass. Pinning url + default-branch + path makes
+# the override explicit, so output is byte-identical regardless of git state or
+# platform: committed == whatever CI regenerates. Keep all three in sync if the
+# repo moves.
+GOMARKDOC := gomarkdoc --repository.url https://github.com/danmestas/dagnats \
+  --repository.default-branch main --repository.path /
+
 docs-gen-sdk:
-	gomarkdoc --output docs/site/content/docs/reference/sdk/dag/api.md ./dag/
-	gomarkdoc --output docs/site/content/docs/reference/sdk/worker/api.md ./worker/
-	gomarkdoc --output docs/site/content/docs/reference/sdk/protocol/api.md ./protocol/
-	gomarkdoc --output docs/site/content/docs/reference/sdk/observe/api.md ./observe/
-	gomarkdoc --output docs/site/content/docs/reference/sdk/actor/api.md ./actor/
-	gomarkdoc --output docs/site/content/docs/reference/sdk/server/api.md ./server/
-	gomarkdoc --output docs/site/content/docs/reference/sdk/bridge/api.md ./bridge/
-	gomarkdoc --output docs/site/content/docs/reference/sdk/httpclient/api.md ./sdk/httpclient/
-	gomarkdoc --output docs/site/content/docs/reference/sdk/dagnatstest/api.md ./dagnatstest/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/dag/api.md ./dag/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/worker/api.md ./worker/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/protocol/api.md ./protocol/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/observe/api.md ./observe/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/actor/api.md ./actor/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/server/api.md ./server/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/bridge/api.md ./bridge/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/httpclient/api.md ./sdk/httpclient/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/dagnatstest/api.md ./dagnatstest/
 
 docs-gen-llms:  # Requires scripts/gen-llms-txt.sh (created later)
 	./scripts/gen-llms-txt.sh
