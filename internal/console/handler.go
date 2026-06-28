@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -680,6 +681,7 @@ func funcMap() template.FuncMap {
 		"tooltip":          tooltipHelper(),
 		"tooltipAs":        tooltipAsHelper(),
 		"tooltipText":      tooltipTextHelper,
+		"tooltipID":        tooltipPopoverID,
 	}
 }
 
@@ -688,10 +690,6 @@ func funcMap() template.FuncMap {
 // back to the bare label when the term is unknown so missing entries
 // degrade gracefully.
 func tooltipAsHelper() func(label, term string) template.HTML {
-	const tmpl = `<span class="glo-tooltip-wrapper" tabindex="0">` +
-		`<span class="glo-tooltip-target">%s</span>` +
-		`<span class="glo-tooltip-popover" role="tooltip">%s</span>` +
-		`</span>`
 	return func(label, term string) template.HTML {
 		if label == "" {
 			return template.HTML("")
@@ -700,11 +698,67 @@ func tooltipAsHelper() func(label, term string) template.HTML {
 		if !ok {
 			return template.HTML(template.HTMLEscapeString(label))
 		}
-		return template.HTML(fmt.Sprintf(tmpl,
-			template.HTMLEscapeString(label),
-			template.HTMLEscapeString(text),
-		))
+		return renderTooltip(label, term, text)
 	}
+}
+
+// tooltipPopoverID derives a stable, unique DOM id for a tooltip's
+// popover from the glossary term. Deterministic (no counter, no
+// randomness) so repeat renders are byte-identical and snapshot-stable;
+// distinct terms yield distinct ids so two tooltips never collide on
+// aria-describedby. The 8-hex FNV suffix disambiguates terms whose
+// slugs collide.
+//
+// Tradeoff: determinism-per-term means two instances of the SAME term on
+// one page produce duplicate ids (not per-element-unique). Accepted —
+// glossary terms rarely repeat on a page, and snapshot stability is worth
+// more than guaranteeing element-level uniqueness here.
+func tooltipPopoverID(term string) string {
+	if term == "" {
+		panic("tooltipPopoverID: empty term")
+	}
+	var slug strings.Builder
+	for _, r := range strings.ToLower(term) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			slug.WriteRune(r)
+		default:
+			slug.WriteByte('-')
+		}
+	}
+	hash := fnv.New32a()
+	if _, err := hash.Write([]byte(term)); err != nil {
+		panic(fmt.Sprintf("tooltipPopoverID: fnv write: %v", err))
+	}
+	return fmt.Sprintf("glo-tip-%s-%08x", slug.String(), hash.Sum32())
+}
+
+// renderTooltip emits the glossary tooltip wrapper with the WCAG 2.4.7 +
+// 4.1.2 wiring: a stable popover id, the wrapper's aria-describedby
+// pointing at it, and aria-label carrying the visible label. The CSS
+// `.glo-tooltip-wrapper:focus-visible` ring (app.css) makes keyboard
+// focus visible to satisfy 2.4.7.
+func renderTooltip(label, term, text string) template.HTML {
+	if label == "" {
+		panic("renderTooltip: empty label")
+	}
+	if text == "" {
+		panic("renderTooltip: empty text")
+	}
+	const tmpl = `<span class="glo-tooltip-wrapper" tabindex="0"` +
+		` aria-label="%s" aria-describedby="%s">` +
+		`<span class="glo-tooltip-target">%s</span>` +
+		`<span class="glo-tooltip-popover" role="tooltip" id="%s">%s</span>` +
+		`</span>`
+	id := tooltipPopoverID(term)
+	escLabel := template.HTMLEscapeString(label)
+	return template.HTML(fmt.Sprintf(tmpl,
+		escLabel,
+		id,
+		escLabel,
+		id,
+		template.HTMLEscapeString(text),
+	))
 }
 
 // tooltipTextHelper returns the raw glossary definition for term so a
@@ -735,10 +789,6 @@ func tooltipTextHelper(term string) string {
 // avoids the same problem if Basecoat ships its own `.tooltip-*`
 // classes later.
 func tooltipHelper() func(term string) template.HTML {
-	const tmpl = `<span class="glo-tooltip-wrapper" tabindex="0">` +
-		`<span class="glo-tooltip-target">%s</span>` +
-		`<span class="glo-tooltip-popover" role="tooltip">%s</span>` +
-		`</span>`
 	return func(term string) template.HTML {
 		if term == "" {
 			return template.HTML("")
@@ -747,10 +797,7 @@ func tooltipHelper() func(term string) template.HTML {
 		if !ok {
 			return template.HTML(template.HTMLEscapeString(term))
 		}
-		return template.HTML(fmt.Sprintf(tmpl,
-			template.HTMLEscapeString(term),
-			template.HTMLEscapeString(text),
-		))
+		return renderTooltip(term, term, text)
 	}
 }
 

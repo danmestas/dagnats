@@ -14,8 +14,9 @@
   with any Basecoat-shipped `.tooltip` rules.
 */}}
 {{define "tooltip"}}
-<span class="glo-tooltip-wrapper" tabindex="0">
+{{- $id := tooltipID .Label -}}
+<span class="glo-tooltip-wrapper" tabindex="0" aria-label="{{.Label}}" aria-describedby="{{$id}}">
   <span class="glo-tooltip-target">{{.Label}}</span>
-  <span class="glo-tooltip-popover" role="tooltip">{{.Text}}</span>
+  <span class="glo-tooltip-popover" role="tooltip" id="{{$id}}">{{.Text}}</span>
 </span>
 {{end}}
