@@ -190,7 +190,7 @@ func buildMetricsTiles(src MetricsSource) []MetricsTile {
 		tileFromSuccessRate(src),
 		tileFromHistogramP50(src,
 			"snapshot.save.duration_ms", "tile-snapshot-p50",
-			"Snapshot p50", "ms", "/console/metrics"),
+			"Snapshot p50", "ms", ""),
 		tileFromCounter(src,
 			"workflow.runs.failed", "tile-failed",
 			"Runs failed", "runs", "/console/dlq"),
@@ -421,6 +421,11 @@ func tileFromHistogramP50(
 		return tile
 	}
 	median := percentileFromBuckets(latest, 0.50)
+	if median <= 0 {
+		tile.Empty = true
+		tile.Value = "—"
+		return tile
+	}
 	tile.Value = formatNumber(median)
 	tile.Spark = sparkFromHistogramP50(series.Points, 60)
 	tile.Trend = "flat"

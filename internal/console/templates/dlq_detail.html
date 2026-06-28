@@ -1,4 +1,13 @@
 {{define "content"}}{{with .Page}}
+{{if .NotFound}}
+<section class="console-section">
+  <header class="console-section-header">
+    <h1>Dead letter #{{.Sequence}}</h1>
+    <p class="console-lede">DLQ entry #{{.Sequence}} not found — it may have been discarded, or the sequence is out of range.</p>
+  </header>
+  <p><a class="btn btn-outline" href="/console/dlq">&larr; back to DLQ</a></p>
+</section>
+{{else}}
 <section class="console-section">
   <header class="console-section-header">
     <h1>Dead letter #{{.Sequence}}</h1>
@@ -72,4 +81,4 @@
 </section>
 
 {{template "dlq-action-modal" .}}
-{{end}}{{end}}
+{{end}}{{end}}{{end}}

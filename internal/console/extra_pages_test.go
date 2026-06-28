@@ -308,6 +308,28 @@ func TestDLQDetail_rendersAndExposesActions(t *testing.T) {
 	}
 }
 
+// TestDLQDetail_outOfRange_rendersContextualNotFound pins m7: an
+// out-of-range / non-existent DLQ sequence must render an in-section
+// not-found message (mirroring stream_detail.html) with a back link,
+// not the generic 404 landmark page.
+func TestDLQDetail_outOfRange_rendersContextualNotFound(t *testing.T) {
+	fake := newFakeDS()
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/dlq/9999", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, "DLQ entry") {
+		t.Errorf("missing contextual not-found copy %q", "DLQ entry")
+	}
+	if !strings.Contains(body, "back to DLQ") {
+		t.Errorf("missing %q back link", "back to DLQ")
+	}
+	if strings.Contains(body, "Popular destinations") {
+		t.Errorf("rendered generic 404 landmark instead of in-section state")
+	}
+}
+
 // TestDLQList_rowsHaveInlineRetryAndDiscardButtons asserts T09's
 // signature contract: every DLQ row carries inline Retry + Discard
 // buttons plus the existing Inspect link, each wired through the
