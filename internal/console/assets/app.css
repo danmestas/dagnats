@@ -2368,6 +2368,18 @@ summary:focus-visible,
   border-radius: 3px;
 }
 
+/* m6-D3 (WCAG 2.4.7 + 4.1.2) — glossary tooltips are keyboard-focusable
+ * (tabindex=0 + aria-describedby on the wrapper, role=tooltip + id on
+ * the popover, wired in handler.go renderTooltip). basecoat-raw already
+ * reveals the popover on :focus; this explicit ring keeps the tooltip's
+ * focus treatment self-documenting alongside the sitewide [tabindex]
+ * rule above. */
+.glo-tooltip-wrapper:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
 /* B8 interaction states — pressed (:active) + hover polish. Recon found
  * zero :active states sitewide; a pressed signifier (Norman) confirms a
  * click landed. Buttons + chips + the theme toggle nudge down 1px and
@@ -3868,6 +3880,7 @@ body[data-theme="dark"] code {
 
 .logs-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.8125rem;
 }
@@ -3885,6 +3898,12 @@ body[data-theme="dark"] code {
 .logs-table .logs-th-time    { width: 220px; }
 .logs-table .logs-th-level   { width: 80px; }
 .logs-table .logs-th-source  { width: 200px; }
+/* The trace column needs a fixed width too: under table-layout:fixed any
+   undeclared column shares the leftover width equally, so without this
+   the message column (the sole `auto` flex column M4 relies on) would
+   only get half the slack. 160px fits a clipped 32-hex trace id / "—"
+   while leaving the rest to message. */
+.logs-table .logs-th-trace   { width: 160px; }
 .logs-table .logs-th-message { width: auto; }
 .logs-row > td {
   padding: var(--space-1) var(--space-3);
@@ -3918,7 +3937,13 @@ body[data-theme="dark"] code {
   font-size: 0.8125rem;
   color: var(--text-primary);
   line-height: 1.45;
+  /* With .logs-table table-layout:fixed the message column takes the
+     remaining width; break-word wraps normal prose and anywhere forces
+     a break inside a single unbroken token (panic hex / long URL) so a
+     ~15000px run can't expand the column. The cell carries a title
+     attribute (see logs.html) so the full text is reachable on hover. */
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .logs-trace {
   display: inline-block;
