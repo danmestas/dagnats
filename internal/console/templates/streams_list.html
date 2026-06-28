@@ -20,7 +20,7 @@
     </thead>
     <tbody id="streams-tbody">
       {{range .Page.Streams}}
-      <tr id="stream-row-{{.Name}}">
+      <tr id="stream-row-{{.Name}}" data-href="/console/streams/{{.Name}}">
         <td class="mono"><a href="/console/streams/{{.Name}}">{{.Name}}</a></td>
         <td class="mono">{{.Subjects}}</td>
         <td>{{if eq .Retention "—"}}<span class="muted">—</span>{{else}}<span class="badge badge-outline{{if .RetentionHot}} stream-pill-hot{{end}}">{{.Retention}}</span>{{end}}</td>

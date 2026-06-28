@@ -85,3 +85,39 @@ import "./sheet.js";
     init();
   }
 })();
+
+// Delegated row-click drill-in. List tables render a per-row
+// data-href on the <tr>; clicking anywhere in the row navigates to
+// that detail page. A single document-level listener handles every
+// list table (workflows, runs, triggers, streams, workers, functions)
+// instead of scattering per-template handlers. The first column still
+// carries a real <a> for keyboard users — this is a mouse convenience,
+// so the <tr> deliberately gets no tabindex/role (no duplicate tab
+// stop). Clicks that originate on an interactive descendant (the name
+// link, a toggle switch, an inline action button, a form control) are
+// left alone so the row-click never hijacks them.
+(function () {
+  const INTERACTIVE =
+    'a[href], button, [role="switch"], [role="checkbox"], input, label, select';
+
+  function onClick(event) {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    if (target.closest(INTERACTIVE)) return;
+    const row = target.closest("tr[data-href]");
+    if (!row) return;
+    const href = row.getAttribute("data-href");
+    if (!href) return;
+    window.location.assign(href);
+  }
+
+  // Guard against double-binding if this bundle is evaluated twice.
+  if (!window.__dagnatsRowClickBound) {
+    window.__dagnatsRowClickBound = true;
+    document.addEventListener("click", onClick);
+  }
+})();

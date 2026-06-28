@@ -583,6 +583,13 @@ a:hover { text-decoration: underline; }
   transform: translateX(2px);
   color: var(--text-primary);
 }
+/* Rows carrying a data-href drill into a detail page on click (handled
+   by the delegated listener in console.js). The pointer cursor makes
+   the affordance honest — the whole row is the click target, not just
+   the chevron. Interactive descendants keep their own cursors. */
+.console-table tbody tr[data-href] {
+  cursor: pointer;
+}
 
 /* Status badges. */
 .badge {

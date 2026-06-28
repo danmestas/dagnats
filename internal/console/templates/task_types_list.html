@@ -60,7 +60,7 @@
           </td>
         </tr>
         {{range .Rows}}
-        <tr class="task-type-row" data-task-type="{{.TaskType}}">
+        <tr class="task-type-row" data-task-type="{{.TaskType}}" data-href="{{.RunHref}}">
           <td class="mono task-type-name"><a href="{{.RunHref}}">{{.TaskType}}</a></td>
           <td class="task-type-owners">
             {{range $i, $id := .OwnerWorkerIDs}}{{if $i}}, {{end}}<span class="mono">{{$id}}</span>{{end}}
