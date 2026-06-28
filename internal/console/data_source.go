@@ -166,7 +166,16 @@ type DataSource interface {
 	// channel closes when ctx is cancelled or the underlying watcher
 	// fails. Caller is responsible for filtering — the stream emits
 	// everything in the bucket.
-	WatchRuns(ctx context.Context) (<-chan RunUpdate, error)
+	//
+	// liveOnly suppresses the initial replay of existing keys: when
+	// true the watch opens with NATS UpdatesOnly so only mutations
+	// after connect are emitted. The runs list passes liveOnly=true on
+	// page>1, where a history replay would prepend the most-recent runs
+	// over the server-rendered offset rows. liveOnly=false (the zero
+	// value) preserves the replay so page 1 pre-populates the live list.
+	WatchRuns(
+		ctx context.Context, liveOnly bool,
+	) (<-chan RunUpdate, error)
 
 	// WatchRunHistory streams history.<runID> events. Events arrive
 	// chronologically per the JetStream delivery order. fromSeq is the
@@ -1454,9 +1463,10 @@ func (a *apiServiceAdapter) readBucketValues(
 // oldest queued update. That's intentional — the operator UI always
 // wants the latest snapshot, never a stale one. Initial replay of
 // existing keys is included, marked Created=true so the list page
-// can pre-populate.
+// can pre-populate — unless liveOnly is set, in which case the watch
+// opens with UpdatesOnly and no replay reaches the consumer.
 func (a *apiServiceAdapter) WatchRuns(
-	ctx context.Context,
+	ctx context.Context, liveOnly bool,
 ) (<-chan RunUpdate, error) {
 	if ctx == nil {
 		panic("apiServiceAdapter.WatchRuns: ctx is nil")
@@ -1472,7 +1482,11 @@ func (a *apiServiceAdapter) WatchRuns(
 	if err != nil {
 		return nil, fmt.Errorf("workflow_runs bucket: %w", err)
 	}
-	watcher, err := kv.WatchAll(ctx)
+	var opts []jetstream.WatchOpt
+	if liveOnly {
+		opts = append(opts, jetstream.UpdatesOnly())
+	}
+	watcher, err := kv.WatchAll(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("watch workflow_runs: %w", err)
 	}

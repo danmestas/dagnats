@@ -1,7 +1,7 @@
 {{define "content"}}{{$page := .Page}}{{with $page}}
 <section class="console-section"
          data-signals="{runsWorkflow: '{{.Workflow}}', runsStatus: '{{.Status}}', runsRange: '{{.Range}}'}"
-         data-init="@get('/console/sse/runs', {openWhenHidden: true})">
+         data-init="@get('/console/sse/runs?page={{.Page}}', {openWhenHidden: true})">
   {{template "page-header" .Header}}
   <p class="console-lede console-section-meta">
     {{if .Total}}Showing {{.FirstIndex}}&ndash;{{.LastIndex}} of {{.Total}} runs.{{else}}No runs match these filters.{{end}}

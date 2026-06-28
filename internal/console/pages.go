@@ -1022,14 +1022,17 @@ func runRowFromRun(r dag.WorkflowRun) RunRow {
 		TriggerKind: triggerKindFromInput(r.Input),
 		StartedAt:   r.CreatedAt.UTC().Format(time.RFC3339),
 	}
-	// The runs list reads only the run snapshot — no per-run history —
-	// so terminal runs have no end timestamp here. Show the honest "—"
-	// rather than a synthetic value; the run-detail page derives the
-	// real terminal duration from the run's history events. In-flight
-	// runs render a labelled elapsed time so it can't be mistaken for a
-	// final duration.
+	// Terminal runs carry CompletedAt in the snapshot (the engine stamps
+	// it on every terminal path), so the list shows the real wall-clock
+	// duration without per-run history. Older snapshots predate the field
+	// and fall back to the honest "—" placeholder. In-flight runs render a
+	// labelled elapsed time so it can't be mistaken for a final duration.
 	if r.Status.IsTerminal() {
 		row.Duration = "—"
+		if r.CompletedAt != nil && !r.CompletedAt.IsZero() &&
+			r.CompletedAt.After(r.CreatedAt) {
+			row.Duration = formatDuration(r.CompletedAt.Sub(r.CreatedAt))
+		}
 	} else {
 		row.Duration = formatDuration(time.Since(r.CreatedAt)) + " elapsed"
 	}

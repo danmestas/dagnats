@@ -421,7 +421,9 @@ func serveSSEAgents(
 	if !ok {
 		return
 	}
-	ch, err := ds.WatchRuns(r.Context())
+	// Agent trees need the full bucket replay to seed the tree on
+	// connect, so liveOnly stays false.
+	ch, err := ds.WatchRuns(r.Context(), false)
 	if err != nil {
 		cfg.Logger.Error("console: sse agents watch", "err", err)
 		http.Error(w, "watch failed", http.StatusServiceUnavailable)

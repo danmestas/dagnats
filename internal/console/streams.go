@@ -52,7 +52,13 @@ func serveSSERuns(
 		return
 	}
 	filter := readRunsFilter(r)
-	ch, err := ds.WatchRuns(r.Context())
+	// On page>1 the GET already server-rendered the offset rows
+	// (rows[(page-1)*size : page*size]). Opening the watch live-only
+	// suppresses the KV history replay that would otherwise prepend the
+	// most-recent runs and stomp those offset rows. Page 1 keeps the
+	// replay so new runs pre-populate the live list.
+	page, _ := parsePageAndSize(r.URL.Query().Get("page"), "")
+	ch, err := ds.WatchRuns(r.Context(), page > 1)
 	if err != nil {
 		cfg.Logger.Error("console: sse runs watch", "err", err)
 		http.Error(w, "watch failed", http.StatusServiceUnavailable)
