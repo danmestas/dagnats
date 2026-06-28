@@ -817,3 +817,159 @@ func readSSEPayloadUntil(
 	}
 	return count, sb.String()
 }
+
+// getWorkflowRecorder wraps a DataSource and records every name passed
+// to GetWorkflow. It exists to prove the run-detail SSE handler never
+// reaches GetWorkflow with an empty name — the empty-name path panics
+// (a TigerStyle programmer-invariant assertion in the real adapter), so
+// the recorder forwarding to the panicking fake is the canary.
+type getWorkflowRecorder struct {
+	*resumeRecorder
+	getWorkflowNames []string
+}
+
+func (g *getWorkflowRecorder) GetWorkflow(name string) (dag.WorkflowDef, error) {
+	g.getWorkflowNames = append(g.getWorkflowNames, name)
+	return g.resumeRecorder.GetWorkflow(name)
+}
+
+var _ DataSource = (*getWorkflowRecorder)(nil)
+
+// TestSSERunDetail_emptyWorkflowID_noPanic drives serveSSERunDetail for
+// a run whose snapshot carries an empty WorkflowID (the live race
+// condition that produced 94 recovered panics). The handler must:
+//   - return 200 with a valid SSE stream (no half-open / refused conn),
+//   - never invoke GetWorkflow with an empty name.
+func TestSSERunDetail_emptyWorkflowID_noPanic(t *testing.T) {
+	fake := newFakeDS()
+	// Run snapshot exists but carries no WorkflowID — the timing window
+	// the bug report describes. getRunWorkflowID returns "" for this run.
+	fake.runs = []dag.WorkflowRun{{
+		RunID: "run-empty", WorkflowID: "",
+		Status: dag.RunStatusRunning, CreatedAt: time.Now(),
+	}}
+	hist := make(chan HistoryEvent, 4)
+	fake.runHistory["run-empty"] = hist
+	rec := &getWorkflowRecorder{resumeRecorder: &resumeRecorder{inner: fake}}
+	h := mountConsoleWithDS(t, rec)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 3*time.Second,
+	)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(
+		ctx, http.MethodGet,
+		srv.URL+"/console/sse/runs/run-empty", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get sse run-detail (empty workflow id): %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (valid SSE)", resp.StatusCode)
+	}
+
+	hist <- HistoryEvent{
+		Event: api.RunEvent{
+			Type: "workflow.started", RunID: "run-empty",
+			Timestamp: time.Now(),
+		},
+		Seq: 1,
+	}
+	// Sentinel flushes the reader past the meaningful event.
+	hist <- HistoryEvent{
+		Event: api.RunEvent{
+			Type: "workflow.heartbeat", RunID: "run-empty",
+			Timestamp: time.Now(),
+		},
+		Seq: 2,
+	}
+
+	gotEvents, payload := readSSEPayloadUntil(t, resp.Body, 2, 1500)
+	if gotEvents < 1 {
+		t.Fatalf("got %d patch events, want >= 1; payload=%s",
+			gotEvents, payload)
+	}
+	for _, name := range rec.getWorkflowNames {
+		if name == "" {
+			t.Fatalf("GetWorkflow was called with an empty name: %v",
+				rec.getWorkflowNames)
+		}
+	}
+}
+
+// TestSSERunDetail_presentWorkflowID_callsGetWorkflow guards the happy
+// path: when the run snapshot carries a WorkflowID, the handler resolves
+// the definition (so step-row patches can light up) and emits a step-row
+// patch targeting the rendered row. Proves the empty-name guard did not
+// suppress the legitimate lookup.
+func TestSSERunDetail_presentWorkflowID_callsGetWorkflow(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	fake.runs = []dag.WorkflowRun{{
+		RunID: "run-z", WorkflowID: "alpha",
+		Status: dag.RunStatusRunning, CreatedAt: time.Now(),
+	}}
+	hist := make(chan HistoryEvent, 4)
+	fake.runHistory["run-z"] = hist
+	rec := &getWorkflowRecorder{resumeRecorder: &resumeRecorder{inner: fake}}
+	h := mountConsoleWithDS(t, rec)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 3*time.Second,
+	)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(
+		ctx, http.MethodGet,
+		srv.URL+"/console/sse/runs/run-z", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get sse run-detail (present workflow id): %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	hist <- HistoryEvent{
+		Event: api.RunEvent{
+			Type: "step.completed", RunID: "run-z", StepID: "first",
+			Timestamp: time.Now(),
+		},
+		Seq: 1,
+	}
+	hist <- HistoryEvent{
+		Event: api.RunEvent{
+			Type: "workflow.heartbeat", RunID: "run-z",
+			Timestamp: time.Now(),
+		},
+		Seq: 2,
+	}
+
+	gotEvents, payload := readSSEPayloadUntil(t, resp.Body, 2, 1500)
+	if gotEvents < 1 {
+		t.Fatalf("got %d patch events, want >= 1; payload=%s",
+			gotEvents, payload)
+	}
+	// The guarded GetWorkflow must still fire with the real name so the
+	// step-row patch can be rendered against the definition's step set.
+	sawAlpha := false
+	for _, name := range rec.getWorkflowNames {
+		if name == "alpha" {
+			sawAlpha = true
+		}
+	}
+	if !sawAlpha {
+		t.Fatalf("GetWorkflow not called with %q; calls=%v",
+			"alpha", rec.getWorkflowNames)
+	}
+	if !strings.Contains(payload, `data-step-id="first"`) {
+		t.Fatalf("missing step-row patch for first; payload=%s", payload)
+	}
+}

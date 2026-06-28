@@ -249,8 +249,17 @@ func serveSSERunDetail(
 		http.Error(w, "watch failed", http.StatusServiceUnavailable)
 		return
 	}
+	// Resolve the workflow name BEFORE committing SSE response headers,
+	// so a best-effort empty result never reaches GetWorkflow (which
+	// asserts on an empty name) after the response is half-open — that
+	// reconnect window is what wedged the listener under repeated SSE
+	// reconnects. Empty name → zero def; the step-patch path no-ops.
+	workflowName := getRunWorkflowID(r.Context(), ds, id)
 	sse := datastar.NewSSE(w, r)
-	def, _ := ds.GetWorkflow(getRunWorkflowID(r.Context(), ds, id))
+	var def dag.WorkflowDef
+	if workflowName != "" {
+		def, _ = ds.GetWorkflow(workflowName)
+	}
 	pumpHistory(r.Context(), sse, ts.base, ch, def, cfg)
 }
 
