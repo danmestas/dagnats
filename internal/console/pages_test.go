@@ -39,18 +39,22 @@ import (
 // control over what the console renders. Mutation helpers (addX)
 // keep test setup verbose but transparent.
 type fakeDataSource struct {
-	workflows    []dag.WorkflowDef
-	runs         []dag.WorkflowRun
-	events       map[string][]api.RunEvent
-	triggers     []trigger.TriggerDef
-	runUpdates   chan RunUpdate
-	runHistory   map[string]chan HistoryEvent
-	deadLetters  []api.DeadLetterView
-	auditEvents  []AuditEvent
-	replayCalls  []uint64
-	discardCalls []uint64
-	replayErr    error
-	discardErr   error
+	workflows  []dag.WorkflowDef
+	runs       []dag.WorkflowRun
+	events     map[string][]api.RunEvent
+	triggers   []trigger.TriggerDef
+	runUpdates chan RunUpdate
+	runHistory map[string]chan HistoryEvent
+	// gotRunsLiveOnly records the liveOnly argument the last WatchRuns
+	// call received, so SSE-handler tests can assert page>1 suppresses
+	// the historical KV replay.
+	gotRunsLiveOnly bool
+	deadLetters     []api.DeadLetterView
+	auditEvents     []AuditEvent
+	replayCalls     []uint64
+	discardCalls    []uint64
+	replayErr       error
+	discardErr      error
 
 	// PR 5 additions: trigger toggle + recent firings + watch streams.
 	triggerFires    map[string][]TriggerFireRow
@@ -297,11 +301,12 @@ func (f *fakeDataSource) GetRunTrace(
 // supply a fake.runUpdates / fake.runHistory channel they own and
 // drive directly.
 func (f *fakeDataSource) WatchRuns(
-	ctx context.Context,
+	ctx context.Context, liveOnly bool,
 ) (<-chan RunUpdate, error) {
 	if ctx == nil {
 		panic("fakeDataSource.WatchRuns: ctx is nil")
 	}
+	f.gotRunsLiveOnly = liveOnly
 	if f.runUpdates != nil {
 		return f.runUpdates, nil
 	}

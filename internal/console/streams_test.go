@@ -106,6 +106,75 @@ func TestSSERuns_emitsPatchOnNewRun(t *testing.T) {
 	}
 }
 
+// TestSSERuns_page2SuppressesHistoryReplay asserts that the runs SSE
+// for ?page=2 opens its KV watch in live-only mode (no historical
+// replay). The page-2 GET server-renders rows[50:100]; if the SSE
+// replayed all KV entries it would prepend the most-recent runs (run
+// #1..) and stomp the correctly offset rows. liveOnly=true is the
+// mechanism that prevents that stomp while leaving page 1 to pre-
+// populate live.
+func TestSSERuns_page2SuppressesHistoryReplay(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 3*time.Second,
+	)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(
+		ctx, http.MethodGet, srv.URL+"/console/sse/runs?page=2", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get sse runs page=2: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	// Cancel so the handler returns and the recorded flag is stable.
+	cancel()
+	waitFor(t, 1500, func() bool { return fake.gotRunsLiveOnly })
+	if !fake.gotRunsLiveOnly {
+		t.Fatalf("page=2 SSE opened watch with liveOnly=false; " +
+			"history replay would stomp server-rendered offset rows")
+	}
+}
+
+// TestSSERuns_page1KeepsHistoryReplay is the negative-space companion:
+// page 1 (and an absent page param) must keep the full replay so new
+// runs pre-populate the live list.
+func TestSSERuns_page1KeepsHistoryReplay(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
+	fake.gotRunsLiveOnly = true // poison: must be flipped to false
+	h := mountWithFake(t, fake)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 3*time.Second,
+	)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(
+		ctx, http.MethodGet, srv.URL+"/console/sse/runs?page=1", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get sse runs page=1: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	cancel()
+	waitFor(t, 1500, func() bool { return !fake.gotRunsLiveOnly })
+	if fake.gotRunsLiveOnly {
+		t.Fatalf("page=1 SSE opened watch with liveOnly=true; " +
+			"live pre-population of new runs would be suppressed")
+	}
+}
+
 func TestSSERuns_filterRejectsNonMatching(t *testing.T) {
 	fake := newFakeDS()
 	fake.workflows = []dag.WorkflowDef{sampleWorkflow("alpha")}
@@ -389,9 +458,9 @@ func mountConsoleWithDS(t *testing.T, ds DataSource) http.Handler {
 var _ DataSource = (*resumeRecorder)(nil)
 
 func (r *resumeRecorder) WatchRuns(
-	ctx context.Context,
+	ctx context.Context, liveOnly bool,
 ) (<-chan RunUpdate, error) {
-	return r.inner.WatchRuns(ctx)
+	return r.inner.WatchRuns(ctx, liveOnly)
 }
 
 func (r *resumeRecorder) WatchRunHistory(
@@ -581,6 +650,24 @@ func (r *resumeRecorder) WorkerDetail(
 // payload substrings. Stops once want events have been seen OR the
 // per-read deadline elapses (bounded). Returns the count and the set
 // of run ids observed.
+// waitFor polls cond until it returns true or deadlineMs elapses. Used
+// by the SSE-handler tests to wait for a recorded flag to settle after
+// the request context is cancelled, without sleeping a fixed interval.
+func waitFor(t *testing.T, deadlineMs int, cond func() bool) {
+	t.Helper()
+	if cond == nil {
+		panic("waitFor: cond is nil")
+	}
+	const maxIters = 10000
+	deadline := time.Now().Add(time.Duration(deadlineMs) * time.Millisecond)
+	for i := 0; i < maxIters && time.Now().Before(deadline); i++ {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func readSSEUntil(
 	t *testing.T, body io.Reader, want int, deadlineMs int,
 ) (int, map[string]bool) {

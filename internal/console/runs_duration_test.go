@@ -60,6 +60,29 @@ func TestRunRow_terminalWithoutEndTimestampIsHonest(t *testing.T) {
 	}
 }
 
+// TestRunRow_terminalWithCompletedAt asserts a terminal run whose
+// snapshot now carries CompletedAt renders the real wall-clock
+// duration (CompletedAt − CreatedAt) instead of the honest "—"
+// fallback. The engine stamps CompletedAt on every terminal path, so
+// the list can show the final duration without per-run history.
+func TestRunRow_terminalWithCompletedAt(t *testing.T) {
+	created := time.Now().Add(-time.Minute)
+	completed := created.Add(5 * time.Second)
+	run := dag.WorkflowRun{
+		RunID: "run-done", WorkflowID: "alpha",
+		Status:      dag.RunStatusCompleted,
+		CreatedAt:   created,
+		CompletedAt: &completed,
+	}
+	row := runRowFromRun(run)
+	if row.Duration == "—" {
+		t.Fatalf("terminal run with CompletedAt still renders — placeholder")
+	}
+	if row.Duration != "5s" {
+		t.Fatalf("terminal list row duration = %q, want 5s", row.Duration)
+	}
+}
+
 // TestRunDetail_terminalDurationFromEvents drives the run-detail page
 // for a completed run with a terminal history event 5s after creation
 // and asserts the page renders a real 5s duration — not the "n/a" stub.

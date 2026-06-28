@@ -82,7 +82,9 @@ func subscribeRunUpdates(
 		close(ch)
 		return ch
 	}
-	ch, err := cfg.Data.WatchRuns(ctx)
+	// The dashboard seeds counts from the full bucket replay on
+	// connect, so liveOnly stays false.
+	ch, err := cfg.Data.WatchRuns(ctx, false)
 	if err != nil {
 		cfg.Logger.Warn("console: dashboard sse watch runs", "err", err)
 		out := make(chan RunUpdate)
