@@ -52,13 +52,26 @@
   var goBtn = document.getElementById("dlq-confirm-go");
   var cancelBtn = document.getElementById("dlq-confirm-cancel");
   var pending = null;
+  var inputListener = null;
 
-  // openFor selects the matching <form> by (actionType, optional seq).
-  // The list page emits one form per row with data-confirm-seq; the
-  // detail page emits one form per action without a seq. Both forms
-  // share data-confirm-action so the picker prefers an exact seq
-  // match when one is offered, then falls back to the action alone.
-  function openFor(actionType, seq) {
+  // gateConfirm reflects the typed-confirm constraint in the browser
+  // model: the Confirm button is HTML-disabled until the input equals
+  // the expected word exactly. An input listener keeps it in sync; the
+  // onClick value-check stays as defense-in-depth.
+  function gateConfirm(expected) {
+    goBtn.disabled = true;
+    if (inputListener) input.removeEventListener("input", inputListener);
+    inputListener = function () {
+      goBtn.disabled = (input.value !== expected);
+    };
+    input.addEventListener("input", inputListener);
+  }
+
+  // openForForm drives the modal from a pre-rendered hidden <form>: the
+  // DLQ list emits one form per row (data-confirm-seq disambiguates),
+  // the DLQ detail emits one form per action. submitAction posts the
+  // form, so the form supplies the POST target + CSRF token.
+  function openForForm(actionType, seq) {
     var form = null;
     if (seq) {
       form = document.querySelector(
@@ -70,60 +83,94 @@
         "form[data-confirm-action='" + actionType + "']");
     }
     if (!form) return;
-    pending = { form: form, actionType: actionType };
     var expect = actionType.toUpperCase();
     var target = form.getAttribute("data-confirm-target") || "this entry";
     var why = form.getAttribute("data-confirm-reason") || "";
-    word.textContent = expect;
-    reason.textContent = why || "(no reason captured)";
-    prompt.textContent =
+    pending = { form: form, actionType: actionType, word: expect };
+    open(expect, target, why,
       (actionType === "discard"
         ? "Discard " + target + " permanently. This cannot be undone."
-        : "Retry " + target + ". The original input is re-injected as a fresh run.");
+        : "Retry " + target + ". The original input is re-injected as a fresh run."),
+      actionType === "discard");
+  }
+
+  // openForAttrs drives the modal from data attributes on the invoking
+  // button alone — no hidden form needed. A single-target page (trigger
+  // detail) supplies the confirm word, the POST url, the CSRF token, and
+  // a display target directly. submitAction posts via fetch to that url.
+  function openForAttrs(btn) {
+    var word = btn.getAttribute("data-confirm-word") || "DELETE";
+    var url = btn.getAttribute("data-confirm-url") || "";
+    var token = btn.getAttribute("data-confirm-token") || "";
+    var target = btn.getAttribute("data-confirm-target") || "this item";
+    if (!url) return;
+    pending = { url: url, token: token, actionType: word.toLowerCase(),
+      word: word };
+    open(word, target, "",
+      "Delete " + target + " permanently. This cannot be undone.", true);
+  }
+
+  // open paints the modal body and arms the disabled-gating. expected is
+  // the literal word the operator must type; destructive picks the tier
+  // colour. The reason block is hidden when no reason is captured.
+  function open(expected, target, why, promptText, destructive) {
+    word.textContent = expected;
+    reason.textContent = why || "(no reason captured)";
+    reason.hidden = !why;
+    prompt.textContent = promptText;
     input.value = "";
     errLine.textContent = "";
     // Audit H9: the confirm button mirrors the action's tier — rust
-    // destructive for Discard, paper-indigo restorative for Retry.
+    // destructive for Discard/Delete, paper-indigo restorative for Retry.
     // The two classes are mutually exclusive so we strip then add.
     goBtn.classList.remove("btn-destructive");
     goBtn.classList.remove("btn-restorative");
-    if (actionType === "discard") {
-      goBtn.classList.add("btn-destructive");
-    } else {
-      goBtn.classList.add("btn-restorative");
-    }
+    goBtn.classList.add(destructive ? "btn-destructive" : "btn-restorative");
+    gateConfirm(expected);
     modal.setAttribute("data-open", "true");
     setTimeout(function () { input.focus(); }, 0);
   }
 
   function close() {
     pending = null;
+    if (inputListener) {
+      input.removeEventListener("input", inputListener);
+      inputListener = null;
+    }
     modal.removeAttribute("data-open");
   }
 
   function confirm() {
     if (!pending) return;
-    var expect = pending.actionType.toUpperCase();
-    if (input.value !== expect) {
-      errLine.textContent = "type " + expect + " to confirm";
+    // Defense-in-depth: the button is HTML-disabled until the word
+    // matches, but re-check the value here in case the gate was bypassed.
+    if (input.value !== pending.word) {
+      errLine.textContent = "type " + pending.word + " to confirm";
       return;
     }
-    submitAction(pending.form, pending.actionType);
+    var actionType = pending.actionType;
+    if (pending.form) {
+      var token = "";
+      var csrf = pending.form.querySelector("input[name=csrf_token]");
+      if (csrf) token = csrf.value || "";
+      submitAction(pending.form.action, token, actionType, false);
+    } else {
+      // Attribute-driven (e.g. trigger delete): single-target page, so
+      // navigate to the redirect the server returns (or fall back).
+      submitAction(pending.url, pending.token, actionType, true);
+    }
   }
 
-  // submitAction posts the form via fetch so the response shapes the
-  // toast feedback. On success: dispatch console:toast with the body's
-  // toast payload. From the list page the SSE bus removes the row;
-  // from the detail page we redirect to the list because the page
-  // would 404 on refresh.
-  function submitAction(form, actionType) {
-    if (!form) return;
-    var token = "";
-    var csrf = form.querySelector("input[name=csrf_token]");
-    if (csrf) token = csrf.value || "";
-    var onList = !!document.getElementById("dlq-tbody");
+  // submitAction posts to url via fetch so the response shapes the toast
+  // feedback. On success: dispatch console:toast with the body's toast
+  // payload. The DLQ list relies on the SSE bus to remove the row; the
+  // DLQ detail and single-target pages navigate away because the page
+  // would 404 on refresh. attrDriven callers follow data.redirect.
+  function submitAction(url, token, actionType, attrDriven) {
+    if (!url) return;
+    var onList = !attrDriven && !!document.getElementById("dlq-tbody");
     close();
-    fetch(form.action, {
+    fetch(url, {
       method: "POST",
       headers: {
         "X-CSRF-Token": token,
@@ -143,11 +190,15 @@
           detail: data.toast,
         }));
       }
-      if (!onList) {
-        // Detail page — the entry is gone, navigate back to the list.
+      if (attrDriven) {
+        // Single-target page — follow the server's redirect (or the
+        // resource's list as a fallback), the way the old IIFE did.
+        window.location.href = (data && data.redirect) || "/console/triggers";
+      } else if (!onList) {
+        // DLQ detail — the entry is gone, navigate back to the list.
         setTimeout(function () { window.location = "/console/dlq"; }, 200);
       }
-      // List page — SSE bus removes #dlq-row-<seq>; nothing to do.
+      // DLQ list — SSE bus removes #dlq-row-<seq>; nothing to do.
     }).catch(function (err) {
       document.dispatchEvent(new CustomEvent("console:toast", {
         detail: {
@@ -158,12 +209,19 @@
     });
   }
 
-  // Wire every button on the page that asks for a typed confirm.
-  // data-confirm-seq is optional; when present the picker disambiguates
-  // between the multiple per-row forms on the list page.
+  // Wire every button on the page that asks for a typed confirm. A
+  // button carrying data-confirm-url drives the modal from its own data
+  // attributes (single-target pages, no hidden form); otherwise the
+  // value names a pre-rendered <form> the picker selects (DLQ flow).
+  // data-confirm-seq is optional; when present it disambiguates between
+  // the multiple per-row forms on the DLQ list page.
   document.querySelectorAll("[data-action-confirm]").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      openFor(
+      if (btn.getAttribute("data-confirm-url")) {
+        openForAttrs(btn);
+        return;
+      }
+      openForForm(
         btn.getAttribute("data-action-confirm"),
         btn.getAttribute("data-confirm-seq") || "");
     });

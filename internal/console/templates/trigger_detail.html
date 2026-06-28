@@ -85,14 +85,18 @@
                 id="trigger-delete-btn"
                 class="btn btn-destructive trigger-delete-btn"
                 data-trigger-id="{{.ID}}"
-                data-csrf="{{.CSRFToken}}"
-                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to delete triggers."{{end}}>
+                {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to delete triggers."{{else}}data-action-confirm="delete"
+                data-confirm-word="DELETE"
+                data-confirm-url="/console/triggers/{{.ID}}/delete"
+                data-confirm-token="{{.CSRFToken}}"
+                data-confirm-target="trigger {{.ID}}"{{end}}>
           Delete
         </button>
       </div>
     </article>
 
     {{template "trigger-modal" .}}
+    {{template "dlq-action-modal" .}}
 
     <article class="card">
       <header class="card-header"><h2>Recent activity</h2></header>
@@ -333,47 +337,6 @@
   saveBtn.addEventListener("click", save);
   modal.addEventListener("click", function (e) {
     if (e.target === modal) close();
-  });
-})();
-(function () {
-  // Delete (detail page): confirm, then POST /console/triggers/<id>/delete
-  // and redirect back to the list on success.
-  var btn = document.getElementById("trigger-delete-btn");
-  if (!btn || btn.hasAttribute("disabled")) return;
-  btn.addEventListener("click", function () {
-    var id = btn.getAttribute("data-trigger-id");
-    var csrf = btn.getAttribute("data-csrf") || "";
-    if (!window.confirm("Delete trigger " + id + "? This cannot be undone.")) {
-      return;
-    }
-    btn.disabled = true;
-    fetch("/console/triggers/" + encodeURIComponent(id) + "/delete", {
-      method: "POST",
-      headers: { "X-CSRF-Token": csrf, "Accept": "application/json" },
-      credentials: "same-origin",
-    }).then(function (resp) {
-      if (!resp.ok) {
-        return resp.text().then(function (t) {
-          throw new Error("delete failed: " + resp.status + " " + t);
-        });
-      }
-      return resp.json();
-    }).then(function (data) {
-      if (data && data.toast) {
-        document.dispatchEvent(new CustomEvent("console:toast", {
-          detail: data.toast,
-        }));
-      }
-      window.location.href = (data && data.redirect) || "/console/triggers";
-    }).catch(function (err) {
-      btn.disabled = false;
-      document.dispatchEvent(new CustomEvent("console:toast", {
-        detail: {
-          level: "error",
-          message: (err && err.message) ? err.message : "delete failed",
-        },
-      }));
-    });
   });
 })();
 </script>
