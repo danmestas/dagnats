@@ -1,5 +1,6 @@
 {{define "trigger-row"}}
 <tr id="trigger-row-{{.Row.ID}}"
+    data-href="/console/triggers/{{.Row.ID}}"
     {{if .Fresh}}data-fresh="true"{{end}}>
   <td>
     <span class="trigger-icon" data-kind="{{.Row.Kind}}" aria-hidden="true">{{triggerKindGlyph .Row.Kind}}</span>

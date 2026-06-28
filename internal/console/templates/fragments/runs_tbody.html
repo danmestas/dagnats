@@ -1,6 +1,6 @@
 {{define "runs-tbody"}}<tbody id="runs-tbody">
   {{range .Rows}}
-  <tr id="run-row-{{.RunID}}">
+  <tr id="run-row-{{.RunID}}" data-href="/console/runs/{{.RunID}}">
     <td class="run-id"><a href="/console/runs/{{.RunID}}">{{.RunIDShort}}</a></td>
     <td class="workflow-id"><a href="/console/workflows/{{.WorkflowID}}">{{.WorkflowID}}</a></td>
     <td>{{template "status-badge" .Status}}</td>

@@ -1,7 +1,7 @@
 {{define "triggers-tbody"}}
 {{if .Rows}}
   {{range .Rows}}
-  <tr id="trigger-row-{{.ID}}">
+  <tr id="trigger-row-{{.ID}}" data-href="/console/triggers/{{.ID}}">
     <td>
       <span class="trigger-icon" data-kind="{{.Kind}}" aria-hidden="true">{{triggerKindGlyph .Kind}}</span>
       <span class="badge badge-outline">{{.Kind}}</span>

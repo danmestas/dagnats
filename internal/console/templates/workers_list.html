@@ -20,7 +20,7 @@
     </thead>
     <tbody id="workers-tbody">
       {{range .Page.Workers}}
-      <tr id="worker-row-{{.WorkerID}}">
+      <tr id="worker-row-{{.WorkerID}}" data-href="/console/workers/{{.WorkerID}}">
         <td class="mono"><a href="/console/workers/{{.WorkerID}}">{{.WorkerID}}</a></td>
         <td>{{.TaskTypes}}</td>
         <td>{{.Host}}</td>
