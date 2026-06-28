@@ -275,6 +275,82 @@ func TestPercentileFromBuckets_LinearInterpolation(t *testing.T) {
 	}
 }
 
+// TestTileFromHistogramP50_zeroMedianShowsEmpty pins m8(A): a histogram
+// with a non-zero Count and non-empty Buckets whose p50 resolves to 0.0
+// must render the empty state (Value "—"), not a bare "0 ms". A bucket
+// at UpperBound 0 makes percentileFromBuckets return 0.0 by design.
+func TestTileFromHistogramP50_zeroMedianShowsEmpty(t *testing.T) {
+	src := newFakeMetricsSource()
+	src.addHistogram(
+		"snapshot.save.duration_ms", 4,
+		[]MetricBucket{{UpperBound: 0, Count: 4}}, time.Now(),
+	)
+	tile := tileFromHistogramP50(
+		src, "snapshot.save.duration_ms", "tile-snapshot-p50",
+		"Snapshot p50", "ms", "",
+	)
+	if !tile.Empty {
+		t.Fatalf("tile.Empty = %v, want true for zero median", tile.Empty)
+	}
+	if tile.Value != "—" {
+		t.Fatalf("tile.Value = %q, want em-dash for zero median", tile.Value)
+	}
+}
+
+// TestBuildMetricsTiles_snapshotP50DrillIsAbsentOrNonSelf pins m8(B):
+// the snapshot-p50 tile must not carry a "drill →" that self-links back
+// to /console/metrics. Either no Href, or an Href to a different page.
+func TestBuildMetricsTiles_snapshotP50DrillIsAbsentOrNonSelf(t *testing.T) {
+	src := newFakeMetricsSource()
+	tiles := buildMetricsTiles(src)
+	var found bool
+	for _, tile := range tiles {
+		if tile.ID != "tile-snapshot-p50" {
+			continue
+		}
+		found = true
+		if tile.Href == "/console/metrics" {
+			t.Fatalf("snapshot-p50 Href = %q, must not self-link", tile.Href)
+		}
+	}
+	if !found {
+		t.Fatal("snapshot-p50 tile missing from buildMetricsTiles output")
+	}
+}
+
+// TestMetricsStream_snapshotP50TileHasNoSelfDrill pins m8(B) on the
+// LIVE SSE tile-refresh path. tileForMetric drives every per-tick patch;
+// it must not re-inject the self-referential /console/metrics "drill →"
+// that buildMetricsTiles already dropped, or the first SSE tick would
+// undo the page-load fix. Drives the real fragment render so the test
+// fails if the rendered HTML carries a drill link back to the page.
+func TestMetricsStream_snapshotP50TileHasNoSelfDrill(t *testing.T) {
+	src := newFakeMetricsSource()
+	src.addHistogram(
+		"snapshot.save.duration_ms", 5,
+		[]MetricBucket{{UpperBound: 5, Count: 3}, {UpperBound: 10, Count: 5}},
+		time.Now(),
+	)
+	tile, ok := tileForMetric(src, "snapshot.save.duration_ms")
+	if !ok {
+		t.Fatal("tileForMetric dropped snapshot.save.duration_ms")
+	}
+	if tile.Href == "/console/metrics" {
+		t.Fatalf("SSE tile Href = %q, must not self-link", tile.Href)
+	}
+	ts, err := loadTemplates()
+	if err != nil {
+		t.Fatalf("loadTemplates: %v", err)
+	}
+	html, err := renderMetricTile(ts.base, tile)
+	if err != nil {
+		t.Fatalf("renderMetricTile: %v", err)
+	}
+	if strings.Contains(html, `href="/console/metrics"`) {
+		t.Errorf("rendered SSE tile carries a self-referential drill link")
+	}
+}
+
 func TestSparkFromPoints_DownsamplesToBins(t *testing.T) {
 	pts := make([]MetricPoint, 100)
 	for i := range pts {

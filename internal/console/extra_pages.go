@@ -758,10 +758,6 @@ func servePageDLQDetail(
 	view := buildDLQDetail(r.Context(), ds, seqStr)
 	view.ReadOnly = cfg.ReadOnly
 	view.CSRFToken = csrfTokenFor(r)
-	if view.NotFound {
-		serveNotFound(w, r, ts, cfg)
-		return
-	}
 	renderPage(w, r, ts, cfg, "dlq-detail", pageData{
 		Title:   fmt.Sprintf("DLQ #%d", view.Sequence),
 		Section: "dlq",
@@ -791,7 +787,7 @@ func buildDLQDetail(
 		}
 		return dlqDetailFromView(v)
 	}
-	return DLQDetailView{NotFound: true}
+	return DLQDetailView{Sequence: seq, NotFound: true}
 }
 
 // dlqDetailFromView populates a DLQDetailView from one DeadLetterView.
