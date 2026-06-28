@@ -26,7 +26,7 @@
       <span class="sr-only">{{.Row.StatusLabel}}</span>
     </span>
   </td>
-  <td class="console-sparkline-col"></td>
+  <td class="console-sparkline-col">{{if .Row.Sparkline}}<canvas class="console-sparkline" data-sparkline-id="trigger-{{.Row.ID}}" data-sparkline-data="{{jsonArray .Row.Sparkline}}" width="60" height="16" aria-label="Activity sparkline for {{.Row.ID}}"></canvas>{{end}}</td>
   <td class="trigger-action-cell">
     {{if .Row.CanFire}}<button type="button" class="btn btn-small trigger-fire-btn" data-trigger-id="{{.Row.ID}}" aria-label="Fire trigger {{.Row.ID}} now">Fire now</button>{{end}}
   </td>

@@ -14,12 +14,25 @@
  *     empty-state path; the JS never invents a flat-line series.
  *   - Defensive: if window.uPlot is missing (vendored bundle didn't
  *     load) we leave the canvas blank rather than throw.
+ *   - Re-init after Datastar SSE swaps: a PatchElements swap replaces
+ *     `#workflows-tbody` (filter fragment) or prepends a live
+ *     `#trigger-row-*`, landing fresh canvases the one-shot
+ *     DOMContentLoaded scan never sees. Datastar dispatches no
+ *     document event specifically for an element-only patch
+ *     (`datastar-signal-patch` fires only when signals change), so we
+ *     observe the DOM directly with a MutationObserver and re-scan.
+ *     The per-canvas `__sparklineInit` guard makes every re-scan
+ *     idempotent and cheap.
  */
 
 (function () {
   const SELECTOR = "canvas[data-sparkline-data]";
 
-  function init() {
+  // initSparklines scans every un-initialised sparkline canvas and
+  // renders it. Idempotent: the `__sparklineInit` guard on each canvas
+  // means an already-rendered canvas is skipped, so calling this after
+  // each DOM mutation is safe and cheap.
+  function initSparklines() {
     if (typeof window === "undefined") return;
     const canvases = document.querySelectorAll(SELECTOR);
     if (canvases.length === 0) return;
@@ -98,9 +111,63 @@
     }
   }
 
+  // addedSparkline reports whether a MutationRecord inserted a sparkline
+  // canvas (itself or a descendant). Hot pages (metrics tile patches,
+  // toasts, banners) mutate the body several times/sec; without this
+  // pre-filter every batch would run a full-document querySelectorAll
+  // even on pages with zero sparklines. ELEMENT_NODE === 1.
+  function addedSparkline(records) {
+    for (let r = 0; r < records.length; r++) {
+      const added = records[r].addedNodes;
+      for (let n = 0; n < added.length; n++) {
+        const node = added[n];
+        if (node.nodeType !== 1) continue;
+        if (node.matches && node.matches(SELECTOR)) return true;
+        if (node.querySelector && node.querySelector(SELECTOR)) return true;
+      }
+    }
+    return false;
+  }
+
+  // observeSwaps re-runs initSparklines after Datastar SSE element
+  // patches land new canvases. A subtree childList observer fires for
+  // every DOM insertion; the `__sparklineInit` guard inside
+  // initSparklines keeps each re-scan a no-op once a canvas is drawn.
+  // Body-wide observation stays general (no per-tbody bookkeeping); the
+  // addedSparkline pre-filter skips the scan entirely when a mutation
+  // batch added no sparkline canvas, killing the scan-storm on
+  // tile/toast/banner churn. Coalesce bursts via a microtask so a
+  // single patch dropping many rows triggers one scan.
+  function observeSwaps() {
+    if (typeof MutationObserver !== "function" || !document.body) return;
+    let scheduled = false;
+    const observer = new MutationObserver(function (records) {
+      if (scheduled) return;
+      if (!addedSparkline(records)) return;
+      scheduled = true;
+      Promise.resolve().then(function () {
+        scheduled = false;
+        initSparklines();
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Expose initSparklines on window so other bundle modules (and the
+  // shipped-bundle test) can reference the re-scan entry point by a
+  // stable name that survives esbuild's minify pass.
+  if (typeof window !== "undefined") {
+    window.initSparklines = initSparklines;
+  }
+
+  function bootstrap() {
+    initSparklines();
+    observeSwaps();
+  }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", bootstrap);
   } else {
-    init();
+    bootstrap();
   }
 })();
