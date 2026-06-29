@@ -25,7 +25,7 @@
   <div class="console-modal-card">
     <h2 id="dlq-confirm-title">Confirm action</h2>
     <p id="dlq-confirm-prompt" class="muted"></p>
-    <p>Reason this entry is on the DLQ:</p>
+    <p id="dlq-confirm-reason-label" hidden></p>
     <pre id="dlq-confirm-reason"></pre>
     <p>To proceed, type <strong id="dlq-confirm-word">RETRY</strong> exactly:</p>
     <input id="dlq-confirm-input" class="input" type="text"
@@ -45,6 +45,7 @@
   if (modal.dataset.dlqWired === "true") return;
   modal.dataset.dlqWired = "true";
   var prompt = document.getElementById("dlq-confirm-prompt");
+  var reasonLabel = document.getElementById("dlq-confirm-reason-label");
   var reason = document.getElementById("dlq-confirm-reason");
   var word = document.getElementById("dlq-confirm-word");
   var input = document.getElementById("dlq-confirm-input");
@@ -87,7 +88,7 @@
     var target = form.getAttribute("data-confirm-target") || "this entry";
     var why = form.getAttribute("data-confirm-reason") || "";
     pending = { form: form, actionType: actionType, word: expect };
-    open(expect, target, why,
+    open(expect, target, why, "Reason this entry is on the DLQ:",
       (actionType === "discard"
         ? "Discard " + target + " permanently. This cannot be undone."
         : "Retry " + target + ". The original input is re-injected as a fresh run."),
@@ -106,15 +107,22 @@
     if (!url) return;
     pending = { url: url, token: token, actionType: word.toLowerCase(),
       word: word };
-    open(word, target, "",
+    // No reason block for attribute-driven deletes (trigger delete): the
+    // empty reasonLabel keeps the DLQ-specific copy out of this flow.
+    open(word, target, "", "",
       "Delete " + target + " permanently. This cannot be undone.", true);
   }
 
   // open paints the modal body and arms the disabled-gating. expected is
   // the literal word the operator must type; destructive picks the tier
   // colour. The reason block is hidden when no reason is captured.
-  function open(expected, target, why, promptText, destructive) {
+  function open(expected, target, why, reasonLabelText, promptText, destructive) {
     word.textContent = expected;
+    // The reason label + block render together, only when a reason was
+    // captured. Attribute-driven deletes (trigger delete) pass no label,
+    // so neither the DLQ-specific copy nor the reason pre appears.
+    reasonLabel.textContent = reasonLabelText || "";
+    reasonLabel.hidden = !reasonLabelText;
     reason.textContent = why || "(no reason captured)";
     reason.hidden = !why;
     prompt.textContent = promptText;

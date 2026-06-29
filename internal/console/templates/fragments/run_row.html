@@ -1,13 +1,15 @@
-{{define "run-row"}}<tr id="run-row-{{.Row.RunID}}"{{if .Fresh}} class="row-enter"{{end}}>
-    <td class="console-mono"><a href="/console/runs/{{.Row.RunID}}">{{.Row.RunIDShort}}</a></td>
-    <td><a href="/console/workflows/{{.Row.WorkflowID}}">{{.Row.WorkflowID}}</a></td>
+{{define "run-row"}}<tr id="run-row-{{.Row.RunID}}" data-href="/console/runs/{{.Row.RunID}}"{{if .Fresh}} class="row-enter"{{end}}>
+    <td class="run-id"><a href="/console/runs/{{.Row.RunID}}">{{.Row.RunIDShort}}</a></td>
+    <td class="workflow-id"><a href="/console/workflows/{{.Row.WorkflowID}}">{{.Row.WorkflowID}}</a></td>
     <td>{{template "status-badge" .Row.Status}}</td>
     <td><span class="badge badge-outline">{{.Row.TriggerKind}}</span></td>
     <td class="console-mono">{{.Row.StartedAt}}</td>
     <td>{{.Row.Duration}}</td>
     <td>
       <button type="button" class="btn btn-sm btn-outline"
+              aria-label="Inspect run {{.Row.RunIDShort}}"
               data-sidesheet-target
               data-on:click="@get('/console/api/runs/{{.Row.RunID}}/sheet')">Inspect</button>
     </td>
+    {{template "row-chevron"}}
   </tr>{{end}}

@@ -286,8 +286,32 @@
   modal.addEventListener("click", function (e) {
     if (e.target === modal) close();
   });
+  // Tabbable descendants of the open modal, in DOM order, skipping
+  // hidden config fields so the trap wraps only the visible controls.
+  function modalTabbables() {
+    var sel = 'a[href], button:not([disabled]), input:not([disabled]), ' +
+      'select:not([disabled]), textarea:not([disabled]), ' +
+      '[tabindex]:not([tabindex="-1"])';
+    return Array.prototype.slice.call(modal.querySelectorAll(sel))
+      .filter(function (el) { return el.offsetParent !== null; });
+  }
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && modal.getAttribute("data-open")) close();
+    if (!modal.getAttribute("data-open")) return;
+    if (e.key === "Escape") { close(); return; }
+    if (e.key !== "Tab") return;
+    // Focus trap: Tab off either end wraps so focus stays in the dialog.
+    var items = modalTabbables();
+    if (items.length === 0) { e.preventDefault(); return; }
+    var first = items[0];
+    var last = items[items.length - 1];
+    var active = document.activeElement;
+    if (e.shiftKey && (active === first || !modal.contains(active))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (active === last || !modal.contains(active))) {
+      e.preventDefault();
+      first.focus();
+    }
   });
 })();
 </script>

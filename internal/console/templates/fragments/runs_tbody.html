@@ -9,6 +9,7 @@
     <td>{{.Duration}}</td>
     <td>
       <button type="button" class="btn btn-sm btn-outline"
+              aria-label="Inspect run {{.RunIDShort}}"
               data-sidesheet-target
               data-on:click="@get('/console/api/runs/{{.RunID}}/sheet')">Inspect</button>
     </td>
