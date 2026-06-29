@@ -37,10 +37,102 @@ const (
 	outcomeCancelled demoOutcome = "cancelled"
 )
 
-// demoTaskInput is the JSON payload carried on each seeded run.
-// Outcome tells the noop handler which terminal state to drive to.
+// demoTaskInput is the JSON payload carried on each seeded run. Outcome
+// is the control field the noop handler dispatches on; the remaining
+// fields are domain-shaped decoration so the run-detail IO tab shows a
+// payload an operator would recognize instead of a bare {"outcome":...}.
+// Every domain field is omitempty so a single struct serves every demo
+// workflow — buildWorkflowInput populates only the subset that matches
+// the chosen workflow. decodeOutcome reads Outcome only; the extra
+// fields are inert to dispatch.
 type demoTaskInput struct {
 	Outcome demoOutcome `json:"outcome"`
+
+	// image-pipeline
+	Album          string   `json:"album,omitempty"`
+	SourceURLs     []string `json:"source_urls,omitempty"`
+	MaxDimensionPx int      `json:"max_dimension_px,omitempty"`
+
+	// llm-agent-loop
+	Goal          string `json:"goal,omitempty"`
+	Model         string `json:"model,omitempty"`
+	MaxIterations int    `json:"max_iterations,omitempty"`
+
+	// etl-nightly
+	Table     string `json:"table,omitempty"`
+	Date      string `json:"date,omitempty"`
+	BatchSize int    `json:"batch_size,omitempty"`
+
+	// notify-fanout
+	Template   string   `json:"template,omitempty"`
+	Recipients []string `json:"recipients,omitempty"`
+}
+
+// demoStepOutputs maps a step ID to the realistic JSON output the noop
+// worker emits on the success path. Keyed by StepID (not task type) so
+// each step in a multi-step pipeline shows a distinct, domain-shaped
+// payload on the run-detail IO tab. Because a downstream step receives
+// its upstream step's output as input, these double as realistic
+// downstream inputs. Values are compile-time constants — the selector
+// stays a pure function of stepID with no RNG or global state, so the
+// handler remains a deterministic dispatcher.
+var demoStepOutputs = map[string]string{
+	"noop":          `{"noop":"ok","processed":true}`,
+	"attempt":       `{"attempt":1,"status":"ok","latency_ms":214}`,
+	"fetch-urls":    `{"urls_discovered":37,"queued":37}`,
+	"fetch":         `{"downloaded":37,"failed":0,"bytes":18452301}`,
+	"build-gallery": `{"gallery_url":"https://gallery.example.com/summer-2026","thumbnails":37,"bytes":824132}`,
+	"plan":          `{"steps_planned":4,"strategy":"depth-first","tokens":512}`,
+	"act":           `{"tool":"code_search","calls":3,"tokens":1840}`,
+	"observe":       `{"observations":3,"goal_satisfied":false}`,
+	"summarize":     `{"summary":"goal reached in 4 iterations","tokens":318}`,
+	"extract":       `{"rows_extracted":124518,"source":"postgres://warehouse/events"}`,
+	"transform":     `{"rows_in":124518,"rows_out":124002,"dropped":516}`,
+	"load":          `{"rows_loaded":124002,"table":"analytics.events_daily"}`,
+	"render":        `{"template":"weekly-digest","bytes":4821,"blocks":7}`,
+	"send-email":    `{"provider":"ses","accepted":128,"rejected":2}`,
+	"send-slack":    `{"channel":"#alerts","ts":"1719600000.000100","ok":true}`,
+}
+
+// stepOutput returns the realistic success-path output for a step,
+// falling back to a generic ok payload so a newly added step never
+// emits empty output. Pure function of stepID.
+func stepOutput(stepID string) []byte {
+	if out, ok := demoStepOutputs[stepID]; ok {
+		return []byte(out)
+	}
+	return []byte(`{"noop":"ok"}`)
+}
+
+// demoStepFailures maps a step ID to a realistic, step-appropriate
+// failure message. This is what the run-detail error banner / IO tab
+// shows for failed runs, so each message names a plausible cause an
+// operator would act on rather than a generic "planned failure".
+var demoStepFailures = map[string]string{
+	"attempt":       "attempt: upstream dependency returned 503 after 3 retries",
+	"fetch-urls":    "fetch-urls: manifest https://cdn.example.com/summer-2026/manifest.json returned 404",
+	"fetch":         "fetch: upstream https://cdn.example.com/a.jpg returned 503 after 3 retries",
+	"build-gallery": "build-gallery: image encode failed: unsupported color profile",
+	"plan":          "plan: model claude-sonnet request timed out after 60s",
+	"act":           "act: tool 'code_search' exited non-zero (rate limited)",
+	"observe":       "observe: response truncated, context window exceeded",
+	"summarize":     "summarize: token budget exhausted (4096/4096)",
+	"extract":       "extract: postgres://warehouse/events: connection refused",
+	"transform":     "transform: schema mismatch on column 'event_ts' (want timestamptz, got text)",
+	"load":          "load: analytics.events_daily: duplicate key violates unique constraint",
+	"render":        "render: template 'weekly-digest' missing required field 'period'",
+	"send-email":    "send-email: ses rejected 2 recipients: address suppressed",
+	"send-slack":    "send-slack: channel #alerts returned 429 (rate limited)",
+}
+
+// stepFailureError returns a realistic, step-specific error for the
+// failure path, falling back to the generic planned-failure message for
+// steps without a bespoke entry. Pure function of stepID.
+func stepFailureError(stepID string) error {
+	if msg, ok := demoStepFailures[stepID]; ok {
+		return errors.New(msg)
+	}
+	return errors.New("demo noop: planned failure")
 }
 
 // demoTaskType is the single task type the noop worker registers.
@@ -227,11 +319,14 @@ func noopHandle(
 	outcome := decodeOutcome(tc.Input())
 	switch outcome {
 	case outcomeCompleted:
-		return tc.Complete([]byte(`{"noop":"ok"}`))
+		// Per-step output so each step in a pipeline shows a distinct,
+		// domain-shaped payload on the run-detail IO tab. Downstream
+		// steps receive this as their input.
+		return tc.Complete(stepOutput(tc.StepID()))
 	case outcomeFailed:
-		return tc.FailPermanent(
-			errors.New("demo noop: planned failure"),
-		)
+		// Step-appropriate error so the run-detail banner names a
+		// plausible cause instead of a generic placeholder.
+		return tc.FailPermanent(stepFailureError(tc.StepID()))
 	case outcomeCancelled:
 		// Order matters: publish the cancel event FIRST while the
 		// run is still in Running state, THEN ack the step. The
