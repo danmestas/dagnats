@@ -532,6 +532,28 @@ a:hover { text-decoration: underline; }
   padding: var(--space-3);
 }
 
+/* Inline labeled form fields (run signal panel). These semantic classes
+   had no rules, so labels collapsed onto their inputs, stacked fields ran
+   together, and the action buttons touched. Stack label over input, gap
+   the stacked fields, and space the action row. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.field + .field {
+  margin-top: var(--space-4);
+}
+.field-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.run-signal-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
 /* Tables. Operator-density paddings per ADR-015 — ~30% horizontal
    and ~30% vertical tighter than the prior e-ink rhythm. */
 .console-table {
@@ -871,6 +893,29 @@ a:hover { text-decoration: underline; }
 .console-event-data {
   max-width: 480px;
   word-break: break-all;
+}
+
+/* Run event timeline: fix the table layout so a long single-line JSON
+   message wraps within its column instead of expanding the table and
+   forcing page-wide horizontal scroll. (max-width on a <td> is ignored
+   under the default auto layout, which is why the cell rule above wasn't
+   enough.) The metadata columns get fixed widths; Message takes the
+   remainder and its <pre>/.console-event-data already wrap. */
+#run-detail-events table {
+  table-layout: fixed;
+  width: 100%;
+}
+#run-detail-events thead th:nth-child(1) { width: 200px; } /* Timestamp */
+#run-detail-events thead th:nth-child(2) { width: 150px; } /* Type */
+#run-detail-events thead th:nth-child(3) { width: 130px; } /* Step */
+/* The message cell inherits white-space:nowrap from the table-cell rule,
+   which (combined with fixed layout) clips the JSON instead of wrapping.
+   Let it wrap and break long unspaced tokens so the preview stays inside
+   the column. */
+#run-detail-events .console-event-data {
+  max-width: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /*
