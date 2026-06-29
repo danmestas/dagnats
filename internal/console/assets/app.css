@@ -553,6 +553,13 @@ a:hover { text-decoration: underline; }
   gap: var(--space-2);
   margin-top: var(--space-4);
 }
+/* The shared .card-body padding (12px) leaves the action buttons jammed
+   against the card's bottom edge — the top reads airier because the
+   card-header sits above the body. Give the signal form generous,
+   balanced internal padding so the buttons have room below them. */
+#run-signal-form .card-body {
+  padding: var(--space-5);
+}
 
 /* Tables. Operator-density paddings per ADR-015 — ~30% horizontal
    and ~30% vertical tighter than the prior e-ink rhythm. */
