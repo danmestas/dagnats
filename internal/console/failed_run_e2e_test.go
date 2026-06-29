@@ -29,9 +29,9 @@
 // Assertions:
 //  1. The run-error-banner DOM element is present in the rendered
 //     /console/runs/<id> body.
-//  2. The banner's jump-to-step anchor targets #step-row-<failedStepID>
-//     where failedStepID matches the step in the workflow definition
-//     that actually failed.
+//  2. The banner's jump-to-step control carries data-jump-step=
+//     <failedStepID> where failedStepID matches the step in the
+//     workflow definition that actually failed.
 package console
 
 import (
@@ -141,18 +141,20 @@ func TestFailedRunBannerEndToEnd(t *testing.T) {
 		)
 	}
 
-	// Assertion 2 (anchor target): the jump-to-step link points at
-	// the step that actually failed in the run. The template emits
-	// `href="#step-row-{{.FailedStepID}}"`. We reverse the wire by
-	// asserting the href substring matches our known failedStepID.
-	wantAnchor := fmt.Sprintf(
-		`href="#step-row-%s"`, failedStepID,
+	// Assertion 2 (jump target): the jump-to-step control carries the
+	// step that actually failed in the run. The template emits
+	// `data-jump-step="{{.FailedStepID}}"` on the .run-error-jump
+	// button; the inline handler resolves it to #step-row-<id> in the
+	// Timeline panel. We reverse the wire by asserting the
+	// data-jump-step substring matches our known failedStepID.
+	wantJump := fmt.Sprintf(
+		`data-jump-step="%s"`, failedStepID,
 	)
-	if !strings.Contains(body, wantAnchor) {
+	if !strings.Contains(body, wantJump) {
 		t.Fatalf(
-			"jump-to-step anchor missing or wrong in /console/runs/%s."+
+			"jump-to-step control missing or wrong in /console/runs/%s."+
 				" Expected substring: %q.\nBody:\n%s",
-			runID, wantAnchor, truncateBody(body, 4000),
+			runID, wantJump, truncateBody(body, 4000),
 		)
 	}
 }

@@ -2785,6 +2785,15 @@ summary:focus-visible,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Transient flash applied by the failed-run banner's "Jump to step"
+ * handler so the operator sees which timeline row it landed on. The
+ * handler removes the class after ~1.6s; the transition fades it out. */
+.step-row-highlight {
+  border-radius: var(--radius-tile);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent);
+  transition: background 0.4s ease, box-shadow 0.4s ease;
+}
 
 /* trace-waterfall — the run-trace tab / trace-detail span tree. Each span
  * name is a native <details>; expanding it reveals the span's backed KV

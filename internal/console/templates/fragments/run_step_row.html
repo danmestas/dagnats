@@ -1,4 +1,4 @@
-{{define "run-step-row"}}<li class="step-list-row timeline-row" data-step-id="{{.ID}}" data-state="{{.State}}">
+{{define "run-step-row"}}<li class="step-list-row timeline-row" id="step-row-{{.ID}}" data-step-id="{{.ID}}" data-state="{{.State}}">
   <span class="timeline-name">
     <span class="step-status step-status-{{.State}}" aria-hidden="true">{{.Icon}}</span>
     <span class="step-name">{{.Name}}</span>

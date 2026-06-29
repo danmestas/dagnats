@@ -205,5 +205,38 @@
     });
   });
 })();
+(function () {
+  // Jump to step: the failed-run banner's .run-error-jump button carries
+  // data-jump-step=<stepid>. The target row lives in the Timeline panel,
+  // which basecoat keeps hidden until its tab is active. So: activate the
+  // Timeline tab, then scroll the failed row into view and flash it.
+  document.addEventListener("click", function (event) {
+    var jump = event.target.closest
+      ? event.target.closest(".run-error-jump")
+      : null;
+    if (!jump) return;
+    event.preventDefault();
+    var stepID = jump.getAttribute("data-jump-step") || "";
+    if (!stepID) return;
+    var tab = document.getElementById("tab-timeline");
+    if (tab) tab.click();
+    var row = document.getElementById("step-row-" + stepID);
+    if (!row) {
+      var panel = document.getElementById("panel-timeline");
+      if (panel) {
+        row = panel.querySelector('[data-step-id="' + stepID + '"]');
+      }
+    }
+    if (!row) return;
+    // Defer the scroll a frame so the tab-switch unhide has applied.
+    window.requestAnimationFrame(function () {
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.classList.add("step-row-highlight");
+      window.setTimeout(function () {
+        row.classList.remove("step-row-highlight");
+      }, 1600);
+    });
+  });
+})();
 </script>
 {{end}}{{end}}
