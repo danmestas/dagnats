@@ -87,6 +87,42 @@ func TestWorkflowDetailRunButton_RendersForNoInputWorkflow(t *testing.T) {
 	}
 }
 
+// TestWorkflowDetailRunButton_ModalWired pins the BLOCKER fix: the
+// detail page must include the run-confirm-modal — the same component
+// the working list page includes — so the [data-action-confirm="run"]
+// button has a handler that opens "Start a new run?" and submits the
+// sibling hidden form. Without the modal include the button is dead:
+// correct markup, no listener. The modal carries its wiring <script>
+// and the stable #run-confirm-modal id (run_confirm_modal.html).
+func TestWorkflowDetailRunButton_ModalWired(t *testing.T) {
+	set := detailContentTemplate(t)
+	view := WorkflowDetailView{
+		Name:      "demo-noop",
+		Version:   "v1",
+		Runnable:  true,
+		ReadOnly:  false,
+		CSRFToken: "tok",
+	}
+	html, err := renderFragment(
+		set.pageTemplates["workflow-detail"], "content", pageData{Page: view},
+	)
+	if err != nil {
+		t.Fatalf("renderFragment content: %v", err)
+	}
+	// Positive space: the modal dialog + its "Start a new run?" prompt
+	// must be on the page, and its handler must wire the run buttons.
+	if !strings.Contains(html, `id="run-confirm-modal"`) {
+		t.Errorf("detail page must include run-confirm-modal; got:\n%s", html)
+	}
+	if !strings.Contains(html, "Start a new run?") {
+		t.Errorf("detail page must carry the run-confirm prompt; got:\n%s", html)
+	}
+	if !strings.Contains(html,
+		`document.querySelectorAll("[data-action-confirm='run']")`) {
+		t.Errorf("detail page must wire run buttons via the modal script; got:\n%s", html)
+	}
+}
+
 // TestWorkflowDetailRunButton_ReadOnly pins the read-only branch: the
 // detail button renders disabled with a tooltip naming the env var.
 func TestWorkflowDetailRunButton_ReadOnly(t *testing.T) {

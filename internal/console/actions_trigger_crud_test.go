@@ -579,3 +579,80 @@ func TestTriggerDetail_editDeleteButtons(t *testing.T) {
 		t.Errorf("missing trigger-delete-btn")
 	}
 }
+
+// TestTriggerModal_cardWrapper asserts the shared trigger modal renders a
+// .console-modal-card wrapper inside the .console-modal element. The CSS
+// keys the centered/constrained dialog box off `.console-modal-card`
+// (width:min(540px,92vw)); without it the dialog renders as a narrow
+// strip. The DLQ modal — the canonical working pattern — wraps its body
+// in `<div class="console-modal-card">`; the trigger modal must match.
+func TestTriggerModal_cardWrapper(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{sampleTrigger("c1", "alpha", "cron")}
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/triggers", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	// Positive: the centered-card wrapper class the CSS sizes must exist.
+	if !strings.Contains(body, "console-modal-card") {
+		t.Errorf("trigger modal missing .console-modal-card wrapper")
+	}
+	// Negative: the inner dialog must be a `.console-modal` element so the
+	// `.console-modal[data-open]` visibility rule can target it (the modal
+	// id #trigger-modal must stay so the open/close JS can find it).
+	if !strings.Contains(body, `id="trigger-modal"`) {
+		t.Errorf("trigger modal lost its #trigger-modal id")
+	}
+}
+
+// TestTriggerModal_dataOpenReveal asserts the list page's open/close
+// script reveals the modal via the `data-open` attribute the CSS keys
+// visibility on (`.console-modal[data-open="true"]`), matching the DLQ
+// modal. The previous code toggled `modal.hidden`, which the CSS ignores,
+// so the modal stayed invisible. The structure that makes the click
+// surface the modal is the data-open toggle; the live click is verified
+// in a browser separately.
+func TestTriggerModal_dataOpenReveal(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{sampleTrigger("c1", "alpha", "cron")}
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/triggers", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	// Positive: the open path must set the data-open hook the CSS reveals.
+	if !strings.Contains(body, `setAttribute("data-open"`) {
+		t.Errorf("openAdd does not set data-open; modal will stay hidden")
+	}
+	// Negative: the dead `modal.hidden` reveal must be gone — the CSS has
+	// no rule for the overlay's hidden attribute, so it never worked.
+	if strings.Contains(body, "modal.hidden = false") {
+		t.Errorf("openAdd still uses dead modal.hidden reveal")
+	}
+}
+
+// TestTriggerDetailModal_dataOpenReveal asserts the detail page's edit
+// modal opens via the same data-open hook (see TestTriggerModal_dataOpenReveal).
+func TestTriggerDetailModal_dataOpenReveal(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{sampleTrigger("c2", "alpha", "cron")}
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/console/triggers/c2", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `setAttribute("data-open"`) {
+		t.Errorf("openEdit does not set data-open; modal will stay hidden")
+	}
+	if strings.Contains(body, "modal.hidden = false") {
+		t.Errorf("openEdit still uses dead modal.hidden reveal")
+	}
+}
