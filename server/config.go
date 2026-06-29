@@ -141,6 +141,15 @@ type Config struct {
 	// Not stored in the on-disk file itself — populated by the CLI
 	// from the resolved path after the file is loaded.
 	ConfigFilePath string `json:"-"`
+
+	// DieWithParent makes a spawned `dagnats serve` self-terminate via
+	// the normal graceful shutdown when its parent process dies (#476).
+	// Default OFF. Opt-in for sidecar spawners (notify's e2e tests, the
+	// eventbus sidecar) whose own cleanup can't run on SIGKILL /
+	// `go test -timeout`, so they'd otherwise orphan the server. The
+	// CLI's --die-with-parent flag sets it; not persisted to
+	// dagnats.yaml — it's an invocation mode, not stored config.
+	DieWithParent bool `json:"-"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.
