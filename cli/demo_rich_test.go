@@ -27,8 +27,8 @@ func TestRichWorkflowDefsAreValidAndDistinct(t *testing.T) {
 	t.Parallel()
 	defs := richWorkflowDefs()
 
-	if len(defs) < 3 {
-		t.Fatalf("richWorkflowDefs returned %d defs, want >= 3",
+	if len(defs) < 6 {
+		t.Fatalf("richWorkflowDefs returned %d defs, want >= 6",
 			len(defs))
 	}
 
@@ -43,10 +43,21 @@ func TestRichWorkflowDefsAreValidAndDistinct(t *testing.T) {
 		names[def.Name] = true
 	}
 
-	// The single-step demo-noop workflow must still be present so the
-	// keep-alive set is a superset of the one-shot seed surface.
-	if !names[demoWorkflowName] {
-		t.Errorf("rich defs missing %q", demoWorkflowName)
+	// demo-noop must still be present so the keep-alive set stays a
+	// superset of the one-shot seed surface; the new recognizable
+	// domains must all be registered so every console page has variety.
+	wantNames := []string{
+		demoWorkflowName,
+		demoWorkflowImagePipeline,
+		demoWorkflowRetryErrors,
+		demoWorkflowAgentLoop,
+		demoWorkflowETL,
+		demoWorkflowNotify,
+	}
+	for _, want := range wantNames {
+		if !names[want] {
+			t.Errorf("rich defs missing %q", want)
+		}
 	}
 
 	// A multi-step workflow proves the Traces page gets real fan-out.
@@ -89,13 +100,16 @@ func TestDemoTaskTypesCoverAllWorkflowSteps(t *testing.T) {
 	}
 }
 
-// TestRichTriggerDefsAreValidCron asserts the demo triggers are valid
-// cron triggers bound to registered workflows.
-func TestRichTriggerDefsAreValidCron(t *testing.T) {
+// TestRichTriggerDefsAreValidAndVaried asserts the demo triggers all
+// validate, bind to registered workflows, and span every trigger type
+// the Triggers page renders (cron + webhook + http + subject). Cron
+// triggers must stay disabled so the generator (not the scheduler)
+// owns the observable run cadence.
+func TestRichTriggerDefsAreValidAndVaried(t *testing.T) {
 	t.Parallel()
 	defs := richTriggerDefs()
-	if len(defs) < 2 {
-		t.Fatalf("richTriggerDefs returned %d, want >= 2", len(defs))
+	if len(defs) < 4 {
+		t.Fatalf("richTriggerDefs returned %d, want >= 4", len(defs))
 	}
 
 	workflows := map[string]bool{}
@@ -103,17 +117,32 @@ func TestRichTriggerDefsAreValidCron(t *testing.T) {
 		workflows[wf.Name] = true
 	}
 
+	var sawCron, sawWebhook, sawHTTP, sawSubject bool
 	for _, td := range defs {
 		if err := trigger.Validate(td); err != nil {
 			t.Errorf("trigger %q invalid: %v", td.ID, err)
-		}
-		if td.Cron == nil {
-			t.Errorf("trigger %q is not a cron trigger", td.ID)
 		}
 		if !workflows[td.WorkflowID] {
 			t.Errorf("trigger %q binds unknown workflow %q",
 				td.ID, td.WorkflowID)
 		}
+		switch {
+		case td.Cron != nil:
+			sawCron = true
+			if td.Enabled {
+				t.Errorf("cron trigger %q must stay disabled", td.ID)
+			}
+		case td.Webhook != nil:
+			sawWebhook = true
+		case td.HTTP != nil:
+			sawHTTP = true
+		case td.Subject != nil:
+			sawSubject = true
+		}
+	}
+	if !sawCron || !sawWebhook || !sawHTTP || !sawSubject {
+		t.Errorf("trigger types incomplete: cron=%v webhook=%v http=%v"+
+			" subject=%v", sawCron, sawWebhook, sawHTTP, sawSubject)
 	}
 }
 

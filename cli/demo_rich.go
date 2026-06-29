@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -57,6 +58,19 @@ const (
 	demoTaskFetch       = "demo-fetch"
 	demoTaskBuildGalley = "demo-build-gallery"
 	demoTaskFlaky       = "demo-flaky"
+
+	demoTaskAgentPlan      = "agent-plan"
+	demoTaskAgentAct       = "agent-act"
+	demoTaskAgentObserve   = "agent-observe"
+	demoTaskAgentSummarize = "agent-summarize"
+
+	demoTaskETLExtract   = "etl-extract"
+	demoTaskETLTransform = "etl-transform"
+	demoTaskETLLoad      = "etl-load"
+
+	demoTaskNotifyRender = "notify-render"
+	demoTaskNotifyEmail  = "notify-email"
+	demoTaskNotifySlack  = "notify-slack"
 )
 
 // Rich demo workflow names. demo-noop is shared with the one-shot
@@ -64,6 +78,9 @@ const (
 const (
 	demoWorkflowImagePipeline = "image-pipeline"
 	demoWorkflowRetryErrors   = "retry-errors"
+	demoWorkflowAgentLoop     = "llm-agent-loop"
+	demoWorkflowETL           = "etl-nightly"
+	demoWorkflowNotify        = "notify-fanout"
 )
 
 // demoKeepAliveOptions configures a keep-alive generator run.
@@ -104,6 +121,43 @@ func demoTaskTypes() []string {
 		demoTaskFetch,
 		demoTaskBuildGalley,
 		demoTaskFlaky,
+		demoTaskAgentPlan,
+		demoTaskAgentAct,
+		demoTaskAgentObserve,
+		demoTaskAgentSummarize,
+		demoTaskETLExtract,
+		demoTaskETLTransform,
+		demoTaskETLLoad,
+		demoTaskNotifyRender,
+		demoTaskNotifyEmail,
+		demoTaskNotifySlack,
+	}
+}
+
+// demoWorkerDomains partitions the demo task types across worker
+// instances so the Workers page shows a realistic fleet instead of one
+// row. worker.NewWorker exposes no name/ID setter (the ID is generated
+// per instance) and WithGroups only narrows the subscription subject —
+// which the demo runs, carrying no group token, would never match. So
+// the cheap mechanism is simply distinct NewWorker instances, each
+// owning a disjoint slice of task types; each gets its own generated
+// ID and heartbeats independently. The union MUST equal demoTaskTypes()
+// or a step would have no handler and its run would hang forever.
+func demoWorkerDomains() map[string][]string {
+	return map[string][]string{
+		"media": {
+			demoTaskType, demoTaskFetchURLs, demoTaskFetch,
+			demoTaskBuildGalley,
+		},
+		"agent": {
+			demoTaskAgentPlan, demoTaskAgentAct, demoTaskAgentObserve,
+			demoTaskAgentSummarize,
+		},
+		"etl": {
+			demoTaskETLExtract, demoTaskETLTransform, demoTaskETLLoad,
+			demoTaskNotifyRender, demoTaskNotifyEmail, demoTaskNotifySlack,
+			demoTaskFlaky,
+		},
 	}
 }
 
@@ -111,10 +165,13 @@ func demoTaskTypes() []string {
 // on a build error because these are compile-time-fixed definitions —
 // a build failure here is a programmer error, not operator input.
 func richWorkflowDefs() []dag.WorkflowDef {
-	defs := make([]dag.WorkflowDef, 0, 3)
+	defs := make([]dag.WorkflowDef, 0, 6)
 	defs = append(defs, mustBuildWorkflow(buildNoopWorkflow()))
 	defs = append(defs, mustBuildWorkflow(buildImagePipeline()))
 	defs = append(defs, mustBuildWorkflow(buildRetryErrors()))
+	defs = append(defs, mustBuildWorkflow(buildAgentLoop()))
+	defs = append(defs, mustBuildWorkflow(buildETLNightly()))
+	defs = append(defs, mustBuildWorkflow(buildNotifyFanout()))
 	return defs
 }
 
@@ -145,6 +202,38 @@ func buildRetryErrors() *dag.WorkflowBuilder {
 	return wb
 }
 
+// buildAgentLoop returns the linear LLM agent pipeline:
+// plan -> act -> observe -> summarize.
+func buildAgentLoop() *dag.WorkflowBuilder {
+	wb := dag.NewWorkflow(demoWorkflowAgentLoop)
+	plan := wb.Task("plan", demoTaskAgentPlan)
+	act := wb.Task("act", demoTaskAgentAct).After(plan)
+	observe := wb.Task("observe", demoTaskAgentObserve).After(act)
+	wb.Task("summarize", demoTaskAgentSummarize).After(observe)
+	return wb
+}
+
+// buildETLNightly returns the linear ETL pipeline:
+// extract -> transform -> load.
+func buildETLNightly() *dag.WorkflowBuilder {
+	wb := dag.NewWorkflow(demoWorkflowETL)
+	extract := wb.Task("extract", demoTaskETLExtract)
+	transform := wb.Task("transform", demoTaskETLTransform).After(extract)
+	wb.Task("load", demoTaskETLLoad).After(transform)
+	return wb
+}
+
+// buildNotifyFanout returns a fan-out: a single render step whose
+// output feeds two independent leaf steps (send-email AND send-slack)
+// so the Traces page shows real parallel branches.
+func buildNotifyFanout() *dag.WorkflowBuilder {
+	wb := dag.NewWorkflow(demoWorkflowNotify)
+	render := wb.Task("render", demoTaskNotifyRender)
+	wb.Task("send-email", demoTaskNotifyEmail).After(render)
+	wb.Task("send-slack", demoTaskNotifySlack).After(render)
+	return wb
+}
+
 // mustBuildWorkflow builds a workflow definition or panics. Used only
 // for the compile-time-fixed demo defs.
 func mustBuildWorkflow(wb *dag.WorkflowBuilder) dag.WorkflowDef {
@@ -165,20 +254,60 @@ func mustBuildWorkflow(wb *dag.WorkflowBuilder) dag.WorkflowDef {
 // not to double-drive runs.
 func richTriggerDefs() []trigger.TriggerDef {
 	return []trigger.TriggerDef{
+		demoCronTrigger("demo-image-pipeline-hourly",
+			demoWorkflowImagePipeline, "0 * * * *"),
+		demoCronTrigger("demo-etl-nightly", demoWorkflowETL, "0 2 * * *"),
+		demoCronTrigger("demo-noop-every-5min", demoWorkflowName,
+			"*/5 * * * *"),
+		// Webhook/HTTP/Subject triggers are externally driven — nothing
+		// in the demo posts to them, so they never double-drive the run
+		// stream. They stay enabled to look realistic on the page.
 		{
-			ID:         "demo-image-pipeline-hourly",
+			ID:         "demo-notify-webhook",
+			WorkflowID: demoWorkflowNotify,
+			Enabled:    true,
+			Webhook:    &trigger.WebhookConfig{Path: "/hooks/notify-fanout"},
+			Source:     "demo",
+		},
+		{
+			ID:         "demo-image-http",
 			WorkflowID: demoWorkflowImagePipeline,
-			Enabled:    false,
-			Cron:       &trigger.CronConfig{Expression: "0 * * * *"},
-			Source:     "demo",
+			Enabled:    true,
+			HTTP: &trigger.HTTPConfig{
+				Path:         "/api/v1/image-pipeline",
+				Method:       http.MethodPost,
+				TimeoutMs:    30000,
+				MaxBodyBytes: 1 << 20,
+			},
+			Source: "demo",
 		},
 		{
-			ID:         "demo-noop-every-5min",
-			WorkflowID: demoWorkflowName,
-			Enabled:    false,
-			Cron:       &trigger.CronConfig{Expression: "*/5 * * * *"},
+			ID:         "demo-agent-subject",
+			WorkflowID: demoWorkflowAgentLoop,
+			Enabled:    true,
+			Subject:    &trigger.SubjectConfig{Subject: "demo.agent.requests"},
 			Source:     "demo",
 		},
+	}
+}
+
+// demoCronTrigger builds a DISABLED demo cron trigger. Cron triggers
+// stay disabled because the keep-alive generator (not the scheduler)
+// drives the observable run cadence — an enabled cron would double-drive
+// runs and muddy the demo stream. The trigger still populates the page.
+func demoCronTrigger(id, workflowID, expr string) trigger.TriggerDef {
+	if id == "" {
+		panic("demoCronTrigger: id must not be empty")
+	}
+	if workflowID == "" {
+		panic("demoCronTrigger: workflowID must not be empty")
+	}
+	return trigger.TriggerDef{
+		ID:         id,
+		WorkflowID: workflowID,
+		Enabled:    false,
+		Cron:       &trigger.CronConfig{Expression: expr},
+		Source:     "demo",
 	}
 }
 
@@ -248,11 +377,15 @@ func runDemoKeepAlive(
 	// is best-effort: log and continue.
 	ensureRichTriggers(ctx, svc)
 
-	w, err := startRichWorker(nc, svc)
+	workers, err := startRichWorker(nc, svc)
 	if err != nil {
 		return demoSeedResult{}, fmt.Errorf("start worker: %w", err)
 	}
-	defer w.Stop()
+	defer func() {
+		for _, w := range workers {
+			w.Stop()
+		}
+	}()
 
 	runIDs := generateRuns(ctx, svc, opts)
 	if len(runIDs) == 0 {
@@ -306,28 +439,39 @@ func ensureRichTriggers(ctx context.Context, svc *api.Service) {
 	}
 }
 
-// startRichWorker builds a worker that handles every demo task type
-// via the shared outcome-driven noopHandle dispatcher and starts it.
-// Caller owns w.Stop().
+// startRichWorker builds the demo worker fleet: one worker.Worker per
+// domain in demoWorkerDomains, each handling its disjoint slice of task
+// types via the shared outcome-driven noopHandle dispatcher. Distinct
+// instances surface as distinct heartbeating rows on the Workers page.
+// The union of domains covers every task type (see demoWorkerDomains),
+// so no step is left without a handler. Caller owns Stop() for each.
 func startRichWorker(
 	nc *nats.Conn, svc *api.Service,
-) (*worker.Worker, error) {
+) ([]*worker.Worker, error) {
 	if nc == nil {
 		panic("startRichWorker: nc must not be nil")
 	}
 	if svc == nil {
 		panic("startRichWorker: svc must not be nil")
 	}
-	w := worker.NewWorker(nc)
-	for _, taskType := range demoTaskTypes() {
-		w.Handle(taskType,
-			func(tc worker.TaskContext) error {
-				return noopHandle(tc, svc)
-			},
-		)
+	domains := demoWorkerDomains()
+	if len(domains) == 0 {
+		panic("startRichWorker: no worker domains")
 	}
-	w.Start()
-	return w, nil
+	workers := make([]*worker.Worker, 0, len(domains))
+	for _, taskTypes := range domains {
+		w := worker.NewWorker(nc)
+		for _, taskType := range taskTypes {
+			w.Handle(taskType,
+				func(tc worker.TaskContext) error {
+					return noopHandle(tc, svc)
+				},
+			)
+		}
+		w.Start()
+		workers = append(workers, w)
+	}
+	return workers, nil
 }
 
 // generateRuns is the continuous generator loop. It starts batches of
@@ -419,26 +563,65 @@ func pickRun(rng *rand.Rand) (string, []byte) {
 		demoWorkflowName,
 		demoWorkflowImagePipeline,
 		demoWorkflowRetryErrors,
+		demoWorkflowAgentLoop,
+		demoWorkflowETL,
+		demoWorkflowNotify,
 	}
 	name := names[rng.Intn(len(names))]
 	outcome := drawOutcome(rng)
 	if name == demoWorkflowRetryErrors && rng.Intn(100) < 50 {
 		outcome = outcomeFailed
 	}
-	input := encodeOutcome(outcome)
-	return name, input
+	return name, buildWorkflowInput(name, outcome)
 }
 
-// encodeOutcome marshals a demoTaskInput. Panics on marshal failure —
-// the input is a fixed-shape struct, so a failure is a programmer
-// error, not operator input.
-func encodeOutcome(outcome demoOutcome) []byte {
-	if outcome == "" {
-		panic("encodeOutcome: outcome must not be empty")
+// buildWorkflowInput constructs the realistic, domain-shaped input for a
+// run of the named workflow, carrying the control outcome plus payload
+// fields an operator would recognize on the run-detail IO tab. The
+// outcome only needs to be honored at the root step: a failed/cancelled
+// root short-circuits the run before downstream steps see input.
+func buildWorkflowInput(name string, outcome demoOutcome) []byte {
+	if name == "" {
+		panic("buildWorkflowInput: name must not be empty")
 	}
-	data, err := json.Marshal(demoTaskInput{Outcome: outcome})
+	if outcome == "" {
+		panic("buildWorkflowInput: outcome must not be empty")
+	}
+	in := demoTaskInput{Outcome: outcome}
+	switch name {
+	case demoWorkflowImagePipeline:
+		in.Album = "summer-2026"
+		in.SourceURLs = []string{
+			"https://cdn.example.com/a.jpg",
+			"https://cdn.example.com/b.jpg",
+			"https://cdn.example.com/c.jpg",
+		}
+		in.MaxDimensionPx = 2048
+	case demoWorkflowAgentLoop:
+		in.Goal = "triage failing CI on main and open a fix PR"
+		in.Model = "claude-sonnet"
+		in.MaxIterations = 8
+	case demoWorkflowETL:
+		in.Table = "analytics.events_daily"
+		in.Date = "2026-06-28"
+		in.BatchSize = 5000
+	case demoWorkflowNotify:
+		in.Template = "weekly-digest"
+		in.Recipients = []string{"ops@example.com", "#alerts"}
+	}
+	return marshalDemoInput(in)
+}
+
+// marshalDemoInput marshals a demoTaskInput. Panics on marshal failure —
+// the input is a fixed-shape struct, so a failure is a programmer error,
+// not operator input.
+func marshalDemoInput(in demoTaskInput) []byte {
+	if in.Outcome == "" {
+		panic("marshalDemoInput: outcome must not be empty")
+	}
+	data, err := json.Marshal(in)
 	if err != nil {
-		panic(fmt.Sprintf("encodeOutcome: %v", err))
+		panic(fmt.Sprintf("marshalDemoInput: %v", err))
 	}
 	return data
 }
