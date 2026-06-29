@@ -213,9 +213,13 @@
     var enabledRow = modal.querySelector('[data-field="enabled"]');
     if (enabledRow) enabledRow.hidden = false;
     showConfigField();
-    modal.hidden = false;
+    modal.setAttribute("data-open", "true");
+    setTimeout(function () {
+      var first = document.getElementById("trigger-modal-id");
+      if (first) first.focus();
+    }, 0);
   }
-  function close() { modal.hidden = true; }
+  function close() { modal.removeAttribute("data-open"); }
   function activeConfigInput() {
     var field = modal.querySelector(
       '[data-config-field="' + typeSel.value + '"]:not([hidden])');
@@ -271,6 +275,9 @@
   typeSel.addEventListener("change", showConfigField);
   modal.addEventListener("click", function (e) {
     if (e.target === modal) close();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal.getAttribute("data-open")) close();
   });
 })();
 </script>

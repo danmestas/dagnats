@@ -292,9 +292,15 @@
       input.disabled = !canEdit;
     }
     saveBtn.disabled = !canEdit;
-    modal.hidden = false;
+    modal.setAttribute("data-open", "true");
+    setTimeout(function () {
+      // In edit mode the id field is hidden; focus the editable config
+      // input (the first field the operator can actually change).
+      var first = configInputFor(kind);
+      if (first && !first.disabled) first.focus();
+    }, 0);
   }
-  function close() { modal.hidden = true; }
+  function close() { modal.removeAttribute("data-open"); }
   function save() {
     var id = modal.getAttribute("data-trigger-id");
     var kind = typeSel.value;
@@ -337,6 +343,9 @@
   saveBtn.addEventListener("click", save);
   modal.addEventListener("click", function (e) {
     if (e.target === modal) close();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal.getAttribute("data-open")) close();
   });
 })();
 </script>
