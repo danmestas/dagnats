@@ -392,7 +392,7 @@ a:hover { text-decoration: underline; }
 .console-tile {
   background: var(--surface);
   border-radius: var(--radius-tile);
-  padding: 1.1rem 1.2rem;
+  padding: var(--space-4);
 }
 .console-tile header h2 {
   margin: 0 0 0.5rem;
@@ -1448,7 +1448,7 @@ body[data-theme="dark"] {
 }
 .ops-tile {
   display: block;
-  padding: 18px 16px;
+  padding: var(--space-4);
   background: var(--surface);
   border-radius: 6px;
   text-decoration: none;
@@ -1716,7 +1716,7 @@ body[data-theme="dark"] {
 .console-metric-tile {
   background: var(--surface);
   border-radius: 8px;
-  padding: 14px 16px 16px 16px;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1797,7 +1797,7 @@ body[data-theme="dark"] {
 .console-chart {
   background: var(--surface);
   border-radius: 8px;
-  padding: 14px 16px 16px 16px;
+  padding: var(--space-4);
 }
 .console-chart-header {
   display: flex;
@@ -4164,9 +4164,9 @@ body[data-theme="dark"] code {
   .dashboard-telemetry-row { grid-template-columns: 1fr; }
 }
 .dashboard-tile {
-  gap: 0.15rem;
+  gap: var(--space-1);
   min-height: 0;
-  padding: 0.65rem 0.85rem;
+  padding: var(--space-3);
 }
 .dashboard-tile-header {
   order: 2;
