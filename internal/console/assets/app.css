@@ -513,6 +513,10 @@ a:hover { text-decoration: underline; }
   display: grid;
   grid-template-columns: 1fr;
   gap: var(--space-3);
+  /* Without this the grid stretches the sparser card (State) to the taller
+     sibling's height, leaving a large empty region below its content. Let
+     each card keep its natural height. */
+  align-items: start;
 }
 @media (min-width: 768px) {
   .stream-detail-cards {
@@ -3434,6 +3438,9 @@ body[data-theme="dark"] code {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
+  /* Stop the shorter pane (streams table) from stretching to the taller KV
+     pane's height — that left ~470px of dead space below it. */
+  align-items: start;
 }
 @media (min-width: 960px) {
   .config-jetstream-grid {
