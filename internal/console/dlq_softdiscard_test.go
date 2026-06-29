@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/console/events"
 )
 
 // softDiscardHarness builds a console handler with the soft-discard
@@ -156,6 +157,38 @@ func TestSoftDiscard_sweepRemovesAfterWindow(t *testing.T) {
 	h.cfg.tomb.SweepOnce()
 	if h.expiredCount() != 1 {
 		t.Fatalf("expired count = %d, want 1", h.expiredCount())
+	}
+}
+
+// TestSoftDiscard_sweepPublishesRowRemove pins the behaviour that was
+// missing: when a tombstone's window closes, the permanent removal must
+// also publish a row.remove on the bus so every open /console/sse/dlq
+// stream patches #dlq-row-<seq> out. Without it the entry vanishes
+// server-side but lingers in the operator's list until a manual refresh
+// — the "after discard nothing deletes" report.
+func TestSoftDiscard_sweepPublishesRowRemove(t *testing.T) {
+	h := newSoftDiscardHarness(t)
+	// Subscribe before the sweep so the emitted event can't be missed.
+	ch, cancel := h.cfg.bus.subscribe(events.TopicDLQ)
+	defer cancel()
+	rr := httptest.NewRecorder()
+	h.handler.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodPost, "/console/dlq/501/discard", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("discard status = %d, want 200", rr.Code)
+	}
+	time.Sleep(250 * time.Millisecond) // past the 200ms harness window
+	h.cfg.tomb.SweepOnce()
+	select {
+	case evt := <-ch:
+		if evt.Op != events.OpRowRemove {
+			t.Fatalf("event op = %v, want OpRowRemove", evt.Op)
+		}
+		if evt.Key != "501" {
+			t.Fatalf("event key = %q, want \"501\"", evt.Key)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sweep published no row.remove; SSE clients keep the row")
 	}
 }
 

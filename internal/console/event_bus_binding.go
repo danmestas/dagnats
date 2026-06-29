@@ -2,6 +2,7 @@ package console
 
 import (
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -77,7 +78,18 @@ func EnableSoftDiscard(
 	if cfg.bus == nil {
 		cfg.bus = newEventBusBinding(cfg.Logger)
 	}
-	cfg.tomb = newDLQTombstoneStore(window, discard)
+	// Wrap the caller's permanent-removal fn so an expired tombstone
+	// also emits the row.remove event. The SSE pipeline is a console
+	// concern, so the caller (server.go) only has to supply "delete the
+	// entry for real" — not know to patch every open list. Without this
+	// the swept entry is gone server-side but lingers in the operator's
+	// DLQ list until a manual refresh ("after discard nothing deletes").
+	bus := cfg.bus
+	onExpire := func(seq uint64) {
+		discard(seq)
+		bus.publish(busEventDLQRemove(strconv.FormatUint(seq, 10)))
+	}
+	cfg.tomb = newDLQTombstoneStore(window, onExpire)
 	cfg.DLQSoftDiscard = true
 }
 
