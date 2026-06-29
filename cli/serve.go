@@ -65,7 +65,8 @@ func runServeCmd(args []string) {
 func printServeHelp() {
 	fmt.Println("Usage: dagnats serve [--config=PATH]" +
 		" [--dry-run] [--nats-ws-port=N]" +
-		" [--nats-ws-no-tls] [--fail-on-port-conflict]")
+		" [--nats-ws-no-tls] [--fail-on-port-conflict]" +
+		" [--die-with-parent]")
 	fmt.Println("Starts embedded NATS server with" +
 		" DagNats engine and API.")
 	fmt.Println()
@@ -81,6 +82,12 @@ func printServeHelp() {
 		" port conflict instead")
 	fmt.Println("                            of auto-falling-back" +
 		" to a free port")
+	fmt.Println("  --die-with-parent   self-terminate (graceful" +
+		" shutdown) when the")
+	fmt.Println("                      parent process dies; for" +
+		" sidecar spawners")
+	fmt.Println("                      whose own cleanup can't run" +
+		" on SIGKILL")
 	fmt.Println()
 	fmt.Println("Config search order (when --config" +
 		" not specified):")
@@ -154,6 +161,19 @@ func applyServeFlagOverrides(
 			default:
 				return fmt.Errorf(
 					"--fail-on-port-conflict: invalid %q", val)
+			}
+		case arg == "--die-with-parent":
+			cfg.DieWithParent = true
+		case strings.HasPrefix(arg, "--die-with-parent="):
+			val := strings.TrimPrefix(arg, "--die-with-parent=")
+			switch strings.ToLower(val) {
+			case "1", "true", "yes", "on":
+				cfg.DieWithParent = true
+			case "0", "false", "no", "off":
+				cfg.DieWithParent = false
+			default:
+				return fmt.Errorf(
+					"--die-with-parent: invalid %q", val)
 			}
 		}
 	}

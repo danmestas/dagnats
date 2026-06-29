@@ -97,6 +97,15 @@ func (s *Server) Run() error {
 		return err
 	}
 
+	// #476: when spawned as a sidecar with --die-with-parent, watch for
+	// the parent's death and self-terminate via the existing graceful
+	// shutdown so a SIGKILL'd / `go test -timeout`'d spawner doesn't
+	// orphan us. The watcher goroutine exits when stopCh closes, so a
+	// normal shutdown reaps it.
+	if s.cfg.DieWithParent {
+		s.startParentWatch()
+	}
+
 	httpErrCh, err := s.startHTTP()
 	if err != nil {
 		s.shutdown()
