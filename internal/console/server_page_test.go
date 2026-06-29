@@ -186,3 +186,71 @@ func TestServerHealthPct(t *testing.T) {
 		t.Errorf("storePct(_, -1 unlimited): got %d, want 0", got)
 	}
 }
+
+func TestStorePctText(t *testing.T) {
+	// A real but sub-percent ratio (14 MiB of 10 GiB rounds to int 0)
+	// reads as "<1", not the misleading "0" that implies nothing is used.
+	if got := storePctText(14<<20, 10<<30); got != "<1" {
+		t.Errorf("storePctText(14MiB, 10GiB): got %q, want \"<1\"", got)
+	}
+	// Genuinely empty store is honestly "0", never the sliver text.
+	if got := storePctText(0, 10<<30); got != "0" {
+		t.Errorf("storePctText(0, 10GiB): got %q, want \"0\"", got)
+	}
+	// A whole-percent ratio renders the number as-is.
+	if got := storePctText(2<<30, 10<<30); got != "20" {
+		t.Errorf("storePctText(2GiB, 10GiB): got %q, want \"20\"", got)
+	}
+	// No ceiling: nothing to be a percentage of, so "0".
+	if got := storePctText(2<<30, 0); got != "0" {
+		t.Errorf("storePctText(_, 0): got %q, want \"0\"", got)
+	}
+}
+
+func TestStoreGaugePct(t *testing.T) {
+	// Sub-percent usage floors the gauge to 1 so a real-but-tiny store
+	// shows a visible sliver instead of an empty bar.
+	if got := storeGaugePct(14<<20, 10<<30); got != 1 {
+		t.Errorf("storeGaugePct(14MiB, 10GiB): got %d, want 1", got)
+	}
+	// Empty store keeps the gauge empty.
+	if got := storeGaugePct(0, 10<<30); got != 0 {
+		t.Errorf("storeGaugePct(0, 10GiB): got %d, want 0", got)
+	}
+	// A real percentage passes through untouched.
+	if got := storeGaugePct(2<<30, 10<<30); got != 20 {
+		t.Errorf("storeGaugePct(2GiB, 10GiB): got %d, want 20", got)
+	}
+}
+
+func TestServePageServer_subPercentStorageText(t *testing.T) {
+	// 14 MiB of 10 GiB is a real, non-zero store that integer-rounds to
+	// 0%. The page must read "<1%" (not "0%", which implies an empty
+	// store) and the gauge must carry a non-zero --storage-pct sliver.
+	fake := newFakeDS()
+	fake.serverHealth = ServerHealth{
+		HasStats:  true,
+		StoreUsed: 14 << 20,
+		StoreMax:  10 << 30,
+		StorePct:  storePct(14<<20, 10<<30),
+	}
+	handler := mountWithFake(t, fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/console/server", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// html/template escapes the "<" in the "<1" label to "&lt;".
+	if !strings.Contains(body, "(&lt;1%)") {
+		t.Errorf("sub-percent storage should render \"(<1%%)\"")
+	}
+	if strings.Contains(body, "(0%)") {
+		t.Errorf("sub-percent storage must not read as \"(0%%)\"")
+	}
+	if !strings.Contains(body, "--storage-pct: 1") {
+		t.Errorf("sub-percent gauge must floor --storage-pct to a visible 1")
+	}
+}

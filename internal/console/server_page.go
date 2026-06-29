@@ -22,6 +22,13 @@ type ServerHealthView struct {
 	MemoryUsedHuman string
 	MemoryMaxHuman  string
 
+	// StorePctText is the storage percentage label ("<1" for a real but
+	// sub-percent store, the integer otherwise) and StoreGaugePct is the
+	// gauge's --storage-pct value, floored to a visible 1 when the store
+	// is used but rounds below a percent. Both keep the template dumb.
+	StorePctText  string
+	StoreGaugePct int
+
 	// Traffic + host byte strings, populated on the rich (HasStats) path.
 	// In/OutBytes and Mem are int64 from Varz; humanBytesSigned clamps a
 	// negative to 0 B before humanizing.
@@ -62,6 +69,8 @@ func servePageServer(
 		Note:            note,
 		StoreUsedHuman:  humanBytes(health.StoreUsed),
 		StoreMaxHuman:   humanBytesMax(health.StoreMax),
+		StorePctText:    storePctText(health.StoreUsed, health.StoreMax),
+		StoreGaugePct:   storeGaugePct(health.StoreUsed, health.StoreMax),
 		MemoryUsedHuman: humanBytes(health.MemoryUsed),
 		MemoryMaxHuman:  humanBytesMax(health.MemoryMax),
 		InBytesHuman:    humanBytesSigned(health.InBytes),

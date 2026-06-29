@@ -77,6 +77,35 @@ func TestTracesListRendersRows(t *testing.T) {
 	}
 }
 
+func TestTracesListSingleDescription(t *testing.T) {
+	// The page header already renders the trace description as its
+	// subtitle (one console-lede paragraph). A second, raw OTLP
+	// "telemetry.spans.{service}.{runID}" lede stacked above the filter
+	// read as clutter — there must be exactly one descriptive line.
+	fake := newFakeDS()
+	fake.runs = seedTraceRuns()
+	h := mountWithFakeRO(t, fake, false)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodGet, "/console/traces", nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// Positive space: the single subtitle description survives.
+	if !strings.Contains(body, "One trace per run") {
+		t.Errorf("body missing the trace subtitle description")
+	}
+	// Negative space: the redundant raw OTLP technical lede is gone.
+	if strings.Contains(body, "telemetry.spans") {
+		t.Errorf("redundant raw OTLP telemetry.spans lede must be removed")
+	}
+	if n := strings.Count(body, "console-lede"); n != 1 {
+		t.Errorf("traces page should render one lede paragraph, got %d", n)
+	}
+}
+
 func TestTracesListEmptyState(t *testing.T) {
 	fake := newFakeDS()
 	// No runs seeded.
