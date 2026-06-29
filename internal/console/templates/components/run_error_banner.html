@@ -8,7 +8,7 @@
     </h3>
     {{if .FailedStepError}}<p class="run-error-message">{{.FailedStepError}}</p>{{end}}
     <div class="run-error-actions">
-      <a href="#step-row-{{.FailedStepID}}" class="btn btn-outline run-error-jump">Jump to step</a>
+      <button type="button" class="btn btn-outline run-error-jump" data-jump-step="{{.FailedStepID}}">Jump to step</button>
     </div>
   </div>
 </div>

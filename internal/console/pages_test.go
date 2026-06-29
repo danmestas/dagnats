@@ -1745,7 +1745,7 @@ func TestRunDetail_failedRunShowsErrorBanner(t *testing.T) {
 		`class="alert alert-destructive run-error-banner"`,
 		"transform",
 		"boom",
-		`href="#step-row-transform"`,
+		`data-jump-step="transform"`,
 		"3 attempts",
 	} {
 		if !strings.Contains(body, sub) {
