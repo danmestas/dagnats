@@ -199,11 +199,17 @@ func serveSSEDLQ(
 	if !ok {
 		return
 	}
+	// The DLQ live feed has two independent sources: the JetStream
+	// new-entry watch (ch) and the in-process bus (discard/retry/undo
+	// mutations). A failure to establish the watch — e.g. no stream
+	// matches dead_letters.> — must NOT 503 the whole stream, or a
+	// discard's row-remove never reaches the page ("after discard
+	// nothing deletes"). Degrade to bus-only: nil ch, keep the bus pump.
 	ch, err := ds.WatchDLQ(r.Context())
 	if err != nil {
-		cfg.Logger.Error("console: sse dlq watch", "err", err)
-		http.Error(w, "watch failed", http.StatusServiceUnavailable)
-		return
+		cfg.Logger.Warn("console: sse dlq watch unavailable; serving"+
+			" bus-only", "err", err)
+		ch = nil
 	}
 	busCh, busCancel := subscribeDLQEvents(cfg)
 	defer busCancel()
@@ -256,7 +262,11 @@ func pumpDLQCombined(
 			return
 		case update, ok := <-kvCh:
 			if !ok {
-				return
+				// New-entry watch ended (or was never wired). Keep
+				// serving bus mutations rather than tearing the whole
+				// SSE down — symmetric with the busCh-closed case below.
+				kvCh = nil
+				continue
 			}
 			if err := emitDLQPatch(sse, tmpl, update, rowCtx); err != nil {
 				cfg.Logger.Warn("console: sse dlq emit",

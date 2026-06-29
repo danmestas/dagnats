@@ -62,6 +62,7 @@ type fakeDataSource struct {
 	triggerSetErr   error
 	triggerUpdates  chan TriggerUpdate
 	dlqUpdates      chan DLQUpdate
+	watchDLQErr     error
 
 	// Trigger CRUD observability (Add / Edit / Delete). Each slice
 	// records one invocation; the *Err seams force the failure path.
@@ -600,6 +601,9 @@ func (f *fakeDataSource) WatchDLQ(
 ) (<-chan DLQUpdate, error) {
 	if ctx == nil {
 		panic("fakeDataSource.WatchDLQ: ctx is nil")
+	}
+	if f.watchDLQErr != nil {
+		return nil, f.watchDLQErr
 	}
 	if f.dlqUpdates != nil {
 		return f.dlqUpdates, nil
