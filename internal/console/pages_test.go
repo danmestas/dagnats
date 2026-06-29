@@ -1710,6 +1710,49 @@ func TestRunDetail_ioTabTwoColumn(t *testing.T) {
 	if strings.Contains(body, `id="run-detail-output"`) {
 		t.Error("output card must be omitted when run has no output")
 	}
+	// Negative space: no Error card when the run did not fail.
+	if strings.Contains(body, `id="run-detail-error"`) {
+		t.Error("error card must be omitted when run has no error")
+	}
+}
+
+// TestRunDetail_ioTabFailedShowsError asserts the IO tab surfaces the
+// failure reason for a failed run. Norman's feedback principle: the
+// result tab must show the OUTCOME, not just the input — a failed run
+// whose IO tab shows only a trivial input reads as "not useful".
+func TestRunDetail_ioTabFailedShowsError(t *testing.T) {
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{{
+		Name:    "demo",
+		Version: "v1",
+		Steps: []dag.StepDef{
+			{ID: "fetch", Task: "echo", Timeout: time.Minute},
+		},
+	}}
+	fake.runs = []dag.WorkflowRun{
+		runWithSteps("run-ioerr", "demo", dag.RunStatusFailed,
+			map[string]dag.StepState{
+				"fetch": {Status: dag.StepStatusFailed,
+					Attempts: 3, Error: "upstream returned 503 after 3 retries"},
+			}, time.Now().Add(-time.Minute)),
+	}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/api/run/run-ioerr/io-tab", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, sub := range []string{
+		`id="run-detail-error"`,
+		"console-pre-error",
+		"upstream returned 503 after 3 retries",
+	} {
+		if !strings.Contains(body, sub) {
+			t.Errorf("failed-run io tab missing %q", sub)
+		}
+	}
 }
 
 // TestRunDetail_failedRunShowsErrorBanner asserts that a failed run

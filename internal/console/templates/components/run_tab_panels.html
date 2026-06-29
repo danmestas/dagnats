@@ -44,6 +44,15 @@
     </div>
   </article>
   {{end}}
+
+  {{if .HasError}}
+  <article class="card" id="run-detail-error">
+    <header class="card-header"><h2>Error</h2></header>
+    <div class="card-body">
+      <pre class="console-pre console-pre-error"><code>{{.ErrorMsg}}</code></pre>
+    </div>
+  </article>
+  {{end}}
 </div>
 {{end}}
 
