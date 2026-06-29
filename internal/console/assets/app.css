@@ -834,6 +834,13 @@ a:hover { text-decoration: underline; }
      dim-to-invisible on dark — pin it to the primary text token. */
   color: var(--text-primary);
 }
+.dlq-detail-subhead {
+  /* "Error message" / "Original input" section labels. Same
+     inherit-basecoat-light-foreground bug as .console-step-name: without
+     an explicit color they computed near-black on the dark surface. These
+     are muted section labels, so pin them to the secondary text token. */
+  color: var(--text-secondary);
+}
 .console-step-type {
   flex: 0 0 auto;
   padding: var(--space-1) var(--space-2);
@@ -4216,6 +4223,12 @@ body[data-theme="dark"] code {
   color: var(--accent);
   background: none;
   line-height: 1;
+  /* The {l:...} ligature renders one glyph per data point at a fixed
+     width; a long series overruns the tile (white-space:nowrap on the
+     base rule). Clip to the tile box so the trend line never spills over
+     its bounding box into neighbouring content. */
+  max-width: 100%;
+  overflow: hidden;
 }
 .console-metric-tile-spark.console-spark {
   display: block;
@@ -4223,6 +4236,8 @@ body[data-theme="dark"] code {
   font-size: 1.3rem;
   color: var(--accent);
   line-height: 1;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 /* ---------------------------------------------------------------- */

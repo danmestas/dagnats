@@ -33,10 +33,10 @@
         <div><dt>Consumer</dt><dd class="console-mono">{{if .Consumer}}{{.Consumer}}{{else}}<span class="muted">—</span>{{end}}</dd></div>
         <div><dt>Body preserved</dt><dd>{{if .BodyPreserved}}yes — retry-eligible{{else}}<span class="muted">no — legacy entry, retry unsupported</span>{{end}}</dd></div>
       </dl>
-      <h3 style="margin-top: 1rem; font-size: 0.95rem;">Error message</h3>
+      <h3 class="dlq-detail-subhead" style="margin-top: 1rem; font-size: 0.95rem;">Error message</h3>
       <pre class="console-pre console-pre-error"><code>{{.ReasonFull}}</code></pre>
       {{if .BodyPreview}}
-      <h3 style="margin-top: 1rem; font-size: 0.95rem;">Original input</h3>
+      <h3 class="dlq-detail-subhead" style="margin-top: 1rem; font-size: 0.95rem;">Original input</h3>
       <pre class="console-pre"><code>{{.BodyPreview}}</code></pre>
       {{end}}
     </div>

@@ -12,6 +12,18 @@
  */
 (function () {
   const OUTLET_ID = "sheet-outlet";
+  const FOCUSABLE =
+    'a[href], button:not([disabled]), input:not([disabled]), ' +
+    'select:not([disabled]), textarea:not([disabled]), ' +
+    '[tabindex]:not([tabindex="-1"])';
+
+  // tabbables returns the in-order focusable descendants of the sheet.
+  // Used to seed initial focus and to wrap the Tab focus trap.
+  function tabbables(sheet) {
+    return Array.prototype.slice
+      .call(sheet.querySelectorAll(FOCUSABLE))
+      .filter((el) => el.offsetParent !== null || el === document.activeElement);
+  }
 
   function openSheet() {
     const sheet = document.querySelector("#" + OUTLET_ID + " .sidesheet");
@@ -23,6 +35,12 @@
       sheet.classList.add("sidesheet-open");
       const backdrop = document.querySelector("#" + OUTLET_ID + " .sidesheet-backdrop");
       if (backdrop) backdrop.classList.add("sidesheet-open");
+      // Move focus into the dialog on open so keyboard + screen-reader
+      // users land inside it. The close button is the conventional first
+      // stop for an inspect-only sheet.
+      const closeBtn = sheet.querySelector("[data-sidesheet-close]");
+      if (closeBtn) closeBtn.focus();
+      else sheet.focus();
     });
   }
 
@@ -57,14 +75,33 @@
     });
     observer.observe(outlet, { childList: true, subtree: false });
 
-    // Esc closes whenever a sheet is open. We attach to document so the
-    // handler keeps working after the outlet contents are replaced.
+    // Esc closes, Tab is trapped within the dialog. Both attach to
+    // document so they survive outlet content replacement across patches.
     document.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape") return;
       const open = outlet.querySelector(".sidesheet.sidesheet-open");
-      if (open) {
+      if (!open) return;
+      if (e.key === "Escape") {
         e.preventDefault();
         closeSheet();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      // Focus trap: Tab off either end wraps to the other end so focus
+      // never escapes the modal dialog while it is open.
+      const items = tabbables(open);
+      if (items.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !open.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !open.contains(active))) {
+        e.preventDefault();
+        first.focus();
       }
     });
 
