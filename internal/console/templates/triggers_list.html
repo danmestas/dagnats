@@ -3,13 +3,23 @@
          data-signals="{}"
          data-on-load="@get('/console/sse/triggers', {openWhenHidden: true})">
   {{template "page-header" .Header}}
-  <p class="console-lede console-section-meta">
-    <span id="triggers-count" data-count="{{.Total}}">{{.Total}}</span> configured.
-    <span id="triggers-count-tick" data-last="0" hidden></span>
+  {{/*
+    Primary section action lives in the same .console-section-actions
+    slot every other list/detail page uses (see workflow_detail.html),
+    so "+ Add trigger" sits in the header action area instead of being
+    stranded mid-paragraph next to the count. The .trigger-add-btn
+    class + button identity are unchanged — the add-trigger modal
+    wiring script below binds to it.
+  */}}
+  <div class="console-section-actions">
     <button type="button" class="btn trigger-add-btn"
             {{if .ReadOnly}}disabled aria-disabled="true" title="Console is read-only. Set CONSOLE_READ_ONLY=false to add triggers."{{end}}>
       + Add trigger
     </button>
+  </div>
+  <p class="console-lede console-section-meta">
+    <span id="triggers-count" data-count="{{.Total}}">{{.Total}}</span> configured.
+    <span id="triggers-count-tick" data-last="0" hidden></span>
   </p>
 
   <form class="console-filter-bar" method="GET" action="/console/triggers">

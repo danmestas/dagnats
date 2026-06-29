@@ -18,9 +18,23 @@
     <div class="config-access-body">
       <div class="config-access-row">
         <span class="config-access-label">Auth mode</span>
-        {{range $ap.Modes}}
-        <span class="config-modepill {{if .Active}}is-active{{end}}">{{.Label}}</span>
-        {{end}}
+        {{/*
+          Read-only segmented INDICATOR — not a control. The auth mode is
+          resolved at startup from config; the operator can't change it
+          here. The pills are connected into one button-group LOOK via
+          .config-modegroup, but carry no role=button / cursor:pointer /
+          hover affordance so they don't lie about being interactive
+          (Norman: false affordance). The "(set via config)" annotation
+          tells the operator why it's read-only.
+        */}}
+        <span class="config-modegroup" role="group"
+              aria-label="Auth mode (read-only, set via config)">
+          {{range $ap.Modes}}
+          <span class="config-modepill {{if .Active}}is-active{{end}}"
+                {{if .Active}}aria-current="true"{{end}}>{{.Label}}</span>
+          {{end}}
+        </span>
+        <span class="config-modegroup-annotation muted">(set via config)</span>
         <span class="config-access-note mono">· {{$ap.ActiveNote}}</span>
       </div>
       <div class="config-access-row">

@@ -3148,6 +3148,10 @@ body[data-theme="dark"] code {
     color: var(--text-secondary);
     cursor: pointer;
     flex: 0 0 auto;
+    /* Breathing room from the rail's right edge so the chevron isn't
+       flush against it — mirrors the inset the wordmark glyph has on
+       the left, keeping the brand row visually symmetric. */
+    margin-right: var(--space-1);
   }
   .sidebar-collapse-toggle:hover {
     color: var(--text-primary);
@@ -3257,6 +3261,12 @@ body[data-theme="dark"] code {
   .console-header[aria-expanded="false"] .console-brand {
     justify-content: center;
   }
+  /* Collapsed rail stacks the brand row into a centered column, so the
+     expanded-state right margin would push the chevron off-center — drop
+     it here to keep the icon centered in the 56px rail. */
+  .console-header[aria-expanded="false"] .sidebar-collapse-toggle {
+    margin-right: 0;
+  }
   .console-header[aria-expanded="false"] .console-glyph {
     display: inline-flex;
     align-items: center;
@@ -3302,6 +3312,18 @@ body[data-theme="dark"] code {
   margin-top: calc(var(--space-2) * -1);
   margin-bottom: var(--space-3);
   color: var(--text-secondary);
+}
+/* Section action slot — the right-aligned home for a page's primary
+   action (e.g. "+ Add trigger", "▸ Run workflow"). Shared by the
+   list + detail pages so primary actions land in a consistent place
+   instead of being stranded inside a lede paragraph. */
+.console-section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+  margin: calc(var(--space-2) * -1) 0 var(--space-3);
 }
 .page-header-tiles {
   list-style: none;
@@ -3690,6 +3712,42 @@ body[data-theme="dark"] code {
   background: var(--accent-soft);
   font-weight: 600;
 }
+/* Read-only segmented auth-mode INDICATOR. The pills are joined into
+   one connected button-group LOOK (shared borders, only the ends are
+   rounded) so it reads as a single segmented display — but it is a
+   read-only indicator, so it carries no pointer cursor and no hover
+   state. The .config-modegroup-annotation says so in words. */
+.config-modegroup {
+  display: inline-flex;
+  align-items: stretch;
+  isolation: isolate;
+}
+.config-modegroup .config-modepill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 0;
+  margin-left: -1px;
+  cursor: default;
+}
+.config-modegroup .config-modepill:first-child {
+  margin-left: 0;
+  border-top-left-radius: var(--radius-button, 4px);
+  border-bottom-left-radius: var(--radius-button, 4px);
+}
+.config-modegroup .config-modepill:last-child {
+  border-top-right-radius: var(--radius-button, 4px);
+  border-bottom-right-radius: var(--radius-button, 4px);
+}
+/* Active segment lifts above its neighbours so its accent border isn't
+   clipped by the shared -1px overlap. */
+.config-modegroup .config-modepill.is-active {
+  z-index: 1;
+}
+.config-modegroup-annotation {
+  font-family: var(--font-sans);
+  font-size: 0.7rem;
+  font-style: italic;
+}
 /* Read-only / source pills borrow the tile-tone count color for their
    text + border so they inherit the established status palette. */
 .config-pill.tile-tone-success {
@@ -3907,6 +3965,23 @@ body[data-theme="dark"] code {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 80ms ease, background 80ms ease;
+}
+.logs-severity-chip-strip .logs-chip:hover {
+  border-color: var(--text-secondary);
+}
+.logs-severity-chip-strip .logs-chip:focus-visible {
+  outline: 2px solid var(--focus, currentColor);
+  outline-offset: 2px;
+}
+/* Pressed (active filter) state — the chip reports the live severity
+   filter so the operator can see which toggle is engaged. */
+.logs-severity-chip-strip .logs-chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
 }
 .logs-chip-dot {
   display: inline-block;
