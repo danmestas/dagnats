@@ -498,6 +498,12 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius-tile);
   margin-bottom: var(--space-3);
   overflow: hidden;
+  /* Basecoat's .card is a flex column with a 24px gap; stacked with the
+     header's padding-bottom + body's padding-top that left ~40px between a
+     card title and its first content, which read as hollow on sparse cards
+     (steps/triggers). Tighten the header-to-body gap to one grid step so the
+     label sits close to the content it labels (proximity). */
+  gap: var(--space-3);
 }
 /* stream-detail-cards — Config + State stat-cards sit side by side on
  * wide viewports and stack on narrow ones. The shared stat-card markup
@@ -770,15 +776,15 @@ a:hover { text-decoration: underline; }
   position: relative;
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.55rem 0.7rem;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
 }
 /* Connector edge between consecutive nodes. */
 .console-step:not(:last-child) {
-  margin-bottom: 1.1rem;
+  margin-bottom: var(--space-4);
 }
 .console-step:not(:last-child)::after {
   content: "";
@@ -805,6 +811,10 @@ a:hover { text-decoration: underline; }
 .console-step-name {
   flex: 1 1 auto;
   font-weight: 600;
+  /* The step name is the row's primary identifier. Without an explicit
+     color it fell through to basecoat's light-mode foreground and rendered
+     dim-to-invisible on dark — pin it to the primary text token. */
+  color: var(--text-primary);
 }
 .console-step-type {
   flex: 0 0 auto;
@@ -2708,13 +2718,16 @@ summary:focus-visible,
 .timeline-name {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-2);
   min-width: 0;
 }
 .timeline-name .step-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Primary identifier for the timeline row — pin to primary text so it
+     doesn't inherit basecoat's light-mode foreground (invisible on dark). */
+  color: var(--text-primary);
 }
 .timeline-track {
   position: relative;
