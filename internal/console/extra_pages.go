@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -19,12 +20,14 @@ import (
 // Keeping these in a separate file from pages.go preserves git
 // blame on the PR 1–3 surfaces.
 
-// serveRunIDLookup redirects /console/runs/lookup?id=<id> to the
-// run-detail page. Empty / whitespace input is treated as a noop and
-// 302s back to the runs list — operators get a tactile signal that
-// the input was seen but no navigation happened. Datastar's runtime
-// URL interpolation pattern is awkward for this case, so a tiny
-// server-side redirect is the simpler ousterhoutian path.
+// serveRunIDLookup redirects /console/runs/lookup?id=<substr> into the
+// runs LIST with an ?id= substring filter. A partial id NARROWS the
+// table to runs whose id contains the substring rather than navigating
+// to a single detail page (which dead-ended at "no run snapshot found"
+// for anything but an exact id). Empty / whitespace input is a noop and
+// 302s back to the unfiltered list. The list handler owns the actual
+// filtering; this route stays a thin compatibility shim for the form's
+// action and any bookmarked lookup URLs.
 func serveRunIDLookup(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config,
@@ -45,17 +48,13 @@ func serveRunIDLookup(
 		http.Redirect(w, r, "/console/runs", http.StatusFound)
 		return
 	}
-	// Sanity: a run id can't have a slash. If the operator pasted a
-	// URL fragment we strip everything down to the trailing segment.
+	// A run id never spans path segments; if the operator pasted a URL
+	// fragment, keep only the trailing segment as the search substring.
 	if idx := strings.LastIndex(id, "/"); idx >= 0 {
 		id = id[idx+1:]
 	}
-	if id == "" || strings.Contains(id, " ") {
-		serveNotFound(w, r, ts, cfg)
-		return
-	}
-	http.Redirect(w, r,
-		"/console/runs/"+id, http.StatusFound)
+	dest := "/console/runs?" + url.Values{"id": {id}}.Encode()
+	http.Redirect(w, r, dest, http.StatusFound)
 }
 
 // TriggersListView is the binding for /console/triggers.

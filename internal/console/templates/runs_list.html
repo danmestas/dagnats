@@ -46,12 +46,12 @@
     </label>
   </form>
 
-  <form class="console-filter-bar" method="GET" action="/console/runs/lookup"
+  <form class="console-filter-bar" method="GET" action="/console/runs"
         aria-label="Find run by id">
     <label class="console-field" style="flex: 1; min-width: 280px;">
       <span>Find run by id</span>
-      <input class="input" type="text" name="id"
-             placeholder="paste the full run UUID and press Enter"
+      <input class="input" type="text" name="id" value="{{.IDFilter}}"
+             placeholder="type any part of a run id to filter the table"
              autocomplete="off" spellcheck="false">
     </label>
     <button type="submit" class="btn">Find</button>

@@ -21,11 +21,12 @@ import (
 	"github.com/danmestas/dagnats/dag"
 )
 
-// TestRunsListFindPlaceholder_saysFullUUID asserts the find-by-id input
-// on /console/runs tells the operator it needs the full run UUID, not
-// the 12-char short id the table displays (M2). The prefix-scan path was
-// rejected in design review, so the placeholder copy is the fix.
-func TestRunsListFindPlaceholder_saysFullUUID(t *testing.T) {
+// TestRunsListFindPlaceholder_saysSubstring asserts the find-by-id input
+// on /console/runs tells the operator it filters the table on any part
+// of a run id. This supersedes the old "full run UUID" copy (M2): the
+// find box now drives a substring filter over the runs LIST rather than
+// navigating to a single detail page, so a partial id is valid input.
+func TestRunsListFindPlaceholder_saysSubstring(t *testing.T) {
 	fake := newFakeDS()
 	fake.runs = []dag.WorkflowRun{
 		{RunID: "11111111-2222-3333-4444-555555555555",
@@ -34,12 +35,13 @@ func TestRunsListFindPlaceholder_saysFullUUID(t *testing.T) {
 	}
 	body := getPage(t, fake, "/console/runs")
 
-	if !strings.Contains(body, "full run UUID") {
-		t.Errorf("runs find placeholder missing %q hint", "full run UUID")
+	if !strings.Contains(body, "any part of a run id") {
+		t.Errorf("runs find placeholder missing substring-filter hint")
 	}
-	// Negative space: the old misleading bare copy must be gone.
-	if strings.Contains(body, "paste a run id and press Enter") {
-		t.Errorf("runs find placeholder still uses the old misleading copy")
+	// Negative space: the old full-UUID copy must be gone now that the
+	// box filters on substrings instead of demanding an exact id.
+	if strings.Contains(body, "full run UUID") {
+		t.Errorf("runs find placeholder still uses the old full-UUID copy")
 	}
 }
 

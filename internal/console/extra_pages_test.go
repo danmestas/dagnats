@@ -721,36 +721,9 @@ func TestAuditLogView_actorFilter(t *testing.T) {
 	}
 }
 
-// TestRunIDLookup_emptyRedirects sends an empty input back to the
-// runs list (the noop path).
-func TestRunIDLookup_emptyRedirects(t *testing.T) {
-	fake := newFakeDS()
-	h := mountWithFake(t, fake)
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/runs/lookup?id=", nil))
-	if rr.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302", rr.Code)
-	}
-	if loc := rr.Header().Get("Location"); loc != "/console/runs" {
-		t.Errorf("Location = %q, want /console/runs", loc)
-	}
-}
-
-// TestRunIDLookup_exactMatch redirects to the run detail page.
-func TestRunIDLookup_exactMatch(t *testing.T) {
-	fake := newFakeDS()
-	h := mountWithFake(t, fake)
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
-		"/console/runs/lookup?id=abc123", nil))
-	if rr.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302", rr.Code)
-	}
-	if loc := rr.Header().Get("Location"); loc != "/console/runs/abc123" {
-		t.Errorf("Location = %q, want /console/runs/abc123", loc)
-	}
-}
+// Run-id-lookup tests moved to runs_id_filter_test.go: the lookup route
+// now redirects into the runs LIST with an ?id= substring filter rather
+// than dead-ending at the /console/runs/<id> detail page.
 
 // TestNotFound_wrapsLayout asserts the layout chrome renders + a
 // useful 404 message + X-Robots-Tag noindex.

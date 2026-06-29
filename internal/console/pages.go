@@ -748,6 +748,11 @@ type RunsListView struct {
 	Header   PageHeader
 	Workflow string
 	Status   string
+	// IDFilter is the case-insensitive run-id substring the find-by-id
+	// box narrows the table on. Empty means no id filter. The template
+	// echoes it back into the input so the box stays populated after a
+	// GET round-trip.
+	IDFilter string
 	Range    string
 	// SinceUnix / UntilUnix scope the run list to an explicit time
 	// window (UTC seconds since epoch). Used by the anomaly-marker
@@ -788,6 +793,7 @@ func buildRunsView(
 	}
 	wf := firstQueryValue(q, "workflow")
 	status := firstQueryValue(q, "status")
+	idSubstr := firstQueryValue(q, "id")
 	rng := firstQueryValue(q, "range")
 	since := parseUnixSecsParam(firstQueryValue(q, "since"))
 	until := parseUnixSecsParam(firstQueryValue(q, "until"))
@@ -804,6 +810,7 @@ func buildRunsView(
 		return RunsListView{}, fmt.Errorf("list runs: %w", err)
 	}
 	runs = filterRunsByStatus(runs, status)
+	runs = filterRunsByIDSubstring(runs, idSubstr)
 	if since > 0 || until > 0 {
 		runs = filterRunsByWindow(runs, since, until)
 	} else {
@@ -820,7 +827,7 @@ func buildRunsView(
 	}
 	view := RunsListView{
 		Header:   buildRunsHeader(runs, time.Now()),
-		Workflow: wf, Status: status, Range: rng,
+		Workflow: wf, Status: status, IDFilter: idSubstr, Range: rng,
 		SinceUnix: since, UntilUnix: until,
 		Page: page, Size: size, Total: total,
 		HasNext: hasNext, HasPrev: page > 1,
@@ -829,7 +836,7 @@ func buildRunsView(
 		Workflows: wfNames,
 		Rows:      toRunRows(runs[start:end]),
 	}
-	if total == 0 && wf == "" && status == "" &&
+	if total == 0 && wf == "" && status == "" && idSubstr == "" &&
 		(rng == "" || rng == "all") && since == 0 && until == 0 {
 		view.EmptyState = newRunsEmptyState()
 	}
@@ -954,6 +961,27 @@ func filterRunsByStatus(
 	out := make([]dag.WorkflowRun, 0, len(runs))
 	for _, r := range runs {
 		if r.Status == parsed {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// filterRunsByIDSubstring keeps runs whose RunID contains the given
+// (case-insensitive) substring. This powers the find-by-id box, which
+// narrows the table rather than navigating to a single detail page —
+// an operator pasting a partial id sees every run that matches. Empty
+// substr is a noop and returns the input unchanged.
+func filterRunsByIDSubstring(
+	runs []dag.WorkflowRun, substr string,
+) []dag.WorkflowRun {
+	if substr == "" {
+		return runs
+	}
+	needle := strings.ToLower(substr)
+	out := make([]dag.WorkflowRun, 0, len(runs))
+	for _, r := range runs {
+		if strings.Contains(strings.ToLower(r.RunID), needle) {
 			out = append(out, r)
 		}
 	}
