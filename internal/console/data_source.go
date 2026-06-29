@@ -480,6 +480,32 @@ func storePct(used uint64, max int64) int {
 	return int(used * 100 / uint64(max))
 }
 
+// storePctText is the human label for the storage percentage. A real but
+// sub-percent ratio (e.g. 14 MiB of 10 GiB) integer-rounds to 0, which
+// reads as an empty store; it renders "<1" instead so the operator sees
+// the store is used, just barely. A genuinely empty store (or no ceiling)
+// stays "0".
+func storePctText(used uint64, max int64) string {
+	if max <= 0 || used == 0 {
+		return "0"
+	}
+	if pct := storePct(used, max); pct > 0 {
+		return strconv.Itoa(pct)
+	}
+	return "<1"
+}
+
+// storeGaugePct is the --storage-pct value for the gauge sliver. It floors
+// a real-but-sub-percent store to 1 so the bar is visible rather than an
+// empty rail; an empty store keeps it at 0.
+func storeGaugePct(used uint64, max int64) int {
+	pct := storePct(used, max)
+	if pct == 0 && used > 0 && max > 0 {
+		return 1
+	}
+	return pct
+}
+
 // consumerRowFrom maps one JetStream ConsumerInfo onto a ConsumerRow.
 // Pure: the stream name comes from the caller's loop variable, not the
 // info, so the page can label each row with the stream it iterated.

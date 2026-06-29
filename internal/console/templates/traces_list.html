@@ -1,10 +1,6 @@
 {{define "content"}}{{$page := .Page}}{{with $page}}
 <section class="console-section" data-page="traces-list">
   {{template "page-header" .Header}}
-  <p class="console-lede console-mono">
-    OTLP spans &middot; telemetry.spans.&#123;service&#125;.&#123;runID&#125;
-    &middot; one trace per run (W3C traceparent)
-  </p>
 
   {{if .TraceIDLookup}}
   <aside class="callout callout-info" role="status">

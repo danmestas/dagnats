@@ -544,6 +544,17 @@ a:hover { text-decoration: underline; }
 .card-body {
   padding: var(--space-3);
 }
+/* Definition-list cards (server identity/account/traffic/host, stream
+   detail config/state) stacked three separators between the section label
+   and its first row: the card's flex gap, the header's padding-bottom, and
+   the body's padding-top. That read as the label floating away from its
+   content. Drop the body's top padding when it wraps a deflist so the
+   label sits close to the data it labels (proximity); the card gap alone
+   keeps them from touching. Scoped to deflist bodies — other cards keep
+   their balanced padding. */
+.card-body:has(> .console-deflist) {
+  padding-top: 0;
+}
 
 /* Inline labeled form fields (run signal panel). These semantic classes
    had no rules, so labels collapsed onto their inputs, stacked fields ran
