@@ -42,6 +42,27 @@ func accessCardRegion(t *testing.T, body string) string {
 	return rest[:end]
 }
 
+// activeModePill reports whether the auth-mode segment labelled `label`
+// is the active one. The active segment carries `is-active` on its
+// .config-modepill span (and an aria-current marker); inactive segments
+// do not. Whitespace between attributes varies with template indentation,
+// so this matches on the span that opens before `>label</span>` and
+// confirms it carries `is-active` — resilient to attribute reordering.
+func activeModePill(region, label string) bool {
+	close := ">" + label + "</span>"
+	at := strings.Index(region, close)
+	if at < 0 {
+		return false
+	}
+	openAt := strings.LastIndex(region[:at], "<span")
+	if openAt < 0 {
+		return false
+	}
+	tag := region[openAt:at]
+	return strings.Contains(tag, "config-modepill") &&
+		strings.Contains(tag, "is-active")
+}
+
 func TestConfigPage_AccessPostureCard_BasicMode(t *testing.T) {
 	fake := newFakeDS()
 	h := mountWithFakeAuth(t, fake, AuthBasic)
@@ -66,8 +87,7 @@ func TestConfigPage_AccessPostureCard_BasicMode(t *testing.T) {
 	}
 	// The active basic-auth pill must carry the on-class; exactly one
 	// pill is active across the strip (negative space: not zero, not two).
-	if !strings.Contains(region,
-		`<span class="config-modepill is-active">basic-auth</span>`) {
+	if !activeModePill(region, "basic-auth") {
 		t.Errorf("basic-auth pill not marked active")
 	}
 	if got := strings.Count(region, "config-modepill is-active"); got != 1 {
@@ -92,13 +112,11 @@ func TestConfigPage_AccessPostureCard_Loopback(t *testing.T) {
 	}
 	region := accessCardRegion(t, rr.Body.String())
 
-	if !strings.Contains(region,
-		`<span class="config-modepill is-active">loopback</span>`) {
+	if !activeModePill(region, "loopback") {
 		t.Errorf("loopback pill not marked active under AuthLoopback")
 	}
 	// Negative space: the basic-auth pill must NOT be active here.
-	if strings.Contains(region,
-		`<span class="config-modepill is-active">basic-auth</span>`) {
+	if activeModePill(region, "basic-auth") {
 		t.Errorf("basic-auth pill wrongly active under AuthLoopback")
 	}
 }

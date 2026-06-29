@@ -54,13 +54,25 @@
     </form>
 
     {{if .SeverityCounts}}
+    {{/*
+      Severity chips are real filter TOGGLES (Norman: the affordance
+      must match the behaviour). Each chip carries role="button" +
+      tabindex so it looks and acts pressable; clicking one sets the
+      #logs-severity select to that level (or clears it when it's
+      already the active filter) and submits the filter form. The
+      aria-pressed state mirrors the active filter so the control
+      reports its own state. The <select> remains the canonical,
+      no-JS-fallback control. Wiring is the inline script below.
+    */}}
     <div class="logs-severity-chip-strip"
-         role="status"
-         aria-label="Severity counts">
+         role="group"
+         aria-label="Filter by severity">
       {{range .SeverityCounts}}
-      <span class="logs-chip logs-chip-{{.Level}}"
+      <span class="logs-chip logs-chip-{{.Level}}{{if eq $page.SeverityFilter .Level}} is-active{{end}}"
             data-level="{{.Level}}"
-            title="{{.Count}} {{.Level}} entries in current view">
+            role="button" tabindex="0"
+            aria-pressed="{{if eq $page.SeverityFilter .Level}}true{{else}}false{{end}}"
+            title="Filter to {{.Level}} ({{.Count}} in current view)">
         <span class="logs-chip-dot" aria-hidden="true"></span>
         <span class="logs-chip-label">{{.Level}}</span>
         <span class="logs-chip-count mono">{{.Count}}</span>
@@ -155,6 +167,35 @@
     } else {
       window.addEventListener('DOMContentLoaded', go);
     }
+  })();
+</script>
+<script>
+  // Severity-chip filter toggles. Event-delegated on the chip strip so
+  // the handler survives SSE-patched chip counts. Clicking a chip sets
+  // the #logs-severity select to that level (or clears it when the chip
+  // is already the active filter) and submits the filter form — the
+  // same code path the select's own change would take. Keyboard:
+  // Enter/Space activate the focused chip (role="button" contract).
+  (function () {
+    var strip = document.querySelector('.logs-severity-chip-strip');
+    var select = document.getElementById('logs-severity');
+    var form = document.getElementById('logs-filters');
+    if (!strip || !select || !form) return;
+    function activate(chip) {
+      var level = chip.getAttribute('data-level');
+      if (!level) return;
+      select.value = (select.value === level) ? '' : level;
+      form.submit();
+    }
+    strip.addEventListener('click', function (ev) {
+      var chip = ev.target.closest('.logs-chip');
+      if (chip) activate(chip);
+    });
+    strip.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+      var chip = ev.target.closest('.logs-chip');
+      if (chip) { ev.preventDefault(); activate(chip); }
+    });
   })();
 </script>
 {{end}}{{end}}
