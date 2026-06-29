@@ -745,6 +745,25 @@ a:hover { text-decoration: underline; }
 }
 .console-pre-error { color: var(--status-failed); }
 
+/* Error pre/code on the run-detail IO tab reads in the failed color so
+   the outcome is legible at a glance (Norman: a failure must signify
+   failure). The ID selector (1,0,1) outranks the dark-mode code override
+   `html:not([data-theme=light]):not([data-theme=dark]) code` (0,2,2)
+   that otherwise forces text-primary onto the code child. */
+#run-detail-error pre,
+#run-detail-error code { color: var(--status-failed); }
+
+/* Run-detail IO tab. Input pairs with Output (completed) or Error
+   (failed) in a responsive two-up grid; a lone card no longer stretches
+   to fill the row and read hollow. align-items:start keeps a short JSON
+   card its natural height next to a taller sibling. */
+.run-io-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
 /* Step status grid on run detail. */
 .console-step-grid {
   display: grid;
