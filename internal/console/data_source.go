@@ -1814,8 +1814,12 @@ func (a *apiServiceAdapter) WatchDLQ(
 	}
 	const bufSize = 16
 	out := make(chan DLQUpdate, bufSize)
+	// Subject must match the DEAD_LETTERS stream (natsutil: subjects
+	// dead.>) and the list path (Service.listDeadLettersInner). The
+	// earlier "dead_letters.>" matched no stream, so the live DLQ feed
+	// 503'd and only mutations (via the bus) ever reached the page.
 	sub, err := jsLegacy.SubscribeSync(
-		"dead_letters.>",
+		"dead.>",
 		nats.AckNone(),
 		nats.DeliverNew(),
 	)
