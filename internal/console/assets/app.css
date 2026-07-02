@@ -2935,6 +2935,61 @@ summary:focus-visible,
  * former theme-scoped + media-variant transparent overrides were
  * removed so there is one source of truth for the header background. */
 
+/* Agent-runtimes cards (/console/agents). The template classes shipped
+ * with NO style rules, so the card header (workflow name, run/gen meta,
+ * and the Active-runs / Registered-defs budget) inherited Basecoat's
+ * near-black --foreground and rendered dark-on-dark — the cards looked
+ * empty/broken. Lay the head out as a row and stroke every element with
+ * a theme-aware token so the summary is legible. */
+.console-agent-runtime {
+  margin-bottom: var(--space-4);
+}
+.console-agent-runtime-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.console-agent-runtime-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.console-agent-runtime-root {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+.console-agent-runtime-meta {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+.console-agent-budget {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0 0 var(--space-3);
+}
+.console-agent-budget > div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.console-agent-budget dt {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.console-agent-budget dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
 /* Dark-mode table cell text override — Basecoat's default
  * --foreground token leaks `oklch(0.145 ...)` (near-black) into
  * td, making body cells unreadable on dark backgrounds. Force our
