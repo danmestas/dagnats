@@ -48,14 +48,30 @@ const (
 	unknownAgentField = "(unknown)"
 )
 
+// agentBudgetSource is the narrow slice of *api.Service the agent-runtime
+// projection needs: the one-shot run scan, the single-root Budget (detail /
+// SSE path), and the BATCHED BudgetsForRoots (list path). Naming it lets the
+// list path be unit-tested with a counting stub — proving the page is O(1)
+// budget reads, not N+1. *api.Service satisfies it.
+type agentBudgetSource interface {
+	ListRunsWithLimit(
+		ctx context.Context, workflowFilter string, limit int,
+	) ([]dag.WorkflowRun, error)
+	Budget(
+		ctx context.Context, ownerRunID string,
+	) (worker.RuntimeBudget, string, error)
+	BudgetsForRoots(
+		ctx context.Context, runs []dag.WorkflowRun,
+	) (map[string]worker.RuntimeBudget, error)
+}
+
 // ListAgentRuntimes scans the run population ONCE, groups by tree-root,
-// filters to actual runtimes (a lone run is omitted), and assembles each
-// tree with its Budget. F3 note: the per-root Budget call is N+1 store
-// scans — acceptable for v1 (few roots). Budget ceilings come from the
-// real control-plane limits (honest, not guessed).
-//
-// TODO #379-followup: compute active counts from the byRoot groups to
-// drop the per-root Budget scans.
+// filters to actual runtimes (a lone run is omitted), and assembles each tree
+// with its Budget. The budgets come from a SINGLE batched BudgetsForRoots call
+// (one def-key scan, zero run scans — active counts derive from the runs we
+// already loaded) rather than a per-root Budget scan, so the page is
+// O(runs + defkeys), not O(roots x runs). Budget ceilings come from the real
+// control-plane limits (honest, not guessed).
 func (a *apiServiceAdapter) ListAgentRuntimes(
 	ctx context.Context, limit int,
 ) ([]AgentRuntimeRow, error) {
@@ -65,12 +81,28 @@ func (a *apiServiceAdapter) ListAgentRuntimes(
 	if a.svc == nil {
 		panic("apiServiceAdapter.ListAgentRuntimes: svc is nil")
 	}
-	runs, err := a.svc.ListRunsWithLimit(ctx, "", agentRunScanMax)
+	return a.listAgentRuntimes(ctx, a.svc, a.runtimeSpawnTargets(ctx), limit)
+}
+
+// listAgentRuntimes is the testable core of ListAgentRuntimes: it takes the
+// budget source as an interface so a counting stub can prove the list path
+// uses the batched BudgetsForRoots exactly once and never the per-root Budget.
+// A batched-budget failure degrades ALL rows to BudgetOK=false (the template
+// omits the block — never a fabricated 0/0) rather than failing the page.
+func (a *apiServiceAdapter) listAgentRuntimes(
+	ctx context.Context, src agentBudgetSource,
+	spawned map[string]bool, limit int,
+) ([]AgentRuntimeRow, error) {
+	runs, err := src.ListRunsWithLimit(ctx, "", agentRunScanMax)
 	if err != nil {
 		return nil, err
 	}
 	byRoot := groupByRoot(runs)
-	spawned := a.runtimeSpawnTargets(ctx)
+	budgets, err := src.BudgetsForRoots(ctx, runs)
+	if err != nil {
+		a.logger.Warn("console: agent budgets batch", "err", err)
+		budgets = nil // signals the degrade path in buildRuntimeRowBatched
+	}
 	rows := make([]AgentRuntimeRow, 0, len(byRoot))
 	for root, group := range byRoot {
 		if !isRuntimeTree(group, root) {
@@ -79,7 +111,8 @@ func (a *apiServiceAdapter) ListAgentRuntimes(
 		if limit > 0 && len(rows) >= limit {
 			break
 		}
-		rows = append(rows, a.buildRuntimeRow(ctx, runs, root, spawned))
+		rows = append(rows,
+			buildRuntimeRowBatched(runs, root, spawned, budgets))
 	}
 	return rows, nil
 }
@@ -109,19 +142,17 @@ func (a *apiServiceAdapter) AgentRuntime(
 	return a.buildRuntimeRow(ctx, runs, root, spawned), true, nil
 }
 
-// buildRuntimeRow assembles one tree, layers the runtime-origin tag and
-// the per-root Budget, and degrades the row (BudgetOK=false) on a Budget
-// read error rather than failing the page.
+// buildRuntimeRow assembles one tree, layers the runtime-origin tag and the
+// per-root Budget, and degrades the row (BudgetOK=false) on a Budget read error
+// rather than failing the page. This is the SINGLE-ROOT path (detail / SSE):
+// one root, one cheap Budget call. The LIST page uses buildRuntimeRowBatched
+// instead, so it never pays N+1 Budget scans.
 func (a *apiServiceAdapter) buildRuntimeRow(
 	ctx context.Context, runs []dag.WorkflowRun, root string,
 	spawned map[string]bool,
 ) AgentRuntimeRow {
 	row := assembleTree(runs, root)
-	for i := range row.Tree {
-		if spawned[row.Tree[i].RunID] {
-			row.Tree[i].SpawnedByRuntime = true
-		}
-	}
+	tagRuntimeOrigin(&row, spawned)
 	budget, _, err := a.svc.Budget(ctx, root)
 	if err != nil {
 		a.logger.Warn("console: agent budget read", "root", root, "err", err)
@@ -131,6 +162,41 @@ func (a *apiServiceAdapter) buildRuntimeRow(
 	row.Budget = budget
 	row.BudgetOK = true
 	return row
+}
+
+// buildRuntimeRowBatched assembles one tree and layers the runtime-origin tag,
+// pulling its Budget from the precomputed BudgetsForRoots map (the list path).
+// A nil map (batched read failed) OR a root missing from the map degrades the
+// row to BudgetOK=false — the template then omits the budget block rather than
+// rendering a fabricated 0/0. No per-root store scan happens here.
+func buildRuntimeRowBatched(
+	runs []dag.WorkflowRun, root string,
+	spawned map[string]bool, budgets map[string]worker.RuntimeBudget,
+) AgentRuntimeRow {
+	row := assembleTree(runs, root)
+	tagRuntimeOrigin(&row, spawned)
+	budget, ok := budgets[root]
+	if !ok {
+		row.BudgetOK = false
+		return row
+	}
+	row.Budget = budget
+	row.BudgetOK = true
+	return row
+}
+
+// tagRuntimeOrigin flips SpawnedByRuntime on every tree node whose RunID a
+// `runtime.spawn` audit row named as its Target. Shared by both the list and
+// single-root row builders so the tag rule lives in one place.
+func tagRuntimeOrigin(row *AgentRuntimeRow, spawned map[string]bool) {
+	if row == nil {
+		panic("tagRuntimeOrigin: row must not be nil")
+	}
+	for i := range row.Tree {
+		if spawned[row.Tree[i].RunID] {
+			row.Tree[i].SpawnedByRuntime = true
+		}
+	}
 }
 
 // runtimeSpawnTargets reads one bounded audit page and returns the set of
