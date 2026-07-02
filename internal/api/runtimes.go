@@ -631,6 +631,104 @@ func (s *Service) Budget(
 	}, "", nil
 }
 
+// BudgetsForRoots computes every tree-root's RuntimeBudget from the run
+// snapshots the CALLER already holds plus ONE def-key scan — the batched
+// counterpart to the per-root Budget. The /console/agents list page loaded
+// runs once, then paid a per-root Budget (a FULL run scan among its three
+// store ops) for each root: O(roots x runs). Deriving ActiveRuns in memory
+// from `runs` and folding all defs in one scan makes the page O(runs +
+// defkeys). Honesty is preserved: real active counts (from runs), real def
+// counts (from defKV), real limits — no fabrication. Returns a non-nil map
+// keyed by root; a root absent from `runs` is simply absent.
+func (s *Service) BudgetsForRoots(
+	ctx context.Context, runs []dag.WorkflowRun,
+) (map[string]worker.RuntimeBudget, error) {
+	if ctx == nil {
+		panic("BudgetsForRoots: ctx must not be nil")
+	}
+	if s.defKV == nil {
+		panic("BudgetsForRoots: defKV must not be nil")
+	}
+	active := make(map[string]int, len(runs))
+	for i := range runs {
+		root := engine.RootRunIDOf(runs[i])
+		delta := 0
+		if !runs[i].Status.IsTerminal() {
+			delta = 1
+		}
+		// Assigning active[root]+delta materializes the root key even when
+		// every run under it is terminal (delta 0), so an all-terminal tree
+		// still reports a budget rather than vanishing from the map.
+		active[root] = active[root] + delta
+	}
+	defs, err := s.defCountsByRoot(ctx, active)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]worker.RuntimeBudget, len(active))
+	for root, activeCount := range active {
+		out[root] = worker.RuntimeBudget{
+			ActiveRuns:        activeCount,
+			MaxActiveRuns:     s.limits.MaxActiveRunsPerRoot,
+			RegisteredDefs:    defs[root],
+			MaxRegisteredDefs: s.limits.MaxDefsPerRoot,
+		}
+	}
+	return out, nil
+}
+
+// defCountsByRoot folds the whole def-key population into a per-root count via
+// ONE bounded defKV.Keys scan (mirroring countDefsForRoot's bound and
+// ErrNoKeysFound tolerance). Each key is parsed to its owning root in a single
+// O(keys) pass; a def is counted only when its root is in `roots` (a def whose
+// tree has no run in the current page is ignored — it wouldn't render anyway).
+func (s *Service) defCountsByRoot(
+	ctx context.Context, roots map[string]int,
+) (map[string]int, error) {
+	if ctx == nil {
+		panic("defCountsByRoot: ctx must not be nil")
+	}
+	counts := make(map[string]int, len(roots))
+	keys, err := s.defKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return counts, nil
+		}
+		return nil, err
+	}
+	if len(keys) > runtimeDefScanMax {
+		return nil, fmt.Errorf(
+			"def key scan exceeded bound (%d > %d)",
+			len(keys), runtimeDefScanMax)
+	}
+	for _, key := range keys {
+		root, ok := rootFromScopedKey(key)
+		if !ok {
+			continue
+		}
+		if _, known := roots[root]; known {
+			counts[root]++
+		}
+	}
+	return counts, nil
+}
+
+// rootFromScopedKey inverts scopePrefix: a def key "agent.<root>.<name>" yields
+// (root, true). Any key not carrying the scope shape yields ("", false). Keeps
+// the namespace shape a single source of truth alongside scopePrefix.
+func rootFromScopedKey(key string) (string, bool) {
+	const scope = "agent."
+	rest, found := strings.CutPrefix(key, scope)
+	if !found {
+		return "", false
+	}
+	dot := strings.IndexByte(rest, '.')
+	if dot <= 0 {
+		return "", false
+	}
+	return rest[:dot], true
+}
+
 // publishSpawn emits the EventWorkflowSpawn the orchestrator consumes.
 // The payload keys match handleWorkflowSpawn's struct exactly; detach is
 // always false so lineage links. childRunID is server-generated so the
