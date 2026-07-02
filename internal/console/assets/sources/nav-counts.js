@@ -14,6 +14,14 @@
  * no placeholder at all (no data/route yet).
  */
 (function () {
+  // Every nav link is a full page load, so each render starts with the
+  // badges hidden and this script re-fetches. Painting only after the
+  // fetch resolves made the counts blink empty for ~100ms on EVERY
+  // navigation. We cache the last-known counts in sessionStorage and
+  // paint them synchronously first, then refresh from the network — so
+  // navigations are flash-free (only the very first visit has no cache).
+  const CACHE_KEY = "dn-nav-counts";
+
   function fill(counts) {
     if (!counts || typeof counts !== "object") return;
     const badges = document.querySelectorAll("[data-nav-count]");
@@ -31,7 +39,26 @@
     });
   }
 
+  function paintCached() {
+    try {
+      const raw = sessionStorage.getItem(CACHE_KEY);
+      if (raw) fill(JSON.parse(raw));
+    } catch (e) {
+      // Private-mode / quota / parse failure — just skip the cache and
+      // let the fetch fill the badges. Never throw from the paint path.
+    }
+  }
+
+  function cache(counts) {
+    try {
+      sessionStorage.setItem(CACHE_KEY, JSON.stringify(counts));
+    } catch (e) {
+      // Storage unavailable — the live fetch still filled the badges.
+    }
+  }
+
   function load() {
+    paintCached();
     fetch("/console/api/nav-counts", {
       headers: { Accept: "application/json" },
     })
@@ -39,9 +66,13 @@
         if (!resp.ok) return null;
         return resp.json();
       })
-      .then(fill)
+      .then(function (counts) {
+        if (!counts) return;
+        fill(counts);
+        cache(counts);
+      })
       .catch(function () {
-        // Network/parse failure: badges simply stay hidden. The nav
+        // Network/parse failure: cached badges (if any) stay; the nav
         // is fully usable without counts.
       });
   }

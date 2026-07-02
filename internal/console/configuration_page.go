@@ -26,6 +26,7 @@ package console
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"net/http"
 	"runtime"
 	"sort"
@@ -123,7 +124,7 @@ type WorkerGroup struct {
 type TriggerTypeRow struct {
 	Name        string
 	Description string
-	Glyph       string
+	Glyph       template.HTML
 }
 
 // BuildFooter is the one-line build/runtime signature rendered at
