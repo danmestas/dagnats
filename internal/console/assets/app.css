@@ -966,9 +966,17 @@ a:hover { text-decoration: underline; }
   table-layout: fixed;
   width: 100%;
 }
-#run-detail-events thead th:nth-child(1) { width: 200px; } /* Timestamp */
-#run-detail-events thead th:nth-child(2) { width: 150px; } /* Type */
-#run-detail-events thead th:nth-child(3) { width: 130px; } /* Step */
+#run-detail-events thead th:nth-child(1) { width: 190px; } /* Timestamp */
+#run-detail-events thead th:nth-child(2) { width: 230px; } /* Type */
+#run-detail-events thead th:nth-child(3) { width: 120px; } /* Step */
+/* The Type badge is white-space:nowrap; at 150px the longest event type
+   (workflow.child.completed) overflowed the fixed-width column into the
+   Step cell. Widen Type to hold it on one line, and let the badge wrap as
+   a safety net so an even longer type can never overlap the next column. */
+#run-detail-events td:nth-child(2) .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 /* The message cell inherits white-space:nowrap from the table-cell rule,
    which (combined with fixed layout) clips the JSON instead of wrapping.
    Let it wrap and break long unspaced tokens so the preview stays inside
