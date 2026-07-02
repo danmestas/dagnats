@@ -39,6 +39,53 @@ func assetCacheHeader() string {
 	return "public, max-age=31536000, immutable"
 }
 
+// assetVersion is a short content hash of the embedded asset bundle,
+// computed once at startup. It is appended as ?v=<hash> to every asset
+// URL in the layout (see the assetURL template func) so a new binary
+// with changed CSS/JS serves NEW asset URLs, busting the browser's
+// immutable cache automatically. Without it, /console/assets/app.css is
+// a stable URL cached immutable for a year — so CSS/JS fixes never
+// reached users until a manual hard reload.
+var assetVersion = computeAssetVersion()
+
+// computeAssetVersion folds every embedded asset (path + bytes, in the
+// deterministic lexical order fs.WalkDir yields) into one FNV hash. FNV
+// is a non-cryptographic content fingerprint — all we need for cache
+// busting. Any asset change flips the hash; an unchanged binary always
+// produces the same value.
+func computeAssetVersion() string {
+	h := fnv.New64a()
+	err := fs.WalkDir(assetsFS, "assets",
+		func(p string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil || d.IsDir() {
+				return walkErr
+			}
+			body, readErr := fs.ReadFile(assetsFS, p)
+			if readErr != nil {
+				return readErr
+			}
+			_, _ = h.Write([]byte(p))
+			_, _ = h.Write(body)
+			return nil
+		})
+	if err != nil {
+		// A walk failure means the embed is broken — a build-time
+		// programmer error, not operator input.
+		panic(fmt.Sprintf("computeAssetVersion: walk assets: %v", err))
+	}
+	return fmt.Sprintf("%x", h.Sum64())
+}
+
+// assetURL appends the asset-bundle version as a cache-busting query so
+// a content change yields a fresh URL. Template func: layout.html emits
+// {{assetURL "/console/assets/app.css"}}.
+func assetURL(path string) string {
+	if path == "" {
+		panic("assetURL: path must not be empty")
+	}
+	return path + "?v=" + assetVersion
+}
+
 // Config carries the runtime state Mount needs to wire up the console.
 //
 // HTTPAddr is the listener's resolved address (used to decide whether
@@ -673,6 +720,7 @@ func funcMap() template.FuncMap {
 		"outcomeIcon":      outcomeIcon,
 		"pagerArgs":        pagerArgs,
 		"triggerKindGlyph": triggerKindGlyph,
+		"assetURL":         assetURL,
 		"jsonArray":        jsonArrayHelper,
 		"sparkExpr":        SparkExpr,
 		"deltaTone":        deltaToneClass,

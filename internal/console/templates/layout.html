@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Title}} — dagnats console</title>
-  <link rel="stylesheet" href="/console/assets/basecoat.css">
-  <link rel="stylesheet" href="/console/assets/app.css">
+  <link rel="stylesheet" href="{{assetURL "/console/assets/basecoat.css"}}">
+  <link rel="stylesheet" href="{{assetURL "/console/assets/app.css"}}">
   <script>
     // Apply persisted theme before first paint to avoid the
     // light → dark flash. Theme attribute is set on <html> so the
@@ -23,14 +23,14 @@
       } catch (_) {}
     })();
   </script>
-  <script src="/console/assets/uplot.min.js" defer></script>
-  <script src="/console/assets/console.js" defer></script>
-  <script src="/console/assets/connection-state.js" defer></script>
-  <script src="/console/assets/toast.js" defer></script>
-  <script src="/console/assets/count-chip.js" defer></script>
-  <script src="/console/assets/nav-counts.js" defer></script>
-  <script src="/console/assets/build-info-copy.js" defer></script>
-  <script src="/console/assets/sidebar-collapse.js" defer></script>
+  <script src="{{assetURL "/console/assets/uplot.min.js"}}" defer></script>
+  <script src="{{assetURL "/console/assets/console.js"}}" defer></script>
+  <script src="{{assetURL "/console/assets/connection-state.js"}}" defer></script>
+  <script src="{{assetURL "/console/assets/toast.js"}}" defer></script>
+  <script src="{{assetURL "/console/assets/count-chip.js"}}" defer></script>
+  <script src="{{assetURL "/console/assets/nav-counts.js"}}" defer></script>
+  <script src="{{assetURL "/console/assets/build-info-copy.js"}}" defer></script>
+  <script src="{{assetURL "/console/assets/sidebar-collapse.js"}}" defer></script>
 </head>
 <body>
   <header class="console-header" aria-expanded="true">

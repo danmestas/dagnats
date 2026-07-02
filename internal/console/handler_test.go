@@ -61,9 +61,11 @@ func TestServeDashboard_rendersLayoutAndNav(t *testing.T) {
 		`href="/console/dlq"`,
 		`href="/console/metrics"`,
 		`href="/console/audit"`,
-		`href="/console/assets/basecoat.css"`,
-		`href="/console/assets/app.css"`,
-		`src="/console/assets/console.js"`,
+		// Asset URLs carry a ?v=<hash> cache-busting query (assetURL) so a
+		// deploy busts the browser's immutable cache without a hard reload.
+		`href="/console/assets/basecoat.css?v=`,
+		`href="/console/assets/app.css?v=`,
+		`src="/console/assets/console.js?v=`,
 		// Phase 2 T07: dashboard now subscribes to /console/sse/dashboard
 		// for live tile updates. The legacy heartbeat SSE moved off the
 		// landing page (it was a plumbing demo, not operator value).
