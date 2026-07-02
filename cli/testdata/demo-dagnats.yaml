@@ -1,0 +1,23 @@
+# cli/testdata/demo-dagnats.yaml
+#
+# Minimal serve config that grants the demo supervisor workflow a runtime
+# control plane, so `dagnats demo seed --keep-alive` can spawn real
+# parent->child agent trees and the console Agents page populates.
+#
+# Control-plane is DENY-BY-DEFAULT: a `dagnats serve` started WITHOUT this
+# grant leaves the supervisor step's ControlPlane handle nil, the demo prints
+# a one-time warning to stderr, and the Agents page stays empty. This file is
+# the ONLY thing that flips that on.
+#
+# Usage (from the repo root):
+#   dagnats serve --config=cli/testdata/demo-dagnats.yaml
+#   # then, against the same NATS URL:
+#   dagnats demo seed --keep-alive
+#
+# The demo registers its own workflows over NATS, so this file carries only
+# the policy section — no workflows/triggers. Seed-registered defs are not
+# file-sourced, so an empty workflows list never deletes them.
+policy:
+  control_plane:
+    grant:
+      - agent-supervisor

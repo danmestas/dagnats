@@ -92,6 +92,7 @@ var demoStepOutputs = map[string]string{
 	"render":        `{"template":"weekly-digest","bytes":4821,"blocks":7}`,
 	"send-email":    `{"provider":"ses","accepted":128,"rejected":2}`,
 	"send-slack":    `{"channel":"#alerts","ts":"1719600000.000100","ok":true}`,
+	"subtask":       `{"subtask":"done","artifacts":2,"tokens":184}`,
 }
 
 // stepOutput returns the realistic success-path output for a step,
