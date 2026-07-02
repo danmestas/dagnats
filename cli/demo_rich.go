@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -71,7 +72,26 @@ const (
 	demoTaskNotifyRender = "notify-render"
 	demoTaskNotifyEmail  = "notify-email"
 	demoTaskNotifySlack  = "notify-slack"
+
+	// demoTaskAgentSupervise is the single gated task type: its handler
+	// spawns the agent fleet via the control plane. demoTaskAgentSubtask is
+	// the runtime-authored child workflow's only step, handled by the noop
+	// dispatcher so each spawned child completes.
+	demoTaskAgentSupervise = "agent-supervise"
+	demoTaskAgentSubtask   = "agent-subtask-run"
 )
+
+// demoCapabilityControlPlane is the capability the supervise step declares
+// so a granted deployment hands its handler a ControlPlane. Deny-by-default:
+// a serve without a matching policy.control_plane.grant leaves the handle
+// nil (the server strips the capability from the task message).
+const demoCapabilityControlPlane = "control-plane"
+
+// demoSupervisorChildCount is how many child runs each supervisor run
+// spawns. A small fleet (>1) so the Agents page shows a real parent->child
+// tree, not a lone run. Fixed and bounded — the demo never fans out
+// unbounded.
+const demoSupervisorChildCount = 3
 
 // Rich demo workflow names. demo-noop is shared with the one-shot
 // path (declared in noop_worker.go).
@@ -81,6 +101,13 @@ const (
 	demoWorkflowAgentLoop     = "llm-agent-loop"
 	demoWorkflowETL           = "etl-nightly"
 	demoWorkflowNotify        = "notify-fanout"
+
+	// demoWorkflowAgentSupervisor is the 7th, control-plane workflow: its
+	// gated step spawns a fleet of child runs so the Agents page shows real
+	// runtime trees. demoChildWorkflowName is the ephemeral child def the
+	// supervisor authors at runtime (never statically registered).
+	demoWorkflowAgentSupervisor = "agent-supervisor"
+	demoChildWorkflowName       = "agent-subtask"
 )
 
 // demoKeepAliveOptions configures a keep-alive generator run.
@@ -131,6 +158,8 @@ func demoTaskTypes() []string {
 		demoTaskNotifyRender,
 		demoTaskNotifyEmail,
 		demoTaskNotifySlack,
+		demoTaskAgentSupervise,
+		demoTaskAgentSubtask,
 	}
 }
 
@@ -143,6 +172,11 @@ func demoTaskTypes() []string {
 // owning a disjoint slice of task types; each gets its own generated
 // ID and heartbeats independently. The union MUST equal demoTaskTypes()
 // or a step would have no handler and its run would hang forever.
+// The "supervisor" domain owns only the gated supervise task; its worker is
+// built WITH a control plane (see buildDomainWorker) while the others are
+// plain. The child task (demoTaskAgentSubtask) rides in the "agent" domain so
+// spawned children complete via the noop dispatcher. The union of all
+// domains MUST equal demoTaskTypes() or a step would have no handler.
 func demoWorkerDomains() map[string][]string {
 	return map[string][]string{
 		"media": {
@@ -151,28 +185,103 @@ func demoWorkerDomains() map[string][]string {
 		},
 		"agent": {
 			demoTaskAgentPlan, demoTaskAgentAct, demoTaskAgentObserve,
-			demoTaskAgentSummarize,
+			demoTaskAgentSummarize, demoTaskAgentSubtask,
 		},
 		"etl": {
 			demoTaskETLExtract, demoTaskETLTransform, demoTaskETLLoad,
 			demoTaskNotifyRender, demoTaskNotifyEmail, demoTaskNotifySlack,
 			demoTaskFlaky,
 		},
+		"supervisor": {demoTaskAgentSupervise},
 	}
 }
 
 // richWorkflowDefs builds the varied demo workflow set. Each panics
 // on a build error because these are compile-time-fixed definitions —
-// a build failure here is a programmer error, not operator input.
+// a build failure here is a programmer error, not operator input. Every
+// built def is decorated with a domain-shaped input/output schema (so the
+// Functions detail Contract section populates) and, for the supervisor,
+// the control-plane capability on its gated step.
 func richWorkflowDefs() []dag.WorkflowDef {
-	defs := make([]dag.WorkflowDef, 0, 6)
-	defs = append(defs, mustBuildWorkflow(buildNoopWorkflow()))
-	defs = append(defs, mustBuildWorkflow(buildImagePipeline()))
-	defs = append(defs, mustBuildWorkflow(buildRetryErrors()))
-	defs = append(defs, mustBuildWorkflow(buildAgentLoop()))
-	defs = append(defs, mustBuildWorkflow(buildETLNightly()))
-	defs = append(defs, mustBuildWorkflow(buildNotifyFanout()))
+	builders := []*dag.WorkflowBuilder{
+		buildNoopWorkflow(),
+		buildImagePipeline(),
+		buildRetryErrors(),
+		buildAgentLoop(),
+		buildETLNightly(),
+		buildNotifyFanout(),
+		buildAgentSupervisor(),
+	}
+	defs := make([]dag.WorkflowDef, 0, len(builders))
+	for _, wb := range builders {
+		defs = append(defs, decorateDemoDef(mustBuildWorkflow(wb)))
+	}
 	return defs
+}
+
+// decorateDemoDef stamps a built demo def with its input/output schema and,
+// for the supervisor, the control-plane capability its gated step needs.
+// Schemas are set post-Build because dag.WorkflowBuilder exposes no schema
+// setter and the capability is set post-Build because the builder exposes no
+// capability setter — both are pure struct fields on the resulting def.
+func decorateDemoDef(def dag.WorkflowDef) dag.WorkflowDef {
+	if pair, ok := demoWorkflowSchemas()[def.Name]; ok {
+		def.InputSchema = pair.input
+		def.OutputSchema = pair.output
+	}
+	if def.Name == demoWorkflowAgentSupervisor {
+		if len(def.Steps) == 0 {
+			panic("decorateDemoDef: supervisor has no steps")
+		}
+		// The supervise step declares control-plane so a granted deployment
+		// hands its handler a ControlPlane to spawn the agent fleet.
+		def.Steps[0].RequiredCapabilities =
+			[]string{demoCapabilityControlPlane}
+	}
+	return def
+}
+
+// demoSchemaPair bundles a workflow's input and output JSON Schemas.
+type demoSchemaPair struct {
+	input  json.RawMessage
+	output json.RawMessage
+}
+
+// demoWorkflowSchemas maps each rich workflow name to its input/output JSON
+// Schema. The shapes mirror the payloads buildWorkflowInput produces and the
+// per-step outputs the noop worker emits, so the Contract section on the
+// Functions detail page reads like the real run IO an operator inspects.
+func demoWorkflowSchemas() map[string]demoSchemaPair {
+	return map[string]demoSchemaPair{
+		demoWorkflowName: {
+			json.RawMessage(schemaNoopInput),
+			json.RawMessage(schemaNoopOutput),
+		},
+		demoWorkflowImagePipeline: {
+			json.RawMessage(schemaImagePipelineInput),
+			json.RawMessage(schemaImagePipelineOutput),
+		},
+		demoWorkflowRetryErrors: {
+			json.RawMessage(schemaRetryErrorsInput),
+			json.RawMessage(schemaRetryErrorsOutput),
+		},
+		demoWorkflowAgentLoop: {
+			json.RawMessage(schemaAgentLoopInput),
+			json.RawMessage(schemaAgentLoopOutput),
+		},
+		demoWorkflowETL: {
+			json.RawMessage(schemaETLInput),
+			json.RawMessage(schemaETLOutput),
+		},
+		demoWorkflowNotify: {
+			json.RawMessage(schemaNotifyInput),
+			json.RawMessage(schemaNotifyOutput),
+		},
+		demoWorkflowAgentSupervisor: {
+			json.RawMessage(schemaSupervisorInput),
+			json.RawMessage(schemaSupervisorOutput),
+		},
+	}
 }
 
 // buildNoopWorkflow returns the single-step demo workflow builder,
@@ -231,6 +340,16 @@ func buildNotifyFanout() *dag.WorkflowBuilder {
 	render := wb.Task("render", demoTaskNotifyRender)
 	wb.Task("send-email", demoTaskNotifyEmail).After(render)
 	wb.Task("send-slack", demoTaskNotifySlack).After(render)
+	return wb
+}
+
+// buildAgentSupervisor returns the single-step supervisor workflow. The
+// step's control-plane capability is stamped post-Build by decorateDemoDef
+// (the builder exposes no capability setter); its handler (superviseHandle)
+// spawns a fleet of child runs to form the Agents-page runtime tree.
+func buildAgentSupervisor() *dag.WorkflowBuilder {
+	wb := dag.NewWorkflow(demoWorkflowAgentSupervisor)
+	wb.Task("supervise", demoTaskAgentSupervise)
 	return wb
 }
 
@@ -440,11 +559,13 @@ func ensureRichTriggers(ctx context.Context, svc *api.Service) {
 }
 
 // startRichWorker builds the demo worker fleet: one worker.Worker per
-// domain in demoWorkerDomains, each handling its disjoint slice of task
-// types via the shared outcome-driven noopHandle dispatcher. Distinct
-// instances surface as distinct heartbeating rows on the Workers page.
-// The union of domains covers every task type (see demoWorkerDomains),
-// so no step is left without a handler. Caller owns Stop() for each.
+// domain in demoWorkerDomains. Most handle their disjoint slice of task
+// types via the shared outcome-driven noopHandle dispatcher; the gated
+// supervisor domain gets a control plane and the fleet-spawning
+// superviseHandle (see buildDomainWorker). Distinct instances surface as
+// distinct heartbeating rows on the Workers page. The union of domains
+// covers every task type, so no step is left without a handler. Caller owns
+// Stop() for each.
 func startRichWorker(
 	nc *nats.Conn, svc *api.Service,
 ) ([]*worker.Worker, error) {
@@ -460,18 +581,145 @@ func startRichWorker(
 	}
 	workers := make([]*worker.Worker, 0, len(domains))
 	for _, taskTypes := range domains {
-		w := worker.NewWorker(nc)
-		for _, taskType := range taskTypes {
-			w.Handle(taskType,
-				func(tc worker.TaskContext) error {
-					return noopHandle(tc, svc)
-				},
-			)
-		}
+		w := buildDomainWorker(nc, svc, taskTypes)
 		w.Start()
 		workers = append(workers, w)
 	}
 	return workers, nil
+}
+
+// buildDomainWorker builds one fleet worker for a domain's task types. A
+// domain owning the gated supervise task gets a control plane (so a granted
+// deployment can spawn children) and routes that task to superviseHandle;
+// every other task routes to the outcome-driven noop dispatcher. Attaching a
+// control plane is harmless for the non-gated tasks — the handle is per-
+// dispatch and nil unless the step both declares AND is granted the
+// capability.
+func buildDomainWorker(
+	nc *nats.Conn, svc *api.Service, taskTypes []string,
+) *worker.Worker {
+	if nc == nil {
+		panic("buildDomainWorker: nc must not be nil")
+	}
+	if svc == nil {
+		panic("buildDomainWorker: svc must not be nil")
+	}
+	if len(taskTypes) == 0 {
+		panic("buildDomainWorker: taskTypes must not be empty")
+	}
+	var opts []worker.WorkerOption
+	if containsTask(taskTypes, demoTaskAgentSupervise) {
+		opts = append(opts,
+			worker.WithControlPlane(worker.NewControlPlane(nc)))
+	}
+	w := worker.NewWorker(nc, opts...)
+	for _, taskType := range taskTypes {
+		if taskType == demoTaskAgentSupervise {
+			w.Handle(taskType, superviseHandle)
+			continue
+		}
+		w.Handle(taskType, func(tc worker.TaskContext) error {
+			return noopHandle(tc, svc)
+		})
+	}
+	return w
+}
+
+// containsTask reports whether want is in taskTypes. Bounded by the slice.
+func containsTask(taskTypes []string, want string) bool {
+	if want == "" {
+		panic("containsTask: want must not be empty")
+	}
+	for _, t := range taskTypes {
+		if t == want {
+			return true
+		}
+	}
+	return false
+}
+
+// controlPlaneDenyWarnOnce makes the deny-by-default warning print at most
+// once per process, so a serve that forgot the grant surfaces WHY the Agents
+// page is empty without spamming stderr on every supervisor run.
+var controlPlaneDenyWarnOnce sync.Once
+
+// superviseHandle is the gated supervisor handler. With a granted control
+// plane it authors an ephemeral child workflow and launches
+// demoSupervisorChildCount child runs, forming the parent->child tree the
+// console Agents page renders. Without a grant (cp == nil) it warns once and
+// completes, so the run still terminates cleanly instead of hanging.
+func superviseHandle(tc worker.TaskContext) error {
+	if tc == nil {
+		panic("superviseHandle: tc must not be nil")
+	}
+	cp := tc.ControlPlane()
+	if cp == nil {
+		controlPlaneDenyWarnOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "demo: workflow %q not granted"+
+				" control-plane; Agents page stays empty. Add"+
+				" policy.control_plane.grant: [%s] to the serve config.\n",
+				demoWorkflowAgentSupervisor, demoWorkflowAgentSupervisor)
+		})
+		return tc.Complete(
+			[]byte(`{"agents_spawned":0,"control_plane":"denied"}`))
+	}
+	childName, err := cp.RegisterWorkflow(
+		tc.Context(), demoChildWorkflowDef(), worker.RegisterOpts{},
+	)
+	if err != nil {
+		return tc.Fail(fmt.Errorf("register child workflow: %w", err))
+	}
+	spawned := spawnAgentChildren(tc, cp, childName)
+	return tc.Complete(
+		[]byte(fmt.Sprintf(`{"agents_spawned":%d}`, spawned)))
+}
+
+// spawnAgentChildren launches demoSupervisorChildCount child runs of the
+// scoped child workflow, each carrying a distinct goal so the tree reads
+// like a real fleet. A single failed spawn (e.g. a quota trip) is logged and
+// skipped so one hiccup does not abort the whole fleet. Returns the count
+// actually started. Bounded by demoSupervisorChildCount.
+func spawnAgentChildren(
+	tc worker.TaskContext, cp worker.ControlPlane, childName string,
+) int {
+	if cp == nil {
+		panic("spawnAgentChildren: cp must not be nil")
+	}
+	if childName == "" {
+		panic("spawnAgentChildren: childName must not be empty")
+	}
+	spawned := 0
+	for i := 0; i < demoSupervisorChildCount; i++ {
+		input := marshalDemoInput(demoTaskInput{
+			Outcome: outcomeCompleted,
+			Goal: fmt.Sprintf("subtask %d of %d",
+				i+1, demoSupervisorChildCount),
+		})
+		if _, err := cp.StartRun(tc.Context(), childName, input); err != nil {
+			fmt.Fprintf(os.Stderr, "demo: spawn child %d: %v\n", i+1, err)
+			continue
+		}
+		spawned++
+	}
+	return spawned
+}
+
+// demoChildWorkflowDef is the ephemeral child workflow a supervisor authors
+// at runtime. Its single step rides demoTaskAgentSubtask (handled by the noop
+// dispatcher) so each spawned child reaches a terminal state and the tree is
+// fully resolved on the Agents page.
+func demoChildWorkflowDef() dag.WorkflowDef {
+	return dag.WorkflowDef{
+		Name:    demoChildWorkflowName,
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID:   "subtask",
+				Task: demoTaskAgentSubtask,
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
 }
 
 // generateRuns is the continuous generator loop. It starts batches of
@@ -566,6 +814,7 @@ func pickRun(rng *rand.Rand) (string, []byte) {
 		demoWorkflowAgentLoop,
 		demoWorkflowETL,
 		demoWorkflowNotify,
+		demoWorkflowAgentSupervisor,
 	}
 	name := names[rng.Intn(len(names))]
 	outcome := drawOutcome(rng)
@@ -608,6 +857,9 @@ func buildWorkflowInput(name string, outcome demoOutcome) []byte {
 	case demoWorkflowNotify:
 		in.Template = "weekly-digest"
 		in.Recipients = []string{"ops@example.com", "#alerts"}
+	case demoWorkflowAgentSupervisor:
+		in.Goal = "coordinate a fleet of subtask agents"
+		in.Model = "claude-sonnet"
 	}
 	return marshalDemoInput(in)
 }

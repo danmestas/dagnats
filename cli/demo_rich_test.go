@@ -12,6 +12,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -19,6 +20,43 @@ import (
 	"github.com/danmestas/dagnats/dagnatstest"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
+
+// TestRichWorkflowDefsCarrySchemas asserts every rich demo workflow ships a
+// non-empty, valid-JSON input AND output schema (so the Functions detail
+// Contract section populates) and that NO task type is referenced by two
+// schema-bearing workflows. The console attributes a workflow's schema to
+// every task type it references and blanks the page when the attribution is
+// ambiguous (function_detail.go), so a shared task type would silently break
+// the very page these schemas exist to populate.
+func TestRichWorkflowDefsCarrySchemas(t *testing.T) {
+	t.Parallel()
+	defs := richWorkflowDefs()
+	if len(defs) == 0 {
+		t.Fatal("richWorkflowDefs returned no defs")
+	}
+
+	taskToWorkflow := map[string]string{}
+	for _, def := range defs {
+		if len(def.InputSchema) == 0 {
+			t.Errorf("workflow %q has empty InputSchema", def.Name)
+		} else if !json.Valid(def.InputSchema) {
+			t.Errorf("workflow %q InputSchema is not valid JSON", def.Name)
+		}
+		if len(def.OutputSchema) == 0 {
+			t.Errorf("workflow %q has empty OutputSchema", def.Name)
+		} else if !json.Valid(def.OutputSchema) {
+			t.Errorf("workflow %q OutputSchema is not valid JSON", def.Name)
+		}
+		for _, step := range def.Steps {
+			if prior, ok := taskToWorkflow[step.Task]; ok {
+				t.Errorf("task type %q referenced by two schema-bearing"+
+					" workflows (%q and %q): ambiguous attribution",
+					step.Task, prior, def.Name)
+			}
+			taskToWorkflow[step.Task] = def.Name
+		}
+	}
+}
 
 // TestRichWorkflowDefsAreValidAndDistinct asserts every rich demo
 // workflow builds into a valid DAG and that the set covers several
@@ -53,6 +91,7 @@ func TestRichWorkflowDefsAreValidAndDistinct(t *testing.T) {
 		demoWorkflowAgentLoop,
 		demoWorkflowETL,
 		demoWorkflowNotify,
+		demoWorkflowAgentSupervisor,
 	}
 	for _, want := range wantNames {
 		if !names[want] {
