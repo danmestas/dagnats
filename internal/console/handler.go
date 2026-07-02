@@ -849,21 +849,49 @@ func jsonArrayHelper(xs []float64) template.JS {
 	return template.JS(b.String())
 }
 
-// triggerKindGlyph returns a one-character icon for each trigger kind.
-// Matches the rendering in the CLI's `trigger list` so the same kind
-// reads identically across surfaces. Unknown kinds get a neutral dot.
-func triggerKindGlyph(kind string) string {
+// triggerKindGlyph returns an inline lucide SVG icon for each trigger
+// kind. Returns template.HTML so html/template emits the SVG unescaped;
+// the SVG strokes with currentColor so the per-kind .trigger-icon color
+// rules in app.css apply unchanged. Unknown kinds get a neutral dot.
+// (Emoji glyphs were replaced with proper icons — the console renders
+// icons everywhere, never emoji.)
+func triggerKindGlyph(kind string) template.HTML {
+	return template.HTML(triggerKindSVG(kind)) //nolint:gosec // fixed literals
+}
+
+// triggerKindSVG is the raw SVG markup for a kind — split out so the
+// template.HTML wrapper stays a one-liner and tests can assert on the
+// string. Icons: cron=clock, webhook=webhook, http=globe, subject=radio.
+func triggerKindSVG(kind string) string {
+	const open = `<svg class="trigger-svg-icon" width="15" height="15" ` +
+		`viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+		`stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ` +
+		`aria-hidden="true">`
+	const close = `</svg>`
 	switch kind {
 	case "cron":
-		return "⏱"
+		return open + `<circle cx="12" cy="12" r="10"/>` +
+			`<polyline points="12 6 12 12 16 14"/>` + close
 	case "webhook":
-		return "↘"
-	case "subject":
-		return "📡"
+		return open +
+			`<path d="M18 16.98h-5.99c-1.66 0-3.01-1.34-3.01-3s1.34-3 ` +
+			`3.01-3H18"/><path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 ` +
+			`4 0 1 1 6.89-4.06"/><path d="m12 6 3.13 5.73C15.66 12.7 16.9 ` +
+			`13 18 13a4 4 0 1 1-3.24 6.35"/>` + close
 	case "http":
-		return "⤴"
+		return open + `<circle cx="12" cy="12" r="10"/>` +
+			`<path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>` +
+			`<path d="M2 12h20"/>` + close
+	case "subject":
+		return open + `<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/>` +
+			`<path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/>` +
+			`<circle cx="12" cy="12" r="2"/>` +
+			`<path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/>` +
+			`<path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>` + close
 	}
-	return "•"
+	return open +
+		`<circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>` +
+		close
 }
 
 // pagerArgsValue is the literal type the pager template binds to.

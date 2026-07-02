@@ -54,6 +54,11 @@
     "paper-stripe": "#bcb8a9",
     "warm-near-black": "#2b261f",
     "warm-cream": "#f7f1e3",
+    // Axis ticks + value labels. The console renders on a dark canvas,
+    // so the old warm-near-black axis stroke was invisible (dark-on-
+    // dark). A warm light gray keeps the axis legible without competing
+    // with the series colors or the paper-stripe grid.
+    "axis-text": "#b0a99c",
   };
 
   // Mapping from a tile's data-metric to the chart-id that depends on it.
@@ -284,9 +289,9 @@
         // the default ~50px band crams the date row flush against the
         // canvas bottom edge. 64px gives the date row clearance so it
         // reads as part of the chart, not spilling past it.
-        { stroke: strokeFor("warm-near-black"), size: 64 },
+        { stroke: strokeFor("axis-text"), size: 64 },
         {
-          stroke: strokeFor("warm-near-black"),
+          stroke: strokeFor("axis-text"),
           label: unit || "",
           grid: { stroke: strokeFor("paper-stripe"), width: 0.5 },
         },

@@ -1336,15 +1336,14 @@ body[data-theme="dark"] {
  * scan a page of mixed triggers without parsing labels.
  */
 .trigger-icon {
-  font-family: var(--font-mono);
-  font-size: 0.95rem;
-  letter-spacing: 0;
-  line-height: 1;
-  display: inline-block;
-  width: 1.2em;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  margin-right: var(--space-1);
   color: var(--text-secondary);
 }
+.trigger-icon .trigger-svg-icon { display: block; }
 .trigger-icon[data-kind="cron"]    { color: var(--accent); }
 .trigger-icon[data-kind="webhook"] { color: var(--status-running); }
 .trigger-icon[data-kind="subject"] { color: var(--status-completed); }
@@ -3600,10 +3599,11 @@ body[data-theme="dark"] code {
   align-items: flex-start;
 }
 .config-trigger-glyph {
-  font-size: 1rem;
-  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
   color: var(--status-pending);
 }
+.config-trigger-glyph .trigger-svg-icon { display: block; }
 .config-trigger-body { flex: 1; min-width: 0; }
 .config-trigger-name {
   font-family: var(--font-mono);
