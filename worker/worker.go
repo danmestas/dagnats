@@ -122,6 +122,19 @@ type Worker struct {
 	stopHeartbeat chan struct{}
 	stopOnce      sync.Once
 
+	// handlerWG tracks in-flight handleMessage calls so Stop() can drain
+	// them before returning (#498). Every Add happens through
+	// beginHandler(), which is guarded by drainMu — that closes the race
+	// between a handler starting and Stop() beginning to wait: once
+	// draining flips to true, no further Add can occur, so Stop()'s
+	// handlerWG.Wait() only ever waits for handlers that started before
+	// shutdown began. drainTimeout bounds that wait so a wedged handler
+	// can't block shutdown forever.
+	handlerWG    sync.WaitGroup
+	drainMu      sync.RWMutex
+	draining     bool
+	drainTimeout time.Duration
+
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration          metric.Float64Histogram
 	stepRetries           metric.Int64Counter
@@ -243,6 +256,13 @@ func generateWorkerID() string {
 	return fmt.Sprintf("worker-%x", b)
 }
 
+// defaultDrainTimeout bounds how long Worker.Stop() waits for in-flight
+// handleMessage calls to finish (#498) before giving up and returning
+// anyway. Shutdown must terminate in bounded time even if a handler is
+// wedged; the timeout trades a theoretical "closed DB mid-handler" risk
+// for a shutdown that always completes.
+const defaultDrainTimeout = 30 * time.Second
+
 // NewWorker creates a Worker using the given connection.
 // Panics if nc is nil or if JetStream cannot be initialised
 // — both are programmer errors at startup. Tracing and
@@ -286,6 +306,7 @@ func NewWorker(
 		stepRetries:           stepRet,
 		tasksActive:           active,
 		cancelledTasksSkipped: skipped,
+		drainTimeout:          defaultDrainTimeout,
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -848,6 +869,23 @@ func (w *Worker) heartbeatLoop(reg WorkerRegistration) {
 // Stop unsubscribes all active subscriptions. Safe to call after
 // Start. Idempotent — repeat calls are no-ops, which makes
 // kill-mid-test patterns + t.Cleanup safe.
+// beginHandler registers one in-flight handleMessage call with handlerWG,
+// racing safely against Stop() via drainMu. Returns false (and adds
+// nothing) once draining has started, so handleMessage knows to bail out
+// instead of touching a Worker that is mid-shutdown. The RLock lets
+// concurrent handlers start together — only Stop()'s draining transition
+// takes the write lock — so this adds no contention on the hot path.
+func (w *Worker) beginHandler() bool {
+	w.drainMu.RLock()
+	if w.draining {
+		w.drainMu.RUnlock()
+		return false
+	}
+	w.handlerWG.Add(1)
+	w.drainMu.RUnlock()
+	return true
+}
+
 func (w *Worker) Stop() {
 	if w.handlers == nil {
 		panic("Worker.Stop: worker not initialized")
@@ -856,6 +894,20 @@ func (w *Worker) Stop() {
 		panic("Worker.Stop: nc must not be nil")
 	}
 	w.stopOnce.Do(func() {
+		// Flip draining before anything else so beginHandler() starts
+		// rejecting new in-flight handlers immediately. Combined with
+		// stopping the consumers below (no new deliveries) and then
+		// waiting on handlerWG, this ordering — block new Adds, stop new
+		// deliveries, wait for Adds already in flight — is what closes
+		// the Add-after-Wait race: any handler that reaches beginHandler
+		// after this point sees draining=true and never Adds, so
+		// handlerWG.Wait() below only waits for handlers that were
+		// already running (or had already passed beginHandler) at this
+		// instant.
+		w.drainMu.Lock()
+		w.draining = true
+		w.drainMu.Unlock()
+
 		if w.stopHeartbeat != nil {
 			close(w.stopHeartbeat)
 		}
@@ -892,6 +944,31 @@ func (w *Worker) Stop() {
 		}
 		for _, s := range w.stoppers {
 			s.Stop()
+		}
+
+		// Wait for in-flight handleMessage calls to finish before
+		// returning (#498) — otherwise a caller's deferred cleanup
+		// (e.g. closing a DB pool) can run out from under a handler
+		// that's still mid-execution. Bounded by drainTimeout so a
+		// wedged handler can't block shutdown forever; if it fires we
+		// log and return anyway rather than hang the process.
+		done := make(chan struct{})
+		go func() {
+			w.handlerWG.Wait()
+			close(done)
+		}()
+		timeout := w.drainTimeout
+		if timeout <= 0 {
+			timeout = defaultDrainTimeout
+		}
+		select {
+		case <-done:
+		case <-time.After(timeout):
+			slog.Warn(
+				"worker.Stop: drain timeout — in-flight handlers did not finish",
+				"worker_id", w.workerID,
+				"timeout", timeout,
+			)
 		}
 	})
 }
@@ -1036,6 +1113,16 @@ func (w *Worker) handleMessage(
 	if handler == nil {
 		panic("handleMessage: handler must not be nil")
 	}
+	// Register this call with handlerWG before doing any work so Stop()
+	// can drain it (#498). If the worker is already draining, bail out
+	// without Add-ing — NAK (not Ack) so the message redelivers to a
+	// live worker, or to this same worker after restart, instead of
+	// being silently dropped.
+	if !w.beginHandler() {
+		_ = msg.Nak()
+		return
+	}
+	defer w.handlerWG.Done()
 	var payload protocol.TaskPayload
 	err := json.Unmarshal(msg.Data(), &payload)
 	if err != nil {
