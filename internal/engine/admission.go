@@ -27,6 +27,7 @@ const (
 type admissionResult struct {
 	action       admissionAction
 	cancelID     string // singleton cancel mode
+	skippedBy    string // singleton skip mode: run ID holding the lock
 	offset       int    // priority offset
 	singletonKey string // KV key for lock release
 }
@@ -56,8 +57,10 @@ func (ac *AdmissionController) Admit(
 		if sResult.action == admissionSkip {
 			slog.InfoContext(ctx, "singleton skip",
 				"run_id", run.RunID,
+				"skipped_by", sResult.skippedBy,
 			)
 			result.action = admissionSkip
+			result.skippedBy = sResult.skippedBy
 			return result, nil
 		}
 		result.cancelID = sResult.cancelID
@@ -184,8 +187,10 @@ func (ac *AdmissionController) applySingletonMode(
 	}
 	switch mode {
 	case dag.SingletonModeSkip:
-		return admissionResult{action: admissionSkip},
-			kvKey, nil
+		return admissionResult{
+			action:    admissionSkip,
+			skippedBy: existingRunID,
+		}, kvKey, nil
 	case dag.SingletonModeCancel:
 		_, updateErr := ac.singletonKV.Update(
 			ctx, kvKey, lockData,

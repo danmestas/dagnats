@@ -103,15 +103,19 @@ func TestSingletonSkipDoesNotEnqueueTask(t *testing.T) {
 	startAdmissionRun(t, js, wfDef, "run-a", nil)
 	time.Sleep(300 * time.Millisecond)
 
-	// Positive (sanity): run-a, the non-skipped run, enqueued a task --
-	// proves the subscription below is wired to the right subject and
-	// isn't just timing out for an unrelated reason.
-	subSanity, err := js.PullSubscribe(
+	// TASK_QUEUES is a work-queue stream: only one filtered consumer per
+	// exact subject may exist at a time, so both fetches below reuse
+	// this single subscription rather than creating a second one.
+	sub, err := js.PullSubscribe(
 		"task.echo.*", "", nats.BindStream("TASK_QUEUES"))
 	if err != nil {
-		t.Fatalf("PullSubscribe sanity: %v", err)
+		t.Fatalf("PullSubscribe: %v", err)
 	}
-	sanityMsgs, err := subSanity.Fetch(1, nats.MaxWait(500*time.Millisecond))
+
+	// Positive (sanity): run-a, the non-skipped run, enqueued a task --
+	// proves the subscription is wired to the right subject and isn't
+	// just timing out for an unrelated reason.
+	sanityMsgs, err := sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
 	if err != nil {
 		t.Fatalf("Fetch sanity task: %v", err)
 	}
@@ -124,12 +128,7 @@ func TestSingletonSkipDoesNotEnqueueTask(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Negative (primary): no further task message shows up for run-b.
-	subSkip, err := js.PullSubscribe(
-		"task.echo.*", "", nats.BindStream("TASK_QUEUES"))
-	if err != nil {
-		t.Fatalf("PullSubscribe skip: %v", err)
-	}
-	_, fetchErr := subSkip.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	_, fetchErr := sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
 	if fetchErr != nats.ErrTimeout {
 		t.Fatalf("Fetch after skip: err = %v, want nats.ErrTimeout",
 			fetchErr)
