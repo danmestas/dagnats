@@ -7,6 +7,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,12 +139,26 @@ func TestSingletonSkipMode(t *testing.T) {
 			firstRun.Status)
 	}
 
-	// Negative: second run should not exist (skipped)
-	_, err = orch.store.Load(context.Background(), "run-second")
-	if err == nil {
-		t.Fatal(
-			"run-second should not exist (singleton skip)",
-		)
+	// Positive: second run is persisted and terminal, not silently
+	// dropped (#502 -- a skipped run must remain visible via
+	// `dagnats run status`, not vanish as if it never happened).
+	secondRun, err := orch.store.Load(context.Background(), "run-second")
+	if err != nil {
+		t.Fatalf("load run-second: %v", err)
+	}
+	if secondRun.Status != dag.RunStatusCancelled {
+		t.Fatalf("run-second status = %s, want cancelled",
+			secondRun.Status)
+	}
+
+	// Positive: the synthetic skip step names the holding run.
+	skipStep, ok := secondRun.Steps["<admission-skip>"]
+	if !ok {
+		t.Fatal("run-second missing <admission-skip> step")
+	}
+	if !strings.Contains(skipStep.Error, "run-first") {
+		t.Fatalf("skip reason %q does not name run-first",
+			skipStep.Error)
 	}
 }
 
@@ -239,5 +254,35 @@ func startAdmissionRun(
 		nats.MsgId(evt.NATSMsgID()),
 	); err != nil {
 		t.Fatalf("publish event: %v", err)
+	}
+}
+
+// TestApplySingletonModeSkipReturnsSkippedBy is a pure unit test over
+// applySingletonMode's skip branch (#502) -- no NATS server needed,
+// since ac.singletonKV is never touched on that path.
+func TestApplySingletonModeSkipReturnsSkippedBy(t *testing.T) {
+	ac := &AdmissionController{}
+	lockData := []byte(`{"run_id":"existing-run-id"}`)
+
+	result, kvKey, err := ac.applySingletonMode(
+		context.Background(), dag.SingletonModeSkip,
+		"some-key", "existing-run-id", lockData, 1,
+	)
+	if err != nil {
+		t.Fatalf("applySingletonMode: %v", err)
+	}
+
+	// Positive: action is skip.
+	if result.action != admissionSkip {
+		t.Fatalf("action = %v, want admissionSkip", result.action)
+	}
+	// Positive: skippedBy names the run holding the lock.
+	if result.skippedBy != "existing-run-id" {
+		t.Fatalf("skippedBy = %q, want %q",
+			result.skippedBy, "existing-run-id")
+	}
+	// Negative: kvKey is passed through unchanged, not mangled.
+	if kvKey != "some-key" {
+		t.Fatalf("kvKey = %q, want %q", kvKey, "some-key")
 	}
 }
