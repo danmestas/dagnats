@@ -1,12 +1,23 @@
 // internal/trigger/metrics.go
-// Metric instruments for trigger firings. Owned by the trigger
-// package so every handler can record without plumbing an OTel meter
-// through its constructor (each handler type creates / accepts one
-// at boot). One counter today: trigger_firings_total{type, outcome}.
-// The trigger_id label is intentionally absent — id is bounded but
-// would explode the per-series fanout in the metrics aggregator; the
-// dashboard groups by (type, outcome) and lists per-id drilldowns via
-// the existing trigger-fire stream.
+// Metric instruments for trigger firings and scheduler state. Owned
+// by the trigger package so every handler can record without
+// plumbing an OTel meter through its constructor (each handler type
+// creates / accepts one at boot). One counter today:
+// trigger_firings_total{type, outcome}. The trigger_id label is
+// intentionally absent from that counter — id is bounded but the
+// series count there scales with fire volume (potentially
+// unbounded over the metric's lifetime), which would explode the
+// per-series fanout in the metrics aggregator; the dashboard groups
+// by (type, outcome) and lists per-id drilldowns via the existing
+// trigger-fire stream.
+//
+// The two scheduler gauges below (trigger_last_fired_seconds,
+// trigger_next_fire_seconds) DO carry a per-trigger `trigger` label,
+// and that is not the same cardinality risk: a gauge has exactly one
+// active series per *registered* trigger (tens, bounded by how many
+// triggers an operator configures), not one per fire. The series
+// count is stable regardless of fire volume, so the counter's
+// cardinality-avoidance rule does not apply here.
 package trigger
 
 import (
@@ -96,4 +107,80 @@ func RecordFiring(
 		attribute.String("type", string(t)),
 		attribute.String("outcome", string(outcome)),
 	))
+}
+
+// schedulerGauges holds the two per-trigger observable gauges the
+// scheduler's OTel callback reports on every collection.
+type schedulerGauges struct {
+	// lastFired is unix seconds of the most recent cron fire whose
+	// Fire call returned nil (OutcomeFired), sourced from
+	// Scheduler.firedAt. Scope: cron scheduler only — manual/API
+	// fires (which call Fire directly via api.Service, bypassing
+	// Scheduler.Tick) never move this gauge. In-process only: empty
+	// at boot, populated only by successful fires in the current
+	// process, with no seed from trigger_state KV on restart (no
+	// production writer of <id>.last_run_at exists today — seeding
+	// from it would be dead code; see trigger_next_fire_seconds for
+	// the restart-safe alerting signal instead). Omitted entirely
+	// for a trigger that has never fired in this process, rather
+	// than emitted as 0/epoch.
+	lastFired metric.Int64ObservableGauge
+	// nextFire is unix seconds of the next matching minute for an
+	// enabled cron trigger, computed fresh on every collection from
+	// the trigger's cron expression/timezone. Present from the
+	// moment a trigger is registered — no fire history required —
+	// which makes it the restart-safe signal for alerting
+	// (now > next_fire + grace), independent of firedAt/lastFired.
+	nextFire metric.Int64ObservableGauge
+}
+
+// newSchedulerGauges builds both gauges from the given meter. Panics
+// if meter is nil — matches newFiringsCounter's convention.
+func newSchedulerGauges(m metric.Meter) schedulerGauges {
+	if m == nil {
+		panic("newSchedulerGauges: meter must not be nil")
+	}
+	lastFired, _ := m.Int64ObservableGauge(
+		"trigger_last_fired_seconds",
+		metric.WithDescription(
+			"Unix seconds of the most recent successful cron fire "+
+				"per trigger. Cron scheduler only; absent until the "+
+				"trigger's first successful fire in this process "+
+				"(no restart seed).",
+		),
+	)
+	nextFire, _ := m.Int64ObservableGauge(
+		"trigger_next_fire_seconds",
+		metric.WithDescription(
+			"Unix seconds of the next matching minute for an "+
+				"enabled cron trigger. Present from registration; "+
+				"restart-safe (no fire history needed).",
+		),
+	)
+	return schedulerGauges{lastFired: lastFired, nextFire: nextFire}
+}
+
+// RegisterSchedulerMetrics wires the scheduler's last_fired/next_fire
+// gauges to a single callback on the given meter. Panics on nil
+// meter or nil scheduler (programmer error). Callers own the
+// returned Registration and may Unregister it on shutdown; the
+// production caller (NewScheduler) does not, since the scheduler has
+// no explicit shutdown path today.
+func RegisterSchedulerMetrics(
+	m metric.Meter, s *Scheduler,
+) (metric.Registration, error) {
+	if m == nil {
+		panic("RegisterSchedulerMetrics: meter must not be nil")
+	}
+	if s == nil {
+		panic("RegisterSchedulerMetrics: scheduler must not be nil")
+	}
+
+	g := newSchedulerGauges(m)
+	return m.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			return s.observeMetrics(ctx, o, g)
+		},
+		g.lastFired, g.nextFire,
+	)
 }
