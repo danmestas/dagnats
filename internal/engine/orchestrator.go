@@ -430,7 +430,44 @@ func (o *Orchestrator) Stop() {
 		return
 	}
 	o.cc.Stop()
+	waitConsumeClosed(o.cc, "orchestrator")
 	o.cc = nil
+}
+
+// consumeStopDrainTimeout bounds how long waitConsumeClosed blocks. A
+// jetstream.ConsumeContext's pull-loop goroutine notices Stop() and
+// exits asynchronously — this should resolve in microseconds, so the
+// timeout exists only to keep a wedged goroutine from hanging shutdown
+// forever, not because the drain is expected to be slow.
+const consumeStopDrainTimeout = 5 * time.Second
+
+// waitConsumeClosed blocks until cc reports fully stopped via Closed(),
+// or consumeStopDrainTimeout elapses. jetstream.ConsumeContext.Stop()
+// only signals its pull-loop goroutine to exit — Closed() is the only
+// synchronous point at which that goroutine is guaranteed to have
+// stopped touching JetStream. Without this wait, Stop() can return
+// while the goroutine is still mid-fetch, which races embedded-server
+// shutdown and store-dir removal in tests built on
+// natsutil.StartTestServer. component names the caller in the timeout
+// log so a hang is traceable to orchestrator vs correlator vs
+// sleep-timer.
+func waitConsumeClosed(cc jetstream.ConsumeContext, component string) {
+	if cc == nil {
+		panic("waitConsumeClosed: cc must not be nil")
+	}
+	if component == "" {
+		panic("waitConsumeClosed: component must not be empty")
+	}
+	select {
+	case <-cc.Closed():
+	case <-time.After(consumeStopDrainTimeout):
+		slog.Warn(
+			"waitConsumeClosed: drain timeout — Stop() returning "+
+				"without full quiesce",
+			"component", component,
+			"timeout", consumeStopDrainTimeout,
+		)
+	}
 }
 
 // getRunLock returns a per-run mutex, creating one on first access.

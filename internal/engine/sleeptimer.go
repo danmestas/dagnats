@@ -178,6 +178,10 @@ func (st *SleepTimer) OnStepTimeout(fn StepTimeoutHandler) {
 func (st *SleepTimer) Stop() {
 	if st.cc != nil {
 		st.cc.Stop()
+		// Wait for the pull-loop goroutine to fully quiesce (see
+		// waitConsumeClosed's doc comment in orchestrator.go) — cc.Stop()
+		// only signals it to exit.
+		waitConsumeClosed(st.cc, "sleeptimer")
 		st.cc = nil
 	}
 }

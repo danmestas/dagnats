@@ -155,6 +155,10 @@ func (c *Correlator) startConsumers() error {
 func (c *Correlator) Stop() {
 	if c.eventCC != nil {
 		c.eventCC.Stop()
+		// Wait for the pull-loop goroutine to fully quiesce (see
+		// waitConsumeClosed's doc comment in orchestrator.go) —
+		// eventCC.Stop() only signals it to exit.
+		waitConsumeClosed(c.eventCC, "correlator")
 		c.eventCC = nil
 	}
 	if c.kvWatch != nil {
