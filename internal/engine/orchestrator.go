@@ -521,10 +521,19 @@ func shouldDeadLetterHistory(maxDeliver int, numDelivered uint64) bool {
 
 // nakOrDeadLetterHistory NAKs with the schedule-derived delay while
 // below the MaxDeliver cap; at/above the cap it dead-letters the raw
-// event via RecoveryManager and Acks so the poison message stops
-// redelivering (#508). On a Metadata() error (should not happen post-
-// Consume) it fails safe: logs and NAKs with schedule[0] rather than
-// risk wrongly dead-lettering.
+// event via RecoveryManager. It Acks only when that dead-letter publish
+// succeeds, so the poison message stops redelivering with a durable DLQ
+// record behind it (#508). If the dead-letter publish itself fails
+// (DEAD_LETTERS transiently unavailable, at limit, connection blip), it
+// NAKs with the schedule's last entry instead of Acking: MaxDeliver was
+// already reached, so JetStream will not attempt further redelivery — the
+// NAK simply leaves the message un-acked (pending) rather than silently
+// consumed, so it survives in WORKFLOW_HISTORY and NATS emits a
+// MAX_DELIVERIES advisory an operator can alert on. MaxDeliver caps total
+// deliveries at the consumer level regardless of Ack/NAK, so this cannot
+// reintroduce an infinite redelivery loop. On a Metadata() error (should
+// not happen post-Consume) it fails safe: logs and NAKs with schedule[0]
+// rather than risk wrongly dead-lettering.
 func (o *Orchestrator) nakOrDeadLetterHistory(
 	ctx context.Context, msg jetstream.Msg,
 	runID, stepID, eventType string, cause error,
@@ -551,10 +560,23 @@ func (o *Orchestrator) nakOrDeadLetterHistory(
 	if shouldDeadLetterHistory(
 		len(o.historyRedeliverSchedule), numDelivered,
 	) {
-		o.recovery.PublishHistoryDeadLetter(
+		dlqErr := o.recovery.PublishHistoryDeadLetter(
 			ctx, msg.Data(), runID, stepID, eventType,
 			numDelivered, md.Sequence.Stream, cause,
 		)
+		if dlqErr != nil {
+			slog.ErrorContext(ctx,
+				"nakOrDeadLetterHistory: dead-letter publish failed, "+
+					"NAKing instead of Acking to preserve the poison "+
+					"event",
+				"error", dlqErr,
+				"run_id", runID,
+				"step_id", stepID,
+			)
+			lastIdx := len(o.historyRedeliverSchedule) - 1
+			msg.NakWithDelay(o.historyRedeliverSchedule[lastIdx])
+			return
+		}
 		msg.Ack()
 		return
 	}

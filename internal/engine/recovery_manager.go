@@ -69,9 +69,13 @@ const (
 // releaseSlotFn frees task concurrency. RecoveryManager
 // modifies run.Steps in-place, then calls saveFn so the caller
 // persists. Compensation is sequential — one step at a time in
-// reverse topological order. Dead-letter publish is
+// reverse topological order. PublishDeadLetter (task-level) is
 // fire-and-forget: errors are silently dropped because the
-// workflow is already in a terminal failure state.
+// workflow is already in a terminal failure state. By contrast
+// PublishHistoryDeadLetter (#508) returns its publish error so the
+// caller can NAK instead of Ack — a poison WORKFLOW_HISTORY event
+// must never be silently dropped just because DEAD_LETTERS was
+// transiently unavailable.
 type RecoveryManager struct {
 	js        jetstream.JetStream
 	tp        *natsutil.TracingPublisher
@@ -587,11 +591,17 @@ func dlqSubjectSafeOrUnknown(s string) string {
 // from PublishDeadLetter, which reconstructs a re-publishable TaskPayload
 // and would silently skip the publish when a poison event has no
 // resolvable run/wfDef/stepDef.
+//
+// Returns the JSPublishMsg error (nil on success) rather than swallowing
+// it: the caller, nakOrDeadLetterHistory, NAKs instead of Acking on a
+// non-nil error so a transient DEAD_LETTERS outage (unavailable, at
+// limit, connection blip) preserves the poison event in WORKFLOW_HISTORY
+// instead of silently consuming it with no durable record.
 func (rm *RecoveryManager) PublishHistoryDeadLetter(
 	ctx context.Context, rawData []byte,
 	runID, stepID, eventType string,
 	numDelivered, streamSeq uint64, handlerErr error,
-) {
+) error {
 	if ctx == nil {
 		panic("PublishHistoryDeadLetter: ctx must not be nil")
 	}
@@ -626,10 +636,9 @@ func (rm *RecoveryManager) PublishHistoryDeadLetter(
 	}
 	_, err := rm.tp.JSPublishMsg(ctx, msg)
 	if err != nil {
-		// Fire-and-forget, consistent with PublishDeadLetter: the
-		// message is about to be Ack'd regardless (it has exhausted
-		// MaxDeliver), so a DLQ publish failure is logged, not
-		// retried.
+		// Propagated to the caller (see doc comment above) instead of
+		// swallowed: the message must NOT be Ack'd when the DLQ write
+		// itself failed.
 		slog.ErrorContext(ctx,
 			"PublishHistoryDeadLetter: publish failed",
 			"error", err,
@@ -637,12 +646,13 @@ func (rm *RecoveryManager) PublishHistoryDeadLetter(
 			"step_id", stepID,
 			"event_type", eventType,
 		)
-		return
+		return err
 	}
 	// workflow label is deliberately "" — the poison event's run/def
 	// may not be resolvable, and even when it is, "workflow" is a
 	// bounded-cardinality metric label; a runID must never appear here.
 	rm.recordDLQEntry(ctx, "", "history_redeliver_exhausted")
+	return nil
 }
 
 // resolveDLQReason maps a failed step's state to a bounded reason

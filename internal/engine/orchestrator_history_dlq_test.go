@@ -423,3 +423,126 @@ func TestOrchestrator_HistoryConsumerHasMaxDeliverAndBackOff(t *testing.T) {
 		)
 	}
 }
+
+// maxDeliveriesAdvisorySubject is the NATS-server-emitted advisory
+// published when a message's delivery count reaches a consumer's
+// MaxDeliver while the message is still pending (unacknowledged). Acking a
+// message removes it from the pending set immediately — that code path
+// never checks MaxDeliver and never sends this advisory — so its presence
+// or absence is a real, server-observed signal for whether the terminal
+// delivery was NAK'd or Ack'd. The orchestrator's WORKFLOW_HISTORY
+// consumer is always named "orchestrator" (natsutil.SetupAll).
+const maxDeliveriesAdvisorySubject = "$JS.EVENT.ADVISORY.CONSUMER." +
+	"MAX_DELIVERIES.WORKFLOW_HISTORY.orchestrator"
+
+// TestOrchestrator_HistoryDeadLetterPublishFailureNaksNotAck is the red
+// test for the #508 review finding: PublishHistoryDeadLetter used to be
+// fire-and-forget (log the JSPublishMsg error and return), and
+// nakOrDeadLetterHistory Ack'd the terminal delivery unconditionally —
+// silently dropping the poison event with no durable DLQ record and no
+// operator signal when DEAD_LETTERS was transiently unavailable. This
+// test deletes DEAD_LETTERS so every dead-letter publish in it fails, then
+// asserts the terminal delivery is NAK'd (preserved), not Ack'd (dropped).
+func TestOrchestrator_HistoryDeadLetterPublishFailureNaksNotAck(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+
+	// Force every PublishHistoryDeadLetter call in this test to fail:
+	// once DEAD_LETTERS is gone, no stream captures "dead.>" and
+	// JSPublishMsg returns a real "no responders" publish error.
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if dErr := jsNew.DeleteStream(deleteCtx, "DEAD_LETTERS"); dErr != nil {
+		t.Fatalf("DeleteStream(DEAD_LETTERS): %v", dErr)
+	}
+
+	sub, subErr := nc.SubscribeSync(maxDeliveriesAdvisorySubject)
+	if subErr != nil {
+		t.Fatalf("SubscribeSync advisory: %v", subErr)
+	}
+	defer sub.Unsubscribe()
+
+	orch := NewOrchestrator(
+		nc, WithHistoryRedeliverBackoff(historyDLQTestSchedule),
+	)
+	orch.Start()
+	defer orch.Stop()
+
+	mustPublish(t, js, "history.poison-dlqfail-run", []byte("not json"))
+
+	// Positive: the terminal delivery is NAK'd, not Ack'd. Bounded well
+	// beyond (3 deliveries * 10ms schedule) plus the final NAK delay.
+	if _, advErr := sub.NextMsg(3 * time.Second); advErr != nil {
+		t.Fatalf(
+			"MAX_DELIVERIES advisory not received: %v — the poison event "+
+				"was silently Ack'd despite the DLQ publish failing "+
+				"(#508: a dead-letter publish failure must NAK, not Ack)",
+			advErr,
+		)
+	}
+
+	// Negative: exactly one advisory — NAK-on-failure must not
+	// reintroduce redelivery beyond MaxDeliver.
+	if _, advErr := sub.NextMsg(200 * time.Millisecond); advErr == nil {
+		t.Fatal(
+			"received a second MAX_DELIVERIES advisory — NAK-on-failure " +
+				"must not cause repeated redelivery past MaxDeliver",
+		)
+	}
+}
+
+// TestOrchestrator_HistoryDeadLetterPublishSuccessAcksNoAdvisory is the
+// positive companion: when the DLQ publish SUCCEEDS at terminal delivery,
+// the message must be Ack'd (no MAX_DELIVERIES advisory — Ack removes the
+// message from pending before the advisory path ever runs) and exactly
+// one DLQ record must land.
+func TestOrchestrator_HistoryDeadLetterPublishSuccessAcksNoAdvisory(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+
+	sub, subErr := nc.SubscribeSync(maxDeliveriesAdvisorySubject)
+	if subErr != nil {
+		t.Fatalf("SubscribeSync advisory: %v", subErr)
+	}
+	defer sub.Unsubscribe()
+
+	orch := NewOrchestrator(
+		nc, WithHistoryRedeliverBackoff(historyDLQTestSchedule),
+	)
+	orch.Start()
+	defer orch.Stop()
+
+	mustPublish(t, js, "history.poison-dlqsuccess-run", []byte("not json"))
+
+	// Positive: exactly one DLQ record lands — the publish succeeded.
+	waitForDeadLetterCount(t, jsNew, "dead.orchestrator.>", 1, 3*time.Second)
+
+	// Negative: no MAX_DELIVERIES advisory ever fires — the message was
+	// Ack'd, not left pending, so JetStream never runs the advisory path.
+	if _, advErr := sub.NextMsg(200 * time.Millisecond); advErr == nil {
+		t.Fatal(
+			"received a MAX_DELIVERIES advisory for a successful DLQ " +
+				"publish — the terminal delivery must be Ack'd, not NAK'd",
+		)
+	}
+}
