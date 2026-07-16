@@ -208,3 +208,40 @@ func TestPrintEngineLag(t *testing.T) {
 		t.Fatalf("unexpected error in output: %s", output)
 	}
 }
+
+// TestPrintEngineLag_ShowsHistoryDeadLetterCount asserts the #508
+// History dead-lettered line always prints, including at zero — a zero
+// count is how operators confirm the feature is wired at all, as
+// distinct from "the CLI silently omitted the line".
+func TestPrintEngineLag_ShowsHistoryDeadLetterCount(t *testing.T) {
+	lag := engineLag{
+		HistoryLagMessages:    10,
+		HistoryLagSeconds:     1.5,
+		ScheduledTimers:       2,
+		HistoryExhaustedCount: 3,
+	}
+
+	output := captureOutput(func() {
+		printEngineLag(lag)
+	})
+
+	// Positive: a non-zero count is visible in the output.
+	if !strings.Contains(output, "History dead-lettered: 3") {
+		t.Fatalf(
+			"expected 'History dead-lettered: 3' in output, got: %s",
+			output,
+		)
+	}
+
+	// Negative: a zero count still prints the line (not omitted) —
+	// operators need "0" as positive confirmation the feature is wired.
+	zeroOutput := captureOutput(func() {
+		printEngineLag(engineLag{})
+	})
+	if !strings.Contains(zeroOutput, "History dead-lettered: 0") {
+		t.Fatalf(
+			"expected 'History dead-lettered: 0' for zero count, got: %s",
+			zeroOutput,
+		)
+	}
+}

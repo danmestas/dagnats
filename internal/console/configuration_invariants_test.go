@@ -59,7 +59,7 @@ func TestConfigPage_EngineInvariantsTable(t *testing.T) {
 
 	// Representative real values, each verified against conn.go / worker.
 	for _, want := range []string{
-		"MaxDeliver", "-1 (unlimited)", // worker/worker.go:577
+		"MaxDeliver", "-1 (unlimited)", // worker/worker.go:647
 		"5s",             // WORKFLOW_HISTORY + TELEMETRY dedup
 		"24h",            // DEAD_LETTERS dedup / idempotency_keys TTL
 		"60s",            // workers KV TTL
@@ -93,6 +93,23 @@ func TestConfigPage_EngineInvariantsTable(t *testing.T) {
 	// AckWait constant cell must carry a parenthetical scope.
 	if strings.Contains(region, `<td class="mono">AckWait</td>`) {
 		t.Errorf("unscoped AckWait row present — fabricates the value")
+	}
+
+	// MaxDeliver is split the same way (#508): the WORKFLOW_HISTORY
+	// consumer now carries a redelivery cap, distinct from the worker
+	// task consumer's unlimited MaxDeliver. A single bare "MaxDeliver"
+	// row would fabricate one of them.
+	if !strings.Contains(region, "MaxDeliver (WORKFLOW_HISTORY consumer)") {
+		t.Errorf("missing scoped WORKFLOW_HISTORY MaxDeliver row")
+	}
+	if !strings.Contains(region, "MaxDeliver (worker task consumer)") {
+		t.Errorf("missing scoped worker-task MaxDeliver row")
+	}
+	if !strings.Contains(region, "8 (dead-letters on exhaustion, #508)") {
+		t.Errorf("WORKFLOW_HISTORY MaxDeliver value (8) not rendered")
+	}
+	if strings.Contains(region, `<td class="mono">MaxDeliver</td>`) {
+		t.Errorf("unscoped MaxDeliver row present — fabricates the value")
 	}
 
 	// Every row's source pill must read the honest "hardcoded".

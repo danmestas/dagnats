@@ -477,7 +477,12 @@ func authActorNote(mode AuthMode) string {
 // auditable. AckWait is split into two scoped rows because the worker task
 // consumer (5m, worker/consumer_naming.go:14) and the WORKFLOW_HISTORY
 // consumer (30s default, internal/natsutil/conn.go:53-54) differ — a
-// single bare "AckWait" row would fabricate one of them.
+// single bare "AckWait" row would fabricate one of them. MaxDeliver is
+// split the same way (#508): the WORKFLOW_HISTORY consumer now carries a
+// redelivery cap that dead-letters on exhaustion, while the worker task
+// consumer's retry budget stays app-level (dag.StepState.Attempts) with
+// MaxDeliver left unlimited — a single bare "MaxDeliver" row would have
+// fabricated one of them.
 func engineInvariants() []InvariantRow {
 	const src = "hardcoded"
 	rows := []InvariantRow{
@@ -485,8 +490,11 @@ func engineInvariants() []InvariantRow {
 			"history consumer ack timeout (conn.go:53-54)", src, ToneDefault},
 		{"AckWait (worker task consumer)", "5m (default)",
 			"task consumer ack timeout (consumer_naming.go:14)", src, ToneDefault},
-		{"MaxDeliver", "-1 (unlimited)",
-			"engine retries via NakWithDelay, not redelivery cap (worker.go:577)",
+		{"MaxDeliver (WORKFLOW_HISTORY consumer)", "8 (dead-letters on exhaustion, #508)",
+			"history consumer redelivery cap (orchestrator.go:342)",
+			src, ToneDefault},
+		{"MaxDeliver (worker task consumer)", "-1 (unlimited)",
+			"engine retries via NakWithDelay, not redelivery cap (worker.go:647)",
 			src, ToneDefault},
 		{"WORKFLOW_HISTORY dedup", "5s",
 			"duplicate-publish window on history.> (conn.go:31)", src, ToneDefault},
@@ -512,7 +520,7 @@ func engineInvariants() []InvariantRow {
 		{"debounce_state TTL", "14d",
 			"trigger debounce timer cleanup (conn.go:126)", src, ToneDefault},
 	}
-	if len(rows) != 14 {
+	if len(rows) != 15 {
 		panic("engineInvariants: row count drifted")
 	}
 	return rows

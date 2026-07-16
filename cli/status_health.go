@@ -37,6 +37,12 @@ type engineLag struct {
 	HistoryLagMessages uint64  `json:"history_lag_messages"`
 	HistoryLagSeconds  float64 `json:"history_lag_seconds"`
 	ScheduledTimers    uint64  `json:"scheduled_timers"`
+	// HistoryExhaustedCount is the DEAD_LETTERS count for the
+	// "orchestrator" DLQ task bucket — WORKFLOW_HISTORY events that
+	// exhausted MaxDeliver (#508). Populated by printDetailSections
+	// from the already-collected dlqSummary so this never triggers a
+	// second DEAD_LETTERS query.
+	HistoryExhaustedCount uint64 `json:"history_exhausted_count"`
 }
 
 // collectQueueHealth iterates consumers on the TASK_QUEUES stream
@@ -397,8 +403,14 @@ func printDetailSections(nc *nats.Conn) {
 
 	ctx := context.Background()
 	printQueueHealth(collectQueueHealth(ctx, js))
-	printDLQSummary(collectDLQSummary(ctx, js))
-	printEngineLag(collectEngineLag(ctx, js))
+	// summary is collected once and reused for both the DLQ section and
+	// the engine section's HistoryExhaustedCount (#508) — a second
+	// DEAD_LETTERS query here would duplicate collectDLQSummary's work.
+	summary := collectDLQSummary(ctx, js)
+	printDLQSummary(summary)
+	lag := collectEngineLag(ctx, js)
+	lag.HistoryExhaustedCount = summary.ByTask["orchestrator"]
+	printEngineLag(lag)
 }
 
 // printQueueHealth prints a table of per-task consumer health.
@@ -498,4 +510,8 @@ func printEngineLag(lag engineLag) {
 		lag.HistoryLagMessages, lag.HistoryLagSeconds,
 	)
 	fmt.Printf("  Scheduled timers: %d\n", lag.ScheduledTimers)
+	fmt.Printf(
+		"  History dead-lettered: %d (MaxDeliver exhausted, see dagnats dlq list)\n",
+		lag.HistoryExhaustedCount,
+	)
 }
