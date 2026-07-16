@@ -88,6 +88,7 @@ func (sr *StickyRouter) PublishTask(
 	workerID string,
 	strategy dag.StickyStrategy,
 	dispatchNonce string,
+	workflowName string,
 ) error {
 	if sr == nil {
 		panic("StickyRouter.PublishTask: called on nil receiver")
@@ -118,6 +119,7 @@ func (sr *StickyRouter) PublishTask(
 		StepID:        step.ID,
 		Attempt:       attempt,
 		Input:         input,
+		WorkflowName:  workflowName,
 		DispatchNonce: dispatchNonce,
 	}
 	data, err := json.Marshal(payload)
@@ -142,22 +144,46 @@ func (sr *StickyRouter) PublishTask(
 	sr.stepEnqueueCount.Add(ctx, 1)
 
 	if strategy == dag.StickySoft && sr.sleepTimer != nil {
-		// Schedule fallback: if sticky worker doesn't claim
-		// within 5 seconds, re-publish to normal subject.
-		sr.sleepTimer.Schedule(ctx, TimerMessage{
-			Action:     TimerActionRateRetry, // reuses rate retry
-			RunID:      runID,
-			StepID:     step.ID,
-			DurationMs: 5000,
-			TaskType:   step.Task,
-			Input:      input,
-			Attempt:    attempt,
-			// Carry the run-binding nonce so the fallback re-publish (#380)
-			// stays run-bound. Sticky steps carry no control-plane capability,
-			// so no caps need stripping here.
-			DispatchNonce: dispatchNonce,
-		})
+		sr.scheduleSoftFallback(
+			ctx, runID, step, input, attempt, dispatchNonce, workflowName,
+		)
 	}
 
 	return nil
+}
+
+// scheduleSoftFallback schedules the soft-sticky fallback timer: if
+// the sticky worker doesn't claim the task within 5 seconds, it
+// re-publishes to the normal (non-sticky) subject. Split out of
+// PublishTask to keep that function within the house function-length
+// budget.
+func (sr *StickyRouter) scheduleSoftFallback(
+	ctx context.Context,
+	runID string,
+	step dag.StepDef,
+	input []byte,
+	attempt int,
+	dispatchNonce string,
+	workflowName string,
+) {
+	if sr.sleepTimer == nil {
+		panic("scheduleSoftFallback: sleepTimer must not be nil")
+	}
+	if runID == "" {
+		panic("scheduleSoftFallback: runID must not be empty")
+	}
+	sr.sleepTimer.Schedule(ctx, TimerMessage{
+		Action:       TimerActionRateRetry, // reuses rate retry
+		RunID:        runID,
+		StepID:       step.ID,
+		DurationMs:   5000,
+		TaskType:     step.Task,
+		Input:        input,
+		Attempt:      attempt,
+		WorkflowName: workflowName,
+		// Carry the run-binding nonce so the fallback re-publish (#380)
+		// stays run-bound. Sticky steps carry no control-plane capability,
+		// so no caps need stripping here.
+		DispatchNonce: dispatchNonce,
+	})
 }

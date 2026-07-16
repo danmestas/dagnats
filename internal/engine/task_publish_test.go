@@ -27,7 +27,9 @@ func TestCollectReadyMessages(t *testing.T) {
 			"b": {Status: dag.StepStatusQueued, Attempts: 1},
 		},
 	}
-	msgs, err := collectReadyMessages("run-1", steps, run, nil)
+	msgs, err := collectReadyMessages(
+		"run-1", steps, run, nil, "deploy-pipeline",
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +44,7 @@ func TestCollectReadyMessages(t *testing.T) {
 			msgs[0].Subject,
 		)
 	}
-	// Positive: correct attempt in payload
+	// Positive: correct attempt and workflow_name in payload (#503)
 	var p protocol.TaskPayload
 	if err := json.Unmarshal(msgs[1].Data, &p); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
@@ -50,8 +52,16 @@ func TestCollectReadyMessages(t *testing.T) {
 	if p.Attempt != 1 {
 		t.Errorf("msg[1] attempt = %d, want 1", p.Attempt)
 	}
+	if p.WorkflowName != "deploy-pipeline" {
+		t.Errorf(
+			"msg[1] WorkflowName = %q, want %q",
+			p.WorkflowName, "deploy-pipeline",
+		)
+	}
 	// Negative: empty steps produces empty slice
-	empty, err := collectReadyMessages("run-1", nil, run, nil)
+	empty, err := collectReadyMessages(
+		"run-1", nil, run, nil, "deploy-pipeline",
+	)
 	if err != nil {
 		t.Fatalf("empty steps error: %v", err)
 	}
@@ -144,7 +154,9 @@ func TestCollectReadyMessages_Metadata(t *testing.T) {
 			"no-meta":   {Status: dag.StepStatusQueued, Attempts: 0},
 		},
 	}
-	msgs, err := collectReadyMessages("run-meta", steps, run, nil)
+	msgs, err := collectReadyMessages(
+		"run-meta", steps, run, nil, "meta-workflow",
+	)
 	if err != nil {
 		t.Fatalf("collectReadyMessages: %v", err)
 	}

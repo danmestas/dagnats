@@ -32,6 +32,12 @@ type TaskPayload struct {
 	// omitempty: legacy payloads deserialize to "" and the server rejects an
 	// empty/mismatched nonce on the control-plane path.
 	DispatchNonce string `json:"dispatch_nonce,omitempty"`
+	// WorkflowName is the workflow definition's name (#503), stamped by the
+	// engine at every publish site so SigNoz can filter/group task spans by
+	// workflow instead of every run collapsing into one undifferentiated
+	// span name. Additive, omitempty: legacy payloads deserialize to "" and
+	// the worker simply omits the workflow_name span attribute in that case.
+	WorkflowName string `json:"workflow_name,omitempty"`
 }
 
 // TaskResolution is the wire format for HTTP bridge resolve actions.

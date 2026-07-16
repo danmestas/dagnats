@@ -59,6 +59,13 @@ type TimerMessage struct {
 	// omitempty: legacy timer messages deserialize to "".
 	DispatchNonce        string   `json:"dispatch_nonce,omitempty"`
 	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
+	// WorkflowName mirrors protocol.TaskPayload.WorkflowName (#503) across
+	// the durable timer boundary, so a timer-fired re-publish (rate_retry /
+	// retry_after / retry_backoff / sticky-fallback) still stamps the
+	// TaskPayload the worker eventually sees. Additive, omitempty: legacy
+	// timer messages deserialize to "" and the re-published TaskPayload
+	// simply carries no workflow_name.
+	WorkflowName string `json:"workflow_name,omitempty"`
 }
 
 // DebounceHandler is called when a debounce timer fires. The seq
@@ -413,10 +420,11 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	defer cancel()
 	subject := fmt.Sprintf("task.%s.%s", tm.TaskType, tm.RunID)
 	payload := protocol.TaskPayload{
-		TaskID: tm.RunID + "." + tm.StepID,
-		RunID:  tm.RunID,
-		StepID: tm.StepID,
-		Input:  tm.Input,
+		TaskID:       tm.RunID + "." + tm.StepID,
+		RunID:        tm.RunID,
+		StepID:       tm.StepID,
+		Input:        tm.Input,
+		WorkflowName: tm.WorkflowName,
 		// Carry the grant decision + run-binding nonce stamped at scheduling
 		// time (#380) so a rate-retried granted step still passes
 		// VerifyDispatch and keeps its control-plane capability.
@@ -495,11 +503,12 @@ func (st *SleepTimer) republishTask(
 		"task.%s.%s", tm.TaskType, tm.RunID,
 	)
 	payload := protocol.TaskPayload{
-		TaskID:  tm.RunID + "." + tm.StepID,
-		RunID:   tm.RunID,
-		StepID:  tm.StepID,
-		Input:   tm.Input,
-		Attempt: tm.Attempt + 1,
+		TaskID:       tm.RunID + "." + tm.StepID,
+		RunID:        tm.RunID,
+		StepID:       tm.StepID,
+		Input:        tm.Input,
+		Attempt:      tm.Attempt + 1,
+		WorkflowName: tm.WorkflowName,
 		// Carry the grant decision + run-binding nonce stamped at scheduling
 		// time (#380) so a retried granted step still passes VerifyDispatch.
 		RequiredCapabilities: tm.RequiredCapabilities,

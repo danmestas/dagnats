@@ -992,14 +992,26 @@ func (w *Worker) startTaskSpan(
 		panic("startTaskSpan: tracer must not be nil")
 	}
 	ctx := observe.ExtractTraceContext(msg, nil)
+	// Span name carries the task type only (bounded cardinality — see
+	// task_publisher.go's doPublish for the matching engine-side
+	// rationale). workflow_name is attached as an attribute only when
+	// the payload carries one: an older engine build's payload has an
+	// empty WorkflowName, and emitting an empty-string attribute would
+	// be worse than omitting it entirely (#503).
+	attrs := []attribute.KeyValue{
+		attribute.String("run_id", payload.RunID),
+		attribute.String("step_id", payload.StepID),
+		attribute.String("task_name", taskType),
+	}
+	if payload.WorkflowName != "" {
+		attrs = append(attrs,
+			attribute.String("workflow_name", payload.WorkflowName),
+		)
+	}
 	ctx, span := w.tracer.Start(ctx,
-		"worker.executeTask",
+		"executeTask "+taskType,
 		trace.WithSpanKind(trace.SpanKindServer),
-		trace.WithAttributes(
-			attribute.String("run_id", payload.RunID),
-			attribute.String("step_id", payload.StepID),
-			attribute.String("task_name", taskType),
-		),
+		trace.WithAttributes(attrs...),
 	)
 	tc := newTaskContext(
 		w.nc, w.tracer, w.js, payload, ctx, span, msg,

@@ -24,7 +24,7 @@ import "github.com/danmestas/dagnats/protocol"
 
 
 <a name="Event"></a>
-## type [Event](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L108-L118>)
+## type [Event](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L114-L124>)
 
 Event is the core communication primitive published to the history stream. Payload carries event\-specific data as raw JSON to keep the type schema\-agnostic.
 
@@ -43,7 +43,7 @@ type Event struct {
 ```
 
 <a name="NewStepEvent"></a>
-### func [NewStepEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L122>)
+### func [NewStepEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L128>)
 
 ```go
 func NewStepEvent(eventType EventType, runID string, stepID string, payload []byte) Event
@@ -52,7 +52,7 @@ func NewStepEvent(eventType EventType, runID string, stepID string, payload []by
 NewStepEvent constructs an Event for a step lifecycle transition. Panics on empty runID or stepID — these are programmer errors, not runtime errors.
 
 <a name="NewWorkflowEvent"></a>
-### func [NewWorkflowEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L140>)
+### func [NewWorkflowEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L146>)
 
 ```go
 func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event
@@ -61,7 +61,7 @@ func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event
 NewWorkflowEvent constructs an Event for a workflow lifecycle transition. Panics on empty runID — programmer error.
 
 <a name="UnmarshalEvent"></a>
-### func [UnmarshalEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L188>)
+### func [UnmarshalEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L194>)
 
 ```go
 func UnmarshalEvent(data []byte) (Event, error)
@@ -70,7 +70,7 @@ func UnmarshalEvent(data []byte) (Event, error)
 UnmarshalEvent deserializes a NATS message body into an Event.
 
 <a name="Event.Marshal"></a>
-### func \(Event\) [Marshal](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L183>)
+### func \(Event\) [Marshal](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L189>)
 
 ```go
 func (e Event) Marshal() ([]byte, error)
@@ -79,7 +79,7 @@ func (e Event) Marshal() ([]byte, error)
 Marshal serializes the event to JSON for publishing to NATS.
 
 <a name="Event.NATSMsgID"></a>
-### func \(Event\) [NATSMsgID](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L171>)
+### func \(Event\) [NATSMsgID](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L177>)
 
 ```go
 func (e Event) NATSMsgID() string
@@ -88,7 +88,7 @@ func (e Event) NATSMsgID() string
 NATSMsgID returns the deduplication ID for JetStream idempotent publishing. Composed of run, step, and event type so replays are safe. For workflow events \(empty StepID\), omits the step segment to avoid double dots.
 
 <a name="Event.NATSSubject"></a>
-### func \(Event\) [NATSSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L158>)
+### func \(Event\) [NATSSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L164>)
 
 ```go
 func (e Event) NATSSubject() string
@@ -97,7 +97,7 @@ func (e Event) NATSSubject() string
 NATSSubject returns the JetStream subject for publishing this event. All events for a run share one subject so consumers get ordered history. Panics on empty RunID — subjects with empty segments are invalid in NATS.
 
 <a name="EventType"></a>
-## type [EventType](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L70>)
+## type [EventType](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L76>)
 
 EventType identifies the kind of workflow lifecycle event. Using string constants makes events self\-describing over the wire.
 
@@ -144,7 +144,7 @@ const (
 ```
 
 <a name="FailureType"></a>
-## type [FailureType](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L51>)
+## type [FailureType](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L57>)
 
 FailureType distinguishes how the engine handles a step failure.
 
@@ -163,7 +163,7 @@ const (
 ```
 
 <a name="StepFailedPayload"></a>
-## type [StepFailedPayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L62-L66>)
+## type [StepFailedPayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L68-L72>)
 
 StepFailedPayload is the structured payload for EventStepFailed. FailureType defaults to retriable when empty \(backward compat\). RetryAfterMs is only used with FailureTypeRetryAfter.
 
@@ -176,7 +176,7 @@ type StepFailedPayload struct {
 ```
 
 <a name="TaskPayload"></a>
-## type [TaskPayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L13-L35>)
+## type [TaskPayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L13-L41>)
 
 TaskPayload is the message body published to a task subject when the engine dispatches a step for execution. Workers unmarshal this to build a TaskContext. Iteration is the agent\-loop iteration index \(0 for the first execution\); workers include it in Continue event MsgIds to prevent JetStream deduplication across cycles.
 
@@ -203,11 +203,17 @@ type TaskPayload struct {
     // omitempty: legacy payloads deserialize to "" and the server rejects an
     // empty/mismatched nonce on the control-plane path.
     DispatchNonce string `json:"dispatch_nonce,omitempty"`
+    // WorkflowName is the workflow definition's name (#503), stamped by the
+    // engine at every publish site so SigNoz can filter/group task spans by
+    // workflow instead of every run collapsing into one undifferentiated
+    // span name. Additive, omitempty: legacy payloads deserialize to "" and
+    // the worker simply omits the workflow_name span attribute in that case.
+    WorkflowName string `json:"workflow_name,omitempty"`
 }
 ```
 
 <a name="TaskResolution"></a>
-## type [TaskResolution](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L40-L48>)
+## type [TaskResolution](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L46-L54>)
 
 TaskResolution is the wire format for HTTP bridge resolve actions. The action field discriminates between complete/fail/pause/checkpoint. Workers POST this to /v1/tasks/\{id\}/resolve to report task outcomes.
 
@@ -224,7 +230,7 @@ type TaskResolution struct {
 ```
 
 <a name="WorkerStatusSnapshot"></a>
-## type [WorkerStatusSnapshot](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L198-L201>)
+## type [WorkerStatusSnapshot](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L204-L207>)
 
 WorkerStatusSnapshot is the per\-worker counter snapshot stored in the worker\_status KV bucket. Workers update their entry as counters change; the CLI reads and aggregates entries to surface drain progress \(issue \#182\). Last\-write\-wins on the WorkerID key.
 

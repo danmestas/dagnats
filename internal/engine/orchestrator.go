@@ -1554,7 +1554,7 @@ func (o *Orchestrator) dispatchRetriableFailure(
 			return err
 		}
 		return o.scheduleRetryBackoff(
-			ctx, evt.RunID, evt.StepID, stepDef, policy, run,
+			ctx, evt.RunID, evt.StepID, stepDef, policy, run, wfDef.Name,
 		)
 	}
 
@@ -1592,7 +1592,7 @@ func (o *Orchestrator) handleRetryAfter(
 		}
 		return o.scheduleRetryAfter(
 			ctx, run.RunID, stepID, stepDef,
-			retryAfterMs, *run,
+			retryAfterMs, *run, wfDef.Name,
 		)
 	}
 	state.Status = dag.StepStatusFailed
@@ -1612,6 +1612,7 @@ func (o *Orchestrator) scheduleRetryAfter(
 	stepDef dag.StepDef,
 	retryAfterMs int64,
 	run dag.WorkflowRun,
+	workflowName string,
 ) error {
 	if runID == "" {
 		panic("scheduleRetryAfter: runID must not be empty")
@@ -1633,13 +1634,14 @@ func (o *Orchestrator) scheduleRetryAfter(
 		)
 	}
 	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionRetryAfter,
-		RunID:      runID,
-		StepID:     stepID,
-		DurationMs: retryAfterMs,
-		TaskType:   stepDef.Task,
-		Input:      input,
-		Attempt:    run.Steps[stepID].Attempts,
+		Action:       TimerActionRetryAfter,
+		RunID:        runID,
+		StepID:       stepID,
+		DurationMs:   retryAfterMs,
+		TaskType:     stepDef.Task,
+		Input:        input,
+		Attempt:      run.Steps[stepID].Attempts,
+		WorkflowName: workflowName,
 	})
 }
 
@@ -1655,6 +1657,7 @@ func (o *Orchestrator) scheduleRetryBackoff(
 	stepDef dag.StepDef,
 	policy *dag.RetryPolicy,
 	run dag.WorkflowRun,
+	workflowName string,
 ) error {
 	if runID == "" {
 		panic("scheduleRetryBackoff: runID must not be empty")
@@ -1698,13 +1701,14 @@ func (o *Orchestrator) scheduleRetryBackoff(
 		)
 	}
 	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionRetryBackoff,
-		RunID:      runID,
-		StepID:     stepID,
-		DurationMs: delayMs,
-		TaskType:   stepDef.Task,
-		Input:      input,
-		Attempt:    attempts,
+		Action:       TimerActionRetryBackoff,
+		RunID:        runID,
+		StepID:       stepID,
+		DurationMs:   delayMs,
+		TaskType:     stepDef.Task,
+		Input:        input,
+		Attempt:      attempts,
+		WorkflowName: workflowName,
 	})
 }
 
@@ -2197,6 +2201,7 @@ func (o *Orchestrator) enqueueReady(
 		"dagnats.engine enqueueReady",
 		trace.WithAttributes(
 			attribute.String("run_id", run.RunID),
+			attribute.String("workflow_name", wfDef.Name),
 		),
 	)
 	defer span.End()
