@@ -4,12 +4,12 @@ go 1.26.2
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/nats-io/nats-server/v2 v2.12.6
-	github.com/nats-io/nats.go v1.50.0
+	github.com/nats-io/nats-server/v2 v2.14.3
+	github.com/nats-io/nats.go v1.52.0
 	github.com/nats-io/nuid v1.0.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/starfederation/datastar-go v1.2.2
-	github.com/synadia-io/orbit.go/jetstreamext v0.2.1
+	github.com/synadia-io/orbit.go/jetstreamext v0.3.1
 	github.com/synadia-io/orbit.go/pcgroups v0.2.1
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.20.0
@@ -31,7 +31,7 @@ require (
 require (
 	github.com/CAFxX/httpcompression v0.0.9 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
-	github.com/antithesishq/antithesis-sdk-go v0.6.0-default-no-op // indirect
+	github.com/antithesishq/antithesis-sdk-go v0.7.0-default-no-op // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -39,10 +39,10 @@ require (
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
-	github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 // indirect
-	github.com/nats-io/jwt/v2 v2.8.1 // indirect
-	github.com/nats-io/nkeys v0.4.15 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
+	github.com/minio/highwayhash v1.0.4 // indirect
+	github.com/nats-io/jwt/v2 v2.8.2 // indirect
+	github.com/nats-io/nkeys v0.4.16 // indirect
 	github.com/synadia-io/orbit.go/natsext v0.1.2 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
