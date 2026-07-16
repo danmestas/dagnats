@@ -265,8 +265,12 @@ const defaultDrainTimeout = 30 * time.Second
 
 // NewWorker creates a Worker using the given connection.
 // Panics if nc is nil or if JetStream cannot be initialised
-// — both are programmer errors at startup. Tracing and
-// metrics use the global OTel providers (noop by default).
+// — both are programmer errors at startup. A W3C
+// TraceContext+Baggage propagator is installed on the global
+// OTel registry if the global is still the no-op default;
+// an already-installed propagator (custom or otherwise) is
+// never overwritten. Tracing and metrics use the global OTel
+// providers (noop by default).
 func NewWorker(
 	nc *nats.Conn, opts ...WorkerOption,
 ) *Worker {
@@ -277,6 +281,7 @@ func NewWorker(
 	if err != nil {
 		panic("NewWorker: jetstream.New failed: " + err.Error())
 	}
+	observe.EnsureDefaultPropagator()
 	m := otel.Meter("dagnats/worker")
 	stepDur, _ := m.Float64Histogram(
 		"step.duration_ms",

@@ -312,6 +312,71 @@ func TestHandleRegistersHandler(t *testing.T) {
 	}
 }
 
+// TestNewWorkerInstallsDefaultPropagator proves NewWorker itself
+// installs the default propagator — independent of extraction
+// machinery — so a process calling only NewWorker (never
+// observe.InitTelemetry) still extracts incoming traceparent
+// headers correctly.
+func TestNewWorkerInstallsDefaultPropagator(t *testing.T) {
+	prev := otel.GetTextMapPropagator()
+	defer otel.SetTextMapPropagator(prev)
+
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(),
+	)
+	// Negative-space setup check: the global is no-op before
+	// NewWorker runs, so a later pass proves NewWorker did the
+	// install, not ambient pollution from another test.
+	if fields := otel.GetTextMapPropagator().Fields(); len(fields) != 0 {
+		t.Fatalf("setup: Fields() = %v, want empty before NewWorker", fields)
+	}
+
+	_, nc := natsutil.StartTestServer(t)
+	NewWorker(nc)
+
+	fields := otel.GetTextMapPropagator().Fields()
+	// Positive: NewWorker installed a propagator carrying traceparent.
+	if !hasField(fields, "traceparent") {
+		t.Fatalf(
+			"Fields() = %v, want traceparent after NewWorker", fields,
+		)
+	}
+
+	msg := &testJetstreamMsg{
+		data: []byte("{}"),
+		headers: nats.Header{
+			"traceparent": {
+				"00-" +
+					"0af7651916cd43dd8448eb211c80319c-" +
+					"b7ad6b7169203331-01",
+			},
+		},
+	}
+	ctx := observe.ExtractTraceContext(msg, nil)
+	sc := trace.SpanContextFromContext(ctx)
+	// Positive: end-to-end extraction now works off a NewWorker-only
+	// process, proving item 6 of the contract.
+	if !sc.IsValid() {
+		t.Fatal("expected valid SpanContext after NewWorker-installed propagator")
+	}
+	wantTrace := "0af7651916cd43dd8448eb211c80319c"
+	if sc.TraceID().String() != wantTrace {
+		t.Fatalf(
+			"TraceID = %q, want %q", sc.TraceID().String(), wantTrace,
+		)
+	}
+}
+
+// hasField reports whether name is present in fields.
+func hasField(fields []string, name string) bool {
+	for _, f := range fields {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestExtractTraceContextWithTraceparent(t *testing.T) {
 	otel.SetTextMapPropagator(
 		propagation.NewCompositeTextMapPropagator(
