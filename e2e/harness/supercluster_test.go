@@ -11,6 +11,36 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// TestAllocatePortsReturnsUniquePorts guards the uniqueness invariant
+// allocatePorts must hold: a supercluster with many servers each
+// claiming several ports (client/cluster/gateway) can only avoid
+// permanent bind collisions if no two allocated ports in the same
+// batch collide. Bound to 128 ports, well above any real topology's
+// needs, to exercise the OS's ephemeral-port reuse behavior.
+func TestAllocatePortsReturnsUniquePorts(t *testing.T) {
+	const count = 128
+	ports := allocatePorts(t, count)
+
+	// Positive: exactly count ports were returned, none left zero.
+	if len(ports) != count {
+		t.Fatalf("expected %d ports, got %d", count, len(ports))
+	}
+	for i, port := range ports {
+		if port == 0 {
+			t.Fatalf("port %d is zero", i)
+		}
+	}
+
+	// Negative: no two ports in the batch are the same.
+	seen := make(map[int]bool, count)
+	for _, port := range ports {
+		seen[port] = true
+	}
+	if len(seen) != count {
+		t.Fatalf("expected %d unique ports, got %d", count, len(seen))
+	}
+}
+
 func TestSuperclusterConnectAndSetup(t *testing.T) {
 	topo := NewSupercluster()
 
