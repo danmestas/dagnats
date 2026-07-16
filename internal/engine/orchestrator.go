@@ -32,6 +32,30 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// historyRedeliverSchedule bounds WORKFLOW_HISTORY redelivery (#508).
+// Indexes the explicit NakWithDelay in handleEventJS (the dominant,
+// explicit-NAK path). We deliberately do NOT set ConsumerConfig.BackOff:
+// BackOff overrides the per-attempt AckWait, causing spurious ack-timeout
+// redeliveries and #196-class duplicate processing, and BackOff is inert
+// on NAK'd messages anyway. MaxDeliver is the only consumer-level knob;
+// this schedule is the sole escalation source. len IS the MaxDeliver cap
+// — keep them defined together. Normal retries index entries 0-6 (the
+// first 7): sum(entries[0:7]) = 335s, the ~5.6min production window
+// across 7 retries before the 8th delivery hits the MaxDeliver cap and
+// dead-letters instead of NAKing. The final entry (180s) is never used
+// as a normal per-delivery retry delay — it is reused only as the NAK
+// delay in the DLQ-publish-failure fallback (nakOrDeadLetterHistory).
+//
+// AckWait on this consumer is deliberately left unset (NATS's 30s
+// default) and is out of scope for #508 — see the SETTLED contract's
+// Non-goal #6. Changing it changes redelivery/duplicate-processing
+// behavior for the whole consumer and needs its own Ousterhout review.
+var historyRedeliverSchedule = []time.Duration{
+	5 * time.Second, 10 * time.Second, 20 * time.Second,
+	30 * time.Second, 60 * time.Second, 90 * time.Second,
+	120 * time.Second, 180 * time.Second,
+}
+
 // Orchestrator subscribes to the history stream and drives workflow execution.
 // It is intentionally stateless between events — all run state lives in the
 // snapshot store (NATS KV), so the orchestrator can crash and resume safely.
@@ -92,6 +116,12 @@ type Orchestrator struct {
 	// Shared with the TaskPublisher so the enqueue path strips the
 	// control-plane capability from any step whose workflow is not granted.
 	grantPolicy *GrantPolicyHolder
+
+	// historyRedeliverSchedule bounds WORKFLOW_HISTORY redelivery
+	// (#508). Defaults to the package-level historyRedeliverSchedule
+	// var; overridable via WithHistoryRedeliverBackoff. len() becomes
+	// the consumer's MaxDeliver cap in Start().
+	historyRedeliverSchedule []time.Duration
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -147,6 +177,21 @@ func WithDefReaperGrace(grace time.Duration) OrchestratorOption {
 	}
 }
 
+// WithHistoryRedeliverBackoff overrides the WORKFLOW_HISTORY redelivery
+// schedule (#508). len(schedule) becomes the consumer MaxDeliver cap.
+// Primary use: integration tests inject a ms-scale schedule so a poison
+// event exhausts in <1s instead of the ~5.6min production window (7
+// retries; see historyRedeliverSchedule's doc comment above for the
+// dead-letter trigger and the last entry's separate role) (TigerStyle:
+// bounded test waits). A nil/empty schedule keeps the default.
+func WithHistoryRedeliverBackoff(schedule []time.Duration) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if len(schedule) > 0 {
+			o.historyRedeliverSchedule = schedule
+		}
+	}
+}
+
 // NewOrchestrator creates an Orchestrator bound to the given NATS connection.
 // Panics if nc is nil or JetStream cannot be obtained — both are programmer
 // errors. KV buckets must already exist (call natsutil.SetupAll first).
@@ -193,16 +238,17 @@ func NewOrchestrator(
 		pm.stepEnqueue,
 	)
 	o := &Orchestrator{
-		nc:         nc,
-		js:         js,
-		tp:         tp,
-		defKV:      defKV,
-		store:      store,
-		tracer:     tracer,
-		admission:  ac,
-		sleepTimer: sleepTimer,
-		sticky:     sticky,
-		metrics:    om,
+		nc:                       nc,
+		js:                       js,
+		tp:                       tp,
+		defKV:                    defKV,
+		store:                    store,
+		tracer:                   tracer,
+		admission:                ac,
+		sleepTimer:               sleepTimer,
+		sticky:                   sticky,
+		metrics:                  om,
+		historyRedeliverSchedule: historyRedeliverSchedule,
 	}
 	o.wireDependentSubsystems(rl, ac, pm, om)
 	for _, opt := range opts {
@@ -258,49 +304,12 @@ func (o *Orchestrator) Start() {
 	if o.cc != nil {
 		panic("Orchestrator.Start: already started")
 	}
-	stream, err := o.js.Stream(
-		context.Background(), "WORKFLOW_HISTORY",
-	)
-	if err != nil {
+	if len(o.historyRedeliverSchedule) == 0 {
 		panic(
-			"Orchestrator.Start: stream: " + err.Error(),
+			"Orchestrator.Start: historyRedeliverSchedule must not be empty",
 		)
 	}
-	// Durable consumer name persists ack offsets across dagnats
-	// restarts. Without this (originally an ephemeral consumer),
-	// every restart created a new consumer that replayed the entire
-	// history stream from sequence 1, re-delivering workflow.started
-	// and step.* events for runs that completed days ago. Combined
-	// with non-idempotent handlers, that produced duplicate run
-	// executions and the symptoms reported in #196 / #194 / #195.
-	//
-	// First deploy of this change still replays once because the
-	// durable consumer is being created for the first time; the
-	// idempotency guards added in #196 — terminal-run short-circuits
-	// at the top of handleWorkflowStarted, handleStepCompleted, and
-	// handleStepFailed, plus the pre-existing stale-event guard in
-	// handleStepStarted — make that replay a no-op for runs that
-	// have already reached a terminal state.
-	cons, err := stream.CreateOrUpdateConsumer(
-		context.Background(), jetstream.ConsumerConfig{
-			Durable:       "orchestrator",
-			FilterSubject: "history.>",
-			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: jetstream.DeliverAllPolicy,
-		},
-	)
-	if err != nil {
-		panic(
-			"Orchestrator.Start: consumer: " + err.Error(),
-		)
-	}
-	cc, err := cons.Consume(o.handleEventJS)
-	if err != nil {
-		panic(
-			"Orchestrator.Start: consume: " + err.Error(),
-		)
-	}
-	o.cc = cc
+	o.cc = o.startHistoryConsumer()
 
 	// Wire the periodic reconciliation janitor (#185). The
 	// goroutine exits when reconcileCancel is invoked from
@@ -338,6 +347,70 @@ func (o *Orchestrator) Start() {
 		}
 		o.startDefReaper(reconcileCtx)
 	}
+}
+
+// startHistoryConsumer creates (or updates) the durable "orchestrator"
+// consumer on WORKFLOW_HISTORY and begins consuming into handleEventJS.
+// Extracted from Start so the consumer-setup logic and its rationale
+// live in one focused unit, mirroring wireDependentSubsystems. Panics on
+// any JetStream error — consumer setup failure at startup is a programmer
+// or environment error, not a runtime condition callers can recover from.
+func (o *Orchestrator) startHistoryConsumer() jetstream.ConsumeContext {
+	if o == nil {
+		panic("startHistoryConsumer: o must not be nil")
+	}
+	if o.js == nil {
+		panic("startHistoryConsumer: o.js must not be nil")
+	}
+	stream, err := o.js.Stream(
+		context.Background(), "WORKFLOW_HISTORY",
+	)
+	if err != nil {
+		panic(
+			"Orchestrator.Start: stream: " + err.Error(),
+		)
+	}
+	// Durable consumer name persists ack offsets across dagnats
+	// restarts. Without this (originally an ephemeral consumer),
+	// every restart created a new consumer that replayed the entire
+	// history stream from sequence 1, re-delivering workflow.started
+	// and step.* events for runs that completed days ago. Combined
+	// with non-idempotent handlers, that produced duplicate run
+	// executions and the symptoms reported in #196 / #194 / #195.
+	//
+	// First deploy of this change still replays once because the
+	// durable consumer is being created for the first time; the
+	// idempotency guards added in #196 — terminal-run short-circuits
+	// at the top of handleWorkflowStarted, handleStepCompleted, and
+	// handleStepFailed, plus the pre-existing stale-event guard in
+	// handleStepStarted — make that replay a no-op for runs that
+	// have already reached a terminal state.
+	//
+	// MaxDeliver: see historyRedeliverSchedule's doc comment above for
+	// the full NAK-escalation / BackOff rationale (#508). AckWait is
+	// deliberately left unset (NATS's 30s default) per the SETTLED
+	// #508 contract's Non-goal #6.
+	cons, err := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			Durable:       "orchestrator",
+			FilterSubject: "history.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+			MaxDeliver:    len(o.historyRedeliverSchedule),
+		},
+	)
+	if err != nil {
+		panic(
+			"Orchestrator.Start: consumer: " + err.Error(),
+		)
+	}
+	cc, err := cons.Consume(o.handleEventJS)
+	if err != nil {
+		panic(
+			"Orchestrator.Start: consume: " + err.Error(),
+		)
+	}
+	return cc
 }
 
 // Stop drains and unsubscribes from the history stream.
@@ -381,7 +454,10 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 			context.Background(),
 			"handleEvent: unmarshal failed", "error", err,
 		)
-		msg.NakWithDelay(5 * time.Second)
+		o.nakOrDeadLetterHistory(
+			context.Background(), msg,
+			"", "", "unmarshal-failed", err,
+		)
 		return
 	}
 	if !isHandledEventType(evt.Type) {
@@ -408,10 +484,110 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 			"event_type", string(evt.Type),
 			"run_id", evt.RunID,
 		)
-		msg.NakWithDelay(5 * time.Second)
+		o.nakOrDeadLetterHistory(
+			ctx, msg, evt.RunID, evt.StepID,
+			string(evt.Type), err,
+		)
 		return
 	}
 	msg.Ack()
+}
+
+// historyRedeliverDelay returns the NAK delay for delivery numDelivered
+// (1-based). Indexes schedule[numDelivered-1], clamped to the last entry.
+// Panics on numDelivered==0 (NATS never delivers with 0 — programmer error).
+func historyRedeliverDelay(
+	schedule []time.Duration, numDelivered uint64,
+) time.Duration {
+	if numDelivered == 0 {
+		panic("historyRedeliverDelay: numDelivered must be >= 1")
+	}
+	if len(schedule) == 0 {
+		panic("historyRedeliverDelay: schedule must not be empty")
+	}
+	idx := numDelivered - 1
+	if idx >= uint64(len(schedule)) {
+		idx = uint64(len(schedule)) - 1
+	}
+	return schedule[idx]
+}
+
+// shouldDeadLetterHistory reports whether this delivery has hit the cap.
+// True exactly when numDelivered >= uint64(maxDeliver).
+func shouldDeadLetterHistory(maxDeliver int, numDelivered uint64) bool {
+	if maxDeliver <= 0 {
+		panic("shouldDeadLetterHistory: maxDeliver must be positive")
+	}
+	if numDelivered == 0 {
+		panic("shouldDeadLetterHistory: numDelivered must be >= 1")
+	}
+	return numDelivered >= uint64(maxDeliver)
+}
+
+// nakOrDeadLetterHistory NAKs with the schedule-derived delay while
+// below the MaxDeliver cap; at/above the cap it dead-letters the raw
+// event via RecoveryManager. It Acks only when that dead-letter publish
+// succeeds, so the poison message stops redelivering with a durable DLQ
+// record behind it (#508). If the dead-letter publish itself fails
+// (DEAD_LETTERS transiently unavailable, at limit, connection blip), it
+// NAKs with the schedule's last entry instead of Acking: MaxDeliver was
+// already reached, so JetStream will not attempt further redelivery — the
+// NAK simply leaves the message un-acked (pending) rather than silently
+// consumed, so it survives in WORKFLOW_HISTORY and NATS emits a
+// MAX_DELIVERIES advisory an operator can alert on. MaxDeliver caps total
+// deliveries at the consumer level regardless of Ack/NAK, so this cannot
+// reintroduce an infinite redelivery loop. On a Metadata() error (should
+// not happen post-Consume) it fails safe: logs and NAKs with schedule[0]
+// rather than risk wrongly dead-lettering.
+func (o *Orchestrator) nakOrDeadLetterHistory(
+	ctx context.Context, msg jetstream.Msg,
+	runID, stepID, eventType string, cause error,
+) {
+	if msg == nil {
+		panic("nakOrDeadLetterHistory: msg must not be nil")
+	}
+	if len(o.historyRedeliverSchedule) == 0 {
+		panic(
+			"nakOrDeadLetterHistory: historyRedeliverSchedule must not be empty",
+		)
+	}
+	md, err := msg.Metadata()
+	if err != nil {
+		slog.ErrorContext(ctx,
+			"nakOrDeadLetterHistory: Metadata failed, "+
+				"failing safe with NAK",
+			"error", err,
+		)
+		msg.NakWithDelay(o.historyRedeliverSchedule[0])
+		return
+	}
+	numDelivered := md.NumDelivered
+	if shouldDeadLetterHistory(
+		len(o.historyRedeliverSchedule), numDelivered,
+	) {
+		dlqErr := o.recovery.PublishHistoryDeadLetter(
+			ctx, msg.Data(), runID, stepID, eventType,
+			numDelivered, md.Sequence.Stream, cause,
+		)
+		if dlqErr != nil {
+			slog.ErrorContext(ctx,
+				"nakOrDeadLetterHistory: dead-letter publish failed, "+
+					"NAKing instead of Acking to preserve the poison "+
+					"event",
+				"error", dlqErr,
+				"run_id", runID,
+				"step_id", stepID,
+			)
+			lastIdx := len(o.historyRedeliverSchedule) - 1
+			msg.NakWithDelay(o.historyRedeliverSchedule[lastIdx])
+			return
+		}
+		msg.Ack()
+		return
+	}
+	msg.NakWithDelay(
+		historyRedeliverDelay(o.historyRedeliverSchedule, numDelivered),
+	)
 }
 
 // isHandledEventType returns true for event types the orchestrator processes.

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -40,12 +41,21 @@ const (
 	// worker group routing) rather than reconstructing from
 	// (task, runID) alone.
 	HeaderDLQTaskSubject = "Dagnats-Dlq-Task-Subject"
+	// HeaderDLQEventType carries the WORKFLOW_HISTORY event's Type
+	// (e.g. "workflow.started") for history dead-letters (#508).
+	// Absent on TASK_QUEUES-originated entries.
+	HeaderDLQEventType = "Dagnats-Dlq-Event-Type"
 
 	// DLQConsumerTaskQueues is the consumer-name marker for DLQ entries
 	// originating from MaxDeliver exhaustion on the TASK_QUEUES stream.
 	// Surfaces in the CLI so operators can distinguish DLQ paths once
 	// other dispatch consumers gain DLQ semantics.
 	DLQConsumerTaskQueues = "TASK_QUEUES"
+
+	// DLQConsumerWorkflowHistory is the consumer-name marker for DLQ
+	// entries originating from MaxDeliver exhaustion on the
+	// WORKFLOW_HISTORY stream's "orchestrator" consumer (#508).
+	DLQConsumerWorkflowHistory = "WORKFLOW_HISTORY"
 )
 
 // RecoveryManager handles step failure recovery: on-failure
@@ -59,9 +69,13 @@ const (
 // releaseSlotFn frees task concurrency. RecoveryManager
 // modifies run.Steps in-place, then calls saveFn so the caller
 // persists. Compensation is sequential — one step at a time in
-// reverse topological order. Dead-letter publish is
+// reverse topological order. PublishDeadLetter (task-level) is
 // fire-and-forget: errors are silently dropped because the
-// workflow is already in a terminal failure state.
+// workflow is already in a terminal failure state. By contrast
+// PublishHistoryDeadLetter (#508) returns its publish error so the
+// caller can NAK instead of Ack — a poison WORKFLOW_HISTORY event
+// must never be silently dropped just because DEAD_LETTERS was
+// transiently unavailable.
 type RecoveryManager struct {
 	js        jetstream.JetStream
 	tp        *natsutil.TracingPublisher
@@ -503,10 +517,9 @@ func (rm *RecoveryManager) PublishDeadLetter(
 }
 
 // recordDLQObservation increments the DLQ counter + depth gauge.
-// Skipped when the publish itself failed or when the instruments are
-// nil (test seams that don't observe metrics). Reason labels come
-// from a closed enum so the cardinality stays bounded — see
-// resolveDLQReason for the enum.
+// Skipped when the publish itself failed. Reason labels come from a
+// closed enum so the cardinality stays bounded — see resolveDLQReason
+// for the enum.
 func (rm *RecoveryManager) recordDLQObservation(
 	ctx context.Context,
 	workflowID string,
@@ -519,10 +532,24 @@ func (rm *RecoveryManager) recordDLQObservation(
 	if publishErr != nil {
 		return
 	}
+	rm.recordDLQEntry(ctx, workflowID, resolveDLQReason(state))
+}
+
+// recordDLQEntry increments dlqEntries + dlqDepth under one nil-guard.
+// reason is a bounded enum label; workflowID must be low-cardinality
+// (empty for history dead-letters — NEVER a runID).
+func (rm *RecoveryManager) recordDLQEntry(
+	ctx context.Context, workflowID, reason string,
+) {
+	if ctx == nil {
+		panic("recordDLQEntry: ctx must not be nil")
+	}
+	if reason == "" {
+		panic("recordDLQEntry: reason must not be empty")
+	}
 	if rm.dlqEntries == nil && rm.dlqDepth == nil {
 		return
 	}
-	reason := resolveDLQReason(state)
 	attrs := []attribute.KeyValue{
 		attribute.String("reason", reason),
 		attribute.String("workflow", workflowID),
@@ -533,6 +560,99 @@ func (rm *RecoveryManager) recordDLQObservation(
 	if rm.dlqDepth != nil {
 		rm.dlqDepth.Add(ctx, 1, metric.WithAttributes(attrs...))
 	}
+}
+
+// dlqSubjectSafe replaces NATS-subject-hostile characters — dots,
+// wildcards, and spaces — with "-" so an event type or runID can
+// become a literal subject token. Event types are dotted
+// ("workflow.started"); a runID is event-payload-derived and gets the
+// same defensive treatment before landing in a subject.
+func dlqSubjectSafe(s string) string {
+	replacer := strings.NewReplacer(
+		".", "-", "*", "-", ">", "-", " ", "-",
+	)
+	return replacer.Replace(s)
+}
+
+// dlqSubjectSafeOrUnknown is dlqSubjectSafe with an "unknown"
+// fallback for the empty string — used for runID, which may be
+// unresolved at the unmarshal-failure call site.
+func dlqSubjectSafeOrUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return dlqSubjectSafe(s)
+}
+
+// PublishHistoryDeadLetter dead-letters a poison WORKFLOW_HISTORY event
+// whose handler kept failing past the MaxDeliver cap (#508). Body is the
+// raw undecoded event bytes (always available; an operator diagnoses and
+// manually replays to history.<runID> after fixing root cause). Distinct
+// from PublishDeadLetter, which reconstructs a re-publishable TaskPayload
+// and would silently skip the publish when a poison event has no
+// resolvable run/wfDef/stepDef.
+//
+// Returns the JSPublishMsg error (nil on success) rather than swallowing
+// it: the caller, nakOrDeadLetterHistory, NAKs instead of Acking on a
+// non-nil error so a transient DEAD_LETTERS outage (unavailable, at
+// limit, connection blip) preserves the poison event in WORKFLOW_HISTORY
+// instead of silently consuming it with no durable record.
+func (rm *RecoveryManager) PublishHistoryDeadLetter(
+	ctx context.Context, rawData []byte,
+	runID, stepID, eventType string,
+	numDelivered, streamSeq uint64, handlerErr error,
+) error {
+	if ctx == nil {
+		panic("PublishHistoryDeadLetter: ctx must not be nil")
+	}
+	if len(rawData) == 0 {
+		panic("PublishHistoryDeadLetter: rawData must not be empty")
+	}
+	subject := fmt.Sprintf("dead.orchestrator.%s.%s",
+		dlqSubjectSafe(eventType), dlqSubjectSafeOrUnknown(runID))
+	errText := ""
+	if handlerErr != nil {
+		errText = handlerErr.Error()
+	}
+	// Nats-Msg-Id keys off the stream sequence of the STORED
+	// WORKFLOW_HISTORY message, not attempt count: the stream
+	// sequence is stable across every redelivery of the same message,
+	// so republishing on a later delivery (which nakOrDeadLetterHistory
+	// prevents, but defense in depth) dedups within the 24h Duplicates
+	// window instead of creating a second DLQ entry.
+	header := nats.Header{
+		"Nats-Msg-Id":          {fmt.Sprintf("dlq:history:%d", streamSeq)},
+		HeaderDLQRunID:         {runID},
+		HeaderDLQStepID:        {stepID},
+		HeaderDLQEventType:     {eventType},
+		HeaderDLQError:         {errText},
+		HeaderDLQDeliveryCount: {strconv.FormatUint(numDelivered, 10)},
+		HeaderDLQConsumer:      {DLQConsumerWorkflowHistory},
+	}
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    rawData,
+		Header:  header,
+	}
+	_, err := rm.tp.JSPublishMsg(ctx, msg)
+	if err != nil {
+		// Propagated to the caller (see doc comment above) instead of
+		// swallowed: the message must NOT be Ack'd when the DLQ write
+		// itself failed.
+		slog.ErrorContext(ctx,
+			"PublishHistoryDeadLetter: publish failed",
+			"error", err,
+			"run_id", runID,
+			"step_id", stepID,
+			"event_type", eventType,
+		)
+		return err
+	}
+	// workflow label is deliberately "" — the poison event's run/def
+	// may not be resolvable, and even when it is, "workflow" is a
+	// bounded-cardinality metric label; a runID must never appear here.
+	rm.recordDLQEntry(ctx, "", "history_redeliver_exhausted")
+	return nil
 }
 
 // resolveDLQReason maps a failed step's state to a bounded reason
