@@ -604,6 +604,11 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run.SingletonKey = admission.singletonKey
 	switch admission.action {
 	case admissionSkip:
+		if err := o.persistSkippedRun(
+			ctx, run, admission.skippedBy,
+		); err != nil {
+			return fmt.Errorf("save skipped run: %w", err)
+		}
 		return nil
 	case admissionQueue:
 		run.Status = dag.RunStatusPending
@@ -741,6 +746,77 @@ func (o *Orchestrator) persistFailedStartRun(
 			"run_id", evt.RunID,
 		)
 	}
+}
+
+// admissionSkipStepID keys the synthetic step persistSkippedRun uses
+// to carry the skip reason (#502). Mirrors reconcileWedged's
+// "<reconciler>" synthetic-step pattern -- reusing a fake step ID is
+// the only existing precedent for attaching a reason without a
+// WorkflowRun schema change.
+const admissionSkipStepID = "<admission-skip>"
+
+// persistSkippedRun records a terminal snapshot for a run that was
+// never dispatched because a singleton lock (mode: skip) was already
+// held by another run. Without this, the run vanishes with no
+// snapshot ever written -- `dagnats run status <run-id>` reports
+// "not found" for a run start that was acked and silently dropped
+// (#502). run must be the already-constructed dag.WorkflowRun for
+// this admission (RunID/WorkflowID/TraceParent/CreatedAt populated by
+// the caller); its Steps map is replaced here, not mutated in place.
+//
+// The save error is returned, not merely logged (#506): the caller
+// (handleWorkflowStarted) ACKs on nil, so swallowing a transient KV
+// write failure here would silently reproduce #502 -- the skip is
+// recorded nowhere and the run vanishes. Returning the error lets it
+// propagate the same way the admissionQueue and normal-running
+// branches already do, so handleEventJS NAKs and NATS redelivers.
+// This does not add a durable DLQ backstop for a save that keeps
+// failing forever -- that gap is dispatcher-wide and tracked in #508.
+func (o *Orchestrator) persistSkippedRun(
+	ctx context.Context, run dag.WorkflowRun, skippedBy string,
+) error {
+	if run.RunID == "" {
+		panic("persistSkippedRun: RunID must not be empty")
+	}
+	if skippedBy == "" {
+		panic("persistSkippedRun: skippedBy must not be empty")
+	}
+	reason := "singleton skip: run already active: " + skippedBy
+	slog.WarnContext(ctx,
+		"workflow.started: singleton skip -- run already active",
+		"run_id", run.RunID,
+		"skipped_by", skippedBy,
+		"workflow", run.WorkflowID,
+	)
+	// Fresh map, not an in-place append: NewWorkflowRun pre-populates
+	// run.Steps with one Pending entry per real workflow step, and
+	// FormatRunStatusWithDef (cli/run.go) iterates run.Steps -- leaving
+	// those in would render every real step as stale "pending" forever
+	// instead of surfacing this reason. Do not "simplify" this back to
+	// mutating the passed-in map.
+	run.Steps = map[string]dag.StepState{
+		admissionSkipStepID: {
+			// Status must be Failed, not Skipped: formatStepLine
+			// (cli/run.go) only prints `error: %s` for
+			// StepStatusFailed steps. Run-level status below is
+			// Cancelled (non-paging); this step-level status is
+			// Failed (carries the message) -- a deliberate
+			// mismatch. Do not "fix" it into consistency, or the
+			// reason text silently stops rendering.
+			Status: dag.StepStatusFailed,
+			Error:  reason,
+		},
+	}
+	// The lock key on `run` names the OTHER run's lock, not one this
+	// run owns -- clear it so a stray ReleaseSingletonLock call can't
+	// be misread as this run's lock (harmless today given its RunID
+	// guard, but misleading to persist).
+	run.SingletonKey = ""
+	run = markTerminal(run, dag.RunStatusCancelled)
+	if saveErr := o.saveSnapshot(ctx, run, ""); saveErr != nil {
+		return fmt.Errorf("save skipped-run snapshot: %w", saveErr)
+	}
+	return nil
 }
 
 // registerCancelWaiters registers one correlator waiter per
