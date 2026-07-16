@@ -39,9 +39,12 @@ import (
 // redeliveries and #196-class duplicate processing, and BackOff is inert
 // on NAK'd messages anyway. MaxDeliver is the only consumer-level knob;
 // this schedule is the sole escalation source. len IS the MaxDeliver cap
-// — keep them defined together. The final entry is never used as a NAK
-// delay (the last delivery dead-letters rather than NAKing); it defines
-// the total window.
+// — keep them defined together. Normal retries index entries 0-6 (the
+// first 7): sum(entries[0:7]) = 335s, the ~5.6min production window
+// across 7 retries before the 8th delivery hits the MaxDeliver cap and
+// dead-letters instead of NAKing. The final entry (180s) is never used
+// as a normal per-delivery retry delay — it is reused only as the NAK
+// delay in the DLQ-publish-failure fallback (nakOrDeadLetterHistory).
 //
 // AckWait on this consumer is deliberately left unset (NATS's 30s
 // default) and is out of scope for #508 — see the SETTLED contract's
@@ -177,8 +180,10 @@ func WithDefReaperGrace(grace time.Duration) OrchestratorOption {
 // WithHistoryRedeliverBackoff overrides the WORKFLOW_HISTORY redelivery
 // schedule (#508). len(schedule) becomes the consumer MaxDeliver cap.
 // Primary use: integration tests inject a ms-scale schedule so a poison
-// event exhausts in <1s instead of the ~8.6min production window
-// (TigerStyle: bounded test waits). A nil/empty schedule keeps the default.
+// event exhausts in <1s instead of the ~5.6min production window (7
+// retries; see historyRedeliverSchedule's doc comment above for the
+// dead-letter trigger and the last entry's separate role) (TigerStyle:
+// bounded test waits). A nil/empty schedule keeps the default.
 func WithHistoryRedeliverBackoff(schedule []time.Duration) OrchestratorOption {
 	return func(o *Orchestrator) {
 		if len(schedule) > 0 {

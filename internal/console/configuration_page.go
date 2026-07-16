@@ -490,8 +490,13 @@ func engineInvariants() []InvariantRow {
 			"history consumer ack timeout (conn.go:53-54)", src, ToneDefault},
 		{"AckWait (worker task consumer)", "5m (default)",
 			"task consumer ack timeout (consumer_naming.go:14)", src, ToneDefault},
+		// "8" is hardcoded because this package can't import the engine's
+		// unexported historyRedeliverSchedule; keep it in sync by hand —
+		// see internal/engine/orchestrator.go's historyRedeliverSchedule
+		// and TestHistoryRedeliverSchedule_LengthDrivesMaxDeliver (#508).
 		{"MaxDeliver (WORKFLOW_HISTORY consumer)", "8 (dead-letters on exhaustion, #508)",
-			"history consumer redelivery cap (orchestrator.go:342)",
+			"history consumer redelivery cap (orchestrator.go:394; " +
+				"schedule: orchestrator.go:50)",
 			src, ToneDefault},
 		{"MaxDeliver (worker task consumer)", "-1 (unlimited)",
 			"engine retries via NakWithDelay, not redelivery cap (worker.go:647)",

@@ -3,10 +3,11 @@
 // dead-lettering exhausted poison events. Methodology: red-green TDD
 // against a real embedded NATS server. Every test injects a ms-scale
 // WithHistoryRedeliverBackoff schedule so a poison event exhausts in well
-// under a second instead of the ~8.6min production window (TigerStyle:
-// bounded test waits). Each test asserts both a positive property (the
-// engine stays alive / a run reaches the expected state) and a negative
-// property (dead-letter count is exact, not "at least").
+// under a second instead of the ~5.6min production window (7 retries
+// before dead-lettering) (TigerStyle: bounded test waits). Each test
+// asserts both a positive property (the engine stays alive / a run
+// reaches the expected state) and a negative property (dead-letter
+// count is exact, not "at least").
 package engine
 
 import (
@@ -23,7 +24,8 @@ import (
 
 // historyDLQTestSchedule is a 3-entry ms-scale schedule shared by the
 // exhaustion tests below: MaxDeliver=3, worst-case exhaustion well under
-// 100ms instead of the ~8.6min production window.
+// 100ms instead of the ~5.6min production window (7 retries before
+// dead-lettering, per historyRedeliverSchedule).
 var historyDLQTestSchedule = []time.Duration{
 	10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond,
 }
