@@ -604,7 +604,11 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run.SingletonKey = admission.singletonKey
 	switch admission.action {
 	case admissionSkip:
-		o.persistSkippedRun(ctx, run, admission.skippedBy)
+		if err := o.persistSkippedRun(
+			ctx, run, admission.skippedBy,
+		); err != nil {
+			return fmt.Errorf("save skipped run: %w", err)
+		}
 		return nil
 	case admissionQueue:
 		run.Status = dag.RunStatusPending
@@ -759,9 +763,18 @@ const admissionSkipStepID = "<admission-skip>"
 // (#502). run must be the already-constructed dag.WorkflowRun for
 // this admission (RunID/WorkflowID/TraceParent/CreatedAt populated by
 // the caller); its Steps map is replaced here, not mutated in place.
+//
+// The save error is returned, not merely logged (#506): the caller
+// (handleWorkflowStarted) ACKs on nil, so swallowing a transient KV
+// write failure here would silently reproduce #502 -- the skip is
+// recorded nowhere and the run vanishes. Returning the error lets it
+// propagate the same way the admissionQueue and normal-running
+// branches already do, so handleEventJS NAKs and NATS redelivers.
+// This does not add a durable DLQ backstop for a save that keeps
+// failing forever -- that gap is dispatcher-wide and tracked in #508.
 func (o *Orchestrator) persistSkippedRun(
 	ctx context.Context, run dag.WorkflowRun, skippedBy string,
-) {
+) error {
 	if run.RunID == "" {
 		panic("persistSkippedRun: RunID must not be empty")
 	}
@@ -801,12 +814,9 @@ func (o *Orchestrator) persistSkippedRun(
 	run.SingletonKey = ""
 	run = markTerminal(run, dag.RunStatusCancelled)
 	if saveErr := o.saveSnapshot(ctx, run, ""); saveErr != nil {
-		slog.ErrorContext(ctx,
-			"workflow.started: save skipped-run snapshot",
-			"error", saveErr,
-			"run_id", run.RunID,
-		)
+		return fmt.Errorf("save skipped-run snapshot: %w", saveErr)
 	}
+	return nil
 }
 
 // registerCancelWaiters registers one correlator waiter per

@@ -10,6 +10,8 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // skipVisibilityWorkflowDef returns a singleton-skip workflow with one
@@ -192,5 +195,133 @@ func TestSingletonLockRecoversAfterHolderTerminates(t *testing.T) {
 	}
 	if len(msgs) != 1 {
 		t.Fatalf("task count for run-c = %d, want 1", len(msgs))
+	}
+}
+
+// skipVisibilityStartEvent builds (without publishing) the same
+// workflow.started payload shape startAdmissionRun publishes, so a
+// test can drive handleWorkflowStarted directly and inspect its
+// return value instead of round-tripping through NakWithDelay.
+func skipVisibilityStartEvent(
+	t *testing.T, wfDef dag.WorkflowDef, runID string,
+) protocol.Event {
+	t.Helper()
+	defData, err := json.Marshal(wfDef)
+	if err != nil {
+		t.Fatalf("marshal wfDef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"workflow_def": json.RawMessage(defData),
+		"input":        json.RawMessage(nil),
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	return protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, runID, payload,
+	)
+}
+
+// failingPutKV wraps a real workflow_runs KV handle and forces Put to
+// fail for exactly one key, simulating the transient snapshot-store
+// write failure #506 guards against (a real KV outage would fail every
+// key; failing one is the narrowest fault that still proves the
+// propagation without destabilizing run-a's earlier successful save).
+type failingPutKV struct {
+	jetstream.KeyValue
+	failKey string
+}
+
+func (f failingPutKV) Put(
+	ctx context.Context, key string, value []byte,
+) (uint64, error) {
+	if key == f.failKey {
+		return 0, errors.New("simulated snapshot write failure")
+	}
+	return f.KeyValue.Put(ctx, key, value)
+}
+
+// TestSkipSnapshotWriteFailureNaksForRedelivery covers #506: a skip
+// snapshot write failure must propagate out of handleWorkflowStarted
+// (so the caller NAKs and NATS redelivers) instead of being logged and
+// swallowed, which would silently reproduce the #502 invisible-run bug
+// on a transient store error.
+func TestSkipSnapshotWriteFailureNaksForRedelivery(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := skipVisibilityWorkflowDef()
+	defKV, _ := js.KeyValue("workflow_defs")
+	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+
+	orch := NewOrchestrator(nc)
+
+	// run-a is admitted directly (no consumer running -- see
+	// advance_exec_test.go / def_reaper_test.go for the same
+	// call-orch-methods-without-Start() convention) so it holds the
+	// singleton lock run-b will be skipped against.
+	evtA := skipVisibilityStartEvent(t, wfDef, "run-a")
+	if err := orch.handleWorkflowStarted(
+		context.Background(), evtA,
+	); err != nil {
+		t.Fatalf("handleWorkflowStarted run-a: %v", err)
+	}
+
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	runsKV, err := jsNew.KeyValue(context.Background(), "workflow_runs")
+	if err != nil {
+		t.Fatalf("KeyValue(workflow_runs): %v", err)
+	}
+	orch.store = &SnapshotStore{
+		kv: failingPutKV{KeyValue: runsKV, failKey: "run.run-b"},
+	}
+
+	evtB := skipVisibilityStartEvent(t, wfDef, "run-b")
+
+	// Negative: the skip-snapshot write failure must come back out of
+	// handleWorkflowStarted as a non-nil error so handleEventJS NAKs
+	// the message instead of ACKing a run that was never persisted.
+	if err := orch.handleWorkflowStarted(
+		context.Background(), evtB,
+	); err == nil {
+		t.Fatal("handleWorkflowStarted run-b (failing store): " +
+			"want non-nil error, got nil")
+	}
+
+	if _, loadErr := orch.store.Load(
+		context.Background(), "run-b",
+	); !errors.Is(loadErr, ErrRunNotFound) {
+		t.Fatalf(
+			"load run-b after failed save: err = %v, want ErrRunNotFound",
+			loadErr,
+		)
+	}
+
+	// Redelivery: the transient failure has cleared, so a second
+	// delivery of the same event must succeed and persist the run.
+	orch.store = &SnapshotStore{kv: runsKV}
+	if err := orch.handleWorkflowStarted(
+		context.Background(), evtB,
+	); err != nil {
+		t.Fatalf("handleWorkflowStarted run-b (redelivery): %v", err)
+	}
+
+	// Positive: the skip snapshot now persists and the run is findable.
+	runB, err := orch.store.Load(context.Background(), "run-b")
+	if err != nil {
+		t.Fatalf("load run-b after redelivery: %v", err)
+	}
+	if runB.Status != dag.RunStatusCancelled {
+		t.Fatalf("run-b status = %s, want cancelled", runB.Status)
+	}
+	skipStep, ok := runB.Steps[admissionSkipStepID]
+	if !ok || !strings.Contains(skipStep.Error, "run-a") {
+		t.Fatalf("run-b skip step = %+v, want reason naming run-a", skipStep)
 	}
 }
