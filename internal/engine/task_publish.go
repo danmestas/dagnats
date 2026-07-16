@@ -67,6 +67,7 @@ func collectReadyMessages(
 	ready []dag.StepDef,
 	run *dag.WorkflowRun,
 	grant *GrantPolicy,
+	workflowName string,
 ) ([]*nats.Msg, error) {
 	if runID == "" {
 		panic("collectReadyMessages: runID must not be empty")
@@ -84,12 +85,13 @@ func collectReadyMessages(
 		}
 		attempt := run.Steps[step.ID].Attempts
 		payload := protocol.TaskPayload{
-			TaskID:   runID + "." + step.ID,
-			RunID:    runID,
-			StepID:   step.ID,
-			Attempt:  attempt,
-			Input:    input,
-			Metadata: step.Metadata,
+			TaskID:       runID + "." + step.ID,
+			RunID:        runID,
+			StepID:       step.ID,
+			Attempt:      attempt,
+			Input:        input,
+			Metadata:     step.Metadata,
+			WorkflowName: workflowName,
 			RequiredCapabilities: effectiveCapabilities(
 				step.RequiredCapabilities, run.WorkflowID, grant,
 			),
@@ -184,7 +186,9 @@ func enqueueReadySteps(
 		run.Steps[step.ID] = state
 	}
 
-	msgs, err := collectReadyMessages(run.RunID, ready, run, grant)
+	msgs, err := collectReadyMessages(
+		run.RunID, ready, run, grant, wfDef.Name,
+	)
 	if err != nil {
 		return err
 	}

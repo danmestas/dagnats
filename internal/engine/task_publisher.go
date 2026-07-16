@@ -168,7 +168,7 @@ func (tp *TaskPublisher) Publish(
 		if loadErr == nil && wfDef.Sticky != dag.StickyNone {
 			return tp.sticky.PublishTask(
 				ctx, runID, step, input, attempt,
-				workerID, wfDef.Sticky, dispatchNonce,
+				workerID, wfDef.Sticky, dispatchNonce, workflowName,
 			)
 		}
 	}
@@ -321,6 +321,7 @@ func (tp *TaskPublisher) scheduleRateRetry(
 		DurationMs:    durationMs,
 		TaskType:      step.Task,
 		Input:         input,
+		WorkflowName:  meta.workflowName,
 		DispatchNonce: meta.nonce,
 		RequiredCapabilities: effectiveCapabilities(
 			step.RequiredCapabilities, meta.workflowName,
@@ -357,6 +358,7 @@ func (tp *TaskPublisher) scheduleConcurrencyRetry(
 		DurationMs:    1000,
 		TaskType:      step.Task,
 		Input:         input,
+		WorkflowName:  workflowName,
 		DispatchNonce: nonce,
 		RequiredCapabilities: effectiveCapabilities(
 			step.RequiredCapabilities, workflowName, tp.grantPolicy.Load(),
@@ -386,22 +388,28 @@ func (tp *TaskPublisher) doPublish(
 	if step.ID == "" {
 		panic("doPublish: step.ID must not be empty")
 	}
+	// Span name carries the task name only (bounded cardinality: task
+	// names are registered handler types, a small fixed set) — never
+	// run_id or workflow_name, which are unbounded per-run values that
+	// would blow up the tracing backend's span-name index (#503).
 	ctx, span := tp.tracer.Start(ctx,
-		"dagnats.engine enqueueTask",
+		"enqueueTask "+step.Task,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("run_id", runID),
 			attribute.String("step_id", step.ID),
 			attribute.String("task_name", step.Task),
+			attribute.String("workflow_name", workflowName),
 		),
 	)
 	defer span.End()
 	payload := protocol.TaskPayload{
-		TaskID:  runID + "." + step.ID,
-		RunID:   runID,
-		StepID:  step.ID,
-		Attempt: attempt,
-		Input:   input,
+		TaskID:       runID + "." + step.ID,
+		RunID:        runID,
+		StepID:       step.ID,
+		Attempt:      attempt,
+		Input:        input,
+		WorkflowName: workflowName,
 		RequiredCapabilities: effectiveCapabilities(
 			step.RequiredCapabilities, workflowName, tp.grantPolicy.Load(),
 		),
@@ -446,13 +454,16 @@ func (tp *TaskPublisher) PublishIteration(
 			"PublishIteration: step.ID must not be empty",
 		)
 	}
+	// Span name carries the task name only — see doPublish for the
+	// bounded-cardinality rationale (#503).
 	ctx, span := tp.tracer.Start(ctx,
-		"dagnats.engine enqueueTask",
+		"enqueueTask "+step.Task,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("run_id", runID),
 			attribute.String("step_id", step.ID),
 			attribute.String("task_name", step.Task),
+			attribute.String("workflow_name", workflowName),
 		),
 	)
 	defer span.End()
@@ -461,11 +472,12 @@ func (tp *TaskPublisher) PublishIteration(
 	// stamp the run-binding nonce so the iteration's control-plane calls pass
 	// VerifyDispatch. A nil holder Loads nil → deny-by-default.
 	payload := protocol.TaskPayload{
-		TaskID:    runID + "." + step.ID,
-		RunID:     runID,
-		StepID:    step.ID,
-		Iteration: iteration,
-		Input:     input,
+		TaskID:       runID + "." + step.ID,
+		RunID:        runID,
+		StepID:       step.ID,
+		Iteration:    iteration,
+		Input:        input,
+		WorkflowName: workflowName,
 		RequiredCapabilities: effectiveCapabilities(
 			step.RequiredCapabilities, workflowName, tp.grantPolicy.Load(),
 		),

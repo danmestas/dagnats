@@ -573,11 +573,12 @@ func buildDLQBody(
 		return nil, fmt.Errorf("resolve input: %w", err)
 	}
 	payload := protocol.TaskPayload{
-		TaskID:  run.RunID + "." + stepDef.ID,
-		RunID:   run.RunID,
-		StepID:  stepDef.ID,
-		Attempt: state.Attempts,
-		Input:   input,
+		TaskID:       run.RunID + "." + stepDef.ID,
+		RunID:        run.RunID,
+		StepID:       stepDef.ID,
+		Attempt:      state.Attempts,
+		Input:        input,
+		WorkflowName: wfDef.Name,
 	}
 	return json.Marshal(payload)
 }

@@ -196,6 +196,51 @@ func TestTaskPayloadIncludesTaskID(t *testing.T) {
 	}
 }
 
+func TestTaskPayloadWorkflowNameRoundTrip(t *testing.T) {
+	// Positive: WorkflowName set survives a JSON round trip.
+	p := TaskPayload{
+		TaskID:       "run-1.step-a",
+		RunID:        "run-1",
+		StepID:       "step-a",
+		WorkflowName: "deploy-pipeline",
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"workflow_name":"deploy-pipeline"`)) {
+		t.Fatalf("marshaled JSON must contain workflow_name field: %s", data)
+	}
+	var decoded TaskPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if decoded.WorkflowName != "deploy-pipeline" {
+		t.Fatalf("WorkflowName = %q, want %q", decoded.WorkflowName, "deploy-pipeline")
+	}
+
+	// Negative: a legacy payload with no workflow_name field on the wire
+	// deserializes to "" without error (back-compat, additive field).
+	legacy := []byte(`{"task_id":"run-2.step-b","run_id":"run-2","step_id":"step-b"}`)
+	var legacyDecoded TaskPayload
+	if err := json.Unmarshal(legacy, &legacyDecoded); err != nil {
+		t.Fatalf("Unmarshal legacy payload failed: %v", err)
+	}
+	if legacyDecoded.WorkflowName != "" {
+		t.Fatalf("legacy WorkflowName = %q, want empty", legacyDecoded.WorkflowName)
+	}
+	// Negative: an empty WorkflowName is omitted from the marshaled JSON,
+	// preserving the wire format for payloads that don't set it.
+	empty := TaskPayload{TaskID: "run-3.step-c", RunID: "run-3", StepID: "step-c"}
+	data, err = json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("Marshal empty failed: %v", err)
+	}
+	if bytes.Contains(data, []byte("workflow_name")) {
+		t.Fatalf("empty WorkflowName must be omitted from JSON, got: %s", data)
+	}
+}
+
 func TestTaskResolutionRoundTrip(t *testing.T) {
 	// Positive: complete action with output
 	res := TaskResolution{
