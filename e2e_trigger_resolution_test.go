@@ -3,22 +3,32 @@
 // registered WorkflowDef from workflow_defs KV → first task is
 // dispatched. Methodology: real embedded NATS, real TriggerService,
 // real Orchestrator. No mocks. Verifies #167 across all three trigger
-// types in one place.
+// types in one place. The two trigger.fire parent-hop tests below
+// (#504) reuse this file's harness with an added in-memory span
+// recorder rather than a new file, since they extend the same
+// no-mocks trigger+orchestrator contract this file already proves.
 package dagnats_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func setupTriggerE2E(t *testing.T) *nats.Conn {
@@ -224,4 +234,225 @@ func TestE2EWebhookTriggerDispatchesFirstTask(t *testing.T) {
 			rec.Code, rec.Body.String())
 	}
 	waitForTask(t, nc, "task-hook-wf")
+}
+
+// spanRecorderOnce/sharedSpanExporter back installE2ESpanRecorder.
+// The OTel Go SDK only ever delegates a tracer obtained before any
+// SDK was installed once, process-wide (see
+// go.opentelemetry.io/otel/internal/global's delegateTraceOnce).
+// internal/trigger's fireTracer package var is obtained at that
+// package's init time, before any test runs, so it permanently binds
+// to whichever TracerProvider the first otel.SetTracerProvider call
+// in this test binary installs. Both tests below must therefore
+// share one provider/exporter installed exactly once and isolate
+// themselves by resetting the exporter's buffer, exactly like
+// internal/trigger/fire_test.go's installSpanRecorder.
+var (
+	spanRecorderOnce   sync.Once
+	sharedSpanExporter *tracetest.InMemoryExporter
+)
+
+// installE2ESpanRecorder returns the shared in-memory span exporter,
+// installing it and the composite W3C propagator on first use.
+// Resets the exporter's buffer before and after the test.
+func installE2ESpanRecorder(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	spanRecorderOnce.Do(func() {
+		sharedSpanExporter = tracetest.NewInMemoryExporter()
+		otel.SetTracerProvider(sdktrace.NewTracerProvider(
+			sdktrace.WithSyncer(sharedSpanExporter),
+		))
+		otel.SetTextMapPropagator(
+			propagation.NewCompositeTextMapPropagator(
+				propagation.TraceContext{}, propagation.Baggage{},
+			),
+		)
+	})
+	sharedSpanExporter.Reset()
+	t.Cleanup(sharedSpanExporter.Reset)
+	return sharedSpanExporter
+}
+
+// waitForSpanNamed polls the exporter for a span with the given name,
+// bounded by timeout, since span export can lag a beat behind the
+// task-dispatch signal waitForTask already waited on (both run in
+// the same process but on different goroutines).
+func waitForSpanNamed(
+	t *testing.T,
+	exporter *tracetest.InMemoryExporter,
+	name string,
+	timeout time.Duration,
+) tracetest.SpanStub {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, s := range exporter.GetSpans() {
+			if s.Name == name {
+				return s
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for span %q", name)
+	return tracetest.SpanStub{}
+}
+
+// countFireSpansNamed counts recorded spans with the given name.
+func countFireSpansNamed(
+	spans tracetest.SpanStubs, name string,
+) int {
+	count := 0
+	for _, s := range spans {
+		if s.Name == name {
+			count++
+		}
+	}
+	return count
+}
+
+// TestTick_ParentsHandleEventUnderTriggerFire proves the #504 parent
+// hop for the cron fire path: the engine's handleEvent span shares
+// its trace ID with the trigger.fire span that started the run.
+func TestTick_ParentsHandleEventUnderTriggerFire(t *testing.T) {
+	exporter := installE2ESpanRecorder(t)
+	nc := setupTriggerE2E(t)
+
+	registerWorkflowDef(t, nc, "tick-parent-wf")
+	def := trigger.TriggerDef{
+		ID:         "tick-parent-t1",
+		WorkflowID: "tick-parent-wf",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "* * * * *", Timezone: "UTC",
+		},
+	}
+
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	scheduler, err := trigger.NewScheduler(nc)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	if err := scheduler.AddTrigger(def); err != nil {
+		t.Fatalf("AddTrigger: %v", err)
+	}
+
+	tickTime := time.Now()
+	if err := scheduler.Tick(tickTime); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	waitForTask(t, nc, "task-tick-parent-wf")
+
+	fireSpan := waitForSpanNamed(t, exporter, "trigger.fire", 5*time.Second)
+	handleSpan := waitForSpanNamed(
+		t, exporter, "dagnats.engine handleEvent", 5*time.Second,
+	)
+
+	// Positive: the engine's handleEvent span is a child of (shares
+	// the trace ID with) trigger.fire — the parent hop this issue
+	// exists to prove.
+	wantTraceID := fireSpan.SpanContext.TraceID()
+	if handleSpan.SpanContext.TraceID() != wantTraceID {
+		t.Fatalf(
+			"handleEvent trace ID = %s, want %s (trigger.fire's)",
+			handleSpan.SpanContext.TraceID(), wantTraceID,
+		)
+	}
+
+	// Negative: regression guard on #173 at the tracing level — a
+	// second Tick for the same matching minute is dedup-claimed
+	// before it ever reaches Fire, so no second trigger.fire span
+	// appears.
+	if err := scheduler.Tick(tickTime); err != nil {
+		t.Fatalf("second Tick: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := countFireSpansNamed(
+		exporter.GetSpans(), "trigger.fire",
+	); got != 1 {
+		t.Fatalf(
+			"trigger.fire span count after dedup tick = %d, want 1",
+			got,
+		)
+	}
+}
+
+// TestFireTrigger_ParentsUnderAPISpan proves the #504 parent hop for
+// the manual fire path: a 3-level chain "dagnats.api fireTrigger" →
+// "trigger.fire" → "dagnats.engine handleEvent" all share one trace,
+// and that a direct StartRun (bypassing triggers) never produces a
+// trigger.fire span.
+func TestFireTrigger_ParentsUnderAPISpan(t *testing.T) {
+	exporter := installE2ESpanRecorder(t)
+	nc := setupTriggerE2E(t)
+
+	registerWorkflowDef(t, nc, "manual-parent-wf")
+	registerTriggerDef(t, nc, trigger.TriggerDef{
+		ID:         "manual-parent-t1",
+		WorkflowID: "manual-parent-wf",
+		Enabled:    true,
+		Cron: &trigger.CronConfig{
+			Expression: "* * * * *", Timezone: "UTC",
+		},
+	})
+
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	svc := api.NewService(nc)
+	runID, err := svc.FireTrigger(
+		context.Background(), "manual-parent-t1",
+	)
+	if err != nil {
+		t.Fatalf("FireTrigger: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("FireTrigger: expected non-empty run ID")
+	}
+	waitForTask(t, nc, "task-manual-parent-wf")
+
+	apiSpan := waitForSpanNamed(
+		t, exporter, "dagnats.api fireTrigger", 5*time.Second,
+	)
+	fireSpan := waitForSpanNamed(t, exporter, "trigger.fire", 5*time.Second)
+	handleSpan := waitForSpanNamed(
+		t, exporter, "dagnats.engine handleEvent", 5*time.Second,
+	)
+
+	// Positive: all three spans share one trace ID — the full
+	// fireTrigger -> trigger.fire -> handleEvent chain.
+	traceID := apiSpan.SpanContext.TraceID()
+	if fireSpan.SpanContext.TraceID() != traceID {
+		t.Fatalf(
+			"trigger.fire trace ID = %s, want %s (fireTrigger's)",
+			fireSpan.SpanContext.TraceID(), traceID,
+		)
+	}
+	if handleSpan.SpanContext.TraceID() != traceID {
+		t.Fatalf(
+			"handleEvent trace ID = %s, want %s (fireTrigger's)",
+			handleSpan.SpanContext.TraceID(), traceID,
+		)
+	}
+
+	// Negative: a direct StartRun bypasses triggers entirely, so its
+	// trace must contain zero trigger.fire spans.
+	exporter.Reset()
+	if _, err := svc.StartRun(
+		context.Background(), "manual-parent-wf", nil,
+	); err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForSpanNamed(t, exporter, "dagnats.api startRun", 5*time.Second)
+	if got := countFireSpansNamed(
+		exporter.GetSpans(), "trigger.fire",
+	); got != 0 {
+		t.Fatalf(
+			"trigger.fire span count after direct StartRun = %d, want 0",
+			got,
+		)
+	}
 }
