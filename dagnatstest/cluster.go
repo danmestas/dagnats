@@ -41,8 +41,18 @@ func StartTestCluster(t *testing.T, n int) *nats.Conn {
 			n, minTestClusterNodes, maxTestClusterNodes))
 	}
 
-	clientPorts := allocateFreePorts(t, n)
-	clusterPorts := allocateFreePorts(t, n)
+	// Allocate all 2n ports in a single batch: allocateFreePorts holds
+	// every listener in the batch open until all ports are chosen, so
+	// one batch guarantees client and cluster ports never collide. Two
+	// separate batches let the OS hand the second call a port the
+	// first call had just closed and freed, silently overlapping a
+	// node's client port with another node's cluster port. That
+	// collision broke one of the two listeners on bind, forming the
+	// cluster subtly wrong and causing an intermittent
+	// TestCluster_HealthyClusterFastSetup / SetupAll flake.
+	allPorts := allocateFreePorts(t, 2*n)
+	clientPorts := allPorts[:n]
+	clusterPorts := allPorts[n:]
 	routesByNode := buildClusterRoutes(t, clusterPorts)
 	servers := startClusterNodes(t, clientPorts, clusterPorts, routesByNode)
 
