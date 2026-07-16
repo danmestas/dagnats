@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -33,6 +37,24 @@ type Scheduler struct {
 	mu          sync.RWMutex
 	lastFiredMu sync.Mutex
 	lastFired   map[string]time.Time
+	// firedAt tracks the unix time of the most recent *successful*
+	// cron fire per trigger ID, for the trigger_last_fired_seconds
+	// gauge. Distinct from lastFired: lastFired advances at claim
+	// time in claimMinute (before Fire is even attempted, to guard
+	// dedup across ticks), so it can be non-zero even when the
+	// subsequent Fire call errors. firedAt only advances on the
+	// OutcomeFired branch of fireWorkflow — it is the "did this
+	// trigger actually publish" signal, not the "did we already
+	// evaluate this minute" signal. In-process only, never seeded
+	// from KV on restart — see metrics.go's RegisterSchedulerMetrics
+	// doc comment for why.
+	firedAtMu sync.Mutex
+	firedAt   map[string]time.Time
+	// metricsReg is the OTel callback registration created in
+	// NewScheduler. Kept only so a future Close/Shutdown path has
+	// something to unregister; the scheduler has no explicit
+	// shutdown today so this is otherwise inert.
+	metricsReg metric.Registration
 }
 
 // NewScheduler creates a Scheduler that uses the trigger_state KV bucket.
@@ -56,14 +78,28 @@ func NewScheduler(nc *nats.Conn) (*Scheduler, error) {
 		return nil, fmt.Errorf("KeyValue trigger_state: %w", err)
 	}
 
-	return &Scheduler{
+	s := &Scheduler{
 		nc:        nc,
 		js:        js,
 		tp:        natsutil.NewTracingPublisher(nc, js),
 		stateKV:   kv,
 		triggers:  make(map[string]TriggerDef),
 		lastFired: make(map[string]time.Time),
-	}, nil
+		firedAt:   make(map[string]time.Time),
+	}
+
+	// Best-effort metrics registration: matches the convention at
+	// metrics.go's newFiringsCounter/pkgFirings — a metrics wiring
+	// failure must never fail scheduler construction, but the error
+	// is never silently dropped (never `_ = err`).
+	reg, err := RegisterSchedulerMetrics(otel.Meter("dagnats/trigger"), s)
+	if err != nil {
+		slog.Error("RegisterSchedulerMetrics failed", "error", err)
+	} else {
+		s.metricsReg = reg
+	}
+
+	return s, nil
 }
 
 // AddTrigger registers a cron trigger. Only processes triggers with Cron
@@ -109,6 +145,10 @@ func (s *Scheduler) RemoveTrigger(id string) error {
 	s.lastFiredMu.Lock()
 	delete(s.lastFired, id)
 	s.lastFiredMu.Unlock()
+
+	s.firedAtMu.Lock()
+	delete(s.firedAt, id)
+	s.firedAtMu.Unlock()
 	return nil
 }
 
@@ -407,5 +447,77 @@ func (s *Scheduler) fireWorkflow(
 		return err
 	}
 	RecordFiring(ctx, TypeCron, OutcomeFired)
+
+	s.firedAtMu.Lock()
+	s.firedAt[def.ID] = now
+	s.firedAtMu.Unlock()
 	return nil
+}
+
+// observeMetrics is the OTel callback body invoked on every collection
+// of the trigger_last_fired_seconds / trigger_next_fire_seconds
+// gauges. Iterates a bounded snapshot of registered triggers (tens of
+// entries, no recursion) and delegates the per-trigger decision to
+// observeTriggerMetrics to stay under the 70-line function limit.
+func (s *Scheduler) observeMetrics(
+	ctx context.Context, o metric.Observer, g schedulerGauges,
+) error {
+	if ctx == nil {
+		panic("observeMetrics: ctx must not be nil")
+	}
+	if o == nil {
+		panic("observeMetrics: observer must not be nil")
+	}
+
+	s.mu.RLock()
+	snapshot := make(map[string]TriggerDef, len(s.triggers))
+	for k, v := range s.triggers {
+		snapshot[k] = v
+	}
+	s.mu.RUnlock()
+
+	for _, def := range snapshot {
+		if !def.Enabled || def.Cron == nil {
+			continue
+		}
+		s.observeTriggerMetrics(o, g, def)
+	}
+	return nil
+}
+
+// observeTriggerMetrics observes last_fired (if the trigger has ever
+// fired successfully in this process) and next_fire (always, for an
+// enabled cron trigger) for a single trigger. Split out of
+// observeMetrics purely to keep both functions under the 70-line
+// limit — no independent invariants of its own.
+func (s *Scheduler) observeTriggerMetrics(
+	o metric.Observer, g schedulerGauges, def TriggerDef,
+) {
+	attrs := metric.WithAttributes(attribute.String("trigger", def.ID))
+
+	s.firedAtMu.Lock()
+	firedAt, fired := s.firedAt[def.ID]
+	s.firedAtMu.Unlock()
+	if fired {
+		o.ObserveInt64(g.lastFired, firedAt.Unix(), attrs)
+	}
+
+	// ParseCron/LoadLocation errors here are defense-in-depth only:
+	// both are already validated at AddTrigger time, so a live error
+	// would mean state drifted after registration. Skip silently
+	// rather than surface a live-error path for an already-validated
+	// config — mirrors shouldFire's timezone-conversion pattern.
+	expr, err := ParseCron(def.Cron.Expression)
+	if err != nil {
+		return
+	}
+	loc, err := time.LoadLocation(def.Cron.Timezone)
+	if err != nil {
+		return
+	}
+	next := expr.NextN(time.Now().In(loc), 1)
+	if len(next) != 1 {
+		return
+	}
+	o.ObserveInt64(g.nextFire, next[0].Unix(), attrs)
 }
