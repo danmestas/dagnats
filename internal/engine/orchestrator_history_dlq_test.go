@@ -339,11 +339,16 @@ func TestOrchestrator_TransientFailureThenSuccessDoesNotDeadLetter(t *testing.T)
 
 // TestOrchestrator_HistoryConsumerHasMaxDeliverAndBackOff asserts the
 // consumer-level contract directly: MaxDeliver equals the configured
-// schedule length (not the pre-fix -1), and BackOff stays empty — the
-// #508 design decision to drive escalation entirely through
+// schedule length (not the pre-fix -1), BackOff stays empty — the #508
+// design decision to drive escalation entirely through
 // nakOrDeadLetterHistory's explicit NAKs rather than ConsumerConfig.BackOff
-// (which would silently shrink the 30s AckWait to the first backoff
-// entry).
+// — and AckWait is derived from the schedule's longest entry rather than
+// left at NATS's 30s default, so a legitimately slow (contended-lock or
+// slow-KV) delivery cannot silently steal MaxDeliver budget via ack-
+// timeout redelivery before the schedule's own escalation gets a chance
+// (see historyRedeliverSchedule's doc comment). The schedule here is
+// intentionally out of order so the assertion catches a "last entry"
+// implementation instead of a true max.
 func TestOrchestrator_HistoryConsumerHasMaxDeliverAndBackOff(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
@@ -355,7 +360,7 @@ func TestOrchestrator_HistoryConsumerHasMaxDeliverAndBackOff(t *testing.T) {
 	}
 
 	schedule := []time.Duration{
-		1 * time.Second, 2 * time.Second, 3 * time.Second,
+		1 * time.Second, 3 * time.Second, 2 * time.Second,
 	}
 	orch := NewOrchestrator(nc, WithHistoryRedeliverBackoff(schedule))
 	orch.Start()
@@ -395,6 +400,120 @@ func TestOrchestrator_HistoryConsumerHasMaxDeliverAndBackOff(t *testing.T) {
 			"Config.BackOff = %v, want empty (escalation lives in "+
 				"nakOrDeadLetterHistory, not ConsumerConfig.BackOff)",
 			info.Config.BackOff,
+		)
+	}
+
+	// Positive: AckWait equals the schedule's longest entry (3s), not the
+	// last entry (2s) and not NATS's 30s default.
+	if info.Config.AckWait != 3*time.Second {
+		t.Fatalf(
+			"Config.AckWait = %s, want %s (schedule's longest entry)",
+			info.Config.AckWait, 3*time.Second,
+		)
+	}
+
+	// Negative: the old implicit 30s default must not survive now that a
+	// schedule with a different longest entry is configured.
+	if info.Config.AckWait == 30*time.Second {
+		t.Fatal(
+			"Config.AckWait = 30s (NATS default) — AckWait must be " +
+				"derived from historyRedeliverSchedule, not left unset",
+		)
+	}
+}
+
+// TestOrchestrator_SlowHandlerPastAckWaitDoesNotDeadLetter reproduces the
+// shared-budget hazard directly: a legitimately slow (not poisoned)
+// delivery blocked on run-lock contention is held past AckWait, forcing
+// JetStream to consider the delivery failed and redeliver the same
+// message while the original delivery is still in flight. Before AckWait
+// was sized to the redelivery schedule, a short/default AckWait let this
+// contention alone consume MaxDeliver budget with no handler error ever
+// occurring. Positive: the run still reaches Running once the lock
+// releases. Negative: DEAD_LETTERS stays untouched — contention-driven
+// redelivery must never dead-letter a healthy event.
+func TestOrchestrator_SlowHandlerPastAckWaitDoesNotDeadLetter(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+
+	// Longest entry (300ms) becomes AckWait; MaxDeliver=3 leaves budget
+	// to absorb the AckWait-forced redelivery below without exhausting.
+	schedule := []time.Duration{
+		100 * time.Millisecond, 200 * time.Millisecond, 300 * time.Millisecond,
+	}
+	orch := NewOrchestrator(nc, WithHistoryRedeliverBackoff(schedule))
+	orch.Start()
+	defer orch.Stop()
+
+	const runID = "slow-handler-ackwait-run"
+	wfDef := dag.WorkflowDef{
+		Name: "slow-handler-ackwait-wf", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "s1", Task: "task-slow", Type: dag.StepTypeNormal},
+		},
+	}
+	defData := mustMarshal(t, wfDef)
+	defKV, _ := js.KeyValue("workflow_defs")
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	before := countDeadLetters(t, jsNew, "dead.orchestrator.>")
+
+	// Hold the run's dispatch lock BEFORE publishing so the first
+	// delivery blocks inside dispatchEvent's lock.Lock() for longer than
+	// AckWait (300ms), forcing a same-message redelivery while the
+	// original delivery is still outstanding -- exactly the race AckWait
+	// sizing exists to survive.
+	lock := orch.getRunLock(runID)
+	lock.Lock()
+	release := time.AfterFunc(450*time.Millisecond, lock.Unlock)
+	defer release.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, runID, defData,
+	)
+	startData, sErr := startEvt.Marshal()
+	if sErr != nil {
+		t.Fatalf("marshal workflow.started: %v", sErr)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	// Positive: despite the forced AckWait redelivery, the run still
+	// reaches Running within a bounded window once the lock releases.
+	deadline := time.Now().Add(5 * time.Second)
+	var reached bool
+	for time.Now().Before(deadline) {
+		r, loadErr := orch.store.Load(context.Background(), runID)
+		if loadErr == nil && r.Status == dag.RunStatusRunning {
+			reached = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !reached {
+		t.Fatalf("run %q never reached RunStatusRunning within 5s", runID)
+	}
+
+	// Negative: the AckWait-forced redelivery must not have dead-lettered
+	// the event.
+	time.Sleep(200 * time.Millisecond)
+	after := countDeadLetters(t, jsNew, "dead.orchestrator.>")
+	if after != before {
+		t.Fatalf(
+			"dead.orchestrator.> count changed %d -> %d; "+
+				"AckWait-forced redelivery must not dead-letter a "+
+				"healthy event",
+			before, after,
 		)
 	}
 }

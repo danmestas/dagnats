@@ -35,17 +35,49 @@ import (
 // historyRedeliverSchedule bounds WORKFLOW_HISTORY redelivery (#508).
 // Indexes the explicit NakWithDelay in handleEventJS (the dominant,
 // explicit-NAK path). We deliberately do NOT set ConsumerConfig.BackOff:
-// BackOff overrides the per-attempt AckWait (shrinking the 30s ack window
-// to 5s -> spurious ack-timeout redeliveries and #196-class duplicate
-// processing), and BackOff is inert on NAK'd messages anyway. MaxDeliver
-// is the only consumer-level knob; this schedule is the sole escalation
-// source. len IS the MaxDeliver cap — keep them defined together. The
-// final entry is never used as a NAK delay (the last delivery dead-letters
-// rather than NAKing); it defines the total window.
+// BackOff overrides the per-attempt AckWait, causing spurious ack-timeout
+// redeliveries and #196-class duplicate processing, and BackOff is inert
+// on NAK'd messages anyway. MaxDeliver is the only consumer-level knob;
+// this schedule is the sole escalation source. len IS the MaxDeliver cap
+// — keep them defined together. The final entry is never used as a NAK
+// delay (the last delivery dead-letters rather than NAKing); it defines
+// the total window.
+//
+// The consumer's AckWait is also derived from this schedule (the longest
+// entry — see historyConsumerAckWait), NOT left at NATS's 30s default.
+// MaxDeliver counts BOTH explicit-NAK redeliveries AND AckWait-expiry
+// redeliveries against the same budget: an in-flight event that
+// legitimately runs long (contended run-lock, slow KV write during a
+// NATS/KV leader election) would otherwise burn delivery budget via
+// silent ack-timeout redeliveries while still being processed, dead-
+// lettering it before this schedule's nominal window elapses. Sizing
+// AckWait to the longest schedule entry keeps that shared budget a
+// ceiling on genuinely poison events, not a floor that a merely-slow
+// handler can trip.
 var historyRedeliverSchedule = []time.Duration{
 	5 * time.Second, 10 * time.Second, 20 * time.Second,
 	30 * time.Second, 60 * time.Second, 90 * time.Second,
 	120 * time.Second, 180 * time.Second,
+}
+
+// historyConsumerAckWait returns the AckWait for the WORKFLOW_HISTORY
+// consumer: the longest entry in schedule. See historyRedeliverSchedule's
+// doc comment for why AckWait must not undercut the redelivery schedule
+// it shares a MaxDeliver budget with.
+func historyConsumerAckWait(schedule []time.Duration) time.Duration {
+	if len(schedule) == 0 {
+		panic("historyConsumerAckWait: schedule must not be empty")
+	}
+	longest := schedule[0]
+	for _, delay := range schedule {
+		if delay > longest {
+			longest = delay
+		}
+	}
+	if longest <= 0 {
+		panic("historyConsumerAckWait: longest schedule entry must be positive")
+	}
+	return longest
 }
 
 // Orchestrator subscribes to the history stream and drives workflow execution.
@@ -299,61 +331,7 @@ func (o *Orchestrator) Start() {
 			"Orchestrator.Start: historyRedeliverSchedule must not be empty",
 		)
 	}
-	stream, err := o.js.Stream(
-		context.Background(), "WORKFLOW_HISTORY",
-	)
-	if err != nil {
-		panic(
-			"Orchestrator.Start: stream: " + err.Error(),
-		)
-	}
-	// Durable consumer name persists ack offsets across dagnats
-	// restarts. Without this (originally an ephemeral consumer),
-	// every restart created a new consumer that replayed the entire
-	// history stream from sequence 1, re-delivering workflow.started
-	// and step.* events for runs that completed days ago. Combined
-	// with non-idempotent handlers, that produced duplicate run
-	// executions and the symptoms reported in #196 / #194 / #195.
-	//
-	// First deploy of this change still replays once because the
-	// durable consumer is being created for the first time; the
-	// idempotency guards added in #196 — terminal-run short-circuits
-	// at the top of handleWorkflowStarted, handleStepCompleted, and
-	// handleStepFailed, plus the pre-existing stale-event guard in
-	// handleStepStarted — make that replay a no-op for runs that
-	// have already reached a terminal state.
-	// MaxDeliver caps redelivery of a poison WORKFLOW_HISTORY event
-	// (#508). Unlike worker.go's task consumer (MaxDeliver: -1, where
-	// dag.StepState.Attempts is the app-level retry budget), this
-	// consumer previously had NO delivery budget at all: an event whose
-	// handler always errored (e.g. unmarshal failure, or a dispatchEvent
-	// bug) redelivered forever. len(o.historyRedeliverSchedule) is the
-	// ONLY delivery budget this failure class has — do not "fix" this
-	// back to -1. Escalation itself is driven entirely by
-	// nakOrDeadLetterHistory's NumDelivered-indexed NakWithDelay
-	// against historyRedeliverSchedule, NOT by ConsumerConfig.BackOff
-	// (deliberately unset — see historyRedeliverSchedule's doc comment).
-	cons, err := stream.CreateOrUpdateConsumer(
-		context.Background(), jetstream.ConsumerConfig{
-			Durable:       "orchestrator",
-			FilterSubject: "history.>",
-			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: jetstream.DeliverAllPolicy,
-			MaxDeliver:    len(o.historyRedeliverSchedule),
-		},
-	)
-	if err != nil {
-		panic(
-			"Orchestrator.Start: consumer: " + err.Error(),
-		)
-	}
-	cc, err := cons.Consume(o.handleEventJS)
-	if err != nil {
-		panic(
-			"Orchestrator.Start: consume: " + err.Error(),
-		)
-	}
-	o.cc = cc
+	o.cc = o.startHistoryConsumer()
 
 	// Wire the periodic reconciliation janitor (#185). The
 	// goroutine exits when reconcileCancel is invoked from
@@ -391,6 +369,70 @@ func (o *Orchestrator) Start() {
 		}
 		o.startDefReaper(reconcileCtx)
 	}
+}
+
+// startHistoryConsumer creates (or updates) the durable "orchestrator"
+// consumer on WORKFLOW_HISTORY and begins consuming into handleEventJS.
+// Extracted from Start so the consumer-setup logic and its rationale
+// live in one focused unit, mirroring wireDependentSubsystems. Panics on
+// any JetStream error — consumer setup failure at startup is a programmer
+// or environment error, not a runtime condition callers can recover from.
+func (o *Orchestrator) startHistoryConsumer() jetstream.ConsumeContext {
+	if o == nil {
+		panic("startHistoryConsumer: o must not be nil")
+	}
+	if o.js == nil {
+		panic("startHistoryConsumer: o.js must not be nil")
+	}
+	stream, err := o.js.Stream(
+		context.Background(), "WORKFLOW_HISTORY",
+	)
+	if err != nil {
+		panic(
+			"Orchestrator.Start: stream: " + err.Error(),
+		)
+	}
+	// Durable consumer name persists ack offsets across dagnats
+	// restarts. Without this (originally an ephemeral consumer),
+	// every restart created a new consumer that replayed the entire
+	// history stream from sequence 1, re-delivering workflow.started
+	// and step.* events for runs that completed days ago. Combined
+	// with non-idempotent handlers, that produced duplicate run
+	// executions and the symptoms reported in #196 / #194 / #195.
+	//
+	// First deploy of this change still replays once because the
+	// durable consumer is being created for the first time; the
+	// idempotency guards added in #196 — terminal-run short-circuits
+	// at the top of handleWorkflowStarted, handleStepCompleted, and
+	// handleStepFailed, plus the pre-existing stale-event guard in
+	// handleStepStarted — make that replay a no-op for runs that
+	// have already reached a terminal state.
+	//
+	// MaxDeliver and AckWait: see historyRedeliverSchedule's doc
+	// comment above for the full NAK-escalation / BackOff / shared-
+	// budget rationale (#508).
+	cons, err := stream.CreateOrUpdateConsumer(
+		context.Background(), jetstream.ConsumerConfig{
+			Durable:       "orchestrator",
+			FilterSubject: "history.>",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+			MaxDeliver:    len(o.historyRedeliverSchedule),
+			AckWait:       historyConsumerAckWait(o.historyRedeliverSchedule),
+		},
+	)
+	if err != nil {
+		panic(
+			"Orchestrator.Start: consumer: " + err.Error(),
+		)
+	}
+	cc, err := cons.Consume(o.handleEventJS)
+	if err != nil {
+		panic(
+			"Orchestrator.Start: consume: " + err.Error(),
+		)
+	}
+	return cc
 }
 
 // Stop drains and unsubscribes from the history stream.
