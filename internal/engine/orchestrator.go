@@ -43,41 +43,14 @@ import (
 // delay (the last delivery dead-letters rather than NAKing); it defines
 // the total window.
 //
-// The consumer's AckWait is also derived from this schedule (the longest
-// entry — see historyConsumerAckWait), NOT left at NATS's 30s default.
-// MaxDeliver counts BOTH explicit-NAK redeliveries AND AckWait-expiry
-// redeliveries against the same budget: an in-flight event that
-// legitimately runs long (contended run-lock, slow KV write during a
-// NATS/KV leader election) would otherwise burn delivery budget via
-// silent ack-timeout redeliveries while still being processed, dead-
-// lettering it before this schedule's nominal window elapses. Sizing
-// AckWait to the longest schedule entry keeps that shared budget a
-// ceiling on genuinely poison events, not a floor that a merely-slow
-// handler can trip.
+// AckWait on this consumer is deliberately left unset (NATS's 30s
+// default) and is out of scope for #508 — see the SETTLED contract's
+// Non-goal #6. Changing it changes redelivery/duplicate-processing
+// behavior for the whole consumer and needs its own Ousterhout review.
 var historyRedeliverSchedule = []time.Duration{
 	5 * time.Second, 10 * time.Second, 20 * time.Second,
 	30 * time.Second, 60 * time.Second, 90 * time.Second,
 	120 * time.Second, 180 * time.Second,
-}
-
-// historyConsumerAckWait returns the AckWait for the WORKFLOW_HISTORY
-// consumer: the longest entry in schedule. See historyRedeliverSchedule's
-// doc comment for why AckWait must not undercut the redelivery schedule
-// it shares a MaxDeliver budget with.
-func historyConsumerAckWait(schedule []time.Duration) time.Duration {
-	if len(schedule) == 0 {
-		panic("historyConsumerAckWait: schedule must not be empty")
-	}
-	longest := schedule[0]
-	for _, delay := range schedule {
-		if delay > longest {
-			longest = delay
-		}
-	}
-	if longest <= 0 {
-		panic("historyConsumerAckWait: longest schedule entry must be positive")
-	}
-	return longest
 }
 
 // Orchestrator subscribes to the history stream and drives workflow execution.
@@ -408,9 +381,10 @@ func (o *Orchestrator) startHistoryConsumer() jetstream.ConsumeContext {
 	// handleStepStarted — make that replay a no-op for runs that
 	// have already reached a terminal state.
 	//
-	// MaxDeliver and AckWait: see historyRedeliverSchedule's doc
-	// comment above for the full NAK-escalation / BackOff / shared-
-	// budget rationale (#508).
+	// MaxDeliver: see historyRedeliverSchedule's doc comment above for
+	// the full NAK-escalation / BackOff rationale (#508). AckWait is
+	// deliberately left unset (NATS's 30s default) per the SETTLED
+	// #508 contract's Non-goal #6.
 	cons, err := stream.CreateOrUpdateConsumer(
 		context.Background(), jetstream.ConsumerConfig{
 			Durable:       "orchestrator",
@@ -418,7 +392,6 @@ func (o *Orchestrator) startHistoryConsumer() jetstream.ConsumeContext {
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			DeliverPolicy: jetstream.DeliverAllPolicy,
 			MaxDeliver:    len(o.historyRedeliverSchedule),
-			AckWait:       historyConsumerAckWait(o.historyRedeliverSchedule),
 		},
 	)
 	if err != nil {
