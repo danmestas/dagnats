@@ -20,7 +20,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -33,7 +32,11 @@ import (
 // InitTelemetry creates and registers OTel TracerProvider,
 // MeterProvider, and LoggerProvider. Returns a shutdown function
 // that flushes and closes all three providers. Panics on
-// programmer errors (nil conn, empty service name).
+// programmer errors (nil conn, empty service name). Propagator
+// install now routes through EnsureDefaultPropagator (best-effort
+// first-writer-wins) instead of unconditionally resetting the
+// global, so a propagator installed before InitTelemetry runs
+// survives.
 func InitTelemetry(
 	ctx context.Context, cfg Config,
 ) (func(context.Context), error) {
@@ -74,10 +77,7 @@ func InitTelemetry(
 
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	EnsureDefaultPropagator()
 
 	shutdown := func(ctx context.Context) {
 		shutdownSafe(ctx, tp)

@@ -10,10 +10,13 @@ config.go defines the telemetry configuration struct. Kept separate from setup.g
 
 propagation.go provides trace context propagation helpers for NATS message boundaries. InjectTraceContext writes W3C trace context to both NATS headers and the Event payload for persistence. ExtractTraceContext reads from headers first, falling back to Event.TraceParent for replay scenarios.
 
+propagator.go installs the default W3C trace\-context propagator when nothing else has claimed the global slot. Kept separate from propagation.go so that file stays focused on NATS header carriers.
+
 setup.go is the single entry point for OTel provider setup. One call to InitTelemetry wires tracing, metrics, and logging with NATS\-backed exporters \(always\) and OTLP/HTTP exporters \(when configured\). This is a deep module: rich behavior behind a minimal interface.
 
 ## Index
 
+- [func EnsureDefaultPropagator\(\)](<#EnsureDefaultPropagator>)
 - [func ExtractTraceContext\(msg jetstream.Msg, evt \*protocol.Event\) context.Context](<#ExtractTraceContext>)
 - [func ExtractTraceContextRaw\(msg \*nats.Msg, evt \*protocol.Event\) context.Context](<#ExtractTraceContextRaw>)
 - [func InitTelemetry\(ctx context.Context, cfg Config\) \(func\(context.Context\), error\)](<#InitTelemetry>)
@@ -24,6 +27,15 @@ setup.go is the single entry point for OTel provider setup. One call to InitTele
   - [func \(c NATSHeaderCarrier\) Keys\(\) \[\]string](<#NATSHeaderCarrier.Keys>)
   - [func \(c NATSHeaderCarrier\) Set\(key, val string\)](<#NATSHeaderCarrier.Set>)
 
+
+<a name="EnsureDefaultPropagator"></a>
+## func [EnsureDefaultPropagator](<https://github.com/danmestas/dagnats/blob/main/observe/propagator.go#L28>)
+
+```go
+func EnsureDefaultPropagator()
+```
+
+EnsureDefaultPropagator installs a TraceContext\+Baggage composite as the global OTel TextMapPropagator if — and only if — the current global is the no\-op default \(Fields\(\) empty\). Never overwrites an already\-installed propagator, custom or otherwise. Idempotent: safe to call from every component constructor. A package\-level mutex serializes concurrent first\-party callers, so this function is safe to race from many goroutines; it cannot defend against an out\-of\-band otel.SetTextMapPropagator call racing it from outside this package, since OTel's global setter has no compare\-and\-swap — first\-party installs must route through here.
 
 <a name="ExtractTraceContext"></a>
 ## func [ExtractTraceContext](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L47-L50>)
@@ -44,13 +56,13 @@ func ExtractTraceContextRaw(msg *nats.Msg, evt *protocol.Event) context.Context
 ExtractTraceContextRaw reads W3C trace context from a raw \*nats.Msg header, falling back to Event.TraceParent for replay. Used in publish paths that work with \*nats.Msg.
 
 <a name="InitTelemetry"></a>
-## func [InitTelemetry](<https://github.com/danmestas/dagnats/blob/main/observe/setup.go#L37-L39>)
+## func [InitTelemetry](<https://github.com/danmestas/dagnats/blob/main/observe/setup.go#L40-L42>)
 
 ```go
 func InitTelemetry(ctx context.Context, cfg Config) (func(context.Context), error)
 ```
 
-InitTelemetry creates and registers OTel TracerProvider, MeterProvider, and LoggerProvider. Returns a shutdown function that flushes and closes all three providers. Panics on programmer errors \(nil conn, empty service name\).
+InitTelemetry creates and registers OTel TracerProvider, MeterProvider, and LoggerProvider. Returns a shutdown function that flushes and closes all three providers. Panics on programmer errors \(nil conn, empty service name\). Propagator install now routes through EnsureDefaultPropagator \(best\-effort first\-writer\-wins\) instead of unconditionally resetting the global, so a propagator installed before InitTelemetry runs survives.
 
 <a name="InjectTraceContext"></a>
 ## func [InjectTraceContext](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L21-L25>)
