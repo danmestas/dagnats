@@ -98,3 +98,48 @@ func TestEffectiveCapabilitiesUnchangedWhenNoControlPlane(t *testing.T) {
 		t.Fatalf("caps without control-plane must be returned unchanged, got %v", got)
 	}
 }
+
+func TestStripControlPlaneCapabilityRemovesItUnconditionally(t *testing.T) {
+	// #513: the strip is unconditional -- no GrantPolicy involved at all,
+	// proving the deny is categorical (data-level), not policy-conditional.
+	input := []string{"control-plane", "gpu"}
+
+	got := stripControlPlaneCapability(input)
+
+	// Positive: control-plane capability is gone.
+	if slices.Contains(got, "control-plane") {
+		t.Fatalf("control-plane must be stripped unconditionally, got %v", got)
+	}
+	// Negative space: unrelated capabilities survive untouched.
+	if !slices.Contains(got, "gpu") {
+		t.Fatalf("non-control-plane caps must be preserved, got %v", got)
+	}
+}
+
+func TestStripControlPlaneCapabilityDoesNotMutateInput(t *testing.T) {
+	input := []string{"control-plane", "gpu"}
+	before := slices.Clone(input)
+
+	_ = stripControlPlaneCapability(input)
+
+	// Positive + negative: the shared input slice is unchanged after the call.
+	if !slices.Equal(input, before) {
+		t.Fatalf("input slice was mutated: got %v, want %v", input, before)
+	}
+}
+
+func TestStripControlPlaneCapabilityNoOpWhenAbsent(t *testing.T) {
+	input := []string{"gpu"}
+
+	got := stripControlPlaneCapability(input)
+
+	// Positive: pass-through value equality.
+	if !slices.Equal(got, input) {
+		t.Fatalf("no-op strip must return an equal slice, got %v, want %v", got, input)
+	}
+	// Nice-to-have (not a hard gate): same underlying array, no reallocation,
+	// on the hot no-capabilities-changed path. Only checked for non-empty input.
+	if len(input) > 0 && &input[0] != &got[0] {
+		t.Logf("stripControlPlaneCapability reallocated on a no-op path (not fatal)")
+	}
+}

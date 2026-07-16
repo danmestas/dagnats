@@ -95,3 +95,26 @@ func effectiveCapabilities(
 	}
 	return stripped
 }
+
+// stripControlPlaneCapability removes "control-plane" from caps
+// unconditionally -- no GrantPolicy, no workflow name. #513: map instances
+// must categorically never hold control-plane (#380), so the deny is
+// expressed directly at the data level (capability absent from the step)
+// rather than as a side effect of passing an empty workflow name into
+// effectiveCapabilities. Never mutates caps. Returns caps unchanged
+// (same underlying array, no allocation) when control-plane is already
+// absent -- mirrors effectiveCapabilities's own short-circuit so the common
+// no-capabilities step pays nothing on the hot path.
+func stripControlPlaneCapability(caps []string) []string {
+	if !slices.Contains(caps, controlPlaneCapability) {
+		return caps
+	}
+	stripped := make([]string, 0, len(caps))
+	for _, capability := range caps {
+		if capability == controlPlaneCapability {
+			continue
+		}
+		stripped = append(stripped, capability)
+	}
+	return stripped
+}
