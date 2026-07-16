@@ -436,16 +436,32 @@ func startServerFromConf(
 }
 
 // allocatePorts finds count available TCP ports by binding to :0.
+// All listeners in the batch are held open simultaneously and closed
+// only after every port is chosen, so the OS cannot hand back the
+// same ephemeral port twice within one batch. The earlier approach —
+// close each listener before opening the next — let the OS reissue a
+// just-freed port later in the same batch. A supercluster allocates
+// many ports per server (client/cluster/gateway); two servers landing
+// on the same port causes one to hit a permanent bind collision that
+// never resolves, and startServerFromConf retries with the same
+// ports for 15 attempts x 30s, manifesting as the ~500s CI flake.
 func allocatePorts(t *testing.T, count int) []int {
 	t.Helper()
 	ports := make([]int, count)
+	listeners := make([]net.Listener, 0, count)
 	for i := range ports {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
+			for _, l := range listeners {
+				l.Close()
+			}
 			t.Fatalf("allocate port %d: %v", i, err)
 		}
+		listeners = append(listeners, listener)
 		ports[i] = listener.Addr().(*net.TCPAddr).Port
-		listener.Close()
+	}
+	for _, l := range listeners {
+		l.Close()
 	}
 	return ports
 }
