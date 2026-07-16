@@ -273,7 +273,7 @@ func protoValue(v attribute.Value) *commonpb.AnyValue {
 		}
 	default:
 		av.Value = &commonpb.AnyValue_StringValue{
-			StringValue: v.Emit(),
+			StringValue: v.String(),
 		}
 	}
 	return av
