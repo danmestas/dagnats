@@ -4,16 +4,31 @@
 package observe
 
 import (
+	"sync"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 )
+
+// ensureDefaultPropagatorMu serializes the get-check-set sequence in
+// EnsureDefaultPropagator so concurrent first-party callers (many
+// NewWorker calls at startup) cannot interleave it.
+var ensureDefaultPropagatorMu sync.Mutex
 
 // EnsureDefaultPropagator installs a TraceContext+Baggage composite
 // as the global OTel TextMapPropagator if — and only if — the
 // current global is the no-op default (Fields() empty). Never
 // overwrites an already-installed propagator, custom or otherwise.
-// Idempotent: safe to call from every component constructor.
+// Idempotent: safe to call from every component constructor. A
+// package-level mutex serializes concurrent first-party callers, so
+// this function is safe to race from many goroutines; it cannot
+// defend against an out-of-band otel.SetTextMapPropagator call racing
+// it from outside this package, since OTel's global setter has no
+// compare-and-swap — first-party installs must route through here.
 func EnsureDefaultPropagator() {
+	ensureDefaultPropagatorMu.Lock()
+	defer ensureDefaultPropagatorMu.Unlock()
+
 	current := otel.GetTextMapPropagator()
 	// Negative-space guard: a non-empty Fields() means something —
 	// custom or previously installed default — already claimed the

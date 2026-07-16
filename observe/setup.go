@@ -32,7 +32,11 @@ import (
 // InitTelemetry creates and registers OTel TracerProvider,
 // MeterProvider, and LoggerProvider. Returns a shutdown function
 // that flushes and closes all three providers. Panics on
-// programmer errors (nil conn, empty service name).
+// programmer errors (nil conn, empty service name). Propagator
+// install now routes through EnsureDefaultPropagator (best-effort
+// first-writer-wins) instead of unconditionally resetting the
+// global, so a propagator installed before InitTelemetry runs
+// survives.
 func InitTelemetry(
 	ctx context.Context, cfg Config,
 ) (func(context.Context), error) {

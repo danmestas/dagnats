@@ -7,6 +7,7 @@ package observe
 
 import (
 	"context"
+	"sync"
 
 	"testing"
 
@@ -102,6 +103,64 @@ func TestEnsureDefaultPropagator_Idempotent(t *testing.T) {
 		t.Fatalf(
 			"Fields() len = %d, want 3 (not double-wrapped)",
 			len(fields),
+		)
+	}
+}
+
+// TestEnsureDefaultPropagator_ConcurrentInstall proves the mutex
+// serializes concurrent first-party callers (e.g. many NewWorker
+// calls racing at startup) instead of interleaving the get-check-set
+// sequence. Run with -race: a missing or too-narrow lock shows up as
+// a detected data race, not just a wrong assertion.
+func TestEnsureDefaultPropagator_ConcurrentInstall(t *testing.T) {
+	prev := otel.GetTextMapPropagator()
+	defer otel.SetTextMapPropagator(prev)
+
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(),
+	)
+
+	const goroutineCount = 16
+	var wg sync.WaitGroup
+	wg.Add(goroutineCount)
+	for i := 0; i < goroutineCount; i++ {
+		go func() {
+			defer wg.Done()
+			EnsureDefaultPropagator()
+		}()
+	}
+	wg.Wait()
+
+	fields := otel.GetTextMapPropagator().Fields()
+	// Positive: exactly the composite's 3 fields survived concurrent
+	// installs — no double-wrapping from an interleaved get-check-set.
+	if len(fields) != 3 ||
+		!containsField(fields, "traceparent") ||
+		!containsField(fields, "tracestate") ||
+		!containsField(fields, "baggage") {
+		t.Fatalf(
+			"Fields() = %v, want exactly [traceparent tracestate baggage]",
+			fields,
+		)
+	}
+
+	otel.SetTextMapPropagator(fakePropagator{})
+	wg.Add(goroutineCount)
+	for i := 0; i < goroutineCount; i++ {
+		go func() {
+			defer wg.Done()
+			EnsureDefaultPropagator()
+		}()
+	}
+	wg.Wait()
+
+	fields = otel.GetTextMapPropagator().Fields()
+	// Negative: a pre-installed custom propagator is not clobbered by
+	// a later concurrent burst of calls.
+	if len(fields) != 1 || fields[0] != "x-sentinel" {
+		t.Fatalf(
+			"Fields() = %v, want unchanged sentinel [x-sentinel]",
+			fields,
 		)
 	}
 }

@@ -390,7 +390,7 @@ func Typed[I, O any](fn TypedHandlerFunc[I, O], opts ...TypedOption) HandlerFunc
 Typed wraps a TypedHandlerFunc into a HandlerFunc by handling JSON serialization. Marshal/unmarshal failures are wrapped in NonRetryableError because bad serialization will not fix itself on retry. Optional TypedOption values tune the wrapper.
 
 <a name="HandlerOption"></a>
-## type [HandlerOption](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L324>)
+## type [HandlerOption](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L329>)
 
 HandlerOption configures per\-handler behavior at registration time. Distinct from WorkerOption \(which configures the Worker itself\): HandlerOptions bind a knob to a specific taskType. Variadic on Handle keeps existing callers source\-compatible.
 
@@ -399,7 +399,7 @@ type HandlerOption func(w *Worker, taskType string)
 ```
 
 <a name="WithAckWait"></a>
-### func [WithAckWait](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L331>)
+### func [WithAckWait](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L336>)
 
 ```go
 func WithAckWait(d time.Duration) HandlerOption
@@ -694,16 +694,16 @@ type Worker struct {
 ```
 
 <a name="NewWorker"></a>
-### func [NewWorker](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L270-L272>)
+### func [NewWorker](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L274-L276>)
 
 ```go
 func NewWorker(nc *nats.Conn, opts ...WorkerOption) *Worker
 ```
 
-NewWorker creates a Worker using the given connection. Panics if nc is nil or if JetStream cannot be initialised — both are programmer errors at startup. Tracing and metrics use the global OTel providers \(noop by default\).
+NewWorker creates a Worker using the given connection. Panics if nc is nil or if JetStream cannot be initialised — both are programmer errors at startup. A W3C TraceContext\+Baggage propagator is installed on the global OTel registry if the global is still the no\-op default; an already\-installed propagator \(custom or otherwise\) is never overwritten. Tracing and metrics use the global OTel providers \(noop by default\).
 
 <a name="Worker.Handle"></a>
-### func \(\*Worker\) [Handle](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L368-L370>)
+### func \(\*Worker\) [Handle](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L373-L375>)
 
 ```go
 func (w *Worker) Handle(taskType string, handler HandlerFunc, opts ...HandlerOption)
@@ -712,7 +712,7 @@ func (w *Worker) Handle(taskType string, handler HandlerFunc, opts ...HandlerOpt
 Handle registers a HandlerFunc for the given task type. Optional HandlerOptions \(e.g. WithAckWait\) tune per\-task knobs. Panics on empty taskType or nil handler — both are programmer errors.
 
 <a name="Worker.HandleSingleton"></a>
-### func \(\*Worker\) [HandleSingleton](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L390-L392>)
+### func \(\*Worker\) [HandleSingleton](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L395-L397>)
 
 ```go
 func (w *Worker) HandleSingleton(taskType string, handler HandlerFunc)
@@ -754,7 +754,7 @@ Side effects:
 Idempotent at the engine side per the ack contract \(\#327\): same Name \+ same OwnerWorkerID \+ same ConfigSchema → nil. Schema drift → error. Owner drift → error.
 
 <a name="Worker.Start"></a>
-### func \(\*Worker\) [Start](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L434>)
+### func \(\*Worker\) [Start](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L439>)
 
 ```go
 func (w *Worker) Start()
@@ -763,7 +763,7 @@ func (w *Worker) Start()
 Start creates JetStream subscriptions for all registered task types. Panics if any subscription fails — stream misconfiguration is a startup error. Binds optional KV buckets for checkpoints and signals \(nil if not present\). When groups are configured, subscribes to group\-specific subjects.
 
 <a name="Worker.Stop"></a>
-### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L889>)
+### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L894>)
 
 ```go
 func (w *Worker) Stop()
