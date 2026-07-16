@@ -366,6 +366,27 @@ func (tp *TaskPublisher) scheduleConcurrencyRetry(
 	})
 }
 
+// spanWorkflowNameAttrs builds the base enqueueTask span attributes,
+// including workflow_name ONLY when non-empty. Mirrors
+// worker/worker.go's startTaskSpan: an empty workflowName means the map
+// fan-out path (or an older payload) has no telemetry name to report, and
+// emitting an empty-string attribute would be worse than omitting it
+// entirely (#503, #513). Shared by doPublish and PublishIteration so the
+// omit-when-empty guard lives in exactly one place.
+func spanWorkflowNameAttrs(
+	runID, stepID, taskName, workflowName string,
+) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String("run_id", runID),
+		attribute.String("step_id", stepID),
+		attribute.String("task_name", taskName),
+	}
+	if workflowName != "" {
+		attrs = append(attrs, attribute.String("workflow_name", workflowName))
+	}
+	return attrs
+}
+
 // doPublish performs the actual NATS publish for a task message. It is the
 // deny-by-default grant gate at the payload source (#380): the step's
 // RequiredCapabilities are passed through effectiveCapabilities, which
@@ -396,10 +417,7 @@ func (tp *TaskPublisher) doPublish(
 		"enqueueTask "+step.Task,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
-			attribute.String("run_id", runID),
-			attribute.String("step_id", step.ID),
-			attribute.String("task_name", step.Task),
-			attribute.String("workflow_name", workflowName),
+			spanWorkflowNameAttrs(runID, step.ID, step.Task, workflowName)...,
 		),
 	)
 	defer span.End()
@@ -460,10 +478,7 @@ func (tp *TaskPublisher) PublishIteration(
 		"enqueueTask "+step.Task,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
-			attribute.String("run_id", runID),
-			attribute.String("step_id", step.ID),
-			attribute.String("task_name", step.Task),
-			attribute.String("workflow_name", workflowName),
+			spanWorkflowNameAttrs(runID, step.ID, step.Task, workflowName)...,
 		),
 	)
 	defer span.End()

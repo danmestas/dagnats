@@ -2662,7 +2662,7 @@ func (o *Orchestrator) enqueueMapStep(
 		return err
 	}
 
-	return o.publishMapTasks(ctx, run.RunID, step, items)
+	return o.publishMapTasks(ctx, run.RunID, wfDef.Name, step, items)
 }
 
 // validateAndInitMapInstances checks MaxItems and initializes
@@ -2700,9 +2700,13 @@ func (o *Orchestrator) validateAndInitMapInstances(
 }
 
 // publishMapTasks publishes one task per map item concurrently.
+// workflowName is the parent run's workflow definition name (wfDef.Name),
+// used ONLY for telemetry -- see the strip comment below for why passing
+// the real name here is safe.
 func (o *Orchestrator) publishMapTasks(
 	ctx context.Context,
 	runID string,
+	workflowName string,
 	step dag.StepDef,
 	items []json.RawMessage,
 ) error {
@@ -2711,15 +2715,30 @@ func (o *Orchestrator) publishMapTasks(
 		i, item := i, item
 		instanceStep := step
 		instanceStep.ID = mapInstanceID(step.ID, i)
-		// Map instances are data-parallel work items that never hold a
-		// control-plane handle: an empty workflow name strips any declared
-		// control-plane capability (deny-by-default), and a fresh nonce keeps
-		// the run-binding field populated though instances do not call the
-		// control plane (#380).
+		// #513: map instances are data-parallel work items that must
+		// categorically never hold a control-plane handle (#380). The STRIP
+		// below -- not the workflowName value passed to Publish -- is what
+		// enforces that deny-by-default: stripControlPlaneCapability removes
+		// "control-plane" from this instance's RequiredCapabilities
+		// unconditionally, regardless of grant policy. Because
+		// effectiveCapabilities (grant_policy.go) is strip-only and
+		// short-circuits when control-plane is already absent from caps, the
+		// workflowName argument becomes structurally irrelevant to this
+		// instance's grant decision from here on -- which is exactly what
+		// makes it safe to pass the REAL workflow name through for
+		// telemetry instead of forging "". Do not revert to an empty name
+		// here, and do not delete the strip below: either change would
+		// silently reconnect telemetry to the grant key or regrant
+		// control-plane to map instances.
+		instanceStep.RequiredCapabilities = stripControlPlaneCapability(
+			step.RequiredCapabilities,
+		)
+		// A fresh nonce keeps the run-binding field populated though
+		// instances do not call the control plane (#380).
 		nonce := runid.New()
 		g.Go(func() error {
 			return o.publisher.Publish(
-				ctx, runID, instanceStep, item, 0, "", nonce,
+				ctx, runID, instanceStep, item, 0, workflowName, nonce,
 			)
 		})
 	}

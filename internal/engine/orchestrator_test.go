@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -3148,6 +3149,250 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("workflow should complete after map fan-out")
+}
+
+func TestOrchestratorMapStepFanOutCarriesRealWorkflowName(t *testing.T) {
+	// Methodology: #513 regression guard (C1). Same fixture as
+	// TestOrchestratorMapStepFanOut (Map step with no RequiredCapabilities).
+	// After fetching the 3 map instance tasks, unmarshal each into
+	// protocol.TaskPayload and assert WorkflowName equals the parent run's
+	// workflow definition name (wfDef.Name), never "". RED against main
+	// (which forges an empty workflow name for map instances), GREEN after
+	// the fix (publishMapTasks threads wfDef.Name through unmodified).
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "map-fanout", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "fetch", Task: "fetch-task",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID: "process", Task: "process-task",
+				Type:      dag.StepTypeMap,
+				DependsOn: []string{"fetch"},
+				Config:    dag.MarshalConfig(&dag.MapConfig{MaxItems: 10}),
+			},
+			{
+				ID: "summarize", Task: "summarize-task",
+				Type:      dag.StepTypeNormal,
+				DependsOn: []string{"process"},
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "map-run-name-1", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	fetchSub, _ := js.PullSubscribe(
+		"task.fetch-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgs, err := fetchSub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch fetch-task failed: %v", err)
+	}
+	msgs[0].Ack()
+
+	fetchOutput := []byte(`["item-a","item-b","item-c"]`)
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "map-run-name-1",
+		"fetch", fetchOutput)
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	mapSub, _ := js.PullSubscribe(
+		"task.process-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	var mapMsgs []*nats.Msg
+	fetchDeadline := time.After(10 * time.Second)
+	for len(mapMsgs) < 3 {
+		batch, fetchErr := mapSub.Fetch(
+			3-len(mapMsgs),
+			nats.MaxWait(2*time.Second))
+		if fetchErr == nil {
+			mapMsgs = append(mapMsgs, batch...)
+		}
+		select {
+		case <-fetchDeadline:
+			t.Fatalf("expected 3 map tasks, got %d",
+				len(mapMsgs))
+		default:
+		}
+	}
+	if len(mapMsgs) != 3 {
+		t.Fatalf("expected 3 map tasks, got %d", len(mapMsgs))
+	}
+
+	for i, msg := range mapMsgs {
+		msg.Ack()
+		var payload protocol.TaskPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			t.Fatalf("unmarshal map instance %d payload: %v", i, err)
+		}
+		// Positive: WorkflowName equals the parent run's workflow definition name.
+		if payload.WorkflowName != wfDef.Name {
+			t.Fatalf(
+				"map instance %d WorkflowName = %q, want %q",
+				i, payload.WorkflowName, wfDef.Name,
+			)
+		}
+		// Negative space: never the forged-empty telemetry name (the bug).
+		if payload.WorkflowName == "" {
+			t.Fatalf("map instance %d WorkflowName is empty, want %q", i, wfDef.Name)
+		}
+	}
+}
+
+func TestOrchestratorMapStepFanOutStripsControlPlaneCapabilityRegardlessOfGrant(t *testing.T) {
+	// Methodology: #513 invariant-preservation guard (C2/C3/C4). Same
+	// fixture, but the Map step declares RequiredCapabilities including
+	// "control-plane", and the orchestrator is constructed with a
+	// GrantPolicy that DOES grant the workflow's name. Verify the map
+	// instances still never carry "control-plane" (the #380 deny-by-default
+	// invariant for map instances holds unconditionally, even when granted),
+	// that unrelated capabilities like "gpu" survive unstripped, and that
+	// WorkflowName is still the real name (the #513 fix coexists with the
+	// preserved #380 invariant in the same dispatch).
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	js, _ := nc.JetStream()
+
+	wfDef := dag.WorkflowDef{
+		Name: "map-fanout", Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "fetch", Task: "fetch-task",
+				Type: dag.StepTypeNormal,
+			},
+			{
+				ID: "process", Task: "process-task",
+				Type:                 dag.StepTypeMap,
+				DependsOn:            []string{"fetch"},
+				Config:               dag.MarshalConfig(&dag.MapConfig{MaxItems: 10}),
+				RequiredCapabilities: []string{"control-plane", "gpu"},
+			},
+			{
+				ID: "summarize", Task: "summarize-task",
+				Type:      dag.StepTypeNormal,
+				DependsOn: []string{"process"},
+			},
+		},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	defData := mustMarshal(t, wfDef)
+	mustPut(t, defKV, wfDef.Name, defData)
+
+	holder := &GrantPolicyHolder{}
+	holder.Store(NewGrantPolicy([]string{"map-fanout"}, nil))
+	orch := NewOrchestrator(nc, WithGrantPolicyHolder(holder))
+	orch.Start()
+	defer orch.Stop()
+
+	startEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "map-run-grant-1", defData)
+	startData, err := startEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, startEvt.NATSSubject(), startData,
+		nats.MsgId(startEvt.NATSMsgID()))
+
+	fetchSub, _ := js.PullSubscribe(
+		"task.fetch-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	msgs, err := fetchSub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch fetch-task failed: %v", err)
+	}
+	msgs[0].Ack()
+
+	fetchOutput := []byte(`["item-a","item-b","item-c"]`)
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "map-run-grant-1",
+		"fetch", fetchOutput)
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	mapSub, _ := js.PullSubscribe(
+		"task.process-task.*", "",
+		nats.BindStream("TASK_QUEUES"))
+	var mapMsgs []*nats.Msg
+	fetchDeadline := time.After(10 * time.Second)
+	for len(mapMsgs) < 3 {
+		batch, fetchErr := mapSub.Fetch(
+			3-len(mapMsgs),
+			nats.MaxWait(2*time.Second))
+		if fetchErr == nil {
+			mapMsgs = append(mapMsgs, batch...)
+		}
+		select {
+		case <-fetchDeadline:
+			t.Fatalf("expected 3 map tasks, got %d",
+				len(mapMsgs))
+		default:
+		}
+	}
+	if len(mapMsgs) != 3 {
+		t.Fatalf("expected 3 map tasks, got %d", len(mapMsgs))
+	}
+
+	for i, msg := range mapMsgs {
+		msg.Ack()
+		var payload protocol.TaskPayload
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			t.Fatalf("unmarshal map instance %d payload: %v", i, err)
+		}
+		// Positive: control-plane is stripped even though "map-fanout" IS
+		// granted -- proves #380 is not weakened by #513's name change.
+		if slices.Contains(payload.RequiredCapabilities, "control-plane") {
+			t.Fatalf(
+				"map instance %d RequiredCapabilities = %v, must not contain control-plane",
+				i, payload.RequiredCapabilities,
+			)
+		}
+		// Negative space: unrelated capabilities survive unstripped.
+		if !slices.Contains(payload.RequiredCapabilities, "gpu") {
+			t.Fatalf(
+				"map instance %d RequiredCapabilities = %v, want gpu preserved",
+				i, payload.RequiredCapabilities,
+			)
+		}
+		// The #513 fix: real workflow name still flows through in the same dispatch.
+		if payload.WorkflowName != wfDef.Name {
+			t.Fatalf(
+				"map instance %d WorkflowName = %q, want %q",
+				i, payload.WorkflowName, wfDef.Name,
+			)
+		}
+	}
 }
 
 func TestOrchestratorMapStepFailFast(t *testing.T) {

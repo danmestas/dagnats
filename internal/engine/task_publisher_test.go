@@ -415,3 +415,67 @@ func TestPublishIterationSpanNameAndWorkflowAttribute(t *testing.T) {
 		)
 	}
 }
+
+// spanAttrAbsent fails the test if the named attribute IS present on the
+// span. Mirror image of spanAttrString, for asserting the omit-when-empty
+// guard (#513) doesn't leak an empty-string workflow_name attribute.
+func spanAttrAbsent(
+	t *testing.T, s tracetest.SpanStub, key string,
+) {
+	t.Helper()
+	for _, kv := range s.Attributes {
+		if string(kv.Key) == key {
+			t.Fatalf("span %q: attribute %q must be absent, got %q", s.Name, key, kv.Value.AsString())
+		}
+	}
+}
+
+func TestDoPublishOmitsWorkflowNameAttributeWhenEmpty(t *testing.T) {
+	// RED: doPublish must NOT attach a workflow_name attribute when the
+	// caller passes an empty workflowName (#513 -- mirrors worker/worker.go's
+	// startTaskSpan, which already omits on empty).
+	tp, _, exporter := newSpanRecordingPublisher(t)
+	step := dag.StepDef{ID: "step-1", Task: "compile", Type: dag.StepTypeNormal}
+
+	err := tp.doPublish(
+		context.Background(), "run-1", step, []byte(`{}`), 1,
+		"", "",
+	)
+	if err != nil {
+		t.Fatalf("doPublish failed: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	span := onlySpanNamed(t, spans, "enqueueTask compile")
+	// Positive: no workflow_name attribute leaked.
+	spanAttrAbsent(t, span, "workflow_name")
+	// Negative space: other identifying attributes are still present.
+	if got := spanAttrString(t, span, "run_id"); got != "run-1" {
+		t.Fatalf("run_id attr = %q, want %q", got, "run-1")
+	}
+}
+
+func TestPublishIterationOmitsWorkflowNameAttributeWhenEmpty(t *testing.T) {
+	// RED: PublishIteration must NOT attach a workflow_name attribute when
+	// the caller passes an empty workflowName. Companion to
+	// TestPublishIterationSpanNameAndWorkflowAttribute (C7).
+	tp, _, exporter := newSpanRecordingPublisher(t)
+	step := dag.StepDef{ID: "step-1", Task: "agent-loop", Type: dag.StepTypeAgent}
+
+	err := tp.PublishIteration(
+		context.Background(), "run-1", step, []byte(`{}`), 2,
+		"", "",
+	)
+	if err != nil {
+		t.Fatalf("PublishIteration failed: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	span := onlySpanNamed(t, spans, "enqueueTask agent-loop")
+	// Positive: no workflow_name attribute leaked.
+	spanAttrAbsent(t, span, "workflow_name")
+	// Negative space: other identifying attributes are still present.
+	if got := spanAttrString(t, span, "step_id"); got != "step-1" {
+		t.Fatalf("step_id attr = %q, want %q", got, "step-1")
+	}
+}
