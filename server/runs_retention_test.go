@@ -1,5 +1,6 @@
-// Methodology: unit tests for the opt-in run-retention config knob (#453).
-// Verify the OFF-by-default safety property (RunsMaxAge zero value), the
+// Methodology: unit tests for the run-retention config knob (#453, #521).
+// Verify the 30d default when the operator sets nothing, the explicit
+// disable escape hatch (0/off/disabled → pruning off), the
 // DAGNATS_RUNS_MAX_AGE env override across Go-duration and d/w suffixes, and
 // that an invalid value is a hard config-load error rather than a silent
 // no-op. Positive + negative space; no NATS server needed.
@@ -13,12 +14,60 @@ import (
 	"time"
 )
 
-func TestDefaultConfig_RunsMaxAgeDisabledByDefault(t *testing.T) {
+func TestDefaultConfig_RunsMaxAgeDefaultsTo30d(t *testing.T) {
 	cfg := DefaultConfig()
 
-	// Headline safety property: upgrading must NOT silently prune runs.
+	// #521: an unconfigured serve now prunes terminal runs older than 30d,
+	// bounding the previously unbounded workflow_runs KV. In-flight runs are
+	// never touched (pruner is terminal-only via CompletedAt), so recovery is
+	// preserved. Zero/off remains the explicit disable escape hatch.
+	if cfg.RunsMaxAge != DefaultRunsMaxAge {
+		t.Errorf("RunsMaxAge = %v, want %v (DefaultRunsMaxAge)",
+			cfg.RunsMaxAge, DefaultRunsMaxAge)
+	}
+	if cfg.RunsMaxAge != 30*24*time.Hour {
+		t.Errorf("RunsMaxAge = %v, want 30d (720h)", cfg.RunsMaxAge)
+	}
+}
+
+func TestConfigFromEnv_RunsMaxAgeDefaultsWhenUnset(t *testing.T) {
+	// No file (temp CWD guarantees no dagnats.yaml) and no env override: the
+	// resolved config must land on the 30d default, not disabled.
+	dir := t.TempDir()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Fatalf("Chdir restore: %v", err)
+		}
+	}()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	os.Unsetenv("DAGNATS_RUNS_MAX_AGE")
+
+	cfg := ConfigFromEnv()
+
+	if cfg.RunsMaxAge != DefaultRunsMaxAge {
+		t.Errorf("RunsMaxAge = %v, want %v (default when unset)",
+			cfg.RunsMaxAge, DefaultRunsMaxAge)
+	}
+	if cfg.RunsMaxAge == 0 {
+		t.Error("RunsMaxAge must not be disabled when the operator is silent")
+	}
+}
+
+func TestConfigFromEnv_RunsMaxAgeOffStaysDisabled(t *testing.T) {
+	t.Setenv("DAGNATS_RUNS_MAX_AGE", "off")
+
+	cfg := ConfigFromEnv()
+
+	// The disable escape hatch must survive the 30d default: an explicit
+	// "off" is an intentional operator choice, not silence.
 	if cfg.RunsMaxAge != 0 {
-		t.Errorf("RunsMaxAge = %v, want 0 (disabled by default)",
+		t.Errorf("RunsMaxAge = %v, want 0 (explicit off = disabled)",
 			cfg.RunsMaxAge)
 	}
 }

@@ -89,11 +89,12 @@ type Orchestrator struct {
 	// in Start, called in Stop. nil before Start / after Stop.
 	reconcileCancel context.CancelFunc
 
-	// runsMaxAge is the opt-in run-retention window (#453). Zero
-	// (the default) disables the sweeper entirely: the prune ticker
-	// is not even started, so upgrading never silently deletes runs.
-	// When > 0, terminal runs whose CompletedAt is older than this
-	// are dropped (delete-only) by the background prune pass.
+	// runsMaxAge is the run-retention window (#453, #521). Zero disables the
+	// sweeper entirely: the prune ticker is not even started. The server
+	// defaults this to 30d (server.DefaultRunsMaxAge); an operator can still
+	// disable it with an explicit 0/off. When > 0, terminal runs whose
+	// CompletedAt is older than this are dropped (delete-only) by the
+	// background prune pass. In-flight runs are never touched.
 	runsMaxAge time.Duration
 
 	// defReaperGrace is the opt-in ephemeral-def garbage-collection
@@ -151,9 +152,10 @@ func WithGrantPolicyHolder(holder *GrantPolicyHolder) OrchestratorOption {
 	}
 }
 
-// WithRunsMaxAge enables the opt-in run-retention sweeper (#453) with the
-// given window. A zero or negative window leaves the sweeper disabled (the
-// default), so the prune ticker is never started and no runs are deleted.
+// WithRunsMaxAge sets the run-retention sweeper window (#453, #521). A zero
+// or negative window leaves the sweeper disabled, so the prune ticker is
+// never started and no runs are deleted; the server passes 30d by default
+// (server.DefaultRunsMaxAge) but honors an explicit 0/off to disable it.
 // When positive, terminal runs whose CompletedAt is older than maxAge are
 // dropped by the background prune pass.
 func WithRunsMaxAge(maxAge time.Duration) OrchestratorOption {

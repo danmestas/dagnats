@@ -223,8 +223,14 @@ func runCleanCmd(args []string) {
 		os.Exit(1)
 	}
 
+	// The full-clear path is O(1) (KV backing-stream purge), so this ceiling
+	// only bounds the --older-than per-key loop, which iterates up to maxKeys
+	// (100k) entries, each under its own perKeyTimeout parented on this ctx.
+	// A tight 30s budget spuriously failed a large but healthy bucket, so the
+	// deadline is generous while still guaranteeing the command terminates
+	// and stays cancellable (#521).
 	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
+		context.Background(), 10*time.Minute,
 	)
 	defer cancel()
 
@@ -344,6 +350,18 @@ func purgeStreamBefore(
 		return false
 	}
 
+	// Age-based purge does not apply to work-queue streams: un-acked
+	// messages are live pending tasks, not history — trimming them by age
+	// silently drops work. The ordered consumer used below to find the age
+	// boundary is also rejected on a work-queue (err 10084, explicit ack
+	// required). A work-queue self-drains as workers ack, so skip it (#521).
+	if info.Config.Retention == jetstream.WorkQueuePolicy {
+		fmt.Fprintf(os.Stderr,
+			"info: skip age-based purge of %s: work-queue stream self-drains\n",
+			info.Config.Name)
+		return false
+	}
+
 	// If the newest message is older than cutoff, purge everything.
 	if info.State.LastTime.Before(cutoff) {
 		if err := stream.Purge(ctx); err != nil {
@@ -428,7 +446,7 @@ func clearBuckets(
 		if olderThan > 0 {
 			cleanErr = purgeKVBucketBefore(ctx, kv, olderThan)
 		} else {
-			cleanErr = purgeKVBucket(ctx, kv)
+			cleanErr = purgeKVBucket(ctx, js, name)
 		}
 		if cleanErr != nil {
 			fmt.Fprintf(os.Stderr,
@@ -441,27 +459,28 @@ func clearBuckets(
 	return cleared, errors
 }
 
-// purgeKVBucket deletes all keys in a KV bucket.
+// purgeKVBucket empties a KV bucket in one round trip by purging its backing
+// JetStream stream (KV_<bucket>). A per-key Delete loop over a large bucket
+// (~222k run keys) blew the shared clean deadline (#521); the backing-stream
+// purge is O(1) — the same mechanism already used to purge streams in this
+// file. The bucket itself is preserved (KV streams allow purge: DenyDelete is
+// set but DenyPurge is not).
 func purgeKVBucket(
-	ctx context.Context, kv jetstream.KeyValue,
+	ctx context.Context, js jetstream.JetStream, bucket string,
 ) error {
-	if kv == nil {
-		panic("purgeKVBucket: kv must not be nil")
+	if js == nil {
+		panic("purgeKVBucket: js must not be nil")
+	}
+	if bucket == "" {
+		panic("purgeKVBucket: bucket must not be empty")
 	}
 
-	keys, err := kv.Keys(ctx)
+	stream, err := js.Stream(ctx, "KV_"+bucket)
 	if err != nil {
-		return nil
+		return fmt.Errorf("kv backing stream %s: %w", bucket, err)
 	}
-
-	const maxKeys = 100_000
-	for i, key := range keys {
-		if i >= maxKeys {
-			break
-		}
-		if err := kv.Delete(ctx, key); err != nil {
-			return fmt.Errorf("delete key %s: %w", key, err)
-		}
+	if err := stream.Purge(ctx); err != nil {
+		return fmt.Errorf("purge kv %s: %w", bucket, err)
 	}
 	return nil
 }
@@ -488,19 +507,31 @@ func purgeKVBucketBefore(
 	}
 
 	const maxKeys = 100_000
+	const perKeyTimeout = 5 * time.Second
 	for i, key := range keys {
 		if i >= maxKeys {
 			break
 		}
-		entry, err := kv.Get(ctx, key)
+		// Per-key bounded context so one slow Get/Delete cannot exhaust a
+		// deadline shared across the whole bucket (#521). Parented on the
+		// caller's ctx (not Background) so an interrupted clean cancels the
+		// loop; the generous clean-wide deadline keeps a large but healthy
+		// bucket from being starved before it finishes.
+		opCtx, cancel := context.WithTimeout(
+			ctx, perKeyTimeout,
+		)
+		entry, err := kv.Get(opCtx, key)
 		if err != nil {
+			cancel()
 			continue
 		}
 		if entry.Created().Before(cutoff) {
-			if err := kv.Delete(ctx, key); err != nil {
+			if err := kv.Delete(opCtx, key); err != nil {
+				cancel()
 				return fmt.Errorf("delete key %s: %w", key, err)
 			}
 		}
+		cancel()
 	}
 	return nil
 }

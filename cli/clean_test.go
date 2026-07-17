@@ -341,7 +341,7 @@ func TestPurgeKVBucket_EmptyBucket(t *testing.T) {
 	}
 
 	// Positive: purging empty bucket does not error.
-	err = purgeKVBucket(ctx, kv)
+	err = purgeKVBucket(ctx, js, "workflow_runs")
 	if err != nil {
 		t.Fatalf("purgeKVBucket on empty: %v", err)
 	}
