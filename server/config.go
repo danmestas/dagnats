@@ -47,6 +47,15 @@ const (
 	defaultMaxActiveRunsPerRoot         = 100
 	defaultMaxDefsPerRoot               = 500
 	defaultMaxRegistersPerMinutePerRoot = 60
+
+	// DefaultRunsMaxAge is the run-retention window applied when the operator
+	// configures nothing (#521). It matches WORKFLOW_HISTORY's 30d so a run's
+	// authoritative snapshot never outlives the history it summarizes, and it
+	// bounds the otherwise-unbounded workflow_runs KV (the prod disk-growth
+	// symptom). The pruner is terminal-only (deletes by CompletedAt), so
+	// in-flight runs are never touched and recovery is preserved. An explicit
+	// 0/off/disabled still turns pruning off — see parseRetentionDuration.
+	DefaultRunsMaxAge = 30 * 24 * time.Hour
 )
 
 // WorkerConfig defines a config-driven embedded worker handler.
@@ -80,13 +89,15 @@ type Config struct {
 	Workers        []WorkerConfig `json:"workers"`
 	OTLPEndpoint   string         `json:"otlp_endpoint"`
 
-	// RunsMaxAge is the opt-in run-retention window for the
-	// workflow_runs KV (#453). Zero (the default) DISABLES pruning
-	// entirely — upgrading never silently deletes anyone's runs.
-	// When > 0, terminal runs older than this are dropped
-	// (delete-only) by the orchestrator's background sweeper. Set
-	// via DAGNATS_RUNS_MAX_AGE, which accepts a Go duration ("720h")
-	// or a d/w suffix ("30d", "2w") for operator ergonomics.
+	// RunsMaxAge is the run-retention window for the workflow_runs KV
+	// (#453, #521). It DEFAULTS to DefaultRunsMaxAge (30d): an unconfigured
+	// serve prunes terminal runs older than 30d, bounding the previously
+	// unbounded bucket. When > 0, terminal runs whose CompletedAt is older
+	// than this are dropped (delete-only) by the orchestrator's background
+	// sweeper; in-flight runs are never touched. Set via DAGNATS_RUNS_MAX_AGE
+	// or the runs_max_age config key, which accept a Go duration ("720h") or
+	// a d/w suffix ("30d", "2w"). An explicit 0/off/disabled turns pruning
+	// off entirely — the escape hatch for operators who want it off.
 	RunsMaxAge time.Duration `json:"runs_max_age"`
 
 	// Per-runtime safety bounds (ADR-021 Phase A, #378). These cap a
@@ -188,6 +199,7 @@ func DefaultConfig() Config {
 		LeafRemotes:                  nil,
 		MaxStoreBytes:                defaultMaxStoreBytes,
 		MaxMemoryBytes:               defaultMaxMemoryBytes,
+		RunsMaxAge:                   DefaultRunsMaxAge,
 		MaxActiveRunsPerRoot:         defaultMaxActiveRunsPerRoot,
 		MaxDefsPerRoot:               defaultMaxDefsPerRoot,
 		MaxGenerationDepth:           engine.MaxNestingDepth,
@@ -470,10 +482,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 }
 
-// applyRunsMaxAgeEnv resolves DAGNATS_RUNS_MAX_AGE into cfg.RunsMaxAge (#453).
-// Unset or empty leaves the disabled default. An explicit "0" stays disabled.
-// A valid window enables the sweeper; an invalid value is a hard error so a
-// typo fails fast at config load rather than silently disabling retention.
+// applyRunsMaxAgeEnv resolves DAGNATS_RUNS_MAX_AGE into cfg.RunsMaxAge
+// (#453, #521). Unset or empty leaves whatever the file/default resolved (the
+// 30d default when the operator is silent). An explicit "0"/"off"/"disabled"
+// turns pruning off, overriding that default. A valid window sets the sweeper
+// window; an invalid value is a hard error so a typo fails fast at config
+// load rather than silently changing retention.
 func applyRunsMaxAgeEnv(cfg *Config) error {
 	if cfg == nil {
 		panic("applyRunsMaxAgeEnv: cfg is nil")
@@ -543,10 +557,16 @@ func applyRuntimeBoundsEnv(cfg *Config) error {
 // parseRetentionDuration parses a retention window. It accepts any Go
 // duration string ("720h", "30m") plus the operator-friendly "<n>d" (days)
 // and "<n>w" (weeks) suffixes. The numeric portion must be a non-negative
-// integer for the d/w forms.
+// integer for the d/w forms. The disable tokens "off"/"disabled" (and the
+// numeric "0") resolve to 0, the explicit "turn pruning off" escape hatch
+// that a caller must NOT override with a default (#521).
 func parseRetentionDuration(val string) (time.Duration, error) {
 	if val == "" {
 		panic("parseRetentionDuration: val must not be empty")
+	}
+	switch strings.ToLower(val) {
+	case "off", "disabled":
+		return 0, nil
 	}
 	last := val[len(val)-1]
 	if last != 'd' && last != 'w' {
