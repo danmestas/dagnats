@@ -945,10 +945,36 @@ dagnats clean [flags]
 |------|-------------|
 | `--type=CATEGORIES` | Comma-separated categories to clean: `runs`, `dlq`, `otel`, `defs` |
 | `--older-than=DURATION` | Only clean data older than duration (`7d`, `24h`, `30m`) |
+| `--keep=N` | Bulk-prune each target to its newest `N` messages (requires `--force`) |
+| `--before-seq=N` | Bulk-prune messages below stream sequence `N` (requires `--force`) |
 | `--dry-run` | Show what would be cleaned without doing it |
 | `--all` | Clean all categories (runs, dlq, otel, defs) |
 | `--force` | Skip confirmation prompt |
 | `--json` | Output result as JSON |
+
+`--keep`, `--before-seq`, and `--older-than` are mutually exclusive; `--keep` and `--before-seq` cannot be combined.
+
+### Retention and bulk prune
+
+A bucket's size is a function of run rate x retention. `--older-than` is the safe
+default: it prunes by age and skips live work-queue streams, so it never drops an
+in-flight task.
+
+If a bucket (typically `KV_workflow_runs`) has already cliffed — grown so large the
+per-key age loop cannot drain it within the command deadline — use `--keep` or
+`--before-seq`. These purge the target's backing stream **server-side by global
+sequence** in a single round trip, so they drain a bucket of any size:
+
+```bash
+dagnats clean --type=runs --keep=30000 --force
+```
+
+**Caution:** sequence prunes purge by write order, not run age or terminal status.
+A long-pending live run whose snapshot has an old last-write sequence can be evicted
+while newer terminal runs survive — silent loss of that run's state. KV delete
+tombstones also count as messages, so fewer than `N` keys may remain. Prefer
+`--older-than` for routine cleanup; reach for `--keep`/`--before-seq` only as a blunt
+recovery tool. Use `--dry-run` to preview without `--force`.
 
 **Categories:**
 
@@ -985,6 +1011,15 @@ dagnats clean --type=otel,dlq --older-than=30d --dry-run
 
 dagnats clean --all --force
 # Purged 6 streams, cleared 11 KV buckets
+
+dagnats clean --type=runs --keep=30000 --force
+# warning: --keep/--before-seq purge by stream sequence, not age ...
+# Purged 4 streams, cleared 10 KV buckets
+
+dagnats clean --type=runs --keep=30000 --dry-run
+# Would clean:
+#   workflow_runs           kv     192000 msgs
+# Total: 192000 messages
 
 dagnats clean --force --json
 # {"streams_purged":5,"buckets_cleared":10,"errors":0}

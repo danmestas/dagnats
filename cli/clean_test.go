@@ -536,6 +536,329 @@ func TestPurgeStreamBefore_AllOld(t *testing.T) {
 	}
 }
 
+// --- Unit tests: bulk prune flags (--keep / --before-seq) ---
+
+func TestParseCleanFlags_KeepAndBeforeSeq(t *testing.T) {
+	f := parseCleanFlags([]string{"--keep=30000"})
+
+	// Positive: --keep parses into keep, before-seq untouched.
+	if f.keep != 30000 {
+		t.Errorf("keep = %d, want 30000", f.keep)
+	}
+	if f.beforeSeq != 0 {
+		t.Errorf("beforeSeq = %d, want 0", f.beforeSeq)
+	}
+
+	f2 := parseCleanFlags([]string{"--before-seq=42"})
+
+	// Positive: --before-seq parses into beforeSeq, keep untouched.
+	if f2.beforeSeq != 42 {
+		t.Errorf("beforeSeq = %d, want 42", f2.beforeSeq)
+	}
+	if f2.keep != 0 {
+		t.Errorf("keep = %d, want 0", f2.keep)
+	}
+}
+
+func TestValidateCleanFlags_MutualExclusion(t *testing.T) {
+	// Negative: --keep and --before-seq cannot combine (nats.go forbids it).
+	if err := validateCleanFlags(cleanFlags{
+		keep: 10, beforeSeq: 5, force: true,
+	}); err == nil {
+		t.Error("keep + before-seq should be rejected")
+	}
+
+	// Negative: --keep and --older-than are different strategies.
+	if err := validateCleanFlags(cleanFlags{
+		keep: 10, olderThan: time.Hour, force: true,
+	}); err == nil {
+		t.Error("keep + older-than should be rejected")
+	}
+
+	// Negative: --before-seq and --older-than are different strategies.
+	if err := validateCleanFlags(cleanFlags{
+		beforeSeq: 10, olderThan: time.Hour, force: true,
+	}); err == nil {
+		t.Error("before-seq + older-than should be rejected")
+	}
+
+	// Positive: --keep alone with --force is valid.
+	if err := validateCleanFlags(cleanFlags{
+		keep: 10, force: true,
+	}); err != nil {
+		t.Errorf("keep + force should be valid: %v", err)
+	}
+}
+
+func TestValidateCleanFlags_ForceRequired(t *testing.T) {
+	// Negative: bulk prune without --force or --dry-run is refused.
+	if err := validateCleanFlags(cleanFlags{keep: 10}); err == nil {
+		t.Error("keep without force/dry-run should be rejected")
+	}
+	if err := validateCleanFlags(cleanFlags{beforeSeq: 10}); err == nil {
+		t.Error("before-seq without force/dry-run should be rejected")
+	}
+
+	// Positive: --dry-run is an allowed preview without --force.
+	if err := validateCleanFlags(cleanFlags{
+		keep: 10, dryRun: true,
+	}); err != nil {
+		t.Errorf("keep + dry-run should be valid: %v", err)
+	}
+
+	// Positive: age-based clean without force is unaffected by the gate.
+	if err := validateCleanFlags(cleanFlags{
+		olderThan: time.Hour,
+	}); err != nil {
+		t.Errorf("older-than without force should be valid: %v", err)
+	}
+}
+
+func TestSeqPurgeWarningText(t *testing.T) {
+	// Positive: seq mode without --json emits the safety warning.
+	if seqPurgeWarningText(cleanFlags{keep: 10}) == "" {
+		t.Error("expected warning for --keep")
+	}
+	if seqPurgeWarningText(cleanFlags{beforeSeq: 10}) == "" {
+		t.Error("expected warning for --before-seq")
+	}
+
+	// Negative: --json suppresses human warning; non-seq mode has none.
+	if seqPurgeWarningText(cleanFlags{keep: 10, json: true}) != "" {
+		t.Error("--json should suppress the warning")
+	}
+	if seqPurgeWarningText(cleanFlags{}) != "" {
+		t.Error("non-seq mode should have no warning")
+	}
+}
+
+// --- Integration tests: bulk prune (--keep / --before-seq) ---
+
+func TestExecuteSeqPurge_KeepBucketDrainsToLimit(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	kv, err := js.KeyValue(ctx, "workflow_runs")
+	if err != nil {
+		t.Fatalf("KeyValue: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		if _, err := kv.Put(ctx,
+			fmt.Sprintf("run-%d", i), []byte("v")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+
+	streams, buckets := collectTargets([]string{"runs"})
+
+	// Tight deadline: the O(1) stream purge must beat a per-key loop.
+	purgeCtx, cancel := context.WithTimeout(
+		context.Background(), 10*time.Second,
+	)
+	defer cancel()
+	result := executeSeqPurge(purgeCtx, js, streams, buckets, 10, 0)
+
+	// Positive: backing stream drained to <= keep.
+	stream, err := js.Stream(ctx, "KV_workflow_runs")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.State.Msgs > 10 {
+		t.Fatalf("expected <=10 msgs after keep, got %d",
+			info.State.Msgs)
+	}
+	if result.Buckets == 0 {
+		t.Fatal("expected at least 1 bucket purged")
+	}
+
+	// Positive: bucket survives and stays usable.
+	if _, err := kv.Put(ctx, "after", []byte("ok")); err != nil {
+		t.Fatalf("bucket unusable after keep-purge: %v", err)
+	}
+
+	// Negative: no errors.
+	if result.Errors != 0 {
+		t.Fatalf("expected 0 errors, got %d", result.Errors)
+	}
+}
+
+func TestExecuteSeqPurge_BeforeSeqPurgesBelow(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	oldJS, _ := nc.JetStream()
+	for i := 0; i < 5; i++ {
+		if _, err := oldJS.Publish("history.seq-test",
+			[]byte(fmt.Sprintf("msg-%d", i))); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+
+	// Purge messages below sequence 3 (keeps seqs 3,4,5).
+	result := executeSeqPurge(ctx, js,
+		[]string{"WORKFLOW_HISTORY"}, nil, 0, 3)
+
+	// Positive: one stream purged, three messages remain.
+	if result.Streams != 1 {
+		t.Fatalf("expected 1 stream purged, got %d", result.Streams)
+	}
+	stream, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.State.Msgs != 3 {
+		t.Fatalf("expected 3 msgs after before-seq, got %d",
+			info.State.Msgs)
+	}
+
+	// Negative: first surviving message is seq 3, not below.
+	if info.State.FirstSeq != 3 {
+		t.Fatalf("expected first seq 3, got %d",
+			info.State.FirstSeq)
+	}
+}
+
+// TestExecuteSeqPurge_SkipsWorkQueueStream regresses the #523 review finding
+// that a bulk sequence purge would drain TASK_QUEUES — a work-queue stream of
+// live un-acked tasks. The recipe `clean --type=runs --keep=N` selects
+// TASK_QUEUES, so an unguarded seq purge silently drops queued work. The purge
+// must skip work-queue streams (as the age path does) while still draining the
+// history stream, proving the skip is a real guard and not a no-op.
+func TestExecuteSeqPurge_SkipsWorkQueueStream(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	pub, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := pub.Publish("task.seq-guard",
+			[]byte(fmt.Sprintf("t-%d", i))); err != nil {
+			t.Fatalf("Publish task: %v", err)
+		}
+		if _, err := pub.Publish("history.seq-guard",
+			[]byte(fmt.Sprintf("h-%d", i))); err != nil {
+			t.Fatalf("Publish history: %v", err)
+		}
+	}
+
+	// Keep only the newest 1 across all runs targets.
+	streams, buckets := collectTargets([]string{"runs"})
+	result := executeSeqPurge(ctx, js, streams, buckets, 1, 0)
+
+	// Positive: the work-queue stream retains ALL its live messages, untouched.
+	wq, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream TASK_QUEUES: %v", err)
+	}
+	wqInfo, err := wq.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info TASK_QUEUES: %v", err)
+	}
+	if wqInfo.State.Msgs != 5 {
+		t.Fatalf("work-queue purged: expected 5 msgs kept, got %d",
+			wqInfo.State.Msgs)
+	}
+
+	// Negative space: the ordinary history stream WAS drained to keep=1, so the
+	// purge genuinely ran — the work-queue skip is a guard, not a dead path.
+	hist, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream WORKFLOW_HISTORY: %v", err)
+	}
+	histInfo, err := hist.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info WORKFLOW_HISTORY: %v", err)
+	}
+	if histInfo.State.Msgs != 1 {
+		t.Fatalf("expected history drained to 1, got %d",
+			histInfo.State.Msgs)
+	}
+	if result.Errors != 0 {
+		t.Fatalf("expected 0 errors, got %d", result.Errors)
+	}
+}
+
+func TestSeqDryRunReport_DoesNotExecute(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	oldJS, _ := nc.JetStream()
+	for i := 0; i < 5; i++ {
+		if _, err := oldJS.Publish("history.dry-seq",
+			[]byte(fmt.Sprintf("m-%d", i))); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+
+	report := seqDryRunReport(ctx, js,
+		[]string{"WORKFLOW_HISTORY"}, nil, 2, 0)
+
+	// Positive: report estimates 3 purged (5 msgs, keep 2).
+	if report.TotalMsgs != 3 {
+		t.Fatalf("expected estimate 3, got %d", report.TotalMsgs)
+	}
+
+	// Negative: dry-run did not touch the stream.
+	stream, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.State.Msgs != 5 {
+		t.Fatalf("dry-run should not execute; got %d msgs",
+			info.State.Msgs)
+	}
+}
+
 func TestPurgeKVBucketBefore_SelectiveDelete(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
