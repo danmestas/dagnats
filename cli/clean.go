@@ -67,6 +67,10 @@ type cleanFlags struct {
 	json      bool
 	dryRun    bool
 	olderThan time.Duration
+	// keep and beforeSeq drive the bulk stream-sequence prune (WithPurgeKeep /
+	// WithPurgeSequence). Zero means unset; both must be positive when used.
+	keep      uint64
+	beforeSeq uint64
 	types     []string
 }
 
@@ -99,6 +103,10 @@ func parseCleanFlags(args []string) cleanFlags {
 				os.Exit(1)
 			}
 			f.olderThan = dur
+		case strings.HasPrefix(arg, "--keep="):
+			f.keep = parseUintFlag(arg, "--keep=")
+		case strings.HasPrefix(arg, "--before-seq="):
+			f.beforeSeq = parseUintFlag(arg, "--before-seq=")
 		case strings.HasPrefix(arg, "--type="):
 			val := strings.TrimPrefix(arg, "--type=")
 			f.types = strings.Split(val, ",")
@@ -113,6 +121,74 @@ func parseCleanFlags(args []string) cleanFlags {
 		}
 	}
 	return f
+}
+
+// parseUintFlag parses a positive uint value from a "--flag=N" argument. Zero
+// is rejected: a zero keep/before-seq purges everything, which the plain full
+// clean already does — surfacing it as an error avoids a surprising blunt wipe.
+func parseUintFlag(arg, prefix string) uint64 {
+	if !strings.HasPrefix(arg, prefix) {
+		panic("parseUintFlag: arg missing prefix")
+	}
+	if prefix == "" {
+		panic("parseUintFlag: prefix must not be empty")
+	}
+
+	val := strings.TrimPrefix(arg, prefix)
+	n, err := strconv.ParseUint(val, 10, 64)
+	if err != nil || n == 0 {
+		fmt.Fprintf(os.Stderr,
+			"invalid %sN: must be a positive integer\n", prefix)
+		os.Exit(1)
+	}
+	return n
+}
+
+// validateCleanFlags rejects mutually-exclusive or unsafe flag combinations.
+// --keep and --before-seq map to nats.go WithPurgeKeep/WithPurgeSequence, which
+// the client refuses to combine; both are whole-stream sequence prunes and must
+// not silently mix with the age-based --older-than strategy. Because a sequence
+// prune purges by write order (not run age or terminal status) it can evict a
+// live in-flight run, so it is gated behind --force unless previewed via
+// --dry-run.
+func validateCleanFlags(f cleanFlags) error {
+	if f.keep > 0 && f.beforeSeq > 0 {
+		return fmt.Errorf(
+			"--keep and --before-seq are mutually exclusive")
+	}
+	if (f.keep > 0 || f.beforeSeq > 0) && f.olderThan > 0 {
+		return fmt.Errorf(
+			"--keep/--before-seq cannot combine with --older-than")
+	}
+	if (f.keep > 0 || f.beforeSeq > 0) && !f.force && !f.dryRun {
+		return fmt.Errorf(
+			"--keep/--before-seq require --force " +
+				"(blunt recovery tool); use --dry-run to preview")
+	}
+	return nil
+}
+
+// seqPurgeWarning explains why a sequence-based prune is dangerous: it purges by
+// global stream sequence, not run age or terminal status, so a long-pending live
+// run whose snapshot has an old last-write sequence can be evicted while newer
+// terminal runs survive. KV delete-tombstones also count as messages, so fewer
+// than N keys may remain.
+const seqPurgeWarning = "warning: --keep/--before-seq purge by stream " +
+	"sequence, not age — they can evict live in-flight runs whose last " +
+	"write is old, and KV tombstones count toward the total so fewer than " +
+	"N keys may remain; --older-than is the safe default, --keep is a blunt " +
+	"recovery tool for a bucket that cannot be drained otherwise."
+
+// seqPurgeWarningText returns the stderr warning for a bulk prune, or "" when
+// none is needed (not a sequence prune, or --json suppresses human output).
+func seqPurgeWarningText(f cleanFlags) string {
+	if f.json {
+		return ""
+	}
+	if f.keep == 0 && f.beforeSeq == 0 {
+		return ""
+	}
+	return seqPurgeWarning
 }
 
 // parseDuration parses durations with day support: "7d", "24h", "30m".
@@ -195,10 +271,19 @@ func runCleanCmd(args []string) {
 	}
 
 	f := parseCleanFlags(args)
+	if err := validateCleanFlags(f); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	categories := resolveCategories(f)
 	streams, buckets := collectTargets(categories)
+	seqMode := f.keep > 0 || f.beforeSeq > 0
 
-	if !f.force && !f.json {
+	// The confirmation gates mutation only: --dry-run previews without touching
+	// data, so it must never prompt (a sequence prune is otherwise force-gated
+	// by validateCleanFlags and skips this too). Only the mutating age/full path
+	// reaches the prompt.
+	if !f.force && !f.json && !f.dryRun {
 		label := "all"
 		if f.olderThan > 0 {
 			label = fmt.Sprintf("older than %s", f.olderThan)
@@ -234,8 +319,19 @@ func runCleanCmd(args []string) {
 	)
 	defer cancel()
 
+	if w := seqPurgeWarningText(f); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
+
 	if f.dryRun {
-		report := dryRunReport(ctx, js, streams, buckets, f.olderThan)
+		var report dryRunResult
+		if seqMode {
+			report = seqDryRunReport(
+				ctx, js, streams, buckets, f.keep, f.beforeSeq)
+		} else {
+			report = dryRunReport(
+				ctx, js, streams, buckets, f.olderThan)
+		}
 		if f.json {
 			if err := FormatJSON(os.Stdout, report); err != nil {
 				fmt.Fprintf(os.Stderr, "format json: %v\n", err)
@@ -247,7 +343,15 @@ func runCleanCmd(args []string) {
 		return
 	}
 
-	result := executeClean(ctx, js, streams, buckets, f.olderThan)
+	// A bulk prune replaces the age/full path entirely — a single server-side
+	// sequence purge, never the per-key/age loop.
+	var result cleanResult
+	if seqMode {
+		result = executeSeqPurge(
+			ctx, js, streams, buckets, f.keep, f.beforeSeq)
+	} else {
+		result = executeClean(ctx, js, streams, buckets, f.olderThan)
+	}
 
 	if f.json {
 		if err := FormatJSON(os.Stdout, result); err != nil {
@@ -536,6 +640,226 @@ func purgeKVBucketBefore(
 	return nil
 }
 
+// purgeSeqOpt maps the keep/beforeSeq flags to the matching single-round-trip
+// nats.go purge option. Exactly one must be set — the caller guarantees this
+// via validateCleanFlags.
+func purgeSeqOpt(keep, beforeSeq uint64) jetstream.StreamPurgeOpt {
+	if keep == 0 && beforeSeq == 0 {
+		panic("purgeSeqOpt: keep or beforeSeq must be set")
+	}
+	if keep > 0 && beforeSeq > 0 {
+		panic("purgeSeqOpt: keep and beforeSeq are exclusive")
+	}
+	if keep > 0 {
+		return jetstream.WithPurgeKeep(keep)
+	}
+	return jetstream.WithPurgeSequence(beforeSeq)
+}
+
+// executeSeqPurge drains selected streams and KV backing-streams by global
+// sequence using server-side WithPurgeKeep/WithPurgeSequence. Unlike the age
+// path's per-key loop, this is one round trip per target and drains a bucket of
+// any size — the recovery tool for a KV_workflow_runs that has already cliffed
+// past what the per-key loop can iterate within the deadline (#523).
+func executeSeqPurge(
+	ctx context.Context,
+	js jetstream.JetStream,
+	streams, buckets []string,
+	keep, beforeSeq uint64,
+) cleanResult {
+	if js == nil {
+		panic("executeSeqPurge: js must not be nil")
+	}
+	if keep == 0 && beforeSeq == 0 {
+		panic("executeSeqPurge: keep or beforeSeq must be set")
+	}
+
+	opt := purgeSeqOpt(keep, beforeSeq)
+	var result cleanResult
+	result.Streams = seqPurgeStreams(ctx, js, streams, opt)
+	cleared, errs := seqPurgeBuckets(ctx, js, buckets, opt)
+	result.Buckets = cleared
+	result.Errors = errs
+	return result
+}
+
+// seqPurgeStreams purges each named stream with opt. Returns the count purged.
+func seqPurgeStreams(
+	ctx context.Context,
+	js jetstream.JetStream,
+	names []string,
+	opt jetstream.StreamPurgeOpt,
+) int {
+	if js == nil {
+		panic("seqPurgeStreams: js must not be nil")
+	}
+	const maxStreams = 50
+	if len(names) > maxStreams {
+		panic("seqPurgeStreams: names exceeds max bound")
+	}
+
+	purged := 0
+	for _, name := range names {
+		stream, err := js.Stream(ctx, name)
+		if err != nil {
+			continue
+		}
+		// A sequence purge does not apply to work-queue streams (e.g.
+		// TASK_QUEUES): un-acked messages are live pending tasks, not history.
+		// Keeping the newest N by sequence — or dropping below a boundary —
+		// would silently discard un-started queued work. A work-queue
+		// self-drains as workers ack, so skip it, mirroring the age-path guard
+		// (#521, #523).
+		info, err := stream.Info(ctx)
+		if err != nil {
+			continue
+		}
+		if info.Config.Retention == jetstream.WorkQueuePolicy {
+			fmt.Fprintf(os.Stderr,
+				"info: skip sequence purge of %s: work-queue stream self-drains\n",
+				name)
+			continue
+		}
+		if err := stream.Purge(ctx, opt); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"warn: purge %s: %v\n", name, err)
+			continue
+		}
+		purged++
+	}
+	return purged
+}
+
+// seqPurgeBuckets purges each KV bucket's backing stream (KV_<bucket>) with opt.
+// The bucket is preserved (only messages are purged). Returns (cleared, errors).
+func seqPurgeBuckets(
+	ctx context.Context,
+	js jetstream.JetStream,
+	names []string,
+	opt jetstream.StreamPurgeOpt,
+) (int, int) {
+	if js == nil {
+		panic("seqPurgeBuckets: js must not be nil")
+	}
+	const maxBuckets = 50
+	if len(names) > maxBuckets {
+		panic("seqPurgeBuckets: names exceeds max bound")
+	}
+
+	cleared := 0
+	errors := 0
+	for _, name := range names {
+		stream, err := js.Stream(ctx, "KV_"+name)
+		if err != nil {
+			continue
+		}
+		if err := stream.Purge(ctx, opt); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"warn: purge kv %s: %v\n", name, err)
+			errors++
+			continue
+		}
+		cleared++
+	}
+	return cleared, errors
+}
+
+// seqPurgeEstimate estimates how many messages a keep/beforeSeq purge removes
+// from a stream in the given state. It is an upper bound: server-side sequence
+// gaps and tombstones make the exact count unknowable without iterating.
+func seqPurgeEstimate(
+	msgs, firstSeq, lastSeq, keep, beforeSeq uint64,
+) uint64 {
+	if keep > 0 {
+		if msgs > keep {
+			return msgs - keep
+		}
+		return 0
+	}
+	if beforeSeq <= firstSeq {
+		return 0
+	}
+	if beforeSeq > lastSeq {
+		return msgs
+	}
+	span := beforeSeq - firstSeq
+	if span > msgs {
+		return msgs
+	}
+	return span
+}
+
+// seqDryRunReport reports what a keep/beforeSeq purge would remove without
+// executing it. Backing-stream (KV_<bucket>) sizes are read directly so the
+// estimate reflects tombstones the KV key count would hide.
+func seqDryRunReport(
+	ctx context.Context,
+	js jetstream.JetStream,
+	streams, buckets []string,
+	keep, beforeSeq uint64,
+) dryRunResult {
+	if js == nil {
+		panic("seqDryRunReport: js must not be nil")
+	}
+	if keep == 0 && beforeSeq == 0 {
+		panic("seqDryRunReport: keep or beforeSeq must be set")
+	}
+
+	var result dryRunResult
+	for _, name := range streams {
+		addSeqDryRunEntry(ctx, js, name, name, "stream",
+			keep, beforeSeq, &result)
+	}
+	for _, name := range buckets {
+		addSeqDryRunEntry(ctx, js, "KV_"+name, name, "kv",
+			keep, beforeSeq, &result)
+	}
+	return result
+}
+
+// addSeqDryRunEntry appends one estimated purge entry for a target stream.
+func addSeqDryRunEntry(
+	ctx context.Context,
+	js jetstream.JetStream,
+	streamName, displayName, kind string,
+	keep, beforeSeq uint64,
+	result *dryRunResult,
+) {
+	if js == nil {
+		panic("addSeqDryRunEntry: js must not be nil")
+	}
+	if result == nil {
+		panic("addSeqDryRunEntry: result must not be nil")
+	}
+
+	stream, err := js.Stream(ctx, streamName)
+	if err != nil {
+		return
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return
+	}
+	// Execute skips work-queue streams (seqPurgeStreams), so the preview must
+	// not report them as purgeable — otherwise the dry-run overstates what a
+	// real run would remove.
+	if info.Config.Retention == jetstream.WorkQueuePolicy {
+		return
+	}
+	st := info.State
+	est := seqPurgeEstimate(
+		st.Msgs, st.FirstSeq, st.LastSeq, keep, beforeSeq)
+	if est == 0 {
+		return
+	}
+	result.Entries = append(result.Entries, dryRunEntry{
+		Name:     displayName,
+		Kind:     kind,
+		Messages: est,
+	})
+	result.TotalMsgs += est
+}
+
 // dryRunEntry describes one stream or bucket for dry-run output.
 type dryRunEntry struct {
 	Name     string `json:"name"`
@@ -705,6 +1029,12 @@ func printCleanUsage() {
 		"  --older-than=<dur>   " +
 			"only clean data older than duration (7d, 24h)")
 	fmt.Println(
+		"  --keep=<n>           " +
+			"bulk-prune each target to the newest n messages")
+	fmt.Println(
+		"  --before-seq=<n>     " +
+			"bulk-prune messages below stream sequence n")
+	fmt.Println(
 		"  --dry-run            " +
 			"show what would be cleaned without doing it")
 	fmt.Println(
@@ -714,4 +1044,22 @@ func printCleanUsage() {
 		"  --force              skip confirmation prompt")
 	fmt.Println(
 		"  --json               output result as JSON")
+	fmt.Println()
+	fmt.Println("Retention & bulk prune:")
+	fmt.Println(
+		"  Bucket size grows with run rate x retention. --older-than is")
+	fmt.Println(
+		"  the safe default: it prunes by age and skips live work. If a")
+	fmt.Println(
+		"  bucket (e.g. KV_workflow_runs) has already cliffed and cannot")
+	fmt.Println(
+		"  be drained per-key, --keep/--before-seq purge server-side by")
+	fmt.Println(
+		"  stream sequence in one round trip, regardless of size.")
+	fmt.Println(
+		"  Recovery recipe:  dagnats clean --type=runs --keep=30000 --force")
+	fmt.Println(
+		"  Caution: sequence prunes ignore run age/status and can evict")
+	fmt.Println(
+		"  live in-flight runs; prefer --older-than for routine cleanup.")
 }
