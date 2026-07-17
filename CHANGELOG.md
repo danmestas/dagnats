@@ -6,6 +6,136 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+## [0.0.10] - 2026-07-17
+
+Reliability release addressing **#523** — a bloated `workflow_runs` KV bucket
+could stall *all* workflow execution, and there was no bounded way to recover
+it. The orchestrator scans pending run snapshots on every completion, and the
+reconciler scans the whole run set periodically; both used an all-or-nothing
+batch read, so one slow key past the deadline turned into an engine-wide stall.
+
+### Fixed
+
+- **Reconciler survives a bloated run bucket (#523).** Pending-run scans are now
+  bounded (cap 1000 keys) and *best-effort*: a slow or missing key is skipped,
+  not fatal. A skipped or capped scan emits a `WARN` plus a
+  `workflow.runs.scan_degraded` metric so the degradation is observable, and the
+  engine keeps making progress while the bucket is oversized.
+
+### Added
+
+- **`clean --keep=N` / `--before-seq=N` bulk prune (#523).** An O(1) server-side
+  stream-sequence purge to recover a bucket that has already cliffed past what
+  the per-key `--older-than` loop can drain within the deadline. Both are
+  force-gated (unless `--dry-run`), mutually exclusive with each other and with
+  `--older-than`, and **skip work-queue streams** (`TASK_QUEUES`) so queued
+  un-acked tasks are never silently discarded. `--dry-run` never prompts or
+  mutates and reads backing-stream sizes so the estimate reflects tombstones the
+  KV key count hides. These purge by *sequence, not age* — a blunt recovery
+  tool; `--older-than` remains the safe default.
+
+## [0.0.9] - 2026-07-17
+
+Bug-fix release addressing **#521** — unbounded run storage and two
+`dagnats clean` failures.
+
+### Fixed
+
+- **Bounded run retention by default (#521).** Terminal run snapshots in the
+  `workflow_runs` KV now age out after 30 days by default (matching
+  `WORKFLOW_HISTORY`), so run storage stays bounded without operator
+  intervention. The pruner is terminal-only — in-flight runs are never touched,
+  preserving snapshot-first recovery. Configure with `DAGNATS_RUNS_MAX_AGE`: a
+  window (`720h`, `30d`, `2w`) or `0`/`off` to disable.
+- **`clean` no longer errors on work-queue streams (#521).** `clean
+  --older-than` now skips `TASK_QUEUES` (a work queue holds live pending work,
+  not history) instead of failing with a pull-consumer ack-policy error
+  (`10084`). A full `clean` still drains it.
+- **`clean` no longer times out deleting run keys (#521).** Full bucket clears
+  use an O(1) backing-stream purge; the `--older-than` path bounds each delete
+  with its own timeout and stays cancellable.
+
+### Changed
+
+- **Run pruner is now on by default (30d).** An upgraded server begins deleting
+  terminal runs older than 30 days, so they disappear from the console
+  (consistent with the 30d history window). Set `DAGNATS_RUNS_MAX_AGE=off` to
+  keep the previous keep-forever behavior.
+
+## [0.0.8] - 2026-07-16
+
+Hardens run-dispatch reliability, eliminates the CI test-harness flakes, and
+brings the full dependency stack current — clearing all outstanding security
+advisories.
+
+### Fixed
+
+- **WORKFLOW_HISTORY poison-loop backstop (#508):** the orchestrator history
+  consumer now has a bounded `MaxDeliver` with a redelivery schedule and
+  dead-letters exhausted handler-error events to `DEAD_LETTERS` instead of
+  NAK-looping forever; a dead-letter-publish failure NAKs rather than silently
+  dropping the event.
+- **Fan-out span differentiation (#513):** map-instance (fan-out) enqueue spans
+  now carry the real `workflow_name` without regranting control-plane
+  capabilities — the capability-grant key and telemetry label are decoupled (the
+  #380 deny-by-default invariant is preserved and regression-tested).
+- **Cleaner shutdown:** `Orchestrator` / `Correlator` / `SleepTimer` `Stop()`
+  now wait (bounded) for their JetStream consume loop to fully quiesce instead
+  of only signaling it, closing a lifecycle race where a goroutine could still
+  be mid-fetch after `Stop()` returned.
+- **CI flakes fixed at the root** — both OS ephemeral-port / temp-dir races in
+  shared test helpers: `StartTestCluster` cross-call port collision (#516) and
+  `StartTestServer` `StoreDir` cleanup race (#520). No more rerun-to-green.
+
+### Security
+
+- **All 14 Dependabot alerts cleared** (7 critical / 2 high / 5 moderate):
+  `golang.org/x/crypto` v0.49.0 → v0.54.0 (critical SSH auth-bypass /
+  key-constraint / FIDO-U2F) and `golang.org/x/net` v0.52.0 → v0.57.0.
+
+### Changed
+
+- **OpenTelemetry** → v1.44.0 / v0.20.0 (coordinated across the tree).
+- **NATS** server → v2.14.3, client (`nats.go`) → v1.52.0,
+  `orbit.go/jetstreamext` → v0.3.1 — changelog-reviewed to confirm the JetStream
+  consumer/advisory semantics this release depends on are unchanged.
+
+## [0.0.7] - 2026-07-15
+
+Closes the observability gaps blocking downstream freshness/trace tooling and
+hardens run-dispatch durability. All six changes since v0.0.6.
+
+### Added
+
+- **Per-trigger `last_fired` / `next_fire` metrics (#501)** — the scheduler
+  exposes `trigger_last_fired_seconds` and `trigger_next_fire_seconds` gauges so
+  a consumer can detect a *missed* cron fire without hardcoding each schedule.
+- **Differentiated task/enqueue span names + `workflow_name` (#503)** —
+  enqueue/execute spans are named per task/type and carry the workflow name, so
+  traces are no longer collapsed into one undifferentiated wall.
+- **Trigger-fire spans + trace propagation (#504)** — cron fires start a
+  `trigger.fire` span and propagate context to the engine, giving trigger
+  identity and a proper trigger→engine parent hop.
+- **Guaranteed W3C propagator in workers (#505)** — `NewWorker` installs a W3C
+  TraceContext+Baggage propagator when none is configured, so incoming
+  `traceparent` headers are no longer silently dropped.
+
+### Fixed
+
+- **Durable visibility for singleton-skipped runs (#502)** — a run skipped by
+  singleton admission now persists a terminal record instead of silently
+  vanishing (acked but never dispatched/findable); a snapshot-write failure NAKs
+  for redelivery rather than dropping the run.
+- **Deterministic supercluster test ports (#509)** — fixed a port-collision
+  flake that surfaced as ~500s CI readiness timeouts.
+
+## [0.0.6] - 2026-07-10
+
+### Fixed
+
+- **`worker.Stop()` now drains in-flight handlers before returning (#498 /
+  #499)** — fixes the shutdown `sql: database is closed` race.
+
 ## [0.0.5] - 2026-06-25
 
 A feature release — 14 PRs since `v0.0.4`. Two headlines: **runtime-generated
