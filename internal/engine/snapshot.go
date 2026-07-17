@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -254,17 +255,30 @@ func (s *SnapshotStore) ListAll(
 		return []dag.WorkflowRun{}, nil
 	}
 
-	entries, err := natsutil.ParallelGetJS(
-		s.kv, filtered, natsutil.DefaultParallelism,
+	// Best-effort fetch (#523): a slow key on a large bucket is skipped
+	// rather than discarding the whole batch, so the 60s reconciler tick
+	// still reconciles the runs it CAN read instead of the all-or-nothing
+	// cliff. Skips are logged LOUDLY so operators can prune/tune retention.
+	entries, skipped, err := natsutil.ParallelGetJSBestEffort(
+		ctx, s.kv, filtered,
+		natsutil.DefaultParallelism, bestEffortGetTimeout,
 	)
 	if err != nil {
 		return nil, err
 	}
+	if skipped > 0 {
+		slog.WarnContext(ctx,
+			"ListAll skipped slow run keys; prune or tune retention",
+			"skipped", skipped,
+			"fetched", len(entries),
+			"scanned", len(filtered),
+		)
+	}
 
 	runs := make([]dag.WorkflowRun, 0, len(entries))
-	for _, entry := range entries {
+	for _, value := range entries {
 		var run dag.WorkflowRun
-		if err := json.Unmarshal(entry.Value(), &run); err != nil {
+		if err := json.Unmarshal(value, &run); err != nil {
 			return nil, err
 		}
 		runs = append(runs, run)

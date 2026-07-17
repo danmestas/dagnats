@@ -36,6 +36,7 @@ type orchMetrics struct {
 	runsCompleted    metric.Int64Counter
 	runsFailed       metric.Int64Counter
 	runsReconciled   metric.Int64Counter
+	runsScanDegraded metric.Int64Counter
 	snapshotDuration metric.Float64Histogram
 	failNonRetriable metric.Int64Counter
 	failRetryAfter   metric.Int64Counter
@@ -61,6 +62,11 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 	runsReconciled, _ := m.Int64Counter(
 		"workflow.runs.reconciled",
 	)
+	// Incremented whenever a bounded run scan had to cap or skip keys
+	// (#523) — the durable operator signal to prune/tune retention.
+	runsScanDegraded, _ := m.Int64Counter(
+		"workflow.runs.scan_degraded",
+	)
 	snapshotDuration, _ := m.Float64Histogram(
 		"snapshot.save.duration_ms",
 	)
@@ -81,6 +87,7 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 		runsCompleted:    runsCompleted,
 		runsFailed:       runsFailed,
 		runsReconciled:   runsReconciled,
+		runsScanDegraded: runsScanDegraded,
 		snapshotDuration: snapshotDuration,
 		failNonRetriable: failNonRetriable,
 		failRetryAfter:   failRetryAfter,

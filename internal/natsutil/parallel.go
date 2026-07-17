@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -114,4 +116,82 @@ func ParallelGetJS(
 		}
 	}
 	return entries, nil
+}
+
+// ParallelGetJSBestEffort fetches KV entries concurrently, bounding each
+// GET with perKeyTimeout and DEGRADING rather than aborting on a slow key.
+// A per-key timeout, deleted key, or transient class error SKIPS that key
+// (counted in skipped) and the batch continues — this is the #523 fix, so
+// one slow GET on a huge bucket can no longer discard every entry the caller
+// could have used. Only a caller-ctx cancellation aborts the whole batch.
+// Returns the fetched values keyed by run key, the skipped count, and an
+// error only on caller cancellation. Distinct from ParallelGetJS, which is
+// all-or-nothing and kept intact for its other callers.
+func ParallelGetJSBestEffort(
+	ctx context.Context, kv jetstream.KeyValue, keys []string,
+	parallelism int, perKeyTimeout time.Duration,
+) (map[string][]byte, int, error) {
+	if kv == nil {
+		panic("ParallelGetJSBestEffort: kv must not be nil")
+	}
+	if parallelism <= 0 {
+		panic("ParallelGetJSBestEffort: parallelism must be positive")
+	}
+	if perKeyTimeout <= 0 {
+		panic("ParallelGetJSBestEffort: perKeyTimeout must be positive")
+	}
+	entries := make(map[string][]byte, len(keys))
+	if len(keys) == 0 {
+		return entries, 0, nil
+	}
+	var mu sync.Mutex
+	skipped := 0
+	// WithContext so a caller cancellation (or the first hard error, which
+	// only ever fires ON that cancellation) short-circuits pending GETs.
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(parallelism)
+	for _, key := range keys {
+		g.Go(func() error {
+			return getKeyBestEffort(
+				gctx, kv, key, perKeyTimeout, &mu, entries, &skipped,
+			)
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return entries, skipped, err
+	}
+	return entries, skipped, nil
+}
+
+// getKeyBestEffort fetches one key under a perKeyTimeout derived from ctx.
+// A caller cancellation (ctx.Err() != nil) is returned as a hard error so
+// the batch aborts; any other GET failure (per-key deadline, not-found,
+// transient) is swallowed as a skip so the batch proceeds.
+func getKeyBestEffort(
+	ctx context.Context, kv jetstream.KeyValue, key string,
+	perKeyTimeout time.Duration, mu *sync.Mutex,
+	entries map[string][]byte, skipped *int,
+) error {
+	if key == "" {
+		panic("getKeyBestEffort: key must not be empty")
+	}
+	if mu == nil {
+		panic("getKeyBestEffort: mu must not be nil")
+	}
+	getCtx, cancel := context.WithTimeout(ctx, perKeyTimeout)
+	defer cancel()
+	entry, err := kv.Get(getCtx, key)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err() // caller cancelled → abort the batch
+		}
+		mu.Lock()
+		*skipped++
+		mu.Unlock()
+		return nil // slow/absent/transient key → skip, keep going
+	}
+	mu.Lock()
+	entries[key] = entry.Value()
+	mu.Unlock()
+	return nil
 }

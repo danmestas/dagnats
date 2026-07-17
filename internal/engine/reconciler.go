@@ -45,6 +45,19 @@ const (
 // runs. Production callers must not mutate.
 var reconcileMaxRunsScan = 1000
 
+// pendingRunScanMax caps the run.* GETs findOldestPendingRun issues
+// on each run completion (#523). Without it, a per-completion scan of a
+// 228k-key workflow_runs bucket parallel-GETs the entire population just
+// to find one pending run — one slow GET then stalls ALL execution. var
+// for test injection; production callers must not mutate.
+var pendingRunScanMax = 1000
+
+// bestEffortGetTimeout bounds each KV GET in the best-effort scans
+// (findOldestPendingRun, ListAll) so a single slow key cannot wedge a
+// whole tick. Well under nats.go's 5s default so a degraded bucket
+// degrades quickly and observably rather than blocking.
+const bestEffortGetTimeout = 2 * time.Second
+
 // prunePassInterval is the cadence of the opt-in run-retention
 // sweeper (#453). var rather than const for test injection —
 // tests lower it so the background pass fires without waiting the
