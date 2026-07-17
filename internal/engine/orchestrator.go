@@ -1263,8 +1263,28 @@ func (o *Orchestrator) startNextPendingRun(
 	return o.transitionPendingToRunning(ctx, runID)
 }
 
-// findOldestPendingRun scans workflow_runs KV for the oldest pending
-// run for the given workflow. Returns (runID, true, nil) when found.
+// findOldestPendingRun finds the oldest pending run for the given workflow
+// among what it can read this tick (#523). It is bounded and best-effort:
+// it filters to run.* keys BEFORE any GET, caps the fetched keys at
+// pendingRunScanMax, and uses ParallelGetJSBestEffort so a slow key is
+// skipped rather than discarding the whole batch. When the population
+// exceeds the cap or any key was skipped it degrades LOUDLY (WARN + metric)
+// so operators get a prune/tune-retention signal.
+//
+// Honest bounds on what that resilience buys:
+//   - A FIFO *reordering* (we start a newer pending run because the oldest's
+//     key was momentarily slow/skipped) self-heals — the oldest is still in
+//     the population and the next completion re-fires this scan.
+//   - A pending run *outside the sampled window* (population > cap, and it
+//     sorted past the first pendingRunScanMax keys) is NOT recovered by a
+//     completion or the reconciler: in the starvation case this fix targets
+//     — all remaining runs Pending, none Running — there is no next
+//     completion, and reconcileRunningRuns only acts on Running runs. That
+//     run is freed only when retention pruning (#453) shrinks the population
+//     back under the cap. A1+A2 therefore give resilience and a loud signal,
+//     NOT a guarantee that an over-cap bucket surfaces every pending run —
+//     which is exactly why the WARN and workflow.runs.scan_degraded metric
+//     exist as the operator's prune-now signal.
 func (o *Orchestrator) findOldestPendingRun(
 	ctx context.Context, workflowID string,
 ) (string, bool, error) {
@@ -1276,30 +1296,56 @@ func (o *Orchestrator) findOldestPendingRun(
 	}
 	keys, err := o.store.kv.Keys(ctx)
 	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return "", false, nil
+		}
 		return "", false, fmt.Errorf("list run keys: %w", err)
 	}
-
-	entries, err := natsutil.ParallelGetJS(
-		o.store.kv, keys, natsutil.DefaultParallelism,
+	// Filter to run.* keys FIRST — key names are cheap, so we never GET a
+	// non-run key just to discard it. Then cap the expensive GETs.
+	runKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if isRunKey(key) {
+			runKeys = append(runKeys, key)
+		}
+	}
+	total := len(runKeys)
+	capped := total > pendingRunScanMax
+	if capped {
+		runKeys = runKeys[:pendingRunScanMax]
+	}
+	entries, skipped, err := natsutil.ParallelGetJSBestEffort(
+		ctx, o.store.kv, runKeys,
+		natsutil.DefaultParallelism, bestEffortGetTimeout,
 	)
 	if err != nil {
-		return "", false, fmt.Errorf(
-			"parallel get runs: %w", err,
-		)
+		return "", false, fmt.Errorf("parallel get runs: %w", err)
 	}
+	o.logPendingScanDegraded(ctx, workflowID, total, capped, skipped)
+	return oldestPendingFromEntries(entries, workflowID)
+}
 
+// oldestPendingFromEntries selects the oldest pending run for workflowID
+// from the fetched run snapshots. Values that fail to unmarshal are skipped
+// (a corrupt snapshot never wedges queue progression).
+func oldestPendingFromEntries(
+	entries map[string][]byte, workflowID string,
+) (string, bool, error) {
+	if workflowID == "" {
+		panic("oldestPendingFromEntries: workflowID must not be empty")
+	}
+	if entries == nil {
+		panic("oldestPendingFromEntries: entries must not be nil")
+	}
 	var oldestRun dag.WorkflowRun
 	var foundPending bool
-
-	for _, entry := range entries {
+	for _, value := range entries {
 		var run dag.WorkflowRun
-		if err := json.Unmarshal(entry.Value(), &run); err != nil {
+		if err := json.Unmarshal(value, &run); err != nil {
 			continue
 		}
-		if run.WorkflowID != workflowID {
-			continue
-		}
-		if run.Status != dag.RunStatusPending {
+		if run.WorkflowID != workflowID ||
+			run.Status != dag.RunStatusPending {
 			continue
 		}
 		if !foundPending ||
@@ -1308,11 +1354,42 @@ func (o *Orchestrator) findOldestPendingRun(
 			foundPending = true
 		}
 	}
-
 	if !foundPending {
 		return "", false, nil
 	}
 	return oldestRun.RunID, true, nil
+}
+
+// logPendingScanDegraded emits the LOUD prune/tune-retention signal (#523)
+// when a pending scan had to cap the population or skip slow keys. Fires
+// per completion by design: findOldestPendingRun runs concurrently across
+// workflows, so a mutable transition-state (like the reconciler's
+// capHitPrev) is unsafe here; a WARN + a monotonic counter are the
+// concurrency-safe operator surface. A clean scan logs nothing.
+func (o *Orchestrator) logPendingScanDegraded(
+	ctx context.Context, workflowID string, total int,
+	capped bool, skipped int,
+) {
+	if ctx == nil {
+		panic("logPendingScanDegraded: ctx must not be nil")
+	}
+	if workflowID == "" {
+		panic("logPendingScanDegraded: workflowID must not be empty")
+	}
+	if !capped && skipped == 0 {
+		return
+	}
+	o.metrics.runsScanDegraded.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("workflow", workflowID),
+	))
+	slog.WarnContext(ctx,
+		"pending scan degraded; prune or tune run retention",
+		"workflow_id", workflowID,
+		"run_keys", total,
+		"cap", pendingRunScanMax,
+		"capped", capped,
+		"skipped", skipped,
+	)
 }
 
 // transitionPendingToRunning loads a pending run, acquires concurrency,
