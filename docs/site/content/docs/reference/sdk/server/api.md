@@ -21,6 +21,7 @@ The gate wraps prom.Handler; the rendered output is unchanged.
 
 ## Index
 
+- [Constants](<#constants>)
 - [func LogMetricsAuthStartup\(logger \*slog.Logger, cfg MetricsAuthConfig, httpAddr string\)](<#LogMetricsAuthStartup>)
 - [func PrintDryRun\(w io.Writer, rc ResolvedConfig\) bool](<#PrintDryRun>)
 - [type Config](<#Config>)
@@ -50,6 +51,24 @@ The gate wraps prom.Handler; the rendered output is unchanged.
   - [func \(s \*WorkerShim\) WithGroups\(groups ...string\)](<#WorkerShim.WithGroups>)
 
 
+## Constants
+
+<a name="DefaultRunsMaxAge"></a>
+
+```go
+const (
+
+    // DefaultRunsMaxAge is the run-retention window applied when the operator
+    // configures nothing (#521). It matches WORKFLOW_HISTORY's 30d so a run's
+    // authoritative snapshot never outlives the history it summarizes, and it
+    // bounds the otherwise-unbounded workflow_runs KV (the prod disk-growth
+    // symptom). The pruner is terminal-only (deletes by CompletedAt), so
+    // in-flight runs are never touched and recovery is preserved. An explicit
+    // 0/off/disabled still turns pruning off — see parseRetentionDuration.
+    DefaultRunsMaxAge = 30 * 24 * time.Hour
+)
+```
+
 <a name="LogMetricsAuthStartup"></a>
 ## func [LogMetricsAuthStartup](<https://github.com/danmestas/dagnats/blob/main/server/metrics_auth.go#L92-L94>)
 
@@ -69,7 +88,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L61-L153>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L70-L164>)
 
 Config holds all server configuration.
 
@@ -96,13 +115,15 @@ type Config struct {
     Workers        []WorkerConfig `json:"workers"`
     OTLPEndpoint   string         `json:"otlp_endpoint"`
 
-    // RunsMaxAge is the opt-in run-retention window for the
-    // workflow_runs KV (#453). Zero (the default) DISABLES pruning
-    // entirely — upgrading never silently deletes anyone's runs.
-    // When > 0, terminal runs older than this are dropped
-    // (delete-only) by the orchestrator's background sweeper. Set
-    // via DAGNATS_RUNS_MAX_AGE, which accepts a Go duration ("720h")
-    // or a d/w suffix ("30d", "2w") for operator ergonomics.
+    // RunsMaxAge is the run-retention window for the workflow_runs KV
+    // (#453, #521). It DEFAULTS to DefaultRunsMaxAge (30d): an unconfigured
+    // serve prunes terminal runs older than 30d, bounding the previously
+    // unbounded bucket. When > 0, terminal runs whose CompletedAt is older
+    // than this are dropped (delete-only) by the orchestrator's background
+    // sweeper; in-flight runs are never touched. Set via DAGNATS_RUNS_MAX_AGE
+    // or the runs_max_age config key, which accept a Go duration ("720h") or
+    // a d/w suffix ("30d", "2w"). An explicit 0/off/disabled turns pruning
+    // off entirely — the escape hatch for operators who want it off.
     RunsMaxAge time.Duration `json:"runs_max_age"`
 
     // Per-runtime safety bounds (ADR-021 Phase A, #378). These cap a
@@ -170,7 +191,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L201>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L213>)
 
 ```go
 func ConfigFromEnv() Config
@@ -179,7 +200,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty or MaxStoreBytes \<= 0 after resolution.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L214-L216>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L226-L228>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -188,7 +209,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty or MaxStoreBytes \<= 0 after resolution.
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L157>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L168>)
 
 ```go
 func DefaultConfig() Config
@@ -333,7 +354,7 @@ func DryRunValidate(cfg Config) ([]ValidationResult, bool)
 DryRunValidate checks prerequisites without starting components. Returns validation results and true if all passed.
 
 <a name="WorkerConfig"></a>
-## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L53-L58>)
+## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L62-L67>)
 
 WorkerConfig defines a config\-driven embedded worker handler.
 
