@@ -9,12 +9,12 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"regexp"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
 )
@@ -63,6 +63,10 @@ func NewNATSAPI(
 	if nc == nil {
 		panic("NewNATSAPI: nc must not be nil")
 	}
+	// Extraction in the handlers is inert under a noop propagator, so a
+	// library embedder that never calls InitTelemetry would silently get
+	// no trace linkage. Idempotent and no-clobber.
+	observe.EnsureDefaultPropagator()
 	return &NATSAPI{svc: svc, nc: nc, version: version}
 }
 
@@ -153,7 +157,7 @@ func (n *NATSAPI) handleRegister(req micro.Request) {
 		return
 	}
 	if err := n.svc.RegisterWorkflow(
-		context.Background(), def,
+		observe.ExtractTraceContextHeader(nats.Header(req.Headers())), def,
 	); err != nil {
 		n.reply(req, map[string]string{"error": err.Error()})
 		return
@@ -177,7 +181,8 @@ func (n *NATSAPI) handleStartRun(req micro.Request) {
 		return
 	}
 	runID, err := n.svc.StartRun(
-		context.Background(), r.Workflow, r.Input,
+		observe.ExtractTraceContextHeader(nats.Header(req.Headers())),
+		r.Workflow, r.Input,
 	)
 	if err != nil {
 		n.reply(req, map[string]string{"error": err.Error()})
@@ -197,7 +202,7 @@ func (n *NATSAPI) handleGetRun(req micro.Request) {
 	}
 	runID := string(req.Data())
 	resp, err := n.svc.GetRunResponse(
-		context.Background(), runID,
+		observe.ExtractTraceContextHeader(nats.Header(req.Headers())), runID,
 	)
 	if err != nil {
 		n.reply(req, map[string]string{"error": err.Error()})
@@ -246,7 +251,7 @@ func (n *NATSAPI) handleRuntimeRegister(req micro.Request) {
 	if r.Promote {
 		deniedAction = "runtime.promote"
 	}
-	ctx := context.Background()
+	ctx := observe.ExtractTraceContextHeader(nats.Header(req.Headers()))
 	if kind, verr := n.svc.VerifyDispatch(
 		ctx, r.OwnerRunID, r.OwnerStepID, r.Nonce,
 	); verr != nil {
@@ -294,7 +299,7 @@ func (n *NATSAPI) handleRunSpawn(req micro.Request) {
 	}
 	// Per-dispatch run-binding (#380, Fix 1): verify the spawn caller
 	// received this dispatch before launching a child run.
-	ctx := context.Background()
+	ctx := observe.ExtractTraceContextHeader(nats.Header(req.Headers()))
 	if kind, verr := n.svc.VerifyDispatch(
 		ctx, r.ParentRunID, r.ParentStepID, r.Nonce,
 	); verr != nil {
@@ -341,7 +346,7 @@ func (n *NATSAPI) handleRuntimesBudget(req micro.Request) {
 	}
 	// Per-dispatch run-binding (#380, Fix 1): even a read-only budget query
 	// must prove it came from this dispatch.
-	ctx := context.Background()
+	ctx := observe.ExtractTraceContextHeader(nats.Header(req.Headers()))
 	if kind, verr := n.svc.VerifyDispatch(
 		ctx, r.OwnerRunID, r.OwnerStepID, r.Nonce,
 	); verr != nil {
