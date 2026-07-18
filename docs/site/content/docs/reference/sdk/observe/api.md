@@ -18,6 +18,7 @@ setup.go is the single entry point for OTel provider setup. One call to InitTele
 
 - [func EnsureDefaultPropagator\(\)](<#EnsureDefaultPropagator>)
 - [func ExtractTraceContext\(msg jetstream.Msg, evt \*protocol.Event\) context.Context](<#ExtractTraceContext>)
+- [func ExtractTraceContextHeader\(hdr nats.Header\) context.Context](<#ExtractTraceContextHeader>)
 - [func ExtractTraceContextRaw\(msg \*nats.Msg, evt \*protocol.Event\) context.Context](<#ExtractTraceContextRaw>)
 - [func InitTelemetry\(ctx context.Context, cfg Config\) \(func\(context.Context\), error\)](<#InitTelemetry>)
 - [func InjectTraceContext\(ctx context.Context, msg \*nats.Msg, evt \*protocol.Event\)](<#InjectTraceContext>)
@@ -46,8 +47,17 @@ func ExtractTraceContext(msg jetstream.Msg, evt *protocol.Event) context.Context
 
 ExtractTraceContext reads W3C trace context from NATS headers, falling back to Event.TraceParent for replay. Accepts jetstream.Msg for consumer message handling. evt may be nil when no event fallback is needed.
 
+<a name="ExtractTraceContextHeader"></a>
+## func [ExtractTraceContextHeader](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L62>)
+
+```go
+func ExtractTraceContextHeader(hdr nats.Header) context.Context
+```
+
+ExtractTraceContextHeader reads W3C trace context directly from a NATS header map. Returns context.Background\(\) when hdr is nil or carries no traceparent. This is the header\-level entry point for transports \(e.g. nats\-micro requests\) that expose headers without a \*nats.Msg or jetstream.Msg.
+
 <a name="ExtractTraceContextRaw"></a>
-## func [ExtractTraceContextRaw](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L79-L82>)
+## func [ExtractTraceContextRaw](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L78-L81>)
 
 ```go
 func ExtractTraceContextRaw(msg *nats.Msg, evt *protocol.Event) context.Context
