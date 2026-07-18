@@ -51,26 +51,25 @@ func ExtractTraceContext(
 	if msg == nil {
 		panic("ExtractTraceContext: msg must not be nil")
 	}
-	if hdrs := msg.Headers(); hdrs != nil {
-		if hdrs.Get("traceparent") != "" {
-			return otel.GetTextMapPropagator().Extract(
-				context.Background(),
-				NATSHeaderCarrier{Header: hdrs},
-			)
-		}
+	return extractWithFallback(msg.Headers(), evt)
+}
+
+// ExtractTraceContextHeader reads W3C trace context directly from a
+// NATS header map. Returns context.Background() when hdr is nil or
+// carries no traceparent. This is the header-level entry point for
+// transports (e.g. nats-micro requests) that expose headers without a
+// *nats.Msg or jetstream.Msg.
+func ExtractTraceContextHeader(hdr nats.Header) context.Context {
+	if hdr == nil {
+		return context.Background()
 	}
-	if evt != nil && evt.TraceParent != "" {
-		hdr := nats.Header{}
-		hdr.Set("traceparent", evt.TraceParent)
-		if evt.TraceState != "" {
-			hdr.Set("tracestate", evt.TraceState)
-		}
-		return otel.GetTextMapPropagator().Extract(
-			context.Background(),
-			NATSHeaderCarrier{Header: hdr},
-		)
+	if hdr.Get("traceparent") == "" {
+		return context.Background()
 	}
-	return context.Background()
+	return otel.GetTextMapPropagator().Extract(
+		context.Background(),
+		NATSHeaderCarrier{Header: hdr},
+	)
 }
 
 // ExtractTraceContextRaw reads W3C trace context from a raw
@@ -83,24 +82,26 @@ func ExtractTraceContextRaw(
 	if msg == nil {
 		panic("ExtractTraceContextRaw: msg must not be nil")
 	}
-	if msg.Header != nil {
-		if msg.Header.Get("traceparent") != "" {
-			return otel.GetTextMapPropagator().Extract(
-				context.Background(),
-				NATSHeaderCarrier{Header: msg.Header},
-			)
-		}
+	return extractWithFallback(msg.Header, evt)
+}
+
+// extractWithFallback prefers the wire header and falls back to the
+// event's persisted traceparent, which is the only carrier available
+// when history is replayed rather than consumed live.
+func extractWithFallback(
+	hdr nats.Header,
+	evt *protocol.Event,
+) context.Context {
+	if hdr.Get("traceparent") != "" {
+		return ExtractTraceContextHeader(hdr)
 	}
 	if evt != nil && evt.TraceParent != "" {
-		hdr := nats.Header{}
-		hdr.Set("traceparent", evt.TraceParent)
+		replay := nats.Header{}
+		replay.Set("traceparent", evt.TraceParent)
 		if evt.TraceState != "" {
-			hdr.Set("tracestate", evt.TraceState)
+			replay.Set("tracestate", evt.TraceState)
 		}
-		return otel.GetTextMapPropagator().Extract(
-			context.Background(),
-			NATSHeaderCarrier{Header: hdr},
-		)
+		return ExtractTraceContextHeader(replay)
 	}
 	return context.Background()
 }

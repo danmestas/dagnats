@@ -187,3 +187,36 @@ func TestExtract_NilEvent(t *testing.T) {
 		t.Fatal("expected remote span context")
 	}
 }
+
+func TestExtractTraceContextHeader(t *testing.T) {
+	restore := installPropagator()
+	defer restore()
+
+	tp := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	hdr := nats.Header{}
+	hdr.Set("traceparent", tp)
+	sc := trace.SpanContextFromContext(ExtractTraceContextHeader(hdr))
+
+	// Positive: trace ID extracted, and marked remote.
+	wantTraceID := "4bf92f3577b34da6a3ce929d0e0e4736"
+	if sc.TraceID().String() != wantTraceID {
+		t.Fatalf(
+			"trace ID: got %q, want %q",
+			sc.TraceID().String(), wantTraceID,
+		)
+	}
+	if !sc.IsRemote() {
+		t.Fatal("expected remote span context")
+	}
+
+	// Negative: a nil header yields a bare background context.
+	nilSC := trace.SpanContextFromContext(
+		ExtractTraceContextHeader(nil),
+	)
+	if nilSC.IsValid() {
+		t.Fatalf("nil header: got valid span context %v", nilSC)
+	}
+	if nilSC.IsRemote() {
+		t.Fatal("nil header: span context must not be remote")
+	}
+}
