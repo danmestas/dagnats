@@ -139,6 +139,10 @@ func (r *Runtime) runActor(cell *actorCell) {
 }
 
 // handleFailure applies the parent's supervision strategy.
+//
+// recursion:allow escalation walks up the supervision tree one parent
+// per call, so depth is the tree's height -- a structural bound set when
+// actors are spawned, not by anything this function controls.
 func (r *Runtime) handleFailure(cell *actorCell, err error) {
 	if cell == nil {
 		panic("handleFailure: cell must not be nil")
@@ -197,6 +201,9 @@ func (r *Runtime) restartActor(cell *actorCell) {
 }
 
 // stopActor terminates an actor and removes it from the runtime.
+//
+// recursion:allow stopping descends the supervision tree one generation
+// per call, mirroring handleFailure's ascent. Bounded by tree height.
 func (r *Runtime) stopActor(cell *actorCell) {
 	if cell == nil {
 		panic("actor: stopActor cell must not be nil")

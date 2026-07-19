@@ -186,6 +186,10 @@ func sortedTraceIDs(
 }
 
 // printNode renders a single tree node with box-drawing lines.
+//
+// recursion:allow depth equals the span tree's depth, which is bounded
+// by the workflow nesting the trace came from. Display-only: a
+// pathological trace prints badly rather than corrupting state.
 func printNode(
 	node *spanread.SpanNode, prefix string, isLast bool,
 ) {
