@@ -93,11 +93,18 @@ func startHTTPE2EStack(
 	}
 }
 
+// routeReadyCeiling is generous by design: the KV watcher that wires
+// the route competes for CPU with every other e2e server on the box,
+// so a short fixed budget turns contention into a spurious failure
+// (issue #555). A miss costs wall-clock; it never masks a real bug,
+// because waitForHTTPRoute names the unwired route when it gives up.
+const routeReadyCeiling = 30 * time.Second
+
 // registerHTTPTrigger registers a workflow + HTTP trigger pair and
 // waits until the trigger service's HTTPRouter resolves the route
 // (no 404). Returns the trigger ID + path so callers can issue
-// requests or remove the trigger later. Bounded wait: 3s ceiling
-// matches http_respond_test.go's waitForRoute helper.
+// requests or remove the trigger later. Bounded wait — see
+// routeReadyCeiling.
 func (s *httpE2EStack) registerHTTPTrigger(
 	t *testing.T,
 	wfDef dag.WorkflowDef,
@@ -123,7 +130,8 @@ func (s *httpE2EStack) registerHTTPTrigger(
 	if err := s.svc.CreateTrigger(s.ctx, def); err != nil {
 		t.Fatalf("CreateTrigger %q: %v", tid, err)
 	}
-	waitForHTTPRoute(t, s.ts, cfg.Method, cfg.Path, 3*time.Second)
+	waitForHTTPRoute(t, s.ts, cfg.Method, cfg.Path,
+		routeReadyCeiling)
 	return tid, cfg.Path
 }
 
