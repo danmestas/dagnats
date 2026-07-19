@@ -26,6 +26,15 @@ type CronExpr struct {
 	DaysOfMonth []int // 1-31
 	Months      []int // 1-12
 	DaysOfWeek  []int // 0-6 (0=Sunday)
+
+	// Parsing expands "*" to the full range, which erases the difference
+	// between "restricted to every value" and "unrestricted" -- and the
+	// POSIX day rule turns on exactly that difference. ParseCron records
+	// it here. Unexported because it is bookkeeping for dayMatches, not
+	// something a caller sets or reasons about; a zero value therefore
+	// reads as "both day fields are *", the vacuous predicate.
+	dayOfMonthRestricted bool
+	dayOfWeekRestricted  bool
 }
 
 // ParseCron parses a 5-field cron expression into a CronExpr.
@@ -77,6 +86,11 @@ func ParseCron(expr string) (*CronExpr, error) {
 		DaysOfMonth: dom,
 		Months:      months,
 		DaysOfWeek:  dow,
+		// Only a bare "*" is unrestricted. "1-31" and "*/1" cover every
+		// value but still express an author's intent to constrain the
+		// day, so they restrict -- matching how operators read them.
+		dayOfMonthRestricted: fields[2] != "*",
+		dayOfWeekRestricted:  fields[4] != "*",
 	}
 
 	// Post-condition: all slices must be populated after successful parse
@@ -99,9 +113,35 @@ func (c *CronExpr) Matches(t time.Time) bool {
 
 	return contains(c.Minutes, t.Minute()) &&
 		contains(c.Hours, t.Hour()) &&
-		contains(c.DaysOfMonth, t.Day()) &&
 		contains(c.Months, int(t.Month())) &&
-		contains(c.DaysOfWeek, int(t.Weekday()))
+		c.dayMatches(t)
+}
+
+// dayMatches answers whether t's day satisfies the expression, applying
+// the POSIX day rule: when both day fields are restricted the day matches
+// if EITHER matches. Vixie cron and everything descended from it behave
+// this way, so an operator writing "0 9 1 * 1" means "the 1st, or any
+// Monday" -- roughly 60 firings a year. Intersecting the two fields
+// instead gave ~1, silently (issue #552).
+func (c *CronExpr) dayMatches(t time.Time) bool {
+	if t.IsZero() {
+		panic("dayMatches: time must not be zero")
+	}
+	if c.DaysOfMonth == nil || c.DaysOfWeek == nil {
+		panic("dayMatches: day slices must not be nil")
+	}
+
+	dayOfMonthMatches := contains(c.DaysOfMonth, t.Day())
+	dayOfWeekMatches := contains(c.DaysOfWeek, int(t.Weekday()))
+
+	if c.dayOfMonthRestricted && c.dayOfWeekRestricted {
+		return dayOfMonthMatches || dayOfWeekMatches
+	}
+	// An unrestricted field spans its whole range, so its side of this
+	// conjunction is always true. That collapses to "the restricted field
+	// alone" when one is restricted, and to true when neither is -- the
+	// remaining three POSIX cases, without branching on them.
+	return dayOfMonthMatches && dayOfWeekMatches
 }
 
 func contains(vals []int, target int) bool {
