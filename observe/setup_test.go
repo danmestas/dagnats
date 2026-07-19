@@ -37,7 +37,14 @@ func startNATS(t *testing.T) (*server.Server, *nats.Conn) {
 	if !ns.ReadyForConnections(5 * time.Second) {
 		t.Fatal("nats not ready")
 	}
-	nc, err := nats.Connect(ns.ClientURL())
+	nc, err := nats.Connect(ns.ClientURL(),
+		// Match internal/natsutil.StartTestServer: the 2s client default
+		// times out under full-suite parallelism (see testConnectTimeout).
+		nats.Timeout(15*time.Second),
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(5),
+		nats.ReconnectWait(200*time.Millisecond),
+	)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

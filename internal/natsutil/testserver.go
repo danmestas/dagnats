@@ -117,12 +117,35 @@ func StartTestServer(t testing.TB) (*natsserver.Server, *nats.Conn) {
 			t.Logf("NATS store dir cleanup left %s: %v", storeDir, err)
 		}
 	})
-	nc, err := nats.Connect(ns.ClientURL())
+	nc, err := nats.Connect(ns.ClientURL(), testConnectOptions()...)
 	if err != nil {
 		t.Fatalf("failed to connect to test NATS server: %v", err)
 	}
 	t.Cleanup(func() { nc.Close() })
 	return ns, nc
+}
+
+// testConnectTimeout replaces the client default of 2s. Under
+// `go test ./...` dozens of packages each start an embedded server
+// concurrently, and 2s is not enough headroom on a loaded machine: the
+// dial times out and the test fails with an i/o timeout that looks like
+// a product bug rather than contention.
+const testConnectTimeout = 15 * time.Second
+
+// testConnectRetryCountMax bounds the retry loop. Retries cover the
+// window where the listener is accepting but the loaded host has not
+// scheduled the accept; they must not mask a server that never came up.
+const testConnectRetryCountMax = 5
+
+// testConnectOptions returns dial options tuned for a machine running
+// the whole suite at once rather than one package in isolation.
+func testConnectOptions() []nats.Option {
+	return []nats.Option{
+		nats.Timeout(testConnectTimeout),
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(testConnectRetryCountMax),
+		nats.ReconnectWait(200 * time.Millisecond),
+	}
 }
 
 // removeDirWithRetry removes dir and everything under it, retrying up to
