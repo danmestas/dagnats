@@ -23,6 +23,7 @@ setup.go is the single entry point for OTel provider setup. One call to InitTele
 - [func InitTelemetry\(ctx context.Context, cfg Config\) \(func\(context.Context\), error\)](<#InitTelemetry>)
 - [func InjectTraceContext\(ctx context.Context, msg \*nats.Msg, evt \*protocol.Event\)](<#InjectTraceContext>)
 - [func InjectTraceContextHeader\(ctx context.Context, hdr nats.Header\)](<#InjectTraceContextHeader>)
+- [func TraceContextFromTask\(task protocol.TaskPayload\) context.Context](<#TraceContextFromTask>)
 - [type Config](<#Config>)
 - [type NATSHeaderCarrier](<#NATSHeaderCarrier>)
   - [func \(c NATSHeaderCarrier\) Get\(key string\) string](<#NATSHeaderCarrier.Get>)
@@ -58,7 +59,7 @@ func ExtractTraceContextHeader(hdr nats.Header) context.Context
 ExtractTraceContextHeader reads W3C trace context directly from a NATS header map. Returns context.Background\(\) when hdr is nil or carries no traceparent. This is the header\-level entry point for transports \(e.g. nats\-micro requests\) that expose headers without a \*nats.Msg or jetstream.Msg.
 
 <a name="ExtractTraceContextRaw"></a>
-## func [ExtractTraceContextRaw](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L98-L101>)
+## func [ExtractTraceContextRaw](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L122-L125>)
 
 ```go
 func ExtractTraceContextRaw(msg *nats.Msg, evt *protocol.Event) context.Context
@@ -94,6 +95,17 @@ func InjectTraceContextHeader(ctx context.Context, hdr nats.Header)
 InjectTraceContextHeader writes W3C trace context from ctx directly into a NATS header map. This is the header\-level entry point for carriers that are not a \*nats.Msg — the inject counterpart to ExtractTraceContextHeader. Panics on nil ctx or nil hdr \(programmer error: a nil map cannot be written to\).
 
 Writes nothing when ctx carries no valid span context: the W3C propagator skips invalid span contexts, so callers never see an empty or malformed traceparent.
+
+<a name="TraceContextFromTask"></a>
+## func [TraceContextFromTask](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L105>)
+
+```go
+func TraceContextFromTask(task protocol.TaskPayload) context.Context
+```
+
+TraceContextFromTask reads the W3C trace context the bridge stamped on a polled task and returns a context suitable as the parent of the worker's execution span. Returns context.Background\(\) when the task carries no traceparent \(pre\-\#537 bridges, or a dispatch with no active span\), so callers can pass the result through unconditionally.
+
+This lives in observe rather than in the SDK so W3C extraction stays behind the observability boundary: every worker transport hands over its TaskPayload and gets back a context, instead of each one rebuilding a header map and reaching for the propagator itself.
 
 <a name="Config"></a>
 ## type [Config](<https://github.com/danmestas/dagnats/blob/main/observe/config.go#L14-L34>)

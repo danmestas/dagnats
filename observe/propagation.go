@@ -92,6 +92,30 @@ func ExtractTraceContextHeader(hdr nats.Header) context.Context {
 	)
 }
 
+// TraceContextFromTask reads the W3C trace context the bridge stamped on
+// a polled task and returns a context suitable as the parent of the
+// worker's execution span. Returns context.Background() when the task
+// carries no traceparent (pre-#537 bridges, or a dispatch with no active
+// span), so callers can pass the result through unconditionally.
+//
+// This lives in observe rather than in the SDK so W3C extraction stays
+// behind the observability boundary: every worker transport hands over
+// its TaskPayload and gets back a context, instead of each one rebuilding
+// a header map and reaching for the propagator itself.
+func TraceContextFromTask(task protocol.TaskPayload) context.Context {
+	if task.TraceParent == "" {
+		return context.Background()
+	}
+	hdr := nats.Header{}
+	hdr.Set("traceparent", task.TraceParent)
+	// A tracestate without a traceparent is meaningless, so it is only
+	// carried when the pair is intact.
+	if task.TraceState != "" {
+		hdr.Set("tracestate", task.TraceState)
+	}
+	return ExtractTraceContextHeader(hdr)
+}
+
 // ExtractTraceContextRaw reads W3C trace context from a raw
 // *nats.Msg header, falling back to Event.TraceParent for
 // replay. Used in publish paths that work with *nats.Msg.

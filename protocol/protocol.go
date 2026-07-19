@@ -38,6 +38,21 @@ type TaskPayload struct {
 	// span name. Additive, omitempty: legacy payloads deserialize to "" and
 	// the worker simply omits the workflow_name span attribute in that case.
 	WorkflowName string `json:"workflow_name,omitempty"`
+	// TraceParent/TraceState carry the W3C trace context the HTTP bridge
+	// stamps on each polled task (#534, #537) so a worker's execution
+	// span parents onto bridge.dispatch instead of orphaning.
+	//
+	// The tags are the W3C wire names, deliberately UN-underscored —
+	// unlike protocol.Event's persisted trace_parent/trace_state a few
+	// types below. Renaming either to match the other silently drops the
+	// field on decode: the poll path uses plain json.Decode with no
+	// DisallowUnknownFields, so a mismatch is invisible at runtime.
+	// Additive and omitempty: pre-#537 responses decode to "".
+	//
+	// Use observe.TraceContextFromTask to turn these into a parent
+	// context rather than parsing them by hand.
+	TraceParent string `json:"traceparent,omitempty"`
+	TraceState  string `json:"tracestate,omitempty"`
 }
 
 // TaskResolution is the wire format for HTTP bridge resolve actions.
