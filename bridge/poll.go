@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -34,6 +35,12 @@ type pollResponse struct {
 	Iteration int             `json:"iteration,omitempty"`
 	Attempt   int             `json:"attempt,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
+	// W3C names, deliberately un-underscored: these are the wire keys
+	// from the trace-context spec, unlike protocol.Event's persisted
+	// trace_parent/trace_state. Workers feed them straight into a
+	// standard propagator.
+	TraceParent string `json:"traceparent,omitempty"`
+	TraceState  string `json:"tracestate,omitempty"`
 }
 
 // pollTimeoutMaxMs caps the maximum long-poll timeout at 60 seconds.
@@ -514,15 +521,49 @@ func (b *Bridge) processPolledMsg(
 	}
 	taskID := payload.RunID + "." + payload.StepID
 	b.ackMap.Store(taskID, msg)
+	traceHdr := dispatchTraceHeader(dispatchCtx)
 	resp := pollResponse{
-		TaskID:    taskID,
-		RunID:     payload.RunID,
-		StepID:    payload.StepID,
-		Iteration: payload.Iteration,
-		Attempt:   attemptNumber,
-		Input:     payload.Input,
+		TaskID:      taskID,
+		RunID:       payload.RunID,
+		StepID:      payload.StepID,
+		Iteration:   payload.Iteration,
+		Attempt:     attemptNumber,
+		Input:       payload.Input,
+		TraceParent: traceHdr.Get("traceparent"),
+		TraceState:  traceHdr.Get("tracestate"),
 	}
 	return resp, true
+}
+
+// dispatchTraceHeader renders ctx's trace context as W3C headers so the
+// poll response can hand the worker a parent for its execution span
+// (issue #534).
+//
+// The bridge.dispatch span ENDS when processPolledMsg returns, well
+// before the worker starts that child. That is normal for a messaging
+// producer span — the link is the trace/span ID pair on the wire, not an
+// open span — so do not "fix" it by holding the span open across the
+// worker's whole execution.
+//
+// Returns an empty header when ctx carries no valid span context; the
+// omitempty tags then drop the fields entirely rather than emitting an
+// empty traceparent.
+func dispatchTraceHeader(ctx context.Context) nats.Header {
+	if ctx == nil {
+		panic("dispatchTraceHeader: ctx must not be nil")
+	}
+	hdr := nats.Header{}
+	observe.InjectTraceContextHeader(ctx, hdr)
+	// tracestate is meaningless without a traceparent, and a worker
+	// extracting the pair would silently drop it. Not an assertion: the
+	// global propagator is pluggable, so this is third-party runtime
+	// output rather than a local invariant, and panicking here would
+	// take down the poll handler after step.started was already
+	// published. Drop the orphan instead.
+	if hdr.Get("traceparent") == "" {
+		hdr.Del("tracestate")
+	}
+	return hdr
 }
 
 // decodePolledTask unmarshals and validates a polled task message.
