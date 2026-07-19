@@ -30,6 +30,15 @@ const (
 	placementProbeInterval = 250 * time.Millisecond
 )
 
+// testClusterMaxStoreBytes pins each cluster node's JetStream store budget
+// so placement is hermetic rather than a function of host free disk. It
+// must clear the ceilings SetupAll derives from the default budget, since
+// these tests call SetupAll without an explicit one: 0.80 of 10 GiB is
+// 8 GiB of per-peer reservation, so 12 GiB leaves real headroom. The
+// budget is a reservation ceiling, not preallocated disk — nothing here
+// writes more than a few MiB.
+const testClusterMaxStoreBytes int64 = 12 << 30
+
 // StartTestCluster starts n in-process NATS servers configured as a
 // cluster, waits for routes to mesh and quorum to form, and returns
 // a connection to peer 0. All cleanup is registered with t.Cleanup.
@@ -117,7 +126,13 @@ func startClusterNodes(
 			Port:       clientPorts[i],
 			ServerName: fmt.Sprintf("dagnats-test-%d", i),
 			JetStream:  true,
-			StoreDir:   t.TempDir(),
+			// Same reason as natsutil's StartTestServer: an unset
+			// budget is sized from the host's free disk, so a nearly
+			// full disk starves peer selection and R3 stream
+			// placement fails with "no suitable peers". The nodes
+			// only ever hold reservations, never bytes.
+			JetStreamMaxStore: testClusterMaxStoreBytes,
+			StoreDir:          t.TempDir(),
 			Cluster: natsserver.ClusterOpts{
 				Name: "dagnats-test",
 				Host: "127.0.0.1",

@@ -66,7 +66,10 @@ func streamConfigsWithBudget(
 }
 
 func TestProportionalMaxBytesPerStream(t *testing.T) {
-	const budget = int64(2 * 1024 * 1024 * 1024) // 2 GiB e2e cluster
+	// Size against the embedded server's own budget: the assertions are
+	// budget-independent math, and a budget exceeding the server's would
+	// fail stream creation on the storage check rather than the sizing.
+	const budget = testServerMaxStoreBytes
 	cfgs := streamConfigsWithBudget(t, budget)
 
 	for name, fraction := range fileStreamFractions {
@@ -87,7 +90,7 @@ func TestProportionalMaxBytesPerStream(t *testing.T) {
 // file stream's MaxBytes must stay comfortably under the budget so stream
 // creation never hits err 10047 (insufficient storage resources).
 func TestMaxBytesSumUnderBudget(t *testing.T) {
-	const budget = int64(2 * 1024 * 1024 * 1024)
+	const budget = testServerMaxStoreBytes
 	cfgs := streamConfigsWithBudget(t, budget)
 
 	var sum int64
