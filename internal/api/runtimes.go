@@ -37,6 +37,7 @@ import (
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Wire kinds the control-plane endpoints emit. They mirror the worker's
@@ -165,6 +166,9 @@ func resolveRuntimeLimits(in RuntimeLimits) RuntimeLimits {
 // "promoted.<name>" namespace (no agent. prefix → the ephemeral-def
 // reaper's prefix gate never touches it). #377 wires the namespace only;
 // authorization for promotion is deferred to #380.
+// Named per operation (not after the shared dispatch check) so the span
+// name and the method= metric label identify which control-plane
+// operation ran, matching startRun/getRun/registerWorkflow.
 func (s *Service) RegisterRuntimeWorkflow(
 	ctx context.Context, def dag.WorkflowDef, ownerRunID string,
 	promote bool,
@@ -174,6 +178,36 @@ func (s *Service) RegisterRuntimeWorkflow(
 	}
 	if s.defKV == nil {
 		panic("RegisterRuntimeWorkflow: defKV must not be nil")
+	}
+	var scoped, kind string
+	err := s.observed(ctx, "registerRuntimeWorkflow",
+		[]attribute.KeyValue{
+			attribute.String("run_id", ownerRunID),
+			attribute.String("workflow", def.Name),
+			attribute.Bool("promote", promote),
+		},
+		func(ctx context.Context) error {
+			var innerErr error
+			scoped, kind, innerErr = s.registerRuntimeWorkflow(
+				ctx, def, ownerRunID, promote,
+			)
+			return innerErr
+		},
+	)
+	return scoped, kind, err
+}
+
+// registerRuntimeWorkflow carries the register/promote work itself; see
+// RegisterRuntimeWorkflow for the contract.
+func (s *Service) registerRuntimeWorkflow(
+	ctx context.Context, def dag.WorkflowDef, ownerRunID string,
+	promote bool,
+) (string, string, error) {
+	if ctx == nil {
+		panic("registerRuntimeWorkflow: ctx must not be nil")
+	}
+	if s.defKV == nil {
+		panic("registerRuntimeWorkflow: defKV must not be nil")
 	}
 	if ownerRunID == "" {
 		return "", cpKindNamespace,
@@ -442,6 +476,8 @@ func validateRuntimeName(name string) error {
 // worker's reply carries cpKindDepthExceeded instead of a silently
 // dropped spawn. On success it publishes EventWorkflowSpawn and the
 // orchestrator's existing path creates the child + links lineage.
+// Named per operation (see RegisterRuntimeWorkflow) so a child spawn is
+// identifiable as spawnChildRun in traces and metrics.
 func (s *Service) SpawnChildRun(
 	ctx context.Context,
 	childWorkflow, parentRunID, parentStepID string,
@@ -449,6 +485,34 @@ func (s *Service) SpawnChildRun(
 ) (string, string, error) {
 	if ctx == nil {
 		panic("SpawnChildRun: ctx must not be nil")
+	}
+	var runID, kind string
+	err := s.observed(ctx, "spawnChildRun",
+		[]attribute.KeyValue{
+			attribute.String("child_workflow", childWorkflow),
+			attribute.String("parent_run_id", parentRunID),
+			attribute.String("parent_step_id", parentStepID),
+		},
+		func(ctx context.Context) error {
+			var innerErr error
+			runID, kind, innerErr = s.spawnChildRun(
+				ctx, childWorkflow, parentRunID, parentStepID, input,
+			)
+			return innerErr
+		},
+	)
+	return runID, kind, err
+}
+
+// spawnChildRun carries the spawn work itself; see SpawnChildRun for the
+// contract.
+func (s *Service) spawnChildRun(
+	ctx context.Context,
+	childWorkflow, parentRunID, parentStepID string,
+	input []byte,
+) (string, string, error) {
+	if ctx == nil {
+		panic("spawnChildRun: ctx must not be nil")
 	}
 	// An empty parent run is a lineage/namespace invariant violation, not
 	// an unresolvable workflow name — cpKindUnresolvableName is reserved
@@ -601,11 +665,35 @@ func (s *Service) countDefsForRoot(
 // loop self-throttle before tripping a quota_exceeded reply. Token/compute
 // metering is deferred (#378 P3) — those fields are intentionally absent.
 // Returns the typed kind on resolve/scan failure, "" on success.
+// Named per operation (see RegisterRuntimeWorkflow) so a budget read is
+// identifiable as budget in traces and metrics.
 func (s *Service) Budget(
 	ctx context.Context, ownerRunID string,
 ) (worker.RuntimeBudget, string, error) {
 	if ctx == nil {
 		panic("Budget: ctx must not be nil")
+	}
+	var budget worker.RuntimeBudget
+	var kind string
+	err := s.observed(ctx, "budget",
+		[]attribute.KeyValue{
+			attribute.String("run_id", ownerRunID),
+		},
+		func(ctx context.Context) error {
+			var innerErr error
+			budget, kind, innerErr = s.budget(ctx, ownerRunID)
+			return innerErr
+		},
+	)
+	return budget, kind, err
+}
+
+// budget carries the budget scan itself; see Budget for the contract.
+func (s *Service) budget(
+	ctx context.Context, ownerRunID string,
+) (worker.RuntimeBudget, string, error) {
+	if ctx == nil {
+		panic("budget: ctx must not be nil")
 	}
 	if ownerRunID == "" {
 		return worker.RuntimeBudget{}, cpKindNamespace,
