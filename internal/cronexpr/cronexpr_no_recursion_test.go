@@ -11,27 +11,47 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"os"
 	"strings"
 	"testing"
 )
 
 func TestPackageHasNoDirectRecursion(t *testing.T) {
-	fileSet := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fileSet, ".", func(info fs.FileInfo) bool {
-		return !strings.HasSuffix(info.Name(), "_test.go")
-	}, 0)
+	// Files are read and parsed individually rather than via
+	// parser.ParseDir, which is deprecated as of Go 1.25. The documented
+	// replacement pulls in golang.org/x/tools -- a dependency this leaf
+	// package does not warrant when the directory holds one package.
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parse package source: %v", err)
+		t.Fatalf("read package dir: %v", err)
 	}
 
-	pkg, ok := pkgs["cronexpr"]
-	if !ok {
-		t.Fatalf("package cronexpr not found in parsed dirs %v", pkgs)
+	fileSet := token.NewFileSet()
+	sources := make(map[string]*ast.File)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		parsed, parseErr := parser.ParseFile(fileSet, name, nil, 0)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", name, parseErr)
+		}
+		if parsed.Name.Name != "cronexpr" {
+			t.Fatalf("%s: package %q, want cronexpr", name, parsed.Name.Name)
+		}
+		sources[name] = parsed
+	}
+
+	if len(sources) == 0 {
+		t.Fatal("found no non-test source files; test is vacuous")
 	}
 
 	inspected := 0
-	for path, file := range pkg.Files {
+	for path, file := range sources {
 		for _, decl := range file.Decls {
 			fn, isFunc := decl.(*ast.FuncDecl)
 			if !isFunc || fn.Body == nil {
