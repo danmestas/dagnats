@@ -19,6 +19,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func MarshalConfig\(cfg interface\{\}\) json.RawMessage](<#MarshalConfig>)
 - [func ResolveInput\(step StepDef, steps map\[string\]StepState, runInput ...json.RawMessage\) \(\[\]byte, error\)](<#ResolveInput>)
 - [func ResolvePriority\(cfg \*PriorityConfig, input json.RawMessage\) int](<#ResolvePriority>)
+- [func ResolveSleepDuration\(cfg SleepConfig, runInput json.RawMessage, now time.Time\) \(time.Duration, error\)](<#ResolveSleepDuration>)
 - [func RunStatusNames\(\) \[\]string](<#RunStatusNames>)
 - [func Validate\(def WorkflowDef\) error](<#Validate>)
 - [func ValidateFragment\(fragment \[\]StepDef, cfg PlannerConfig, existingIDs map\[string\]bool\) error](<#ValidateFragment>)
@@ -182,7 +183,7 @@ func IsComplete(def WorkflowDef, completed map[string]bool) bool
 IsComplete returns true when every step in the definition has been completed or skipped. Auxiliary steps \(OnFailure/Compensate targets\) that were never triggered don't block completion — they are expected to remain Pending in the happy path.
 
 <a name="MarshalConfig"></a>
-## func [MarshalConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L18>)
+## func [MarshalConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L53>)
 
 ```go
 func MarshalConfig(cfg interface{}) json.RawMessage
@@ -207,6 +208,17 @@ func ResolvePriority(cfg *PriorityConfig, input json.RawMessage) int
 ```
 
 ResolvePriority computes the priority offset from input data.
+
+<a name="ResolveSleepDuration"></a>
+## func [ResolveSleepDuration](<https://github.com/danmestas/dagnats/blob/main/dag/sleep.go#L84-L86>)
+
+```go
+func ResolveSleepDuration(cfg SleepConfig, runInput json.RawMessage, now time.Time) (time.Duration, error)
+```
+
+ResolveSleepDuration turns a sleep config into the concrete delay to wait, given the run input and the dispatch instant. \`now\` is a parameter so callers and tests share one clock.
+
+The returned duration is never negative. Only a past RFC3339 instant clamps to zero — a negative millisecond count errors instead, because it is far more likely a producer bug than an intentional zero sleep, and clamping would hide it. Every form is bound\-checked against maxSleepDuration here, cron included — relying on the cron package's internal scan horizon would tie this invariant to an unexported constant elsewhere that could be raised without any compiler error or failing test here.
 
 <a name="RunStatusNames"></a>
 ## func [RunStatusNames](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L116>)
@@ -260,7 +272,7 @@ type AgentLoopConfig struct {
 ```
 
 <a name="ParseAgentLoopConfig"></a>
-### func [ParseAgentLoopConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L32-L34>)
+### func [ParseAgentLoopConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L67-L69>)
 
 ```go
 func ParseAgentLoopConfig(step StepDef) (AgentLoopConfig, error)
@@ -342,7 +354,7 @@ type MapConfig struct {
 ```
 
 <a name="ParseMapConfig"></a>
-### func [ParseMapConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L57>)
+### func [ParseMapConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L92>)
 
 ```go
 func ParseMapConfig(step StepDef) (MapConfig, error)
@@ -446,7 +458,7 @@ type PlannerConfig struct {
 ```
 
 <a name="ParsePlannerConfig"></a>
-### func [ParsePlannerConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L156-L158>)
+### func [ParsePlannerConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L201-L203>)
 
 ```go
 func ParsePlannerConfig(step StepDef) (PlannerConfig, error)
@@ -706,18 +718,22 @@ const (
 ```
 
 <a name="SleepConfig"></a>
-## type [SleepConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L11-L13>)
+## type [SleepConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L17-L21>)
 
-SleepConfig holds configuration for sleep steps. Duration is the durable delay the engine waits before completing.
+SleepConfig holds configuration for sleep steps. Exactly one of the three forms must be set; ParseSleepConfig enforces that so no downstream caller can observe an ambiguous config.
+
+Duration fixes the delay at def\-registration time. Cron and UntilInputPath defer it to dispatch: Cron sleeps until the next occurrence strictly after dispatch, UntilInputPath reads a deadline from the run input \(an RFC3339 instant or integer milliseconds\).
 
 ```go
 type SleepConfig struct {
-    Duration time.Duration `json:"duration"`
+    Duration       time.Duration `json:"duration,omitempty"`
+    Cron           string        `json:"cron,omitempty"`
+    UntilInputPath string        `json:"until_input_path,omitempty"`
 }
 ```
 
 <a name="ParseSleepConfig"></a>
-### func [ParseSleepConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L80>)
+### func [ParseSleepConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L115>)
 
 ```go
 func ParseSleepConfig(step StepDef) (SleepConfig, error)
@@ -1114,7 +1130,7 @@ type SubWorkflowConfig struct {
 ```
 
 <a name="ParseSubWorkflowConfig"></a>
-### func [ParseSubWorkflowConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L103-L105>)
+### func [ParseSubWorkflowConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L148-L150>)
 
 ```go
 func ParseSubWorkflowConfig(step StepDef) (SubWorkflowConfig, error)
@@ -1136,7 +1152,7 @@ type WaitForEventOpts struct {
 ```
 
 <a name="ParseWaitForEventConfig"></a>
-### func [ParseWaitForEventConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L129-L131>)
+### func [ParseWaitForEventConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L174-L176>)
 
 ```go
 func ParseWaitForEventConfig(step StepDef) (WaitForEventOpts, error)

@@ -6,10 +6,45 @@ import (
 	"time"
 )
 
-// SleepConfig holds configuration for sleep steps.
-// Duration is the durable delay the engine waits before completing.
+// SleepConfig holds configuration for sleep steps. Exactly one of the
+// three forms must be set; ParseSleepConfig enforces that so no
+// downstream caller can observe an ambiguous config.
+//
+// Duration fixes the delay at def-registration time. Cron and
+// UntilInputPath defer it to dispatch: Cron sleeps until the next
+// occurrence strictly after dispatch, UntilInputPath reads a deadline
+// from the run input (an RFC3339 instant or integer milliseconds).
 type SleepConfig struct {
-	Duration time.Duration `json:"duration"`
+	Duration       time.Duration `json:"duration,omitempty"`
+	Cron           string        `json:"cron,omitempty"`
+	UntilInputPath string        `json:"until_input_path,omitempty"`
+}
+
+// formCount reports how many of the three mutually-exclusive forms are
+// set. Used to enforce the exactly-one invariant at parse time.
+func (c SleepConfig) formCount() int {
+	const formCountMax = 3
+
+	count := 0
+	if c.Duration != 0 {
+		count++
+	}
+	if c.Cron != "" {
+		count++
+	}
+	if c.UntilInputPath != "" {
+		count++
+	}
+
+	if count < 0 {
+		panic("formCount: count must not be negative")
+	}
+	// Catches a fourth form being added to the struct without a
+	// matching branch here — callers rely on this counting every form.
+	if count > formCountMax {
+		panic("formCount: count exceeds the number of known forms")
+	}
+	return count
 }
 
 // MarshalConfig serializes a config struct into raw JSON for
@@ -93,6 +128,16 @@ func ParseSleepConfig(step StepDef) (SleepConfig, error) {
 	if err := json.Unmarshal(step.Config, &cfg); err != nil {
 		return SleepConfig{}, fmt.Errorf(
 			"step %q: unmarshal SleepConfig: %w", step.ID, err,
+		)
+	}
+	// Enforced here rather than only at registration because the config
+	// round-trips through KV and is re-parsed at dispatch: a hand-edited
+	// or older def must not slip an ambiguous form past the dispatcher.
+	if n := cfg.formCount(); n != 1 {
+		return SleepConfig{}, fmt.Errorf(
+			"step %q: sleep config must set exactly one of "+
+				"duration, cron, until_input_path; got %d",
+			step.ID, n,
 		)
 	}
 	return cfg, nil
