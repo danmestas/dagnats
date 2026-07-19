@@ -384,8 +384,9 @@ func consumerCreateError(
 		return fmt.Errorf(
 			"cannot create consumer %q on filter %s: another consumer "+
 				"already covers an overlapping filter on the "+
-				"TASK_QUEUES work-queue stream (grouped workers are not "+
-				"pollable over the bridge): %w",
+				"TASK_QUEUES work-queue stream. Grouped task types are "+
+				"not pollable over the bridge; see "+
+				"/docs/workers/http-bridge#limitations: %w",
 			name, filter, cause,
 		)
 	}

@@ -55,12 +55,28 @@ Response:
         "step_id": "step-1",
         "iteration": 0,
         "attempt": 0,
-        "input": {"url": "https://example.com/doc.pdf"}
+        "input": {"url": "https://example.com/doc.pdf"},
+        "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
     }
 ]
 ```
 
 The `timeout_ms` field controls how long the bridge waits for a task before returning empty. Maximum is 60 seconds.
+
+`traceparent` (and `tracestate`, when present) carry W3C trace context for
+that specific task. Start your execution span as a child of it and your
+worker's spans join the run's trace instead of appearing as disconnected
+roots. The fields are per task, not per response, because one poll can
+return tasks belonging to different runs and therefore different traces.
+Both are omitted entirely when the dispatch carried no trace context.
+
+Go workers can convert the pair directly:
+
+```go
+ctx := observe.TraceContextFromTask(task)
+ctx, span := tracer.Start(ctx, "my-worker.handle")
+defer span.End()
+```
 
 ### POST /v1/tasks/{id}/resolve
 
@@ -113,6 +129,32 @@ http.ListenAndServe(":8080", b.Handler())
 ```
 
 The bridge binds optional KV buckets for **checkpoints** and **signals** at construction time. If these buckets are missing, the corresponding resolve actions return an error.
+
+## Limitations
+
+### Grouped task types cannot be polled over the bridge
+
+A native Go worker registered with `worker.WithGroups(...)` consumes the
+subject `task.<type>.<group>.>`. The bridge polls `task.<type>.>`, which
+covers that subject and every other group for the same task type.
+
+`TASK_QUEUES` uses JetStream's `WorkQueuePolicy` retention, which permits
+exactly one consumer per filter subject and enforces that on filter
+**overlap**, not equality. The bridge's filter always overlaps a grouped
+worker's, so the two cannot coexist for the same task type: whichever
+consumer is created second is rejected by the server.
+
+A poll that hits this returns an error naming both filters, rather than an
+empty task array. If you see `another consumer already covers an
+overlapping filter on the TASK_QUEUES work-queue stream`, this is why —
+the task type is being served by a grouped consumer.
+
+**Use a native Go worker for grouped task types.** The bridge is for
+non-Go workers on ungrouped types. If you need grouped work served over
+HTTP, that is not currently supported and wants an issue describing the
+use case — the protocol would need a `group` field on the poll request so
+the bridge could target the grouped consumer exactly instead of
+overlapping it.
 
 ## Examples
 
