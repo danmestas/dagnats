@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -41,6 +42,20 @@ type Bridge struct {
 	requestDuration metric.Float64Histogram
 	ackMapSize      metric.Int64UpDownCounter
 }
+
+// routePoll / routeResolve tag the shared bridge.requests counter,
+// which both endpoints increment. Without them the two collapse into
+// one series and neither endpoint's request rate can be read on its
+// own. bridge.request.duration_ms is recorded only on the poll path,
+// and carries routePoll for consistency.
+var (
+	routePoll = metric.WithAttributes(
+		attribute.String("route", "poll"),
+	)
+	routeResolve = metric.WithAttributes(
+		attribute.String("route", "resolve"),
+	)
+)
 
 // NewBridge creates a Bridge. Panics on nil pub — a programmer
 // error at startup. The TracingPublisher wraps both *nats.Conn
