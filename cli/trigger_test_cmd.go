@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danmestas/dagnats/internal/trigger"
+	"github.com/danmestas/dagnats/internal/cronexpr"
 )
 
 // cronTestResult is the JSON response for trigger test.
@@ -121,7 +121,7 @@ func FormatCronTestJSON(
 	}
 	result.Timezone = tz
 
-	parsed, parseErr := trigger.ParseCron(expr)
+	parsed, parseErr := cronexpr.ParseCron(expr)
 	if parseErr != nil {
 		result.Error = parseErr.Error()
 		FormatJSON(w, result)
@@ -162,7 +162,7 @@ func FormatCronTest(expr, tz string, count int) string {
 		return b.String()
 	}
 
-	parsed, err := trigger.ParseCron(expr)
+	parsed, err := cronexpr.ParseCron(expr)
 	if err != nil {
 		fmt.Fprintf(&b, "Invalid: %s\n  %v\n", expr, err)
 		return b.String()

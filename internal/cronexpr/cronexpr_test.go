@@ -1,4 +1,4 @@
-package trigger
+package cronexpr
 
 // Methodology: unit tests for cron expression parsing and matching.
 // No NATS dependency — pure time logic.

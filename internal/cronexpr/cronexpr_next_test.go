@@ -1,7 +1,7 @@
-// trigger/cron_next_test.go
+// cronexpr/cronexpr_next_test.go
 // Tests for CronExpr.NextN: computing upcoming fire times from a reference.
 // Methodology: unit tests with known cron expressions and fixed reference times.
-package trigger
+package cronexpr
 
 import (
 	"testing"

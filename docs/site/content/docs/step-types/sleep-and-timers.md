@@ -57,7 +57,37 @@ Sleep configuration is stored in `StepDef.Config` as `SleepConfig`:
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `duration` | `time.Duration` | How long to sleep. Must be positive. |
+| `duration` | `time.Duration` | How long to sleep. Must be positive. Fixed when the def is registered. |
+| `cron` | `string` | Sleep until the next occurrence of this 5-field cron expression, strictly after dispatch. |
+| `until_input_path` | `string` | Dot-path into the **run** input naming the deadline. Resolved at dispatch. |
+
+Exactly one of the three must be set; a config with zero or more than one is rejected when the workflow def is registered, as is a malformed `cron` expression.
+
+`duration` fixes the delay at registration time. `cron` and `until_input_path` defer it to dispatch, which is what makes calendar waits and payload-carried deadlines expressible as sleep steps rather than as a worker that blocks on a task lease.
+
+**`cron` form:**
+
+Uses the same 5-field grammar as cron triggers (`*`, `*/N`, `N-M`, comma lists; numeric day-of-week, no symbolic names). All five fields are ANDed, so day-of-month and day-of-week intersect rather than union.
+
+```go
+// Next Monday at 09:00.
+Config: dag.MarshalConfig(&dag.SleepConfig{Cron: "0 9 * * 1"})
+```
+
+{{< callout type="warning" >}}
+**Sleep cron has no timezone field.** Unlike cron *triggers*, which carry an explicit `Timezone`, a sleep step's cron expression is evaluated in the **orchestrator process's local zone**. `"0 9 * * 1"` means 09:00 wherever the engine runs, not 09:00 UTC. If you need a specific zone, use `until_input_path` with an RFC3339 instant, which carries its own offset.
+{{< /callout >}}
+
+**`until_input_path` form:**
+
+The path resolves against the run input -- not the step's resolved input, which for a mid-DAG step is upstream output and the wrong source for a run-scoped deadline. The target value is either an RFC3339 instant or a number of milliseconds.
+
+```go
+// Run input: {"deadline": "2026-08-01T12:00:00Z"}
+Config: dag.MarshalConfig(&dag.SleepConfig{UntilInputPath: "deadline"})
+```
+
+An RFC3339 instant already in the past clamps to a zero-length sleep that completes normally. A missing path, an unparseable value, or a cron expression with no next occurrence fails the step at dispatch.
 
 **Bounds:**
 

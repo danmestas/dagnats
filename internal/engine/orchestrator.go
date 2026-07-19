@@ -2842,15 +2842,28 @@ func (o *Orchestrator) enqueueSleepStep(
 		panic("enqueueSleepStep: RunID must not be empty")
 	}
 
+	// Both the config parse and the resolution below read only the def
+	// and the run input, which are immutable for the life of the run. A
+	// failure here is therefore deterministic: every redelivery would
+	// reproduce it identically, so retrying can never succeed. Fail the
+	// step instead of returning an error that leaves it queued forever.
 	sleepCfg, err := dag.ParseSleepConfig(step)
 	if err != nil {
-		return fmt.Errorf("enqueueSleepStep: %w", err)
+		return o.failSleepStep(ctx, run, step, err.Error())
+	}
+
+	// Cron and until_input_path forms are only knowable now; the run
+	// input (not the step's resolved input) is the deadline source.
+	now := time.Now()
+	sleepFor, err := dag.ResolveSleepDuration(sleepCfg, run.Input, now)
+	if err != nil {
+		return o.failSleepStep(ctx, run, step, err.Error())
 	}
 
 	// Mark step as Running and record wake time.
 	state := run.Steps[step.ID]
 	state.Status = dag.StepStatusRunning
-	wakeAt := time.Now().Add(sleepCfg.Duration)
+	wakeAt := now.Add(sleepFor)
 	state.WakeAt = &wakeAt
 	run.Steps[step.ID] = state
 	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
@@ -2861,7 +2874,7 @@ func (o *Orchestrator) enqueueSleepStep(
 	o.publishSleepStarted(ctx, run.RunID, step.ID)
 
 	// Schedule durable timer via NakWithDelay.
-	durationMs := sleepCfg.Duration.Milliseconds()
+	durationMs := sleepFor.Milliseconds()
 	if durationMs <= 0 {
 		durationMs = 1
 	}
@@ -2871,6 +2884,38 @@ func (o *Orchestrator) enqueueSleepStep(
 		StepID:     step.ID,
 		DurationMs: durationMs,
 	})
+}
+
+// failSleepStep marks a sleep step Failed and fails the run. Used for
+// dispatch-time errors that no retry can clear, mirroring
+// failPlannerStep: the config and the run input cannot change, so the
+// alternative is a run wedged with the step stuck in Queued.
+func (o *Orchestrator) failSleepStep(
+	ctx context.Context,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+	reason string,
+) error {
+	if run.RunID == "" {
+		panic("failSleepStep: RunID must not be empty")
+	}
+	if step.ID == "" {
+		panic("failSleepStep: step.ID must not be empty")
+	}
+
+	slog.ErrorContext(ctx,
+		"sleep step failed",
+		"error", reason,
+		"run_id", run.RunID,
+		"step_id", step.ID,
+	)
+
+	state := run.Steps[step.ID]
+	state.Status = dag.StepStatusFailed
+	state.Error = reason
+	run.Steps[step.ID] = state
+
+	return o.failWorkflow(ctx, *run, step, state)
 }
 
 // publishSleepStarted publishes an EventStepSleepStarted event.
