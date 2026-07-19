@@ -2,8 +2,14 @@
 // Methodology: real embedded NATS, send a request carrying a W3C
 // traceparent header to api.runs.start, then read the run back over
 // api.runs.get and assert the persisted trace_id equals the inbound
-// trace ID (positive) and that a request without the header yields an
-// empty trace_id (negative). All waits are bounded.
+// trace ID (positive) and that a request WITHOUT the header never
+// persists that same trace ID (negative). The negative half is phrased
+// as "differs from the caller's trace", not "is empty", because a real
+// TracerProvider -- which is what production installs via
+// InitTelemetry -- legitimately mints a fresh root span for an untraced
+// request and persists its trace ID. Emptiness is an artifact of the
+// noop tracer; non-inheritance is the property under test, and it holds
+// under both providers. All waits are bounded.
 package api
 
 import (
@@ -73,17 +79,53 @@ func TestNATSAPIStartRunPropagatesTraceContext(t *testing.T) {
 	if traced == "" {
 		t.Fatal("traced start returned empty run_id")
 	}
-	if got := waitForRunTraceID(t, nc, traced, true); got != inboundTraceID {
+	if got := waitForRunTraceID(t, nc, traced); got != inboundTraceID {
 		t.Fatalf("trace_id = %q, want %q", got, inboundTraceID)
 	}
 
-	// Negative space: no traceparent header -> no trace linkage.
+	// Negative space: no traceparent header -> the caller's trace must
+	// not be inherited. Under the noop tracer this run's trace_id stays
+	// empty; under a real provider it is a fresh root trace. Either way
+	// it must never be inboundTraceID.
 	untraced := startRunWithHeader(t, nc, "")
 	if untraced == "" {
 		t.Fatal("untraced start returned empty run_id")
 	}
-	if got := waitForRunTraceID(t, nc, untraced, false); got != "" {
-		t.Fatalf("untraced trace_id = %q, want empty", got)
+	assertRunTraceIDNeverEquals(t, nc, untraced, inboundTraceID)
+}
+
+// assertRunTraceIDNeverEquals polls api.runs.get for runID across a
+// bounded window and fails if any sample reports forbidden as the
+// persisted trace_id. It deliberately does NOT stop at the first
+// sample: fetchRunTraceID is best-effort and returns "" on a slow
+// history read, so a single early read could miss a leaked trace ID
+// that a later read would surface. The run must become readable at
+// least once, otherwise the assertion would be vacuous.
+func assertRunTraceIDNeverEquals(
+	t *testing.T, nc *nats.Conn, runID, forbidden string,
+) {
+	t.Helper()
+	if forbidden == "" {
+		t.Fatal("assertRunTraceIDNeverEquals: forbidden must be non-empty")
+	}
+	const attempts_max = 60
+	deadline := time.Now().Add(3 * time.Second)
+	readable := false
+	for i := 0; i < attempts_max && time.Now().Before(deadline); i++ {
+		traceID, replyErr := runTraceID(t, nc, runID)
+		if replyErr != "" {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		readable = true
+		if traceID == forbidden {
+			t.Fatalf("untraced run %s inherited caller trace %s",
+				runID, forbidden)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !readable {
+		t.Fatalf("run %s never became readable", runID)
 	}
 }
 
@@ -137,14 +179,13 @@ func runTraceID(
 	return resp.TraceID, resp.Error
 }
 
-// waitForRunTraceID polls api.runs.get until the run snapshot exists,
-// returning its trace_id. When wantTraceID is set the poll also waits
-// for a non-empty trace_id: fetchRunTraceID is best-effort and can come
-// back empty on a slow history read even once the snapshot is readable,
-// so exiting on snapshot-readable alone would flake. Bounded on both
-// iterations and wall time; fails the test on timeout.
+// waitForRunTraceID polls api.runs.get until the run snapshot exists
+// AND carries a non-empty trace_id, returning it. fetchRunTraceID is
+// best-effort and can come back empty on a slow history read even once
+// the snapshot is readable, so exiting on snapshot-readable alone would
+// flake. Bounded on both iterations and wall time; fails on timeout.
 func waitForRunTraceID(
-	t *testing.T, nc *nats.Conn, runID string, wantTraceID bool,
+	t *testing.T, nc *nats.Conn, runID string,
 ) string {
 	t.Helper()
 	const attempts_max = 100
@@ -152,7 +193,7 @@ func waitForRunTraceID(
 	var lastErr string
 	for i := 0; i < attempts_max && time.Now().Before(deadline); i++ {
 		traceID, replyErr := runTraceID(t, nc, runID)
-		if replyErr == "" && (traceID != "" || !wantTraceID) {
+		if replyErr == "" && traceID != "" {
 			return traceID
 		}
 		lastErr = replyErr

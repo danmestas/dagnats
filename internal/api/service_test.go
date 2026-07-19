@@ -1778,6 +1778,28 @@ func TestGetRunResponseNoTrace(t *testing.T) {
 	wfDef, _ := wb.Build()
 	svc.RegisterWorkflow(context.Background(), wfDef)
 
+	// A caller-supplied trace, so the untraced run below has something
+	// concrete it must NOT have inherited. Asserting the untraced run's
+	// trace_id is merely empty would be wrong under a real
+	// TracerProvider (production installs one via InitTelemetry), which
+	// mints a fresh root span and legitimately persists its trace ID.
+	restorePropagator := installAPIPropagator()
+	defer restorePropagator()
+
+	tracedRunID, err := svc.StartRun(
+		callerTraceContext(t), "notrace-wf", nil,
+	)
+	if err != nil {
+		t.Fatalf("traced StartRun failed: %v", err)
+	}
+	tracedResp := waitForRunResponse(t, svc, tracedRunID)
+	if tracedResp.TraceID != callerTraceID {
+		t.Fatalf(
+			"traced TraceID = %q, want %q",
+			tracedResp.TraceID, callerTraceID,
+		)
+	}
+
 	// Start run without any trace context.
 	runID, err := svc.StartRun(
 		context.Background(), "notrace-wf", nil,
@@ -1785,27 +1807,12 @@ func TestGetRunResponseNoTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRun failed: %v", err)
 	}
+	resp := waitForRunResponse(t, svc, runID)
 
-	deadline := time.After(5 * time.Second)
-	var resp RunResponse
-	for {
-		resp, err = svc.GetRunResponse(
-			context.Background(), runID,
-		)
-		if err == nil {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("snapshot not ready in 5s: %v", err)
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-
-	// Positive: trace_id is empty when no context injected.
-	if resp.TraceID != "" {
+	// Positive: the untraced run did not inherit the caller's trace.
+	if resp.TraceID == callerTraceID {
 		t.Fatalf(
-			"TraceID = %q, want empty", resp.TraceID,
+			"untraced run inherited caller trace %q", callerTraceID,
 		)
 	}
 
@@ -1815,6 +1822,68 @@ func TestGetRunResponseNoTrace(t *testing.T) {
 			"RunID = %q, want %q", resp.RunID, runID,
 		)
 	}
+}
+
+// callerTraceID is the trace a caller of StartRun hands in; the
+// untraced run in TestGetRunResponseNoTrace must never carry it.
+const callerTraceID = "1111222233334444aaaabbbbccccdddd"
+
+// callerTraceContext returns a context carrying a valid, sampled remote
+// span context on callerTraceID -- the shape an inbound W3C traceparent
+// produces after extraction.
+func callerTraceContext(t *testing.T) context.Context {
+	t.Helper()
+	traceID, err := trace.TraceIDFromHex(callerTraceID)
+	if err != nil {
+		t.Fatalf("TraceIDFromHex failed: %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("5555666677778888")
+	if err != nil {
+		t.Fatalf("SpanIDFromHex failed: %v", err)
+	}
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	if !spanContext.IsValid() {
+		t.Fatal("constructed span context is not valid")
+	}
+	return trace.ContextWithSpanContext(context.Background(), spanContext)
+}
+
+// waitForRunResponse polls GetRunResponse until the run snapshot exists
+// AND carries a trace_id, or until the trace_id has had a fair chance
+// to appear. fetchRunTraceID is best-effort and returns "" on a slow
+// history read, so returning on snapshot-readable alone would let a
+// leaked trace ID slip past unread. Bounded on iterations and wall
+// time; fails the test on timeout.
+func waitForRunResponse(
+	t *testing.T, svc *Service, runID string,
+) RunResponse {
+	t.Helper()
+	const attempts_max = 100
+	deadline := time.Now().Add(5 * time.Second)
+	var lastResp RunResponse
+	var lastErr error
+	readable := false
+	for i := 0; i < attempts_max && time.Now().Before(deadline); i++ {
+		lastResp, lastErr = svc.GetRunResponse(
+			context.Background(), runID,
+		)
+		if lastErr == nil {
+			readable = true
+			if lastResp.TraceID != "" {
+				return lastResp
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !readable {
+		t.Fatalf("snapshot for %s not ready in 5s: %v", runID, lastErr)
+	}
+	return lastResp
 }
 
 func TestParseTraceID(t *testing.T) {

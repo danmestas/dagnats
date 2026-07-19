@@ -1,8 +1,9 @@
-// api/tracectx/natsapi_handler_tracecontext_test.go
+// api/natsapi_handler_tracecontext_test.go
 // Methodology: real embedded NATS plus an in-memory OTel span recorder
 // installed via otel.SetTracerProvider (the pattern from
-// internal/trigger/fire_test.go). Each of the five micro handlers that
-// internal/api's TestNATSAPIStartRunPropagatesTraceContext does not
+// internal/trigger/fire_test.go). This file owns the binary's TestMain
+// and therefore its real TracerProvider. Each of the five micro
+// handlers that TestNATSAPIStartRunPropagatesTraceContext does not
 // cover is driven over its real subject with an inbound W3C
 // traceparent, and the server-side span its service call records is
 // asserted to carry the inbound trace ID. Only the TRACE ID is
@@ -13,19 +14,17 @@
 // ambient trace leaks in. The three runtime subjects gate on
 // VerifyDispatch before reaching their observed service method, so the
 // test stands up a real run and echoes its live dispatch nonce. All
-// waits are bounded; the NATS server is isolated per test. See doc.go
-// for why this lives in its own package.
-package tracectx_test
+// waits are bounded; the NATS server is isolated per test.
+package api
 
 import (
 	"context"
 	"encoding/json"
-	"sync"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
@@ -34,13 +33,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
-
-// inboundTraceParent is the W3C example traceparent; inboundTraceID is
-// the trace ID every handler's span must adopt when it is present.
-const inboundTraceParent = "00-0af7651916cd43dd8448eb211c80319c-" +
-	"b7ad6b7169203331-01"
-
-const inboundTraceID = "0af7651916cd43dd8448eb211c80319c"
 
 // traceWorkflowName is registered once and reused as the run's
 // workflow, the runtime-register def, and the spawn child target.
@@ -51,36 +43,34 @@ const traceWorkflowName = "handler-trace-ctx-test"
 // VerifyDispatch, so its nonce stays usable for the whole test.
 const traceStepID = "a"
 
-// spanRecorderOnce/sharedSpanExporter back installSpanRecorder. The
-// OTel global TracerProvider only ever hands its delegate to a
-// previously-obtained tracer once, process-wide (internal/global's
-// delegateTraceOnce), so a second otel.SetTracerProvider call would not
-// reach a Service constructed before it. One provider is installed for
-// the whole binary and tests isolate themselves by resetting the
-// exporter buffer instead of swapping providers.
-var (
-	spanRecorderOnce   sync.Once
-	sharedSpanExporter *tracetest.InMemoryExporter
-)
+// sharedSpanExporter records every span this test binary produces. It
+// is installed once from TestMain, before any tracer is obtained: the
+// OTel global TracerProvider hands its delegate to a previously-created
+// tracer only once, process-wide (internal/global's delegateTraceOnce),
+// so a provider installed mid-run would never reach a Service built
+// before it. Tests isolate themselves by resetting the buffer.
+var sharedSpanExporter = tracetest.NewInMemoryExporter()
 
-// installSpanRecorder returns the shared in-memory span exporter,
-// installing it (synchronously, via WithSyncer, so a span is visible
-// the moment span.End() returns) and the composite W3C propagator on
-// first use. The prior propagator is saved and restored; the
-// TracerProvider deliberately is not, per the delegate-once constraint.
+// TestMain installs the real SDK TracerProvider for the whole
+// internal/api binary. Sibling tests must therefore assert on trace
+// PROVENANCE (this run did not inherit that caller's trace), never on
+// trace ABSENCE -- under a real provider, which is what production
+// installs via InitTelemetry, an untraced request legitimately mints a
+// fresh root span whose trace ID is then persisted.
+func TestMain(m *testing.M) {
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(sharedSpanExporter),
+	))
+	os.Exit(m.Run())
+}
+
+// installSpanRecorder returns the shared exporter with a clean buffer
+// and pins the composite W3C propagator, so extraction is deterministic
+// regardless of test order (NewNATSAPI calls EnsureDefaultPropagator,
+// which is no-clobber, so whichever propagator is installed first wins).
 func installSpanRecorder(t *testing.T) *tracetest.InMemoryExporter {
 	t.Helper()
 	previousPropagator := otel.GetTextMapPropagator()
-	spanRecorderOnce.Do(func() {
-		sharedSpanExporter = tracetest.NewInMemoryExporter()
-		otel.SetTracerProvider(sdktrace.NewTracerProvider(
-			sdktrace.WithSyncer(sharedSpanExporter),
-		))
-	})
-	// Set after the Once: api.NewNATSAPI calls EnsureDefaultPropagator,
-	// which is no-clobber, so whichever propagator is already installed
-	// wins. Pinning the composite here makes extraction deterministic
-	// regardless of test order.
 	otel.SetTextMapPropagator(
 		propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{}, propagation.Baggage{},
@@ -178,8 +168,8 @@ func TestNATSAPIHandlersPropagateTraceContext(t *testing.T) {
 	orchestrator.Start()
 	defer orchestrator.Stop()
 
-	service := api.NewService(nc)
-	natsAPI := api.NewNATSAPI(service, nc, "1.0.0")
+	service := NewService(nc)
+	natsAPI := NewNATSAPI(service, nc, "1.0.0")
 	natsAPI.Start()
 	defer natsAPI.Stop()
 
@@ -274,7 +264,7 @@ func startRun(t *testing.T, nc *nats.Conn) string {
 // three runtime endpoints must echo to clear VerifyDispatch. Bounded on
 // both iterations and wall time; fails the test on timeout.
 func waitForDispatchNonce(
-	t *testing.T, service *api.Service, runID string,
+	t *testing.T, service *Service, runID string,
 ) string {
 	t.Helper()
 	const attempts_max = 100
