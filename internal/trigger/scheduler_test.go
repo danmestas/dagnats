@@ -239,22 +239,35 @@ func TestSchedulerBackfillThenLiveTickNoDoubleFire(t *testing.T) {
 	if err := scheduler.Backfill(); err != nil {
 		t.Fatalf("Backfill failed: %v", err)
 	}
-	// Drain any backfilled events.
+	// Drain the backfilled events, keeping the minute the last one
+	// claimed. That minute comes from the published envelope, NOT from
+	// a second time.Now() read: Backfill claims the minute containing
+	// its own time.Now(), and this drain takes ~500ms, so a wall-clock
+	// read here lands in the NEXT minute whenever the drain straddles a
+	// real minute boundary (~1% of runs). A live tick in a genuinely
+	// new minute SHOULD fire, so that made the assertion below flaky
+	// rather than wrong. Sourcing the tick time from the event keeps
+	// the test on the behavior it means to pin.
 	backfilled := 0
+	var backfilledMinute time.Time
 	for {
-		_, err := sub.NextMsg(500 * time.Millisecond)
+		msg, err := sub.NextMsg(500 * time.Millisecond)
 		if err != nil {
 			break
 		}
 		backfilled++
+		backfilledMinute = triggerFireMinute(t, msg)
 	}
 	if backfilled == 0 {
 		t.Fatalf("expected at least one backfilled event")
 	}
+	if backfilledMinute.IsZero() {
+		t.Fatalf("expected non-zero minute on backfilled event")
+	}
 
-	// Live tick at the most recent backfilled minute. Without the
-	// claimMinute guard in backfill, this would publish again.
-	if err := scheduler.Tick(time.Now().UTC()); err != nil {
+	// Live tick at exactly the most recent backfilled minute. Without
+	// the claimMinute guard in backfill, this would publish again.
+	if err := scheduler.Tick(backfilledMinute); err != nil {
 		t.Fatalf("Tick failed: %v", err)
 	}
 
@@ -265,6 +278,33 @@ func TestSchedulerBackfillThenLiveTickNoDoubleFire(t *testing.T) {
 			"expected no live event for backfilled minute, got %s",
 			msg.Subject)
 	}
+}
+
+// triggerFireMinute reports the cron minute a workflow.started event was
+// fired for, read from its TriggerEnvelope payload. Tests derive tick
+// times from this rather than from time.Now() so an assertion about a
+// specific minute cannot be decided by where a real minute boundary
+// happens to fall during the test run.
+func triggerFireMinute(t *testing.T, msg *nats.Msg) time.Time {
+	t.Helper()
+
+	var evt protocol.Event
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+	if evt.Type != protocol.EventWorkflowStarted {
+		t.Fatalf("expected workflow.started, got %s", evt.Type)
+	}
+
+	var envelope TriggerEnvelope
+	if err := json.Unmarshal(evt.Payload, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if envelope.Timestamp.IsZero() {
+		t.Fatalf("expected non-zero envelope timestamp")
+	}
+
+	return envelope.Timestamp.UTC()
 }
 
 func setupSchedulerWithEveryMinuteTrigger(
