@@ -63,8 +63,19 @@ func setupStream(
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
+	// Explicit deadline: with a bare Background context the jetstream
+	// client applies its own default request timeout, which is too
+	// tight under `go test ./...` where dozens of packages drive
+	// embedded servers at once. That surfaced as "create stream:
+	// context deadline exceeded" in the full suite while this package
+	// passed in isolation. Bounded, but generous enough to be
+	// contention rather than a hang.
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
 	_, err = js.CreateOrUpdateStream(
-		context.Background(),
+		ctx,
 		jetstream.StreamConfig{
 			Name:       "TELEMETRY",
 			Subjects:   []string{"telemetry.>"},

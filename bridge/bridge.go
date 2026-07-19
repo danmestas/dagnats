@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -40,7 +41,10 @@ type Bridge struct {
 	// Pre-allocated metric instruments — created once in constructor.
 	requestCount    metric.Int64Counter
 	requestDuration metric.Float64Histogram
-	ackMapSize      metric.Int64UpDownCounter
+	// metricsReg holds the observable-gauge registration. Bridge has no
+	// shutdown path today, so nothing unregisters it; it is kept so a
+	// future Close can, matching internal/trigger's scheduler.
+	metricsReg metric.Registration
 }
 
 // routePoll / routeResolve tag the shared bridge.requests counter,
@@ -85,8 +89,7 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 	reqDur, _ := m.Float64Histogram(
 		"bridge.request.duration_ms",
 	)
-	ackSize, _ := m.Int64UpDownCounter("bridge.ackmap.size")
-	return &Bridge{
+	b := &Bridge{
 		pub:             pub,
 		nc:              nc,
 		js:              js,
@@ -97,8 +100,18 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 		tracer:          otel.Tracer("dagnats/bridge"),
 		requestCount:    reqCount,
 		requestDuration: reqDur,
-		ackMapSize:      ackSize,
 	}
+	// Registered after the Bridge exists because the callback closes
+	// over it. A failure here costs one gauge, so it is logged rather
+	// than fatal: losing observability must not stop the bridge from
+	// serving workers.
+	reg, err := RegisterBridgeMetrics(m, b)
+	if err != nil {
+		slog.Warn("bridge ackmap size gauge not registered",
+			"error", err)
+	}
+	b.metricsReg = reg
+	return b
 }
 
 // Handler returns an http.Handler with the three bridge routes.

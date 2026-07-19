@@ -8,6 +8,7 @@ import "github.com/danmestas/dagnats/bridge"
 
 ## Index
 
+- [func RegisterBridgeMetrics\(m metric.Meter, b \*Bridge\) \(metric.Registration, error\)](<#RegisterBridgeMetrics>)
 - [type AckMap](<#AckMap>)
   - [func NewAckMap\(\) \*AckMap](<#NewAckMap>)
   - [func \(am \*AckMap\) Count\(\) int64](<#AckMap.Count>)
@@ -18,6 +19,19 @@ import "github.com/danmestas/dagnats/bridge"
   - [func NewBridge\(pub \*natsutil.TracingPublisher\) \*Bridge](<#NewBridge>)
   - [func \(b \*Bridge\) Handler\(\) http.Handler](<#Bridge.Handler>)
 
+
+<a name="RegisterBridgeMetrics"></a>
+## func [RegisterBridgeMetrics](<https://github.com/danmestas/dagnats/blob/main/bridge/metrics.go#L32-L34>)
+
+```go
+func RegisterBridgeMetrics(m metric.Meter, b *Bridge) (metric.Registration, error)
+```
+
+RegisterBridgeMetrics wires the bridge's observable instruments to m and returns the registration so a caller can unregister it.
+
+The ackmap size is an observable gauge rather than an up/down counter deliberately. A counter requires every mutation site — store, resolve, reap, cap eviction — to Add the right delta forever, and drifts permanently the moment one is missed. This instrument was previously an Int64UpDownCounter with no Add call anywhere, so it reported a constant zero: indistinguishable from an idle bridge, and wrong the entire time it existed. A callback reading AckMap.Count\(\) cannot drift, because it reports the real value at every collection.
+
+Mirrors RegisterSchedulerMetrics \(internal/trigger/metrics.go\): a standalone registration function rather than construction inside NewBridge, so the error is returned to a caller that can assert on it instead of being discarded at startup.
 
 <a name="AckMap"></a>
 ## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L58-L63>)
@@ -84,7 +98,7 @@ func (am *AckMap) Store(taskID string, msg jetstream.Msg)
 Store saves a NATS message keyed by task ID, stamped with the insertion time. Sweeps expired entries and enforces the size cap before inserting. Panics on empty taskID or nil msg — both are programmer errors.
 
 <a name="Bridge"></a>
-## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L30-L44>)
+## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L31-L48>)
 
 Bridge is an HTTP\-to\-NATS gateway that lets non\-Go workers interact with DagNats over HTTP. Three deep endpoints expose the full worker lifecycle: connect, poll, and resolve.
 
@@ -99,7 +113,7 @@ type Bridge struct {
 ```
 
 <a name="NewBridge"></a>
-### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L67>)
+### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L71>)
 
 ```go
 func NewBridge(pub *natsutil.TracingPublisher) *Bridge
@@ -110,7 +124,7 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L109>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L122>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
