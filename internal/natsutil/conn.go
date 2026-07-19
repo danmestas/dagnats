@@ -61,11 +61,59 @@ const (
 	fractionSleepTimers     = 0.04
 )
 
-// defaultMaxStoreBytes is the fallback store budget used by callers that
-// cannot easily obtain the real JetStreamMaxStore (test helpers). 10 GiB
-// matches server.defaultMaxStoreBytes; the proportional ceilings derived
-// from it stay well under any realistic host store.
+// defaultMaxStoreBytes is the last-resort store budget, used only when the
+// connected server reports an UNLIMITED store (JetStream encodes unlimited
+// as MaxStore <= 0). Fractions of "unlimited" are meaningless, so the
+// ceilings are sized off this concrete figure instead. 10 GiB matches
+// server.defaultMaxStoreBytes.
+//
+// It is deliberately NOT a fallback for callers that omit a budget: those
+// resolve the connected server's real limit (see resolveStoreBudget).
+// Guessing 10 GiB is what overran any server whose budget was smaller,
+// failing stream creation with err 10047.
 const defaultMaxStoreBytes int64 = 10 << 30
+
+// storeBudgetResolveTimeout bounds the AccountInfo round trip that resolves
+// the server's store budget. It is a single request/reply against an
+// already-connected server, so seconds are generous.
+const storeBudgetResolveTimeout = 5 * time.Second
+
+// storeBudgetFromLimit maps a server-reported JetStream store limit to the
+// budget the proportional ceilings are sized against. NATS encodes an
+// unlimited store as MaxStore <= 0; sizing fractions off that would yield a
+// 0 (no-ceiling) budget, silently removing the storage backstop, so an
+// unlimited server falls back to defaultMaxStoreBytes.
+func storeBudgetFromLimit(maxStore int64) int64 {
+	if maxStore <= 0 {
+		return defaultMaxStoreBytes
+	}
+	if defaultMaxStoreBytes <= 0 {
+		panic("storeBudgetFromLimit: defaultMaxStoreBytes must be positive")
+	}
+	return maxStore
+}
+
+// resolveStoreBudget reports the store budget of the server js is connected
+// to, so per-stream ceilings track the budget that server will actually
+// enforce rather than a compile-time guess. A failed query is returned, not
+// swallowed: the alternative is inventing a budget that may exceed the
+// server's and fail stream creation later with an error that names storage
+// rather than the failed lookup.
+func resolveStoreBudget(
+	ctx context.Context, js jetstream.JetStream,
+) (int64, error) {
+	if js == nil {
+		panic("resolveStoreBudget: js must not be nil")
+	}
+	if ctx == nil {
+		panic("resolveStoreBudget: ctx must not be nil")
+	}
+	info, err := js.AccountInfo(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("resolve JetStream store budget: %w", err)
+	}
+	return storeBudgetFromLimit(info.Limits.MaxStore), nil
+}
 
 // proportionalMaxBytes returns floor(budget*fraction), or 0 when the budget
 // is unset (<= 0) so the caller skips MaxBytes entirely (no ceiling) rather
@@ -407,11 +455,12 @@ type setupOptions struct {
 }
 
 // WithStoreBudget sets the JetStreamMaxStore budget SetupAll uses to size
-// each file stream's proportional MaxBytes ceiling. When unset (or 0), the
-// default budget (defaultMaxStoreBytes) is used so callers that cannot
-// easily obtain the real budget still get sane ceilings. The server passes
-// its configured MaxStoreBytes; the e2e harness passes its smaller cluster
-// budget so the proportional sizing fits the test store.
+// each file stream's proportional MaxBytes ceiling. When unset (or 0),
+// SetupAll queries the connected server for its real budget instead (see
+// resolveStoreBudget). Pass this only to size against a budget the server
+// itself does not report — e.g. the server passes its own configured
+// MaxStoreBytes before the value is observable, and the e2e harness pins
+// the cluster budget it provisioned its nodes with.
 func WithStoreBudget(maxStoreBytes int64) SetupOption {
 	return func(o *setupOptions) {
 		o.maxStoreBytes = maxStoreBytes
@@ -457,15 +506,23 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	for _, opt := range opts {
 		opt(&options)
 	}
-	// A caller that did not declare a budget still gets proportional
-	// ceilings off the default budget, never a 0 (uncapped) store.
-	if options.maxStoreBytes <= 0 {
-		options.maxStoreBytes = defaultMaxStoreBytes
-	}
 
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return err
+	}
+
+	// A caller that did not declare a budget gets ceilings sized against
+	// the budget THIS server enforces, so the sum can never overrun it.
+	if options.maxStoreBytes <= 0 {
+		budgetCtx, budgetCancel := context.WithTimeout(
+			context.Background(), storeBudgetResolveTimeout,
+		)
+		options.maxStoreBytes, err = resolveStoreBudget(budgetCtx, js)
+		budgetCancel()
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(options.cluster.Routes) > 0 {

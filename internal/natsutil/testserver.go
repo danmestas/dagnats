@@ -20,6 +20,27 @@ const storeDirRemoveAttemptsMax = 20
 // in-flight filestore write land before the next RemoveAll walk.
 const storeDirRemoveRetryDelay = 25 * time.Millisecond
 
+// testServerMaxStoreBytes pins the embedded server's JetStream store
+// budget. Without an explicit value nats-server sizes the budget from the
+// host's AVAILABLE DISK at startup, which makes every JetStream test's
+// outcome depend on ambient host state: on a host with less free disk than
+// the ceilings a caller derives, stream creation fails with err 10047. A
+// fixed budget makes the suite hermetic and disk-independent.
+//
+// 1 GiB is ample — the proportional ceilings are reservations against the
+// budget, not preallocated files, and no test writes anywhere near this —
+// while staying small enough to fit on a nearly-full disk.
+const testServerMaxStoreBytes int64 = 1 << 30
+
+// testServerMaxStoreHeadroomBytes is the slack the server's store budget
+// carries above the account's. The server must hold strictly MORE than the
+// account limit: UpdateJetStreamLimits validates the DELTA from the
+// account's current limit, and an unconfigured account starts at the -1
+// (unlimited) sentinel, so raising it to N is checked as a request for N+1
+// bytes. Headroom keeps that arithmetic clear of the server bound without
+// making the account budget the tests observe anything but a round number.
+const testServerMaxStoreHeadroomBytes int64 = 64 << 20
+
 // StartTestServer starts an embedded NATS server with JetStream enabled
 // and returns both the server and a connected client. The server and
 // connection are shut down via t.Cleanup when the test ends, and the
@@ -46,7 +67,9 @@ func StartTestServer(t testing.TB) (*natsserver.Server, *nats.Conn) {
 		Host:      "127.0.0.1",
 		Port:      -1,
 		JetStream: true,
-		StoreDir:  storeDir,
+		JetStreamMaxStore: testServerMaxStoreBytes +
+			testServerMaxStoreHeadroomBytes,
+		StoreDir: storeDir,
 	}
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
@@ -57,6 +80,28 @@ func StartTestServer(t testing.TB) (*natsserver.Server, *nats.Conn) {
 	if !ns.ReadyForConnections(5_000_000_000) {
 		os.RemoveAll(storeDir)
 		t.Fatal("NATS server not ready after 5s")
+	}
+	// The server-level JetStreamMaxStore above bounds the store but is NOT
+	// visible to clients: an unconfigured account reports its limits as -1
+	// (unlimited), so a caller sizing stream ceilings from AccountInfo
+	// would derive them from a fallback larger than the server enforces.
+	// Mirroring the budget onto the global account's limits makes the
+	// bound the clients see the same bound the server applies.
+	limits := map[string]natsserver.JetStreamAccountLimits{
+		"": {
+			MaxMemory:            -1,
+			MaxStore:             testServerMaxStoreBytes,
+			MaxStreams:           -1,
+			MaxConsumers:         -1,
+			MaxAckPending:        -1,
+			MemoryMaxStreamBytes: -1,
+			StoreMaxStreamBytes:  -1,
+		},
+	}
+	if err := ns.GlobalAccount().UpdateJetStreamLimits(limits); err != nil {
+		ns.Shutdown()
+		os.RemoveAll(storeDir)
+		t.Fatalf("failed to bound test account JetStream store: %v", err)
 	}
 	// One cleanup owns the full teardown order: stop the server, wait
 	// for its goroutines to exit, THEN remove the store dir. Registered
