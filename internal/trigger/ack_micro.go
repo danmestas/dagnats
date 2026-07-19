@@ -34,6 +34,8 @@ import (
 
 	"log/slog"
 
+	"github.com/danmestas/dagnats/observe"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
 )
@@ -141,6 +143,12 @@ func microVersion(build string) string {
 // "external::<name>" key. Reply is empty bytes on success or a JSON
 // error envelope on failure. Never panics on bad wire input — workers
 // must surface boot failures cleanly.
+//
+// The inbound W3C trace context is extracted once here and threaded
+// through every helper on the path (#530), so the registering worker's
+// span is the parent of the KV work this handler performs. Helpers
+// derive their own timeouts FROM this context rather than rooting fresh
+// ones, which keeps the bounds while inheriting the trace.
 func (ts *TriggerService) handleAckMicro(req micro.Request) {
 	if req == nil {
 		panic("handleAckMicro: req must not be nil")
@@ -149,6 +157,7 @@ func (ts *TriggerService) handleAckMicro(req micro.Request) {
 		ts.replyAckMicro(req, fmt.Errorf("trigger_types KV not initialised"))
 		return
 	}
+	ctx := observe.ExtractTraceContextHeader(nats.Header(req.Headers()))
 
 	var r RegisterTriggerTypeRequest
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
@@ -164,7 +173,7 @@ func (ts *TriggerService) handleAckMicro(req micro.Request) {
 		return
 	}
 
-	tdef, err := ts.loadTriggerType(r.Name)
+	tdef, err := ts.loadTriggerType(ctx, r.Name)
 	if err != nil {
 		ts.replyAckMicro(req, err)
 		return
@@ -175,7 +184,7 @@ func (ts *TriggerService) handleAckMicro(req micro.Request) {
 			r.Name, tdef.OwnerWorkerID, r.OwnerWorkerID))
 		return
 	}
-	if err := ts.installExternalRegistrar(r.Name, tdef); err != nil {
+	if err := ts.installExternalRegistrar(ctx, r.Name, tdef); err != nil {
 		ts.replyAckMicro(req, err)
 		return
 	}
@@ -185,17 +194,22 @@ func (ts *TriggerService) handleAckMicro(req micro.Request) {
 // loadTriggerType reads the TriggerTypeDef from the trigger_types KV
 // bucket and verifies its ConfigSchema parses as JSON. Returns a
 // canonical "not registered" error when the key is missing.
+//
+// The 5s bound is derived from ctx rather than context.Background() so
+// the caller's trace context reaches the KV read while the bound on KV
+// latency is preserved (#530).
 func (ts *TriggerService) loadTriggerType(
-	name string,
+	ctx context.Context, name string,
 ) (TriggerTypeDef, error) {
+	if ctx == nil {
+		panic("loadTriggerType: ctx must not be nil")
+	}
 	if name == "" {
 		panic("loadTriggerType: name must not be empty")
 	}
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 5*time.Second,
-	)
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	entry, err := ts.triggerTypesKV.Get(ctx, name)
+	entry, err := ts.triggerTypesKV.Get(getCtx, name)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return TriggerTypeDef{}, fmt.Errorf(
@@ -244,8 +258,11 @@ func (ts *TriggerService) loadTriggerType(
 // matches the #330 lock-ordering rule so KV latency can't pin the
 // registrars map.
 func (ts *TriggerService) installExternalRegistrar(
-	name string, tdef TriggerTypeDef,
+	ctx context.Context, name string, tdef TriggerTypeDef,
 ) error {
+	if ctx == nil {
+		panic("installExternalRegistrar: ctx must not be nil")
+	}
 	if name == "" {
 		panic("installExternalRegistrar: name must not be empty")
 	}
@@ -263,7 +280,7 @@ func (ts *TriggerService) installExternalRegistrar(
 			return fmt.Errorf(
 				"registrar %q exists but is not external", key)
 		}
-		return ts.reconcileExternalRegistrar(key, existingExt, tdef)
+		return ts.reconcileExternalRegistrar(ctx, key, existingExt, tdef)
 	}
 
 	reg := newExternalRegistrar(
@@ -288,8 +305,15 @@ func (ts *TriggerService) installExternalRegistrar(
 // Caller MUST NOT hold ts.mu — this function manages its own locking
 // and drops the lock around KV I/O (#330 lock-ordering rule).
 func (ts *TriggerService) reconcileExternalRegistrar(
-	key string, existing *externalRegistrar, tdef TriggerTypeDef,
+	ctx context.Context, key string,
+	existing *externalRegistrar, tdef TriggerTypeDef,
 ) error {
+	if ctx == nil {
+		panic("reconcileExternalRegistrar: ctx must not be nil")
+	}
+	if existing == nil {
+		panic("reconcileExternalRegistrar: existing must not be nil")
+	}
 	name := existing.kind
 	if existing.ownerWorkerID != tdef.OwnerWorkerID {
 		return fmt.Errorf(
@@ -305,9 +329,10 @@ func (ts *TriggerService) reconcileExternalRegistrar(
 		return nil
 	}
 
-	scanCtx, cancel := context.WithTimeout(
-		context.Background(), 5*time.Second,
-	)
+	// Derived from ctx, not context.Background(): the scan is part of the
+	// registering worker's request, so it inherits that trace while
+	// keeping its own 5s bound on KV latency (#530).
+	scanCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	hasLive, err := ts.hasLiveTriggersOfKind(
 		scanCtx, name, liveTriggersScanMax,
 	)

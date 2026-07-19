@@ -12,6 +12,7 @@ import (
 	"log/slog"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
@@ -113,6 +114,13 @@ func NewTriggerService(
 	if !nc.IsConnected() {
 		panic("NewTriggerService: nc must be connected")
 	}
+	// The ack handler's extraction and the subject trigger's injection are
+	// both inert under a noop propagator. server.Start happens to call
+	// InitTelemetry first, but NewTriggerService is independently
+	// constructible (tests, library embedders), so it must not depend on
+	// another component having been built first. Idempotent and
+	// no-clobber — matches NewNATSAPI and NewWorker (#528, #530).
+	observe.EnsureDefaultPropagator()
 
 	js, err := jetstream.New(nc)
 	if err != nil {

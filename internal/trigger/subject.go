@@ -9,6 +9,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -105,6 +106,11 @@ func (s *SubjectTrigger) Close() error {
 
 // handleMessage processes incoming NATS messages and publishes workflow.started.
 // Panics if msg is nil (NATS library invariant).
+//
+// The inbound W3C trace context is extracted once here and threaded
+// through the debounce and publish paths (#530). Before this, both
+// rooted context.Background(), so the workflow.started event was
+// trace-detached despite the type doc's auto-flow claim (#334).
 func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 	if msg == nil {
 		panic("handleMessage: msg must not be nil")
@@ -113,9 +119,9 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 		panic("handleMessage: JetStream context must not be nil")
 	}
 
-	bg := context.Background()
+	ctx := observe.ExtractTraceContextRaw(msg, nil)
 	if !s.def.Enabled {
-		RecordFiring(bg, TypeSubject, OutcomeSkipped)
+		RecordFiring(ctx, TypeSubject, OutcomeSkipped)
 		return
 	}
 
@@ -127,31 +133,34 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 	// Route through debounce if configured
 	if s.def.Debounce != nil && s.debounce != nil {
 		debounceCtx, debounceCancel := context.WithTimeout(
-			context.Background(), 5*time.Second,
+			ctx, 5*time.Second,
 		)
 		defer debounceCancel()
 		fire, eventData, err := s.debounce.DebounceOrFire(
 			debounceCtx, s.def, data,
 		)
 		if err != nil {
-			RecordFiring(bg, TypeSubject, OutcomeError)
+			RecordFiring(ctx, TypeSubject, OutcomeError)
 			return
 		}
 		if !fire {
-			RecordFiring(bg, TypeSubject, OutcomeSkipped)
+			RecordFiring(ctx, TypeSubject, OutcomeSkipped)
 			return
 		}
 		data = eventData
 	}
 
-	s.publishWorkflowStarted(data)
+	s.publishWorkflowStarted(ctx, data)
 }
 
 // publishWorkflowStarted wraps data in a TriggerEnvelope and publishes
 // it as a workflow.started event to JetStream.
 func (s *SubjectTrigger) publishWorkflowStarted(
-	data json.RawMessage,
+	ctx context.Context, data json.RawMessage,
 ) {
+	if ctx == nil {
+		panic("publishWorkflowStarted: ctx must not be nil")
+	}
 	if s.js == nil {
 		panic("publishWorkflowStarted: js must not be nil")
 	}
@@ -188,9 +197,9 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 		return
 	}
 
-	pubCtx, pubCancel := context.WithTimeout(
-		context.Background(), 5*time.Second,
-	)
+	// Derived from ctx so JSPublish's header injection carries the
+	// inbound message's trace onto workflow.started (#530).
+	pubCtx, pubCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer pubCancel()
 	if _, err := s.tp.JSPublish(
 		pubCtx, evt.NATSSubject(), evtBytes,
