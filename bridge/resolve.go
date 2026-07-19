@@ -82,7 +82,7 @@ func (b *Bridge) handleResolve(
 		return
 	}
 
-	b.requestCount.Add(ctx, 1)
+	b.requestCount.Add(ctx, 1, routeResolve)
 	slog.InfoContext(ctx, "task resolved",
 		"task_id", taskID,
 		"action", req.Action,

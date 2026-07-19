@@ -8,8 +8,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // pollRequest is the JSON body for POST /v1/tasks/poll.
@@ -44,8 +48,11 @@ func (b *Bridge) handlePoll(
 	if b.ackMap == nil {
 		panic("handlePoll: ackMap must not be nil")
 	}
-	ctx, span := b.tracer.Start(r.Context(), "bridge.poll")
-	defer span.End()
+	// No request-level span: a poll that finds nothing is waiting, not
+	// work, and one span per poll per worker swamped span volume at
+	// idle (#531). The per-task bridge.dispatch span covers the work;
+	// these instruments cover the wait.
+	ctx := r.Context()
 
 	start := time.Now()
 	req, err := parsePollRequest(r)
@@ -56,8 +63,8 @@ func (b *Bridge) handlePoll(
 	tasks := b.fetchTasks(ctx, req)
 
 	elapsed := time.Since(start).Milliseconds()
-	b.requestCount.Add(ctx, 1)
-	b.requestDuration.Record(ctx, float64(elapsed))
+	b.requestCount.Add(ctx, 1, routePoll)
+	b.requestDuration.Record(ctx, float64(elapsed), routePoll)
 	slog.InfoContext(ctx, "poll completed",
 		"task_count", len(tasks),
 		"elapsed_ms", elapsed,
@@ -199,33 +206,47 @@ func (b *Bridge) processPolledMsg(
 	if b.ackMap == nil {
 		panic("processPolledMsg: ackMap must not be nil")
 	}
-	var payload protocol.TaskPayload
-	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
-		// Bad JSON — consume it; redelivery cannot fix the body.
-		if ackErr := msg.Ack(); ackErr != nil {
-			slog.WarnContext(ctx, "ack malformed task failed",
-				"error", ackErr)
-		}
+	payload, ok := decodePolledTask(ctx, msg)
+	if !ok {
 		return pollResponse{}, false
 	}
-	if payload.RunID == "" || payload.StepID == "" {
-		// Malformed task — same disposition as bad JSON.
-		if ackErr := msg.Ack(); ackErr != nil {
-			slog.WarnContext(ctx, "ack malformed task failed",
-				"error", ackErr)
-		}
-		return pollResponse{}, false
-	}
+	// Extract, never root: the engine injects its enqueueTask trace
+	// context onto the task message (internal/engine/task_publish.go),
+	// so dispatch joins that trace. A fresh root here would orphan the
+	// step lifecycle exactly as #527/#528 fixed.
+	//
+	// Graft the remote span context onto ctx rather than using the
+	// extracted context directly: extraction roots on Background
+	// (observe/propagation.go), which would discard the request's
+	// deadline and cancellation — the only bound on the step.started
+	// publish below.
+	remote := trace.SpanContextFromContext(
+		observe.ExtractTraceContext(msg, nil),
+	)
+	dispatchCtx, span := b.tracer.Start(
+		trace.ContextWithRemoteSpanContext(ctx, remote),
+		"bridge.dispatch",
+	)
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("run_id", payload.RunID),
+		attribute.String("step_id", payload.StepID),
+	)
 	attemptNumber, err := taskAttemptNumber(msg, payload.Attempt)
 	if err != nil {
-		nakPolledMsg(ctx, msg, "derive attempt number", err)
+		nakPolledMsg(
+			dispatchCtx, msg, "derive attempt number", err, span,
+		)
 		return pollResponse{}, false
 	}
+	span.SetAttributes(attribute.Int("attempt", attemptNumber))
 	err = b.publishStepStarted(
-		ctx, payload.RunID, payload.StepID, attemptNumber,
+		dispatchCtx, payload.RunID, payload.StepID, attemptNumber,
 	)
 	if err != nil {
-		nakPolledMsg(ctx, msg, "publish step.started", err)
+		nakPolledMsg(
+			dispatchCtx, msg, "publish step.started", err, span,
+		)
 		return pollResponse{}, false
 	}
 	taskID := payload.RunID + "." + payload.StepID
@@ -239,6 +260,36 @@ func (b *Bridge) processPolledMsg(
 		Input:     payload.Input,
 	}
 	return resp, true
+}
+
+// decodePolledTask unmarshals and validates a polled task message.
+// A body that cannot be decoded or lacks identity is acked, not naked:
+// redelivery cannot repair it. Reports false when the message was
+// consumed and must not be dispatched.
+func decodePolledTask(
+	ctx context.Context, msg jetstream.Msg,
+) (protocol.TaskPayload, bool) {
+	if ctx == nil {
+		panic("decodePolledTask: ctx must not be nil")
+	}
+	if msg == nil {
+		panic("decodePolledTask: msg must not be nil")
+	}
+	var payload protocol.TaskPayload
+	err := json.Unmarshal(msg.Data(), &payload)
+	if err == nil && (payload.RunID == "" || payload.StepID == "") {
+		err = fmt.Errorf("run_id and step_id are required")
+	}
+	if err != nil {
+		slog.WarnContext(ctx, "malformed task consumed",
+			"error", err)
+		if ackErr := msg.Ack(); ackErr != nil {
+			slog.WarnContext(ctx, "ack malformed task failed",
+				"error", ackErr)
+		}
+		return protocol.TaskPayload{}, false
+	}
+	return payload, true
 }
 
 // taskAttemptNumber derives the 1-based attempt number for a polled
@@ -312,11 +363,16 @@ const nakPolledTaskRetryDelay = 5 * time.Second
 // redeliver rather than be silently consumed. Delayed: a bare NAK
 // under a persistent history-publish failure would tight-loop
 // redeliveries and inflate NumDelivered-derived attempt counts.
+//
+// span is the caller's bridge.dispatch span: recording here keeps the
+// failure on the span that owns the dispatch without pushing a second
+// error path back up into processPolledMsg.
 func nakPolledMsg(
 	ctx context.Context,
 	msg jetstream.Msg,
 	cause string,
 	causeErr error,
+	span trace.Span,
 ) {
 	if msg == nil {
 		panic("nakPolledMsg: msg must not be nil")
@@ -324,6 +380,11 @@ func nakPolledMsg(
 	if cause == "" {
 		panic("nakPolledMsg: cause must not be empty")
 	}
+	if span == nil {
+		panic("nakPolledMsg: span must not be nil")
+	}
+	span.RecordError(causeErr)
+	span.SetStatus(codes.Error, cause)
 	slog.WarnContext(ctx, "polled task returned to queue",
 		"cause", cause,
 		"error", causeErr,
