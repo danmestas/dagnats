@@ -32,12 +32,32 @@ func InjectTraceContext(
 	if msg.Header == nil {
 		msg.Header = nats.Header{}
 	}
-	prop := otel.GetTextMapPropagator()
-	prop.Inject(ctx, NATSHeaderCarrier{Header: msg.Header})
+	InjectTraceContextHeader(ctx, msg.Header)
 	if evt != nil {
 		evt.TraceParent = msg.Header.Get("traceparent")
 		evt.TraceState = msg.Header.Get("tracestate")
 	}
+}
+
+// InjectTraceContextHeader writes W3C trace context from ctx directly
+// into a NATS header map. This is the header-level entry point for
+// carriers that are not a *nats.Msg — the inject counterpart to
+// ExtractTraceContextHeader. Panics on nil ctx or nil hdr (programmer
+// error: a nil map cannot be written to).
+//
+// Writes nothing when ctx carries no valid span context: the W3C
+// propagator skips invalid span contexts, so callers never see an empty
+// or malformed traceparent.
+func InjectTraceContextHeader(ctx context.Context, hdr nats.Header) {
+	if ctx == nil {
+		panic("InjectTraceContextHeader: ctx must not be nil")
+	}
+	if hdr == nil {
+		panic("InjectTraceContextHeader: hdr must not be nil")
+	}
+	otel.GetTextMapPropagator().Inject(
+		ctx, NATSHeaderCarrier{Header: hdr},
+	)
 }
 
 // ExtractTraceContext reads W3C trace context from NATS

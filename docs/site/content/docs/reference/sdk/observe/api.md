@@ -22,6 +22,7 @@ setup.go is the single entry point for OTel provider setup. One call to InitTele
 - [func ExtractTraceContextRaw\(msg \*nats.Msg, evt \*protocol.Event\) context.Context](<#ExtractTraceContextRaw>)
 - [func InitTelemetry\(ctx context.Context, cfg Config\) \(func\(context.Context\), error\)](<#InitTelemetry>)
 - [func InjectTraceContext\(ctx context.Context, msg \*nats.Msg, evt \*protocol.Event\)](<#InjectTraceContext>)
+- [func InjectTraceContextHeader\(ctx context.Context, hdr nats.Header\)](<#InjectTraceContextHeader>)
 - [type Config](<#Config>)
 - [type NATSHeaderCarrier](<#NATSHeaderCarrier>)
   - [func \(c NATSHeaderCarrier\) Get\(key string\) string](<#NATSHeaderCarrier.Get>)
@@ -39,7 +40,7 @@ func EnsureDefaultPropagator()
 EnsureDefaultPropagator installs a TraceContext\+Baggage composite as the global OTel TextMapPropagator if — and only if — the current global is the no\-op default \(Fields\(\) empty\). Never overwrites an already\-installed propagator, custom or otherwise. Idempotent: safe to call from every component constructor. A package\-level mutex serializes concurrent first\-party callers, so this function is safe to race from many goroutines; it cannot defend against an out\-of\-band otel.SetTextMapPropagator call racing it from outside this package, since OTel's global setter has no compare\-and\-swap — first\-party installs must route through here.
 
 <a name="ExtractTraceContext"></a>
-## func [ExtractTraceContext](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L47-L50>)
+## func [ExtractTraceContext](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L67-L70>)
 
 ```go
 func ExtractTraceContext(msg jetstream.Msg, evt *protocol.Event) context.Context
@@ -48,7 +49,7 @@ func ExtractTraceContext(msg jetstream.Msg, evt *protocol.Event) context.Context
 ExtractTraceContext reads W3C trace context from NATS headers, falling back to Event.TraceParent for replay. Accepts jetstream.Msg for consumer message handling. evt may be nil when no event fallback is needed.
 
 <a name="ExtractTraceContextHeader"></a>
-## func [ExtractTraceContextHeader](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L62>)
+## func [ExtractTraceContextHeader](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L82>)
 
 ```go
 func ExtractTraceContextHeader(hdr nats.Header) context.Context
@@ -57,7 +58,7 @@ func ExtractTraceContextHeader(hdr nats.Header) context.Context
 ExtractTraceContextHeader reads W3C trace context directly from a NATS header map. Returns context.Background\(\) when hdr is nil or carries no traceparent. This is the header\-level entry point for transports \(e.g. nats\-micro requests\) that expose headers without a \*nats.Msg or jetstream.Msg.
 
 <a name="ExtractTraceContextRaw"></a>
-## func [ExtractTraceContextRaw](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L78-L81>)
+## func [ExtractTraceContextRaw](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L98-L101>)
 
 ```go
 func ExtractTraceContextRaw(msg *nats.Msg, evt *protocol.Event) context.Context
@@ -82,6 +83,17 @@ func InjectTraceContext(ctx context.Context, msg *nats.Msg, evt *protocol.Event)
 ```
 
 InjectTraceContext writes W3C trace context to both NATS headers and the Event's TraceParent/TraceState fields for persistence. Panics on nil msg \(programmer error\). evt may be nil when no event dual\-write is needed.
+
+<a name="InjectTraceContextHeader"></a>
+## func [InjectTraceContextHeader](<https://github.com/danmestas/dagnats/blob/main/observe/propagation.go#L51>)
+
+```go
+func InjectTraceContextHeader(ctx context.Context, hdr nats.Header)
+```
+
+InjectTraceContextHeader writes W3C trace context from ctx directly into a NATS header map. This is the header\-level entry point for carriers that are not a \*nats.Msg — the inject counterpart to ExtractTraceContextHeader. Panics on nil ctx or nil hdr \(programmer error: a nil map cannot be written to\).
+
+Writes nothing when ctx carries no valid span context: the W3C propagator skips invalid span contexts, so callers never see an empty or malformed traceparent.
 
 <a name="Config"></a>
 ## type [Config](<https://github.com/danmestas/dagnats/blob/main/observe/config.go#L14-L34>)
