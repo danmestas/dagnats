@@ -158,6 +158,10 @@ func contains(vals []int, target int) bool {
 }
 
 // parseField parses one cron field (*, */N, N-M, N, comma-separated).
+// The comma list is the only recursive-looking construct in the grammar and
+// it is not actually recursive: a part is always comma-free, so splitting
+// once and looping over the parts covers every expression a self-call could
+// (issue #554, and CLAUDE.md forbids recursion outright).
 func parseField(field string, min, max int) ([]int, error) {
 	if field == "" {
 		panic("parseField: field must not be empty")
@@ -166,29 +170,40 @@ func parseField(field string, min, max int) ([]int, error) {
 		panic("parseField: min must not exceed max")
 	}
 
-	if field == "*" {
+	parts := strings.Split(field, ",")
+	result := make([]int, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			panic("parseField: field must not be empty")
+		}
+		values, err := parseFieldValue(part, min, max)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, values...)
+	}
+	return result, nil
+}
+
+// parseFieldValue parses one comma-free value form: *, */N, N-M, or N.
+func parseFieldValue(value string, min, max int) ([]int, error) {
+	if value == "" {
+		panic("parseFieldValue: value must not be empty")
+	}
+	if min > max {
+		panic("parseFieldValue: min must not exceed max")
+	}
+
+	if value == "*" {
 		return rangeInts(min, max), nil
 	}
 
-	// Handle comma-separated values
-	if strings.Contains(field, ",") {
-		var result []int
-		for _, part := range strings.Split(field, ",") {
-			vals, err := parseField(part, min, max)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, vals...)
-		}
-		return result, nil
-	}
-
 	// Handle */N (step)
-	if strings.HasPrefix(field, "*/") {
-		stepStr := field[2:]
+	if strings.HasPrefix(value, "*/") {
+		stepStr := value[2:]
 		step, err := strconv.Atoi(stepStr)
 		if err != nil || step <= 0 {
-			return nil, fmt.Errorf("invalid step: %q", field)
+			return nil, fmt.Errorf("invalid step: %q", value)
 		}
 		var result []int
 		for i := min; i <= max; i += step {
@@ -198,26 +213,26 @@ func parseField(field string, min, max int) ([]int, error) {
 	}
 
 	// Handle N-M (range)
-	if strings.Contains(field, "-") {
-		parts := strings.SplitN(field, "-", 2)
+	if strings.Contains(value, "-") {
+		parts := strings.SplitN(value, "-", 2)
 		lo, err := strconv.Atoi(parts[0])
 		if err != nil {
-			return nil, fmt.Errorf("invalid range start: %q", field)
+			return nil, fmt.Errorf("invalid range start: %q", value)
 		}
 		hi, err := strconv.Atoi(parts[1])
 		if err != nil {
-			return nil, fmt.Errorf("invalid range end: %q", field)
+			return nil, fmt.Errorf("invalid range end: %q", value)
 		}
 		if lo < min || hi > max || lo > hi {
-			return nil, fmt.Errorf("range out of bounds: %q", field)
+			return nil, fmt.Errorf("range out of bounds: %q", value)
 		}
 		return rangeInts(lo, hi), nil
 	}
 
 	// Single value
-	val, err := strconv.Atoi(field)
+	val, err := strconv.Atoi(value)
 	if err != nil {
-		return nil, fmt.Errorf("invalid value: %q", field)
+		return nil, fmt.Errorf("invalid value: %q", value)
 	}
 	if val < min || val > max {
 		return nil, fmt.Errorf(
