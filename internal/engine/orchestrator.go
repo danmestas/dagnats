@@ -2481,6 +2481,15 @@ func errString(err error) string {
 // enqueueReady resolves all currently-ready steps and publishes one task
 // message per step. Steps with satisfied SkipIf conditions are marked Skipped
 // instead of enqueued, potentially unblocking further downstream steps.
+//
+// recursion:allow this is the hub of the dispatch cycle -- enqueueReady
+// -> dispatchReadySteps -> enqueueSubWorkflow -> completeWorkflow ->
+// startNextPendingRun -> enqueueReady, plus the failure variant through
+// failWorkflow. Re-entry happens only when finishing one run admits
+// another, so depth follows sub-workflow nesting, which the DAG
+// validator bounds at registration. Restructuring this into an explicit
+// work queue is a real change to live dispatch, tracked separately;
+// annotating it here records the decision rather than hiding it.
 func (o *Orchestrator) enqueueReady(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,

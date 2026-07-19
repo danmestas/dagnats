@@ -32,7 +32,10 @@ type schemaNode struct {
 }
 
 // validateNode checks a value against a schema node at the given path.
-// Recursion is bounded by schema depth (typically <20 levels).
+//
+// recursion:allow bounded by schema nesting depth (typically <20
+// levels), which is fixed by the registered workflow definition rather
+// than by runtime input.
 func validateNode(
 	s schemaNode, value any, path string,
 ) error {

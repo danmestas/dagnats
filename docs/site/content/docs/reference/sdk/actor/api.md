@@ -322,7 +322,7 @@ func NewRuntime() *Runtime
 NewRuntime creates an empty actor runtime.
 
 <a name="Runtime.Send"></a>
-### func \(\*Runtime\) [Send](<https://github.com/danmestas/dagnats/blob/main/actor/runtime.go#L245-L247>)
+### func \(\*Runtime\) [Send](<https://github.com/danmestas/dagnats/blob/main/actor/runtime.go#L252-L254>)
 
 ```go
 func (r *Runtime) Send(to Address, msg Message) error
@@ -340,7 +340,7 @@ func (r *Runtime) Spawn(addr Address, actor Actor, opts ...SpawnOption) error
 Spawn starts a new root\-level actor. Use Context.Spawn for supervised child actors. Returns ErrAlreadyExists if the address is taken.
 
 <a name="Runtime.Stop"></a>
-### func \(\*Runtime\) [Stop](<https://github.com/danmestas/dagnats/blob/main/actor/runtime.go#L267>)
+### func \(\*Runtime\) [Stop](<https://github.com/danmestas/dagnats/blob/main/actor/runtime.go#L274>)
 
 ```go
 func (r *Runtime) Stop(addr Address) error
@@ -349,7 +349,7 @@ func (r *Runtime) Stop(addr Address) error
 Stop gracefully terminates an actor and its children.
 
 <a name="Runtime.StopAll"></a>
-### func \(\*Runtime\) [StopAll](<https://github.com/danmestas/dagnats/blob/main/actor/runtime.go#L282>)
+### func \(\*Runtime\) [StopAll](<https://github.com/danmestas/dagnats/blob/main/actor/runtime.go#L289>)
 
 ```go
 func (r *Runtime) StopAll()

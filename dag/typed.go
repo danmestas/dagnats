@@ -34,6 +34,10 @@ func schemaFromType[T any]() json.RawMessage {
 }
 
 // typeToSchema converts a reflect.Type to a JSON Schema map.
+//
+// recursion:allow descends Go type structure, alternating with
+// structToSchema for struct fields. Depth is the compile-time nesting of
+// the type, so it cannot grow at runtime.
 func typeToSchema(t reflect.Type) map[string]any {
 	// Unwrap pointer types
 	for t.Kind() == reflect.Ptr {

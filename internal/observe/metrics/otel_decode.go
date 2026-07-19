@@ -201,6 +201,10 @@ func attributesToMap(
 // shape). The native primitive path covers the cases the engine emits;
 // the typed-shape fallback handles future label types without a
 // schema migration.
+//
+// recursion:allow the typed-shape fallback unwraps one {"Type","Value"}
+// layer per call. The SDK emits at most one such wrapper, so this is a
+// single re-entry in practice rather than an open-ended descent.
 func attributeValueString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
