@@ -3,11 +3,14 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -60,7 +63,15 @@ func (b *Bridge) handlePoll(
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	tasks := b.fetchTasks(ctx, req)
+	tasks, err := b.fetchTasks(ctx, req)
+	if err != nil {
+		// Loud by construction: a consumer the bridge cannot obtain is
+		// a topology fault, not "no work". Reporting it as an empty
+		// array is what hid #532 for the whole life of this endpoint.
+		slog.WarnContext(ctx, "poll failed", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	elapsed := time.Since(start).Milliseconds()
 	b.requestCount.Add(ctx, 1, routePoll)
@@ -89,6 +100,11 @@ func parsePollRequest(r *http.Request) (pollRequest, error) {
 	if len(req.TaskTypes) == 0 {
 		return req, fmt.Errorf("task_types is required")
 	}
+	for _, taskType := range req.TaskTypes {
+		if err := validateTaskType(taskType); err != nil {
+			return req, err
+		}
+	}
 	if req.MaxTasks <= 0 {
 		req.MaxTasks = 1
 	}
@@ -106,7 +122,7 @@ func parsePollRequest(r *http.Request) (pollRequest, error) {
 // ack/nak it later.
 func (b *Bridge) fetchTasks(
 	ctx context.Context, req pollRequest,
-) []pollResponse {
+) ([]pollResponse, error) {
 	if ctx == nil {
 		panic("fetchTasks: ctx must not be nil")
 	}
@@ -119,25 +135,52 @@ func (b *Bridge) fetchTasks(
 	timeout := time.Duration(req.TimeoutMs) * time.Millisecond
 	tasks := make([]pollResponse, 0, req.MaxTasks)
 	remaining := req.MaxTasks
+	var firstErr error
 
 	for _, taskType := range req.TaskTypes {
 		if remaining <= 0 {
 			break
 		}
-		fetched := b.fetchForType(ctx, taskType, remaining, timeout)
+		fetched, err := b.fetchForType(ctx, taskType, remaining, timeout)
+		// Keep what was fetched even when the type errored: by this
+		// point each message has had step.started published and been
+		// parked in the ackMap, and the ackMap has no reaper. Dropping
+		// them would strand them unacked until AckWait expires while the
+		// run displays a started attempt nobody is running.
 		tasks = append(tasks, fetched...)
 		remaining -= len(fetched)
+		if err != nil {
+			// Degrade per type, not per poll: one unusable task type
+			// must not starve its healthy siblings in the same request.
+			slog.WarnContext(ctx, "task type unavailable this poll",
+				"task_type", taskType, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
 	}
-	return tasks
+	// Only a poll that produced nothing AND faulted is an error. A
+	// partial set is real work and must reach the caller; reporting a
+	// fault as an empty array is what hid #532.
+	if len(tasks) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return tasks, nil
 }
 
-// fetchForType creates an ephemeral consumer for one task type
-// and fetches up to count messages. Each message is stored in
-// the ackMap.
+// fetchForType fetches up to count messages for one task type off the
+// shared per-type durable consumer, storing each in the ackMap.
+//
+// TASK_QUEUES is a work-queue stream, so JetStream admits exactly one
+// consumer per overlapping filter subject. The bridge therefore shares
+// the native worker's durable rather than owning its own: look up
+// first, create only when absent. Lookup-before-create (not
+// CreateOrUpdateConsumer) is load-bearing — an update would overwrite
+// a native worker's WithAckWait override with our default.
 func (b *Bridge) fetchForType(
 	ctx context.Context,
 	taskType string, count int, timeout time.Duration,
-) []pollResponse {
+) ([]pollResponse, error) {
 	if ctx == nil {
 		panic("fetchForType: ctx must not be nil")
 	}
@@ -147,26 +190,17 @@ func (b *Bridge) fetchForType(
 	if count <= 0 {
 		panic("fetchForType: count must be positive")
 	}
-	subject := "task." + taskType + ".>"
-	stream, err := b.js.Stream(ctx, "TASK_QUEUES")
+	cons, err := b.taskConsumer(ctx, taskType)
 	if err != nil {
-		return nil
-	}
-	cons, err := stream.CreateOrUpdateConsumer(
-		ctx, jetstream.ConsumerConfig{
-			FilterSubject:     subject,
-			AckPolicy:         jetstream.AckExplicitPolicy,
-			InactiveThreshold: timeout,
-		},
-	)
-	if err != nil {
-		return nil
+		return nil, err
 	}
 	fetchResult, err := cons.Fetch(
 		count, jetstream.FetchMaxWait(timeout),
 	)
 	if err != nil {
-		return nil
+		slog.WarnContext(ctx, "fetch tasks failed",
+			"task_type", taskType, "error", err)
+		return nil, fmt.Errorf("fetch %q tasks: %w", taskType, err)
 	}
 	tasks := make([]pollResponse, 0, count)
 	for msg := range fetchResult.Messages() {
@@ -175,7 +209,236 @@ func (b *Bridge) fetchForType(
 			tasks = append(tasks, resp)
 		}
 	}
-	return tasks
+	// jetstream surfaces mid-fetch faults (connection loss, missed
+	// heartbeat) here rather than from Fetch, and the message channel
+	// simply closes early. Without this check a truncated fetch is
+	// indistinguishable from a short successful poll — the same silent
+	// failure shape #532 removed. Tasks already dispatched above are
+	// returned alongside the error; the caller keeps them.
+	if err := fetchResult.Error(); err != nil {
+		slog.WarnContext(ctx, "fetch tasks truncated",
+			"task_type", taskType, "error", err)
+		return tasks, fmt.Errorf("fetch %q tasks: %w", taskType, err)
+	}
+	return tasks, nil
+}
+
+// jsErrCodeWorkQueueConsumerNotUnique is the server's rejection of a
+// second consumer whose filter overlaps an existing one on a
+// work-queue stream ("filtered consumer not unique on workqueue
+// stream"). nats.go exports no constant for it.
+const jsErrCodeWorkQueueConsumerNotUnique jetstream.ErrorCode = 10100
+
+// taskConsumer returns the durable consumer shared by every poller of
+// taskType, creating it with the native worker's canonical config when
+// it does not yet exist.
+func (b *Bridge) taskConsumer(
+	ctx context.Context, taskType string,
+) (jetstream.Consumer, error) {
+	if ctx == nil {
+		panic("taskConsumer: ctx must not be nil")
+	}
+	if taskType == "" {
+		panic("taskConsumer: taskType must not be empty")
+	}
+	name := consumername.NameFor(taskType, "")
+	filter := consumername.FilterFor(taskType, "")
+	cons, err := b.adoptConsumer(ctx, name, filter)
+	if err == nil {
+		return cons, nil
+	}
+	if !errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return nil, err
+	}
+	cons, err = b.js.CreateConsumer(
+		ctx, "TASK_QUEUES", jetstream.ConsumerConfig{
+			Durable:       name,
+			Name:          name,
+			FilterSubject: filter,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+			// Match the native worker exactly (worker/worker.go): a
+			// bridge worker inheriting the server's 30s AckWait default
+			// had its task redelivered mid-flight and executed twice.
+			AckWait:    consumername.DefaultAckWait,
+			MaxDeliver: -1,
+		},
+	)
+	if err == nil {
+		return cons, nil
+	}
+	// TOCTOU: a native worker can create the durable between our lookup
+	// and our create. JetStream answers ErrConsumerExists only when the
+	// existing config DIFFERS — e.g. a worker carrying a WithAckWait
+	// override — so the common race lands here, not on the happy path.
+	// Adopting is what the lookup above wanted; the filter check still
+	// applies, so we never inherit a consumer serving other subjects.
+	if errors.Is(err, jetstream.ErrConsumerExists) {
+		cons, adoptErr := b.adoptConsumer(ctx, name, filter)
+		if adoptErr != nil {
+			return nil, fmt.Errorf(
+				"adopt consumer %q after concurrent create: %w",
+				name, adoptErr,
+			)
+		}
+		return cons, nil
+	}
+	return nil, consumerCreateError(ctx, name, filter, err)
+}
+
+// adoptConsumer returns the existing durable named name, but only after
+// confirming it actually serves filter.
+//
+// Adopting by name alone is unsafe: consumername.Sanitize collapses '.'
+// to '-', so "send.email" and "send-email" both name
+// "workers-send-email" while their filters stay distinct. A bridge that
+// trusted the name would serve one type's tasks to the other type's
+// poller. Reports ErrConsumerNotFound unwrapped so the caller can branch
+// on it and create.
+func (b *Bridge) adoptConsumer(
+	ctx context.Context, name, filter string,
+) (jetstream.Consumer, error) {
+	if ctx == nil {
+		panic("adoptConsumer: ctx must not be nil")
+	}
+	if name == "" {
+		panic("adoptConsumer: name must not be empty")
+	}
+	if filter == "" {
+		panic("adoptConsumer: filter must not be empty")
+	}
+	cons, err := b.js.Consumer(ctx, "TASK_QUEUES", name)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return nil, err
+		}
+		slog.WarnContext(ctx, "task consumer lookup failed",
+			"consumer", name, "error", err)
+		return nil, fmt.Errorf("look up consumer %q: %w", name, err)
+	}
+	// CachedInfo: js.Consumer already round-tripped for this info.
+	info := cons.CachedInfo()
+	if info == nil {
+		return nil, fmt.Errorf(
+			"consumer %q returned no cached config", name,
+		)
+	}
+	if info.Config.FilterSubject != filter {
+		return nil, consumerFilterMismatchError(
+			ctx, name, filter, info.Config.FilterSubject,
+		)
+	}
+	return cons, nil
+}
+
+// consumerFilterMismatchError reports a durable whose name matches ours
+// but whose filter does not. Loud by construction, same as the
+// work-queue uniqueness rejection: silently serving the other type's
+// tasks is the failure this replaces, and only an operator can resolve
+// it by renaming one of the two task types.
+func consumerFilterMismatchError(
+	ctx context.Context, name, want, got string,
+) error {
+	if name == "" {
+		panic("consumerFilterMismatchError: name must not be empty")
+	}
+	if want == got {
+		panic("consumerFilterMismatchError: filters must differ")
+	}
+	slog.WarnContext(ctx, "task consumer filter mismatch",
+		"consumer", name, "want_filter", want, "got_filter", got)
+	return fmt.Errorf(
+		"consumer %q already serves filter %s but this poll needs %s: "+
+			"two task types sanitize to the same durable name "+
+			"(dots collapse to hyphens) — rename one of them",
+		name, got, want,
+	)
+}
+
+// consumerCreateError turns a consumer-create failure into a message
+// an operator can act on. The work-queue uniqueness rejection gets
+// named explicitly: it means someone else already holds an
+// overlapping filter — in practice a grouped worker durable, which
+// the bridge's ungrouped poll cannot share.
+func consumerCreateError(
+	ctx context.Context, name, filter string, cause error,
+) error {
+	if name == "" {
+		panic("consumerCreateError: name must not be empty")
+	}
+	if cause == nil {
+		panic("consumerCreateError: cause must not be nil")
+	}
+	slog.WarnContext(ctx, "task consumer create failed",
+		"consumer", name, "filter", filter, "error", cause)
+	var apiErr *jetstream.APIError
+	if errors.As(cause, &apiErr) &&
+		apiErr.ErrorCode == jsErrCodeWorkQueueConsumerNotUnique {
+		return fmt.Errorf(
+			"cannot create consumer %q on filter %s: another consumer "+
+				"already covers an overlapping filter on the "+
+				"TASK_QUEUES work-queue stream (grouped workers are not "+
+				"pollable over the bridge): %w",
+			name, filter, cause,
+		)
+	}
+	return fmt.Errorf(
+		"create consumer %q on filter %s: %w", name, filter, cause,
+	)
+}
+
+// taskTypeLenMax bounds a polled task type. Types name durable
+// consumers and subject tokens; anything longer is a malformed client.
+const taskTypeLenMax = 128
+
+// validateTaskType rejects task types that cannot safely become a
+// subject token or a durable consumer name. The durable created for a
+// type never self-deletes, so a typo would otherwise leave a permanent
+// consumer behind — validation at the door is the cheap fix.
+func validateTaskType(taskType string) error {
+	if taskType == "" {
+		return fmt.Errorf("task_types entries must not be empty")
+	}
+	if len(taskType) > taskTypeLenMax {
+		return fmt.Errorf(
+			"task type exceeds %d bytes", taskTypeLenMax,
+		)
+	}
+	if taskType[0] == '.' || taskType[len(taskType)-1] == '.' {
+		return fmt.Errorf(
+			"invalid task type %q: must not start or end with '.'",
+			taskType,
+		)
+	}
+	if strings.Contains(taskType, "..") {
+		return fmt.Errorf(
+			"invalid task type %q: empty subject token", taskType,
+		)
+	}
+	for i := 0; i < len(taskType); i++ {
+		if !isTaskTypeByte(taskType[i]) {
+			return fmt.Errorf(
+				"invalid task type %q: illegal character %q",
+				taskType, string(taskType[i]),
+			)
+		}
+	}
+	return nil
+}
+
+// isTaskTypeByte reports whether c may appear in a task type.
+// Deliberately narrower than NATS subject rules: no wildcards, no
+// whitespace, so the type maps 1:1 onto one subject path.
+func isTaskTypeByte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	case c == '-', c == '_', c == '.':
+		return true
+	}
+	return false
 }
 
 // taskAttemptCountMax bounds the attempt number accepted from a

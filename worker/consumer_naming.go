@@ -1,89 +1,34 @@
 // worker/consumer_naming.go
-// Naming convention for dagnats-managed JetStream consumers on TASK_QUEUES.
-// All durable names live under the "workers-" prefix; sanitization maps
-// task-type/group strings to NATS-legal name fragments.
+// Worker-side bindings for the shared consumer-naming convention.
+//
+// The scheme itself lives in internal/consumername because the bridge's
+// poll path must produce byte-identical durables (issue #532), and
+// TASK_QUEUES is a work-queue stream that rejects a second consumer on an
+// overlapping filter. Sharing via internal/ keeps that coupling out of
+// the worker package's public SDK surface.
 package worker
 
-import "time"
+import "github.com/danmestas/dagnats/internal/consumername"
 
 // defaultAckWait bounds the longest expected task duration plus a margin.
-// Workers running tasks longer than this should call msg.InProgress()
-// periodically (planned: ADR-008 heartbeats, tracked as follow-up to
-// issue #136) or override at handler registration via WithAckWait.
-// See ADR-006 §"Out of scope (deferred)" for the full deferred-list.
-const defaultAckWait = 5 * time.Minute
+// See consumername.DefaultAckWait for the rationale and the deferred
+// heartbeat work.
+const defaultAckWait = consumername.DefaultAckWait
 
 // sanitizeConsumerName maps a task-type or group string to a NATS-legal
-// consumer-name fragment. Dots collapse to hyphens for the common
-// dotted-namespace case; other disallowed characters fall back to
-// underscore. Empty input or empty output is a programmer error.
+// consumer-name fragment.
 func sanitizeConsumerName(s string) string {
-	if s == "" {
-		panic("sanitizeConsumerName: input must not be empty")
-	}
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'A' && c <= 'Z',
-			c >= 'a' && c <= 'z',
-			c >= '0' && c <= '9',
-			c == '-',
-			c == '_':
-			out = append(out, c)
-		case c == '.':
-			out = append(out, '-')
-		default:
-			out = append(out, '_')
-		}
-	}
-	if len(out) == 0 {
-		panic("sanitizeConsumerName: result must not be empty")
-	}
-	return string(out)
+	return consumername.Sanitize(s)
 }
 
-// consumerNameFor produces the durable consumer name for a (taskType, group)
-// pair. group=="" means the default branch. Both inputs are sanitized via
-// sanitizeConsumerName before being concatenated under the "workers-" prefix.
-// The "workers-" prefix is reserved for dagnats-managed consumers.
+// consumerNameFor produces the durable consumer name for a (taskType,
+// group) pair. group=="" means the default branch.
 func consumerNameFor(taskType, group string) string {
-	if taskType == "" {
-		panic("consumerNameFor: taskType must not be empty")
-	}
-	if group == "" {
-		out := "workers-" + sanitizeConsumerName(taskType)
-		if out == "" {
-			panic("consumerNameFor: result must not be empty")
-		}
-		return out
-	}
-	out := "workers-" + sanitizeConsumerName(taskType) + "-" +
-		sanitizeConsumerName(group)
-	if out == "" {
-		panic("consumerNameFor: result must not be empty")
-	}
-	return out
+	return consumername.NameFor(taskType, group)
 }
 
-// consumerFilterFor produces the filter subject for a (taskType, group) pair.
-// Inputs are NOT sanitized — they appear in the message-subject hierarchy and
-// must round-trip exactly. Subject validity is the publisher's contract;
-// sanitization is a consumer-naming concern.
+// consumerFilterFor produces the filter subject for a (taskType, group)
+// pair. Inputs are NOT sanitized — they must round-trip exactly.
 func consumerFilterFor(taskType, group string) string {
-	if taskType == "" {
-		panic("consumerFilterFor: taskType must not be empty")
-	}
-	if group == "" {
-		out := "task." + taskType + ".>"
-		if out == "" {
-			panic("consumerFilterFor: result must not be empty")
-		}
-		return out
-	}
-	out := "task." + taskType + "." + group + ".>"
-	if out == "" {
-		panic("consumerFilterFor: result must not be empty")
-	}
-	return out
+	return consumername.FilterFor(taskType, group)
 }
