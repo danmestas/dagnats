@@ -12,7 +12,9 @@ worker/consumer\_collision\_xprocess.go Cross\-process precheck \(ADR\-010\): ca
 
 Companion to assertNoConsumerNameCollisions \(consumer\_collision.go\), which catches the same collision class in the same Worker. This file is the NATS\-aware twin that catches the cross\-process variant.
 
-worker/consumer\_naming.go Naming convention for dagnats\-managed JetStream consumers on TASK\_QUEUES. All durable names live under the "workers\-" prefix; sanitization maps task\-type/group strings to NATS\-legal name fragments.
+worker/consumer\_naming.go Worker\-side bindings for the shared consumer\-naming convention.
+
+The scheme itself lives in internal/consumername because the bridge's poll path must produce byte\-identical durables \(issue \#532\), and TASK\_QUEUES is a work\-queue stream that rejects a second consumer on an overlapping filter. Sharing via internal/ keeps that coupling out of the worker package's public SDK surface.
 
 worker/controlplane.go ControlPlane is the worker\-side handle a GATED task handler uses to author and launch workflows at runtime. It is a DEEP module: the two methods below hide def validation, server\-side namespacing, run lineage, the maxNestingDepth cap, and every NATS round\-trip. Handlers never see subjects, KV keys, or wire framing — they hold a small interface and get back a scoped name or a run ID, or a structured typed error they can branch on.
 
