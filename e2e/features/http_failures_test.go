@@ -159,6 +159,14 @@ func testFailureWorkflowFailed(t *testing.T, nc *nats.Conn) {
 		dag.RunStatusFailed)
 }
 
+// workerStartCeiling bounds how long the engine_cancelled case waits
+// for its worker to report a run id. It is deliberately generous:
+// on a loaded runner (or across a supercluster) worker startup can
+// take orders of magnitude longer than the few hundred milliseconds
+// it takes on an idle machine. Contention must cost wall-clock, not
+// a spurious failure — see issue #555.
+const workerStartCeiling = 60 * time.Second
+
 // testFailureEngineCancelled drives a workflow that blocks, then
 // calls Service.CancelRun while the HTTP handler is waiting. The
 // handler maps workflow.cancelled to 503.
@@ -170,7 +178,6 @@ func testFailureEngineCancelled(
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
 
-	var seenRunID string
 	runIDCh := make(chan string, 1)
 	harness.SubscribeWorker(t, nc, "blocker-cancel",
 		func(tc worker.TaskContext) error {
@@ -195,31 +202,32 @@ func testFailureEngineCancelled(
 	}
 	_, path := stack.registerHTTPTrigger(t, wfDef,
 		&trigger.HTTPConfig{
-			Path:         "/" + harness.UniqueName(t, "cancel"),
-			Method:       http.MethodPost,
-			TimeoutMs:    10_000,
+			Path:   "/" + harness.UniqueName(t, "cancel"),
+			Method: http.MethodPost,
+			// Must exceed workerStartCeiling: if the handler's own
+			// timeout could fire first, a slow worker would surface
+			// as a 504-vs-503 mismatch instead of a startup failure.
+			TimeoutMs:    int(workerStartCeiling/time.Millisecond) * 2,
 			MaxBodyBytes: 1024,
 		})
 
-	// Cancel asynchronously after the worker reports its run id.
-	cancelDoneCh := make(chan struct{})
-	go func() {
-		defer close(cancelDoneCh)
-		select {
-		case rid := <-runIDCh:
-			seenRunID = rid
-			// Small delay so the handler is parked on its
-			// select before cancellation fires.
-			time.Sleep(100 * time.Millisecond)
-			_ = stack.svc.CancelRun(stack.ctx, rid)
-		case <-time.After(5 * time.Second):
-			t.Errorf("worker did not start within 5s")
-		}
-	}()
-	rec := postOnRouter(t, stack.router,
-		http.MethodPost, path, []byte(`{}`), nil)
-	<-cancelDoneCh
-	_ = seenRunID
+	// The request context is ours so the readiness-failure path can
+	// unpark the handler instead of waiting out TimeoutMs.
+	requestCtx, unparkHandler := context.WithCancel(
+		context.Background())
+	defer unparkHandler()
+	waitForCancel := cancelRunWhenWorkerStarts(t, stack,
+		runIDCh, unparkHandler)
+
+	req := httptest.NewRequest(http.MethodPost, path,
+		strings.NewReader(`{}`)).WithContext(requestCtx)
+	rec := httptest.NewRecorder()
+	stack.router.ServeHTTP(rec, req)
+
+	// Fails fast and names worker startup; never falls through to
+	// the status assertions below (issue #555).
+	waitForCancel()
+
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body=%s",
 			rec.Code, rec.Body)
@@ -228,6 +236,59 @@ func testFailureEngineCancelled(
 		`"error":"workflow_cancelled"`) {
 		t.Fatalf("body = %q, want workflow_cancelled",
 			rec.Body.String())
+	}
+}
+
+// cancelRunWhenWorkerStarts spawns the canceller for the
+// engine_cancelled case: it polls runIDCh up to workerStartCeiling
+// and, once the worker reports a run id, cancels that run while the
+// HTTP handler is still parked.
+//
+// The returned wait func must be called after the HTTP request
+// completes. It blocks until the canceller finishes, and if the
+// worker never started it fails the test immediately, naming worker
+// startup as the cause — so the caller never reaches its status-code
+// assertions and can never report the misleading 504-vs-503 symptom
+// of issue #555. On that path it also unparks the handler so the
+// test does not burn the trigger's full timeout budget.
+func cancelRunWhenWorkerStarts(
+	t *testing.T, stack *httpE2EStack,
+	runIDCh <-chan string, unparkHandler context.CancelFunc,
+) (waitForCancel func()) {
+	t.Helper()
+	if runIDCh == nil {
+		panic("cancelRunWhenWorkerStarts: runIDCh must not be nil")
+	}
+	if unparkHandler == nil {
+		panic("cancelRunWhenWorkerStarts: unparkHandler nil")
+	}
+	startedCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		select {
+		case runID := <-runIDCh:
+			close(startedCh)
+			// Small delay so the handler is parked on its select
+			// before cancellation fires.
+			time.Sleep(100 * time.Millisecond)
+			if err := stack.svc.CancelRun(stack.ctx, runID); err != nil {
+				t.Errorf("CancelRun(%q): %v", runID, err)
+			}
+		case <-time.After(workerStartCeiling):
+			unparkHandler()
+		}
+	}()
+	return func() {
+		t.Helper()
+		<-doneCh
+		select {
+		case <-startedCh:
+		default:
+			t.Fatalf("worker never started within %s — test aborted "+
+				"before status assertions; this is worker startup, "+
+				"NOT a status-code regression", workerStartCeiling)
+		}
 	}
 }
 
@@ -367,8 +428,11 @@ func assertRunReachesStatus(
 	if runID == "" {
 		t.Fatal("assertRunReachesStatus: runID empty")
 	}
-	const budget = 5 * time.Second
-	const maxIter = 100
+	// Generous ceiling: propagation through JetStream is slow under
+	// contention, and a miss here must cost wall-clock rather than a
+	// spurious failure (issue #555). Still bounded on both axes.
+	const budget = 30 * time.Second
+	const maxIter = 1000
 	deadline := time.Now().Add(budget)
 	for i := 0; i < maxIter; i++ {
 		run, err := stack.svc.GetRun(stack.ctx, runID)
