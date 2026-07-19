@@ -20,11 +20,15 @@ import "github.com/danmestas/dagnats/bridge"
 
 
 <a name="AckMap"></a>
-## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L15-L19>)
+## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L58-L63>)
 
 AckMap tracks in\-flight tasks for HTTP workers. Maps task\_id \(\{runID\}.\{stepID\}\) to the NATS message so the bridge can ack/nak on behalf of the HTTP client when it resolves the task.
 
-Thread\-safe: multiple poll/resolve handlers run concurrently. Bounded by the number of in\-flight tasks across all HTTP workers.
+Thread\-safe: multiple poll/resolve handlers run concurrently.
+
+Bounded two ways, because an HTTP worker that dies mid\-task never resolves and would otherwise leak its entry for the process lifetime: entries older than ackMapReapAfter are swept on insert, and ackMapMaxEntries caps the map between sweeps.
+
+The sweep runs on insert rather than on a ticker because Bridge has no shutdown path to stop a goroutine against, and because entries are only ever created by traffic — an idle bridge cannot grow.
 
 ```go
 type AckMap struct {
@@ -33,7 +37,7 @@ type AckMap struct {
 ```
 
 <a name="NewAckMap"></a>
-### func [NewAckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L22>)
+### func [NewAckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L66>)
 
 ```go
 func NewAckMap() *AckMap
@@ -42,7 +46,7 @@ func NewAckMap() *AckMap
 NewAckMap creates an empty AckMap ready for use.
 
 <a name="AckMap.Count"></a>
-### func \(\*AckMap\) [Count](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L73>)
+### func \(\*AckMap\) [Count](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L144>)
 
 ```go
 func (am *AckMap) Count() int64
@@ -51,7 +55,7 @@ func (am *AckMap) Count() int64
 Count returns the number of in\-flight tasks.
 
 <a name="AckMap.Delete"></a>
-### func \(\*AckMap\) [Delete](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L58>)
+### func \(\*AckMap\) [Delete](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L131>)
 
 ```go
 func (am *AckMap) Delete(taskID string)
@@ -60,7 +64,7 @@ func (am *AckMap) Delete(taskID string)
 Delete removes a task from the map after resolution.
 
 <a name="AckMap.Load"></a>
-### func \(\*AckMap\) [Load](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L43>)
+### func \(\*AckMap\) [Load](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L114>)
 
 ```go
 func (am *AckMap) Load(taskID string) (jetstream.Msg, bool)
@@ -68,14 +72,16 @@ func (am *AckMap) Load(taskID string) (jetstream.Msg, bool)
 
 Load retrieves the NATS message for the given task ID. Returns \(nil, false\) if not found.
 
+Deliberately does not reap: a resolve arriving concurrently with the reaper must not race into a "task not found" that the worker cannot distinguish from a genuine unknown\-task error.
+
 <a name="AckMap.Store"></a>
-### func \(\*AckMap\) [Store](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L28>)
+### func \(\*AckMap\) [Store](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L91>)
 
 ```go
 func (am *AckMap) Store(taskID string, msg jetstream.Msg)
 ```
 
-Store saves a NATS message keyed by task ID. Panics on empty taskID or nil msg — both are programmer errors.
+Store saves a NATS message keyed by task ID, stamped with the insertion time. Sweeps expired entries and enforces the size cap before inserting. Panics on empty taskID or nil msg — both are programmer errors.
 
 <a name="Bridge"></a>
 ## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L30-L44>)
