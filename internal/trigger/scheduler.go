@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/cronexpr"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -380,7 +381,7 @@ func (s *Scheduler) findMatches(
 		panic("findMatches: def.Cron is nil")
 	}
 
-	expr, err := ParseCron(def.Cron.Expression)
+	expr, err := cronexpr.ParseCron(def.Cron.Expression)
 	if err != nil {
 		return nil, fmt.Errorf("ParseCron: %w", err)
 	}
@@ -412,7 +413,7 @@ func (s *Scheduler) shouldFire(def TriggerDef, now time.Time) (bool, error) {
 		panic("shouldFire: def.Cron is nil")
 	}
 
-	expr, err := ParseCron(def.Cron.Expression)
+	expr, err := cronexpr.ParseCron(def.Cron.Expression)
 	if err != nil {
 		return false, fmt.Errorf("ParseCron: %w", err)
 	}
@@ -507,7 +508,7 @@ func (s *Scheduler) observeTriggerMetrics(
 	// would mean state drifted after registration. Skip silently
 	// rather than surface a live-error path for an already-validated
 	// config — mirrors shouldFire's timezone-conversion pattern.
-	expr, err := ParseCron(def.Cron.Expression)
+	expr, err := cronexpr.ParseCron(def.Cron.Expression)
 	if err != nil {
 		return
 	}

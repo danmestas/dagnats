@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/cronexpr"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -180,7 +181,7 @@ func validateCronConfig(id string, c *CronConfig) error {
 		return fmt.Errorf(
 			"trigger %q: cron expression must not be empty", id)
 	}
-	_, err := ParseCron(c.Expression)
+	_, err := cronexpr.ParseCron(c.Expression)
 	if err != nil {
 		return fmt.Errorf(
 			"trigger %q: invalid cron expression: %w", id, err)

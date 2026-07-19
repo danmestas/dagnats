@@ -1,4 +1,16 @@
-package trigger
+// Package cronexpr parses 5-field cron expressions and answers two
+// questions about them: does an instant match, and what are the next N
+// matching instants. It previously lived inside the trigger package,
+// which made it unreachable from dag -- trigger imports dag, so a dag
+// import of the cron type would close an import cycle. Sleep steps need
+// the same parser trigger schedules use, and a second parser would be
+// two definitions of "what a dagnats cron expression means" that drift.
+//
+// Ousterhout note: a leaf package with no in-module imports, so any
+// layer may depend on it. The interface is one constructor and two
+// methods; the field grammar (*, */N, N-M, comma lists) and the
+// minute-by-minute scan are hidden behind it.
+package cronexpr
 
 import (
 	"fmt"
