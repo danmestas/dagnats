@@ -78,7 +78,7 @@ func (am *AckMap) Store(taskID string, msg jetstream.Msg)
 Store saves a NATS message keyed by task ID. Panics on empty taskID or nil msg — both are programmer errors.
 
 <a name="Bridge"></a>
-## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L29-L43>)
+## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L30-L44>)
 
 Bridge is an HTTP\-to\-NATS gateway that lets non\-Go workers interact with DagNats over HTTP. Three deep endpoints expose the full worker lifecycle: connect, poll, and resolve.
 
@@ -93,7 +93,7 @@ type Bridge struct {
 ```
 
 <a name="NewBridge"></a>
-### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L52>)
+### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L67>)
 
 ```go
 func NewBridge(pub *natsutil.TracingPublisher) *Bridge
@@ -104,7 +104,7 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L94>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L109>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
