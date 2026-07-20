@@ -57,11 +57,26 @@ func TestSignalWait(t *testing.T) {
 		}
 		runID := harness.RegisterAndStart(t, svc, wfDef, nil)
 
-		// Give worker time to start waiting for the signal.
-		time.Sleep(1 * time.Second)
+		ctx := context.Background()
+
+		// Signalling before the worker has claimed the step races the
+		// step's own KV watcher, and the miss then looks like a
+		// signal-delivery bug rather than a slow worker start.
+		harness.WaitForPrecondition(t,
+			"worker started the \"wait\" step and is blocking on "+
+				"the approval signal",
+			stepRunningCeiling,
+			func() bool {
+				run, err := svc.GetRun(ctx, runID)
+				if err != nil {
+					return false
+				}
+				return run.Steps["wait"].Status ==
+					dag.StepStatusRunning
+			},
+		)
 
 		// Send the signal via API.
-		ctx := context.Background()
 		err = svc.SendSignal(
 			ctx, runID, "approval", []byte(`"approved"`),
 		)

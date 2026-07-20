@@ -102,8 +102,14 @@ func TestSubjectTrigger(t *testing.T) {
 		}
 		t.Cleanup(func() { sub.Unsubscribe() })
 
-		// Allow KV watcher and subscription to establish.
-		time.Sleep(1 * time.Second)
+		// Publishing before the KV watcher has subscribed drops the
+		// message on the floor, and the miss then looks like a
+		// missing workflow.started event.
+		harness.WaitForPrecondition(t,
+			"subject trigger "+triggerID+" subscribed to "+subjectName,
+			triggerReadyCeiling,
+			func() bool { return ts.TriggerCount() >= 1 },
+		)
 
 		// Publish to the trigger subject.
 		err = nc.Publish(subjectName, []byte(`{"order_id":"123"}`))

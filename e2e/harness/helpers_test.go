@@ -52,6 +52,28 @@ func TestHelperRoundTrip(t *testing.T) {
 	)
 }
 
+func TestWaitForPreconditionReturnsWhenReady(t *testing.T) {
+	polls := 0
+	ready := func() bool {
+		polls++
+		return polls >= 3
+	}
+
+	start := time.Now()
+	WaitForPrecondition(t, "third poll", 5*time.Second, ready)
+	elapsed := time.Since(start)
+
+	// Positive: it returned only once the condition held.
+	if polls < 3 {
+		t.Fatalf("expected at least 3 polls, got %d", polls)
+	}
+
+	// Negative: it did not burn the whole budget waiting.
+	if elapsed >= 5*time.Second {
+		t.Fatalf("expected an early return, waited %s", elapsed)
+	}
+}
+
 func TestUniqueNameDiffers(t *testing.T) {
 	a := UniqueName(t, "wf")
 	b := UniqueName(t, "wf")

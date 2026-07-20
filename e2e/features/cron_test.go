@@ -104,8 +104,14 @@ func TestCronTrigger(t *testing.T) {
 		}
 		t.Cleanup(func() { sub.Unsubscribe() })
 
-		// Allow KV watcher to pick up the new trigger.
-		time.Sleep(1 * time.Second)
+		// Ticking before the KV watcher has installed the trigger
+		// fires an empty scheduler, and the miss then looks like a
+		// missing workflow.started event.
+		harness.WaitForPrecondition(t,
+			"cron trigger "+triggerID+" registered in the scheduler",
+			triggerReadyCeiling,
+			func() bool { return ts.TriggerCount() >= 1 },
+		)
 
 		// Force a tick.
 		ts.TickNow()
