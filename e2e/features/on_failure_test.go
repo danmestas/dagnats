@@ -5,7 +5,6 @@
 package features
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -17,6 +16,13 @@ import (
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
+
+// onFailureCompleteCeiling bounds the wait for the fallback step to
+// run and the workflow to settle. Generous by design: under CPU
+// contention the fallback simply takes longer, and the old fixed 5s
+// sleep turned that into "fallback: expected completed, got running"
+// — a false claim about behavior (#558).
+const onFailureCompleteCeiling = 60 * time.Second
 
 func TestOnFailureHandler(t *testing.T) {
 	harness.RunE2E(t, func(t *testing.T, nc *nats.Conn) {
@@ -53,10 +59,13 @@ func TestOnFailureHandler(t *testing.T) {
 
 		runID := harness.RegisterAndStart(t, svc, wfDef, nil)
 
-		time.Sleep(5 * time.Second)
-
-		run, _ := svc.GetRun(
-			context.Background(), runID,
+		// Positive: the run reaches Completed, not Failed — the whole
+		// point of the on-failure handler. Polled rather than slept
+		// on, so contention costs wall-clock instead of reporting a
+		// still-running fallback as a wrong step status.
+		run := harness.WaitForRunStatus(
+			t, svc, runID,
+			dag.RunStatusCompleted, onFailureCompleteCeiling,
 		)
 
 		// Positive: fallback step was executed
@@ -71,12 +80,6 @@ func TestOnFailureHandler(t *testing.T) {
 			dag.StepStatusRecovered {
 			t.Fatalf("main: expected recovered, got %s",
 				run.Steps["main"].Status)
-		}
-
-		// Positive: workflow completed (not failed)
-		if run.Status != dag.RunStatusCompleted {
-			t.Fatalf("run: expected completed, got %s",
-				run.Status)
 		}
 
 		// Negative: fallback received error context

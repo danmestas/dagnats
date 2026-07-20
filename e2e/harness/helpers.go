@@ -100,6 +100,58 @@ func WaitForRunStatus(
 	}
 }
 
+// preconditionPollInterval bounds how often WaitForPrecondition
+// re-checks. Short enough that the wait costs little once the setup
+// lands, long enough not to spin a core on a loaded box.
+const preconditionPollInterval = 25 * time.Millisecond
+
+// WaitForPrecondition polls check until it reports ready, for tests
+// that must perform an ACTION once some asynchronous setup is live —
+// a KV watcher having registered a trigger, a worker having begun
+// waiting. A fixed sleep there lands the action on a system that is
+// not listening yet, and the miss then surfaces downstream as a wrong
+// -looking symptom (a missing event, a 404) that reads as a product
+// defect rather than a startup race (#558).
+//
+// Bounded on both axes: a wall-clock budget and a poll cap. On
+// timeout it fails naming the precondition and saying explicitly that
+// the setup, not the behavior under test, is what never arrived.
+func WaitForPrecondition(
+	t *testing.T, precondition string,
+	timeout time.Duration, check func() bool,
+) {
+	t.Helper()
+	if precondition == "" {
+		panic("WaitForPrecondition: precondition must not be empty")
+	}
+	if check == nil {
+		panic("WaitForPrecondition: check must not be nil")
+	}
+	if timeout <= preconditionPollInterval {
+		panic("WaitForPrecondition: timeout must exceed poll interval")
+	}
+	pollsMax := int(timeout/preconditionPollInterval) + 2
+	deadline := time.After(timeout)
+poll:
+	for polls := 0; polls < pollsMax; polls++ {
+		if check() {
+			return
+		}
+		select {
+		case <-deadline:
+			break poll
+		case <-time.After(preconditionPollInterval):
+		}
+	}
+	t.Fatalf(
+		"WaitForPrecondition: %s never became ready within %s "+
+			"(max %d polls) — the test setup did not complete, so no "+
+			"action was taken; this is NOT a failure of the behavior "+
+			"under test",
+		precondition, timeout, pollsMax,
+	)
+}
+
 // SubscribeWorker creates a worker, registers the handler, starts it,
 // and registers cleanup. Returns the worker for chaining.
 func SubscribeWorker(

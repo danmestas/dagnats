@@ -105,8 +105,13 @@ func TestWebhookTrigger(t *testing.T) {
 		}
 		t.Cleanup(func() { sub.Unsubscribe() })
 
-		// Allow KV watcher to pick up the new trigger.
-		time.Sleep(1 * time.Second)
+		// POSTing before the KV watcher has wired the route returns
+		// 404, and the miss then looks like a broken webhook handler.
+		harness.WaitForPrecondition(t,
+			"webhook trigger "+triggerID+" wired at "+webhookPath,
+			triggerReadyCeiling,
+			func() bool { return ts.TriggerCount() >= 1 },
+		)
 
 		// POST to webhook handler.
 		handler := ts.WebhookHandler()
