@@ -152,6 +152,68 @@ poll:
 	)
 }
 
+// helperFataler is the subset of *testing.T that AssertHoldsForWindow
+// needs. Declared explicitly (rather than taking *testing.T directly)
+// so unit tests can substitute a fake that records failures instead
+// of tearing down the real test — testing.TB can't be faked outside
+// the testing package because it has an unexported method.
+type helperFataler interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
+// AssertHoldsForWindow polls check on every tick for the full window
+// and fails the test the instant check reports a violation. It exists
+// for negative assertions ("X never happened") where polling until
+// check first succeeds would prove nothing — the first poll always
+// succeeds trivially, so success only means something if it holds for
+// the whole window, not just once (#562).
+//
+// check returns (true, "") while the expected state holds, or
+// (false, detail) the moment a violation is observed; detail explains
+// what went wrong. Bounded on both axes: a wall-clock budget (window)
+// and a poll cap, so it never spins unboundedly.
+func AssertHoldsForWindow(
+	t helperFataler, description string,
+	window, pollInterval time.Duration,
+	check func() (bool, string),
+) {
+	t.Helper()
+	if description == "" {
+		panic("AssertHoldsForWindow: description must not be empty")
+	}
+	if check == nil {
+		panic("AssertHoldsForWindow: check must not be nil")
+	}
+	if window <= pollInterval {
+		panic("AssertHoldsForWindow: window must exceed poll interval")
+	}
+	pollsMax := int(window/pollInterval) + 2
+	deadline := time.After(window)
+	ticks := 0
+poll:
+	for polls := 0; polls < pollsMax; polls++ {
+		ticks++
+		ok, detail := check()
+		if !ok {
+			t.Fatalf(
+				"AssertHoldsForWindow: %s violated after "+
+					"%d poll(s): %s",
+				description, polls+1, detail,
+			)
+			return // unreachable with a real *testing.T
+		}
+		select {
+		case <-deadline:
+			break poll
+		case <-time.After(pollInterval):
+		}
+	}
+	if ticks == 0 {
+		panic("AssertHoldsForWindow: window elapsed without a poll")
+	}
+}
+
 // SubscribeWorker creates a worker, registers the handler, starts it,
 // and registers cleanup. Returns the worker for chaining.
 func SubscribeWorker(
