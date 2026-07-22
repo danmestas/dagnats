@@ -6,6 +6,7 @@ package features
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,16 +79,69 @@ func TestConcurrencyLimit(t *testing.T) {
 			dag.RunStatusRunning, 10*time.Second,
 		)
 
-		// Positive: run 2 is pending (concurrency limit).
-		time.Sleep(1 * time.Second)
-		run2, err := svc.GetRun(ctx, runID2)
-		if err != nil {
-			t.Fatalf("GetRun 2: %v", err)
-		}
-		if run2.Status != dag.RunStatusPending {
-			t.Fatalf("run 2: expected pending, got %s",
-				run2.Status)
-		}
+		// Establish the baseline before the negative check below: run
+		// 2 must be observably Pending first. StartRun returns as
+		// soon as the start request is accepted, before admission for
+		// run 2 has necessarily been processed off the async
+		// workflow-started NATS event, so GetRun can legitimately
+		// race ahead of run 2's first snapshot. This is a positive
+		// precondition wait (matching WaitForPrecondition's idiom
+		// elsewhere in this harness, #558), not the negative
+		// assertion itself.
+		harness.WaitForRunStatus(
+			t, svc, runID2, dag.RunStatusPending, 5*time.Second,
+		)
+
+		// Positive: run 2 stays pending because the concurrency limit
+		// blocks admission. This is a negative assertion (run 2 must
+		// NOT start), so it can't be proven by a fixed sleep followed
+		// by one check — that only proves time elapsed, and passes
+		// vacuously if the scheduler simply hasn't gotten to run 2
+		// yet (#562). It also can't be proven by polling until
+		// Pending is observed — that succeeds on the very first poll
+		// and would prove even less than the sleep.
+		//
+		// Instead, give the scheduler a real window to dispatch run 2
+		// and watch two things on every tick for the whole window:
+		// taskCount, which the gated worker bumps the instant it
+		// receives a task — before it ever blocks on the gate — and
+		// run 2's status. Admission for run 2 is decided
+		// asynchronously off the workflow-started NATS event
+		// (Orchestrator.handleWorkflowStarted -> AdmissionController
+		// .Admit), so if the concurrency limit were broken, taskCount
+		// would jump to 2 almost immediately — well inside this
+		// window — rather than only becoming visible at the end of a
+		// fixed sleep. The window is a small multiple of the 250ms
+		// poll interval harness.WaitForRunStatus uses for the same
+		// local JetStream setup elsewhere in this suite, giving ample
+		// margin over real dispatch latency without slowing the test.
+		const admissionWindow = 2 * time.Second
+		const admissionPollInterval = 50 * time.Millisecond
+		harness.AssertHoldsForWindow(
+			t, "run 2 stays pending under the concurrency limit",
+			admissionWindow, admissionPollInterval,
+			func() (bool, string) {
+				if got := taskCount.Load(); got >= 2 {
+					return false, fmt.Sprintf(
+						"worker received a second task "+
+							"(taskCount=%d) — concurrency "+
+							"limit did not block admission",
+						got,
+					)
+				}
+				run2, err := svc.GetRun(ctx, runID2)
+				if err != nil {
+					return false, fmt.Sprintf("GetRun 2: %v", err)
+				}
+				if run2.Status != dag.RunStatusPending {
+					return false, fmt.Sprintf(
+						"run 2: expected pending, got %s",
+						run2.Status,
+					)
+				}
+				return true, ""
+			},
+		)
 
 		// Complete run 1.
 		gate <- struct{}{}
