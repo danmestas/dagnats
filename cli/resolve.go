@@ -57,7 +57,7 @@ func resolveFromList(
 		panic("resolveFromList: must have input or lastFlag")
 	}
 
-	runs, err := svc.ListRuns(context.Background(), "")
+	runs, err := svc.ScanRuns(context.Background(), api.RunsFilter{}, 0)
 	if err != nil {
 		return "", fmt.Errorf("list runs: %w", err)
 	}
@@ -70,7 +70,7 @@ func resolveFromList(
 }
 
 // resolveLastRun returns the run ID with the newest CreatedAt.
-// ListRuns returns runs sorted newest-first, so index 0 is newest.
+// ScanRuns returns runs sorted newest-first, so index 0 is newest.
 func resolveLastRun(
 	runs []dag.WorkflowRun,
 ) (string, error) {

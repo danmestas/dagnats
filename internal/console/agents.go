@@ -7,6 +7,7 @@ import (
 	"github.com/starfederation/datastar-go/datastar"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/worker"
 )
@@ -54,8 +55,8 @@ const (
 // list path be unit-tested with a counting stub — proving the page is O(1)
 // budget reads, not N+1. *api.Service satisfies it.
 type agentBudgetSource interface {
-	ListRunsWithLimit(
-		ctx context.Context, workflowFilter string, limit int,
+	ScanRuns(
+		ctx context.Context, filter api.RunsFilter, limit int,
 	) ([]dag.WorkflowRun, error)
 	Budget(
 		ctx context.Context, ownerRunID string,
@@ -93,7 +94,7 @@ func (a *apiServiceAdapter) listAgentRuntimes(
 	ctx context.Context, src agentBudgetSource,
 	spawned map[string]bool, limit int,
 ) ([]AgentRuntimeRow, error) {
-	runs, err := src.ListRunsWithLimit(ctx, "", agentRunScanMax)
+	runs, err := src.ScanRuns(ctx, api.RunsFilter{}, agentRunScanMax)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +131,7 @@ func (a *apiServiceAdapter) AgentRuntime(
 	if root == "" {
 		return AgentRuntimeRow{}, false, nil
 	}
-	runs, err := a.svc.ListRunsWithLimit(ctx, "", agentRunScanMax)
+	runs, err := a.svc.ScanRuns(ctx, api.RunsFilter{}, agentRunScanMax)
 	if err != nil {
 		return AgentRuntimeRow{}, false, err
 	}

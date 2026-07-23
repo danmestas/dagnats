@@ -44,7 +44,7 @@ func TestBudgetsForRoots_ParityWithPerRootBudget(t *testing.T) {
 	// Root "idle": just its own root run, no defs.
 	seedRootRun(t, h.svc, "idle")
 
-	runs, err := h.svc.ListRunsWithLimit(context.Background(), "", 10_000)
+	runs, err := h.svc.ScanRuns(context.Background(), RunsFilter{}, 10_000)
 	if err != nil {
 		t.Fatalf("list runs: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestBudgetsForRoots_TerminalRunsExcluded(t *testing.T) {
 	seedActiveRunUnderRoot(t, h.svc, "r-kid", "r")
 	markRunTerminal(t, h.svc, "r-kid")
 
-	runs, err := h.svc.ListRunsWithLimit(context.Background(), "", 10_000)
+	runs, err := h.svc.ScanRuns(context.Background(), RunsFilter{}, 10_000)
 	if err != nil {
 		t.Fatalf("list runs: %v", err)
 	}

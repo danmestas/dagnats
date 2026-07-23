@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -43,8 +44,8 @@ type countingBudgetSource struct {
 	perRootCalls int
 }
 
-func (c *countingBudgetSource) ListRunsWithLimit(
-	_ context.Context, _ string, _ int,
+func (c *countingBudgetSource) ScanRuns(
+	_ context.Context, _ api.RunsFilter, _ int,
 ) ([]dag.WorkflowRun, error) {
 	return c.runs, nil
 }

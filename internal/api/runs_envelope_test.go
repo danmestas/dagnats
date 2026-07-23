@@ -1,7 +1,7 @@
 // api/runs_envelope_test.go
-// Tests for the #452 run-list honesty surface: ListRunsEnvelope
-// (runs + total + returned + truncated), CountRuns, and the --since
-// filter shared by both.
+// Tests for the #452 run-list honesty surface: ListRuns
+// (runs + total + returned + truncated envelope), CountRuns, and the
+// --since filter shared by both.
 // Methodology: real embedded NATS server, one per test (no sharing).
 // We submit runs through the live service, wait for them to surface,
 // then assert the aggregate/envelope contract with bounded timeouts.
@@ -164,9 +164,9 @@ func waitForRunCount(t *testing.T, svc *Service, want int) {
 	}
 }
 
-// TestListRunsEnvelopeTruncation proves the envelope reports the true
+// TestListRunsTruncation proves the envelope reports the true
 // total and a truncated flag when limit < total.
-func TestListRunsEnvelopeTruncation(t *testing.T) {
+func TestListRunsTruncation(t *testing.T) {
 	svc := newRunsSvc(t, "env-wf")
 	const submitted = 5
 	for i := 0; i < submitted; i++ {
@@ -178,11 +178,11 @@ func TestListRunsEnvelopeTruncation(t *testing.T) {
 	}
 	waitForRunCount(t, svc, submitted)
 
-	env, err := svc.ListRunsEnvelope(
+	env, err := svc.ListRuns(
 		context.Background(), RunsFilter{}, 2,
 	)
 	if err != nil {
-		t.Fatalf("ListRunsEnvelope: %v", err)
+		t.Fatalf("ListRuns: %v", err)
 	}
 	// Positive: total reflects the full population, returned the cap.
 	if env.Total != submitted {
@@ -196,11 +196,11 @@ func TestListRunsEnvelopeTruncation(t *testing.T) {
 		t.Fatal("Truncated must be true when total > returned")
 	}
 	// Negative: no truncation when limit covers the whole population.
-	full, err := svc.ListRunsEnvelope(
+	full, err := svc.ListRuns(
 		context.Background(), RunsFilter{}, 100,
 	)
 	if err != nil {
-		t.Fatalf("ListRunsEnvelope(full): %v", err)
+		t.Fatalf("ListRuns(full): %v", err)
 	}
 	if full.Truncated {
 		t.Fatal("Truncated must be false when limit >= total")

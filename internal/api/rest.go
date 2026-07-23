@@ -221,8 +221,8 @@ func handleListRuns(
 	}
 	workflowFilter := r.URL.Query().Get("workflow")
 	limit := parseLimitQuery(r.URL.Query().Get("limit"))
-	runs, err := svc.ListRunsWithLimit(
-		r.Context(), workflowFilter, limit,
+	runs, err := svc.ScanRuns(
+		r.Context(), RunsFilter{Workflow: workflowFilter}, limit,
 	)
 	if err != nil {
 		http.Error(w, err.Error(),
@@ -237,7 +237,7 @@ func handleListRuns(
 }
 
 // parseLimitQuery converts the raw ?limit= string into an int. Empty
-// or unparseable values yield 0, which ListRunsWithLimit treats as
+// or unparseable values yield 0, which ScanRuns treats as
 // "use DefaultRunsLimit". This keeps the REST surface forgiving — an
 // operator who types ?limit=abc gets the default, not a 400.
 func parseLimitQuery(raw string) int {
