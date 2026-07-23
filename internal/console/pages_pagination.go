@@ -59,3 +59,73 @@ func paginate(total, page, size int) (int, int, bool) {
 	}
 	return start, end, end < total
 }
+
+// pageWindow is the derived list-page pagination chrome: the [Start,End)
+// slice bounds every list builder pages its rows with, plus the
+// navigation metadata every list template binds. It is domain-neutral —
+// callers own what rows to paginate, how to filter them, and which of
+// these fields their template surfaces; the window only does the bounds
+// and metadata arithmetic and enforces that the result is self-consistent.
+//
+// FirstIndex / LastIndex are the 1-indexed bounds of the current page for
+// the "Showing N–M of K" lede; both are zero when the page renders no
+// rows so the template omits the range rather than printing "1–0".
+type pageWindow struct {
+	Start      int
+	End        int
+	HasNext    bool
+	HasPrev    bool
+	NextPage   int
+	PrevPage   int
+	Total      int
+	Page       int
+	Size       int
+	FirstIndex int
+	LastIndex  int
+}
+
+// computePageWindow derives the full pageWindow from a row count and a
+// clamped 1-indexed page/size (the output of parsePageAndSize). It hides
+// the offset arithmetic, the hasNext/hasPrev/next/prev derivation, and
+// the empty-vs-populated lede decision behind one call so every list
+// builder shares identical paging behavior. It asserts its inputs and
+// its own output so an impossible page (negative bounds, a lede that
+// disagrees with the slice, hasNext past the end, hasPrev on page one)
+// surfaces as a programmer-error panic rather than a wrong render.
+func computePageWindow(total, page, size int) pageWindow {
+	if total < 0 {
+		panic("computePageWindow: total is negative")
+	}
+	if page < 1 {
+		panic("computePageWindow: page must be >= 1")
+	}
+	if size <= 0 {
+		panic("computePageWindow: size must be positive")
+	}
+	start, end, hasNext := paginate(total, page, size)
+	first, last := 0, 0
+	if end > start {
+		first = start + 1
+		last = end
+	}
+	win := pageWindow{
+		Start: start, End: end,
+		HasNext: hasNext, HasPrev: page > 1,
+		NextPage: page + 1, PrevPage: page - 1,
+		Total: total, Page: page, Size: size,
+		FirstIndex: first, LastIndex: last,
+	}
+	if win.Start < 0 || win.End < win.Start || win.End > total {
+		panic("computePageWindow: slice bounds out of range")
+	}
+	if (win.FirstIndex == 0) != (win.Start == win.End) {
+		panic("computePageWindow: lede disagrees with slice bounds")
+	}
+	if win.HasNext && win.End >= total {
+		panic("computePageWindow: hasNext with no further rows")
+	}
+	if win.HasPrev != (win.Page > 1) {
+		panic("computePageWindow: hasPrev disagrees with page number")
+	}
+	return win
+}

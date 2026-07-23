@@ -134,26 +134,19 @@ func buildRunsView(
 		runs = filterRunsByRange(runs, rng, time.Now())
 	}
 	defs, _ := ds.ListWorkflows(ctx)
-	wfNames := workflowNamesFromDefs(defs)
-	total := len(runs)
-	start, end, hasNext := paginate(total, page, size)
-	first, last := 0, 0
-	if total > 0 && end > start {
-		first = start + 1
-		last = end
-	}
+	win := computePageWindow(len(runs), page, size)
 	view := RunsListView{
 		Header:   buildRunsHeader(runs, time.Now()),
 		Workflow: wf, Status: status, IDFilter: idSubstr, Range: rng,
 		SinceUnix: since, UntilUnix: until,
-		Page: page, Size: size, Total: total,
-		HasNext: hasNext, HasPrev: page > 1,
-		NextPage: page + 1, PrevPage: page - 1,
-		FirstIndex: first, LastIndex: last,
-		Workflows: wfNames,
-		Rows:      toRunRows(runs[start:end]),
+		Page: win.Page, Size: win.Size, Total: win.Total,
+		HasNext: win.HasNext, HasPrev: win.HasPrev,
+		NextPage: win.NextPage, PrevPage: win.PrevPage,
+		FirstIndex: win.FirstIndex, LastIndex: win.LastIndex,
+		Workflows: workflowNamesFromDefs(defs),
+		Rows:      toRunRows(runs[win.Start:win.End]),
 	}
-	if total == 0 && wf == "" && status == "" && idSubstr == "" &&
+	if win.Total == 0 && wf == "" && status == "" && idSubstr == "" &&
 		(rng == "" || rng == "all") && since == 0 && until == 0 {
 		view.EmptyState = newRunsEmptyState()
 	}

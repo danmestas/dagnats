@@ -136,23 +136,21 @@ func buildWorkflowsView(
 	rows := assembleWorkflowRows(defs, triggers, runs)
 	attachWorkflowSparklines(ctx, ds, rows)
 	sortWorkflowRows(rows, sortKey)
-	total := len(rows)
-	start, end, hasNext := paginate(total, page, size)
-	header := buildWorkflowsHeader(rows)
+	win := computePageWindow(len(rows), page, size)
 	view := WorkflowsListView{
-		Header:   header,
+		Header:   buildWorkflowsHeader(rows),
 		Filter:   filter,
 		Sort:     sortKey,
-		Page:     page,
-		Size:     size,
-		Total:    total,
-		HasNext:  hasNext,
-		HasPrev:  page > 1,
-		NextPage: page + 1,
-		PrevPage: page - 1,
-		Rows:     rows[start:end],
+		Page:     win.Page,
+		Size:     win.Size,
+		Total:    win.Total,
+		HasNext:  win.HasNext,
+		HasPrev:  win.HasPrev,
+		NextPage: win.NextPage,
+		PrevPage: win.PrevPage,
+		Rows:     rows[win.Start:win.End],
 	}
-	if total == 0 && filter == "" {
+	if win.Total == 0 && filter == "" {
 		view.EmptyState = newWorkflowsEmptyState()
 	}
 	return view, nil
