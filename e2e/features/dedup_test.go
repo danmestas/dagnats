@@ -12,6 +12,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/e2e/harness"
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
@@ -79,9 +80,9 @@ func TestDeduplication(t *testing.T) {
 		)
 
 		// Positive: exactly one run exists.
-		runs, err := svc.ListRuns(ctx, wfName)
+		runs, err := svc.ScanRuns(ctx, api.RunsFilter{Workflow: wfName}, 0)
 		if err != nil {
-			t.Fatalf("ListRuns: %v", err)
+			t.Fatalf("ScanRuns: %v", err)
 		}
 
 		count := 0
