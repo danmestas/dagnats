@@ -25,14 +25,6 @@ import (
 // consumer can't keep up: operators see the latest state, never a stale
 // one.
 
-// WorkflowCatalog reads workflow definitions. Backs the workflows list /
-// detail pages, cmd+k search, and the inline Run button's runnability
-// check.
-type WorkflowCatalog interface {
-	ListWorkflows(ctx context.Context) ([]dag.WorkflowDef, error)
-	GetWorkflow(name string) (dag.WorkflowDef, error)
-}
-
 // RunStore reads runs and their history, drives run mutations (start /
 // cancel / signal), and streams live run + per-run-history updates. The
 // watches carry the console-specific projection; the list/get/mutation
@@ -398,7 +390,13 @@ type SearchIndex interface {
 // requirePort, not on this union. Kept as a single name so the
 // production adapter and the legacy full fake have one thing to satisfy.
 type DataSource interface {
-	WorkflowCatalog
+	// Workflow-definition reads have no port of their own: both bodies
+	// are nil-checks around a straight api.Service delegation, with no
+	// projection, watch, or honesty logic to hide. A named port would
+	// be pure indirection, so they sit on the union directly.
+	ListWorkflows(ctx context.Context) ([]dag.WorkflowDef, error)
+	GetWorkflow(name string) (dag.WorkflowDef, error)
+
 	RunStore
 	TriggerStore
 	DLQStore
