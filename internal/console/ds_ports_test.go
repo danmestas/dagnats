@@ -264,3 +264,55 @@ func TestConcurrencyPage_narrowPortFake(t *testing.T) {
 		t.Errorf("body unexpectedly contains a fabricated lock key")
 	}
 }
+
+// dlqPageDS is the #576 counterpart to concurrencyOnlyDS: instead of
+// hand-writing the page's methods it REUSES the per-port fakes from
+// ds_fakes_test.go, composing exactly the two ports /console/dlq reads
+// (dead letters for the table, the deployment snapshot for the shared
+// footer). deepUnimplemented sits one embedding level below both, so
+// every other port still panics — the negative-space assertion.
+type dlqPageDS struct {
+	fakeDLQStore
+	fakeOpsInventory
+	deepUnimplemented
+}
+
+// TestDLQPage_composedPortFakes mounts /console/dlq backed only by the
+// DLQ + ops port fakes. A green render proves two things: the page
+// depends on those ports alone, and the decomposed fakes are usable
+// without the full fakeDataSource composite.
+func TestDLQPage_composedPortFakes(t *testing.T) {
+	fake := &dlqPageDS{
+		fakeDLQStore: fakeDLQStore{
+			deadLetters: []api.DeadLetterView{
+				sampleDeadLetter(9001, "task timed out after 30s"),
+			},
+		},
+		fakeOpsInventory: fakeOpsInventory{
+			fakeDeployment: &fakeDeployment{},
+		},
+	}
+	handler := Mount(Config{
+		HTTPAddr: "127.0.0.1:0",
+		AuthMode: AuthLoopback,
+		Build:    "test",
+		Logger:   slog.New(slog.NewTextHandler(testLogWriter(t), nil)),
+		Data:     fake,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/console/dlq", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "9001") {
+		t.Errorf("body missing seeded dead-letter sequence 9001")
+	}
+	// Negative space: a sequence we never seeded must not appear.
+	if strings.Contains(body, "424242") {
+		t.Errorf("body unexpectedly contains a fabricated sequence")
+	}
+}
