@@ -13,11 +13,19 @@
 //     registerConsoleRoutes and proves the mux was never touched by
 //     probing a pattern that would have been installed and expecting 404.
 //   - The method-dispatch test locks /console/triggers 405 + Allow header.
+//   - The builder-precondition tests drive the two invariants that would
+//     otherwise fail silently at request time rather than at boot: a
+//     redirect target missing its leading slash (resolved relative to the
+//     request path by http.Redirect) and a jsSourceRoute basename carrying
+//     a path separator (which would corrupt both the URL pattern and the
+//     embedded sources/ lookup). Each asserts the panic fires on the bad
+//     input and does not fire on the good one.
 package console
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -178,6 +186,50 @@ func TestRegisterConsoleRoutes_leavesMuxUnmodifiedOnInvalidTable(t *testing.T) {
 	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/console/dup", nil))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("after failed registration, GET /console/dup = %d, want 404 (mux untouched)", rr.Code)
+	}
+}
+
+func TestRedirectTo_rejectsNonAbsoluteTarget(t *testing.T) {
+	for _, bad := range []string{"", "console/", "https://evil.example/x"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("redirectTo(%q) did not panic, want panic", bad)
+				}
+			}()
+			redirectTo(bad)
+		}()
+	}
+	if redirectTo("/console/") == nil {
+		t.Fatalf("redirectTo(%q) = nil handler, want non-nil", "/console/")
+	}
+}
+
+func TestJSSourceRoute_rejectsBasenameWithSeparator(t *testing.T) {
+	// A separator-bearing basename already blows up downstream on the
+	// embedded-read miss, so the panic alone proves nothing: assert the
+	// message names jsSourceRoute, pinning the contract at the layer that
+	// owns it rather than at an accidental file-not-found.
+	for _, bad := range []string{"", "sources/toast.js", "../toast.js"} {
+		func() {
+			defer func() {
+				got, ok := recover().(string)
+				if !ok {
+					t.Fatalf("jsSourceRoute(%q) did not panic with a string, want panic", bad)
+				}
+				if !strings.HasPrefix(got, "jsSourceRoute:") {
+					t.Fatalf("jsSourceRoute(%q) panicked with %q, want a jsSourceRoute: contract", bad, got)
+				}
+			}()
+			jsSourceRoute(bad)
+		}()
+	}
+	got := jsSourceRoute("toast.js")
+	if got.pattern != "/console/assets/toast.js" {
+		t.Fatalf("jsSourceRoute pattern = %q, want %q", got.pattern, "/console/assets/toast.js")
+	}
+	if got.handler == nil {
+		t.Fatalf("jsSourceRoute handler = nil, want non-nil")
 	}
 }
 

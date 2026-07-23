@@ -351,6 +351,13 @@ func consoleRoutes(ts *templateSet, cfg Config) []consoleRoute {
 			handler: serveBasecoatFixture,
 		})
 	}
+	// Postcondition: the table is assembled from five independent
+	// builders, so an empty result means a builder was emptied or
+	// dropped — a console that serves nothing, which would otherwise
+	// register cleanly and 404 every path at runtime.
+	if len(table) == 0 {
+		panic("consoleRoutes: empty route table")
+	}
 	return table
 }
 
@@ -373,6 +380,11 @@ func withTemplateSet(
 
 // withConfig adapts a handler that needs only config into an
 // http.HandlerFunc, closing over cfg once per route.
+//
+// One assertion by design: fn is the only argument with an invariant.
+// Config is a value type whose fields are validated where they are
+// consumed, and the returned closure is non-nil by construction — a
+// second check here would be ceremony, not a contract.
 func withConfig(
 	fn func(http.ResponseWriter, *http.Request, Config),
 	cfg Config,
@@ -388,9 +400,16 @@ func withConfig(
 // redirectTo returns a handler that permanently redirects to target. It
 // captures the four constant-target /console/ops* hops; the two that
 // preserve query parameters keep their dedicated handlers.
+//
+// target must be a root-relative path: http.Redirect resolves a bare
+// relative target against the requesting URL, so "console/" from
+// /console/ops silently lands on /console/console/ instead of failing.
 func redirectTo(target string) http.HandlerFunc {
 	if target == "" {
 		panic("redirectTo: empty target")
+	}
+	if !strings.HasPrefix(target, "/") {
+		panic("redirectTo: target is not root-relative: " + target)
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		redirectMovedPermanently(w, r, target)
@@ -400,9 +419,17 @@ func redirectTo(target string) http.HandlerFunc {
 // jsSourceRoute builds a route for a plain (uncompressed) JS asset served
 // from the embedded sources/ dir. Every such asset maps its console URL
 // basename to sources/<basename>, so the basename is the only variable.
+//
+// basename must be a bare filename: a separator would both reshape the
+// URL into an unintended subtree pattern and redirect the embedded
+// lookup, which today surfaces only as a confusing servePlainAssetAt
+// read miss one layer down.
 func jsSourceRoute(basename string) consoleRoute {
 	if basename == "" {
 		panic("jsSourceRoute: empty basename")
+	}
+	if strings.ContainsAny(basename, "/\\") {
+		panic("jsSourceRoute: basename is not a bare filename: " + basename)
 	}
 	return consoleRoute{
 		pattern: "/console/assets/" + basename,
@@ -436,6 +463,12 @@ func dispatchTriggersRoot(
 
 // pageRoutes returns the HTML page and dispatch-subtree routes, plus the
 // two log export/clear actions that live under /console/logs.
+//
+// One assertion by design (same for apiRoutes/sseRoutes): ts is the only
+// argument with an invariant, cfg is a value type, and the return is a
+// slice literal — a non-empty postcondition here could not fail. The
+// meaningful emptiness check lives in consoleRoutes, where the table is
+// actually assembled and a dropped builder could go unnoticed.
 func pageRoutes(ts *templateSet, cfg Config) []consoleRoute {
 	if ts == nil {
 		panic("pageRoutes: ts is nil")
@@ -476,7 +509,8 @@ func pageRoutes(ts *templateSet, cfg Config) []consoleRoute {
 	}
 }
 
-// apiRoutes returns the /console/api/* fragment and data routes.
+// apiRoutes returns the /console/api/* fragment and data routes. One
+// assertion by design — see pageRoutes.
 func apiRoutes(ts *templateSet, cfg Config) []consoleRoute {
 	if ts == nil {
 		panic("apiRoutes: ts is nil")
@@ -497,7 +531,7 @@ func apiRoutes(ts *templateSet, cfg Config) []consoleRoute {
 
 // sseRoutes returns the /console/sse/* streaming routes. Heartbeat needs
 // only the configured interval, so it keeps a focused closure rather than
-// the shared config adapter.
+// the shared config adapter. One assertion by design — see pageRoutes.
 func sseRoutes(ts *templateSet, cfg Config) []consoleRoute {
 	if ts == nil {
 		panic("sseRoutes: ts is nil")
