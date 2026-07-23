@@ -247,9 +247,32 @@ func Mount(cfg Config) http.Handler {
 	return authMiddleware(cfg.AuthMode, cfg.Password, csrfGuarded)
 }
 
-// routes wires every public path under /console/ into mux.
-// Keeping this on a separate function makes the route inventory
-// easy to scan.
+// consoleRoute is the minimal descriptor the registry needs: a ServeMux
+// pattern and the handler installed for it. Nothing more — auth, CSRF,
+// read-only, and method policy stay where they already live (middleware
+// wrapping mux, or inside the handlers), so the descriptor does not grow
+// speculative policy fields.
+type consoleRoute struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// consoleRouteCountMax bounds the route table so the registration loop is
+// provably bounded (TigerStyle: every loop has a fixed upper bound) and an
+// accidental explosion of routes trips an assertion instead of growing
+// silently. The live table is 68 unconditional routes plus one gated
+// fixture route.
+const consoleRouteCountMax = 128
+
+const (
+	contentTypeJS  = "application/javascript; charset=utf-8"
+	contentTypeCSS = "text/css; charset=utf-8"
+)
+
+// routes validates the full console route registry, then installs every
+// entry on mux in one bounded pass. Validation runs to completion before
+// the first mux.HandleFunc call, so an invalid registry cannot partially
+// mutate mux — it fails loudly at boot instead.
 func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	if mux == nil {
 		panic("routes: mux is nil")
@@ -257,272 +280,276 @@ func routes(mux *http.ServeMux, ts *templateSet, cfg Config) {
 	if ts == nil {
 		panic("routes: ts is nil")
 	}
-	mux.HandleFunc("/console/", func(w http.ResponseWriter, r *http.Request) {
-		dispatchRoot(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/workflows", func(w http.ResponseWriter, r *http.Request) {
-		servePageWorkflowsList(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/workflows/", func(w http.ResponseWriter, r *http.Request) {
-		dispatchWorkflows(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/runs", func(w http.ResponseWriter, r *http.Request) {
-		servePageRunsList(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/runs/lookup", func(w http.ResponseWriter, r *http.Request) {
-		serveRunIDLookup(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/runs/", func(w http.ResponseWriter, r *http.Request) {
-		dispatchRuns(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/api/run/",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveRunTabFragment(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/api/fragments/workflows-list",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveFragmentWorkflowsList(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/api/fragments/runs-list",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveFragmentRunsList(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/triggers",
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodPost:
-				handleTriggerCreate(w, r, cfg)
-			case http.MethodGet, http.MethodHead:
-				servePageTriggersList(w, r, ts, cfg)
-			default:
-				w.Header().Set("Allow", "GET, POST")
-				w.WriteHeader(http.StatusMethodNotAllowed)
-			}
-		})
-	mux.HandleFunc("/console/triggers/",
-		func(w http.ResponseWriter, r *http.Request) {
-			dispatchTriggers(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/traces",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageTracesList(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/traces/",
-		func(w http.ResponseWriter, r *http.Request) {
-			dispatchTraces(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/dlq",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageDLQList(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/dlq/",
-		func(w http.ResponseWriter, r *http.Request) {
-			dispatchDLQ(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/api/dlq/",
-		func(w http.ResponseWriter, r *http.Request) {
-			dispatchDLQAPIFragment(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/api/runs/",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveRunSheet(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/api/search",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveSearch(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/api/nav-counts",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveNavCounts(w, r, cfg)
-		})
-	mux.HandleFunc("/console/workers",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageWorkers(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/workers/",
-		func(w http.ResponseWriter, r *http.Request) {
-			dispatchWorkers(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/services",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageServices(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/kv",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageKVInspector(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/streams",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageStreams(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/streams/",
-		func(w http.ResponseWriter, r *http.Request) {
-			dispatchStreams(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/consumers",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageConsumers(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/server",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageServer(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/connections",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageConnections(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/concurrency",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageConcurrency(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/agents",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageAgentRuntimes(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/logs",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageLogs(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/logs/export",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveLogsExport(w, r, cfg)
-		})
-	mux.HandleFunc("/console/logs/clear",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveLogsClear(w, r, cfg)
-		})
-	mux.HandleFunc("/console/sse/logs",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveSSELogs(w, r, cfg)
-		})
-	mux.HandleFunc("/console/config",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageConfiguration(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/task-types",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageTaskTypes(w, r, ts, cfg)
-		})
-	// /console/functions is the user-facing route for the page formerly
-	// labelled "Task Types"; the legacy path stays mounted for bookmarks.
-	mux.HandleFunc("/console/functions",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageTaskTypes(w, r, ts, cfg)
-		})
-	// The trailing-slash subtree drills into one function's read-only
-	// detail; Go's ServeMux routes it separately from the exact path above.
-	mux.HandleFunc("/console/functions/",
-		func(w http.ResponseWriter, r *http.Request) {
-			dispatchFunctions(w, r, ts, cfg)
-		})
-	// Promoted top-level routes (B3 nav/IA). The Ops hub is gone; its
-	// children now live at the top level. The old /console/ops* paths
-	// 301-redirect below so bookmarks survive.
-	mux.HandleFunc("/console/metrics",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageMetrics(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/audit",
-		func(w http.ResponseWriter, r *http.Request) {
-			servePageAuditLog(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/ops",
-		func(w http.ResponseWriter, r *http.Request) {
-			redirectMovedPermanently(w, r, "/console/")
-		})
-	mux.HandleFunc("/console/ops/workers",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveOpsWorkersRedirect(w, r)
-		})
-	// The Leases page was removed (no engine feed, no mockup peer). Its
-	// admission-layer concepts live on /console/concurrency, so the
-	// legacy bookmark lands on that real, data-backed surface.
-	mux.HandleFunc("/console/ops/leases",
-		func(w http.ResponseWriter, r *http.Request) {
-			redirectMovedPermanently(w, r, "/console/concurrency")
-		})
-	mux.HandleFunc("/console/ops/kv",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveOpsKVRedirect(w, r)
-		})
-	mux.HandleFunc("/console/ops/audit",
-		func(w http.ResponseWriter, r *http.Request) {
-			redirectMovedPermanently(w, r, "/console/audit")
-		})
-	mux.HandleFunc("/console/ops/metrics",
-		func(w http.ResponseWriter, r *http.Request) {
-			redirectMovedPermanently(w, r, "/console/metrics")
-		})
-	mux.HandleFunc("/console/sse/metrics",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveSSEMetrics(w, r, ts, cfg)
-		})
-	mux.HandleFunc("/console/api/metrics/chart/",
-		func(w http.ResponseWriter, r *http.Request) {
-			serveAPIMetricsChart(w, r, cfg)
-		})
-	mux.HandleFunc("/console/assets/console.js", serveGzAsset("console.js.gz",
-		"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/basecoat.css", serveGzAsset("basecoat.css.gz",
-		"text/css; charset=utf-8"))
-	mux.HandleFunc("/console/assets/uplot.min.js", serveGzAsset("uplot.min.js.gz",
-		"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/app.css", servePlainAsset("app.css",
-		"text/css; charset=utf-8"))
-	mux.HandleFunc("/console/assets/connection-state.js",
-		servePlainAssetAt("sources/connection-state.js",
-			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/toast.js",
-		servePlainAssetAt("sources/toast.js",
-			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/count-chip.js",
-		servePlainAssetAt("sources/count-chip.js",
-			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/metrics.js",
-		servePlainAssetAt("sources/metrics.js",
-			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/build-info-copy.js",
-		servePlainAssetAt("sources/build-info-copy.js",
-			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/sidebar-collapse.js",
-		servePlainAssetAt("sources/sidebar-collapse.js",
-			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/nav-counts.js",
-		servePlainAssetAt("sources/nav-counts.js",
-			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/assets/logs.js",
-		servePlainAssetAt("sources/logs.js",
-			"application/javascript; charset=utf-8"))
-	mux.HandleFunc("/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
-		serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
-	})
-	mux.HandleFunc("/console/sse/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		serveSSEDashboard(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/sse/runs", func(w http.ResponseWriter, r *http.Request) {
-		serveSSERuns(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/sse/runs/", func(w http.ResponseWriter, r *http.Request) {
-		serveSSERunDetail(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/sse/agents", func(w http.ResponseWriter, r *http.Request) {
-		serveSSEAgents(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/sse/triggers", func(w http.ResponseWriter, r *http.Request) {
-		serveSSETriggers(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/sse/dlq", func(w http.ResponseWriter, r *http.Request) {
-		serveSSEDLQ(w, r, ts, cfg)
-	})
-	mux.HandleFunc("/console/assets/fonts/", serveFontAsset())
-	// Fixture pages for Phase 2 component vendoring smoke tests. Gated
-	// by DAGNATS_FIXTURES=true so production never exposes them. Tests
-	// flip the env var on before calling Mount.
+	if err := registerConsoleRoutes(mux, consoleRoutes(ts, cfg)); err != nil {
+		panic("routes: invalid console route registry: " + err.Error())
+	}
+}
+
+// registerConsoleRoutes validates table, then installs it on mux. It
+// returns an error (rather than panicking) on an invalid table so callers
+// and tests can assert the mux stays untouched when validation fails.
+func registerConsoleRoutes(mux *http.ServeMux, table []consoleRoute) error {
+	if mux == nil {
+		panic("registerConsoleRoutes: mux is nil")
+	}
+	if table == nil {
+		panic("registerConsoleRoutes: table is nil")
+	}
+	if err := validateConsoleRoutes(table); err != nil {
+		return err
+	}
+	for _, rt := range table {
+		mux.HandleFunc(rt.pattern, rt.handler)
+	}
+	return nil
+}
+
+// validateConsoleRoutes rejects an empty pattern, a nil handler, or a
+// duplicate pattern before any route is installed. The temporary set is
+// local to duplicate detection; the ordered slice stays the source of
+// truth. The loop is bounded by consoleRouteCountMax.
+func validateConsoleRoutes(table []consoleRoute) error {
+	if table == nil {
+		panic("validateConsoleRoutes: table is nil")
+	}
+	if len(table) > consoleRouteCountMax {
+		panic("validateConsoleRoutes: route count exceeds consoleRouteCountMax")
+	}
+	seen := make(map[string]struct{}, len(table))
+	for _, rt := range table {
+		if rt.pattern == "" {
+			return fmt.Errorf("console route has an empty pattern")
+		}
+		if rt.handler == nil {
+			return fmt.Errorf("console route %q has a nil handler", rt.pattern)
+		}
+		if _, dup := seen[rt.pattern]; dup {
+			return fmt.Errorf("console route %q is registered twice", rt.pattern)
+		}
+		seen[rt.pattern] = struct{}{}
+	}
+	return nil
+}
+
+// consoleRoutes builds the ordered route registry. The slice — assembled
+// from category builders in a fixed order — is the single source of truth
+// for the console's HTTP surface. The fixture subtree is appended only
+// when DAGNATS_ENV permits it, so production never exposes it.
+func consoleRoutes(ts *templateSet, cfg Config) []consoleRoute {
+	if ts == nil {
+		panic("consoleRoutes: ts is nil")
+	}
+	table := make([]consoleRoute, 0, consoleRouteCountMax)
+	table = append(table, pageRoutes(ts, cfg)...)
+	table = append(table, apiRoutes(ts, cfg)...)
+	table = append(table, sseRoutes(ts, cfg)...)
+	table = append(table, redirectRoutes()...)
+	table = append(table, assetRoutes()...)
 	if fixturesEnabled() {
-		mux.HandleFunc("/console/__fixtures__/",
-			func(w http.ResponseWriter, r *http.Request) {
-				serveBasecoatFixture(w, r)
-			})
+		table = append(table, consoleRoute{
+			pattern: "/console/__fixtures__/",
+			handler: serveBasecoatFixture,
+		})
+	}
+	return table
+}
+
+// withTemplateSet adapts a handler that needs the template set and config
+// into an http.HandlerFunc, closing over ts and cfg once per route.
+func withTemplateSet(
+	fn func(http.ResponseWriter, *http.Request, *templateSet, Config),
+	ts *templateSet, cfg Config,
+) http.HandlerFunc {
+	if fn == nil {
+		panic("withTemplateSet: fn is nil")
+	}
+	if ts == nil {
+		panic("withTemplateSet: ts is nil")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		fn(w, r, ts, cfg)
+	}
+}
+
+// withConfig adapts a handler that needs only config into an
+// http.HandlerFunc, closing over cfg once per route.
+func withConfig(
+	fn func(http.ResponseWriter, *http.Request, Config),
+	cfg Config,
+) http.HandlerFunc {
+	if fn == nil {
+		panic("withConfig: fn is nil")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		fn(w, r, cfg)
+	}
+}
+
+// redirectTo returns a handler that permanently redirects to target. It
+// captures the four constant-target /console/ops* hops; the two that
+// preserve query parameters keep their dedicated handlers.
+func redirectTo(target string) http.HandlerFunc {
+	if target == "" {
+		panic("redirectTo: empty target")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		redirectMovedPermanently(w, r, target)
+	}
+}
+
+// jsSourceRoute builds a route for a plain (uncompressed) JS asset served
+// from the embedded sources/ dir. Every such asset maps its console URL
+// basename to sources/<basename>, so the basename is the only variable.
+func jsSourceRoute(basename string) consoleRoute {
+	if basename == "" {
+		panic("jsSourceRoute: empty basename")
+	}
+	return consoleRoute{
+		pattern: "/console/assets/" + basename,
+		handler: servePlainAssetAt("sources/"+basename, contentTypeJS),
+	}
+}
+
+// dispatchTriggersRoot handles the exact /console/triggers path. Method
+// dispatch lives here, not in the route table: POST creates a trigger,
+// GET/HEAD render the list, anything else is 405 with an Allow header.
+func dispatchTriggersRoot(
+	w http.ResponseWriter, r *http.Request,
+	ts *templateSet, cfg Config,
+) {
+	if w == nil {
+		panic("dispatchTriggersRoot: w is nil")
+	}
+	if r == nil {
+		panic("dispatchTriggersRoot: r is nil")
+	}
+	switch r.Method {
+	case http.MethodPost:
+		handleTriggerCreate(w, r, cfg)
+	case http.MethodGet, http.MethodHead:
+		servePageTriggersList(w, r, ts, cfg)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// pageRoutes returns the HTML page and dispatch-subtree routes, plus the
+// two log export/clear actions that live under /console/logs.
+func pageRoutes(ts *templateSet, cfg Config) []consoleRoute {
+	if ts == nil {
+		panic("pageRoutes: ts is nil")
+	}
+	return []consoleRoute{
+		{"/console/", withTemplateSet(dispatchRoot, ts, cfg)},
+		{"/console/workflows", withTemplateSet(servePageWorkflowsList, ts, cfg)},
+		{"/console/workflows/", withTemplateSet(dispatchWorkflows, ts, cfg)},
+		{"/console/runs", withTemplateSet(servePageRunsList, ts, cfg)},
+		{"/console/runs/lookup", withTemplateSet(serveRunIDLookup, ts, cfg)},
+		{"/console/runs/", withTemplateSet(dispatchRuns, ts, cfg)},
+		{"/console/triggers", withTemplateSet(dispatchTriggersRoot, ts, cfg)},
+		{"/console/triggers/", withTemplateSet(dispatchTriggers, ts, cfg)},
+		{"/console/traces", withTemplateSet(servePageTracesList, ts, cfg)},
+		{"/console/traces/", withTemplateSet(dispatchTraces, ts, cfg)},
+		{"/console/dlq", withTemplateSet(servePageDLQList, ts, cfg)},
+		{"/console/dlq/", withTemplateSet(dispatchDLQ, ts, cfg)},
+		{"/console/workers", withTemplateSet(servePageWorkers, ts, cfg)},
+		{"/console/workers/", withTemplateSet(dispatchWorkers, ts, cfg)},
+		{"/console/services", withTemplateSet(servePageServices, ts, cfg)},
+		{"/console/kv", withTemplateSet(servePageKVInspector, ts, cfg)},
+		{"/console/streams", withTemplateSet(servePageStreams, ts, cfg)},
+		{"/console/streams/", withTemplateSet(dispatchStreams, ts, cfg)},
+		{"/console/consumers", withTemplateSet(servePageConsumers, ts, cfg)},
+		{"/console/server", withTemplateSet(servePageServer, ts, cfg)},
+		{"/console/connections", withTemplateSet(servePageConnections, ts, cfg)},
+		{"/console/concurrency", withTemplateSet(servePageConcurrency, ts, cfg)},
+		{"/console/agents", withTemplateSet(servePageAgentRuntimes, ts, cfg)},
+		{"/console/logs", withTemplateSet(servePageLogs, ts, cfg)},
+		{"/console/logs/export", withConfig(serveLogsExport, cfg)},
+		{"/console/logs/clear", withConfig(serveLogsClear, cfg)},
+		{"/console/config", withTemplateSet(servePageConfiguration, ts, cfg)},
+		{"/console/task-types", withTemplateSet(servePageTaskTypes, ts, cfg)},
+		{"/console/functions", withTemplateSet(servePageTaskTypes, ts, cfg)},
+		{"/console/functions/", withTemplateSet(dispatchFunctions, ts, cfg)},
+		{"/console/metrics", withTemplateSet(servePageMetrics, ts, cfg)},
+		{"/console/audit", withTemplateSet(servePageAuditLog, ts, cfg)},
+	}
+}
+
+// apiRoutes returns the /console/api/* fragment and data routes.
+func apiRoutes(ts *templateSet, cfg Config) []consoleRoute {
+	if ts == nil {
+		panic("apiRoutes: ts is nil")
+	}
+	return []consoleRoute{
+		{"/console/api/run/", withTemplateSet(serveRunTabFragment, ts, cfg)},
+		{"/console/api/fragments/workflows-list",
+			withTemplateSet(serveFragmentWorkflowsList, ts, cfg)},
+		{"/console/api/fragments/runs-list",
+			withTemplateSet(serveFragmentRunsList, ts, cfg)},
+		{"/console/api/dlq/", withTemplateSet(dispatchDLQAPIFragment, ts, cfg)},
+		{"/console/api/runs/", withTemplateSet(serveRunSheet, ts, cfg)},
+		{"/console/api/search", withTemplateSet(serveSearch, ts, cfg)},
+		{"/console/api/nav-counts", withConfig(serveNavCounts, cfg)},
+		{"/console/api/metrics/chart/", withConfig(serveAPIMetricsChart, cfg)},
+	}
+}
+
+// sseRoutes returns the /console/sse/* streaming routes. Heartbeat needs
+// only the configured interval, so it keeps a focused closure rather than
+// the shared config adapter.
+func sseRoutes(ts *templateSet, cfg Config) []consoleRoute {
+	if ts == nil {
+		panic("sseRoutes: ts is nil")
+	}
+	return []consoleRoute{
+		{"/console/sse/logs", withConfig(serveSSELogs, cfg)},
+		{"/console/sse/metrics", withTemplateSet(serveSSEMetrics, ts, cfg)},
+		{"/console/sse/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+			serveHeartbeat(w, r, ts, cfg.HeartbeatInterval)
+		}},
+		{"/console/sse/dashboard", withTemplateSet(serveSSEDashboard, ts, cfg)},
+		{"/console/sse/runs", withTemplateSet(serveSSERuns, ts, cfg)},
+		{"/console/sse/runs/", withTemplateSet(serveSSERunDetail, ts, cfg)},
+		{"/console/sse/agents", withTemplateSet(serveSSEAgents, ts, cfg)},
+		{"/console/sse/triggers", withTemplateSet(serveSSETriggers, ts, cfg)},
+		{"/console/sse/dlq", withTemplateSet(serveSSEDLQ, ts, cfg)},
+	}
+}
+
+// redirectRoutes returns the legacy /console/ops* permanent redirects.
+// The four constant-target hops share redirectTo; the two that preserve
+// query parameters keep their dedicated handlers.
+func redirectRoutes() []consoleRoute {
+	return []consoleRoute{
+		{"/console/ops", redirectTo("/console/")},
+		{"/console/ops/workers", serveOpsWorkersRedirect},
+		{"/console/ops/leases", redirectTo("/console/concurrency")},
+		{"/console/ops/kv", serveOpsKVRedirect},
+		{"/console/ops/audit", redirectTo("/console/audit")},
+		{"/console/ops/metrics", redirectTo("/console/metrics")},
+	}
+}
+
+// assetRoutes returns the static asset routes. Content types and cache
+// behavior are owned by the serve* asset helpers; this builder only maps
+// URL to helper. jsSourceRoute captures the eight identical plain-JS
+// entries that differ solely by basename.
+func assetRoutes() []consoleRoute {
+	return []consoleRoute{
+		{"/console/assets/console.js", serveGzAsset("console.js.gz", contentTypeJS)},
+		{"/console/assets/basecoat.css", serveGzAsset("basecoat.css.gz", contentTypeCSS)},
+		{"/console/assets/uplot.min.js", serveGzAsset("uplot.min.js.gz", contentTypeJS)},
+		{"/console/assets/app.css", servePlainAsset("app.css", contentTypeCSS)},
+		jsSourceRoute("connection-state.js"),
+		jsSourceRoute("toast.js"),
+		jsSourceRoute("count-chip.js"),
+		jsSourceRoute("metrics.js"),
+		jsSourceRoute("build-info-copy.js"),
+		jsSourceRoute("sidebar-collapse.js"),
+		jsSourceRoute("nav-counts.js"),
+		jsSourceRoute("logs.js"),
+		{"/console/assets/fonts/", serveFontAsset()},
 	}
 }
 
