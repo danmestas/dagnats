@@ -80,7 +80,7 @@ func servePageTracesList(
 	if r == nil {
 		panic("servePageTracesList: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "traces-list")
+	ds, ok := requirePort[RunStore](w, cfg, "traces-list")
 	if !ok {
 		return
 	}
@@ -182,7 +182,7 @@ func servePageTraceDetail(
 	if runID == "" {
 		panic("servePageTraceDetail: runID is empty")
 	}
-	ds, ok := requireData(w, cfg, "trace-detail")
+	ds, ok := requirePort[RunStore](w, cfg, "trace-detail")
 	if !ok {
 		return
 	}
@@ -199,7 +199,7 @@ func servePageTraceDetail(
 // first-event trace id. Each read degrades independently to an honest
 // empty/dash rather than failing the whole page.
 func buildTraceDetailView(
-	ctx context.Context, ds DataSource, runID string, cfg Config,
+	ctx context.Context, ds RunStore, runID string, cfg Config,
 ) TraceDetailView {
 	if ctx == nil {
 		panic("buildTraceDetailView: ctx is nil")
@@ -230,7 +230,7 @@ func buildTraceDetailView(
 // the single cheap per-detail lookup the Ousterhout review blessed; it is
 // NOT done on the list path.
 func traceIDForRun(
-	ctx context.Context, ds DataSource, runID string, cfg Config,
+	ctx context.Context, ds RunStore, runID string, cfg Config,
 ) string {
 	if ctx == nil {
 		panic("traceIDForRun: ctx is nil")

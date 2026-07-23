@@ -37,7 +37,7 @@ func servePageConcurrency(
 	if r == nil {
 		panic("servePageConcurrency: r is nil")
 	}
-	data, ok := requireData(w, cfg, "read admission state")
+	data, ok := requirePort[AdmissionView](w, cfg, "read admission state")
 	if !ok {
 		return
 	}

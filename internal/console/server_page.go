@@ -51,7 +51,7 @@ func servePageServer(
 	if r == nil {
 		panic("servePageServer: r is nil")
 	}
-	data, ok := requireData(w, cfg, "read server health")
+	data, ok := requirePort[OpsInventory](w, cfg, "read server health")
 	if !ok {
 		return
 	}
