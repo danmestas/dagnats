@@ -35,7 +35,7 @@ func servePageServices(
 	if r == nil {
 		panic("servePageServices: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "services-list")
+	ds, ok := requirePort[WorkerDirectory](w, cfg, "services-list")
 	if !ok {
 		return
 	}

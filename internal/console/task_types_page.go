@@ -97,7 +97,7 @@ func servePageTaskTypes(
 	if r == nil {
 		panic("servePageTaskTypes: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "task-types")
+	ds, ok := requirePort[WorkerDirectory](w, cfg, "task-types")
 	if !ok {
 		return
 	}
@@ -116,7 +116,7 @@ func servePageTaskTypes(
 // Errors collapse to the empty state — the page is observational, so
 // a transient failure paints empty rather than 500ing.
 func buildTaskTypesView(
-	ctx context.Context, ds DataSource,
+	ctx context.Context, ds WorkerDirectory,
 ) TaskTypesPageView {
 	rows, err := ds.AggregateTaskTypes(ctx)
 	if err != nil || len(rows) == 0 {

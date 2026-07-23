@@ -113,6 +113,38 @@ func requireData(
 	return cfg.Data, true
 }
 
+// requirePort narrows the configured DataSource to the single domain
+// port P a handler actually needs, reporting the same uniform 503 as
+// requireData when no source is wired. Handlers depend on the narrow
+// port, so their unit tests substitute a fake implementing just P (see
+// unimplementedDataSource in ds_ports_test.go) rather than the whole
+// surface. The production adapter implements every port, so the type
+// assertion never fails in a wired deployment — a miss is a programmer
+// error (a port method that isn't on the concrete adapter), hence panic.
+func requirePort[P any](
+	w http.ResponseWriter, cfg Config, op string,
+) (P, bool) {
+	if w == nil {
+		panic("requirePort: w is nil")
+	}
+	if op == "" {
+		panic("requirePort: op is empty")
+	}
+	var zero P
+	if cfg.Data == nil {
+		cfg.Logger.Warn("console: data source not configured", "op", op)
+		http.Error(w,
+			"data source not configured",
+			http.StatusServiceUnavailable)
+		return zero, false
+	}
+	port, ok := any(cfg.Data).(P)
+	if !ok {
+		panic("requirePort: data source does not implement the port for " + op)
+	}
+	return port, true
+}
+
 // WorkflowsListView is what the workflows-list template binds.
 // LastRunTime / LastRunStatus are derived per workflow at render
 // time from a single ListRuns scan; both empty when no runs exist.

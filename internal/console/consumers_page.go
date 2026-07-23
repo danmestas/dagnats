@@ -26,7 +26,7 @@ func servePageConsumers(
 	if r == nil {
 		panic("servePageConsumers: r is nil")
 	}
-	data, ok := requireData(w, cfg, "list consumers")
+	data, ok := requirePort[OpsInventory](w, cfg, "list consumers")
 	if !ok {
 		return
 	}

@@ -28,7 +28,7 @@ func servePageConnections(
 	if r == nil {
 		panic("servePageConnections: r is nil")
 	}
-	data, ok := requireData(w, cfg, "list connections")
+	data, ok := requirePort[OpsInventory](w, cfg, "list connections")
 	if !ok {
 		return
 	}
