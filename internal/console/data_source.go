@@ -608,7 +608,9 @@ func (a *apiServiceAdapter) ListRuns(
 	if ctx == nil {
 		panic("apiServiceAdapter.ListRuns: ctx is nil")
 	}
-	return a.svc.ListRuns(ctx, workflowFilter)
+	return a.svc.ScanRuns(
+		ctx, api.RunsFilter{Workflow: workflowFilter}, api.DefaultRunsLimit,
+	)
 }
 
 func (a *apiServiceAdapter) GetRun(
@@ -1863,7 +1865,7 @@ func appendRunHits(
 		hits = append(hits, makeRunHit(run))
 		return hits
 	}
-	runs, err := svc.ListRuns(ctx, "")
+	runs, err := svc.ScanRuns(ctx, api.RunsFilter{}, api.DefaultRunsLimit)
 	if err != nil {
 		return hits
 	}

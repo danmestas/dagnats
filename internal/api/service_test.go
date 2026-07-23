@@ -563,9 +563,9 @@ func TestServiceListRuns(t *testing.T) {
 	deadline := time.After(5 * time.Second)
 	runsFound := 0
 	for {
-		runs, err := svc.ListRuns(context.Background(), "")
+		runs, err := svc.ScanRuns(context.Background(), RunsFilter{}, 0)
 		if err != nil {
-			t.Fatalf("ListRuns failed: %v", err)
+			t.Fatalf("ScanRuns failed: %v", err)
 		}
 		foundRun1 := false
 		foundRun2 := false
@@ -618,9 +618,11 @@ func TestServiceListRunsFilterByWorkflow(t *testing.T) {
 
 	deadline := time.After(5 * time.Second)
 	for {
-		runs, err := svc.ListRuns(context.Background(), "filter-wf-a")
+		runs, err := svc.ScanRuns(
+			context.Background(), RunsFilter{Workflow: "filter-wf-a"}, 0,
+		)
 		if err != nil {
-			t.Fatalf("ListRuns failed: %v", err)
+			t.Fatalf("ScanRuns failed: %v", err)
 		}
 		foundA := false
 		for _, run := range runs {
@@ -645,7 +647,7 @@ func TestServiceListRunsFilterByWorkflow(t *testing.T) {
 	}
 }
 
-// TestServiceListRunsRespectsLimit asserts ListRunsWithLimit caps the
+// TestServiceListRunsRespectsLimit asserts ScanRuns caps the
 // returned slice at the caller-supplied limit. We submit more runs
 // than the limit, wait for them all to surface, then request fewer.
 func TestServiceListRunsRespectsLimit(t *testing.T) {
@@ -681,11 +683,11 @@ func TestServiceListRunsRespectsLimit(t *testing.T) {
 	// satisfied by the store still loading.
 	deadline := time.After(10 * time.Second)
 	for {
-		all, err := svc.ListRunsWithLimit(
-			context.Background(), "", 100,
+		all, err := svc.ScanRuns(
+			context.Background(), RunsFilter{}, 100,
 		)
 		if err != nil {
-			t.Fatalf("ListRunsWithLimit baseline: %v", err)
+			t.Fatalf("ScanRuns baseline: %v", err)
 		}
 		if len(all) >= submitted {
 			break
@@ -701,11 +703,11 @@ func TestServiceListRunsRespectsLimit(t *testing.T) {
 	}
 
 	const want = 3
-	runs, err := svc.ListRunsWithLimit(
-		context.Background(), "", want,
+	runs, err := svc.ScanRuns(
+		context.Background(), RunsFilter{}, want,
 	)
 	if err != nil {
-		t.Fatalf("ListRunsWithLimit: %v", err)
+		t.Fatalf("ScanRuns: %v", err)
 	}
 	if len(runs) != want {
 		t.Fatalf("len(runs) = %d, want %d", len(runs), want)
@@ -738,12 +740,12 @@ func TestServiceListRunsCeiling(t *testing.T) {
 	// Positive: clampRunsLimit applied — call should succeed with a
 	// far-too-large limit (the store will be called with the
 	// ceiling, which is well below any panic threshold).
-	runs, err := svc.ListRunsWithLimit(
-		context.Background(), "", 20000,
+	runs, err := svc.ScanRuns(
+		context.Background(), RunsFilter{}, 20000,
 	)
 	if err != nil {
 		t.Fatalf(
-			"ListRunsWithLimit(20000) returned error: %v "+
+			"ScanRuns(20000) returned error: %v "+
 				"(want clamp, not failure)", err,
 		)
 	}
@@ -757,10 +759,10 @@ func TestServiceListRunsCeiling(t *testing.T) {
 	// Negative: a zero limit should fall back to DefaultRunsLimit,
 	// not panic. We don't assert the length (it depends on store
 	// contents) — only that the call returns cleanly.
-	if _, err := svc.ListRunsWithLimit(
-		context.Background(), "", 0,
+	if _, err := svc.ScanRuns(
+		context.Background(), RunsFilter{}, 0,
 	); err != nil {
-		t.Fatalf("ListRunsWithLimit(0) returned error: %v", err)
+		t.Fatalf("ScanRuns(0) returned error: %v", err)
 	}
 }
 

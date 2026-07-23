@@ -1592,47 +1592,40 @@ func isTaskSubject(subject string) bool {
 	return len(subject) >= 5 && subject[:5] == "task."
 }
 
-// DefaultRunsLimit is the row cap applied when callers invoke
-// ListRuns without an explicit limit. It preserves pre-#257 behavior
-// (the cap used to be hard-coded inside listRunsInner).
+// DefaultRunsLimit is the row cap applied when callers pass a
+// non-positive limit to ScanRuns or ListRuns. It preserves pre-#257
+// behavior (the cap used to be hard-coded inside the run scan).
 const DefaultRunsLimit = 1000
 
-// MaxRunsLimitCeiling is the hard server-side ceiling. ListRunsWithLimit
-// clamps any caller-supplied limit at or below this value. Defense
-// against accidental OOM from "fetch everything" callers.
+// MaxRunsLimitCeiling is the hard server-side ceiling. ScanRuns and
+// ListRuns clamp any caller-supplied limit at or below this value.
+// Defense against accidental OOM from "fetch everything" callers.
 const MaxRunsLimitCeiling = 10000
 
-// ListRuns retrieves all workflow runs, optionally filtered by workflow ID.
-// Returns runs sorted by CreatedAt descending (newest first).
-// Applies DefaultRunsLimit as the row cap; callers that need to raise
-// the cap should use ListRunsWithLimit.
-func (s *Service) ListRuns(
-	ctx context.Context, workflowFilter string,
-) ([]dag.WorkflowRun, error) {
-	return s.ListRunsWithLimit(ctx, workflowFilter, DefaultRunsLimit)
-}
-
-// ListRunsWithLimit is the same as ListRuns but lets callers raise the
-// row cap up to MaxRunsLimitCeiling. limit <= 0 is treated as
-// DefaultRunsLimit; limit > MaxRunsLimitCeiling is clamped to the
-// ceiling (friendlier than a 400 error from a typo).
-func (s *Service) ListRunsWithLimit(
-	ctx context.Context, workflowFilter string, limit int,
+// ScanRuns returns up to limit runs matching filter, newest-first. It is
+// the CHEAP bounded read: the store caps the key scan at limit (ListAll)
+// instead of fetching the whole run population, so high-frequency callers
+// (console pages, CLI status, agent-runtime scans) stay O(limit), not
+// O(population). It trades a true most-recent-N for a bounded, low-cost
+// sample — callers that need an honest Total/Truncated must use ListRuns
+// (the envelope). limit <= 0 is treated as DefaultRunsLimit; limit >
+// MaxRunsLimitCeiling is clamped to the ceiling (friendlier than a 400
+// error from a typo).
+func (s *Service) ScanRuns(
+	ctx context.Context, filter RunsFilter, limit int,
 ) ([]dag.WorkflowRun, error) {
 	if ctx == nil {
-		panic("ListRunsWithLimit: ctx must not be nil")
+		panic("ScanRuns: ctx must not be nil")
 	}
 	if s.store == nil {
-		panic("ListRunsWithLimit: store must not be nil")
+		panic("ScanRuns: store must not be nil")
 	}
 	effective := clampRunsLimit(limit)
 	var runs []dag.WorkflowRun
-	err := s.observed(ctx, "listRuns", nil,
+	err := s.observed(ctx, "scanRuns", nil,
 		func(ctx context.Context) error {
 			var innerErr error
-			runs, innerErr = s.listRunsInner(
-				ctx, workflowFilter, effective,
-			)
+			runs, innerErr = s.scanRunsInner(ctx, filter, effective)
 			return innerErr
 		},
 	)
@@ -1652,27 +1645,28 @@ func clampRunsLimit(limit int) int {
 	return limit
 }
 
-// listRunsInner retrieves up to limit runs from the store, filters, and sorts.
-func (s *Service) listRunsInner(
-	ctx context.Context, workflowFilter string, limit int,
+// scanRunsInner fetches up to limit runs from the cheap order-agnostic
+// store scan (ListAll), applies the filter, and sorts newest-first. The
+// filter is applied WITHIN the bounded sample — a filtered ScanRuns may
+// miss matches older than the sampled window (same caveat the envelope
+// documents for filtered totals); callers needing exactness use ListRuns.
+func (s *Service) scanRunsInner(
+	ctx context.Context, filter RunsFilter, limit int,
 ) ([]dag.WorkflowRun, error) {
 	if s.store == nil {
-		panic("listRunsInner: store must not be nil")
-	}
-	if s.js == nil {
-		panic("listRunsInner: js must not be nil")
+		panic("scanRunsInner: store must not be nil")
 	}
 	if limit <= 0 {
-		panic("listRunsInner: limit must be positive")
+		panic("scanRunsInner: limit must be positive")
 	}
 	runs, err := s.store.ListAll(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	if workflowFilter != "" {
+	if !filter.isEmpty() {
 		filtered := make([]dag.WorkflowRun, 0, len(runs))
 		for _, run := range runs {
-			if run.WorkflowID == workflowFilter {
+			if filter.matches(run) {
 				filtered = append(filtered, run)
 			}
 		}
@@ -1716,7 +1710,7 @@ func (f RunsFilter) matches(run dag.WorkflowRun) bool {
 	return true
 }
 
-// RunsEnvelope is the honest shape returned by ListRunsEnvelope: the
+// RunsEnvelope is the honest shape returned by ListRuns: the
 // (already-truncated) Runs window plus the true Total matching the
 // filter, the Returned count, and whether Total exceeded the window.
 type RunsEnvelope struct {
@@ -1726,23 +1720,26 @@ type RunsEnvelope struct {
 	Truncated bool
 }
 
-// runReader is the read surface ListRunsEnvelope and CountRuns need
-// from the store: the globally-sorted latest-N window (ListRecent) and
-// an exact keys-only population count (CountAll). *engine.SnapshotStore
-// satisfies it; the seam keeps the envelope/count logic unit-testable.
+// runReader is the read surface ListRuns and CountRuns need from the
+// store: the globally-sorted latest-N window (ListRecent) and an exact
+// keys-only population count (CountAll). *engine.SnapshotStore satisfies
+// it; the seam keeps the envelope/count logic unit-testable.
 //
 // NOTE: this deliberately uses ListRecent, NOT the cheap order-agnostic
-// ListAll — the #452 surface needs the genuine most-recent N. Other
-// callers (reconciler, bulk retry/cancel, REST list) keep using
-// ListAll directly and are unaffected by this seam.
+// ListAll — the #452 surface needs the genuine most-recent N. The cheap
+// ScanRuns path and other callers (reconciler, bulk retry/cancel) keep
+// using ListAll directly and are unaffected by this seam.
 type runReader interface {
 	ListRecent(ctx context.Context, limit int) ([]dag.WorkflowRun, error)
 	CountAll(ctx context.Context) (int, error)
 }
 
-// ListRunsEnvelope returns the newest matching runs capped at limit,
-// alongside the total so callers can report "showing N of M" and
-// truncation honestly (#452).
+// ListRuns returns the newest matching runs capped at limit, alongside
+// the total so callers can report "showing N of M" and truncation
+// honestly (#452). This is the HONEST list surface: it fetches the
+// genuine most-recent window (ListRecent) plus an exact total, so it
+// costs O(population). High-frequency callers that only need a bounded
+// sample should use ScanRuns instead.
 //
 // For an UNFILTERED query the total is the exact population from the
 // cheap keys-only CountAll path — so "showing 1000 of 146046" is the
@@ -1754,14 +1751,14 @@ type runReader interface {
 // secondary index, so a filtered total may undercount matches older
 // than that window. The exact filtered count lands with the #453
 // time-ordered index work.
-func (s *Service) ListRunsEnvelope(
+func (s *Service) ListRuns(
 	ctx context.Context, filter RunsFilter, limit int,
 ) (RunsEnvelope, error) {
 	if ctx == nil {
-		panic("ListRunsEnvelope: ctx must not be nil")
+		panic("ListRuns: ctx must not be nil")
 	}
 	if s.store == nil {
-		panic("ListRunsEnvelope: store must not be nil")
+		panic("ListRuns: store must not be nil")
 	}
 	effective := clampRunsLimit(limit)
 	var env RunsEnvelope
@@ -1777,7 +1774,7 @@ func (s *Service) ListRunsEnvelope(
 
 // listRunsEnvelopeFrom fetches the globally-sorted latest-N window,
 // truncates it to limit for the returned rows, and derives the total
-// per the ListRunsEnvelope contract (exact CountAll when unfiltered,
+// per the ListRuns envelope contract (exact CountAll when unfiltered,
 // in-window match count when filtered).
 func listRunsEnvelopeFrom(
 	ctx context.Context, store runReader, filter RunsFilter, limit int,

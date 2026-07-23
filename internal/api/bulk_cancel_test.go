@@ -57,8 +57,8 @@ func TestBulkCancelByWorkflow(t *testing.T) {
 		t.Fatalf("total = %d, want 3", resp.Total)
 	}
 
-	runsB, _ := svc.ListRuns(
-		context.Background(), "bulk-wf-b",
+	runsB, _ := svc.ScanRuns(
+		context.Background(), RunsFilter{Workflow: "bulk-wf-b"}, 0,
 	)
 	if len(runsB) != 1 {
 		t.Fatalf("wf-b runs = %d, want 1", len(runsB))
@@ -104,8 +104,8 @@ func TestBulkCancelDryRun(t *testing.T) {
 			len(resp.Cancelled))
 	}
 
-	runs, _ := svc.ListRuns(
-		context.Background(), "dry-run-wf",
+	runs, _ := svc.ScanRuns(
+		context.Background(), RunsFilter{Workflow: "dry-run-wf"}, 0,
 	)
 	for _, run := range runs {
 		if run.Status == dag.RunStatusCancelled {

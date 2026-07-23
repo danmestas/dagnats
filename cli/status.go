@@ -143,7 +143,7 @@ func collectSystemStatus(
 	status.Streams = info.Streams
 	status.StreamInfo = collectStreamInfo(js)
 
-	runs, err := svc.ListRuns(context.Background(), "")
+	runs, err := svc.ScanRuns(context.Background(), api.RunsFilter{}, 0)
 	if err != nil {
 		return status
 	}
@@ -194,7 +194,7 @@ func printSystemStatus(nc *nats.Conn, svc *api.Service) {
 	fmt.Printf("JetStream:   available (%d streams)\n",
 		info.Streams)
 
-	runs, err := svc.ListRuns(context.Background(), "")
+	runs, err := svc.ScanRuns(context.Background(), api.RunsFilter{}, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
 			"Active runs: error (%v)\n", err)

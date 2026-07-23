@@ -114,7 +114,9 @@ func TestBulkRunValidationFailsAtomically(t *testing.T) {
 	if !strings.Contains(err.Error(), "input[1]") {
 		t.Fatalf("error should mention input[1], got %q", err.Error())
 	}
-	runs, _ := svc.ListRuns(context.Background(), "bulk-schema-wf")
+	runs, _ := svc.ScanRuns(
+		context.Background(), RunsFilter{Workflow: "bulk-schema-wf"}, 0,
+	)
 	if len(runs) != 0 {
 		t.Fatalf("expected 0 runs after validation fail, got %d", len(runs))
 	}

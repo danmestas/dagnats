@@ -182,13 +182,13 @@ func collectRunCountMap(
 		panic("collectRunCountMap: svc must not be nil")
 	}
 
-	runs, err := svc.ListRuns(context.Background(), "")
+	runs, err := svc.ScanRuns(context.Background(), api.RunsFilter{}, 0)
 	if err != nil {
 		return nil, err
 	}
 
 	if runs == nil {
-		panic("collectRunCountMap: ListRuns returned nil")
+		panic("collectRunCountMap: ScanRuns returned nil")
 	}
 
 	counts := countRunsByStatus(runs)
@@ -209,14 +209,14 @@ func printRunBreakdown(svc *api.Service) {
 		panic("printRunBreakdown: svc must not be nil")
 	}
 
-	runs, err := svc.ListRuns(context.Background(), "")
+	runs, err := svc.ScanRuns(context.Background(), api.RunsFilter{}, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Runs:  error (%v)\n", err)
 		return
 	}
 
 	if runs == nil {
-		panic("printRunBreakdown: ListRuns returned nil")
+		panic("printRunBreakdown: ScanRuns returned nil")
 	}
 
 	counts := countRunsByStatus(runs)
@@ -351,12 +351,12 @@ func collectWorkflowMetrics(
 		panic("collectWorkflowMetrics: svc must not be nil")
 	}
 
-	runs, err := svc.ListRuns(context.Background(), "")
+	runs, err := svc.ScanRuns(context.Background(), api.RunsFilter{}, 0)
 	if err != nil {
 		return nil, err
 	}
 	if runs == nil {
-		panic("collectWorkflowMetrics: ListRuns returned nil")
+		panic("collectWorkflowMetrics: ScanRuns returned nil")
 	}
 
 	return groupRunsByWorkflow(runs), nil

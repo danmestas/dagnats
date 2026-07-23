@@ -883,7 +883,7 @@ func runActiveList(
 	if limit < runListLimitMin || limit > api.MaxRunsLimitCeiling {
 		panic("runActiveList: limit out of bounds")
 	}
-	env, err := svc.ListRunsEnvelope(
+	env, err := svc.ListRuns(
 		context.Background(), filter, limit,
 	)
 	if err != nil {

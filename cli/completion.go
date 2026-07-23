@@ -392,7 +392,7 @@ func fetchRunIDs(prefix string) []string {
 	)
 	defer cancel()
 
-	runs, err := svc.ListRuns(ctx, "")
+	runs, err := svc.ScanRuns(ctx, api.RunsFilter{}, 0)
 	if err != nil {
 		return nil
 	}

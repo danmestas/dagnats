@@ -119,12 +119,12 @@ func waitForChildRuns(
 }
 
 // childRunsOf returns every run whose ParentRunID is rootRunID. Uses the same
-// ListRunsWithLimit scan the console Agents adapter uses.
+// ScanRuns scan the console Agents adapter uses.
 func childRunsOf(
 	t *testing.T, svc *api.Service, rootRunID string,
 ) []dag.WorkflowRun {
 	t.Helper()
-	runs, err := svc.ListRunsWithLimit(context.Background(), "", 500)
+	runs, err := svc.ScanRuns(context.Background(), api.RunsFilter{}, 500)
 	if err != nil {
 		return nil
 	}
