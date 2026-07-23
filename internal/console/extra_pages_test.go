@@ -1499,3 +1499,41 @@ func calloutSnippet(body string) string {
 
 // Silence unused-import linter when nothing exercises io in this file.
 var _ = io.Discard
+
+// TestDLQRetry_discardWarning covers the best-effort-discard branch of
+// the retry handler: the replay succeeds, so the operator's action
+// succeeded, but the follow-up discard of the original entry fails. The
+// contract is "non-fatal, but recorded" — 200 with a success audit row
+// carrying discard_warning — so the operator can tell a clean retry from
+// one that left a stale DLQ row behind.
+func TestDLQRetry_discardWarning(t *testing.T) {
+	fake := newFakeDS()
+	fake.deadLetters = []api.DeadLetterView{
+		sampleDeadLetter(702, "panic"),
+	}
+	fake.discardErr = errors.New("simulated discard failure")
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost,
+		"/console/dlq/702/retry", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(fake.replayCalls) != 1 || len(fake.discardCalls) != 1 {
+		t.Fatalf("replay=%v discard=%v; want one of each",
+			fake.replayCalls, fake.discardCalls)
+	}
+	if len(fake.auditEvents) != 1 ||
+		fake.auditEvents[0].Outcome != string(OutcomeSuccess) {
+		t.Fatalf("audit = %+v; want one success", fake.auditEvents)
+	}
+	warn, ok := fake.auditEvents[0].Data["discard_warning"]
+	if !ok {
+		t.Fatalf("audit data = %+v; want a discard_warning key",
+			fake.auditEvents[0].Data)
+	}
+	if warn != "simulated discard failure" {
+		t.Errorf("discard_warning = %v; want the underlying error", warn)
+	}
+}
