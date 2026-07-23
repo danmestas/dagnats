@@ -585,7 +585,7 @@ func servePageRunTrace(
 		serveNotFound(w, r, ts, cfg)
 		return
 	}
-	ds, ok := requireData(w, cfg, "run-trace")
+	ds, ok := requirePort[RunStore](w, cfg, "run-trace")
 	if !ok {
 		return
 	}
@@ -686,7 +686,7 @@ func serveRunTraceTabFragment(
 	w http.ResponseWriter, r *http.Request,
 	ts *templateSet, cfg Config, runID string,
 ) {
-	ds, ok := requireData(w, cfg, "run-trace-tab")
+	ds, ok := requirePort[RunStore](w, cfg, "run-trace-tab")
 	if !ok {
 		return
 	}

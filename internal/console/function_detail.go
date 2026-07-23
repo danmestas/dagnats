@@ -163,7 +163,7 @@ func findTaskTypeRow(rows []TaskTypeRow, name string) (TaskTypeRow, bool) {
 
 // workerRowsOrEmpty reads the live worker rows, collapsing a read miss to
 // an empty slice so the join below renders "no worker" rather than 500ing.
-func workerRowsOrEmpty(ctx context.Context, ds DataSource) []WorkerStatusRow {
+func workerRowsOrEmpty(ctx context.Context, ds WorkerDirectory) []WorkerStatusRow {
 	rows, _ := ds.ListWorkerRows(ctx)
 	return rows
 }

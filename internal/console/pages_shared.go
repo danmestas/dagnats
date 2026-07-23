@@ -75,6 +75,16 @@ func renderPage(
 // requireData reports an error to the client and returns false when
 // no DataSource is configured. Pages depending on a data source must
 // short-circuit through this; it keeps the 503 message uniform.
+//
+// Prefer requirePort. What is left on requireData are the handlers that
+// genuinely read two or more ports — every one of them combines a named
+// port with the workflow-definition reads (ListWorkflows / GetWorkflow),
+// which sit on the DataSource union with no port of their own (#564), so
+// there is nothing narrower to ask for. A handler that reads exactly one
+// port must use requirePort so its unit test can substitute just that
+// port's fake; a handler that reads two related ports should name a small
+// composite (see agentStreamPorts in agents.go) rather than widen back to
+// the whole surface.
 func requireData(
 	w http.ResponseWriter, cfg Config, op string,
 ) (DataSource, bool) {

@@ -41,7 +41,7 @@ func serveSSETriggers(
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	ds, ok := requireData(w, cfg, "sse-triggers")
+	ds, ok := requirePort[TriggerStore](w, cfg, "sse-triggers")
 	if !ok {
 		return
 	}
@@ -195,7 +195,7 @@ func serveSSEDLQ(
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	ds, ok := requireData(w, cfg, "sse-dlq")
+	ds, ok := requirePort[DLQStore](w, cfg, "sse-dlq")
 	if !ok {
 		return
 	}

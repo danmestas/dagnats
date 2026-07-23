@@ -36,7 +36,7 @@ func serveSearch(
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	ds, ok := requireData(w, cfg, "search")
+	ds, ok := requirePort[SearchIndex](w, cfg, "search")
 	if !ok {
 		return
 	}

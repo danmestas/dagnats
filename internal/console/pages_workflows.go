@@ -345,7 +345,7 @@ func workflowRunnable(def dag.WorkflowDef) bool {
 // progressive enhancement, not load-bearing — but logged via slog
 // elsewhere when DataSource surfaces them. Bounded loop by rows.
 func attachWorkflowSparklines(
-	ctx context.Context, ds DataSource, rows []WorkflowRow,
+	ctx context.Context, ds SearchIndex, rows []WorkflowRow,
 ) {
 	if ds == nil {
 		return

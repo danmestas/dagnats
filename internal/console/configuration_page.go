@@ -186,7 +186,7 @@ func buildConfigView(ctx context.Context, cfg Config) ConfigPageView {
 // the page surfaces. Returns a zero-value snapshot when ds is nil so
 // the renderer paints the empty-state shell consistently.
 func fetchConfigSnapshot(
-	ctx context.Context, ds DataSource,
+	ctx context.Context, ds OpsInventory,
 ) ConfigSnapshot {
 	if ds == nil {
 		return ConfigSnapshot{}

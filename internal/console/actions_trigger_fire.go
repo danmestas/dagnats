@@ -75,7 +75,7 @@ func handleTriggerFire(
 func executeTriggerFire(
 	w http.ResponseWriter, r *http.Request, cfg Config, id string,
 ) {
-	ds, ok := requireData(w, cfg, "trigger-fire")
+	ds, ok := requirePort[TriggerStore](w, cfg, "trigger-fire")
 	if !ok {
 		return
 	}
