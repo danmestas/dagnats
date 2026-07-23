@@ -249,26 +249,17 @@ func (ag *ApprovalGate) scheduleTimeout(
 
 // HandleGranted completes the approval step with the granted
 // payload as output. Guards against duplicate processing.
-// Callback order: loadFn → modify step Completed → saveFn →
-// enqueueFn (or completeFn if DAG is done).
+// Order: load → modify step Completed → save → enqueue (or
+// complete if the DAG is done). Uses the injected runMutator.
 func (ag *ApprovalGate) HandleGranted(
 	ctx context.Context,
 	evt protocol.Event,
-	loadFn func(ctx context.Context, runID string) (
-		dag.WorkflowDef, dag.WorkflowRun, error,
-	),
-	completeFn func(
-		ctx context.Context, run dag.WorkflowRun,
-	) error,
-	saveFn SaveSnapshotFunc,
-	enqueueFn func(
-		ctx context.Context,
-		wfDef dag.WorkflowDef,
-		run dag.WorkflowRun,
-	) error,
 ) error {
 	if ag == nil {
 		return nil
+	}
+	if ag.mutator == nil {
+		panic("HandleGranted: mutator must be wired")
 	}
 	if evt.RunID == "" {
 		panic("HandleGranted: RunID must not be empty")
@@ -276,7 +267,7 @@ func (ag *ApprovalGate) HandleGranted(
 	if evt.StepID == "" {
 		panic("HandleGranted: StepID must not be empty")
 	}
-	wfDef, run, err := loadFn(ctx, evt.RunID)
+	wfDef, run, err := ag.mutator.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -291,32 +282,26 @@ func (ag *ApprovalGate) HandleGranted(
 
 	completed := completedSet(run)
 	if dag.IsComplete(wfDef, completed) {
-		return completeFn(ctx, run)
+		return ag.mutator.completeWorkflow(ctx, run)
 	}
-	if err := saveFn(ctx, run, evt.StepID); err != nil {
+	if err := ag.mutator.saveSnapshot(ctx, run, evt.StepID); err != nil {
 		return err
 	}
-	return enqueueFn(ctx, wfDef, run)
+	return ag.mutator.enqueueReady(ctx, wfDef, run)
 }
 
 // HandleRejected fails the approval step and delegates to the
 // standard failure path (on-failure, compensate, or fail).
-// Callback order: loadFn → modify step Failed → failFn.
+// Order: load → modify step Failed → failWorkflow.
 func (ag *ApprovalGate) HandleRejected(
 	ctx context.Context,
 	evt protocol.Event,
-	loadFn func(ctx context.Context, runID string) (
-		dag.WorkflowDef, dag.WorkflowRun, error,
-	),
-	failFn func(
-		ctx context.Context,
-		run dag.WorkflowRun,
-		stepDef dag.StepDef,
-		state dag.StepState,
-	) error,
 ) error {
 	if ag == nil {
 		return nil
+	}
+	if ag.mutator == nil {
+		panic("HandleRejected: mutator must be wired")
 	}
 	if evt.RunID == "" {
 		panic(
@@ -328,7 +313,7 @@ func (ag *ApprovalGate) HandleRejected(
 			"HandleRejected: StepID must not be empty",
 		)
 	}
-	wfDef, run, err := loadFn(ctx, evt.RunID)
+	wfDef, run, err := ag.mutator.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -345,27 +330,21 @@ func (ag *ApprovalGate) HandleRejected(
 	run.Steps[evt.StepID] = state
 
 	stepDef, _ := findStepDef(wfDef, evt.StepID)
-	return failFn(ctx, run, stepDef, state)
+	return ag.mutator.failWorkflow(ctx, run, stepDef, state)
 }
 
 // HandleExpired fails the approval step when the timeout fires.
 // Guards against steps already approved or rejected.
-// Callback order: loadFn → modify step Failed → failFn.
+// Order: load → modify step Failed → failWorkflow.
 func (ag *ApprovalGate) HandleExpired(
 	ctx context.Context,
 	evt protocol.Event,
-	loadFn func(ctx context.Context, runID string) (
-		dag.WorkflowDef, dag.WorkflowRun, error,
-	),
-	failFn func(
-		ctx context.Context,
-		run dag.WorkflowRun,
-		stepDef dag.StepDef,
-		state dag.StepState,
-	) error,
 ) error {
 	if ag == nil {
 		return nil
+	}
+	if ag.mutator == nil {
+		panic("HandleExpired: mutator must be wired")
 	}
 	if evt.RunID == "" {
 		panic(
@@ -377,7 +356,7 @@ func (ag *ApprovalGate) HandleExpired(
 			"HandleExpired: StepID must not be empty",
 		)
 	}
-	wfDef, run, err := loadFn(ctx, evt.RunID)
+	wfDef, run, err := ag.mutator.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
 		return err
 	}
@@ -391,7 +370,7 @@ func (ag *ApprovalGate) HandleExpired(
 	run.Steps[evt.StepID] = state
 
 	stepDef, _ := findStepDef(wfDef, evt.StepID)
-	return failFn(ctx, run, stepDef, state)
+	return ag.mutator.failWorkflow(ctx, run, stepDef, state)
 }
 
 // CleanupTokens deletes tokens for any approval steps that were

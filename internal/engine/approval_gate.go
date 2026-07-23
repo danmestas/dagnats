@@ -17,22 +17,27 @@ import (
 
 // ApprovalGate manages approval token lifecycle: generation,
 // storage, timeout scheduling, grant/reject handling, and
-// cleanup. Talks to NATS KV and JetStream but delegates
-// snapshot persistence back to the Orchestrator via callbacks.
+// cleanup. Talks to NATS KV and JetStream but delegates run
+// lifecycle mutations back to the Orchestrator via the mutator
+// port.
 //
-// Callback protocol: ApprovalGate modifies run.Steps state
-// in-place (e.g. marking a step Running or Completed), then
-// calls saveFn so the caller can persist the snapshot. Methods
-// like HandleGranted additionally accept loadFn to reload
-// current state and enqueueFn/completeFn to advance the DAG.
-// The ordering contract is: load → modify run.Steps → save →
-// enqueue/complete.
+// Protocol: ApprovalGate modifies run.Steps state in-place (e.g.
+// marking a step Running or Completed), then calls the mutator to
+// persist the snapshot and advance/finish the run. The ordering
+// contract is: load → modify run.Steps → save → enqueue/complete.
+//
+// mutator is injected after construction by wireDependentSubsystems
+// (it points at the *Orchestrator). It is nil only in Enqueue-only
+// unit tests that never call the Handle* methods; those methods
+// assert it is set. Enqueue itself still takes an explicit
+// SaveSnapshotFunc so it works without a wired mutator.
 type ApprovalGate struct {
 	nc         *nats.Conn
 	js         jetstream.JetStream
 	tp         *natsutil.TracingPublisher
 	sleepTimer *SleepTimer
 	tracer     trace.Tracer
+	mutator    runMutator
 }
 
 // NewApprovalGate creates an ApprovalGate with the given

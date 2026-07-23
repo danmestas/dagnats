@@ -68,19 +68,20 @@ type Orchestrator struct {
 	// Correlator, AdmissionController, SleepTimer). Per #334, raw
 	// JS or core NATS Publish/PublishMsg outside the wrapper are
 	// CI-lint forbidden.
-	tp         *natsutil.TracingPublisher
-	defKV      jetstream.KeyValue
-	store      *SnapshotStore
-	tracer     trace.Tracer
-	cc         jetstream.ConsumeContext
-	runLocks   sync.Map             // map[string]*sync.Mutex — per-run serialization
-	admission  *AdmissionController // singleton + concurrency
-	approval   *ApprovalGate        // approval token lifecycle
-	sleepTimer *SleepTimer          // durable sleep via NakWithDelay
-	correlator *Correlator          // event wait-for-event matching
-	sticky     *StickyRouter        // worker affinity bindings
-	publisher  *TaskPublisher       // task dispatch pipeline
-	recovery   *RecoveryManager     // failure recovery + compensation
+	tp           *natsutil.TracingPublisher
+	defKV        jetstream.KeyValue
+	store        *SnapshotStore
+	tracer       trace.Tracer
+	cc           jetstream.ConsumeContext
+	runLocks     sync.Map             // map[string]*sync.Mutex — per-run serialization
+	admission    *AdmissionController // singleton + concurrency
+	approval     *ApprovalGate        // approval token lifecycle
+	sleepTimer   *SleepTimer          // durable sleep via NakWithDelay
+	sleepHandler *sleepHandler        // sleep step-kind lifecycle
+	correlator   *Correlator          // event wait-for-event matching
+	sticky       *StickyRouter        // worker affinity bindings
+	publisher    *TaskPublisher       // task dispatch pipeline
+	recovery     *RecoveryManager     // failure recovery + compensation
 
 	// Pre-allocated metric instruments — created once in constructor.
 	metrics orchMetrics
@@ -289,6 +290,10 @@ func (o *Orchestrator) wireDependentSubsystems(
 	o.approval = NewApprovalGate(
 		o.nc, o.js, o.tp, o.sleepTimer, o.tracer,
 	)
+	// Inject the run-lifecycle port (the Orchestrator itself) so the
+	// gate's Handle* methods no longer take four callbacks per call.
+	o.approval.mutator = o
+	o.sleepHandler = newSleepHandler(o, o.sleepTimer, o.tp)
 	o.correlator = NewCorrelator(o.nc, o.js, o.tp)
 	// Wire the step timeout watchdog (issue #140). Hooking from the
 	// orchestrator side keeps SleepTimer free of a SnapshotStore
@@ -716,19 +721,11 @@ func (o *Orchestrator) dispatchEvent(
 	case protocol.EventWorkflowCancelled:
 		return o.handleWorkflowCancelled(ctx, evt)
 	case protocol.EventApprovalGranted:
-		return o.approval.HandleGranted(
-			ctx, evt, o.loadRunAndDef,
-			o.completeWorkflow, o.saveSnapshot,
-			o.enqueueReady,
-		)
+		return o.approval.HandleGranted(ctx, evt)
 	case protocol.EventApprovalRejected:
-		return o.approval.HandleRejected(
-			ctx, evt, o.loadRunAndDef, o.failWorkflow,
-		)
+		return o.approval.HandleRejected(ctx, evt)
 	case protocol.EventApprovalExpired:
-		return o.approval.HandleExpired(
-			ctx, evt, o.loadRunAndDef, o.failWorkflow,
-		)
+		return o.approval.HandleExpired(ctx, evt)
 	default:
 		return nil
 	}
@@ -2668,7 +2665,7 @@ func (o *Orchestrator) dispatchReadySteps(
 				return err
 			}
 		case dag.StepTypeSleep:
-			if err := o.enqueueSleepStep(
+			if err := o.sleepHandler.enqueue(
 				ctx, &run, step,
 			); err != nil {
 				return err
@@ -2834,121 +2831,6 @@ func splitTraceparent(
 		return "", "", false
 	}
 	return parts[1], parts[2], true
-}
-
-// enqueueSleepStep marks the step as Running, publishes a
-// SleepStarted event, and schedules a durable timer. No worker
-// is involved — the timer fires the completion event directly.
-func (o *Orchestrator) enqueueSleepStep(
-	ctx context.Context,
-	run *dag.WorkflowRun,
-	step dag.StepDef,
-) error {
-	if step.Type != dag.StepTypeSleep {
-		panic("enqueueSleepStep: step is not a Sleep step")
-	}
-	if run.RunID == "" {
-		panic("enqueueSleepStep: RunID must not be empty")
-	}
-
-	// Both the config parse and the resolution below read only the def
-	// and the run input, which are immutable for the life of the run. A
-	// failure here is therefore deterministic: every redelivery would
-	// reproduce it identically, so retrying can never succeed. Fail the
-	// step instead of returning an error that leaves it queued forever.
-	sleepCfg, err := dag.ParseSleepConfig(step)
-	if err != nil {
-		return o.failSleepStep(ctx, run, step, err.Error())
-	}
-
-	// Cron and until_input_path forms are only knowable now; the run
-	// input (not the step's resolved input) is the deadline source.
-	now := time.Now()
-	sleepFor, err := dag.ResolveSleepDuration(sleepCfg, run.Input, now)
-	if err != nil {
-		return o.failSleepStep(ctx, run, step, err.Error())
-	}
-
-	// Mark step as Running and record wake time.
-	state := run.Steps[step.ID]
-	state.Status = dag.StepStatusRunning
-	wakeAt := now.Add(sleepFor)
-	state.WakeAt = &wakeAt
-	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
-		return err
-	}
-
-	// Publish sleep started event for observability.
-	o.publishSleepStarted(ctx, run.RunID, step.ID)
-
-	// Schedule durable timer via NakWithDelay.
-	durationMs := sleepFor.Milliseconds()
-	if durationMs <= 0 {
-		durationMs = 1
-	}
-	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionSleepComplete,
-		RunID:      run.RunID,
-		StepID:     step.ID,
-		DurationMs: durationMs,
-	})
-}
-
-// failSleepStep marks a sleep step Failed and fails the run. Used for
-// dispatch-time errors that no retry can clear, mirroring
-// failPlannerStep: the config and the run input cannot change, so the
-// alternative is a run wedged with the step stuck in Queued.
-func (o *Orchestrator) failSleepStep(
-	ctx context.Context,
-	run *dag.WorkflowRun,
-	step dag.StepDef,
-	reason string,
-) error {
-	if run.RunID == "" {
-		panic("failSleepStep: RunID must not be empty")
-	}
-	if step.ID == "" {
-		panic("failSleepStep: step.ID must not be empty")
-	}
-
-	slog.ErrorContext(ctx,
-		"sleep step failed",
-		"error", reason,
-		"run_id", run.RunID,
-		"step_id", step.ID,
-	)
-
-	state := run.Steps[step.ID]
-	state.Status = dag.StepStatusFailed
-	state.Error = reason
-	run.Steps[step.ID] = state
-
-	return o.failWorkflow(ctx, *run, step, state)
-}
-
-// publishSleepStarted publishes an EventStepSleepStarted event.
-func (o *Orchestrator) publishSleepStarted(
-	ctx context.Context, runID string, stepID string,
-) {
-	if runID == "" {
-		panic("publishSleepStarted: runID must not be empty")
-	}
-	if stepID == "" {
-		panic("publishSleepStarted: stepID must not be empty")
-	}
-	evt := protocol.NewStepEvent(
-		protocol.EventStepSleepStarted,
-		runID, stepID, nil,
-	)
-	data, err := evt.Marshal()
-	if err != nil {
-		return
-	}
-	o.tp.JSPublish(
-		ctx, evt.NATSSubject(), data,
-		jetstream.WithMsgID(evt.NATSMsgID()),
-	)
 }
 
 // isMapInstanceID returns true if the step ID is a map instance

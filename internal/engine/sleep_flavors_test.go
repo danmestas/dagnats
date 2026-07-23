@@ -242,7 +242,7 @@ func TestSleepStepUntilInputPathPastInstantCompletes(t *testing.T) {
 }
 
 func TestSleepStepPastInstantSchedulesMinimumTimer(t *testing.T) {
-	// Pins the durationMs <= 0 -> 1 clamp in enqueueSleepStep, which the
+	// Pins the durationMs <= 0 -> 1 clamp in sleepHandler.enqueue, which the
 	// past-instant path made newly reachable with an exact zero.
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {

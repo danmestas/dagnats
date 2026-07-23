@@ -446,50 +446,21 @@ func TestApprovalGateNilReceiverIsNoOp(t *testing.T) {
 		t.Fatal("expected error from nil ApprovalGate")
 	}
 
-	// HandleGranted on nil should return nil (no-op).
-	loadFn := func(
-		ctx context.Context, runID string,
-	) (dag.WorkflowDef, dag.WorkflowRun, error) {
-		return wfDef, run, nil
-	}
-	completeFn := func(
-		ctx context.Context, r dag.WorkflowRun,
-	) error {
-		return nil
-	}
-	enqueueFn := func(
-		ctx context.Context,
-		wf dag.WorkflowDef,
-		r dag.WorkflowRun,
-	) error {
-		return nil
-	}
+	// HandleGranted on nil should return nil (no-op) — the nil-gate
+	// guard must fire before the mutator is ever consulted.
 	evt := protocol.NewStepEvent(
 		protocol.EventApprovalGranted, "r1", "gate", nil,
 	)
-	err = ag.HandleGranted(
-		context.Background(), evt, loadFn, completeFn,
-		saveFn, enqueueFn,
-	)
+	err = ag.HandleGranted(context.Background(), evt)
 	if err != nil {
 		t.Fatalf("HandleGranted on nil should return nil, got: %v", err)
 	}
 
 	// HandleRejected on nil should return nil (no-op).
-	failFn := func(
-		ctx context.Context,
-		r dag.WorkflowRun,
-		stepDef dag.StepDef,
-		state dag.StepState,
-	) error {
-		return nil
-	}
 	evt = protocol.NewStepEvent(
 		protocol.EventApprovalRejected, "r1", "gate", nil,
 	)
-	err = ag.HandleRejected(
-		context.Background(), evt, loadFn, failFn,
-	)
+	err = ag.HandleRejected(context.Background(), evt)
 	if err != nil {
 		t.Fatalf("HandleRejected on nil should return nil, got: %v", err)
 	}
@@ -498,9 +469,7 @@ func TestApprovalGateNilReceiverIsNoOp(t *testing.T) {
 	evt = protocol.NewStepEvent(
 		protocol.EventApprovalExpired, "r1", "gate", nil,
 	)
-	err = ag.HandleExpired(
-		context.Background(), evt, loadFn, failFn,
-	)
+	err = ag.HandleExpired(context.Background(), evt)
 	if err != nil {
 		t.Fatalf("HandleExpired on nil should return nil, got: %v", err)
 	}
