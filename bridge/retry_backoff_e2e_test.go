@@ -125,11 +125,22 @@ func TestBridgeRetryBackoff_ExhaustsAndDeadLetters(t *testing.T) {
 	store := enginepkg.NewSnapshotStore(jsNew)
 	deadline := time.Now().Add(25 * time.Second)
 	var run dag.WorkflowRun
+	var dlqCount uint64
 	for time.Now().Before(deadline) {
 		r, loadErr := store.Load(context.Background(), "run-bridge-rb-1")
 		if loadErr == nil && r.Status == dag.RunStatusFailed {
 			run = r
-			break
+			// failWorkflow saves the Failed snapshot BEFORE it calls
+			// recovery.PublishDeadLetter (orchestrator.go: saveSnapshot,
+			// then a def-reload KV read, then PublishDeadLetter). Under
+			// -p4 load that gap lets the run read Failed while its DLQ
+			// entry is still in flight, so a single point-in-time read
+			// races and sees 0. Poll for the entry within the same
+			// bounded deadline instead of racing one read.
+			dlqCount = countDeadLetters(t, jsNew)
+			if dlqCount >= 1 {
+				break
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -137,7 +148,6 @@ func TestBridgeRetryBackoff_ExhaustsAndDeadLetters(t *testing.T) {
 	mu.Lock()
 	attempts := append([]int(nil), polledAttempts...)
 	mu.Unlock()
-	dlqCount := countDeadLetters(t, jsNew)
 	if run.Status != dag.RunStatusFailed {
 		t.Fatalf(
 			"run.Status = %v, want Failed — bridge retry stall (#381): "+
