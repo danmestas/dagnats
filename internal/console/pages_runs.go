@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -44,7 +45,7 @@ func servePageRunsList(
 	if !ok {
 		return
 	}
-	view, err := buildRunsView(r.Context(), ds, r.URL.Query())
+	view, err := buildRunsView(r.Context(), ds, r.URL.Query(), cfg.Logger)
 	if err != nil {
 		cfg.Logger.Error("console: runs list", "err", err)
 		http.Error(w, "list runs failed", http.StatusInternalServerError)
@@ -99,8 +100,14 @@ type RunsListView struct {
 
 // buildRunsView assembles RunsListView from query params. Filters
 // apply server-side; the pagination math is identical to workflows.
+//
+// logger records the workflow-name enrichment read failing — that read
+// only fills the filter dropdown, so the run table renders without it,
+// but the failure is logged rather than swallowed (#580). A nil logger
+// falls back to slog.Default via loggerOrDefault.
 func buildRunsView(
 	ctx context.Context, ds DataSource, q map[string][]string,
+	logger *slog.Logger,
 ) (RunsListView, error) {
 	if ds == nil {
 		panic("buildRunsView: ds is nil")
@@ -108,6 +115,7 @@ func buildRunsView(
 	if ctx == nil {
 		panic("buildRunsView: ctx is nil")
 	}
+	logger = loggerOrDefault(logger)
 	wf := firstQueryValue(q, "workflow")
 	status := firstQueryValue(q, "status")
 	idSubstr := firstQueryValue(q, "id")
@@ -133,7 +141,14 @@ func buildRunsView(
 	} else {
 		runs = filterRunsByRange(runs, rng, time.Now())
 	}
-	defs, _ := ds.ListWorkflows(ctx)
+	// The workflow list only populates the filter dropdown; the run
+	// table renders without it. Degrade to nil on failure, but log it so
+	// a backend outage is distinguishable from "no workflows" (#580).
+	defs, err := ds.ListWorkflows(ctx)
+	if err != nil {
+		logger.Warn("console: runs list workflow enrichment failed",
+			"err", err)
+	}
 	win := computePageWindow(len(runs), page, size)
 	view := RunsListView{
 		Header:   buildRunsHeader(runs, time.Now()),

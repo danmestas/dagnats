@@ -157,6 +157,18 @@ type Config struct {
 	LogRing LogTailSource
 }
 
+// loggerOrDefault collapses a nil logger into slog.Default so a view
+// builder can log a degraded-enrichment warning without a nil check at
+// every call site — mirroring the events.Bus loggerOr convention. Page
+// handlers always pass cfg.Logger; the fallback exists for direct-call
+// unit tests and for defence in depth (#580).
+func loggerOrDefault(logger *slog.Logger) *slog.Logger {
+	if logger != nil {
+		return logger
+	}
+	return slog.Default()
+}
+
 // LogTailSource is the narrow surface /console/logs depends on. It is
 // satisfied by logring.Handler but expressed locally so the console
 // package never imports observe types — tests pass a fake here without
