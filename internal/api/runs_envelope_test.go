@@ -3,8 +3,10 @@
 // (runs + total + returned + truncated envelope), CountRuns, and the
 // --since filter shared by both.
 // Methodology: real embedded NATS server, one per test (no sharing).
-// We submit runs through the live service, wait for them to surface,
-// then assert the aggregate/envelope contract with bounded timeouts.
+// We submit runs through the live service and drive them to a terminal
+// Completed state (a fixture worker), then assert the aggregate/envelope
+// contract. Waiting for terminal drains the orchestrator's async snapshot
+// pipeline so the keys-only count scans read a quiescent store (#570).
 package api
 
 import (
@@ -15,6 +17,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/worker"
 )
 
 // fakeRunReader is a deterministic runReader stub: ListRecent returns
@@ -120,7 +123,11 @@ func TestCountUnfilteredUsesCountAll(t *testing.T) {
 }
 
 // newRunsSvc spins an embedded server + orchestrator + service and
-// registers a single-step workflow named wfName.
+// registers a single-step workflow named wfName. It also starts a worker
+// that immediately completes the task types these tests use (task-a and
+// the count-b fixture's task-b), so runs reach a terminal Completed state
+// rather than sitting Queued forever. That terminal state is the settled
+// signal the count assertions rely on — see waitAllComplete (#570).
 func newRunsSvc(t *testing.T, wfName string) *Service {
 	t.Helper()
 	_, nc := natsutil.StartTestServer(t)
@@ -130,6 +137,12 @@ func newRunsSvc(t *testing.T, wfName string) *Service {
 	orch := engine.NewOrchestrator(nc)
 	orch.Start()
 	t.Cleanup(orch.Stop)
+	w := worker.NewWorker(nc)
+	complete := func(ctx worker.TaskContext) error { return ctx.Complete(nil) }
+	w.Handle("task-a", complete)
+	w.Handle("task-b", complete)
+	w.Start()
+	t.Cleanup(w.Stop)
 	svc := NewService(nc)
 	wb := dag.NewWorkflow(wfName)
 	wb.Task("a", "task-a")
@@ -143,25 +156,57 @@ func newRunsSvc(t *testing.T, wfName string) *Service {
 	return svc
 }
 
-// waitForRunCount submits nothing; it polls until the store reports at
-// least want runs or the bounded deadline elapses.
-func waitForRunCount(t *testing.T, svc *Service, want int) {
+// waitAllComplete blocks until every run in ids reaches a terminal
+// Completed state — the settled signal these count assertions require.
+//
+// A run is NOT done writing when StartRun returns. The orchestrator
+// drives an ASYNC snapshot pipeline per run: create (steps Pending) →
+// enqueueReady re-Puts the key (step Queued) → the orchestrator consumes
+// its own step.queued event and re-Puts AGAIN → step.completed →
+// completion re-Puts once more with status Completed. Every one of those
+// Puts, under the History:1 workflow_runs bucket, is a delete-old +
+// add-new. CountAll / ListRuns count via a keys-only kv.Keys() scan
+// (a DeliverLastPerSubject ordered consumer), which transiently drops a
+// key that is mid-Put — so an exact total asserted before the pipeline
+// drains flakes low (e.g. "Total = 4, want 5", #570). Counting or
+// step-state waits cannot fix this: those intermediate Puts leave the key
+// count and the step status unchanged, so they are invisible to the very
+// scans that race them. Completed is the LAST write and is observed via
+// GetRun — a single-key Load, not a Keys() scan — so once every run is
+// Completed the store is quiescent and the count scans are race-free.
+func waitAllComplete(t *testing.T, svc *Service, ids []string) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
-	for {
-		got, err := svc.CountRuns(context.Background(), RunsFilter{})
-		if err != nil {
-			t.Fatalf("CountRuns: %v", err)
-		}
-		if got >= want {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("only %d/%d runs surfaced before timeout", got, want)
-		case <-time.After(20 * time.Millisecond):
-		}
+	if svc == nil {
+		panic("waitAllComplete: svc must not be nil")
 	}
+	if len(ids) == 0 {
+		panic("waitAllComplete: ids must not be empty")
+	}
+	for _, id := range ids {
+		waitRunStatus(t, svc, id, dag.RunStatusCompleted)
+	}
+}
+
+// startRuns starts count runs of wfName and returns their run IDs.
+func startRuns(
+	t *testing.T, svc *Service, wfName string, count int,
+) []string {
+	t.Helper()
+	if wfName == "" {
+		panic("startRuns: wfName must not be empty")
+	}
+	if count <= 0 {
+		panic("startRuns: count must be positive")
+	}
+	ids := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		id, err := svc.StartRun(context.Background(), wfName, nil)
+		if err != nil {
+			t.Fatalf("StartRun %s #%d: %v", wfName, i, err)
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // TestListRunsTruncation proves the envelope reports the true
@@ -169,14 +214,8 @@ func waitForRunCount(t *testing.T, svc *Service, want int) {
 func TestListRunsTruncation(t *testing.T) {
 	svc := newRunsSvc(t, "env-wf")
 	const submitted = 5
-	for i := 0; i < submitted; i++ {
-		if _, err := svc.StartRun(
-			context.Background(), "env-wf", nil,
-		); err != nil {
-			t.Fatalf("StartRun %d: %v", i, err)
-		}
-	}
-	waitForRunCount(t, svc, submitted)
+	ids := startRuns(t, svc, "env-wf", submitted)
+	waitAllComplete(t, svc, ids)
 
 	env, err := svc.ListRuns(
 		context.Background(), RunsFilter{}, 2,
@@ -224,16 +263,9 @@ func TestCountRunsRespectsWorkflowFilter(t *testing.T) {
 	if err := svc.RegisterWorkflow(context.Background(), def); err != nil {
 		t.Fatalf("RegisterWorkflow b: %v", err)
 	}
-	if _, err := svc.StartRun(context.Background(), "count-a", nil); err != nil {
-		t.Fatalf("StartRun a: %v", err)
-	}
-	if _, err := svc.StartRun(context.Background(), "count-a", nil); err != nil {
-		t.Fatalf("StartRun a2: %v", err)
-	}
-	if _, err := svc.StartRun(context.Background(), "count-b", nil); err != nil {
-		t.Fatalf("StartRun b: %v", err)
-	}
-	waitForRunCount(t, svc, 3)
+	ids := startRuns(t, svc, "count-a", 2)
+	ids = append(ids, startRuns(t, svc, "count-b", 1)...)
+	waitAllComplete(t, svc, ids)
 
 	onlyA, err := svc.CountRuns(
 		context.Background(), RunsFilter{Workflow: "count-a"},
@@ -259,12 +291,7 @@ func TestCountRunsRespectsWorkflowFilter(t *testing.T) {
 // created strictly before the cutoff.
 func TestRunsFilterSinceExcludesOlder(t *testing.T) {
 	svc := newRunsSvc(t, "since-wf")
-	if _, err := svc.StartRun(
-		context.Background(), "since-wf", nil,
-	); err != nil {
-		t.Fatalf("StartRun: %v", err)
-	}
-	waitForRunCount(t, svc, 1)
+	waitAllComplete(t, svc, startRuns(t, svc, "since-wf", 1))
 
 	// Positive: a cutoff in the past keeps the run.
 	past := time.Now().Add(-1 * time.Hour)
