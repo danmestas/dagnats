@@ -48,7 +48,7 @@ func serveFragmentWorkflowsList(
 		return
 	}
 	q := mergeFragmentParams(r, "workflowsFilter", "workflowsSort")
-	view, err := buildWorkflowsView(r.Context(), ds, q)
+	view, err := buildWorkflowsView(r.Context(), ds, q, cfg.Logger)
 	if err != nil {
 		cfg.Logger.Error("console: workflows fragment", "err", err)
 		http.Error(w, "list workflows failed", http.StatusInternalServerError)
@@ -82,7 +82,7 @@ func serveFragmentRunsList(
 		return
 	}
 	q := mergeFragmentParams(r, "runsWorkflow", "runsStatus", "runsRange")
-	view, err := buildRunsView(r.Context(), ds, q)
+	view, err := buildRunsView(r.Context(), ds, q, cfg.Logger)
 	if err != nil {
 		cfg.Logger.Error("console: runs fragment", "err", err)
 		http.Error(w, "list runs failed", http.StatusInternalServerError)

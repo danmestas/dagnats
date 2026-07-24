@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -90,7 +91,7 @@ func servePageWorkflowsList(
 	if !ok {
 		return
 	}
-	view, err := buildWorkflowsView(r.Context(), ds, r.URL.Query())
+	view, err := buildWorkflowsView(r.Context(), ds, r.URL.Query(), cfg.Logger)
 	if err != nil {
 		cfg.Logger.Error("console: workflows list", "err", err)
 		http.Error(w, "list workflows failed", http.StatusInternalServerError)
@@ -110,8 +111,14 @@ func servePageWorkflowsList(
 
 // buildWorkflowsView assembles WorkflowsListView from query params.
 // Pulled out of the handler so the fragment endpoint can reuse it.
+//
+// logger records enrichment-read failures (triggers, runs) that degrade
+// the page rather than failing it — see the loggerOrDefault call. A nil
+// logger falls back to slog.Default so the builder never panics on a
+// caller that did not wire one (#580).
 func buildWorkflowsView(
 	ctx context.Context, ds DataSource, q map[string][]string,
+	logger *slog.Logger,
 ) (WorkflowsListView, error) {
 	if ds == nil {
 		panic("buildWorkflowsView: ds is nil")
@@ -119,6 +126,7 @@ func buildWorkflowsView(
 	if ctx == nil {
 		panic("buildWorkflowsView: ctx is nil")
 	}
+	logger = loggerOrDefault(logger)
 	filter := firstQueryValue(q, "filter")
 	sortKey := firstQueryValue(q, "sort")
 	if sortKey == "" {
@@ -131,8 +139,21 @@ func buildWorkflowsView(
 		return WorkflowsListView{}, fmt.Errorf("list workflows: %w", err)
 	}
 	defs = filterWorkflows(defs, filter)
-	triggers, _ := ds.ListTriggers(ctx)
-	runs, _ := ds.ListRuns(ctx, "")
+	// Triggers + runs are enrichment reads: their counts / last-run
+	// stats decorate the rows but the list renders without them. A read
+	// failure here degrades to nil (assembleWorkflowRows tolerates it) —
+	// but log it so an operator can tell a backend outage apart from a
+	// workflow that genuinely has no triggers / runs (#580).
+	triggers, err := ds.ListTriggers(ctx)
+	if err != nil {
+		logger.Warn("console: workflows list trigger enrichment failed",
+			"err", err)
+	}
+	runs, err := ds.ListRuns(ctx, "")
+	if err != nil {
+		logger.Warn("console: workflows list run enrichment failed",
+			"err", err)
+	}
 	rows := assembleWorkflowRows(defs, triggers, runs)
 	attachWorkflowSparklines(ctx, ds, rows)
 	sortWorkflowRows(rows, sortKey)
