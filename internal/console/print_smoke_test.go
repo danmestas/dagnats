@@ -29,8 +29,10 @@
 //   - Run pdftotext on the result and assert every panel's marker
 //     string appears. Minimum 3 assertions (one per panel) + a
 //     positive assertion that the PDF is non-empty.
-//   - Bounded: 60s total deadline. The Chrome subprocess gets 30s,
-//     pdftotext 10s.
+//   - Bounded: 120s total deadline. The Chrome subprocess gets 30s
+//     per attempt and is retried up to 3x with a 2s backoff (issue
+//     #573 — absorbs transient `signal: killed` under `-p 4` load);
+//     pdftotext gets 10s.
 package console
 
 import (
@@ -130,8 +132,13 @@ func TestPrintCSS_allRunDetailTabsRender(t *testing.T) {
 	pdf := filepath.Join(dir, "run-print.pdf")
 	url := srv.URL + "/console/runs/run-print"
 
+	// Budget: 3 Chrome attempts * 30s each + 2 * 2s backoff = 94s worst
+	// case, then pdftotext's 10s. 120s leaves margin without being an
+	// open-ended wait. The 30s per-attempt ceiling is unchanged from the
+	// pre-#573 single-shot value — the retry, not a longer timeout, is
+	// what absorbs the transient `signal: killed` under contention.
 	ctx, cancel := context.WithTimeout(
-		context.Background(), 60*time.Second,
+		context.Background(), 120*time.Second,
 	)
 	defer cancel()
 
@@ -140,8 +147,6 @@ func TestPrintCSS_allRunDetailTabsRender(t *testing.T) {
 	// that don't have user-namespace support; --disable-gpu avoids a
 	// noisy GPU stack on headless. --virtual-time-budget lets any
 	// onload work finish before the snapshot.
-	chromeCtx, chromeCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer chromeCancel()
 	args := []string{
 		"--headless=new",
 		"--disable-gpu",
@@ -151,13 +156,21 @@ func TestPrintCSS_allRunDetailTabsRender(t *testing.T) {
 		"--print-to-pdf-no-header",
 		url,
 	}
-	cmd := exec.CommandContext(chromeCtx, chrome, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	// #573: under full-suite `-p 4` load the Chrome subprocess is
+	// intermittently reaped (OOM) or blows its deadline as contention
+	// inflates startup latency ~5x. Both surface as `signal: killed` and
+	// both clear once the spike passes, so retry up to 3 times with a 2s
+	// backoff. newCmd must not set Stdout/Stderr — the runner owns them.
+	newCmd := func(cmdCtx context.Context) *exec.Cmd {
+		return exec.CommandContext(cmdCtx, chrome, args...)
+	}
+	const chromeAttemptsMax = 3
+	stdout, stderr, err := runSubprocessWithRetry(
+		ctx, chromeAttemptsMax, 30*time.Second, 2*time.Second, newCmd,
+	)
+	if err != nil {
 		t.Fatalf("chrome --print-to-pdf: %v\nstdout: %s\nstderr: %s",
-			err, stdout.String(), stderr.String())
+			err, stdout, stderr)
 	}
 
 	info, err := os.Stat(pdf)
