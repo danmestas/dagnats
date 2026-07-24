@@ -78,9 +78,13 @@ func TestHTTPRespondHappyPath(t *testing.T) {
 			WorkflowID: wfName,
 			Enabled:    true,
 			HTTP: &trigger.HTTPConfig{
-				Path:         triggerPath,
-				Method:       http.MethodPost,
-				TimeoutMs:    10_000,
+				Path:   triggerPath,
+				Method: http.MethodPost,
+				// Topology-aware budget: supercluster's cross-cluster
+				// replication can turn a starved JetStream op into a 5s
+				// orchestrator NAK-and-retry, so it needs more headroom
+				// than the faster topologies (#574).
+				TimeoutMs:    harness.RespondTimeoutMs(t),
 				MaxBodyBytes: 1024,
 			},
 		}
