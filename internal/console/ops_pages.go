@@ -42,7 +42,7 @@ func servePageWorkers(
 	if r == nil {
 		panic("servePageWorkers: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "workers-list")
+	ds, ok := requirePort[WorkerDirectory](w, cfg, "workers-list")
 	if !ok {
 		return
 	}
@@ -140,7 +140,7 @@ func servePageKVInspector(
 	if r == nil {
 		panic("servePageKVInspector: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "kv-list")
+	ds, ok := requirePort[OpsInventory](w, cfg, "kv-list")
 	if !ok {
 		return
 	}
@@ -157,7 +157,7 @@ func servePageKVInspector(
 // rendered as zero-state rather than 500s — KV inspector is
 // observational, never blocking.
 func buildKVInspectorView(
-	ctx context.Context, ds DataSource, q map[string][]string,
+	ctx context.Context, ds OpsInventory, q map[string][]string,
 ) KVInspectorView {
 	buckets, _ := ds.ListKVBuckets(ctx)
 	view := KVInspectorView{
@@ -283,7 +283,7 @@ func humanDuration(d time.Duration) string {
 // buildKVEntry pulls one entry from the DataSource and converts it
 // into the render shape. Pretty-prints JSON when present.
 func buildKVEntry(
-	ctx context.Context, ds DataSource, bucket, key string,
+	ctx context.Context, ds OpsInventory, bucket, key string,
 ) *KVInspectorEntry {
 	entry, err := ds.GetKVEntry(ctx, bucket, key)
 	if err != nil {
@@ -361,7 +361,7 @@ func servePageStreams(
 	if r == nil {
 		panic("servePageStreams: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "streams-list")
+	ds, ok := requirePort[OpsInventory](w, cfg, "streams-list")
 	if !ok {
 		return
 	}
@@ -498,7 +498,7 @@ func servePageStreamDetail(
 	if name == "" {
 		panic("servePageStreamDetail: name is empty")
 	}
-	ds, ok := requireData(w, cfg, "stream-detail")
+	ds, ok := requirePort[OpsInventory](w, cfg, "stream-detail")
 	if !ok {
 		return
 	}
@@ -627,7 +627,7 @@ func servePageWorkerDetail(
 	if id == "" {
 		panic("servePageWorkerDetail: id is empty")
 	}
-	ds, ok := requireData(w, cfg, "worker-detail")
+	ds, ok := requirePort[WorkerDirectory](w, cfg, "worker-detail")
 	if !ok {
 		return
 	}

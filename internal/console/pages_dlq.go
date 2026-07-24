@@ -59,7 +59,7 @@ func serveDLQConfirmFragment(
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
 	}
-	ds, ok := requireData(w, cfg, "dlq-confirm-fragment")
+	ds, ok := requirePort[DLQStore](w, cfg, "dlq-confirm-fragment")
 	if !ok {
 		return
 	}
@@ -110,7 +110,7 @@ func dlqConfirmSeqFromPath(path string) string {
 // returns the modal-binding view. ok=false on missing/garbage seq so
 // the caller can 404 instead of rendering an empty modal.
 func buildDLQModalView(
-	r *http.Request, ds DataSource, cfg Config,
+	r *http.Request, ds DLQStore, cfg Config,
 	seqStr, action string,
 ) (dlqModalView, bool) {
 	if r == nil {
@@ -184,7 +184,7 @@ func serveDLQSheet(
 		http.NotFound(w, r)
 		return
 	}
-	ds, ok := requireData(w, cfg, "dlq-sheet")
+	ds, ok := requirePort[DLQStore](w, cfg, "dlq-sheet")
 	if !ok {
 		return
 	}

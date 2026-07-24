@@ -131,7 +131,7 @@ func executeTriggerToggle(
 	w http.ResponseWriter, r *http.Request,
 	cfg Config, id string,
 ) {
-	ds, ok := requireData(w, cfg, "trigger-toggle")
+	ds, ok := requirePort[TriggerStore](w, cfg, "trigger-toggle")
 	if !ok {
 		return
 	}
@@ -432,7 +432,7 @@ func handleDLQRetry(
 		http.Error(w, "invalid sequence", http.StatusBadRequest)
 		return
 	}
-	ds, ok := requireData(w, cfg, "dlq-retry")
+	ds, ok := requirePort[DLQStore](w, cfg, "dlq-retry")
 	if !ok {
 		return
 	}
@@ -522,7 +522,7 @@ func handleDLQDiscard(
 		http.Error(w, "invalid sequence", http.StatusBadRequest)
 		return
 	}
-	ds, ok := requireData(w, cfg, "dlq-discard")
+	ds, ok := requirePort[DLQStore](w, cfg, "dlq-discard")
 	if !ok {
 		return
 	}
@@ -538,7 +538,7 @@ func handleDLQDiscard(
 // log makes the deferred removal visible.
 func executeDLQSoftDiscard(
 	w http.ResponseWriter, r *http.Request, cfg Config,
-	ds DataSource, seq uint64, seqStr string,
+	ds DLQStore, seq uint64, seqStr string,
 	tomb *dlqTombstoneStore,
 ) {
 	if ds == nil {
@@ -558,7 +558,7 @@ func executeDLQSoftDiscard(
 // installations that haven't enabled the tombstone store.
 func executeDLQHardDiscard(
 	w http.ResponseWriter, r *http.Request, cfg Config,
-	ds DataSource, seq uint64, seqStr string,
+	ds DLQStore, seq uint64, seqStr string,
 ) {
 	if ds == nil {
 		panic("executeDLQHardDiscard: ds is nil")

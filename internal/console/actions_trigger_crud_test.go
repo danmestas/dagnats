@@ -656,3 +656,66 @@ func TestTriggerDetailModal_dataOpenReveal(t *testing.T) {
 		t.Errorf("openEdit still uses dead modal.hidden reveal")
 	}
 }
+
+// TestTriggerEdit_dataSourceError covers the UpdateTrigger write-failure
+// branch: the trigger exists and the form validates, so the handler gets
+// past lookup and mapping, then the KV write fails. Mirrors
+// TestTriggerCreate_dataSourceError for the edit path.
+func TestTriggerEdit_dataSourceError(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-edit-err", "alpha", "cron"),
+	}
+	fake.updateTriggerErr = stringError("simulated KV failure")
+	h := mountWithFakeRO(t, fake, false)
+	form := url.Values{"type": {"cron"}, "config": {"0 * * * *"}}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, postForm("/console/triggers/cron-edit-err/edit", form))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	// Positive space: the write WAS attempted (distinguishes this from
+	// the unknown-id 404 and the invalid-form 400).
+	if len(fake.updateTriggerCalls) != 1 {
+		t.Fatalf("UpdateTrigger calls = %d; want 1",
+			len(fake.updateTriggerCalls))
+	}
+	if len(fake.auditEvents) != 1 ||
+		fake.auditEvents[0].Action != string(ActionTriggerUpdate) ||
+		fake.auditEvents[0].Outcome != string(OutcomeFailed) {
+		t.Fatalf("audit = %+v; want one update failure", fake.auditEvents)
+	}
+}
+
+// TestTriggerDelete_dataSourceError covers the DeleteTrigger write-failure
+// branch: the trigger resolves, so the handler gets past the 404 gate, and
+// then the KV delete fails.
+func TestTriggerDelete_dataSourceError(t *testing.T) {
+	fake := newFakeDS()
+	fake.triggers = []trigger.TriggerDef{
+		sampleTrigger("cron-del-err", "alpha", "cron"),
+	}
+	fake.deleteTriggerErr = stringError("simulated KV failure")
+	h := mountWithFakeRO(t, fake, false)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr,
+		postForm("/console/triggers/cron-del-err/delete", url.Values{}))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(fake.deleteTriggerCalls) != 1 {
+		t.Fatalf("DeleteTrigger calls = %v; want one",
+			fake.deleteTriggerCalls)
+	}
+	if len(fake.auditEvents) != 1 ||
+		fake.auditEvents[0].Action != string(ActionTriggerDelete) ||
+		fake.auditEvents[0].Outcome != string(OutcomeFailed) {
+		t.Fatalf("audit = %+v; want one delete failure", fake.auditEvents)
+	}
+	// Negative space: a failed delete must leave the trigger in place.
+	if len(fake.triggers) != 1 {
+		t.Errorf("triggers = %+v; want the row retained", fake.triggers)
+	}
+}

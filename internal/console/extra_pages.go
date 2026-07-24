@@ -242,7 +242,7 @@ func buildTriggersHeader(rows []TriggerRow) PageHeader {
 // rows. Pulled into its own helper so the view assembler stays small
 // and the empty-state path is the same shape on both surfaces.
 func attachTriggerSparklines(
-	ctx context.Context, ds DataSource, rows []TriggerRow,
+	ctx context.Context, ds SearchIndex, rows []TriggerRow,
 ) {
 	if ds == nil {
 		return
@@ -391,7 +391,7 @@ func buildTriggerDetail(
 // a quick glance, not a full audit log. ListTriggerFires errors are
 // swallowed; the panel renders empty and the user sees the zero state.
 func readTriggerFirings(
-	ctx context.Context, ds DataSource, id string,
+	ctx context.Context, ds TriggerStore, id string,
 ) []TriggerFiringRow {
 	const firingsLimit = 25
 	fires, err := ds.ListTriggerFires(ctx, id, firingsLimit)
@@ -556,7 +556,7 @@ func servePageDLQList(
 	if r == nil {
 		panic("servePageDLQList: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "dlq-list")
+	ds, ok := requirePort[DLQStore](w, cfg, "dlq-list")
 	if !ok {
 		return
 	}
@@ -575,7 +575,7 @@ func servePageDLQList(
 
 // buildDLQView pulls the recent dead letters and shapes them as rows.
 func buildDLQView(
-	ctx context.Context, ds DataSource, q map[string][]string,
+	ctx context.Context, ds DLQStore, q map[string][]string,
 ) DLQListView {
 	if ds == nil {
 		panic("buildDLQView: ds is nil")
@@ -750,7 +750,7 @@ func servePageDLQDetail(
 		serveNotFound(w, r, ts, cfg)
 		return
 	}
-	ds, ok := requireData(w, cfg, "dlq-detail")
+	ds, ok := requirePort[DLQStore](w, cfg, "dlq-detail")
 	if !ok {
 		return
 	}
@@ -766,7 +766,7 @@ func servePageDLQDetail(
 
 // buildDLQDetail looks up a single DLQ entry by sequence string.
 func buildDLQDetail(
-	ctx context.Context, ds DataSource, seqStr string,
+	ctx context.Context, ds DLQStore, seqStr string,
 ) DLQDetailView {
 	if ds == nil {
 		panic("buildDLQDetail: ds is nil")
@@ -889,7 +889,7 @@ func servePageAuditLog(
 	if r == nil {
 		panic("servePageAuditLog: r is nil")
 	}
-	ds, ok := requireData(w, cfg, "audit-log")
+	ds, ok := requirePort[AuditLog](w, cfg, "audit-log")
 	if !ok {
 		return
 	}
@@ -905,7 +905,7 @@ func servePageAuditLog(
 // buildAuditView reads recent audit events and applies filter params:
 // actor (exact match), action (exact match), and range (time window).
 func buildAuditView(
-	ctx context.Context, ds DataSource, q map[string][]string,
+	ctx context.Context, ds AuditLog, q map[string][]string,
 ) AuditLogView {
 	if ds == nil {
 		panic("buildAuditView: ds is nil")

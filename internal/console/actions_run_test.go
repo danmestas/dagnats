@@ -443,3 +443,40 @@ func TestRunSignal_csrfForwardAuth(t *testing.T) {
 			fake.signalCalls)
 	}
 }
+
+// TestRunSignal_sendFailure covers the SendSignal transport-error branch
+// in finishRunSignal: the run resolves and is non-terminal, so validation
+// passes, but the write fails. Asserts the 500 and the failed audit row
+// carrying the underlying error — the seam that distinguishes a rejected
+// signal (400/404/409, no engine call) from an accepted-then-failed one.
+func TestRunSignal_sendFailure(t *testing.T) {
+	fake := newFakeDS()
+	fake.runs = []dag.WorkflowRun{runningRun("run-sig-err")}
+	fake.signalErr = stringError("simulated KV failure")
+	h := mountWithFakeRO(t, fake, false)
+
+	body := strings.NewReader("name=approve&data=")
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/console/runs/run-sig-err/signal", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	// Positive space: the engine method WAS reached (unlike the
+	// validation-rejection cases, which never call it).
+	if len(fake.signalCalls) != 1 {
+		t.Fatalf("signalCalls = %v, want 1", fake.signalCalls)
+	}
+	if len(fake.auditEvents) != 1 ||
+		fake.auditEvents[0].Outcome != string(OutcomeFailed) {
+		t.Fatalf("audit = %+v; want one failed", fake.auditEvents)
+	}
+	// Negative space: a failed send must not report success copy.
+	if strings.Contains(rr.Body.String(), `"ok":true`) {
+		t.Errorf("failed signal returned a success envelope: %s",
+			rr.Body.String())
+	}
+}

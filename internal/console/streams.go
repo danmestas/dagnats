@@ -47,7 +47,7 @@ func serveSSERuns(
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	ds, ok := requireData(w, cfg, "sse-runs")
+	ds, ok := requirePort[RunStore](w, cfg, "sse-runs")
 	if !ok {
 		return
 	}
@@ -306,7 +306,7 @@ func parseFromQuery(q string) uint64 {
 // (race with the publisher), we return empty and step patches no-op
 // gracefully.
 func getRunWorkflowID(
-	ctx context.Context, ds DataSource, runID string,
+	ctx context.Context, ds RunStore, runID string,
 ) string {
 	if ctx == nil {
 		panic("getRunWorkflowID: ctx is nil")

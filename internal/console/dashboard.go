@@ -211,7 +211,7 @@ func countRunsForTiles(
 // loop on limit. The list is already CreatedAt-descending by the
 // underlying api.Service.
 func readRecentFailures(
-	ctx context.Context, ds DataSource, limit int,
+	ctx context.Context, ds RunStore, limit int,
 ) []RecentFailureRow {
 	if limit <= 0 {
 		panic("readRecentFailures: limit must be positive")
@@ -259,7 +259,7 @@ func projectFailureRow(r dag.WorkflowRun) RecentFailureRow {
 // readRecentActions pulls up to limit recent audit events and projects
 // them into the panel-row shape. Honest empty state on a nil-source.
 func readRecentActions(
-	ctx context.Context, ds DataSource, limit int,
+	ctx context.Context, ds AuditLog, limit int,
 ) []RecentActionRow {
 	if limit <= 0 {
 		panic("readRecentActions: limit must be positive")

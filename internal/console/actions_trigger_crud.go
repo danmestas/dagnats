@@ -152,7 +152,7 @@ func executeTriggerCreate(w http.ResponseWriter, r *http.Request, cfg Config) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	ds, ok := requireData(w, cfg, "trigger-create")
+	ds, ok := requirePort[TriggerStore](w, cfg, "trigger-create")
 	if !ok {
 		return
 	}
@@ -222,7 +222,7 @@ func handleTriggerEdit(w http.ResponseWriter, r *http.Request, cfg Config, id st
 // executeTriggerEdit resolves the trigger, builds config-only updates
 // from its current kind, and calls UpdateTrigger.
 func executeTriggerEdit(w http.ResponseWriter, r *http.Request, cfg Config, id string) {
-	ds, ok := requireData(w, cfg, "trigger-edit")
+	ds, ok := requirePort[TriggerStore](w, cfg, "trigger-edit")
 	if !ok {
 		return
 	}
@@ -327,7 +327,7 @@ func handleTriggerDelete(w http.ResponseWriter, r *http.Request, cfg Config, id 
 // executeTriggerDelete resolves the trigger (so an unknown id 404s
 // before the mutation) and calls DeleteTrigger.
 func executeTriggerDelete(w http.ResponseWriter, r *http.Request, cfg Config, id string) {
-	ds, ok := requireData(w, cfg, "trigger-delete")
+	ds, ok := requirePort[TriggerStore](w, cfg, "trigger-delete")
 	if !ok {
 		return
 	}

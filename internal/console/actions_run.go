@@ -72,7 +72,7 @@ func handleRunCancel(
 func executeRunCancel(
 	w http.ResponseWriter, r *http.Request, cfg Config, runID string,
 ) {
-	ds, ok := requireData(w, cfg, "run-cancel")
+	ds, ok := requirePort[RunStore](w, cfg, "run-cancel")
 	if !ok {
 		return
 	}
@@ -164,7 +164,7 @@ func executeRunSignal(
 			http.StatusBadRequest)
 		return
 	}
-	ds, ok := requireData(w, cfg, "run-signal")
+	ds, ok := requirePort[RunStore](w, cfg, "run-signal")
 	if !ok {
 		return
 	}
@@ -191,7 +191,7 @@ func executeRunSignal(
 // keep both under the function-length cap.
 func finishRunSignal(
 	w http.ResponseWriter, r *http.Request, cfg Config,
-	ds DataSource, runID, name, payload string,
+	ds RunStore, runID, name, payload string,
 ) {
 	if err := ds.SendSignal(r.Context(), runID, name, []byte(payload)); err != nil {
 		cfg.Logger.Error("console: run signal",

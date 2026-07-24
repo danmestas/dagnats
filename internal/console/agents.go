@@ -422,7 +422,7 @@ func servePageAgentRuntimes(
 	if r == nil {
 		panic("servePageAgentRuntimes: r is nil")
 	}
-	data, ok := requireData(w, cfg, "list agent runtimes")
+	data, ok := requirePort[AgentRuntimeView](w, cfg, "list agent runtimes")
 	if !ok {
 		return
 	}
@@ -484,7 +484,7 @@ func serveSSEAgents(
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	ds, ok := requireData(w, cfg, "sse-agents")
+	ds, ok := requirePort[agentStreamPorts](w, cfg, "sse-agents")
 	if !ok {
 		return
 	}
@@ -507,7 +507,7 @@ func serveSSEAgents(
 func pumpAgentUpdates(
 	ctx context.Context,
 	sse *datastar.ServerSentEventGenerator,
-	ts *templateSet, ds DataSource,
+	ts *templateSet, ds AgentRuntimeView,
 	ch <-chan RunUpdate, cfg Config,
 ) {
 	if sse == nil {
@@ -539,7 +539,7 @@ func pumpAgentUpdates(
 func emitAgentPatch(
 	ctx context.Context,
 	sse *datastar.ServerSentEventGenerator,
-	ts *templateSet, ds DataSource,
+	ts *templateSet, ds AgentRuntimeView,
 	update RunUpdate, cfg Config,
 ) bool {
 	if update.Run.RunID == "" {
@@ -567,4 +567,14 @@ func emitAgentPatch(
 		return false
 	}
 	return true
+}
+
+// agentStreamPorts is the two-port slice the /console/agents SSE
+// endpoint reads: the run watch that tells it something changed, and the
+// runtime view it re-projects each changed root through. Genuinely two
+// ports, so it is named here rather than forcing a single-port fit or
+// falling back to the whole DataSource.
+type agentStreamPorts interface {
+	RunStore
+	AgentRuntimeView
 }
