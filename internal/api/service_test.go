@@ -1533,9 +1533,18 @@ func TestServiceListWorkersFiltersStale(t *testing.T) {
 	}
 	svc := NewService(nc)
 
-	// Short window so the test runs in <1s instead of 60s.
+	// The staleness cutoff is computed as time.Now()-MaxWorkerStaleness
+	// inside listWorkersInner, AFTER two NATS round trips (KeyValue +
+	// Keys). The freshly-registered live worker must still fall within
+	// that window when the cutoff is finally computed, so the window has
+	// to exceed the worst-case ListWorkers latency under load. A 50ms
+	// window flaked (#584): under -p 4 contention scheduling jitter plus
+	// the round trips pushed the cutoff >50ms past the live worker's KV
+	// creation timestamp, filtering the live worker out (len==0). 500ms
+	// gives an ~10x margin over observed loaded latency while keeping the
+	// test well under the 60s production default.
 	prev := worker.MaxWorkerStaleness
-	worker.MaxWorkerStaleness = 50 * time.Millisecond
+	worker.MaxWorkerStaleness = 500 * time.Millisecond
 	t.Cleanup(func() { worker.MaxWorkerStaleness = prev })
 
 	jsNew, err := jetstream.New(nc)
@@ -1554,9 +1563,11 @@ func TestServiceListWorkersFiltersStale(t *testing.T) {
 		t.Fatalf("Register dead: %v", err)
 	}
 
-	// Wait past the staleness window so the dead worker's entry is
-	// older than the cutoff at the moment ListWorkers reads.
-	time.Sleep(150 * time.Millisecond)
+	// Wait past 2x the staleness window so the dead worker's entry is
+	// deterministically older than the cutoff at the moment ListWorkers
+	// reads -- giving the dead worker the same ~500ms margin the live
+	// worker has on the other side of the cutoff.
+	time.Sleep(1000 * time.Millisecond)
 
 	live := worker.WorkerRegistration{
 		WorkerID:  "worker-live",
