@@ -114,10 +114,31 @@ func TestCluster_OverrideHonored(t *testing.T) {
 	}
 }
 
+// setupSanityBudget is the wall-clock ceiling for SetupAll on a healthy
+// 3-node cluster. This test is a regression sanity check against a genuine
+// setup-path hang (quorum never forming, the historical client/cluster port
+// collision, streams never placing) — SetupAll would then run into its
+// internal 60s quorum timeout. It is NOT a performance benchmark, so the
+// ceiling is chosen to catch a real hang while tolerating scheduler
+// contention on a loaded CI runner running the suite at `-p 4`.
+//
+// Measured (14-core dev host, SetupAll wall time creating the R=3 streams):
+//   - isolated:                    ~2.1s (stable across 10 runs)
+//   - 6 concurrent NATS load loops: ~3s
+//   - 24 concurrent load loops:     ~6s
+//   - 48 load loops (3.4x CPU over-subscription, worse than real `-p 4`):
+//     13-20s, which is where the old 10s ceiling flaked (11/12 samples over).
+//
+// The real full-suite `-p 4` flake in issue #588 measured 12.15s. 30s gives
+// ~2.5x margin over that observed worst case and ~1.5x over the pathological
+// 48-loop max, while sitting at exactly half SetupAll's internal 60s quorum
+// timeout — so a genuine hang forming still trips it well before the internal
+// bound, and mere contention never does.
+const setupSanityBudget = 30 * time.Second
+
 // TestCluster_HealthyClusterFastSetup verifies that SetupAll completes
-// quickly on a healthy 3-node cluster — sanity check on bootstrap
-// timing. SetupAll uses an internal 60s timeout (not the caller's ctx),
-// so we measure wall time and assert it's well under that bound.
+// well under SetupAll's internal 60s quorum timeout on a healthy 3-node
+// cluster — a sanity check on bootstrap timing, not a performance benchmark.
 func TestCluster_HealthyClusterFastSetup(t *testing.T) {
 	nc := dagnatstest.StartTestCluster(t, 3)
 
@@ -129,7 +150,10 @@ func TestCluster_HealthyClusterFastSetup(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	elapsed := time.Since(start)
-	if elapsed > 10*time.Second {
-		t.Errorf("SetupAll took %v on healthy 3-node cluster; expected <10s", elapsed)
+	t.Logf("SetupAll on healthy 3-node cluster took %v (budget %v)",
+		elapsed, setupSanityBudget)
+	if elapsed > setupSanityBudget {
+		t.Errorf("SetupAll took %v on healthy 3-node cluster; expected <%v",
+			elapsed, setupSanityBudget)
 	}
 }
