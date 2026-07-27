@@ -217,22 +217,26 @@
     });
   }
 
-  // Wire every button on the page that asks for a typed confirm. A
-  // button carrying data-confirm-url drives the modal from its own data
-  // attributes (single-target pages, no hidden form); otherwise the
-  // value names a pre-rendered <form> the picker selects (DLQ flow).
-  // data-confirm-seq is optional; when present it disambiguates between
-  // the multiple per-row forms on the DLQ list page.
-  document.querySelectorAll("[data-action-confirm]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      if (btn.getAttribute("data-confirm-url")) {
-        openForAttrs(btn);
-        return;
-      }
-      openForForm(
-        btn.getAttribute("data-action-confirm"),
-        btn.getAttribute("data-confirm-seq") || "");
-    });
+  // Delegate the click on document rather than binding each button at
+  // load time: the DLQ list's SSE feed inserts and replaces #dlq-row-<seq>
+  // rows after the initial render (new dead letters land, retried/
+  // discarded rows swap out), so a button wired at load time would leave
+  // any post-load row's Retry/Discard silently dead. A button carrying
+  // data-confirm-url drives the modal from its own data attributes
+  // (single-target pages, no hidden form); otherwise the value names a
+  // pre-rendered <form> the picker selects (DLQ flow). data-confirm-seq
+  // is optional; when present it disambiguates between the multiple
+  // per-row forms on the DLQ list page.
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-action-confirm]");
+    if (!btn) return;
+    if (btn.getAttribute("data-confirm-url")) {
+      openForAttrs(btn);
+      return;
+    }
+    openForForm(
+      btn.getAttribute("data-action-confirm"),
+      btn.getAttribute("data-confirm-seq") || "");
   });
   cancelBtn.addEventListener("click", close);
   goBtn.addEventListener("click", confirm);
