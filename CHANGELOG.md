@@ -99,6 +99,12 @@ finishes publishing (#577).
   guessed; trace-provenance assertions strengthened from absence-checking to
   presence-checking.
 
+### Security
+
+- **`google.golang.org/grpc`** v1.81.1 → v1.82.1, clearing a high-severity xDS
+  RBAC / HTTP/2 advisory (transitive, via OpenTelemetry's OTLP exporters —
+  dagnats does not use gRPC directly).
+
 ### Docs
 
 - Documented that grouped task types are not pollable over the bridge (#546).
