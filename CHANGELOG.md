@@ -6,6 +6,103 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+## [0.0.11] - 2026-07-27
+
+Refactor and reliability release. Splits three console god-files and the
+`api.Service` control-plane facade into small, domain-focused units (#564–#569,
+#576), and root-causes eight intermittent CI failures instead of papering over
+them with longer timeouts — several turned out to be real bugs, not just
+timing luck: a NATS KV `Keys()` scan racing an async multi-write snapshot
+pipeline (#570), and a run marked `Failed` before its dead-letter entry
+finishes publishing (#577).
+
+### Changed
+
+- **Console `DataSource` mega-interface split into ten domain ports (#564,
+  #576).** The 41-method interface backing every console page test is now ten
+  small ports (`RunStore`, `TriggerStore`, `DLQStore`, ...); the page-test fake
+  is decomposed to match, so a test that only cares about one page no longer
+  drags in the whole surface.
+- **Console `pages.go` (2,150 LOC) split by domain (#567).** Workflow, run,
+  DLQ-fragment, and search page builders move to their own files behind a
+  single shared `pageWindow` pagination helper — the one piece of chrome
+  genuinely common across list pages; everything else stayed with its domain
+  builder rather than forcing a one-size-fits-all abstraction.
+- **Console route registration replaced with a typed registry (#568).** ~50
+  near-identical `mux.HandleFunc` closures become an ordered `[]consoleRoute`
+  table, validated whole (empty pattern / nil handler / duplicate) before a
+  single route installs — an invalid table can no longer partially mutate the
+  mux.
+- **`api.Service` (2,370 LOC) split by domain; run-list API collapsed (#566).**
+  Four overlapping run-list entrypoints become two purpose-built ones
+  (`ScanRuns` for bounded reads, `ListRuns` for an honest total/truncated
+  envelope) instead of one API forcing every caller through the more
+  expensive path.
+- **`RunMutator` port extracted from the orchestrator (#565).** Approval and
+  sleep step-kind handlers no longer take four separate load/save/complete/
+  enqueue callbacks per call — they hold one cohesive port, shrinking
+  `orchestrator.go` and the coupling surface for the next step kind.
+- **`internal/engine` test suite (4,508 LOC in one file) reorganized by event
+  kind (#569)**, alongside the handlers #565 extracted — lifecycle, spawn,
+  map, sleep/wait, retry/recovery, and step-execution tests now live in
+  focused files with zero scenario loss (verified by an exhaustive
+  before/after function-body diff).
+- **No-recursion rule now enforced repo-wide (#554, #560)** — `parseField`'s
+  last recursive call site is gone, and a lint step keeps it that way.
+
+### Added
+
+- **Dispatch-time-resolved sleep flavors (#551)** — cron- and
+  deadline-from-run-input-based sleeps are now resolved when the step
+  dispatches, not when the workflow is defined.
+
+### Fixed
+
+- **Eight intermittent CI failures root-caused and fixed, not just
+  retried-to-green (#562, #570, #573, #574, #577, #580, #584, #588).** Each
+  was reproduced under induced contention with a real before/after failure
+  count rather than assumed from a plausible-sounding timing story. Two
+  turned out to be genuine bugs: `TestListRunsTruncation`'s undercount was a
+  real race in the vendored `nats.go` KV `Keys()` ordered-consumer scan
+  against an in-flight multi-write snapshot pipeline (#570); the bridge
+  DLQ-population flake was a real ordering gap where a run's status flips to
+  `Failed` and saves before its dead-letter entry finishes publishing (#577).
+  The rest were timing budgets too tight for realistic `-p 4` parallel-test
+  contention — a headless-Chrome print-smoke subprocess retry (#573), a
+  topology-aware HTTP-respond timeout for the slower supercluster topology
+  (#574), a widened worker-staleness test window (#584), and a relaxed
+  cluster-setup sanity ceiling (#588) — each with a measured, justified
+  margin rather than a round-number bump.
+- **Discarded enrichment errors now logged, not silenced (#580)** — the
+  workflows-list and runs-list page builders swallowed errors from
+  secondary/enrichment DataSource calls; a real backend outage there is now
+  observable instead of indistinguishable from "no data."
+- **Trace context no longer silently dropped at four propagation gaps
+  (#527, #530, #534, #538)** — inbound W3C trace context is now extracted in
+  NATS micro handlers, trigger-service entrypoints, and carried through the
+  bridge poll response into `protocol.TaskPayload`, so traces stay connected
+  across those hops instead of restarting.
+- **Bridge dispatch reliability** — `AckMap` entries now have a bounded
+  lifetime so an abandoned dispatch cannot leak forever (#545, with its size
+  gauge actually emitting per #549); bridge poll reuses durable task
+  consumers instead of creating one per poll (#532), and span volume is now
+  proportional to work done, not requests made (#531).
+- **POSIX cron day-of-month/day-of-week semantics (#552)** — a schedule with
+  both fields set now ORs them per POSIX cron, instead of requiring both to
+  match.
+- **Five previously-untested API handlers now covered, three made observable
+  (#529).**
+- **E2E test hardening**: worker-readiness waits are adaptive instead of
+  fixed-short (#555); several fixed-duration sleeps replaced with real
+  precondition polling (#558); a wall-clock race removed from the scheduler
+  backfill test; JetStream store budgets derived from the server instead of
+  guessed; trace-provenance assertions strengthened from absence-checking to
+  presence-checking.
+
+### Docs
+
+- Documented that grouped task types are not pollable over the bridge (#546).
+
 ## [0.0.10] - 2026-07-17
 
 Reliability release addressing **#523** — a bloated `workflow_runs` KV bucket
