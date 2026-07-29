@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/testutil"
 	"github.com/nats-io/nats.go"
 
 	"go.opentelemetry.io/otel"
@@ -51,7 +50,7 @@ func TestSpanExportRoundTrip(t *testing.T) {
 	defer cancel()
 	shutdown(shutCtx)
 
-	spans := testutil.CollectSpans(t, nc, 2*time.Second)
+	spans := CollectSpans(t, nc, 2*time.Second)
 
 	// Assertion 1: at least one span arrived.
 	if len(spans) == 0 {
@@ -131,7 +130,7 @@ func TestTracePropagationAcrossNATS(t *testing.T) {
 	defer cancel()
 	shutdown(shutCtx)
 
-	spans := testutil.CollectSpans(t, nc, 2*time.Second)
+	spans := CollectSpans(t, nc, 2*time.Second)
 
 	// Assertion 1: both spans share the same trace ID.
 	if parentSC.TraceID() != childSC.TraceID() {
@@ -198,7 +197,7 @@ func TestResourceAttributes(t *testing.T) {
 	defer cancel()
 	shutdown(shutCtx)
 
-	spans := testutil.CollectSpans(t, nc, 2*time.Second)
+	spans := CollectSpans(t, nc, 2*time.Second)
 
 	// Assertion 1: at least one span arrived.
 	if len(spans) == 0 {
@@ -264,7 +263,7 @@ func TestLogExportRoundTrip(t *testing.T) {
 	defer cancel()
 	shutdown(shutCtx)
 
-	logs := testutil.CollectLogs(t, nc, 2*time.Second)
+	logs := CollectLogs(t, nc, 2*time.Second)
 
 	// Assertion 1: at least one log record arrived.
 	if len(logs) == 0 {
