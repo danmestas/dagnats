@@ -217,9 +217,21 @@ func TestStepTimeout_TimeoutPlusRetryRetriesAttempts(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
+	// Budget note (#591): the happy-path wait floor here is ~5.3s, not
+	// the sub-second one might expect from the 200ms step timeout. The
+	// worker runs task handlers serially per consumer (jetstream Consume
+	// invokes the handler inline), so attempt 1's wedged handler holds
+	// the "to-retry-task" consumer until its 5s self-timeout fires — only
+	// then does the retry's re-dispatched attempt 2 get delivered. So the
+	// floor is worker-self-timeout (5s) + retry backoff (100ms) + attempt-2
+	// step timeout (200ms) ~= 5.3s, measured stable at 5.20-5.24s across
+	// 200 contended runs (wall-clock-gated, so contention barely moves it).
+	// 15s = ~2.8x that floor, leaving ~9.7s of headroom for the 5s Go timer
+	// to drift late and the post-timer tail to inflate under CI load. An 8s
+	// budget was only ~1.5x the floor, which is what flaked.
 	run := publishStartAndWaitTerminal(
 		t, js, jsNew, "run-to-2", defData,
-		dag.RunStatusFailed, 8*time.Second,
+		dag.RunStatusFailed, 15*time.Second,
 	)
 
 	step := run.Steps["s"]
