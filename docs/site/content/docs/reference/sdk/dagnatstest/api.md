@@ -31,6 +31,8 @@ dagnatstest/fixtures.go Pre\-built workflow definitions for common DAG topologie
 
 dagnatstest/harness.go Test harness that bundles NATS server, orchestrator, API service, and worker into a single struct. Eliminates \~15 lines of boilerplate that every integration test otherwise duplicates.
 
+This file's internal/api import \(shared by dlq\_fixture.go, helpers.go, setup.go\) transitively pulls in observe, which makes dagnatstest unimportable from any observe in\-package test \(package observe\) without an import cycle. Accepted as\-is per ADR\-023 — see docs/architecture/adr\-023\-accept\-dagnatstest\-internal\-api\-coupling.md.
+
 dagnatstest/helpers.go Convenience helpers for workflow integration tests. RunAndWait and WaitForStatus eliminate the poll\-loop boilerplate that every test otherwise duplicates.
 
 dagnatstest/log\_capture.go LogCapture installs a process\-wide slog handler that records every log record emitted while the test runs. The capture is restored on t.Cleanup, so tests cannot leak captured state into siblings.
@@ -154,7 +156,7 @@ func FanOutDef(t *testing.T, n int) dag.WorkflowDef
 FanOutDef builds a workflow with 1 root and n parallel branches: root \-\> \{branch\-0, branch\-1, ..., branch\-\(n\-1\)\}.
 
 <a name="HandleTypedOn"></a>
-## func [HandleTypedOn](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L76-L79>)
+## func [HandleTypedOn](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L82-L85>)
 
 ```go
 func HandleTypedOn[I, O any](h *Harness, t *testing.T, taskType string, fn worker.TypedHandlerFunc[I, O])
@@ -428,7 +430,7 @@ type FailRetryAfterCall struct {
 ```
 
 <a name="Harness"></a>
-## type [Harness](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L22-L27>)
+## type [Harness](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L28-L33>)
 
 Harness holds all components needed for a workflow integration test. Fields are public so tests can reach into them for assertions \(e.g., h.Svc.GetRun\(\)\).
 
@@ -442,7 +444,7 @@ type Harness struct {
 ```
 
 <a name="NewHarness"></a>
-### func [NewHarness](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L32>)
+### func [NewHarness](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L38>)
 
 ```go
 func NewHarness(t *testing.T) *Harness
@@ -451,7 +453,7 @@ func NewHarness(t *testing.T) *Harness
 NewHarness starts an embedded NATS server, orchestrator, and API service. The worker is created but NOT started — register handlers first, then call h.Start\(t\).
 
 <a name="Harness.Handle"></a>
-### func \(\*Harness\) [Handle](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L60-L62>)
+### func \(\*Harness\) [Handle](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L66-L68>)
 
 ```go
 func (h *Harness) Handle(t *testing.T, taskType string, fn worker.HandlerFunc)
@@ -460,7 +462,7 @@ func (h *Harness) Handle(t *testing.T, taskType string, fn worker.HandlerFunc)
 Handle registers a raw handler on the harness worker. Call before h.Start\(t\).
 
 <a name="Harness.RegisterAndRun"></a>
-### func \(\*Harness\) [RegisterAndRun](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L107-L110>)
+### func \(\*Harness\) [RegisterAndRun](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L113-L116>)
 
 ```go
 func (h *Harness) RegisterAndRun(t *testing.T, def dag.WorkflowDef, input []byte, timeout time.Duration) dag.WorkflowRun
@@ -469,7 +471,7 @@ func (h *Harness) RegisterAndRun(t *testing.T, def dag.WorkflowDef, input []byte
 RegisterAndRun registers a workflow definition, starts a run, and blocks until it reaches a terminal status. Returns the final WorkflowRun snapshot.
 
 <a name="Harness.Start"></a>
-### func \(\*Harness\) [Start](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L92>)
+### func \(\*Harness\) [Start](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L98>)
 
 ```go
 func (h *Harness) Start(t *testing.T)
