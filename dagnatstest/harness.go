@@ -2,6 +2,12 @@
 // Test harness that bundles NATS server, orchestrator, API service,
 // and worker into a single struct. Eliminates ~15 lines of
 // boilerplate that every integration test otherwise duplicates.
+//
+// This file's internal/api import (shared by dlq_fixture.go,
+// helpers.go, setup.go) transitively pulls in observe, which makes
+// dagnatstest unimportable from any observe in-package test
+// (package observe) without an import cycle. Accepted as-is per
+// ADR-023 — see docs/architecture/adr-023-accept-dagnatstest-internal-api-coupling.md.
 package dagnatstest
 
 import (
