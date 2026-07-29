@@ -99,6 +99,33 @@ func NewService(nc *nats.Conn) *Service {
 	return NewServiceWithLimits(nc, RuntimeLimits{})
 }
 
+// ResourcesReady reports whether the NATS resources NewService requires
+// (JetStream and the workflow_defs bucket) are provisioned. It returns
+// nil when NewService would succeed, or a descriptive error for the
+// operationally-expected "server not provisioned yet" case -- a CLI may
+// run before `dagnats serve` finishes bootstrapping. That condition is
+// environmental, not a programmer error, so callers get an error to
+// handle instead of a panic to recover from. Genuine invariant
+// violations still panic: nc must not be nil.
+func ResourcesReady(nc *nats.Conn) error {
+	if nc == nil {
+		panic("ResourcesReady: nc must not be nil")
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return fmt.Errorf("jetstream unavailable: %w", err)
+	}
+	if _, err := js.KeyValue(
+		context.Background(), "workflow_defs",
+	); err != nil {
+		return fmt.Errorf(
+			"workflow_defs bucket not provisioned "+
+				"(run 'dagnats serve'): %w", err,
+		)
+	}
+	return nil
+}
+
 // NewServiceWithLimits is NewService with explicit per-runtime safety
 // bounds (#378). Zero fields in limits resolve to the default consts so a
 // caller passing RuntimeLimits{} gets the safe defaults. The register

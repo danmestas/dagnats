@@ -57,24 +57,20 @@ func connectService() (*api.Service, *nats.Conn) {
 	return svc, nc
 }
 
-// tryNewService wraps api.NewService and recovers from panics that
-// occur when required NATS resources (KV buckets, JetStream) are
-// missing. Returns the service on success or an error message.
-// NOTE: This recover-from-panic pattern is a pragmatic workaround.
-// api.NewService panics on missing resources (TigerStyle: programmer
-// error). Long-term, NewService should return (*Service, error) for
-// conditions that are operationally expected (server not running).
+// tryNewService probes for the NATS resources api.NewService requires
+// and constructs the service only once they are provisioned. Returns
+// the service on success, or a friendly error message for the
+// operationally-expected "server not provisioned yet" case -- the CLI
+// may run before `dagnats serve` finishes bootstrapping. A nil nc is a
+// programmer error and panics.
 func tryNewService(
 	nc *nats.Conn,
 ) (svc *api.Service, errMsg string) {
 	if nc == nil {
 		panic("tryNewService: nc must not be nil")
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			errMsg = fmt.Sprintf("%v", r)
-		}
-	}()
-	svc = api.NewService(nc)
-	return svc, ""
+	if err := api.ResourcesReady(nc); err != nil {
+		return nil, err.Error()
+	}
+	return api.NewService(nc), ""
 }
