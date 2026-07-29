@@ -205,15 +205,14 @@ func (tp *TracingPublisher) JSPublishMsg(
 // onto the Event payload so a later replay (post-restart, archive
 // import) still has the trace ID inside the persisted record.
 //
-// IMPORTANT: callers MUST leave msg.Data unset (or empty) — the
-// wrapper marshals evt internally AFTER injecting trace context
-// so the persisted bytes carry the traceparent. If the caller
-// pre-marshals and stuffs msg.Data, the trace ID won't appear in
-// the JetStream record's body (header only) and post-restart
-// replay will lose it. This is the lesson learned from #334
-// integration: the header carries trace context for live
-// consumers, but Event.TraceParent is the durable side that the
-// snapshot store and post-restart replay rely on.
+// Callers MUST leave msg.Data unset (or empty): the wrapper marshals
+// evt internally AFTER injecting trace context so the persisted bytes
+// carry the traceparent. A caller that pre-marshals into msg.Data has
+// its bytes discarded (evt wins), so pre-setting Data is a programmer
+// error and panics rather than silently losing data. This is the
+// lesson learned from #334 integration: the header carries trace
+// context for live consumers, but Event.TraceParent is the durable
+// side that the snapshot store and post-restart replay rely on.
 //
 // opts pass through to the underlying client (typical use:
 // jetstream.WithMsgID for dedup — though the caller usually sets
@@ -235,6 +234,9 @@ func (tp *TracingPublisher) JSPublishMsgEvent(
 	}
 	if tp.js == nil {
 		panic("JSPublishMsgEvent: js must not be nil")
+	}
+	if len(msg.Data) != 0 {
+		panic("JSPublishMsgEvent: msg.Data must be empty; wrapper marshals evt")
 	}
 	observe.InjectTraceContext(ctx, msg, evt)
 	// Re-marshal evt now that TraceParent / TraceState are set so

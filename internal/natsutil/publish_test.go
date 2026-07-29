@@ -168,6 +168,53 @@ func TestTracingPublisher_JSPublishMsgEvent_Dualwrite(t *testing.T) {
 	}
 }
 
+func TestJSPublishMsgEvent_PanicsOnPresetData(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	tp := natsutil.NewTracingPublisher(nc, js)
+
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, "run-preset", nil,
+	)
+	// Pre-set msg.Data — the wrapper owns marshalling, so a caller
+	// stuffing Data is a programmer error that must fail loudly
+	// rather than silently lose the caller's bytes.
+	msg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+		Data:    []byte("caller-preset"),
+	}
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_, _ = tp.JSPublishMsgEvent(
+			context.Background(), msg, &evt,
+		)
+	}()
+
+	// Positive: a panic fired on the precondition violation.
+	if recovered == nil {
+		t.Fatal("JSPublishMsgEvent did not panic on pre-set msg.Data")
+	}
+	// Negative: empty msg.Data is accepted (no panic on the happy path).
+	okMsg := &nats.Msg{
+		Subject: evt.NATSSubject(),
+		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+	}
+	if _, err := tp.JSPublishMsgEvent(
+		context.Background(), okMsg, &evt,
+	); err != nil {
+		t.Fatalf("JSPublishMsgEvent with empty Data: %v", err)
+	}
+}
+
 func TestWrapHandler_NoTraceparent_BackgroundCtx(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
