@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
+	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/danmestas/dagnats/dag"
@@ -36,6 +39,7 @@ func runWorkflowCmd(args []string) {
 		fmt.Println("  register   register a workflow from a JSON file")
 		fmt.Println("  show       show details of a registered workflow")
 		fmt.Println("  validate   validate a workflow JSON file")
+		fmt.Println("  delete     delete a registered workflow")
 		return
 	}
 	if len(args) == 0 {
@@ -45,6 +49,7 @@ func runWorkflowCmd(args []string) {
 		fmt.Println("  register   register a workflow from a JSON file")
 		fmt.Println("  show       show details of a registered workflow")
 		fmt.Println("  validate   validate a workflow JSON file")
+		fmt.Println("  delete     delete a registered workflow")
 		return
 	}
 	switch args[0] {
@@ -56,6 +61,8 @@ func runWorkflowCmd(args []string) {
 		runWorkflowShowCmd(args[1:])
 	case "validate":
 		runWorkflowValidateCmd(args[1:])
+	case "delete":
+		runWorkflowDeleteCmd(args[1:])
 	default:
 		fmt.Printf("unknown workflow subcommand: %s\n", args[0])
 	}
@@ -248,7 +255,134 @@ func parseWorkflowFile(data []byte) (workflowFile, error) {
 	if err := json.Unmarshal(data, &wf); err != nil {
 		return workflowFile{}, err
 	}
+	if err := rejectUnknownTopLevelFields(data); err != nil {
+		return workflowFile{}, err
+	}
 	return wf, nil
+}
+
+// rejectUnknownTopLevelFields fails closed when the workflow file
+// carries a top-level key the parser doesn't recognize. Go's default
+// json.Unmarshal silently drops such keys, which let a workflow declare
+// its trigger under a singular `trigger` object (instead of the
+// `triggers` array) and register with the trigger thrown away (#607).
+//
+// WHY the map-diff instead of json.Decoder.DisallowUnknownFields: the
+// standard decoder applies its strictness recursively into every nested
+// struct, so it would also reject a legitimately-new field inside a step
+// or trigger config that an older CLI simply hasn't learned yet. That
+// forward-compatibility risk is real for nested structures but not for
+// the outermost envelope, whose small schema IS the parser's contract
+// with file authors. Diffing top-level keys against the struct tags
+// scopes the check to exactly that envelope and no deeper.
+func rejectUnknownTopLevelFields(data []byte) error {
+	if len(data) == 0 {
+		panic("rejectUnknownTopLevelFields: data must not be empty")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// A non-object top level is caught by the struct unmarshal in
+		// the caller; nothing to diff here.
+		return nil
+	}
+	known := knownWorkflowFileKeys()
+	unknown := make([]string, 0)
+	for key := range raw {
+		// Mirror encoding/json's case-insensitive field matching so we
+		// flag exactly the keys it would have silently dropped.
+		if _, ok := known[strings.ToLower(key)]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf(
+		"unrecognized workflow field(s): %s "+
+			"(check for a typo or a singular \"trigger\" that "+
+			"should be the \"triggers\" array)",
+		strings.Join(unknown, ", "),
+	)
+}
+
+// knownWorkflowFileKeys returns the lowercased set of JSON keys valid at
+// the top level of a workflow file. It reflects over workflowFile so the
+// set never drifts from the struct: the embedded dag.WorkflowDef
+// contributes its promoted keys and workflowFile adds "triggers".
+func knownWorkflowFileKeys() map[string]struct{} {
+	keys := make(map[string]struct{}, 16)
+	root := reflect.TypeOf(workflowFile{})
+	if root.Kind() != reflect.Struct {
+		panic("knownWorkflowFileKeys: workflowFile must be a struct")
+	}
+	// Explicit stack (no recursion) walks embedded structs whose fields
+	// JSON promotes to the top level.
+	stack := []reflect.Type{root}
+	const maxTypes = 100
+	for len(stack) > 0 {
+		if len(stack) > maxTypes {
+			panic("knownWorkflowFileKeys: type stack exceeds bound")
+		}
+		typ := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		stack = collectTopLevelKeys(typ, keys, stack)
+	}
+	if len(keys) == 0 {
+		panic("knownWorkflowFileKeys: no keys collected")
+	}
+	return keys
+}
+
+// collectTopLevelKeys adds typ's promoted JSON keys to keys and returns
+// stack extended with any embedded structs still to visit. An anonymous
+// struct field with no json tag is promoted (its fields become top-level
+// keys); anything else contributes its own key name.
+func collectTopLevelKeys(
+	typ reflect.Type, keys map[string]struct{}, stack []reflect.Type,
+) []reflect.Type {
+	if keys == nil {
+		panic("collectTopLevelKeys: keys must not be nil")
+	}
+	if typ.Kind() != reflect.Struct {
+		panic("collectTopLevelKeys: typ must be a struct")
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.PkgPath != "" {
+			continue // unexported — json ignores it
+		}
+		if field.Anonymous &&
+			field.Type.Kind() == reflect.Struct &&
+			field.Tag.Get("json") == "" {
+			stack = append(stack, field.Type)
+			continue
+		}
+		name := jsonFieldName(field)
+		if name == "" || name == "-" {
+			continue
+		}
+		keys[strings.ToLower(name)] = struct{}{}
+	}
+	return stack
+}
+
+// jsonFieldName resolves the wire key for a struct field: the json tag
+// name, or the Go field name when the tag is absent or names only
+// options (e.g. `json:",omitempty"`).
+func jsonFieldName(field reflect.StructField) string {
+	tag := field.Tag.Get("json")
+	if tag == "" {
+		return field.Name
+	}
+	name := tag
+	if idx := strings.IndexByte(tag, ','); idx >= 0 {
+		name = tag[:idx]
+	}
+	if name == "" {
+		return field.Name
+	}
+	return name
 }
 
 // validateEmbeddedTriggers auto-fills each embedded trigger's

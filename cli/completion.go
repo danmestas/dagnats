@@ -32,7 +32,7 @@ var subcommandMap = map[string][]string{
 		"retry-all", "signal", "start", "status", "watch",
 	},
 	"workflow": {
-		"list", "register", "show", "validate",
+		"delete", "list", "register", "show", "validate",
 	},
 	"trigger": {
 		"create", "delete", "disable", "enable",
@@ -83,6 +83,7 @@ var flagMap = map[string][]string{
 	"workflow.register": {"--json"},
 	"workflow.show":     {"--json"},
 	"workflow.validate": {},
+	"workflow.delete":   {"--force", "--json"},
 	"trigger.create": {
 		"--backfill", "--cron=", "--json",
 		"--secret=", "--subject=", "--tz=", "--webhook=",
