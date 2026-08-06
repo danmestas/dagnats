@@ -141,6 +141,46 @@ func (s *Service) GetWorkflow(name string) (dag.WorkflowDef, error) {
 	return def, err
 }
 
+// DeleteWorkflow removes a registered workflow definition by name. It
+// fails when the name is not registered (KV Delete alone is idempotent
+// and would report success for a typo'd name — #607 requires a loud
+// error instead). Only the definition record is touched; historical run
+// snapshots live in the separate workflow_runs bucket and are untouched.
+func (s *Service) DeleteWorkflow(
+	ctx context.Context, name string,
+) error {
+	if ctx == nil {
+		panic("DeleteWorkflow: ctx must not be nil")
+	}
+	if name == "" {
+		panic("DeleteWorkflow: name must not be empty")
+	}
+	return s.observed(ctx, "deleteWorkflow",
+		[]attribute.KeyValue{
+			attribute.String("workflow_name", name),
+		},
+		func(ctx context.Context) error {
+			return s.deleteWorkflowInner(ctx, name)
+		},
+	)
+}
+
+// deleteWorkflowInner confirms the definition exists, then removes it.
+func (s *Service) deleteWorkflowInner(
+	ctx context.Context, name string,
+) error {
+	if name == "" {
+		panic("deleteWorkflowInner: name must not be empty")
+	}
+	if s.defKV == nil {
+		panic("deleteWorkflowInner: defKV must not be nil")
+	}
+	if _, err := s.defKV.Get(ctx, name); err != nil {
+		return fmt.Errorf("workflow %q not found: %w", name, err)
+	}
+	return s.defKV.Delete(ctx, name)
+}
+
 // ListWorkflows retrieves all registered workflow definitions from KV.
 func (s *Service) ListWorkflows(
 	ctx context.Context,
