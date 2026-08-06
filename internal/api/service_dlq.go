@@ -257,30 +257,38 @@ func parseLegacyDLQ(
 	}
 }
 
-// fetchMessages drains up to limit messages from sub within the
-// given total deadline. Returns on first NextMsg error (timeout or
-// stream exhaustion). Owns the timeout algebra so callers don't.
+// messageDrain is the minimal read surface fetchMessages needs: pull the
+// next already-delivered message (or time out) and ask the server how many
+// messages the consumer still has undelivered. *nats.Subscription satisfies
+// it directly. The seam exists so the drain's stopping condition can be
+// unit-tested against injected delivery gaps (#609) without depending on
+// live NATS delivery timing, which is unreproducible over loopback.
+type messageDrain interface {
+	NextMsg(timeout time.Duration) (*nats.Msg, error)
+	ConsumerInfo() (*nats.ConsumerInfo, error)
+}
+
+// fetchMessages drains up to limit messages from sub within the given total
+// deadline. Owns the timeout algebra so callers don't.
 //
-// The per-message timeout is two-tier:
+// The per-message wait is two-tier: a 100ms "warm" window for the first
+// message (covers consumer-creation plus backlog delivery) and a 5ms "tail"
+// window once the client's local pending queue is being drained. These keep
+// TTFB low on the common loopback case where the whole prefix is already
+// buffered client-side.
 //
-//   - 100ms "warm" window for the first message — covers the
-//     consumer-creation roundtrip plus any backlog delivery. On
-//     loopback / LAN the first message lands in <10ms; 100ms is a
-//     generous ceiling that still cuts page-load TTFB by ~5x vs the
-//     original 500ms.
-//   - 5ms "tail" window for subsequent messages — once one message
-//     arrived the NATS client's local pending queue already holds
-//     the rest of the prefix (the server streams the full set on
-//     the consumer pull), so 5ms is plenty to drain the buffer
-//     and detect end-of-stream.
-//
-// Previously every fetchMessages call paid 500ms on both the first
-// and the tail, which taxed every page that walked a NATS
-// subscription synchronously (DLQ list, DLQ detail, run-detail
-// event timeline) by ~505ms TTFB even when there were no messages
-// to read.
+// A NextMsg timeout does NOT end the drain on its own (#609). Under load a
+// single inter-message delivery gap can exceed the 5ms tail while messages
+// are still pending server-side; the old "break on first timeout" then
+// silently truncated the result even though more entries were in the stream
+// and the deadline was nowhere near. Instead, on a timeout we ask the
+// consumer whether anything is still pending: if so we keep waiting up to
+// the deadline; only when the server reports nothing pending — and a final
+// grace poll catches no in-flight straggler — do we conclude the stream is
+// exhausted and return. A genuinely short stream still returns promptly
+// because pending hits zero as soon as its last message is delivered.
 func fetchMessages(
-	sub *nats.Subscription, limit int, deadline time.Time,
+	sub messageDrain, limit int, deadline time.Time,
 ) []*nats.Msg {
 	if sub == nil {
 		panic("fetchMessages: sub must not be nil")
@@ -291,25 +299,54 @@ func fetchMessages(
 	const firstWait = 100 * time.Millisecond
 	const tailWait = 5 * time.Millisecond
 	msgs := make([]*nats.Msg, 0, limit)
-	for i := 0; i < limit; i++ {
+	for len(msgs) < limit {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-		timeout := firstWait
-		if len(msgs) > 0 {
-			timeout = tailWait
+		timeout := tailWait
+		if len(msgs) == 0 {
+			timeout = firstWait
 		}
 		if remaining < timeout {
 			timeout = remaining
 		}
 		msg, err := sub.NextMsg(timeout)
-		if err != nil {
+		if err == nil {
+			msgs = append(msgs, msg)
+			continue
+		}
+		if !errors.Is(err, nats.ErrTimeout) {
 			break
 		}
-		msgs = append(msgs, msg)
+		if drainHasPending(sub) {
+			continue
+		}
+		if straggler, graceErr := sub.NextMsg(tailWait); graceErr == nil {
+			msgs = append(msgs, straggler)
+			continue
+		}
+		break
 	}
 	return msgs
+}
+
+// drainHasPending reports whether the consumer still has messages the server
+// has not yet delivered. A ConsumerInfo failure is treated as "nothing
+// pending" so a broken subscription stops the drain rather than spinning it
+// against the deadline.
+func drainHasPending(sub messageDrain) bool {
+	if sub == nil {
+		panic("drainHasPending: sub must not be nil")
+	}
+	info, err := sub.ConsumerInfo()
+	if err != nil {
+		return false
+	}
+	if info == nil {
+		panic("drainHasPending: ConsumerInfo returned nil without error")
+	}
+	return info.NumPending > 0
 }
 
 // extractTaskFromSubject extracts the task name from a subject.
