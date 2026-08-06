@@ -22,7 +22,7 @@ w.Handle("summarize", func(ctx worker.TaskContext) error {
 })
 ```
 
-The engine's `ActorOrchestrator` follows the same pattern. It exposes `Start()` and `Stop()`. Internally it manages a JetStream consumer, per-run actor spawning, supervision, event routing, and KV snapshots.
+The engine's `Orchestrator` follows the same pattern. It exposes `Start()` and `Stop()`. Internally it manages a JetStream consumer, per-run serialization, event routing, and KV snapshots.
 
 ### Pull Complexity Downward
 
@@ -41,12 +41,13 @@ TigerBeetle's coding discipline prioritizes correctness through constraints and 
 Every design tradeoff follows this ordering. The engine uses assertions (panics) for programmer errors -- a nil connection, an empty address, an impossible state. These are not recoverable errors; they indicate bugs that must be fixed immediately. The codebase contains at minimum two assertions per function.
 
 ```go
-func NewActorOrchestrator(nc *nats.Conn, tel *observe.Telemetry) *ActorOrchestrator {
+func NewOrchestrator(nc *nats.Conn, opts ...OrchestratorOption) *Orchestrator {
     if nc == nil {
-        panic("NewActorOrchestrator: nc must not be nil")
+        panic("NewOrchestrator: nc must not be nil")
     }
-    if tel == nil {
-        panic("NewActorOrchestrator: tel must not be nil")
+    js, err := jetstream.New(nc)
+    if err != nil {
+        panic("NewOrchestrator: jetstream.New: " + err.Error())
     }
     // ...
 }
@@ -56,7 +57,7 @@ This is intentional. A panic at startup is better than a nil pointer dereference
 
 ### Bounded Everything
 
-All loops, queues, retries, and collections have explicit upper bounds. Configuration files are limited to 300 lines. Leaf remotes are capped at 10. Worker configs are capped at 50. Map steps allow at most 10,000 items. Dynamic planners generate at most 100 steps. Actor mailboxes are buffered channels with fixed capacity. Restart trackers allow at most 5 restarts per minute.
+All loops, queues, retries, and collections have explicit upper bounds. Configuration files are limited to 300 lines. Leaf remotes are capped at 10. Worker configs are capped at 50. Map steps allow at most 10,000 items. Dynamic planners generate at most 100 steps. Task redelivery is capped by JetStream's `MaxDeliver`. Parallel KV fetches run under a fixed concurrency limit.
 
 Unbounded growth is a bug. Every bound is documented and enforced.
 
@@ -78,7 +79,7 @@ The `dagnats serve` binary contains everything: embedded NATS, JetStream storage
 
 ### Do Not Import What You Can Write
 
-The codebase avoids external dependencies aggressively. The actor runtime, supervision strategies, restart tracking, KV-backed rate limiting, event correlation, and config file parsing are all implemented in-house. Each is under 300 lines. If you can write the 50 lines yourself, do it -- you own the behavior, the tests, and the upgrade path.
+The codebase avoids external dependencies aggressively. KV-backed rate limiting, admission control, sticky worker routing, event correlation, and config file parsing are all implemented in-house. Each is under 300 lines. If you can write the 50 lines yourself, do it -- you own the behavior, the tests, and the upgrade path.
 
 ## How These Apply Together
 

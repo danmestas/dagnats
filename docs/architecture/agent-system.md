@@ -1,43 +1,21 @@
 # Agent System
 
-## Architecture Decision: NATS-Native Actors (No Framework)
+## Orchestration Model (`engine/`)
 
-DagNats was already ~70% actor-like (per-run state, message-driven, supervision via NATS). Rather than adopt an actor framework, we implemented pure Go actor primitives that integrate naturally with NATS.
+**Status (2026-08-06):** Production runs through a single event-sourced
+`engine.Orchestrator`. It consumes the `WORKFLOW_HISTORY` stream,
+loads run state from KV per event, and serializes each run's events
+behind a per-run mutex (`getRunLock`, a `sync.Map` of `*sync.Mutex`)
+to prevent concurrent KV load-modify-save races. Supervision
+(retry/timeout) is provided by JetStream's `AckWait`/`MaxDeliver` per
+this repo's NATS-native patterns, not by an in-process actor system.
 
-## Actor Runtime (`actor/` package)
-
-**Core types:**
-- `Address` — type + ID pair for actor identification
-- `Message` — envelope with From address and Payload
-- `Actor` interface — single `Receive(ctx, msg)` method
-- `Context` — `Self()`, `Send()`, `Spawn()` for actor operations
-- `Directive` — Restart, Stop, Escalate, Resume
-
-**Supervision strategies:**
-- `OneForOne` — restart only failed child (default)
-- `AllForOne` — restart all siblings on failure
-- Each strategy has `Decide(err) Directive`
-
-**Restart tracking:** Bounded time-window counter (default: 5 restarts/minute). Prevents infinite restart loops. Iterative pruning of expired restarts.
-
-**Runtime mechanics:**
-- Per-actor mailbox (buffered channel)
-- Spawn creates goroutine running receive loop
-- Sequential message processing (thread-safe per actor)
-- Parent supervision on child error
-- Recursive kill tree on parent failure
-
-**Key constraint:** `actor/` is pure Go with zero NATS dependencies. NATS integration is in `engine/`.
-
-## Per-Workflow Actors (`engine/`)
-
-**Status (2026-05-02):** The experimental actor-based engine path
-(`WorkflowActor`, `ActorOrchestrator`) was removed (closes #149). See
-[ADR-009](adr-009-remove-experimental-actor-orchestrator.md). It was
-never wired into any `cmd/` binary; production runs through
-`engine.Orchestrator` (event-sourced, per-event KV load of run state).
-The `actor/` runtime package remains for any future exploration.
-Resurrect via `git log` if needed.
+The experimental actor-based engine path (`WorkflowActor`,
+`ActorOrchestrator`) was removed on 2026-05-02 — see
+[ADR-009](adr-009-remove-experimental-actor-orchestrator.md). The
+standalone `actor/` runtime package it depended on was later deleted
+too (issue #598) after remaining unused since; recover either from
+`git log` if a future actor-model exploration needs a starting point.
 
 ## Agent Step Type
 

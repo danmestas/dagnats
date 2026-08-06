@@ -101,7 +101,6 @@ docs-gen-sdk:
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/worker/api.md ./worker/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/protocol/api.md ./protocol/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/observe/api.md ./observe/
-	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/actor/api.md ./actor/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/server/api.md ./server/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/bridge/api.md ./bridge/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/httpclient/api.md ./sdk/httpclient/
