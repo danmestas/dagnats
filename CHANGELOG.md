@@ -6,6 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+## [0.0.12] - 2026-08-06
+
+Bug-fix and cleanup release. Two real correctness bugs land: a silently-dropped
+workflow trigger declaration (#607) and a shared JetStream drain loop that
+could truncate DLQ listings and run event-history under load (#609). Rounds
+out with the architecture-review nit sweep (#599) and removal of the unused
+`actor/` package (#598).
+
+### Fixed
+
+- **`workflow register` no longer silently drops an unrecognized trigger
+  declaration (#607).** A workflow-definition file that declared its trigger
+  as a singular `trigger` object instead of the expected `triggers` array (or
+  carried any other unrecognized top-level field) registered successfully
+  with the trigger data thrown away — no error, no warning, no failed run.
+  `workflow register` and `workflow validate` now reject unrecognized
+  top-level fields with a clear error before any write. Also adds
+  `workflow delete <name>` (`--force`/`--json`), which refuses to delete a
+  workflow that still has triggers referencing it unless `--force` is passed.
+- **`dlq list` and run event-history reads could silently truncate under load
+  (#609).** The shared `fetchMessages` drain loop broke on the first
+  inter-message delivery gap over 5ms, even with more messages still in the
+  stream and the overall 10s deadline nowhere near — so `dlq list --all`
+  could under-report entries while printing a misleading "truncated, use
+  --all" footer. The drain now checks the consumer's pending count before
+  giving up, so a brief delivery gap under load no longer ends the read
+  early. Also fixes the DLQ confirm-modal's Retry/Discard buttons going
+  silently dead on rows inserted by the live SSE feed after initial page
+  load, by delegating the click listener instead of binding it once at load
+  time.
+- **Step-timeout retry test sized to the real worker dispatch floor (#591).**
+  The worker dispatches task handlers serially per consumer, so a wedged
+  attempt blocks the next redelivery for the full self-timeout window; the
+  test's wait budget now reflects the real ~5.3s floor instead of an
+  optimistic ~1s guess.
+
+### Changed
+
+- **Architecture-review nit sweep (#599).** `internal/engine/orchestrator.go`
+  split into five per-event-kind handler files; the CLI's connect path
+  replaced a panic/recover control-flow pattern with an error-returning
+  `api.ResourcesReady` probe; the three root-level e2e test files migrated
+  into `e2e/features/` under the shared topology-matrix harness; the
+  one-consumer `testutil` package folded into its sole consumer; a stale
+  precondition doc in `internal/natsutil/publish.go` corrected and backed by
+  an assertion.
+- **`dagnatstest` → `internal/api` coupling documented, not split (#601).**
+  Investigated during the `testutil` fold above; no live consumer is
+  currently blocked by the coupling, so ADR-023 records the decision to
+  leave it as-is rather than take on speculative package-splitting work.
+
+### Removed
+
+- **Unused `actor/` package deleted (#598).** Zero non-test importers since
+  its only consumer was removed in ADR-009; its own package doc had gone
+  false (claimed NATS integration lived in `engine/`, which never imported
+  it). Stale references swept from `docs/architecture/` and the docs site,
+  including a full public page describing the runtime as still in use.
+  ADR-009 gets a dated addendum recording the reversal.
+
 ## [0.0.11] - 2026-07-27
 
 Refactor and reliability release. Splits three console god-files and the
