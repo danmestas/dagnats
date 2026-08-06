@@ -13,7 +13,6 @@ Each package section includes a hand-written overview and auto-generated API doc
 | [worker](worker/) | Task execution framework: worker lifecycle, handlers, task context |
 | [protocol](protocol/) | Wire types: events, task payloads, resolutions |
 | [observe](observe/) | Telemetry interfaces: logging, tracing, metrics, error reporting |
-| [actor](actor/) | Actor runtime with supervision trees |
 | [server](server/) | Embedded NATS server with programmatic startup |
 | [bridge](bridge/) | HTTP-to-NATS gateway for non-Go workers |
 | [httpclient](httpclient/) | Go HTTP reference client for the bridge |

@@ -2,7 +2,7 @@
 
 ## Design Decision: errgroup for I/O Fan-Out, Context for Shutdown
 
-Parallelize I/O-bound fan-out operations using `golang.org/x/sync/errgroup`. Migrate scheduler shutdown from `stopChan` to `context.Context`. Fix `time.AfterFunc` context leak. No changes to the actor runtime — actors remain single-threaded with mailbox channels.
+Parallelize I/O-bound fan-out operations using `golang.org/x/sync/errgroup`. Migrate scheduler shutdown from `stopChan` to `context.Context`. Fix `time.AfterFunc` context leak. No changes to the orchestrator's per-run serialization — each run's events stay serialized behind a per-run mutex (`getRunLock`).
 
 ## Parallel KV Helper
 
@@ -59,7 +59,6 @@ Sequential `Tick` returned on first error — if trigger 2 of 5 failed, triggers
 
 ## What Is NOT Changed
 
-- **Actor runtime** — single-threaded with mailbox channels (correct for actor semantics)
 - **Worker system** — sequential per-subscription processing (intentional for task ordering)
 - **Per-run mutex** — run-level serialization via `sync.Map` (prevents KV races)
 - **ConcurrencyManager** — KV-based CAS (correct for distributed concurrency limits)
