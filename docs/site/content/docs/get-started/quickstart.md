@@ -175,3 +175,7 @@ All of this happened through NATS JetStream -- no HTTP calls, no database writes
 {{< callout type="info" >}}
 Building LLM agent pipelines? Check out [AI & LLM Patterns](/docs/ai-patterns/) for agent loops, checkpoints, and multi-agent orchestration.
 {{< /callout >}}
+
+{{< callout type="info" >}}
+Want your workflow to *be* an HTTP API instead of a background job? See [Durable Endpoints](/docs/triggers/http) -- a synchronous HTTP trigger paired with a [`respond` step](/docs/step-types/respond-steps), with retries, timeouts, and event-sourced state included.
+{{< /callout >}}

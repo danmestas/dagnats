@@ -1,11 +1,11 @@
 ---
-title: HTTP Trigger + Respond Step
+title: HTTP Trigger + Respond Step (Durable Endpoints)
 weight: 5
 ---
 
 The HTTP trigger turns a DagNats workflow into a synchronous HTTP endpoint. The caller waits for the workflow's response. The **respond step** is the explicit node in the DAG that publishes that response — analogous to a `return` statement, but a node because DAGs have no single return point.
 
-This pair (ADR-013) is distinct from [webhooks](/docs/triggers/webhooks), which are fire-and-forget; webhook callers get a 202 immediately and never see the workflow's output.
+This pair is dagnats' version of what other workflow engines (e.g. Inngest) call **Durable Endpoints** — see [ADR-013](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-013-http-trigger-respond-step.md) for the design rationale. It is distinct from [webhooks](/docs/triggers/webhooks), which are fire-and-forget; webhook callers get a 202 immediately and never see the workflow's output.
 
 ## Mental model: `respond` is a side effect, not a return
 
