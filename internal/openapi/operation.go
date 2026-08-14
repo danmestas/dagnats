@@ -13,6 +13,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/trigger"
+	oapi "github.com/danmestas/dagnats/openapi"
 )
 
 // buildOperation produces the OpenAPI operation for one HTTP trigger.
@@ -23,14 +24,14 @@ func buildOperation(
 	td trigger.TriggerDef,
 	def dag.WorkflowDef,
 	comps *buildState,
-) *Operation {
+) *oapi.Operation {
 	if td.HTTP == nil {
 		panic("buildOperation: td.HTTP must not be nil")
 	}
 	if comps == nil {
 		panic("buildOperation: comps must not be nil")
 	}
-	op := &Operation{
+	op := &oapi.Operation{
 		OperationID: operationID(td),
 		Summary:     summaryFor(td, def),
 		Tags:        []string{td.WorkflowID},
@@ -99,7 +100,7 @@ func buildOpExtensions(
 // The fallback matches the "missing_schemas" validator warning shape.
 func buildRequestBody(
 	cfg *trigger.HTTPConfig, def dag.WorkflowDef,
-) *RequestBody {
+) *oapi.RequestBody {
 	if cfg == nil {
 		panic("buildRequestBody: cfg must not be nil")
 	}
@@ -110,10 +111,10 @@ func buildRequestBody(
 	if len(schema) == 0 {
 		schema = freeFormObjectSchema()
 	}
-	return &RequestBody{
+	return &oapi.RequestBody{
 		Required:    true,
 		Description: "JSON payload — see schema",
-		Content: map[string]MediaType{
+		Content: map[string]oapi.MediaType{
 			"application/json": {Schema: schema},
 		},
 	}
@@ -126,13 +127,13 @@ func buildRequestBody(
 // surface the engine accepts.
 func buildHeaderParams(
 	cfg *trigger.HTTPConfig,
-) []Parameter {
+) []oapi.Parameter {
 	if cfg == nil {
 		panic("buildHeaderParams: cfg must not be nil")
 	}
-	var out []Parameter
+	var out []oapi.Parameter
 	if cfg.IdempotencyHeader != "" {
-		out = append(out, Parameter{
+		out = append(out, oapi.Parameter{
 			Name:        cfg.IdempotencyHeader,
 			In:          "header",
 			Required:    false,
@@ -157,23 +158,23 @@ func freeFormObjectSchema() json.RawMessage {
 // the success response. Each non-2xx references the shared error
 // schema in components. Every response includes the X-Dagnats-Run-Id
 // header.
-func buildResponses(def dag.WorkflowDef) map[string]Response {
+func buildResponses(def dag.WorkflowDef) map[string]oapi.Response {
 	successSchema := def.OutputSchema
 	if len(successSchema) == 0 {
 		successSchema = freeFormObjectSchema()
 	}
-	runIDHeader := Header{
+	runIDHeader := oapi.Header{
 		Description: "Echoed run identifier for engine correlation",
 		Schema:      json.RawMessage(`{"type":"string"}`),
 	}
-	headers := map[string]Header{
+	headers := map[string]oapi.Header{
 		"X-Dagnats-Run-Id": runIDHeader,
 	}
-	return map[string]Response{
+	return map[string]oapi.Response{
 		"200": {
 			Description: "Workflow responded successfully",
 			Headers:     headers,
-			Content: map[string]MediaType{
+			Content: map[string]oapi.MediaType{
 				"application/json": {Schema: successSchema},
 			},
 		},
@@ -200,12 +201,12 @@ func buildResponses(def dag.WorkflowDef) map[string]Response {
 // All four share the structural shape — separated functions only for
 // the description string.
 func errorResponse(
-	desc string, headers map[string]Header,
-) Response {
-	return Response{
+	desc string, headers map[string]oapi.Header,
+) oapi.Response {
+	return oapi.Response{
 		Description: desc,
 		Headers:     headers,
-		Content: map[string]MediaType{
+		Content: map[string]oapi.MediaType{
 			"application/json": {
 				Schema: json.RawMessage(
 					`{"$ref":"#/components/schemas/DagnatsError"}`,
@@ -243,7 +244,7 @@ func registerErrorSchema(comps *buildState) {
 // authentication first, then HMAC if Secret is set. Empty when
 // neither is configured.
 func applySecurity(
-	op *Operation,
+	op *oapi.Operation,
 	cfg *trigger.HTTPConfig,
 	comps *buildState,
 ) {
@@ -262,7 +263,7 @@ func applySecurity(
 	}
 	if cfg.Secret != "" {
 		const hmacName = "hmacSignature"
-		comps.schemes[hmacName] = SecurityScheme{
+		comps.schemes[hmacName] = oapi.SecurityScheme{
 			Type:        "apiKey",
 			Name:        "X-Signature-256",
 			In:          "header",
@@ -282,11 +283,11 @@ func applySecurity(
 // each field set is internally consistent — this function maps 1:1.
 func toSecurityScheme(
 	a *trigger.HTTPAuthentication,
-) SecurityScheme {
+) oapi.SecurityScheme {
 	if a == nil {
 		panic("toSecurityScheme: a must not be nil")
 	}
-	out := SecurityScheme{
+	out := oapi.SecurityScheme{
 		Type:         a.Type,
 		Description:  a.Description,
 		Scheme:       a.Scheme,

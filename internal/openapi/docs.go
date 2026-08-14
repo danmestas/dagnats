@@ -27,6 +27,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/trigger"
+	oapi "github.com/danmestas/dagnats/openapi"
 )
 
 //go:embed scalar.html
@@ -144,7 +145,7 @@ func serveScalarBundle(w http.ResponseWriter, r *http.Request) {
 // SortedPathKeys returns the path keys in the spec sorted lexically.
 // Exported so callers (tests, debug surfaces) can enumerate the
 // stable order without re-implementing the comparator.
-func SortedPathKeys(s Spec) []string {
+func SortedPathKeys(s oapi.Spec) []string {
 	out := make([]string, 0, len(s.Paths))
 	for k := range s.Paths {
 		out = append(out, k)
