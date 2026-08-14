@@ -31,6 +31,7 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/openapi"
 	"github.com/danmestas/dagnats/internal/trigger"
+	oapi "github.com/danmestas/dagnats/openapi"
 	"github.com/nats-io/nats.go"
 )
 
@@ -129,7 +130,7 @@ func startSmokeServer(
 // the body as JSON into the openapi.Spec struct, and returns it.
 // A bounded HTTP timeout keeps the test from hanging on a missing
 // route.
-func fetchSpec(t *testing.T, base string) openapi.Spec {
+func fetchSpec(t *testing.T, base string) oapi.Spec {
 	t.Helper()
 	cli := &http.Client{Timeout: 5 * time.Second}
 	resp, err := cli.Get(base + "/openapi.json")
@@ -148,7 +149,7 @@ func fetchSpec(t *testing.T, base string) openapi.Spec {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	var spec openapi.Spec
+	var spec oapi.Spec
 	if err := json.Unmarshal(raw, &spec); err != nil {
 		t.Fatalf("unmarshal spec: %v body=%s", err, raw)
 	}

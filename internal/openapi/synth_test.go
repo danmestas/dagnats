@@ -20,6 +20,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/trigger"
+	oapi "github.com/danmestas/dagnats/openapi"
 )
 
 // minimalHTTPTrigger returns a triggerDef + matching workflow with no
@@ -416,7 +417,7 @@ func TestRequestBodyByVerb(t *testing.T) {
 			if !ok {
 				t.Fatalf("path missing for %s", tc.method)
 			}
-			var op *Operation
+			var op *oapi.Operation
 			switch tc.method {
 			case "GET":
 				op = item.Get

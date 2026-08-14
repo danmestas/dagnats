@@ -30,6 +30,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/trigger"
+	oapi "github.com/danmestas/dagnats/openapi"
 )
 
 // Build assembles an OpenAPI 3.1 spec from the supplied triggers and
@@ -45,22 +46,22 @@ func Build(
 	title, version string,
 	triggers []trigger.TriggerDef,
 	defs map[string]dag.WorkflowDef,
-) Spec {
+) oapi.Spec {
 	if defs == nil {
 		panic("openapi.Build: defs map must not be nil")
 	}
 	if len(triggers) > buildMaxTriggers {
 		panic("openapi.Build: too many triggers")
 	}
-	out := Spec{
+	out := oapi.Spec{
 		OpenAPI: "3.1.0",
-		Info: Info{
+		Info: oapi.Info{
 			Title:   defaultIfEmpty(title, "dagnats HTTP API"),
 			Version: defaultIfEmpty(version, "0.0.0"),
 			Description: "Auto-generated from registered HTTP-trigger " +
 				"workflows. Synthesised on demand at request time.",
 		},
-		Paths: make(map[string]PathItem),
+		Paths: make(map[string]oapi.PathItem),
 	}
 	comps := newComponents()
 	httpCount := buildPaths(&out, comps, triggers, defs)
@@ -92,24 +93,24 @@ func defaultIfEmpty(s, fallback string) string {
 // can register a security scheme or shared schema without threading
 // the same struct through every signature.
 type buildState struct {
-	schemes map[string]SecurityScheme
+	schemes map[string]oapi.SecurityScheme
 	schemas map[string]json.RawMessage
 }
 
 func newComponents() *buildState {
 	return &buildState{
-		schemes: make(map[string]SecurityScheme),
+		schemes: make(map[string]oapi.SecurityScheme),
 		schemas: make(map[string]json.RawMessage),
 	}
 }
 
 // collapse returns the Components struct or nil when nothing was
 // registered (drops an empty `components: {}` key from the JSON).
-func (s *buildState) collapse() *Components {
+func (s *buildState) collapse() *oapi.Components {
 	if len(s.schemes) == 0 && len(s.schemas) == 0 {
 		return nil
 	}
-	return &Components{
+	return &oapi.Components{
 		Schemas:         s.schemas,
 		SecuritySchemes: s.schemes,
 	}
@@ -119,7 +120,7 @@ func (s *buildState) collapse() *Components {
 // adds one operation per (path, method). Returns the count of HTTP
 // triggers actually folded in.
 func buildPaths(
-	spec *Spec, comps *buildState,
+	spec *oapi.Spec, comps *buildState,
 	triggers []trigger.TriggerDef,
 	defs map[string]dag.WorkflowDef,
 ) int {
@@ -181,7 +182,7 @@ func sortHTTPTriggers(in []trigger.TriggerDef) {
 // assignOperation places op on the path item at the right method
 // slot. Panics on unsupported methods — those are caught earlier by
 // HTTPConfig.Validate's allowed-method set.
-func assignOperation(item *PathItem, method string, op *Operation) {
+func assignOperation(item *oapi.PathItem, method string, op *oapi.Operation) {
 	if item == nil {
 		panic("assignOperation: item must not be nil")
 	}
