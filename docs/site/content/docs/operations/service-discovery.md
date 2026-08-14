@@ -3,8 +3,6 @@ title: "Service Discovery (nats-micro)"
 weight: 6
 ---
 
-# Service Discovery (nats-micro)
-
 DagNats's internal control-plane endpoints run as **[nats-micro](https://github.com/nats-io/nats.go/tree/main/micro)
 services**. That means dagnats is **discoverable and observable with standard
 NATS tooling** out of the box — no extra wiring — and the console Services page
