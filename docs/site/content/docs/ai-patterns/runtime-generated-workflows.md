@@ -3,8 +3,6 @@ title: "Runtime-Generated Workflows (Agent Runtimes)"
 weight: 9
 ---
 
-# Runtime-Generated Workflows (Agent Runtimes)
-
 Most workflows are **pre-registered**: you author a DAG, register it, and trigger
 runs of it. Agent runtimes lift that restriction for **gated** task handlers — a
 running step can **author a brand-new workflow at runtime and launch it**, so an
