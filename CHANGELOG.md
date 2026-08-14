@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+## [0.0.13] - 2026-08-14
+
+### Changed
+
+- **OpenAPI 3.1 document types promoted to a public `openapi` package (#614).**
+  `internal/openapi/types.go` moves to `openapi/` at module root (stdlib-only,
+  zero dagnats-internal dependencies), matching the shape of `dag`,
+  `dagnatsext`, and `dagnatstest`. Lets other modules import the document
+  model without depending on this repo's `internal/` tree, which Go
+  disallows. Synthesis logic (mapping workflows/triggers into the document
+  model) stays in `internal/openapi`, now importing the public types. No
+  behavior change — output is byte-for-byte identical.
+
+### Documentation
+
+- **Durable Endpoints made discoverable.** The HTTP-trigger + respond-step
+  pairing (ADR-013 names it "Durable Endpoints") had solid dedicated docs
+  but the name itself never appeared anywhere public-facing, the capability
+  was missing from both the README's and docs site's top-level pitch, and
+  onboarding pages had zero cross-links to it. Added the name to the
+  existing README bullet, a docs-site Key Differentiators entry, a
+  quickstart callout, and the page title.
+- **Fixed duplicate page-title headings** on two docs-site pages (Service
+  Discovery, Runtime-Generated Workflows) where a redundant body H1
+  duplicated the theme-rendered frontmatter title.
+
 ## [0.0.12] - 2026-08-06
 
 Bug-fix and cleanup release. Two real correctness bugs land: a silently-dropped
