@@ -11,11 +11,17 @@ import (
 )
 
 // workflowValidateResult is the JSON output for workflow validate.
+//
+// Warnings carries the structured {kind,message} ADR-013 respond-
+// reachability warnings (issue #613). The field has no omitempty: the
+// acceptance criterion requires the array to be present even when empty
+// so JSON consumers can iterate it unconditionally.
 type workflowValidateResult struct {
-	Valid bool   `json:"valid"`
-	Name  string `json:"name,omitempty"`
-	Steps int    `json:"steps,omitempty"`
-	Error string `json:"error,omitempty"`
+	Valid    bool          `json:"valid"`
+	Name     string        `json:"name,omitempty"`
+	Steps    int           `json:"steps,omitempty"`
+	Error    string        `json:"error,omitempty"`
+	Warnings []dag.Warning `json:"warnings"`
 }
 
 // runWorkflowValidateCmd validates a workflow JSON file without NATS.
@@ -46,12 +52,13 @@ func runWorkflowValidateCmd(args []string) {
 		return
 	}
 
-	result, err := validateWorkflowFile(filePath)
+	wf, err := parseAndValidateWorkflow(filePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Println(result)
+	fmt.Printf("Valid: %s (%d steps)\n", wf.Name, len(wf.Steps))
+	printRespondWarnings(respondWarnings(wf))
 }
 
 // runWorkflowValidateJSON outputs validation result as JSON.
@@ -69,11 +76,12 @@ func runWorkflowValidateJSON(filePath string) {
 		)
 	}
 
-	def, err := parseAndValidateWorkflow(filePath)
+	wf, err := parseAndValidateWorkflow(filePath)
 	if err != nil {
 		out := workflowValidateResult{
-			Valid: false,
-			Error: err.Error(),
+			Valid:    false,
+			Error:    err.Error(),
+			Warnings: []dag.Warning{},
 		}
 		if fmtErr := FormatJSON(os.Stdout, out); fmtErr != nil {
 			fmt.Fprintf(
@@ -84,10 +92,15 @@ func runWorkflowValidateJSON(filePath string) {
 		return
 	}
 
+	warnings := respondWarnings(wf)
+	if warnings == nil {
+		warnings = []dag.Warning{}
+	}
 	out := workflowValidateResult{
-		Valid: true,
-		Name:  def.Name,
-		Steps: len(def.Steps),
+		Valid:    true,
+		Name:     wf.Name,
+		Steps:    len(wf.Steps),
+		Warnings: warnings,
 	}
 	if fmtErr := FormatJSON(os.Stdout, out); fmtErr != nil {
 		fmt.Fprintf(os.Stderr, "format json: %v\n", fmtErr)
@@ -95,11 +108,14 @@ func runWorkflowValidateJSON(filePath string) {
 	}
 }
 
-// parseAndValidateWorkflow reads, parses, and validates a workflow
-// JSON file. Returns the parsed def or an error.
+// parseAndValidateWorkflow reads, parses, and validates a workflow JSON
+// file. Returns the parsed file (definition + embedded triggers) or an
+// error. The triggers are retained so callers can compute offline
+// respond-reachability warnings from the file's own HTTP trigger
+// (issue #613) without a NATS round-trip.
 func parseAndValidateWorkflow(
 	filePath string,
-) (dag.WorkflowDef, error) {
+) (workflowFile, error) {
 	if filePath == "" {
 		panic(
 			"parseAndValidateWorkflow: filePath must not be empty",
@@ -113,20 +129,20 @@ func parseAndValidateWorkflow(
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return dag.WorkflowDef{}, fmt.Errorf(
+		return workflowFile{}, fmt.Errorf(
 			"read file: %w", err,
 		)
 	}
 
 	wf, err := parseWorkflowFile(data)
 	if err != nil {
-		return dag.WorkflowDef{}, fmt.Errorf(
+		return workflowFile{}, fmt.Errorf(
 			"parse workflow: %w", err,
 		)
 	}
 
 	if err := dag.Validate(wf.WorkflowDef); err != nil {
-		return dag.WorkflowDef{}, fmt.Errorf(
+		return workflowFile{}, fmt.Errorf(
 			"invalid: %w", err,
 		)
 	}
@@ -135,10 +151,10 @@ func parseAndValidateWorkflow(
 	// `workflow validate` catches malformed cron / mismatched
 	// workflow_id offline.
 	if err := validateEmbeddedTriggers(&wf); err != nil {
-		return dag.WorkflowDef{}, err
+		return workflowFile{}, err
 	}
 
-	return wf.WorkflowDef, nil
+	return wf, nil
 }
 
 // validateWorkflowFile reads, parses, and validates a workflow JSON
@@ -159,12 +175,12 @@ func validateWorkflowFile(
 		)
 	}
 
-	def, err := parseAndValidateWorkflow(filePath)
+	wf, err := parseAndValidateWorkflow(filePath)
 	if err != nil {
 		return "", err
 	}
 
 	return fmt.Sprintf(
-		"Valid: %s (%d steps)", def.Name, len(def.Steps),
+		"Valid: %s (%d steps)", wf.Name, len(wf.Steps),
 	), nil
 }

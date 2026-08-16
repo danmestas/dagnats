@@ -30,6 +30,55 @@ type workflowFile struct {
 	Triggers []trigger.TriggerDef `json:"triggers,omitempty"`
 }
 
+// fileHasHTTPTrigger reports whether the workflow file declares at least
+// one HTTP trigger. This is the offline counterpart to the register
+// service's live-KV hasHTTPTriggerFor: `workflow validate` never
+// connects to NATS, so the check reads the file's own embedded triggers
+// (issue #613).
+func fileHasHTTPTrigger(wf workflowFile) bool {
+	const maxTriggers = 100000
+	if len(wf.Triggers) > maxTriggers {
+		panic("fileHasHTTPTrigger: trigger count exceeds bound")
+	}
+	for i := range wf.Triggers {
+		if wf.Triggers[i].HTTP != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// respondWarnings runs dag.ValidateRespondReachability against the parsed
+// workflow file, deriving hasHTTPTrigger from the file's embedded
+// triggers. Shared by `workflow validate` and `workflow register` so
+// both CLI commands surface the identical ADR-013 graph warnings offline
+// (issue #613). Returns a nil slice when there are no problems.
+func respondWarnings(wf workflowFile) []dag.Warning {
+	if wf.WorkflowDef.Name == "" {
+		panic("respondWarnings: workflow name must not be empty")
+	}
+	if len(wf.WorkflowDef.Steps) == 0 {
+		panic("respondWarnings: workflow must have steps")
+	}
+	return dag.ValidateRespondReachability(
+		wf.WorkflowDef, fileHasHTTPTrigger(wf),
+	)
+}
+
+// printRespondWarnings writes each ADR-013 respond-reachability warning
+// to stderr. These are advisory and never change an exit code, so they
+// stay off stdout — keeping the "Valid:"/"Workflow created" line and the
+// --json document clean for machine consumers.
+func printRespondWarnings(warnings []dag.Warning) {
+	const maxWarnings = 100000
+	if len(warnings) > maxWarnings {
+		panic("printRespondWarnings: warning count exceeds bound")
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "Warning [%s]: %s\n", w.Kind, w.Message)
+	}
+}
+
 // runWorkflowCmd dispatches workflow subcommands.
 func runWorkflowCmd(args []string) {
 	if HasHelpFlag(args) {
@@ -126,11 +175,19 @@ func printWorkflowListTable(defs []dag.WorkflowDef) {
 }
 
 // workflowRegisterResult is the JSON output for workflow register.
+//
+// Warnings and RespondWarnings are kept as distinct fields on purpose:
+// Warnings carries missing-worker advisories (formatted task names from
+// checkMissingWorkers), while RespondWarnings carries the structured
+// {kind,message} ADR-013 respond-reachability warnings. Folding the two
+// into one opaque string list would erase the kind/message split that
+// existing consumers of Warnings never expected to parse (issue #613).
 type workflowRegisterResult struct {
-	Name     string   `json:"name"`
-	Action   string   `json:"action"`
-	Steps    int      `json:"steps"`
-	Warnings []string `json:"warnings,omitempty"`
+	Name            string        `json:"name"`
+	Action          string        `json:"action"`
+	Steps           int           `json:"steps"`
+	Warnings        []string      `json:"warnings,omitempty"`
+	RespondWarnings []dag.Warning `json:"respond_warnings,omitempty"`
 }
 
 // runWorkflowRegisterCmd reads a workflow definition file and
@@ -177,7 +234,8 @@ func runWorkflowRegisterCmd(args []string) {
 		action = "updated"
 	}
 	warnings := checkMissingWorkers(nc, def)
-	printRegisterResult(jsonOutput, def, action, warnings)
+	respondWarns := respondWarnings(wf)
+	printRegisterResult(jsonOutput, def, action, warnings, respondWarns)
 }
 
 // printRegisterResult formats and writes the post-register output for
@@ -188,6 +246,7 @@ func printRegisterResult(
 	def dag.WorkflowDef,
 	action string,
 	warnings []string,
+	respondWarns []dag.Warning,
 ) {
 	if action == "" {
 		panic("printRegisterResult: action must not be empty")
@@ -197,10 +256,11 @@ func printRegisterResult(
 	}
 	if jsonOutput {
 		result := workflowRegisterResult{
-			Name:     def.Name,
-			Action:   action,
-			Steps:    len(def.Steps),
-			Warnings: warnings,
+			Name:            def.Name,
+			Action:          action,
+			Steps:           len(def.Steps),
+			Warnings:        warnings,
+			RespondWarnings: respondWarns,
 		}
 		if err := FormatJSON(os.Stdout, result); err != nil {
 			fmt.Fprintf(os.Stderr, "format json: %v\n", err)
@@ -214,6 +274,7 @@ func printRegisterResult(
 		fmt.Fprintf(os.Stderr,
 			"Warning: no active worker for task %q\n", w)
 	}
+	printRespondWarnings(respondWarns)
 	printHint(false,
 		"Hint: start a run with:",
 		fmt.Sprintf("  dagnats run start %s '{}' --watch", def.Name),
