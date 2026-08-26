@@ -18,7 +18,15 @@ const (
 	downloadTimeout = 30 * time.Second
 	maxDownloadSize = 200 * 1024 * 1024 // 200 MB
 
-	defaultOtelcolVersion      = "0.102.0"
+	// defaultOtelcolVersion pins the upstream OTel Collector *core*
+	// distro. Core is sufficient because the generated config uses
+	// only core components (otlp receiver, batch processor, otlp_http
+	// exporter). Go module tooling cannot see this pin — it is an
+	// external binary — so it needs a deliberate bump. To bump:
+	// regenerate a config and check it both validates AND starts
+	// without warnings, since `otelcol validate` misses deprecation
+	// warnings that only surface at runtime.
+	defaultOtelcolVersion      = "0.159.0"
 	defaultOtlp2parquetVersion = "0.9.1"
 	// defaultMCPDuckDBVersion tracks the dagnats release tag.
 	// The tarball is built and published alongside the main

@@ -63,11 +63,11 @@ func TestGenerateCollectorConfig_LocalOnly(t *testing.T) {
 	}
 
 	// Verify parquet exporter present, backend absent.
-	if _, ok := cc.Exporters["otlphttp/parquet"]; !ok {
-		t.Error("expected otlphttp/parquet exporter")
+	if _, ok := cc.Exporters["otlp_http/parquet"]; !ok {
+		t.Error("expected otlp_http/parquet exporter")
 	}
-	if _, ok := cc.Exporters["otlphttp/backend"]; ok {
-		t.Error("unexpected otlphttp/backend exporter")
+	if _, ok := cc.Exporters["otlp_http/backend"]; ok {
+		t.Error("unexpected otlp_http/backend exporter")
 	}
 
 	// Verify all 3 pipelines exist with correct exporters.
@@ -82,6 +82,37 @@ func TestGenerateCollectorConfig_LocalOnly(t *testing.T) {
 				"%s: expected 1 exporter, got %d",
 				name, len(p.Exporters),
 			)
+		}
+	}
+}
+
+// TestGenerateCollectorConfig_NoDeprecatedExporterAlias guards the
+// exporter type name. Collector 0.159.0 accepts the legacy "otlphttp"
+// spelling but logs a deprecation warning per signal on every start;
+// only "otlp_http" boots clean. `otelcol validate` does not catch this,
+// so the assertion lives here.
+func TestGenerateCollectorConfig_NoDeprecatedExporterAlias(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Backend = &BackendConfig{
+		Endpoint: "https://otel.example.com:4318",
+	}
+
+	data, err := GenerateCollectorConfig(cfg)
+	if err != nil {
+		t.Fatalf("GenerateCollectorConfig: %v", err)
+	}
+
+	cc := parseCollectorYAML(t, data)
+
+	for _, name := range []string{"parquet", "backend"} {
+		if _, ok := cc.Exporters["otlphttp/"+name]; ok {
+			t.Errorf(
+				"exporter otlphttp/%s uses the deprecated alias; "+
+					"expected otlp_http/%s", name, name,
+			)
+		}
+		if _, ok := cc.Exporters["otlp_http/"+name]; !ok {
+			t.Errorf("expected otlp_http/%s exporter", name)
 		}
 	}
 }
@@ -103,8 +134,8 @@ func TestGenerateCollectorConfig_WithBackend(t *testing.T) {
 	cc := parseCollectorYAML(t, data)
 
 	// Verify backend exporter present.
-	if _, ok := cc.Exporters["otlphttp/backend"]; !ok {
-		t.Error("expected otlphttp/backend exporter")
+	if _, ok := cc.Exporters["otlp_http/backend"]; !ok {
+		t.Error("expected otlp_http/backend exporter")
 	}
 
 	// Verify all pipelines include both exporters.

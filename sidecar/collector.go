@@ -19,10 +19,10 @@ processors:
     send_batch_size: 1024
 
 exporters:
-  otlphttp/parquet:
+  otlp_http/parquet:
     endpoint: "http://localhost:4319"
 {{- if .Backend}}
-  otlphttp/backend:
+  otlp_http/backend:
     endpoint: "{{.Backend.Endpoint}}"
 {{- if .Backend.Headers}}
     headers:
@@ -37,15 +37,15 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/parquet{{if .Backend}}, otlphttp/backend{{end}}]
+      exporters: [otlp_http/parquet{{if .Backend}}, otlp_http/backend{{end}}]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/parquet{{if .Backend}}, otlphttp/backend{{end}}]
+      exporters: [otlp_http/parquet{{if .Backend}}, otlp_http/backend{{end}}]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/parquet{{if .Backend}}, otlphttp/backend{{end}}]
+      exporters: [otlp_http/parquet{{if .Backend}}, otlp_http/backend{{end}}]
 `
 
 var collectorTmpl = template.Must(
