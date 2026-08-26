@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+### Fixed
+
+- **`dagnats sidecar install` could never fetch `dagnats-mcp-duckdb` (#621).**
+  The release workflow built the four tarballs but only uploaded them as
+  workflow artifacts, expecting an operator to attach them by hand — which
+  never happened, so no release from v0.0.1 through v0.0.13 shipped the
+  asset and every prebuilt download 404'd. Compounding it, the download
+  version was pinned to a hardcoded `0.0.1` that drifted 12 releases behind.
+  The workflow now attaches the tarballs to the release on tag push, and the
+  version is derived from the running dagnats build instead of a hand-bumped
+  constant. Hosts with Go were unaffected (the install falls back to a local
+  build); clean prebuilt hosts silently lost MCP DuckDB queries.
+
+### Changed
+
+- **`sidecar.InstallAll` now takes the dagnats build version**
+  (`InstallAll(w io.Writer, dagnatsVersion string)`). It selects the matching
+  `dagnats-mcp-duckdb` release asset; unversioned dev builds fall through to
+  the existing build-from-source path. Breaking for direct importers of the
+  `sidecar` package, which is not part of the published SDK reference.
+- **OTel Collector bumped 0.102.0 → 0.159.0 (#620).** The pin was the
+  file's birth value and had never been revisited, leaving it ~2 years
+  behind upstream. Generated configs now use the `otlp_http` exporter name;
+  0.159.0 still accepts the old `otlphttp` alias but warns per signal on
+  every start.
+
 ## [0.0.13] - 2026-08-14
 
 ### Changed

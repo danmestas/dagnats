@@ -180,6 +180,63 @@ func TestOtlp2parquetDefaultVersionExistsUpstream(t *testing.T) {
 	}
 }
 
+func TestMCPDuckDBVersion_DerivesFromBuildVersion(t *testing.T) {
+	// The tarball ships as an asset on the dagnats release of the
+	// same tag, so the version is never independent of the build.
+	// A hardcoded constant drifted 12 releases behind before this
+	// was derived; anything hand-maintained rots the same way.
+	cases := []struct {
+		name  string
+		build string
+		want  string
+	}{
+		{"release tag", "v0.0.13", "0.0.13"},
+		{"bare semver", "0.0.13", "0.0.13"},
+		{"describe after tag", "v0.0.13-5-gabc1234", "0.0.13"},
+		{"describe dirty", "v0.0.13-5-gabc1234-dirty", "0.0.13"},
+		{"double digit", "v1.24.7", "1.24.7"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := MCPDuckDBVersion(tc.build)
+			if err != nil {
+				t.Fatalf(
+					"MCPDuckDBVersion(%q): unexpected error: %v",
+					tc.build, err,
+				)
+			}
+			if got != tc.want {
+				t.Errorf(
+					"MCPDuckDBVersion(%q) = %q; want %q",
+					tc.build, got, tc.want,
+				)
+			}
+		})
+	}
+}
+
+func TestMCPDuckDBVersion_RejectsUnversionedBuilds(t *testing.T) {
+	// Dev builds have no matching release asset. Returning an error
+	// (rather than a bogus version that 404s) lets InstallAll fall
+	// through to its existing build-from-source path.
+	for _, build := range []string{"dev", "not-a-version", "v", "vx.y.z"} {
+		got, err := MCPDuckDBVersion(build)
+		if err == nil {
+			t.Errorf(
+				"MCPDuckDBVersion(%q) = %q; want an error",
+				build, got,
+			)
+		}
+		if got != "" {
+			t.Errorf(
+				"MCPDuckDBVersion(%q) returned %q on error; want empty",
+				build, got,
+			)
+		}
+	}
+}
+
 func TestDownloadURL_Unknown(t *testing.T) {
 	_, err := DownloadURL(
 		"unknown", "1.0.0", "linux", "amd64",
@@ -321,7 +378,7 @@ func TestInstallAll_SoftFailsMCPDuckDB(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	var buf bytes.Buffer
-	err := InstallAll(&buf)
+	err := InstallAll(&buf, "dev")
 	if err != nil {
 		t.Fatalf(
 			"InstallAll should succeed when only "+
@@ -360,8 +417,14 @@ func TestKnownBinaries_IncludesMCPDuckDB(t *testing.T) {
 	if spec.urlFmt == "" {
 		t.Fatal("dagnats-mcp-duckdb URL template must be set")
 	}
-	if spec.version == "" {
-		t.Fatal("dagnats-mcp-duckdb default version must be set")
+	// Negative: the version must NOT be pinned here. It is derived
+	// per call from the running dagnats build (see MCPDuckDBVersion);
+	// a static pin here is what drifted 12 releases behind (#621).
+	if spec.version != "" {
+		t.Errorf(
+			"dagnats-mcp-duckdb version must be derived, "+
+				"not pinned; got %q", spec.version,
+		)
 	}
 }
 
@@ -369,13 +432,17 @@ func TestDownloadURL_MCPDuckDB_LinuxAMD64(t *testing.T) {
 	// #188: the URL produced for linux/amd64 must point at
 	// the dagnats GitHub release artifact for the named
 	// version and platform pair.
-	spec, ok := knownBinaries["dagnats-mcp-duckdb"]
-	if !ok {
+	if _, ok := knownBinaries["dagnats-mcp-duckdb"]; !ok {
 		t.Fatal("dagnats-mcp-duckdb missing from knownBinaries")
 	}
 
+	version, err := MCPDuckDBVersion("v0.0.13")
+	if err != nil {
+		t.Fatalf("MCPDuckDBVersion: %v", err)
+	}
+
 	url, err := DownloadURL(
-		"dagnats-mcp-duckdb", spec.version, "linux", "amd64",
+		"dagnats-mcp-duckdb", version, "linux", "amd64",
 	)
 	if err != nil {
 		t.Fatalf("DownloadURL: unexpected error: %v", err)
@@ -413,9 +480,13 @@ func TestKnownBinaries_MCPDuckDB_ResolvesForAllPlatforms(
 	// platform). The release pipeline must publish a tarball
 	// for each.
 	t.Parallel()
-	spec, ok := knownBinaries["dagnats-mcp-duckdb"]
-	if !ok {
+	if _, ok := knownBinaries["dagnats-mcp-duckdb"]; !ok {
 		t.Fatal("dagnats-mcp-duckdb missing from knownBinaries")
+	}
+
+	version, err := MCPDuckDBVersion("v0.0.13")
+	if err != nil {
+		t.Fatalf("MCPDuckDBVersion: %v", err)
 	}
 
 	platforms := []struct{ os, arch string }{
@@ -427,7 +498,7 @@ func TestKnownBinaries_MCPDuckDB_ResolvesForAllPlatforms(
 
 	for _, p := range platforms {
 		url, err := DownloadURL(
-			"dagnats-mcp-duckdb", spec.version, p.os, p.arch,
+			"dagnats-mcp-duckdb", version, p.os, p.arch,
 		)
 		if err != nil {
 			t.Errorf(
