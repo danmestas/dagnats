@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -28,14 +29,9 @@ const (
 	// warnings that only surface at runtime.
 	defaultOtelcolVersion      = "0.159.0"
 	defaultOtlp2parquetVersion = "0.9.1"
-	// defaultMCPDuckDBVersion tracks the dagnats release tag.
-	// The tarball is built and published alongside the main
-	// dagnats binaries; bump in lockstep with the release tag.
-	defaultMCPDuckDBVersion = "0.0.1"
-
-	binDirName = ".dagnats/bin"
-	dirPerms   = 0o755
-	binPerms   = 0o755
+	binDirName                 = ".dagnats/bin"
+	dirPerms                   = 0o755
+	binPerms                   = 0o755
 )
 
 // knownBinaries maps binary names to their download URL
@@ -62,9 +58,11 @@ var knownBinaries = map[string]binarySpec{
 	// CGO+marcboeker/go-duckdb means we can't bundle it into the
 	// main pure-Go dagnats binary, but the release pipeline builds
 	// a standalone per-platform tarball alongside the main release.
-	// See #188.
+	// See #188. The version is not pinned here: it is derived per
+	// call from the running dagnats build via MCPDuckDBVersion,
+	// because the asset lives on the dagnats release of the same
+	// tag. A hardcoded pin here drifted 12 releases behind (#621).
 	"dagnats-mcp-duckdb": {
-		version: defaultMCPDuckDBVersion,
 		urlFmt: "https://github.com/" +
 			"danmestas/dagnats/" +
 			"releases/download/v%s/" +
@@ -128,6 +126,44 @@ func binDirPath() (string, error) {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
 	return filepath.Join(home, binDirName), nil
+}
+
+// mcpDuckDBVersionRe matches a release tag at the head of a build
+// version string, tolerating an optional leading "v" and any
+// `git describe` suffix ("-5-gabc1234", "-dirty").
+var mcpDuckDBVersionRe = regexp.MustCompile(
+	`^v?(\d+\.\d+\.\d+)(?:[-+].*)?$`,
+)
+
+// MCPDuckDBVersion derives the dagnats-mcp-duckdb release version
+// from the running dagnats build version. The tarball ships as an
+// asset on the dagnats release of the same tag, so the two are never
+// independent — deriving removes the hand-maintained pin that drifted
+// 12 releases behind (#621).
+//
+// Accepts release tags ("v0.0.13", "0.0.13") and `git describe` output
+// from commits after a tag, which resolve to the base tag. Returns an
+// error for unversioned dev builds, where no matching release asset
+// exists; callers fall back to building from source.
+func MCPDuckDBVersion(dagnatsVersion string) (string, error) {
+	if dagnatsVersion == "" {
+		panic("MCPDuckDBVersion: dagnatsVersion is empty")
+	}
+	const versionMax = 100
+	if len(dagnatsVersion) > versionMax {
+		panic("MCPDuckDBVersion: dagnatsVersion unreasonably long")
+	}
+
+	m := mcpDuckDBVersionRe.FindStringSubmatch(dagnatsVersion)
+	if m == nil {
+		return "", fmt.Errorf(
+			"dagnats build version %q is not a release tag; "+
+				"no matching dagnats-mcp-duckdb asset exists",
+			dagnatsVersion,
+		)
+	}
+
+	return m[1], nil
 }
 
 // DownloadURL builds the download URL for a known binary.
@@ -388,9 +424,16 @@ func findModuleRoot() (string, error) {
 // Uses prebuilt downloads where available, falls back to
 // building from source for otlp2parquet (Rust/cargo) and
 // dagnats-mcp-duckdb (Go).
-func InstallAll(w io.Writer) error {
+//
+// dagnatsVersion is the running dagnats build version; it selects the
+// matching dagnats-mcp-duckdb release asset. Unversioned dev builds
+// fall through to the local build path.
+func InstallAll(w io.Writer, dagnatsVersion string) error {
 	if w == nil {
 		panic("InstallAll: writer is nil")
+	}
+	if dagnatsVersion == "" {
+		panic("InstallAll: dagnatsVersion is empty")
 	}
 
 	// Download-based binaries.
@@ -432,28 +475,56 @@ func InstallAll(w io.Writer) error {
 		fmt.Fprintf(w, "✓ %s installed\n", name)
 	}
 
-	// Local Go binaries: try prebuilt download first (clean
-	// hosts have no Go), fall back to BuildLocal for the
-	// dagnats source tree path, and soft-skip if both fail.
 	for _, lb := range localBinaries {
-		path, err := FindBinary(lb.Name)
-		if err == nil {
-			fmt.Fprintf(w, "✓ %s found at %s\n",
-				lb.Name, path)
-			continue
+		if err := installLocalBinary(
+			w, lb, dagnatsVersion,
+		); err != nil {
+			return err
 		}
+	}
 
-		// Prefer prebuilt download when knownBinaries has an
-		// entry — this is the prebuilt-host path and avoids
-		// the Go/CGO toolchain. See #188.
-		if spec, ok := knownBinaries[lb.Name]; ok {
-			fmt.Fprintf(
-				w, "⬇ installing %s v%s...\n",
-				lb.Name, spec.version,
+	return nil
+}
+
+// installLocalBinary installs one local Go binary: try the prebuilt
+// download first (clean hosts have no Go), fall back to BuildLocal
+// for the dagnats source tree path, and soft-skip if both fail.
+func installLocalBinary(
+	w io.Writer, lb localBinary, dagnatsVersion string,
+) error {
+	if w == nil {
+		panic("installLocalBinary: writer is nil")
+	}
+	if dagnatsVersion == "" {
+		panic("installLocalBinary: dagnatsVersion is empty")
+	}
+
+	path, err := FindBinary(lb.Name)
+	if err == nil {
+		fmt.Fprintf(w, "✓ %s found at %s\n", lb.Name, path)
+		return nil
+	}
+
+	// Prefer prebuilt download when knownBinaries has an entry —
+	// this is the prebuilt-host path and avoids the Go/CGO
+	// toolchain. See #188. Dev builds have no matching release
+	// asset, so they skip straight to the local build (#621).
+	if _, ok := knownBinaries[lb.Name]; ok {
+		version, verErr := MCPDuckDBVersion(dagnatsVersion)
+		switch {
+		case verErr != nil:
+			fmt.Fprintf(w,
+				"  no release asset for this build (%v); "+
+					"trying local build...\n",
+				verErr,
 			)
-			if err := Install(lb.Name, spec.version); err == nil {
+		default:
+			fmt.Fprintf(
+				w, "⬇ installing %s v%s...\n", lb.Name, version,
+			)
+			if err := Install(lb.Name, version); err == nil {
 				fmt.Fprintf(w, "✓ %s installed\n", lb.Name)
-				continue
+				return nil
 			} else {
 				fmt.Fprintf(w,
 					"  download failed (%v); "+
@@ -462,30 +533,28 @@ func InstallAll(w io.Writer) error {
 				)
 			}
 		}
-
-		fmt.Fprintf(w, "🔨 building %s...\n", lb.Name)
-		if err := BuildLocal(lb.Name, lb.Pkg); err != nil {
-			// dagnats-mcp-duckdb is best-effort: it powers
-			// ad-hoc MCP DuckDB queries, not the core OTLP
-			// pipe. Skip on build failure rather than failing
-			// the whole install. The supervisor will also
-			// log a notice and run without it. See #187.
-			if lb.Name == "dagnats-mcp-duckdb" {
-				fmt.Fprintf(w,
-					"⚠ %s not built (%v); MCP DuckDB "+
-						"queries will be unavailable. "+
-						"Install Go and re-run from the "+
-						"dagnats source tree if needed.\n",
-					lb.Name, err,
-				)
-				continue
-			}
-			return fmt.Errorf(
-				"build %s: %w", lb.Name, err,
-			)
-		}
-		fmt.Fprintf(w, "✓ %s built\n", lb.Name)
 	}
+
+	fmt.Fprintf(w, "🔨 building %s...\n", lb.Name)
+	if err := BuildLocal(lb.Name, lb.Pkg); err != nil {
+		// dagnats-mcp-duckdb is best-effort: it powers ad-hoc MCP
+		// DuckDB queries, not the core OTLP pipe. Skip on build
+		// failure rather than failing the whole install. The
+		// supervisor will also log a notice and run without it.
+		// See #187.
+		if lb.Name == "dagnats-mcp-duckdb" {
+			fmt.Fprintf(w,
+				"⚠ %s not built (%v); MCP DuckDB "+
+					"queries will be unavailable. "+
+					"Install Go and re-run from the "+
+					"dagnats source tree if needed.\n",
+				lb.Name, err,
+			)
+			return nil
+		}
+		return fmt.Errorf("build %s: %w", lb.Name, err)
+	}
+	fmt.Fprintf(w, "✓ %s built\n", lb.Name)
 
 	return nil
 }

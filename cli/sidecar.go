@@ -319,7 +319,7 @@ func runSidecarInstallCmd(args []string) {
 		return
 	}
 
-	if err := sidecar.InstallAll(os.Stderr); err != nil {
+	if err := sidecar.InstallAll(os.Stderr, Version); err != nil {
 		fmt.Fprintf(os.Stderr,
 			"error: install: %v\n", err)
 		exitFunc(1)

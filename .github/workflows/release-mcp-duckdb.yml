@@ -7,11 +7,13 @@ name: Release dagnats-mcp-duckdb
 # darwin job is intentionally a single runner to keep macOS minutes low —
 # see #188 PR 6b for the cost-control rationale.
 #
-# This workflow does not auto-publish today: it uploads the tarballs +
-# SHA256SUMS as workflow artifacts and the operator attaches them to the
-# release manually (matching the rest of the dagnats release flow, which
-# is operator-driven via `make release`). When `make release` is wired
-# into CI, this workflow becomes the build half of that pipeline.
+# On a tag push the `publish` job attaches the tarballs to the matching
+# GitHub release. It used to stop at workflow artifacts and rely on the
+# operator attaching them by hand; that step was never performed, so no
+# release from v0.0.1 through v0.0.13 shipped a dagnats-mcp-duckdb asset
+# and `dagnats sidecar install` 404'd on every one of them (#621).
+# `make release` would have globbed them in, but releases are cut via
+# `make build-release` + `gh release upload`, which does not build them.
 
 on:
   push:
@@ -134,3 +136,63 @@ jobs:
             dist/dagnats-mcp-duckdb-darwin-amd64.tar.gz
             dist/dagnats-mcp-duckdb-darwin-arm64.tar.gz
           if-no-files-found: error
+
+  # Attach the built tarballs to the GitHub release for this tag.
+  # Only runs on tag pushes — a workflow_dispatch build has no release
+  # to publish to and stops at workflow artifacts.
+  publish:
+    name: publish to release
+    needs: [linux, darwin]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built tarballs
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        # Named separately from the release's own SHA256SUMS (written by
+        # `make build-release`) so uploading does not clobber it.
+        run: |
+          set -eu
+          cd artifacts
+          ls -la
+          shasum -a 256 dagnats-mcp-duckdb-*.tar.gz > SHA256SUMS-mcp-duckdb
+          cat SHA256SUMS-mcp-duckdb
+
+      - name: Wait for the release to exist
+        # The tag push fires this workflow, but the release itself is
+        # created by the operator's `gh release create`. Poll rather than
+        # assume an ordering. Bounded: 30 tries x 20s = 10 minutes.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME}"
+          for i in $(seq 1 30); do
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "release $TAG exists"
+              exit 0
+            fi
+            echo "attempt $i/30: release $TAG not published yet, waiting 20s"
+            sleep 20
+          done
+          echo "::error::release $TAG never appeared; assets not attached."
+          echo "Re-run this workflow once the release is published."
+          exit 1
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME}"
+          gh release upload "$TAG" \
+            artifacts/dagnats-mcp-duckdb-*.tar.gz \
+            artifacts/SHA256SUMS-mcp-duckdb \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          echo "attached $(ls artifacts/dagnats-mcp-duckdb-*.tar.gz | wc -l) tarballs to $TAG"
