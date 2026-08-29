@@ -192,17 +192,25 @@ func (o *Orchestrator) publishContinueTask(
 		)
 	}
 	loopCfg, _ := dag.ParseAgentLoopConfig(stepDef)
+	// #624 review round 4: dispatchIdentity(dispatchSameAttempt) — a
+	// Continue iteration reuses the SAME attempt; only Iterations
+	// increments (already reflected in run, since Advance() bumped it
+	// before this call — see dispatchIdentity's doc comment). iteration
+	// here always equals state.Iterations by construction; using the
+	// builder's return value (not state.Iterations directly) keeps
+	// this call site honest about routing through the single builder.
+	attempt, iteration := dispatchIdentity(run, stepDef.ID, dispatchSameAttempt)
 	// state.DispatchNonce was stamped fresh by handleContinue before the
 	// snapshot save, so it is already persisted; thread it (with the run's
 	// workflow name) through both the delayed and immediate re-enqueue (#380).
 	if loopCfg.LoopDelay > 0 {
 		return o.scheduleDelayedIteration(
 			ctx, run.RunID, run.WorkflowID, stepDef, input,
-			state.Iterations, loopCfg.LoopDelay, state.DispatchNonce,
+			attempt, iteration, loopCfg.LoopDelay, state.DispatchNonce,
 		)
 	}
 	return o.publisher.PublishIteration(
-		ctx, run.RunID, stepDef, input, state.Iterations,
+		ctx, run.RunID, stepDef, input, attempt, iteration,
 		run.WorkflowID, state.DispatchNonce,
 	)
 }
@@ -215,6 +223,7 @@ func (o *Orchestrator) scheduleDelayedIteration(
 	workflowName string,
 	stepDef dag.StepDef,
 	input []byte,
+	attempt int,
 	iteration int,
 	delay time.Duration,
 	dispatchNonce string,
@@ -237,7 +246,7 @@ func (o *Orchestrator) scheduleDelayedIteration(
 			return
 		case <-timer.C:
 			pubErr := o.publisher.PublishIteration(
-				ctx, runID, stepDef, input, iteration,
+				ctx, runID, stepDef, input, attempt, iteration,
 				workflowName, dispatchNonce,
 			)
 			if pubErr != nil {

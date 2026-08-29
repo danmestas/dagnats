@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -346,6 +347,9 @@ func (s *stubTaskContext) PutStream(
 }
 
 func (s *stubTaskContext) Heartbeat() error { return nil }
+
+func (s *stubTaskContext) LogOut() io.Writer { return io.Discard }
+func (s *stubTaskContext) LogErr() io.Writer { return io.Discard }
 
 func (s *stubTaskContext) Checkpoint(
 	state []byte,

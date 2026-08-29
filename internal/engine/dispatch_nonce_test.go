@@ -79,7 +79,7 @@ func TestPublishIterationStampsNonce(t *testing.T) {
 	// Pass an empty nonce to prove the defensive choke-point mint: even if a
 	// caller forgets to thread one, the payload still carries a nonce.
 	if err := tp.PublishIteration(
-		context.Background(), "run-1", step, []byte(`{}`), 3, "wf", "",
+		context.Background(), "run-1", step, []byte(`{}`), 1, 3, "wf", "",
 	); err != nil {
 		t.Fatalf("PublishIteration: %v", err)
 	}

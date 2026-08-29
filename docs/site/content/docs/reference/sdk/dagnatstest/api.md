@@ -102,6 +102,8 @@ dagnatstest/setup.go Higher\-level setup helpers that eliminate boilerplate when
   - [func \(m \*MockTaskContext\) Heartbeat\(\) error](<#MockTaskContext.Heartbeat>)
   - [func \(m \*MockTaskContext\) Input\(\) \[\]byte](<#MockTaskContext.Input>)
   - [func \(m \*MockTaskContext\) LoadCheckpoint\(\) \(\[\]byte, error\)](<#MockTaskContext.LoadCheckpoint>)
+  - [func \(m \*MockTaskContext\) LogErr\(\) io.Writer](<#MockTaskContext.LogErr>)
+  - [func \(m \*MockTaskContext\) LogOut\(\) io.Writer](<#MockTaskContext.LogOut>)
   - [func \(m \*MockTaskContext\) Metadata\(\) map\[string\]string](<#MockTaskContext.Metadata>)
   - [func \(m \*MockTaskContext\) Pause\(name string, duration time.Duration\) error](<#MockTaskContext.Pause>)
   - [func \(m \*MockTaskContext\) PutStream\(data \[\]byte\) error](<#MockTaskContext.PutStream>)
@@ -418,7 +420,7 @@ type ExitSwapper func(next func(int)) func(int)
 ```
 
 <a name="FailRetryAfterCall"></a>
-## type [FailRetryAfterCall](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L57-L60>)
+## type [FailRetryAfterCall](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L85-L88>)
 
 FailRetryAfterCall records a FailRetryAfter call.
 
@@ -545,7 +547,7 @@ func (c *LogCapture) WithGroup(string) slog.Handler
 WithGroup returns the receiver unchanged for the same reason as WithAttrs.
 
 <a name="MockTaskContext"></a>
-## type [MockTaskContext](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L21-L47>)
+## type [MockTaskContext](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L22-L50>)
 
 MockTaskContext is a test double for worker.TaskContext that records all method calls. Safe for concurrent use. Satisfies TaskContext and all role interfaces \(SimpleTask, CheckpointTask, LoopTask, StreamTask, SignalTask\).
 
@@ -575,12 +577,14 @@ type MockTaskContext struct {
     HeartbeatCount      int
     SignalsSent         []SentSignal
     FailRetryAfterCalls []FailRetryAfterCall
+    LoggedOut           []byte // accumulated LogOut() writes
+    LoggedErr           []byte // accumulated LogErr() writes
     // contains filtered or unexported fields
 }
 ```
 
 <a name="MockTaskContext.Checkpoint"></a>
-### func \(\*MockTaskContext\) [Checkpoint](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L119>)
+### func \(\*MockTaskContext\) [Checkpoint](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L147>)
 
 ```go
 func (m *MockTaskContext) Checkpoint(state []byte) error
@@ -589,7 +593,7 @@ func (m *MockTaskContext) Checkpoint(state []byte) error
 
 
 <a name="MockTaskContext.Complete"></a>
-### func \(\*MockTaskContext\) [Complete](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L80>)
+### func \(\*MockTaskContext\) [Complete](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L108>)
 
 ```go
 func (m *MockTaskContext) Complete(output []byte) error
@@ -598,7 +602,7 @@ func (m *MockTaskContext) Complete(output []byte) error
 
 
 <a name="MockTaskContext.Context"></a>
-### func \(\*MockTaskContext\) [Context](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L62>)
+### func \(\*MockTaskContext\) [Context](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L90>)
 
 ```go
 func (m *MockTaskContext) Context() context.Context
@@ -607,7 +611,7 @@ func (m *MockTaskContext) Context() context.Context
 
 
 <a name="MockTaskContext.Continue"></a>
-### func \(\*MockTaskContext\) [Continue](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L111>)
+### func \(\*MockTaskContext\) [Continue](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L139>)
 
 ```go
 func (m *MockTaskContext) Continue(output []byte) error
@@ -616,7 +620,7 @@ func (m *MockTaskContext) Continue(output []byte) error
 
 
 <a name="MockTaskContext.ControlPlane"></a>
-### func \(\*MockTaskContext\) [ControlPlane](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L78>)
+### func \(\*MockTaskContext\) [ControlPlane](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L106>)
 
 ```go
 func (m *MockTaskContext) ControlPlane() worker.ControlPlane
@@ -625,7 +629,7 @@ func (m *MockTaskContext) ControlPlane() worker.ControlPlane
 ControlPlane returns nil: the mock is ungated by default, matching the deny\-by\-default contract. Tests that need a granted handle set it explicitly via their own double.
 
 <a name="MockTaskContext.Fail"></a>
-### func \(\*MockTaskContext\) [Fail](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L88>)
+### func \(\*MockTaskContext\) [Fail](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L116>)
 
 ```go
 func (m *MockTaskContext) Fail(err error) error
@@ -634,7 +638,7 @@ func (m *MockTaskContext) Fail(err error) error
 
 
 <a name="MockTaskContext.FailPermanent"></a>
-### func \(\*MockTaskContext\) [FailPermanent](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L96>)
+### func \(\*MockTaskContext\) [FailPermanent](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L124>)
 
 ```go
 func (m *MockTaskContext) FailPermanent(err error) error
@@ -643,7 +647,7 @@ func (m *MockTaskContext) FailPermanent(err error) error
 
 
 <a name="MockTaskContext.FailRetryAfter"></a>
-### func \(\*MockTaskContext\) [FailRetryAfter](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L104>)
+### func \(\*MockTaskContext\) [FailRetryAfter](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L132>)
 
 ```go
 func (m *MockTaskContext) FailRetryAfter(err error, after time.Duration) error
@@ -652,7 +656,7 @@ func (m *MockTaskContext) FailRetryAfter(err error, after time.Duration) error
 
 
 <a name="MockTaskContext.Heartbeat"></a>
-### func \(\*MockTaskContext\) [Heartbeat](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L140>)
+### func \(\*MockTaskContext\) [Heartbeat](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L168>)
 
 ```go
 func (m *MockTaskContext) Heartbeat() error
@@ -661,7 +665,7 @@ func (m *MockTaskContext) Heartbeat() error
 
 
 <a name="MockTaskContext.Input"></a>
-### func \(\*MockTaskContext\) [Input](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L69>)
+### func \(\*MockTaskContext\) [Input](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L97>)
 
 ```go
 func (m *MockTaskContext) Input() []byte
@@ -670,7 +674,7 @@ func (m *MockTaskContext) Input() []byte
 
 
 <a name="MockTaskContext.LoadCheckpoint"></a>
-### func \(\*MockTaskContext\) [LoadCheckpoint](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L127>)
+### func \(\*MockTaskContext\) [LoadCheckpoint](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L155>)
 
 ```go
 func (m *MockTaskContext) LoadCheckpoint() ([]byte, error)
@@ -678,8 +682,26 @@ func (m *MockTaskContext) LoadCheckpoint() ([]byte, error)
 
 
 
+<a name="MockTaskContext.LogErr"></a>
+### func \(\*MockTaskContext\) [LogErr](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L73>)
+
+```go
+func (m *MockTaskContext) LogErr() io.Writer
+```
+
+LogErr returns a writer that accumulates into LoggedErr.
+
+<a name="MockTaskContext.LogOut"></a>
+### func \(\*MockTaskContext\) [LogOut](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L68>)
+
+```go
+func (m *MockTaskContext) LogOut() io.Writer
+```
+
+LogOut returns a writer that accumulates into LoggedOut.
+
 <a name="MockTaskContext.Metadata"></a>
-### func \(\*MockTaskContext\) [Metadata](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L73>)
+### func \(\*MockTaskContext\) [Metadata](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L101>)
 
 ```go
 func (m *MockTaskContext) Metadata() map[string]string
@@ -688,7 +710,7 @@ func (m *MockTaskContext) Metadata() map[string]string
 
 
 <a name="MockTaskContext.Pause"></a>
-### func \(\*MockTaskContext\) [Pause](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L147>)
+### func \(\*MockTaskContext\) [Pause](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L175>)
 
 ```go
 func (m *MockTaskContext) Pause(name string, duration time.Duration) error
@@ -697,7 +719,7 @@ func (m *MockTaskContext) Pause(name string, duration time.Duration) error
 
 
 <a name="MockTaskContext.PutStream"></a>
-### func \(\*MockTaskContext\) [PutStream](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L133>)
+### func \(\*MockTaskContext\) [PutStream](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L161>)
 
 ```go
 func (m *MockTaskContext) PutStream(data []byte) error
@@ -706,7 +728,7 @@ func (m *MockTaskContext) PutStream(data []byte) error
 
 
 <a name="MockTaskContext.RetryCount"></a>
-### func \(\*MockTaskContext\) [RetryCount](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L72>)
+### func \(\*MockTaskContext\) [RetryCount](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L100>)
 
 ```go
 func (m *MockTaskContext) RetryCount() int
@@ -715,7 +737,7 @@ func (m *MockTaskContext) RetryCount() int
 
 
 <a name="MockTaskContext.RunID"></a>
-### func \(\*MockTaskContext\) [RunID](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L70>)
+### func \(\*MockTaskContext\) [RunID](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L98>)
 
 ```go
 func (m *MockTaskContext) RunID() string
@@ -724,7 +746,7 @@ func (m *MockTaskContext) RunID() string
 
 
 <a name="MockTaskContext.SendSignal"></a>
-### func \(\*MockTaskContext\) [SendSignal](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L157>)
+### func \(\*MockTaskContext\) [SendSignal](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L185>)
 
 ```go
 func (m *MockTaskContext) SendSignal(runID, name string, data []byte) error
@@ -733,7 +755,7 @@ func (m *MockTaskContext) SendSignal(runID, name string, data []byte) error
 
 
 <a name="MockTaskContext.StepID"></a>
-### func \(\*MockTaskContext\) [StepID](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L71>)
+### func \(\*MockTaskContext\) [StepID](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L99>)
 
 ```go
 func (m *MockTaskContext) StepID() string
@@ -742,7 +764,7 @@ func (m *MockTaskContext) StepID() string
 
 
 <a name="MockTaskContext.WaitForSignal"></a>
-### func \(\*MockTaskContext\) [WaitForSignal](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L151>)
+### func \(\*MockTaskContext\) [WaitForSignal](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L179>)
 
 ```go
 func (m *MockTaskContext) WaitForSignal(name string, timeout time.Duration) ([]byte, error)
@@ -811,7 +833,7 @@ func (f *RunFixture) SubmitAndAdvanceTo(t *testing.T, state string, n int)
 SubmitAndAdvanceTo registers and runs n single\-step workflows whose handlers drive each run to the requested terminal state \("completed" or "failed"\). Returns once every run has reached state or the per\-run timeout fires.
 
 <a name="SentSignal"></a>
-## type [SentSignal](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L50-L54>)
+## type [SentSignal](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/mock.go#L78-L82>)
 
 SentSignal records a SendSignal call.
 

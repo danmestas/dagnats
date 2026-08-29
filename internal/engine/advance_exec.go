@@ -82,9 +82,15 @@ func (o *Orchestrator) executeOneEffect(
 		if nonce == "" {
 			nonce = runid.New()
 		}
+		// #624 review round 4: pass run itself, not a pre-computed
+		// attempt int — Publish/doPublish derive BOTH Attempt and
+		// Iteration from it via dispatchIdentity. This path also fires
+		// for a step being re-queued after a completed attempt, so a
+		// stale/omitted value here would collide with (or silently
+		// diverge from) that attempt's BUILD_LOGS subject.
 		return o.publisher.Publish(
-			ctx, run.RunID, e.Step, e.Input, 0,
-			run.WorkflowID, nonce,
+			ctx, run.RunID, e.Step, e.Input,
+			run, run.WorkflowID, nonce,
 		)
 	case CompleteWorkflow:
 		return o.completeWorkflow(ctx, run)

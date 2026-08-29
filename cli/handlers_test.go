@@ -81,6 +81,9 @@ func (f *fakeTaskContext) PutStream(_ []byte) error {
 
 func (f *fakeTaskContext) Heartbeat() error { return nil }
 
+func (f *fakeTaskContext) LogOut() io.Writer { return io.Discard }
+func (f *fakeTaskContext) LogErr() io.Writer { return io.Discard }
+
 func (f *fakeTaskContext) Checkpoint(
 	_ []byte,
 ) error {

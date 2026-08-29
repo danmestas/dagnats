@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -14,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -38,26 +40,40 @@ type taskContext struct {
 	// Built once in newTaskContext from the same nc/js pair so
 	// every step lifecycle event (started, completed, failed,
 	// continue) carries W3C trace context automatically.
-	tp           *natsutil.TracingPublisher
-	publishMsg   publishMsgFunc // injected by Worker for publishStarted
-	tracer       trace.Tracer
-	runID        string
-	stepID       string
-	iteration    int
-	attempt      int
-	input        []byte
-	metadata     map[string]string
-	ctx          context.Context
-	span         trace.Span
-	msg          jetstream.Msg
-	checkpointKV jetstream.KeyValue
-	signalKV     jetstream.KeyValue
-	paused       bool   // set by Pause() to prevent double-ack
-	workerID     string // included in completion events for sticky routing
+	tp         *natsutil.TracingPublisher
+	publishMsg publishMsgFunc // injected by Worker for publishStarted
+	tracer     trace.Tracer
+	runID      string
+	stepID     string
+	iteration  int
+	attempt    int
+	// attemptNumber is the resolved 1-based AttemptNumber — set by
+	// publishStarted before the handler runs (see resolveAttemptNumber's
+	// doc comment for why this must match step.started/step.failed's
+	// AttemptNumber exactly). Zero until publishStarted runs;
+	// effectiveAttempt() falls back to resolving it fresh for the
+	// handful of tests that construct a taskContext directly.
+	attemptNumber int
+	input         []byte
+	metadata      map[string]string
+	ctx           context.Context
+	span          trace.Span
+	msg           jetstream.Msg
+	checkpointKV  jetstream.KeyValue
+	signalKV      jetstream.KeyValue
+	paused        bool   // set by Pause() to prevent double-ack
+	workerID      string // included in completion events for sticky routing
 	// controlPlane is the per-step runtime control-plane handle, set by
 	// startTaskSpan only for gated steps. nil by default — deny-by-default
 	// is the zero value, so an ungated step can never reach it.
 	controlPlane ControlPlane
+
+	// logLane buffers and publishes LogOut()/LogErr() writes to the
+	// BUILD_LOGS hot lane (#624). Lazily created by ensureLogLane on
+	// first Write so a handler that never logs never pays for the
+	// background ticker goroutine.
+	logLane          *logLane
+	logChunkFailures metric.Int64Counter
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -123,6 +139,127 @@ func (c *taskContext) Context() context.Context    { return c.ctx }
 // the step was not gated. nil is the deny-by-default zero value.
 func (c *taskContext) ControlPlane() ControlPlane { return c.controlPlane }
 
+// logWriter is the io.Writer LogOut()/LogErr() hand back to callers.
+// stream selects which of the lane's two buffers a Write() targets.
+type logWriter struct {
+	lane   *logLane
+	stream string
+}
+
+func (w *logWriter) Write(p []byte) (int, error) {
+	if w.stream == protocol.LogStreamOut {
+		return w.lane.writeOut(p)
+	}
+	return w.lane.writeErr(p)
+}
+
+// resolveAttemptNumber derives the 1-based AttemptNumber for a
+// dispatched task — the SAME resolution publishStarted's inline logic
+// already used (payload.Attempt when the engine set one explicitly,
+// else NATS NumDelivered), extracted here so BUILD_LOGS's attempt-
+// scoped subject (#624 review) and step.started/step.failed's
+// AttemptNumber field are computed by ONE function and can never drift
+// apart. That agreement matters beyond consistency: GET .../logs
+// defaults its ?attempt= param to dag.StepState.Attempts, which is
+// itself derived from AttemptNumber — if the log subject used a
+// different numbering, that default would silently point at the wrong
+// (or a nonexistent) subject.
+//
+// msg == nil resolves via payloadAttempt alone (falling back to 1) —
+// exercised only by tests that construct a taskContext directly
+// without a NATS message; the real dispatch path (publishStarted)
+// always has a non-nil msg and preserves its original contract: when
+// msg is non-nil, Metadata() is read (and its error propagated)
+// unconditionally, exactly as publishStarted did before this was
+// extracted, even though a positive payloadAttempt makes the value
+// unused — a Metadata() failure on the real message is still a real
+// problem worth surfacing.
+func resolveAttemptNumber(payloadAttempt int, msg jetstream.Msg) (int, error) {
+	if msg == nil {
+		if payloadAttempt > 0 {
+			return payloadAttempt, nil
+		}
+		return 1, nil
+	}
+	meta, err := msg.Metadata()
+	if err != nil {
+		return 0, err
+	}
+	if payloadAttempt > 0 {
+		return payloadAttempt, nil
+	}
+	n := int(meta.NumDelivered)
+	if n < 1 {
+		n = 1
+	}
+	return n, nil
+}
+
+// effectiveAttempt returns c.attemptNumber if publishStarted has
+// already resolved it (the normal dispatch path — see handleMessage,
+// which calls publishStarted before invoking the handler), or resolves
+// it fresh as a fallback for tests that construct a taskContext
+// directly. Errors from that fallback resolution are swallowed to 1
+// (the "first/only attempt" default) rather than propagated — an
+// io.Writer's LogOut()/LogErr() must never fail a handler over this.
+func (c *taskContext) effectiveAttempt() int {
+	if c.attemptNumber > 0 {
+		return c.attemptNumber
+	}
+	n, err := resolveAttemptNumber(c.attempt, c.msg)
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+// ensureLogLane lazily creates c.logLane on first use, scoped to this
+// attempt and iteration (effectiveAttempt() — see resolveAttemptNumber's
+// doc comment for why this must match step.started's AttemptNumber).
+// The check-then-set on c.logLane here is NOT itself safe for
+// concurrent LogOut()/LogErr() calls racing the FIRST creation — call
+// LogOut()/LogErr() once, from the handler goroutine, before handing
+// the returned io.Writer to concurrent users (e.g. os/exec's
+// cmd.Stdout/Stderr). Once created, the lane itself IS safe for
+// concurrent Write() calls (see the TaskContext interface's LogOut/
+// LogErr doc comment) — this constructor race is the only unsafe part.
+func (c *taskContext) ensureLogLane() *logLane {
+	if c.logLane == nil {
+		c.logLane = newLogLane(
+			c.ctx, c.tp, c.runID, c.stepID,
+			c.effectiveAttempt(), c.iteration, c.logChunkFailures,
+		)
+	}
+	return c.logLane
+}
+
+// LogOut returns a writer that publishes stdout-tagged chunks to the
+// BUILD_LOGS hot lane (logs.{runID}.{stepID}.{attempt}.{iteration}).
+// Buffered: writes are batched and flushed at LogChunkBytesMax or
+// after 250ms, never blocking on NATS I/O.
+func (c *taskContext) LogOut() io.Writer {
+	return &logWriter{lane: c.ensureLogLane(), stream: protocol.LogStreamOut}
+}
+
+// LogErr is LogOut's stderr-tagged counterpart.
+func (c *taskContext) LogErr() io.Writer {
+	return &logWriter{lane: c.ensureLogLane(), stream: protocol.LogStreamErr}
+}
+
+// drainLogs flushes any buffered log bytes and emits marker (one of
+// the protocol.LogMarker* constants) as the last chunk on this
+// attempt's subject, then stops the lane's ticker. No-op if the
+// handler never called LogOut()/LogErr(). Called by every
+// attempt-ending TaskContext method (Complete, Fail, FailPermanent,
+// FailRetryAfter, Continue, Pause) with the marker matching its own
+// outcome — see drainWithMarker's doc comment for why this must be
+// exhaustive.
+func (c *taskContext) drainLogs(marker string) {
+	if c.logLane != nil {
+		c.logLane.drainWithMarker(marker)
+	}
+}
+
 // Complete publishes a step.completed event with trace context.
 func (c *taskContext) Complete(output []byte) error {
 	if c.msg == nil {
@@ -142,6 +279,11 @@ func (c *taskContext) Complete(output []byte) error {
 		),
 	)
 	defer span.End()
+	// Drain-before-resolve invariant (#624): flush trailing log bytes
+	// and emit the "completed" marker so a consumer observing
+	// step.completed can never see it before the log lines (and the
+	// marker) that led to it.
+	c.drainLogs(protocol.LogMarkerCompleted)
 	return c.publishEvent(
 		protocol.EventStepCompleted, output,
 	)
@@ -166,6 +308,9 @@ func (c *taskContext) Fail(err error) error {
 	defer span.End()
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
+	// Drain-before-resolve invariant (#624): the "failed" marker chunk
+	// must precede the step.failed event this call publishes next.
+	c.drainLogs(protocol.LogMarkerFailed)
 	return c.publishFailedPayload(protocol.StepFailedPayload{
 		Error:       err.Error(),
 		FailureType: protocol.FailureTypeRetriable,
@@ -193,6 +338,9 @@ func (c *taskContext) FailPermanent(err error) error {
 	defer span.End()
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
+	// Drain-before-resolve invariant (#624): the "failed" marker chunk
+	// must precede the step.failed event this call publishes next.
+	c.drainLogs(protocol.LogMarkerFailed)
 	return c.publishFailedPayload(protocol.StepFailedPayload{
 		Error:       err.Error(),
 		FailureType: protocol.FailureTypeNonRetriable,
@@ -233,6 +381,10 @@ func (c *taskContext) FailRetryAfter(
 	if afterMs < 100 {
 		afterMs = 100
 	}
+	// This attempt failed too (the engine will retry after afterMs on
+	// a fresh attempt-scoped subject) — "failed" is the correct marker
+	// for this attempt's own subject, same as Fail/FailPermanent.
+	c.drainLogs(protocol.LogMarkerFailed)
 	return c.publishFailedPayload(protocol.StepFailedPayload{
 		Error:        err.Error(),
 		FailureType:  protocol.FailureTypeRetryAfter,
@@ -291,6 +443,11 @@ func (c *taskContext) Continue(output []byte) error {
 		Subject: evt.NATSSubject(),
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
+	// Drain-before-resolve invariant (#624): flush trailing log bytes
+	// and emit "continued" before the step.continue publish below —
+	// this attempt's subject is done; the next iteration gets a fresh
+	// attempt-scoped subject.
+	c.drainLogs(protocol.LogMarkerContinued)
 	// JSPublishMsgEvent injects trace context, then marshals evt
 	// internally so the persisted body carries TraceParent.
 	_, err := c.tp.JSPublishMsgEvent(c.ctx, outMsg, &evt)
@@ -464,6 +621,11 @@ func (c *taskContext) Pause(name string, duration time.Duration) error {
 		return fmt.Errorf("save pause checkpoint: %w", err)
 	}
 	c.paused = true
+	// This taskContext (and its logLane, if the handler ever wrote to
+	// LogOut/LogErr before pausing) is discarded once this call
+	// returns; the "paused" marker closes out this attempt's subject
+	// and stops the ticker goroutine rather than leaking it.
+	c.drainLogs(protocol.LogMarkerPaused)
 	return c.msg.NakWithDelay(duration)
 }
 
@@ -514,19 +676,16 @@ func (c *taskContext) publishStarted(msg jetstream.Msg) error {
 	if c.runID == "" {
 		panic("publishStarted: runID must not be empty")
 	}
-	meta, err := msg.Metadata()
+	attemptNumber, err := resolveAttemptNumber(c.attempt, msg)
 	if err != nil {
 		return err
 	}
+	c.attemptNumber = attemptNumber
 	evt := protocol.NewStepEvent(
 		protocol.EventStepStarted, c.runID, c.stepID, nil,
 	)
 	evt.WorkerID = c.workerID
-	if c.attempt > 0 {
-		evt.AttemptNumber = c.attempt
-	} else {
-		evt.AttemptNumber = int(meta.NumDelivered)
-	}
+	evt.AttemptNumber = attemptNumber
 	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Header: nats.Header{

@@ -231,6 +231,117 @@ GET /runs/{id}
 curl http://localhost:8080/runs/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
 ```
 
+### Run logs
+
+Read or tail one step's captured stdout/stderr from the BUILD_LOGS hot
+lane (see "Consumer contract: build logs" in the wire protocol
+reference). dagnats owns the hot lane only -- retention past its TTL
+(`DAGNATS_BUILD_LOGS_TTL`, default 7d) is a consumer's job.
+
+```
+GET /runs/{id}/logs?step={stepID}&attempt={n}&iteration={n}&cursor={n}&follow={0|1}&from={failure}
+```
+
+| Query param | Required | Notes |
+|-------------|----------|-------|
+| `step` | yes | Step ID within the run. `400` if omitted. |
+| `attempt` | no | Which attempt's log lane to read (`logs.{runID}.{stepID}.{attempt}.{iteration}`, the same numbering as `step.started`'s `AttemptNumber`). Defaults to the step's current `Attempts` from the run snapshot -- omit it for "the live/most recent attempt". |
+| `iteration` | no | Which agent-loop iteration's log lane to read within that attempt (0 for non-loop steps, bumped by each `Continue` without touching `attempt`). Defaults to the step's current `Iterations` from the run snapshot -- omit it for "the live/most recent iteration". |
+| `cursor` | no | Opaque paging token -- copy the previous response's `next_cursor` here to fetch the next page. Omit for the first page. It is a JetStream stream sequence number, not a chunk `seq`; treat it as opaque. |
+| `from` | no | `from=failure` starts the response at the attempt's recorded `"failed"` marker instead of `cursor`, resolved in O(1) (`GetLastMsgForSubject`), not by scanning. Strict: if the attempt's last message isn't a `"failed"` marker (it completed, or has no messages yet), this 404s -- see below. |
+| `follow` | no | `follow=1` upgrades the response to Server-Sent Events instead of one JSON page. |
+
+**Response (non-follow):** `200 OK`
+
+```json
+{
+  "chunks": [
+    {"seq": 0, "attempt": 1, "iteration": 0, "ts": "2026-08-28T12:00:00.100Z", "stream": "out", "data": "cnVubmluZyB0ZXN0cwo="},
+    {"seq": 1, "attempt": 1, "iteration": 0, "ts": "2026-08-28T12:00:00.350Z", "stream": "out", "data": "MyBwYXNzZWQK"}
+  ],
+  "next_cursor": 2,
+  "eof": true
+}
+```
+
+`chunks` is capped at 1024 (`protocol.LogReadChunksMax`) per response --
+page again with `cursor` set to the returned `next_cursor` for more;
+`next_cursor` is a JetStream stream sequence, opaque to the caller.
+`eof` is `true` only when the requested attempt is done for good (a
+past attempt, or the step's current attempt reached a terminal status)
+AND this page returned everything currently stored -- it does not mean
+the stream is empty forever, just that nothing more is coming for this
+attempt. A step that exists but has produced no chunks yet returns
+`200` with `"chunks": []`, not `404`, so a UI can attach before the
+first line lands. A `cursor` past the last stored message on a
+terminal attempt also returns `200` with an empty page and `eof: true`.
+`from=failure` on an attempt whose last message isn't a `"failed"`
+marker returns `404` with `{"error":"attempt has no failure marker"}`
+instead of silently starting at whatever the last message happens to
+be.
+
+**Response (`follow=1`):** `200 OK`, `Content-Type: text/event-stream`
+
+```
+event: chunk
+data: {"seq":0,"attempt":1,"iteration":0,"ts":"2026-08-28T12:00:00.100Z","stream":"out","data":"cnVubmluZyB0ZXN0cwo="}
+
+: keepalive
+
+event: eof
+data: {}
+
+```
+
+An `event: chunk` per `protocol.LogChunk`, a `: keepalive` comment
+every 15s while idle (so an intermediary proxy doesn't drop the
+connection), and `event: eof` once the attempt-ending marker is read
+off the SAME consumer this connection opened at attach time -- exactly
+one JetStream consumer is opened per `follow=1` connection, for its
+whole lifetime, not re-opened on a poll interval. `event: eof`'s `data`
+carries `{"reason":"paused"}` or `{"reason":"continued"}` when the
+attempt ended that way (a UI is expected to re-attach with a fresh
+`attempt` for `paused`, or a fresh `iteration` at the SAME `attempt`
+for `continued` -- Continue never bumps `attempt`); it's `{}` for
+`completed`/`failed` and for the rare crash
+fallback (a coarse run-snapshot poll, at most every 10s, for the case
+where the marker itself never arrives). Hard capped at 1h per
+connection (`protocol.LogFollowDurationMax`); capped at 256 concurrent
+follows per API server process (`protocol.LogFollowConcurrentMax`),
+beyond which a new follow gets `503`.
+
+If the follow's own consumer fails mid-connection (deleted out from
+under it, a connection problem) the stream ends with `event: error` and
+`data: {"reason":"<cause>"}` instead of silently looping as idle until
+the 1h cap -- this is distinct from the ordinary per-wait timeout every
+idle keepalive cycle hits internally, which never reaches the client as
+an error.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Chunks (possibly empty) or an SSE stream |
+| `400` | Missing `step` query parameter |
+| `404` | Run not found, run found but `step` unknown, or (non-follow only) `from=failure` with no recorded failure marker for the attempt |
+| `503` | `follow=1` and the server is already at `LogFollowConcurrentMax` |
+
+**Non-Go (HTTP bridge) workers**: `POST /v1/tasks/{id}/logs` (below)
+also emits the attempt-ending marker automatically on
+`complete`/`fail`/`continue`/`pause` resolve actions (see
+`POST /v1/tasks/{id}/resolve` in the bridge reference) -- callers never
+POST a marker chunk themselves. A log POST for a task that already
+resolved is rejected `409 Conflict`, distinguishing "already resolved"
+from `404` ("never claimed").
+
+**curl (page):**
+```bash
+curl "http://localhost:8080/runs/a1b2c3d4.../logs?step=fetch-diff"
+```
+
+**curl (follow):**
+```bash
+curl -N "http://localhost:8080/runs/a1b2c3d4.../logs?step=fetch-diff&follow=1"
+```
+
 ### Cancel Run
 
 Cancel a running workflow by publishing a `workflow.cancelled` event.

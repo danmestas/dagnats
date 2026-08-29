@@ -1,7 +1,7 @@
 // examples/log-offload/offload_test.go
 // Methodology: unit test over a real embedded NATS server (repo
 // convention). Seeds a BUILD_LOGS stream and publishes chunks
-// directly (standing in for #624's not-yet-merged publisher), then
+// directly (standing in for a real worker/bridge publisher), then
 // asserts offloadRunLogs drains them into the expected NDJSON file(s)
 // in stream order.
 package main
@@ -11,12 +11,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -37,18 +37,18 @@ func setupBuildLogsStream(t *testing.T, js jetstream.JetStream) {
 	}
 }
 
-// publishChunk publishes one logChunk to logs.{runID}.{stepID}.{attempt}.
+// publishChunk publishes one protocol.LogChunk to
+// logs.{runID}.{stepID}.{attempt}.{iteration}.
 func publishChunk(
 	t *testing.T, js jetstream.JetStream,
-	runID, stepID string, attempt int, chunk logChunk,
+	runID, stepID string, attempt, iteration int, chunk protocol.LogChunk,
 ) {
 	t.Helper()
 	data, err := json.Marshal(chunk)
 	if err != nil {
 		t.Fatalf("marshal chunk: %v", err)
 	}
-	subject := buildLogsSubjectPrefix + runID + "." + stepID + "." +
-		strconv.Itoa(attempt)
+	subject := natsutil.LogSubject(runID, stepID, attempt, iteration)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := js.Publish(ctx, subject, data); err != nil {
@@ -64,15 +64,24 @@ func TestOffloadRunLogs_WritesOneFileInOrder(t *testing.T) {
 	}
 	setupBuildLogsStream(t, js)
 
-	runID, stepID, attempt := "run-offload-1", "build", 1
+	runID, stepID, attempt, iteration := "run-offload-1", "build", 1, 0
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	chunks := []logChunk{
-		{Seq: 1, Ts: base, Attempt: attempt, Stream: "out", Data: "line one"},
-		{Seq: 2, Ts: base.Add(time.Second), Attempt: attempt, Stream: "out", Data: "line two"},
-		{Seq: 3, Ts: base.Add(2 * time.Second), Attempt: attempt, Stream: "marker", Data: "completed"},
+	chunks := []protocol.LogChunk{
+		{
+			Seq: 1, TS: base, Attempt: attempt, Iteration: iteration,
+			Stream: "out", Data: []byte("line one"),
+		},
+		{
+			Seq: 2, TS: base.Add(time.Second), Attempt: attempt, Iteration: iteration,
+			Stream: "out", Data: []byte("line two"),
+		},
+		{
+			Seq: 3, TS: base.Add(2 * time.Second), Attempt: attempt, Iteration: iteration,
+			Stream: "marker", Data: []byte("completed"),
+		},
 	}
 	for _, c := range chunks {
-		publishChunk(t, js, runID, stepID, attempt, c)
+		publishChunk(t, js, runID, stepID, attempt, iteration, c)
 	}
 
 	outDir := t.TempDir()
@@ -89,7 +98,7 @@ func TestOffloadRunLogs_WritesOneFileInOrder(t *testing.T) {
 		t.Fatalf("ChunkCount = %d, want 3", out.ChunkCount)
 	}
 
-	path := filepath.Join(outDir, "build.1.ndjson")
+	path := filepath.Join(outDir, "build.1.0.ndjson")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -102,7 +111,7 @@ func TestOffloadRunLogs_WritesOneFileInOrder(t *testing.T) {
 	// Positive: order preserved — decode each line and check Seq
 	// ascends 1,2,3 and the terminal marker is last.
 	for i, line := range lines {
-		var got logChunk
+		var got protocol.LogChunk
 		if err := json.Unmarshal([]byte(line), &got); err != nil {
 			t.Fatalf("unmarshal line %d: %v", i, err)
 		}
@@ -110,17 +119,17 @@ func TestOffloadRunLogs_WritesOneFileInOrder(t *testing.T) {
 			t.Fatalf("line %d Seq = %d, want %d", i, got.Seq, i+1)
 		}
 	}
-	var last logChunk
+	var last protocol.LogChunk
 	if err := json.Unmarshal([]byte(lines[2]), &last); err != nil {
 		t.Fatalf("unmarshal last line: %v", err)
 	}
 	// Negative: the marker line is the terminal one — not "out".
-	if last.Stream != "marker" || last.Data != "completed" {
+	if last.Stream != "marker" || string(last.Data) != "completed" {
 		t.Fatalf("last chunk = %+v, want marker/completed", last)
 	}
 }
 
-func TestOffloadRunLogs_SeparatesStepsAndAttempts(t *testing.T) {
+func TestOffloadRunLogs_SeparatesStepsAttemptsAndIterations(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -130,14 +139,21 @@ func TestOffloadRunLogs_SeparatesStepsAndAttempts(t *testing.T) {
 
 	runID := "run-offload-2"
 	base := time.Now().UTC()
-	publishChunk(t, js, runID, "build", 1, logChunk{
-		Seq: 1, Ts: base, Attempt: 1, Stream: "out", Data: "attempt one",
+	publishChunk(t, js, runID, "build", 1, 0, protocol.LogChunk{
+		Seq: 1, TS: base, Attempt: 1, Iteration: 0, Stream: "out", Data: []byte("attempt one"),
 	})
-	publishChunk(t, js, runID, "build", 2, logChunk{
-		Seq: 1, Ts: base, Attempt: 2, Stream: "out", Data: "attempt two (retry)",
+	publishChunk(t, js, runID, "build", 2, 0, protocol.LogChunk{
+		Seq: 1, TS: base, Attempt: 2, Iteration: 0, Stream: "out", Data: []byte("attempt two (retry)"),
 	})
-	publishChunk(t, js, runID, "test", 1, logChunk{
-		Seq: 1, Ts: base, Attempt: 1, Stream: "out", Data: "other step",
+	// Same attempt as the line above, next agent-loop iteration — must
+	// land in its own file, not collide with attempt 2 iteration 0
+	// (#624 review round 3: iteration is a second identity dimension).
+	publishChunk(t, js, runID, "build", 2, 1, protocol.LogChunk{
+		Seq: 1, TS: base, Attempt: 2, Iteration: 1,
+		Stream: "out", Data: []byte("attempt two, iteration one"),
+	})
+	publishChunk(t, js, runID, "test", 1, 0, protocol.LogChunk{
+		Seq: 1, TS: base, Attempt: 1, Iteration: 0, Stream: "out", Data: []byte("other step"),
 	})
 
 	outDir := t.TempDir()
@@ -146,11 +162,11 @@ func TestOffloadRunLogs_SeparatesStepsAndAttempts(t *testing.T) {
 		t.Fatalf("offloadRunLogs: %v", err)
 	}
 
-	// Positive: three distinct (step, attempt) files.
-	if len(out.Files) != 3 {
-		t.Fatalf("Files = %v, want 3 entries", out.Files)
+	// Positive: four distinct (step, attempt, iteration) files.
+	if len(out.Files) != 4 {
+		t.Fatalf("Files = %v, want 4 entries", out.Files)
 	}
-	for _, name := range []string{"build.1", "build.2", "test.1"} {
+	for _, name := range []string{"build.1.0", "build.2.0", "build.2.1", "test.1.0"} {
 		if _, err := os.Stat(
 			filepath.Join(outDir, name+".ndjson"),
 		); err != nil {
@@ -176,12 +192,12 @@ func TestOffloadRunLogs_RetryDoesNotDuplicateLines(t *testing.T) {
 
 	runID := "run-offload-retry"
 	base := time.Now().UTC()
-	chunks := []logChunk{
-		{Seq: 1, Ts: base, Attempt: 1, Stream: "out", Data: "line one"},
-		{Seq: 2, Ts: base, Attempt: 1, Stream: "marker", Data: "completed"},
+	chunks := []protocol.LogChunk{
+		{Seq: 1, TS: base, Attempt: 1, Iteration: 0, Stream: "out", Data: []byte("line one")},
+		{Seq: 2, TS: base, Attempt: 1, Iteration: 0, Stream: "marker", Data: []byte("completed")},
 	}
 	for _, c := range chunks {
-		publishChunk(t, js, runID, "build", 1, c)
+		publishChunk(t, js, runID, "build", 1, 0, c)
 	}
 
 	outDir := t.TempDir()
@@ -192,7 +208,7 @@ func TestOffloadRunLogs_RetryDoesNotDuplicateLines(t *testing.T) {
 		t.Fatalf("second (retry) offloadRunLogs: %v", err)
 	}
 
-	path := filepath.Join(outDir, "build.1.ndjson")
+	path := filepath.Join(outDir, "build.1.0.ndjson")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)

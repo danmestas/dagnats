@@ -39,40 +39,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// subjectTokenMaxLen bounds the sanitized workflow token so a
-// pathological workflow name cannot grow the subject beyond NATS'
-// practical limits or blow out subject-based dashboards/ACLs.
-const subjectTokenMaxLen = 128
-
-// subjectToken makes s safe for use as a NATS subject token: any byte
-// outside [A-Za-z0-9_-] becomes '_', and the result is capped to
-// subjectTokenMaxLen. Reused by the event.run.* subject builder below;
-// task subjects (taskSubject in task_publish.go) don't sanitize today
-// because workflow names there are validated at register time — this
-// is the first NATS-subject use of a workflow name that ISN'T already
-// validated, so the sanitizer is new rather than reused.
-//
-// Pure and total, like RootRunIDOf: every input (including "") is
-// valid and produces a well-formed (if degenerate) output, so there
-// is no invariant to assert here.
-func subjectToken(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') ||
-			(r >= '0' && r <= '9') || r == '_' || r == '-' {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('_')
-		}
-	}
-	out := b.String()
-	if len(out) > subjectTokenMaxLen {
-		out = out[:subjectTokenMaxLen]
-	}
-	return out
-}
-
 // runEventSubject builds the event.run.{workflow}.{runID}.{status}
 // subject. workflowToken falls back to "_" when it sanitizes to empty
 // (an unset WorkflowID) so the subject never contains a double dot,
@@ -87,7 +53,7 @@ func runEventSubject(workflow, runID, status string) string {
 	if strings.ContainsAny(runID, ". \t*>") {
 		panic("runEventSubject: runID must not contain NATS subject metacharacters")
 	}
-	token := subjectToken(workflow)
+	token := natsutil.SubjectToken(workflow)
 	if token == "" {
 		token = "_"
 	}

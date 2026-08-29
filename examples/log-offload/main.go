@@ -17,16 +17,16 @@
 // below that horizon will silently lose logs for any run whose
 // offload step keeps failing.
 //
-// Build note (#634 review): PR #652 (#624 build logs) had not merged
-// when this was written, and its shape changed mid-review to subject
-// logs.{runID}.{stepID}.{attempt} with protocol.LogChunk{seq, ts,
-// attempt, stream, data} — stream one of out/err/marker, with marker
-// chunks carrying completed/failed/paused/continued as the LAST chunk
-// of an attempt. This file is written against exactly that shape
-// (logChunk below mirrors protocol.LogChunk field-for-field) so it
-// can switch to importing the real type with a one-line change once
-// #652 lands; it does not import protocol.LogChunk today because
-// that type does not exist on main yet.
+// Build note (#624 review round 3): PR #652 (#624 build logs) has
+// merged and added a second dimension, iteration, alongside attempt —
+// subject logs.{runID}.{stepID}.{attempt}.{iteration} with
+// protocol.LogChunk{seq, attempt, iteration, ts, stream, data} —
+// stream one of out/err/marker, with marker chunks carrying
+// completed/failed/paused/continued as the LAST chunk of an
+// attempt/iteration. This file now imports protocol.LogChunk directly
+// instead of mirroring it locally, and keys output per (step, attempt,
+// iteration) so a Continue'd agent-loop step's iterations land in
+// separate files instead of colliding.
 package main
 
 import (
@@ -42,14 +42,16 @@ import (
 
 // buildLogsStream and buildLogsSubjectPrefix name the #624 stream and
 // subject this worker reads from. Duplicated here (not imported)
-// because #624/#652 have not merged — see the package doc.
+// because internal/natsutil, which owns the canonical constants, is
+// an internal package this example cannot import.
 const (
 	buildLogsStream        = "BUILD_LOGS"
 	buildLogsSubjectPrefix = "logs."
 )
 
 // logOffloadDirEnv names the directory this reference worker writes
-// one NDJSON file per (step, attempt) into. Required — see main().
+// one NDJSON file per (step, attempt, iteration) into. Required — see
+// main().
 const logOffloadDirEnv = "LOG_OFFLOAD_DIR"
 
 // fetchBatchSize and fetchMaxWait bound each pull-consumer Fetch call.
@@ -66,15 +68,6 @@ const (
 	fetchIdleAttemptsMax = 2
 	fetchTotalChunksMax  = 1_000_000 // matches #624's documented per-run cap
 )
-
-// logChunk mirrors protocol.LogChunk's wire shape (see package doc).
-type logChunk struct {
-	Seq     uint64    `json:"seq"`
-	Ts      time.Time `json:"ts"`
-	Attempt int       `json:"attempt"`
-	Stream  string    `json:"stream"` // "out" | "err" | "marker"
-	Data    string    `json:"data"`
-}
 
 // offloadInput is the run_terminal trigger's chain-start Input shape
 // (internal/trigger's runTerminalChainInput, #634) — the flat

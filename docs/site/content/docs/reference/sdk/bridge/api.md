@@ -6,6 +6,10 @@
 import "github.com/danmestas/dagnats/bridge"
 ```
 
+bridge/logs.go POST /v1/tasks/\{id\}/logs \(\#624\): the HTTP\-bridge counterpart to the worker SDK's LogOut\(\)/LogErr\(\) — lets a non\-Go worker publish stdout/stderr\-tagged chunks to the BUILD\_LOGS hot lane. Ownership is enforced exactly like resolve \(authorizeTaskOwner against the claiming TokenID\), and the bridge — not the caller — assigns Seq and owns the per\-step LogStepBytesMax budget, mirroring worker/log\_writer.go so a consumer reading BUILD\_LOGS sees the same chunk shape regardless of which lane produced it.
+
+Subject/attempt/iteration scoping \(\#624 review rounds 2\-3\): the subject is logs.\{runID\}.\{stepID\}.\{attempt\}.\{iteration\}, matching worker/log\_writer.go exactly — both are read from the claimed task's own message \(the same one authorizeTaskOwner already validated ownership against\), NOT from the caller's request body, so an HTTP worker can never spoof which attempt/iteration its chunks land on.
+
 ## Index
 
 - [func RegisterBridgeMetrics\(m metric.Meter, b \*Bridge\) \(metric.Registration, error\)](<#RegisterBridgeMetrics>)
@@ -15,7 +19,10 @@ import "github.com/danmestas/dagnats/bridge"
   - [func \(am \*AckMap\) Delete\(taskID string\)](<#AckMap.Delete>)
   - [func \(am \*AckMap\) Load\(taskID string\) \(jetstream.Msg, bool\)](<#AckMap.Load>)
   - [func \(am \*AckMap\) LoadWithTokenID\(taskID string\) \(jetstream.Msg, string, bool\)](<#AckMap.LoadWithTokenID>)
+  - [func \(am \*AckMap\) MarkResolved\(taskID, tokenID string\)](<#AckMap.MarkResolved>)
   - [func \(am \*AckMap\) Store\(taskID string, msg jetstream.Msg, tokenID string\)](<#AckMap.Store>)
+  - [func \(am \*AckMap\) WasResolvedBy\(taskID string, claims workertoken.Claims\) bool](<#AckMap.WasResolvedBy>)
+  - [func \(am \*AckMap\) WithLogState\(taskID string, fn func\(seq uint64, totalBytes int64, truncated bool\) \(newSeq uint64, newTotalBytes int64, newTruncated bool\)\) bool](<#AckMap.WithLogState>)
 - [type Bridge](<#Bridge>)
   - [func NewBridge\(pub \*natsutil.TracingPublisher\) \*Bridge](<#NewBridge>)
   - [func \(b \*Bridge\) Handler\(\) http.Handler](<#Bridge.Handler>)
@@ -36,7 +43,7 @@ The ackmap size is an observable gauge rather than an up/down counter deliberate
 Mirrors RegisterSchedulerMetrics \(internal/trigger/metrics.go\): a standalone registration function rather than construction inside NewBridge, so the error is returned to a caller that can assert on it instead of being discarded at startup.
 
 <a name="AckMap"></a>
-## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L62-L67>)
+## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L84-L100>)
 
 AckMap tracks in\-flight tasks for HTTP workers. Maps task\_id \(\{runID\}.\{stepID\}\) to the NATS message so the bridge can ack/nak on behalf of the HTTP client when it resolves the task.
 
@@ -53,7 +60,7 @@ type AckMap struct {
 ```
 
 <a name="NewAckMap"></a>
-### func [NewAckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L70>)
+### func [NewAckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L111>)
 
 ```go
 func NewAckMap() *AckMap
@@ -62,7 +69,7 @@ func NewAckMap() *AckMap
 NewAckMap creates an empty AckMap ready for use.
 
 <a name="AckMap.Count"></a>
-### func \(\*AckMap\) [Count](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L160>)
+### func \(\*AckMap\) [Count](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L300>)
 
 ```go
 func (am *AckMap) Count() int64
@@ -71,7 +78,7 @@ func (am *AckMap) Count() int64
 Count returns the number of in\-flight tasks.
 
 <a name="AckMap.Delete"></a>
-### func \(\*AckMap\) [Delete](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L147>)
+### func \(\*AckMap\) [Delete](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L226>)
 
 ```go
 func (am *AckMap) Delete(taskID string)
@@ -80,7 +87,7 @@ func (am *AckMap) Delete(taskID string)
 Delete removes a task from the map after resolution.
 
 <a name="AckMap.Load"></a>
-### func \(\*AckMap\) [Load](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L120>)
+### func \(\*AckMap\) [Load](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L162>)
 
 ```go
 func (am *AckMap) Load(taskID string) (jetstream.Msg, bool)
@@ -91,7 +98,7 @@ Load retrieves the NATS message for the given task ID. Returns \(nil, false\) if
 Deliberately does not reap: a resolve arriving concurrently with the reaper must not race into a "task not found" that the worker cannot distinguish from a genuine unknown\-task error.
 
 <a name="AckMap.LoadWithTokenID"></a>
-### func \(\*AckMap\) [LoadWithTokenID](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L130>)
+### func \(\*AckMap\) [LoadWithTokenID](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L172>)
 
 ```go
 func (am *AckMap) LoadWithTokenID(taskID string) (jetstream.Msg, string, bool)
@@ -99,8 +106,17 @@ func (am *AckMap) LoadWithTokenID(taskID string) (jetstream.Msg, string, bool)
 
 LoadWithTokenID retrieves the NATS message and the TokenID recorded at Store time for the given task ID \(\#627 per\-task authorization: a resolve must present the same TokenID that claimed the task, or be Admin\). Returns \(nil, "", false\) if not found. Same does\-not\-reap contract as Load.
 
+<a name="AckMap.MarkResolved"></a>
+### func \(\*AckMap\) [MarkResolved](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L247>)
+
+```go
+func (am *AckMap) MarkResolved(taskID, tokenID string)
+```
+
+MarkResolved records that taskID was just resolved \(complete/fail/ pause/continue\) by tokenID \(empty for the admin bearer or dev mode\) — called alongside Delete, from the same resolve call, so a POST /v1/tasks/\{id\}/logs that arrives afterwards can be told 409 \(already resolved\) instead of 404 \(never existed\) — but ONLY for the SAME caller that resolved it; see WasResolvedBy. Bounded and TTL'd the same way Store bounds entries: evicts the oldest resolvedTasks entry at resolvedTaskMax, and WasResolvedBy expires an entry past resolvedTaskTTL.
+
 <a name="AckMap.Store"></a>
-### func \(\*AckMap\) [Store](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L96>)
+### func \(\*AckMap\) [Store](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L138>)
 
 ```go
 func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string)
@@ -108,8 +124,26 @@ func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string)
 
 Store saves a NATS message keyed by task ID, stamped with the insertion time and the TokenID of the caller that claimed it \(\#627; empty for the admin bearer or dev mode\). Sweeps expired entries and enforces the size cap before inserting. Panics on empty taskID or nil msg — both are programmer errors.
 
+<a name="AckMap.WasResolvedBy"></a>
+### func \(\*AckMap\) [WasResolvedBy](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L279>)
+
+```go
+func (am *AckMap) WasResolvedBy(taskID string, claims workertoken.Claims) bool
+```
+
+WasResolvedBy reports whether taskID was resolved within the last resolvedTaskTTL BY claims — i.e. claims.Admin, or claims.TokenID equals the TokenID that resolved it \(\#624 review round 3: gating this on the caller, not just the taskID, closes an enumeration hole — without it, any valid token could probe 409\-vs\-404 for a task it never claimed and learn whether that task ever existed/resolved\). Expires \(and removes\) a stale entry on read rather than waiting for a separate sweep — resolvedTasks is only ever queried from handleLogs's rejection path, so a lazy expiry costs nothing extra there.
+
+<a name="AckMap.WithLogState"></a>
+### func \(\*AckMap\) [WithLogState](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L197-L202>)
+
+```go
+func (am *AckMap) WithLogState(taskID string, fn func(seq uint64, totalBytes int64, truncated bool) (newSeq uint64, newTotalBytes int64, newTruncated bool)) bool
+```
+
+WithLogState atomically reads and updates the log\-ingest counters for taskID under AckMap's own mutex \(\#624\). fn receives the current \(seq, totalBytes, truncated\) and returns the updated values, which are written back before the lock releases — so concurrent POST /v1/tasks/\{id\}/logs calls for the same task never race each other's seq assignment or truncation decision. Returns false \(fn not called\) if taskID has no entry — same does\-not\-reap contract as LoadWithTokenID: a resolve racing the reaper must not surface as an ambiguous "not found" to the caller.
+
 <a name="Bridge"></a>
-## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L45-L63>)
+## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L45-L69>)
 
 Bridge is an HTTP\-to\-NATS gateway that lets non\-Go workers interact with DagNats over HTTP. Three deep endpoints expose the full worker lifecycle: connect, poll, and resolve.
 
@@ -124,7 +158,7 @@ type Bridge struct {
 ```
 
 <a name="NewBridge"></a>
-### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L86>)
+### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L92>)
 
 ```go
 func NewBridge(pub *natsutil.TracingPublisher) *Bridge
@@ -135,7 +169,7 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L144>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L152>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
@@ -148,7 +182,7 @@ Handler returns an http.Handler with the three bridge routes. The mux routes are
 - POST /v1/tasks/ \(resolve, path includes task ID\)
 
 <a name="Bridge.SetTokenStore"></a>
-### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L168>)
+### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L179>)
 
 ```go
 func (b *Bridge) SetTokenStore(store *workertoken.Store)

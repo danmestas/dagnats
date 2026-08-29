@@ -113,6 +113,14 @@ func (s *Service) routeRunByID(
 		handleApproval(s, w, r)
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "logs" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		handleGetRunLogs(s, w, r)
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "scheduled" {
 		switch r.Method {
 		case http.MethodGet:

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -34,6 +35,21 @@ import (
 // Checkpoint and signal methods depend on optional KV buckets
 // ("checkpoints" and "signals"). They return an error if the bucket
 // was not provisioned at startup — check your natsutil.SetupAll call.
+//
+// BREAKING CHANGE (#624): LogOut() io.Writer and LogErr() io.Writer
+// were added to this interface. Any out-of-repo Go type that
+// implements TaskContext directly (rather than embedding one dagnats
+// already constructs, e.g. via a handler-wrapping test double) stops
+// compiling against this version until it adds both methods. The
+// simplest fix for a test double or thin wrapper that doesn't care
+// about log capture is to return io.Discard from both:
+//
+//	func (m *myFakeTaskContext) LogOut() io.Writer { return io.Discard }
+//	func (m *myFakeTaskContext) LogErr() io.Writer { return io.Discard }
+//
+// A type that embeds worker.TaskContext (or a *testing double this
+// module already provides, e.g. dagnatstest.MockTaskContext) needs no
+// change — it inherits the new methods automatically.
 type TaskContext interface {
 	// Step identity and input
 	Input() []byte
@@ -55,6 +71,28 @@ type TaskContext interface {
 	// Streaming and heartbeat
 	PutStream(data []byte) error
 	Heartbeat() error
+
+	// LogOut and LogErr (#624) publish stdout/stderr-tagged chunks to
+	// the BUILD_LOGS hot lane (logs.{runID}.{stepID}.{attempt}.{iteration}
+	// — scoped to THIS attempt and iteration so a retry or agent-loop
+	// Continue never collides with a prior dispatch's sequence numbers
+	// within the stream's dedup window), buffered and flushed at
+	// protocol.LogChunkBytesMax or after 250ms. Complete, Fail,
+	// FailPermanent, FailRetryAfter, Continue, and Pause all drain any
+	// buffered bytes AND emit an attempt-ending marker
+	// (completed/failed/continued/paused) before publishing their own
+	// resolution, so a consumer that observes the terminal event never
+	// misses trailing log output and can treat the marker as a
+	// reliable "this attempt is over" signal.
+	//
+	// The writers LogOut/LogErr return ARE safe to call concurrently —
+	// each Write() holds the lane's own mutex — which matters because
+	// the canonical use is handing them straight to an external
+	// process: `cmd.Stdout = tc.LogOut(); cmd.Stderr = tc.LogErr()`
+	// then `cmd.Run()`, where os/exec copies each stream on its own
+	// goroutine.
+	LogOut() io.Writer
+	LogErr() io.Writer
 
 	// Checkpointing — save/restore handler state across retries
 	Checkpoint(state []byte) error
@@ -140,6 +178,10 @@ type Worker struct {
 	stepRetries           metric.Int64Counter
 	tasksActive           metric.Int64UpDownCounter
 	cancelledTasksSkipped metric.Int64Counter
+	// logChunkFailures counts BUILD_LOGS chunk publish failures
+	// (#624) — threaded into every taskContext so LogOut()/LogErr()
+	// writers can record a dropped chunk without blocking the handler.
+	logChunkFailures metric.Int64Counter
 
 	// workflowRunsKV is the optional binding to the workflow_runs KV
 	// bucket. When present, the worker fast-skips tasks whose parent
@@ -293,6 +335,9 @@ func NewWorker(
 	skipped, _ := m.Int64Counter(
 		"worker.tasks.cancelled_skipped",
 	)
+	logChunkFail, _ := m.Int64Counter(
+		"worker.log_chunk.publish_failures",
+	)
 	tp := natsutil.NewTracingPublisher(nc, js)
 	w := &Worker{
 		nc: nc,
@@ -311,6 +356,7 @@ func NewWorker(
 		stepRetries:           stepRet,
 		tasksActive:           active,
 		cancelledTasksSkipped: skipped,
+		logChunkFailures:      logChunkFail,
 		drainTimeout:          defaultDrainTimeout,
 	}
 	for _, opt := range opts {
@@ -1019,6 +1065,7 @@ func (w *Worker) startTaskSpan(
 	)
 	tc.workerID = w.workerID
 	tc.publishMsg = w.publishMsg
+	tc.logChunkFailures = w.logChunkFailures
 	// Deny-by-default gate: grant a control-plane handle only when the
 	// deployment wired one (w.controlPlane != nil) AND this step declared
 	// the capability. Both conditions must hold; either alone leaves the
@@ -1198,6 +1245,16 @@ func (w *Worker) handleMessage(
 		)
 		return
 	}
+	// #624 review round 2: a handler that returns nil WITHOUT ever
+	// calling Complete/Fail*/Continue/Pause (a bug — TaskContext's
+	// contract calls for exactly one of them, but nothing enforces it)
+	// used to leave tc.logLane's ticker goroutine running forever: it
+	// only stops when one of those methods calls drainWithMarker.
+	// This call is unconditional and idempotent — drainWithMarker's
+	// alreadyTerminal guard makes it a safe no-op if the handler
+	// already resolved normally (worker/context.go), so it closes the
+	// leak without double-emitting a marker on the common path.
+	tc.drainLogs(protocol.LogMarkerCompleted)
 	// Pause() already NAK'd the message — don't double-ack.
 	if !tc.paused {
 		msg.Ack()

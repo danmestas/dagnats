@@ -116,12 +116,19 @@ func NewTaskPublisher(
 // Publish dispatches a single task after checking rate limits,
 // task concurrency, and sticky bindings. If rate-limited or
 // concurrency-blocked, schedules a timer for delayed re-attempt.
+//
+// run is the CURRENT run snapshot (#624 review round 4): doPublish and
+// sticky.PublishTask derive BOTH Attempt and Iteration from it via
+// dispatchIdentity, so no call site computes either by hand. Passing
+// run (not a pre-computed attempt int) is what makes the class of bug
+// this round fixes impossible to reintroduce — the only way to get an
+// Attempt/Iteration onto the wire is through dispatchIdentity.
 func (tp *TaskPublisher) Publish(
 	ctx context.Context,
 	runID string,
 	step dag.StepDef,
 	input []byte,
-	attempt int,
+	run dag.WorkflowRun,
 	workflowName string,
 	dispatchNonce string,
 ) error {
@@ -130,6 +137,9 @@ func (tp *TaskPublisher) Publish(
 	}
 	if step.ID == "" {
 		panic("TaskPublisher.Publish: step.ID must not be empty")
+	}
+	if run.RunID != "" && run.RunID != runID {
+		panic("TaskPublisher.Publish: run.RunID must match runID")
 	}
 
 	// Check rate limit before concurrency acquisition so we
@@ -167,14 +177,14 @@ func (tp *TaskPublisher) Publish(
 		wfDef, _, loadErr := tp.loadRunAndDef(ctx, runID)
 		if loadErr == nil && wfDef.Sticky != dag.StickyNone {
 			return tp.sticky.PublishTask(
-				ctx, runID, step, input, attempt,
+				ctx, runID, step, input, run,
 				workerID, wfDef.Sticky, dispatchNonce, workflowName,
 			)
 		}
 	}
 
 	return tp.doPublish(
-		ctx, runID, step, input, attempt, workflowName, dispatchNonce,
+		ctx, runID, step, input, run, workflowName, dispatchNonce,
 	)
 }
 
@@ -394,12 +404,17 @@ func spanWorkflowNameAttrs(
 // the message a worker receives never carries a capability the policy
 // withholds. dispatchNonce rides the payload for server-side run-binding;
 // it was stamped on the step's StepState in the same snapshot write.
+//
+// Attempt and Iteration come from dispatchIdentity(run, step.ID,
+// dispatchNewAttempt) — this is the ONLY site in the New-attempt path
+// that builds a TaskPayload, so it is the ONLY site that needs to call
+// it (#624 review round 4).
 func (tp *TaskPublisher) doPublish(
 	ctx context.Context,
 	runID string,
 	step dag.StepDef,
 	input []byte,
-	attempt int,
+	run dag.WorkflowRun,
 	workflowName string,
 	dispatchNonce string,
 ) error {
@@ -421,11 +436,13 @@ func (tp *TaskPublisher) doPublish(
 		),
 	)
 	defer span.End()
+	attempt, iteration := dispatchIdentity(run, step.ID, dispatchNewAttempt)
 	payload := protocol.TaskPayload{
 		TaskID:       runID + "." + step.ID,
 		RunID:        runID,
 		StepID:       step.ID,
 		Attempt:      attempt,
+		Iteration:    iteration,
 		Input:        input,
 		WorkflowName: workflowName,
 		RequiredCapabilities: effectiveCapabilities(
@@ -458,6 +475,7 @@ func (tp *TaskPublisher) PublishIteration(
 	runID string,
 	step dag.StepDef,
 	input []byte,
+	attempt int,
 	iteration int,
 	workflowName string,
 	dispatchNonce string,
@@ -486,10 +504,19 @@ func (tp *TaskPublisher) PublishIteration(
 	// granted loop keeps its control-plane capability across iterations, and
 	// stamp the run-binding nonce so the iteration's control-plane calls pass
 	// VerifyDispatch. A nil holder Loads nil → deny-by-default.
+	//
+	// attempt is the caller's currentAttempt(run, step.ID) (#624 review
+	// round 3) — the SAME attempt this Continue call is a part of, not
+	// a new one via nextDispatchAttempt: a Continue iteration must not
+	// consume retry budget the step never spent. iteration is the new
+	// value; the two together are what scope this dispatch's BUILD_LOGS
+	// subject (logs.{runID}.{stepID}.{attempt}.{iteration}) so iteration
+	// 2+'s chunks never collide with iteration 0's.
 	payload := protocol.TaskPayload{
 		TaskID:       runID + "." + step.ID,
 		RunID:        runID,
 		StepID:       step.ID,
+		Attempt:      attempt,
 		Iteration:    iteration,
 		Input:        input,
 		WorkflowName: workflowName,
@@ -575,14 +602,18 @@ func (tp *TaskPublisher) PublishBatch(
 				step.ID, err,
 			)
 		}
-		attempt := run.Steps[step.ID].Attempts
 		// The grant strip keys on the workflow name; the run-binding nonce
 		// was stamped onto the step state by enqueueReady and rides the
-		// in-memory snapshot here (no re-load per task).
+		// in-memory snapshot here (no re-load per task). run itself
+		// (not a pre-computed attempt) flows through to Publish so
+		// Attempt/Iteration are both derived by dispatchIdentity
+		// (#624 review round 4) — this call site used to read
+		// Steps[step.ID].Attempts bare with no +1, which under-counted
+		// the attempt for any step being re-queued after a prior one.
 		nonce := run.Steps[step.ID].DispatchNonce
 		g.Go(func() error {
 			return tp.Publish(
-				ctx, runID, step, input, attempt,
+				ctx, runID, step, input, run,
 				run.WorkflowID, nonce,
 			)
 		})

@@ -11,8 +11,8 @@ Storage-agnostic by construction: everything in `offload.go` except
 `writeChunk` is generic (find the consumer, drain it, hand each chunk to a
 writer). `writeChunk` is the ONLY function this example expects you to
 replace. The shipped `writeChunk` writes one newline-delimited JSON file per
-`(step, attempt)` to a local directory — a working reference target with zero
-external dependencies, not a production recommendation.
+`(step, attempt, iteration)` to a local directory — a working reference
+target with zero external dependencies, not a production recommendation.
 
 ## Workflow
 
@@ -60,8 +60,11 @@ nats kv put triggers log-offload-on-your-build-workflow \
 Now every time `your-build-workflow` finishes, `log-offload` starts
 automatically with input `{"run_id", "workflow_id", "status", "labels"}`
 describing the run that just finished, and the worker writes
-`$LOG_OFFLOAD_DIR/{step}.{attempt}.ndjson` for every step/attempt that wrote
-to BUILD_LOGS during that run.
+`$LOG_OFFLOAD_DIR/{step}.{attempt}.{iteration}.ndjson` for every
+step/attempt/iteration that wrote to BUILD_LOGS during that run — iteration
+is 0 for a normal step and increments per agent-loop `Continue` without
+touching attempt, so a Continue'd step's iterations land in separate files
+instead of one overwriting another.
 
 ## The TTL constraint
 

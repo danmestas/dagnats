@@ -94,7 +94,7 @@ func (b *Bridge) handleResolve(
 		"action", req.Action,
 	)
 
-	err = b.dispatchAction(ctx, taskID, msg, req, w, r)
+	err = b.dispatchAction(ctx, taskID, claimingTokenID, msg, req, w, r)
 	if err != nil {
 		if errors.Is(err, errResponseAlreadyWritten) {
 			return
@@ -146,6 +146,7 @@ func parseResolveRequest(
 func (b *Bridge) dispatchAction(
 	ctx context.Context,
 	taskID string,
+	claimingTokenID string,
 	msg jetstream.Msg,
 	req resolveRequest,
 	w http.ResponseWriter,
@@ -162,11 +163,11 @@ func (b *Bridge) dispatchAction(
 	}
 	switch req.Action {
 	case "complete":
-		return b.resolveComplete(ctx, taskID, msg, req)
+		return b.resolveComplete(ctx, taskID, claimingTokenID, msg, req)
 	case "fail":
-		return b.resolveFail(ctx, taskID, msg, req)
+		return b.resolveFail(ctx, taskID, claimingTokenID, msg, req)
 	case "pause":
-		return b.resolvePause(ctx, taskID, msg, req)
+		return b.resolvePause(ctx, taskID, claimingTokenID, msg, req)
 	case "checkpoint":
 		return b.resolveCheckpoint(ctx, taskID, msg, req)
 	case "send_signal":
@@ -174,7 +175,7 @@ func (b *Bridge) dispatchAction(
 	case "wait_signal":
 		return b.resolveWaitSignal(ctx, taskID, msg, req, w, r)
 	case "continue":
-		return b.resolveContinue(ctx, taskID, msg, req)
+		return b.resolveContinue(ctx, taskID, claimingTokenID, msg, req)
 	case "heartbeat":
 		return b.resolveHeartbeat(ctx, taskID, msg)
 	case "stream":
@@ -188,7 +189,7 @@ func (b *Bridge) dispatchAction(
 // and removes the task from the ackMap.
 func (b *Bridge) resolveComplete(
 	ctx context.Context,
-	taskID string, msg jetstream.Msg, req resolveRequest,
+	taskID string, claimingTokenID string, msg jetstream.Msg, req resolveRequest,
 ) error {
 	if ctx == nil {
 		panic("resolveComplete: ctx must not be nil")
@@ -204,6 +205,11 @@ func (b *Bridge) resolveComplete(
 		return fmt.Errorf("derive attempt number: %w", err)
 	}
 	runID, stepID := splitTaskID(taskID)
+	// #624 review round 2: emit the "completed" marker (using the
+	// AckMap's own seq/attempt state) BEFORE the resolution publish and
+	// BEFORE the task leaves the AckMap — the drain-before-resolve
+	// invariant the worker SDK already guarantees natively.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerCompleted)
 	evt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, runID, stepID, req.Output,
 	)
@@ -215,6 +221,7 @@ func (b *Bridge) resolveComplete(
 		return fmt.Errorf("ack message: %w", err)
 	}
 	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID, claimingTokenID)
 	return nil
 }
 
@@ -222,7 +229,7 @@ func (b *Bridge) resolveComplete(
 // removes the task from the ackMap.
 func (b *Bridge) resolveFail(
 	ctx context.Context,
-	taskID string, msg jetstream.Msg, req resolveRequest,
+	taskID string, claimingTokenID string, msg jetstream.Msg, req resolveRequest,
 ) error {
 	if ctx == nil {
 		panic("resolveFail: ctx must not be nil")
@@ -251,6 +258,13 @@ func (b *Bridge) resolveFail(
 	if err != nil {
 		return fmt.Errorf("marshal fail payload: %w", err)
 	}
+	// #624 review round 2: "failed" covers fail/fail_permanent/
+	// fail_retry_after alike — bridge represents all three as one
+	// "fail" action distinguished only by FailureType, and every one
+	// of them ends this attempt the same way from the log lane's
+	// perspective. Emit BEFORE the resolution publish and BEFORE the
+	// task leaves the AckMap.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerFailed)
 	evt := protocol.NewStepEvent(
 		protocol.EventStepFailed, runID, stepID, payloadData,
 	)
@@ -262,13 +276,14 @@ func (b *Bridge) resolveFail(
 		return fmt.Errorf("ack message: %w", err)
 	}
 	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID, claimingTokenID)
 	return nil
 }
 
 // resolvePause writes checkpoint to KV and NAKs with delay.
 func (b *Bridge) resolvePause(
 	ctx context.Context,
-	taskID string, msg jetstream.Msg, req resolveRequest,
+	taskID string, claimingTokenID string, msg jetstream.Msg, req resolveRequest,
 ) error {
 	if ctx == nil {
 		panic("resolvePause: ctx must not be nil")
@@ -287,11 +302,17 @@ func (b *Bridge) resolvePause(
 	if err := b.writeCheckpoint(ctx, taskID, req.Checkpoint); err != nil {
 		return err
 	}
+	// #624 review round 2: emit BEFORE the NAK — the NAK is this
+	// attempt's own "resolution" (the message is redelivered fresh on
+	// resume), so the marker must land before it, same ordering as
+	// every other resolve path.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerPaused)
 	duration := time.Duration(req.DurationMs) * time.Millisecond
 	if err := msg.NakWithDelay(duration); err != nil {
 		return fmt.Errorf("nak with delay: %w", err)
 	}
 	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID, claimingTokenID)
 	return nil
 }
 
@@ -324,7 +345,7 @@ func (b *Bridge) resolveCheckpoint(
 // non-Go agents to implement agent loops via the HTTP bridge.
 func (b *Bridge) resolveContinue(
 	ctx context.Context,
-	taskID string, msg jetstream.Msg, req resolveRequest,
+	taskID string, claimingTokenID string, msg jetstream.Msg, req resolveRequest,
 ) error {
 	if ctx == nil {
 		panic("resolveContinue: ctx must not be nil")
@@ -336,6 +357,16 @@ func (b *Bridge) resolveContinue(
 		panic("resolveContinue: msg must not be nil")
 	}
 	runID, stepID := splitTaskID(taskID)
+	// #624 review round 3: emit BEFORE the step.continue publish —
+	// this ITERATION's subject is done; the next iteration gets a
+	// fresh iteration-scoped subject (logs.{runID}.{stepID}.{attempt}.
+	// {iteration}), same as the worker SDK's Continue. The attempt
+	// stays the SAME across iterations — a round-2 version of this
+	// comment incorrectly said the opposite ("a fresh attempt-scoped
+	// subject"); bumping attempt per iteration would consume retry
+	// budget the step never spent, which is exactly why iteration
+	// exists as its own dimension of subject identity.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerContinued)
 	evt := protocol.NewStepEvent(
 		protocol.EventStepContinue, runID, stepID, req.Output,
 	)
@@ -360,6 +391,7 @@ func (b *Bridge) resolveContinue(
 		return fmt.Errorf("ack message: %w", err)
 	}
 	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID, claimingTokenID)
 	return nil
 }
 

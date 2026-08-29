@@ -363,6 +363,99 @@ different purposes and neither replaces the other.
   `event.run.>` instead of polling; fall back to polling only to recover
   from a missed message during a consumer outage.
 
+### `logs.{runID}.{stepID}.{attempt}.{iteration}` -- captured step stdout/stderr (BUILD_LOGS stream)
+
+dagnats owns the JetStream **hot lane only** -- a bounded, short-TTL buffer
+of a step's captured output. There is no S3 offload, no cache, no
+long-term index. **Retention past the hot TTL is a consumer's job**, the
+same way `history.{runID}` and telemetry already work: a forge that needs
+a verdict's logs to stay explainable for years drains
+`logs.{runID}.{stepID}.{attempt}.{iteration}` into its own store next to the verdict,
+before the TTL elapses.
+
+- **Payload:** `protocol.LogChunk` (`protocol/log_chunk.go`):
+
+  ```json
+  {
+    "seq": 3,
+    "attempt": 1,
+    "ts": "2026-08-28T12:00:00.125Z",
+    "stream": "out",
+    "data": "aGVsbG8gd29ybGQK"
+  }
+  ```
+
+  `seq` is monotonic per ATTEMPT, shared across `out`/`err`/`marker` --
+  ordering by `seq` reconstructs write order even though stdout and
+  stderr buffer independently. `attempt` is the 1-based `AttemptNumber`
+  this chunk belongs to -- the SAME numbering `step.started`'s
+  `AttemptNumber` and `dag.StepState.Attempts` use. `stream` is `"out"`,
+  `"err"`, or `"marker"`; for `"marker"`, `data` carries `"completed"`,
+  `"failed"`, `"continued"`, `"paused"`, or `"truncated"` instead of
+  captured bytes. `data` is base64 on the wire.
+- **Subject:** `logs.{runID}.{stepID}.{attempt}.{iteration}` -- `stepID` is
+  sanitized with `natsutil.SubjectToken` before it goes into the
+  subject; `runID` (a `nuid`) is never sanitized. `attempt` scopes the
+  subject so a retry's chunks can never collide with (and silently
+  drop as a duplicate of) the prior attempt's within BUILD_LOGS's
+  2-minute dedup window -- query `logs.{runID}.{stepID}.>` for every
+  attempt of one step.
+- **Bounds** (`protocol/log_chunk.go`): `LogChunkBytesMax` 64 KiB per
+  chunk, `LogStepBytesMax` 64 MiB per attempt (total across both streams),
+  `LogReadChunksMax` 1024 chunks per non-follow read, `LogFollowDurationMax`
+  1h per SSE follow, `LogFollowConcurrentMax` 256 concurrent follows per
+  API server process.
+- **Markers:** every path that ends a task attempt -- worker SDK
+  `Complete`/`Fail`/`FailPermanent`/`FailRetryAfter`/`Continue`/`Pause`
+  AND the HTTP bridge's `complete`/`fail`/`continue`/`pause` resolve
+  actions alike -- emits exactly one of `"completed"`, `"failed"`
+  (covers `Fail`/`FailPermanent`/`FailRetryAfter`, or bridge's single
+  `fail` action distinguished by `failure_type`), `"continued"`, or
+  `"paused"` as the TRUE LAST message on that attempt's subject -- so
+  `GET .../logs?from=failure` resolves the failure position in O(1) via
+  `GetLastMsgForSubject` instead of a scan. `from=failure` is strict:
+  if the last message isn't a `"failed"` marker, the request 404s with
+  `{"error":"attempt has no failure marker"}`. `"truncated"` is emitted
+  at most once, the moment `LogStepBytesMax` is reached, BEFORE the
+  attempt-ending marker (which still lands last).
+- **Drain-before-resolve invariant:** the worker SDK's `Complete`, `Fail`,
+  `FailPermanent`, `FailRetryAfter`, `Continue`, and `Pause` -- and the
+  HTTP bridge's equivalent resolve actions -- all flush buffered log
+  bytes and emit their attempt-ending marker BEFORE publishing their
+  resolution event (or NAK-ing, for `Pause`). A bridge log POST for an
+  already-resolved task is rejected `409` (not `404`). A consumer
+  observing a step's terminal event, or the marker itself off a
+  `follow=1` connection, is guaranteed every log byte that produced it
+  is already on this subject.
+- **Buffering:** writes flush at `LogChunkBytesMax` or ~250ms after the
+  first unflushed byte, whichever comes first.
+- **Dedup key:** `Nats-Msg-Id: log-{runID}-{stepID}-{attempt}-{iteration}-{seq}`.
+- **Retention:** `DAGNATS_BUILD_LOGS_TTL` -- default 168h (7d), configurable
+  in `[1h, 8760h]`; an invalid value refuses server startup
+  (`internal/natsutil/build_logs.go`).
+- **Ingest paths:** the worker SDK (`worker.TaskContext.LogOut()` /
+  `LogErr()`) for Go workers; `POST /v1/tasks/{id}/logs` for non-Go
+  workers via the HTTP bridge, whose `attempt` AND `iteration` are
+  both read from the claimed task's own message (never caller-
+  supplied). Both resolve `AttemptNumber` the same way and read
+  `Iteration` straight off the payload, enforcing the same bounds and
+  marker behavior.
+- **Read path:** `GET /runs/{id}/logs?step=&attempt=&iteration=&cursor=&follow=&from=`
+  (see "Run logs" in the REST API reference) -- non-follow pages through
+  stored chunks via an opaque JetStream-stream-sequence cursor,
+  `follow=1` upgrades to Server-Sent Events over a single long-lived
+  consumer, ending with `event: eof` normally or `event: error` if that
+  consumer itself fails.
+- **Use for:** a live or historical tail of one attempt's captured output
+  within the hot TTL window. Anything longer-lived belongs in a
+  consumer's own store, drained before the TTL elapses.
+
+**Breaking change for Go worker SDK consumers:** `worker.TaskContext`
+gained `LogOut() io.Writer` and `LogErr() io.Writer`. An out-of-repo
+type implementing `TaskContext` directly must add both (return
+`io.Discard` from each if log capture isn't needed) -- see the
+`TaskContext` doc comment in `worker/worker.go`.
+
 ### `event.queue.snapshot` -- periodic task-queue depth (EVENTS stream)
 
 - **Payload:** `protocol.QueueSnapshot` (`protocol/queue.go`), the same

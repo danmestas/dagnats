@@ -56,6 +56,12 @@ type Bridge struct {
 	// Pre-allocated metric instruments — created once in constructor.
 	requestCount    metric.Int64Counter
 	requestDuration metric.Float64Histogram
+	// logChunkFailures counts BUILD_LOGS publish failures from this
+	// package's log-ingest/marker paths (#624 review round 3) — the
+	// bridge counterpart to worker.log_chunk.publish_failures
+	// (worker/worker.go), so a BUILD_LOGS hiccup is observable
+	// regardless of which lane (native worker or HTTP bridge) hit it.
+	logChunkFailures metric.Int64Counter
 	// metricsReg holds the observable-gauge registration. Bridge has no
 	// shutdown path today, so nothing unregisters it; it is kept so a
 	// future Close can, matching internal/trigger's scheduler.
@@ -111,17 +117,19 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 	reqDur, _ := m.Float64Histogram(
 		"bridge.request.duration_ms",
 	)
+	logChunkFail, _ := m.Int64Counter("bridge.log_chunk.publish_failures")
 	b := &Bridge{
-		pub:             pub,
-		nc:              nc,
-		js:              js,
-		ackMap:          NewAckMap(),
-		checkpointKV:    checkpointKV,
-		signalKV:        signalKV,
-		token:           token,
-		tracer:          otel.Tracer("dagnats/bridge"),
-		requestCount:    reqCount,
-		requestDuration: reqDur,
+		pub:              pub,
+		nc:               nc,
+		js:               js,
+		ackMap:           NewAckMap(),
+		checkpointKV:     checkpointKV,
+		signalKV:         signalKV,
+		token:            token,
+		tracer:           otel.Tracer("dagnats/bridge"),
+		requestCount:     reqCount,
+		requestDuration:  reqDur,
+		logChunkFailures: logChunkFail,
 	}
 	// Registered after the Bridge exists because the callback closes
 	// over it. A failure here costs one gauge, so it is logged rather
@@ -157,6 +165,9 @@ func (b *Bridge) Handler() http.Handler {
 	)
 	mux.HandleFunc(
 		"POST /v1/tasks/{id}/resolve", b.handleResolve,
+	)
+	mux.HandleFunc(
+		"POST /v1/tasks/{id}/logs", b.handleLogs,
 	)
 	return b.authMiddleware(mux)
 }

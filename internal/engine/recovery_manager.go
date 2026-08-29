@@ -317,9 +317,11 @@ func (rm *RecoveryManager) TryOnFailure(
 		`{"failed_step":"%s","error":%q}`,
 		stepID, state.Error,
 	))
+	// #624 review round 4: pass run itself so Publish derives both
+	// Attempt and Iteration via dispatchIdentity.
 	err := rm.publisher.Publish(
-		ctx, run.RunID, onFailStep, errorInput, 0,
-		run.WorkflowID, ofState.DispatchNonce,
+		ctx, run.RunID, onFailStep, errorInput,
+		run, run.WorkflowID, ofState.DispatchNonce,
 	)
 	return err == nil, err
 }
@@ -367,9 +369,11 @@ func (rm *RecoveryManager) StartCompensation(
 		originalID, run.Steps[originalID].Output,
 		failedStepID, failedError,
 	)
+	// #624 review round 4: pass *run so Publish derives both Attempt
+	// and Iteration via dispatchIdentity.
 	return rm.publisher.Publish(
-		ctx, run.RunID, first, input, 0,
-		run.WorkflowID, run.Steps[first.ID].DispatchNonce,
+		ctx, run.RunID, first, input,
+		*run, run.WorkflowID, run.Steps[first.ID].DispatchNonce,
 	)
 }
 
@@ -428,9 +432,11 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 		stampDispatch(&nextState, time.Now().UTC())
 		run.Steps[step.Compensate] = nextState
 		saveFn(ctx, *run, step.Compensate)
+		// #624 review round 4: pass *run so Publish derives both
+		// Attempt and Iteration via dispatchIdentity.
 		rm.publisher.Publish(
-			ctx, run.RunID, compDef, input, 0,
-			run.WorkflowID, nextState.DispatchNonce,
+			ctx, run.RunID, compDef, input,
+			*run, run.WorkflowID, nextState.DispatchNonce,
 		)
 		return true
 	}
@@ -718,11 +724,16 @@ func buildDLQBody(
 	if err != nil {
 		return nil, fmt.Errorf("resolve input: %w", err)
 	}
+	// Attempt/Iteration are the AS-RECORDED values of the attempt that
+	// died (not a re-dispatch: this body documents what was sent, it
+	// is never itself published to a task subject), so both are bare
+	// state fields — no dispatchIdentity call belongs here.
 	payload := protocol.TaskPayload{
 		TaskID:       run.RunID + "." + stepDef.ID,
 		RunID:        run.RunID,
 		StepID:       stepDef.ID,
 		Attempt:      state.Attempts,
+		Iteration:    state.Iterations,
 		Input:        input,
 		WorkflowName: wfDef.Name,
 	}

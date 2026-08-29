@@ -79,12 +79,17 @@ func (sr *StickyRouter) DeleteBinding(
 // Hard: publish only to worker-specific subject.
 // Soft: publish to worker-specific subject, schedule fallback timer
 // that re-publishes to normal subject if unclaimed.
+// run is the CURRENT run snapshot (#624 review round 4): Attempt and
+// Iteration are both derived from it via dispatchIdentity, the same
+// builder doPublish uses — before this round, sticky dispatch never
+// set Iteration at all (an independent instance of the same bug class
+// TaskPublisher.doPublish had).
 func (sr *StickyRouter) PublishTask(
 	ctx context.Context,
 	runID string,
 	step dag.StepDef,
 	input []byte,
-	attempt int,
+	run dag.WorkflowRun,
 	workerID string,
 	strategy dag.StickyStrategy,
 	dispatchNonce string,
@@ -113,11 +118,13 @@ func (sr *StickyRouter) PublishTask(
 	defer span.End()
 
 	// Build the task payload
+	attempt, iteration := dispatchIdentity(run, step.ID, dispatchNewAttempt)
 	payload := protocol.TaskPayload{
 		TaskID:        runID + "." + step.ID,
 		RunID:         runID,
 		StepID:        step.ID,
 		Attempt:       attempt,
+		Iteration:     iteration,
 		Input:         input,
 		WorkflowName:  workflowName,
 		DispatchNonce: dispatchNonce,

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -29,6 +30,8 @@ func (m *mockTaskContext) Metadata() map[string]string { return nil }
 func (m *mockTaskContext) Context() context.Context    { return context.Background() }
 func (m *mockTaskContext) ControlPlane() ControlPlane  { return nil }
 func (m *mockTaskContext) Heartbeat() error            { return nil }
+func (m *mockTaskContext) LogOut() io.Writer           { return io.Discard }
+func (m *mockTaskContext) LogErr() io.Writer           { return io.Discard }
 func (m *mockTaskContext) PutStream([]byte) error      { return nil }
 func (m *mockTaskContext) Checkpoint([]byte) error     { return nil }
 func (m *mockTaskContext) Continue([]byte) error       { return nil }

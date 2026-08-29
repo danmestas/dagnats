@@ -81,7 +81,7 @@ func (o *Orchestrator) enqueueMapStep(
 		return err
 	}
 
-	return o.publishMapTasks(ctx, run.RunID, wfDef.Name, step, items)
+	return o.publishMapTasks(ctx, run, wfDef.Name, step, items)
 }
 
 // validateAndInitMapInstances checks MaxItems and initializes
@@ -121,14 +121,22 @@ func (o *Orchestrator) validateAndInitMapInstances(
 // publishMapTasks publishes one task per map item concurrently.
 // workflowName is the parent run's workflow definition name (wfDef.Name),
 // used ONLY for telemetry -- see the strip comment below for why passing
-// the real name here is safe.
+// the real name here is safe. run is read (never mutated) and passed
+// straight to Publish, which derives each instance's Attempt AND
+// Iteration via dispatchIdentity (#624 review round 4) -- a retried
+// map instance keeps its own StepState (keyed by its synthesized
+// instance ID) with its own Attempts/Iterations, so a re-run of this
+// function for the same instance must not re-dispatch as (0, 0).
 func (o *Orchestrator) publishMapTasks(
 	ctx context.Context,
-	runID string,
+	run *dag.WorkflowRun,
 	workflowName string,
 	step dag.StepDef,
 	items []json.RawMessage,
 ) error {
+	if run == nil {
+		panic("publishMapTasks: run must not be nil")
+	}
 	var g errgroup.Group
 	for i, item := range items {
 		i, item := i, item
@@ -157,7 +165,8 @@ func (o *Orchestrator) publishMapTasks(
 		nonce := runid.New()
 		g.Go(func() error {
 			return o.publisher.Publish(
-				ctx, runID, instanceStep, item, 0, workflowName, nonce,
+				ctx, run.RunID, instanceStep, item, *run,
+				workflowName, nonce,
 			)
 		})
 	}
@@ -341,8 +350,10 @@ func (o *Orchestrator) runMapOnFailure(
 		`{"failed_step":"%s","error":%q}`,
 		baseID, state.Error,
 	))
+	// #624 review round 4: pass run itself so Publish derives both
+	// Attempt and Iteration via dispatchIdentity.
 	return o.publisher.Publish(
-		ctx, run.RunID, onFailStep, errorInput, 0,
-		run.WorkflowID, ofState.DispatchNonce,
+		ctx, run.RunID, onFailStep, errorInput,
+		run, run.WorkflowID, ofState.DispatchNonce,
 	)
 }
