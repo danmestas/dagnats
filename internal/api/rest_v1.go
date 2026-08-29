@@ -43,6 +43,12 @@ func MountV1(mux *http.ServeMux, svc *Service, tokenStore *workertoken.Store) {
 	mux.HandleFunc("GET /v1/workers", svc.handleListWorkersV1)
 	mux.HandleFunc("GET /v1/queue", svc.handleGetQueueV1)
 	mountTokenRoutes(mux, tokenStore)
+	mux.HandleFunc("POST /v1/ci/compile", func(w http.ResponseWriter, r *http.Request) {
+		handleCICompile(svc, w, r)
+	})
+	mux.HandleFunc("POST /v1/ci/validate", func(w http.ResponseWriter, r *http.Request) {
+		handleCIValidate(svc, w, r)
+	})
 }
 
 // handleListWorkersV1 serves GET /v1/workers. Method mismatches never

@@ -776,6 +776,22 @@ curl -X DELETE http://localhost:8080/v1/tokens/6f1c...9a2b \
 
 ---
 
+## CI
+
+`POST /v1/ci/compile` and `POST /v1/ci/validate` compile a `.dagnats/ci.yml`
+spec into a `dag.WorkflowDef` -- see the
+[CI Module Reference](../ci-module) for the full request/response contract,
+the diagnostic shape, and why this is the only place `.dagnats/ci.yml`
+awareness enters the control plane (core `POST /workflows` above stays
+`dag.WorkflowDef`-only).
+
+```
+POST /v1/ci/compile    # {"name","spec","register"} -> {"workflow","def_hash","registered","warnings"} | 422 {"diagnostics"}
+POST /v1/ci/validate   # {"name","spec"} -> 200 {"valid","diagnostics"}, never registers
+```
+
+---
+
 ## Health
 
 ### Telemetry Health

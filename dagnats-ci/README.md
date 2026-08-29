@@ -9,10 +9,17 @@ GitHub event → DagNats run → Dagger execution → GitHub Check.
 
 ## What this module implements now
 
-- **CI-spec compiler** (`internal/compile`): parses `.dagnats/ci.yml` and
-  compiles it into a `dag.WorkflowDef` ready for the DagNats engine. Checks map
-  to `dagger.call` steps; `approval: required` inserts a durable human-gate step
-  before deployment.
+- **CI-spec compiler** (`github.com/danmestas/dagnats/ci`, promoted to the
+  parent module's root in #633 so this nested module can import it — a nested
+  Go module cannot import another module's `internal/` tree): parses
+  `.dagnats/ci.yml` and compiles it into a `dag.WorkflowDef` ready for the
+  DagNats engine. Checks map to `dagger.call` steps; `approval: required`
+  inserts a durable human-gate step before deployment. Parse/compile problems
+  are returned as a bounded list of `ci.Diagnostic` (line/column/field/message)
+  instead of failing fast on the first one — see the parent repo's
+  `docs/site/content/docs/reference/ci-module.md` for the diagnostic shape and
+  the mounted `/v1/ci/compile` and `/v1/ci/validate` control-plane endpoints
+  that also use this package.
 
 - **Webhook signature verification** (`internal/githubapp`): constant-time
   HMAC-SHA256 verification of the `X-Hub-Signature-256` header.
@@ -56,11 +63,8 @@ deploy:
 ```
 dagnats-ci/
   go.mod                       # replace => ../ for in-repo development
+                                # (ci.yml compile: ../ci — see parent repo)
   internal/
-    compile/
-      spec.go                  # parse .dagnats/ci.yml
-      compile.go               # compile → dag.WorkflowDef
-      compile_test.go
     githubapp/
       webhook.go               # HMAC-SHA256 verify
       event.go                 # event parsing + ToEnvelope

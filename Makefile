@@ -98,6 +98,7 @@ GOMARKDOC := gomarkdoc --repository.url https://github.com/danmestas/dagnats \
 
 docs-gen-sdk:
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/dag/api.md ./dag/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/ci/api.md ./ci/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/worker/api.md ./worker/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/protocol/api.md ./protocol/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/observe/api.md ./observe/
