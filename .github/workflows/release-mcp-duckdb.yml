@@ -195,4 +195,5 @@ jobs:
             artifacts/dagnats-mcp-duckdb-*.tar.gz \
             artifacts/SHA256SUMS-mcp-duckdb \
             --repo "$GITHUB_REPOSITORY" --clobber
-          echo "attached $(ls artifacts/dagnats-mcp-duckdb-*.tar.gz | wc -l) tarballs to $TAG"
+          n=$(find artifacts -name 'dagnats-mcp-duckdb-*.tar.gz' | wc -l)
+          echo "attached $n tarballs to $TAG"

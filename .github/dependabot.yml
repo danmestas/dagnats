@@ -1,0 +1,102 @@
+# Dependency automation.
+#
+# Covers what Dependabot can see: Go modules (four of them — the root,
+# the CGO mcp-duckdb module, dagnats-ci, and the docs site), GitHub
+# Actions, and the Dockerfile.
+#
+# It deliberately does NOT cover the pinned external binary versions in
+# sidecar/install.go (otelcol, otlp2parquet). Those are plain string
+# constants, invisible to every package manager, which is exactly how
+# otelcol sat 57 releases behind for ~2 years (#620) and the
+# dagnats-mcp-duckdb pin drifted 12 releases (#621). They are checked by
+# .github/workflows/binary-pins.yml instead.
+#
+# Grouping is aggressive on purpose: ungrouped, the OTel and NATS module
+# families alone would open a dozen PRs a week and get ignored, which is
+# the failure mode this file exists to prevent.
+version: 2
+
+updates:
+  # ---- Go modules -------------------------------------------------
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # The otel SDK modules share a release train and must move in
+      # lockstep — a partial bump produces version skew between the
+      # API and SDK halves. Always one PR.
+      opentelemetry:
+        patterns:
+          - go.opentelemetry.io/*
+      # nats.go and nats-server travel together in tests: the embedded
+      # server in engine/worker integration tests is the same major
+      # line the client speaks to.
+      nats:
+        patterns:
+          - github.com/nats-io/*
+          - github.com/synadia-io/orbit.go/*
+      # Everything else, minor and patch only. Majors get their own PR
+      # so the breaking-change review is not buried in a batch.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: gomod
+    directory: /cmd/dagnats-mcp-duckdb
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      all:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: gomod
+    directory: /dagnats-ci
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      all:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: gomod
+    directory: /docs/site
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    groups:
+      all:
+        update-types:
+          - minor
+          - patch
+
+  # ---- GitHub Actions ---------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        update-types:
+          - major
+          - minor
+          - patch
+
+  # ---- Container --------------------------------------------------
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2

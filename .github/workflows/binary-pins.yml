@@ -1,0 +1,120 @@
+name: Binary pins
+
+# The external binary versions in sidecar/install.go are plain string
+# constants. No package manager can see them, so Dependabot cannot watch
+# them and they rot silently: otelcol sat ~2 years and 57 releases behind
+# (#620), and the dagnats-mcp-duckdb pin drifted 12 releases while its own
+# comment promised it tracked the release tag (#621). Before that, #186
+# shipped a pin to a version upstream never released, so every install
+# 404'd.
+#
+# Two classes of problem, deliberately handled differently:
+#
+#   fail  — a pinned asset does not resolve. `dagnats sidecar install` is
+#           broken right now for everyone. This is #186 and #621.
+#   warn  — a newer upstream release exists. Not broken, but drifting.
+#           Reported to the job summary rather than failing, because a
+#           red recurring job trains people to ignore it.
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC — lands with the Dependabot batch.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'sidecar/install.go'
+      - '.github/workflows/binary-pins.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: pinned assets resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          SRC=sidecar/install.go
+          failed=0
+
+          pin() {
+            grep -oE "$1[[:space:]]*=[[:space:]]*\"[^\"]+\"" "$SRC" \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'
+          }
+
+          # Resolve a pinned asset; fail if it 404s.
+          check_asset() {
+            name="$1"; url="$2"
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 60 "$url" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "  ok   $name -> HTTP $code"
+            else
+              echo "::error::$name pinned asset does not resolve (HTTP $code): $url"
+              echo "- **$name**: pinned asset returns HTTP \`$code\` — install is broken" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+            fi
+          }
+
+          # Compare pin against upstream latest; warn only.
+          check_latest() {
+            name="$1"; repo="$2"; have="$3"
+            latest=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null | sed 's/^v//') || latest=""
+            if [ -z "$latest" ]; then
+              echo "  ??   $name: could not read upstream latest"
+              return
+            fi
+            if [ "$have" = "$latest" ]; then
+              echo "  ok   $name is current ($have)"
+            else
+              echo "::warning::$name pinned at $have; upstream latest is $latest"
+              echo "- **$name**: pinned \`$have\`, upstream latest \`$latest\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          echo "## Binary pins" >> "$GITHUB_STEP_SUMMARY"
+
+          OTELCOL=$(pin defaultOtelcolVersion)
+          OTLP2P=$(pin defaultOtlp2parquetVersion)
+          echo "otelcol=$OTELCOL otlp2parquet=$OTLP2P"
+
+          if [ -z "$OTELCOL" ] || [ -z "$OTLP2P" ]; then
+            echo "::error::could not parse version pins from $SRC — did the constant names change?"
+            exit 1
+          fi
+
+          # otelcol ships one tarball per platform; linux/amd64 is
+          # representative and the platform CI runs on.
+          check_asset "otelcol $OTELCOL" \
+            "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL}/otelcol_${OTELCOL}_linux_amd64.tar.gz"
+          check_asset "otlp2parquet $OTLP2P" \
+            "https://github.com/smithclay/otlp2parquet/releases/download/v${OTLP2P}/otlp2parquet-cli-linux-amd64.tar.gz"
+
+          check_latest "otelcol" "open-telemetry/opentelemetry-collector-releases" "$OTELCOL"
+          check_latest "otlp2parquet" "smithclay/otlp2parquet" "$OTLP2P"
+
+          # dagnats-mcp-duckdb has no pin — its version is derived from the
+          # build (#621). What can rot instead is the release pipeline
+          # silently stopping to publish the asset, which is the original
+          # bug. Warn only: a release cut before the fix legitimately has
+          # no asset, and failing on that would be red for reasons nobody
+          # can act on.
+          tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null) || tag=""
+          if [ -n "$tag" ]; then
+            n=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+                  --jq '[.assets[].name | select(startswith("dagnats-mcp-duckdb"))] | length' 2>/dev/null) || n=0
+            if [ "${n:-0}" -gt 0 ]; then
+              echo "  ok   dagnats-mcp-duckdb: $n assets on $tag"
+            else
+              echo "::warning::latest release $tag has no dagnats-mcp-duckdb assets (see #621)"
+              echo "- **dagnats-mcp-duckdb**: no assets on \`$tag\` — prebuilt install falls back to a local build" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          exit $failed
