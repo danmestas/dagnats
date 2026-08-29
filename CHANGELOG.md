@@ -6,8 +6,121 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+### Breaking / behavior changes
+
+- **`sidecar.InstallAll`** now takes the dagnats build version:
+  `InstallAll(w io.Writer, dagnatsVersion string)`. Breaking for direct
+  importers of the `sidecar` package (see Changed).
+- **`worker.TaskContext`** gained `LogOut() io.Writer` / `LogErr() io.Writer`
+  (#624/#652). Any out-of-repo type implementing `TaskContext` directly
+  (not via `dagnatstest.MockTaskContext`, and not embedding a value this
+  module constructs) stops compiling until it adds both methods.
+- **`api.MountV1`** gained a third parameter, `tokenStore *workertoken.Store`
+  (#627/#647).
+- **`POST /workflows`** now fails with `400` on a def with an unsafe task
+  type or `WorkerGroup`, or a dotted task type paired with a `WorkerGroup`
+  (#674/#677) — previously it registered a run that could never dispatch.
+- **An ungrouped worker no longer drains a grouped task type's work, and
+  vice versa** (#674/#677). **Migration:** a deployment relying on an
+  ungrouped worker to serve a task type that grouped workers also poll
+  must add a matching grouped worker for that task type — see
+  docs/wire-protocol.md "Task Subjects". A not-yet-upgraded durable for
+  the same task type/group auto-upgrades in place the first time upgraded
+  code claims it (logged once at `warn`, no maintenance window needed); a
+  message already published under the old scheme to a subject with an
+  extra token the new filter no longer matches is not redelivered to that
+  durable and instead ages out via `MaxAge`.
+- **`DAGNATS_BRIDGE_TOKEN`, when set, is the admin/root credential** for
+  worker-token minting — the only credential `/v1/tokens` mint/list/revoke
+  accept — and minting fails closed with `503` when it's unset (#627/#647).
+  Bridge auth's existing dev-mode/env-token gate is otherwise unchanged.
+- **`Orchestrator.Start()` now returns an error and fails startup** when the
+  active-run index cannot converge, instead of silently starting with an
+  incomplete reconciler view (#664/#668).
+- **`GET /runs` and `POST /runs/cancel` are exact only over a newest-first
+  scanned window**, not the full run population; both responses carry a
+  `truncated` flag when the scan hit its bound before exhausting the index
+  (#659/#663).
+
+### Added
+
+- **`GET /v1/workers` exposes the live worker directory (#628/#635).**
+  Returns `{"workers": [...], "count": N}` (`workers` never `null`); wins
+  Go 1.22+ mux precedence over the worker-runtime bridge's `/v1/` catch-all
+  for this exact path.
+- **`def_hash` on workflows + an annotation contract (#630/#636, #639).**
+  `dag.DefHash` is a hex SHA-256 over a workflow def's canonical JSON,
+  surfaced as `def_hash` on register/list; `protocol.Annotations` is the
+  blessed (optional) shape a worker may put in `TaskResolution.Data` so a
+  forge can pin failure/warning markers to a diff view — the engine never
+  parses it. Docs correct an earlier claim that in-flight runs keep the def
+  they started with; that guarantee ships separately, below.
+- **Per-step `StartedAt`/`CompletedAt` timestamps (#626/#638).** Added to
+  `dag.StepState`, stamped on the same snapshot writes the engine already
+  makes (no extra KV writes); a UI can now render per-step durations or a
+  waterfall from a run snapshot.
+- **Run labels, label filters, bulk cancel by label (#629/#645).**
+  `dag.WorkflowRun.Labels` (bounded: 16 labels max, key/value charset and
+  length limits), settable on `POST /runs` and `POST /runs/bulk`, queryable
+  via repeatable `?label=key=value` on `GET /runs`, and filterable on
+  `POST /runs/cancel` — all composing with the existing `workflow`/`status`
+  filters.
+- **Terminal run events + a documented consumer contract (#625/#646).**
+  Every terminal transition (including cancelled/compensated paths that
+  previously published nothing) now publishes
+  `event.run.{workflow}.{runID}.{status}` on `EVENTS` after the terminal
+  snapshot durably persists, replacing the old `workflow.completed`/
+  `workflow.failed` events that only 4 of 12 terminal paths triggered.
+- **Mintable, revocable, scoped worker tokens (#627/#647).** New
+  `internal/workertoken` KV-backed store: operators mint per-machine
+  bearer tokens scoped to task-type prefixes (segment-aware matching)
+  instead of handing out the admin secret; poll/resolve are enforced
+  per-token, and revoked tokens are pruned once past a bounded count.
+- **Queue-depth API + periodic snapshot events (#632/#649).** `GET
+  /v1/queue` returns a per-task-type pending/oldest-wait snapshot sourced
+  directly from `TASK_QUEUES`' unacked messages (no separate counter to
+  drift); `event.queue.snapshot` on `EVENTS` publishes the same shape on
+  change (plus a 60s heartbeat) so a consumer can watch depth live.
+- **`ci/` package + `/v1/ci/{compile,validate}` (#633/#651).** Promotes the
+  CI-spec compiler out of the nested `dagnats-ci` module's `internal/`
+  tree into a public root package, and mounts two control-plane endpoints
+  on top of it. Diagnostics now accumulate (bounded at 100) instead of
+  failing fast on the first problem; `POST /workflows` itself stays
+  spec-agnostic — the two `/v1/ci/*` routes are the only place `ci.yml`
+  awareness enters the control plane.
+- **Build-log hot lane, worker log writers, tail/follow API (#624/#652).**
+  New `BUILD_LOGS` stream (`logs.{runID}.{stepID}.{attempt}`, TTL via
+  `DAGNATS_BUILD_LOGS_TTL`); `TaskContext.LogOut()`/`LogErr()` for Go
+  workers, `POST /v1/tasks/{id}/logs` for the bridge; `GET
+  /runs/{id}/logs` for a paged read or SSE follow. Scope is deliberately
+  the hot lane only — no S3 offload, no cold cache; retention past the
+  TTL is a consumer's job, same posture as `history.{runID}`.
+- **`run_terminal` trigger with loop guards (#634/#653).** Starts a target
+  workflow when another workflow's run reaches a terminal state, sourced
+  from the `event.run.*` contract above. Register-time self-trigger
+  rejection, a `TriggerDepth`-bounded (8) refusal for cross-workflow
+  cycles, and restart-safe dedup (the started run's ID is a deterministic
+  hash of `{triggerID}|{sourceRunID}`, not a duplicate-window trick).
+- **`ci.yml` checks may name a plain task type (#671/#673).** `Check.Call`/
+  `DeployStep.Call` no longer force every check through `dagger.call`; a
+  new `task:` field (mutually exclusive with `call:`) lets a repo whose
+  workers already speak the plain worker protocol use `ci.yml` too.
+
 ### Fixed
 
+- **`workflow validate` and `workflow register` silently skipped
+  respond-reachability warnings (#613/#619).** `dag.ValidateRespondReachability`
+  was already wired into the REST registration handler and the console's
+  registration page, but neither CLI command an author actually runs
+  offline called it — both reported clean success while missing/duplicate
+  `respond` steps and missing schemas went unflagged. `workflow validate`
+  now detects HTTP triggers offline (no NATS round-trip) from the parsed
+  file's own `triggers` array; `workflow register` shares the same
+  helper. `workflowValidateResult` gains `Warnings []dag.Warning`;
+  `workflowRegisterResult` gains a distinct `RespondWarnings
+  []dag.Warning` (kept separate from the existing missing-worker
+  `Warnings []string` field rather than conflating the two shapes).
+  Warnings print to stderr and never change exit code.
 - **`dag.Validate` accepted task types that could never dispatch, and a
   dotted task type's consumer filter wildcard-matched unrelated sibling
   types (#674).** A step's `Task` was only checked for non-emptiness;
@@ -60,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   up. This only affects messages published in the narrow window before
   a deployment's first upgraded process claims the durable; steady
   state is unaffected.
-- **`dagnats sidecar install` could never fetch `dagnats-mcp-duckdb` (#621).**
+- **`dagnats sidecar install` could never fetch `dagnats-mcp-duckdb` (#621/#622).**
   The release workflow built the four tarballs but only uploaded them as
   workflow artifacts, expecting an operator to attach them by hand — which
   never happened, so no release from v0.0.1 through v0.0.13 shipped the
@@ -70,6 +183,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version is derived from the running dagnats build instead of a hand-bumped
   constant. Hosts with Go were unaffected (the install falls back to a local
   build); clean prebuilt hosts silently lost MCP DuckDB queries.
+- **`worker_id` could be re-registered by a token that didn't own it
+  (#650/#660, #667).** `POST /v1/workers/connect` wrote the registration
+  under whatever `worker_id` the request body named, with no check tying
+  the id to the caller's token — a second worker presenting a different
+  token could overwrite the first's directory entry (hostname, task
+  types, `token_id`). Not exploitable for task execution (poll/resolve
+  were already token-scoped since #647), but it corrupted the `GET
+  /v1/workers` directory. A connect from a different token now gets
+  `409`; the admin bearer can still always take over. A follow-up
+  (#667) found the ownership check mapped *any* KV revision conflict to
+  that same `409`, including a same-owner race between a reconnect and
+  the prior connection's own disconnect-time deregister, or its own
+  heartbeat loop — those now retry against fresh state (bounded, 5
+  attempts) before giving up, and persistent contention returns `503`
+  with `Retry-After` instead of a wrongly-rejected `409`.
+- **Admission-release recovery after finalize failures (#648/#661).** If
+  the singleton-lock/concurrency-slot release step after a run's terminal
+  snapshot save failed, the lock or slot leaked forever — three terminal
+  paths (Failed, CompensateFailed, Compensated) had no debt recording at
+  all, so the reconciler never even knew to look. `finalizeRun` now
+  records the debt (`WorkflowRun.ReleasePending`) durably before
+  publishing terminal events, and every terminal path routes through one
+  shared `releaseAdmission` so the reconciler can recover it.
+  `concurrency_runs` moved from a bare counter to a bounded member set
+  keyed by run ID, so a replayed release can't double-decrement.
+- **Runs could silently pick up a different workflow definition mid-flight
+  (#637/#662).** `Orchestrator.loadRunAndDef` re-read the workflow def by
+  name on every advance, so re-registering an existing name (e.g. a forge
+  re-registering `ci/*.json` on every check-in) changed an in-flight run's
+  steps, retries, concurrency, or timeouts on its very next advance. Runs
+  now pin to the `def_hash` (#630) they started with via an immutable
+  `name.v.<hash>` snapshot; a legacy run with no pinned hash keeps today's
+  mutable-pointer behavior, and a missing version key for a pinned run
+  self-heals when the mutable pointer's content hash still matches.
+- **Filtered/paginated run scans could silently miss recent runs
+  (#659/#663).** `GET /runs` and bulk cancel capped a lexicographically
+  (NUID) ordered KV key scan *before* applying the filter, so once the
+  run population exceeded the cap, a labeled or filtered query sampled an
+  arbitrary subset — the exact runs a label filter exists to find were
+  the likely casualties. A creation-ordered `runidx.<runID>` index now
+  backs a single newest-first scan primitive shared by `GET /runs`, bulk
+  cancel, and `ListRecent`; both responses report `truncated` when the
+  scan hit its bound. A bounded repair sweep backfills the index for
+  pre-existing runs.
+- **The reconciler and quota scans could miss active runs beyond a capped
+  window (#664/#668).** Recovery of runs owed an admission-release debt
+  (see #648/#661 above) and the wedged-run sweep both depended on a
+  bounded scan of the run population. A new `runactive.<runID>` marker —
+  present iff the reconciler owns the run (non-terminal, or terminal with
+  `ReleasePending`) — backs one `ListActive` listing per reconciler tick,
+  independent of total run count; startup now fails loudly
+  (`Orchestrator.Start()` returns an error) if the index can't converge
+  rather than silently reconciling an incomplete view.
+- **Every ordered JetStream consumer is now bounded via one helper; lint
+  enforces it repo-wide (#675/#676).** nats.go v1.53.1's unbounded default
+  `MaxResetAttempts` made an ordered consumer's `Next()` retry forever
+  once its stream was deleted (first caught in `internal/api`'s build-log
+  read/follow paths, #672). The bound now lives in one place,
+  `internal/natsutil/ordered_consumer.go`, and seven more TELEMETRY/
+  BUILD_LOGS ordered-consumer call sites (`internal/observe/spanread`,
+  `cli/logs.go`, `cli/logs_search.go`, `cli/trace.go`, `cli/metrics.go`,
+  `cli/clean.go`) route through it; CI now greps the whole tree to forbid
+  a raw `jetstream.OrderedConsumerConfig{`/`OrderedConsumer(` call outside
+  that file.
 
 ### Changed
 
@@ -83,6 +260,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind upstream. Generated configs now use the `otlp_http` exporter name;
   0.159.0 still accepts the old `otlphttp` alias but warns per signal on
   every start.
+- **CI hardening.** A `Docker` workflow builds the image and smoke-runs it
+  on PRs touching the Dockerfile/Go sources (#657); a `race` job runs `go
+  test -race` over the concurrency-heavy packages (`bridge`, `worker`,
+  `internal/engine`, `internal/api`, `internal/workertoken`,
+  `internal/natsutil`) that the fast `test` job doesn't cover (#669/#670);
+  `.github/dependabot.yml` now watches all four Go modules, Actions, and
+  the Dockerfile, grouped so the OTel/NATS release trains don't fragment
+  into a dozen PRs a week, with a `binary-pins.yml` job covering the
+  external `otelcol`/`dagnats-mcp-duckdb` pins Dependabot structurally
+  can't see (#623), later corrected so OTel/NATS don't fall into the
+  catch-all group (#655); and a round of flaky-test fixes (KV-purge
+  cutoff determinism, a port-reservation TOCTOU, a log-follow test's
+  wrong failure premise, a deleted-stream ordered-consumer hang) (#654,
+  #665, #666, #672).
+- **Dependency bumps.** OTel 1.44.0→1.46.0 / `otel/log`+`sdk/log`
+  0.20.0→0.22.0 (with the resulting `attribute.KeyValue` migration in the
+  NATS log exporter), `nats-server` 2.14.3→2.14.6, `nats.go`
+  1.52.0→1.53.1, `orbit.go/pcgroups` 0.2.1→0.2.2 (#658);
+  `mark3labs/mcp-go` 0.47.0→0.58.0 in `cmd/dagnats-mcp-duckdb` (#642); the
+  Docker base images `golang:1.26-alpine`→`1.27-alpine` and
+  `alpine:3.19`→`3.24` (#640, #641); `golang.org/x/net` and
+  `google.golang.org/protobuf` (#656); GitHub Actions, grouped (#643).
 
 ## [0.0.13] - 2026-08-14
 
