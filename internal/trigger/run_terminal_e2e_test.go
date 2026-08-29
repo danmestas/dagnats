@@ -504,3 +504,237 @@ func TestRunTerminalTrigger_DepthCapStopsChain(t *testing.T) {
 		t.Fatalf("D started despite depth cap: count=%d", count)
 	}
 }
+
+// TestRunTerminalTrigger_DeliverNewPolicyIgnoresHistoricalEvents
+// covers #634 review Blocker 1: a NEW durable consumer must not
+// replay EVENTS' retention window and start one target run per
+// historic terminal event that happened before the trigger existed.
+func TestRunTerminalTrigger_DeliverNewPolicyIgnoresHistoricalEvents(t *testing.T) {
+	h := newRunTerminalTestHarness(t)
+
+	wfA := oneStepEchoWorkflow("rt-new-a")
+	wfB := oneStepEchoWorkflow("rt-new-b")
+	h.putWorkflowDef(wfA)
+	h.putWorkflowDef(wfB)
+
+	// Three source runs complete BEFORE the trigger is ever
+	// registered.
+	historical := []string{"run-new-1", "run-new-2", "run-new-3"}
+	for _, runID := range historical {
+		h.startRun(wfA, runID)
+		h.waitRunStatus(runID, dag.RunStatusRunning)
+		h.completeStep(runID, "a")
+		h.waitRunStatus(runID, dag.RunStatusCompleted)
+	}
+
+	h.activateRunTerminal(TriggerDef{
+		ID:         "rt-new-trigger",
+		WorkflowID: wfB.Name,
+		Enabled:    true,
+		RunTerminal: &RunTerminalConfig{
+			Workflow: wfA.Name,
+		},
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	// Negative: none of the historical completions fired the trigger.
+	for _, runID := range historical {
+		if count := h.countChainedRuns(wfB.Name, runID); count != 0 {
+			t.Fatalf(
+				"historical run %s incorrectly fired the trigger: count=%d",
+				runID, count,
+			)
+		}
+	}
+
+	// Positive: a run completing AFTER registration does fire.
+	h.startRun(wfA, "run-new-4")
+	h.waitRunStatus("run-new-4", dag.RunStatusRunning)
+	h.completeStep("run-new-4", "a")
+	h.waitRunStatus("run-new-4", dag.RunStatusCompleted)
+	h.waitForChainedRun(wfB.Name, "run-new-4")
+}
+
+// TestRunTerminalTrigger_SurvivesLateRedeliveryPastDedupWindow covers
+// #634 review Blocker 2: dedup must not depend on WORKFLOW_HISTORY's
+// short Nats-Msg-Id Duplicates window (natsutil/conn.go, a few
+// seconds) — a crash/restart gap is minutes. This test republishes
+// the identical source RunEvent after sleeping PAST that window and
+// asserts the fix (deterministic run ID + SnapshotStore.ClaimRunID)
+// still collapses to exactly one target run, not two.
+func TestRunTerminalTrigger_SurvivesLateRedeliveryPastDedupWindow(t *testing.T) {
+	h := newRunTerminalTestHarness(t)
+
+	wfA := oneStepEchoWorkflow("rt-late-a")
+	wfB := oneStepEchoWorkflow("rt-late-b")
+	h.putWorkflowDef(wfA)
+	h.putWorkflowDef(wfB)
+
+	h.activateRunTerminal(TriggerDef{
+		ID:         "rt-late-trigger",
+		WorkflowID: wfB.Name,
+		Enabled:    true,
+		RunTerminal: &RunTerminalConfig{
+			Workflow: wfA.Name,
+		},
+	})
+
+	h.startRun(wfA, "run-late-1")
+	h.waitRunStatus("run-late-1", dag.RunStatusRunning)
+	h.completeStep("run-late-1", "a")
+	h.waitRunStatus("run-late-1", dag.RunStatusCompleted)
+	h.waitForChainedRun(wfB.Name, "run-late-1")
+
+	// Sleep past WORKFLOW_HISTORY's Duplicates window (a few seconds)
+	// before republishing — proves the fix does not rely on that
+	// window at all.
+	time.Sleep(6 * time.Second)
+
+	evt := protocol.RunEvent{
+		Type:       protocol.RunEventCompleted,
+		RunID:      "run-late-1",
+		WorkflowID: wfA.Name,
+		Status:     "completed",
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal RunEvent: %v", err)
+	}
+	subject := "event.run." + wfA.Name + ".run-late-1.completed"
+	if _, err := h.js.Publish(subject, data); err != nil {
+		t.Fatalf("republish RunEvent: %v", err)
+	}
+	time.Sleep(1 * time.Second)
+
+	// Negative: still exactly one B run for this source, even past
+	// the dedup window.
+	if count := h.countChainedRuns(wfB.Name, "run-late-1"); count != 1 {
+		t.Fatalf(
+			"chained B run count = %d, want 1 (dedup past window)",
+			count,
+		)
+	}
+}
+
+// TestRunTerminalTrigger_ExactWorkflowMatchNotSanitizedSubject covers
+// #634 review Major 4: the FilterSubject is built from a SANITIZED
+// workflow token, so two distinct workflow names that sanitize to the
+// same token share a subject. A trigger watching one of them must NOT
+// fire on the other reaching the same terminal status.
+func TestRunTerminalTrigger_ExactWorkflowMatchNotSanitizedSubject(t *testing.T) {
+	h := newRunTerminalTestHarness(t)
+
+	// Both sanitize to "rt_collide_a".
+	wfDot := oneStepEchoWorkflow("rt.collide.a")
+	wfUnd := oneStepEchoWorkflow("rt_collide_a")
+	wfB := oneStepEchoWorkflow("rt-collide-b")
+	h.putWorkflowDef(wfDot)
+	h.putWorkflowDef(wfUnd)
+	h.putWorkflowDef(wfB)
+
+	h.activateRunTerminal(TriggerDef{
+		ID:         "rt-collide-trigger",
+		WorkflowID: wfB.Name,
+		Enabled:    true,
+		RunTerminal: &RunTerminalConfig{
+			Workflow: wfDot.Name, // watches "rt.collide.a" exactly
+		},
+	})
+
+	// The subject-colliding workflow completes — must NOT fire.
+	h.startRun(wfUnd, "run-collide-und")
+	h.waitRunStatus("run-collide-und", dag.RunStatusRunning)
+	h.completeStep("run-collide-und", "a")
+	h.waitRunStatus("run-collide-und", dag.RunStatusCompleted)
+	time.Sleep(500 * time.Millisecond)
+	if count := h.countChainedRuns(wfB.Name, "run-collide-und"); count != 0 {
+		t.Fatalf(
+			"subject-collision workflow incorrectly fired the trigger: count=%d",
+			count,
+		)
+	}
+
+	// The ACTUAL watched workflow completes — must fire.
+	h.startRun(wfDot, "run-collide-dot")
+	h.waitRunStatus("run-collide-dot", dag.RunStatusRunning)
+	h.completeStep("run-collide-dot", "a")
+	h.waitRunStatus("run-collide-dot", dag.RunStatusCompleted)
+	h.waitForChainedRun(wfB.Name, "run-collide-dot")
+}
+
+// TestRunTerminalTrigger_DurableNamesDontCollideForSimilarIDs covers
+// #634 review Major 5: two trigger IDs that sanitize to the same
+// subject token ("rt.durable.x" and "rt_durable_x") must get DISTINCT
+// durable consumer names, or the second Activate's
+// CreateOrUpdateConsumer silently rewrites the first trigger's
+// consumer and only one of the two ever actually fires.
+func TestRunTerminalTrigger_DurableNamesDontCollideForSimilarIDs(t *testing.T) {
+	h := newRunTerminalTestHarness(t)
+
+	wfA := oneStepEchoWorkflow("rt-durable-src")
+	wfB1 := oneStepEchoWorkflow("rt-durable-b1")
+	wfB2 := oneStepEchoWorkflow("rt-durable-b2")
+	h.putWorkflowDef(wfA)
+	h.putWorkflowDef(wfB1)
+	h.putWorkflowDef(wfB2)
+
+	h.activateRunTerminal(TriggerDef{
+		ID: "rt.durable.x", WorkflowID: wfB1.Name, Enabled: true,
+		RunTerminal: &RunTerminalConfig{Workflow: wfA.Name},
+	})
+	h.activateRunTerminal(TriggerDef{
+		ID: "rt_durable_x", WorkflowID: wfB2.Name, Enabled: true,
+		RunTerminal: &RunTerminalConfig{Workflow: wfA.Name},
+	})
+
+	h.startRun(wfA, "run-durable-src")
+	h.waitRunStatus("run-durable-src", dag.RunStatusRunning)
+	h.completeStep("run-durable-src", "a")
+	h.waitRunStatus("run-durable-src", dag.RunStatusCompleted)
+
+	// Positive: BOTH triggers fire from the same source completion —
+	// if the durable names collided, only one would.
+	h.waitForChainedRun(wfB1.Name, "run-durable-src")
+	h.waitForChainedRun(wfB2.Name, "run-durable-src")
+}
+
+// TestRunTerminalTrigger_DeleteRemovesDurableConsumer covers #634
+// review Major 6: a genuine KV delete of the trigger must remove its
+// durable EVENTS consumer, not just stop the in-process
+// ConsumeContext (Deactivate alone), or the consumer accumulates on
+// the server forever.
+func TestRunTerminalTrigger_DeleteRemovesDurableConsumer(t *testing.T) {
+	h := newRunTerminalTestHarness(t)
+
+	wfA := oneStepEchoWorkflow("rt-delete-a")
+	wfB := oneStepEchoWorkflow("rt-delete-b")
+	h.putWorkflowDef(wfA)
+	h.putWorkflowDef(wfB)
+
+	id := "rt-delete-trigger"
+	h.activateRunTerminal(TriggerDef{
+		ID: id, WorkflowID: wfB.Name, Enabled: true,
+		RunTerminal: &RunTerminalConfig{Workflow: wfA.Name},
+	})
+
+	stream, err := h.jsv2.Stream(context.Background(), "EVENTS")
+	if err != nil {
+		t.Fatalf("stream EVENTS: %v", err)
+	}
+	durable := runTerminalDurableName(id)
+
+	// Positive (sanity): the consumer exists right after Activate.
+	if _, err := stream.Consumer(context.Background(), durable); err != nil {
+		t.Fatalf("consumer %s should exist after Activate: %v", durable, err)
+	}
+
+	// Simulate the real KV-delete path: permanent=true.
+	if err := h.svc.removeTrigger(id, true); err != nil {
+		t.Fatalf("removeTrigger: %v", err)
+	}
+
+	// Negative: the durable consumer is gone, not just deactivated.
+	if _, err := stream.Consumer(context.Background(), durable); err == nil {
+		t.Fatalf("consumer %s should be deleted after a permanent removeTrigger", durable)
+	}
+}

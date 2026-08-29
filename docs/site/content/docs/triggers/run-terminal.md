@@ -85,14 +85,58 @@ would-be-started run, increments the
 triggering event without firing — the source run's completion is not
 affected, only the chain stops there.
 
+A sub-workflow spawned by a run inherits that run's `TriggerDepth` (the loop
+guard follows the trigger-chain lineage through a spawn, not just the
+top-level run), so a cycle routed through a sub-workflow still hits the cap.
+A DETACHED sub-workflow does not inherit it — same as it does not inherit
+`RootRunID` — a detached spawn is a deliberately new, independent lineage.
+
+**Operator-initiated resets are out of scope for the cap.** A bulk retry or
+manual rerun of a chained run starts a fresh top-level run, which always
+gets `TriggerDepth = 0` — the depth resets. This is intentional: the cap
+exists to stop an unattended trigger graph from looping forever, not to
+limit how many times an operator may deliberately re-run something.
+
 ## Delivery and dedup
 
 Each `run_terminal` trigger owns a durable JetStream consumer on `EVENTS`,
 filtered to `event.run.{sanitized watched workflow}.*.*` — the server does
-the filtering, not the trigger. At-least-once: a redelivered `RunEvent` (for
-example after an engine restart) does not double-start the target workflow.
-The started run's `Nats-Msg-Id` is `trig-{triggerID}-{sourceRunID}`, so a
-retry collapses to the same run via JetStream's publish dedup window.
+the filtering, not the trigger (an exact-match check on `WorkflowID` runs
+after that, since two distinct workflow names can sanitize to the same
+subject token; see below). The consumer is created with `DeliverNewPolicy`,
+not `DeliverAllPolicy`: at REGISTRATION time it must not replay `EVENTS`'
+retention window and start one target run per historical terminal event that
+predates the trigger. Once created, the durable consumer resumes from its
+own ack floor on every restart regardless of that initial policy — `New`
+only governs where a brand-new consumer starts reading.
+
+At-least-once: a redelivered `RunEvent` (for example after an engine
+restart, possibly minutes later) does not double-start the target workflow.
+This does NOT rely on JetStream's publish dedup window (`Nats-Msg-Id`,
+a few seconds) — that window cannot survive a restart gap. Instead:
+
+- The started run's ID is **deterministic**: a SHA-256 of
+  `{triggerID}|{sourceRunID}`, not a freshly minted ID. Every redelivery of
+  the same (trigger, source run) pair names the identical target run.
+- The engine claims that run ID with an atomic KV `Create` (not `Put`)
+  before doing anything else — the first caller to successfully create wins,
+  every other caller (including one racing at the same instant, not just one
+  arriving later) is told the run already exists and acks without starting
+  anything. This is a durable, no-expiry guard, not a time-bounded window.
+
+The `Nats-Msg-Id` (`trig-{triggerID}-{sourceRunID}`) is still set on the
+publish as a cheap fast-path that avoids a wasted publish attempt within the
+short window — it is a minor optimization on top of the guarantees above,
+not what makes redelivery safe.
+
+Each trigger's durable consumer is named from a hash of the trigger ID
+(not the sanitized ID directly), so two trigger IDs that happen to sanitize
+to the same token still get independent consumers instead of one silently
+overwriting the other's filter.
+
+Deleting a `run_terminal` trigger deletes its durable consumer; disabling one
+(or any other edit that re-registers it) does not — the consumer is reused
+so re-enabling resumes from where it left off instead of losing position.
 
 ## The TTL constraint (for log offload specifically)
 

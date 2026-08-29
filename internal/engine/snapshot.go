@@ -63,6 +63,54 @@ func (s *SnapshotStore) Save(ctx context.Context, run dag.WorkflowRun) error {
 	return err
 }
 
+// ClaimRunID atomically reserves runID by writing a minimal
+// placeholder snapshot via KV CREATE (not Put) — the FIRST caller to
+// succeed wins; every other caller, including one racing at the same
+// instant, gets claimed=false. Callers that win overwrite the
+// placeholder moments later with the real initial snapshot via the
+// ordinary Save; callers that lose must ack/skip without starting
+// anything (#634 review, Blocker 2).
+//
+// This exists for run-ID schemes that are DETERMINISTIC across
+// redeliveries — today, exclusively internal/trigger's run_terminal
+// chain-start run IDs (runTerminalChainRunID). A time-bounded publish
+// dedup window (WORKFLOW_HISTORY's Nats-Msg-Id Duplicates, a few
+// seconds) cannot survive a crash/restart gap of minutes; an atomic
+// KV write can, because it has no expiry. Every OTHER trigger type
+// still mints a fresh run ID per fire and relies on the existing
+// Load-then-skip idempotency guard in handleWorkflowStarted (#196) —
+// that guard is correct for THEM because a genuine redelivery of the
+// exact same stored workflow.started message always carries the same
+// RunID; ClaimRunID only matters when two SEPARATE publish attempts
+// might independently compute the same target RunID.
+func (s *SnapshotStore) ClaimRunID(
+	ctx context.Context, runID string,
+) (bool, error) {
+	if runID == "" {
+		panic("SnapshotStore.ClaimRunID: runID must not be empty")
+	}
+	if s.kv == nil {
+		panic("SnapshotStore.ClaimRunID: kv bucket must not be nil")
+	}
+	placeholder := dag.WorkflowRun{
+		RunID:     runID,
+		Status:    dag.RunStatusPending,
+		CreatedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(placeholder)
+	if err != nil {
+		return false, err
+	}
+	_, err = s.kv.Create(ctx, "run."+runID, data)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, jetstream.ErrKeyExists) {
+		return false, nil
+	}
+	return false, err
+}
+
 // Delete removes the snapshot for the given run ID under key "run.<RunID>".
 // Idempotent at the NATS layer — deleting an absent key is not an error.
 // Drop-only retention (#453) is built on this; there is no archive path.

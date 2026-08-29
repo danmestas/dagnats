@@ -29,6 +29,8 @@
 package trigger
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -190,4 +192,49 @@ func sanitizeSubjectToken(s string) string {
 		out = out[:runTerminalTokenMaxLen]
 	}
 	return out
+}
+
+// runTerminalDurableName derives the EVENTS-stream durable consumer
+// name for trigger triggerID. Hashed (not sanitizeSubjectToken)
+// because two distinct IDs can sanitize to the identical token (#634
+// review, Major 5) — e.g. "x.y" and "x_y" both sanitize to "x_y". A
+// name collision there would make the second trigger's
+// CreateOrUpdateConsumer call silently REWRITE the first trigger's
+// consumer (same durable name = same consumer identity to
+// JetStream), so only one of the two triggers would ever actually
+// receive events. SHA-256 makes a collision between two operator-
+// chosen IDs practically impossible; 16 hex chars (64 bits) is ample
+// for a durable-name suffix while keeping consumer names short.
+func runTerminalDurableName(triggerID string) string {
+	if triggerID == "" {
+		panic("runTerminalDurableName: triggerID must not be empty")
+	}
+	sum := sha256.Sum256([]byte(triggerID))
+	return "run-terminal-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// runTerminalChainRunID derives the deterministic run ID a
+// run_terminal trigger starts in reaction to sourceRunID (#634
+// review, Blocker 2). MUST be deterministic — not runid.New() — so
+// that firing the SAME (triggerID, sourceRunID) pair twice (a
+// redelivered source RunEvent, whether within JetStream's short
+// Nats-Msg-Id dedup window or hours later after a crash/restart)
+// always names the SAME target run. That determinism is what lets
+// the engine's atomic run-ID claim (SnapshotStore.ClaimRunID) reject
+// the second attempt outright, instead of relying on a dedup window
+// that cannot survive a restart gap. sha256 (not e.g. FNV) because
+// this ID crosses a trust boundary into a value operators and other
+// systems will see (run IDs are exposed via the API/CLI) and a
+// cryptographic hash means two different (triggerID, sourceRunID)
+// pairs colliding is not something an adversary or bad luck can
+// engineer.
+func runTerminalChainRunID(triggerID, sourceRunID string) string {
+	if triggerID == "" {
+		panic("runTerminalChainRunID: triggerID must not be empty")
+	}
+	if sourceRunID == "" {
+		panic("runTerminalChainRunID: sourceRunID must not be empty")
+	}
+	sum := sha256.Sum256([]byte(triggerID + "|" + sourceRunID))
+	return "trg" + hex.EncodeToString(sum[:])[:20]
 }

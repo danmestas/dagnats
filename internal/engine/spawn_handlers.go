@@ -111,6 +111,18 @@ func (o *Orchestrator) createChildRun(
 		switch {
 		case err == nil:
 			childRun.RootRunID = RootRunIDOf(parent)
+			// Inherit TriggerDepth too (#634 review, Blocker 3): a
+			// sub-workflow spawned by a run at depth N is still part
+			// of the same trigger-chain lineage — a run_terminal
+			// trigger reacting to the PARENT run's eventual
+			// completion sees a RunEvent whose depth must reflect the
+			// full chain, not reset to 0 just because a sub-workflow
+			// hop happened in between. Without this, a cycle routed
+			// through a sub-workflow spawn (A --run_terminal--> B,
+			// B spawns child C, C's completion triggers A again)
+			// would reset to depth 0 at C and bypass TriggerDepthMax
+			// entirely.
+			childRun.TriggerDepth = parent.TriggerDepth
 		case errors.Is(err, ErrRunNotFound):
 			childRun.RootRunID = childRunID
 		default:
@@ -120,6 +132,11 @@ func (o *Orchestrator) createChildRun(
 			)
 		}
 	} else {
+		// Detached: no ParentRunID/ParentStepID link is recorded, and
+		// TriggerDepth is deliberately NOT inherited here, symmetric
+		// with RootRunID self-rooting on the line below — "detached"
+		// means "start a new independent lineage," and the loop guard
+		// follows the same lineage boundary as the tree-root does.
 		childRun.RootRunID = childRunID // detached child self-roots (#377)
 	}
 

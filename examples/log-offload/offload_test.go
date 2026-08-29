@@ -158,3 +158,50 @@ func TestOffloadRunLogs_SeparatesStepsAndAttempts(t *testing.T) {
 		}
 	}
 }
+
+func TestOffloadRunLogs_RetryDoesNotDuplicateLines(t *testing.T) {
+	// Methodology: offloadRunLogs creates a fresh ephemeral consumer
+	// per call, so calling it twice against the SAME seeded chunks
+	// (its own ack state does not carry over between calls) is
+	// exactly what a retried offload step does — reads the whole
+	// backlog again. #634 review nit 9: a naive append-mode writer
+	// would duplicate every line on the second call; the
+	// temp-file-then-rename writer must not.
+	_, nc := natsutil.StartTestServer(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	setupBuildLogsStream(t, js)
+
+	runID := "run-offload-retry"
+	base := time.Now().UTC()
+	chunks := []logChunk{
+		{Seq: 1, Ts: base, Attempt: 1, Stream: "out", Data: "line one"},
+		{Seq: 2, Ts: base, Attempt: 1, Stream: "marker", Data: "completed"},
+	}
+	for _, c := range chunks {
+		publishChunk(t, js, runID, "build", 1, c)
+	}
+
+	outDir := t.TempDir()
+	if _, err := offloadRunLogs(context.Background(), js, runID, outDir); err != nil {
+		t.Fatalf("first offloadRunLogs: %v", err)
+	}
+	if _, err := offloadRunLogs(context.Background(), js, runID, outDir); err != nil {
+		t.Fatalf("second (retry) offloadRunLogs: %v", err)
+	}
+
+	path := filepath.Join(outDir, "build.1.ndjson")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	// Negative: still 2 lines, not 4 -- the retry replaced the file
+	// instead of appending onto it.
+	if len(lines) != 2 {
+		t.Fatalf("lines after retry = %d, want 2 (no duplication): %q",
+			len(lines), string(data))
+	}
+}

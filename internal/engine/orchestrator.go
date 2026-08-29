@@ -740,16 +740,49 @@ func (o *Orchestrator) handleWorkflowStarted(
 		panic("handleWorkflowStarted: Payload must not be nil")
 	}
 
-	// Idempotency guard (#196). Bug shape: dagnats restart causes
-	// the WORKFLOW_HISTORY consumer to replay historical events,
-	// including workflow.started for runs that have long since
-	// completed. Without this guard, NewWorkflowRun + saveSnapshot
-	// below overwrite the existing terminal-state KV entry with a
-	// fresh Pending run and re-dispatch the first step, producing
-	// duplicate workflow.completed events and worker storms. Any
-	// existing record means a prior workflow.started for this RunID
-	// has been processed — treat the redelivery as a no-op.
-	if existing, loadErr := o.store.Load(
+	// Idempotency guard (#196 generic path; #634 review Blocker 2 for
+	// run_terminal specifically — see below). Bug shape: dagnats
+	// restart causes the WORKFLOW_HISTORY consumer to replay
+	// historical events, including workflow.started for runs that
+	// have long since completed. Without this guard, NewWorkflowRun +
+	// saveSnapshot below overwrite the existing terminal-state KV
+	// entry with a fresh Pending run and re-dispatch the first step,
+	// producing duplicate workflow.completed events and worker
+	// storms. Any existing record means a prior workflow.started for
+	// this RunID has been processed — treat the redelivery as a
+	// no-op.
+	//
+	// A run_terminal chain-start payload takes a DIFFERENT, stricter
+	// guard: ClaimRunID (atomic KV Create) instead of Load-then-skip.
+	// Load-then-skip is correct here ONLY when a redelivery always
+	// carries the identical RunID because it is the SAME stored
+	// message being redelivered — true for every other trigger type
+	// and for direct/manual starts. run_terminal's RunID is instead
+	// RECOMPUTED (deterministically) on every fire from the durable
+	// EVENTS consumer's OWN redelivery of the SOURCE RunEvent — a
+	// genuinely SEPARATE publish attempt, not a redelivery of this
+	// same workflow.started message. Two such attempts landing on
+	// this orchestrator back-to-back (or on two orchestrator
+	// replicas) could both pass a plain Load check before either has
+	// saved anything; ClaimRunID closes that race with a single
+	// atomic write instead of a time-bounded dedup window.
+	if isRunTerminalChainPayload(evt.Payload) {
+		claimed, claimErr := o.store.ClaimRunID(ctx, evt.RunID)
+		if claimErr != nil {
+			return fmt.Errorf(
+				"claim run_terminal chain run %q: %w",
+				evt.RunID, claimErr,
+			)
+		}
+		if !claimed {
+			slog.InfoContext(ctx,
+				"skipping redelivered run_terminal chain start — "+
+					"run ID already claimed in workflow_runs KV",
+				"run_id", evt.RunID,
+			)
+			return nil
+		}
+	} else if existing, loadErr := o.store.Load(
 		ctx, evt.RunID,
 	); loadErr == nil {
 		slog.InfoContext(ctx,
@@ -990,6 +1023,21 @@ func decodeRunTerminalChainPayload(
 		return "", nil, 0, false
 	}
 	return env.WorkflowID, env.Input, env.TriggerDepth, true
+}
+
+// isRunTerminalChainPayload is a cheap peek used only to pick which
+// duplicate-start guard handleWorkflowStarted applies (#634 review,
+// Blocker 2) — a second, fuller decode happens later in
+// resolveStartPayload via decodeRunTerminalChainPayload itself. Not
+// merged into one call because the guard must run BEFORE any other
+// work (including the generic Load-based guard it replaces for this
+// payload shape), while resolveStartPayload's decode naturally
+// happens later in the existing control flow; duplicating one cheap
+// json.Unmarshal is simpler than threading the decoded values back
+// out to the top of the function.
+func isRunTerminalChainPayload(payload []byte) bool {
+	_, _, _, ok := decodeRunTerminalChainPayload(payload)
+	return ok
 }
 
 // decodeTriggerEnvelope returns the workflow ID from a TriggerEnvelope

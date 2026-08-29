@@ -13,13 +13,13 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -29,6 +29,23 @@ import (
 // matching RunEvent triggers. Short: this is a local JetStream
 // publish, not a network call to an external system.
 const runTerminalFireTimeout = 5 * time.Second
+
+// runTerminalMaxDeliver bounds redelivery of one event.run.* message
+// on a trigger's durable consumer (#634 review, nit 7). Without a
+// cap a message that keeps NAK'ing (e.g. the target workflow's def
+// KV lookup is persistently broken) redelivers forever. On
+// exhaustion JetStream drops the message from this consumer's view;
+// there is no dead-letter stream for EVENTS today, so exhaustion is
+// surfaced via the OutcomeError metric/log at the final NAK only —
+// an operator alerting on trigger_firings_total{outcome="error"}
+// sees it.
+const runTerminalMaxDeliver = 10
+
+// runTerminalNakBaseDelay is the base backoff NakWithDelay applies
+// (#634 review, nit 7). A bare Nak() redelivers as fast as the
+// consumer can re-fetch, hot-looping a transient publish failure
+// (e.g. a momentary JetStream unavailability) instead of backing off.
+const runTerminalNakBaseDelay = 2 * time.Second
 
 // runTerminalTrigger holds the live consumer for one run_terminal
 // TriggerDef.
@@ -97,15 +114,26 @@ func (r *runTerminalRegistrar) Activate(
 	if err != nil {
 		return fmt.Errorf("stream EVENTS: %w", err)
 	}
-	durable := "run-terminal-" + sanitizeSubjectToken(def.ID)
+	durable := runTerminalDurableName(def.ID)
 	cons, err := stream.CreateOrUpdateConsumer(
 		ctx, jetstream.ConsumerConfig{
 			Durable: durable,
 			FilterSubject: runTerminalSubject(
 				def.RunTerminal.Workflow,
 			),
-			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: jetstream.DeliverAllPolicy,
+			AckPolicy: jetstream.AckExplicitPolicy,
+			// DeliverNewPolicy (#634 review, Blocker 1): DeliverAll
+			// would replay EVENTS' full retention (eventsMaxAge, up
+			// to 14 days — natsutil/conn.go) the FIRST time this
+			// durable is created, starting one target run per
+			// historic terminal event that happened before the
+			// trigger even existed. New is still restart-safe: once
+			// created, a durable consumer resumes from its own ack
+			// floor on every subsequent Activate (server-side state,
+			// not re-derived from DeliverPolicy — that policy only
+			// applies at consumer CREATION).
+			DeliverPolicy: jetstream.DeliverNewPolicy,
+			MaxDeliver:    runTerminalMaxDeliver,
 		},
 	)
 	if err != nil {
@@ -128,10 +156,17 @@ func (r *runTerminalRegistrar) Activate(
 }
 
 // Deactivate stops the trigger's ConsumeContext and removes it from
-// the table. Idempotent. The durable consumer itself is left on the
-// server (matching the register-then-forget lifecycle every other
-// registrar follows — a re-Activate of the same def.ID reuses it via
-// CreateOrUpdateConsumer rather than erroring on "already exists").
+// the table. Idempotent. The durable consumer itself is DELIBERATELY
+// left on the server — Deactivate runs on every routine trigger-def
+// update too (TriggerService.removeTrigger is called before
+// addTrigger on every KV re-Put, not just on delete), so it must stay
+// cheap and reversible: a config edit re-Activates against the same
+// durable via CreateOrUpdateConsumer, resuming from the durable's own
+// ack floor rather than paying a delete+recreate round trip and
+// losing that position. DeletePermanently below is the actual
+// consumer teardown, called only for a genuine KV delete (#634
+// review, Major 6) so an operator who deletes a trigger does not
+// leave its consumer accumulating forever.
 func (r *runTerminalRegistrar) Deactivate(
 	_ context.Context, def TriggerDef,
 ) error {
@@ -148,6 +183,33 @@ func (r *runTerminalRegistrar) Deactivate(
 		rt.cc.Stop()
 	}
 	delete(r.triggers, def.ID)
+	return nil
+}
+
+// DeletePermanently deletes id's durable EVENTS consumer. Called by
+// TriggerService.removeTrigger ONLY for a genuine KV delete (not the
+// Deactivate-then-Activate cycle every routine trigger update goes
+// through — see Deactivate's doc comment). Idempotent: deleting an
+// already-gone consumer is not an error. Implements the unexported
+// permanentDeleter interface (service.go) — a type assertion, not an
+// addition to the shared TriggerRegistrar interface, because no other
+// registrar holds a resource Deactivate doesn't already fully tear
+// down.
+func (r *runTerminalRegistrar) DeletePermanently(
+	ctx context.Context, id string,
+) error {
+	if id == "" {
+		panic("runTerminalRegistrar.DeletePermanently: id must not be empty")
+	}
+	stream, err := r.js.Stream(ctx, "EVENTS")
+	if err != nil {
+		return fmt.Errorf("stream EVENTS: %w", err)
+	}
+	durable := runTerminalDurableName(id)
+	if err := stream.DeleteConsumer(ctx, durable); err != nil &&
+		!errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return fmt.Errorf("delete consumer %s: %w", durable, err)
+	}
 	return nil
 }
 
@@ -176,6 +238,20 @@ func (r *runTerminalRegistrar) handleRunEvent(
 		)
 		_ = msg.Ack()
 		RecordFiring(ctx, TypeRunTerminal, OutcomeError)
+		return
+	}
+
+	// Exact match, not subject-membership (#634 review, Major 4): the
+	// consumer's FilterSubject is built from a SANITIZED workflow
+	// token, and two distinct workflow names can sanitize to the same
+	// token (e.g. "a.b" and "a_b" both become "a_b") — any subscriber
+	// on that subject sees BOTH workflows' events. Without this
+	// check, a run_terminal trigger watching "a.b" would also fire on
+	// "a_b" finishing, defeating the self-target validation (#634
+	// item 2a) for any pair of names that collide this way.
+	if evt.WorkflowID != def.RunTerminal.Workflow {
+		_ = msg.Ack()
+		RecordFiring(ctx, TypeRunTerminal, OutcomeSkipped)
 		return
 	}
 
@@ -208,13 +284,17 @@ func (r *runTerminalRegistrar) handleRunEvent(
 			"error", err, "trigger_id", def.ID,
 			"source_run_id", evt.RunID,
 		)
-		// Nak (not Ack): the publish may have failed transiently
-		// (NATS hiccup) — redelivery retries. If it actually
-		// succeeded and only the ack path failed, JSPublish's
-		// Nats-Msg-Id dedup on the msgID below (fireRunTerminal's
-		// "trig-"+triggerID+"-"+sourceRunID) collapses the retry to
-		// the same started run rather than double-starting it.
-		_ = msg.Nak()
+		// NakWithDelay (not a bare Nak — #634 review, nit 7): a bare
+		// Nak redelivers as fast as the consumer can re-fetch, hot-
+		// looping a transient failure. The publish may have failed
+		// transiently (NATS hiccup) — bounded backoff retries. If it
+		// actually succeeded and only the ack path failed, the
+		// engine's atomic run-ID claim (SnapshotStore.ClaimRunID,
+		// keyed on fireRunTerminal's deterministic runTerminalChainRunID)
+		// collapses the retry to the same started run rather than
+		// double-starting it — not JSPublish's short dedup window,
+		// which does not survive a crash/restart gap.
+		_ = msg.NakWithDelay(runTerminalNakBaseDelay)
 		RecordFiring(ctx, TypeRunTerminal, OutcomeError)
 		return
 	}
@@ -248,15 +328,27 @@ type runTerminalChainInput struct {
 // fireRunTerminal publishes workflow.started for def's target
 // workflow, in reaction to source event evt. Returns the new run ID.
 //
-// Nats-Msg-Id is "trig-"+def.ID+"-"+evt.RunID (the issue's exact
-// dedup contract): keyed on the SOURCE run, not a freshly minted ID,
-// so a redelivered event.run.* message — the durable consumer's
-// crash-recovery path — collapses to the SAME started run instead of
-// starting a second one. This is why fireRunTerminal cannot reuse
-// fire.go's Fire(): Fire mints its own dedup ID scheme (cron-minute-
-// bucket or manual-nanosecond) that has no notion of "the source
-// event that caused this fire," and Fire's envelope shape has no
-// TriggerDepth field.
+// The run ID is runTerminalChainRunID(def.ID, evt.RunID) --
+// DETERMINISTIC, not freshly minted (#634 review, Blocker 2). A
+// freshly minted ID defeated its own dedup: a redelivery outside
+// JetStream's short Nats-Msg-Id window (natsutil/conn.go's
+// Duplicates -- a few seconds; a crash/restart gap is minutes) would
+// mint a SECOND, different run ID and genuinely double-start the
+// target workflow, because nothing tied the two publishes' bodies
+// together. With a deterministic ID, every redelivery of the same
+// (trigger, source run) pair names the identical target run, and the
+// engine's atomic claim (SnapshotStore.ClaimRunID, called from
+// resolveStartPayload's run_terminal branch) rejects the second
+// attempt outright -- durable, not time-bounded. The
+// Nats-Msg-Id ("trig-"+def.ID+"-"+evt.RunID) is kept as a CHEAP,
+// FAST-PATH short-window dedup on top -- it still saves a wasted
+// publish attempt for redeliveries within the window -- but it is not
+// what makes this correct across a restart; ClaimRunID is.
+//
+// This is why fireRunTerminal cannot reuse fire.go's Fire(): Fire
+// mints its own dedup ID scheme (cron-minute-bucket or manual-
+// nanosecond) that has no notion of "the source event that caused
+// this fire," and Fire's envelope shape has no TriggerDepth field.
 func fireRunTerminal(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
@@ -294,7 +386,7 @@ func fireRunTerminal(
 		return "", fmt.Errorf("marshal chain payload: %w", err)
 	}
 
-	newRunID := runid.New()
+	newRunID := runTerminalChainRunID(def.ID, evt.RunID)
 	startedEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, newRunID, payloadBytes,
 	)

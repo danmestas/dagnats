@@ -438,7 +438,29 @@ func httpRouteKey(method string, path string) string {
 	return method + " " + path
 }
 
-func (ts *TriggerService) removeTrigger(id string) error {
+// permanentDeleter is an OPTIONAL extra a registrar may implement
+// when Deactivate alone does not fully release an external resource
+// it holds (#634 review, Major 6). Today only runTerminalRegistrar
+// does: its durable EVENTS consumer must survive the routine
+// Deactivate-then-Activate cycle every trigger update goes through
+// (fast re-activation), but must NOT survive an actual KV delete
+// (orphan accumulation). A type assertion rather than a method on the
+// shared TriggerRegistrar interface, so every OTHER registrar's
+// contract is unchanged.
+type permanentDeleter interface {
+	DeletePermanently(ctx context.Context, id string) error
+}
+
+// removeTrigger deactivates id across every registrar (each is
+// idempotent for unknown ids, so the wrong ones are no-ops — cost is
+// bounded: O(kinds * map walk per kind), registrar set fixed at
+// boot). permanent distinguishes the two callers in handleKVUpdate: a
+// genuine KV delete/purge (permanent=true, additionally releases any
+// permanentDeleter resource) versus the remove-then-re-add half of a
+// routine trigger-definition update (permanent=false, Deactivate
+// only — the resource is about to be reused by the immediately
+// following addTrigger).
+func (ts *TriggerService) removeTrigger(id string, permanent bool) error {
 	if id == "" {
 		panic("removeTrigger: id must not be empty")
 	}
@@ -449,14 +471,17 @@ func (ts *TriggerService) removeTrigger(id string) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	// We don't know which kind owns this id without keeping a side
-	// table — instead, ask each registrar to Deactivate. Each is
-	// idempotent for unknown ids (ADR-016 contract), so the wrong
-	// ones are no-ops. Cost is bounded: O(kinds * map walk per
-	// kind) and the registrar set is fixed at boot.
 	stub := TriggerDef{ID: id}
 	for _, reg := range ts.registrars {
 		_ = reg.Deactivate(ts.ctx, stub)
+		if permanent {
+			if pd, ok := reg.(permanentDeleter); ok {
+				if err := pd.DeletePermanently(ts.ctx, id); err != nil {
+					slog.Error("permanent trigger resource cleanup failed",
+						"error", err, "trigger_id", id)
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -513,7 +538,7 @@ func (ts *TriggerService) handleKVUpdate(
 		ts.mu.Lock()
 		delete(ts.revisions, entry.Key())
 		ts.mu.Unlock()
-		_ = ts.removeTrigger(entry.Key())
+		_ = ts.removeTrigger(entry.Key(), true)
 		return
 	}
 
@@ -537,7 +562,7 @@ func (ts *TriggerService) handleKVUpdate(
 	}
 
 	// Remove old version and add new
-	_ = ts.removeTrigger(def.ID)
+	_ = ts.removeTrigger(def.ID, false)
 
 	// Respect max triggers limit
 	if ts.TriggerCount() < maxActiveTriggers {
