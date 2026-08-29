@@ -34,7 +34,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 
 # ---- runtime stage ----
 
-FROM alpine:3.19
+FROM alpine:3.24
 
 # ca-certificates: outbound TLS from triggers, observability exporters, etc.
 # tini: PID-1 signal handler so SIGTERM reaches the binary in k8s/compose.
