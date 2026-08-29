@@ -1,6 +1,9 @@
 package dag
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Validate checks a WorkflowDef for structural correctness before any run
 // is created. Catching these errors at definition time defines them out of
@@ -137,6 +140,9 @@ func validateStepReferences(
 		if err := validateTaskType(step); err != nil {
 			return err
 		}
+		if err := validateWorkerGroup(step); err != nil {
+			return err
+		}
 		if err := validateWaitForEventStep(step, ids); err != nil {
 			return err
 		}
@@ -231,6 +237,46 @@ func validateTaskType(step StepDef) error {
 	}
 	if err := ValidTaskType(step.Task); err != nil {
 		return fmt.Errorf("step %q has invalid task: %w", step.ID, err)
+	}
+	return nil
+}
+
+// validateWorkerGroup checks a step's WorkerGroup against the same
+// subject-token rule as ValidTaskType — StepSubject appends WorkerGroup
+// as its own token, between Task and the run ID
+// ("task.{Task}.{WorkerGroup}.{runID}"), so an unsafe WorkerGroup value
+// is exactly as dangerous as an unsafe Task (issue #674).
+//
+// It also rejects the combination of a dotted Task with a non-empty
+// WorkerGroup: consumername.FilterFor("render.gpu", "") and
+// FilterFor("render", "gpu") derive the byte-identical filter subject
+// AND durable name ("task.render.gpu.*", "workers-render-gpu"), so a
+// workflow that pairs a dotted Task with a WorkerGroup can silently
+// collide with an unrelated ungrouped step of the dotted name. Each
+// half is fine on its own (a dotted, ungrouped Task; an undotted Task
+// with a WorkerGroup) — only the combination on one step is rejected,
+// closing the ambiguity at register time instead of documenting it.
+func validateWorkerGroup(step StepDef) error {
+	if step.ID == "" {
+		panic("validateWorkerGroup: step ID is empty")
+	}
+	if step.WorkerGroup == "" {
+		return nil
+	}
+	if err := ValidTaskType(step.WorkerGroup); err != nil {
+		return fmt.Errorf(
+			"step %q has invalid worker_group: %w", step.ID, err,
+		)
+	}
+	if strings.Contains(step.Task, ".") {
+		return fmt.Errorf(
+			"step %q combines dotted task %q with worker_group %q: "+
+				"FilterFor(%q, \"\") and FilterFor(%q, %q) would derive "+
+				"the same filter subject and durable name — use an "+
+				"undotted task type when worker_group is set",
+			step.ID, step.Task, step.WorkerGroup,
+			step.Task, step.Task, step.WorkerGroup,
+		)
 	}
 	return nil
 }

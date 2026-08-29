@@ -599,14 +599,20 @@ func (w *Worker) subscribeTask(
 		if w.singletons[tt] {
 			partCount = 1
 		}
-		filter := "task." + tt + ".>"
-		groupName := "workers-" + tt
+		// Routed through consumerFilterFor/consumerNameFor (not built
+		// inline) so a partitioned worker's filter carries the same
+		// one-trailing-token anchor and sanitization a non-partitioned
+		// worker's subscribePullConsumer uses — otherwise a partitioned
+		// "build" worker would (a) still wildcard-leak "build.linux"
+		// dispatches and (b) collide on TASK_QUEUES with a
+		// non-partitioned worker of the same task type, whose filter is
+		// now "*"-anchored (#674).
+		filter := consumerFilterFor(tt, "")
+		groupName := consumerNameFor(tt, "")
 		if len(w.groups) > 0 {
 			for _, group := range w.groups {
-				gFilter := "task." + tt + "." +
-					group + ".>"
-				gName := "workers-" + tt +
-					"-" + group
+				gFilter := consumerFilterFor(tt, group)
+				gName := consumerNameFor(tt, group)
 				cc := w.createElasticConsumer(
 					tt, gName, gFilter,
 					partCount, h,

@@ -25,6 +25,16 @@ time unless it is:
 - composed only of `A-Za-z0-9_.-`,
 - and never starts or ends with `.`, nor contains an empty token (`a..b`).
 
+A step's `WorkerGroup` (the `{workerGroup}` above) is validated against the
+exact same rule — `StepSubject` appends it as its own subject token, so an
+unsafe `WorkerGroup` is exactly as dangerous as an unsafe `Task`. Additionally,
+a dotted `Task` combined with a non-empty `WorkerGroup` is rejected outright:
+`FilterFor("render.gpu", "")` and `FilterFor("render", "gpu")` derive the
+byte-identical filter subject AND durable name, so pairing the two on one
+step could silently collide with an unrelated ungrouped step. Each half
+stays legal on its own (a dotted, ungrouped `Task`; an undotted `Task` with a
+`WorkerGroup`) — only the combination is rejected.
+
 **Dots are legal and are not a separator for consumer-filter purposes.**
 `dagger.call` is a production task type. A worker or bridge poller derives
 its consumer's `FilterSubject` via `internal/consumername.FilterFor`, which
@@ -38,6 +48,18 @@ correctly (whitespace, a NATS wildcard `*`/`>`, a stray leading/trailing/
 empty dotted token) now fails `POST /workflows` with 400 instead of
 silently never getting picked up (issue #674).
 
+**An ungrouped worker no longer drains a grouped task type's work (and vice
+versa).** Before #674, `FilterFor(type, "")` ("task.{type}.>") and
+`FilterFor(type, group)` ("task.{type}.{group}.>") overlapped under the old
+`>`-anchored wildcard, so an ungrouped poller for a task type also received
+that type's grouped dispatches — accidental sharing, not a documented or
+intentional feature. The exact-anchored filters no longer overlap: an
+ungrouped worker and a grouped worker for the same task type are fully
+isolated from each other. **Migration:** a deployment relying on an
+ungrouped worker to (even partially) serve a task type that also has grouped
+dispatches must add a matching grouped worker for that group — the ungrouped
+worker will no longer see that work after upgrading.
+
 Examples:
 
 - `task.llm.*` — all LLM tasks (any run)
@@ -46,11 +68,20 @@ Examples:
 - `task.build.*` — all `build` tasks; does **not** match `task.build.linux.*`
 
 Workers create durable pull consumers or ephemeral subscriptions with manual
-ACK. A durable's `FilterSubject` is brought in line with a changed
-`FilterFor` output the next time its owner calls
-`jetstream.CreateOrUpdateConsumer` (`worker.subscribePullConsumer`,
-`bridge.taskConsumer` via `adoptConsumer`) — there is no separate migration
-step for consumers created before this rule existed.
+ACK. `FilterSubject` is immutable on an existing JetStream consumer, so
+`jetstream.CreateOrUpdateConsumer` cannot rewrite it in place when
+`FilterFor`'s output changes (as it did for #674, `.>` → `.*`). Instead, the
+next time a worker (`worker.subscribePullConsumer`) or the bridge
+(`bridge.taskConsumer` via `adoptConsumer`) claims a durable and finds it
+already exists with the OLD `.>`-anchored filter for the SAME task
+type/group, it automatically deletes and recreates that durable with the
+new filter, logging once at `warn` ("auto-upgrading legacy consumer
+filter"). This is a live, in-place upgrade, not a separate migration
+step or a maintenance window — the first process to touch a given task
+type after upgrading performs it. A durable whose filter differs for a
+genuinely different task type still triggers the collision error
+unchanged (cross-process name collision, work-queue uniqueness
+rejection, etc.).
 
 ### TaskPayload Schema
 

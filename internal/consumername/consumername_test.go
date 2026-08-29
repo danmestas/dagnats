@@ -200,3 +200,73 @@ func TestFilterFor_AnchorsToOneTrailingToken(t *testing.T) {
 		)
 	}
 }
+
+func TestLegacyFilterFor(t *testing.T) {
+	cases := []struct {
+		name            string
+		taskType, group string
+		want            string
+	}{
+		{"default_branch", "render", "", "task.render.>"},
+		{"default_branch_dotted_task", "render.gpu", "",
+			"task.render.gpu.>"},
+		{"groups_branch", "render", "gpu", "task.render.gpu.>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := LegacyFilterFor(tc.taskType, tc.group)
+			if got != tc.want {
+				t.Fatalf("LegacyFilterFor(%q, %q) = %q, want %q",
+					tc.taskType, tc.group, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFilterIsLegacyUpgrade(t *testing.T) {
+	cases := []struct {
+		name      string
+		new, old  string
+		wantMatch bool
+	}{
+		{
+			"legacy_twin_ungrouped",
+			FilterFor("build", ""), LegacyFilterFor("build", ""),
+			true,
+		},
+		{
+			"legacy_twin_grouped",
+			FilterFor("render", "gpu"), LegacyFilterFor("render", "gpu"),
+			true,
+		},
+		{
+			"legacy_twin_dotted_task",
+			FilterFor("dagger.call", ""), LegacyFilterFor("dagger.call", ""),
+			true,
+		},
+		{
+			"same_anchor_not_legacy",
+			FilterFor("build", ""), FilterFor("build", ""),
+			false,
+		},
+		{
+			"different_task_type_not_legacy",
+			FilterFor("build", ""), LegacyFilterFor("bar", ""),
+			false,
+		},
+		{
+			"different_group_not_legacy",
+			FilterFor("render", "gpu"), LegacyFilterFor("render", "cpu"),
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FilterIsLegacyUpgrade(tc.new, tc.old)
+			if got != tc.wantMatch {
+				t.Fatalf("FilterIsLegacyUpgrade(%q, %q) = %v, want %v",
+					tc.new, tc.old, got, tc.wantMatch)
+			}
+		})
+	}
+}

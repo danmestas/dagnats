@@ -531,3 +531,78 @@ func TestAdoptConsumerContract(t *testing.T) {
 		t.Fatalf("mismatch must not masquerade as not-found: %v", err)
 	}
 }
+
+// TestAdoptConsumerAutoUpgradesLegacyFilter is the regression guard for
+// the upgrade-rollout blocker found in review: adoptConsumer used to
+// 500 (via consumerFilterMismatchError) when the existing durable's
+// filter was the pre-#674 ">"-anchored form of the SAME task type —
+// exactly what a not-yet-upgraded native worker or bridge process
+// leaves behind. That's an in-place upgrade opportunity, not a
+// collision: adoptConsumer must delete the stale durable and report
+// ErrConsumerNotFound so taskConsumer's existing fallback recreates it
+// with the new "*"-anchored filter.
+func TestAdoptConsumerAutoUpgradesLegacyFilter(t *testing.T) {
+	js, b, _ := newPollConsumerBridge(t)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+
+	preCreateDurable(
+		t, js, "workers-legacy", "task.legacy.>", adoptedAckWait,
+	)
+
+	_, err := b.adoptConsumer(ctx, "workers-legacy", "task.legacy.*")
+	if !errors.Is(err, jetstream.ErrConsumerNotFound) {
+		t.Fatalf(
+			"legacy filter: got %v, want ErrConsumerNotFound "+
+				"(so the caller recreates with the new anchor)",
+			err,
+		)
+	}
+
+	// Negative: the stale durable is actually gone, not merely ignored.
+	if _, err := js.Consumer(ctx, "TASK_QUEUES", "workers-legacy"); !errors.Is(
+		err, jetstream.ErrConsumerNotFound,
+	) {
+		t.Fatalf("legacy durable still present after upgrade: %v", err)
+	}
+}
+
+// TestBridgePollAutoUpgradesLegacyDurable proves the upgrade end-to-end
+// over the HTTP poll path: a durable left by a pre-#674 bridge/worker
+// process no longer 500s a poll for the same task type — it upgrades
+// in place and serves the work.
+func TestBridgePollAutoUpgradesLegacyDurable(t *testing.T) {
+	js, _, ts := newPollConsumerBridge(t)
+	preCreateDurable(
+		t, js, "workers-legacy", "task.legacy.>", 5*time.Minute,
+	)
+	publishTaskFixture(t, js, "legacy", "legacy-1")
+
+	tasks := postPoll(t, ts, "legacy", 1, pollConsumerFetchTimeoutMs)
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1 (upgrade must not lose the poll)",
+			len(tasks))
+	}
+	if tasks[0].RunID != "legacy-1" {
+		t.Fatalf("served run %q, want %q", tasks[0].RunID, "legacy-1")
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	cons, err := js.Consumer(ctx, "TASK_QUEUES", "workers-legacy")
+	if err != nil {
+		t.Fatalf("workers-legacy missing after upgrade: %v", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.Config.FilterSubject != "task.legacy.*" {
+		t.Fatalf("FilterSubject = %q, want task.legacy.* (auto-upgraded)",
+			info.Config.FilterSubject)
+	}
+}

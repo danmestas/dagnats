@@ -36,6 +36,9 @@ func ValidTaskType(s string) error {
 			s, len(s), taskTypeLenMax,
 		)
 	}
+	// Indexing s[0] and s[len(s)-1] unguarded here is safe only because
+	// the len(s) == 0 check above already returned — s is guaranteed
+	// non-empty from this point on.
 	if s[0] == '.' || s[len(s)-1] == '.' {
 		return fmt.Errorf(
 			"task type %q must not start or end with '.'", s,

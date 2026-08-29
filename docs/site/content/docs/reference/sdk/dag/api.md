@@ -331,7 +331,7 @@ ValidTaskType reports whether s is safe to publish verbatim as one or more NATS 
 Dots ARE allowed within a token: "dagger.call" is a production task type, and rejecting dots outright would break it. What keeps a dotted task type from leaking into another worker's poll is FilterFor's exact token\-count anchor, not a charset restriction here — see internal/consumername.FilterFor's doc comment.
 
 <a name="Validate"></a>
-## func [Validate](<https://github.com/danmestas/dagnats/blob/main/dag/validate.go#L9>)
+## func [Validate](<https://github.com/danmestas/dagnats/blob/main/dag/validate.go#L12>)
 
 ```go
 func Validate(def WorkflowDef) error

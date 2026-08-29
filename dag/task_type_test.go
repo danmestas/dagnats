@@ -71,3 +71,89 @@ func TestValidateRejectsInvalidStepTask(t *testing.T) {
 		t.Fatalf("Validate(safe task type) = %v, want nil", err)
 	}
 }
+
+// TestValidateRejectsInvalidWorkerGroup proves WorkerGroup is checked
+// against the same subject-token rule as Task — StepSubject appends it
+// as its own token ("task.{Task}.{WorkerGroup}.{runID}"), so an unsafe
+// value is exactly as dangerous as an unsafe Task (issue #674 review).
+func TestValidateRejectsInvalidWorkerGroup(t *testing.T) {
+	def := WorkflowDef{Name: "bad-group", Version: "1", Steps: []StepDef{
+		{
+			ID: "step-a", Task: "render", WorkerGroup: "gpu fast",
+			Type: StepTypeNormal,
+		},
+	}}
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error for an unsafe worker_group")
+	}
+	if !strings.Contains(err.Error(), `"step-a"`) {
+		t.Fatalf("Validate() error = %q, want it to name step %q",
+			err.Error(), "step-a")
+	}
+
+	// Negative: a safe worker_group does not trip this check.
+	okDef := WorkflowDef{Name: "ok-group", Version: "1", Steps: []StepDef{
+		{
+			ID: "step-a", Task: "render", WorkerGroup: "gpu-fast",
+			Type: StepTypeNormal,
+		},
+	}}
+	if err := Validate(okDef); err != nil {
+		t.Fatalf("Validate(safe worker_group) = %v, want nil", err)
+	}
+}
+
+// TestValidateRejectsDottedTaskWithWorkerGroup is the regression guard
+// for the filter/durable-name collision found in review:
+// consumername.FilterFor("render.gpu", "") and FilterFor("render",
+// "gpu") derive the identical filter subject AND durable name, so a
+// workflow that pairs a dotted Task with a WorkerGroup can silently
+// collide with an unrelated ungrouped step. Both halves stay legal on
+// their own — only the combination on one step is rejected.
+func TestValidateRejectsDottedTaskWithWorkerGroup(t *testing.T) {
+	// Positive: dotted task + worker_group together is rejected.
+	combined := WorkflowDef{Name: "dotted-plus-group", Version: "1",
+		Steps: []StepDef{
+			{
+				ID: "step-a", Task: "render.gpu", WorkerGroup: "fast",
+				Type: StepTypeNormal,
+			},
+		}}
+	err := Validate(combined)
+	if err == nil {
+		t.Fatal(
+			"Validate() = nil, want an error for a dotted task " +
+				"combined with worker_group",
+		)
+	}
+	if !strings.Contains(err.Error(), `"step-a"`) {
+		t.Fatalf("Validate() error = %q, want it to name step %q",
+			err.Error(), "step-a")
+	}
+
+	// Negative, form 1: dotted task alone (no worker_group) stays legal.
+	dottedAlone := WorkflowDef{Name: "dotted-alone", Version: "1",
+		Steps: []StepDef{
+			{ID: "step-a", Task: "render.gpu", Type: StepTypeNormal},
+		}}
+	if err := Validate(dottedAlone); err != nil {
+		t.Fatalf("Validate(dotted task, no worker_group) = %v, want nil",
+			err)
+	}
+
+	// Negative, form 2: undotted task with worker_group stays legal.
+	undottedWithGroup := WorkflowDef{Name: "undotted-with-group",
+		Version: "1", Steps: []StepDef{
+			{
+				ID: "step-a", Task: "render", WorkerGroup: "gpu",
+				Type: StepTypeNormal,
+			},
+		}}
+	if err := Validate(undottedWithGroup); err != nil {
+		t.Fatalf(
+			"Validate(undotted task, worker_group set) = %v, want nil",
+			err,
+		)
+	}
+}

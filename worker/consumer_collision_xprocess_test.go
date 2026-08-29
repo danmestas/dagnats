@@ -166,3 +166,74 @@ func TestCrossProcessCollision_EmptyStream_NoPanic(t *testing.T) {
 		t.Errorf("Durable = %q, want workers-foo", info.Config.Durable)
 	}
 }
+
+// TestCrossProcessCollision_LegacyFilter_AutoUpgrades is the regression
+// guard for the upgrade-rollout blocker found in review: a durable a
+// pre-#674 process left behind (">"-anchored filter, SAME task type) must
+// not panic the upgraded worker at startup. It's an in-place upgrade —
+// delete and recreate with the new "*"-anchored filter — not a
+// cross-type collision.
+func TestCrossProcessCollision_LegacyFilter_AutoUpgrades(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	// Pre-seed exactly what a pre-#674 worker process would have left:
+	// durable "workers-foo" filtering on the OLD ">"-anchored subject.
+	if _, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "workers-foo",
+		Name:          "workers-foo",
+		FilterSubject: "task.foo.>",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	}); err != nil {
+		t.Fatalf("seed legacy durable: %v", err)
+	}
+
+	logs := captureLogs(t, func() {
+		w := NewWorker(nc)
+		cc := w.subscribePullConsumer("foo", "",
+			func(ctx TaskContext) error { return nil })
+		t.Cleanup(cc.Stop)
+	})
+
+	// Positive: the durable now carries the new anchor, not the old one.
+	cons, err := stream.Consumer(ctx, "workers-foo")
+	if err != nil {
+		t.Fatalf("workers-foo missing after upgrade: %v", err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.Config.FilterSubject != "task.foo.*" {
+		t.Fatalf("FilterSubject = %q, want task.foo.* (auto-upgraded)",
+			info.Config.FilterSubject)
+	}
+
+	// Positive: the upgrade was logged at warn, once, naming both filters.
+	var upgradeLog string
+	for _, l := range logs {
+		if strings.Contains(l, "auto-upgrading legacy consumer filter") {
+			upgradeLog = l
+			break
+		}
+	}
+	if upgradeLog == "" {
+		t.Fatalf("upgrade not logged; logs: %v", logs)
+	}
+	if !strings.Contains(upgradeLog, "task.foo.>") ||
+		!strings.Contains(upgradeLog, "task.foo.*") {
+		t.Fatalf("upgrade log missing old/new filter: %s", upgradeLog)
+	}
+}

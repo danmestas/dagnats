@@ -11,7 +11,10 @@
 // SDK surface — the scheme is an internal invariant, not an API promise.
 package consumername
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // DefaultAckWait bounds the longest expected task duration plus a margin.
 // Workers running tasks longer than this should call msg.InProgress()
@@ -114,4 +117,48 @@ func FilterFor(taskType, group string) string {
 		panic("consumername.FilterFor: result must not be empty")
 	}
 	return out
+}
+
+// LegacyFilterFor returns the pre-#674 trailing-">"-wildcard form of
+// FilterFor(taskType, group). A durable a not-yet-upgraded dagnats
+// process created (worker or bridge, before the #674 anchor fix) still
+// carries this shape. Callers use it (usually via FilterIsLegacyUpgrade)
+// to recognize a stale-but-safe-to-replace durable rather than treating
+// it as a genuine cross-type collision.
+func LegacyFilterFor(taskType, group string) string {
+	if taskType == "" {
+		panic("consumername.LegacyFilterFor: taskType must not be empty")
+	}
+	if group == "" {
+		return "task." + taskType + ".>"
+	}
+	return "task." + taskType + "." + group + ".>"
+}
+
+// FilterIsLegacyUpgrade reports whether old is exactly the pre-#674
+// ">"-anchored form of new, the current "*"-anchored filter FilterFor
+// produced for the SAME (taskType, group) pair. It compares strings
+// only — new and old never need to be decomposed back into taskType and
+// group, because FilterFor and LegacyFilterFor always agree on the
+// prefix up to the trailing wildcard token.
+//
+// This is what lets a worker or bridge process upgrading past #674
+// treat a durable left by a not-yet-upgraded sibling process as an
+// in-place upgrade (delete and recreate with the new anchor) instead of
+// a genuine cross-type collision (which still panics/500s loudly).
+// Returns false — never a collision misdetected as an upgrade — for any
+// old that isn't byte-for-byte the ">"-anchored twin of new.
+func FilterIsLegacyUpgrade(newFilter, oldFilter string) bool {
+	if newFilter == "" {
+		panic("consumername.FilterIsLegacyUpgrade: newFilter must not be empty")
+	}
+	if oldFilter == "" {
+		panic("consumername.FilterIsLegacyUpgrade: oldFilter must not be empty")
+	}
+	if !strings.HasSuffix(newFilter, ".*") {
+		// Not a filter FilterFor could have produced; cannot have a
+		// legacy twin under this rule.
+		return false
+	}
+	return oldFilter == strings.TrimSuffix(newFilter, "*")+">"
 }

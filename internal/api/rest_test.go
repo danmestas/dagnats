@@ -547,8 +547,77 @@ func TestRESTRegisterWorkflowUnsafeTaskTypeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}
-	if resp2.StatusCode == http.StatusBadRequest {
-		t.Fatal("dotted-but-safe task type should not return 400")
+	if resp2.StatusCode != http.StatusOK && resp2.StatusCode != http.StatusCreated {
+		t.Fatalf(
+			"dotted-but-safe task type: status = %d, want %d or %d",
+			resp2.StatusCode, http.StatusOK, http.StatusCreated,
+		)
+	}
+}
+
+// TestRESTRegisterWorkflowUnsafeWorkerGroupRejected proves POST
+// /workflows 400s on an unsafe WorkerGroup the same way it does on an
+// unsafe Task — StepSubject appends WorkerGroup as its own subject
+// token ("task.{Task}.{WorkerGroup}.{runID}"), so it is exactly as
+// dangerous as an unsafe Task (issue #674 review).
+func TestRESTRegisterWorkflowUnsafeWorkerGroupRejected(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc)
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// Positive: a worker_group containing whitespace returns 400.
+	def := dag.WorkflowDef{
+		Name:    "rest-unsafe-group",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "a", Task: "render", WorkerGroup: "gpu fast",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	body := mustMarshal(t, def)
+	resp, err := http.Post(
+		server.URL+"/workflows",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusBadRequest)
+	}
+
+	// Negative: a safe, undotted worker_group registers cleanly.
+	okDef := dag.WorkflowDef{
+		Name:    "rest-safe-group",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{
+				ID: "a", Task: "render", WorkerGroup: "gpu-fast",
+				Type: dag.StepTypeNormal,
+			},
+		},
+	}
+	okBody := mustMarshal(t, okDef)
+	resp2, err := http.Post(
+		server.URL+"/workflows",
+		"application/json",
+		bytes.NewReader(okBody),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp2.StatusCode != http.StatusOK && resp2.StatusCode != http.StatusCreated {
+		t.Fatalf(
+			"safe worker_group: status = %d, want %d or %d",
+			resp2.StatusCode, http.StatusOK, http.StatusCreated,
+		)
 	}
 }
 
