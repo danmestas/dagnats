@@ -651,6 +651,131 @@ curl http://localhost:8080/v1/queue
 
 ---
 
+## Tokens
+
+Mint, list, and revoke bearer tokens that scope HTTP-bridge worker access
+to specific task-type prefixes. Separate from `DAGNATS_BRIDGE_TOKEN`,
+which remains the single admin/root credential: it authenticates
+unscoped, and it is the only credential these three routes accept.
+
+**All three routes require `Authorization: Bearer <DAGNATS_BRIDGE_TOKEN>`.**
+This is a fail-closed contract: if `DAGNATS_BRIDGE_TOKEN` is unset,
+token management is unavailable (`503`), never open. A minted worker
+token cannot call these routes, no matter its scope. This is
+independent of the bridge's own poll/resolve/connect auth, which
+follows the opposite rule: no env token there means an open bridge
+(dev mode); set it and every worker needs either the env token or a
+minted one.
+
+`task_type_prefixes` entries are **dot-segment prefixes**, not raw
+byte prefixes: a prefix `p` matches task type `t` iff `t == p` or `t`
+starts with `p + "."`. `"build"` matches `"build"` and `"build.deploy"`
+but **not** `"builder.deploy"`; `"echo"` matches `"echo"` but not
+`"echo-admin"`. Write the segment you want, without a trailing dot.
+
+### Mint Token
+
+```
+POST /v1/tokens
+```
+
+**Request body:**
+
+```json
+{
+  "label": "ci-runner-1",
+  "task_type_prefixes": ["ci", "build"]
+}
+```
+
+An empty (or omitted) `task_type_prefixes` mints a token that is
+authorized for **no** task types — fail closed, not "all types." Bounds:
+label up to 128 bytes, up to 32 prefixes of up to 64 bytes each, and up
+to 1000 non-revoked tokens outstanding at once.
+
+**Response:** `201 Created`
+
+```json
+{
+  "id": "6f1c...9a2b",
+  "token": "dgn_6f1c...9a2b_kQ3z...",
+  "label": "ci-runner-1",
+  "task_type_prefixes": ["ci", "build"],
+  "created_at": "2026-08-28T12:00:00Z"
+}
+```
+
+`token` (the bearer a worker presents as
+`Authorization: Bearer dgn_{id}_{secret}`) is shown **exactly once**,
+here. It is not recoverable from `GET /v1/tokens` or anywhere else — the
+server stores only its SHA-256 hash. Save it immediately or mint a new
+one.
+
+**curl:**
+```bash
+curl -X POST http://localhost:8080/v1/tokens \
+  -H "Authorization: Bearer $DAGNATS_BRIDGE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"ci-runner-1","task_type_prefixes":["ci"]}'
+```
+
+### List Tokens
+
+```
+GET /v1/tokens
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "tokens": [
+    {
+      "id": "6f1c...9a2b",
+      "label": "ci-runner-1",
+      "task_type_prefixes": ["ci", "build"],
+      "created_at": "2026-08-28T12:00:00Z",
+      "created_by": "admin",
+      "revoked_at": null
+    }
+  ]
+}
+```
+
+Revoked tokens are kept in the listing for audit (`revoked_at` set) —
+they are not deleted. The response never includes the secret or its
+hash.
+
+**curl:**
+```bash
+curl http://localhost:8080/v1/tokens \
+  -H "Authorization: Bearer $DAGNATS_BRIDGE_TOKEN"
+```
+
+### Revoke Token
+
+```
+DELETE /v1/tokens/{id}
+```
+
+**Response:** `204 No Content` on success, `404 Not Found` if `id` is
+unknown.
+
+Revocation latency is bounded by the bridge's KV-watch reconnect window
+(capped at 30s), not instant: each bridge process caches minted tokens
+in memory and only re-syncs immediately on a live watch; during a NATS
+reconnect it keeps serving its last-known cache rather than failing
+every poll/resolve outright, so a revoke made during that window takes
+effect once the watch reconnects.
+
+**curl:**
+```bash
+curl -X DELETE http://localhost:8080/v1/tokens/6f1c...9a2b \
+  -H "Authorization: Bearer $DAGNATS_BRIDGE_TOKEN"
+```
+
+---
+
 ## Health
 
 ### Telemetry Health

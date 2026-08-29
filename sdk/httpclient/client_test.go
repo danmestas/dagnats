@@ -21,6 +21,11 @@ import (
 // testServerAddr starts a full DagNats server and returns the HTTP
 // base URL and a cleanup function. The server runs in a background
 // goroutine and shuts down when cleanup is called.
+//
+// #627: the server always wires a workertoken.Store into the bridge,
+// but auth mode is still decided by DAGNATS_BRIDGE_TOKEN alone (see
+// bridge.Bridge.authorize) -- left unset here, so these tests stay
+// dev mode (unauthenticated allowed), same as before #627.
 func testServerAddr(t *testing.T) (string, func()) {
 	if t == nil {
 		panic("testServerAddr: t must not be nil")

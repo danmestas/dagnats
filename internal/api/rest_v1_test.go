@@ -9,15 +9,34 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// openTestTokenStore opens a workertoken.Store against the given
+// jetstream handle for tests that only need MountV1's third argument
+// satisfied, not token-management behavior itself (see
+// rest_v1_tokens_test.go for those).
+func openTestTokenStore(t *testing.T, js jetstream.JetStream) *workertoken.Store {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store, err := workertoken.Open(ctx, js)
+	if err != nil {
+		t.Fatalf("workertoken.Open: %v", err)
+	}
+	t.Cleanup(store.Close)
+	return store
+}
 
 // listWorkersResponse mirrors the JSON body MountV1's handler writes for
 // GET /v1/workers.
@@ -34,17 +53,27 @@ func TestMountV1PanicsOnNilArgs(t *testing.T) {
 				t.Fatal("expected panic for nil mux")
 			}
 		}()
-		MountV1(nil, &Service{})
+		MountV1(nil, &Service{}, nil)
 	}()
 
-	// Negative: nil svc panics too (both args are required).
+	// Negative: nil svc panics too (all three args are required).
 	func() {
 		defer func() {
 			if recover() == nil {
 				t.Fatal("expected panic for nil svc")
 			}
 		}()
-		MountV1(http.NewServeMux(), nil)
+		MountV1(http.NewServeMux(), nil, nil)
+	}()
+
+	// Negative: nil tokenStore panics too.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected panic for nil tokenStore")
+			}
+		}()
+		MountV1(http.NewServeMux(), &Service{}, nil)
 	}()
 }
 
@@ -76,7 +105,7 @@ func TestRESTV1ListWorkers(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	MountV1(mux, svc)
+	MountV1(mux, svc, openTestTokenStore(t, js))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -121,9 +150,13 @@ func TestRESTV1ListWorkersEmpty(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	svc := NewService(nc)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
-	MountV1(mux, svc)
+	MountV1(mux, svc, openTestTokenStore(t, js))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -173,9 +206,13 @@ func TestRESTV1MethodNotAllowed(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	svc := NewService(nc)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
-	MountV1(mux, svc)
+	MountV1(mux, svc, openTestTokenStore(t, js))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -202,6 +239,10 @@ func TestRESTV1MuxPrecedence(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	svc := NewService(nc)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 
 	catchAllHit := false
 	mux := http.NewServeMux()
@@ -209,7 +250,7 @@ func TestRESTV1MuxPrecedence(t *testing.T) {
 		catchAllHit = true
 		w.WriteHeader(http.StatusOK)
 	})
-	MountV1(mux, svc)
+	MountV1(mux, svc, openTestTokenStore(t, js))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 

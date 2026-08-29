@@ -26,6 +26,7 @@ import (
 	"github.com/danmestas/dagnats/internal/openapi"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/internal/web"
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/worker"
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -37,14 +38,18 @@ const shutdownDeadline = 15 * time.Second
 
 // Server is the all-in-one DagNats server lifecycle manager.
 type Server struct {
-	cfg                Config
-	ns                 *natsserver.Server
-	nc                 *nats.Conn
-	orch               *engine.Orchestrator
-	svc                *api.Service
-	natsAPI            *api.NATSAPI
-	trig               *trigger.TriggerService
-	bridge             *bridge.Bridge
+	cfg     Config
+	ns      *natsserver.Server
+	nc      *nats.Conn
+	orch    *engine.Orchestrator
+	svc     *api.Service
+	natsAPI *api.NATSAPI
+	trig    *trigger.TriggerService
+	bridge  *bridge.Bridge
+	// tokenStore is the ONE workertoken.Store shared by the bridge (auth)
+	// and the api service (mint/list/revoke REST routes), matching #627's
+	// requirement that both see the same cache.
+	tokenStore         *workertoken.Store
 	httpSrv            *http.Server
 	telShutdown        func(context.Context)
 	metricsAgg         *metrics.Aggregator
@@ -236,8 +241,25 @@ func (s *Server) startComponents() error {
 		s.ns.Shutdown()
 		return fmt.Errorf("bridge jetstream init: %w", err)
 	}
+	// One Store shared by the bridge (auth) and the api service's
+	// /v1/tokens routes (#627) -- both must see the same mint/revoke
+	// state, so there is exactly one Open call for the whole server.
+	tokenCtx, tokenCancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	s.tokenStore, err = workertoken.Open(tokenCtx, bridgeJS)
+	tokenCancel()
+	if err != nil {
+		s.orch.Stop()
+		s.natsAPI.Stop()
+		s.telShutdown(context.Background())
+		s.nc.Close()
+		s.ns.Shutdown()
+		return fmt.Errorf("worker token store init: %w", err)
+	}
 	bridgePub := natsutil.NewTracingPublisher(s.nc, bridgeJS)
 	s.bridge = bridge.NewBridge(bridgePub)
+	s.bridge.SetTokenStore(s.tokenStore)
 	printStep(os.Stderr, "http bridge ready")
 
 	s.trig, err = trigger.NewTriggerService(s.nc, s.cfg.Build)
@@ -499,6 +521,9 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	if s.svc == nil {
 		panic("startHTTP: svc is nil")
 	}
+	if s.tokenStore == nil {
+		panic("startHTTP: tokenStore is nil")
+	}
 
 	mux := http.NewServeMux()
 	// Bare-root GETs redirect to /console/ so operators landing on the
@@ -533,7 +558,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	// still falls through to the bridge unchanged. Future /v1
 	// control-plane routes (#627 tokens, #632 queue, #633 ci) go
 	// through MountV1, not the bridge.
-	api.MountV1(mux, s.svc)
+	api.MountV1(mux, s.svc, s.tokenStore)
 	mux.Handle("/ui/", web.New(s.svc, s.nc).Handler())
 
 	// OpenAPI spec + Scalar-rendered explorer. Routes mount as
@@ -668,6 +693,9 @@ func (s *Server) shutdown() error {
 		printStep(os.Stderr, "stopping triggers...")
 		if s.trig != nil {
 			s.trig.Stop()
+		}
+		if s.tokenStore != nil {
+			s.tokenStore.Close()
 		}
 		if s.natsAPI != nil {
 			s.natsAPI.Stop()

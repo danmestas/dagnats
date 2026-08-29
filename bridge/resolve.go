@@ -51,11 +51,8 @@ func (b *Bridge) handleResolve(
 	if b.js == nil {
 		panic("handleResolve: js must not be nil")
 	}
-	// Extract W3C trace context from inbound HTTP headers so the
-	// span we open is a child of the upstream caller's trace, not
-	// a brand-new root. Without this, TracingPublisher would still
-	// inject context — but it would carry a fresh trace_id, and
-	// the trace would not stitch across the HTTP-to-NATS boundary.
+	// Extract W3C trace context so the span we open joins the
+	// upstream caller's trace instead of rooting a fresh one.
 	incoming := otel.GetTextMapPropagator().Extract(
 		r.Context(), propagation.HeaderCarrier(r.Header),
 	)
@@ -70,9 +67,18 @@ func (b *Bridge) handleResolve(
 		return
 	}
 
-	msg, ok := b.ackMap.Load(taskID)
+	// r.Context() carries the same values as ctx below (read here,
+	// ahead of tracing/parsing, to fail auth fast).
+	claims := claimsFromContext(r.Context())
+	msg, claimingTokenID, ok := b.ackMap.LoadWithTokenID(taskID)
 	if !ok {
 		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	// #627: see authorizeTaskOwner's doc comment. 403 not 404: the
+	// caller already knows the task ID exists (its own poll, or leaked).
+	if !b.authorizeTaskOwner(claims, claimingTokenID) {
+		http.Error(w, "task not claimed by this token", http.StatusForbidden)
 		return
 	}
 

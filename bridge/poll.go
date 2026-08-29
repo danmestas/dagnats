@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/consumername"
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -70,6 +71,13 @@ func (b *Bridge) handlePoll(
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	claims := claimsFromContext(ctx)
+	if unmatched, ok := firstUnauthorizedTaskType(claims, req.TaskTypes); ok {
+		http.Error(w, fmt.Sprintf(
+			"task type %q not permitted for this token", unmatched,
+		), http.StatusForbidden)
+		return
+	}
 	tasks, err := b.fetchTasks(ctx, req)
 	if err != nil {
 		// Loud by construction: a consumer the bridge cannot obtain is
@@ -89,6 +97,32 @@ func (b *Bridge) handlePoll(
 	)
 
 	writePollResponse(w, tasks)
+}
+
+// firstUnauthorizedTaskType returns the first entry of taskTypes claims
+// does not permit, reporting false when every entry is allowed.
+//
+// Scoping is bypassed for Admin claims ONLY -- dev mode (authorize's
+// no-env-token path) always sets Admin: true, so this and the dev-mode
+// bypass are the same check. An empty, non-admin TokenID must NEVER be
+// treated as unscoped: that would silently widen a hand-built or
+// future-refactored Claims{} zero value into "allow everything",
+// exactly the shape of hole this scoping exists to close.
+func firstUnauthorizedTaskType(
+	claims workertoken.Claims, taskTypes []string,
+) (string, bool) {
+	if len(taskTypes) == 0 {
+		panic("firstUnauthorizedTaskType: taskTypes must not be empty")
+	}
+	if claims.Admin {
+		return "", false
+	}
+	for _, taskType := range taskTypes {
+		if !claims.AllowsTaskType(taskType) {
+			return taskType, true
+		}
+	}
+	return "", false
 }
 
 // parsePollRequest validates the poll JSON body.
@@ -521,7 +555,7 @@ func (b *Bridge) processPolledMsg(
 		return pollResponse{}, false
 	}
 	taskID := payload.RunID + "." + payload.StepID
-	b.ackMap.Store(taskID, msg)
+	b.storeClaimedTask(ctx, taskID, msg)
 	traceHdr := dispatchTraceHeader(dispatchCtx)
 	resp := pollResponse{
 		TaskID:      taskID,
@@ -534,6 +568,27 @@ func (b *Bridge) processPolledMsg(
 		TraceState:  traceHdr.Get("tracestate"),
 	}
 	return resp, true
+}
+
+// storeClaimedTask records msg in the ackMap keyed by taskID, tagged
+// with the TokenID from ctx's Claims (#627) so a later resolve can be
+// scoped to the caller that claimed it (bridge.authorizeTaskOwner).
+// ctx must be the original request context or a descendant that still
+// carries the same context.Value chain -- a dispatch child context
+// works too, but the caller passes the closest-to-source one it has.
+// Extracted from processPolledMsg to keep it under the function-length
+// limit.
+func (b *Bridge) storeClaimedTask(
+	ctx context.Context, taskID string, msg jetstream.Msg,
+) {
+	if ctx == nil {
+		panic("storeClaimedTask: ctx must not be nil")
+	}
+	if taskID == "" {
+		panic("storeClaimedTask: taskID must not be empty")
+	}
+	claims := claimsFromContext(ctx)
+	b.ackMap.Store(taskID, msg, claims.TokenID)
 }
 
 // dispatchTraceHeader renders ctx's trace context as W3C headers so the

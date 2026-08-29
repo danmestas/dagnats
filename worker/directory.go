@@ -51,6 +51,13 @@ type WorkerRegistration struct {
 	// to time.Now() to gauge worker liveness without depending on
 	// NATS KV's TTL-eviction latency.
 	LastSeen time.Time `json:"last_seen,omitempty"`
+
+	// TokenID identifies the workertoken.Token the worker presented to
+	// the HTTP bridge's /v1/workers/connect, if any (#627). Empty for
+	// the env-token admin path, dev mode, or non-bridge (native NATS)
+	// workers -- it exists purely so an operator can see, from the
+	// directory, which minted token a given worker is using.
+	TokenID string `json:"token_id,omitempty"`
 }
 
 // Directory provides worker visibility via NATS KV.

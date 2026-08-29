@@ -187,7 +187,7 @@ Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}
 
 ## Authentication
 
-HTTP transport requires Bearer token authentication. Set `DAGNATS_BRIDGE_TOKEN` to a shared secret. Workers must include `Authorization: Bearer {token}` header on all requests. Missing or invalid tokens return `401 Unauthorized`.
+No env token = open bridge (dev mode, unauthenticated); set `DAGNATS_BRIDGE_TOKEN` and every worker needs either the env token or a minted one. The env token is the admin/root credential (unscoped, and the only credential the `/v1/tokens` routes accept); mint scoped, revocable worker tokens from it via `POST /v1/tokens` and hand those to individual machines instead. Missing or invalid tokens return `401 Unauthorized`; a worker token polling outside its minted task-type prefixes returns `403`. See the REST API reference's Tokens section for the mint/list/revoke routes.
 
 NATS transport uses NATS native authentication (user/password, tokens, NKey, JWT).
 

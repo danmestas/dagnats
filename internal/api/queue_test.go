@@ -38,7 +38,7 @@ func TestRESTV1QueueDepth(t *testing.T) {
 
 	svc := NewService(nc)
 	mux := http.NewServeMux()
-	MountV1(mux, svc)
+	MountV1(mux, svc, openTestTokenStore(t, js))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -91,7 +91,7 @@ func TestRESTV1QueueDepthOldestWaitIncreasesOverTime(t *testing.T) {
 
 	svc := NewService(nc)
 	mux := http.NewServeMux()
-	MountV1(mux, svc)
+	MountV1(mux, svc, openTestTokenStore(t, js))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -121,9 +121,13 @@ func TestRESTV1QueueDepthEmpty(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
 	svc := NewService(nc)
 	mux := http.NewServeMux()
-	MountV1(mux, svc)
+	MountV1(mux, svc, openTestTokenStore(t, js))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -169,7 +173,7 @@ func TestRESTV1QueueDepthTruncatesAt256Subjects(t *testing.T) {
 
 	svc := NewService(nc)
 	mux := http.NewServeMux()
-	MountV1(mux, svc)
+	MountV1(mux, svc, openTestTokenStore(t, js))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 

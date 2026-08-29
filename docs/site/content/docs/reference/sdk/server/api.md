@@ -302,7 +302,7 @@ func ResolveConfig() ResolvedConfig
 ResolveConfig loads config and tracks the source of each value. Returns resolved config with provenance for every key.
 
 <a name="Server"></a>
-## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L39-L68>)
+## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L40-L73>)
 
 Server is the all\-in\-one DagNats server lifecycle manager.
 
@@ -313,7 +313,7 @@ type Server struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L71>)
+### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L76>)
 
 ```go
 func New(cfg Config) *Server
@@ -322,7 +322,7 @@ func New(cfg Config) *Server
 New creates a Server with the given config. Panics if DataDir is empty.
 
 <a name="Server.Run"></a>
-### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L83>)
+### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L88>)
 
 ```go
 func (s *Server) Run() error
@@ -331,7 +331,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L610>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L635>)
 
 ```go
 func (s *Server) Stop()

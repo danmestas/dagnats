@@ -260,6 +260,11 @@ func TestServer_PrintsStartupAndShutdownBanner(t *testing.T) {
 
 // TestServerMountsBridgeEndpoints verifies that the bridge handler
 // is mounted on the HTTP mux and responds to connection requests.
+//
+// #627: the server always wires a workertoken.Store into the bridge,
+// but auth mode is still decided by DAGNATS_BRIDGE_TOKEN alone (see
+// bridge.Bridge.authorize) -- with it unset, this stays dev mode
+// (unauthenticated allowed), same as before #627.
 func TestServerMountsBridgeEndpoints(t *testing.T) {
 	cfg := testConfig(t)
 	srv := New(cfg)
@@ -293,7 +298,8 @@ func TestServerMountsBridgeEndpoints(t *testing.T) {
 		t.Fatal("/ready did not return 200 within 10s")
 	}
 
-	// Test bridge endpoint responds
+	// Test bridge endpoint responds -- dev mode (no admin token set),
+	// unaffected by the server always wiring a Store into the bridge.
 	body := `{"worker_id":"w-1","task_types":["echo"],"max_tasks":1}`
 	resp, err := http.Post(
 		fmt.Sprintf("http://%s/v1/workers/connect", cfg.HTTPAddr),

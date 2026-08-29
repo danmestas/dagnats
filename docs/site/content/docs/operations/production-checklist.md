@@ -153,7 +153,7 @@ For production:
 - Use NATS credentials (`leaf_credentials` config key) for leaf-to-hub authentication
 - Place the HTTP API behind a reverse proxy with TLS
 - Use `DAGNATS_WEBHOOK_SECRET` for webhook trigger authentication
-- Use `DAGNATS_BRIDGE_TOKEN` for HTTP bridge authentication
+- Set `DAGNATS_BRIDGE_TOKEN` for production: no env token means an open bridge (dev mode, unauthenticated); set it and every worker needs either the env token or a minted one. It doubles as the admin/root credential -- mint scoped, revocable worker tokens from it (`POST /v1/tokens`) to hand to individual machines rather than distributing the admin credential itself
 
 ### Data Directory Permissions
 

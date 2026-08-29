@@ -47,6 +47,7 @@ func (b *Bridge) handleConnect(
 		"max_tasks", req.MaxTasks,
 	)
 
+	claims := claimsFromContext(ctx)
 	dir := worker.NewDirectory(b.js)
 	reg := worker.WorkerRegistration{
 		WorkerID:  req.WorkerID,
@@ -54,6 +55,10 @@ func (b *Bridge) handleConnect(
 		Language:  "http",
 		Transport: "bridge",
 		MaxTasks:  req.MaxTasks,
+		// TokenID is empty for the admin bearer or dev mode -- claims
+		// only carries a TokenID when Authorize matched a Store-issued
+		// worker token (#627).
+		TokenID: claims.TokenID,
 	}
 	if err := dir.Register(reg); err != nil {
 		http.Error(
