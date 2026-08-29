@@ -67,7 +67,7 @@ func TestRepairRunIndexToConvergenceRecoversFromTransientError(t *testing.T) {
 			{Repaired: 0, OrphansRemoved: 0}, // pass 2: converged
 		},
 	}
-	repaired, orphans, passes, err := repairRunIndexToConvergenceWith(
+	totals, passes, err := repairRunIndexToConvergenceWith(
 		context.Background(), repairer, repairPageMax,
 		repairRunIndexMaxIterations, testBackoff,
 	)
@@ -75,11 +75,19 @@ func TestRepairRunIndexToConvergenceRecoversFromTransientError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repairRunIndexToConvergenceWith: %v", err)
 	}
-	if repaired != 1200 {
-		t.Fatalf("repaired = %d, want 1200", repaired)
+	if totals.Repaired != 1200 {
+		t.Fatalf("Repaired = %d, want 1200", totals.Repaired)
 	}
-	if orphans != 0 {
-		t.Fatalf("orphans = %d, want 0", orphans)
+	if totals.OrphansRemoved != 0 {
+		t.Fatalf("OrphansRemoved = %d, want 0", totals.OrphansRemoved)
+	}
+	// The fake's results never set Active{Repaired,OrphansRemoved} (#664)
+	// -- both must come back zero, not silently dropped.
+	if totals.ActiveRepaired != 0 {
+		t.Fatalf("ActiveRepaired = %d, want 0", totals.ActiveRepaired)
+	}
+	if totals.ActiveOrphansRemoved != 0 {
+		t.Fatalf("ActiveOrphansRemoved = %d, want 0", totals.ActiveOrphansRemoved)
 	}
 	if passes != 2 {
 		t.Fatalf("passes = %d, want 2", passes)
@@ -98,7 +106,7 @@ func TestRepairRunIndexToConvergencePersistentErrorReturnsError(t *testing.T) {
 	repairer := &fakeRunIndexRepairer{
 		persistentErr: errors.New("kv unavailable"),
 	}
-	_, _, _, err := repairRunIndexToConvergenceWith(
+	_, _, err := repairRunIndexToConvergenceWith(
 		context.Background(), repairer, repairPageMax,
 		repairRunIndexMaxIterations, testBackoff,
 	)
@@ -130,9 +138,10 @@ func TestRepairRunIndexToConvergenceExceedingBoundReturnsError(t *testing.T) {
 			t.Fatalf("must return an error, not panic: %v", r)
 		}
 	}()
-	repaired, _, passes, err := repairRunIndexToConvergenceWith(
+	totals, passes, err := repairRunIndexToConvergenceWith(
 		context.Background(), repairer, repairPageMax, smallBound, testBackoff,
 	)
+	repaired := totals.Repaired
 	// Positive: an error naming the bound comes back.
 	if err == nil {
 		t.Fatal("expected error, got nil")

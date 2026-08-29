@@ -300,7 +300,7 @@ func (o *Orchestrator) failMapStep(
 
 	// No on-failure — fail the workflow.
 	run, err := finalizeRun(
-		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, baseID,
+		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusFailed, baseID,
 		func(ctx context.Context) error {
 			wfAttr := metric.WithAttributes(
 				attribute.String("workflow", run.WorkflowID),

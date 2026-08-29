@@ -32,7 +32,9 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +54,57 @@ func markTerminalWithDebt(run dag.WorkflowRun, status dag.RunStatus) dag.Workflo
 	run.CompletedAt = &now
 	run.ReleasePending = true
 	return run
+}
+
+// saveWithReleaseDebt persists run (already run through
+// markTerminalWithDebt) via a plain Save, matching what
+// finalizeWithReleaseDebt does in production (#664 review round 4):
+// under the unified runactive invariant (isReconcilerOwned --
+// non-terminal OR ReleasePending), this run's runactive marker was
+// ALREADY created back when every caller of this helper admits it via
+// startAdmissionRun (the real admission path, SaveInitial). Marking it
+// terminal-with-debt does not touch that marker at all -- it is
+// already exactly correct for ReleasePending=true, so there is
+// nothing else to write here.
+func saveWithReleaseDebt(
+	t *testing.T, store *SnapshotStore, run dag.WorkflowRun,
+) {
+	t.Helper()
+	if err := store.Save(context.Background(), run); err != nil {
+		t.Fatalf("save release-pending run %s: %v", run.RunID, err)
+	}
+}
+
+// seedTerminalNoiseForReleasePending seeds `total` ordinary terminal
+// runs with NO release debt -- pure population noise, admitted via
+// SaveInitial exactly like seedTerminalNoise (active_index_test.go)
+// so each also carries a correct runidx entry and, being terminal
+// with ReleasePending=false, correctly carries NO runactive marker.
+// Used to prove the release-pending sweep is no longer biased by a
+// capped population scan (#664 review round 4): the old
+// scanReleasePendingRuns capped at 1,000 keys BEFORE any value was
+// fetched, so a genuinely pending run could be crowded out by noise;
+// ListActive is bounded by the OWNED population instead (the pending
+// run plus zero of this noise, since none of it is owned), so it must
+// still find the pending run regardless of how much noise surrounds
+// it.
+func seedTerminalNoiseForReleasePending(
+	t *testing.T, store *SnapshotStore, total int,
+) {
+	t.Helper()
+	ctx := context.Background()
+	for i := 0; i < total; i++ {
+		run := dag.WorkflowRun{
+			RunID:      fmt.Sprintf("rp-noise-%05d", i),
+			WorkflowID: "wf",
+			Status:     dag.RunStatusCompleted,
+			Steps:      map[string]dag.StepState{},
+			CreatedAt:  time.Now().UTC(),
+		}
+		if err := store.SaveInitial(ctx, run); err != nil {
+			t.Fatalf("seed release-pending noise %d: %v", i, err)
+		}
+	}
 }
 
 func TestReconciler_RecoversReleasePending_SingletonLock(t *testing.T) {
@@ -100,9 +153,7 @@ func TestReconciler_RecoversReleasePending_SingletonLock(t *testing.T) {
 	// injecting a failure into the live completion handler) so the
 	// test is deterministic.
 	run1 = markTerminalWithDebt(run1, dag.RunStatusCompleted)
-	if err := orch.store.Save(ctx, run1); err != nil {
-		t.Fatalf("save release-pending run-1: %v", err)
-	}
+	saveWithReleaseDebt(t, orch.store, run1)
 
 	singletonKV, err := js.KeyValue("singleton_locks")
 	if err != nil {
@@ -239,9 +290,7 @@ func TestReconciler_RecoversReleasePending_ConcurrencySlot(t *testing.T) {
 	// Simulate the release failure -- the slot stays held (MaxRuns=1,
 	// counter still at 1) even though the run is terminal.
 	run1 = markTerminalWithDebt(run1, dag.RunStatusCompleted)
-	if err := orch.store.Save(ctx, run1); err != nil {
-		t.Fatalf("save release-pending run-1: %v", err)
-	}
+	saveWithReleaseDebt(t, orch.store, run1)
 
 	// Positive: with the slot still held, a second run for the same
 	// workflow queues instead of running -- the leak is real and
@@ -322,9 +371,7 @@ func TestReleaseAdmission_ReplayedConcurrencyReleaseDoesNotStealNewHolder(
 		t.Fatalf("load rp-replay-conc-1: %v", err)
 	}
 	run1 = markTerminalWithDebt(run1, dag.RunStatusCompleted)
-	if err := orch.store.Save(ctx, run1); err != nil {
-		t.Fatalf("save rp-replay-conc-1: %v", err)
-	}
+	saveWithReleaseDebt(t, orch.store, run1)
 
 	// The first, real release.
 	if err := orch.releaseAdmission(ctx, run1); err != nil {
@@ -411,9 +458,7 @@ func TestReleaseAdmission_ReplayedSingletonReleaseDoesNotStealNewHolder(
 	}
 	singletonKey := run1.SingletonKey
 	run1 = markTerminalWithDebt(run1, dag.RunStatusCompleted)
-	if err := orch.store.Save(ctx, run1); err != nil {
-		t.Fatalf("save rp-replay-sing-1: %v", err)
-	}
+	saveWithReleaseDebt(t, orch.store, run1)
 
 	// The first, real release.
 	if err := orch.releaseAdmission(ctx, run1); err != nil {
@@ -600,5 +645,188 @@ func TestReconciler_ReleasePendingMalformedRunSkipped(t *testing.T) {
 	logs := buf.String()
 	if !strings.Contains(logs, "malformed run") {
 		t.Fatalf("expected an ERROR log naming the malformed run, got: %s", logs)
+	}
+}
+
+// TestReconciler_RecoversReleasePending_BeyondOldScanWindow proves the
+// #664 fix directly: the reconciler's release-pending sweep finds a
+// ReleasePending run on a store with more than 1,000 terminal runs --
+// the exact population the OLD scanReleasePendingRuns (a keys-only
+// listing capped at releasePendingScanMax=1,000 BEFORE any value was
+// fetched) could arbitrarily crowd the pending run out of, since
+// Keys() has no ordering relationship to which run actually carries
+// the debt. ListActive instead lists runactive.> directly (the
+// unified isReconcilerOwned invariant, review round 4), so it is
+// bounded by the OWNED population (here, exactly one run -- none of
+// the terminal noise is owned), never by the 1,500 terminal runs
+// surrounding it.
+func TestReconciler_RecoversReleasePending_BeyondOldScanWindow(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{
+		Name:    "release-pending-beyond-window-wf",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
+		},
+		Singleton: &dag.SingletonConfig{Mode: dag.SingletonModeSkip},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	// Pure population noise, well beyond the old 1,000-key scan cap.
+	const noiseCount = 1500
+	seedTerminalNoiseForReleasePending(t, orch.store, noiseCount)
+
+	startAdmissionRun(t, js, wfDef, "rp-beyond-window-1", nil)
+	waitForRunStatus(t, orch.store, "rp-beyond-window-1",
+		dag.RunStatusRunning, 5*time.Second)
+
+	ctx := context.Background()
+	run1, err := orch.store.Load(ctx, "rp-beyond-window-1")
+	if err != nil {
+		t.Fatalf("load rp-beyond-window-1: %v", err)
+	}
+	if run1.SingletonKey == "" {
+		t.Fatal("rp-beyond-window-1: SingletonKey must be set once admitted")
+	}
+	run1 = markTerminalWithDebt(run1, dag.RunStatusCompleted)
+	saveWithReleaseDebt(t, orch.store, run1)
+
+	singletonKV, err := js.KeyValue("singleton_locks")
+	if err != nil {
+		t.Fatalf("singleton_locks KV: %v", err)
+	}
+	if _, getErr := singletonKV.Get(run1.SingletonKey); getErr != nil {
+		t.Fatalf("lock %q missing before recovery: %v", run1.SingletonKey, getErr)
+	}
+
+	orch.reconcileRunningRuns(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		reloaded, loadErr := orch.store.Load(ctx, "rp-beyond-window-1")
+		if loadErr == nil && !reloaded.ReleasePending {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// Positive: found and recovered despite 1,500 terminal runs of noise.
+	recovered, err := orch.store.Load(ctx, "rp-beyond-window-1")
+	if err != nil {
+		t.Fatalf("load rp-beyond-window-1 after sweep: %v", err)
+	}
+	if recovered.ReleasePending {
+		t.Fatal("rp-beyond-window-1: ReleasePending still true after " +
+			"reconciler pass -- population noise must not hide a " +
+			"pending run from ListActive")
+	}
+	// Negative: the lock is actually gone, not just the flag flipped.
+	if _, getErr := singletonKV.Get(run1.SingletonKey); getErr == nil {
+		t.Fatal("lock still present after reconciler recovery")
+	}
+}
+
+// TestBuildActiveIndexOnce_MigratesReleasePendingRunsOnUpgrade proves
+// the #664 review round 4 BLOCKER fix: a run that already carries
+// ReleasePending=true on a store upgrading onto this design -- seeded
+// directly with a raw KV Put, bypassing SaveInitial entirely, so it
+// starts with NO runidx and NO runactive marker at all, simulating a
+// pre-#664 store -- gets a runactive marker from the one-time build
+// (buildActiveIndexOnce), because isReconcilerOwned says a terminal
+// run with ReleasePending=true is still owned. Without this, the run
+// would be permanently invisible to ListActive and its leaked
+// singleton lock would never be recovered.
+func TestBuildActiveIndexOnce_MigratesReleasePendingRunsOnUpgrade(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	orch := NewOrchestrator(nc)
+	ctx := context.Background()
+
+	const key = "migrate-rp-lock"
+	singletonKV, err := js.KeyValue("singleton_locks")
+	if err != nil {
+		t.Fatalf("singleton_locks KV: %v", err)
+	}
+	if _, err := singletonKV.Create(
+		key, []byte(`{"run_id":"migrate-rp-1"}`),
+	); err != nil {
+		t.Fatalf("create lock: %v", err)
+	}
+
+	now := time.Now().UTC()
+	run := dag.WorkflowRun{
+		RunID: "migrate-rp-1", WorkflowID: "migrate-rp-wf",
+		Status: dag.RunStatusCompleted, Steps: map[string]dag.StepState{},
+		CreatedAt: now, CompletedAt: &now,
+		SingletonKey: key, ReleasePending: true,
+	}
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := orch.store.kv.Put(ctx, "run."+run.RunID, data); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if err := orch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(orch.Stop)
+
+	// Positive: the one-time build gave this run a runactive marker
+	// even though it is terminal, because it is still owed a release.
+	activeIDs, err := orch.store.listActiveRunIDs(ctx)
+	if err != nil {
+		t.Fatalf("listActiveRunIDs: %v", err)
+	}
+	found := false
+	for _, id := range activeIDs {
+		if id == run.RunID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("runactive markers = %v, want to include %s",
+			activeIDs, run.RunID)
+	}
+
+	// Positive: the reconciler can now find and recover it.
+	orch.reconcileRunningRuns(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		reloaded, loadErr := orch.store.Load(ctx, run.RunID)
+		if loadErr == nil && !reloaded.ReleasePending {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	recovered, err := orch.store.Load(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("load after recovery: %v", err)
+	}
+	if recovered.ReleasePending {
+		t.Fatal("ReleasePending still true after reconciler pass -- " +
+			"migrated run was not recovered")
+	}
+	if _, getErr := singletonKV.Get(key); getErr == nil {
+		t.Fatal("lock still present after recovery")
 	}
 }

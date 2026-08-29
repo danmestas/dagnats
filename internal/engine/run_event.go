@@ -183,10 +183,32 @@ func recordRunEventPublishFailure(
 
 // finalizeRun marks run terminal, persists it via saveFn, runs
 // afterPersist (the caller's lock/slot-release and queue-advance
-// logic — nil for sites with none of that), publishes the existing
-// history workflow event for Completed/Failed (so
+// logic — nil for sites with none of that), deletes the run's
+// runactive.<runID> liveness marker IF AND ONLY IF the reconciler no
+// longer owns it (#664 review round 4 invariant: runactive exists iff
+// non-terminal OR ReleasePending -- see isReconcilerOwned), publishes
+// the existing history workflow event for Completed/Failed (so
 // internal/trigger/http.go's poll-for-completion path keeps working
 // unchanged), and finally publishes the new event.run.* RunEvent.
+//
+// The delete happens AFTER afterPersist, not before (review round 4):
+// if afterPersist fails, finalizeWithReleaseDebt sets
+// ReleasePending=true, and the run is STILL owned -- the marker (created
+// back at SaveInitial/CreateSnapshot time) must simply stay. There is
+// no ordering race and no grace window needed here, unlike an earlier
+// version of this fix that tried a separate write-once "runpending"
+// marker: runactive was already created long before finalize ever
+// runs, so nothing new needs to be written on the debt path at all.
+//
+// finalizeRun and the reconciler's release-recovery/abandon paths
+// (reconcileReleasePending, reconcileReleaseFailed, reconciler.go) are
+// the ONLY places a run's runactive entry is deleted for a genuine
+// terminal transition (PruneTerminal's delete is a SEPARATE, defensive
+// cleanup for runs that reached terminal without ever going through
+// either — a legacy/direct write). This is asserted, not just
+// documented: TestDeleteActiveEntryHasNoOtherTerminalTransitionCaller
+// scans the package source for calls to deleteActiveEntry outside
+// those three call sites and PruneTerminal.
 //
 // Guard against the double-terminal operating race: if run arrives
 // ALREADY FINALIZED — terminal AND already carrying a CompletedAt —
@@ -216,6 +238,7 @@ func recordRunEventPublishFailure(
 func finalizeRun(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
+	store *SnapshotStore,
 	saveFn SaveSnapshotFunc,
 	run dag.WorkflowRun,
 	status dag.RunStatus,
@@ -224,6 +247,9 @@ func finalizeRun(
 ) (dag.WorkflowRun, error) {
 	if tp == nil {
 		panic("finalizeRun: tp must not be nil")
+	}
+	if store == nil {
+		panic("finalizeRun: store must not be nil")
 	}
 	if saveFn == nil {
 		panic("finalizeRun: saveFn must not be nil")
@@ -244,11 +270,20 @@ func finalizeRun(
 	}
 	if afterPersist != nil {
 		if err := afterPersist(ctx); err != nil {
+			// The debt path: ReleasePending is about to become true,
+			// so the reconciler still owns this run -- runactive must
+			// NOT be deleted (review round 4 invariant). It already
+			// exists from creation time; nothing to write here either.
 			return finalizeWithReleaseDebt(
 				ctx, tp, saveFn, run, status, stepID, err,
 			)
 		}
 	}
+	// afterPersist succeeded, or there was none: no debt, so the
+	// reconciler no longer owns this run -- delete its liveness
+	// marker NOW, from here, not inferred inside Save (#664 review
+	// round 2/4) -- see the doc comment above.
+	store.deleteActiveEntry(ctx, run.RunID)
 	if err := publishHistoryTerminalEvent(ctx, tp, status, run.RunID); err != nil {
 		return run, err
 	}
@@ -326,12 +361,24 @@ func init() {
 // ever reaching finalizeRun again — nothing ever retried the release.
 //
 // Instead: log + count the failure, record the debt durably by
-// re-persisting the run with ReleasePending=true FIRST, then STILL
-// publish both terminal events (the run IS terminal; consumers must
-// hear it even though its admission slot is stuck) so the
-// reconciler's terminal-run sweep (reconciler.go) can retry the
-// release later via the exact same releaseAdmission logic the normal
-// path uses.
+// re-persisting the run with ReleasePending=true, then STILL publish
+// both terminal events (the run IS terminal; consumers must hear it
+// even though its admission slot is stuck) so the reconciler's
+// terminal-run sweep (reconciler.go) can retry the release later via
+// the exact same releaseAdmission logic the normal path uses.
+//
+// No index write happens here at all (#664 review round 4 -- an
+// earlier version of this fix created a separate write-once
+// "runpending" marker at this point, ordered before the save, with a
+// grace window in the orphan-repair pass to close the resulting
+// TOCTOU; both are gone). Under the unified runactive invariant
+// (isReconcilerOwned: non-terminal OR ReleasePending), this run's
+// runactive marker was ALREADY created back when it was admitted
+// (SaveInitial/CreateSnapshot) and finalizeRun deliberately skipped
+// deleting it before calling this function (see finalizeRun's doc
+// comment) -- so the marker is already exactly correct for
+// ReleasePending=true, with no write, no ordering race, and no grace
+// window needed.
 //
 // The debt-recording save runs BEFORE the publish attempts, not after
 // (#648 PR review round 2): publishing is best-effort either way (a
@@ -346,7 +393,12 @@ func init() {
 // (necessarily) notified and WITHOUT a persisted ReleasePending flag
 // — a residual window bounded to this specific double-failure
 // (afterPersist AND the debt save both failing) that the reconciler
-// cannot see and therefore cannot recover from automatically.
+// cannot see and therefore cannot recover from automatically. Its
+// runactive marker, however, is unaffected either way: it stays
+// present, which is harmless (a future repair pass will find the run
+// genuinely non-terminal-or-ReleasePending is false only once this
+// run is EITHER recovered by the reconciler OR the save above
+// eventually succeeds on a later finalize attempt).
 func finalizeWithReleaseDebt(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,

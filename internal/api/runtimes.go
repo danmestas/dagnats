@@ -37,7 +37,9 @@ import (
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Wire kinds the control-plane endpoints emit. They mirror the worker's
@@ -72,12 +74,6 @@ const (
 	DefaultMaxDefsPerRoot               = 500
 	DefaultMaxRegistersPerMinutePerRoot = 60
 
-	// runtimeRunScanMax bounds the active-run quota scan (TigerStyle:
-	// every loop has a fixed upper bound). A tree with more runs than this
-	// is already far past any sane quota; the scan returns an error rather
-	// than silently undercounting.
-	runtimeRunScanMax = 10_000
-
 	// runtimeDefScanMax symmetrically bounds the def quota scan. defKV.Keys
 	// returns ALL defs (every tree's), so the bound is on the returned key
 	// slice, not on tree-local defs. Exceeding it returns an error on the
@@ -85,9 +81,38 @@ const (
 	runtimeDefScanMax = 100_000
 )
 
+// runtimeRunScanMax bounds the active-run quota scan's ListActive
+// fetchMax (TigerStyle: every loop has a fixed upper bound). var rather
+// than const for test injection (#664 review round 2) — a test lowers
+// it to exercise the Truncated fail-closed path without seeding
+// thousands of active runs. Production callers must not mutate.
+var runtimeRunScanMax = 10_000
+
 // registerRatePeriod is the window the register rate limit refills over.
 // One minute matches the per-minute config knob (MaxRegistersPerMinutePerRoot).
 const registerRatePeriod = time.Minute
+
+// activeRunCountTruncated counts how often countActiveRunsForRoot's
+// ListActive scan came back truncated -- an operator-visible signal
+// that runtimeRunScanMax needs raising, or that the active-run
+// population has grown large enough to warrant investigation (#664
+// review round 2). Package-level (not threaded through Service's
+// constructor) following internal/engine/run_event.go's
+// runEventPublishFailures precedent for a counter with no natural
+// owning struct.
+var activeRunCountTruncated metric.Int64Counter
+
+func init() {
+	m := otel.Meter("dagnats/api")
+	c, err := m.Int64Counter("engine.run_active.truncated")
+	if err != nil {
+		// A meter that cannot create a counter at process startup is a
+		// programmer/config error (bad instrument name, misconfigured
+		// provider) — there is no runtime fallback that makes sense.
+		panic("init: create engine.run_active.truncated counter: " + err.Error())
+	}
+	activeRunCountTruncated = c
+}
 
 // scopeName is the single server-side source of truth for runtime
 // workflow naming. root is the namespace root — the true tree-root run of
@@ -598,10 +623,22 @@ func (s *Service) spawnDepthExceeded(
 }
 
 // countActiveRunsForRoot returns the number of non-terminal runs sharing
-// root's spawn tree, via a single bounded ListAll scan (D2: no separate KV
-// counter — a counter would drift from truth and spread complexity). The
-// count is a point-in-time read; the quota that consumes it is best-effort
-// (see SpawnChildRun). ErrNoKeysFound resolves to 0.
+// root's spawn tree, via a single bounded ListActive scan (#664: the old
+// ListAll cap sampled the first runtimeRunScanMax keys in lexicographic
+// order, which under-counted on a store larger than the cap and let the
+// quota under-enforce; ListActive is bounded by the active-run
+// population instead, which admission/concurrency limits already bound).
+// D2: no separate KV counter — a counter would drift from truth and
+// spread complexity. The count is a point-in-time read; the quota that
+// consumes it is best-effort (see SpawnChildRun).
+//
+// FAILS CLOSED on a truncated scan (#664 review round 2): a quota exists
+// to bound resource usage, so a count that might be missing real active
+// runs must never be trusted as "the count" — silently under-counting
+// would let the quota under-enforce exactly the way the original bug
+// did. A Truncated ListActive result increments
+// engine.run_active.truncated and returns an error instead of a number,
+// so the caller (SpawnChildRun) refuses the spawn rather than risk it.
 func (s *Service) countActiveRunsForRoot(
 	ctx context.Context, root string,
 ) (int, error) {
@@ -611,17 +648,30 @@ func (s *Service) countActiveRunsForRoot(
 	if root == "" {
 		panic("countActiveRunsForRoot: root must not be empty")
 	}
-	runs, err := s.store.ListAll(ctx, runtimeRunScanMax)
+	runs, stats, err := s.store.ListActive(ctx, runtimeRunScanMax)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0, nil
 		}
 		return 0, err
 	}
+	if stats.Truncated {
+		activeRunCountTruncated.Add(ctx, 1)
+		slog.ErrorContext(ctx,
+			"countActiveRunsForRoot: ListActive truncated; refusing to "+
+				"trust an under-count for quota enforcement",
+			"root", root,
+			"fetch_max", runtimeRunScanMax,
+		)
+		return 0, fmt.Errorf(
+			"active-run count for root %q truncated at %d -- "+
+				"refusing to under-count for quota enforcement",
+			root, runtimeRunScanMax,
+		)
+	}
 	count := 0
 	for i := range runs {
-		if engine.RootRunIDOf(runs[i]) == root &&
-			!runs[i].Status.IsTerminal() {
+		if engine.RootRunIDOf(runs[i]) == root {
 			count++
 		}
 	}

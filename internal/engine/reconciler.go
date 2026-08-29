@@ -49,11 +49,14 @@ const (
 	releaseAttemptsMax = 10
 )
 
-// reconcileMaxRunsScan caps the per-cycle workflow_runs scan.
+// reconcileActiveFetchMax caps the per-cycle ListActive fetch (#664).
 // var rather than const for test injection — tests lower it to
-// exercise the cap-hit transition logic without seeding 1000
-// runs. Production callers must not mutate.
-var reconcileMaxRunsScan = 1000
+// exercise the cap-hit transition logging without seeding thousands of
+// active runs. Production callers must not mutate. The active-run
+// population is bounded by admission/concurrency limits, not by the
+// whole run.* population ListAll used to cap at, so this ceiling is
+// defense in depth rather than a limit ever expected to bind.
+var reconcileActiveFetchMax = 1000
 
 // pendingRunScanMax caps the run.* GETs findOldestPendingRun issues
 // on each run completion (#523). Without it, a per-completion scan of a
@@ -138,15 +141,33 @@ func (o *Orchestrator) runRepairRunIndexPass(ctx context.Context) {
 			"reconciler: repair run index", "error", err)
 		return
 	}
-	if stats.Repaired == 0 && stats.OrphansRemoved == 0 {
+	if repairStatsAllZero(stats) {
 		return
 	}
 	slog.InfoContext(ctx, "reconciler: repaired run index",
 		"repaired", stats.Repaired,
 		"orphans_removed", stats.OrphansRemoved,
+		"active_repaired", stats.ActiveRepaired,
+		"active_orphans_removed", stats.ActiveOrphansRemoved,
 	)
 	o.metrics.runIndexRepaired.Add(ctx, int64(stats.Repaired))
 	o.metrics.runIndexOrphans.Add(ctx, int64(stats.OrphansRemoved))
+	o.metrics.runActiveRepaired.Add(ctx, int64(stats.ActiveRepaired))
+	o.metrics.runActiveOrphans.Add(ctx, int64(stats.ActiveOrphansRemoved))
+}
+
+// repairStatsAllZero reports whether a RepairRunIndex call found
+// nothing to do across BOTH indexes it reconciles (#659's runidx and
+// #664's runactive) — the shared "nothing happened" check
+// runRepairRunIndexPass and repairRunIndexToConvergence both need.
+func repairStatsAllZero(stats RepairStats) bool {
+	return stats.Repaired == 0 && stats.OrphansRemoved == 0 &&
+		stats.ActiveRepaired == 0 && stats.ActiveOrphansRemoved == 0 &&
+		// review round 3 nit: a truncated validation pass must never
+		// read as "converged", even when it happened to remove nothing
+		// from the markers it DID check -- markers beyond pageMax were
+		// never examined.
+		!stats.ActiveValidationTruncated
 }
 
 // repairRunIndexMaxIterations bounds repairRunIndexToConvergenceWith's
@@ -211,9 +232,10 @@ func repairRunIndexOnceWithRetry(
 }
 
 // repairRunIndexToConvergenceWith loops repairRunIndexOnceWithRetry
-// until a pass reports nothing left to do (Repaired==0 AND
-// OrphansRemoved==0), bounded by maxIterations convergence passes.
-// Pure and store-agnostic (parameterized on runIndexRepairer) so it is
+// until a pass reports nothing left to do on EITHER index it
+// reconciles -- #659's runidx AND #664's runactive (repairStatsAllZero)
+// -- bounded by maxIterations convergence passes. Pure and
+// store-agnostic (parameterized on runIndexRepairer) so it is
 // unit-testable without a real NATS server. Returns an error -- NEVER
 // panics -- when either a single pass exhausts its retry budget or
 // the iteration bound is hit without converging: both are OPERATING
@@ -223,7 +245,7 @@ func repairRunIndexOnceWithRetry(
 func repairRunIndexToConvergenceWith(
 	ctx context.Context, repairer runIndexRepairer,
 	pageMax, maxIterations int, backoff []time.Duration,
-) (totalRepaired, totalOrphans, passes int, err error) {
+) (totals RepairStats, passes int, err error) {
 	if repairer == nil {
 		panic("repairRunIndexToConvergenceWith: repairer must not be nil")
 	}
@@ -236,18 +258,23 @@ func repairRunIndexToConvergenceWith(
 	for ; passes < maxIterations; passes++ {
 		stats, callErr := repairRunIndexOnceWithRetry(ctx, repairer, pageMax, backoff)
 		if callErr != nil {
-			return totalRepaired, totalOrphans, passes, callErr
+			return totals, passes, callErr
 		}
-		totalRepaired += stats.Repaired
-		totalOrphans += stats.OrphansRemoved
-		if stats.Repaired == 0 && stats.OrphansRemoved == 0 {
-			return totalRepaired, totalOrphans, passes + 1, nil
+		// RepairStats.Add, not manual per-field addition (#664 review
+		// round 4 MEDIUM fix): a prior version of this loop accumulated
+		// only 4 of RepairStats' fields, silently dropping
+		// PendingOrphansRemoved and both truncation flags.
+		totals = totals.Add(stats)
+		if repairStatsAllZero(stats) {
+			return totals, passes + 1, nil
 		}
 	}
-	return totalRepaired, totalOrphans, passes, fmt.Errorf(
+	return totals, passes, fmt.Errorf(
 		"run index did not converge within %d passes"+
-			" (repaired=%d orphans_removed=%d)",
-		maxIterations, totalRepaired, totalOrphans,
+			" (repaired=%d orphans_removed=%d active_repaired=%d"+
+			" active_orphans_removed=%d)",
+		maxIterations, totals.Repaired, totals.OrphansRemoved,
+		totals.ActiveRepaired, totals.ActiveOrphansRemoved,
 	)
 }
 
@@ -262,10 +289,13 @@ func repairRunIndexToConvergenceWith(
 // It calls repairRunIndexToConvergenceWith and returns its error
 // UNCHANGED (wrapped) so Start fails loudly and never opens the
 // history consumer over a partially-converged index (review round 2).
-// The reconciler's periodic tick deliberately keeps the single
-// bounded pass (runRepairRunIndexPass) — it only needs to close small
-// gaps left by an occasional lost writeRunIndexEntry race, not
-// converge a whole backlog under the tick's time budget.
+// The same convergence covers BOTH #659's runidx and #664's runactive
+// -- repairRunIndexToConvergenceWith does not declare done until
+// neither index has outstanding work. The reconciler's periodic tick
+// deliberately keeps the single bounded pass (runRepairRunIndexPass)
+// — it only needs to close small gaps left by an occasional lost
+// writeRunEntryIndexes race, not converge a whole backlog under the
+// tick's time budget.
 //
 // Known limitation (HA): if a second orchestrator starts against the
 // same store while a live peer is actively Saving runs, this loop's
@@ -283,23 +313,27 @@ func (o *Orchestrator) repairRunIndexToConvergence(ctx context.Context) error {
 	if o.store == nil {
 		panic("repairRunIndexToConvergence: store must not be nil")
 	}
-	totalRepaired, totalOrphans, passes, err := repairRunIndexToConvergenceWith(
+	totals, passes, err := repairRunIndexToConvergenceWith(
 		ctx, o.store, repairPageMax,
 		repairRunIndexMaxIterations, repairRunIndexRetryBackoff,
 	)
 	if err != nil {
 		return fmt.Errorf("startup: repair run index: %w", err)
 	}
-	if totalRepaired == 0 && totalOrphans == 0 {
+	if repairStatsAllZero(totals) {
 		return nil
 	}
 	slog.InfoContext(ctx, "startup: repaired run index to convergence",
-		"repaired", totalRepaired,
-		"orphans_removed", totalOrphans,
+		"repaired", totals.Repaired,
+		"orphans_removed", totals.OrphansRemoved,
+		"active_repaired", totals.ActiveRepaired,
+		"active_orphans_removed", totals.ActiveOrphansRemoved,
 		"passes", passes,
 	)
-	o.metrics.runIndexRepaired.Add(ctx, int64(totalRepaired))
-	o.metrics.runIndexOrphans.Add(ctx, int64(totalOrphans))
+	o.metrics.runIndexRepaired.Add(ctx, int64(totals.Repaired))
+	o.metrics.runIndexOrphans.Add(ctx, int64(totals.OrphansRemoved))
+	o.metrics.runActiveRepaired.Add(ctx, int64(totals.ActiveRepaired))
+	o.metrics.runActiveOrphans.Add(ctx, int64(totals.ActiveOrphansRemoved))
 	return nil
 }
 
@@ -528,37 +562,46 @@ func (o *Orchestrator) defShouldBeReaped(
 	return time.Since(*run.CompletedAt) > o.defReaperGrace, nil
 }
 
-// reconcileRunningRuns walks the workflow_runs KV for entries
-// stuck at RunStatusRunning and forces them to a terminal
-// state when warranted. Skips runs younger than
-// reconcileMinAge as a safety guard against in-flight
-// dispatch races.
+// reconcileRunningRuns walks the runs the reconciler owns (#664
+// review round 4: ListActive's isReconcilerOwned invariant) and
+// forces a wedged Running one to a terminal state when warranted.
+// Skips runs younger than reconcileMinAge as a safety guard against
+// in-flight dispatch races. Also runs the #648 release-pending
+// recovery sweep, from the SAME ListActive listing: a run that is
+// terminal but still ReleasePending is owned by definition
+// (isReconcilerOwned), so ONE call finds both the wedged-Running
+// candidates and the release-pending ones -- no second scan needed.
 func (o *Orchestrator) reconcileRunningRuns(ctx context.Context) {
 	if ctx == nil {
 		panic("reconcileRunningRuns: ctx must not be nil")
 	}
 
-	runs, err := o.store.ListAll(ctx, reconcileMaxRunsScan)
+	// ListActive (#664) — not the old capped ListAll — so EVERY run
+	// the reconciler owns is visited regardless of the total run.*
+	// population: the owned population is bounded by
+	// admission/concurrency (non-terminal runs) and the rarity of
+	// release failures (ReleasePending runs), so a keys-first scan
+	// over runactive.> never truncates in practice. ONE listing feeds
+	// BOTH sweeps below (review round 4: an earlier version issued a
+	// second, separate listing for the release-pending case via its
+	// own now-removed index -- isReconcilerOwned's unified invariant
+	// means ListActive already returns everything either sweep needs).
+	runs, stats, err := o.store.ListActive(ctx, reconcileActiveFetchMax)
 	if err != nil {
 		slog.ErrorContext(ctx,
-			"reconciler: list runs", "error", err)
+			"reconciler: list active runs", "error", err)
 		return
 	}
-	o.logScanCapTransition(ctx, len(runs))
+	o.logScanCapTransition(ctx, stats.Truncated, len(runs))
 	cutoff := time.Now().Add(-reconcileMinAge)
 	for _, run := range runs {
 		if run.Status == dag.RunStatusRunning {
-			if run.CreatedAt.IsZero() ||
-				run.CreatedAt.After(cutoff) {
+			if run.CreatedAt.IsZero() || run.CreatedAt.After(cutoff) {
 				continue
 			}
 			o.reconcileOneRun(ctx, run.RunID)
 			continue
 		}
-		// Terminal runs whose admission release didn't complete at
-		// finalize time (#648) surface here too -- same sweep, same
-		// once-per-pass bound (reconcileMaxRunsScan), just a different
-		// predicate than the wedged-Running check above.
 		if run.Status.IsTerminal() && run.ReleasePending {
 			o.reconcileReleasePending(ctx, run)
 		}
@@ -582,22 +625,16 @@ func (o *Orchestrator) reconcileRunningRuns(ctx context.Context) {
 // was recorded, then ALSO released successfully before this sweep ran
 // -- is safe to release again here; nothing double-frees.
 //
-// Best-effort, not a guarantee: reconcileRunningRuns' ListAll scan is
-// capped at reconcileMaxRunsScan and unordered, so a ReleasePending
-// run outside that window is simply not seen this pass (self-heals
-// next pass once older runs rotate out, same bound
-// findOldestPendingRun already documents) -- and PruneTerminal (#453,
-// opt-in retention) can delete a terminal run, ReleasePending flag and
-// all, before this sweep ever reaches it, in which case the leak is
-// no longer visible to recover at all. Neither failure mode is new
-// here; both already bound every other terminal-run scan this
-// reconciler runs.
-//
-// Not ReleasePending-first ordered: ListAll caps by KV key count
-// before any value is fetched, and ReleasePending lives inside each
-// run's JSON value, not the key -- prioritizing it would mean
-// fetching every run's value up front just to sort, which defeats
-// the whole point of capping the scan.
+// Bounded by the owned population, not a guess (#664 review round 4):
+// this run arrived via reconcileRunningRuns' single ListActive call,
+// which returns EVERY run isReconcilerOwned(run) says the reconciler
+// owns -- non-terminal, or terminal-with-ReleasePending -- up to
+// ActiveFetchMax (10,000), not a lexicographic/key-scan sample of the
+// total run population. PruneTerminal (#453, opt-in retention) can
+// still delete a terminal run, runactive marker and all, before this
+// sweep ever reaches it, in which case the leak is no longer visible
+// to recover at all -- the one failure mode this inherits from every
+// other terminal-run scan this reconciler runs.
 func (o *Orchestrator) reconcileReleasePending(
 	ctx context.Context, run dag.WorkflowRun,
 ) {
@@ -648,6 +685,10 @@ func (o *Orchestrator) reconcileReleasePending(
 		)
 		return
 	}
+	// The reconciler no longer owns this run (review round 4
+	// invariant: terminal AND ReleasePending is now false) -- delete
+	// runactive the same way finalizeRun does for the non-debt path.
+	o.store.deleteActiveEntry(ctx, run.RunID)
 	slog.InfoContext(ctx,
 		"reconciler: recovered admission release for terminal run",
 		"run_id", run.RunID,
@@ -708,6 +749,10 @@ func (o *Orchestrator) reconcileReleaseFailed(
 		)
 		return
 	}
+	// Abandoning clears ReleasePending too (above), so the reconciler
+	// no longer owns this run -- delete runactive here as well, same
+	// invariant as the success path in reconcileReleasePending.
+	o.store.deleteActiveEntry(ctx, run.RunID)
 	slog.ErrorContext(ctx,
 		"reconciler: abandoning release-pending recovery after "+
 			"max attempts -- admission slot/lock may remain leaked",
@@ -734,25 +779,24 @@ func (o *Orchestrator) reconcileReleaseFailed(
 // Mutates o.capHitPrev. Called once per reconcile cycle from
 // the single reconciler goroutine.
 func (o *Orchestrator) logScanCapTransition(
-	ctx context.Context, runCount int,
+	ctx context.Context, capped bool, runCount int,
 ) {
-	capped := runCount >= reconcileMaxRunsScan
 	switch {
 	case capped && !o.capHitPrev:
 		slog.WarnContext(ctx,
 			"reconciler: scan hit cap; older runs may "+
 				"not be reconciled this cycle",
-			"cap", reconcileMaxRunsScan,
+			"cap", reconcileActiveFetchMax,
 		)
 	case capped && o.capHitPrev:
 		slog.DebugContext(ctx,
 			"reconciler: scan still at cap",
-			"cap", reconcileMaxRunsScan,
+			"cap", reconcileActiveFetchMax,
 		)
 	case !capped && o.capHitPrev:
 		slog.InfoContext(ctx,
 			"reconciler: scan-cap cleared",
-			"cap", reconcileMaxRunsScan,
+			"cap", reconcileActiveFetchMax,
 			"runs", runCount,
 		)
 	}

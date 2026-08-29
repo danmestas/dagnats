@@ -102,7 +102,7 @@ type Orchestrator struct {
 	defReaperGrace time.Duration
 
 	// capHitPrev tracks whether the previous reconcile cycle hit
-	// reconcileMaxRunsScan. Used to suppress the steady-state
+	// reconcileActiveFetchMax. Used to suppress the steady-state
 	// scan-cap WARN (#260): emit only on the not-capped → capped
 	// transition; drop to DEBUG while continuously capped; emit
 	// INFO on the capped → not-capped recovery edge. Accessed
@@ -279,7 +279,7 @@ func (o *Orchestrator) wireDependentSubsystems(
 	)
 	o.publisher = publisher
 	o.recovery = NewRecoveryManager(
-		o.js, o.tp, publisher, o.tracer,
+		o.js, o.tp, o.store, publisher, o.tracer,
 		om.runsActive, om.runsFailed,
 		om.dlqEntries, om.dlqDepth,
 		o.releaseAdmission,
@@ -313,23 +313,8 @@ func (o *Orchestrator) Start() error {
 			"Orchestrator.Start: historyRedeliverSchedule must not be empty",
 		)
 	}
-	// Repair the run index to CONVERGENCE before the consumer starts
-	// (#659): a store upgraded from a pre-index build must have
-	// ordered-scan visibility into its ENTIRE existing run population
-	// immediately, not just the first repairPageMax of it. A single
-	// bounded pass here left the remainder for a later reconciler
-	// tick, during which any newly Saved run would sit ahead of
-	// still-unindexed old runs in the index -- ScanNewestFirst would
-	// treat stale runs as newest until that tick finished the backlog.
-	//
-	// review round 2: a repair failure (transient KV error exhausting
-	// its retry budget, or the store failing to converge within the
-	// iteration bound) is an OPERATING condition, not a programmer
-	// error -- Start returns the error and the history consumer is
-	// NEVER started, so the process does not serve reads over a
-	// possibly-misordered index. The caller (main) must check this.
-	if err := o.repairRunIndexToConvergence(context.Background()); err != nil {
-		return fmt.Errorf("Orchestrator.Start: %w", err)
+	if err := o.convergeRunIndexesAtStartup(); err != nil {
+		return err
 	}
 
 	o.cc = o.startHistoryConsumer()
@@ -369,6 +354,41 @@ func (o *Orchestrator) Start() error {
 				"(orphan-sweep safety invariant, #377)")
 		}
 		o.startDefReaper(reconcileCtx)
+	}
+	return nil
+}
+
+// convergeRunIndexesAtStartup repairs the derived run indexes to
+// CONVERGENCE before the history consumer starts (#659, extracted from
+// Start in review round 3 to keep it under TigerStyle's 70-line
+// limit): a store upgraded from a pre-index build must have
+// ordered-scan visibility into its ENTIRE existing run population
+// immediately, not just the first repairPageMax of it. A single
+// bounded pass here left the remainder for a later reconciler tick,
+// during which any newly Saved run would sit ahead of still-unindexed
+// old runs in the index -- ScanNewestFirst would treat stale runs as
+// newest until that tick finished the backlog.
+//
+// review round 2: a repair failure (transient KV error exhausting its
+// retry budget, or the store failing to converge within the iteration
+// bound) is an OPERATING condition, not a programmer error -- this
+// returns the error and Start never starts the history consumer, so
+// the process does not serve reads over a possibly-misordered index.
+// The caller (main) must check this.
+//
+// buildActiveIndexOnce runs FIRST: a store that predates #664 (or was
+// left with a large backlog by an earlier partial run) needs its
+// ENTIRE population walked once to build runactive correctly --
+// exactly the cost the steady-state crash-gap repair below is
+// deliberately NOT sized for. Idempotent: a store that has already
+// completed this pass (indexMetaKey present) returns immediately
+// without reading a single run.* value.
+func (o *Orchestrator) convergeRunIndexesAtStartup() error {
+	if _, err := o.store.buildActiveIndexOnce(context.Background()); err != nil {
+		return fmt.Errorf("Orchestrator.Start: build active index: %w", err)
+	}
+	if err := o.repairRunIndexToConvergence(context.Background()); err != nil {
+		return fmt.Errorf("Orchestrator.Start: %w", err)
 	}
 	return nil
 }
@@ -850,7 +870,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 			run.TraceParent = evt.TraceParent
 			run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
 			if _, finalizeErr := finalizeRun(
-				ctx, o.tp, o.saveSnapshot, run,
+				ctx, o.tp, o.store, o.saveSnapshot, run,
 				dag.RunStatusFailed, "", nil,
 			); finalizeErr != nil {
 				slog.ErrorContext(ctx,
@@ -929,7 +949,13 @@ func (o *Orchestrator) createOrHealRun(
 	}
 
 	if !isRunTerminal {
-		if err := o.saveSnapshot(ctx, run, ""); err != nil {
+		// SaveInitial, not saveSnapshot/Save (#664 review round 2):
+		// this IS the run's genuine first persistence for every
+		// non-run_terminal trigger type, so it is the one call site
+		// (besides CreateSnapshot below) that must create both
+		// derived indexes. Every LATER save for this run goes through
+		// saveSnapshot -> Save, which touches neither.
+		if err := o.saveInitialSnapshot(ctx, run); err != nil {
 			return fmt.Errorf("save initial run: %w", err)
 		}
 		return o.dispatchNewRun(ctx, wfDef, run, doEnqueue)
@@ -1266,7 +1292,7 @@ func (o *Orchestrator) persistFailedStartRun(
 		TraceParent: evt.TraceParent,
 	}
 	if _, err := finalizeRun(
-		ctx, o.tp, o.saveSnapshot, failed, dag.RunStatusFailed, "", nil,
+		ctx, o.tp, o.store, o.saveSnapshot, failed, dag.RunStatusFailed, "", nil,
 	); err != nil {
 		slog.ErrorContext(ctx,
 			"workflow.started: save failed-run snapshot",
@@ -1341,7 +1367,7 @@ func (o *Orchestrator) persistSkippedRun(
 	// guard, but misleading to persist).
 	run.SingletonKey = ""
 	if _, err := finalizeRun(
-		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCancelled, "", nil,
+		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusCancelled, "", nil,
 	); err != nil {
 		return fmt.Errorf("save skipped-run snapshot: %w", err)
 	}
@@ -1440,7 +1466,7 @@ func (o *Orchestrator) completeWorkflow(
 		panic("completeWorkflow: RunID must not be empty")
 	}
 	run, err := finalizeRun(
-		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCompleted, "",
+		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusCompleted, "",
 		func(ctx context.Context) error {
 			// Runs BEFORE either publish (#625 review round 2): a
 			// subscriber reacting to run.completed by starting the next
@@ -1724,7 +1750,7 @@ func (o *Orchestrator) failWorkflow(
 	state dag.StepState,
 ) error {
 	run, err := finalizeRun(
-		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, stepDef.ID,
+		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusFailed, stepDef.ID,
 		func(ctx context.Context) error {
 			o.sticky.DeleteBinding(ctx, run.RunID)
 			wfAttr := metric.WithAttributes(
@@ -1806,7 +1832,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	// must run through the SAME releaseAdmission the reconciler's
 	// recovery path calls, not a copy split across two places.
 	run, err = finalizeRun(
-		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCancelled, "",
+		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusCancelled, "",
 		func(ctx context.Context) error {
 			o.metrics.runsActive.Add(ctx, -1)
 			return o.releaseAdmission(ctx, run)
@@ -2211,6 +2237,33 @@ func (o *Orchestrator) saveSnapshot(
 		metric.WithAttributes(
 			attribute.String("workflow", run.WorkflowID),
 			attribute.String("step", stepID),
+		),
+	)
+	return err
+}
+
+// saveInitialSnapshot is saveSnapshot's counterpart for a run's
+// GENUINE first persistence via the Put-based admission path (#664
+// review round 2) -- see SnapshotStore.SaveInitial's doc comment.
+// Records the same snapshot.save.duration_ms histogram as saveSnapshot
+// (step label empty: a creation is never attributed to a step), just
+// through the index-creating store call instead of the plain one.
+func (o *Orchestrator) saveInitialSnapshot(
+	ctx context.Context, run dag.WorkflowRun,
+) error {
+	if run.RunID == "" {
+		panic("saveInitialSnapshot: RunID must not be empty")
+	}
+	if ctx == nil {
+		panic("saveInitialSnapshot: ctx must not be nil")
+	}
+	start := time.Now()
+	err := o.store.SaveInitial(ctx, run)
+	elapsed := float64(time.Since(start).Milliseconds())
+	o.metrics.snapshotDuration.Record(ctx, elapsed,
+		metric.WithAttributes(
+			attribute.String("workflow", run.WorkflowID),
+			attribute.String("step", ""),
 		),
 	)
 	return err

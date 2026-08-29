@@ -65,7 +65,7 @@ func TestRunWatchOutputsEventsForExistingRun(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(context.Background(), run); err != nil {
+	if err := store.SaveInitial(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestWatchRunWithStatusReturnsTerminal(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(context.Background(), run); err != nil {
+	if err := store.SaveInitial(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 

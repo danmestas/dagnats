@@ -53,7 +53,11 @@ func TestInspectShowsInlineFailuresAndDLQ(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(context.Background(), run); err != nil {
+	// SaveInitial, not Save (#664 review round 2): this run's only
+	// write, so it must create the runidx entry ScanRuns' prefix
+	// resolution (cli/resolve.go) depends on -- plain Save touches
+	// neither derived index.
+	if err := store.SaveInitial(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
@@ -265,7 +269,9 @@ func TestInspectCleanRunShowsNoFailures(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(
+	// SaveInitial, not Save (#664 review round 2): needed for ScanRuns'
+	// prefix resolution (cli/resolve.go) to find this run.
+	if err := store.SaveInitial(
 		context.Background(), run,
 	); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -346,7 +352,9 @@ func TestInspectNoTraceWithoutFlag(t *testing.T) {
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(
+	// SaveInitial, not Save (#664 review round 2): needed for ScanRuns'
+	// prefix resolution (cli/resolve.go) to find this run.
+	if err := store.SaveInitial(
 		context.Background(), run,
 	); err != nil {
 		t.Fatalf("Save: %v", err)

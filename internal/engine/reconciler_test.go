@@ -53,7 +53,7 @@ func TestReconciler_CompletesRunWhenStepsAllDone(t *testing.T) {
 		},
 	}
 	ctx := context.Background()
-	if err := orch.store.Save(ctx, wedged); err != nil {
+	if err := orch.store.SaveInitial(ctx, wedged); err != nil {
 		t.Fatalf("seed wedged run: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestReconciler_FailsRunWhenWedgedNoWork(t *testing.T) {
 		Status: dag.StepStatusCancelled,
 	}
 	ctx := context.Background()
-	if err := orch.store.Save(ctx, wedged); err != nil {
+	if err := orch.store.SaveInitial(ctx, wedged); err != nil {
 		t.Fatalf("seed wedged run: %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestReconciler_SkipsRecentlyCreatedRun(t *testing.T) {
 		},
 	}
 	ctx := context.Background()
-	if err := orch.store.Save(ctx, young); err != nil {
+	if err := orch.store.SaveInitial(ctx, young); err != nil {
 		t.Fatalf("seed young run: %v", err)
 	}
 
@@ -224,7 +224,7 @@ func TestReconciler_SkipsRunWithInFlightStep(t *testing.T) {
 		},
 	}
 	ctx := context.Background()
-	if err := orch.store.Save(ctx, active); err != nil {
+	if err := orch.store.SaveInitial(ctx, active); err != nil {
 		t.Fatalf("seed active run: %v", err)
 	}
 
@@ -281,7 +281,7 @@ func TestReconciler_LeavesTerminalRunsAlone(t *testing.T) {
 				"a": {Status: dag.StepStatusCompleted},
 			},
 		}
-		if err := orch.store.Save(ctx, run); err != nil {
+		if err := orch.store.SaveInitial(ctx, run); err != nil {
 			t.Fatalf("seed %v: %v", status, err)
 		}
 	}
@@ -310,15 +310,15 @@ func TestReconciler_LeavesTerminalRunsAlone(t *testing.T) {
 }
 
 func TestReconcilerCapWarnSuppressedAcrossCycles(t *testing.T) {
-	// Issue #260: in steady state with the workflow_runs scan
+	// Issue #260: in steady state with the active-run scan
 	// permanently saturated, the WARN about "scan hit cap"
 	// must only fire on the transition into cap (cold start
 	// or not-capped → capped). Subsequent cycles already in
 	// the capped state drop to DEBUG so operators can still
 	// distinguish "normally saturated" from "newly saturated".
-	prevCap := reconcileMaxRunsScan
-	reconcileMaxRunsScan = 3
-	t.Cleanup(func() { reconcileMaxRunsScan = prevCap })
+	prevCap := reconcileActiveFetchMax
+	reconcileActiveFetchMax = 3
+	t.Cleanup(func() { reconcileActiveFetchMax = prevCap })
 
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
@@ -337,21 +337,23 @@ func TestReconcilerCapWarnSuppressedAcrossCycles(t *testing.T) {
 
 	orch := NewOrchestrator(nc)
 	ctx := context.Background()
-	// Seed 5 terminal runs (> cap of 3). Terminal so the
-	// reconciler scan picks them up but does not mutate them
-	// — we only care about cap-hit log behavior here.
+	// Seed 5 NON-terminal (Running) runs (> cap of 3) -- ListActive
+	// (#664) only ever sees non-terminal runs, unlike the old ListAll
+	// which scanned the whole run.* population regardless of status.
+	// CreatedAt is recent so the age guard skips reconcileOneRun on
+	// every one of them -- they must stay untouched and stable across
+	// all 3 cycles; only cap-hit log behavior is under test here.
 	for i := 0; i < 5; i++ {
 		run := dag.WorkflowRun{
 			RunID:      "cap-run-" + itoa(i),
 			WorkflowID: wfDef.Name,
-			Status:     dag.RunStatusCompleted,
-			CreatedAt: time.Now().UTC().
-				Add(-(reconcileMinAge + time.Minute)),
+			Status:     dag.RunStatusRunning,
+			CreatedAt:  time.Now().UTC(),
 			Steps: map[string]dag.StepState{
-				"a": {Status: dag.StepStatusCompleted},
+				"a": {Status: dag.StepStatusPending},
 			},
 		}
-		if err := orch.store.Save(ctx, run); err != nil {
+		if err := orch.store.SaveInitial(ctx, run); err != nil {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 	}
@@ -384,9 +386,9 @@ func TestReconcilerCapClearedEmitsInfo(t *testing.T) {
 	// Issue #260: when the scan was capped on the previous
 	// cycle and is no longer capped on the current cycle,
 	// emit an INFO so operators see that the backlog drained.
-	prevCap := reconcileMaxRunsScan
-	reconcileMaxRunsScan = 3
-	t.Cleanup(func() { reconcileMaxRunsScan = prevCap })
+	prevCap := reconcileActiveFetchMax
+	reconcileActiveFetchMax = 3
+	t.Cleanup(func() { reconcileActiveFetchMax = prevCap })
 
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
@@ -405,19 +407,20 @@ func TestReconcilerCapClearedEmitsInfo(t *testing.T) {
 
 	orch := NewOrchestrator(nc)
 	ctx := context.Background()
-	// Drive cycle 1 into the capped state.
+	// Drive cycle 1 into the capped state -- non-terminal, recent
+	// (age-guard-skipped) runs, same reasoning as the WARN-suppression
+	// test above.
 	for i := 0; i < 5; i++ {
 		run := dag.WorkflowRun{
 			RunID:      "clear-run-" + itoa(i),
 			WorkflowID: wfDef.Name,
-			Status:     dag.RunStatusCompleted,
-			CreatedAt: time.Now().UTC().
-				Add(-(reconcileMinAge + time.Minute)),
+			Status:     dag.RunStatusRunning,
+			CreatedAt:  time.Now().UTC(),
 			Steps: map[string]dag.StepState{
-				"a": {Status: dag.StepStatusCompleted},
+				"a": {Status: dag.StepStatusPending},
 			},
 		}
-		if err := orch.store.Save(ctx, run); err != nil {
+		if err := orch.store.SaveInitial(ctx, run); err != nil {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 	}
@@ -425,7 +428,7 @@ func TestReconcilerCapClearedEmitsInfo(t *testing.T) {
 
 	// Drop the cap (simulate backlog draining) by raising the
 	// scan limit so the run set is now below cap.
-	reconcileMaxRunsScan = 100
+	reconcileActiveFetchMax = 100
 
 	buf, restore := captureSlog(t)
 	defer restore()
@@ -444,6 +447,88 @@ func TestReconcilerCapClearedEmitsInfo(t *testing.T) {
 			"recovery cycle must not re-emit cap-hit WARN; logs:\n%s",
 			logs,
 		)
+	}
+}
+
+// TestReconcileRunningRuns_VisitsAllRunningBeyondOldListAllCap proves
+// the #664 fix: reconcileRunningRuns must visit EVERY running run even
+// when the total run.* population far exceeds the OLD ListAll cap
+// (1000). Seeds 1,500 terminal runs (pure population noise) plus 5
+// wedged-complete running runs, then asserts every one of the 5 was
+// reconciled — the exact failure mode ListAll's lexicographic-order
+// cap could miss on a store this size.
+func TestReconcileRunningRuns_VisitsAllRunningBeyondOldListAllCap(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	wfDef := dag.WorkflowDef{
+		Name: "reconciler-beyond-cap", Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+		},
+	}
+	seedWorkflowDef(t, nc, wfDef)
+
+	orch := NewOrchestrator(nc)
+	ctx := context.Background()
+
+	// 1,500 terminal runs -- pure noise, well beyond the old 1000-run
+	// ListAll cap, none of them running.
+	const terminalCount = 1500
+	for i := 0; i < terminalCount; i++ {
+		run := dag.WorkflowRun{
+			RunID:      "noise-" + itoa(i),
+			WorkflowID: wfDef.Name,
+			Status:     dag.RunStatusCompleted,
+			CreatedAt:  time.Now().UTC(),
+			Steps: map[string]dag.StepState{
+				"a": {Status: dag.StepStatusCompleted},
+			},
+		}
+		if err := orch.store.SaveInitial(ctx, run); err != nil {
+			t.Fatalf("seed noise %d: %v", i, err)
+		}
+	}
+
+	// 5 wedged-complete running runs, old enough to clear the age
+	// guard. Under the old ListAll(1000) scan these could easily fall
+	// outside the lexicographic-order sample; ListActive is bounded by
+	// the active population (5), not the 1,505-run total.
+	const runningCount = 5
+	for i := 0; i < runningCount; i++ {
+		run := dag.WorkflowRun{
+			RunID:      "wedged-" + itoa(i),
+			WorkflowID: wfDef.Name,
+			Status:     dag.RunStatusRunning,
+			CreatedAt: time.Now().UTC().
+				Add(-(reconcileMinAge + time.Minute)),
+			Steps: map[string]dag.StepState{
+				"a": {Status: dag.StepStatusCompleted},
+			},
+		}
+		if err := orch.store.SaveInitial(ctx, run); err != nil {
+			t.Fatalf("seed running %d: %v", i, err)
+		}
+	}
+
+	orch.reconcileRunningRuns(ctx)
+
+	// Positive: every one of the 5 running runs was promoted to
+	// Completed (IsComplete is true — all steps done).
+	for i := 0; i < runningCount; i++ {
+		runID := "wedged-" + itoa(i)
+		after, err := orch.store.Load(ctx, runID)
+		if err != nil {
+			t.Fatalf("load %s: %v", runID, err)
+		}
+		if after.Status != dag.RunStatusCompleted {
+			t.Errorf(
+				"%s Status = %v, want Completed (reconciler must visit "+
+					"EVERY running run regardless of total population)",
+				runID, after.Status,
+			)
+		}
 	}
 }
 
