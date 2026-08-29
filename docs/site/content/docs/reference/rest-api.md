@@ -101,15 +101,18 @@ curl -X POST http://localhost:8080/workflows \
 
 ### List Runs
 
-Retrieve all workflow runs, optionally filtered by workflow. Returns runs sorted by creation time (newest first).
+Retrieve all workflow runs, optionally filtered by workflow and/or labels. Returns runs sorted by creation time (newest first).
 
 ```
-GET /runs[?workflow=NAME]
+GET /runs[?workflow=NAME][&label=KEY=VALUE...]
 ```
 
 | Query Parameter | Description |
 |----------------|-------------|
 | `workflow` | Filter by workflow name |
+| `label` | Filter by a run label, `key=value`. Repeatable — every `label` param given must match (AND semantics). A param with no `=` returns `400`. |
+
+Filters compose: `workflow` and `label` narrow the same query together, not as alternatives. Filtering is applied within a bounded most-recent-runs window server-side, so a filtered result (here and on Count) may miss matches older than that window until the time-ordered index in #453 lands. Cursor-based pagination is not part of this change and is also tracked by #453.
 
 **Response:** `200 OK`
 
@@ -120,6 +123,7 @@ GET /runs[?workflow=NAME]
     "workflow_id": "code-review",
     "status": "running",
     "created_at": "2025-01-15T09:00:00Z",
+    "labels": {"pr": "42", "repo": "dagnats"},
     "steps": {
       "fetch-diff": {"status": "completed", "attempts": 1},
       "lint": {"status": "running", "attempts": 1}
@@ -131,6 +135,7 @@ GET /runs[?workflow=NAME]
 **curl:**
 ```bash
 curl http://localhost:8080/runs?workflow=code-review
+curl 'http://localhost:8080/runs?label=repo=dagnats&label=pr=42'
 ```
 
 ### Start Run
@@ -147,7 +152,8 @@ POST /runs
 {
   "workflow": "code-review",
   "input": {"pr": 42},
-  "run_at": "2025-01-16T09:00:00Z"
+  "run_at": "2025-01-16T09:00:00Z",
+  "labels": {"pr": "42", "repo": "dagnats"}
 }
 ```
 
@@ -156,6 +162,7 @@ POST /runs
 | `workflow` | string | Yes | Workflow name |
 | `input` | JSON | No | Arbitrary input data |
 | `run_at` | string | No | RFC3339 time for scheduled execution |
+| `labels` | object | No | Key/value metadata stamped on the run (applies to both immediate and scheduled runs). At most 16 labels; keys match `^[a-z0-9_.-]+$` and are at most 64 chars; values at most 256 chars. Use labels to find or bulk-cancel runs later via `GET /runs?label=` or `POST /runs/cancel` without a separate lookup table. |
 
 **Response (immediate):** `201 Created`
 
@@ -389,7 +396,8 @@ POST /runs/bulk
   "inputs": [
     {"env": "staging"},
     {"env": "prod"}
-  ]
+  ],
+  "labels": {"batch": "release-42"}
 }
 ```
 
@@ -397,6 +405,7 @@ POST /runs/bulk
 |-------|------|----------|-------------|
 | `workflow_id` | string | Yes | Workflow name |
 | `inputs` | []JSON | Yes | Array of input payloads (max 1000) |
+| `labels` | object | No | Applied to every run started in this batch (same bounds as Start Run's `labels`) |
 
 **Response:** `201 Created`
 
@@ -438,7 +447,8 @@ POST /runs/cancel
   "status": "running",
   "after": "2025-01-15T00:00:00Z",
   "before": "2025-01-16T00:00:00Z",
-  "dry_run": false
+  "dry_run": false,
+  "labels": {"batch": "release-42"}
 }
 ```
 
@@ -449,6 +459,7 @@ POST /runs/cancel
 | `after` | string | No | RFC3339 lower bound on creation time |
 | `before` | string | No | RFC3339 upper bound on creation time |
 | `dry_run` | bool | No | Preview without cancelling |
+| `labels` | object | No | Every key/value must match a run's labels (AND semantics), composing with `workflow_id`/`status`/`after`/`before`. Same bounds as Start Run's `labels`; a filter with more than 16 labels is a `400`. |
 
 **Response:** `200 OK`
 

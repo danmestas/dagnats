@@ -366,6 +366,12 @@ type WorkflowRun struct {
 	SingletonKey   string     `json:"singleton_key,omitempty"`
 	TraceParent    string     `json:"trace_parent,omitempty"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	// Labels are caller-supplied key/value metadata set at start time
+	// (#629). External triggers start runs *about* something (an order,
+	// a tenant, a region) and need to find or bulk-cancel those runs
+	// later without standing up a shadow lookup table. Additive: legacy
+	// snapshots deserialize to nil. See ValidateLabels for bounds.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.

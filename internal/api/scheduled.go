@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -36,6 +37,10 @@ type ScheduledRun struct {
 	RunAt      time.Time       `json:"run_at"`
 	CreatedAt  time.Time       `json:"created_at"`
 	Status     string          `json:"status"`
+	// Labels carries the caller-supplied run labels (#629) through to
+	// fireScheduledRun, which stamps them on the eventual workflow.started
+	// payload the same way an immediate StartRun does.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // ScheduleRun validates the workflow exists, generates a run ID,
@@ -47,11 +52,26 @@ func (s *Service) ScheduleRun(
 	input []byte,
 	runAt time.Time,
 ) (string, error) {
+	return s.ScheduleRunWithLabels(ctx, workflowName, input, runAt, nil)
+}
+
+// ScheduleRunWithLabels is ScheduleRun with caller-supplied run labels
+// (#629), validated via dag.ValidateLabels before anything is stored.
+func (s *Service) ScheduleRunWithLabels(
+	ctx context.Context,
+	workflowName string,
+	input []byte,
+	runAt time.Time,
+	labels map[string]string,
+) (string, error) {
 	if ctx == nil {
-		panic("ScheduleRun: ctx must not be nil")
+		panic("ScheduleRunWithLabels: ctx must not be nil")
 	}
 	if workflowName == "" {
-		panic("ScheduleRun: workflowName must not be empty")
+		panic("ScheduleRunWithLabels: workflowName must not be empty")
+	}
+	if err := dag.ValidateLabels(labels); err != nil {
+		return "", err
 	}
 	var runID string
 	err := s.observed(ctx, "scheduleRun",
@@ -61,7 +81,7 @@ func (s *Service) ScheduleRun(
 		func(ctx context.Context) error {
 			var innerErr error
 			runID, innerErr = s.scheduleRunInner(
-				ctx, workflowName, input, runAt,
+				ctx, workflowName, input, runAt, labels,
 			)
 			if innerErr == nil {
 				span := trace.SpanFromContext(ctx)
@@ -81,6 +101,7 @@ func (s *Service) scheduleRunInner(
 	workflowName string,
 	input []byte,
 	runAt time.Time,
+	labels map[string]string,
 ) (string, error) {
 	if workflowName == "" {
 		panic("scheduleRunInner: workflowName must not be empty")
@@ -130,6 +151,7 @@ func (s *Service) scheduleRunInner(
 		RunAt:      runAt,
 		CreatedAt:  time.Now().UTC(),
 		Status:     "scheduled",
+		Labels:     labels,
 	}
 	data, err := json.Marshal(sr)
 	if err != nil {

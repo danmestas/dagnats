@@ -765,7 +765,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 		)
 	}
 
-	wfDef, input, err := o.resolveStartPayload(ctx, evt)
+	wfDef, input, labels, err := o.resolveStartPayload(ctx, evt)
 	if errors.Is(err, errStartPayloadHandled) {
 		return nil
 	}
@@ -780,6 +780,15 @@ func (o *Orchestrator) handleWorkflowStarted(
 	// must not crash the engine.
 	if validateErr := dag.Validate(wfDef); validateErr != nil {
 		o.persistFailedStartRun(ctx, evt, wfDef.Name, validateErr)
+		return nil
+	}
+
+	// Re-validate labels at the trust boundary (#629). The API service
+	// already rejects invalid labels with a 400, but any other producer
+	// of workflow.started (a direct engine caller, a future trigger
+	// type) gets the same guarantee here rather than a corrupt snapshot.
+	if labelErr := dag.ValidateLabels(labels); labelErr != nil {
+		o.persistFailedStartRun(ctx, evt, wfDef.Name, labelErr)
 		return nil
 	}
 
@@ -800,6 +809,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run.TraceParent = evt.TraceParent
 	run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
 	run.Input = input
+	run.Labels = labels
 
 	admission, admitErr := o.admission.Admit(ctx, wfDef, run, input)
 	if admitErr != nil {
@@ -847,15 +857,17 @@ func (o *Orchestrator) handleWorkflowStarted(
 // ACK without further processing. Detect with errors.Is.
 var errStartPayloadHandled = errors.New("start payload already handled")
 
-// resolveStartPayload decodes evt.Payload into a WorkflowDef and Input.
-// Three shapes are accepted, in priority order:
+// resolveStartPayload decodes evt.Payload into a WorkflowDef, Input, and
+// Labels. Three shapes are accepted, in priority order:
 //
-//  1. Structured {workflow_def, input} — produced by the API service
-//     when a user invokes a workflow manually.
+//  1. Structured {workflow_def, input, labels} — produced by the API
+//     service when a user invokes a workflow manually (#629 adds
+//     labels).
 //  2. TriggerEnvelope {trigger, source, workflow_id, ...} — produced
 //     by every trigger type (#167). The def is resolved from
 //     workflow_defs KV by WorkflowID; the envelope itself becomes the
-//     run's Input so workflows can observe how they were fired.
+//     run's Input so workflows can observe how they were fired. No
+//     labels shape exists for trigger envelopes yet.
 //  3. Bare WorkflowDef — backward compat for direct callers (tests
 //     and any embedded users that pre-date the structured shape).
 //
@@ -865,19 +877,20 @@ var errStartPayloadHandled = errors.New("start payload already handled")
 // would re-fail identically.
 func (o *Orchestrator) resolveStartPayload(
 	ctx context.Context, evt protocol.Event,
-) (dag.WorkflowDef, json.RawMessage, error) {
+) (dag.WorkflowDef, json.RawMessage, map[string]string, error) {
 	var startPayload struct {
-		WorkflowDef json.RawMessage `json:"workflow_def"`
-		Input       json.RawMessage `json:"input"`
+		WorkflowDef json.RawMessage   `json:"workflow_def"`
+		Input       json.RawMessage   `json:"input"`
+		Labels      map[string]string `json:"labels"`
 	}
 	if err := json.Unmarshal(evt.Payload, &startPayload); err == nil &&
 		startPayload.WorkflowDef != nil {
 		var wfDef dag.WorkflowDef
 		if err := json.Unmarshal(startPayload.WorkflowDef, &wfDef); err != nil {
-			return dag.WorkflowDef{}, nil,
+			return dag.WorkflowDef{}, nil, nil,
 				fmt.Errorf("unmarshal WorkflowDef: %w", err)
 		}
-		return wfDef, startPayload.Input, nil
+		return wfDef, startPayload.Input, startPayload.Labels, nil
 	}
 
 	if workflowID, ok := decodeTriggerEnvelope(evt.Payload); ok {
@@ -885,22 +898,22 @@ func (o *Orchestrator) resolveStartPayload(
 		if err != nil {
 			o.persistFailedStartRun(ctx, evt, workflowID,
 				fmt.Errorf("resolve trigger workflow def: %w", err))
-			return dag.WorkflowDef{}, nil, errStartPayloadHandled
+			return dag.WorkflowDef{}, nil, nil, errStartPayloadHandled
 		}
 		var wfDef dag.WorkflowDef
 		if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
-			return dag.WorkflowDef{}, nil,
+			return dag.WorkflowDef{}, nil, nil,
 				fmt.Errorf("unmarshal trigger workflow def: %w", err)
 		}
-		return wfDef, evt.Payload, nil
+		return wfDef, evt.Payload, nil, nil
 	}
 
 	var wfDef dag.WorkflowDef
 	if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
-		return dag.WorkflowDef{}, nil,
+		return dag.WorkflowDef{}, nil, nil,
 			fmt.Errorf("unmarshal WorkflowDef: %w", err)
 	}
-	return wfDef, nil, nil
+	return wfDef, nil, nil, nil
 }
 
 // decodeTriggerEnvelope returns the workflow ID from a TriggerEnvelope

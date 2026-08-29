@@ -21,6 +21,7 @@ Key fields:
 | `CreatedAt` | `time.Time` | When the run was created (UTC) |
 | `ParentRunID` | `string` | Set for child sub-workflow runs |
 | `Deadline` | `*time.Time` | Workflow-level timeout deadline |
+| `Labels` | `map[string]string` | Caller-supplied metadata set at start time; find or bulk-cancel runs by label via the REST API |
 
 ## Run Status State Machine
 

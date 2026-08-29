@@ -41,11 +41,24 @@ type RunEvent struct {
 func (s *Service) StartRun(
 	ctx context.Context, workflowName string, input []byte,
 ) (string, error) {
+	return s.StartRunWithLabels(ctx, workflowName, input, nil)
+}
+
+// StartRunWithLabels is StartRun with caller-supplied run labels
+// (#629). labels is validated via dag.ValidateLabels before anything
+// is published.
+func (s *Service) StartRunWithLabels(
+	ctx context.Context, workflowName string, input []byte,
+	labels map[string]string,
+) (string, error) {
 	if ctx == nil {
-		panic("StartRun: ctx must not be nil")
+		panic("StartRunWithLabels: ctx must not be nil")
 	}
 	if workflowName == "" {
-		panic("StartRun: workflowName must not be empty")
+		panic("StartRunWithLabels: workflowName must not be empty")
+	}
+	if err := dag.ValidateLabels(labels); err != nil {
+		return "", err
 	}
 	var runID string
 	err := s.observed(ctx, "startRun",
@@ -56,7 +69,7 @@ func (s *Service) StartRun(
 			span := trace.SpanFromContext(ctx)
 			var innerErr error
 			runID, innerErr = s.startRunInner(
-				ctx, span, workflowName, input,
+				ctx, span, workflowName, input, labels,
 			)
 			if innerErr == nil {
 				span.SetAttributes(
@@ -76,6 +89,7 @@ func (s *Service) startRunInner(
 	span trace.Span,
 	workflowName string,
 	input []byte,
+	labels map[string]string,
 ) (string, error) {
 	if workflowName == "" {
 		panic(
@@ -129,7 +143,7 @@ func (s *Service) startRunInner(
 	}
 
 	runID := runid.New()
-	payload, err := buildStartPayload(entry.Value(), input)
+	payload, err := buildStartPayload(entry.Value(), input, labels)
 	if err != nil {
 		return "", err
 	}
@@ -269,11 +283,12 @@ func parseTraceID(traceparent string) string {
 	return parts[1]
 }
 
-// buildStartPayload wraps the workflow definition and optional user
-// input into a structured JSON payload for the workflow.started event.
-// The engine parses this to store Input on the WorkflowRun snapshot.
+// buildStartPayload wraps the workflow definition, optional user input,
+// and optional labels into a structured JSON payload for the
+// workflow.started event. The engine parses this to store Input and
+// Labels on the WorkflowRun snapshot.
 func buildStartPayload(
-	defBytes []byte, input []byte,
+	defBytes []byte, input []byte, labels map[string]string,
 ) ([]byte, error) {
 	if defBytes == nil {
 		panic("buildStartPayload: defBytes must not be nil")
@@ -282,11 +297,13 @@ func buildStartPayload(
 		panic("buildStartPayload: defBytes must not be empty")
 	}
 	sp := struct {
-		WorkflowDef json.RawMessage `json:"workflow_def"`
-		Input       json.RawMessage `json:"input,omitempty"`
+		WorkflowDef json.RawMessage   `json:"workflow_def"`
+		Input       json.RawMessage   `json:"input,omitempty"`
+		Labels      map[string]string `json:"labels,omitempty"`
 	}{
 		WorkflowDef: defBytes,
 		Input:       input,
+		Labels:      labels,
 	}
 	return json.Marshal(sp)
 }
@@ -489,11 +506,15 @@ func (s *Service) scanRunsInner(
 // RunsFilter narrows a run-list or count query. The zero value matches
 // every run. Workflow filters by WorkflowID; State (nil = any) filters
 // by run status; Since (zero = any age) keeps runs with CreatedAt at
-// or after the cutoff.
+// or after the cutoff. Labels (nil/empty = any, #629) requires every
+// key/value pair in the filter to be present with an equal value on the
+// run (AND semantics) — it composes with Workflow/State/Since rather
+// than replacing them.
 type RunsFilter struct {
 	Workflow string
 	State    *dag.RunStatus
 	Since    time.Time
+	Labels   map[string]string
 }
 
 // isEmpty reports whether the filter matches every run (the zero
@@ -501,7 +522,8 @@ type RunsFilter struct {
 // stdlib footgun — it compares the wall-clock + monotonic + location
 // fields, so two "zero" times can compare unequal. IsZero is correct.
 func (f RunsFilter) isEmpty() bool {
-	return f.Workflow == "" && f.State == nil && f.Since.IsZero()
+	return f.Workflow == "" && f.State == nil && f.Since.IsZero() &&
+		len(f.Labels) == 0
 }
 
 // matches reports whether a single run satisfies the filter.
@@ -514,6 +536,11 @@ func (f RunsFilter) matches(run dag.WorkflowRun) bool {
 	}
 	if !f.Since.IsZero() && run.CreatedAt.Before(f.Since) {
 		return false
+	}
+	for key, value := range f.Labels {
+		if run.Labels[key] != value {
+			return false
+		}
 	}
 	return true
 }

@@ -7,6 +7,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,11 +21,15 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// startRunRequest is the JSON body expected by POST /runs.
+// startRunRequest is the JSON body expected by POST /runs. Labels (#629)
+// are optional caller-supplied metadata, validated via dag.ValidateLabels
+// and stored on the resulting run (immediate or scheduled) so it can be
+// found or bulk-cancelled later by label.
 type startRunRequest struct {
-	Workflow string          `json:"workflow"`
-	Input    json.RawMessage `json:"input,omitempty"`
-	RunAt    *time.Time      `json:"run_at,omitempty"`
+	Workflow string            `json:"workflow"`
+	Input    json.RawMessage   `json:"input,omitempty"`
+	RunAt    *time.Time        `json:"run_at,omitempty"`
+	Labels   map[string]string `json:"labels,omitempty"`
 }
 
 // NewRESTHandler returns an http.Handler that routes the DagNats
@@ -226,9 +231,12 @@ func handleListWorkflows(
 }
 
 // handleListRuns returns all workflow runs as a JSON array.
-// Supports optional ?workflow= filter and ?limit= row cap. limit is
-// clamped at MaxRunsLimitCeiling server-side; omitted/invalid values
-// fall back to DefaultRunsLimit.
+// Supports optional ?workflow= filter, repeatable ?label=key=value
+// filters (#629, AND semantics — every given label must match), and
+// ?limit= row cap. limit is clamped at MaxRunsLimitCeiling server-side;
+// omitted/invalid values fall back to DefaultRunsLimit. NOTE: this filter
+// is applied within the bounded ScanRuns window (see RunsFilter and
+// #453) — a filtered result may miss matches older than that window.
 func handleListRuns(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
@@ -239,9 +247,16 @@ func handleListRuns(
 		panic("handleListRuns: r must not be nil")
 	}
 	workflowFilter := r.URL.Query().Get("workflow")
+	labels, labelErr := parseLabelQuery(r.URL.Query()["label"])
+	if labelErr != nil {
+		http.Error(w, labelErr.Error(), http.StatusBadRequest)
+		return
+	}
 	limit := parseLimitQuery(r.URL.Query().Get("limit"))
 	runs, err := svc.ScanRuns(
-		r.Context(), RunsFilter{Workflow: workflowFilter}, limit,
+		r.Context(),
+		RunsFilter{Workflow: workflowFilter, Labels: labels},
+		limit,
 	)
 	if err != nil {
 		http.Error(w, err.Error(),
@@ -253,6 +268,27 @@ func handleListRuns(
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
 	}
+}
+
+// parseLabelQuery parses repeatable ?label=key=value query params into
+// a map. Splits on the FIRST "=" only, so a value may itself contain
+// "=". Returns an error naming the malformed entry when a param has no
+// "=" at all (empty raw slice returns a nil map, not an error).
+func parseLabelQuery(raw []string) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	labels := make(map[string]string, len(raw))
+	for _, entry := range raw {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			return nil, fmt.Errorf(
+				"malformed label filter %q: want key=value", entry,
+			)
+		}
+		labels[key] = value
+	}
+	return labels, nil
 }
 
 // parseLimitQuery converts the raw ?limit= string into an int. Empty
@@ -296,8 +332,9 @@ func handleStartRun(
 	const immediateThreshold = time.Second
 	if req.RunAt != nil &&
 		time.Until(*req.RunAt) > immediateThreshold {
-		runID, err := svc.ScheduleRun(
+		runID, err := svc.ScheduleRunWithLabels(
 			r.Context(), req.Workflow, req.Input, *req.RunAt,
+			req.Labels,
 		)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -313,8 +350,8 @@ func handleStartRun(
 	}
 
 	// Immediate run path (existing).
-	runID, err := svc.StartRun(
-		r.Context(), req.Workflow, req.Input,
+	runID, err := svc.StartRunWithLabels(
+		r.Context(), req.Workflow, req.Input, req.Labels,
 	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
