@@ -308,7 +308,7 @@ func (o *Orchestrator) failLoopStep(
 	state.Error = reason
 	run.Steps[stepID] = state
 	run, err := finalizeRun(
-		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, stepID,
+		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusFailed, stepID,
 		func(ctx context.Context) error {
 			wfAttr := metric.WithAttributes(
 				attribute.String("workflow", run.WorkflowID),

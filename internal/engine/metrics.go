@@ -54,6 +54,8 @@ type orchMetrics struct {
 	defPinMissingVersion metric.Int64Counter
 	runIndexRepaired     metric.Int64Counter
 	runIndexOrphans      metric.Int64Counter
+	runActiveRepaired    metric.Int64Counter
+	runActiveOrphans     metric.Int64Counter
 }
 
 // newOrchMetrics creates all orchestrator metric instruments.
@@ -107,6 +109,17 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 	runIndexOrphans, _ := m.Int64Counter(
 		"engine.run_index.orphans_removed",
 	)
+	// #664: the active-run liveness index's repair-sweep outcome --
+	// nonzero repaired means a non-terminal run lost the
+	// createActiveEntry race; nonzero orphans means a stale entry
+	// survived a terminal Save (lost deleteActiveEntry race) or a
+	// pre-#664 upgrade.
+	runActiveRepaired, _ := m.Int64Counter(
+		"engine.run_active.repaired",
+	)
+	runActiveOrphans, _ := m.Int64Counter(
+		"engine.run_active.orphans_removed",
+	)
 	return orchMetrics{
 		runsActive:           runsActive,
 		runsCompleted:        runsCompleted,
@@ -121,6 +134,8 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 		defPinMissingVersion: defPinMissingVersion,
 		runIndexRepaired:     runIndexRepaired,
 		runIndexOrphans:      runIndexOrphans,
+		runActiveRepaired:    runActiveRepaired,
+		runActiveOrphans:     runActiveOrphans,
 	}
 }
 

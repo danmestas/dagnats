@@ -498,7 +498,11 @@ func seedRootRun(t *testing.T, svc *Service, runID string) {
 	run := dag.NewWorkflowRun(def, runID)
 	run.RootRunID = runID
 	run.Status = dag.RunStatusRunning
-	if err := store.Save(context.Background(), run); err != nil {
+	// SaveInitial, not Save (#664 review round 2): this run's ONLY
+	// write, so it must create both derived indexes -- plain Save
+	// touches neither, leaving the run invisible to runidx-based scans
+	// (ScanRuns) and runactive-based ones (countActiveRunsForRoot).
+	if err := store.SaveInitial(context.Background(), run); err != nil {
 		t.Fatalf("seed root run %q: %v", runID, err)
 	}
 }

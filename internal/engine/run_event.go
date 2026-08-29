@@ -183,10 +183,41 @@ func recordRunEventPublishFailure(
 
 // finalizeRun marks run terminal, persists it via saveFn, runs
 // afterPersist (the caller's lock/slot-release and queue-advance
-// logic — nil for sites with none of that), publishes the existing
-// history workflow event for Completed/Failed (so
+// logic — nil for sites with none of that), deletes the run's
+// runactive.<runID> liveness marker IF AND ONLY IF the reconciler no
+// longer owns it (#664 review round 4 invariant: runactive exists iff
+// non-terminal OR ReleasePending -- see isReconcilerOwned), publishes
+// the existing history workflow event for Completed/Failed (so
 // internal/trigger/http.go's poll-for-completion path keeps working
 // unchanged), and finally publishes the new event.run.* RunEvent.
+//
+// The delete happens AFTER afterPersist, not before (review round 4):
+// if afterPersist fails, finalizeWithReleaseDebt sets
+// ReleasePending=true, and the run is STILL owned -- the marker (created
+// back at SaveInitial/CreateSnapshot time) is normally left untouched.
+//
+// But there IS a narrow ordering race (review round 5, reproduced by
+// the reviewer): between the terminal saveFn call just above and
+// finalizeWithReleaseDebt's own ReleasePending=true save, the persisted
+// run is terminal AND ReleasePending is still false -- isReconcilerOwned
+// says NOT owned. A concurrent reconciler tick's repairActiveOrphans
+// (snapshot.go) can observe the run in exactly that window and delete
+// its (still legitimate) runactive marker as "stale." finalizeWithRelease
+// Debt closes that gap itself: activeOrphanGrace gives repairActiveOrphans
+// a bounded window to skip a candidate that might just be mid-finalize,
+// and finalizeWithReleaseDebt recreates the marker (idempotent) after its
+// own save in case the grace window was missed anyway. See both doc
+// comments for the full picture.
+//
+// finalizeRun and the reconciler's release-recovery/abandon paths
+// (reconcileReleasePending, reconcileReleaseFailed, reconciler.go) are
+// the ONLY places a run's runactive entry is deleted for a genuine
+// terminal transition (PruneTerminal's delete is a SEPARATE, defensive
+// cleanup for runs that reached terminal without ever going through
+// either — a legacy/direct write). This is asserted, not just
+// documented: TestDeleteActiveEntryHasNoOtherTerminalTransitionCaller
+// scans the package source for calls to deleteActiveEntry outside
+// those three call sites and PruneTerminal.
 //
 // Guard against the double-terminal operating race: if run arrives
 // ALREADY FINALIZED — terminal AND already carrying a CompletedAt —
@@ -216,6 +247,7 @@ func recordRunEventPublishFailure(
 func finalizeRun(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
+	store *SnapshotStore,
 	saveFn SaveSnapshotFunc,
 	run dag.WorkflowRun,
 	status dag.RunStatus,
@@ -224,6 +256,9 @@ func finalizeRun(
 ) (dag.WorkflowRun, error) {
 	if tp == nil {
 		panic("finalizeRun: tp must not be nil")
+	}
+	if store == nil {
+		panic("finalizeRun: store must not be nil")
 	}
 	if saveFn == nil {
 		panic("finalizeRun: saveFn must not be nil")
@@ -244,11 +279,23 @@ func finalizeRun(
 	}
 	if afterPersist != nil {
 		if err := afterPersist(ctx); err != nil {
+			// The debt path: ReleasePending is about to become true,
+			// so the reconciler still owns this run -- runactive must
+			// NOT be deleted (review round 4 invariant). It already
+			// exists from creation time; finalizeWithReleaseDebt
+			// recreates it defensively in case a concurrent repair
+			// pass deleted it in the window between the save above and
+			// its own save (review round 5 -- see its doc comment).
 			return finalizeWithReleaseDebt(
-				ctx, tp, saveFn, run, status, stepID, err,
+				ctx, tp, store, saveFn, run, status, stepID, err,
 			)
 		}
 	}
+	// afterPersist succeeded, or there was none: no debt, so the
+	// reconciler no longer owns this run -- delete its liveness
+	// marker NOW, from here, not inferred inside Save (#664 review
+	// round 2/4) -- see the doc comment above.
+	store.deleteActiveEntry(ctx, run.RunID)
 	if err := publishHistoryTerminalEvent(ctx, tp, status, run.RunID); err != nil {
 		return run, err
 	}
@@ -326,12 +373,37 @@ func init() {
 // ever reaching finalizeRun again — nothing ever retried the release.
 //
 // Instead: log + count the failure, record the debt durably by
-// re-persisting the run with ReleasePending=true FIRST, then STILL
-// publish both terminal events (the run IS terminal; consumers must
-// hear it even though its admission slot is stuck) so the
-// reconciler's terminal-run sweep (reconciler.go) can retry the
-// release later via the exact same releaseAdmission logic the normal
-// path uses.
+// re-persisting the run with ReleasePending=true, then STILL publish
+// both terminal events (the run IS terminal; consumers must hear it
+// even though its admission slot is stuck) so the reconciler's
+// terminal-run sweep (reconciler.go) can retry the release later via
+// the exact same releaseAdmission logic the normal path uses.
+//
+// Under the unified runactive invariant (isReconcilerOwned: non-terminal
+// OR ReleasePending), this run's runactive marker was ALREADY created
+// back when it was admitted (SaveInitial/CreateSnapshot) and finalizeRun
+// deliberately skips deleting it before calling this function (see
+// finalizeRun's doc comment) -- so under normal timing the marker is
+// already exactly correct for ReleasePending=true, with nothing new to
+// write.
+//
+// review round 5 (reviewer-reproduced): there IS still a real ordering
+// race, just not the one round 4 wrote a "runpending" marker to close.
+// finalizeRun's terminal saveFn call (just before this function runs)
+// persists the run terminal with ReleasePending still false -- so for
+// however long it takes THIS function to run and save ReleasePending=
+// true, isReconcilerOwned says the run is NOT owned. A concurrent
+// reconciler tick's repairActiveOrphans can land in exactly that window,
+// see a "stale" marker, and delete it. activeOrphanGrace (snapshot.go)
+// closes most of that window from the read side by giving
+// repairActiveOrphans a bounded grace period before it trusts a
+// terminal-and-not-ReleasePending marker is genuinely stale. This
+// function closes the rest of it from the write side: after the
+// ReleasePending=true save below, it defensively re-Creates the
+// runactive marker. createActiveEntry is idempotent (a repair pass that
+// did NOT race this window finds the marker already present and no-ops
+// via ErrKeyExists), so doing this unconditionally on every debt save is
+// always safe, not just correct for the rare raced case.
 //
 // The debt-recording save runs BEFORE the publish attempts, not after
 // (#648 PR review round 2): publishing is best-effort either way (a
@@ -346,16 +418,28 @@ func init() {
 // (necessarily) notified and WITHOUT a persisted ReleasePending flag
 // — a residual window bounded to this specific double-failure
 // (afterPersist AND the debt save both failing) that the reconciler
-// cannot see and therefore cannot recover from automatically.
+// cannot see and therefore cannot recover from automatically. Its
+// runactive marker, however, is unaffected either way: it stays
+// present, which is harmless (a future repair pass will find the run
+// genuinely non-terminal-or-ReleasePending is false only once this
+// run is EITHER recovered by the reconciler OR the save above
+// eventually succeeds on a later finalize attempt).
 func finalizeWithReleaseDebt(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
+	store *SnapshotStore,
 	saveFn SaveSnapshotFunc,
 	run dag.WorkflowRun,
 	status dag.RunStatus,
 	stepID string,
 	afterPersistErr error,
 ) (dag.WorkflowRun, error) {
+	if store == nil {
+		panic("finalizeWithReleaseDebt: store must not be nil")
+	}
+	if run.RunID == "" {
+		panic("finalizeWithReleaseDebt: run.RunID must not be empty")
+	}
 	slog.WarnContext(ctx,
 		"finalizeRun: afterPersist failed after terminal snapshot "+
 			"was saved -- admission release is owed, recording debt "+
@@ -370,6 +454,15 @@ func finalizeWithReleaseDebt(
 	}
 	run.ReleasePending = true
 	if err := saveFn(ctx, run, stepID); err != nil {
+		return run, err
+	}
+	// Defensive re-Create: closes the write side of the round-5 TOCTOU
+	// (see doc comment above) against a concurrent repairActiveOrphans
+	// that deleted the marker between finalizeRun's terminal save and
+	// this function's ReleasePending=true save. Idempotent -- the
+	// common case where nothing raced this window costs one Create that
+	// no-ops on ErrKeyExists.
+	if err := store.createActiveEntry(ctx, run.RunID); err != nil {
 		return run, err
 	}
 	if err := publishHistoryTerminalEvent(ctx, tp, status, run.RunID); err != nil {

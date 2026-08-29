@@ -100,7 +100,7 @@ func TestFinalizeRun_AfterPersistRunsBeforeEitherPublish(t *testing.T) {
 	}
 
 	if _, err := finalizeRun(
-		context.Background(), tp, saveFn(store), run,
+		context.Background(), tp, store, saveFn(store), run,
 		dag.RunStatusCompleted, "", afterPersist,
 	); err != nil {
 		t.Fatalf("finalizeRun: %v", err)
@@ -147,7 +147,7 @@ func TestFinalizeRun_AlreadyTerminalRun_FirstStatusWins(t *testing.T) {
 
 	ctx := context.Background()
 	afterFailed, err := finalizeRun(
-		ctx, tp, saveFn(store), run, dag.RunStatusFailed, "", nil,
+		ctx, tp, store, saveFn(store), run, dag.RunStatusFailed, "", nil,
 	)
 	if err != nil {
 		t.Fatalf("finalizeRun(Failed): %v", err)
@@ -156,7 +156,7 @@ func TestFinalizeRun_AlreadyTerminalRun_FirstStatusWins(t *testing.T) {
 	// Second terminal transition for the SAME already-terminal run
 	// (simulates cancel-vs-fail racing to finalize the same run).
 	afterCancelled, err := finalizeRun(
-		ctx, tp, saveFn(store), afterFailed, dag.RunStatusCancelled, "", nil,
+		ctx, tp, store, saveFn(store), afterFailed, dag.RunStatusCancelled, "", nil,
 	)
 	if err != nil {
 		t.Fatalf("finalizeRun(Cancelled): %v", err)

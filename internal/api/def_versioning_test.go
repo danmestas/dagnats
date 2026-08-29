@@ -60,7 +60,11 @@ func saveLiveRun(
 		Status: dag.RunStatusRunning, DefHash: defHash,
 		Steps: map[string]dag.StepState{"step-0": {Status: dag.StepStatusPending}},
 	}
-	if err := store.Save(context.Background(), run); err != nil {
+	// SaveInitial, not Save (#664 review round 2): liveDefHashes reads
+	// via ListRecent (runidx-backed), so this run's genuine first (and
+	// only, in these tests) write must create that index entry -- a
+	// plain Save touches neither derived index.
+	if err := store.SaveInitial(context.Background(), run); err != nil {
 		t.Fatalf("saveLiveRun: %v", err)
 	}
 }

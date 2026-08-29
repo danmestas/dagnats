@@ -153,6 +153,46 @@ func TestPruneTerminal_DropsOldTerminalKeepsLiveAndRecent(t *testing.T) {
 	}
 }
 
+// releasePendingRun builds an old terminal run that still owes an
+// admission release -- the state finalizeWithReleaseDebt persists after
+// afterPersist fails (#648).
+func releasePendingRun(runID string, age time.Duration) dag.WorkflowRun {
+	run := terminalRun(runID, age)
+	run.ReleasePending = true
+	return run
+}
+
+// #664 review round 5: PruneTerminal must never delete a run that still
+// owes the reconciler an admission release, no matter how old it is --
+// doing so would erase the only durable record of the debt, silently
+// abandoning a leaked singleton lock/concurrency slot forever instead of
+// letting reconcileReleasePending/reconcileReleaseFailed eventually
+// recover or abandon it.
+func TestPruneTerminal_NeverDeletesReleasePendingDebt(t *testing.T) {
+	store := newPruneStore(t)
+	saveAll(t, store,
+		releasePendingRun("old-debt", 48*time.Hour), // owes a release: keep
+		terminalRun("old-terminal", 48*time.Hour),   // no debt: prune
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	deleted, err := store.PruneTerminal(ctx, 24*time.Hour, 100)
+	if err != nil {
+		t.Fatalf("PruneTerminal failed: %v", err)
+	}
+
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1 (only the non-debt run)", deleted)
+	}
+	if !exists(t, store, "old-debt") {
+		t.Fatal("ReleasePending run was pruned -- release debt lost")
+	}
+	if exists(t, store, "old-terminal") {
+		t.Fatal("old-terminal should have been pruned")
+	}
+}
+
 // Invariant 4: at most max_prune deletions per pass.
 func TestPruneTerminal_RespectsMaxPrune(t *testing.T) {
 	store := newPruneStore(t)

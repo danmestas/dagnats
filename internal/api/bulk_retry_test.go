@@ -274,7 +274,7 @@ func TestBulkRetryFindsNewFailedRunAmongManyOldRuns(t *testing.T) {
 			Steps:      map[string]dag.StepState{},
 			CreatedAt:  base.Add(time.Duration(i) * time.Millisecond),
 		}
-		if err := svc.store.Save(ctx, run); err != nil {
+		if err := svc.store.SaveInitial(ctx, run); err != nil {
 			t.Fatalf("seed run %d: %v", i, err)
 		}
 	}
@@ -285,7 +285,7 @@ func TestBulkRetryFindsNewFailedRunAmongManyOldRuns(t *testing.T) {
 		Status: dag.RunStatusFailed, Steps: map[string]dag.StepState{},
 		Input: []byte(`{"x":1}`), CreatedAt: time.Now().UTC(),
 	}
-	if err := svc.store.Save(ctx, newRun); err != nil {
+	if err := svc.store.SaveInitial(ctx, newRun); err != nil {
 		t.Fatalf("save new run: %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestBulkRetrySurfacesTruncatedScan(t *testing.T) {
 			Steps:      map[string]dag.StepState{},
 			CreatedAt:  base.Add(time.Duration(i) * time.Millisecond),
 		}
-		if err := svc.store.Save(ctx, run); err != nil {
+		if err := svc.store.SaveInitial(ctx, run); err != nil {
 			t.Fatalf("seed run %d: %v", i, err)
 		}
 	}

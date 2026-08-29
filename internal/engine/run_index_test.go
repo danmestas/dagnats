@@ -200,15 +200,15 @@ func TestListKeysFilteredReplaysWriteOrderNotLexicalOrder(t *testing.T) {
 // path for most trigger types) also Create-writes the runidx.<runID>
 // marker, so the index is populated without any caller having to know
 // it exists.
-func TestSaveWritesRunIndexEntry(t *testing.T) {
+func TestSaveInitialWritesRunIndexEntry(t *testing.T) {
 	store := newListStore(t)
 	run := dag.WorkflowRun{
 		RunID: "run-idx-1", WorkflowID: "wf",
 		Status: dag.RunStatusRunning, Steps: map[string]dag.StepState{},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.Save(context.Background(), run); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := store.SaveInitial(context.Background(), run); err != nil {
+		t.Fatalf("SaveInitial: %v", err)
 	}
 
 	keys, err := store.listRunIndexKeys(context.Background())
@@ -222,7 +222,9 @@ func TestSaveWritesRunIndexEntry(t *testing.T) {
 	if keys[0] != runIndexPrefix+"run-idx-1" {
 		t.Fatalf("index key = %q, want %q", keys[0], runIndexPrefix+"run-idx-1")
 	}
-	// Negative: a second Save (an advance) must NOT add a second entry.
+	// Negative: a later plain Save (an advance) must NOT add a second
+	// entry -- trivially true under #664 review round 2 (Save touches
+	// neither index at all), but still the observable contract.
 	run.Status = dag.RunStatusCompleted
 	if err := store.Save(context.Background(), run); err != nil {
 		t.Fatalf("Save (advance): %v", err)
@@ -500,7 +502,7 @@ func TestBackfillMissingIndexDoesNotCountRacedCreateAsRepaired(t *testing.T) {
 	runIDs := map[string]bool{run.RunID: true}
 	indexIDs := map[string]bool{} // stale view: run looks unindexed
 
-	repaired, err := store.backfillMissingIndex(
+	repaired, _, err := store.backfillMissingIndex(
 		context.Background(), runIDs, indexIDs, repairPageMax,
 	)
 	if err != nil {
@@ -525,8 +527,15 @@ func TestBackfillMissingIndexDoesNotCountRacedCreateAsRepaired(t *testing.T) {
 
 // TestRepairRunIndexBackfillsAndRemovesOrphans proves RepairRunIndex
 // (a) backfills index entries for runs written directly (no index),
-// in CreatedAt order, bounded by pageMax across multiple calls, and
-// (b) removes an index entry with no matching run.
+// bounded by pageMax across multiple calls, and (b) removes an index
+// entry with no matching run. #664 review round 2 moved the
+// CreatedAt-order-preservation guarantee OUT of this steady-state
+// crash-gap path (which no longer sorts -- the crash-gap set is
+// always small, so there is nothing an ordering invariant would buy)
+// and into buildActiveIndexOnce's one-time full pass, which owns the
+// large-backlog/pre-upgrade scenario this test used to exercise; see
+// TestBuildActiveIndexOnce_ReviewerRepro_ConvergesAndGatesOnMetaKey
+// (active_index_test.go) for that order-preservation coverage.
 func TestRepairRunIndexBackfillsAndRemovesOrphans(t *testing.T) {
 	store := newListStore(t)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -572,8 +581,9 @@ func TestRepairRunIndexBackfillsAndRemovesOrphans(t *testing.T) {
 			stats2.OrphansRemoved)
 	}
 
-	// Positive: the FULL index now matches creation (CreatedAt) order
-	// across both bounded calls, not just within one.
+	// Positive: the FULL index now has an entry for every run, across
+	// both bounded calls (order is no longer asserted here -- see the
+	// doc comment above).
 	keys, err := store.listRunIndexKeys(context.Background())
 	if err != nil {
 		t.Fatalf("listRunIndexKeys: %v", err)
@@ -581,11 +591,15 @@ func TestRepairRunIndexBackfillsAndRemovesOrphans(t *testing.T) {
 	if len(keys) != total {
 		t.Fatalf("index keys = %d, want %d", len(keys), total)
 	}
-	for i, key := range keys {
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		seen[key] = true
+	}
+	for i := 0; i < total; i++ {
 		want := runIndexPrefix + runIDFor(i)
-		if key != want {
-			t.Fatalf("index order[%d] = %q, want %q (CreatedAt order "+
-				"across bounded calls): full = %v", i, key, want, keys)
+		if !seen[want] {
+			t.Fatalf("index missing %q after both bounded calls: full = %v",
+				want, keys)
 		}
 	}
 }
@@ -689,15 +703,17 @@ func TestOrchestratorStartupRepairsRunIndexToConvergence(t *testing.T) {
 	}
 	t.Cleanup(orch.Stop)
 
-	// A run Saved right after Start() returns -- before any later
+	// A run admitted right after Start() returns -- before any later
 	// reconciler tick -- must be found as the unambiguous newest run.
+	// SaveInitial, not Save: this is the run's genuine first write,
+	// matching createOrHealRun's real admission path.
 	newRun := dag.WorkflowRun{
 		RunID: "post-start", WorkflowID: "wf",
 		Status: dag.RunStatusRunning, Steps: map[string]dag.StepState{},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := orch.store.Save(context.Background(), newRun); err != nil {
-		t.Fatalf("Save post-start run: %v", err)
+	if err := orch.store.SaveInitial(context.Background(), newRun); err != nil {
+		t.Fatalf("SaveInitial post-start run: %v", err)
 	}
 
 	matches, _, err := orch.store.ScanNewestFirst(

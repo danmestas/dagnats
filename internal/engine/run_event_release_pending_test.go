@@ -54,7 +54,7 @@ func TestFinalizeRun_AfterPersistError_PublishesEventsAndRecordsDebt(t *testing.
 	}
 
 	_, err = finalizeRun(
-		context.Background(), tp, saveFn(store), run,
+		context.Background(), tp, store, saveFn(store), run,
 		dag.RunStatusCompleted, "", afterPersist,
 	)
 	// Positive: the release failure is converted into a durably
@@ -108,7 +108,7 @@ func TestFinalizeRun_NormalPath_NeverSetsReleasePending(t *testing.T) {
 	}
 
 	if _, err := finalizeRun(
-		context.Background(), tp, saveFn(store), run,
+		context.Background(), tp, store, saveFn(store), run,
 		dag.RunStatusCompleted, "", afterPersist,
 	); err != nil {
 		t.Fatalf("finalizeRun: %v", err)
@@ -131,7 +131,7 @@ func TestFinalizeRun_NormalPath_NeverSetsReleasePending(t *testing.T) {
 	run2 := run
 	run2.RunID = "run-release-pending-3"
 	if _, err := finalizeRun(
-		context.Background(), tp, saveFn(store), run2,
+		context.Background(), tp, store, saveFn(store), run2,
 		dag.RunStatusFailed, "", nil,
 	); err != nil {
 		t.Fatalf("finalizeRun(nil afterPersist): %v", err)
@@ -220,7 +220,7 @@ func TestFinalizeRun_ReleaseDebtSavesBeforePublishing(t *testing.T) {
 	}
 
 	if _, err := finalizeRun(
-		context.Background(), tp, orderedSaveFn, run,
+		context.Background(), tp, store, orderedSaveFn, run,
 		dag.RunStatusCompleted, "", afterPersist,
 	); err != nil {
 		t.Fatalf("finalizeRun: %v", err)

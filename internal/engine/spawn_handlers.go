@@ -138,7 +138,13 @@ func (o *Orchestrator) createChildRun(
 		childRun.RootRunID = childRunID // detached child self-roots (#377)
 	}
 
-	if err := o.saveSnapshot(ctx, childRun, ""); err != nil {
+	// saveInitialSnapshot, not saveSnapshot (#664 review round 2): this
+	// is childRun's genuine first persistence -- a second creation path
+	// alongside createOrHealRun's, easy to miss since it lives in a
+	// different file. Must create both derived indexes so the child is
+	// immediately visible to runidx-based scans (ScanRuns) and
+	// runactive-based ones (the reconciler, the quota).
+	if err := o.saveInitialSnapshot(ctx, childRun); err != nil {
 		return err
 	}
 

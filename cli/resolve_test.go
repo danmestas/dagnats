@@ -65,7 +65,7 @@ func TestResolveRunIDPrefixMatch(t *testing.T) {
 		Steps:      map[string]dag.StepState{},
 		CreatedAt:  time.Now().UTC(),
 	}
-	if err := store.Save(context.Background(), run); err != nil {
+	if err := store.SaveInitial(context.Background(), run); err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
 
@@ -116,10 +116,10 @@ func TestResolveRunIDAmbiguousPrefix(t *testing.T) {
 		Steps:      map[string]dag.StepState{},
 		CreatedAt:  time.Now().UTC().Add(-time.Second),
 	}
-	if err := store.Save(context.Background(), run1); err != nil {
+	if err := store.SaveInitial(context.Background(), run1); err != nil {
 		t.Fatalf("save run1: %v", err)
 	}
-	if err := store.Save(context.Background(), run2); err != nil {
+	if err := store.SaveInitial(context.Background(), run2); err != nil {
 		t.Fatalf("save run2: %v", err)
 	}
 
@@ -200,10 +200,10 @@ func TestResolveRunIDLastFlag(t *testing.T) {
 		Steps:      map[string]dag.StepState{},
 		CreatedAt:  time.Now().UTC(),
 	}
-	if err := store.Save(context.Background(), older); err != nil {
+	if err := store.SaveInitial(context.Background(), older); err != nil {
 		t.Fatalf("save older: %v", err)
 	}
-	if err := store.Save(context.Background(), newer); err != nil {
+	if err := store.SaveInitial(context.Background(), newer); err != nil {
 		t.Fatalf("save newer: %v", err)
 	}
 

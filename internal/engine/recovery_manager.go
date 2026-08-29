@@ -79,6 +79,7 @@ const (
 type RecoveryManager struct {
 	js        jetstream.JetStream
 	tp        *natsutil.TracingPublisher
+	store     *SnapshotStore
 	publisher *TaskPublisher
 	tracer    trace.Tracer
 
@@ -114,6 +115,7 @@ type RecoveryManager struct {
 func NewRecoveryManager(
 	js jetstream.JetStream,
 	tp *natsutil.TracingPublisher,
+	store *SnapshotStore,
 	publisher *TaskPublisher,
 	tracer trace.Tracer,
 	runsActive metric.Int64UpDownCounter,
@@ -127,6 +129,9 @@ func NewRecoveryManager(
 	}
 	if tp == nil {
 		panic("NewRecoveryManager: tp must not be nil")
+	}
+	if store == nil {
+		panic("NewRecoveryManager: store must not be nil")
 	}
 	if publisher == nil {
 		panic(
@@ -144,6 +149,7 @@ func NewRecoveryManager(
 	return &RecoveryManager{
 		js:               js,
 		tp:               tp,
+		store:            store,
 		publisher:        publisher,
 		tracer:           tracer,
 		runsActive:       runsActive,
@@ -276,7 +282,7 @@ func (rm *RecoveryManager) failAuxStep(
 	// also gets the event.run.* terminal notification (#625): compensate
 	// failures previously had NO terminal notification of any kind.
 	run, err := finalizeRun(
-		ctx, rm.tp, saveFn, run, dag.RunStatusCompensateFailed, stepDef.ID,
+		ctx, rm.tp, rm.store, saveFn, run, dag.RunStatusCompensateFailed, stepDef.ID,
 		func(ctx context.Context) error {
 			rm.runsActive.Add(ctx, -1)
 			rm.runsFailed.Add(ctx, 1)
@@ -473,7 +479,7 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 	// change is logging it instead of dropping it silently.
 	preFinalize := *run
 	finalized, err := finalizeRun(
-		ctx, rm.tp, saveFn, preFinalize, dag.RunStatusCompensated, "",
+		ctx, rm.tp, rm.store, saveFn, preFinalize, dag.RunStatusCompensated, "",
 		func(ctx context.Context) error {
 			rm.runsActive.Add(ctx, -1)
 			// releaseAdmission (#648 PR review round 2): this site

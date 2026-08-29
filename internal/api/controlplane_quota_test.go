@@ -16,6 +16,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +44,10 @@ func seedActiveRunUnderRoot(
 		run.ParentRunID = root
 	}
 	run.Status = dag.RunStatusRunning
-	if err := store.Save(context.Background(), run); err != nil {
+	// SaveInitial, not Save (#664 review round 2): this run's ONLY
+	// write, so it must create the runactive marker countActiveRunsForRoot's
+	// ListActive scan depends on -- plain Save touches neither index.
+	if err := store.SaveInitial(context.Background(), run); err != nil {
 		t.Fatalf("seed active run %q: %v", runID, err)
 	}
 }
@@ -486,5 +490,68 @@ func TestRuntimeBounds_UnderLimitStillWorks(t *testing.T) {
 	var cpErr *worker.ControlPlaneError
 	if errors.As(error(nil), &cpErr) {
 		t.Fatal("unexpected ControlPlaneError on the happy path")
+	}
+}
+
+// TestCountActiveRunsForRoot_CorrectOnLargeStore proves the #664 fix:
+// countActiveRunsForRoot (now routed through ListActive, not the old
+// capped ListAll) counts EXACTLY the active runs under a root even on a
+// store with substantial terminal-run noise sharing the bucket, and
+// correctly ignores active runs under a DIFFERENT root.
+func TestCountActiveRunsForRoot_CorrectOnLargeStore(t *testing.T) {
+	h := newCPHarness(t, true)
+	store := engine.NewSnapshotStore(h.svc.js)
+
+	// 1,500 terminal runs -- pure population noise sharing the bucket,
+	// none of them under either root below.
+	const noiseCount = 1500
+	for i := 0; i < noiseCount; i++ {
+		run := dag.WorkflowRun{
+			RunID:      fmt.Sprintf("quota-noise-%04d", i),
+			WorkflowID: "noise",
+			Status:     dag.RunStatusCompleted,
+			Steps:      map[string]dag.StepState{},
+		}
+		if err := store.Save(context.Background(), run); err != nil {
+			t.Fatalf("seed noise %d: %v", i, err)
+		}
+	}
+
+	// 7 active runs under "target-root", 3 active runs under a
+	// different root -- the count must isolate the former exactly.
+	const wantActive = 7
+	seedActiveRunUnderRoot(t, h.svc, "target-root", "target-root")
+	for i := 0; i < wantActive-1; i++ {
+		seedActiveRunUnderRoot(
+			t, h.svc, fmt.Sprintf("target-child-%d", i), "target-root",
+		)
+	}
+	seedActiveRunUnderRoot(t, h.svc, "other-root", "other-root")
+	for i := 0; i < 2; i++ {
+		seedActiveRunUnderRoot(
+			t, h.svc, fmt.Sprintf("other-child-%d", i), "other-root",
+		)
+	}
+
+	active, err := h.svc.countActiveRunsForRoot(
+		context.Background(), "target-root",
+	)
+	if err != nil {
+		t.Fatalf("countActiveRunsForRoot: %v", err)
+	}
+	// Positive: the exact count under target-root, unaffected by noise.
+	if active != wantActive {
+		t.Fatalf("countActiveRunsForRoot(target-root) = %d, want %d",
+			active, wantActive)
+	}
+	// Negative: the other root's count is isolated, not merged in.
+	otherActive, err := h.svc.countActiveRunsForRoot(
+		context.Background(), "other-root",
+	)
+	if err != nil {
+		t.Fatalf("countActiveRunsForRoot(other-root): %v", err)
+	}
+	if otherActive != 3 {
+		t.Fatalf("countActiveRunsForRoot(other-root) = %d, want 3", otherActive)
 	}
 }

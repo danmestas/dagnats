@@ -114,7 +114,7 @@ func TestSnapshotUpdate(t *testing.T) {
 	}
 }
 
-func TestSnapshotListAllEmpty(t *testing.T) {
+func TestSnapshotListActiveEmpty(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -127,16 +127,20 @@ func TestSnapshotListAllEmpty(t *testing.T) {
 	store := NewSnapshotStore(js)
 
 	// Positive: empty bucket returns empty slice, no error.
-	runs, err := store.ListAll(context.Background(), 100)
+	runs, stats, err := store.ListActive(context.Background(), 100)
 	if err != nil {
-		t.Fatalf("ListAll on empty bucket failed: %v", err)
+		t.Fatalf("ListActive on empty bucket failed: %v", err)
 	}
 	if len(runs) != 0 {
 		t.Fatalf("expected 0 runs, got %d", len(runs))
 	}
+	// Negative: an empty scan is never reported truncated.
+	if stats.Truncated {
+		t.Fatalf("stats.Truncated = true on empty bucket, want false")
+	}
 }
 
-func TestSnapshotListAllBounded(t *testing.T) {
+func TestSnapshotListActiveOnlyNonTerminal(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -148,52 +152,6 @@ func TestSnapshotListAllBounded(t *testing.T) {
 	}
 	store := NewSnapshotStore(js)
 
-	// Save 3 runs.
-	for i := 0; i < 3; i++ {
-		run := dag.WorkflowRun{
-			RunID:      fmt.Sprintf("bound-%d", i),
-			WorkflowID: "wf",
-			Status:     dag.RunStatusRunning,
-			Steps: map[string]dag.StepState{
-				"a": {Status: dag.StepStatusPending},
-			},
-			CreatedAt: time.Now().UTC(),
-		}
-		if err := store.Save(context.Background(), run); err != nil {
-			t.Fatalf("Save failed: %v", err)
-		}
-	}
-
-	// Positive: maxRuns=2 limits results.
-	runs, err := store.ListAll(context.Background(), 2)
-	if err != nil {
-		t.Fatalf("ListAll failed: %v", err)
-	}
-	if len(runs) != 2 {
-		t.Fatalf("expected 2 runs, got %d", len(runs))
-	}
-
-	// Positive: maxRuns=10 returns all 3.
-	allRuns, err := store.ListAll(context.Background(), 10)
-	if err != nil {
-		t.Fatalf("ListAll failed: %v", err)
-	}
-	if len(allRuns) != 3 {
-		t.Fatalf("expected 3 runs, got %d", len(allRuns))
-	}
-}
-
-func TestSnapshotListAll(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
-	js, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New failed: %v", err)
-	}
-	err = natsutil.SetupKVBuckets(js, 1)
-	if err != nil {
-		t.Fatalf("SetupKVBuckets failed: %v", err)
-	}
-	store := NewSnapshotStore(js)
 	run1 := dag.WorkflowRun{
 		RunID:      "run-001",
 		WorkflowID: "wf-a",
@@ -208,33 +166,25 @@ func TestSnapshotListAll(t *testing.T) {
 		Steps:      map[string]dag.StepState{"b": {Status: dag.StepStatusCompleted}},
 		CreatedAt:  time.Now().UTC().Add(1 * time.Second).Truncate(time.Millisecond),
 	}
-	err = store.Save(context.Background(), run1)
+	if err := store.SaveInitial(context.Background(), run1); err != nil {
+		t.Fatalf("SaveInitial run1 failed: %v", err)
+	}
+	if err := store.SaveInitial(context.Background(), run2); err != nil {
+		t.Fatalf("SaveInitial run2 failed: %v", err)
+	}
+	runs, _, err := store.ListActive(context.Background(), 100)
 	if err != nil {
-		t.Fatalf("Save run1 failed: %v", err)
+		t.Fatalf("ListActive failed: %v", err)
 	}
-	err = store.Save(context.Background(), run2)
-	if err != nil {
-		t.Fatalf("Save run2 failed: %v", err)
+	// Positive: the non-terminal run is returned.
+	if len(runs) != 1 || runs[0].RunID != "run-001" {
+		t.Fatalf("ListActive = %v, want exactly [run-001]", runIDs(runs))
 	}
-	runs, err := store.ListAll(context.Background(), 100)
-	if err != nil {
-		t.Fatalf("ListAll failed: %v", err)
-	}
-	if len(runs) < 2 {
-		t.Fatalf("expected at least 2 runs, got %d", len(runs))
-	}
-	foundRun1 := false
-	foundRun2 := false
-	for _, run := range runs {
-		if run.RunID == "run-001" {
-			foundRun1 = true
+	// Negative: the terminal run must never appear.
+	for _, r := range runs {
+		if r.RunID == "run-002" {
+			t.Fatal("ListActive returned a terminal run")
 		}
-		if run.RunID == "run-002" {
-			foundRun2 = true
-		}
-	}
-	if !foundRun1 || !foundRun2 {
-		t.Fatal("ListAll did not return both expected runs")
 	}
 }
 
@@ -269,8 +219,12 @@ func seedNumberedRuns(
 			Steps:      map[string]dag.StepState{},
 			CreatedAt:  base.Add(time.Duration(i) * time.Hour),
 		}
-		if err := store.Save(context.Background(), run); err != nil {
-			t.Fatalf("Save %d: %v", i, err)
+		// SaveInitial, not Save (#664 review round 2): this is each
+		// run's genuine first (and only) write, so it is what must
+		// create the runidx entry every caller of this helper relies
+		// on for ScanNewestFirst/ListRecent visibility.
+		if err := store.SaveInitial(context.Background(), run); err != nil {
+			t.Fatalf("SaveInitial %d: %v", i, err)
 		}
 	}
 }
@@ -307,55 +261,61 @@ func TestListRecentReturnsGlobalLatestN(t *testing.T) {
 	}
 }
 
-// TestListAllIsCheapCapOnFetch is the regression guard against re-
-// conflating ListAll with ListRecent (#452). ListAll must remain the
-// cheap, order-agnostic primitive: it caps DURING the key scan and
-// applies NO global CreatedAt-DESC sort.
-//
-// We request the WHOLE population (maxRuns >= count) so the cap never
-// truncates and every run is returned regardless of key-scan order.
-// The deterministic, non-flaky invariant: ListAll must NOT emit runs
-// in strictly CreatedAt-descending order — that ordering is exactly
-// what ListRecent's sort produces and what main's ListAll never did.
-// If someone re-adds the sort, this fails; the unordered scan
-// producing a perfectly-DESC 10-run sequence by chance is negligible.
-func TestListAllIsCheapCapOnFetch(t *testing.T) {
+// seedNumberedActiveRuns writes `total` NON-terminal (Running) runs
+// run-00..run-NN, so ListActive can see them (seedNumberedRuns' runs
+// are Completed/terminal and invisible to ListActive by design).
+func seedNumberedActiveRuns(
+	t *testing.T, store *SnapshotStore, total int,
+) {
+	t.Helper()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < total; i++ {
+		run := dag.WorkflowRun{
+			RunID:      fmt.Sprintf("run-%02d", i),
+			WorkflowID: "wf",
+			Status:     dag.RunStatusRunning,
+			Steps:      map[string]dag.StepState{"a": {Status: dag.StepStatusPending}},
+			CreatedAt:  base.Add(time.Duration(i) * time.Hour),
+		}
+		if err := store.SaveInitial(context.Background(), run); err != nil {
+			t.Fatalf("SaveInitial %d: %v", i, err)
+		}
+	}
+}
+
+// TestListActiveHonorsFetchMaxAndReportsTruncated proves ListActive
+// caps its result at fetchMax and honestly reports Truncated when the
+// active population exceeds it, while returning every active run
+// (unordered — order is not part of ListActive's contract) when
+// fetchMax comfortably covers the population.
+func TestListActiveHonorsFetchMaxAndReportsTruncated(t *testing.T) {
 	store := newListStore(t)
 	const total = 10
-	seedNumberedRuns(t, store, total)
+	seedNumberedActiveRuns(t, store, total)
 
-	// Positive: the cap is honoured (request fewer than the population).
-	capped, err := store.ListAll(context.Background(), 4)
+	// Positive: the cap is honoured and Truncated reported.
+	capped, stats, err := store.ListActive(context.Background(), 4)
 	if err != nil {
-		t.Fatalf("ListAll(4): %v", err)
+		t.Fatalf("ListActive(4): %v", err)
 	}
 	if len(capped) != 4 {
 		t.Fatalf("len(capped) = %d, want 4 (cap honoured)", len(capped))
 	}
+	if !stats.Truncated {
+		t.Fatalf("stats.Truncated = false, want true (10 active > fetchMax 4)")
+	}
 
-	got, err := store.ListAll(context.Background(), total)
+	// Negative: a fetchMax covering the whole population is NOT
+	// truncated and returns every active run.
+	got, stats, err := store.ListActive(context.Background(), total)
 	if err != nil {
-		t.Fatalf("ListAll(all): %v", err)
+		t.Fatalf("ListActive(all): %v", err)
 	}
 	if len(got) != total {
 		t.Fatalf("len(got) = %d, want %d", len(got), total)
 	}
-	// Negative: the returned order must NOT be strictly DESC by
-	// CreatedAt. ListRecent guarantees DESC; ListAll must not.
-	strictlyDesc := true
-	for i := 1; i < len(got); i++ {
-		if !got[i-1].CreatedAt.After(got[i].CreatedAt) {
-			strictlyDesc = false
-			break
-		}
-	}
-	if strictlyDesc {
-		t.Fatalf(
-			"ListAll emitted a strictly CreatedAt-DESC sequence %v — it "+
-				"appears re-conflated with ListRecent; ListAll must stay "+
-				"cheap/unordered (#452)",
-			runIDs(got),
-		)
+	if stats.Truncated {
+		t.Fatalf("stats.Truncated = true, want false (fetchMax covers population)")
 	}
 }
 

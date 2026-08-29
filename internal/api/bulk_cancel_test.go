@@ -230,7 +230,7 @@ func TestBulkCancelSurfacesTruncatedScan(t *testing.T) {
 			Steps:      map[string]dag.StepState{},
 			CreatedAt:  base.Add(time.Duration(i) * time.Millisecond),
 		}
-		if err := svc.store.Save(context.Background(), run); err != nil {
+		if err := svc.store.SaveInitial(context.Background(), run); err != nil {
 			t.Fatalf("seed run %d: %v", i, err)
 		}
 	}

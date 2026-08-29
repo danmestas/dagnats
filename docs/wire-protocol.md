@@ -673,6 +673,133 @@ exact fix.
   alerting on a growing `oldest_wait_ms`) without polling
   `GET /v1/queue` on a timer.
 
+## workflow_runs derived indexes: runidx, runactive, and index.meta
+
+The `workflow_runs` KV bucket stores one `run.<runID>` snapshot key per
+run, plus two small derived index key spaces and one meta key that
+exist purely to make common scans cheap. All are maintained by
+`internal/engine.SnapshotStore` and are implementation detail, not
+part of the wire protocol — documented here because their lifecycle
+explains why some run-list, quota, and release-recovery behavior is
+exact rather than sampled, and because getting this wrong has real
+consequences (a leaked admission slot/lock, or a wedged run) — worth
+being explicit about.
+
+**The invariant, in one sentence:** `runactive.<runID>` exists IF AND
+ONLY IF the reconciler still owns `runID` — the run is non-terminal,
+OR it is terminal but still owes an admission release
+(`WorkflowRun.ReleasePending == true`, #648). Every place that decides
+whether a `runactive` marker should exist routes through this single
+predicate (`isReconcilerOwned` in code) — there is no second index for
+the release-debt case; an earlier design tried that (`runpending`) and
+it was a source of real bugs (a migration gap, and a TOCTOU race)
+before being removed in favor of this one, unified marker.
+
+- **`runidx.<runID>`** (#659) — a creation-ordered marker. Written
+  exactly once, via a NATS KV `Create`, at the run's genuine first
+  persistence — `SnapshotStore.SaveInitial` (the Put-based admission
+  path) or `CreateSnapshot` (the atomic-Create path for
+  deterministically-ID'd runs), AFTER `runactive` (see below) if the
+  run starts non-terminal. Never updated or deleted while the run
+  exists. Because it is write-once, JetStream's replay order over
+  `runidx.>` IS the run's true creation order — unlike `Keys()` on
+  `run.*`, which sorts lexicographically and carries no time signal.
+  `ScanNewestFirst` walks this index backward (newest first) to serve
+  `GET /v1/runs`, bulk cancel/retry, and `ListRecent` in O(limit)
+  rather than O(population).
+
+- **`runactive.<runID>`** — the liveness/ownership marker described
+  above. Created the moment a run's first snapshot is written
+  (`createEntryIndexes`, same choke point that creates `runidx`), only
+  if the run starts non-terminal — a run is never created already
+  `ReleasePending`. Order is load-bearing: `runactive` is written
+  BEFORE `runidx`, and its error is propagated (never swallowed),
+  because the crash-gap repair pass (`backfillMissingIndex`) is the
+  ONLY place a missing `runactive` entry is ever recreated, keyed off
+  "run has a snapshot but no `runidx`" — writing `runidx` first could
+  leave a running run with `runidx` present and `runactive` missing
+  forever, invisible to `ListActive`, with repair reporting nothing to
+  do.
+
+  Deleted only when the reconciler no longer owns the run: by
+  `finalizeRun` (#625's funnel), right after it persists a run
+  terminal WITH NO owed release; or by the reconciler
+  (`reconcileReleasePending` / `reconcileReleaseFailed`), right after
+  it clears an owed release (recovered, or abandoned past the retry
+  cap) — in both cases the delete happens via the SAME choke point,
+  `deleteActiveEntry`, asserted by a source-scanning test to have no
+  other callers besides these and `PruneTerminal`'s defensive cleanup.
+
+  If `afterPersist` (the admission release) fails inside `finalizeRun`,
+  the run's `ReleasePending` flag is set and re-persisted
+  (`finalizeWithReleaseDebt`) but `runactive` is deliberately NOT
+  touched — it already exists from creation time and is already
+  correct for `ReleasePending=true`. This is why there is no ordering
+  race and no grace window needed here, unlike an earlier design that
+  tried to write a second marker at this exact point.
+
+  `SnapshotStore.ListActive` (bounded by `ActiveFetchMax`, 10,000) lists
+  `runactive.>` directly and returns every run `isReconcilerOwned`
+  accepts. `reconcileRunningRuns` uses ONE such call per tick to drive
+  BOTH the wedged-Running sweep and the `#648` release-pending recovery
+  sweep — a release-pending run is terminal by definition, so it could
+  never appear in a naive "non-terminal only" listing, but it is
+  exactly what `isReconcilerOwned` is for. `countActiveRunsForRoot`
+  (the active-run quota, which FAILS CLOSED — refuses a spawn with an
+  error rather than under-counting — if its scan comes back truncated)
+  also correctly counts a `ReleasePending` run: its concurrency slot
+  has not actually been freed yet.
+
+**`index.meta`** — a single JSON value, `{"active_built": true}`,
+written once by `SnapshotStore.buildActiveIndexOnce`. Its presence
+means the ENTIRE `run.*` population has been walked at least once to
+build `runactive` correctly (necessary for a store that predates these
+indexes, or was left with a large backlog by an earlier partial run,
+or is upgrading with EXISTING `ReleasePending=true` runs already on it
+— the build applies `isReconcilerOwned` to every run it finds, so a
+run mid-debt on an upgrading store gets its `runactive` marker exactly
+like a running one does) — a one-time, explicit, `runKeyScanMax`-bounded
+full pass with progress logged per batch, run once from
+`Orchestrator.Start` before the steady-state repair loop. A bound
+exceeded during this pass, or during the steady-state repair's own
+keys-only scan, returns an error (naming the bound) rather than
+panicking — an OPERATING condition, not a programmer error; panicking
+on the build path would crash-loop the process on every restart before
+the meta key is ever written. Its absence gates the full pass; once
+written, every later startup skips it entirely (a single Get, zero
+`run.*` fetches) and relies purely on the crash-gap repair below.
+
+**Repair sweep — crash-gap only, never population-scale.**
+`SnapshotStore.RepairRunIndex` reconciles both indexes, but ONLY
+against the population each can actually drift against:
+
+- `runidx` backfill: runs with a snapshot but no `runidx` entry — the
+  crash-gap set — get both `runidx` and, if `isReconcilerOwned` says
+  so, `runactive` Created. Order is not preserved across bounded calls
+  here (there is no large backlog to preserve order for in steady
+  state — that is `buildActiveIndexOnce`'s job, once).
+- `runidx` orphan removal: an entry with no matching `run.*` value
+  (deleted directly, bypassing `PruneTerminal`). Keys-only, no value
+  fetch.
+- `runactive` validation: EVERY CURRENT `runactive` marker is checked
+  against `isReconcilerOwned(run)` and removed if that is now false
+  (stale) or the run is gone (orphaned) — bounded by the OWNED
+  population (it lists `runactive.>` directly), never by the total run
+  count. There is nothing to backfill here: a run missing its marker
+  can only occur via the `runidx`-missing crash gap above, which
+  already recreates it. A validation pass that only covers PART of the
+  current marker population this call (more markers exist than the
+  per-call cap) reports itself truncated rather than letting the
+  caller read "zero removed" as "nothing to do".
+
+Each phase is capped per call; the reconciler tick runs one bounded
+pass every cycle, and `Orchestrator.Start` loops the SAME repair to
+convergence (plus `buildActiveIndexOnce` first) before returning — so
+a store with real drift is corrected before serving, but a converged
+store's steady-state repair cost stays proportional to its crash-gap
+and active-marker counts, never to how many runs it has accumulated
+over its lifetime.
+
 ## Reference Implementations
 
 - **Go**: see `worker/` package for NATS transport
