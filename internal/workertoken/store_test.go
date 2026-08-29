@@ -245,3 +245,104 @@ func TestListNeverContainsSecretHash(t *testing.T) {
 		t.Fatalf("List()[0].SecretHash = %v, want nil", toks[0].SecretHash)
 	}
 }
+
+// TestAuthorizeEmptyBearerReturnsError pins the fix for a reachable
+// panic: a non-HTTP caller (or a future transport) can hand Authorize
+// an empty string, and that must be an ordinary error, not a crash.
+// The nil-receiver / uninitialized-store panic stays a panic --
+// that's a genuine programmer error, not caller input.
+func TestAuthorizeEmptyBearerReturnsError(t *testing.T) {
+	store := newTestStore(t)
+	// Positive: empty bearer returns an error, does not panic.
+	_, err := store.Authorize("")
+	if err == nil {
+		t.Fatal("Authorize(\"\") = nil error, want error")
+	}
+	// Negative: it's the same opaque error as any other malformed
+	// bearer, not a distinct "empty" message that would leak shape.
+	_, garbageErr := store.Authorize("not-a-bearer")
+	if err.Error() != garbageErr.Error() {
+		t.Fatalf("error texts differ: empty=%q garbage=%q",
+			err.Error(), garbageErr.Error())
+	}
+}
+
+// TestRevokeFallsBackToKVOnCacheMiss pins the fix for watch-lag false
+// negatives: if a token was just minted by another Store instance and
+// this Store's watch hasn't caught up yet, Revoke must not report 404
+// without first checking the KV bucket directly.
+func TestRevokeFallsBackToKVOnCacheMiss(t *testing.T) {
+	storeA := newTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, _, err := storeA.Mint(ctx, "worker-a", []string{"echo"}, "tester")
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	// storeA's own cache has the id immediately (Mint updates it
+	// synchronously) -- Revoke on the SAME instance already covers the
+	// warm-cache path. To exercise the cold-cache path, clear the
+	// local cache entry directly, simulating a Store whose watch has
+	// not yet replayed this id.
+	storeA.mu.Lock()
+	delete(storeA.tokens, id)
+	storeA.mu.Unlock()
+
+	// Positive: Revoke still succeeds via a KV fallback read, not a
+	// false 404 from the empty cache.
+	if err := storeA.Revoke(ctx, id); err != nil {
+		t.Fatalf("Revoke after cache eviction: %v", err)
+	}
+	// Negative: revoking a truly unknown id (absent from KV too)
+	// still 404s.
+	if err := storeA.Revoke(ctx, "genuinely-unknown-id"); err == nil {
+		t.Fatal("Revoke(unknown) = nil error, want error")
+	}
+}
+
+// TestRevokedRecordsAreBounded pins the fix for unbounded bucket
+// growth: revoked tokens are audit records, but a long-running
+// mint/revoke loop must not grow the bucket forever. Once revoked
+// records exceed TokensCountMax, the oldest (by RevokedAt) are pruned.
+func TestRevokedRecordsAreBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping revoked-records bound test in -short mode")
+	}
+	store := newTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	ids := make([]string, 0, TokensCountMax+5)
+	for i := 0; i < TokensCountMax+5; i++ {
+		id, _, err := store.Mint(ctx, "worker", []string{"t"}, "tester")
+		if err != nil {
+			t.Fatalf("Mint %d: %v", i, err)
+		}
+		if err := store.Revoke(ctx, id); err != nil {
+			t.Fatalf("Revoke %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+
+	toks, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	// Positive: revoked records never exceed TokensCountMax.
+	if len(toks) > TokensCountMax {
+		t.Fatalf("len(List()) = %d, want <= %d", len(toks), TokensCountMax)
+	}
+	// Negative: the earliest-revoked ids are the ones pruned, not an
+	// arbitrary subset.
+	if len(toks) == TokensCountMax {
+		found := false
+		for _, tok := range toks {
+			if tok.ID == ids[0] {
+				found = true
+			}
+		}
+		if found {
+			t.Fatal("earliest-revoked id survived pruning, want it evicted")
+		}
+	}
+}

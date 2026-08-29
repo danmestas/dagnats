@@ -123,12 +123,20 @@ func (tr *tokenRoutes) handleMint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Lookup reads the just-minted record's actual stored CreatedAt
+	// (Mint updates its own Store's cache synchronously before
+	// returning), rather than re-stamping a fresh time.Now() here that
+	// could drift from what List later reports for the same token.
+	createdAt := time.Now().UTC()
+	if tok, ok := tr.store.Lookup(id); ok {
+		createdAt = tok.CreatedAt
+	}
 	resp := mintTokenResponse{
 		ID:               id,
 		Token:            bearer,
 		Label:            req.Label,
 		TaskTypePrefixes: req.TaskTypePrefixes,
-		CreatedAt:        time.Now().UTC(),
+		CreatedAt:        createdAt,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

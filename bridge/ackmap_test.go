@@ -79,7 +79,7 @@ func TestAckMapStoreAndLoad(t *testing.T) {
 	am := NewAckMap()
 	msg := &stubMsg{subject: "task.echo.run1"}
 
-	am.Store("run1.step1", msg)
+	am.Store("run1.step1", msg, "")
 
 	got, ok := am.Load("run1.step1")
 	if !ok {
@@ -100,7 +100,7 @@ func TestAckMapDelete(t *testing.T) {
 	am := NewAckMap()
 	msg := &stubMsg{subject: "task.echo.run1"}
 
-	am.Store("run1.step1", msg)
+	am.Store("run1.step1", msg, "")
 	am.Delete("run1.step1")
 
 	_, ok := am.Load("run1.step1")
@@ -123,8 +123,8 @@ func TestAckMapCount(t *testing.T) {
 		t.Fatalf("expected count 0, got %d", am.Count())
 	}
 
-	am.Store("run1.step1", msg1)
-	am.Store("run2.step1", msg2)
+	am.Store("run1.step1", msg1, "")
+	am.Store("run2.step1", msg2, "")
 
 	if am.Count() != 2 {
 		t.Fatalf("expected count 2, got %d", am.Count())
@@ -150,7 +150,7 @@ func TestAckMapStorePanicsEmptyID(t *testing.T) {
 			t.Fatal("expected panic on empty taskID")
 		}
 	}()
-	am.Store("", &stubMsg{})
+	am.Store("", &stubMsg{}, "")
 }
 
 func TestAckMapStorePanicsNilMsg(t *testing.T) {
@@ -161,7 +161,7 @@ func TestAckMapStorePanicsNilMsg(t *testing.T) {
 			t.Fatal("expected panic on nil msg")
 		}
 	}()
-	am.Store("run1.step1", nil)
+	am.Store("run1.step1", nil, "")
 }
 
 // TestAckMapReapsAbandonedEntry is the leak-closed proof: a worker
@@ -173,7 +173,7 @@ func TestAckMapReapsAbandonedEntry(t *testing.T) {
 	clock := newFakeClock()
 	am := newAckMapWithClock(clock.Now)
 
-	am.Store("run1.abandoned", &stubMsg{subject: "task.echo.run1"})
+	am.Store("run1.abandoned", &stubMsg{subject: "task.echo.run1"}, "")
 	if am.Count() != 1 {
 		t.Fatalf("expected count 1 after store, got %d", am.Count())
 	}
@@ -182,7 +182,7 @@ func TestAckMapReapsAbandonedEntry(t *testing.T) {
 	// Sweep is throttled and runs on insert, so a later Store is what
 	// drives it. This mirrors the real bridge: entries only accumulate
 	// while tasks are being dispatched.
-	am.Store("run2.live", &stubMsg{subject: "task.echo.run2"})
+	am.Store("run2.live", &stubMsg{subject: "task.echo.run2"}, "")
 
 	if _, ok := am.Load("run1.abandoned"); ok {
 		t.Fatal("expected abandoned entry to be reaped")
@@ -205,10 +205,10 @@ func TestAckMapDoesNotReapBeforeWindow(t *testing.T) {
 	am := newAckMapWithClock(clock.Now)
 
 	msg := &stubMsg{subject: "task.echo.run1"}
-	am.Store("run1.slow", msg)
+	am.Store("run1.slow", msg, "")
 
 	clock.Advance(ackMapReapAfter / 2)
-	am.Store("run2.other", &stubMsg{subject: "task.echo.run2"})
+	am.Store("run2.other", &stubMsg{subject: "task.echo.run2"}, "")
 
 	got, ok := am.Load("run1.slow")
 	if !ok {
@@ -230,7 +230,7 @@ func TestAckMapLoadDoesNotReap(t *testing.T) {
 	clock := newFakeClock()
 	am := newAckMapWithClock(clock.Now)
 
-	am.Store("run1.stale", &stubMsg{subject: "task.echo.run1"})
+	am.Store("run1.stale", &stubMsg{subject: "task.echo.run1"}, "")
 	clock.Advance(ackMapReapAfter * 2)
 
 	if _, ok := am.Load("run1.stale"); !ok {
@@ -256,7 +256,7 @@ func TestAckMapCapEvictsOldestAndLogs(t *testing.T) {
 
 	// Distinct timestamps so "oldest" is well defined.
 	for i := 0; i < ackMapMaxEntries; i++ {
-		am.Store(fmt.Sprintf("run%d.step1", i), &stubMsg{})
+		am.Store(fmt.Sprintf("run%d.step1", i), &stubMsg{}, "")
 		clock.Advance(time.Millisecond)
 	}
 	if am.Count() != ackMapMaxEntries {
@@ -264,7 +264,7 @@ func TestAckMapCapEvictsOldestAndLogs(t *testing.T) {
 			ackMapMaxEntries, am.Count())
 	}
 
-	am.Store("run-overflow.step1", &stubMsg{})
+	am.Store("run-overflow.step1", &stubMsg{}, "")
 
 	if am.Count() != ackMapMaxEntries {
 		t.Fatalf("expected count to stay at cap %d, got %d",
@@ -305,4 +305,30 @@ func TestAckMapLoadPanicsEmptyID(t *testing.T) {
 		}
 	}()
 	am.Load("")
+}
+
+// TestAckMapLoadWithTokenIDRoundTrip pins #627's per-task authorization
+// data: the TokenID recorded at Store time comes back from
+// LoadWithTokenID, and Load's existing 2-value shape is preserved for
+// callers that don't care about it.
+func TestAckMapLoadWithTokenIDRoundTrip(t *testing.T) {
+	am := NewAckMap()
+	msg := &stubMsg{}
+	am.Store("run1.step1", msg, "tok-abc")
+
+	// Positive: LoadWithTokenID returns the stored TokenID.
+	gotMsg, gotTokenID, ok := am.LoadWithTokenID("run1.step1")
+	if !ok || gotMsg != jetstream.Msg(msg) || gotTokenID != "tok-abc" {
+		t.Fatalf("LoadWithTokenID = (%v, %q, %v), want (msg, tok-abc, true)",
+			gotMsg, gotTokenID, ok)
+	}
+	// Negative: an admin/dev-mode claim (empty TokenID) round-trips as
+	// empty too, not as some sentinel that would be misread as a real
+	// token id.
+	am.Store("run2.step1", msg, "")
+	_, gotEmpty, ok := am.LoadWithTokenID("run2.step1")
+	if !ok || gotEmpty != "" {
+		t.Fatalf("LoadWithTokenID empty TokenID = (%q, %v), want (empty, true)",
+			gotEmpty, ok)
+	}
 }

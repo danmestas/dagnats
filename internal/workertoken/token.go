@@ -43,6 +43,12 @@ type Claims struct {
 // require a prefix match. An empty TaskTypePrefixes list authorizes
 // nothing — fail closed, not "all types" — matching Mint's contract
 // that an empty prefix list is a deliberate no-task-types token.
+//
+// Matching is segment-aware, not a raw byte-prefix test: prefix p
+// matches taskType t iff t == p or t has "p." as a literal prefix —
+// p names a whole dot-separated segment. A byte-prefix test would let
+// ["build"] match "builder.deploy" and ["echo"] match "echo-admin",
+// silently widening a token's grant beyond what its label promised.
 func (c Claims) AllowsTaskType(taskType string) bool {
 	if taskType == "" {
 		panic("Claims.AllowsTaskType: taskType must not be empty")
@@ -51,7 +57,12 @@ func (c Claims) AllowsTaskType(taskType string) bool {
 		return true
 	}
 	for _, prefix := range c.TaskTypePrefixes {
-		if len(taskType) >= len(prefix) && taskType[:len(prefix)] == prefix {
+		if taskType == prefix {
+			return true
+		}
+		if len(taskType) > len(prefix) &&
+			taskType[len(prefix)] == '.' &&
+			taskType[:len(prefix)] == prefix {
 			return true
 		}
 	}

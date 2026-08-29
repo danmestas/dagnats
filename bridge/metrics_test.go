@@ -76,8 +76,8 @@ func TestAckMapSizeGaugeTracksCount(t *testing.T) {
 
 	// Store two, then delete one: a gauge with an inverted sign or a
 	// double-count cannot satisfy both samples.
-	b.ackMap.Store("task-a", &stubMsg{subject: "task.a"})
-	b.ackMap.Store("task-b", &stubMsg{subject: "task.b"})
+	b.ackMap.Store("task-a", &stubMsg{subject: "task.a"}, "")
+	b.ackMap.Store("task-b", &stubMsg{subject: "task.b"}, "")
 	got, _ = collectAckMapSize(t, reader)
 	if want := b.ackMap.Count(); got != want {
 		t.Fatalf("after 2 stores gauge = %d, Count() = %d", got, want)

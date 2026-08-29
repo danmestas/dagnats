@@ -108,10 +108,11 @@ func TestTokensAPIMintListRevokeRoundTrip(t *testing.T) {
 		t.Fatalf("mint status = %d, want %d", mintResp.StatusCode, http.StatusCreated)
 	}
 	var minted struct {
-		ID               string   `json:"id"`
-		Token            string   `json:"token"`
-		Label            string   `json:"label"`
-		TaskTypePrefixes []string `json:"task_type_prefixes"`
+		ID               string    `json:"id"`
+		Token            string    `json:"token"`
+		Label            string    `json:"label"`
+		TaskTypePrefixes []string  `json:"task_type_prefixes"`
+		CreatedAt        time.Time `json:"created_at"`
 	}
 	if err := json.NewDecoder(mintResp.Body).Decode(&minted); err != nil {
 		t.Fatalf("decode mint response: %v", err)
@@ -143,6 +144,14 @@ func TestTokensAPIMintListRevokeRoundTrip(t *testing.T) {
 	// Negative: List never carries the hash or secret over the wire.
 	if listed.Tokens[0].SecretHash != nil {
 		t.Fatalf("Tokens[0].SecretHash = %v, want nil", listed.Tokens[0].SecretHash)
+	}
+	// Positive: the mint response's CreatedAt is the token's actual
+	// stored creation time (via Store.Lookup), not a fresh time.Now()
+	// stamped after Mint returns -- pinned by exact equality against
+	// the same field read back from List.
+	if minted.CreatedAt.IsZero() || !minted.CreatedAt.Equal(listed.Tokens[0].CreatedAt) {
+		t.Fatalf("mint CreatedAt = %v, want exactly listed CreatedAt %v",
+			minted.CreatedAt, listed.Tokens[0].CreatedAt)
 	}
 
 	revokeResp := doJSON(

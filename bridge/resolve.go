@@ -70,9 +70,29 @@ func (b *Bridge) handleResolve(
 		return
 	}
 
-	msg, ok := b.ackMap.Load(taskID)
+	// claimsFromContext reads r.Context() (not the trace-extracted
+	// ctx below -- both carry the same values, but this is read
+	// before ctx even exists, keeping the auth check ahead of any
+	// tracing/parsing work).
+	claims := claimsFromContext(r.Context())
+	msg, claimingTokenID, ok := b.ackMap.LoadWithTokenID(taskID)
 	if !ok {
 		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	// #627: a resolve must come from the same token that claimed the
+	// task via poll, or from admin. Scoping to task-type prefixes at
+	// poll time is not enough -- without this, any minted token (no
+	// matter its own prefixes) could complete/fail/pause ANY in-flight
+	// task by ID. The body deliberately does not distinguish this from
+	// "task not found" in wording (both are opaque to the caller), but
+	// uses 403 rather than 404 -- the caller already knows the task ID
+	// exists (it came from ITS OWN poll or a leaked ID), so hiding
+	// existence buys nothing here the way it does for token lookup.
+	if !claims.Admin && claims.TokenID != claimingTokenID {
+		http.Error(
+			w, "task not claimed by this token", http.StatusForbidden,
+		)
 		return
 	}
 

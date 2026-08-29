@@ -10,12 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // bucketName is the KV bucket Store persists tokens in. Provisioned by
@@ -56,6 +59,12 @@ type Store struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// watchFailures counts failed watch-reconnect attempts (#627
+	// security follow-up): a dead watch degrades to serving a stale
+	// cache silently otherwise -- this must be visible on a dashboard,
+	// not only in the paired warn log.
+	watchFailures metric.Int64Counter
 }
 
 // Open ensures the worker_tokens bucket exists, loads its current
@@ -78,11 +87,20 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 		return nil, fmt.Errorf("ensure %s bucket: %w", bucketName, err)
 	}
 	watchCtx, cancel := context.WithCancel(context.Background())
+	m := otel.Meter("dagnats/workertoken")
+	watchFailures, meterErr := m.Int64Counter("workertoken.watch_failures")
+	if meterErr != nil {
+		// Same posture as bridge.NewBridge's metric setup: losing one
+		// counter must not stop the store from serving auth.
+		slog.Warn("workertoken watch_failures counter not registered",
+			"error", meterErr)
+	}
 	s := &Store{
-		kv:     kv,
-		tokens: make(map[string]Token),
-		ctx:    watchCtx,
-		cancel: cancel,
+		kv:            kv,
+		tokens:        make(map[string]Token),
+		ctx:           watchCtx,
+		cancel:        cancel,
+		watchFailures: watchFailures,
 	}
 	if err := s.loadAll(ctx); err != nil {
 		cancel()
@@ -153,6 +171,9 @@ func (s *Store) watchLoop() {
 		if err != nil {
 			slog.Warn("workertoken: watch failed, retrying",
 				"error", err, "backoff", backoff)
+			if s.watchFailures != nil {
+				s.watchFailures.Add(context.Background(), 1)
+			}
 			if !s.sleep(backoff) {
 				return
 			}
@@ -269,6 +290,11 @@ func (s *Store) Mint(
 	if err := validatePrefixes(prefixes); err != nil {
 		return "", "", err
 	}
+	// Check-then-act, not atomic: two concurrent Mints can both read a
+	// count just under TokensCountMax and both succeed, overshooting it
+	// by a small amount. Accepted: Mint is admin-only (fail-closed
+	// behind DAGNATS_BRIDGE_TOKEN), so this is not an externally
+	// triggerable resource-exhaustion path.
 	if s.activeTokenCount() >= TokensCountMax {
 		return "", "", fmt.Errorf(
 			"worker token limit reached (%d active)", TokensCountMax,
@@ -389,9 +415,7 @@ func (s *Store) Revoke(ctx context.Context, id string) error {
 	if id == "" {
 		panic("Revoke: id must not be empty")
 	}
-	s.mu.RLock()
-	tok, ok := s.tokens[id]
-	s.mu.RUnlock()
+	tok, ok := s.lookupOrFetch(ctx, id)
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrTokenNotFound, id)
 	}
@@ -410,7 +434,79 @@ func (s *Store) Revoke(ctx context.Context, id string) error {
 	s.mu.Lock()
 	s.tokens[id] = tok
 	s.mu.Unlock()
+	s.pruneOldestRevoked(ctx)
 	return nil
+}
+
+// lookupOrFetch reads id from the cache, falling back to one direct KV
+// read on a cache miss. A miss can mean the id is genuinely unknown OR
+// this Store's watch has not yet replayed a mint committed by another
+// instance (bounded by the reconnect window on a live watch, but
+// unbounded on a cold cache right after Open) -- Revoke must not
+// report a false 404 for the latter case.
+func (s *Store) lookupOrFetch(ctx context.Context, id string) (Token, bool) {
+	if ctx == nil {
+		panic("lookupOrFetch: ctx must not be nil")
+	}
+	if id == "" {
+		panic("lookupOrFetch: id must not be empty")
+	}
+	s.mu.RLock()
+	tok, ok := s.tokens[id]
+	s.mu.RUnlock()
+	if ok {
+		return tok, true
+	}
+	entry, err := s.kv.Get(ctx, id)
+	if err != nil {
+		return Token{}, false
+	}
+	if err := json.Unmarshal(entry.Value(), &tok); err != nil {
+		slog.Warn("workertoken: unparsable record on KV fallback read",
+			"id", id, "error", err)
+		return Token{}, false
+	}
+	return tok, true
+}
+
+// pruneOldestRevoked deletes the oldest revoked records once their
+// count exceeds TokensCountMax, keeping the bucket bounded under a
+// long-running mint/revoke loop. Revoked records exist purely for
+// audit, so pruning the oldest trades old audit history for a bounded
+// bucket -- a deliberate choice, not a leak. Best-effort: a failed
+// delete is logged and skipped rather than failing the Revoke call
+// that triggered it, since the record it prunes is not the one the
+// caller is waiting on.
+func (s *Store) pruneOldestRevoked(ctx context.Context) {
+	if ctx == nil {
+		panic("pruneOldestRevoked: ctx must not be nil")
+	}
+	s.mu.RLock()
+	revoked := make([]Token, 0, len(s.tokens))
+	for _, tok := range s.tokens {
+		if tok.RevokedAt != nil {
+			revoked = append(revoked, tok)
+		}
+	}
+	s.mu.RUnlock()
+	if len(revoked) <= TokensCountMax {
+		return
+	}
+	sort.Slice(revoked, func(i, j int) bool {
+		return revoked[i].RevokedAt.Before(*revoked[j].RevokedAt)
+	})
+	excess := len(revoked) - TokensCountMax
+	for i := 0; i < excess; i++ {
+		id := revoked[i].ID
+		if err := s.kv.Delete(ctx, id); err != nil {
+			slog.Warn("workertoken: prune oldest revoked failed",
+				"id", id, "error", err)
+			continue
+		}
+		s.mu.Lock()
+		delete(s.tokens, id)
+		s.mu.Unlock()
+	}
 }
 
 // List returns every token (minted and revoked) with SecretHash zeroed
@@ -431,6 +527,25 @@ func (s *Store) List(ctx context.Context) ([]Token, error) {
 	return out, nil
 }
 
+// Lookup returns the single token identified by id, with SecretHash
+// zeroed, or false if not cached. Reads the cache only, same as List
+// and Authorize. Used by callers (e.g. the mint REST handler) that
+// need one token's server-assigned fields -- CreatedAt in particular
+// -- right after Mint, rather than re-deriving them client-side.
+func (s *Store) Lookup(id string) (Token, bool) {
+	if id == "" {
+		panic("Lookup: id must not be empty")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tok, ok := s.tokens[id]
+	if !ok {
+		return Token{}, false
+	}
+	tok.SecretHash = nil
+	return tok, true
+}
+
 // errInvalidToken is returned for every Authorize failure mode
 // (malformed bearer, unknown ID, wrong secret, revoked). One error
 // text for all of them by design: distinguishing "unknown id" from
@@ -442,23 +557,32 @@ var errInvalidToken = errors.New("invalid worker token")
 // no NATS round-trip. Returns Claims scoped to the token's
 // TaskTypePrefixes, or errInvalidToken for any failure.
 func (s *Store) Authorize(bearer string) (Claims, error) {
-	if bearer == "" {
-		panic("Authorize: bearer must not be empty")
-	}
 	if s.kv == nil {
 		panic("Authorize: store not initialized")
+	}
+	// Empty bearer is caller input, not a programmer error -- a
+	// non-HTTP caller (or a future transport) can reach this with an
+	// empty string, and that must be an ordinary rejection, not a
+	// crash. Only the nil-receiver / uninitialized-store case above
+	// stays a panic.
+	if bearer == "" {
+		return Claims{}, errInvalidToken
 	}
 	id, secret, err := parseBearer(bearer)
 	if err != nil {
 		return Claims{}, errInvalidToken
 	}
+	// Hash unconditionally, before the lookup branch: an unknown id
+	// must cost the same CPU work as a known id with a wrong secret,
+	// so the two are not timing-distinguishable in addition to already
+	// sharing one error text.
+	sum := sha256.Sum256([]byte(secret))
 	s.mu.RLock()
 	tok, ok := s.tokens[id]
 	s.mu.RUnlock()
 	if !ok || tok.RevokedAt != nil {
 		return Claims{}, errInvalidToken
 	}
-	sum := sha256.Sum256([]byte(secret))
 	if subtle.ConstantTimeCompare(sum[:], tok.SecretHash) != 1 {
 		return Claims{}, errInvalidToken
 	}

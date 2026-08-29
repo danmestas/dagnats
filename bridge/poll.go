@@ -555,7 +555,13 @@ func (b *Bridge) processPolledMsg(
 		return pollResponse{}, false
 	}
 	taskID := payload.RunID + "." + payload.StepID
-	b.ackMap.Store(taskID, msg)
+	// claimsFromContext reads the original request ctx (a
+	// context.Value read propagates through the trace-context wraps
+	// above), not dispatchCtx -- recording who claimed this task so
+	// resolve can later enforce that only the claiming caller, or an
+	// admin, may act on it (#627).
+	claims := claimsFromContext(ctx)
+	b.ackMap.Store(taskID, msg, claims.TokenID)
 	traceHdr := dispatchTraceHeader(dispatchCtx)
 	resp := pollResponse{
 		TaskID:      taskID,

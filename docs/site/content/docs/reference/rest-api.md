@@ -667,6 +667,12 @@ follows the opposite rule: no env token there means an open bridge
 (dev mode); set it and every worker needs either the env token or a
 minted one.
 
+`task_type_prefixes` entries are **dot-segment prefixes**, not raw
+byte prefixes: a prefix `p` matches task type `t` iff `t == p` or `t`
+starts with `p + "."`. `"build"` matches `"build"` and `"build.deploy"`
+but **not** `"builder.deploy"`; `"echo"` matches `"echo"` but not
+`"echo-admin"`. Write the segment you want, without a trailing dot.
+
 ### Mint Token
 
 ```
@@ -678,7 +684,7 @@ POST /v1/tokens
 ```json
 {
   "label": "ci-runner-1",
-  "task_type_prefixes": ["ci.", "build."]
+  "task_type_prefixes": ["ci", "build"]
 }
 ```
 
@@ -694,7 +700,7 @@ to 1000 non-revoked tokens outstanding at once.
   "id": "6f1c...9a2b",
   "token": "dgn_6f1c...9a2b_kQ3z...",
   "label": "ci-runner-1",
-  "task_type_prefixes": ["ci.", "build."],
+  "task_type_prefixes": ["ci", "build"],
   "created_at": "2026-08-28T12:00:00Z"
 }
 ```
@@ -710,7 +716,7 @@ one.
 curl -X POST http://localhost:8080/v1/tokens \
   -H "Authorization: Bearer $DAGNATS_BRIDGE_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"label":"ci-runner-1","task_type_prefixes":["ci."]}'
+  -d '{"label":"ci-runner-1","task_type_prefixes":["ci"]}'
 ```
 
 ### List Tokens
@@ -727,7 +733,7 @@ GET /v1/tokens
     {
       "id": "6f1c...9a2b",
       "label": "ci-runner-1",
-      "task_type_prefixes": ["ci.", "build."],
+      "task_type_prefixes": ["ci", "build"],
       "created_at": "2026-08-28T12:00:00Z",
       "created_by": "admin",
       "revoked_at": null

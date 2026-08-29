@@ -14,7 +14,8 @@ import "github.com/danmestas/dagnats/bridge"
   - [func \(am \*AckMap\) Count\(\) int64](<#AckMap.Count>)
   - [func \(am \*AckMap\) Delete\(taskID string\)](<#AckMap.Delete>)
   - [func \(am \*AckMap\) Load\(taskID string\) \(jetstream.Msg, bool\)](<#AckMap.Load>)
-  - [func \(am \*AckMap\) Store\(taskID string, msg jetstream.Msg\)](<#AckMap.Store>)
+  - [func \(am \*AckMap\) LoadWithTokenID\(taskID string\) \(jetstream.Msg, string, bool\)](<#AckMap.LoadWithTokenID>)
+  - [func \(am \*AckMap\) Store\(taskID string, msg jetstream.Msg, tokenID string\)](<#AckMap.Store>)
 - [type Bridge](<#Bridge>)
   - [func NewBridge\(pub \*natsutil.TracingPublisher\) \*Bridge](<#NewBridge>)
   - [func \(b \*Bridge\) Handler\(\) http.Handler](<#Bridge.Handler>)
@@ -35,7 +36,7 @@ The ackmap size is an observable gauge rather than an up/down counter deliberate
 Mirrors RegisterSchedulerMetrics \(internal/trigger/metrics.go\): a standalone registration function rather than construction inside NewBridge, so the error is returned to a caller that can assert on it instead of being discarded at startup.
 
 <a name="AckMap"></a>
-## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L58-L63>)
+## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L62-L67>)
 
 AckMap tracks in\-flight tasks for HTTP workers. Maps task\_id \(\{runID\}.\{stepID\}\) to the NATS message so the bridge can ack/nak on behalf of the HTTP client when it resolves the task.
 
@@ -52,7 +53,7 @@ type AckMap struct {
 ```
 
 <a name="NewAckMap"></a>
-### func [NewAckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L66>)
+### func [NewAckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L70>)
 
 ```go
 func NewAckMap() *AckMap
@@ -61,7 +62,7 @@ func NewAckMap() *AckMap
 NewAckMap creates an empty AckMap ready for use.
 
 <a name="AckMap.Count"></a>
-### func \(\*AckMap\) [Count](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L144>)
+### func \(\*AckMap\) [Count](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L160>)
 
 ```go
 func (am *AckMap) Count() int64
@@ -70,7 +71,7 @@ func (am *AckMap) Count() int64
 Count returns the number of in\-flight tasks.
 
 <a name="AckMap.Delete"></a>
-### func \(\*AckMap\) [Delete](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L131>)
+### func \(\*AckMap\) [Delete](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L147>)
 
 ```go
 func (am *AckMap) Delete(taskID string)
@@ -79,24 +80,33 @@ func (am *AckMap) Delete(taskID string)
 Delete removes a task from the map after resolution.
 
 <a name="AckMap.Load"></a>
-### func \(\*AckMap\) [Load](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L114>)
+### func \(\*AckMap\) [Load](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L120>)
 
 ```go
 func (am *AckMap) Load(taskID string) (jetstream.Msg, bool)
 ```
 
-Load retrieves the NATS message for the given task ID. Returns \(nil, false\) if not found.
+Load retrieves the NATS message for the given task ID. Returns \(nil, false\) if not found. A thin wrapper over LoadWithTokenID for callers that don't need the claiming TokenID.
 
 Deliberately does not reap: a resolve arriving concurrently with the reaper must not race into a "task not found" that the worker cannot distinguish from a genuine unknown\-task error.
 
-<a name="AckMap.Store"></a>
-### func \(\*AckMap\) [Store](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L91>)
+<a name="AckMap.LoadWithTokenID"></a>
+### func \(\*AckMap\) [LoadWithTokenID](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L130>)
 
 ```go
-func (am *AckMap) Store(taskID string, msg jetstream.Msg)
+func (am *AckMap) LoadWithTokenID(taskID string) (jetstream.Msg, string, bool)
 ```
 
-Store saves a NATS message keyed by task ID, stamped with the insertion time. Sweeps expired entries and enforces the size cap before inserting. Panics on empty taskID or nil msg — both are programmer errors.
+LoadWithTokenID retrieves the NATS message and the TokenID recorded at Store time for the given task ID \(\#627 per\-task authorization: a resolve must present the same TokenID that claimed the task, or be Admin\). Returns \(nil, "", false\) if not found. Same does\-not\-reap contract as Load.
+
+<a name="AckMap.Store"></a>
+### func \(\*AckMap\) [Store](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L96>)
+
+```go
+func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string)
+```
+
+Store saves a NATS message keyed by task ID, stamped with the insertion time and the TokenID of the caller that claimed it \(\#627; empty for the admin bearer or dev mode\). Sweeps expired entries and enforces the size cap before inserting. Panics on empty taskID or nil msg — both are programmer errors.
 
 <a name="Bridge"></a>
 ## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L45-L63>)
