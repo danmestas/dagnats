@@ -524,6 +524,53 @@ curl -X POST http://localhost:8080/runs/retry \
 
 ---
 
+## Workers
+
+### List Workers
+
+Retrieve the live worker directory. A worker is considered live if it has
+sent a heartbeat within the staleness TTL (60s); entries older than that
+are filtered out before the response is built, so every worker returned
+here is currently reachable.
+
+```
+GET /v1/workers
+```
+
+Note the `/v1` prefix — this route is mounted at the top level alongside
+the worker-runtime bridge, not under the unprefixed control-plane paths
+above.
+
+**Response:** `200 OK`
+
+```json
+{
+  "workers": [
+    {
+      "worker_id": "worker-1",
+      "task_types": ["git.fetch-diff", "code-review"],
+      "language": "go",
+      "transport": "nats",
+      "max_tasks": 10,
+      "pid": 4821,
+      "hostname": "build-01",
+      "last_seen": "2026-08-28T12:00:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+`workers` is always an array (`[]` when none are registered or live),
+never `null`.
+
+**curl:**
+```bash
+curl http://localhost:8080/v1/workers
+```
+
+---
+
 ## Health
 
 ### Telemetry Health
