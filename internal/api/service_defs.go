@@ -41,6 +41,14 @@ func (s *Service) RegisterWorkflow(
 
 // registerWorkflowInner holds the core logic, keeping the
 // instrumented wrapper under the 70-line limit.
+//
+// Beyond the historical name -> latest-def pointer write, this also
+// persists an immutable name.v.hash version snapshot (#637) so a
+// run that started under this content stays pinned to it even after
+// a later re-register moves the pointer -- see loadRunAndDef in
+// internal/engine/orchestrator.go. The version write is idempotent:
+// re-registering byte-identical content is a no-op past the initial
+// write (content-addressed, so the existing key already holds it).
 func (s *Service) registerWorkflowInner(
 	ctx context.Context, def dag.WorkflowDef,
 ) error {
@@ -50,11 +58,19 @@ func (s *Service) registerWorkflowInner(
 	if def.Name == "" {
 		panic("registerWorkflowInner: def.Name must not be empty")
 	}
+	if dag.IsDefVersionKey(def.Name) {
+		return fmt.Errorf(
+			"workflow name %q is reserved for internal def "+
+				"versioning and cannot be registered", def.Name)
+	}
 	if err := dag.Validate(def); err != nil {
 		return fmt.Errorf("invalid workflow: %w", err)
 	}
 	data, err := json.Marshal(def)
 	if err != nil {
+		return err
+	}
+	if err := s.persistDefVersion(ctx, def, data); err != nil {
 		return err
 	}
 	_, err = s.defKV.Put(ctx, def.Name, data)
@@ -225,8 +241,19 @@ func (s *Service) listWorkflowsInner(
 		return nil, err
 	}
 
+	// Skip immutable name.v.hash version snapshots (#637) -- they
+	// share the bucket with the mutable name -> latest pointers this
+	// endpoint lists, but are not themselves a "registered workflow".
+	nameKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if dag.IsDefVersionKey(key) {
+			continue
+		}
+		nameKeys = append(nameKeys, key)
+	}
+
 	entries, err := natsutil.ParallelGetJS(
-		s.defKV, keys, natsutil.DefaultParallelism,
+		s.defKV, nameKeys, natsutil.DefaultParallelism,
 	)
 	if err != nil {
 		return nil, err

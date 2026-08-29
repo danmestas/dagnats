@@ -2196,7 +2196,11 @@ func (o *Orchestrator) saveSnapshot(
 	return err
 }
 
-// loadRunAndDef loads the workflow definition and current run snapshot.
+// loadRunAndDef loads the workflow definition and current run
+// snapshot. The def is pinned to the content run.DefHash names
+// (#637) so a POST /workflows re-register mid-flight never changes
+// what a running run sees on its next advance -- see
+// loadPinnedOrLatestDef.
 func (o *Orchestrator) loadRunAndDef(
 	ctx context.Context, runID string,
 ) (dag.WorkflowDef, dag.WorkflowRun, error) {
@@ -2208,20 +2212,71 @@ func (o *Orchestrator) loadRunAndDef(
 		return dag.WorkflowDef{}, dag.WorkflowRun{},
 			fmt.Errorf("load run %q: %w", runID, err)
 	}
-	entry, err := o.defKV.Get(ctx, run.WorkflowID)
+	wfDef, err := o.loadPinnedOrLatestDef(ctx, run)
 	if err != nil {
-		return dag.WorkflowDef{}, dag.WorkflowRun{},
-			fmt.Errorf("load workflow def %q: %w",
-				run.WorkflowID, err)
-	}
-	var wfDef dag.WorkflowDef
-	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
-		return dag.WorkflowDef{}, dag.WorkflowRun{},
-			fmt.Errorf("unmarshal workflow def %q: %w",
-				run.WorkflowID, err)
+		return dag.WorkflowDef{}, dag.WorkflowRun{}, err
 	}
 	wfDef = dag.EffectiveDef(wfDef, run)
 	return wfDef, run, nil
+}
+
+// loadPinnedOrLatestDef resolves the def a run should see on its next
+// advance (#637). When run.DefHash is set, it reads the immutable
+// name.v.hash version the run was created under -- content-addressed
+// and never mutated by a later RegisterWorkflow call, so a re-
+// register mid-flight cannot change it. Falls back to loadDef (the
+// mutable name -> latest pointer) for a legacy run (DefHash == "",
+// pre-#637 snapshot) and for a pinned version that has gone missing
+// (evicted past DefVersionsMax); the fallback increments
+// defPinFallbacks and logs at warn so an operator can see retention
+// evicting a version still in use, without an unbounded per-run log
+// or memory footprint to track "already warned".
+//
+// A stored version whose content hash doesn't match the key it was
+// read from indicates workflow_defs corruption, not an operating
+// condition to fall back from -- it is returned as an error, never
+// silently substituted.
+func (o *Orchestrator) loadPinnedOrLatestDef(
+	ctx context.Context, run dag.WorkflowRun,
+) (dag.WorkflowDef, error) {
+	if run.RunID == "" {
+		panic("loadPinnedOrLatestDef: run.RunID must not be empty")
+	}
+	if o.defKV == nil {
+		panic("loadPinnedOrLatestDef: defKV must not be nil")
+	}
+	if run.DefHash == "" {
+		return o.loadDef(ctx, run.WorkflowID)
+	}
+	versionKey := dag.DefVersionKey(run.WorkflowID, run.DefHash)
+	entry, err := o.defKV.Get(ctx, versionKey)
+	if err != nil {
+		if !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return dag.WorkflowDef{}, fmt.Errorf(
+				"load pinned workflow def %q: %w", versionKey, err)
+		}
+		o.metrics.defPinFallbacks.Add(ctx, 1)
+		slog.WarnContext(ctx,
+			"pinned workflow def version missing -- falling back "+
+				"to latest (legacy snapshot or evicted version)",
+			"run_id", run.RunID,
+			"workflow_id", run.WorkflowID,
+			"def_hash", run.DefHash,
+		)
+		return o.loadDef(ctx, run.WorkflowID)
+	}
+	var wfDef dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"unmarshal pinned workflow def %q: %w", versionKey, err)
+	}
+	if got := dag.DefHash(wfDef); got != run.DefHash {
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"pinned workflow def %q corrupt: content hash %s "+
+				"does not match key hash %s",
+			versionKey, got, run.DefHash)
+	}
+	return wfDef, nil
 }
 
 // parseTraceparent reads traceparent from *nats.Msg header first,

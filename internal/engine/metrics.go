@@ -42,6 +42,12 @@ type orchMetrics struct {
 	failRetryAfter   metric.Int64Counter
 	dlqEntries       metric.Int64Counter
 	dlqDepth         metric.Int64UpDownCounter
+	// defPinFallbacks counts loadRunAndDef calls that fell back to the
+	// mutable name -> latest-def pointer because the run's pinned
+	// name.v.hash version was missing (#637): a legacy pre-#637
+	// snapshot, or a version evicted past DefVersionsMax. The durable
+	// operator signal that retention is evicting versions still in use.
+	defPinFallbacks metric.Int64Counter
 }
 
 // newOrchMetrics creates all orchestrator metric instruments.
@@ -82,6 +88,9 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 	dlqDepth, _ := m.Int64UpDownCounter(
 		"dlq_depth",
 	)
+	defPinFallbacks, _ := m.Int64Counter(
+		"engine.def_pin.fallbacks",
+	)
 	return orchMetrics{
 		runsActive:       runsActive,
 		runsCompleted:    runsCompleted,
@@ -93,6 +102,7 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 		failRetryAfter:   failRetryAfter,
 		dlqEntries:       dlqEntries,
 		dlqDepth:         dlqDepth,
+		defPinFallbacks:  defPinFallbacks,
 	}
 }
 

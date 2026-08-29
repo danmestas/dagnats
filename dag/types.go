@@ -402,6 +402,15 @@ type WorkflowRun struct {
 	// retrying unboundedly. Additive: legacy snapshots deserialize to
 	// 0, the correct starting count.
 	ReleaseAttempts int `json:"release_attempts,omitempty"`
+	// DefHash pins the run to the exact def content it started under
+	// (#637): the SHA-256 hex digest DefHash(def) computed at run
+	// creation, before any dynamic steps are added. loadRunAndDef uses
+	// it to re-read that immutable version instead of the mutable
+	// name -> latest-def pointer, so a POST /workflows re-register
+	// mid-flight never changes what a running run sees on its next
+	// advance. Additive: legacy snapshots deserialize to "" and fall
+	// back to today's by-name read.
+	DefHash string `json:"def_hash,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.
@@ -424,6 +433,9 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun {
 		Status:     RunStatusPending,
 		Steps:      steps,
 		CreatedAt:  time.Now().UTC(),
+		// Pin to the def content this run was constructed from (#637),
+		// before any dynamic steps are layered on top.
+		DefHash: DefHash(def),
 	}
 }
 
