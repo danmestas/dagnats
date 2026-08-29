@@ -1,0 +1,52 @@
+name: Race
+
+# ci.yml's Test step runs `go test ./...` without -race, so a data race
+# only surfaces if a human happens to run the detector locally (#667:
+# a race in connect_owned_race_test.go merged silently and was only
+# caught by a reviewer). This job runs -race over the concurrency-heavy
+# packages — bridge, worker, engine, api, workertoken, natsutil — where
+# heartbeat loops, ordered consumers, CAS retry loops, and SSE fan-out
+# make races most likely. The full embedded E2E suite is skipped here
+# (see ci.yml's Test step) to keep this job's runtime bounded; local
+# `-race` timing for the listed packages was ~124s wall (bridge 31.5s,
+# worker 92.8s, engine 79.9s, api 108.3s, workertoken 5.6s, natsutil
+# 6.4s, run concurrently), so -timeout below is ~2x that with headroom
+# for slower CI runners.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - go.mod
+      - go.sum
+      - '.github/workflows/race.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.go'
+      - go.mod
+      - go.sum
+      - '.github/workflows/race.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  race:
+    name: race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Race detector
+        run: |
+          go test -race -count=1 -timeout 300s \
+            ./bridge/ ./worker/ ./internal/engine/ ./internal/api/ \
+            ./internal/workertoken/ ./internal/natsutil/
+        env:
+          E2E_TOPOLOGY: embedded

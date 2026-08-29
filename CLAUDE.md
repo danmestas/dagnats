@@ -52,6 +52,7 @@ When adding a new decision, write a numbered ADR. When taking notes that don't r
 - Bounded timeouts on all test waits
 - No shared NATS servers between tests
 - Each test file opens with a methodology comment
+- CI's `race` job runs `go test -race` over the concurrency-heavy packages (`bridge/`, `worker/`, `internal/engine/`, `internal/api/`, `internal/workertoken/`, `internal/natsutil/`); the fast `test` job in `ci.yml` does not run with `-race`.
 
 ## Observability
 
