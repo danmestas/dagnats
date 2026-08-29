@@ -13,7 +13,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Datastar kebab-form lint
         # Datastar v1 uses camelCase event handlers (data-on-keyup).
@@ -57,7 +57,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         if: steps.filter.outputs.code == 'true'
         with:
           go-version-file: go.mod
