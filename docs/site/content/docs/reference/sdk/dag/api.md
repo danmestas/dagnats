@@ -332,7 +332,7 @@ ValidTaskType reports whether s is safe to publish verbatim as one or more NATS 
 Dots ARE allowed within a token: "dagger.call" is a production task type, and rejecting dots outright would break it. What keeps a dotted task type from leaking into another worker's poll is FilterFor's exact token\-count anchor, not a charset restriction here — see internal/consumername.FilterFor's doc comment.
 
 <a name="ValidWorkerGroup"></a>
-## func [ValidWorkerGroup](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L91>)
+## func [ValidWorkerGroup](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L98>)
 
 ```go
 func ValidWorkerGroup(s string) error
@@ -340,7 +340,7 @@ func ValidWorkerGroup(s string) error
 
 ValidWorkerGroup reports whether s is safe to use as a StepDef.WorkerGroup. StepSubject appends WorkerGroup as its OWN subject token \("task.\{Task\}.\{WorkerGroup\}.\{runID\}"\), so it must satisfy ValidTaskType's charset/length/leading\-trailing\-dot rule AND additionally contain no dots at all — unlike Task, WorkerGroup is never a dotted namespace.
 
-Dots are banned here \(not merely anchored around, the way FilterFor isolates a dotted Task\) because a dot in WorkerGroup is indistinguishable from the separator FilterFor/StepSubject place between Task and WorkerGroup: FilterFor\("render", "gpu.fast"\) and FilterFor\("render.gpu", "fast"\) both derive "task.render.gpu.fast.\*", and NameFor collapses both to "workers\-render\-gpu\-fast" — a dotted group silently collides with an unrelated dotted\-task/group split. Banning dots in WorkerGroup outright \(rather than case\-by\-case\) closes that regardless of what Task looks like; see validateStepDispatch's combination check for the remaining case where Task itself is dotted and WorkerGroup is set.
+Dots are banned here \(not merely anchored around, the way FilterFor isolates a dotted Task\) because a dot in WorkerGroup is indistinguishable from the separator FilterFor/StepSubject place between Task and WorkerGroup: FilterFor\("render", "gpu.fast"\) and FilterFor\("render.gpu", "fast"\) both derive "task.render.gpu.fast.\*", and NameFor collapses both to "workers\-render\-gpu\-fast" — a dotted group silently collides with an unrelated dotted\-task/group split. Banning dots in WorkerGroup outright \(rather than case\-by\-case\) closes that for a single step's own Task, regardless of what that step's Task looks like; see validateStepDispatch's combination check for the remaining case where THAT SAME step's Task is dotted and WorkerGroup is set. Neither rule reaches across steps or workflow defs: step A \{Task:"render.gpu"\} and step B \{Task:"render", WorkerGroup:"gpu"\} in different workflows still derive the identical filter subject and durable name, and the cross\-process collision check treats that as ordinary idempotent durable reuse, not a conflict — see docs/wire\-protocol.md "Task Subjects" for that limitation.
 
 <a name="Validate"></a>
 ## func [Validate](<https://github.com/danmestas/dagnats/blob/main/dag/validate.go#L12>)
