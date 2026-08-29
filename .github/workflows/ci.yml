@@ -101,6 +101,53 @@ jobs:
             exit 1
           fi
 
+      - name: Ordered consumer bound lint
+        if: steps.filter.outputs.code == 'true'
+        # Forbid ad-hoc ordered consumers on the BUILD_LOGS read path.
+        # nats.go v1.53.1 rewrites an unset MaxResetAttempts to -1
+        # (jetstream/ordered.go getConsumerConfig) and its reset retry
+        # loop only stops when attempts > 0 (retryWithBackoff), while
+        # Next() calls reset() on every invocation — so a consumer whose
+        # stream is deleted blocks in Next() forever, on
+        # context.Background(), where the caller's own deadline cannot
+        # reach it. That hung the SSE follow handler and the httptest
+        # server waiting on it. logsOrderedConsumerConfig
+        # (internal/api/logs.go) is the single place the bound is set;
+        # this keeps a new call site from quietly reintroducing the
+        # unbounded default.
+        #
+        # Two patterns, two exclusion sets: the CONFIG literal is what
+        # carries MaxResetAttempts, so it may only appear in logs.go.
+        # The CALL may also appear in logs_follow.go, which passes the
+        # helper's config — any raw config it tried to build inline
+        # would still be caught by the first pattern.
+        #
+        # Scope is internal/api/ (the log lane). cli/ and
+        # internal/observe/spanread/ still build ordered consumers
+        # directly and carry the same upstream footgun; bounding those
+        # is tracked separately and deliberately out of this step.
+        run: |
+          set -eu
+          if matches=$(grep -rnE 'jetstream\.OrderedConsumerConfig\{' \
+              --include='*.go' \
+              --exclude='*_test.go' \
+              --exclude='logs.go' \
+              internal/api/); then
+            echo "::error::OrderedConsumerConfig built outside internal/api/logs.go. Use logsOrderedConsumerConfig (it sets MaxResetAttempts; the nats.go default is unbounded)."
+            echo "$matches"
+            exit 1
+          fi
+          if matches=$(grep -rnE 'OrderedConsumer\(' \
+              --include='*.go' \
+              --exclude='*_test.go' \
+              --exclude='logs.go' \
+              --exclude='logs_follow.go' \
+              internal/api/); then
+            echo "::error::Ordered consumer opened outside the bounded log readers. Route its config through logsOrderedConsumerConfig."
+            echo "$matches"
+            exit 1
+          fi
+
       - name: Staticcheck
         if: steps.filter.outputs.code == 'true'
         run: |

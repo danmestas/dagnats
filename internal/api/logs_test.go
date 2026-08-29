@@ -704,6 +704,87 @@ func scanForSSEErrorEvent(body io.Reader) bool {
 	return false
 }
 
+// TestGetRunLogs_PageErrorsWhenStreamDeleted is the non-follow
+// counterpart to TestGetRunLogs_FollowEndsWithErrorEventOnStreamDeleted.
+// fetchLogsPage drives the same kind of ordered consumer, and nats.go
+// defaults MaxResetAttempts to -1, so a Next() whose stream has gone
+// away recreates the consumer forever instead of returning — the page
+// read hung well past its own 10s context (reset() retries on
+// context.Background(), so the handler's deadline cannot stop it).
+// The read must instead fail fast and say why.
+func TestGetRunLogs_PageErrorsWhenStreamDeleted(t *testing.T) {
+	svc, server, nc, _ := newLogsRestFixture(t, "logs-pagedel", "logs-pagedel-task",
+		func(tc worker.TaskContext) error {
+			return tc.Complete(nil)
+		}, false)
+	runID := startLogsTestRun(t, svc, "logs-pagedel")
+	waitForStepKnown(t, svc, runID, "a", 5*time.Second)
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	delCtx, delCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer delCancel()
+	if err := js.DeleteStream(delCtx, "BUILD_LOGS"); err != nil {
+		t.Fatalf("DeleteStream(BUILD_LOGS): %v", err)
+	}
+
+	// Same kill-switch discipline as the follow test: cancel the
+	// request before failing so t.Cleanup(server.Close) cannot turn a
+	// failure into a package-timeout hang.
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
+	req, err := http.NewRequestWithContext(
+		reqCtx, "GET",
+		fmt.Sprintf("%s/runs/%s/logs?step=a", server.URL, runID), nil,
+	)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	type pageResult struct {
+		status int
+		body   string
+	}
+	got := make(chan pageResult, 1)
+	failed := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			failed <- doErr
+			return
+		}
+		defer resp.Body.Close()
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			failed <- readErr
+			return
+		}
+		got <- pageResult{status: resp.StatusCode, body: string(body)}
+	}()
+
+	// One bounded wait: the read must not sit on an unbounded consumer
+	// reset. 25s is far past the handler's own 10s budget.
+	select {
+	case res := <-got:
+		if res.status != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d (body %q)",
+				res.status, http.StatusServiceUnavailable, res.body)
+		}
+		if !strings.Contains(res.body, "log stream unavailable") {
+			t.Fatalf("body = %q, want it to name %q", res.body, "log stream unavailable")
+		}
+	case doErr := <-failed:
+		reqCancel()
+		t.Fatalf("page request: %v", doErr)
+	case <-time.After(25 * time.Second):
+		reqCancel()
+		t.Fatal("page read never returned after the stream was deleted")
+	}
+}
+
 // TestGetRunLogs_FollowUsesExactlyOneConsumer is the #624 review's
 // regression test for point 3: the old implementation opened a fresh
 // ordered consumer every 500ms for the life of a follow connection.

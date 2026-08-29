@@ -32,6 +32,7 @@ import (
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -199,7 +200,7 @@ func serveLogsPage(
 	if r.URL.Query().Get("from") == "failure" {
 		found, seq, err := lastFailureMarkerSeq(ctx, svc.js, runID, stepID, attempt, iteration)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeLogsReadError(w, err)
 			return
 		}
 		if !found {
@@ -222,7 +223,7 @@ func serveLogsPage(
 		ctx, svc.js, runID, stepID, attempt, iteration, startCursor, protocol.LogReadChunksMax,
 	)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeLogsReadError(w, err)
 		return
 	}
 
@@ -244,6 +245,26 @@ func serveLogsPage(
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("encode logs response", "error", err)
 	}
+}
+
+// writeLogsReadError maps a BUILD_LOGS read failure onto a status. A
+// missing stream is not the caller's fault and is not permanent — the
+// hot lane has a TTL and can be recreated — so it is a 503 naming the
+// condition rather than a 500 leaking whichever JS API error text came
+// back. Everything else stays a 500.
+func writeLogsReadError(w http.ResponseWriter, cause error) {
+	if cause == nil {
+		panic("writeLogsReadError: cause must not be nil")
+	}
+	if w == nil {
+		panic("writeLogsReadError: w must not be nil")
+	}
+	if errors.Is(cause, jetstream.ErrStreamNotFound) {
+		slog.Warn("BUILD_LOGS stream unavailable for log read", "error", cause)
+		writeJSONError(w, http.StatusServiceUnavailable, "log stream unavailable")
+		return
+	}
+	http.Error(w, cause.Error(), http.StatusInternalServerError)
 }
 
 // dispatchIsDone reports whether the (attempt, iteration) pair's
@@ -326,6 +347,66 @@ func lastFailureMarkerSeq(
 	return true, msg.Sequence, nil
 }
 
+// logsConsumerResetMax bounds jetstream's ordered-consumer reset retry
+// loop for EVERY BUILD_LOGS reader in this package — the paged read
+// and the SSE follow both take their config from
+// logsOrderedConsumerConfig so this bound cannot drift between them.
+// A CI lint step ("Ordered consumer bound lint") fails the build if any
+// non-test file outside logs.go names OrderedConsumer at all, so the
+// bound cannot be bypassed by a new call site either.
+//
+// It MUST be set, and this is a deliberate local workaround for
+// upstream behavior, not a tuning knob. In nats.go v1.53.1:
+//
+//   - jetstream/ordered.go:614 (getConsumerConfig) rewrites an unset
+//     MaxResetAttempts (the zero value) to -1.
+//   - jetstream/ordered.go:820 (retryWithBackoff) only stops on
+//     `opts.attempts > 0 && i >= opts.attempts-1`, so -1 means the
+//     retry loop has no exit.
+//   - orderedConsumer.Next calls Fetch, which calls reset() on EVERY
+//     invocation (ordered.go:441, :529).
+//
+// Observed consequence: once the stream is deleted, Next() NEVER
+// RETURNS. It recreates the consumer forever on a 1s/2s/4s/8s/10s
+// backoff, and because reset() issues each CreateOrUpdateConsumer on
+// context.Background(), the caller's own context deadline cannot stop
+// it. That hung an SSE follow handler (and the http.Server waiting on
+// it) indefinitely; the paged read has the same exposure if the
+// stream vanishes mid-page.
+//
+// The workaround is to set the bound explicitly. Four attempts spend
+// ~7s (1+2+4) before Next() surfaces the real "stream not found",
+// which both readers then classify and report.
+const logsConsumerResetMax = 4
+
+// logsOrderedConsumerConfig builds the ONE ordered-consumer config
+// every BUILD_LOGS reader here uses: the paged read (fetchLogsPage)
+// and the SSE follow (openLogsFollowConsumer). Both anchor at cursor
+// the same way (0 = from the start of the attempt's subject), and both
+// must carry logsConsumerResetMax — keeping that in a single
+// constructor is the point of this function.
+func logsOrderedConsumerConfig(
+	runID, stepID string, attempt, iteration int, cursor uint64,
+) jetstream.OrderedConsumerConfig {
+	if runID == "" {
+		panic("logsOrderedConsumerConfig: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("logsOrderedConsumerConfig: stepID must not be empty")
+	}
+	cfg := jetstream.OrderedConsumerConfig{
+		FilterSubjects:   []string{natsutil.LogSubject(runID, stepID, attempt, iteration)},
+		MaxResetAttempts: logsConsumerResetMax,
+	}
+	if cursor > 0 {
+		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+		cfg.OptStartSeq = cursor
+	} else {
+		cfg.DeliverPolicy = jetstream.DeliverAllPolicy
+	}
+	return cfg
+}
+
 // fetchLogsPage fetches up to max BUILD_LOGS messages for
 // logs.{runID}.{stepID}.{attempt}.{iteration}, starting at stream
 // sequence cursor (0 means "from the start of the subject"), in stream
@@ -346,16 +427,10 @@ func fetchLogsPage(
 	if max <= 0 {
 		panic("fetchLogsPage: max must be positive")
 	}
-	cfg := jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{natsutil.LogSubject(runID, stepID, attempt, iteration)},
-	}
-	if cursor > 0 {
-		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
-		cfg.OptStartSeq = cursor
-	} else {
-		cfg.DeliverPolicy = jetstream.DeliverAllPolicy
-	}
-	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS", cfg)
+	cons, err := js.OrderedConsumer(
+		ctx, "BUILD_LOGS",
+		logsOrderedConsumerConfig(runID, stepID, attempt, iteration, cursor),
+	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
 	}
@@ -367,7 +442,17 @@ func fetchLogsPage(
 		}
 		msg, err := cons.Next(jetstream.FetchMaxWait(logsFetchIdleWait))
 		if err != nil {
-			break
+			// nats.ErrTimeout is this loop's normal end-of-page
+			// signal ("nothing more buffered right now"). Anything
+			// else — most importantly the stream going away
+			// mid-page, which is what the bounded reset now
+			// surfaces instead of retrying forever — is a real
+			// failure and must reach the caller rather than being
+			// reported as a short but successful page.
+			if errors.Is(err, nats.ErrTimeout) {
+				break
+			}
+			return nil, 0, fmt.Errorf("read BUILD_LOGS page: %w", err)
 		}
 		chunk, seq, ok := decodeLogsMsg(msg, runID, stepID)
 		if ackErr := msg.Ack(); ackErr != nil {

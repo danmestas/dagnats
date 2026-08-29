@@ -586,6 +586,21 @@ verdict, before the TTL elapses (#624).
   `event: eof` on the normal attempt-ending path or `event: error` if
   that consumer itself fails (deleted, connection lost) rather than
   looping silently until the 1h duration cap.
+- **Ordered consumers must be bounded**: if you read this stream with
+  your own `jetstream` ordered consumer, set `MaxResetAttempts`
+  explicitly. In nats.go v1.53.1, an unset value is rewritten to `-1`
+  (`jetstream/ordered.go`, `getConsumerConfig`) and the reset retry
+  loop only stops when `attempts > 0` (`retryWithBackoff`), while
+  `Next()` calls `reset()` on every invocation. So if BUILD_LOGS goes
+  away underneath you — deleted, or aged out of its TTL — `Next()`
+  never returns: it recreates the consumer forever on a 1s/2s/4s/8s/10s
+  backoff, on `context.Background()`, so your own context deadline
+  cannot interrupt it. Bound it and treat the resulting
+  `ErrStreamNotFound` as "the hot lane is gone", not as a fatal client
+  error; the stream is recreatable and the read is retryable. dagnats'
+  own readers do this in `logsOrderedConsumerConfig`
+  (`internal/api/logs.go`), which a CI lint step keeps as the single
+  place any ordered consumer is configured.
 - **Use for**: a live or historical tail of one attempt's captured
   output within the hot TTL window. Anything longer-lived belongs in a
   consumer's own store, drained from this stream before the TTL
