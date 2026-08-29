@@ -101,18 +101,19 @@ curl -X POST http://localhost:8080/workflows \
 
 ### List Runs
 
-Retrieve all workflow runs, optionally filtered by workflow and/or labels. Returns runs sorted by creation time (newest first).
+Retrieve all workflow runs, optionally filtered by workflow, status, and/or labels. Returns runs sorted by creation time (newest first).
 
 ```
-GET /runs[?workflow=NAME][&label=KEY=VALUE...]
+GET /runs[?workflow=NAME][&status=STATUS][&label=KEY=VALUE...]
 ```
 
 | Query Parameter | Description |
 |----------------|-------------|
 | `workflow` | Filter by workflow name |
+| `status` | Filter by run status: `pending`, `running`, `completed`, `failed`, `cancelled`, `compensated`, or `compensate_failed`. An unrecognized value returns `400` listing the accepted set. |
 | `label` | Filter by a run label, `key=value`. Repeatable — every `label` param given must match (AND semantics). A param with no `=` returns `400`. |
 
-Filters compose: `workflow` and `label` narrow the same query together, not as alternatives. Filtering is applied within a bounded most-recent-runs window server-side, so a filtered result (here and on Count) may miss matches older than that window until the time-ordered index in #453 lands. Cursor-based pagination is not part of this change and is also tracked by #453.
+Filters compose: `workflow`, `status`, and `label` narrow the same query together, not as alternatives. Filtering is applied within a bounded most-recent-runs window server-side, so a filtered result (here and on Count) may miss matches older than that window until the time-ordered index in #453 lands. Cursor-based pagination is not part of this change and is also tracked by #453.
 
 **Response:** `200 OK`
 
@@ -135,7 +136,7 @@ Filters compose: `workflow` and `label` narrow the same query together, not as a
 **curl:**
 ```bash
 curl http://localhost:8080/runs?workflow=code-review
-curl 'http://localhost:8080/runs?label=repo=dagnats&label=pr=42'
+curl 'http://localhost:8080/runs?status=failed&label=repo=dagnats&label=pr=42'
 ```
 
 ### Start Run

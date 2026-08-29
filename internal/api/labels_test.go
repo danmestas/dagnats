@@ -275,3 +275,54 @@ func TestBulkCancelByLabel(t *testing.T) {
 		t.Fatal("non-matching-label run must not be cancelled")
 	}
 }
+
+// TestGetRunsFilterByStatus proves ?status= narrows GET /runs to runs in
+// that RunStatus, composes with ?label= (AND), and rejects an unknown
+// status value with 400 (#629 review follow-up).
+func TestGetRunsFilterByStatus(t *testing.T) {
+	svc, server := newLabelsRestFixture(t, "status-filter-wf")
+
+	completed, err := svc.StartRunWithLabels(
+		context.Background(), "status-filter-wf", nil,
+		map[string]string{"batch": "x"},
+	)
+	if err != nil {
+		t.Fatalf("StartRunWithLabels(completed): %v", err)
+	}
+	waitRunStatus(t, svc, completed, dag.RunStatusCompleted)
+
+	failed, err := svc.StartRunWithLabels(
+		context.Background(), "status-filter-wf", nil,
+		map[string]string{"batch": "x"},
+	)
+	if err != nil {
+		t.Fatalf("StartRunWithLabels(failed): %v", err)
+	}
+	failedRun := waitRunStatus(t, svc, failed, dag.RunStatusCompleted)
+	failedRun.Status = dag.RunStatusFailed
+	if err := svc.store.Save(context.Background(), failedRun); err != nil {
+		t.Fatalf("force failed state: %v", err)
+	}
+
+	// Positive: ?status=failed returns only the forced-failed run.
+	runs, resp := getRuns(t, server.URL, "?status=failed")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(runs) != 1 || runs[0].RunID != failed {
+		t.Fatalf("status=failed runs = %+v, want exactly [%s]", runs, failed)
+	}
+
+	// Positive: status= composes with label= (AND) — both runs share
+	// batch=x, so status=failed&label=batch=x still narrows to one.
+	both, _ := getRuns(t, server.URL, "?status=failed&label=batch=x")
+	if len(both) != 1 || both[0].RunID != failed {
+		t.Fatalf("status+label AND = %+v, want exactly [%s]", both, failed)
+	}
+
+	// Negative: an unknown status value is rejected with 400.
+	_, bad := getRuns(t, server.URL, "?status=bogus")
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=bogus status = %d, want 400", bad.StatusCode)
+	}
+}

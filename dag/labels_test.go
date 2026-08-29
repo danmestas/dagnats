@@ -66,3 +66,49 @@ func TestValidateLabelsErrorNamesOffendingKey(t *testing.T) {
 		t.Fatalf("error should name the offending key, got: %v", err)
 	}
 }
+
+// TestValidateLabelsErrorIsDeterministicAcrossViolations proves that with
+// two invalid keys present, ValidateLabels always names the lexically
+// first one -- map iteration order is not stable across calls, so
+// without sorting this test would flake. Run repeatedly to make a
+// regression to map-order iteration visible rather than a coin flip.
+func TestValidateLabelsErrorIsDeterministicAcrossViolations(t *testing.T) {
+	labels := map[string]string{
+		"zzz bad": "v",
+		"aaa bad": "v",
+	}
+	for i := 0; i < 20; i++ {
+		err := ValidateLabels(labels)
+		if err == nil {
+			t.Fatal("expected error for two invalid keys, got nil")
+		}
+		// Positive: the lexically-first offending key is always named.
+		if !strings.Contains(err.Error(), "aaa bad") {
+			t.Fatalf("iteration %d: error = %v, want it to name %q",
+				i, err, "aaa bad")
+		}
+		// Negative: the other invalid key is never named instead.
+		if strings.Contains(err.Error(), "zzz bad") {
+			t.Fatalf("iteration %d: error = %v, must not name %q",
+				i, err, "zzz bad")
+		}
+	}
+}
+
+func TestLabelsMatch(t *testing.T) {
+	have := map[string]string{"tenant": "a", "region": "us"}
+	// Positive: nil/empty want matches anything; a subset want matches.
+	if !LabelsMatch(nil, have) {
+		t.Fatal("nil want should match any run")
+	}
+	if !LabelsMatch(map[string]string{"tenant": "a"}, have) {
+		t.Fatal("matching subset should match")
+	}
+	// Negative: a wrong value, or a key absent from have, must not match.
+	if LabelsMatch(map[string]string{"tenant": "b"}, have) {
+		t.Fatal("mismatched value must not match")
+	}
+	if LabelsMatch(map[string]string{"stage": "prod"}, have) {
+		t.Fatal("key absent from have must not match")
+	}
+}

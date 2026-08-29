@@ -537,10 +537,8 @@ func (f RunsFilter) matches(run dag.WorkflowRun) bool {
 	if !f.Since.IsZero() && run.CreatedAt.Before(f.Since) {
 		return false
 	}
-	for key, value := range f.Labels {
-		if run.Labels[key] != value {
-			return false
-		}
+	if !dag.LabelsMatch(f.Labels, run.Labels) {
+		return false
 	}
 	return true
 }

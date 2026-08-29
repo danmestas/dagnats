@@ -11,6 +11,7 @@ package dag
 import (
 	"fmt"
 	"regexp"
+	"sort"
 )
 
 // LabelsCountMax bounds how many labels a single run may carry.
@@ -30,7 +31,10 @@ var labelKeyPattern = regexp.MustCompile(`^[a-z0-9_.-]+$`)
 // ValidateLabels reports whether labels is a legal set of run labels. A
 // nil or empty map is valid -- labels are optional. On the first
 // violation it returns a descriptive error naming the offending key (or
-// the label count, when the count itself is the violation).
+// the label count, when the count itself is the violation). Keys are
+// checked in sorted order so the reported "first violation" is
+// deterministic across calls -- map iteration order is not, and two
+// invalid keys in the same input must always name the same one.
 func ValidateLabels(labels map[string]string) error {
 	if len(labels) == 0 {
 		return nil
@@ -41,8 +45,13 @@ func ValidateLabels(labels map[string]string) error {
 			LabelsCountMax, len(labels),
 		)
 	}
-	for key, value := range labels {
-		if err := validateLabel(key, value); err != nil {
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if err := validateLabel(key, labels[key]); err != nil {
 			return err
 		}
 	}
@@ -72,4 +81,33 @@ func validateLabel(key, value string) error {
 		)
 	}
 	return nil
+}
+
+// LabelsMatch reports whether every key/value in want is present in have
+// with an equal value (AND semantics) -- a nil/empty want matches
+// anything. This is the single deep entry point for label-filter
+// matching: RunsFilter (GET /runs, CountRuns) and BulkCancelRequest
+// (POST /runs/cancel) both narrow by label and must apply the same
+// semantics rather than maintaining two copies of this loop.
+//
+// want must already be a validated filter (len(want) <= LabelsCountMax)
+// -- callers run it through ValidateLabels before matching, the same way
+// a run's own Labels are validated before being stored. have is a
+// stored run's Labels and carries the same guarantee from run-creation
+// time. Both are true invariants by the time a run is filterable, not
+// user input reachable from here, so violations panic rather than
+// silently mismatching.
+func LabelsMatch(want, have map[string]string) bool {
+	if len(want) > LabelsCountMax {
+		panic("LabelsMatch: want exceeds LabelsCountMax; caller must validate first")
+	}
+	if len(have) > LabelsCountMax {
+		panic("LabelsMatch: have exceeds LabelsCountMax; run was stored unvalidated")
+	}
+	for key, value := range want {
+		if have[key] != value {
+			return false
+		}
+	}
+	return true
 }

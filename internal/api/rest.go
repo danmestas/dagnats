@@ -231,12 +231,14 @@ func handleListWorkflows(
 }
 
 // handleListRuns returns all workflow runs as a JSON array.
-// Supports optional ?workflow= filter, repeatable ?label=key=value
-// filters (#629, AND semantics — every given label must match), and
-// ?limit= row cap. limit is clamped at MaxRunsLimitCeiling server-side;
-// omitted/invalid values fall back to DefaultRunsLimit. NOTE: this filter
-// is applied within the bounded ScanRuns window (see RunsFilter and
-// #453) — a filtered result may miss matches older than that window.
+// Supports optional ?workflow= filter, ?status= (a dag.RunStatus name;
+// unknown value returns 400 listing the accepted set), repeatable
+// ?label=key=value filters (#629, AND semantics — every given label must
+// match, composing with ?status=), and ?limit= row cap. limit is clamped
+// at MaxRunsLimitCeiling server-side; omitted/invalid values fall back
+// to DefaultRunsLimit. NOTE: this filter is applied within the bounded
+// ScanRuns window (see RunsFilter and #453) — a filtered result may miss
+// matches older than that window.
 func handleListRuns(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 ) {
@@ -247,15 +249,28 @@ func handleListRuns(
 		panic("handleListRuns: r must not be nil")
 	}
 	workflowFilter := r.URL.Query().Get("workflow")
+	state, stateErr := parseStatusQuery(r.URL.Query().Get("status"))
+	if stateErr != nil {
+		http.Error(w, stateErr.Error(), http.StatusBadRequest)
+		return
+	}
 	labels, labelErr := parseLabelQuery(r.URL.Query()["label"])
 	if labelErr != nil {
 		http.Error(w, labelErr.Error(), http.StatusBadRequest)
 		return
 	}
+	// Bound the filter itself the same way a run's own labels are bounded
+	// at start time -- this is also what lets dag.LabelsMatch treat
+	// len(want) <= LabelsCountMax as a true invariant rather than
+	// user-input it has to defend against on every call.
+	if err := dag.ValidateLabels(labels); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	limit := parseLimitQuery(r.URL.Query().Get("limit"))
 	runs, err := svc.ScanRuns(
 		r.Context(),
-		RunsFilter{Workflow: workflowFilter, Labels: labels},
+		RunsFilter{Workflow: workflowFilter, State: state, Labels: labels},
 		limit,
 	)
 	if err != nil {
@@ -268,6 +283,21 @@ func handleListRuns(
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
 	}
+}
+
+// parseStatusQuery parses the optional ?status= query param into a
+// *dag.RunStatus via the single deep entry point dag.ParseRunStatus,
+// which already reports the accepted value set on an unknown string.
+// Empty input means "no status filter" and returns (nil, nil).
+func parseStatusQuery(raw string) (*dag.RunStatus, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	status, err := dag.ParseRunStatus(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &status, nil
 }
 
 // parseLabelQuery parses repeatable ?label=key=value query params into

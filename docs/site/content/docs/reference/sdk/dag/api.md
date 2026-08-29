@@ -19,6 +19,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func DefHash\(def WorkflowDef\) string](<#DefHash>)
 - [func ExtractDotPath\(path string, data \[\]byte\) \(any, error\)](<#ExtractDotPath>)
 - [func IsComplete\(def WorkflowDef, completed map\[string\]bool\) bool](<#IsComplete>)
+- [func LabelsMatch\(want, have map\[string\]string\) bool](<#LabelsMatch>)
 - [func MarshalConfig\(cfg interface\{\}\) json.RawMessage](<#MarshalConfig>)
 - [func ResolveInput\(step StepDef, steps map\[string\]StepState, runInput ...json.RawMessage\) \(\[\]byte, error\)](<#ResolveInput>)
 - [func ResolvePriority\(cfg \*PriorityConfig, input json.RawMessage\) int](<#ResolvePriority>)
@@ -217,6 +218,17 @@ func IsComplete(def WorkflowDef, completed map[string]bool) bool
 
 IsComplete returns true when every step in the definition has been completed or skipped. Auxiliary steps \(OnFailure/Compensate targets\) that were never triggered don't block completion — they are expected to remain Pending in the happy path.
 
+<a name="LabelsMatch"></a>
+## func [LabelsMatch](<https://github.com/danmestas/dagnats/blob/main/dag/labels.go#L100>)
+
+```go
+func LabelsMatch(want, have map[string]string) bool
+```
+
+LabelsMatch reports whether every key/value in want is present in have with an equal value \(AND semantics\) \-\- a nil/empty want matches anything. This is the single deep entry point for label\-filter matching: RunsFilter \(GET /runs, CountRuns\) and BulkCancelRequest \(POST /runs/cancel\) both narrow by label and must apply the same semantics rather than maintaining two copies of this loop.
+
+want must already be a validated filter \(len\(want\) \<= LabelsCountMax\) \-\- callers run it through ValidateLabels before matching, the same way a run's own Labels are validated before being stored. have is a stored run's Labels and carries the same guarantee from run\-creation time. Both are true invariants by the time a run is filterable, not user input reachable from here, so violations panic rather than silently mismatching.
+
 <a name="MarshalConfig"></a>
 ## func [MarshalConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L53>)
 
@@ -283,13 +295,13 @@ func ValidateFragment(fragment []StepDef, cfg PlannerConfig, existingIDs map[str
 ValidateFragment checks a planner\-generated DAG fragment against bounds. All IDs must be unique and not collide with existing steps. Tasks must be non\-empty and in AllowedTasks if configured. Dependencies must reference only within\-fragment steps.
 
 <a name="ValidateLabels"></a>
-## func [ValidateLabels](<https://github.com/danmestas/dagnats/blob/main/dag/labels.go#L34>)
+## func [ValidateLabels](<https://github.com/danmestas/dagnats/blob/main/dag/labels.go#L38>)
 
 ```go
 func ValidateLabels(labels map[string]string) error
 ```
 
-ValidateLabels reports whether labels is a legal set of run labels. A nil or empty map is valid \-\- labels are optional. On the first violation it returns a descriptive error naming the offending key \(or the label count, when the count itself is the violation\).
+ValidateLabels reports whether labels is a legal set of run labels. A nil or empty map is valid \-\- labels are optional. On the first violation it returns a descriptive error naming the offending key \(or the label count, when the count itself is the violation\). Keys are checked in sorted order so the reported "first violation" is deterministic across calls \-\- map iteration order is not, and two invalid keys in the same input must always name the same one.
 
 <a name="ValidateSchema"></a>
 ## func [ValidateSchema](<https://github.com/danmestas/dagnats/blob/main/dag/schema.go#L11-L13>)

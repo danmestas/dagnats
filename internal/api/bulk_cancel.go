@@ -215,7 +215,7 @@ func filterRuns(
 			run.CreatedAt.After(before) {
 			continue
 		}
-		if !matchesLabels(run.Labels, labels) {
+		if !dag.LabelsMatch(labels, run.Labels) {
 			continue
 		}
 		matched = append(matched, run)
@@ -226,18 +226,6 @@ func filterRuns(
 		)
 	})
 	return matched
-}
-
-// matchesLabels reports whether every key/value in filter is present in
-// run with an equal value (AND semantics). An empty/nil filter matches
-// every run.
-func matchesLabels(run, filter map[string]string) bool {
-	for key, value := range filter {
-		if run[key] != value {
-			return false
-		}
-	}
-	return true
 }
 
 // matchesStatusFilter checks if a run status matches the filter.
