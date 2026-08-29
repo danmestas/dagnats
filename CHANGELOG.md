@@ -51,7 +51,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and recreated with the new filter, logged once at `warn`. This is
   live, not a maintenance-window migration step. A durable whose filter
   differs for a genuinely different task type still collides loudly,
-  unchanged.
+  unchanged. **Caveat:** any message already published under the old
+  scheme to a subject with an extra token beyond what `*` now matches
+  (e.g. `task.{type}.{extra}.{runID}` from a pre-upgrade dispatch the
+  old `>` filter would have drained but the new one-token `*` does not)
+  is no longer delivered to that durable — it sits on TASK_QUEUES until
+  the stream's `MaxAge` retention expires it, rather than being picked
+  up. This only affects messages published in the narrow window before
+  a deployment's first upgraded process claims the durable; steady
+  state is unaffected.
 - **`dagnats sidecar install` could never fetch `dagnats-mcp-duckdb` (#621).**
   The release workflow built the four tarballs but only uploaded them as
   workflow artifacts, expecting an operator to attach them by hand — which

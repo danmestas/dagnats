@@ -45,6 +45,39 @@ func TestValidTaskType(t *testing.T) {
 	}
 }
 
+func TestValidWorkerGroup(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"simple", "gpu", false},
+		{"hyphen_underscore_digit", "gpu-fast_1", false},
+		{"empty", "", true},
+		{"internal_space", "gpu fast", true},
+		{"wildcard_star", "gpu*", true},
+		{"wildcard_gt", "gpu>", true},
+		// Unlike ValidTaskType, a single dot anywhere is rejected —
+		// WorkerGroup is never a dotted namespace.
+		{"single_dot_rejected", "gpu.fast", true},
+		{"leading_dot_rejected", ".gpu", true},
+		{"trailing_dot_rejected", "gpu.", true},
+		{"129_chars", strings.Repeat("a", 129), true},
+		{"128_chars_ok", strings.Repeat("a", 128), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidWorkerGroup(tc.in)
+			if tc.wantErr && err == nil {
+				t.Fatalf("ValidWorkerGroup(%q) = nil, want an error", tc.in)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("ValidWorkerGroup(%q) = %v, want nil", tc.in, err)
+			}
+		})
+	}
+}
+
 // TestValidateRejectsInvalidStepTask proves dag.Validate itself — not just
 // ci/compile.go's mirrored check — refuses a step whose Task is unsafe to
 // publish verbatim, and that the error names the offending step so a
@@ -155,5 +188,62 @@ func TestValidateRejectsDottedTaskWithWorkerGroup(t *testing.T) {
 			"Validate(undotted task, worker_group set) = %v, want nil",
 			err,
 		)
+	}
+}
+
+// TestValidateRejectsDottedWorkerGroup is the regression guard for the
+// round-2 review finding: {Task:"render", WorkerGroup:"gpu.fast"} and
+// {Task:"render.gpu.fast"} (no group) both used to validate and derive
+// the SAME filter subject ("task.render.gpu.fast.*") and durable name
+// ("workers-render-gpu-fast") — the dotted-Task+WorkerGroup combination
+// check alone didn't catch this because the ambiguous half here is the
+// WorkerGroup, not the Task. WorkerGroup must be a single subject token
+// (no dots) ALWAYS, regardless of whether Task is dotted — closing this
+// as one rule rather than adding another case to a list.
+func TestValidateRejectsDottedWorkerGroup(t *testing.T) {
+	// Positive: a dotted worker_group is rejected even though Task
+	// itself is undotted.
+	def := WorkflowDef{Name: "dotted-group", Version: "1", Steps: []StepDef{
+		{
+			ID: "step-a", Task: "render", WorkerGroup: "gpu.fast",
+			Type: StepTypeNormal,
+		},
+	}}
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error for a dotted worker_group")
+	}
+	if !strings.Contains(err.Error(), `"step-a"`) {
+		t.Fatalf("Validate() error = %q, want it to name step %q",
+			err.Error(), "step-a")
+	}
+
+	// Mirror form: the equivalent all-in-Task spelling that would derive
+	// the identical filter/durable name stays legal on its own (dotted
+	// Task, no group) — proving the two forms no longer collide because
+	// the dotted-group form is rejected outright, not because both are
+	// now banned.
+	equivalentDottedTask := WorkflowDef{
+		Name: "dotted-task-equivalent", Version: "1",
+		Steps: []StepDef{
+			{ID: "step-a", Task: "render.gpu.fast", Type: StepTypeNormal},
+		},
+	}
+	if err := Validate(equivalentDottedTask); err != nil {
+		t.Fatalf(
+			"Validate(dotted task, no worker_group) = %v, want nil", err,
+		)
+	}
+
+	// Negative: an undotted worker_group is unaffected.
+	okDef := WorkflowDef{Name: "undotted-group", Version: "1",
+		Steps: []StepDef{
+			{
+				ID: "step-a", Task: "render", WorkerGroup: "gpu-fast",
+				Type: StepTypeNormal,
+			},
+		}}
+	if err := Validate(okDef); err != nil {
+		t.Fatalf("Validate(undotted worker_group) = %v, want nil", err)
 	}
 }

@@ -259,6 +259,14 @@ func TestFilterIsLegacyUpgrade(t *testing.T) {
 			FilterFor("render", "gpu"), LegacyFilterFor("render", "cpu"),
 			false,
 		},
+		{
+			// old is the legacy form of FilterFor("a", "") (no group),
+			// not of FilterFor("a", "b") — an extra "b" token in new
+			// must not be mistaken for old's legacy twin.
+			"extra_group_token_not_legacy",
+			"task.a.b.*", "task.a.>",
+			false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

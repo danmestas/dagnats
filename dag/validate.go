@@ -137,10 +137,7 @@ func validateStepReferences(
 		if err := validateSingleStep(step, ids); err != nil {
 			return err
 		}
-		if err := validateTaskType(step); err != nil {
-			return err
-		}
-		if err := validateWorkerGroup(step); err != nil {
+		if err := validateStepDispatch(step); err != nil {
 			return err
 		}
 		if err := validateWaitForEventStep(step, ids); err != nil {
@@ -222,15 +219,39 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 	return nil
 }
 
-// validateTaskType rejects a step whose Task is not safe to publish
-// verbatim as a NATS subject — see ValidTaskType. Steps of a type that
-// carries no task (Sleep, WaitForEvent, Approval, SubWorkflow) skip.
-func validateTaskType(step StepDef) error {
+// validateStepDispatch is the ONE place every charset/shape rule for a
+// step's dispatch-bound fields (Task, WorkerGroup) and their combination
+// is enforced — called from both dag.Validate (static steps, via
+// validateStepReferences) and dag.ValidateFragment (planner-generated
+// dynamic steps, via validateFragmentTasks) so the two paths cannot
+// drift (issue #674 and its follow-up review). Steps of a type that
+// carries no task (Sleep, WaitForEvent, Approval, SubWorkflow) skip —
+// see stepRequiresTask.
+//
+// Rules, in order:
+//  1. Task must satisfy ValidTaskType (dots ARE allowed — "dagger.call"
+//     is a production task type; FilterFor's exact-token anchor, not a
+//     charset restriction, keeps a dotted Task isolated from siblings).
+//  2. WorkerGroup, when set, must satisfy ValidWorkerGroup — the SAME
+//     charset rule as Task, but with dots additionally forbidden
+//     outright: StepSubject appends WorkerGroup as its own subject
+//     token, and a dot there is indistinguishable from the separator
+//     between Task and WorkerGroup, so a dotted WorkerGroup can derive
+//     the identical filter/durable name as an equivalent dotted Task.
+//  3. A dotted Task combined with a non-empty WorkerGroup is rejected
+//     even when the WorkerGroup itself is dot-free:
+//     consumername.FilterFor("render.gpu", "") and
+//     FilterFor("render", "gpu") derive the byte-identical filter
+//     subject AND durable name ("task.render.gpu.*",
+//     "workers-render-gpu"). Each half stays legal alone (a dotted,
+//     ungrouped Task; an undotted Task with a WorkerGroup) — only the
+//     combination on one step is rejected.
+func validateStepDispatch(step StepDef) error {
 	if step.ID == "" {
-		panic("validateTaskType: step ID is empty")
+		panic("validateStepDispatch: step ID is empty")
 	}
 	if step.Task == "" && stepRequiresTask(step.Type) {
-		panic("validateTaskType: step task is empty")
+		panic("validateStepDispatch: step task is empty")
 	}
 	if step.Task == "" {
 		return nil
@@ -238,32 +259,10 @@ func validateTaskType(step StepDef) error {
 	if err := ValidTaskType(step.Task); err != nil {
 		return fmt.Errorf("step %q has invalid task: %w", step.ID, err)
 	}
-	return nil
-}
-
-// validateWorkerGroup checks a step's WorkerGroup against the same
-// subject-token rule as ValidTaskType — StepSubject appends WorkerGroup
-// as its own token, between Task and the run ID
-// ("task.{Task}.{WorkerGroup}.{runID}"), so an unsafe WorkerGroup value
-// is exactly as dangerous as an unsafe Task (issue #674).
-//
-// It also rejects the combination of a dotted Task with a non-empty
-// WorkerGroup: consumername.FilterFor("render.gpu", "") and
-// FilterFor("render", "gpu") derive the byte-identical filter subject
-// AND durable name ("task.render.gpu.*", "workers-render-gpu"), so a
-// workflow that pairs a dotted Task with a WorkerGroup can silently
-// collide with an unrelated ungrouped step of the dotted name. Each
-// half is fine on its own (a dotted, ungrouped Task; an undotted Task
-// with a WorkerGroup) — only the combination on one step is rejected,
-// closing the ambiguity at register time instead of documenting it.
-func validateWorkerGroup(step StepDef) error {
-	if step.ID == "" {
-		panic("validateWorkerGroup: step ID is empty")
-	}
 	if step.WorkerGroup == "" {
 		return nil
 	}
-	if err := ValidTaskType(step.WorkerGroup); err != nil {
+	if err := ValidWorkerGroup(step.WorkerGroup); err != nil {
 		return fmt.Errorf(
 			"step %q has invalid worker_group: %w", step.ID, err,
 		)

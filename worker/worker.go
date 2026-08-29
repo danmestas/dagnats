@@ -711,14 +711,37 @@ func (w *Worker) subscribePullConsumer(
 
 	tt := taskType
 	h := handler
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		w.handleMessage(tt, h, msg)
-	})
+	cc, err := cons.Consume(
+		func(msg jetstream.Msg) {
+			w.handleMessage(tt, h, msg)
+		},
+		jetstream.ConsumeErrHandler(consumeErrHandler(durable)),
+	)
 	if err != nil {
 		panic("subscribePullConsumer: Consume for " + durable + ": " +
 			err.Error())
 	}
 	return cc
+}
+
+// consumeErrHandler logs Consume() background-loop errors instead of
+// letting nats.go's nil default silently discard them. This matters
+// concretely for a durable racing consumer_collision_xprocess.go's
+// legacy-filter upgrade: if a sibling process deletes this consumer out
+// from under an in-flight Consume (the exact bug upgradeLegacyDurable's
+// re-fetch-before-delete now prevents in the steady case, but a wider
+// TOCTOU window can still exist — see its doc comment), an unhandled
+// "consumer deleted" error would otherwise vanish instead of surfacing.
+func consumeErrHandler(label string) jetstream.ConsumeErrHandlerFunc {
+	if label == "" {
+		panic("consumeErrHandler: label must not be empty")
+	}
+	return func(_ jetstream.ConsumeContext, err error) {
+		if err == nil {
+			panic("consumeErrHandler: err must not be nil")
+		}
+		slog.Warn("consumer error", "consumer", label, "error", err)
+	}
 }
 
 // cleanupOrphanEphemerals deletes pre-existing ephemeral consumers on
@@ -824,9 +847,12 @@ func (w *Worker) createStickyConsumer(
 	}
 	tt := taskType
 	h := handler
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		w.handleMessage(tt, h, msg)
-	})
+	cc, err := cons.Consume(
+		func(msg jetstream.Msg) {
+			w.handleMessage(tt, h, msg)
+		},
+		jetstream.ConsumeErrHandler(consumeErrHandler(subject)),
+	)
 	if err != nil {
 		return nil
 	}

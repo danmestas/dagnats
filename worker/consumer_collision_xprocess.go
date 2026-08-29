@@ -65,20 +65,7 @@ func assertNoCrossProcessCollision(
 			continue
 		}
 		if consumername.FilterIsLegacyUpgrade(filter, info.Config.FilterSubject) {
-			slog.Warn(
-				"auto-upgrading legacy consumer filter (issue #674)",
-				"durable", durable,
-				"old_filter", info.Config.FilterSubject,
-				"new_filter", filter,
-			)
-			if err := stream.DeleteConsumer(ctx, durable); err != nil &&
-				!errors.Is(err, jetstream.ErrConsumerNotFound) {
-				panic(
-					"assertNoCrossProcessCollision: DeleteConsumer " +
-						"for legacy upgrade of " + durable + ": " +
-						err.Error(),
-				)
-			}
+			upgradeLegacyDurable(ctx, stream, durable, filter)
 			continue
 		}
 		panic(fmt.Sprintf(
@@ -91,5 +78,77 @@ func assertNoCrossProcessCollision(
 	}
 	if err := iter.Err(); err != nil {
 		panic("assertNoCrossProcessCollision: iterator: " + err.Error())
+	}
+}
+
+// upgradeLegacyDurable deletes durable so the caller's subsequent
+// CreateOrUpdateConsumer recreates it with the new "*"-anchored filter.
+//
+// Deliberately does NOT trust the ListConsumers snapshot that led here:
+// two sibling processes can both observe the same stale legacy durable
+// and both start upgrading it concurrently. If B blindly deleted on the
+// strength of its snapshot, it could delete the durable AFTER A already
+// recreated it — killing A's live, freshly upgraded consumer instead of
+// the stale one either of them meant to replace. Re-fetching the
+// durable's CURRENT FilterSubject immediately before deleting closes
+// that window down to the single DeleteConsumer call: if another
+// process already finished the upgrade (current == filter) or the
+// durable is simply gone (a sibling deleted it and hasn't recreated it
+// yet), this is a no-op; only a durable STILL carrying the legacy
+// filter at the moment of the re-check gets deleted.
+func upgradeLegacyDurable(
+	ctx context.Context, stream jetstream.Stream, durable, filter string,
+) {
+	if durable == "" {
+		panic("upgradeLegacyDurable: durable must not be empty")
+	}
+	if filter == "" {
+		panic("upgradeLegacyDurable: filter must not be empty")
+	}
+
+	cons, err := stream.Consumer(ctx, durable)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			// A sibling already deleted it; nothing left for us to do.
+			return
+		}
+		panic(
+			"upgradeLegacyDurable: Consumer lookup for " + durable +
+				": " + err.Error(),
+		)
+	}
+	info := cons.CachedInfo()
+	if info == nil {
+		panic(
+			"upgradeLegacyDurable: Consumer " + durable +
+				" returned no cached config",
+		)
+	}
+	current := info.Config.FilterSubject
+	if current == filter {
+		// A sibling already completed the upgrade. Idempotent no-op.
+		return
+	}
+	if !consumername.FilterIsLegacyUpgrade(filter, current) {
+		// The durable no longer matches the legacy shape we
+		// snapshotted — something else changed it between our scan and
+		// now. Don't delete state we no longer understand; leave it for
+		// the caller's CreateOrUpdateConsumer (or the next
+		// assertNoCrossProcessCollision pass) to react to.
+		return
+	}
+
+	slog.Warn(
+		"auto-upgrading legacy consumer filter (issue #674)",
+		"durable", durable,
+		"old_filter", current,
+		"new_filter", filter,
+	)
+	if err := stream.DeleteConsumer(ctx, durable); err != nil &&
+		!errors.Is(err, jetstream.ErrConsumerNotFound) {
+		panic(
+			"upgradeLegacyDurable: DeleteConsumer for legacy upgrade " +
+				"of " + durable + ": " + err.Error(),
+		)
 	}
 }

@@ -1,6 +1,9 @@
 package dag
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // taskTypeLenMax bounds a StepDef.Task's length. A task type feeds
 // directly into a NATS subject token (internal/engine/task_publisher.go's
@@ -65,6 +68,36 @@ func ValidTaskType(s string) error {
 				s, string(c), i,
 			)
 		}
+	}
+	return nil
+}
+
+// ValidWorkerGroup reports whether s is safe to use as a StepDef.WorkerGroup.
+// StepSubject appends WorkerGroup as its OWN subject token
+// ("task.{Task}.{WorkerGroup}.{runID}"), so it must satisfy ValidTaskType's
+// charset/length/leading-trailing-dot rule AND additionally contain no dots
+// at all — unlike Task, WorkerGroup is never a dotted namespace.
+//
+// Dots are banned here (not merely anchored around, the way FilterFor
+// isolates a dotted Task) because a dot in WorkerGroup is indistinguishable
+// from the separator FilterFor/StepSubject place between Task and
+// WorkerGroup: FilterFor("render", "gpu.fast") and FilterFor("render.gpu",
+// "fast") both derive "task.render.gpu.fast.*", and NameFor collapses both
+// to "workers-render-gpu-fast" — a dotted group silently collides with an
+// unrelated dotted-task/group split. Banning dots in WorkerGroup outright
+// (rather than case-by-case) closes that regardless of what Task looks
+// like; see validateStepDispatch's combination check for the remaining
+// case where Task itself is dotted and WorkerGroup is set.
+func ValidWorkerGroup(s string) error {
+	if err := ValidTaskType(s); err != nil {
+		return err
+	}
+	if strings.Contains(s, ".") {
+		return fmt.Errorf(
+			"worker group %q must not contain '.': worker_group is "+
+				"always a single subject token, never a dotted namespace",
+			s,
+		)
 	}
 	return nil
 }
