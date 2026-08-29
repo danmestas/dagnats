@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/runid"
+	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -302,6 +303,14 @@ func (s *Store) Mint(
 	}
 
 	id = runid.New()
+	if id == worker.AdminTokenID {
+		// Unreachable in practice -- ids are nuids, which can never
+		// literally spell "admin" -- but #650 relies on this value
+		// being reserved to mark bridge admin/dev-mode directory
+		// entries, so a collision must fail loudly rather than let a
+		// minted token silently impersonate the admin marker.
+		panic("Mint: minted id collided with worker.AdminTokenID")
+	}
 	secret, secretHash, err := mintSecret()
 	if err != nil {
 		return "", "", err

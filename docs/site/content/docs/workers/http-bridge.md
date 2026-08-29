@@ -34,12 +34,18 @@ Registers an HTTP worker and opens an SSE heartbeat stream. The connection stays
 The worker appears in the **workers** KV directory alongside Go native workers. On disconnect, the bridge deregisters the worker automatically.
 
 `worker_id` is claimed by the first token that registers it: once an entry exists with a
-non-empty token identity, only that same token (or the admin bearer) may re-register that
-`worker_id` -- a restart or heartbeat re-register from the owning token succeeds, but a
-different token attempting to take over the id gets `409 Conflict` and the existing entry is
-left untouched. The admin bearer can always take over any `worker_id`. Entries with no token
-identity -- written before per-token identity existed, or by a dev-mode/native worker -- have
-no owner and are claimable by the first token that registers them.
+non-empty token identity, only that same token (or the admin bearer) may re-register or
+disconnect-clear that `worker_id` -- a restart or heartbeat re-register from the owning token
+succeeds, but a different token attempting to take over the id gets `409 Conflict` and the
+existing entry is left untouched. The connect handler, the periodic heartbeat re-register, and
+disconnect cleanup all go through the same revision-guarded write, so two tokens racing an
+unclaimed id can't both win it (exactly one gets `200`, the loser gets `409`), and a heartbeat
+can never resurrect a `worker_id` an admin has since taken over. The admin bearer -- and every
+caller in dev mode, which has no token identity to enforce -- can always take over or delete
+any `worker_id`; those entries are written with the reserved `admin` token identity so a later
+worker token can't reclaim them the way an unowned entry can. Entries with no token identity at
+all -- a native Go worker, which never goes through the bridge -- are outside this scope
+entirely: they're claimable, and deletable, by any bridge token, in both directions.
 
 ### POST /v1/tasks/poll
 

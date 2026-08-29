@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -159,10 +160,10 @@ func TestConnectWorkerIDOwnershipEnforced(t *testing.T) {
 		t.Fatalf("admin connect status = %d, want 200", respAdmin.StatusCode)
 	}
 	entryAfterAdmin := findWorker(t, dir, "w1")
-	if entryAfterAdmin.TokenID != "" {
+	if entryAfterAdmin.TokenID != worker.AdminTokenID {
 		t.Fatalf(
-			"entry.TokenID = %q after admin takeover, want empty",
-			entryAfterAdmin.TokenID,
+			"entry.TokenID = %q after admin takeover, want %q",
+			entryAfterAdmin.TokenID, worker.AdminTokenID,
 		)
 	}
 	respAdmin.Body.Close()
@@ -331,10 +332,10 @@ func TestConnectDeregisterOwnershipScoped(t *testing.T) {
 		t.Fatalf("admin connect status = %d, want 200", respAdmin.StatusCode)
 	}
 	entry, ok = workerPresent(t, dir, "w1")
-	if !ok || entry.TokenID != "" {
+	if !ok || entry.TokenID != worker.AdminTokenID {
 		t.Fatalf(
-			"entry after admin takeover = %+v, ok=%v, want TokenID=\"\"",
-			entry, ok,
+			"entry after admin takeover = %+v, ok=%v, want TokenID=%q",
+			entry, ok, worker.AdminTokenID,
 		)
 	}
 
@@ -347,10 +348,10 @@ func TestConnectDeregisterOwnershipScoped(t *testing.T) {
 	if !ok {
 		t.Fatal("w1 was deleted by A's stale disconnect, want it to remain")
 	}
-	if entry.TokenID != "" {
+	if entry.TokenID != worker.AdminTokenID {
 		t.Fatalf(
-			"entry.TokenID = %q after A's stale disconnect, want \"\" (still admin's)",
-			entry.TokenID,
+			"entry.TokenID = %q after A's stale disconnect, want %q (still admin's)",
+			entry.TokenID, worker.AdminTokenID,
 		)
 	}
 
@@ -413,5 +414,306 @@ func TestConnectDeregisterDevModeAlwaysDeletes(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if _, ok := workerPresent(t, dir, "dev-w1"); ok {
 		t.Fatal("dev-w1 still present after disconnect, want it removed")
+	}
+}
+
+// raceConnectResult is one goroutine's outcome from raceConnect, sent
+// back over a channel so the connecting goroutines never call t.Fatal
+// themselves (unsafe/unsupported from a non-test goroutine).
+type raceConnectResult struct {
+	idx    int
+	resp   *http.Response
+	cancel context.CancelFunc
+	err    error
+}
+
+// raceConnect is connectWorker without the *testing.T dependency, so
+// it's safe to call concurrently from goroutines that are not the
+// test's own goroutine.
+func raceConnect(baseURL, bearer, workerID string) (*http.Response, context.CancelFunc, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	body := fmt.Sprintf(
+		`{"worker_id":%q,"task_types":["echo"],"max_tasks":1}`,
+		workerID,
+	)
+	req, err := http.NewRequestWithContext(
+		ctx, "POST", baseURL+"/v1/workers/connect", strings.NewReader(body),
+	)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // caller closes
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return resp, cancel, nil
+}
+
+// TestConnectConcurrentClaimExactlyOneWinner pins RegisterOwned's
+// revision guard (#650 round 3, MAJOR #2): the register-time ownership
+// check alone (Get, then a plain Put) leaves a window where two
+// tokens racing a fresh worker_id both pass the Get and the later Put
+// wins, silently overwriting the earlier one instead of rejecting it.
+// N distinct tokens connect the same never-before-seen worker_id
+// concurrently; exactly one may win (200) and every other racer must
+// see 409, with the directory entry left owned by the winner alone.
+func TestConnectConcurrentClaimExactlyOneWinner(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := openTokenStore(t, js)
+
+	b := newTestBridge(t, nc)
+	b.token = "admin-secret"
+	b.SetTokenStore(store)
+	ts := httptest.NewServer(b.Handler())
+	t.Cleanup(ts.Close)
+
+	const racerCount = 8
+	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer mintCancel()
+	ids := make([]string, racerCount)
+	bearers := make([]string, racerCount)
+	for i := range racerCount {
+		id, bearer, err := store.Mint(
+			mintCtx, fmt.Sprintf("racer-%d", i), []string{"echo"}, "tester",
+		)
+		if err != nil {
+			t.Fatalf("Mint racer %d: %v", i, err)
+		}
+		ids[i] = id
+		bearers[i] = bearer
+	}
+
+	results := make(chan raceConnectResult, racerCount)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range racerCount {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			resp, cancel, err := raceConnect(ts.URL, bearers[idx], "race-w1")
+			results <- raceConnectResult{idx: idx, resp: resp, cancel: cancel, err: err}
+		}(i)
+	}
+	close(start)
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	statuses := make([]int, racerCount)
+	var cleanups []func()
+	for res := range results {
+		if res.err != nil {
+			t.Fatalf("racer %d: connect request: %v", res.idx, res.err)
+		}
+		statuses[res.idx] = res.resp.StatusCode
+		resp, cancel := res.resp, res.cancel
+		cleanups = append(cleanups, func() {
+			resp.Body.Close()
+			cancel()
+		})
+	}
+	t.Cleanup(func() {
+		for _, c := range cleanups {
+			c()
+		}
+	})
+
+	winners := 0
+	winnerIdx := -1
+	for i, code := range statuses {
+		switch code {
+		case http.StatusOK:
+			winners++
+			winnerIdx = i
+		case http.StatusConflict:
+			// expected for every loser
+		default:
+			t.Fatalf("racer %d unexpected status %d", i, code)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf(
+			"winners = %d, want exactly 1 (statuses=%v)", winners, statuses,
+		)
+	}
+
+	dir := worker.NewDirectory(js)
+	entry, ok := workerPresent(t, dir, "race-w1")
+	if !ok || entry.TokenID != ids[winnerIdx] {
+		t.Fatalf(
+			"entry after race = %+v, ok=%v, want TokenID=%q",
+			entry, ok, ids[winnerIdx],
+		)
+	}
+}
+
+// TestHeartbeatStopsAfterOwnershipTakeover pins the #650 round 3
+// BLOCKER: the heartbeat loop used to replay a plain, unguarded Put
+// of its connect-time TokenID every tick, with no ownership check, no
+// revision guard, and a swallowed error -- resurrecting a worker_id
+// an admin had already taken over on the very next tick. Overrides
+// the package's heartbeatInterval to observe several ticks inside a
+// bounded wait instead of the real 25s cadence.
+func TestHeartbeatStopsAfterOwnershipTakeover(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := openTokenStore(t, js)
+
+	b := newTestBridge(t, nc)
+	b.token = "admin-secret"
+	b.SetTokenStore(store)
+	ts := httptest.NewServer(b.Handler())
+	t.Cleanup(ts.Close)
+
+	origInterval := heartbeatInterval
+	heartbeatInterval = 200 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = origInterval })
+
+	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer mintCancel()
+	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	if err != nil {
+		t.Fatalf("Mint A: %v", err)
+	}
+
+	dir := worker.NewDirectory(js)
+
+	respA, cancelA := connectWorker(t, ts.URL, bearerA, "w1")
+	t.Cleanup(cancelA)
+	if respA.StatusCode != http.StatusOK {
+		t.Fatalf("A connect status = %d, want 200", respA.StatusCode)
+	}
+	entry, ok := workerPresent(t, dir, "w1")
+	if !ok || entry.TokenID != idA {
+		t.Fatalf(
+			"entry after A connect = %+v, ok=%v, want TokenID=%q",
+			entry, ok, idA,
+		)
+	}
+
+	// A's SSE stream closing (EOF) is the observable signal that its
+	// heartbeat loop stopped -- heartbeatReregister returning false
+	// ends sendHeartbeatLoop, which ends handleConnect's response.
+	aClosed := make(chan struct{})
+	go func() {
+		defer close(aClosed)
+		_, _ = io.Copy(io.Discard, respA.Body)
+	}()
+
+	// Admin takes over w1 while A's heartbeat loop is still running.
+	respAdmin, cancelAdmin := connectWorker(t, ts.URL, "admin-secret", "w1")
+	t.Cleanup(cancelAdmin)
+	if respAdmin.StatusCode != http.StatusOK {
+		t.Fatalf("admin connect status = %d, want 200", respAdmin.StatusCode)
+	}
+
+	select {
+	case <-aClosed:
+	case <-time.After(3*heartbeatInterval + 2*time.Second):
+		t.Fatal("A's SSE connection did not close after admin takeover")
+	}
+
+	// The entry must stay admin's across several more heartbeat
+	// intervals -- if A's loop were still fighting back (the pre-fix
+	// unguarded Put) it would have re-claimed it by now.
+	for tick := range 3 {
+		time.Sleep(heartbeatInterval)
+		entry, ok := workerPresent(t, dir, "w1")
+		if !ok || entry.TokenID != worker.AdminTokenID {
+			t.Fatalf(
+				"entry after takeover, tick %d = %+v, ok=%v, want TokenID=%q",
+				tick, entry, ok, worker.AdminTokenID,
+			)
+		}
+	}
+}
+
+// TestHeartbeatContinuesForOwner pins that a connection which still
+// owns its worker_id keeps successfully re-registering (and so
+// refreshing LastSeen) across multiple heartbeat ticks -- the #650
+// round 3 fix must not turn every heartbeat into a rejection for the
+// common, uncontested case.
+func TestHeartbeatContinuesForOwner(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := openTokenStore(t, js)
+
+	b := newTestBridge(t, nc)
+	b.token = "admin-secret"
+	b.SetTokenStore(store)
+	ts := httptest.NewServer(b.Handler())
+	t.Cleanup(ts.Close)
+
+	origInterval := heartbeatInterval
+	heartbeatInterval = 200 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = origInterval })
+
+	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer mintCancel()
+	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	if err != nil {
+		t.Fatalf("Mint A: %v", err)
+	}
+
+	dir := worker.NewDirectory(js)
+
+	respA, cancelA := connectWorker(t, ts.URL, bearerA, "w3")
+	t.Cleanup(cancelA)
+	if respA.StatusCode != http.StatusOK {
+		t.Fatalf("A connect status = %d, want 200", respA.StatusCode)
+	}
+
+	entry1, ok := workerPresent(t, dir, "w3")
+	if !ok || entry1.TokenID != idA {
+		t.Fatalf(
+			"entry after connect = %+v, ok=%v, want TokenID=%q",
+			entry1, ok, idA,
+		)
+	}
+
+	time.Sleep(3 * heartbeatInterval)
+
+	entry2, ok := workerPresent(t, dir, "w3")
+	if !ok {
+		t.Fatal("w3 no longer present after heartbeat ticks")
+	}
+	if entry2.TokenID != idA {
+		t.Fatalf(
+			"entry.TokenID = %q after heartbeat ticks, want %q (still A's)",
+			entry2.TokenID, idA,
+		)
+	}
+	if !entry2.LastSeen.After(entry1.LastSeen) {
+		t.Fatalf(
+			"LastSeen did not advance across heartbeat ticks (before=%v, after=%v) -- own-entry heartbeat did not refresh",
+			entry1.LastSeen, entry2.LastSeen,
+		)
 	}
 }
