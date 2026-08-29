@@ -48,7 +48,7 @@ func TestProductionMountReceivesNonNilMetricsSource(t *testing.T) {
 			t.Fatal("Run() did not return within 20s")
 		}
 	}()
-	waitForReady(t, cfg.HTTPAddr)
+	httpAddr := waitHTTPAddr(t, srv)
 
 	if srv.metricsAgg == nil {
 		t.Fatal("srv.metricsAgg is nil after Run(); aggregator must " +
@@ -56,7 +56,7 @@ func TestProductionMountReceivesNonNilMetricsSource(t *testing.T) {
 	}
 
 	consoleCfg := buildConsoleConfig(
-		srv.cfg.HTTPAddr, srv.svc, srv.nc,
+		httpAddr, srv.svc, srv.nc,
 		srv.metricsAgg, srv.metricsErrorReason, srv.ns,
 		"v9.9.9-test",
 	)
@@ -75,7 +75,7 @@ func TestProductionMountReceivesNonNilMetricsSource(t *testing.T) {
 	// Negative space: an empty build threads through as empty so the
 	// console-side consoleBuildLabel degrades it to the honest "dev".
 	emptyCfg := buildConsoleConfig(
-		srv.cfg.HTTPAddr, srv.svc, srv.nc,
+		httpAddr, srv.svc, srv.nc,
 		srv.metricsAgg, srv.metricsErrorReason, srv.ns,
 		"",
 	)
@@ -134,7 +134,7 @@ func TestServer_DashboardSeesLiveMetrics(t *testing.T) {
 			t.Fatal("Run() did not return within 20s")
 		}
 	}()
-	waitForReady(t, cfg.HTTPAddr)
+	httpAddr := waitHTTPAddr(t, srv)
 	if srv.metricsAgg == nil {
 		t.Fatal("srv.metricsAgg is nil; aggregator must be wired")
 	}
@@ -143,7 +143,7 @@ func TestServer_DashboardSeesLiveMetrics(t *testing.T) {
 	ingestCounter(t, srv.metricsAgg, "workflow.runs.completed", 9, now)
 	ingestCounter(t, srv.metricsAgg, "workflow.runs.failed", 1, now)
 
-	body := getDashboardBody(t, cfg.HTTPAddr)
+	body := getDashboardBody(t, httpAddr)
 
 	// Positive: the success-rate tile slot exists.
 	if !strings.Contains(body, `id="tile-success-rate"`) {
@@ -168,27 +168,6 @@ func TestServer_DashboardSeesLiveMetrics(t *testing.T) {
 		t.Fatalf("tile-success-rate hint is 'telemetry pending' "+
 			"after ingest — wire is broken. tile:\n%s", tile)
 	}
-}
-
-// waitForReady blocks until /ready returns 200 or fails the test.
-// Pattern lifted from the surrounding server_test.go fixtures; kept
-// local here so the wiring test stays self-contained.
-func waitForReady(t *testing.T, addr string) {
-	t.Helper()
-	url := fmt.Sprintf("http://%s/ready", addr)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, err := http.Get(url)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			return
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("/ready did not return 200 within 10s")
 }
 
 // ingestCounter is a small test helper that pushes one counter point

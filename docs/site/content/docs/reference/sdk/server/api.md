@@ -36,6 +36,7 @@ The gate wraps prom.Handler; the rendered output is unchanged.
   - [func ResolveConfig\(\) ResolvedConfig](<#ResolveConfig>)
 - [type Server](<#Server>)
   - [func New\(cfg Config\) \*Server](<#New>)
+  - [func \(s \*Server\) HTTPAddr\(\) string](<#Server.HTTPAddr>)
   - [func \(s \*Server\) Run\(\) error](<#Server.Run>)
   - [func \(s \*Server\) Stop\(\)](<#Server.Stop>)
 - [type ValidationResult](<#ValidationResult>)
@@ -321,6 +322,15 @@ func New(cfg Config) *Server
 
 New creates a Server with the given config. Panics if DataDir is empty.
 
+<a name="Server.HTTPAddr"></a>
+### func \(\*Server\) [HTTPAddr](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L134>)
+
+```go
+func (s *Server) HTTPAddr() string
+```
+
+HTTPAddr returns the actual bound "host:port" the server is serving HTTP on, or "" if Run has not finished starting yet. Safe to call concurrently with Run: startHTTP writes the resolved s.cfg.HTTPAddr before Run stores s.ready, and sync/atomic gives that store/load pair release/acquire ordering, so a caller observing ready==true is guaranteed to see the final address. Callers that need to wait for the address \(e.g. tests\) should poll this instead of pre\-reserving a port.
+
 <a name="Server.Run"></a>
 ### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L88>)
 
@@ -331,7 +341,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L635>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L656>)
 
 ```go
 func (s *Server) Stop()

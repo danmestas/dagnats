@@ -28,17 +28,73 @@ func testConfig(t *testing.T) Config {
 	cfg := DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.NATSPort = -1 // Random port
-
-	// Find free HTTP port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("find free port: %v", err)
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-	cfg.HTTPAddr = addr
+	// Bind HTTP to an OS-chosen port; the server records the actual
+	// bound address (see startHTTP), which tests read back via
+	// waitHTTPAddr. This avoids the classic find-free-port TOCTOU: a
+	// listener opened here, closed, and rebound later can lose the
+	// port to another process on the runner in between.
+	cfg.HTTPAddr = "127.0.0.1:0"
 
 	return cfg
+}
+
+// waitHTTPAddr polls srv.HTTPAddr() until the server has bound its
+// actual HTTP listener (bounded 10s, 50ms interval) and returns it.
+// srv.HTTPAddr() only returns non-empty once the server is ready, so
+// this also serves as the readiness wait.
+func waitHTTPAddr(t *testing.T, srv *Server) string {
+	t.Helper()
+	if srv == nil {
+		panic("waitHTTPAddr: srv must not be nil")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if addr := srv.HTTPAddr(); addr != "" {
+			return addr
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("server did not bind an HTTP address within 10s")
+	return ""
+}
+
+// TestServer_HTTPAddr pins the HTTPAddr() accessor added to close the
+// find-free-port TOCTOU: before the server is ready it must report ""
+// (nothing to race on), and once ready it must report the real bound
+// address, dialable over TCP.
+func TestServer_HTTPAddr(t *testing.T) {
+	cfg := testConfig(t)
+	srv := New(cfg)
+	if srv == nil {
+		panic("New() returned nil")
+	}
+
+	// Negative: before Run, no address has been bound yet.
+	if addr := srv.HTTPAddr(); addr != "" {
+		t.Fatalf("HTTPAddr() before Run = %q, want \"\"", addr)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+	defer func() {
+		srv.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(20 * time.Second):
+			t.Fatal("Run() did not return within 20s")
+		}
+	}()
+
+	// Positive: once ready, HTTPAddr() reports a real, dialable address.
+	httpAddr := waitHTTPAddr(t, srv)
+	if httpAddr == "" {
+		t.Fatal("HTTPAddr() after ready is empty")
+	}
+	conn, err := net.DialTimeout("tcp", httpAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial HTTPAddr() result %q: %v", httpAddr, err)
+	}
+	conn.Close()
 }
 
 // TestServer_StartsAndStops verifies the server starts, becomes ready,
@@ -57,30 +113,21 @@ func TestServer_StartsAndStops(t *testing.T) {
 		errCh <- srv.Run()
 	}()
 
-	// Poll /ready until server is ready (bounded 10s, 50ms sleep)
-	readyURL := fmt.Sprintf("http://%s/ready", cfg.HTTPAddr)
-	deadline := time.Now().Add(10 * time.Second)
-	ready := false
-
-	for time.Now().Before(deadline) && !ready {
-		resp, err := http.Get(readyURL)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			ready = true
-			break
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(50 * time.Millisecond)
+	// Wait for the server to bind and become ready, then verify /ready
+	// explicitly returns 200 (the thing this test is pinning).
+	httpAddr := waitHTTPAddr(t, srv)
+	readyURL := fmt.Sprintf("http://%s/ready", httpAddr)
+	readyResp, err := http.Get(readyURL)
+	if err != nil {
+		t.Fatalf("GET /ready: %v", err)
 	}
-
-	if !ready {
-		t.Fatal("/ready did not return 200 within 10s")
+	if readyResp.StatusCode != http.StatusOK {
+		t.Fatalf("/ready status: got %d, want 200", readyResp.StatusCode)
 	}
+	readyResp.Body.Close()
 
 	// Verify /health returns 200
-	healthURL := fmt.Sprintf("http://%s/health", cfg.HTTPAddr)
+	healthURL := fmt.Sprintf("http://%s/health", httpAddr)
 	resp, err := http.Get(healthURL)
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
@@ -128,20 +175,8 @@ func TestServer_MetricsExporterIsWired(t *testing.T) {
 			t.Fatal("Run() did not return within 20s")
 		}
 	}()
-	readyURL := fmt.Sprintf("http://%s/ready", cfg.HTTPAddr)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, err := http.Get(readyURL)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			break
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	metricsURL := fmt.Sprintf("http://%s/metrics", cfg.HTTPAddr)
+	httpAddr := waitHTTPAddr(t, srv)
+	metricsURL := fmt.Sprintf("http://%s/metrics", httpAddr)
 	resp, err := http.Get(metricsURL)
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
@@ -199,27 +234,8 @@ func TestServer_PrintsStartupAndShutdownBanner(t *testing.T) {
 		errCh <- srv.Run()
 	}()
 
-	// Poll /ready until server is up (bounded 10s)
-	readyURL := fmt.Sprintf("http://%s/ready", cfg.HTTPAddr)
-	deadline := time.Now().Add(10 * time.Second)
-	ready := false
-
-	for time.Now().Before(deadline) && !ready {
-		resp, getErr := http.Get(readyURL)
-		if getErr == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			ready = true
-			break
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if !ready {
-		t.Fatal("/ready did not return 200 within 10s")
-	}
+	// Wait for the server to bind and become ready (bounded 10s).
+	waitHTTPAddr(t, srv)
 
 	// Stop server and wait for Run() to return
 	srv.Stop()
@@ -276,33 +292,14 @@ func TestServerMountsBridgeEndpoints(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Run() }()
 
-	// Wait for server to become ready
-	readyURL := fmt.Sprintf("http://%s/ready", cfg.HTTPAddr)
-	deadline := time.Now().Add(10 * time.Second)
-	ready := false
-
-	for time.Now().Before(deadline) && !ready {
-		resp, err := http.Get(readyURL)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			ready = true
-			break
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if !ready {
-		t.Fatal("/ready did not return 200 within 10s")
-	}
+	// Wait for server to bind and become ready
+	httpAddr := waitHTTPAddr(t, srv)
 
 	// Test bridge endpoint responds -- dev mode (no admin token set),
 	// unaffected by the server always wiring a Store into the bridge.
 	body := `{"worker_id":"w-1","task_types":["echo"],"max_tasks":1}`
 	resp, err := http.Post(
-		fmt.Sprintf("http://%s/v1/workers/connect", cfg.HTTPAddr),
+		fmt.Sprintf("http://%s/v1/workers/connect", httpAddr),
 		"application/json",
 		strings.NewReader(body),
 	)
@@ -359,22 +356,8 @@ func TestServer_EmbeddedWorkerCompletesRun(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Run() }()
 
-	// Wait for ready
-	readyURL := fmt.Sprintf(
-		"http://%s/ready", cfg.HTTPAddr,
-	)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, err := http.Get(readyURL)
-		if err == nil && resp.StatusCode == 200 {
-			resp.Body.Close()
-			break
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	// Wait for the server to bind and become ready
+	httpAddr := waitHTTPAddr(t, srv)
 
 	// Register workflow via REST API
 	wfBody := `{
@@ -384,7 +367,7 @@ func TestServer_EmbeddedWorkerCompletesRun(t *testing.T) {
 	}`
 	wfResp, err := http.Post(
 		fmt.Sprintf(
-			"http://%s/workflows", cfg.HTTPAddr,
+			"http://%s/workflows", httpAddr,
 		),
 		"application/json",
 		strings.NewReader(wfBody),
@@ -407,7 +390,7 @@ func TestServer_EmbeddedWorkerCompletesRun(t *testing.T) {
 	}`
 	runResp, err := http.Post(
 		fmt.Sprintf(
-			"http://%s/runs", cfg.HTTPAddr,
+			"http://%s/runs", httpAddr,
 		),
 		"application/json",
 		strings.NewReader(runBody),
@@ -440,7 +423,7 @@ func TestServer_EmbeddedWorkerCompletesRun(t *testing.T) {
 	// Poll run status until completed (bounded 15s)
 	runURL := fmt.Sprintf(
 		"http://%s/runs/%s",
-		cfg.HTTPAddr, startResult.RunID,
+		httpAddr, startResult.RunID,
 	)
 	pollDeadline := time.Now().Add(15 * time.Second)
 	completed := false
@@ -499,24 +482,7 @@ func TestServer_NATSAPIRespondsAfterReady(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Run() }()
 
-	readyURL := fmt.Sprintf("http://%s/ready", cfg.HTTPAddr)
-	deadline := time.Now().Add(10 * time.Second)
-	ready := false
-	for time.Now().Before(deadline) && !ready {
-		resp, err := http.Get(readyURL)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			ready = true
-			break
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if !ready {
-		t.Fatal("/ready did not return 200 within 10s")
-	}
+	waitHTTPAddr(t, srv)
 
 	// External caller path: connect to embedded NATS via its URL.
 	nc, err := nats.Connect(srv.ns.ClientURL())

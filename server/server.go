@@ -124,6 +124,27 @@ func (s *Server) Run() error {
 	return s.waitAndShutdown(httpErrCh)
 }
 
+// HTTPAddr returns the actual bound "host:port" the server is serving
+// HTTP on, or "" if Run has not finished starting yet. Safe to call
+// concurrently with Run: startHTTP writes the resolved s.cfg.HTTPAddr
+// before Run stores s.ready, and sync/atomic gives that store/load pair
+// release/acquire ordering, so a caller observing ready==true is
+// guaranteed to see the final address. Callers that need to wait for the
+// address (e.g. tests) should poll this instead of pre-reserving a port.
+func (s *Server) HTTPAddr() string {
+	if s == nil {
+		panic("HTTPAddr: s is nil")
+	}
+	if !s.ready.Load() {
+		return ""
+	}
+	addr := s.cfg.HTTPAddr
+	if addr == "" {
+		panic("HTTPAddr: ready but cfg.HTTPAddr is empty")
+	}
+	return addr
+}
+
 // startComponents initializes NATS, telemetry, and all services.
 // Cleans up on failure to prevent resource leaks.
 func (s *Server) startComponents() error {
