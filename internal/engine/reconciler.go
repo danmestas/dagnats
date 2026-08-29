@@ -113,9 +113,40 @@ func (o *Orchestrator) startReconciler(ctx context.Context) {
 				return
 			case <-ticker.C:
 				o.reconcileRunningRuns(ctx)
+				o.runRepairRunIndexPass(ctx)
 			}
 		}
 	}()
+}
+
+// runRepairRunIndexPass runs one bounded RepairRunIndex call and logs
+// + counts the outcome when nonzero (#659). Called once per
+// reconciler tick and once, synchronously, from Orchestrator.Start
+// before the history consumer begins processing, so a store upgraded
+// from a pre-#659 build has ordered-scan visibility into its existing
+// runs immediately rather than only after the first tick.
+func (o *Orchestrator) runRepairRunIndexPass(ctx context.Context) {
+	if ctx == nil {
+		panic("runRepairRunIndexPass: ctx must not be nil")
+	}
+	if o.store == nil {
+		panic("runRepairRunIndexPass: store must not be nil")
+	}
+	stats, err := o.store.RepairRunIndex(ctx, repairPageMax)
+	if err != nil {
+		slog.ErrorContext(ctx,
+			"reconciler: repair run index", "error", err)
+		return
+	}
+	if stats.Repaired == 0 && stats.OrphansRemoved == 0 {
+		return
+	}
+	slog.InfoContext(ctx, "reconciler: repaired run index",
+		"repaired", stats.Repaired,
+		"orphans_removed", stats.OrphansRemoved,
+	)
+	o.metrics.runIndexRepaired.Add(ctx, int64(stats.Repaired))
+	o.metrics.runIndexOrphans.Add(ctx, int64(stats.OrphansRemoved))
 }
 
 // startRunPruner launches the opt-in run-retention sweeper

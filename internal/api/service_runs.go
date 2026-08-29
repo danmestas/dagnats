@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -427,13 +427,15 @@ const DefaultRunsLimit = 1000
 // Defense against accidental OOM from "fetch everything" callers.
 const MaxRunsLimitCeiling = 10000
 
-// ScanRuns returns up to limit runs matching filter, newest-first. It is
-// the CHEAP bounded read: the store caps the key scan at limit (ListAll)
-// instead of fetching the whole run population, so high-frequency callers
-// (console pages, CLI status, agent-runtime scans) stay O(limit), not
-// O(population). It trades a true most-recent-N for a bounded, low-cost
-// sample — callers that need an honest Total/Truncated must use ListRuns
-// (the envelope). limit <= 0 is treated as DefaultRunsLimit; limit >
+// ScanRuns returns up to limit runs matching filter, newest-first. It
+// is the CHEAP bounded read: the store scans the creation-ordered run
+// index newest-first and applies filter DURING the scan (#659), so
+// high-frequency callers (console pages, CLI status, agent-runtime
+// scans) stay O(limit) rather than O(population) while still finding
+// the newest matches first — never missing a match newer than the
+// scanned window the way the pre-#659 unordered sample could. Callers
+// that need an honest Total/Truncated must use ListRuns (the
+// envelope). limit <= 0 is treated as DefaultRunsLimit; limit >
 // MaxRunsLimitCeiling is clamped to the ceiling (friendlier than a 400
 // error from a typo).
 func (s *Service) ScanRuns(
@@ -470,11 +472,13 @@ func clampRunsLimit(limit int) int {
 	return limit
 }
 
-// scanRunsInner fetches up to limit runs from the cheap order-agnostic
-// store scan (ListAll), applies the filter, and sorts newest-first. The
-// filter is applied WITHIN the bounded sample — a filtered ScanRuns may
-// miss matches older than the sampled window (same caveat the envelope
-// documents for filtered totals); callers needing exactness use ListRuns.
+// scanRunsInner fetches up to limit runs newest-first via the store's
+// creation-ordered scan, applying filter DURING the scan rather than
+// after a bounded, order-agnostic sample -- the #659 fix. A filtered
+// ScanRuns may still miss matches OLDER than ScanFetchMax scanned
+// entries (the same caveat the envelope documents for filtered
+// totals), but it can never miss a match newer than that window the
+// way the old ListAll-then-filter sample could.
 func (s *Service) scanRunsInner(
 	ctx context.Context, filter RunsFilter, limit int,
 ) ([]dag.WorkflowRun, error) {
@@ -484,23 +488,10 @@ func (s *Service) scanRunsInner(
 	if limit <= 0 {
 		panic("scanRunsInner: limit must be positive")
 	}
-	runs, err := s.store.ListAll(ctx, limit)
-	if err != nil {
-		return nil, err
-	}
-	if !filter.isEmpty() {
-		filtered := make([]dag.WorkflowRun, 0, len(runs))
-		for _, run := range runs {
-			if filter.matches(run) {
-				filtered = append(filtered, run)
-			}
-		}
-		runs = filtered
-	}
-	sort.Slice(runs, func(i, j int) bool {
-		return runs[i].CreatedAt.After(runs[j].CreatedAt)
-	})
-	return runs, nil
+	runs, _, err := s.store.ScanNewestFirst(
+		ctx, filter.matches, limit, engine.ScanFetchMax,
+	)
+	return runs, err
 }
 
 // RunsFilter narrows a run-list or count query. The zero value matches
@@ -554,17 +545,20 @@ type RunsEnvelope struct {
 }
 
 // runReader is the read surface ListRuns and CountRuns need from the
-// store: the globally-sorted latest-N window (ListRecent) and an exact
-// keys-only population count (CountAll). *engine.SnapshotStore satisfies
-// it; the seam keeps the envelope/count logic unit-testable.
-//
-// NOTE: this deliberately uses ListRecent, NOT the cheap order-agnostic
-// ListAll — the #452 surface needs the genuine most-recent N. The cheap
-// ScanRuns path and other callers (reconciler, bulk retry/cancel) keep
-// using ListAll directly and are unaffected by this seam.
+// store: the genuine latest-N window (ListRecent), an exact keys-only
+// population count (CountAll), and the creation-ordered scan primitive
+// (ScanNewestFirst, #659) CountRuns' filtered path uses directly so it
+// can report truncation honestly. *engine.SnapshotStore satisfies it;
+// the seam keeps the envelope/count logic unit-testable. ListRecent and
+// ScanNewestFirst are both O(limit) now, not O(population) — #452's
+// "costs O(population)" caveat below no longer applies to either.
 type runReader interface {
 	ListRecent(ctx context.Context, limit int) ([]dag.WorkflowRun, error)
 	CountAll(ctx context.Context) (int, error)
+	ScanNewestFirst(
+		ctx context.Context, pred func(dag.WorkflowRun) bool,
+		limit, fetchMax int,
+	) ([]dag.WorkflowRun, engine.ScanStats, error)
 }
 
 // ListRuns returns the newest matching runs capped at limit, alongside
@@ -686,17 +680,29 @@ func countRunsFrom(
 	if filter.isEmpty() {
 		return store.CountAll(ctx)
 	}
-	all, err := store.ListRecent(ctx, MaxRunsLimitCeiling)
+	// limit == fetchMax: there's no natural "stop at N matches" cap
+	// for a count query, so the scan runs until it has looked at every
+	// run within the fetch cap (or the index is exhausted) and every
+	// match in that window is counted. stats.Truncated tells us
+	// honestly whether older matches could exist beyond the window —
+	// logged rather than threaded through CountRuns' (int, error)
+	// signature, matching the #452 filtered-total caveat this
+	// replaces.
+	matched, stats, err := store.ScanNewestFirst(
+		ctx, filter.matches, MaxRunsLimitCeiling, MaxRunsLimitCeiling,
+	)
 	if err != nil {
 		return 0, err
 	}
-	count := 0
-	for _, run := range all {
-		if filter.matches(run) {
-			count++
-		}
+	if stats.Truncated {
+		slog.WarnContext(ctx,
+			"countRuns: filtered count truncated by fetch cap; "+
+				"matches older than the scanned window are not counted",
+			"scanned", stats.Scanned,
+			"fetched", stats.Fetched,
+		)
 	}
-	return count, nil
+	return len(matched), nil
 }
 
 // ListRunEvents retrieves history events for a given run.

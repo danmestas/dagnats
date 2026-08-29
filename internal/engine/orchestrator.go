@@ -313,6 +313,12 @@ func (o *Orchestrator) Start() {
 			"Orchestrator.Start: historyRedeliverSchedule must not be empty",
 		)
 	}
+	// One synchronous repair pass before the consumer starts (#659):
+	// a store upgraded from a pre-index build must have ordered-scan
+	// visibility into its existing runs immediately, not only after
+	// the first 60s reconciler tick.
+	o.runRepairRunIndexPass(context.Background())
+
 	o.cc = o.startHistoryConsumer()
 
 	// Wire the periodic reconciliation janitor (#185). The

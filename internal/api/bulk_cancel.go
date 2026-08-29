@@ -7,10 +7,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/engine"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -74,7 +74,11 @@ func (s *Service) BulkCancelRuns(
 	return resp, err
 }
 
-// bulkCancelInner lists, filters, and cancels matching runs.
+// bulkCancelInner scans, filters, and cancels matching runs. Uses the
+// creation-ordered newest-first scan (#659) instead of the old
+// order-agnostic ListAll+filter sample, so a run labeled/matched after
+// the population grew past maxBulkCancelLimit is still found instead
+// of silently no-op'd.
 func (s *Service) bulkCancelInner(
 	ctx context.Context, req BulkCancelRequest,
 ) (BulkCancelResponse, error) {
@@ -90,15 +94,19 @@ func (s *Service) bulkCancelInner(
 		return BulkCancelResponse{}, err
 	}
 
-	runs, err := s.store.ListAll(ctx, maxBulkCancelLimit+1)
+	pred := func(run dag.WorkflowRun) bool {
+		return runMatchesBulkCancel(
+			run, req.WorkflowID, status,
+			req.After, req.Before, req.Labels,
+		)
+	}
+	matched, _, err := s.store.ScanNewestFirst(
+		ctx, pred, maxBulkCancelLimit+1, engine.ScanFetchMax,
+	)
 	if err != nil {
 		return BulkCancelResponse{},
 			fmt.Errorf("list runs: %w", err)
 	}
-	matched := filterRuns(
-		runs, req.WorkflowID, status,
-		req.After, req.Before, req.Labels,
-	)
 
 	if len(matched) > maxBulkCancelLimit {
 		return BulkCancelResponse{}, fmt.Errorf(
@@ -107,6 +115,10 @@ func (s *Service) bulkCancelInner(
 			len(matched), maxBulkCancelLimit,
 		)
 	}
+	// ScanNewestFirst returns newest-first; cancel oldest-first
+	// (matches the pre-#659 filterRuns ordering) to bias survivors
+	// toward the runs a consumer most recently started.
+	reverseRuns(matched)
 
 	if req.DryRun {
 		ids := make([]string, len(matched))
@@ -184,48 +196,42 @@ func (s *Service) executeBulkCancel(
 	return resp
 }
 
-// filterRuns selects runs matching workflow, status, time range, and
-// labels (#629, AND semantics — every entry in labels must be present
-// on the run with an equal value).
-func filterRuns(
-	runs []dag.WorkflowRun,
+// runMatchesBulkCancel reports whether run matches workflow, status,
+// time range, and labels (#629, AND semantics — every entry in labels
+// must be present on the run with an equal value). This is the
+// ScanNewestFirst predicate for bulkCancelInner.
+func runMatchesBulkCancel(
+	run dag.WorkflowRun,
 	workflowID, status string,
 	after, before time.Time,
 	labels map[string]string,
-) []dag.WorkflowRun {
+) bool {
 	if workflowID == "" {
-		panic("filterRuns: workflowID must not be empty")
+		panic("runMatchesBulkCancel: workflowID must not be empty")
 	}
 	if status == "" {
-		panic("filterRuns: status must not be empty")
+		panic("runMatchesBulkCancel: status must not be empty")
 	}
-	var matched []dag.WorkflowRun
-	for _, run := range runs {
-		if run.WorkflowID != workflowID {
-			continue
-		}
-		if !matchesStatusFilter(run.Status, status) {
-			continue
-		}
-		if !after.IsZero() &&
-			run.CreatedAt.Before(after) {
-			continue
-		}
-		if !before.IsZero() &&
-			run.CreatedAt.After(before) {
-			continue
-		}
-		if !dag.LabelsMatch(labels, run.Labels) {
-			continue
-		}
-		matched = append(matched, run)
+	if run.WorkflowID != workflowID {
+		return false
 	}
-	sort.Slice(matched, func(i, j int) bool {
-		return matched[i].CreatedAt.Before(
-			matched[j].CreatedAt,
-		)
-	})
-	return matched
+	if !matchesStatusFilter(run.Status, status) {
+		return false
+	}
+	if !after.IsZero() && run.CreatedAt.Before(after) {
+		return false
+	}
+	if !before.IsZero() && run.CreatedAt.After(before) {
+		return false
+	}
+	return dag.LabelsMatch(labels, run.Labels)
+}
+
+// reverseRuns reverses runs in place.
+func reverseRuns(runs []dag.WorkflowRun) {
+	for i, j := 0, len(runs)-1; i < j; i, j = i+1, j-1 {
+		runs[i], runs[j] = runs[j], runs[i]
+	}
 }
 
 // matchesStatusFilter checks if a run status matches the filter.
