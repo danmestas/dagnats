@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -609,8 +610,16 @@ func TestGetRunLogs_FollowEndsWithErrorEventOnStreamDeleted(t *testing.T) {
 	runID := startLogsTestRun(t, svc, "logs-streamdel")
 	waitForStepKnown(t, svc, runID, "a", 5*time.Second)
 
-	req, err := http.NewRequest(
-		"GET", fmt.Sprintf("%s/runs/%s/logs?step=a&follow=1", server.URL, runID), nil,
+	// The request context is this test's kill switch: every failure
+	// path cancels it before failing, which drops the connection so
+	// the handler returns. Without that, t.Fatalf runs
+	// t.Cleanup(server.Close), which waits on the in-flight handler
+	// and turns a test failure into a package-timeout hang.
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
+	req, err := http.NewRequestWithContext(
+		reqCtx, "GET",
+		fmt.Sprintf("%s/runs/%s/logs?step=a&follow=1", server.URL, runID), nil,
 	)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -622,6 +631,7 @@ func TestGetRunLogs_FollowEndsWithErrorEventOnStreamDeleted(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		reqCancel()
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
@@ -636,33 +646,25 @@ func TestGetRunLogs_FollowEndsWithErrorEventOnStreamDeleted(t *testing.T) {
 	delCtx, delCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer delCancel()
 	if err := js.DeleteStream(delCtx, "BUILD_LOGS"); err != nil {
+		reqCancel()
 		t.Fatalf("DeleteStream(BUILD_LOGS): %v", err)
 	}
 
 	// event: error must arrive well within the 15s keepalive wait —
-	// bounded generously for CI jitter, nowhere near the 1h cap.
-	scanner := bufio.NewScanner(resp.Body)
-	var sawError bool
-	var event string
-	scanDeadline := time.Now().Add(20 * time.Second)
-	for scanner.Scan() {
-		if time.Now().After(scanDeadline) {
-			break
+	// bounded generously for CI jitter, nowhere near the 1h cap. The
+	// scan runs on its own goroutine because bufio.Scan blocks: a
+	// deadline checked only between Scan calls is not a deadline.
+	scanned := make(chan bool, 1)
+	go func() { scanned <- scanForSSEErrorEvent(resp.Body) }()
+	select {
+	case sawError := <-scanned:
+		if !sawError {
+			reqCancel()
+			t.Fatal("never observed an event: error after the stream was deleted")
 		}
-		line := scanner.Text()
-		switch {
-		case strings.HasPrefix(line, "event: error"):
-			event = "error"
-		case strings.HasPrefix(line, "event: eof"), strings.HasPrefix(line, "event: chunk"):
-			event = ""
-		}
-		if event == "error" && strings.HasPrefix(line, "data:") {
-			sawError = true
-			break
-		}
-	}
-	if !sawError {
-		t.Fatal("never observed an event: error after the stream was deleted")
+	case <-time.After(25 * time.Second):
+		reqCancel()
+		t.Fatal("timed out waiting for event: error after the stream was deleted")
 	}
 
 	// The handler must have returned by now — closing the server must
@@ -674,8 +676,112 @@ func TestGetRunLogs_FollowEndsWithErrorEventOnStreamDeleted(t *testing.T) {
 	}()
 	select {
 	case <-closed:
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
+		reqCancel()
 		t.Fatal("server.Close() blocked — follow handler did not return after stream deletion")
+	}
+}
+
+// scanForSSEErrorEvent reads an SSE body until it sees a complete
+// "event: error" frame (its data line), reporting whether one
+// arrived. It returns false when the body ends first — the caller
+// owns the deadline, since this blocks on reads.
+func scanForSSEErrorEvent(body io.Reader) bool {
+	scanner := bufio.NewScanner(body)
+	var event string
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event: error"):
+			event = "error"
+		case strings.HasPrefix(line, "event: eof"), strings.HasPrefix(line, "event: chunk"):
+			event = ""
+		}
+		if event == "error" && strings.HasPrefix(line, "data:") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGetRunLogs_PageErrorsWhenStreamDeleted is the non-follow
+// counterpart to TestGetRunLogs_FollowEndsWithErrorEventOnStreamDeleted.
+// fetchLogsPage drives the same kind of ordered consumer, and nats.go
+// defaults MaxResetAttempts to -1, so a Next() whose stream has gone
+// away recreates the consumer forever instead of returning — the page
+// read hung well past its own 10s context (reset() retries on
+// context.Background(), so the handler's deadline cannot stop it).
+// The read must instead fail fast and say why.
+func TestGetRunLogs_PageErrorsWhenStreamDeleted(t *testing.T) {
+	svc, server, nc, _ := newLogsRestFixture(t, "logs-pagedel", "logs-pagedel-task",
+		func(tc worker.TaskContext) error {
+			return tc.Complete(nil)
+		}, false)
+	runID := startLogsTestRun(t, svc, "logs-pagedel")
+	waitForStepKnown(t, svc, runID, "a", 5*time.Second)
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	delCtx, delCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer delCancel()
+	if err := js.DeleteStream(delCtx, "BUILD_LOGS"); err != nil {
+		t.Fatalf("DeleteStream(BUILD_LOGS): %v", err)
+	}
+
+	// Same kill-switch discipline as the follow test: cancel the
+	// request before failing so t.Cleanup(server.Close) cannot turn a
+	// failure into a package-timeout hang.
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
+	req, err := http.NewRequestWithContext(
+		reqCtx, "GET",
+		fmt.Sprintf("%s/runs/%s/logs?step=a", server.URL, runID), nil,
+	)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	type pageResult struct {
+		status int
+		body   string
+	}
+	got := make(chan pageResult, 1)
+	failed := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			failed <- doErr
+			return
+		}
+		defer resp.Body.Close()
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			failed <- readErr
+			return
+		}
+		got <- pageResult{status: resp.StatusCode, body: string(body)}
+	}()
+
+	// One bounded wait: the read must not sit on an unbounded consumer
+	// reset. 25s is far past the handler's own 10s budget.
+	select {
+	case res := <-got:
+		if res.status != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d (body %q)",
+				res.status, http.StatusServiceUnavailable, res.body)
+		}
+		if !strings.Contains(res.body, "log stream unavailable") {
+			t.Fatalf("body = %q, want it to name %q", res.body, "log stream unavailable")
+		}
+	case doErr := <-failed:
+		reqCancel()
+		t.Fatalf("page request: %v", doErr)
+	case <-time.After(25 * time.Second):
+		reqCancel()
+		t.Fatal("page read never returned after the stream was deleted")
 	}
 }
 

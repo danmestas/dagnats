@@ -456,6 +456,18 @@ before the TTL elapses.
   `follow=1` upgrades to Server-Sent Events over a single long-lived
   consumer, ending with `event: eof` normally or `event: error` if that
   consumer itself fails.
+- **Ordered consumers must be bounded:** if you read this stream with your
+  own `jetstream` ordered consumer, set `MaxResetAttempts` explicitly. In
+  nats.go v1.53.1 an unset value becomes `-1` (`jetstream/ordered.go`,
+  `getConsumerConfig`) and the reset retry loop only stops when
+  `attempts > 0` (`retryWithBackoff`), while `Next()` calls `reset()` on
+  every invocation. If BUILD_LOGS goes away underneath you -- deleted, or
+  aged out of its TTL -- `Next()` never returns: it recreates the consumer
+  forever on a 1s/2s/4s/8s/10s backoff, on `context.Background()`, so your
+  own context deadline cannot interrupt it. Bound it, and treat the
+  resulting `ErrStreamNotFound` as "the hot lane is gone" -- the stream is
+  recreatable and the read is retryable, so a 503 fits it better than a
+  fatal error.
 - **Use for:** a live or historical tail of one attempt's captured output
   within the hot TTL window. Anything longer-lived belongs in a
   consumer's own store, drained before the TTL elapses.

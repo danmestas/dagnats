@@ -30,7 +30,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -52,6 +51,11 @@ const logsKeepaliveInterval = 15 * time.Second
 // the marker actually landing), not as the normal termination signal.
 // It reads svc.GetRun (a KV get), never opens a BUILD_LOGS consumer.
 const logsCrashFallbackPollInterval = 10 * time.Second
+
+// logsFollowStreamCheckTimeout bounds the one cheap round trip
+// serveLogsFollow spends per idle keepalive tick confirming BUILD_LOGS
+// still exists. It is a JS API get, not a consumer open.
+const logsFollowStreamCheckTimeout = 3 * time.Second
 
 // logsEOFEvent is the "event: eof" payload. Reason is set only for the
 // two non-final outcomes (continued/paused) where the attempt is over
@@ -127,16 +131,10 @@ func openLogsFollowConsumer(
 	if js == nil {
 		panic("openLogsFollowConsumer: js must not be nil")
 	}
-	cfg := jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{natsutil.LogSubject(runID, stepID, attempt, iteration)},
-	}
-	if cursor > 0 {
-		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
-		cfg.OptStartSeq = cursor
-	} else {
-		cfg.DeliverPolicy = jetstream.DeliverAllPolicy
-	}
-	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS", cfg)
+	cons, err := js.OrderedConsumer(
+		ctx, "BUILD_LOGS",
+		logsOrderedConsumerConfig(runID, stepID, attempt, iteration, cursor),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
 	}
@@ -179,6 +177,16 @@ func runLogsFollowLoop(
 				return
 			}
 			flusher.Flush()
+			// Belt to the MaxResetAttempts brace: an idle wait that
+			// ends in ErrTimeout tells us nothing about whether
+			// BUILD_LOGS still exists (a pull request in flight when
+			// the stream is deleted simply expires). Confirm it
+			// ourselves rather than waiting for the consumer to
+			// report a loss it may never report.
+			if logsStreamMissing(ctx, svc.js) {
+				writeLogsErrorEvent(w, flusher, errLogStreamUnavailable)
+				return
+			}
 			if shouldCrashFallbackEnd(
 				ctx, svc, fallback, runID, stepID, attempt, iteration, &lastActivity,
 			) {
@@ -204,6 +212,30 @@ func runLogsFollowLoop(
 			return
 		}
 	}
+}
+
+// errLogStreamUnavailable is the cause reported when the follow's own
+// per-tick check finds BUILD_LOGS gone. It is a fixed sentinel so the
+// SSE error payload names the condition rather than leaking whichever
+// transport-level error the JS API happened to return.
+var errLogStreamUnavailable = errors.New("log stream unavailable")
+
+// logsStreamMissing reports whether BUILD_LOGS has gone away. Only a
+// definite ErrStreamNotFound counts: a timed-out or otherwise failed
+// check must not end a healthy follow, so every other outcome
+// (including an error) reports "still there" and the next tick
+// retries.
+func logsStreamMissing(ctx context.Context, js jetstream.JetStream) bool {
+	if js == nil {
+		panic("logsStreamMissing: js must not be nil")
+	}
+	if ctx == nil {
+		panic("logsStreamMissing: ctx must not be nil")
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, logsFollowStreamCheckTimeout)
+	defer cancel()
+	_, err := js.Stream(checkCtx, "BUILD_LOGS")
+	return errors.Is(err, jetstream.ErrStreamNotFound)
 }
 
 // shouldCrashFallbackEnd checks the run snapshot for a terminal status
