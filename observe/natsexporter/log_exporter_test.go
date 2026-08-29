@@ -48,10 +48,10 @@ func TestLogExporter_Export(t *testing.T) {
 	var rec log.Record
 	rec.SetSeverity(log.SeverityError)
 	rec.SetSeverityText("ERROR")
-	rec.SetBody(log.StringValue("something went wrong"))
+	rec.SetBody(attribute.StringValue("something went wrong"))
 	rec.SetTimestamp(time.Now())
 	rec.AddAttributes(
-		log.String("component", "engine"),
+		attribute.String("component", "engine"),
 	)
 
 	logger.Emit(context.Background(), rec)
@@ -118,6 +118,26 @@ func TestLogExporter_Export(t *testing.T) {
 				svc,
 			)
 		}
+
+		// Pin the exact serialized bytes for the attribute
+		// map: proves WalkAttributes over attribute.KeyValue
+		// still yields the same JSON shape as before the
+		// otel/log 0.20 -> 0.22 API change.
+		const wantAttrsJSON = `{"component":"engine"}`
+		attrsRaw, ok := parsed["attributes"]
+		if !ok {
+			t.Fatal("JSON missing 'attributes' field")
+		}
+		attrsJSON, err := json.Marshal(attrsRaw)
+		if err != nil {
+			t.Fatalf("marshal attributes: %v", err)
+		}
+		if string(attrsJSON) != wantAttrsJSON {
+			t.Errorf(
+				"attributes JSON = %s, want %s",
+				attrsJSON, wantAttrsJSON,
+			)
+		}
 	}
 
 	if count != 1 {
@@ -155,7 +175,7 @@ func TestLogExporter_DefaultSeverity(t *testing.T) {
 	// Emit without setting severity text — should default
 	// to "info" in the subject.
 	var rec log.Record
-	rec.SetBody(log.StringValue("no severity set"))
+	rec.SetBody(attribute.StringValue("no severity set"))
 	rec.SetTimestamp(time.Now())
 
 	logger.Emit(context.Background(), rec)

@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -160,7 +160,7 @@ func extractLogAttrs(
 		return nil
 	}
 	attrs := make(map[string]string, r.AttributesLen())
-	r.WalkAttributes(func(kv log.KeyValue) bool {
+	r.WalkAttributes(func(kv attribute.KeyValue) bool {
 		attrs[string(kv.Key)] = kv.Value.AsString()
 		return true
 	})
