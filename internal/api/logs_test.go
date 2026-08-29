@@ -483,6 +483,27 @@ func buildLogsConsumerNames(t *testing.T, nc *nats.Conn) map[string]bool {
 // follow's underlying JetStream consumer out from under it must end
 // the SSE stream with an event: error within one Next() wait, not
 // silently loop as "idle" until the 1h duration cap.
+//
+// Root cause of the CI flake this replaces: nats.go's OrderedConsumer
+// creates a consumer synchronously in js.OrderedConsumer() ("gen-0")
+// BEFORE serveLogsFollow writes response headers, then unconditionally
+// replaces it ("gen-1") on the very first Fetch/Next call — Fetch
+// always calls c.reset() first (jetstream/ordered.go), which is why
+// the doc comment warns "it will reset the consumer for each
+// subsequent Fetch call". Deleting whichever consumer is ACTUALLY
+// blocked in Next() reliably produces "nats: consumer deleted" as a
+// real error (confirmed by 20+ local runs, single-shot, no chase
+// loop needed) — the old test's flake was that its discovery loop
+// returned on the FIRST new name it saw, which on a slow/contended CI
+// runner could be the short-lived gen-0 rather than gen-1, and
+// deleting a superseded generation is a silent no-op: the actually
+// blocked gen-1 keeps waiting, no event: error ever fires, and
+// the test hangs to its scan deadline. The fix below removes that
+// race without changing the semantics or looping deletes: it collects
+// every new consumer name over a fixed window (nothing else creates
+// BUILD_LOGS consumers in this test) and deletes the most recently
+// observed one, which is always the live generation once the
+// gen-0→gen-1 transition has settled.
 func TestGetRunLogs_FollowEndsWithErrorEventOnConsumerDeleted(t *testing.T) {
 	svc, server, nc, _ := newLogsRestFixture(t, "logs-consdel", "logs-consdel-task",
 		func(tc worker.TaskContext) error {
@@ -510,21 +531,20 @@ func TestGetRunLogs_FollowEndsWithErrorEventOnConsumerDeleted(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	// Find the new consumer this follow opened, and delete it — the
-	// mid-flight failure the review's regression targets.
+	// Poll for the FULL window rather than stopping at the first new
+	// name — the ordered consumer's own self-reset can retire an early
+	// name before the delete below ever reaches it. Taking the last
+	// name observed converges on whichever generation settled in.
 	var newName string
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && newName == "" {
+	pollDeadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(pollDeadline) {
 		after := buildLogsConsumerNames(t, nc)
 		for name := range after {
 			if !before[name] {
 				newName = name
-				break
 			}
 		}
-		if newName == "" {
-			time.Sleep(100 * time.Millisecond)
-		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if newName == "" {
 		t.Fatal("never observed the follow's own consumer appear on BUILD_LOGS")
@@ -569,6 +589,93 @@ func TestGetRunLogs_FollowEndsWithErrorEventOnConsumerDeleted(t *testing.T) {
 	}
 	if !sawError {
 		t.Fatal("never observed an event: error after the consumer was deleted")
+	}
+}
+
+// TestGetRunLogs_FollowEndsWithErrorEventOnStreamDeleted is a second
+// #624 review round-2 regression test for point 4, covering a
+// different failure surface than
+// TestGetRunLogs_FollowEndsWithErrorEventOnConsumerDeleted: deleting
+// the STREAM itself, not just its consumer. The follow must end the
+// SSE stream with event: error promptly — not silently loop as idle
+// until the 1h duration cap — and the handler goroutine must actually
+// return so closing the server doesn't block.
+func TestGetRunLogs_FollowEndsWithErrorEventOnStreamDeleted(t *testing.T) {
+	svc, server, nc, _ := newLogsRestFixture(t, "logs-streamdel", "logs-streamdel-task",
+		func(tc worker.TaskContext) error {
+			time.Sleep(5 * time.Second) // keep the run open past the deletion+assertion
+			return tc.Complete(nil)
+		}, false)
+	runID := startLogsTestRun(t, svc, "logs-streamdel")
+	waitForStepKnown(t, svc, runID, "a", 5*time.Second)
+
+	req, err := http.NewRequest(
+		"GET", fmt.Sprintf("%s/runs/%s/logs?step=a&follow=1", server.URL, runID), nil,
+	)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("follow request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// By the time 200 OK reached the client, serveLogsFollow had
+	// already opened its consumer synchronously (openLogsFollowConsumer
+	// runs before headers are written) — the stream is safe to delete
+	// immediately, no discovery race to lose.
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	delCtx, delCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer delCancel()
+	if err := js.DeleteStream(delCtx, "BUILD_LOGS"); err != nil {
+		t.Fatalf("DeleteStream(BUILD_LOGS): %v", err)
+	}
+
+	// event: error must arrive well within the 15s keepalive wait —
+	// bounded generously for CI jitter, nowhere near the 1h cap.
+	scanner := bufio.NewScanner(resp.Body)
+	var sawError bool
+	var event string
+	scanDeadline := time.Now().Add(20 * time.Second)
+	for scanner.Scan() {
+		if time.Now().After(scanDeadline) {
+			break
+		}
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event: error"):
+			event = "error"
+		case strings.HasPrefix(line, "event: eof"), strings.HasPrefix(line, "event: chunk"):
+			event = ""
+		}
+		if event == "error" && strings.HasPrefix(line, "data:") {
+			sawError = true
+			break
+		}
+	}
+	if !sawError {
+		t.Fatal("never observed an event: error after the stream was deleted")
+	}
+
+	// The handler must have returned by now — closing the server must
+	// not block waiting on a still-running follow goroutine.
+	closed := make(chan struct{})
+	go func() {
+		server.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server.Close() blocked — follow handler did not return after stream deletion")
 	}
 }
 
