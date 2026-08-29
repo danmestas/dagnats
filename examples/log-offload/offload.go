@@ -1,8 +1,9 @@
 // examples/log-offload/offload.go
 // offloadRunLogs drains every BUILD_LOGS chunk for one run and writes
-// it to a local file, one file per (step, attempt), in stream order.
-// Split from main.go so the unit test (offload_test.go) can exercise
-// it directly against an embedded NATS server without a real Worker.
+// it to a local file, one file per (step, attempt, iteration), in
+// stream order. Split from main.go so the unit test
+// (offload_test.go) can exercise it directly against an embedded
+// NATS server without a real Worker.
 package main
 
 import (
@@ -16,16 +17,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // offloadRunLogs creates an ephemeral pull consumer filtered to
 // logs.{runID}.>, drains it (bounded — see fetchIdleAttemptsMax /
-// fetchTotalChunksMax), buffers each (step, attempt)'s chunks in
-// memory in stream order, then flushes each buffer to
-// outDir/{stepID}.{attempt}.ndjson via a temp-file-then-rename (see
-// flushBuffers). Returns the file list and total chunk count for the
-// step's output.
+// fetchTotalChunksMax), buffers each (step, attempt, iteration)'s
+// chunks in memory in stream order, then flushes each buffer to
+// outDir/{stepID}.{attempt}.{iteration}.ndjson via a
+// temp-file-then-rename (see flushBuffers). Returns the file list and
+// total chunk count for the step's output.
 //
 // Buffering the whole run's logs in memory before writing (rather
 // than streaming straight to an appended file) is what makes the
@@ -119,8 +121,8 @@ func drainBatch(
 }
 
 // bufferChunk validates one chunk and appends it (as one NDJSON line)
-// to its (stepID, attempt) in-memory buffer, creating the buffer the
-// first time that key is seen.
+// to its (stepID, attempt, iteration) in-memory buffer, creating the
+// buffer the first time that key is seen.
 func bufferChunk(
 	msg jetstream.Msg, runID string, buffers map[string]*bytes.Buffer,
 ) error {
@@ -131,16 +133,16 @@ func bufferChunk(
 		panic("bufferChunk: runID must not be empty")
 	}
 
-	stepID, attempt, err := parseLogSubject(msg.Subject(), runID)
+	stepID, attempt, iteration, err := parseLogSubject(msg.Subject(), runID)
 	if err != nil {
 		return err
 	}
-	var chunk logChunk
+	var chunk protocol.LogChunk
 	if err := json.Unmarshal(msg.Data(), &chunk); err != nil {
 		return fmt.Errorf("unmarshal chunk %s: %w", msg.Subject(), err)
 	}
 
-	key := stepID + "." + strconv.Itoa(attempt)
+	key := stepID + "." + strconv.Itoa(attempt) + "." + strconv.Itoa(iteration)
 	buf, ok := buffers[key]
 	if !ok {
 		buf = &bytes.Buffer{}
@@ -228,12 +230,12 @@ func closeLogErr(f *os.File) {
 	}
 }
 
-// parseLogSubject extracts stepID and attempt from a
-// logs.{runID}.{stepID}.{attempt} subject. runID is passed in
-// (already known from the trigger's input) rather than re-derived
-// from the subject, so a step ID that happens to contain characters
-// resembling the runID token cannot confuse the split.
-func parseLogSubject(subject, runID string) (string, int, error) {
+// parseLogSubject extracts stepID, attempt, and iteration from a
+// logs.{runID}.{stepID}.{attempt}.{iteration} subject. runID is
+// passed in (already known from the trigger's input) rather than
+// re-derived from the subject, so a step ID that happens to contain
+// characters resembling the runID token cannot confuse the split.
+func parseLogSubject(subject, runID string) (string, int, int, error) {
 	if subject == "" {
 		panic("parseLogSubject: subject must not be empty")
 	}
@@ -242,18 +244,30 @@ func parseLogSubject(subject, runID string) (string, int, error) {
 	}
 	prefix := buildLogsSubjectPrefix + runID + "."
 	if !strings.HasPrefix(subject, prefix) {
-		return "", 0, fmt.Errorf("subject %q missing prefix %q", subject, prefix)
+		return "", 0, 0, fmt.Errorf("subject %q missing prefix %q", subject, prefix)
 	}
 	rest := strings.TrimPrefix(subject, prefix)
-	idx := strings.LastIndex(rest, ".")
-	if idx < 0 {
-		return "", 0, fmt.Errorf("subject %q missing attempt segment", subject)
+
+	iterIdx := strings.LastIndex(rest, ".")
+	if iterIdx < 0 {
+		return "", 0, 0, fmt.Errorf("subject %q missing iteration segment", subject)
 	}
-	stepID, attemptStr := rest[:idx], rest[idx+1:]
+	withoutIteration, iterationStr := rest[:iterIdx], rest[iterIdx+1:]
+	iteration, err := strconv.Atoi(iterationStr)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("subject %q: bad iteration %q: %w",
+			subject, iterationStr, err)
+	}
+
+	attemptIdx := strings.LastIndex(withoutIteration, ".")
+	if attemptIdx < 0 {
+		return "", 0, 0, fmt.Errorf("subject %q missing attempt segment", subject)
+	}
+	stepID, attemptStr := withoutIteration[:attemptIdx], withoutIteration[attemptIdx+1:]
 	attempt, err := strconv.Atoi(attemptStr)
 	if err != nil {
-		return "", 0, fmt.Errorf("subject %q: bad attempt %q: %w",
+		return "", 0, 0, fmt.Errorf("subject %q: bad attempt %q: %w",
 			subject, attemptStr, err)
 	}
-	return stepID, attempt, nil
+	return stepID, attempt, iteration, nil
 }
