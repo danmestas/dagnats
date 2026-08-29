@@ -275,17 +275,17 @@ func checkTaskCallExclusivity(
 	if field == "" {
 		panic("checkTaskCallExclusivity: field must not be empty")
 	}
+	before := len(diags)
 	hasCall := call != ""
 	hasTask := task != ""
 	if hasCall == hasTask {
-		return addDiagnostic(diags, Diagnostic{
+		diags = addDiagnostic(diags, Diagnostic{
 			Field: field,
 			Message: fmt.Sprintf(
 				"%s: exactly one of call or task must be set", field,
 			),
 		})
-	}
-	if hasTask && !validTaskType(task) {
+	} else if hasTask && !validTaskType(task) {
 		diags = addDiagnostic(diags, Diagnostic{
 			Field: field,
 			Message: fmt.Sprintf(
@@ -294,6 +294,9 @@ func checkTaskCallExclusivity(
 				field, task,
 			),
 		})
+	}
+	if len(diags) < before {
+		panic("checkTaskCallExclusivity: internal invariant: diagnostics count decreased")
 	}
 	return diags
 }
