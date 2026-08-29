@@ -9,7 +9,8 @@ control-plane endpoints (#633, superseding the API half of #631).
 ## What this is
 
 `.dagnats/ci.yml` is a small, declarative CI spec: a set of named checks
-(each backed by a Dagger function call), an optional deploy step, and an
+(each backed by a Dagger function call or a plain task type — see
+[`call:` vs `task:`](#call-vs-task) below), an optional deploy step, and an
 optional durable human-approval gate before deploy. The `ci` package
 (`github.com/danmestas/dagnats/ci`, module root) parses that YAML and
 compiles it into a `dag.WorkflowDef` the DagNats engine can run.
@@ -60,6 +61,42 @@ Each check compiles to a `dagger.call` step; `approval: required` inserts an
 engine waits for a human signal instead of deploying unattended. `branches:`
 under `deploy:` is rejected — it isn't implemented yet and a silent no-op
 would be worse than an explicit diagnostic.
+
+## `call:` vs `task:`
+
+Every check and the `deploy:` step accept exactly one of two mutually
+exclusive fields (#671):
+
+```yaml
+checks:
+  test: { task: "go-test" }        # compiles to Task: "go-test" — any worker
+  scan: { call: "security-scan" }  # compiles to dagger.call, exactly as before
+```
+
+- **`call:`** names a Dagger function. The step compiles to the
+  `dagger.call` task type with a Dagger-shaped `Metadata` (`module`, `call`)
+  the Dagger worker reads to invoke the function. This is the original,
+  and still default-feeling, shape — Dagger stays fully supported.
+- **`task:`** names a plain task type verbatim. The step's `Task` is set to
+  that value with no `Metadata` at all, so it dispatches to whatever worker
+  in the fleet handles that task type through the ordinary worker protocol
+  — no Dagger involvement required. `needs:`, `timeout:` (and, on
+  `deploy:`, `approval:`/`branches:`) behave identically either way.
+- **Setting both, or neither,** is a compile-time `Diagnostic` naming the
+  check (`Field: "<check-name>"`) or `"deploy"`, in the same accumulating
+  style as every other per-check problem — an author sees every mistake in
+  one `ci.yml` push, not one push per error.
+- **`task:` values are restricted** to the same safe charset run labels use
+  (lowercase letters, digits, `_`, `-`, `.`) because the engine builds the
+  dispatch subject from `Task` verbatim, with no sanitization — an unsafe
+  value would otherwise compile and register cleanly but silently mint a
+  broken subject only once a run actually tries to dispatch it.
+
+Dagger is one supported runner among any worker that speaks the task
+protocol — `ci.yml` no longer implies Dagger by construction. A repo whose
+workers already handle plain task types (`go-test`, `lint`, `docker-build`,
+whatever the fleet dispatches) can adopt `ci.yml` without touching Dagger at
+all; a repo already using Dagger keeps using `call:` unchanged.
 
 ## Diagnostics, not fail-fast errors
 

@@ -36,7 +36,7 @@ const DiagnosticsMax = 100
 ```
 
 <a name="Parse"></a>
-## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L81>)
+## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L88>)
 
 ```go
 func Parse(spec []byte) (Spec, []Diagnostic)
@@ -45,13 +45,14 @@ func Parse(spec []byte) (Spec, []Diagnostic)
 Parse decodes YAML bytes into a Spec, accumulating a Diagnostic \(rather than failing fast\) for every field that fails to decode. It parses via yaml.Node first so each diagnostic carries the offending field's Line and Column — authors can jump straight to the problem in their ci.yml instead of pattern\-matching a stack\-trace\-flavored error string.
 
 <a name="Check"></a>
-## type [Check](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L59-L63>)
+## type [Check](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L62-L67>)
 
-Check declares one CI check step backed by a Dagger function call. Call is the Dagger function name. Needs lists check names that must complete before this check runs. Timeout is a Go duration string \(e.g. "15m"\).
+Check declares one CI check step backed by exactly one runner: Call \(a Dagger function name, compiled to the "dagger.call" task type\) or Task \(a plain task type, compiled verbatim for any worker that speaks the ordinary worker protocol\). Setting both, or neither, is a compile\-time diagnostic \(\#671\) — see compileCheck. Needs lists check names that must complete before this check runs. Timeout is a Go duration string \(e.g. "15m"\).
 
 ```go
 type Check struct {
     Call    string   `yaml:"call"`
+    Task    string   `yaml:"task"`
     Needs   []string `yaml:"needs"`
     Timeout string   `yaml:"timeout"`
 }
@@ -70,13 +71,14 @@ type Defaults struct {
 ```
 
 <a name="DeployStep"></a>
-## type [DeployStep](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L68-L74>)
+## type [DeployStep](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L74-L81>)
 
-DeployStep declares an optional deploy stage that follows the CI checks. Approval=="required" inserts a durable human\-gate step before execution. Branches limits deployment to specific push targets \(never PR heads\).
+DeployStep declares an optional deploy stage that follows the CI checks. Call and Task are mutually exclusive, same as Check \(\#671\) — see compileDeploy. Approval=="required" inserts a durable human\-gate step before execution. Branches limits deployment to specific push targets \(never PR heads\).
 
 ```go
 type DeployStep struct {
     Call     string   `yaml:"call"`
+    Task     string   `yaml:"task"`
     Needs    []string `yaml:"needs"`
     Approval string   `yaml:"approval"`
     Branches []string `yaml:"branches"`
@@ -99,7 +101,7 @@ type Diagnostic struct {
 ```
 
 <a name="Compile"></a>
-### func [Compile](<https://github.com/danmestas/dagnats/blob/main/ci/compile.go#L44>)
+### func [Compile](<https://github.com/danmestas/dagnats/blob/main/ci/compile.go#L64>)
 
 ```go
 func Compile(name string, s Spec) (dag.WorkflowDef, []Diagnostic)
@@ -110,7 +112,7 @@ Compile converts a parsed Spec into a dag.WorkflowDef ready for the DagNats engi
 Diagnostics raised here have no YAML source position \(Line/Column are 0\) because Compile receives an already\-decoded Spec, not the original bytes. Callers that hold the raw ci.yml text should use CompileYAML instead, which threads Parse's positions through for the fields it can decode.
 
 <a name="CompileYAML"></a>
-### func [CompileYAML](<https://github.com/danmestas/dagnats/blob/main/ci/compile.go#L88>)
+### func [CompileYAML](<https://github.com/danmestas/dagnats/blob/main/ci/compile.go#L108>)
 
 ```go
 func CompileYAML(name string, spec []byte) (dag.WorkflowDef, []Diagnostic)

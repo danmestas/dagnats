@@ -33,6 +33,21 @@ checks:
   build: { call: "build", needs: [missing] }
 `
 
+// ciYMLTaskValid is a minimal task:-based ci.yml spec (#671) — the
+// runner-neutral path, dispatchable to any worker rather than requiring
+// Dagger.
+const ciYMLTaskValid = `
+checks:
+  test: { task: "go-test" }
+`
+
+// ciYMLTaskAndCallBothSet sets both call: and task: on the same check,
+// which is mutually exclusive (#671) and must produce a diagnostic.
+const ciYMLTaskAndCallBothSet = `
+checks:
+  test: { call: "test", task: "go-test" }
+`
+
 // newCIRequestBody marshals a POST body for /v1/ci/{compile,validate}.
 func newCIRequestBody(t *testing.T, name, spec string, register bool) []byte {
 	t.Helper()
@@ -317,5 +332,99 @@ func TestCICompileEmptyNameReturns400(t *testing.T) {
 	defer resp2.Body.Close()
 	if resp2.StatusCode == http.StatusBadRequest {
 		t.Error("named request rejected with 400, want it to pass the name check")
+	}
+}
+
+// TestCICompileTaskSpecRegistersPlainTask verifies that POST
+// /v1/ci/compile with a task:-based spec (#671) returns a def whose step
+// carries the plain Task with no Dagger-shaped Metadata, and that
+// register:true persists it exactly like a call:-based spec.
+func TestCICompileTaskSpecRegistersPlainTask(t *testing.T) {
+	_, server := newCITestServer(t)
+	body := newCIRequestBody(t, "ci-task", ciYMLTaskValid, true)
+
+	resp, err := http.Post(server.URL+"/v1/ci/compile", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /v1/ci/compile: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Positive: 200, registered: true, step's Task is the plain value.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var out ciCompileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Registered {
+		t.Fatal("registered = false, want true")
+	}
+	if len(out.Workflow.Steps) != 1 {
+		t.Fatalf("workflow.steps = %+v, want exactly 1", out.Workflow.Steps)
+	}
+	step := out.Workflow.Steps[0]
+	if step.Task != "go-test" {
+		t.Errorf("step.Task = %q, want \"go-test\"", step.Task)
+	}
+
+	// Negative: no Dagger-shaped Metadata (module/call) leaks into a
+	// task:-based step.
+	if len(step.Metadata) != 0 {
+		t.Errorf("step.Metadata = %+v, want empty for a task: check", step.Metadata)
+	}
+
+	// Positive: it registered, same as any other clean compile.
+	names := listWorkflowNames(t, server.URL)
+	if !names["ci-task"] {
+		t.Error("ci-task does not appear in GET /workflows despite register: true")
+	}
+}
+
+// TestCIValidateTaskAndCallExclusivityDiagnostic verifies that POST
+// /v1/ci/validate reports the call:/task: exclusivity diagnostic (#671)
+// for a spec that sets both on the same check.
+func TestCIValidateTaskAndCallExclusivityDiagnostic(t *testing.T) {
+	_, server := newCITestServer(t)
+	body := newCIRequestBody(t, "ci-validate-both", ciYMLTaskAndCallBothSet, false)
+
+	resp, err := http.Post(server.URL+"/v1/ci/validate", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /v1/ci/validate: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Positive: 200 (validate is always 200), valid: false, one diagnostic
+	// naming the offending check.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (validate is always 200)", resp.StatusCode)
+	}
+	var out ciDiagnosticsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Valid {
+		t.Error("valid = true, want false for call:+task: both set")
+	}
+	if len(out.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v, want exactly 1", out.Diagnostics)
+	}
+	if out.Diagnostics[0].Field != "test" {
+		t.Errorf("diagnostics[0].Field = %q, want \"test\"", out.Diagnostics[0].Field)
+	}
+
+	// Negative: a task:-only variant of the same check is valid.
+	okBody := newCIRequestBody(t, "ci-validate-task-only", ciYMLTaskValid, false)
+	okResp, err := http.Post(server.URL+"/v1/ci/validate", "application/json", bytes.NewReader(okBody))
+	if err != nil {
+		t.Fatalf("POST /v1/ci/validate (task only): %v", err)
+	}
+	defer okResp.Body.Close()
+	var okOut ciDiagnosticsResponse
+	if err := json.NewDecoder(okResp.Body).Decode(&okOut); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !okOut.Valid {
+		t.Errorf("valid = false, want true (diagnostics: %+v)", okOut.Diagnostics)
 	}
 }

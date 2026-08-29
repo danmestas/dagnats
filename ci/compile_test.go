@@ -101,6 +101,65 @@ checks:
   c: { call: "c" }
 `
 
+// ciYMLTaskCheck has a single check using task: instead of call: — the
+// runner-neutral path (#671) that must compile to a plain Task with no
+// Dagger-shaped Metadata.
+const ciYMLTaskCheck = `
+checks:
+  test: { task: "go-test" }
+`
+
+// ciYMLTaskAndCallBothSet sets both call: and task: on the same check,
+// which is mutually exclusive and must produce exactly one diagnostic.
+const ciYMLTaskAndCallBothSet = `
+checks:
+  test: { call: "test", task: "go-test" }
+`
+
+// ciYMLNeitherTaskNorCall sets neither call: nor task:, which is also
+// mutually-exclusive-violating (exactly one must be set).
+const ciYMLNeitherTaskNorCall = `
+checks:
+  test: { timeout: "5m" }
+`
+
+// ciYMLDeployTask is a deploy block using task: instead of call:.
+const ciYMLDeployTask = `
+checks:
+  test: { call: "test" }
+deploy:
+  task: "deploy-worker"
+  needs: [test]
+`
+
+// ciYMLDeployTaskAndCall sets both call: and task: on deploy.
+const ciYMLDeployTaskAndCall = `
+checks:
+  test: { call: "test" }
+deploy:
+  call: "publish"
+  task: "deploy-worker"
+  needs: [test]
+`
+
+// ciYMLMixedTaskAndCall has one task: check and one call: check, with the
+// task: check depending on the call: check -- proving needs edges compile
+// correctly across the two runner kinds.
+const ciYMLMixedTaskAndCall = `
+checks:
+  build: { call: "build" }
+  test:  { task: "go-test", needs: [build] }
+`
+
+// ciYMLInvalidTaskValue has a task: value containing characters that are
+// unsafe as a NATS subject token (a space), which dag.Validate would not
+// catch (it only checks non-empty) and the engine does not sanitize (it
+// builds the subject from step.Task verbatim).
+const ciYMLInvalidTaskValue = `
+checks:
+  test: { task: "go test" }
+`
+
 // stepByID is a test helper that looks up a compiled step by its ID.
 // It fails the test immediately if the step is not found — an absent step
 // is a compiler bug that makes every downstream assertion meaningless.
@@ -439,5 +498,230 @@ func TestCompileYAMLValidSpecYieldsValidatedDef(t *testing.T) {
 	_, diags2 := ci.CompileYAML("ci-yaml-bad", []byte(ciYMLBadDefaultsField))
 	if len(diags2) == 0 {
 		t.Fatal("CompileYAML(bad defaults) diagnostics = none, want >=1")
+	}
+}
+
+// TestCompileTaskCheckCompilesVerbatimWithNoDaggerInput verifies that a
+// check using task: compiles to a StepDef whose Task is the value verbatim
+// and whose Metadata carries no Dagger-shaped module/call keys.
+func TestCompileTaskCheckCompilesVerbatimWithNoDaggerInput(t *testing.T) {
+	spec := mustParse(t, ciYMLTaskCheck)
+	def, diags := ci.Compile("ci-task", spec)
+	if len(diags) != 0 {
+		t.Fatalf("Compile: unexpected diagnostics: %+v", diags)
+	}
+
+	// Positive: the step's Task is the task: value verbatim.
+	step := stepByID(t, def.Steps, "test")
+	if step.Task != "go-test" {
+		t.Errorf("step.Task = %q, want \"go-test\"", step.Task)
+	}
+
+	// Negative: no Dagger-shaped input (module/call) leaks into Metadata.
+	if _, ok := step.Metadata["module"]; ok {
+		t.Errorf("step.Metadata = %+v, want no \"module\" key for a task: check", step.Metadata)
+	}
+	if _, ok := step.Metadata["call"]; ok {
+		t.Errorf("step.Metadata = %+v, want no \"call\" key for a task: check", step.Metadata)
+	}
+
+	if err := dag.Validate(def); err != nil {
+		t.Errorf("dag.Validate returned error: %v", err)
+	}
+}
+
+// TestCompileTaskAndCallBothSetIsRejected verifies that setting both call:
+// and task: on the same check produces exactly one diagnostic naming that
+// check, and that fixing it (setting only one) compiles cleanly.
+func TestCompileTaskAndCallBothSetIsRejected(t *testing.T) {
+	spec := mustParse(t, ciYMLTaskAndCallBothSet)
+
+	// Positive: exactly one diagnostic naming the "test" check.
+	_, diags := ci.Compile("ci-both", spec)
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "test" {
+		t.Errorf("diags[0].Field = %q, want \"test\"", diags[0].Field)
+	}
+
+	// Negative: a spec with only one of call/task set compiles cleanly.
+	okSpec := mustParse(t, ciYMLTaskCheck)
+	if _, diags2 := ci.Compile("ci-both-fixed", okSpec); len(diags2) != 0 {
+		t.Errorf("Compile(task only) diagnostics = %+v, want none", diags2)
+	}
+}
+
+// TestCompileNeitherTaskNorCallIsRejected verifies that a check with
+// neither call: nor task: set produces exactly one diagnostic.
+func TestCompileNeitherTaskNorCallIsRejected(t *testing.T) {
+	spec := mustParse(t, ciYMLNeitherTaskNorCall)
+
+	// Positive: exactly one diagnostic naming the "test" check.
+	_, diags := ci.Compile("ci-neither", spec)
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "test" {
+		t.Errorf("diags[0].Field = %q, want \"test\"", diags[0].Field)
+	}
+
+	// Negative: the same spec with call: added compiles cleanly.
+	okSpec := mustParse(t, ciYMLBasic)
+	if _, diags2 := ci.Compile("ci-neither-fixed", okSpec); len(diags2) != 0 {
+		t.Errorf("Compile(call set) diagnostics = %+v, want none", diags2)
+	}
+}
+
+// TestCompileDeployWithTask verifies that a deploy block using task:
+// compiles to a StepDef whose Task is the value verbatim, with no
+// Dagger-shaped Metadata, same as a task: check.
+func TestCompileDeployWithTask(t *testing.T) {
+	spec := mustParse(t, ciYMLDeployTask)
+	def, diags := ci.Compile("ci-deploy-task", spec)
+	if len(diags) != 0 {
+		t.Fatalf("Compile: unexpected diagnostics: %+v", diags)
+	}
+
+	// Positive: deploy step's Task is the task: value verbatim.
+	deploy := stepByID(t, def.Steps, "deploy")
+	if deploy.Task != "deploy-worker" {
+		t.Errorf("deploy.Task = %q, want \"deploy-worker\"", deploy.Task)
+	}
+
+	// Negative: no Dagger-shaped Metadata for a task: deploy.
+	if len(deploy.Metadata) != 0 {
+		t.Errorf("deploy.Metadata = %+v, want empty for a task: deploy", deploy.Metadata)
+	}
+
+	if err := dag.Validate(def); err != nil {
+		t.Errorf("dag.Validate returned error: %v", err)
+	}
+}
+
+// TestCompileDeployTaskAndCallBothSetIsRejected verifies deploy's
+// exclusivity diagnostic mirrors the per-check one, naming "deploy".
+func TestCompileDeployTaskAndCallBothSetIsRejected(t *testing.T) {
+	spec := mustParse(t, ciYMLDeployTaskAndCall)
+
+	// Positive: exactly one diagnostic naming "deploy".
+	_, diags := ci.Compile("ci-deploy-both", spec)
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "deploy" {
+		t.Errorf("diags[0].Field = %q, want \"deploy\"", diags[0].Field)
+	}
+
+	// Negative: the task-only deploy variant compiles cleanly.
+	okSpec := mustParse(t, ciYMLDeployTask)
+	if _, diags2 := ci.Compile("ci-deploy-both-fixed", okSpec); len(diags2) != 0 {
+		t.Errorf("Compile(deploy task only) diagnostics = %+v, want none", diags2)
+	}
+}
+
+// TestCompileMixedTaskAndCallChecksCompile verifies a spec with one call:
+// check and one task: check compiles both, with the needs edge between
+// them intact regardless of which runner kind is on each side.
+func TestCompileMixedTaskAndCallChecksCompile(t *testing.T) {
+	spec := mustParse(t, ciYMLMixedTaskAndCall)
+	def, diags := ci.Compile("ci-mixed", spec)
+	if len(diags) != 0 {
+		t.Fatalf("Compile: unexpected diagnostics: %+v", diags)
+	}
+
+	// Positive: both steps compiled with their respective runner shapes.
+	build := stepByID(t, def.Steps, "build")
+	if build.Task != "dagger.call" || build.Metadata["call"] != "build" {
+		t.Errorf("build = %+v, want dagger.call with call metadata", build)
+	}
+	test := stepByID(t, def.Steps, "test")
+	if test.Task != "go-test" {
+		t.Errorf("test.Task = %q, want \"go-test\"", test.Task)
+	}
+
+	// Negative: the needs edge from test -> build survives across runner kinds.
+	if !slices.Contains(test.DependsOn, "build") {
+		t.Errorf("test.DependsOn %v does not contain \"build\"", test.DependsOn)
+	}
+
+	if err := dag.Validate(def); err != nil {
+		t.Errorf("dag.Validate returned error: %v", err)
+	}
+}
+
+// TestCompileInvalidTaskValueIsRejected verifies that a task: value
+// containing NATS-subject-unsafe characters (here, a space) is rejected at
+// compile time with a diagnostic, rather than silently minting a malformed
+// subject at dispatch time — dag.Validate only checks Task is non-empty,
+// and the engine's StepSubject builds "task.{Task}.{runID}" verbatim with
+// no sanitization.
+func TestCompileInvalidTaskValueIsRejected(t *testing.T) {
+	spec := mustParse(t, ciYMLInvalidTaskValue)
+
+	// Positive: exactly one diagnostic naming the "test" check.
+	_, diags := ci.Compile("ci-bad-task", spec)
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "test" {
+		t.Errorf("diags[0].Field = %q, want \"test\"", diags[0].Field)
+	}
+
+	// Negative: a task: value with only safe characters compiles cleanly.
+	okSpec := mustParse(t, ciYMLTaskCheck)
+	if _, diags2 := ci.Compile("ci-bad-task-fixed", okSpec); len(diags2) != 0 {
+		t.Errorf("Compile(valid task) diagnostics = %+v, want none", diags2)
+	}
+}
+
+// ciCallSpecHashes pins the DefHash of every call:-only example spec as
+// compiled by the pre-#671 compiler, captured before task: existed. A
+// changed hash here means the call: compile path stopped being
+// byte-identical -- the one thing #671 must never do.
+var ciCallSpecHashes = map[string]string{
+	"golden-basic":  "e9f5043068315e1cc55a60de4295ed91d5d56721a968b94affd6e5409bdf5a56",
+	"golden-deploy": "93d81e4872504eb1f9c3166a609ba28258a453f34a146fde654a67aa354f26a1",
+}
+
+// TestCompileCallSpecsAreByteIdenticalToPreTaskCompiler verifies that
+// adding task: support did not change one bit of the call: compile path:
+// the DefHash of ciYMLBasic and ciYMLDeployApproval, compiled through
+// today's compiler, must equal the hashes captured from the compiler
+// before #671 touched compile.go/spec.go.
+func TestCompileCallSpecsAreByteIdenticalToPreTaskCompiler(t *testing.T) {
+	cases := []struct {
+		hashKey string
+		defName string
+		yml     string
+	}{
+		{"golden-basic", "golden-basic", ciYMLBasic},
+		{"golden-deploy", "golden-deploy", ciYMLDeployApproval},
+	}
+	for _, c := range cases {
+		def, diags := ci.CompileYAML(c.defName, []byte(c.yml))
+		if len(diags) != 0 {
+			t.Fatalf("CompileYAML(%s): unexpected diagnostics: %+v", c.defName, diags)
+		}
+
+		// Positive: hash matches the pinned pre-#671 golden value.
+		got := dag.DefHash(def)
+		want := ciCallSpecHashes[c.hashKey]
+		if got != want {
+			t.Errorf("DefHash(%s) = %q, want %q (call: path is not byte-identical)",
+				c.defName, got, want)
+		}
+	}
+
+	// Negative: a task: spec's hash does NOT collide with either golden
+	// call: hash -- proving the two runner kinds produce distinguishable
+	// output rather than both degenerating to the same shape.
+	taskDef, diags := ci.CompileYAML("golden-basic", []byte(ciYMLTaskCheck))
+	if len(diags) != 0 {
+		t.Fatalf("CompileYAML(task check): unexpected diagnostics: %+v", diags)
+	}
+	taskHash := dag.DefHash(taskDef)
+	if taskHash == ciCallSpecHashes["golden-basic"] {
+		t.Errorf("task: spec hash collides with the call: golden hash %q", taskHash)
 	}
 }

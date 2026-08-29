@@ -53,20 +53,27 @@ type Defaults struct {
 	Engine string `yaml:"engine"`
 }
 
-// Check declares one CI check step backed by a Dagger function call.
-// Call is the Dagger function name. Needs lists check names that must
+// Check declares one CI check step backed by exactly one runner: Call (a
+// Dagger function name, compiled to the "dagger.call" task type) or Task
+// (a plain task type, compiled verbatim for any worker that speaks the
+// ordinary worker protocol). Setting both, or neither, is a compile-time
+// diagnostic (#671) — see compileCheck. Needs lists check names that must
 // complete before this check runs. Timeout is a Go duration string (e.g. "15m").
 type Check struct {
 	Call    string   `yaml:"call"`
+	Task    string   `yaml:"task"`
 	Needs   []string `yaml:"needs"`
 	Timeout string   `yaml:"timeout"`
 }
 
 // DeployStep declares an optional deploy stage that follows the CI checks.
-// Approval=="required" inserts a durable human-gate step before execution.
-// Branches limits deployment to specific push targets (never PR heads).
+// Call and Task are mutually exclusive, same as Check (#671) — see
+// compileDeploy. Approval=="required" inserts a durable human-gate step
+// before execution. Branches limits deployment to specific push targets
+// (never PR heads).
 type DeployStep struct {
 	Call     string   `yaml:"call"`
+	Task     string   `yaml:"task"`
 	Needs    []string `yaml:"needs"`
 	Approval string   `yaml:"approval"`
 	Branches []string `yaml:"branches"`

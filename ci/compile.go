@@ -28,6 +28,26 @@ const (
 // Compile's doc comment.
 var stepIDPattern = regexp.MustCompile(`step "([^"]+)"`)
 
+// taskTypePattern restricts a ci.yml task: value to the same safe,
+// greppable charset dag/labels.go's labelKeyPattern uses for run label
+// keys: lowercase letters, digits, underscore, dot, hyphen. dag.Validate
+// only requires a StepDef's Task to be non-empty, and the engine's
+// StepSubject (internal/engine/task_publisher.go) builds
+// "task.{Task}.{runID}" from it verbatim — unlike a step ID, which passes
+// through natsutil.SubjectToken sanitization first. An unsafe Task value
+// (whitespace, a NATS wildcard) would therefore compile and register
+// cleanly but mint a malformed or wildcard-colliding subject only at
+// dispatch time. Rejecting it here instead means the author sees a
+// Diagnostic instead of a run that silently never gets picked up.
+var taskTypePattern = regexp.MustCompile(`^[a-z0-9_.-]+$`)
+
+// validTaskType reports whether s is safe to use verbatim as a
+// dag.StepDef.Task without corrupting the NATS subject the engine builds
+// from it.
+func validTaskType(s string) bool {
+	return taskTypePattern.MatchString(s)
+}
+
 // Compile converts a parsed Spec into a dag.WorkflowDef ready for the DagNats
 // engine. name becomes WorkflowDef.Name. Unlike the pre-#633 fail-fast
 // compiler, every problem found (unknown Needs references, invalid
@@ -183,11 +203,14 @@ func buildSteps(
 	return steps, diags
 }
 
-// compileCheck converts one ci.yml check entry into a dag.StepDef that
-// executes a Dagger function via the "dagger.call" task type. module is the
-// resolved Dagger module path (Defaults.Module or "."). Returns ok==false
-// when the check produced one or more diagnostics, in which case the
-// returned StepDef is not usable.
+// compileCheck converts one ci.yml check entry into a dag.StepDef. Exactly
+// one of Call or Task must be set: Call compiles to the "dagger.call" task
+// type with a Dagger-shaped Metadata (module/call); Task compiles to that
+// value verbatim with no Metadata, dispatchable to any worker that speaks
+// the ordinary worker protocol (#671). module is the resolved Dagger
+// module path (Defaults.Module or "."), used only on the Call path.
+// Returns ok==false when the check produced one or more diagnostics, in
+// which case the returned StepDef is not usable.
 func compileCheck(
 	name string, c Check, module string, known map[string]bool,
 	diags []Diagnostic,
@@ -196,6 +219,7 @@ func compileCheck(
 		panic("compileCheck: known must not be nil")
 	}
 	before := len(diags)
+	diags = checkTaskCallExclusivity(name, c.Call, c.Task, diags)
 	for _, need := range c.Needs {
 		if !known[need] {
 			diags = addDiagnostic(diags, Diagnostic{
@@ -221,17 +245,57 @@ func compileCheck(
 	}
 	deps := make([]string, len(c.Needs))
 	copy(deps, c.Needs)
-	return dag.StepDef{
+	step := dag.StepDef{
 		ID:        name,
-		Task:      "dagger.call",
 		Type:      dag.StepTypeNormal,
 		Timeout:   timeout,
 		DependsOn: deps,
-		Metadata: map[string]string{
+	}
+	if c.Task != "" {
+		step.Task = c.Task
+	} else {
+		step.Task = "dagger.call"
+		step.Metadata = map[string]string{
 			"module": module,
 			"call":   c.Call,
-		},
-	}, true, diags
+		}
+	}
+	return step, true, diags
+}
+
+// checkTaskCallExclusivity validates that exactly one of call/task is set
+// and, when task is set, that it is safe to use verbatim as a
+// dag.StepDef.Task. field is the Diagnostic Field to attribute problems to
+// ("<check name>" for a check, "deploy" for the deploy block) — shared by
+// compileCheck and compileDeploy so the two entry points report the same
+// message shape for the same mistake (#671).
+func checkTaskCallExclusivity(
+	field, call, task string, diags []Diagnostic,
+) []Diagnostic {
+	if field == "" {
+		panic("checkTaskCallExclusivity: field must not be empty")
+	}
+	hasCall := call != ""
+	hasTask := task != ""
+	if hasCall == hasTask {
+		return addDiagnostic(diags, Diagnostic{
+			Field: field,
+			Message: fmt.Sprintf(
+				"%s: exactly one of call or task must be set", field,
+			),
+		})
+	}
+	if hasTask && !validTaskType(task) {
+		diags = addDiagnostic(diags, Diagnostic{
+			Field: field,
+			Message: fmt.Sprintf(
+				"%s: task %q is not a valid task type "+
+					"(lowercase letters, digits, '_', '-', '.' only)",
+				field, task,
+			),
+		})
+	}
+	return diags
 }
 
 // compileDeploy converts the ci.yml deploy block into one or two dag.StepDefs.
@@ -251,6 +315,7 @@ func compileDeploy(
 		panic("compileDeploy: known must not be nil")
 	}
 	before := len(diags)
+	diags = checkTaskCallExclusivity("deploy", d.Call, d.Task, diags)
 	if len(d.Branches) > 0 {
 		diags = addDiagnostic(diags, Diagnostic{
 			Field: "deploy",
@@ -309,17 +374,22 @@ func buildDeploySteps(
 		})
 		deployDeps = []string{"approve-deploy"}
 	}
-	steps = append(steps, dag.StepDef{
+	deployStep := dag.StepDef{
 		ID:        "deploy",
-		Task:      "dagger.call",
 		Type:      dag.StepTypeNormal,
 		Timeout:   deployTimeout,
 		DependsOn: deployDeps,
-		Metadata: map[string]string{
+	}
+	if d.Task != "" {
+		deployStep.Task = d.Task
+	} else {
+		deployStep.Task = "dagger.call"
+		deployStep.Metadata = map[string]string{
 			"module": module,
 			"call":   d.Call,
-		},
-	})
+		}
+	}
+	steps = append(steps, deployStep)
 	return steps
 }
 
