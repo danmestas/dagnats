@@ -11,10 +11,10 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -301,7 +301,7 @@ func (rm *RecoveryManager) TryOnFailure(
 	}
 	ofState := run.Steps[onFailStep.ID]
 	ofState.Status = dag.StepStatusQueued
-	ofState.DispatchNonce = runid.New()
+	stampDispatch(&ofState, time.Now().UTC())
 	run.Steps[onFailStep.ID] = ofState
 	if err := saveFn(ctx, run, onFailStep.ID); err != nil {
 		return false, err
@@ -339,12 +339,13 @@ func (rm *RecoveryManager) StartCompensation(
 		return nil
 	}
 
-	// Mark compensate steps as queued, stamping a fresh dispatch nonce on
-	// each so every compensate dispatch is run-bound (#380).
+	// Mark compensate steps as queued, stamping a fresh dispatch nonce and
+	// StartedAt on each so every compensate dispatch is run-bound (#380,
+	// #626).
 	for _, step := range chain {
 		state := run.Steps[step.ID]
 		state.Status = dag.StepStatusQueued
-		state.DispatchNonce = runid.New()
+		stampDispatch(&state, time.Now().UTC())
 		run.Steps[step.ID] = state
 	}
 	// Compensation chain spans multiple steps — workflow-scoped save.
@@ -413,10 +414,11 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 			step.ID, run.Steps[step.ID].Output,
 			failedStepID, failedError,
 		)
-		// Re-stamp a fresh dispatch nonce on this compensate step so the
-		// next dispatch is run-bound (#380); it rides the save below.
+		// Re-stamp a fresh dispatch nonce and StartedAt on this compensate
+		// step so the next dispatch is run-bound (#380, #626); both ride
+		// the save below.
 		nextState := run.Steps[step.Compensate]
-		nextState.DispatchNonce = runid.New()
+		stampDispatch(&nextState, time.Now().UTC())
 		run.Steps[step.Compensate] = nextState
 		saveFn(ctx, *run, step.Compensate)
 		rm.publisher.Publish(

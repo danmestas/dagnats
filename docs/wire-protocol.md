@@ -278,6 +278,22 @@ last `POST /workflows` response), compute `dag.DefHash` locally over the
 definition it is about to send, and skip the `POST /workflows` round-trip
 entirely when the two hashes match.
 
+## Step State Timestamps
+
+Not part of TaskPayload — these live on `dag.StepState` in the run snapshot
+returned by `GetRun`, so UIs can render per-step durations and a waterfall
+without extra queries:
+
+| Field | Type | Description |
+|-------|------|--------------|
+| `started_at` | RFC3339 timestamp | When the engine decided to dispatch this step (marked it Queued and stamped `dispatch_nonce`) — not when the worker picked it up. A retry re-stamps this to the new attempt's dispatch time. |
+| `completed_at` | RFC3339 timestamp | When the step reached a terminal status (Completed or Failed). |
+
+Both fields are additive: legacy snapshots written before this field existed
+deserialize with them absent (nil). Worker-reported `duration_ms` on task
+resolution remains the execution-only figure; `started_at`/`completed_at`
+capture the engine's end-to-end dispatch-to-terminal window instead.
+
 ## Reference Implementations
 
 - **Go**: see `worker/` package for NATS transport

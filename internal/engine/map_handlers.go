@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/runid"
@@ -329,7 +330,7 @@ func (o *Orchestrator) runMapOnFailure(
 	}
 	ofState := run.Steps[onFailStep.ID]
 	ofState.Status = dag.StepStatusQueued
-	ofState.DispatchNonce = runid.New()
+	stampDispatch(&ofState, time.Now().UTC())
 	run.Steps[onFailStep.ID] = ofState
 	if err := o.saveSnapshot(ctx, run, onFailStep.ID); err != nil {
 		return err
