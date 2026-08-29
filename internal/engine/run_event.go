@@ -194,11 +194,20 @@ func recordRunEventPublishFailure(
 // The delete happens AFTER afterPersist, not before (review round 4):
 // if afterPersist fails, finalizeWithReleaseDebt sets
 // ReleasePending=true, and the run is STILL owned -- the marker (created
-// back at SaveInitial/CreateSnapshot time) must simply stay. There is
-// no ordering race and no grace window needed here, unlike an earlier
-// version of this fix that tried a separate write-once "runpending"
-// marker: runactive was already created long before finalize ever
-// runs, so nothing new needs to be written on the debt path at all.
+// back at SaveInitial/CreateSnapshot time) is normally left untouched.
+//
+// But there IS a narrow ordering race (review round 5, reproduced by
+// the reviewer): between the terminal saveFn call just above and
+// finalizeWithReleaseDebt's own ReleasePending=true save, the persisted
+// run is terminal AND ReleasePending is still false -- isReconcilerOwned
+// says NOT owned. A concurrent reconciler tick's repairActiveOrphans
+// (snapshot.go) can observe the run in exactly that window and delete
+// its (still legitimate) runactive marker as "stale." finalizeWithRelease
+// Debt closes that gap itself: activeOrphanGrace gives repairActiveOrphans
+// a bounded window to skip a candidate that might just be mid-finalize,
+// and finalizeWithReleaseDebt recreates the marker (idempotent) after its
+// own save in case the grace window was missed anyway. See both doc
+// comments for the full picture.
 //
 // finalizeRun and the reconciler's release-recovery/abandon paths
 // (reconcileReleasePending, reconcileReleaseFailed, reconciler.go) are
@@ -273,9 +282,12 @@ func finalizeRun(
 			// The debt path: ReleasePending is about to become true,
 			// so the reconciler still owns this run -- runactive must
 			// NOT be deleted (review round 4 invariant). It already
-			// exists from creation time; nothing to write here either.
+			// exists from creation time; finalizeWithReleaseDebt
+			// recreates it defensively in case a concurrent repair
+			// pass deleted it in the window between the save above and
+			// its own save (review round 5 -- see its doc comment).
 			return finalizeWithReleaseDebt(
-				ctx, tp, saveFn, run, status, stepID, err,
+				ctx, tp, store, saveFn, run, status, stepID, err,
 			)
 		}
 	}
@@ -367,18 +379,31 @@ func init() {
 // terminal-run sweep (reconciler.go) can retry the release later via
 // the exact same releaseAdmission logic the normal path uses.
 //
-// No index write happens here at all (#664 review round 4 -- an
-// earlier version of this fix created a separate write-once
-// "runpending" marker at this point, ordered before the save, with a
-// grace window in the orphan-repair pass to close the resulting
-// TOCTOU; both are gone). Under the unified runactive invariant
-// (isReconcilerOwned: non-terminal OR ReleasePending), this run's
-// runactive marker was ALREADY created back when it was admitted
-// (SaveInitial/CreateSnapshot) and finalizeRun deliberately skipped
-// deleting it before calling this function (see finalizeRun's doc
-// comment) -- so the marker is already exactly correct for
-// ReleasePending=true, with no write, no ordering race, and no grace
-// window needed.
+// Under the unified runactive invariant (isReconcilerOwned: non-terminal
+// OR ReleasePending), this run's runactive marker was ALREADY created
+// back when it was admitted (SaveInitial/CreateSnapshot) and finalizeRun
+// deliberately skips deleting it before calling this function (see
+// finalizeRun's doc comment) -- so under normal timing the marker is
+// already exactly correct for ReleasePending=true, with nothing new to
+// write.
+//
+// review round 5 (reviewer-reproduced): there IS still a real ordering
+// race, just not the one round 4 wrote a "runpending" marker to close.
+// finalizeRun's terminal saveFn call (just before this function runs)
+// persists the run terminal with ReleasePending still false -- so for
+// however long it takes THIS function to run and save ReleasePending=
+// true, isReconcilerOwned says the run is NOT owned. A concurrent
+// reconciler tick's repairActiveOrphans can land in exactly that window,
+// see a "stale" marker, and delete it. activeOrphanGrace (snapshot.go)
+// closes most of that window from the read side by giving
+// repairActiveOrphans a bounded grace period before it trusts a
+// terminal-and-not-ReleasePending marker is genuinely stale. This
+// function closes the rest of it from the write side: after the
+// ReleasePending=true save below, it defensively re-Creates the
+// runactive marker. createActiveEntry is idempotent (a repair pass that
+// did NOT race this window finds the marker already present and no-ops
+// via ErrKeyExists), so doing this unconditionally on every debt save is
+// always safe, not just correct for the rare raced case.
 //
 // The debt-recording save runs BEFORE the publish attempts, not after
 // (#648 PR review round 2): publishing is best-effort either way (a
@@ -402,12 +427,19 @@ func init() {
 func finalizeWithReleaseDebt(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
+	store *SnapshotStore,
 	saveFn SaveSnapshotFunc,
 	run dag.WorkflowRun,
 	status dag.RunStatus,
 	stepID string,
 	afterPersistErr error,
 ) (dag.WorkflowRun, error) {
+	if store == nil {
+		panic("finalizeWithReleaseDebt: store must not be nil")
+	}
+	if run.RunID == "" {
+		panic("finalizeWithReleaseDebt: run.RunID must not be empty")
+	}
 	slog.WarnContext(ctx,
 		"finalizeRun: afterPersist failed after terminal snapshot "+
 			"was saved -- admission release is owed, recording debt "+
@@ -422,6 +454,15 @@ func finalizeWithReleaseDebt(
 	}
 	run.ReleasePending = true
 	if err := saveFn(ctx, run, stepID); err != nil {
+		return run, err
+	}
+	// Defensive re-Create: closes the write side of the round-5 TOCTOU
+	// (see doc comment above) against a concurrent repairActiveOrphans
+	// that deleted the marker between finalizeRun's terminal save and
+	// this function's ReleasePending=true save. Idempotent -- the
+	// common case where nothing raced this window costs one Create that
+	// no-ops on ErrKeyExists.
+	if err := store.createActiveEntry(ctx, run.RunID); err != nil {
 		return run, err
 	}
 	if err := publishHistoryTerminalEvent(ctx, tp, status, run.RunID); err != nil {

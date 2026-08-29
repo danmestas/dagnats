@@ -880,3 +880,127 @@ func TestRepairStatsAddCoversEveryField(t *testing.T) {
 		}
 	}
 }
+
+// TestRepairActiveOrphans_ReviewerRepro_GraceWindowSurvivesRepairRace
+// reproduces the #664 review round 5 finding exactly: SaveInitial
+// (Running, creates runactive) -> Save (terminal, ReleasePending still
+// false -- mirrors finalizeRun's terminal saveFn call, BEFORE it knows
+// whether afterPersist will fail) -> RepairRunIndex (simulating a
+// concurrent reconciler tick landing in that exact window) -> Save
+// (ReleasePending=true -- mirrors finalizeWithReleaseDebt's own save).
+// Before the round-5 fix, RepairRunIndex's repairActiveOrphans pass
+// deleted the marker as "stale" (terminal, not yet ReleasePending) at
+// step 3, and nothing recreated it, so ListActive returned 0 runs
+// instead of 1 -- a permanently leaked admission slot. The CompletedAt
+// stamped at step 2 is "just now," well inside activeOrphanGrace, so
+// the fixed repairActiveOrphans must leave the marker alone.
+func TestRepairActiveOrphans_ReviewerRepro_GraceWindowSurvivesRepairRace(t *testing.T) {
+	store := newListStore(t)
+	ctx := context.Background()
+
+	run := dag.WorkflowRun{
+		RunID: "release-race-1", WorkflowID: "wf",
+		Status: dag.RunStatusRunning, Steps: map[string]dag.StepState{},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.SaveInitial(ctx, run); err != nil {
+		t.Fatalf("SaveInitial: %v", err)
+	}
+
+	// finalizeRun's terminal saveFn call: terminal, CompletedAt just
+	// now, ReleasePending still false -- afterPersist has not run yet.
+	completedAt := time.Now().UTC()
+	run.Status = dag.RunStatusCompleted
+	run.CompletedAt = &completedAt
+	if err := store.Save(ctx, run); err != nil {
+		t.Fatalf("Save (terminal): %v", err)
+	}
+
+	// A concurrent reconciler tick lands in the window between the two
+	// finalize saves.
+	stats, err := store.RepairRunIndex(ctx, repairPageMax)
+	if err != nil {
+		t.Fatalf("RepairRunIndex: %v", err)
+	}
+	// Positive: the grace window protects the marker -- nothing removed.
+	if stats.ActiveOrphansRemoved != 0 {
+		t.Fatalf(
+			"ActiveOrphansRemoved = %d, want 0 (marker is inside "+
+				"activeOrphanGrace, not genuinely stale)",
+			stats.ActiveOrphansRemoved,
+		)
+	}
+
+	// finalizeWithReleaseDebt's own save: afterPersist failed, debt
+	// recorded.
+	run.ReleasePending = true
+	if err := store.Save(ctx, run); err != nil {
+		t.Fatalf("Save (ReleasePending): %v", err)
+	}
+
+	runs, _, err := store.ListActive(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	// Positive: the reviewer's repro -- ListActive must still find the
+	// run, not silently drop it.
+	if len(runs) != 1 || runs[0].RunID != run.RunID {
+		t.Fatalf("ListActive = %v, want exactly [%s]", runIDs(runs), run.RunID)
+	}
+	// Negative: the recovered run must actually carry the release debt,
+	// not just be present.
+	if !runs[0].ReleasePending {
+		t.Fatal("recovered run does not carry ReleasePending=true")
+	}
+}
+
+// TestRepairActiveOrphans_PastGrace_StillRemovesGenuinelyStaleMarker
+// proves activeOrphanGrace only widens the window, it does not disable
+// staleness detection: a marker for a run that finished long before the
+// grace window and never became ReleasePending is still genuinely
+// stale (a lost deleteActiveEntry race, or a pre-#664 entry) and must
+// still be removed exactly as before round 5.
+func TestRepairActiveOrphans_PastGrace_StillRemovesGenuinelyStaleMarker(t *testing.T) {
+	store := newListStore(t)
+	ctx := context.Background()
+
+	run := dag.WorkflowRun{
+		RunID: "genuinely-stale-1", WorkflowID: "wf",
+		Status: dag.RunStatusRunning, Steps: map[string]dag.StepState{},
+		CreatedAt: time.Now().UTC().Add(-2 * activeOrphanGrace),
+	}
+	if err := store.SaveInitial(ctx, run); err != nil {
+		t.Fatalf("SaveInitial: %v", err)
+	}
+
+	// Terminal, ReleasePending false, CompletedAt well past the grace
+	// window -- a genuinely stale marker (finalize completed long ago
+	// with no owed release, but something lost the deleteActiveEntry
+	// race).
+	completedAt := time.Now().UTC().Add(-2 * activeOrphanGrace)
+	run.Status = dag.RunStatusCompleted
+	run.CompletedAt = &completedAt
+	if err := store.Save(ctx, run); err != nil {
+		t.Fatalf("Save (terminal): %v", err)
+	}
+
+	removed, truncated, err := store.repairActiveOrphans(ctx, repairPageMax)
+	if err != nil {
+		t.Fatalf("repairActiveOrphans: %v", err)
+	}
+	if truncated {
+		t.Fatal("repairActiveOrphans reported truncated unexpectedly")
+	}
+	// Positive: past the grace window, the stale marker is removed.
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1 (marker is past activeOrphanGrace)", removed)
+	}
+
+	runs, _, err := store.ListActive(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("ListActive = %v, want empty after stale marker removal", runIDs(runs))
+	}
+}

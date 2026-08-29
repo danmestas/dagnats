@@ -72,6 +72,22 @@ const ScanFetchMax = 10_000
 // bound -- regardless of how large the total run.* population grows.
 const runActivePrefix = "runactive."
 
+// activeOrphanGrace bounds how recently a terminal, not-ReleasePending
+// run must have completed before repairActiveOrphans trusts its
+// runactive marker is genuinely stale rather than possibly mid-finalize
+// (#664 review round 5, reviewer-reproduced). finalizeRun's two saves --
+// the terminal saveFn call, then (on an afterPersist failure)
+// finalizeWithReleaseDebt's ReleasePending=true save -- fall inside this
+// window: between them, the persisted run is genuinely terminal AND
+// ReleasePending is still false, so isReconcilerOwned correctly says
+// "not owned" even though the marker is about to become correct again
+// milliseconds later. Set to the reconciler's own tick interval: any
+// finalize that has not completed its second save within one full tick
+// is not "unlucky timing" anymore, and the marker is genuinely
+// removable. See repairActiveOrphans and finalizeWithReleaseDebt's doc
+// comments for the read-side/write-side halves of the fix.
+const activeOrphanGrace = reconcileInterval
+
 // ActiveFetchMax is the hard ceiling on values ListActive will ever fetch
 // in a single call, regardless of the caller-supplied fetchMax -- defense
 // in depth mirroring ScanFetchMax, even though the active-run population
@@ -201,8 +217,13 @@ func (s *SnapshotStore) writeRunIndexEntry(ctx context.Context, runID string) {
 
 // createEntryIndexes writes BOTH derived per-run indexes for a run
 // being created RIGHT NOW -- runactive (#664, liveness), FIRST and
-// only if the run is non-terminal, THEN runidx (#659, write-once,
-// creation order). This is the SOLE creation-time choke point:
+// only if isReconcilerOwned(run) says so (equivalent to non-terminal at
+// genuine creation time -- a run is never created already
+// ReleasePending -- but routed through the shared predicate rather than
+// spelling it out by hand, so this call site cannot drift from
+// ListActive/repairActiveOrphans/buildActiveIndexOnce about what
+// "owned" means), THEN runidx (#659, write-once, creation order). This
+// is the SOLE creation-time choke point:
 // SaveInitial, CreateSnapshot's success path, and the repair passes
 // (crash-gap backfill and the one-time full build) all route through
 // it. It is deliberately NOT called from Save -- see Save's doc
@@ -231,7 +252,7 @@ func (s *SnapshotStore) createEntryIndexes(ctx context.Context, run dag.Workflow
 	if s.kv == nil {
 		panic("createEntryIndexes: kv bucket must not be nil")
 	}
-	if !run.Status.IsTerminal() {
+	if isReconcilerOwned(run) {
 		if err := s.createActiveEntry(ctx, run.RunID); err != nil {
 			return fmt.Errorf("create active-run index entry: %w", err)
 		}
@@ -362,9 +383,11 @@ func (s *SnapshotStore) Delete(ctx context.Context, runID string) error {
 }
 
 // PruneTerminal is the opt-in, drop-only run-retention sweep (#453). It
-// deletes a run ONLY IF it is terminal AND its CompletedAt is strictly
-// older than olderThan. Non-terminal runs (even ancient ones) and terminal
-// runs younger than the window are never touched. At most maxPrune runs are
+// deletes a run ONLY IF it is terminal, its CompletedAt is strictly
+// older than olderThan, AND it is not ReleasePending (#664 review round
+// 5 -- see isPrunable). Non-terminal runs (even ancient ones), terminal
+// runs younger than the window, and terminal runs still owing an
+// admission release are never touched. At most maxPrune runs are
 // deleted per call; the key scan is bounded by runKeyScanMax. Returns the
 // number of runs deleted.
 //
@@ -462,7 +485,13 @@ func (s *SnapshotStore) collectPrunable(
 
 // isPrunable loads one snapshot key and reports whether the run is terminal
 // with a CompletedAt strictly before cutoff. A key that vanished between
-// scan and load is treated as already-gone (no error, not prunable).
+// scan and load is treated as already-gone (no error, not prunable). A run
+// with ReleasePending=true is never prunable regardless of age (#664 review
+// round 5): it still owes the reconciler an admission release, and deleting
+// its snapshot out from under that debt would erase the only record of it,
+// silently abandoning a leaked singleton lock/concurrency slot forever
+// instead of letting the reconciler eventually recover or abandon it
+// through reconcileReleasePending/reconcileReleaseFailed.
 func (s *SnapshotStore) isPrunable(
 	ctx context.Context, key string, cutoff time.Time,
 ) (bool, error) {
@@ -484,6 +513,9 @@ func (s *SnapshotStore) isPrunable(
 		return false, err
 	}
 	if !run.Status.IsTerminal() || run.CompletedAt == nil {
+		return false, nil
+	}
+	if run.ReleasePending {
 		return false, nil
 	}
 	return run.CompletedAt.Before(cutoff), nil
@@ -1203,8 +1235,9 @@ func (s *SnapshotStore) removeOrphanIndexEntries(
 // repairActiveOrphans validates up to pageMax of the CURRENT
 // runactive.<runID> markers against isReconcilerOwned(run), deleting
 // any that are stale (no longer owned -- terminal AND not
-// ReleasePending) or orphaned (run missing) (#664 review round 2,
-// predicate updated round 4). It lists runactive.> directly
+// ReleasePending, AND has been for longer than activeOrphanGrace) or
+// orphaned (run missing) (#664 review round 2, predicate updated round
+// 4, grace window added round 5). It lists runactive.> directly
 // (listActiveRunIDs, the same primitive ListActive uses) rather than
 // diffing against the full run.* population -- so its cost is bounded
 // by the OWNED population, which admission/concurrency limits AND the
@@ -1214,6 +1247,22 @@ func (s *SnapshotStore) removeOrphanIndexEntries(
 // missing its runactive entry via the crash-gap path
 // backfillMissingIndex already covers, so there is nothing to
 // backfill here -- only to validate and clean up.
+//
+// The grace window (review round 5, reviewer-reproduced): finalizeRun
+// persists a run terminal (ReleasePending still false) BEFORE it knows
+// whether afterPersist will fail and hand off to
+// finalizeWithReleaseDebt, which is what actually sets ReleasePending=
+// true. A run observed here in that narrow window looks exactly like a
+// genuinely stale marker -- terminal, ReleasePending false -- but is
+// not; deleting it would strand finalizeWithReleaseDebt's later save
+// with no marker to have kept correct, since that function does not
+// unconditionally recreate one on every call path (see its own
+// defensive re-Create for the write-side half of this fix). A run
+// whose CompletedAt is within activeOrphanGrace is left alone here on
+// this pass -- a genuinely stale marker past the window is still
+// removed exactly as before; a marker for a run that has vanished
+// entirely (run.* missing) has no CompletedAt to consult and is always
+// removed immediately, grace does not apply to orphans.
 func (s *SnapshotStore) repairActiveOrphans(
 	ctx context.Context, pageMax int,
 ) (removed int, truncated bool, err error) {
@@ -1256,7 +1305,8 @@ func (s *SnapshotStore) repairActiveOrphans(
 			if err := json.Unmarshal(value, &run); err != nil {
 				return removed, truncated, err
 			}
-			stale = !isReconcilerOwned(run)
+			stale = !isReconcilerOwned(run) &&
+				!withinActiveOrphanGrace(run)
 		}
 		if !stale {
 			continue
@@ -1267,6 +1317,21 @@ func (s *SnapshotStore) repairActiveOrphans(
 		removed++
 	}
 	return removed, truncated, nil
+}
+
+// withinActiveOrphanGrace reports whether run completed recently enough
+// that repairActiveOrphans must NOT yet treat its (terminal,
+// not-ReleasePending) runactive marker as stale -- see
+// repairActiveOrphans' doc comment for the finalizeRun ordering race
+// this guards against. A run with no CompletedAt (should not happen for
+// a genuinely terminal run -- markTerminal always sets it) gets no
+// grace: there is no timestamp to bound the window by, so it is treated
+// as immediately eligible for removal, matching pre-round-5 behavior.
+func withinActiveOrphanGrace(run dag.WorkflowRun) bool {
+	if run.CompletedAt == nil {
+		return false
+	}
+	return time.Since(*run.CompletedAt) < activeOrphanGrace
 }
 
 // indexMetaKey names the single meta key recording whether the
