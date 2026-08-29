@@ -6,6 +6,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -246,5 +247,60 @@ func TestBulkRetrySkipsNonFailed(t *testing.T) {
 	if len(resp.Retried) != 0 {
 		t.Fatalf("retried = %d, want 0",
 			len(resp.Retried))
+	}
+}
+
+// TestBulkRetryFindsNewFailedRunAmongManyOldRuns reproduces the same
+// #659 bias bulk cancel had, for bulk retry's ListAll+filterFailedRuns
+// path (review-round nit: same shape, same fix): a Failed run for the
+// target workflow, seeded AFTER 1200+ Failed runs belonging to an
+// unrelated workflow, must still be found -- the unrelated population
+// must not crowd it out of an order-agnostic bounded sample.
+func TestBulkRetryFindsNewFailedRunAmongManyOldRuns(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	svc := NewService(nc)
+	ctx := context.Background()
+	base := time.Now().Add(-24 * time.Hour)
+	const total = 1200
+	for i := 0; i < total; i++ {
+		run := dag.WorkflowRun{
+			RunID:      fmt.Sprintf("retry-seed-%05d", i),
+			WorkflowID: "retry-scan-order-other-wf",
+			Status:     dag.RunStatusFailed,
+			Steps:      map[string]dag.StepState{},
+			CreatedAt:  base.Add(time.Duration(i) * time.Millisecond),
+		}
+		if err := svc.store.Save(ctx, run); err != nil {
+			t.Fatalf("seed run %d: %v", i, err)
+		}
+	}
+
+	const wf = "retry-scan-order-wf"
+	newRun := dag.WorkflowRun{
+		RunID: "zzzz-new-failed", WorkflowID: wf,
+		Status: dag.RunStatusFailed, Steps: map[string]dag.StepState{},
+		Input: []byte(`{"x":1}`), CreatedAt: time.Now().UTC(),
+	}
+	if err := svc.store.Save(ctx, newRun); err != nil {
+		t.Fatalf("save new run: %v", err)
+	}
+
+	resp, err := svc.BulkRetryRuns(ctx, BulkRetryRequest{
+		WorkflowID: wf, Mode: "rerun", DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("BulkRetryRuns: %v", err)
+	}
+	// Positive: exactly the new run was found.
+	if len(resp.Retried) != 1 || resp.Retried[0].OriginalRunID != "zzzz-new-failed" {
+		t.Fatalf("Retried = %+v, want exactly [zzzz-new-failed]", resp.Retried)
+	}
+	// Negative: none of the unrelated-workflow seeded runs leaked in.
+	if resp.Total != 1 {
+		t.Fatalf("Total = %d, want 1", resp.Total)
 	}
 }

@@ -472,13 +472,42 @@ func clampRunsLimit(limit int) int {
 	return limit
 }
 
+// scaledFetchMaxFloor is scaledFetchMax's minimum: a filtered scan
+// still gets real depth (not just "10x the smallest possible limit")
+// even for a caller asking for a single match.
+const scaledFetchMaxFloor = 1_000
+
+// scaledFetchMax picks a filtered ScanNewestFirst call's fetchMax
+// proportional to limit, rather than always passing the hard ceiling
+// (engine.ScanFetchMax): a low-limit, no-match filter (the common
+// case -- console pages default to 1000, CLI status queries often
+// want far fewer) would otherwise force a full 10,000-value fetch on
+// every request just because ScanNewestFirst can never find more
+// matches than it fetches. 10x limit gives real headroom for a
+// filter that only matches a fraction of scanned runs, floored at
+// scaledFetchMaxFloor and capped at engine.ScanFetchMax. Exactness
+// (a filtered scan cannot miss a run newer than one already found)
+// holds for the newest fetchMax runs scanned, same as before --
+// scaling fetchMax down only narrows that window for small limits,
+// it never removes the guarantee.
+func scaledFetchMax(limit int) int {
+	fetchMax := limit * 10
+	if fetchMax < scaledFetchMaxFloor {
+		fetchMax = scaledFetchMaxFloor
+	}
+	if fetchMax > engine.ScanFetchMax {
+		fetchMax = engine.ScanFetchMax
+	}
+	return fetchMax
+}
+
 // scanRunsInner fetches up to limit runs newest-first via the store's
 // creation-ordered scan, applying filter DURING the scan rather than
 // after a bounded, order-agnostic sample -- the #659 fix. A filtered
-// ScanRuns may still miss matches OLDER than ScanFetchMax scanned
-// entries (the same caveat the envelope documents for filtered
-// totals), but it can never miss a match newer than that window the
-// way the old ListAll-then-filter sample could.
+// ScanRuns may still miss matches OLDER than the scaledFetchMax(limit)
+// scanned entries (the same caveat the envelope documents for
+// filtered totals), but it can never miss a match newer than that
+// window the way the old ListAll-then-filter sample could.
 func (s *Service) scanRunsInner(
 	ctx context.Context, filter RunsFilter, limit int,
 ) ([]dag.WorkflowRun, error) {
@@ -489,7 +518,7 @@ func (s *Service) scanRunsInner(
 		panic("scanRunsInner: limit must be positive")
 	}
 	runs, _, err := s.store.ScanNewestFirst(
-		ctx, filter.matches, limit, engine.ScanFetchMax,
+		ctx, filter.matches, limit, scaledFetchMax(limit),
 	)
 	return runs, err
 }
@@ -680,16 +709,19 @@ func countRunsFrom(
 	if filter.isEmpty() {
 		return store.CountAll(ctx)
 	}
-	// limit == fetchMax: there's no natural "stop at N matches" cap
-	// for a count query, so the scan runs until it has looked at every
-	// run within the fetch cap (or the index is exhausted) and every
-	// match in that window is counted. stats.Truncated tells us
-	// honestly whether older matches could exist beyond the window —
-	// logged rather than threaded through CountRuns' (int, error)
-	// signature, matching the #452 filtered-total caveat this
-	// replaces.
+	// limit == MaxRunsLimitCeiling: there's no natural "stop at N
+	// matches" cap for a count query, so the scan runs until it has
+	// looked at every run within scaledFetchMax(limit) (or the index
+	// is exhausted) and every match in that window is counted. At
+	// this limit scaledFetchMax already saturates at engine.ScanFetchMax,
+	// same as before -- routed through the shared helper for
+	// consistency with scanRunsInner/bulkCancelInner, not a behavior
+	// change. stats.Truncated tells us honestly whether older matches
+	// could exist beyond the window — logged rather than threaded
+	// through CountRuns' (int, error) signature, matching the #452
+	// filtered-total caveat this replaces.
 	matched, stats, err := store.ScanNewestFirst(
-		ctx, filter.matches, MaxRunsLimitCeiling, MaxRunsLimitCeiling,
+		ctx, filter.matches, MaxRunsLimitCeiling, scaledFetchMax(MaxRunsLimitCeiling),
 	)
 	if err != nil {
 		return 0, err
@@ -699,7 +731,7 @@ func countRunsFrom(
 			"countRuns: filtered count truncated by fetch cap; "+
 				"matches older than the scanned window are not counted",
 			"scanned", stats.Scanned,
-			"fetched", stats.Fetched,
+			"attempted", stats.Attempted,
 		)
 	}
 	return len(matched), nil

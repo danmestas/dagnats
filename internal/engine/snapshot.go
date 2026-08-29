@@ -264,7 +264,7 @@ func (s *SnapshotStore) collectPrunable(
 		}
 		return nil, err
 	}
-	if len(keys) > runKeyScanMax {
+	if runKeyCountOf(keys) > runKeyScanMax {
 		panic("SnapshotStore.collectPrunable: key set exceeds bound")
 	}
 	doomed := make([]string, 0, maxPrune)
@@ -418,17 +418,23 @@ func (s *SnapshotStore) ListAll(
 type ScanStats struct {
 	// Scanned is the number of index entries examined.
 	Scanned int
-	// Fetched is the number of run.* values actually GET'd.
-	Fetched int
+	// Attempted is the number of run.* GETs issued -- the batch sizes
+	// summed, i.e. what fetchMax actually bounds. NOT the count of
+	// successful fetches: a GET counted here can still fail (pruned
+	// key, timeout) and be counted again in Skipped. Attempted minus
+	// Skipped is the number that actually resolved to a value.
+	Attempted int
 	// Matched is the number of fetched runs pred accepted.
 	Matched int
 	// Skipped is the number of index entries whose run.* value could
 	// not be fetched (pruned between the index list and the fetch, or
 	// a transient/timeout GET failure).
 	Skipped int
-	// Truncated is true iff the scan stopped because it hit fetchMax
-	// with index entries still unscanned -- i.e. the result may be
-	// missing real matches OLDER than what was actually scanned.
+	// Truncated is true iff the scan stopped WITHOUT collecting limit
+	// matches AND without exhausting the index -- i.e. it hit fetchMax
+	// first, so the result may be missing real matches OLDER than what
+	// was actually scanned. Reaching limit (even in the same batch
+	// that also happened to hit fetchMax) is success, not truncation.
 	Truncated bool
 }
 
@@ -470,13 +476,13 @@ func (s *SnapshotStore) ScanNewestFirst(
 	matches := make([]dag.WorkflowRun, 0, limit)
 	var stats ScanStats
 	pos := len(indexKeys) // exclusive end of the next batch, walking backward
-	for pos > 0 && len(matches) < limit && stats.Fetched < fetchMax {
+	for pos > 0 && len(matches) < limit && stats.Attempted < fetchMax {
 		batchSize := scanBatchSize
 		if batchSize > pos {
 			batchSize = pos
 		}
-		if stats.Fetched+batchSize > fetchMax {
-			batchSize = fetchMax - stats.Fetched
+		if stats.Attempted+batchSize > fetchMax {
+			batchSize = fetchMax - stats.Attempted
 		}
 		start := pos - batchSize
 		batchIDs := make([]string, batchSize)
@@ -490,7 +496,7 @@ func (s *SnapshotStore) ScanNewestFirst(
 		if err != nil {
 			return nil, ScanStats{}, err
 		}
-		stats.Fetched += len(batchIDs)
+		stats.Attempted += len(batchIDs)
 		stats.Skipped += skipped
 
 		// fetched preserves batchIDs' ascending (oldest-first) order;
@@ -502,16 +508,34 @@ func (s *SnapshotStore) ScanNewestFirst(
 			}
 		}
 	}
-	stats.Truncated = pos > 0 && stats.Fetched >= fetchMax
+	// pos > 0 (index not exhausted) after the loop can only follow
+	// from EITHER the fetchMax budget running out OR limit being
+	// satisfied -- distinguish them by whether limit was actually
+	// reached, not by re-checking Attempted against fetchMax (which
+	// can coincidentally equal fetchMax in the very batch that also
+	// satisfied limit, which is success, not truncation).
+	stats.Truncated = pos > 0 && len(matches) < limit
 	return matches, stats, nil
 }
 
 // listRunIndexKeys drains the runidx.> filtered key listing into a
-// slice in creation order (oldest first). Every runidx.<runID> key is
-// written exactly once via Create and never updated (writeRunIndexEntry),
-// so JetStream's replay order for the filtered watch behind
-// ListKeysFiltered IS creation order -- unlike Keys(), which sorts
-// lexicographically and carries no time signal.
+// deduped slice in creation order (oldest first). Every runidx.<runID>
+// key is written exactly once via Create and never updated
+// (writeRunIndexEntry), so JetStream's replay order for the filtered
+// watch behind ListKeysFiltered IS creation order -- unlike Keys(),
+// which explicitly slices.Sort()s its result lexicographically before
+// returning (nats.go jetstream/kv.go, kvs.Keys, ~line 1403) and
+// therefore carries no time signal at all. ListKeysFiltered's own
+// watcher, by contrast, delivers keys in the order the underlying
+// WatchFiltered stream replays them -- unsorted, i.e. write order --
+// which is exactly the property this index depends on.
+//
+// nats.go documents that "[o]n buckets with a large number of keys and
+// frequent writes, duplicate keys may be reported during listing" for
+// both ListKeys and ListKeysFiltered (kv.go ~1428, ~1457) -- a repeat
+// would double-count an index entry's batch position in
+// ScanNewestFirst, so every key is deduped (first occurrence kept,
+// preserving order) before being returned.
 func (s *SnapshotStore) listRunIndexKeys(ctx context.Context) ([]string, error) {
 	if s.kv == nil {
 		panic("listRunIndexKeys: kv bucket must not be nil")
@@ -520,14 +544,32 @@ func (s *SnapshotStore) listRunIndexKeys(ctx context.Context) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	keys := make([]string, 0, 256)
+	raw := make([]string, 0, 256)
 	for key := range lister.Keys() {
-		if len(keys) >= runKeyScanMax {
+		if len(raw) >= runKeyScanMax {
 			panic("listRunIndexKeys: key set exceeds bound")
 		}
-		keys = append(keys, key)
+		raw = append(raw, key)
 	}
-	return keys, nil
+	return dedupeOrderedKeys(raw), nil
+}
+
+// dedupeOrderedKeys removes duplicate keys while preserving
+// first-occurrence order. See listRunIndexKeys' doc comment for why
+// this is needed -- ListKeysFiltered's underlying watcher may repeat a
+// key on a bucket with many keys and frequent writes. Bounded by
+// len(keys), itself already bounded by runKeyScanMax at the call site.
+func dedupeOrderedKeys(keys []string) []string {
+	seen := make(map[string]bool, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out
 }
 
 // fetchRunsByID batch-fetches run.<id> for every id in runIDs (all
@@ -606,7 +648,7 @@ func (s *SnapshotStore) CountAll(ctx context.Context) (int, error) {
 		}
 		return 0, err
 	}
-	if len(keys) > runKeyScanMax {
+	if runKeyCountOf(keys) > runKeyScanMax {
 		panic("SnapshotStore.CountAll: key set exceeds bound")
 	}
 	count := 0
@@ -627,6 +669,23 @@ func isRunKey(key string) bool {
 func isRunIndexKey(key string) bool {
 	return len(key) > len(runIndexPrefix) &&
 		key[:len(runIndexPrefix)] == runIndexPrefix
+}
+
+// runKeyCountOf counts how many of keys are run.<id> snapshot keys,
+// ignoring runidx.<id> index markers and anything else. The bucket
+// now holds two keys per run (run.<id> + runidx.<id>), so bounding a
+// raw len(keys) against runKeyScanMax would silently halve the run
+// population the bound was meant to cover -- every caller checking
+// runKeyScanMax against an UNFILTERED s.kv.Keys(ctx) result must
+// count through this first.
+func runKeyCountOf(keys []string) int {
+	count := 0
+	for _, key := range keys {
+		if isRunKey(key) {
+			count++
+		}
+	}
+	return count
 }
 
 // RepairStats reports what one RepairRunIndex call did.
@@ -699,7 +758,7 @@ func (s *SnapshotStore) loadRunAndIndexIDSets(
 		}
 		return nil, nil, err
 	}
-	if len(keys) > runKeyScanMax {
+	if runKeyCountOf(keys) > runKeyScanMax {
 		panic("loadRunAndIndexIDSets: key set exceeds bound")
 	}
 	runIDs := make(map[string]bool, len(keys))

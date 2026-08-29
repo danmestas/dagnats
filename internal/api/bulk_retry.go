@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -77,7 +76,11 @@ func (s *Service) BulkRetryRuns(
 	return resp, err
 }
 
-// bulkRetryInner lists failed runs and retries them.
+// bulkRetryInner scans, filters, and retries failed runs. Uses the
+// creation-ordered newest-first scan (#659, same shape as
+// bulkCancelInner) instead of the old order-agnostic ListAll+filter
+// sample, so a run that just failed after the population grew past
+// maxBulkRetryLimit is still found instead of silently no-op'd.
 func (s *Service) bulkRetryInner(
 	ctx context.Context,
 	req BulkRetryRequest,
@@ -92,15 +95,18 @@ func (s *Service) bulkRetryInner(
 		return BulkRetryResponse{}, err
 	}
 
-	runs, err := s.store.ListAll(ctx, maxBulkRetryLimit+1)
+	pred := func(run dag.WorkflowRun) bool {
+		return runMatchesBulkRetry(
+			run, req.WorkflowID, req.After, req.Before,
+		)
+	}
+	matched, _, err := s.store.ScanNewestFirst(
+		ctx, pred, maxBulkRetryLimit+1, scaledFetchMax(maxBulkRetryLimit+1),
+	)
 	if err != nil {
 		return BulkRetryResponse{},
 			fmt.Errorf("list runs: %w", err)
 	}
-	matched := filterFailedRuns(
-		runs, req.WorkflowID,
-		req.After, req.Before,
-	)
 
 	if len(matched) > maxBulkRetryLimit {
 		return BulkRetryResponse{}, fmt.Errorf(
@@ -109,6 +115,10 @@ func (s *Service) bulkRetryInner(
 			len(matched), maxBulkRetryLimit,
 		)
 	}
+
+	// ScanNewestFirst returns newest-first; retry oldest-first (matches
+	// the pre-#659 filterFailedRuns ordering).
+	reverseRuns(matched)
 
 	if req.DryRun {
 		items := make([]BulkRetryItem, len(matched))
@@ -229,45 +239,29 @@ func (s *Service) bulkReplay(
 	return resp, nil
 }
 
-// filterFailedRuns selects failed runs for the given workflow.
-func filterFailedRuns(
-	runs []dag.WorkflowRun,
-	workflowID string,
-	after, before time.Time,
-) []dag.WorkflowRun {
-	if runs == nil {
-		panic("filterFailedRuns: runs must not be nil")
-	}
+// runMatchesBulkRetry reports whether run is a failed run for
+// workflowID within [after, before). This is the ScanNewestFirst
+// predicate for bulkRetryInner.
+func runMatchesBulkRetry(
+	run dag.WorkflowRun, workflowID string, after, before time.Time,
+) bool {
 	if workflowID == "" {
-		panic(
-			"filterFailedRuns: workflowID must not be empty",
-		)
+		panic("runMatchesBulkRetry: workflowID must not be empty")
 	}
-	var matched []dag.WorkflowRun
-	for _, run := range runs {
-		if run.WorkflowID != workflowID {
-			continue
-		}
-		if run.Status != dag.RunStatusFailed &&
-			run.Status != dag.RunStatusCompensateFailed {
-			continue
-		}
-		if !after.IsZero() &&
-			run.CreatedAt.Before(after) {
-			continue
-		}
-		if !before.IsZero() &&
-			run.CreatedAt.After(before) {
-			continue
-		}
-		matched = append(matched, run)
+	if run.WorkflowID != workflowID {
+		return false
 	}
-	sort.Slice(matched, func(i, j int) bool {
-		return matched[i].CreatedAt.Before(
-			matched[j].CreatedAt,
-		)
-	})
-	return matched
+	if run.Status != dag.RunStatusFailed &&
+		run.Status != dag.RunStatusCompensateFailed {
+		return false
+	}
+	if !after.IsZero() && run.CreatedAt.Before(after) {
+		return false
+	}
+	if !before.IsZero() && run.CreatedAt.After(before) {
+		return false
+	}
+	return true
 }
 
 // validateBulkRetryRequest checks request constraints.

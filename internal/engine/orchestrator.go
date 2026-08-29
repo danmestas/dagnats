@@ -313,11 +313,15 @@ func (o *Orchestrator) Start() {
 			"Orchestrator.Start: historyRedeliverSchedule must not be empty",
 		)
 	}
-	// One synchronous repair pass before the consumer starts (#659):
-	// a store upgraded from a pre-index build must have ordered-scan
-	// visibility into its existing runs immediately, not only after
-	// the first 60s reconciler tick.
-	o.runRepairRunIndexPass(context.Background())
+	// Repair the run index to CONVERGENCE before the consumer starts
+	// (#659): a store upgraded from a pre-index build must have
+	// ordered-scan visibility into its ENTIRE existing run population
+	// immediately, not just the first repairPageMax of it. A single
+	// bounded pass here left the remainder for a later reconciler
+	// tick, during which any newly Saved run would sit ahead of
+	// still-unindexed old runs in the index -- ScanNewestFirst would
+	// treat stale runs as newest until that tick finished the backlog.
+	o.repairRunIndexToConvergence(context.Background())
 
 	o.cc = o.startHistoryConsumer()
 

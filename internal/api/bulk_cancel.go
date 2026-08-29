@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/internal/engine"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -101,7 +100,7 @@ func (s *Service) bulkCancelInner(
 		)
 	}
 	matched, _, err := s.store.ScanNewestFirst(
-		ctx, pred, maxBulkCancelLimit+1, engine.ScanFetchMax,
+		ctx, pred, maxBulkCancelLimit+1, scaledFetchMax(maxBulkCancelLimit+1),
 	)
 	if err != nil {
 		return BulkCancelResponse{},

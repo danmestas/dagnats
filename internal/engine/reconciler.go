@@ -149,6 +149,66 @@ func (o *Orchestrator) runRepairRunIndexPass(ctx context.Context) {
 	o.metrics.runIndexOrphans.Add(ctx, int64(stats.OrphansRemoved))
 }
 
+// repairRunIndexMaxIterations bounds repairRunIndexToConvergence's
+// loop. At repairPageMax entries handled per RepairRunIndex call,
+// this many iterations cover a population up to runKeyScanMax with
+// headroom for runs created concurrently with the loop. Exceeding it
+// means the store is not converging (outpaced by concurrent writes,
+// or a bug) -- a programmer/environment error we panic on rather than
+// hold up startup indefinitely.
+const repairRunIndexMaxIterations = runKeyScanMax/repairPageMax + 100
+
+// repairRunIndexToConvergence loops RepairRunIndex until it reports a
+// pass with nothing left to do (Repaired==0 AND OrphansRemoved==0),
+// bounded by repairRunIndexMaxIterations. Called once, synchronously,
+// from Orchestrator.Start BEFORE the history consumer begins
+// processing (review round: a single bounded pass left a store with
+// more than repairPageMax unindexed runs — e.g. a pre-#659 upgrade —
+// with its backlog only partially backfilled; any run Saved before a
+// LATER reconciler tick finished the rest would sit newer in the
+// index than still-unindexed old runs, so ScanNewestFirst would
+// return stale runs as "newest" until that tick caught up, and any
+// run repaired mid-backlog would land in the WRONG relative position
+// permanently). The reconciler's periodic tick deliberately keeps the
+// single bounded pass (runRepairRunIndexPass) — it only needs to
+// close small gaps left by an occasional lost writeRunIndexEntry
+// race, not converge a whole backlog under the tick's time budget.
+func (o *Orchestrator) repairRunIndexToConvergence(ctx context.Context) {
+	if ctx == nil {
+		panic("repairRunIndexToConvergence: ctx must not be nil")
+	}
+	if o.store == nil {
+		panic("repairRunIndexToConvergence: store must not be nil")
+	}
+	totalRepaired, totalOrphans, passes := 0, 0, 0
+	for ; passes < repairRunIndexMaxIterations; passes++ {
+		stats, err := o.store.RepairRunIndex(ctx, repairPageMax)
+		if err != nil {
+			slog.ErrorContext(ctx,
+				"startup: repair run index", "error", err)
+			return
+		}
+		totalRepaired += stats.Repaired
+		totalOrphans += stats.OrphansRemoved
+		if stats.Repaired == 0 && stats.OrphansRemoved == 0 {
+			break
+		}
+	}
+	if passes >= repairRunIndexMaxIterations {
+		panic("repairRunIndexToConvergence: did not converge within bound")
+	}
+	if totalRepaired == 0 && totalOrphans == 0 {
+		return
+	}
+	slog.InfoContext(ctx, "startup: repaired run index to convergence",
+		"repaired", totalRepaired,
+		"orphans_removed", totalOrphans,
+		"passes", passes+1,
+	)
+	o.metrics.runIndexRepaired.Add(ctx, int64(totalRepaired))
+	o.metrics.runIndexOrphans.Add(ctx, int64(totalOrphans))
+}
+
 // startRunPruner launches the opt-in run-retention sweeper
 // goroutine (#453). The loop exits when ctx is cancelled (from
 // Stop). Callers must only invoke this when o.runsMaxAge > 0 —
