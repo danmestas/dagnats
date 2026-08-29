@@ -53,6 +53,34 @@ func publishWorkflowEvent(
 	return err
 }
 
+// nextDispatchAttempt returns the protocol.TaskPayload.Attempt value
+// for stepID's NEXT dispatch, derived from run's CURRENT
+// Steps[stepID].Attempts (#624 review round 2) rather than a value
+// threaded through however many hops a re-dispatch path took to reach
+// its publish call. Every dispatch/re-dispatch site in this package
+// must call this instead of building its own Attempt value.
+//
+// A step with Attempts == 0 has never started: its first dispatch uses
+// 0 directly, letting the worker SDK's/bridge's own AttemptNumber
+// resolution (worker/context.go's resolveAttemptNumber,
+// bridge/poll.go's taskAttemptNumber) fall back to NATS NumDelivered —
+// this asymmetry is intentional and pre-dates this fix. A step with
+// Attempts >= 1 has completed at least one attempt already —
+// Steps[stepID].Attempts TALLIES completed attempts, so the next
+// dispatch is that count + 1; using the bare count again would resolve
+// to the SAME AttemptNumber as a prior attempt and collide on
+// BUILD_LOGS's attempt-scoped subject within its dedup window.
+func nextDispatchAttempt(run dag.WorkflowRun, stepID string) int {
+	if stepID == "" {
+		panic("nextDispatchAttempt: stepID must not be empty")
+	}
+	attempts := run.Steps[stepID].Attempts
+	if attempts == 0 {
+		return 0
+	}
+	return attempts + 1
+}
+
 // collectReadyMessages builds NATS messages for ready steps
 // without publishing. Returns messages grouped by step. The grant policy
 // (#380) strips the control-plane capability from any step whose workflow

@@ -92,6 +92,16 @@ type SleepTimer struct {
 	onDebounce    DebounceHandler
 	onStepTimeout StepTimeoutHandler
 	startOnce     sync.Once
+	// store reads the CURRENT run snapshot at fire time so every
+	// re-dispatch derives TaskPayload.Attempt from
+	// Steps[stepID].Attempts (nextDispatchAttempt, #624 review round 2)
+	// instead of trusting a value threaded through however many
+	// TimerMessage hops it took to reach here. Requires
+	// natsutil.SetupAll to have provisioned the workflow_runs KV
+	// bucket first — every existing NewSleepTimer call site already
+	// requires that (see the orchestrator.go comment above its own
+	// construction), so this adds no new precondition in practice.
+	store *SnapshotStore
 }
 
 // NewSleepTimer creates a SleepTimer bound to the given connection.
@@ -110,7 +120,33 @@ func NewSleepTimer(
 	if tp == nil {
 		panic("NewSleepTimer: tp must not be nil")
 	}
-	return &SleepTimer{nc: nc, js: js, tp: tp}
+	return &SleepTimer{nc: nc, js: js, tp: tp, store: NewSnapshotStore(js)}
+}
+
+// attemptForRedispatch loads the CURRENT run snapshot and returns
+// nextDispatchAttempt for stepID — the authoritative Attempt value
+// every fire-* re-dispatch path in this file must use. Falls back to 0
+// (fresh-dispatch numbering, matching a step that has never started)
+// on any lookup failure: a missing/unreadable snapshot must never
+// block a retry from firing, and 0 is the same safe default
+// nextDispatchAttempt itself uses for an unstarted step.
+func (st *SleepTimer) attemptForRedispatch(
+	ctx context.Context, runID, stepID string,
+) int {
+	if runID == "" {
+		panic("attemptForRedispatch: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("attemptForRedispatch: stepID must not be empty")
+	}
+	if st.store == nil {
+		return 0
+	}
+	run, err := st.store.Load(ctx, runID)
+	if err != nil {
+		return 0
+	}
+	return nextDispatchAttempt(run, stepID)
 }
 
 // Start subscribes to sleep.> on the SLEEP_TIMERS stream.
@@ -423,10 +459,15 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	)
 	defer cancel()
 	subject := fmt.Sprintf("task.%s.%s", tm.TaskType, tm.RunID)
+	// #624 review round 2: fireRateRetry used to omit Attempt entirely
+	// (zero value), so every rate-retried task ran as if attempt 1
+	// (worker's NumDelivered fallback) regardless of the step's real
+	// attempt count — derive it from the live snapshot instead.
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
 		StepID:       tm.StepID,
+		Attempt:      st.attemptForRedispatch(ctx, tm.RunID, tm.StepID),
 		Input:        tm.Input,
 		WorkflowName: tm.WorkflowName,
 		// Carry the grant decision + run-binding nonce stamped at scheduling
@@ -506,12 +547,20 @@ func (st *SleepTimer) republishTask(
 	subject := fmt.Sprintf(
 		"task.%s.%s", tm.TaskType, tm.RunID,
 	)
+	// #624 review round 2: derive Attempt from the live run snapshot
+	// (attemptForRedispatch) instead of trusting tm.Attempt+1 — the
+	// TimerMessage's own carried count can only ever reflect what was
+	// true at Schedule time, while the snapshot is authoritative at
+	// fire time. In the normal case the two agree (nothing else bumps
+	// Steps[stepID].Attempts between schedule and fire), but deriving
+	// fresh here means a re-dispatch can never regress to a stale or
+	// dropped value the way fireRateRetry's omission did.
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
 		StepID:       tm.StepID,
 		Input:        tm.Input,
-		Attempt:      tm.Attempt + 1,
+		Attempt:      st.attemptForRedispatch(ctx, tm.RunID, tm.StepID),
 		WorkflowName: tm.WorkflowName,
 		// Carry the grant decision + run-binding nonce stamped at scheduling
 		// time (#380) so a retried granted step still passes VerifyDispatch.

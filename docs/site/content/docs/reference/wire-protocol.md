@@ -405,21 +405,28 @@ before the TTL elapses.
   `LogReadChunksMax` 1024 chunks per non-follow read, `LogFollowDurationMax`
   1h per SSE follow, `LogFollowConcurrentMax` 256 concurrent follows per
   API server process.
-- **Markers:** every path that ends a task attempt emits exactly one of
-  `"completed"` (`Complete`), `"failed"` (`Fail`/`FailPermanent`/
-  `FailRetryAfter`, worker SDK and HTTP bridge alike), `"continued"`
-  (`Continue`), or `"paused"` (`Pause`) as the TRUE LAST message on that
-  attempt's subject -- so `GET .../logs?from=failure` resolves the
-  failure position in O(1) via `GetLastMsgForSubject` instead of a scan.
-  `"truncated"` is emitted at most once, the moment `LogStepBytesMax` is
-  reached, BEFORE the attempt-ending marker (which still lands last).
+- **Markers:** every path that ends a task attempt -- worker SDK
+  `Complete`/`Fail`/`FailPermanent`/`FailRetryAfter`/`Continue`/`Pause`
+  AND the HTTP bridge's `complete`/`fail`/`continue`/`pause` resolve
+  actions alike -- emits exactly one of `"completed"`, `"failed"`
+  (covers `Fail`/`FailPermanent`/`FailRetryAfter`, or bridge's single
+  `fail` action distinguished by `failure_type`), `"continued"`, or
+  `"paused"` as the TRUE LAST message on that attempt's subject -- so
+  `GET .../logs?from=failure` resolves the failure position in O(1) via
+  `GetLastMsgForSubject` instead of a scan. `from=failure` is strict:
+  if the last message isn't a `"failed"` marker, the request 404s with
+  `{"error":"attempt has no failure marker"}`. `"truncated"` is emitted
+  at most once, the moment `LogStepBytesMax` is reached, BEFORE the
+  attempt-ending marker (which still lands last).
 - **Drain-before-resolve invariant:** the worker SDK's `Complete`, `Fail`,
-  `FailPermanent`, `FailRetryAfter`, `Continue`, and `Pause` all flush
-  buffered `LogOut()`/`LogErr()` bytes and emit their attempt-ending
-  marker BEFORE publishing their resolution event (or NAK-ing, for
-  `Pause`) -- a consumer observing a step's terminal event, or the
-  marker itself off a `follow=1` connection, is guaranteed every log
-  byte that produced it is already on this subject.
+  `FailPermanent`, `FailRetryAfter`, `Continue`, and `Pause` -- and the
+  HTTP bridge's equivalent resolve actions -- all flush buffered log
+  bytes and emit their attempt-ending marker BEFORE publishing their
+  resolution event (or NAK-ing, for `Pause`). A bridge log POST for an
+  already-resolved task is rejected `409` (not `404`). A consumer
+  observing a step's terminal event, or the marker itself off a
+  `follow=1` connection, is guaranteed every log byte that produced it
+  is already on this subject.
 - **Buffering:** writes flush at `LogChunkBytesMax` or ~250ms after the
   first unflushed byte, whichever comes first.
 - **Dedup key:** `Nats-Msg-Id: log-{runID}-{stepID}-{attempt}-{seq}`.
@@ -436,7 +443,8 @@ before the TTL elapses.
   (see "Run logs" in the REST API reference) -- non-follow pages through
   stored chunks via an opaque JetStream-stream-sequence cursor,
   `follow=1` upgrades to Server-Sent Events over a single long-lived
-  consumer.
+  consumer, ending with `event: eof` normally or `event: error` if that
+  consumer itself fails.
 - **Use for:** a live or historical tail of one attempt's captured output
   within the hot TTL window. Anything longer-lived belongs in a
   consumer's own store, drained before the TTL elapses.

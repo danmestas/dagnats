@@ -247,7 +247,7 @@ GET /runs/{id}/logs?step={stepID}&attempt={n}&cursor={n}&follow={0|1}&from={fail
 | `step` | yes | Step ID within the run. `400` if omitted. |
 | `attempt` | no | Which attempt's log lane to read (`logs.{runID}.{stepID}.{attempt}`, the same numbering as `step.started`'s `AttemptNumber`). Defaults to the step's current `Attempts` from the run snapshot -- omit it for "the live/most recent attempt". |
 | `cursor` | no | Opaque paging token -- copy the previous response's `next_cursor` here to fetch the next page. Omit for the first page. It is a JetStream stream sequence number, not a chunk `seq`; treat it as opaque. |
-| `from` | no | `from=failure` starts the response at the attempt's recorded `"failed"` marker instead of `cursor`, resolved in O(1) (`GetLastMsgForSubject`), not by scanning. |
+| `from` | no | `from=failure` starts the response at the attempt's recorded `"failed"` marker instead of `cursor`, resolved in O(1) (`GetLastMsgForSubject`), not by scanning. Strict: if the attempt's last message isn't a `"failed"` marker (it completed, or has no messages yet), this 404s -- see below. |
 | `follow` | no | `follow=1` upgrades the response to Server-Sent Events instead of one JSON page. |
 
 **Response (non-follow):** `200 OK`
@@ -274,6 +274,10 @@ attempt. A step that exists but has produced no chunks yet returns
 `200` with `"chunks": []`, not `404`, so a UI can attach before the
 first line lands. A `cursor` past the last stored message on a
 terminal attempt also returns `200` with an empty page and `eof: true`.
+`from=failure` on an attempt whose last message isn't a `"failed"`
+marker returns `404` with `{"error":"attempt has no failure marker"}`
+instead of silently starting at whatever the last message happens to
+be.
 
 **Response (`follow=1`):** `200 OK`, `Content-Type: text/event-stream`
 
@@ -303,12 +307,27 @@ connection (`protocol.LogFollowDurationMax`); capped at 256 concurrent
 follows per API server process (`protocol.LogFollowConcurrentMax`),
 beyond which a new follow gets `503`.
 
+If the follow's own consumer fails mid-connection (deleted out from
+under it, a connection problem) the stream ends with `event: error` and
+`data: {"reason":"<cause>"}` instead of silently looping as idle until
+the 1h cap -- this is distinct from the ordinary per-wait timeout every
+idle keepalive cycle hits internally, which never reaches the client as
+an error.
+
 | Status | Condition |
 |--------|-----------|
 | `200` | Chunks (possibly empty) or an SSE stream |
 | `400` | Missing `step` query parameter |
-| `404` | Run not found, or run found but `step` unknown |
+| `404` | Run not found, run found but `step` unknown, or (non-follow only) `from=failure` with no recorded failure marker for the attempt |
 | `503` | `follow=1` and the server is already at `LogFollowConcurrentMax` |
+
+**Non-Go (HTTP bridge) workers**: `POST /v1/tasks/{id}/logs` (below)
+also emits the attempt-ending marker automatically on
+`complete`/`fail`/`continue`/`pause` resolve actions (see
+`POST /v1/tasks/{id}/resolve` in the bridge reference) -- callers never
+POST a marker chunk themselves. A log POST for a task that already
+resolved is rejected `409 Conflict`, distinguishing "already resolved"
+from `404` ("never claimed").
 
 **curl (page):**
 ```bash

@@ -12,6 +12,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -546,5 +547,95 @@ func TestRetry_ProducesChunksOnDistinctAttemptSubjects(t *testing.T) {
 	// extra or overwritten messages.
 	if count := countLogChunks(t, js, runID, stepID, 1); count != 2 {
 		t.Fatalf("attempt-1 subject has %d chunks after the retry ran, want exactly 2 (unchanged)", count)
+	}
+}
+
+// TestHandlerReturningNilWithoutResolving_DrainsLogLaneNoLeak is the
+// #624 review round-2 regression test for the goroutine leak: a
+// handler that writes to LogOut() but returns nil WITHOUT ever calling
+// Complete/Fail*/Continue/Pause (a bug — TaskContext's contract calls
+// for exactly one of them, but nothing enforces it) used to leave
+// tc.logLane's ticker goroutine running forever, since only those
+// methods stopped it. handleMessage's defensive drainLogs call
+// (worker/worker.go) must still emit a "completed" marker and stop the
+// ticker even when the handler itself never resolves.
+func TestHandlerReturningNilWithoutResolving_DrainsLogLaneNoLeak(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	const runID, stepID = "run-log-noresolve", "step-1"
+	const iterations = 5 // bounded loop
+	done := make(chan struct{}, iterations)
+	w := NewWorker(nc)
+	w.Handle("noresolvetask", func(tc TaskContext) error {
+		tc.LogOut().Write([]byte("wrote but never resolved"))
+		done <- struct{}{}
+		return nil // bug under test: handler never resolves.
+	})
+	w.Start()
+	defer w.Stop()
+
+	// Dispatch one attempt-scoped instance per iteration (distinct
+	// stepID suffix -> distinct log lane/ticker) so a real leak
+	// accumulates iterations worth of stuck goroutines, not just one —
+	// a much more reliable signal than a single before/after snapshot,
+	// which is noisy against unrelated background goroutines (NATS
+	// client internals, OTel batching, HTTP keep-alive) that a fixed
+	// small tolerance can't distinguish from a genuine single leak.
+	//
+	// Goroutine sampling happens in THIS loop, before any
+	// collectLogChunks call — collectLogChunks itself opens a fresh
+	// OrderedConsumer per call (a real, uncleaned-up subscription in
+	// this test helper) that would otherwise confound the sample with
+	// growth that has nothing to do with the log lane. Marker
+	// correctness is checked in a separate pass below, after sampling
+	// is done.
+	iterStepIDs := make([]string, iterations)
+	var samples []int
+	for i := 0; i < iterations; i++ {
+		iterStepIDs[i] = stepID + "-" + strconv.Itoa(i)
+		publishTask(t, js, "noresolvetask", runID, iterStepIDs[i], 0)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: handler did not run in time", i)
+		}
+		// Let this iteration's (correctly stopped) ticker goroutine
+		// actually finish exiting before sampling.
+		time.Sleep(50 * time.Millisecond)
+		samples = append(samples, runtime.NumGoroutine())
+	}
+
+	// Positive: the defensive drain emitted the marker for every
+	// instance, proving it actually ran (not just that no panic
+	// occurred).
+	for i, iterStepID := range iterStepIDs {
+		chunks := collectLogChunks(t, js, runID, iterStepID, 1, 2, 10*time.Second)
+		if chunks[1].Stream != protocol.LogStreamMarker ||
+			string(chunks[1].Data) != protocol.LogMarkerCompleted {
+			t.Fatalf("iteration %d: chunks[1] = %+v, want marker=completed", i, chunks[1])
+		}
+	}
+
+	// Negative: goroutine count must NOT trend upward across
+	// iterations — a real leak of one ticker per iteration would show
+	// samples growing roughly by 1 each time; unrelated background
+	// noise stays roughly flat. Compare the last sample against the
+	// FIRST (post-iteration-0) sample rather than a pre-test baseline,
+	// so one-time startup goroutines (the worker's own subscriptions,
+	// etc.) don't count against the tolerance.
+	first, last := samples[0], samples[len(samples)-1]
+	const growthToleranceMax = 2
+	if last > first+growthToleranceMax {
+		t.Fatalf(
+			"goroutine count grew from %d to %d over %d iterations (samples=%v) — log lane ticker leaked",
+			first, last, iterations, samples,
+		)
 	}
 }

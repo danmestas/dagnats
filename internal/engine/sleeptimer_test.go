@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -301,5 +302,90 @@ func TestSleepTimerStartsLazilyOnSchedule(t *testing.T) {
 			"expected step ID 'lazy-step', got %q",
 			evt.StepID,
 		)
+	}
+}
+
+// TestSleepTimerRateRetryDerivesAttemptFromSnapshot is the #624 review
+// round-2 regression test: any re-dispatch through the rate/concurrency
+// retry path (fireRateRetry) must derive TaskPayload.Attempt from the
+// step's CURRENT run snapshot (via SnapshotStore), never hardcode or
+// drop it. Before this fix fireRateRetry omitted Attempt entirely
+// (always resolving to the zero value), so every rate-retried task ran
+// as if it were attempt 1 (worker's resolveAttemptNumber NumDelivered
+// fallback) regardless of how many real attempts the step already had
+// — colliding with a genuine attempt 1's BUILD_LOGS subject and never
+// matching the default `?attempt=` a consumer would look at.
+func TestSleepTimerRateRetryDerivesAttemptFromSnapshot(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	jsLegacy, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream failed: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	// Seed a run snapshot whose step has already completed 3 attempts —
+	// the rate-retry fire below must read THIS value, not trust
+	// whatever (if anything) the TimerMessage itself carries.
+	store := NewSnapshotStore(js)
+	seedRun := dag.WorkflowRun{
+		RunID: "run-rate-attempt",
+		Steps: map[string]dag.StepState{
+			"step-rate-attempt": {
+				Status: dag.StepStatusRunning, Attempts: 3,
+			},
+		},
+	}
+	if err := store.Save(context.Background(), seedRun); err != nil {
+		t.Fatalf("seed Save failed: %v", err)
+	}
+
+	st := NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
+	if err := st.Start(); err != nil {
+		t.Fatalf("SleepTimer.Start failed: %v", err)
+	}
+	defer st.Stop()
+
+	sub, err := jsLegacy.SubscribeSync(
+		"task.attempt-task.>", nats.DeliverAll(),
+	)
+	if err != nil {
+		t.Fatalf("SubscribeSync failed: %v", err)
+	}
+
+	err = st.Schedule(context.Background(), TimerMessage{
+		Action:     TimerActionRateRetry,
+		RunID:      "run-rate-attempt",
+		StepID:     "step-rate-attempt",
+		DurationMs: 100,
+		TaskType:   "attempt-task",
+		Input:      json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("Schedule failed: %v", err)
+	}
+
+	msg, err := sub.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("did not receive task message: %v", err)
+	}
+	var payload protocol.TaskPayload
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		t.Fatalf("unmarshal payload failed: %v", err)
+	}
+	// Positive: Attempts(3) + 1 — the snapshot tallies COMPLETED
+	// attempts, so the next dispatch is one past that.
+	if payload.Attempt != 4 {
+		t.Fatalf("payload.Attempt = %d, want 4 (snapshot Attempts=3 + 1)",
+			payload.Attempt)
+	}
+	// Negative: must not be the old hardcoded/dropped value.
+	if payload.Attempt == 1 {
+		t.Fatal("payload.Attempt = 1 — looks like the pre-fix hardcoded default")
 	}
 }

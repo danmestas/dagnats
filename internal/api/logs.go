@@ -57,6 +57,24 @@ type logsResponse struct {
 	EOF        bool                `json:"eof"`
 }
 
+// logsErrorBody is the JSON body writeJSONError sends.
+type logsErrorBody struct {
+	Error string `json:"error"`
+}
+
+// writeJSONError writes a JSON error body ({"error": msg}) with the
+// given status. Used where a plain http.Error text body isn't
+// specific enough (from=failure's 404, #624 review round 2) — callers
+// that just need a status code with any error string still use
+// http.Error elsewhere in this file.
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(logsErrorBody{Error: msg}); err != nil {
+		slog.Error("encode logs error body", "error", err)
+	}
+}
+
 // handleGetRunLogs serves GET /runs/{id}/logs?step=&attempt=&cursor=&follow=&from=.
 func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 	if svc == nil {
@@ -151,19 +169,22 @@ func serveLogsPage(
 
 	startCursor := cursorParam(r)
 	if r.URL.Query().Get("from") == "failure" {
-		found, seq, err := lastLogMsgSeq(ctx, svc.js, runID, stepID, attempt)
+		found, seq, err := lastFailureMarkerSeq(ctx, svc.js, runID, stepID, attempt)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if !found {
-			// This attempt's subject has no messages at all (yet, or
-			// ever) — there is nothing to resolve "failure" against.
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(logsResponse{
-				Chunks: []protocol.LogChunk{}, NextCursor: 0,
-				EOF: attemptIsPast(attempt, stepState) || stepTerminal(stepState.Status),
-			})
+			// #624 review round 2: from=failure must be strict —
+			// either this attempt's subject has no messages at all, or
+			// its last message exists but is NOT a "failed" marker
+			// (the attempt completed, is still running, or ended some
+			// other way). Either way there is no recorded failure
+			// position to start from, so this is a 404, not an empty
+			// 200 page — a caller asking for the failure position on
+			// an attempt that never failed made a request error, not
+			// a "nothing here yet" query.
+			writeJSONError(w, http.StatusNotFound, "attempt has no failure marker")
 			return
 		}
 		startCursor = seq
@@ -177,8 +198,11 @@ func serveLogsPage(
 		return
 	}
 
+	// Advance off lastStreamSeq whenever anything was consumed — even
+	// a page of nothing but malformed chunks (page empty, lastStreamSeq
+	// still > 0) must move the cursor forward (#624 review round 2 nit).
 	nextCursor := startCursor
-	if len(page) > 0 {
+	if lastStreamSeq > 0 {
 		nextCursor = lastStreamSeq + 1
 	}
 	gotFullPage := len(page) >= protocol.LogReadChunksMax
@@ -216,18 +240,22 @@ func stepTerminal(status dag.StepStatus) bool {
 	return false
 }
 
-// lastLogMsgSeq resolves from=failure's start cursor in O(1): the
-// drain-before-resolve invariant guarantees the attempt-ending marker
-// (completed/failed/continued/paused) is the TRUE LAST message on this
-// attempt's subject, so "the failure position" is just "the last
-// message", fetched directly via GetLastMsgForSubject rather than
-// scanning from the beginning. found is false when the subject has no
-// messages yet.
-func lastLogMsgSeq(
+// lastFailureMarkerSeq resolves from=failure's start cursor in O(1):
+// the drain-before-resolve invariant guarantees the attempt-ending
+// marker (completed/failed/continued/paused) is the TRUE LAST message
+// on this attempt's subject, so IF this attempt failed, "the failure
+// position" is just "the last message" — fetched directly via
+// GetLastMsgForSubject rather than scanning from the beginning. found
+// is false both when the subject has no messages yet AND when the
+// last message exists but is not a LogMarkerFailed marker (#624
+// review round 2: from=failure must be strict, not "whatever happens
+// to be last") — the caller does not need to distinguish the two; both
+// mean "there is no recorded failure position to start from".
+func lastFailureMarkerSeq(
 	ctx context.Context, js jetstream.JetStream, runID, stepID string, attempt int,
 ) (found bool, seq uint64, err error) {
 	if js == nil {
-		panic("lastLogMsgSeq: js must not be nil")
+		panic("lastFailureMarkerSeq: js must not be nil")
 	}
 	stream, err := js.Stream(ctx, "BUILD_LOGS")
 	if err != nil {
@@ -240,6 +268,13 @@ func lastLogMsgSeq(
 			return false, 0, nil
 		}
 		return false, 0, fmt.Errorf("get last message for %s: %w", subject, err)
+	}
+	var chunk protocol.LogChunk
+	if unmarshalErr := json.Unmarshal(msg.Data, &chunk); unmarshalErr != nil {
+		return false, 0, fmt.Errorf("unmarshal last message for %s: %w", subject, unmarshalErr)
+	}
+	if chunk.Stream != protocol.LogStreamMarker || string(chunk.Data) != protocol.LogMarkerFailed {
+		return false, 0, nil
 	}
 	return true, msg.Sequence, nil
 }
@@ -292,31 +327,44 @@ func fetchLogsPage(
 			slog.Warn("ack BUILD_LOGS message failed",
 				"error", ackErr, "run_id", runID, "step_id", stepID)
 		}
+		// Advance the cursor off seq regardless of ok — a decode
+		// failure must not pin next_cursor at a stale position (#624
+		// review round 2 nit), or a page of nothing but malformed
+		// messages would make every subsequent request re-fetch the
+		// same messages forever.
+		if seq > 0 {
+			lastStreamSeq = seq
+		}
 		if !ok {
 			continue
 		}
 		chunks = append(chunks, chunk)
-		lastStreamSeq = seq
 	}
 	return chunks, lastStreamSeq, nil
 }
 
 // decodeLogsMsg unmarshals msg into a LogChunk and reads its JetStream
-// stream sequence. ok is false (chunk/seq zero) on a malformed
-// payload, logged and skipped rather than failing the whole page.
+// stream sequence. ok is false (chunk zero) on a malformed payload,
+// logged and skipped rather than failing the whole page — but
+// streamSeq is still returned whenever metadata was readable, EVEN ON
+// an unmarshal failure (#624 review round 2 nit): the caller advances
+// its paging cursor off streamSeq regardless of ok, so a run of
+// undecodable messages can never stall pagination by pinning the
+// cursor at the same stale position forever.
 func decodeLogsMsg(
 	msg jetstream.Msg, runID, stepID string,
 ) (chunk protocol.LogChunk, streamSeq uint64, ok bool) {
-	if unmarshalErr := json.Unmarshal(msg.Data(), &chunk); unmarshalErr != nil {
-		slog.Warn("skipping malformed BUILD_LOGS chunk",
-			"error", unmarshalErr, "run_id", runID, "step_id", stepID)
-		return protocol.LogChunk{}, 0, false
-	}
 	meta, metaErr := msg.Metadata()
 	if metaErr != nil {
 		slog.Warn("BUILD_LOGS message metadata unavailable",
 			"error", metaErr, "run_id", runID, "step_id", stepID)
 		return protocol.LogChunk{}, 0, false
+	}
+	if unmarshalErr := json.Unmarshal(msg.Data(), &chunk); unmarshalErr != nil {
+		slog.Warn("skipping malformed BUILD_LOGS chunk",
+			"error", unmarshalErr, "run_id", runID, "step_id", stepID,
+			"stream_seq", meta.Sequence.Stream)
+		return protocol.LogChunk{}, meta.Sequence.Stream, false
 	}
 	return chunk, meta.Sequence.Stream, true
 }

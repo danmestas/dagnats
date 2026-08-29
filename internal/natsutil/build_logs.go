@@ -48,19 +48,23 @@ func resolveBuildLogsTTL(val string) (time.Duration, error) {
 }
 
 // SetupBuildLogsStream creates the BUILD_LOGS stream (#624): the
-// per-task hot lane for worker stdout/stderr, subjects
-// logs.{runID}.{stepID}. LimitsPolicy + FileStorage matches the other
-// history-shaped streams (WORKFLOW_HISTORY, EVENTS); ttl is the caller's
-// resolved DAGNATS_BUILD_LOGS_TTL (see resolveBuildLogsTTL). maxStoreBytes
-// is the JetStreamMaxStore budget; the byte ceiling is a fraction of it
-// (see the fraction table's comment block above) — a budget of 0 (or
-// less) disables the ceiling, same as every other file stream here.
+// per-attempt hot lane for worker stdout/stderr, subjects
+// logs.{runID}.{stepID}.{attempt}. LimitsPolicy + FileStorage matches
+// the other history-shaped streams (WORKFLOW_HISTORY, EVENTS); ttl is
+// the caller's resolved DAGNATS_BUILD_LOGS_TTL (see
+// resolveBuildLogsTTL). maxStoreBytes is the JetStreamMaxStore budget;
+// the byte ceiling is a fraction of it (see the fraction table's
+// comment block above) — a budget of 0 (or less) disables the
+// ceiling, same as every other file stream here.
 //
 // Duplicates uses a >=2min window: LogChunk.Seq collisions from a
 // redelivered task message (worker crash between publish and ack) must
-// dedup on Nats-Msg-Id ("log-{runID}-{stepID}-{seq}"), and 2 minutes
-// comfortably covers the AckWait-driven redelivery interval a worker
-// task can see.
+// dedup on Nats-Msg-Id ("log-{runID}-{stepID}-{attempt}-{seq}"), and 2
+// minutes comfortably covers the AckWait-driven redelivery interval a
+// worker task can see. attempt is part of both the subject and the
+// Msg-Id (#624 review round 2) — without it, a retry's fresh Msg-Id
+// counter starting back at seq 0 would collide with the prior
+// attempt's within this same window.
 //
 // No AllowDirect: unlike TASK_QUEUES (#632's queue-depth API), nothing
 // reads BUILD_LOGS via direct-get — the tail API (internal/api) reads it

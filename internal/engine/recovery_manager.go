@@ -317,8 +317,10 @@ func (rm *RecoveryManager) TryOnFailure(
 		`{"failed_step":"%s","error":%q}`,
 		stepID, state.Error,
 	))
+	// #624 review round 2: derive Attempt from the snapshot, not 0.
 	err := rm.publisher.Publish(
-		ctx, run.RunID, onFailStep, errorInput, 0,
+		ctx, run.RunID, onFailStep, errorInput,
+		nextDispatchAttempt(run, onFailStep.ID),
 		run.WorkflowID, ofState.DispatchNonce,
 	)
 	return err == nil, err
@@ -367,8 +369,10 @@ func (rm *RecoveryManager) StartCompensation(
 		originalID, run.Steps[originalID].Output,
 		failedStepID, failedError,
 	)
+	// #624 review round 2: derive Attempt from the snapshot, not 0.
 	return rm.publisher.Publish(
-		ctx, run.RunID, first, input, 0,
+		ctx, run.RunID, first, input,
+		nextDispatchAttempt(*run, first.ID),
 		run.WorkflowID, run.Steps[first.ID].DispatchNonce,
 	)
 }
@@ -428,8 +432,10 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 		stampDispatch(&nextState, time.Now().UTC())
 		run.Steps[step.Compensate] = nextState
 		saveFn(ctx, *run, step.Compensate)
+		// #624 review round 2: derive Attempt from the snapshot, not 0.
 		rm.publisher.Publish(
-			ctx, run.RunID, compDef, input, 0,
+			ctx, run.RunID, compDef, input,
+			nextDispatchAttempt(*run, step.Compensate),
 			run.WorkflowID, nextState.DispatchNonce,
 		)
 		return true

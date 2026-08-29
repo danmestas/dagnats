@@ -431,30 +431,44 @@ verdict, before the TTL elapses (#624).
 
 - **Markers**: a `stream: "marker"` chunk never carries step output —
   it carries a control value in `data`. Every path that ends a task
-  attempt emits exactly one of the first four as the TRUE LAST message
-  on that attempt's subject (drain-before-resolve — see below):
-  - `"completed"` — the worker SDK's `Complete`.
+  attempt — the worker SDK's `Complete`/`Fail`/`FailPermanent`/
+  `FailRetryAfter`/`Continue`/`Pause` AND the HTTP bridge's
+  `complete`/`fail`/`continue`/`pause` resolve actions alike — emits
+  exactly one of the first four as the TRUE LAST message on that
+  attempt's subject (drain-before-resolve — see below):
+  - `"completed"` — `Complete` / bridge `action: "complete"`.
   - `"failed"` — `Fail`, `FailPermanent`, and `FailRetryAfter` (all
-    three represent this attempt ending in failure, retried or not),
-    plus the HTTP-bridge equivalent. Because this lands as the true
-    last message on the subject, `GET .../logs?from=failure` resolves
-    it in O(1) via `GetLastMsgForSubject` — a **recorded** position,
-    not one inferred by scanning `history.{runID}` and
-    cross-referencing timestamps.
-  - `"continued"` — `Continue` (agent-loop iteration boundary); the
-    next iteration gets a new attempt-scoped subject.
-  - `"paused"` — `Pause`; a resumed step gets a new attempt-scoped
-    subject.
+    three represent this attempt ending in failure, retried or not) /
+    bridge `action: "fail"` (covers all three the same way — bridge
+    has one fail action distinguished by `failure_type`, not three).
+    Because this lands as the true last message on the subject,
+    `GET .../logs?from=failure` resolves it in O(1) via
+    `GetLastMsgForSubject` — a **recorded** position, not one inferred
+    by scanning `history.{runID}` and cross-referencing timestamps.
+    `from=failure` is strict: if the last message is anything other
+    than a `"failed"` marker (the attempt completed, or has no
+    messages at all), the request 404s with
+    `{"error":"attempt has no failure marker"}` rather than starting
+    at whatever happens to be last.
+  - `"continued"` — `Continue` / bridge `action: "continue"`
+    (agent-loop iteration boundary); the next iteration gets a new
+    attempt-scoped subject.
+  - `"paused"` — `Pause` / bridge `action: "pause"`; a resumed step
+    gets a new attempt-scoped subject.
   - `"truncated"` — emitted at most once, the moment `LogStepBytesMax`
     is reached, BEFORE the attempt-ending marker (which still lands
     last).
 - **Drain-before-resolve invariant**: the worker SDK's `Complete`,
-  `Fail`, `FailPermanent`, `FailRetryAfter`, `Continue`, and `Pause`
-  all flush any buffered `LogOut()`/`LogErr()` bytes and emit their
-  attempt-ending marker **before** publishing their resolution event
-  (or, for `Pause`, NAK-ing). A consumer that observes a step's
-  terminal `history.{runID}` event, `GET /runs/{id}` snapshot, or the
-  marker itself off a `GET .../logs?follow=1` connection is therefore
+  `Fail`, `FailPermanent`, `FailRetryAfter`, `Continue`, and `Pause` —
+  and the HTTP bridge's equivalent resolve actions — all flush any
+  buffered log bytes and emit their attempt-ending marker **before**
+  publishing their resolution event (or, for `Pause`, NAK-ing). A
+  bridge POST /v1/tasks/{id}/logs for a task that already resolved is
+  rejected `409` (not `404` — the task existed, it's just closed to
+  further ingest), so a caller can tell "already resolved" apart from
+  "never claimed". A consumer that observes a step's terminal
+  `history.{runID}` event, `GET /runs/{id}` snapshot, or the marker
+  itself off a `GET .../logs?follow=1` connection is therefore
   guaranteed every log byte that produced that outcome is already on
   `logs.{runID}.{stepID}.{attempt}` — no race where the terminal
   signal arrives before its trailing log lines.
@@ -488,7 +502,10 @@ verdict, before the TTL elapses (#624).
   (see `docs/site/content/docs/reference/rest-api.md`, "Run logs")
   reads this stream — non-follow pages through stored chunks via an
   opaque JetStream-stream-sequence cursor, `follow=1` upgrades to
-  Server-Sent Events over a single long-lived consumer.
+  Server-Sent Events over a single long-lived consumer, ending with
+  `event: eof` on the normal attempt-ending path or `event: error` if
+  that consumer itself fails (deleted, connection lost) rather than
+  looping silently until the 1h duration cap.
 - **Use for**: a live or historical tail of one attempt's captured
   output within the hot TTL window. Anything longer-lived belongs in a
   consumer's own store, drained from this stream before the TTL

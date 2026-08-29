@@ -168,3 +168,136 @@ func TestPostLogs_UnknownTaskIs404(t *testing.T) {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// resolveLogsTest POSTs a resolve action for taskID against ts, failing
+// the test on a non-2xx status.
+func resolveLogsTest(t *testing.T, ts *httptest.Server, taskID, body string) {
+	t.Helper()
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resolve status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestPostLogs_FailMarkerIsLastMessageOnAttemptSubject is the #624
+// review round-2 regression test for bridge markers: an HTTP worker
+// POSTs a log chunk, then resolves the task as failed. The "failed"
+// marker (emitted by handleResolve's resolveFail, not by the caller)
+// must be the LAST message on the attempt's BUILD_LOGS subject, same
+// invariant the worker SDK already guarantees natively.
+func TestPostLogs_FailMarkerIsLastMessageOnAttemptSubject(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := newTestBridge(t, nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(t, nc, b, ts, "run-logs-fail", "step-1")
+
+	body := `{"chunks":[{"stream":"out","data":"` + b64("about to fail") + `"}]}`
+	resp := postLogs(t, ts.URL, taskID, "", body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("postLogs status = %d, want 200", resp.StatusCode)
+	}
+
+	resolveLogsTest(t, ts, taskID,
+		`{"action":"fail","error":"boom","failure_type":"retriable"}`)
+
+	// attempt=1: a fresh single poll resolves via NumDelivered fallback
+	// (bridge/poll.go's taskAttemptNumber), same numbering the worker
+	// SDK uses.
+	chunks := drainBuildLogs(t, nc, "run-logs-fail", "step-1", 1, 2, 10*time.Second)
+	if chunks[0].Stream != protocol.LogStreamOut ||
+		string(chunks[0].Data) != "about to fail" {
+		t.Fatalf("chunks[0] = %+v, want out=%q", chunks[0], "about to fail")
+	}
+	if chunks[1].Stream != protocol.LogStreamMarker ||
+		string(chunks[1].Data) != protocol.LogMarkerFailed {
+		t.Fatalf("chunks[1] = %+v, want marker=failed", chunks[1])
+	}
+}
+
+// TestPostLogs_AfterResolveIs409 asserts the log-ingest endpoint
+// rejects a POST for a task that was already resolved, distinguishing
+// it from "never existed" (404) via AckMap.WasResolved.
+func TestPostLogs_AfterResolveIs409(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := newTestBridge(t, nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(t, nc, b, ts, "run-logs-409", "step-1")
+	resolveLogsTest(t, ts, taskID, `{"action":"complete","output":{}}`)
+
+	body := `{"chunks":[{"stream":"out","data":"` + b64("too late") + `"}]}`
+	resp := postLogs(t, ts.URL, taskID, "", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// TestPostLogs_FromFailureWorksForBridgeWorker exercises
+// GET /runs/{id}/logs?from=failure end to end for an HTTP-bridge-driven
+// task, mirroring the worker-SDK equivalent in internal/api/logs_test.go.
+func TestPostLogs_FromFailureWorksForBridgeWorker(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	b := newTestBridge(t, nc)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	taskID := publishAndPollTask(t, nc, b, ts, "run-logs-fromfail", "step-1")
+	body := `{"chunks":[{"stream":"out","data":"` + b64("before") + `"}]}`
+	postLogs(t, ts.URL, taskID, "", body).Body.Close()
+	resolveLogsTest(t, ts, taskID,
+		`{"action":"fail","error":"boom","failure_type":"retriable"}`)
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "BUILD_LOGS")
+	if err != nil {
+		t.Fatalf("Stream(BUILD_LOGS): %v", err)
+	}
+	subject := "logs.run-logs-fromfail.step-1.1"
+	deadline := time.Now().Add(5 * time.Second)
+	var lastMsg *jetstream.RawStreamMsg
+	for time.Now().Before(deadline) {
+		lastMsg, err = stream.GetLastMsgForSubject(ctx, subject)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("GetLastMsgForSubject: %v", err)
+	}
+	var chunk protocol.LogChunk
+	if err := json.Unmarshal(lastMsg.Data, &chunk); err != nil {
+		t.Fatalf("unmarshal last chunk: %v", err)
+	}
+	if chunk.Stream != protocol.LogStreamMarker ||
+		string(chunk.Data) != protocol.LogMarkerFailed {
+		t.Fatalf("last message = %+v, want marker=failed (from=failure target)", chunk)
+	}
+}

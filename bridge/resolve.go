@@ -204,6 +204,11 @@ func (b *Bridge) resolveComplete(
 		return fmt.Errorf("derive attempt number: %w", err)
 	}
 	runID, stepID := splitTaskID(taskID)
+	// #624 review round 2: emit the "completed" marker (using the
+	// AckMap's own seq/attempt state) BEFORE the resolution publish and
+	// BEFORE the task leaves the AckMap — the drain-before-resolve
+	// invariant the worker SDK already guarantees natively.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerCompleted)
 	evt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, runID, stepID, req.Output,
 	)
@@ -215,6 +220,7 @@ func (b *Bridge) resolveComplete(
 		return fmt.Errorf("ack message: %w", err)
 	}
 	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID)
 	return nil
 }
 
@@ -251,6 +257,13 @@ func (b *Bridge) resolveFail(
 	if err != nil {
 		return fmt.Errorf("marshal fail payload: %w", err)
 	}
+	// #624 review round 2: "failed" covers fail/fail_permanent/
+	// fail_retry_after alike — bridge represents all three as one
+	// "fail" action distinguished only by FailureType, and every one
+	// of them ends this attempt the same way from the log lane's
+	// perspective. Emit BEFORE the resolution publish and BEFORE the
+	// task leaves the AckMap.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerFailed)
 	evt := protocol.NewStepEvent(
 		protocol.EventStepFailed, runID, stepID, payloadData,
 	)
@@ -262,6 +275,7 @@ func (b *Bridge) resolveFail(
 		return fmt.Errorf("ack message: %w", err)
 	}
 	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID)
 	return nil
 }
 
@@ -287,11 +301,17 @@ func (b *Bridge) resolvePause(
 	if err := b.writeCheckpoint(ctx, taskID, req.Checkpoint); err != nil {
 		return err
 	}
+	// #624 review round 2: emit BEFORE the NAK — the NAK is this
+	// attempt's own "resolution" (the message is redelivered fresh on
+	// resume), so the marker must land before it, same ordering as
+	// every other resolve path.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerPaused)
 	duration := time.Duration(req.DurationMs) * time.Millisecond
 	if err := msg.NakWithDelay(duration); err != nil {
 		return fmt.Errorf("nak with delay: %w", err)
 	}
 	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID)
 	return nil
 }
 
@@ -336,6 +356,10 @@ func (b *Bridge) resolveContinue(
 		panic("resolveContinue: msg must not be nil")
 	}
 	runID, stepID := splitTaskID(taskID)
+	// #624 review round 2: emit BEFORE the step.continue publish —
+	// this attempt's subject is done; the next iteration gets a fresh
+	// attempt-scoped subject, same as the worker SDK's Continue.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerContinued)
 	evt := protocol.NewStepEvent(
 		protocol.EventStepContinue, runID, stepID, req.Output,
 	)
@@ -360,6 +384,7 @@ func (b *Bridge) resolveContinue(
 		return fmt.Errorf("ack message: %w", err)
 	}
 	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID)
 	return nil
 }
 

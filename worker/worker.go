@@ -1242,6 +1242,16 @@ func (w *Worker) handleMessage(
 		)
 		return
 	}
+	// #624 review round 2: a handler that returns nil WITHOUT ever
+	// calling Complete/Fail*/Continue/Pause (a bug — TaskContext's
+	// contract calls for exactly one of them, but nothing enforces it)
+	// used to leave tc.logLane's ticker goroutine running forever: it
+	// only stops when one of those methods calls drainWithMarker.
+	// This call is unconditional and idempotent — drainWithMarker's
+	// alreadyTerminal guard makes it a safe no-op if the handler
+	// already resolved normally (worker/context.go), so it closes the
+	// leak without double-emitting a marker on the common path.
+	tc.drainLogs(protocol.LogMarkerCompleted)
 	// Pause() already NAK'd the message — don't double-ack.
 	if !tc.paused {
 		msg.Ack()

@@ -23,6 +23,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -157,6 +159,16 @@ func runLogsFollowLoop(
 		}
 		msg, err := cons.Next(jetstream.FetchMaxWait(logsKeepaliveInterval))
 		if err != nil {
+			if !errors.Is(err, nats.ErrTimeout) {
+				// #624 review round 2: a real error (deleted consumer,
+				// connection problem, etc.) — NOT the ordinary "nothing
+				// arrived within this wait" timeout every idle
+				// iteration hits — must end the stream with an
+				// event: error, not be treated as idle and looped on
+				// via a now-broken consumer until the 1h duration cap.
+				writeLogsErrorEvent(w, flusher, err)
+				return
+			}
 			// Idle for a full keepalive window — write the comment and
 			// check the crash-fallback ticker before looping back into
 			// another bounded wait.
@@ -251,6 +263,33 @@ func writeLogsEOFEvent(w http.ResponseWriter, flusher http.Flusher, marker strin
 	// review's discarded-error nit.
 	if _, err := fmt.Fprintf(w, "event: eof\ndata: %s\n\n", data); err != nil {
 		slog.Warn("write SSE eof event failed", "error", err)
+		return
+	}
+	flusher.Flush()
+}
+
+// logsErrorEvent is the "event: error" payload — a genuine failure of
+// the follow's consumer (deleted consumer, connection problem), as
+// opposed to event: eof's normal end-of-attempt signal.
+type logsErrorEvent struct {
+	Reason string `json:"reason"`
+}
+
+// writeLogsErrorEvent ends a follow connection on a real consumer
+// error (#624 review round 2) — distinct from the ordinary per-wait
+// nats.ErrTimeout every idle loop iteration produces, which must NOT
+// reach here (that's the event: eof / keepalive path).
+func writeLogsErrorEvent(w http.ResponseWriter, flusher http.Flusher, cause error) {
+	if cause == nil {
+		panic("writeLogsErrorEvent: cause must not be nil")
+	}
+	slog.Warn("SSE log follow consumer error; ending stream", "error", cause)
+	data, err := json.Marshal(logsErrorEvent{Reason: cause.Error()})
+	if err != nil {
+		data = []byte(`{"reason":"internal error"}`)
+	}
+	if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", data); err != nil {
+		slog.Warn("write SSE error event failed", "error", err)
 		return
 	}
 	flusher.Flush()

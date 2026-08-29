@@ -32,6 +32,18 @@ const (
 	// cadence. Reaching it means genuinely that many concurrent
 	// in-flight HTTP tasks, which is already pathological.
 	ackMapMaxEntries = 10000
+
+	// resolvedTaskTTL bounds how long a resolved-task marker survives
+	// in the separate resolvedTasks map (#624 review round 2). It
+	// exists purely so POST /v1/tasks/{id}/logs can tell a caller
+	// "already resolved" (409) instead of "never existed" (404) for a
+	// window after resolve — no correctness depends on how long the
+	// distinction survives past that, so this is generous but bounded.
+	resolvedTaskTTL = 5 * time.Minute
+
+	// resolvedTaskMax backstops resolvedTasks the same way
+	// ackMapMaxEntries backstops entries.
+	resolvedTaskMax = 10000
 )
 
 // ackEntry pairs a polled message with its insertion time so the
@@ -73,6 +85,13 @@ type AckMap struct {
 	entries   map[string]ackEntry
 	lastSweep time.Time
 	now       func() time.Time
+	// resolvedTasks records taskIDs recently removed from entries via
+	// resolution (complete/fail/pause/continue), separately from
+	// entries itself, so handleLogs can distinguish "already resolved"
+	// (409) from "never existed" (404) after Delete has already
+	// dropped the live claim entry (#624 review round 2). Bounded and
+	// TTL'd the same way entries is; see resolvedTaskMax/resolvedTaskTTL.
+	resolvedTasks map[string]time.Time
 }
 
 // NewAckMap creates an empty AckMap ready for use.
@@ -91,9 +110,10 @@ func newAckMapWithClock(now func() time.Time) *AckMap {
 		panic("newAckMapWithClock: clock must not return zero time")
 	}
 	return &AckMap{
-		entries:   make(map[string]ackEntry),
-		lastSweep: start,
-		now:       now,
+		entries:       make(map[string]ackEntry),
+		lastSweep:     start,
+		now:           now,
+		resolvedTasks: make(map[string]time.Time),
 	}
 }
 
@@ -200,6 +220,60 @@ func (am *AckMap) Delete(taskID string) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	delete(am.entries, taskID)
+}
+
+// MarkResolved records that taskID was just resolved (complete/fail/
+// pause/continue) — called alongside Delete, from the same resolve
+// call, so a POST /v1/tasks/{id}/logs that arrives afterwards can be
+// told 409 (already resolved) instead of 404 (never existed). Bounded
+// and TTL'd the same way Store bounds entries: evicts the oldest
+// resolvedTasks entry at resolvedTaskMax, and WasResolved expires an
+// entry past resolvedTaskTTL.
+func (am *AckMap) MarkResolved(taskID string) {
+	if am == nil {
+		panic("AckMap.MarkResolved: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.MarkResolved: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if len(am.resolvedTasks) >= resolvedTaskMax {
+		var oldestID string
+		var oldestAt time.Time
+		for id, at := range am.resolvedTasks {
+			if oldestID == "" || at.Before(oldestAt) {
+				oldestID, oldestAt = id, at
+			}
+		}
+		delete(am.resolvedTasks, oldestID)
+	}
+	am.resolvedTasks[taskID] = am.now()
+}
+
+// WasResolved reports whether taskID was resolved within the last
+// resolvedTaskTTL. Expires (and removes) a stale entry on read rather
+// than waiting for a separate sweep — resolvedTasks is only ever
+// queried from handleLogs's rejection path, so a lazy expiry costs
+// nothing extra there.
+func (am *AckMap) WasResolved(taskID string) bool {
+	if am == nil {
+		panic("AckMap.WasResolved: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.WasResolved: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	at, ok := am.resolvedTasks[taskID]
+	if !ok {
+		return false
+	}
+	if am.now().Sub(at) >= resolvedTaskTTL {
+		delete(am.resolvedTasks, taskID)
+		return false
+	}
+	return true
 }
 
 // Count returns the number of in-flight tasks.

@@ -74,7 +74,9 @@ type logPlanStep struct {
 
 // handleLogs ingests a batch of log chunks for a claimed task. Auth
 // mirrors handleResolve: the task must be in the AckMap (claimed via
-// poll) and the caller must be its claiming token or an admin.
+// poll) and the caller must be its claiming token or an admin. Split
+// from the actual ingest (ingestLogChunks) to stay under the house
+// function-length budget.
 func (b *Bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if b.ackMap == nil {
 		panic("handleLogs: ackMap must not be nil")
@@ -97,7 +99,7 @@ func (b *Bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromContext(r.Context())
 	claimedMsg, claimingTokenID, ok := b.ackMap.LoadWithTokenID(taskID)
 	if !ok {
-		http.Error(w, "task not found", http.StatusNotFound)
+		b.rejectUnclaimedLogPost(w, taskID)
 		return
 	}
 	if !b.authorizeTaskOwner(claims, claimingTokenID) {
@@ -119,13 +121,33 @@ func (b *Bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
 	decoded, err := decodeLogsChunks(req.Chunks)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	b.ingestLogChunks(ctx, w, taskID, attempt, decoded)
+}
+
+// rejectUnclaimedLogPost distinguishes 409 (already resolved — see
+// AckMap.MarkResolved/WasResolved, #624 review round 2) from 404
+// (never claimed at all) for a taskID no longer in the AckMap.
+func (b *Bridge) rejectUnclaimedLogPost(w http.ResponseWriter, taskID string) {
+	if b.ackMap.WasResolved(taskID) {
+		http.Error(w, "task already resolved; log ingest closed",
+			http.StatusConflict)
+		return
+	}
+	http.Error(w, "task not found", http.StatusNotFound)
+}
+
+// ingestLogChunks assigns seq/truncation state and publishes the
+// decoded chunks for an already-authorized request.
+func (b *Bridge) ingestLogChunks(
+	ctx context.Context, w http.ResponseWriter,
+	taskID string, attempt int, decoded []decodedChunk,
+) {
 	runID, stepID := splitTaskID(taskID)
 	var steps []logPlanStep
 	var startSeq uint64
@@ -139,12 +161,11 @@ func (b *Bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return seq, totalBytes, truncated
 	})
 	if !found {
-		// Raced the reaper/resolve between the ownership check above
-		// and here — same not-found semantics as handleResolve.
-		http.Error(w, "task not found", http.StatusNotFound)
+		// Raced the reaper/resolve between the ownership check in
+		// handleLogs and here.
+		b.rejectUnclaimedLogPost(w, taskID)
 		return
 	}
-
 	b.publishLogSteps(ctx, runID, stepID, attempt, startSeq, steps)
 	w.WriteHeader(http.StatusOK)
 }
@@ -276,6 +297,49 @@ chunkLoop:
 		}
 	}
 	return steps, newSeq, newTotalBytes, newTruncated
+}
+
+// emitLogMarker publishes marker (one of the protocol.LogMarker*
+// constants) as the LAST message on taskID's current attempt subject,
+// via the same seq counter POST /v1/tasks/{id}/logs uses — the
+// HTTP-bridge counterpart to worker/log_writer.go's drainWithMarker
+// (#624 review round 2: bridge never emitted a terminal marker at all,
+// so from=failure/follow's eof for an HTTP worker had nothing reliable
+// to key off). Call this BEFORE the resolution's own publish/ack/NAK
+// and BEFORE removing the task from the AckMap — WithLogState needs
+// the live entry to assign seq. Best-effort like every other log
+// publish in this package: a failure here is logged, never propagated,
+// so a BUILD_LOGS hiccup can never block a task from resolving.
+func (b *Bridge) emitLogMarker(
+	ctx context.Context, taskID string, msg jetstream.Msg, marker string,
+) {
+	if taskID == "" {
+		panic("emitLogMarker: taskID must not be empty")
+	}
+	if marker == "" {
+		panic("emitLogMarker: marker must not be empty")
+	}
+	attempt, err := logsTaskAttempt(msg)
+	if err != nil {
+		slog.Warn("emitLogMarker: derive attempt failed",
+			"error", err, "task_id", taskID)
+		return
+	}
+	runID, stepID := splitTaskID(taskID)
+	steps := []logPlanStep{{stream: protocol.LogStreamMarker, data: []byte(marker)}}
+	var startSeq uint64
+	found := b.ackMap.WithLogState(taskID, func(
+		seq uint64, totalBytes int64, truncated bool,
+	) (uint64, int64, bool) {
+		startSeq = seq
+		return seq + 1, totalBytes, truncated
+	})
+	if !found {
+		slog.Warn("emitLogMarker: no AckMap entry (already resolved or reaped)",
+			"task_id", taskID, "marker", marker)
+		return
+	}
+	b.publishLogSteps(ctx, runID, stepID, attempt, startSeq, steps)
 }
 
 // publishLogSteps publishes each planned step as its own LogChunk,

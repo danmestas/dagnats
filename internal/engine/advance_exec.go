@@ -82,8 +82,14 @@ func (o *Orchestrator) executeOneEffect(
 		if nonce == "" {
 			nonce = runid.New()
 		}
+		// #624 review round 2: derive Attempt from the run snapshot
+		// (nextDispatchAttempt), not a hardcoded 0 — this path also
+		// fires for a step being re-queued after a completed attempt,
+		// and a stale 0 would collide with that attempt's BUILD_LOGS
+		// subject.
 		return o.publisher.Publish(
-			ctx, run.RunID, e.Step, e.Input, 0,
+			ctx, run.RunID, e.Step, e.Input,
+			nextDispatchAttempt(run, e.Step.ID),
 			run.WorkflowID, nonce,
 		)
 	case CompleteWorkflow:

@@ -254,6 +254,41 @@ func TestGetRunLogs_FromFailureStartsAtMarker(t *testing.T) {
 	}
 }
 
+// TestGetRunLogs_FromFailureOnCompletedAttemptIs404 is the #624 review
+// round-2 regression test for point 3: from=failure must be STRICT —
+// a completed (non-failed) attempt's last message is a "completed"
+// marker, not "failed", so from=failure must 404 rather than silently
+// starting at whatever the last message happens to be.
+func TestGetRunLogs_FromFailureOnCompletedAttemptIs404(t *testing.T) {
+	svc, server, _, _ := newLogsRestFixture(t, "logs-failure-404", "logs-failure-404-task",
+		func(tc worker.TaskContext) error {
+			tc.LogOut().Write([]byte("all good"))
+			return tc.Complete(nil)
+		}, false)
+	runID := startLogsTestRun(t, svc, "logs-failure-404")
+
+	waitForLogsNonEmpty(t, server.URL, runID, 2, 10*time.Second)
+	resp, err := http.Get(
+		fmt.Sprintf("%s/runs/%s/logs?step=a&from=failure", server.URL, runID),
+	)
+	if err != nil {
+		t.Fatalf("GET logs: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error != "attempt has no failure marker" {
+		t.Fatalf("error = %q, want %q", body.Error, "attempt has no failure marker")
+	}
+}
+
 func TestGetRunLogs_UnknownRunIs404(t *testing.T) {
 	_, server, _, _ := newLogsRestFixture(t, "logs-404run", "logs-404run-task",
 		func(tc worker.TaskContext) error { return tc.Complete(nil) }, false)
@@ -415,6 +450,125 @@ func countBuildLogsConsumers(t *testing.T, nc *nats.Conn) int {
 		t.Fatalf("ConsumerNames: %v", err)
 	}
 	return count
+}
+
+// buildLogsConsumerNames returns the set of live consumer names on
+// BUILD_LOGS.
+func buildLogsConsumerNames(t *testing.T, nc *nats.Conn) map[string]bool {
+	t.Helper()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "BUILD_LOGS")
+	if err != nil {
+		t.Fatalf("Stream(BUILD_LOGS): %v", err)
+	}
+	lister := stream.ConsumerNames(ctx)
+	names := make(map[string]bool)
+	for name := range lister.Name() {
+		names[name] = true
+	}
+	if err := lister.Err(); err != nil {
+		t.Fatalf("ConsumerNames: %v", err)
+	}
+	return names
+}
+
+// TestGetRunLogs_FollowEndsWithErrorEventOnConsumerDeleted is the
+// #624 review round-2 regression test for point 4: deleting the
+// follow's underlying JetStream consumer out from under it must end
+// the SSE stream with an event: error within one Next() wait, not
+// silently loop as "idle" until the 1h duration cap.
+func TestGetRunLogs_FollowEndsWithErrorEventOnConsumerDeleted(t *testing.T) {
+	svc, server, nc, _ := newLogsRestFixture(t, "logs-consdel", "logs-consdel-task",
+		func(tc worker.TaskContext) error {
+			time.Sleep(3 * time.Second) // keep the follow open
+			return tc.Complete(nil)
+		}, false)
+	runID := startLogsTestRun(t, svc, "logs-consdel")
+	waitForStepKnown(t, svc, runID, "a", 5*time.Second)
+
+	before := buildLogsConsumerNames(t, nc)
+
+	req, err := http.NewRequest(
+		"GET", fmt.Sprintf("%s/runs/%s/logs?step=a&follow=1", server.URL, runID), nil,
+	)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("follow request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Find the new consumer this follow opened, and delete it — the
+	// mid-flight failure the review's regression targets.
+	var newName string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && newName == "" {
+		after := buildLogsConsumerNames(t, nc)
+		for name := range after {
+			if !before[name] {
+				newName = name
+				break
+			}
+		}
+		if newName == "" {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if newName == "" {
+		t.Fatal("never observed the follow's own consumer appear on BUILD_LOGS")
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "BUILD_LOGS")
+	if err != nil {
+		t.Fatalf("Stream(BUILD_LOGS): %v", err)
+	}
+	if err := stream.DeleteConsumer(ctx, newName); err != nil {
+		t.Fatalf("DeleteConsumer(%s): %v", newName, err)
+	}
+
+	// The stream must end with event: error well within the 15s
+	// keepalive wait — bounded generously to absorb scheduling jitter,
+	// but nowhere near the 1h duration cap the pre-fix busy loop would
+	// have run into.
+	scanner := bufio.NewScanner(resp.Body)
+	var sawError bool
+	var event string
+	scanDeadline := time.Now().Add(20 * time.Second)
+	for scanner.Scan() {
+		if time.Now().After(scanDeadline) {
+			break
+		}
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event: error"):
+			event = "error"
+		case strings.HasPrefix(line, "event: eof"), strings.HasPrefix(line, "event: chunk"):
+			event = ""
+		}
+		if event == "error" && strings.HasPrefix(line, "data:") {
+			sawError = true
+			break
+		}
+	}
+	if !sawError {
+		t.Fatal("never observed an event: error after the consumer was deleted")
+	}
 }
 
 // TestGetRunLogs_FollowUsesExactlyOneConsumer is the #624 review's
