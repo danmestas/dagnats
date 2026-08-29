@@ -67,9 +67,18 @@ func TestOffloadRunLogs_WritesOneFileInOrder(t *testing.T) {
 	runID, stepID, attempt, iteration := "run-offload-1", "build", 1, 0
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	chunks := []protocol.LogChunk{
-		{Seq: 1, TS: base, Attempt: attempt, Iteration: iteration, Stream: "out", Data: []byte("line one")},
-		{Seq: 2, TS: base.Add(time.Second), Attempt: attempt, Iteration: iteration, Stream: "out", Data: []byte("line two")},
-		{Seq: 3, TS: base.Add(2 * time.Second), Attempt: attempt, Iteration: iteration, Stream: "marker", Data: []byte("completed")},
+		{
+			Seq: 1, TS: base, Attempt: attempt, Iteration: iteration,
+			Stream: "out", Data: []byte("line one"),
+		},
+		{
+			Seq: 2, TS: base.Add(time.Second), Attempt: attempt, Iteration: iteration,
+			Stream: "out", Data: []byte("line two"),
+		},
+		{
+			Seq: 3, TS: base.Add(2 * time.Second), Attempt: attempt, Iteration: iteration,
+			Stream: "marker", Data: []byte("completed"),
+		},
 	}
 	for _, c := range chunks {
 		publishChunk(t, js, runID, stepID, attempt, iteration, c)
@@ -140,7 +149,8 @@ func TestOffloadRunLogs_SeparatesStepsAttemptsAndIterations(t *testing.T) {
 	// land in its own file, not collide with attempt 2 iteration 0
 	// (#624 review round 3: iteration is a second identity dimension).
 	publishChunk(t, js, runID, "build", 2, 1, protocol.LogChunk{
-		Seq: 1, TS: base, Attempt: 2, Iteration: 1, Stream: "out", Data: []byte("attempt two, iteration one"),
+		Seq: 1, TS: base, Attempt: 2, Iteration: 1,
+		Stream: "out", Data: []byte("attempt two, iteration one"),
 	})
 	publishChunk(t, js, runID, "test", 1, 0, protocol.LogChunk{
 		Seq: 1, TS: base, Attempt: 1, Iteration: 0, Stream: "out", Data: []byte("other step"),

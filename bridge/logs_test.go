@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,7 +59,7 @@ func drainBuildLogs(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	subject := fmt.Sprintf("logs.%s.%s.%d.%d", runID, stepID, attempt, iteration)
+	subject := natsutil.LogSubject(runID, stepID, attempt, iteration)
 	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS",
 		jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}})
 	if err != nil {

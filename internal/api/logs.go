@@ -122,6 +122,18 @@ func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 // attemptParam parses "attempt"; absent/invalid resolves to the step's
 // current attempt count (dag.StepState.Attempts) — reading logs for a
 // step with no explicit ?attempt= gets its live/most-recent attempt.
+//
+// This default is only correct because it is the READ side of a chain
+// a future edit here must preserve (#624 review round 4/5):
+// dispatchIdentity (internal/engine/task_publish.go) is the ONLY thing
+// that stamps TaskPayload.Attempt on the wire; the worker/bridge
+// resolve their own AttemptNumber from it via resolveAttemptNumber
+// (worker/context.go) / taskAttemptNumber (bridge/poll.go); and
+// handleStepStarted (internal/engine/step_handlers.go) folds that
+// AttemptNumber into Steps[stepID].Attempts via a monotonic max().
+// stepState.Attempts here is that same field — change any link in
+// that chain without checking the others and this default silently
+// stops matching the subject a producer actually wrote to.
 func attemptParam(r *http.Request, stepState dag.StepState) int {
 	val := r.URL.Query().Get("attempt")
 	if val == "" {
@@ -138,6 +150,14 @@ func attemptParam(r *http.Request, stepState dag.StepState) int {
 // step's current Iterations (#624 review round 3) — reading logs for a
 // step with no explicit ?iteration= gets its live/most-recent
 // iteration (0 for a non-loop step).
+//
+// Same invariant as attemptParam above: dispatchIdentity is the single
+// place Iteration is derived for the wire, and stepState.Iterations is
+// its snapshot-side counterpart (bumped by Advance() on Continue,
+// never reset by a retry — #624 review round 4). Both defaults exist
+// so a bare GET .../logs?step=X always resolves to whatever
+// (attempt, iteration) pair a producer most recently wrote to; keep
+// them reading the SAME fields dispatchIdentity writes from.
 func iterationParam(r *http.Request, stepState dag.StepState) int {
 	val := r.URL.Query().Get("iteration")
 	if val == "" {
