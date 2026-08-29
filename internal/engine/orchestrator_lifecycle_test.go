@@ -39,6 +39,7 @@ func TestOrchestratorStartsFirstStep(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -87,6 +88,7 @@ func TestOrchestratorAdvancesAfterStepCompleted(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -148,6 +150,7 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -243,6 +246,7 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -328,6 +332,7 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -378,6 +383,7 @@ func TestOrchestratorPersistsTraceParentOnStart(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -423,6 +429,7 @@ func TestOrchestratorEmptyTraceParentStaysEmpty(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -466,6 +473,7 @@ func TestOrchestratorSetsCompletedAtOnCompletion(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -524,6 +532,7 @@ func TestOrchestratorSetsCompletedAtOnFailure(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -596,6 +605,7 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 	}
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, "cancel-test", defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -672,6 +682,7 @@ func TestOrchestratorSetsCompletedAtOnCancellation(t *testing.T) {
 	}
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, "cancel-ca", defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -743,6 +754,7 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 	}
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, "timeout-test", defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -818,6 +830,7 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -898,6 +911,7 @@ func TestOrchestratorSnapshotRestore(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	store := NewSnapshotStore(jsNew)
 	crafted := dag.WorkflowRun{
@@ -952,6 +966,7 @@ func TestOrchestratorTraceparentPropagation(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1010,6 +1025,7 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1095,6 +1111,7 @@ func TestOrchestratorStartWithInput(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1159,6 +1176,7 @@ func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1235,6 +1253,7 @@ func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -1349,6 +1368,7 @@ func TestOrchestratorLoopStepFailureStampsCompletedAt(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

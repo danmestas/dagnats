@@ -55,6 +55,10 @@ func putMixedWorkflowDef(
 	if _, err := defKV.Put(wfName, defData); err != nil {
 		t.Fatalf("put def: %v", err)
 	}
+	versionKey := dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef))
+	if _, err := defKV.Put(versionKey, defData); err != nil {
+		t.Fatalf("put def version: %v", err)
+	}
 	return defData
 }
 

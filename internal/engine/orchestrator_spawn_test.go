@@ -49,6 +49,11 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 	if _, err := defKV.Put("child-wf", childDefData); err != nil {
 		t.Fatalf("put child def: %v", err)
 	}
+	if _, err := defKV.Put(
+		dag.DefVersionKey(childDef.Name, dag.DefHash(childDef)), childDefData,
+	); err != nil {
+		t.Fatalf("put child def version: %v", err)
+	}
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -113,6 +118,7 @@ func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
 	}
 	childDefData := mustMarshal(t, childDef)
 	mustPut(t, defKV, "notify-child", childDefData)
+	mustPut(t, defKV, dag.DefVersionKey(childDef.Name, dag.DefHash(childDef)), childDefData)
 
 	// Subscribe to parent's history for child.completed
 	parentSub, err := js.SubscribeSync("history.parent-run-2",
@@ -197,6 +203,7 @@ func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
 	}
 	childDefData := mustMarshal(t, childDef)
 	mustPut(t, defKV, "deep-child", childDefData)
+	mustPut(t, defKV, dag.DefVersionKey(childDef.Name, dag.DefHash(childDef)), childDefData)
 
 	// Create a chain: run-0 -> run-1 -> run-2 (depth 3)
 	for i := 0; i < 3; i++ {
@@ -286,6 +293,7 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 	}
 	childDefData := mustMarshal(t, childDef)
 	mustPut(t, defKV, "fail-child", childDefData)
+	mustPut(t, defKV, dag.DefVersionKey(childDef.Name, dag.DefHash(childDef)), childDefData)
 
 	parentSub, err := js.SubscribeSync(
 		"history.parent-fail",
@@ -378,8 +386,20 @@ func TestOrchestratorChildInheritsTriggerDepth(t *testing.T) {
 	if _, err := defKV.Put("parent-wf-depth", mustMarshal(t, parentDef)); err != nil {
 		t.Fatalf("put parent def: %v", err)
 	}
+	if _, err := defKV.Put(
+		dag.DefVersionKey(parentDef.Name, dag.DefHash(parentDef)),
+		mustMarshal(t, parentDef),
+	); err != nil {
+		t.Fatalf("put parent def version: %v", err)
+	}
 	if _, err := defKV.Put("child-wf-depth", mustMarshal(t, childDef)); err != nil {
 		t.Fatalf("put child def: %v", err)
+	}
+	if _, err := defKV.Put(
+		dag.DefVersionKey(childDef.Name, dag.DefHash(childDef)),
+		mustMarshal(t, childDef),
+	); err != nil {
+		t.Fatalf("put child def version: %v", err)
 	}
 
 	store := NewSnapshotStore(jsNew)
@@ -512,9 +532,21 @@ func TestOrchestratorDetachedChildInheritsTriggerDepth(t *testing.T) {
 		t.Fatalf("put parent def: %v", err)
 	}
 	if _, err := defKV.Put(
+		dag.DefVersionKey(parentDef.Name, dag.DefHash(parentDef)),
+		mustMarshal(t, parentDef),
+	); err != nil {
+		t.Fatalf("put parent def version: %v", err)
+	}
+	if _, err := defKV.Put(
 		"child-wf-detached-depth", mustMarshal(t, childDef),
 	); err != nil {
 		t.Fatalf("put child def: %v", err)
+	}
+	if _, err := defKV.Put(
+		dag.DefVersionKey(childDef.Name, dag.DefHash(childDef)),
+		mustMarshal(t, childDef),
+	); err != nil {
+		t.Fatalf("put child def version: %v", err)
 	}
 
 	store := NewSnapshotStore(jsNew)

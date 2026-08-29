@@ -53,6 +53,7 @@ func TestRetryBackoff_ExponentialRetriesUntilSuccess(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -136,6 +137,7 @@ func TestRetryBackoff_ExhaustsAndFails(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -210,6 +212,7 @@ func TestRetryBackoff_NoPolicyFailsImmediately(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()

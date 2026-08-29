@@ -2225,17 +2225,25 @@ func (o *Orchestrator) loadRunAndDef(
 // name.v.hash version the run was created under -- content-addressed
 // and never mutated by a later RegisterWorkflow call, so a re-
 // register mid-flight cannot change it. Falls back to loadDef (the
-// mutable name -> latest pointer) for a legacy run (DefHash == "",
-// pre-#637 snapshot) and for a pinned version that has gone missing
-// (evicted past DefVersionsMax); the fallback increments
-// defPinFallbacks and logs at warn so an operator can see retention
-// evicting a version still in use, without an unbounded per-run log
-// or memory footprint to track "already warned".
+// mutable name -> latest pointer) ONLY for a legacy run (DefHash ==
+// "", pre-#637 snapshot) -- that's a safe, well-understood fallback
+// to the exact behavior this package had before #637.
+//
+// A run WITH a DefHash whose pinned version key can't be found does
+// NOT fall back. #637 exists to stop a running run from silently
+// picking up whatever the mutable pointer currently holds; falling
+// back here on a missing version would reopen exactly that hole
+// through retention (eviction bugs, or a scan that misses a live run
+// outside its bounded window -- see liveDefHashes in
+// internal/api/def_versioning.go). Instead the advance FAILS with an
+// error naming the run and the missing hash, and
+// defPinMissingVersion counts it -- a stuck-but-correct run is the
+// safe failure mode; a silently re-defined one is not.
 //
 // A stored version whose content hash doesn't match the key it was
 // read from indicates workflow_defs corruption, not an operating
-// condition to fall back from -- it is returned as an error, never
-// silently substituted.
+// condition to fall back from -- it is likewise returned as an
+// error, never silently substituted.
 func (o *Orchestrator) loadPinnedOrLatestDef(
 	ctx context.Context, run dag.WorkflowRun,
 ) (dag.WorkflowDef, error) {
@@ -2255,15 +2263,21 @@ func (o *Orchestrator) loadPinnedOrLatestDef(
 			return dag.WorkflowDef{}, fmt.Errorf(
 				"load pinned workflow def %q: %w", versionKey, err)
 		}
-		o.metrics.defPinFallbacks.Add(ctx, 1)
+		o.metrics.defPinMissingVersion.Add(ctx, 1)
 		slog.WarnContext(ctx,
-			"pinned workflow def version missing -- falling back "+
-				"to latest (legacy snapshot or evicted version)",
+			"pinned workflow def version missing -- failing advance "+
+				"rather than silently re-defining a running run",
 			"run_id", run.RunID,
 			"workflow_id", run.WorkflowID,
 			"def_hash", run.DefHash,
 		)
-		return o.loadDef(ctx, run.WorkflowID)
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"run %q pinned to workflow def version %q which no "+
+				"longer exists (def_hash %s): retention may have "+
+				"evicted a version still in use, or it was never "+
+				"written",
+			run.RunID, versionKey, run.DefHash,
+		)
 	}
 	var wfDef dag.WorkflowDef
 	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {

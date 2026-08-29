@@ -43,12 +43,16 @@ func (s *Service) RegisterWorkflow(
 // instrumented wrapper under the 70-line limit.
 //
 // Beyond the historical name -> latest-def pointer write, this also
-// persists an immutable name.v.hash version snapshot (#637) so a
-// run that started under this content stays pinned to it even after
-// a later re-register moves the pointer -- see loadRunAndDef in
-// internal/engine/orchestrator.go. The version write is idempotent:
-// re-registering byte-identical content is a no-op past the initial
-// write (content-addressed, so the existing key already holds it).
+// persists an immutable name.v.hash version snapshot (#637, via
+// persistDef -- see its doc for why runtimes.go's registerRuntimeWorkflow
+// shares this exact path) so a run that started under this content
+// stays pinned to it even after a later re-register moves the
+// pointer -- see loadRunAndDef in internal/engine/orchestrator.go.
+// The version write is idempotent: re-registering byte-identical
+// content is a no-op past the initial write (content-addressed, so
+// the existing key already holds it). Concurrent RegisterWorkflow
+// calls for the same name are last-writer-wins on the pointer, same
+// as before #637.
 func (s *Service) registerWorkflowInner(
 	ctx context.Context, def dag.WorkflowDef,
 ) error {
@@ -70,11 +74,7 @@ func (s *Service) registerWorkflowInner(
 	if err != nil {
 		return err
 	}
-	if err := s.persistDefVersion(ctx, def, data); err != nil {
-		return err
-	}
-	_, err = s.defKV.Put(ctx, def.Name, data)
-	return err
+	return s.persistDef(ctx, def, data)
 }
 
 // RegisterWorkflowWithWarnings is the variant that returns the
@@ -194,7 +194,41 @@ func (s *Service) deleteWorkflowInner(
 	if _, err := s.defKV.Get(ctx, name); err != nil {
 		return fmt.Errorf("workflow %q not found: %w", name, err)
 	}
+	if err := s.deleteDefVersions(ctx, name); err != nil {
+		return err
+	}
 	return s.defKV.Delete(ctx, name)
+}
+
+// deleteDefVersions removes every immutable name.v.hash version key
+// for name (#637 review fix): DeleteWorkflow used to delete only the
+// mutable pointer, leaking up to DefVersionsMax version snapshots
+// forever. Bounded by defVersionKeysForName's own scan bound
+// (defVersionScanMax).
+//
+// Any run still pinned to one of these versions will fail its next
+// advance (missing pinned version, engine.def_pin.missing_version)
+// rather than silently reading something else -- consistent with
+// #637's fail-loud rule. An explicit administrative delete of the
+// whole workflow is exactly the case where that tradeoff is correct:
+// the operator asked for the definition gone.
+func (s *Service) deleteDefVersions(ctx context.Context, name string) error {
+	if ctx == nil {
+		panic("deleteDefVersions: ctx must not be nil")
+	}
+	if name == "" {
+		panic("deleteDefVersions: name must not be empty")
+	}
+	versionKeys, err := s.defVersionKeysForName(ctx, name)
+	if err != nil {
+		return err
+	}
+	for _, key := range versionKeys {
+		if err := s.defKV.Delete(ctx, key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListWorkflows retrieves all registered workflow definitions from KV.

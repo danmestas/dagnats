@@ -41,6 +41,7 @@ func TestEndToEnd_LifecycleEventsFire(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -167,6 +168,7 @@ func TestEndToEnd_AttemptsVisibleDuringRun(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -242,6 +244,7 @@ func TestEndToEnd_RetryViaNakIncrementsAttempts(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()

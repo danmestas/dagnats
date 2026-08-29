@@ -494,4 +494,5 @@ func seedWorkflowDef(
 		t.Fatalf("workflow_defs KV: %v", err)
 	}
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 }

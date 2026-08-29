@@ -48,6 +48,7 @@ func TestSingletonSkipPersistsVisibleTerminalRun(t *testing.T) {
 	wfDef := skipVisibilityWorkflowDef()
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -98,6 +99,7 @@ func TestSingletonSkipDoesNotEnqueueTask(t *testing.T) {
 	wfDef := skipVisibilityWorkflowDef()
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -148,6 +150,7 @@ func TestSingletonLockRecoversAfterHolderTerminates(t *testing.T) {
 	wfDef := skipVisibilityWorkflowDef()
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -256,6 +259,7 @@ func TestSkipSnapshotWriteFailureNaksForRedelivery(t *testing.T) {
 	wfDef := skipVisibilityWorkflowDef()
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 
 	orch := NewOrchestrator(nc)
 

@@ -51,6 +51,7 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 	}
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, "retry-test", defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -127,6 +128,7 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 	}
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, "exhaust-test", defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -218,6 +220,7 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 	}
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, "dlq-test", defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	// Subscribe to DLQ
 	dlqSub, err := js.SubscribeSync("dead.>",
@@ -304,6 +307,7 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 	}
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, "onfail-test", defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	// Subscribe to task queue for notify
 	taskSub, _ := js.SubscribeSync("task.notify-task.>",
@@ -384,6 +388,7 @@ func TestOrchestratorCompensationChain(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -494,6 +499,7 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -621,6 +627,7 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -721,6 +728,7 @@ func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

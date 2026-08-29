@@ -73,3 +73,31 @@ func TestDefVersionKeyCannotCollideWithPlainName(t *testing.T) {
 		t.Fatalf("a name with a short suffix must not be flagged")
 	}
 }
+
+// TestDefHashFromVersionKeyAnchoredAgainstNamePrefixCollision verifies
+// the review fix for #637: a workflow literally named "orders.v" has
+// its own version keys ("orders.v" + ".v." + hash), and a loose
+// prefix match on "orders" (prefix "orders.v.") would wrongly treat
+// those as belonging to "orders" too -- corrupting retention
+// accounting and enabling cross-workflow eviction. DefHashFromVersionKey
+// must anchor on the FULL key shape (name + ".v." + exactly 64 hex
+// chars, nothing more), not just a prefix.
+func TestDefHashFromVersionKeyAnchoredAgainstNamePrefixCollision(t *testing.T) {
+	t.Parallel()
+	otherHash := DefHash(WorkflowDef{
+		Name:  "orders.v",
+		Steps: []StepDef{{ID: "a", Task: "t", Type: StepTypeNormal}},
+	})
+	collidingKey := DefVersionKey("orders.v", otherHash)
+	// Positive: the colliding key IS a version key for its own name.
+	if _, ok := DefHashFromVersionKey(collidingKey, "orders.v"); !ok {
+		t.Fatalf("DefHashFromVersionKey(%q, %q) = false, want true",
+			collidingKey, "orders.v")
+	}
+	// Negative: it must NOT be mistaken for a version key of "orders"
+	// even though it shares the "orders.v." prefix.
+	if _, ok := DefHashFromVersionKey(collidingKey, "orders"); ok {
+		t.Fatalf("DefHashFromVersionKey(%q, %q) = true, want false "+
+			"(cross-name collision)", collidingKey, "orders")
+	}
+}

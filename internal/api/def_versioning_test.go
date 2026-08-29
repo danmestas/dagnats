@@ -312,3 +312,68 @@ func TestReserveDefVersionSlotErrorType(t *testing.T) {
 		t.Fatalf("typed.Name = %q, want %q", typed.Name, wfName)
 	}
 }
+
+// TestReserveDefVersionSlotNeverEvictsCurrentPointerVersion is the
+// reviewer's repro for the second half of blocker 1: re-registering
+// byte-identical content for the OLDEST retained version moves the
+// mutable name pointer back to that oldest version (by KV revision,
+// it's still the "oldest" version key even though it's now what the
+// pointer references). A retention pass that picks purely by revision
+// would then evict the very version the pointer points at on the next
+// register -- deleting the pointer's own target. oldestEvictableVersion
+// must exclude whatever version the pointer currently references.
+func TestReserveDefVersionSlotNeverEvictsCurrentPointerVersion(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc)
+
+	const wfName = "retention-pointer-guard-wf"
+	var oldest dag.WorkflowDef
+	for i := 1; i <= DefVersionsMax; i++ {
+		def := versionedDef(wfName, i)
+		if i == 1 {
+			oldest = def
+		}
+		if err := svc.RegisterWorkflow(context.Background(), def); err != nil {
+			t.Fatalf("RegisterWorkflow #%d: %v", i, err)
+		}
+	}
+	// Re-register the oldest version's byte-identical content -- a
+	// no-growth, no-eviction no-op for the version population, but it
+	// DOES move the mutable pointer back to the oldest version.
+	if err := svc.RegisterWorkflow(context.Background(), oldest); err != nil {
+		t.Fatalf("re-register oldest: %v", err)
+	}
+	got, err := svc.GetWorkflow(wfName)
+	if err != nil {
+		t.Fatalf("GetWorkflow: %v", err)
+	}
+	if len(got.Steps) != len(oldest.Steps) {
+		t.Fatalf("pointer not moved back to oldest: got %d steps, want %d",
+			len(got.Steps), len(oldest.Steps))
+	}
+
+	// One more register at the cap: must NOT evict the oldest version,
+	// because it's what the pointer currently references.
+	newest := versionedDef(wfName, DefVersionsMax+1)
+	if err := svc.RegisterWorkflow(context.Background(), newest); err != nil {
+		t.Fatalf("RegisterWorkflow newest: %v", err)
+	}
+	oldestKey := dag.DefVersionKey(wfName, dag.DefHash(oldest))
+	// Positive: the pointer's own version survived.
+	if _, err := svc.defKV.Get(context.Background(), oldestKey); err != nil {
+		t.Fatalf("pointer's own version key evicted: %v", err)
+	}
+	// Negative: the retained count stayed at the cap (something else
+	// was evicted instead), proving this wasn't a silent no-op.
+	versionKeys, err := svc.defVersionKeysForName(context.Background(), wfName)
+	if err != nil {
+		t.Fatalf("defVersionKeysForName: %v", err)
+	}
+	if len(versionKeys) != DefVersionsMax {
+		t.Fatalf("retained versions = %d, want %d",
+			len(versionKeys), DefVersionsMax)
+	}
+}

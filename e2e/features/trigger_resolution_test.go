@@ -83,6 +83,10 @@ func registerWorkflowDef(t *testing.T, nc *nats.Conn, name string) {
 	if _, err := defKV.Put(name, defData); err != nil {
 		t.Fatalf("put def: %v", err)
 	}
+	versionKey := dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef))
+	if _, err := defKV.Put(versionKey, defData); err != nil {
+		t.Fatalf("put def version: %v", err)
+	}
 }
 
 // registerTriggerDef writes a trigger def to the triggers KV.

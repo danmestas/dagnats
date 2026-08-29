@@ -9,9 +9,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/nats-io/nats.go/jetstream"
@@ -52,6 +52,40 @@ func (e *ErrTooManyLiveWorkflowVersions) Error() string {
 	)
 }
 
+// persistDef writes BOTH the immutable name.v.hash version snapshot
+// and the mutable name -> latest pointer for def (already marshaled
+// as data). This is the ONLY path that may write to workflow_defs --
+// RegisterWorkflow (author-named workflows) and registerRuntimeWorkflow
+// (ephemeral/promoted runtime defs, internal/api/runtimes.go) both
+// funnel through it (#637 review fix). Before this fix,
+// registerRuntimeWorkflow wrote the pointer directly with
+// defKV.Put, bypassing the version write entirely -- so a run started
+// from a runtime def had a WorkflowRun.DefHash (NewWorkflowRun stamps
+// it unconditionally) that named a version key which was NEVER
+// WRITTEN. Every agent-loop run's first advance would hit the
+// missing-pinned-version failure path and get stuck. Concurrent
+// registers of the same name are last-writer-wins on the pointer, as
+// RegisterWorkflow has always been -- persistDef adds a version
+// record alongside that, it does not add locking.
+func (s *Service) persistDef(
+	ctx context.Context, def dag.WorkflowDef, data []byte,
+) error {
+	if ctx == nil {
+		panic("persistDef: ctx must not be nil")
+	}
+	if s.defKV == nil {
+		panic("persistDef: defKV must not be nil")
+	}
+	if def.Name == "" {
+		panic("persistDef: def.Name must not be empty")
+	}
+	if err := s.persistDefVersion(ctx, def, data); err != nil {
+		return err
+	}
+	_, err := s.defKV.Put(ctx, def.Name, data)
+	return err
+}
+
 // persistDefVersion writes the immutable name.v.hash snapshot for def
 // (content data, already marshaled by the caller so the bytes match
 // exactly what registerWorkflowInner is about to Put under the plain
@@ -87,10 +121,12 @@ func (s *Service) persistDefVersion(
 // reserveDefVersionSlot makes room for one new, not-yet-written
 // version of name when name is already at DefVersionsMax retained
 // versions: it evicts the oldest version key that no non-terminal
-// run currently pins via WorkflowRun.DefHash. If every retained
-// version is still referenced, it refuses with
+// run currently pins via WorkflowRun.DefHash AND that the mutable
+// name -> latest pointer doesn't currently reference. If every
+// retained version is still referenced, it refuses with
 // ErrTooManyLiveWorkflowVersions instead of silently exceeding the
-// cap or evicting a version a running run still needs.
+// cap or evicting a version a running run -- or the pointer itself --
+// still needs.
 func (s *Service) reserveDefVersionSlot(
 	ctx context.Context, name string,
 ) error {
@@ -110,6 +146,19 @@ func (s *Service) reserveDefVersionSlot(
 	liveHashes, err := s.liveDefHashes(ctx, name)
 	if err != nil {
 		return err
+	}
+	// The version the mutable pointer currently references must never
+	// be evicted, even if no run pins it: registering byte-identical
+	// content for an old version moves the pointer back onto it (see
+	// TestReserveDefVersionSlotNeverEvictsCurrentPointerVersion) --
+	// without this, a later register could delete the pointer's own
+	// target purely because it happens to have the lowest KV revision.
+	pointerHash, hasPointer, err := s.currentPointerHash(ctx, name)
+	if err != nil {
+		return err
+	}
+	if hasPointer {
+		liveHashes[pointerHash] = true
 	}
 	evictKey, err := s.oldestEvictableVersion(ctx, name, versionKeys, liveHashes)
 	if err != nil {
@@ -149,14 +198,44 @@ func (s *Service) defVersionKeysForName(
 			"workflow_defs key scan exceeded bound (%d > %d)",
 			len(keys), defVersionScanMax)
 	}
-	prefix := dag.DefVersionKeyPrefix(name)
+	// dag.DefHashFromVersionKey anchors on the FULL key shape (name +
+	// ".v." + exactly 64 hex chars), not a loose prefix match -- a
+	// workflow literally named "orders.v" would otherwise have its
+	// own version keys mistaken for "orders"'s (#637 review fix).
 	versionKeys := make([]string, 0, len(keys))
 	for _, key := range keys {
-		if strings.HasPrefix(key, prefix) && dag.IsDefVersionKey(key) {
+		if _, ok := dag.DefHashFromVersionKey(key, name); ok {
 			versionKeys = append(versionKeys, key)
 		}
 	}
 	return versionKeys, nil
+}
+
+// currentPointerHash returns the content hash of the def currently
+// stored under name's mutable pointer key. ok is false when name has
+// no pointer yet (first-ever registration -- nothing to protect from
+// eviction).
+func (s *Service) currentPointerHash(
+	ctx context.Context, name string,
+) (hash string, ok bool, err error) {
+	if ctx == nil {
+		panic("currentPointerHash: ctx must not be nil")
+	}
+	if name == "" {
+		panic("currentPointerHash: name must not be empty")
+	}
+	entry, err := s.defKV.Get(ctx, name)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	var def dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		return "", false, err
+	}
+	return dag.DefHash(def), true, nil
 }
 
 // liveDefHashes returns the set of DefHash values referenced by a
@@ -164,6 +243,20 @@ func (s *Service) defVersionKeysForName(
 // ListRecent(MaxRunsLimitCeiling) window the REST run-list endpoints
 // already accept as "the genuinely most-recent window" for this
 // bucket (#637 reuses that bound rather than introducing a new one).
+//
+// This scan is best-effort, not exhaustive: a non-terminal run of
+// name older than the most-recent MaxRunsLimitCeiling runs
+// SYSTEM-WIDE (not just for name) falls outside the window and is
+// invisible here, so its pinned version could be judged evictable
+// when it is not. That gap is deliberately not closed by widening the
+// scan -- it stays window-bounded, matching every other bounded scan
+// over this run population. What makes a miss survivable is #637's
+// fail-loud rule in Orchestrator.loadPinnedOrLatestDef: if this scan
+// missed a live run and its version gets evicted anyway, that run's
+// next advance FAILS loudly (missing pinned version, counted via
+// engine.def_pin.missing_version) instead of silently re-defining the
+// run under a different version. A wrongly-evicted version is a bug
+// to fix, but it can never corrupt a run's behavior.
 func (s *Service) liveDefHashes(
 	ctx context.Context, name string,
 ) (map[string]bool, error) {

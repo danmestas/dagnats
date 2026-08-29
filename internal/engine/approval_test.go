@@ -60,6 +60,10 @@ func startApprovalRun(
 	if _, err := defKV.Put(wfDef.Name, defData); err != nil {
 		t.Fatalf("put def: %v", err)
 	}
+	versionKey := dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef))
+	if _, err := defKV.Put(versionKey, defData); err != nil {
+		t.Fatalf("put def version: %v", err)
+	}
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -329,6 +333,7 @@ func TestApprovalStep_TimeoutFails(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

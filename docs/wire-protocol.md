@@ -268,25 +268,50 @@ advance sees. Dynamic-planner steps recorded on the run
 (`WorkflowRun.DynamicSteps`) are still layered on top of the pinned base via
 `dag.EffectiveDef`, exactly as before.
 
-Two fallbacks exist and are logged (and counted via the
-`engine.def_pin.fallbacks` metric) when they fire:
+Exactly one fallback exists: a run snapshot written before this feature
+(`DefHash == ""`) falls back to the mutable `name -> latest` pointer —
+today's pre-pinning behavior, preserved for compatibility.
 
-- A run snapshot written before this feature (`DefHash == ""`) falls back
-  to the mutable `name -> latest` pointer — today's pre-pinning behavior,
-  preserved for compatibility.
-- A pinned version that no longer exists (evicted — see the retention rule
-  below) also falls back to the mutable pointer rather than failing the
-  advance. A version whose *stored content* doesn't hash back to the key it
-  was read under is treated as bucket corruption and returned as an error
-  instead of silently substituting something else.
+**A run *with* a `DefHash` whose pinned version key is missing does NOT
+fall back.** Falling back there would reopen the exact hazard this feature
+exists to close — a running run silently picking up whatever the mutable
+pointer currently holds — just via a different door (retention evicting a
+version still in use, instead of a raw re-register). Instead the advance
+**fails** with an error naming the run and the missing hash, logged at
+warn and counted via the `engine.def_pin.missing_version` metric. A
+stuck-but-correct run is the safe failure mode. Separately, a stored
+version whose *content* doesn't hash back to the key it was read under is
+bucket corruption, not an operating condition — also returned as an error,
+never silently substituted.
 
 **Retention.** `workflow_defs` retains at most `DefVersionsMax` (32)
 immutable versions per workflow name. When a register would exceed that
 cap, the oldest version with no non-terminal run still pinned to it (via
-`DefHash`) is evicted first. If every retained version is still referenced
-by a live run, the register is refused rather than evicting a version a
-running run needs: `POST /workflows` returns **409 Conflict** with
+`DefHash`) is evicted first — and the version the mutable pointer itself
+currently references is always excluded from eviction, even if no run
+pins it (re-registering byte-identical content for an old version moves
+the pointer back onto it; without this exclusion a later register could
+delete the pointer's own target). If every retained version is still
+referenced, the register is refused rather than evicting one a running
+run needs: `POST /workflows` returns **409 Conflict** with
 `{"error": "too many live workflow versions", "live_versions": <n>}`.
+
+The liveness scan behind retention (which runs are pinned to which
+version) is **best-effort and window-bounded** — it checks the
+most-recent `MaxRunsLimitCeiling` runs system-wide, the same bound every
+other run-population scan in the control plane accepts, not an exhaustive
+scan of every run that ever existed. A non-terminal run outside that
+window is invisible to it and its version could be judged evictable when
+it isn't. This gap is deliberately not closed by widening the scan; what
+makes a miss survivable is the fail-loud rule above — a wrongly-evicted
+version makes that run's next advance error loudly (and increments
+`engine.def_pin.missing_version`) instead of silently corrupting its
+behavior. A miss is a retention bug to go fix, never a run-correctness bug.
+
+Concurrent `POST /workflows` calls for the same name are **last-writer-wins**
+on the mutable pointer, exactly as `RegisterWorkflow` has always been —
+version persistence adds a content-addressed record alongside that, not
+locking.
 
 Both `POST /workflows` and each entry of `GET /workflows` include a
 `def_hash` field: the hex-encoded SHA-256 of the server's canonical JSON

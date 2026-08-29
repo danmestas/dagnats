@@ -118,3 +118,62 @@ func TestDeleteWorkflowDoesNotTouchRunHistory(t *testing.T) {
 		t.Fatalf("run snapshot corrupted: %#v", got)
 	}
 }
+
+// TestDeleteWorkflowRemovesVersionKeys is the review fix for blocker
+// 3: DeleteWorkflow used to delete only the mutable name pointer,
+// leaking up to DefVersionsMax immutable name.v.hash version
+// snapshots in workflow_defs forever every time a workflow was
+// deleted and never re-registered under the same name.
+func TestDeleteWorkflowRemovesVersionKeys(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	svc := NewService(nc)
+	ctx := context.Background()
+
+	const wfName = "wf-del-versions"
+	for i := 1; i <= 3; i++ {
+		def := dag.WorkflowDef{
+			Name: wfName,
+			Steps: []dag.StepDef{
+				{ID: "a", Task: "task-a"},
+				{ID: "b", DependsOn: []string{"a"}, Task: "task-b"},
+			},
+			Concurrency: &dag.ConcurrencyLimit{MaxSteps: i},
+		}
+		if err := svc.RegisterWorkflow(ctx, def); err != nil {
+			t.Fatalf("RegisterWorkflow #%d: %v", i, err)
+		}
+	}
+	versionKeysBefore, err := svc.defVersionKeysForName(ctx, wfName)
+	if err != nil {
+		t.Fatalf("defVersionKeysForName (before delete): %v", err)
+	}
+	// Sanity: the setup actually produced multiple retained versions,
+	// otherwise this test would pass trivially.
+	if len(versionKeysBefore) < 3 {
+		t.Fatalf("test setup invalid: only %d version keys before delete, "+
+			"want >= 3", len(versionKeysBefore))
+	}
+
+	if err := svc.DeleteWorkflow(ctx, wfName); err != nil {
+		t.Fatalf("DeleteWorkflow: %v", err)
+	}
+
+	// Positive: zero name.v.* keys remain for this name.
+	versionKeysAfter, err := svc.defVersionKeysForName(ctx, wfName)
+	if err != nil {
+		t.Fatalf("defVersionKeysForName (after delete): %v", err)
+	}
+	if len(versionKeysAfter) != 0 {
+		t.Fatalf("version keys survived delete: %v", versionKeysAfter)
+	}
+	// Negative: the mutable pointer is also gone (existing behavior,
+	// re-asserted so this test doesn't pass on a broken delete that
+	// only ever touched the pointer and never got to the plain-name
+	// case above).
+	if _, err := svc.GetWorkflow(wfName); err == nil {
+		t.Fatal("workflow pointer should be gone after delete")
+	}
+}

@@ -90,6 +90,7 @@ func TestOrchestrator_EmptyWorkflowDefDoesNotCrash(t *testing.T) {
 	validData := mustMarshal(t, validDef)
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, validDef.Name, validData)
+	mustPut(t, defKV, dag.DefVersionKey(validDef.Name, dag.DefHash(validDef)), validData)
 	validEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "good-run", validData,
 	)
@@ -156,6 +157,7 @@ func TestOrchestrator_DispatchRecoversFromHandlerPanic(t *testing.T) {
 	defData := mustMarshal(t, validDef)
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, validDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(validDef.Name, dag.DefHash(validDef)), defData)
 	validEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "post-panic-run", defData,
 	)
