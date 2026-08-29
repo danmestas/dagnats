@@ -250,7 +250,13 @@ func (s *Server) startComponents() error {
 		s.nc, engine.WithRunsMaxAge(s.cfg.RunsMaxAge),
 		engine.WithGrantPolicyHolder(s.grantHolder),
 	)
-	s.orch.Start()
+	if err := s.orch.Start(); err != nil {
+		s.natsAPI.Stop()
+		s.telShutdown(context.Background())
+		s.nc.Close()
+		s.ns.Shutdown()
+		return fmt.Errorf("start orchestrator: %w", err)
+	}
 	printStep(os.Stderr, "orchestrator started")
 
 	bridgeJS, err := jetstream.New(s.nc)

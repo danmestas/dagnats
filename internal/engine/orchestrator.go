@@ -304,7 +304,7 @@ func (o *Orchestrator) wireDependentSubsystems(
 // a pull consumer. Messages are delivered asynchronously to handleEvent.
 // SleepTimer and Correlator start lazily on first use via sync.Once.
 // Panics if already started.
-func (o *Orchestrator) Start() {
+func (o *Orchestrator) Start() error {
 	if o.cc != nil {
 		panic("Orchestrator.Start: already started")
 	}
@@ -321,7 +321,16 @@ func (o *Orchestrator) Start() {
 	// tick, during which any newly Saved run would sit ahead of
 	// still-unindexed old runs in the index -- ScanNewestFirst would
 	// treat stale runs as newest until that tick finished the backlog.
-	o.repairRunIndexToConvergence(context.Background())
+	//
+	// review round 2: a repair failure (transient KV error exhausting
+	// its retry budget, or the store failing to converge within the
+	// iteration bound) is an OPERATING condition, not a programmer
+	// error -- Start returns the error and the history consumer is
+	// NEVER started, so the process does not serve reads over a
+	// possibly-misordered index. The caller (main) must check this.
+	if err := o.repairRunIndexToConvergence(context.Background()); err != nil {
+		return fmt.Errorf("Orchestrator.Start: %w", err)
+	}
 
 	o.cc = o.startHistoryConsumer()
 
@@ -361,6 +370,7 @@ func (o *Orchestrator) Start() {
 		}
 		o.startDefReaper(reconcileCtx)
 	}
+	return nil
 }
 
 // startHistoryConsumer creates (or updates) the durable "orchestrator"

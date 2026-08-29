@@ -27,11 +27,18 @@ type BulkRetryRequest struct {
 }
 
 // BulkRetryResponse reports the outcome.
+// BulkRetryResponse reports the outcome. Truncated (#659 review round
+// 2) is true when the underlying newest-first scan hit its fetch cap
+// before it could prove there were no more matches beyond the scanned
+// window -- a caller must not read Retried/Skipped as "definitely
+// everything that matches" when Truncated is set, even if the result
+// happens to be empty.
 type BulkRetryResponse struct {
-	Retried []BulkRetryItem `json:"retried"`
-	Skipped []string        `json:"skipped,omitempty"`
-	Total   int             `json:"total"`
-	DryRun  bool            `json:"dry_run"`
+	Retried   []BulkRetryItem `json:"retried"`
+	Skipped   []string        `json:"skipped,omitempty"`
+	Total     int             `json:"total"`
+	DryRun    bool            `json:"dry_run"`
+	Truncated bool            `json:"truncated,omitempty"`
 }
 
 // BulkRetryItem links an original run to its retry outcome.
@@ -100,7 +107,7 @@ func (s *Service) bulkRetryInner(
 			run, req.WorkflowID, req.After, req.Before,
 		)
 	}
-	matched, _, err := s.store.ScanNewestFirst(
+	matched, stats, err := s.store.ScanNewestFirst(
 		ctx, pred, maxBulkRetryLimit+1, scaledFetchMax(maxBulkRetryLimit+1),
 	)
 	if err != nil {
@@ -129,18 +136,37 @@ func (s *Service) bulkRetryInner(
 		}
 		return BulkRetryResponse{
 			Retried: items, Total: len(items),
-			DryRun: true,
+			DryRun: true, Truncated: stats.Truncated,
 		}, nil
 	}
 
-	switch req.Mode {
+	return s.bulkRetryExecute(ctx, req.Mode, matched, stats.Truncated)
+}
+
+// bulkRetryExecute dispatches to the rerun/replay executor and stamps
+// the resulting response with Truncated -- both executors build a
+// fresh BulkRetryResponse with no knowledge of the scan that produced
+// their input, so Truncated is attached here, once, rather than
+// threaded through both.
+func (s *Service) bulkRetryExecute(
+	ctx context.Context, mode string,
+	matched []dag.WorkflowRun, truncated bool,
+) (BulkRetryResponse, error) {
+	var resp BulkRetryResponse
+	var err error
+	switch mode {
 	case "rerun":
-		return s.bulkRerun(ctx, matched)
+		resp, err = s.bulkRerun(ctx, matched)
 	case "replay":
-		return s.bulkReplay(ctx, matched)
+		resp, err = s.bulkReplay(ctx, matched)
 	default:
-		panic("bulkRetryInner: invalid mode passed validation")
+		panic("bulkRetryExecute: invalid mode passed validation")
 	}
+	if err != nil {
+		return BulkRetryResponse{}, err
+	}
+	resp.Truncated = truncated
+	return resp, nil
 }
 
 // bulkRerun starts fresh runs with original inputs.

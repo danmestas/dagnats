@@ -304,3 +304,52 @@ func TestBulkRetryFindsNewFailedRunAmongManyOldRuns(t *testing.T) {
 		t.Fatalf("Total = %d, want 1", resp.Total)
 	}
 }
+
+// TestBulkRetrySurfacesTruncatedScan proves the review-round-2 nit
+// (same as bulk cancel): when the newest-first scan hits its fetch
+// cap before it could prove there were no more matches beyond the
+// scanned window, the response says so via Truncated, instead of
+// silently discarding ScanStats. Population exceeds
+// engine.ScanFetchMax (10,000) and belongs to an UNRELATED workflow,
+// so genuinely zero runs match the target workflow -- but the scan
+// still can't prove that within its fetch cap.
+func TestBulkRetrySurfacesTruncatedScan(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc)
+
+	const seedTotal = engine.ScanFetchMax + 100
+	ctx := context.Background()
+	base := time.Now().Add(-24 * time.Hour)
+	for i := 0; i < seedTotal; i++ {
+		run := dag.WorkflowRun{
+			RunID:      fmt.Sprintf("trunc-retry-seed-%05d", i),
+			WorkflowID: "trunc-retry-other-wf",
+			Status:     dag.RunStatusFailed,
+			Steps:      map[string]dag.StepState{},
+			CreatedAt:  base.Add(time.Duration(i) * time.Millisecond),
+		}
+		if err := svc.store.Save(ctx, run); err != nil {
+			t.Fatalf("seed run %d: %v", i, err)
+		}
+	}
+
+	resp, err := svc.BulkRetryRuns(ctx, BulkRetryRequest{
+		WorkflowID: "trunc-retry-target-wf", Mode: "rerun", DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("BulkRetryRuns: %v", err)
+	}
+	// Positive: Truncated is surfaced.
+	if !resp.Truncated {
+		t.Fatal("resp.Truncated = false, want true " +
+			"(scan hit its fetch cap before exhausting the population)")
+	}
+	// Negative: the (correct, but unproven-complete) zero-match result
+	// is still returned alongside the honest Truncated flag.
+	if len(resp.Retried) != 0 {
+		t.Fatalf("Retried = %v, want empty", resp.Retried)
+	}
+}

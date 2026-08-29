@@ -42,7 +42,10 @@ func main() {
 	}
 	defer telShutdown(context.Background())
 	orch := engine.NewOrchestrator(nc)
-	orch.Start()
+	if err := orch.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start orchestrator: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Println("dagnats-engine started")
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

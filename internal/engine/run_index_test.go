@@ -15,7 +15,41 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+// fakeKeyLister emits a fixed slice of keys, in order, then closes --
+// mirrors jetstream's keyLister shape (Keys() <-chan string, Stop()
+// error) without needing a live watcher.
+type fakeKeyLister struct {
+	keys []string
+}
+
+func (f *fakeKeyLister) Keys() <-chan string {
+	ch := make(chan string, len(f.keys))
+	for _, k := range f.keys {
+		ch <- k
+	}
+	close(ch)
+	return ch
+}
+
+func (f *fakeKeyLister) Stop() error { return nil }
+
+// fakeDupeKV is a jetstream.KeyValue whose ListKeysFiltered returns a
+// fakeKeyLister emitting a REAL duplicate -- everything else is
+// unimplemented (embedding a nil interface panics if called), since
+// listRunIndexKeys is the only method under test here.
+type fakeDupeKV struct {
+	jetstream.KeyValue
+	keys []string
+}
+
+func (f *fakeDupeKV) ListKeysFiltered(
+	_ context.Context, _ ...string,
+) (jetstream.KeyLister, error) {
+	return &fakeKeyLister{keys: f.keys}, nil
+}
 
 // TestDedupeOrderedKeysRemovesDuplicatesPreservingOrder proves the
 // pure dedup step listRunIndexKeys applies keeps first-occurrence
@@ -48,6 +82,46 @@ func TestDedupeOrderedKeysRemovesDuplicatesPreservingOrder(t *testing.T) {
 	gotNoDupes := dedupeOrderedKeys(noDupes)
 	if len(gotNoDupes) != 2 {
 		t.Fatalf("dedupeOrderedKeys(%v) = %v, want unchanged", noDupes, gotNoDupes)
+	}
+}
+
+// TestListRunIndexKeysDedupesRealDuplicateFromLister exercises dedup
+// through listRunIndexKeys' ACTUAL wiring (review round 2's ask) --
+// not just the pure dedupeOrderedKeys function above. A fakeDupeKV
+// stands in for a real bucket whose ListKeysFiltered watcher repeated
+// a key (nats.go's documented caveat, kv.go ~1457), proving the
+// dedup step is actually reached and actually applied on the real
+// listRunIndexKeys code path, not merely available as a helper
+// nothing calls correctly.
+func TestListRunIndexKeysDedupesRealDuplicateFromLister(t *testing.T) {
+	fake := &fakeDupeKV{keys: []string{
+		runIndexPrefix + "a", runIndexPrefix + "b",
+		runIndexPrefix + "a", runIndexPrefix + "c",
+	}}
+	store := &SnapshotStore{kv: fake}
+
+	keys, err := store.listRunIndexKeys(context.Background())
+	if err != nil {
+		t.Fatalf("listRunIndexKeys: %v", err)
+	}
+	want := []string{
+		runIndexPrefix + "a", runIndexPrefix + "b", runIndexPrefix + "c",
+	}
+	// Positive: the real duplicate ("a" appears twice in the lister's
+	// stream) is collapsed to one, in first-seen order.
+	if len(keys) != len(want) {
+		t.Fatalf("listRunIndexKeys = %v, want %v", keys, want)
+	}
+	for i, w := range want {
+		if keys[i] != w {
+			t.Fatalf("listRunIndexKeys[%d] = %q, want %q (full=%v)",
+				i, keys[i], w, keys)
+		}
+	}
+	// Negative: the duplicate's SECOND occurrence must not have bumped
+	// "b" or "c" out of position -- order is first-seen, not sorted.
+	if keys[1] != runIndexPrefix+"b" || keys[2] != runIndexPrefix+"c" {
+		t.Fatalf("dedup corrupted order: got %v", keys)
 	}
 }
 
@@ -397,6 +471,58 @@ func seedRunDirect(t *testing.T, store *SnapshotStore, run dag.WorkflowRun) {
 	}
 }
 
+// TestBackfillMissingIndexDoesNotCountRacedCreateAsRepaired proves the
+// review-round-2 nit: when Create loses a race (ErrKeyExists) because
+// something else already wrote the index entry between
+// loadRunAndIndexIDSets' diff and this call, that entry must NOT be
+// counted as repaired -- it did no work, and counting it would waste
+// a convergence pass (a "repaired>0" result the caller reads as
+// "keep looping") and inflate the engine.run_index.repaired metric
+// with no real index write behind it.
+func TestBackfillMissingIndexDoesNotCountRacedCreateAsRepaired(t *testing.T) {
+	store := newListStore(t)
+	run := dag.WorkflowRun{
+		RunID: "raced-run", WorkflowID: "wf",
+		Status: dag.RunStatusCompleted, Steps: map[string]dag.StepState{},
+		CreatedAt: time.Now().UTC(),
+	}
+	seedRunDirect(t, store, run)
+	// Simulate the race directly: the index entry already exists even
+	// though the caller-supplied indexIDs (below) says it's missing --
+	// exactly what a concurrent writer landing between the diff and
+	// this call would produce.
+	if _, err := store.kv.Create(
+		context.Background(), runIndexPrefix+run.RunID, []byte{},
+	); err != nil {
+		t.Fatalf("pre-create index entry: %v", err)
+	}
+
+	runIDs := map[string]bool{run.RunID: true}
+	indexIDs := map[string]bool{} // stale view: run looks unindexed
+
+	repaired, err := store.backfillMissingIndex(
+		context.Background(), runIDs, indexIDs, repairPageMax,
+	)
+	if err != nil {
+		t.Fatalf("backfillMissingIndex: %v", err)
+	}
+	// Positive: the raced Create must not count as a repair.
+	if repaired != 0 {
+		t.Fatalf("repaired = %d, want 0 (ErrKeyExists is a no-op, not work done)",
+			repaired)
+	}
+	// Negative: the index entry is still there and still exactly one
+	// -- the race didn't corrupt anything, it just did no NEW work.
+	keys, err := store.listRunIndexKeys(context.Background())
+	if err != nil {
+		t.Fatalf("listRunIndexKeys: %v", err)
+	}
+	if len(keys) != 1 || keys[0] != runIndexPrefix+run.RunID {
+		t.Fatalf("index keys = %v, want exactly [%s]",
+			keys, runIndexPrefix+run.RunID)
+	}
+}
+
 // TestRepairRunIndexBackfillsAndRemovesOrphans proves RepairRunIndex
 // (a) backfills index entries for runs written directly (no index),
 // in CreatedAt order, bounded by pageMax across multiple calls, and
@@ -558,7 +684,9 @@ func TestOrchestratorStartupRepairsRunIndexToConvergence(t *testing.T) {
 		}
 	}
 
-	orch.Start()
+	if err := orch.Start(); err != nil {
+		t.Fatalf("orch.Start: %v", err)
+	}
 	t.Cleanup(orch.Stop)
 
 	// A run Saved right after Start() returns -- before any later

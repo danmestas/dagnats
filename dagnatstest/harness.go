@@ -47,7 +47,9 @@ func NewHarness(t *testing.T) *Harness {
 	}
 
 	orch := engine.NewOrchestrator(nc)
-	orch.Start()
+	if err := orch.Start(); err != nil {
+		t.Fatalf("NewHarness: orch.Start: %v", err)
+	}
 	t.Cleanup(func() { orch.Stop() })
 
 	svc := api.NewService(nc)

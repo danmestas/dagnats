@@ -715,9 +715,22 @@ type RepairStats struct {
 // Both phases are capped at pageMax per call; a store with more
 // damage than that needs more than one call -- callers (the
 // reconciler tick, orchestrator startup) call this repeatedly on a
-// schedule rather than in a loop within one call. Until a run is
-// backfilled, ScanNewestFirst simply cannot see it -- a documented,
-// bounded visibility window, not a correctness bug.
+// schedule rather than in a loop within one call.
+//
+// Plainly, stated without euphemism (review round 2): until a run is
+// backfilled, ScanNewestFirst cannot see it at all -- it is simply
+// absent from every scan. And a backfilled run is Created at the
+// CURRENT tail of the index (this call's write position), not
+// spliced into its true chronological position among already-indexed
+// entries -- there is no re-sort, ever. So a run whose original
+// writeRunIndexEntry write was lost (a crash, or a transient KV
+// error) and is later backfilled will read as one of the NEWEST
+// entries in the index, however old its real CreatedAt is, for as
+// long as it remains at the tail. Orchestrator.Start converges the
+// index to zero missing runs before serving, so in normal operation
+// this window never reaches a caller; it can only reopen if a LATER
+// Save's writeRunIndexEntry loses its race after startup, in which
+// case the next reconciler tick's single bounded pass closes it.
 func (s *SnapshotStore) RepairRunIndex(
 	ctx context.Context, pageMax int,
 ) (RepairStats, error) {
@@ -839,7 +852,17 @@ func (s *SnapshotStore) backfillMissingIndex(
 		if err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 			return repaired, err
 		}
-		repaired++
+		// ErrKeyExists means a concurrent writer (another Save,
+		// another RepairRunIndex pass) already created this entry
+		// between loadRunAndIndexIDSets' diff and this Create -- the
+		// entry is correct, but THIS call did no work, so it must not
+		// count as repaired (review round 2): counting it would waste
+		// a convergence pass -- the caller reads repaired>0 as "keep
+		// looping" -- and inflate the engine.run_index.repaired metric
+		// with no real index write behind it.
+		if err == nil {
+			repaired++
+		}
 	}
 	return repaired, nil
 }

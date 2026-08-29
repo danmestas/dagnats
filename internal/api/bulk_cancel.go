@@ -30,12 +30,18 @@ type BulkCancelRequest struct {
 	Labels     map[string]string `json:"labels,omitempty"`
 }
 
-// BulkCancelResponse reports the outcome.
+// BulkCancelResponse reports the outcome. Truncated (#659 review
+// round 2) is true when the underlying newest-first scan hit its
+// fetch cap before it could prove there were no more matches beyond
+// the scanned window -- a caller must not read Cancelled/Skipped as
+// "definitely everything that matches" when Truncated is set, even
+// if the result happens to be empty.
 type BulkCancelResponse struct {
 	Cancelled []string `json:"cancelled"`
 	Skipped   []string `json:"skipped,omitempty"`
 	Total     int      `json:"total"`
 	DryRun    bool     `json:"dry_run"`
+	Truncated bool     `json:"truncated,omitempty"`
 }
 
 // BulkCancelRuns cancels runs matching the filter criteria.
@@ -99,7 +105,7 @@ func (s *Service) bulkCancelInner(
 			req.After, req.Before, req.Labels,
 		)
 	}
-	matched, _, err := s.store.ScanNewestFirst(
+	matched, stats, err := s.store.ScanNewestFirst(
 		ctx, pred, maxBulkCancelLimit+1, scaledFetchMax(maxBulkCancelLimit+1),
 	)
 	if err != nil {
@@ -126,10 +132,13 @@ func (s *Service) bulkCancelInner(
 		}
 		return BulkCancelResponse{
 			Cancelled: ids, Total: len(ids), DryRun: true,
+			Truncated: stats.Truncated,
 		}, nil
 	}
 
-	return s.executeBulkCancel(ctx, matched), nil
+	resp := s.executeBulkCancel(ctx, matched)
+	resp.Truncated = stats.Truncated
+	return resp, nil
 }
 
 // validateBulkCancelRequest checks request validity.

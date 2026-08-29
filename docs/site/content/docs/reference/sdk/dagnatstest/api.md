@@ -158,7 +158,7 @@ func FanOutDef(t *testing.T, n int) dag.WorkflowDef
 FanOutDef builds a workflow with 1 root and n parallel branches: root \-\> \{branch\-0, branch\-1, ..., branch\-\(n\-1\)\}.
 
 <a name="HandleTypedOn"></a>
-## func [HandleTypedOn](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L82-L85>)
+## func [HandleTypedOn](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L84-L87>)
 
 ```go
 func HandleTypedOn[I, O any](h *Harness, t *testing.T, taskType string, fn worker.TypedHandlerFunc[I, O])
@@ -455,7 +455,7 @@ func NewHarness(t *testing.T) *Harness
 NewHarness starts an embedded NATS server, orchestrator, and API service. The worker is created but NOT started — register handlers first, then call h.Start\(t\).
 
 <a name="Harness.Handle"></a>
-### func \(\*Harness\) [Handle](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L66-L68>)
+### func \(\*Harness\) [Handle](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L68-L70>)
 
 ```go
 func (h *Harness) Handle(t *testing.T, taskType string, fn worker.HandlerFunc)
@@ -464,7 +464,7 @@ func (h *Harness) Handle(t *testing.T, taskType string, fn worker.HandlerFunc)
 Handle registers a raw handler on the harness worker. Call before h.Start\(t\).
 
 <a name="Harness.RegisterAndRun"></a>
-### func \(\*Harness\) [RegisterAndRun](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L113-L116>)
+### func \(\*Harness\) [RegisterAndRun](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L115-L118>)
 
 ```go
 func (h *Harness) RegisterAndRun(t *testing.T, def dag.WorkflowDef, input []byte, timeout time.Duration) dag.WorkflowRun
@@ -473,7 +473,7 @@ func (h *Harness) RegisterAndRun(t *testing.T, def dag.WorkflowDef, input []byte
 RegisterAndRun registers a workflow definition, starts a run, and blocks until it reaches a terminal status. Returns the final WorkflowRun snapshot.
 
 <a name="Harness.Start"></a>
-### func \(\*Harness\) [Start](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L98>)
+### func \(\*Harness\) [Start](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L100>)
 
 ```go
 func (h *Harness) Start(t *testing.T)
