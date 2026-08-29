@@ -138,6 +138,12 @@ func sortedSubjectKeys(subjects map[string]uint64) []string {
 // debug and OldestWaitMs is left nil rather than failing the whole
 // snapshot (design fixed by #632 -- one flaky subject must not blank
 // out every other group's data).
+//
+// Called once per subject from buildQueueSnapshot's loop, sequentially
+// (not batched/parallelized) and bounded by QueueGroupsMax (256) --
+// fine at the default 5s snapshot cadence; revisit with a batched
+// direct-get or a lower cadence-to-cardinality ratio if task-type
+// cardinality grows well past that bound.
 func buildQueueGroup(
 	ctx context.Context, stream jetstream.Stream, subject string,
 	pending uint64, firstSeq uint64, now time.Time, logger *slog.Logger,

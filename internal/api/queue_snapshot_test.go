@@ -209,3 +209,25 @@ func TestStartQueueSnapshotPublisherPanicsOnNilArgs(t *testing.T) {
 		_, _ = StartQueueSnapshotPublisher(t.Context(), tp, nil, time.Second, nil)
 	}()
 }
+
+// TestHashQueueSnapshotIncludesTruncated proves the change-suppression
+// hash reacts to a Truncated flip even when Groups is byte-for-byte
+// identical (review round 1, #649): otherwise a fleet-sizing consumer
+// watching event.queue.snapshot could see `truncated` go stale for up
+// to the 60s heartbeat after subject cardinality crosses 256.
+func TestHashQueueSnapshotIncludesTruncated(t *testing.T) {
+	groups := []protocol.QueueGroup{{TaskType: "build", Pending: 3}}
+	notTruncated := protocol.QueueSnapshot{Groups: groups, Truncated: false}
+	truncated := protocol.QueueSnapshot{Groups: groups, Truncated: true}
+
+	// Positive: identical groups, only Truncated differs -> hashes differ.
+	if hashQueueSnapshot(notTruncated) == hashQueueSnapshot(truncated) {
+		t.Fatal("hash unchanged when Truncated flipped false->true, want different hash")
+	}
+	// Negative: two snapshots with the same Truncated value and groups
+	// hash identically (no spurious difference introduced).
+	again := protocol.QueueSnapshot{Groups: groups, Truncated: false}
+	if hashQueueSnapshot(notTruncated) != hashQueueSnapshot(again) {
+		t.Fatal("hash differs for two snapshots with identical Groups/Truncated")
+	}
+}

@@ -186,7 +186,7 @@ func publishIfChanged(
 		logger.Warn("queue snapshot: build failed", "error", err)
 		return lastHash
 	}
-	hash := hashQueueGroups(snap.Groups)
+	hash := hashQueueSnapshot(snap)
 	if hash == lastHash {
 		return lastHash
 	}
@@ -232,16 +232,22 @@ func publishSnapshot(
 	}
 }
 
-// hashQueueGroups builds a stable comparison key over groups, ignoring
+// hashQueueSnapshot builds a stable comparison key over snap, ignoring
 // SnapshotAt (never part of "did the queue state change") and
 // smoothing OldestWaitMs to the nearest second -- otherwise every tick
 // would report a "changed" hash purely from millisecond clock drift on
 // an otherwise-static queue, defeating change-suppression entirely.
 // The precise (unrounded) value is still what gets published; only the
 // comparison is coarsened.
-func hashQueueGroups(groups []protocol.QueueGroup) string {
+//
+// Truncated is folded in (review round 1, #649): a subject-cardinality
+// crossing that flips Truncated but leaves the visible (capped) Groups
+// byte-for-byte identical must still count as a change -- otherwise a
+// fleet-sizing consumer watching event.queue.snapshot sees a stale
+// truncated flag for up to the 60s heartbeat.
+func hashQueueSnapshot(snap protocol.QueueSnapshot) string {
 	h := sha256.New()
-	for _, g := range groups {
+	for _, g := range snap.Groups {
 		fmt.Fprintf(h, "%s|%d|", g.TaskType, g.Pending)
 		if g.OldestWaitMs == nil {
 			fmt.Fprint(h, "-;")
@@ -250,5 +256,6 @@ func hashQueueGroups(groups []protocol.QueueGroup) string {
 		roundedSec := int64(math.Round(float64(*g.OldestWaitMs) / 1000))
 		fmt.Fprintf(h, "%d;", roundedSec)
 	}
+	fmt.Fprintf(h, "truncated=%t", snap.Truncated)
 	return hex.EncodeToString(h.Sum(nil))
 }
