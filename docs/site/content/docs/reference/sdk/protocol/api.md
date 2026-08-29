@@ -6,6 +6,8 @@
 import "github.com/danmestas/dagnats/protocol"
 ```
 
+protocol/queue.go QueueSnapshot is the shared payload for two surfaces \(\#632\): the synchronous GET /v1/queue response and the periodic event.queue.snapshot notification on the EVENTS stream. Both surfaces answer the same question \-\- "how deep is each task\-type queue right now" \-\- so they share one wire schema instead of drifting apart. See docs/wire\-protocol.md "Consumer contract: run lifecycle events" for the event.queue.snapshot cadence/dedup contract.
+
 protocol/run\_event.go RunEvent is the payload for the run\-lifecycle consumer contract published to the EVENTS stream \(event.run.\{workflow\}.\{runID\}.\{status\}\), distinct from protocol.Event on the WORKFLOW\_HISTORY stream \(history.\{runID\}\). history.\* carries the full per\-step timeline; event.run.\* carries ONLY the reliable "this run reached a terminal state, and it is durably persisted" signal a forge/poller needs instead of GET /runs/\{id\} polling. See docs/wire\-protocol.md "Consumer contract: run lifecycle events".
 
 ## Index
@@ -22,6 +24,8 @@ protocol/run\_event.go RunEvent is the payload for the run\-lifecycle consumer c
   - [func \(e Event\) NATSSubject\(\) string](<#Event.NATSSubject>)
 - [type EventType](<#EventType>)
 - [type FailureType](<#FailureType>)
+- [type QueueGroup](<#QueueGroup>)
+- [type QueueSnapshot](<#QueueSnapshot>)
 - [type RunEvent](<#RunEvent>)
 - [type RunEventType](<#RunEventType>)
 - [type StepFailedPayload](<#StepFailedPayload>)
@@ -211,6 +215,32 @@ const (
     FailureTypeNonRetriable FailureType = "non_retriable"
     FailureTypeRetryAfter   FailureType = "retry_after"
 )
+```
+
+<a name="QueueGroup"></a>
+## type [QueueGroup](<https://github.com/danmestas/dagnats/blob/main/protocol/queue.go#L18-L22>)
+
+QueueGroup is the pending\-task count for one task type on the TASK\_QUEUES stream \(task.\{taskType\} subject\). OldestWaitMs is omitted when the server could not read the oldest pending message for this subject \(a best\-effort direct\-get failure never fails the whole response/snapshot \-\- see internal/api/queue.go\).
+
+```go
+type QueueGroup struct {
+    TaskType     string `json:"task_type"`
+    Pending      int64  `json:"pending"`
+    OldestWaitMs *int64 `json:"oldest_wait_ms,omitempty"`
+}
+```
+
+<a name="QueueSnapshot"></a>
+## type [QueueSnapshot](<https://github.com/danmestas/dagnats/blob/main/protocol/queue.go#L31-L35>)
+
+QueueSnapshot is the wire payload for GET /v1/queue and event.queue.snapshot. Groups is always a non\-nil slice, sorted by TaskType, so JSON serializes it as \[\] rather than null when there are no pending tasks. Truncated is set when the TASK\_QUEUES stream carries more distinct task\-type subjects than internal/api.QueueGroupsMax \-\- Groups is capped at that bound rather than growing unbounded.
+
+```go
+type QueueSnapshot struct {
+    Groups     []QueueGroup `json:"groups"`
+    SnapshotAt time.Time    `json:"snapshot_at"`
+    Truncated  bool         `json:"truncated,omitempty"`
+}
 ```
 
 <a name="RunEvent"></a>

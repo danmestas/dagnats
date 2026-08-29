@@ -361,6 +361,55 @@ different purposes and neither replaces the other.
   `event.run.>` instead of polling; fall back to polling only to recover
   from a missed message during a consumer outage.
 
+### `event.queue.snapshot` -- periodic task-queue depth (EVENTS stream)
+
+- **Payload:** `protocol.QueueSnapshot` (`protocol/queue.go`), the same
+  shape `GET /v1/queue` returns:
+
+```json
+{
+  "groups": [
+    { "task_type": "build", "pending": 3, "oldest_wait_ms": 1523 },
+    { "task_type": "test", "pending": 1, "oldest_wait_ms": 402 }
+  ],
+  "snapshot_at": "2026-08-28T12:00:00Z"
+}
+```
+
+`groups` is always present (`[]` when nothing is pending, never
+`null`), sorted by `task_type`. `truncated` (bool, omitted when false)
+appears only when the stream carries more than 256 distinct task-type
+subjects -- `groups` is capped to the first 256 in `task_type` order.
+
+- **Cadence:** its own ticker, at `DAGNATS_QUEUE_SNAPSHOT_INTERVAL`
+  (default 5s, bounded to [1s, 5m]; invalid or out-of-range refuses
+  server startup) -- never per-enqueue. Published only when the queue
+  state differs from the last publish (change-suppression, with
+  `oldest_wait_ms` rounded to the nearest second for the comparison so
+  clock drift on an idle queue doesn't count as a change), plus an
+  unconditional heartbeat publish every 60s regardless of change, so a
+  consumer with no message for over a minute can tell the publisher is
+  down rather than the queue being idle.
+- **Dedup key:** `Nats-Msg-Id: queue-snapshot-{snapshot_at RFC3339Nano}`.
+- **Ordering:** per-subject JetStream order; every snapshot stands alone.
+- **Retention:** `eventsMaxAge` -- 14 days (`internal/natsutil/conn.go`),
+  same as `event.run.*`.
+- **Source of truth:** the `TASK_QUEUES` stream's own state -- a
+  subject-filtered `StreamInfo` plus a direct-get of the oldest pending
+  message per subject (`Stream.GetMsg(WithGetMsgSubject(...))`, which
+  requires `AllowDirect` on `TASK_QUEUES`), not a KV mirror or an
+  in-memory engine counter. A direct-get failure for one subject omits
+  that subject's `oldest_wait_ms` rather than failing the whole
+  snapshot.
+- **Labels are not a grouping dimension.** Pending tasks don't carry
+  run labels in their subject or a cheap-to-read header, so grouping by
+  label would mean fetching and decoding every pending payload --
+  unbounded work. This event groups by `task_type` only (free -- it's
+  the subject).
+- **Use for:** a live queue-depth feed (dashboards, autoscalers,
+  alerting on a growing `oldest_wait_ms`) without polling
+  `GET /v1/queue` on a timer.
+
 ---
 
 ## Reference Implementations

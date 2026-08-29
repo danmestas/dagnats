@@ -23,8 +23,9 @@ type listWorkersV1Response struct {
 }
 
 // MountV1 registers the control plane's /v1 routes on mux. Panics if
-// mux or svc is nil. Future /v1 control-plane routes (#627 tokens, #632
-// queue, #633 ci) should be added here alongside GET /v1/workers.
+// mux or svc is nil. Future /v1 control-plane routes (#627 tokens,
+// #633 ci) should be added here alongside GET /v1/workers and
+// GET /v1/queue.
 func MountV1(mux *http.ServeMux, svc *Service) {
 	if mux == nil {
 		panic("MountV1: mux must not be nil")
@@ -33,6 +34,7 @@ func MountV1(mux *http.ServeMux, svc *Service) {
 		panic("MountV1: svc must not be nil")
 	}
 	mux.HandleFunc("GET /v1/workers", svc.handleListWorkersV1)
+	mux.HandleFunc("GET /v1/queue", svc.handleGetQueueV1)
 }
 
 // handleListWorkersV1 serves GET /v1/workers. Method mismatches never

@@ -88,7 +88,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L70-L164>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L71-L173>)
 
 Config holds all server configuration.
 
@@ -125,6 +125,14 @@ type Config struct {
     // a d/w suffix ("30d", "2w"). An explicit 0/off/disabled turns pruning
     // off entirely — the escape hatch for operators who want it off.
     RunsMaxAge time.Duration `json:"runs_max_age"`
+
+    // QueueSnapshotInterval is the periodic event.queue.snapshot
+    // publisher's change-check cadence (#632). Defaults to
+    // api.ParseQueueSnapshotInterval("")'s 5s when unset. Set via
+    // DAGNATS_QUEUE_SNAPSHOT_INTERVAL, which accepts any Go duration
+    // string bounded to [1s, 5m] -- an invalid or out-of-range value is
+    // a hard config-load error (see applyQueueSnapshotIntervalEnv).
+    QueueSnapshotInterval time.Duration `json:"queue_snapshot_interval"`
 
     // Per-runtime safety bounds (ADR-021 Phase A, #378). These cap a
     // single spawn-tree's resource use so a runaway agent loop cannot
@@ -191,7 +199,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L213>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L235>)
 
 ```go
 func ConfigFromEnv() Config
@@ -200,7 +208,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty or MaxStoreBytes \<= 0 after resolution.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L226-L228>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L248-L250>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -209,7 +217,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty or MaxStoreBytes \<= 0 after resolution.
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L168>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L177>)
 
 ```go
 func DefaultConfig() Config
@@ -294,7 +302,7 @@ func ResolveConfig() ResolvedConfig
 ResolveConfig loads config and tracks the source of each value. Returns resolved config with provenance for every key.
 
 <a name="Server"></a>
-## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L39-L67>)
+## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L39-L68>)
 
 Server is the all\-in\-one DagNats server lifecycle manager.
 
@@ -305,7 +313,7 @@ type Server struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L70>)
+### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L71>)
 
 ```go
 func New(cfg Config) *Server
@@ -314,7 +322,7 @@ func New(cfg Config) *Server
 New creates a Server with the given config. Panics if DataDir is empty.
 
 <a name="Server.Run"></a>
-### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L82>)
+### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L83>)
 
 ```go
 func (s *Server) Run() error
@@ -323,7 +331,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L608>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L610>)
 
 ```go
 func (s *Server) Stop()
@@ -354,7 +362,7 @@ func DryRunValidate(cfg Config) ([]ValidationResult, bool)
 DryRunValidate checks prerequisites without starting components. Returns validation results and true if all passed.
 
 <a name="WorkerConfig"></a>
-## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L62-L67>)
+## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L63-L68>)
 
 WorkerConfig defines a config\-driven embedded worker handler.
 

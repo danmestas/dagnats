@@ -174,6 +174,14 @@ func SetupStreams(
 				maxStoreBytes, fractionTaskQueues,
 			),
 			Replicas: replicas,
+			// AllowDirect enables Stream.GetMsg(WithGetMsgSubject),
+			// which the queue-depth API (#632) uses to read the
+			// oldest pending message per task-type subject without a
+			// consumer. CreateOrUpdateStream below applies this to an
+			// already-existing TASK_QUEUES too, so operators upgrading
+			// from an older binary get direct-get without a manual
+			// stream edit.
+			AllowDirect: true,
 		},
 		{
 			Name:      "EVENTS",

@@ -50,6 +50,7 @@ type Server struct {
 	metricsAgg         *metrics.Aggregator
 	metricsStop        func()
 	metricsErrorReason string
+	queueSnapshotStop  func()
 	ready              atomic.Bool
 	stopCh             chan struct{}
 	workerShims        []*WorkerShim
@@ -552,6 +553,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	s.cfg.HTTPAddr = ln.Addr().String()
 
 	s.startMetricsAggregator()
+	s.startQueueSnapshotPublisher()
 	mountMetricsExporter(
 		mux, s.metricsAgg, slog.Default(), s.cfg.HTTPAddr,
 		s.metricsErrorReason,
@@ -690,6 +692,10 @@ func (s *Server) shutdown() error {
 		if s.metricsAgg != nil {
 			s.metricsAgg.Close()
 			printStep(os.Stderr, "metrics aggregator shut down")
+		}
+		if s.queueSnapshotStop != nil {
+			s.queueSnapshotStop()
+			printStep(os.Stderr, "queue snapshot publisher shut down")
 		}
 		if s.telShutdown != nil {
 			s.telShutdown(context.Background())
@@ -951,6 +957,43 @@ func (s *Server) startMetricsAggregator() {
 	}
 	s.metricsAgg = agg
 	s.metricsStop = stop
+}
+
+// startQueueSnapshotPublisher boots the periodic event.queue.snapshot
+// publisher (#632). Nil-tolerant like startMetricsAggregator: when the
+// core NATS connection isn't available the publisher stays off rather
+// than panicking, so a degraded-but-running server keeps serving
+// everything else. Uses s.cfg.QueueSnapshotInterval, which
+// ConfigWithPath already validated at load time (invalid/out-of-range
+// DAGNATS_QUEUE_SNAPSHOT_INTERVAL refuses server startup before this
+// method is ever reached), so the only remaining failure mode here is
+// JetStream connectivity.
+func (s *Server) startQueueSnapshotPublisher() {
+	if s == nil {
+		panic("startQueueSnapshotPublisher: s is nil")
+	}
+	if s.nc == nil {
+		return
+	}
+	js, err := jetstream.New(s.nc)
+	if err != nil {
+		slog.Default().Warn(
+			"queue snapshot: jetstream init failed; publisher disabled",
+			"err", err)
+		return
+	}
+	tp := natsutil.NewTracingPublisher(s.nc, js)
+	stop, err := api.StartQueueSnapshotPublisher(
+		context.Background(), tp, js, s.cfg.QueueSnapshotInterval,
+		slog.Default(),
+	)
+	if err != nil {
+		slog.Default().Warn(
+			"queue snapshot: publisher start failed",
+			"err", err)
+		return
+	}
+	s.queueSnapshotStop = stop
 }
 
 // mountMetricsExporter installs /metrics. Auth is loopback-default:

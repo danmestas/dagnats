@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 )
 
@@ -99,6 +100,14 @@ type Config struct {
 	// a d/w suffix ("30d", "2w"). An explicit 0/off/disabled turns pruning
 	// off entirely — the escape hatch for operators who want it off.
 	RunsMaxAge time.Duration `json:"runs_max_age"`
+
+	// QueueSnapshotInterval is the periodic event.queue.snapshot
+	// publisher's change-check cadence (#632). Defaults to
+	// api.ParseQueueSnapshotInterval("")'s 5s when unset. Set via
+	// DAGNATS_QUEUE_SNAPSHOT_INTERVAL, which accepts any Go duration
+	// string bounded to [1s, 5m] -- an invalid or out-of-range value is
+	// a hard config-load error (see applyQueueSnapshotIntervalEnv).
+	QueueSnapshotInterval time.Duration `json:"queue_snapshot_interval"`
 
 	// Per-runtime safety bounds (ADR-021 Phase A, #378). These cap a
 	// single spawn-tree's resource use so a runaway agent loop cannot
@@ -192,6 +201,18 @@ func DefaultConfig() Config {
 		panic("dataDir resolved to empty string")
 	}
 
+	// api.ParseQueueSnapshotInterval("") always resolves the compiled-in
+	// default and never errors -- the error return exists for the
+	// operator-supplied env-var path (applyQueueSnapshotIntervalEnv), not
+	// this one. Panicking on it here would only be reachable if that
+	// invariant ever broke, which is exactly what the panic guards.
+	queueSnapshotInterval, err := api.ParseQueueSnapshotInterval("")
+	if err != nil {
+		panic(fmt.Sprintf(
+			"DefaultConfig: ParseQueueSnapshotInterval(\"\") failed: %v", err,
+		))
+	}
+
 	return Config{
 		DataDir:                      dataDir,
 		HTTPAddr:                     defaultHTTPAddr,
@@ -200,6 +221,7 @@ func DefaultConfig() Config {
 		MaxStoreBytes:                defaultMaxStoreBytes,
 		MaxMemoryBytes:               defaultMaxMemoryBytes,
 		RunsMaxAge:                   DefaultRunsMaxAge,
+		QueueSnapshotInterval:        queueSnapshotInterval,
 		MaxActiveRunsPerRoot:         defaultMaxActiveRunsPerRoot,
 		MaxDefsPerRoot:               defaultMaxDefsPerRoot,
 		MaxGenerationDepth:           engine.MaxNestingDepth,
@@ -242,6 +264,10 @@ func ConfigWithPath(
 	applyEnvOverrides(&cfg)
 
 	if err := applyRunsMaxAgeEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+
+	if err := applyQueueSnapshotIntervalEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
 
@@ -506,6 +532,29 @@ func applyRunsMaxAgeEnv(cfg *Config) error {
 		)
 	}
 	cfg.RunsMaxAge = dur
+	return nil
+}
+
+// applyQueueSnapshotIntervalEnv resolves DAGNATS_QUEUE_SNAPSHOT_INTERVAL
+// into cfg.QueueSnapshotInterval (#632) through the SAME validating
+// parser the periodic publisher itself uses (api.ParseQueueSnapshotInterval),
+// so a typo or an out-of-[1s,5m]-range value is a hard config-load error
+// rather than a silent fall-through to whatever the publisher's own
+// bounds check would otherwise panic on at startup. Unset leaves the
+// DefaultConfig-resolved 5s default.
+func applyQueueSnapshotIntervalEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyQueueSnapshotIntervalEnv: cfg is nil")
+	}
+	val := os.Getenv("DAGNATS_QUEUE_SNAPSHOT_INTERVAL")
+	if val == "" {
+		return nil
+	}
+	dur, err := api.ParseQueueSnapshotInterval(val)
+	if err != nil {
+		return fmt.Errorf("env DAGNATS_QUEUE_SNAPSHOT_INTERVAL: %w", err)
+	}
+	cfg.QueueSnapshotInterval = dur
 	return nil
 }
 
