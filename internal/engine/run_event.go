@@ -208,9 +208,11 @@ func recordRunEventPublishFailure(
 // Status alone would treat that first, legitimate transition as an
 // already-finalized run and silently skip persisting/publishing it.
 //
-// Returns the mutated run and any save/afterPersist/history-publish
-// error; the new event's publish failure never propagates (see
-// publishRunEvent).
+// Returns the mutated run and any save/history-publish error. An
+// afterPersist error does NOT propagate (#648): finalizeWithReleaseDebt
+// converts it into a durably recorded ReleasePending debt instead — see
+// its doc comment for why. The new event's publish failure never
+// propagates either (see publishRunEvent).
 func finalizeRun(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
@@ -242,11 +244,140 @@ func finalizeRun(
 	}
 	if afterPersist != nil {
 		if err := afterPersist(ctx); err != nil {
-			return run, err
+			return finalizeWithReleaseDebt(
+				ctx, tp, saveFn, run, status, stepID, err,
+			)
 		}
 	}
 	if err := publishHistoryTerminalEvent(ctx, tp, status, run.RunID); err != nil {
 		return run, err
+	}
+	publishRunEvent(ctx, tp, run)
+	return run, nil
+}
+
+// finalizeReleaseFailures counts afterPersist (admission release)
+// failures observed by finalizeRun after the terminal snapshot was
+// already saved (#648). Package-level, mirroring
+// runEventPublishFailures — the release-debt path is a pure function
+// shared by every finalizeRun call site, not owned by one struct.
+var finalizeReleaseFailures metric.Int64Counter
+
+// finalizeReleaseRecovered counts successful reconciler-driven
+// recoveries of a ReleasePending debt (see reconciler.go).
+var finalizeReleaseRecovered metric.Int64Counter
+
+// finalizeReleaseAbandoned counts ReleasePending runs the reconciler
+// gave up on after releaseAttemptsMax failed recovery attempts (#648
+// PR review round 3, reconcileReleasePending in reconciler.go).
+var finalizeReleaseAbandoned metric.Int64Counter
+
+// finalizeReleaseMalformedSkipped counts ReleasePending runs the
+// reconciler refused to hand to releaseAdmission because their
+// identity was malformed (empty RunID or WorkflowID) -- releaseAdmission
+// panics on either (a programmer-error invariant at that call
+// boundary), so the reconciler must validate BEFORE calling it: one
+// corrupt KV snapshot must not take down the reconcile goroutine
+// (#648 PR review round 4).
+var finalizeReleaseMalformedSkipped metric.Int64Counter
+
+func init() {
+	m := otel.Meter("dagnats/engine")
+	f, err := m.Int64Counter("engine.finalize.release_failures")
+	if err != nil {
+		panic(
+			"init: create engine.finalize.release_failures counter: " +
+				err.Error(),
+		)
+	}
+	finalizeReleaseFailures = f
+	r, err := m.Int64Counter("engine.finalize.release_recovered")
+	if err != nil {
+		panic(
+			"init: create engine.finalize.release_recovered counter: " +
+				err.Error(),
+		)
+	}
+	finalizeReleaseRecovered = r
+	a, err := m.Int64Counter("engine.finalize.release_abandoned")
+	if err != nil {
+		panic(
+			"init: create engine.finalize.release_abandoned counter: " +
+				err.Error(),
+		)
+	}
+	finalizeReleaseAbandoned = a
+	ms, err := m.Int64Counter("engine.finalize.release_malformed_skipped")
+	if err != nil {
+		panic(
+			"init: create engine.finalize.release_malformed_skipped " +
+				"counter: " + err.Error(),
+		)
+	}
+	finalizeReleaseMalformedSkipped = ms
+}
+
+// finalizeWithReleaseDebt handles an afterPersist (admission release)
+// failure for an already-persisted terminal run (#648). Before this
+// fix, that error propagated straight to finalizeRun's caller, which
+// left the singleton lock / concurrency slot held forever: a
+// redelivery of the triggering message reloads the run, finds it
+// already terminal, and hits the caller's own early-return before
+// ever reaching finalizeRun again — nothing ever retried the release.
+//
+// Instead: log + count the failure, record the debt durably by
+// re-persisting the run with ReleasePending=true FIRST, then STILL
+// publish both terminal events (the run IS terminal; consumers must
+// hear it even though its admission slot is stuck) so the
+// reconciler's terminal-run sweep (reconciler.go) can retry the
+// release later via the exact same releaseAdmission logic the normal
+// path uses.
+//
+// The debt-recording save runs BEFORE the publish attempts, not after
+// (#648 PR review round 2): publishing is best-effort either way (a
+// publish failure is only logged, never propagated -- see
+// publishRunEvent and the WARN below), so save-first strictly
+// dominates save-after. Saving after publishing would mean a run
+// already announced as terminal to every consumer could still end up
+// with an unrecoverable leak the reconciler has no way to see, if the
+// save that follows the announcement then itself fails. If the save
+// fails, its error is returned (redelivery is the only remaining
+// recovery channel) and this run is left terminal but NOT
+// (necessarily) notified and WITHOUT a persisted ReleasePending flag
+// — a residual window bounded to this specific double-failure
+// (afterPersist AND the debt save both failing) that the reconciler
+// cannot see and therefore cannot recover from automatically.
+func finalizeWithReleaseDebt(
+	ctx context.Context,
+	tp *natsutil.TracingPublisher,
+	saveFn SaveSnapshotFunc,
+	run dag.WorkflowRun,
+	status dag.RunStatus,
+	stepID string,
+	afterPersistErr error,
+) (dag.WorkflowRun, error) {
+	slog.WarnContext(ctx,
+		"finalizeRun: afterPersist failed after terminal snapshot "+
+			"was saved -- admission release is owed, recording debt "+
+			"for the reconciler to recover",
+		"run_id", run.RunID,
+		"workflow_id", run.WorkflowID,
+		"status", status.String(),
+		"error", afterPersistErr,
+	)
+	if finalizeReleaseFailures != nil {
+		finalizeReleaseFailures.Add(ctx, 1)
+	}
+	run.ReleasePending = true
+	if err := saveFn(ctx, run, stepID); err != nil {
+		return run, err
+	}
+	if err := publishHistoryTerminalEvent(ctx, tp, status, run.RunID); err != nil {
+		slog.WarnContext(ctx,
+			"finalizeRun: history terminal event publish failed "+
+				"during release-debt handling",
+			"run_id", run.RunID, "error", err,
+		)
 	}
 	publishRunEvent(ctx, tp, run)
 	return run, nil
