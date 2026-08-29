@@ -1449,12 +1449,14 @@ func (o *Orchestrator) completeWorkflow(
 // call the EXACT same release logic normal termination uses instead
 // of re-implementing a second, possibly-drifting copy.
 //
-// Idempotent: ReleaseSingletonLock only deletes a lock it still owns
-// (admission.go checks the stored RunID before deleting), and
-// ReleaseRunIfConcurrency floor-clamps its decrement at zero
-// (concurrency.go's ReleaseRun returns nil without writing once the
-// counter reads <= 0) -- a second call after a successful release is
-// a safe no-op for both. See run_event_release_pending_test.go and
+// Idempotent: ReleaseSingletonLock only deletes a lock it still owns,
+// with a revision guard against a late replay stealing a reclaimed
+// lock (admission.go); ReleaseRunIfConcurrency releases by run-ID
+// membership, not a bare counter, so releasing a runID that already
+// isn't a member is a no-op that can never free a DIFFERENT run's
+// slot (concurrency.go, #648 PR review round 3) -- a second call
+// after a successful release is a safe no-op for both. See
+// run_event_release_pending_test.go and
 // reconciler_release_pending_test.go for the idempotence proof.
 //
 // startNextPendingRun failure is logged, not returned: a stuck queue
@@ -1470,9 +1472,11 @@ func (o *Orchestrator) releaseAdmission(
 	if run.WorkflowID == "" {
 		panic("releaseAdmission: WorkflowID must not be empty")
 	}
-	o.admission.ReleaseSingletonLock(ctx, run)
+	if err := o.admission.ReleaseSingletonLock(ctx, run); err != nil {
+		return err
+	}
 	if err := o.admission.ReleaseRunIfConcurrency(
-		ctx, run.WorkflowID,
+		ctx, run.WorkflowID, run.RunID,
 	); err != nil {
 		return err
 	}
@@ -1657,7 +1661,7 @@ func (o *Orchestrator) transitionPendingToRunning(
 
 	if wfDef.Concurrency != nil {
 		acquired, err := o.admission.AcquireRun(
-			ctx, wfDef.Name, wfDef.Concurrency.MaxRuns,
+			ctx, wfDef.Name, run.RunID, wfDef.Concurrency.MaxRuns,
 		)
 		if err != nil {
 			return fmt.Errorf("acquire for pending run: %w", err)

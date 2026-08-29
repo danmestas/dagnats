@@ -391,6 +391,16 @@ type WorkflowRun struct {
 	// is correct — a run finalized before this field existed either
 	// released cleanly or is already outside any recovery window.
 	ReleasePending bool `json:"release_pending,omitempty"`
+	// ReleaseAttempts counts the reconciler's recovery attempts for a
+	// ReleasePending run (#648 PR review round 3). Without a bound, a
+	// run whose release keeps failing for a structural reason (not a
+	// transient blip) would retry -- and WARN-log -- every reconciler
+	// pass forever. engine.ReleaseAttemptsMax caps it; reaching the
+	// cap clears ReleasePending (the sweep stops, an ERROR is logged
+	// once, and engine.finalize.release_abandoned is incremented)
+	// rather than retrying unboundedly. Additive: legacy snapshots
+	// deserialize to 0, the correct starting count.
+	ReleaseAttempts int `json:"release_attempts,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.

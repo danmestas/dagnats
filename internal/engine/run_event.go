@@ -267,6 +267,11 @@ var finalizeReleaseFailures metric.Int64Counter
 // recoveries of a ReleasePending debt (see reconciler.go).
 var finalizeReleaseRecovered metric.Int64Counter
 
+// finalizeReleaseAbandoned counts ReleasePending runs the reconciler
+// gave up on after releaseAttemptsMax failed recovery attempts (#648
+// PR review round 3, reconcileReleasePending in reconciler.go).
+var finalizeReleaseAbandoned metric.Int64Counter
+
 func init() {
 	m := otel.Meter("dagnats/engine")
 	f, err := m.Int64Counter("engine.finalize.release_failures")
@@ -285,6 +290,14 @@ func init() {
 		)
 	}
 	finalizeReleaseRecovered = r
+	a, err := m.Int64Counter("engine.finalize.release_abandoned")
+	if err != nil {
+		panic(
+			"init: create engine.finalize.release_abandoned counter: " +
+				err.Error(),
+		)
+	}
+	finalizeReleaseAbandoned = a
 }
 
 // finalizeWithReleaseDebt handles an afterPersist (admission release)

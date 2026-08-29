@@ -64,24 +64,26 @@ func NewAdmissionController(
 }
 
 // AcquireRun delegates to ConcurrencyManager if present.
-// Returns true (acquired) when concurrency is nil.
+// Returns true (acquired) when concurrency is nil. runID identifies
+// the slot holder (#648 PR review round 3's member-set model) --
+// re-acquiring the same runID is idempotent, not a second slot.
 func (ac *AdmissionController) AcquireRun(
-	ctx context.Context, workflowID string, limit int,
+	ctx context.Context, workflowID, runID string, limit int,
 ) (bool, error) {
 	if ac.concurrency == nil {
 		return true, nil
 	}
-	return ac.concurrency.AcquireRun(ctx, workflowID, limit)
+	return ac.concurrency.AcquireRun(ctx, workflowID, runID, limit)
 }
 
 // ReleaseRun delegates to ConcurrencyManager if present.
 func (ac *AdmissionController) ReleaseRun(
-	ctx context.Context, workflowID string,
+	ctx context.Context, workflowID, runID string,
 ) error {
 	if ac.concurrency == nil {
 		return nil
 	}
-	return ac.concurrency.ReleaseRun(ctx, workflowID)
+	return ac.concurrency.ReleaseRun(ctx, workflowID, runID)
 }
 
 // AcquireTask delegates to ConcurrencyManager if present.
@@ -112,16 +114,16 @@ func (ac *AdmissionController) HasConcurrency() bool {
 	return ac.concurrency != nil
 }
 
-// ReleaseRunIfConcurrency releases a run slot and returns
+// ReleaseRunIfConcurrency releases runID's run slot and returns
 // an error if the release fails. No-op without concurrency.
 func (ac *AdmissionController) ReleaseRunIfConcurrency(
-	ctx context.Context, workflowID string,
+	ctx context.Context, workflowID, runID string,
 ) error {
 	if ac.concurrency == nil {
 		return nil
 	}
 	if err := ac.concurrency.ReleaseRun(
-		ctx, workflowID,
+		ctx, workflowID, runID,
 	); err != nil {
 		return fmt.Errorf("release run: %w", err)
 	}

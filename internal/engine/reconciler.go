@@ -37,6 +37,16 @@ const (
 	// state. Visible in DLQ entries from the janitor sweep.
 	reconcileWedgedReason = "wedged: no in-flight work and " +
 		"no path to completion"
+
+	// releaseAttemptsMax bounds reconcileReleasePending's recovery
+	// attempts per run (#648 PR review round 3). Without a bound, a
+	// run whose release keeps failing for a structural (not
+	// transient) reason would retry -- and WARN-log -- every
+	// reconciler pass forever. Reaching the cap abandons the run:
+	// ReleasePending is cleared, one ERROR is logged, and
+	// engine.finalize.release_abandoned is incremented, rather than
+	// retrying unboundedly.
+	releaseAttemptsMax = 10
 )
 
 // reconcileMaxRunsScan caps the per-cycle workflow_runs scan.
@@ -376,9 +386,10 @@ func (o *Orchestrator) reconcileRunningRuns(ctx context.Context) {
 // already saved, so the singleton lock / concurrency slot is stuck
 // and no ordinary redelivery will ever retry it (the caller's own
 // Status != Running early-return fires first). One attempt per run
-// per reconciler pass: on failure this run is simply seen again next
-// cycle, still flagged; on success the flag is cleared with a save so
-// it is not retried forever.
+// per reconciler pass: on failure, reconcileReleaseFailed records the
+// attempt and either lets this run be seen again next cycle or, past
+// releaseAttemptsMax, abandons it; on success the flag is cleared
+// with a save so it is not retried forever.
 //
 // Idempotent with the normal finalize path by construction:
 // releaseAdmission's own idempotence (see its doc comment) means a
@@ -412,16 +423,11 @@ func (o *Orchestrator) reconcileReleasePending(
 		panic("reconcileReleasePending: run must be terminal")
 	}
 	if err := o.releaseAdmission(ctx, run); err != nil {
-		slog.WarnContext(ctx,
-			"reconciler: release-pending recovery failed, will retry "+
-				"next pass",
-			"run_id", run.RunID,
-			"workflow_id", run.WorkflowID,
-			"error", err,
-		)
+		o.reconcileReleaseFailed(ctx, run, err)
 		return
 	}
 	run.ReleasePending = false
+	run.ReleaseAttempts = 0
 	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		// The release itself succeeded; only the flag-clear write
 		// failed. Documented residual window (same shape as
@@ -445,6 +451,69 @@ func (o *Orchestrator) reconcileReleasePending(
 	)
 	if finalizeReleaseRecovered != nil {
 		finalizeReleaseRecovered.Add(ctx, 1)
+	}
+}
+
+// reconcileReleaseFailed handles one failed releaseAdmission attempt
+// for a ReleasePending run: increments and persists ReleaseAttempts,
+// then either leaves the run flagged for another pass (WARN) or, past
+// releaseAttemptsMax, abandons it -- clears ReleasePending so the
+// sweep stops touching it, logs once at ERROR, and increments
+// engine.finalize.release_abandoned (#648 PR review round 3). Split
+// out of reconcileReleasePending to keep that function under
+// TigerStyle's 70-line limit.
+//
+// If the attempts-count save itself fails, the count simply doesn't
+// advance this pass -- the next pass re-attempts the release and
+// tries to persist the count again. This cannot loop forever any
+// worse than the underlying save failure already can elsewhere; it is
+// not a new unbounded-retry path.
+func (o *Orchestrator) reconcileReleaseFailed(
+	ctx context.Context, run dag.WorkflowRun, releaseErr error,
+) {
+	if ctx == nil {
+		panic("reconcileReleaseFailed: ctx must not be nil")
+	}
+	if releaseErr == nil {
+		panic("reconcileReleaseFailed: releaseErr must not be nil")
+	}
+	run.ReleaseAttempts++
+	abandon := run.ReleaseAttempts >= releaseAttemptsMax
+	if abandon {
+		run.ReleasePending = false
+	}
+	if err := o.saveSnapshot(ctx, run, ""); err != nil {
+		slog.ErrorContext(ctx,
+			"reconciler: persist release_attempts after failed "+
+				"recovery failed",
+			"run_id", run.RunID,
+			"workflow_id", run.WorkflowID,
+			"attempts", run.ReleaseAttempts,
+			"error", err,
+		)
+		return
+	}
+	if !abandon {
+		slog.WarnContext(ctx,
+			"reconciler: release-pending recovery failed, will retry "+
+				"next pass",
+			"run_id", run.RunID,
+			"workflow_id", run.WorkflowID,
+			"attempts", run.ReleaseAttempts,
+			"error", releaseErr,
+		)
+		return
+	}
+	slog.ErrorContext(ctx,
+		"reconciler: abandoning release-pending recovery after "+
+			"max attempts -- admission slot/lock may remain leaked",
+		"run_id", run.RunID,
+		"workflow_id", run.WorkflowID,
+		"attempts", run.ReleaseAttempts,
+		"error", releaseErr,
+	)
+	if finalizeReleaseAbandoned != nil {
+		finalizeReleaseAbandoned.Add(ctx, 1)
 	}
 }
 

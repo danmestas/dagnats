@@ -32,11 +32,13 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // markTerminalWithDebt mutates run in place to look exactly like a
@@ -267,19 +269,20 @@ func TestReconciler_RecoversReleasePending_ConcurrencySlot(t *testing.T) {
 	}
 }
 
-// TestReleaseAdmission_DoubleCallIsNoOp proves the idempotence
-// releaseAdmission's doc comment claims: ReleaseSingletonLock only
-// deletes a lock it still owns, and ReleaseRunIfConcurrency
-// floor-clamps its decrement at zero -- calling releaseAdmission a
-// second time for the SAME already-released run (the shape the
-// reconciler's crash-between-release-and-flag-clear residual window
-// can produce, see reconcileReleasePending's doc comment) must not
-// error and must not free a slot that a DIFFERENT run now holds.
-// Concurrency only (no singleton): AcquireRun's counter has no
-// per-run identity, so this is the resource where a naive
-// double-decrement would actually corrupt shared state -- exactly
-// the risk #648 asks to verify.
-func TestReleaseAdmission_DoubleCallIsNoOp(t *testing.T) {
+// TestReleaseAdmission_ReplayedConcurrencyReleaseDoesNotStealNewHolder
+// is the exact scenario from the PR #661 review round-3 BLOCKER,
+// driven through the public releaseAdmission path a reconciler replay
+// actually uses (not just the underlying ConcurrencyManager unit --
+// see concurrency_test.go's TestConcurrencyReleaseDoesNotStealADifferentRunsSlot
+// for that level). MaxRuns=1: run1 admitted; releaseAdmission(run1)
+// (the first, real release); run2 admitted into the freed slot;
+// releaseAdmission(run1) AGAIN (the replay -- simulating the
+// reconciler retrying a ReleasePending debt whose flag-clear save
+// failed after the first release already succeeded); run3 must NOT be
+// admitted while run2 is Running.
+func TestReleaseAdmission_ReplayedConcurrencyReleaseDoesNotStealNewHolder(
+	t *testing.T,
+) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
@@ -294,7 +297,7 @@ func TestReleaseAdmission_DoubleCallIsNoOp(t *testing.T) {
 	}
 
 	wfDef := dag.WorkflowDef{
-		Name:    "release-pending-idempotent-wf",
+		Name:    "release-pending-replay-conc-wf",
 		Version: "1",
 		Steps: []dag.StepDef{
 			{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
@@ -308,46 +311,248 @@ func TestReleaseAdmission_DoubleCallIsNoOp(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	startAdmissionRun(t, js, wfDef, "rp-idem-1", nil)
-	waitForRunStatus(t, orch.store, "rp-idem-1",
+	startAdmissionRun(t, js, wfDef, "rp-replay-conc-1", nil)
+	waitForRunStatus(t, orch.store, "rp-replay-conc-1",
 		dag.RunStatusRunning, 5*time.Second)
 
 	ctx := context.Background()
-	run1, err := orch.store.Load(ctx, "rp-idem-1")
+	run1, err := orch.store.Load(ctx, "rp-replay-conc-1")
 	if err != nil {
-		t.Fatalf("load rp-idem-1: %v", err)
+		t.Fatalf("load rp-replay-conc-1: %v", err)
 	}
 	run1 = markTerminalWithDebt(run1, dag.RunStatusCompleted)
 	if err := orch.store.Save(ctx, run1); err != nil {
-		t.Fatalf("save rp-idem-1: %v", err)
+		t.Fatalf("save rp-replay-conc-1: %v", err)
 	}
 
-	// First call: the real release (slot decremented 1 -> 0).
+	// The first, real release.
 	if err := orch.releaseAdmission(ctx, run1); err != nil {
-		t.Fatalf("releaseAdmission (first call): %v", err)
-	}
-	// Second call on the SAME run: must be a safe no-op, not an
-	// error and not a double-free.
-	if err := orch.releaseAdmission(ctx, run1); err != nil {
-		t.Fatalf("releaseAdmission (second call) must be a no-op, got error: %v", err)
+		t.Fatalf("releaseAdmission (first, real release): %v", err)
 	}
 
-	// Positive: a second run now acquires the slot cleanly
-	// (MaxRuns=1) -- proves the double call left the counter at
-	// exactly 0, not merely "low enough".
-	startAdmissionRun(t, js, wfDef, "rp-idem-2", nil)
-	waitForRunStatus(t, orch.store, "rp-idem-2",
+	// run2 acquires the slot run1 freed.
+	startAdmissionRun(t, js, wfDef, "rp-replay-conc-2", nil)
+	waitForRunStatus(t, orch.store, "rp-replay-conc-2",
 		dag.RunStatusRunning, 5*time.Second)
 
-	// Negative: with MaxRuns=1 and rp-idem-2 now holding the only
-	// slot, a THIRD run must be queued (Pending), not admitted. Had
-	// the earlier double-release decremented the shared counter below
-	// zero (the corruption #648 calls out), the counter would read -1
-	// here instead of the true holder count (1), and in a >1-capacity
-	// workflow that drift would let one MORE run through than the
-	// configured limit. This pins the counter at its exact value, not
-	// just "under the limit by luck".
-	startAdmissionRun(t, js, wfDef, "rp-idem-3", nil)
-	waitForRunStatus(t, orch.store, "rp-idem-3",
+	// The replay: run1's release fires AGAIN, long after run2 took
+	// the slot run1 vacated.
+	if err := orch.releaseAdmission(ctx, run1); err != nil {
+		t.Fatalf("releaseAdmission (replay): %v", err)
+	}
+
+	// Negative: run3 must NOT be admitted -- the replay must not have
+	// stolen run2's slot. A bare-counter implementation would have
+	// decremented the shared counter to 0 here and wrongly admitted
+	// run3 alongside the still-Running run2.
+	startAdmissionRun(t, js, wfDef, "rp-replay-conc-3", nil)
+	waitForRunStatus(t, orch.store, "rp-replay-conc-3",
 		dag.RunStatusPending, 5*time.Second)
+	run2, err := orch.store.Load(ctx, "rp-replay-conc-2")
+	if err != nil {
+		t.Fatalf("load rp-replay-conc-2: %v", err)
+	}
+	if run2.Status != dag.RunStatusRunning {
+		t.Fatalf(
+			"rp-replay-conc-2: status = %v, want Running -- the "+
+				"replay must not have disturbed its slot",
+			run2.Status,
+		)
+	}
+}
+
+// TestReleaseAdmission_ReplayedSingletonReleaseDoesNotStealNewHolder
+// is the singleton-lock analog of the concurrency-slot scenario above,
+// driven through releaseAdmission end to end (complementing
+// admission_release_race_test.go's internal-hook TOCTOU test, which
+// forces the Get/Delete interleaving directly -- this one exercises
+// the ordinary sequential replay a reconciler retry produces: by the
+// time the replay's Get runs, the lock's owner has already changed,
+// so the existing ownership check alone is enough to protect it).
+func TestReleaseAdmission_ReplayedSingletonReleaseDoesNotStealNewHolder(
+	t *testing.T,
+) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	wfDef := dag.WorkflowDef{
+		Name:    "release-pending-replay-singleton-wf",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
+		},
+		Singleton: &dag.SingletonConfig{Mode: dag.SingletonModeSkip},
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	startAdmissionRun(t, js, wfDef, "rp-replay-sing-1", nil)
+	waitForRunStatus(t, orch.store, "rp-replay-sing-1",
+		dag.RunStatusRunning, 5*time.Second)
+
+	ctx := context.Background()
+	run1, err := orch.store.Load(ctx, "rp-replay-sing-1")
+	if err != nil {
+		t.Fatalf("load rp-replay-sing-1: %v", err)
+	}
+	if run1.SingletonKey == "" {
+		t.Fatal("rp-replay-sing-1: SingletonKey must be set once admitted")
+	}
+	singletonKey := run1.SingletonKey
+	run1 = markTerminalWithDebt(run1, dag.RunStatusCompleted)
+	if err := orch.store.Save(ctx, run1); err != nil {
+		t.Fatalf("save rp-replay-sing-1: %v", err)
+	}
+
+	// The first, real release.
+	if err := orch.releaseAdmission(ctx, run1); err != nil {
+		t.Fatalf("releaseAdmission (first, real release): %v", err)
+	}
+
+	// run2 acquires the lock run1 freed.
+	startAdmissionRun(t, js, wfDef, "rp-replay-sing-2", nil)
+	waitForRunStatus(t, orch.store, "rp-replay-sing-2",
+		dag.RunStatusRunning, 5*time.Second)
+
+	// The replay: run1's release fires AGAIN, long after run2 took
+	// the lock run1 vacated.
+	if err := orch.releaseAdmission(ctx, run1); err != nil {
+		t.Fatalf("releaseAdmission (replay): %v", err)
+	}
+
+	// Positive: the lock is still present and still run2's -- the
+	// replay must not have deleted it.
+	singletonKV, err := js.KeyValue("singleton_locks")
+	if err != nil {
+		t.Fatalf("singleton_locks KV: %v", err)
+	}
+	entry, getErr := singletonKV.Get(singletonKey)
+	if getErr != nil {
+		t.Fatalf("lock missing after replay: %v", getErr)
+	}
+	if string(entry.Value()) != `{"run_id":"rp-replay-sing-2"}` {
+		t.Fatalf(
+			"lock value = %s, want run2's untouched lock", entry.Value(),
+		)
+	}
+
+	// Negative: run3 must NOT be admitted while run2 holds the lock.
+	startAdmissionRun(t, js, wfDef, "rp-replay-sing-3", nil)
+	waitForRunStatus(t, orch.store, "rp-replay-sing-3",
+		dag.RunStatusCancelled, 5*time.Second)
+}
+
+// TestReconciler_ReleasePendingAbandonedAfterMaxAttempts is the PR
+// #661 review round-3 NIT: a ReleasePending run whose release keeps
+// failing for a structural (not transient) reason must not retry --
+// and WARN-log -- every reconciler pass forever. After
+// releaseAttemptsMax failed attempts, the sweep must stop retrying
+// (clear ReleasePending) and log the abandonment once at ERROR,
+// incrementing engine.finalize.release_abandoned.
+//
+// The failure is forced deterministically via fakeDeleteErrKV (same
+// seam admission_release_race_test.go uses) wired into a REPLACEMENT
+// AdmissionController on the orchestrator, so every ReleaseSingletonLock
+// call for this run's key returns the injected non-revision-mismatch
+// error every single pass -- never succeeding.
+func TestReconciler_ReleasePendingAbandonedAfterMaxAttempts(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	jsc, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	realSingletonKV, err := jsc.KeyValue(
+		context.Background(), "singleton_locks",
+	)
+	if err != nil {
+		t.Fatalf("jetstream singleton_locks KV: %v", err)
+	}
+
+	orch := NewOrchestrator(nc)
+	fakeKV := &fakeDeleteErrKV{
+		KeyValue:  realSingletonKV,
+		deleteErr: errors.New("simulated persistent KV failure"),
+	}
+	orch.admission = NewAdmissionController(
+		nc, jsc, orch.tp, orch.store, nil, fakeKV,
+	)
+
+	ctx := context.Background()
+	const key = "abandon-wf"
+	singletonKV, err := js.KeyValue("singleton_locks")
+	if err != nil {
+		t.Fatalf("singleton_locks KV: %v", err)
+	}
+	if _, err := singletonKV.Create(
+		key, []byte(`{"run_id":"rp-abandon-1"}`),
+	); err != nil {
+		t.Fatalf("create lock: %v", err)
+	}
+
+	run := dag.WorkflowRun{
+		RunID:          "rp-abandon-1",
+		WorkflowID:     "abandon-wf",
+		Status:         dag.RunStatusCompleted,
+		Steps:          map[string]dag.StepState{},
+		CreatedAt:      time.Now().UTC(),
+		SingletonKey:   key,
+		ReleasePending: true,
+	}
+	now := time.Now().UTC()
+	run.CompletedAt = &now
+	if err := orch.store.Save(ctx, run); err != nil {
+		t.Fatalf("save rp-abandon-1: %v", err)
+	}
+
+	// Drive reconciler passes until the sweep gives up -- bounded by
+	// releaseAttemptsMax+2 iterations so a regression that never
+	// abandons fails the test instead of hanging.
+	var final dag.WorkflowRun
+	for i := 0; i < releaseAttemptsMax+2; i++ {
+		reloaded, loadErr := orch.store.Load(ctx, "rp-abandon-1")
+		if loadErr != nil {
+			t.Fatalf("load pass %d: %v", i, loadErr)
+		}
+		if !reloaded.ReleasePending {
+			final = reloaded
+			break
+		}
+		orch.reconcileReleasePending(ctx, reloaded)
+	}
+
+	// Positive: the sweep stopped (ReleasePending cleared) instead of
+	// retrying forever.
+	if final.RunID != "rp-abandon-1" {
+		t.Fatalf(
+			"ReleasePending was never cleared within %d passes -- "+
+				"sweep did not abandon",
+			releaseAttemptsMax+2,
+		)
+	}
+	// Positive: it took the full bounded number of attempts, not
+	// fewer (i.e. the release genuinely kept failing every pass, this
+	// isn't a false pass from some other bug clearing the flag).
+	if final.ReleaseAttempts < releaseAttemptsMax {
+		t.Fatalf(
+			"ReleaseAttempts = %d, want >= %d (releaseAttemptsMax)",
+			final.ReleaseAttempts, releaseAttemptsMax,
+		)
+	}
 }

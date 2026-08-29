@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -9,8 +10,28 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// concurrencyCASRetriesMax bounds the optimistic-concurrency retry
+// loop shared by every KV-CAS operation in this file (TigerStyle:
+// bounded loops).
+const concurrencyCASRetriesMax = 10
+
 // ConcurrencyManager enforces run and step concurrency limits using
-// NATS KV counters with optimistic locking. Thread-safe.
+// NATS KV with optimistic locking. Thread-safe.
+//
+// Run-level limits (AcquireRun/ReleaseRun) are backed by a bounded
+// MEMBER SET keyed by run ID, not a bare integer counter (#648 PR
+// review round 3). A bare counter has no notion of WHICH run holds a
+// slot, so a release replayed for a run that already released (the
+// reconciler's ReleasePending sweep can replay arbitrarily late, e.g.
+// if the flag-clear save after a successful release itself fails)
+// decrements whatever the counter currently reads -- which may by
+// then represent a DIFFERENT run's legitimately held slot. A member
+// set makes release-by-run-ID naturally idempotent: removing a run
+// that isn't a member is a no-op, so a replay can never free a slot
+// it doesn't own. Task-level limits (AcquireTask/ReleaseTask) stay
+// counter-based: they gate a task TYPE's in-flight execution slots,
+// not a specific run's admission, and are not subject to the
+// reconciler's ReleasePending replay path.
 type ConcurrencyManager struct {
 	runKV  jetstream.KeyValue
 	taskKV jetstream.KeyValue
@@ -60,13 +81,27 @@ func NewConcurrencyManagerSafe(
 	}, nil
 }
 
-// AcquireRun increments the counter for the workflow. Returns false
-// if the limit is reached. Limit 0 means unlimited.
+// runMembership is the JSON shape stored at "workflow.<id>" in
+// concurrency_runs: the set of run IDs currently holding a slot for
+// that workflow. len(Members) is the active count; it is always
+// <= the caller-supplied limit by construction (AcquireRun refuses to
+// grow past it).
+type runMembership struct {
+	Members []string `json:"members"`
+}
+
+// AcquireRun claims a run-concurrency slot for runID under workflowID.
+// Returns false if the limit is already held by other runs. Limit 0
+// means unlimited. Re-acquiring a runID that already holds a slot is
+// a no-op success (idempotent), not a second slot.
 func (cm *ConcurrencyManager) AcquireRun(
-	ctx context.Context, workflowID string, limit int,
+	ctx context.Context, workflowID, runID string, limit int,
 ) (bool, error) {
 	if workflowID == "" {
 		panic("AcquireRun: workflowID must not be empty")
+	}
+	if runID == "" {
+		panic("AcquireRun: runID must not be empty")
 	}
 	if limit <= 0 {
 		return true, nil // Unlimited
@@ -74,16 +109,22 @@ func (cm *ConcurrencyManager) AcquireRun(
 
 	key := "workflow." + workflowID
 
-	// Retry loop for optimistic locking (bounded)
-	for attempt := 0; attempt < 10; attempt++ {
-		current, rev, err := cm.readCounter(ctx, key)
+	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
+		members, rev, err := cm.readMembers(ctx, key)
 		if err != nil {
 			return false, err
 		}
-		if current >= limit {
+		if containsMember(members, runID) {
+			return true, nil // Already holds a slot -- idempotent.
+		}
+		if len(members) >= limit {
 			return false, nil
 		}
-		if cm.casIncrement(ctx, key, current, rev) {
+		newMembers := append(append([]string{}, members...), runID)
+		if len(newMembers) > limit {
+			panic("AcquireRun: member set grew beyond limit")
+		}
+		if cm.casWriteMembers(ctx, key, newMembers, rev) {
 			return true, nil
 		}
 		// CAS failed — retry
@@ -91,36 +132,115 @@ func (cm *ConcurrencyManager) AcquireRun(
 	return false, fmt.Errorf("acquire: too many CAS retries")
 }
 
-// ReleaseRun decrements the counter for the workflow.
+// ReleaseRun releases runID's slot under workflowID, if held.
+// Releasing a runID that is not (or no longer) a member is a safe
+// no-op — this is what makes a replayed release idempotent regardless
+// of how late it lands (#648 PR review round 3).
 func (cm *ConcurrencyManager) ReleaseRun(
-	ctx context.Context, workflowID string,
+	ctx context.Context, workflowID, runID string,
 ) error {
 	if workflowID == "" {
 		panic("ReleaseRun: workflowID must not be empty")
 	}
+	if runID == "" {
+		panic("ReleaseRun: runID must not be empty")
+	}
 	key := "workflow." + workflowID
 
-	for attempt := 0; attempt < 10; attempt++ {
-		current, rev, err := cm.readCounter(ctx, key)
+	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
+		members, rev, err := cm.readMembers(ctx, key)
 		if err != nil {
 			return err
 		}
-		if current <= 0 {
-			return nil // Already at zero
+		if !containsMember(members, runID) {
+			return nil // Not held (or already released) -- no-op.
 		}
-		newVal := current - 1
-		data := []byte(strconv.Itoa(newVal))
-		if rev == 0 {
-			_, err = cm.runKV.Create(ctx, key, data)
-		} else {
-			_, err = cm.runKV.Update(ctx, key, data, rev)
-		}
-		if err == nil {
+		newMembers := removeMember(members, runID)
+		if cm.casWriteMembers(ctx, key, newMembers, rev) {
 			return nil
 		}
 		// CAS failed — retry
 	}
 	return fmt.Errorf("release: too many CAS retries")
+}
+
+// containsMember reports whether runID is present in members.
+func containsMember(members []string, runID string) bool {
+	for _, m := range members {
+		if m == runID {
+			return true
+		}
+	}
+	return false
+}
+
+// removeMember returns a copy of members with runID removed (a
+// no-op copy if runID is absent -- callers check presence first so
+// this path is only hit when it IS present).
+func removeMember(members []string, runID string) []string {
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		if m != runID {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// readMembers reads the run-membership set at key. A missing key
+// reads as an empty set with revision 0 (so the caller's next CAS
+// write is a Create). A value that fails to unmarshal as
+// runMembership -- either corrupt JSON or the LEGACY plain-integer
+// counter format this replaces -- also reads as an empty set, but
+// keeps the entry's real revision so the caller's next CAS write
+// lands as an Update, migrating the key to the new format in place on
+// first touch.
+//
+// The legacy-format case is a deliberate, documented one-time
+// under-count: a bare integer counter has no record of WHICH run IDs
+// it was counting, so there is no way to reconstruct the correct
+// initial member set from it. Any workflow mid-flight at the moment
+// of this upgrade may briefly admit more concurrent runs than its
+// limit, until the runs the old counter was tracking finish (their
+// ReleaseRun calls will find them absent from the new empty set and
+// no-op, same as any other release of a run that already isn't a
+// member). This window is bounded to the runs in flight at upgrade
+// time and self-heals as they complete.
+func (cm *ConcurrencyManager) readMembers(
+	ctx context.Context, key string,
+) ([]string, uint64, error) {
+	entry, err := cm.runKV.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	var m runMembership
+	if unmarshalErr := json.Unmarshal(entry.Value(), &m); unmarshalErr != nil {
+		return nil, entry.Revision(), nil
+	}
+	return m.Members, entry.Revision(), nil
+}
+
+// casWriteMembers CAS-writes the member set at key: Create if rev==0
+// (key never existed), Update guarded by rev otherwise (covers both
+// a fresh key at its real revision and a legacy-format value being
+// migrated in place). Returns false on any CAS conflict so the
+// caller's bounded retry loop re-reads and retries.
+func (cm *ConcurrencyManager) casWriteMembers(
+	ctx context.Context, key string, members []string, rev uint64,
+) bool {
+	data, err := json.Marshal(runMembership{Members: members})
+	if err != nil {
+		return false
+	}
+	if rev == 0 {
+		_, err = cm.runKV.Create(ctx, key, data)
+	} else {
+		_, err = cm.runKV.Update(ctx, key, data, rev)
+	}
+	return err == nil
 }
 
 // AcquireTask increments the counter for a task type. Returns false
@@ -139,7 +259,7 @@ func (cm *ConcurrencyManager) AcquireTask(
 	}
 
 	key := "task." + taskType
-	for attempt := 0; attempt < 10; attempt++ {
+	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
 		current, rev, err := cm.readKV(ctx, cm.taskKV, key)
 		if err != nil {
 			return false, err
@@ -166,7 +286,7 @@ func (cm *ConcurrencyManager) ReleaseTask(
 	}
 
 	key := "task." + taskType
-	for attempt := 0; attempt < 10; attempt++ {
+	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
 		current, rev, err := cm.readKV(ctx, cm.taskKV, key)
 		if err != nil {
 			return err
@@ -230,37 +350,6 @@ func (cm *ConcurrencyManager) casIncrementKV(
 		_, err = kv.Create(ctx, key, data)
 	} else {
 		_, err = kv.Update(ctx, key, data, rev)
-	}
-	return err == nil
-}
-
-func (cm *ConcurrencyManager) readCounter(
-	ctx context.Context, key string,
-) (int, uint64, error) {
-	entry, err := cm.runKV.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return 0, 0, nil
-		}
-		return 0, 0, err
-	}
-	val, err := strconv.Atoi(string(entry.Value()))
-	if err != nil {
-		return 0, entry.Revision(), nil
-	}
-	return val, entry.Revision(), nil
-}
-
-func (cm *ConcurrencyManager) casIncrement(
-	ctx context.Context, key string, current int, rev uint64,
-) bool {
-	newVal := current + 1
-	data := []byte(strconv.Itoa(newVal))
-	var err error
-	if rev == 0 {
-		_, err = cm.runKV.Create(ctx, key, data)
-	} else {
-		_, err = cm.runKV.Update(ctx, key, data, rev)
 	}
 	return err == nil
 }
