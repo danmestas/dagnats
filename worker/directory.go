@@ -9,9 +9,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// ErrWorkerIDOwned is returned by CheckOwnership when workerID is
-// already registered under a different, non-empty token_id and the
-// caller is neither that token nor an admin.
+// ErrWorkerIDOwned is returned by CheckOwnership (on register) and
+// DeregisterOwned (on disconnect) when workerID's current entry is
+// owned by a different token and the caller is neither that token
+// nor an admin.
 var ErrWorkerIDOwned = errors.New(
 	"worker_id is registered to another token",
 )
@@ -178,6 +179,58 @@ func (d *Directory) Deregister(workerID string) error {
 	)
 	defer cancel()
 	err := d.kv.Delete(ctx, workerID)
+	if err == jetstream.ErrKeyNotFound {
+		return nil
+	}
+	return err
+}
+
+// DeregisterOwned removes workerID's entry, but only if the caller
+// still owns it (#650, the delete-side counterpart to
+// CheckOwnership): the entry's token_id must equal callerTokenID, or
+// callerIsAdmin must be true. A disconnect from a token that has
+// since been superseded (e.g. an admin took the worker_id over while
+// the original owner's connection was still open) must not delete
+// the current owner's entry out from under it -- it returns
+// ErrWorkerIDOwned instead and leaves the entry untouched. Uses the
+// Get's revision with jetstream.LastRevision on Delete so a
+// concurrent re-register between the Get and the Delete aborts the
+// delete instead of clobbering the new owner (closes the TOCTOU
+// window CheckOwnership+Register also has to accept). Returns nil if
+// the key does not exist.
+func (d *Directory) DeregisterOwned(
+	workerID, callerTokenID string, callerIsAdmin bool,
+) error {
+	if workerID == "" {
+		panic("Directory.DeregisterOwned: workerID must not be empty")
+	}
+	if d.kv == nil {
+		panic("Directory.DeregisterOwned: kv must not be nil")
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	entry, err := d.kv.Get(ctx, workerID)
+	if err == jetstream.ErrKeyNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !callerIsAdmin {
+		var existing WorkerRegistration
+		unmarshalErr := json.Unmarshal(entry.Value(), &existing)
+		// A corrupt/stale entry can't prove ownership either way --
+		// treat it like a mismatch and leave it alone rather than
+		// delete data this caller can't be shown to own.
+		if unmarshalErr != nil || existing.TokenID != callerTokenID {
+			return ErrWorkerIDOwned
+		}
+	}
+	err = d.kv.Delete(
+		ctx, workerID, jetstream.LastRevision(entry.Revision()),
+	)
 	if err == jetstream.ErrKeyNotFound {
 		return nil
 	}

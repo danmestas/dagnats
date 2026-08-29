@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,15 +72,43 @@ func (b *Bridge) handleConnect(
 		)
 		return
 	}
-	defer func() {
-		dir.Deregister(req.WorkerID)
-		slog.InfoContext(ctx, "worker disconnected",
-			"worker_id", req.WorkerID,
-		)
-	}()
+	defer deregisterOnDisconnect(ctx, dir, req.WorkerID, claims)
 
 	writeSSEHeaders(w)
 	sendHeartbeatLoop(w, r, reg, dir)
+}
+
+// deregisterOnDisconnect removes the worker's directory entry when
+// its connection closes, scoped to the same ownership rule enforced
+// on connect (#650): a stale disconnect from a token that no longer
+// owns the worker_id (e.g. after an admin takeover while this
+// connection stayed open) must not delete the current owner's entry.
+func deregisterOnDisconnect(
+	ctx context.Context, dir *worker.Directory,
+	workerID string, claims workertoken.Claims,
+) {
+	if dir == nil {
+		panic("deregisterOnDisconnect: dir must not be nil")
+	}
+	if workerID == "" {
+		panic("deregisterOnDisconnect: workerID must not be empty")
+	}
+	err := dir.DeregisterOwned(workerID, claims.TokenID, claims.Admin)
+	switch {
+	case errors.Is(err, worker.ErrWorkerIDOwned):
+		slog.DebugContext(ctx,
+			"stale disconnect for worker_id owned by another token",
+			"worker_id", workerID,
+		)
+	case err != nil:
+		slog.ErrorContext(ctx, "deregister failed",
+			"worker_id", workerID, "error", err,
+		)
+	default:
+		slog.InfoContext(ctx, "worker disconnected",
+			"worker_id", workerID,
+		)
+	}
 }
 
 // enforceWorkerIDOwnership checks -- and, on rejection, responds to --

@@ -256,3 +256,162 @@ func TestConnectWorkerIDOwnershipUnownedEntryClaimable(t *testing.T) {
 	resp.Body.Close()
 	cancel()
 }
+
+// workerPresent reports whether workerID currently has an entry in
+// the directory, without failing the test.
+func workerPresent(
+	t *testing.T, dir *worker.Directory, workerID string,
+) (worker.WorkerRegistration, bool) {
+	t.Helper()
+	workers, err := dir.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, w := range workers {
+		if w.WorkerID == workerID {
+			return w, true
+		}
+	}
+	return worker.WorkerRegistration{}, false
+}
+
+// TestConnectDeregisterOwnershipScoped pins the #650 delete-side fix:
+// disconnect only removes the directory entry when the disconnecting
+// connection's identity still owns it. A stale disconnect from a
+// token that has since been superseded (e.g. by an admin takeover)
+// must leave the current entry alone rather than delete it out from
+// under its new owner.
+func TestConnectDeregisterOwnershipScoped(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := openTokenStore(t, js)
+
+	b := newTestBridge(t, nc)
+	b.token = "admin-secret"
+	b.SetTokenStore(store)
+	ts := httptest.NewServer(b.Handler())
+	// Cleanups run LIFO: registering Close first (before any
+	// connection's cancel) guarantees every connection is torn down
+	// before Close blocks waiting for them, even on an early t.Fatal.
+	t.Cleanup(ts.Close)
+
+	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer mintCancel()
+	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	if err != nil {
+		t.Fatalf("Mint A: %v", err)
+	}
+
+	dir := worker.NewDirectory(js)
+
+	// A connects and claims w1; leave the connection open.
+	respA, cancelA := connectWorker(t, ts.URL, bearerA, "w1")
+	t.Cleanup(cancelA)
+	if respA.StatusCode != http.StatusOK {
+		t.Fatalf("A connect status = %d, want 200", respA.StatusCode)
+	}
+	entry, ok := workerPresent(t, dir, "w1")
+	if !ok || entry.TokenID != idA {
+		t.Fatalf(
+			"entry after A connect = %+v, ok=%v, want TokenID=%q",
+			entry, ok, idA,
+		)
+	}
+
+	// Admin takes over w1 while A is still connected.
+	respAdmin, cancelAdmin := connectWorker(t, ts.URL, "admin-secret", "w1")
+	t.Cleanup(cancelAdmin)
+	if respAdmin.StatusCode != http.StatusOK {
+		t.Fatalf("admin connect status = %d, want 200", respAdmin.StatusCode)
+	}
+	entry, ok = workerPresent(t, dir, "w1")
+	if !ok || entry.TokenID != "" {
+		t.Fatalf(
+			"entry after admin takeover = %+v, ok=%v, want TokenID=\"\"",
+			entry, ok,
+		)
+	}
+
+	// A disconnects (stale connection, no longer the owner): w1 must
+	// still be present and still admin's.
+	respA.Body.Close()
+	cancelA()
+	time.Sleep(200 * time.Millisecond)
+	entry, ok = workerPresent(t, dir, "w1")
+	if !ok {
+		t.Fatal("w1 was deleted by A's stale disconnect, want it to remain")
+	}
+	if entry.TokenID != "" {
+		t.Fatalf(
+			"entry.TokenID = %q after A's stale disconnect, want \"\" (still admin's)",
+			entry.TokenID,
+		)
+	}
+
+	// Admin disconnects its own entry: it is removed.
+	respAdmin.Body.Close()
+	cancelAdmin()
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := workerPresent(t, dir, "w1"); ok {
+		t.Fatal("w1 still present after admin's own disconnect, want it removed")
+	}
+
+	// A connects and disconnects its own worker_id (w2, no takeover):
+	// the entry is removed by its own owner.
+	respA2, cancelA2 := connectWorker(t, ts.URL, bearerA, "w2")
+	t.Cleanup(cancelA2)
+	if respA2.StatusCode != http.StatusOK {
+		t.Fatalf("A connect w2 status = %d, want 200", respA2.StatusCode)
+	}
+	if _, ok := workerPresent(t, dir, "w2"); !ok {
+		t.Fatal("w2 not present after A's own connect")
+	}
+	respA2.Body.Close()
+	cancelA2()
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := workerPresent(t, dir, "w2"); ok {
+		t.Fatal("w2 still present after A's own disconnect, want it removed")
+	}
+}
+
+// TestConnectDeregisterDevModeAlwaysDeletes pins that dev mode (no
+// env token configured) always removes the entry on disconnect --
+// every dev-mode caller is Admin, so there is no ownership to
+// enforce.
+func TestConnectDeregisterDevModeAlwaysDeletes(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	b := newTestBridge(t, nc)
+	ts := httptest.NewServer(b.Handler())
+	t.Cleanup(ts.Close)
+
+	dir := worker.NewDirectory(js)
+
+	resp, cancel := connectWorker(t, ts.URL, "", "dev-w1")
+	t.Cleanup(cancel)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("connect status = %d, want 200", resp.StatusCode)
+	}
+	if _, ok := workerPresent(t, dir, "dev-w1"); !ok {
+		t.Fatal("dev-w1 not present after connect")
+	}
+	resp.Body.Close()
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := workerPresent(t, dir, "dev-w1"); ok {
+		t.Fatal("dev-w1 still present after disconnect, want it removed")
+	}
+}
