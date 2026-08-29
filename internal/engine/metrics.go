@@ -52,6 +52,8 @@ type orchMetrics struct {
 	// attention; the run itself stays stuck-but-correct rather than
 	// silently advancing under a different def.
 	defPinMissingVersion metric.Int64Counter
+	runIndexRepaired     metric.Int64Counter
+	runIndexOrphans      metric.Int64Counter
 }
 
 // newOrchMetrics creates all orchestrator metric instruments.
@@ -95,6 +97,16 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 	defPinMissingVersion, _ := m.Int64Counter(
 		"engine.def_pin.missing_version",
 	)
+	// #659: the creation-ordered run-index repair sweep's outcome --
+	// nonzero repaired means the index was stale (pre-upgrade runs or
+	// a lost writeRunIndexEntry race); nonzero orphans means a run was
+	// deleted outside PruneTerminal.
+	runIndexRepaired, _ := m.Int64Counter(
+		"engine.run_index.repaired",
+	)
+	runIndexOrphans, _ := m.Int64Counter(
+		"engine.run_index.orphans_removed",
+	)
 	return orchMetrics{
 		runsActive:           runsActive,
 		runsCompleted:        runsCompleted,
@@ -107,6 +119,8 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 		dlqEntries:           dlqEntries,
 		dlqDepth:             dlqDepth,
 		defPinMissingVersion: defPinMissingVersion,
+		runIndexRepaired:     runIndexRepaired,
+		runIndexOrphans:      runIndexOrphans,
 	}
 }
 

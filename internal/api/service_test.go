@@ -799,6 +799,44 @@ func TestClampRunsLimit(t *testing.T) {
 	}
 }
 
+// TestScaledFetchMax pins the review-round fetchMax scaling: a small
+// limit (the common case -- console pages, CLI status) must not force
+// a 10,000-value fetch on a no-match filter. fetchMax scales with
+// limit but never drops below a floor that still gives filtered
+// queries real depth, and never exceeds engine.ScanFetchMax. Pure
+// unit, no NATS.
+func TestScaledFetchMax(t *testing.T) {
+	cases := []struct {
+		limit, want int
+	}{
+		{limit: 1, want: 1000},                               // floor: 1*10=10 clamps up
+		{limit: 50, want: 1000},                              // 50*10=500 still under floor
+		{limit: 100, want: 1000},                             // 100*10=1000 exactly at floor
+		{limit: DefaultRunsLimit, want: engine.ScanFetchMax}, // 1000*10=10000
+		{limit: MaxRunsLimitCeiling, want: engine.ScanFetchMax},
+		{limit: MaxRunsLimitCeiling + 1, want: engine.ScanFetchMax},
+	}
+	for _, c := range cases {
+		got := scaledFetchMax(c.limit)
+		if got != c.want {
+			t.Errorf(
+				"scaledFetchMax(%d) = %d, want %d",
+				c.limit, got, c.want,
+			)
+		}
+	}
+	// Negative: the result must never be below limit itself --
+	// ScanNewestFirst asserts fetchMax >= limit and would panic.
+	for _, limit := range []int{1, 1000, MaxRunsLimitCeiling} {
+		if got := scaledFetchMax(limit); got < limit {
+			t.Fatalf(
+				"scaledFetchMax(%d) = %d, must be >= limit",
+				limit, got,
+			)
+		}
+	}
+}
+
 func TestServiceListRunEvents(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	err := natsutil.SetupAll(nc)

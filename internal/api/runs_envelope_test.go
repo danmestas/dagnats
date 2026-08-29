@@ -47,6 +47,31 @@ func (f fakeRunReader) CountAll(_ context.Context) (int, error) {
 	return f.countAll, nil
 }
 
+func (f fakeRunReader) ScanNewestFirst(
+	_ context.Context, pred func(dag.WorkflowRun) bool,
+	limit, fetchMax int,
+) ([]dag.WorkflowRun, engine.ScanStats, error) {
+	if pred == nil {
+		panic("fakeRunReader.ScanNewestFirst: pred must not be nil")
+	}
+	if limit <= 0 {
+		panic("fakeRunReader.ScanNewestFirst: limit must be positive")
+	}
+	if fetchMax < limit {
+		panic("fakeRunReader.ScanNewestFirst: fetchMax must be >= limit")
+	}
+	matched := make([]dag.WorkflowRun, 0, limit)
+	for _, run := range f.runs {
+		if len(matched) >= limit {
+			break
+		}
+		if pred(run) {
+			matched = append(matched, run)
+		}
+	}
+	return matched, engine.ScanStats{Matched: len(matched)}, nil
+}
+
 // TestEnvelopeUnfilteredTotalIsFullPopulation proves the unfiltered
 // envelope total reflects the TRUE population (via CountAll), not the
 // length of the capped ListRecent window. This is the #452 headline:
@@ -109,8 +134,9 @@ func TestCountUnfilteredUsesCountAll(t *testing.T) {
 	if got != fullPopulation {
 		t.Fatalf("count = %d, want %d", got, fullPopulation)
 	}
-	// Negative: a workflow filter falls back to the window scan, so
-	// it counts matches in ListRecent (here: zero matches for "nope").
+	// Negative: a workflow filter falls back to the newest-first scan,
+	// so it counts matches within that window (here: zero matches for
+	// "nope").
 	none, err := countRunsFrom(
 		context.Background(), store, RunsFilter{Workflow: "nope"},
 	)

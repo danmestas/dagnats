@@ -114,7 +114,7 @@ GET /runs[?workflow=NAME][&status=STATUS][&label=KEY=VALUE...]
 | `status` | Filter by run status: `pending`, `running`, `completed`, `failed`, `cancelled`, `compensated`, or `compensate_failed`. An unrecognized value returns `400` listing the accepted set. |
 | `label` | Filter by a run label, `key=value`. Repeatable — every `label` param given must match (AND semantics). A param with no `=` returns `400`. |
 
-Filters compose: `workflow`, `status`, and `label` narrow the same query together, not as alternatives. Filtering is applied within a bounded most-recent-runs window server-side, so a filtered result (here and on Count) may miss matches older than that window until the time-ordered index in #453 lands. Cursor-based pagination is not part of this change and is also tracked by #453.
+Filters compose: `workflow`, `status`, and `label` narrow the same query together, not as alternatives. The server scans runs newest-first (a creation-ordered index, #659) and applies the filter during that scan, so a filtered result (here, Count, and Bulk Cancel below) is exact for the newest runs and only ever misses matches OLDER than the scanned window — it never misses a run newer than one already found, the failure mode #659 fixed. Cursor-based pagination is not part of this change; the index position enables it later.
 
 **Response:** `200 OK`
 
@@ -575,6 +575,8 @@ POST /runs/cancel
 | `before` | string | No | RFC3339 upper bound on creation time |
 | `dry_run` | bool | No | Preview without cancelling |
 | `labels` | object | No | Every key/value must match a run's labels (AND semantics), composing with `workflow_id`/`status`/`after`/`before`. Same bounds as Start Run's `labels`; a filter with more than 16 labels is a `400`. |
+
+Matching runs are found via the same newest-first, creation-ordered scan List Runs uses (#659): exact for the newest matches, missing only runs OLDER than the scanned window — never a run newer than one already found.
 
 **Response:** `200 OK`
 

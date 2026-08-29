@@ -6,6 +6,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -199,5 +200,58 @@ func TestBulkCancelEmptyResult(t *testing.T) {
 	if len(resp.Cancelled) != 0 {
 		t.Fatalf("cancelled should be empty, got %d",
 			len(resp.Cancelled))
+	}
+}
+
+// TestBulkCancelSurfacesTruncatedScan proves the review-round-2 nit:
+// when the newest-first scan hits its fetch cap before it could prove
+// there are no more matches beyond the scanned window, the response
+// says so via Truncated -- a caller must never read an empty/partial
+// bulk-cancel result as "definitely everything," the way silently
+// discarding ScanStats.Truncated let it. Population exceeds
+// engine.ScanFetchMax (10,000) and belongs to an UNRELATED workflow,
+// so genuinely zero runs match the target workflow -- but the scan
+// still can't prove that within its fetch cap, so Truncated must be
+// true regardless of the (correct) zero-match result.
+func TestBulkCancelSurfacesTruncatedScan(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc)
+
+	const seedTotal = engine.ScanFetchMax + 100
+	base := time.Now().Add(-24 * time.Hour)
+	for i := 0; i < seedTotal; i++ {
+		run := dag.WorkflowRun{
+			RunID:      fmt.Sprintf("trunc-seed-%05d", i),
+			WorkflowID: "trunc-cancel-other-wf",
+			Status:     dag.RunStatusCompleted,
+			Steps:      map[string]dag.StepState{},
+			CreatedAt:  base.Add(time.Duration(i) * time.Millisecond),
+		}
+		if err := svc.store.Save(context.Background(), run); err != nil {
+			t.Fatalf("seed run %d: %v", i, err)
+		}
+	}
+
+	resp, err := svc.BulkCancelRuns(context.Background(),
+		BulkCancelRequest{
+			WorkflowID: "trunc-cancel-target-wf",
+			DryRun:     true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("BulkCancelRuns: %v", err)
+	}
+	// Positive: Truncated is surfaced.
+	if !resp.Truncated {
+		t.Fatal("resp.Truncated = false, want true " +
+			"(scan hit its fetch cap before exhausting the population)")
+	}
+	// Negative: the (correct, but unproven-complete) zero-match result
+	// is still returned alongside the honest Truncated flag.
+	if len(resp.Cancelled) != 0 {
+		t.Fatalf("Cancelled = %v, want empty", resp.Cancelled)
 	}
 }
