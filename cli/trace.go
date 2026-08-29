@@ -6,6 +6,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -13,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/observe/spanread"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
@@ -422,9 +425,9 @@ func searchTraces(
 	)
 	defer cancel()
 
-	cons, err := js.OrderedConsumer(
-		ctx, "TELEMETRY",
-		jetstream.OrderedConsumerConfig{
+	cons, err := natsutil.OpenConsumer(
+		ctx, js, "TELEMETRY",
+		natsutil.OrderedConsumerSpec{
 			FilterSubjects: []string{subject},
 			DeliverPolicy:  jetstream.DeliverByStartTimePolicy,
 			OptStartTime:   &startTime,
@@ -438,7 +441,10 @@ func searchTraces(
 	return collectSearchResults(cons, flags)
 }
 
-// collectSearchResults reads spans and aggregates by trace ID.
+// collectSearchResults reads spans and aggregates by trace ID. Ends
+// normally on the idle-wait timeout; any other fetch error (most
+// importantly the stream going away mid-scan) is reported rather than
+// silently truncating the search.
 func collectSearchResults(
 	cons jetstream.Consumer, flags traceSearchFlags,
 ) []traceSearchResult {
@@ -457,6 +463,9 @@ func collectSearchResults(
 			jetstream.FetchMaxWait(time.Second),
 		)
 		if fetchErr != nil {
+			if !errors.Is(fetchErr, nats.ErrTimeout) {
+				fmt.Fprintf(os.Stderr, "read TELEMETRY: %v\n", fetchErr)
+			}
 			break
 		}
 		sp, parseErr := spanread.ParseSpan(msg.Data())

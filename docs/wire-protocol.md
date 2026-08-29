@@ -597,10 +597,13 @@ verdict, before the TTL elapses (#624).
   backoff, on `context.Background()`, so your own context deadline
   cannot interrupt it. Bound it and treat the resulting
   `ErrStreamNotFound` as "the hot lane is gone", not as a fatal client
-  error; the stream is recreatable and the read is retryable. dagnats'
-  own readers do this in `logsOrderedConsumerConfig`
-  (`internal/api/logs.go`), which a CI lint step keeps as the single
-  place any ordered consumer is configured.
+  error; the stream is recreatable and the read is retryable. Every
+  dagnats reader of this stream — the API's paged and follow readers
+  and every `dagnats` CLI command that scans BUILD_LOGS or TELEMETRY
+  (`logs`, `trace`, `metrics`, `clean`) — applies this same bound via
+  `natsutil.OpenConsumer`/`natsutil.OpenStreamConsumer`
+  (`internal/natsutil/ordered_consumer.go`), which a CI lint step keeps
+  as the single place any ordered consumer is configured or opened.
 - **Use for**: a live or historical tail of one attempt's captured
   output within the hot TTL window. Anything longer-lived belongs in a
   consumer's own store, drained from this stream before the TTL

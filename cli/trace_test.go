@@ -292,6 +292,53 @@ func TestCollectRunSpansIntegration(t *testing.T) {
 	}
 }
 
+// TestCollectRunSpansDeletedStreamReturnsWithinBound is #675's red
+// test for the natsutil.OrderedConsumerConfig bound: before it, a
+// TELEMETRY stream deleted out from under the ordered consumer left
+// Next() retrying forever (nats.go v1.53.1's unbounded MaxResetAttempts
+// default), hanging CollectRunSpans instead of returning an error.
+func TestCollectRunSpansDeletedStreamReturnsWithinBound(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	if _, err := js.Stream(context.Background(), "TELEMETRY"); err != nil {
+		t.Fatalf("TELEMETRY stream missing before delete: %v", err)
+	}
+	if err := js.DeleteStream(context.Background(), "TELEMETRY"); err != nil {
+		t.Fatalf("DeleteStream: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	start := time.Now()
+	_, collectErr := spanread.CollectRunSpans(
+		ctx, js, "test-run-001", spanread.MaxSpans,
+	)
+	elapsed := time.Since(start)
+
+	// Positive: the bounded reset must surface an error rather than
+	// the caller's context deadline being the only thing that stops it.
+	if collectErr == nil {
+		t.Fatal("expected an error for a deleted TELEMETRY stream")
+	}
+	// Negative: it must return well inside the 30s test deadline — the
+	// bound (natsutil.OrderedConsumerResetMax attempts, ~7s of backoff)
+	// is what stops it, not the caller's context.
+	if elapsed > 15*time.Second {
+		t.Fatalf("CollectRunSpans took %s; bound not applied", elapsed)
+	}
+}
+
 func TestCollectRunSpansBuildTree(t *testing.T) {
 	srv, nc := natsutil.StartTestServer(t)
 	_ = srv

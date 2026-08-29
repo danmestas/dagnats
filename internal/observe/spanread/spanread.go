@@ -9,9 +9,13 @@ package spanread
 import (
 	"context"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"sort"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -25,8 +29,12 @@ const MaxSpans = 10000
 // CollectRunSpans reads up to maxSpans spans for runID from the
 // TELEMETRY stream via an ordered consumer. The drain ends when the
 // stream is exhausted (a 1s fetch wait elapses) or maxSpans is reached.
-// Returns the collected spans; a consumer-creation failure returns the
-// error so the caller can surface it.
+// Returns the collected spans; a consumer-creation failure, or a fetch
+// failure other than the normal idle-timeout (most importantly the
+// stream going away mid-read, which natsutil.OrderedConsumerConfig's
+// bound now surfaces instead of retrying forever), returns the error
+// so the caller can surface it rather than silently truncating the
+// trace.
 func CollectRunSpans(
 	ctx context.Context, js jetstream.JetStream,
 	runID string, maxSpans int,
@@ -39,9 +47,9 @@ func CollectRunSpans(
 	}
 
 	subject := "telemetry.spans.*." + runID
-	cons, err := js.OrderedConsumer(
-		ctx, "TELEMETRY",
-		jetstream.OrderedConsumerConfig{
+	cons, err := natsutil.OpenConsumer(
+		ctx, js, "TELEMETRY",
+		natsutil.OrderedConsumerSpec{
 			FilterSubjects: []string{subject},
 			DeliverPolicy:  jetstream.DeliverAllPolicy,
 		},
@@ -56,7 +64,10 @@ func CollectRunSpans(
 			jetstream.FetchMaxWait(time.Second),
 		)
 		if fetchErr != nil {
-			break
+			if errors.Is(fetchErr, nats.ErrTimeout) {
+				break
+			}
+			return nil, fmt.Errorf("read TELEMETRY spans for run %s: %w", runID, fetchErr)
 		}
 		sp, parseErr := ParseSpan(msg.Data())
 		if parseErr != nil {

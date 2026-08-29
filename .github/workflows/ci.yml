@@ -103,47 +103,50 @@ jobs:
 
       - name: Ordered consumer bound lint
         if: steps.filter.outputs.code == 'true'
-        # Forbid ad-hoc ordered consumers on the BUILD_LOGS read path.
-        # nats.go v1.53.1 rewrites an unset MaxResetAttempts to -1
+        # Forbid ad-hoc ordered consumers anywhere in the tree. nats.go
+        # v1.53.1 rewrites an unset MaxResetAttempts to -1
         # (jetstream/ordered.go getConsumerConfig) and its reset retry
         # loop only stops when attempts > 0 (retryWithBackoff), while
         # Next() calls reset() on every invocation — so a consumer whose
         # stream is deleted blocks in Next() forever, on
         # context.Background(), where the caller's own deadline cannot
         # reach it. That hung the SSE follow handler and the httptest
-        # server waiting on it. logsOrderedConsumerConfig
-        # (internal/api/logs.go) is the single place the bound is set;
-        # this keeps a new call site from quietly reintroducing the
-        # unbounded default.
+        # server waiting on it (#672); the same footgun existed at
+        # seven other sites reading TELEMETRY/BUILD_LOGS directly (#675).
         #
-        # Two patterns, two exclusion sets: the CONFIG literal is what
-        # carries MaxResetAttempts, so it may only appear in logs.go.
-        # The CALL may also appear in logs_follow.go, which passes the
-        # helper's config — any raw config it tried to build inline
-        # would still be caught by the first pattern.
+        # internal/natsutil/ordered_consumer.go is the single place
+        # left that may build a jetstream.OrderedConsumerConfig{} or
+        # call .OrderedConsumer( — natsutil.OrderedConsumerConfig sets
+        # the bound, and natsutil.OpenConsumer / OpenStreamConsumer are
+        # the only sanctioned callers of the jetstream API method
+        # itself. Every reader in the repo (internal/api, cli/, and
+        # internal/observe/spanread) goes through those, so this lint
+        # covers the whole tree, not just one package.
         #
-        # Scope is internal/api/ (the log lane). cli/ and
-        # internal/observe/spanread/ still build ordered consumers
-        # directly and carry the same upstream footgun; bounding those
-        # is tracked separately and deliberately out of this step.
+        # Two patterns: the CONFIG literal is what carries
+        # MaxResetAttempts, so it may only appear in the helper file.
+        # The CALL (js.OrderedConsumer / stream.OrderedConsumer) may
+        # also only appear there — everywhere else calls
+        # natsutil.OpenConsumer/OpenStreamConsumer instead, which is
+        # exempt because those names don't match the "OrderedConsumer("
+        # substring the pattern below is built to catch.
         run: |
           set -eu
           if matches=$(grep -rnE 'jetstream\.OrderedConsumerConfig\{' \
               --include='*.go' \
               --exclude='*_test.go' \
-              --exclude='logs.go' \
-              internal/api/); then
-            echo "::error::OrderedConsumerConfig built outside internal/api/logs.go. Use logsOrderedConsumerConfig (it sets MaxResetAttempts; the nats.go default is unbounded)."
+              --exclude-dir='natsutil' \
+              .); then
+            echo "::error::OrderedConsumerConfig built outside internal/natsutil. Use natsutil.OrderedConsumerConfig / natsutil.OpenConsumer (it sets MaxResetAttempts; the nats.go default is unbounded)."
             echo "$matches"
             exit 1
           fi
           if matches=$(grep -rnE 'OrderedConsumer\(' \
               --include='*.go' \
               --exclude='*_test.go' \
-              --exclude='logs.go' \
-              --exclude='logs_follow.go' \
-              internal/api/); then
-            echo "::error::Ordered consumer opened outside the bounded log readers. Route its config through logsOrderedConsumerConfig."
+              --exclude-dir='natsutil' \
+              .); then
+            echo "::error::Ordered consumer opened outside internal/natsutil. Route it through natsutil.OpenConsumer / natsutil.OpenStreamConsumer."
             echo "$matches"
             exit 1
           fi

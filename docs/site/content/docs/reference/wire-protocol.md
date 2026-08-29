@@ -467,7 +467,11 @@ before the TTL elapses.
   own context deadline cannot interrupt it. Bound it, and treat the
   resulting `ErrStreamNotFound` as "the hot lane is gone" -- the stream is
   recreatable and the read is retryable, so a 503 fits it better than a
-  fatal error.
+  fatal error. Every dagnats reader applies this bound -- the API's
+  paged and follow readers and every `dagnats` CLI command that scans
+  BUILD_LOGS or TELEMETRY -- via `natsutil.OpenConsumer`/
+  `natsutil.OpenStreamConsumer`, the single place any ordered consumer
+  is configured or opened (enforced by a CI lint step).
 - **Use for:** a live or historical tail of one attempt's captured output
   within the hot TTL window. Anything longer-lived belongs in a
   consumer's own store, drained before the TTL elapses.

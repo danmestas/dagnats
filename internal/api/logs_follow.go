@@ -30,6 +30,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -131,9 +132,9 @@ func openLogsFollowConsumer(
 	if js == nil {
 		panic("openLogsFollowConsumer: js must not be nil")
 	}
-	cons, err := js.OrderedConsumer(
-		ctx, "BUILD_LOGS",
-		logsOrderedConsumerConfig(runID, stepID, attempt, iteration, cursor),
+	cons, err := natsutil.OpenConsumer(
+		ctx, js, "BUILD_LOGS",
+		logsOrderedConsumerSpec(runID, stepID, attempt, iteration, cursor),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
