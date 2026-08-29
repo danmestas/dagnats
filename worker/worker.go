@@ -599,14 +599,20 @@ func (w *Worker) subscribeTask(
 		if w.singletons[tt] {
 			partCount = 1
 		}
-		filter := "task." + tt + ".>"
-		groupName := "workers-" + tt
+		// Routed through consumerFilterFor/consumerNameFor (not built
+		// inline) so a partitioned worker's filter carries the same
+		// one-trailing-token anchor and sanitization a non-partitioned
+		// worker's subscribePullConsumer uses — otherwise a partitioned
+		// "build" worker would (a) still wildcard-leak "build.linux"
+		// dispatches and (b) collide on TASK_QUEUES with a
+		// non-partitioned worker of the same task type, whose filter is
+		// now "*"-anchored (#674).
+		filter := consumerFilterFor(tt, "")
+		groupName := consumerNameFor(tt, "")
 		if len(w.groups) > 0 {
 			for _, group := range w.groups {
-				gFilter := "task." + tt + "." +
-					group + ".>"
-				gName := "workers-" + tt +
-					"-" + group
+				gFilter := consumerFilterFor(tt, group)
+				gName := consumerNameFor(tt, group)
 				cc := w.createElasticConsumer(
 					tt, gName, gFilter,
 					partCount, h,
@@ -705,14 +711,37 @@ func (w *Worker) subscribePullConsumer(
 
 	tt := taskType
 	h := handler
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		w.handleMessage(tt, h, msg)
-	})
+	cc, err := cons.Consume(
+		func(msg jetstream.Msg) {
+			w.handleMessage(tt, h, msg)
+		},
+		jetstream.ConsumeErrHandler(consumeErrHandler(durable)),
+	)
 	if err != nil {
 		panic("subscribePullConsumer: Consume for " + durable + ": " +
 			err.Error())
 	}
 	return cc
+}
+
+// consumeErrHandler logs Consume() background-loop errors instead of
+// letting nats.go's nil default silently discard them. This matters
+// concretely for a durable racing consumer_collision_xprocess.go's
+// legacy-filter upgrade: if a sibling process deletes this consumer out
+// from under an in-flight Consume (the exact bug upgradeLegacyDurable's
+// re-fetch-before-delete now prevents in the steady case, but a wider
+// TOCTOU window can still exist — see its doc comment), an unhandled
+// "consumer deleted" error would otherwise vanish instead of surfacing.
+func consumeErrHandler(label string) jetstream.ConsumeErrHandlerFunc {
+	if label == "" {
+		panic("consumeErrHandler: label must not be empty")
+	}
+	return func(_ jetstream.ConsumeContext, err error) {
+		if err == nil {
+			panic("consumeErrHandler: err must not be nil")
+		}
+		slog.Warn("consumer error", "consumer", label, "error", err)
+	}
 }
 
 // cleanupOrphanEphemerals deletes pre-existing ephemeral consumers on
@@ -818,9 +847,12 @@ func (w *Worker) createStickyConsumer(
 	}
 	tt := taskType
 	h := handler
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		w.handleMessage(tt, h, msg)
-	})
+	cc, err := cons.Consume(
+		func(msg jetstream.Msg) {
+			w.handleMessage(tt, h, msg)
+		},
+		jetstream.ConsumeErrHandler(consumeErrHandler(subject)),
+	)
 	if err != nil {
 		return nil
 	}

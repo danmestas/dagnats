@@ -60,9 +60,9 @@ func TestSubscribePullConsumer_AppliesExpectedConfig(t *testing.T) {
 	if info.Config.Name != "workers-render" {
 		t.Errorf("Name = %q, want %q", info.Config.Name, "workers-render")
 	}
-	if info.Config.FilterSubject != "task.render.>" {
+	if info.Config.FilterSubject != "task.render.*" {
 		t.Errorf("FilterSubject = %q, want %q",
-			info.Config.FilterSubject, "task.render.>")
+			info.Config.FilterSubject, "task.render.*")
 	}
 	if info.Config.AckPolicy != jetstream.AckExplicitPolicy {
 		t.Errorf("AckPolicy = %v, want AckExplicitPolicy", info.Config.AckPolicy)
@@ -130,7 +130,7 @@ func (l *logCapture) Write(p []byte) (int, error) {
 }
 
 func TestMigration_OrphanEphemeralRemoved(t *testing.T) {
-	// Methodology: pre-seed an ephemeral consumer matching task.render.>,
+	// Methodology: pre-seed an ephemeral consumer matching task.render.*,
 	// drive subscribePullConsumer directly to isolate the helper from the
 	// Start() wiring, assert the orphan is deleted, the migration INFO log
 	// fires with all five expected fields, the durable is created, and a
@@ -151,7 +151,7 @@ func TestMigration_OrphanEphemeralRemoved(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 	orphan, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-		FilterSubject: "task.render.>",
+		FilterSubject: "task.render.*",
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 	})
@@ -215,7 +215,7 @@ func TestMigration_OrphanEphemeralRemoved(t *testing.T) {
 	}
 	for _, want := range []string{
 		"consumer_name=" + orphanName,
-		"filter_subject=task.render.>",
+		"filter_subject=task.render.*",
 		"stream=TASK_QUEUES",
 		"durable_being_claimed=workers-render",
 		`reason="ephemeral with matching filter; pre-fix dagnats orphan"`,
@@ -269,7 +269,7 @@ func TestMigration_PreservesManagedConsumer(t *testing.T) {
 	_, err = stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:       "workers-render",
 		Name:          "workers-render",
-		FilterSubject: "task.render.>",
+		FilterSubject: "task.render.*",
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 	})
@@ -323,7 +323,7 @@ func TestMigration_PreservesUnrelatedConsumer(t *testing.T) {
 	_, err = stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:       "audit-tap",
 		Name:          "audit-tap",
-		FilterSubject: "task.audit.>",
+		FilterSubject: "task.audit.*",
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 	})
@@ -389,7 +389,7 @@ func TestMigration_ConcurrentStartup_OneOrphan(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 	orphan, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-		FilterSubject: "task.render.>",
+		FilterSubject: "task.render.*",
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 	})
@@ -449,7 +449,7 @@ func TestMigration_ConcurrentStartup_OneOrphan(t *testing.T) {
 func TestMigration_PaginationManyConsumers(t *testing.T) {
 	// Methodology: pre-seed 300 consumers on TASK_QUEUES — well past the
 	// SDK's typical 256-entry first-page boundary. One of them is the
-	// orphan ephemeral matching task.render.>, placed at index 250. Drive
+	// orphan ephemeral matching task.render.*, placed at index 250. Drive
 	// subscribePullConsumer directly. Asserts the iterator form (not the
 	// single-page list) finds and deletes the orphan regardless of position.
 	if testing.Short() {
@@ -476,7 +476,7 @@ func TestMigration_PaginationManyConsumers(t *testing.T) {
 		var cfg jetstream.ConsumerConfig
 		if i == 250 {
 			cfg = jetstream.ConsumerConfig{
-				FilterSubject: "task.render.>",
+				FilterSubject: "task.render.*",
 				AckPolicy:     jetstream.AckExplicitPolicy,
 				DeliverPolicy: jetstream.DeliverAllPolicy,
 			}
@@ -512,10 +512,10 @@ func TestMigration_PaginationManyConsumers(t *testing.T) {
 		t.Fatalf("Durable = %q, want workers-render", info.Config.Durable)
 	}
 
-	// Re-scan: there must be no remaining ephemeral with task.render.> filter.
+	// Re-scan: there must be no remaining ephemeral with task.render.* filter.
 	iter := stream.ListConsumers(ctx)
 	for ci := range iter.Info() {
-		if ci.Config.FilterSubject == "task.render.>" &&
+		if ci.Config.FilterSubject == "task.render.*" &&
 			ci.Config.Durable == "" {
 			t.Fatalf("orphan ephemeral still present: %s", ci.Name)
 		}
@@ -987,7 +987,7 @@ func TestRealisticTaskNames_AllSanitizationPaths(t *testing.T) {
 		data, _ := json.Marshal(payload)
 		// Subjects allow dots (separator), so render.gpu publishes on
 		// "task.render.gpu.san" — this is the publisher's contract, the
-		// filter "task.render.gpu.>" matches.
+		// filter "task.render.gpu.*" matches.
 		subj := "task." + tt + ".san"
 		if _, err := js.Publish(ctx, subj, data); err != nil {
 			t.Fatalf("Publish %s: %v", tt, err)
@@ -1080,7 +1080,7 @@ func TestMigration_DeleteFailure_Panics(t *testing.T) {
 	}
 	if _, err := stream.CreateOrUpdateConsumer(ctx,
 		jetstream.ConsumerConfig{
-			FilterSubject: "task.render.>",
+			FilterSubject: "task.render.*",
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			DeliverPolicy: jetstream.DeliverAllPolicy,
 		},

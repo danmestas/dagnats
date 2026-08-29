@@ -8,6 +8,8 @@ package consumername
 import (
 	"testing"
 	"time"
+
+	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestSanitize(t *testing.T) {
@@ -122,12 +124,12 @@ func TestFilterFor(t *testing.T) {
 		taskType, group string
 		want            string
 	}{
-		{"default_branch", "render", "", "task.render.>"},
+		{"default_branch", "render", "", "task.render.*"},
 		{"default_branch_dotted_task", "render.gpu", "",
-			"task.render.gpu.>"},
-		{"groups_branch", "render", "gpu", "task.render.gpu.>"},
+			"task.render.gpu.*"},
+		{"groups_branch", "render", "gpu", "task.render.gpu.*"},
 		{"groups_branch_hyphenated", "nasr-ingest", "fastlane",
-			"task.nasr-ingest.fastlane.>"},
+			"task.nasr-ingest.fastlane.*"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,4 +152,129 @@ func TestFilterFor_RejectsEmptyTaskType(t *testing.T) {
 		}
 	}()
 	FilterFor("", "")
+}
+
+// TestFilterFor_AnchorsToOneTrailingToken proves against a real NATS
+// server (core pub/sub subject matching, identical wildcard semantics to
+// JetStream's FilterSubject) that FilterFor("build", "") matches exactly
+// what StepSubject publishes for the "build" task type — one trailing run
+// ID token — and does NOT also match a differently-typed but
+// dot-prefixed sibling like "build.linux". This is the regression guard
+// for the #674 wildcard leak: the old "task.build.>" filter matched both.
+func TestFilterFor_AnchorsToOneTrailingToken(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+
+	sub, err := nc.SubscribeSync(FilterFor("build", ""))
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Positive: a "build" task's own subject (task type + one run-ID
+	// token) is delivered.
+	ownSubject := "task.build." + "deadbeefdeadbeefdeadbeefdeadbeef"
+	if err := nc.Publish(ownSubject, []byte("own")); err != nil {
+		t.Fatalf("Publish(own): %v", err)
+	}
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("expected delivery for %q, got: %v", ownSubject, err)
+	}
+	if string(msg.Data) != "own" {
+		t.Fatalf("delivered payload = %q, want %q", msg.Data, "own")
+	}
+
+	// Negative: a differently-typed sibling that merely shares the
+	// "build" dotted prefix must NOT be delivered to a "build" poller.
+	siblingSubject := "task.build.linux." + "deadbeefdeadbeefdeadbeefdeadbeef"
+	if err := nc.Publish(siblingSubject, []byte("sibling")); err != nil {
+		t.Fatalf("Publish(sibling): %v", err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if _, err := sub.NextMsg(300 * time.Millisecond); err == nil {
+		t.Fatalf(
+			"filter %q unexpectedly matched sibling subject %q",
+			FilterFor("build", ""), siblingSubject,
+		)
+	}
+}
+
+func TestLegacyFilterFor(t *testing.T) {
+	cases := []struct {
+		name            string
+		taskType, group string
+		want            string
+	}{
+		{"default_branch", "render", "", "task.render.>"},
+		{"default_branch_dotted_task", "render.gpu", "",
+			"task.render.gpu.>"},
+		{"groups_branch", "render", "gpu", "task.render.gpu.>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := LegacyFilterFor(tc.taskType, tc.group)
+			if got != tc.want {
+				t.Fatalf("LegacyFilterFor(%q, %q) = %q, want %q",
+					tc.taskType, tc.group, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFilterIsLegacyUpgrade(t *testing.T) {
+	cases := []struct {
+		name      string
+		new, old  string
+		wantMatch bool
+	}{
+		{
+			"legacy_twin_ungrouped",
+			FilterFor("build", ""), LegacyFilterFor("build", ""),
+			true,
+		},
+		{
+			"legacy_twin_grouped",
+			FilterFor("render", "gpu"), LegacyFilterFor("render", "gpu"),
+			true,
+		},
+		{
+			"legacy_twin_dotted_task",
+			FilterFor("dagger.call", ""), LegacyFilterFor("dagger.call", ""),
+			true,
+		},
+		{
+			"same_anchor_not_legacy",
+			FilterFor("build", ""), FilterFor("build", ""),
+			false,
+		},
+		{
+			"different_task_type_not_legacy",
+			FilterFor("build", ""), LegacyFilterFor("bar", ""),
+			false,
+		},
+		{
+			"different_group_not_legacy",
+			FilterFor("render", "gpu"), LegacyFilterFor("render", "cpu"),
+			false,
+		},
+		{
+			// old is the legacy form of FilterFor("a", "") (no group),
+			// not of FilterFor("a", "b") — an extra "b" token in new
+			// must not be mistaken for old's legacy twin.
+			"extra_group_token_not_legacy",
+			"task.a.b.*", "task.a.>",
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FilterIsLegacyUpgrade(tc.new, tc.old)
+			if got != tc.wantMatch {
+				t.Fatalf("FilterIsLegacyUpgrade(%q, %q) = %v, want %v",
+					tc.new, tc.old, got, tc.wantMatch)
+			}
+		})
+	}
 }

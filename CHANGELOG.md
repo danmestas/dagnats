@@ -8,6 +8,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`dag.Validate` accepted task types that could never dispatch, and a
+  dotted task type's consumer filter wildcard-matched unrelated sibling
+  types (#674).** A step's `Task` was only checked for non-emptiness;
+  `internal/engine`'s `StepSubject` builds `task.{Task}.{runID}` from it
+  verbatim (no sanitization), so a `Task` with whitespace, a NATS
+  wildcard, or a stray leading/trailing/empty dotted token registered
+  cleanly and then silently never got dispatched. Separately,
+  `internal/consumername.FilterFor` anchored on a trailing `>` wildcard,
+  so a worker polling `build` also received `task.build.linux.<runID>` —
+  a differently-typed task that only shared a dotted prefix. `dag.Validate`
+  now enforces one charset/shape rule (`dag.ValidTaskType`, shared with
+  `ci/compile.go`'s diagnostic and, for `WorkerGroup`, `dag.Validate`
+  itself — `StepSubject` appends `WorkerGroup` as its own subject token,
+  so an unsafe value is exactly as dangerous as an unsafe `Task`), and
+  `FilterFor` anchors on exactly one trailing token instead of `>`. A
+  workflow that pairs a dotted `Task` with a `WorkerGroup` is now also
+  rejected: `FilterFor("render.gpu", "")` and `FilterFor("render",
+  "gpu")` derive the byte-identical filter subject and durable name, so
+  the combination could silently collide with an unrelated step. Dots
+  remain legal in task types on their own (`dagger.call` still works) —
+  isolation comes from the filter anchor, not from banning dots.
+  A worker's `WithPartitions` (pcgroups elastic consumer) path built its
+  filters inline and bypassed both the anchor fix and consumer-name
+  sanitization; it now routes through the same `FilterFor`/`NameFor`
+  helpers as the non-partitioned path.
+  **Behavior changes:**
+  - a workflow def with an unsafe task type or `WorkerGroup` (or a
+    dotted task type paired with a `WorkerGroup`) now fails
+    `POST /workflows` with 400 instead of registering a run that could
+    never dispatch correctly;
+  - an ungrouped worker no longer drains a grouped task type's work (or
+    vice versa) — on `main` this was accidental overlap from the same
+    `>` wildcard bug, not an intentional feature. **Migration:** any
+    deployment that has been relying on an ungrouped worker to serve a
+    task type other, grouped workers also poll must add a matching
+    grouped worker for that task type — see docs/wire-protocol.md
+    "Task Subjects".
+  A durable a not-yet-upgraded worker or bridge process left behind
+  (the old `>`-anchored filter, for the SAME task type/group) is
+  auto-upgraded in place the first time the new code claims it — deleted
+  and recreated with the new filter, logged once at `warn`. This is
+  live, not a maintenance-window migration step. A durable whose filter
+  differs for a genuinely different task type still collides loudly,
+  unchanged. **Caveat:** any message already published under the old
+  scheme to a subject with an extra token beyond what `*` now matches
+  (e.g. `task.{type}.{extra}.{runID}` from a pre-upgrade dispatch the
+  old `>` filter would have drained but the new one-token `*` does not)
+  is no longer delivered to that durable — it sits on TASK_QUEUES until
+  the stream's `MaxAge` retention expires it, rather than being picked
+  up. This only affects messages published in the narrow window before
+  a deployment's first upgraded process claims the durable; steady
+  state is unaffected.
 - **`dagnats sidecar install` could never fetch `dagnats-mcp-duckdb` (#621).**
   The release workflow built the four tarballs but only uploaded them as
   workflow artifacts, expecting an operator to attach them by hand — which

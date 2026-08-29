@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -221,4 +222,73 @@ func TestWithPartitionsUpperBound(t *testing.T) {
 		}
 	}()
 	WithPartitions(257)
+}
+
+// TestWorker_ElasticConsumeFilterIsAnchored is the regression guard for
+// #674's partitioned-path leak: WithPartitions used to build filters
+// inline ("task."+tt+".>", "task."+tt+"."+group+".>"), bypassing
+// consumerFilterFor entirely — so a partitioned "build" worker still
+// wildcard-leaked "build.linux" dispatches AND collided with a
+// non-partitioned worker of the same task type, whose filter is now
+// "*"-anchored. Asserts every underlying JetStream consumer pcgroups
+// creates on TASK_QUEUES carries the SAME filter consumerFilterFor
+// derives, for the grouped elastic path, and that none fall back to the
+// old un-anchored ">" shape.
+func TestWorker_ElasticConsumeFilterIsAnchored(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	w := NewWorker(nc, WithPartitions(2), WithGroups("east"))
+	w.Handle("build.linux", func(ctx TaskContext) error {
+		return ctx.Complete([]byte(`"done"`))
+	})
+	w.Start()
+	defer w.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	wantFilter := consumerFilterFor("build.linux", "east")
+	// Positive: the anchored filter is actually used by (at least) one
+	// underlying consumer pcgroups created for the group.
+	found := false
+	// pcgroups.AddMembers assigns partitions and creates the underlying
+	// consumer asynchronously; give it a bounded moment to land before
+	// scanning the stream.
+	time.Sleep(500 * time.Millisecond)
+	iter := stream.ListConsumers(ctx)
+	for info := range iter.Info() {
+		if info.Config.FilterSubject == wantFilter {
+			found = true
+		}
+		// Negative: no consumer this worker created may fall back to
+		// the old un-anchored, un-sanitized inline shape.
+		if strings.HasSuffix(info.Config.FilterSubject, ".>") {
+			t.Fatalf(
+				"consumer %q uses un-anchored filter %q (want a "+
+					"single trailing '*' token, see consumerFilterFor)",
+				info.Name, info.Config.FilterSubject,
+			)
+		}
+	}
+	if err := iter.Err(); err != nil {
+		t.Fatalf("iterator err: %v", err)
+	}
+	if !found {
+		t.Fatalf(
+			"no consumer on TASK_QUEUES used filter %q "+
+				"(consumerFilterFor(\"build.linux\", \"east\"))",
+			wantFilter,
+		)
+	}
 }

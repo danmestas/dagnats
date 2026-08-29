@@ -154,6 +154,44 @@ func TestValidateFragment_DisallowedTask(t *testing.T) {
 	}
 }
 
+// TestValidateFragment_RejectsDottedWorkerGroup is the regression guard
+// for the round-2 review finding: a planner fragment's WorkerGroup was
+// never checked at all — StepSubject uses a fragment step's WorkerGroup
+// verbatim exactly like a static step's, so the SAME rule
+// (validateStepDispatch, shared with dag.Validate) must reject a dotted
+// WorkerGroup here too, not just in the static-def path.
+func TestValidateFragment_RejectsDottedWorkerGroup(t *testing.T) {
+	fragment := []StepDef{
+		{
+			ID: "x", Task: "build", WorkerGroup: "gpu.fast",
+			Type: StepTypeNormal,
+		},
+	}
+	cfg := PlannerConfig{MaxSteps: 10}
+	err := ValidateFragment(fragment, cfg, map[string]bool{})
+	if err == nil {
+		t.Fatal("expected error for a dotted worker_group in a fragment")
+	}
+	if !strings.Contains(err.Error(), `"x"`) {
+		t.Errorf("error = %v, want it to name step %q", err, "x")
+	}
+
+	// Negative: an undotted worker_group in a fragment stays legal.
+	okFragment := []StepDef{
+		{
+			ID: "x", Task: "build", WorkerGroup: "gpu-fast",
+			Type: StepTypeNormal,
+		},
+	}
+	if err := ValidateFragment(
+		okFragment, cfg, map[string]bool{},
+	); err != nil {
+		t.Fatalf(
+			"ValidateFragment(undotted worker_group) = %v, want nil", err,
+		)
+	}
+}
+
 func TestValidateFragment_Cycle(t *testing.T) {
 	fragment := []StepDef{
 		{

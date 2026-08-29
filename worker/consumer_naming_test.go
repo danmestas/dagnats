@@ -33,9 +33,9 @@ func TestConsumerNamingBindingsDelegate(t *testing.T) {
 			got)
 	}
 	if got := consumerFilterFor("render", "gpu"); got !=
-		"task.render.gpu.>" {
+		"task.render.gpu.*" {
 		t.Fatalf("consumerFilterFor = %q, want %q", got,
-			"task.render.gpu.>")
+			"task.render.gpu.*")
 	}
 	if got := sanitizeConsumerName("a b"); got != "a_b" {
 		t.Fatalf("sanitizeConsumerName = %q, want %q", got, "a_b")

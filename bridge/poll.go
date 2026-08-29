@@ -365,6 +365,28 @@ func (b *Bridge) adoptConsumer(
 		)
 	}
 	if info.Config.FilterSubject != filter {
+		if consumername.FilterIsLegacyUpgrade(filter, info.Config.FilterSubject) {
+			// A not-yet-upgraded worker or bridge process created this
+			// durable for the SAME task type before #674 anchored
+			// FilterFor to "*" — not a genuine cross-type collision.
+			// FilterSubject is immutable on an existing consumer, so
+			// delete it here; the caller's ErrConsumerNotFound-driven
+			// fallback (taskConsumer) recreates it with the new anchor.
+			slog.WarnContext(ctx,
+				"auto-upgrading legacy consumer filter (issue #674)",
+				"consumer", name,
+				"old_filter", info.Config.FilterSubject,
+				"new_filter", filter,
+			)
+			if err := b.js.DeleteConsumer(ctx, "TASK_QUEUES", name); err != nil &&
+				!errors.Is(err, jetstream.ErrConsumerNotFound) {
+				return nil, fmt.Errorf(
+					"delete legacy consumer %q for upgrade: %w",
+					name, err,
+				)
+			}
+			return nil, jetstream.ErrConsumerNotFound
+		}
 		return nil, consumerFilterMismatchError(
 			ctx, name, filter, info.Config.FilterSubject,
 		)

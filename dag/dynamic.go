@@ -122,8 +122,13 @@ func validateFragmentIDs(
 	return nil
 }
 
-// validateFragmentTasks checks that all tasks are non-empty and
-// within the allowed set if configured.
+// validateFragmentTasks checks that all tasks are non-empty, that every
+// step's Task/WorkerGroup (and their combination) pass the SAME
+// dispatch-safety rule a static step's do — validateStepDispatch,
+// shared with dag.Validate so a planner fragment can't drift from it
+// (issue #674 and its follow-up review: a fragment's Task and
+// WorkerGroup flow into StepSubject exactly like a static step's) — and
+// that every task is within the allowed set if configured.
 func validateFragmentTasks(
 	fragment []StepDef, allowedTasks []string,
 ) error {
@@ -140,6 +145,9 @@ func validateFragmentTasks(
 				"planner fragment step %q has empty task",
 				step.ID,
 			)
+		}
+		if err := validateStepDispatch(step); err != nil {
+			return fmt.Errorf("planner fragment: %w", err)
 		}
 		if len(allowedTasks) > 0 && !allowed[step.Task] {
 			return fmt.Errorf(

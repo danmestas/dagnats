@@ -1,6 +1,9 @@
 package dag
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Validate checks a WorkflowDef for structural correctness before any run
 // is created. Catching these errors at definition time defines them out of
@@ -134,6 +137,9 @@ func validateStepReferences(
 		if err := validateSingleStep(step, ids); err != nil {
 			return err
 		}
+		if err := validateStepDispatch(step); err != nil {
+			return err
+		}
 		if err := validateWaitForEventStep(step, ids); err != nil {
 			return err
 		}
@@ -208,6 +214,67 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 		return fmt.Errorf(
 			"step %q MaxTaskConcurrency is %d (must be 0..1000)",
 			step.ID, step.MaxTaskConcurrency,
+		)
+	}
+	return nil
+}
+
+// validateStepDispatch is the ONE place every charset/shape rule for a
+// step's dispatch-bound fields (Task, WorkerGroup) and their combination
+// is enforced — called from both dag.Validate (static steps, via
+// validateStepReferences) and dag.ValidateFragment (planner-generated
+// dynamic steps, via validateFragmentTasks) so the two paths cannot
+// drift (issue #674 and its follow-up review). Steps of a type that
+// carries no task (Sleep, WaitForEvent, Approval, SubWorkflow) skip —
+// see stepRequiresTask.
+//
+// Rules, in order:
+//  1. Task must satisfy ValidTaskType (dots ARE allowed — "dagger.call"
+//     is a production task type; FilterFor's exact-token anchor, not a
+//     charset restriction, keeps a dotted Task isolated from siblings).
+//  2. WorkerGroup, when set, must satisfy ValidWorkerGroup — the SAME
+//     charset rule as Task, but with dots additionally forbidden
+//     outright: StepSubject appends WorkerGroup as its own subject
+//     token, and a dot there is indistinguishable from the separator
+//     between Task and WorkerGroup, so a dotted WorkerGroup can derive
+//     the identical filter/durable name as an equivalent dotted Task.
+//  3. A dotted Task combined with a non-empty WorkerGroup is rejected
+//     even when the WorkerGroup itself is dot-free:
+//     consumername.FilterFor("render.gpu", "") and
+//     FilterFor("render", "gpu") derive the byte-identical filter
+//     subject AND durable name ("task.render.gpu.*",
+//     "workers-render-gpu"). Each half stays legal alone (a dotted,
+//     ungrouped Task; an undotted Task with a WorkerGroup) — only the
+//     combination on one step is rejected.
+func validateStepDispatch(step StepDef) error {
+	if step.ID == "" {
+		panic("validateStepDispatch: step ID is empty")
+	}
+	if step.Task == "" && stepRequiresTask(step.Type) {
+		panic("validateStepDispatch: step task is empty")
+	}
+	if step.Task == "" {
+		return nil
+	}
+	if err := ValidTaskType(step.Task); err != nil {
+		return fmt.Errorf("step %q has invalid task: %w", step.ID, err)
+	}
+	if step.WorkerGroup == "" {
+		return nil
+	}
+	if err := ValidWorkerGroup(step.WorkerGroup); err != nil {
+		return fmt.Errorf(
+			"step %q has invalid worker_group: %w", step.ID, err,
+		)
+	}
+	if strings.Contains(step.Task, ".") {
+		return fmt.Errorf(
+			"step %q combines dotted task %q with worker_group %q: "+
+				"FilterFor(%q, \"\") and FilterFor(%q, %q) would derive "+
+				"the same filter subject and durable name — use an "+
+				"undotted task type when worker_group is set",
+			step.ID, step.Task, step.WorkerGroup,
+			step.Task, step.Task, step.WorkerGroup,
 		)
 	}
 	return nil
