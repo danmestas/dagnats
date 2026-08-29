@@ -5,7 +5,9 @@
 //	dagnats-ci compile <path-to-ci.yml> [--name <workflow-name>]
 //
 // Reads the given ci.yml, compiles it into a dag.WorkflowDef, and writes
-// the JSON to stdout. Exits 1 on any error, printing to stderr.
+// the JSON to stdout. Any diagnostics (parse or compile problems) are
+// printed to stderr as "file:line:col: field: message", one per line, and
+// the command exits 1 -- nothing is written to stdout in that case.
 package main
 
 import (
@@ -13,7 +15,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/danmestas/dagnats-ci/internal/compile"
+	"github.com/danmestas/dagnats/ci"
 )
 
 func main() {
@@ -69,13 +71,9 @@ func runCompile(args []string) error {
 	if err != nil {
 		return fmt.Errorf("compile: read %q: %w", path, err)
 	}
-	spec, err := compile.ParseSpec(data)
-	if err != nil {
-		return fmt.Errorf("compile: %w", err)
-	}
-	def, err := compile.Compile(name, spec)
-	if err != nil {
-		return fmt.Errorf("compile: %w", err)
+	def, diags := ci.CompileYAML(name, data)
+	if len(diags) > 0 {
+		return diagnosticsError(path, diags)
 	}
 	out, err := json.MarshalIndent(def, "", "  ")
 	if err != nil {
@@ -85,4 +83,40 @@ func runCompile(args []string) error {
 	}
 	fmt.Printf("%s\n", out)
 	return nil
+}
+
+// diagnosticsError renders every diagnostic as one "file:line:col: field:
+// message" line to stderr and returns a summary error so run's caller exits
+// 1. Line/Col/Field are omitted from a line when unset (0 / "") rather than
+// printed as misleading zeros.
+func diagnosticsError(path string, diags []ci.Diagnostic) error {
+	if path == "" {
+		panic("diagnosticsError: path must not be empty")
+	}
+	if len(diags) == 0 {
+		panic("diagnosticsError: diags must not be empty")
+	}
+	for _, d := range diags {
+		fmt.Fprintln(os.Stderr, formatDiagnostic(path, d))
+	}
+	return fmt.Errorf("compile: %d diagnostic(s)", len(diags))
+}
+
+// formatDiagnostic renders one diagnostic as "file:line:col: field: message".
+func formatDiagnostic(path string, d ci.Diagnostic) string {
+	if path == "" {
+		panic("formatDiagnostic: path must not be empty")
+	}
+	loc := path
+	if d.Line > 0 {
+		if d.Column > 0 {
+			loc = fmt.Sprintf("%s:%d:%d", path, d.Line, d.Column)
+		} else {
+			loc = fmt.Sprintf("%s:%d", path, d.Line)
+		}
+	}
+	if d.Field != "" {
+		return fmt.Sprintf("%s: %s: %s", loc, d.Field, d.Message)
+	}
+	return fmt.Sprintf("%s: %s", loc, d.Message)
 }
