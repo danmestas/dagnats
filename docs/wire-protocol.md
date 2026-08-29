@@ -273,16 +273,26 @@ Exactly one fallback exists: a run snapshot written before this feature
 today's pre-pinning behavior, preserved for compatibility.
 
 **A run *with* a `DefHash` whose pinned version key is missing does NOT
-fall back.** Falling back there would reopen the exact hazard this feature
-exists to close — a running run silently picking up whatever the mutable
-pointer currently holds — just via a different door (retention evicting a
-version still in use, instead of a raw re-register). Instead the advance
-**fails** with an error naming the run and the missing hash, logged at
-warn and counted via the `engine.def_pin.missing_version` metric. A
-stuck-but-correct run is the safe failure mode. Separately, a stored
-version whose *content* doesn't hash back to the key it was read under is
-bucket corruption, not an operating condition — also returned as an error,
-never silently substituted.
+blindly fall back.** Falling back there would reopen the exact hazard this
+feature exists to close — a running run silently picking up whatever the
+mutable pointer currently holds — just via a different door (retention
+evicting a version still in use, instead of a raw re-register). Instead
+`Orchestrator.selfHealMissingVersion` reads the mutable pointer and
+compares its content hash to `run.DefHash`. **Equal hashes are a proof,
+not a guess:** they mean the pointer's content is byte-identical to what
+the run is pinned to, the same guarantee a version-key hit would have
+given. In that case the missing version key is written (`Create`,
+tolerant of a racing self-heal via `ErrKeyExists`) and the advance
+proceeds normally — this is the migration path for every workflow
+registered before this feature existed, whose `workflow_defs` entry has
+only ever had the mutable pointer. Only a **hash mismatch** (the pointer
+has moved on to different content) falls through to the loud failure:
+an error naming the run and the missing hash, logged at warn and counted
+via the `engine.def_pin.missing_version` metric. A stuck-but-correct run
+is the safe failure mode. Separately, a stored version whose *content*
+doesn't hash back to the key it was read under is bucket corruption, not
+an operating condition — also returned as an error, never silently
+substituted.
 
 **Retention.** `workflow_defs` retains at most `DefVersionsMax` (32)
 immutable versions per workflow name. When a register would exceed that
@@ -311,7 +321,17 @@ behavior. A miss is a retention bug to go fix, never a run-correctness bug.
 Concurrent `POST /workflows` calls for the same name are **last-writer-wins**
 on the mutable pointer, exactly as `RegisterWorkflow` has always been —
 version persistence adds a content-addressed record alongside that, not
-locking.
+locking. The retention cap itself is enforced per call, not atomically
+across concurrent registers: two `POST /workflows` calls for the same
+name with *distinct* content, racing each other, can both observe the
+same pre-write version count and both proceed, transiently landing one
+version over `DefVersionsMax` until the next register re-checks and
+evicts. And a version write can succeed while the immediately-following
+pointer `Put` fails (a mid-request crash, a transient KV error): the
+version key is left orphaned — harmless (nothing pins it yet, and it
+still counts toward `DefVersionsMax` so it's evicted like any other
+unreferenced version) and bounded by the same retention cap as every
+other version.
 
 Both `POST /workflows` and each entry of `GET /workflows` include a
 `def_hash` field: the hex-encoded SHA-256 of the server's canonical JSON

@@ -17,6 +17,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -296,4 +297,130 @@ func TestLoadRunAndDefCorruptPinnedVersionErrors(t *testing.T) {
 	// Negative: it must not silently succeed with the by-name def
 	// either -- the error path returns before any def, confirmed by
 	// err != nil above; nothing further to substitute-check.
+}
+
+// TestLoadRunAndDefSelfHealsPointerOnlyPreExistingDef is the review
+// fix for the migration hazard: on upgrade, every workflow already in
+// workflow_defs has ONLY the pointer key -- no name.v.hash version
+// was ever written for it (RegisterWorkflow didn't exist yet). A run
+// started against such a def still gets DefHash stamped
+// unconditionally (dag.NewWorkflowRun), so its first advance after
+// the in-memory def is exhausted would hit the missing-pinned-version
+// path. Failing loudly there would dead-letter every such workflow's
+// runs until each one is re-registered -- unacceptable on upgrade.
+//
+// The fix: when the version key is missing, read the mutable pointer
+// and compare its content hash to run.DefHash. Equal hashes prove the
+// pointer's content IS byte-identical to what the run is pinned to --
+// not "probably fine", but the same guarantee a version-key hit would
+// have given. Self-heal by writing the version key (Create, tolerant
+// of a racing writer) and proceed normally. Only a HASH MISMATCH
+// falls through to the loud error -- verified separately by
+// TestLoadRunAndDefMissingPinnedVersionFailsLoudly, which pins to a
+// hash that does NOT match the pointer's content.
+func TestLoadRunAndDefSelfHealsPointerOnlyPreExistingDef(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	defKV, err := js.KeyValue("workflow_defs")
+	if err != nil {
+		t.Fatalf("KeyValue(workflow_defs): %v", err)
+	}
+
+	def := dag.WorkflowDef{Name: "pre-637-wf", Version: "1", Steps: []dag.StepDef{
+		{ID: "a", Task: "task-a", Type: dag.StepTypeNormal},
+	}}
+	// Simulate a pre-#637 registration: ONLY the mutable pointer
+	// exists. No name.v.hash version key was ever written.
+	mustPut(t, defKV, def.Name, mustMarshal(t, def))
+
+	run := dag.NewWorkflowRun(def, "run-pre-637-1")
+	// run.DefHash is stamped unconditionally and, since it was built
+	// from the exact same def the pointer holds, equals its content
+	// hash -- the guard condition the self-heal checks.
+	if run.DefHash != dag.DefHash(def) {
+		t.Fatalf("test setup invalid: run.DefHash must equal DefHash(def)")
+	}
+
+	orch := NewOrchestrator(nc)
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	counter, err := mp.Meter("self-heal-test").Int64Counter(
+		"engine.def_pin.missing_version",
+	)
+	if err != nil {
+		t.Fatalf("Int64Counter: %v", err)
+	}
+	orch.metrics.defPinMissingVersion = counter
+
+	if err := orch.store.Save(context.Background(), run); err != nil {
+		t.Fatalf("Save run: %v", err)
+	}
+
+	versionKey := dag.DefVersionKey(def.Name, run.DefHash)
+	if _, err := defKV.Get(versionKey); err == nil {
+		t.Fatalf("test setup invalid: version key must not pre-exist")
+	}
+
+	// First advance: self-heals.
+	gotDef, _, err := orch.loadRunAndDef(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("loadRunAndDef (1st advance): %v, want self-heal success", err)
+	}
+	if len(gotDef.Steps) != 1 || gotDef.Steps[0].ID != "a" {
+		t.Fatalf("gotDef.Steps = %+v, want def's step \"a\"", gotDef.Steps)
+	}
+	// Positive: the version key now exists, written by the self-heal.
+	entry, err := defKV.Get(versionKey)
+	if err != nil {
+		t.Fatalf("version key %q not created by self-heal: %v", versionKey, err)
+	}
+	var healed dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &healed); err != nil {
+		t.Fatalf("unmarshal self-healed version: %v", err)
+	}
+	if dag.DefHash(healed) != run.DefHash {
+		t.Fatalf("self-healed version content hash mismatch")
+	}
+
+	// Second advance: reads the now-existing version key directly
+	// (completes the "advance it twice" scenario the review asked for).
+	gotDef2, _, err := orch.loadRunAndDef(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("loadRunAndDef (2nd advance): %v", err)
+	}
+	if len(gotDef2.Steps) != 1 || gotDef2.Steps[0].ID != "a" {
+		t.Fatalf("gotDef2.Steps = %+v, want def's step \"a\"", gotDef2.Steps)
+	}
+
+	// Negative: self-heal must NEVER count as a missing-version
+	// failure -- it's a recognized, verified-safe migration path, not
+	// an operator-facing problem.
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "engine.def_pin.missing_version" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric is not an Int64 Sum: %T", m.Data)
+			}
+			var total int64
+			for _, dp := range sum.DataPoints {
+				total += dp.Value
+			}
+			if total != 0 {
+				t.Fatalf("engine.def_pin.missing_version = %d, want 0", total)
+			}
+		}
+	}
 }
