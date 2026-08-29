@@ -1,0 +1,49 @@
+name: Docker
+
+# The Dockerfile was previously built by nothing in CI, so a base-image
+# bump (golang:*-alpine, alpine:*) or a build-stage change could only be
+# verified by hand. Same class of gap as the binary pins (#620/#621):
+# invisible to `go test ./...`, rots silently. This builds the image and
+# smoke-runs the binary on every PR that could affect it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - '.dockerignore'
+      - '**.go'
+      - go.mod
+      - go.sum
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - '.dockerignore'
+      - '**.go'
+      - go.mod
+      - go.sum
+      - '.github/workflows/docker.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: image builds and runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --pull -t dagnats:ci .
+
+      - name: Smoke-run binary
+        # The image entrypoint must start and report its version on a
+        # clean container; a broken base image or a CGO surprise shows
+        # up here rather than at deploy time.
+        run: |
+          set -eu
+          docker run --rm dagnats:ci --version
+          docker image inspect dagnats:ci --format 'size={{.Size}} bytes'
