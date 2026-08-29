@@ -352,14 +352,82 @@ func (o *Orchestrator) reconcileRunningRuns(ctx context.Context) {
 	o.logScanCapTransition(ctx, len(runs))
 	cutoff := time.Now().Add(-reconcileMinAge)
 	for _, run := range runs {
-		if run.Status != dag.RunStatusRunning {
+		if run.Status == dag.RunStatusRunning {
+			if run.CreatedAt.IsZero() ||
+				run.CreatedAt.After(cutoff) {
+				continue
+			}
+			o.reconcileOneRun(ctx, run.RunID)
 			continue
 		}
-		if run.CreatedAt.IsZero() ||
-			run.CreatedAt.After(cutoff) {
-			continue
+		// Terminal runs whose admission release didn't complete at
+		// finalize time (#648) surface here too -- same sweep, same
+		// once-per-pass bound (reconcileMaxRunsScan), just a different
+		// predicate than the wedged-Running check above.
+		if run.Status.IsTerminal() && run.ReleasePending {
+			o.reconcileReleasePending(ctx, run)
 		}
-		o.reconcileOneRun(ctx, run.RunID)
+	}
+}
+
+// reconcileReleasePending retries the admission release for a
+// terminal run whose finalizeRun left WorkflowRun.ReleasePending set
+// (#648) -- afterPersist failed after the terminal snapshot was
+// already saved, so the singleton lock / concurrency slot is stuck
+// and no ordinary redelivery will ever retry it (the caller's own
+// Status != Running early-return fires first). One attempt per run
+// per reconciler pass: on failure this run is simply seen again next
+// cycle, still flagged; on success the flag is cleared with a save so
+// it is not retried forever.
+//
+// Idempotent with the normal finalize path by construction:
+// releaseAdmission's own idempotence (see its doc comment) means a
+// run that actually already released cleanly -- e.g. this run's debt
+// was recorded, then ALSO released successfully before this sweep ran
+// -- is safe to release again here; nothing double-frees.
+func (o *Orchestrator) reconcileReleasePending(
+	ctx context.Context, run dag.WorkflowRun,
+) {
+	if ctx == nil {
+		panic("reconcileReleasePending: ctx must not be nil")
+	}
+	if !run.Status.IsTerminal() {
+		panic("reconcileReleasePending: run must be terminal")
+	}
+	if err := o.releaseAdmission(ctx, run); err != nil {
+		slog.WarnContext(ctx,
+			"reconciler: release-pending recovery failed, will retry "+
+				"next pass",
+			"run_id", run.RunID,
+			"workflow_id", run.WorkflowID,
+			"error", err,
+		)
+		return
+	}
+	run.ReleasePending = false
+	if err := o.saveSnapshot(ctx, run, ""); err != nil {
+		// The release itself succeeded; only the flag-clear write
+		// failed. Documented residual window (same shape as
+		// finalizeWithReleaseDebt's own second-save failure,
+		// run_event.go): the NEXT pass sees ReleasePending still
+		// true and retries releaseAdmission, which is safe (see its
+		// idempotence doc) but redundant.
+		slog.ErrorContext(ctx,
+			"reconciler: clear release_pending after successful "+
+				"recovery failed",
+			"run_id", run.RunID,
+			"workflow_id", run.WorkflowID,
+			"error", err,
+		)
+		return
+	}
+	slog.InfoContext(ctx,
+		"reconciler: recovered admission release for terminal run",
+		"run_id", run.RunID,
+		"workflow_id", run.WorkflowID,
+	)
+	if finalizeReleaseRecovered != nil {
+		finalizeReleaseRecovered.Add(ctx, 1)
 	}
 }
 

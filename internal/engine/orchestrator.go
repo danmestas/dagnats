@@ -1425,36 +1425,68 @@ func (o *Orchestrator) completeWorkflow(
 			// subscriber reacting to run.completed by starting the next
 			// run must see the singleton lock and concurrency slot
 			// already released, not race their release.
-			o.admission.ReleaseSingletonLock(ctx, run)
 			o.sticky.DeleteBinding(ctx, run.RunID)
 			wfAttr := metric.WithAttributes(
 				attribute.String("workflow", run.WorkflowID),
 			)
 			o.metrics.runsActive.Add(ctx, -1, wfAttr)
 			o.metrics.runsCompleted.Add(ctx, 1, wfAttr)
-			if err := o.admission.ReleaseRunIfConcurrency(
-				ctx, run.WorkflowID,
-			); err != nil {
-				return err
-			}
-			if o.admission.HasConcurrency() {
-				if err := o.startNextPendingRun(
-					ctx, run.WorkflowID,
-				); err != nil {
-					slog.ErrorContext(ctx,
-						"failed to start next pending run",
-						"error", err,
-						"workflow_id", run.WorkflowID,
-					)
-				}
-			}
-			return nil
+			return o.releaseAdmission(ctx, run)
 		},
 	)
 	if err != nil {
 		return err
 	}
 	return o.notifyParentIfChild(ctx, run, nil)
+}
+
+// releaseAdmission releases the singleton lock (if run holds one) and
+// the concurrency slot (if a ConcurrencyManager is configured) for a
+// terminal run, then starts the next pending run for the workflow if
+// a slot opened up. Extracted (#648) so finalizeRun's own recovery
+// path -- the reconciler's ReleasePending sweep, reconciler.go -- can
+// call the EXACT same release logic normal termination uses instead
+// of re-implementing a second, possibly-drifting copy.
+//
+// Idempotent: ReleaseSingletonLock only deletes a lock it still owns
+// (admission.go checks the stored RunID before deleting), and
+// ReleaseRunIfConcurrency floor-clamps its decrement at zero
+// (concurrency.go's ReleaseRun returns nil without writing once the
+// counter reads <= 0) -- a second call after a successful release is
+// a safe no-op for both. See run_event_release_pending_test.go and
+// reconciler_release_pending_test.go for the idempotence proof.
+//
+// startNextPendingRun failure is logged, not returned: a stuck queue
+// slot is recoverable on the NEXT completion/reconciler pass and must
+// not itself cause the caller (afterPersist) to report failure and
+// re-attempt a lock/slot release that already succeeded.
+func (o *Orchestrator) releaseAdmission(
+	ctx context.Context, run dag.WorkflowRun,
+) error {
+	if run.RunID == "" {
+		panic("releaseAdmission: RunID must not be empty")
+	}
+	if run.WorkflowID == "" {
+		panic("releaseAdmission: WorkflowID must not be empty")
+	}
+	o.admission.ReleaseSingletonLock(ctx, run)
+	if err := o.admission.ReleaseRunIfConcurrency(
+		ctx, run.WorkflowID,
+	); err != nil {
+		return err
+	}
+	if o.admission.HasConcurrency() {
+		if err := o.startNextPendingRun(
+			ctx, run.WorkflowID,
+		); err != nil {
+			slog.ErrorContext(ctx,
+				"failed to start next pending run",
+				"error", err,
+				"workflow_id", run.WorkflowID,
+			)
+		}
+	}
+	return nil
 }
 
 // startNextPendingRun finds the oldest pending run for a workflow and
@@ -1669,30 +1701,13 @@ func (o *Orchestrator) failWorkflow(
 	run, err := finalizeRun(
 		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, stepDef.ID,
 		func(ctx context.Context) error {
-			o.admission.ReleaseSingletonLock(ctx, run)
 			o.sticky.DeleteBinding(ctx, run.RunID)
 			wfAttr := metric.WithAttributes(
 				attribute.String("workflow", run.WorkflowID),
 			)
 			o.metrics.runsActive.Add(ctx, -1, wfAttr)
 			o.metrics.runsFailed.Add(ctx, 1, wfAttr)
-			if err := o.admission.ReleaseRunIfConcurrency(
-				ctx, run.WorkflowID,
-			); err != nil {
-				return err
-			}
-			if o.admission.HasConcurrency() {
-				if err := o.startNextPendingRun(
-					ctx, run.WorkflowID,
-				); err != nil {
-					slog.ErrorContext(ctx,
-						"failed to start next pending run",
-						"error", err,
-						"workflow_id", run.WorkflowID,
-					)
-				}
-			}
-			return nil
+			return o.releaseAdmission(ctx, run)
 		},
 	)
 	if err != nil {
@@ -1754,34 +1769,22 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	}
 
 	o.cascadeCancelChildren(ctx, wfDef, run)
-	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
 
 	// finalizeRun stamps Status/CompletedAt (markTerminal), saves, and
 	// publishes the new event.run.* notification — cancellation has no
 	// history-stream terminal counterpart (see publishHistoryTerminalEvent),
 	// so this is the only reliable "run finished cancelling" signal.
+	//
+	// ReleaseSingletonLock moved into afterPersist (#648, was called
+	// unconditionally above before finalizeRun): admission release
+	// must run through the SAME releaseAdmission the reconciler's
+	// recovery path calls, not a copy split across two places.
 	run, err = finalizeRun(
 		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCancelled, "",
 		func(ctx context.Context) error {
 			o.metrics.runsActive.Add(ctx, -1)
-			if err := o.admission.ReleaseRunIfConcurrency(
-				ctx, run.WorkflowID,
-			); err != nil {
-				return err
-			}
-			if o.admission.HasConcurrency() {
-				if err := o.startNextPendingRun(
-					ctx, run.WorkflowID,
-				); err != nil {
-					slog.ErrorContext(ctx,
-						"failed to start next pending run",
-						"error", err,
-						"workflow_id", run.WorkflowID,
-					)
-				}
-			}
-			return nil
+			return o.releaseAdmission(ctx, run)
 		},
 	)
 	if err != nil {

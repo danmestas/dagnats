@@ -1536,7 +1536,7 @@ func WithSchemas[I, O any](def WorkflowDef) WorkflowDef
 WithSchemas generates JSON schemas from Go types I \(input\) and O \(output\) and attaches them to the WorkflowDef. Applied after Build\(\). Supports flat structs with primitive fields, slices, and maps.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L384>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L394>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1576,11 +1576,21 @@ type WorkflowRun struct {
     // chained run is ever started. Additive: legacy snapshots
     // deserialize to 0.
     TriggerDepth int `json:"trigger_depth,omitempty"`
+    // ReleasePending marks a terminal run whose admission release
+    // (singleton lock / concurrency slot / queue advance) did NOT
+    // complete when the run was finalized (#648) — the terminal
+    // snapshot and both terminal events are still authoritative, but
+    // the release itself is owed. The reconciler's terminal-run sweep
+    // looks for this flag and retries the release, clearing it on
+    // success. Additive: legacy snapshots deserialize to false, which
+    // is correct — a run finalized before this field existed either
+    // released cleanly or is already outside any recovery window.
+    ReleasePending bool `json:"release_pending,omitempty"`
 }
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L389>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L399>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1589,7 +1599,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L410>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L420>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time

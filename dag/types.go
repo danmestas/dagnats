@@ -381,6 +381,16 @@ type WorkflowRun struct {
 	// chained run is ever started. Additive: legacy snapshots
 	// deserialize to 0.
 	TriggerDepth int `json:"trigger_depth,omitempty"`
+	// ReleasePending marks a terminal run whose admission release
+	// (singleton lock / concurrency slot / queue advance) did NOT
+	// complete when the run was finalized (#648) — the terminal
+	// snapshot and both terminal events are still authoritative, but
+	// the release itself is owed. The reconciler's terminal-run sweep
+	// looks for this flag and retries the release, clearing it on
+	// success. Additive: legacy snapshots deserialize to false, which
+	// is correct — a run finalized before this field existed either
+	// released cleanly or is already outside any recovery window.
+	ReleasePending bool `json:"release_pending,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.

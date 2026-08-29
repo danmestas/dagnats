@@ -315,23 +315,13 @@ func (o *Orchestrator) failLoopStep(
 			)
 			o.metrics.runsActive.Add(ctx, -1, wfAttr)
 			o.metrics.runsFailed.Add(ctx, 1, wfAttr)
-			if err := o.admission.ReleaseRunIfConcurrency(
-				ctx, run.WorkflowID,
-			); err != nil {
-				return err
-			}
-			if o.admission.HasConcurrency() {
-				if err := o.startNextPendingRun(
-					ctx, run.WorkflowID,
-				); err != nil {
-					slog.ErrorContext(ctx,
-						"failed to start next pending run",
-						"error", err,
-						"workflow_id", run.WorkflowID,
-					)
-				}
-			}
-			return nil
+			// releaseAdmission (#648) also releases a held singleton
+			// lock -- this path never did that before, a pre-existing
+			// gap (a singleton-locked workflow whose loop step hit its
+			// bound iteration/duration ceiling kept the lock forever).
+			// ReleaseSingletonLock is a no-op when run holds none, so
+			// this is safe for the common no-singleton case too.
+			return o.releaseAdmission(ctx, run)
 		},
 	)
 	if err != nil {
