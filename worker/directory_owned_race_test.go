@@ -156,6 +156,55 @@ func TestRegisterOwnedDifferentOwnerRaceRejects(t *testing.T) {
 	}
 }
 
+// TestRegisterOwnedCreateConflictDifferentOwnerRejects pins the
+// Create-side (not Update-side) counterpart of the different-owner
+// case: workerID has never been registered, so the first attempt
+// takes the Create branch of registerOwnedAttempt; a different owner
+// wins the race to create it first, our Create gets ErrKeyExists,
+// and the retry's fresh Get must see that owner and reject with
+// ErrWorkerIDOwned -- not silently succeed or misreport contention.
+func TestRegisterOwnedCreateConflictDifferentOwnerRejects(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	dir := NewDirectory(js)
+
+	reg := WorkerRegistration{
+		WorkerID:  "race-w5",
+		TaskTypes: []string{"echo"},
+		TokenID:   "tok-a",
+	}
+
+	raceFired := false
+	registerOwnedTestHook = func() {
+		if raceFired {
+			return
+		}
+		raceFired = true
+		// race-w5 has never been registered -- our own attempt is
+		// about to take the Create branch. A different token wins
+		// the race to create it first.
+		rawReregister(t, dir.kv, "race-w5", "tok-other")
+	}
+	t.Cleanup(func() { registerOwnedTestHook = nil })
+
+	err = dir.RegisterOwned(reg, "tok-a", false)
+	if err != ErrWorkerIDOwned {
+		t.Fatalf(
+			"RegisterOwned after create-conflict with a different"+
+				" owner = %v, want ErrWorkerIDOwned", err,
+		)
+	}
+	if !raceFired {
+		t.Fatalf("test hook never fired -- race was not exercised")
+	}
+}
+
 // TestRegisterOwnedExhaustsToContended pins the retry bound: when
 // every attempt loses the revision race (a pathological, persistent
 // contender), RegisterOwned gives up after ownedWriteRetriesMax

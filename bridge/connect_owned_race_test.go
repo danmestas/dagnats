@@ -100,6 +100,22 @@ func TestConnectReconnectRacesOwnHeartbeatNeverConflicts(t *testing.T) {
 	heartbeatInterval = 50 * time.Millisecond
 	t.Cleanup(func() { heartbeatInterval = origInterval })
 
+	// tickerCreated receives once per connection, from
+	// sendHeartbeatLoopTestHook, immediately after that connection's
+	// ticker is created (i.e. after its one-time read of
+	// heartbeatInterval). A plain time.Sleep before closing a
+	// connection does NOT prove that read has happened -- closing
+	// the client side only unblocks this test's own read locally, so
+	// it establishes no happens-before with the server goroutine, and
+	// `-race` correctly flags restoring heartbeatInterval afterward
+	// as racing it. Receiving on this channel does establish that
+	// edge, so every connection is drained here before its
+	// connection is ever closed and before the loop returns.
+	const iterations = 50
+	tickerCreated := make(chan struct{}, iterations)
+	sendHeartbeatLoopTestHook = func() { tickerCreated <- struct{}{} }
+	t.Cleanup(func() { sendHeartbeatLoopTestHook = nil })
+
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
 	_, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
@@ -107,15 +123,22 @@ func TestConnectReconnectRacesOwnHeartbeatNeverConflicts(t *testing.T) {
 		t.Fatalf("Mint A: %v", err)
 	}
 
-	const iterations = 50
 	conflicts := 0
 	var lastConn *http.Response
-	var lastCancel func()
+	var lastCancel context.CancelFunc
 	for i := range iterations {
 		resp, cancel := connectWorker(t, ts.URL, bearerA, "w-heartbeat-race")
-		if resp.StatusCode == http.StatusConflict {
+		switch resp.StatusCode {
+		case http.StatusConflict:
+			// Rejected before writeSSEHeaders/sendHeartbeatLoop ever
+			// ran -- no ticker was created, nothing to wait for.
 			conflicts++
-		} else if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			cancel()
+			continue
+		case http.StatusOK:
+			// handled below
+		default:
 			t.Fatalf(
 				"iteration %d: connect status = %d, want 200",
 				i, resp.StatusCode,
@@ -125,15 +148,25 @@ func TestConnectReconnectRacesOwnHeartbeatNeverConflicts(t *testing.T) {
 		// loop keeps running (and re-registering) while the next
 		// reconnect races it, instead of blocking on an unread body.
 		go func(body io.ReadCloser) { _, _ = io.Copy(io.Discard, body) }(resp.Body)
+		select {
+		case <-tickerCreated:
+		case <-time.After(2 * time.Second):
+			t.Fatalf(
+				"iteration %d: timed out waiting for ticker creation",
+				i,
+			)
+		}
 		if lastConn != nil {
+			// Give the still-open previous connection's heartbeat a
+			// chance to tick (and re-register) while this reconnect
+			// is in flight, so the race this test targets is
+			// actually exercised rather than always winning on an
+			// idle bucket.
+			time.Sleep(heartbeatInterval)
 			lastConn.Body.Close()
 			lastCancel()
 		}
 		lastConn, lastCancel = resp, cancel
-		// Give the heartbeat loop a chance to tick at least once
-		// before the next reconnect, so the race is actually
-		// exercised rather than always winning on an empty bucket.
-		time.Sleep(heartbeatInterval / 2)
 	}
 	if lastConn != nil {
 		lastConn.Body.Close()

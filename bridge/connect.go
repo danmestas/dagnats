@@ -228,6 +228,18 @@ func writeSSEHeaders(w http.ResponseWriter) {
 	}
 }
 
+// sendHeartbeatLoopTestHook, when non-nil, is called once per
+// connection immediately after its ticker is created (and
+// heartbeatInterval has therefore already been read) -- a test-only
+// synchronization point. A test that mutates heartbeatInterval needs
+// a real happens-before edge, not a timing guess: closing/canceling
+// a connection only unblocks the CLIENT's read locally and proves
+// nothing about this goroutine, so a plain time.Sleep before
+// restoring the package var still races under `-race`. Sending on a
+// channel from here, and receiving it in the test, gives that edge.
+// Must never be set outside tests.
+var sendHeartbeatLoopTestHook func()
+
 // sendHeartbeatLoop sends periodic SSE heartbeats and re-registers
 // the worker until the client disconnects.
 func sendHeartbeatLoop(
@@ -246,6 +258,9 @@ func sendHeartbeatLoop(
 	}
 	flusher, _ := w.(http.Flusher)
 	ticker := time.NewTicker(heartbeatInterval)
+	if sendHeartbeatLoopTestHook != nil {
+		sendHeartbeatLoopTestHook()
+	}
 	defer ticker.Stop()
 	for {
 		select {
@@ -299,6 +314,14 @@ func heartbeatReregister(
 			"worker_id", reg.WorkerID,
 		)
 		return false
+	case errors.Is(err, worker.ErrWorkerIDContended):
+		// Transient contention, not a failure -- matches
+		// deregisterOnDisconnect's WARN treatment of the same error.
+		slog.WarnContext(ctx,
+			"heartbeat re-register lost the revision race repeatedly",
+			"worker_id", reg.WorkerID,
+		)
+		return true
 	default:
 		slog.ErrorContext(ctx, "heartbeat re-register failed",
 			"worker_id", reg.WorkerID, "error", err,

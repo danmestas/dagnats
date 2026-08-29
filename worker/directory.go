@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/workertoken"
@@ -41,6 +42,56 @@ var ErrWorkerIDContended = errors.New(
 // wrote in the window, not who; re-Get and re-run the ownership rule
 // against the fresh entry before concluding either way.
 const ownedWriteRetriesMax = 5
+
+// ownedWriteBackoffBaseMs is the base delay (in milliseconds) for
+// ownedWriteBackoff's jittered exponential backoff between retries:
+// 5, 10, 20, 40ms before jitter, doubling per attempt. Keeps
+// contending writers (e.g. every worker's heartbeat re-registering
+// on the same tick interval) from retrying in lockstep and re-
+// colliding on the same revision every attempt.
+const ownedWriteBackoffBaseMs = 5
+
+// ownedWriteBackoff returns the sleep duration before retrying
+// attempt (0-indexed: the attempt about to run). Attempt 0 backs off
+// zero -- there is nothing to back off from yet. Later attempts
+// double the base delay and apply +/-25% jitter so multiple
+// contenders desynchronize instead of retrying in lockstep.
+func ownedWriteBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		panic("ownedWriteBackoff: attempt must not be negative")
+	}
+	if attempt >= ownedWriteRetriesMax {
+		panic("ownedWriteBackoff: attempt must be less than ownedWriteRetriesMax")
+	}
+	if attempt == 0 {
+		return 0
+	}
+	baseMs := float64(ownedWriteBackoffBaseMs) * float64(uint(1)<<uint(attempt-1))
+	jitterFrac := 0.75 + rand.Float64()*0.5 // 0.75..1.25
+	return time.Duration(baseMs * jitterFrac * float64(time.Millisecond))
+}
+
+// sleepOwnedWriteBackoff sleeps for ownedWriteBackoff(attempt),
+// returning early if ctx is done first -- a bounded backoff must
+// never outlive the caller's own timeout.
+func sleepOwnedWriteBackoff(ctx context.Context, attempt int) {
+	if ctx == nil {
+		panic("sleepOwnedWriteBackoff: ctx must not be nil")
+	}
+	if attempt < 0 {
+		panic("sleepOwnedWriteBackoff: attempt must not be negative")
+	}
+	d := ownedWriteBackoff(attempt)
+	if d <= 0 {
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
 
 // AdminTokenID is the reserved token_id value written to a
 // registration created by the bridge's admin bearer or dev mode
@@ -199,6 +250,7 @@ func (d *Directory) RegisterOwned(
 	)
 	defer cancel()
 	for attempt := 0; attempt < ownedWriteRetriesMax; attempt++ {
+		sleepOwnedWriteBackoff(ctx, attempt)
 		done, err := registerOwnedAttempt(
 			ctx, d.kv, reg, callerTokenID, callerIsAdmin,
 		)
@@ -368,6 +420,7 @@ func (d *Directory) DeregisterOwned(
 	)
 	defer cancel()
 	for attempt := 0; attempt < ownedWriteRetriesMax; attempt++ {
+		sleepOwnedWriteBackoff(ctx, attempt)
 		done, err := deregisterOwnedAttempt(
 			ctx, d.kv, workerID, callerTokenID, callerIsAdmin,
 		)
