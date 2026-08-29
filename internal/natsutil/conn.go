@@ -263,6 +263,12 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 		{Bucket: "workflow_runs", Replicas: replicas},
 		{Bucket: "scheduled_runs", Replicas: replicas},
 		{Bucket: "workers", TTL: 60 * time.Second, Replicas: replicas},
+		// worker_tokens: mintable, revocable, scoped bearer tokens for
+		// worker access (#627). No TTL — a token's lifetime is governed
+		// by explicit Revoke, not staleness; revoked records are kept
+		// for audit. History 1: readers only need the latest state per
+		// token, same rationale as "services" below.
+		{Bucket: "worker_tokens", History: 1, Replicas: replicas},
 		// worker_status: per-worker counter snapshots (cancelled-task
 		// skip count, etc.) used by `dagnats status --detail`. TTL'd
 		// so dead workers' entries age out of the aggregate (#182).

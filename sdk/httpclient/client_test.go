@@ -18,6 +18,15 @@ import (
 	"github.com/danmestas/dagnats/server"
 )
 
+// testServerAdminToken is the DAGNATS_BRIDGE_TOKEN every testServerAddr
+// server is started with. #627: the server always wires a
+// workertoken.Store into the bridge, so an unauthenticated bridge
+// request is rejected (401) even with no admin token configured --
+// unlike before #627, there is no more unauthenticated dev-mode
+// fallback once a Store exists. Tests authenticate as admin via
+// httpclient.WithToken(testServerAdminToken).
+const testServerAdminToken = "test-admin-token"
+
 // testServerAddr starts a full DagNats server and returns the HTTP
 // base URL and a cleanup function. The server runs in a background
 // goroutine and shuts down when cleanup is called.
@@ -26,6 +35,7 @@ func testServerAddr(t *testing.T) (string, func()) {
 		panic("testServerAddr: t must not be nil")
 	}
 	t.Helper()
+	t.Setenv("DAGNATS_BRIDGE_TOKEN", testServerAdminToken)
 
 	cfg := server.DefaultConfig()
 	cfg.DataDir = t.TempDir()
@@ -220,7 +230,7 @@ func TestClientE2EWorkflowCompletion(t *testing.T) {
 
 	// Create HTTP client and connect as worker
 	ctx := context.Background()
-	client := httpclient.New(baseURL)
+	client := httpclient.New(baseURL, httpclient.WithToken(testServerAdminToken))
 	if client == nil {
 		t.Fatal("httpclient.New returned nil")
 	}
@@ -289,7 +299,7 @@ func TestClientE2ETaskFailure(t *testing.T) {
 	}`)
 
 	ctx := context.Background()
-	client := httpclient.New(baseURL)
+	client := httpclient.New(baseURL, httpclient.WithToken(testServerAdminToken))
 
 	err := client.Connect(
 		ctx, "sdk-fail-worker",
@@ -375,7 +385,7 @@ func TestClientPollTimeout(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	client := httpclient.New(baseURL)
+	client := httpclient.New(baseURL, httpclient.WithToken(testServerAdminToken))
 
 	err := client.Connect(
 		ctx, "sdk-timeout-worker",

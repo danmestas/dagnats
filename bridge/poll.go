@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/consumername"
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -70,6 +71,13 @@ func (b *Bridge) handlePoll(
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	claims := claimsFromContext(ctx)
+	if unmatched, ok := firstUnauthorizedTaskType(claims, req.TaskTypes); ok {
+		http.Error(w, fmt.Sprintf(
+			"task type %q not permitted for this token", unmatched,
+		), http.StatusForbidden)
+		return
+	}
 	tasks, err := b.fetchTasks(ctx, req)
 	if err != nil {
 		// Loud by construction: a consumer the bridge cannot obtain is
@@ -89,6 +97,32 @@ func (b *Bridge) handlePoll(
 	)
 
 	writePollResponse(w, tasks)
+}
+
+// firstUnauthorizedTaskType returns the first entry of taskTypes claims
+// does not permit, reporting false when every entry is allowed.
+//
+// Scoping only ever applies to a real Store-issued identity: admin
+// claims (env bearer) are unscoped by design, and claims with no
+// TokenID mean the request reached here via dev mode (no admin token,
+// no Store configured) -- there is no worker-token identity to scope
+// against, so it must not be treated as "a token with zero prefixes"
+// (which would fail closed and break dev mode).
+func firstUnauthorizedTaskType(
+	claims workertoken.Claims, taskTypes []string,
+) (string, bool) {
+	if len(taskTypes) == 0 {
+		panic("firstUnauthorizedTaskType: taskTypes must not be empty")
+	}
+	if claims.Admin || claims.TokenID == "" {
+		return "", false
+	}
+	for _, taskType := range taskTypes {
+		if !claims.AllowsTaskType(taskType) {
+			return taskType, true
+		}
+	}
+	return "", false
 }
 
 // parsePollRequest validates the poll JSON body.

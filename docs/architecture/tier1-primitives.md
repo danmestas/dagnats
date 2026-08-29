@@ -66,7 +66,7 @@
 
 **Ack map:** In-memory `sync.Map` of `taskID → nats.Msg`. Bridge holds NATS ack until HTTP worker resolves. On bridge restart, in-flight tasks timeout via AckWait and NATS redelivers.
 
-**Auth:** Bearer token via `DAGNATS_BRIDGE_TOKEN` env var. No token = allow all (dev mode).
+**Auth (#627):** `DAGNATS_BRIDGE_TOKEN` is the admin/root bearer — unscoped, and the only credential the `/v1/tokens` mint/list/revoke routes accept. It mints scoped, revocable worker tokens (`dgn_{id}_{secret}`) handed to individual machines; a worker token is checked against the task-type prefixes it was minted with. `dagnats serve` always provisions the worker-token store, so an unauthenticated request is rejected even with `DAGNATS_BRIDGE_TOKEN` unset — "no token = allow all" only applies to a bridge embedded standalone with no store wired in. Revocation latency is bounded by the KV-watch reconnect window (capped at 30s), not instant.
 
 **Mounted on `dagnats serve`** at `/v1/` on the existing HTTP mux. No separate port.
 

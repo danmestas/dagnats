@@ -318,7 +318,7 @@ const (
 ```
 
 <a name="Directory"></a>
-## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L59-L61>)
+## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L66-L68>)
 
 Directory provides worker visibility via NATS KV. Each worker writes its registration to the "workers" bucket; the bucket's TTL ensures stale entries are purged automatically.
 
@@ -329,7 +329,7 @@ type Directory struct {
 ```
 
 <a name="NewDirectory"></a>
-### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L66>)
+### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L73>)
 
 ```go
 func NewDirectory(js jetstream.JetStream) *Directory
@@ -338,7 +338,7 @@ func NewDirectory(js jetstream.JetStream) *Directory
 NewDirectory creates a Directory backed by the "workers" KV bucket. Panics if js is nil or the bucket does not exist — both are programmer errors indicating missing setup.
 
 <a name="Directory.Deregister"></a>
-### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L113>)
+### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L120>)
 
 ```go
 func (d *Directory) Deregister(workerID string) error
@@ -347,7 +347,7 @@ func (d *Directory) Deregister(workerID string) error
 Deregister removes the worker's entry from the directory. Panics if workerID is empty. Returns nil if the key does not exist.
 
 <a name="Directory.List"></a>
-### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L134>)
+### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L141>)
 
 ```go
 func (d *Directory) List() ([]WorkerRegistration, error)
@@ -356,7 +356,7 @@ func (d *Directory) List() ([]WorkerRegistration, error)
 List returns all currently registered workers. Returns an empty slice when no workers are registered. Skips entries that fail to unmarshal \(TTL expiry race\).
 
 <a name="Directory.Register"></a>
-### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L85>)
+### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L92>)
 
 ```go
 func (d *Directory) Register(reg WorkerRegistration) error
@@ -823,7 +823,7 @@ func WithPartitions(n int) WorkerOption
 WithPartitions configures pcgroups elastic consumer groups with the given partition count. 0 = legacy consumer \(default\).
 
 <a name="WorkerRegistration"></a>
-## type [WorkerRegistration](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L34-L54>)
+## type [WorkerRegistration](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L34-L61>)
 
 WorkerRegistration is the directory entry for a running worker. The directory is observability\-only — the engine never reads it. Workers register on startup and maintain their entry via periodic heartbeat writes \(the KV bucket has a 60s TTL\).
 
@@ -850,6 +850,13 @@ type WorkerRegistration struct {
     // to time.Now() to gauge worker liveness without depending on
     // NATS KV's TTL-eviction latency.
     LastSeen time.Time `json:"last_seen,omitempty"`
+
+    // TokenID identifies the workertoken.Token the worker presented to
+    // the HTTP bridge's /v1/workers/connect, if any (#627). Empty for
+    // the env-token admin path, dev mode, or non-bridge (native NATS)
+    // workers -- it exists purely so an operator can see, from the
+    // directory, which minted token a given worker is using.
+    TokenID string `json:"token_id,omitempty"`
 }
 ```
 

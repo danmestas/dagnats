@@ -67,7 +67,7 @@ Workers register in the `workers` KV bucket on startup via `worker.Directory`. T
 
 ## HTTP Transport
 
-The bridge exposes three endpoints for HTTP workers. All requests require Bearer token authentication via `Authorization: Bearer {token}` header. The token is configured via the `DAGNATS_BRIDGE_TOKEN` environment variable.
+The bridge exposes three endpoints for HTTP workers. All requests require Bearer token authentication via `Authorization: Bearer {token}` header. `DAGNATS_BRIDGE_TOKEN` is the admin/root credential; it can also mint scoped, revocable worker tokens (`dgn_{id}_{secret}`) via [`POST /v1/tokens`](rest-api#tokens) for individual machines instead of distributing the admin credential itself.
 
 ### POST /v1/workers/connect
 
@@ -210,7 +210,7 @@ Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}
 
 | Transport | Method |
 |-----------|--------|
-| HTTP bridge | Bearer token via `Authorization: Bearer {token}` header. Token set via `DAGNATS_BRIDGE_TOKEN`. Missing or invalid tokens return `401 Unauthorized`. |
+| HTTP bridge | Bearer token via `Authorization: Bearer {token}` header — the `DAGNATS_BRIDGE_TOKEN` admin bearer, or a minted worker token scoped to task-type prefixes ([`/v1/tokens`](rest-api#tokens)). Missing or invalid tokens return `401 Unauthorized`; an out-of-scope worker token returns `403`. |
 | NATS native | NATS native authentication (user/password, tokens, NKey, JWT). |
 
 ---
