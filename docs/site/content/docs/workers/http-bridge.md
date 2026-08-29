@@ -33,6 +33,14 @@ Registers an HTTP worker and opens an SSE heartbeat stream. The connection stays
 
 The worker appears in the **workers** KV directory alongside Go native workers. On disconnect, the bridge deregisters the worker automatically.
 
+`worker_id` is claimed by the first token that registers it: once an entry exists with a
+non-empty token identity, only that same token (or the admin bearer) may re-register that
+`worker_id` -- a restart or heartbeat re-register from the owning token succeeds, but a
+different token attempting to take over the id gets `409 Conflict` and the existing entry is
+left untouched. The admin bearer can always take over any `worker_id`. Entries with no token
+identity -- written before per-token identity existed, or by a dev-mode/native worker -- have
+no owner and are claimable by the first token that registers them.
+
 ### POST /v1/tasks/poll
 
 Long-polls for tasks from the TASK_QUEUES stream. Returns a JSON array of task payloads, or an empty array on timeout.

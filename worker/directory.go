@@ -3,9 +3,17 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+)
+
+// ErrWorkerIDOwned is returned by CheckOwnership when workerID is
+// already registered under a different, non-empty token_id and the
+// caller is neither that token nor an admin.
+var ErrWorkerIDOwned = errors.New(
+	"worker_id is registered to another token",
 )
 
 // MaxWorkerStaleness is the read-time cutoff used by List(): entries
@@ -84,6 +92,47 @@ func NewDirectory(js jetstream.JetStream) *Directory {
 		)
 	}
 	return &Directory{kv: kv}
+}
+
+// CheckOwnership enforces per-token worker_id ownership (#650): once a
+// worker_id has been registered under a non-empty token_id, only that
+// same token -- or an admin caller -- may re-register it. Entries
+// with an empty token_id (written before #627, or by dev-mode/native
+// workers) have no owner and are claimable by anyone. Bounded to one
+// KV Get; callers make this check before their own Register/Put.
+func (d *Directory) CheckOwnership(
+	workerID, callerTokenID string, callerIsAdmin bool,
+) error {
+	if workerID == "" {
+		panic("Directory.CheckOwnership: workerID must not be empty")
+	}
+	if d.kv == nil {
+		panic("Directory.CheckOwnership: kv must not be nil")
+	}
+	if callerIsAdmin {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	entry, err := d.kv.Get(ctx, workerID)
+	if err == jetstream.ErrKeyNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var existing WorkerRegistration
+	if err := json.Unmarshal(entry.Value(), &existing); err != nil {
+		// Corrupt or stale entry -- treat as unowned rather than
+		// block a legitimate registration on undecodable data.
+		return nil
+	}
+	if existing.TokenID != "" && existing.TokenID != callerTokenID {
+		return ErrWorkerIDOwned
+	}
+	return nil
 }
 
 // Register writes the worker's registration to the KV bucket.

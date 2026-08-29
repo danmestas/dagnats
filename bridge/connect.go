@@ -2,11 +2,13 @@ package bridge
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -49,6 +51,9 @@ func (b *Bridge) handleConnect(
 
 	claims := claimsFromContext(ctx)
 	dir := worker.NewDirectory(b.js)
+	if !enforceWorkerIDOwnership(w, dir, req.WorkerID, claims) {
+		return
+	}
 	reg := worker.WorkerRegistration{
 		WorkerID:  req.WorkerID,
 		TaskTypes: req.TaskTypes,
@@ -75,6 +80,38 @@ func (b *Bridge) handleConnect(
 
 	writeSSEHeaders(w)
 	sendHeartbeatLoop(w, r, reg, dir)
+}
+
+// enforceWorkerIDOwnership checks -- and, on rejection, responds to --
+// per-token worker_id ownership (#650): a worker_id already owned by
+// a different, non-empty token_id may only be re-registered by that
+// same token or by an admin caller, otherwise any presented token
+// could overwrite another worker's directory entry. Returns true when
+// the caller may proceed to Register; false means the response has
+// already been written and the handler must return.
+func enforceWorkerIDOwnership(
+	w http.ResponseWriter, dir *worker.Directory,
+	workerID string, claims workertoken.Claims,
+) bool {
+	if w == nil {
+		panic("enforceWorkerIDOwnership: w must not be nil")
+	}
+	if dir == nil {
+		panic("enforceWorkerIDOwnership: dir must not be nil")
+	}
+	err := dir.CheckOwnership(workerID, claims.TokenID, claims.Admin)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, worker.ErrWorkerIDOwned) {
+		http.Error(
+			w, "worker_id is registered to another token",
+			http.StatusConflict,
+		)
+		return false
+	}
+	http.Error(w, "ownership check failed", http.StatusInternalServerError)
+	return false
 }
 
 // parseConnectRequest validates the connect JSON body.
