@@ -289,7 +289,7 @@ func (r *runTerminalRegistrar) handleRunEvent(
 		// looping a transient failure. The publish may have failed
 		// transiently (NATS hiccup) — bounded backoff retries. If it
 		// actually succeeded and only the ack path failed, the
-		// engine's atomic run-ID claim (SnapshotStore.ClaimRunID,
+		// engine's atomic run-ID claim (SnapshotStore.CreateSnapshot,
 		// keyed on fireRunTerminal's deterministic runTerminalChainRunID)
 		// collapses the retry to the same started run rather than
 		// double-starting it — not JSPublish's short dedup window,
@@ -337,13 +337,13 @@ type runTerminalChainInput struct {
 // target workflow, because nothing tied the two publishes' bodies
 // together. With a deterministic ID, every redelivery of the same
 // (trigger, source run) pair names the identical target run, and the
-// engine's atomic claim (SnapshotStore.ClaimRunID, called from
+// engine's atomic claim (SnapshotStore.CreateSnapshot, called from
 // resolveStartPayload's run_terminal branch) rejects the second
 // attempt outright -- durable, not time-bounded. The
 // Nats-Msg-Id ("trig-"+def.ID+"-"+evt.RunID) is kept as a CHEAP,
 // FAST-PATH short-window dedup on top -- it still saves a wasted
 // publish attempt for redeliveries within the window -- but it is not
-// what makes this correct across a restart; ClaimRunID is.
+// what makes this correct across a restart; CreateSnapshot is.
 //
 // This is why fireRunTerminal cannot reuse fire.go's Fire(): Fire
 // mints its own dedup ID scheme (cron-minute-bucket or manual-

@@ -1009,68 +1009,49 @@ func (o *Orchestrator) healRun(
 		"workflow_id", run.WorkflowID,
 	)
 
-	// Two independent gaps a crash/error can leave behind, healed
-	// separately (#634 review round 2):
+	// Re-increment runsActive (#634 review round 3; the only other
+	// increment site is dispatchNewRun above). runsActive is a purely
+	// in-process Int64UpDownCounter, not persisted -- a process
+	// restart resets it to 0 regardless of how many runs are actually
+	// still Running. healRun exists precisely for the "process
+	// crashed" case, so this delivery has no way to know whether the
+	// original winning delivery's own increment survived the crash;
+	// treating it as lost is the safer assumption (undercounting
+	// active runs after a crash is a silent, permanent drift with no
+	// other correction path; the reverse -- double-counting when heal
+	// runs without an intervening crash -- is the rarer case and
+	// still self-corrects to zero net drift once this run's own
+	// terminal -1 fires, just one run early).
+	o.metrics.runsActive.Add(ctx, 1)
+
+	// Heals EXACTLY ONE gap: the crash/error happened BEFORE
+	// enqueueReady ever ran, so entry steps are still Pending.
+	// enqueueReady's own resolveReadySteps naturally finds and
+	// dispatches ONLY those -- it never touches a step already Queued.
 	//
-	//  1. The crash happened BEFORE enqueueReady ever ran: entry
-	//     steps are still Pending. enqueueReady's own
-	//     resolveReadySteps naturally finds and dispatches them —
-	//     the call below.
-	//  2. The crash/error happened INSIDE enqueueReady, AFTER its own
-	//     snapshot save (which marks ready steps Queued and stamps a
-	//     DispatchNonce) but BEFORE — or during — the actual task
-	//     publish (dispatchReadySteps). resolveReadySteps would NOT
-	//     re-select these: they are no longer Pending. They need a
-	//     direct redispatch using the ALREADY-persisted nonce —
-	//     redispatchQueuedNormalSteps below. The task publish dedups
-	//     on Nats-Msg-Id derived from (runID, stepID) alone
-	//     (task_publisher.go's doPublish), so redispatching a step
-	//     that actually DID land despite the reported error is a safe
-	//     no-op, not a double dispatch to the worker.
-	if err := o.redispatchQueuedNormalSteps(ctx, wfDef, run); err != nil {
-		return err
-	}
+	// #634 review round 3: an earlier version of this ALSO
+	// redispatched steps already marked Queued, reasoning that the
+	// task publish's Nats-Msg-Id (runID+"."+stepID+".queued") would
+	// dedup a re-send. That dedup is a JetStream Duplicates WINDOW
+	// (TASK_QUEUES sets none explicitly, so the 2-minute server
+	// default applies -- natsutil/conn.go), and the redeliveries that
+	// reach healRun in practice are exactly the ones OLDER than that
+	// window (a restart replay, not a same-second retry). Past the
+	// window the redispatch is not deduped -- it lands as a genuine
+	// SECOND task message for a step that may already be executing,
+	// and the persisted DispatchNonce is unchanged so the second
+	// worker's control-plane checks pass too: two workers run the
+	// step's full side effects. The same risk applies to a step that
+	// is legitimately sitting Queued in an ordinary backlog with no
+	// crash at all. A publish that truly never landed is the existing
+	// MaxDeliver/reconciler concern, not this function's -- healRun
+	// only ever recovers "never reached enqueueReady," never "already
+	// Queued."
 	if err := o.enqueueReady(ctx, wfDef, run); err != nil {
 		return err
 	}
 	o.registerCancelWaiters(ctx, wfDef, run)
 	return nil
-}
-
-// redispatchQueuedNormalSteps re-publishes the task message for every
-// StepTypeNormal/StepTypeAgentLoop step already marked Queued in run
-// (#634 review round 2's healRun, see its call site's comment for
-// why). Scoped to just these two step types deliberately: they are
-// the ones task_publisher.go's PublishBatch drives, and the ONLY ones
-// this file has verified redispatch-idempotent via a deterministic,
-// nonce-independent Nats-Msg-Id (runID+"."+stepID+".queued"). Other
-// step types that reach Queued via their own enqueue* helpers
-// (sub-workflow spawn, map, sleep, wait-for-event, approval, respond)
-// are NOT redispatched here — several of those mint fresh
-// identifiers per call (e.g. a new child run ID) and are not
-// verified-safe to invoke twice, so a stuck one of those needs a
-// different recovery path, not blind re-invocation.
-func (o *Orchestrator) redispatchQueuedNormalSteps(
-	ctx context.Context, wfDef dag.WorkflowDef, run dag.WorkflowRun,
-) error {
-	if run.RunID == "" {
-		panic("redispatchQueuedNormalSteps: run.RunID must not be empty")
-	}
-	var queued []dag.StepDef
-	for _, step := range wfDef.Steps {
-		if step.Type != dag.StepTypeNormal &&
-			step.Type != dag.StepTypeAgentLoop {
-			continue
-		}
-		state, ok := run.Steps[step.ID]
-		if ok && state.Status == dag.StepStatusQueued {
-			queued = append(queued, step)
-		}
-	}
-	if len(queued) == 0 {
-		return nil
-	}
-	return o.dispatchReadySteps(ctx, wfDef, run, queued)
 }
 
 // errStartPayloadHandled signals that resolveStartPayload has already

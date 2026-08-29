@@ -1,16 +1,26 @@
 // internal/engine/run_terminal_heal_test.go
-// Methodology: white-box (package engine) fault-injection tests for
-// #634 review round 2's create-only-save-is-the-claim fix. Each test
-// calls handleWorkflowStarted directly (bypassing the NATS consumer
+// Methodology: white-box (package engine) fault-injection test for
+// #634 review round 2's create-only-save-is-the-claim fix. Calls
+// handleWorkflowStarted directly (bypassing the NATS consumer
 // plumbing dispatchEvent normally wraps it in) so a "redelivery" is
 // simply a second direct call with the identical event -- exactly
-// what JetStream redelivering the same message would produce.
-// Failures are injected two ways: a KeyValue wrapper that fails
-// Create a bounded number of times before delegating to the real
-// bucket (save failure), and a delete-then-recreate of TASK_QUEUES
-// (enqueue failure) -- both clear on their own before the
-// "redelivery" call, matching a transient fault, not a permanent one.
-// Uses a real embedded NATS server.
+// what JetStream redelivering the same message would produce. The
+// failure is injected via a KeyValue wrapper that fails Create a
+// bounded number of times before delegating to the real bucket, so
+// it clears on its own before the "redelivery" call, matching a
+// transient fault, not a permanent one. Uses a real embedded NATS
+// server.
+//
+// #634 review round 3 removed this file's second test
+// (EnqueueFailureThenRedeliveryHeals): it exercised healRun
+// redispatching a step already marked Queued, which round 3 found
+// unsafe (TASK_QUEUES has no Duplicates window, so a redispatch past
+// the ~2 minute default can double-dispatch a step to two workers)
+// and removed from healRun entirely -- see orchestrator.go's healRun
+// doc comment. The "step already Queued at redelivery" scenario is
+// now covered at the e2e level instead
+// (internal/trigger/run_terminal_e2e_test.go), which exercises it
+// against real task dispatch rather than a synthetic publish failure.
 package engine
 
 import (
@@ -19,12 +29,10 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -92,10 +100,10 @@ func runTerminalChainEvent(
 }
 
 func TestHandleWorkflowStarted_RunTerminal_SaveFailureThenRedeliveryStarts(t *testing.T) {
-	// (a) #634 review round 2, failing test first: a Create failure
-	// on the FIRST delivery must leave NOTHING behind -- no
-	// placeholder, no partial state -- so a redelivery starts the run
-	// cleanly from scratch.
+	// #634 review round 2, failing test first: a Create failure on
+	// the FIRST delivery must leave NOTHING behind -- no placeholder,
+	// no partial state -- so a redelivery starts the run cleanly from
+	// scratch.
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -153,108 +161,5 @@ func TestHandleWorkflowStarted_RunTerminal_SaveFailureThenRedeliveryStarts(t *te
 	}
 	if run.WorkflowID != wfDef.Name {
 		t.Fatalf("run.WorkflowID = %q, want %q", run.WorkflowID, wfDef.Name)
-	}
-}
-
-func TestHandleWorkflowStarted_RunTerminal_EnqueueFailureThenRedeliveryHeals(t *testing.T) {
-	// (b) #634 review round 2, failing test first: an error AFTER the
-	// Create succeeds (simulated here by making TASK_QUEUES briefly
-	// unavailable so dispatchReadySteps' publish fails) must not
-	// strand the run -- redelivery must find the already-saved row
-	// and finish enqueueing it, ending with exactly one run whose
-	// step is actually dispatched.
-	_, nc := natsutil.StartTestServer(t)
-	if err := natsutil.SetupAll(nc); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	js, _ := nc.JetStream()
-	jsNew, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New: %v", err)
-	}
-	defKV, _ := js.KeyValue("workflow_defs")
-	wfDef := runTerminalHealWorkflow("heal-enqueue-fail-wf")
-	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
-
-	orch := NewOrchestrator(nc)
-	orch.Start()
-	defer orch.Stop()
-
-	evt := runTerminalChainEvent(t, "heal-enqueue-fail-run", wfDef.Name, "src-2")
-
-	// Break the publish path enqueueReady needs (TASK_QUEUES) for the
-	// first delivery only -- capture its config so it can be recreated
-	// identically afterward.
-	taskQueuesStream, err := jsNew.Stream(context.Background(), "TASK_QUEUES")
-	if err != nil {
-		t.Fatalf("stream TASK_QUEUES: %v", err)
-	}
-	taskQueuesInfo, err := taskQueuesStream.Info(context.Background())
-	if err != nil {
-		t.Fatalf("TASK_QUEUES info: %v", err)
-	}
-	if err := jsNew.DeleteStream(context.Background(), "TASK_QUEUES"); err != nil {
-		t.Fatalf("delete TASK_QUEUES: %v", err)
-	}
-
-	if err := orch.handleWorkflowStarted(context.Background(), evt); err == nil {
-		t.Fatal("expected error from first delivery (TASK_QUEUES unavailable)")
-	}
-
-	// Positive (sanity): the Create DID land -- the run exists,
-	// Running, with its step still Pending (never enqueued).
-	saved, loadErr := orch.store.Load(
-		context.Background(), "heal-enqueue-fail-run",
-	)
-	if loadErr != nil {
-		t.Fatalf("load after failed first delivery: %v", loadErr)
-	}
-	if saved.Status != dag.RunStatusRunning {
-		t.Fatalf("saved.Status = %s, want running", saved.Status)
-	}
-	// enqueueReady's own save marks a ready step Queued (and stamps a
-	// DispatchNonce) BEFORE attempting the actual task publish, so a
-	// publish failure leaves the step Queued, not Pending -- this is
-	// exactly the gap redispatchQueuedNormalSteps exists to heal.
-	if saved.Steps["a"].Status != dag.StepStatusQueued {
-		t.Fatalf("saved step status = %v, want queued (saved, never dispatched)",
-			saved.Steps["a"].Status)
-	}
-	if saved.Steps["a"].DispatchNonce == "" {
-		t.Fatal("saved step should already carry a DispatchNonce")
-	}
-
-	// Restore TASK_QUEUES with its original config, then redeliver.
-	if _, err := jsNew.CreateStream(
-		context.Background(), taskQueuesInfo.Config,
-	); err != nil {
-		t.Fatalf("restore TASK_QUEUES: %v", err)
-	}
-	if err := orch.handleWorkflowStarted(context.Background(), evt); err != nil {
-		t.Fatalf("redelivery (heal): %v", err)
-	}
-
-	// Positive: still exactly one run (Create is deterministic-run-ID
-	// -keyed, so there is only ever one row to find), and its step
-	// got dispatched this time.
-	sub, err := js.PullSubscribe(
-		"task.echo.*", "", nats.BindStream("TASK_QUEUES"))
-	if err != nil {
-		t.Fatalf("PullSubscribe: %v", err)
-	}
-	msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
-	if err != nil {
-		t.Fatalf("Fetch dispatched task: %v", err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("dispatched task count = %d, want 1", len(msgs))
-	}
-	var payload protocol.TaskPayload
-	if err := json.Unmarshal(msgs[0].Data, &payload); err != nil {
-		t.Fatalf("unmarshal task payload: %v", err)
-	}
-	if payload.RunID != "heal-enqueue-fail-run" {
-		t.Fatalf("dispatched task RunID = %q, want heal-enqueue-fail-run",
-			payload.RunID)
 	}
 }

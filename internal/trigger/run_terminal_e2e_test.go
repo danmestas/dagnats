@@ -35,6 +35,11 @@ import (
 const runTerminalPollMax = 50 // 50 * 100ms = 5s
 const runTerminalPollInterval = 100 * time.Millisecond
 
+// taskCountPollMax bounds countTaskMessages' Fetch loop -- a handful
+// of iterations is ample since TASK_QUEUES never holds more than a
+// couple of messages per subject in these tests.
+const taskCountPollMax = 5
+
 // oneStepEchoWorkflow returns a single-step workflow definition so
 // completing it is one raw StepCompleted publish away, matching
 // admission_skip_visibility_test.go's pattern.
@@ -351,6 +356,65 @@ func (h *runTerminalTestHarness) countChainedRuns(
 	return count
 }
 
+// countTaskMessages counts every message ever published to subject on
+// TASK_QUEUES (#634 review round 3: dedup-by-run-count is not enough
+// to catch a healRun that double-DISPATCHES a single step's task --
+// this counts at the task-message level instead). Bounded: stops
+// after an empty Fetch, capped by taskCountPollMax iterations so a
+// genuine bug (an unbounded stream of duplicates) cannot hang the
+// test. Does not Ack -- these are throwaway ephemeral pulls in a test
+// server with no real worker, so leaving messages unacked has no
+// side effect on anything else in the test.
+func (h *runTerminalTestHarness) countTaskMessages(subject string) int {
+	h.t.Helper()
+	sub, err := h.js.PullSubscribe(
+		subject, "", nats.BindStream("TASK_QUEUES"))
+	if err != nil {
+		h.t.Fatalf("PullSubscribe %q: %v", subject, err)
+	}
+	// Unsubscribe (not just let it go out of scope) deletes the
+	// underlying JetStream pull consumer immediately: a work-queue
+	// stream allows only ONE filtered consumer per exact subject at a
+	// time, and this helper is called more than once per test against
+	// the SAME subject (a before/after count around one redelivery).
+	// Messages fetched here are never Acked, so they remain
+	// redeliverable to the NEXT ephemeral consumer this creates --
+	// nothing is lost between calls.
+	defer func() { _ = sub.Unsubscribe() }()
+	count := 0
+	for i := 0; i < taskCountPollMax; i++ {
+		msgs, fetchErr := sub.Fetch(10, nats.MaxWait(300*time.Millisecond))
+		if fetchErr != nil {
+			break // nats.ErrTimeout (or similar): no more messages
+		}
+		count += len(msgs)
+		if len(msgs) == 0 {
+			break
+		}
+	}
+	return count
+}
+
+// waitStepStatus polls workflow_runs for runID until step stepID
+// reaches status, bounded by runTerminalPollMax attempts. Fails the
+// test on timeout -- used to synchronize a test with "the step has
+// been dispatched (Queued) but not yet completed" before exercising
+// a redelivery against that exact window.
+func (h *runTerminalTestHarness) waitStepStatus(
+	runID, stepID string, status dag.StepStatus,
+) dag.WorkflowRun {
+	h.t.Helper()
+	run, ok := h.pollRun(runID, func(r dag.WorkflowRun) bool {
+		state, exists := r.Steps[stepID]
+		return exists && state.Status == status
+	})
+	if !ok {
+		h.t.Fatalf("run %q step %q did not reach status %s within timeout",
+			runID, stepID, status)
+	}
+	return run
+}
+
 func TestRunTerminalTrigger_RedeliveryDedups(t *testing.T) {
 	h := newRunTerminalTestHarness(t)
 
@@ -565,8 +629,22 @@ func TestRunTerminalTrigger_DeliverNewPolicyIgnoresHistoricalEvents(t *testing.T
 // short Nats-Msg-Id Duplicates window (natsutil/conn.go, a few
 // seconds) — a crash/restart gap is minutes. This test republishes
 // the identical source RunEvent after sleeping PAST that window and
-// asserts the fix (deterministic run ID + SnapshotStore.ClaimRunID)
+// asserts the fix (deterministic run ID + SnapshotStore.CreateSnapshot)
 // still collapses to exactly one target run, not two.
+//
+// #634 review round 3 strengthened this: it now ALSO counts task
+// MESSAGES on TASK_QUEUES for B's step, not just B's run count. Round
+// 2's healRun additionally redispatched a step already Queued,
+// reasoning the task publish's Nats-Msg-Id would dedup a re-send —
+// but TASK_QUEUES sets no Duplicates window (natsutil/conn.go), so
+// past the JetStream server default (2 minutes) that redispatch was
+// NOT deduped: it landed as a genuine second task message for the
+// same step, which two workers could both pick up and execute. A
+// run-count-only assertion could not see that bug (the run count
+// stays 1 regardless — the duplication was at the task level). B's
+// step is never completed in this test (there is no worker here), so
+// it stays Queued for the whole test, exactly the state a redelivery
+// arriving after the original dispatch would find it in.
 func TestRunTerminalTrigger_SurvivesLateRedeliveryPastDedupWindow(t *testing.T) {
 	h := newRunTerminalTestHarness(t)
 
@@ -588,7 +666,14 @@ func TestRunTerminalTrigger_SurvivesLateRedeliveryPastDedupWindow(t *testing.T) 
 	h.waitRunStatus("run-late-1", dag.RunStatusRunning)
 	h.completeStep("run-late-1", "a")
 	h.waitRunStatus("run-late-1", dag.RunStatusCompleted)
-	h.waitForChainedRun(wfB.Name, "run-late-1")
+	bRun := h.waitForChainedRun(wfB.Name, "run-late-1")
+	h.waitStepStatus(bRun.RunID, "a", dag.StepStatusQueued)
+
+	// Positive (sanity): exactly one task message before redelivery.
+	taskSubject := "task.echo." + bRun.RunID
+	if count := h.countTaskMessages(taskSubject); count != 1 {
+		t.Fatalf("task message count before redelivery = %d, want 1", count)
+	}
 
 	// Sleep past WORKFLOW_HISTORY's Duplicates window (a few seconds)
 	// before republishing — proves the fix does not rely on that
@@ -616,6 +701,91 @@ func TestRunTerminalTrigger_SurvivesLateRedeliveryPastDedupWindow(t *testing.T) 
 	if count := h.countChainedRuns(wfB.Name, "run-late-1"); count != 1 {
 		t.Fatalf(
 			"chained B run count = %d, want 1 (dedup past window)",
+			count,
+		)
+	}
+	// Negative: still exactly ONE task message for B's step across
+	// the heal, not two — this is the assertion that actually catches
+	// the round-2 redispatch bug.
+	if count := h.countTaskMessages(taskSubject); count != 1 {
+		t.Fatalf(
+			"task message count after heal = %d, want 1 (no duplicate dispatch)",
+			count,
+		)
+	}
+}
+
+// TestRunTerminalTrigger_HealDoesNotRedispatchAlreadyQueuedStep covers
+// #634 review round 3's second required case: a redelivery of the
+// source RunEvent that arrives while B's step is ALREADY Queued
+// (dispatched once, not yet completed — no crash, no restart, just
+// an ordinary redelivery racing an in-flight step) must not produce a
+// second task message either. This is deliberately a SHORT-window
+// redelivery (no 6s sleep) — the round-2 bug was not specific to
+// crash/restart timing; the exact same over-eager redispatch would
+// have double-dispatched a step sitting in an ordinary backlog too.
+func TestRunTerminalTrigger_HealDoesNotRedispatchAlreadyQueuedStep(t *testing.T) {
+	h := newRunTerminalTestHarness(t)
+
+	wfA := oneStepEchoWorkflow("rt-queued-a")
+	wfB := oneStepEchoWorkflow("rt-queued-b")
+	h.putWorkflowDef(wfA)
+	h.putWorkflowDef(wfB)
+
+	h.activateRunTerminal(TriggerDef{
+		ID:         "rt-queued-trigger",
+		WorkflowID: wfB.Name,
+		Enabled:    true,
+		RunTerminal: &RunTerminalConfig{
+			Workflow: wfA.Name,
+		},
+	})
+
+	h.startRun(wfA, "run-queued-1")
+	h.waitRunStatus("run-queued-1", dag.RunStatusRunning)
+	h.completeStep("run-queued-1", "a")
+	h.waitRunStatus("run-queued-1", dag.RunStatusCompleted)
+
+	bRun := h.waitForChainedRun(wfB.Name, "run-queued-1")
+	// Synchronize on "dispatched but not completed" — B's step "a" is
+	// never completed in this test, so once Queued it stays Queued.
+	h.waitStepStatus(bRun.RunID, "a", dag.StepStatusQueued)
+
+	taskSubject := "task.echo." + bRun.RunID
+	if count := h.countTaskMessages(taskSubject); count != 1 {
+		t.Fatalf("task message count before redelivery = %d, want 1", count)
+	}
+
+	// Redeliver the SAME source RunEvent immediately (same
+	// triggerID+sourceRunID -> same deterministic B run ID). healRun
+	// finds B already Running with step "a" Queued and must do
+	// nothing to it — resolveReadySteps only re-selects Pending steps.
+	evt := protocol.RunEvent{
+		Type:       protocol.RunEventCompleted,
+		RunID:      "run-queued-1",
+		WorkflowID: wfA.Name,
+		Status:     "completed",
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal RunEvent: %v", err)
+	}
+	subject := "event.run." + wfA.Name + ".run-queued-1.completed"
+	if _, err := h.js.Publish(subject, data); err != nil {
+		t.Fatalf("republish RunEvent: %v", err)
+	}
+	time.Sleep(1 * time.Second)
+
+	// Negative: still exactly one B run.
+	if count := h.countChainedRuns(wfB.Name, "run-queued-1"); count != 1 {
+		t.Fatalf("chained B run count = %d, want 1", count)
+	}
+	// Negative: still exactly one task message for B's step — the
+	// core assertion this test exists for.
+	if count := h.countTaskMessages(taskSubject); count != 1 {
+		t.Fatalf(
+			"task message count after redelivery = %d, want 1 "+
+				"(heal must not redispatch an already-Queued step)",
 			count,
 		)
 	}

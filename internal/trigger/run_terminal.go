@@ -223,7 +223,7 @@ func runTerminalDurableName(triggerID string) string {
 // redelivered source RunEvent, whether within JetStream's short
 // Nats-Msg-Id dedup window or hours later after a crash/restart)
 // always names the SAME target run. That determinism is what lets
-// the engine's atomic run-ID claim (SnapshotStore.ClaimRunID) reject
+// the engine's atomic run-ID claim (SnapshotStore.CreateSnapshot) reject
 // the second attempt outright, instead of relying on a dedup window
 // that cannot survive a restart gap. sha256 (not e.g. FNV) because
 // this ID crosses a trust boundary into a value operators and other
