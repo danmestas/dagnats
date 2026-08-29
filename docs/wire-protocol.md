@@ -270,7 +270,11 @@ marshal of the definition (`dag.DefHash`, `dag/hash.go`). Determinism comes
 from two `encoding/json` guarantees, not custom canonicalization — map keys
 are sorted before marshaling and struct fields are always emitted in
 declaration order, so two field-for-field-equal `WorkflowDef` values hash
-identically regardless of how their maps were populated.
+identically regardless of how their maps were populated. This does not
+extend to the `json.RawMessage` fields (`input_schema`, `output_schema`,
+step `config`): those are hashed verbatim as whatever bytes they hold, so
+two schemas that are semantically equal but differ in whitespace or key
+order hash differently.
 
 A caller that re-registers a workflow on every trigger can fetch the
 current `def_hash` (via `GET /workflows` or by caching the value from its

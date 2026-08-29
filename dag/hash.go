@@ -17,7 +17,12 @@ import (
 // them, and struct fields are always marshaled in declaration order. So
 // two WorkflowDef values that are field-for-field equal -- including
 // maps populated in a different insertion order -- always marshal to
-// byte-identical JSON and therefore hash identically.
+// byte-identical JSON and therefore hash identically. This does NOT
+// extend to the json.RawMessage fields (WorkflowDef.InputSchema,
+// WorkflowDef.OutputSchema, StepDef.Config): those are hashed verbatim
+// as whatever bytes they hold, so two schemas that are semantically
+// equal but differ in whitespace or key order (e.g. `{"a":1,"b":2}` vs
+// `{"b":2,"a":1}`) hash differently.
 //
 // Panics on an empty def.Name (a WorkflowDef without a name is a
 // programmer error, not a runtime condition to handle) and if marshaling
@@ -31,9 +36,6 @@ func DefHash(def WorkflowDef) string {
 	data, err := json.Marshal(def)
 	if err != nil {
 		panic("DefHash: marshal WorkflowDef: " + err.Error())
-	}
-	if len(data) == 0 {
-		panic("DefHash: marshaled WorkflowDef must not be empty")
 	}
 
 	sum := sha256.Sum256(data)

@@ -166,7 +166,7 @@ func CalculateDelay(policy RetryPolicy, attempt int) time.Duration
 CalculateDelay returns the delay before the next retry attempt. Attempt is 1\-based \(first retry = attempt 1\).
 
 <a name="DefHash"></a>
-## func [DefHash](<https://github.com/danmestas/dagnats/blob/main/dag/hash.go#L26>)
+## func [DefHash](<https://github.com/danmestas/dagnats/blob/main/dag/hash.go#L31>)
 
 ```go
 func DefHash(def WorkflowDef) string
@@ -174,7 +174,7 @@ func DefHash(def WorkflowDef) string
 
 DefHash returns a deterministic content hash for a WorkflowDef: the hex\-encoded SHA\-256 of its canonical JSON encoding. It exists so a caller that re\-registers the same definition on every trigger \(\#630\) can compare hashes and skip the POST /workflows round\-trip when the definition is unchanged, instead of re\-registering unconditionally.
 
-Determinism relies on two Go/encoding/json guarantees rather than any custom canonicalization: encoding/json sorts map keys before emitting them, and struct fields are always marshaled in declaration order. So two WorkflowDef values that are field\-for\-field equal \-\- including maps populated in a different insertion order \-\- always marshal to byte\-identical JSON and therefore hash identically.
+Determinism relies on two Go/encoding/json guarantees rather than any custom canonicalization: encoding/json sorts map keys before emitting them, and struct fields are always marshaled in declaration order. So two WorkflowDef values that are field\-for\-field equal \-\- including maps populated in a different insertion order \-\- always marshal to byte\-identical JSON and therefore hash identically. This does NOT extend to the json.RawMessage fields \(WorkflowDef.InputSchema, WorkflowDef.OutputSchema, StepDef.Config\): those are hashed verbatim as whatever bytes they hold, so two schemas that are semantically equal but differ in whitespace or key order \(e.g. \`\{"a":1,"b":2\}\` vs \`\{"b":2,"a":1\}\`\) hash differently.
 
 Panics on an empty def.Name \(a WorkflowDef without a name is a programmer error, not a runtime condition to handle\) and if marshaling fails \(WorkflowDef holds only JSON\-safe field types, so a marshal failure indicates a violated invariant elsewhere, not bad input\).
 
