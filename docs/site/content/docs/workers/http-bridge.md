@@ -33,6 +33,24 @@ Registers an HTTP worker and opens an SSE heartbeat stream. The connection stays
 
 The worker appears in the **workers** KV directory alongside Go native workers. On disconnect, the bridge deregisters the worker automatically.
 
+`worker_id` is claimed by the first token that registers it: once an entry exists with a
+non-empty token identity, only that same token (or the admin bearer) may re-register or
+disconnect-clear that `worker_id` -- a restart or heartbeat re-register from the owning token
+succeeds, but a different token attempting to take over the id gets `409 Conflict` and the
+existing entry is left untouched. The connect handler, the periodic heartbeat re-register, and
+disconnect cleanup all go through the same revision-guarded write, so two tokens racing an
+unclaimed id can't both win it (exactly one gets `200`, the loser gets `409`), and a heartbeat
+can never resurrect a `worker_id` an admin has since taken over. The admin bearer -- and every
+caller in dev mode, which has no token identity to enforce -- can always take over or delete
+any `worker_id`; those entries are written with the reserved `admin` token identity so a later
+worker token can't reclaim them the way an unowned entry can. Entries with no token identity at
+all -- a native Go worker, which never goes through the bridge -- are outside this scope
+entirely: they're claimable, and deletable, by any bridge token, in both directions. That cuts
+both ways: a native Go worker authenticates with NATS credentials, not a bridge token, and its
+plain KV write carries no token identity at all, so if it registers a `worker_id` a bridge
+token currently owns, the entry silently becomes unowned -- a different trust boundary than the
+bridge's own ownership rule, worth knowing rather than discovering by surprise.
+
 ### POST /v1/tasks/poll
 
 Long-polls for tasks from the TASK_QUEUES stream. Returns a JSON array of task payloads, or an empty array on timeout.

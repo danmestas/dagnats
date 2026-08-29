@@ -3,10 +3,58 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// ErrWorkerIDOwned is returned by RegisterOwned (on register/
+// heartbeat) and DeregisterOwned (on disconnect) when workerID's
+// current entry is owned by a different token and the caller is
+// neither that token nor an admin -- including when the caller lost
+// a race to another writer between the ownership check and the
+// revision-guarded write.
+var ErrWorkerIDOwned = errors.New(
+	"worker_id is registered to another token",
+)
+
+// AdminTokenID is the reserved token_id value written to a
+// registration created by the bridge's admin bearer or dev mode
+// (#650 round 3). Using "" for these entries made an admin takeover
+// indistinguishable from a genuinely unowned entry (a pre-#627
+// record, or a native Go worker outside the bridge's scope -- see
+// Register/Deregister) and therefore claimable by the next bridge
+// token to connect. workertoken.Mint asserts a minted id can never
+// equal this value (ids are nuids, so the collision is not reachable
+// in practice, but the assertion makes the invariant explicit), so
+// an entry carrying AdminTokenID is unambiguously admin-owned: only
+// an admin caller (which includes every dev-mode caller -- dev mode
+// has no identity to enforce) may re-register or delete it. Defined
+// in internal/workertoken (the token-identity package) and re-
+// exported here so the dependency runs public -> internal, not the
+// reverse.
+const AdminTokenID = workertoken.AdminTokenID
+
+// ownershipAllows is the single ownership decision shared by
+// RegisterOwned and DeregisterOwned (#650): an admin caller may
+// always act; otherwise an entry with no token_id has no identity to
+// enforce (pre-#627, or a native Go worker that never went through
+// the bridge -- out of #650's bridge scope in both directions) and
+// is open to any caller; anything else -- including AdminTokenID --
+// requires the caller's token_id to match exactly.
+func ownershipAllows(
+	existingTokenID, callerTokenID string, callerIsAdmin bool,
+) bool {
+	if callerIsAdmin {
+		return true
+	}
+	if existingTokenID == "" {
+		return true
+	}
+	return existingTokenID == callerTokenID
+}
 
 // MaxWorkerStaleness is the read-time cutoff used by List(): entries
 // whose last Put is older than this are treated as dead and filtered
@@ -86,9 +134,105 @@ func NewDirectory(js jetstream.JetStream) *Directory {
 	return &Directory{kv: kv}
 }
 
-// Register writes the worker's registration to the KV bucket.
-// The worker must call Register periodically (before the 60s TTL)
-// to maintain its presence. Panics on empty WorkerID or TaskTypes.
+// RegisterOwned is the single, revision-guarded write path for
+// worker_id registration used by the bridge for both the initial
+// connect and the periodic heartbeat re-register (#650 round 3). A
+// prior two-step "check ownership, then plain Put" (and the
+// heartbeat's unconditional Put) each raced a concurrent writer
+// between the check and the write: two tokens racing an unclaimed id
+// could both pass the check and last-writer-wins, and a heartbeat
+// replaying its connect-time TokenID could resurrect a worker_id
+// after an admin had taken it over. Get -> ownershipAllows -> Create
+// (key absent) or Update with the Get's revision (key present)
+// closes both races: a losing/late writer's Create/Update fails on a
+// duplicate-key or revision conflict and gets ErrWorkerIDOwned, same
+// as a synchronous ownership rejection. Bounded to one Get plus one
+// Create/Update.
+func (d *Directory) RegisterOwned(
+	reg WorkerRegistration, callerTokenID string, callerIsAdmin bool,
+) error {
+	if reg.WorkerID == "" {
+		panic("Directory.RegisterOwned: WorkerID must not be empty")
+	}
+	if len(reg.TaskTypes) == 0 {
+		panic("Directory.RegisterOwned: TaskTypes must not be empty")
+	}
+	if d.kv == nil {
+		panic("Directory.RegisterOwned: kv must not be nil")
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	entry, getErr := d.kv.Get(ctx, reg.WorkerID)
+	if getErr != nil && getErr != jetstream.ErrKeyNotFound {
+		return getErr
+	}
+	reg.LastSeen = time.Now()
+	data, err := json.Marshal(reg)
+	if err != nil {
+		return err
+	}
+	if getErr == jetstream.ErrKeyNotFound {
+		return createOwned(ctx, d.kv, reg.WorkerID, data)
+	}
+	var existing WorkerRegistration
+	if err := json.Unmarshal(entry.Value(), &existing); err != nil {
+		// Corrupt/stale entry: it can't prove ownership either way,
+		// so treat it as absent for the decision -- but the write
+		// below is still guarded by the revision we just read, so a
+		// concurrent writer in between still wins the race honestly.
+		existing = WorkerRegistration{}
+	}
+	if !ownershipAllows(existing.TokenID, callerTokenID, callerIsAdmin) {
+		return ErrWorkerIDOwned
+	}
+	if _, err := d.kv.Update(
+		ctx, reg.WorkerID, data, entry.Revision(),
+	); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			// Another writer's Create/Update landed between our Get
+			// and this Update (a takeover, or a losing racer in a
+			// concurrent claim) -- we lost the race and must not
+			// clobber the value that won it.
+			return ErrWorkerIDOwned
+		}
+		return err
+	}
+	return nil
+}
+
+// createOwned performs the Create half of RegisterOwned's Get ->
+// Create-or-Update decision, split out to keep RegisterOwned under
+// the 70-line function limit.
+func createOwned(
+	ctx context.Context, kv jetstream.KeyValue, workerID string, data []byte,
+) error {
+	if kv == nil {
+		panic("createOwned: kv must not be nil")
+	}
+	if workerID == "" {
+		panic("createOwned: workerID must not be empty")
+	}
+	if _, err := kv.Create(ctx, workerID, data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			// Someone else created the key between our Get (not
+			// found) and this Create -- they won the race for a
+			// fresh id.
+			return ErrWorkerIDOwned
+		}
+		return err
+	}
+	return nil
+}
+
+// Register writes the worker's registration to the KV bucket with an
+// unguarded Put -- no ownership check, no revision guard. Reserved
+// for native Go workers, which never go through the bridge and so
+// have no TokenID to enforce (#650's ownership scope is the bridge's
+// HTTP connect/heartbeat path only; see RegisterOwned). The worker
+// must call Register periodically (before the 60s TTL) to maintain
+// its presence. Panics on empty WorkerID or TaskTypes.
 func (d *Directory) Register(reg WorkerRegistration) error {
 	if reg.WorkerID == "" {
 		panic("Directory.Register: WorkerID must not be empty")
@@ -133,6 +277,75 @@ func (d *Directory) Deregister(workerID string) error {
 		return nil
 	}
 	return err
+}
+
+// DeregisterOwned removes workerID's entry, but only if the caller
+// still owns it (#650, the delete-side counterpart to RegisterOwned):
+// ownershipAllows must hold for the entry's current token_id against
+// the caller. A disconnect from a token that has since been
+// superseded (e.g. an admin took the worker_id over while the
+// original owner's connection was still open) must not delete the
+// current owner's entry out from under it -- it returns
+// ErrWorkerIDOwned instead and leaves the entry untouched. Uses the
+// Get's revision with jetstream.LastRevision on Delete so a
+// concurrent re-register between the Get and the Delete aborts the
+// delete instead of clobbering the new owner (closes the same TOCTOU
+// window RegisterOwned closes on the write side); that abort --
+// including on the admin path, which skips the ownershipAllows check
+// above but still races the same Delete -- also maps to
+// ErrWorkerIDOwned rather than a raw KV error, so a benign concurrent
+// re-register is logged at debug by the caller instead of ERROR.
+// Returns nil if the key does not exist.
+func (d *Directory) DeregisterOwned(
+	workerID, callerTokenID string, callerIsAdmin bool,
+) error {
+	if workerID == "" {
+		panic("Directory.DeregisterOwned: workerID must not be empty")
+	}
+	if d.kv == nil {
+		panic("Directory.DeregisterOwned: kv must not be nil")
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	entry, err := d.kv.Get(ctx, workerID)
+	if err == jetstream.ErrKeyNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !callerIsAdmin {
+		var existing WorkerRegistration
+		if err := json.Unmarshal(entry.Value(), &existing); err != nil {
+			// A corrupt/stale entry can't prove ownership either way
+			// -- leave it alone rather than delete data this caller
+			// can't be shown to own.
+			return ErrWorkerIDOwned
+		}
+		if !ownershipAllows(existing.TokenID, callerTokenID, callerIsAdmin) {
+			return ErrWorkerIDOwned
+		}
+	}
+	err = d.kv.Delete(
+		ctx, workerID, jetstream.LastRevision(entry.Revision()),
+	)
+	if err == jetstream.ErrKeyNotFound {
+		return nil
+	}
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			// Someone re-registered (or re-deregistered) between our
+			// Get and this Delete -- a benign concurrent write, not a
+			// failure. Map it to ErrWorkerIDOwned so the caller logs
+			// it at debug instead of ERROR, matching RegisterOwned's
+			// treatment of the same race on the write side.
+			return ErrWorkerIDOwned
+		}
+		return err
+	}
+	return nil
 }
 
 // List returns all currently registered workers.

@@ -54,6 +54,7 @@ Catch\-up contract: on subscribe, the worker scans the \`triggers\` KV bucket an
 
 ## Index
 
+- [Constants](<#constants>)
 - [Variables](<#variables>)
 - [func HandleCheckpoint\(w \*Worker, taskType string, fn func\(CheckpointTask\) error\)](<#HandleCheckpoint>)
 - [func HandleLoop\(w \*Worker, taskType string, fn func\(LoopTask\) error\)](<#HandleLoop>)
@@ -72,8 +73,10 @@ Catch\-up contract: on subscribe, the worker scans the \`triggers\` KV bucket an
 - [type Directory](<#Directory>)
   - [func NewDirectory\(js jetstream.JetStream\) \*Directory](<#NewDirectory>)
   - [func \(d \*Directory\) Deregister\(workerID string\) error](<#Directory.Deregister>)
+  - [func \(d \*Directory\) DeregisterOwned\(workerID, callerTokenID string, callerIsAdmin bool\) error](<#Directory.DeregisterOwned>)
   - [func \(d \*Directory\) List\(\) \(\[\]WorkerRegistration, error\)](<#Directory.List>)
   - [func \(d \*Directory\) Register\(reg WorkerRegistration\) error](<#Directory.Register>)
+  - [func \(d \*Directory\) RegisterOwned\(reg WorkerRegistration, callerTokenID string, callerIsAdmin bool\) error](<#Directory.RegisterOwned>)
 - [type HTTPEnvelope](<#HTTPEnvelope>)
 - [type HandlerFunc](<#HandlerFunc>)
   - [func Typed\[I, O any\]\(fn TypedHandlerFunc\[I, O\], opts ...TypedOption\) HandlerFunc](<#Typed>)
@@ -116,6 +119,14 @@ Catch\-up contract: on subscribe, the worker scans the \`triggers\` KV bucket an
 - [type WorkerRegistration](<#WorkerRegistration>)
 
 
+## Constants
+
+<a name="AdminTokenID"></a>AdminTokenID is the reserved token\_id value written to a registration created by the bridge's admin bearer or dev mode \(\#650 round 3\). Using "" for these entries made an admin takeover indistinguishable from a genuinely unowned entry \(a pre\-\#627 record, or a native Go worker outside the bridge's scope \-\- see Register/Deregister\) and therefore claimable by the next bridge token to connect. workertoken.Mint asserts a minted id can never equal this value \(ids are nuids, so the collision is not reachable in practice, but the assertion makes the invariant explicit\), so an entry carrying AdminTokenID is unambiguously admin\-owned: only an admin caller \(which includes every dev\-mode caller \-\- dev mode has no identity to enforce\) may re\-register or delete it. Defined in internal/workertoken \(the token\-identity package\) and re\- exported here so the dependency runs public \-\> internal, not the reverse.
+
+```go
+const AdminTokenID = workertoken.AdminTokenID
+```
+
 ## Variables
 
 <a name="ErrPromotionUnsupported"></a>Sentinels for errors.Is. Each wraps its Kind so a freshly constructed \*ControlPlaneError of the same Kind matches via the Is method below.
@@ -134,6 +145,14 @@ var (
     ErrDepthExceeded    = &ControlPlaneError{Kind: KindDepthExceeded}
     ErrQuotaExceeded    = &ControlPlaneError{Kind: KindQuotaExceeded}
     ErrRateLimited      = &ControlPlaneError{Kind: KindRateLimited}
+)
+```
+
+<a name="ErrWorkerIDOwned"></a>ErrWorkerIDOwned is returned by RegisterOwned \(on register/ heartbeat\) and DeregisterOwned \(on disconnect\) when workerID's current entry is owned by a different token and the caller is neither that token nor an admin \-\- including when the caller lost a race to another writer between the ownership check and the revision\-guarded write.
+
+```go
+var ErrWorkerIDOwned = errors.New(
+    "worker_id is registered to another token",
 )
 ```
 
@@ -326,7 +345,7 @@ const (
 ```
 
 <a name="Directory"></a>
-## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L66-L68>)
+## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L114-L116>)
 
 Directory provides worker visibility via NATS KV. Each worker writes its registration to the "workers" bucket; the bucket's TTL ensures stale entries are purged automatically.
 
@@ -337,7 +356,7 @@ type Directory struct {
 ```
 
 <a name="NewDirectory"></a>
-### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L73>)
+### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L121>)
 
 ```go
 func NewDirectory(js jetstream.JetStream) *Directory
@@ -346,7 +365,7 @@ func NewDirectory(js jetstream.JetStream) *Directory
 NewDirectory creates a Directory backed by the "workers" KV bucket. Panics if js is nil or the bucket does not exist — both are programmer errors indicating missing setup.
 
 <a name="Directory.Deregister"></a>
-### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L120>)
+### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L264>)
 
 ```go
 func (d *Directory) Deregister(workerID string) error
@@ -354,8 +373,17 @@ func (d *Directory) Deregister(workerID string) error
 
 Deregister removes the worker's entry from the directory. Panics if workerID is empty. Returns nil if the key does not exist.
 
+<a name="Directory.DeregisterOwned"></a>
+### func \(\*Directory\) [DeregisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L299-L301>)
+
+```go
+func (d *Directory) DeregisterOwned(workerID, callerTokenID string, callerIsAdmin bool) error
+```
+
+DeregisterOwned removes workerID's entry, but only if the caller still owns it \(\#650, the delete\-side counterpart to RegisterOwned\): ownershipAllows must hold for the entry's current token\_id against the caller. A disconnect from a token that has since been superseded \(e.g. an admin took the worker\_id over while the original owner's connection was still open\) must not delete the current owner's entry out from under it \-\- it returns ErrWorkerIDOwned instead and leaves the entry untouched. Uses the Get's revision with jetstream.LastRevision on Delete so a concurrent re\-register between the Get and the Delete aborts the delete instead of clobbering the new owner \(closes the same TOCTOU window RegisterOwned closes on the write side\); that abort \-\- including on the admin path, which skips the ownershipAllows check above but still races the same Delete \-\- also maps to ErrWorkerIDOwned rather than a raw KV error, so a benign concurrent re\-register is logged at debug by the caller instead of ERROR. Returns nil if the key does not exist.
+
 <a name="Directory.List"></a>
-### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L141>)
+### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L354>)
 
 ```go
 func (d *Directory) List() ([]WorkerRegistration, error)
@@ -364,13 +392,22 @@ func (d *Directory) List() ([]WorkerRegistration, error)
 List returns all currently registered workers. Returns an empty slice when no workers are registered. Skips entries that fail to unmarshal \(TTL expiry race\).
 
 <a name="Directory.Register"></a>
-### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L92>)
+### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L236>)
 
 ```go
 func (d *Directory) Register(reg WorkerRegistration) error
 ```
 
-Register writes the worker's registration to the KV bucket. The worker must call Register periodically \(before the 60s TTL\) to maintain its presence. Panics on empty WorkerID or TaskTypes.
+Register writes the worker's registration to the KV bucket with an unguarded Put \-\- no ownership check, no revision guard. Reserved for native Go workers, which never go through the bridge and so have no TokenID to enforce \(\#650's ownership scope is the bridge's HTTP connect/heartbeat path only; see RegisterOwned\). The worker must call Register periodically \(before the 60s TTL\) to maintain its presence. Panics on empty WorkerID or TaskTypes.
+
+<a name="Directory.RegisterOwned"></a>
+### func \(\*Directory\) [RegisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L151-L153>)
+
+```go
+func (d *Directory) RegisterOwned(reg WorkerRegistration, callerTokenID string, callerIsAdmin bool) error
+```
+
+RegisterOwned is the single, revision\-guarded write path for worker\_id registration used by the bridge for both the initial connect and the periodic heartbeat re\-register \(\#650 round 3\). A prior two\-step "check ownership, then plain Put" \(and the heartbeat's unconditional Put\) each raced a concurrent writer between the check and the write: two tokens racing an unclaimed id could both pass the check and last\-writer\-wins, and a heartbeat replaying its connect\-time TokenID could resurrect a worker\_id after an admin had taken it over. Get \-\> ownershipAllows \-\> Create \(key absent\) or Update with the Get's revision \(key present\) closes both races: a losing/late writer's Create/Update fails on a duplicate\-key or revision conflict and gets ErrWorkerIDOwned, same as a synchronous ownership rejection. Bounded to one Get plus one Create/Update.
 
 <a name="HTTPEnvelope"></a>
 ## type [HTTPEnvelope](<https://github.com/danmestas/dagnats/blob/main/worker/envelope.go#L17>)
@@ -804,7 +841,7 @@ func (w *Worker) Start()
 Start creates JetStream subscriptions for all registered task types. Panics if any subscription fails — stream misconfiguration is a startup error. Binds optional KV buckets for checkpoints and signals \(nil if not present\). When groups are configured, subscribes to group\-specific subjects.
 
 <a name="Worker.Stop"></a>
-### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L940>)
+### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L950>)
 
 ```go
 func (w *Worker) Stop()
@@ -862,7 +899,7 @@ func WithPartitions(n int) WorkerOption
 WithPartitions configures pcgroups elastic consumer groups with the given partition count. 0 = legacy consumer \(default\).
 
 <a name="WorkerRegistration"></a>
-## type [WorkerRegistration](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L34-L61>)
+## type [WorkerRegistration](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L82-L109>)
 
 WorkerRegistration is the directory entry for a running worker. The directory is observability\-only — the engine never reads it. Workers register on startup and maintain their entry via periodic heartbeat writes \(the KV bucket has a 60s TTL\).
 

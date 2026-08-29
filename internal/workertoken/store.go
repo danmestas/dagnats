@@ -302,6 +302,14 @@ func (s *Store) Mint(
 	}
 
 	id = runid.New()
+	if id == AdminTokenID {
+		// Unreachable in practice -- ids are nuids, which can never
+		// literally spell "admin" -- but #650 relies on this value
+		// being reserved to mark bridge admin/dev-mode directory
+		// entries, so a collision must fail loudly rather than let a
+		// minted token silently impersonate the admin marker.
+		panic("Mint: minted id collided with AdminTokenID")
+	}
 	secret, secretHash, err := mintSecret()
 	if err != nil {
 		return "", "", err
