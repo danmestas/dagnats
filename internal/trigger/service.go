@@ -468,19 +468,39 @@ func (ts *TriggerService) removeTrigger(id string, permanent bool) error {
 		panic("removeTrigger: scheduler must not be nil")
 	}
 
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-
 	stub := TriggerDef{ID: id}
+	var deleters []permanentDeleter
+
+	// Deactivate mutates each registrar's own in-memory table
+	// (r.webhooks / r.routes / ...) — those methods do NOT lock
+	// internally (see e.g. webhookRegistrar.Deactivate), they rely on
+	// THIS caller holding ts.mu for the whole critical section. Keep
+	// that section limited to the in-memory work: collect which
+	// registrars need a permanent-delete call under the lock, then
+	// run those calls after releasing it.
+	ts.mu.Lock()
 	for _, reg := range ts.registrars {
 		_ = reg.Deactivate(ts.ctx, stub)
 		if permanent {
 			if pd, ok := reg.(permanentDeleter); ok {
-				if err := pd.DeletePermanently(ts.ctx, id); err != nil {
-					slog.Error("permanent trigger resource cleanup failed",
-						"error", err, "trigger_id", id)
-				}
+				deleters = append(deleters, pd)
 			}
+		}
+	}
+	ts.mu.Unlock()
+
+	// DeletePermanently does a real NATS round-trip (durable consumer
+	// delete) — running that under ts.mu would block every other
+	// trigger-service operation (the KV watcher goroutine, API/CLI
+	// reads) for the duration (#634 review round 2, nit). Safe to run
+	// after unlocking: ts.registrars itself never changes after
+	// NewTriggerService (fixed at boot), and each permanentDeleter's
+	// own state (e.g. runTerminalRegistrar's js/tp) is immutable
+	// per-instance, not part of what ts.mu protects.
+	for _, pd := range deleters {
+		if err := pd.DeletePermanently(ts.ctx, id); err != nil {
+			slog.Error("permanent trigger resource cleanup failed",
+				"error", err, "trigger_id", id)
 		}
 	}
 	return nil

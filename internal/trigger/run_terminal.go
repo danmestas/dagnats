@@ -39,8 +39,11 @@ import (
 // triggered runs may take before the engine refuses to start the
 // next one (#634). A var, not a const, so tests can lower it to
 // exercise the cap without constructing an 8-deep trigger chain.
-// Package-private: no production caller ever needs a different
-// value, so there is no exported knob to keep documented and stable.
+// Exported (capitalized) only because this package's own e2e tests
+// live in the same package and need to reassign it directly — this
+// lives under internal/, so it is not part of any documented public
+// API surface, and no production caller has a reason to set it to
+// anything but the default.
 var TriggerDepthMax = 8
 
 // runTerminalStatuses is the full set of terminal RunEventType

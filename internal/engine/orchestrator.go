@@ -740,58 +740,54 @@ func (o *Orchestrator) handleWorkflowStarted(
 		panic("handleWorkflowStarted: Payload must not be nil")
 	}
 
-	// Idempotency guard (#196 generic path; #634 review Blocker 2 for
-	// run_terminal specifically — see below). Bug shape: dagnats
-	// restart causes the WORKFLOW_HISTORY consumer to replay
-	// historical events, including workflow.started for runs that
-	// have long since completed. Without this guard, NewWorkflowRun +
-	// saveSnapshot below overwrite the existing terminal-state KV
-	// entry with a fresh Pending run and re-dispatch the first step,
-	// producing duplicate workflow.completed events and worker
-	// storms. Any existing record means a prior workflow.started for
-	// this RunID has been processed — treat the redelivery as a
-	// no-op.
+	isRunTerminal := isRunTerminalChainPayload(evt.Payload)
+
+	// Idempotency guard (#196). READ-ONLY early check — #634 review
+	// round 2 replaced the earlier write-a-placeholder-then-claim
+	// design (which stranded that placeholder forever on ANY error or
+	// crash after the claim but before the real Save/enqueue) with
+	// this: a Load never strands anything, because it writes nothing.
+	// Two outcomes when evt.RunID already has a snapshot:
 	//
-	// A run_terminal chain-start payload takes a DIFFERENT, stricter
-	// guard: ClaimRunID (atomic KV Create) instead of Load-then-skip.
-	// Load-then-skip is correct here ONLY when a redelivery always
-	// carries the identical RunID because it is the SAME stored
-	// message being redelivered — true for every other trigger type
-	// and for direct/manual starts. run_terminal's RunID is instead
-	// RECOMPUTED (deterministically) on every fire from the durable
-	// EVENTS consumer's OWN redelivery of the SOURCE RunEvent — a
-	// genuinely SEPARATE publish attempt, not a redelivery of this
-	// same workflow.started message. Two such attempts landing on
-	// this orchestrator back-to-back (or on two orchestrator
-	// replicas) could both pass a plain Load check before either has
-	// saved anything; ClaimRunID closes that race with a single
-	// atomic write instead of a time-bounded dedup window.
-	if isRunTerminalChainPayload(evt.Payload) {
-		claimed, claimErr := o.store.ClaimRunID(ctx, evt.RunID)
-		if claimErr != nil {
-			return fmt.Errorf(
-				"claim run_terminal chain run %q: %w",
-				evt.RunID, claimErr,
-			)
-		}
-		if !claimed {
+	//   - Every OTHER trigger type / manual/HTTP/cron start: a prior
+	//     workflow.started for this EXACT RunID was already processed
+	//     — this is a redelivery of the SAME stored message — skip.
+	//   - run_terminal chain starts: the RunID is DETERMINISTIC
+	//     (recomputed per fire from the source RunEvent, not carried
+	//     by message redelivery), so "already exists" can also mean
+	//     an EARLIER, SEPARATE delivery already created this run and
+	//     possibly crashed before finishing it (before enqueueReady
+	//     ran). Heal, don't skip: re-drive dispatch if it is still
+	//     live (healRun below).
+	//
+	// This early check is a short-circuit for the common SEQUENTIAL
+	// redelivery case only (by far the most likely: a NAK, or a
+	// crash-restart replay, of an event whose first delivery already
+	// fully succeeded) — it avoids re-running admission's side effects
+	// (e.g. AcquireRun's concurrency-slot counter) for a run that
+	// turns out not to be new. It is NOT the correctness guarantee for
+	// a genuine race between two truly concurrent attempts;
+	// CreateSnapshot's atomic KV Create (in createOrHealRun) is. Two
+	// attempts CANNOT race past this point on the SAME orchestrator
+	// process for the SAME RunID: dispatchEvent already serializes all
+	// processing per RunID behind a per-run mutex (getRunLock) before
+	// this function is ever called, so only sequential redeliveries —
+	// never concurrent ones — reach this early exit in a single
+	// process. Multiple orchestrator replicas remain a genuine race,
+	// which is exactly what CreateSnapshot defends against.
+	if existing, loadErr := o.store.Load(
+		ctx, evt.RunID,
+	); loadErr == nil {
+		if !isRunTerminal {
 			slog.InfoContext(ctx,
-				"skipping redelivered run_terminal chain start — "+
-					"run ID already claimed in workflow_runs KV",
+				"skipping redelivered workflow.started — "+
+					"run already exists in workflow_runs KV",
 				"run_id", evt.RunID,
+				"existing_status", existing.Status.String(),
 			)
 			return nil
 		}
-	} else if existing, loadErr := o.store.Load(
-		ctx, evt.RunID,
-	); loadErr == nil {
-		slog.InfoContext(ctx,
-			"skipping redelivered workflow.started — "+
-				"run already exists in workflow_runs KV",
-			"run_id", evt.RunID,
-			"existing_status", existing.Status.String(),
-		)
-		return nil
+		return o.healRun(ctx, existing)
 	} else if !errors.Is(loadErr, ErrRunNotFound) {
 		return fmt.Errorf(
 			"load existing run %q: %w", evt.RunID, loadErr,
@@ -872,10 +868,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 		return nil
 	case admissionQueue:
 		run.Status = dag.RunStatusPending
-		if err := o.saveSnapshot(ctx, run, ""); err != nil {
-			return fmt.Errorf("save pending run: %w", err)
-		}
-		return nil
+		return o.createOrHealRun(ctx, isRunTerminal, wfDef, run, false)
 	}
 
 	run.Status = dag.RunStatusRunning
@@ -883,8 +876,79 @@ func (o *Orchestrator) handleWorkflowStarted(
 		deadline := time.Now().Add(wfDef.Timeout)
 		run.Deadline = &deadline
 	}
-	if err := o.saveSnapshot(ctx, run, ""); err != nil {
-		return fmt.Errorf("save initial run: %w", err)
+	return o.createOrHealRun(ctx, isRunTerminal, wfDef, run, true)
+}
+
+// createOrHealRun persists run's initial state using the write
+// strategy isRunTerminal selects, then — for a live run (doEnqueue) —
+// dispatches its entry-point steps.
+//
+//   - isRunTerminal=false (every other trigger type, manual/HTTP/cron
+//     starts): a plain, unconditional Save (Put). Safe because
+//     handleWorkflowStarted's early guard already proved evt.RunID
+//     has no existing snapshot for THIS message before reaching here
+//     — matches every trigger type's original behavior exactly.
+//   - isRunTerminal=true (run_terminal chain starts, #634 review round
+//     2): CreateSnapshot — an atomic KV Create, not Put. This IS the
+//     claim; there is no separate placeholder write. If it wins the
+//     race, dispatch proceeds below exactly as the non-run_terminal
+//     path does. If it loses — "already exists" — a delivery landed
+//     between this call's caller's own early Load-miss and now (the
+//     narrow window only a genuine cross-replica race, or extremely
+//     tight redelivery timing, can hit — see handleWorkflowStarted's
+//     early-guard comment). Losing does NOT mean "nothing to do":
+//     load the existing row and heal it (o.healRun) instead of
+//     silently dropping this delivery.
+func (o *Orchestrator) createOrHealRun(
+	ctx context.Context, isRunTerminal bool,
+	wfDef dag.WorkflowDef, run dag.WorkflowRun, doEnqueue bool,
+) error {
+	if run.RunID == "" {
+		panic("createOrHealRun: run.RunID must not be empty")
+	}
+
+	if !isRunTerminal {
+		if err := o.saveSnapshot(ctx, run, ""); err != nil {
+			return fmt.Errorf("save initial run: %w", err)
+		}
+		return o.dispatchNewRun(ctx, wfDef, run, doEnqueue)
+	}
+
+	created, err := o.store.CreateSnapshot(ctx, run)
+	if err != nil {
+		return fmt.Errorf("create initial run %q: %w", run.RunID, err)
+	}
+	if created {
+		return o.dispatchNewRun(ctx, wfDef, run, doEnqueue)
+	}
+	if !doEnqueue {
+		// Pending: nothing live to heal yet — the queue-advance path
+		// (not this function) owns moving a Pending run forward.
+		return nil
+	}
+	existing, loadErr := o.store.Load(ctx, run.RunID)
+	if loadErr != nil {
+		return fmt.Errorf(
+			"load existing run %q for healing: %w", run.RunID, loadErr,
+		)
+	}
+	return o.healRun(ctx, existing)
+}
+
+// dispatchNewRun bumps the active-run gauge and, for a live run
+// (doEnqueue), enqueues its entry-point steps and registers CancelOn
+// waiters. Shared by createOrHealRun's two write strategies so the
+// happy path is byte-for-byte identical regardless of which one wrote
+// the snapshot.
+func (o *Orchestrator) dispatchNewRun(
+	ctx context.Context, wfDef dag.WorkflowDef,
+	run dag.WorkflowRun, doEnqueue bool,
+) error {
+	if run.RunID == "" {
+		panic("dispatchNewRun: run.RunID must not be empty")
+	}
+	if !doEnqueue {
+		return nil
 	}
 	o.metrics.runsActive.Add(ctx, 1)
 	if err := o.enqueueReady(ctx, wfDef, run); err != nil {
@@ -892,6 +956,121 @@ func (o *Orchestrator) handleWorkflowStarted(
 	}
 	o.registerCancelWaiters(ctx, wfDef, run)
 	return nil
+}
+
+// healRun re-drives dispatch for an ALREADY-PERSISTED run_terminal
+// chain run (#634 review round 2) — the fix for the "saved but
+// crashed before enqueue" gap the earlier placeholder-claim design
+// could strand forever. A no-op for anything other than a still-
+// Running run: Pending has nothing to enqueue yet (the queue-advance
+// path owns moving it forward later), and any terminal status means a
+// prior delivery already finished the job — there is nothing left to
+// heal. Re-running enqueueReady against an already-fully-dispatched
+// Running run is a safe no-op: resolveReadySteps only returns steps
+// still Pending, and the actual task publishes dedup on Nats-Msg-Id
+// (task_publish.go) regardless.
+//
+// Single owner of this recovery: the reconciler (reconciler.go,
+// reconcileRunningRuns/reconcileOneRun) does NOT also drive this case
+// — hasInFlightStep treats a step still Pending as "in flight
+// elsewhere" and skips the run, which is exactly the state a Running
+// run that never reached enqueueReady is stuck in (every step
+// initializes Pending in dag.NewWorkflowRun; enqueueReady is what
+// promotes entry steps to Queued). The reconciler would neither
+// complete nor fail such a run — it would leave it alone forever.
+// healRun is therefore the ONLY code path that recovers it.
+func (o *Orchestrator) healRun(
+	ctx context.Context, run dag.WorkflowRun,
+) error {
+	if run.RunID == "" {
+		panic("healRun: run.RunID must not be empty")
+	}
+	if run.Status != dag.RunStatusRunning {
+		return nil
+	}
+
+	entry, err := o.defKV.Get(ctx, run.WorkflowID)
+	if err != nil {
+		return fmt.Errorf(
+			"load workflow def %q for heal: %w", run.WorkflowID, err,
+		)
+	}
+	var wfDef dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
+		return fmt.Errorf(
+			"unmarshal workflow def %q for heal: %w", run.WorkflowID, err,
+		)
+	}
+
+	slog.InfoContext(ctx,
+		"healing run_terminal chain run — re-driving dispatch "+
+			"instead of skipping",
+		"run_id", run.RunID,
+		"workflow_id", run.WorkflowID,
+	)
+
+	// Two independent gaps a crash/error can leave behind, healed
+	// separately (#634 review round 2):
+	//
+	//  1. The crash happened BEFORE enqueueReady ever ran: entry
+	//     steps are still Pending. enqueueReady's own
+	//     resolveReadySteps naturally finds and dispatches them —
+	//     the call below.
+	//  2. The crash/error happened INSIDE enqueueReady, AFTER its own
+	//     snapshot save (which marks ready steps Queued and stamps a
+	//     DispatchNonce) but BEFORE — or during — the actual task
+	//     publish (dispatchReadySteps). resolveReadySteps would NOT
+	//     re-select these: they are no longer Pending. They need a
+	//     direct redispatch using the ALREADY-persisted nonce —
+	//     redispatchQueuedNormalSteps below. The task publish dedups
+	//     on Nats-Msg-Id derived from (runID, stepID) alone
+	//     (task_publisher.go's doPublish), so redispatching a step
+	//     that actually DID land despite the reported error is a safe
+	//     no-op, not a double dispatch to the worker.
+	if err := o.redispatchQueuedNormalSteps(ctx, wfDef, run); err != nil {
+		return err
+	}
+	if err := o.enqueueReady(ctx, wfDef, run); err != nil {
+		return err
+	}
+	o.registerCancelWaiters(ctx, wfDef, run)
+	return nil
+}
+
+// redispatchQueuedNormalSteps re-publishes the task message for every
+// StepTypeNormal/StepTypeAgentLoop step already marked Queued in run
+// (#634 review round 2's healRun, see its call site's comment for
+// why). Scoped to just these two step types deliberately: they are
+// the ones task_publisher.go's PublishBatch drives, and the ONLY ones
+// this file has verified redispatch-idempotent via a deterministic,
+// nonce-independent Nats-Msg-Id (runID+"."+stepID+".queued"). Other
+// step types that reach Queued via their own enqueue* helpers
+// (sub-workflow spawn, map, sleep, wait-for-event, approval, respond)
+// are NOT redispatched here — several of those mint fresh
+// identifiers per call (e.g. a new child run ID) and are not
+// verified-safe to invoke twice, so a stuck one of those needs a
+// different recovery path, not blind re-invocation.
+func (o *Orchestrator) redispatchQueuedNormalSteps(
+	ctx context.Context, wfDef dag.WorkflowDef, run dag.WorkflowRun,
+) error {
+	if run.RunID == "" {
+		panic("redispatchQueuedNormalSteps: run.RunID must not be empty")
+	}
+	var queued []dag.StepDef
+	for _, step := range wfDef.Steps {
+		if step.Type != dag.StepTypeNormal &&
+			step.Type != dag.StepTypeAgentLoop {
+			continue
+		}
+		state, ok := run.Steps[step.ID]
+		if ok && state.Status == dag.StepStatusQueued {
+			queued = append(queued, step)
+		}
+	}
+	if len(queued) == 0 {
+		return nil
+	}
+	return o.dispatchReadySteps(ctx, wfDef, run, queued)
 }
 
 // errStartPayloadHandled signals that resolveStartPayload has already

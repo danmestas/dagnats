@@ -266,13 +266,18 @@ func TestRunTerminalTrigger_StartsTargetOnMatchingStatus(t *testing.T) {
 }
 
 // waitForChainedRun polls workflow_runs for the first run whose
-// WorkflowID matches target and whose Input names sourceRunID —
-// the chained run's ID is minted fresh (runid.New()) so tests can't
-// predict it ahead of time. Bounded by runTerminalPollMax * a small
-// per-tick scan cost; workflow_runs stays tiny in these tests (single
-// digits of runs), so a full-bucket scan per tick is acceptable here
-// even though production code (reconciler.go) bounds/paginates this
-// same style of scan for a much larger population.
+// WorkflowID matches target and whose Input names sourceRunID.
+// The chained run's ID IS deterministic (runTerminalChainRunID,
+// #634 review round 2 — a SHA-256 of triggerID+sourceRunID, not a
+// freshly minted one), but scanning by content is still simpler for
+// callers than duplicating that hash formula here, and every test in
+// this file already needs a scan-based lookup for the negative-space
+// "confirm nothing fired" assertions anyway. Bounded by
+// runTerminalPollMax * a small per-tick scan cost; workflow_runs
+// stays tiny in these tests (single digits of runs), so a full-bucket
+// scan per tick is acceptable here even though production code
+// (reconciler.go) bounds/paginates this same style of scan for a much
+// larger population.
 func (h *runTerminalTestHarness) waitForChainedRun(
 	targetWorkflow, sourceRunID string,
 ) dag.WorkflowRun {
