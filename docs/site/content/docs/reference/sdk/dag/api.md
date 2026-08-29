@@ -8,6 +8,8 @@ import "github.com/danmestas/dagnats/dag"
 
 WorkflowBuilder provides a fluent DSL for constructing WorkflowDefs. Centralizing construction here lets callers express graph topology naturally without touching StepDef internals — the builder enforces invariants and delegates final structural validation to Validate.
 
+Labels let external triggers stamp arbitrary key/value metadata on a WorkflowRun at start time \-\- an event source starts a run \*about\* something \(an order ID, a tenant, a region\) and needs to find or bulk cancel those runs later without standing up a shadow lookup table. The bounds here keep labels cheap to carry on every snapshot and cheap to scan when filtering.
+
 dag/priority.go Priority resolution for workflow run ordering.
 
 ## Index
@@ -17,6 +19,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func DefHash\(def WorkflowDef\) string](<#DefHash>)
 - [func ExtractDotPath\(path string, data \[\]byte\) \(any, error\)](<#ExtractDotPath>)
 - [func IsComplete\(def WorkflowDef, completed map\[string\]bool\) bool](<#IsComplete>)
+- [func LabelsMatch\(want, have map\[string\]string\) bool](<#LabelsMatch>)
 - [func MarshalConfig\(cfg interface\{\}\) json.RawMessage](<#MarshalConfig>)
 - [func ResolveInput\(step StepDef, steps map\[string\]StepState, runInput ...json.RawMessage\) \(\[\]byte, error\)](<#ResolveInput>)
 - [func ResolvePriority\(cfg \*PriorityConfig, input json.RawMessage\) int](<#ResolvePriority>)
@@ -24,6 +27,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func RunStatusNames\(\) \[\]string](<#RunStatusNames>)
 - [func Validate\(def WorkflowDef\) error](<#Validate>)
 - [func ValidateFragment\(fragment \[\]StepDef, cfg PlannerConfig, existingIDs map\[string\]bool\) error](<#ValidateFragment>)
+- [func ValidateLabels\(labels map\[string\]string\) error](<#ValidateLabels>)
 - [func ValidateSchema\(schema json.RawMessage, data json.RawMessage\) error](<#ValidateSchema>)
 - [type AgentLoopConfig](<#AgentLoopConfig>)
   - [func ParseAgentLoopConfig\(step StepDef\) \(AgentLoopConfig, error\)](<#ParseAgentLoopConfig>)
@@ -150,6 +154,24 @@ const (
 )
 ```
 
+<a name="LabelKeyLengthMax"></a>LabelKeyLengthMax bounds the length of a single label key.
+
+```go
+const LabelKeyLengthMax = 64
+```
+
+<a name="LabelValueLengthMax"></a>LabelValueLengthMax bounds the length of a single label value.
+
+```go
+const LabelValueLengthMax = 256
+```
+
+<a name="LabelsCountMax"></a>LabelsCountMax bounds how many labels a single run may carry.
+
+```go
+const LabelsCountMax = 16
+```
+
 <a name="RetryAttemptCountMax"></a>RetryAttemptCountMax bounds MaxAttempts on any retry policy. Validate rejects larger values at definition time so the engine's retry scheduler can assert the bound as a true unreachable invariant rather than a config\-reachable one \(see internal/engine scheduleRetryBackoff\).
 
 ```go
@@ -195,6 +217,17 @@ func IsComplete(def WorkflowDef, completed map[string]bool) bool
 ```
 
 IsComplete returns true when every step in the definition has been completed or skipped. Auxiliary steps \(OnFailure/Compensate targets\) that were never triggered don't block completion — they are expected to remain Pending in the happy path.
+
+<a name="LabelsMatch"></a>
+## func [LabelsMatch](<https://github.com/danmestas/dagnats/blob/main/dag/labels.go#L100>)
+
+```go
+func LabelsMatch(want, have map[string]string) bool
+```
+
+LabelsMatch reports whether every key/value in want is present in have with an equal value \(AND semantics\) \-\- a nil/empty want matches anything. This is the single deep entry point for label\-filter matching: RunsFilter \(GET /runs, CountRuns\) and BulkCancelRequest \(POST /runs/cancel\) both narrow by label and must apply the same semantics rather than maintaining two copies of this loop.
+
+want must already be a validated filter \(len\(want\) \<= LabelsCountMax\) \-\- callers run it through ValidateLabels before matching, the same way a run's own Labels are validated before being stored. have is a stored run's Labels and carries the same guarantee from run\-creation time. Both are true invariants by the time a run is filterable, not user input reachable from here, so violations panic rather than silently mismatching.
 
 <a name="MarshalConfig"></a>
 ## func [MarshalConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L53>)
@@ -260,6 +293,15 @@ func ValidateFragment(fragment []StepDef, cfg PlannerConfig, existingIDs map[str
 ```
 
 ValidateFragment checks a planner\-generated DAG fragment against bounds. All IDs must be unique and not collide with existing steps. Tasks must be non\-empty and in AllowedTasks if configured. Dependencies must reference only within\-fragment steps.
+
+<a name="ValidateLabels"></a>
+## func [ValidateLabels](<https://github.com/danmestas/dagnats/blob/main/dag/labels.go#L38>)
+
+```go
+func ValidateLabels(labels map[string]string) error
+```
+
+ValidateLabels reports whether labels is a legal set of run labels. A nil or empty map is valid \-\- labels are optional. On the first violation it returns a descriptive error naming the offending key \(or the label count, when the count itself is the violation\). Keys are checked in sorted order so the reported "first violation" is deterministic across calls \-\- map iteration order is not, and two invalid keys in the same input must always name the same one.
 
 <a name="ValidateSchema"></a>
 ## func [ValidateSchema](<https://github.com/danmestas/dagnats/blob/main/dag/schema.go#L11-L13>)
@@ -1494,7 +1536,7 @@ func WithSchemas[I, O any](def WorkflowDef) WorkflowDef
 WithSchemas generates JSON schemas from Go types I \(input\) and O \(output\) and attaches them to the WorkflowDef. Applied after Build\(\). Supports flat structs with primitive fields, slices, and maps.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L369>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L375>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1519,11 +1561,17 @@ type WorkflowRun struct {
     SingletonKey   string     `json:"singleton_key,omitempty"`
     TraceParent    string     `json:"trace_parent,omitempty"`
     CompletedAt    *time.Time `json:"completed_at,omitempty"`
+    // Labels are caller-supplied key/value metadata set at start time
+    // (#629). External triggers start runs *about* something (an order,
+    // a tenant, a region) and need to find or bulk-cancel those runs
+    // later without standing up a shadow lookup table. Additive: legacy
+    // snapshots deserialize to nil. See ValidateLabels for bounds.
+    Labels map[string]string `json:"labels,omitempty"`
 }
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L374>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L380>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1532,7 +1580,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L395>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L401>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time

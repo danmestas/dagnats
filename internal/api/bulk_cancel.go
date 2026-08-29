@@ -16,13 +16,19 @@ import (
 
 const maxBulkCancelLimit = 1000
 
-// BulkCancelRequest specifies which runs to cancel.
+// BulkCancelRequest specifies which runs to cancel. Labels (#629), when
+// set, requires every key/value pair to match with AND semantics,
+// composing with WorkflowID/Status/After/Before rather than replacing
+// them. Labels is itself bounded by dag.ValidateLabels — a filter with
+// more than dag.LabelsCountMax entries is rejected the same way an
+// invalid label on a started run would be.
 type BulkCancelRequest struct {
-	WorkflowID string    `json:"workflow_id"`
-	Status     string    `json:"status,omitempty"`
-	After      time.Time `json:"after,omitempty"`
-	Before     time.Time `json:"before,omitempty"`
-	DryRun     bool      `json:"dry_run,omitempty"`
+	WorkflowID string            `json:"workflow_id"`
+	Status     string            `json:"status,omitempty"`
+	After      time.Time         `json:"after,omitempty"`
+	Before     time.Time         `json:"before,omitempty"`
+	DryRun     bool              `json:"dry_run,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
 // BulkCancelResponse reports the outcome.
@@ -91,7 +97,7 @@ func (s *Service) bulkCancelInner(
 	}
 	matched := filterRuns(
 		runs, req.WorkflowID, status,
-		req.After, req.Before,
+		req.After, req.Before, req.Labels,
 	)
 
 	if len(matched) > maxBulkCancelLimit {
@@ -137,6 +143,9 @@ func validateBulkCancelRequest(
 		!req.Before.After(req.After) {
 		return "", fmt.Errorf("before must be after after")
 	}
+	if err := dag.ValidateLabels(req.Labels); err != nil {
+		return "", err
+	}
 	return status, nil
 }
 
@@ -175,11 +184,14 @@ func (s *Service) executeBulkCancel(
 	return resp
 }
 
-// filterRuns selects runs matching workflow, status, and time range.
+// filterRuns selects runs matching workflow, status, time range, and
+// labels (#629, AND semantics — every entry in labels must be present
+// on the run with an equal value).
 func filterRuns(
 	runs []dag.WorkflowRun,
 	workflowID, status string,
 	after, before time.Time,
+	labels map[string]string,
 ) []dag.WorkflowRun {
 	if workflowID == "" {
 		panic("filterRuns: workflowID must not be empty")
@@ -201,6 +213,9 @@ func filterRuns(
 		}
 		if !before.IsZero() &&
 			run.CreatedAt.After(before) {
+			continue
+		}
+		if !dag.LabelsMatch(labels, run.Labels) {
 			continue
 		}
 		matched = append(matched, run)

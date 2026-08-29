@@ -152,7 +152,7 @@ func (s *Service) bulkRerun(
 	for _, run := range matched {
 		newID, err := s.startRunInner(
 			ctx, noopSpan,
-			run.WorkflowID, run.Input,
+			run.WorkflowID, run.Input, run.Labels,
 		)
 		if err != nil {
 			resp.Skipped = append(

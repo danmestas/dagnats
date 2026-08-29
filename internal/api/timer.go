@@ -146,7 +146,7 @@ func (tc *TimerConsumer) fireScheduledRun(
 	}
 
 	payload, err := buildStartPayload(
-		entry.Value(), sr.Input,
+		entry.Value(), sr.Input, sr.Labels,
 	)
 	if err != nil {
 		return err

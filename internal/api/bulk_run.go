@@ -19,9 +19,15 @@ import (
 
 const maxBulkRunLimit = 1000
 
+// BulkRunRequest starts one run per entry in Inputs. Labels, when set,
+// applies to every run in the batch (#629) -- a bulk-triggered burst
+// (e.g. one order-processing run per line item) is one logical event and
+// should be findable/cancellable as a group via the same label filter a
+// single StartRun would use.
 type BulkRunRequest struct {
 	WorkflowID string            `json:"workflow_id"`
 	Inputs     []json.RawMessage `json:"inputs"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
 type BulkRunResponse struct {
@@ -105,7 +111,7 @@ func (s *Service) bulkRunInner(
 		}
 	}
 	return s.publishBulkRuns(
-		ctx, span, req.WorkflowID, defBytes, req.Inputs,
+		ctx, span, req.WorkflowID, defBytes, req.Inputs, req.Labels,
 	)
 }
 
@@ -115,6 +121,7 @@ func (s *Service) publishBulkRuns(
 	workflowID string,
 	defBytes []byte,
 	inputs []json.RawMessage,
+	labels map[string]string,
 ) (BulkRunResponse, error) {
 	if workflowID == "" {
 		panic("publishBulkRuns: workflowID must not be empty")
@@ -125,7 +132,7 @@ func (s *Service) publishBulkRuns(
 	runIDs := make([]string, 0, len(inputs))
 	for _, input := range inputs {
 		runID := runid.New()
-		payload, err := buildStartPayload(defBytes, input)
+		payload, err := buildStartPayload(defBytes, input, labels)
 		if err != nil {
 			return BulkRunResponse{
 				RunIDs: runIDs, Total: len(runIDs),
@@ -163,6 +170,9 @@ func validateBulkRunRequest(req BulkRunRequest) error {
 			"too many inputs (%d > %d)",
 			len(req.Inputs), maxBulkRunLimit,
 		)
+	}
+	if err := dag.ValidateLabels(req.Labels); err != nil {
+		return err
 	}
 	return nil
 }
