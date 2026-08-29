@@ -20,6 +20,28 @@ var ErrWorkerIDOwned = errors.New(
 	"worker_id is registered to another token",
 )
 
+// ErrWorkerIDContended is returned by RegisterOwned and
+// DeregisterOwned when a revision-guarded write loses the race to a
+// concurrent writer ownedWriteRetriesMax times in a row -- distinct
+// from ErrWorkerIDOwned because contention is not an ownership
+// decision: the fresh entry re-Get after each conflict may still
+// belong to the caller, we simply never won the write. Callers
+// should treat this as transient (e.g. the bridge maps it to 503
+// with Retry-After), never as a takeover.
+var ErrWorkerIDContended = errors.New(
+	"worker_id write lost the revision race too many times",
+)
+
+// ownedWriteRetriesMax bounds RegisterOwned/DeregisterOwned's
+// Get -> decide -> write retry loop (the fix for the CI-only race
+// where a revision conflict caused by the SAME owner -- a heartbeat
+// re-register racing a reconnect's write, or a heartbeat racing this
+// connection's own disconnect-time deregister -- was wrongly treated
+// as an ownership violation). A conflict only proves someone else
+// wrote in the window, not who; re-Get and re-run the ownership rule
+// against the fresh entry before concluding either way.
+const ownedWriteRetriesMax = 5
+
 // AdminTokenID is the reserved token_id value written to a
 // registration created by the bridge's admin bearer or dev mode
 // (#650 round 3). Using "" for these entries made an admin takeover
@@ -134,6 +156,14 @@ func NewDirectory(js jetstream.JetStream) *Directory {
 	return &Directory{kv: kv}
 }
 
+// registerOwnedTestHook, when non-nil, is called by
+// registerOwnedAttempt immediately after its Get and before the
+// ownership decision or write -- a test-only injection point that
+// lets a test perform a concurrent write inside RegisterOwned's
+// Get-to-write window instead of relying on timing. Must never be
+// set outside tests.
+var registerOwnedTestHook func()
+
 // RegisterOwned is the single, revision-guarded write path for
 // worker_id registration used by the bridge for both the initial
 // connect and the periodic heartbeat re-register (#650 round 3). A
@@ -144,10 +174,14 @@ func NewDirectory(js jetstream.JetStream) *Directory {
 // replaying its connect-time TokenID could resurrect a worker_id
 // after an admin had taken it over. Get -> ownershipAllows -> Create
 // (key absent) or Update with the Get's revision (key present)
-// closes both races: a losing/late writer's Create/Update fails on a
-// duplicate-key or revision conflict and gets ErrWorkerIDOwned, same
-// as a synchronous ownership rejection. Bounded to one Get plus one
-// Create/Update.
+// closed both races, but a raw revision conflict on its own proves
+// only that someone wrote in the window -- not who. A prior version
+// mapped any conflict straight to ErrWorkerIDOwned, which wrongly
+// rejected a reconnect racing its own heartbeat's re-register (CI-
+// only flake: TestConnectWorkerIDOwnershipDevMode's second connect
+// racing the first connection's disconnect-time deregister). On
+// conflict, registerOwnedAttempt re-Gets and this loop retries the
+// decision against the fresh entry, up to ownedWriteRetriesMax times.
 func (d *Directory) RegisterOwned(
 	reg WorkerRegistration, callerTokenID string, callerIsAdmin bool,
 ) error {
@@ -164,17 +198,57 @@ func (d *Directory) RegisterOwned(
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	entry, getErr := d.kv.Get(ctx, reg.WorkerID)
+	for attempt := 0; attempt < ownedWriteRetriesMax; attempt++ {
+		done, err := registerOwnedAttempt(
+			ctx, d.kv, reg, callerTokenID, callerIsAdmin,
+		)
+		if done {
+			return err
+		}
+	}
+	return ErrWorkerIDContended
+}
+
+// registerOwnedAttempt performs one Get -> decide -> write attempt of
+// RegisterOwned's retry loop, split out to keep RegisterOwned under
+// the 70-line function limit. done=true means the caller must return
+// err as-is (success, or a rejection/failure against fresh state);
+// done=false means a create/revision conflict was hit and the caller
+// should retry against fresh state.
+func registerOwnedAttempt(
+	ctx context.Context, kv jetstream.KeyValue,
+	reg WorkerRegistration, callerTokenID string, callerIsAdmin bool,
+) (done bool, err error) {
+	if kv == nil {
+		panic("registerOwnedAttempt: kv must not be nil")
+	}
+	if reg.WorkerID == "" {
+		panic("registerOwnedAttempt: reg.WorkerID must not be empty")
+	}
+	entry, getErr := kv.Get(ctx, reg.WorkerID)
 	if getErr != nil && getErr != jetstream.ErrKeyNotFound {
-		return getErr
+		return true, getErr
+	}
+	if registerOwnedTestHook != nil {
+		registerOwnedTestHook()
 	}
 	reg.LastSeen = time.Now()
 	data, err := json.Marshal(reg)
 	if err != nil {
-		return err
+		return true, err
 	}
 	if getErr == jetstream.ErrKeyNotFound {
-		return createOwned(ctx, d.kv, reg.WorkerID, data)
+		if _, err := kv.Create(ctx, reg.WorkerID, data); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				// Someone else created the key between our Get (not
+				// found) and this Create -- retry against fresh state
+				// rather than assuming they beat us for ownership
+				// reasons.
+				return false, nil
+			}
+			return true, err
+		}
+		return true, nil
 	}
 	var existing WorkerRegistration
 	if err := json.Unmarshal(entry.Value(), &existing); err != nil {
@@ -185,45 +259,22 @@ func (d *Directory) RegisterOwned(
 		existing = WorkerRegistration{}
 	}
 	if !ownershipAllows(existing.TokenID, callerTokenID, callerIsAdmin) {
-		return ErrWorkerIDOwned
+		return true, ErrWorkerIDOwned
 	}
-	if _, err := d.kv.Update(
+	if _, err := kv.Update(
 		ctx, reg.WorkerID, data, entry.Revision(),
 	); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
 			// Another writer's Create/Update landed between our Get
-			// and this Update (a takeover, or a losing racer in a
-			// concurrent claim) -- we lost the race and must not
-			// clobber the value that won it.
-			return ErrWorkerIDOwned
+			// and this Update. That writer might be the very same
+			// owner (a heartbeat tick) -- not a takeover -- so retry
+			// against fresh state instead of concluding ownership
+			// from a bare revision conflict.
+			return false, nil
 		}
-		return err
+		return true, err
 	}
-	return nil
-}
-
-// createOwned performs the Create half of RegisterOwned's Get ->
-// Create-or-Update decision, split out to keep RegisterOwned under
-// the 70-line function limit.
-func createOwned(
-	ctx context.Context, kv jetstream.KeyValue, workerID string, data []byte,
-) error {
-	if kv == nil {
-		panic("createOwned: kv must not be nil")
-	}
-	if workerID == "" {
-		panic("createOwned: workerID must not be empty")
-	}
-	if _, err := kv.Create(ctx, workerID, data); err != nil {
-		if errors.Is(err, jetstream.ErrKeyExists) {
-			// Someone else created the key between our Get (not
-			// found) and this Create -- they won the race for a
-			// fresh id.
-			return ErrWorkerIDOwned
-		}
-		return err
-	}
-	return nil
+	return true, nil
 }
 
 // Register writes the worker's registration to the KV bucket with an
@@ -279,6 +330,12 @@ func (d *Directory) Deregister(workerID string) error {
 	return err
 }
 
+// deregisterOwnedTestHook, when non-nil, is called by
+// deregisterOwnedAttempt immediately after its Get and before the
+// ownership decision or delete -- the delete-side counterpart to
+// registerOwnedTestHook. Must never be set outside tests.
+var deregisterOwnedTestHook func()
+
 // DeregisterOwned removes workerID's entry, but only if the caller
 // still owns it (#650, the delete-side counterpart to RegisterOwned):
 // ownershipAllows must hold for the entry's current token_id against
@@ -288,14 +345,15 @@ func (d *Directory) Deregister(workerID string) error {
 // current owner's entry out from under it -- it returns
 // ErrWorkerIDOwned instead and leaves the entry untouched. Uses the
 // Get's revision with jetstream.LastRevision on Delete so a
-// concurrent re-register between the Get and the Delete aborts the
-// delete instead of clobbering the new owner (closes the same TOCTOU
-// window RegisterOwned closes on the write side); that abort --
-// including on the admin path, which skips the ownershipAllows check
-// above but still races the same Delete -- also maps to
-// ErrWorkerIDOwned rather than a raw KV error, so a benign concurrent
-// re-register is logged at debug by the caller instead of ERROR.
-// Returns nil if the key does not exist.
+// concurrent write between the Get and the Delete aborts the delete
+// instead of clobbering it, same TOCTOU window RegisterOwned closes
+// on the write side -- but a bare revision conflict doesn't prove who
+// wrote in the window: it could be this same connection's own
+// heartbeat re-registering right as it disconnects, which must not
+// skip a legitimate deregister. On conflict, deregisterOwnedAttempt
+// re-Gets and this loop retries the decision against the fresh entry,
+// up to ownedWriteRetriesMax times. Returns nil if the key does not
+// exist.
 func (d *Directory) DeregisterOwned(
 	workerID, callerTokenID string, callerIsAdmin bool,
 ) error {
@@ -309,12 +367,40 @@ func (d *Directory) DeregisterOwned(
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	entry, err := d.kv.Get(ctx, workerID)
+	for attempt := 0; attempt < ownedWriteRetriesMax; attempt++ {
+		done, err := deregisterOwnedAttempt(
+			ctx, d.kv, workerID, callerTokenID, callerIsAdmin,
+		)
+		if done {
+			return err
+		}
+	}
+	return ErrWorkerIDContended
+}
+
+// deregisterOwnedAttempt performs one Get -> decide -> delete attempt
+// of DeregisterOwned's retry loop, split out to keep DeregisterOwned
+// under the 70-line function limit. done semantics match
+// registerOwnedAttempt.
+func deregisterOwnedAttempt(
+	ctx context.Context, kv jetstream.KeyValue,
+	workerID, callerTokenID string, callerIsAdmin bool,
+) (done bool, err error) {
+	if kv == nil {
+		panic("deregisterOwnedAttempt: kv must not be nil")
+	}
+	if workerID == "" {
+		panic("deregisterOwnedAttempt: workerID must not be empty")
+	}
+	entry, err := kv.Get(ctx, workerID)
 	if err == jetstream.ErrKeyNotFound {
-		return nil
+		return true, nil
 	}
 	if err != nil {
-		return err
+		return true, err
+	}
+	if deregisterOwnedTestHook != nil {
+		deregisterOwnedTestHook()
 	}
 	if !callerIsAdmin {
 		var existing WorkerRegistration
@@ -322,30 +408,30 @@ func (d *Directory) DeregisterOwned(
 			// A corrupt/stale entry can't prove ownership either way
 			// -- leave it alone rather than delete data this caller
 			// can't be shown to own.
-			return ErrWorkerIDOwned
+			return true, ErrWorkerIDOwned
 		}
 		if !ownershipAllows(existing.TokenID, callerTokenID, callerIsAdmin) {
-			return ErrWorkerIDOwned
+			return true, ErrWorkerIDOwned
 		}
 	}
-	err = d.kv.Delete(
+	err = kv.Delete(
 		ctx, workerID, jetstream.LastRevision(entry.Revision()),
 	)
 	if err == jetstream.ErrKeyNotFound {
-		return nil
+		return true, nil
 	}
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
 			// Someone re-registered (or re-deregistered) between our
-			// Get and this Delete -- a benign concurrent write, not a
-			// failure. Map it to ErrWorkerIDOwned so the caller logs
-			// it at debug instead of ERROR, matching RegisterOwned's
-			// treatment of the same race on the write side.
-			return ErrWorkerIDOwned
+			// Get and this Delete. That writer might be this same
+			// connection's own heartbeat -- not a takeover -- so
+			// retry against fresh state instead of concluding
+			// ownership from a bare revision conflict.
+			return false, nil
 		}
-		return err
+		return true, err
 	}
-	return nil
+	return true, nil
 }
 
 // List returns all currently registered workers.
