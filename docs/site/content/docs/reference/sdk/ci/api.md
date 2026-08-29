@@ -110,7 +110,7 @@ Compile converts a parsed Spec into a dag.WorkflowDef ready for the DagNats engi
 Diagnostics raised here have no YAML source position \(Line/Column are 0\) because Compile receives an already\-decoded Spec, not the original bytes. Callers that hold the raw ci.yml text should use CompileYAML instead, which threads Parse's positions through for the fields it can decode.
 
 <a name="CompileYAML"></a>
-### func [CompileYAML](<https://github.com/danmestas/dagnats/blob/main/ci/compile.go#L85>)
+### func [CompileYAML](<https://github.com/danmestas/dagnats/blob/main/ci/compile.go#L88>)
 
 ```go
 func CompileYAML(name string, spec []byte) (dag.WorkflowDef, []Diagnostic)

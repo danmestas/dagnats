@@ -23,6 +23,9 @@ const DiagnosticsMax = 100
 // drops every further diagnostic — the caller already has enough signal to
 // fix the worst offenders and re-run.
 func addDiagnostic(diags []Diagnostic, d Diagnostic) []Diagnostic {
+	if len(diags) > DiagnosticsMax+1 {
+		panic("addDiagnostic: internal invariant: diags already exceeds the capped length")
+	}
 	if len(diags) >= DiagnosticsMax {
 		return diags
 	}
@@ -32,6 +35,9 @@ func addDiagnostic(diags []Diagnostic, d Diagnostic) []Diagnostic {
 			Message: "too many errors: stopped accumulating diagnostics " +
 				"after reaching the maximum",
 		})
+	}
+	if len(diags) > DiagnosticsMax+1 {
+		panic("addDiagnostic: internal invariant: diags grew past the capped length")
 	}
 	return diags
 }

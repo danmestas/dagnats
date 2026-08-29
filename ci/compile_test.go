@@ -91,6 +91,16 @@ checks:
   test: { call: "test" }
 `
 
+// ciYMLBadMiddleCheck has three checks where the middle one ("b") has a
+// bad value (a scalar instead of a mapping) -- Parse must report exactly
+// that entry, at its own line, and keep "a" and "c" intact.
+const ciYMLBadMiddleCheck = `
+checks:
+  a: { call: "a" }
+  b: "not-a-map"
+  c: { call: "c" }
+`
+
 // stepByID is a test helper that looks up a compiled step by its ID.
 // It fails the test immediately if the step is not found — an absent step
 // is a compiler bug that makes every downstream assertion meaningless.
@@ -360,6 +370,37 @@ func TestParseKeepsLineAndColumnForBadField(t *testing.T) {
 	// one bad field must not blank out the rest of the spec.
 	if _, ok := spec.Checks["test"]; !ok {
 		t.Errorf("spec.Checks = %+v, want \"test\" present despite bad defaults field", spec.Checks)
+	}
+}
+
+// TestParseChecksReportsPerEntryDiagnostics verifies that a bad entry
+// inside "checks" is reported as its own Diagnostic (Field "checks.<name>",
+// positioned at that entry, not the whole checks: block) and that the
+// other, valid entries survive in the returned Spec.
+func TestParseChecksReportsPerEntryDiagnostics(t *testing.T) {
+	spec, diags := ci.Parse([]byte(ciYMLBadMiddleCheck))
+
+	// Positive: exactly one diagnostic, naming checks.b at its own position.
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "checks.b" {
+		t.Errorf("diags[0].Field = %q, want \"checks.b\"", diags[0].Field)
+	}
+	if diags[0].Line <= 0 || diags[0].Column <= 0 {
+		t.Errorf("diags[0] = %+v, want positive Line and Column", diags[0])
+	}
+
+	// Negative: the other two checks ("a" and "c") are intact, and the
+	// bad one ("b") is absent rather than present with zero-value fields.
+	if _, ok := spec.Checks["a"]; !ok {
+		t.Errorf("spec.Checks = %+v, want \"a\" present", spec.Checks)
+	}
+	if _, ok := spec.Checks["c"]; !ok {
+		t.Errorf("spec.Checks = %+v, want \"c\" present", spec.Checks)
+	}
+	if _, ok := spec.Checks["b"]; ok {
+		t.Errorf("spec.Checks = %+v, want \"b\" absent (it failed to decode)", spec.Checks)
 	}
 }
 

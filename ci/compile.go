@@ -74,6 +74,9 @@ func Compile(name string, s Spec) (dag.WorkflowDef, []Diagnostic) {
 		})
 		return dag.WorkflowDef{}, diags
 	}
+	if def.Name != name {
+		panic("Compile: internal invariant: compiled def.Name does not match name")
+	}
 	return def, nil
 }
 
@@ -105,6 +108,9 @@ func stepFieldFromError(err error) string {
 		panic("stepFieldFromError: err must not be nil")
 	}
 	m := stepIDPattern.FindStringSubmatch(err.Error())
+	if len(m) != 0 && len(m) != 2 {
+		panic("stepFieldFromError: internal invariant: unexpected submatch count")
+	}
 	if len(m) == 2 {
 		return m[1]
 	}
@@ -119,6 +125,14 @@ func knownCheckIDs(s Spec) map[string]bool {
 	for name := range s.Checks {
 		known[name] = true
 	}
+	if len(known) != len(s.Checks) {
+		panic("knownCheckIDs: internal invariant: known count does not match s.Checks")
+	}
+	for name := range known {
+		if _, ok := s.Checks[name]; !ok {
+			panic("knownCheckIDs: internal invariant: known key not present in s.Checks")
+		}
+	}
 	return known
 }
 
@@ -130,6 +144,12 @@ func sortedCheckNames(s Spec) []string {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	if len(names) != len(s.Checks) {
+		panic("sortedCheckNames: internal invariant: names count does not match s.Checks")
+	}
+	if len(names) > 1 && names[0] > names[len(names)-1] {
+		panic("sortedCheckNames: internal invariant: names not sorted")
+	}
 	return names
 }
 
@@ -139,6 +159,10 @@ func sortedCheckNames(s Spec) []string {
 func buildSteps(
 	s Spec, module string, known map[string]bool, diags []Diagnostic,
 ) ([]dag.StepDef, []Diagnostic) {
+	if known == nil {
+		panic("buildSteps: known must not be nil")
+	}
+	diagCountBefore := len(diags)
 	var steps []dag.StepDef
 	for _, n := range sortedCheckNames(s) {
 		var step dag.StepDef
@@ -153,6 +177,9 @@ func buildSteps(
 		deploySteps, diags = compileDeploy(s.Deploy, module, known, diags)
 		steps = append(steps, deploySteps...)
 	}
+	if len(diags) < diagCountBefore {
+		panic("buildSteps: internal invariant: diagnostics count decreased")
+	}
 	return steps, diags
 }
 
@@ -165,6 +192,9 @@ func compileCheck(
 	name string, c Check, module string, known map[string]bool,
 	diags []Diagnostic,
 ) (dag.StepDef, bool, []Diagnostic) {
+	if known == nil {
+		panic("compileCheck: known must not be nil")
+	}
 	before := len(diags)
 	for _, need := range c.Needs {
 		if !known[need] {
@@ -185,6 +215,9 @@ func compileCheck(
 	}
 	if len(diags) > before {
 		return dag.StepDef{}, false, diags
+	}
+	if len(diags) != before {
+		panic("compileCheck: internal invariant: diagnostics changed on the ok path")
 	}
 	deps := make([]string, len(c.Needs))
 	copy(deps, c.Needs)
@@ -213,6 +246,9 @@ func compileDeploy(
 ) ([]dag.StepDef, []Diagnostic) {
 	if d == nil {
 		panic("compileDeploy: deploy step must not be nil")
+	}
+	if known == nil {
+		panic("compileDeploy: known must not be nil")
 	}
 	before := len(diags)
 	if len(d.Branches) > 0 {
@@ -303,6 +339,9 @@ func compileTimeout(s string, defaultTimeout time.Duration) (time.Duration, erro
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("timeout %q must be positive", s)
+	}
+	if d <= 0 {
+		panic("compileTimeout: internal invariant: non-positive duration on success path")
 	}
 	return d, nil
 }
