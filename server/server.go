@@ -523,6 +523,16 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	if s.bridge != nil {
 		mux.Handle("/v1/", s.bridge.Handler())
 	}
+	// /v1 ownership: the bridge above owns the "/v1/" catch-all (worker
+	// runtime routes: workers/connect, tasks/poll, tasks/{id}/resolve).
+	// api.MountV1 registers more-specific /v1 patterns on this SAME
+	// top-level mux; Go 1.22+ ServeMux always prefers the most specific
+	// registered pattern, so e.g. "GET /v1/workers" wins over the
+	// bridge's "/v1/" for that exact path while every other /v1/* path
+	// still falls through to the bridge unchanged. Future /v1
+	// control-plane routes (#627 tokens, #632 queue, #633 ci) go
+	// through MountV1, not the bridge.
+	api.MountV1(mux, s.svc)
 	mux.Handle("/ui/", web.New(s.svc, s.nc).Handler())
 
 	// OpenAPI spec + Scalar-rendered explorer. Routes mount as

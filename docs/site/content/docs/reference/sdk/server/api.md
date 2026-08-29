@@ -323,7 +323,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L598>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L608>)
 
 ```go
 func (s *Server) Stop()
