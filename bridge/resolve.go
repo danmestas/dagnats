@@ -51,11 +51,8 @@ func (b *Bridge) handleResolve(
 	if b.js == nil {
 		panic("handleResolve: js must not be nil")
 	}
-	// Extract W3C trace context from inbound HTTP headers so the
-	// span we open is a child of the upstream caller's trace, not
-	// a brand-new root. Without this, TracingPublisher would still
-	// inject context — but it would carry a fresh trace_id, and
-	// the trace would not stitch across the HTTP-to-NATS boundary.
+	// Extract W3C trace context so the span we open joins the
+	// upstream caller's trace instead of rooting a fresh one.
 	incoming := otel.GetTextMapPropagator().Extract(
 		r.Context(), propagation.HeaderCarrier(r.Header),
 	)
@@ -70,29 +67,18 @@ func (b *Bridge) handleResolve(
 		return
 	}
 
-	// claimsFromContext reads r.Context() (not the trace-extracted
-	// ctx below -- both carry the same values, but this is read
-	// before ctx even exists, keeping the auth check ahead of any
-	// tracing/parsing work).
+	// r.Context() carries the same values as ctx below (read here,
+	// ahead of tracing/parsing, to fail auth fast).
 	claims := claimsFromContext(r.Context())
 	msg, claimingTokenID, ok := b.ackMap.LoadWithTokenID(taskID)
 	if !ok {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
-	// #627: a resolve must come from the same token that claimed the
-	// task via poll, or from admin. Scoping to task-type prefixes at
-	// poll time is not enough -- without this, any minted token (no
-	// matter its own prefixes) could complete/fail/pause ANY in-flight
-	// task by ID. The body deliberately does not distinguish this from
-	// "task not found" in wording (both are opaque to the caller), but
-	// uses 403 rather than 404 -- the caller already knows the task ID
-	// exists (it came from ITS OWN poll or a leaked ID), so hiding
-	// existence buys nothing here the way it does for token lookup.
-	if !claims.Admin && claims.TokenID != claimingTokenID {
-		http.Error(
-			w, "task not claimed by this token", http.StatusForbidden,
-		)
+	// #627: see authorizeTaskOwner's doc comment. 403 not 404: the
+	// caller already knows the task ID exists (its own poll, or leaked).
+	if !b.authorizeTaskOwner(claims, claimingTokenID) {
+		http.Error(w, "task not claimed by this token", http.StatusForbidden)
 		return
 	}
 

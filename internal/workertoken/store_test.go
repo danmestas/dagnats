@@ -73,7 +73,7 @@ func TestMintAuthorizeRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo."}, "tester")
+	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -89,8 +89,8 @@ func TestMintAuthorizeRoundTrip(t *testing.T) {
 		t.Fatalf("claims.Admin = true, want false for a minted token")
 	}
 	// Negative: a minted worker token is never treated as admin.
-	if len(claims.TaskTypePrefixes) != 1 || claims.TaskTypePrefixes[0] != "echo." {
-		t.Fatalf("TaskTypePrefixes = %v, want [echo.]", claims.TaskTypePrefixes)
+	if len(claims.TaskTypePrefixes) != 1 || claims.TaskTypePrefixes[0] != "echo" {
+		t.Fatalf("TaskTypePrefixes = %v, want [echo]", claims.TaskTypePrefixes)
 	}
 }
 
@@ -167,6 +167,46 @@ func TestMintPrefixBounds(t *testing.T) {
 		ctx, "worker-a", []string{tooLong}, "tester",
 	); err == nil {
 		t.Fatalf("Mint with over-long prefix = nil error, want error")
+	}
+}
+
+// TestMintRejectsInvalidPrefixCharset pins the fix for mintable
+// prefixes that can never match anything: validateTaskType already
+// rejects '*', '>', whitespace, and leading/trailing '.' bytes on
+// poll's task_type entries, so a prefix using any of those could never
+// be satisfied by a real poll -- minting one is an operator error
+// worth a 400 rather than a silently dead scope.
+func TestMintRejectsInvalidPrefixCharset(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cases := []struct {
+		name    string
+		prefix  string
+		wantErr bool
+	}{
+		{"wildcard star", "build*", true},
+		{"wildcard gt", "build>", true},
+		{"whitespace", "build deploy", true},
+		{"leading dot", ".build", true},
+		{"trailing dot", "build.", true},
+		{"valid segment", "build", false},
+		{"valid multi-segment", "build.deploy", false},
+		{"valid with dash and underscore", "build-a_b", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := store.Mint(ctx, "worker", []string{tc.prefix}, "tester")
+			// Positive: invalid-charset prefixes are rejected.
+			if tc.wantErr && err == nil {
+				t.Fatalf("Mint(%q) = nil error, want error", tc.prefix)
+			}
+			// Negative: valid prefixes are still accepted.
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Mint(%q) = %v, want nil error", tc.prefix, err)
+			}
+		})
 	}
 }
 

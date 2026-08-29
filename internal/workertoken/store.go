@@ -395,8 +395,52 @@ func validatePrefixes(prefixes []string) error {
 				"task type prefix exceeds %d bytes", PrefixLengthMax,
 			)
 		}
+		if err := validatePrefixCharset(prefix); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// validatePrefixCharset rejects a prefix that could never match a
+// real task type. bridge's validateTaskType already rejects '*', '>',
+// whitespace, and a leading/trailing '.' on the poll side (task types
+// map 1:1 onto NATS subject tokens), so a prefix using any of those
+// bytes is permanently dead -- minting one is an operator error worth
+// a 400 at mint time rather than a silently-never-matching scope
+// discovered later. Charset: [A-Za-z0-9_.-].
+func validatePrefixCharset(prefix string) error {
+	if prefix == "" {
+		panic("validatePrefixCharset: prefix must not be empty")
+	}
+	if prefix[0] == '.' || prefix[len(prefix)-1] == '.' {
+		return fmt.Errorf(
+			"invalid task type prefix %q: must not start or end with '.'",
+			prefix,
+		)
+	}
+	for i := 0; i < len(prefix); i++ {
+		if !isPrefixByte(prefix[i]) {
+			return fmt.Errorf(
+				"invalid task type prefix %q: illegal character %q",
+				prefix, string(prefix[i]),
+			)
+		}
+	}
+	return nil
+}
+
+// isPrefixByte reports whether c may appear in a task-type prefix.
+func isPrefixByte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	case c == '-', c == '_', c == '.':
+		return true
+	}
+	return false
 }
 
 // ErrTokenNotFound is returned by Revoke (wrapped with the requested
@@ -580,10 +624,20 @@ func (s *Store) Authorize(bearer string) (Claims, error) {
 	s.mu.RLock()
 	tok, ok := s.tokens[id]
 	s.mu.RUnlock()
-	if !ok || tok.RevokedAt != nil {
-		return Claims{}, errInvalidToken
+	// compareAgainst is always sha256.Size bytes so the comparison
+	// below does identical work whether id was found or not --
+	// subtle.ConstantTimeCompare short-circuits on a length mismatch,
+	// so comparing against tok.SecretHash's zero-length nil (unknown
+	// id) would skip the comparison loop and leak a timing signal a
+	// fixed-length dummy avoids. Revoked status is decided AFTER the
+	// compare runs, not before, for the same reason: all three failure
+	// paths (unknown id, wrong secret, revoked) must do identical work.
+	compareAgainst := tok.SecretHash
+	if len(compareAgainst) != sha256.Size {
+		compareAgainst = make([]byte, sha256.Size)
 	}
-	if subtle.ConstantTimeCompare(sum[:], tok.SecretHash) != 1 {
+	match := subtle.ConstantTimeCompare(sum[:], compareAgainst) == 1
+	if !ok || !match || tok.RevokedAt != nil {
 		return Claims{}, errInvalidToken
 	}
 	return Claims{

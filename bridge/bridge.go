@@ -188,6 +188,33 @@ func claimsFromContext(ctx context.Context) workertoken.Claims {
 	return claims
 }
 
+// authorizeTaskOwner reports whether claims may act on a task claimed
+// by claimingTokenID (#627): admin bypasses ownership entirely (a
+// resolve/pause/checkpoint/signal from the env admin bearer can act on
+// any task); every other caller must present the exact TokenID that
+// claimed the task via poll. Extracted from handleResolve to keep it
+// under the function-length limit -- this is the whole authorization
+// decision, independent of HTTP/ackMap plumbing.
+func (b *Bridge) authorizeTaskOwner(
+	claims workertoken.Claims, claimingTokenID string,
+) bool {
+	if b == nil {
+		panic("authorizeTaskOwner: b must not be nil")
+	}
+	if claims.Admin && claims.TokenID != "" {
+		// Invariant from authorize(): every admin Claims value is
+		// constructed with an empty TokenID (bearer match or dev
+		// mode). A non-empty TokenID alongside Admin means a caller
+		// upstream built Claims by hand instead of going through
+		// authorize() -- a programmer error, not a request to reject.
+		panic("authorizeTaskOwner: admin claims must not carry a TokenID")
+	}
+	if claims.Admin {
+		return true
+	}
+	return claims.TokenID == claimingTokenID
+}
+
 // authMiddleware resolves the Authorization header into Claims and
 // rejects the request with 401 when none of the three modes documented
 // on Bridge apply. On success it attaches Claims to the request

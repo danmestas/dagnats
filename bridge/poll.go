@@ -102,19 +102,19 @@ func (b *Bridge) handlePoll(
 // firstUnauthorizedTaskType returns the first entry of taskTypes claims
 // does not permit, reporting false when every entry is allowed.
 //
-// Scoping only ever applies to a real Store-issued identity: admin
-// claims (env bearer) are unscoped by design, and claims with no
-// TokenID mean the request reached here via dev mode (no admin token,
-// no Store configured) -- there is no worker-token identity to scope
-// against, so it must not be treated as "a token with zero prefixes"
-// (which would fail closed and break dev mode).
+// Scoping is bypassed for Admin claims ONLY -- dev mode (authorize's
+// no-env-token path) always sets Admin: true, so this and the dev-mode
+// bypass are the same check. An empty, non-admin TokenID must NEVER be
+// treated as unscoped: that would silently widen a hand-built or
+// future-refactored Claims{} zero value into "allow everything",
+// exactly the shape of hole this scoping exists to close.
 func firstUnauthorizedTaskType(
 	claims workertoken.Claims, taskTypes []string,
 ) (string, bool) {
 	if len(taskTypes) == 0 {
 		panic("firstUnauthorizedTaskType: taskTypes must not be empty")
 	}
-	if claims.Admin || claims.TokenID == "" {
+	if claims.Admin {
 		return "", false
 	}
 	for _, taskType := range taskTypes {
@@ -555,13 +555,7 @@ func (b *Bridge) processPolledMsg(
 		return pollResponse{}, false
 	}
 	taskID := payload.RunID + "." + payload.StepID
-	// claimsFromContext reads the original request ctx (a
-	// context.Value read propagates through the trace-context wraps
-	// above), not dispatchCtx -- recording who claimed this task so
-	// resolve can later enforce that only the claiming caller, or an
-	// admin, may act on it (#627).
-	claims := claimsFromContext(ctx)
-	b.ackMap.Store(taskID, msg, claims.TokenID)
+	b.storeClaimedTask(ctx, taskID, msg)
 	traceHdr := dispatchTraceHeader(dispatchCtx)
 	resp := pollResponse{
 		TaskID:      taskID,
@@ -574,6 +568,27 @@ func (b *Bridge) processPolledMsg(
 		TraceState:  traceHdr.Get("tracestate"),
 	}
 	return resp, true
+}
+
+// storeClaimedTask records msg in the ackMap keyed by taskID, tagged
+// with the TokenID from ctx's Claims (#627) so a later resolve can be
+// scoped to the caller that claimed it (bridge.authorizeTaskOwner).
+// ctx must be the original request context or a descendant that still
+// carries the same context.Value chain -- a dispatch child context
+// works too, but the caller passes the closest-to-source one it has.
+// Extracted from processPolledMsg to keep it under the function-length
+// limit.
+func (b *Bridge) storeClaimedTask(
+	ctx context.Context, taskID string, msg jetstream.Msg,
+) {
+	if ctx == nil {
+		panic("storeClaimedTask: ctx must not be nil")
+	}
+	if taskID == "" {
+		panic("storeClaimedTask: taskID must not be empty")
+	}
+	claims := claimsFromContext(ctx)
+	b.ackMap.Store(taskID, msg, claims.TokenID)
 }
 
 // dispatchTraceHeader renders ctx's trace context as W3C headers so the

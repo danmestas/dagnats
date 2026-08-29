@@ -213,3 +213,24 @@ func TestTokenEnvSetRandomBearerRejected(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 }
+
+// TestFirstUnauthorizedTaskTypeEmptyTokenIDNeverBypasses pins the fix
+// for a defensive-coding hole: only claims.Admin bypasses scoping.
+// Before this fix, a non-admin Claims with an empty TokenID (a
+// hand-built or future zero-value Claims{}) was ALSO treated as
+// unscoped -- silently as permissive as admin, for a shape that must
+// never be reachable via HTTP today but must not be trusted if it is.
+func TestFirstUnauthorizedTaskTypeEmptyTokenIDNeverBypasses(t *testing.T) {
+	claims := workertoken.Claims{} // Admin: false, TokenID: "", no prefixes.
+	// Positive: every task type is rejected, not bypassed.
+	unmatched, ok := firstUnauthorizedTaskType(claims, []string{"echo"})
+	if !ok || unmatched != "echo" {
+		t.Fatalf("firstUnauthorizedTaskType(zero Claims) = (%q, %v), want (echo, true)",
+			unmatched, ok)
+	}
+	// Negative: Admin claims still bypass, unaffected by the fix.
+	admin := workertoken.Claims{Admin: true}
+	if _, ok := firstUnauthorizedTaskType(admin, []string{"echo"}); ok {
+		t.Fatal("firstUnauthorizedTaskType(admin) rejected a type, want bypass")
+	}
+}
