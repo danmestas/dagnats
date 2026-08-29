@@ -372,6 +372,15 @@ type WorkflowRun struct {
 	// later without standing up a shadow lookup table. Additive: legacy
 	// snapshots deserialize to nil. See ValidateLabels for bounds.
 	Labels map[string]string `json:"labels,omitempty"`
+	// TriggerDepth counts hops through run_terminal trigger chains
+	// (#634): 0 for every manual/HTTP/cron-started run, source run's
+	// TriggerDepth+1 for a run started by a run_terminal trigger
+	// reacting to that source run's completion. The runtime half of
+	// the loop guard for cross-workflow trigger cycles (A→B→A) — see
+	// internal/trigger's TriggerDepthMax cap, enforced before a
+	// chained run is ever started. Additive: legacy snapshots
+	// deserialize to 0.
+	TriggerDepth int `json:"trigger_depth,omitempty"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.

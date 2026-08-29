@@ -49,6 +49,7 @@ type TriggerService struct {
 	subjectReg     *subjectRegistrar
 	webhookReg     *webhookRegistrar
 	httpReg        *httpRegistrar
+	runTerminalReg *runTerminalRegistrar
 	ackMicro       micro.Service
 	// build is the binary's build string, threaded into the
 	// dagnats-trigger micro service version (#449 Phase 2b).
@@ -72,10 +73,11 @@ type TriggerService struct {
 // because the keys appear in JSON payloads and registry lookups; an
 // iota would not survive the wire crossing.
 const (
-	kindCron    = "cron"
-	kindSubject = "subject"
-	kindWebhook = "webhook"
-	kindHTTP    = "http"
+	kindCron        = "cron"
+	kindSubject     = "subject"
+	kindWebhook     = "webhook"
+	kindHTTP        = "http"
+	kindRunTerminal = "run_terminal"
 )
 
 // triggerKind returns the kind name for def, or "" if no kind field
@@ -95,6 +97,8 @@ func triggerKind(def TriggerDef) string {
 		return kindWebhook
 	case def.HTTP != nil:
 		return kindHTTP
+	case def.RunTerminal != nil:
+		return kindRunTerminal
 	case def.External != nil:
 		return externalKindPrefix + def.External.Kind
 	}
@@ -174,11 +178,15 @@ func NewTriggerService(
 	ts.subjectReg = newSubjectRegistrar(nc, ts.subjects, &ts.mu)
 	ts.webhookReg = newWebhookRegistrar(nc, ts.webhooks, &ts.mu)
 	ts.httpReg = newHTTPRegistrar(nc, ts.httpRoutes, &ts.mu)
+	ts.runTerminalReg = newRunTerminalRegistrar(
+		js, natsutil.NewTracingPublisher(nc, js),
+	)
 	ts.registrars = map[string]TriggerRegistrar{
-		kindCron:    newCronRegistrar(scheduler),
-		kindSubject: ts.subjectReg,
-		kindWebhook: ts.webhookReg,
-		kindHTTP:    ts.httpReg,
+		kindCron:        newCronRegistrar(scheduler),
+		kindSubject:     ts.subjectReg,
+		kindWebhook:     ts.webhookReg,
+		kindHTTP:        ts.httpReg,
+		kindRunTerminal: ts.runTerminalReg,
 	}
 	return ts, nil
 }

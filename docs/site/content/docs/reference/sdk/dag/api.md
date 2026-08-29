@@ -1536,7 +1536,7 @@ func WithSchemas[I, O any](def WorkflowDef) WorkflowDef
 WithSchemas generates JSON schemas from Go types I \(input\) and O \(output\) and attaches them to the WorkflowDef. Applied after Build\(\). Supports flat structs with primitive fields, slices, and maps.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L375>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L384>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1567,11 +1567,20 @@ type WorkflowRun struct {
     // later without standing up a shadow lookup table. Additive: legacy
     // snapshots deserialize to nil. See ValidateLabels for bounds.
     Labels map[string]string `json:"labels,omitempty"`
+    // TriggerDepth counts hops through run_terminal trigger chains
+    // (#634): 0 for every manual/HTTP/cron-started run, source run's
+    // TriggerDepth+1 for a run started by a run_terminal trigger
+    // reacting to that source run's completion. The runtime half of
+    // the loop guard for cross-workflow trigger cycles (A→B→A) — see
+    // internal/trigger's TriggerDepthMax cap, enforced before a
+    // chained run is ever started. Additive: legacy snapshots
+    // deserialize to 0.
+    TriggerDepth int `json:"trigger_depth,omitempty"`
 }
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L380>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L389>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1580,7 +1589,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L401>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L410>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time

@@ -45,7 +45,7 @@ func validateCommon(def TriggerDef, kvh *kvHandle) error {
 	if def.ID == "" && def.WorkflowID == "" &&
 		def.Cron == nil && def.Subject == nil &&
 		def.Webhook == nil && def.HTTP == nil &&
-		def.External == nil {
+		def.External == nil && def.RunTerminal == nil {
 		panic("Validate: completely empty TriggerDef is a programmer error")
 	}
 	if def.ID == "" {
@@ -59,7 +59,7 @@ func validateCommon(def TriggerDef, kvh *kvHandle) error {
 	if count != 1 {
 		return fmt.Errorf(
 			"trigger %q: exactly one of cron/subject/webhook/"+
-				"http/external must be set (got %d)",
+				"http/external/run_terminal must be set (got %d)",
 			def.ID, count)
 	}
 	if err := validateTypeBranch(def, kvh); err != nil {
@@ -97,6 +97,9 @@ func validateTypeBranch(def TriggerDef, kvh *kvHandle) error {
 	}
 	if def.External != nil {
 		return validateExternal(def, kvh)
+	}
+	if def.RunTerminal != nil {
+		return validateRunTerminalConfig(def)
 	}
 	return nil
 }
@@ -164,6 +167,9 @@ func countTriggerTypes(def TriggerDef) int {
 		count++
 	}
 	if def.External != nil {
+		count++
+	}
+	if def.RunTerminal != nil {
 		count++
 	}
 	return count

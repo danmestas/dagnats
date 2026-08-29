@@ -1,0 +1,15 @@
+{
+  "$schema": "../../docs/workflow-schema.json",
+  "name": "log-offload",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "offload",
+      "task": "logs.offload",
+      "type": "normal",
+      "depends_on": [],
+      "retries": 3,
+      "timeout": 600000000000
+    }
+  ]
+}

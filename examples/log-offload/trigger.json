@@ -1,0 +1,9 @@
+{
+  "id": "log-offload-on-your-build-workflow",
+  "workflow_id": "log-offload",
+  "enabled": true,
+  "run_terminal": {
+    "workflow": "your-build-workflow",
+    "statuses": ["completed", "failed", "cancelled"]
+  }
+}
