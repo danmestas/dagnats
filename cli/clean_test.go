@@ -878,12 +878,37 @@ func TestPurgeKVBucketBefore_SelectiveDelete(t *testing.T) {
 	}
 
 	kv.Put(ctx, "old-key", []byte("old"))
-	time.Sleep(50 * time.Millisecond)
+	// Small sleep only to guarantee distinct Created timestamps between
+	// the two puts; the cutoff below is derived from new-key's own
+	// timestamp, so the test outcome does not depend on how much wall
+	// time actually elapses on a loaded runner.
+	time.Sleep(5 * time.Millisecond)
 	kv.Put(ctx, "new-key", []byte("new"))
 
-	err = purgeKVBucketBefore(ctx, kv, 25*time.Millisecond)
+	oldEntry, err := kv.Get(ctx, "old-key")
 	if err != nil {
-		t.Fatalf("purgeKVBucketBefore: %v", err)
+		t.Fatalf("Get old-key: %v", err)
+	}
+	newEntry, err := kv.Get(ctx, "new-key")
+	if err != nil {
+		t.Fatalf("Get new-key: %v", err)
+	}
+
+	// Precondition: fail loudly here rather than silently downstream if
+	// Created() timestamps ever stop being monotonic across Puts.
+	if !newEntry.Created().After(oldEntry.Created()) {
+		t.Fatalf("new-key Created() = %v, want after old-key Created() = %v",
+			newEntry.Created(), oldEntry.Created())
+	}
+
+	// Before() is strict, so the cutoff sits exactly on new-key's
+	// timestamp: old-key (strictly before) is deleted, new-key (not
+	// before its own timestamp) survives, regardless of runner speed.
+	cutoff := newEntry.Created()
+
+	err = purgeKVBucketBeforeCutoff(ctx, kv, cutoff)
+	if err != nil {
+		t.Fatalf("purgeKVBucketBeforeCutoff: %v", err)
 	}
 
 	_, err = kv.Get(ctx, "old-key")
@@ -899,4 +924,52 @@ func TestPurgeKVBucketBefore_SelectiveDelete(t *testing.T) {
 		t.Errorf("value = %q, want new",
 			string(entry.Value()))
 	}
+}
+
+// TestPurgeKVBucketBefore_WrapperComputesCutoff verifies the thin
+// olderThan wrapper delegates correctly: a generous olderThan (24h)
+// must not delete anything written moments ago.
+func TestPurgeKVBucketBefore_WrapperComputesCutoff(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	kv, err := js.KeyValue(ctx, "workflow_runs")
+	if err != nil {
+		t.Fatalf("KeyValue: %v", err)
+	}
+
+	kv.Put(ctx, "fresh-key", []byte("fresh"))
+
+	err = purgeKVBucketBefore(ctx, kv, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("purgeKVBucketBefore: %v", err)
+	}
+
+	// Positive: a 24h-old cutoff does not touch a key written now.
+	entry, err := kv.Get(ctx, "fresh-key")
+	if err != nil {
+		t.Fatalf("fresh-key should survive: %v", err)
+	}
+	if string(entry.Value()) != "fresh" {
+		t.Errorf("value = %q, want fresh", string(entry.Value()))
+	}
+
+	// Negative: the wrapper must still reject a non-positive olderThan.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected panic for zero olderThan")
+			}
+		}()
+		_ = purgeKVBucketBefore(ctx, kv, 0)
+	}()
 }
