@@ -260,12 +260,15 @@ func (rm *RecoveryManager) failAuxStep(
 	// failures previously had NO terminal notification of any kind.
 	run, err := finalizeRun(
 		ctx, rm.tp, saveFn, run, dag.RunStatusCompensateFailed, stepDef.ID,
+		func(ctx context.Context) error {
+			rm.runsActive.Add(ctx, -1)
+			rm.runsFailed.Add(ctx, 1)
+			return nil
+		},
 	)
 	if err != nil {
 		return err
 	}
-	rm.runsActive.Add(ctx, -1)
-	rm.runsFailed.Add(ctx, 1)
 	taskSubject := ""
 	if stepDef.Task != "" {
 		taskSubject = rm.publisher.StepSubject(stepDef, run.RunID)
@@ -443,6 +446,10 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 	// change is logging it instead of dropping it silently.
 	finalized, err := finalizeRun(
 		ctx, rm.tp, saveFn, *run, dag.RunStatusCompensated, "",
+		func(ctx context.Context) error {
+			rm.runsActive.Add(ctx, -1)
+			return nil
+		},
 	)
 	if err != nil {
 		slog.ErrorContext(ctx,
@@ -451,7 +458,6 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 		)
 	}
 	*run = finalized
-	rm.runsActive.Add(ctx, -1)
 	return true
 }
 

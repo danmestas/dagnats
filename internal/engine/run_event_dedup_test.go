@@ -10,11 +10,13 @@
 package engine
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -63,6 +65,28 @@ func TestPublishRunEvent_RedeliveredFinalize_DedupsToOneMessage(t *testing.T) {
 	}
 	if first == nil {
 		t.Fatal("first message must not be nil")
+	}
+	// Positive: the surviving message is the run.completed event we
+	// published, on the exact subject we subscribed to — not just "a"
+	// message, but the correct one, with the correct payload.
+	if first.Subject != subject {
+		t.Fatalf("surviving message subject = %q, want %q", first.Subject, subject)
+	}
+	var survivingEvt protocol.RunEvent
+	if err := json.Unmarshal(first.Data, &survivingEvt); err != nil {
+		t.Fatalf("unmarshal surviving message: %v", err)
+	}
+	if survivingEvt.Type != protocol.RunEventCompleted {
+		t.Fatalf("surviving payload Type = %q, want %q",
+			survivingEvt.Type, protocol.RunEventCompleted)
+	}
+	if survivingEvt.RunID != run.RunID {
+		t.Fatalf("surviving payload RunID = %q, want %q",
+			survivingEvt.RunID, run.RunID)
+	}
+	if survivingEvt.WorkflowID != run.WorkflowID {
+		t.Fatalf("surviving payload WorkflowID = %q, want %q",
+			survivingEvt.WorkflowID, run.WorkflowID)
 	}
 
 	_, err = sub.NextMsg(500 * time.Millisecond)

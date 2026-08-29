@@ -1,12 +1,13 @@
 // internal/engine/dispatch_stamp.go
 
 // Per-step dispatch/completion stamping (#626). Consolidates the
-// DispatchNonce minting that used to be duplicated inline at seven call
-// sites (enqueueReady, enqueueReadySteps, handleStepContinue,
-// TryOnFailure, StartCompensation, HandleCompensateCompleted,
-// runMapOnFailure) and adds StartedAt/CompletedAt alongside it. Both
-// timestamps ride the snapshot write the caller was already making — no
-// extra KV write.
+// DispatchNonce minting that used to be duplicated inline at several call
+// sites (enqueueReady, handleStepContinue, TryOnFailure,
+// StartCompensation, HandleCompensateCompleted, runMapOnFailure) and adds
+// StartedAt/CompletedAt alongside it. Both timestamps ride the snapshot
+// write the caller was already making — no extra KV write.
+// enqueueReadySteps (the unused sibling of enqueueReady) was deleted as
+// dead code during the #625 review (it had no non-test caller).
 package engine
 
 import (

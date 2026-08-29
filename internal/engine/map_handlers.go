@@ -292,15 +292,18 @@ func (o *Orchestrator) failMapStep(
 	// No on-failure — fail the workflow.
 	run, err := finalizeRun(
 		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, baseID,
+		func(ctx context.Context) error {
+			wfAttr := metric.WithAttributes(
+				attribute.String("workflow", run.WorkflowID),
+			)
+			o.metrics.runsActive.Add(ctx, -1, wfAttr)
+			o.metrics.runsFailed.Add(ctx, 1, wfAttr)
+			return nil
+		},
 	)
 	if err != nil {
 		return err
 	}
-	wfAttr := metric.WithAttributes(
-		attribute.String("workflow", run.WorkflowID),
-	)
-	o.metrics.runsActive.Add(ctx, -1, wfAttr)
-	o.metrics.runsFailed.Add(ctx, 1, wfAttr)
 	taskSubject := ""
 	if stepDef.Task != "" {
 		taskSubject = o.publisher.StepSubject(stepDef, run.RunID)

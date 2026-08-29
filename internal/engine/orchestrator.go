@@ -801,7 +801,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 			run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
 			if _, finalizeErr := finalizeRun(
 				ctx, o.tp, o.saveSnapshot, run,
-				dag.RunStatusFailed, "",
+				dag.RunStatusFailed, "", nil,
 			); finalizeErr != nil {
 				slog.ErrorContext(ctx,
 					"input validation: save failed-run snapshot",
@@ -969,7 +969,7 @@ func (o *Orchestrator) persistFailedStartRun(
 		TraceParent: evt.TraceParent,
 	}
 	if _, err := finalizeRun(
-		ctx, o.tp, o.saveSnapshot, failed, dag.RunStatusFailed, "",
+		ctx, o.tp, o.saveSnapshot, failed, dag.RunStatusFailed, "", nil,
 	); err != nil {
 		slog.ErrorContext(ctx,
 			"workflow.started: save failed-run snapshot",
@@ -1044,7 +1044,7 @@ func (o *Orchestrator) persistSkippedRun(
 	// guard, but misleading to persist).
 	run.SingletonKey = ""
 	if _, err := finalizeRun(
-		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCancelled, "",
+		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCancelled, "", nil,
 	); err != nil {
 		return fmt.Errorf("save skipped-run snapshot: %w", err)
 	}
@@ -1144,30 +1144,39 @@ func (o *Orchestrator) completeWorkflow(
 	}
 	run, err := finalizeRun(
 		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCompleted, "",
+		func(ctx context.Context) error {
+			// Runs BEFORE either publish (#625 review round 2): a
+			// subscriber reacting to run.completed by starting the next
+			// run must see the singleton lock and concurrency slot
+			// already released, not race their release.
+			o.admission.ReleaseSingletonLock(ctx, run)
+			o.sticky.DeleteBinding(ctx, run.RunID)
+			wfAttr := metric.WithAttributes(
+				attribute.String("workflow", run.WorkflowID),
+			)
+			o.metrics.runsActive.Add(ctx, -1, wfAttr)
+			o.metrics.runsCompleted.Add(ctx, 1, wfAttr)
+			if err := o.admission.ReleaseRunIfConcurrency(
+				ctx, run.WorkflowID,
+			); err != nil {
+				return err
+			}
+			if o.admission.HasConcurrency() {
+				if err := o.startNextPendingRun(
+					ctx, run.WorkflowID,
+				); err != nil {
+					slog.ErrorContext(ctx,
+						"failed to start next pending run",
+						"error", err,
+						"workflow_id", run.WorkflowID,
+					)
+				}
+			}
+			return nil
+		},
 	)
 	if err != nil {
 		return err
-	}
-	o.admission.ReleaseSingletonLock(ctx, run)
-	o.sticky.DeleteBinding(ctx, run.RunID)
-	wfAttr := metric.WithAttributes(
-		attribute.String("workflow", run.WorkflowID),
-	)
-	o.metrics.runsActive.Add(ctx, -1, wfAttr)
-	o.metrics.runsCompleted.Add(ctx, 1, wfAttr)
-	if err := o.admission.ReleaseRunIfConcurrency(
-		ctx, run.WorkflowID,
-	); err != nil {
-		return err
-	}
-	if o.admission.HasConcurrency() {
-		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
-			slog.ErrorContext(ctx,
-				"failed to start next pending run",
-				"error", err,
-				"workflow_id", run.WorkflowID,
-			)
-		}
 	}
 	return o.notifyParentIfChild(ctx, run, nil)
 }
@@ -1383,30 +1392,35 @@ func (o *Orchestrator) failWorkflow(
 ) error {
 	run, err := finalizeRun(
 		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, stepDef.ID,
+		func(ctx context.Context) error {
+			o.admission.ReleaseSingletonLock(ctx, run)
+			o.sticky.DeleteBinding(ctx, run.RunID)
+			wfAttr := metric.WithAttributes(
+				attribute.String("workflow", run.WorkflowID),
+			)
+			o.metrics.runsActive.Add(ctx, -1, wfAttr)
+			o.metrics.runsFailed.Add(ctx, 1, wfAttr)
+			if err := o.admission.ReleaseRunIfConcurrency(
+				ctx, run.WorkflowID,
+			); err != nil {
+				return err
+			}
+			if o.admission.HasConcurrency() {
+				if err := o.startNextPendingRun(
+					ctx, run.WorkflowID,
+				); err != nil {
+					slog.ErrorContext(ctx,
+						"failed to start next pending run",
+						"error", err,
+						"workflow_id", run.WorkflowID,
+					)
+				}
+			}
+			return nil
+		},
 	)
 	if err != nil {
 		return err
-	}
-	o.admission.ReleaseSingletonLock(ctx, run)
-	o.sticky.DeleteBinding(ctx, run.RunID)
-	wfAttr := metric.WithAttributes(
-		attribute.String("workflow", run.WorkflowID),
-	)
-	o.metrics.runsActive.Add(ctx, -1, wfAttr)
-	o.metrics.runsFailed.Add(ctx, 1, wfAttr)
-	if err := o.admission.ReleaseRunIfConcurrency(
-		ctx, run.WorkflowID,
-	); err != nil {
-		return err
-	}
-	if o.admission.HasConcurrency() {
-		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
-			slog.ErrorContext(ctx,
-				"failed to start next pending run",
-				"error", err,
-				"workflow_id", run.WorkflowID,
-			)
-		}
 	}
 	// Best-effort definition reload so PublishDeadLetter can resolve
 	// the step's input via dag.ResolveInput. A missing def degrades
@@ -1473,26 +1487,29 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	// so this is the only reliable "run finished cancelling" signal.
 	run, err = finalizeRun(
 		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCancelled, "",
+		func(ctx context.Context) error {
+			o.metrics.runsActive.Add(ctx, -1)
+			if err := o.admission.ReleaseRunIfConcurrency(
+				ctx, run.WorkflowID,
+			); err != nil {
+				return err
+			}
+			if o.admission.HasConcurrency() {
+				if err := o.startNextPendingRun(
+					ctx, run.WorkflowID,
+				); err != nil {
+					slog.ErrorContext(ctx,
+						"failed to start next pending run",
+						"error", err,
+						"workflow_id", run.WorkflowID,
+					)
+				}
+			}
+			return nil
+		},
 	)
 	if err != nil {
 		return err
-	}
-	o.metrics.runsActive.Add(ctx, -1)
-	if err := o.admission.ReleaseRunIfConcurrency(
-		ctx, run.WorkflowID,
-	); err != nil {
-		return err
-	}
-	if o.admission.HasConcurrency() {
-		if err := o.startNextPendingRun(
-			ctx, run.WorkflowID,
-		); err != nil {
-			slog.ErrorContext(ctx,
-				"failed to start next pending run",
-				"error", err,
-				"workflow_id", run.WorkflowID,
-			)
-		}
 	}
 	return o.notifyParentIfChild(ctx, run, fmt.Errorf("cancelled"))
 }

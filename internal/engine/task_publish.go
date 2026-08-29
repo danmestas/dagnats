@@ -4,16 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/synadia-io/orbit.go/jetstreamext"
 )
 
 // taskSubject builds the NATS subject for a task. Agent steps
@@ -108,143 +104,4 @@ func collectReadyMessages(
 		msgs = append(msgs, buildTaskMsg(subject, data, msgID))
 	}
 	return msgs, nil
-}
-
-// enqueueReadySteps resolves ready steps, publishes tasks, and
-// checks for workflow completion. Returns updated run state. tp
-// is the TracingPublisher wrapper; js is retained for the
-// atomic-batch publish via jetstreamext (PublishMsgBatch is not
-// on the TracingPublisher surface — trace context is pre-injected
-// per-message before the batch goes on the wire).
-func enqueueReadySteps(
-	ctx context.Context,
-	js jetstream.JetStream,
-	tp *natsutil.TracingPublisher,
-	wfDef dag.WorkflowDef,
-	run *dag.WorkflowRun,
-	grant *GrantPolicy,
-) error {
-	if js == nil {
-		panic("enqueueReadySteps: js must not be nil")
-	}
-	if tp == nil {
-		panic("enqueueReadySteps: tp must not be nil")
-	}
-	if run == nil {
-		panic("enqueueReadySteps: run must not be nil")
-	}
-	completed := completedSet(*run)
-	queued := queuedSet(*run)
-
-	// Process skipped steps first
-	skipped := dag.ResolveSkipped(
-		wfDef, completed, queued, run.Steps,
-	)
-	for _, step := range skipped {
-		state := run.Steps[step.ID]
-		state.Status = dag.StepStatusSkipped
-		run.Steps[step.ID] = state
-	}
-	if len(skipped) > 0 {
-		completed = completedSet(*run)
-		if dag.IsComplete(wfDef, completed) {
-			*run = markTerminal(*run, dag.RunStatusCompleted)
-			return publishWorkflowEvent(
-				ctx, tp, protocol.EventWorkflowCompleted,
-				run.RunID,
-			)
-		}
-	}
-
-	// Check completion before looking for ready steps
-	if dag.IsComplete(wfDef, completed) {
-		*run = markTerminal(*run, dag.RunStatusCompleted)
-		return publishWorkflowEvent(
-			ctx, tp, protocol.EventWorkflowCompleted,
-			run.RunID,
-		)
-	}
-
-	ready := dag.ResolveReady(wfDef, completed, queued)
-	// Exclude steps already skipped
-	filtered := make([]dag.StepDef, 0, len(ready))
-	for _, step := range ready {
-		if run.Steps[step.ID].Status != dag.StepStatusSkipped {
-			filtered = append(filtered, step)
-		}
-	}
-	ready = filtered
-
-	if len(ready) == 0 {
-		return nil
-	}
-
-	for _, step := range ready {
-		state := run.Steps[step.ID]
-		state.Status = dag.StepStatusQueued
-		// Stamp a fresh dispatch nonce and StartedAt (#380, #626); both
-		// ride this snapshot write.
-		stampDispatch(&state, time.Now().UTC())
-		run.Steps[step.ID] = state
-	}
-
-	msgs, err := collectReadyMessages(
-		run.RunID, ready, run, grant, wfDef.Name,
-	)
-	if err != nil {
-		return err
-	}
-	if len(msgs) == 0 {
-		return nil
-	}
-
-	return publishAtomicBatches(ctx, js, msgs)
-}
-
-// publishAtomicBatches splits messages by stream prefix and
-// publishes each group as an atomic batch. Normal tasks go to
-// TASK_QUEUES (task.>), agent tasks to AGENT_TASKS (agent_task.>).
-// Each message has its W3C trace context injected before the batch
-// publish — jetstreamext.PublishMsgBatch is outside the
-// TracingPublisher surface, so injection happens here at the
-// boundary instead of inside the wrapper.
-func publishAtomicBatches(
-	ctx context.Context,
-	js jetstream.JetStream, msgs []*nats.Msg,
-) error {
-	if js == nil {
-		panic("publishAtomicBatches: js must not be nil")
-	}
-	if len(msgs) == 0 {
-		panic("publishAtomicBatches: msgs must not be empty")
-	}
-	var taskMsgs, agentMsgs []*nats.Msg
-	for _, msg := range msgs {
-		if msg.Header == nil {
-			msg.Header = nats.Header{}
-		}
-		observe.InjectTraceContext(ctx, msg, nil)
-		if strings.HasPrefix(msg.Subject, "agent_task.") {
-			agentMsgs = append(agentMsgs, msg)
-		} else {
-			taskMsgs = append(taskMsgs, msg)
-		}
-	}
-	if len(taskMsgs) > 0 {
-		_, err := jetstreamext.PublishMsgBatch(
-			ctx, js, taskMsgs,
-		)
-		if err != nil {
-			return fmt.Errorf("atomic task publish: %w", err)
-		}
-	}
-	if len(agentMsgs) > 0 {
-		_, err := jetstreamext.PublishMsgBatch(
-			ctx, js, agentMsgs,
-		)
-		if err != nil {
-			return fmt.Errorf("atomic agent publish: %w", err)
-		}
-	}
-	return nil
 }

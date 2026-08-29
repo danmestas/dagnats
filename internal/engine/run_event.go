@@ -1,11 +1,20 @@
 // internal/engine/run_event.go
 // finalizeRun is the SINGLE funnel every terminal run transition
-// routes through: mark terminal, persist the snapshot, publish the
-// existing history.{runID} workflow event for Completed/Failed (the
-// consumer internal/trigger/http.go already polls), then — only once
-// the snapshot write has succeeded — publish the new, reliable
+// routes through: mark terminal, persist the snapshot, run the
+// caller's afterPersist release logic (locks/slots/queue advance),
+// publish the existing history.{runID} workflow event for
+// Completed/Failed (the consumer internal/trigger/http.go already
+// polls — this absorbs and replaces the old publishWorkflowCompleted/
+// publishWorkflowFailed), then publish the new, reliable
 // event.run.{workflow}.{runID}.{status} RunEvent on the EVENTS stream
 // (docs/wire-protocol.md "Consumer contract: run lifecycle events").
+//
+// Ordering matters: afterPersist (lock/slot release, next-pending-run
+// advance) runs BEFORE either publish. A subscriber reacting to
+// run.completed by starting the next run must see admission state
+// that already reflects this run being done — publishing first would
+// let that subscriber race the release and get incorrectly
+// skipped/queued. See #625 review round 2.
 //
 // Before this, publishWorkflowCompleted/publishWorkflowFailed were
 // called ad hoc from 4 of 12 markTerminal call sites, so most terminal
@@ -42,6 +51,10 @@ const subjectTokenMaxLen = 128
 // because workflow names there are validated at register time — this
 // is the first NATS-subject use of a workflow name that ISN'T already
 // validated, so the sanitizer is new rather than reused.
+//
+// Pure and total, like RootRunIDOf: every input (including "") is
+// valid and produces a well-formed (if degenerate) output, so there
+// is no invariant to assert here.
 func subjectToken(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -64,7 +77,16 @@ func subjectToken(s string) string {
 // subject. workflowToken falls back to "_" when it sanitizes to empty
 // (an unset WorkflowID) so the subject never contains a double dot,
 // which NATS subject matching treats as a malformed/empty token.
+//
+// runID is NOT sanitized like workflow is — every runID in this
+// codebase is engine- or nuid-generated (never raw user input), so
+// the assert below is a programmer-error guard against a caller
+// passing something subject-metacharacter-laden, not a defense
+// against untrusted input.
 func runEventSubject(workflow, runID, status string) string {
+	if strings.ContainsAny(runID, ". \t*>") {
+		panic("runEventSubject: runID must not contain NATS subject metacharacters")
+	}
 	token := subjectToken(workflow)
 	if token == "" {
 		token = "_"
@@ -78,6 +100,10 @@ func runEventSubject(workflow, runID, status string) string {
 // after the workflow itself failed, so from a "did this run's original
 // goal succeed" standpoint both are failures — the exact outcome still
 // rides RunEvent.Status and the subject's status segment.
+//
+// Pure and total: every dag.RunStatus string maps to a bucket (the
+// default case covers failed/compensated/compensate_failed), so
+// there is no invariant to assert.
 func runEventType(status string) protocol.RunEventType {
 	switch status {
 	case "completed":
@@ -99,7 +125,13 @@ var runEventPublishFailures metric.Int64Counter
 
 func init() {
 	m := otel.Meter("dagnats/engine")
-	c, _ := m.Int64Counter("engine.run_event.publish_failures")
+	c, err := m.Int64Counter("engine.run_event.publish_failures")
+	if err != nil {
+		// A meter that cannot create a counter at process startup is a
+		// programmer/config error (bad instrument name, misconfigured
+		// provider) — there is no runtime fallback that makes sense.
+		panic("init: create engine.run_event.publish_failures counter: " + err.Error())
+	}
 	runEventPublishFailures = c
 }
 
@@ -110,7 +142,10 @@ func init() {
 // consumer contract that already exists. Dedup key is keyed on runID
 // alone: a run reaches exactly one terminal status once, so redelivery
 // of the same finalize (e.g. a NAK'd handler retrying) must collapse
-// to one EVENTS message.
+// to one EVENTS message — within JetStream's dedup window. EVENTS
+// (internal/natsutil/conn.go) sets no explicit Duplicates window, so
+// that window is the server default (2 minutes), not a
+// stream-specific override.
 func publishRunEvent(
 	ctx context.Context, tp *natsutil.TracingPublisher, run dag.WorkflowRun,
 ) {
@@ -128,6 +163,7 @@ func publishRunEvent(
 		Status:      status,
 		CreatedAt:   run.CreatedAt,
 		CompletedAt: run.CompletedAt,
+		Labels:      copyLabels(run.Labels),
 		TraceParent: run.TraceParent,
 	}
 	data, err := json.Marshal(evt)
@@ -143,6 +179,22 @@ func publishRunEvent(
 	if err != nil {
 		recordRunEventPublishFailure(ctx, run, err)
 	}
+}
+
+// copyLabels returns an independent copy of labels, or nil for a nil/
+// empty input (so the RunEvent's `labels` json tag stays omitempty
+// rather than serializing an empty object). Copying — not aliasing —
+// matters because RunEvent may be marshalled asynchronously relative
+// to any future mutation of the run's own Labels map by its caller.
+func copyLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(labels))
+	for k, v := range labels {
+		out[k] = v
+	}
+	return out
 }
 
 // recordRunEventPublishFailure logs and counts a failed event.run.*
@@ -162,13 +214,36 @@ func recordRunEventPublishFailure(
 	}
 }
 
-// finalizeRun marks run terminal, persists it via saveFn, publishes
-// the existing history workflow event for Completed/Failed (so
+// finalizeRun marks run terminal, persists it via saveFn, runs
+// afterPersist (the caller's lock/slot-release and queue-advance
+// logic — nil for sites with none of that), publishes the existing
+// history workflow event for Completed/Failed (so
 // internal/trigger/http.go's poll-for-completion path keeps working
-// unchanged), and — only after the snapshot write succeeds — publishes
-// the new event.run.* RunEvent. Returns the mutated run and any save
-// or history-publish error; the new event's publish failure never
-// propagates (see publishRunEvent).
+// unchanged), and finally publishes the new event.run.* RunEvent.
+//
+// Guard against the double-terminal operating race: if run arrives
+// ALREADY FINALIZED — terminal AND already carrying a CompletedAt —
+// the FIRST terminal status wins. finalizeRun no-ops rather than
+// re-marking, re-saving, or re-publishing, so the persisted snapshot
+// and the one event already published stay in agreement instead of
+// the snapshot silently drifting to a second status behind the first
+// (and only) event. This covers e.g. a cancel and a fail racing to
+// finalize the same run — each handler reloads its own copy from the
+// store, so a persisted terminal status here is not a programmer
+// error.
+//
+// The guard checks CompletedAt, not just Status.IsTerminal(): the
+// pure state-machine core (Advance, advance.go) legitimately presets
+// run.Status to Completed/Failed as part of computing the SAME call's
+// transition, before this run has ever been through markTerminal —
+// CompletedAt is nil at that point since markTerminal (called only
+// from inside finalizeRun) is the sole writer of it. Guarding on
+// Status alone would treat that first, legitimate transition as an
+// already-finalized run and silently skip persisting/publishing it.
+//
+// Returns the mutated run and any save/afterPersist/history-publish
+// error; the new event's publish failure never propagates (see
+// publishRunEvent).
 func finalizeRun(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
@@ -176,6 +251,7 @@ func finalizeRun(
 	run dag.WorkflowRun,
 	status dag.RunStatus,
 	stepID string,
+	afterPersist func(context.Context) error,
 ) (dag.WorkflowRun, error) {
 	if tp == nil {
 		panic("finalizeRun: tp must not be nil")
@@ -183,9 +259,24 @@ func finalizeRun(
 	if saveFn == nil {
 		panic("finalizeRun: saveFn must not be nil")
 	}
+	if run.Status.IsTerminal() && run.CompletedAt != nil {
+		slog.DebugContext(ctx,
+			"finalizeRun: run already terminal, ignoring redundant "+
+				"terminal transition",
+			"run_id", run.RunID,
+			"existing_status", run.Status.String(),
+			"requested_status", status.String(),
+		)
+		return run, nil
+	}
 	run = markTerminal(run, status)
 	if err := saveFn(ctx, run, stepID); err != nil {
 		return run, err
+	}
+	if afterPersist != nil {
+		if err := afterPersist(ctx); err != nil {
+			return run, err
+		}
 	}
 	if err := publishHistoryTerminalEvent(ctx, tp, status, run.RunID); err != nil {
 		return run, err
