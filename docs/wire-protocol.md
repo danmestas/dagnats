@@ -33,7 +33,14 @@ a dotted `Task` combined with a non-empty `WorkerGroup` is rejected outright:
 byte-identical filter subject AND durable name, so pairing the two on one
 step could silently collide with an unrelated ungrouped step. Each half
 stays legal on its own (a dotted, ungrouped `Task`; an undotted `Task` with a
-`WorkerGroup`) — only the combination is rejected.
+`WorkerGroup`) — only the combination is rejected. Both rules are checked
+per step, not across the whole system: step A `{Task: "render.gpu"}` in one
+workflow def and step B `{Task: "render", WorkerGroup: "gpu"}` in a
+different def still derive the identical filter subject and durable name,
+and the cross-process collision check treats that as ordinary idempotent
+durable reuse rather than a conflict — closing that fully would require
+validating a def against every other registered def's task types, which
+`dag.Validate` does not do.
 
 **Dots are legal and are not a separator for consumer-filter purposes.**
 `dagger.call` is a production task type. A worker or bridge poller derives

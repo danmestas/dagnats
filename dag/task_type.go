@@ -85,9 +85,16 @@ func ValidTaskType(s string) error {
 // "fast") both derive "task.render.gpu.fast.*", and NameFor collapses both
 // to "workers-render-gpu-fast" — a dotted group silently collides with an
 // unrelated dotted-task/group split. Banning dots in WorkerGroup outright
-// (rather than case-by-case) closes that regardless of what Task looks
-// like; see validateStepDispatch's combination check for the remaining
-// case where Task itself is dotted and WorkerGroup is set.
+// (rather than case-by-case) closes that for a single step's own Task,
+// regardless of what that step's Task looks like; see
+// validateStepDispatch's combination check for the remaining case where
+// THAT SAME step's Task is dotted and WorkerGroup is set. Neither rule
+// reaches across steps or workflow defs: step A {Task:"render.gpu"} and
+// step B {Task:"render", WorkerGroup:"gpu"} in different workflows still
+// derive the identical filter subject and durable name, and the
+// cross-process collision check treats that as ordinary idempotent
+// durable reuse, not a conflict — see docs/wire-protocol.md "Task
+// Subjects" for that limitation.
 func ValidWorkerGroup(s string) error {
 	if err := ValidTaskType(s); err != nil {
 		return err
