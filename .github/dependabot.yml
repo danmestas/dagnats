@@ -40,7 +40,14 @@ updates:
           - github.com/synadia-io/orbit.go/*
       # Everything else, minor and patch only. Majors get their own PR
       # so the breaking-change review is not buried in a batch.
+      # exclude-patterns is load-bearing: on the first run Dependabot
+      # put the otel and nats families in here despite the groups
+      # above being defined first, so one failing dep blocked 17.
       minor-and-patch:
+        exclude-patterns:
+          - go.opentelemetry.io/*
+          - github.com/nats-io/*
+          - github.com/synadia-io/orbit.go/*
         update-types:
           - minor
           - patch
