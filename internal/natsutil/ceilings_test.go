@@ -25,6 +25,7 @@ var fileStreamFractions = map[string]float64{
 	"EVENTS":           fractionEvents,
 	"TASK_QUEUES":      fractionTaskQueues,
 	"TELEMETRY":        fractionTelemetry,
+	"BUILD_LOGS":       fractionBuildLogs,
 	"DEAD_LETTERS":     fractionDeadLetters,
 	"TRIGGER_HISTORY":  fractionTriggerHistory,
 	"SLEEP_TIMERS":     fractionSleepTimers,
@@ -49,6 +50,11 @@ func streamConfigsWithBudget(
 	}
 	if err := SetupTriggerHistoryStream(js, budget); err != nil {
 		t.Fatalf("SetupTriggerHistoryStream: %v", err)
+	}
+	if err := SetupBuildLogsStream(
+		js, budget, buildLogsTTLDefault, 1,
+	); err != nil {
+		t.Fatalf("SetupBuildLogsStream: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 5*time.Second,

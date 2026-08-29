@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -14,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -58,6 +60,13 @@ type taskContext struct {
 	// startTaskSpan only for gated steps. nil by default — deny-by-default
 	// is the zero value, so an ungated step can never reach it.
 	controlPlane ControlPlane
+
+	// logLane buffers and publishes LogOut()/LogErr() writes to the
+	// BUILD_LOGS hot lane (#624). Lazily created by ensureLogLane on
+	// first Write so a handler that never logs never pays for the
+	// background ticker goroutine.
+	logLane          *logLane
+	logChunkFailures metric.Int64Counter
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -123,6 +132,63 @@ func (c *taskContext) Context() context.Context    { return c.ctx }
 // the step was not gated. nil is the deny-by-default zero value.
 func (c *taskContext) ControlPlane() ControlPlane { return c.controlPlane }
 
+// logWriter is the io.Writer LogOut()/LogErr() hand back to callers.
+// stream selects which of the lane's two buffers a Write() targets.
+type logWriter struct {
+	lane   *logLane
+	stream string
+}
+
+func (w *logWriter) Write(p []byte) (int, error) {
+	if w.stream == protocol.LogStreamOut {
+		return w.lane.writeOut(p)
+	}
+	return w.lane.writeErr(p)
+}
+
+// ensureLogLane lazily creates c.logLane on first use. Not safe for
+// concurrent calls from multiple goroutines — task handlers run
+// single-threaded against their TaskContext, same as every other
+// taskContext method.
+func (c *taskContext) ensureLogLane() *logLane {
+	if c.logLane == nil {
+		c.logLane = newLogLane(
+			c.ctx, c.tp, c.runID, c.stepID, c.logChunkFailures,
+		)
+	}
+	return c.logLane
+}
+
+// LogOut returns a writer that publishes stdout-tagged chunks to the
+// BUILD_LOGS hot lane (logs.{runID}.{stepID}). Buffered: writes are
+// batched and flushed at LogChunkBytesMax or after 250ms, never
+// blocking on NATS I/O.
+func (c *taskContext) LogOut() io.Writer {
+	return &logWriter{lane: c.ensureLogLane(), stream: protocol.LogStreamOut}
+}
+
+// LogErr is LogOut's stderr-tagged counterpart.
+func (c *taskContext) LogErr() io.Writer {
+	return &logWriter{lane: c.ensureLogLane(), stream: protocol.LogStreamErr}
+}
+
+// drainLogs flushes any buffered log bytes (no marker) and stops the
+// lane's ticker. No-op if the handler never called LogOut()/LogErr().
+func (c *taskContext) drainLogs() {
+	if c.logLane != nil {
+		c.logLane.drain()
+	}
+}
+
+// failDrainLogs flushes any buffered log bytes, emits the "failed"
+// marker, then stops the lane's ticker. No-op if the handler never
+// called LogOut()/LogErr().
+func (c *taskContext) failDrainLogs() {
+	if c.logLane != nil {
+		c.logLane.failDrain()
+	}
+}
+
 // Complete publishes a step.completed event with trace context.
 func (c *taskContext) Complete(output []byte) error {
 	if c.msg == nil {
@@ -142,6 +208,10 @@ func (c *taskContext) Complete(output []byte) error {
 		),
 	)
 	defer span.End()
+	// Drain-before-resolve invariant (#624): flush trailing log bytes
+	// so a consumer observing step.completed can never see it before
+	// the log lines that led to it.
+	c.drainLogs()
 	return c.publishEvent(
 		protocol.EventStepCompleted, output,
 	)
@@ -166,6 +236,9 @@ func (c *taskContext) Fail(err error) error {
 	defer span.End()
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
+	// Drain-before-resolve invariant (#624): the "failed" marker chunk
+	// must precede the step.failed event this call publishes next.
+	c.failDrainLogs()
 	return c.publishFailedPayload(protocol.StepFailedPayload{
 		Error:       err.Error(),
 		FailureType: protocol.FailureTypeRetriable,
@@ -193,6 +266,9 @@ func (c *taskContext) FailPermanent(err error) error {
 	defer span.End()
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
+	// Drain-before-resolve invariant (#624): the "failed" marker chunk
+	// must precede the step.failed event this call publishes next.
+	c.failDrainLogs()
 	return c.publishFailedPayload(protocol.StepFailedPayload{
 		Error:       err.Error(),
 		FailureType: protocol.FailureTypeNonRetriable,
@@ -233,6 +309,11 @@ func (c *taskContext) FailRetryAfter(
 	if afterMs < 100 {
 		afterMs = 100
 	}
+	// Retriable, so no "failed" marker — but the lane's ticker still
+	// needs to stop and buffered bytes still need to reach the stream:
+	// this attempt's taskContext (and its logLane) is discarded once
+	// this call returns, and a re-delivered retry gets a fresh one.
+	c.drainLogs()
 	return c.publishFailedPayload(protocol.StepFailedPayload{
 		Error:        err.Error(),
 		FailureType:  protocol.FailureTypeRetryAfter,
@@ -291,6 +372,9 @@ func (c *taskContext) Continue(output []byte) error {
 		Subject: evt.NATSSubject(),
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
+	// Drain-before-resolve invariant (#624): flush trailing log bytes
+	// before the step.continue publish below.
+	c.drainLogs()
 	// JSPublishMsgEvent injects trace context, then marshals evt
 	// internally so the persisted body carries TraceParent.
 	_, err := c.tp.JSPublishMsgEvent(c.ctx, outMsg, &evt)
@@ -464,6 +548,10 @@ func (c *taskContext) Pause(name string, duration time.Duration) error {
 		return fmt.Errorf("save pause checkpoint: %w", err)
 	}
 	c.paused = true
+	// This taskContext (and its logLane, if the handler ever wrote to
+	// LogOut/LogErr before pausing) is discarded once this call
+	// returns; drain stops the ticker goroutine rather than leaking it.
+	c.drainLogs()
 	return c.msg.NakWithDelay(duration)
 }
 

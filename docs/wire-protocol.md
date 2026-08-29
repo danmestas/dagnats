@@ -374,6 +374,99 @@ different purposes and neither replaces the other:
   to polling only to recover from a missed message during a consumer
   outage.
 
+### `logs.{runID}.{stepID}` — captured step stdout/stderr (BUILD_LOGS stream)
+
+dagnats owns the JetStream **hot lane only** — a bounded, short-TTL
+buffer of a step's captured output. There is no S3 offload, no cache,
+no long-term index. **Retention past the hot TTL is a consumer's job**,
+the same way `history.{runID}` and telemetry already work: a forge
+that needs a verdict's logs to stay explainable for years drains
+`logs.{runID}.{stepID}` into its own store next to the verdict, before
+the TTL elapses (#624).
+
+- **Payload**: `protocol.LogChunk` (`protocol/log_chunk.go`):
+
+  ```json
+  {
+    "seq": 3,
+    "ts": "2026-08-28T12:00:00.125Z",
+    "stream": "out",
+    "data": "aGVsbG8gd29ybGQK"
+  }
+  ```
+
+  | Field | Type | Notes |
+  |-------|------|-------|
+  | `seq` | uint64 | Monotonic per step, shared across `out`/`err`/`marker` — ordering by `seq` reconstructs write order even though stdout and stderr are buffered independently. Starts at 0 per step. |
+  | `ts` | RFC3339 timestamp | When this chunk was published (not when the bytes were written — buffering can delay it up to ~250ms; see below). |
+  | `stream` | string | `"out"`, `"err"`, or `"marker"`. |
+  | `data` | bytes (base64 on the wire) | The captured bytes for `out`/`err`; the marker value (`"failed"` or `"truncated"`) for `marker`. |
+
+- **Subject**: `logs.{runID}.{stepID}` — `stepID` is sanitized with
+  `natsutil.SubjectToken` (any byte outside `[A-Za-z0-9_-]` becomes
+  `_`, capped to 128 chars) before it goes into the subject; `runID`
+  is a `nuid` and is never sanitized.
+- **Bounds** (`protocol/log_chunk.go`):
+
+  | Constant | Value | Meaning |
+  |----------|-------|---------|
+  | `LogChunkBytesMax` | 64 KiB | Max bytes in one chunk's `data`. A single `Write()` larger than this is split across multiple chunks. |
+  | `LogStepBytesMax` | 64 MiB | Max total bytes (both streams combined) captured for one step. Hitting it emits one `truncated` marker, then silently drops further writes for that step. |
+  | `LogReadChunksMax` | 1024 | Max chunks one non-follow `GET .../logs` response returns. |
+  | `LogFollowDurationMax` | 1h | Hard cap on one SSE follow connection. |
+  | `LogFollowConcurrentMax` | 256 | Max concurrent SSE follows per API server process. |
+
+- **Markers**: a `stream: "marker"` chunk never carries step output —
+  it carries a control value in `data`:
+  - `"failed"` — emitted by the worker SDK's `Fail`/`FailPermanent`
+    (and the HTTP-bridge equivalent) BEFORE the corresponding
+    `step.failed` history event publishes, so a consumer that wants
+    "jump to the first failure" has a **recorded** position
+    (`GET .../logs?from=failure`) rather than one it has to infer by
+    scanning `history.{runID}` and cross-referencing timestamps.
+  - `"truncated"` — emitted exactly once, the moment `LogStepBytesMax`
+    is reached. No chunk for that step follows it.
+- **Drain-before-resolve invariant**: the worker SDK's `Complete`,
+  `Fail`, `FailPermanent`, and `Continue` all flush any buffered
+  `LogOut()`/`LogErr()` bytes (and, for `Fail`/`FailPermanent`, the
+  `failed` marker) **before** publishing their resolution event. A
+  consumer that observes a step's terminal `history.{runID}` event or
+  `GET /runs/{id}` snapshot is therefore guaranteed every log byte that
+  produced that outcome is already on `logs.{runID}.{stepID}` — no
+  race where the terminal event arrives before its trailing log lines.
+- **Buffering**: writes to `LogOut()`/`LogErr()` are buffered per
+  stream and flushed at `LogChunkBytesMax` or ~250ms after the first
+  unflushed byte, whichever comes first — a handler that logs a lot in
+  a burst gets fewer, larger chunks; a handler that logs sparsely still
+  sees its lines show up within a quarter second.
+- **Dedup key**: `Nats-Msg-Id: log-{runID}-{stepID}-{seq}`.
+- **Ordering**: per-subject JetStream order; consumers should also
+  sort/verify by `seq` since the worker SDK's out/err buffers flush
+  independently — two chunks published in the same tick land in
+  whichever order the publish calls happened to run, but `seq` always
+  reflects true write order.
+- **Retention**: `DAGNATS_BUILD_LOGS_TTL` — default 168h (7d), operator
+  configurable in `[1h, 8760h]`; an out-of-range or unparseable value
+  refuses server startup (`internal/natsutil/build_logs.go`). Sized as
+  a proportional share of `JetStreamMaxStore`, like every other
+  file-backed stream (`internal/natsutil/conn.go`'s fraction table).
+- **Ingest paths**: the worker SDK (`worker.TaskContext.LogOut()` /
+  `LogErr()`, `worker/log_writer.go`) for Go workers; the HTTP bridge's
+  `POST /v1/tasks/{id}/logs` (see `docs/site/content/docs/reference/rest-api.md`)
+  for non-Go workers. Both assign `seq` from the same per-task counter
+  space conceptually (each owns its own counter instance, since a task
+  is captured by exactly one of the two paths) and enforce the same
+  `LogStepBytesMax`/`LogChunkBytesMax` bounds and `truncated` marker
+  behavior.
+- **Read path**: `GET /runs/{id}/logs?step=&after_seq=&follow=&from=`
+  (see `docs/site/content/docs/reference/rest-api.md`, "Run logs")
+  reads this stream — non-follow pages through stored chunks,
+  `follow=1` upgrades to Server-Sent Events.
+- **Use for**: a live or historical tail of one step's captured output
+  within the hot TTL window. Anything longer-lived belongs in a
+  consumer's own store, drained from this stream before the TTL
+  elapses.
+
 ### `event.queue.snapshot` — periodic task-queue depth (EVENTS stream)
 
 - **Payload**: `protocol.QueueSnapshot` (`protocol/queue.go`), the same

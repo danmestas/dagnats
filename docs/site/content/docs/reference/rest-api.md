@@ -231,6 +231,85 @@ GET /runs/{id}
 curl http://localhost:8080/runs/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
 ```
 
+### Run logs
+
+Read or tail one step's captured stdout/stderr from the BUILD_LOGS hot
+lane (see "Consumer contract: build logs" in the wire protocol
+reference). dagnats owns the hot lane only -- retention past its TTL
+(`DAGNATS_BUILD_LOGS_TTL`, default 7d) is a consumer's job.
+
+```
+GET /runs/{id}/logs?step={stepID}&after_seq={n}&follow={0|1}&from={failure}
+```
+
+| Query param | Required | Notes |
+|-------------|----------|-------|
+| `step` | yes | Step ID within the run. `400` if omitted. |
+| `after_seq` | no | Return only chunks with `seq` greater than this value. Ignored when `from=failure` is set. |
+| `from` | no | `from=failure` starts the response at the step's recorded `"failed"` marker instead of `after_seq`. |
+| `follow` | no | `follow=1` upgrades the response to Server-Sent Events instead of one JSON page. |
+
+**Response (non-follow):** `200 OK`
+
+```json
+{
+  "chunks": [
+    {"seq": 0, "ts": "2026-08-28T12:00:00.100Z", "stream": "out", "data": "cnVubmluZyB0ZXN0cwo="},
+    {"seq": 1, "ts": "2026-08-28T12:00:00.350Z", "stream": "out", "data": "MyBwYXNzZWQK"}
+  ],
+  "next_seq": 2,
+  "eof": true
+}
+```
+
+`chunks` is capped at 1024 (`protocol.LogReadChunksMax`) per response --
+page again with `after_seq` set to the returned `next_seq` for more.
+`eof` is `true` only when the step has reached a terminal status AND
+this page returned everything currently stored -- it does not mean the
+stream is empty forever, just that nothing more is coming for this
+step. A step that exists but has produced no chunks yet returns `200`
+with `"chunks": []`, not `404`, so a UI can attach before the first
+line lands.
+
+**Response (`follow=1`):** `200 OK`, `Content-Type: text/event-stream`
+
+```
+event: chunk
+data: {"seq":0,"ts":"2026-08-28T12:00:00.100Z","stream":"out","data":"cnVubmluZyB0ZXN0cwo="}
+
+: keepalive
+
+event: eof
+data: {}
+
+```
+
+An `event: chunk` per `protocol.LogChunk`, a `: keepalive` comment
+every 15s while idle (so an intermediary proxy doesn't drop the
+connection), and `event: eof` once the step is terminal and the lane
+is drained -- after which the server closes the connection. Hard
+capped at 1h per connection (`protocol.LogFollowDurationMax`); capped
+at 256 concurrent follows per API server process
+(`protocol.LogFollowConcurrentMax`), beyond which a new follow gets
+`503`.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Chunks (possibly empty) or an SSE stream |
+| `400` | Missing `step` query parameter |
+| `404` | Run not found, or run found but `step` unknown |
+| `503` | `follow=1` and the server is already at `LogFollowConcurrentMax` |
+
+**curl (page):**
+```bash
+curl "http://localhost:8080/runs/a1b2c3d4.../logs?step=fetch-diff"
+```
+
+**curl (follow):**
+```bash
+curl -N "http://localhost:8080/runs/a1b2c3d4.../logs?step=fetch-diff&follow=1"
+```
+
 ### Cancel Run
 
 Cancel a running workflow by publishing a `workflow.cancelled` event.

@@ -3,6 +3,7 @@ package natsutil
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -42,20 +43,30 @@ const (
 // SLEEP_TIMERS hold live/pending work so they carry NO max_age, but a byte
 // ceiling on a work-queue is safe and gives the backstop its teeth.
 //
-//	WORKFLOW_HISTORY  0.30   run step events — the real grower
+//	WORKFLOW_HISTORY  0.25   run step events — the real grower
 //	EVENTS            0.15   workflow signal/event log
 //	TASK_QUEUES       0.12   live task backstop
 //	TELEMETRY         0.10   spans/metrics/logs (was an absolute 1 GiB)
+//	BUILD_LOGS        0.05   step stdout/stderr hot lane (#624)
 //	DEAD_LETTERS      0.05   failed-run records
 //	TRIGGER_HISTORY   0.04   trigger fire log
 //	SLEEP_TIMERS      0.04   pending timer backstop
 //	------------------------
 //	total             0.80
+//
+// #624 added BUILD_LOGS by trimming WORKFLOW_HISTORY from 0.30 to 0.25
+// rather than adding on top of 0.80: WORKFLOW_HISTORY is bounded by
+// history's own 30d MaxAge and dominated in practice by step lifecycle
+// events, not step output, so it had headroom to give up; every other
+// fraction (including the new one) keeps its as-shipped size, and the
+// table's total — and hence the store-budget headroom — stays exactly
+// where #441 set it.
 const (
-	fractionWorkflowHistory = 0.30
+	fractionWorkflowHistory = 0.25
 	fractionEvents          = 0.15
 	fractionTaskQueues      = 0.12
 	fractionTelemetry       = 0.10
+	fractionBuildLogs       = 0.05
 	fractionDeadLetters     = 0.05
 	fractionTriggerHistory  = 0.04
 	fractionSleepTimers     = 0.04
@@ -569,6 +580,15 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	}
 	if err := SetupTriggerHistoryStream(
 		js, options.maxStoreBytes,
+	); err != nil {
+		return err
+	}
+	buildLogsTTL, err := resolveBuildLogsTTL(os.Getenv("DAGNATS_BUILD_LOGS_TTL"))
+	if err != nil {
+		return err
+	}
+	if err := SetupBuildLogsStream(
+		js, options.maxStoreBytes, buildLogsTTL, replicas,
 	); err != nil {
 		return err
 	}

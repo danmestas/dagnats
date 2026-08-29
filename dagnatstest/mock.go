@@ -2,6 +2,7 @@ package dagnatstest
 
 import (
 	"context"
+	"io"
 	"sync"
 	"time"
 
@@ -44,6 +45,33 @@ type MockTaskContext struct {
 	HeartbeatCount      int
 	SignalsSent         []SentSignal
 	FailRetryAfterCalls []FailRetryAfterCall
+	LoggedOut           []byte // accumulated LogOut() writes
+	LoggedErr           []byte // accumulated LogErr() writes
+}
+
+// mockLogWriter accumulates writes into the named field of the parent
+// MockTaskContext under its mutex, so LogOut()/LogErr() are safe for
+// concurrent use like every other mock method.
+type mockLogWriter struct {
+	m      *MockTaskContext
+	target *[]byte
+}
+
+func (w *mockLogWriter) Write(p []byte) (int, error) {
+	w.m.mu.Lock()
+	defer w.m.mu.Unlock()
+	*w.target = append(*w.target, p...)
+	return len(p), nil
+}
+
+// LogOut returns a writer that accumulates into LoggedOut.
+func (m *MockTaskContext) LogOut() io.Writer {
+	return &mockLogWriter{m: m, target: &m.LoggedOut}
+}
+
+// LogErr returns a writer that accumulates into LoggedErr.
+func (m *MockTaskContext) LogErr() io.Writer {
+	return &mockLogWriter{m: m, target: &m.LoggedErr}
 }
 
 // SentSignal records a SendSignal call.

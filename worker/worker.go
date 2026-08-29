@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -55,6 +56,15 @@ type TaskContext interface {
 	// Streaming and heartbeat
 	PutStream(data []byte) error
 	Heartbeat() error
+
+	// LogOut and LogErr (#624) publish stdout/stderr-tagged chunks to
+	// the BUILD_LOGS hot lane (logs.{runID}.{stepID}), buffered and
+	// flushed at protocol.LogChunkBytesMax or after 250ms. Complete,
+	// Fail, FailPermanent, and Continue drain any buffered bytes
+	// before publishing their resolution, so a consumer that observes
+	// the terminal event never misses trailing log output.
+	LogOut() io.Writer
+	LogErr() io.Writer
 
 	// Checkpointing — save/restore handler state across retries
 	Checkpoint(state []byte) error
@@ -140,6 +150,10 @@ type Worker struct {
 	stepRetries           metric.Int64Counter
 	tasksActive           metric.Int64UpDownCounter
 	cancelledTasksSkipped metric.Int64Counter
+	// logChunkFailures counts BUILD_LOGS chunk publish failures
+	// (#624) — threaded into every taskContext so LogOut()/LogErr()
+	// writers can record a dropped chunk without blocking the handler.
+	logChunkFailures metric.Int64Counter
 
 	// workflowRunsKV is the optional binding to the workflow_runs KV
 	// bucket. When present, the worker fast-skips tasks whose parent
@@ -293,6 +307,9 @@ func NewWorker(
 	skipped, _ := m.Int64Counter(
 		"worker.tasks.cancelled_skipped",
 	)
+	logChunkFail, _ := m.Int64Counter(
+		"worker.log_chunk.publish_failures",
+	)
 	tp := natsutil.NewTracingPublisher(nc, js)
 	w := &Worker{
 		nc: nc,
@@ -311,6 +328,7 @@ func NewWorker(
 		stepRetries:           stepRet,
 		tasksActive:           active,
 		cancelledTasksSkipped: skipped,
+		logChunkFailures:      logChunkFail,
 		drainTimeout:          defaultDrainTimeout,
 	}
 	for _, opt := range opts {
@@ -1019,6 +1037,7 @@ func (w *Worker) startTaskSpan(
 	)
 	tc.workerID = w.workerID
 	tc.publishMsg = w.publishMsg
+	tc.logChunkFailures = w.logChunkFailures
 	// Deny-by-default gate: grant a control-plane handle only when the
 	// deployment wired one (w.controlPlane != nil) AND this step declared
 	// the capability. Both conditions must hold; either alone leaves the

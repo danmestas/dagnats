@@ -43,6 +43,15 @@ type ackEntry struct {
 	msg      jetstream.Msg
 	storedAt time.Time
 	tokenID  string
+
+	// Log-ingest counters for POST /v1/tasks/{id}/logs (#624). Piggybacks
+	// on AckMap's existing lifecycle rather than a second expiring map:
+	// log ingest is only valid while the task is in-flight, which is
+	// exactly the window an ackEntry exists for, so these counters age
+	// out (and get reset for a re-claimed task ID) for free.
+	logSeq        uint64
+	logTotalBytes int64
+	logTruncated  bool
 }
 
 // AckMap tracks in-flight tasks for HTTP workers. Maps task_id
@@ -141,6 +150,43 @@ func (am *AckMap) LoadWithTokenID(taskID string) (jetstream.Msg, string, bool) {
 		return nil, "", false
 	}
 	return entry.msg, entry.tokenID, true
+}
+
+// WithLogState atomically reads and updates the log-ingest counters
+// for taskID under AckMap's own mutex (#624). fn receives the current
+// (seq, totalBytes, truncated) and returns the updated values, which
+// are written back before the lock releases — so concurrent
+// POST /v1/tasks/{id}/logs calls for the same task never race each
+// other's seq assignment or truncation decision. Returns false (fn not
+// called) if taskID has no entry — same does-not-reap contract as
+// LoadWithTokenID: a resolve racing the reaper must not surface as an
+// ambiguous "not found" to the caller.
+func (am *AckMap) WithLogState(
+	taskID string,
+	fn func(seq uint64, totalBytes int64, truncated bool) (
+		newSeq uint64, newTotalBytes int64, newTruncated bool,
+	),
+) bool {
+	if am == nil {
+		panic("AckMap.WithLogState: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.WithLogState: taskID must not be empty")
+	}
+	if fn == nil {
+		panic("AckMap.WithLogState: fn must not be nil")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok {
+		return false
+	}
+	entry.logSeq, entry.logTotalBytes, entry.logTruncated = fn(
+		entry.logSeq, entry.logTotalBytes, entry.logTruncated,
+	)
+	am.entries[taskID] = entry
+	return true
 }
 
 // Delete removes a task from the map after resolution.

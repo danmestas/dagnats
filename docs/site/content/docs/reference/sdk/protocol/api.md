@@ -24,6 +24,7 @@ protocol/run\_event.go RunEvent is the payload for the run\-lifecycle consumer c
   - [func \(e Event\) NATSSubject\(\) string](<#Event.NATSSubject>)
 - [type EventType](<#EventType>)
 - [type FailureType](<#FailureType>)
+- [type LogChunk](<#LogChunk>)
 - [type QueueGroup](<#QueueGroup>)
 - [type QueueSnapshot](<#QueueSnapshot>)
 - [type RunEvent](<#RunEvent>)
@@ -43,6 +44,61 @@ const (
     AnnotationSeverityError   = "error"
     AnnotationSeverityWarning = "warning"
     AnnotationSeverityNotice  = "notice"
+)
+```
+
+<a name="LogChunkBytesMax"></a>Bounds for the BUILD\_LOGS hot lane \(\#624\). dagnats owns the JetStream hot lane only — no S3, no offloader, no cache. Retention past the hot TTL is a consumer's job, the same way run history and telemetry already work \(docs/wire\-protocol.md, "Consumer contract: build logs"\).
+
+```go
+const (
+    // LogChunkBytesMax bounds a single LogChunk's Data payload. A
+    // worker Write() larger than this is split into multiple chunks
+    // (worker/log_writer.go) rather than growing one chunk unbounded.
+    LogChunkBytesMax = 64 * 1024
+
+    // LogStepBytesMax bounds the total bytes (both out and err
+    // streams combined) captured for one step. Once hit, exactly one
+    // LogMarkerTruncated chunk is emitted and further writes for that
+    // step are dropped — bounded storage beats an unbounded log flood
+    // from a runaway process.
+    LogStepBytesMax = 64 * 1024 * 1024
+
+    // LogReadChunksMax bounds a single non-follow GET /runs/{id}/logs
+    // response.
+    LogReadChunksMax = 1024
+
+    // LogFollowDurationMax bounds a single SSE follow connection.
+    LogFollowDurationMax = 1 * time.Hour
+
+    // LogFollowConcurrentMax bounds concurrent SSE follow connections
+    // per server process.
+    LogFollowConcurrentMax = 256
+)
+```
+
+<a name="LogStreamOut"></a>Stream tags a LogChunk's origin.
+
+```go
+const (
+    LogStreamOut    = "out"
+    LogStreamErr    = "err"
+    LogStreamMarker = "marker"
+)
+```
+
+<a name="LogMarkerFailed"></a>Marker values, carried in LogChunk.Data when Stream == LogStreamMarker.
+
+```go
+const (
+    // LogMarkerFailed is emitted by Fail/FailPermanent BEFORE the
+    // resolution publish, so a consumer following the lane sees the
+    // marker before (or with) the terminal step.failed event and
+    // GET .../logs?from=failure has a recorded position to start
+    // from rather than an inferred one.
+    LogMarkerFailed = "failed"
+    // LogMarkerTruncated is emitted exactly once, the moment
+    // LogStepBytesMax is reached; no further chunks follow it.
+    LogMarkerTruncated = "truncated"
 )
 ```
 
@@ -215,6 +271,22 @@ const (
     FailureTypeNonRetriable FailureType = "non_retriable"
     FailureTypeRetryAfter   FailureType = "retry_after"
 )
+```
+
+<a name="LogChunk"></a>
+## type [LogChunk](<https://github.com/danmestas/dagnats/blob/main/protocol/log_chunk.go#L64-L69>)
+
+LogChunk is a single unit of captured step output on the BUILD\_LOGS stream, subject logs.\{runID\}.\{stepID\}. Seq is monotonic per step and shared across the out/err streams \(worker/log\_writer.go assigns it from one counter\), so ordering by Seq reconstructs write order even though out and err are independently buffered.
+
+Data marshals to a base64 string over JSON \(encoding/json's default \[\]byte handling\) so both text and arbitrary binary output round\-trip safely.
+
+```go
+type LogChunk struct {
+    Seq    uint64    `json:"seq"`
+    TS     time.Time `json:"ts"`
+    Stream string    `json:"stream"`
+    Data   []byte    `json:"data"`
+}
 ```
 
 <a name="QueueGroup"></a>

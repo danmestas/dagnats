@@ -158,6 +158,9 @@ func (b *Bridge) Handler() http.Handler {
 	mux.HandleFunc(
 		"POST /v1/tasks/{id}/resolve", b.handleResolve,
 	)
+	mux.HandleFunc(
+		"POST /v1/tasks/{id}/logs", b.handleLogs,
+	)
 	return b.authMiddleware(mux)
 }
 
