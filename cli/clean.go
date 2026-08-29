@@ -590,7 +590,8 @@ func purgeKVBucket(
 }
 
 // purgeKVBucketBefore deletes keys with revision timestamps older
-// than the cutoff.
+// than olderThan ago. Thin wrapper that computes the cutoff and
+// delegates to purgeKVBucketBeforeCutoff.
 func purgeKVBucketBefore(
 	ctx context.Context,
 	kv jetstream.KeyValue,
@@ -604,6 +605,22 @@ func purgeKVBucketBefore(
 	}
 
 	cutoff := time.Now().Add(-olderThan)
+	return purgeKVBucketBeforeCutoff(ctx, kv, cutoff)
+}
+
+// purgeKVBucketBeforeCutoff deletes keys with revision timestamps
+// strictly before cutoff.
+func purgeKVBucketBeforeCutoff(
+	ctx context.Context,
+	kv jetstream.KeyValue,
+	cutoff time.Time,
+) error {
+	if kv == nil {
+		panic("purgeKVBucketBeforeCutoff: kv must not be nil")
+	}
+	if cutoff.IsZero() {
+		panic("purgeKVBucketBeforeCutoff: cutoff must not be zero")
+	}
 
 	keys, err := kv.Keys(ctx)
 	if err != nil {
