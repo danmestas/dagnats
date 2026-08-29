@@ -170,16 +170,28 @@ func handleRegisterWorkflow(
 	resp := struct {
 		Status   string        `json:"status"`
 		Name     string        `json:"name"`
+		DefHash  string        `json:"def_hash"`
 		Warnings []dag.Warning `json:"warnings,omitempty"`
 	}{
 		Status:   "registered",
 		Name:     def.Name,
+		DefHash:  dag.DefHash(def),
 		Warnings: warnings,
 	}
 	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
 	}
+}
+
+// workflowListEntry is the wire shape for one item in the GET
+// /workflows array. It embeds dag.WorkflowDef so all existing fields
+// stay at the top level (additive, per #630) and adds def_hash so a
+// caller that re-registers every workflow on every trigger can compare
+// hashes and skip the round-trip when the definition is unchanged.
+type workflowListEntry struct {
+	dag.WorkflowDef
+	DefHash string `json:"def_hash"`
 }
 
 // handleListWorkflows returns all registered workflow definitions as
@@ -199,8 +211,15 @@ func handleListWorkflows(
 			http.StatusInternalServerError)
 		return
 	}
+	entries := make([]workflowListEntry, 0, len(defs))
+	for _, def := range defs {
+		entries = append(entries, workflowListEntry{
+			WorkflowDef: def,
+			DefHash:     dag.DefHash(def),
+		})
+	}
 	w.Header().Set("Content-Type", "application/json")
-	encErr := json.NewEncoder(w).Encode(defs)
+	encErr := json.NewEncoder(w).Encode(entries)
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
 	}

@@ -46,6 +46,49 @@ func TestRESTRegisterWorkflow(t *testing.T) {
 	}
 }
 
+// TestRESTRegisterWorkflowResponseHasDefHash asserts POST /workflows
+// (#630) returns def_hash equal to dag.DefHash(def), so a caller that
+// re-registers on every trigger can compare hashes and skip the
+// round-trip when the definition is unchanged.
+func TestRESTRegisterWorkflowResponseHasDefHash(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc)
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wb := dag.NewWorkflow("rest-hash-test")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	body := mustMarshal(t, wfDef)
+
+	resp, err := http.Post(
+		server.URL+"/workflows",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusCreated)
+	}
+	var result struct {
+		DefHash string `json:"def_hash"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	want := dag.DefHash(wfDef)
+	if result.DefHash != want {
+		t.Fatalf("def_hash = %q, want %q", result.DefHash, want)
+	}
+	if result.DefHash == "" {
+		t.Fatal("def_hash must not be empty")
+	}
+}
+
 func TestRESTStartRun(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
@@ -553,6 +596,56 @@ func TestRESTListWorkflows(t *testing.T) {
 		if d.Name == "list-test" {
 			found = true
 			break
+		}
+	}
+	if !found {
+		t.Fatal("registered workflow not in list")
+	}
+}
+
+// TestRESTListWorkflowsIncludesDefHash asserts each GET /workflows
+// entry (#630) carries a def_hash matching dag.DefHash of that entry's
+// own fields, additive to the existing response shape.
+func TestRESTListWorkflowsIncludesDefHash(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc)
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wb := dag.NewWorkflow("list-hash-test")
+	wb.Task("a", "task-a")
+	wfDef, _ := wb.Build()
+	svc.RegisterWorkflow(context.Background(), wfDef)
+
+	resp, err := http.Get(server.URL + "/workflows")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusOK)
+	}
+	var entries []struct {
+		dag.WorkflowDef
+		DefHash string `json:"def_hash"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	found := false
+	for _, entry := range entries {
+		if entry.Name != "list-hash-test" {
+			continue
+		}
+		found = true
+		want := dag.DefHash(entry.WorkflowDef)
+		if entry.DefHash != want {
+			t.Fatalf("def_hash = %q, want %q", entry.DefHash, want)
+		}
+		if entry.DefHash == "" {
+			t.Fatal("def_hash must not be empty")
 		}
 	}
 	if !found {

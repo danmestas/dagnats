@@ -14,6 +14,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 
 - [Constants](<#constants>)
 - [func CalculateDelay\(policy RetryPolicy, attempt int\) time.Duration](<#CalculateDelay>)
+- [func DefHash\(def WorkflowDef\) string](<#DefHash>)
 - [func ExtractDotPath\(path string, data \[\]byte\) \(any, error\)](<#ExtractDotPath>)
 - [func IsComplete\(def WorkflowDef, completed map\[string\]bool\) bool](<#IsComplete>)
 - [func MarshalConfig\(cfg interface\{\}\) json.RawMessage](<#MarshalConfig>)
@@ -163,6 +164,19 @@ func CalculateDelay(policy RetryPolicy, attempt int) time.Duration
 ```
 
 CalculateDelay returns the delay before the next retry attempt. Attempt is 1\-based \(first retry = attempt 1\).
+
+<a name="DefHash"></a>
+## func [DefHash](<https://github.com/danmestas/dagnats/blob/main/dag/hash.go#L26>)
+
+```go
+func DefHash(def WorkflowDef) string
+```
+
+DefHash returns a deterministic content hash for a WorkflowDef: the hex\-encoded SHA\-256 of its canonical JSON encoding. It exists so a caller that re\-registers the same definition on every trigger \(\#630\) can compare hashes and skip the POST /workflows round\-trip when the definition is unchanged, instead of re\-registering unconditionally.
+
+Determinism relies on two Go/encoding/json guarantees rather than any custom canonicalization: encoding/json sorts map keys before emitting them, and struct fields are always marshaled in declaration order. So two WorkflowDef values that are field\-for\-field equal \-\- including maps populated in a different insertion order \-\- always marshal to byte\-identical JSON and therefore hash identically.
+
+Panics on an empty def.Name \(a WorkflowDef without a name is a programmer error, not a runtime condition to handle\) and if marshaling fails \(WorkflowDef holds only JSON\-safe field types, so a marshal failure indicates a violated invariant elsewhere, not bad input\).
 
 <a name="ExtractDotPath"></a>
 ## func [ExtractDotPath](<https://github.com/danmestas/dagnats/blob/main/dag/dotpath.go#L13>)
