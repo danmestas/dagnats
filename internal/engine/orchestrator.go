@@ -282,6 +282,7 @@ func (o *Orchestrator) wireDependentSubsystems(
 		o.js, o.tp, publisher, o.tracer,
 		om.runsActive, om.runsFailed,
 		om.dlqEntries, om.dlqDepth,
+		o.releaseAdmission,
 	)
 	o.approval = NewApprovalGate(
 		o.nc, o.js, o.tp, o.sleepTimer, o.tracer,

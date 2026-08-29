@@ -295,23 +295,28 @@ func init() {
 // already terminal, and hits the caller's own early-return before
 // ever reaching finalizeRun again — nothing ever retried the release.
 //
-// Instead: log + count the failure, STILL publish both terminal
-// events (the run IS terminal; consumers must hear it even though its
-// admission slot is stuck), and record the debt durably by
-// re-persisting the run with ReleasePending=true so the reconciler's
-// terminal-run sweep (reconciler.go) can retry the release later via
-// the exact same releaseAdmission logic the normal path uses.
+// Instead: log + count the failure, record the debt durably by
+// re-persisting the run with ReleasePending=true FIRST, then STILL
+// publish both terminal events (the run IS terminal; consumers must
+// hear it even though its admission slot is stuck) so the
+// reconciler's terminal-run sweep (reconciler.go) can retry the
+// release later via the exact same releaseAdmission logic the normal
+// path uses.
 //
-// The debt-recording save runs AFTER the publish attempts, not
-// before: publishing is what makes this run's terminal outcome
-// observable at all, and must not be skipped just because the
-// bookkeeping write that follows it might also fail. If that second
-// save itself fails, the error is returned (redelivery is the only
-// remaining recovery channel) and this run is left terminal, notified,
-// but WITHOUT a persisted ReleasePending flag — a residual window
-// bounded to this specific double-failure (afterPersist AND the debt
-// save both failing) that the reconciler cannot see and therefore
-// cannot recover from automatically.
+// The debt-recording save runs BEFORE the publish attempts, not after
+// (#648 PR review round 2): publishing is best-effort either way (a
+// publish failure is only logged, never propagated -- see
+// publishRunEvent and the WARN below), so save-first strictly
+// dominates save-after. Saving after publishing would mean a run
+// already announced as terminal to every consumer could still end up
+// with an unrecoverable leak the reconciler has no way to see, if the
+// save that follows the announcement then itself fails. If the save
+// fails, its error is returned (redelivery is the only remaining
+// recovery channel) and this run is left terminal but NOT
+// (necessarily) notified and WITHOUT a persisted ReleasePending flag
+// — a residual window bounded to this specific double-failure
+// (afterPersist AND the debt save both failing) that the reconciler
+// cannot see and therefore cannot recover from automatically.
 func finalizeWithReleaseDebt(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
@@ -333,6 +338,10 @@ func finalizeWithReleaseDebt(
 	if finalizeReleaseFailures != nil {
 		finalizeReleaseFailures.Add(ctx, 1)
 	}
+	run.ReleasePending = true
+	if err := saveFn(ctx, run, stepID); err != nil {
+		return run, err
+	}
 	if err := publishHistoryTerminalEvent(ctx, tp, status, run.RunID); err != nil {
 		slog.WarnContext(ctx,
 			"finalizeRun: history terminal event publish failed "+
@@ -341,10 +350,6 @@ func finalizeWithReleaseDebt(
 		)
 	}
 	publishRunEvent(ctx, tp, run)
-	run.ReleasePending = true
-	if err := saveFn(ctx, run, stepID); err != nil {
-		return run, err
-	}
 	return run, nil
 }
 

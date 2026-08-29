@@ -144,3 +144,97 @@ func TestFinalizeRun_NormalPath_NeverSetsReleasePending(t *testing.T) {
 		t.Fatal("persisted run: ReleasePending = true, want false when afterPersist is nil")
 	}
 }
+
+// TestFinalizeRun_ReleaseDebtSavesBeforePublishing is the PR #661
+// review round-2 fix: finalizeWithReleaseDebt must persist
+// ReleasePending=true BEFORE attempting either publish, not after.
+// Publish is best-effort either way (a failure there is only logged),
+// so save-first strictly dominates save-after: if the debt save were
+// to happen after publish and then itself fail, the run would already
+// be announced as terminal to every consumer with an unrecoverable
+// leak nobody can see (#648's whole point is that the reconciler can
+// only recover what ReleasePending records). This wraps saveFn to
+// observe ordering directly: the second save call (the debt save)
+// must land before either event subscription has anything to read.
+func TestFinalizeRun_ReleaseDebtSavesBeforePublishing(t *testing.T) {
+	tp, store, nc := newFinalizeRunTestDeps(t)
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+
+	run := dag.WorkflowRun{
+		RunID:      "run-release-pending-order-1",
+		WorkflowID: "release-pending-order-wf",
+		Status:     dag.RunStatusRunning,
+		Steps:      map[string]dag.StepState{},
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	runEventSub, err := js.SubscribeSync(
+		runEventSubject(run.WorkflowID, run.RunID, "completed"),
+		nats.DeliverAll(),
+	)
+	if err != nil {
+		t.Fatalf("SubscribeSync event.run.*: %v", err)
+	}
+	historySub, err := js.SubscribeSync(
+		"history."+run.RunID, nats.DeliverAll(),
+	)
+	if err != nil {
+		t.Fatalf("SubscribeSync history.*: %v", err)
+	}
+
+	saveCalls := 0
+	orderedSaveFn := func(
+		ctx context.Context, saved dag.WorkflowRun, stepID string,
+	) error {
+		saveCalls++
+		if saveCalls == 2 {
+			// This is the debt save (call 1 was the initial terminal
+			// save before afterPersist ran). Neither event must be
+			// visible yet -- if finalizeWithReleaseDebt published
+			// first, this would find a message instead of timing out.
+			if !saved.ReleasePending {
+				t.Fatal("second save is not the debt save (ReleasePending false)")
+			}
+			if _, subErr := runEventSub.NextMsg(50 * time.Millisecond); subErr == nil {
+				t.Fatal(
+					"event.run.* already published before the debt " +
+						"save -- save must happen first",
+				)
+			}
+			if _, subErr := historySub.NextMsg(50 * time.Millisecond); subErr == nil {
+				t.Fatal(
+					"history.* already published before the debt " +
+						"save -- save must happen first",
+				)
+			}
+		}
+		return store.Save(ctx, saved)
+	}
+
+	releaseErr := errors.New("simulated admission release failure")
+	afterPersist := func(ctx context.Context) error {
+		return releaseErr
+	}
+
+	if _, err := finalizeRun(
+		context.Background(), tp, orderedSaveFn, run,
+		dag.RunStatusCompleted, "", afterPersist,
+	); err != nil {
+		t.Fatalf("finalizeRun: %v", err)
+	}
+
+	if saveCalls != 2 {
+		t.Fatalf("saveFn called %d times, want 2 (terminal save + debt save)", saveCalls)
+	}
+
+	// Positive: both events were still published after the debt save.
+	if _, subErr := runEventSub.NextMsg(5 * time.Second); subErr != nil {
+		t.Fatalf("expected event.run.* after debt save: %v", subErr)
+	}
+	if _, subErr := historySub.NextMsg(5 * time.Second); subErr != nil {
+		t.Fatalf("expected history.* after debt save: %v", subErr)
+	}
+}

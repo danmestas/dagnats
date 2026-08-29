@@ -307,7 +307,11 @@ func (o *Orchestrator) failMapStep(
 			)
 			o.metrics.runsActive.Add(ctx, -1, wfAttr)
 			o.metrics.runsFailed.Add(ctx, 1, wfAttr)
-			return nil
+			// releaseAdmission (#648 PR review round 2): this site
+			// previously passed no admission release at all, leaking
+			// a singleton lock / concurrency slot permanently on a
+			// Map step's terminal failure.
+			return o.releaseAdmission(ctx, run)
 		},
 	)
 	if err != nil {

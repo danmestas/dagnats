@@ -93,6 +93,18 @@ type RecoveryManager struct {
 	// short constructor — guard before use.
 	dlqEntries metric.Int64Counter
 	dlqDepth   metric.Int64UpDownCounter
+
+	// releaseAdmission is the Orchestrator's own releaseAdmission
+	// method (orchestrator.go, #648 PR review round 2), passed in
+	// rather than duplicated: failAuxStep (CompensateFailed) and
+	// HandleCompensateCompleted (Compensated) previously passed no
+	// afterPersist to finalizeRun at all, so a singleton-locked or
+	// concurrency-limited run ending at either status never released
+	// its admission slot -- and since afterPersist was nil,
+	// finalizeRun's ReleasePending debt never engaged either, so the
+	// reconciler had nothing to recover. Every terminal path now goes
+	// through the SAME release + debt mechanism.
+	releaseAdmission func(context.Context, dag.WorkflowRun) error
 }
 
 // NewRecoveryManager creates a RecoveryManager with the given
@@ -108,6 +120,7 @@ func NewRecoveryManager(
 	runsFailed metric.Int64Counter,
 	dlqEntries metric.Int64Counter,
 	dlqDepth metric.Int64UpDownCounter,
+	releaseAdmission func(context.Context, dag.WorkflowRun) error,
 ) *RecoveryManager {
 	if js == nil {
 		panic("NewRecoveryManager: js must not be nil")
@@ -125,15 +138,19 @@ func NewRecoveryManager(
 			"NewRecoveryManager: tracer must not be nil",
 		)
 	}
+	if releaseAdmission == nil {
+		panic("NewRecoveryManager: releaseAdmission must not be nil")
+	}
 	return &RecoveryManager{
-		js:         js,
-		tp:         tp,
-		publisher:  publisher,
-		tracer:     tracer,
-		runsActive: runsActive,
-		runsFailed: runsFailed,
-		dlqEntries: dlqEntries,
-		dlqDepth:   dlqDepth,
+		js:               js,
+		tp:               tp,
+		publisher:        publisher,
+		tracer:           tracer,
+		runsActive:       runsActive,
+		runsFailed:       runsFailed,
+		dlqEntries:       dlqEntries,
+		dlqDepth:         dlqDepth,
+		releaseAdmission: releaseAdmission,
 	}
 }
 
@@ -263,7 +280,11 @@ func (rm *RecoveryManager) failAuxStep(
 		func(ctx context.Context) error {
 			rm.runsActive.Add(ctx, -1)
 			rm.runsFailed.Add(ctx, 1)
-			return nil
+			// releaseAdmission (#648 PR review round 2): this site
+			// previously passed no admission release at all, leaking
+			// a singleton lock / concurrency slot permanently on a
+			// CompensateFailed terminal outcome.
+			return rm.releaseAdmission(ctx, run)
 		},
 	)
 	if err != nil {
@@ -450,11 +471,18 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 	// propagatable failure) — matches the pre-existing saveFn(ctx, *run,
 	// "") call this replaces, which also discarded its error; the only
 	// change is logging it instead of dropping it silently.
+	preFinalize := *run
 	finalized, err := finalizeRun(
-		ctx, rm.tp, saveFn, *run, dag.RunStatusCompensated, "",
+		ctx, rm.tp, saveFn, preFinalize, dag.RunStatusCompensated, "",
 		func(ctx context.Context) error {
 			rm.runsActive.Add(ctx, -1)
-			return nil
+			// releaseAdmission (#648 PR review round 2): this site
+			// previously passed no admission release at all, leaking
+			// a singleton lock / concurrency slot permanently on a
+			// Compensated terminal outcome. preFinalize (not *run,
+			// which finalizeRun has not yet mutated back into) is
+			// the exact value finalizeRun itself received here.
+			return rm.releaseAdmission(ctx, preFinalize)
 		},
 	)
 	if err != nil {

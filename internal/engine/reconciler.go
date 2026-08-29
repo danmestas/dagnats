@@ -385,6 +385,23 @@ func (o *Orchestrator) reconcileRunningRuns(ctx context.Context) {
 // run that actually already released cleanly -- e.g. this run's debt
 // was recorded, then ALSO released successfully before this sweep ran
 // -- is safe to release again here; nothing double-frees.
+//
+// Best-effort, not a guarantee: reconcileRunningRuns' ListAll scan is
+// capped at reconcileMaxRunsScan and unordered, so a ReleasePending
+// run outside that window is simply not seen this pass (self-heals
+// next pass once older runs rotate out, same bound
+// findOldestPendingRun already documents) -- and PruneTerminal (#453,
+// opt-in retention) can delete a terminal run, ReleasePending flag and
+// all, before this sweep ever reaches it, in which case the leak is
+// no longer visible to recover at all. Neither failure mode is new
+// here; both already bound every other terminal-run scan this
+// reconciler runs.
+//
+// Not ReleasePending-first ordered: ListAll caps by KV key count
+// before any value is fetched, and ReleasePending lives inside each
+// run's JSON value, not the key -- prioritizing it would mean
+// fetching every run's value up front just to sort, which defeats
+// the whole point of capping the scan.
 func (o *Orchestrator) reconcileReleasePending(
 	ctx context.Context, run dag.WorkflowRun,
 ) {

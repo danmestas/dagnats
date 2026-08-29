@@ -209,9 +209,29 @@ func (ac *AdmissionController) applySingletonMode(
 	}
 }
 
-// ReleaseSingletonLock deletes the lock if it belongs to
-// this run. Uses SingletonKey stored on the run -- no need
-// to reload the workflow def or recompute the key path.
+// releaseSingletonLockRaceHook is a test-only seam (default no-op)
+// called between ReleaseSingletonLock's ownership Get and its
+// revision-guarded Delete. Production never overrides it. It exists
+// because the TOCTOU window it brackets -- a NEW run reclaiming the
+// same key between our Get and our Delete -- is only reachable under
+// genuine concurrent execution; a test needs to force that
+// interleaving deterministically rather than race a goroutine against
+// it. See admission_release_race_test.go.
+var releaseSingletonLockRaceHook = func() {}
+
+// ReleaseSingletonLock deletes the lock if it belongs to this run.
+// Uses SingletonKey stored on the run -- no need to reload the
+// workflow def or recompute the key path.
+//
+// The Delete is revision-guarded (#648 PR review): a run's release
+// can be replayed arbitrarily late by the reconciler's ReleasePending
+// sweep, long after the ownership Get below was accurate. Without a
+// revision check, a NEW run reclaiming this SAME key in the gap
+// between that Get and the Delete would have its fresh lock wiped out
+// by a delete-by-key that no longer reflects who actually holds it. A
+// revision mismatch on Delete means exactly that happened -- the lock
+// is no longer ours to delete, which is the safe outcome, not a
+// retry-worthy failure, so it's logged at DEBUG rather than ERROR.
 func (ac *AdmissionController) ReleaseSingletonLock(
 	ctx context.Context, run dag.WorkflowRun,
 ) {
@@ -235,16 +255,21 @@ func (ac *AdmissionController) ReleaseSingletonLock(
 	); unmarshalErr != nil {
 		return
 	}
-	if lock.RunID == run.RunID {
-		if deleteErr := ac.singletonKV.Delete(
-			ctx, run.SingletonKey,
-		); deleteErr != nil {
-			slog.ErrorContext(ctx,
-				"release singleton lock failed",
-				"error", deleteErr,
-				"key", run.SingletonKey,
-			)
-		}
+	if lock.RunID != run.RunID {
+		return
+	}
+	releaseSingletonLockRaceHook()
+	if deleteErr := ac.singletonKV.Delete(
+		ctx, run.SingletonKey,
+		jetstream.LastRevision(entry.Revision()),
+	); deleteErr != nil {
+		slog.DebugContext(ctx,
+			"release singleton lock: revision changed since Get -- "+
+				"lock was reclaimed by a new run, treating as "+
+				"already released",
+			"error", deleteErr,
+			"key", run.SingletonKey,
+		)
 	}
 }
 
