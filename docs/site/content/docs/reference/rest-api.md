@@ -31,10 +31,13 @@ GET /workflows
     "name": "code-review",
     "version": "1.0.0",
     "steps": [...],
-    "timeout": "30m"
+    "timeout": "30m",
+    "def_hash": "3f1a...c2"
   }
 ]
 ```
+
+Each entry includes `def_hash`: the hex-encoded SHA-256 of the server's canonical JSON marshal of that definition (`dag.DefHash`). See [Wire Protocol: Workflow Re-registration and def_hash](../wire-protocol#workflow-re-registration-and-def_hash) for how a caller uses it to skip re-registering an unchanged definition.
 
 **curl:**
 ```bash
@@ -48,6 +51,8 @@ Register or update a workflow definition.
 ```
 POST /workflows
 ```
+
+Re-registering an existing name **replaces** the stored definition; in-flight runs pick up the replacement on their next advance rather than staying pinned to the version they started with (see [Wire Protocol: Workflow Re-registration and def_hash](../wire-protocol#workflow-re-registration-and-def_hash)).
 
 **Request body:** A `WorkflowDef` JSON object (see [Workflow Schema](../workflow-schema)).
 
@@ -71,9 +76,12 @@ POST /workflows
 ```json
 {
   "status": "registered",
-  "name": "code-review"
+  "name": "code-review",
+  "def_hash": "3f1a...c2"
 }
 ```
+
+`def_hash` is `dag.DefHash(def)` for the definition just registered. A caller that re-registers on every trigger can compare its locally computed hash against the last-seen `def_hash` and skip this call when they match.
 
 | Status | Condition |
 |--------|-----------|

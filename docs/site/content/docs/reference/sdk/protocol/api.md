@@ -8,6 +8,9 @@ import "github.com/danmestas/dagnats/protocol"
 
 ## Index
 
+- [Constants](<#constants>)
+- [type Annotation](<#Annotation>)
+- [type Annotations](<#Annotations>)
 - [type Event](<#Event>)
   - [func NewStepEvent\(eventType EventType, runID string, stepID string, payload \[\]byte\) Event](<#NewStepEvent>)
   - [func NewWorkflowEvent\(eventType EventType, runID string, payload \[\]byte\) Event](<#NewWorkflowEvent>)
@@ -22,6 +25,50 @@ import "github.com/danmestas/dagnats/protocol"
 - [type TaskResolution](<#TaskResolution>)
 - [type WorkerStatusSnapshot](<#WorkerStatusSnapshot>)
 
+
+## Constants
+
+<a name="AnnotationSeverityError"></a>Annotation severities. These are the only three levels forges commonly distinguish; consumers should treat an unrecognized value as AnnotationSeverityNotice rather than rejecting the annotation.
+
+```go
+const (
+    AnnotationSeverityError   = "error"
+    AnnotationSeverityWarning = "warning"
+    AnnotationSeverityNotice  = "notice"
+)
+```
+
+<a name="AnnotationsMax"></a>AnnotationsMax is the documented ceiling on Annotations.Annotations that consumers \(forge integrations\) may rely on when sizing their own buffers or API batch calls. The engine does not enforce this bound \-\- it never parses Data \-\- so a worker that emits more is not rejected; it is simply outside the contract a well\-behaved consumer promises to honor.
+
+```go
+const AnnotationsMax = 1000
+```
+
+<a name="Annotation"></a>
+## type [Annotation](<https://github.com/danmestas/dagnats/blob/main/protocol/annotation.go#L19-L25>)
+
+Annotation pins one finding onto a specific file/line, mirroring the shape most forge check\-run APIs \(GitHub Checks, GitLab CI, etc.\) expect for inline diff annotations.
+
+```go
+type Annotation struct {
+    Path     string `json:"path"`
+    Line     int    `json:"line"`
+    Column   int    `json:"column,omitempty"`
+    Severity string `json:"severity"`
+    Message  string `json:"message"`
+}
+```
+
+<a name="Annotations"></a>
+## type [Annotations](<https://github.com/danmestas/dagnats/blob/main/protocol/annotation.go#L29-L31>)
+
+Annotations is the top\-level shape a worker places into TaskResolution.Data when it wants to surface per\-line findings.
+
+```go
+type Annotations struct {
+    Annotations []Annotation `json:"annotations"`
+}
+```
 
 <a name="Event"></a>
 ## type [Event](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L129-L139>)

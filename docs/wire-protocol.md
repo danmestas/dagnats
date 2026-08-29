@@ -200,6 +200,84 @@ NATS transport uses NATS native authentication (user/password, tokens, NKey, JWT
 - Worker KV entries have 60s TTL; workers re-register every 30s to stay visible
 - SSE heartbeats are sent every 25s to maintain HTTP connections through proxies
 
+## Annotations in TaskResolution.Data
+
+A worker may put a blessed (but optional) shape into `TaskResolution.Data`
+so a forge integration (GitHub, GitLab, etc.) can pin failure or warning
+markers onto a diff view. This is a paper contract only: the engine reads
+`Data` as an opaque `json.RawMessage` and never parses it for engine-level
+decisions. A worker that emits some other shape into `Data`, or nothing at
+all, loses nothing — only a forge-integration consumer that specifically
+understands this shape benefits from it.
+
+```json
+{
+  "annotations": [
+    {
+      "path": "main.go",
+      "line": 42,
+      "column": 7,
+      "severity": "error",
+      "message": "undefined variable"
+    },
+    {
+      "path": "util.go",
+      "line": 10,
+      "severity": "warning",
+      "message": "unused import"
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | Yes | File path the annotation applies to |
+| `line` | int | Yes | 1-based line number |
+| `column` | int | No | 1-based column number |
+| `severity` | string | Yes | One of `error`, `warning`, `notice` |
+| `message` | string | Yes | Human-readable finding text |
+
+Severities are `error`, `warning`, `notice` (`protocol.AnnotationSeverityError`,
+`protocol.AnnotationSeverityWarning`, `protocol.AnnotationSeverityNotice`).
+`protocol.AnnotationsMax` (1000) is a documented ceiling that consumers may
+size their own buffers or API batch calls against — the engine does not
+enforce it, since it never parses `Data`.
+
+See `protocol.Annotation` and `protocol.Annotations` in
+`protocol/annotation.go` for the canonical Go types.
+
+## Workflow re-registration and def_hash
+
+`POST /workflows` with a name that already has a registered definition
+**replaces** that definition in the `workflow_defs` KV bucket — the same
+overwrite-by-name behavior `Service.RegisterWorkflow` has always had.
+
+The engine does **not** snapshot a workflow's definition into the run at
+start time. `Orchestrator.loadRunAndDef` (`internal/engine/orchestrator.go`)
+re-reads the definition from `workflow_defs` by name on every advance call,
+then layers dynamic-planner steps on top via `dag.EffectiveDef`. So a
+re-registration that lands while a run is in flight changes what that run's
+*next* advance step sees — dynamic steps already recorded on the run
+(`WorkflowRun.DynamicSteps`) are preserved by `EffectiveDef`, but everything
+else in the base definition (static steps, retry policy, concurrency,
+timeout) is picked up fresh from the newly-registered version, not pinned to
+whatever was registered when the run started.
+
+Both `POST /workflows` and each entry of `GET /workflows` include a
+`def_hash` field: the hex-encoded SHA-256 of the server's canonical JSON
+marshal of the definition (`dag.DefHash`, `dag/hash.go`). Determinism comes
+from two `encoding/json` guarantees, not custom canonicalization — map keys
+are sorted before marshaling and struct fields are always emitted in
+declaration order, so two field-for-field-equal `WorkflowDef` values hash
+identically regardless of how their maps were populated.
+
+A caller that re-registers a workflow on every trigger can fetch the
+current `def_hash` (via `GET /workflows` or by caching the value from its
+last `POST /workflows` response), compute `dag.DefHash` locally over the
+definition it is about to send, and skip the `POST /workflows` round-trip
+entirely when the two hashes match.
+
 ## Reference Implementations
 
 - **Go**: see `worker/` package for NATS transport
