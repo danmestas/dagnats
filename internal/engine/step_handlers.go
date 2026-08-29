@@ -298,8 +298,10 @@ func (o *Orchestrator) failLoopStep(
 	state.Status = dag.StepStatusFailed
 	state.Error = reason
 	run.Steps[stepID] = state
-	run = markTerminal(run, dag.RunStatusFailed)
-	if err := o.saveSnapshot(ctx, run, stepID); err != nil {
+	run, err := finalizeRun(
+		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, stepID,
+	)
+	if err != nil {
 		return err
 	}
 	wfAttr := metric.WithAttributes(
@@ -320,9 +322,6 @@ func (o *Orchestrator) failLoopStep(
 				"workflow_id", run.WorkflowID,
 			)
 		}
-	}
-	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
-		return err
 	}
 	return o.notifyParentIfChild(ctx, run, fmt.Errorf("%s", reason))
 }

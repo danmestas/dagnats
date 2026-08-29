@@ -293,6 +293,76 @@ capture the engine's end-to-end dispatch-to-terminal window instead.
 
 ---
 
+## Consumer contract: run lifecycle events
+
+Two distinct streams carry run/step lifecycle information. They serve
+different purposes and neither replaces the other.
+
+### `history.{runID}` -- per-step timeline (WORKFLOW_HISTORY stream)
+
+- **Payload:** `protocol.Event` (see NATS Transport above) -- `step.queued`,
+  `step.started`, `step.completed`, `step.failed`, `step.continue`,
+  `workflow.completed`, `workflow.failed`, etc.
+- **Ordering:** JetStream per-subject order only. Every event for one run
+  shares the single `history.{runID}` subject, so events *within a run*
+  arrive in publish order. There is no cross-run or cross-subject
+  ordering guarantee.
+- **Retention:** `historyMaxAge` -- 30 days (`internal/natsutil/conn.go`).
+- **Use for:** reconstructing a run's full step-by-step timeline
+  (waterfall views, per-step duration, debugging a specific run).
+
+### `event.run.{workflow}.{runID}.{status}` -- reliable run-terminal notification (EVENTS stream)
+
+- **Payload:** `protocol.RunEvent` (`protocol/run_event.go`):
+
+```json
+{
+  "type": "run.completed",
+  "run_id": "run-abc",
+  "workflow_id": "my-workflow",
+  "status": "completed",
+  "created_at": "2026-08-28T12:00:00Z",
+  "completed_at": "2026-08-28T12:00:05Z",
+  "trace_parent": "00-...-01"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | string | One of `run.completed`, `run.failed`, `run.cancelled`. Compensation outcomes (`compensated`, `compensate_failed`) report as `run.failed` -- compensation only runs after the workflow itself failed. |
+| `run_id` | string | The run. |
+| `workflow_id` | string | The workflow definition name. |
+| `status` | string | The exact `dag.RunStatus` string (`completed`, `failed`, `cancelled`, `compensated`, or `compensate_failed`) -- finer-grained than `type`. |
+| `created_at` | RFC3339 timestamp | Run creation time. |
+| `completed_at` | RFC3339 timestamp, omitempty | When the run reached its terminal status. |
+| `labels` | map[string]string, omitempty | Reserved; populated once `dag.WorkflowRun.Labels` exists. Absent today. |
+| `trace_parent` | string, omitempty | W3C traceparent so a consumer's processing continues the run's trace. |
+
+- **Subject wildcard recipes:**
+  - `event.run.*.*.failed` -- every failure across every workflow.
+  - `event.run.myflow.>` -- every terminal event for the `myflow` workflow,
+    any run, any status.
+  - Filter by run ID with `event.run.*.{runID}.*`, or consume `event.run.>`
+    and filter client-side.
+- **Ordering:** per-subject JetStream order; since each run publishes at
+  most one terminal event, cross-run ordering is not meaningful.
+- **Delivery:** at-least-once. Dedup key is `Nats-Msg-Id: run-terminal-{runID}`
+  -- a run reaches a terminal status exactly once, so redelivery of the
+  same finalize collapses to one message within JetStream's dedup window.
+- **Retention:** `eventsMaxAge` -- 14 days (`internal/natsutil/conn.go`).
+- **Failure policy:** publishing this event is best-effort. A publish
+  failure is logged (WARN) and counted (`engine.run_event.publish_failures`)
+  but never fails the run -- `history.{runID}` and the persisted
+  `WorkflowRun` snapshot remain the source of truth. The event is
+  published only after the terminal snapshot write succeeds.
+- **Use for:** the reliable "this run just finished" signal a forge or
+  webhook relay needs. **Pollers (`GET /runs/{id}` on a timer) become a
+  fallback path, not the primary integration path** -- subscribe to
+  `event.run.>` instead of polling; fall back to polling only to recover
+  from a missed message during a consumer outage.
+
+---
+
 ## Reference Implementations
 
 - **Go (NATS):** `worker/` package
