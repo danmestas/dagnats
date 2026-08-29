@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,8 +48,7 @@ func publishChunk(
 	if err != nil {
 		t.Fatalf("marshal chunk: %v", err)
 	}
-	subject := buildLogsSubjectPrefix + runID + "." + stepID + "." +
-		strconv.Itoa(attempt) + "." + strconv.Itoa(iteration)
+	subject := natsutil.LogSubject(runID, stepID, attempt, iteration)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := js.Publish(ctx, subject, data); err != nil {

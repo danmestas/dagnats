@@ -1,12 +1,10 @@
 // internal/engine/task_publish_test.go
-// Tests for the shared TaskPayload.Attempt builders (#624 review round
-// 3, nit 6): nextDispatchAttempt (for a NEW dispatch — initial or
-// retry) and currentAttempt (for continuing the SAME attempt — the
-// agent-loop Continue re-enqueue). collectReadyMessages, the function
-// these tests used to cover, was dead code (no production caller —
-// the live dispatch path is TaskPublisher.Publish/doPublish) using the
-// PRE-#624-review-round-2 "bare Attempts, no +1" semantic; it has been
-// deleted along with its now-unused taskSubject helper.
+// Tests for dispatchIdentity (#624 review round 4): the single builder
+// every TaskPayload construction in this package routes through for
+// both Attempt and Iteration. Replaces the round-3 nextDispatchAttempt
+// /currentAttempt pair, which each computed only Attempt and left
+// every call site to set (or, on the retry path, forget to set)
+// Iteration by hand — exactly the bug this round fixes.
 // Methodology: pure unit tests, no NATS required.
 package engine
 
@@ -16,57 +14,98 @@ import (
 	"github.com/danmestas/dagnats/dag"
 )
 
-func TestNextDispatchAttempt(t *testing.T) {
+func TestDispatchIdentity_NewAttempt(t *testing.T) {
 	run := dag.WorkflowRun{
 		RunID: "run-1",
 		Steps: map[string]dag.StepState{
-			"never-started": {Status: dag.StepStatusPending, Attempts: 0},
-			"started-once":  {Status: dag.StepStatusFailed, Attempts: 1},
-			"started-twice": {Status: dag.StepStatusFailed, Attempts: 2},
+			"never-started": {Status: dag.StepStatusPending, Attempts: 0, Iterations: 0},
+			"started-once":  {Status: dag.StepStatusFailed, Attempts: 1, Iterations: 0},
+			"started-twice": {Status: dag.StepStatusFailed, Attempts: 2, Iterations: 0},
+			// The round-4 regression: an agent-loop step that Continued
+			// to iteration 3 and then failed its CURRENT attempt.
+			// Iterations is never reset on retry, so the retry's
+			// dispatch identity must carry iteration 3 forward, not
+			// reset it to 0 — the reader's default (attempt=Attempts,
+			// iteration=Iterations) must land on exactly this pair.
+			"loop-retry": {Status: dag.StepStatusFailed, Attempts: 1, Iterations: 3},
+			// A map-fan-out instance: same shape as any other step
+			// key, just with a "#"-suffixed stepID — dispatchIdentity
+			// does not special-case it.
+			"fanout#2": {Status: dag.StepStatusFailed, Attempts: 1, Iterations: 0},
 		},
 	}
-	// Positive: a step that never started dispatches at 0 (the
-	// worker/bridge NumDelivered-fallback signal), not 1.
-	if got := nextDispatchAttempt(run, "never-started"); got != 0 {
-		t.Errorf("nextDispatchAttempt(never-started) = %d, want 0", got)
+	cases := []struct {
+		stepID        string
+		wantAttempt   int
+		wantIteration int
+	}{
+		// Positive: a step that never started dispatches at attempt 0
+		// (the worker/bridge NumDelivered-fallback signal), iteration 0.
+		{"never-started", 0, 0},
+		// Positive: a step that already started once dispatches its
+		// NEXT attempt (Attempts + 1), not the same AttemptNumber again.
+		{"started-once", 2, 0},
+		{"started-twice", 3, 0},
+		// The blocker regression: iteration carries forward across a
+		// retry instead of resetting to the Go zero value.
+		{"loop-retry", 2, 3},
+		{"fanout#2", 2, 0},
+		// Negative: an unknown stepID (zero-value StepState) behaves
+		// like never-started — no panic, no bogus attempt.
+		{"unknown-step", 0, 0},
 	}
-	// Positive: a step that already started once dispatches its NEXT
-	// attempt (Attempts + 1), not the same AttemptNumber again.
-	if got := nextDispatchAttempt(run, "started-once"); got != 2 {
-		t.Errorf("nextDispatchAttempt(started-once) = %d, want 2", got)
-	}
-	if got := nextDispatchAttempt(run, "started-twice"); got != 3 {
-		t.Errorf("nextDispatchAttempt(started-twice) = %d, want 3", got)
-	}
-	// Negative: an unknown stepID (zero-value StepState, Attempts=0)
-	// behaves exactly like never-started — no panic, no bogus attempt.
-	if got := nextDispatchAttempt(run, "unknown-step"); got != 0 {
-		t.Errorf("nextDispatchAttempt(unknown-step) = %d, want 0", got)
+	for _, tc := range cases {
+		attempt, iteration := dispatchIdentity(run, tc.stepID, dispatchNewAttempt)
+		if attempt != tc.wantAttempt || iteration != tc.wantIteration {
+			t.Errorf(
+				"dispatchIdentity(%q, dispatchNewAttempt) = (%d, %d), want (%d, %d)",
+				tc.stepID, attempt, iteration, tc.wantAttempt, tc.wantIteration,
+			)
+		}
 	}
 }
 
-func TestCurrentAttempt(t *testing.T) {
+func TestDispatchIdentity_SameAttempt(t *testing.T) {
 	run := dag.WorkflowRun{
 		RunID: "run-1",
 		Steps: map[string]dag.StepState{
-			"never-started": {Status: dag.StepStatusPending, Attempts: 0},
-			"mid-loop":      {Status: dag.StepStatusRunning, Attempts: 1},
-			"retried-loop":  {Status: dag.StepStatusRunning, Attempts: 3},
+			"never-started": {Status: dag.StepStatusPending, Attempts: 0, Iterations: 0},
+			"mid-loop":      {Status: dag.StepStatusRunning, Attempts: 1, Iterations: 2},
+			"retried-loop":  {Status: dag.StepStatusRunning, Attempts: 3, Iterations: 1},
 		},
 	}
-	// Positive: currentAttempt returns Attempts bare — NEVER +1, unlike
-	// nextDispatchAttempt — because a Continue iteration reuses the
-	// SAME attempt, not a new one.
-	if got := currentAttempt(run, "mid-loop"); got != 1 {
-		t.Errorf("currentAttempt(mid-loop) = %d, want 1 (bare, no +1)", got)
+	cases := []struct {
+		stepID        string
+		wantAttempt   int
+		wantIteration int
+	}{
+		// Positive: dispatchSameAttempt returns Attempts bare — NEVER
+		// +1 — because a Continue iteration reuses the SAME attempt,
+		// not a new one; iteration is the just-incremented value
+		// Advance() already wrote into the snapshot.
+		{"mid-loop", 1, 2},
+		{"retried-loop", 3, 1},
+		// Negative: an unstarted step's identity is (0, 0) — Continue
+		// only ever fires after a step has started, but the function
+		// itself makes no such assumption and must not panic.
+		{"never-started", 0, 0},
 	}
-	if got := currentAttempt(run, "retried-loop"); got != 3 {
-		t.Errorf("currentAttempt(retried-loop) = %d, want 3 (bare, no +1)", got)
+	for _, tc := range cases {
+		attempt, iteration := dispatchIdentity(run, tc.stepID, dispatchSameAttempt)
+		if attempt != tc.wantAttempt || iteration != tc.wantIteration {
+			t.Errorf(
+				"dispatchIdentity(%q, dispatchSameAttempt) = (%d, %d), want (%d, %d)",
+				tc.stepID, attempt, iteration, tc.wantAttempt, tc.wantIteration,
+			)
+		}
 	}
-	// Negative: an unstarted step's current attempt is 0 — Continue
-	// only ever fires after a step has started, but the function itself
-	// makes no such assumption and must not panic.
-	if got := currentAttempt(run, "never-started"); got != 0 {
-		t.Errorf("currentAttempt(never-started) = %d, want 0", got)
-	}
+}
+
+func TestDispatchIdentity_PanicsOnEmptyStepID(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("dispatchIdentity(\"\") did not panic")
+		}
+	}()
+	dispatchIdentity(dag.WorkflowRun{}, "", dispatchNewAttempt)
 }

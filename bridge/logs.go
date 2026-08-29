@@ -24,7 +24,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -379,14 +378,7 @@ func (b *Bridge) publishLogSteps(
 	if len(steps) == 0 {
 		return
 	}
-	if strings.ContainsAny(runID, ". \t*>") {
-		panic("publishLogSteps: runID must not contain NATS subject metacharacters")
-	}
-	// SubjectToken(stepID) feeds both the subject and the Msg-Id below
-	// so they reflect the same sanitized identity — matching
-	// worker/log_writer.go's publishLocked (#624 review).
-	stepToken := natsutil.SubjectToken(stepID)
-	subject := fmt.Sprintf("logs.%s.%s.%d.%d", runID, stepToken, attempt, iteration)
+	subject := natsutil.LogSubject(runID, stepID, attempt, iteration)
 	for i, step := range steps {
 		seq := startSeq + uint64(i)
 		chunk := protocol.LogChunk{
@@ -403,8 +395,7 @@ func (b *Bridge) publishLogSteps(
 				"error", err, "run_id", runID, "step_id", stepID)
 			continue
 		}
-		msgID := fmt.Sprintf("log-%s-%s-%d-%d-%d",
-			runID, stepToken, attempt, iteration, seq)
+		msgID := natsutil.LogMsgID(runID, stepID, attempt, iteration, seq)
 		msg := &nats.Msg{
 			Subject: subject,
 			Data:    payload,

@@ -164,18 +164,6 @@ func cursorParam(r *http.Request) uint64 {
 	return n
 }
 
-// logSubject builds the attempt+iteration-scoped BUILD_LOGS subject,
-// matching worker/log_writer.go and bridge/logs.go exactly (#624
-// review round 3: iteration is a second dimension of dispatch
-// identity, alongside attempt).
-func logSubject(runID, stepID string, attempt, iteration int) string {
-	if strings.ContainsAny(runID, ". \t*>") {
-		panic("logSubject: runID must not contain NATS subject metacharacters")
-	}
-	return fmt.Sprintf("logs.%s.%s.%d.%d",
-		runID, natsutil.SubjectToken(stepID), attempt, iteration)
-}
-
 // serveLogsPage handles the non-follow read: resolve the start cursor
 // (from=failure short-circuits to the attempt's terminal marker via
 // GetLastMsgForSubject; otherwise the caller's cursor param), fetch one
@@ -300,7 +288,7 @@ func lastFailureMarkerSeq(
 	if err != nil {
 		return false, 0, fmt.Errorf("open BUILD_LOGS stream: %w", err)
 	}
-	subject := logSubject(runID, stepID, attempt, iteration)
+	subject := natsutil.LogSubject(runID, stepID, attempt, iteration)
 	msg, err := stream.GetLastMsgForSubject(ctx, subject)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
@@ -339,7 +327,7 @@ func fetchLogsPage(
 		panic("fetchLogsPage: max must be positive")
 	}
 	cfg := jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{logSubject(runID, stepID, attempt, iteration)},
+		FilterSubjects: []string{natsutil.LogSubject(runID, stepID, attempt, iteration)},
 	}
 	if cursor > 0 {
 		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy

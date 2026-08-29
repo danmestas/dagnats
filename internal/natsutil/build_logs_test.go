@@ -94,3 +94,30 @@ func TestSetupBuildLogsStreamShape(t *testing.T) {
 		t.Fatalf("AllowDirect = true, want false (BUILD_LOGS is consumer-read only)")
 	}
 }
+
+// TestLogSubjectAndLogMsgID pins the single builder every BUILD_LOGS
+// producer/consumer (worker, bridge, internal/api, examples/log-offload)
+// must route through — a test of these two functions is a test of every
+// site that formerly grew its own fmt.Sprintf (#624 review round 4).
+func TestLogSubjectAndLogMsgID(t *testing.T) {
+	// Positive: exact shapes, sanitized stepID.
+	subject := LogSubject("run-1", "build step!", 2, 3)
+	if want := "logs.run-1.build_step_.2.3"; subject != want {
+		t.Fatalf("LogSubject = %q, want %q", subject, want)
+	}
+	msgID := LogMsgID("run-1", "build step!", 2, 3, 7)
+	if want := "log-run-1-build_step_-2-3-7"; msgID != want {
+		t.Fatalf("LogMsgID = %q, want %q", msgID, want)
+	}
+
+	// Negative: different iterations must not collide on subject or
+	// Msg-Id even with everything else held constant — this is exactly
+	// the round-4 regression (retry left iteration at the Go zero
+	// value instead of routing through this builder).
+	if LogSubject("run-1", "build", 2, 0) == LogSubject("run-1", "build", 2, 3) {
+		t.Fatalf("LogSubject must vary with iteration")
+	}
+	if LogMsgID("run-1", "build", 2, 0, 0) == LogMsgID("run-1", "build", 2, 3, 0) {
+		t.Fatalf("LogMsgID must vary with iteration")
+	}
+}

@@ -654,7 +654,7 @@ func TestGetRunLogs_PagesWithoutGapsOrDuplicates(t *testing.T) {
 	// (worker/context.go's resolveAttemptNumber, #624 review) — must
 	// match the subject the real worker's own "completed" marker
 	// lands on below, or the two would occupy disjoint subjects.
-	subject := logSubject(runID, "a", 1, 0)
+	subject := natsutil.LogSubject(runID, "a", 1, 0)
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer seedCancel()
 	for i := 0; i < chunkCount; i++ {
@@ -829,7 +829,7 @@ func TestAgentLoop_ContinueTwiceKeepsEachIterationOnItsOwnSubject(t *testing.T) 
 	// attempt=1: this step never fails/retries — every iteration
 	// dispatches within the SAME (first) attempt.
 	for iter := 0; iter < 3; iter++ {
-		subject := logSubject(runID, "a", 1, iter)
+		subject := natsutil.LogSubject(runID, "a", 1, iter)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS",
 			jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}})
@@ -870,5 +870,171 @@ func TestAgentLoop_ContinueTwiceKeepsEachIterationOnItsOwnSubject(t *testing.T) 
 			t.Fatalf("iteration %d chunks[1] = %+v, want marker=continued iteration=%d",
 				iter, chunks[1], iter)
 		}
+	}
+}
+
+// TestAgentLoop_RetryAfterIterationsKeepsIterationOnDefaultRead is the
+// round-4 blocker's required regression test: an agent-loop step
+// Continues to iteration 3, then fails its CURRENT attempt and
+// retries. Steps[stepID].Iterations is never reset by a retry, so the
+// retry's dispatch identity must be (attempt=2, iteration=3) -- exactly
+// what GET .../logs?step=X's default (attempt, iteration) params
+// (which read straight off the same snapshot fields) resolve to.
+// Before the round-4 fix, the retry dispatched at (attempt=2,
+// iteration=0): the default read landed on an empty page, eof never
+// tripped, and follow hung to its 1h cap.
+func TestAgentLoop_RetryAfterIterationsKeepsIterationOnDefaultRead(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	t.Cleanup(orch.Stop)
+
+	var callCount int64
+	w := worker.NewWorker(nc)
+	w.Handle("logs-loop-retry-task", func(tc worker.TaskContext) error {
+		n := atomic.AddInt64(&callCount, 1) - 1 // 0-based
+		tc.LogOut().Write([]byte(fmt.Sprintf("call-%d-line", n)))
+		switch {
+		case n < 3:
+			// Iterations 0, 1, 2: keep looping.
+			return tc.Continue([]byte(`{}`))
+		case n == 3:
+			// Still attempt 1, iteration 3 in the payload. Fail so the
+			// engine retries -- Iterations must NOT reset to 0.
+			return tc.FailRetryAfter(
+				fmt.Errorf("transient failure"), 100*time.Millisecond,
+			)
+		default:
+			// n == 4: the retry (attempt 2). Sleep so a follow attached
+			// right after the retry begins observes this attempt/
+			// iteration before it ends.
+			time.Sleep(200 * time.Millisecond)
+			return tc.Complete(nil)
+		}
+	})
+	w.Start()
+	t.Cleanup(w.Stop)
+
+	svc := NewService(nc)
+	server := httptest.NewServer(NewRESTHandler(svc))
+	t.Cleanup(server.Close)
+
+	wb := dag.NewWorkflow("logs-agent-loop-retry")
+	wb.AgentLoop("a", "logs-loop-retry-task").
+		WithMaxIterations(5).
+		WithRetries(1)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := svc.RegisterWorkflow(context.Background(), def); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+	runID := startLogsTestRun(t, svc, "logs-agent-loop-retry")
+	waitForStepKnown(t, svc, runID, "a", 5*time.Second)
+
+	// Wait for the retry to begin (Attempts == 2) -- the window where
+	// the follow attach below must land before the retry's own
+	// deliberate 200ms sleep runs out.
+	deadline := time.Now().Add(10 * time.Second)
+	var run dag.WorkflowRun
+	for time.Now().Before(deadline) {
+		var getErr error
+		run, getErr = svc.GetRun(context.Background(), runID)
+		if getErr == nil && run.Steps["a"].Attempts == 2 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if run.Steps["a"].Attempts != 2 {
+		t.Fatalf("Steps[a].Attempts = %d, want 2 (retry never started)",
+			run.Steps["a"].Attempts)
+	}
+	// The blocker's core assertion: Iterations carried forward across
+	// the retry instead of resetting.
+	if run.Steps["a"].Iterations != 3 {
+		t.Fatalf("Steps[a].Iterations = %d, want 3 (must not reset on retry)",
+			run.Steps["a"].Iterations)
+	}
+
+	// Attach a follow with NO explicit attempt/iteration -- the default
+	// must resolve to the retry's own (2, 3) lane and see it through
+	// to completion.
+	req, err := http.NewRequest(
+		"GET", fmt.Sprintf("%s/runs/%s/logs?step=a&follow=1", server.URL, runID), nil,
+	)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("follow request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var sawRetryChunk, sawEOF bool
+	var event string
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event: chunk"):
+			event = "chunk"
+		case strings.HasPrefix(line, "event: eof"):
+			event = "eof"
+		case strings.HasPrefix(line, "data: ") && event == "chunk":
+			// Data is base64 in the wire JSON (protocol.LogChunk.Data
+			// is []byte), so decode the chunk rather than substring-
+			// matching the raw SSE line for the plaintext log line.
+			var c protocol.LogChunk
+			if err := json.Unmarshal(
+				[]byte(strings.TrimPrefix(line, "data: ")), &c,
+			); err == nil && c.Attempt == 2 && c.Iteration == 3 &&
+				string(c.Data) == "call-4-line" {
+				sawRetryChunk = true
+			}
+		}
+		if event == "eof" && strings.HasPrefix(line, "data:") {
+			sawEOF = true
+		}
+	}
+	if !sawRetryChunk {
+		t.Fatal("follow on default (attempt, iteration) never saw the retry's own chunk " +
+			"(attempt=2 iteration=3 data=call-4-line) -- it resolved to the wrong subject")
+	}
+	if !sawEOF {
+		t.Fatal("follow on default (attempt, iteration) never reached eof")
+	}
+
+	// Non-follow confirms the same thing once the run has settled: the
+	// default page holds the retry's data line and its completed
+	// marker, both tagged (attempt=2, iteration=3).
+	page := waitForLogsNonEmpty(t, server.URL, runID, 2, 10*time.Second)
+	if len(page.Chunks) < 2 {
+		t.Fatalf("Chunks = %+v, want at least 2 (data line + completed marker)", page.Chunks)
+	}
+	last := page.Chunks[len(page.Chunks)-1]
+	if last.Stream != protocol.LogStreamMarker ||
+		string(last.Data) != protocol.LogMarkerCompleted ||
+		last.Attempt != 2 || last.Iteration != 3 {
+		t.Fatalf("last chunk = %+v, want marker=completed attempt=2 iteration=3", last)
+	}
+	found := false
+	for _, c := range page.Chunks {
+		if c.Attempt == 2 && c.Iteration == 3 && string(c.Data) == "call-4-line" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("Chunks = %+v, want a chunk with attempt=2 iteration=3 data=call-4-line",
+			page.Chunks)
 	}
 }

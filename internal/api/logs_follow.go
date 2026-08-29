@@ -30,6 +30,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -127,7 +128,7 @@ func openLogsFollowConsumer(
 		panic("openLogsFollowConsumer: js must not be nil")
 	}
 	cfg := jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{logSubject(runID, stepID, attempt, iteration)},
+		FilterSubjects: []string{natsutil.LogSubject(runID, stepID, attempt, iteration)},
 	}
 	if cursor > 0 {
 		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy

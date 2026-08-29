@@ -122,7 +122,7 @@ func TestDoPublishMetricNotIncrementedOnFailure(t *testing.T) {
 	}
 
 	err := tp.doPublish(
-		context.Background(), "run-1", step, []byte(`{}`), 1, "", "",
+		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{}, "", "",
 	)
 
 	// doPublish must return an error on failed publish.
@@ -178,7 +178,7 @@ func TestDoPublishMetricIncrementedOnSuccess(t *testing.T) {
 	}
 
 	err := tp.doPublish(
-		context.Background(), "run-1", step, []byte(`{}`), 1, "", "",
+		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{}, "", "",
 	)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -336,7 +336,7 @@ func TestDoPublishSpanNameAndWorkflowAttribute(t *testing.T) {
 	step := dag.StepDef{ID: "step-1", Task: "compile", Type: dag.StepTypeNormal}
 
 	err := tp.doPublish(
-		context.Background(), "run-1", step, []byte(`{}`), 1,
+		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{},
 		"deploy-pipeline", "",
 	)
 	if err != nil {
@@ -438,7 +438,7 @@ func TestDoPublishOmitsWorkflowNameAttributeWhenEmpty(t *testing.T) {
 	step := dag.StepDef{ID: "step-1", Task: "compile", Type: dag.StepTypeNormal}
 
 	err := tp.doPublish(
-		context.Background(), "run-1", step, []byte(`{}`), 1,
+		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{},
 		"", "",
 	)
 	if err != nil {

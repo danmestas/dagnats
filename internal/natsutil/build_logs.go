@@ -3,6 +3,7 @@ package natsutil
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -48,23 +49,25 @@ func resolveBuildLogsTTL(val string) (time.Duration, error) {
 }
 
 // SetupBuildLogsStream creates the BUILD_LOGS stream (#624): the
-// per-attempt hot lane for worker stdout/stderr, subjects
-// logs.{runID}.{stepID}.{attempt}. LimitsPolicy + FileStorage matches
-// the other history-shaped streams (WORKFLOW_HISTORY, EVENTS); ttl is
-// the caller's resolved DAGNATS_BUILD_LOGS_TTL (see
-// resolveBuildLogsTTL). maxStoreBytes is the JetStreamMaxStore budget;
-// the byte ceiling is a fraction of it (see the fraction table's
-// comment block above) — a budget of 0 (or less) disables the
-// ceiling, same as every other file stream here.
+// per-(attempt, iteration) hot lane for worker stdout/stderr, subjects
+// built by LogSubject (below) — never hand-formatted, so this comment
+// cannot drift out of sync with the actual shape a third time (#624
+// review round 4). LimitsPolicy + FileStorage matches the other
+// history-shaped streams (WORKFLOW_HISTORY, EVENTS); ttl is the
+// caller's resolved DAGNATS_BUILD_LOGS_TTL (see resolveBuildLogsTTL).
+// maxStoreBytes is the JetStreamMaxStore budget; the byte ceiling is a
+// fraction of it (see the fraction table's comment block above) — a
+// budget of 0 (or less) disables the ceiling, same as every other file
+// stream here.
 //
 // Duplicates uses a >=2min window: LogChunk.Seq collisions from a
 // redelivered task message (worker crash between publish and ack) must
-// dedup on Nats-Msg-Id ("log-{runID}-{stepID}-{attempt}-{seq}"), and 2
-// minutes comfortably covers the AckWait-driven redelivery interval a
-// worker task can see. attempt is part of both the subject and the
-// Msg-Id (#624 review round 2) — without it, a retry's fresh Msg-Id
-// counter starting back at seq 0 would collide with the prior
-// attempt's within this same window.
+// dedup on the Nats-Msg-Id LogMsgID (below) builds, and 2 minutes
+// comfortably covers the AckWait-driven redelivery interval a worker
+// task can see. Both attempt AND iteration are part of the subject and
+// the Msg-Id (#624 review rounds 2 and 3) — without both, a retry or a
+// Continue's fresh Msg-Id counter starting back at seq 0 could collide
+// with a different attempt's or iteration's within this same window.
 //
 // No AllowDirect: unlike TASK_QUEUES (#632's queue-depth API), nothing
 // reads BUILD_LOGS via direct-get — the tail API (internal/api) reads it
@@ -103,4 +106,41 @@ func SetupBuildLogsStream(
 	defer cancel()
 	_, err := js.CreateOrUpdateStream(ctx, cfg)
 	return err
+}
+
+// LogSubject builds the BUILD_LOGS subject for one (attempt,
+// iteration) log lane: logs.{runID}.{stepID}.{attempt}.{iteration}.
+// The SOLE place this shape is assembled (#624 review round 4) — every
+// producer (worker/log_writer.go, bridge/logs.go,
+// examples/log-offload) and every consumer (internal/api/logs.go,
+// internal/api/logs_follow.go) calls this instead of formatting its
+// own copy, so a test of this one function is a test of every site
+// agreeing on the wire shape.
+func LogSubject(runID, stepID string, attempt, iteration int) string {
+	if runID == "" {
+		panic("LogSubject: runID must not be empty")
+	}
+	if strings.ContainsAny(runID, ". \t*>") {
+		panic("LogSubject: runID must not contain NATS subject metacharacters")
+	}
+	return fmt.Sprintf("logs.%s.%s.%d.%d",
+		runID, SubjectToken(stepID), attempt, iteration)
+}
+
+// LogMsgID builds the BUILD_LOGS dedup key for one chunk:
+// log-{runID}-{stepID}-{attempt}-{iteration}-{seq}. SubjectToken(stepID)
+// here matches LogSubject exactly, so the Msg-Id always reflects the
+// same sanitized identity as the subject it dedups within — a raw
+// (pre-sanitized) stepID here could let two differently spelled
+// stepIDs that sanitize to the same subject mint colliding subjects
+// with non-colliding Msg-Ids.
+func LogMsgID(runID, stepID string, attempt, iteration int, seq uint64) string {
+	if runID == "" {
+		panic("LogMsgID: runID must not be empty")
+	}
+	if strings.ContainsAny(runID, ". \t*>") {
+		panic("LogMsgID: runID must not contain NATS subject metacharacters")
+	}
+	return fmt.Sprintf("log-%s-%s-%d-%d-%d",
+		runID, SubjectToken(stepID), attempt, iteration, seq)
 }

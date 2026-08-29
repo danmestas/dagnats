@@ -37,51 +37,78 @@ func publishWorkflowEvent(
 	return err
 }
 
-// nextDispatchAttempt returns the protocol.TaskPayload.Attempt value
-// for stepID's NEXT dispatch, derived from run's CURRENT
-// Steps[stepID].Attempts (#624 review round 2) rather than a value
-// threaded through however many hops a re-dispatch path took to reach
-// its publish call. Every dispatch/re-dispatch site in this package
-// that starts a NEW attempt (initial dispatch, retry) must call this
-// instead of building its own Attempt value. Continuing the SAME
-// attempt (agent-loop Continue) must NOT call this — see
-// currentAttempt below.
-//
-// Steps[stepID].Attempts is the max AttemptNumber of any attempt that
-// has STARTED for this step (handleStepStarted's monotonic max-merge
-// against step.started's AttemptNumber) — not a tally of completed
-// attempts. A step with Attempts == 0 has never started: its first
-// dispatch uses 0 directly, letting the worker SDK's/bridge's own
-// AttemptNumber resolution (worker/context.go's resolveAttemptNumber,
-// bridge/poll.go's taskAttemptNumber) fall back to NATS NumDelivered —
-// this asymmetry is intentional and pre-dates this fix. A step with
-// Attempts >= 1 has already started at least once — the next dispatch
-// is Attempts + 1; using the bare value again would resolve to the
-// SAME AttemptNumber as the already-started attempt and collide on
-// BUILD_LOGS's attempt-scoped subject within its dedup window.
-func nextDispatchAttempt(run dag.WorkflowRun, stepID string) int {
-	if stepID == "" {
-		panic("nextDispatchAttempt: stepID must not be empty")
-	}
-	attempts := run.Steps[stepID].Attempts
-	if attempts == 0 {
-		return 0
-	}
-	return attempts + 1
-}
+// dispatchIdentityMode distinguishes the two dispatch shapes
+// dispatchIdentity supports — see dispatchIdentity's doc comment for
+// why one pure function cannot infer this from (run, stepID) alone.
+type dispatchIdentityMode int
 
-// currentAttempt returns run's Steps[stepID].Attempts AS-IS — for
-// dispatch paths that continue the SAME attempt (the agent-loop
-// Continue re-enqueue, internal/engine/task_publisher.go's
-// PublishIteration) rather than starting a new one. Unlike
-// nextDispatchAttempt, this must NOT add 1: a Continue iteration is
-// not a retry and must not consume retry budget the step never
-// actually spent (#624 review round 3). iteration, not attempt, is
-// what changes across Continue calls — see protocol.LogChunk's doc
-// comment for why both are part of the BUILD_LOGS subject.
-func currentAttempt(run dag.WorkflowRun, stepID string) int {
+const (
+	// dispatchNewAttempt is for every re-dispatch that starts a
+	// genuinely NEW attempt: initial dispatch, retry (rate/concurrency/
+	// backoff/retry-after), DLQ replay, on-fail compensation, a map
+	// instance's own dispatch. Attempt is projected as Attempts + 1
+	// (or 0 for a never-started step) — see dispatchIdentity.
+	dispatchNewAttempt dispatchIdentityMode = iota
+	// dispatchSameAttempt is for the agent-loop Continue re-enqueue
+	// ONLY: it is NOT a new attempt and must not consume retry budget
+	// the step never spent, so Attempt is Steps[stepID].Attempts
+	// AS-IS — no +1.
+	dispatchSameAttempt
+)
+
+// dispatchIdentity is the ONE builder for the (attempt, iteration)
+// pair every protocol.TaskPayload construction and BUILD_LOGS subject
+// resolution in this package must use — no call site computes Attempt
+// or Iteration by hand (#624 review round 4). It replaces the round-3
+// nextDispatchAttempt/currentAttempt pair, which each computed only
+// Attempt: every re-dispatch path built Iteration by hand (i.e. left
+// it unset, the Go zero value), so a loop step that failed mid-loop
+// and retried dispatched its retry at iteration 0 while
+// Steps[stepID].Iterations — never reset by a retry — still reported
+// the loop's true position. GET .../logs's default (attempt,
+// iteration) params, which read directly off Steps[stepID], then
+// resolved to a subject the retry never wrote to: an empty page,
+// eof never tripping, follow hanging to its 1h cap.
+//
+// iteration is ALWAYS Steps[stepID].Iterations, in EITHER mode: for
+// dispatchSameAttempt (Continue), the pure Advance() core already
+// incremented it as part of computing the Continue effect (advance.go)
+// before the caller's run reaches this function, so it already holds
+// the NEW iteration; for dispatchNewAttempt (retry included), nothing
+// resets it, so carrying it forward unconditionally is exactly what
+// makes a retry's dispatch identity land on the SAME (attempt,
+// iteration) pair the reader's snapshot-derived default resolves to —
+// by construction, not by two independent formulas staying in sync.
+//
+// attempt DOES depend on mode, and cannot be inferred from (run,
+// stepID) alone: Steps[stepID].Attempts is bumped only by
+// handleStepStarted processing the step.started event AFTER a
+// dispatch's own payload was already built and published (an
+// event-driven, asynchronous update — see step_handlers.go), so at
+// call time the snapshot still reflects the PREVIOUS attempt count for
+// a genuinely new dispatch, requiring +1; a Continue re-dispatch,
+// by contrast, is happening WITHIN an attempt whose step.started
+// already landed, so Attempts already equals the attempt this
+// dispatch belongs to and must NOT be bumped again. The mode
+// parameter carries that caller-known distinction explicitly rather
+// than dispatchIdentity guessing at it.
+func dispatchIdentity(
+	run dag.WorkflowRun, stepID string, mode dispatchIdentityMode,
+) (attempt, iteration int) {
 	if stepID == "" {
-		panic("currentAttempt: stepID must not be empty")
+		panic("dispatchIdentity: stepID must not be empty")
 	}
-	return run.Steps[stepID].Attempts
+	state := run.Steps[stepID]
+	switch mode {
+	case dispatchNewAttempt:
+		attempt = state.Attempts
+		if attempt > 0 {
+			attempt++
+		}
+	case dispatchSameAttempt:
+		attempt = state.Attempts
+	default:
+		panic("dispatchIdentity: unknown dispatchIdentityMode")
+	}
+	return attempt, state.Iterations
 }

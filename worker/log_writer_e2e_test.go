@@ -464,11 +464,11 @@ func TestComplete_DrainsBufferedBytesBeforeResolution(t *testing.T) {
 // OWN subject.
 //
 // Payload.Attempt values mirror the engine's real dispatch shape
-// (internal/engine/task_publish.go's collectReadyMessages publishes
-// the first attempt with Attempt: 0; internal/engine/sleeptimer.go's
-// republishTask publishes a retry with Attempt: tm.Attempt+1, where
-// tm.Attempt was already the POST-first-attempt Attempts value — so a
-// retry's payload.Attempt is 2, not 1, in practice). The resolved
+// (internal/engine/task_publish.go's dispatchIdentity, #624 review
+// round 4): the first attempt publishes with Attempt: 0 (a
+// never-started step's dispatchNewAttempt result); a retry, once
+// step.started has landed for that first attempt, publishes with
+// Attempt: 2 (dispatchNewAttempt on Attempts=1). The resolved
 // AttemptNumber worker/log_writer.go's subject actually uses
 // (resolveAttemptNumber) is 1 for the first dispatch (payload.Attempt
 // 0 falls back to NATS NumDelivered) and 2 for the retry

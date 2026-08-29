@@ -33,7 +33,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -150,10 +149,9 @@ func newLogLane(
 		panic("newLogLane: iteration must be >= 0")
 	}
 	lane := &logLane{
-		tp:  tp,
-		ctx: ctx,
-		subject: fmt.Sprintf("logs.%s.%s.%d.%d",
-			runID, natsutil.SubjectToken(stepID), attempt, iteration),
+		tp:        tp,
+		ctx:       ctx,
+		subject:   natsutil.LogSubject(runID, stepID, attempt, iteration),
 		runID:     runID,
 		stepID:    stepID,
 		attempt:   attempt,
@@ -311,13 +309,7 @@ func (l *logLane) publishLocked(streamName string, data []byte) {
 			"error", err, "run_id", l.runID, "step_id", l.stepID)
 		return
 	}
-	// SubjectToken(stepID) here matches the subject built in
-	// newLogLane exactly — the Msg-Id must reflect the actual subject
-	// identity, not the raw (pre-sanitized) stepID, or two differently
-	// spelled stepIDs that sanitize to the same subject token could
-	// mint colliding subjects with non-colliding Msg-Ids.
-	msgID := fmt.Sprintf("log-%s-%s-%d-%d-%d",
-		l.runID, natsutil.SubjectToken(l.stepID), l.attempt, l.iteration, seq)
+	msgID := natsutil.LogMsgID(l.runID, l.stepID, l.attempt, l.iteration, seq)
 	msg := &nats.Msg{
 		Subject: l.subject,
 		Data:    payload,
