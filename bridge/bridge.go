@@ -22,15 +22,20 @@ import (
 // interact with DagNats over HTTP. Three deep endpoints expose the
 // full worker lifecycle: connect, poll, and resolve.
 //
-// Authentication (#627): DAGNATS_BRIDGE_TOKEN, when set, is now the
-// admin/root credential -- it authenticates as workertoken.Claims{
-// Admin: true}, bypassing task-type scoping entirely. A configured
-// workertoken.Store (SetTokenStore) additionally accepts minted,
-// revocable, scoped worker tokens ("dgn_{id}_{secret}" bearers) --
-// checked whenever the admin bearer does not match, regardless of
-// whether DAGNATS_BRIDGE_TOKEN is set. With neither an admin token nor
-// a Store configured, every request is allowed (development mode,
-// unchanged from before #627).
+// Authentication (#627): the auth mode is decided by DAGNATS_BRIDGE_TOKEN
+// ALONE -- no env token means open bridge (dev mode), regardless of
+// whether a workertoken.Store is wired in via SetTokenStore. Set it and
+// every request needs either the env token itself (admin/root,
+// authenticates as workertoken.Claims{Admin: true}, bypassing
+// task-type scoping entirely) or a minted, revocable, scoped worker
+// token ("dgn_{id}_{secret}" bearer, checked against a configured
+// Store). This is deliberate: minting a worker token itself requires
+// the admin token (internal/api's /v1/tokens routes fail closed with
+// 503 when it is unset), so a Store-configured gate independent of the
+// env token would let a fresh `dagnats serve` with no admin token lock
+// out every worker permanently -- nothing could ever be minted to
+// satisfy it. NewBridge logs a startup warning when the env token is
+// unset so dev mode is never silent.
 //
 // Every outbound NATS publish goes through *natsutil.TracingPublisher
 // so W3C trace context (traceparent / tracestate) is auto-injected
@@ -94,6 +99,13 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 	checkpointKV, _ := js.KeyValue(ctx, "checkpoints")
 	signalKV, _ := js.KeyValue(ctx, "signals")
 	token := os.Getenv("DAGNATS_BRIDGE_TOKEN")
+	if token == "" {
+		// Loud by construction: an operator who forgot to set the
+		// admin token should see this in the startup log, not
+		// discover it later as "why did an unauthenticated worker
+		// just connect".
+		slog.Warn("bridge auth disabled: DAGNATS_BRIDGE_TOKEN unset")
+	}
 	m := otel.Meter("dagnats/bridge")
 	reqCount, _ := m.Int64Counter("bridge.requests")
 	reqDur, _ := m.Float64Histogram(
@@ -205,26 +217,26 @@ func (b *Bridge) authMiddleware(
 // configured Store, then dev-mode allow-all when neither is
 // configured. See the Bridge doc comment for the full contract.
 func (b *Bridge) authorize(header string) (workertoken.Claims, bool) {
+	if b.token == "" {
+		// Dev mode is decided by the env token ALONE, regardless of
+		// whether a Store is wired in. Minting requires the admin
+		// token (internal/api's fail-closed 503 gate), so with no
+		// admin token no worker token could ever exist -- a
+		// Store-configured gate here would make a fresh `dagnats
+		// serve` with no admin token unable to admit any worker at
+		// all. See NewBridge's startup warning.
+		return workertoken.Claims{Admin: true, TokenID: ""}, true
+	}
 	bearer, hasBearer := strings.CutPrefix(header, "Bearer ")
-	if b.token != "" && hasBearer &&
+	if hasBearer &&
 		subtle.ConstantTimeCompare([]byte(bearer), []byte(b.token)) == 1 {
 		return workertoken.Claims{Admin: true}, true
 	}
-	if b.tokenStore != nil {
-		if !hasBearer {
-			return workertoken.Claims{}, false
-		}
+	if b.tokenStore != nil && hasBearer {
 		claims, err := b.tokenStore.Authorize(bearer)
-		if err != nil {
-			return workertoken.Claims{}, false
+		if err == nil {
+			return claims, true
 		}
-		return claims, true
-	}
-	if b.token == "" {
-		// Dev mode: no admin token, no Store configured. Unscoped
-		// zero-value Claims is fine -- nothing downstream checks
-		// AllowsTaskType unless a Store is configured.
-		return workertoken.Claims{}, true
 	}
 	return workertoken.Claims{}, false
 }

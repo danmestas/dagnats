@@ -67,7 +67,7 @@ Workers register in the `workers` KV bucket on startup via `worker.Directory`. T
 
 ## HTTP Transport
 
-The bridge exposes three endpoints for HTTP workers. All requests require Bearer token authentication via `Authorization: Bearer {token}` header. `DAGNATS_BRIDGE_TOKEN` is the admin/root credential; it can also mint scoped, revocable worker tokens (`dgn_{id}_{secret}`) via [`POST /v1/tokens`](rest-api#tokens) for individual machines instead of distributing the admin credential itself.
+The bridge exposes three endpoints for HTTP workers. No env token = open bridge (dev mode); set `DAGNATS_BRIDGE_TOKEN` and every worker needs either the env token (admin/root) or a minted one. The admin token can mint scoped, revocable worker tokens (`dgn_{id}_{secret}`) via [`POST /v1/tokens`](rest-api#tokens) for individual machines instead of distributing the admin credential itself.
 
 ### POST /v1/workers/connect
 

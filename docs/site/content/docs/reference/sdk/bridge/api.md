@@ -99,11 +99,11 @@ func (am *AckMap) Store(taskID string, msg jetstream.Msg)
 Store saves a NATS message keyed by task ID, stamped with the insertion time. Sweeps expired entries and enforces the size cap before inserting. Panics on empty taskID or nil msg — both are programmer errors.
 
 <a name="Bridge"></a>
-## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L40-L58>)
+## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L45-L63>)
 
 Bridge is an HTTP\-to\-NATS gateway that lets non\-Go workers interact with DagNats over HTTP. Three deep endpoints expose the full worker lifecycle: connect, poll, and resolve.
 
-Authentication \(\#627\): DAGNATS\_BRIDGE\_TOKEN, when set, is now the admin/root credential \-\- it authenticates as workertoken.Claims\{ Admin: true\}, bypassing task\-type scoping entirely. A configured workertoken.Store \(SetTokenStore\) additionally accepts minted, revocable, scoped worker tokens \("dgn\_\{id\}\_\{secret\}" bearers\) \-\- checked whenever the admin bearer does not match, regardless of whether DAGNATS\_BRIDGE\_TOKEN is set. With neither an admin token nor a Store configured, every request is allowed \(development mode, unchanged from before \#627\).
+Authentication \(\#627\): the auth mode is decided by DAGNATS\_BRIDGE\_TOKEN ALONE \-\- no env token means open bridge \(dev mode\), regardless of whether a workertoken.Store is wired in via SetTokenStore. Set it and every request needs either the env token itself \(admin/root, authenticates as workertoken.Claims\{Admin: true\}, bypassing task\-type scoping entirely\) or a minted, revocable, scoped worker token \("dgn\_\{id\}\_\{secret\}" bearer, checked against a configured Store\). This is deliberate: minting a worker token itself requires the admin token \(internal/api's /v1/tokens routes fail closed with 503 when it is unset\), so a Store\-configured gate independent of the env token would let a fresh \`dagnats serve\` with no admin token lock out every worker permanently \-\- nothing could ever be minted to satisfy it. NewBridge logs a startup warning when the env token is unset so dev mode is never silent.
 
 Every outbound NATS publish goes through \*natsutil.TracingPublisher so W3C trace context \(traceparent / tracestate\) is auto\-injected onto the outgoing message. This continues distributed traces from the inbound HTTP request into the NATS plane — without it, the trace ID would terminate at the HTTP boundary for non\-Go workers.
 
@@ -114,7 +114,7 @@ type Bridge struct {
 ```
 
 <a name="NewBridge"></a>
-### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L81>)
+### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L86>)
 
 ```go
 func NewBridge(pub *natsutil.TracingPublisher) *Bridge
@@ -125,7 +125,7 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L132>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L144>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
@@ -138,7 +138,7 @@ Handler returns an http.Handler with the three bridge routes. The mux routes are
 - POST /v1/tasks/ \(resolve, path includes task ID\)
 
 <a name="Bridge.SetTokenStore"></a>
-### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L156>)
+### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L168>)
 
 ```go
 func (b *Bridge) SetTokenStore(store *workertoken.Store)

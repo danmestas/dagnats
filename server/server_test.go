@@ -261,14 +261,11 @@ func TestServer_PrintsStartupAndShutdownBanner(t *testing.T) {
 // TestServerMountsBridgeEndpoints verifies that the bridge handler
 // is mounted on the HTTP mux and responds to connection requests.
 //
-// #627: the server now always wires a workertoken.Store into the
-// bridge, so an unauthenticated request is rejected even with
-// DAGNATS_BRIDGE_TOKEN unset (Store-configured is no longer the same
-// as dev mode -- see bridge.Bridge.authorize). This test sets the
-// admin token and authenticates as admin to prove the endpoint is
-// still mounted and reachable.
+// #627: the server always wires a workertoken.Store into the bridge,
+// but auth mode is still decided by DAGNATS_BRIDGE_TOKEN alone (see
+// bridge.Bridge.authorize) -- with it unset, this stays dev mode
+// (unauthenticated allowed), same as before #627.
 func TestServerMountsBridgeEndpoints(t *testing.T) {
-	t.Setenv("DAGNATS_BRIDGE_TOKEN", "test-admin-token")
 	cfg := testConfig(t)
 	srv := New(cfg)
 
@@ -301,20 +298,14 @@ func TestServerMountsBridgeEndpoints(t *testing.T) {
 		t.Fatal("/ready did not return 200 within 10s")
 	}
 
-	// Test bridge endpoint responds -- authenticated as admin, since
-	// #627 makes an unauthenticated request 401 once a Store is wired
-	// in (which the server always does).
+	// Test bridge endpoint responds -- dev mode (no admin token set),
+	// unaffected by the server always wiring a Store into the bridge.
 	body := `{"worker_id":"w-1","task_types":["echo"],"max_tasks":1}`
-	req, err := http.NewRequest(
-		"POST", fmt.Sprintf("http://%s/v1/workers/connect", cfg.HTTPAddr),
+	resp, err := http.Post(
+		fmt.Sprintf("http://%s/v1/workers/connect", cfg.HTTPAddr),
+		"application/json",
 		strings.NewReader(body),
 	)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer test-admin-token")
-	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/workers/connect: %v", err)
 	}

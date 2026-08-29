@@ -1,9 +1,11 @@
 // token_auth_test.go
 // Tests for scoped worker-token authentication on the bridge (#627):
-// admin bearer bypasses scoping, a minted worker token is checked
-// against its task-type prefixes, out-of-scope polls are rejected, and
-// an unset env token still allows minted tokens through a configured
-// Store while rejecting an unrelated random bearer.
+// bridge auth mode is decided by the env token ALONE. With it unset,
+// the bridge stays in dev mode (allow all) regardless of whether a
+// Store is wired in -- minted tokens are only meaningful once an
+// admin token exists to mint them. With it set, the bearer must be
+// either the env token (admin, bypasses scoping) or a valid minted
+// token (checked against its task-type prefixes).
 // Methodology: real NATS, real workertoken.Store, httptest.
 package bridge
 
@@ -68,6 +70,10 @@ func TestTokenPollInScopeSucceeds(t *testing.T) {
 	store := openTokenStore(t, js)
 
 	b := newTestBridge(t, nc)
+	// Minted tokens are only meaningful once an admin token exists to
+	// mint them -- the env token must be set for Store.Authorize to be
+	// consulted at all.
+	b.token = "admin-secret"
 	b.SetTokenStore(store)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
@@ -101,6 +107,7 @@ func TestTokenPollOutOfScopeForbidden(t *testing.T) {
 	store := openTokenStore(t, js)
 
 	b := newTestBridge(t, nc)
+	b.token = "admin-secret"
 	b.SetTokenStore(store)
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
@@ -145,7 +152,15 @@ func TestTokenAdminBypassesScoping(t *testing.T) {
 	}
 }
 
-func TestTokenEnvUnsetStoreConfiguredMintedWorksRandomRejected(t *testing.T) {
+// TestTokenEnvUnsetStoreWiredAllowsUnauthenticated pins the fix for the
+// lockout bug: wiring a Store into every server (#627) must NOT change
+// dev-mode behavior. Bridge auth mode is decided by the env token
+// ALONE -- with it unset, an unauthenticated request still succeeds
+// even though a Store is configured, because a fresh `dagnats serve`
+// with no admin token could otherwise never admit any worker (minting
+// itself requires the admin token, so no worker token could ever
+// exist to satisfy a Store-only gate).
+func TestTokenEnvUnsetStoreWiredAllowsUnauthenticated(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -162,25 +177,39 @@ func TestTokenEnvUnsetStoreConfiguredMintedWorksRandomRejected(t *testing.T) {
 	ts := httptest.NewServer(b.Handler())
 	defer ts.Close()
 
-	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer mintCancel()
-	_, bearer, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	// Positive: no Authorization header at all still succeeds -- dev
+	// mode, unaffected by the Store being wired in.
+	resp := pollWithBearer(t, ts.URL, "", `["echo"]`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// TestTokenEnvSetRandomBearerRejected keeps the "env token set + random
+// bearer -> 401" case pinned once a Store is wired in, distinct from
+// the dev-mode case above.
+func TestTokenEnvSetRandomBearerRejected(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
 	if err != nil {
-		t.Fatalf("Mint: %v", err)
+		t.Fatalf("jetstream.New: %v", err)
 	}
+	store := openTokenStore(t, js)
 
-	okResp := pollWithBearer(t, ts.URL, bearer, `["echo"]`)
-	defer okResp.Body.Close()
-	// Positive: a minted token works even with no admin token set.
-	if okResp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", okResp.StatusCode, http.StatusOK)
-	}
+	b := newTestBridge(t, nc)
+	b.token = "admin-secret"
+	b.SetTokenStore(store)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
 
-	badResp := pollWithBearer(t, ts.URL, "dgn_notarealtoken_secretvalue", `["echo"]`)
-	defer badResp.Body.Close()
-	// Negative: a random bearer is rejected once a Store is configured
-	// -- env-unset no longer means "allow all" when a Store exists.
-	if badResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", badResp.StatusCode, http.StatusUnauthorized)
+	resp := pollWithBearer(t, ts.URL, "dgn_notarealtoken_secretvalue", `["echo"]`)
+	defer resp.Body.Close()
+	// Negative: a random bearer is rejected once the env token is set.
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 }

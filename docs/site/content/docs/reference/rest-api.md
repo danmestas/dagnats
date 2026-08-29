@@ -661,7 +661,11 @@ unscoped, and it is the only credential these three routes accept.
 **All three routes require `Authorization: Bearer <DAGNATS_BRIDGE_TOKEN>`.**
 This is a fail-closed contract: if `DAGNATS_BRIDGE_TOKEN` is unset,
 token management is unavailable (`503`), never open. A minted worker
-token cannot call these routes, no matter its scope.
+token cannot call these routes, no matter its scope. This is
+independent of the bridge's own poll/resolve/connect auth, which
+follows the opposite rule: no env token there means an open bridge
+(dev mode); set it and every worker needs either the env token or a
+minted one.
 
 ### Mint Token
 

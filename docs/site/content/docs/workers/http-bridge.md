@@ -113,16 +113,19 @@ Fail with retry-after:
 
 ## Authentication
 
-`DAGNATS_BRIDGE_TOKEN` is now the **admin/root credential**. Set it and
-every request must include:
+**No env token = open bridge (dev mode); set it and every worker needs
+either the env token or a minted one.** `DAGNATS_BRIDGE_TOKEN` is the
+sole switch: unset, every request is allowed unauthenticated (a
+startup log warns `bridge auth disabled: DAGNATS_BRIDGE_TOKEN unset`
+so this is never silent). Set it and every request must include:
 
 ```
 Authorization: Bearer <token>
 ```
 
-The admin token authenticates unscoped — it can poll or resolve any
-task type, and it is the only credential accepted by the
-[token-management REST routes](../../reference/rest-api#tokens)
+The admin token (the env value itself) authenticates unscoped — it can
+poll or resolve any task type, and it is the only credential accepted
+by the [token-management REST routes](../../reference/rest-api#tokens)
 (`POST/GET /v1/tokens`, `DELETE /v1/tokens/{id}`).
 
 Use the admin token to mint scoped, revocable **worker tokens** and hand
@@ -131,20 +134,16 @@ credential itself. A worker token (`Authorization: Bearer
 dgn_{id}_{secret}`) is checked against the task-type prefixes it was
 minted with — a poll naming a task type outside those prefixes gets
 `403`. Revoking one worker token does not require rotating
-`DAGNATS_BRIDGE_TOKEN` or bouncing every other worker.
+`DAGNATS_BRIDGE_TOKEN` or bouncing every other worker. Worker tokens
+are only meaningful once the env token is set: minting itself requires
+the admin credential, so with it unset the bridge stays in dev mode
+regardless of whether a worker-token store is wired in.
 
 Revocation is not instant: each bridge process keeps an in-memory cache
 kept current by a NATS KV watch, and during a reconnect it keeps
 serving its last-known cache rather than failing every poll/resolve
 outright. Revocation latency is therefore bounded by the watch's
 reconnect window (capped at 30s), not zero.
-
-`dagnats serve` always provisions the worker-token store, so a server
-with `DAGNATS_BRIDGE_TOKEN` unset no longer means "allow all" the way
-it used to: an unauthenticated request is rejected (`401`) unless it
-carries a valid minted worker token. True dev mode (no admin token, no
-token store at all) only exists for a bridge embedded standalone
-without wiring one in — see `bridge.Bridge.SetTokenStore`.
 
 ## Setup
 
