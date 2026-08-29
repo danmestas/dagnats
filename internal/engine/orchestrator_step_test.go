@@ -54,6 +54,10 @@ func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
 	if _, err := defKV.Put("routed-wf", defData); err != nil {
 		t.Fatalf("put def: %v", err)
 	}
+	versionKey := dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef))
+	if _, err := defKV.Put(versionKey, defData); err != nil {
+		t.Fatalf("put def version: %v", err)
+	}
 
 	// Subscribe to AGENT_TASKS to verify routing
 	agentSub, err := js.SubscribeSync("agent.task.>",
@@ -115,6 +119,7 @@ func TestOrchestratorWorkerGroupRouting(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -178,6 +183,7 @@ func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -273,6 +279,7 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -360,6 +367,7 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -474,6 +482,7 @@ func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -551,6 +560,7 @@ func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

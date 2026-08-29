@@ -41,6 +41,18 @@ func (s *Service) RegisterWorkflow(
 
 // registerWorkflowInner holds the core logic, keeping the
 // instrumented wrapper under the 70-line limit.
+//
+// Beyond the historical name -> latest-def pointer write, this also
+// persists an immutable name.v.hash version snapshot (#637, via
+// persistDef -- see its doc for why runtimes.go's registerRuntimeWorkflow
+// shares this exact path) so a run that started under this content
+// stays pinned to it even after a later re-register moves the
+// pointer -- see loadRunAndDef in internal/engine/orchestrator.go.
+// The version write is idempotent: re-registering byte-identical
+// content is a no-op past the initial write (content-addressed, so
+// the existing key already holds it). Concurrent RegisterWorkflow
+// calls for the same name are last-writer-wins on the pointer, same
+// as before #637.
 func (s *Service) registerWorkflowInner(
 	ctx context.Context, def dag.WorkflowDef,
 ) error {
@@ -50,6 +62,11 @@ func (s *Service) registerWorkflowInner(
 	if def.Name == "" {
 		panic("registerWorkflowInner: def.Name must not be empty")
 	}
+	if dag.IsDefVersionKey(def.Name) {
+		return fmt.Errorf(
+			"workflow name %q is reserved for internal def "+
+				"versioning and cannot be registered", def.Name)
+	}
 	if err := dag.Validate(def); err != nil {
 		return fmt.Errorf("invalid workflow: %w", err)
 	}
@@ -57,8 +74,7 @@ func (s *Service) registerWorkflowInner(
 	if err != nil {
 		return err
 	}
-	_, err = s.defKV.Put(ctx, def.Name, data)
-	return err
+	return s.persistDef(ctx, def, data)
 }
 
 // RegisterWorkflowWithWarnings is the variant that returns the
@@ -178,7 +194,41 @@ func (s *Service) deleteWorkflowInner(
 	if _, err := s.defKV.Get(ctx, name); err != nil {
 		return fmt.Errorf("workflow %q not found: %w", name, err)
 	}
+	if err := s.deleteDefVersions(ctx, name); err != nil {
+		return err
+	}
 	return s.defKV.Delete(ctx, name)
+}
+
+// deleteDefVersions removes every immutable name.v.hash version key
+// for name (#637 review fix): DeleteWorkflow used to delete only the
+// mutable pointer, leaking up to DefVersionsMax version snapshots
+// forever. Bounded by defVersionKeysForName's own scan bound
+// (defVersionScanMax).
+//
+// Any run still pinned to one of these versions will fail its next
+// advance (missing pinned version, engine.def_pin.missing_version)
+// rather than silently reading something else -- consistent with
+// #637's fail-loud rule. An explicit administrative delete of the
+// whole workflow is exactly the case where that tradeoff is correct:
+// the operator asked for the definition gone.
+func (s *Service) deleteDefVersions(ctx context.Context, name string) error {
+	if ctx == nil {
+		panic("deleteDefVersions: ctx must not be nil")
+	}
+	if name == "" {
+		panic("deleteDefVersions: name must not be empty")
+	}
+	versionKeys, err := s.defVersionKeysForName(ctx, name)
+	if err != nil {
+		return err
+	}
+	for _, key := range versionKeys {
+		if err := s.defKV.Delete(ctx, key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListWorkflows retrieves all registered workflow definitions from KV.
@@ -225,8 +275,19 @@ func (s *Service) listWorkflowsInner(
 		return nil, err
 	}
 
+	// Skip immutable name.v.hash version snapshots (#637) -- they
+	// share the bucket with the mutable name -> latest pointers this
+	// endpoint lists, but are not themselves a "registered workflow".
+	nameKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if dag.IsDefVersionKey(key) {
+			continue
+		}
+		nameKeys = append(nameKeys, key)
+	}
+
 	entries, err := natsutil.ParallelGetJS(
-		s.defKV, keys, natsutil.DefaultParallelism,
+		s.defKV, nameKeys, natsutil.DefaultParallelism,
 	)
 	if err != nil {
 		return nil, err

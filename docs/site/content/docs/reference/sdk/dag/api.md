@@ -17,8 +17,12 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [Constants](<#constants>)
 - [func CalculateDelay\(policy RetryPolicy, attempt int\) time.Duration](<#CalculateDelay>)
 - [func DefHash\(def WorkflowDef\) string](<#DefHash>)
+- [func DefHashFromVersionKey\(key, name string\) \(hash string, ok bool\)](<#DefHashFromVersionKey>)
+- [func DefVersionKey\(name, hash string\) string](<#DefVersionKey>)
+- [func DefVersionKeyPrefix\(name string\) string](<#DefVersionKeyPrefix>)
 - [func ExtractDotPath\(path string, data \[\]byte\) \(any, error\)](<#ExtractDotPath>)
 - [func IsComplete\(def WorkflowDef, completed map\[string\]bool\) bool](<#IsComplete>)
+- [func IsDefVersionKey\(key string\) bool](<#IsDefVersionKey>)
 - [func LabelsMatch\(want, have map\[string\]string\) bool](<#LabelsMatch>)
 - [func MarshalConfig\(cfg interface\{\}\) json.RawMessage](<#MarshalConfig>)
 - [func ResolveInput\(step StepDef, steps map\[string\]StepState, runInput ...json.RawMessage\) \(\[\]byte, error\)](<#ResolveInput>)
@@ -200,6 +204,35 @@ Determinism relies on two Go/encoding/json guarantees rather than any custom can
 
 Panics on an empty def.Name \(a WorkflowDef without a name is a programmer error, not a runtime condition to handle\) and if marshaling fails \(WorkflowDef holds only JSON\-safe field types, so a marshal failure indicates a violated invariant elsewhere, not bad input\).
 
+<a name="DefHashFromVersionKey"></a>
+## func [DefHashFromVersionKey](<https://github.com/danmestas/dagnats/blob/main/dag/defkey.go#L81>)
+
+```go
+func DefHashFromVersionKey(key, name string) (hash string, ok bool)
+```
+
+DefHashFromVersionKey extracts the hash suffix from a version key produced by DefVersionKey\(name, hash\). ok is false when key is not EXACTLY a version key belonging to name.
+
+Anchored on both length and content, not a prefix match: a naive strings.HasPrefix\(key, name\+".v."\) check is fooled by a workflow literally named "orders.v" \-\- its own version keys \("orders.v" \+ ".v." \+ hash\) also start with "orders.v.", so a prefix\-only check would mistake them for version keys of a DIFFERENT workflow "orders", corrupting that name's retention accounting and enabling cross\-workflow eviction \(\#637 review fix\). Requiring the remainder after name's prefix to be exactly 64 hex characters \-\- no more, no less \-\- makes that impossible: "orders.v.v.\<hash\>" has "v.\<hash\>" \(66 chars\) left over under name "orders", which fails the length/hex check and returns false.
+
+<a name="DefVersionKey"></a>
+## func [DefVersionKey](<https://github.com/danmestas/dagnats/blob/main/dag/defkey.go#L25>)
+
+```go
+func DefVersionKey(name, hash string) string
+```
+
+DefVersionKey returns the workflow\_defs KV key under which the immutable, content\-addressed snapshot of the def named name at content hash hash is stored, alongside the mutable name \-\> latest pointer at plain key name. hash is expected to be a DefHash output \(64 lowercase hex chars\); DefVersionKey does not itself validate that shape \-\- callers pass DefHash\(def\) directly.
+
+<a name="DefVersionKeyPrefix"></a>
+## func [DefVersionKeyPrefix](<https://github.com/danmestas/dagnats/blob/main/dag/defkey.go#L54>)
+
+```go
+func DefVersionKeyPrefix(name string) string
+```
+
+DefVersionKeyPrefix returns the prefix every DefVersionKey\(name, \_\) output starts with \-\- name \+ ".v.". A prefix match ALONE is not enough to identify name's own version keys: a workflow literally named e.g. "orders.v" has its own version keys sharing the prefix "orders.v." that "orders" would compute too. Callers scanning workflow\_defs for name's retained versions should use DefHashFromVersionKey\(key, name\), which anchors on the full key shape and rejects that collision, rather than testing this prefix directly.
+
 <a name="ExtractDotPath"></a>
 ## func [ExtractDotPath](<https://github.com/danmestas/dagnats/blob/main/dag/dotpath.go#L13>)
 
@@ -217,6 +250,15 @@ func IsComplete(def WorkflowDef, completed map[string]bool) bool
 ```
 
 IsComplete returns true when every step in the definition has been completed or skipped. Auxiliary steps \(OnFailure/Compensate targets\) that were never triggered don't block completion — they are expected to remain Pending in the happy path.
+
+<a name="IsDefVersionKey"></a>
+## func [IsDefVersionKey](<https://github.com/danmestas/dagnats/blob/main/dag/defkey.go#L41>)
+
+```go
+func IsDefVersionKey(key string) bool
+```
+
+IsDefVersionKey reports whether key has the shape a DefVersionKey call produces: some prefix followed by ".v." and 64 lowercase hex characters. RegisterWorkflow rejects workflow names of this shape \(see registerWorkflowInner\) so a legitimate name \-\> latest pointer key can never collide with a version key \-\- any name that would collide is refused at registration time instead.
 
 <a name="LabelsMatch"></a>
 ## func [LabelsMatch](<https://github.com/danmestas/dagnats/blob/main/dag/labels.go#L100>)
@@ -1536,7 +1578,7 @@ func WithSchemas[I, O any](def WorkflowDef) WorkflowDef
 WithSchemas generates JSON schemas from Go types I \(input\) and O \(output\) and attaches them to the WorkflowDef. Applied after Build\(\). Supports flat structs with primitive fields, slices, and maps.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L405>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L414>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1597,11 +1639,20 @@ type WorkflowRun struct {
     // retrying unboundedly. Additive: legacy snapshots deserialize to
     // 0, the correct starting count.
     ReleaseAttempts int `json:"release_attempts,omitempty"`
+    // DefHash pins the run to the exact def content it started under
+    // (#637): the SHA-256 hex digest DefHash(def) computed at run
+    // creation, before any dynamic steps are added. loadRunAndDef uses
+    // it to re-read that immutable version instead of the mutable
+    // name -> latest-def pointer, so a POST /workflows re-register
+    // mid-flight never changes what a running run sees on its next
+    // advance. Additive: legacy snapshots deserialize to "" and fall
+    // back to today's by-name read.
+    DefHash string `json:"def_hash,omitempty"`
 }
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L410>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L419>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1610,7 +1661,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L431>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L443>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time

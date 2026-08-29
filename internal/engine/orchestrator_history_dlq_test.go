@@ -131,6 +131,7 @@ func TestOrchestrator_UnmarshalFailurePoisonEventExhaustsToDeadLetter(t *testing
 	defData := mustMarshal(t, validDef)
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, validDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(validDef.Name, dag.DefHash(validDef)), defData)
 	validEvt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, "post-poison-run", defData,
 	)
@@ -280,6 +281,7 @@ func TestOrchestrator_TransientFailureThenSuccessDoesNotDeadLetter(t *testing.T)
 	defData := mustMarshal(t, wfDef)
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	before := countDeadLetters(t, jsNew, "dead.orchestrator.>")
 

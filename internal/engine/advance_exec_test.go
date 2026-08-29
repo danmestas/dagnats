@@ -43,6 +43,7 @@ func TestExecuteSideEffects_EnqueueTask(t *testing.T) {
 	defData := mustMarshal(t, wfDef)
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 
@@ -119,6 +120,7 @@ func TestExecuteSideEffects_CompleteWorkflow(t *testing.T) {
 	defData := mustMarshal(t, wfDef)
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 
@@ -233,6 +235,7 @@ func TestAdvanceIntegration_StepCompletedTriggersEnqueue(
 	defData := mustMarshal(t, wfDef)
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

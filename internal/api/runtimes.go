@@ -251,7 +251,12 @@ func (s *Service) registerRuntimeWorkflow(
 	if err != nil {
 		return "", cpKindInvalidDef, err
 	}
-	if _, err := s.defKV.Put(ctx, scoped, data); err != nil {
+	// Route through persistDef, NOT a raw defKV.Put (#637 review fix):
+	// a run spawned from this def is stamped with DefHash unconditionally
+	// (dag.NewWorkflowRun), so its pin must resolve to a written
+	// name.v.hash version or the run's first advance fails loudly. See
+	// persistDef's doc in internal/api/def_versioning.go.
+	if err := s.persistDef(ctx, def, data); err != nil {
 		return "", cpKindTransport, err
 	}
 	action := "runtime.register"
@@ -652,6 +657,14 @@ func (s *Service) countDefsForRoot(
 	prefix := scopePrefix(root)
 	count := 0
 	for _, key := range keys {
+		// Skip immutable name.v.hash version keys (#637 review fix):
+		// persistDef now writes one alongside every scoped def's
+		// pointer, and it shares the "agent.<root>." prefix -- without
+		// this filter, every runtime def registration burns TWO def
+		// quota slots instead of one.
+		if dag.IsDefVersionKey(key) {
+			continue
+		}
 		if strings.HasPrefix(key, prefix) {
 			count++
 		}
@@ -790,6 +803,11 @@ func (s *Service) defCountsByRoot(
 			len(keys), runtimeDefScanMax)
 	}
 	for _, key := range keys {
+		// Skip immutable name.v.hash version keys (#637 review fix) --
+		// see the matching comment in countDefsForRoot.
+		if dag.IsDefVersionKey(key) {
+			continue
+		}
 		root, ok := rootFromScopedKey(key)
 		if !ok {
 			continue

@@ -42,6 +42,16 @@ type orchMetrics struct {
 	failRetryAfter   metric.Int64Counter
 	dlqEntries       metric.Int64Counter
 	dlqDepth         metric.Int64UpDownCounter
+	// defPinMissingVersion counts loadRunAndDef calls that FAILED the
+	// advance because the run's pinned name.v.hash version was
+	// missing (#637 review fix: a legacy DefHash=="" run falls back
+	// to the mutable pointer silently and is NOT counted here -- only
+	// a run WITH a DefHash whose version key can't be found, meaning
+	// retention evicted a version still in use, or it was never
+	// written). The durable operator signal that retention needs
+	// attention; the run itself stays stuck-but-correct rather than
+	// silently advancing under a different def.
+	defPinMissingVersion metric.Int64Counter
 }
 
 // newOrchMetrics creates all orchestrator metric instruments.
@@ -82,17 +92,21 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 	dlqDepth, _ := m.Int64UpDownCounter(
 		"dlq_depth",
 	)
+	defPinMissingVersion, _ := m.Int64Counter(
+		"engine.def_pin.missing_version",
+	)
 	return orchMetrics{
-		runsActive:       runsActive,
-		runsCompleted:    runsCompleted,
-		runsFailed:       runsFailed,
-		runsReconciled:   runsReconciled,
-		runsScanDegraded: runsScanDegraded,
-		snapshotDuration: snapshotDuration,
-		failNonRetriable: failNonRetriable,
-		failRetryAfter:   failRetryAfter,
-		dlqEntries:       dlqEntries,
-		dlqDepth:         dlqDepth,
+		runsActive:           runsActive,
+		runsCompleted:        runsCompleted,
+		runsFailed:           runsFailed,
+		runsReconciled:       runsReconciled,
+		runsScanDegraded:     runsScanDegraded,
+		snapshotDuration:     snapshotDuration,
+		failNonRetriable:     failNonRetriable,
+		failRetryAfter:       failRetryAfter,
+		dlqEntries:           dlqEntries,
+		dlqDepth:             dlqDepth,
+		defPinMissingVersion: defPinMissingVersion,
 	}
 }
 

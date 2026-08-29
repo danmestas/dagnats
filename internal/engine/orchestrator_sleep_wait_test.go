@@ -54,6 +54,7 @@ func TestOrchestratorSleepStep(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -174,6 +175,7 @@ func TestOrchestratorRateLimitDelaysTask(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -317,6 +319,7 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -457,6 +460,7 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

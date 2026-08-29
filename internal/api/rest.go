@@ -175,6 +175,11 @@ func handleRegisterWorkflow(
 		r.Context(), def,
 	)
 	if err != nil {
+		var tooMany *ErrTooManyLiveWorkflowVersions
+		if errors.As(err, &tooMany) {
+			writeTooManyLiveVersionsError(w, tooMany)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -194,6 +199,34 @@ func handleRegisterWorkflow(
 	encErr := json.NewEncoder(w).Encode(resp)
 	if encErr != nil {
 		slog.Error("encode response", "error", encErr)
+	}
+}
+
+// writeTooManyLiveVersionsError writes the 409 body for
+// ErrTooManyLiveWorkflowVersions (#637): every retained def version
+// for the workflow is still referenced by a non-terminal run, so
+// RegisterWorkflow refused rather than evicting one out from under a
+// running run or growing the retained-version count unbounded.
+func writeTooManyLiveVersionsError(
+	w http.ResponseWriter, err *ErrTooManyLiveWorkflowVersions,
+) {
+	if w == nil {
+		panic("writeTooManyLiveVersionsError: w must not be nil")
+	}
+	if err == nil {
+		panic("writeTooManyLiveVersionsError: err must not be nil")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	body := struct {
+		Error        string `json:"error"`
+		LiveVersions int    `json:"live_versions"`
+	}{
+		Error:        "too many live workflow versions",
+		LiveVersions: err.LiveVersions,
+	}
+	if encErr := json.NewEncoder(w).Encode(body); encErr != nil {
+		slog.Error("encode 409 response", "error", encErr)
 	}
 }
 

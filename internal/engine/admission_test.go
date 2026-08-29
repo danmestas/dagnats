@@ -50,6 +50,7 @@ func TestPriorityAffectsPendingOrder(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -116,6 +117,7 @@ func TestSingletonSkipMode(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -189,6 +191,7 @@ func TestSingletonCancelMode(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

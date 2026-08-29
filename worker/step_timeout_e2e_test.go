@@ -112,6 +112,7 @@ func TestStepTimeout_HandlerHangAndFailNoPolicy(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -196,6 +197,7 @@ func TestStepTimeout_TimeoutPlusRetryRetriesAttempts(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -279,6 +281,7 @@ func TestStepTimeout_NoFireOnSuccess(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -375,6 +378,7 @@ func TestStepTimeout_NoFireAfterRetry(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()

@@ -37,6 +37,14 @@ func registerWorkflowDef(
 	if _, err := defKV.Put(def.Name, data); err != nil {
 		t.Fatalf("put workflow def: %v", err)
 	}
+	// Also write the immutable name.v.hash version key (#637): every
+	// run built via dag.NewWorkflowRun is stamped with DefHash
+	// unconditionally, so a run started against this def must be able
+	// to resolve its pin or its first advance fails loudly.
+	versionKey := dag.DefVersionKey(def.Name, dag.DefHash(def))
+	if _, err := defKV.Put(versionKey, data); err != nil {
+		t.Fatalf("put workflow def version: %v", err)
+	}
 }
 
 // publishEvent publishes a protocol.Event to the history stream.

@@ -2196,7 +2196,11 @@ func (o *Orchestrator) saveSnapshot(
 	return err
 }
 
-// loadRunAndDef loads the workflow definition and current run snapshot.
+// loadRunAndDef loads the workflow definition and current run
+// snapshot. The def is pinned to the content run.DefHash names
+// (#637) so a POST /workflows re-register mid-flight never changes
+// what a running run sees on its next advance -- see
+// loadPinnedOrLatestDef.
 func (o *Orchestrator) loadRunAndDef(
 	ctx context.Context, runID string,
 ) (dag.WorkflowDef, dag.WorkflowRun, error) {
@@ -2208,20 +2212,168 @@ func (o *Orchestrator) loadRunAndDef(
 		return dag.WorkflowDef{}, dag.WorkflowRun{},
 			fmt.Errorf("load run %q: %w", runID, err)
 	}
-	entry, err := o.defKV.Get(ctx, run.WorkflowID)
+	wfDef, err := o.loadPinnedOrLatestDef(ctx, run)
 	if err != nil {
-		return dag.WorkflowDef{}, dag.WorkflowRun{},
-			fmt.Errorf("load workflow def %q: %w",
-				run.WorkflowID, err)
-	}
-	var wfDef dag.WorkflowDef
-	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
-		return dag.WorkflowDef{}, dag.WorkflowRun{},
-			fmt.Errorf("unmarshal workflow def %q: %w",
-				run.WorkflowID, err)
+		return dag.WorkflowDef{}, dag.WorkflowRun{}, err
 	}
 	wfDef = dag.EffectiveDef(wfDef, run)
 	return wfDef, run, nil
+}
+
+// loadPinnedOrLatestDef resolves the def a run should see on its next
+// advance (#637). When run.DefHash is set, it reads the immutable
+// name.v.hash version the run was created under -- content-addressed
+// and never mutated by a later RegisterWorkflow call, so a re-
+// register mid-flight cannot change it. Falls back to loadDef (the
+// mutable name -> latest pointer) ONLY for a legacy run (DefHash ==
+// "", pre-#637 snapshot) -- that's a safe, well-understood fallback
+// to the exact behavior this package had before #637.
+//
+// A run WITH a DefHash whose pinned version key can't be found tries
+// selfHealMissingVersion before giving up -- see its doc for why that
+// is safe. Only when self-heal itself can't prove safety (the pointer
+// doesn't match, or can't be read) does the advance FAIL with an
+// error naming the run and the missing hash, counted via
+// defPinMissingVersion -- a stuck-but-correct run is the safe failure
+// mode; a silently re-defined one is not.
+//
+// A stored version whose content hash doesn't match the key it was
+// read from indicates workflow_defs corruption, not an operating
+// condition to fall back from -- it is likewise returned as an
+// error, never silently substituted.
+func (o *Orchestrator) loadPinnedOrLatestDef(
+	ctx context.Context, run dag.WorkflowRun,
+) (dag.WorkflowDef, error) {
+	if run.RunID == "" {
+		panic("loadPinnedOrLatestDef: run.RunID must not be empty")
+	}
+	if o.defKV == nil {
+		panic("loadPinnedOrLatestDef: defKV must not be nil")
+	}
+	if run.DefHash == "" {
+		return o.loadDef(ctx, run.WorkflowID)
+	}
+	versionKey := dag.DefVersionKey(run.WorkflowID, run.DefHash)
+	entry, err := o.defKV.Get(ctx, versionKey)
+	if err != nil {
+		if !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return dag.WorkflowDef{}, fmt.Errorf(
+				"load pinned workflow def %q: %w", versionKey, err)
+		}
+		if healed, healErr := o.selfHealMissingVersion(
+			ctx, run, versionKey,
+		); healErr == nil {
+			return healed, nil
+		}
+		return dag.WorkflowDef{}, o.failMissingPinnedVersion(
+			ctx, run, versionKey)
+	}
+	var wfDef dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"unmarshal pinned workflow def %q: %w", versionKey, err)
+	}
+	if got := dag.DefHash(wfDef); got != run.DefHash {
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"pinned workflow def %q corrupt: content hash %s "+
+				"does not match key hash %s",
+			versionKey, got, run.DefHash)
+	}
+	return wfDef, nil
+}
+
+// selfHealMissingVersion covers the upgrade migration hazard (#637
+// review round 2): every workflow registered before this feature has
+// ONLY the mutable name -> latest pointer in workflow_defs, no
+// name.v.hash version key. A run started against such a def still
+// gets DefHash stamped unconditionally (dag.NewWorkflowRun), so
+// without this its second advance -- once the in-memory def from the
+// first advance is gone -- would hit the missing-pinned-version path
+// and fail every such run in a live deployment until each workflow
+// is manually re-registered.
+//
+// The safety argument: read the mutable pointer and compute its
+// content hash. If it EQUALS run.DefHash, the pointer's content is
+// PROVABLY byte-identical to what the run is pinned to -- the same
+// guarantee a version-key hit would have given, not a guess. Only
+// then does this write the version key (Create, tolerating a racing
+// self-heal via ErrKeyExists) and return the def. A hash MISMATCH
+// (the pointer has since moved to different content) returns an
+// error and the caller falls through to the loud failure -- self-heal
+// never silently substitutes a def the run wasn't pinned to.
+func (o *Orchestrator) selfHealMissingVersion(
+	ctx context.Context, run dag.WorkflowRun, versionKey string,
+) (dag.WorkflowDef, error) {
+	if run.RunID == "" {
+		panic("selfHealMissingVersion: run.RunID must not be empty")
+	}
+	if versionKey == "" {
+		panic("selfHealMissingVersion: versionKey must not be empty")
+	}
+	wfDef, err := o.loadDef(ctx, run.WorkflowID)
+	if err != nil {
+		return dag.WorkflowDef{}, err
+	}
+	if dag.DefHash(wfDef) != run.DefHash {
+		return dag.WorkflowDef{}, errDefPinHashMismatch
+	}
+	data, err := json.Marshal(wfDef)
+	if err != nil {
+		return dag.WorkflowDef{}, err
+	}
+	if _, err := o.defKV.Create(ctx, versionKey, data); err != nil &&
+		!errors.Is(err, jetstream.ErrKeyExists) {
+		return dag.WorkflowDef{}, err
+	}
+	slog.InfoContext(ctx,
+		"self-healed missing pinned workflow def version -- pointer "+
+			"content hash matched run.DefHash exactly",
+		"run_id", run.RunID,
+		"workflow_id", run.WorkflowID,
+		"def_hash", run.DefHash,
+	)
+	return wfDef, nil
+}
+
+// errDefPinHashMismatch signals selfHealMissingVersion found the
+// mutable pointer's content hash does not equal the run's pinned
+// DefHash -- the pointer has moved on to different content and
+// cannot be used to reconstruct the missing version. This is the
+// guard that keeps self-heal from ever silently substituting a
+// different def than the one the run started under.
+var errDefPinHashMismatch = errors.New(
+	"pointer content hash does not match pinned def_hash")
+
+// failMissingPinnedVersion records and formats the loud failure for
+// a pinned version that's missing and could not be self-healed. Split
+// out of loadPinnedOrLatestDef to keep it under the function length
+// limit.
+func (o *Orchestrator) failMissingPinnedVersion(
+	ctx context.Context, run dag.WorkflowRun, versionKey string,
+) error {
+	if run.RunID == "" {
+		panic("failMissingPinnedVersion: run.RunID must not be empty")
+	}
+	if versionKey == "" {
+		panic("failMissingPinnedVersion: versionKey must not be empty")
+	}
+	o.metrics.defPinMissingVersion.Add(ctx, 1)
+	slog.WarnContext(ctx,
+		"pinned workflow def version missing and not self-healable -- "+
+			"failing advance rather than silently re-defining a "+
+			"running run",
+		"run_id", run.RunID,
+		"workflow_id", run.WorkflowID,
+		"def_hash", run.DefHash,
+	)
+	return fmt.Errorf(
+		"run %q pinned to workflow def version %q which no "+
+			"longer exists (def_hash %s) and could not be "+
+			"self-healed: retention may have evicted a version "+
+			"still in use, or the mutable pointer has moved on to "+
+			"different content",
+		run.RunID, versionKey, run.DefHash,
+	)
 }
 
 // parseTraceparent reads traceparent from *nats.Msg header first,

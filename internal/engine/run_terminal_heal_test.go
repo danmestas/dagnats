@@ -116,6 +116,7 @@ func TestHandleWorkflowStarted_RunTerminal_SaveFailureThenRedeliveryStarts(t *te
 	defKV, _ := js.KeyValue("workflow_defs")
 	wfDef := runTerminalHealWorkflow("heal-save-fail-wf")
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 
 	orch := NewOrchestrator(nc)
 	orch.Start()

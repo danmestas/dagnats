@@ -52,7 +52,7 @@ Register or update a workflow definition.
 POST /workflows
 ```
 
-Re-registering an existing name **replaces** the stored definition; in-flight runs pick up the replacement on their next advance rather than staying pinned to the version they started with (see [Wire Protocol: Workflow Re-registration and def_hash](../wire-protocol#workflow-re-registration-and-def_hash)).
+Re-registering an existing name **replaces** the `name -> latest` pointer; in-flight runs stay pinned to the definition they started with and pick up the replacement only on their next fresh run (see [Wire Protocol: Workflow Re-registration and def_hash](../wire-protocol#workflow-re-registration-and-def_hash)). `workflow_defs` retains at most 32 immutable versions per name; if every retained version is still referenced by a non-terminal run, registration is refused with `409` rather than evicting one out from under a running run.
 
 **Request body:** A `WorkflowDef` JSON object (see [Workflow Schema](../workflow-schema)).
 
@@ -87,6 +87,7 @@ Re-registering an existing name **replaces** the stored definition; in-flight ru
 |--------|-----------|
 | `201` | Workflow registered successfully |
 | `400` | Invalid JSON or validation failure |
+| `409` | Every retained def version for this name is still referenced by a live run; response body is `{"error": "too many live workflow versions", "live_versions": <n>}` |
 
 **curl:**
 ```bash
@@ -219,6 +220,8 @@ GET /runs/{id}
   }
 }
 ```
+
+The snapshot also carries `def_hash`: the definition version this run is pinned to (see [Wire Protocol: Workflow Re-registration and def_hash](../wire-protocol#workflow-re-registration-and-def_hash)). Empty for a run started before this field existed.
 
 | Status | Condition |
 |--------|-----------|

@@ -53,6 +53,7 @@ func TestOrchestrator_ResolvesDefFromTriggerEnvelope(t *testing.T) {
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 
 	orch := NewOrchestrator(nc)
 	orch.Start()
@@ -177,6 +178,7 @@ func TestOrchestrator_TriggerEnvelopeMissingWorkflowFails(t *testing.T) {
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 	follow := triggerEnvelope{
 		Trigger:    "cron",
 		Source:     "trig-ok",

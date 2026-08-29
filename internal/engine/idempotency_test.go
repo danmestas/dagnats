@@ -49,6 +49,7 @@ func TestHandleWorkflowStarted_IdempotentForCompletedRun(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 
@@ -143,6 +144,7 @@ func TestHandleWorkflowStarted_IdempotentForRunningRun(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := NewOrchestrator(nc)
 
@@ -235,6 +237,7 @@ func TestHandleStepCompleted_SkipsTerminalRun(t *testing.T) {
 	}
 	defKV, _ := js.KeyValue("workflow_defs")
 	mustPut(t, defKV, wfDef.Name, mustMarshal(t, wfDef))
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), mustMarshal(t, wfDef))
 
 	orch := NewOrchestrator(nc)
 	terminal := dag.WorkflowRun{
@@ -319,6 +322,7 @@ func TestRestartedOrchestratorDoesNotReplayHistory(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData := mustMarshal(t, wfDef)
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	// First instance: process a workflow.started, dispatch a
 	// step, complete it.

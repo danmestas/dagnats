@@ -71,6 +71,7 @@ func startSleepFlavorRun(
 		t.Fatalf("workflow_defs KV: %v", err)
 	}
 	mustPut(t, defKV, wfDef.Name, defData)
+	mustPut(t, defKV, dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 	startAdmissionRun(t, js, wfDef, runID, input)
 }
 

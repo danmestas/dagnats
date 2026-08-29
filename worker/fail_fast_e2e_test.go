@@ -61,6 +61,7 @@ func TestFailFast_GenericErrorRetriesUntilExhausted(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -149,6 +150,7 @@ func TestFailFast_GenericErrorThenSuccess(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()
@@ -223,6 +225,7 @@ func TestFailFast_NoPolicyFailsOnce(t *testing.T) {
 	defKV, _ := js.KeyValue("workflow_defs")
 	defData, _ := json.Marshal(wfDef)
 	defKV.Put(wfDef.Name, defData)
+	defKV.Put(dag.DefVersionKey(wfDef.Name, dag.DefHash(wfDef)), defData)
 
 	orch := enginepkg.NewOrchestrator(nc)
 	orch.Start()

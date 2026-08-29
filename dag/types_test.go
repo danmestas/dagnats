@@ -881,3 +881,55 @@ func TestParseRunStatus_Empty_ReturnsError(t *testing.T) {
 			err.Error())
 	}
 }
+
+// TestNewWorkflowRunStampsDefHash verifies NewWorkflowRun stamps the
+// content hash of the def it was built from (#637), so loadRunAndDef
+// can later pin a run to that exact def instead of re-reading by name.
+func TestNewWorkflowRunStampsDefHash(t *testing.T) {
+	t.Parallel()
+	def := WorkflowDef{
+		Name: "test", Version: "1",
+		Steps: []StepDef{{ID: "a", Task: "t", Type: StepTypeNormal}},
+	}
+	run := NewWorkflowRun(def, "run-1")
+	// Positive: DefHash equals the def's content hash.
+	want := DefHash(def)
+	if run.DefHash != want {
+		t.Fatalf("DefHash = %q, want %q", run.DefHash, want)
+	}
+	// Negative: a differently-shaped def produces a different hash,
+	// proving the field isn't a constant/no-op.
+	other := def
+	other.Steps = append([]StepDef{}, def.Steps...)
+	other.Steps[0].ID = "b"
+	otherRun := NewWorkflowRun(other, "run-2")
+	if otherRun.DefHash == run.DefHash {
+		t.Fatalf("DefHash must differ for a different def")
+	}
+}
+
+// TestWorkflowRunDefHashOmitemptyLegacyRoundTrip verifies a legacy
+// snapshot JSON without def_hash deserializes to "" (additive field,
+// #637) and that a populated DefHash round-trips through JSON.
+func TestWorkflowRunDefHashOmitemptyLegacyRoundTrip(t *testing.T) {
+	t.Parallel()
+	legacy := []byte(`{"run_id":"r1","workflow_id":"w","status":"pending","steps":{}}`)
+	var run WorkflowRun
+	if err := json.Unmarshal(legacy, &run); err != nil {
+		t.Fatalf("unmarshal legacy snapshot: %v", err)
+	}
+	// Positive: legacy snapshot has no def_hash -> zero value.
+	if run.DefHash != "" {
+		t.Fatalf("DefHash = %q, want empty for legacy snapshot", run.DefHash)
+	}
+	run.DefHash = "abc123"
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Negative: a populated DefHash must appear in the encoded JSON
+	// (omitempty must not silently drop a non-empty value).
+	if !bytes.Contains(data, []byte(`"def_hash":"abc123"`)) {
+		t.Fatalf("marshaled run missing def_hash: %s", data)
+	}
+}
