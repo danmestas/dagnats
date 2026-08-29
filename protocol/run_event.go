@@ -26,9 +26,10 @@ const (
 
 // RunEvent is the wire payload published to event.run.*. Status
 // carries the precise dag.RunStatus string (e.g. "compensated") even
-// when Type has coalesced to a coarser bucket. Labels mirrors
-// dag.WorkflowRun.Labels when that field exists; left unpopulated
-// until #629 lands (see run_event.go's caller in internal/engine).
+// when Type has coalesced to a coarser bucket. Labels is copied from
+// the run's dag.WorkflowRun.Labels at finalization time (see
+// copyLabels in internal/engine/run_event.go) — omitted from the
+// wire payload when the run has none.
 //
 // Status is a plain string, not dag.RunStatus: protocol is the wire
 // schema package and stays free of a dependency on dag's internal
