@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -35,14 +34,11 @@ func testServerAddr(t *testing.T) (string, func()) {
 	cfg := server.DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.NATSPort = -1
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("find free port: %v", err)
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-	cfg.HTTPAddr = addr
+	// The server binds its own listener (server.startHTTP) and records
+	// the actual address; asking for port 0 here and reading it back via
+	// srv.HTTPAddr() avoids the pre-reserve/close/rebind TOCTOU window
+	// where another process on the runner steals the port in between.
+	cfg.HTTPAddr = "127.0.0.1:0"
 
 	srv := server.New(cfg)
 	if srv == nil {
@@ -52,24 +48,19 @@ func testServerAddr(t *testing.T) (string, func()) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Run() }()
 
-	// Wait for /ready (bounded 10s, 50ms poll interval)
-	readyURL := "http://" + addr + "/ready"
+	// Wait for the server to bind and become ready (bounded 10s, 50ms
+	// poll interval). srv.HTTPAddr() only returns non-empty once ready.
+	addr := ""
 	deadline := time.Now().Add(10 * time.Second)
-	ready := false
-	for time.Now().Before(deadline) && !ready {
-		resp, getErr := http.Get(readyURL)
-		if getErr == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			ready = true
+	for time.Now().Before(deadline) && addr == "" {
+		if a := srv.HTTPAddr(); a != "" {
+			addr = a
 			break
-		}
-		if resp != nil {
-			resp.Body.Close()
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !ready {
-		t.Fatal("server /ready did not return 200 within 10s")
+	if addr == "" {
+		t.Fatal("server did not bind an HTTP address within 10s")
 	}
 
 	baseURL := "http://" + addr
