@@ -17,7 +17,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -1654,10 +1653,11 @@ func (o *Orchestrator) enqueueReady(
 	for _, step := range ready {
 		state := run.Steps[step.ID]
 		state.Status = dag.StepStatusQueued
-		// Stamp a fresh per-dispatch nonce (#380): it rides this snapshot
-		// write (no extra KV write) and is mirrored onto the TaskPayload in
-		// PublishBatch so the worker can prove it received this dispatch.
-		state.DispatchNonce = runid.New()
+		// Stamp a fresh per-dispatch nonce and StartedAt (#380, #626): both
+		// ride this snapshot write (no extra KV write); the nonce is
+		// mirrored onto the TaskPayload in PublishBatch so the worker can
+		// prove it received this dispatch.
+		stampDispatch(&state, time.Now().UTC())
 		run.Steps[step.ID] = state
 	}
 	// Multi-step batch — no single owning step, so pass "".
@@ -1849,6 +1849,12 @@ func (o *Orchestrator) saveSnapshot(
 	if ctx == nil {
 		panic("saveSnapshot: ctx must not be nil")
 	}
+	// Stamp CompletedAt (#626) for any step that just reached a terminal
+	// status on this snapshot — one place covers every completion/failure
+	// branch instead of each one remembering to call stampCompleted.
+	// Mutates run.Steps in place (map is a reference type) so it rides
+	// this write; no extra KV write.
+	stampTerminalSteps(run.Steps, time.Now().UTC())
 	start := time.Now()
 	err := o.store.Save(ctx, run)
 	elapsed := float64(time.Since(start).Milliseconds())

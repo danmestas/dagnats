@@ -328,6 +328,19 @@ type StepState struct {
 	// cannot forge another run's nonce. A retry re-stamps a fresh nonce.
 	// Additive: legacy snapshots deserialize to "".
 	DispatchNonce string `json:"dispatch_nonce,omitempty"`
+	// StartedAt is the engine's dispatch decision time for this step (#626)
+	// — when the orchestrator marked it Queued and stamped DispatchNonce,
+	// not when the worker later picked it up. A retry re-stamps StartedAt
+	// alongside the fresh nonce, so it reflects the current attempt only.
+	// Worker-reported DurationMs remains the execution-only figure; this
+	// field is for waterfall/UI rendering of end-to-end step timing.
+	// Additive: legacy snapshots deserialize to nil.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	// CompletedAt is when the step reached a terminal status (Completed or
+	// Failed), stamped on the same snapshot write that persists the
+	// terminal status — no extra KV write. Additive: legacy snapshots
+	// deserialize to nil.
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

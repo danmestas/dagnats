@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -182,7 +182,9 @@ func enqueueReadySteps(
 	for _, step := range ready {
 		state := run.Steps[step.ID]
 		state.Status = dag.StepStatusQueued
-		state.DispatchNonce = runid.New()
+		// Stamp a fresh dispatch nonce and StartedAt (#380, #626); both
+		// ride this snapshot write.
+		stampDispatch(&state, time.Now().UTC())
 		run.Steps[step.ID] = state
 	}
 

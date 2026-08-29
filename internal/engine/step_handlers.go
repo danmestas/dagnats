@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -157,11 +156,11 @@ func (o *Orchestrator) handleStepContinue(
 			ctx, run, evt.StepID, state, reason,
 		)
 	}
-	// Re-stamp a fresh per-dispatch nonce for this iteration (#380): it rides
-	// this snapshot save (no extra write) and is threaded onto the
-	// PublishIteration payload so the iteration's control-plane calls bind to
-	// this dispatch.
-	state.DispatchNonce = runid.New()
+	// Re-stamp a fresh per-dispatch nonce and StartedAt for this iteration
+	// (#380, #626): both ride this snapshot save (no extra write); the
+	// nonce is threaded onto the PublishIteration payload so the
+	// iteration's control-plane calls bind to this dispatch.
+	stampDispatch(&state, time.Now().UTC())
 	run.Steps[evt.StepID] = state
 
 	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
