@@ -6,6 +6,8 @@
 import "github.com/danmestas/dagnats/protocol"
 ```
 
+protocol/run\_event.go RunEvent is the payload for the run\-lifecycle consumer contract published to the EVENTS stream \(event.run.\{workflow\}.\{runID\}.\{status\}\), distinct from protocol.Event on the WORKFLOW\_HISTORY stream \(history.\{runID\}\). history.\* carries the full per\-step timeline; event.run.\* carries ONLY the reliable "this run reached a terminal state, and it is durably persisted" signal a forge/poller needs instead of GET /runs/\{id\} polling. See docs/wire\-protocol.md "Consumer contract: run lifecycle events".
+
 ## Index
 
 - [Constants](<#constants>)
@@ -20,6 +22,8 @@ import "github.com/danmestas/dagnats/protocol"
   - [func \(e Event\) NATSSubject\(\) string](<#Event.NATSSubject>)
 - [type EventType](<#EventType>)
 - [type FailureType](<#FailureType>)
+- [type RunEvent](<#RunEvent>)
+- [type RunEventType](<#RunEventType>)
 - [type StepFailedPayload](<#StepFailedPayload>)
 - [type TaskPayload](<#TaskPayload>)
 - [type TaskResolution](<#TaskResolution>)
@@ -206,6 +210,45 @@ const (
     FailureTypeRetriable    FailureType = "retriable"
     FailureTypeNonRetriable FailureType = "non_retriable"
     FailureTypeRetryAfter   FailureType = "retry_after"
+)
+```
+
+<a name="RunEvent"></a>
+## type [RunEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/run_event.go#L37-L46>)
+
+RunEvent is the wire payload published to event.run.\*. Status carries the precise dag.RunStatus string \(e.g. "compensated"\) even when Type has coalesced to a coarser bucket. Labels is copied from the run's dag.WorkflowRun.Labels at finalization time \(see copyLabels in internal/engine/run\_event.go\) — omitted from the wire payload when the run has none.
+
+Status is a plain string, not dag.RunStatus: protocol is the wire schema package and stays free of a dependency on dag's internal types, matching Event's existing payload\-as\-raw\-JSON discipline.
+
+```go
+type RunEvent struct {
+    Type        RunEventType      `json:"type"`
+    RunID       string            `json:"run_id"`
+    WorkflowID  string            `json:"workflow_id"`
+    Status      string            `json:"status"`
+    CreatedAt   time.Time         `json:"created_at"`
+    CompletedAt *time.Time        `json:"completed_at,omitempty"`
+    Labels      map[string]string `json:"labels,omitempty"`
+    TraceParent string            `json:"trace_parent,omitempty"`
+}
+```
+
+<a name="RunEventType"></a>
+## type [RunEventType](<https://github.com/danmestas/dagnats/blob/main/protocol/run_event.go#L19>)
+
+RunEventType discriminates the three terminal outcomes a run can reach. Coarser than dag.RunStatus \(which also has Compensated / CompensateFailed\) — compensation outcomes are reported as RunEventFailed since compensation only runs after the workflow itself failed; the exact status still rides the Status field.
+
+```go
+type RunEventType string
+```
+
+<a name="RunEventCompleted"></a>
+
+```go
+const (
+    RunEventCompleted RunEventType = "run.completed"
+    RunEventFailed    RunEventType = "run.failed"
+    RunEventCancelled RunEventType = "run.cancelled"
 )
 ```
 

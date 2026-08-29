@@ -799,8 +799,16 @@ func (o *Orchestrator) handleWorkflowStarted(
 			run := dag.NewWorkflowRun(wfDef, evt.RunID)
 			run.TraceParent = evt.TraceParent
 			run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
-			run = markTerminal(run, dag.RunStatusFailed)
-			o.saveSnapshot(ctx, run, "")
+			if _, finalizeErr := finalizeRun(
+				ctx, o.tp, o.saveSnapshot, run,
+				dag.RunStatusFailed, "", nil,
+			); finalizeErr != nil {
+				slog.ErrorContext(ctx,
+					"input validation: save failed-run snapshot",
+					"error", finalizeErr,
+					"run_id", evt.RunID,
+				)
+			}
 			return fmt.Errorf("input validation: %w", err)
 		}
 	}
@@ -953,17 +961,19 @@ func (o *Orchestrator) persistFailedStartRun(
 		"run_id", evt.RunID,
 		"workflow_id", workflowID,
 	)
-	failed := markTerminal(dag.WorkflowRun{
+	failed := dag.WorkflowRun{
 		RunID:       evt.RunID,
 		WorkflowID:  workflowID,
 		Steps:       map[string]dag.StepState{},
 		CreatedAt:   time.Now().UTC(),
 		TraceParent: evt.TraceParent,
-	}, dag.RunStatusFailed)
-	if saveErr := o.saveSnapshot(ctx, failed, ""); saveErr != nil {
+	}
+	if _, err := finalizeRun(
+		ctx, o.tp, o.saveSnapshot, failed, dag.RunStatusFailed, "", nil,
+	); err != nil {
 		slog.ErrorContext(ctx,
 			"workflow.started: save failed-run snapshot",
-			"error", saveErr,
+			"error", err,
 			"run_id", evt.RunID,
 		)
 	}
@@ -1033,9 +1043,10 @@ func (o *Orchestrator) persistSkippedRun(
 	// be misread as this run's lock (harmless today given its RunID
 	// guard, but misleading to persist).
 	run.SingletonKey = ""
-	run = markTerminal(run, dag.RunStatusCancelled)
-	if saveErr := o.saveSnapshot(ctx, run, ""); saveErr != nil {
-		return fmt.Errorf("save skipped-run snapshot: %w", saveErr)
+	if _, err := finalizeRun(
+		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCancelled, "", nil,
+	); err != nil {
+		return fmt.Errorf("save skipped-run snapshot: %w", err)
 	}
 	return nil
 }
@@ -1123,40 +1134,48 @@ func RootRunIDOf(run dag.WorkflowRun) string {
 	return run.RunID
 }
 
-// completeWorkflow marks the run complete, saves, publishes the event,
-// adjusts metrics, and releases concurrency slot.
+// completeWorkflow marks the run complete, saves, publishes the terminal
+// events (finalizeRun), adjusts metrics, and releases concurrency slot.
 func (o *Orchestrator) completeWorkflow(
 	ctx context.Context, run dag.WorkflowRun,
 ) error {
 	if run.RunID == "" {
 		panic("completeWorkflow: RunID must not be empty")
 	}
-	run = markTerminal(run, dag.RunStatusCompleted)
-	if err := o.saveSnapshot(ctx, run, ""); err != nil {
-		return err
-	}
-	o.admission.ReleaseSingletonLock(ctx, run)
-	o.sticky.DeleteBinding(ctx, run.RunID)
-	wfAttr := metric.WithAttributes(
-		attribute.String("workflow", run.WorkflowID),
-	)
-	o.metrics.runsActive.Add(ctx, -1, wfAttr)
-	o.metrics.runsCompleted.Add(ctx, 1, wfAttr)
-	if err := o.admission.ReleaseRunIfConcurrency(
-		ctx, run.WorkflowID,
-	); err != nil {
-		return err
-	}
-	if o.admission.HasConcurrency() {
-		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
-			slog.ErrorContext(ctx,
-				"failed to start next pending run",
-				"error", err,
-				"workflow_id", run.WorkflowID,
+	run, err := finalizeRun(
+		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCompleted, "",
+		func(ctx context.Context) error {
+			// Runs BEFORE either publish (#625 review round 2): a
+			// subscriber reacting to run.completed by starting the next
+			// run must see the singleton lock and concurrency slot
+			// already released, not race their release.
+			o.admission.ReleaseSingletonLock(ctx, run)
+			o.sticky.DeleteBinding(ctx, run.RunID)
+			wfAttr := metric.WithAttributes(
+				attribute.String("workflow", run.WorkflowID),
 			)
-		}
-	}
-	if err := o.publishWorkflowCompleted(ctx, run.RunID); err != nil {
+			o.metrics.runsActive.Add(ctx, -1, wfAttr)
+			o.metrics.runsCompleted.Add(ctx, 1, wfAttr)
+			if err := o.admission.ReleaseRunIfConcurrency(
+				ctx, run.WorkflowID,
+			); err != nil {
+				return err
+			}
+			if o.admission.HasConcurrency() {
+				if err := o.startNextPendingRun(
+					ctx, run.WorkflowID,
+				); err != nil {
+					slog.ErrorContext(ctx,
+						"failed to start next pending run",
+						"error", err,
+						"workflow_id", run.WorkflowID,
+					)
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
 		return err
 	}
 	return o.notifyParentIfChild(ctx, run, nil)
@@ -1371,32 +1390,36 @@ func (o *Orchestrator) failWorkflow(
 	stepDef dag.StepDef,
 	state dag.StepState,
 ) error {
-	run = markTerminal(run, dag.RunStatusFailed)
-	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
-		return err
-	}
-	o.admission.ReleaseSingletonLock(ctx, run)
-	o.sticky.DeleteBinding(ctx, run.RunID)
-	wfAttr := metric.WithAttributes(
-		attribute.String("workflow", run.WorkflowID),
-	)
-	o.metrics.runsActive.Add(ctx, -1, wfAttr)
-	o.metrics.runsFailed.Add(ctx, 1, wfAttr)
-	if err := o.admission.ReleaseRunIfConcurrency(
-		ctx, run.WorkflowID,
-	); err != nil {
-		return err
-	}
-	if o.admission.HasConcurrency() {
-		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
-			slog.ErrorContext(ctx,
-				"failed to start next pending run",
-				"error", err,
-				"workflow_id", run.WorkflowID,
+	run, err := finalizeRun(
+		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, stepDef.ID,
+		func(ctx context.Context) error {
+			o.admission.ReleaseSingletonLock(ctx, run)
+			o.sticky.DeleteBinding(ctx, run.RunID)
+			wfAttr := metric.WithAttributes(
+				attribute.String("workflow", run.WorkflowID),
 			)
-		}
-	}
-	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
+			o.metrics.runsActive.Add(ctx, -1, wfAttr)
+			o.metrics.runsFailed.Add(ctx, 1, wfAttr)
+			if err := o.admission.ReleaseRunIfConcurrency(
+				ctx, run.WorkflowID,
+			); err != nil {
+				return err
+			}
+			if o.admission.HasConcurrency() {
+				if err := o.startNextPendingRun(
+					ctx, run.WorkflowID,
+				); err != nil {
+					slog.ErrorContext(ctx,
+						"failed to start next pending run",
+						"error", err,
+						"workflow_id", run.WorkflowID,
+					)
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
 		return err
 	}
 	// Best-effort definition reload so PublishDeadLetter can resolve
@@ -1434,7 +1457,6 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		return nil
 	}
 
-	run = markTerminal(run, dag.RunStatusCancelled)
 	for id, state := range run.Steps {
 		if state.Status == dag.StepStatusQueued ||
 			state.Status == dag.StepStatusRunning ||
@@ -1459,25 +1481,35 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	o.admission.ReleaseSingletonLock(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
 
-	if err := o.saveSnapshot(ctx, run, ""); err != nil {
+	// finalizeRun stamps Status/CompletedAt (markTerminal), saves, and
+	// publishes the new event.run.* notification — cancellation has no
+	// history-stream terminal counterpart (see publishHistoryTerminalEvent),
+	// so this is the only reliable "run finished cancelling" signal.
+	run, err = finalizeRun(
+		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusCancelled, "",
+		func(ctx context.Context) error {
+			o.metrics.runsActive.Add(ctx, -1)
+			if err := o.admission.ReleaseRunIfConcurrency(
+				ctx, run.WorkflowID,
+			); err != nil {
+				return err
+			}
+			if o.admission.HasConcurrency() {
+				if err := o.startNextPendingRun(
+					ctx, run.WorkflowID,
+				); err != nil {
+					slog.ErrorContext(ctx,
+						"failed to start next pending run",
+						"error", err,
+						"workflow_id", run.WorkflowID,
+					)
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
 		return err
-	}
-	o.metrics.runsActive.Add(ctx, -1)
-	if err := o.admission.ReleaseRunIfConcurrency(
-		ctx, run.WorkflowID,
-	); err != nil {
-		return err
-	}
-	if o.admission.HasConcurrency() {
-		if err := o.startNextPendingRun(
-			ctx, run.WorkflowID,
-		); err != nil {
-			slog.ErrorContext(ctx,
-				"failed to start next pending run",
-				"error", err,
-				"workflow_id", run.WorkflowID,
-			)
-		}
 	}
 	return o.notifyParentIfChild(ctx, run, fmt.Errorf("cancelled"))
 }
@@ -1906,52 +1938,6 @@ func (o *Orchestrator) loadRunAndDef(
 	}
 	wfDef = dag.EffectiveDef(wfDef, run)
 	return wfDef, run, nil
-}
-
-// publishWorkflowCompleted publishes a workflow.completed event.
-func (o *Orchestrator) publishWorkflowCompleted(
-	ctx context.Context, runID string,
-) error {
-	if runID == "" {
-		panic("publishWorkflowCompleted: runID must not be empty")
-	}
-	evt := protocol.NewWorkflowEvent(
-		protocol.EventWorkflowCompleted, runID, nil,
-	)
-	data, err := evt.Marshal()
-	if err != nil {
-		return fmt.Errorf(
-			"marshal workflow.completed event: %w", err,
-		)
-	}
-	_, err = o.tp.JSPublish(
-		ctx, evt.NATSSubject(), data,
-		jetstream.WithMsgID(evt.NATSMsgID()),
-	)
-	return err
-}
-
-// publishWorkflowFailed publishes a workflow.failed event.
-func (o *Orchestrator) publishWorkflowFailed(
-	ctx context.Context, runID string,
-) error {
-	if runID == "" {
-		panic("publishWorkflowFailed: runID must not be empty")
-	}
-	evt := protocol.NewWorkflowEvent(
-		protocol.EventWorkflowFailed, runID, nil,
-	)
-	data, err := evt.Marshal()
-	if err != nil {
-		return fmt.Errorf(
-			"marshal workflow.failed event: %w", err,
-		)
-	}
-	_, err = o.tp.JSPublish(
-		ctx, evt.NATSSubject(), data,
-		jetstream.WithMsgID(evt.NATSMsgID()),
-	)
-	return err
 }
 
 // parseTraceparent reads traceparent from *nats.Msg header first,

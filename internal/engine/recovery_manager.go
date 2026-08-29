@@ -252,16 +252,23 @@ func (rm *RecoveryManager) failAuxStep(
 	if stepDef.ID == "" {
 		panic("failAuxStep: stepDef.ID must not be empty")
 	}
-	// Route through markTerminal so CompensateFailed (a terminal
-	// status) records an honest CompletedAt rather than nil — both for
-	// #443's duration/trace surfaces and so the run is reachable by the
-	// #453 retention sweeper instead of leaking past it forever.
-	run = markTerminal(run, dag.RunStatusCompensateFailed)
-	if err := saveFn(ctx, run, stepDef.ID); err != nil {
+	// Route through finalizeRun so CompensateFailed (a terminal status)
+	// records an honest CompletedAt rather than nil — both for #443's
+	// duration/trace surfaces and so the run is reachable by the #453
+	// retention sweeper instead of leaking past it forever — and now
+	// also gets the event.run.* terminal notification (#625): compensate
+	// failures previously had NO terminal notification of any kind.
+	run, err := finalizeRun(
+		ctx, rm.tp, saveFn, run, dag.RunStatusCompensateFailed, stepDef.ID,
+		func(ctx context.Context) error {
+			rm.runsActive.Add(ctx, -1)
+			rm.runsFailed.Add(ctx, 1)
+			return nil
+		},
+	)
+	if err != nil {
 		return err
 	}
-	rm.runsActive.Add(ctx, -1)
-	rm.runsFailed.Add(ctx, 1)
 	taskSubject := ""
 	if stepDef.Task != "" {
 		taskSubject = rm.publisher.StepSubject(stepDef, run.RunID)
@@ -429,11 +436,28 @@ func (rm *RecoveryManager) HandleCompensateCompleted(
 	}
 
 	// All compensate steps done — mark workflow Compensated. Route
-	// through markTerminal so the terminal snapshot carries an honest
-	// CompletedAt like every other terminal path.
-	*run = markTerminal(*run, dag.RunStatusCompensated)
-	saveFn(ctx, *run, "")
-	rm.runsActive.Add(ctx, -1)
+	// through finalizeRun so the terminal snapshot carries an honest
+	// CompletedAt like every other terminal path and now also
+	// publishes the event.run.* terminal notification (#625).
+	// HandleCompensateCompleted returns bool, not error (its callers
+	// treat it as a "did I handle this" dispatch match, not a
+	// propagatable failure) — matches the pre-existing saveFn(ctx, *run,
+	// "") call this replaces, which also discarded its error; the only
+	// change is logging it instead of dropping it silently.
+	finalized, err := finalizeRun(
+		ctx, rm.tp, saveFn, *run, dag.RunStatusCompensated, "",
+		func(ctx context.Context) error {
+			rm.runsActive.Add(ctx, -1)
+			return nil
+		},
+	)
+	if err != nil {
+		slog.ErrorContext(ctx,
+			"compensate completed: save snapshot failed",
+			"error", err, "run_id", run.RunID,
+		)
+	}
+	*run = finalized
 	return true
 }
 

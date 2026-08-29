@@ -298,30 +298,34 @@ func (o *Orchestrator) failLoopStep(
 	state.Status = dag.StepStatusFailed
 	state.Error = reason
 	run.Steps[stepID] = state
-	run = markTerminal(run, dag.RunStatusFailed)
-	if err := o.saveSnapshot(ctx, run, stepID); err != nil {
-		return err
-	}
-	wfAttr := metric.WithAttributes(
-		attribute.String("workflow", run.WorkflowID),
-	)
-	o.metrics.runsActive.Add(ctx, -1, wfAttr)
-	o.metrics.runsFailed.Add(ctx, 1, wfAttr)
-	if err := o.admission.ReleaseRunIfConcurrency(
-		ctx, run.WorkflowID,
-	); err != nil {
-		return err
-	}
-	if o.admission.HasConcurrency() {
-		if err := o.startNextPendingRun(ctx, run.WorkflowID); err != nil {
-			slog.ErrorContext(ctx,
-				"failed to start next pending run",
-				"error", err,
-				"workflow_id", run.WorkflowID,
+	run, err := finalizeRun(
+		ctx, o.tp, o.saveSnapshot, run, dag.RunStatusFailed, stepID,
+		func(ctx context.Context) error {
+			wfAttr := metric.WithAttributes(
+				attribute.String("workflow", run.WorkflowID),
 			)
-		}
-	}
-	if err := o.publishWorkflowFailed(ctx, run.RunID); err != nil {
+			o.metrics.runsActive.Add(ctx, -1, wfAttr)
+			o.metrics.runsFailed.Add(ctx, 1, wfAttr)
+			if err := o.admission.ReleaseRunIfConcurrency(
+				ctx, run.WorkflowID,
+			); err != nil {
+				return err
+			}
+			if o.admission.HasConcurrency() {
+				if err := o.startNextPendingRun(
+					ctx, run.WorkflowID,
+				); err != nil {
+					slog.ErrorContext(ctx,
+						"failed to start next pending run",
+						"error", err,
+						"workflow_id", run.WorkflowID,
+					)
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
 		return err
 	}
 	return o.notifyParentIfChild(ctx, run, fmt.Errorf("%s", reason))
