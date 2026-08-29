@@ -33,6 +33,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -554,5 +555,50 @@ func TestReconciler_ReleasePendingAbandonedAfterMaxAttempts(t *testing.T) {
 			"ReleaseAttempts = %d, want >= %d (releaseAttemptsMax)",
 			final.ReleaseAttempts, releaseAttemptsMax,
 		)
+	}
+}
+
+// TestReconciler_ReleasePendingMalformedRunSkipped is the PR #661
+// review round-4 fix: releaseAdmission panics on an empty
+// RunID/WorkflowID (a programmer-error invariant at ITS boundary),
+// and the reconciler sweep is now reachable with KV-loaded snapshots
+// -- a malformed one must not take down the reconcile goroutine. The
+// sweep must validate BEFORE calling releaseAdmission: skip, log at
+// ERROR, and count, never panic.
+func TestReconciler_ReleasePendingMalformedRunSkipped(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	orch := NewOrchestrator(nc)
+	ctx := context.Background()
+
+	malformed := dag.WorkflowRun{
+		RunID:          "rp-malformed-1",
+		WorkflowID:     "",
+		Status:         dag.RunStatusCompleted,
+		Steps:          map[string]dag.StepState{},
+		CreatedAt:      time.Now().UTC(),
+		ReleasePending: true,
+	}
+	now := time.Now().UTC()
+	malformed.CompletedAt = &now
+
+	buf, restore := captureSlog(t)
+	defer restore()
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("reconcileReleasePending panicked on malformed run: %v", r)
+			}
+		}()
+		orch.reconcileReleasePending(ctx, malformed)
+	}()
+
+	logs := buf.String()
+	if !strings.Contains(logs, "malformed run") {
+		t.Fatalf("expected an ERROR log naming the malformed run, got: %s", logs)
 	}
 }

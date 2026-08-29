@@ -272,6 +272,15 @@ var finalizeReleaseRecovered metric.Int64Counter
 // PR review round 3, reconcileReleasePending in reconciler.go).
 var finalizeReleaseAbandoned metric.Int64Counter
 
+// finalizeReleaseMalformedSkipped counts ReleasePending runs the
+// reconciler refused to hand to releaseAdmission because their
+// identity was malformed (empty RunID or WorkflowID) -- releaseAdmission
+// panics on either (a programmer-error invariant at that call
+// boundary), so the reconciler must validate BEFORE calling it: one
+// corrupt KV snapshot must not take down the reconcile goroutine
+// (#648 PR review round 4).
+var finalizeReleaseMalformedSkipped metric.Int64Counter
+
 func init() {
 	m := otel.Meter("dagnats/engine")
 	f, err := m.Int64Counter("engine.finalize.release_failures")
@@ -298,6 +307,14 @@ func init() {
 		)
 	}
 	finalizeReleaseAbandoned = a
+	ms, err := m.Int64Counter("engine.finalize.release_malformed_skipped")
+	if err != nil {
+		panic(
+			"init: create engine.finalize.release_malformed_skipped " +
+				"counter: " + err.Error(),
+		)
+	}
+	finalizeReleaseMalformedSkipped = ms
 }
 
 // finalizeWithReleaseDebt handles an afterPersist (admission release)

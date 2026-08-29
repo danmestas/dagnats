@@ -395,11 +395,12 @@ type WorkflowRun struct {
 	// ReleasePending run (#648 PR review round 3). Without a bound, a
 	// run whose release keeps failing for a structural reason (not a
 	// transient blip) would retry -- and WARN-log -- every reconciler
-	// pass forever. engine.ReleaseAttemptsMax caps it; reaching the
-	// cap clears ReleasePending (the sweep stops, an ERROR is logged
-	// once, and engine.finalize.release_abandoned is incremented)
-	// rather than retrying unboundedly. Additive: legacy snapshots
-	// deserialize to 0, the correct starting count.
+	// pass forever. The engine package's unexported releaseAttemptsMax
+	// constant caps it; reaching the cap clears ReleasePending (the
+	// sweep stops, an ERROR is logged once, and
+	// engine.finalize.release_abandoned is incremented) rather than
+	// retrying unboundedly. Additive: legacy snapshots deserialize to
+	// 0, the correct starting count.
 	ReleaseAttempts int `json:"release_attempts,omitempty"`
 }
 

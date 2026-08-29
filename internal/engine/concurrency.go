@@ -5,15 +5,78 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
+	"sync"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // concurrencyCASRetriesMax bounds the optimistic-concurrency retry
 // loop shared by every KV-CAS operation in this file (TigerStyle:
 // bounded loops).
 const concurrencyCASRetriesMax = 10
+
+// legacyResetWarnedMax bounds the in-memory set of workflow keys this
+// process has already logged a legacy-value reset for (#648 PR review
+// round 4). Not a correctness bound -- only caps memory for this
+// migration-visibility dedup. Once full, further first-sightings
+// still warn; a few redundant log lines beat unbounded memory growth
+// over a long-lived process with many distinct workflows.
+const legacyResetWarnedMax = 4096
+
+var (
+	legacyResetWarnedMu sync.Mutex
+	legacyResetWarned   = make(map[string]bool)
+)
+
+// concurrencyLegacyReset counts readMembers calls that fell back to
+// an empty set because the stored value was not the current JSON
+// member-set shape -- either the pre-#648 plain-integer counter
+// format, or corrupt data. A limiter silently resetting itself must
+// be visible, not just safely handled (#648 PR review round 4).
+var concurrencyLegacyReset metric.Int64Counter
+
+func init() {
+	m := otel.Meter("dagnats/engine")
+	c, err := m.Int64Counter("engine.concurrency.legacy_reset")
+	if err != nil {
+		panic(
+			"init: create engine.concurrency.legacy_reset counter: " +
+				err.Error(),
+		)
+	}
+	concurrencyLegacyReset = c
+}
+
+// warnLegacyConcurrencyResetOnce logs, at most once per key for this
+// process's lifetime, that key's stored concurrency value was reset
+// to an empty member set because it wasn't the current JSON shape.
+// Always increments the counter (the metric is the durable signal;
+// the log is a bounded diagnostic aid, not itself the record of how
+// many times this happened).
+func warnLegacyConcurrencyResetOnce(ctx context.Context, key string) {
+	if concurrencyLegacyReset != nil {
+		concurrencyLegacyReset.Add(ctx, 1)
+	}
+	legacyResetWarnedMu.Lock()
+	alreadyWarned := legacyResetWarned[key]
+	if !alreadyWarned && len(legacyResetWarned) < legacyResetWarnedMax {
+		legacyResetWarned[key] = true
+	}
+	legacyResetWarnedMu.Unlock()
+	if alreadyWarned {
+		return
+	}
+	slog.WarnContext(ctx,
+		"concurrency: stored value was not a member set -- reset to "+
+			"empty (legacy plain-integer counter or corrupt data); "+
+			"migrating to the new format on the next write",
+		"key", key,
+	)
+}
 
 // ConcurrencyManager enforces run and step concurrency limits using
 // NATS KV with optimistic locking. Thread-safe.
@@ -206,6 +269,11 @@ func removeMember(members []string, runID string) []string {
 // no-op, same as any other release of a run that already isn't a
 // member). This window is bounded to the runs in flight at upgrade
 // time and self-heals as they complete.
+//
+// warnLegacyConcurrencyResetOnce is called on the fallback path
+// (#648 PR review round 4): a limiter silently resetting itself must
+// be visible, not just safely handled -- WARN once per key (bounded)
+// plus engine.concurrency.legacy_reset on every occurrence.
 func (cm *ConcurrencyManager) readMembers(
 	ctx context.Context, key string,
 ) ([]string, uint64, error) {
@@ -218,6 +286,7 @@ func (cm *ConcurrencyManager) readMembers(
 	}
 	var m runMembership
 	if unmarshalErr := json.Unmarshal(entry.Value(), &m); unmarshalErr != nil {
+		warnLegacyConcurrencyResetOnce(ctx, key)
 		return nil, entry.Revision(), nil
 	}
 	return m.Members, entry.Revision(), nil

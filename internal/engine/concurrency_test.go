@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -310,6 +311,62 @@ func TestConcurrencyLegacyCounterMigrates(t *testing.T) {
 	}
 	if ok2 {
 		t.Fatal("run-2 should be refused -- limit=1 already held by run-1")
+	}
+}
+
+// TestConcurrencyLegacyValueWarnsOnceAndCounts is the PR #661 review
+// round-4 fix: a limiter silently resetting itself (the legacy-value
+// fallback readMembers takes -- see TestConcurrencyLegacyCounterMigrates)
+// must be visible, not just safe. Reading the SAME still-legacy key
+// twice (before anything migrates it) must log the WARN only once
+// (bounded per-key dedup) even though the counter increments on every
+// occurrence.
+func TestConcurrencyLegacyValueWarnsOnceAndCounts(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "concurrency_runs"},
+		),
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	kv, _ := jsNew.KeyValue(
+		context.Background(), "concurrency_runs",
+	)
+	// A unique key per test run avoids collisions with the
+	// process-lifetime warned-keys dedup set other tests populate.
+	key := "workflow.dedup-wf-" + t.Name()
+	mustPutJS(t, context.Background(), kv, key, []byte("3"))
+
+	cm := NewConcurrencyManager(jsNew)
+
+	buf, restore := captureSlog(t)
+	defer restore()
+
+	// Two reads of the SAME still-legacy value (readMembers is
+	// read-only -- neither call migrates the key).
+	if _, _, err := cm.readMembers(context.Background(), key); err != nil {
+		t.Fatalf("readMembers 1: %v", err)
+	}
+	if _, _, err := cm.readMembers(context.Background(), key); err != nil {
+		t.Fatalf("readMembers 2: %v", err)
+	}
+
+	logs := buf.String()
+	occurrences := strings.Count(logs, "stored value was not a member set")
+	if occurrences != 1 {
+		t.Fatalf(
+			"legacy-reset WARN logged %d times for the same key, want exactly 1 (bounded dedup): %s",
+			occurrences, logs,
+		)
+	}
+	if !strings.Contains(logs, key) {
+		t.Fatalf("legacy-reset WARN did not name the key %q: %s", key, logs)
 	}
 }
 

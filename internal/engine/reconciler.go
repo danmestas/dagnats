@@ -422,6 +422,25 @@ func (o *Orchestrator) reconcileReleasePending(
 	if !run.Status.IsTerminal() {
 		panic("reconcileReleasePending: run must be terminal")
 	}
+	// releaseAdmission panics on an empty RunID/WorkflowID -- a
+	// programmer-error invariant at ITS call boundary, appropriate
+	// for callers that construct run in-process. This sweep instead
+	// loads run from the KV, so a corrupt/malformed snapshot is
+	// attacker-adjacent input, not a programmer error: validate here
+	// and skip rather than let one bad snapshot panic the reconcile
+	// goroutine (#648 PR review round 4).
+	if run.RunID == "" || run.WorkflowID == "" {
+		slog.ErrorContext(ctx,
+			"reconciler: skipping release-pending recovery for a "+
+				"malformed run (empty RunID or WorkflowID)",
+			"run_id", run.RunID,
+			"workflow_id", run.WorkflowID,
+		)
+		if finalizeReleaseMalformedSkipped != nil {
+			finalizeReleaseMalformedSkipped.Add(ctx, 1)
+		}
+		return
+	}
 	if err := o.releaseAdmission(ctx, run); err != nil {
 		o.reconcileReleaseFailed(ctx, run, err)
 		return
