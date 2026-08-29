@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,7 +50,8 @@ func postLogs(
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 func drainBuildLogs(
-	t *testing.T, nc *nats.Conn, runID, stepID string, want int, timeout time.Duration,
+	t *testing.T, nc *nats.Conn, runID, stepID string, attempt, want int,
+	timeout time.Duration,
 ) []protocol.LogChunk {
 	t.Helper()
 	js, err := jetstream.New(nc)
@@ -58,7 +60,7 @@ func drainBuildLogs(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	subject := "logs." + runID + "." + stepID
+	subject := fmt.Sprintf("logs.%s.%s.%d", runID, stepID, attempt)
 	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS",
 		jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}})
 	if err != nil {
@@ -102,14 +104,17 @@ func TestPostLogs_ChunksLandOnBuildLogs(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	chunks := drainBuildLogs(t, nc, "run-logs-1", "step-1", 2, 10*time.Second)
-	if chunks[0].Seq != 0 || chunks[0].Stream != protocol.LogStreamOut ||
+	// attempt=1: taskAttemptNumber (bridge/poll.go) resolves a fresh
+	// poll's payload.Attempt=0 via NATS NumDelivered, same as
+	// worker/log_writer.go's resolveAttemptNumber (#624 review).
+	chunks := drainBuildLogs(t, nc, "run-logs-1", "step-1", 1, 2, 10*time.Second)
+	if chunks[0].Seq != 0 || chunks[0].Attempt != 1 || chunks[0].Stream != protocol.LogStreamOut ||
 		string(chunks[0].Data) != "hello" {
-		t.Fatalf("chunks[0] = %+v, want seq=0 out=hello", chunks[0])
+		t.Fatalf("chunks[0] = %+v, want seq=0 attempt=1 out=hello", chunks[0])
 	}
-	if chunks[1].Seq != 1 || chunks[1].Stream != protocol.LogStreamErr ||
+	if chunks[1].Seq != 1 || chunks[1].Attempt != 1 || chunks[1].Stream != protocol.LogStreamErr ||
 		string(chunks[1].Data) != "oops" {
-		t.Fatalf("chunks[1] = %+v, want seq=1 err=oops", chunks[1])
+		t.Fatalf("chunks[1] = %+v, want seq=1 attempt=1 err=oops", chunks[1])
 	}
 }
 

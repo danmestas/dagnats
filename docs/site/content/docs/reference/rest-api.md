@@ -239,14 +239,15 @@ reference). dagnats owns the hot lane only -- retention past its TTL
 (`DAGNATS_BUILD_LOGS_TTL`, default 7d) is a consumer's job.
 
 ```
-GET /runs/{id}/logs?step={stepID}&after_seq={n}&follow={0|1}&from={failure}
+GET /runs/{id}/logs?step={stepID}&attempt={n}&cursor={n}&follow={0|1}&from={failure}
 ```
 
 | Query param | Required | Notes |
 |-------------|----------|-------|
 | `step` | yes | Step ID within the run. `400` if omitted. |
-| `after_seq` | no | Return only chunks with `seq` greater than this value. Ignored when `from=failure` is set. |
-| `from` | no | `from=failure` starts the response at the step's recorded `"failed"` marker instead of `after_seq`. |
+| `attempt` | no | Which attempt's log lane to read (`logs.{runID}.{stepID}.{attempt}`, the same numbering as `step.started`'s `AttemptNumber`). Defaults to the step's current `Attempts` from the run snapshot -- omit it for "the live/most recent attempt". |
+| `cursor` | no | Opaque paging token -- copy the previous response's `next_cursor` here to fetch the next page. Omit for the first page. It is a JetStream stream sequence number, not a chunk `seq`; treat it as opaque. |
+| `from` | no | `from=failure` starts the response at the attempt's recorded `"failed"` marker instead of `cursor`, resolved in O(1) (`GetLastMsgForSubject`), not by scanning. |
 | `follow` | no | `follow=1` upgrades the response to Server-Sent Events instead of one JSON page. |
 
 **Response (non-follow):** `200 OK`
@@ -254,28 +255,31 @@ GET /runs/{id}/logs?step={stepID}&after_seq={n}&follow={0|1}&from={failure}
 ```json
 {
   "chunks": [
-    {"seq": 0, "ts": "2026-08-28T12:00:00.100Z", "stream": "out", "data": "cnVubmluZyB0ZXN0cwo="},
-    {"seq": 1, "ts": "2026-08-28T12:00:00.350Z", "stream": "out", "data": "MyBwYXNzZWQK"}
+    {"seq": 0, "attempt": 1, "ts": "2026-08-28T12:00:00.100Z", "stream": "out", "data": "cnVubmluZyB0ZXN0cwo="},
+    {"seq": 1, "attempt": 1, "ts": "2026-08-28T12:00:00.350Z", "stream": "out", "data": "MyBwYXNzZWQK"}
   ],
-  "next_seq": 2,
+  "next_cursor": 2,
   "eof": true
 }
 ```
 
 `chunks` is capped at 1024 (`protocol.LogReadChunksMax`) per response --
-page again with `after_seq` set to the returned `next_seq` for more.
-`eof` is `true` only when the step has reached a terminal status AND
-this page returned everything currently stored -- it does not mean the
-stream is empty forever, just that nothing more is coming for this
-step. A step that exists but has produced no chunks yet returns `200`
-with `"chunks": []`, not `404`, so a UI can attach before the first
-line lands.
+page again with `cursor` set to the returned `next_cursor` for more;
+`next_cursor` is a JetStream stream sequence, opaque to the caller.
+`eof` is `true` only when the requested attempt is done for good (a
+past attempt, or the step's current attempt reached a terminal status)
+AND this page returned everything currently stored -- it does not mean
+the stream is empty forever, just that nothing more is coming for this
+attempt. A step that exists but has produced no chunks yet returns
+`200` with `"chunks": []`, not `404`, so a UI can attach before the
+first line lands. A `cursor` past the last stored message on a
+terminal attempt also returns `200` with an empty page and `eof: true`.
 
 **Response (`follow=1`):** `200 OK`, `Content-Type: text/event-stream`
 
 ```
 event: chunk
-data: {"seq":0,"ts":"2026-08-28T12:00:00.100Z","stream":"out","data":"cnVubmluZyB0ZXN0cwo="}
+data: {"seq":0,"attempt":1,"ts":"2026-08-28T12:00:00.100Z","stream":"out","data":"cnVubmluZyB0ZXN0cwo="}
 
 : keepalive
 
@@ -286,12 +290,18 @@ data: {}
 
 An `event: chunk` per `protocol.LogChunk`, a `: keepalive` comment
 every 15s while idle (so an intermediary proxy doesn't drop the
-connection), and `event: eof` once the step is terminal and the lane
-is drained -- after which the server closes the connection. Hard
-capped at 1h per connection (`protocol.LogFollowDurationMax`); capped
-at 256 concurrent follows per API server process
-(`protocol.LogFollowConcurrentMax`), beyond which a new follow gets
-`503`.
+connection), and `event: eof` once the attempt-ending marker is read
+off the SAME consumer this connection opened at attach time -- exactly
+one JetStream consumer is opened per `follow=1` connection, for its
+whole lifetime, not re-opened on a poll interval. `event: eof`'s `data`
+carries `{"reason":"paused"}` or `{"reason":"continued"}` when the
+attempt ended that way (a UI is expected to re-attach with a fresh
+`attempt`); it's `{}` for `completed`/`failed` and for the rare crash
+fallback (a coarse run-snapshot poll, at most every 10s, for the case
+where the marker itself never arrives). Hard capped at 1h per
+connection (`protocol.LogFollowDurationMax`); capped at 256 concurrent
+follows per API server process (`protocol.LogFollowConcurrentMax`),
+beyond which a new follow gets `503`.
 
 | Status | Condition |
 |--------|-----------|

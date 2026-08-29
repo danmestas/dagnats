@@ -1,8 +1,23 @@
 // internal/api/logs_follow.go
 // SSE half of GET /runs/{id}/logs?follow=1 (#624). Split from logs.go
 // to keep each file under a manageable size — the follow path has its
-// own concerns (flush cadence, keepalive, terminal detection) distinct
-// from the paged-read path.
+// own concerns (one long-lived consumer, keepalive cadence, marker-
+// driven eof) distinct from the paged-read path.
+//
+// #624 review fix: the original implementation opened a FRESH ordered
+// consumer every 500ms and rescanned the whole attempt's subject from
+// the beginning — O(n^2) over a connection's lifetime and, at the
+// 256-follower cap, roughly 512 ephemeral consumers/sec against
+// BUILD_LOGS. This version opens exactly ONE ordered consumer per
+// connection, anchored at the caller's cursor, and blocks on it with a
+// bounded wait that doubles as the keepalive tick. Eof no longer
+// depends on polling BUILD_LOGS at all: every attempt-ending
+// TaskContext method (worker/context.go) now emits a terminal marker
+// as the guaranteed last chunk on its subject, so eof fires the moment
+// that marker is READ off the one open consumer. The run-snapshot poll
+// only exists as a crash fallback (a marker that, for whatever reason,
+// never got published) and runs far less often, and never opens a
+// second BUILD_LOGS consumer to do it.
 package api
 
 import (
@@ -15,26 +30,56 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-// logsKeepaliveInterval is how often serveLogsFollow writes an SSE
-// comment while idle, so an intermediary (proxy, load balancer) does
-// not treat the connection as dead and close it.
+// logsKeepaliveInterval is both how often serveLogsFollow writes an
+// SSE comment while idle (so an intermediary doesn't treat the
+// connection as dead) AND the bounded wait passed to the single open
+// consumer's Next() call — the same number serves both purposes so
+// there is exactly one blocking wait per loop iteration, not a
+// separate timer racing a separate fetch.
 const logsKeepaliveInterval = 15 * time.Second
 
-// logsTerminalPollInterval is how often serveLogsFollow re-checks the
-// run snapshot for the step's terminal status once the BUILD_LOGS lane
-// itself has gone quiet (no new chunk arrived).
-const logsTerminalPollInterval = 500 * time.Millisecond
+// logsCrashFallbackPollInterval is how often serveLogsFollow re-checks
+// the run snapshot as a fallback when no terminal marker has arrived
+// off the log consumer — deliberately coarse (10s, not the old 500ms)
+// because this path exists only to cover the case where the marker
+// itself never got published (a worker crash between draining logs and
+// the marker actually landing), not as the normal termination signal.
+// It reads svc.GetRun (a KV get), never opens a BUILD_LOGS consumer.
+const logsCrashFallbackPollInterval = 10 * time.Second
 
-// serveLogsFollow upgrades to Server-Sent Events: an "event: chunk"
-// per LogChunk, a ": keepalive" comment every logsKeepaliveInterval
-// while idle, and "event: eof" once the step is terminal AND the
-// BUILD_LOGS lane for it is drained (no chunk arrived on the last
-// poll). Bounded by protocol.LogFollowDurationMax and gated by
-// logFollowConcurrentMax.
+// logsEOFEvent is the "event: eof" payload. Reason is set only for the
+// two non-final outcomes (continued/paused) where the attempt is over
+// but the STEP isn't necessarily done — a UI is expected to re-attach
+// with a fresh attempt param. It's empty for completed/failed, where
+// there is nothing more to attach to.
+type logsEOFEvent struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// isAttemptEndingMarker reports whether data (a LogStreamMarker
+// chunk's Data) is one of the markers every TaskContext attempt-ending
+// method emits — as opposed to LogMarkerTruncated, which can appear
+// mid-attempt and must NOT end a follow.
+func isAttemptEndingMarker(marker string) bool {
+	switch marker {
+	case protocol.LogMarkerCompleted, protocol.LogMarkerFailed,
+		protocol.LogMarkerContinued, protocol.LogMarkerPaused:
+		return true
+	}
+	return false
+}
+
+// serveLogsFollow upgrades to Server-Sent Events over ONE long-lived
+// BUILD_LOGS consumer anchored at cursor (0 = from the start of the
+// attempt's subject). See the file doc comment for why this replaced
+// a poll-and-rescan design. Bounded by protocol.LogFollowDurationMax
+// and gated by logFollowConcurrentMax.
 func serveLogsFollow(
-	svc *Service, w http.ResponseWriter, r *http.Request, runID, stepID string,
+	svc *Service, w http.ResponseWriter, r *http.Request,
+	runID, stepID string, attempt int,
 ) {
 	if atomic.AddInt64(&logFollowActive, 1) > logFollowConcurrentMax {
 		atomic.AddInt64(&logFollowActive, -1)
@@ -48,123 +93,129 @@ func serveLogsFollow(
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), protocol.LogFollowDurationMax)
+	defer cancel()
+
+	cons, err := openLogsFollowConsumer(ctx, svc.js, runID, stepID, attempt, cursorParam(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ctx, cancel := context.WithTimeout(r.Context(), protocol.LogFollowDurationMax)
-	defer cancel()
+	runLogsFollowLoop(ctx, svc, w, flusher, cons, runID, stepID, attempt)
+}
 
-	afterSeq := afterSeqParam(r)
-	fromFailure := r.URL.Query().Get("from") == "failure"
-	nextSeq, ok := logsFollowCatchUp(ctx, svc, w, flusher, runID, stepID, afterSeq, fromFailure)
-	if !ok {
-		return
+// openLogsFollowConsumer opens the single ordered consumer a follow
+// connection uses for its entire lifetime, anchored at cursor exactly
+// like fetchLogsPage's non-follow counterpart.
+func openLogsFollowConsumer(
+	ctx context.Context, js jetstream.JetStream,
+	runID, stepID string, attempt int, cursor uint64,
+) (jetstream.Consumer, error) {
+	if js == nil {
+		panic("openLogsFollowConsumer: js must not be nil")
 	}
+	cfg := jetstream.OrderedConsumerConfig{
+		FilterSubjects: []string{attemptSubject(runID, stepID, attempt)},
+	}
+	if cursor > 0 {
+		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+		cfg.OptStartSeq = cursor
+	} else {
+		cfg.DeliverPolicy = jetstream.DeliverAllPolicy
+	}
+	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS", cfg)
+	if err != nil {
+		return nil, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
+	}
+	return cons, nil
+}
 
-	keepalive := time.NewTicker(logsKeepaliveInterval)
-	defer keepalive.Stop()
-	poll := time.NewTicker(logsTerminalPollInterval)
-	defer poll.Stop()
+// runLogsFollowLoop drives one already-open consumer for the life of
+// the connection: fetch (bounded wait = the keepalive tick) -> emit ->
+// repeat, with a coarse crash-fallback snapshot poll running in
+// parallel. Ends on ctx.Done(), a write failure, or an attempt-ending
+// marker/snapshot terminal signal.
+func runLogsFollowLoop(
+	ctx context.Context, svc *Service, w http.ResponseWriter, flusher http.Flusher,
+	cons jetstream.Consumer, runID, stepID string, attempt int,
+) {
+	fallback := time.NewTicker(logsCrashFallbackPollInterval)
+	defer fallback.Stop()
+	lastActivity := time.Now()
 
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		case <-keepalive.C:
-			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+		}
+		msg, err := cons.Next(jetstream.FetchMaxWait(logsKeepaliveInterval))
+		if err != nil {
+			// Idle for a full keepalive window — write the comment and
+			// check the crash-fallback ticker before looping back into
+			// another bounded wait.
+			if _, werr := fmt.Fprint(w, ": keepalive\n\n"); werr != nil {
 				return
 			}
 			flusher.Flush()
-		case <-poll.C:
-			var wrote bool
-			nextSeq, wrote = logsFollowDrain(ctx, svc, w, flusher, runID, stepID, nextSeq)
-			if wrote {
-				keepalive.Reset(logsKeepaliveInterval)
-			}
-			run, err := svc.GetRun(ctx, runID)
-			if err != nil {
-				continue
-			}
-			state, known := run.Steps[stepID]
-			if known && stepTerminal(state.Status) {
-				// One more drain in case a chunk landed between the
-				// drain above and this snapshot read.
-				_, _ = logsFollowDrain(ctx, svc, w, flusher, runID, stepID, nextSeq)
-				writeLogsEOFEvent(w, flusher)
+			if shouldCrashFallbackEnd(ctx, svc, fallback, runID, stepID, attempt, &lastActivity) {
+				writeLogsEOFEvent(w, flusher, "")
 				return
 			}
-		}
-	}
-}
-
-// logsFollowCatchUp fetches and emits everything currently stored
-// after afterSeq (or from the failure marker) before the poll loop
-// starts, so a late attach still sees history. Returns the seq to
-// resume from and false if the response write already failed.
-func logsFollowCatchUp(
-	ctx context.Context, svc *Service, w http.ResponseWriter, flusher http.Flusher,
-	runID, stepID string, afterSeq int64, fromFailure bool,
-) (uint64, bool) {
-	all, err := fetchStepLogChunks(ctx, svc.js, runID, stepID)
-	if err != nil {
-		return uint64(afterSeq + 1), true
-	}
-	startIdx := 0
-	if fromFailure {
-		startIdx = len(all)
-		for i, c := range all {
-			if c.Stream == protocol.LogStreamMarker &&
-				string(c.Data) == protocol.LogMarkerFailed {
-				startIdx = i
-				break
-			}
-		}
-	} else {
-		for i, c := range all {
-			if int64(c.Seq) > afterSeq {
-				startIdx = i
-				break
-			}
-			startIdx = i + 1
-		}
-	}
-	next := uint64(afterSeq + 1)
-	for _, c := range all[startIdx:] {
-		if !writeLogsChunkEvent(w, flusher, c) {
-			return next, false
-		}
-		next = c.Seq + 1
-	}
-	return next, true
-}
-
-// logsFollowDrain fetches and emits any chunk with Seq >= fromSeq
-// published since the last drain. Returns the next resume seq and
-// whether anything was written.
-func logsFollowDrain(
-	ctx context.Context, svc *Service, w http.ResponseWriter, flusher http.Flusher,
-	runID, stepID string, fromSeq uint64,
-) (uint64, bool) {
-	all, err := fetchStepLogChunks(ctx, svc.js, runID, stepID)
-	if err != nil {
-		return fromSeq, false
-	}
-	wrote := false
-	next := fromSeq
-	for _, c := range all {
-		if c.Seq < fromSeq {
 			continue
 		}
-		if !writeLogsChunkEvent(w, flusher, c) {
-			return next, wrote
+		lastActivity = time.Now()
+		chunk, _, ok := decodeLogsMsg(msg, runID, stepID)
+		if ackErr := msg.Ack(); ackErr != nil {
+			slog.Warn("ack SSE BUILD_LOGS message failed",
+				"error", ackErr, "run_id", runID, "step_id", stepID)
 		}
-		next = c.Seq + 1
-		wrote = true
+		if !ok {
+			continue
+		}
+		if !writeLogsChunkEvent(w, flusher, chunk) {
+			return
+		}
+		if chunk.Stream == protocol.LogStreamMarker && isAttemptEndingMarker(string(chunk.Data)) {
+			writeLogsEOFEvent(w, flusher, string(chunk.Data))
+			return
+		}
 	}
-	return next, wrote
+}
+
+// shouldCrashFallbackEnd checks the run snapshot for a terminal status
+// no more often than logsCrashFallbackPollInterval, WITHOUT opening a
+// BUILD_LOGS consumer — it exists only to end a follow whose marker
+// never arrived (a crashed worker), not as the normal path.
+// lastActivity is reset by the caller on every successfully read
+// chunk so a fallback check doesn't fire seconds after real traffic.
+func shouldCrashFallbackEnd(
+	ctx context.Context, svc *Service, ticker *time.Ticker,
+	runID, stepID string, attempt int, lastActivity *time.Time,
+) bool {
+	select {
+	case <-ticker.C:
+	default:
+		return false
+	}
+	if time.Since(*lastActivity) < logsCrashFallbackPollInterval {
+		return false
+	}
+	run, err := svc.GetRun(ctx, runID)
+	if err != nil {
+		return false
+	}
+	state, known := run.Steps[stepID]
+	if !known {
+		return false
+	}
+	return attemptIsPast(attempt, state) || stepTerminal(state.Status)
 }
 
 func writeLogsChunkEvent(w http.ResponseWriter, flusher http.Flusher, c protocol.LogChunk) bool {
@@ -180,7 +231,27 @@ func writeLogsChunkEvent(w http.ResponseWriter, flusher http.Flusher, c protocol
 	return true
 }
 
-func writeLogsEOFEvent(w http.ResponseWriter, flusher http.Flusher) {
-	fmt.Fprint(w, "event: eof\ndata: {}\n\n")
+// writeLogsEOFEvent writes the terminal SSE event. marker is the
+// attempt-ending marker value that triggered it ("" for the crash
+// fallback, which has none) — only continued/paused surface as
+// "reason" in the payload; completed/failed and the crash fallback
+// carry an empty object.
+func writeLogsEOFEvent(w http.ResponseWriter, flusher http.Flusher, marker string) {
+	var payload logsEOFEvent
+	if marker == protocol.LogMarkerContinued || marker == protocol.LogMarkerPaused {
+		payload.Reason = marker
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		data = []byte("{}")
+	}
+	// The connection is ending either way (caller returns right after
+	// this call) — a write failure here has nothing left to affect,
+	// but it's still logged rather than silently dropped per #624
+	// review's discarded-error nit.
+	if _, err := fmt.Fprintf(w, "event: eof\ndata: %s\n\n", data); err != nil {
+		slog.Warn("write SSE eof event failed", "error", err)
+		return
+	}
 	flusher.Flush()
 }

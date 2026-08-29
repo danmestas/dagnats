@@ -4,6 +4,17 @@
 // into. Non-follow returns a bounded page of stored chunks; follow=1
 // upgrades to Server-Sent Events. dagnats owns the JetStream hot lane
 // only — this handler never reaches past BUILD_LOGS's own TTL.
+//
+// Cursor shape (#624 review): the cursor is the JetStream STREAM
+// sequence of the last delivered message + 1 — opaque to the client,
+// who only ever copies next_cursor from a prior response into the next
+// request's cursor= param. This replaced an after_seq design that
+// fetched a fixed ~1032-message window from the start of the subject
+// on every request and filtered client-side: paging past that window
+// silently stalled (every page after it returned empty with eof never
+// becoming true). Anchoring directly on the stream's own sequence
+// numbers via DeliverByStartSequencePolicy makes each page an O(page
+// size) JetStream fetch, not an O(everything before the cursor) scan.
 package api
 
 import (
@@ -24,16 +35,9 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// logsFetchScanMax bounds how many BUILD_LOGS messages a single
-// non-follow request (or a follow's initial catch-up) will read for
-// one step. A step can hold at most LogStepBytesMax/LogChunkBytesMax
-// data chunks plus a couple of markers, so this comfortably covers a
-// full step's history in one bounded scan.
-const logsFetchScanMax = protocol.LogStepBytesMax/protocol.LogChunkBytesMax + 8
-
-// logsFetchIdleWait bounds how long fetchStepLogChunks waits for the
-// NEXT message before concluding the stream is exhausted (not: the
-// step has no more logs ever — just none buffered right now).
+// logsFetchIdleWait bounds how long fetchLogsPage waits for the NEXT
+// message before concluding nothing more is buffered right now (not:
+// the subject will never receive another message).
 const logsFetchIdleWait = 200 * time.Millisecond
 
 // logFollowConcurrentMax is the effective SSE-follow concurrency cap.
@@ -48,12 +52,12 @@ var logFollowActive int64
 
 // logsResponse is the non-follow GET /runs/{id}/logs body.
 type logsResponse struct {
-	Chunks  []protocol.LogChunk `json:"chunks"`
-	NextSeq uint64              `json:"next_seq"`
-	EOF     bool                `json:"eof"`
+	Chunks     []protocol.LogChunk `json:"chunks"`
+	NextCursor uint64              `json:"next_cursor"`
+	EOF        bool                `json:"eof"`
 }
 
-// handleGetRunLogs serves GET /runs/{id}/logs?step=&after_seq=&follow=&from=.
+// handleGetRunLogs serves GET /runs/{id}/logs?step=&attempt=&cursor=&follow=&from=.
 func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 	if svc == nil {
 		panic("handleGetRunLogs: svc must not be nil")
@@ -87,79 +91,103 @@ func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "step not found", http.StatusNotFound)
 		return
 	}
+	attempt := attemptParam(r, stepState)
 
 	if r.URL.Query().Get("follow") == "1" {
-		serveLogsFollow(svc, w, r, runID, stepID)
+		serveLogsFollow(svc, w, r, runID, stepID, attempt)
 		return
 	}
-	serveLogsPage(svc, w, r, runID, stepID, stepState)
+	serveLogsPage(svc, w, r, runID, stepID, attempt, stepState)
 }
 
-// afterSeqParam parses "after_seq"; absent/invalid resolves to -1
-// (include from the very first chunk, seq 0).
-func afterSeqParam(r *http.Request) int64 {
-	val := r.URL.Query().Get("after_seq")
+// attemptParam parses "attempt"; absent/invalid resolves to the step's
+// current attempt count (dag.StepState.Attempts) — reading logs for a
+// step with no explicit ?attempt= gets its live/most-recent attempt.
+func attemptParam(r *http.Request, stepState dag.StepState) int {
+	val := r.URL.Query().Get("attempt")
 	if val == "" {
-		return -1
+		return stepState.Attempts
 	}
-	n, err := strconv.ParseInt(val, 10, 64)
+	n, err := strconv.Atoi(val)
 	if err != nil || n < 0 {
-		return -1
+		return stepState.Attempts
 	}
 	return n
 }
 
-// serveLogsPage handles the non-follow read: fetch, filter (after_seq
-// or from=failure), page to LogReadChunksMax, and report next_seq/eof.
+// cursorParam parses "cursor"; absent/invalid resolves to 0, meaning
+// "start of the subject" (DeliverAllPolicy).
+func cursorParam(r *http.Request) uint64 {
+	val := r.URL.Query().Get("cursor")
+	if val == "" {
+		return 0
+	}
+	n, err := strconv.ParseUint(val, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// attemptSubject builds the attempt-scoped BUILD_LOGS subject, matching
+// worker/log_writer.go and bridge/logs.go exactly.
+func attemptSubject(runID, stepID string, attempt int) string {
+	if strings.ContainsAny(runID, ". \t*>") {
+		panic("attemptSubject: runID must not contain NATS subject metacharacters")
+	}
+	return fmt.Sprintf("logs.%s.%s.%d", runID, natsutil.SubjectToken(stepID), attempt)
+}
+
+// serveLogsPage handles the non-follow read: resolve the start cursor
+// (from=failure short-circuits to the attempt's terminal marker via
+// GetLastMsgForSubject; otherwise the caller's cursor param), fetch one
+// bounded page, and report next_cursor/eof.
 func serveLogsPage(
 	svc *Service, w http.ResponseWriter, r *http.Request,
-	runID, stepID string, stepState dag.StepState,
+	runID, stepID string, attempt int, stepState dag.StepState,
 ) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	all, err := fetchStepLogChunks(ctx, svc.js, runID, stepID)
+
+	startCursor := cursorParam(r)
+	if r.URL.Query().Get("from") == "failure" {
+		found, seq, err := lastLogMsgSeq(ctx, svc.js, runID, stepID, attempt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !found {
+			// This attempt's subject has no messages at all (yet, or
+			// ever) — there is nothing to resolve "failure" against.
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(logsResponse{
+				Chunks: []protocol.LogChunk{}, NextCursor: 0,
+				EOF: attemptIsPast(attempt, stepState) || stepTerminal(stepState.Status),
+			})
+			return
+		}
+		startCursor = seq
+	}
+
+	page, lastStreamSeq, err := fetchLogsPage(
+		ctx, svc.js, runID, stepID, attempt, startCursor, protocol.LogReadChunksMax,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	startIdx := 0
-	afterSeq := afterSeqParam(r)
-	if r.URL.Query().Get("from") == "failure" {
-		startIdx = len(all) // not found → empty
-		for i, c := range all {
-			if c.Stream == protocol.LogStreamMarker &&
-				string(c.Data) == protocol.LogMarkerFailed {
-				startIdx = i
-				break
-			}
-		}
-	} else {
-		for i, c := range all {
-			if int64(c.Seq) > afterSeq {
-				startIdx = i
-				break
-			}
-			startIdx = i + 1
-		}
-	}
-	filtered := all[startIdx:]
-
-	page := filtered
-	truncatedPage := false
-	if len(page) > protocol.LogReadChunksMax {
-		page = page[:protocol.LogReadChunksMax]
-		truncatedPage = true
-	}
-
-	nextSeq := uint64(afterSeq + 1)
+	nextCursor := startCursor
 	if len(page) > 0 {
-		nextSeq = page[len(page)-1].Seq + 1
+		nextCursor = lastStreamSeq + 1
 	}
-	resp := logsResponse{
-		Chunks:  page,
-		NextSeq: nextSeq,
-		EOF:     !truncatedPage && stepTerminal(stepState.Status),
+	gotFullPage := len(page) >= protocol.LogReadChunksMax
+	eof := !gotFullPage &&
+		(attemptIsPast(attempt, stepState) || stepTerminal(stepState.Status))
+
+	resp := logsResponse{Chunks: page, NextCursor: nextCursor, EOF: eof}
+	if resp.Chunks == nil {
+		resp.Chunks = []protocol.LogChunk{}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -167,9 +195,17 @@ func serveLogsPage(
 	}
 }
 
-// stepTerminal reports whether status is a terminal StepStatus — the
-// eof condition for GET .../logs (no non-follow status implies "may
-// still receive more chunks").
+// attemptIsPast reports whether attempt is strictly behind the step's
+// current attempt count — a past attempt's subject can never receive
+// another message no matter what the CURRENT attempt's status is, so
+// reads of it are always eligible for eof once a page comes up short.
+func attemptIsPast(attempt int, stepState dag.StepState) bool {
+	return attempt < stepState.Attempts
+}
+
+// stepTerminal reports whether status is a terminal StepStatus — half
+// of the eof condition for GET .../logs on the step's CURRENT attempt
+// (the other half, for a past attempt, is attemptIsPast).
 func stepTerminal(status dag.StepStatus) bool {
 	switch status {
 	case dag.StepStatusCompleted, dag.StepStatusFailed,
@@ -180,27 +216,70 @@ func stepTerminal(status dag.StepStatus) bool {
 	return false
 }
 
-// fetchStepLogChunks drains up to logsFetchScanMax BUILD_LOGS messages
-// for logs.{runID}.{stepID}, in stream order, stopping once no further
-// message arrives within logsFetchIdleWait (interpreted as "nothing
-// more buffered right now", not "never will be").
-func fetchStepLogChunks(
-	ctx context.Context, js jetstream.JetStream, runID, stepID string,
-) ([]protocol.LogChunk, error) {
+// lastLogMsgSeq resolves from=failure's start cursor in O(1): the
+// drain-before-resolve invariant guarantees the attempt-ending marker
+// (completed/failed/continued/paused) is the TRUE LAST message on this
+// attempt's subject, so "the failure position" is just "the last
+// message", fetched directly via GetLastMsgForSubject rather than
+// scanning from the beginning. found is false when the subject has no
+// messages yet.
+func lastLogMsgSeq(
+	ctx context.Context, js jetstream.JetStream, runID, stepID string, attempt int,
+) (found bool, seq uint64, err error) {
 	if js == nil {
-		panic("fetchStepLogChunks: js must not be nil")
+		panic("lastLogMsgSeq: js must not be nil")
+	}
+	stream, err := js.Stream(ctx, "BUILD_LOGS")
+	if err != nil {
+		return false, 0, fmt.Errorf("open BUILD_LOGS stream: %w", err)
+	}
+	subject := attemptSubject(runID, stepID, attempt)
+	msg, err := stream.GetLastMsgForSubject(ctx, subject)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			return false, 0, nil
+		}
+		return false, 0, fmt.Errorf("get last message for %s: %w", subject, err)
+	}
+	return true, msg.Sequence, nil
+}
+
+// fetchLogsPage fetches up to max BUILD_LOGS messages for
+// logs.{runID}.{stepID}.{attempt}, starting at stream sequence cursor
+// (0 means "from the start of the subject"), in stream order. Returns
+// the fetched chunks and the JetStream stream sequence of the last one
+// delivered (0 if none). Stops early once no further message arrives
+// within logsFetchIdleWait — interpreted as "nothing more buffered
+// right now", not "the subject is done forever".
+func fetchLogsPage(
+	ctx context.Context, js jetstream.JetStream,
+	runID, stepID string, attempt int, cursor uint64, max int,
+) ([]protocol.LogChunk, uint64, error) {
+	if js == nil {
+		panic("fetchLogsPage: js must not be nil")
 	}
 	if runID == "" {
-		panic("fetchStepLogChunks: runID must not be empty")
+		panic("fetchLogsPage: runID must not be empty")
 	}
-	subject := "logs." + runID + "." + natsutil.SubjectToken(stepID)
-	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS",
-		jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}})
+	if max <= 0 {
+		panic("fetchLogsPage: max must be positive")
+	}
+	cfg := jetstream.OrderedConsumerConfig{
+		FilterSubjects: []string{attemptSubject(runID, stepID, attempt)},
+	}
+	if cursor > 0 {
+		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+		cfg.OptStartSeq = cursor
+	} else {
+		cfg.DeliverPolicy = jetstream.DeliverAllPolicy
+	}
+	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS", cfg)
 	if err != nil {
-		return nil, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
+		return nil, 0, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
 	}
 	var chunks []protocol.LogChunk
-	for len(chunks) < logsFetchScanMax {
+	var lastStreamSeq uint64
+	for len(chunks) < max {
 		if ctx.Err() != nil {
 			break
 		}
@@ -208,15 +287,36 @@ func fetchStepLogChunks(
 		if err != nil {
 			break
 		}
-		var c protocol.LogChunk
-		if unmarshalErr := json.Unmarshal(msg.Data(), &c); unmarshalErr != nil {
-			slog.Warn("skipping malformed BUILD_LOGS chunk",
-				"error", unmarshalErr, "run_id", runID, "step_id", stepID)
-			msg.Ack()
+		chunk, seq, ok := decodeLogsMsg(msg, runID, stepID)
+		if ackErr := msg.Ack(); ackErr != nil {
+			slog.Warn("ack BUILD_LOGS message failed",
+				"error", ackErr, "run_id", runID, "step_id", stepID)
+		}
+		if !ok {
 			continue
 		}
-		msg.Ack()
-		chunks = append(chunks, c)
+		chunks = append(chunks, chunk)
+		lastStreamSeq = seq
 	}
-	return chunks, nil
+	return chunks, lastStreamSeq, nil
+}
+
+// decodeLogsMsg unmarshals msg into a LogChunk and reads its JetStream
+// stream sequence. ok is false (chunk/seq zero) on a malformed
+// payload, logged and skipped rather than failing the whole page.
+func decodeLogsMsg(
+	msg jetstream.Msg, runID, stepID string,
+) (chunk protocol.LogChunk, streamSeq uint64, ok bool) {
+	if unmarshalErr := json.Unmarshal(msg.Data(), &chunk); unmarshalErr != nil {
+		slog.Warn("skipping malformed BUILD_LOGS chunk",
+			"error", unmarshalErr, "run_id", runID, "step_id", stepID)
+		return protocol.LogChunk{}, 0, false
+	}
+	meta, metaErr := msg.Metadata()
+	if metaErr != nil {
+		slog.Warn("BUILD_LOGS message metadata unavailable",
+			"error", metaErr, "run_id", runID, "step_id", stepID)
+		return protocol.LogChunk{}, 0, false
+	}
+	return chunk, meta.Sequence.Stream, true
 }

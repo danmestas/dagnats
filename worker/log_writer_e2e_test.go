@@ -2,9 +2,9 @@
 // End-to-end tests for the BUILD_LOGS hot lane (#624): a real Worker,
 // dispatched against a real embedded NATS server, driving LogOut()/
 // LogErr() through to published protocol.LogChunk messages on
-// logs.{runID}.{stepID}. Methodology: publish a task message directly
-// to the worker's task subject (bypassing the engine, matching the
-// existing consumer_subscribe_test.go pattern), drain an ordered
+// logs.{runID}.{stepID}.{attempt}. Methodology: publish a task message
+// directly to the worker's task subject (bypassing the engine, matching
+// the existing consumer_subscribe_test.go pattern), drain an ordered
 // consumer over BUILD_LOGS, assert chunk shape/ordering/markers.
 // Bounded timeouts on every wait.
 package worker
@@ -12,6 +12,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -20,16 +21,22 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// collectLogChunks drains up to want chunks from logs.{runID}.{stepID}
-// within timeout, in stream order.
+// logsSubject builds the attempt-scoped BUILD_LOGS subject the same
+// way worker/log_writer.go's newLogLane does.
+func logsSubject(runID, stepID string, attempt int) string {
+	return "logs." + runID + "." + stepID + "." + strconv.Itoa(attempt)
+}
+
+// collectLogChunks drains up to want chunks from
+// logs.{runID}.{stepID}.{attempt} within timeout, in stream order.
 func collectLogChunks(
 	t *testing.T, js jetstream.JetStream,
-	runID, stepID string, want int, timeout time.Duration,
+	runID, stepID string, attempt, want int, timeout time.Duration,
 ) []protocol.LogChunk {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	subject := "logs." + runID + "." + stepID
+	subject := logsSubject(runID, stepID, attempt)
 	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS", jetstream.OrderedConsumerConfig{
 		FilterSubjects: []string{subject},
 	})
@@ -55,15 +62,46 @@ func collectLogChunks(
 	return chunks
 }
 
+// countLogChunks drains everything currently on
+// logs.{runID}.{stepID}.{attempt} within a short idle window and
+// returns how many messages arrived — used for exact-count negative
+// assertions ("no further chunk after the terminal marker").
+func countLogChunks(
+	t *testing.T, js jetstream.JetStream, runID, stepID string, attempt int,
+) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	subject := logsSubject(runID, stepID, attempt)
+	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS", jetstream.OrderedConsumerConfig{
+		FilterSubjects: []string{subject},
+		DeliverPolicy:  jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		t.Fatalf("OrderedConsumer: %v", err)
+	}
+	count := 0
+	for {
+		msg, err := cons.Next(jetstream.FetchMaxWait(300 * time.Millisecond))
+		if err != nil {
+			break
+		}
+		msg.Ack()
+		count++
+	}
+	return count
+}
+
 func publishTask(
 	t *testing.T, js jetstream.JetStream,
-	taskType, runID, stepID string,
+	taskType, runID, stepID string, attempt int,
 ) {
 	t.Helper()
 	payload := protocol.TaskPayload{
-		TaskID: runID + "." + stepID,
-		RunID:  runID,
-		StepID: stepID,
+		TaskID:  runID + "." + stepID,
+		RunID:   runID,
+		StepID:  stepID,
+		Attempt: attempt,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -108,7 +146,7 @@ func TestLogOutLogErr_WritesLandInWriteOrder(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	publishTask(t, js, "logtask", runID, stepID)
+	publishTask(t, js, "logtask", runID, stepID, 0)
 	select {
 	case err := <-done:
 		if err != nil {
@@ -118,18 +156,25 @@ func TestLogOutLogErr_WritesLandInWriteOrder(t *testing.T) {
 		t.Fatal("handler did not complete in time")
 	}
 
-	chunks := collectLogChunks(t, js, runID, stepID, 4, 10*time.Second)
-	if len(chunks) != 4 {
-		t.Fatalf("got %d chunks, want 4: %+v", len(chunks), chunks)
+	// 4 data chunks + the "completed" terminal marker every attempt-
+	// ending path now emits (#624 review).
+	chunks := collectLogChunks(t, js, runID, stepID, 1, 5, 10*time.Second)
+	if len(chunks) != 5 {
+		t.Fatalf("got %d chunks, want 5: %+v", len(chunks), chunks)
 	}
 	wantStream := []string{
 		protocol.LogStreamOut, protocol.LogStreamOut,
 		protocol.LogStreamOut, protocol.LogStreamErr,
+		protocol.LogStreamMarker,
 	}
-	wantData := []string{"line1", "line2", "line3", "err1"}
+	wantData := []string{"line1", "line2", "line3", "err1", protocol.LogMarkerCompleted}
 	for i, c := range chunks {
 		if c.Seq != uint64(i) {
 			t.Fatalf("chunk %d: Seq = %d, want %d", i, c.Seq, i)
+		}
+		if c.Attempt != 1 {
+			t.Fatalf("chunk %d: Attempt = %d, want 1 (resolved AttemptNumber for a fresh dispatch)",
+				i, c.Attempt)
 		}
 		if c.Stream != wantStream[i] {
 			t.Fatalf("chunk %d: Stream = %q, want %q", i, c.Stream, wantStream[i])
@@ -166,7 +211,7 @@ func TestLogOut_SplitsOversizedWriteIntoMultipleChunks(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	publishTask(t, js, "bigtask", runID, stepID)
+	publishTask(t, js, "bigtask", runID, stepID, 0)
 	select {
 	case err := <-done:
 		if err != nil {
@@ -176,9 +221,10 @@ func TestLogOut_SplitsOversizedWriteIntoMultipleChunks(t *testing.T) {
 		t.Fatal("handler did not complete in time")
 	}
 
-	chunks := collectLogChunks(t, js, runID, stepID, 2, 10*time.Second)
-	if len(chunks) != 2 {
-		t.Fatalf("got %d chunks, want 2: sizes=%v",
+	// 2 data chunks (split) + the "completed" terminal marker.
+	chunks := collectLogChunks(t, js, runID, stepID, 1, 3, 10*time.Second)
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3: sizes=%v",
 			len(chunks), chunkSizes(chunks))
 	}
 	total := len(chunks[0].Data) + len(chunks[1].Data)
@@ -188,6 +234,10 @@ func TestLogOut_SplitsOversizedWriteIntoMultipleChunks(t *testing.T) {
 	if len(chunks[0].Data) != protocol.LogChunkBytesMax {
 		t.Fatalf("chunk[0] size = %d, want %d",
 			len(chunks[0].Data), protocol.LogChunkBytesMax)
+	}
+	if chunks[2].Stream != protocol.LogStreamMarker ||
+		string(chunks[2].Data) != protocol.LogMarkerCompleted {
+		t.Fatalf("chunks[2] = %+v, want marker=completed", chunks[2])
 	}
 }
 
@@ -231,14 +281,14 @@ func TestFail_EmitsFailedMarkerBeforeStepFailedEvent(t *testing.T) {
 		t.Fatalf("OrderedConsumer(WORKFLOW_HISTORY): %v", err)
 	}
 
-	publishTask(t, js, "failtask", runID, stepID)
+	publishTask(t, js, "failtask", runID, stepID, 0)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("handler did not finish in time")
 	}
 
-	chunks := collectLogChunks(t, js, runID, stepID, 2, 10*time.Second)
+	chunks := collectLogChunks(t, js, runID, stepID, 1, 2, 10*time.Second)
 	if len(chunks) != 2 {
 		t.Fatalf("got %d chunks, want 2 (log line + marker): %+v", len(chunks), chunks)
 	}
@@ -320,7 +370,7 @@ func TestLogOut_ExceedingStepBudgetEmitsOneTruncatedMarker(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	publishTask(t, js, "trunctask", runID, stepID)
+	publishTask(t, js, "trunctask", runID, stepID, 0)
 	select {
 	case err := <-done:
 		if err != nil {
@@ -330,36 +380,23 @@ func TestLogOut_ExceedingStepBudgetEmitsOneTruncatedMarker(t *testing.T) {
 		t.Fatal("handler did not complete in time")
 	}
 
-	// Positive: exactly 2 chunks — one data chunk (truncated to fit
-	// the 200-byte budget) then the truncated marker. No third chunk
-	// from the dropped write ever appears.
-	chunks := collectLogChunks(t, js, runID, stepID, 2, 10*time.Second)
+	// Positive: exactly 3 chunks — one data chunk (truncated to fit
+	// the 200-byte budget), the truncated marker, then the
+	// attempt-ending "completed" marker (Complete() still runs after
+	// truncation — truncation stops OUTPUT chunks, not the attempt).
+	// No chunk from the dropped third write ever appears.
+	chunks := collectLogChunks(t, js, runID, stepID, 1, 3, 10*time.Second)
 	if chunks[1].Stream != protocol.LogStreamMarker ||
 		string(chunks[1].Data) != protocol.LogMarkerTruncated {
 		t.Fatalf("chunks[1] = %+v, want marker=truncated", chunks[1])
 	}
-	// Negative: no further chunk shows up after the marker.
-	extraCtx, extraCancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer extraCancel()
-	subject := "logs." + runID + "." + stepID
-	extraCons, err := js.OrderedConsumer(extraCtx, "BUILD_LOGS",
-		jetstream.OrderedConsumerConfig{
-			FilterSubjects: []string{subject}, DeliverPolicy: jetstream.DeliverAllPolicy,
-		})
-	if err != nil {
-		t.Fatalf("OrderedConsumer: %v", err)
+	if chunks[2].Stream != protocol.LogStreamMarker ||
+		string(chunks[2].Data) != protocol.LogMarkerCompleted {
+		t.Fatalf("chunks[2] = %+v, want marker=completed", chunks[2])
 	}
-	count := 0
-	for {
-		msg, err := extraCons.Next(jetstream.FetchMaxWait(300 * time.Millisecond))
-		if err != nil {
-			break
-		}
-		msg.Ack()
-		count++
-	}
-	if count != 2 {
-		t.Fatalf("stream has %d chunks after drain, want exactly 2", count)
+	// Negative: no further chunk shows up after the terminal marker.
+	if count := countLogChunks(t, js, runID, stepID, 1); count != 3 {
+		t.Fatalf("stream has %d chunks after drain, want exactly 3", count)
 	}
 }
 
@@ -390,15 +427,124 @@ func TestComplete_DrainsBufferedBytesBeforeResolution(t *testing.T) {
 	w.Start()
 	defer w.Stop()
 
-	publishTask(t, js, "draintask", runID, stepID)
+	publishTask(t, js, "draintask", runID, stepID, 0)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("handler did not complete in time")
 	}
 
-	chunks := collectLogChunks(t, js, runID, stepID, 1, 10*time.Second)
+	chunks := collectLogChunks(t, js, runID, stepID, 1, 2, 10*time.Second)
 	if string(chunks[0].Data) != "final line" {
 		t.Fatalf("chunks[0].Data = %q, want %q", chunks[0].Data, "final line")
+	}
+	if chunks[1].Stream != protocol.LogStreamMarker ||
+		string(chunks[1].Data) != protocol.LogMarkerCompleted {
+		t.Fatalf("chunks[1] = %+v, want marker=completed", chunks[1])
+	}
+}
+
+// TestRetry_ProducesChunksOnDistinctAttemptSubjects is the #624 review's
+// headline regression test: the first attempt fails (writing a log
+// line first), a retry is dispatched as a genuinely separate task
+// message and completes. Before the fix, both attempts published to
+// the SAME bare logs.{runID}.{stepID} subject and BOTH used seq
+// starting at 0 under the SAME Nats-Msg-Id shape, so the retry's
+// chunks silently collided with (and were dropped as duplicates of)
+// the first attempt's inside BUILD_LOGS's 2-minute dedup window. This
+// test proves chunks from BOTH attempts are independently observable,
+// and that each attempt's terminal marker is the last message on ITS
+// OWN subject.
+//
+// Payload.Attempt values mirror the engine's real dispatch shape
+// (internal/engine/task_publish.go's collectReadyMessages publishes
+// the first attempt with Attempt: 0; internal/engine/sleeptimer.go's
+// republishTask publishes a retry with Attempt: tm.Attempt+1, where
+// tm.Attempt was already the POST-first-attempt Attempts value — so a
+// retry's payload.Attempt is 2, not 1, in practice). The resolved
+// AttemptNumber worker/log_writer.go's subject actually uses
+// (resolveAttemptNumber) is 1 for the first dispatch (payload.Attempt
+// 0 falls back to NATS NumDelivered) and 2 for the retry
+// (payload.Attempt 2 is used directly) — the two numbers this test
+// asserts against.
+func TestRetry_ProducesChunksOnDistinctAttemptSubjects(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	const runID, stepID = "run-log-retry", "step-1"
+	attemptSeen := make(chan int, 2)
+	w := NewWorker(nc)
+	w.Handle("retrytask", func(tc TaskContext) error {
+		attempt := tc.RetryCount()
+		attemptSeen <- attempt
+		if attempt == 0 {
+			tc.LogOut().Write([]byte("attempt-1-line"))
+			return tc.Fail(assertionError("first attempt fails"))
+		}
+		tc.LogOut().Write([]byte("attempt-2-line"))
+		return tc.Complete([]byte(`"ok"`))
+	})
+	w.Start()
+	defer w.Stop()
+
+	publishTask(t, js, "retrytask", runID, stepID, 0)
+	select {
+	case got := <-attemptSeen:
+		if got != 0 {
+			t.Fatalf("first attempt payload.Attempt = %d, want 0", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first attempt never dispatched")
+	}
+	// The first attempt resolves to AttemptNumber 1 (NumDelivered
+	// fallback for a fresh message) — its terminal marker (failed)
+	// must be the last message on ITS subject before the retry is
+	// even published.
+	firstAttemptChunks := collectLogChunks(t, js, runID, stepID, 1, 2, 10*time.Second)
+	if firstAttemptChunks[0].Attempt != 1 || string(firstAttemptChunks[0].Data) != "attempt-1-line" {
+		t.Fatalf("firstAttemptChunks[0] = %+v, want attempt=1 data=attempt-1-line",
+			firstAttemptChunks[0])
+	}
+	if firstAttemptChunks[1].Stream != protocol.LogStreamMarker ||
+		string(firstAttemptChunks[1].Data) != protocol.LogMarkerFailed {
+		t.Fatalf("firstAttemptChunks[1] = %+v, want marker=failed", firstAttemptChunks[1])
+	}
+	if count := countLogChunks(t, js, runID, stepID, 1); count != 2 {
+		t.Fatalf("attempt-1 subject has %d chunks, want exactly 2 (no retry bleed-through)", count)
+	}
+
+	// Dispatch the retry exactly as the engine's republishTask would:
+	// a fresh task message with Attempt: 2 (see the doc comment above
+	// for why it's 2, not 1).
+	publishTask(t, js, "retrytask", runID, stepID, 2)
+	select {
+	case got := <-attemptSeen:
+		if got != 2 {
+			t.Fatalf("retry payload.Attempt = %d, want 2", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retry never dispatched")
+	}
+	retryChunks := collectLogChunks(t, js, runID, stepID, 2, 2, 10*time.Second)
+	if retryChunks[0].Seq != 0 || retryChunks[0].Attempt != 2 ||
+		string(retryChunks[0].Data) != "attempt-2-line" {
+		t.Fatalf("retryChunks[0] = %+v, want seq=0 attempt=2 data=attempt-2-line",
+			retryChunks[0])
+	}
+	if retryChunks[1].Stream != protocol.LogStreamMarker ||
+		string(retryChunks[1].Data) != protocol.LogMarkerCompleted {
+		t.Fatalf("retryChunks[1] = %+v, want marker=completed", retryChunks[1])
+	}
+	// The first attempt's subject is untouched by the retry's chunks —
+	// the collision this test guards against would show up here as
+	// extra or overwritten messages.
+	if count := countLogChunks(t, js, runID, stepID, 1); count != 2 {
+		t.Fatalf("attempt-1 subject has %d chunks after the retry ran, want exactly 2 (unchanged)", count)
 	}
 }

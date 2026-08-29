@@ -8,6 +8,8 @@ import "github.com/danmestas/dagnats/bridge"
 
 bridge/logs.go POST /v1/tasks/\{id\}/logs \(\#624\): the HTTP\-bridge counterpart to the worker SDK's LogOut\(\)/LogErr\(\) — lets a non\-Go worker publish stdout/stderr\-tagged chunks to the BUILD\_LOGS hot lane. Ownership is enforced exactly like resolve \(authorizeTaskOwner against the claiming TokenID\), and the bridge — not the caller — assigns Seq and owns the per\-step LogStepBytesMax budget, mirroring worker/log\_writer.go so a consumer reading BUILD\_LOGS sees the same chunk shape regardless of which lane produced it.
 
+Subject/attempt scoping \(\#624 review\): the subject is logs.\{runID\}.\{stepID\}.\{attempt\}, matching worker/log\_writer.go exactly — attempt is protocol.TaskPayload.Attempt read from the claimed task's own message \(the same one authorizeTaskOwner already validated ownership against\), NOT from the caller's request body, so an HTTP worker can never spoof which attempt its chunks land on.
+
 ## Index
 
 - [func RegisterBridgeMetrics\(m metric.Meter, b \*Bridge\) \(metric.Registration, error\)](<#RegisterBridgeMetrics>)

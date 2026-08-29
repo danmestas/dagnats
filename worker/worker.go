@@ -35,6 +35,21 @@ import (
 // Checkpoint and signal methods depend on optional KV buckets
 // ("checkpoints" and "signals"). They return an error if the bucket
 // was not provisioned at startup — check your natsutil.SetupAll call.
+//
+// BREAKING CHANGE (#624): LogOut() io.Writer and LogErr() io.Writer
+// were added to this interface. Any out-of-repo Go type that
+// implements TaskContext directly (rather than embedding one dagnats
+// already constructs, e.g. via a handler-wrapping test double) stops
+// compiling against this version until it adds both methods. The
+// simplest fix for a test double or thin wrapper that doesn't care
+// about log capture is to return io.Discard from both:
+//
+//	func (m *myFakeTaskContext) LogOut() io.Writer { return io.Discard }
+//	func (m *myFakeTaskContext) LogErr() io.Writer { return io.Discard }
+//
+// A type that embeds worker.TaskContext (or a *testing double this
+// module already provides, e.g. dagnatstest.MockTaskContext) needs no
+// change — it inherits the new methods automatically.
 type TaskContext interface {
 	// Step identity and input
 	Input() []byte
@@ -58,11 +73,21 @@ type TaskContext interface {
 	Heartbeat() error
 
 	// LogOut and LogErr (#624) publish stdout/stderr-tagged chunks to
-	// the BUILD_LOGS hot lane (logs.{runID}.{stepID}), buffered and
+	// the BUILD_LOGS hot lane (logs.{runID}.{stepID}.{attempt} — scoped
+	// to THIS attempt so a retry never collides with a prior attempt's
+	// sequence numbers within the stream's dedup window), buffered and
 	// flushed at protocol.LogChunkBytesMax or after 250ms. Complete,
-	// Fail, FailPermanent, and Continue drain any buffered bytes
-	// before publishing their resolution, so a consumer that observes
-	// the terminal event never misses trailing log output.
+	// Fail, FailPermanent, FailRetryAfter, Continue, and Pause all
+	// drain any buffered bytes AND emit an attempt-ending marker
+	// (completed/failed/continued/paused) before publishing their own
+	// resolution, so a consumer that observes the terminal event never
+	// misses trailing log output and can treat the marker as a
+	// reliable "this attempt is over" signal.
+	//
+	// The writers returned by LogOut/LogErr are NOT safe to call
+	// concurrently from goroutines other than the one running the
+	// task handler — like every other TaskContext method, they assume
+	// single-threaded use against one dispatched task.
 	LogOut() io.Writer
 	LogErr() io.Writer
 

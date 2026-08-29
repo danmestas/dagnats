@@ -7,6 +7,13 @@
 // owns the per-step LogStepBytesMax budget, mirroring worker/log_writer.go
 // so a consumer reading BUILD_LOGS sees the same chunk shape regardless
 // of which lane produced it.
+//
+// Subject/attempt scoping (#624 review): the subject is
+// logs.{runID}.{stepID}.{attempt}, matching worker/log_writer.go
+// exactly — attempt is protocol.TaskPayload.Attempt read from the
+// claimed task's own message (the same one authorizeTaskOwner already
+// validated ownership against), NOT from the caller's request body, so
+// an HTTP worker can never spoof which attempt its chunks land on.
 package bridge
 
 import (
@@ -17,11 +24,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -86,13 +95,18 @@ func (b *Bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	claims := claimsFromContext(r.Context())
-	_, claimingTokenID, ok := b.ackMap.LoadWithTokenID(taskID)
+	claimedMsg, claimingTokenID, ok := b.ackMap.LoadWithTokenID(taskID)
 	if !ok {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
 	if !b.authorizeTaskOwner(claims, claimingTokenID) {
 		http.Error(w, "task not claimed by this token", http.StatusForbidden)
+		return
+	}
+	attempt, err := logsTaskAttempt(claimedMsg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -131,8 +145,28 @@ func (b *Bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b.publishLogSteps(ctx, runID, stepID, startSeq, steps)
+	b.publishLogSteps(ctx, runID, stepID, attempt, startSeq, steps)
 	w.WriteHeader(http.StatusOK)
+}
+
+// logsTaskAttempt reads protocol.TaskPayload.Attempt from the claimed
+// task's original message and resolves it to the 1-based AttemptNumber
+// via taskAttemptNumber (bridge/poll.go) — the SAME numbering
+// step.started/step.failed's AttemptNumber field and
+// worker/log_writer.go's resolveAttemptNumber use, so a consumer
+// correlating BUILD_LOGS with the lifecycle history stream sees one
+// consistent per-attempt identity regardless of which lane (native
+// worker or HTTP bridge) produced it, and GET .../logs's default
+// ?attempt= (dag.StepState.Attempts) resolves to the right subject.
+func logsTaskAttempt(msg jetstream.Msg) (int, error) {
+	if msg == nil {
+		panic("logsTaskAttempt: msg must not be nil")
+	}
+	var payload protocol.TaskPayload
+	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
+		return 0, fmt.Errorf("unmarshal task payload: %w", err)
+	}
+	return taskAttemptNumber(msg, payload.Attempt)
 }
 
 var errLogsBodyTooLarge = fmt.Errorf("request body exceeds %d bytes", logsBodyBytesMax)
@@ -253,19 +287,28 @@ chunkLoop:
 // chunk dropped, never retried or blocking the caller — same policy
 // as worker/log_writer.go.
 func (b *Bridge) publishLogSteps(
-	ctx context.Context, runID, stepID string, startSeq uint64, steps []logPlanStep,
+	ctx context.Context, runID, stepID string, attempt int,
+	startSeq uint64, steps []logPlanStep,
 ) {
 	if len(steps) == 0 {
 		return
 	}
-	subject := "logs." + runID + "." + natsutil.SubjectToken(stepID)
+	if strings.ContainsAny(runID, ". \t*>") {
+		panic("publishLogSteps: runID must not contain NATS subject metacharacters")
+	}
+	// SubjectToken(stepID) feeds both the subject and the Msg-Id below
+	// so they reflect the same sanitized identity — matching
+	// worker/log_writer.go's publishLocked (#624 review).
+	stepToken := natsutil.SubjectToken(stepID)
+	subject := fmt.Sprintf("logs.%s.%s.%d", runID, stepToken, attempt)
 	for i, step := range steps {
 		seq := startSeq + uint64(i)
 		chunk := protocol.LogChunk{
-			Seq:    seq,
-			TS:     time.Now(),
-			Stream: step.stream,
-			Data:   step.data,
+			Seq:     seq,
+			Attempt: attempt,
+			TS:      time.Now(),
+			Stream:  step.stream,
+			Data:    step.data,
 		}
 		payload, err := json.Marshal(chunk)
 		if err != nil {
@@ -273,7 +316,7 @@ func (b *Bridge) publishLogSteps(
 				"error", err, "run_id", runID, "step_id", stepID)
 			continue
 		}
-		msgID := fmt.Sprintf("log-%s-%s-%d", runID, stepID, seq)
+		msgID := fmt.Sprintf("log-%s-%s-%d-%d", runID, stepToken, attempt, seq)
 		msg := &nats.Msg{
 			Subject: subject,
 			Data:    payload,
