@@ -148,6 +148,14 @@ var (
 )
 ```
 
+<a name="ErrWorkerIDContended"></a>ErrWorkerIDContended is returned by RegisterOwned and DeregisterOwned when a revision\-guarded write loses the race to a concurrent writer ownedWriteRetriesMax times in a row \-\- distinct from ErrWorkerIDOwned because contention is not an ownership decision: the fresh entry re\-Get after each conflict may still belong to the caller, we simply never won the write. Callers should treat this as transient \(e.g. the bridge maps it to 503 with Retry\-After\), never as a takeover.
+
+```go
+var ErrWorkerIDContended = errors.New(
+    "worker_id write lost the revision race too many times",
+)
+```
+
 <a name="ErrWorkerIDOwned"></a>ErrWorkerIDOwned is returned by RegisterOwned \(on register/ heartbeat\) and DeregisterOwned \(on disconnect\) when workerID's current entry is owned by a different token and the caller is neither that token nor an admin \-\- including when the caller lost a race to another writer between the ownership check and the revision\-guarded write.
 
 ```go
@@ -345,7 +353,7 @@ const (
 ```
 
 <a name="Directory"></a>
-## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L114-L116>)
+## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L187-L189>)
 
 Directory provides worker visibility via NATS KV. Each worker writes its registration to the "workers" bucket; the bucket's TTL ensures stale entries are purged automatically.
 
@@ -356,7 +364,7 @@ type Directory struct {
 ```
 
 <a name="NewDirectory"></a>
-### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L121>)
+### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L194>)
 
 ```go
 func NewDirectory(js jetstream.JetStream) *Directory
@@ -365,7 +373,7 @@ func NewDirectory(js jetstream.JetStream) *Directory
 NewDirectory creates a Directory backed by the "workers" KV bucket. Panics if js is nil or the bucket does not exist — both are programmer errors indicating missing setup.
 
 <a name="Directory.Deregister"></a>
-### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L264>)
+### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L367>)
 
 ```go
 func (d *Directory) Deregister(workerID string) error
@@ -374,16 +382,16 @@ func (d *Directory) Deregister(workerID string) error
 Deregister removes the worker's entry from the directory. Panics if workerID is empty. Returns nil if the key does not exist.
 
 <a name="Directory.DeregisterOwned"></a>
-### func \(\*Directory\) [DeregisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L299-L301>)
+### func \(\*Directory\) [DeregisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L409-L411>)
 
 ```go
 func (d *Directory) DeregisterOwned(workerID, callerTokenID string, callerIsAdmin bool) error
 ```
 
-DeregisterOwned removes workerID's entry, but only if the caller still owns it \(\#650, the delete\-side counterpart to RegisterOwned\): ownershipAllows must hold for the entry's current token\_id against the caller. A disconnect from a token that has since been superseded \(e.g. an admin took the worker\_id over while the original owner's connection was still open\) must not delete the current owner's entry out from under it \-\- it returns ErrWorkerIDOwned instead and leaves the entry untouched. Uses the Get's revision with jetstream.LastRevision on Delete so a concurrent re\-register between the Get and the Delete aborts the delete instead of clobbering the new owner \(closes the same TOCTOU window RegisterOwned closes on the write side\); that abort \-\- including on the admin path, which skips the ownershipAllows check above but still races the same Delete \-\- also maps to ErrWorkerIDOwned rather than a raw KV error, so a benign concurrent re\-register is logged at debug by the caller instead of ERROR. Returns nil if the key does not exist.
+DeregisterOwned removes workerID's entry, but only if the caller still owns it \(\#650, the delete\-side counterpart to RegisterOwned\): ownershipAllows must hold for the entry's current token\_id against the caller. A disconnect from a token that has since been superseded \(e.g. an admin took the worker\_id over while the original owner's connection was still open\) must not delete the current owner's entry out from under it \-\- it returns ErrWorkerIDOwned instead and leaves the entry untouched. Uses the Get's revision with jetstream.LastRevision on Delete so a concurrent write between the Get and the Delete aborts the delete instead of clobbering it, same TOCTOU window RegisterOwned closes on the write side \-\- but a bare revision conflict doesn't prove who wrote in the window: it could be this same connection's own heartbeat re\-registering right as it disconnects, which must not skip a legitimate deregister. On conflict, deregisterOwnedAttempt re\-Gets and this loop retries the decision against the fresh entry, up to ownedWriteRetriesMax times. Returns nil if the key does not exist.
 
 <a name="Directory.List"></a>
-### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L354>)
+### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L493>)
 
 ```go
 func (d *Directory) List() ([]WorkerRegistration, error)
@@ -392,7 +400,7 @@ func (d *Directory) List() ([]WorkerRegistration, error)
 List returns all currently registered workers. Returns an empty slice when no workers are registered. Skips entries that fail to unmarshal \(TTL expiry race\).
 
 <a name="Directory.Register"></a>
-### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L236>)
+### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L339>)
 
 ```go
 func (d *Directory) Register(reg WorkerRegistration) error
@@ -401,13 +409,13 @@ func (d *Directory) Register(reg WorkerRegistration) error
 Register writes the worker's registration to the KV bucket with an unguarded Put \-\- no ownership check, no revision guard. Reserved for native Go workers, which never go through the bridge and so have no TokenID to enforce \(\#650's ownership scope is the bridge's HTTP connect/heartbeat path only; see RegisterOwned\). The worker must call Register periodically \(before the 60s TTL\) to maintain its presence. Panics on empty WorkerID or TaskTypes.
 
 <a name="Directory.RegisterOwned"></a>
-### func \(\*Directory\) [RegisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L151-L153>)
+### func \(\*Directory\) [RegisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L236-L238>)
 
 ```go
 func (d *Directory) RegisterOwned(reg WorkerRegistration, callerTokenID string, callerIsAdmin bool) error
 ```
 
-RegisterOwned is the single, revision\-guarded write path for worker\_id registration used by the bridge for both the initial connect and the periodic heartbeat re\-register \(\#650 round 3\). A prior two\-step "check ownership, then plain Put" \(and the heartbeat's unconditional Put\) each raced a concurrent writer between the check and the write: two tokens racing an unclaimed id could both pass the check and last\-writer\-wins, and a heartbeat replaying its connect\-time TokenID could resurrect a worker\_id after an admin had taken it over. Get \-\> ownershipAllows \-\> Create \(key absent\) or Update with the Get's revision \(key present\) closes both races: a losing/late writer's Create/Update fails on a duplicate\-key or revision conflict and gets ErrWorkerIDOwned, same as a synchronous ownership rejection. Bounded to one Get plus one Create/Update.
+RegisterOwned is the single, revision\-guarded write path for worker\_id registration used by the bridge for both the initial connect and the periodic heartbeat re\-register \(\#650 round 3\). A prior two\-step "check ownership, then plain Put" \(and the heartbeat's unconditional Put\) each raced a concurrent writer between the check and the write: two tokens racing an unclaimed id could both pass the check and last\-writer\-wins, and a heartbeat replaying its connect\-time TokenID could resurrect a worker\_id after an admin had taken it over. Get \-\> ownershipAllows \-\> Create \(key absent\) or Update with the Get's revision \(key present\) closed both races, but a raw revision conflict on its own proves only that someone wrote in the window \-\- not who. A prior version mapped any conflict straight to ErrWorkerIDOwned, which wrongly rejected a reconnect racing its own heartbeat's re\-register \(CI\- only flake: TestConnectWorkerIDOwnershipDevMode's second connect racing the first connection's disconnect\-time deregister\). On conflict, registerOwnedAttempt re\-Gets and this loop retries the decision against the fresh entry, up to ownedWriteRetriesMax times.
 
 <a name="HTTPEnvelope"></a>
 ## type [HTTPEnvelope](<https://github.com/danmestas/dagnats/blob/main/worker/envelope.go#L17>)
@@ -899,7 +907,7 @@ func WithPartitions(n int) WorkerOption
 WithPartitions configures pcgroups elastic consumer groups with the given partition count. 0 = legacy consumer \(default\).
 
 <a name="WorkerRegistration"></a>
-## type [WorkerRegistration](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L82-L109>)
+## type [WorkerRegistration](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L155-L182>)
 
 WorkerRegistration is the directory entry for a running worker. The directory is observability\-only — the engine never reads it. Workers register on startup and maintain their entry via periodic heartbeat writes \(the KV bucket has a 60s TTL\).
 

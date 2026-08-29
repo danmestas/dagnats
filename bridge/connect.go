@@ -117,8 +117,33 @@ func registerOwnedOrReject(
 		)
 		return false
 	}
+	if errors.Is(err, worker.ErrWorkerIDContended) {
+		writeContendedResponse(w)
+		return false
+	}
 	http.Error(w, "register failed", http.StatusInternalServerError)
 	return false
+}
+
+// writeContendedResponse responds to a caller that lost the
+// worker_id write race ownedWriteRetriesMax times in a row (#650
+// round 4): contention is not an ownership decision, so this is a
+// distinct 503 (not the 409 used for a genuine ownership rejection)
+// with Retry-After telling the caller -- typically its own heartbeat
+// re-registering right as it reconnected -- to back off and retry
+// rather than treating this connect as rejected.
+func writeContendedResponse(w http.ResponseWriter) {
+	if w == nil {
+		panic("writeContendedResponse: w must not be nil")
+	}
+	if w.Header() == nil {
+		panic("writeContendedResponse: w.Header() must not be nil")
+	}
+	w.Header().Set("Retry-After", "1")
+	http.Error(
+		w, "worker_id registration is contended, retry shortly",
+		http.StatusServiceUnavailable,
+	)
 }
 
 // deregisterOnDisconnect removes the worker's directory entry when
@@ -141,6 +166,11 @@ func deregisterOnDisconnect(
 	case errors.Is(err, worker.ErrWorkerIDOwned):
 		slog.DebugContext(ctx,
 			"stale disconnect for worker_id owned by another token",
+			"worker_id", workerID,
+		)
+	case errors.Is(err, worker.ErrWorkerIDContended):
+		slog.WarnContext(ctx,
+			"deregister lost the revision race repeatedly",
 			"worker_id", workerID,
 		)
 	case err != nil:
@@ -198,6 +228,18 @@ func writeSSEHeaders(w http.ResponseWriter) {
 	}
 }
 
+// sendHeartbeatLoopTestHook, when non-nil, is called once per
+// connection immediately after its ticker is created (and
+// heartbeatInterval has therefore already been read) -- a test-only
+// synchronization point. A test that mutates heartbeatInterval needs
+// a real happens-before edge, not a timing guess: closing/canceling
+// a connection only unblocks the CLIENT's read locally and proves
+// nothing about this goroutine, so a plain time.Sleep before
+// restoring the package var still races under `-race`. Sending on a
+// channel from here, and receiving it in the test, gives that edge.
+// Must never be set outside tests.
+var sendHeartbeatLoopTestHook func()
+
 // sendHeartbeatLoop sends periodic SSE heartbeats and re-registers
 // the worker until the client disconnects.
 func sendHeartbeatLoop(
@@ -216,6 +258,9 @@ func sendHeartbeatLoop(
 	}
 	flusher, _ := w.(http.Flusher)
 	ticker := time.NewTicker(heartbeatInterval)
+	if sendHeartbeatLoopTestHook != nil {
+		sendHeartbeatLoopTestHook()
+	}
 	defer ticker.Stop()
 	for {
 		select {
@@ -269,6 +314,14 @@ func heartbeatReregister(
 			"worker_id", reg.WorkerID,
 		)
 		return false
+	case errors.Is(err, worker.ErrWorkerIDContended):
+		// Transient contention, not a failure -- matches
+		// deregisterOnDisconnect's WARN treatment of the same error.
+		slog.WarnContext(ctx,
+			"heartbeat re-register lost the revision race repeatedly",
+			"worker_id", reg.WorkerID,
+		)
+		return true
 	default:
 		slog.ErrorContext(ctx, "heartbeat re-register failed",
 			"worker_id", reg.WorkerID, "error", err,
