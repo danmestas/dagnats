@@ -29,6 +29,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func ResolvePriority\(cfg \*PriorityConfig, input json.RawMessage\) int](<#ResolvePriority>)
 - [func ResolveSleepDuration\(cfg SleepConfig, runInput json.RawMessage, now time.Time\) \(time.Duration, error\)](<#ResolveSleepDuration>)
 - [func RunStatusNames\(\) \[\]string](<#RunStatusNames>)
+- [func ValidTaskType\(s string\) error](<#ValidTaskType>)
 - [func Validate\(def WorkflowDef\) error](<#Validate>)
 - [func ValidateFragment\(fragment \[\]StepDef, cfg PlannerConfig, existingIDs map\[string\]bool\) error](<#ValidateFragment>)
 - [func ValidateLabels\(labels map\[string\]string\) error](<#ValidateLabels>)
@@ -317,6 +318,17 @@ func RunStatusNames() []string
 ```
 
 RunStatusNames returns the canonical lowercase string names for every RunStatus value, in numeric order. Callers \(CLI help text, API docs, error messages\) reuse this rather than maintaining their own copy of the slice.
+
+<a name="ValidTaskType"></a>
+## func [ValidTaskType](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L29>)
+
+```go
+func ValidTaskType(s string) error
+```
+
+ValidTaskType reports whether s is safe to publish verbatim as one or more NATS subject tokens. StepSubject builds "task.\{Task\}.\{runID\}" \(optionally "task.\{Task\}.\{WorkerGroup\}.\{runID\}"\) from a StepDef's Task with no sanitization — unlike a step ID, which passes through natsutil.SubjectToken first — because a worker's registered task\_types must match the value byte\-for\-byte to poll it. consumername.FilterFor anchors a worker's consumer filter on the same value. An unsafe Task \(whitespace, a NATS wildcard, a stray leading, trailing, or empty dotted token\) would register cleanly today and only break at dispatch time, either minting a malformed subject or silently never getting picked up — see issue \#674.
+
+Dots ARE allowed within a token: "dagger.call" is a production task type, and rejecting dots outright would break it. What keeps a dotted task type from leaking into another worker's poll is FilterFor's exact token\-count anchor, not a charset restriction here — see internal/consumername.FilterFor's doc comment.
 
 <a name="Validate"></a>
 ## func [Validate](<https://github.com/danmestas/dagnats/blob/main/dag/validate.go#L9>)
@@ -883,7 +895,7 @@ func EffectiveSteps(def WorkflowDef, run WorkflowRun) []StepDef
 EffectiveSteps returns the combined static \+ dynamic steps for a running workflow. When no dynamic steps exist, the original slice is returned unchanged to avoid allocation.
 
 <a name="NamespaceFragment"></a>
-### func [NamespaceFragment](<https://github.com/danmestas/dagnats/blob/main/dag/dynamic.go#L232-L234>)
+### func [NamespaceFragment](<https://github.com/danmestas/dagnats/blob/main/dag/dynamic.go#L241-L243>)
 
 ```go
 func NamespaceFragment(plannerID string, fragment []StepDef) []StepDef

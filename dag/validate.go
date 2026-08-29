@@ -134,6 +134,9 @@ func validateStepReferences(
 		if err := validateSingleStep(step, ids); err != nil {
 			return err
 		}
+		if err := validateTaskType(step); err != nil {
+			return err
+		}
 		if err := validateWaitForEventStep(step, ids); err != nil {
 			return err
 		}
@@ -209,6 +212,25 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 			"step %q MaxTaskConcurrency is %d (must be 0..1000)",
 			step.ID, step.MaxTaskConcurrency,
 		)
+	}
+	return nil
+}
+
+// validateTaskType rejects a step whose Task is not safe to publish
+// verbatim as a NATS subject — see ValidTaskType. Steps of a type that
+// carries no task (Sleep, WaitForEvent, Approval, SubWorkflow) skip.
+func validateTaskType(step StepDef) error {
+	if step.ID == "" {
+		panic("validateTaskType: step ID is empty")
+	}
+	if step.Task == "" && stepRequiresTask(step.Type) {
+		panic("validateTaskType: step task is empty")
+	}
+	if step.Task == "" {
+		return nil
+	}
+	if err := ValidTaskType(step.Task); err != nil {
+		return fmt.Errorf("step %q has invalid task: %w", step.ID, err)
 	}
 	return nil
 }

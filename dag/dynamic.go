@@ -122,8 +122,11 @@ func validateFragmentIDs(
 	return nil
 }
 
-// validateFragmentTasks checks that all tasks are non-empty and
-// within the allowed set if configured.
+// validateFragmentTasks checks that all tasks are non-empty, safe to
+// publish verbatim as a NATS subject (see ValidTaskType — a planner
+// fragment's Task flows into StepSubject exactly like a static step's,
+// so it inherits the same #674 subject-safety requirement), and within
+// the allowed set if configured.
 func validateFragmentTasks(
 	fragment []StepDef, allowedTasks []string,
 ) error {
@@ -139,6 +142,12 @@ func validateFragmentTasks(
 			return fmt.Errorf(
 				"planner fragment step %q has empty task",
 				step.ID,
+			)
+		}
+		if err := ValidTaskType(step.Task); err != nil {
+			return fmt.Errorf(
+				"planner fragment step %q has invalid task: %w",
+				step.ID, err,
 			)
 		}
 		if len(allowedTasks) > 0 && !allowed[step.Task] {

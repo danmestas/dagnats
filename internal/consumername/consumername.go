@@ -85,18 +85,31 @@ func NameFor(taskType, group string) string {
 // Inputs are NOT sanitized — they appear in the message-subject hierarchy
 // and must round-trip exactly. Subject validity is the publisher's
 // contract; sanitization is a consumer-naming concern.
+//
+// The trailing token is a single `*`, not `>`, anchoring the filter to
+// exactly the token count internal/engine/task_publisher.go's StepSubject
+// appends after (taskType[, group]): one token, the run ID (a 32-char hex
+// string with no dots — see internal/runid.New). A trailing `>` would
+// wildcard-match ANY number of following tokens, so a dotted taskType like
+// "build" would also receive "task.build.linux.<runID>" — a completely
+// different, unrelated task type that merely shares a dotted prefix. `*`
+// closes that leak (issue #674) while still allowing taskType itself to
+// contain dots ("dagger.call" is a production task type). Any existing
+// durable consumer's FilterSubject is brought in line the next time its
+// owner calls jetstream.CreateOrUpdateConsumer (worker.subscribePullConsumer,
+// bridge.taskConsumer) — see docs/wire-protocol.md "Task Subjects".
 func FilterFor(taskType, group string) string {
 	if taskType == "" {
 		panic("consumername.FilterFor: taskType must not be empty")
 	}
 	if group == "" {
-		out := "task." + taskType + ".>"
+		out := "task." + taskType + ".*"
 		if out == "" {
 			panic("consumername.FilterFor: result must not be empty")
 		}
 		return out
 	}
-	out := "task." + taskType + "." + group + ".>"
+	out := "task." + taskType + "." + group + ".*"
 	if out == "" {
 		panic("consumername.FilterFor: result must not be empty")
 	}

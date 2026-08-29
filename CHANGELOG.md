@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`dag.Validate` accepted task types that could never dispatch, and a
+  dotted task type's consumer filter wildcard-matched unrelated sibling
+  types (#674).** A step's `Task` was only checked for non-emptiness;
+  `internal/engine`'s `StepSubject` builds `task.{Task}.{runID}` from it
+  verbatim (no sanitization), so a `Task` with whitespace, a NATS
+  wildcard, or a stray leading/trailing/empty dotted token registered
+  cleanly and then silently never got dispatched. Separately,
+  `internal/consumername.FilterFor` anchored on a trailing `>` wildcard,
+  so a worker polling `build` also received `task.build.linux.<runID>` —
+  a differently-typed task that only shared a dotted prefix. `dag.Validate`
+  now enforces one charset/shape rule (`dag.ValidTaskType`, shared with
+  `ci/compile.go`'s diagnostic so the two can't drift), and `FilterFor`
+  anchors on exactly one trailing token instead of `>`. Dots remain legal
+  in task types (`dagger.call` still works) — isolation now comes from the
+  filter anchor, not from banning dots. **Behavior change:** a workflow def
+  with an unsafe task type now fails `POST /workflows` with 400 instead of
+  registering a run that could never dispatch.
 - **`dagnats sidecar install` could never fetch `dagnats-mcp-duckdb` (#621).**
   The release workflow built the four tarballs but only uploaded them as
   workflow artifacts, expecting an operator to attach them by hand — which

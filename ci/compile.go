@@ -28,26 +28,6 @@ const (
 // Compile's doc comment.
 var stepIDPattern = regexp.MustCompile(`step "([^"]+)"`)
 
-// taskTypePattern restricts a ci.yml task: value to the same safe,
-// greppable charset dag/labels.go's labelKeyPattern uses for run label
-// keys: lowercase letters, digits, underscore, dot, hyphen. dag.Validate
-// only requires a StepDef's Task to be non-empty, and the engine's
-// StepSubject (internal/engine/task_publisher.go) builds
-// "task.{Task}.{runID}" from it verbatim — unlike a step ID, which passes
-// through natsutil.SubjectToken sanitization first. An unsafe Task value
-// (whitespace, a NATS wildcard) would therefore compile and register
-// cleanly but mint a malformed or wildcard-colliding subject only at
-// dispatch time. Rejecting it here instead means the author sees a
-// Diagnostic instead of a run that silently never gets picked up.
-var taskTypePattern = regexp.MustCompile(`^[a-z0-9_.-]+$`)
-
-// validTaskType reports whether s is safe to use verbatim as a
-// dag.StepDef.Task without corrupting the NATS subject the engine builds
-// from it.
-func validTaskType(s string) bool {
-	return taskTypePattern.MatchString(s)
-}
-
 // Compile converts a parsed Spec into a dag.WorkflowDef ready for the DagNats
 // engine. name becomes WorkflowDef.Name. Unlike the pre-#633 fail-fast
 // compiler, every problem found (unknown Needs references, invalid
@@ -265,10 +245,13 @@ func compileCheck(
 
 // checkTaskCallExclusivity validates that exactly one of call/task is set
 // and, when task is set, that it is safe to use verbatim as a
-// dag.StepDef.Task. field is the Diagnostic Field to attribute problems to
-// ("<check name>" for a check, "deploy" for the deploy block) — shared by
-// compileCheck and compileDeploy so the two entry points report the same
-// message shape for the same mistake (#671).
+// dag.StepDef.Task — via dag.ValidTaskType, the single rule dag.Validate
+// itself also enforces (#674), so this diagnostic and a direct
+// POST /workflows 400 can never drift apart. field is the Diagnostic
+// Field to attribute problems to ("<check name>" for a check, "deploy"
+// for the deploy block) — shared by compileCheck and compileDeploy so the
+// two entry points report the same message shape for the same mistake
+// (#671).
 func checkTaskCallExclusivity(
 	field, call, task string, diags []Diagnostic,
 ) []Diagnostic {
@@ -285,15 +268,16 @@ func checkTaskCallExclusivity(
 				"%s: exactly one of call or task must be set", field,
 			),
 		})
-	} else if hasTask && !validTaskType(task) {
-		diags = addDiagnostic(diags, Diagnostic{
-			Field: field,
-			Message: fmt.Sprintf(
-				"%s: task %q is not a valid task type "+
-					"(lowercase letters, digits, '_', '-', '.' only)",
-				field, task,
-			),
-		})
+	} else if hasTask {
+		if err := dag.ValidTaskType(task); err != nil {
+			diags = addDiagnostic(diags, Diagnostic{
+				Field: field,
+				Message: fmt.Sprintf(
+					"%s: task %q is not a valid task type: %v",
+					field, task, err,
+				),
+			})
+		}
 	}
 	if len(diags) < before {
 		panic("checkTaskCallExclusivity: internal invariant: diagnostics count decreased")

@@ -209,7 +209,7 @@ func TestBridgePollAdoptsWorkerDurable(t *testing.T) {
 	)
 	defer cancel()
 	preCreateDurable(
-		t, js, "workers-adopt", "task.adopt.>", adoptedAckWait,
+		t, js, "workers-adopt", "task.adopt.*", adoptedAckWait,
 	)
 
 	publishTaskFixture(t, js, "adopt", "adopt-1")
@@ -235,10 +235,10 @@ func TestBridgePollAdoptsWorkerDurable(t *testing.T) {
 	// Asserting only AckWait would pass even if the bridge adopted a
 	// durable serving a different subject entirely — the exact blind
 	// spot that let the send.email/send-email collision through.
-	if info.Config.FilterSubject != "task.adopt.>" {
+	if info.Config.FilterSubject != "task.adopt.*" {
 		t.Fatalf(
 			"adopted consumer serves %q, want %q",
-			info.Config.FilterSubject, "task.adopt.>",
+			info.Config.FilterSubject, "task.adopt.*",
 		)
 	}
 }
@@ -246,13 +246,13 @@ func TestBridgePollAdoptsWorkerDurable(t *testing.T) {
 // TestPollRejectsNameCollidingDurable is the finding-1 guard.
 // sanitizeConsumerName collapses '.' to '-', so "send.email" and
 // "send-email" both name the durable "workers-send-email" while their
-// filters stay distinct (task.send.email.> vs task.send-email.>).
+// filters stay distinct (task.send.email.* vs task.send-email.*).
 // Adopting purely by name therefore hands a poller another type's work.
 // The bridge must refuse and say why, naming both filters.
 func TestPollRejectsNameCollidingDurable(t *testing.T) {
 	js, b, ts := newPollConsumerBridge(t)
 	preCreateDurable(
-		t, js, "workers-send-email", "task.send-email.>", adoptedAckWait,
+		t, js, "workers-send-email", "task.send-email.*", adoptedAckWait,
 	)
 	// Work exists ONLY for the hyphenated type. A bridge that adopts by
 	// name will happily serve it to a send.email poller.
@@ -270,7 +270,7 @@ func TestPollRejectsNameCollidingDurable(t *testing.T) {
 		)
 	}
 	for _, want := range []string{
-		"task.send.email.>", "task.send-email.>", "workers-send-email",
+		"task.send.email.*", "task.send-email.*", "workers-send-email",
 	} {
 		if !strings.Contains(respBody, want) {
 			t.Fatalf("error body omits %q: %q", want, respBody)
@@ -292,16 +292,20 @@ func TestPollRejectsNameCollidingDurable(t *testing.T) {
 // started attempt nobody is running.
 func TestPollDegradesPerTaskType(t *testing.T) {
 	js, b, ts := newPollConsumerBridge(t)
-	// A grouped durable makes "grp" unpollable: the bridge's ungrouped
-	// filter task.grp.> overlaps it, and the work-queue stream rejects
-	// the second consumer (err 10100).
+	// A name-colliding durable (see TestPollRejectsNameCollidingDurable)
+	// makes "grp.legacy" unpollable: consumername.Sanitize collapses '.'
+	// to '-', so "grp.legacy" and "grp-legacy" share durable name
+	// "workers-grp-legacy" while their filters differ — adoptConsumer
+	// refuses the mismatch. (A grouped/ungrouped work-queue overlap no
+	// longer forces this after #674 anchored FilterFor to exactly one
+	// trailing token — see TestPollFailsWhenEveryTypeFails.)
 	preCreateDurable(
-		t, js, "workers-grp-alpha", "task.grp.alpha.>", adoptedAckWait,
+		t, js, "workers-grp-legacy", "task.grp-legacy.*", adoptedAckWait,
 	)
 	publishTaskFixture(t, js, "healthy", "healthy-1")
 
 	body := fmt.Sprintf(
-		`{"task_types":["healthy","grp"],"max_tasks":2,"timeout_ms":%d}`,
+		`{"task_types":["healthy","grp.legacy"],"max_tasks":2,"timeout_ms":%d}`,
 		pollConsumerFetchTimeoutMs,
 	)
 	status, respBody := postPollRaw(t, ts, body)
@@ -332,21 +336,29 @@ func TestPollDegradesPerTaskType(t *testing.T) {
 // degradation: partial success returns 200, but a poll where nothing
 // could be fetched AND something faulted is a topology error, not "no
 // work". Reporting it as an empty array is what hid #532.
+//
+// Forced via a name-colliding durable (see TestPollRejectsNameCollidingDurable)
+// rather than a grouped/ungrouped work-queue overlap: issue #674
+// anchored consumername.FilterFor to exactly one trailing token, so
+// "task.notify.*" (ungrouped "notify") and "task.notify.sms.*" (grouped
+// "notify"+"sms") no longer overlap on the work-queue stream — that
+// scenario stopped producing a fault to react to, which is the fix
+// working as intended.
 func TestPollFailsWhenEveryTypeFails(t *testing.T) {
 	js, b, ts := newPollConsumerBridge(t)
 	preCreateDurable(
-		t, js, "workers-grp-alpha", "task.grp.alpha.>", adoptedAckWait,
+		t, js, "workers-notify-sms", "task.notify-sms.*", adoptedAckWait,
 	)
 
 	body := fmt.Sprintf(
-		`{"task_types":["grp"],"max_tasks":1,"timeout_ms":%d}`,
+		`{"task_types":["notify.sms"],"max_tasks":1,"timeout_ms":%d}`,
 		pollConsumerFetchTimeoutMs,
 	)
 	status, respBody := postPollRaw(t, ts, body)
 	if status != http.StatusInternalServerError {
 		t.Fatalf("got status %d, want 500 (body %q)", status, respBody)
 	}
-	if !strings.Contains(respBody, "task.grp.>") {
+	if !strings.Contains(respBody, "task.notify-sms.*") {
 		t.Fatalf("error body does not name the colliding filter: %q",
 			respBody)
 	}
@@ -366,10 +378,10 @@ func TestPollUsesDurableNotEphemeral(t *testing.T) {
 		postPoll(t, ts, "churn", 1, pollConsumerFetchTimeoutMs)
 	}
 
-	got := consumersOnFilter(t, js, "task.churn.>")
+	got := consumersOnFilter(t, js, "task.churn.*")
 	if len(got) != 1 {
 		t.Fatalf(
-			"got %d consumers on task.churn.>, want exactly 1", len(got),
+			"got %d consumers on task.churn.*, want exactly 1", len(got),
 		)
 	}
 	if got[0].Durable != "workers-churn" {
@@ -387,9 +399,18 @@ func TestPollUsesDurableNotEphemeral(t *testing.T) {
 }
 
 // TestGroupedCollisionIsLoud is the regression guard for the whole
-// silent-failure class. Grouped polling over the bridge is not
-// supported; a WorkQueuePolicy uniqueness rejection must surface as a
-// descriptive error, never as HTTP 200 with an empty task list.
+// silent-failure class: a WorkQueuePolicy uniqueness rejection must
+// surface as a descriptive error, never as HTTP 200 with an empty task
+// list.
+//
+// Forced by pre-seeding a durable using the PRE-#674 ">" trailing
+// wildcard — exactly what a not-yet-upgraded native worker or bridge
+// process would still be running mid-rollout. "task.grp.>" is a strict
+// superset of the "task.grp.*" this bridge now derives for an ungrouped
+// "grp" poll, so JetStream's WorkQueuePolicy still rejects the second
+// consumer even though two same-version ("*"-anchored) filters for
+// related-but-distinct task types no longer overlap each other (see
+// TestPollFailsWhenEveryTypeFails).
 func TestGroupedCollisionIsLoud(t *testing.T) {
 	js, _, ts := newPollConsumerBridge(t)
 	ctx, cancel := context.WithTimeout(
@@ -398,9 +419,9 @@ func TestGroupedCollisionIsLoud(t *testing.T) {
 	defer cancel()
 	_, err := js.CreateOrUpdateConsumer(
 		ctx, "TASK_QUEUES", jetstream.ConsumerConfig{
-			Durable:       "workers-grp-alpha",
-			Name:          "workers-grp-alpha",
-			FilterSubject: "task.grp.alpha.>",
+			Durable:       "workers-grp-legacy",
+			Name:          "workers-grp-legacy",
+			FilterSubject: "task.grp.>",
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			DeliverPolicy: jetstream.DeliverAllPolicy,
 			AckWait:       adoptedAckWait,
@@ -408,7 +429,7 @@ func TestGroupedCollisionIsLoud(t *testing.T) {
 		},
 	)
 	if err != nil {
-		t.Fatalf("pre-create grouped durable: %v", err)
+		t.Fatalf("pre-create legacy-filter durable: %v", err)
 	}
 
 	body := fmt.Sprintf(
@@ -418,10 +439,10 @@ func TestGroupedCollisionIsLoud(t *testing.T) {
 	status, respBody := postPollRaw(t, ts, body)
 	if status == http.StatusOK {
 		t.Fatalf(
-			"grouped collision reported as success: body=%q", respBody,
+			"legacy-filter collision reported as success: body=%q", respBody,
 		)
 	}
-	if !strings.Contains(respBody, "task.grp.>") {
+	if !strings.Contains(respBody, "task.grp.*") {
 		t.Fatalf(
 			"error body does not name the colliding filter: %q",
 			respBody,
@@ -479,7 +500,7 @@ func TestAdoptConsumerContract(t *testing.T) {
 	)
 	defer cancel()
 
-	_, err := b.adoptConsumer(ctx, "workers-absent", "task.absent.>")
+	_, err := b.adoptConsumer(ctx, "workers-absent", "task.absent.*")
 	if !errors.Is(err, jetstream.ErrConsumerNotFound) {
 		t.Fatalf("absent consumer: got %v, want ErrConsumerNotFound", err)
 	}
@@ -487,9 +508,9 @@ func TestAdoptConsumerContract(t *testing.T) {
 	// AckWait differs from ours — exactly the shape that makes
 	// CreateConsumer answer ErrConsumerExists instead of succeeding.
 	preCreateDurable(
-		t, js, "workers-toctou", "task.toctou.>", adoptedAckWait,
+		t, js, "workers-toctou", "task.toctou.*", adoptedAckWait,
 	)
-	cons, err := b.adoptConsumer(ctx, "workers-toctou", "task.toctou.>")
+	cons, err := b.adoptConsumer(ctx, "workers-toctou", "task.toctou.*")
 	if err != nil {
 		t.Fatalf("adopt matching durable: %v", err)
 	}
@@ -498,10 +519,10 @@ func TestAdoptConsumerContract(t *testing.T) {
 	}
 
 	preCreateDurable(
-		t, js, "workers-send-email", "task.send-email.>", adoptedAckWait,
+		t, js, "workers-send-email", "task.send-email.*", adoptedAckWait,
 	)
 	_, err = b.adoptConsumer(
-		ctx, "workers-send-email", "task.send.email.>",
+		ctx, "workers-send-email", "task.send.email.*",
 	)
 	if err == nil {
 		t.Fatal("adopted a durable serving a different filter")

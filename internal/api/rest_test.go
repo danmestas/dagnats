@@ -492,6 +492,66 @@ func TestRESTRegisterWorkflowInvalidDef(t *testing.T) {
 	}
 }
 
+// TestRESTRegisterWorkflowUnsafeTaskTypeRejected proves a direct
+// POST /workflows caller — which never runs through ci/compile.go's
+// mirrored diagnostic — gets a 400 for a step Task that is unsafe to
+// publish verbatim as a NATS subject (issue #674). Before the fix,
+// dag.Validate only checked Task was non-empty, so this def would have
+// registered and then silently never dispatched.
+func TestRESTRegisterWorkflowUnsafeTaskTypeRejected(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	natsutil.SetupAll(nc)
+	svc := NewService(nc)
+	handler := NewRESTHandler(svc)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// Positive: a task type containing whitespace returns 400. Built by
+	// hand rather than via dag.NewWorkflow — the builder's Build() runs
+	// dag.Validate itself, so an unsafe Task there yields a zero-value
+	// def instead of exercising the REST handler's own validation path.
+	// A crafted raw JSON body reaches handleRegisterWorkflow the same
+	// way a builder-less client (or a hand-written ci.yml bypass) would.
+	def := dag.WorkflowDef{
+		Name:    "rest-unsafe-task",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "go test", Type: dag.StepTypeNormal},
+		},
+	}
+	body := mustMarshal(t, def)
+	resp, err := http.Post(
+		server.URL+"/workflows",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d",
+			resp.StatusCode, http.StatusBadRequest)
+	}
+
+	// Negative: a dotted-but-safe task type (e.g. "dagger.call") still
+	// registers cleanly — dots must stay legal.
+	okWb := dag.NewWorkflow("rest-safe-dotted-task")
+	okWb.Task("a", "dagger.call")
+	okDef, _ := okWb.Build()
+	okBody := mustMarshal(t, okDef)
+	resp2, err := http.Post(
+		server.URL+"/workflows",
+		"application/json",
+		bytes.NewReader(okBody),
+	)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	if resp2.StatusCode == http.StatusBadRequest {
+		t.Fatal("dotted-but-safe task type should not return 400")
+	}
+}
+
 func TestRESTStartRunUnknownWorkflow(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)

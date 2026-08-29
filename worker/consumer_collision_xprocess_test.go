@@ -18,10 +18,10 @@ import (
 )
 
 func TestCrossProcessCollision_DifferentFilter_Panics(t *testing.T) {
-	// Pre-seed durable workers-foo with FilterSubject task.bar.> as if
+	// Pre-seed durable workers-foo with FilterSubject task.bar.* as if
 	// Worker A (a different process) had claimed it for some other task
 	// type whose sanitized name happens to be "foo". Then drive Worker B
-	// with taskType "foo", which derives FilterSubject task.foo.>. Same
+	// with taskType "foo", which derives FilterSubject task.foo.*. Same
 	// durable, different filters — without the precheck,
 	// CreateOrUpdateConsumer would silently mutate the FilterSubject and
 	// corrupt routing.
@@ -42,7 +42,7 @@ func TestCrossProcessCollision_DifferentFilter_Panics(t *testing.T) {
 	if _, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:       "workers-foo",
 		Name:          "workers-foo",
-		FilterSubject: "task.bar.>",
+		FilterSubject: "task.bar.*",
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 	}); err != nil {
@@ -60,11 +60,11 @@ func TestCrossProcessCollision_DifferentFilter_Panics(t *testing.T) {
 		}
 		// Both filter subjects must be named so the operator can identify
 		// which task types collided.
-		if !strings.Contains(msg, "task.bar.>") {
-			t.Errorf("panic must name pre-existing filter task.bar.>, got: %s", msg)
+		if !strings.Contains(msg, "task.bar.*") {
+			t.Errorf("panic must name pre-existing filter task.bar.*, got: %s", msg)
 		}
-		if !strings.Contains(msg, "task.foo.>") {
-			t.Errorf("panic must name claiming filter task.foo.>, got: %s", msg)
+		if !strings.Contains(msg, "task.foo.*") {
+			t.Errorf("panic must name claiming filter task.foo.*, got: %s", msg)
 		}
 		if !strings.Contains(msg, "workers-foo") {
 			t.Errorf("panic must name colliding durable workers-foo, got: %s", msg)
@@ -97,7 +97,7 @@ func TestCrossProcessCollision_SameFilter_NoPanic(t *testing.T) {
 	if _, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:       "workers-foo",
 		Name:          "workers-foo",
-		FilterSubject: "task.foo.>",
+		FilterSubject: "task.foo.*",
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 	}); err != nil {
@@ -118,8 +118,8 @@ func TestCrossProcessCollision_SameFilter_NoPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Info: %v", err)
 	}
-	if info.Config.FilterSubject != "task.foo.>" {
-		t.Errorf("FilterSubject = %q, want task.foo.>", info.Config.FilterSubject)
+	if info.Config.FilterSubject != "task.foo.*" {
+		t.Errorf("FilterSubject = %q, want task.foo.*", info.Config.FilterSubject)
 	}
 	if info.Config.Durable != "workers-foo" {
 		t.Errorf("Durable = %q, want workers-foo", info.Config.Durable)
@@ -159,8 +159,8 @@ func TestCrossProcessCollision_EmptyStream_NoPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Info: %v", err)
 	}
-	if info.Config.FilterSubject != "task.foo.>" {
-		t.Errorf("FilterSubject = %q, want task.foo.>", info.Config.FilterSubject)
+	if info.Config.FilterSubject != "task.foo.*" {
+		t.Errorf("FilterSubject = %q, want task.foo.*", info.Config.FilterSubject)
 	}
 	if info.Config.Durable != "workers-foo" {
 		t.Errorf("Durable = %q, want workers-foo", info.Config.Durable)

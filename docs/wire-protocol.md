@@ -8,13 +8,49 @@ Workers connect directly to NATS JetStream and subscribe to task subjects.
 
 ### Task Subjects
 
-Task subjects follow the pattern `task.{type}.{runID}`:
+Task subjects follow the pattern `task.{type}[.{workerGroup}].{runID}` — the
+run ID is always the last, and only the last, token. `runID` is a 32-char
+lowercase-hex string minted by `internal/runid.New` and contains no dots, so
+it is always exactly one subject token.
 
-- `task.llm.*` — all LLM tasks
-- `task.http.*` — all HTTP tasks
-- `task.llm.run-abc` — LLM tasks for run-abc only
+A step's `Task` (the `{type}` above) is published **verbatim**, with no
+sanitization — unlike a step ID, which passes through
+`natsutil.SubjectToken` first. A worker's registered `task_types` must
+match the registered value byte-for-byte to poll it, so rewriting the
+value would silently break polling. Because it is unsanitized, `dag.Validate`
+(via `dag.ValidTaskType`) rejects a `Task` value at workflow-registration
+time unless it is:
 
-Workers create durable pull consumers or ephemeral subscriptions with manual ACK.
+- non-empty and at most 128 bytes,
+- composed only of `A-Za-z0-9_.-`,
+- and never starts or ends with `.`, nor contains an empty token (`a..b`).
+
+**Dots are legal and are not a separator for consumer-filter purposes.**
+`dagger.call` is a production task type. A worker or bridge poller derives
+its consumer's `FilterSubject` via `internal/consumername.FilterFor`, which
+anchors on exactly one trailing wildcard token (`task.{type}.*` or
+`task.{type}.{group}.*`) — not a `>` multi-token wildcard. That means a
+worker polling `build` receives `task.build.<runID>` but **not**
+`task.build.linux.<runID>`: `build` and `build.linux` are different,
+unrelated task types that happen to share a dotted prefix, not a
+parent/child pair. Registering a `Task` value that could never dispatch
+correctly (whitespace, a NATS wildcard `*`/`>`, a stray leading/trailing/
+empty dotted token) now fails `POST /workflows` with 400 instead of
+silently never getting picked up (issue #674).
+
+Examples:
+
+- `task.llm.*` — all LLM tasks (any run)
+- `task.http.*` — all HTTP tasks (any run)
+- `task.llm.run-abc` — the LLM task for run-abc only
+- `task.build.*` — all `build` tasks; does **not** match `task.build.linux.*`
+
+Workers create durable pull consumers or ephemeral subscriptions with manual
+ACK. A durable's `FilterSubject` is brought in line with a changed
+`FilterFor` output the next time its owner calls
+`jetstream.CreateOrUpdateConsumer` (`worker.subscribePullConsumer`,
+`bridge.taskConsumer` via `adoptConsumer`) — there is no separate migration
+step for consumers created before this rule existed.
 
 ### TaskPayload Schema
 
