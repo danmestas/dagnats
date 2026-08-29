@@ -458,6 +458,7 @@ func (tp *TaskPublisher) PublishIteration(
 	runID string,
 	step dag.StepDef,
 	input []byte,
+	attempt int,
 	iteration int,
 	workflowName string,
 	dispatchNonce string,
@@ -486,10 +487,19 @@ func (tp *TaskPublisher) PublishIteration(
 	// granted loop keeps its control-plane capability across iterations, and
 	// stamp the run-binding nonce so the iteration's control-plane calls pass
 	// VerifyDispatch. A nil holder Loads nil → deny-by-default.
+	//
+	// attempt is the caller's currentAttempt(run, step.ID) (#624 review
+	// round 3) — the SAME attempt this Continue call is a part of, not
+	// a new one via nextDispatchAttempt: a Continue iteration must not
+	// consume retry budget the step never spent. iteration is the new
+	// value; the two together are what scope this dispatch's BUILD_LOGS
+	// subject (logs.{runID}.{stepID}.{attempt}.{iteration}) so iteration
+	// 2+'s chunks never collide with iteration 0's.
 	payload := protocol.TaskPayload{
 		TaskID:       runID + "." + step.ID,
 		RunID:        runID,
 		StepID:       step.ID,
+		Attempt:      attempt,
 		Iteration:    iteration,
 		Input:        input,
 		WorkflowName: workflowName,

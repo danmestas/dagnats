@@ -86,7 +86,7 @@ const (
 )
 ```
 
-<a name="LogMarkerCompleted"></a>Marker values, carried in LogChunk.Data when Stream == LogStreamMarker. Every path that ends a task attempt \(worker/context.go's Complete, Fail, FailPermanent, FailRetryAfter, Continue, Pause\) emits exactly one of these as the LAST chunk on that attempt's logs.\{runID\}.\{stepID\}.\{attempt\} subject \(\#624 review\) — the drain\-before\-resolve invariant guarantees no write for that attempt lands after it. GET .../logs's follow mode and from=failure both depend on this: a marker is a reliable end\-of\-attempt signal, not one a consumer has to infer from a separate history stream.
+<a name="LogMarkerCompleted"></a>Marker values, carried in LogChunk.Data when Stream == LogStreamMarker. Every path that ends a task attempt/iteration \(worker/context.go's Complete, Fail, FailPermanent, FailRetryAfter, Continue, Pause\) emits exactly one of these as the LAST chunk on that logs.\{runID\}.\{stepID\}.\{attempt\}.\{iteration\} subject \(\#624 review\) — the drain\-before\-resolve invariant guarantees no write for that attempt/iteration lands after it. GET .../logs's follow mode and from=failure both depend on this: a marker is a reliable end\-of\- attempt/iteration signal, not one a consumer has to infer from a separate history stream.
 
 ```go
 const (
@@ -287,19 +287,20 @@ const (
 ```
 
 <a name="LogChunk"></a>
-## type [LogChunk](<https://github.com/danmestas/dagnats/blob/main/protocol/log_chunk.go#L90-L96>)
+## type [LogChunk](<https://github.com/danmestas/dagnats/blob/main/protocol/log_chunk.go#L94-L101>)
 
-LogChunk is a single unit of captured step output on the BUILD\_LOGS stream, subject logs.\{runID\}.\{stepID\}.\{attempt\} \(\#624 review: attempt is part of the subject, not just this payload field, because a retry republishes step.started under the same runID/stepID within the stream's dedup window — without attempt in the subject/Msg\-Id, a second attempt's seq\-0 chunk collides with the first attempt's and is silently dropped as a duplicate\). Seq is monotonic per ATTEMPT and shared across the out/err streams \(worker/log\_writer.go assigns it from one counter\), so ordering by Seq reconstructs write order even though out and err are independently buffered.
+LogChunk is a single unit of captured step output on the BUILD\_LOGS stream, subject logs.\{runID\}.\{stepID\}.\{attempt\}.\{iteration\} \(\#624 review round 3: iteration is a SECOND dimension of dispatch identity, distinct from attempt — an agent\-loop step's Continue re\-dispatches the SAME attempt with a new iteration, never bumping Attempts \(doing so would consume retry budget the step never spent\), so iteration must be part of the subject/Msg\-Id too or iteration 2\+'s chunks collide with iteration 0's within the dedup window exactly the way un\-scoped attempts collided before \#624 review round 2. iteration is 0 for a non\-loop step. Seq is monotonic per \(ATTEMPT, ITERATION\) pair and shared across the out/err streams \(worker/log\_writer.go assigns it from one counter\), so ordering by Seq reconstructs write order even though out and err are independently buffered.
 
 Data marshals to a base64 string over JSON \(encoding/json's default \[\]byte handling\) so both text and arbitrary binary output round\-trip safely.
 
 ```go
 type LogChunk struct {
-    Seq     uint64    `json:"seq"`
-    Attempt int       `json:"attempt"`
-    TS      time.Time `json:"ts"`
-    Stream  string    `json:"stream"`
-    Data    []byte    `json:"data"`
+    Seq       uint64    `json:"seq"`
+    Attempt   int       `json:"attempt"`
+    Iteration int       `json:"iteration"`
+    TS        time.Time `json:"ts"`
+    Stream    string    `json:"stream"`
+    Data      []byte    `json:"data"`
 }
 ```
 

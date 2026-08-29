@@ -225,7 +225,7 @@ func TestPublishIterationMetricNotIncrementedOnFailure(
 	}
 
 	err := tp.PublishIteration(
-		context.Background(), "run-1", step, []byte(`{}`), 1, "", "",
+		context.Background(), "run-1", step, []byte(`{}`), 0, 1, "", "",
 	)
 	if err == nil {
 		t.Fatal(
@@ -381,7 +381,7 @@ func TestPublishIterationSpanNameAndWorkflowAttribute(t *testing.T) {
 	step := dag.StepDef{ID: "step-1", Task: "agent-loop", Type: dag.StepTypeAgent}
 
 	err := tp.PublishIteration(
-		context.Background(), "run-1", step, []byte(`{}`), 2,
+		context.Background(), "run-1", step, []byte(`{}`), 1, 2,
 		"deploy-pipeline", "",
 	)
 	if err != nil {
@@ -463,7 +463,7 @@ func TestPublishIterationOmitsWorkflowNameAttributeWhenEmpty(t *testing.T) {
 	step := dag.StepDef{ID: "step-1", Task: "agent-loop", Type: dag.StepTypeAgent}
 
 	err := tp.PublishIteration(
-		context.Background(), "run-1", step, []byte(`{}`), 2,
+		context.Background(), "run-1", step, []byte(`{}`), 1, 2,
 		"", "",
 	)
 	if err != nil {

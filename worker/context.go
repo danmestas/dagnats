@@ -214,23 +214,29 @@ func (c *taskContext) effectiveAttempt() int {
 }
 
 // ensureLogLane lazily creates c.logLane on first use, scoped to this
-// attempt (effectiveAttempt() — see resolveAttemptNumber's doc comment
-// for why this must match step.started's AttemptNumber). Not safe for
-// concurrent calls from multiple goroutines; see the LogOut/LogErr
-// concurrency note on the TaskContext interface.
+// attempt and iteration (effectiveAttempt() — see resolveAttemptNumber's
+// doc comment for why this must match step.started's AttemptNumber).
+// The check-then-set on c.logLane here is NOT itself safe for
+// concurrent LogOut()/LogErr() calls racing the FIRST creation — call
+// LogOut()/LogErr() once, from the handler goroutine, before handing
+// the returned io.Writer to concurrent users (e.g. os/exec's
+// cmd.Stdout/Stderr). Once created, the lane itself IS safe for
+// concurrent Write() calls (see the TaskContext interface's LogOut/
+// LogErr doc comment) — this constructor race is the only unsafe part.
 func (c *taskContext) ensureLogLane() *logLane {
 	if c.logLane == nil {
 		c.logLane = newLogLane(
-			c.ctx, c.tp, c.runID, c.stepID, c.effectiveAttempt(), c.logChunkFailures,
+			c.ctx, c.tp, c.runID, c.stepID,
+			c.effectiveAttempt(), c.iteration, c.logChunkFailures,
 		)
 	}
 	return c.logLane
 }
 
 // LogOut returns a writer that publishes stdout-tagged chunks to the
-// BUILD_LOGS hot lane (logs.{runID}.{stepID}.{attempt}). Buffered:
-// writes are batched and flushed at LogChunkBytesMax or after 250ms,
-// never blocking on NATS I/O.
+// BUILD_LOGS hot lane (logs.{runID}.{stepID}.{attempt}.{iteration}).
+// Buffered: writes are batched and flushed at LogChunkBytesMax or
+// after 250ms, never blocking on NATS I/O.
 func (c *taskContext) LogOut() io.Writer {
 	return &logWriter{lane: c.ensureLogLane(), stream: protocol.LogStreamOut}
 }

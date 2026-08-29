@@ -73,21 +73,24 @@ type TaskContext interface {
 	Heartbeat() error
 
 	// LogOut and LogErr (#624) publish stdout/stderr-tagged chunks to
-	// the BUILD_LOGS hot lane (logs.{runID}.{stepID}.{attempt} — scoped
-	// to THIS attempt so a retry never collides with a prior attempt's
-	// sequence numbers within the stream's dedup window), buffered and
-	// flushed at protocol.LogChunkBytesMax or after 250ms. Complete,
-	// Fail, FailPermanent, FailRetryAfter, Continue, and Pause all
-	// drain any buffered bytes AND emit an attempt-ending marker
+	// the BUILD_LOGS hot lane (logs.{runID}.{stepID}.{attempt}.{iteration}
+	// — scoped to THIS attempt and iteration so a retry or agent-loop
+	// Continue never collides with a prior dispatch's sequence numbers
+	// within the stream's dedup window), buffered and flushed at
+	// protocol.LogChunkBytesMax or after 250ms. Complete, Fail,
+	// FailPermanent, FailRetryAfter, Continue, and Pause all drain any
+	// buffered bytes AND emit an attempt-ending marker
 	// (completed/failed/continued/paused) before publishing their own
 	// resolution, so a consumer that observes the terminal event never
 	// misses trailing log output and can treat the marker as a
 	// reliable "this attempt is over" signal.
 	//
-	// The writers returned by LogOut/LogErr are NOT safe to call
-	// concurrently from goroutines other than the one running the
-	// task handler — like every other TaskContext method, they assume
-	// single-threaded use against one dispatched task.
+	// The writers LogOut/LogErr return ARE safe to call concurrently —
+	// each Write() holds the lane's own mutex — which matters because
+	// the canonical use is handing them straight to an external
+	// process: `cmd.Stdout = tc.LogOut(); cmd.Stderr = tc.LogErr()`
+	// then `cmd.Run()`, where os/exec copies each stream on its own
+	// goroutine.
 	LogOut() io.Writer
 	LogErr() io.Writer
 

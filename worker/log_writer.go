@@ -1,18 +1,26 @@
 // worker/log_writer.go
-// logLane buffers and publishes one task ATTEMPT's captured stdout/
-// stderr to the BUILD_LOGS hot lane (#624, subject
-// logs.{runID}.{stepID}.{attempt}). One lane per attempt, created
-// lazily on first LogOut()/LogErr() Write so a handler that never logs
-// never spins up a ticker goroutine.
+// logLane buffers and publishes one task ATTEMPT/ITERATION's captured
+// stdout/stderr to the BUILD_LOGS hot lane (#624, subject
+// logs.{runID}.{stepID}.{attempt}.{iteration}). One lane per
+// attempt/iteration, created lazily on first LogOut()/LogErr() Write so
+// a handler that never logs never spins up a ticker goroutine.
 //
-// Attempt is part of the subject (#624 review), not just the payload:
-// a retry re-dispatches the same runID/stepID, and BUILD_LOGS's dedup
-// window (2 min) is comfortably longer than the gap between two
-// attempts, so a bare logs.{runID}.{stepID} subject would let attempt
-// 2's seq-0 chunk collide with attempt 1's Nats-Msg-Id and silently
-// vanish as a duplicate. Scoping the subject by attempt makes every
-// attempt's chunk stream independent and gives from=failure an
-// unambiguous target.
+// Attempt is part of the subject (#624 review round 2), not just the
+// payload: a retry re-dispatches the same runID/stepID, and
+// BUILD_LOGS's dedup window (2 min) is comfortably longer than the gap
+// between two attempts, so a bare logs.{runID}.{stepID} subject would
+// let attempt 2's seq-0 chunk collide with attempt 1's Nats-Msg-Id and
+// silently vanish as a duplicate.
+//
+// Iteration is a SECOND, independent dimension (#624 review round 3):
+// an agent-loop step's Continue re-dispatches the SAME attempt with
+// iteration incremented — never bumping attempt, which would consume
+// retry budget the step never spent — so without iteration in the
+// subject/Msg-Id too, iteration 2+'s chunks would collide with
+// iteration 0's the exact same way un-scoped attempts collided before
+// round 2. Scoping the subject by both makes every
+// attempt+iteration's chunk stream independent and gives from=failure
+// an unambiguous target.
 //
 // Complete, Fail, FailPermanent, FailRetryAfter, Continue, and Pause
 // all drain the lane (flush pending bytes, emit the attempt-ending
@@ -72,10 +80,11 @@ type logLane struct {
 	tp  *natsutil.TracingPublisher
 	ctx context.Context
 
-	subject string
-	runID   string
-	stepID  string
-	attempt int
+	subject   string
+	runID     string
+	stepID    string
+	attempt   int
+	iteration int
 
 	seq uint64
 	out logStreamBuf
@@ -100,9 +109,19 @@ type logLane struct {
 // dag.StepState.Attempts is derived from, so GET .../logs's default
 // ?attempt= (the step's current Attempts) lands on the right subject
 // without a caller ever needing to know this package's internals.
-// Always >= 1; 0 or negative is a programmer error. Callers must
-// eventually call drainWithMarker exactly once to stop the ticker;
-// leaving a lane un-drained leaks its goroutine.
+// Always >= 1; 0 or negative is a programmer error.
+//
+// iteration scopes the subject a SECOND dimension (#624 review round
+// 3): an agent-loop step's Continue re-dispatches the SAME attempt
+// with iteration incremented, never bumping attempt (that would
+// consume retry budget the step never spent) — without iteration in
+// the subject/Msg-Id, iteration 2+'s seq-0 chunk collides with
+// iteration 0's the exact way un-scoped attempts collided before round
+// 2. iteration is 0 for a non-loop step (protocol.TaskPayload.Iteration's
+// own zero value). Always >= 0.
+//
+// Callers must eventually call drainWithMarker exactly once to stop
+// the ticker; leaving a lane un-drained leaks its goroutine.
 //
 // runID must not contain NATS subject metacharacters — every runID in
 // this codebase is engine- or nuid-generated (never raw user input),
@@ -112,7 +131,7 @@ func newLogLane(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
 	runID, stepID string,
-	attempt int,
+	attempt, iteration int,
 	failures metric.Int64Counter,
 ) *logLane {
 	if tp == nil {
@@ -127,18 +146,22 @@ func newLogLane(
 	if attempt < 1 {
 		panic("newLogLane: attempt must be >= 1")
 	}
+	if iteration < 0 {
+		panic("newLogLane: iteration must be >= 0")
+	}
 	lane := &logLane{
 		tp:  tp,
 		ctx: ctx,
-		subject: fmt.Sprintf("logs.%s.%s.%d",
-			runID, natsutil.SubjectToken(stepID), attempt),
-		runID:    runID,
-		stepID:   stepID,
-		attempt:  attempt,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
-		failures: failures,
-		ticker:   time.NewTicker(logFlushCheckInterval),
+		subject: fmt.Sprintf("logs.%s.%s.%d.%d",
+			runID, natsutil.SubjectToken(stepID), attempt, iteration),
+		runID:     runID,
+		stepID:    stepID,
+		attempt:   attempt,
+		iteration: iteration,
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
+		failures:  failures,
+		ticker:    time.NewTicker(logFlushCheckInterval),
 	}
 	go lane.run()
 	return lane
@@ -275,11 +298,12 @@ func (l *logLane) publishLocked(streamName string, data []byte) {
 	seq := l.seq
 	l.seq++
 	chunk := protocol.LogChunk{
-		Seq:     seq,
-		Attempt: l.attempt,
-		TS:      time.Now(),
-		Stream:  streamName,
-		Data:    data,
+		Seq:       seq,
+		Attempt:   l.attempt,
+		Iteration: l.iteration,
+		TS:        time.Now(),
+		Stream:    streamName,
+		Data:      data,
 	}
 	payload, err := json.Marshal(chunk)
 	if err != nil {
@@ -292,8 +316,8 @@ func (l *logLane) publishLocked(streamName string, data []byte) {
 	// identity, not the raw (pre-sanitized) stepID, or two differently
 	// spelled stepIDs that sanitize to the same subject token could
 	// mint colliding subjects with non-colliding Msg-Ids.
-	msgID := fmt.Sprintf("log-%s-%s-%d-%d",
-		l.runID, natsutil.SubjectToken(l.stepID), l.attempt, seq)
+	msgID := fmt.Sprintf("log-%s-%s-%d-%d-%d",
+		l.runID, natsutil.SubjectToken(l.stepID), l.attempt, l.iteration, seq)
 	msg := &nats.Msg{
 		Subject: l.subject,
 		Data:    payload,

@@ -374,14 +374,14 @@ different purposes and neither replaces the other:
   to polling only to recover from a missed message during a consumer
   outage.
 
-### `logs.{runID}.{stepID}.{attempt}` — captured step stdout/stderr (BUILD_LOGS stream)
+### `logs.{runID}.{stepID}.{attempt}.{iteration}` — captured step stdout/stderr (BUILD_LOGS stream)
 
 dagnats owns the JetStream **hot lane only** — a bounded, short-TTL
 buffer of a step's captured output. There is no S3 offload, no cache,
 no long-term index. **Retention past the hot TTL is a consumer's job**,
 the same way `history.{runID}` and telemetry already work: a forge
 that needs a verdict's logs to stay explainable for years drains
-`logs.{runID}.{stepID}.{attempt}` into its own store next to the
+`logs.{runID}.{stepID}.{attempt}.{iteration}` into its own store next to the
 verdict, before the TTL elapses (#624).
 
 - **Payload**: `protocol.LogChunk` (`protocol/log_chunk.go`):
@@ -390,6 +390,7 @@ verdict, before the TTL elapses (#624).
   {
     "seq": 3,
     "attempt": 1,
+    "iteration": 0,
     "ts": "2026-08-28T12:00:00.125Z",
     "stream": "out",
     "data": "aGVsbG8gd29ybGQK"
@@ -398,27 +399,34 @@ verdict, before the TTL elapses (#624).
 
   | Field | Type | Notes |
   |-------|------|-------|
-  | `seq` | uint64 | Monotonic per ATTEMPT, shared across `out`/`err`/`marker` — ordering by `seq` reconstructs write order even though stdout and stderr are buffered independently. Starts at 0 per attempt. |
+  | `seq` | uint64 | Monotonic per (ATTEMPT, ITERATION) pair, shared across `out`/`err`/`marker` — ordering by `seq` reconstructs write order even though stdout and stderr are buffered independently. Starts at 0 per attempt+iteration. |
   | `attempt` | int | The 1-based `AttemptNumber` this chunk belongs to — the SAME numbering `step.started`/`step.failed`'s `AttemptNumber` field and `dag.StepState.Attempts` use (see the Subject note below). |
+  | `iteration` | int | The agent-loop iteration this chunk belongs to — 0 for a non-loop step, N for the Nth `Continue` re-dispatch (`dag.StepState.Iterations`). A second, independent dimension from `attempt`: `Continue` never bumps `attempt` (that would consume retry budget the step never spent). |
   | `ts` | RFC3339 timestamp | When this chunk was published (not when the bytes were written — buffering can delay it up to ~250ms; see below). |
   | `stream` | string | `"out"`, `"err"`, or `"marker"`. |
   | `data` | bytes (base64 on the wire) | The captured bytes for `out`/`err`; the marker value (`"completed"`, `"failed"`, `"continued"`, `"paused"`, or `"truncated"`) for `marker`. |
 
-- **Subject**: `logs.{runID}.{stepID}.{attempt}` — `stepID` is
-  sanitized with `natsutil.SubjectToken` (any byte outside
+- **Subject**: `logs.{runID}.{stepID}.{attempt}.{iteration}` — `stepID`
+  is sanitized with `natsutil.SubjectToken` (any byte outside
   `[A-Za-z0-9_-]` becomes `_`, capped to 128 chars) before it goes into
-  the subject; `runID` is a `nuid` and is never sanitized. **`attempt`
-  is part of the subject, not just the payload**: retrying a step
-  republishes the same `runID`/`stepID` within BUILD_LOGS's 2-minute
-  dedup window, so a bare `logs.{runID}.{stepID}` subject would let a
-  retry's `seq` 0 chunk collide with (and silently drop as a duplicate
-  of) the prior attempt's. `attempt` is the resolved `AttemptNumber`
-  (`worker/log_writer.go`'s `resolveAttemptNumber`: the engine's
-  explicit `TaskPayload.Attempt` when set, else NATS `NumDelivered` for
-  a fresh dispatch) — the SAME numbering `dag.StepState.Attempts` is
-  derived from, which is why `GET .../logs`'s `?attempt=` defaults to
-  it and lands on the right subject with no extra lookup. Query
-  `logs.{runID}.{stepID}.>` for every attempt of one step.
+  the subject; `runID` is a `nuid` and is never sanitized. **Both
+  `attempt` and `iteration` are part of the subject, not just the
+  payload** — two independent reasons a bare `logs.{runID}.{stepID}`
+  subject would collide within BUILD_LOGS's 2-minute dedup window:
+  retrying a step republishes the same `runID`/`stepID` (a retry's
+  `seq` 0 chunk would collide with the prior attempt's), and an
+  agent-loop step's `Continue` re-dispatches the SAME attempt with a
+  new iteration (iteration 1+'s `seq` 0 chunk would collide with
+  iteration 0's — this is why iteration exists as its own dimension
+  rather than being folded into attempt). `attempt` is the resolved
+  `AttemptNumber` (`worker/log_writer.go`'s `resolveAttemptNumber`: the
+  engine's explicit `TaskPayload.Attempt` when set, else NATS
+  `NumDelivered` for a fresh dispatch) — the SAME numbering
+  `dag.StepState.Attempts` is derived from, which is why
+  `GET .../logs`'s `?attempt=` defaults to it and lands on the right
+  subject with no extra lookup; `?iteration=` similarly defaults to
+  `dag.StepState.Iterations`. Query `logs.{runID}.{stepID}.>` for every
+  attempt and iteration of one step.
 - **Bounds** (`protocol/log_chunk.go`):
 
   | Constant | Value | Meaning |
@@ -470,14 +478,14 @@ verdict, before the TTL elapses (#624).
   `history.{runID}` event, `GET /runs/{id}` snapshot, or the marker
   itself off a `GET .../logs?follow=1` connection is therefore
   guaranteed every log byte that produced that outcome is already on
-  `logs.{runID}.{stepID}.{attempt}` — no race where the terminal
+  `logs.{runID}.{stepID}.{attempt}.{iteration}` — no race where the terminal
   signal arrives before its trailing log lines.
 - **Buffering**: writes to `LogOut()`/`LogErr()` are buffered per
   stream and flushed at `LogChunkBytesMax` or ~250ms after the first
   unflushed byte, whichever comes first — a handler that logs a lot in
   a burst gets fewer, larger chunks; a handler that logs sparsely still
   sees its lines show up within a quarter second.
-- **Dedup key**: `Nats-Msg-Id: log-{runID}-{stepID}-{attempt}-{seq}`
+- **Dedup key**: `Nats-Msg-Id: log-{runID}-{stepID}-{attempt}-{iteration}-{seq}`
   (`stepID` here is the same sanitized `SubjectToken` value used in
   the subject, so the two never drift apart).
 - **Ordering**: per-subject JetStream order; consumers should also
@@ -493,12 +501,14 @@ verdict, before the TTL elapses (#624).
 - **Ingest paths**: the worker SDK (`worker.TaskContext.LogOut()` /
   `LogErr()`, `worker/log_writer.go`) for Go workers; the HTTP bridge's
   `POST /v1/tasks/{id}/logs` (see `docs/site/content/docs/reference/rest-api.md`)
-  for non-Go workers, whose `attempt` is read from the claimed task's
-  own message — a caller can never spoof which attempt its chunks land
-  on. Both resolve `AttemptNumber` the same way and enforce the same
-  `LogStepBytesMax`/`LogChunkBytesMax` bounds and `truncated` marker
-  behavior.
-- **Read path**: `GET /runs/{id}/logs?step=&attempt=&cursor=&follow=&from=`
+  for non-Go workers, whose `attempt` AND `iteration` are both read
+  from the claimed task's own message — a caller can never spoof which
+  attempt/iteration its chunks land on. Both resolve `AttemptNumber`
+  the same way and read `Iteration` straight off the payload (the
+  engine always sets it explicitly, no fallback needed), enforcing the
+  same `LogStepBytesMax`/`LogChunkBytesMax` bounds and `truncated`
+  marker behavior.
+- **Read path**: `GET /runs/{id}/logs?step=&attempt=&iteration=&cursor=&follow=&from=`
   (see `docs/site/content/docs/reference/rest-api.md`, "Run logs")
   reads this stream — non-follow pages through stored chunks via an
   opaque JetStream-stream-sequence cursor, `follow=1` upgrades to

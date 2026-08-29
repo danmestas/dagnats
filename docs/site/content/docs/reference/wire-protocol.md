@@ -363,14 +363,14 @@ different purposes and neither replaces the other.
   `event.run.>` instead of polling; fall back to polling only to recover
   from a missed message during a consumer outage.
 
-### `logs.{runID}.{stepID}.{attempt}` -- captured step stdout/stderr (BUILD_LOGS stream)
+### `logs.{runID}.{stepID}.{attempt}.{iteration}` -- captured step stdout/stderr (BUILD_LOGS stream)
 
 dagnats owns the JetStream **hot lane only** -- a bounded, short-TTL buffer
 of a step's captured output. There is no S3 offload, no cache, no
 long-term index. **Retention past the hot TTL is a consumer's job**, the
 same way `history.{runID}` and telemetry already work: a forge that needs
 a verdict's logs to stay explainable for years drains
-`logs.{runID}.{stepID}.{attempt}` into its own store next to the verdict,
+`logs.{runID}.{stepID}.{attempt}.{iteration}` into its own store next to the verdict,
 before the TTL elapses.
 
 - **Payload:** `protocol.LogChunk` (`protocol/log_chunk.go`):
@@ -393,7 +393,7 @@ before the TTL elapses.
   `"err"`, or `"marker"`; for `"marker"`, `data` carries `"completed"`,
   `"failed"`, `"continued"`, `"paused"`, or `"truncated"` instead of
   captured bytes. `data` is base64 on the wire.
-- **Subject:** `logs.{runID}.{stepID}.{attempt}` -- `stepID` is
+- **Subject:** `logs.{runID}.{stepID}.{attempt}.{iteration}` -- `stepID` is
   sanitized with `natsutil.SubjectToken` before it goes into the
   subject; `runID` (a `nuid`) is never sanitized. `attempt` scopes the
   subject so a retry's chunks can never collide with (and silently
@@ -429,17 +429,18 @@ before the TTL elapses.
   is already on this subject.
 - **Buffering:** writes flush at `LogChunkBytesMax` or ~250ms after the
   first unflushed byte, whichever comes first.
-- **Dedup key:** `Nats-Msg-Id: log-{runID}-{stepID}-{attempt}-{seq}`.
+- **Dedup key:** `Nats-Msg-Id: log-{runID}-{stepID}-{attempt}-{iteration}-{seq}`.
 - **Retention:** `DAGNATS_BUILD_LOGS_TTL` -- default 168h (7d), configurable
   in `[1h, 8760h]`; an invalid value refuses server startup
   (`internal/natsutil/build_logs.go`).
 - **Ingest paths:** the worker SDK (`worker.TaskContext.LogOut()` /
   `LogErr()`) for Go workers; `POST /v1/tasks/{id}/logs` for non-Go
-  workers via the HTTP bridge, whose `attempt` is read from the claimed
-  task's own message (never caller-supplied). Both resolve
-  `AttemptNumber` the same way and enforce the same bounds and marker
-  behavior.
-- **Read path:** `GET /runs/{id}/logs?step=&attempt=&cursor=&follow=&from=`
+  workers via the HTTP bridge, whose `attempt` AND `iteration` are
+  both read from the claimed task's own message (never caller-
+  supplied). Both resolve `AttemptNumber` the same way and read
+  `Iteration` straight off the payload, enforcing the same bounds and
+  marker behavior.
+- **Read path:** `GET /runs/{id}/logs?step=&attempt=&iteration=&cursor=&follow=&from=`
   (see "Run logs" in the REST API reference) -- non-follow pages through
   stored chunks via an opaque JetStream-stream-sequence cursor,
   `follow=1` upgrades to Server-Sent Events over a single long-lived

@@ -23,9 +23,15 @@ import (
 )
 
 // logsSubject builds the attempt-scoped BUILD_LOGS subject the same
-// way worker/log_writer.go's newLogLane does.
+// way worker/log_writer.go's newLogLane does. iteration is always 0
+// here — none of this file's tests exercise an agent-loop step; that
+// scenario (iteration as a second subject dimension, #624 review
+// round 3) is covered end-to-end in
+// internal/api/logs_test.go's TestAgentLoop_ContinueTwiceKeepsEachIterationOnItsOwnSubject,
+// which drives a real engine-dispatched Continue loop rather than the
+// synthetic direct-publish harness this file uses.
 func logsSubject(runID, stepID string, attempt int) string {
-	return "logs." + runID + "." + stepID + "." + strconv.Itoa(attempt)
+	return "logs." + runID + "." + stepID + "." + strconv.Itoa(attempt) + ".0"
 }
 
 // collectLogChunks drains up to want chunks from

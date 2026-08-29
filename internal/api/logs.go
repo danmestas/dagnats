@@ -110,12 +110,13 @@ func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attempt := attemptParam(r, stepState)
+	iteration := iterationParam(r, stepState)
 
 	if r.URL.Query().Get("follow") == "1" {
-		serveLogsFollow(svc, w, r, runID, stepID, attempt)
+		serveLogsFollow(svc, w, r, runID, stepID, attempt, iteration)
 		return
 	}
-	serveLogsPage(svc, w, r, runID, stepID, attempt, stepState)
+	serveLogsPage(svc, w, r, runID, stepID, attempt, iteration, stepState)
 }
 
 // attemptParam parses "attempt"; absent/invalid resolves to the step's
@@ -129,6 +130,22 @@ func attemptParam(r *http.Request, stepState dag.StepState) int {
 	n, err := strconv.Atoi(val)
 	if err != nil || n < 0 {
 		return stepState.Attempts
+	}
+	return n
+}
+
+// iterationParam parses "iteration"; absent/invalid resolves to the
+// step's current Iterations (#624 review round 3) — reading logs for a
+// step with no explicit ?iteration= gets its live/most-recent
+// iteration (0 for a non-loop step).
+func iterationParam(r *http.Request, stepState dag.StepState) int {
+	val := r.URL.Query().Get("iteration")
+	if val == "" {
+		return stepState.Iterations
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 0 {
+		return stepState.Iterations
 	}
 	return n
 }
@@ -147,13 +164,16 @@ func cursorParam(r *http.Request) uint64 {
 	return n
 }
 
-// attemptSubject builds the attempt-scoped BUILD_LOGS subject, matching
-// worker/log_writer.go and bridge/logs.go exactly.
-func attemptSubject(runID, stepID string, attempt int) string {
+// logSubject builds the attempt+iteration-scoped BUILD_LOGS subject,
+// matching worker/log_writer.go and bridge/logs.go exactly (#624
+// review round 3: iteration is a second dimension of dispatch
+// identity, alongside attempt).
+func logSubject(runID, stepID string, attempt, iteration int) string {
 	if strings.ContainsAny(runID, ". \t*>") {
-		panic("attemptSubject: runID must not contain NATS subject metacharacters")
+		panic("logSubject: runID must not contain NATS subject metacharacters")
 	}
-	return fmt.Sprintf("logs.%s.%s.%d", runID, natsutil.SubjectToken(stepID), attempt)
+	return fmt.Sprintf("logs.%s.%s.%d.%d",
+		runID, natsutil.SubjectToken(stepID), attempt, iteration)
 }
 
 // serveLogsPage handles the non-follow read: resolve the start cursor
@@ -162,23 +182,23 @@ func attemptSubject(runID, stepID string, attempt int) string {
 // bounded page, and report next_cursor/eof.
 func serveLogsPage(
 	svc *Service, w http.ResponseWriter, r *http.Request,
-	runID, stepID string, attempt int, stepState dag.StepState,
+	runID, stepID string, attempt, iteration int, stepState dag.StepState,
 ) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	startCursor := cursorParam(r)
 	if r.URL.Query().Get("from") == "failure" {
-		found, seq, err := lastFailureMarkerSeq(ctx, svc.js, runID, stepID, attempt)
+		found, seq, err := lastFailureMarkerSeq(ctx, svc.js, runID, stepID, attempt, iteration)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if !found {
 			// #624 review round 2: from=failure must be strict —
-			// either this attempt's subject has no messages at all, or
-			// its last message exists but is NOT a "failed" marker
-			// (the attempt completed, is still running, or ended some
+			// either this (attempt, iteration) subject has no messages
+			// at all, or its last message exists but is NOT a "failed"
+			// marker (it completed, is still running, or ended some
 			// other way). Either way there is no recorded failure
 			// position to start from, so this is a 404, not an empty
 			// 200 page — a caller asking for the failure position on
@@ -191,7 +211,7 @@ func serveLogsPage(
 	}
 
 	page, lastStreamSeq, err := fetchLogsPage(
-		ctx, svc.js, runID, stepID, attempt, startCursor, protocol.LogReadChunksMax,
+		ctx, svc.js, runID, stepID, attempt, iteration, startCursor, protocol.LogReadChunksMax,
 	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -206,8 +226,7 @@ func serveLogsPage(
 		nextCursor = lastStreamSeq + 1
 	}
 	gotFullPage := len(page) >= protocol.LogReadChunksMax
-	eof := !gotFullPage &&
-		(attemptIsPast(attempt, stepState) || stepTerminal(stepState.Status))
+	eof := !gotFullPage && dispatchIsDone(attempt, iteration, stepState)
 
 	resp := logsResponse{Chunks: page, NextCursor: nextCursor, EOF: eof}
 	if resp.Chunks == nil {
@@ -219,12 +238,32 @@ func serveLogsPage(
 	}
 }
 
-// attemptIsPast reports whether attempt is strictly behind the step's
-// current attempt count — a past attempt's subject can never receive
-// another message no matter what the CURRENT attempt's status is, so
-// reads of it are always eligible for eof once a page comes up short.
-func attemptIsPast(attempt int, stepState dag.StepState) bool {
-	return attempt < stepState.Attempts
+// dispatchIsDone reports whether the (attempt, iteration) pair's
+// subject can never receive another message (#624 review round 3:
+// iteration is a second dimension alongside attempt, so eof needs both
+// — a past iteration within the CURRENT attempt is just as "done" as a
+// past attempt, and the live (attempt, iteration) is only done once
+// the step itself reaches a terminal status):
+//   - attempt strictly behind the step's current Attempts — a past
+//     attempt's subject is done regardless of iteration or status.
+//   - attempt current, iteration strictly behind current Iterations —
+//     a past iteration within the live attempt is done.
+//   - attempt and iteration both current — done only once the step
+//     status is terminal.
+func dispatchIsDone(attempt, iteration int, stepState dag.StepState) bool {
+	if attempt < stepState.Attempts {
+		return true
+	}
+	if attempt > stepState.Attempts {
+		return false
+	}
+	if iteration < stepState.Iterations {
+		return true
+	}
+	if iteration > stepState.Iterations {
+		return false
+	}
+	return stepTerminal(stepState.Status)
 }
 
 // stepTerminal reports whether status is a terminal StepStatus — half
@@ -252,7 +291,7 @@ func stepTerminal(status dag.StepStatus) bool {
 // to be last") — the caller does not need to distinguish the two; both
 // mean "there is no recorded failure position to start from".
 func lastFailureMarkerSeq(
-	ctx context.Context, js jetstream.JetStream, runID, stepID string, attempt int,
+	ctx context.Context, js jetstream.JetStream, runID, stepID string, attempt, iteration int,
 ) (found bool, seq uint64, err error) {
 	if js == nil {
 		panic("lastFailureMarkerSeq: js must not be nil")
@@ -261,7 +300,7 @@ func lastFailureMarkerSeq(
 	if err != nil {
 		return false, 0, fmt.Errorf("open BUILD_LOGS stream: %w", err)
 	}
-	subject := attemptSubject(runID, stepID, attempt)
+	subject := logSubject(runID, stepID, attempt, iteration)
 	msg, err := stream.GetLastMsgForSubject(ctx, subject)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
@@ -280,15 +319,15 @@ func lastFailureMarkerSeq(
 }
 
 // fetchLogsPage fetches up to max BUILD_LOGS messages for
-// logs.{runID}.{stepID}.{attempt}, starting at stream sequence cursor
-// (0 means "from the start of the subject"), in stream order. Returns
-// the fetched chunks and the JetStream stream sequence of the last one
-// delivered (0 if none). Stops early once no further message arrives
-// within logsFetchIdleWait — interpreted as "nothing more buffered
-// right now", not "the subject is done forever".
+// logs.{runID}.{stepID}.{attempt}.{iteration}, starting at stream
+// sequence cursor (0 means "from the start of the subject"), in stream
+// order. Returns the fetched chunks and the JetStream stream sequence
+// of the last one delivered (0 if none). Stops early once no further
+// message arrives within logsFetchIdleWait — interpreted as "nothing
+// more buffered right now", not "the subject is done forever".
 func fetchLogsPage(
 	ctx context.Context, js jetstream.JetStream,
-	runID, stepID string, attempt int, cursor uint64, max int,
+	runID, stepID string, attempt, iteration int, cursor uint64, max int,
 ) ([]protocol.LogChunk, uint64, error) {
 	if js == nil {
 		panic("fetchLogsPage: js must not be nil")
@@ -300,7 +339,7 @@ func fetchLogsPage(
 		panic("fetchLogsPage: max must be positive")
 	}
 	cfg := jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{attemptSubject(runID, stepID, attempt)},
+		FilterSubjects: []string{logSubject(runID, stepID, attempt, iteration)},
 	}
 	if cursor > 0 {
 		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy

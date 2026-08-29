@@ -14,11 +14,12 @@ import (
 
 func TestLogChunkJSONRoundTrip(t *testing.T) {
 	want := LogChunk{
-		Seq:     42,
-		Attempt: 2,
-		TS:      time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
-		Stream:  LogStreamOut,
-		Data:    []byte("hello world"),
+		Seq:       42,
+		Attempt:   2,
+		Iteration: 3,
+		TS:        time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		Stream:    LogStreamOut,
+		Data:      []byte("hello world"),
 	}
 	data, err := json.Marshal(want)
 	if err != nil {
@@ -28,12 +29,13 @@ func TestLogChunkJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if got.Seq != want.Seq || got.Attempt != want.Attempt || got.Stream != want.Stream ||
+	if got.Seq != want.Seq || got.Attempt != want.Attempt || got.Iteration != want.Iteration ||
+		got.Stream != want.Stream ||
 		string(got.Data) != string(want.Data) || !got.TS.Equal(want.TS) {
 		t.Fatalf("round trip mismatch: got %+v, want %+v", got, want)
 	}
 	// snake_case wire keys, per the design.
-	for _, key := range []string{`"seq"`, `"attempt"`, `"ts"`, `"stream"`, `"data"`} {
+	for _, key := range []string{`"seq"`, `"attempt"`, `"iteration"`, `"ts"`, `"stream"`, `"data"`} {
 		if !jsonContains(data, key) {
 			t.Fatalf("marshaled JSON missing key %s: %s", key, data)
 		}

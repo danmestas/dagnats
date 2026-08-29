@@ -522,15 +522,21 @@ func (st *SleepTimer) fireRetryBackoff(tm TimerMessage) {
 // republishTask is the shared task re-publish path used by retry_after
 // and retry_backoff timer fires. The kind suffix scopes the dedup
 // MsgId to the cause, so the two paths can fire independently for the
-// same step without colliding. Including Attempt in the MsgId keeps
-// each retry distinct within JetStream's dedup window — without it,
-// a multi-retry backoff loop would dedup attempts 2..N to a no-op.
+// same step without colliding. Including the resolved attempt in the
+// MsgId keeps each retry distinct within JetStream's dedup window —
+// without it, a multi-retry backoff loop would dedup attempts 2..N to
+// a no-op.
 //
-// payload.Attempt carries the next attempt number to the worker so
-// step.started fires with the correct AttemptNumber. The original
-// failed attempt is tm.Attempt; the next attempt is tm.Attempt+1.
-// Without this hint the worker would derive AttemptNumber from NATS
-// metadata (NumDelivered=1 on a fresh re-publish), losing the count.
+// payload.Attempt (and the MsgId's own attempt component) both come
+// from attemptForRedispatch — the live run snapshot's
+// Steps[stepID].Attempts, NOT tm.Attempt (#624 review round 3: a
+// round-2 version of this comment described the OLD tm.Attempt+1
+// scheme; the MsgId below used to still key on tm.Attempt even after
+// the payload switched to the snapshot-derived value, which could
+// silently diverge from what actually got dispatched). Deriving fresh
+// here means a re-dispatch can never regress to a stale or dropped
+// value the way fireRateRetry's omission once did, and the MsgId
+// always reflects the SAME attempt number the payload carries.
 func (st *SleepTimer) republishTask(
 	tm TimerMessage, kind string,
 ) {
@@ -547,20 +553,13 @@ func (st *SleepTimer) republishTask(
 	subject := fmt.Sprintf(
 		"task.%s.%s", tm.TaskType, tm.RunID,
 	)
-	// #624 review round 2: derive Attempt from the live run snapshot
-	// (attemptForRedispatch) instead of trusting tm.Attempt+1 — the
-	// TimerMessage's own carried count can only ever reflect what was
-	// true at Schedule time, while the snapshot is authoritative at
-	// fire time. In the normal case the two agree (nothing else bumps
-	// Steps[stepID].Attempts between schedule and fire), but deriving
-	// fresh here means a re-dispatch can never regress to a stale or
-	// dropped value the way fireRateRetry's omission did.
+	attempt := st.attemptForRedispatch(ctx, tm.RunID, tm.StepID)
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
 		StepID:       tm.StepID,
 		Input:        tm.Input,
-		Attempt:      st.attemptForRedispatch(ctx, tm.RunID, tm.StepID),
+		Attempt:      attempt,
 		WorkflowName: tm.WorkflowName,
 		// Carry the grant decision + run-binding nonce stamped at scheduling
 		// time (#380) so a retried granted step still passes VerifyDispatch.
@@ -573,7 +572,7 @@ func (st *SleepTimer) republishTask(
 	}
 	msgID := fmt.Sprintf(
 		"%s.%s.%s.%d",
-		tm.RunID, tm.StepID, kind, tm.Attempt,
+		tm.RunID, tm.StepID, kind, attempt,
 	)
 	msg := &nats.Msg{
 		Subject: subject,

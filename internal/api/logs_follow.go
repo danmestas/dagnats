@@ -81,7 +81,7 @@ func isAttemptEndingMarker(marker string) bool {
 // and gated by logFollowConcurrentMax.
 func serveLogsFollow(
 	svc *Service, w http.ResponseWriter, r *http.Request,
-	runID, stepID string, attempt int,
+	runID, stepID string, attempt, iteration int,
 ) {
 	if atomic.AddInt64(&logFollowActive, 1) > logFollowConcurrentMax {
 		atomic.AddInt64(&logFollowActive, -1)
@@ -99,7 +99,9 @@ func serveLogsFollow(
 	ctx, cancel := context.WithTimeout(r.Context(), protocol.LogFollowDurationMax)
 	defer cancel()
 
-	cons, err := openLogsFollowConsumer(ctx, svc.js, runID, stepID, attempt, cursorParam(r))
+	cons, err := openLogsFollowConsumer(
+		ctx, svc.js, runID, stepID, attempt, iteration, cursorParam(r),
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -111,7 +113,7 @@ func serveLogsFollow(
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	runLogsFollowLoop(ctx, svc, w, flusher, cons, runID, stepID, attempt)
+	runLogsFollowLoop(ctx, svc, w, flusher, cons, runID, stepID, attempt, iteration)
 }
 
 // openLogsFollowConsumer opens the single ordered consumer a follow
@@ -119,13 +121,13 @@ func serveLogsFollow(
 // like fetchLogsPage's non-follow counterpart.
 func openLogsFollowConsumer(
 	ctx context.Context, js jetstream.JetStream,
-	runID, stepID string, attempt int, cursor uint64,
+	runID, stepID string, attempt, iteration int, cursor uint64,
 ) (jetstream.Consumer, error) {
 	if js == nil {
 		panic("openLogsFollowConsumer: js must not be nil")
 	}
 	cfg := jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{attemptSubject(runID, stepID, attempt)},
+		FilterSubjects: []string{logSubject(runID, stepID, attempt, iteration)},
 	}
 	if cursor > 0 {
 		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
@@ -147,7 +149,7 @@ func openLogsFollowConsumer(
 // marker/snapshot terminal signal.
 func runLogsFollowLoop(
 	ctx context.Context, svc *Service, w http.ResponseWriter, flusher http.Flusher,
-	cons jetstream.Consumer, runID, stepID string, attempt int,
+	cons jetstream.Consumer, runID, stepID string, attempt, iteration int,
 ) {
 	fallback := time.NewTicker(logsCrashFallbackPollInterval)
 	defer fallback.Stop()
@@ -176,7 +178,9 @@ func runLogsFollowLoop(
 				return
 			}
 			flusher.Flush()
-			if shouldCrashFallbackEnd(ctx, svc, fallback, runID, stepID, attempt, &lastActivity) {
+			if shouldCrashFallbackEnd(
+				ctx, svc, fallback, runID, stepID, attempt, iteration, &lastActivity,
+			) {
 				writeLogsEOFEvent(w, flusher, "")
 				return
 			}
@@ -209,7 +213,7 @@ func runLogsFollowLoop(
 // chunk so a fallback check doesn't fire seconds after real traffic.
 func shouldCrashFallbackEnd(
 	ctx context.Context, svc *Service, ticker *time.Ticker,
-	runID, stepID string, attempt int, lastActivity *time.Time,
+	runID, stepID string, attempt, iteration int, lastActivity *time.Time,
 ) bool {
 	select {
 	case <-ticker.C:
@@ -227,7 +231,7 @@ func shouldCrashFallbackEnd(
 	if !known {
 		return false
 	}
-	return attemptIsPast(attempt, state) || stepTerminal(state.Status)
+	return dispatchIsDone(attempt, iteration, state)
 }
 
 func writeLogsChunkEvent(w http.ResponseWriter, flusher http.Flusher, c protocol.LogChunk) bool {

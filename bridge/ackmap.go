@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/consumername"
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -89,9 +90,21 @@ type AckMap struct {
 	// resolution (complete/fail/pause/continue), separately from
 	// entries itself, so handleLogs can distinguish "already resolved"
 	// (409) from "never existed" (404) after Delete has already
-	// dropped the live claim entry (#624 review round 2). Bounded and
-	// TTL'd the same way entries is; see resolvedTaskMax/resolvedTaskTTL.
-	resolvedTasks map[string]time.Time
+	// dropped the live claim entry (#624 review round 2). Keyed by the
+	// resolving TokenID too (#624 review round 3) — WasResolvedBy only
+	// reveals the 409 distinction to the SAME caller that owned the
+	// task (or admin), so a token can't probe 409-vs-404 for a task it
+	// never claimed. Bounded and TTL'd the same way entries is; see
+	// resolvedTaskMax/resolvedTaskTTL.
+	resolvedTasks map[string]resolvedTaskEntry
+}
+
+// resolvedTaskEntry is one AckMap.resolvedTasks value: when a task was
+// resolved and which TokenID resolved it (empty for the admin bearer
+// or dev mode, matching ackEntry.tokenID's convention).
+type resolvedTaskEntry struct {
+	at      time.Time
+	tokenID string
 }
 
 // NewAckMap creates an empty AckMap ready for use.
@@ -113,7 +126,7 @@ func newAckMapWithClock(now func() time.Time) *AckMap {
 		entries:       make(map[string]ackEntry),
 		lastSweep:     start,
 		now:           now,
-		resolvedTasks: make(map[string]time.Time),
+		resolvedTasks: make(map[string]resolvedTaskEntry),
 	}
 }
 
@@ -223,13 +236,15 @@ func (am *AckMap) Delete(taskID string) {
 }
 
 // MarkResolved records that taskID was just resolved (complete/fail/
-// pause/continue) — called alongside Delete, from the same resolve
-// call, so a POST /v1/tasks/{id}/logs that arrives afterwards can be
-// told 409 (already resolved) instead of 404 (never existed). Bounded
-// and TTL'd the same way Store bounds entries: evicts the oldest
-// resolvedTasks entry at resolvedTaskMax, and WasResolved expires an
-// entry past resolvedTaskTTL.
-func (am *AckMap) MarkResolved(taskID string) {
+// pause/continue) by tokenID (empty for the admin bearer or dev mode)
+// — called alongside Delete, from the same resolve call, so a
+// POST /v1/tasks/{id}/logs that arrives afterwards can be told 409
+// (already resolved) instead of 404 (never existed) — but ONLY for the
+// SAME caller that resolved it; see WasResolvedBy. Bounded and TTL'd
+// the same way Store bounds entries: evicts the oldest resolvedTasks
+// entry at resolvedTaskMax, and WasResolvedBy expires an entry past
+// resolvedTaskTTL.
+func (am *AckMap) MarkResolved(taskID, tokenID string) {
 	if am == nil {
 		panic("AckMap.MarkResolved: nil receiver")
 	}
@@ -241,39 +256,44 @@ func (am *AckMap) MarkResolved(taskID string) {
 	if len(am.resolvedTasks) >= resolvedTaskMax {
 		var oldestID string
 		var oldestAt time.Time
-		for id, at := range am.resolvedTasks {
-			if oldestID == "" || at.Before(oldestAt) {
-				oldestID, oldestAt = id, at
+		for id, e := range am.resolvedTasks {
+			if oldestID == "" || e.at.Before(oldestAt) {
+				oldestID, oldestAt = id, e.at
 			}
 		}
 		delete(am.resolvedTasks, oldestID)
 	}
-	am.resolvedTasks[taskID] = am.now()
+	am.resolvedTasks[taskID] = resolvedTaskEntry{at: am.now(), tokenID: tokenID}
 }
 
-// WasResolved reports whether taskID was resolved within the last
-// resolvedTaskTTL. Expires (and removes) a stale entry on read rather
-// than waiting for a separate sweep — resolvedTasks is only ever
-// queried from handleLogs's rejection path, so a lazy expiry costs
-// nothing extra there.
-func (am *AckMap) WasResolved(taskID string) bool {
+// WasResolvedBy reports whether taskID was resolved within the last
+// resolvedTaskTTL BY claims — i.e. claims.Admin, or claims.TokenID
+// equals the TokenID that resolved it (#624 review round 3: gating
+// this on the caller, not just the taskID, closes an enumeration hole
+// — without it, any valid token could probe 409-vs-404 for a task it
+// never claimed and learn whether that task ever existed/resolved).
+// Expires (and removes) a stale entry on read rather than waiting for
+// a separate sweep — resolvedTasks is only ever queried from
+// handleLogs's rejection path, so a lazy expiry costs nothing extra
+// there.
+func (am *AckMap) WasResolvedBy(taskID string, claims workertoken.Claims) bool {
 	if am == nil {
-		panic("AckMap.WasResolved: nil receiver")
+		panic("AckMap.WasResolvedBy: nil receiver")
 	}
 	if taskID == "" {
-		panic("AckMap.WasResolved: taskID must not be empty")
+		panic("AckMap.WasResolvedBy: taskID must not be empty")
 	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
-	at, ok := am.resolvedTasks[taskID]
+	entry, ok := am.resolvedTasks[taskID]
 	if !ok {
 		return false
 	}
-	if am.now().Sub(at) >= resolvedTaskTTL {
+	if am.now().Sub(entry.at) >= resolvedTaskTTL {
 		delete(am.resolvedTasks, taskID)
 		return false
 	}
-	return true
+	return claims.Admin || (claims.TokenID != "" && claims.TokenID == entry.tokenID)
 }
 
 // Count returns the number of in-flight tasks.

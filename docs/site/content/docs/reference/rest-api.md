@@ -239,13 +239,14 @@ reference). dagnats owns the hot lane only -- retention past its TTL
 (`DAGNATS_BUILD_LOGS_TTL`, default 7d) is a consumer's job.
 
 ```
-GET /runs/{id}/logs?step={stepID}&attempt={n}&cursor={n}&follow={0|1}&from={failure}
+GET /runs/{id}/logs?step={stepID}&attempt={n}&iteration={n}&cursor={n}&follow={0|1}&from={failure}
 ```
 
 | Query param | Required | Notes |
 |-------------|----------|-------|
 | `step` | yes | Step ID within the run. `400` if omitted. |
-| `attempt` | no | Which attempt's log lane to read (`logs.{runID}.{stepID}.{attempt}`, the same numbering as `step.started`'s `AttemptNumber`). Defaults to the step's current `Attempts` from the run snapshot -- omit it for "the live/most recent attempt". |
+| `attempt` | no | Which attempt's log lane to read (`logs.{runID}.{stepID}.{attempt}.{iteration}`, the same numbering as `step.started`'s `AttemptNumber`). Defaults to the step's current `Attempts` from the run snapshot -- omit it for "the live/most recent attempt". |
+| `iteration` | no | Which agent-loop iteration's log lane to read within that attempt (0 for non-loop steps, bumped by each `Continue` without touching `attempt`). Defaults to the step's current `Iterations` from the run snapshot -- omit it for "the live/most recent iteration". |
 | `cursor` | no | Opaque paging token -- copy the previous response's `next_cursor` here to fetch the next page. Omit for the first page. It is a JetStream stream sequence number, not a chunk `seq`; treat it as opaque. |
 | `from` | no | `from=failure` starts the response at the attempt's recorded `"failed"` marker instead of `cursor`, resolved in O(1) (`GetLastMsgForSubject`), not by scanning. Strict: if the attempt's last message isn't a `"failed"` marker (it completed, or has no messages yet), this 404s -- see below. |
 | `follow` | no | `follow=1` upgrades the response to Server-Sent Events instead of one JSON page. |
@@ -255,8 +256,8 @@ GET /runs/{id}/logs?step={stepID}&attempt={n}&cursor={n}&follow={0|1}&from={fail
 ```json
 {
   "chunks": [
-    {"seq": 0, "attempt": 1, "ts": "2026-08-28T12:00:00.100Z", "stream": "out", "data": "cnVubmluZyB0ZXN0cwo="},
-    {"seq": 1, "attempt": 1, "ts": "2026-08-28T12:00:00.350Z", "stream": "out", "data": "MyBwYXNzZWQK"}
+    {"seq": 0, "attempt": 1, "iteration": 0, "ts": "2026-08-28T12:00:00.100Z", "stream": "out", "data": "cnVubmluZyB0ZXN0cwo="},
+    {"seq": 1, "attempt": 1, "iteration": 0, "ts": "2026-08-28T12:00:00.350Z", "stream": "out", "data": "MyBwYXNzZWQK"}
   ],
   "next_cursor": 2,
   "eof": true
@@ -283,7 +284,7 @@ be.
 
 ```
 event: chunk
-data: {"seq":0,"attempt":1,"ts":"2026-08-28T12:00:00.100Z","stream":"out","data":"cnVubmluZyB0ZXN0cwo="}
+data: {"seq":0,"attempt":1,"iteration":0,"ts":"2026-08-28T12:00:00.100Z","stream":"out","data":"cnVubmluZyB0ZXN0cwo="}
 
 : keepalive
 
@@ -300,7 +301,9 @@ one JetStream consumer is opened per `follow=1` connection, for its
 whole lifetime, not re-opened on a poll interval. `event: eof`'s `data`
 carries `{"reason":"paused"}` or `{"reason":"continued"}` when the
 attempt ended that way (a UI is expected to re-attach with a fresh
-`attempt`); it's `{}` for `completed`/`failed` and for the rare crash
+`attempt` for `paused`, or a fresh `iteration` at the SAME `attempt`
+for `continued` -- Continue never bumps `attempt`); it's `{}` for
+`completed`/`failed` and for the rare crash
 fallback (a coarse run-snapshot poll, at most every 10s, for the case
 where the marker itself never arrives). Hard capped at 1h per
 connection (`protocol.LogFollowDurationMax`); capped at 256 concurrent

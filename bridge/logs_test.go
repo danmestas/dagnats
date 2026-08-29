@@ -50,7 +50,7 @@ func postLogs(
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 func drainBuildLogs(
-	t *testing.T, nc *nats.Conn, runID, stepID string, attempt, want int,
+	t *testing.T, nc *nats.Conn, runID, stepID string, attempt, iteration, want int,
 	timeout time.Duration,
 ) []protocol.LogChunk {
 	t.Helper()
@@ -60,7 +60,7 @@ func drainBuildLogs(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	subject := fmt.Sprintf("logs.%s.%s.%d", runID, stepID, attempt)
+	subject := fmt.Sprintf("logs.%s.%s.%d.%d", runID, stepID, attempt, iteration)
 	cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS",
 		jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}})
 	if err != nil {
@@ -107,7 +107,7 @@ func TestPostLogs_ChunksLandOnBuildLogs(t *testing.T) {
 	// attempt=1: taskAttemptNumber (bridge/poll.go) resolves a fresh
 	// poll's payload.Attempt=0 via NATS NumDelivered, same as
 	// worker/log_writer.go's resolveAttemptNumber (#624 review).
-	chunks := drainBuildLogs(t, nc, "run-logs-1", "step-1", 1, 2, 10*time.Second)
+	chunks := drainBuildLogs(t, nc, "run-logs-1", "step-1", 1, 0, 2, 10*time.Second)
 	if chunks[0].Seq != 0 || chunks[0].Attempt != 1 || chunks[0].Stream != protocol.LogStreamOut ||
 		string(chunks[0].Data) != "hello" {
 		t.Fatalf("chunks[0] = %+v, want seq=0 attempt=1 out=hello", chunks[0])
@@ -217,7 +217,7 @@ func TestPostLogs_FailMarkerIsLastMessageOnAttemptSubject(t *testing.T) {
 	// attempt=1: a fresh single poll resolves via NumDelivered fallback
 	// (bridge/poll.go's taskAttemptNumber), same numbering the worker
 	// SDK uses.
-	chunks := drainBuildLogs(t, nc, "run-logs-fail", "step-1", 1, 2, 10*time.Second)
+	chunks := drainBuildLogs(t, nc, "run-logs-fail", "step-1", 1, 0, 2, 10*time.Second)
 	if chunks[0].Stream != protocol.LogStreamOut ||
 		string(chunks[0].Data) != "about to fail" {
 		t.Fatalf("chunks[0] = %+v, want out=%q", chunks[0], "about to fail")
@@ -279,7 +279,7 @@ func TestPostLogs_FromFailureWorksForBridgeWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream(BUILD_LOGS): %v", err)
 	}
-	subject := "logs.run-logs-fromfail.step-1.1"
+	subject := "logs.run-logs-fromfail.step-1.1.0"
 	deadline := time.Now().Add(5 * time.Second)
 	var lastMsg *jetstream.RawStreamMsg
 	for time.Now().Before(deadline) {
@@ -299,5 +299,34 @@ func TestPostLogs_FromFailureWorksForBridgeWorker(t *testing.T) {
 	if chunk.Stream != protocol.LogStreamMarker ||
 		string(chunk.Data) != protocol.LogMarkerFailed {
 		t.Fatalf("last message = %+v, want marker=failed (from=failure target)", chunk)
+	}
+}
+
+// TestPostLogs_UnrelatedTokenCannotProbe409Vs404 is the #624 review
+// round-3 regression test for nit 2: a token that never claimed a task
+// must not be able to distinguish "already resolved" (409) from
+// "never existed" (404) for it — WasResolvedBy gates the 409 on the
+// caller matching the TokenID that actually resolved the task (or
+// admin), so an unrelated token always sees 404, the same as it would
+// for a genuinely nonexistent task ID.
+func TestPostLogs_UnrelatedTokenCannotProbe409Vs404(t *testing.T) {
+	baseURL, svc, bearerA, bearerB, _ := tokenResolveFixture(t)
+	task := startRunAndPollTask(t, baseURL, svc, bearerA)
+
+	resolveWithBearer(t, baseURL, task.TaskID, bearerA,
+		`{"action":"complete","output":{}}`).Body.Close()
+
+	body := `{"chunks":[{"stream":"out","data":"` + b64("too late") + `"}]}`
+	resp := postLogs(t, baseURL, task.TaskID, bearerB, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (unrelated token must not see 409)", resp.StatusCode)
+	}
+
+	// Positive control: the SAME token that resolved it still sees 409.
+	resp2 := postLogs(t, baseURL, task.TaskID, bearerA, body)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 for the resolving token itself", resp2.StatusCode)
 	}
 }

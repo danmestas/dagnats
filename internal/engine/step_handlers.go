@@ -192,17 +192,21 @@ func (o *Orchestrator) publishContinueTask(
 		)
 	}
 	loopCfg, _ := dag.ParseAgentLoopConfig(stepDef)
+	// #624 review round 3: currentAttempt (NOT nextDispatchAttempt) —
+	// a Continue iteration reuses the SAME attempt; only Iterations
+	// increments.
+	attempt := currentAttempt(run, stepDef.ID)
 	// state.DispatchNonce was stamped fresh by handleContinue before the
 	// snapshot save, so it is already persisted; thread it (with the run's
 	// workflow name) through both the delayed and immediate re-enqueue (#380).
 	if loopCfg.LoopDelay > 0 {
 		return o.scheduleDelayedIteration(
 			ctx, run.RunID, run.WorkflowID, stepDef, input,
-			state.Iterations, loopCfg.LoopDelay, state.DispatchNonce,
+			attempt, state.Iterations, loopCfg.LoopDelay, state.DispatchNonce,
 		)
 	}
 	return o.publisher.PublishIteration(
-		ctx, run.RunID, stepDef, input, state.Iterations,
+		ctx, run.RunID, stepDef, input, attempt, state.Iterations,
 		run.WorkflowID, state.DispatchNonce,
 	)
 }
@@ -215,6 +219,7 @@ func (o *Orchestrator) scheduleDelayedIteration(
 	workflowName string,
 	stepDef dag.StepDef,
 	input []byte,
+	attempt int,
 	iteration int,
 	delay time.Duration,
 	dispatchNonce string,
@@ -237,7 +242,7 @@ func (o *Orchestrator) scheduleDelayedIteration(
 			return
 		case <-timer.C:
 			pubErr := o.publisher.PublishIteration(
-				ctx, runID, stepDef, input, iteration,
+				ctx, runID, stepDef, input, attempt, iteration,
 				workflowName, dispatchNonce,
 			)
 			if pubErr != nil {

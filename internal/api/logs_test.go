@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -653,7 +654,7 @@ func TestGetRunLogs_PagesWithoutGapsOrDuplicates(t *testing.T) {
 	// (worker/context.go's resolveAttemptNumber, #624 review) — must
 	// match the subject the real worker's own "completed" marker
 	// lands on below, or the two would occupy disjoint subjects.
-	subject := attemptSubject(runID, "a", 1)
+	subject := logSubject(runID, "a", 1, 0)
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer seedCancel()
 	for i := 0; i < chunkCount; i++ {
@@ -766,5 +767,108 @@ func TestGetRunLogs_CursorPastEndIsEmptyAndEOF(t *testing.T) {
 	}
 	if !page.EOF {
 		t.Fatal("EOF = false for a cursor past the end of a terminal step's log")
+	}
+}
+
+// TestAgentLoop_ContinueTwiceKeepsEachIterationOnItsOwnSubject is the
+// #624 review round-3 blocker's regression test: PublishIteration used
+// to never set Attempt, so every iteration resolved to attempt 1 with
+// a FRESH log lane whose seq restarted at 0 — iteration 1+'s chunks
+// silently collided with (and were dropped as duplicates of) iteration
+// 0's within BUILD_LOGS's 2-minute dedup window. This drives a real
+// agent-loop step through three iterations (each Write()s a line then
+// Continues) and asserts all three iterations' chunks are independently
+// present, none dropped, with iteration 2's "continued" marker as the
+// true last message on ITS OWN subject.
+func TestAgentLoop_ContinueTwiceKeepsEachIterationOnItsOwnSubject(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	t.Cleanup(orch.Stop)
+
+	var callCount int64
+	w := worker.NewWorker(nc)
+	w.Handle("logs-loop-task", func(tc worker.TaskContext) error {
+		n := atomic.AddInt64(&callCount, 1) - 1 // 0-based: matches Iteration
+		tc.LogOut().Write([]byte(fmt.Sprintf("iter-%d-line", n)))
+		return tc.Continue([]byte(`{}`))
+	})
+	w.Start()
+	t.Cleanup(w.Stop)
+
+	svc := NewService(nc)
+	wb := dag.NewWorkflow("logs-agent-loop")
+	wb.AgentLoop("a", "logs-loop-task").WithMaxIterations(3)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := svc.RegisterWorkflow(context.Background(), def); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+	runID := startLogsTestRun(t, svc, "logs-agent-loop")
+
+	// Wait for all three handler invocations (iterations 0, 1, 2) —
+	// MaxIterations=3 fails the loop after the third Continue brings
+	// Iterations to 3, without a 4th dispatch.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt64(&callCount) < 3 {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got := atomic.LoadInt64(&callCount); got != 3 {
+		t.Fatalf("handler invocation count = %d, want 3", got)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	// attempt=1: this step never fails/retries — every iteration
+	// dispatches within the SAME (first) attempt.
+	for iter := 0; iter < 3; iter++ {
+		subject := logSubject(runID, "a", 1, iter)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cons, err := js.OrderedConsumer(ctx, "BUILD_LOGS",
+			jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}})
+		if err != nil {
+			cancel()
+			t.Fatalf("iteration %d: OrderedConsumer: %v", iter, err)
+		}
+		var chunks []protocol.LogChunk
+		for len(chunks) < 2 {
+			if ctx.Err() != nil {
+				t.Fatalf("iteration %d: timed out with %d/2 chunks: %+v",
+					iter, len(chunks), chunks)
+			}
+			msg, err := cons.Next(jetstream.FetchMaxWait(500 * time.Millisecond))
+			if err != nil {
+				continue
+			}
+			var c protocol.LogChunk
+			if err := json.Unmarshal(msg.Data(), &c); err != nil {
+				t.Fatalf("iteration %d: unmarshal: %v", iter, err)
+			}
+			msg.Ack()
+			chunks = append(chunks, c)
+		}
+		cancel()
+		// Positive: this iteration's own data line, not dropped/collided.
+		wantLine := fmt.Sprintf("iter-%d-line", iter)
+		if chunks[0].Attempt != 1 || chunks[0].Iteration != iter ||
+			string(chunks[0].Data) != wantLine {
+			t.Fatalf("iteration %d chunks[0] = %+v, want attempt=1 iteration=%d data=%q",
+				iter, chunks[0], iter, wantLine)
+		}
+		// Positive: the "continued" marker is present, tagged with
+		// this SAME iteration — the last message on this subject.
+		if chunks[1].Stream != protocol.LogStreamMarker ||
+			string(chunks[1].Data) != protocol.LogMarkerContinued ||
+			chunks[1].Iteration != iter {
+			t.Fatalf("iteration %d chunks[1] = %+v, want marker=continued iteration=%d",
+				iter, chunks[1], iter)
+		}
 	}
 }

@@ -8,12 +8,12 @@
 // so a consumer reading BUILD_LOGS sees the same chunk shape regardless
 // of which lane produced it.
 //
-// Subject/attempt scoping (#624 review): the subject is
-// logs.{runID}.{stepID}.{attempt}, matching worker/log_writer.go
-// exactly — attempt is protocol.TaskPayload.Attempt read from the
-// claimed task's own message (the same one authorizeTaskOwner already
-// validated ownership against), NOT from the caller's request body, so
-// an HTTP worker can never spoof which attempt its chunks land on.
+// Subject/attempt/iteration scoping (#624 review rounds 2-3): the
+// subject is logs.{runID}.{stepID}.{attempt}.{iteration}, matching
+// worker/log_writer.go exactly — both are read from the claimed task's
+// own message (the same one authorizeTaskOwner already validated
+// ownership against), NOT from the caller's request body, so an HTTP
+// worker can never spoof which attempt/iteration its chunks land on.
 package bridge
 
 import (
@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -99,14 +100,18 @@ func (b *Bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromContext(r.Context())
 	claimedMsg, claimingTokenID, ok := b.ackMap.LoadWithTokenID(taskID)
 	if !ok {
-		b.rejectUnclaimedLogPost(w, taskID)
+		// #624 review round 3: authorize BEFORE deciding 409 vs 404 —
+		// rejectUnclaimedLogPost/WasResolvedBy only reveal "already
+		// resolved" to the SAME caller that resolved it (or admin), so
+		// a token can't probe 409-vs-404 for a task it never claimed.
+		b.rejectUnclaimedLogPost(w, taskID, claims)
 		return
 	}
 	if !b.authorizeTaskOwner(claims, claimingTokenID) {
 		http.Error(w, "task not claimed by this token", http.StatusForbidden)
 		return
 	}
-	attempt, err := logsTaskAttempt(claimedMsg)
+	attempt, iteration, err := logsTaskAttemptIteration(claimedMsg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -127,14 +132,20 @@ func (b *Bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b.ingestLogChunks(ctx, w, taskID, attempt, decoded)
+	b.ingestLogChunks(ctx, w, taskID, attempt, iteration, claims, decoded)
 }
 
-// rejectUnclaimedLogPost distinguishes 409 (already resolved — see
-// AckMap.MarkResolved/WasResolved, #624 review round 2) from 404
-// (never claimed at all) for a taskID no longer in the AckMap.
-func (b *Bridge) rejectUnclaimedLogPost(w http.ResponseWriter, taskID string) {
-	if b.ackMap.WasResolved(taskID) {
+// rejectUnclaimedLogPost distinguishes 409 (already resolved BY claims
+// — see AckMap.MarkResolved/WasResolvedBy, #624 review rounds 2-3)
+// from 404 (never claimed by claims at all) for a taskID no longer in
+// the AckMap. WasResolvedBy itself is the authorization check: it only
+// returns true when claims match the TokenID that actually resolved
+// the task (or claims.Admin), so a caller can never learn "this task
+// was resolved" for a task it never owned.
+func (b *Bridge) rejectUnclaimedLogPost(
+	w http.ResponseWriter, taskID string, claims workertoken.Claims,
+) {
+	if b.ackMap.WasResolvedBy(taskID, claims) {
 		http.Error(w, "task already resolved; log ingest closed",
 			http.StatusConflict)
 		return
@@ -146,7 +157,8 @@ func (b *Bridge) rejectUnclaimedLogPost(w http.ResponseWriter, taskID string) {
 // decoded chunks for an already-authorized request.
 func (b *Bridge) ingestLogChunks(
 	ctx context.Context, w http.ResponseWriter,
-	taskID string, attempt int, decoded []decodedChunk,
+	taskID string, attempt, iteration int, claims workertoken.Claims,
+	decoded []decodedChunk,
 ) {
 	runID, stepID := splitTaskID(taskID)
 	var steps []logPlanStep
@@ -163,31 +175,41 @@ func (b *Bridge) ingestLogChunks(
 	if !found {
 		// Raced the reaper/resolve between the ownership check in
 		// handleLogs and here.
-		b.rejectUnclaimedLogPost(w, taskID)
+		b.rejectUnclaimedLogPost(w, taskID, claims)
 		return
 	}
-	b.publishLogSteps(ctx, runID, stepID, attempt, startSeq, steps)
+	b.publishLogSteps(ctx, runID, stepID, attempt, iteration, startSeq, steps)
 	w.WriteHeader(http.StatusOK)
 }
 
-// logsTaskAttempt reads protocol.TaskPayload.Attempt from the claimed
-// task's original message and resolves it to the 1-based AttemptNumber
-// via taskAttemptNumber (bridge/poll.go) — the SAME numbering
+// logsTaskAttemptIteration unmarshals the claimed task's original
+// message once and returns both dimensions of BUILD_LOGS subject
+// identity (logs.{runID}.{stepID}.{attempt}.{iteration}, #624 review
+// round 3): attempt is resolved to the 1-based AttemptNumber via
+// taskAttemptNumber (bridge/poll.go) — the SAME numbering
 // step.started/step.failed's AttemptNumber field and
 // worker/log_writer.go's resolveAttemptNumber use, so a consumer
 // correlating BUILD_LOGS with the lifecycle history stream sees one
-// consistent per-attempt identity regardless of which lane (native
-// worker or HTTP bridge) produced it, and GET .../logs's default
-// ?attempt= (dag.StepState.Attempts) resolves to the right subject.
-func logsTaskAttempt(msg jetstream.Msg) (int, error) {
+// consistent identity regardless of which lane (native worker or HTTP
+// bridge) produced it, and GET .../logs's default ?attempt= resolves
+// to the right subject. iteration needs no such resolution — the
+// engine always sets protocol.TaskPayload.Iteration explicitly (0 for
+// a non-loop step; N for an agent-loop step's Nth Continue
+// re-dispatch, internal/engine/task_publisher.go's PublishIteration)
+// — so the raw payload value IS the answer.
+func logsTaskAttemptIteration(msg jetstream.Msg) (attempt, iteration int, err error) {
 	if msg == nil {
-		panic("logsTaskAttempt: msg must not be nil")
+		panic("logsTaskAttemptIteration: msg must not be nil")
 	}
 	var payload protocol.TaskPayload
 	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
-		return 0, fmt.Errorf("unmarshal task payload: %w", err)
+		return 0, 0, fmt.Errorf("unmarshal task payload: %w", err)
 	}
-	return taskAttemptNumber(msg, payload.Attempt)
+	attempt, err = taskAttemptNumber(msg, payload.Attempt)
+	if err != nil {
+		return 0, 0, err
+	}
+	return attempt, payload.Iteration, nil
 }
 
 var errLogsBodyTooLarge = fmt.Errorf("request body exceeds %d bytes", logsBodyBytesMax)
@@ -319,9 +341,9 @@ func (b *Bridge) emitLogMarker(
 	if marker == "" {
 		panic("emitLogMarker: marker must not be empty")
 	}
-	attempt, err := logsTaskAttempt(msg)
+	attempt, iteration, err := logsTaskAttemptIteration(msg)
 	if err != nil {
-		slog.Warn("emitLogMarker: derive attempt failed",
+		slog.Warn("emitLogMarker: derive attempt/iteration failed",
 			"error", err, "task_id", taskID)
 		return
 	}
@@ -339,7 +361,7 @@ func (b *Bridge) emitLogMarker(
 			"task_id", taskID, "marker", marker)
 		return
 	}
-	b.publishLogSteps(ctx, runID, stepID, attempt, startSeq, steps)
+	b.publishLogSteps(ctx, runID, stepID, attempt, iteration, startSeq, steps)
 }
 
 // publishLogSteps publishes each planned step as its own LogChunk,
@@ -351,7 +373,7 @@ func (b *Bridge) emitLogMarker(
 // chunk dropped, never retried or blocking the caller — same policy
 // as worker/log_writer.go.
 func (b *Bridge) publishLogSteps(
-	ctx context.Context, runID, stepID string, attempt int,
+	ctx context.Context, runID, stepID string, attempt, iteration int,
 	startSeq uint64, steps []logPlanStep,
 ) {
 	if len(steps) == 0 {
@@ -364,15 +386,16 @@ func (b *Bridge) publishLogSteps(
 	// so they reflect the same sanitized identity — matching
 	// worker/log_writer.go's publishLocked (#624 review).
 	stepToken := natsutil.SubjectToken(stepID)
-	subject := fmt.Sprintf("logs.%s.%s.%d", runID, stepToken, attempt)
+	subject := fmt.Sprintf("logs.%s.%s.%d.%d", runID, stepToken, attempt, iteration)
 	for i, step := range steps {
 		seq := startSeq + uint64(i)
 		chunk := protocol.LogChunk{
-			Seq:     seq,
-			Attempt: attempt,
-			TS:      time.Now(),
-			Stream:  step.stream,
-			Data:    step.data,
+			Seq:       seq,
+			Attempt:   attempt,
+			Iteration: iteration,
+			TS:        time.Now(),
+			Stream:    step.stream,
+			Data:      step.data,
 		}
 		payload, err := json.Marshal(chunk)
 		if err != nil {
@@ -380,13 +403,17 @@ func (b *Bridge) publishLogSteps(
 				"error", err, "run_id", runID, "step_id", stepID)
 			continue
 		}
-		msgID := fmt.Sprintf("log-%s-%s-%d-%d", runID, stepToken, attempt, seq)
+		msgID := fmt.Sprintf("log-%s-%s-%d-%d-%d",
+			runID, stepToken, attempt, iteration, seq)
 		msg := &nats.Msg{
 			Subject: subject,
 			Data:    payload,
 			Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 		}
 		if _, err := b.pub.JSPublishMsg(ctx, msg); err != nil {
+			if b.logChunkFailures != nil {
+				b.logChunkFailures.Add(context.Background(), 1)
+			}
 			slog.Error("publish log chunk failed",
 				"error", err, "run_id", runID, "step_id", stepID,
 				"stream", step.stream)
