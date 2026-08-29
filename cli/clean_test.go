@@ -536,6 +536,96 @@ func TestPurgeStreamBefore_AllOld(t *testing.T) {
 	}
 }
 
+// orderedConsumerThenDelete wraps a jetstream.Stream so its
+// OrderedConsumer() call succeeds normally (returning a real,
+// functioning consumer), then deletes the underlying stream as a side
+// effect before returning — simulating the stream vanishing between
+// purgeStreamBefore opening its boundary-scan consumer and the first
+// cons.Next() call it makes on it. This specifically exercises the
+// cons.Next() error branch (not the earlier "consumer for %s" open
+// failure), which is the branch #676's review flagged: it used to
+// treat ANY error there as "no messages after cutoff" and purge
+// everything.
+type orderedConsumerThenDelete struct {
+	jetstream.Stream
+	js     jetstream.JetStream
+	delCtx context.Context
+	name   string
+}
+
+func (w *orderedConsumerThenDelete) OrderedConsumer(
+	ctx context.Context, cfg jetstream.OrderedConsumerConfig,
+) (jetstream.Consumer, error) {
+	cons, err := w.Stream.OrderedConsumer(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if delErr := w.js.DeleteStream(w.delCtx, w.name); delErr != nil {
+		panic("orderedConsumerThenDelete: DeleteStream: " + delErr.Error())
+	}
+	return cons, nil
+}
+
+// TestPurgeStreamBefore_DeletedMidCheckDoesNotPurge is the red test
+// for #676's review nit: purgeStreamBefore used to treat ANY cons.Next
+// error (including the stream vanishing mid-check) the same as "no
+// messages after cutoff" and purged everything. It must now purge
+// NOTHING and report the failure when the boundary scan hits a real
+// error rather than the idle-wait timeout.
+func TestPurgeStreamBefore_DeletedMidCheckDoesNotPurge(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Mixed old + new messages so purgeStreamBefore reaches the
+	// ordered-consumer boundary scan rather than short-circuiting on
+	// the all-old or all-new fast paths.
+	oldJS, _ := nc.JetStream()
+	oldJS.Publish("history.midcheck-test", []byte("old"))
+	time.Sleep(100 * time.Millisecond)
+	midpoint := time.Now()
+	time.Sleep(100 * time.Millisecond)
+	oldJS.Publish("history.midcheck-test", []byte("new"))
+
+	stream, err := js.Stream(ctx, "WORKFLOW_HISTORY")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	info, _ := stream.Info(ctx)
+	if info.State.Msgs != 2 {
+		t.Fatalf("expected 2 msgs, got %d", info.State.Msgs)
+	}
+
+	wrapped := &orderedConsumerThenDelete{
+		Stream: stream, js: js, delCtx: ctx, name: "WORKFLOW_HISTORY",
+	}
+	olderThan := time.Since(midpoint)
+
+	var purged bool
+	output := captureStderr(func() {
+		purged = purgeStreamBefore(ctx, wrapped, olderThan)
+	})
+
+	// Positive: a real mid-check error must not purge.
+	if purged {
+		t.Fatal("expected no purge when the stream vanishes mid-check")
+	}
+	// Negative: the failure must be reported, not swallowed — proof
+	// this went through the "real error, not idle-timeout" branch
+	// rather than some other silent early return.
+	if output == "" {
+		t.Fatal("expected a warning on stderr for the mid-check failure")
+	}
+}
+
 // --- Unit tests: bulk prune flags (--keep / --before-seq) ---
 
 func TestParseCleanFlags_KeepAndBeforeSeq(t *testing.T) {

@@ -136,6 +136,8 @@ jobs:
               --include='*.go' \
               --exclude='*_test.go' \
               --exclude-dir='natsutil' \
+              --exclude-dir='vendor' \
+              --exclude-dir='.git' \
               .); then
             echo "::error::OrderedConsumerConfig built outside internal/natsutil. Use natsutil.OrderedConsumerConfig / natsutil.OpenConsumer (it sets MaxResetAttempts; the nats.go default is unbounded)."
             echo "$matches"
@@ -145,6 +147,8 @@ jobs:
               --include='*.go' \
               --exclude='*_test.go' \
               --exclude-dir='natsutil' \
+              --exclude-dir='vendor' \
+              --exclude-dir='.git' \
               .); then
             echo "::error::Ordered consumer opened outside internal/natsutil. Route it through natsutil.OpenConsumer / natsutil.OpenStreamConsumer."
             echo "$matches"
