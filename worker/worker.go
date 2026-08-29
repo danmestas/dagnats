@@ -569,7 +569,12 @@ func (w *Worker) registerDirectory() {
 		Hostname:  ident.hostname,
 		Version:   ident.version,
 	}
-	_ = w.dir.Register(reg)
+	if err := w.dir.Register(reg); err != nil {
+		slog.Warn(
+			"initial directory registration failed",
+			"worker_id", w.workerID, "error", err,
+		)
+	}
 	go w.heartbeatLoop(reg)
 }
 
@@ -910,7 +915,12 @@ func (w *Worker) heartbeatLoop(reg WorkerRegistration) {
 	for {
 		select {
 		case <-ticker.C:
-			_ = w.dir.Register(reg)
+			if err := w.dir.Register(reg); err != nil {
+				slog.Warn(
+					"heartbeat directory registration failed",
+					"worker_id", reg.WorkerID, "error", err,
+				)
+			}
 		case <-w.stopHeartbeat:
 			return
 		}

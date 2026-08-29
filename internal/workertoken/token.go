@@ -69,6 +69,20 @@ func (c Claims) AllowsTaskType(taskType string) bool {
 	return false
 }
 
+// AdminTokenID is the reserved token_id value the bridge's
+// worker.Directory writes for a registration created by the admin
+// bearer or dev mode (#650 round 3): using "" for those entries made
+// an admin takeover indistinguishable from a genuinely unowned entry
+// (a pre-#627 record, or a native Go worker outside the bridge's
+// scope) and therefore reclaimable by the next bridge token to
+// connect. Defined here (workertoken is the token-identity package)
+// rather than in worker, which imports it, so the dependency runs
+// public -> internal instead of the reverse. Mint asserts a minted id
+// can never equal this value -- ids are nuids, so the collision is
+// not reachable in practice, but the assertion makes the invariant
+// explicit.
+const AdminTokenID = "admin"
+
 // Bounds enforced by Mint. These cap the worker_tokens KV bucket's
 // growth and the size of any single record, so a scripting mistake
 // (or a malicious admin-token holder) cannot mint unbounded state.

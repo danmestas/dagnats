@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -30,8 +31,11 @@ var ErrWorkerIDOwned = errors.New(
 // in practice, but the assertion makes the invariant explicit), so
 // an entry carrying AdminTokenID is unambiguously admin-owned: only
 // an admin caller (which includes every dev-mode caller -- dev mode
-// has no identity to enforce) may re-register or delete it.
-const AdminTokenID = "admin"
+// has no identity to enforce) may re-register or delete it. Defined
+// in internal/workertoken (the token-identity package) and re-
+// exported here so the dependency runs public -> internal, not the
+// reverse.
+const AdminTokenID = workertoken.AdminTokenID
 
 // ownershipAllows is the single ownership decision shared by
 // RegisterOwned and DeregisterOwned (#650): an admin caller may
@@ -286,8 +290,12 @@ func (d *Directory) Deregister(workerID string) error {
 // Get's revision with jetstream.LastRevision on Delete so a
 // concurrent re-register between the Get and the Delete aborts the
 // delete instead of clobbering the new owner (closes the same TOCTOU
-// window RegisterOwned closes on the write side). Returns nil if the
-// key does not exist.
+// window RegisterOwned closes on the write side); that abort --
+// including on the admin path, which skips the ownershipAllows check
+// above but still races the same Delete -- also maps to
+// ErrWorkerIDOwned rather than a raw KV error, so a benign concurrent
+// re-register is logged at debug by the caller instead of ERROR.
+// Returns nil if the key does not exist.
 func (d *Directory) DeregisterOwned(
 	workerID, callerTokenID string, callerIsAdmin bool,
 ) error {
@@ -326,7 +334,18 @@ func (d *Directory) DeregisterOwned(
 	if err == jetstream.ErrKeyNotFound {
 		return nil
 	}
-	return err
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			// Someone re-registered (or re-deregistered) between our
+			// Get and this Delete -- a benign concurrent write, not a
+			// failure. Map it to ErrWorkerIDOwned so the caller logs
+			// it at debug instead of ERROR, matching RegisterOwned's
+			// treatment of the same race on the write side.
+			return ErrWorkerIDOwned
+		}
+		return err
+	}
+	return nil
 }
 
 // List returns all currently registered workers.

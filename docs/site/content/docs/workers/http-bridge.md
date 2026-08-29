@@ -45,7 +45,11 @@ caller in dev mode, which has no token identity to enforce -- can always take ov
 any `worker_id`; those entries are written with the reserved `admin` token identity so a later
 worker token can't reclaim them the way an unowned entry can. Entries with no token identity at
 all -- a native Go worker, which never goes through the bridge -- are outside this scope
-entirely: they're claimable, and deletable, by any bridge token, in both directions.
+entirely: they're claimable, and deletable, by any bridge token, in both directions. That cuts
+both ways: a native Go worker authenticates with NATS credentials, not a bridge token, and its
+plain KV write carries no token identity at all, so if it registers a `worker_id` a bridge
+token currently owns, the entry silently becomes unowned -- a different trust boundary than the
+bridge's own ownership rule, worth knowing rather than discovering by surprise.
 
 ### POST /v1/tasks/poll
 
