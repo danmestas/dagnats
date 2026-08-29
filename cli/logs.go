@@ -7,6 +7,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -16,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -88,9 +91,9 @@ func runLogsFollow(js jetstream.JetStream, subject string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cons, err := js.OrderedConsumer(
-		ctx, "TELEMETRY",
-		jetstream.OrderedConsumerConfig{
+	cons, err := natsutil.OpenConsumer(
+		ctx, js, "TELEMETRY",
+		natsutil.OrderedConsumerSpec{
 			FilterSubjects: []string{subject},
 			DeliverPolicy:  jetstream.DeliverNewPolicy,
 		},
@@ -122,6 +125,14 @@ func runLogsFollow(js jetstream.JetStream, subject string) {
 	for i := 0; i < maxMessages; i++ {
 		msg, err := iter.Next()
 		if err != nil {
+			// ErrMsgIteratorClosed is the normal shutdown path: the
+			// signal handler above called iter.Stop(). Anything else
+			// (most importantly the stream going away mid-follow) is
+			// a real failure and must be reported, not swallowed.
+			if !errors.Is(err, jetstream.ErrMsgIteratorClosed) {
+				fmt.Fprintf(os.Stderr, "logs: %v\n", err)
+				os.Exit(1)
+			}
 			return
 		}
 		var rec LogRecord
@@ -266,9 +277,9 @@ func runLogsTail(
 	}
 
 	ctx := context.Background()
-	cons, err := js.OrderedConsumer(
-		ctx, "TELEMETRY",
-		jetstream.OrderedConsumerConfig{
+	cons, err := natsutil.OpenConsumer(
+		ctx, js, "TELEMETRY",
+		natsutil.OrderedConsumerSpec{
 			FilterSubjects: []string{subject},
 			DeliverPolicy:  jetstream.DeliverAllPolicy,
 		},
@@ -287,7 +298,9 @@ func runLogsTail(
 
 // collectTailMessages reads messages from consumer into a ring
 // buffer of capacity count. Stops when no message arrives within
-// the fetch timeout.
+// the fetch timeout; any other fetch error (most importantly the
+// stream going away mid-tail) is reported rather than silently
+// truncating the tail.
 func collectTailMessages(
 	cons jetstream.Consumer, count int,
 ) []LogRecord {
@@ -305,6 +318,9 @@ func collectTailMessages(
 			jetstream.FetchMaxWait(time.Second),
 		)
 		if err != nil {
+			if !errors.Is(err, nats.ErrTimeout) {
+				fmt.Fprintf(os.Stderr, "read TELEMETRY: %v\n", err)
+			}
 			break
 		}
 		var rec LogRecord

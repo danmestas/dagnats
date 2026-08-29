@@ -6,12 +6,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -484,8 +487,8 @@ func purgeStreamBefore(
 
 	// Find the first message at or after the cutoff using an
 	// ordered consumer. Its sequence becomes the purge boundary.
-	cons, err := stream.OrderedConsumer(ctx,
-		jetstream.OrderedConsumerConfig{
+	cons, err := natsutil.OpenStreamConsumer(ctx, stream,
+		natsutil.OrderedConsumerSpec{
 			OptStartTime: &cutoff,
 		})
 	if err != nil {
@@ -499,7 +502,17 @@ func purgeStreamBefore(
 		jetstream.FetchMaxWait(5 * time.Second),
 	)
 	if err != nil {
-		// No messages at or after cutoff — purge all.
+		// The idle-wait timeout is the ONLY error that means "no
+		// messages at or after cutoff" — anything else (most
+		// importantly the stream going away mid-check, which the
+		// bounded reset now surfaces instead of hanging) must not be
+		// treated as an empty tail and trigger a full purge.
+		if !errors.Is(err, nats.ErrTimeout) {
+			fmt.Fprintf(os.Stderr,
+				"warn: read %s at cutoff: %v\n",
+				info.Config.Name, err)
+			return false
+		}
 		if err := stream.Purge(ctx); err != nil {
 			return false
 		}

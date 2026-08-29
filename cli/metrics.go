@@ -7,12 +7,15 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -219,9 +222,9 @@ func collectMetricPoints(
 	)
 	defer cancel()
 
-	cons, err := js.OrderedConsumer(
-		ctx, "TELEMETRY",
-		jetstream.OrderedConsumerConfig{
+	cons, err := natsutil.OpenConsumer(
+		ctx, js, "TELEMETRY",
+		natsutil.OrderedConsumerSpec{
 			FilterSubjects: []string{subject},
 			DeliverPolicy:  jetstream.DeliverByStartTimePolicy,
 			OptStartTime:   &startTime,
@@ -257,7 +260,10 @@ func handleStreamError(err error, name string) {
 }
 
 // fetchMetricPoints reads messages from an ordered consumer and
-// extracts numeric values. Bounded by metricsPointMax.
+// extracts numeric values. Bounded by metricsPointMax. Ends normally
+// on the idle-wait timeout; any other fetch error (most importantly
+// the stream going away mid-scan) is reported rather than silently
+// truncating the result set.
 func fetchMetricPoints(
 	cons jetstream.Consumer,
 ) []metricPoint {
@@ -271,6 +277,9 @@ func fetchMetricPoints(
 			jetstream.FetchMaxWait(time.Second),
 		)
 		if fetchErr != nil {
+			if !errors.Is(fetchErr, nats.ErrTimeout) {
+				fmt.Fprintf(os.Stderr, "read TELEMETRY: %v\n", fetchErr)
+			}
 			break
 		}
 		pt, ok := parseMetricPoint(msg.Data())

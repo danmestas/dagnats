@@ -5,6 +5,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -569,4 +570,49 @@ func captureMetricsStderr(fn func()) string {
 	buf := make([]byte, 16384)
 	n, _ := r.Read(buf)
 	return string(buf[:n])
+}
+
+// TestCollectMetricPointsDeletedStreamReturnsWithinBound is #675's red
+// test for cli/metrics.go: before natsutil.OrderedConsumerConfig
+// bounded MaxResetAttempts, a TELEMETRY stream deleted out from under
+// the ordered consumer left Next() retrying forever instead of
+// returning within collectMetricPoints's own scan timeout.
+func TestCollectMetricPointsDeletedStreamReturnsWithinBound(t *testing.T) {
+	srv, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	t.Setenv("NATS_URL", srv.ClientURL())
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	if err := js.DeleteStream(context.Background(), "TELEMETRY"); err != nil {
+		t.Fatalf("DeleteStream: %v", err)
+	}
+
+	flags := metricShowFlags{name: "test.latency", since: time.Hour}
+
+	start := time.Now()
+	var points []metricPoint
+	output := captureMetricsStderr(func() {
+		points = collectMetricPoints(js, flags)
+	})
+	elapsed := time.Since(start)
+
+	// Positive: no points from a deleted stream, and a message is
+	// printed rather than the call silently hanging with no feedback.
+	if len(points) != 0 {
+		t.Fatalf("expected no points, got %d", len(points))
+	}
+	if output == "" {
+		t.Fatal("expected a stream-unavailable message on stderr")
+	}
+	// Negative: must return well inside collectMetricPoints's own
+	// metricsScanTimeout (10s) plus slack — the bound stops it, not a
+	// long-running caller-side timeout.
+	if elapsed > 20*time.Second {
+		t.Fatalf("collectMetricPoints took %s; bound not applied", elapsed)
+	}
 }

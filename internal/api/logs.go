@@ -347,64 +347,33 @@ func lastFailureMarkerSeq(
 	return true, msg.Sequence, nil
 }
 
-// logsConsumerResetMax bounds jetstream's ordered-consumer reset retry
-// loop for EVERY BUILD_LOGS reader in this package — the paged read
-// and the SSE follow both take their config from
-// logsOrderedConsumerConfig so this bound cannot drift between them.
-// A CI lint step ("Ordered consumer bound lint") fails the build if any
-// non-test file outside logs.go names OrderedConsumer at all, so the
-// bound cannot be bypassed by a new call site either.
-//
-// It MUST be set, and this is a deliberate local workaround for
-// upstream behavior, not a tuning knob. In nats.go v1.53.1:
-//
-//   - jetstream/ordered.go:614 (getConsumerConfig) rewrites an unset
-//     MaxResetAttempts (the zero value) to -1.
-//   - jetstream/ordered.go:820 (retryWithBackoff) only stops on
-//     `opts.attempts > 0 && i >= opts.attempts-1`, so -1 means the
-//     retry loop has no exit.
-//   - orderedConsumer.Next calls Fetch, which calls reset() on EVERY
-//     invocation (ordered.go:441, :529).
-//
-// Observed consequence: once the stream is deleted, Next() NEVER
-// RETURNS. It recreates the consumer forever on a 1s/2s/4s/8s/10s
-// backoff, and because reset() issues each CreateOrUpdateConsumer on
-// context.Background(), the caller's own context deadline cannot stop
-// it. That hung an SSE follow handler (and the http.Server waiting on
-// it) indefinitely; the paged read has the same exposure if the
-// stream vanishes mid-page.
-//
-// The workaround is to set the bound explicitly. Four attempts spend
-// ~7s (1+2+4) before Next() surfaces the real "stream not found",
-// which both readers then classify and report.
-const logsConsumerResetMax = 4
-
-// logsOrderedConsumerConfig builds the ONE ordered-consumer config
-// every BUILD_LOGS reader here uses: the paged read (fetchLogsPage)
-// and the SSE follow (openLogsFollowConsumer). Both anchor at cursor
-// the same way (0 = from the start of the attempt's subject), and both
-// must carry logsConsumerResetMax — keeping that in a single
+// logsOrderedConsumerSpec builds the ONE ordered-consumer spec every
+// BUILD_LOGS reader here uses: the paged read (fetchLogsPage) and the
+// SSE follow (openLogsFollowConsumer). Both anchor at cursor the same
+// way (0 = from the start of the attempt's subject), and both open
+// through natsutil.OpenConsumer so they carry the same reset bound
+// (natsutil.OrderedConsumerResetMax; see its doc comment for the
+// nats.go footgun this works around) — keeping that in a single
 // constructor is the point of this function.
-func logsOrderedConsumerConfig(
+func logsOrderedConsumerSpec(
 	runID, stepID string, attempt, iteration int, cursor uint64,
-) jetstream.OrderedConsumerConfig {
+) natsutil.OrderedConsumerSpec {
 	if runID == "" {
-		panic("logsOrderedConsumerConfig: runID must not be empty")
+		panic("logsOrderedConsumerSpec: runID must not be empty")
 	}
 	if stepID == "" {
-		panic("logsOrderedConsumerConfig: stepID must not be empty")
+		panic("logsOrderedConsumerSpec: stepID must not be empty")
 	}
-	cfg := jetstream.OrderedConsumerConfig{
-		FilterSubjects:   []string{natsutil.LogSubject(runID, stepID, attempt, iteration)},
-		MaxResetAttempts: logsConsumerResetMax,
+	spec := natsutil.OrderedConsumerSpec{
+		FilterSubjects: []string{natsutil.LogSubject(runID, stepID, attempt, iteration)},
 	}
 	if cursor > 0 {
-		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
-		cfg.OptStartSeq = cursor
+		spec.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+		spec.OptStartSeq = cursor
 	} else {
-		cfg.DeliverPolicy = jetstream.DeliverAllPolicy
+		spec.DeliverPolicy = jetstream.DeliverAllPolicy
 	}
-	return cfg
+	return spec
 }
 
 // fetchLogsPage fetches up to max BUILD_LOGS messages for
@@ -427,9 +396,9 @@ func fetchLogsPage(
 	if max <= 0 {
 		panic("fetchLogsPage: max must be positive")
 	}
-	cons, err := js.OrderedConsumer(
-		ctx, "BUILD_LOGS",
-		logsOrderedConsumerConfig(runID, stepID, attempt, iteration, cursor),
+	cons, err := natsutil.OpenConsumer(
+		ctx, js, "BUILD_LOGS",
+		logsOrderedConsumerSpec(runID, stepID, attempt, iteration, cursor),
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
