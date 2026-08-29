@@ -9,4 +9,5 @@ weight: 4
   {{< card link="event-triggers" title="Event Triggers" >}}
   {{< card link="webhooks" title="Webhooks" >}}
   {{< card link="http" title="HTTP Trigger + Respond Step" >}}
+  {{< card link="run-terminal" title="Run Terminal Trigger" >}}
 {{< /cards >}}

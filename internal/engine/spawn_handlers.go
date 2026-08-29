@@ -97,27 +97,42 @@ func (o *Orchestrator) createChildRun(
 	childRun := dag.NewWorkflowRun(childDef, childRunID)
 	childRun.Input = input
 	childRun.Status = dag.RunStatusRunning
+
+	// Load the parent UNCONDITIONALLY, detached or not (#634 review
+	// round 2, Major): RootRunID and TriggerDepth are different
+	// invariants that happen to both be parent-derived. RootRunID is
+	// lineage DISPLAY — "detached" deliberately starts a new visible
+	// tree, so a detached child self-roots regardless of the parent.
+	// TriggerDepth is a SAFETY CAP — `detach` is an author-controlled
+	// workflow-definition flag, so gating the cap's inheritance on it
+	// would make the cap bypassable by construction: A
+	// --run_terminal--> B, B spawns a DETACHED child C, C's
+	// completion triggers A again — every hop resets to depth 0 and
+	// TriggerDepthMax never engages. A genuinely-missing parent
+	// (ErrRunNotFound) means this child heads a new depth-0 lineage
+	// regardless of detach — mirroring nestingDepth, which treats a
+	// missing parent as the chain root. Only a real store fault (not
+	// a miss) propagates as a wrapped error.
+	parent, parentErr := o.store.Load(ctx, parentRunID)
+	switch {
+	case parentErr == nil:
+		childRun.TriggerDepth = parent.TriggerDepth
+	case errors.Is(parentErr, ErrRunNotFound):
+		// childRun.TriggerDepth stays 0 (zero value).
+	default:
+		return fmt.Errorf(
+			"load parent run %q for spawn derivation: %w",
+			parentRunID, parentErr,
+		)
+	}
+
 	if !detach {
 		childRun.ParentRunID = parentRunID
 		childRun.ParentStepID = parentStepID
-		// Inherit the tree-root from the parent so every run in a spawn
-		// tree carries the same RootRunID (#377). O(1) parent load — the
-		// root rule is transitive, so the parent already holds the root.
-		// A genuinely-missing parent (ErrRunNotFound) means this child
-		// heads a new tree, so it self-roots — mirroring nestingDepth,
-		// which treats a missing parent as the chain root. Only a real
-		// store fault (not a miss) propagates as a wrapped error.
-		parent, err := o.store.Load(ctx, parentRunID)
-		switch {
-		case err == nil:
+		if parentErr == nil {
 			childRun.RootRunID = RootRunIDOf(parent)
-		case errors.Is(err, ErrRunNotFound):
+		} else {
 			childRun.RootRunID = childRunID
-		default:
-			return fmt.Errorf(
-				"load parent run %q for root derivation: %w",
-				parentRunID, err,
-			)
 		}
 	} else {
 		childRun.RootRunID = childRunID // detached child self-roots (#377)

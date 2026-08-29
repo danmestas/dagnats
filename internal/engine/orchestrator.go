@@ -740,32 +740,61 @@ func (o *Orchestrator) handleWorkflowStarted(
 		panic("handleWorkflowStarted: Payload must not be nil")
 	}
 
-	// Idempotency guard (#196). Bug shape: dagnats restart causes
-	// the WORKFLOW_HISTORY consumer to replay historical events,
-	// including workflow.started for runs that have long since
-	// completed. Without this guard, NewWorkflowRun + saveSnapshot
-	// below overwrite the existing terminal-state KV entry with a
-	// fresh Pending run and re-dispatch the first step, producing
-	// duplicate workflow.completed events and worker storms. Any
-	// existing record means a prior workflow.started for this RunID
-	// has been processed — treat the redelivery as a no-op.
+	isRunTerminal := isRunTerminalChainPayload(evt.Payload)
+
+	// Idempotency guard (#196). READ-ONLY early check — #634 review
+	// round 2 replaced the earlier write-a-placeholder-then-claim
+	// design (which stranded that placeholder forever on ANY error or
+	// crash after the claim but before the real Save/enqueue) with
+	// this: a Load never strands anything, because it writes nothing.
+	// Two outcomes when evt.RunID already has a snapshot:
+	//
+	//   - Every OTHER trigger type / manual/HTTP/cron start: a prior
+	//     workflow.started for this EXACT RunID was already processed
+	//     — this is a redelivery of the SAME stored message — skip.
+	//   - run_terminal chain starts: the RunID is DETERMINISTIC
+	//     (recomputed per fire from the source RunEvent, not carried
+	//     by message redelivery), so "already exists" can also mean
+	//     an EARLIER, SEPARATE delivery already created this run and
+	//     possibly crashed before finishing it (before enqueueReady
+	//     ran). Heal, don't skip: re-drive dispatch if it is still
+	//     live (healRun below).
+	//
+	// This early check is a short-circuit for the common SEQUENTIAL
+	// redelivery case only (by far the most likely: a NAK, or a
+	// crash-restart replay, of an event whose first delivery already
+	// fully succeeded) — it avoids re-running admission's side effects
+	// (e.g. AcquireRun's concurrency-slot counter) for a run that
+	// turns out not to be new. It is NOT the correctness guarantee for
+	// a genuine race between two truly concurrent attempts;
+	// CreateSnapshot's atomic KV Create (in createOrHealRun) is. Two
+	// attempts CANNOT race past this point on the SAME orchestrator
+	// process for the SAME RunID: dispatchEvent already serializes all
+	// processing per RunID behind a per-run mutex (getRunLock) before
+	// this function is ever called, so only sequential redeliveries —
+	// never concurrent ones — reach this early exit in a single
+	// process. Multiple orchestrator replicas remain a genuine race,
+	// which is exactly what CreateSnapshot defends against.
 	if existing, loadErr := o.store.Load(
 		ctx, evt.RunID,
 	); loadErr == nil {
-		slog.InfoContext(ctx,
-			"skipping redelivered workflow.started — "+
-				"run already exists in workflow_runs KV",
-			"run_id", evt.RunID,
-			"existing_status", existing.Status.String(),
-		)
-		return nil
+		if !isRunTerminal {
+			slog.InfoContext(ctx,
+				"skipping redelivered workflow.started — "+
+					"run already exists in workflow_runs KV",
+				"run_id", evt.RunID,
+				"existing_status", existing.Status.String(),
+			)
+			return nil
+		}
+		return o.healRun(ctx, existing)
 	} else if !errors.Is(loadErr, ErrRunNotFound) {
 		return fmt.Errorf(
 			"load existing run %q: %w", evt.RunID, loadErr,
 		)
 	}
 
-	wfDef, input, labels, err := o.resolveStartPayload(ctx, evt)
+	wfDef, input, labels, triggerDepth, err := o.resolveStartPayload(ctx, evt)
 	if errors.Is(err, errStartPayloadHandled) {
 		return nil
 	}
@@ -818,6 +847,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
 	run.Input = input
 	run.Labels = labels
+	run.TriggerDepth = triggerDepth
 
 	admission, admitErr := o.admission.Admit(ctx, wfDef, run, input)
 	if admitErr != nil {
@@ -838,10 +868,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 		return nil
 	case admissionQueue:
 		run.Status = dag.RunStatusPending
-		if err := o.saveSnapshot(ctx, run, ""); err != nil {
-			return fmt.Errorf("save pending run: %w", err)
-		}
-		return nil
+		return o.createOrHealRun(ctx, isRunTerminal, wfDef, run, false)
 	}
 
 	run.Status = dag.RunStatusRunning
@@ -849,10 +876,177 @@ func (o *Orchestrator) handleWorkflowStarted(
 		deadline := time.Now().Add(wfDef.Timeout)
 		run.Deadline = &deadline
 	}
-	if err := o.saveSnapshot(ctx, run, ""); err != nil {
-		return fmt.Errorf("save initial run: %w", err)
+	return o.createOrHealRun(ctx, isRunTerminal, wfDef, run, true)
+}
+
+// createOrHealRun persists run's initial state using the write
+// strategy isRunTerminal selects, then — for a live run (doEnqueue) —
+// dispatches its entry-point steps.
+//
+//   - isRunTerminal=false (every other trigger type, manual/HTTP/cron
+//     starts): a plain, unconditional Save (Put). Safe because
+//     handleWorkflowStarted's early guard already proved evt.RunID
+//     has no existing snapshot for THIS message before reaching here
+//     — matches every trigger type's original behavior exactly.
+//   - isRunTerminal=true (run_terminal chain starts, #634 review round
+//     2): CreateSnapshot — an atomic KV Create, not Put. This IS the
+//     claim; there is no separate placeholder write. If it wins the
+//     race, dispatch proceeds below exactly as the non-run_terminal
+//     path does. If it loses — "already exists" — a delivery landed
+//     between this call's caller's own early Load-miss and now (the
+//     narrow window only a genuine cross-replica race, or extremely
+//     tight redelivery timing, can hit — see handleWorkflowStarted's
+//     early-guard comment). Losing does NOT mean "nothing to do":
+//     load the existing row and heal it (o.healRun) instead of
+//     silently dropping this delivery.
+func (o *Orchestrator) createOrHealRun(
+	ctx context.Context, isRunTerminal bool,
+	wfDef dag.WorkflowDef, run dag.WorkflowRun, doEnqueue bool,
+) error {
+	if run.RunID == "" {
+		panic("createOrHealRun: run.RunID must not be empty")
+	}
+
+	if !isRunTerminal {
+		if err := o.saveSnapshot(ctx, run, ""); err != nil {
+			return fmt.Errorf("save initial run: %w", err)
+		}
+		return o.dispatchNewRun(ctx, wfDef, run, doEnqueue)
+	}
+
+	created, err := o.store.CreateSnapshot(ctx, run)
+	if err != nil {
+		return fmt.Errorf("create initial run %q: %w", run.RunID, err)
+	}
+	if created {
+		return o.dispatchNewRun(ctx, wfDef, run, doEnqueue)
+	}
+	if !doEnqueue {
+		// Pending: nothing live to heal yet — the queue-advance path
+		// (not this function) owns moving a Pending run forward.
+		return nil
+	}
+	existing, loadErr := o.store.Load(ctx, run.RunID)
+	if loadErr != nil {
+		return fmt.Errorf(
+			"load existing run %q for healing: %w", run.RunID, loadErr,
+		)
+	}
+	return o.healRun(ctx, existing)
+}
+
+// dispatchNewRun bumps the active-run gauge and, for a live run
+// (doEnqueue), enqueues its entry-point steps and registers CancelOn
+// waiters. Shared by createOrHealRun's two write strategies so the
+// happy path is byte-for-byte identical regardless of which one wrote
+// the snapshot.
+func (o *Orchestrator) dispatchNewRun(
+	ctx context.Context, wfDef dag.WorkflowDef,
+	run dag.WorkflowRun, doEnqueue bool,
+) error {
+	if run.RunID == "" {
+		panic("dispatchNewRun: run.RunID must not be empty")
+	}
+	if !doEnqueue {
+		return nil
 	}
 	o.metrics.runsActive.Add(ctx, 1)
+	if err := o.enqueueReady(ctx, wfDef, run); err != nil {
+		return err
+	}
+	o.registerCancelWaiters(ctx, wfDef, run)
+	return nil
+}
+
+// healRun re-drives dispatch for an ALREADY-PERSISTED run_terminal
+// chain run (#634 review round 2) — the fix for the "saved but
+// crashed before enqueue" gap the earlier placeholder-claim design
+// could strand forever. A no-op for anything other than a still-
+// Running run: Pending has nothing to enqueue yet (the queue-advance
+// path owns moving it forward later), and any terminal status means a
+// prior delivery already finished the job — there is nothing left to
+// heal. Re-running enqueueReady against an already-fully-dispatched
+// Running run is a safe no-op: resolveReadySteps only returns steps
+// still Pending, and the actual task publishes dedup on Nats-Msg-Id
+// (task_publish.go) regardless.
+//
+// Single owner of this recovery: the reconciler (reconciler.go,
+// reconcileRunningRuns/reconcileOneRun) does NOT also drive this case
+// — hasInFlightStep treats a step still Pending as "in flight
+// elsewhere" and skips the run, which is exactly the state a Running
+// run that never reached enqueueReady is stuck in (every step
+// initializes Pending in dag.NewWorkflowRun; enqueueReady is what
+// promotes entry steps to Queued). The reconciler would neither
+// complete nor fail such a run — it would leave it alone forever.
+// healRun is therefore the ONLY code path that recovers it.
+func (o *Orchestrator) healRun(
+	ctx context.Context, run dag.WorkflowRun,
+) error {
+	if run.RunID == "" {
+		panic("healRun: run.RunID must not be empty")
+	}
+	if run.Status != dag.RunStatusRunning {
+		return nil
+	}
+
+	entry, err := o.defKV.Get(ctx, run.WorkflowID)
+	if err != nil {
+		return fmt.Errorf(
+			"load workflow def %q for heal: %w", run.WorkflowID, err,
+		)
+	}
+	var wfDef dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
+		return fmt.Errorf(
+			"unmarshal workflow def %q for heal: %w", run.WorkflowID, err,
+		)
+	}
+
+	slog.InfoContext(ctx,
+		"healing run_terminal chain run — re-driving dispatch "+
+			"instead of skipping",
+		"run_id", run.RunID,
+		"workflow_id", run.WorkflowID,
+	)
+
+	// Re-increment runsActive (#634 review round 3; the only other
+	// increment site is dispatchNewRun above). runsActive is a purely
+	// in-process Int64UpDownCounter, not persisted -- a process
+	// restart resets it to 0 regardless of how many runs are actually
+	// still Running. healRun exists precisely for the "process
+	// crashed" case, so this delivery has no way to know whether the
+	// original winning delivery's own increment survived the crash;
+	// treating it as lost is the safer assumption (undercounting
+	// active runs after a crash is a silent, permanent drift with no
+	// other correction path; the reverse -- double-counting when heal
+	// runs without an intervening crash -- is the rarer case and
+	// still self-corrects to zero net drift once this run's own
+	// terminal -1 fires, just one run early).
+	o.metrics.runsActive.Add(ctx, 1)
+
+	// Heals EXACTLY ONE gap: the crash/error happened BEFORE
+	// enqueueReady ever ran, so entry steps are still Pending.
+	// enqueueReady's own resolveReadySteps naturally finds and
+	// dispatches ONLY those -- it never touches a step already Queued.
+	//
+	// #634 review round 3: an earlier version of this ALSO
+	// redispatched steps already marked Queued, reasoning that the
+	// task publish's Nats-Msg-Id (runID+"."+stepID+".queued") would
+	// dedup a re-send. That dedup is a JetStream Duplicates WINDOW
+	// (TASK_QUEUES sets none explicitly, so the 2-minute server
+	// default applies -- natsutil/conn.go), and the redeliveries that
+	// reach healRun in practice are exactly the ones OLDER than that
+	// window (a restart replay, not a same-second retry). Past the
+	// window the redispatch is not deduped -- it lands as a genuine
+	// SECOND task message for a step that may already be executing,
+	// and the persisted DispatchNonce is unchanged so the second
+	// worker's control-plane checks pass too: two workers run the
+	// step's full side effects. The same risk applies to a step that
+	// is legitimately sitting Queued in an ordinary backlog with no
+	// crash at all. A publish that truly never landed is the existing
+	// MaxDeliver/reconciler concern, not this function's -- healRun
+	// only ever recovers "never reached enqueueReady," never "already
+	// Queued."
 	if err := o.enqueueReady(ctx, wfDef, run); err != nil {
 		return err
 	}
@@ -865,18 +1059,31 @@ func (o *Orchestrator) handleWorkflowStarted(
 // ACK without further processing. Detect with errors.Is.
 var errStartPayloadHandled = errors.New("start payload already handled")
 
-// resolveStartPayload decodes evt.Payload into a WorkflowDef, Input, and
-// Labels. Three shapes are accepted, in priority order:
+// resolveStartPayload decodes evt.Payload into a WorkflowDef, Input,
+// Labels, and TriggerDepth. Four shapes are accepted, in priority
+// order:
 //
 //  1. Structured {workflow_def, input, labels} — produced by the API
 //     service when a user invokes a workflow manually (#629 adds
-//     labels).
-//  2. TriggerEnvelope {trigger, source, workflow_id, ...} — produced
-//     by every trigger type (#167). The def is resolved from
+//     labels). TriggerDepth is always 0 here — manual starts root a
+//     new trigger-chain lineage.
+//  2. Run-terminal chain payload {trigger:"run_terminal", source,
+//     workflow_id, input, trigger_depth} — produced by the
+//     run_terminal trigger (#634) when a source run reaches a
+//     terminal status. Unlike the generic TriggerEnvelope below, the
+//     run's Input is exactly the nested `input` object (source run_id
+//     /workflow_id/status/labels), not the whole wrapper — see
+//     internal/trigger's fireRunTerminal. TriggerDepth carries the
+//     already-capped depth the trigger computed (source depth + 1);
+//     the engine trusts it (internal producer) rather than
+//     recomputing, matching the trust boundary #629 already applies
+//     to Labels from the API service.
+//  3. TriggerEnvelope {trigger, source, workflow_id, ...} — produced
+//     by every OTHER trigger type (#167). The def is resolved from
 //     workflow_defs KV by WorkflowID; the envelope itself becomes the
 //     run's Input so workflows can observe how they were fired. No
-//     labels shape exists for trigger envelopes yet.
-//  3. Bare WorkflowDef — backward compat for direct callers (tests
+//     labels shape exists for trigger envelopes yet. TriggerDepth 0.
+//  4. Bare WorkflowDef — backward compat for direct callers (tests
 //     and any embedded users that pre-date the structured shape).
 //
 // For trigger envelopes referencing a workflow that has no registered
@@ -885,7 +1092,7 @@ var errStartPayloadHandled = errors.New("start payload already handled")
 // would re-fail identically.
 func (o *Orchestrator) resolveStartPayload(
 	ctx context.Context, evt protocol.Event,
-) (dag.WorkflowDef, json.RawMessage, map[string]string, error) {
+) (dag.WorkflowDef, json.RawMessage, map[string]string, int, error) {
 	var startPayload struct {
 		WorkflowDef json.RawMessage   `json:"workflow_def"`
 		Input       json.RawMessage   `json:"input"`
@@ -895,33 +1102,102 @@ func (o *Orchestrator) resolveStartPayload(
 		startPayload.WorkflowDef != nil {
 		var wfDef dag.WorkflowDef
 		if err := json.Unmarshal(startPayload.WorkflowDef, &wfDef); err != nil {
-			return dag.WorkflowDef{}, nil, nil,
+			return dag.WorkflowDef{}, nil, nil, 0,
 				fmt.Errorf("unmarshal WorkflowDef: %w", err)
 		}
-		return wfDef, startPayload.Input, startPayload.Labels, nil
+		return wfDef, startPayload.Input, startPayload.Labels, 0, nil
+	}
+
+	if workflowID, input, depth, ok := decodeRunTerminalChainPayload(
+		evt.Payload,
+	); ok {
+		wfDef, err := o.loadDefOrFail(ctx, evt, workflowID)
+		if err != nil {
+			return dag.WorkflowDef{}, nil, nil, 0, err
+		}
+		return wfDef, input, nil, depth, nil
 	}
 
 	if workflowID, ok := decodeTriggerEnvelope(evt.Payload); ok {
-		entry, err := o.defKV.Get(ctx, workflowID)
+		wfDef, err := o.loadDefOrFail(ctx, evt, workflowID)
 		if err != nil {
-			o.persistFailedStartRun(ctx, evt, workflowID,
-				fmt.Errorf("resolve trigger workflow def: %w", err))
-			return dag.WorkflowDef{}, nil, nil, errStartPayloadHandled
+			return dag.WorkflowDef{}, nil, nil, 0, err
 		}
-		var wfDef dag.WorkflowDef
-		if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
-			return dag.WorkflowDef{}, nil, nil,
-				fmt.Errorf("unmarshal trigger workflow def: %w", err)
-		}
-		return wfDef, evt.Payload, nil, nil
+		return wfDef, evt.Payload, nil, 0, nil
 	}
 
 	var wfDef dag.WorkflowDef
 	if err := json.Unmarshal(evt.Payload, &wfDef); err != nil {
-		return dag.WorkflowDef{}, nil, nil,
+		return dag.WorkflowDef{}, nil, nil, 0,
 			fmt.Errorf("unmarshal WorkflowDef: %w", err)
 	}
-	return wfDef, nil, nil, nil
+	return wfDef, nil, nil, 0, nil
+}
+
+// loadDefOrFail resolves workflowID from workflow_defs KV, sharing the
+// "persist a visible failed run, ACK, don't propagate" handling
+// between the run-terminal chain path and the generic TriggerEnvelope
+// path — both fail identically when the target workflow was never
+// registered (or was removed after the trigger was created).
+func (o *Orchestrator) loadDefOrFail(
+	ctx context.Context, evt protocol.Event, workflowID string,
+) (dag.WorkflowDef, error) {
+	if workflowID == "" {
+		panic("loadDefOrFail: workflowID must not be empty")
+	}
+	entry, err := o.defKV.Get(ctx, workflowID)
+	if err != nil {
+		o.persistFailedStartRun(ctx, evt, workflowID,
+			fmt.Errorf("resolve trigger workflow def: %w", err))
+		return dag.WorkflowDef{}, errStartPayloadHandled
+	}
+	var wfDef dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &wfDef); err != nil {
+		return dag.WorkflowDef{},
+			fmt.Errorf("unmarshal trigger workflow def: %w", err)
+	}
+	return wfDef, nil
+}
+
+// decodeRunTerminalChainPayload recognizes the run_terminal trigger's
+// chain-start payload (#634) and extracts the flat Input object plus
+// TriggerDepth. Distinguished from the generic TriggerEnvelope by
+// Trigger=="run_terminal": that trigger is engine-internal (never a
+// user-facing envelope shape), so pinning the literal string here is
+// safe and keeps the decode a pure structural check like its sibling
+// decodeTriggerEnvelope.
+func decodeRunTerminalChainPayload(
+	payload []byte,
+) (workflowID string, input json.RawMessage, depth int, ok bool) {
+	var env struct {
+		Trigger      string          `json:"trigger"`
+		WorkflowID   string          `json:"workflow_id"`
+		Input        json.RawMessage `json:"input"`
+		TriggerDepth int             `json:"trigger_depth"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return "", nil, 0, false
+	}
+	if env.Trigger != "run_terminal" || env.WorkflowID == "" ||
+		len(env.Input) == 0 {
+		return "", nil, 0, false
+	}
+	return env.WorkflowID, env.Input, env.TriggerDepth, true
+}
+
+// isRunTerminalChainPayload is a cheap peek used only to pick which
+// duplicate-start guard handleWorkflowStarted applies (#634 review,
+// Blocker 2) — a second, fuller decode happens later in
+// resolveStartPayload via decodeRunTerminalChainPayload itself. Not
+// merged into one call because the guard must run BEFORE any other
+// work (including the generic Load-based guard it replaces for this
+// payload shape), while resolveStartPayload's decode naturally
+// happens later in the existing control flow; duplicating one cheap
+// json.Unmarshal is simpler than threading the decoded values back
+// out to the top of the function.
+func isRunTerminalChainPayload(payload []byte) bool {
+	_, _, _, ok := decodeRunTerminalChainPayload(payload)
+	return ok
 }
 
 // decodeTriggerEnvelope returns the workflow ID from a TriggerEnvelope

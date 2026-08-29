@@ -244,7 +244,7 @@ type QueueSnapshot struct {
 ```
 
 <a name="RunEvent"></a>
-## type [RunEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/run_event.go#L37-L46>)
+## type [RunEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/run_event.go#L37-L54>)
 
 RunEvent is the wire payload published to event.run.\*. Status carries the precise dag.RunStatus string \(e.g. "compensated"\) even when Type has coalesced to a coarser bucket. Labels is copied from the run's dag.WorkflowRun.Labels at finalization time \(see copyLabels in internal/engine/run\_event.go\) — omitted from the wire payload when the run has none.
 
@@ -260,6 +260,14 @@ type RunEvent struct {
     CompletedAt *time.Time        `json:"completed_at,omitempty"`
     Labels      map[string]string `json:"labels,omitempty"`
     TraceParent string            `json:"trace_parent,omitempty"`
+    // TriggerDepth is the source run's dag.WorkflowRun.TriggerDepth,
+    // copied here at finalization time (#634) so a run_terminal
+    // trigger consuming this event can compute the depth of the run
+    // it is about to start (source depth + 1) WITHOUT a second lookup
+    // of the source run. Additive: omitempty, older events decode to
+    // 0 which is also the correct depth for every manual/HTTP/cron
+    // -started run.
+    TriggerDepth int `json:"trigger_depth,omitempty"`
 }
 ```
 

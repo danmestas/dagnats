@@ -10,6 +10,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -336,5 +337,243 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 	if childRun.Status != dag.RunStatusFailed {
 		t.Fatalf("child = %v, want Failed",
 			childRun.Status)
+	}
+}
+
+// TestOrchestratorChildInheritsTriggerDepth verifies createChildRun
+// propagates the parent's TriggerDepth to the child (#634 review,
+// Blocker 3): without this, a cycle routed through a sub-workflow
+// spawn resets depth to 0 and bypasses TriggerDepthMax entirely. Also
+// asserts the child's own terminal RunEvent (event.run.*, #625/#634)
+// carries the inherited trigger_depth, since that is what a
+// downstream run_terminal trigger reacting to the child would use to
+// compute the NEXT depth in the chain.
+func TestOrchestratorChildInheritsTriggerDepth(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	parentDef := dag.WorkflowDef{
+		Name:    "parent-wf-depth",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
+		},
+	}
+	childDef := dag.WorkflowDef{
+		Name:    "child-wf-depth",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
+		},
+	}
+	if _, err := defKV.Put("parent-wf-depth", mustMarshal(t, parentDef)); err != nil {
+		t.Fatalf("put parent def: %v", err)
+	}
+	if _, err := defKV.Put("child-wf-depth", mustMarshal(t, childDef)); err != nil {
+		t.Fatalf("put child def: %v", err)
+	}
+
+	store := NewSnapshotStore(jsNew)
+	parentRun := dag.NewWorkflowRun(parentDef, "parent-run-depth")
+	parentRun.Status = dag.RunStatusRunning
+	parentRun.TriggerDepth = 1
+	if err := store.Save(context.Background(), parentRun); err != nil {
+		t.Fatalf("save parent run: %v", err)
+	}
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	spawnPayload := mustMarshal(t, map[string]string{
+		"child_run_id":   "child-run-depth",
+		"child_workflow": "child-wf-depth",
+		"parent_step_id": "a",
+	})
+	spawnEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowSpawn, "parent-run-depth", spawnPayload)
+	data, err := spawnEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, spawnEvt.NATSSubject(), data,
+		nats.MsgId(spawnEvt.NATSMsgID()))
+
+	var childRun dag.WorkflowRun
+	var loadErr error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		childRun, loadErr = store.Load(context.Background(), "child-run-depth")
+		if loadErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if loadErr != nil {
+		t.Fatalf("child run should exist: %v", loadErr)
+	}
+	// Positive: child inherits the parent's TriggerDepth.
+	if childRun.TriggerDepth != 1 {
+		t.Fatalf("childRun.TriggerDepth = %d, want 1", childRun.TriggerDepth)
+	}
+
+	// Complete the child's only step so it finalizes and publishes
+	// its own event.run.* RunEvent.
+	compEvt := protocol.NewStepEvent(
+		protocol.EventStepCompleted, "child-run-depth", "a",
+		[]byte(`{"status":"ok"}`),
+	)
+	compData, err := compEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal complete event: %v", err)
+	}
+	mustPublish(t, js, compEvt.NATSSubject(), compData,
+		nats.MsgId(compEvt.NATSMsgID()))
+
+	var msg *jetstream.RawStreamMsg
+	subject := "event.run.child-wf-depth.child-run-depth.completed"
+	evtDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(evtDeadline) {
+		stream, streamErr := jsNew.Stream(context.Background(), "EVENTS")
+		if streamErr == nil {
+			msg, err = stream.GetLastMsgForSubject(
+				context.Background(), subject,
+			)
+			if err == nil {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if msg == nil {
+		t.Fatalf("child RunEvent on %q should exist: %v", subject, err)
+	}
+	var runEvt protocol.RunEvent
+	if err := json.Unmarshal(msg.Data, &runEvt); err != nil {
+		t.Fatalf("unmarshal RunEvent: %v", err)
+	}
+	// Positive: the child's own RunEvent carries the inherited depth,
+	// not 0 — this is what a downstream run_terminal trigger would
+	// read to compute the next hop's depth.
+	if runEvt.TriggerDepth != 1 {
+		t.Fatalf("child RunEvent.TriggerDepth = %d, want 1",
+			runEvt.TriggerDepth)
+	}
+}
+
+// TestOrchestratorDetachedChildInheritsTriggerDepth verifies a
+// DETACHED sub-workflow spawn ALSO inherits the parent's TriggerDepth
+// (#634 review round 2, Major): `detach` is an author-controlled
+// workflow-definition flag, so if TriggerDepth inheritance were
+// gated on it, the loop guard would be bypassable by construction —
+// A --run_terminal--> B, B spawns a detached child C, C's completion
+// triggers A again, and every hop would reset to depth 0. RootRunID
+// still self-roots for a detached child (lineage DISPLAY, unaffected
+// by this fix) even though TriggerDepth (the safety cap) inherits.
+func TestOrchestratorDetachedChildInheritsTriggerDepth(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	js, _ := nc.JetStream()
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	defKV, _ := js.KeyValue("workflow_defs")
+
+	parentDef := dag.WorkflowDef{
+		Name:    "parent-wf-detached-depth",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
+		},
+	}
+	childDef := dag.WorkflowDef{
+		Name:    "child-wf-detached-depth",
+		Version: "1",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
+		},
+	}
+	if _, err := defKV.Put(
+		"parent-wf-detached-depth", mustMarshal(t, parentDef),
+	); err != nil {
+		t.Fatalf("put parent def: %v", err)
+	}
+	if _, err := defKV.Put(
+		"child-wf-detached-depth", mustMarshal(t, childDef),
+	); err != nil {
+		t.Fatalf("put child def: %v", err)
+	}
+
+	store := NewSnapshotStore(jsNew)
+	parentRun := dag.NewWorkflowRun(parentDef, "parent-run-detached-depth")
+	parentRun.Status = dag.RunStatusRunning
+	parentRun.TriggerDepth = 1
+	if err := store.Save(context.Background(), parentRun); err != nil {
+		t.Fatalf("save parent run: %v", err)
+	}
+
+	orch := NewOrchestrator(nc)
+	orch.Start()
+	defer orch.Stop()
+
+	spawnPayload := mustMarshal(t, map[string]any{
+		"child_run_id":   "child-run-detached-depth",
+		"child_workflow": "child-wf-detached-depth",
+		"parent_step_id": "a",
+		"detach":         true,
+	})
+	spawnEvt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowSpawn, "parent-run-detached-depth", spawnPayload)
+	data, err := spawnEvt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mustPublish(t, js, spawnEvt.NATSSubject(), data,
+		nats.MsgId(spawnEvt.NATSMsgID()))
+
+	var childRun dag.WorkflowRun
+	var loadErr error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		childRun, loadErr = store.Load(
+			context.Background(), "child-run-detached-depth",
+		)
+		if loadErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if loadErr != nil {
+		t.Fatalf("child run should exist: %v", loadErr)
+	}
+
+	// Positive: TriggerDepth inherits even though detached.
+	if childRun.TriggerDepth != 1 {
+		t.Fatalf("detached childRun.TriggerDepth = %d, want 1",
+			childRun.TriggerDepth)
+	}
+	// Negative: RootRunID still self-roots -- detach's lineage-display
+	// behavior is unchanged by this fix.
+	if childRun.RootRunID != "child-run-detached-depth" {
+		t.Fatalf("detached childRun.RootRunID = %q, want self-root %q",
+			childRun.RootRunID, "child-run-detached-depth")
+	}
+	// Negative: no parent link recorded for a detached child.
+	if childRun.ParentRunID != "" {
+		t.Fatalf("detached childRun.ParentRunID = %q, want empty",
+			childRun.ParentRunID)
 	}
 }

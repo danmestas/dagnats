@@ -52,10 +52,11 @@ const (
 type TriggerType string
 
 const (
-	TypeCron    TriggerType = "cron"
-	TypeWebhook TriggerType = "webhook"
-	TypeSubject TriggerType = "subject"
-	TypeHTTP    TriggerType = "http"
+	TypeCron        TriggerType = "cron"
+	TypeWebhook     TriggerType = "webhook"
+	TypeSubject     TriggerType = "subject"
+	TypeHTTP        TriggerType = "http"
+	TypeRunTerminal TriggerType = "run_terminal"
 )
 
 // firingsCounter is the package-global counter used by every fire
@@ -107,6 +108,35 @@ func RecordFiring(
 		attribute.String("type", string(t)),
 		attribute.String("outcome", string(outcome)),
 	))
+}
+
+// depthRefusalsCounter is the package-global counter for run_terminal
+// chain starts refused by the TriggerDepthMax cap (#634). Separate
+// from pkgFirings (which already has an OutcomeSkipped bucket)
+// because a depth refusal is an operationally distinct signal — it
+// means a trigger CYCLE exists in the trigger graph, not an ordinary
+// debounce/disabled skip — and an operator alerting on it wants a
+// dedicated series rather than filtering trigger_firings_total by
+// label.
+var depthRefusalsCounter metric.Int64Counter
+
+func init() {
+	m := otel.Meter("dagnats/trigger")
+	c, _ := m.Int64Counter("trigger.run_terminal.depth_refusals")
+	depthRefusalsCounter = c
+}
+
+// RecordDepthRefusal increments trigger.run_terminal.depth_refusals.
+// Called once per refused chain start, right before the source
+// event.run.* message is Ack'd without firing.
+func RecordDepthRefusal(ctx context.Context) {
+	if ctx == nil {
+		panic("RecordDepthRefusal: ctx must not be nil")
+	}
+	if depthRefusalsCounter == nil {
+		return
+	}
+	depthRefusalsCounter.Add(ctx, 1)
 }
 
 // schedulerGauges holds the two per-trigger observable gauges the

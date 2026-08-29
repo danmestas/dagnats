@@ -63,6 +63,59 @@ func (s *SnapshotStore) Save(ctx context.Context, run dag.WorkflowRun) error {
 	return err
 }
 
+// CreateSnapshot atomically persists run's FULL, final initial state
+// via KV CREATE (not Put) -- the FIRST caller to succeed wins; every
+// other caller, including one racing at the same instant, gets
+// created=false and MUST NOT treat that as "nothing to do." #634
+// review round 2: an earlier version of this claimed a separate,
+// minimal PLACEHOLDER key before doing any of the real
+// validation/admission work, so an error or crash between the claim
+// and the real Save stranded that placeholder forever (a redelivery
+// saw claimed=false and silently ack'd, losing the run). There is no
+// separate claim step anymore -- the CALLER builds the complete run
+// (through admission) first, and THIS call is simultaneously the
+// claim and the real, final initial write. A caller that loses the
+// race must load the existing row and resume from it (see
+// handleWorkflowStarted's createOrHealRun) rather than skip, since
+// "already exists" can mean either "a concurrent/earlier delivery
+// fully succeeded" or "an earlier delivery saved but crashed before
+// finishing (e.g. before enqueueReady)."
+//
+// This exists for run-ID schemes that are DETERMINISTIC across
+// redeliveries -- today, exclusively internal/trigger's run_terminal
+// chain-start run IDs (runTerminalChainRunID). A time-bounded publish
+// dedup window (WORKFLOW_HISTORY's Nats-Msg-Id Duplicates, a few
+// seconds) cannot survive a crash/restart gap of minutes; an atomic
+// KV write can, because it has no expiry. Every OTHER trigger type
+// still mints a fresh run ID per fire and relies on the existing
+// Load-then-skip idempotency guard in handleWorkflowStarted (#196) --
+// that guard is correct for THEM because a genuine redelivery of the
+// exact same stored workflow.started message always carries the same
+// RunID; CreateSnapshot only matters when two SEPARATE publish
+// attempts might independently compute the same target RunID.
+func (s *SnapshotStore) CreateSnapshot(
+	ctx context.Context, run dag.WorkflowRun,
+) (bool, error) {
+	if run.RunID == "" {
+		panic("SnapshotStore.CreateSnapshot: RunID must not be empty")
+	}
+	if s.kv == nil {
+		panic("SnapshotStore.CreateSnapshot: kv bucket must not be nil")
+	}
+	data, err := json.Marshal(run)
+	if err != nil {
+		return false, err
+	}
+	_, err = s.kv.Create(ctx, "run."+run.RunID, data)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, jetstream.ErrKeyExists) {
+		return false, nil
+	}
+	return false, err
+}
+
 // Delete removes the snapshot for the given run ID under key "run.<RunID>".
 // Idempotent at the NATS layer — deleting an absent key is not an error.
 // Drop-only retention (#453) is built on this; there is no archive path.

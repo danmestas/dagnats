@@ -11,22 +11,23 @@ import (
 )
 
 // TriggerDef defines a single trigger. Exactly one of Cron, Subject,
-// Webhook, HTTP, or External must be non-nil. HTTP triggers (ADR-013)
+// Webhook, HTTP, External, or RunTerminal must be non-nil. HTTP triggers (ADR-013)
 // differ from Webhook triggers in that the caller waits for a workflow
 // response; webhook callers are fire-and-forget. External triggers
 // (parent #273 Phase 2.2) defer the type identity to a worker-owned
 // TriggerTypeDef stored in the "trigger_types" KV bucket. The shapes
 // stay distinct so the semantic contract cannot be mistaken at a glance.
 type TriggerDef struct {
-	ID         string                 `json:"id"`
-	WorkflowID string                 `json:"workflow_id"`
-	Enabled    bool                   `json:"enabled"`
-	Cron       *CronConfig            `json:"cron,omitempty"`
-	Subject    *SubjectConfig         `json:"subject,omitempty"`
-	Webhook    *WebhookConfig         `json:"webhook,omitempty"`
-	HTTP       *HTTPConfig            `json:"http,omitempty"`
-	External   *ExternalTriggerConfig `json:"external,omitempty"`
-	Debounce   *DebounceConfig        `json:"debounce,omitempty"`
+	ID          string                 `json:"id"`
+	WorkflowID  string                 `json:"workflow_id"`
+	Enabled     bool                   `json:"enabled"`
+	Cron        *CronConfig            `json:"cron,omitempty"`
+	Subject     *SubjectConfig         `json:"subject,omitempty"`
+	Webhook     *WebhookConfig         `json:"webhook,omitempty"`
+	HTTP        *HTTPConfig            `json:"http,omitempty"`
+	External    *ExternalTriggerConfig `json:"external,omitempty"`
+	RunTerminal *RunTerminalConfig     `json:"run_terminal,omitempty"`
+	Debounce    *DebounceConfig        `json:"debounce,omitempty"`
 	// Source labels who put the record into the triggers KV. Empty
 	// string means a legacy KV entry written before #358 — backward
 	// compatible because json.Unmarshal silently leaves zero values

@@ -157,14 +157,15 @@ func publishRunEvent(
 	}
 	status := run.Status.String()
 	evt := protocol.RunEvent{
-		Type:        runEventType(status),
-		RunID:       run.RunID,
-		WorkflowID:  run.WorkflowID,
-		Status:      status,
-		CreatedAt:   run.CreatedAt,
-		CompletedAt: run.CompletedAt,
-		Labels:      copyLabels(run.Labels),
-		TraceParent: run.TraceParent,
+		Type:         runEventType(status),
+		RunID:        run.RunID,
+		WorkflowID:   run.WorkflowID,
+		Status:       status,
+		CreatedAt:    run.CreatedAt,
+		CompletedAt:  run.CompletedAt,
+		Labels:       copyLabels(run.Labels),
+		TraceParent:  run.TraceParent,
+		TriggerDepth: run.TriggerDepth,
 	}
 	data, err := json.Marshal(evt)
 	if err != nil {

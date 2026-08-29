@@ -323,7 +323,8 @@ different purposes and neither replaces the other.
   "status": "completed",
   "created_at": "2026-08-28T12:00:00Z",
   "completed_at": "2026-08-28T12:00:05Z",
-  "trace_parent": "00-...-01"
+  "trace_parent": "00-...-01",
+  "trigger_depth": 0
 }
 ```
 
@@ -335,8 +336,9 @@ different purposes and neither replaces the other.
 | `status` | string | The exact `dag.RunStatus` string (`completed`, `failed`, `cancelled`, `compensated`, or `compensate_failed`) -- finer-grained than `type`. |
 | `created_at` | RFC3339 timestamp | Run creation time. |
 | `completed_at` | RFC3339 timestamp, omitempty | When the run reached its terminal status. |
-| `labels` | map[string]string, omitempty | Reserved; populated once `dag.WorkflowRun.Labels` exists. Absent today. |
+| `labels` | map[string]string, omitempty | Copied from `dag.WorkflowRun.Labels` at finalization. Absent for a run with no labels. |
 | `trace_parent` | string, omitempty | W3C traceparent so a consumer's processing continues the run's trace. |
+| `trigger_depth` | int, omitempty | `dag.WorkflowRun.TriggerDepth`. 0 for a manual/HTTP/cron-started run, source run's depth + 1 for a run started by a `run_terminal` trigger. See [Run Terminal Trigger](/docs/triggers/run-terminal). |
 
 - **Subject wildcard recipes:**
   - `event.run.*.*.failed` -- every failure across every workflow.
