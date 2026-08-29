@@ -51,6 +51,73 @@ func TestSetupStreams(t *testing.T) {
 	}
 }
 
+// TestSetupStreamsTaskQueuesAllowDirect proves TASK_QUEUES is created
+// with AllowDirect (#632): the queue-depth API's oldest_wait_ms lookup
+// uses Stream.GetMsg(WithGetMsgSubject), which requires direct-get
+// support on the stream.
+func TestSetupStreamsTaskQueuesAllowDirect(t *testing.T) {
+	_, nc := StartTestServer(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	if err := SetupStreams(js, 1, 0); err != nil {
+		t.Fatalf("SetupStreams failed: %v", err)
+	}
+	ctx := context.Background()
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream(TASK_QUEUES) failed: %v", err)
+	}
+	// Positive: freshly created TASK_QUEUES has AllowDirect set.
+	if !stream.CachedInfo().Config.AllowDirect {
+		t.Fatal("TASK_QUEUES.Config.AllowDirect = false, want true")
+	}
+}
+
+// TestSetupStreamsTaskQueuesAllowDirectAppliesToExistingStream proves
+// the create-or-update path in SetupStreams turns AllowDirect on for a
+// TASK_QUEUES stream that already exists WITHOUT it -- the upgrade
+// path an operator running an older dagnats binary hits, not just a
+// fresh cluster. A create-only path would silently leave existing
+// deployments without direct-get, breaking oldest_wait_ms for them.
+func TestSetupStreamsTaskQueuesAllowDirectAppliesToExistingStream(t *testing.T) {
+	_, nc := StartTestServer(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New failed: %v", err)
+	}
+	ctx := context.Background()
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:        "TASK_QUEUES",
+		Subjects:    []string{"task.>"},
+		Retention:   jetstream.WorkQueuePolicy,
+		Storage:     jetstream.FileStorage,
+		AllowDirect: false,
+	})
+	if err != nil {
+		t.Fatalf("CreateStream(TASK_QUEUES) failed: %v", err)
+	}
+	if err := SetupStreams(js, 1, 0); err != nil {
+		t.Fatalf("SetupStreams failed: %v", err)
+	}
+	stream, err := js.Stream(ctx, "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("Stream(TASK_QUEUES) failed: %v", err)
+	}
+	// Positive: the update path flips AllowDirect true on the
+	// pre-existing stream.
+	if !stream.CachedInfo().Config.AllowDirect {
+		t.Fatal("TASK_QUEUES.Config.AllowDirect = false after update, want true")
+	}
+	// Negative: the pre-existing subjects/retention are untouched by
+	// the update (SetupStreams does not clobber unrelated config).
+	if stream.CachedInfo().Config.Retention != jetstream.WorkQueuePolicy {
+		t.Fatalf("Retention = %v, want WorkQueuePolicy",
+			stream.CachedInfo().Config.Retention)
+	}
+}
+
 func TestSetupKVBuckets(t *testing.T) {
 	_, nc := StartTestServer(t)
 	js, err := jetstream.New(nc)

@@ -591,6 +591,66 @@ curl http://localhost:8080/v1/workers
 
 ---
 
+## Queue
+
+### Queue depth
+
+Retrieve a snapshot of pending task counts per task type on the
+`TASK_QUEUES` work queue. The source of truth is the stream's own
+per-subject state -- `TASK_QUEUES` is a JetStream work-queue stream, so
+an unacked message on `task.{taskType}` IS the pending task; there is
+no separate counter to drift from it.
+
+```
+GET /v1/queue
+```
+
+Note the `/v1` prefix, same as `GET /v1/workers` above.
+
+**Response:** `200 OK`
+
+```json
+{
+  "groups": [
+    { "task_type": "build", "pending": 3, "oldest_wait_ms": 1523 },
+    { "task_type": "test", "pending": 1, "oldest_wait_ms": 402 }
+  ],
+  "snapshot_at": "2026-08-28T12:00:00Z"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `task_type` | string | The task type -- the `task.{taskType}` subject with the `task.` prefix stripped. |
+| `pending` | integer | Unacked message count for this subject right now. |
+| `oldest_wait_ms` | integer, omitted when unavailable | How long the oldest pending message on this subject has been waiting, in milliseconds. Omitted (not zero) when the server could not read the oldest message for this one subject -- a transient per-subject read failure never fails the whole response. |
+| `snapshot_at` | RFC3339 timestamp | When this snapshot was taken. |
+| `truncated` | boolean, omitted when false | Present and `true` only when the stream carries more distinct task-type subjects than the server's cap (256) -- `groups` is truncated to the first 256 in `task_type` order. |
+
+`groups` is always an array, sorted by `task_type`, `[]` when nothing is
+pending -- never `null`.
+
+**Labels are not a grouping dimension here.** Pending tasks on
+`TASK_QUEUES` don't carry run labels in their subject or a
+cheap-to-read header; grouping by label would mean fetching and
+decoding every pending payload, which is unbounded work on a queue
+that can hold an unbounded number of pending tasks. `task_type`
+grouping is free (it's the subject); label grouping is not, so it is
+out of scope for this endpoint.
+
+For a live feed instead of point-in-time polling, subscribe to
+`event.queue.snapshot` on the `EVENTS` stream -- see
+[Consumer contract: run lifecycle events](/docs/reference/wire-protocol#consumer-contract-run-lifecycle-events)
+for its cadence and change-suppression behavior; the payload shape is
+identical to this response.
+
+**curl:**
+```bash
+curl http://localhost:8080/v1/queue
+```
+
+---
+
 ## Health
 
 ### Telemetry Health
