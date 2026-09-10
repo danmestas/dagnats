@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danmestas/dagnats/ci"
 	"github.com/danmestas/dagnats/dag"
@@ -158,6 +159,174 @@ checks:
 const ciYMLInvalidTaskValue = `
 checks:
   test: { task: "go test" }
+`
+
+// ciYMLRetriesShorthand uses the retries: N shorthand on a check (#681).
+const ciYMLRetriesShorthand = `
+checks:
+  test: { call: "test", retries: 3 }
+`
+
+// ciYMLRetryBlock uses the full retry: mapping with every field set.
+const ciYMLRetryBlock = `
+checks:
+  test:
+    call: "test"
+    retry:
+      max_attempts: 5
+      strategy: exponential
+      initial_delay: 30s
+      max_delay: 2m
+      multiplier: 2
+`
+
+// ciYMLRetriesAndRetryBothSet sets both retries: and retry:, which is
+// mutually exclusive.
+const ciYMLRetriesAndRetryBothSet = `
+checks:
+  test:
+    call: "test"
+    retries: 3
+    retry:
+      max_attempts: 5
+`
+
+// ciYMLCheckUnknownField has an unrecognized "run:" key on a check, plus a
+// typo'd "retres:" on another -- the issue's exact repro (#681).
+const ciYMLCheckUnknownField = `
+checks:
+  test:
+    call: "test"
+    run: "echo hi"
+  build:
+    call: "build"
+    retres: 3
+`
+
+// ciYMLCheckRetryUnknownField has an unrecognized key nested inside the
+// retry: block.
+const ciYMLCheckRetryUnknownField = `
+checks:
+  test:
+    call: "test"
+    retry:
+      max_attempts: 3
+      backoff: "slow"
+`
+
+// ciYMLDeployUnknownField has an unrecognized key on the deploy block.
+const ciYMLDeployUnknownField = `
+checks:
+  test: { call: "test" }
+deploy:
+  call: "publish"
+  needs: [test]
+  run: "echo deploying"
+`
+
+// ciYMLMergeKeyCheck reproduces the merge-key regression (#681 BLOCKER 1):
+// a checks entry ("base") holds an anchor, and a sibling ("derived") merges
+// it in via "<<: *b". Before the merge-key fix, "<<" itself was reported as
+// an unknown field -- a spec that compiled clean at the merge base would
+// fail to register after the unknown-field scan landed.
+const ciYMLMergeKeyCheck = `
+checks:
+  base: &b
+    call: "base"
+  derived:
+    <<: *b
+    needs: [base]
+`
+
+// ciYMLTopLevelUnknownField has a typo'd top-level key ("defalts" instead
+// of "defaults") that must be diagnosed, not silently ignored (#681 MAJOR 3).
+const ciYMLTopLevelUnknownField = `
+defalts:
+  module: "."
+checks:
+  test: { call: "test" }
+`
+
+// ciYMLExtensionTopLevelKey parks an anchor under an "x-"-prefixed
+// top-level key with an arbitrary, otherwise-unrecognized body. The
+// extension key itself must not be diagnosed, and its body must not be
+// scanned.
+const ciYMLExtensionTopLevelKey = `
+x-defaults: &shared
+  totally_made_up_field: 1
+  another_one: [1, 2, 3]
+checks:
+  test: { call: "test" }
+`
+
+// ciYMLExtensionAnchorAliasedIntoCheck aliases an "x-"-prefixed anchor
+// (whose body has an unrecognized field) into a check via a merge key.
+// This pins the actual, verified behavior (#681 MAJOR 3): the merge key
+// itself is skipped by the scan, and the merged-in field is not visible in
+// the check entry's own Content, so it is not diagnosed -- but the merge
+// still decodes correctly (the check's known fields come through).
+const ciYMLExtensionAnchorAliasedIntoCheck = `
+x-shared: &shared
+  call: "shared"
+  bogus_field: 1
+checks:
+  test:
+    <<: *shared
+`
+
+// ciYMLDefaultsUnknownField has an unrecognized key nested inside
+// defaults:.
+const ciYMLDefaultsUnknownField = `
+defaults:
+  module: "."
+  bogus: "nope"
+checks:
+  test: { call: "test" }
+`
+
+// ciYMLRetriesNegative has a negative retries: shorthand value.
+const ciYMLRetriesNegative = `
+checks:
+  test: { call: "test", retries: -1 }
+`
+
+// ciYMLRetryMaxAttemptsNegative has a negative retry.max_attempts.
+const ciYMLRetryMaxAttemptsNegative = `
+checks:
+  test:
+    call: "test"
+    retry:
+      max_attempts: -5
+`
+
+// ciYMLRetryMultiplierNegative has a negative retry.multiplier.
+const ciYMLRetryMultiplierNegative = `
+checks:
+  test:
+    call: "test"
+    retry:
+      max_attempts: 3
+      multiplier: -2
+`
+
+// ciYMLRetryInitialDelayNegative has a negative retry.initial_delay.
+const ciYMLRetryInitialDelayNegative = `
+checks:
+  test:
+    call: "test"
+    retry:
+      max_attempts: 3
+      initial_delay: "-5s"
+`
+
+// ciYMLRetryStrategyBogus has an unrecognized retry.strategy value.
+const ciYMLRetryStrategyBogus = `
+checks:
+  test:
+    call: "test"
+    retry:
+      max_attempts: 3
+      strategy: "bogus"
 `
 
 // stepByID is a test helper that looks up a compiled step by its ID.
@@ -723,5 +892,338 @@ func TestCompileCallSpecsAreByteIdenticalToPreTaskCompiler(t *testing.T) {
 	taskHash := dag.DefHash(taskDef)
 	if taskHash == ciCallSpecHashes["golden-basic"] {
 		t.Errorf("task: spec hash collides with the call: golden hash %q", taskHash)
+	}
+}
+
+// TestCompileRetriesShorthandMapsToFixedPolicy verifies that retries: N
+// compiles to the same fixed-delay policy dag.ResolveRetryPolicy's legacy
+// Retries defaulting produces (#681).
+func TestCompileRetriesShorthandMapsToFixedPolicy(t *testing.T) {
+	def, diags := ci.CompileYAML("ci", []byte(ciYMLRetriesShorthand))
+	if len(diags) != 0 {
+		t.Fatalf("CompileYAML: unexpected diagnostics: %+v", diags)
+	}
+
+	// Positive: the step carries the expected fixed-delay policy.
+	step := stepByID(t, def.Steps, "test")
+	if step.Retry == nil {
+		t.Fatal("step.Retry = nil, want a fixed-delay policy")
+	}
+	want := dag.RetryPolicy{
+		MaxAttempts: 3, Strategy: dag.RetryFixed,
+		InitialDelay: 5 * time.Second, MaxDelay: 5 * time.Second,
+	}
+	if *step.Retry != want {
+		t.Errorf("step.Retry = %+v, want %+v", *step.Retry, want)
+	}
+
+	// Negative: a check with no retries: set has no retry policy.
+	basic, diags := ci.CompileYAML("ci-basic", []byte(ciYMLBasic))
+	if len(diags) != 0 {
+		t.Fatalf("CompileYAML(basic): unexpected diagnostics: %+v", diags)
+	}
+	if noRetry := stepByID(t, basic.Steps, "test"); noRetry.Retry != nil {
+		t.Errorf("step.Retry = %+v, want nil (no retries: set)", noRetry.Retry)
+	}
+}
+
+// TestCompileRetryBlockMapsExactly verifies that a full retry: mapping
+// compiles onto dag.RetryPolicy with every field carried through verbatim.
+func TestCompileRetryBlockMapsExactly(t *testing.T) {
+	def, diags := ci.CompileYAML("ci", []byte(ciYMLRetryBlock))
+	if len(diags) != 0 {
+		t.Fatalf("CompileYAML: unexpected diagnostics: %+v", diags)
+	}
+
+	step := stepByID(t, def.Steps, "test")
+	if step.Retry == nil {
+		t.Fatal("step.Retry = nil, want a policy")
+	}
+	want := dag.RetryPolicy{
+		MaxAttempts: 5, Strategy: dag.RetryExponential,
+		InitialDelay: 30 * time.Second, MaxDelay: 2 * time.Minute,
+		Multiplier: 2,
+	}
+	if *step.Retry != want {
+		t.Errorf("step.Retry = %+v, want %+v", *step.Retry, want)
+	}
+}
+
+// TestCompileRetriesAndRetryBothSetIsRejected verifies that setting both
+// retries: and retry: on the same check is a diagnostic.
+func TestCompileRetriesAndRetryBothSetIsRejected(t *testing.T) {
+	_, diags := ci.CompileYAML("ci", []byte(ciYMLRetriesAndRetryBothSet))
+	if len(diags) == 0 {
+		t.Fatal("CompileYAML: no diagnostics for retries+retry both set, want >=1")
+	}
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "exactly one of retries or retry") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("diags = %+v, want one mentioning \"exactly one of retries or retry\"", diags)
+	}
+}
+
+// TestParseCheckUnknownFieldIsDiagnosed reproduces the issue's exact repro:
+// a check with `run:` (not a real field) and a sibling with a typo'd
+// `retres:` must both be diagnosed instead of silently dropped (#681).
+func TestParseCheckUnknownFieldIsDiagnosed(t *testing.T) {
+	spec, diags := ci.Parse([]byte(ciYMLCheckUnknownField))
+
+	// Positive: both unknown keys are reported.
+	if len(diags) != 2 {
+		t.Fatalf("diags = %+v, want exactly 2", diags)
+	}
+	var messages []string
+	for _, d := range diags {
+		messages = append(messages, d.Message)
+	}
+	if !strings.Contains(strings.Join(messages, "\n"), `"run"`) {
+		t.Errorf("diags = %+v, want one mentioning \"run\"", diags)
+	}
+	if !strings.Contains(strings.Join(messages, "\n"), `"retres"`) {
+		t.Errorf("diags = %+v, want one mentioning \"retres\"", diags)
+	}
+
+	// Negative: the checks still decode their known fields despite the
+	// unrecognized key sitting alongside them.
+	if spec.Checks["test"].Call != "test" {
+		t.Errorf("spec.Checks[test].Call = %q, want \"test\"", spec.Checks["test"].Call)
+	}
+}
+
+// TestParseCheckRetryUnknownFieldIsDiagnosed verifies that an unrecognized
+// key nested inside a check's retry: block is also diagnosed.
+func TestParseCheckRetryUnknownFieldIsDiagnosed(t *testing.T) {
+	_, diags := ci.Parse([]byte(ciYMLCheckRetryUnknownField))
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "checks.test.retry" {
+		t.Errorf("diags[0].Field = %q, want \"checks.test.retry\"", diags[0].Field)
+	}
+	if !strings.Contains(diags[0].Message, `"backoff"`) {
+		t.Errorf("diags[0].Message = %q, want it to mention \"backoff\"", diags[0].Message)
+	}
+}
+
+// TestParseDeployUnknownFieldIsDiagnosed verifies that deploy: gets the
+// same unknown-field treatment as checks (#681).
+func TestParseDeployUnknownFieldIsDiagnosed(t *testing.T) {
+	_, diags := ci.Parse([]byte(ciYMLDeployUnknownField))
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "deploy" {
+		t.Errorf("diags[0].Field = %q, want \"deploy\"", diags[0].Field)
+	}
+	if !strings.Contains(diags[0].Message, `"run"`) {
+		t.Errorf("diags[0].Message = %q, want it to mention \"run\"", diags[0].Message)
+	}
+}
+
+// TestParseValidSpecsHaveNoUnknownFieldFalsePositives verifies that every
+// existing valid spec constant in this file still compiles clean -- the
+// unknown-field scan must not misfire on known fields.
+func TestParseValidSpecsHaveNoUnknownFieldFalsePositives(t *testing.T) {
+	specs := []string{
+		ciYMLBasic, ciYMLDeployApproval, ciYMLDeployNoApproval,
+		ciYMLTaskCheck, ciYMLDeployTask, ciYMLMixedTaskAndCall,
+		ciYMLRetriesShorthand, ciYMLRetryBlock,
+		ciYMLMergeKeyCheck, ciYMLExtensionTopLevelKey,
+	}
+	for _, yml := range specs {
+		if _, diags := ci.Parse([]byte(yml)); len(diags) != 0 {
+			t.Errorf("Parse(%q): unexpected diagnostics: %+v", yml, diags)
+		}
+	}
+}
+
+// TestParseMergeKeyIsNotAnUnknownField is the regression test for #681
+// BLOCKER 1: a checks entry using a YAML merge key ("<<: *anchor") must not
+// be diagnosed as having an unknown "<<" field, and the merge must still
+// decode -- the derived check picks up the anchor's fields.
+func TestParseMergeKeyIsNotAnUnknownField(t *testing.T) {
+	spec, diags := ci.Parse([]byte(ciYMLMergeKeyCheck))
+
+	// Positive: zero diagnostics -- the merge key is not an unknown field.
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v, want none", diags)
+	}
+
+	// Negative: the merge actually applied -- derived picked up base's call.
+	derived, ok := spec.Checks["derived"]
+	if !ok {
+		t.Fatal("spec.Checks[derived] missing")
+	}
+	if derived.Call != "base" {
+		t.Errorf("derived.Call = %q, want \"base\" (merged from &b)", derived.Call)
+	}
+}
+
+// TestParseTopLevelUnknownFieldIsDiagnosed verifies that a typo'd
+// top-level key is diagnosed rather than silently ignored (#681 MAJOR 3).
+func TestParseTopLevelUnknownFieldIsDiagnosed(t *testing.T) {
+	spec, diags := ci.Parse([]byte(ciYMLTopLevelUnknownField))
+
+	// Positive: the typo is reported.
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if !strings.Contains(diags[0].Message, `"defalts"`) {
+		t.Errorf("diags[0].Message = %q, want it to mention \"defalts\"", diags[0].Message)
+	}
+
+	// Negative: the valid "checks" field still decoded despite the typo.
+	if _, ok := spec.Checks["test"]; !ok {
+		t.Errorf("spec.Checks = %+v, want \"test\" present", spec.Checks)
+	}
+}
+
+// TestParseExtensionTopLevelKeyIsIgnored verifies that an "x-"-prefixed
+// top-level key is exempt from the unknown-field scan entirely -- neither
+// the key itself nor its arbitrary body is diagnosed (#681 MAJOR 3).
+func TestParseExtensionTopLevelKeyIsIgnored(t *testing.T) {
+	_, diags := ci.Parse([]byte(ciYMLExtensionTopLevelKey))
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v, want none (x- keys are free-form)", diags)
+	}
+}
+
+// TestParseExtensionAnchorAliasedIntoCheckPinsMergeBehavior pins the
+// verified behavior of a merge key whose anchor lives under an "x-"
+// extension key with an unrecognized field: the alias resolves and the
+// check's known fields decode correctly, but the anchor's unrecognized
+// field is not visible in the check entry's own Content and so is not
+// diagnosed (#681 MAJOR 3) -- documented as a known gap rather than
+// silently assumed.
+func TestParseExtensionAnchorAliasedIntoCheckPinsMergeBehavior(t *testing.T) {
+	spec, diags := ci.Parse([]byte(ciYMLExtensionAnchorAliasedIntoCheck))
+
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v, want none (merged-in fields are not scanned)", diags)
+	}
+	test, ok := spec.Checks["test"]
+	if !ok {
+		t.Fatal("spec.Checks[test] missing")
+	}
+	if test.Call != "shared" {
+		t.Errorf("test.Call = %q, want \"shared\" (merged from x-shared)", test.Call)
+	}
+}
+
+// TestParseDefaultsUnknownFieldIsDiagnosed verifies that defaults: gets
+// the same nested unknown-field treatment as checks and deploy (#681 MAJOR 3).
+func TestParseDefaultsUnknownFieldIsDiagnosed(t *testing.T) {
+	_, diags := ci.Parse([]byte(ciYMLDefaultsUnknownField))
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "defaults" {
+		t.Errorf("diags[0].Field = %q, want \"defaults\"", diags[0].Field)
+	}
+	if !strings.Contains(diags[0].Message, `"bogus"`) {
+		t.Errorf("diags[0].Message = %q, want it to mention \"bogus\"", diags[0].Message)
+	}
+}
+
+// TestCompileRetriesNegativeIsRejected verifies that a negative retries:
+// shorthand value is a diagnostic, not silently ignored (#681 MAJOR 4).
+func TestCompileRetriesNegativeIsRejected(t *testing.T) {
+	_, diags := ci.CompileYAML("ci", []byte(ciYMLRetriesNegative))
+	if len(diags) == 0 {
+		t.Fatal("CompileYAML: no diagnostics for negative retries, want >=1")
+	}
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "retries must not be negative") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("diags = %+v, want one mentioning \"retries must not be negative\"", diags)
+	}
+}
+
+// TestCompileRetryMaxAttemptsNegativeIsRejected verifies that a negative
+// retry.max_attempts is a diagnostic (#681 BLOCKER 2).
+func TestCompileRetryMaxAttemptsNegativeIsRejected(t *testing.T) {
+	_, diags := ci.CompileYAML("ci", []byte(ciYMLRetryMaxAttemptsNegative))
+	if len(diags) == 0 {
+		t.Fatal("CompileYAML: no diagnostics for negative retry.max_attempts, want >=1")
+	}
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "retry.max_attempts must not be negative") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf(
+			"diags = %+v, want one mentioning \"retry.max_attempts must not be negative\"",
+			diags,
+		)
+	}
+}
+
+// TestCompileRetryMultiplierNegativeIsRejected verifies that a negative
+// retry.multiplier is a diagnostic (#681 BLOCKER 2).
+func TestCompileRetryMultiplierNegativeIsRejected(t *testing.T) {
+	_, diags := ci.CompileYAML("ci", []byte(ciYMLRetryMultiplierNegative))
+	if len(diags) == 0 {
+		t.Fatal("CompileYAML: no diagnostics for negative retry.multiplier, want >=1")
+	}
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "retry.multiplier must not be negative") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf(
+			"diags = %+v, want one mentioning \"retry.multiplier must not be negative\"",
+			diags,
+		)
+	}
+}
+
+// TestCompileRetryInitialDelayNegativeIsRejected verifies that a negative
+// retry.initial_delay duration is a diagnostic (#681 MAJOR 4).
+func TestCompileRetryInitialDelayNegativeIsRejected(t *testing.T) {
+	_, diags := ci.CompileYAML("ci", []byte(ciYMLRetryInitialDelayNegative))
+	if len(diags) == 0 {
+		t.Fatal("CompileYAML: no diagnostics for negative retry.initial_delay, want >=1")
+	}
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "invalid retry.initial_delay") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf(
+			"diags = %+v, want one mentioning \"invalid retry.initial_delay\"", diags,
+		)
+	}
+}
+
+// TestCompileRetryStrategyBogusIsRejected verifies that an unrecognized
+// retry.strategy value is a diagnostic (#681 MAJOR 4).
+func TestCompileRetryStrategyBogusIsRejected(t *testing.T) {
+	_, diags := ci.CompileYAML("ci", []byte(ciYMLRetryStrategyBogus))
+	if len(diags) == 0 {
+		t.Fatal("CompileYAML: no diagnostics for bogus retry.strategy, want >=1")
+	}
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "unknown retry strategy") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("diags = %+v, want one mentioning \"unknown retry strategy\"", diags)
 	}
 }

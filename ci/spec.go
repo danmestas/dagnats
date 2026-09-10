@@ -10,6 +10,9 @@
 package ci
 
 import (
+	"fmt"
+	"strings"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -58,12 +61,30 @@ type Defaults struct {
 // (a plain task type, compiled verbatim for any worker that speaks the
 // ordinary worker protocol). Setting both, or neither, is a compile-time
 // diagnostic (#671) — see compileCheck. Needs lists check names that must
-// complete before this check runs. Timeout is a Go duration string (e.g. "15m").
+// complete before this check runs. Timeout is a Go duration string (e.g.
+// "15m"). Retries is shorthand for a fixed-delay retry policy; Retry is the
+// full policy. Setting both is a compile-time diagnostic (#681) — see
+// compileCheckRetry.
 type Check struct {
-	Call    string   `yaml:"call"`
-	Task    string   `yaml:"task"`
-	Needs   []string `yaml:"needs"`
-	Timeout string   `yaml:"timeout"`
+	Call    string      `yaml:"call"`
+	Task    string      `yaml:"task"`
+	Needs   []string    `yaml:"needs"`
+	Timeout string      `yaml:"timeout"`
+	Retries int         `yaml:"retries"`
+	Retry   *CheckRetry `yaml:"retry"`
+}
+
+// CheckRetry is the full retry policy for a check, mapped onto
+// dag.RetryPolicy by compileCheckRetry. InitialDelay and MaxDelay are Go
+// duration strings, parsed the same way Check.Timeout is. Strategy is one
+// of "fixed", "linear", "exponential" ("" defaults to "fixed", matching
+// dag.RetryPolicy's zero value).
+type CheckRetry struct {
+	MaxAttempts  int     `yaml:"max_attempts"`
+	Strategy     string  `yaml:"strategy"`
+	InitialDelay string  `yaml:"initial_delay"`
+	MaxDelay     string  `yaml:"max_delay"`
+	Multiplier   float64 `yaml:"multiplier"`
 }
 
 // DeployStep declares an optional deploy stage that follows the CI checks.
@@ -78,6 +99,121 @@ type DeployStep struct {
 	Approval string   `yaml:"approval"`
 	Branches []string `yaml:"branches"`
 	Timeout  string   `yaml:"timeout"`
+}
+
+// specKnownFields, checkKnownFields, checkRetryKnownFields,
+// deployKnownFields, and defaultsKnownFields list the YAML keys each
+// struct's yaml.v3 default (non-strict) Decode silently drops when
+// unrecognized. unknownFieldDiagnostics (and specTopLevelDiagnostics for
+// the top level) use them to turn that silent drop into a Diagnostic
+// instead (#681) — a typo like "retres:" or a stale key like "run:" must
+// be caught, not compiled away.
+var (
+	specKnownFields = map[string]bool{
+		"on": true, "defaults": true, "checks": true, "deploy": true,
+	}
+	checkKnownFields = map[string]bool{
+		"call": true, "task": true, "needs": true, "timeout": true,
+		"retries": true, "retry": true,
+	}
+	checkRetryKnownFields = map[string]bool{
+		"max_attempts": true, "strategy": true, "initial_delay": true,
+		"max_delay": true, "multiplier": true,
+	}
+	deployKnownFields = map[string]bool{
+		"call": true, "task": true, "needs": true, "approval": true,
+		"branches": true, "timeout": true,
+	}
+	defaultsKnownFields = map[string]bool{
+		"module": true, "engine": true,
+	}
+)
+
+// extensionKeyPrefix marks a top-level ci.yml key as free-form
+// extension/anchor space — the docker-compose/OpenAPI "x-" convention.
+// specTopLevelDiagnostics never scans or diagnoses a key with this prefix,
+// so ci.yml authors have a documented place to park YAML anchors (for
+// `<<: *name` merge keys) without it looking like an unrecognized real
+// field. This is also what stops an anchor from smuggling unknown fields
+// past the scan by hiding under some other unscanned top-level key (#681
+// MAJOR 3): only "x-"-prefixed keys are exempt, everything else unknown is
+// diagnosed.
+const extensionKeyPrefix = "x-"
+
+// unknownFieldDiagnostics scans node's mapping keys against known and
+// returns one Diagnostic per unrecognized key, positioned at the key
+// itself so the ci.yml author can jump straight to the typo. field is the
+// Diagnostic Field prefix ("checks.<name>", "checks.<name>.retry",
+// "defaults", or "deploy"). A YAML merge key (`<<: *anchor`, Tag
+// "!!merge") is always skipped: it is not a field of the struct being
+// decoded, and its merged-in content is not visible in node's own Content
+// (see decodeChecksField's doc comment for how that content is decoded).
+func unknownFieldDiagnostics(
+	node *yaml.Node, known map[string]bool, field string, diags []Diagnostic,
+) []Diagnostic {
+	if node == nil {
+		panic("unknownFieldDiagnostics: node must not be nil")
+	}
+	if node.Kind != yaml.MappingNode {
+		panic("unknownFieldDiagnostics: node must be a mapping node")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Tag == "!!merge" || known[key.Value] {
+			continue
+		}
+		diags = addDiagnostic(diags, Diagnostic{
+			Line: key.Line, Column: key.Column,
+			Field:   field,
+			Message: fmt.Sprintf("%s: unknown field %q", field, key.Value),
+		})
+	}
+	return diags
+}
+
+// specTopLevelDiagnostics scans doc's top-level mapping keys and returns
+// one Diagnostic per unrecognized key, exempting merge keys and
+// "x"-prefixed extension keys the same way unknownFieldDiagnostics does
+// (see extensionKeyPrefix). It is separate from unknownFieldDiagnostics
+// (rather than a call to it) because the extension exemption is specific
+// to the top level: nothing below it (a check, a retry block, deploy) gets
+// free-form extension keys.
+func specTopLevelDiagnostics(doc *yaml.Node, diags []Diagnostic) []Diagnostic {
+	if doc == nil {
+		panic("specTopLevelDiagnostics: doc must not be nil")
+	}
+	if doc.Kind != yaml.MappingNode {
+		panic("specTopLevelDiagnostics: doc must be a mapping node")
+	}
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		key := doc.Content[i]
+		if key.Tag == "!!merge" || specKnownFields[key.Value] ||
+			strings.HasPrefix(key.Value, extensionKeyPrefix) {
+			continue
+		}
+		diags = addDiagnostic(diags, Diagnostic{
+			Line: key.Line, Column: key.Column,
+			Message: fmt.Sprintf("unknown field %q", key.Value),
+		})
+	}
+	return diags
+}
+
+// mappingValue returns the value node for key within mapping node node, or
+// nil when key is absent. node must be a mapping node.
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil {
+		panic("mappingValue: node must not be nil")
+	}
+	if node.Kind != yaml.MappingNode {
+		panic("mappingValue: node must be a mapping node")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 // Parse decodes YAML bytes into a Spec, accumulating a Diagnostic (rather
@@ -116,8 +252,9 @@ func Parse(spec []byte) (Spec, []Diagnostic) {
 
 // decodeSpecFields walks the top-level mapping node's key/value pairs and
 // decodes each known field independently, so one bad field does not prevent
-// diagnostics for the others. Unknown top-level keys are ignored, matching
-// yaml.v3's default (non-strict) unmarshal behavior.
+// diagnostics for the others. Unknown top-level keys are diagnosed by
+// specTopLevelDiagnostics rather than ignored (#681) -- except keys under
+// the "x-" extension prefix, which stay free-form and unscanned.
 func decodeSpecFields(doc *yaml.Node) (Spec, []Diagnostic) {
 	if doc == nil {
 		panic("decodeSpecFields: doc must not be nil")
@@ -127,6 +264,7 @@ func decodeSpecFields(doc *yaml.Node) (Spec, []Diagnostic) {
 	}
 	var s Spec
 	var diags []Diagnostic
+	diags = specTopLevelDiagnostics(doc, diags)
 	for i := 0; i+1 < len(doc.Content); i += 2 {
 		diags = decodeOneField(&s, doc.Content[i], doc.Content[i+1], diags)
 	}
@@ -150,6 +288,12 @@ func decodeOneField(
 	if key.Value == "checks" {
 		s.Checks, diags = decodeChecksField(val, diags)
 		return diags
+	}
+	if key.Value == "deploy" && val.Kind == yaml.MappingNode {
+		diags = unknownFieldDiagnostics(val, deployKnownFields, "deploy", diags)
+	}
+	if key.Value == "defaults" && val.Kind == yaml.MappingNode {
+		diags = unknownFieldDiagnostics(val, defaultsKnownFields, "defaults", diags)
 	}
 	var err error
 	switch key.Value {
@@ -199,6 +343,19 @@ func decodeChecksField(
 	checks := make(map[string]Check, len(val.Content)/2)
 	for i := 0; i+1 < len(val.Content); i += 2 {
 		nameNode, entryNode := val.Content[i], val.Content[i+1]
+		// Only scan for unknown fields when the entry is itself a mapping --
+		// a non-mapping entry (e.g. "b": "not-a-map") has no keys to walk and
+		// already gets its own decode-failure Diagnostic below.
+		if entryNode.Kind == yaml.MappingNode {
+			field := "checks." + nameNode.Value
+			diags = unknownFieldDiagnostics(entryNode, checkKnownFields, field, diags)
+			if retryNode := mappingValue(entryNode, "retry"); retryNode != nil &&
+				retryNode.Kind == yaml.MappingNode {
+				diags = unknownFieldDiagnostics(
+					retryNode, checkRetryKnownFields, field+".retry", diags,
+				)
+			}
+		}
 		var c Check
 		if err := entryNode.Decode(&c); err != nil {
 			diags = addDiagnostic(diags, Diagnostic{
