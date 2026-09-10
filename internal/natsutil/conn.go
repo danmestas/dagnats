@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -563,6 +565,16 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		}
 	}
 
+	// Ahead of any assertion, while the failure can still be explained.
+	preflightCtx, preflightCancel := context.WithTimeout(
+		context.Background(), storeBudgetResolveTimeout,
+	)
+	err = preflightStoreBudget(preflightCtx, js, options.maxStoreBytes)
+	preflightCancel()
+	if err != nil {
+		return err
+	}
+
 	replicas := DeriveReplicas(
 		options.cluster.Routes, options.cluster.ReplicasOverride,
 	)
@@ -663,4 +675,88 @@ func enableAtomicPublish(
 		)
 	}
 	return nil
+}
+
+// preflightStoreBudget returns an actionable error when the streams already on
+// disk reserve more bytes than budget allows.
+//
+// JetStream admits a stream only if its MaxBytes fits the budget remaining
+// after every OTHER stream's MaxBytes. A store established under a LARGER
+// budget therefore refuses EVERY assertion that follows, including the very
+// updates that would have shrunk those ceilings. dagnats cannot lower its own
+// budget: doing so requires writes the lowered budget forbids.
+//
+// The refusal itself is legitimate. What was missing was any way to tell why
+// from the outside: left to JetStream the operator sees only "insufficient
+// storage resources available", which names neither the budget nor the
+// aggregate it was measured against, and dagnats exits into a
+// Restart=on-failure loop with the whole engine down (#685).
+//
+// A listing failure is deliberately NOT fatal. This is a diagnostic that runs
+// ahead of the real assertions and those report their own errors; refusing to
+// start because the diagnostic could not run would convert a message
+// improvement into a new failure mode.
+func preflightStoreBudget(
+	ctx context.Context, js jetstream.JetStream, budget int64,
+) error {
+	if budget <= 0 {
+		return nil
+	}
+	var reserved int64
+	var counted int
+	type reservation struct {
+		name  string
+		bytes int64
+	}
+	var largest []reservation
+	lister := js.ListStreams(ctx)
+	for info := range lister.Info() {
+		if info == nil || info.Config.MaxBytes <= 0 {
+			continue
+		}
+		reserved += info.Config.MaxBytes
+		counted++
+		largest = append(largest, reservation{
+			name: info.Config.Name, bytes: info.Config.MaxBytes,
+		})
+	}
+	if lister.Err() != nil || reserved <= budget {
+		return nil
+	}
+	sort.Slice(largest, func(i, j int) bool {
+		return largest[i].bytes > largest[j].bytes
+	})
+	// Name only the biggest few: those are the ones worth trimming, and a
+	// full list on a busy node is dozens of streams long.
+	if len(largest) > 3 {
+		largest = largest[:3]
+	}
+	worst := make([]string, 0, len(largest))
+	for _, r := range largest {
+		worst = append(worst, fmt.Sprintf(
+			"%s=%s", r.name, humanStoreBytes(r.bytes),
+		))
+	}
+	return fmt.Errorf(
+		"max_store_bytes=%s is below the %s already reserved by %d existing "+
+			"stream(s); largest: %s. JetStream validates the combined "+
+			"reservation before admitting any stream, so dagnats cannot "+
+			"shrink these ceilings under the new budget. Lower each stream's "+
+			"MaxBytes until the total fits, then set max_store_bytes",
+		humanStoreBytes(budget), humanStoreBytes(reserved), counted,
+		strings.Join(worst, ", "),
+	)
+}
+
+// humanStoreBytes renders a store size the way an operator would write it in
+// config, so the error can be pasted back as a setting.
+func humanStoreBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fGiB", float64(n)/float64(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0fMiB", float64(n)/float64(1<<20))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
