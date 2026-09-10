@@ -141,6 +141,31 @@ func TestDeleteWorkflow_TerminalRunsOnlySucceedsWithoutForce(t *testing.T) {
 	}
 }
 
+// TestDeleteWorkflow_IgnoresNonTerminalRunsOfOtherWorkflows guards
+// against a WorkflowID filter that trivially passes because every
+// test seeds runs only for the workflow under test (review blocker):
+// a non-terminal run belonging to a DIFFERENT workflow must never
+// block this delete.
+func TestDeleteWorkflow_IgnoresNonTerminalRunsOfOtherWorkflows(t *testing.T) {
+	svc, store := newNonTerminalGuardTestService(t)
+	ctx := context.Background()
+	seedRun(t, store, "run-other-1", "other-wf", dag.RunStatusRunning)
+
+	// Positive: an active run under a different WorkflowID never
+	// blocks this delete.
+	if err := svc.DeleteWorkflow(ctx, "wf-guard", false); err != nil {
+		t.Fatalf("delete should ignore other-wf's active run: %v", err)
+	}
+	// Negative: the unrelated run is untouched.
+	got, err := store.Load(ctx, "run-other-1")
+	if err != nil {
+		t.Fatalf("unrelated run should survive: %v", err)
+	}
+	if got.Status != dag.RunStatusRunning {
+		t.Fatalf("unrelated run status changed: %v", got.Status)
+	}
+}
+
 func TestDeleteWorkflow_NonTerminalRunListIsCappedWithHonestTotal(t *testing.T) {
 	svc, store := newNonTerminalGuardTestService(t)
 	ctx := context.Background()

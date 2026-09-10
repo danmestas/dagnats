@@ -1,9 +1,12 @@
 // api/rest_workflow_delete_test.go
 // Methodology: exercise DELETE /workflows/{name} via httptest.Server
 // against a real embedded NATS server (#682). 404 on an unregistered
-// name, 409 (with a JSON body listing offending run IDs) while a run
-// is non-terminal unless ?force=true, and 204 + removal from the
-// list on success.
+// name, 409 (JSON body naming the offending run IDs or trigger IDs)
+// while a run is non-terminal (#682) or a trigger still references
+// the workflow (#607) unless ?force=true, and 204 + removal from the
+// list on success. Both guards live in Service.DeleteWorkflow, so this
+// file is the REST-surface proof that it inherits both, not a
+// reimplementation of either.
 package api
 
 import (
@@ -17,6 +20,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -165,6 +169,95 @@ func TestRESTDeleteWorkflow_ConflictOnNonTerminalRun(t *testing.T) {
 	}
 	if body.TotalNonTerminal != 1 {
 		t.Fatalf("TotalNonTerminal = %d, want 1", body.TotalNonTerminal)
+	}
+}
+
+// newDeleteRESTTestServerWithTriggers is newDeleteRESTTestServer plus
+// the "triggers" KV bucket, for tests exercising the trigger-reference
+// guard (#607) over HTTP.
+func newDeleteRESTTestServerWithTriggers(t *testing.T) (*Service, *httptest.Server) {
+	t.Helper()
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc := NewService(nc)
+	server := httptest.NewServer(NewRESTHandler(svc))
+	t.Cleanup(server.Close)
+	return svc, server
+}
+
+func TestRESTDeleteWorkflow_ConflictOnReferencingTrigger(t *testing.T) {
+	svc, server := newDeleteRESTTestServerWithTriggers(t)
+	registerRESTTestWorkflow(t, server, "rest-del-trig")
+	trig := trigger.TriggerDef{
+		ID:         "trig-ref-1",
+		WorkflowID: "rest-del-trig",
+		Enabled:    true,
+		Cron:       &trigger.CronConfig{Expression: "* * * * *"},
+	}
+	if err := svc.CreateTrigger(context.Background(), trig); err != nil {
+		t.Fatalf("CreateTrigger: %v", err)
+	}
+
+	req, _ := http.NewRequest(
+		http.MethodDelete, server.URL+"/workflows/rest-del-trig", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+	// Positive: a referencing trigger refuses with 409.
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+	var body struct {
+		Error      string   `json:"error"`
+		TriggerIDs []string `json:"trigger_ids"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode 409 body: %v", err)
+	}
+	// Negative: the body names the offending trigger.
+	found := false
+	for _, id := range body.TriggerIDs {
+		if id == "trig-ref-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("409 body should list trig-ref-1, got %v", body.TriggerIDs)
+	}
+}
+
+func TestRESTDeleteWorkflow_ForceBypassesTriggerConflict(t *testing.T) {
+	svc, server := newDeleteRESTTestServerWithTriggers(t)
+	registerRESTTestWorkflow(t, server, "rest-del-trig-force")
+	trig := trigger.TriggerDef{
+		ID:         "trig-ref-2",
+		WorkflowID: "rest-del-trig-force",
+		Enabled:    true,
+		Cron:       &trigger.CronConfig{Expression: "* * * * *"},
+	}
+	if err := svc.CreateTrigger(context.Background(), trig); err != nil {
+		t.Fatalf("CreateTrigger: %v", err)
+	}
+
+	req, _ := http.NewRequest(
+		http.MethodDelete,
+		server.URL+"/workflows/rest-del-trig-force?force=true", nil,
+	)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+	// Positive: force=true bypasses the trigger-reference 409.
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
 	}
 }
 

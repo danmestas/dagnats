@@ -1,10 +1,12 @@
 // cli/workflow_delete.go
 // `dagnats workflow delete <name>` removes a registered workflow
-// definition (#607). It mirrors `trigger delete`: a --force/--json
-// surface plus a refusal guard. The guard refuses to delete a workflow
-// that still has triggers referencing it (they would keep firing a
-// now-missing definition) unless --force is passed. Deleting the
-// definition never touches historical run records.
+// definition. It mirrors `trigger delete`: a --force/--json surface
+// over api.Service.DeleteWorkflow, which owns both refusal guards --
+// a workflow still referenced by a trigger (#607) and a workflow with
+// a non-terminal run (#682) -- unless --force is passed. Deleting the
+// definition never touches historical run records. The guards used to
+// live partly here (trigger check only); they were pulled down into
+// the service so REST inherits the identical contract (#682 review).
 package cli
 
 import (
@@ -13,10 +15,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/danmestas/dagnats/internal/api"
-	"github.com/danmestas/dagnats/internal/trigger"
 )
 
 // workflowDeleteResult is the JSON output for `workflow delete`.
@@ -29,31 +29,7 @@ type workflowDeleteResult struct {
 // Declared as an interface so the delete logic is testable and so the
 // dependency surface stays small.
 type workflowDeleter interface {
-	ListTriggers(ctx context.Context) ([]trigger.TriggerDef, error)
 	DeleteWorkflow(ctx context.Context, name string, force bool) error
-}
-
-// workflowTriggerRefusalError is returned when a delete is refused
-// because triggers still reference the workflow and --force was not
-// passed. A distinct type lets the CLI wrapper map it to exit code 2,
-// matching `trigger delete`'s file-managed refusal.
-type workflowTriggerRefusalError struct {
-	Workflow   string
-	TriggerIDs []string
-}
-
-func (e *workflowTriggerRefusalError) Error() string {
-	if e.Workflow == "" {
-		panic("workflowTriggerRefusalError: Workflow must not be empty")
-	}
-	if len(e.TriggerIDs) == 0 {
-		panic("workflowTriggerRefusalError: TriggerIDs must not be empty")
-	}
-	return fmt.Sprintf(
-		"refused: workflow %q still has trigger(s) referencing it: %s."+
-			" Delete the trigger(s) or rerun with --force.",
-		e.Workflow, strings.Join(e.TriggerIDs, ", "),
-	)
 }
 
 // runWorkflowDeleteCmd deletes a workflow via api.Service.
@@ -62,8 +38,9 @@ func runWorkflowDeleteCmd(args []string) {
 }
 
 // runWorkflowDeleteCmdWithWriter parses flags, connects, and delegates
-// to deleteWorkflow, translating its errors into exit codes: 2 for the
-// referencing-trigger refusal (recoverable via --force), 1 otherwise.
+// to deleteWorkflow, translating its errors into exit codes: 2 for
+// either refusal guard (trigger-reference or non-terminal-run, both
+// recoverable via --force), 1 otherwise.
 func runWorkflowDeleteCmdWithWriter(args []string, w io.Writer) {
 	if w == nil {
 		panic("runWorkflowDeleteCmdWithWriter: w must not be nil")
@@ -90,9 +67,9 @@ func runWorkflowDeleteCmdWithWriter(args []string, w io.Writer) {
 	err := deleteWorkflow(context.Background(), svc, name, force)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		var triggerRefusal *workflowTriggerRefusalError
-		var runsRefusal *api.ErrWorkflowHasNonTerminalRuns
-		if errors.As(err, &triggerRefusal) || errors.As(err, &runsRefusal) {
+		var hasTriggers *api.ErrWorkflowHasTriggers
+		var hasNonTerminalRuns *api.ErrWorkflowHasNonTerminalRuns
+		if errors.As(err, &hasTriggers) || errors.As(err, &hasNonTerminalRuns) {
 			os.Exit(2)
 		}
 		os.Exit(1)
@@ -107,9 +84,11 @@ func runWorkflowDeleteCmdWithWriter(args []string, w io.Writer) {
 	fmt.Fprintf(w, "Workflow deleted: %s\n", name)
 }
 
-// deleteWorkflow runs the guarded delete: unless force is set, it
-// refuses when any trigger still references name. On the go-ahead it
-// removes the definition (which errors if name is unregistered).
+// deleteWorkflow is a thin pass-through to svc.DeleteWorkflow -- both
+// refusal guards (trigger-reference, non-terminal-run) live in the
+// service itself (#682 review), so REST and the CLI share exactly one
+// guarded-delete implementation instead of the CLI keeping a private
+// copy of one of them.
 func deleteWorkflow(
 	ctx context.Context, svc workflowDeleter, name string, force bool,
 ) error {
@@ -119,48 +98,5 @@ func deleteWorkflow(
 	if svc == nil {
 		panic("deleteWorkflow: svc must not be nil")
 	}
-	if !force {
-		refs, err := referencingTriggerIDs(ctx, svc, name)
-		if err != nil {
-			return err
-		}
-		if len(refs) > 0 {
-			return &workflowTriggerRefusalError{
-				Workflow: name, TriggerIDs: refs,
-			}
-		}
-	}
 	return svc.DeleteWorkflow(ctx, name, force)
-}
-
-// referencingTriggerIDs returns the IDs of triggers whose WorkflowID
-// matches name. An empty triggers bucket (no keys) is the benign
-// "nothing references it" case, reported as no references.
-func referencingTriggerIDs(
-	ctx context.Context, svc workflowDeleter, name string,
-) ([]string, error) {
-	if name == "" {
-		panic("referencingTriggerIDs: name must not be empty")
-	}
-	if svc == nil {
-		panic("referencingTriggerIDs: svc must not be nil")
-	}
-	defs, err := svc.ListTriggers(ctx)
-	if err != nil {
-		if strings.Contains(err.Error(), "no keys found") {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("list triggers: %w", err)
-	}
-	const maxRefs = 10000
-	refs := make([]string, 0)
-	for i, def := range defs {
-		if i >= maxRefs {
-			break
-		}
-		if def.WorkflowID == name {
-			refs = append(refs, def.ID)
-		}
-	}
-	return refs, nil
 }
