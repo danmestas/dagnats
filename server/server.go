@@ -179,23 +179,7 @@ func (s *Server) startComponents() error {
 		s.cfg.LeafCredentials = resolved
 	}
 
-	s.ns, err = startNATS(s.cfg)
-	if err != nil {
-		if s.tempCreds != "" {
-			os.Remove(s.tempCreds)
-		}
-		return fmt.Errorf("start NATS: %w", err)
-	}
-	printStep(os.Stderr, "nats server started")
-
-	s.nc, err = nats.Connect(s.ns.ClientURL())
-	if err != nil {
-		s.ns.Shutdown()
-		return fmt.Errorf("connect to NATS: %w", err)
-	}
-	printStep(os.Stderr, "nats client connected")
-
-	err = natsutil.SetupAll(s.nc,
+	setupOpts := []natsutil.SetupOption{
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
 			natsutil.KVConfig{Bucket: "trigger_state"},
@@ -208,12 +192,16 @@ func (s *Server) startComponents() error {
 			ReplicasOverride: s.cfg.NATSJetStreamReplicas,
 		}),
 		natsutil.WithStoreBudget(s.cfg.MaxStoreBytes),
-	)
-	if err != nil {
-		s.nc.Close()
-		s.ns.Shutdown()
-		return fmt.Errorf("setup NATS resources: %w", err)
 	}
+	s.ns, s.nc, err = startNATSAndSetupAll(s.cfg, setupOpts)
+	if err != nil {
+		if s.tempCreds != "" {
+			os.Remove(s.tempCreds)
+		}
+		return err
+	}
+	printStep(os.Stderr, "nats server started")
+	printStep(os.Stderr, "nats client connected")
 	printStep(os.Stderr, "streams and kv buckets ready")
 
 	telShutdown, telErr := observe.InitTelemetry(
