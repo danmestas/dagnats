@@ -10,6 +10,8 @@
 package ci
 
 import (
+	"fmt"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -58,12 +60,30 @@ type Defaults struct {
 // (a plain task type, compiled verbatim for any worker that speaks the
 // ordinary worker protocol). Setting both, or neither, is a compile-time
 // diagnostic (#671) — see compileCheck. Needs lists check names that must
-// complete before this check runs. Timeout is a Go duration string (e.g. "15m").
+// complete before this check runs. Timeout is a Go duration string (e.g.
+// "15m"). Retries is shorthand for a fixed-delay retry policy; Retry is the
+// full policy. Setting both is a compile-time diagnostic (#681) — see
+// compileCheckRetry.
 type Check struct {
-	Call    string   `yaml:"call"`
-	Task    string   `yaml:"task"`
-	Needs   []string `yaml:"needs"`
-	Timeout string   `yaml:"timeout"`
+	Call    string      `yaml:"call"`
+	Task    string      `yaml:"task"`
+	Needs   []string    `yaml:"needs"`
+	Timeout string      `yaml:"timeout"`
+	Retries int         `yaml:"retries"`
+	Retry   *CheckRetry `yaml:"retry"`
+}
+
+// CheckRetry is the full retry policy for a check, mapped onto
+// dag.RetryPolicy by compileCheckRetry. InitialDelay and MaxDelay are Go
+// duration strings, parsed the same way Check.Timeout is. Strategy is one
+// of "fixed", "linear", "exponential" ("" defaults to "fixed", matching
+// dag.RetryPolicy's zero value).
+type CheckRetry struct {
+	MaxAttempts  int     `yaml:"max_attempts"`
+	Strategy     string  `yaml:"strategy"`
+	InitialDelay string  `yaml:"initial_delay"`
+	MaxDelay     string  `yaml:"max_delay"`
+	Multiplier   float64 `yaml:"multiplier"`
 }
 
 // DeployStep declares an optional deploy stage that follows the CI checks.
@@ -78,6 +98,71 @@ type DeployStep struct {
 	Approval string   `yaml:"approval"`
 	Branches []string `yaml:"branches"`
 	Timeout  string   `yaml:"timeout"`
+}
+
+// checkKnownFields, checkRetryKnownFields, and deployKnownFields list the
+// YAML keys each struct's yaml.v3 default (non-strict) Decode silently
+// drops when unrecognized. unknownFieldDiagnostics uses them to turn that
+// silent drop into a Diagnostic instead (#681) — a typo like "retres:"
+// or a stale key like "run:" must be caught, not compiled away.
+var (
+	checkKnownFields = map[string]bool{
+		"call": true, "task": true, "needs": true, "timeout": true,
+		"retries": true, "retry": true,
+	}
+	checkRetryKnownFields = map[string]bool{
+		"max_attempts": true, "strategy": true, "initial_delay": true,
+		"max_delay": true, "multiplier": true,
+	}
+	deployKnownFields = map[string]bool{
+		"call": true, "task": true, "needs": true, "approval": true,
+		"branches": true, "timeout": true,
+	}
+)
+
+// unknownFieldDiagnostics scans node's mapping keys against known and
+// returns one Diagnostic per unrecognized key, positioned at the key
+// itself so the ci.yml author can jump straight to the typo. field is the
+// Diagnostic Field prefix ("checks.<name>", "checks.<name>.retry", or
+// "deploy").
+func unknownFieldDiagnostics(
+	node *yaml.Node, known map[string]bool, field string, diags []Diagnostic,
+) []Diagnostic {
+	if node == nil {
+		panic("unknownFieldDiagnostics: node must not be nil")
+	}
+	if node.Kind != yaml.MappingNode {
+		panic("unknownFieldDiagnostics: node must be a mapping node")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if known[key.Value] {
+			continue
+		}
+		diags = addDiagnostic(diags, Diagnostic{
+			Line: key.Line, Column: key.Column,
+			Field:   field,
+			Message: fmt.Sprintf("%s: unknown field %q", field, key.Value),
+		})
+	}
+	return diags
+}
+
+// mappingValue returns the value node for key within mapping node node, or
+// nil when key is absent. node must be a mapping node.
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil {
+		panic("mappingValue: node must not be nil")
+	}
+	if node.Kind != yaml.MappingNode {
+		panic("mappingValue: node must be a mapping node")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 // Parse decodes YAML bytes into a Spec, accumulating a Diagnostic (rather
@@ -151,6 +236,9 @@ func decodeOneField(
 		s.Checks, diags = decodeChecksField(val, diags)
 		return diags
 	}
+	if key.Value == "deploy" && val.Kind == yaml.MappingNode {
+		diags = unknownFieldDiagnostics(val, deployKnownFields, "deploy", diags)
+	}
 	var err error
 	switch key.Value {
 	case "on":
@@ -199,6 +287,16 @@ func decodeChecksField(
 	checks := make(map[string]Check, len(val.Content)/2)
 	for i := 0; i+1 < len(val.Content); i += 2 {
 		nameNode, entryNode := val.Content[i], val.Content[i+1]
+		if entryNode.Kind == yaml.MappingNode {
+			field := "checks." + nameNode.Value
+			diags = unknownFieldDiagnostics(entryNode, checkKnownFields, field, diags)
+			if retryNode := mappingValue(entryNode, "retry"); retryNode != nil &&
+				retryNode.Kind == yaml.MappingNode {
+				diags = unknownFieldDiagnostics(
+					retryNode, checkRetryKnownFields, field+".retry", diags,
+				)
+			}
+		}
 		var c Check
 		if err := entryNode.Decode(&c); err != nil {
 			diags = addDiagnostic(diags, Diagnostic{

@@ -217,6 +217,8 @@ func compileCheck(
 			Message: fmt.Sprintf("check %q: %v", name, err),
 		})
 	}
+	var retry *dag.RetryPolicy
+	retry, diags = compileCheckRetry(name, c, diags)
 	if len(diags) > before {
 		return dag.StepDef{}, false, diags
 	}
@@ -230,6 +232,7 @@ func compileCheck(
 		Type:      dag.StepTypeNormal,
 		Timeout:   timeout,
 		DependsOn: deps,
+		Retry:     retry,
 	}
 	if c.Task != "" {
 		step.Task = c.Task
@@ -378,6 +381,123 @@ func buildDeploySteps(
 	}
 	steps = append(steps, deployStep)
 	return steps
+}
+
+// compileCheckRetry maps a check's retries/retry ci.yml fields onto the
+// step's dag.RetryPolicy (#681). retries: N is shorthand mirroring
+// dag.ResolveRetryPolicy's legacy-Retries defaulting exactly (fixed
+// strategy, 5s initial/max delay) so a ci.yml author who writes
+// `retries: 3` gets the same behavior a native workflow author gets from
+// the legacy StepDef.Retries field. retry: <block> maps every field
+// explicitly, with no additional defaulting beyond dag.RetryPolicy's own
+// zero value. Setting both is a diagnostic (mutually exclusive, same style
+// as checkTaskCallExclusivity). Returns nil, diags when the check has no
+// retry policy at all -- the step then keeps the engine's default of one
+// attempt.
+func compileCheckRetry(
+	field string, c Check, diags []Diagnostic,
+) (*dag.RetryPolicy, []Diagnostic) {
+	if field == "" {
+		panic("compileCheckRetry: field must not be empty")
+	}
+	before := len(diags)
+	if c.Retries < 0 {
+		diags = addDiagnostic(diags, Diagnostic{
+			Field: field,
+			Message: fmt.Sprintf(
+				"%s: retries must not be negative (%d)", field, c.Retries,
+			),
+		})
+		return nil, diags
+	}
+	if c.Retries > 0 && c.Retry != nil {
+		diags = addDiagnostic(diags, Diagnostic{
+			Field: field,
+			Message: fmt.Sprintf(
+				"%s: exactly one of retries or retry must be set", field,
+			),
+		})
+		return nil, diags
+	}
+	if c.Retries > 0 {
+		return &dag.RetryPolicy{
+			MaxAttempts:  c.Retries,
+			Strategy:     dag.RetryFixed,
+			InitialDelay: 5 * time.Second,
+			MaxDelay:     5 * time.Second,
+		}, diags
+	}
+	if c.Retry == nil {
+		return nil, diags
+	}
+	strategy, err := parseRetryStrategy(c.Retry.Strategy)
+	if err != nil {
+		diags = addDiagnostic(diags, Diagnostic{
+			Field:   field,
+			Message: fmt.Sprintf("%s: %v", field, err),
+		})
+	}
+	initialDelay, err := compileRetryDuration(c.Retry.InitialDelay)
+	if err != nil {
+		diags = addDiagnostic(diags, Diagnostic{
+			Field: field,
+			Message: fmt.Sprintf(
+				"%s: invalid retry.initial_delay: %v", field, err,
+			),
+		})
+	}
+	maxDelay, err := compileRetryDuration(c.Retry.MaxDelay)
+	if err != nil {
+		diags = addDiagnostic(diags, Diagnostic{
+			Field:   field,
+			Message: fmt.Sprintf("%s: invalid retry.max_delay: %v", field, err),
+		})
+	}
+	if len(diags) > before {
+		return nil, diags
+	}
+	return &dag.RetryPolicy{
+		MaxAttempts:  c.Retry.MaxAttempts,
+		Strategy:     strategy,
+		InitialDelay: initialDelay,
+		MaxDelay:     maxDelay,
+		Multiplier:   c.Retry.Multiplier,
+	}, diags
+}
+
+// parseRetryStrategy maps a retry.strategy string onto dag.RetryStrategy.
+// "" defaults to fixed, matching dag.RetryPolicy's zero value.
+func parseRetryStrategy(s string) (dag.RetryStrategy, error) {
+	switch s {
+	case "", "fixed":
+		return dag.RetryFixed, nil
+	case "linear":
+		return dag.RetryLinear, nil
+	case "exponential":
+		return dag.RetryExponential, nil
+	default:
+		return 0, fmt.Errorf("unknown retry strategy %q", s)
+	}
+}
+
+// compileRetryDuration parses an optional retry.initial_delay or
+// retry.max_delay string the same way Timeout is parsed
+// (time.ParseDuration). Unlike compileTimeout, an empty string maps to
+// zero rather than a package default -- native dag.RetryPolicy has no
+// builtin default for these fields, so ci.yml's retry: block must not
+// invent one.
+func compileRetryDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("duration %q must not be negative", s)
+	}
+	return d, nil
 }
 
 // compileTimeout parses a human-readable duration string into time.Duration.
