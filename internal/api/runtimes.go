@@ -92,14 +92,16 @@ var runtimeRunScanMax = 10_000
 // One minute matches the per-minute config knob (MaxRegistersPerMinutePerRoot).
 const registerRatePeriod = time.Minute
 
-// activeRunCountTruncated counts how often countActiveRunsForRoot's
-// ListActive scan came back truncated -- an operator-visible signal
-// that runtimeRunScanMax needs raising, or that the active-run
-// population has grown large enough to warrant investigation (#664
-// review round 2). Package-level (not threaded through Service's
-// constructor) following internal/engine/run_event.go's
-// runEventPublishFailures precedent for a counter with no natural
-// owning struct.
+// activeRunCountTruncated counts how often a ListActive scan came back
+// truncated -- an operator-visible signal that runtimeRunScanMax needs
+// raising, or that the active-run population has grown large enough
+// to warrant investigation (#664 review round 2). Shared by
+// countActiveRunsForRoot and service_defs.go's
+// nonTerminalRunIDsForWorkflow (#682) -- both hit the exact same
+// underlying truncation, just for different callers. Package-level
+// (not threaded through Service's constructor) following
+// internal/engine/run_event.go's runEventPublishFailures precedent for
+// a counter with no natural owning struct.
 var activeRunCountTruncated metric.Int64Counter
 
 func init() {

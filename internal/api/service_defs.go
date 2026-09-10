@@ -10,12 +10,101 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// nonTerminalRunListCap bounds how many offending run IDs
+// ErrWorkflowHasNonTerminalRuns lists explicitly (#682). Total still
+// carries the true count, so a workflow with hundreds of active runs
+// gets an honest number instead of a silently truncated list.
+const nonTerminalRunListCap = 20
+
+// ErrWorkflowHasNonTerminalRuns is returned by DeleteWorkflow when
+// runs for the workflow are still non-terminal and force was not
+// passed (#682). The REST handler maps this to 409; the CLI maps it
+// to exit code 2, same as the trigger-reference refusal.
+type ErrWorkflowHasNonTerminalRuns struct {
+	Name   string
+	RunIDs []string
+	Total  int
+}
+
+func (e *ErrWorkflowHasNonTerminalRuns) Error() string {
+	if e == nil {
+		panic("ErrWorkflowHasNonTerminalRuns.Error: receiver is nil")
+	}
+	suffix := ""
+	if e.Total > len(e.RunIDs) {
+		suffix = fmt.Sprintf(" (and %d more)", e.Total-len(e.RunIDs))
+	}
+	return fmt.Sprintf(
+		"refused: workflow %q has %d non-terminal run(s): %s%s."+
+			" Cancel them or rerun with force.",
+		e.Name, e.Total, strings.Join(e.RunIDs, ", "), suffix,
+	)
+}
+
+// newErrWorkflowHasNonTerminalRuns constructs the refusal error. The
+// Total==0 invariant belongs here, at construction, rather than in
+// Error() -- a Stringer/error's Error() method must never panic, since
+// fmt (and slog, when logging an error value) may call it at format
+// time on a code path the caller does not control.
+func newErrWorkflowHasNonTerminalRuns(
+	name string, runIDs []string, total int,
+) *ErrWorkflowHasNonTerminalRuns {
+	if name == "" {
+		panic("newErrWorkflowHasNonTerminalRuns: name must not be empty")
+	}
+	if total == 0 {
+		panic("newErrWorkflowHasNonTerminalRuns: total must not be zero")
+	}
+	return &ErrWorkflowHasNonTerminalRuns{
+		Name: name, RunIDs: runIDs, Total: total,
+	}
+}
+
+// ErrWorkflowHasTriggers is returned by DeleteWorkflow when name is
+// still referenced by trigger(s) and force was not passed (#607).
+// Pulled down from a CLI-only check into the shared service guard
+// (#682 review) so REST inherits the same refusal instead of the
+// weaker "definition gone, trigger still firing at it" contract the
+// HTTP-only guard would otherwise have. The REST handler maps this to
+// 409; the CLI maps it to exit code 2.
+type ErrWorkflowHasTriggers struct {
+	Name       string
+	TriggerIDs []string
+}
+
+func (e *ErrWorkflowHasTriggers) Error() string {
+	if e == nil {
+		panic("ErrWorkflowHasTriggers.Error: receiver is nil")
+	}
+	return fmt.Sprintf(
+		"refused: workflow %q still has trigger(s) referencing it: %s."+
+			" Delete the trigger(s) or rerun with force.",
+		e.Name, strings.Join(e.TriggerIDs, ", "),
+	)
+}
+
+// newErrWorkflowHasTriggers constructs the refusal error. Same
+// construction-site-assertion rationale as
+// newErrWorkflowHasNonTerminalRuns.
+func newErrWorkflowHasTriggers(
+	name string, triggerIDs []string,
+) *ErrWorkflowHasTriggers {
+	if name == "" {
+		panic("newErrWorkflowHasTriggers: name must not be empty")
+	}
+	if len(triggerIDs) == 0 {
+		panic("newErrWorkflowHasTriggers: triggerIDs must not be empty")
+	}
+	return &ErrWorkflowHasTriggers{Name: name, TriggerIDs: triggerIDs}
+}
 
 // RegisterWorkflow validates and persists a workflow definition under
 // its name. Subsequent calls with the same name overwrite the previous
@@ -160,10 +249,23 @@ func (s *Service) GetWorkflow(name string) (dag.WorkflowDef, error) {
 // DeleteWorkflow removes a registered workflow definition by name. It
 // fails when the name is not registered (KV Delete alone is idempotent
 // and would report success for a typo'd name — #607 requires a loud
-// error instead). Only the definition record is touched; historical run
-// snapshots live in the separate workflow_runs bucket and are untouched.
+// error instead). Unless force is set, it also refuses with
+// *ErrWorkflowHasTriggers while a trigger still references name
+// (#607), and *ErrWorkflowHasNonTerminalRuns while any run for name is
+// non-terminal (#682) -- deleting the definition out from under a
+// still-running run would strand its next advance. Only the
+// definition record is touched; historical run snapshots live in the
+// separate workflow_runs bucket and are untouched either way.
+//
+// The non-terminal-run guard has a TOCTOU window: a run admitted
+// between the scan and the delete is not seen by either. That run's
+// next advance fails loudly via engine's failMissingPinnedVersion
+// (missing pinned def version) rather than silently reading a
+// different definition -- a stuck run beats a silently re-defined one,
+// and it is exactly the same outcome force deliberately produces on
+// purpose for every run left non-terminal at delete time.
 func (s *Service) DeleteWorkflow(
-	ctx context.Context, name string,
+	ctx context.Context, name string, force bool,
 ) error {
 	if ctx == nil {
 		panic("DeleteWorkflow: ctx must not be nil")
@@ -174,16 +276,21 @@ func (s *Service) DeleteWorkflow(
 	return s.observed(ctx, "deleteWorkflow",
 		[]attribute.KeyValue{
 			attribute.String("workflow_name", name),
+			attribute.Bool("force", force),
 		},
 		func(ctx context.Context) error {
-			return s.deleteWorkflowInner(ctx, name)
+			return s.deleteWorkflowInner(ctx, name, force)
 		},
 	)
 }
 
-// deleteWorkflowInner confirms the definition exists, then removes it.
+// deleteWorkflowInner confirms the definition exists, applies the
+// trigger-reference guard (#607) and the non-terminal-run guard (#682)
+// unless force is set, then removes it. Both guards live here (not in
+// a caller-side wrapper) so REST and CLI -- and any future caller --
+// get the same refusal contract for free.
 func (s *Service) deleteWorkflowInner(
-	ctx context.Context, name string,
+	ctx context.Context, name string, force bool,
 ) error {
 	if name == "" {
 		panic("deleteWorkflowInner: name must not be empty")
@@ -194,10 +301,119 @@ func (s *Service) deleteWorkflowInner(
 	if _, err := s.defKV.Get(ctx, name); err != nil {
 		return fmt.Errorf("workflow %q not found: %w", name, err)
 	}
+	if !force {
+		triggerIDs, err := s.referencingTriggerIDs(ctx, name)
+		if err != nil {
+			return err
+		}
+		if len(triggerIDs) > 0 {
+			return newErrWorkflowHasTriggers(name, triggerIDs)
+		}
+		runIDs, total, err := s.nonTerminalRunIDsForWorkflow(ctx, name)
+		if err != nil {
+			return err
+		}
+		if total > 0 {
+			return newErrWorkflowHasNonTerminalRuns(name, runIDs, total)
+		}
+	}
 	if err := s.deleteDefVersions(ctx, name); err != nil {
 		return err
 	}
 	return s.defKV.Delete(ctx, name)
+}
+
+// referencingTriggerIDs returns the IDs of triggers whose WorkflowID
+// matches name (#607, pulled down from a CLI-only helper into the
+// shared service guard -- #682 review). An empty triggers bucket (no
+// keys) is the benign "nothing references it" case, reported as no
+// references.
+func (s *Service) referencingTriggerIDs(
+	ctx context.Context, name string,
+) ([]string, error) {
+	if ctx == nil {
+		panic("referencingTriggerIDs: ctx must not be nil")
+	}
+	if name == "" {
+		panic("referencingTriggerIDs: name must not be empty")
+	}
+	defs, err := s.ListTriggers(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list triggers: %w", err)
+	}
+	const maxRefs = 10_000
+	refs := make([]string, 0)
+	for i, def := range defs {
+		if i >= maxRefs {
+			break
+		}
+		if def.WorkflowID == name {
+			refs = append(refs, def.ID)
+		}
+	}
+	return refs, nil
+}
+
+// nonTerminalRunIDsForWorkflow returns up to nonTerminalRunListCap run
+// IDs for name that are not yet terminal, plus the true total (#682).
+// Backed by the reconciler's active-run index (ListActive) rather than
+// a scan over all history, so this stays cheap even on a large
+// workflow_runs population -- mirrors countActiveRunsForRoot's pattern
+// in runtimes.go.
+//
+// This is best-effort, not an absolute guarantee: ListActive's
+// underlying fetch can silently drop a run on a per-key timeout
+// (ScanStats.Skipped, via ParallelGetJSBestEffort) without that
+// setting Truncated. What this function DOES fail closed on is the
+// cheaper, larger-blast-radius failure mode -- the active-ID list
+// itself coming back truncated -- which is treated as an error rather
+// than a silent under-count, same as countActiveRunsForRoot's own
+// truncation handling.
+func (s *Service) nonTerminalRunIDsForWorkflow(
+	ctx context.Context, name string,
+) ([]string, int, error) {
+	if ctx == nil {
+		panic("nonTerminalRunIDsForWorkflow: ctx must not be nil")
+	}
+	if name == "" {
+		panic("nonTerminalRunIDsForWorkflow: name must not be empty")
+	}
+	runs, stats, err := s.store.ListActive(ctx, runtimeRunScanMax)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	if stats.Truncated {
+		activeRunCountTruncated.Add(ctx, 1)
+		slog.ErrorContext(ctx,
+			"nonTerminalRunIDsForWorkflow: ListActive truncated; "+
+				"refusing to trust an under-count for delete safety",
+			"workflow", name,
+			"fetch_max", runtimeRunScanMax,
+		)
+		return nil, 0, fmt.Errorf(
+			"non-terminal run scan for workflow %q truncated at %d -- "+
+				"refusing to under-count for delete safety",
+			name, runtimeRunScanMax,
+		)
+	}
+	ids := make([]string, 0, nonTerminalRunListCap)
+	total := 0
+	for i := range runs {
+		if runs[i].WorkflowID != name {
+			continue
+		}
+		total++
+		if len(ids) < nonTerminalRunListCap {
+			ids = append(ids, runs[i].RunID)
+		}
+	}
+	return ids, total, nil
 }
 
 // deleteDefVersions removes every immutable name.v.hash version key

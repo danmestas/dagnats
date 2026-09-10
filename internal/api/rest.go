@@ -40,6 +40,7 @@ func NewRESTHandler(svc *Service) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/workflows", svc.routeWorkflows)
+	mux.HandleFunc("/workflows/", svc.routeWorkflowByName)
 	mux.HandleFunc("/runs", svc.routeRuns)
 	mux.HandleFunc("/runs/cancel", svc.routeBulkCancel)
 	mux.HandleFunc("/runs/bulk", svc.routeBulkRun)
@@ -61,6 +62,29 @@ func (s *Service) routeWorkflows(
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// routeWorkflowByName dispatches DELETE /workflows/{name} (#682). No
+// other method has defined semantics under this subtree yet -- GET
+// /workflows already lists every def with its def_hash, so a
+// GET-by-name endpoint isn't needed for this issue's scope. A name
+// containing "/" is unreachable on this route -- it is both
+// registrable (POST /workflows does not forbid it) and CLI-deletable,
+// a known pre-existing limitation this endpoint doesn't attempt to
+// fix; adding name-charset validation is out of scope here.
+func (s *Service) routeWorkflowByName(
+	w http.ResponseWriter, r *http.Request,
+) {
+	name := strings.TrimPrefix(r.URL.Path, "/workflows/")
+	if name == "" || strings.Contains(name, "/") {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	handleDeleteWorkflow(s, w, r, name)
 }
 
 // routeRuns dispatches GET and POST /runs.
@@ -224,6 +248,99 @@ func writeTooManyLiveVersionsError(
 	}{
 		Error:        "too many live workflow versions",
 		LiveVersions: err.LiveVersions,
+	}
+	if encErr := json.NewEncoder(w).Encode(body); encErr != nil {
+		slog.Error("encode 409 response", "error", encErr)
+	}
+}
+
+// handleDeleteWorkflow serves DELETE /workflows/{name} (#682). Refuses
+// with 404 when name is not registered, 409 (body names the offending
+// triggers or run IDs) while a trigger still references it (#607) or
+// non-terminal runs still reference it (#682), in both cases unless
+// ?force=true, and otherwise removes the definition -- run history is
+// untouched either way (Service.DeleteWorkflow only ever touches
+// workflow_defs). Both guards live in Service.DeleteWorkflow itself,
+// so REST and the CLI share exactly one refusal contract.
+func handleDeleteWorkflow(
+	svc *Service, w http.ResponseWriter, r *http.Request, name string,
+) {
+	if svc == nil {
+		panic("handleDeleteWorkflow: svc must not be nil")
+	}
+	if r == nil {
+		panic("handleDeleteWorkflow: r must not be nil")
+	}
+	force := r.URL.Query().Get("force") == "true"
+	err := svc.DeleteWorkflow(r.Context(), name, force)
+	if err == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	var nonTerminal *ErrWorkflowHasNonTerminalRuns
+	var hasTriggers *ErrWorkflowHasTriggers
+	switch {
+	case errors.As(err, &nonTerminal):
+		writeNonTerminalRunsError(w, nonTerminal)
+	case errors.As(err, &hasTriggers):
+		writeWorkflowHasTriggersError(w, hasTriggers)
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	default:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// writeNonTerminalRunsError writes the 409 body for
+// ErrWorkflowHasNonTerminalRuns (#682): the workflow still has runs
+// that are not terminal, so DeleteWorkflow refused rather than
+// stranding their next advance under a missing definition.
+func writeNonTerminalRunsError(
+	w http.ResponseWriter, err *ErrWorkflowHasNonTerminalRuns,
+) {
+	if w == nil {
+		panic("writeNonTerminalRunsError: w must not be nil")
+	}
+	if err == nil {
+		panic("writeNonTerminalRunsError: err must not be nil")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	body := struct {
+		Error            string   `json:"error"`
+		RunIDs           []string `json:"run_ids"`
+		TotalNonTerminal int      `json:"total_non_terminal"`
+	}{
+		Error:            "workflow has non-terminal runs",
+		RunIDs:           err.RunIDs,
+		TotalNonTerminal: err.Total,
+	}
+	if encErr := json.NewEncoder(w).Encode(body); encErr != nil {
+		slog.Error("encode 409 response", "error", encErr)
+	}
+}
+
+// writeWorkflowHasTriggersError writes the 409 body for
+// ErrWorkflowHasTriggers (#607/#682): the workflow is still referenced
+// by trigger(s), so DeleteWorkflow refused rather than leaving a
+// trigger firing at a now-missing definition.
+func writeWorkflowHasTriggersError(
+	w http.ResponseWriter, err *ErrWorkflowHasTriggers,
+) {
+	if w == nil {
+		panic("writeWorkflowHasTriggersError: w must not be nil")
+	}
+	if err == nil {
+		panic("writeWorkflowHasTriggersError: err must not be nil")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	body := struct {
+		Error      string   `json:"error"`
+		TriggerIDs []string `json:"trigger_ids"`
+	}{
+		Error:      "workflow has referencing triggers",
+		TriggerIDs: err.TriggerIDs,
 	}
 	if encErr := json.NewEncoder(w).Encode(body); encErr != nil {
 		slog.Error("encode 409 response", "error", encErr)

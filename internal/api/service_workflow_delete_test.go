@@ -32,7 +32,7 @@ func TestDeleteWorkflowRemovesDefinition(t *testing.T) {
 		t.Fatalf("RegisterWorkflow: %v", err)
 	}
 
-	if err := svc.DeleteWorkflow(ctx, "wf-del"); err != nil {
+	if err := svc.DeleteWorkflow(ctx, "wf-del", false); err != nil {
 		t.Fatalf("DeleteWorkflow: %v", err)
 	}
 
@@ -62,7 +62,7 @@ func TestDeleteWorkflowNonexistent(t *testing.T) {
 
 	// Positive: deleting an unregistered name is an error, not a
 	// silent success.
-	err := svc.DeleteWorkflow(context.Background(), "nope")
+	err := svc.DeleteWorkflow(context.Background(), "nope", false)
 	if err == nil {
 		t.Fatal("expected error deleting nonexistent workflow")
 	}
@@ -104,7 +104,7 @@ func TestDeleteWorkflowDoesNotTouchRunHistory(t *testing.T) {
 		t.Fatalf("store.Save: %v", err)
 	}
 
-	if err := svc.DeleteWorkflow(ctx, "wf-del"); err != nil {
+	if err := svc.DeleteWorkflow(ctx, "wf-del", false); err != nil {
 		t.Fatalf("DeleteWorkflow: %v", err)
 	}
 
@@ -157,7 +157,7 @@ func TestDeleteWorkflowRemovesVersionKeys(t *testing.T) {
 			"want >= 3", len(versionKeysBefore))
 	}
 
-	if err := svc.DeleteWorkflow(ctx, wfName); err != nil {
+	if err := svc.DeleteWorkflow(ctx, wfName, false); err != nil {
 		t.Fatalf("DeleteWorkflow: %v", err)
 	}
 
