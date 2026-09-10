@@ -193,14 +193,17 @@ func (s *Server) startComponents() error {
 		}),
 		natsutil.WithStoreBudget(s.cfg.MaxStoreBytes),
 	}
-	s.ns, s.nc, err = startNATSAndSetupAll(s.cfg, setupOpts)
+	s.ns, s.nc, err = startNATSAndSetupAll(s.cfg, setupOpts,
+		func(*natsserver.Server) {
+			printStep(os.Stderr, "nats server started")
+		},
+	)
 	if err != nil {
 		if s.tempCreds != "" {
 			os.Remove(s.tempCreds)
 		}
 		return err
 	}
-	printStep(os.Stderr, "nats server started")
 	printStep(os.Stderr, "nats client connected")
 	printStep(os.Stderr, "streams and kv buckets ready")
 

@@ -599,6 +599,13 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	admissionCeiling := options.storeAdmissionCeiling
 	if admissionCeiling <= 0 {
 		admissionCeiling = options.maxStoreBytes
+	} else if admissionCeiling < options.maxStoreBytes {
+		panic(fmt.Sprintf(
+			"SetupAll: WithStoreAdmissionCeiling(%d) is below the store "+
+				"budget %d; the ceiling exists to admit MORE than the "+
+				"budget, never less",
+			admissionCeiling, options.maxStoreBytes,
+		))
 	}
 	err = preflightStoreBudget(
 		preflightCtx, js, options.maxStoreBytes, admissionCeiling,
@@ -749,9 +756,6 @@ func (e *StoreBudgetExceededError) Error() string {
 	if e == nil {
 		panic("StoreBudgetExceededError.Error: e is nil")
 	}
-	if e.Reserved <= 0 || e.Counted <= 0 {
-		panic("StoreBudgetExceededError.Error: Reserved and Counted must be positive")
-	}
 	worst := make([]string, 0, len(e.Largest))
 	for _, r := range e.Largest {
 		worst = append(worst, fmt.Sprintf(
@@ -816,12 +820,42 @@ func preflightStoreBudget(
 	if len(largest) > 3 {
 		largest = largest[:3]
 	}
+	if reserved <= 0 {
+		panic("preflightStoreBudget: reserved must be positive to exceed admissionCeiling")
+	}
+	if counted <= 0 {
+		panic("preflightStoreBudget: counted must be positive when reserved > 0")
+	}
 	return &StoreBudgetExceededError{
 		Budget:   budget,
 		Reserved: reserved,
 		Counted:  counted,
 		Largest:  largest,
 	}
+}
+
+// CheckStoreBudget reports whether the connected server's existing stream
+// reservations still fit budget, returning the same *StoreBudgetExceededError
+// preflightStoreBudget produces during SetupAll.
+//
+// Exported for #688's auto-shrink recovery: after a shrink pass, the caller
+// rechecks against the operator's CONFIGURED budget (not the temporarily
+// inflated admission ceiling the process is running at this boot) to catch
+// a stream SetupAll does not manage -- operator-created, a mirror, an
+// orphan -- still holding the aggregate over budget. Without this recheck
+// that case would silently re-enter recovery, inflated, on every future
+// boot instead of surfacing the same actionable message #686 already
+// produces.
+func CheckStoreBudget(
+	ctx context.Context, js jetstream.JetStream, budget int64,
+) error {
+	if js == nil {
+		panic("CheckStoreBudget: js must not be nil")
+	}
+	if budget <= 0 {
+		panic("CheckStoreBudget: budget must be positive")
+	}
+	return preflightStoreBudget(ctx, js, budget, budget)
 }
 
 // humanStoreBytes renders a store size the way an operator would write it in

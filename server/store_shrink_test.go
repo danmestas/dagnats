@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ func TestStartNATSAndSetupAll_BudgetThatFitsStartsOnce(t *testing.T) {
 	const budget int64 = 1 << 30
 	cfg := Config{DataDir: t.TempDir(), NATSPort: -1, MaxStoreBytes: budget}
 
-	ns, nc, err := startNATSAndSetupAll(cfg, setupOptsForBudget(budget))
+	ns, nc, err := startNATSAndSetupAll(cfg, setupOptsForBudget(budget), nil)
 	if err != nil {
 		t.Fatalf("startNATSAndSetupAll: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestStartNATSAndSetupAll_AutoShrinksLoweredBudget(t *testing.T) {
 
 	ns1, nc1, err := startNATSAndSetupAll(
 		Config{DataDir: dataDir, NATSPort: -1, MaxStoreBytes: bigBudget},
-		setupOptsForBudget(bigBudget),
+		setupOptsForBudget(bigBudget), nil,
 	)
 	if err != nil {
 		t.Fatalf("initial startNATSAndSetupAll under the large budget: %v", err)
@@ -67,7 +68,7 @@ func TestStartNATSAndSetupAll_AutoShrinksLoweredBudget(t *testing.T) {
 
 	ns2, nc2, err := startNATSAndSetupAll(
 		Config{DataDir: dataDir, NATSPort: -1, MaxStoreBytes: smallBudget},
-		setupOptsForBudget(smallBudget),
+		setupOptsForBudget(smallBudget), nil,
 	)
 	if err != nil {
 		t.Fatalf("startNATSAndSetupAll with a lowered budget must "+
@@ -119,7 +120,7 @@ func TestStartNATSAndSetupAll_AutoShrinksLoweredBudget(t *testing.T) {
 	ns2.WaitForShutdown()
 	ns3, nc3, err := startNATSAndSetupAll(
 		Config{DataDir: dataDir, NATSPort: -1, MaxStoreBytes: smallBudget},
-		setupOptsForBudget(smallBudget),
+		setupOptsForBudget(smallBudget), nil,
 	)
 	if err != nil {
 		t.Fatalf("restart at the already-shrunk configured budget must "+
@@ -155,7 +156,7 @@ func TestEffectiveStoreBudget(t *testing.T) {
 
 	const smallConfigured = int64(1) << 27
 	const bigReserved = int64(819) << 20
-	want := bigReserved + storeBudgetShrinkHeadroomBytes
+	want := bigReserved + 64<<20 // pinned literal: the headroom constant itself, not derived from it
 	got := effectiveStoreBudget(smallConfigured, bigReserved)
 	if got != want {
 		t.Fatalf("effectiveStoreBudget(configured < reserved) = %d, "+
@@ -164,5 +165,76 @@ func TestEffectiveStoreBudget(t *testing.T) {
 	if got < bigReserved {
 		t.Fatalf("effectiveStoreBudget = %d, must be >= reserved %d "+
 			"(the process must admit what is already on disk)", got, bigReserved)
+	}
+}
+
+// TestStartNATSAndSetupAll_NonConvergentShrinkReturnsActionableError covers
+// the case runShrinkPass's recheck exists for: a stream SetupAll does not
+// manage (operator-created here, standing in for a mirror or an orphan)
+// still holds the aggregate over budget after every MANAGED stream has
+// shrunk. Without the recheck this would report success and silently
+// re-enter recovery, inflated, on every future boot; it must instead return
+// the same actionable *natsutil.StoreBudgetExceededError #686 produces,
+// naming the unmanaged stream as one of the largest reservations.
+func TestStartNATSAndSetupAll_NonConvergentShrinkReturnsActionableError(t *testing.T) {
+	dataDir := t.TempDir()
+	const bigBudget int64 = 1 << 30
+	const smallBudget int64 = 1 << 27
+	const unmanagedBytes int64 = 150 << 20
+
+	ns1, nc1, err := startNATSAndSetupAll(
+		Config{DataDir: dataDir, NATSPort: -1, MaxStoreBytes: bigBudget},
+		setupOptsForBudget(bigBudget), nil,
+	)
+	if err != nil {
+		t.Fatalf("initial startNATSAndSetupAll under the large budget: %v", err)
+	}
+
+	js, err := jetstream.New(nc1)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	createCtx, createCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, err = js.CreateStream(createCtx, jetstream.StreamConfig{
+		Name:     "UNMANAGED_STREAM",
+		Subjects: []string{"unmanaged.>"},
+		Storage:  jetstream.FileStorage,
+		MaxBytes: unmanagedBytes,
+	})
+	createCancel()
+	if err != nil {
+		t.Fatalf("create unmanaged stream: %v", err)
+	}
+	nc1.Close()
+	ns1.Shutdown()
+	ns1.WaitForShutdown()
+
+	_, _, err = startNATSAndSetupAll(
+		Config{DataDir: dataDir, NATSPort: -1, MaxStoreBytes: smallBudget},
+		setupOptsForBudget(smallBudget), nil,
+	)
+	if err == nil {
+		t.Fatal("startNATSAndSetupAll succeeded despite an unmanaged " +
+			"stream still holding the aggregate over budget; want the " +
+			"actionable error, not a false success")
+	}
+
+	var budgetErr *natsutil.StoreBudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("error is not a *natsutil.StoreBudgetExceededError: %v", err)
+	}
+	if budgetErr.Budget != smallBudget {
+		t.Errorf("budgetErr.Budget = %d, want %d", budgetErr.Budget, smallBudget)
+	}
+	named := false
+	for _, r := range budgetErr.Largest {
+		if r.Name == "UNMANAGED_STREAM" {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("error does not name UNMANAGED_STREAM among the largest "+
+			"reservations, so the operator has nothing to act on: %+v",
+			budgetErr.Largest)
 	}
 }

@@ -40,8 +40,13 @@ const storeShrinkListTimeout = 5 * time.Second
 // budget so every stream still shrinks to the operator's target ceilings.
 // The configured budget takes full effect (as JetStreamMaxStore) on the
 // NEXT restart, once nothing is left to shrink.
+//
+// onReady, when non-nil, is called as soon as each embedded NATS process
+// (the initial one, and the recovery restart if one happens) is up and
+// accepting connections, before SetupAll runs against it -- so a caller
+// logging progress does not go silent for the duration of a setup hang.
 func startNATSAndSetupAll(
-	cfg Config, setupOpts []natsutil.SetupOption,
+	cfg Config, setupOpts []natsutil.SetupOption, onReady func(*natsserver.Server),
 ) (*natsserver.Server, *nats.Conn, error) {
 	if cfg.DataDir == "" {
 		panic("startNATSAndSetupAll: cfg.DataDir is empty")
@@ -50,7 +55,7 @@ func startNATSAndSetupAll(
 		panic("startNATSAndSetupAll: setupOpts is empty")
 	}
 
-	ns, nc, err := startNATSAndConnect(cfg)
+	ns, nc, err := startNATSAndConnect(cfg, onReady)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -70,19 +75,30 @@ func startNATSAndSetupAll(
 	nc.Close()
 	ns.Shutdown()
 	ns.WaitForShutdown()
-	return recoverFromStoreBudgetExceeded(cfg, setupOpts, budgetErr)
+	return recoverFromStoreBudgetExceeded(cfg, setupOpts, budgetErr, onReady)
 }
 
 // startNATSAndConnect starts the embedded NATS server and connects a client
-// to it, cleaning up the server on a failed connect.
-func startNATSAndConnect(cfg Config) (*natsserver.Server, *nats.Conn, error) {
+// to it, cleaning up the server on a failed connect. onReady, when non-nil,
+// fires once the process is accepting connections, before the client
+// connect attempt.
+func startNATSAndConnect(
+	cfg Config, onReady func(*natsserver.Server),
+) (*natsserver.Server, *nats.Conn, error) {
 	if cfg.DataDir == "" {
 		panic("startNATSAndConnect: cfg.DataDir is empty")
+	}
+	if cfg.MaxStoreBytes <= 0 {
+		panic(fmt.Sprintf(
+			"startNATSAndConnect: cfg.MaxStoreBytes <= 0: %d", cfg.MaxStoreBytes))
 	}
 
 	ns, err := startNATS(cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("start NATS: %w", err)
+	}
+	if onReady != nil {
+		onReady(ns)
 	}
 	nc, err := nats.Connect(ns.ClientURL())
 	if err != nil {
@@ -104,6 +120,11 @@ func effectiveStoreBudget(configured, reserved int64) int64 {
 		panic("effectiveStoreBudget: reserved must be positive")
 	}
 	effective := reserved + storeBudgetShrinkHeadroomBytes
+	if effective < reserved {
+		panic(fmt.Sprintf(
+			"effectiveStoreBudget: reserved+headroom overflowed int64: "+
+				"reserved=%d headroom=%d", reserved, storeBudgetShrinkHeadroomBytes))
+	}
 	if effective < configured {
 		return configured
 	}
@@ -117,7 +138,7 @@ func effectiveStoreBudget(configured, reserved int64) int64 {
 // ceiling from cfg.MaxStoreBytes -- so the shrink pass actually shrinks.
 func recoverFromStoreBudgetExceeded(
 	cfg Config, setupOpts []natsutil.SetupOption,
-	budgetErr *natsutil.StoreBudgetExceededError,
+	budgetErr *natsutil.StoreBudgetExceededError, onReady func(*natsserver.Server),
 ) (*natsserver.Server, *nats.Conn, error) {
 	if budgetErr == nil {
 		panic("recoverFromStoreBudgetExceeded: budgetErr is nil")
@@ -130,8 +151,9 @@ func recoverFromStoreBudgetExceeded(
 	slog.Warn(
 		"max_store_bytes is below what existing streams already reserve; "+
 			"starting this boot at a temporarily higher limit so the "+
-			"configured budget can shrink them -- it takes full effect "+
-			"on the next restart",
+			"configured budget can shrink them -- shrinking a stream's "+
+			"MaxBytes discards its oldest messages to comply, and the "+
+			"configured limit takes full effect on the next restart",
 		"configured_max_store_bytes", cfg.MaxStoreBytes,
 		"reserved_bytes", budgetErr.Reserved,
 		"effective_max_store_bytes", effective,
@@ -139,7 +161,7 @@ func recoverFromStoreBudgetExceeded(
 
 	shrinkCfg := cfg
 	shrinkCfg.MaxStoreBytes = effective
-	ns, nc, err := startNATSAndConnect(shrinkCfg)
+	ns, nc, err := startNATSAndConnect(shrinkCfg, onReady)
 	if err != nil {
 		return nil, nil, fmt.Errorf(
 			"restart NATS at the effective store budget %d: %w", effective, err)
@@ -149,7 +171,7 @@ func recoverFromStoreBudgetExceeded(
 		append([]natsutil.SetupOption{}, setupOpts...),
 		natsutil.WithStoreAdmissionCeiling(effective),
 	)
-	resized, err := runShrinkPass(nc, shrinkOpts)
+	resized, err := runShrinkPass(nc, shrinkOpts, cfg.MaxStoreBytes)
 	if err != nil {
 		nc.Close()
 		ns.Shutdown()
@@ -167,12 +189,28 @@ func recoverFromStoreBudgetExceeded(
 // runShrinkPass snapshots every stream's MaxBytes, runs setupOpts through
 // natsutil.SetupAll, and reports how many streams came out with a smaller
 // MaxBytes than they went in with.
-func runShrinkPass(nc *nats.Conn, setupOpts []natsutil.SetupOption) (int, error) {
+//
+// SetupAll only shrinks the streams IT manages. A stream outside that set --
+// operator-created, a mirror, an orphan left by a removed feature -- can
+// still hold the aggregate reservation over configuredBudget after the
+// managed streams shrink, in which case every future boot would silently
+// re-enter this recovery path forever at an inflated limit. So after
+// SetupAll succeeds, this rechecks the aggregate against configuredBudget
+// (via natsutil.CheckStoreBudget, the same preflight SetupAll itself runs)
+// and returns that *natsutil.StoreBudgetExceededError, naming the offenders,
+// if it still does not fit -- the caller must not report success in that
+// case.
+func runShrinkPass(
+	nc *nats.Conn, setupOpts []natsutil.SetupOption, configuredBudget int64,
+) (int, error) {
 	if nc == nil {
 		panic("runShrinkPass: nc is nil")
 	}
 	if len(setupOpts) == 0 {
 		panic("runShrinkPass: setupOpts is empty")
+	}
+	if configuredBudget <= 0 {
+		panic("runShrinkPass: configuredBudget must be positive")
 	}
 
 	js, err := jetstream.New(nc)
@@ -196,8 +234,20 @@ func runShrinkPass(nc *nats.Conn, setupOpts []natsutil.SetupOption) (int, error)
 	afterCtx, afterCancel := context.WithTimeout(
 		context.Background(), storeShrinkListTimeout,
 	)
-	defer afterCancel()
-	return countShrunkStreams(afterCtx, js, before)
+	resized, err := countShrunkStreams(afterCtx, js, before)
+	afterCancel()
+	if err != nil {
+		return 0, err
+	}
+
+	recheckCtx, recheckCancel := context.WithTimeout(
+		context.Background(), storeShrinkListTimeout,
+	)
+	defer recheckCancel()
+	if err := natsutil.CheckStoreBudget(recheckCtx, js, configuredBudget); err != nil {
+		return resized, err
+	}
+	return resized, nil
 }
 
 // snapshotStreamMaxBytes lists every stream's current MaxBytes, keyed by
