@@ -344,13 +344,19 @@ func TestValidateRejectsSubUnityExponentialMultiplier(t *testing.T) {
 	if err := Validate(makeDef(-1)); err == nil {
 		t.Fatal("Validate accepted negative exponential multiplier")
 	}
+	if err := Validate(makeDef(RetryMultiplierMax + 1)); err == nil {
+		t.Fatal("Validate accepted multiplier above RetryMultiplierMax")
+	}
 
 	// Positive space: unset (0, meaning "use the default") and any
-	// value >= 1 are accepted.
+	// value in [1, RetryMultiplierMax] is accepted.
 	if err := Validate(makeDef(0)); err != nil {
 		t.Fatalf("Validate rejected unset multiplier: %v", err)
 	}
 	if err := Validate(makeDef(2)); err != nil {
 		t.Fatalf("Validate rejected multiplier 2: %v", err)
+	}
+	if err := Validate(makeDef(RetryMultiplierMax)); err != nil {
+		t.Fatalf("Validate rejected multiplier at the max: %v", err)
 	}
 }

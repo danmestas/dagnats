@@ -184,8 +184,14 @@ const LabelsCountMax = 16
 const RetryAttemptCountMax = 100_000
 ```
 
+<a name="RetryMultiplierMax"></a>RetryMultiplierMax bounds an explicit exponential multiplier. math.Pow with an unbounded multiplier can overflow to \+Inf, and converting Inf to time.Duration is implementation\-defined; bounding at definition time keeps CalculateDelay's arithmetic finite without relying on callers to clamp.
+
+```go
+const RetryMultiplierMax = 100
+```
+
 <a name="CalculateDelay"></a>
-## func [CalculateDelay](<https://github.com/danmestas/dagnats/blob/main/dag/retry.go#L90-L92>)
+## func [CalculateDelay](<https://github.com/danmestas/dagnats/blob/main/dag/retry.go#L97-L99>)
 
 ```go
 func CalculateDelay(policy RetryPolicy, attempt int) time.Duration
@@ -670,7 +676,7 @@ func (c RespondConfig) Defaulted() RespondConfig
 Defaulted returns a copy of c with zero\-valued fields filled from the documented defaults. Callers should use this exactly once at execute time; storing the defaulted copy back into the workflow definition would obscure the author's intent and lose the "default" signal on subsequent re\-reads.
 
 <a name="RetryPolicy"></a>
-## type [RetryPolicy](<https://github.com/danmestas/dagnats/blob/main/dag/retry.go#L57-L63>)
+## type [RetryPolicy](<https://github.com/danmestas/dagnats/blob/main/dag/retry.go#L64-L70>)
 
 RetryPolicy configures retry behavior for a step or as a workflow default. MaxAttempts=0 means no retries.
 
@@ -685,7 +691,7 @@ type RetryPolicy struct {
 ```
 
 <a name="ResolveRetryPolicy"></a>
-### func [ResolveRetryPolicy](<https://github.com/danmestas/dagnats/blob/main/dag/retry.go#L68-L70>)
+### func [ResolveRetryPolicy](<https://github.com/danmestas/dagnats/blob/main/dag/retry.go#L75-L77>)
 
 ```go
 func ResolveRetryPolicy(wfDef WorkflowDef, stepDef StepDef) *RetryPolicy
