@@ -52,6 +52,13 @@ func (s *RetryStrategy) UnmarshalJSON(data []byte) error {
 // internal/engine scheduleRetryBackoff).
 const RetryAttemptCountMax = 100_000
 
+// RetryMultiplierMax bounds an explicit exponential multiplier.
+// math.Pow with an unbounded multiplier can overflow to +Inf, and
+// converting Inf to time.Duration is implementation-defined; bounding
+// at definition time keeps CalculateDelay's arithmetic finite without
+// relying on callers to clamp.
+const RetryMultiplierMax = 100
+
 // RetryPolicy configures retry behavior for a step or as a workflow
 // default. MaxAttempts=0 means no retries.
 type RetryPolicy struct {
@@ -100,8 +107,12 @@ func CalculateDelay(
 	case RetryLinear:
 		delay = policy.InitialDelay * time.Duration(attempt)
 	case RetryExponential:
+		multiplier := policy.Multiplier
+		if multiplier <= 0 {
+			multiplier = 2.0
+		}
 		d := float64(policy.InitialDelay) *
-			math.Pow(policy.Multiplier, float64(attempt-1))
+			math.Pow(multiplier, float64(attempt-1))
 		delay = time.Duration(d)
 	default:
 		delay = policy.InitialDelay
