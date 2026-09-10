@@ -23,6 +23,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_store_bytes` `dagnats.yaml` key, already crashed startup before this
   change; it now fails the same way but with a clear, source-specific
   error message instead of a generic panic (#687).
+- **Unrecognized `ci.yml` keys are now diagnosed instead of silently
+  dropped** (#681) — in checks, the nested `retry:` block, `deploy:`,
+  `defaults:`, and at the top level. A spec with a typo'd or unsupported
+  key that previously validated clean now fails `/v1/ci/validate` with a
+  positioned diagnostic. YAML merge keys (`<<:`) are respected, and
+  top-level `x-`-prefixed keys are reserved extension/anchor space and
+  left unscanned.
+- **An exponential retry policy with no `multiplier` now backs off ×2 per
+  attempt** (#683) — previously the unset multiplier computed
+  `InitialDelay * 0^(n-1)`, so every retry after the first fired with zero
+  delay. An explicit multiplier is now validated to `[1, 100]` at
+  definition time.
+
+### Added
+
+- **`ci.yml` checks can declare retries** (#681): `retries: N` as
+  shorthand (fixed strategy, 5s delay, mirroring the native format's
+  legacy `Retries` defaults) or a full `retry:` block (`max_attempts`,
+  `strategy`, `initial_delay`, `max_delay`, `multiplier`) mapped onto the
+  step's retry policy. Previously both were accepted, validated, and
+  silently discarded at compile.
+- **Registered workflows can be deleted** (#682): `DELETE
+  /workflows/{name}` and `dagnats workflow delete <name>`. Refuses with
+  `409` while non-terminal runs exist (listing them) or while triggers
+  still reference the workflow; `--force`/`?force=true` overrides. Both
+  guards live in the service, so the CLI and HTTP surfaces share one
+  contract. Deleting a definition removes its version keys but leaves run
+  history readable.
 
 ### Changed
 
