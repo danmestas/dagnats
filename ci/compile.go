@@ -430,6 +430,29 @@ func compileCheckRetry(
 	if c.Retry == nil {
 		return nil, diags
 	}
+	// Symmetric with the negative-retries check above: a negative
+	// max_attempts would make the engine fail the step permanently on
+	// first error, and a negative multiplier feeds directly into
+	// dag.CalculateDelay's math.Pow. Upper-bound and sub-unity multiplier
+	// validation belongs to dag.Validate (#683), not duplicated here.
+	if c.Retry.MaxAttempts < 0 {
+		diags = addDiagnostic(diags, Diagnostic{
+			Field: field,
+			Message: fmt.Sprintf(
+				"%s: retry.max_attempts must not be negative (%d)",
+				field, c.Retry.MaxAttempts,
+			),
+		})
+	}
+	if c.Retry.Multiplier < 0 {
+		diags = addDiagnostic(diags, Diagnostic{
+			Field: field,
+			Message: fmt.Sprintf(
+				"%s: retry.multiplier must not be negative (%g)",
+				field, c.Retry.Multiplier,
+			),
+		})
+	}
 	strategy, err := parseRetryStrategy(c.Retry.Strategy)
 	if err != nil {
 		diags = addDiagnostic(diags, Diagnostic{

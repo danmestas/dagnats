@@ -37,7 +37,7 @@ const DiagnosticsMax = 100
 ```
 
 <a name="Parse"></a>
-## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L173>)
+## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L224>)
 
 ```go
 func Parse(spec []byte) (Spec, []Diagnostic)
@@ -46,7 +46,7 @@ func Parse(spec []byte) (Spec, []Diagnostic)
 Parse decodes YAML bytes into a Spec, accumulating a Diagnostic \(rather than failing fast\) for every field that fails to decode. It parses via yaml.Node first so each diagnostic carries the offending field's Line and Column — authors can jump straight to the problem in their ci.yml instead of pattern\-matching a stack\-trace\-flavored error string.
 
 <a name="Check"></a>
-## type [Check](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L67-L74>)
+## type [Check](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L68-L75>)
 
 Check declares one CI check step backed by exactly one runner: Call \(a Dagger function name, compiled to the "dagger.call" task type\) or Task \(a plain task type, compiled verbatim for any worker that speaks the ordinary worker protocol\). Setting both, or neither, is a compile\-time diagnostic \(\#671\) — see compileCheck. Needs lists check names that must complete before this check runs. Timeout is a Go duration string \(e.g. "15m"\). Retries is shorthand for a fixed\-delay retry policy; Retry is the full policy. Setting both is a compile\-time diagnostic \(\#681\) — see compileCheckRetry.
 
@@ -62,7 +62,7 @@ type Check struct {
 ```
 
 <a name="CheckRetry"></a>
-## type [CheckRetry](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L81-L87>)
+## type [CheckRetry](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L82-L88>)
 
 CheckRetry is the full retry policy for a check, mapped onto dag.RetryPolicy by compileCheckRetry. InitialDelay and MaxDelay are Go duration strings, parsed the same way Check.Timeout is. Strategy is one of "fixed", "linear", "exponential" \("" defaults to "fixed", matching dag.RetryPolicy's zero value\).
 
@@ -77,7 +77,7 @@ type CheckRetry struct {
 ```
 
 <a name="Defaults"></a>
-## type [Defaults](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L53-L56>)
+## type [Defaults](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L54-L57>)
 
 Defaults carry workflow\-wide settings inherited by every step. Module is the Dagger module path in the repository \(usually "."\). Engine is advisory only in Phase 1; workers provision Dagger themselves.
 
@@ -89,7 +89,7 @@ type Defaults struct {
 ```
 
 <a name="DeployStep"></a>
-## type [DeployStep](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L94-L101>)
+## type [DeployStep](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L95-L102>)
 
 DeployStep declares an optional deploy stage that follows the CI checks. Call and Task are mutually exclusive, same as Check \(\#671\) — see compileDeploy. Approval=="required" inserts a durable human\-gate step before execution. Branches limits deployment to specific push targets \(never PR heads\).
 
@@ -139,7 +139,7 @@ func CompileYAML(name string, spec []byte) (dag.WorkflowDef, []Diagnostic)
 CompileYAML is the thin composition of Parse and Compile for callers that hold ci.yml bytes directly \(the CLI, the /v1/ci/compile handler\). Parse diagnostics — which do carry source positions — short\-circuit before Compile ever runs, since a Spec that failed to decode has no meaningful checks/deploy to compile.
 
 <a name="On"></a>
-## type [On](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L28-L32>)
+## type [On](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L29-L33>)
 
 On describes which GitHub events trigger the CI run.
 
@@ -152,7 +152,7 @@ type On struct {
 ```
 
 <a name="PullRequest"></a>
-## type [PullRequest](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L35-L37>)
+## type [PullRequest](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L36-L38>)
 
 PullRequest restricts CI runs to the listed target branches.
 
@@ -163,7 +163,7 @@ type PullRequest struct {
 ```
 
 <a name="Push"></a>
-## type [Push](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L40-L42>)
+## type [Push](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L41-L43>)
 
 Push restricts CI runs to the listed push target branches.
 
@@ -174,7 +174,7 @@ type Push struct {
 ```
 
 <a name="Schedule"></a>
-## type [Schedule](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L46-L48>)
+## type [Schedule](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L47-L49>)
 
 Schedule triggers CI on a cron expression, routed through a DagNats cron trigger. This is a DagNats differentiator — ephemeral CI runners have no cron primitive.
 
@@ -185,7 +185,7 @@ type Schedule struct {
 ```
 
 <a name="Spec"></a>
-## type [Spec](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L20-L25>)
+## type [Spec](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L21-L26>)
 
 Spec is the parsed form of a .dagnats/ci.yml file. The On block records which GitHub events trigger CI; Checks and Deploy describe what to run.
 

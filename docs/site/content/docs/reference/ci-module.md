@@ -98,6 +98,81 @@ workers already handle plain task types (`go-test`, `lint`, `docker-build`,
 whatever the fleet dispatches) can adopt `ci.yml` without touching Dagger at
 all; a repo already using Dagger keeps using `call:` unchanged.
 
+## `retries:` and `retry:`
+
+Every check accepts an optional retry policy, mapped onto the engine's
+`dag.RetryPolicy` (#681). `retries:` is shorthand for a fixed-delay policy;
+`retry:` is the full policy. Setting both is a compile-time `Diagnostic` —
+they're mutually exclusive, the same way `call:`/`task:` are.
+
+```yaml
+checks:
+  # Shorthand: 3 attempts, fixed 5s delay between each -- the same default
+  # a native workflow gets from the legacy StepDef.Retries field.
+  clone: { call: "clone", retries: 3 }
+
+  # Full policy: every field explicit.
+  test:
+    call: "test"
+    retry:
+      max_attempts: 5
+      strategy: exponential   # "fixed" (default), "linear", or "exponential"
+      initial_delay: 30s
+      max_delay: 2m
+      multiplier: 2
+```
+
+`initial_delay` and `max_delay` are Go duration strings, parsed the same way
+`timeout:` is. Unlike `timeout:`, an empty or omitted delay maps to zero
+rather than a package default — the native `dag.RetryPolicy` format has no
+builtin default for these fields, so `ci.yml` doesn't invent one. Negative
+`retries:`, `retry.max_attempts`, or `retry.multiplier` values are
+diagnostics, not silently-ignored input; the upper bound on `max_attempts`
+and any bound on `multiplier` come from `dag.Validate` (#683), same as a
+native workflow.
+
+## Unknown fields are diagnosed, not dropped
+
+`ci.yml`'s YAML decoding used to match `yaml.v3`'s default (non-strict)
+behavior: an unrecognized key was silently ignored. That turned a typo
+(`retres:` for `retries:`) or a stale key (`run:`, left over from another
+CI system) into a silent behavior change instead of a caught mistake
+(#681). `Parse` now diagnoses unrecognized keys at every level that has a
+known field set — the top level (`on`, `defaults`, `checks`, `deploy`),
+`defaults:`, each check (including its nested `retry:` block), and
+`deploy:`.
+
+```yaml
+checks:
+  test:
+    call: "test"
+    retreis: 3   # typo -- diagnosed as "checks.test: unknown field \"retreis\""
+```
+
+**Extension keys.** A top-level key prefixed with `x-` is exempt: it, and
+everything nested under it, is never scanned or diagnosed. This is the same
+convention docker-compose and OpenAPI use for vendor extensions, and it's
+also where a YAML anchor referenced by a `<<: *name` merge key should live,
+so it doesn't read as an unrecognized real field:
+
+```yaml
+x-defaults: &shared
+  call: "build"
+  timeout: "20m"
+
+checks:
+  build:
+    <<: *shared
+  build-arm64:
+    <<: *shared
+    call: "build-arm64"
+```
+
+A merge key (`<<:`) itself is never diagnosed as an unknown field at any
+level, but the scan does not resolve what it merges in — an unrecognized
+field on the anchor's own body is only caught if that body is itself
+scanned (i.e. lives directly under a known field, not under `x-`).
+
 ## Diagnostics, not fail-fast errors
 
 Unlike the pre-#633 compiler (which returned the first `error` it hit),
