@@ -173,6 +173,38 @@ func TestCalculateDelayExponential(t *testing.T) {
 	}
 }
 
+func TestCalculateDelayExponentialDefaultMultiplier(t *testing.T) {
+	// Regression for #683: an exponential policy with no Multiplier
+	// set must default to 2.0, not 0 (which collapsed every attempt
+	// after the first to a 0s tight-loop delay).
+	p := RetryPolicy{
+		Strategy: RetryExponential, InitialDelay: 5 * time.Second,
+	}
+	// Positive: 5s, 10s, 20s (multiplier defaults to 2.0)
+	if d := CalculateDelay(p, 1); d != 5*time.Second {
+		t.Fatalf("attempt 1 = %v, want 5s", d)
+	}
+	if d := CalculateDelay(p, 2); d != 10*time.Second {
+		t.Fatalf("attempt 2 = %v, want 10s", d)
+	}
+	if d := CalculateDelay(p, 3); d != 20*time.Second {
+		t.Fatalf("attempt 3 = %v, want 20s", d)
+	}
+
+	// Negative: an explicit multiplier is honored, not overridden.
+	p.Multiplier = 3.0
+	if d := CalculateDelay(p, 2); d != 15*time.Second {
+		t.Fatalf("attempt 2 with multiplier 3 = %v, want 15s", d)
+	}
+
+	// Positive: MaxDelay still caps the defaulted-multiplier path.
+	p.Multiplier = 0
+	p.MaxDelay = 15 * time.Second
+	if d := CalculateDelay(p, 3); d != 15*time.Second {
+		t.Fatalf("attempt 3 capped = %v, want 15s", d)
+	}
+}
+
 func TestCalculateDelayPanicsOnZeroAttempt(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -285,5 +317,40 @@ func TestValidateBoundsRetryMaxAttempts(t *testing.T) {
 	overLegacy.Steps[0].Retries = RetryAttemptCountMax + 1
 	if err := Validate(overLegacy); err == nil {
 		t.Fatal("Validate accepted oversized legacy step Retries")
+	}
+}
+
+func TestValidateRejectsSubUnityExponentialMultiplier(t *testing.T) {
+	makeDef := func(multiplier float64) WorkflowDef {
+		return WorkflowDef{
+			Name: "rb-multiplier", Version: "1",
+			Steps: []StepDef{
+				{
+					ID: "s", Task: "t", Type: StepTypeNormal,
+					Retry: &RetryPolicy{
+						MaxAttempts: 3,
+						Strategy:    RetryExponential,
+						Multiplier:  multiplier,
+					},
+				},
+			},
+		}
+	}
+
+	// Negative space: an explicit multiplier below 1 is rejected.
+	if err := Validate(makeDef(0.5)); err == nil {
+		t.Fatal("Validate accepted exponential multiplier 0.5")
+	}
+	if err := Validate(makeDef(-1)); err == nil {
+		t.Fatal("Validate accepted negative exponential multiplier")
+	}
+
+	// Positive space: unset (0, meaning "use the default") and any
+	// value >= 1 are accepted.
+	if err := Validate(makeDef(0)); err != nil {
+		t.Fatalf("Validate rejected unset multiplier: %v", err)
+	}
+	if err := Validate(makeDef(2)); err != nil {
+		t.Fatalf("Validate rejected multiplier 2: %v", err)
 	}
 }

@@ -100,8 +100,12 @@ func CalculateDelay(
 	case RetryLinear:
 		delay = policy.InitialDelay * time.Duration(attempt)
 	case RetryExponential:
+		multiplier := policy.Multiplier
+		if multiplier <= 0 {
+			multiplier = 2.0
+		}
 		d := float64(policy.InitialDelay) *
-			math.Pow(policy.Multiplier, float64(attempt-1))
+			math.Pow(multiplier, float64(attempt-1))
 		delay = time.Duration(d)
 	default:
 		delay = policy.InitialDelay

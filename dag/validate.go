@@ -74,6 +74,15 @@ func validateRetryPolicies(def WorkflowDef) error {
 			RetryAttemptCountMax,
 		)
 	}
+	if def.DefaultRetry != nil && def.DefaultRetry.Multiplier != 0 &&
+		def.DefaultRetry.Multiplier < 1 {
+		return fmt.Errorf(
+			"workflow %q DefaultRetry.Multiplier is %v: "+
+				"exponential retry multiplier must be "+
+				">= 1 when set",
+			def.Name, def.DefaultRetry.Multiplier,
+		)
+	}
 	for _, step := range def.Steps {
 		if step.Retry != nil &&
 			step.Retry.MaxAttempts > RetryAttemptCountMax {
@@ -87,6 +96,15 @@ func validateRetryPolicies(def WorkflowDef) error {
 			return fmt.Errorf(
 				"step %q Retries is %d (max %d)",
 				step.ID, step.Retries, RetryAttemptCountMax,
+			)
+		}
+		if step.Retry != nil && step.Retry.Multiplier != 0 &&
+			step.Retry.Multiplier < 1 {
+			return fmt.Errorf(
+				"step %q Retry.Multiplier is %v: "+
+					"exponential retry multiplier must be "+
+					">= 1 when set",
+				step.ID, step.Retry.Multiplier,
 			)
 		}
 	}
