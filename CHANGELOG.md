@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change; it now fails the same way but with a clear, source-specific
   error message instead of a generic panic (#687).
 
+### Changed
+
+- **Lowering `max_store_bytes` below what an established store already
+  reserves** no longer requires a manual per-stream trim before it takes
+  effect (#688, following #685/#686). The embedded server now auto-trims
+  stream ceilings over one restart: it temporarily admits the existing
+  reservation, shrinks every stream's `MaxBytes` down to the configured
+  budget's ceilings — discarding each stream's oldest messages as needed to
+  comply, same as any other `MaxBytes` reduction — and the configured value
+  takes full effect on the restart after that. If a stream outside dagnats's
+  own set (operator-created, a mirror, an orphan) still holds the aggregate
+  over budget once the managed streams have shrunk, startup fails with the
+  same actionable message #686 introduced, naming the offenders, instead of
+  silently re-entering recovery at an inflated limit on every future boot.
+
 ## [0.0.14] - 2026-08-29
 
 ### Breaking / behavior changes

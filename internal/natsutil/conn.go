@@ -475,10 +475,11 @@ type KVConfig struct {
 type SetupOption func(*setupOptions)
 
 type setupOptions struct {
-	streams       []StreamConfig
-	kvs           []KVConfig
-	cluster       ClusterOptions
-	maxStoreBytes int64
+	streams               []StreamConfig
+	kvs                   []KVConfig
+	cluster               ClusterOptions
+	maxStoreBytes         int64
+	storeAdmissionCeiling int64
 }
 
 // WithStoreBudget sets the JetStreamMaxStore budget SetupAll uses to size
@@ -491,6 +492,32 @@ type setupOptions struct {
 func WithStoreBudget(maxStoreBytes int64) SetupOption {
 	return func(o *setupOptions) {
 		o.maxStoreBytes = maxStoreBytes
+	}
+}
+
+// WithStoreAdmissionCeiling tells preflightStoreBudget to check existing
+// stream reservations against ceilingBytes instead of the WithStoreBudget
+// figure. The two are ordinarily equal -- a caller starts its NATS process
+// and calls SetupAll with the same store budget -- so this is unnecessary
+// for nearly every caller.
+//
+// It exists for #688's auto-shrink recovery: an embedded-server caller that
+// hit StoreBudgetExceededError can restart its NATS process at a temporarily
+// larger JetStreamMaxStore (covering what StoreBudgetExceededError.Reserved
+// reported) so the process actually admits the existing streams, then retry
+// SetupAll with WithStoreBudget still at the operator's configured (smaller)
+// value -- so ceilings still shrink to it -- and WithStoreAdmissionCeiling
+// set to that larger, actually-enforced limit, so the preflight does not
+// refuse a shrink the restarted process can, in fact, perform.
+//
+// resolveStoreBudget/AccountInfo cannot discover this ceiling on its own:
+// AccountInfo reports the account's JetStream tier limit, not the
+// server-level JetStreamMaxStore the caller passed to natsserver.Options,
+// which is what actually gates admission (10047 insufficient storage
+// resources). Only the caller that started the process knows it.
+func WithStoreAdmissionCeiling(ceilingBytes int64) SetupOption {
+	return func(o *setupOptions) {
+		o.storeAdmissionCeiling = ceilingBytes
 	}
 }
 
@@ -569,7 +596,20 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	preflightCtx, preflightCancel := context.WithTimeout(
 		context.Background(), storeBudgetResolveTimeout,
 	)
-	err = preflightStoreBudget(preflightCtx, js, options.maxStoreBytes)
+	admissionCeiling := options.storeAdmissionCeiling
+	if admissionCeiling <= 0 {
+		admissionCeiling = options.maxStoreBytes
+	} else if admissionCeiling < options.maxStoreBytes {
+		panic(fmt.Sprintf(
+			"SetupAll: WithStoreAdmissionCeiling(%d) is below the store "+
+				"budget %d; the ceiling exists to admit MORE than the "+
+				"budget, never less",
+			admissionCeiling, options.maxStoreBytes,
+		))
+	}
+	err = preflightStoreBudget(
+		preflightCtx, js, options.maxStoreBytes, admissionCeiling,
+	)
 	preflightCancel()
 	if err != nil {
 		return err
@@ -677,38 +717,87 @@ func enableAtomicPublish(
 	return nil
 }
 
-// preflightStoreBudget returns an actionable error when the streams already on
-// disk reserve more bytes than budget allows.
+// StoreBudgetReservation names one stream's contribution to a
+// StoreBudgetExceededError's Reserved total, largest first.
+type StoreBudgetReservation struct {
+	Name  string
+	Bytes int64
+}
+
+// StoreBudgetExceededError reports that budget is below the aggregate
+// MaxBytes already reserved by existing streams (#685).
 //
 // JetStream admits a stream only if its MaxBytes fits the budget remaining
 // after every OTHER stream's MaxBytes. A store established under a LARGER
 // budget therefore refuses EVERY assertion that follows, including the very
-// updates that would have shrunk those ceilings. dagnats cannot lower its own
-// budget: doing so requires writes the lowered budget forbids.
+// updates that would have shrunk those ceilings: a single connection to the
+// server enforcing the new budget cannot lower its own reservation, because
+// doing so requires writes the lowered budget forbids.
 //
-// The refusal itself is legitimate. What was missing was any way to tell why
-// from the outside: left to JetStream the operator sees only "insufficient
-// storage resources available", which names neither the budget nor the
-// aggregate it was measured against, and dagnats exits into a
-// Restart=on-failure loop with the whole engine down (#685).
+// An embedded-server caller that also owns the NATS process (server.startNATS)
+// can recover from this: restart the process with a temporarily larger
+// JetStreamMaxStore covering Reserved, then retry SetupAll at the original
+// budget so the fractional ceilings still shrink to what the operator
+// configured, one restart later (#688). Reserved and Largest are exported so
+// that caller doesn't need to reparse Error()'s text. A caller connected to
+// an EXTERNAL server it does not control has no such restart available and
+// must trim streams by hand -- for that caller this remains a hard failure.
+type StoreBudgetExceededError struct {
+	Budget   int64
+	Reserved int64
+	Counted  int
+	Largest  []StoreBudgetReservation
+}
+
+// Error renders the operator-facing message: left to JetStream the operator
+// would see only "insufficient storage resources available", which names
+// neither the budget nor the aggregate it was measured against (#685).
+func (e *StoreBudgetExceededError) Error() string {
+	if e == nil {
+		panic("StoreBudgetExceededError.Error: e is nil")
+	}
+	worst := make([]string, 0, len(e.Largest))
+	for _, r := range e.Largest {
+		worst = append(worst, fmt.Sprintf(
+			"%s=%s", r.Name, humanStoreBytes(r.Bytes),
+		))
+	}
+	return fmt.Sprintf(
+		"max_store_bytes=%s is below the %s already reserved by %d existing "+
+			"stream(s); largest: %s. JetStream validates the combined "+
+			"reservation before admitting any stream, so dagnats cannot "+
+			"shrink these ceilings under the new budget. Lower each stream's "+
+			"MaxBytes until the total fits, then set max_store_bytes",
+		humanStoreBytes(e.Budget), humanStoreBytes(e.Reserved), e.Counted,
+		strings.Join(worst, ", "),
+	)
+}
+
+// preflightStoreBudget returns a *StoreBudgetExceededError when the streams
+// already on disk reserve more bytes than admissionCeiling. See
+// StoreBudgetExceededError's doc for why this happens and how an
+// embedded-server caller recovers from it.
+//
+// admissionCeiling, not budget, is what streams are actually admitted
+// against: it must be the server's real, currently-enforced JetStreamMaxStore
+// (SetupAll's caller either passes budget straight through, the ordinary
+// case, or supplies a larger WithStoreAdmissionCeiling during a #688
+// shrink-pass retry). budget is only used to label the operator-facing
+// error with what the caller is sizing ceilings from downstream.
 //
 // A listing failure is deliberately NOT fatal. This is a diagnostic that runs
 // ahead of the real assertions and those report their own errors; refusing to
 // start because the diagnostic could not run would convert a message
 // improvement into a new failure mode.
 func preflightStoreBudget(
-	ctx context.Context, js jetstream.JetStream, budget int64,
+	ctx context.Context, js jetstream.JetStream, budget, admissionCeiling int64,
 ) error {
-	if budget <= 0 {
+	if budget <= 0 || admissionCeiling <= 0 {
 		return nil
 	}
 	var reserved int64
 	var counted int
-	type reservation struct {
-		name  string
-		bytes int64
-	}
-	var largest []reservation
+	var largest []StoreBudgetReservation
 	lister := js.ListStreams(ctx)
 	for info := range lister.Info() {
 		if info == nil || info.Config.MaxBytes <= 0 {
@@ -716,36 +805,57 @@ func preflightStoreBudget(
 		}
 		reserved += info.Config.MaxBytes
 		counted++
-		largest = append(largest, reservation{
-			name: info.Config.Name, bytes: info.Config.MaxBytes,
+		largest = append(largest, StoreBudgetReservation{
+			Name: info.Config.Name, Bytes: info.Config.MaxBytes,
 		})
 	}
-	if lister.Err() != nil || reserved <= budget {
+	if lister.Err() != nil || reserved <= admissionCeiling {
 		return nil
 	}
 	sort.Slice(largest, func(i, j int) bool {
-		return largest[i].bytes > largest[j].bytes
+		return largest[i].Bytes > largest[j].Bytes
 	})
 	// Name only the biggest few: those are the ones worth trimming, and a
 	// full list on a busy node is dozens of streams long.
 	if len(largest) > 3 {
 		largest = largest[:3]
 	}
-	worst := make([]string, 0, len(largest))
-	for _, r := range largest {
-		worst = append(worst, fmt.Sprintf(
-			"%s=%s", r.name, humanStoreBytes(r.bytes),
-		))
+	if reserved <= 0 {
+		panic("preflightStoreBudget: reserved must be positive to exceed admissionCeiling")
 	}
-	return fmt.Errorf(
-		"max_store_bytes=%s is below the %s already reserved by %d existing "+
-			"stream(s); largest: %s. JetStream validates the combined "+
-			"reservation before admitting any stream, so dagnats cannot "+
-			"shrink these ceilings under the new budget. Lower each stream's "+
-			"MaxBytes until the total fits, then set max_store_bytes",
-		humanStoreBytes(budget), humanStoreBytes(reserved), counted,
-		strings.Join(worst, ", "),
-	)
+	if counted <= 0 {
+		panic("preflightStoreBudget: counted must be positive when reserved > 0")
+	}
+	return &StoreBudgetExceededError{
+		Budget:   budget,
+		Reserved: reserved,
+		Counted:  counted,
+		Largest:  largest,
+	}
+}
+
+// CheckStoreBudget reports whether the connected server's existing stream
+// reservations still fit budget, returning the same *StoreBudgetExceededError
+// preflightStoreBudget produces during SetupAll.
+//
+// Exported for #688's auto-shrink recovery: after a shrink pass, the caller
+// rechecks against the operator's CONFIGURED budget (not the temporarily
+// inflated admission ceiling the process is running at this boot) to catch
+// a stream SetupAll does not manage -- operator-created, a mirror, an
+// orphan -- still holding the aggregate over budget. Without this recheck
+// that case would silently re-enter recovery, inflated, on every future
+// boot instead of surfacing the same actionable message #686 already
+// produces.
+func CheckStoreBudget(
+	ctx context.Context, js jetstream.JetStream, budget int64,
+) error {
+	if js == nil {
+		panic("CheckStoreBudget: js must not be nil")
+	}
+	if budget <= 0 {
+		panic("CheckStoreBudget: budget must be positive")
+	}
+	return preflightStoreBudget(ctx, js, budget, budget)
 }
 
 // humanStoreBytes renders a store size the way an operator would write it in
