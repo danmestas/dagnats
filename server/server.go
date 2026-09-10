@@ -73,9 +73,17 @@ type Server struct {
 }
 
 // New creates a Server with the given config. Panics if DataDir is empty.
+//
+// A caller that built cfg via DefaultConfig() directly (rather than through
+// ConfigWithPath/ConfigFromEnv) still has MaxStoreBytes at the 0
+// "derive from disk" sentinel (#687); resolve it here too so every
+// construction path enters Run/startNATS with a usable, non-zero budget.
 func New(cfg Config) *Server {
 	if cfg.DataDir == "" {
 		panic("New: cfg.DataDir is empty")
+	}
+	if cfg.MaxStoreBytes == 0 {
+		cfg.MaxStoreBytes = deriveMaxStoreBytes(cfg.DataDir)
 	}
 	return &Server{
 		cfg:    cfg,

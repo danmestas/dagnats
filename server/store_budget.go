@@ -9,10 +9,16 @@ import (
 )
 
 // storeBudgetWarnThresholdPct is the fraction of available disk bytes past
-// which an effective max_store_bytes (derived OR explicit) gets a loud
-// warning: too little is left over for the OS and everything else sharing
-// the host (issue #687 option 4).
+// which an effective max_store_bytes gets a loud warning: too little is
+// left over for the OS and everything else sharing the host (issue #687
+// option 4). In practice this only fires for an EXPLICIT max_store_bytes:
+// deriveMaxStoreBytes halves available disk by construction, so a derived
+// value is always <= 50% and can never cross an 80% threshold on its own.
 const storeBudgetWarnThresholdPct = 0.8
+
+// maxProbePathLen bounds the paths statfsAvailableBytes/nearestExistingAncestor
+// walk, matching ConfigWithPath's existing configPath bound.
+const maxProbePathLen = 4096
 
 // availableDiskBytesFn resolves the bytes available to an unprivileged
 // writer on the filesystem holding a path. A var indirection so tests can
@@ -61,13 +67,14 @@ func deriveMaxStoreBytes(dataDir string) int64 {
 }
 
 // warnIfStoreBudgetTooLarge logs a plain warning when the effective
-// max_store_bytes (derived or explicit) reserves more than
-// storeBudgetWarnThresholdPct of the disk available at dataDir. A budget
-// that large leaves too little headroom for the OS, other services, and
-// JetStream's own filestore index -- the #687 incident shape even when the
-// value came from an explicit config rather than the default. A probe
-// failure here is not fatal: this warning is a courtesy, not a gate, so it
-// simply stays silent when the disk size cannot be determined.
+// max_store_bytes reserves more than storeBudgetWarnThresholdPct of the
+// disk available at dataDir. That large a budget leaves too little
+// headroom for the OS, other services, and JetStream's own filestore index
+// -- the #687 incident shape reached via an explicit config rather than
+// the default (a derived value can never cross this threshold; see
+// storeBudgetWarnThresholdPct). A probe failure here is not fatal: this
+// warning is a courtesy, not a gate, so it simply stays silent when the
+// disk size cannot be determined.
 func warnIfStoreBudgetTooLarge(dataDir string, effective int64) {
 	if dataDir == "" {
 		panic("warnIfStoreBudgetTooLarge: dataDir is empty")
@@ -103,10 +110,16 @@ func statfsAvailableBytes(path string) (int64, error) {
 	if path == "" {
 		panic("statfsAvailableBytes: path is empty")
 	}
+	if len(path) > maxProbePathLen {
+		panic("statfsAvailableBytes: path exceeds max length")
+	}
 
 	probePath, err := nearestExistingAncestor(path)
 	if err != nil {
 		return 0, err
+	}
+	if probePath == "" {
+		panic("statfsAvailableBytes: nearestExistingAncestor returned empty path with nil error")
 	}
 
 	var stat syscall.Statfs_t
@@ -129,6 +142,9 @@ func statfsAvailableBytes(path string) (int64, error) {
 func nearestExistingAncestor(path string) (string, error) {
 	if path == "" {
 		panic("nearestExistingAncestor: path is empty")
+	}
+	if len(path) > maxProbePathLen {
+		panic("nearestExistingAncestor: path exceeds max length")
 	}
 	const maxAncestorHops = 64
 

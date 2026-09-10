@@ -80,7 +80,7 @@ func TestConfigWithPath_UnsetBudgetDerivesFromDisk(t *testing.T) {
 
 	dataDir := t.TempDir()
 	t.Setenv("DAGNATS_DATA_DIR", dataDir)
-	os.Unsetenv("DAGNATS_MAX_STORE_BYTES")
+	t.Setenv("DAGNATS_MAX_STORE_BYTES", "")
 
 	cfg, _, err := ConfigWithPath("")
 	if err != nil {
@@ -117,6 +117,61 @@ func TestConfigWithPath_ExplicitBudgetWinsUntouched(t *testing.T) {
 	// Negative: not derived from the tiny fake disk
 	if cfg.MaxStoreBytes == available/2 {
 		t.Errorf("explicit MaxStoreBytes was overwritten by derivation")
+	}
+}
+
+// TestConfigWithPath_FullDiskReturnsErrorNotPanic is the regression test
+// for the full-disk edge blocker: statfs can legitimately report 0 bytes
+// available (Bavail=0), which makes deriveMaxStoreBytes return 0 too.
+// ConfigWithPath must report that as a returned config-load error -- host
+// state an operator can act on -- never as a panic.
+func TestConfigWithPath_FullDiskReturnsErrorNotPanic(t *testing.T) {
+	withFakeDisk(t, 0, nil) // disk backing DataDir reports 0 bytes available
+
+	dataDir := t.TempDir()
+	t.Setenv("DAGNATS_DATA_DIR", dataDir)
+	t.Setenv("DAGNATS_MAX_STORE_BYTES", "")
+
+	_, _, err := ConfigWithPath("")
+
+	// Positive: a returned error, not a panic
+	if err == nil {
+		t.Fatal("ConfigWithPath() succeeded on a full disk, want an error")
+	}
+	// Negative: the error must be operator-actionable -- naming the data
+	// dir and the space problem -- not a bare recycled panic message.
+	if !strings.Contains(err.Error(), dataDir) ||
+		!strings.Contains(err.Error(), "space") {
+		t.Errorf(
+			"error = %q, want it to name the data dir and disk space",
+			err.Error(),
+		)
+	}
+}
+
+// TestNew_DefaultConfigDerivesBudgetWithoutPanic is the regression test for
+// the second blocker: any caller that builds a Config via DefaultConfig()
+// directly (not through ConfigWithPath) and passes it to New must still
+// get a resolved, non-zero MaxStoreBytes -- not a startNATS panic later.
+func TestNew_DefaultConfigDerivesBudgetWithoutPanic(t *testing.T) {
+	const available = 4 << 30 // 4 GiB
+	withFakeDisk(t, available, nil)
+
+	cfg := DefaultConfig()
+	cfg.DataDir = t.TempDir()
+
+	srv := New(cfg)
+
+	// Positive: New resolved the sentinel
+	if srv.cfg.MaxStoreBytes != available/2 {
+		t.Errorf(
+			"srv.cfg.MaxStoreBytes = %d, want %d",
+			srv.cfg.MaxStoreBytes, available/2,
+		)
+	}
+	// Negative: the sentinel must not survive construction
+	if srv.cfg.MaxStoreBytes == 0 {
+		t.Errorf("srv.cfg.MaxStoreBytes still 0 after New()")
 	}
 }
 
@@ -184,12 +239,18 @@ func TestWarnIfStoreBudgetTooLarge_FiresOverThreshold(t *testing.T) {
 
 func TestWarnIfStoreBudgetTooLarge_SilentUnderThreshold(t *testing.T) {
 	const available = 10 << 30 // 10 GiB
-	withFakeDisk(t, available, nil)
+	var probedPath string
+	orig := availableDiskBytesFn
+	availableDiskBytesFn = func(path string) (int64, error) {
+		probedPath = path
+		return available, nil
+	}
+	t.Cleanup(func() { availableDiskBytesFn = orig })
 
 	var buf bytes.Buffer
-	orig := slog.Default()
+	origLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(orig) })
+	t.Cleanup(func() { slog.SetDefault(origLog) })
 
 	warnIfStoreBudgetTooLarge("/fake/data-dir", 5<<30) // 50% of available
 
@@ -197,9 +258,34 @@ func TestWarnIfStoreBudgetTooLarge_SilentUnderThreshold(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Errorf("log output = %q, want empty", buf.String())
 	}
-	// Negative: sanity check that the threshold logic can fire at all
-	if strings.Contains(buf.String(), "headroom") {
-		t.Errorf("unexpected headroom warning under threshold")
+	// Negative: the silence must be because the threshold genuinely
+	// wasn't crossed, not because the disk probe was skipped entirely
+	// (which would also produce an empty log, for the wrong reason).
+	if probedPath != "/fake/data-dir" {
+		t.Errorf("availableDiskBytesFn probed %q, want /fake/data-dir", probedPath)
+	}
+}
+
+// TestWarnIfStoreBudgetTooLarge_SilentAtExactThreshold pins the threshold
+// comparison's inclusive boundary: exactly storeBudgetWarnThresholdPct
+// (80%) must NOT warn. Mutating the "<=" in warnIfStoreBudgetTooLarge to
+// "<" flips this case to firing, so this test catches that mutation where
+// TestWarnIfStoreBudgetTooLarge_FiresOverThreshold (comfortably over) and
+// TestWarnIfStoreBudgetTooLarge_SilentUnderThreshold (comfortably under)
+// both would not.
+func TestWarnIfStoreBudgetTooLarge_SilentAtExactThreshold(t *testing.T) {
+	const available = 10 << 30 // 10 GiB
+	withFakeDisk(t, available, nil)
+
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	warnIfStoreBudgetTooLarge("/fake/data-dir", 8<<30) // exactly 80% of available
+
+	if buf.Len() != 0 {
+		t.Errorf("log output = %q, want empty at exactly the threshold", buf.String())
 	}
 }
 
@@ -229,8 +315,13 @@ func TestNearestExistingAncestor_WalksUpToExistingDir(t *testing.T) {
 	if got != base {
 		t.Errorf("nearestExistingAncestor() = %q, want %q", got, base)
 	}
-	// Negative: must not just echo the nonexistent input back
-	if got == nested {
-		t.Errorf("nearestExistingAncestor() returned the nonexistent path unchanged")
+	// Negative: the returned ancestor must actually exist on disk -- not
+	// just differ structurally from the nonexistent input, which the
+	// equality check above could already pass for the wrong reason (e.g.
+	// a bug that always returns filepath.Dir(path) once, landing on
+	// "yet"'s existing parent by coincidence rather than by walking to
+	// one that is real).
+	if _, statErr := os.Stat(got); statErr != nil {
+		t.Errorf("returned ancestor %q does not exist: %v", got, statErr)
 	}
 }

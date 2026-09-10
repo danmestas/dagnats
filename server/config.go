@@ -181,6 +181,12 @@ type Config struct {
 
 // DefaultConfig returns platform-appropriate defaults.
 // Panics if dataDir resolves empty.
+//
+// MaxStoreBytes is left at 0, the "derive from available disk" sentinel
+// (#687): callers that resolve config through ConfigWithPath/ConfigFromEnv
+// get it resolved automatically; callers that construct a Server directly
+// from DefaultConfig() get it resolved in server.New instead. Either way,
+// nothing downstream of construction ever observes the 0 sentinel.
 func DefaultConfig() Config {
 	if runtime.GOOS == "" {
 		panic("runtime.GOOS is empty")
@@ -242,7 +248,9 @@ func DefaultConfig() Config {
 
 // ConfigFromEnv loads config from defaults, config file, then env vars.
 // Config file is dagnats.yaml in CWD. Missing file is not an error.
-// Panics if DataDir is empty or MaxStoreBytes <= 0 after resolution.
+// Panics if DataDir is empty after resolution. Exits (via log.Fatalf) if
+// MaxStoreBytes still resolves to <= 0 (e.g. the disk backing DataDir has
+// no space left) -- see ConfigWithPath.
 func ConfigFromEnv() Config {
 	cfg, _, err := ConfigWithPath("")
 	if err != nil {
@@ -255,7 +263,11 @@ func ConfigFromEnv() Config {
 // Returns the resolved config and the path of the file that was loaded
 // (empty string if no file was found). When configPath is non-empty, the
 // file must exist or an error is returned.
-// Panics if DataDir is empty or MaxStoreBytes <= 0 after resolution.
+// Panics if DataDir is empty after resolution. Returns an error if
+// MaxStoreBytes still resolves to <= 0 after the disk-derived default is
+// applied (e.g. the disk backing DataDir has no space left) -- that is
+// operator/host state, not a programmer error, so it is reported rather
+// than panicked on. See deriveMaxStoreBytes (#687).
 func ConfigWithPath(
 	configPath string,
 ) (Config, string, error) {
@@ -311,13 +323,24 @@ func ConfigWithPath(
 	if cfg.MaxStoreBytes == 0 {
 		cfg.MaxStoreBytes = deriveMaxStoreBytes(cfg.DataDir)
 	}
-	warnIfStoreBudgetTooLarge(cfg.DataDir, cfg.MaxStoreBytes)
 
+	// deriveMaxStoreBytes can legitimately return 0 (statfs reporting the
+	// filesystem holding DataDir has no space available at all). That is
+	// operator/host state, not a programmer error, so it is a returned
+	// config-load error -- not the panic below, which guards an explicit
+	// value that should be structurally impossible to reach here.
 	if cfg.MaxStoreBytes <= 0 {
-		panic(fmt.Sprintf(
-			"MaxStoreBytes <= 0: %d", cfg.MaxStoreBytes,
-		))
+		return Config{}, "", fmt.Errorf(
+			"max_store_bytes resolved to %d for data_dir %q: the "+
+				"filesystem backing it appears to have no space "+
+				"available; free disk space or set max_store_bytes "+
+				"explicitly (env DAGNATS_MAX_STORE_BYTES or the "+
+				"max_store_bytes config key)",
+			cfg.MaxStoreBytes, cfg.DataDir,
+		)
 	}
+
+	warnIfStoreBudgetTooLarge(cfg.DataDir, cfg.MaxStoreBytes)
 
 	return cfg, loadedPath, nil
 }
