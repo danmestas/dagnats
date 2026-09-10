@@ -28,8 +28,15 @@ const (
 	// only from processes on the host. Operators with remote-access
 	// deployments must set DAGNATS_HTTP_ADDR explicitly to a
 	// non-loopback bind (e.g. "0.0.0.0:8080"). See ADR-014.
-	defaultHTTPAddr      = "127.0.0.1:8080"
-	defaultNATSPort      = 4222
+	defaultHTTPAddr = "127.0.0.1:8080"
+	defaultNATSPort = 4222
+	// defaultMaxStoreBytes is the CEILING applied when max_store_bytes is
+	// derived from available disk, and the fallback used when disk size
+	// cannot be probed (see deriveMaxStoreBytes). It is NOT an
+	// unconditional default: an unconfigured operator gets half of
+	// whatever is actually available, capped at this value, not this
+	// value outright (#687 -- the unconditional-10-GiB default silently
+	// overcommitted a 2 GB host).
 	defaultMaxStoreBytes = 10 << 30 // 10 GiB
 	// defaultMaxMemoryBytes caps the JetStream in-memory store and is also
 	// applied as the soft Go memory limit (GOMEMLIMIT) at startup so the
@@ -214,11 +221,15 @@ func DefaultConfig() Config {
 	}
 
 	return Config{
-		DataDir:                      dataDir,
-		HTTPAddr:                     defaultHTTPAddr,
-		NATSPort:                     defaultNATSPort,
-		LeafRemotes:                  nil,
-		MaxStoreBytes:                defaultMaxStoreBytes,
+		DataDir:     dataDir,
+		HTTPAddr:    defaultHTTPAddr,
+		NATSPort:    defaultNATSPort,
+		LeafRemotes: nil,
+		// 0 is the "derive from available disk at resolution" sentinel
+		// (#687) -- see ConfigWithPath / deriveMaxStoreBytes. An explicit
+		// file/env/caller value always wins; this only resolves when
+		// nothing set it.
+		MaxStoreBytes:                0,
 		MaxMemoryBytes:               defaultMaxMemoryBytes,
 		RunsMaxAge:                   DefaultRunsMaxAge,
 		QueueSnapshotInterval:        queueSnapshotInterval,
@@ -263,6 +274,10 @@ func ConfigWithPath(
 
 	applyEnvOverrides(&cfg)
 
+	if err := applyMaxStoreBytesEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+
 	if err := applyRunsMaxAgeEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
@@ -288,6 +303,16 @@ func ConfigWithPath(
 	if cfg.DataDir == "" {
 		panic("DataDir is empty after config resolution")
 	}
+
+	// A surviving 0 can only mean "unset": every explicit source (file,
+	// env) rejects <= 0 at parse time (see applyConfigValue,
+	// applyMaxStoreBytesEnv), so this is always the DefaultConfig
+	// sentinel, never a typo'd explicit value (#687).
+	if cfg.MaxStoreBytes == 0 {
+		cfg.MaxStoreBytes = deriveMaxStoreBytes(cfg.DataDir)
+	}
+	warnIfStoreBudgetTooLarge(cfg.DataDir, cfg.MaxStoreBytes)
+
 	if cfg.MaxStoreBytes <= 0 {
 		panic(fmt.Sprintf(
 			"MaxStoreBytes <= 0: %d", cfg.MaxStoreBytes,
@@ -453,11 +478,6 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.MonitorPort = port
 		}
 	}
-	if val := os.Getenv("DAGNATS_MAX_STORE_BYTES"); val != "" {
-		if maxBytes, err := strconv.ParseInt(val, 10, 64); err == nil {
-			cfg.MaxStoreBytes = maxBytes
-		}
-	}
 	if val := os.Getenv("DAGNATS_MAX_MEMORY_BYTES"); val != "" {
 		if maxBytes, err := strconv.ParseInt(val, 10, 64); err == nil {
 			cfg.MaxMemoryBytes = maxBytes
@@ -532,6 +552,33 @@ func applyRunsMaxAgeEnv(cfg *Config) error {
 		)
 	}
 	cfg.RunsMaxAge = dur
+	return nil
+}
+
+// applyMaxStoreBytesEnv resolves DAGNATS_MAX_STORE_BYTES into
+// cfg.MaxStoreBytes (#687). Unset leaves whatever the file/default already
+// resolved -- including the 0 "derive from disk" sentinel. An explicit
+// value must be a positive integer: <= 0 is a hard config-load error, the
+// same treatment applyConfigValue gives the file key, so a typo'd env var
+// can never survive as the sentinel and get silently re-derived from disk.
+func applyMaxStoreBytesEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyMaxStoreBytesEnv: cfg is nil")
+	}
+	val := os.Getenv("DAGNATS_MAX_STORE_BYTES")
+	if val == "" {
+		return nil
+	}
+	maxBytes, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid DAGNATS_MAX_STORE_BYTES %q: %w", val, err)
+	}
+	if maxBytes <= 0 {
+		return fmt.Errorf(
+			"invalid DAGNATS_MAX_STORE_BYTES %q: must be positive", val,
+		)
+	}
+	cfg.MaxStoreBytes = maxBytes
 	return nil
 }
 
@@ -759,6 +806,11 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		maxBytes, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
 			return fmt.Errorf("invalid max_store_bytes: %w", err)
+		}
+		if maxBytes <= 0 {
+			return fmt.Errorf(
+				"invalid max_store_bytes: must be positive, got %d", maxBytes,
+			)
 		}
 		cfg.MaxStoreBytes = maxBytes
 	case "max_memory_bytes":

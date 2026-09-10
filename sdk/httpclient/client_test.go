@@ -39,6 +39,10 @@ func testServerAddr(t *testing.T) (string, func()) {
 	// srv.HTTPAddr() avoids the pre-reserve/close/rebind TOCTOU window
 	// where another process on the runner steals the port in between.
 	cfg.HTTPAddr = "127.0.0.1:0"
+	// DefaultConfig() leaves the 0 "derive from disk" sentinel (#687);
+	// set it explicitly so this test stays fast and deterministic rather
+	// than statfs-ing the real t.TempDir() filesystem.
+	cfg.MaxStoreBytes = 1 << 30 // 1 GiB
 
 	srv := server.New(cfg)
 	if srv == nil {

@@ -34,6 +34,10 @@ func testConfig(t *testing.T) Config {
 	// listener opened here, closed, and rebound later can lose the
 	// port to another process on the runner in between.
 	cfg.HTTPAddr = "127.0.0.1:0"
+	// DefaultConfig() leaves the 0 "derive from disk" sentinel (#687);
+	// set it explicitly here so tests stay fast and deterministic
+	// rather than statfs-ing the real t.TempDir() filesystem.
+	cfg.MaxStoreBytes = 1 << 30 // 1 GiB
 
 	return cfg
 }

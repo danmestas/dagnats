@@ -59,6 +59,20 @@ func ResolveConfig() ResolvedConfig {
 	afterFile := cfg
 
 	applyEnvOverrides(&cfg)
+	if err := applyMaxStoreBytesEnv(&cfg); err != nil {
+		// Dry-run reporting is best-effort throughout this function (the
+		// loadConfigFile error above is dropped the same way); an invalid
+		// override still shows up to the operator as a 0/derived value in
+		// the report rather than aborting it.
+		_ = err
+	}
+
+	// Mirror ConfigWithPath's resolution (#687): an unset budget derives
+	// from the resolved DataDir so `dagnats serve --dry-run` reports what
+	// startNATS will actually use, not the raw 0 sentinel.
+	if cfg.MaxStoreBytes == 0 && cfg.DataDir != "" {
+		cfg.MaxStoreBytes = deriveMaxStoreBytes(cfg.DataDir)
+	}
 
 	entries := buildEntries(defaults, afterFile, cfg, fileChanged)
 	return ResolvedConfig{Config: cfg, Entries: entries}
