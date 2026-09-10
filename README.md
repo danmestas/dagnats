@@ -117,6 +117,8 @@ editor autocomplete via `docs/workflow-schema.json` (add `"$schema"` reference).
 ```
 POST   /workflows              Register a workflow definition
 GET    /workflows               List all workflows
+DELETE /workflows/{name}       Delete a workflow definition (404 if unregistered,
+                               409 if non-terminal runs exist unless ?force=true)
 POST   /runs                   Start a new run
 GET    /runs/{id}              Get run status
 POST   /runs/{id}/cancel       Cancel a run

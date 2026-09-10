@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
 
@@ -29,7 +30,7 @@ type workflowDeleteResult struct {
 // dependency surface stays small.
 type workflowDeleter interface {
 	ListTriggers(ctx context.Context) ([]trigger.TriggerDef, error)
-	DeleteWorkflow(ctx context.Context, name string) error
+	DeleteWorkflow(ctx context.Context, name string, force bool) error
 }
 
 // workflowTriggerRefusalError is returned when a delete is refused
@@ -89,8 +90,9 @@ func runWorkflowDeleteCmdWithWriter(args []string, w io.Writer) {
 	err := deleteWorkflow(context.Background(), svc, name, force)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		var refusal *workflowTriggerRefusalError
-		if errors.As(err, &refusal) {
+		var triggerRefusal *workflowTriggerRefusalError
+		var runsRefusal *api.ErrWorkflowHasNonTerminalRuns
+		if errors.As(err, &triggerRefusal) || errors.As(err, &runsRefusal) {
 			os.Exit(2)
 		}
 		os.Exit(1)
@@ -128,7 +130,7 @@ func deleteWorkflow(
 			}
 		}
 	}
-	return svc.DeleteWorkflow(ctx, name)
+	return svc.DeleteWorkflow(ctx, name, force)
 }
 
 // referencingTriggerIDs returns the IDs of triggers whose WorkflowID
