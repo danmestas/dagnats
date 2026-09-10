@@ -48,8 +48,11 @@ func TestDefaultConfig_PortsAndLimits(t *testing.T) {
 	if cfg.NATSPort != defaultNATSPort {
 		t.Errorf("NATSPort = %d, want %d", cfg.NATSPort, defaultNATSPort)
 	}
-	if cfg.MaxStoreBytes != defaultMaxStoreBytes {
-		t.Errorf("MaxStoreBytes = %d, want %d", cfg.MaxStoreBytes, defaultMaxStoreBytes)
+	// MaxStoreBytes defaults to the 0 "derive from available disk at
+	// resolution" sentinel (#687), not the unconditional cap -- see
+	// deriveMaxStoreBytes and TestConfigWithPath_UnsetBudgetDerivesFromDisk.
+	if cfg.MaxStoreBytes != 0 {
+		t.Errorf("MaxStoreBytes = %d, want 0 (derive-from-disk sentinel)", cfg.MaxStoreBytes)
 	}
 
 	// Negative: LeafRemotes should be empty

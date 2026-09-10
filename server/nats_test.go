@@ -185,6 +185,7 @@ func TestStartNATS_ClusterOptsSet(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.NATSPort = -1
+	cfg.MaxStoreBytes = 1 << 30 // 1 GiB; see other startNATS tests in this file
 	cfg.NATSClusterName = "dagnats-test"
 	cfg.NATSClusterRoutes = []string{
 		"nats://127.0.0.1:16222",

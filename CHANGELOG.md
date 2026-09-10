@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
+### Breaking / behavior changes
+
+- **The default `max_store_bytes`** is no longer an unconditional 10 GiB.
+  An unconfigured operator now gets `min(10 GiB, available disk at
+  data_dir / 2)`, derived at config-resolution time (#687) — a small host
+  (e.g. a 2 GB VM) no longer has its JetStream store budget silently set
+  larger than the disk backing it. A budget over 80% of available disk
+  (derived or explicit) is logged as a warning. If the disk backing
+  `data_dir` has no space at all, startup now fails with a config-load
+  error naming the data dir, instead of starting with an unusable budget.
+- **A malformed (non-numeric) `DAGNATS_MAX_STORE_BYTES` env var** (previously
+  silently ignored, leaving the 10 GiB default in place) **now aborts
+  startup with a config-load error** naming the bad value. A well-formed
+  but non-positive value (`0` or negative), from either the env var or the
+  `max_store_bytes` `dagnats.yaml` key, already crashed startup before this
+  change; it now fails the same way but with a clear, source-specific
+  error message instead of a generic panic (#687).
+
 ## [0.0.14] - 2026-08-29
 
 ### Breaking / behavior changes
