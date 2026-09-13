@@ -92,11 +92,11 @@ func tokenResolveFixture(
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	_, bearerA, err = store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	_, bearerA, err = store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint A: %v", err)
 	}
-	_, bearerB, err = store.Mint(mintCtx, "worker-b", []string{"echo"}, "tester")
+	_, bearerB, err = store.Mint(mintCtx, "worker-b", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint B: %v", err)
 	}

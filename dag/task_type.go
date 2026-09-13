@@ -108,3 +108,34 @@ func ValidWorkerGroup(s string) error {
 	}
 	return nil
 }
+
+// ValidTaskGroupCombo checks whether task and group may be dispatched
+// together, independent of whether each individually satisfies
+// ValidTaskType / ValidWorkerGroup. Returns nil whenever group is empty
+// (a dotted task alone is fine) or task contains no dot (an undotted
+// task with a group is fine).
+//
+// A dotted task combined with a non-empty group is rejected even when
+// group itself is dot-free: consumername.FilterFor("render.gpu", "")
+// and FilterFor("render", "gpu") derive the byte-identical filter
+// subject AND durable name ("task.render.gpu.*", "workers-render-gpu").
+// Each half stays legal alone — only the combination is rejected.
+//
+// Shared between dag.validateStepDispatch (workflow definition time)
+// and the bridge's poll endpoint (request time, issue #695) so the two
+// callers cannot drift on the same collision rule.
+func ValidTaskGroupCombo(task, group string) error {
+	if group == "" {
+		return nil
+	}
+	if strings.Contains(task, ".") {
+		return fmt.Errorf(
+			"task %q combined with worker_group %q: "+
+				"FilterFor(%q, \"\") and FilterFor(%q, %q) would derive "+
+				"the same filter subject and durable name — use an "+
+				"undotted task type when worker_group is set",
+			task, group, task, task, group,
+		)
+	}
+	return nil
+}

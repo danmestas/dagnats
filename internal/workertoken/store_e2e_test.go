@@ -45,7 +45,7 @@ func TestStoreWatchPropagatesAcrossInstances(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	id, bearer, err := minter.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	id, bearer, err := minter.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}

@@ -789,6 +789,10 @@ starts with `p + "."`. `"build"` matches `"build"` and `"build.deploy"`
 but **not** `"builder.deploy"`; `"echo"` matches `"echo"` but not
 `"echo-admin"`. Write the segment you want, without a trailing dot.
 
+`worker_groups` (#695) independently scopes which worker groups a token
+may poll on `POST /v1/tasks/poll` — see `docs/wire-protocol.md`'s
+"Authentication" and "Task Subjects" sections for the poll-side contract.
+
 ### Mint Token
 
 ```
@@ -800,7 +804,8 @@ POST /v1/tokens
 ```json
 {
   "label": "ci-runner-1",
-  "task_type_prefixes": ["ci", "build"]
+  "task_type_prefixes": ["ci", "build"],
+  "worker_groups": ["repo-alpha"]
 }
 ```
 
@@ -808,6 +813,16 @@ An empty (or omitted) `task_type_prefixes` mints a token that is
 authorized for **no** task types — fail closed, not "all types." Bounds:
 label up to 128 bytes, up to 32 prefixes of up to 64 bytes each, and up
 to 1000 non-revoked tokens outstanding at once.
+
+`worker_groups` is optional and follows the OPPOSITE rule from
+`task_type_prefixes`: omitting it (or sending no field at all) mints a
+token unscoped by group — it may poll any worker group, including the
+ungrouped queue, exactly like a token minted before #695. Sending a
+present-but-empty array (`"worker_groups": []`) is refused with `400` —
+it is never treated as "every group". A non-empty list scopes the token
+to exactly those groups; each entry must satisfy the same charset rule as
+a `StepDef.WorkerGroup` (no dots, `A-Za-z0-9_-` only), and the list is
+bounded at 32 entries.
 
 **Response:** `201 Created`
 
@@ -817,6 +832,7 @@ to 1000 non-revoked tokens outstanding at once.
   "token": "dgn_6f1c...9a2b_kQ3z...",
   "label": "ci-runner-1",
   "task_type_prefixes": ["ci", "build"],
+  "worker_groups": ["repo-alpha"],
   "created_at": "2026-08-28T12:00:00Z"
 }
 ```
@@ -850,6 +866,7 @@ GET /v1/tokens
       "id": "6f1c...9a2b",
       "label": "ci-runner-1",
       "task_type_prefixes": ["ci", "build"],
+      "worker_groups": ["repo-alpha"],
       "created_at": "2026-08-28T12:00:00Z",
       "created_by": "admin",
       "revoked_at": null

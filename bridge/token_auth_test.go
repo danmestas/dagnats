@@ -80,7 +80,7 @@ func TestTokenPollInScopeSucceeds(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	_, bearer, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	_, bearer, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestTokenPollOutOfScopeForbidden(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	_, bearer, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	_, bearer, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}

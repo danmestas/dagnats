@@ -83,10 +83,15 @@ func (tr *tokenRoutes) requireAdmin(
 	return true
 }
 
-// mintTokenRequest is the JSON body for POST /v1/tokens.
+// mintTokenRequest is the JSON body for POST /v1/tokens. WorkerGroups
+// relies on Go's nil-vs-non-nil-empty json.Unmarshal distinction: an
+// absent field leaves it nil (unscoped by group), while `[]` decodes
+// to a non-nil empty slice that Store.Mint refuses (#695) -- see
+// workertoken.validateWorkerGroups.
 type mintTokenRequest struct {
 	Label            string   `json:"label"`
 	TaskTypePrefixes []string `json:"task_type_prefixes"`
+	WorkerGroups     []string `json:"worker_groups"`
 }
 
 // mintTokenResponse is the JSON body for a successful POST /v1/tokens.
@@ -97,6 +102,7 @@ type mintTokenResponse struct {
 	Token            string    `json:"token"`
 	Label            string    `json:"label"`
 	TaskTypePrefixes []string  `json:"task_type_prefixes"`
+	WorkerGroups     []string  `json:"worker_groups,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -117,7 +123,8 @@ func (tr *tokenRoutes) handleMint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, bearer, err := tr.store.Mint(
-		r.Context(), req.Label, req.TaskTypePrefixes, tokenAdminCreatedBy,
+		r.Context(), req.Label, req.TaskTypePrefixes, req.WorkerGroups,
+		tokenAdminCreatedBy,
 	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -136,6 +143,7 @@ func (tr *tokenRoutes) handleMint(w http.ResponseWriter, r *http.Request) {
 		Token:            bearer,
 		Label:            req.Label,
 		TaskTypePrefixes: req.TaskTypePrefixes,
+		WorkerGroups:     req.WorkerGroups,
 		CreatedAt:        createdAt,
 	}
 	w.Header().Set("Content-Type", "application/json")

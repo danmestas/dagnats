@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/observe"
@@ -23,9 +24,10 @@ import (
 
 // pollRequest is the JSON body for POST /v1/tasks/poll.
 type pollRequest struct {
-	TaskTypes []string `json:"task_types"`
-	MaxTasks  int      `json:"max_tasks"`
-	TimeoutMs int64    `json:"timeout_ms"`
+	TaskTypes   []string `json:"task_types"`
+	WorkerGroup string   `json:"worker_group,omitempty"`
+	MaxTasks    int      `json:"max_tasks"`
+	TimeoutMs   int64    `json:"timeout_ms"`
 }
 
 // pollResponse is a single task returned from a poll.
@@ -75,6 +77,12 @@ func (b *Bridge) handlePoll(
 	if unmatched, ok := firstUnauthorizedTaskType(claims, req.TaskTypes); ok {
 		http.Error(w, fmt.Sprintf(
 			"task type %q not permitted for this token", unmatched,
+		), http.StatusForbidden)
+		return
+	}
+	if !claims.AllowsWorkerGroup(req.WorkerGroup) {
+		http.Error(w, fmt.Sprintf(
+			"worker group %q not permitted for this token", req.WorkerGroup,
 		), http.StatusForbidden)
 		return
 	}
@@ -141,8 +149,16 @@ func parsePollRequest(r *http.Request) (pollRequest, error) {
 	if len(req.TaskTypes) == 0 {
 		return req, fmt.Errorf("task_types is required")
 	}
+	if req.WorkerGroup != "" {
+		if err := dag.ValidWorkerGroup(req.WorkerGroup); err != nil {
+			return req, err
+		}
+	}
 	for _, taskType := range req.TaskTypes {
 		if err := validateTaskType(taskType); err != nil {
+			return req, err
+		}
+		if err := dag.ValidTaskGroupCombo(taskType, req.WorkerGroup); err != nil {
 			return req, err
 		}
 	}
@@ -182,7 +198,9 @@ func (b *Bridge) fetchTasks(
 		if remaining <= 0 {
 			break
 		}
-		fetched, err := b.fetchForType(ctx, taskType, remaining, timeout)
+		fetched, err := b.fetchForType(
+			ctx, taskType, req.WorkerGroup, remaining, timeout,
+		)
 		// Keep what was fetched even when the type errored: by this
 		// point each message has had step.started published and been
 		// parked in the ackMap, and the ackMap has no reaper. Dropping
@@ -220,7 +238,7 @@ func (b *Bridge) fetchTasks(
 // a native worker's WithAckWait override with our default.
 func (b *Bridge) fetchForType(
 	ctx context.Context,
-	taskType string, count int, timeout time.Duration,
+	taskType, group string, count int, timeout time.Duration,
 ) ([]pollResponse, error) {
 	if ctx == nil {
 		panic("fetchForType: ctx must not be nil")
@@ -231,7 +249,7 @@ func (b *Bridge) fetchForType(
 	if count <= 0 {
 		panic("fetchForType: count must be positive")
 	}
-	cons, err := b.taskConsumer(ctx, taskType)
+	cons, err := b.taskConsumer(ctx, taskType, group)
 	if err != nil {
 		return nil, err
 	}
@@ -271,10 +289,11 @@ func (b *Bridge) fetchForType(
 const jsErrCodeWorkQueueConsumerNotUnique jetstream.ErrorCode = 10100
 
 // taskConsumer returns the durable consumer shared by every poller of
-// taskType, creating it with the native worker's canonical config when
-// it does not yet exist.
+// taskType+group, creating it with the native worker's canonical
+// config when it does not yet exist. group == "" is the ungrouped
+// queue, unchanged from pre-#695 behavior.
 func (b *Bridge) taskConsumer(
-	ctx context.Context, taskType string,
+	ctx context.Context, taskType, group string,
 ) (jetstream.Consumer, error) {
 	if ctx == nil {
 		panic("taskConsumer: ctx must not be nil")
@@ -282,8 +301,8 @@ func (b *Bridge) taskConsumer(
 	if taskType == "" {
 		panic("taskConsumer: taskType must not be empty")
 	}
-	name := consumername.NameFor(taskType, "")
-	filter := consumername.FilterFor(taskType, "")
+	name := consumername.NameFor(taskType, group)
+	filter := consumername.FilterFor(taskType, group)
 	cons, err := b.adoptConsumer(ctx, name, filter)
 	if err == nil {
 		return cons, nil

@@ -8,6 +8,7 @@ package workertoken
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestAuthorizeParseStrictness(t *testing.T) {
 	store := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, "tester")
+	_, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestMintAuthorizeRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, "tester")
+	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestAuthorizeWrongSecretSameErrorAsUnknownID(t *testing.T) {
 	store := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, "tester")
+	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestRevokedTokenRejected(t *testing.T) {
 	store := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, "tester")
+	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -156,7 +157,7 @@ func TestMintPrefixBounds(t *testing.T) {
 		tooMany[i] = "p"
 	}
 	// Positive: exceeding PrefixesCountMax is rejected.
-	if _, _, err := store.Mint(ctx, "worker-a", tooMany, "tester"); err == nil {
+	if _, _, err := store.Mint(ctx, "worker-a", tooMany, nil, "tester"); err == nil {
 		t.Fatalf("Mint with %d prefixes = nil error, want error", len(tooMany))
 	}
 
@@ -164,7 +165,7 @@ func TestMintPrefixBounds(t *testing.T) {
 	// Negative-of-that: within-bounds count but an over-long single
 	// prefix is rejected too.
 	if _, _, err := store.Mint(
-		ctx, "worker-a", []string{tooLong}, "tester",
+		ctx, "worker-a", []string{tooLong}, nil, "tester",
 	); err == nil {
 		t.Fatalf("Mint with over-long prefix = nil error, want error")
 	}
@@ -197,7 +198,7 @@ func TestMintRejectsInvalidPrefixCharset(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := store.Mint(ctx, "worker", []string{tc.prefix}, "tester")
+			_, _, err := store.Mint(ctx, "worker", []string{tc.prefix}, nil, "tester")
 			// Positive: invalid-charset prefixes are rejected.
 			if tc.wantErr && err == nil {
 				t.Fatalf("Mint(%q) = nil error, want error", tc.prefix)
@@ -214,7 +215,7 @@ func TestMintEmptyPrefixesMeansNoTaskTypes(t *testing.T) {
 	store := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, bearer, err := store.Mint(ctx, "worker-a", nil, "tester")
+	_, bearer, err := store.Mint(ctx, "worker-a", nil, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint with empty prefixes: %v", err)
 	}
@@ -243,14 +244,14 @@ func TestMintTokensCountMaxEnforced(t *testing.T) {
 
 	for i := 0; i < TokensCountMax; i++ {
 		if _, _, err := store.Mint(
-			ctx, "worker", []string{"t"}, "tester",
+			ctx, "worker", []string{"t"}, nil, "tester",
 		); err != nil {
 			t.Fatalf("Mint %d: %v", i, err)
 		}
 	}
 	// Positive: the mint one past the cap is refused.
 	if _, _, err := store.Mint(
-		ctx, "one-too-many", []string{"t"}, "tester",
+		ctx, "one-too-many", []string{"t"}, nil, "tester",
 	); err == nil {
 		t.Fatalf("Mint at cap+1 = nil error, want error")
 	}
@@ -269,7 +270,7 @@ func TestListNeverContainsSecretHash(t *testing.T) {
 	store := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, _, err := store.Mint(ctx, "worker-a", []string{"echo"}, "tester"); err != nil {
+	if _, _, err := store.Mint(ctx, "worker-a", []string{"echo"}, nil, "tester"); err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
 	toks, err := store.List(ctx)
@@ -315,7 +316,7 @@ func TestRevokeFallsBackToKVOnCacheMiss(t *testing.T) {
 	storeA := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, _, err := storeA.Mint(ctx, "worker-a", []string{"echo"}, "tester")
+	id, _, err := storeA.Mint(ctx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestRevokedRecordsAreBounded(t *testing.T) {
 
 	ids := make([]string, 0, TokensCountMax+5)
 	for i := 0; i < TokensCountMax+5; i++ {
-		id, _, err := store.Mint(ctx, "worker", []string{"t"}, "tester")
+		id, _, err := store.Mint(ctx, "worker", []string{"t"}, nil, "tester")
 		if err != nil {
 			t.Fatalf("Mint %d: %v", i, err)
 		}
@@ -384,5 +385,111 @@ func TestRevokedRecordsAreBounded(t *testing.T) {
 		if found {
 			t.Fatal("earliest-revoked id survived pruning, want it evicted")
 		}
+	}
+}
+
+// TestMintWorkerGroupsNilVsPresentEmpty pins the #695 nil-vs-empty
+// contract at Mint, the opposite polarity from prefixes: nil mints an
+// unscoped-by-group token (Authorize's Claims.WorkerGroups is empty,
+// and AllowsWorkerGroup then allows everything), while a present but
+// zero-length slice is refused outright rather than silently minting
+// "every group".
+func TestMintWorkerGroupsNilVsPresentEmpty(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Positive: nil worker_groups mints fine and is unscoped by group.
+	_, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, nil, "tester")
+	if err != nil {
+		t.Fatalf("Mint(nil worker_groups): %v", err)
+	}
+	claims, err := store.Authorize(bearer)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !claims.AllowsWorkerGroup("alpha") || !claims.AllowsWorkerGroup("") {
+		t.Fatal("nil worker_groups must allow any group, including ungrouped")
+	}
+
+	// Negative: present-but-empty worker_groups is refused at Mint.
+	if _, _, err := store.Mint(
+		ctx, "worker-b", []string{"echo"}, []string{}, "tester",
+	); err == nil {
+		t.Fatal("Mint(present-but-empty worker_groups) = nil error, want error")
+	}
+}
+
+// TestMintWorkerGroupsCharsetAndBound mirrors
+// TestMintRejectsInvalidPrefixCharset: each worker group must satisfy
+// dag.ValidWorkerGroup, and the list is bounded at WorkerGroupsCountMax.
+func TestMintWorkerGroupsCharsetAndBound(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cases := []struct {
+		name    string
+		group   string
+		wantErr bool
+	}{
+		{"valid", "alpha", false},
+		{"valid with dash and underscore", "alpha-fast_1", false},
+		{"dotted group rejected", "alpha.fast", true},
+		{"wildcard star", "alpha*", true},
+		{"whitespace", "alpha beta", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := store.Mint(
+				ctx, "worker", []string{"echo"}, []string{tc.group}, "tester",
+			)
+			if tc.wantErr && err == nil {
+				t.Fatalf("Mint(worker_groups=[%q]) = nil error, want error", tc.group)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Mint(worker_groups=[%q]) = %v, want nil error", tc.group, err)
+			}
+		})
+	}
+
+	tooMany := make([]string, WorkerGroupsCountMax+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("g%d", i)
+	}
+	if _, _, err := store.Mint(
+		ctx, "worker-over", []string{"echo"}, tooMany, "tester",
+	); err == nil {
+		t.Fatal("Mint with over-count worker_groups = nil error, want error")
+	}
+}
+
+// TestAuthorizeScopesClaimsWorkerGroups proves a minted token's groups
+// reach Authorize's returned Claims verbatim.
+func TestAuthorizeScopesClaimsWorkerGroups(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, bearer, err := store.Mint(
+		ctx, "worker-a", []string{"echo"}, []string{"alpha", "beta"}, "tester",
+	)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	claims, err := store.Authorize(bearer)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	// Positive: the token's own groups are allowed.
+	if !claims.AllowsWorkerGroup("alpha") || !claims.AllowsWorkerGroup("beta") {
+		t.Fatalf("Claims.WorkerGroups = %v, want alpha and beta allowed",
+			claims.WorkerGroups)
+	}
+	// Negative: an unrelated group, and the ungrouped queue, are denied.
+	if claims.AllowsWorkerGroup("gamma") {
+		t.Fatal("AllowsWorkerGroup(gamma) = true, want false")
+	}
+	if claims.AllowsWorkerGroup("") {
+		t.Fatal("AllowsWorkerGroup(\"\") = true, want false for a group-scoped token")
 	}
 }

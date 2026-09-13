@@ -29,6 +29,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func ResolvePriority\(cfg \*PriorityConfig, input json.RawMessage\) int](<#ResolvePriority>)
 - [func ResolveSleepDuration\(cfg SleepConfig, runInput json.RawMessage, now time.Time\) \(time.Duration, error\)](<#ResolveSleepDuration>)
 - [func RunStatusNames\(\) \[\]string](<#RunStatusNames>)
+- [func ValidTaskGroupCombo\(task, group string\) error](<#ValidTaskGroupCombo>)
 - [func ValidTaskType\(s string\) error](<#ValidTaskType>)
 - [func ValidWorkerGroup\(s string\) error](<#ValidWorkerGroup>)
 - [func Validate\(def WorkflowDef\) error](<#Validate>)
@@ -326,6 +327,19 @@ func RunStatusNames() []string
 
 RunStatusNames returns the canonical lowercase string names for every RunStatus value, in numeric order. Callers \(CLI help text, API docs, error messages\) reuse this rather than maintaining their own copy of the slice.
 
+<a name="ValidTaskGroupCombo"></a>
+## func [ValidTaskGroupCombo](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L127>)
+
+```go
+func ValidTaskGroupCombo(task, group string) error
+```
+
+ValidTaskGroupCombo checks whether task and group may be dispatched together, independent of whether each individually satisfies ValidTaskType / ValidWorkerGroup. Returns nil whenever group is empty \(a dotted task alone is fine\) or task contains no dot \(an undotted task with a group is fine\).
+
+A dotted task combined with a non\-empty group is rejected even when group itself is dot\-free: consumername.FilterFor\("render.gpu", ""\) and FilterFor\("render", "gpu"\) derive the byte\-identical filter subject AND durable name \("task.render.gpu.\*", "workers\-render\-gpu"\). Each half stays legal alone — only the combination is rejected.
+
+Shared between dag.validateStepDispatch \(workflow definition time\) and the bridge's poll endpoint \(request time, issue \#695\) so the two callers cannot drift on the same collision rule.
+
 <a name="ValidTaskType"></a>
 ## func [ValidTaskType](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L32>)
 
@@ -349,7 +363,7 @@ ValidWorkerGroup reports whether s is safe to use as a StepDef.WorkerGroup. Step
 Dots are banned here \(not merely anchored around, the way FilterFor isolates a dotted Task\) because a dot in WorkerGroup is indistinguishable from the separator FilterFor/StepSubject place between Task and WorkerGroup: FilterFor\("render", "gpu.fast"\) and FilterFor\("render.gpu", "fast"\) both derive "task.render.gpu.fast.\*", and NameFor collapses both to "workers\-render\-gpu\-fast" — a dotted group silently collides with an unrelated dotted\-task/group split. Banning dots in WorkerGroup outright \(rather than case\-by\-case\) closes that for a single step's own Task, regardless of what that step's Task looks like; see validateStepDispatch's combination check for the remaining case where THAT SAME step's Task is dotted and WorkerGroup is set. Neither rule reaches across steps or workflow defs: step A \{Task:"render.gpu"\} and step B \{Task:"render", WorkerGroup:"gpu"\} in different workflows still derive the identical filter subject and durable name, and the cross\-process collision check treats that as ordinary idempotent durable reuse, not a conflict — see docs/wire\-protocol.md "Task Subjects" for that limitation.
 
 <a name="Validate"></a>
-## func [Validate](<https://github.com/danmestas/dagnats/blob/main/dag/validate.go#L12>)
+## func [Validate](<https://github.com/danmestas/dagnats/blob/main/dag/validate.go#L11>)
 
 ```go
 func Validate(def WorkflowDef) error

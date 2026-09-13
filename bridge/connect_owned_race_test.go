@@ -118,7 +118,7 @@ func TestConnectReconnectRacesOwnHeartbeatNeverConflicts(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	_, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	_, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint A: %v", err)
 	}

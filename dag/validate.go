@@ -2,7 +2,6 @@ package dag
 
 import (
 	"fmt"
-	"strings"
 )
 
 // Validate checks a WorkflowDef for structural correctness before any run
@@ -289,15 +288,8 @@ func validateStepDispatch(step StepDef) error {
 			"step %q has invalid worker_group: %w", step.ID, err,
 		)
 	}
-	if strings.Contains(step.Task, ".") {
-		return fmt.Errorf(
-			"step %q combines dotted task %q with worker_group %q: "+
-				"FilterFor(%q, \"\") and FilterFor(%q, %q) would derive "+
-				"the same filter subject and durable name — use an "+
-				"undotted task type when worker_group is set",
-			step.ID, step.Task, step.WorkerGroup,
-			step.Task, step.Task, step.WorkerGroup,
-		)
+	if err := ValidTaskGroupCombo(step.Task, step.WorkerGroup); err != nil {
+		return fmt.Errorf("step %q: %w", step.ID, err)
 	}
 	return nil
 }
