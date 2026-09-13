@@ -328,7 +328,7 @@ func RunStatusNames() []string
 RunStatusNames returns the canonical lowercase string names for every RunStatus value, in numeric order. Callers \(CLI help text, API docs, error messages\) reuse this rather than maintaining their own copy of the slice.
 
 <a name="ValidTaskGroupCombo"></a>
-## func [ValidTaskGroupCombo](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L127>)
+## func [ValidTaskGroupCombo](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L133>)
 
 ```go
 func ValidTaskGroupCombo(task, group string) error
@@ -339,6 +339,8 @@ ValidTaskGroupCombo checks whether task and group may be dispatched together, in
 A dotted task combined with a non\-empty group is rejected even when group itself is dot\-free: consumername.FilterFor\("render.gpu", ""\) and FilterFor\("render", "gpu"\) derive the byte\-identical filter subject AND durable name \("task.render.gpu.\*", "workers\-render\-gpu"\). Each half stays legal alone — only the combination is rejected.
 
 Shared between dag.validateStepDispatch \(workflow definition time\) and the bridge's poll endpoint \(request time, issue \#695\) so the two callers cannot drift on the same collision rule.
+
+Deliberately assertion\-free, same as ValidTaskType and ValidWorkerGroup: this is a validator over untrusted caller input \(an author\-supplied task/group pair, or a poll request body\), not a programmer\-error check over this package's own invariants \-\- a bad task/group pair here is an ordinary rejection, never a panic.
 
 <a name="ValidTaskType"></a>
 ## func [ValidTaskType](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L32>)

@@ -824,6 +824,12 @@ to exactly those groups; each entry must satisfy the same charset rule as
 a `StepDef.WorkerGroup` (no dots, `A-Za-z0-9_-` only), and the list is
 bounded at 32 entries.
 
+Group scoping is checked against every reading of the subject a poll
+actually consumes from, not just the `worker_group` spelling in the
+request body — a dotted ungrouped task type can derive the same
+underlying queue as an equivalent (task type, group) pair, so the bridge
+authorizes both readings rather than only the one the caller wrote.
+
 **Response:** `201 Created`
 
 ```json

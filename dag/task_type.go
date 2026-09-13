@@ -124,6 +124,12 @@ func ValidWorkerGroup(s string) error {
 // Shared between dag.validateStepDispatch (workflow definition time)
 // and the bridge's poll endpoint (request time, issue #695) so the two
 // callers cannot drift on the same collision rule.
+//
+// Deliberately assertion-free, same as ValidTaskType and ValidWorkerGroup:
+// this is a validator over untrusted caller input (an author-supplied
+// task/group pair, or a poll request body), not a programmer-error check
+// over this package's own invariants -- a bad task/group pair here is
+// an ordinary rejection, never a panic.
 func ValidTaskGroupCombo(task, group string) error {
 	if group == "" {
 		return nil

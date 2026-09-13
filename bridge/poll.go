@@ -86,6 +86,12 @@ func (b *Bridge) handlePoll(
 		), http.StatusForbidden)
 		return
 	}
+	if reason, ok := firstUnauthorizedAliasedReading(
+		claims, req.TaskTypes, req.WorkerGroup,
+	); ok {
+		http.Error(w, reason, http.StatusForbidden)
+		return
+	}
 	tasks, err := b.fetchTasks(ctx, req)
 	if err != nil {
 		// Loud by construction: a consumer the bridge cannot obtain is
@@ -131,6 +137,108 @@ func firstUnauthorizedTaskType(
 		}
 	}
 	return "", false
+}
+
+// firstUnauthorizedAliasedReading returns a 403-ready message for the
+// first ALIASED subject reading claims refuses, reporting false when
+// every reading induced by taskTypes/group is also authorized. Run
+// alongside firstUnauthorizedTaskType and the standalone
+// AllowsWorkerGroup check, which authorize only the caller's literal
+// request spelling -- this closes the gap those leave open.
+//
+// consumername.FilterFor's (taskType, group) -> filter-subject mapping
+// is NOT injective (found in review, #695): a dotted ungrouped task type
+// "a.b" derives the BYTE-IDENTICAL filter subject and durable name
+// ("task.a.b.*", "workers-a-b") as the grouped pair (task type "a",
+// group "b"). A token authorized for one spelling but not the other
+// would otherwise reach the SAME queue under whichever spelling it can
+// name -- demonstrated live: a token scoped to task-type prefix
+// "zz4.alpha" (no group scope) was correctly refused
+// {"task_types":["zz4"],"worker_group":"alpha"}, then drained that
+// exact queue via {"task_types":["zz4.alpha"]}.
+//
+// Only the LAST dot can split a valid worker group off a dotted task
+// type -- dag.ValidWorkerGroup forbids dots in a group, so a task type
+// has exactly one alternate (grouped) reading, never more. This is
+// constant work per task type, not a loop over split points.
+//
+// Two symmetric directions, each checked per task type:
+//   - Ungrouped request (group == "") naming a dotted task type T that
+//     splits into head+tail: the SAME filter subject is also the
+//     grouped reading (head, tail), so head+tail must be authorized too
+//     (claims.AllowsTaskType(head) && claims.AllowsWorkerGroup(tail)),
+//     not just T itself.
+//   - Grouped request (group == G, task type T): the SAME filter
+//     subject is also the ungrouped reading of task type T+"."+G, so
+//     that concatenation must be authorized too
+//     (claims.AllowsTaskType(T+"."+G)). This does not narrow the
+//     intended case: a token with prefix "dagger" polling (dagger,
+//     alpha) passes, because segment-aware AllowsTaskType("dagger")
+//     already covers "dagger.alpha" as a dot-child (see
+//     TestFirstUnauthorizedAliasedReadingAllowsIntendedGroupedCase) --
+//     in fact AllowsTaskType(T) being true (as the earlier
+//     firstUnauthorizedTaskType check already required) ALWAYS implies
+//     AllowsTaskType(T+"."+G) under today's segment-aware matching, so
+//     this direction's check never actually denies anything today; it
+//     stays in place as a defense-in-depth guard against a future
+//     AllowsTaskType change that breaks that monotonicity.
+//
+// Scoping is bypassed for Admin claims ONLY, and follows the identical
+// fail-closed posture as firstUnauthorizedTaskType: an empty, non-admin
+// TokenID must never be treated as unscoped.
+func firstUnauthorizedAliasedReading(
+	claims workertoken.Claims, taskTypes []string, group string,
+) (string, bool) {
+	if len(taskTypes) == 0 {
+		panic("firstUnauthorizedAliasedReading: taskTypes must not be empty")
+	}
+	if claims.Admin {
+		return "", false
+	}
+	for _, taskType := range taskTypes {
+		if group == "" {
+			head, tail, ok := splitLastDot(taskType)
+			if !ok {
+				continue
+			}
+			if !claims.AllowsTaskType(head) || !claims.AllowsWorkerGroup(tail) {
+				return fmt.Sprintf(
+					"task type %q (ungrouped) derives the same subject "+
+						"as task type %q with worker_group %q, which is "+
+						"not permitted for this token",
+					taskType, head, tail,
+				), true
+			}
+			continue
+		}
+		aliased := taskType + "." + group
+		if !claims.AllowsTaskType(aliased) {
+			return fmt.Sprintf(
+				"task type %q with worker_group %q derives the same "+
+					"subject as ungrouped task type %q, which is not "+
+					"permitted for this token",
+				taskType, group, aliased,
+			), true
+		}
+	}
+	return "", false
+}
+
+// splitLastDot splits taskType on its LAST '.' into head and tail,
+// reporting ok==false when taskType has no dot. Only the last dot can
+// ever split a valid worker group off a dotted task type -- a worker
+// group is always a single subject token (dag.ValidWorkerGroup forbids
+// dots) -- so a dotted task type has exactly one alternate grouped
+// reading, never more.
+func splitLastDot(taskType string) (head, tail string, ok bool) {
+	if taskType == "" {
+		panic("splitLastDot: taskType must not be empty")
+	}
+	i := strings.LastIndexByte(taskType, '.')
+	if i < 0 {
+		return "", "", false
+	}
+	return taskType[:i], taskType[i+1:], true
 }
 
 // parsePollRequest validates the poll JSON body.

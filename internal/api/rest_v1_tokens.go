@@ -130,20 +130,24 @@ func (tr *tokenRoutes) handleMint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Lookup reads the just-minted record's actual stored CreatedAt
-	// (Mint updates its own Store's cache synchronously before
-	// returning), rather than re-stamping a fresh time.Now() here that
-	// could drift from what List later reports for the same token.
+	// Lookup reads the just-minted record's actual stored CreatedAt and
+	// WorkerGroups (Mint updates its own Store's cache synchronously
+	// before returning), rather than echoing req.WorkerGroups verbatim
+	// -- the request value and the stored value could silently drift
+	// the day Mint starts normalizing worker_groups (dedup, ordering),
+	// same reasoning CreatedAt already followed.
 	createdAt := time.Now().UTC()
+	workerGroups := req.WorkerGroups
 	if tok, ok := tr.store.Lookup(id); ok {
 		createdAt = tok.CreatedAt
+		workerGroups = tok.WorkerGroups
 	}
 	resp := mintTokenResponse{
 		ID:               id,
 		Token:            bearer,
 		Label:            req.Label,
 		TaskTypePrefixes: req.TaskTypePrefixes,
-		WorkerGroups:     req.WorkerGroups,
+		WorkerGroups:     workerGroups,
 		CreatedAt:        createdAt,
 	}
 	w.Header().Set("Content-Type", "application/json")
