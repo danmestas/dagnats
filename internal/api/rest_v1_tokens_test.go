@@ -173,3 +173,95 @@ func TestTokensAPIMintListRevokeRoundTrip(t *testing.T) {
 			revokeUnknownResp.StatusCode, http.StatusNotFound)
 	}
 }
+
+// mintedTokenResponse mirrors mintTokenResponse for decoding in tests
+// that need to inspect the WorkerGroups scope.
+type mintedTokenResponse struct {
+	ID               string    `json:"id"`
+	Token            string    `json:"token"`
+	Label            string    `json:"label"`
+	TaskTypePrefixes []string  `json:"task_type_prefixes"`
+	WorkerGroups     []string  `json:"worker_groups"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// TestTokensAPIMintWorkerGroupsAbsentOK proves an absent worker_groups
+// field mints successfully and unscoped (#695) -- the pre-#695 request
+// shape must keep working byte-for-byte.
+func TestTokensAPIMintWorkerGroupsAbsentOK(t *testing.T) {
+	baseURL := mintTokensTestFixture(t, "admin-token")
+	resp := doJSON(t, "POST", baseURL+"/v1/tokens", "admin-token",
+		`{"label":"worker-a","task_type_prefixes":["echo"]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mint status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var minted mintedTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&minted); err != nil {
+		t.Fatalf("decode mint response: %v", err)
+	}
+	if len(minted.WorkerGroups) != 0 {
+		t.Fatalf("WorkerGroups = %v, want empty for an absent field",
+			minted.WorkerGroups)
+	}
+}
+
+// TestTokensAPIMintWorkerGroupsPresentButEmptyRefused pins the mint-
+// time rejection of a present-but-empty worker_groups array (#695):
+// absent means unscoped, but an explicit `[]` must never silently mean
+// "every group".
+func TestTokensAPIMintWorkerGroupsPresentButEmptyRefused(t *testing.T) {
+	baseURL := mintTokensTestFixture(t, "admin-token")
+	resp := doJSON(t, "POST", baseURL+"/v1/tokens", "admin-token",
+		`{"label":"worker-a","task_type_prefixes":["echo"],"worker_groups":[]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TestTokensAPIMintWorkerGroupsInvalidRefused proves a group value
+// that could never appear on a real dispatch (a dot, forbidden by
+// dag.ValidWorkerGroup) is refused at mint.
+func TestTokensAPIMintWorkerGroupsInvalidRefused(t *testing.T) {
+	baseURL := mintTokensTestFixture(t, "admin-token")
+	resp := doJSON(t, "POST", baseURL+"/v1/tokens", "admin-token",
+		`{"label":"worker-a","task_type_prefixes":["echo"],"worker_groups":["a.b"]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TestTokensAPIMintListEchoesWorkerGroups proves a valid worker_groups
+// scope round-trips through both the mint response and the listing.
+func TestTokensAPIMintListEchoesWorkerGroups(t *testing.T) {
+	baseURL := mintTokensTestFixture(t, "admin-token")
+	mintResp := doJSON(t, "POST", baseURL+"/v1/tokens", "admin-token",
+		`{"label":"worker-a","task_type_prefixes":["echo"],"worker_groups":["alpha"]}`)
+	defer mintResp.Body.Close()
+	if mintResp.StatusCode != http.StatusCreated {
+		t.Fatalf("mint status = %d, want %d", mintResp.StatusCode, http.StatusCreated)
+	}
+	var minted mintedTokenResponse
+	if err := json.NewDecoder(mintResp.Body).Decode(&minted); err != nil {
+		t.Fatalf("decode mint response: %v", err)
+	}
+	if len(minted.WorkerGroups) != 1 || minted.WorkerGroups[0] != "alpha" {
+		t.Fatalf("mint WorkerGroups = %v, want [alpha]", minted.WorkerGroups)
+	}
+
+	listResp := doJSON(t, "GET", baseURL+"/v1/tokens", "admin-token", "")
+	defer listResp.Body.Close()
+	var listed struct {
+		Tokens []workertoken.Token `json:"tokens"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Tokens) != 1 ||
+		len(listed.Tokens[0].WorkerGroups) != 1 ||
+		listed.Tokens[0].WorkerGroups[0] != "alpha" {
+		t.Fatalf("listed WorkerGroups = %+v, want [alpha]", listed.Tokens)
+	}
+}

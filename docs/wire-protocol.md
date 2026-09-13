@@ -67,6 +67,17 @@ ungrouped worker to (even partially) serve a task type that also has grouped
 dispatches must add a matching grouped worker for that group — the ungrouped
 worker will no longer see that work after upgrading.
 
+**HTTP (bridge) workers can poll a group too (#695).** `POST
+/v1/tasks/poll` accepts an optional `worker_group`, threaded through to the
+same `consumername.NameFor`/`FilterFor` derivation a native worker uses —
+an HTTP-connected runner now gets the identical isolation a native Go
+worker already had. Absent `worker_group` behaves exactly as before: the
+ungrouped durable, unchanged. The same dotted-`Task`-plus-`WorkerGroup`
+rejection applies at the request boundary, not only at workflow
+registration: a poll naming a dotted task type together with a non-empty
+`worker_group` is rejected with `400`, for the identical filter/durable-name
+collision reason. See "2. POST /v1/tasks/poll" below.
+
 Examples:
 
 - `task.llm.*` — all LLM tasks (any run)
@@ -164,10 +175,20 @@ Long-polls for available tasks from the TASK_QUEUES stream.
 ```json
 {
   "task_types": ["llm"],
+  "worker_group": "repo-alpha",
   "max_tasks": 1,
   "timeout_ms": 30000
 }
 ```
+
+`worker_group` is optional (#695). Omitting it polls the ungrouped queue,
+identical to pre-#695 behavior. When set, it must satisfy the same
+`dag.ValidWorkerGroup` rule a `StepDef.WorkerGroup` does, and every entry in
+`task_types` must be undotted — a dotted task type combined with a
+non-empty `worker_group` is rejected with `400` (see "Task Subjects"
+above). A worker token scoped to specific groups (see Authentication
+below) can only poll the groups it was minted with; polling outside that
+scope returns `403`.
 
 **Response**:
 ```json
@@ -184,7 +205,10 @@ Long-polls for available tasks from the TASK_QUEUES stream.
 ```
 
 **Behavior**:
-- Creates ephemeral pull subscriptions for each task type
+- Shares one durable consumer per `task_type`+`worker_group` pair with
+  every other poller of that same pair (native workers included) —
+  `worker_group` selects which durable, exactly as a native worker's
+  `StepDef.WorkerGroup` does
 - Fetches up to `max_tasks` messages with `timeout_ms` long-poll
 - Returns empty array `[]` on timeout
 - Each fetched message is stored in an in-memory ack map keyed by `task_id`
@@ -262,6 +286,8 @@ Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}
 ## Authentication
 
 No env token = open bridge (dev mode, unauthenticated); set `DAGNATS_BRIDGE_TOKEN` and every worker needs either the env token or a minted one. The env token is the admin/root credential (unscoped, and the only credential the `/v1/tokens` routes accept); mint scoped, revocable worker tokens from it via `POST /v1/tokens` and hand those to individual machines instead. Missing or invalid tokens return `401 Unauthorized`; a worker token polling outside its minted task-type prefixes returns `403`. See the REST API reference's Tokens section for the mint/list/revoke routes.
+
+A minted token can also be scoped to specific worker groups via `worker_groups` (#695), independent of `task_type_prefixes`. Omitting `worker_groups` (or leaving it unset) mints a token unscoped by group — it may poll any group, including the ungrouped queue, exactly like a pre-#695 token. A non-empty `worker_groups` list scopes the token to EXACTLY those groups: it may poll any of them, but never a group outside the list, and — because `""` is never a mintable group value — it can never poll the ungrouped queue either. A present-but-empty `worker_groups` array (`[]`) is refused at mint time rather than silently meaning "every group". Polling a group the token does not carry also returns `403`.
 
 NATS transport uses NATS native authentication (user/password, tokens, NKey, JWT).
 

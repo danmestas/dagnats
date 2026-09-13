@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
@@ -271,12 +272,23 @@ func nextBackoff(d time.Duration) time.Duration {
 	return next
 }
 
-// Mint creates a new worker token scoped to prefixes, refusing beyond
-// TokensCountMax non-revoked tokens. Returns the token's ID and its
-// bearer string ("dgn_{id}_{secret}") — the bearer is the ONLY time
-// the secret is ever available; it is not recoverable afterward.
+// Mint creates a new worker token scoped to prefixes and, optionally,
+// workerGroups, refusing beyond TokensCountMax non-revoked tokens.
+// Returns the token's ID and its bearer string ("dgn_{id}_{secret}") —
+// the bearer is the ONLY time the secret is ever available; it is not
+// recoverable afterward.
+//
+// workerGroups follows the opposite-of-prefixes contract on nil vs
+// empty (#695): nil means unscoped by group (today's behavior, so
+// existing callers passing nil keep minting unscoped tokens) while a
+// non-nil, zero-length slice is refused outright -- an operator who
+// wrote `"worker_groups": []` almost certainly meant "no groups
+// granted", and silently treating that the same as nil ("every group")
+// would be exactly the widening #695 isolation exists to prevent.
 func (s *Store) Mint(
-	ctx context.Context, label string, prefixes []string, createdBy string,
+	ctx context.Context,
+	label string, prefixes []string, workerGroups []string,
+	createdBy string,
 ) (id, bearer string, err error) {
 	if ctx == nil {
 		panic("Mint: ctx must not be nil")
@@ -288,6 +300,9 @@ func (s *Store) Mint(
 		return "", "", err
 	}
 	if err := validatePrefixes(prefixes); err != nil {
+		return "", "", err
+	}
+	if err := validateWorkerGroups(workerGroups); err != nil {
 		return "", "", err
 	}
 	// Check-then-act, not atomic: two concurrent Mints can both read a
@@ -318,6 +333,7 @@ func (s *Store) Mint(
 		ID:               id,
 		Label:            label,
 		TaskTypePrefixes: prefixes,
+		WorkerGroups:     workerGroups,
 		CreatedAt:        time.Now().UTC(),
 		CreatedBy:        createdBy,
 		SecretHash:       secretHash,
@@ -433,6 +449,35 @@ func validatePrefixCharset(prefix string) error {
 				"invalid task type prefix %q: illegal character %q",
 				prefix, string(prefix[i]),
 			)
+		}
+	}
+	return nil
+}
+
+// validateWorkerGroups bounds the worker-group list and each entry
+// (#695). Unlike validatePrefixes, nil and non-nil-empty are NOT
+// treated alike here: nil means unscoped by group (today's behavior),
+// while a present-but-empty slice is refused -- see Mint's doc comment
+// for why. Each entry must satisfy dag.ValidWorkerGroup, the same
+// charset/shape rule StepDef.WorkerGroup and the bridge's poll
+// endpoint enforce, so a token can never be minted with a group value
+// that could never appear on a real dispatch.
+func validateWorkerGroups(workerGroups []string) error {
+	if workerGroups != nil && len(workerGroups) == 0 {
+		return fmt.Errorf(
+			"worker_groups must not be present-but-empty: omit the " +
+				"field entirely for an unscoped token, or list at " +
+				"least one group",
+		)
+	}
+	if len(workerGroups) > WorkerGroupsCountMax {
+		return fmt.Errorf(
+			"worker_groups exceeds %d entries", WorkerGroupsCountMax,
+		)
+	}
+	for _, group := range workerGroups {
+		if err := dag.ValidWorkerGroup(group); err != nil {
+			return fmt.Errorf("invalid worker group: %w", err)
 		}
 	}
 	return nil
@@ -651,6 +696,7 @@ func (s *Store) Authorize(bearer string) (Claims, error) {
 	return Claims{
 		TokenID:          id,
 		TaskTypePrefixes: tok.TaskTypePrefixes,
+		WorkerGroups:     tok.WorkerGroups,
 	}, nil
 }
 

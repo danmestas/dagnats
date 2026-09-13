@@ -131,6 +131,55 @@ diagnostics, not silently-ignored input; the upper bound on `max_attempts`
 and any bound on `multiplier` come from `dag.Validate` (#683), same as a
 native workflow.
 
+## `worker_group:`
+
+Every check and `deploy:` accept an optional `worker_group:`, mapped onto
+the compiled step's `WorkerGroup` field (#695). It scopes the step to a
+specific worker group so only a worker (or worker token, over the HTTP
+bridge) polling that exact group can pick it up — the mechanism a repo
+owner uses to run CI on their own runners without also being handed every
+other task in the fleet.
+
+```yaml
+checks:
+  test: { task: "go-test", worker_group: "repo-alpha" }
+```
+
+**The constraint that traps first-time users: `worker_group:` cannot be
+combined with a dotted task type.** The wire subject a grouped step
+publishes to is `task.{type}.{group}.{runID}` — a dot inside `{type}` is
+indistinguishable from the separator between `{type}` and `{group}`, so a
+dotted task type plus a worker group can derive the exact same subject
+(and durable consumer name) as a different, unrelated undotted
+task/group pair. This is caught at compile time, not silently dispatched
+into a collision:
+
+```yaml
+checks:
+  # Rejected: call: always compiles to the dotted "dagger.call" task
+  # type, so this can never carry a worker_group.
+  build: { call: "build", worker_group: "repo-alpha" }
+
+  # Also rejected: an author-supplied dotted task: hits the same rule.
+  scan: { task: "dagger.custom", worker_group: "repo-alpha" }
+
+  # Fine: an undotted task: with worker_group:.
+  test: { task: "go-test", worker_group: "repo-alpha" }
+```
+
+In practice this means **`worker_group:` is only usable with `task:`,
+and only when that task type has no dots in it** — never with `call:`.
+If a check needs both Dagger and a worker group, register a plain,
+undotted task type for it (`task: "dagger-build"` rather than relying on
+`call:`'s `dagger.call` default) and have the worker dispatch into Dagger
+itself; `ci.yml` does not rewrite what `call:` compiles to just to make
+grouping possible.
+
+`worker_group:` values follow the same charset rule task types do
+(`A-Za-z0-9_-`) but, unlike `task:`, may never contain a dot at all —
+`dag.ValidWorkerGroup` enforces this identically whether the value came
+from `ci.yml` or a native `StepDef.WorkerGroup`.
+
 ## Unknown fields are diagnosed, not dropped
 
 `ci.yml`'s YAML decoding used to match `yaml.v3`'s default (non-strict)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/observe"
@@ -23,9 +24,10 @@ import (
 
 // pollRequest is the JSON body for POST /v1/tasks/poll.
 type pollRequest struct {
-	TaskTypes []string `json:"task_types"`
-	MaxTasks  int      `json:"max_tasks"`
-	TimeoutMs int64    `json:"timeout_ms"`
+	TaskTypes   []string `json:"task_types"`
+	WorkerGroup string   `json:"worker_group,omitempty"`
+	MaxTasks    int      `json:"max_tasks"`
+	TimeoutMs   int64    `json:"timeout_ms"`
 }
 
 // pollResponse is a single task returned from a poll.
@@ -78,6 +80,18 @@ func (b *Bridge) handlePoll(
 		), http.StatusForbidden)
 		return
 	}
+	if !claims.AllowsWorkerGroup(req.WorkerGroup) {
+		http.Error(w, fmt.Sprintf(
+			"worker group %q not permitted for this token", req.WorkerGroup,
+		), http.StatusForbidden)
+		return
+	}
+	if reason, ok := firstUnauthorizedAliasedReading(
+		claims, req.TaskTypes, req.WorkerGroup,
+	); ok {
+		http.Error(w, reason, http.StatusForbidden)
+		return
+	}
 	tasks, err := b.fetchTasks(ctx, req)
 	if err != nil {
 		// Loud by construction: a consumer the bridge cannot obtain is
@@ -125,6 +139,108 @@ func firstUnauthorizedTaskType(
 	return "", false
 }
 
+// firstUnauthorizedAliasedReading returns a 403-ready message for the
+// first ALIASED subject reading claims refuses, reporting false when
+// every reading induced by taskTypes/group is also authorized. Run
+// alongside firstUnauthorizedTaskType and the standalone
+// AllowsWorkerGroup check, which authorize only the caller's literal
+// request spelling -- this closes the gap those leave open.
+//
+// consumername.FilterFor's (taskType, group) -> filter-subject mapping
+// is NOT injective (found in review, #695): a dotted ungrouped task type
+// "a.b" derives the BYTE-IDENTICAL filter subject and durable name
+// ("task.a.b.*", "workers-a-b") as the grouped pair (task type "a",
+// group "b"). A token authorized for one spelling but not the other
+// would otherwise reach the SAME queue under whichever spelling it can
+// name -- demonstrated live: a token scoped to task-type prefix
+// "zz4.alpha" (no group scope) was correctly refused
+// {"task_types":["zz4"],"worker_group":"alpha"}, then drained that
+// exact queue via {"task_types":["zz4.alpha"]}.
+//
+// Only the LAST dot can split a valid worker group off a dotted task
+// type -- dag.ValidWorkerGroup forbids dots in a group, so a task type
+// has exactly one alternate (grouped) reading, never more. This is
+// constant work per task type, not a loop over split points.
+//
+// Two symmetric directions, each checked per task type:
+//   - Ungrouped request (group == "") naming a dotted task type T that
+//     splits into head+tail: the SAME filter subject is also the
+//     grouped reading (head, tail), so head+tail must be authorized too
+//     (claims.AllowsTaskType(head) && claims.AllowsWorkerGroup(tail)),
+//     not just T itself.
+//   - Grouped request (group == G, task type T): the SAME filter
+//     subject is also the ungrouped reading of task type T+"."+G, so
+//     that concatenation must be authorized too
+//     (claims.AllowsTaskType(T+"."+G)). This does not narrow the
+//     intended case: a token with prefix "dagger" polling (dagger,
+//     alpha) passes, because segment-aware AllowsTaskType("dagger")
+//     already covers "dagger.alpha" as a dot-child (see
+//     TestFirstUnauthorizedAliasedReadingAllowsIntendedGroupedCase) --
+//     in fact AllowsTaskType(T) being true (as the earlier
+//     firstUnauthorizedTaskType check already required) ALWAYS implies
+//     AllowsTaskType(T+"."+G) under today's segment-aware matching, so
+//     this direction's check never actually denies anything today; it
+//     stays in place as a defense-in-depth guard against a future
+//     AllowsTaskType change that breaks that monotonicity.
+//
+// Scoping is bypassed for Admin claims ONLY, and follows the identical
+// fail-closed posture as firstUnauthorizedTaskType: an empty, non-admin
+// TokenID must never be treated as unscoped.
+func firstUnauthorizedAliasedReading(
+	claims workertoken.Claims, taskTypes []string, group string,
+) (string, bool) {
+	if len(taskTypes) == 0 {
+		panic("firstUnauthorizedAliasedReading: taskTypes must not be empty")
+	}
+	if claims.Admin {
+		return "", false
+	}
+	for _, taskType := range taskTypes {
+		if group == "" {
+			head, tail, ok := splitLastDot(taskType)
+			if !ok {
+				continue
+			}
+			if !claims.AllowsTaskType(head) || !claims.AllowsWorkerGroup(tail) {
+				return fmt.Sprintf(
+					"task type %q (ungrouped) derives the same subject "+
+						"as task type %q with worker_group %q, which is "+
+						"not permitted for this token",
+					taskType, head, tail,
+				), true
+			}
+			continue
+		}
+		aliased := taskType + "." + group
+		if !claims.AllowsTaskType(aliased) {
+			return fmt.Sprintf(
+				"task type %q with worker_group %q derives the same "+
+					"subject as ungrouped task type %q, which is not "+
+					"permitted for this token",
+				taskType, group, aliased,
+			), true
+		}
+	}
+	return "", false
+}
+
+// splitLastDot splits taskType on its LAST '.' into head and tail,
+// reporting ok==false when taskType has no dot. Only the last dot can
+// ever split a valid worker group off a dotted task type -- a worker
+// group is always a single subject token (dag.ValidWorkerGroup forbids
+// dots) -- so a dotted task type has exactly one alternate grouped
+// reading, never more.
+func splitLastDot(taskType string) (head, tail string, ok bool) {
+	if taskType == "" {
+		panic("splitLastDot: taskType must not be empty")
+	}
+	i := strings.LastIndexByte(taskType, '.')
+	if i < 0 {
+		return "", "", false
+	}
+	return taskType[:i], taskType[i+1:], true
+}
+
 // parsePollRequest validates the poll JSON body.
 func parsePollRequest(r *http.Request) (pollRequest, error) {
 	if r == nil {
@@ -141,8 +257,16 @@ func parsePollRequest(r *http.Request) (pollRequest, error) {
 	if len(req.TaskTypes) == 0 {
 		return req, fmt.Errorf("task_types is required")
 	}
+	if req.WorkerGroup != "" {
+		if err := dag.ValidWorkerGroup(req.WorkerGroup); err != nil {
+			return req, err
+		}
+	}
 	for _, taskType := range req.TaskTypes {
 		if err := validateTaskType(taskType); err != nil {
+			return req, err
+		}
+		if err := dag.ValidTaskGroupCombo(taskType, req.WorkerGroup); err != nil {
 			return req, err
 		}
 	}
@@ -182,7 +306,9 @@ func (b *Bridge) fetchTasks(
 		if remaining <= 0 {
 			break
 		}
-		fetched, err := b.fetchForType(ctx, taskType, remaining, timeout)
+		fetched, err := b.fetchForType(
+			ctx, taskType, req.WorkerGroup, remaining, timeout,
+		)
 		// Keep what was fetched even when the type errored: by this
 		// point each message has had step.started published and been
 		// parked in the ackMap, and the ackMap has no reaper. Dropping
@@ -220,7 +346,7 @@ func (b *Bridge) fetchTasks(
 // a native worker's WithAckWait override with our default.
 func (b *Bridge) fetchForType(
 	ctx context.Context,
-	taskType string, count int, timeout time.Duration,
+	taskType, group string, count int, timeout time.Duration,
 ) ([]pollResponse, error) {
 	if ctx == nil {
 		panic("fetchForType: ctx must not be nil")
@@ -231,7 +357,7 @@ func (b *Bridge) fetchForType(
 	if count <= 0 {
 		panic("fetchForType: count must be positive")
 	}
-	cons, err := b.taskConsumer(ctx, taskType)
+	cons, err := b.taskConsumer(ctx, taskType, group)
 	if err != nil {
 		return nil, err
 	}
@@ -271,10 +397,11 @@ func (b *Bridge) fetchForType(
 const jsErrCodeWorkQueueConsumerNotUnique jetstream.ErrorCode = 10100
 
 // taskConsumer returns the durable consumer shared by every poller of
-// taskType, creating it with the native worker's canonical config when
-// it does not yet exist.
+// taskType+group, creating it with the native worker's canonical
+// config when it does not yet exist. group == "" is the ungrouped
+// queue, unchanged from pre-#695 behavior.
 func (b *Bridge) taskConsumer(
-	ctx context.Context, taskType string,
+	ctx context.Context, taskType, group string,
 ) (jetstream.Consumer, error) {
 	if ctx == nil {
 		panic("taskConsumer: ctx must not be nil")
@@ -282,8 +409,8 @@ func (b *Bridge) taskConsumer(
 	if taskType == "" {
 		panic("taskConsumer: taskType must not be empty")
 	}
-	name := consumername.NameFor(taskType, "")
-	filter := consumername.FilterFor(taskType, "")
+	name := consumername.NameFor(taskType, group)
+	filter := consumername.FilterFor(taskType, group)
 	cons, err := b.adoptConsumer(ctx, name, filter)
 	if err == nil {
 		return cons, nil

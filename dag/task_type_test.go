@@ -137,6 +137,36 @@ func TestValidateRejectsInvalidWorkerGroup(t *testing.T) {
 	}
 }
 
+// TestValidTaskGroupCombo exercises the exported combination check
+// directly -- validateStepDispatch (dag definition time) and the
+// bridge's poll endpoint (request time, #695) both call this so the
+// two callers cannot drift on the same collision rule.
+func TestValidTaskGroupCombo(t *testing.T) {
+	cases := []struct {
+		name        string
+		task, group string
+		wantErr     bool
+	}{
+		{"undotted_task_no_group", "render", "", false},
+		{"undotted_task_with_group", "render", "gpu", false},
+		{"dotted_task_no_group", "render.gpu", "", false},
+		{"dotted_task_with_group", "render.gpu", "fast", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidTaskGroupCombo(tc.task, tc.group)
+			if tc.wantErr && err == nil {
+				t.Fatalf("ValidTaskGroupCombo(%q, %q) = nil, want an error",
+					tc.task, tc.group)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("ValidTaskGroupCombo(%q, %q) = %v, want nil",
+					tc.task, tc.group, err)
+			}
+		})
+	}
+}
+
 // TestValidateRejectsDottedTaskWithWorkerGroup is the regression guard
 // for the filter/durable-name collision found in review:
 // consumername.FilterFor("render.gpu", "") and FilterFor("render",

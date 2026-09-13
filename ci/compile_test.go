@@ -161,6 +161,58 @@ checks:
   test: { task: "go test" }
 `
 
+// ciYMLCheckWorkerGroup sets worker_group: on a task: check whose task
+// type is a single token, so it must compile cleanly (#695).
+const ciYMLCheckWorkerGroup = `
+checks:
+  test: { task: "go-test", worker_group: "repo-alpha" }
+`
+
+// ciYMLDeployWorkerGroup sets worker_group: on a task: deploy step.
+const ciYMLDeployWorkerGroup = `
+checks:
+  test: { call: "test" }
+deploy:
+  task: "deploy-worker"
+  worker_group: "repo-alpha"
+  needs: [test]
+`
+
+// ciYMLCheckWorkerGroupInvalidValue sets a worker_group: value that fails
+// dag.ValidWorkerGroup's charset rule (whitespace).
+const ciYMLCheckWorkerGroupInvalidValue = `
+checks:
+  test: { task: "go-test", worker_group: "repo alpha" }
+`
+
+// ciYMLCallCheckWorkerGroup sets worker_group: on a call: check — call:
+// always compiles to the dotted "dagger.call" task type, so this must be
+// diagnosed regardless of what the author wrote for task:.
+const ciYMLCallCheckWorkerGroup = `
+checks:
+  test: { call: "test", worker_group: "repo-alpha" }
+`
+
+// ciYMLDottedTaskCheckWorkerGroup sets worker_group: on a task: check
+// whose author-supplied task value is itself dotted.
+const ciYMLDottedTaskCheckWorkerGroup = `
+checks:
+  test: { task: "dagger.custom", worker_group: "repo-alpha" }
+`
+
+// ciYMLDeployCallWorkerGroup sets worker_group: on a call: deploy step —
+// the deploy-side mirror of ciYMLCallCheckWorkerGroup, proving
+// compileDeploy shares the same compileWorkerGroupDiagnostics helper as
+// compileCheck.
+const ciYMLDeployCallWorkerGroup = `
+checks:
+  test: { call: "test" }
+deploy:
+  call: "publish"
+  worker_group: "repo-alpha"
+  needs: [test]
+`
+
 // ciYMLRetriesShorthand uses the retries: N shorthand on a check (#681).
 const ciYMLRetriesShorthand = `
 checks:
@@ -841,6 +893,170 @@ func TestCompileInvalidTaskValueIsRejected(t *testing.T) {
 	okSpec := mustParse(t, ciYMLTaskCheck)
 	if _, diags2 := ci.Compile("ci-bad-task-fixed", okSpec); len(diags2) != 0 {
 		t.Errorf("Compile(valid task) diagnostics = %+v, want none", diags2)
+	}
+}
+
+// TestCompileWorkerGroupOnCheckReachesCompiledStep verifies worker_group:
+// on a task: check is accepted and carried onto the compiled step's
+// WorkerGroup field (#695).
+func TestCompileWorkerGroupOnCheckReachesCompiledStep(t *testing.T) {
+	spec := mustParse(t, ciYMLCheckWorkerGroup)
+	def, diags := ci.Compile("ci-worker-group", spec)
+	if len(diags) != 0 {
+		t.Fatalf("Compile: unexpected diagnostics: %+v", diags)
+	}
+
+	// Positive: the step's WorkerGroup is the worker_group: value verbatim.
+	step := stepByID(t, def.Steps, "test")
+	if step.WorkerGroup != "repo-alpha" {
+		t.Errorf("step.WorkerGroup = %q, want \"repo-alpha\"", step.WorkerGroup)
+	}
+
+	if err := dag.Validate(def); err != nil {
+		t.Errorf("dag.Validate returned error: %v", err)
+	}
+}
+
+// TestCompileWorkerGroupOnDeployReachesCompiledStep mirrors the check-side
+// test for the deploy block.
+func TestCompileWorkerGroupOnDeployReachesCompiledStep(t *testing.T) {
+	spec := mustParse(t, ciYMLDeployWorkerGroup)
+	def, diags := ci.Compile("ci-deploy-worker-group", spec)
+	if len(diags) != 0 {
+		t.Fatalf("Compile: unexpected diagnostics: %+v", diags)
+	}
+
+	deploy := stepByID(t, def.Steps, "deploy")
+	if deploy.WorkerGroup != "repo-alpha" {
+		t.Errorf("deploy.WorkerGroup = %q, want \"repo-alpha\"", deploy.WorkerGroup)
+	}
+
+	if err := dag.Validate(def); err != nil {
+		t.Errorf("dag.Validate returned error: %v", err)
+	}
+}
+
+// TestCompileWorkerGroupInvalidValueIsRejected proves worker_group: is
+// validated with dag.ValidWorkerGroup, the same charset rule a
+// StepDef.WorkerGroup is checked against at workflow-registration time.
+func TestCompileWorkerGroupInvalidValueIsRejected(t *testing.T) {
+	spec := mustParse(t, ciYMLCheckWorkerGroupInvalidValue)
+
+	_, diags := ci.Compile("ci-bad-worker-group", spec)
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "test" {
+		t.Errorf("diags[0].Field = %q, want \"test\"", diags[0].Field)
+	}
+	// This phrase is unique to compileWorkerGroupDiagnostics's own
+	// wording -- dag.Validate's fallback error (the safety net Compile
+	// also runs) wraps the same underlying dag.ValidWorkerGroup error
+	// with different text ("has invalid worker_group"), so asserting on
+	// this exact phrase is what makes deleting the ci-level check turn
+	// this test red rather than being silently absorbed by the fallback.
+	if !strings.Contains(diags[0].Message, "is not valid") {
+		t.Errorf(
+			"diags[0].Message = %q, want the ci-level \"is not valid\" wording",
+			diags[0].Message,
+		)
+	}
+
+	// Negative: a valid worker_group value compiles cleanly.
+	okSpec := mustParse(t, ciYMLCheckWorkerGroup)
+	if _, diags2 := ci.Compile("ci-bad-worker-group-fixed", okSpec); len(diags2) != 0 {
+		t.Errorf("Compile(valid worker_group) diagnostics = %+v, want none", diags2)
+	}
+}
+
+// TestCompileCallCheckWithWorkerGroupIsRejected is the load-bearing
+// diagnostic (#695): call: always compiles to the dotted "dagger.call"
+// task type, and a dotted task type combined with a non-empty
+// worker_group can never map onto a real dispatch (FilterFor("dagger.call",
+// "") and FilterFor("dagger", "call.repo-alpha")-shaped collisions --
+// see dag.ValidTaskGroupCombo). The diagnostic must fire even though the
+// author never wrote task: at all.
+func TestCompileCallCheckWithWorkerGroupIsRejected(t *testing.T) {
+	spec := mustParse(t, ciYMLCallCheckWorkerGroup)
+
+	_, diags := ci.Compile("ci-call-worker-group", spec)
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "test" {
+		t.Errorf("diags[0].Field = %q, want \"test\"", diags[0].Field)
+	}
+	// "single-token" and "set task:" are compileWorkerGroupDiagnostics's
+	// own ci.yml-flavored wording, not present in dag.ValidTaskGroupCombo's
+	// underlying message ("use an undotted task type") -- asserting on
+	// them is what makes deleting the ci-level check (and falling back
+	// to Compile's dag.Validate safety net alone) turn this test red.
+	if !strings.Contains(diags[0].Message, "worker_group") ||
+		!strings.Contains(diags[0].Message, "dagger.call") ||
+		!strings.Contains(diags[0].Message, "single-token") ||
+		!strings.Contains(diags[0].Message, "set task:") {
+		t.Errorf(
+			"diags[0].Message = %q, want it to name worker_group, "+
+				"dagger.call, and the single-token task: fix",
+			diags[0].Message,
+		)
+	}
+}
+
+// TestCompileDottedTaskCheckWithWorkerGroupIsRejected covers the
+// author-supplied-dotted-task: half of the same rule: task: "dagger.custom"
+// combined with worker_group: must be diagnosed identically to the call:
+// case, reusing the same dag-level combination check so the two paths
+// can never disagree.
+func TestCompileDottedTaskCheckWithWorkerGroupIsRejected(t *testing.T) {
+	spec := mustParse(t, ciYMLDottedTaskCheckWorkerGroup)
+
+	_, diags := ci.Compile("ci-dotted-task-worker-group", spec)
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "test" {
+		t.Errorf("diags[0].Field = %q, want \"test\"", diags[0].Field)
+	}
+	if !strings.Contains(diags[0].Message, "single-token") ||
+		!strings.Contains(diags[0].Message, "set task:") {
+		t.Errorf(
+			"diags[0].Message = %q, want the ci-level single-token task: fix wording",
+			diags[0].Message,
+		)
+	}
+
+	// Negative: the same dotted task with NO worker_group stays legal.
+	okSpec := mustParse(t, ciYMLDottedTaskCheckWorkerGroup)
+	okSpec.Checks["test"] = ci.Check{
+		Task: okSpec.Checks["test"].Task,
+	}
+	if _, diags2 := ci.Compile("ci-dotted-task-no-group", okSpec); len(diags2) != 0 {
+		t.Errorf("Compile(dotted task, no group) diagnostics = %+v, want none",
+			diags2)
+	}
+}
+
+// TestCompileDeployCallWithWorkerGroupIsRejected is the deploy-side
+// mirror of TestCompileCallCheckWithWorkerGroupIsRejected, proving
+// compileDeploy runs the same compileWorkerGroupDiagnostics check as
+// compileCheck rather than a separately-maintained copy.
+func TestCompileDeployCallWithWorkerGroupIsRejected(t *testing.T) {
+	spec := mustParse(t, ciYMLDeployCallWorkerGroup)
+
+	_, diags := ci.Compile("ci-deploy-call-worker-group", spec)
+	if len(diags) != 1 {
+		t.Fatalf("diags = %+v, want exactly 1", diags)
+	}
+	if diags[0].Field != "deploy" {
+		t.Errorf("diags[0].Field = %q, want \"deploy\"", diags[0].Field)
+	}
+	if !strings.Contains(diags[0].Message, "single-token") ||
+		!strings.Contains(diags[0].Message, "set task:") {
+		t.Errorf(
+			"diags[0].Message = %q, want the ci-level single-token task: fix wording",
+			diags[0].Message,
+		)
 	}
 }
 

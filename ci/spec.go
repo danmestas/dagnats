@@ -64,14 +64,19 @@ type Defaults struct {
 // complete before this check runs. Timeout is a Go duration string (e.g.
 // "15m"). Retries is shorthand for a fixed-delay retry policy; Retry is the
 // full policy. Setting both is a compile-time diagnostic (#681) — see
-// compileCheckRetry.
+// compileCheckRetry. WorkerGroup scopes this check to a worker group,
+// mapped onto the compiled step's WorkerGroup field (#695); combining it
+// with a dotted compiled task type (including every call: check, which
+// always compiles to "dagger.call") is a compile-time diagnostic — see
+// compileWorkerGroupDiagnostics.
 type Check struct {
-	Call    string      `yaml:"call"`
-	Task    string      `yaml:"task"`
-	Needs   []string    `yaml:"needs"`
-	Timeout string      `yaml:"timeout"`
-	Retries int         `yaml:"retries"`
-	Retry   *CheckRetry `yaml:"retry"`
+	Call        string      `yaml:"call"`
+	Task        string      `yaml:"task"`
+	Needs       []string    `yaml:"needs"`
+	Timeout     string      `yaml:"timeout"`
+	Retries     int         `yaml:"retries"`
+	Retry       *CheckRetry `yaml:"retry"`
+	WorkerGroup string      `yaml:"worker_group"`
 }
 
 // CheckRetry is the full retry policy for a check, mapped onto
@@ -91,14 +96,15 @@ type CheckRetry struct {
 // Call and Task are mutually exclusive, same as Check (#671) — see
 // compileDeploy. Approval=="required" inserts a durable human-gate step
 // before execution. Branches limits deployment to specific push targets
-// (never PR heads).
+// (never PR heads). WorkerGroup mirrors Check.WorkerGroup (#695).
 type DeployStep struct {
-	Call     string   `yaml:"call"`
-	Task     string   `yaml:"task"`
-	Needs    []string `yaml:"needs"`
-	Approval string   `yaml:"approval"`
-	Branches []string `yaml:"branches"`
-	Timeout  string   `yaml:"timeout"`
+	Call        string   `yaml:"call"`
+	Task        string   `yaml:"task"`
+	Needs       []string `yaml:"needs"`
+	Approval    string   `yaml:"approval"`
+	Branches    []string `yaml:"branches"`
+	Timeout     string   `yaml:"timeout"`
+	WorkerGroup string   `yaml:"worker_group"`
 }
 
 // specKnownFields, checkKnownFields, checkRetryKnownFields,
@@ -114,7 +120,7 @@ var (
 	}
 	checkKnownFields = map[string]bool{
 		"call": true, "task": true, "needs": true, "timeout": true,
-		"retries": true, "retry": true,
+		"retries": true, "retry": true, "worker_group": true,
 	}
 	checkRetryKnownFields = map[string]bool{
 		"max_attempts": true, "strategy": true, "initial_delay": true,
@@ -122,7 +128,7 @@ var (
 	}
 	deployKnownFields = map[string]bool{
 		"call": true, "task": true, "needs": true, "approval": true,
-		"branches": true, "timeout": true,
+		"branches": true, "timeout": true, "worker_group": true,
 	}
 	defaultsKnownFields = map[string]bool{
 		"module": true, "engine": true,

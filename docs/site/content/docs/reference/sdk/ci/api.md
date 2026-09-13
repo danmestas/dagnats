@@ -37,7 +37,7 @@ const DiagnosticsMax = 100
 ```
 
 <a name="Parse"></a>
-## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L224>)
+## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L230>)
 
 ```go
 func Parse(spec []byte) (Spec, []Diagnostic)
@@ -46,23 +46,24 @@ func Parse(spec []byte) (Spec, []Diagnostic)
 Parse decodes YAML bytes into a Spec, accumulating a Diagnostic \(rather than failing fast\) for every field that fails to decode. It parses via yaml.Node first so each diagnostic carries the offending field's Line and Column — authors can jump straight to the problem in their ci.yml instead of pattern\-matching a stack\-trace\-flavored error string.
 
 <a name="Check"></a>
-## type [Check](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L68-L75>)
+## type [Check](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L72-L80>)
 
-Check declares one CI check step backed by exactly one runner: Call \(a Dagger function name, compiled to the "dagger.call" task type\) or Task \(a plain task type, compiled verbatim for any worker that speaks the ordinary worker protocol\). Setting both, or neither, is a compile\-time diagnostic \(\#671\) — see compileCheck. Needs lists check names that must complete before this check runs. Timeout is a Go duration string \(e.g. "15m"\). Retries is shorthand for a fixed\-delay retry policy; Retry is the full policy. Setting both is a compile\-time diagnostic \(\#681\) — see compileCheckRetry.
+Check declares one CI check step backed by exactly one runner: Call \(a Dagger function name, compiled to the "dagger.call" task type\) or Task \(a plain task type, compiled verbatim for any worker that speaks the ordinary worker protocol\). Setting both, or neither, is a compile\-time diagnostic \(\#671\) — see compileCheck. Needs lists check names that must complete before this check runs. Timeout is a Go duration string \(e.g. "15m"\). Retries is shorthand for a fixed\-delay retry policy; Retry is the full policy. Setting both is a compile\-time diagnostic \(\#681\) — see compileCheckRetry. WorkerGroup scopes this check to a worker group, mapped onto the compiled step's WorkerGroup field \(\#695\); combining it with a dotted compiled task type \(including every call: check, which always compiles to "dagger.call"\) is a compile\-time diagnostic — see compileWorkerGroupDiagnostics.
 
 ```go
 type Check struct {
-    Call    string      `yaml:"call"`
-    Task    string      `yaml:"task"`
-    Needs   []string    `yaml:"needs"`
-    Timeout string      `yaml:"timeout"`
-    Retries int         `yaml:"retries"`
-    Retry   *CheckRetry `yaml:"retry"`
+    Call        string      `yaml:"call"`
+    Task        string      `yaml:"task"`
+    Needs       []string    `yaml:"needs"`
+    Timeout     string      `yaml:"timeout"`
+    Retries     int         `yaml:"retries"`
+    Retry       *CheckRetry `yaml:"retry"`
+    WorkerGroup string      `yaml:"worker_group"`
 }
 ```
 
 <a name="CheckRetry"></a>
-## type [CheckRetry](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L82-L88>)
+## type [CheckRetry](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L87-L93>)
 
 CheckRetry is the full retry policy for a check, mapped onto dag.RetryPolicy by compileCheckRetry. InitialDelay and MaxDelay are Go duration strings, parsed the same way Check.Timeout is. Strategy is one of "fixed", "linear", "exponential" \("" defaults to "fixed", matching dag.RetryPolicy's zero value\).
 
@@ -89,18 +90,19 @@ type Defaults struct {
 ```
 
 <a name="DeployStep"></a>
-## type [DeployStep](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L95-L102>)
+## type [DeployStep](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L100-L108>)
 
-DeployStep declares an optional deploy stage that follows the CI checks. Call and Task are mutually exclusive, same as Check \(\#671\) — see compileDeploy. Approval=="required" inserts a durable human\-gate step before execution. Branches limits deployment to specific push targets \(never PR heads\).
+DeployStep declares an optional deploy stage that follows the CI checks. Call and Task are mutually exclusive, same as Check \(\#671\) — see compileDeploy. Approval=="required" inserts a durable human\-gate step before execution. Branches limits deployment to specific push targets \(never PR heads\). WorkerGroup mirrors Check.WorkerGroup \(\#695\).
 
 ```go
 type DeployStep struct {
-    Call     string   `yaml:"call"`
-    Task     string   `yaml:"task"`
-    Needs    []string `yaml:"needs"`
-    Approval string   `yaml:"approval"`
-    Branches []string `yaml:"branches"`
-    Timeout  string   `yaml:"timeout"`
+    Call        string   `yaml:"call"`
+    Task        string   `yaml:"task"`
+    Needs       []string `yaml:"needs"`
+    Approval    string   `yaml:"approval"`
+    Branches    []string `yaml:"branches"`
+    Timeout     string   `yaml:"timeout"`
+    WorkerGroup string   `yaml:"worker_group"`
 }
 ```
 

@@ -23,6 +23,7 @@ type Token struct {
 	ID               string     `json:"id"`
 	Label            string     `json:"label"`
 	TaskTypePrefixes []string   `json:"task_type_prefixes"`
+	WorkerGroups     []string   `json:"worker_groups,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
 	CreatedBy        string     `json:"created_by"`
 	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
@@ -31,11 +32,13 @@ type Token struct {
 
 // Claims is what Authorize returns for a bearer that passed
 // verification: either the env-configured admin token (Admin: true,
-// unscoped) or a minted worker token scoped to TaskTypePrefixes.
+// unscoped) or a minted worker token scoped to TaskTypePrefixes and,
+// optionally, WorkerGroups.
 type Claims struct {
 	TokenID          string
 	Admin            bool
 	TaskTypePrefixes []string
+	WorkerGroups     []string
 }
 
 // AllowsTaskType reports whether taskType may be polled under these
@@ -63,6 +66,50 @@ func (c Claims) AllowsTaskType(taskType string) bool {
 		if len(taskType) > len(prefix) &&
 			taskType[len(prefix)] == '.' &&
 			taskType[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsWorkerGroup reports whether group may be polled under these
+// claims. Admin claims bypass scoping entirely, same as AllowsTaskType.
+// A token with NO WorkerGroups entries is unscoped-by-group -- today's
+// behavior, so existing tokens keep working -- and may poll any group,
+// including the ungrouped queue (group == ""). A group-scoped token
+// (at least one WorkerGroups entry) must match group EXACTLY: unlike
+// AllowsTaskType there is no prefix/segment concept here, because
+// worker_group is always a single subject token (dag.ValidWorkerGroup
+// forbids dots) -- a group is one token, so prefix semantics would be
+// a silent widening.
+//
+// Because "" is never a mintable group value (Mint refuses an empty
+// entry), a group-scoped token can never list it, which means a
+// group-scoped token can NEVER poll the ungrouped queue -- that is the
+// whole point of the isolation this closes: a token scoped to one
+// repo's group must not be able to fall back to draining everyone
+// else's ungrouped work.
+//
+// This method alone is NOT the full isolation guarantee: authorization
+// must cover every reading of the DERIVED subject a poll consumes from
+// (internal/consumername.FilterFor), not merely the (task type, group)
+// spelling the caller chose. FilterFor's mapping is not injective -- a
+// dotted ungrouped task type "a.b" derives the byte-identical filter
+// subject as the grouped pair (task type "a", group "b") -- so a caller
+// can request the SAME queue under either spelling. The bridge's poll
+// handler (bridge.firstUnauthorizedAliasedReading, #695 review) checks
+// AllowsWorkerGroup against BOTH the request's own worker_group and the
+// worker_group half of that alternate reading; calling this method with
+// only the caller's literal request value is not sufficient on its own.
+func (c Claims) AllowsWorkerGroup(group string) bool {
+	if c.Admin {
+		return true
+	}
+	if len(c.WorkerGroups) == 0 {
+		return true
+	}
+	for _, g := range c.WorkerGroups {
+		if g == group {
 			return true
 		}
 	}
@@ -98,4 +145,7 @@ const (
 	PrefixesCountMax = 32
 	// PrefixLengthMax bounds a single task-type prefix's length.
 	PrefixLengthMax = 64
+	// WorkerGroupsCountMax bounds how many worker groups one token may
+	// carry.
+	WorkerGroupsCountMax = 32
 )

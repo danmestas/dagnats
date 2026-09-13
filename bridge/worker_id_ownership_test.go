@@ -98,11 +98,11 @@ func TestConnectWorkerIDOwnershipEnforced(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint A: %v", err)
 	}
-	_, bearerB, err := store.Mint(mintCtx, "worker-b", []string{"echo"}, "tester")
+	_, bearerB, err := store.Mint(mintCtx, "worker-b", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint B: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestConnectWorkerIDOwnershipUnownedEntryClaimable(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint A: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestConnectDeregisterOwnershipScoped(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint A: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestConnectConcurrentClaimExactlyOneWinner(t *testing.T) {
 	bearers := make([]string, racerCount)
 	for i := range racerCount {
 		id, bearer, err := store.Mint(
-			mintCtx, fmt.Sprintf("racer-%d", i), []string{"echo"}, "tester",
+			mintCtx, fmt.Sprintf("racer-%d", i), []string{"echo"}, nil, "tester",
 		)
 		if err != nil {
 			t.Fatalf("Mint racer %d: %v", i, err)
@@ -592,7 +592,7 @@ func TestHeartbeatStopsAfterOwnershipTakeover(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint A: %v", err)
 	}
@@ -677,7 +677,7 @@ func TestHeartbeatContinuesForOwner(t *testing.T) {
 
 	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer mintCancel()
-	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, "tester")
+	idA, bearerA, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
 	if err != nil {
 		t.Fatalf("Mint A: %v", err)
 	}
