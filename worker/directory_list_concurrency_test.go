@@ -37,17 +37,29 @@ const listConcurrencyWriters = 4
 
 func TestDirectoryListNeverMissesLiveKey(t *testing.T) {
 	dir := newListTestDirectory(t)
-	reg := WorkerRegistration{
+	hot := WorkerRegistration{
 		WorkerID:  "w1",
 		TaskTypes: []string{"echo"},
 		TokenID:   "admin",
 	}
-	if err := dir.RegisterOwned(reg, "admin", true); err != nil {
-		t.Fatalf("seed RegisterOwned: %v", err)
+	if err := dir.RegisterOwned(hot, "admin", true); err != nil {
+		t.Fatalf("seed RegisterOwned hot: %v", err)
+	}
+	// A second worker registered once and never written again. It
+	// makes the empty-listing and quiet-key counters independent of
+	// the hot key: with only one registration, "list came back empty"
+	// and "list missed w1" would be the same event counted twice.
+	quiet := WorkerRegistration{
+		WorkerID:  "w2",
+		TaskTypes: []string{"echo"},
+		TokenID:   "admin",
+	}
+	if err := dir.RegisterOwned(quiet, "admin", true); err != nil {
+		t.Fatalf("seed RegisterOwned quiet: %v", err)
 	}
 
-	stopWriters := startHeartbeatWriters(dir, reg)
-	misses, empties := 0, 0
+	stopWriters := startHeartbeatWriters(dir, hot)
+	hotMisses, quietMisses, empties := 0, 0, 0
 	for range listConcurrencyReads {
 		workers, err := dir.List()
 		if err != nil {
@@ -60,20 +72,31 @@ func TestDirectoryListNeverMissesLiveKey(t *testing.T) {
 			empties++
 		}
 		if !containsWorker(workers, "w1") {
-			misses++
+			hotMisses++
+		}
+		if !containsWorker(workers, "w2") {
+			quietMisses++
 		}
 	}
 	if err := stopWriters(); err != nil {
 		t.Fatalf("writer RegisterOwned: %v", err)
 	}
 
-	// Positive space: the key is registered and never deleted, so
-	// every List must report it. Negative space: a List that returned
-	// nothing at all is the same defect seen from the other side.
-	if misses != 0 {
+	// Positive space: both keys are registered and never deleted, so
+	// every List must report both. Negative space: the enumeration
+	// snapshot covers the whole bucket, so a racing write to w1 must
+	// not drop the untouched w2 either, and no List may come back
+	// empty while two workers are registered.
+	if hotMisses != 0 {
 		t.Fatalf(
 			"List() missed live key w1 %d/%d times",
-			misses, listConcurrencyReads,
+			hotMisses, listConcurrencyReads,
+		)
+	}
+	if quietMisses != 0 {
+		t.Fatalf(
+			"List() missed untouched key w2 %d/%d times",
+			quietMisses, listConcurrencyReads,
 		)
 	}
 	if empties != 0 {
