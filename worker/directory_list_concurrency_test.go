@@ -15,6 +15,8 @@
 package worker
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -49,7 +51,9 @@ func TestDirectoryListNeverMissesLiveKey(t *testing.T) {
 	for range listConcurrencyReads {
 		workers, err := dir.List()
 		if err != nil {
-			stopWriters()
+			if stopErr := stopWriters(); stopErr != nil {
+				t.Errorf("writer: %v", stopErr)
+			}
 			t.Fatalf("List: %v", err)
 		}
 		if len(workers) == 0 {
@@ -59,7 +63,9 @@ func TestDirectoryListNeverMissesLiveKey(t *testing.T) {
 			misses++
 		}
 	}
-	stopWriters()
+	if err := stopWriters(); err != nil {
+		t.Fatalf("writer RegisterOwned: %v", err)
+	}
 
 	// Positive space: the key is registered and never deleted, so
 	// every List must report it. Negative space: a List that returned
@@ -148,6 +154,80 @@ func TestDirectoryListSkipsDeletedKeys(t *testing.T) {
 	}
 }
 
+// errGetBroke stands in for a transient KV Get failure (timeout,
+// disconnect) that is not a missing key.
+var errGetBroke = errors.New("kv get broke")
+
+// stubKV serves listKeys' bucket name and fails every Get. Embedding
+// the interface leaves every other method unimplemented on purpose:
+// List() must not call them, and a nil-panic says so loudly if it
+// ever starts.
+type stubKV struct {
+	jetstream.KeyValue
+	getErr error
+}
+
+func (s stubKV) Bucket() string { return "workers" }
+
+func (s stubKV) Get(
+	_ context.Context, _ string,
+) (jetstream.KeyValueEntry, error) {
+	return nil, s.getErr
+}
+
+// stubStream reports one subject so List() has exactly one key to Get.
+type stubStream struct {
+	jetstream.Stream
+}
+
+func (s stubStream) Info(
+	_ context.Context, _ ...jetstream.StreamInfoOpt,
+) (*jetstream.StreamInfo, error) {
+	return &jetstream.StreamInfo{
+		State: jetstream.StreamState{
+			Subjects: map[string]uint64{"$KV.workers.w1": 1},
+		},
+	}, nil
+}
+
+// TestDirectoryListPropagatesGetError pins that a Get failure which
+// is NOT ErrKeyNotFound fails the call instead of being swallowed.
+// Silently skipping it would drop a live worker from the listing --
+// indistinguishable, to the caller, from the enumeration bug this
+// file exists to cover.
+func TestDirectoryListPropagatesGetError(t *testing.T) {
+	dir := &Directory{
+		kv:     stubKV{getErr: errGetBroke},
+		stream: stubStream{},
+	}
+	workers, err := dir.List()
+	if !errors.Is(err, errGetBroke) {
+		t.Fatalf("List() error = %v, want %v", err, errGetBroke)
+	}
+	// Negative space: a propagated failure must not also hand back a
+	// partial list a caller might use.
+	if workers != nil {
+		t.Fatalf("List() workers = %+v, want nil on error", workers)
+	}
+}
+
+// TestDirectoryListSkipsNotFoundKeys pins the other side of that
+// branch: a delete-marker subject yields ErrKeyNotFound from Get and
+// is skipped silently, without failing the whole listing.
+func TestDirectoryListSkipsNotFoundKeys(t *testing.T) {
+	dir := &Directory{
+		kv:     stubKV{getErr: jetstream.ErrKeyNotFound},
+		stream: stubStream{},
+	}
+	workers, err := dir.List()
+	if err != nil {
+		t.Fatalf("List() error = %v, want nil", err)
+	}
+	if len(workers) != 0 {
+		t.Fatalf("List() = %+v, want no workers", workers)
+	}
+}
+
 // newListTestDirectory starts an embedded NATS server and returns a
 // Directory backed by its workers bucket.
 func newListTestDirectory(t *testing.T) *Directory {
@@ -168,10 +248,13 @@ func newListTestDirectory(t *testing.T) *Directory {
 
 // startHeartbeatWriters replays reg's registration from several
 // goroutines until the returned stop function is called, which waits
-// for every writer to exit before returning.
+// for every writer to exit and then reports the first write error
+// that was not plain contention. ErrWorkerIDContended is expected
+// here by construction -- these writers deliberately collide on one
+// key -- so it is the one error the caller may ignore.
 func startHeartbeatWriters(
 	dir *Directory, reg WorkerRegistration,
-) func() {
+) func() error {
 	if dir == nil {
 		panic("startHeartbeatWriters: dir must not be nil")
 	}
@@ -179,22 +262,30 @@ func startHeartbeatWriters(
 		panic("startHeartbeatWriters: reg.WorkerID must not be empty")
 	}
 	var stop atomic.Bool
+	var firstErr atomic.Value
 	done := make(chan struct{}, listConcurrencyWriters)
 	for range listConcurrencyWriters {
 		go func() {
 			defer func() { done <- struct{}{} }()
 			for !stop.Load() {
-				// Errors are the point of the race, not the subject
-				// of this test: the reader's view is what is asserted.
-				_ = dir.RegisterOwned(reg, "admin", true)
+				err := dir.RegisterOwned(reg, "admin", true)
+				if err != nil &&
+					!errors.Is(err, ErrWorkerIDContended) {
+					firstErr.CompareAndSwap(nil, err)
+					return
+				}
 			}
 		}()
 	}
-	return func() {
+	return func() error {
 		stop.Store(true)
 		for range listConcurrencyWriters {
 			<-done
 		}
+		if err, ok := firstErr.Load().(error); ok {
+			return err
+		}
+		return nil
 	}
 }
 

@@ -187,7 +187,11 @@ type WorkerRegistration struct {
 // the bucket's TTL ensures stale entries are purged automatically.
 type Directory struct {
 	kv jetstream.KeyValue
-	js jetstream.JetStream
+	// stream is the KV bucket's backing stream, resolved once at
+	// construction: List() reads the bucket's key set from its
+	// subject state, and re-resolving it per call would cost a
+	// second round trip for a name that never changes.
+	stream jetstream.Stream
 }
 
 // NewDirectory creates a Directory backed by the "workers" KV
@@ -206,7 +210,16 @@ func NewDirectory(js jetstream.JetStream) *Directory {
 				err.Error(),
 		)
 	}
-	return &Directory{kv: kv, js: js}
+	stream, err := js.Stream(
+		context.Background(), "KV_"+kv.Bucket(),
+	)
+	if err != nil {
+		panic(
+			"NewDirectory: workers bucket stream not found: " +
+				err.Error(),
+		)
+	}
+	return &Directory{kv: kv, stream: stream}
 }
 
 // registerOwnedTestHook, when non-nil, is called by
@@ -489,12 +502,6 @@ func deregisterOwnedAttempt(
 	return true, nil
 }
 
-// listKeysMax bounds how many keys one List() enumerates. The worker
-// directory is operator-facing and one entry per live worker, so this
-// is far above any real deployment -- it exists so a runaway bucket
-// can't make List() unbounded.
-const listKeysMax = 100_000
-
 // listKeys enumerates the bucket's keys from the backing stream's
 // server-side subject state instead of kv.ListKeys.
 //
@@ -511,25 +518,26 @@ const listKeysMax = 100_000
 // production, a worker blinking out of `dagnats workers list` and the
 // console.
 //
-// A filtered stream Info is a single consistent server-side read of
-// which subjects currently hold messages, so a concurrent Put cannot
-// hide an existing key. Subjects whose last message is a delete
-// marker still appear here; List()'s per-key Get returns
-// ErrKeyNotFound for those and skips them, exactly as before.
+// A filtered stream Info resolves server-side under the store lock,
+// so a concurrent Put cannot hide an existing key. That atomicity
+// holds as long as the answer is one response: a bucket with more
+// than the server's JSMaxSubjectDetails (100_000) subjects is
+// assembled from several paginated requests and is then only
+// eventually consistent. The workers bucket is one entry per live
+// worker under a 60s TTL, so it is nowhere near that.
+//
+// Subjects whose last message is a delete marker still appear here;
+// List()'s per-key Get returns ErrKeyNotFound for those and skips
+// them, exactly as before.
 func (d *Directory) listKeys(ctx context.Context) ([]string, error) {
-	if d.js == nil {
-		panic("Directory.listKeys: js must not be nil")
+	if d.stream == nil {
+		panic("Directory.listKeys: stream must not be nil")
 	}
 	if d.kv == nil {
 		panic("Directory.listKeys: kv must not be nil")
 	}
-	bucket := d.kv.Bucket()
-	stream, err := d.js.Stream(ctx, "KV_"+bucket)
-	if err != nil {
-		return nil, err
-	}
-	prefix := "$KV." + bucket + "."
-	info, err := stream.Info(
+	prefix := "$KV." + d.kv.Bucket() + "."
+	info, err := d.stream.Info(
 		ctx, jetstream.WithSubjectFilter(prefix+">"),
 	)
 	if err != nil {
@@ -537,12 +545,6 @@ func (d *Directory) listKeys(ctx context.Context) ([]string, error) {
 	}
 	keys := make([]string, 0, len(info.State.Subjects))
 	for subject := range info.State.Subjects {
-		if len(keys) >= listKeysMax {
-			break
-		}
-		if !strings.HasPrefix(subject, prefix) {
-			continue
-		}
 		keys = append(keys, strings.TrimPrefix(subject, prefix))
 	}
 	return keys, nil
@@ -555,8 +557,8 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 	if d.kv == nil {
 		panic("Directory.List: kv must not be nil")
 	}
-	if d.js == nil {
-		panic("Directory.List: js must not be nil")
+	if d.stream == nil {
+		panic("Directory.List: stream must not be nil")
 	}
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 5*time.Second,
@@ -570,8 +572,19 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 	cutoff := time.Now().Add(-MaxWorkerStaleness)
 	for _, key := range keys {
 		entry, err := d.kv.Get(ctx, key)
-		if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			// Expected on every call: listKeys enumerates subjects,
+			// and a deregistered key's subject still holds its delete
+			// marker. Not a live worker.
 			continue
+		}
+		if err != nil {
+			// A transient Get failure is indistinguishable from a
+			// deleted key once it is swallowed, and swallowing it
+			// drops a LIVE worker from the listing -- the exact
+			// symptom listKeys exists to eliminate. Fail the call
+			// instead of silently returning a short list.
+			return nil, err
 		}
 		if MaxWorkerStaleness > 0 &&
 			entry.Created().Before(cutoff) {
