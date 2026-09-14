@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -124,6 +125,14 @@ func extractTaskFromConsumer(
 
 // parseTaskFromSubject extracts the task name from a filter subject
 // like "task.greet.>" or "task.greet.*". Returns "" if not matched.
+//
+// A grouped filter carries the group as a sentinel-prefixed token
+// between the task and the trailing wildcard (#704:
+// "task.greet.=fast.*"). Stripping only the wildcard would render the
+// task as "greet.=fast" in status output, so the sentinel token is
+// dropped too. The sentinel cannot appear in a task type (dag's and the
+// bridge's charsets both reject it), so a token starting with it is
+// unambiguously the group.
 func parseTaskFromSubject(subject string) string {
 	if len(subject) < 6 {
 		return ""
@@ -134,6 +143,10 @@ func parseTaskFromSubject(subject string) string {
 
 	rest := subject[5:]
 	if idx := strings.LastIndex(rest, "."); idx > 0 {
+		rest = rest[:idx]
+	}
+	if idx := strings.LastIndex(rest, "."); idx > 0 &&
+		strings.HasPrefix(rest[idx+1:], consumername.GroupSentinel) {
 		return rest[:idx]
 	}
 	return rest
