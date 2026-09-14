@@ -353,7 +353,7 @@ const (
 ```
 
 <a name="Directory"></a>
-## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L187-L189>)
+## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L188-L195>)
 
 Directory provides worker visibility via NATS KV. Each worker writes its registration to the "workers" bucket; the bucket's TTL ensures stale entries are purged automatically.
 
@@ -364,7 +364,7 @@ type Directory struct {
 ```
 
 <a name="NewDirectory"></a>
-### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L194>)
+### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L200>)
 
 ```go
 func NewDirectory(js jetstream.JetStream) *Directory
@@ -373,7 +373,7 @@ func NewDirectory(js jetstream.JetStream) *Directory
 NewDirectory creates a Directory backed by the "workers" KV bucket. Panics if js is nil or the bucket does not exist — both are programmer errors indicating missing setup.
 
 <a name="Directory.Deregister"></a>
-### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L367>)
+### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L382>)
 
 ```go
 func (d *Directory) Deregister(workerID string) error
@@ -382,7 +382,7 @@ func (d *Directory) Deregister(workerID string) error
 Deregister removes the worker's entry from the directory. Panics if workerID is empty. Returns nil if the key does not exist.
 
 <a name="Directory.DeregisterOwned"></a>
-### func \(\*Directory\) [DeregisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L409-L411>)
+### func \(\*Directory\) [DeregisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L424-L426>)
 
 ```go
 func (d *Directory) DeregisterOwned(workerID, callerTokenID string, callerIsAdmin bool) error
@@ -391,7 +391,7 @@ func (d *Directory) DeregisterOwned(workerID, callerTokenID string, callerIsAdmi
 DeregisterOwned removes workerID's entry, but only if the caller still owns it \(\#650, the delete\-side counterpart to RegisterOwned\): ownershipAllows must hold for the entry's current token\_id against the caller. A disconnect from a token that has since been superseded \(e.g. an admin took the worker\_id over while the original owner's connection was still open\) must not delete the current owner's entry out from under it \-\- it returns ErrWorkerIDOwned instead and leaves the entry untouched. Uses the Get's revision with jetstream.LastRevision on Delete so a concurrent write between the Get and the Delete aborts the delete instead of clobbering it, same TOCTOU window RegisterOwned closes on the write side \-\- but a bare revision conflict doesn't prove who wrote in the window: it could be this same connection's own heartbeat re\-registering right as it disconnects, which must not skip a legitimate deregister. On conflict, deregisterOwnedAttempt re\-Gets and this loop retries the decision against the fresh entry, up to ownedWriteRetriesMax times. Returns nil if the key does not exist.
 
 <a name="Directory.List"></a>
-### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L493>)
+### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L556>)
 
 ```go
 func (d *Directory) List() ([]WorkerRegistration, error)
@@ -400,7 +400,7 @@ func (d *Directory) List() ([]WorkerRegistration, error)
 List returns all currently registered workers. Returns an empty slice when no workers are registered. Skips entries that fail to unmarshal \(TTL expiry race\).
 
 <a name="Directory.Register"></a>
-### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L339>)
+### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L354>)
 
 ```go
 func (d *Directory) Register(reg WorkerRegistration) error
@@ -409,7 +409,7 @@ func (d *Directory) Register(reg WorkerRegistration) error
 Register writes the worker's registration to the KV bucket with an unguarded Put \-\- no ownership check, no revision guard. Reserved for native Go workers, which never go through the bridge and so have no TokenID to enforce \(\#650's ownership scope is the bridge's HTTP connect/heartbeat path only; see RegisterOwned\). The worker must call Register periodically \(before the 60s TTL\) to maintain its presence. Panics on empty WorkerID or TaskTypes.
 
 <a name="Directory.RegisterOwned"></a>
-### func \(\*Directory\) [RegisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L236-L238>)
+### func \(\*Directory\) [RegisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L251-L253>)
 
 ```go
 func (d *Directory) RegisterOwned(reg WorkerRegistration, callerTokenID string, callerIsAdmin bool) error
@@ -840,7 +840,7 @@ Side effects:
 Idempotent at the engine side per the ack contract \(\#327\): same Name \+ same OwnerWorkerID \+ same ConfigSchema → nil. Schema drift → error. Owner drift → error.
 
 <a name="Worker.Start"></a>
-### func \(\*Worker\) [Start](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L485>)
+### func \(\*Worker\) [Start](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L491>)
 
 ```go
 func (w *Worker) Start()
@@ -849,7 +849,7 @@ func (w *Worker) Start()
 Start creates JetStream subscriptions for all registered task types. Panics if any subscription fails — stream misconfiguration is a startup error. Binds optional KV buckets for checkpoints and signals \(nil if not present\). When groups are configured, subscribes to group\-specific subjects.
 
 <a name="Worker.Stop"></a>
-### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L982>)
+### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L988>)
 
 ```go
 func (w *Worker) Stop()
@@ -907,7 +907,7 @@ func WithPartitions(n int) WorkerOption
 WithPartitions configures pcgroups elastic consumer groups with the given partition count. 0 = legacy consumer \(default\).
 
 <a name="WorkerRegistration"></a>
-## type [WorkerRegistration](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L155-L182>)
+## type [WorkerRegistration](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L156-L183>)
 
 WorkerRegistration is the directory entry for a running worker. The directory is observability\-only — the engine never reads it. Workers register on startup and maintain their entry via periodic heartbeat writes \(the KV bucket has a 60s TTL\).
 
