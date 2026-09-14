@@ -474,7 +474,7 @@ func newDirectoryOptional(
 	if err != nil {
 		return nil, err
 	}
-	return &Directory{kv: kv}, nil
+	return &Directory{kv: kv, js: js}, nil
 }
 
 // Start creates JetStream subscriptions for all registered task

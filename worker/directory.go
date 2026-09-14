@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/workertoken"
@@ -186,6 +187,7 @@ type WorkerRegistration struct {
 // the bucket's TTL ensures stale entries are purged automatically.
 type Directory struct {
 	kv jetstream.KeyValue
+	js jetstream.JetStream
 }
 
 // NewDirectory creates a Directory backed by the "workers" KV
@@ -204,7 +206,7 @@ func NewDirectory(js jetstream.JetStream) *Directory {
 				err.Error(),
 		)
 	}
-	return &Directory{kv: kv}
+	return &Directory{kv: kv, js: js}
 }
 
 // registerOwnedTestHook, when non-nil, is called by
@@ -487,6 +489,65 @@ func deregisterOwnedAttempt(
 	return true, nil
 }
 
+// listKeysMax bounds how many keys one List() enumerates. The worker
+// directory is operator-facing and one entry per live worker, so this
+// is far above any real deployment -- it exists so a runaway bucket
+// can't make List() unbounded.
+const listKeysMax = 100_000
+
+// listKeys enumerates the bucket's keys from the backing stream's
+// server-side subject state instead of kv.ListKeys.
+//
+// kv.ListKeys builds its answer from a watcher: a consumer is created
+// and its initial delivery is treated as the set of live keys. That
+// snapshot is not atomic with respect to concurrent writers. The
+// workers bucket keeps history=1, so a heartbeat's Put immediately
+// replaces the key's only revision; when that lands inside the
+// watcher's setup window the key can be omitted from the listing
+// entirely, even though a plain Get for it succeeds. List() then
+// reported a live, actively-heartbeating worker as absent roughly
+// once per 2000 calls -- the intermittent failure of
+// bridge.TestHeartbeatStopsAfterOwnershipTakeover, and, in
+// production, a worker blinking out of `dagnats workers list` and the
+// console.
+//
+// A filtered stream Info is a single consistent server-side read of
+// which subjects currently hold messages, so a concurrent Put cannot
+// hide an existing key. Subjects whose last message is a delete
+// marker still appear here; List()'s per-key Get returns
+// ErrKeyNotFound for those and skips them, exactly as before.
+func (d *Directory) listKeys(ctx context.Context) ([]string, error) {
+	if d.js == nil {
+		panic("Directory.listKeys: js must not be nil")
+	}
+	if d.kv == nil {
+		panic("Directory.listKeys: kv must not be nil")
+	}
+	bucket := d.kv.Bucket()
+	stream, err := d.js.Stream(ctx, "KV_"+bucket)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "$KV." + bucket + "."
+	info, err := stream.Info(
+		ctx, jetstream.WithSubjectFilter(prefix+">"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(info.State.Subjects))
+	for subject := range info.State.Subjects {
+		if len(keys) >= listKeysMax {
+			break
+		}
+		if !strings.HasPrefix(subject, prefix) {
+			continue
+		}
+		keys = append(keys, strings.TrimPrefix(subject, prefix))
+	}
+	return keys, nil
+}
+
 // List returns all currently registered workers.
 // Returns an empty slice when no workers are registered.
 // Skips entries that fail to unmarshal (TTL expiry race).
@@ -494,17 +555,20 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 	if d.kv == nil {
 		panic("Directory.List: kv must not be nil")
 	}
+	if d.js == nil {
+		panic("Directory.List: js must not be nil")
+	}
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	keys, err := d.kv.ListKeys(ctx)
+	keys, err := d.listKeys(ctx)
 	if err != nil {
 		return nil, err
 	}
 	workers := make([]WorkerRegistration, 0, 32)
 	cutoff := time.Now().Add(-MaxWorkerStaleness)
-	for key := range keys.Keys() {
+	for _, key := range keys {
 		entry, err := d.kv.Get(ctx, key)
 		if err != nil {
 			continue
