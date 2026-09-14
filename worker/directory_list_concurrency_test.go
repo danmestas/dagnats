@@ -9,9 +9,9 @@
 // used kv.ListKeys, whose watcher-built snapshot could omit a key
 // whose only revision (history=1) was replaced inside the watcher's
 // setup window, so a live worker was reported absent roughly once
-// per 2000 calls. This probe is statistical by nature -- it cannot
-// fail against correct code, but it only catches a reintroduction
-// with high probability, not certainty.
+// per 2000 calls. These probes are statistical by nature -- they
+// cannot fail against correct code, but they only catch a
+// reintroduction with high probability, not certainty.
 package worker
 
 import (
@@ -25,9 +25,13 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// listConcurrencyReads bounds the probe. 1500 reads reproduced the
-// pre-fix miss on every one of 10 attempts; the fixed path runs them
-// in a few seconds because it no longer creates a consumer per call.
+// listConcurrencyReads bounds the probe. At this read count, with
+// the subject enumeration reverted to kv.ListKeys, the probe was
+// observed red in 20 of 20 runs -- but that is a measured frequency,
+// not a guarantee: the miss is a race, so a single green run does
+// not prove the enumeration is sound. The fixed path costs about
+// 1.6s (no consumer created per call), so raising this is cheap if
+// the rate is ever seen to drop.
 const listConcurrencyReads = 1500
 
 // listConcurrencyWriters is the number of goroutines replaying the
