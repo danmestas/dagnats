@@ -261,9 +261,18 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 //
 // A dotted Task combined with a non-empty WorkerGroup used to be
 // rejected here (the two would derive the byte-identical filter subject
-// and durable name). #704's group sentinel in consumername.FilterFor and
-// NameFor makes the combination provably distinct instead, so it is no
-// longer restricted.
+// and durable name). #704's group sentinel makes the FILTER SUBJECT
+// provably distinct, which is what dispatch routes on, so the
+// combination is no longer restricted.
+//
+// The DURABLE NAME is a weaker guarantee and deliberately not claimed
+// here: consumername.Sanitize maps '.' to '-', so NameFor("aa.a", "a")
+// and NameFor("aa-a", "a") still collide on "workers-aa-a-=a" with
+// different filters. That hazard already exists for two ungrouped types
+// ("a.b" versus "a-b") and fails LOUDLY either way -- the mismatched
+// filter trips the cross-process collision assertion rather than
+// silently sharing a queue -- so it is a naming wart, not a routing
+// one. See consumername.NameFor's doc for the full statement.
 func validateStepDispatch(step StepDef) error {
 	if step.ID == "" {
 		panic("validateStepDispatch: step ID is empty")

@@ -512,6 +512,17 @@ func validateTaskType(taskType string) error {
 // isTaskTypeByte reports whether c may appear in a task type.
 // Deliberately narrower than NATS subject rules: no wildcards, no
 // whitespace, so the type maps 1:1 onto one subject path.
+//
+// SECURITY INVARIANT (#695, #704): consumername.GroupSentinel ('=') must
+// NEVER be added here. Poll authorization checks the requested task type
+// and worker group literally, which is complete ONLY because a caller
+// cannot spell a grouped filter as an ungrouped task type. Admit '=' and
+// {"task_types":["a.=b"]} derives task.a.=b.*, byte-identical to
+// FilterFor("a","b") -- while AllowsWorkerGroup is never consulted,
+// because the request is ungrouped. That is the #695 bypass verbatim,
+// which was demonstrated against a live server. This list is a second
+// copy of dag.ValidTaskType's charset; both are tested against the
+// sentinel so the two cannot drift apart unnoticed.
 func isTaskTypeByte(c byte) bool {
 	switch {
 	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':

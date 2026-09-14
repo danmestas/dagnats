@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## Unreleased
+
+### Breaking / behavior changes
+
+- **The worker-group subject token is now sentinel-prefixed** (#704):
+  `task.{task}.={group}.{runID}`, with the matching durable name
+  `workers-{task}-={group}`. Previously `task.{task}.{group}.{runID}`
+  could not be distinguished from a dotted task type, which is why a
+  dotted task type could not carry a worker group at all and why a token
+  granted the dotted prefix `a.b` could reach type `a` / group `b`
+  (#695). Both mappings are now injective, so a dotted task type carries
+  a worker group normally and `dag.ValidTaskGroupCombo` — an exported
+  symbol — is **removed** along with the poll-time aliasing check it
+  backed. Ungrouped subjects and durable names are unchanged.
+  **Migration, required for any deployment using worker groups: upgrade
+  the engine FIRST, then the workers.** Work-queue retention plus
+  `DeliverAllPolicy` means grouped tasks published before an upgraded
+  worker exists are held in the stream and delivered in full once it
+  starts, so engine-first loses nothing. **Workers-first is unsupported**
+  — the engine would still publish the legacy subject, and a grouped task
+  published to a subject no consumer matches strands *indefinitely*
+  rather than failing: `TASK_QUEUES` has no MaxAge, AckWait and
+  MaxDeliver are inert with no consumer, and the per-step watchdog never
+  arms because `step.started` never fires. The orchestrator logs any such
+  stranded subject at startup, naming the message count and remediation.
+
 ## [0.0.15] - 2026-09-13
 
 ### Breaking / behavior changes

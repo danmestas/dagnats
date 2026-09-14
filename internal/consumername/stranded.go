@@ -24,7 +24,7 @@ import (
 const groupPairsMax = 10_000
 
 // GroupPair identifies one (taskType, group) pairing with a non-empty
-// group — the shape #704's "@" sentinel now disambiguates. Used only to
+// group — the shape #704's GroupSentinel now disambiguates. Used only to
 // drive CheckStrandedSubjects.
 type GroupPair struct {
 	Task  string
