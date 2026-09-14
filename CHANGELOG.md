@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `InitialDelay * 0^(n-1)`, so every retry after the first fired with zero
   delay. An explicit multiplier is now validated to `[1, 100]` at
   definition time.
+- **A worker token granted a dotted task-type prefix no longer reaches the
+  equivalent grouped queue** (#695). `task.{type}.{group}.{runID}` cannot
+  distinguish a dotted task type from a task-plus-group, so a token holding
+  `["a.b"]` could drain type `a` / group `b` — work it was refused when it
+  asked by name. A poll is now authorized against every reading of the
+  subject it derives, not the spelling the caller chose. **Migration:** a
+  token scoped to an exact dotted prefix without also holding the ancestor
+  (`["a"]`) can no longer poll that type ungrouped; scope to the ancestor.
 
 ### Added
 
@@ -51,6 +59,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guards live in the service, so the CLI and HTTP surfaces share one
   contract. Deleting a definition removes its version keys but leaves run
   history readable.
+- **Worker-group scoping, so a repository owner can supply their own
+  runners** (#695). `POST /v1/tasks/poll` takes an optional `worker_group`
+  and polls that group's consumer — previously a bridge-connected worker
+  could only ever drain the ungrouped one, making `WorkerGroup` unreachable
+  over HTTP. `POST /v1/tokens` takes an optional `worker_groups`, reported
+  back on mint and in the listing; a group-scoped token cannot reach
+  another group or the ungrouped queue. Absent means unscoped by group
+  (existing tokens are unaffected); a present-but-empty list is refused at
+  mint so it can never silently widen to "every group". Isolation is by
+  subject: two groups derive non-overlapping consumer filters, so neither
+  ever receives the other's messages.
+- **`ci.yml` checks and `deploy` accept `worker_group:`** (#695), with a
+  compile diagnostic when it is paired with a dotted compiled task type —
+  including the `call:` path, which compiles to `dagger.call`. Without the
+  diagnostic the failure was silent: a worker that idles forever against a
+  subject nobody publishes to. Grouped steps need a single-token task type.
+
+### Fixed
+
+- **A live worker could intermittently vanish from `dagnats workers list`,
+  the console, and trigger-owner liveness** (#699), roughly one listing in
+  2000. `Directory.List()` enumerated via `kv.ListKeys()`, whose answer is
+  built from a watcher's initial delivery and is not atomic with respect to
+  concurrent writers; on the `history=1` workers bucket a heartbeat's `Put`
+  landing inside the watcher's setup window dropped the key from the
+  listing entirely, while `Get` still returned it. Enumeration now reads
+  the stream's subject state, which the server resolves under the store
+  lock, and costs one round trip instead of an ephemeral consumer per call.
 
 ### Changed
 
