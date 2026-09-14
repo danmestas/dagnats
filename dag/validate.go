@@ -241,13 +241,12 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 }
 
 // validateStepDispatch is the ONE place every charset/shape rule for a
-// step's dispatch-bound fields (Task, WorkerGroup) and their combination
-// is enforced — called from both dag.Validate (static steps, via
-// validateStepReferences) and dag.ValidateFragment (planner-generated
-// dynamic steps, via validateFragmentTasks) so the two paths cannot
-// drift (issue #674 and its follow-up review). Steps of a type that
-// carries no task (Sleep, WaitForEvent, Approval, SubWorkflow) skip —
-// see stepRequiresTask.
+// step's dispatch-bound fields (Task, WorkerGroup) is enforced — called
+// from both dag.Validate (static steps, via validateStepReferences) and
+// dag.ValidateFragment (planner-generated dynamic steps, via
+// validateFragmentTasks) so the two paths cannot drift (issue #674 and
+// its follow-up review). Steps of a type that carries no task (Sleep,
+// WaitForEvent, Approval, SubWorkflow) skip — see stepRequiresTask.
 //
 // Rules, in order:
 //  1. Task must satisfy ValidTaskType (dots ARE allowed — "dagger.call"
@@ -259,14 +258,21 @@ func validateSingleStep(step StepDef, ids map[string]bool) error {
 //     token, and a dot there is indistinguishable from the separator
 //     between Task and WorkerGroup, so a dotted WorkerGroup can derive
 //     the identical filter/durable name as an equivalent dotted Task.
-//  3. A dotted Task combined with a non-empty WorkerGroup is rejected
-//     even when the WorkerGroup itself is dot-free:
-//     consumername.FilterFor("render.gpu", "") and
-//     FilterFor("render", "gpu") derive the byte-identical filter
-//     subject AND durable name ("task.render.gpu.*",
-//     "workers-render-gpu"). Each half stays legal alone (a dotted,
-//     ungrouped Task; an undotted Task with a WorkerGroup) — only the
-//     combination on one step is rejected.
+//
+// A dotted Task combined with a non-empty WorkerGroup used to be
+// rejected here (the two would derive the byte-identical filter subject
+// and durable name). #704's group sentinel makes the FILTER SUBJECT
+// provably distinct, which is what dispatch routes on, so the
+// combination is no longer restricted.
+//
+// The DURABLE NAME is a weaker guarantee and deliberately not claimed
+// here: consumername.Sanitize maps '.' to '-', so NameFor("aa.a", "a")
+// and NameFor("aa-a", "a") still collide on "workers-aa-a-=a" with
+// different filters. That hazard already exists for two ungrouped types
+// ("a.b" versus "a-b") and fails LOUDLY either way -- the mismatched
+// filter trips the cross-process collision assertion rather than
+// silently sharing a queue -- so it is a naming wart, not a routing
+// one. See consumername.NameFor's doc for the full statement.
 func validateStepDispatch(step StepDef) error {
 	if step.ID == "" {
 		panic("validateStepDispatch: step ID is empty")
@@ -287,9 +293,6 @@ func validateStepDispatch(step StepDef) error {
 		return fmt.Errorf(
 			"step %q has invalid worker_group: %w", step.ID, err,
 		)
-	}
-	if err := ValidTaskGroupCombo(step.Task, step.WorkerGroup); err != nil {
-		return fmt.Errorf("step %q: %w", step.ID, err)
 	}
 	return nil
 }

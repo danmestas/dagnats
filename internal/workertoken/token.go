@@ -90,17 +90,17 @@ func (c Claims) AllowsTaskType(taskType string) bool {
 // repo's group must not be able to fall back to draining everyone
 // else's ungrouped work.
 //
-// This method alone is NOT the full isolation guarantee: authorization
-// must cover every reading of the DERIVED subject a poll consumes from
-// (internal/consumername.FilterFor), not merely the (task type, group)
-// spelling the caller chose. FilterFor's mapping is not injective -- a
-// dotted ungrouped task type "a.b" derives the byte-identical filter
-// subject as the grouped pair (task type "a", group "b") -- so a caller
-// can request the SAME queue under either spelling. The bridge's poll
-// handler (bridge.firstUnauthorizedAliasedReading, #695 review) checks
-// AllowsWorkerGroup against BOTH the request's own worker_group and the
-// worker_group half of that alternate reading; calling this method with
-// only the caller's literal request value is not sufficient on its own.
+// Before #704, this method alone was NOT the full isolation guarantee:
+// internal/consumername.FilterFor's (task type, group) -> filter mapping
+// was not injective -- a dotted ungrouped task type "a.b" derived the
+// byte-identical filter subject as the grouped pair (task type "a",
+// group "b") -- so a caller could request the SAME queue under either
+// spelling, and the bridge's poll handler needed an extra aliased-reading
+// check (bridge.firstUnauthorizedAliasedReading, #695 review, removed in
+// #704) on top of this method. #704's group sentinel in FilterFor makes the
+// two spellings derive provably distinct filter subjects, so that
+// aliasing is gone: AllowsWorkerGroup against the caller's own literal
+// request value is sufficient on its own.
 func (c Claims) AllowsWorkerGroup(group string) bool {
 	if c.Admin {
 		return true

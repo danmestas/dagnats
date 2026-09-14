@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -95,8 +96,9 @@ func listActiveTaskTypes(
 	return active
 }
 
-// extractTaskType parses a filter subject like "task.greet.>" or
-// "task.greet.*" and returns the task type ("greet"). Returns ""
+// extractTaskType parses a filter subject like "task.greet.>",
+// "task.greet.*", or a grouped filter carrying #704's group sentinel
+// ("task.greet.=gpu.>") and returns the task type ("greet"). Returns ""
 // for subjects that do not match the expected pattern.
 func extractTaskType(subject string) string {
 	if len(subject) < 6 {
@@ -108,11 +110,21 @@ func extractTaskType(subject string) string {
 
 	// Strip the "task." prefix and the trailing ".>" or ".*"
 	rest := subject[5:]
-	if idx := strings.LastIndex(rest, "."); idx > 0 {
-		return rest[:idx]
+	idx := strings.LastIndex(rest, ".")
+	if idx <= 0 {
+		// Consumer might filter on "task.greet" without wildcard.
+		return rest
 	}
-	// Consumer might filter on "task.greet" without wildcard
-	return rest
+	taskType := rest[:idx]
+	// A grouped filter's trailing token before the wildcard is the
+	// sentinel-prefixed group (#704) — drop it too, so a grouped
+	// consumer's task type still surfaces as the plain task type, not
+	// "greet.=gpu".
+	sentinelSuffix := "." + consumername.GroupSentinel
+	if groupIdx := strings.LastIndex(taskType, sentinelSuffix); groupIdx > 0 {
+		return taskType[:groupIdx]
+	}
+	return taskType
 }
 
 // findMissingTypes returns task types from wanted that are not

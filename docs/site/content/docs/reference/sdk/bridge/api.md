@@ -10,6 +10,8 @@ bridge/logs.go POST /v1/tasks/\{id\}/logs \(\#624\): the HTTP\-bridge counterpar
 
 Subject/attempt/iteration scoping \(\#624 review rounds 2\-3\): the subject is logs.\{runID\}.\{stepID\}.\{attempt\}.\{iteration\}, matching worker/log\_writer.go exactly — both are read from the claimed task's own message \(the same one authorizeTaskOwner already validated ownership against\), NOT from the caller's request body, so an HTTP worker can never spoof which attempt/iteration its chunks land on.
 
+bridge/stranded\_check.go Defense\-in\-depth counterpart to the engine's primary stranded\-subject check \(Orchestrator.checkStrandedGroupSubjects, internal/engine\): \#704 moved the grouped subject/durable encoding behind the group sentinel \(consumername.GroupSentinel\) with no compatibility consumer, so a message published to a legacy grouped subject before every process upgrades is never reclaimed by any other mechanism \-\- see the pinned design on issue \#704. This narrows the check to the one \(task, group\) pair the bridge is about to serve, checked right before adopting or creating that pair's consumer.
+
 ## Index
 
 - [func RegisterBridgeMetrics\(m metric.Meter, b \*Bridge\) \(metric.Registration, error\)](<#RegisterBridgeMetrics>)

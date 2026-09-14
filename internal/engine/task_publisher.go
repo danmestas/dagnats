@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
@@ -572,7 +573,12 @@ func (tp *TaskPublisher) StepSubject(
 	}
 	subject := prefix + "." + step.Task
 	if step.WorkerGroup != "" {
-		subject += "." + step.WorkerGroup
+		// Group sentinel (#704): disambiguates a dotted Task from an
+		// undotted Task plus WorkerGroup, which used to derive the
+		// byte-identical subject — see internal/consumername.FilterFor
+		// and consumername.GroupSentinel for the full constraint set
+		// that pins its value.
+		subject += "." + consumername.GroupSentinel + step.WorkerGroup
 	}
 	return subject + "." + runID
 }

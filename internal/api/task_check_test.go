@@ -162,6 +162,20 @@ func TestExtractTaskType(t *testing.T) {
 	if got := extractTaskType("task.upper.*"); got != "upper" {
 		t.Fatalf("got = %q, want %q", got, "upper")
 	}
+	// #704: a grouped filter's trailing token is the "="-prefixed group,
+	// not part of the task type — dropping only the wildcard token (the
+	// pre-#704 behavior) would wrongly return "render.=gpu".
+	if got := extractTaskType("task.render.=gpu.>"); got != "render" {
+		t.Fatalf("got = %q, want %q", got, "render")
+	}
+	if got := extractTaskType("task.render.=gpu.*"); got != "render" {
+		t.Fatalf("got = %q, want %q", got, "render")
+	}
+	// Negative: a dotted, UNGROUPED task type must not be mistaken for a
+	// grouped one — no "=" sentinel present.
+	if got := extractTaskType("task.build.linux.*"); got != "build.linux" {
+		t.Fatalf("got = %q, want %q", got, "build.linux")
+	}
 
 	// Negative: non-task subjects return empty.
 	if got := extractTaskType("history.run1"); got != "" {

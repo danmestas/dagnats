@@ -558,8 +558,8 @@ func TestRESTRegisterWorkflowUnsafeTaskTypeRejected(t *testing.T) {
 // TestRESTRegisterWorkflowUnsafeWorkerGroupRejected proves POST
 // /workflows 400s on an unsafe WorkerGroup the same way it does on an
 // unsafe Task — StepSubject appends WorkerGroup as its own subject
-// token ("task.{Task}.{WorkerGroup}.{runID}"), so it is exactly as
-// dangerous as an unsafe Task (issue #674 review).
+// token ("task.{Task}.={WorkerGroup}.{runID}", #704's group sentinel),
+// so it is exactly as dangerous as an unsafe Task (issue #674 review).
 func TestRESTRegisterWorkflowUnsafeWorkerGroupRejected(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)

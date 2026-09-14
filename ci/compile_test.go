@@ -185,34 +185,6 @@ checks:
   test: { task: "go-test", worker_group: "repo alpha" }
 `
 
-// ciYMLCallCheckWorkerGroup sets worker_group: on a call: check — call:
-// always compiles to the dotted "dagger.call" task type, so this must be
-// diagnosed regardless of what the author wrote for task:.
-const ciYMLCallCheckWorkerGroup = `
-checks:
-  test: { call: "test", worker_group: "repo-alpha" }
-`
-
-// ciYMLDottedTaskCheckWorkerGroup sets worker_group: on a task: check
-// whose author-supplied task value is itself dotted.
-const ciYMLDottedTaskCheckWorkerGroup = `
-checks:
-  test: { task: "dagger.custom", worker_group: "repo-alpha" }
-`
-
-// ciYMLDeployCallWorkerGroup sets worker_group: on a call: deploy step —
-// the deploy-side mirror of ciYMLCallCheckWorkerGroup, proving
-// compileDeploy shares the same compileWorkerGroupDiagnostics helper as
-// compileCheck.
-const ciYMLDeployCallWorkerGroup = `
-checks:
-  test: { call: "test" }
-deploy:
-  call: "publish"
-  worker_group: "repo-alpha"
-  needs: [test]
-`
-
 // ciYMLRetriesShorthand uses the retries: N shorthand on a check (#681).
 const ciYMLRetriesShorthand = `
 checks:
@@ -969,94 +941,57 @@ func TestCompileWorkerGroupInvalidValueIsRejected(t *testing.T) {
 	}
 }
 
-// TestCompileCallCheckWithWorkerGroupIsRejected is the load-bearing
-// diagnostic (#695): call: always compiles to the dotted "dagger.call"
-// task type, and a dotted task type combined with a non-empty
-// worker_group can never map onto a real dispatch (FilterFor("dagger.call",
-// "") and FilterFor("dagger", "call.repo-alpha")-shaped collisions --
-// see dag.ValidTaskGroupCombo). The diagnostic must fire even though the
-// author never wrote task: at all.
-func TestCompileCallCheckWithWorkerGroupIsRejected(t *testing.T) {
-	spec := mustParse(t, ciYMLCallCheckWorkerGroup)
-
+// TestCompileCallCheckWithWorkerGroupIsAccepted is the ci.yml-layer proof
+// for #704: call: always compiles to the dotted "dagger.call" task type,
+// which used to be rejected outright when combined with worker_group
+// (FilterFor("dagger.call", "") and FilterFor("dagger", "call.X") could
+// collide). The "=" sentinel makes the combination legal, so this must
+// now compile clean even though the author never wrote task: at all.
+func TestCompileCallCheckWithWorkerGroupIsAccepted(t *testing.T) {
+	spec := mustParse(t, `
+checks:
+  test: { call: "test", worker_group: "repo-alpha" }
+`)
 	_, diags := ci.Compile("ci-call-worker-group", spec)
-	if len(diags) != 1 {
-		t.Fatalf("diags = %+v, want exactly 1", diags)
-	}
-	if diags[0].Field != "test" {
-		t.Errorf("diags[0].Field = %q, want \"test\"", diags[0].Field)
-	}
-	// "single-token" and "set task:" are compileWorkerGroupDiagnostics's
-	// own ci.yml-flavored wording, not present in dag.ValidTaskGroupCombo's
-	// underlying message ("use an undotted task type") -- asserting on
-	// them is what makes deleting the ci-level check (and falling back
-	// to Compile's dag.Validate safety net alone) turn this test red.
-	if !strings.Contains(diags[0].Message, "worker_group") ||
-		!strings.Contains(diags[0].Message, "dagger.call") ||
-		!strings.Contains(diags[0].Message, "single-token") ||
-		!strings.Contains(diags[0].Message, "set task:") {
-		t.Errorf(
-			"diags[0].Message = %q, want it to name worker_group, "+
-				"dagger.call, and the single-token task: fix",
-			diags[0].Message,
-		)
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v, want none (#704 allows call: + worker_group)",
+			diags)
 	}
 }
 
-// TestCompileDottedTaskCheckWithWorkerGroupIsRejected covers the
-// author-supplied-dotted-task: half of the same rule: task: "dagger.custom"
-// combined with worker_group: must be diagnosed identically to the call:
-// case, reusing the same dag-level combination check so the two paths
-// can never disagree.
-func TestCompileDottedTaskCheckWithWorkerGroupIsRejected(t *testing.T) {
-	spec := mustParse(t, ciYMLDottedTaskCheckWorkerGroup)
-
+// TestCompileDottedTaskCheckWithWorkerGroupIsAccepted covers the
+// author-supplied-dotted-task: half of the same #704 proof: task:
+// "dagger.custom" combined with worker_group: must compile clean too,
+// not just the call: path.
+func TestCompileDottedTaskCheckWithWorkerGroupIsAccepted(t *testing.T) {
+	spec := mustParse(t, `
+checks:
+  test: { task: "dagger.custom", worker_group: "repo-alpha" }
+`)
 	_, diags := ci.Compile("ci-dotted-task-worker-group", spec)
-	if len(diags) != 1 {
-		t.Fatalf("diags = %+v, want exactly 1", diags)
-	}
-	if diags[0].Field != "test" {
-		t.Errorf("diags[0].Field = %q, want \"test\"", diags[0].Field)
-	}
-	if !strings.Contains(diags[0].Message, "single-token") ||
-		!strings.Contains(diags[0].Message, "set task:") {
-		t.Errorf(
-			"diags[0].Message = %q, want the ci-level single-token task: fix wording",
-			diags[0].Message,
-		)
-	}
-
-	// Negative: the same dotted task with NO worker_group stays legal.
-	okSpec := mustParse(t, ciYMLDottedTaskCheckWorkerGroup)
-	okSpec.Checks["test"] = ci.Check{
-		Task: okSpec.Checks["test"].Task,
-	}
-	if _, diags2 := ci.Compile("ci-dotted-task-no-group", okSpec); len(diags2) != 0 {
-		t.Errorf("Compile(dotted task, no group) diagnostics = %+v, want none",
-			diags2)
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v, want none (#704 allows a dotted task: + "+
+			"worker_group)", diags)
 	}
 }
 
-// TestCompileDeployCallWithWorkerGroupIsRejected is the deploy-side
-// mirror of TestCompileCallCheckWithWorkerGroupIsRejected, proving
-// compileDeploy runs the same compileWorkerGroupDiagnostics check as
+// TestCompileDeployCallWithWorkerGroupIsAccepted is the deploy-side
+// mirror of TestCompileCallCheckWithWorkerGroupIsAccepted, proving
+// compileDeploy runs the same compileWorkerGroupDiagnostics helper as
 // compileCheck rather than a separately-maintained copy.
-func TestCompileDeployCallWithWorkerGroupIsRejected(t *testing.T) {
-	spec := mustParse(t, ciYMLDeployCallWorkerGroup)
-
+func TestCompileDeployCallWithWorkerGroupIsAccepted(t *testing.T) {
+	spec := mustParse(t, `
+checks:
+  test: { call: "test" }
+deploy:
+  call: "publish"
+  worker_group: "repo-alpha"
+  needs: [test]
+`)
 	_, diags := ci.Compile("ci-deploy-call-worker-group", spec)
-	if len(diags) != 1 {
-		t.Fatalf("diags = %+v, want exactly 1", diags)
-	}
-	if diags[0].Field != "deploy" {
-		t.Errorf("diags[0].Field = %q, want \"deploy\"", diags[0].Field)
-	}
-	if !strings.Contains(diags[0].Message, "single-token") ||
-		!strings.Contains(diags[0].Message, "set task:") {
-		t.Errorf(
-			"diags[0].Message = %q, want the ci-level single-token task: fix wording",
-			diags[0].Message,
-		)
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v, want none (#704 allows call: + worker_group)",
+			diags)
 	}
 }
 

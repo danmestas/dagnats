@@ -317,6 +317,13 @@ func (o *Orchestrator) Start() error {
 		return err
 	}
 
+	// #704 stranded-subject check (primary detector): the engine is the
+	// process guaranteed to restart under the supported engine-first
+	// upgrade order, so it is the only process that gives a signal in the
+	// worst case (grouped workers never restarted). Deliberately
+	// non-fatal — see checkStrandedGroupSubjects.
+	o.checkStrandedGroupSubjects(context.Background())
+
 	o.cc = o.startHistoryConsumer()
 
 	// Wire the periodic reconciliation janitor (#185). The

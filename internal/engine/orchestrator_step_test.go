@@ -137,7 +137,7 @@ func TestOrchestratorWorkerGroupRouting(t *testing.T) {
 
 	// Positive: task should appear on gpu-specific subject
 	gpuSub, err := js.PullSubscribe(
-		"task.ml-training.gpu.*", "", nats.BindStream("TASK_QUEUES"),
+		"task.ml-training.=gpu.*", "", nats.BindStream("TASK_QUEUES"),
 	)
 	if err != nil {
 		t.Fatalf("PullSubscribe gpu subject failed: %v", err)
