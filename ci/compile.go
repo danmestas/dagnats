@@ -219,11 +219,7 @@ func compileCheck(
 	}
 	var retry *dag.RetryPolicy
 	retry, diags = compileCheckRetry(name, c, diags)
-	compiledTask := c.Task
-	if compiledTask == "" {
-		compiledTask = "dagger.call"
-	}
-	diags = compileWorkerGroupDiagnostics(name, c.WorkerGroup, compiledTask, diags)
+	diags = compileWorkerGroupDiagnostics(name, c.WorkerGroup, diags)
 	if len(diags) > before {
 		return dag.StepDef{}, false, diags
 	}
@@ -253,24 +249,16 @@ func compileCheck(
 }
 
 // compileWorkerGroupDiagnostics validates a check's or deploy's
-// worker_group against the SAME rules dag.validateStepDispatch enforces
+// worker_group against the SAME rule dag.validateStepDispatch enforces
 // on a StepDef.WorkerGroup at workflow-registration time (#695): sharing
-// dag.ValidWorkerGroup and dag.ValidTaskGroupCombo keeps this compile-time
-// diagnostic and the eventual dag.Validate 400 from ever disagreeing.
-// compiledTask is the step's FINAL Task value -- "dagger.call" on the
-// call: path, or the literal task: value on the task: path -- the
-// combination check must run against what actually gets published, not
-// the raw YAML field, so a call: check (which always compiles to the
-// dotted "dagger.call") is caught even though its author never wrote
-// task: at all. Returns diags unchanged when workerGroup is empty.
+// dag.ValidWorkerGroup keeps this compile-time diagnostic and the
+// eventual dag.Validate 400 from ever disagreeing. Returns diags
+// unchanged when workerGroup is empty.
 func compileWorkerGroupDiagnostics(
-	field, workerGroup, compiledTask string, diags []Diagnostic,
+	field, workerGroup string, diags []Diagnostic,
 ) []Diagnostic {
 	if field == "" {
 		panic("compileWorkerGroupDiagnostics: field must not be empty")
-	}
-	if compiledTask == "" {
-		panic("compileWorkerGroupDiagnostics: compiledTask must not be empty")
 	}
 	if workerGroup == "" {
 		return diags
@@ -281,20 +269,6 @@ func compileWorkerGroupDiagnostics(
 			Message: fmt.Sprintf(
 				"%s: worker_group %q is not valid: %v",
 				field, workerGroup, err,
-			),
-		})
-	}
-	if err := dag.ValidTaskGroupCombo(compiledTask, workerGroup); err != nil {
-		return addDiagnostic(diags, Diagnostic{
-			Field: field,
-			Message: fmt.Sprintf(
-				"%s: worker_group %q cannot be combined with task %q "+
-					"because it is a dotted task type -- the subject "+
-					"encoding cannot distinguish a dotted task from an "+
-					"undotted task plus worker_group; set task: to a "+
-					"single-token (undotted) task type to use worker_group "+
-					"on this check (fix: %v)",
-				field, workerGroup, compiledTask, err,
 			),
 		})
 	}
@@ -387,13 +361,7 @@ func compileDeploy(
 			Message: fmt.Sprintf("deploy: %v", err),
 		})
 	}
-	deployCompiledTask := d.Task
-	if deployCompiledTask == "" {
-		deployCompiledTask = "dagger.call"
-	}
-	diags = compileWorkerGroupDiagnostics(
-		"deploy", d.WorkerGroup, deployCompiledTask, diags,
-	)
+	diags = compileWorkerGroupDiagnostics("deploy", d.WorkerGroup, diags)
 	if len(diags) > before {
 		return nil, diags
 	}

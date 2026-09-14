@@ -47,7 +47,7 @@ func publishGroupedTaskFixture(
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	subject := "task." + taskType + "." + group + "." + runID
+	subject := "task." + taskType + ".=" + group + "." + runID
 	if _, err := js.Publish(context.Background(), subject, data); err != nil {
 		t.Fatalf("publish grouped task: %v", err)
 	}
@@ -155,35 +155,69 @@ func TestGroupedPollReachesGroupedConsumer(t *testing.T) {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
 	}
 
-	got := consumersOnFilter(t, js, "task.topo.fast.*")
+	got := consumersOnFilter(t, js, "task.topo.=fast.*")
 	if len(got) != 1 {
-		t.Fatalf("got %d consumers on task.topo.fast.*, want 1", len(got))
+		t.Fatalf("got %d consumers on task.topo.=fast.*, want 1", len(got))
 	}
-	if got[0].Durable != "workers-topo-fast" {
-		t.Fatalf("Durable = %q, want %q", got[0].Durable, "workers-topo-fast")
+	if got[0].Durable != "workers-topo-=fast" {
+		t.Fatalf("Durable = %q, want %q", got[0].Durable, "workers-topo-=fast")
 	}
 }
 
-// TestPollDottedTaskWithWorkerGroupRejected mirrors dag's
-// validateStepDispatch combination rule (issue #695): a dotted task
-// type combined with a non-empty worker_group can never map onto a
-// real dispatch (FilterFor("a.b", "") and FilterFor("a", "b") collide),
-// so the bridge must reject it at the request boundary with 400.
-func TestPollDottedTaskWithWorkerGroupRejected(t *testing.T) {
-	_, _, ts := newPollConsumerBridge(t)
+// TestPollDottedTaskWithWorkerGroupIsIsolatedFromUngrouped is the
+// headline proof for #704: the "=" sentinel disambiguates a dotted task
+// type combined with a non-empty worker_group from the byte-identical
+// dotted-only task type it used to collide with (FilterFor("a.b", "")
+// used to equal FilterFor("a", "b")), so this combination -- previously
+// rejected outright by dag.ValidTaskGroupCombo -- now works end to end
+// AND stays isolated: a dotted-task-plus-group poller and an ungrouped
+// poller for the CONCATENATED dotted task type run simultaneously and
+// each receives only its own tasks.
+func TestPollDottedTaskWithWorkerGroupIsIsolatedFromUngrouped(t *testing.T) {
+	js, _, ts := newPollConsumerBridge(t)
+
+	// Grouped: task type "dagger.call", worker_group "fast" -- FilterFor
+	// derives "task.dagger.call.=fast.*".
+	publishGroupedTaskFixture(t, js, "dagger.call", "fast", "grouped-1")
+	// Ungrouped: the CONCATENATED dotted task type "dagger.call.fast" --
+	// FilterFor derives "task.dagger.call.fast.*". Before #704 these two
+	// were the exact same subject; #704 exists to make them provably
+	// distinct.
+	publishTaskFixture(t, js, "dagger.call.fast", "ungrouped-1")
+
+	// Positive: the grouped poll reaches only its own task.
 	status, body := pollGroupedRaw(t, ts, "dagger.call", "fast")
-	if status != 400 {
-		t.Fatalf("status = %d, want 400 (body %q)", status, body)
+	if status != 200 {
+		t.Fatalf("grouped poll status = %d, body = %q", status, body)
+	}
+	var groupedTasks []pollResponse
+	if err := json.Unmarshal([]byte(body), &groupedTasks); err != nil {
+		t.Fatalf("decode grouped poll: %v", err)
+	}
+	if len(groupedTasks) != 1 || groupedTasks[0].RunID != "grouped-1" {
+		t.Fatalf("grouped poll = %+v, want exactly [grouped-1]", groupedTasks)
 	}
 
-	// Negative: the same dotted type with NO worker_group stays legal.
-	status, body = postPollRaw(t, ts, fmt.Sprintf(
-		`{"task_types":["dagger.call"],"max_tasks":1,"timeout_ms":%d}`,
-		pollConsumerFetchTimeoutMs,
-	))
-	if status != 200 {
-		t.Fatalf("dotted task with no group: status = %d, want 200 (body %q)",
-			status, body)
+	// Positive: the ungrouped poll for the concatenated task type reaches
+	// only ITS own task, not the grouped one.
+	ungroupedTasks := postPoll(
+		t, ts, "dagger.call.fast", 5, pollConsumerFetchTimeoutMs,
+	)
+	if len(ungroupedTasks) != 1 || ungroupedTasks[0].RunID != "ungrouped-1" {
+		t.Fatalf("ungrouped poll = %+v, want exactly [ungrouped-1]",
+			ungroupedTasks)
+	}
+
+	// Consumer topology: two distinct durables, two distinct filters.
+	grouped := consumersOnFilter(t, js, "task.dagger.call.=fast.*")
+	if len(grouped) != 1 || grouped[0].Durable != "workers-dagger-call-=fast" {
+		t.Fatalf("grouped consumer = %+v, want durable workers-dagger-call-=fast",
+			grouped)
+	}
+	ungrouped := consumersOnFilter(t, js, "task.dagger.call.fast.*")
+	if len(ungrouped) != 1 || ungrouped[0].Durable != "workers-dagger-call-fast" {
+		t.Fatalf("ungrouped consumer = %+v, want durable workers-dagger-call-fast",
+			ungrouped)
 	}
 }
 

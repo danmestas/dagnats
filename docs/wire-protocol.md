@@ -8,10 +8,10 @@ Workers connect directly to NATS JetStream and subscribe to task subjects.
 
 ### Task Subjects
 
-Task subjects follow the pattern `task.{type}[.{workerGroup}].{runID}` — the
-run ID is always the last, and only the last, token. `runID` is a 32-char
-lowercase-hex string minted by `internal/runid.New` and contains no dots, so
-it is always exactly one subject token.
+Task subjects follow the pattern `task.{type}[.={workerGroup}].{runID}` —
+the run ID is always the last, and only the last, token. `runID` is a
+32-char lowercase-hex string minted by `internal/runid.New` and contains
+no dots, so it is always exactly one subject token.
 
 A step's `Task` (the `{type}` above) is published **verbatim**, with no
 sanitization — unlike a step ID, which passes through
@@ -27,20 +27,56 @@ time unless it is:
 
 A step's `WorkerGroup` (the `{workerGroup}` above) is validated against the
 exact same rule — `StepSubject` appends it as its own subject token, so an
-unsafe `WorkerGroup` is exactly as dangerous as an unsafe `Task`. Additionally,
-a dotted `Task` combined with a non-empty `WorkerGroup` is rejected outright:
-`FilterFor("render.gpu", "")` and `FilterFor("render", "gpu")` derive the
-byte-identical filter subject AND durable name, so pairing the two on one
-step could silently collide with an unrelated ungrouped step. Each half
-stays legal on its own (a dotted, ungrouped `Task`; an undotted `Task` with a
-`WorkerGroup`) — only the combination is rejected. Both rules are checked
-per step, not across the whole system: step A `{Task: "render.gpu"}` in one
-workflow def and step B `{Task: "render", WorkerGroup: "gpu"}` in a
-different def still derive the identical filter subject and durable name,
-and the cross-process collision check treats that as ordinary idempotent
-durable reuse rather than a conflict — closing that fully would require
-validating a def against every other registered def's task types, which
-`dag.Validate` does not do.
+unsafe `WorkerGroup` is exactly as dangerous as an unsafe `Task`.
+
+**The `=` sentinel (issue #704).** `StepSubject` prefixes a non-empty
+`WorkerGroup` with `=`: `task.{Task}.={WorkerGroup}.{runID}`. Without it, a
+dotted `Task` combined with a `WorkerGroup` was indistinguishable from an
+unrelated, undotted `Task` plus the same `WorkerGroup` written as a dotted
+suffix — `FilterFor("render.gpu", "")` and `FilterFor("render", "gpu")`
+used to derive the byte-identical filter subject AND durable name.
+`ValidTaskType` forbids `=` in a `Task`, and `ValidWorkerGroup` forbids it
+in a `WorkerGroup` (via the same charset rule), so the sentinel is
+unreachable from either field and the two forms are now provably
+distinct: `FilterFor("render.gpu", "")` is `task.render.gpu.*` while
+`FilterFor("render", "gpu")` is `task.render.=gpu.*`. `NameFor` carries the
+same sentinel into the durable name (`workers-render-=gpu` vs.
+`workers-render-gpu`) — the subject alone was not enough, since
+`FilterSubject` differing on an otherwise name-colliding durable would
+have converted the old registration-time rejection into a worker panic at
+runtime (`assertNoCrossProcessCollision`). A dotted `Task` combined with a
+non-empty `WorkerGroup` is legal as of #704; it used to be rejected
+outright at workflow-registration time.
+
+`=` is not an arbitrary choice among several legal candidates — it is
+`internal/consumername.GroupSentinel`'s only value that survives all
+four constraints its uses cross simultaneously: legal in a NATS subject
+token, legal in a JetStream consumer (durable) name, legal as a NATS KV
+key (nats.go's key validator is `^[-/_=\.a-zA-Z0-9]+$`), and outside
+`ValidTaskType`'s allowed charset. The KV constraint is easy to miss
+from this package alone — it exists because the partitioned/elastic
+consumer-group path (`WithPartitions` + `WithGroups`) hands `NameFor`'s
+output straight to `github.com/synadia-io/orbit.go/pcgroups`, which
+keys its own group-state document in a KV bucket by that exact string.
+A sentinel illegal there (the original design draft used `@`) passes
+every other check and panics only at consumer-group creation time
+(`nats: invalid key`) — see `GroupSentinel`'s doc comment in
+`internal/consumername/consumername.go` for the full derivation.
+
+**Ungrouped subjects and durable names are byte-identical before and
+after #704** — only the grouped form changed. A dotted `Task` alone
+(no `WorkerGroup`) was, and remains, unaffected.
+
+**This is a breaking wire change for grouped deployments with no
+compatibility consumer.** See "Upgrading a grouped deployment past #704"
+below before upgrading anything that uses `WorkerGroup`.
+
+Both rules above are checked per step, not across the whole system: step A
+`{Task: "render.gpu"}` in one workflow def and step B `{Task: "render",
+WorkerGroup: "gpu"}` in a different def no longer derive the same filter
+subject or durable name at all (the sentinel disambiguates them), so the
+cross-workflow collision this section used to document does not exist
+post-#704.
 
 **Dots are legal and are not a separator for consumer-filter purposes.**
 `dagger.call` is a production task type. A worker or bridge poller derives
@@ -72,11 +108,9 @@ worker will no longer see that work after upgrading.
 same `consumername.NameFor`/`FilterFor` derivation a native worker uses —
 an HTTP-connected runner now gets the identical isolation a native Go
 worker already had. Absent `worker_group` behaves exactly as before: the
-ungrouped durable, unchanged. The same dotted-`Task`-plus-`WorkerGroup`
-rejection applies at the request boundary, not only at workflow
-registration: a poll naming a dotted task type together with a non-empty
-`worker_group` is rejected with `400`, for the identical filter/durable-name
-collision reason. See "2. POST /v1/tasks/poll" below.
+ungrouped durable, unchanged. As of #704, a dotted task type combined with
+a non-empty `worker_group` is legal at this endpoint too — see "2. POST
+/v1/tasks/poll" below.
 
 Examples:
 
@@ -84,22 +118,76 @@ Examples:
 - `task.http.*` — all HTTP tasks (any run)
 - `task.llm.run-abc` — the LLM task for run-abc only
 - `task.build.*` — all `build` tasks; does **not** match `task.build.linux.*`
+- `task.render.=gpu.*` — all `render` tasks in worker group `gpu`; does
+  **not** match `task.render.gpu.*` (the ungrouped, dotted task type
+  `render.gpu`)
 
-Workers create durable pull consumers or ephemeral subscriptions with manual
-ACK. `FilterSubject` is immutable on an existing JetStream consumer, so
-`jetstream.CreateOrUpdateConsumer` cannot rewrite it in place when
-`FilterFor`'s output changes (as it did for #674, `.>` → `.*`). Instead, the
-next time a worker (`worker.subscribePullConsumer`) or the bridge
-(`bridge.taskConsumer` via `adoptConsumer`) claims a durable and finds it
-already exists with the OLD `.>`-anchored filter for the SAME task
-type/group, it automatically deletes and recreates that durable with the
-new filter, logging once at `warn` ("auto-upgrading legacy consumer
-filter"). This is a live, in-place upgrade, not a separate migration
-step or a maintenance window — the first process to touch a given task
-type after upgrading performs it. A durable whose filter differs for a
-genuinely different task type still triggers the collision error
-unchanged (cross-process name collision, work-queue uniqueness
-rejection, etc.).
+Workers create durable pull consumers or ephemeral subscriptions with
+manual ACK. `FilterSubject` is immutable on an existing JetStream
+consumer, so `jetstream.CreateOrUpdateConsumer` cannot rewrite it in place
+when `FilterFor`'s output changes.
+
+**Ungrouped in-place upgrade (#674, unaffected by #704).** The next time a
+worker (`worker.subscribePullConsumer`) or the bridge (`bridge.taskConsumer`
+via `adoptConsumer`) claims an UNGROUPED durable and finds it already
+exists with the OLD `.>`-anchored filter for the SAME task type, it
+automatically deletes and recreates that durable with the new filter,
+logging once at `warn` ("auto-upgrading legacy consumer filter"). This is
+a live, in-place upgrade, not a separate migration step or a maintenance
+window — the first process to touch a given task type after upgrading
+performs it. A durable whose filter differs for a genuinely different
+task type still triggers the collision error unchanged (cross-process
+name collision, work-queue uniqueness rejection, etc.).
+
+**Grouped upgrade past #704 is NOT an in-place upgrade.** #704 changed
+both the filter subject AND the durable name for a grouped pair
+(`workers-render-gpu` → `workers-render-=gpu`), so a legacy grouped
+durable is a DIFFERENTLY-NAMED consumer from today's, not an old version
+of it — the name-keyed collision scan (`assertNoCrossProcessCollision`)
+will never even see it. See "Upgrading a grouped deployment past #704"
+below.
+
+### Upgrading a grouped deployment past #704
+
+There is deliberately no compatibility consumer: dual-filtering a new
+consumer over both the sentinel and legacy shapes is self-defeating,
+because the legacy grouped filter for task type `X` and group `g` is
+byte-identical to the ungrouped filter for the concatenated task type
+`X.g` — exactly the ambiguity #704 removes. So this is a clean cut, and
+grouped deployments need a coordinated, **engine-first** restart:
+
+1. Both worker and bridge create consumers with `DeliverAllPolicy`, and
+   `TASK_QUEUES` is a work-queue stream that removes a message only on
+   ack. A message published to the new (`=`-sentinel) subject before any
+   consumer for it exists simply accumulates in the stream and is
+   delivered in full to the first consumer created for that filter — so
+   upgrading the engine first is zero-loss: not-yet-upgraded grouped
+   workers idle (no consumer matches the new subject yet), and each
+   worker/bridge process drains the backlog in full as soon as it
+   upgrades.
+2. **Workers-first is unsupported.** If a worker upgrades before the
+   engine, the engine is still publishing the legacy (no-`=`) subject
+   nobody's new-form consumer matches, and those messages strand — see
+   below.
+3. A message published to a legacy grouped subject and never consumed
+   (either upgrade order run backwards, or a worker that never restarts)
+   is **never reclaimed by any other mechanism**: `AckWait`/`MaxDeliver`
+   are inert with no consumer to redeliver to, work-queue retention
+   removes a message only on ack, and `TASK_QUEUES` sets no `MaxAge` by
+   design (un-acked work-queue messages are treated as live tasks — see
+   `internal/natsutil/conn.go`). The observable symptom is a run stuck
+   `Running` with its step never starting, indefinitely, with no error or
+   distinguishing metric.
+4. Because of (3), the engine runs a stranded-subject check at startup
+   (`Orchestrator.checkStrandedGroupSubjects`): it enumerates every
+   registered workflow def's `(Task, WorkerGroup)` pairs and queries
+   `TASK_QUEUES` for each pair's legacy-shaped subjects
+   (`consumername.LegacyFilterFor`), logging (never failing startup on)
+   any non-zero pending count, naming the subject, the count, and the
+   remediation (republish under the current pair to recover the
+   messages). Worker and bridge each run a narrower version of the same
+   check, scoped to their own pair, at consumer setup as defense in
+   depth.
 
 ### TaskPayload Schema
 
@@ -183,12 +271,12 @@ Long-polls for available tasks from the TASK_QUEUES stream.
 
 `worker_group` is optional (#695). Omitting it polls the ungrouped queue,
 identical to pre-#695 behavior. When set, it must satisfy the same
-`dag.ValidWorkerGroup` rule a `StepDef.WorkerGroup` does, and every entry in
-`task_types` must be undotted — a dotted task type combined with a
-non-empty `worker_group` is rejected with `400` (see "Task Subjects"
-above). A worker token scoped to specific groups (see Authentication
-below) can only poll the groups it was minted with; polling outside that
-scope returns `403`.
+`dag.ValidWorkerGroup` rule a `StepDef.WorkerGroup` does. As of #704, a
+dotted task type combined with a non-empty `worker_group` is legal — the
+`=` sentinel (see "Task Subjects" above) makes the derived filter/durable
+provably distinct from the concatenated ungrouped task type. A worker
+token scoped to specific groups (see Authentication below) can only poll
+the groups it was minted with; polling outside that scope returns `403`.
 
 **Response**:
 ```json

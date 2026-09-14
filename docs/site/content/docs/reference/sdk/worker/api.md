@@ -40,6 +40,8 @@ Services are a metadata namespace for grouping task types under a logical name. 
 
 This file does not import or extend Directory. Sharing machinery would conflate two different lifecycles. See ADR\-017 §Alternatives for the rejected re\-use option.
 
+worker/stranded\_check.go Defense\-in\-depth counterpart to the engine's primary stranded\-subject check \(Orchestrator.checkStrandedGroupSubjects, internal/engine\): \#704 moved the grouped subject/durable encoding behind an "@" sentinel with no compatibility consumer, so a message published to a legacy grouped subject before every process upgrades is never reclaimed by any other mechanism \-\- see the pinned design on issue \#704. This narrows the check to the one \(task, group\) pair this worker is about to serve, checked right before subscribing that pair's consumer.
+
 worker/trigger\_types.go Worker\-side complement to the ExternalRegistrar ack micro endpoint \(\#327\). RegisterTriggerType is the SDK call workers make once on boot to \(a\) publish their TriggerTypeDef into the \`trigger\_types\` KV bucket and \(b\) ask the engine to allocate an externalRegistrar so subsequent \`\_TRIGGER.\<kind\>.\{activate,deactivate\}\` requests get bridged to this worker.
 
 KV\-then\-ack ordering is load\-bearing — the engine's handleAck reads the schema bytes straight from KV \(audit\-adjusted contract: "KV is the source of truth"\). A worker that calls ack before its Put has landed will see a "trigger type %q not registered in KV" error and must retry.
@@ -849,7 +851,7 @@ func (w *Worker) Start()
 Start creates JetStream subscriptions for all registered task types. Panics if any subscription fails — stream misconfiguration is a startup error. Binds optional KV buckets for checkpoints and signals \(nil if not present\). When groups are configured, subscribes to group\-specific subjects.
 
 <a name="Worker.Stop"></a>
-### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L988>)
+### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L991>)
 
 ```go
 func (w *Worker) Stop()

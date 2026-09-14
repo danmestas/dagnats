@@ -137,45 +137,13 @@ func TestValidateRejectsInvalidWorkerGroup(t *testing.T) {
 	}
 }
 
-// TestValidTaskGroupCombo exercises the exported combination check
-// directly -- validateStepDispatch (dag definition time) and the
-// bridge's poll endpoint (request time, #695) both call this so the
-// two callers cannot drift on the same collision rule.
-func TestValidTaskGroupCombo(t *testing.T) {
-	cases := []struct {
-		name        string
-		task, group string
-		wantErr     bool
-	}{
-		{"undotted_task_no_group", "render", "", false},
-		{"undotted_task_with_group", "render", "gpu", false},
-		{"dotted_task_no_group", "render.gpu", "", false},
-		{"dotted_task_with_group", "render.gpu", "fast", true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidTaskGroupCombo(tc.task, tc.group)
-			if tc.wantErr && err == nil {
-				t.Fatalf("ValidTaskGroupCombo(%q, %q) = nil, want an error",
-					tc.task, tc.group)
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("ValidTaskGroupCombo(%q, %q) = %v, want nil",
-					tc.task, tc.group, err)
-			}
-		})
-	}
-}
-
-// TestValidateRejectsDottedTaskWithWorkerGroup is the regression guard
-// for the filter/durable-name collision found in review:
-// consumername.FilterFor("render.gpu", "") and FilterFor("render",
-// "gpu") derive the identical filter subject AND durable name, so a
-// workflow that pairs a dotted Task with a WorkerGroup can silently
-// collide with an unrelated ungrouped step. Both halves stay legal on
-// their own — only the combination on one step is rejected.
-func TestValidateRejectsDottedTaskWithWorkerGroup(t *testing.T) {
-	// Positive: dotted task + worker_group together is rejected.
+// TestValidateAllowsDottedTaskWithWorkerGroup is the headline #704 proof
+// at the dag.Validate layer: a dotted Task combined with a WorkerGroup
+// used to be rejected because consumername.FilterFor("render.gpu", "")
+// and FilterFor("render", "gpu") derived the identical filter subject
+// AND durable name. The "=" sentinel in FilterFor/NameFor makes the two
+// forms provably distinct, so the combination is now legal.
+func TestValidateAllowsDottedTaskWithWorkerGroup(t *testing.T) {
 	combined := WorkflowDef{Name: "dotted-plus-group", Version: "1",
 		Steps: []StepDef{
 			{
@@ -183,19 +151,14 @@ func TestValidateRejectsDottedTaskWithWorkerGroup(t *testing.T) {
 				Type: StepTypeNormal,
 			},
 		}}
-	err := Validate(combined)
-	if err == nil {
-		t.Fatal(
-			"Validate() = nil, want an error for a dotted task " +
-				"combined with worker_group",
+	if err := Validate(combined); err != nil {
+		t.Fatalf(
+			"Validate(dotted task + worker_group) = %v, want nil (#704 "+
+				"made this combination legal)", err,
 		)
 	}
-	if !strings.Contains(err.Error(), `"step-a"`) {
-		t.Fatalf("Validate() error = %q, want it to name step %q",
-			err.Error(), "step-a")
-	}
 
-	// Negative, form 1: dotted task alone (no worker_group) stays legal.
+	// Both halves stay legal alone too.
 	dottedAlone := WorkflowDef{Name: "dotted-alone", Version: "1",
 		Steps: []StepDef{
 			{ID: "step-a", Task: "render.gpu", Type: StepTypeNormal},
@@ -204,8 +167,6 @@ func TestValidateRejectsDottedTaskWithWorkerGroup(t *testing.T) {
 		t.Fatalf("Validate(dotted task, no worker_group) = %v, want nil",
 			err)
 	}
-
-	// Negative, form 2: undotted task with worker_group stays legal.
 	undottedWithGroup := WorkflowDef{Name: "undotted-with-group",
 		Version: "1", Steps: []StepDef{
 			{

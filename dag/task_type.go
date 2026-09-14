@@ -73,28 +73,20 @@ func ValidTaskType(s string) error {
 }
 
 // ValidWorkerGroup reports whether s is safe to use as a StepDef.WorkerGroup.
-// StepSubject appends WorkerGroup as its OWN subject token
-// ("task.{Task}.{WorkerGroup}.{runID}"), so it must satisfy ValidTaskType's
-// charset/length/leading-trailing-dot rule AND additionally contain no dots
-// at all — unlike Task, WorkerGroup is never a dotted namespace.
+// StepSubject appends WorkerGroup as its OWN subject token, prefixed with
+// the "=" sentinel ("task.{Task}.={WorkerGroup}.{runID}", #704), so it must
+// satisfy ValidTaskType's charset/length/leading-trailing-dot rule AND
+// additionally contain no dots at all — unlike Task, WorkerGroup is never a
+// dotted namespace.
 //
 // Dots are banned here (not merely anchored around, the way FilterFor
 // isolates a dotted Task) because a dot in WorkerGroup is indistinguishable
 // from the separator FilterFor/StepSubject place between Task and
 // WorkerGroup: FilterFor("render", "gpu.fast") and FilterFor("render.gpu",
-// "fast") both derive "task.render.gpu.fast.*", and NameFor collapses both
-// to "workers-render-gpu-fast" — a dotted group silently collides with an
-// unrelated dotted-task/group split. Banning dots in WorkerGroup outright
-// (rather than case-by-case) closes that for a single step's own Task,
-// regardless of what that step's Task looks like; see
-// validateStepDispatch's combination check for the remaining case where
-// THAT SAME step's Task is dotted and WorkerGroup is set. Neither rule
-// reaches across steps or workflow defs: step A {Task:"render.gpu"} and
-// step B {Task:"render", WorkerGroup:"gpu"} in different workflows still
-// derive the identical filter subject and durable name, and the
-// cross-process collision check treats that as ordinary idempotent
-// durable reuse, not a conflict — see docs/wire-protocol.md "Task
-// Subjects" for that limitation.
+// "fast") both derive "task.render.=gpu.fast.*", and NameFor collapses both
+// to "workers-render-=gpu-fast" — a dotted group would silently collide
+// with an unrelated dotted-task/group split. Banning dots in WorkerGroup
+// outright closes that regardless of what the step's Task looks like.
 func ValidWorkerGroup(s string) error {
 	if err := ValidTaskType(s); err != nil {
 		return err
@@ -104,43 +96,6 @@ func ValidWorkerGroup(s string) error {
 			"worker group %q must not contain '.': worker_group is "+
 				"always a single subject token, never a dotted namespace",
 			s,
-		)
-	}
-	return nil
-}
-
-// ValidTaskGroupCombo checks whether task and group may be dispatched
-// together, independent of whether each individually satisfies
-// ValidTaskType / ValidWorkerGroup. Returns nil whenever group is empty
-// (a dotted task alone is fine) or task contains no dot (an undotted
-// task with a group is fine).
-//
-// A dotted task combined with a non-empty group is rejected even when
-// group itself is dot-free: consumername.FilterFor("render.gpu", "")
-// and FilterFor("render", "gpu") derive the byte-identical filter
-// subject AND durable name ("task.render.gpu.*", "workers-render-gpu").
-// Each half stays legal alone — only the combination is rejected.
-//
-// Shared between dag.validateStepDispatch (workflow definition time)
-// and the bridge's poll endpoint (request time, issue #695) so the two
-// callers cannot drift on the same collision rule.
-//
-// Deliberately assertion-free, same as ValidTaskType and ValidWorkerGroup:
-// this is a validator over untrusted caller input (an author-supplied
-// task/group pair, or a poll request body), not a programmer-error check
-// over this package's own invariants -- a bad task/group pair here is
-// an ordinary rejection, never a panic.
-func ValidTaskGroupCombo(task, group string) error {
-	if group == "" {
-		return nil
-	}
-	if strings.Contains(task, ".") {
-		return fmt.Errorf(
-			"task %q combined with worker_group %q: "+
-				"FilterFor(%q, \"\") and FilterFor(%q, %q) would derive "+
-				"the same filter subject and durable name — use an "+
-				"undotted task type when worker_group is set",
-			task, group, task, task, group,
 		)
 	}
 	return nil

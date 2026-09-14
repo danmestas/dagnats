@@ -227,7 +227,7 @@ func TestWorkerWithGroupsOnlyHandlesGroupTasks(t *testing.T) {
 		Input:  json.RawMessage(`"gpu-data"`),
 	}
 	gpuData, _ := json.Marshal(gpuPayload)
-	if _, err := js.Publish("task.ml-training.gpu.run-gpu", gpuData); err != nil {
+	if _, err := js.Publish("task.ml-training.=gpu.run-gpu", gpuData); err != nil {
 		t.Fatalf("Publish gpu task failed: %v", err)
 	}
 

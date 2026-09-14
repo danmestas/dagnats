@@ -50,7 +50,7 @@ func TestAssertNoConsumerNameCollisions_GroupsBranchCollision(t *testing.T) {
 		if !strings.Contains(msg, "gpu.fast") || !strings.Contains(msg, "gpu-fast") {
 			t.Fatalf("panic must name both group originals, got: %s", msg)
 		}
-		if !strings.Contains(msg, "workers-render-gpu-fast") {
+		if !strings.Contains(msg, "workers-render-=gpu-fast") {
 			t.Fatalf("panic must name colliding durable, got: %s", msg)
 		}
 	}()

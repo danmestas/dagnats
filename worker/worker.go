@@ -696,6 +696,9 @@ func (w *Worker) subscribePullConsumer(
 	// remains; running it after cleanup does not change that property.
 	w.cleanupOrphanEphemerals(ctx, filter, durable)
 	assertNoCrossProcessCollision(ctx, w.js, filter, durable)
+	if group != "" {
+		checkStrandedGroupSubject(ctx, w.js, taskType, group)
+	}
 
 	cfg := jetstream.ConsumerConfig{
 		Durable:       durable,
