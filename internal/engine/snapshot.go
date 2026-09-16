@@ -639,10 +639,12 @@ func isReconcilerOwned(run dag.WorkflowRun) bool {
 // watcher-snapshot race that #699 fixed for the workers bucket. That
 // race needs a Put to REPLACE a key's only revision (history=1) inside
 // the watcher's setup window -- no replacement, no drop. Every write to
-// "runactive.<runID>" is Create or Delete, never Put: createActiveEntry
-// (:281), the crash-gap backfill and repairActiveOrphans' Create calls
-// (:1197), deleteActiveEntry (:307), and repairActiveOrphans' Delete
-// (:1314). A run ID is unique, so its runactive key is written at most
+// "runactive.<runID>" is Create or Delete, never Put: createActiveEntry,
+// deleteActiveEntry, the crash-gap backfill, and repairActiveOrphans'
+// Create and Delete calls. (Cited by symbol deliberately -- line
+// numbers in a comment rot the moment anything above them moves, and
+// this one's whole job is to still be checkable years from now.)
+// A run ID is unique, so its runactive key is written at most
 // once while it exists and then deleted outright -- no revision is
 // ever replaced while the key is live, which is what the race
 // requires. Do not "fix" this call site with the #699 stream
@@ -800,9 +802,9 @@ func (s *SnapshotStore) ScanNewestFirst(
 //
 // #698: like listActiveRunIDs, this is immune to the #699
 // watcher-snapshot drop -- every "runidx.<runID>" key is written
-// exactly once via Create (writeRunIndexEntry, buildActiveIndexOnce
-// :1403) and never Put, so no revision is ever replaced while the key
-// exists, which the race requires.
+// exactly once via Create (writeRunIndexEntry, buildActiveIndexOnce)
+// and never Put, so no revision is ever replaced while the key exists,
+// which the race requires.
 //
 // It is ALSO the wrong site for the #699 fix even if it needed one:
 // ScanNewestFirst depends on ListKeysFiltered's creation-order replay

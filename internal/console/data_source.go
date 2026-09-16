@@ -1693,6 +1693,21 @@ func kvBucketCount(
 // small, complete, and feed decisions. If this view ever grows a
 // correctness dependency on a complete listing, revisit — but pair it
 // with real pagination rather than a full-bucket fetch.
+//
+// readBucketValues shares this method to build the admission page, and
+// that case was decided on its own merits rather than inherited: it
+// reads singleton_locks, concurrency_tasks, rate_limits and
+// debounce_state, which ARE Put-updated, so a dropped key there can
+// under-report a held lock or an active limiter. It stays acceptable
+// only because the page is display-only — nothing admits, releases, or
+// expires based on what it renders. Should any of it become
+// decision-bearing, that caller needs the complete-listing guarantee
+// and must not keep sharing this path.
+//
+// Note also that a bucket tile's key count comes from kvBucketCount, a
+// different path, so the count and the listed keys can disagree by a
+// racing key. Harmless, but it is the kind of mismatch that generates a
+// bug report.
 func (a *apiServiceAdapter) ListKVKeys(
 	ctx context.Context, bucket, _ string, limit int,
 ) ([]string, string, error) {
@@ -1719,7 +1734,15 @@ func (a *apiServiceAdapter) ListKVKeys(
 	}
 	lister, err := kv.ListKeys(ctx)
 	if err != nil {
-		return nil, "", nil //nolint:nilerr
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			// Genuinely empty bucket — render the zero state.
+			return nil, "", nil
+		}
+		// Anything else is a real failure. Reporting it as an empty
+		// bucket makes a broken connection indistinguishable from a
+		// bucket with no keys, and the page renders "no keys" over a
+		// bucket that may be full.
+		return nil, "", err
 	}
 	defer lister.Stop() //nolint:errcheck
 	out := make([]string, 0, limit)

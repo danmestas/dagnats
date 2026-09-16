@@ -243,9 +243,18 @@ func listTriggerTypes(
 	}
 
 	defs := make([]trigger.TriggerTypeDef, 0, 16)
+	// Truncate rather than panic. Bucket size is operator data, not an
+	// invariant this code guarantees, so an oversized bucket is not a
+	// programmer error and must not crash the CLI. (The pre-#698 loop
+	// counted up and broke at the same bound, silently; this keeps the
+	// bound and says so.) Keys are sorted, so the kept subset is the
+	// deterministic first maxDefs rather than an arbitrary sample.
 	const maxDefs = 10000
 	if len(keys) > maxDefs {
-		panic("listTriggerTypes: keys exceeds max bound")
+		fmt.Fprintf(os.Stderr,
+			"warning: %s holds %d keys; listing the first %d\n",
+			triggerTypesBucket, len(keys), maxDefs)
+		keys = keys[:maxDefs]
 	}
 	for _, key := range keys {
 		entry, err := kv.Get(ctx, key)
