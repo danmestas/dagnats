@@ -14,6 +14,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumers whose durable name is not self-describing so the filter
   subject is parsed instead. Display only; introduced with #704's
   encoding.
+- **The Audit page showed stale events on a busy deployment** (#698).
+  Its key listing truncated to the *oldest* entries while the renderer
+  walked the result backwards for newest-first, so once the bucket
+  passed the 2,000-key cap the page displayed old activity while
+  presenting it as recent.
+- **Worker-token, service, trigger-type and audit listings could omit a
+  live entry** (#698) when a concurrent write replaced that key's only
+  revision, the same `kv.ListKeys` watcher-snapshot race fixed for the
+  worker directory in #699. These listings now enumerate from the
+  stream's subject state, which the server resolves under the store
+  lock. The run-active and run-index enumerations are unaffected and
+  deliberately unchanged: their keys are created once and never
+  replaced, and the run index additionally depends on creation-order
+  replay that the new enumeration cannot provide.
+- **A failed key fetch during those listings no longer silently shortens
+  the result** (#698). Four of them treated any error as "skip this
+  key", making a transient failure indistinguishable from a deleted
+  one; only a genuinely missing key is skipped now.
+- **`dagnats services list` and `dagnats trigger-type list` emit a
+  stable order** (#698), including their JSON output, so results can be
+  diffed across invocations. `dagnats trigger-type list` also no longer
+  aborts when the bucket holds more than 10,000 keys; it warns and
+  lists the first 10,000.
 
 ## [0.0.16] - 2026-09-14
 
