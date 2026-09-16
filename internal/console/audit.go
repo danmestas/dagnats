@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -126,11 +125,19 @@ func listAuditEventsInner(
 // Unlike listRunIndexKeys (internal/engine/snapshot.go), which must
 // keep the watcher-based ListKeysFiltered because its creation-order
 // replay IS the ordering contract, this bucket's keys are safe to
-// enumerate from the stream's unordered subject state: auditkv.KeyFor
-// prefixes every key with a nanosecond UTC timestamp
+// enumerate from the stream's subject state: auditkv.KeyFor prefixes
+// every key with a nanosecond UTC timestamp
 // (TestAuditKeyFor_chronologicalOrder pins that later times sort
-// lexicographically after earlier ones), so an explicit sort below
-// recovers chronological order regardless of enumeration order.
+// lexicographically after earlier ones), so natsutil.ListKeys'
+// lexicographic ordering IS chronological order for this bucket.
+//
+// Truncation keeps the NEWEST max keys, not the first max. The caller
+// walks the result in reverse to render newest-first, so trimming the
+// tail would have handed it the oldest max events and then shown "the
+// newest of the oldest" — on a bucket past the cap the Audit page would
+// render stale events while claiming to be recent. Ordering being
+// explicit here is what makes that visible; it was equally wrong when
+// the order was incidental.
 func listAuditKeys(
 	ctx context.Context, stream jetstream.Stream, bucket string, max int,
 ) ([]string, error) {
@@ -141,9 +148,8 @@ func listAuditKeys(
 	if err != nil {
 		return nil, fmt.Errorf("list keys: %w", err)
 	}
-	sort.Strings(keys)
 	if len(keys) > max {
-		keys = keys[:max]
+		keys = keys[len(keys)-max:]
 	}
 	return keys, nil
 }

@@ -14,7 +14,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
-	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
@@ -711,7 +710,7 @@ func (a *apiServiceAdapter) ListAuditEvents(
 		// Cannot happen through the production wiring (server.go builds
 		// auditKV and nc from the same connection), but a caller that
 		// hands the adapter one without the other is a setup bug worth
-		// surfacing rather than a nil-pointer panic three calls deep.
+		// surfacing rather than a nil dereference three calls deep.
 		return nil, fmt.Errorf(
 			"ListAuditEvents: auditKV is set but nc is nil")
 	}
@@ -1672,18 +1671,28 @@ func kvBucketCount(
 // pagination directly. We return an empty next-cursor when the page
 // fits; callers can detect "more" by len(keys) == limit.
 //
-// Key enumeration is natsutil.ListKeys (#698), not kv.ListKeys: bucket
-// is operator-chosen from kvBucketsKnown, and several of those buckets
-// (workers, services, triggers, trigger_types, worker_tokens, the
-// console_audit alias) are Put-updated over their lifetime, exposing
-// this browse view to the watcher-snapshot race #699 fixed for the
-// workers bucket.
+// DELIBERATELY NOT natsutil.ListKeys (#698), unlike the name-keyed
+// registries that migrated to it. Three reasons, all specific to a
+// browse path:
 //
-// Unlike a site that already Gets every key for its value, this one
-// previously only needed the key NAME. natsutil.ListKeys, unlike
-// kv.ListKeys (which watches with IgnoreDeletes), surfaces a deleted
-// key's subject too — so a per-key Get is now required here purely to
-// filter those out, even though the fetched value itself is unused.
+//  1. It wants the first `limit` keys, and the watcher stops delivering
+//     at the break. natsutil.ListKeys fetches the bucket's ENTIRE
+//     subject map first — paginated across multiple requests above
+//     JSMaxSubjectDetails — and then discards all but `limit`. bucket
+//     is operator-chosen from kvBucketsKnown, which includes
+//     workflow_runs and idempotency_keys: potentially hundreds of
+//     thousands of keys fetched per page load, to show 200.
+//  2. It needs only key NAMES. natsutil.ListKeys surfaces delete-marker
+//     subjects (kv.ListKeys watches with IgnoreDeletes), so using it
+//     here would require a per-key Get purely to filter markers, whose
+//     fetched value is then thrown away.
+//  3. What the race costs here is a row occasionally missing from a
+//     generic key browser, which is immaterial next to (1).
+//
+// The trade is inverted from the registry sites, where listings are
+// small, complete, and feed decisions. If this view ever grows a
+// correctness dependency on a complete listing, revisit — but pair it
+// with real pagination rather than a full-bucket fetch.
 func (a *apiServiceAdapter) ListKVKeys(
 	ctx context.Context, bucket, _ string, limit int,
 ) ([]string, string, error) {
@@ -1708,36 +1717,17 @@ func (a *apiServiceAdapter) ListKVKeys(
 		// Empty / nonexistent bucket — render the zero state.
 		return nil, "", nil
 	}
-	stream, err := js.Stream(ctx, "KV_"+bucket)
+	lister, err := kv.ListKeys(ctx)
 	if err != nil {
-		// The KV bucket resolved above but its backing stream did not
-		// — an inconsistency worth surfacing, not papering over as an
-		// empty bucket.
-		return nil, "", fmt.Errorf("KV bucket stream bind: %w", err)
+		return nil, "", nil //nolint:nilerr
 	}
-	keys, err := natsutil.ListKeys(ctx, stream, bucket)
-	if err != nil {
-		return nil, "", err
-	}
+	defer lister.Stop() //nolint:errcheck
 	out := make([]string, 0, limit)
-	for _, key := range keys {
+	for key := range lister.Keys() {
+		out = append(out, key)
 		if len(out) >= limit {
 			break
 		}
-		if _, err := kv.Get(ctx, key); err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				// Expected: ListKeys enumerates subjects, and a
-				// subject whose last message is a delete marker still
-				// appears here. Not a live key.
-				continue
-			}
-			// A transient Get failure is indistinguishable from a
-			// deleted key once swallowed, and swallowing it drops a
-			// LIVE key from the browse view. Fail the call instead of
-			// silently returning a short list.
-			return nil, "", err
-		}
-		out = append(out, key)
 	}
 	return out, "", nil
 }

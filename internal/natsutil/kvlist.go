@@ -2,6 +2,7 @@ package natsutil
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -60,5 +61,22 @@ func ListKeys(
 	for subject := range info.State.Subjects {
 		keys = append(keys, strings.TrimPrefix(subject, prefix))
 	}
+	// SORTED BY CONTRACT, not as a convenience. info.State.Subjects is a
+	// Go map, so ranging it yields a different order on every call --
+	// whereas kv.ListKeys, which callers are migrating away from,
+	// happened to deliver watcher-replay (creation) order. Any caller
+	// that reversed, truncated to first-N, paginated, or simply printed
+	// the result would silently start flapping between calls, with
+	// nothing failing to reveal it. Making order a property of this
+	// helper kills that whole class once instead of asking six call
+	// sites to remember it.
+	//
+	// Lexicographic, NOT creation order: a caller that genuinely needs
+	// creation order (see internal/engine's listRunIndexKeys, which
+	// ScanNewestFirst depends on) cannot use this helper at all and must
+	// keep ListKeysFiltered. Timestamp-prefixed key spaces such as the
+	// audit bucket get chronological order from this for free, since
+	// their keys sort that way by construction.
+	sort.Strings(keys)
 	return keys, nil
 }
