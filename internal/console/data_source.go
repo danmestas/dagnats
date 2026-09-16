@@ -14,6 +14,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
@@ -703,7 +704,22 @@ func (a *apiServiceAdapter) ListAuditEvents(
 	if limit <= 0 {
 		panic("apiServiceAdapter.ListAuditEvents: limit must be positive")
 	}
-	return listAuditEventsInner(ctx, a.auditKV, limit)
+	if a.auditKV == nil {
+		return nil, nil
+	}
+	if a.nc == nil {
+		// Cannot happen through the production wiring (server.go builds
+		// auditKV and nc from the same connection), but a caller that
+		// hands the adapter one without the other is a setup bug worth
+		// surfacing rather than a nil-pointer panic three calls deep.
+		return nil, fmt.Errorf(
+			"ListAuditEvents: auditKV is set but nc is nil")
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return nil, fmt.Errorf("ListAuditEvents: jetstream init: %w", err)
+	}
+	return listAuditEventsInner(ctx, js, a.auditKV, limit)
 }
 
 func (a *apiServiceAdapter) EmitAuditEvent(
@@ -1655,6 +1671,19 @@ func kvBucketCount(
 // currently unused — JetStream KV.ListKeys doesn't support cursored
 // pagination directly. We return an empty next-cursor when the page
 // fits; callers can detect "more" by len(keys) == limit.
+//
+// Key enumeration is natsutil.ListKeys (#698), not kv.ListKeys: bucket
+// is operator-chosen from kvBucketsKnown, and several of those buckets
+// (workers, services, triggers, trigger_types, worker_tokens, the
+// console_audit alias) are Put-updated over their lifetime, exposing
+// this browse view to the watcher-snapshot race #699 fixed for the
+// workers bucket.
+//
+// Unlike a site that already Gets every key for its value, this one
+// previously only needed the key NAME. natsutil.ListKeys, unlike
+// kv.ListKeys (which watches with IgnoreDeletes), surfaces a deleted
+// key's subject too — so a per-key Get is now required here purely to
+// filter those out, even though the fetched value itself is unused.
 func (a *apiServiceAdapter) ListKVKeys(
 	ctx context.Context, bucket, _ string, limit int,
 ) ([]string, string, error) {
@@ -1679,17 +1708,36 @@ func (a *apiServiceAdapter) ListKVKeys(
 		// Empty / nonexistent bucket — render the zero state.
 		return nil, "", nil
 	}
-	lister, err := kv.ListKeys(ctx)
+	stream, err := js.Stream(ctx, "KV_"+bucket)
 	if err != nil {
-		return nil, "", nil //nolint:nilerr
+		// The KV bucket resolved above but its backing stream did not
+		// — an inconsistency worth surfacing, not papering over as an
+		// empty bucket.
+		return nil, "", fmt.Errorf("KV bucket stream bind: %w", err)
 	}
-	defer lister.Stop() //nolint:errcheck
+	keys, err := natsutil.ListKeys(ctx, stream, bucket)
+	if err != nil {
+		return nil, "", err
+	}
 	out := make([]string, 0, limit)
-	for key := range lister.Keys() {
-		out = append(out, key)
+	for _, key := range keys {
 		if len(out) >= limit {
 			break
 		}
+		if _, err := kv.Get(ctx, key); err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				// Expected: ListKeys enumerates subjects, and a
+				// subject whose last message is a delete marker still
+				// appears here. Not a live key.
+				continue
+			}
+			// A transient Get failure is indistinguishable from a
+			// deleted key once swallowed, and swallowing it drops a
+			// LIVE key from the browse view. Fail the call instead of
+			// silently returning a short list.
+			return nil, "", err
+		}
+		out = append(out, key)
 	}
 	return out, "", nil
 }

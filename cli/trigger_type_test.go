@@ -29,6 +29,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/worker"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // liveSet is a small helper so test bodies stay readable. The
@@ -338,6 +339,84 @@ func TestRunTriggerTypeListCmd_EndToEnd(t *testing.T) {
 		t.Errorf(
 			"unexpected empty-state message; got:\n%s", output,
 		)
+	}
+}
+
+// TestListTriggerTypes_SkipsDeletedKey asserts that a trigger type
+// deleted directly from the bucket (#698: listTriggerTypes now
+// enumerates via natsutil.ListKeys, which surfaces a delete marker's
+// subject even though nothing deletes a trigger type today) is not
+// resurrected into the listing, and a live, untouched entry survives.
+func TestListTriggerTypes_SkipsDeletedKey(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "triggers"},
+			natsutil.KVConfig{Bucket: "trigger_state"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	svc, err := trigger.NewTriggerService(nc, "1.0.0")
+	if err != nil {
+		t.Fatalf("NewTriggerService: %v", err)
+	}
+	if err := svc.Start(); err != nil {
+		t.Fatalf("svc.Start: %v", err)
+	}
+	t.Cleanup(svc.Stop)
+
+	w := worker.NewWorker(nc)
+	t.Cleanup(w.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := w.RegisterTriggerType(ctx, dagnatsext.TriggerTypeDef{
+		Name:         "gone",
+		Description:  "will be deleted",
+		ConfigSchema: schemaBytes,
+		Version:      "1.0.0",
+	}); err != nil {
+		t.Fatalf("RegisterTriggerType gone: %v", err)
+	}
+	if err := w.RegisterTriggerType(ctx, dagnatsext.TriggerTypeDef{
+		Name:         "kept",
+		Description:  "stays registered",
+		ConfigSchema: schemaBytes,
+		Version:      "1.0.0",
+	}); err != nil {
+		t.Fatalf("RegisterTriggerType kept: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	kv, err := js.KeyValue(ctx, triggerTypesBucket)
+	if err != nil {
+		t.Fatalf("KeyValue: %v", err)
+	}
+	if err := kv.Delete(ctx, "gone"); err != nil {
+		t.Fatalf("Delete gone: %v", err)
+	}
+
+	defs, err := listTriggerTypes(js)
+	if err != nil {
+		t.Fatalf("listTriggerTypes: %v", err)
+	}
+	for _, d := range defs {
+		if d.Name == "gone" {
+			t.Fatalf("listTriggerTypes resurrected deleted key %q: %+v", "gone", defs)
+		}
+	}
+	found := false
+	for _, d := range defs {
+		if d.Name == "kept" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("listTriggerTypes dropped live entry %q, got %+v", "kept", defs)
 	}
 }
 

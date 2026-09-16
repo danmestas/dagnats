@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand"
-	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -502,57 +502,16 @@ func deregisterOwnedAttempt(
 	return true, nil
 }
 
-// listKeys enumerates the bucket's keys from the backing stream's
-// server-side subject state instead of kv.ListKeys.
-//
-// kv.ListKeys builds its answer from a watcher: a consumer is created
-// and its initial delivery is treated as the set of live keys. That
-// snapshot is not atomic with respect to concurrent writers. The
-// workers bucket keeps history=1, so a heartbeat's Put immediately
-// replaces the key's only revision; when that lands inside the
-// watcher's setup window the key can be omitted from the listing
-// entirely, even though a plain Get for it succeeds. List() then
-// reported a live, actively-heartbeating worker as absent roughly
-// once per 2000 calls -- the intermittent failure of
-// bridge.TestHeartbeatStopsAfterOwnershipTakeover, and, in
-// production, a worker blinking out of `dagnats workers list` and the
-// console.
-//
-// A filtered stream Info resolves server-side under the store lock,
-// so a concurrent Put cannot hide an existing key. That atomicity
-// holds as long as the answer is one response: a bucket with more
-// than the server's JSMaxSubjectDetails (100_000) subjects is
-// assembled from several paginated requests and is then only
-// eventually consistent. The workers bucket is one entry per live
-// worker under a 60s TTL, so it is nowhere near that.
-//
-// Subjects whose last message is a delete marker still appear here;
-// List()'s per-key Get returns ErrKeyNotFound for those and skips
-// them, exactly as before.
-func (d *Directory) listKeys(ctx context.Context) ([]string, error) {
-	if d.stream == nil {
-		panic("Directory.listKeys: stream must not be nil")
-	}
-	if d.kv == nil {
-		panic("Directory.listKeys: kv must not be nil")
-	}
-	prefix := "$KV." + d.kv.Bucket() + "."
-	info, err := d.stream.Info(
-		ctx, jetstream.WithSubjectFilter(prefix+">"),
-	)
-	if err != nil {
-		return nil, err
-	}
-	keys := make([]string, 0, len(info.State.Subjects))
-	for subject := range info.State.Subjects {
-		keys = append(keys, strings.TrimPrefix(subject, prefix))
-	}
-	return keys, nil
-}
-
 // List returns all currently registered workers.
 // Returns an empty slice when no workers are registered.
 // Skips entries that fail to unmarshal (TTL expiry race).
+//
+// Key enumeration is natsutil.ListKeys, not kv.ListKeys -- see its doc
+// comment for the watcher-snapshot race this avoids (#699: List()
+// reported a live, actively-heartbeating worker as absent roughly once
+// per 2000 calls). Subjects whose last message is a delete marker
+// still appear in that enumeration; the per-key Get below returns
+// ErrKeyNotFound for those and skips them.
 func (d *Directory) List() ([]WorkerRegistration, error) {
 	if d.kv == nil {
 		panic("Directory.List: kv must not be nil")
@@ -564,7 +523,7 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	keys, err := d.listKeys(ctx)
+	keys, err := natsutil.ListKeys(ctx, d.stream, d.kv.Bucket())
 	if err != nil {
 		return nil, err
 	}

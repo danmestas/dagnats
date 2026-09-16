@@ -634,6 +634,19 @@ func isReconcilerOwned(run dag.WorkflowRun) bool {
 // duplicate-during-listing reason listRunIndexKeys documents). Order is
 // irrelevant to ListActive, unlike listRunIndexKeys' creation-order
 // contract for ScanNewestFirst.
+//
+// #698: this is NOT exposed to the ListKeys/ListKeysFiltered
+// watcher-snapshot race that #699 fixed for the workers bucket. That
+// race needs a Put to REPLACE a key's only revision (history=1) inside
+// the watcher's setup window -- no replacement, no drop. Every write to
+// "runactive.<runID>" is Create or Delete, never Put: createActiveEntry
+// (:281), the crash-gap backfill and repairActiveOrphans' Create calls
+// (:1197), deleteActiveEntry (:307), and repairActiveOrphans' Delete
+// (:1314). A run ID is unique, so its runactive key is written at most
+// once while it exists and then deleted outright -- no revision is
+// ever replaced while the key is live, which is what the race
+// requires. Do not "fix" this call site with the #699 stream
+// subject-state helper; there is nothing here for it to fix.
 func (s *SnapshotStore) listActiveRunIDs(ctx context.Context) ([]string, error) {
 	if s.kv == nil {
 		panic("listActiveRunIDs: kv bucket must not be nil")
@@ -784,6 +797,20 @@ func (s *SnapshotStore) ScanNewestFirst(
 // would double-count an index entry's batch position in
 // ScanNewestFirst, so every key is deduped (first occurrence kept,
 // preserving order) before being returned.
+//
+// #698: like listActiveRunIDs, this is immune to the #699
+// watcher-snapshot drop -- every "runidx.<runID>" key is written
+// exactly once via Create (writeRunIndexEntry, buildActiveIndexOnce
+// :1403) and never Put, so no revision is ever replaced while the key
+// exists, which the race requires.
+//
+// It is ALSO the wrong site for the #699 fix even if it needed one:
+// ScanNewestFirst depends on ListKeysFiltered's creation-order replay
+// (see the doc comment above), and the #699 helper enumerates from the
+// stream's subject state (jetstream.StreamInfo.State.Subjects), which
+// is an unordered map -- migrating this site would silently turn
+// "newest first" into "arbitrary order". Keep ListKeysFiltered here
+// regardless of what happens to the other five sites.
 func (s *SnapshotStore) listRunIndexKeys(ctx context.Context) ([]string, error) {
 	if s.kv == nil {
 		panic("listRunIndexKeys: kv bucket must not be nil")

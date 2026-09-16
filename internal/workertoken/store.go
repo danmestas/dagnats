@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
@@ -53,6 +54,12 @@ const (
 // tokens for at most ~30s.
 type Store struct {
 	kv jetstream.KeyValue
+	// stream is the worker_tokens bucket's backing stream, resolved
+	// once at Open: loadAll enumerates the bucket's key set from its
+	// subject state (natsutil.ListKeys), and re-resolving the stream
+	// per call would cost a second round trip for a name that never
+	// changes.
+	stream jetstream.Stream
 
 	mu     sync.RWMutex
 	tokens map[string]Token // id -> Token, includes revoked (for List/audit)
@@ -87,6 +94,10 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ensure %s bucket: %w", bucketName, err)
 	}
+	stream, err := js.Stream(ctx, "KV_"+bucketName)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s bucket stream: %w", bucketName, err)
+	}
 	watchCtx, cancel := context.WithCancel(context.Background())
 	m := otel.Meter("dagnats/workertoken")
 	watchFailures, meterErr := m.Int64Counter("workertoken.watch_failures")
@@ -98,6 +109,7 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 	}
 	s := &Store{
 		kv:            kv,
+		stream:        stream,
 		tokens:        make(map[string]Token),
 		ctx:           watchCtx,
 		cancel:        cancel,
@@ -128,6 +140,15 @@ func (s *Store) Close() {
 // loadAll populates the cache from a full bucket scan. Called once at
 // Open, before the watch starts, so the cache is warm from the first
 // Authorize call rather than waiting on the watch's initial replay.
+//
+// Key enumeration is natsutil.ListKeys (#698), not kv.ListKeys: Revoke
+// Puts over an existing token record, which is exactly the write shape
+// exposed to the watcher-snapshot race #699 fixed for the workers
+// bucket (a Put replacing a key's only history=1 revision inside the
+// listing watcher's setup window can drop the key entirely). Because
+// ListKeys enumerates subject state, a subject whose last message is a
+// delete marker (pruneOldestRevoked) also appears here; the per-key Get
+// below tells the two apart by error, not by swallowing every failure.
 func (s *Store) loadAll(ctx context.Context) error {
 	if ctx == nil {
 		panic("loadAll: ctx must not be nil")
@@ -135,19 +156,29 @@ func (s *Store) loadAll(ctx context.Context) error {
 	if s.kv == nil {
 		panic("loadAll: kv must not be nil")
 	}
-	keys, err := s.kv.ListKeys(ctx)
+	if s.stream == nil {
+		panic("loadAll: stream must not be nil")
+	}
+	keys, err := natsutil.ListKeys(ctx, s.stream, bucketName)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil
-		}
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for key := range keys.Keys() {
+	for _, key := range keys {
 		entry, err := s.kv.Get(ctx, key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			// Expected: ListKeys enumerates subjects, and a pruned
+			// token's subject still holds its delete marker.
+			continue
+		}
 		if err != nil {
-			continue // deleted between ListKeys and Get; watch will settle it
+			// A transient Get failure is indistinguishable from a
+			// deleted key once swallowed, and swallowing it drops a
+			// LIVE token from the cache -- Authorize would then reject
+			// a still-valid bearer as unknown. Fail Open instead of
+			// silently warming a short cache.
+			return err
 		}
 		var tok Token
 		if err := json.Unmarshal(entry.Value(), &tok); err != nil {
