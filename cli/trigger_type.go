@@ -12,12 +12,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"text/tabwriter"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go/jetstream"
@@ -207,6 +209,12 @@ func firstPositional(args []string) string {
 // bucket. Returns an empty slice when nothing is registered — the
 // bucket is provisioned by SetupAll, so absence of keys is the
 // boot state, not an error.
+//
+// Key enumeration is natsutil.ListKeys (#698), not kv.ListKeys: trigger
+// types Put by stable name on re-registration, exposing this listing
+// to the watcher-snapshot race #699 fixed for the workers bucket.
+// Called from the CLI, so the bucket's backing stream is resolved
+// inline rather than cached.
 func listTriggerTypes(
 	js jetstream.JetStream,
 ) ([]trigger.TriggerTypeDef, error) {
@@ -223,26 +231,45 @@ func listTriggerTypes(
 		return nil, fmt.Errorf(
 			"%s KV bind: %w", triggerTypesBucket, err)
 	}
-
-	keys, err := kv.ListKeys(ctx)
+	stream, err := js.Stream(ctx, "KV_"+triggerTypesBucket)
 	if err != nil {
-		if err == jetstream.ErrNoKeysFound {
-			return []trigger.TriggerTypeDef{}, nil
-		}
+		return nil, fmt.Errorf(
+			"%s KV stream bind: %w", triggerTypesBucket, err)
+	}
+
+	keys, err := natsutil.ListKeys(ctx, stream, triggerTypesBucket)
+	if err != nil {
 		return nil, err
 	}
 
 	defs := make([]trigger.TriggerTypeDef, 0, 16)
+	// Truncate rather than panic. Bucket size is operator data, not an
+	// invariant this code guarantees, so an oversized bucket is not a
+	// programmer error and must not crash the CLI. (The pre-#698 loop
+	// counted up and broke at the same bound, silently; this keeps the
+	// bound and says so.) Keys are sorted, so the kept subset is the
+	// deterministic first maxDefs rather than an arbitrary sample.
 	const maxDefs = 10000
-	count := 0
-	for key := range keys.Keys() {
-		if count >= maxDefs {
-			break
-		}
-		count++
+	if len(keys) > maxDefs {
+		fmt.Fprintf(os.Stderr,
+			"warning: %s holds %d keys; listing the first %d\n",
+			triggerTypesBucket, len(keys), maxDefs)
+		keys = keys[:maxDefs]
+	}
+	for _, key := range keys {
 		entry, err := kv.Get(ctx, key)
-		if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			// Expected: ListKeys enumerates subjects, so a subject
+			// whose last message is a delete marker still appears
+			// here even though nothing deletes a trigger type today.
 			continue
+		}
+		if err != nil {
+			// A transient Get failure is indistinguishable from a
+			// deleted key once swallowed, and swallowing it drops a
+			// LIVE trigger type from the listing. Fail the call
+			// instead of silently returning a short list.
+			return nil, err
 		}
 		var def trigger.TriggerTypeDef
 		if err := json.Unmarshal(entry.Value(), &def); err != nil {

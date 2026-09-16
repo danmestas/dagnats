@@ -856,7 +856,7 @@ func TestAuditEmitter_nilKVWarnsAndContinues(t *testing.T) {
 
 // TestListAuditEvents_nilKVEmpty returns empty + no error.
 func TestListAuditEvents_nilKVEmpty(t *testing.T) {
-	out, err := listAuditEventsInner(context.Background(), nil, 10)
+	out, err := listAuditEventsInner(context.Background(), nil, nil, 10)
 	if err != nil {
 		t.Fatalf("list on nil KV err = %v, want nil", err)
 	}

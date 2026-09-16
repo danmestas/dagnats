@@ -703,7 +703,22 @@ func (a *apiServiceAdapter) ListAuditEvents(
 	if limit <= 0 {
 		panic("apiServiceAdapter.ListAuditEvents: limit must be positive")
 	}
-	return listAuditEventsInner(ctx, a.auditKV, limit)
+	if a.auditKV == nil {
+		return nil, nil
+	}
+	if a.nc == nil {
+		// Cannot happen through the production wiring (server.go builds
+		// auditKV and nc from the same connection), but a caller that
+		// hands the adapter one without the other is a setup bug worth
+		// surfacing rather than a nil dereference three calls deep.
+		return nil, fmt.Errorf(
+			"ListAuditEvents: auditKV is set but nc is nil")
+	}
+	js, err := jetstream.New(a.nc)
+	if err != nil {
+		return nil, fmt.Errorf("ListAuditEvents: jetstream init: %w", err)
+	}
+	return listAuditEventsInner(ctx, js, a.auditKV, limit)
 }
 
 func (a *apiServiceAdapter) EmitAuditEvent(
@@ -1655,6 +1670,44 @@ func kvBucketCount(
 // currently unused — JetStream KV.ListKeys doesn't support cursored
 // pagination directly. We return an empty next-cursor when the page
 // fits; callers can detect "more" by len(keys) == limit.
+//
+// DELIBERATELY NOT natsutil.ListKeys (#698), unlike the name-keyed
+// registries that migrated to it. Three reasons, all specific to a
+// browse path:
+//
+//  1. It wants the first `limit` keys, and the watcher stops delivering
+//     at the break. natsutil.ListKeys fetches the bucket's ENTIRE
+//     subject map first — paginated across multiple requests above
+//     JSMaxSubjectDetails — and then discards all but `limit`. bucket
+//     is operator-chosen from kvBucketsKnown, which includes
+//     workflow_runs and idempotency_keys: potentially hundreds of
+//     thousands of keys fetched per page load, to show 200.
+//  2. It needs only key NAMES. natsutil.ListKeys surfaces delete-marker
+//     subjects (kv.ListKeys watches with IgnoreDeletes), so using it
+//     here would require a per-key Get purely to filter markers, whose
+//     fetched value is then thrown away.
+//  3. What the race costs here is a row occasionally missing from a
+//     generic key browser, which is immaterial next to (1).
+//
+// The trade is inverted from the registry sites, where listings are
+// small, complete, and feed decisions. If this view ever grows a
+// correctness dependency on a complete listing, revisit — but pair it
+// with real pagination rather than a full-bucket fetch.
+//
+// readBucketValues shares this method to build the admission page, and
+// that case was decided on its own merits rather than inherited: it
+// reads singleton_locks, concurrency_tasks, rate_limits and
+// debounce_state, which ARE Put-updated, so a dropped key there can
+// under-report a held lock or an active limiter. It stays acceptable
+// only because the page is display-only — nothing admits, releases, or
+// expires based on what it renders. Should any of it become
+// decision-bearing, that caller needs the complete-listing guarantee
+// and must not keep sharing this path.
+//
+// Note also that a bucket tile's key count comes from kvBucketCount, a
+// different path, so the count and the listed keys can disagree by a
+// racing key. Harmless, but it is the kind of mismatch that generates a
+// bug report.
 func (a *apiServiceAdapter) ListKVKeys(
 	ctx context.Context, bucket, _ string, limit int,
 ) ([]string, string, error) {
@@ -1681,7 +1734,15 @@ func (a *apiServiceAdapter) ListKVKeys(
 	}
 	lister, err := kv.ListKeys(ctx)
 	if err != nil {
-		return nil, "", nil //nolint:nilerr
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			// Genuinely empty bucket — render the zero state.
+			return nil, "", nil
+		}
+		// Anything else is a real failure. Reporting it as an empty
+		// bucket makes a broken connection indistinguishable from a
+		// bucket with no keys, and the page renders "no keys" over a
+		// bucket that may be full.
+		return nil, "", err
 	}
 	defer lister.Stop() //nolint:errcheck
 	out := make([]string, 0, limit)

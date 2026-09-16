@@ -34,6 +34,7 @@ import (
 
 	"log/slog"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -371,6 +372,12 @@ func (ts *TriggerService) reconcileExternalRegistrar(
 // Test seam: when liveTriggersScanCounter is non-nil it is called once
 // per entry actually inspected (not per key listed) so tests can prove
 // the early-return semantics without a timing race.
+//
+// Key enumeration is natsutil.ListKeys (#698), not kv.ListKeys: trigger
+// defs are Put-updated over their lifetime (enable/disable, owner
+// changes), exposing this scan to the watcher-snapshot race #699 fixed
+// for the workers bucket. Called once per ack, not a hot loop, so the
+// bucket's backing stream is resolved inline.
 func (ts *TriggerService) hasLiveTriggersOfKind(
 	ctx context.Context, kind string, scanMax int,
 ) (bool, error) {
@@ -386,15 +393,21 @@ func (ts *TriggerService) hasLiveTriggersOfKind(
 	if ts.triggerKV == nil {
 		panic("hasLiveTriggersOfKind: triggerKV must not be nil")
 	}
+	if ts.js == nil {
+		panic("hasLiveTriggersOfKind: js must not be nil")
+	}
 
-	lister, err := ts.triggerKV.ListKeys(ctx)
+	stream, err := ts.js.Stream(ctx, "KV_"+ts.triggerKV.Bucket())
+	if err != nil {
+		return false, fmt.Errorf("triggers KV stream bind: %w", err)
+	}
+	keys, err := natsutil.ListKeys(ctx, stream, ts.triggerKV.Bucket())
 	if err != nil {
 		return false, fmt.Errorf("list trigger keys: %w", err)
 	}
-	defer func() { _ = lister.Stop() }()
 
 	inspected := 0
-	for key := range lister.Keys() {
+	for _, key := range keys {
 		if inspected >= scanMax {
 			return false, nil
 		}

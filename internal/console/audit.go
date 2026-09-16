@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/danmestas/dagnats/internal/auditkv"
+	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 // audit.go owns the operator-action audit reader. The schema, bucket, key
@@ -54,8 +56,13 @@ func auditKeyFor(t time.Time) (string, error) {
 // bucket. Returns nil + nil-error on an empty bucket so callers can
 // render the zero state without branching. Bounded loop on a positive
 // limit; ≤2k cap is the hard ceiling.
+//
+// js resolves the bucket's backing stream for key enumeration
+// (#698) and is only dereferenced when kv is non-nil — a caller that
+// passes a non-nil kv must also pass a non-nil js.
 func listAuditEventsInner(
-	ctx context.Context, kv jetstream.KeyValue, limit int,
+	ctx context.Context, js jetstream.JetStream, kv jetstream.KeyValue,
+	limit int,
 ) ([]AuditEvent, error) {
 	if ctx == nil {
 		panic("listAuditEventsInner: ctx is nil")
@@ -66,22 +73,38 @@ func listAuditEventsInner(
 	if kv == nil {
 		return nil, nil
 	}
+	if js == nil {
+		panic("listAuditEventsInner: js must not be nil when kv is non-nil")
+	}
 	const maxKeys = 2000
 	if limit > maxKeys {
 		limit = maxKeys
 	}
-	keys, err := listAuditKeys(ctx, kv, maxKeys)
+	stream, err := js.Stream(ctx, "KV_"+kv.Bucket())
 	if err != nil {
-		// Empty bucket reports an error; treat as benign zero-state.
-		return nil, nil //nolint:nilerr
+		return nil, fmt.Errorf("audit bucket stream bind: %w", err)
+	}
+	keys, err := listAuditKeys(ctx, stream, kv.Bucket(), maxKeys)
+	if err != nil {
+		return nil, err
 	}
 	// Newest first: keys sort chronologically ascending, so iterate
 	// in reverse.
 	out := make([]AuditEvent, 0, limit)
 	for i := len(keys) - 1; i >= 0 && len(out) < limit; i-- {
 		entry, err := kv.Get(ctx, keys[i])
-		if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			// Expected: the bucket has a TTL (AuditTTL), so an entry
+			// listed a moment ago can have expired between the list
+			// and this Get. Not a bug, just a stale key.
 			continue
+		}
+		if err != nil {
+			// A transient Get failure is indistinguishable from a
+			// TTL-expired key once swallowed, and swallowing it drops
+			// a LIVE audit event from the page. Fail the call instead
+			// of silently returning a short list.
+			return nil, err
 		}
 		var evt AuditEvent
 		if err := json.Unmarshal(entry.Value(), &evt); err != nil {
@@ -92,26 +115,41 @@ func listAuditEventsInner(
 	return out, nil
 }
 
-// listAuditKeys returns up to max keys from the bucket. JetStream
-// KV.ListKeys streams asynchronously; we drain to a slice. Bounded by
-// max so a runaway bucket doesn't OOM the caller.
+// listAuditKeys returns up to max keys from the bucket, oldest first.
+//
+// Key enumeration is natsutil.ListKeys (#698), not kv.ListKeys: audit
+// events are technically Put (auditkv.Emit), not Create, so a
+// once-in-2^48 KeyFor collision would expose this to the same
+// watcher-snapshot race #699 fixed for the workers bucket.
+//
+// Unlike listRunIndexKeys (internal/engine/snapshot.go), which must
+// keep the watcher-based ListKeysFiltered because its creation-order
+// replay IS the ordering contract, this bucket's keys are safe to
+// enumerate from the stream's subject state: auditkv.KeyFor prefixes
+// every key with a nanosecond UTC timestamp
+// (TestAuditKeyFor_chronologicalOrder pins that later times sort
+// lexicographically after earlier ones), so natsutil.ListKeys'
+// lexicographic ordering IS chronological order for this bucket.
+//
+// Truncation keeps the NEWEST max keys, not the first max. The caller
+// walks the result in reverse to render newest-first, so trimming the
+// tail would have handed it the oldest max events and then shown "the
+// newest of the oldest" — on a bucket past the cap the Audit page would
+// render stale events while claiming to be recent. Ordering being
+// explicit here is what makes that visible; it was equally wrong when
+// the order was incidental.
 func listAuditKeys(
-	ctx context.Context, kv jetstream.KeyValue, max int,
+	ctx context.Context, stream jetstream.Stream, bucket string, max int,
 ) ([]string, error) {
 	if max <= 0 {
 		panic("listAuditKeys: max must be positive")
 	}
-	lister, err := kv.ListKeys(ctx)
+	keys, err := natsutil.ListKeys(ctx, stream, bucket)
 	if err != nil {
 		return nil, fmt.Errorf("list keys: %w", err)
 	}
-	defer lister.Stop() //nolint:errcheck
-	out := make([]string, 0, max)
-	for key := range lister.Keys() {
-		out = append(out, key)
-		if len(out) >= max {
-			break
-		}
+	if len(keys) > max {
+		keys = keys[len(keys)-max:]
 	}
-	return out, nil
+	return keys, nil
 }

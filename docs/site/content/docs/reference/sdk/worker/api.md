@@ -393,13 +393,15 @@ func (d *Directory) DeregisterOwned(workerID, callerTokenID string, callerIsAdmi
 DeregisterOwned removes workerID's entry, but only if the caller still owns it \(\#650, the delete\-side counterpart to RegisterOwned\): ownershipAllows must hold for the entry's current token\_id against the caller. A disconnect from a token that has since been superseded \(e.g. an admin took the worker\_id over while the original owner's connection was still open\) must not delete the current owner's entry out from under it \-\- it returns ErrWorkerIDOwned instead and leaves the entry untouched. Uses the Get's revision with jetstream.LastRevision on Delete so a concurrent write between the Get and the Delete aborts the delete instead of clobbering it, same TOCTOU window RegisterOwned closes on the write side \-\- but a bare revision conflict doesn't prove who wrote in the window: it could be this same connection's own heartbeat re\-registering right as it disconnects, which must not skip a legitimate deregister. On conflict, deregisterOwnedAttempt re\-Gets and this loop retries the decision against the fresh entry, up to ownedWriteRetriesMax times. Returns nil if the key does not exist.
 
 <a name="Directory.List"></a>
-### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L556>)
+### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L515>)
 
 ```go
 func (d *Directory) List() ([]WorkerRegistration, error)
 ```
 
 List returns all currently registered workers. Returns an empty slice when no workers are registered. Skips entries that fail to unmarshal \(TTL expiry race\).
+
+Key enumeration is natsutil.ListKeys, not kv.ListKeys \-\- see its doc comment for the watcher\-snapshot race this avoids \(\#699: List\(\) reported a live, actively\-heartbeating worker as absent roughly once per 2000 calls\). Subjects whose last message is a delete marker still appear in that enumeration; the per\-key Get below returns ErrKeyNotFound for those and skips them.
 
 <a name="Directory.Register"></a>
 ### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L354>)
@@ -582,7 +584,7 @@ type RuntimeBudget struct {
 ```
 
 <a name="ServiceDef"></a>
-## type [ServiceDef](<https://github.com/danmestas/dagnats/blob/main/worker/services.go#L43-L47>)
+## type [ServiceDef](<https://github.com/danmestas/dagnats/blob/main/worker/services.go#L45-L49>)
 
 ServiceDef is the metadata entry for a logical service in the \`services\` KV bucket. Pure descriptive surface — does NOT gate task invocation. The \`service::task\` convention in task\-type names is just a naming hint; the engine never reads this bucket during dispatch.
 
@@ -597,7 +599,7 @@ type ServiceDef struct {
 ```
 
 <a name="ListServices"></a>
-### func [ListServices](<https://github.com/danmestas/dagnats/blob/main/worker/services.go#L107-L109>)
+### func [ListServices](<https://github.com/danmestas/dagnats/blob/main/worker/services.go#L116-L118>)
 
 ```go
 func ListServices(js jetstream.JetStream) ([]ServiceDef, error)
@@ -606,6 +608,8 @@ func ListServices(js jetstream.JetStream) ([]ServiceDef, error)
 ListServices reads every entry from the \`services\` KV bucket. Returns an empty slice when no services are registered. Skips entries that fail to unmarshal so a single bad payload does not block the whole listing \(defensive — the bucket is metadata only, never authoritative\).
 
 This is package\-level rather than a method on Worker because the CLI reads the bucket without owning a Worker. It takes a jetstream.JetStream handle so callers can share their existing connection.
+
+Key enumeration is natsutil.ListKeys \(\#698\), not kv.ListKeys: RegisterService Puts by stable service name on every re\-registration \(a worker restart\), which is exactly the write shape exposed to the watcher\-snapshot race \#699 fixed for the workers bucket. Called rarely \(CLI/console reads\), so the bucket's backing stream is resolved inline rather than cached.
 
 <a name="SignalTask"></a>
 ## type [SignalTask](<https://github.com/danmestas/dagnats/blob/main/worker/roles.go#L57-L63>)
@@ -809,7 +813,7 @@ func (w *Worker) HandleSingleton(taskType string, handler HandlerFunc)
 HandleSingleton registers a handler that runs as a single\- partition elastic consumer group. Only one consumer processes messages at a time across all worker instances. Implicitly enables partitioned mode if not already configured.
 
 <a name="Worker.RegisterService"></a>
-### func \(\*Worker\) [RegisterService](<https://github.com/danmestas/dagnats/blob/main/worker/services.go#L66>)
+### func \(\*Worker\) [RegisterService](<https://github.com/danmestas/dagnats/blob/main/worker/services.go#L68>)
 
 ```go
 func (w *Worker) RegisterService(def ServiceDef) error

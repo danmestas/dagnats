@@ -215,6 +215,60 @@ func TestRegisterService_EmptyNamePanics(t *testing.T) {
 	_ = w.RegisterService(ServiceDef{Name: ""})
 }
 
+// TestListServices_SkipsDeletedKey asserts that a service key deleted
+// directly from the bucket (#698: natsutil.ListKeys enumerates subject
+// state, so a delete marker still surfaces from it, unlike the prior
+// kv.ListKeys-based enumeration on this path) is not resurrected into
+// the listing. Application code never deletes a service entry today,
+// but ListServices must not depend on that staying true.
+func TestListServices_SkipsDeletedKey(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	w := NewWorker(nc)
+	if err := w.RegisterService(ServiceDef{Name: "gone"}); err != nil {
+		t.Fatalf("RegisterService gone: %v", err)
+	}
+	if err := w.RegisterService(ServiceDef{Name: "kept"}); err != nil {
+		t.Fatalf("RegisterService kept: %v", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	kv, err := js.KeyValue(ctx, servicesBucket)
+	if err != nil {
+		t.Fatalf("KeyValue: %v", err)
+	}
+	if err := kv.Delete(ctx, "gone"); err != nil {
+		t.Fatalf("Delete gone: %v", err)
+	}
+
+	services, err := ListServices(js)
+	if err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	for _, s := range services {
+		if s.Name == "gone" {
+			t.Fatalf("ListServices resurrected deleted key %q: %+v", "gone", services)
+		}
+	}
+	found := false
+	for _, s := range services {
+		if s.Name == "kept" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ListServices dropped live entry %q, got %+v", "kept", services)
+	}
+}
+
 // TestListServices_EmptyBucket asserts that ListServices returns an
 // empty slice (not an error) when no services have been registered.
 // Callers (the CLI) print "no services" on this state and would

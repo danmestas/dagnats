@@ -736,3 +736,49 @@ func TestHasLiveTriggersOfKind_BoundedScan(t *testing.T) {
 			got, scanMax)
 	}
 }
+
+// TestHasLiveTriggersOfKind_SkipsDeletedKey asserts that a trigger
+// deleted directly from the bucket (#698: hasLiveTriggersOfKind now
+// enumerates via natsutil.ListKeys, which surfaces a delete marker's
+// subject that kv.ListKeys' watcher-built snapshot would not have) is
+// not mistaken for a live trigger, and does not error the scan.
+func TestHasLiveTriggersOfKind_SkipsDeletedKey(t *testing.T) {
+	nc, svc := startExternalSvc(t)
+
+	const kind = "fs.watch"
+	putTriggerDef(t, nc, TriggerDef{
+		ID:         "gone",
+		WorkflowID: "wf",
+		Enabled:    true,
+		External: &ExternalTriggerConfig{
+			Kind:   kind,
+			Config: json.RawMessage(`{}`),
+		},
+	})
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	kv, err := js.KeyValue(ctx, "triggers")
+	if err != nil {
+		t.Fatalf("KeyValue(triggers): %v", err)
+	}
+	if err := kv.Delete(ctx, "gone"); err != nil {
+		t.Fatalf("Delete gone: %v", err)
+	}
+
+	has, err := svc.hasLiveTriggersOfKind(ctx, kind, liveTriggersScanMax)
+	if err != nil {
+		t.Fatalf("hasLiveTriggersOfKind: %v", err)
+	}
+	// Positive: the only entry of this kind was deleted, so no live
+	// trigger of it remains.
+	if has {
+		t.Fatal("hasLiveTriggersOfKind = true for a deleted-only kind, want false")
+	}
+}

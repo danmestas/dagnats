@@ -16,8 +16,10 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -104,6 +106,13 @@ func (w *Worker) RegisterService(def ServiceDef) error {
 // CLI reads the bucket without owning a Worker. It takes a
 // jetstream.JetStream handle so callers can share their existing
 // connection.
+//
+// Key enumeration is natsutil.ListKeys (#698), not kv.ListKeys:
+// RegisterService Puts by stable service name on every re-registration
+// (a worker restart), which is exactly the write shape exposed to the
+// watcher-snapshot race #699 fixed for the workers bucket. Called
+// rarely (CLI/console reads), so the bucket's backing stream is
+// resolved inline rather than cached.
 func ListServices(
 	js jetstream.JetStream,
 ) ([]ServiceDef, error) {
@@ -120,29 +129,36 @@ func ListServices(
 	if err != nil {
 		return nil, err
 	}
-
-	keys, err := kv.ListKeys(ctx)
+	stream, err := js.Stream(ctx, "KV_"+servicesBucket)
 	if err != nil {
-		// Empty bucket returns a "no keys found" error in some
-		// nats.go versions — surface as an empty list instead so
-		// callers don't have to special-case the boot state.
-		if err == jetstream.ErrNoKeysFound {
-			return []ServiceDef{}, nil
-		}
+		return nil, err
+	}
+
+	keys, err := natsutil.ListKeys(ctx, stream, servicesBucket)
+	if err != nil {
 		return nil, err
 	}
 
 	services := make([]ServiceDef, 0, 16)
 	const maxServices = 10000
-	count := 0
-	for key := range keys.Keys() {
-		count++
-		if count > maxServices {
-			panic("ListServices: keys exceeds max bound")
-		}
+	if len(keys) > maxServices {
+		panic("ListServices: keys exceeds max bound")
+	}
+	for _, key := range keys {
 		entry, err := kv.Get(ctx, key)
-		if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			// Expected: ListKeys enumerates subjects, and no service
+			// is ever deleted here, but a bucket shared with a future
+			// delete path could still leave a marker. Not a live
+			// service.
 			continue
+		}
+		if err != nil {
+			// A transient Get failure is indistinguishable from a
+			// deleted key once swallowed, and swallowing it drops a
+			// LIVE service from the listing. Fail the call instead of
+			// silently returning a short list.
+			return nil, err
 		}
 		var def ServiceDef
 		if err := json.Unmarshal(entry.Value(), &def); err != nil {
