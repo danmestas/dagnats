@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **A worker token's 403 now explains itself** (#711). Refusals used to
+  say only `task type "X" not permitted for this token`, which reads as
+  "that work isn't for me" when the usual cause is a scope that matches
+  nothing. The message now names the requested task type and the
+  token's scopes, says plainly when a token has no task types at all,
+  and flags the common near miss: `task_type_prefixes` entries match a
+  whole task type or a namespace the type continues after a `.`, not a
+  text prefix, so `dantest-` never matches `dantest-puzzles.<id>`. For
+  a near miss it suggests the scope that would work, taken from the
+  requested type. The worker-group 403 names the token's group scope
+  too. The field's real semantics are now documented where it's
+  defined and in the wire-protocol docs; the field is not renamed.
+
 ## [0.0.17] - 2026-09-16
 
 ### Fixed
