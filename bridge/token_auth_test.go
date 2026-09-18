@@ -11,6 +11,7 @@ package bridge
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -124,6 +125,103 @@ func TestTokenPollOutOfScopeForbidden(t *testing.T) {
 	// Positive: an out-of-scope task type is rejected with 403.
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+// TestTokenPollOutOfScopeBodyNamesScopes pins #711: the 403 body must
+// name the token's own scopes and the requested type, not just blame
+// the task type in isolation -- otherwise the holder of a token
+// scoped to nothing has no way to tell "wrong type" from "no types at
+// all" without reaching for another tool.
+func TestTokenPollOutOfScopeBodyNamesScopes(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := openTokenStore(t, js)
+
+	b := newTestBridge(t, nc)
+	b.token = "admin-secret"
+	b.SetTokenStore(store)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer mintCancel()
+	_, bearer, err := store.Mint(
+		mintCtx, "worker-a", []string{"dantest-puzzles", "dantest-html"}, nil, "tester",
+	)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	resp := pollWithBearer(t, ts.URL, bearer, `["dantest-other.26acbacb"]`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	got := string(body)
+	// Positive: the requested type and every scope the token carries
+	// appear in the refusal.
+	for _, want := range []string{"dantest-other.26acbacb", "dantest-puzzles", "dantest-html"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("body %q does not contain %q", got, want)
+		}
+	}
+}
+
+// TestTokenPollEmptyScopeBodySaysScopedToNothing pins case (a): a
+// token minted with no task types must say so plainly, not just
+// blame whatever type happened to be requested.
+func TestTokenPollEmptyScopeBodySaysScopedToNothing(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := openTokenStore(t, js)
+
+	b := newTestBridge(t, nc)
+	b.token = "admin-secret"
+	b.SetTokenStore(store)
+	ts := httptest.NewServer(b.Handler())
+	defer ts.Close()
+
+	mintCtx, mintCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer mintCancel()
+	// Mint permits an empty task-type list (workertoken.TestMintEmptyPrefixesMeansNoTaskTypes
+	// pins this): it mints a token deliberately scoped to nothing.
+	_, bearer, err := store.Mint(mintCtx, "worker-a", nil, nil, "tester")
+	if err != nil {
+		t.Fatalf("Mint with empty prefixes: %v", err)
+	}
+
+	resp := pollWithBearer(t, ts.URL, bearer, `["dantest-puzzles.26acbacb"]`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "no task types") {
+		t.Fatalf("body %q does not say the token is scoped to no task types", got)
+	}
+	if !strings.Contains(got, "dantest-puzzles.26acbacb") {
+		t.Fatalf("body %q does not name the requested task type", got)
 	}
 }
 

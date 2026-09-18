@@ -89,7 +89,13 @@ func (tr *tokenRoutes) requireAdmin(
 // to a non-nil empty slice that Store.Mint refuses (#695) -- see
 // workertoken.validateWorkerGroups.
 type mintTokenRequest struct {
-	Label            string   `json:"label"`
+	Label string `json:"label"`
+	// TaskTypePrefixes entries are not byte prefixes despite the
+	// field's name: each entry must equal a whole task type, or name
+	// a namespace the type continues after a '.' (workertoken.Claims.
+	// AllowsTaskType). "build" matches "build" and "build.deploy" but
+	// NOT "build-linux" -- see docs/wire-protocol.md and
+	// docs/site/content/docs/reference/rest-api.md for the full rule.
 	TaskTypePrefixes []string `json:"task_type_prefixes"`
 	WorkerGroups     []string `json:"worker_groups"`
 }

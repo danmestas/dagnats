@@ -13,15 +13,22 @@
 // layout, the watch/reconnect loop, and the hashing scheme.
 package workertoken
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Token is a directory entry for one minted worker token, persisted in
 // the worker_tokens KV bucket keyed by ID. SecretHash is the SHA-256
 // digest of the token's random secret half; the plaintext secret is
 // never stored, logged, or returned again after Mint returns it once.
 type Token struct {
-	ID               string     `json:"id"`
-	Label            string     `json:"label"`
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// TaskTypePrefixes: despite the name, entries are not byte
+	// prefixes. An entry must equal a whole task type, or name a
+	// namespace the type continues after a '.' -- see
+	// Claims.AllowsTaskType for the exact rule.
 	TaskTypePrefixes []string   `json:"task_type_prefixes"`
 	WorkerGroups     []string   `json:"worker_groups,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
@@ -35,8 +42,10 @@ type Token struct {
 // unscoped) or a minted worker token scoped to TaskTypePrefixes and,
 // optionally, WorkerGroups.
 type Claims struct {
-	TokenID          string
-	Admin            bool
+	TokenID string
+	Admin   bool
+	// TaskTypePrefixes: see AllowsTaskType for the matching rule --
+	// the name is misleading, these are not byte prefixes.
 	TaskTypePrefixes []string
 	WorkerGroups     []string
 }
@@ -70,6 +79,63 @@ func (c Claims) AllowsTaskType(taskType string) bool {
 		}
 	}
 	return false
+}
+
+// ExplainTaskTypeRefusal returns a one-line, human-readable sentence
+// explaining why AllowsTaskType(taskType) returned false for these
+// claims (#711). It always names the requested task type and the
+// token's own scopes, and distinguishes three causes that read
+// identically as a bare 403 but are diagnosable only if told apart:
+//
+//   - no scopes at all: the token can never claim work, full stop --
+//     distinct from "scoped to the wrong thing", and the one case a
+//     holder cannot self-diagnose by looking at the queue.
+//   - a near miss: some scope is a literal byte-prefix of taskType
+//     but not a dot-segment of it (e.g. scope "dantest-" against type
+//     "dantest-puzzles.<id>") -- this reads as "should match" to a
+//     human and is the exact trap AllowsTaskType's segment-aware
+//     matching closes.
+//   - a plain mismatch: every scope is unrelated to taskType.
+//
+// Precondition: callers must only invoke this for a (claims,
+// taskType) pair AllowsTaskType has already rejected, on non-admin
+// claims -- it is a diagnostic for the 403 path, not a general query.
+func (c Claims) ExplainTaskTypeRefusal(taskType string) string {
+	if taskType == "" {
+		panic("Claims.ExplainTaskTypeRefusal: taskType must not be empty")
+	}
+	if c.Admin {
+		panic("Claims.ExplainTaskTypeRefusal: must not be called for admin claims")
+	}
+	if c.AllowsTaskType(taskType) {
+		panic("Claims.ExplainTaskTypeRefusal: taskType was allowed, not refused")
+	}
+	if len(c.TaskTypePrefixes) == 0 {
+		return fmt.Sprintf(
+			"this token is scoped to no task types at all, so it can never "+
+				"claim work (requested %q) -- re-mint it with task types",
+			taskType,
+		)
+	}
+	for _, prefix := range c.TaskTypePrefixes {
+		if len(taskType) > len(prefix) && taskType[:len(prefix)] == prefix {
+			return fmt.Sprintf(
+				"this token is scoped to %v; %q is a text prefix of the "+
+					"requested task type %q, not a namespace of it -- a scope "+
+					"matches a whole task type or a namespace the type "+
+					"continues after a '.' (e.g. scope \"dantest-puzzles\" "+
+					"matches \"dantest-puzzles.<id>\", but \"dantest-\" matches "+
+					"nothing)",
+				c.TaskTypePrefixes, prefix, taskType,
+			)
+		}
+	}
+	return fmt.Sprintf(
+		"this token is scoped to %v; none of them match the requested task "+
+			"type %q -- a scope must equal the task type or be a "+
+			"dot-separated namespace of it",
+		c.TaskTypePrefixes, taskType,
+	)
 }
 
 // AllowsWorkerGroup reports whether group may be polled under these
@@ -114,6 +180,31 @@ func (c Claims) AllowsWorkerGroup(group string) bool {
 		}
 	}
 	return false
+}
+
+// ExplainWorkerGroupRefusal returns a one-line sentence explaining why
+// AllowsWorkerGroup(group) returned false for these claims (#711
+// symmetry pass). Unlike task types there is only one refusal shape
+// here -- AllowsWorkerGroup only ever refuses once at least one
+// WorkerGroups entry is present, since an empty list is unscoped-by-
+// group -- so this always names the requested group and the token's
+// group scopes with no case split.
+//
+// Precondition: callers must only invoke this for a (claims, group)
+// pair AllowsWorkerGroup has already rejected, on non-admin claims.
+func (c Claims) ExplainWorkerGroupRefusal(group string) string {
+	if c.Admin {
+		panic("Claims.ExplainWorkerGroupRefusal: must not be called for admin claims")
+	}
+	if c.AllowsWorkerGroup(group) {
+		panic("Claims.ExplainWorkerGroupRefusal: group was allowed, not refused")
+	}
+	return fmt.Sprintf(
+		"this token is scoped to worker groups %v; the requested group %q "+
+			"is not one of them -- worker-group scopes match exactly, with "+
+			"no prefix or namespace concept",
+		c.WorkerGroups, group,
+	)
 }
 
 // AdminTokenID is the reserved token_id value the bridge's
