@@ -75,15 +75,11 @@ func (b *Bridge) handlePoll(
 	}
 	claims := claimsFromContext(ctx)
 	if unmatched, ok := firstUnauthorizedTaskType(claims, req.TaskTypes); ok {
-		http.Error(w, fmt.Sprintf(
-			"task type %q not permitted for this token", unmatched,
-		), http.StatusForbidden)
+		http.Error(w, claims.ExplainTaskTypeRefusal(unmatched), http.StatusForbidden)
 		return
 	}
 	if !claims.AllowsWorkerGroup(req.WorkerGroup) {
-		http.Error(w, fmt.Sprintf(
-			"worker group %q not permitted for this token", req.WorkerGroup,
-		), http.StatusForbidden)
+		http.Error(w, claims.ExplainWorkerGroupRefusal(req.WorkerGroup), http.StatusForbidden)
 		return
 	}
 	tasks, err := b.fetchTasks(ctx, req)
