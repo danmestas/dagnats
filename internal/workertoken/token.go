@@ -15,6 +15,7 @@ package workertoken
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -120,22 +121,41 @@ func (c Claims) ExplainTaskTypeRefusal(taskType string) string {
 	for _, prefix := range c.TaskTypePrefixes {
 		if len(taskType) > len(prefix) && taskType[:len(prefix)] == prefix {
 			return fmt.Sprintf(
-				"this token is scoped to %v; %q is a text prefix of the "+
+				"this token is scoped to %q; %q is a text prefix of the "+
 					"requested task type %q, not a namespace of it -- a scope "+
-					"matches a whole task type or a namespace the type "+
-					"continues after a '.' (e.g. scope \"dantest-puzzles\" "+
-					"matches \"dantest-puzzles.<id>\", but \"dantest-\" matches "+
-					"nothing)",
-				c.TaskTypePrefixes, prefix, taskType,
+					"matches a whole task type, or a namespace the type "+
+					"continues after a '.', so %q matches only the task type "+
+					"%q itself. To claim this work, scope the token to %q",
+				c.TaskTypePrefixes, prefix, taskType, prefix, prefix,
+				namespaceOf(taskType, len(prefix)),
 			)
 		}
 	}
 	return fmt.Sprintf(
-		"this token is scoped to %v; none of them match the requested task "+
+		"this token is scoped to %q; none of them match the requested task "+
 			"type %q -- a scope must equal the task type or be a "+
-			"dot-separated namespace of it",
+			"namespace the type continues after a '.'",
 		c.TaskTypePrefixes, taskType,
 	)
+}
+
+// namespaceOf returns the scope that would admit taskType, given that
+// the first `from` bytes already matched a caller's near-miss scope: the
+// type up to (not including) the first '.' at or after `from`, or the
+// whole type when it has no further dot. Suggesting it turns a refusal
+// into the one-line fix, derived from the caller's own task type rather
+// than a canned example.
+func namespaceOf(taskType string, from int) string {
+	if from <= 0 || from >= len(taskType) {
+		panic("namespaceOf: from must fall strictly inside taskType")
+	}
+	if taskType == "" {
+		panic("namespaceOf: taskType must not be empty")
+	}
+	if i := strings.IndexByte(taskType[from:], '.'); i >= 0 {
+		return taskType[:from+i]
+	}
+	return taskType
 }
 
 // AllowsWorkerGroup reports whether group may be polled under these
@@ -199,8 +219,15 @@ func (c Claims) ExplainWorkerGroupRefusal(group string) string {
 	if c.AllowsWorkerGroup(group) {
 		panic("Claims.ExplainWorkerGroupRefusal: group was allowed, not refused")
 	}
+	if group == "" {
+		return fmt.Sprintf(
+			"this token is scoped to worker groups %q, so it cannot poll "+
+				"the ungrouped queue -- set worker_group to one of them",
+			c.WorkerGroups,
+		)
+	}
 	return fmt.Sprintf(
-		"this token is scoped to worker groups %v; the requested group %q "+
+		"this token is scoped to worker groups %q; the requested group %q "+
 			"is not one of them -- worker-group scopes match exactly, with "+
 			"no prefix or namespace concept",
 		c.WorkerGroups, group,

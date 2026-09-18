@@ -205,3 +205,29 @@ func TestClaimsAllowsWorkerGroupAdminBypasses(t *testing.T) {
 		t.Fatal("admin claims must allow the ungrouped queue")
 	}
 }
+
+// TestExplainTaskTypeRefusal_SuggestsNamespaceFromRequest pins that the
+// near-miss message derives its suggested fix from the caller's own task
+// type, not from a canned example: a holder with scope "build-" polling
+// "build-linux.7f3a" must be told to scope to "build-linux", and must not
+// see an unrelated example name.
+func TestExplainTaskTypeRefusal_SuggestsNamespaceFromRequest(t *testing.T) {
+	cases := []struct {
+		scope, taskType, want string
+	}{
+		{"dantest-", "dantest-puzzles.26acbacb9e1879580c89a231477106f4", `"dantest-puzzles"`},
+		{"build-", "build-linux.7f3a", `"build-linux"`},
+		{"build-", "build-linux", `"build-linux"`},
+	}
+	for _, tc := range cases {
+		c := Claims{TokenID: "t1", TaskTypePrefixes: []string{tc.scope}}
+		msg := c.ExplainTaskTypeRefusal(tc.taskType)
+		if !strings.Contains(msg, "scope the token to "+tc.want) {
+			t.Errorf("scope %q type %q: msg %q lacks suggestion %s",
+				tc.scope, tc.taskType, msg, tc.want)
+		}
+		if tc.scope == "build-" && strings.Contains(msg, "dantest") {
+			t.Errorf("msg %q leaks an unrelated example name", msg)
+		}
+	}
+}
