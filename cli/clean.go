@@ -74,7 +74,13 @@ type cleanFlags struct {
 	// WithPurgeSequence). Zero means unset; both must be positive when used.
 	keep      uint64
 	beforeSeq uint64
-	types     []string
+	// maxKeep overrides defaultMaxRunKeep, the count ceiling applied to the
+	// "runs" category after every clean. maxKeepSet distinguishes "not
+	// passed" (use the default) from an explicit "--max-keep=0" (disable the
+	// ceiling entirely) — both parse to a zero uint64 otherwise.
+	maxKeep    uint64
+	maxKeepSet bool
+	types      []string
 }
 
 // parseCleanFlags extracts flags from args.
@@ -110,6 +116,17 @@ func parseCleanFlags(args []string) cleanFlags {
 			f.keep = parseUintFlag(arg, "--keep=")
 		case strings.HasPrefix(arg, "--before-seq="):
 			f.beforeSeq = parseUintFlag(arg, "--before-seq=")
+		case strings.HasPrefix(arg, "--max-keep="):
+			val := strings.TrimPrefix(arg, "--max-keep=")
+			n, err := strconv.ParseUint(val, 10, 64)
+			if err != nil {
+				fmt.Fprintf(os.Stderr,
+					"invalid --max-keep=N: must be a "+
+						"non-negative integer (0 disables)\n")
+				os.Exit(1)
+			}
+			f.maxKeep = n
+			f.maxKeepSet = true
 		case strings.HasPrefix(arg, "--type="):
 			val := strings.TrimPrefix(arg, "--type=")
 			f.types = strings.Split(val, ",")
@@ -259,6 +276,144 @@ func collectTargets(
 	return streams, buckets
 }
 
+// defaultMaxRunKeep is the count ceiling applied to the "runs" category on
+// every clean, on top of whatever --older-than found. On 2026-09-19 a
+// production outage's retry storm wrote 353,614 workflow_runs KV entries and
+// 513,001 WORKFLOW_HISTORY messages in under an hour. The scheduled cleanup
+// job (age-only, 7-day floor) ran on time and reported success — but every
+// one of those records was hours old, so nothing qualified and nothing was
+// purged. dagnats then walked that oversized run index on every scheduler
+// tick until it stopped firing triggers entirely (176% CPU, 550MB RSS, 80
+// minutes with no ticks). Age and count are orthogonal failure modes:
+// --older-than only guards the first. This ceiling guards the second, and it
+// is on by default so a fleet that never changes its cleanup job's command
+// line still gets the fix from a binary upgrade alone. 50,000 is chosen to
+// sit far above steady-state live-run volume (the incident's own recovery
+// step, --keep=2000, was already generous) while still bounding a bad day.
+const defaultMaxRunKeep = 50_000
+
+// effectiveMaxKeep resolves the count ceiling to apply: the explicit
+// --max-keep value when passed (0 means "disabled"), otherwise
+// defaultMaxRunKeep.
+func effectiveMaxKeep(f cleanFlags) uint64 {
+	if f.maxKeepSet {
+		return f.maxKeep
+	}
+	return defaultMaxRunKeep
+}
+
+// runCeilingResult reports what the count-ceiling pass found and did.
+type runCeilingResult struct {
+	Checked  int `json:"targets_checked"`
+	Exceeded int `json:"targets_exceeded"`
+	Purged   int `json:"targets_purged"`
+}
+
+// enforceRunCeiling walks the "runs" category's streams and KV backing
+// streams and, for any target still holding more than maxKeep messages,
+// purges it server-side down to the newest maxKeep via WithPurgeKeep — the
+// same mechanism --keep already offers by hand. It is called unconditionally
+// after the primary clean, even when the age-based pass purged nothing,
+// because a target where nothing qualifies as "old" is exactly the
+// retry-storm case this exists to catch.
+//
+// Only the "runs" category is ever touched, and only when the caller's
+// resolved categories include it — never dlq/otel/defs. defs holds workflow
+// definitions; an automatic count purge must never reach it.
+//
+// Work-queue streams (TASK_QUEUES) are skipped, mirroring the guard already
+// in seqPurgeStreams: their un-acked messages are live pending tasks, not
+// history, and WithPurgeKeep would silently drop unstarted work.
+//
+// maxKeep == 0 disables the ceiling (an explicit --max-keep=0).
+func enforceRunCeiling(
+	ctx context.Context,
+	js jetstream.JetStream,
+	categories []string,
+	maxKeep uint64,
+) runCeilingResult {
+	if js == nil {
+		panic("enforceRunCeiling: js must not be nil")
+	}
+
+	var result runCeilingResult
+	if maxKeep == 0 || !containsCategory(categories, "runs") {
+		return result
+	}
+
+	cat := categoryMap["runs"]
+	opt := jetstream.WithPurgeKeep(maxKeep)
+
+	for _, name := range cat.Streams {
+		stream, err := js.Stream(ctx, name)
+		if err != nil {
+			continue
+		}
+		info, err := stream.Info(ctx)
+		if err != nil {
+			continue
+		}
+		if info.Config.Retention == jetstream.WorkQueuePolicy {
+			continue
+		}
+		result.Checked++
+		if info.State.Msgs <= maxKeep {
+			continue
+		}
+		result.Exceeded++
+		fmt.Fprintf(os.Stderr,
+			"warn: ceiling: %s holds %d messages, over "+
+				"--max-keep=%d (age-based purge alone left it "+
+				"there); purging to the newest %d\n",
+			name, info.State.Msgs, maxKeep, maxKeep)
+		if err := stream.Purge(ctx, opt); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"warn: ceiling purge %s: %v\n", name, err)
+			continue
+		}
+		result.Purged++
+	}
+
+	for _, name := range cat.Buckets {
+		stream, err := js.Stream(ctx, "KV_"+name)
+		if err != nil {
+			continue
+		}
+		info, err := stream.Info(ctx)
+		if err != nil {
+			continue
+		}
+		result.Checked++
+		if info.State.Msgs <= maxKeep {
+			continue
+		}
+		result.Exceeded++
+		fmt.Fprintf(os.Stderr,
+			"warn: ceiling: KV_%s holds %d messages, over "+
+				"--max-keep=%d (age-based purge alone left it "+
+				"there); purging to the newest %d\n",
+			name, info.State.Msgs, maxKeep, maxKeep)
+		if err := stream.Purge(ctx, opt); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"warn: ceiling purge kv %s: %v\n", name, err)
+			continue
+		}
+		result.Purged++
+	}
+
+	return result
+}
+
+// containsCategory reports whether name appears in categories.
+func containsCategory(categories []string, name string) bool {
+	for _, c := range categories {
+		if c == name {
+			return true
+		}
+	}
+	return false
+}
+
 // runCleanCmd purges run data from streams and KV buckets.
 func runCleanCmd(args []string) {
 	if args == nil {
@@ -350,10 +505,15 @@ func runCleanCmd(args []string) {
 	// sequence purge, never the per-key/age loop.
 	var result cleanResult
 	if seqMode {
+		// The caller already asked for an explicit bulk sequence prune —
+		// that IS a count-based ceiling action, so the automatic one below
+		// would be redundant at best.
 		result = executeSeqPurge(
 			ctx, js, streams, buckets, f.keep, f.beforeSeq)
 	} else {
 		result = executeClean(ctx, js, streams, buckets, f.olderThan)
+		result.Ceiling = enforceRunCeiling(
+			ctx, js, categories, effectiveMaxKeep(f))
 	}
 
 	if f.json {
@@ -372,6 +532,10 @@ type cleanResult struct {
 	Streams int `json:"streams_purged"`
 	Buckets int `json:"buckets_cleared"`
 	Errors  int `json:"errors"`
+	// Ceiling reports the count-ceiling pass run after an age/full clean (see
+	// enforceRunCeiling). Zero-valued when the seq-purge path handled the
+	// ceiling itself, or when --max-keep=0 disabled it.
+	Ceiling runCeilingResult `json:"ceiling"`
 }
 
 // executeClean purges streams and clears KV buckets.
@@ -1040,6 +1204,16 @@ func printCleanResult(r cleanResult) {
 		fmt.Printf(" (%d errors)", r.Errors)
 	}
 	fmt.Println()
+	// Loud on purpose: an age-based pass that purged nothing while the run
+	// index is enormous must not look identical to a healthy no-op — the
+	// scheduled job that missed this exact case (2026-09-19) reported
+	// "success" the same way.
+	if r.Ceiling.Purged > 0 {
+		fmt.Printf(
+			"Ceiling: %d of %d runs targets were over --max-keep, "+
+				"purged down to size\n",
+			r.Ceiling.Purged, r.Ceiling.Checked)
+	}
 }
 
 // printCleanUsage prints clean command help.
@@ -1064,6 +1238,10 @@ func printCleanUsage() {
 	fmt.Println(
 		"  --before-seq=<n>     " +
 			"bulk-prune messages below stream sequence n")
+	fmt.Println(
+		"  --max-keep=<n>       " +
+			"cap runs targets to n after the clean (default " +
+			fmt.Sprint(defaultMaxRunKeep) + ", 0 disables)")
 	fmt.Println(
 		"  --dry-run            " +
 			"show what would be cleaned without doing it")
@@ -1092,4 +1270,20 @@ func printCleanUsage() {
 		"  Caution: sequence prunes ignore run age/status and can evict")
 	fmt.Println(
 		"  live in-flight runs; prefer --older-than for routine cleanup.")
+	fmt.Println()
+	fmt.Println("Count ceiling:")
+	fmt.Println(
+		"  Every age/full clean also caps each runs target to " +
+			"--max-keep")
+	fmt.Println(
+		"  (default " + fmt.Sprint(defaultMaxRunKeep) + ") via a " +
+			"server-side WithPurgeKeep, run whether or not")
+	fmt.Println(
+		"  --older-than purged anything — an age-only pass can legitimately")
+	fmt.Println(
+		"  purge nothing while a retry storm has already grown the index")
+	fmt.Println(
+		"  past what the scheduler can walk. Work-queue streams are always")
+	fmt.Println(
+		"  skipped, same as --keep. Use --max-keep=0 to disable.")
 }

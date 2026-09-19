@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **`dagnats clean`'s scheduled `--older-than` run could purge nothing while
+  the run index grew unbounded.** On 2026-09-19 a production outage's retry
+  storm wrote 353,614 `workflow_runs` KV entries and 513,001
+  `WORKFLOW_HISTORY` messages in under an hour. The scheduled cleanup job
+  (age-only, 7-day floor) ran on time and reported success — but every one
+  of those records was hours old, so nothing qualified and nothing was
+  purged. dagnats then walked that oversized run index on every scheduler
+  tick until it stopped firing triggers entirely for 80 minutes, at 176% CPU
+  and 550MB RSS, with no code change and no stream backlog to explain it —
+  purging the streams did nothing, only draining the KV bucket did. Age and
+  count are orthogonal failure modes; `--older-than` only ever guarded the
+  first. `clean` now also enforces a count ceiling (`--max-keep`, default
+  50,000) on the "runs" category after every age/full clean, whether or not
+  the age pass found anything — the exact case a retry storm produces. It
+  purges server-side via the same `WithPurgeKeep` mechanism `--keep` already
+  offered by hand, skips work-queue streams so live un-acked tasks are never
+  evicted, and is on by default so existing deployments get the fix from a
+  binary upgrade alone, with no change needed to the scheduled job's command
+  line. Pass `--max-keep=0` to disable it.
+
 ## [0.0.18] - 2026-09-18
 
 ### Changed

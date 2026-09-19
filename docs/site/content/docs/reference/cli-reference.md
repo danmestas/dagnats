@@ -947,6 +947,7 @@ dagnats clean [flags]
 | `--older-than=DURATION` | Only clean data older than duration (`7d`, `24h`, `30m`) |
 | `--keep=N` | Bulk-prune each target to its newest `N` messages (requires `--force`) |
 | `--before-seq=N` | Bulk-prune messages below stream sequence `N` (requires `--force`) |
+| `--max-keep=N` | Count ceiling applied to the `runs` category after every clean (default 50000, `0` disables) |
 | `--dry-run` | Show what would be cleaned without doing it |
 | `--all` | Clean all categories (runs, dlq, otel, defs) |
 | `--force` | Skip confirmation prompt |
@@ -975,6 +976,19 @@ while newer terminal runs survive — silent loss of that run's state. KV delete
 tombstones also count as messages, so fewer than `N` keys may remain. Prefer
 `--older-than` for routine cleanup; reach for `--keep`/`--before-seq` only as a blunt
 recovery tool. Use `--dry-run` to preview without `--force`.
+
+### Count ceiling
+
+`--older-than` guards age but not count: a retry storm can write a huge number of
+runs in a single day, all newer than any age floor, so an age-only pass legitimately
+purges nothing while the index keeps growing until something that walks it (the
+scheduler, in particular) falls over. Every age/full clean (not the `--keep`/
+`--before-seq` recovery path, which is already a count-based purge) also caps each
+`runs`-category target to `--max-keep` (default 50000) afterward, via the same
+server-side `WithPurgeKeep` mechanism, whether or not `--older-than` purged anything.
+Work-queue streams are always skipped, same as `--keep`. Pass `--max-keep=0` to turn
+it off, or a lower value to tighten it. This runs by default — no change to an
+existing scheduled job's command line is needed to get the protection.
 
 **Categories:**
 
@@ -1022,7 +1036,7 @@ dagnats clean --type=runs --keep=30000 --dry-run
 # Total: 192000 messages
 
 dagnats clean --force --json
-# {"streams_purged":5,"buckets_cleared":10,"errors":0}
+# {"streams_purged":5,"buckets_cleared":10,"errors":0,"ceiling":{"targets_checked":13,"targets_exceeded":0,"targets_purged":0}}
 ```
 
 ---
