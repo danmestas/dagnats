@@ -1,6 +1,6 @@
 module github.com/danmestas/dagnats
 
-go 1.26.2
+go 1.27.1
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1

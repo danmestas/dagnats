@@ -146,7 +146,7 @@ build-release: clean ## Build cross-platform release binaries + tarballs into ./
 # only glibc + libstdc++ + libm + libdl on the target host — all
 # standard on every Ubuntu/Debian/RHEL release.
 #
-# We build inside a golang:1.26-bookworm container (linux/amd64)
+# We build inside a golang:1.27-bookworm container (linux/amd64)
 # so the toolchain is reproducible and host-independent. Hosts
 # need only Docker. The cmd/dagnats-mcp-duckdb directory is its
 # own Go module, so the build runs from inside that subdir.
@@ -158,7 +158,7 @@ build-release: clean ## Build cross-platform release binaries + tarballs into ./
 # ownership" guard (exit 128, #466). The mcp-duckdb binary needs no embedded git
 # revision, so disabling the stamp is the clean fix. The darwin builds run
 # natively (git is trusted) and keep the default.
-MCPDUCKDB_BUILDER_IMG := golang:1.26-bookworm
+MCPDUCKDB_BUILDER_IMG := golang:1.27-bookworm
 MCPDUCKDB_PKGNAME := dagnats-mcp-duckdb-linux-amd64
 build-mcp-duckdb-linux-amd64: ## Build dagnats-mcp-duckdb linux/amd64 tarball
 	@mkdir -p "$(DIST)/$(MCPDUCKDB_PKGNAME)"

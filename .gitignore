@@ -14,3 +14,6 @@ coverage.out
 .env*
 !.env.example
 .agent-config/
+
+# Build artifact from `go build ./...` inside the module directory.
+/cmd/dagnats-mcp-duckdb/dagnats-mcp-duckdb
