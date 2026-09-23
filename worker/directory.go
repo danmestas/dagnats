@@ -160,6 +160,12 @@ type WorkerRegistration struct {
 	Transport string            `json:"transport"`
 	MaxTasks  int               `json:"max_tasks"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
+	// WorkerGroups names the worker groups this worker drains (#719),
+	// so /v1/workers can answer "who serves group G". Plural because an
+	// SDK worker may drain several (WithGroups). Empty means the
+	// ungrouped queue. omitempty so a registration written before #719
+	// reads back unchanged.
+	WorkerGroups []string `json:"worker_groups,omitempty"`
 
 	// Identity — populated once at worker boot, stable for the life
 	// of the process.
