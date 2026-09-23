@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builders now all use the same toolchain, and the 1.26 series was six
   patch releases behind upstream.
 
+### Fixed
+
+- **A grouped step that failed once was never retried, and its run never
+  ended** (#721). Retries are re-published by a timer, and the timer
+  rebuilt the task subject without the worker group, so every retry of a
+  grouped step landed on the ungrouped subject, where no grouped worker
+  listens. The step timeout then scheduled another retry to the same
+  wrong subject, leaving the run `running` indefinitely. This affected
+  rate-limit and concurrency retries, `retry_after`, exponential/fixed
+  backoff retries, and the sticky soft-fallback. Retries now reuse the
+  exact subject the first dispatch was published on. Runs already stuck
+  this way recover on their own after upgrading: the next step-timeout
+  retry is published to the grouped subject and claimed normally.
+
 ## [0.0.19] - 2026-09-22
 
 ### Fixed
