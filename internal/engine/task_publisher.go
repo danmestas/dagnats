@@ -180,6 +180,7 @@ func (tp *TaskPublisher) Publish(
 			return tp.sticky.PublishTask(
 				ctx, runID, step, input, run,
 				workerID, wfDef.Sticky, dispatchNonce, workflowName,
+				tp.StepSubject(step, runID),
 			)
 		}
 	}
@@ -331,6 +332,7 @@ func (tp *TaskPublisher) scheduleRateRetry(
 		StepID:        step.ID,
 		DurationMs:    durationMs,
 		TaskType:      step.Task,
+		Subject:       tp.StepSubject(step, runID),
 		Input:         input,
 		WorkflowName:  meta.workflowName,
 		DispatchNonce: meta.nonce,
@@ -368,6 +370,7 @@ func (tp *TaskPublisher) scheduleConcurrencyRetry(
 		StepID:        step.ID,
 		DurationMs:    1000,
 		TaskType:      step.Task,
+		Subject:       tp.StepSubject(step, runID),
 		Input:         input,
 		WorkflowName:  workflowName,
 		DispatchNonce: nonce,
