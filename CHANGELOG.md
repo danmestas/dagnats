@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this way recover on their own after upgrading: the next step-timeout
   retry is published to the grouped subject and claimed normally.
 
+### Added
+
+- **Worker registrations record the worker groups they drain** (#719),
+  as `worker_groups` in `GET /v1/workers`, so a consumer can answer "who
+  serves group G" and show capacity per group. Previously every
+  registration carried no group, so a grouped worker that was actively
+  draining its group appeared attached to nothing. Go SDK workers report
+  the groups they were started with. Bridge workers can name a
+  `worker_group` on `POST /v1/workers/connect`, validated exactly as a
+  poll's group is; if they omit it, the registration records the
+  token's group scope rather than claiming the ungrouped queue.
+
 ## [0.0.19] - 2026-09-22
 
 ### Fixed

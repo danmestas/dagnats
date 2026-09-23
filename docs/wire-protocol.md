@@ -242,14 +242,29 @@ Registers a worker and maintains a Server-Sent Events (SSE) heartbeat stream. Th
 {
   "worker_id": "worker-123",
   "task_types": ["llm", "http"],
-  "max_tasks": 2
+  "max_tasks": 2,
+  "worker_group": "quarry"
 }
 ```
+
+`worker_group` is optional and names the group this worker drains, so
+`GET /v1/workers` can report who serves a group.
+
+- **When given**, it is validated exactly as a poll's `worker_group` is:
+  an invalid value is `400`, and a group the token is not scoped to is
+  `403`, with the same explanation poll returns. A connect succeeds only
+  for a group this worker could actually poll.
+- **When omitted**, the registration records the token's own group
+  scope: the one group of a single-group token, every group of a
+  multi-group token, and none (the ungrouped queue) for an unscoped
+  token. A group-scoped token is never recorded as ungrouped, since it
+  cannot poll the ungrouped queue.
 
 **Response**: SSE stream with `heartbeat` events every 25 seconds.
 
 **Behavior**:
-- Worker is registered in the `workers` KV bucket
+- Worker is registered in the `workers` KV bucket, including its
+  `worker_groups`
 - Heartbeat events are sent every 25s to maintain connection
 - Worker is deregistered on disconnect
 
