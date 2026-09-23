@@ -1,6 +1,6 @@
 module github.com/danmestas/dagnats/cmd/dagnats-mcp-duckdb
 
-go 1.26.1
+go 1.27.1
 
 require (
 	github.com/marcboeker/go-duckdb v1.8.5

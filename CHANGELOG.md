@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Breaking / behavior changes
+
+- **Go 1.27.1 is now the minimum toolchain** (was 1.26.2, and 1.26.1 for
+  the `dagnats-mcp-duckdb` module). This raises the required Go for
+  anyone importing the SDK packages. It also collapses four different
+  versions that had drifted apart: CI tested on 1.26.2 while the
+  published container image built its binaries on 1.27, the
+  mcp-duckdb release builder used 1.26-bookworm, and a local `go build`
+  used whatever was installed. Tests, the container, and the release
+  builders now all use the same toolchain, and the 1.26 series was six
+  patch releases behind upstream.
+
 ## [0.0.19] - 2026-09-22
 
 ### Fixed
