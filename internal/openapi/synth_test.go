@@ -31,30 +31,30 @@ func minimalHTTPTrigger(
 ) (trigger.TriggerDef, dag.WorkflowDef) {
 	t.Helper()
 	return trigger.TriggerDef{
-			ID:         "echo-trigger",
-			WorkflowID: "echo",
-			Enabled:    true,
-			HTTP: &trigger.HTTPConfig{
-				Path:         "/api/echo",
-				Method:       "POST",
-				TimeoutMs:    5000,
-				MaxBodyBytes: 1 << 20,
+		ID:         "echo-trigger",
+		WorkflowID: "echo",
+		Enabled:    true,
+		HTTP: &trigger.HTTPConfig{
+			Path:         "/api/echo",
+			Method:       "POST",
+			TimeoutMs:    5000,
+			MaxBodyBytes: 1 << 20,
+		},
+	}, dag.WorkflowDef{
+		Name:    "echo",
+		Version: "1.0",
+		Steps: []dag.StepDef{
+			{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
+			{
+				ID:        "r",
+				Type:      dag.StepTypeRespond,
+				DependsOn: []string{"a"},
+				Config: json.RawMessage(
+					`{"status":200,"content_type":"application/json"}`,
+				),
 			},
-		}, dag.WorkflowDef{
-			Name:    "echo",
-			Version: "1.0",
-			Steps: []dag.StepDef{
-				{ID: "a", Task: "echo", Type: dag.StepTypeNormal},
-				{
-					ID:        "r",
-					Type:      dag.StepTypeRespond,
-					DependsOn: []string{"a"},
-					Config: json.RawMessage(
-						`{"status":200,"content_type":"application/json"}`,
-					),
-				},
-			},
-		}
+		},
+	}
 }
 
 func TestBuildMinimalHTTPTrigger(t *testing.T) {
