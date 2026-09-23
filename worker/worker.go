@@ -571,9 +571,12 @@ func (w *Worker) registerDirectory() {
 		Language:  "go",
 		Transport: "nats",
 		MaxTasks:  len(taskTypes),
-		Pid:       ident.pid,
-		Hostname:  ident.hostname,
-		Version:   ident.version,
+		// The heartbeat re-registers this same value, so recording the
+		// groups once here keeps them on every refresh (#719).
+		WorkerGroups: w.groups,
+		Pid:          ident.pid,
+		Hostname:     ident.hostname,
+		Version:      ident.version,
 	}
 	if err := w.dir.Register(reg); err != nil {
 		slog.Warn(

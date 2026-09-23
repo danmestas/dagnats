@@ -688,6 +688,7 @@ above.
       "language": "go",
       "transport": "nats",
       "max_tasks": 10,
+      "worker_groups": ["gpu"],
       "pid": 4821,
       "hostname": "build-01",
       "last_seen": "2026-08-28T12:00:00Z"
@@ -699,6 +700,12 @@ above.
 
 `workers` is always an array (`[]` when none are registered or live),
 never `null`.
+
+`worker_groups` lists the worker groups a worker drains. It is omitted
+for a worker that drains only the ungrouped queue. A Go SDK worker
+reports the groups it was started with (`WithGroups`); a bridge worker
+reports the `worker_group` it named on connect, or its token's group
+scope if it named none.
 
 **curl:**
 ```bash

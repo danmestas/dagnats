@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/worker"
 )
@@ -18,6 +19,10 @@ type connectRequest struct {
 	WorkerID  string   `json:"worker_id"`
 	TaskTypes []string `json:"task_types"`
 	MaxTasks  int      `json:"max_tasks"`
+	// WorkerGroup is the group this worker drains (#719). Optional: when
+	// omitted the registration records the token's own group scope --
+	// see connectWorkerGroups.
+	WorkerGroup string `json:"worker_group,omitempty"`
 }
 
 // heartbeatIntervalMs controls how often SSE heartbeats are sent.
@@ -58,14 +63,20 @@ func (b *Bridge) handleConnect(
 	)
 
 	claims := claimsFromContext(ctx)
+	groups, status, refusal := connectWorkerGroups(req.WorkerGroup, claims)
+	if status != 0 {
+		http.Error(w, refusal, status)
+		return
+	}
 	dir := worker.NewDirectory(b.js)
 	reg := worker.WorkerRegistration{
-		WorkerID:  req.WorkerID,
-		TaskTypes: req.TaskTypes,
-		Language:  "http",
-		Transport: "bridge",
-		MaxTasks:  req.MaxTasks,
-		TokenID:   registrationTokenID(claims),
+		WorkerID:     req.WorkerID,
+		TaskTypes:    req.TaskTypes,
+		Language:     "http",
+		Transport:    "bridge",
+		MaxTasks:     req.MaxTasks,
+		WorkerGroups: groups,
+		TokenID:      registrationTokenID(claims),
 	}
 	if !registerOwnedOrReject(w, dir, reg, claims) {
 		return
@@ -185,6 +196,51 @@ func deregisterOnDisconnect(
 }
 
 // parseConnectRequest validates the connect JSON body.
+// connectWorkerGroups resolves the worker groups a connecting bridge
+// worker is recorded as draining (#719), returning a non-zero HTTP
+// status and message when the connect must be refused.
+//
+// A named worker_group is validated exactly as a poll's is, so a connect
+// succeeds only for a group this worker could actually poll. When
+// worker_group is omitted, the registration records the token's own
+// group scope: the single group of a per-repository token, the full list
+// of a multi-group token, and nothing for an unscoped or admin token
+// (the ungrouped queue). Omission is deliberately NOT refused: a
+// multi-group token that connects without a group and then polls a named
+// one works today, and recording its scope keeps the listing truthful
+// without breaking that flow. What it must never do is record a
+// group-scoped token as ungrouped -- such a token cannot poll the
+// ungrouped queue, so that registration would be false.
+func connectWorkerGroups(
+	group string, claims workertoken.Claims,
+) ([]string, int, string) {
+	var groups []string
+	if group == "" {
+		groups = append([]string(nil), claims.WorkerGroups...)
+	} else {
+		if err := dag.ValidWorkerGroup(group); err != nil {
+			return nil, http.StatusBadRequest, err.Error()
+		}
+		if !claims.AllowsWorkerGroup(group) {
+			return nil, http.StatusForbidden,
+				claims.ExplainWorkerGroupRefusal(group)
+		}
+		groups = []string{group}
+	}
+	// Postcondition: every recorded group is one this token may drain.
+	// A registration naming a group the token cannot poll would put the
+	// listing back into exactly the state #719 exists to fix.
+	for _, g := range groups {
+		if !claims.AllowsWorkerGroup(g) {
+			panic("connectWorkerGroups: recorded a group the token cannot drain")
+		}
+	}
+	if len(groups) > workertoken.WorkerGroupsCountMax {
+		panic("connectWorkerGroups: recorded groups exceed the mint bound")
+	}
+	return groups, 0, ""
+}
+
 func parseConnectRequest(
 	r *http.Request,
 ) (connectRequest, error) {

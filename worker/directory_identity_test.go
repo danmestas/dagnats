@@ -154,3 +154,73 @@ func mustRead(
 		workerID, len(workers))
 	return WorkerRegistration{}
 }
+
+// TestWorkerRegistrationRecordsGroups pins #719 for the SDK path: a
+// worker started WithGroups records those groups in its registration,
+// so /v1/workers can answer who drains a group. An ungrouped worker
+// records none, which reads as the ungrouped queue.
+func TestWorkerRegistrationRecordsGroups(t *testing.T) {
+	cases := []struct {
+		name   string
+		groups []string
+	}{
+		{"grouped", []string{"gpu", "fast"}},
+		{"ungrouped", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, nc := natsutil.StartTestServer(t)
+			if err := natsutil.SetupAll(nc); err != nil {
+				t.Fatalf("SetupAll: %v", err)
+			}
+			js, err := jetstream.New(nc)
+			if err != nil {
+				t.Fatalf("jetstream.New: %v", err)
+			}
+			var opts []WorkerOption
+			if tc.groups != nil {
+				opts = append(opts, WithGroups(tc.groups...))
+			}
+			w := NewWorker(nc, opts...)
+			w.Handle("group-task", func(ctx TaskContext) error {
+				return ctx.Complete(nil)
+			})
+			w.Start()
+			t.Cleanup(w.Stop)
+
+			got := waitForSoleRegistration(t, NewDirectory(js))
+			if len(got.WorkerGroups) != len(tc.groups) {
+				t.Fatalf("WorkerGroups = %v, want %v",
+					got.WorkerGroups, tc.groups)
+			}
+			for i := range tc.groups {
+				if got.WorkerGroups[i] != tc.groups[i] {
+					t.Fatalf("WorkerGroups = %v, want %v",
+						got.WorkerGroups, tc.groups)
+				}
+			}
+		})
+	}
+}
+
+// waitForSoleRegistration returns the single registration in dir,
+// polling briefly because the directory write lands asynchronously.
+func waitForSoleRegistration(t *testing.T, dir *Directory) WorkerRegistration {
+	t.Helper()
+	if dir == nil {
+		t.Fatal("waitForSoleRegistration: dir must not be nil")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		workers, err := dir.List()
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(workers) == 1 {
+			return workers[0]
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("worker did not register within 2s")
+	return WorkerRegistration{}
+}
