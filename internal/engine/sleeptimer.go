@@ -66,6 +66,43 @@ type TimerMessage struct {
 	// timer messages deserialize to "" and the re-published TaskPayload
 	// simply carries no workflow_name.
 	WorkflowName string `json:"workflow_name,omitempty"`
+	// Subject is the resolved dispatch subject for a timer that
+	// re-publishes a task (rate_retry / task_concurrency_retry /
+	// retry_after / retry_backoff / sticky-fallback), computed by
+	// TaskPublisher.StepSubject when the timer is SCHEDULED (#721).
+	//
+	// The resolved subject is carried rather than the ingredients to
+	// rebuild it, so a re-dispatch cannot diverge from the first
+	// dispatch. Before this, the timer rebuilt the subject as
+	// "task.<Task>.<runID>" and dropped the worker group, which put every
+	// retry of a grouped step on a subject no grouped consumer filters:
+	// the step never ran again and its run never ended. Additive,
+	// omitempty: see dispatchSubject for the legacy fallback.
+	Subject string `json:"subject,omitempty"`
+}
+
+// dispatchSubject returns the subject a dispatch timer re-publishes
+// to. It is the single place that resolution happens, shared by every
+// dispatch action, so the paths cannot drift apart again (#721 found
+// two independent copies, both dropping the worker group).
+//
+// A timer scheduled before #721 carries no Subject and falls back to
+// the pre-#721 ungrouped derivation. For an ungrouped step that is the
+// correct subject. For a grouped step it is still the wrong one, but
+// the step's timeout watchdog then schedules a fresh retry that DOES
+// carry the resolved subject, so an affected run recovers on its next
+// timeout cycle rather than staying stuck.
+func (tm TimerMessage) dispatchSubject() string {
+	if tm.RunID == "" {
+		panic("TimerMessage.dispatchSubject: RunID must not be empty")
+	}
+	if tm.Subject != "" {
+		return tm.Subject
+	}
+	if tm.TaskType == "" {
+		panic("TimerMessage.dispatchSubject: legacy timer has no TaskType")
+	}
+	return fmt.Sprintf("task.%s.%s", tm.TaskType, tm.RunID)
 }
 
 // DebounceHandler is called when a debounce timer fires. The seq
@@ -460,7 +497,7 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	subject := fmt.Sprintf("task.%s.%s", tm.TaskType, tm.RunID)
+	subject := tm.dispatchSubject()
 	// #624 review round 2/4: fireRateRetry used to omit Attempt
 	// entirely (zero value), so every rate-retried task ran as if
 	// attempt 1 (worker's NumDelivered fallback) regardless of the
@@ -560,9 +597,7 @@ func (st *SleepTimer) republishTask(
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	subject := fmt.Sprintf(
-		"task.%s.%s", tm.TaskType, tm.RunID,
-	)
+	subject := tm.dispatchSubject()
 	attempt, iteration := st.identityForRedispatch(ctx, tm.RunID, tm.StepID)
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,

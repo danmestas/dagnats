@@ -94,6 +94,7 @@ func (sr *StickyRouter) PublishTask(
 	strategy dag.StickyStrategy,
 	dispatchNonce string,
 	workflowName string,
+	fallbackSubject string,
 ) error {
 	if sr == nil {
 		panic("StickyRouter.PublishTask: called on nil receiver")
@@ -153,6 +154,7 @@ func (sr *StickyRouter) PublishTask(
 	if strategy == dag.StickySoft && sr.sleepTimer != nil {
 		sr.scheduleSoftFallback(
 			ctx, runID, step, input, attempt, dispatchNonce, workflowName,
+			fallbackSubject,
 		)
 	}
 
@@ -172,9 +174,13 @@ func (sr *StickyRouter) scheduleSoftFallback(
 	attempt int,
 	dispatchNonce string,
 	workflowName string,
+	fallbackSubject string,
 ) {
 	if sr.sleepTimer == nil {
 		panic("scheduleSoftFallback: sleepTimer must not be nil")
+	}
+	if fallbackSubject == "" {
+		panic("scheduleSoftFallback: fallbackSubject must not be empty")
 	}
 	if runID == "" {
 		panic("scheduleSoftFallback: runID must not be empty")
@@ -188,6 +194,9 @@ func (sr *StickyRouter) scheduleSoftFallback(
 		Input:        input,
 		Attempt:      attempt,
 		WorkflowName: workflowName,
+		// The fallback goes to the step's NORMAL subject, which for a
+		// grouped step carries the worker group (#721).
+		Subject: fallbackSubject,
 		// Carry the run-binding nonce so the fallback re-publish (#380)
 		// stays run-bound. Sticky steps carry no control-plane capability,
 		// so no caps need stripping here.
