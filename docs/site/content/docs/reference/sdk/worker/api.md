@@ -355,7 +355,7 @@ const (
 ```
 
 <a name="Directory"></a>
-## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L194-L201>)
+## type [Directory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L194-L205>)
 
 Directory provides worker visibility via NATS KV. Each worker writes its registration to the "workers" bucket; the bucket's TTL ensures stale entries are purged automatically.
 
@@ -366,7 +366,7 @@ type Directory struct {
 ```
 
 <a name="NewDirectory"></a>
-### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L206>)
+### func [NewDirectory](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L210>)
 
 ```go
 func NewDirectory(js jetstream.JetStream) *Directory
@@ -375,7 +375,7 @@ func NewDirectory(js jetstream.JetStream) *Directory
 NewDirectory creates a Directory backed by the "workers" KV bucket. Panics if js is nil or the bucket does not exist — both are programmer errors indicating missing setup.
 
 <a name="Directory.Deregister"></a>
-### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L388>)
+### func \(\*Directory\) [Deregister](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L392>)
 
 ```go
 func (d *Directory) Deregister(workerID string) error
@@ -384,7 +384,7 @@ func (d *Directory) Deregister(workerID string) error
 Deregister removes the worker's entry from the directory. Panics if workerID is empty. Returns nil if the key does not exist.
 
 <a name="Directory.DeregisterOwned"></a>
-### func \(\*Directory\) [DeregisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L430-L432>)
+### func \(\*Directory\) [DeregisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L434-L436>)
 
 ```go
 func (d *Directory) DeregisterOwned(workerID, callerTokenID string, callerIsAdmin bool) error
@@ -393,7 +393,7 @@ func (d *Directory) DeregisterOwned(workerID, callerTokenID string, callerIsAdmi
 DeregisterOwned removes workerID's entry, but only if the caller still owns it \(\#650, the delete\-side counterpart to RegisterOwned\): ownershipAllows must hold for the entry's current token\_id against the caller. A disconnect from a token that has since been superseded \(e.g. an admin took the worker\_id over while the original owner's connection was still open\) must not delete the current owner's entry out from under it \-\- it returns ErrWorkerIDOwned instead and leaves the entry untouched. Uses the Get's revision with jetstream.LastRevision on Delete so a concurrent write between the Get and the Delete aborts the delete instead of clobbering it, same TOCTOU window RegisterOwned closes on the write side \-\- but a bare revision conflict doesn't prove who wrote in the window: it could be this same connection's own heartbeat re\-registering right as it disconnects, which must not skip a legitimate deregister. On conflict, deregisterOwnedAttempt re\-Gets and this loop retries the decision against the fresh entry, up to ownedWriteRetriesMax times. Returns nil if the key does not exist.
 
 <a name="Directory.List"></a>
-### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L521>)
+### func \(\*Directory\) [List](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L525>)
 
 ```go
 func (d *Directory) List() ([]WorkerRegistration, error)
@@ -404,7 +404,7 @@ List returns all currently registered workers. Returns an empty slice when no wo
 Key enumeration is natsutil.ListKeys, not kv.ListKeys \-\- see its doc comment for the watcher\-snapshot race this avoids \(\#699: List\(\) reported a live, actively\-heartbeating worker as absent roughly once per 2000 calls\). Subjects whose last message is a delete marker still appear in that enumeration; the per\-key Get below returns ErrKeyNotFound for those and skips them.
 
 <a name="Directory.Register"></a>
-### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L360>)
+### func \(\*Directory\) [Register](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L364>)
 
 ```go
 func (d *Directory) Register(reg WorkerRegistration) error
@@ -413,7 +413,7 @@ func (d *Directory) Register(reg WorkerRegistration) error
 Register writes the worker's registration to the KV bucket with an unguarded Put \-\- no ownership check, no revision guard. Reserved for native Go workers, which never go through the bridge and so have no TokenID to enforce \(\#650's ownership scope is the bridge's HTTP connect/heartbeat path only; see RegisterOwned\). The worker must call Register periodically \(before the 60s TTL\) to maintain its presence. Panics on empty WorkerID or TaskTypes.
 
 <a name="Directory.RegisterOwned"></a>
-### func \(\*Directory\) [RegisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L257-L259>)
+### func \(\*Directory\) [RegisterOwned](<https://github.com/danmestas/dagnats/blob/main/worker/directory.go#L261-L263>)
 
 ```go
 func (d *Directory) RegisterOwned(reg WorkerRegistration, callerTokenID string, callerIsAdmin bool) error
