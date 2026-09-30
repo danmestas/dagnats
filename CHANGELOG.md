@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **A GitHub-Actions-shaped `ci.yml`** (#728): `on:`, `jobs:` with
+  `needs:`, and `steps:` of shell `run:` commands, alongside the existing
+  `checks:` shape, which compiles exactly as before. Each job compiles to
+  one step with task `<task_namespace>.job` in worker group
+  `<task_namespace>`, where the namespace comes from the caller; the job
+  itself travels as JSON in `Metadata["ci.job"]`. `on:` is returned,
+  normalised but uninterpreted, so the caller decides when a workflow
+  runs. Secrets are referenced by name only (`${{ secrets.NAME }}` as an
+  entire env value, bound to an env var of the same name); no other
+  expressions are accepted. Unsupported Actions keys such as `runs-on`,
+  `uses`, `if` and `strategy` are reported as unsupported rather than as
+  typos, and every diagnostic carries a line and column. `POST
+  /v1/ci/compile` and `/v1/ci/validate` accept `task_namespace` and return
+  `on`. In the Go SDK, `ci.CompileYAMLWith` takes the namespace;
+  `ci.CompileYAML` is unchanged.
+
 ## [0.0.20] - 2026-09-23
 
 ### Breaking / behavior changes

@@ -932,8 +932,8 @@ awareness enters the control plane (core `POST /workflows` above stays
 `dag.WorkflowDef`-only).
 
 ```
-POST /v1/ci/compile    # {"name","spec","register"} -> {"workflow","def_hash","registered","warnings"} | 422 {"diagnostics"}
-POST /v1/ci/validate   # {"name","spec"} -> 200 {"valid","diagnostics"}, never registers
+POST /v1/ci/compile    # {"name","spec","register","task_namespace"} -> {"workflow","def_hash","registered","warnings","on"} | 422 {"diagnostics"}
+POST /v1/ci/validate   # {"name","spec","task_namespace"} -> 200 {"valid","diagnostics","on"}, never registers
 ```
 
 ---

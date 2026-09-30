@@ -13,9 +13,12 @@ This package lives at the module root \(not under internal/\) so the dagnats\-ci
 ## Index
 
 - [Constants](<#constants>)
+- [func CompileYAMLWith\(name string, spec \[\]byte, opts CompileOptions\) \(CompileResult, \[\]Diagnostic\)](<#CompileYAMLWith>)
 - [func Parse\(spec \[\]byte\) \(Spec, \[\]Diagnostic\)](<#Parse>)
 - [type Check](<#Check>)
 - [type CheckRetry](<#CheckRetry>)
+- [type CompileOptions](<#CompileOptions>)
+- [type CompileResult](<#CompileResult>)
 - [type Defaults](<#Defaults>)
 - [type DeployStep](<#DeployStep>)
 - [type Diagnostic](<#Diagnostic>)
@@ -35,6 +38,15 @@ This package lives at the module root \(not under internal/\) so the dagnats\-ci
 ```go
 const DiagnosticsMax = 100
 ```
+
+<a name="CompileYAMLWith"></a>
+## func [CompileYAMLWith](<https://github.com/danmestas/dagnats/blob/main/ci/options.go#L30-L32>)
+
+```go
+func CompileYAMLWith(name string, spec []byte, opts CompileOptions) (CompileResult, []Diagnostic)
+```
+
+CompileYAMLWith compiles ci.yml bytes of either shape. A spec with a top\-level jobs: key is the Actions\-shaped spec; anything else compiles exactly as CompileYAML always has.
 
 <a name="Parse"></a>
 ## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L230>)
@@ -74,6 +86,29 @@ type CheckRetry struct {
     InitialDelay string  `yaml:"initial_delay"`
     MaxDelay     string  `yaml:"max_delay"`
     Multiplier   float64 `yaml:"multiplier"`
+}
+```
+
+<a name="CompileOptions"></a>
+## type [CompileOptions](<https://github.com/danmestas/dagnats/blob/main/ci/options.go#L14-L16>)
+
+CompileOptions carries the caller\-supplied inputs a ci.yml cannot hold. TaskNamespace is required by a jobs: spec: every job compiles to task "\<TaskNamespace\>.job" in worker group TaskNamespace. A checks: spec ignores it.
+
+```go
+type CompileOptions struct {
+    TaskNamespace string
+}
+```
+
+<a name="CompileResult"></a>
+## type [CompileResult](<https://github.com/danmestas/dagnats/blob/main/ci/options.go#L22-L25>)
+
+CompileResult is a successful compile: the workflow, plus, for a jobs: spec, the spec's on: block normalised to JSON \(event name to filter object\) and otherwise uninterpreted. On is nil for a checks: spec and whenever the compile reported diagnostics.
+
+```go
+type CompileResult struct {
+    Workflow dag.WorkflowDef
+    On       json.RawMessage
 }
 ```
 

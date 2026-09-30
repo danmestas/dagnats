@@ -263,6 +263,128 @@ func CompileYAML(name string, spec []byte) (dag.WorkflowDef, []Diagnostic)
 `dag.WorkflowDef` is only valid — and only non-zero — when the diagnostics
 slice is empty.
 
+## The `jobs:` shape
+
+A spec with a top-level `jobs:` key is the GitHub-Actions-shaped spec:
+`on:`, `jobs:` with `needs:`, and `steps:` of shell `run:` commands. A spec
+with `checks:` compiles exactly as described above. A spec with **both** is
+a diagnostic: *"a spec uses either jobs: or checks:, not both"*.
+
+```yaml
+on:
+  push:
+    branches: [trunk]
+env:
+  CI: "1"
+jobs:
+  test:
+    timeout-minutes: 30
+    steps:
+      - run: npm test
+  deploy:
+    needs: [test]
+    environment: production
+    steps:
+      - name: publish
+        run: npx --yes wrangler@4.138.0 deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+```
+
+Allowed keys:
+
+- **top level:** `on`, `env`, `jobs`, `name`
+- **job:** `name`, `needs`, `timeout-minutes`, `retries`, `env`,
+  `environment`, `working-directory`, `steps`
+- **step:** `name`, `run`, `env`, `working-directory`
+
+### How it compiles
+
+- **One step per job.** The step ID is the job id, `DependsOn` is `needs`
+  (a single job id or a list), and `Timeout` comes from `timeout-minutes`
+  (a positive integer up to 360; a check's default when absent). `retries`
+  is the same fixed-delay shorthand a check has (at most 100,000).
+- **The task type comes from the caller.** Every job compiles to task
+  `<task_namespace>.job` in worker group `<task_namespace>`, where
+  `task_namespace` is supplied with the compile request. A `jobs:` spec
+  compiled without one is a diagnostic. The namespace must be a single
+  subject token (no dots). `CompileYAML` has no namespace, so a `jobs:`
+  spec passed to it is always diagnosed; use `CompileYAMLWith`.
+- **The job travels in `Metadata["ci.job"]`**, as a JSON string with
+  exactly these keys:
+
+  ```json
+  {
+    "name": "", "env": {"CI": "1"}, "working-directory": "",
+    "environment": "production", "secrets": ["CLOUDFLARE_API_TOKEN"],
+    "steps": [{"name": "publish", "run": "npx ...", "env": {},
+               "working-directory": ""}]
+  }
+  ```
+
+  The job's `env` is the workflow's `env` with the job's layered on top
+  (the job wins). A step's `env` stays on that step for the worker to apply
+  over the job's. A job whose encoded JSON exceeds 64 KiB is a diagnostic,
+  because it travels in every task message for that job.
+- **`on:` is returned, not interpreted.** The compile and validate responses
+  carry it as structured JSON, normalised so a single event or a list of
+  events becomes a map of event to filter (`on: push` becomes
+  `{"push":{}}`). The caller decides which events exist and whether a
+  workflow runs; the compiler only checks that `on:` is well formed and
+  names at least one event.
+
+### Secrets
+
+`${{ secrets.NAME }}` is accepted only as the **entire** value of an `env`
+entry, at workflow, job, or step level, and only bound to an env var of the
+**same name**:
+
+```yaml
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}   # accepted
+  API_KEY: ${{ secrets.PROD_TOKEN }}                            # diagnosed
+```
+
+The compiler removes the entry from `env` and adds `NAME` to the job's
+`secrets` list. It never sees or stores a secret value, only a name.
+Because the list carries names only, a worker can export each secret under
+exactly one variable name, its own. A different key would silently export
+the secret under the wrong name, so the compiler rejects it. A job-level
+plain value replaces a workflow-level secret with the same key.
+
+Any other `${{` anywhere is a diagnostic: *"expressions are not supported;
+only ${{ secrets.NAME }} as an env value"*.
+
+### Unsupported Actions keys
+
+These GitHub Actions keys are reported as **not supported**, each with a
+reason, rather than as typos: `uses`, `if`, `strategy`, `matrix`,
+`container`, `services`, `runs-on`, `outputs`, `permissions`, `concurrency`,
+`defaults`, `shell`, `continue-on-error`. YAML merge keys (`<<:`) are also
+rejected in a `jobs:` spec, since their merged fields would otherwise be
+dropped without notice.
+
+### Diagnostics
+
+As with `checks:`, every problem is reported in one pass with a line and
+column: unknown and unsupported keys at every level, a `needs:` naming no
+job, `needs:` cycles (reported at the `needs:` of a job on the cycle, with
+the path spelled out), a job with no steps, a step with no `run`, and a bad
+`timeout-minutes` or `retries`.
+
+### Worker scope and job input
+
+A worker token scopes task types and worker groups **independently**. A
+token claims `<ns>.job` in group `<ns>` when its task-type scope admits
+`<ns>.job` (the prefix `<ns>` does, as a namespace) and its group scope
+admits `<ns>`. Pairing both scopes on one name is a convention of the
+caller that mints the token, not an engine rule.
+
+A step with exactly one dependency receives that step's **output** as its
+input, not the run's input (`dag.ResolveInput`). So for a check-in or other
+run input to flow through `needs:`, a job runner should return its input as
+its output.
+
 ## `POST /v1/ci/compile`
 
 Compiles a `ci.yml` spec and, optionally, registers the result.
@@ -273,11 +395,13 @@ Compiles a `ci.yml` spec and, optionally, registers the result.
 {
   "name": "ci:myrepo",
   "spec": "checks:\n  test: { call: \"test\" }\n",
-  "register": false
+  "register": false,
+  "task_namespace": "myrepo"
 }
 ```
 
-`name` is required (`400` if empty). `spec` must be at most 256 KiB — the
+`task_namespace` is required for a [`jobs:` spec](#the-jobs-shape) and
+ignored for a `checks:` spec. `name` is required (`400` if empty). `spec` must be at most 256 KiB — the
 body is read through a bounded `io.LimitReader` before the YAML decoder ever
 sees it, so an oversized spec is rejected (`413`) rather than truncated.
 
@@ -288,9 +412,14 @@ sees it, so an oversized spec is rejected (`413`) rather than truncated.
   "workflow": { "name": "ci:myrepo", "version": "1.0.0", "steps": [...] },
   "def_hash": "3f1a...c2",
   "registered": false,
-  "warnings": []
+  "warnings": [],
+  "on": {"push": {"branches": ["trunk"]}}
 }
 ```
+
+`on` is present only for a `jobs:` spec: its normalised, uninterpreted
+`on:` block. `POST /v1/ci/validate` reports it the same way for a valid
+`jobs:` spec. A spec with diagnostics has no `on` on either endpoint.
 
 With `"register": true`, the compiled definition is persisted through the
 same `RegisterWorkflowWithWarnings` call `POST /workflows` uses —
