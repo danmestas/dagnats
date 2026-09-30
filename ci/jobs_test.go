@@ -186,3 +186,90 @@ func TestChecksSpecUnaffected(t *testing.T) {
 		t.Fatalf("CompileYAML and CompileYAMLWith disagree on a checks spec")
 	}
 }
+
+// TestJobsSecretPrecedence pins the review fix: a job-level plain value
+// replaces a workflow-level secret for the same key, so the worker never
+// receives both a literal and a secret for one variable.
+func TestJobsSecretPrecedence(t *testing.T) {
+	spec := "env:\n  TOKEN: ${{ secrets.TOKEN }}\n  SHARED: ${{ secrets.SHARED }}\n" +
+		"jobs:\n  a:\n    env:\n      TOKEN: literal\n    steps:\n      - run: x\n"
+	res, diags := compileJobs(t, spec, testNamespace)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", diags)
+	}
+	job := decodeJob(t, res.Workflow.Steps[0].Metadata["ci.job"])
+	env := job["env"].(map[string]any)
+	if env["TOKEN"] != "literal" {
+		t.Fatalf("job plain value must win: env = %v", env)
+	}
+	secrets := job["secrets"].([]any)
+	if len(secrets) != 1 || secrets[0] != "SHARED" {
+		t.Fatalf("overridden secret must drop out: secrets = %v, want [SHARED]", secrets)
+	}
+}
+
+// TestJobsSecretsDedupedSortedAndHoisted covers secrets gathered from
+// workflow, job and step level: deduplicated, sorted, never left in env.
+func TestJobsSecretsDedupedSortedAndHoisted(t *testing.T) {
+	spec := "env:\n  ZED: ${{ secrets.ZED }}\njobs:\n  a:\n" +
+		"    env:\n      ALPHA: ${{ secrets.ALPHA }}\n    steps:\n" +
+		"      - run: x\n        env:\n          ALPHA: ${{ secrets.ALPHA }}\n" +
+		"          MID: ${{ secrets.MID }}\n"
+	res, diags := compileJobs(t, spec, testNamespace)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", diags)
+	}
+	raw := res.Workflow.Steps[0].Metadata["ci.job"]
+	if strings.Contains(raw, "${{") {
+		t.Fatalf("a secret expression survived: %s", raw)
+	}
+	got := decodeJob(t, raw)["secrets"].([]any)
+	want := []string{"ALPHA", "MID", "ZED"}
+	if len(got) != len(want) {
+		t.Fatalf("secrets = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("secrets = %v, want %v (deduped, sorted)", got, want)
+		}
+	}
+}
+
+// TestJobsPayloadSizeBound: an oversized job is diagnosed at its id,
+// and a job just under the bound still compiles.
+func TestJobsPayloadSizeBound(t *testing.T) {
+	big := strings.Repeat("x", jobPayloadMaxBytes)
+	spec := "jobs:\n  huge:\n    steps:\n      - run: " + big + "\n"
+	res, diags := compileJobs(t, spec, testNamespace)
+	if len(res.Workflow.Steps) != 0 {
+		t.Fatal("an oversized job must not compile")
+	}
+	requireDiagAt(t, spec, diags, "over the", "huge")
+	small := "jobs:\n  ok:\n    steps:\n      - run: " +
+		strings.Repeat("x", jobPayloadMaxBytes/2) + "\n"
+	if _, d := compileJobs(t, small, testNamespace); len(d) != 0 {
+		t.Fatalf("a job well under the bound was rejected: %+v", d)
+	}
+}
+
+// TestJobsWorkflowTimeoutSaturates pins the overflow fix: many long jobs
+// at the retry ceiling must cap at the ceiling, never wrap negative.
+func TestJobsWorkflowTimeoutSaturates(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("jobs:\n")
+	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
+		b.WriteString("  " + id + ":\n    timeout-minutes: 360\n" +
+			"    retries: 100000\n    steps:\n      - run: x\n")
+	}
+	res, diags := compileJobs(t, b.String(), testNamespace)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", diags)
+	}
+	if res.Workflow.Timeout != jobsWorkflowTimeoutMax {
+		t.Fatalf("timeout = %v, want the %v ceiling", res.Workflow.Timeout, jobsWorkflowTimeoutMax)
+	}
+	one, _ := compileJobs(t, "jobs:\n  a:\n    steps:\n      - run: x\n", testNamespace)
+	if one.Workflow.Timeout <= 0 || one.Workflow.Timeout >= jobsWorkflowTimeoutMax {
+		t.Fatalf("a small spec's timeout %v must be positive and uncapped", one.Workflow.Timeout)
+	}
+}
