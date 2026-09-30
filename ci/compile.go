@@ -92,11 +92,9 @@ func CompileYAML(name string, spec []byte) (dag.WorkflowDef, []Diagnostic) {
 	if spec == nil {
 		panic("CompileYAML: spec must not be nil")
 	}
-	s, diags := Parse(spec)
-	if len(diags) > 0 {
-		return dag.WorkflowDef{}, diags
-	}
-	return Compile(name, s)
+	// No namespace: a jobs: spec reaches the no-namespace diagnostic.
+	result, diags := CompileYAMLWith(name, spec, CompileOptions{})
+	return result.Workflow, diags
 }
 
 // stepFieldFromError extracts the offending step ID from a dag.Validate
@@ -451,12 +449,7 @@ func compileCheckRetry(
 		return nil, diags
 	}
 	if c.Retries > 0 {
-		return &dag.RetryPolicy{
-			MaxAttempts:  c.Retries,
-			Strategy:     dag.RetryFixed,
-			InitialDelay: 5 * time.Second,
-			MaxDelay:     5 * time.Second,
-		}, diags
+		return fixedRetryPolicy(c.Retries), diags
 	}
 	if c.Retry == nil {
 		return nil, diags
@@ -517,6 +510,24 @@ func compileCheckRetry(
 		MaxDelay:     maxDelay,
 		Multiplier:   c.Retry.Multiplier,
 	}, diags
+}
+
+// fixedRetryPolicy is the retries: shorthand shared by checks and jobs: a
+// fixed 5s delay between attempts. It returns nil when attempts is not
+// positive, meaning no retry policy.
+func fixedRetryPolicy(attempts int) *dag.RetryPolicy {
+	if attempts < 0 {
+		panic("fixedRetryPolicy: attempts must not be negative")
+	}
+	if attempts == 0 {
+		return nil
+	}
+	return &dag.RetryPolicy{
+		MaxAttempts:  attempts,
+		Strategy:     dag.RetryFixed,
+		InitialDelay: 5 * time.Second,
+		MaxDelay:     5 * time.Second,
+	}
 }
 
 // parseRetryStrategy maps a retry.strategy string onto dag.RetryStrategy.
