@@ -29,7 +29,9 @@ const (
 	// single NATS message: 768 KiB leaves headroom under the default 1 MiB
 	// max_payload for the envelope. Without it, the workflow env (copied
 	// into every job) times thousands of jobs passes the per-job bound and
-	// fails only at registration, with nothing tying it to the spec.
+	// fails only at registration, with nothing tying it to the spec. This
+	// assumes the server keeps max_payload at or above the default; a server
+	// configured lower can still refuse a def that passes here.
 	jobsDefMaxBytes = 768 * 1024
 	// jobsWorkflowTimeoutMax caps the summed workflow timeout. The engine
 	// sets a run deadline with time.Now().Add(timeout) and bounds neither,
@@ -406,8 +408,8 @@ func defTooLarge(p parsedJobs) Diagnostic {
 		panic("defTooLarge: the def bound must exceed the per-job bound")
 	}
 	return diagAt(p.jobsKey, "jobs", fmt.Sprintf(
-		"the compiled workflow encodes to more than %d bytes (the workflow env is "+
-			"copied into every job); use fewer jobs or a smaller env", jobsDefMaxBytes))
+		"the compiled workflow encodes to more than %d bytes; use fewer or smaller "+
+			"jobs, or a smaller workflow env (it is copied into every job)", jobsDefMaxBytes))
 }
 
 func buildJobSteps(p parsedJobs, payloads map[string]string, namespace string) []dag.StepDef {
