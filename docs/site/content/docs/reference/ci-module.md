@@ -327,8 +327,8 @@ Allowed keys:
   (the job wins). A step's `env` stays on that step for the worker to apply
   over the job's. A job whose encoded JSON exceeds 64 KiB is a diagnostic,
   because it travels in every task message for that job, and so is a spec
-  whose jobs together exceed 512 KiB, since the workflow `env` is copied
-  into every job and the whole def is stored as one NATS message.
+  whose compiled workflow exceeds 768 KiB of JSON, since the workflow `env`
+  is copied into every job and the whole def is stored as one NATS message.
 - **`on:` is returned, not interpreted.** The compile and validate responses
   carry it as structured JSON, normalised so a single event or a list of
   events becomes a map of event to filter (`on: push` becomes

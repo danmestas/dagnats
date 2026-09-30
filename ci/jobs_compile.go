@@ -25,13 +25,12 @@ const (
 	// here, positioned, rather than at publish with nothing tying it to the
 	// spec.
 	jobPayloadMaxBytes = 64 * 1024
-	// jobsPayloadTotalMaxBytes bounds every job's JSON together. The
-	// workflow env is copied into each job, so the per-job bound alone lets
-	// a spec under the request cap multiply one large value by thousands of
-	// jobs into hundreds of megabytes of def. The def is stored as a single
-	// NATS message (1 MiB max_payload by default); half of that leaves room
-	// for the rest of the def and its envelope.
-	jobsPayloadTotalMaxBytes = 512 * 1024
+	// jobsDefMaxBytes bounds the compiled def's JSON, which is stored as a
+	// single NATS message: 768 KiB leaves headroom under the default 1 MiB
+	// max_payload for the envelope. Without it, the workflow env (copied
+	// into every job) times thousands of jobs passes the per-job bound and
+	// fails only at registration, with nothing tying it to the spec.
+	jobsDefMaxBytes = 768 * 1024
 	// jobsWorkflowTimeoutMax caps the summed workflow timeout. The engine
 	// sets a run deadline with time.Now().Add(timeout) and bounds neither,
 	// so an unbounded sum (many jobs x long timeouts x high retries) could
@@ -102,6 +101,13 @@ func compileJobsDoc(
 		return CompileResult{}, addDiagnostic(diags, Diagnostic{
 			Field: stepFieldFromError(err), Message: err.Error(),
 		})
+	}
+	encoded, err := json.Marshal(def)
+	if err != nil {
+		panic("compileJobsDoc: a validated def must encode: " + err.Error())
+	}
+	if len(encoded) > jobsDefMaxBytes {
+		return CompileResult{}, addDiagnostic(diags, defTooLarge(parsed))
 	}
 	return CompileResult{Workflow: def, On: parsed.on}, nil
 }
@@ -269,13 +275,12 @@ func jobPayloads(
 				id, len(encoded), jobPayloadMaxBytes)))
 			continue
 		}
+		// Each payload appears in the def at least at its own size, so a
+		// sum past the def bound already decides the outcome: stop encoding
+		// rather than build hundreds of megabytes only to reject them.
 		total += len(encoded)
-		if total > jobsPayloadTotalMaxBytes {
-			// Stop encoding: every further job only adds to the overrun.
-			return payloads, addDiagnostic(diags, diagAt(p.jobsKey, "jobs", fmt.Sprintf(
-				"the jobs encode to more than %d bytes together (the workflow env is "+
-					"copied into every job); use fewer jobs or a smaller env",
-				jobsPayloadTotalMaxBytes)))
+		if total > jobsDefMaxBytes {
+			return payloads, addDiagnostic(diags, defTooLarge(p))
 		}
 		payloads[id] = string(encoded)
 	}
@@ -389,6 +394,20 @@ func buildJobPayload(p parsedJobs, job *parsedJob) jobPayload {
 		Name: job.name, Env: env, WorkingDirectory: job.workingDir,
 		Environment: job.environ, Secrets: secrets, Steps: steps,
 	}
+}
+
+// defTooLarge is the one diagnostic for a def over jobsDefMaxBytes, whether
+// caught early by the payload sum or by encoding the finished def.
+func defTooLarge(p parsedJobs) Diagnostic {
+	if p.jobsKey == nil {
+		panic("defTooLarge: a jobs: spec has a jobs key")
+	}
+	if jobsDefMaxBytes <= jobPayloadMaxBytes {
+		panic("defTooLarge: the def bound must exceed the per-job bound")
+	}
+	return diagAt(p.jobsKey, "jobs", fmt.Sprintf(
+		"the compiled workflow encodes to more than %d bytes (the workflow env is "+
+			"copied into every job); use fewer jobs or a smaller env", jobsDefMaxBytes))
 }
 
 func buildJobSteps(p parsedJobs, payloads map[string]string, namespace string) []dag.StepDef {

@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 const testNamespace = "pikchr-studio"
@@ -298,10 +300,56 @@ func TestJobsTotalPayloadBound(t *testing.T) {
 	if len(res.Workflow.Steps) != 0 {
 		t.Fatal("jobs over the total bound must not compile")
 	}
-	requireDiagAt(t, spec, diags, "together", "jobs:")
+	requireDiagAt(t, spec, diags, "compiled workflow encodes", "jobs:")
 	if _, d := compileJobs(t, build(5), testNamespace); len(d) != 0 {
 		t.Fatalf("five jobs sharing the env fit the bound: %+v", d)
 	}
+}
+
+// TestJobPayloadsStopsEarly pins the early exit: once the encoded sum is
+// past the def bound, jobPayloads reports it and encodes no further jobs,
+// so a spec that multiplies its env across thousands of jobs is rejected
+// without first building the whole def.
+func TestJobPayloadsStopsEarly(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("env:\n  BIG: " + strings.Repeat("x", 60000) + "\njobs:\n")
+	for i := 0; i < 100; i++ {
+		b.WriteString(fmt.Sprintf("  j%d:\n    steps:\n      - run: x\n", i))
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(b.String()), &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	parsed, diags := parseJobsSpec(doc.Content[0])
+	if len(diags) != 0 {
+		t.Fatalf("unexpected parse diagnostics: %+v", diags)
+	}
+	payloads, diags := jobPayloads(parsed, nil)
+	if len(diags) != 1 || !strings.Contains(diags[0].Message, "compiled workflow encodes") {
+		t.Fatalf("diags = %+v, want the one def-size diagnostic", diags)
+	}
+	if len(payloads) >= len(parsed.ids)/2 {
+		t.Fatalf("encoded %d of %d jobs; the sum must stop encoding at the bound",
+			len(payloads), len(parsed.ids))
+	}
+}
+
+// TestJobsDefBoundCountsEscaping: ci.job is JSON inside JSON, so every quote
+// in a run: is escaped again in the stored def. Payloads that fit the early
+// sum can still overflow the def; the finished def is what is measured.
+func TestJobsDefBoundCountsEscaping(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("jobs:\n")
+	for i := 0; i < 9; i++ {
+		b.WriteString(fmt.Sprintf("  j%d:\n    steps:\n      - run: '%s'\n",
+			i, strings.Repeat(`"`, 30000)))
+	}
+	spec := b.String()
+	res, diags := compileJobs(t, spec, testNamespace)
+	if len(res.Workflow.Steps) != 0 {
+		t.Fatal("a def over the bound after escaping must not compile")
+	}
+	requireDiagAt(t, spec, diags, "compiled workflow encodes", "jobs:")
 }
 
 // TestJobsWorkflowTimeoutSaturates pins the overflow fix: jobs whose
