@@ -25,6 +25,12 @@ const (
 	// here, positioned, rather than at publish with nothing tying it to the
 	// spec.
 	jobPayloadMaxBytes = 64 * 1024
+	// jobsWorkflowTimeoutMax caps the summed workflow timeout. The engine
+	// sets a run deadline with time.Now().Add(timeout) and bounds neither,
+	// so an unbounded sum (many jobs x long timeouts x high retries) could
+	// overflow there. A year is far past any real spec's total and keeps
+	// that arithmetic safe.
+	jobsWorkflowTimeoutMax = 365 * 24 * time.Hour
 )
 
 // jobStepPayload and jobPayload define the wire shape of Metadata["ci.job"].
@@ -242,11 +248,23 @@ func buildJobPayload(p parsedJobs, job *parsedJob) jobPayload {
 	for key, val := range job.env.plain {
 		env[key] = val
 	}
-	names := map[string]bool{}
-	for _, name := range p.env.secretNames {
-		names[name] = true
+	// Secrets follow the same precedence as plain env: a job-level entry,
+	// plain or secret, replaces a workflow-level one for the same key.
+	// Without this, a workflow secret overridden by a job's plain value
+	// would stay in secrets, and the worker would receive both the literal
+	// and the secret for one variable, one silently clobbering the other.
+	bound := make(map[string]string, len(p.env.secretNames)+len(job.env.secretNames))
+	for key, name := range p.env.secretNames {
+		bound[key] = name
 	}
-	for _, name := range job.env.secretNames {
+	for key := range job.env.plain {
+		delete(bound, key)
+	}
+	for key, name := range job.env.secretNames {
+		bound[key] = name
+	}
+	names := make(map[string]bool, len(bound)+len(job.secrets))
+	for _, name := range bound {
 		names[name] = true
 	}
 	for name := range job.secrets {
@@ -292,10 +310,23 @@ func buildJobSteps(p parsedJobs, payloads map[string]string, namespace string) [
 // sequence with all its retries; the checks shape's fixed 45m would cut a
 // longer job off mid-run. It never drops below the checks default.
 func jobsWorkflowTimeout(p parsedJobs) time.Duration {
+	if len(p.ids) == 0 {
+		panic("jobsWorkflowTimeout: a compiled spec has at least one job")
+	}
 	total := time.Duration(0)
 	for _, id := range p.ids {
 		job := p.jobs[id]
-		total += job.timeout * time.Duration(1+job.retries)
+		if job.timeout <= 0 || job.retries < 0 {
+			panic("jobsWorkflowTimeout: a clean job has a positive timeout and retries >= 0")
+		}
+		// One job's product fits: timeout <= 360m and retries are bounded
+		// by dag.RetryAttemptCountMax, about 2.2e18ns. The SUM across jobs
+		// is what can overflow, so saturate at the ceiling instead.
+		per := job.timeout * time.Duration(1+job.retries)
+		if per >= jobsWorkflowTimeoutMax || total >= jobsWorkflowTimeoutMax-per {
+			return jobsWorkflowTimeoutMax
+		}
+		total += per
 	}
 	if total < workflowTimeout {
 		return workflowTimeout

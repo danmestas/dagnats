@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"gopkg.in/yaml.v3"
 )
 
@@ -205,11 +206,25 @@ func parseJobsEnv(
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key, val := node.Content[i], resolveAlias(node.Content[i+1])
 		entry := field + "." + key.Value
+		if strings.Contains(key.Value, "${{") {
+			diags = addDiagnostic(diags, diagAt(key, field, field+": "+expressionsUnsupported))
+			continue
+		}
 		if val.Kind != yaml.ScalarNode {
 			diags = addDiagnostic(diags, diagAt(val, entry, entry+" must be a string"))
 			continue
 		}
 		if m := secretExpression.FindStringSubmatch(val.Value); m != nil {
+			// The job JSON lists secrets by NAME only, so a worker can bind a
+			// secret to exactly one env var: its own name. KEY: ${{ secrets.OTHER }}
+			// would silently export OTHER instead of KEY, and the step reading
+			// $KEY would see nothing. Refuse it here rather than mis-bind later.
+			if m[1] != key.Value {
+				diags = addDiagnostic(diags, diagAt(val, entry, fmt.Sprintf(
+					"%s: a secret must be bound to an env var of the same name; "+
+						"write %s: ${{ secrets.%s }}", entry, m[1], m[1])))
+				continue
+			}
 			env.secretNames[key.Value] = m[1]
 			continue
 		}
@@ -238,7 +253,7 @@ func parseOn(node *yaml.Node, diags []Diagnostic) (json.RawMessage, []Diagnostic
 	case yaml.SequenceNode:
 		for _, item := range node.Content {
 			item = resolveAlias(item)
-			if item.Kind != yaml.ScalarNode {
+			if item.Kind != yaml.ScalarNode || item.Value == "" {
 				return nil, addDiagnostic(diags, diagAt(item, "on", "on list entries must be event names"))
 			}
 			events[item.Value] = map[string]interface{}{}
@@ -258,9 +273,17 @@ func parseOn(node *yaml.Node, diags []Diagnostic) (json.RawMessage, []Diagnostic
 		return nil, addDiagnostic(diags, diagAt(node, "on",
 			"on must be an event name, a list of event names, or a mapping"))
 	}
+	if len(events) == 0 {
+		return nil, addDiagnostic(diags, diagAt(node, "on", "on must name at least one event"))
+	}
 	raw, err := json.Marshal(events)
 	if err != nil {
 		return nil, addDiagnostic(diags, diagAt(node, "on", "on is not representable as JSON: "+err.Error()))
+	}
+	// "$", "{" and "}" are never escaped by encoding/json, so a plain
+	// substring test on the encoded form finds an expression anywhere in on:.
+	if strings.Contains(string(raw), "${{") {
+		return nil, addDiagnostic(diags, diagAt(node, "on", "on: "+expressionsUnsupported))
 	}
 	return raw, diags
 }
@@ -271,7 +294,7 @@ func parseJobsSpec(doc *yaml.Node) (parsedJobs, []Diagnostic) {
 		panic("parseJobsSpec: doc must be a mapping node")
 	}
 	p := parsedJobs{jobs: map[string]*parsedJob{}}
-	p.env, _ = parseJobsEnv(&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"}, "env", nil)
+	p.env = envValues{plain: map[string]string{}, secretNames: map[string]string{}}
 	var diags []Diagnostic
 	diags = jobsLevelKeys(doc, jobsTopAllowed, "spec", diags)
 	for i := 0; i+1 < len(doc.Content); i += 2 {
@@ -419,6 +442,10 @@ func parseRetries(node *yaml.Node, field string, diags []Diagnostic) (int, []Dia
 	if retries < 0 {
 		return 0, addDiagnostic(diags, diagAt(node, field,
 			fmt.Sprintf("%s must not be negative (%d)", field, retries)))
+	}
+	if retries > dag.RetryAttemptCountMax {
+		return 0, addDiagnostic(diags, diagAt(node, field, fmt.Sprintf(
+			"%s must be at most %d (got %d)", field, dag.RetryAttemptCountMax, retries)))
 	}
 	return retries, diags
 }
