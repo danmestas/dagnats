@@ -333,6 +333,7 @@ func (tp *TaskPublisher) scheduleRateRetry(
 		DurationMs:    durationMs,
 		TaskType:      step.Task,
 		Subject:       tp.StepSubject(step, runID),
+		Metadata:      step.Metadata,
 		Input:         input,
 		WorkflowName:  meta.workflowName,
 		DispatchNonce: meta.nonce,
@@ -371,6 +372,7 @@ func (tp *TaskPublisher) scheduleConcurrencyRetry(
 		DurationMs:    1000,
 		TaskType:      step.Task,
 		Subject:       tp.StepSubject(step, runID),
+		Metadata:      step.Metadata,
 		Input:         input,
 		WorkflowName:  workflowName,
 		DispatchNonce: nonce,
@@ -456,6 +458,7 @@ func (tp *TaskPublisher) doPublish(
 		// new dispatch path that forgets to thread one cannot silently
 		// produce an unverifiable (always-denied) dispatch (#380).
 		DispatchNonce: nonceOrMint(dispatchNonce),
+		Metadata:      step.Metadata,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -528,6 +531,7 @@ func (tp *TaskPublisher) PublishIteration(
 			step.RequiredCapabilities, workflowName, tp.grantPolicy.Load(),
 		),
 		DispatchNonce: nonceOrMint(dispatchNonce),
+		Metadata:      step.Metadata,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

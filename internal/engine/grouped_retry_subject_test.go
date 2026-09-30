@@ -64,7 +64,7 @@ func TestGroupedStepRetriesOnGroupedSubjectUntilRunFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	orch := startGroupedRetryWorkflow(t, nc, js, runID)
+	orch := startGroupedRetryWorkflow(t, nc, js, runID, nil)
 	defer orch.Stop()
 
 	grouped, err := js.PullSubscribe(
@@ -100,9 +100,11 @@ func TestGroupedStepRetriesOnGroupedSubjectUntilRunFails(t *testing.T) {
 }
 
 // startGroupedRetryWorkflow registers a single grouped step with a fast
-// fixed retry policy, starts the orchestrator, and starts one run.
+// fixed retry policy and the given step metadata (nil for none), starts
+// the orchestrator, and starts one run.
 func startGroupedRetryWorkflow(
 	t *testing.T, nc *nats.Conn, js nats.JetStreamContext, runID string,
+	metadata map[string]string,
 ) *Orchestrator {
 	t.Helper()
 	if nc == nil {
@@ -122,6 +124,7 @@ func startGroupedRetryWorkflow(
 		Steps: []dag.StepDef{{
 			ID: "train", Task: "ml-training",
 			Type: dag.StepTypeNormal, WorkerGroup: "gpu",
+			Metadata: metadata,
 		}},
 	}
 	defKV, err := js.KeyValue("workflow_defs")

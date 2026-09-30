@@ -770,6 +770,7 @@ func buildDLQBody(
 		Iteration:    state.Iterations,
 		Input:        input,
 		WorkflowName: wfDef.Name,
+		Metadata:     stepDef.Metadata,
 	}
 	return json.Marshal(payload)
 }

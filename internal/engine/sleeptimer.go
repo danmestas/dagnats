@@ -79,6 +79,11 @@ type TimerMessage struct {
 	// the step never ran again and its run never ended. Additive,
 	// omitempty: see dispatchSubject for the legacy fallback.
 	Subject string `json:"subject,omitempty"`
+	// Metadata is the step's StepDef.Metadata, copied when a re-dispatch
+	// timer is SCHEDULED so the retried task carries it like the first
+	// dispatch did (#732). omitempty: nil for steps without metadata and
+	// for timers that never re-dispatch.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // dispatchSubject returns the subject a dispatch timer re-publishes
@@ -518,6 +523,7 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 		// VerifyDispatch and keeps its control-plane capability.
 		RequiredCapabilities: tm.RequiredCapabilities,
 		DispatchNonce:        nonceOrMint(tm.DispatchNonce),
+		Metadata:             tm.Metadata,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -611,6 +617,7 @@ func (st *SleepTimer) republishTask(
 		// time (#380) so a retried granted step still passes VerifyDispatch.
 		RequiredCapabilities: tm.RequiredCapabilities,
 		DispatchNonce:        nonceOrMint(tm.DispatchNonce),
+		Metadata:             tm.Metadata,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

@@ -129,6 +129,7 @@ func (sr *StickyRouter) PublishTask(
 		Input:         input,
 		WorkflowName:  workflowName,
 		DispatchNonce: dispatchNonce,
+		Metadata:      step.Metadata,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -196,7 +197,8 @@ func (sr *StickyRouter) scheduleSoftFallback(
 		WorkflowName: workflowName,
 		// The fallback goes to the step's NORMAL subject, which for a
 		// grouped step carries the worker group (#721).
-		Subject: fallbackSubject,
+		Subject:  fallbackSubject,
+		Metadata: step.Metadata,
 		// Carry the run-binding nonce so the fallback re-publish (#380)
 		// stays run-bound. Sticky steps carry no control-plane capability,
 		// so no caps need stripping here.

@@ -81,6 +81,11 @@ Response:
 
 The `timeout_ms` field controls how long the bridge waits for a task before returning empty. Maximum is 60 seconds.
 
+`metadata` is the step's own static config (`StepDef.Metadata`), the same
+map a NATS worker reads through `TaskContext.Metadata()`. It is omitted
+when the step declares none. A `jobs:` workflow's job arrives here, as JSON
+under `metadata["ci.job"]` (see the CI module reference).
+
 `traceparent` (and `tracestate`, when present) carry W3C trace context for
 that specific task. Start your execution span as a child of it and your
 worker's spans join the run's trace instead of appearing as disconnected

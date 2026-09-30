@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **Step metadata reaches workers again** (#732). Since 0.0.14 the engine
+  published tasks without `StepDef.Metadata`: the dispatch path that copied
+  it (#450) was replaced in #652 and the copy was lost, so
+  `TaskContext.Metadata()` was empty for every worker, and a `jobs:`
+  workflow's `ci.job` (#728) never arrived. Every dispatch now carries it,
+  including timer-driven retries and the dead-letter body. The HTTP bridge
+  also returns it: `POST /v1/tasks/poll` tasks gain `metadata`, omitted when
+  the step has none.
+
 ## [0.0.21] - 2026-09-30
 
 ### Added

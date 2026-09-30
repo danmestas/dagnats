@@ -44,6 +44,11 @@ type pollResponse struct {
 	// standard propagator.
 	TraceParent string `json:"traceparent,omitempty"`
 	TraceState  string `json:"tracestate,omitempty"`
+	// Metadata is the step's own static config, copied from
+	// TaskPayload.Metadata (StepDef.Metadata), as NATS workers receive
+	// it. A jobs: workflow's job travels here under "ci.job" (#728).
+	// omitempty keeps the response unchanged for steps without it.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // pollTimeoutMaxMs caps the maximum long-poll timeout at 60 seconds.
@@ -614,6 +619,7 @@ func (b *Bridge) processPolledMsg(
 		Input:       payload.Input,
 		TraceParent: traceHdr.Get("traceparent"),
 		TraceState:  traceHdr.Get("tracestate"),
+		Metadata:    payload.Metadata,
 	}
 	return resp, true
 }
