@@ -198,6 +198,10 @@ type Directory struct {
 	// subject state, and re-resolving it per call would cost a
 	// second round trip for a name that never changes.
 	stream jetstream.Stream
+	// now is List()'s clock for the staleness cutoff: time.Now, except
+	// in tests that pin it so a short window does not race the
+	// scheduler.
+	now func() time.Time
 }
 
 // NewDirectory creates a Directory backed by the "workers" KV
@@ -225,7 +229,7 @@ func NewDirectory(js jetstream.JetStream) *Directory {
 				err.Error(),
 		)
 	}
-	return &Directory{kv: kv, stream: stream}
+	return &Directory{kv: kv, stream: stream, now: time.Now}
 }
 
 // registerOwnedTestHook, when non-nil, is called by
@@ -525,6 +529,9 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 	if d.stream == nil {
 		panic("Directory.List: stream must not be nil")
 	}
+	if d.now == nil {
+		panic("Directory.List: now must not be nil")
+	}
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 5*time.Second,
 	)
@@ -534,7 +541,7 @@ func (d *Directory) List() ([]WorkerRegistration, error) {
 		return nil, err
 	}
 	workers := make([]WorkerRegistration, 0, 32)
-	cutoff := time.Now().Add(-MaxWorkerStaleness)
+	cutoff := d.now().Add(-MaxWorkerStaleness)
 	for _, key := range keys {
 		entry, err := d.kv.Get(ctx, key)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {

@@ -5,6 +5,7 @@
 package worker
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -242,6 +243,21 @@ func TestDirectoryListFiltersStaleEntries(t *testing.T) {
 	if err := dir.Register(fresh); err != nil {
 		t.Fatalf("Register fresh: %v", err)
 	}
+
+	// Pin List's clock to the fresh entry's own server timestamp. With
+	// the real clock, a scheduler stall longer than the 50ms window
+	// between Register and List aged the fresh worker out too, and
+	// List returned nothing. Pinned, the fresh entry's age is exactly
+	// zero and the stale one's is at least the sleep above.
+	kv, err := js.KeyValue(context.Background(), "workers")
+	if err != nil {
+		t.Fatalf("workers bucket: %v", err)
+	}
+	freshEntry, err := kv.Get(context.Background(), fresh.WorkerID)
+	if err != nil {
+		t.Fatalf("Get fresh: %v", err)
+	}
+	dir.now = func() time.Time { return freshEntry.Created() }
 
 	workers, err := dir.List()
 	if err != nil {

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
@@ -226,6 +227,7 @@ func TestDirectoryListPropagatesGetError(t *testing.T) {
 	dir := &Directory{
 		kv:     stubKV{getErr: errGetBroke},
 		stream: stubStream{},
+		now:    time.Now,
 	}
 	workers, err := dir.List()
 	if !errors.Is(err, errGetBroke) {
@@ -245,6 +247,7 @@ func TestDirectoryListSkipsNotFoundKeys(t *testing.T) {
 	dir := &Directory{
 		kv:     stubKV{getErr: jetstream.ErrKeyNotFound},
 		stream: stubStream{},
+		now:    time.Now,
 	}
 	workers, err := dir.List()
 	if err != nil {
