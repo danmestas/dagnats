@@ -827,38 +827,52 @@ func TestRESTListRuns(t *testing.T) {
 		context.Background(), "list-runs-test", nil,
 	)
 
-	// Poll until snapshot exists.
+	// Poll the listing itself, not GetRun: a run's snapshot is written
+	// before its creation-order index marker (#659), so GetRun can
+	// already find a run that GET /runs does not list yet. Waiting on
+	// GetRun and then asserting on the listing failed under heavy load.
 	deadline := time.After(5 * time.Second)
 	for {
-		_, err := svc.GetRun(context.Background(), runID)
-		if err == nil {
+		if listRunsContains(t, server.URL, runID) {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("run snapshot did not appear within 5s")
+			t.Fatalf("GET /runs did not list run %s within 5s", runID)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+	// Negative: a run that was never started is not listed.
+	if listRunsContains(t, server.URL, "no-such-run") {
+		t.Fatal("GET /runs listed a run that was never started")
+	}
+}
 
-	// Positive: GET /runs returns 200 with array.
-	resp, err := http.Get(server.URL + "/runs")
+// listRunsContains fetches GET /runs, requires a 200 with a JSON array,
+// and reports whether runID is among the rows.
+func listRunsContains(t *testing.T, baseURL, runID string) bool {
+	t.Helper()
+	if runID == "" {
+		t.Fatal("listRunsContains: runID must not be empty")
+	}
+	resp, err := http.Get(baseURL + "/runs")
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d",
-			resp.StatusCode, http.StatusOK)
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 	var runs []dag.WorkflowRun
 	if err := json.NewDecoder(resp.Body).Decode(&runs); err != nil {
 		t.Fatalf("Decode failed: %v", err)
 	}
-
-	// Negative: list should not be empty.
-	if len(runs) == 0 {
-		t.Fatal("expected at least one run")
+	for _, run := range runs {
+		if run.RunID == runID {
+			return true
+		}
 	}
+	return false
 }
 
 func TestRouteRunByIDRejectsPUT(t *testing.T) {
