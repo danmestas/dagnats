@@ -26,7 +26,9 @@ import (
 func startEmbeddedNATS(t *testing.T) (*server.Server, *nats.Conn) {
 	t.Helper()
 	ns, err := server.NewServer(&server.Options{
-		Port: -1, JetStream: true, StoreDir: t.TempDir(),
+		// Loopback, as in internal/natsutil.StartTestServer: a wildcard
+		// server's port can be taken on 127.0.0.1 by another process.
+		Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("start nats: %v", err)

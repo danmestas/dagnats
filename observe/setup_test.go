@@ -26,6 +26,11 @@ import (
 func startNATS(t *testing.T) (*server.Server, *nats.Conn) {
 	t.Helper()
 	ns, err := server.NewServer(&server.Options{
+		// Loopback, not the wildcard default: on macOS another process can
+		// still bind 127.0.0.1 on a wildcard server's port, and a client
+		// dialing that port then hangs on the wrong listener. See
+		// TestStartNATSOwnsItsLoopbackPort.
+		Host:      "127.0.0.1",
 		Port:      -1,
 		JetStream: true,
 		StoreDir:  t.TempDir(),
