@@ -300,8 +300,9 @@ Allowed keys:
 
 ### How it compiles
 
-- **One step per job.** The step ID is the job id, `DependsOn` is `needs`
-  (a single job id or a list), and `Timeout` comes from `timeout-minutes`
+- **One step per job.** The step ID is the job id (letters, digits, `_`
+  and `-`, not starting with a digit or `-`), `DependsOn` is `needs` (a
+  single job id or a list; repeats are kept once), and `Timeout` comes from `timeout-minutes`
   (a positive integer up to 360; a check's default when absent). `retries`
   is the same fixed-delay shorthand a check has (at most 100,000).
 - **The task type comes from the caller.** Every job compiles to task
@@ -316,9 +317,9 @@ Allowed keys:
   ```json
   {
     "name": "", "env": {"CI": "1"}, "working-directory": "",
-    "environment": "production", "secrets": ["CLOUDFLARE_API_TOKEN"],
+    "environment": "production", "secrets": [],
     "steps": [{"name": "publish", "run": "npx ...", "env": {},
-               "working-directory": ""}]
+               "working-directory": "", "secrets": ["CLOUDFLARE_API_TOKEN"]}]
   }
   ```
 
@@ -345,12 +346,20 @@ env:
   API_KEY: ${{ secrets.PROD_TOKEN }}                            # diagnosed
 ```
 
-The compiler removes the entry from `env` and adds `NAME` to the job's
+The compiler removes the entry from `env` and records `NAME` in a
 `secrets` list. It never sees or stores a secret value, only a name.
-Because the list carries names only, a worker can export each secret under
+Secrets are scoped as in GitHub Actions: one bound in the workflow's or
+the job's `env` goes in the job's `secrets` list, for the worker to export
+to every step; one bound in a step's `env` goes in that step's own
+`secrets` list and reaches that step alone.
+
+Because the lists carry names only, a worker can export each secret under
 exactly one variable name, its own. A different key would silently export
-the secret under the wrong name, so the compiler rejects it. A job-level
-plain value replaces a workflow-level secret with the same key.
+the secret under the wrong name, so the compiler rejects it. For the same
+reason, a variable is either a secret or a plain value within a job: if it
+is bound to a secret at any level (workflow, job, or any of the job's
+steps), a plain value for it anywhere in that job is a diagnostic, so a
+worker is never handed both.
 
 Any other `${{` anywhere is a diagnostic: *"expressions are not supported;
 only ${{ secrets.NAME }} as an env value"*.
@@ -360,9 +369,26 @@ only ${{ secrets.NAME }} as an env value"*.
 These GitHub Actions keys are reported as **not supported**, each with a
 reason, rather than as typos: `uses`, `if`, `strategy`, `matrix`,
 `container`, `services`, `runs-on`, `outputs`, `permissions`, `concurrency`,
-`defaults`, `shell`, `continue-on-error`. YAML merge keys (`<<:`) are also
-rejected in a `jobs:` spec, since their merged fields would otherwise be
-dropped without notice.
+`defaults`, `shell`, `continue-on-error`.
+
+### YAML rules
+
+A `jobs:` spec is stricter YAML than a `checks:` spec:
+
+- **No aliases** (`*name`), and so no merge keys (`<<:`) either. The
+  compiler reads the YAML tree directly, where the YAML library's own
+  alias-expansion limit does not apply, so a small spec of nested aliases
+  could otherwise expand into gigabytes of job JSON.
+- **No `x-` extension keys.** Their usual purpose is holding anchors, which
+  have nothing to refer to them here.
+- **No duplicate keys** in any mapping. The repeat is reported, not
+  silently merged or overwritten.
+- **Env var names** must match `^[A-Za-z_][A-Za-z0-9_]*$`. A key such as
+  `A=B` would otherwise reach the worker's process environment as
+  `A=B=value` and set `A`.
+
+A spec with both `jobs:` and `checks:` gets a single diagnostic saying so,
+and nothing else about the spec is reported until one of them is removed.
 
 ### Diagnostics
 

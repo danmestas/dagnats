@@ -11,8 +11,10 @@
 package ci
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 type diagCase struct {
@@ -116,7 +118,8 @@ func TestJobsDiagnosticsExpressions(t *testing.T) {
 			spec: "jobs:\n  a:\n    env:\n      ${{ secrets.K }}: v\n    steps:\n      - run: x\n",
 			want: "expressions are not supported", marker: "${{ secrets.K }}: v"},
 		{name: "secret bound to a different env var",
-			spec: "jobs:\n  a:\n    env:\n      API_KEY: ${{ secrets.PROD_TOKEN }}\n    steps:\n      - run: x\n",
+			spec: "jobs:\n  a:\n    env:\n      API_KEY: ${{ secrets.PROD_TOKEN }}\n" +
+				"    steps:\n      - run: x\n",
 			want: "bound to an env var of the same name", marker: "${{ secrets.PROD_TOKEN }}"},
 		{name: "expression in on",
 			spec: "on:\n  push:\n    branches: ['${{ x }}']\njobs:\n  a:\n    steps:\n      - run: x\n",
@@ -128,6 +131,86 @@ func TestJobsDiagnosticsExpressions(t *testing.T) {
 			spec: "on: ['']\njobs:\n  a:\n    steps:\n      - run: x\n",
 			want: "on list entries must be event names", marker: "''"},
 	})
+}
+
+// TestJobsDiagnosticsDocument covers the pre-parse screen and the key
+// grammars: aliases, duplicate keys at any level, env var names, job ids.
+func TestJobsDiagnosticsDocument(t *testing.T) {
+	runDiagCases(t, []diagCase{
+		{name: "alias",
+			spec: "jobs:\n  a:\n    name: &n x\n    steps:\n      - run: *n\n",
+			want: "aliases (*n) are not supported", marker: "*n"},
+		{name: "duplicate env key",
+			spec: "jobs:\n  a:\n    env:\n      A: ${{ secrets.A }}\n      A: plain\n" +
+				"    steps:\n      - run: x\n",
+			want: `key "A" is declared twice`, marker: "A: plain"},
+		{name: "duplicate top-level jobs",
+			spec: "jobs:\n  a:\n    steps:\n      - run: x\njobs:\n  b:\n" +
+				"    steps:\n      - run: y\n",
+			want: `key "jobs" is declared twice`, marker: "jobs:\n  b"},
+		{name: "duplicate job id",
+			spec: "jobs:\n  a:\n    steps:\n      - run: x\n  a:\n    steps:\n      - run: y\n",
+			want: `key "a" is declared twice`, marker: "a:\n    steps:\n      - run: y"},
+		{name: "env key with =",
+			spec: "jobs:\n  a:\n    env:\n      A=B: v\n    steps:\n      - run: x\n",
+			want: `env var name "A=B"`, marker: "A=B"},
+		{name: "empty env key",
+			spec: "jobs:\n  a:\n    env:\n      \"\": v\n    steps:\n      - run: x\n",
+			want: `env var name ""`, marker: `""`},
+		{name: "job id with an expression",
+			spec: "jobs:\n  \"${{ secrets.K }}\":\n    steps:\n      - run: x\n",
+			want: "job id", marker: `"${{`},
+		{name: "job id with a dot",
+			spec: "jobs:\n  a.b:\n    steps:\n      - run: x\n",
+			want: `job id "a.b"`, marker: "a.b"},
+	})
+}
+
+// TestJobsNeedsDeduplicated: a repeated need is kept once, so a cycle
+// through it is reported once rather than per repeat.
+func TestJobsNeedsDeduplicated(t *testing.T) {
+	spec := "jobs:\n  a:\n    needs: [a, a]\n    steps:\n      - run: x\n"
+	_, diags := compileJobs(t, spec, testNamespace)
+	cycles := 0
+	for _, d := range diags {
+		if strings.Contains(d.Message, "needs cycle") {
+			cycles++
+		}
+	}
+	if cycles != 1 {
+		t.Fatalf("got %d cycle diagnostics, want exactly 1: %+v", cycles, diags)
+	}
+	ok := "jobs:\n  a:\n    steps:\n      - run: x\n  b:\n    needs: [a, a]\n" +
+		"    steps:\n      - run: y\n"
+	res, diags := compileJobs(t, ok, testNamespace)
+	if len(diags) != 0 || len(res.Workflow.Steps[1].DependsOn) != 1 {
+		t.Fatalf("needs [a, a] must compile to one dependency: %+v", diags)
+	}
+}
+
+// TestJobsAliasBombRejectedFast: nested aliases that would expand past any
+// bound are refused by the pre-parse screen, before anything is encoded.
+func TestJobsAliasBombRejectedFast(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("jobs:\n  j0:\n    name: &B " + strings.Repeat("a", 60000) +
+		"\n    steps: &L\n")
+	for i := 0; i < 2000; i++ {
+		b.WriteString("      - {run: *B}\n")
+	}
+	for i := 1; i < 100; i++ {
+		b.WriteString(fmt.Sprintf("  j%d: {steps: *L}\n", i))
+	}
+	start := time.Now()
+	res, diags := compileJobs(t, b.String(), testNamespace)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("alias bomb took %v to reject; the screen must run before encoding", elapsed)
+	}
+	if len(res.Workflow.Steps) != 0 || len(diags) == 0 {
+		t.Fatal("an aliased spec must be rejected")
+	}
+	if !strings.Contains(diags[0].Message, "aliases") {
+		t.Fatalf("first diagnostic = %q, want the alias rejection", diags[0].Message)
+	}
 }
 
 // TestJobsNamespace covers the caller-supplied namespace.

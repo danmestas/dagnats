@@ -17,8 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself travels as JSON in `Metadata["ci.job"]`. `on:` is returned,
   normalised but uninterpreted, so the caller decides when a workflow
   runs. Secrets are referenced by name only (`${{ secrets.NAME }}` as an
-  entire env value, bound to an env var of the same name); no other
-  expressions are accepted. Unsupported Actions keys such as `runs-on`,
+  entire env value, bound to an env var of the same name) and scoped as in
+  Actions: workflow and job secrets reach every step, a step's secret only
+  that step. No other expressions are accepted. A `jobs:` spec rejects
+  YAML aliases, duplicate keys and malformed env var names. A spec that
+  has both `jobs:` and `checks:` now gets that one diagnostic in place of
+  its other `checks:` diagnostics. Unsupported Actions keys such as `runs-on`,
   `uses`, `if` and `strategy` are reported as unsupported rather than as
   typos, and every diagnostic carries a line and column. `POST
   /v1/ci/compile` and `/v1/ci/validate` accept `task_namespace` and return

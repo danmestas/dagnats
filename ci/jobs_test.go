@@ -114,9 +114,14 @@ func TestJobsIssueExampleCompiles(t *testing.T) {
 		t.Fatalf("a secret expression survived into the job JSON: %s", raw)
 	}
 	job := decodeJob(t, raw)
-	secrets, _ := job["secrets"].([]any)
-	if len(secrets) != 1 || secrets[0] != "CLOUDFLARE_API_TOKEN" {
-		t.Fatalf("secrets = %v, want [CLOUDFLARE_API_TOKEN]", job["secrets"])
+	// The token is bound on the publish step, so only that step sees it.
+	if secrets, _ := job["secrets"].([]any); len(secrets) != 0 {
+		t.Fatalf("job secrets = %v, want none: the secret is step-scoped", secrets)
+	}
+	step := job["steps"].([]any)[0].(map[string]any)
+	stepSecrets, _ := step["secrets"].([]any)
+	if len(stepSecrets) != 1 || stepSecrets[0] != "CLOUDFLARE_API_TOKEN" {
+		t.Fatalf("step secrets = %v, want [CLOUDFLARE_API_TOKEN]", step["secrets"])
 	}
 	if env, _ := job["env"].(map[string]any); env["CI"] != "1" {
 		t.Fatalf("workflow env not merged into job env: %v", job["env"])
@@ -140,7 +145,7 @@ func TestJobsJSONKeysAreTheContract(t *testing.T) {
 		}
 	}
 	step := job["steps"].([]any)[0].(map[string]any)
-	for _, key := range []string{"name", "run", "env", "working-directory"} {
+	for _, key := range []string{"name", "run", "env", "working-directory", "secrets"} {
 		if _, ok := step[key]; !ok {
 			t.Fatalf("step JSON lacks contract key %q: %v", key, step)
 		}
@@ -187,34 +192,46 @@ func TestChecksSpecUnaffected(t *testing.T) {
 	}
 }
 
-// TestJobsSecretPrecedence pins the review fix: a job-level plain value
-// replaces a workflow-level secret for the same key, so the worker never
-// receives both a literal and a secret for one variable.
-func TestJobsSecretPrecedence(t *testing.T) {
-	spec := "env:\n  TOKEN: ${{ secrets.TOKEN }}\n  SHARED: ${{ secrets.SHARED }}\n" +
-		"jobs:\n  a:\n    env:\n      TOKEN: literal\n    steps:\n      - run: x\n"
+// TestJobsSecretOrPlainNotBoth: a variable bound to a secret anywhere in a
+// job may not also be a plain value anywhere in it, since the job JSON would
+// then hand a runner both for one key. Each case is diagnosed at the plain
+// entry; the same secret bound at two levels is not a conflict.
+func TestJobsSecretOrPlainNotBoth(t *testing.T) {
+	const secretK = "${{ secrets.K }}"
+	runDiagCases(t, []diagCase{
+		{name: "workflow secret, job plain",
+			spec: "env:\n  K: " + secretK + "\njobs:\n  a:\n    env:\n      K: lit\n" +
+				"    steps:\n      - run: x\n",
+			want: "either a secret or a plain value", marker: "K: lit"},
+		{name: "job plain, step secret",
+			spec: "jobs:\n  a:\n    env:\n      K: lit\n    steps:\n      - run: x\n" +
+				"        env:\n          K: " + secretK + "\n",
+			want: "either a secret or a plain value", marker: "K: lit"},
+		{name: "one step secret, another step plain",
+			spec: "jobs:\n  a:\n    steps:\n      - run: x\n        env:\n" +
+				"          K: " + secretK + "\n      - run: y\n        env:\n          K: lit\n",
+			want: "either a secret or a plain value", marker: "K: lit"},
+	})
+	spec := "env:\n  K: " + secretK + "\njobs:\n  a:\n    env:\n      K: " + secretK +
+		"\n    steps:\n      - run: x\n"
 	res, diags := compileJobs(t, spec, testNamespace)
 	if len(diags) != 0 {
-		t.Fatalf("unexpected diagnostics: %+v", diags)
+		t.Fatalf("the same secret at two levels is not a conflict: %+v", diags)
 	}
-	job := decodeJob(t, res.Workflow.Steps[0].Metadata["ci.job"])
-	env := job["env"].(map[string]any)
-	if env["TOKEN"] != "literal" {
-		t.Fatalf("job plain value must win: env = %v", env)
-	}
-	secrets := job["secrets"].([]any)
-	if len(secrets) != 1 || secrets[0] != "SHARED" {
-		t.Fatalf("overridden secret must drop out: secrets = %v, want [SHARED]", secrets)
+	secrets := decodeJob(t, res.Workflow.Steps[0].Metadata["ci.job"])["secrets"].([]any)
+	if len(secrets) != 1 || secrets[0] != "K" {
+		t.Fatalf("secrets = %v, want [K] once", secrets)
 	}
 }
 
-// TestJobsSecretsDedupedSortedAndHoisted covers secrets gathered from
-// workflow, job and step level: deduplicated, sorted, never left in env.
-func TestJobsSecretsDedupedSortedAndHoisted(t *testing.T) {
+// TestJobsSecretsScopedAndSorted: workflow and job secrets reach every step
+// through the job's list; a step's secret reaches that step alone. Lists
+// are deduplicated and sorted, and no expression survives into the JSON.
+func TestJobsSecretsScopedAndSorted(t *testing.T) {
 	spec := "env:\n  ZED: ${{ secrets.ZED }}\njobs:\n  a:\n" +
 		"    env:\n      ALPHA: ${{ secrets.ALPHA }}\n    steps:\n" +
-		"      - run: x\n        env:\n          ALPHA: ${{ secrets.ALPHA }}\n" +
-		"          MID: ${{ secrets.MID }}\n"
+		"      - run: x\n        env:\n          MID: ${{ secrets.MID }}\n" +
+		"          ALPHA: ${{ secrets.ALPHA }}\n      - run: y\n"
 	res, diags := compileJobs(t, spec, testNamespace)
 	if len(diags) != 0 {
 		t.Fatalf("unexpected diagnostics: %+v", diags)
@@ -223,14 +240,25 @@ func TestJobsSecretsDedupedSortedAndHoisted(t *testing.T) {
 	if strings.Contains(raw, "${{") {
 		t.Fatalf("a secret expression survived: %s", raw)
 	}
-	got := decodeJob(t, raw)["secrets"].([]any)
-	want := []string{"ALPHA", "MID", "ZED"}
-	if len(got) != len(want) {
-		t.Fatalf("secrets = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("secrets = %v, want %v (deduped, sorted)", got, want)
+	job := decodeJob(t, raw)
+	steps := job["steps"].([]any)
+	for _, tc := range []struct {
+		name string
+		got  any
+		want []string
+	}{
+		{"job", job["secrets"], []string{"ALPHA", "ZED"}},
+		{"step 0", steps[0].(map[string]any)["secrets"], []string{"ALPHA", "MID"}},
+		{"step 1", steps[1].(map[string]any)["secrets"], []string{}},
+	} {
+		got, _ := tc.got.([]any)
+		if len(got) != len(tc.want) {
+			t.Fatalf("%s secrets = %v, want %v", tc.name, tc.got, tc.want)
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Fatalf("%s secrets = %v, want %v (deduped, sorted)", tc.name, got, tc.want)
+			}
 		}
 	}
 }
@@ -252,8 +280,10 @@ func TestJobsPayloadSizeBound(t *testing.T) {
 	}
 }
 
-// TestJobsWorkflowTimeoutSaturates pins the overflow fix: many long jobs
-// at the retry ceiling must cap at the ceiling, never wrap negative.
+// TestJobsWorkflowTimeoutSaturates pins the overflow fix: jobs whose
+// timeouts cap at the ceiling, never wrap negative. The first spec has each
+// job alone over the ceiling; the second has jobs individually under it
+// whose SUM is over, which is the branch that guards the running total.
 func TestJobsWorkflowTimeoutSaturates(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("jobs:\n")
@@ -267,6 +297,16 @@ func TestJobsWorkflowTimeoutSaturates(t *testing.T) {
 	}
 	if res.Workflow.Timeout != jobsWorkflowTimeoutMax {
 		t.Fatalf("timeout = %v, want the %v ceiling", res.Workflow.Timeout, jobsWorkflowTimeoutMax)
+	}
+	// 360m x 1001 attempts is about 0.69 years: under the cap alone, over
+	// it in pairs.
+	pair := "jobs:\n  a:\n    timeout-minutes: 360\n    retries: 1000\n" +
+		"    steps:\n      - run: x\n  b:\n    timeout-minutes: 360\n" +
+		"    retries: 1000\n    steps:\n      - run: y\n"
+	summed, diags := compileJobs(t, pair, testNamespace)
+	if len(diags) != 0 || summed.Workflow.Timeout != jobsWorkflowTimeoutMax {
+		t.Fatalf("summed timeout = %v (%+v), want the %v ceiling",
+			summed.Workflow.Timeout, diags, jobsWorkflowTimeoutMax)
 	}
 	one, _ := compileJobs(t, "jobs:\n  a:\n    steps:\n      - run: x\n", testNamespace)
 	if one.Workflow.Timeout <= 0 || one.Workflow.Timeout >= jobsWorkflowTimeoutMax {

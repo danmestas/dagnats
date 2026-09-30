@@ -35,11 +35,14 @@ const (
 
 // jobStepPayload and jobPayload define the wire shape of Metadata["ci.job"].
 // The JSON keys are a contract with job runners; do not rename them.
+// Secrets are names only, each exported under its own name: the job's list
+// to every step, a step's list to that step alone, as in GitHub Actions.
 type jobStepPayload struct {
 	Name             string            `json:"name"`
 	Run              string            `json:"run"`
 	Env              map[string]string `json:"env"`
 	WorkingDirectory string            `json:"working-directory"`
+	Secrets          []string          `json:"secrets"`
 }
 
 type jobPayload struct {
@@ -69,10 +72,17 @@ func compileJobsDoc(
 		return CompileResult{}, addDiagnostic(diags, diagAt(jobsKey, "jobs",
 			"a spec uses either jobs: or checks:, not both"))
 	}
+	// Aliases and duplicate keys stop compilation before parsing: the
+	// parser must never walk an alias, and with duplicates the parse would
+	// silently keep one declaration of two.
+	if diags = jobsDocumentDiagnostics(doc); len(diags) > 0 {
+		return CompileResult{}, diags
+	}
 	parsed, diags := parseJobsSpec(doc)
 	diags = namespaceDiagnostics(namespace, diags)
 	diags = needsDiagnostics(parsed, diags)
 	diags = cycleDiagnostics(parsed, diags)
+	diags = secretConflictDiagnostics(parsed, diags)
 	payloads, diags := jobPayloads(parsed, diags)
 	if len(diags) > 0 {
 		return CompileResult{}, diags
@@ -92,6 +102,9 @@ func compileJobsDoc(
 // namespaceDiagnostics requires a namespace that is legal both as a worker
 // group (one subject token) and, with the job suffix, as a task type.
 func namespaceDiagnostics(namespace string, diags []Diagnostic) []Diagnostic {
+	if len(diags) > DiagnosticsMax+1 {
+		panic("namespaceDiagnostics: diags exceeds the capped length")
+	}
 	if namespace == "" {
 		return addDiagnostic(diags, Diagnostic{
 			Field:   "task_namespace",
@@ -108,10 +121,19 @@ func namespaceDiagnostics(namespace string, diags []Diagnostic) []Diagnostic {
 			Field: "task_namespace", Message: "invalid task_namespace: " + err.Error(),
 		})
 	}
+	if strings.Contains(namespace, ".") {
+		panic("namespaceDiagnostics: a valid worker group is a single subject token")
+	}
 	return diags
 }
 
 func needsDiagnostics(p parsedJobs, diags []Diagnostic) []Diagnostic {
+	if p.jobs == nil {
+		panic("needsDiagnostics: jobs must not be nil")
+	}
+	if len(p.ids) != len(p.jobs) {
+		panic("needsDiagnostics: ids and jobs must describe the same jobs")
+	}
 	declared := make(map[string]bool, len(p.ids))
 	for _, id := range p.ids {
 		declared[id] = true
@@ -189,6 +211,12 @@ func cycleDiagnostics(p parsedJobs, diags []Diagnostic) []Diagnostic {
 
 // cycleDiagnostic names the path from the gray job back to itself.
 func cycleDiagnostic(p parsedJobs, stack []dfsFrame, closing string) Diagnostic {
+	if len(stack) == 0 {
+		panic("cycleDiagnostic: a back edge needs a non-empty stack")
+	}
+	if closing == "" {
+		panic("cycleDiagnostic: closing must name a job")
+	}
 	start := 0
 	for i, frame := range stack {
 		if frame.id == closing {
@@ -210,10 +238,16 @@ func cycleDiagnostic(p parsedJobs, stack []dfsFrame, closing string) Diagnostic 
 func jobPayloads(
 	p parsedJobs, diags []Diagnostic,
 ) (map[string]string, []Diagnostic) {
+	if p.jobs == nil {
+		panic("jobPayloads: jobs must not be nil")
+	}
 	payloads := make(map[string]string, len(p.ids))
 	for _, id := range p.ids {
 		job := p.jobs[id]
-		if !job.ok {
+		if job == nil {
+			panic("jobPayloads: every id must name a parsed job")
+		}
+		if !job.ok || len(diags) >= DiagnosticsMax {
 			continue
 		}
 		encoded, err := json.Marshal(buildJobPayload(p, job))
@@ -232,8 +266,69 @@ func jobPayloads(
 	return payloads, diags
 }
 
-// buildJobPayload merges workflow env under job env (job wins) and gathers
-// the deduplicated, sorted secret names from every level.
+// secretConflictDiagnostics refuses a variable that is a secret at one
+// level (workflow, job, or any of the job's steps) and a plain value at
+// another, for every job it would reach. The
+// job JSON carries plain env and secret names side by side, so a runner
+// handed both for one key would have to pick a winner by convention;
+// refusing the spec leaves no convention to get wrong.
+func secretConflictDiagnostics(p parsedJobs, diags []Diagnostic) []Diagnostic {
+	if p.jobs == nil {
+		panic("secretConflictDiagnostics: jobs must not be nil")
+	}
+	if len(p.ids) != len(p.jobs) {
+		panic("secretConflictDiagnostics: ids and jobs must describe the same jobs")
+	}
+	for _, id := range p.ids {
+		job := p.jobs[id]
+		levels := make([]envValues, 0, 2+len(job.steps))
+		levels = append(levels, p.env, job.env)
+		for _, step := range job.steps {
+			levels = append(levels, step.env)
+		}
+		secret := map[string]bool{}
+		for _, level := range levels {
+			for key := range level.secretNames {
+				secret[key] = true
+			}
+		}
+		for _, level := range levels {
+			for _, key := range sortedKeys(level.plain) {
+				if secret[key] {
+					// The job must not be encoded: its payload would carry
+					// the very overlap this refuses.
+					job.ok = false
+					diags = addDiagnostic(diags, diagAt(level.keyNodes[key], key,
+						fmt.Sprintf("%s is bound to a secret for job %q and to a plain "+
+							"value here; a variable is either a secret or a plain value", key, id)))
+				}
+			}
+		}
+	}
+	return diags
+}
+
+// sortedKeys returns a map's keys in order, so diagnostics are deterministic.
+func sortedKeys(values map[string]string) []string {
+	if values == nil {
+		panic("sortedKeys: values must not be nil")
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) != len(values) {
+		panic("sortedKeys: every key must be listed once")
+	}
+	return keys
+}
+
+// buildJobPayload merges workflow env under job env (job wins) and lists
+// the secrets bound at workflow or job level, deduplicated and sorted; each
+// step lists its own.
+// secretConflictDiagnostics has already refused any key that is both a
+// secret and a plain value, so the two never overlap here.
 func buildJobPayload(p parsedJobs, job *parsedJob) jobPayload {
 	if job == nil {
 		panic("buildJobPayload: job must not be nil")
@@ -242,43 +337,34 @@ func buildJobPayload(p parsedJobs, job *parsedJob) jobPayload {
 	for key, val := range p.env.plain {
 		env[key] = val
 	}
-	for key := range job.env.secretNames {
-		delete(env, key)
-	}
 	for key, val := range job.env.plain {
 		env[key] = val
 	}
-	// Secrets follow the same precedence as plain env: a job-level entry,
-	// plain or secret, replaces a workflow-level one for the same key.
-	// Without this, a workflow secret overridden by a job's plain value
-	// would stay in secrets, and the worker would receive both the literal
-	// and the secret for one variable, one silently clobbering the other.
-	bound := make(map[string]string, len(p.env.secretNames)+len(job.env.secretNames))
-	for key, name := range p.env.secretNames {
-		bound[key] = name
-	}
-	for key := range job.env.plain {
-		delete(bound, key)
-	}
-	for key, name := range job.env.secretNames {
-		bound[key] = name
-	}
-	names := make(map[string]bool, len(bound)+len(job.secrets))
-	for _, name := range bound {
+	names := make(map[string]bool, len(p.env.secretNames)+len(job.env.secretNames))
+	for name := range p.env.secretNames {
 		names[name] = true
 	}
-	for name := range job.secrets {
+	for name := range job.env.secretNames {
 		names[name] = true
 	}
 	secrets := make([]string, 0, len(names))
 	for name := range names {
+		if _, plain := env[name]; plain {
+			panic("buildJobPayload: a secret must never also be a plain env value")
+		}
 		secrets = append(secrets, name)
 	}
 	sort.Strings(secrets)
 	steps := make([]jobStepPayload, 0, len(job.steps))
 	for _, step := range job.steps {
+		stepSecrets := make([]string, 0, len(step.env.secretNames))
+		for name := range step.env.secretNames {
+			stepSecrets = append(stepSecrets, name)
+		}
+		sort.Strings(stepSecrets)
 		steps = append(steps, jobStepPayload{
-			Name: step.name, Run: step.run, Env: step.env, WorkingDirectory: step.workingDir,
+			Name: step.name, Run: step.run, Env: step.env.plain,
+			WorkingDirectory: step.workingDir, Secrets: stepSecrets,
 		})
 	}
 	return jobPayload{
@@ -290,6 +376,9 @@ func buildJobPayload(p parsedJobs, job *parsedJob) jobPayload {
 func buildJobSteps(p parsedJobs, payloads map[string]string, namespace string) []dag.StepDef {
 	if len(payloads) != len(p.ids) {
 		panic("buildJobSteps: every job must have a payload")
+	}
+	if namespace == "" {
+		panic("buildJobSteps: namespace must not be empty")
 	}
 	steps := make([]dag.StepDef, 0, len(p.ids))
 	for _, id := range p.ids {

@@ -36,6 +36,15 @@ var secretExpression = regexp.MustCompile(
 	`^\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$`,
 )
 
+// envKeyPattern is the env var grammar, shared with secret names. A key such
+// as "A=B" would reach a worker's exec environment as A=B=value and set A,
+// overriding whatever A was bound to, so anything else is refused.
+var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// jobIDPattern is the GitHub Actions job id grammar. A job id becomes a
+// step ID, appears in needs, and is echoed in every diagnostic about it.
+var jobIDPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+
 // unsupportedJobsKeys are Actions keys this spec does not implement. They
 // are named as unsupported, not as typos, at every level they appear.
 var unsupportedJobsKeys = map[string]string{
@@ -55,8 +64,9 @@ var unsupportedJobsKeys = map[string]string{
 }
 
 var (
-	jobsTopAllowed  = []string{"on", "env", "jobs", "name"}
-	jobsJobAllowed  = []string{"name", "needs", "timeout-minutes", "retries", "env", "environment", "working-directory", "steps"}
+	jobsTopAllowed = []string{"on", "env", "jobs", "name"}
+	jobsJobAllowed = []string{"name", "needs", "timeout-minutes", "retries", "env",
+		"environment", "working-directory", "steps"}
 	jobsStepAllowed = []string{"name", "run", "env", "working-directory"}
 )
 
@@ -64,6 +74,9 @@ var (
 // allowed keys plus the unsupported ones, so a key like runs-on is reported
 // once, as unsupported, and never again as an unknown field.
 func jobsKnown(allowed []string) map[string]bool {
+	if len(allowed) == 0 {
+		panic("jobsKnown: allowed must not be empty")
+	}
 	known := make(map[string]bool, len(allowed)+len(unsupportedJobsKeys))
 	for _, key := range allowed {
 		known[key] = true
@@ -71,22 +84,35 @@ func jobsKnown(allowed []string) map[string]bool {
 	for key := range unsupportedJobsKeys {
 		known[key] = true
 	}
+	if len(known) < len(unsupportedJobsKeys) {
+		panic("jobsKnown: the known set must include every unsupported key")
+	}
 	return known
 }
 
 // envValues is one env block after secret extraction: plain entries, plus
-// secretNames mapping each env key that held ${{ secrets.NAME }} to NAME.
-// The secret value never exists here; only its name does.
+// secretNames, the keys that held ${{ secrets.KEY }}. A secret is always
+// bound to the env var of its own name, so the key IS the secret's name.
+// The secret value never exists here; only its name does. keyNodes keeps
+// each key's node so cross-level conflicts can be reported in place.
 type envValues struct {
 	plain       map[string]string
-	secretNames map[string]string
+	secretNames map[string]bool
+	keyNodes    map[string]*yaml.Node
+}
+
+func newEnvValues() envValues {
+	return envValues{
+		plain: map[string]string{}, secretNames: map[string]bool{},
+		keyNodes: map[string]*yaml.Node{},
+	}
 }
 
 type parsedStep struct {
 	name       string
 	run        string
 	workingDir string
-	env        map[string]string
+	env        envValues
 }
 
 type parsedJob struct {
@@ -100,9 +126,7 @@ type parsedJob struct {
 	environ    string
 	workingDir string
 	steps      []parsedStep
-	// secrets collects the names declared at job or step level.
-	secrets map[string]bool
-	ok      bool
+	ok         bool
 }
 
 type parsedJobs struct {
@@ -125,16 +149,6 @@ func mappingKey(node *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
-}
-
-func resolveAlias(node *yaml.Node) *yaml.Node {
-	if node == nil {
-		panic("resolveAlias: node must not be nil")
-	}
-	if node.Kind == yaml.AliasNode && node.Alias != nil {
-		return node.Alias
-	}
-	return node
 }
 
 func diagAt(node *yaml.Node, field, message string) Diagnostic {
@@ -176,7 +190,6 @@ func parseJobsString(
 	if field == "" {
 		panic("parseJobsString: field must not be empty")
 	}
-	node = resolveAlias(node)
 	if node.Kind != yaml.ScalarNode {
 		return "", addDiagnostic(diags, diagAt(node, field, field+" must be a string"))
 	}
@@ -195,8 +208,10 @@ func parseJobsEnv(
 	if field == "" {
 		panic("parseJobsEnv: field must not be empty")
 	}
-	env := envValues{plain: map[string]string{}, secretNames: map[string]string{}}
-	node = resolveAlias(node)
+	if node == nil {
+		panic("parseJobsEnv: node must not be nil")
+	}
+	env := newEnvValues()
 	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
 		return env, diags
 	}
@@ -204,37 +219,53 @@ func parseJobsEnv(
 		return env, addDiagnostic(diags, diagAt(node, field, field+" must be a mapping"))
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		key, val := node.Content[i], resolveAlias(node.Content[i+1])
-		entry := field + "." + key.Value
-		if strings.Contains(key.Value, "${{") {
-			diags = addDiagnostic(diags, diagAt(key, field, field+": "+expressionsUnsupported))
-			continue
-		}
-		if val.Kind != yaml.ScalarNode {
-			diags = addDiagnostic(diags, diagAt(val, entry, entry+" must be a string"))
-			continue
-		}
-		if m := secretExpression.FindStringSubmatch(val.Value); m != nil {
-			// The job JSON lists secrets by NAME only, so a worker can bind a
-			// secret to exactly one env var: its own name. KEY: ${{ secrets.OTHER }}
-			// would silently export OTHER instead of KEY, and the step reading
-			// $KEY would see nothing. Refuse it here rather than mis-bind later.
-			if m[1] != key.Value {
-				diags = addDiagnostic(diags, diagAt(val, entry, fmt.Sprintf(
-					"%s: a secret must be bound to an env var of the same name; "+
-						"write %s: ${{ secrets.%s }}", entry, m[1], m[1])))
-				continue
-			}
-			env.secretNames[key.Value] = m[1]
-			continue
-		}
-		if strings.Contains(val.Value, "${{") {
-			diags = addDiagnostic(diags, diagAt(val, entry, entry+": "+expressionsUnsupported))
-			continue
-		}
-		env.plain[key.Value] = val.Value
+		diags = parseJobsEnvEntry(&env, node.Content[i], node.Content[i+1], field, diags)
 	}
 	return env, diags
+}
+
+// parseJobsEnvEntry validates one key/value pair and files it as plain or
+// secret.
+func parseJobsEnvEntry(
+	env *envValues, key, val *yaml.Node, field string, diags []Diagnostic,
+) []Diagnostic {
+	if env == nil || key == nil || val == nil {
+		panic("parseJobsEnvEntry: env, key and val must not be nil")
+	}
+	if field == "" {
+		panic("parseJobsEnvEntry: field must not be empty")
+	}
+	entry := field + "." + key.Value
+	if strings.Contains(key.Value, "${{") {
+		return addDiagnostic(diags, diagAt(key, field, field+": "+expressionsUnsupported))
+	}
+	if key.Kind != yaml.ScalarNode || !envKeyPattern.MatchString(key.Value) {
+		return addDiagnostic(diags, diagAt(key, field, fmt.Sprintf(
+			"%s: env var name %q must match %s", field, key.Value, envKeyPattern)))
+	}
+	if val.Kind != yaml.ScalarNode {
+		return addDiagnostic(diags, diagAt(val, entry, entry+" must be a string"))
+	}
+	env.keyNodes[key.Value] = key
+	m := secretExpression.FindStringSubmatch(val.Value)
+	if m == nil {
+		if strings.Contains(val.Value, "${{") {
+			return addDiagnostic(diags, diagAt(val, entry, entry+": "+expressionsUnsupported))
+		}
+		env.plain[key.Value] = val.Value
+		return diags
+	}
+	// The job JSON lists secrets by NAME only, so a worker can bind a secret
+	// to exactly one env var: its own name. KEY: ${{ secrets.OTHER }} would
+	// silently export OTHER instead of KEY, and the step reading $KEY would
+	// see nothing. Refuse it here rather than mis-bind later.
+	if m[1] != key.Value {
+		return addDiagnostic(diags, diagAt(val, entry, fmt.Sprintf(
+			"%s: a secret must be bound to an env var of the same name; "+
+				"write %s: ${{ secrets.%s }}", entry, m[1], m[1])))
+	}
+	env.secretNames[key.Value] = true
+	return diags
 }
 
 // parseOn normalises on: to a map of event to filter and returns it as JSON
@@ -242,7 +273,12 @@ func parseJobsEnv(
 // becomes {event: {}}; a null filter (`push:`) becomes {} so consumers see
 // one shape.
 func parseOn(node *yaml.Node, diags []Diagnostic) (json.RawMessage, []Diagnostic) {
-	node = resolveAlias(node)
+	if node == nil {
+		panic("parseOn: node must not be nil")
+	}
+	if node.Kind == yaml.AliasNode {
+		panic("parseOn: aliases are rejected before parsing")
+	}
 	events := map[string]interface{}{}
 	switch node.Kind {
 	case yaml.ScalarNode:
@@ -252,9 +288,9 @@ func parseOn(node *yaml.Node, diags []Diagnostic) (json.RawMessage, []Diagnostic
 		events[node.Value] = map[string]interface{}{}
 	case yaml.SequenceNode:
 		for _, item := range node.Content {
-			item = resolveAlias(item)
 			if item.Kind != yaml.ScalarNode || item.Value == "" {
-				return nil, addDiagnostic(diags, diagAt(item, "on", "on list entries must be event names"))
+				return nil, addDiagnostic(diags, diagAt(item, "on",
+					"on list entries must be event names"))
 			}
 			events[item.Value] = map[string]interface{}{}
 		}
@@ -278,7 +314,8 @@ func parseOn(node *yaml.Node, diags []Diagnostic) (json.RawMessage, []Diagnostic
 	}
 	raw, err := json.Marshal(events)
 	if err != nil {
-		return nil, addDiagnostic(diags, diagAt(node, "on", "on is not representable as JSON: "+err.Error()))
+		return nil, addDiagnostic(diags, diagAt(node, "on",
+			"on is not representable as JSON: "+err.Error()))
 	}
 	// "$", "{" and "}" are never escaped by encoding/json, so a plain
 	// substring test on the encoded form finds an expression anywhere in on:.
@@ -294,7 +331,7 @@ func parseJobsSpec(doc *yaml.Node) (parsedJobs, []Diagnostic) {
 		panic("parseJobsSpec: doc must be a mapping node")
 	}
 	p := parsedJobs{jobs: map[string]*parsedJob{}}
-	p.env = envValues{plain: map[string]string{}, secretNames: map[string]string{}}
+	p.env = newEnvValues()
 	var diags []Diagnostic
 	diags = jobsLevelKeys(doc, jobsTopAllowed, "spec", diags)
 	for i := 0; i+1 < len(doc.Content); i += 2 {
@@ -315,10 +352,12 @@ func parseJobsSpec(doc *yaml.Node) (parsedJobs, []Diagnostic) {
 }
 
 func parseJobsMap(p *parsedJobs, node *yaml.Node, diags []Diagnostic) []Diagnostic {
-	if p == nil {
-		panic("parseJobsMap: p must not be nil")
+	if p == nil || p.jobs == nil {
+		panic("parseJobsMap: p and its jobs map must not be nil")
 	}
-	node = resolveAlias(node)
+	if node == nil {
+		panic("parseJobsMap: node must not be nil")
+	}
 	if node.Kind != yaml.MappingNode {
 		return addDiagnostic(diags, diagAt(node, "jobs", "jobs must be a mapping of job id to job"))
 	}
@@ -328,8 +367,13 @@ func parseJobsMap(p *parsedJobs, node *yaml.Node, diags []Diagnostic) []Diagnost
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		idNode := node.Content[i]
 		if _, dup := p.jobs[idNode.Value]; dup {
-			diags = addDiagnostic(diags, diagAt(idNode, "jobs."+idNode.Value,
-				fmt.Sprintf("job %q is declared twice", idNode.Value)))
+			// jobsDocumentDiagnostics rejects duplicate keys, and compile
+			// stops before parsing when it reports anything.
+			panic("parseJobsMap: duplicate job id reached the parser")
+		}
+		if idNode.Kind != yaml.ScalarNode || !jobIDPattern.MatchString(idNode.Value) {
+			diags = addDiagnostic(diags, diagAt(idNode, "jobs", fmt.Sprintf(
+				"job id %q must match %s", idNode.Value, jobIDPattern)))
 			continue
 		}
 		var job *parsedJob
@@ -345,12 +389,16 @@ func parseJobsMap(p *parsedJobs, node *yaml.Node, diags []Diagnostic) []Diagnost
 func parseJob(
 	idNode, node *yaml.Node, diags []Diagnostic,
 ) (*parsedJob, []Diagnostic) {
+	if idNode == nil || node == nil {
+		panic("parseJob: idNode and node must not be nil")
+	}
+	if !jobIDPattern.MatchString(idNode.Value) {
+		panic("parseJob: the caller validates the job id")
+	}
 	job := &parsedJob{
 		idNode: idNode, timeout: defaultCheckTimeout,
-		secrets: map[string]bool{},
-		env:     envValues{plain: map[string]string{}, secretNames: map[string]string{}},
+		env: newEnvValues(),
 	}
-	node = resolveAlias(node)
 	field := "jobs." + idNode.Value
 	if node.Kind != yaml.MappingNode {
 		return job, addDiagnostic(diags, diagAt(node, field, field+" must be a mapping"))
@@ -396,7 +444,12 @@ func parseJobField(
 }
 
 func parseNeeds(node *yaml.Node, field string, diags []Diagnostic) ([]string, []Diagnostic) {
-	node = resolveAlias(node)
+	if node == nil {
+		panic("parseNeeds: node must not be nil")
+	}
+	if field == "" {
+		panic("parseNeeds: field must not be empty")
+	}
 	if node.Kind == yaml.ScalarNode && node.Tag != "!!null" {
 		return []string{node.Value}, diags
 	}
@@ -405,13 +458,18 @@ func parseNeeds(node *yaml.Node, field string, diags []Diagnostic) ([]string, []
 			field+" must be a job id or a list of job ids"))
 	}
 	needs := make([]string, 0, len(node.Content))
+	listed := make(map[string]bool, len(node.Content))
 	for _, item := range node.Content {
-		item = resolveAlias(item)
 		if item.Kind != yaml.ScalarNode {
 			diags = addDiagnostic(diags, diagAt(item, field, field+" entries must be job ids"))
 			continue
 		}
-		needs = append(needs, item.Value)
+		// A repeated need adds no ordering; keep one so a cycle through it
+		// is reported once.
+		if !listed[item.Value] {
+			listed[item.Value] = true
+			needs = append(needs, item.Value)
+		}
 	}
 	return needs, diags
 }
@@ -419,7 +477,12 @@ func parseNeeds(node *yaml.Node, field string, diags []Diagnostic) ([]string, []
 func parseTimeoutMinutes(
 	node *yaml.Node, field string, fallback time.Duration, diags []Diagnostic,
 ) (time.Duration, []Diagnostic) {
-	node = resolveAlias(node)
+	if node == nil {
+		panic("parseTimeoutMinutes: node must not be nil")
+	}
+	if fallback <= 0 {
+		panic("parseTimeoutMinutes: fallback must be positive")
+	}
 	var minutes int
 	if node.Kind != yaml.ScalarNode || node.Tag != "!!int" || node.Decode(&minutes) != nil {
 		return fallback, addDiagnostic(diags, diagAt(node, field,
@@ -434,7 +497,12 @@ func parseTimeoutMinutes(
 }
 
 func parseRetries(node *yaml.Node, field string, diags []Diagnostic) (int, []Diagnostic) {
-	node = resolveAlias(node)
+	if node == nil {
+		panic("parseRetries: node must not be nil")
+	}
+	if field == "" {
+		panic("parseRetries: field must not be empty")
+	}
 	var retries int
 	if node.Kind != yaml.ScalarNode || node.Tag != "!!int" || node.Decode(&retries) != nil {
 		return 0, addDiagnostic(diags, diagAt(node, field, field+" must be an integer"))
@@ -456,7 +524,6 @@ func parseSteps(
 	if job == nil {
 		panic("parseSteps: job must not be nil")
 	}
-	node = resolveAlias(node)
 	if node.Kind != yaml.SequenceNode {
 		return addDiagnostic(diags, diagAt(node, field, field+" must be a list of steps"))
 	}
@@ -477,8 +544,7 @@ func parseStep(
 	if job == nil {
 		panic("parseStep: job must not be nil")
 	}
-	step := parsedStep{env: map[string]string{}}
-	node = resolveAlias(node)
+	step := parsedStep{env: newEnvValues()}
 	if node.Kind != yaml.MappingNode {
 		return step, addDiagnostic(diags, diagAt(node, field, field+" must be a mapping"))
 	}
@@ -497,12 +563,7 @@ func parseStep(
 		case "working-directory":
 			step.workingDir, diags = parseJobsString(val, field+".working-directory", diags)
 		case "env":
-			var env envValues
-			env, diags = parseJobsEnv(val, field+".env", diags)
-			step.env = env.plain
-			for _, name := range env.secretNames {
-				job.secrets[name] = true
-			}
+			step.env, diags = parseJobsEnv(val, field+".env", diags)
 		}
 	}
 	if mappingKey(node, "run") == nil {
