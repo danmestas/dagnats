@@ -30,6 +30,9 @@ type ciRequest struct {
 	Name     string `json:"name"`
 	Spec     string `json:"spec"`
 	Register bool   `json:"register"`
+	// TaskNamespace is required by a jobs: spec (#728): each job compiles to
+	// task "<ns>.job" in worker group <ns>. A checks: spec ignores it.
+	TaskNamespace string `json:"task_namespace,omitempty"`
 }
 
 // ciCompileResponse is the 200 body for POST /v1/ci/compile.
@@ -38,6 +41,9 @@ type ciCompileResponse struct {
 	DefHash    string          `json:"def_hash"`
 	Registered bool            `json:"registered"`
 	Warnings   []dag.Warning   `json:"warnings,omitempty"`
+	// On is a jobs: spec's on: block, normalised and uninterpreted (#728):
+	// the caller decides which events exist and whether a workflow runs.
+	On json.RawMessage `json:"on,omitempty"`
 }
 
 // ciDiagnosticsResponse is the 422 body for POST /v1/ci/compile and the
@@ -45,6 +51,9 @@ type ciCompileResponse struct {
 type ciDiagnosticsResponse struct {
 	Valid       bool            `json:"valid,omitempty"`
 	Diagnostics []ci.Diagnostic `json:"diagnostics"`
+	// On is present only for a valid jobs: spec (#728); a spec with
+	// diagnostics has no trustworthy on: to report.
+	On json.RawMessage `json:"on,omitempty"`
 }
 
 // ciCompileResult is compileRequest's outcome: exactly one of Def (compiled
@@ -54,6 +63,7 @@ type ciDiagnosticsResponse struct {
 // no body (a malformed request, not a diagnosable spec problem).
 type ciCompileResult struct {
 	Def         dag.WorkflowDef
+	On          json.RawMessage
 	Diagnostics []ci.Diagnostic
 	Register    bool
 	status      int
@@ -75,8 +85,14 @@ func compileRequest(r *http.Request) ciCompileResult {
 	if status != 0 {
 		return ciCompileResult{status: status}
 	}
-	def, diags := ci.CompileYAML(req.Name, []byte(req.Spec))
-	return ciCompileResult{Def: def, Diagnostics: diags, Register: req.Register}
+	compiled, diags := ci.CompileYAMLWith(
+		req.Name, []byte(req.Spec),
+		ci.CompileOptions{TaskNamespace: req.TaskNamespace},
+	)
+	return ciCompileResult{
+		Def: compiled.Workflow, On: compiled.On,
+		Diagnostics: diags, Register: req.Register,
+	}
 }
 
 // decodeCIRequestBody reads the request body through a bounded
@@ -133,7 +149,9 @@ func handleCICompile(svc *Service, w http.ResponseWriter, r *http.Request) {
 			ciDiagnosticsResponse{Diagnostics: result.Diagnostics})
 		return
 	}
-	resp := ciCompileResponse{Workflow: result.Def, DefHash: dag.DefHash(result.Def)}
+	resp := ciCompileResponse{
+		Workflow: result.Def, DefHash: dag.DefHash(result.Def), On: result.On,
+	}
 	if result.Register {
 		warnings, err := svc.RegisterWorkflowWithWarnings(r.Context(), result.Def)
 		if err != nil {
@@ -164,6 +182,7 @@ func handleCIValidate(svc *Service, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ciDiagnosticsResponse{
 		Valid:       len(result.Diagnostics) == 0,
 		Diagnostics: result.Diagnostics,
+		On:          result.On,
 	})
 }
 
