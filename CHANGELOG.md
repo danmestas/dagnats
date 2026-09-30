@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.0.21] - 2026-09-30
 
 ### Added
 
@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   /v1/ci/compile` and `/v1/ci/validate` accept `task_namespace` and return
   `on`. In the Go SDK, `ci.CompileYAMLWith` takes the namespace;
   `ci.CompileYAML` is unchanged.
+
+### Changed
+
+- **Dependencies:** `github.com/nats-io/nats.go` 1.54.0 (#727) and
+  `github.com/mark3labs/mcp-go` 1.1.1 (#726).
 
 ## [0.0.20] - 2026-09-23
 
