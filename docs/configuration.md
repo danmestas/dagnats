@@ -21,6 +21,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `nats_jetstream_replicas` | int      | `0` (auto-derive)                                  | `0` (auto-derive)                        |
 | `monitor_port`            | int      | (none)                                             | (none)                                   |
 | `max_store_bytes`         | int64    | `10737418240` (10 GiB)                             | `10737418240` (10 GiB)                   |
+| `max_payload`             | int32    | unset (NATS default, 1 MiB)                        | unset (NATS default, 1 MiB)              |
 | `max_active_runs_per_root` | int     | `100`                                              | `100`                                    |
 | `max_defs_per_root`       | int      | `500`                                              | `500`                                    |
 | `max_generation_depth`    | int      | `3`                                                | `3`                                      |
@@ -36,6 +37,10 @@ Four fields enable self-clustered topology (see [`production.md`](production.md#
 - `nats_cluster_routes` (string list, default `[]`) — Peer URLs (e.g. `nats://node-2:6222`) for embedded cluster mode. Mutually exclusive with `leaf_remotes`. Cap 10 entries.
 - `nats_cluster_auth_token` (string, default `""`) — Optional shared token for cluster route authentication. (Mapped to NATS `Cluster.Username` internally; functions as a shared secret across cluster peers.)
 - `nats_jetstream_replicas` (int, default `0`) — JetStream replication factor override. Valid: `{0, 1, 3, 5}`. `0` means auto-derive from cluster size.
+
+### Message size
+
+`max_payload` (int, bytes) sets the embedded NATS server's `max_payload`, the largest message a client may publish. Unset keeps the nats-server default of 1 MiB (1048576). Raise it when producers publish larger messages, for example `max_payload: 4194304` for 4 MiB. An explicit value must be between 1 and 8388608 (8 MiB); zero, negative or larger values fail config load, because nats-server warns above 8 MB and advises against going higher. Clients learn the limit from the server's INFO, so nothing else needs changing. In a cluster or leaf topology, set the same value on every node.
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 
@@ -54,6 +59,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0`=auto |
 | `DAGNATS_MONITOR_PORT`    | `monitor_port`    | NATS monitoring HTTP port        |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |
+| `DAGNATS_MAX_PAYLOAD`     | `max_payload`     | Bytes, 1 to 8388608 (8 MiB); 0, negative or larger is rejected at load |
 | `DAGNATS_MAX_ACTIVE_RUNS_PER_ROOT` | `max_active_runs_per_root` | Must be a positive integer |
 | `DAGNATS_MAX_DEFS_PER_ROOT` | `max_defs_per_root` | Must be a positive integer |
 | `DAGNATS_MAX_GENERATION_DEPTH` | `max_generation_depth` | Must be a positive integer; clamped to engine ceiling |

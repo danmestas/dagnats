@@ -109,6 +109,11 @@ func printConfigShowOutput(cfg server.Config, loadedPath string) {
 	fmt.Printf("leaf_credentials: %s\n", credsDisplay)
 	fmt.Printf("max_store_bytes:  %d\n",
 		cfg.MaxStoreBytes)
+	payloadDisplay := "(nats default, 1048576)"
+	if cfg.MaxPayload > 0 {
+		payloadDisplay = fmt.Sprintf("%d", cfg.MaxPayload)
+	}
+	fmt.Printf("max_payload:      %s\n", payloadDisplay)
 	printConsoleEnvVars()
 }
 

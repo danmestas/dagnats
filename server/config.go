@@ -44,10 +44,17 @@ const (
 	// 1 GiB is safe for a typical host; tunable via DAGNATS_MAX_MEMORY_BYTES
 	// or the max_memory_bytes config key.
 	defaultMaxMemoryBytes = 1 << 30 // 1 GiB
-	maxLeafRemotes        = 10
-	maxClusterRoutes      = 10
-	maxConfigFileLines    = 300
-	maxWorkerConfigs      = 50
+	// maxPayloadCeiling is the largest max_payload dagnats accepts for the
+	// embedded NATS server (#735). nats-server's hard limit is 64 MB, but it
+	// warns above 8 MB and its docs advise against going higher, so dagnats
+	// refuses anything larger at config load. Unset (0) keeps nats-server's
+	// own 1 MiB default.
+	maxPayloadCeiling = 8 << 20 // 8 MiB
+
+	maxLeafRemotes     = 10
+	maxClusterRoutes   = 10
+	maxConfigFileLines = 300
+	maxWorkerConfigs   = 50
 
 	// Per-runtime bound defaults (ADR-021 Phase A, #378). MaxGenerationDepth
 	// has no const here — its default is engine.MaxNestingDepth so the depth
@@ -93,9 +100,16 @@ type Config struct {
 	// (JetStreamMaxMemory) and is applied as the soft Go memory limit at
 	// startup (#441). Defaults to defaultMaxMemoryBytes; <= 0 disables the
 	// JetStream cap and the Go limit.
-	MaxMemoryBytes int64          `json:"max_memory_bytes"`
-	Workers        []WorkerConfig `json:"workers"`
-	OTLPEndpoint   string         `json:"otlp_endpoint"`
+	MaxMemoryBytes int64 `json:"max_memory_bytes"`
+	// MaxPayload is the embedded NATS server's max_payload in bytes: the
+	// largest message a client may publish (#735). 0 (unset) keeps the
+	// nats-server default of 1 MiB. Set via DAGNATS_MAX_PAYLOAD or the
+	// max_payload config key; an explicit value must be in (0, 8 MiB].
+	// Clients learn the limit from the server INFO, so nothing else needs
+	// configuring.
+	MaxPayload   int32          `json:"max_payload"`
+	Workers      []WorkerConfig `json:"workers"`
+	OTLPEndpoint string         `json:"otlp_endpoint"`
 
 	// RunsMaxAge is the run-retention window for the workflow_runs KV
 	// (#453, #521). It DEFAULTS to DefaultRunsMaxAge (30d): an unconfigured
@@ -291,6 +305,10 @@ func ConfigWithPath(
 	}
 
 	if err := applyRunsMaxAgeEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+
+	if err := applyMaxPayloadEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
 
@@ -605,6 +623,55 @@ func applyMaxStoreBytesEnv(cfg *Config) error {
 	return nil
 }
 
+// applyMaxPayloadEnv resolves DAGNATS_MAX_PAYLOAD into cfg.MaxPayload
+// (#735). Unset leaves whatever the file/default resolved (0 = the
+// nats-server 1 MiB default). An explicit value goes through the same
+// parser as the max_payload config key, so zero, negative, non-integer or
+// over-8-MiB values are a hard config-load error rather than a silent
+// fall-back to 1 MiB.
+func applyMaxPayloadEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyMaxPayloadEnv: cfg is nil")
+	}
+	val := os.Getenv("DAGNATS_MAX_PAYLOAD")
+	if val == "" {
+		return nil
+	}
+	n, err := parseMaxPayload(val)
+	if err != nil {
+		return fmt.Errorf("invalid DAGNATS_MAX_PAYLOAD %q: %w", val, err)
+	}
+	cfg.MaxPayload = n
+	return nil
+}
+
+// parseMaxPayload parses an explicit max_payload value in bytes. It must be
+// a positive integer no larger than maxPayloadCeiling (8 MiB).
+func parseMaxPayload(val string) (int32, error) {
+	n, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("must be an integer byte count: %w", err)
+	}
+	if err := validateMaxPayload(n); err != nil {
+		return 0, err
+	}
+	return int32(n), nil
+}
+
+// validateMaxPayload checks an explicit max_payload byte count: it must be
+// positive and at most maxPayloadCeiling.
+func validateMaxPayload(n int64) error {
+	if n <= 0 {
+		return fmt.Errorf("must be positive, got %d", n)
+	}
+	if n > maxPayloadCeiling {
+		return fmt.Errorf(
+			"%d exceeds the %d-byte (8 MiB) ceiling", n, maxPayloadCeiling,
+		)
+	}
+	return nil
+}
+
 // applyQueueSnapshotIntervalEnv resolves DAGNATS_QUEUE_SNAPSHOT_INTERVAL
 // into cfg.QueueSnapshotInterval (#632) through the SAME validating
 // parser the periodic publisher itself uses (api.ParseQueueSnapshotInterval),
@@ -842,6 +909,12 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			return fmt.Errorf("invalid max_memory_bytes: %w", err)
 		}
 		cfg.MaxMemoryBytes = maxBytes
+	case "max_payload":
+		n, err := parseMaxPayload(val)
+		if err != nil {
+			return fmt.Errorf("invalid max_payload: %w", err)
+		}
+		cfg.MaxPayload = n
 	case "runs_max_age":
 		dur, err := parseRetentionDuration(val)
 		if err != nil {

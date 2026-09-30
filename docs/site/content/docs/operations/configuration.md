@@ -24,6 +24,9 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `leaf_credentials` | string | (none) | (none) |
 | `monitor_port` | int | (none) | (none) |
 | `max_store_bytes` | int64 | `10737418240` (10 GiB) | `10737418240` (10 GiB) |
+| `max_payload` | int32 | unset (NATS default, 1 MiB) | unset (NATS default, 1 MiB) |
+
+`max_payload` sets the embedded NATS server's largest accepted message in bytes. Unset keeps the nats-server default of 1 MiB; raise it (for example to `4194304`, 4 MiB) when producers publish larger messages. Values must be between 1 and 8388608 (8 MiB). Clients learn the limit from the server's INFO. In a cluster or leaf topology, set the same value on every node.
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 
@@ -40,6 +43,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_LEAF_CREDENTIALS` | `leaf_credentials` | Path to NATS credentials file |
 | `DAGNATS_MONITOR_PORT` | `monitor_port` | NATS monitoring HTTP port |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer |
+| `DAGNATS_MAX_PAYLOAD` | `max_payload` | Bytes, 1 to 8388608 (8 MiB); 0, negative or larger is rejected at load |
 
 ### Triggers
 

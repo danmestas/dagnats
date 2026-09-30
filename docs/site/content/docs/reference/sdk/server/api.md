@@ -89,7 +89,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L78-L180>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L85-L194>)
 
 Config holds all server configuration.
 
@@ -112,9 +112,16 @@ type Config struct {
     // (JetStreamMaxMemory) and is applied as the soft Go memory limit at
     // startup (#441). Defaults to defaultMaxMemoryBytes; <= 0 disables the
     // JetStream cap and the Go limit.
-    MaxMemoryBytes int64          `json:"max_memory_bytes"`
-    Workers        []WorkerConfig `json:"workers"`
-    OTLPEndpoint   string         `json:"otlp_endpoint"`
+    MaxMemoryBytes int64 `json:"max_memory_bytes"`
+    // MaxPayload is the embedded NATS server's max_payload in bytes: the
+    // largest message a client may publish (#735). 0 (unset) keeps the
+    // nats-server default of 1 MiB. Set via DAGNATS_MAX_PAYLOAD or the
+    // max_payload config key; an explicit value must be in (0, 8 MiB].
+    // Clients learn the limit from the server INFO, so nothing else needs
+    // configuring.
+    MaxPayload   int32          `json:"max_payload"`
+    Workers      []WorkerConfig `json:"workers"`
+    OTLPEndpoint string         `json:"otlp_endpoint"`
 
     // RunsMaxAge is the run-retention window for the workflow_runs KV
     // (#453, #521). It DEFAULTS to DefaultRunsMaxAge (30d): an unconfigured
@@ -200,7 +207,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L254>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L268>)
 
 ```go
 func ConfigFromEnv() Config
@@ -209,7 +216,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty after resolution. Exits \(via log.Fatalf\) if MaxStoreBytes still resolves to \<= 0 \(e.g. the disk backing DataDir has no space left\) \-\- see ConfigWithPath.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L271-L273>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L285-L287>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -218,7 +225,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty after resolution. Returns an error if MaxStoreBytes still resolves to \<= 0 after the disk\-derived default is applied \(e.g. the disk backing DataDir has no space left\) \-\- that is operator/host state, not a programmer error, so it is reported rather than panicked on. See deriveMaxStoreBytes \(\#687\).
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L190>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L204>)
 
 ```go
 func DefaultConfig() Config
@@ -376,7 +383,7 @@ func DryRunValidate(cfg Config) ([]ValidationResult, bool)
 DryRunValidate checks prerequisites without starting components. Returns validation results and true if all passed.
 
 <a name="WorkerConfig"></a>
-## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L70-L75>)
+## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L77-L82>)
 
 WorkerConfig defines a config\-driven embedded worker handler.
 

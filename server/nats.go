@@ -33,6 +33,15 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		host = "0.0.0.0"
 	}
 
+	// 0 means "unset": keep the nats-server default (1 MiB). Config load
+	// already rejects bad explicit values; this guards a Config built
+	// directly in code (#735).
+	if cfg.MaxPayload != 0 {
+		if err := validateMaxPayload(int64(cfg.MaxPayload)); err != nil {
+			return nil, fmt.Errorf("invalid max_payload: %w", err)
+		}
+	}
+
 	// Apply the soft Go memory limit (GOMEMLIMIT equivalent) so the runtime
 	// GCs harder and returns heap to the OS near the ceiling (#441). Skipped
 	// when GOMEMLIMIT is already set by the operator (their value wins).
@@ -48,6 +57,7 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		StoreDir:           cfg.DataDir,
 		JetStreamMaxStore:  cfg.MaxStoreBytes,
 		JetStreamMaxMemory: cfg.MaxMemoryBytes,
+		MaxPayload:         cfg.MaxPayload,
 		NoLog:              true,
 		NoSigs:             true,
 	}
