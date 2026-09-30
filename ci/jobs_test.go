@@ -12,6 +12,7 @@ package ci
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -277,6 +278,29 @@ func TestJobsPayloadSizeBound(t *testing.T) {
 		strings.Repeat("x", jobPayloadMaxBytes/2) + "\n"
 	if _, d := compileJobs(t, small, testNamespace); len(d) != 0 {
 		t.Fatalf("a job well under the bound was rejected: %+v", d)
+	}
+}
+
+// TestJobsTotalPayloadBound: a workflow env value is copied into every job,
+// so many jobs each under the per-job bound can still add up past the
+// total. That is diagnosed at jobs:, and the same env with few jobs compiles.
+func TestJobsTotalPayloadBound(t *testing.T) {
+	build := func(jobCount int) string {
+		var b strings.Builder
+		b.WriteString("env:\n  BIG: " + strings.Repeat("x", 60000) + "\njobs:\n")
+		for i := 0; i < jobCount; i++ {
+			b.WriteString(fmt.Sprintf("  j%d:\n    steps:\n      - run: x\n", i))
+		}
+		return b.String()
+	}
+	spec := build(20)
+	res, diags := compileJobs(t, spec, testNamespace)
+	if len(res.Workflow.Steps) != 0 {
+		t.Fatal("jobs over the total bound must not compile")
+	}
+	requireDiagAt(t, spec, diags, "together", "jobs:")
+	if _, d := compileJobs(t, build(5), testNamespace); len(d) != 0 {
+		t.Fatalf("five jobs sharing the env fit the bound: %+v", d)
 	}
 }
 

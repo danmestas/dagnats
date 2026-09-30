@@ -25,6 +25,13 @@ const (
 	// here, positioned, rather than at publish with nothing tying it to the
 	// spec.
 	jobPayloadMaxBytes = 64 * 1024
+	// jobsPayloadTotalMaxBytes bounds every job's JSON together. The
+	// workflow env is copied into each job, so the per-job bound alone lets
+	// a spec under the request cap multiply one large value by thousands of
+	// jobs into hundreds of megabytes of def. The def is stored as a single
+	// NATS message (1 MiB max_payload by default); half of that leaves room
+	// for the rest of the def and its envelope.
+	jobsPayloadTotalMaxBytes = 512 * 1024
 	// jobsWorkflowTimeoutMax caps the summed workflow timeout. The engine
 	// sets a run deadline with time.Now().Add(timeout) and bounds neither,
 	// so an unbounded sum (many jobs x long timeouts x high retries) could
@@ -242,6 +249,7 @@ func jobPayloads(
 		panic("jobPayloads: jobs must not be nil")
 	}
 	payloads := make(map[string]string, len(p.ids))
+	total := 0
 	for _, id := range p.ids {
 		job := p.jobs[id]
 		if job == nil {
@@ -260,6 +268,14 @@ func jobPayloads(
 				"job %q encodes to %d bytes, over the %d byte limit",
 				id, len(encoded), jobPayloadMaxBytes)))
 			continue
+		}
+		total += len(encoded)
+		if total > jobsPayloadTotalMaxBytes {
+			// Stop encoding: every further job only adds to the overrun.
+			return payloads, addDiagnostic(diags, diagAt(p.jobsKey, "jobs", fmt.Sprintf(
+				"the jobs encode to more than %d bytes together (the workflow env is "+
+					"copied into every job); use fewer jobs or a smaller env",
+				jobsPayloadTotalMaxBytes)))
 		}
 		payloads[id] = string(encoded)
 	}
@@ -298,9 +314,11 @@ func secretConflictDiagnostics(p parsedJobs, diags []Diagnostic) []Diagnostic {
 					// The job must not be encoded: its payload would carry
 					// the very overlap this refuses.
 					job.ok = false
-					diags = addDiagnostic(diags, diagAt(level.keyNodes[key], key,
-						fmt.Sprintf("%s is bound to a secret for job %q and to a plain "+
-							"value here; a variable is either a secret or a plain value", key, id)))
+					entry := level.field + "." + key
+					diags = addDiagnostic(diags, diagAt(level.keyNodes[key], entry,
+						fmt.Sprintf("%s: %s is bound to a secret elsewhere in job %q; a "+
+							"variable is either a secret or a plain value throughout a job",
+							entry, key, id)))
 				}
 			}
 		}

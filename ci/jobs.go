@@ -96,6 +96,7 @@ func jobsKnown(allowed []string) map[string]bool {
 // The secret value never exists here; only its name does. keyNodes keeps
 // each key's node so cross-level conflicts can be reported in place.
 type envValues struct {
+	field       string
 	plain       map[string]string
 	secretNames map[string]bool
 	keyNodes    map[string]*yaml.Node
@@ -133,6 +134,8 @@ type parsedJobs struct {
 	on   json.RawMessage
 	env  envValues
 	jobs map[string]*parsedJob
+	// jobsKey positions diagnostics about the jobs as a whole.
+	jobsKey *yaml.Node
 	// ids lists every declared job id, including jobs that failed to parse,
 	// so a needs reference to a malformed job is not reported as unknown.
 	ids []string
@@ -212,6 +215,7 @@ func parseJobsEnv(
 		panic("parseJobsEnv: node must not be nil")
 	}
 	env := newEnvValues()
+	env.field = field
 	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
 		return env, diags
 	}
@@ -344,6 +348,7 @@ func parseJobsSpec(doc *yaml.Node) (parsedJobs, []Diagnostic) {
 		case "name":
 			_, diags = parseJobsString(val, "name", diags)
 		case "jobs":
+			p.jobsKey = key
 			diags = parseJobsMap(&p, val, diags)
 		}
 	}
