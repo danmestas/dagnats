@@ -15,8 +15,10 @@ import (
 )
 
 // lookupTimeout bounds the KV read so a slow store cannot stall a poll
-// or a worker's fetch loop; on timeout the task proceeds (fail open).
-const lookupTimeout = 2 * time.Second
+// or a worker's fetch loop; on timeout the task proceeds (fail open). A
+// healthy read takes milliseconds, and a poll may check several tasks
+// in turn, so this stays well under a second.
+const lookupTimeout = 500 * time.Millisecond
 
 // Cancelled reports whether runID's snapshot in the workflow_runs bucket
 // reads cancelled. It fails open: a nil bucket (not provisioned), a

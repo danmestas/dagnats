@@ -133,6 +133,11 @@ func (b *Bridge) withdrawIfRunCancelled(
 	}
 	slog.InfoContext(ctx, "withdrawing claimed task of a cancelled run",
 		"run_id", runID, "step_id", stepID)
+	// End the attempt's log like every other resolve does, so a
+	// logs?follow stream on it gets its eof instead of waiting out
+	// LogFollowDurationMax. "failed" is the existing attempt-ending
+	// marker for an attempt that produced no result.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerFailed)
 	if err := msg.Ack(); err != nil {
 		slog.WarnContext(ctx, "ack withdrawn task failed; it may redeliver",
 			"run_id", runID, "step_id", stepID, "error", err)

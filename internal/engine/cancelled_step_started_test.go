@@ -24,24 +24,26 @@ import (
 )
 
 func TestStepStartedAfterCancelLeavesStepCancelled(t *testing.T) {
-	js, store := startCancelledRun(t, "cancel-started-1", true)
+	js, store := startCancelledRun(t, "cancel-started-1")
 	publishLateStepEvent(t, js, "cancel-started-1", protocol.EventStepStarted)
 	requireStaysCancelled(t, store, "cancel-started-1")
 }
 
 // TestStepQueuedAfterCancelLeavesStepCancelled covers the same hole in
-// handleStepQueued: the engine's own step.queued event, emitted at
-// dispatch, can be processed after a cancel that raced the first enqueue.
+// handleStepQueued. The engine's own step.queued, emitted at dispatch,
+// can land after a cancel that raced the first enqueue. The test sends
+// one deliberately after the cancel so the guard, not the race, decides.
 func TestStepQueuedAfterCancelLeavesStepCancelled(t *testing.T) {
-	js, store := startCancelledRun(t, "cancel-queued-1", false)
+	js, store := startCancelledRun(t, "cancel-queued-1")
 	publishLateStepEvent(t, js, "cancel-queued-1", protocol.EventStepQueued)
 	requireStaysCancelled(t, store, "cancel-queued-1")
 }
 
-// startCancelledRun starts the one grouped step, optionally waits until
-// it is queued, cancels the run and waits until it reads cancelled.
+// startCancelledRun starts the one grouped step, waits until it is
+// queued (so the engine's own step.queued is already processed and cannot
+// race the cancel), cancels the run and waits until it reads cancelled.
 func startCancelledRun(
-	t *testing.T, runID string, waitQueued bool,
+	t *testing.T, runID string,
 ) (nats.JetStreamContext, *SnapshotStore) {
 	t.Helper()
 	if runID == "" {
@@ -62,9 +64,7 @@ func startCancelledRun(
 	orch := startGroupedRetryWorkflow(t, nc, js, runID, nil)
 	t.Cleanup(orch.Stop)
 	store := NewSnapshotStore(jsNew)
-	if waitQueued {
-		waitForStepStatus(t, store, runID, "train", dag.StepStatusQueued, 5*time.Second)
-	}
+	waitForStepStatus(t, store, runID, "train", dag.StepStatusQueued, 5*time.Second)
 	cancel := protocol.NewWorkflowEvent(protocol.EventWorkflowCancelled, runID, nil)
 	data, err := cancel.Marshal()
 	if err != nil {

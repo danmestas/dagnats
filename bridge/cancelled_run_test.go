@@ -29,7 +29,9 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/sdk/httpclient"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -39,6 +41,7 @@ type cancelFixture struct {
 	svc *api.Service
 	ts  *httptest.Server
 	js  jetstream.JetStream
+	nc  *nats.Conn
 }
 
 func newCancelFixture(t *testing.T, workflow string) cancelFixture {
@@ -69,7 +72,7 @@ func newCancelFixture(t *testing.T, workflow string) cancelFixture {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	return cancelFixture{svc: svc, ts: ts, js: js}
+	return cancelFixture{svc: svc, ts: ts, js: js, nc: nc}
 }
 
 // startQueuedRun starts a run and waits until its step is queued, so the
@@ -212,6 +215,13 @@ func TestClaimedTaskOfCancelledRunAnswersConflict(t *testing.T) {
 		t.Fatalf("complete after the conflict = %d, want 404: the task is withdrawn", status)
 	}
 	f.requireStepStatus(t, runID, dag.StepStatusCancelled)
+	// The withdrawn attempt's log ends with an attempt-ending marker, so a
+	// logs?follow stream on it reaches eof instead of hanging.
+	chunks := drainBuildLogs(t, f.nc, runID, "job", 1, 0, 1, 5*time.Second)
+	if chunks[0].Stream != protocol.LogStreamMarker ||
+		string(chunks[0].Data) != protocol.LogMarkerFailed {
+		t.Fatalf("log after withdraw = %+v, want the failed marker", chunks[0])
+	}
 }
 
 // TestCompleteOfCancelledRunIsRefused: a worker that skips heartbeats

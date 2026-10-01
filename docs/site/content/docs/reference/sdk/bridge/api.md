@@ -171,7 +171,7 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L158>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L162>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
@@ -184,7 +184,7 @@ Handler returns an http.Handler with the three bridge routes. The mux routes are
 - POST /v1/tasks/ \(resolve, path includes task ID\)
 
 <a name="Bridge.SetTokenStore"></a>
-### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L185>)
+### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L189>)
 
 ```go
 func (b *Bridge) SetTokenStore(store *workertoken.Store)

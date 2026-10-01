@@ -109,6 +109,10 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 	checkpointKV, _ := js.KeyValue(ctx, "checkpoints")
 	signalKV, _ := js.KeyValue(ctx, "signals")
 	workflowRunsKV, _ := js.KeyValue(ctx, "workflow_runs")
+	if workflowRunsKV == nil {
+		slog.Warn("workflow_runs KV bucket not found" +
+			" — cancelled runs' tasks will still be handed out")
+	}
 	token := os.Getenv("DAGNATS_BRIDGE_TOKEN")
 	if token == "" {
 		// Loud by construction: an operator who forgot to set the
