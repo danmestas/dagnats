@@ -10,6 +10,7 @@ Package httpclient implements the DagNats worker protocol over HTTP. This is the
 
 ## Index
 
+- [Variables](<#variables>)
 - [type Client](<#Client>)
   - [func New\(baseURL string, opts ...Option\) \*Client](<#New>)
   - [func \(c \*Client\) Checkpoint\(ctx context.Context, taskID string, data json.RawMessage\) error](<#Client.Checkpoint>)
@@ -23,8 +24,16 @@ Package httpclient implements the DagNats worker protocol over HTTP. This is the
   - [func WithToken\(token string\) Option](<#WithToken>)
 
 
+## Variables
+
+<a name="ErrRunCancelled"></a>ErrRunCancelled is returned, wrapped, by every resolve call \(Complete, Fail, Pause, Checkpoint\) when the bridge answers 409: the task's run was cancelled and the bridge has withdrawn the task \(\#737\). A worker should stop the work and must not retry; nothing it reports for this task will be recorded. Test with errors.Is.
+
+```go
+var ErrRunCancelled = errors.New("run cancelled")
+```
+
 <a name="Client"></a>
-## type [Client](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L26-L32>)
+## type [Client](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L27-L33>)
 
 Client implements the DagNats worker protocol over HTTP. This is the reference implementation for other language SDKs.
 
@@ -35,7 +44,7 @@ type Client struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L44>)
+### func [New](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L45>)
 
 ```go
 func New(baseURL string, opts ...Option) *Client
@@ -44,7 +53,7 @@ func New(baseURL string, opts ...Option) *Client
 New creates an HTTP client targeting the given base URL. Panics if baseURL is empty.
 
 <a name="Client.Checkpoint"></a>
-### func \(\*Client\) [Checkpoint](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L266-L270>)
+### func \(\*Client\) [Checkpoint](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L267-L271>)
 
 ```go
 func (c *Client) Checkpoint(ctx context.Context, taskID string, data json.RawMessage) error
@@ -53,7 +62,7 @@ func (c *Client) Checkpoint(ctx context.Context, taskID string, data json.RawMes
 Checkpoint saves intermediate state for a task.
 
 <a name="Client.Complete"></a>
-### func \(\*Client\) [Complete](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L204-L208>)
+### func \(\*Client\) [Complete](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L205-L209>)
 
 ```go
 func (c *Client) Complete(ctx context.Context, taskID string, output json.RawMessage) error
@@ -62,7 +71,7 @@ func (c *Client) Complete(ctx context.Context, taskID string, output json.RawMes
 Complete resolves a task as successfully completed.
 
 <a name="Client.Connect"></a>
-### func \(\*Client\) [Connect](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L73-L76>)
+### func \(\*Client\) [Connect](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L74-L77>)
 
 ```go
 func (c *Client) Connect(ctx context.Context, workerID string, taskTypes []string, maxTasks int) error
@@ -71,7 +80,7 @@ func (c *Client) Connect(ctx context.Context, workerID string, taskTypes []strin
 Connect registers a worker with the bridge and starts a background SSE heartbeat reader. The SSE connection stays open until Disconnect is called or ctx is cancelled.
 
 <a name="Client.Disconnect"></a>
-### func \(\*Client\) [Disconnect](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L126>)
+### func \(\*Client\) [Disconnect](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L127>)
 
 ```go
 func (c *Client) Disconnect()
@@ -80,7 +89,7 @@ func (c *Client) Disconnect()
 Disconnect cancels the SSE connection.
 
 <a name="Client.Fail"></a>
-### func \(\*Client\) [Fail](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L223-L227>)
+### func \(\*Client\) [Fail](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L224-L228>)
 
 ```go
 func (c *Client) Fail(ctx context.Context, taskID string, errMsg string) error
@@ -89,7 +98,7 @@ func (c *Client) Fail(ctx context.Context, taskID string, errMsg string) error
 Fail resolves a task as failed with an error message.
 
 <a name="Client.Pause"></a>
-### func \(\*Client\) [Pause](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L243-L249>)
+### func \(\*Client\) [Pause](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L244-L250>)
 
 ```go
 func (c *Client) Pause(ctx context.Context, taskID string, name string, duration time.Duration, checkpoint json.RawMessage) error
@@ -98,7 +107,7 @@ func (c *Client) Pause(ctx context.Context, taskID string, name string, duration
 Pause pauses a task with optional checkpoint, to be resumed after the given duration.
 
 <a name="Client.Poll"></a>
-### func \(\*Client\) [Poll](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L144-L149>)
+### func \(\*Client\) [Poll](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L145-L150>)
 
 ```go
 func (c *Client) Poll(ctx context.Context, taskTypes []string, maxTasks int, timeout time.Duration) ([]protocol.TaskPayload, error)
@@ -107,7 +116,7 @@ func (c *Client) Poll(ctx context.Context, taskTypes []string, maxTasks int, tim
 Poll long\-polls for available tasks. Returns an empty slice on timeout.
 
 <a name="Option"></a>
-## type [Option](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L35>)
+## type [Option](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L36>)
 
 Option configures a Client.
 
@@ -116,7 +125,7 @@ type Option func(*Client)
 ```
 
 <a name="WithToken"></a>
-### func [WithToken](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L38>)
+### func [WithToken](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L39>)
 
 ```go
 func WithToken(token string) Option

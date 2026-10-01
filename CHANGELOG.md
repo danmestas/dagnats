@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **Cancelling a run withdraws its tasks from HTTP workers** (#737).
+  - **Queued tasks:** a task still queued when its run was cancelled used
+    to be handed out by `POST /v1/tasks/poll`, possibly minutes later, run
+    to the end, and show its step as completed under the cancelled run.
+    The bridge now drops such a task when a poll draws it, as native NATS
+    workers already did.
+  - **Claimed tasks:** every resolve action on a claimed task of a
+    cancelled run (`heartbeat` included) answers `409 Conflict` with
+    `run cancelled` and withdraws the task, so a worker knows to stop and
+    nothing it reports is recorded. Go workers on `sdk/httpclient` get
+    `httpclient.ErrRunCancelled`.
+  - **Engine:** a `step.queued` or `step.started` that arrives after its
+    run has finished no longer moves the step. Before, such an event
+    could flip a cancelled step back to queued or running.
+
 ## [0.0.22] - 2026-09-30
 
 ### Fixed

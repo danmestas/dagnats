@@ -134,6 +134,30 @@ Fail with retry-after:
 }
 ```
 
+### Cancelled runs
+
+Cancelling a run withdraws its tasks from HTTP workers:
+
+- **Queued tasks are never handed out.** A poll that draws a task whose
+  run has been cancelled drops it from the queue and returns nothing for
+  it. It does not report the step as started.
+- **Claimed tasks answer `409 Conflict`** with the body `run cancelled`
+  on every resolve action, `heartbeat` included. The task is withdrawn
+  at that point, so a later resolve for it gets `404`, and nothing the
+  worker sends is recorded against the run. Treat the 409 as the signal
+  to stop the work, and do not retry it.
+
+A worker that never heartbeats learns about the cancel when it resolves.
+To stop long work promptly, heartbeat while it runs.
+
+Go workers on `sdk/httpclient` get the 409 as `httpclient.ErrRunCancelled`:
+
+```go
+if err := client.Complete(ctx, taskID, output); errors.Is(err, httpclient.ErrRunCancelled) {
+    // the run was cancelled: discard the result, nothing was recorded
+}
+```
+
 ## Authentication
 
 **No env token = open bridge (dev mode); set it and every worker needs

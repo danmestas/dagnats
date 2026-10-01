@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/runstate"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -1152,28 +1152,10 @@ func (w *Worker) shouldSkipForCancelledRun(runID string) bool {
 		panic("shouldSkipForCancelledRun: counter not initialized; " +
 			"use NewWorker")
 	}
-	if w.workflowRunsKV == nil {
-		return false
-	}
-	const lookupTimeout = 2 * time.Second
-	ctx, cancel := context.WithTimeout(
-		context.Background(), lookupTimeout,
-	)
-	defer cancel()
-	entry, err := w.workflowRunsKV.Get(ctx, "run."+runID)
-	if err != nil {
-		// Missing run / transient error: defensive default is execute.
-		return false
-	}
-	var run dag.WorkflowRun
-	if err := json.Unmarshal(entry.Value(), &run); err != nil {
-		slog.Warn("workflow_runs entry unmarshal failed; proceeding",
-			"error", err,
-			"run_id", runID,
-		)
-		return false
-	}
-	return run.Status == dag.RunStatusCancelled
+	// runstate owns the lookup and its fail-open rule (a nil bucket,
+	// missing run or failed read all proceed), shared with the HTTP
+	// bridge's poll and resolve paths (#737).
+	return runstate.Cancelled(context.Background(), w.workflowRunsKV, runID)
 }
 
 // publishWorkerStatus writes the latest cancelled-skip count to the

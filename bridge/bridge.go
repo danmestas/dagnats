@@ -49,9 +49,13 @@ type Bridge struct {
 	ackMap       *AckMap
 	checkpointKV jetstream.KeyValue
 	signalKV     jetstream.KeyValue
-	token        string
-	tokenStore   *workertoken.Store
-	tracer       trace.Tracer
+	// workflowRunsKV lets dispatch and resolve see that a task's run was
+	// cancelled (#737). Nil when the bucket is not provisioned, which
+	// runstate.Cancelled reads as "not cancelled".
+	workflowRunsKV jetstream.KeyValue
+	token          string
+	tokenStore     *workertoken.Store
+	tracer         trace.Tracer
 
 	// Pre-allocated metric instruments — created once in constructor.
 	requestCount    metric.Int64Counter
@@ -104,6 +108,7 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 	ctx := context.Background()
 	checkpointKV, _ := js.KeyValue(ctx, "checkpoints")
 	signalKV, _ := js.KeyValue(ctx, "signals")
+	workflowRunsKV, _ := js.KeyValue(ctx, "workflow_runs")
 	token := os.Getenv("DAGNATS_BRIDGE_TOKEN")
 	if token == "" {
 		// Loud by construction: an operator who forgot to set the
@@ -125,6 +130,7 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 		ackMap:           NewAckMap(),
 		checkpointKV:     checkpointKV,
 		signalKV:         signalKV,
+		workflowRunsKV:   workflowRunsKV,
 		token:            token,
 		tracer:           otel.Tracer("dagnats/bridge"),
 		requestCount:     reqCount,

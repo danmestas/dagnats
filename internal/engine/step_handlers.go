@@ -373,6 +373,9 @@ func (o *Orchestrator) handleStepStarted(
 		)
 		return nil
 	}
+	if lateEventForTerminalRun(ctx, run, evt) {
+		return nil
+	}
 
 	attemptCountBefore := state.Attempts
 	state.Status = dag.StepStatusRunning
@@ -389,23 +392,57 @@ func (o *Orchestrator) handleStepStarted(
 	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 		return err
 	}
-	// Schedule the per-step watchdog (issue #140). Every
-	// step.started arms a fresh timer; stale fires from prior
-	// attempts are dropped by fireStepTimeout's staleness guard.
-	// Skipping the watchdog on def-load failure is acceptable: the
-	// run is already saved as Running, and the next step.started
-	// (e.g. on retry) will re-arm.
+	return o.armStepWatchdog(ctx, run, evt.StepID, state.Attempts)
+}
+
+// armStepWatchdog schedules the per-step watchdog (issue #140). Every
+// step.started arms a fresh timer; stale fires from prior attempts are
+// dropped by fireStepTimeout's staleness guard. Skipping the watchdog on
+// def-load failure is acceptable: the run is already saved as Running,
+// and the next step.started (e.g. on retry) will re-arm.
+func (o *Orchestrator) armStepWatchdog(
+	ctx context.Context, run dag.WorkflowRun, stepID string, attempts int,
+) error {
+	if stepID == "" {
+		panic("armStepWatchdog: stepID must not be empty")
+	}
+	if attempts < 0 {
+		panic("armStepWatchdog: attempts must not be negative")
+	}
 	wfDef, err := o.loadDef(ctx, run.WorkflowID)
 	if err != nil {
 		return nil
 	}
-	stepDef, found := findStepDef(wfDef, evt.StepID)
+	stepDef, found := findStepDef(wfDef, stepID)
 	if !found || stepDef.Timeout <= 0 {
 		return nil
 	}
-	return o.scheduleStepTimeout(
-		ctx, evt.RunID, evt.StepID, stepDef, state.Attempts,
-	)
+	return o.scheduleStepTimeout(ctx, run.RunID, stepID, stepDef, attempts)
+}
+
+// lateEventForTerminalRun reports, and logs, a step lifecycle event that
+// arrived after its run finished. Such an event must not move the step:
+// a cancelled run marks its in-flight steps Cancelled, and a step.queued
+// or step.started that lands afterwards (the engine's own dispatch event
+// racing the cancel, or a task already handed out) used to flip the step
+// back to Queued or Running under the cancelled run (#737). The same rule
+// handleStepCompleted applies to completions.
+func lateEventForTerminalRun(
+	ctx context.Context, run dag.WorkflowRun, evt protocol.Event,
+) bool {
+	if run.RunID != evt.RunID {
+		panic("lateEventForTerminalRun: event and run must name the same run")
+	}
+	if evt.Type != protocol.EventStepQueued && evt.Type != protocol.EventStepStarted {
+		panic("lateEventForTerminalRun: only step.queued and step.started are guarded here")
+	}
+	if !run.Status.IsTerminal() {
+		return false
+	}
+	slog.InfoContext(ctx, "ignoring step event for terminal run",
+		"event", string(evt.Type), "run_id", evt.RunID, "step_id", evt.StepID,
+		"run_status", run.Status.String())
+	return true
 }
 
 // handleStepQueued is mostly a no-op during normal operation — the
@@ -441,6 +478,9 @@ func (o *Orchestrator) handleStepQueued(
 		state.Status == dag.StepStatusFailed ||
 		state.Status == dag.StepStatusRunning {
 		// Already past Queued — don't roll back.
+		return nil
+	}
+	if lateEventForTerminalRun(ctx, run, evt) {
 		return nil
 	}
 	attemptCountBefore := state.Attempts

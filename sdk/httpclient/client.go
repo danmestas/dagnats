@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -281,6 +282,13 @@ func (c *Client) Checkpoint(
 	return c.resolveExpectOK(ctx, taskID, res)
 }
 
+// ErrRunCancelled is returned, wrapped, by every resolve call (Complete,
+// Fail, Pause, Checkpoint) when the bridge answers 409: the task's run
+// was cancelled and the bridge has withdrawn the task (#737). A worker
+// should stop the work and must not retry; nothing it reports for this
+// task will be recorded. Test with errors.Is.
+var ErrRunCancelled = errors.New("run cancelled")
+
 // resolveExpectOK posts a resolve request and checks for 200 OK.
 func (c *Client) resolveExpectOK(
 	ctx context.Context,
@@ -298,6 +306,9 @@ func (c *Client) resolveExpectOK(
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		return fmt.Errorf("resolve %s: %w", res.Action, ErrRunCancelled)
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(
 			io.LimitReader(resp.Body, 1024),

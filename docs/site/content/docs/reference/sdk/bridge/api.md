@@ -145,7 +145,7 @@ func (am *AckMap) WithLogState(taskID string, fn func(seq uint64, totalBytes int
 WithLogState atomically reads and updates the log\-ingest counters for taskID under AckMap's own mutex \(\#624\). fn receives the current \(seq, totalBytes, truncated\) and returns the updated values, which are written back before the lock releases — so concurrent POST /v1/tasks/\{id\}/logs calls for the same task never race each other's seq assignment or truncation decision. Returns false \(fn not called\) if taskID has no entry — same does\-not\-reap contract as LoadWithTokenID: a resolve racing the reaper must not surface as an ambiguous "not found" to the caller.
 
 <a name="Bridge"></a>
-## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L45-L69>)
+## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L45-L73>)
 
 Bridge is an HTTP\-to\-NATS gateway that lets non\-Go workers interact with DagNats over HTTP. Three deep endpoints expose the full worker lifecycle: connect, poll, and resolve.
 
@@ -160,7 +160,7 @@ type Bridge struct {
 ```
 
 <a name="NewBridge"></a>
-### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L92>)
+### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L96>)
 
 ```go
 func NewBridge(pub *natsutil.TracingPublisher) *Bridge
@@ -171,7 +171,7 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L152>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L158>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
@@ -184,7 +184,7 @@ Handler returns an http.Handler with the three bridge routes. The mux routes are
 - POST /v1/tasks/ \(resolve, path includes task ID\)
 
 <a name="Bridge.SetTokenStore"></a>
-### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L179>)
+### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L185>)
 
 ```go
 func (b *Bridge) SetTokenStore(store *workertoken.Store)

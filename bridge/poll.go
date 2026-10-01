@@ -12,6 +12,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/consumername"
+	"github.com/danmestas/dagnats/internal/runstate"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
@@ -564,7 +565,7 @@ func (b *Bridge) processPolledMsg(
 	if b.ackMap == nil {
 		panic("processPolledMsg: ackMap must not be nil")
 	}
-	payload, ok := decodePolledTask(ctx, msg)
+	payload, ok := b.dispatchablePolledTask(ctx, msg)
 	if !ok {
 		return pollResponse{}, false
 	}
@@ -622,6 +623,36 @@ func (b *Bridge) processPolledMsg(
 		Metadata:    payload.Metadata,
 	}
 	return resp, true
+}
+
+// dispatchablePolledTask decodes msg and withholds it when its run has
+// been cancelled (#737): such a task is acked, which removes it from the
+// work queue for good, and is never handed to a worker or announced with
+// step.started. Without this a queued task outlived its run's cancel and
+// ran to the end on whichever worker polled next.
+func (b *Bridge) dispatchablePolledTask(
+	ctx context.Context, msg jetstream.Msg,
+) (protocol.TaskPayload, bool) {
+	if msg == nil {
+		panic("dispatchablePolledTask: msg must not be nil")
+	}
+	if ctx == nil {
+		panic("dispatchablePolledTask: ctx must not be nil")
+	}
+	payload, ok := decodePolledTask(ctx, msg)
+	if !ok {
+		return payload, false
+	}
+	if !runstate.Cancelled(ctx, b.workflowRunsKV, payload.RunID) {
+		return payload, true
+	}
+	slog.InfoContext(ctx, "withholding task of a cancelled run",
+		"run_id", payload.RunID, "step_id", payload.StepID)
+	if err := msg.Ack(); err != nil {
+		slog.WarnContext(ctx, "ack withheld task failed; it may redeliver",
+			"run_id", payload.RunID, "step_id", payload.StepID, "error", err)
+	}
+	return payload, false
 }
 
 // storeClaimedTask records msg in the ackMap keyed by taskID, tagged

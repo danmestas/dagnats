@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/runstate"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -87,6 +88,10 @@ func (b *Bridge) handleResolve(
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if b.withdrawIfRunCancelled(ctx, taskID, claimingTokenID, msg) {
+		http.Error(w, "run cancelled", http.StatusConflict)
+		return
+	}
 
 	b.requestCount.Add(ctx, 1, routeResolve)
 	slog.InfoContext(ctx, "task resolved",
@@ -105,6 +110,36 @@ func (b *Bridge) handleResolve(
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// withdrawIfRunCancelled withdraws a claimed task whose run has been
+// cancelled (#737) and reports whether it did. Every resolve action asks,
+// heartbeat included: a 409 is the signal a worker acts on to stop the
+// work, and withdrawing (ack, then drop the claim) means no later resolve
+// can record the step. Nothing is published: the engine already finished
+// the run, and a step event would only describe work nobody wants.
+func (b *Bridge) withdrawIfRunCancelled(
+	ctx context.Context, taskID, claimingTokenID string, msg jetstream.Msg,
+) bool {
+	if msg == nil {
+		panic("withdrawIfRunCancelled: msg must not be nil")
+	}
+	if taskID == "" {
+		panic("withdrawIfRunCancelled: taskID must not be empty")
+	}
+	runID, stepID := splitTaskID(taskID)
+	if !runstate.Cancelled(ctx, b.workflowRunsKV, runID) {
+		return false
+	}
+	slog.InfoContext(ctx, "withdrawing claimed task of a cancelled run",
+		"run_id", runID, "step_id", stepID)
+	if err := msg.Ack(); err != nil {
+		slog.WarnContext(ctx, "ack withdrawn task failed; it may redeliver",
+			"run_id", runID, "step_id", stepID, "error", err)
+	}
+	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID, claimingTokenID)
+	return true
 }
 
 // parseResolveRequest validates the resolve JSON body.
