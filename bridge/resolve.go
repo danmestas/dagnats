@@ -469,6 +469,8 @@ func (b *Bridge) extendClaim(taskID string, msg jetstream.Msg) error {
 	if err := msg.InProgress(); err != nil {
 		return err
 	}
+	// A missing entry means the task was already resolved or reaped;
+	// there is no claim left to extend, so the result is ignored.
 	b.ackMap.Touch(taskID)
 	return nil
 }
