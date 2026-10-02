@@ -17,7 +17,8 @@ const (
 	ackMapReapMargin = 30 * time.Second
 
 	// ackMapReapAfter bounds an entry's life to the delivery it
-	// describes. Past AckWait, NATS has redelivered the message, so the
+	// describes. Past AckWait since the claim or the last InProgress
+	// (which Touch records), NATS has redelivered the message, so the
 	// held jetstream.Msg refers to a superseded delivery and acking it
 	// is silently discarded. Keeping the entry beyond this point is not
 	// merely useless, it is misleading.
@@ -47,7 +48,8 @@ const (
 	resolvedTaskMax = 10000
 )
 
-// ackEntry pairs a polled message with its insertion time so the
+// ackEntry pairs a polled message with its last sign of life (the
+// claim, or the latest InProgress via Touch) so the
 // reaper can tell a live delivery from a superseded one, plus the
 // TokenID of the caller that claimed it (#627) so resolve can enforce
 // that only the claiming caller -- or an admin -- may act on it.
@@ -218,6 +220,29 @@ func (am *AckMap) WithLogState(
 	entry.logSeq, entry.logTotalBytes, entry.logTruncated = fn(
 		entry.logSeq, entry.logTotalBytes, entry.logTruncated,
 	)
+	am.entries[taskID] = entry
+	return true
+}
+
+// Touch restarts taskID's reap window and reports whether the entry
+// exists. Call it after every successful msg.InProgress (#741): that
+// call resets NATS's AckWait, so the held delivery stays current and
+// the reap window must count from it, not from the claim. Never
+// creates an entry.
+func (am *AckMap) Touch(taskID string) bool {
+	if am == nil {
+		panic("AckMap.Touch: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.Touch: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok {
+		return false
+	}
+	entry.storedAt = am.now()
 	am.entries[taskID] = entry
 	return true
 }

@@ -332,3 +332,67 @@ func TestAckMapLoadWithTokenIDRoundTrip(t *testing.T) {
 			gotEmpty, ok)
 	}
 }
+
+// TestAckMapTouchKeepsHeartbeatedEntry is the #741 regression: a worker
+// that heartbeats every 20s keeps NATS from redelivering, so its entry
+// must survive a sweep long after the claim. Before Touch, the reap
+// window counted from the claim and the entry vanished at 5m30s.
+func TestAckMapTouchKeepsHeartbeatedEntry(t *testing.T) {
+	clock := newFakeClock()
+	am := newAckMapWithClock(clock.Now)
+
+	msg := &stubMsg{subject: "task.echo.run1"}
+	am.Store("run1.busy", msg, "tok-1")
+	for elapsed := time.Duration(0); elapsed < 2*ackMapReapAfter; elapsed += 20 * time.Second {
+		clock.Advance(20 * time.Second)
+		if !am.Touch("run1.busy") {
+			t.Fatalf("Touch at %s: entry already gone", elapsed)
+		}
+	}
+	// Another claim drives the sweep, as in production.
+	am.Store("run2.other", &stubMsg{subject: "task.echo.run2"}, "")
+
+	got, tokenID, ok := am.LoadWithTokenID("run1.busy")
+	if !ok {
+		t.Fatal("expected heartbeated entry to survive the sweep")
+	}
+	if got != msg || tokenID != "tok-1" {
+		t.Fatal("expected Touch to keep the claimed message and TokenID")
+	}
+}
+
+// TestAckMapReapsEntryThatStopsHeartbeating guards the other side: a
+// worker that heartbeated for a while and then died must still be
+// reaped one window after its last heartbeat, or Touch reopens the leak
+// the reaper closed.
+func TestAckMapReapsEntryThatStopsHeartbeating(t *testing.T) {
+	clock := newFakeClock()
+	am := newAckMapWithClock(clock.Now)
+
+	am.Store("run1.died", &stubMsg{subject: "task.echo.run1"}, "")
+	clock.Advance(ackMapReapAfter / 2)
+	if !am.Touch("run1.died") {
+		t.Fatal("expected Touch to find the live entry")
+	}
+	clock.Advance(ackMapReapAfter + time.Second)
+	am.Store("run2.live", &stubMsg{subject: "task.echo.run2"}, "")
+
+	if _, ok := am.Load("run1.died"); ok {
+		t.Fatal("expected entry to be reaped one window after its last heartbeat")
+	}
+	if am.Count() != 1 {
+		t.Fatalf("expected count to return to 1, got %d", am.Count())
+	}
+}
+
+// TestAckMapTouchMissingEntry pins that Touch never resurrects an entry:
+// a heartbeat for a task already resolved or reaped must not create one.
+func TestAckMapTouchMissingEntry(t *testing.T) {
+	am := NewAckMap()
+	if am.Touch("run1.gone") {
+		t.Fatal("expected Touch on a missing entry to report false")
+	}
+	if am.Count() != 0 {
+		t.Fatalf("expected Touch not to create an entry, got count %d", am.Count())
+	}
+}

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A heartbeating HTTP worker keeps its task past 5m30s** (#741). The
+  bridge dropped a claimed task from its in-flight map 5m30s after the
+  claim, even while the worker heartbeated, so the next claim's sweep
+  made every later `heartbeat`, log upload or `complete` answer
+  `404 task not found`, and NATS redelivered the task to run again.
+  Every action that extends the claim (`heartbeat`, `stream`,
+  `checkpoint`, `send_signal`, `wait_signal`) now restarts that window,
+  so only a worker that stops extending its claim loses the task.
+
 ## [0.0.23] - 2026-10-01
 
 ### Fixed

@@ -927,6 +927,75 @@ func TestResolveHeartbeatExtendsDeadline(t *testing.T) {
 	}
 }
 
+// TestResolveAfterLongExtendedClaim is the #741 end-to-end regression:
+// a worker that keeps extending its claim (heartbeat, stream, checkpoint,
+// send_signal all call InProgress) for longer than the reap window must
+// still resolve its task after another claim sweeps the ack map. The
+// ack map runs on a fake clock; NATS AckWait runs on the wall clock and
+// never expires during the test, exactly like a live heartbeat loop.
+func TestResolveAfterLongExtendedClaim(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"heartbeat", `{"action":"heartbeat"}`},
+		{"stream", `{"action":"stream","data":{"line":"tick"}}`},
+		{"checkpoint", `{"action":"checkpoint","data":{"progress":50}}`},
+		{"send_signal", `{"action":"send_signal","run_id":"run-other","name":"tick","data":{}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, nc := natsutil.StartTestServer(t)
+			err := natsutil.SetupAll(nc, natsutil.WithKVBuckets(
+				natsutil.KVConfig{Bucket: "checkpoints"},
+				natsutil.KVConfig{Bucket: "signals"},
+			))
+			if err != nil {
+				t.Fatalf("SetupAll failed: %v", err)
+			}
+			b := newTestBridge(t, nc)
+			clock := newFakeClock()
+			b.ackMap = newAckMapWithClock(clock.Now)
+			ts := httptest.NewServer(b.Handler())
+			defer ts.Close()
+
+			taskID := publishAndPollTask(t, nc, b, ts, "run-long", "step-long")
+			for elapsed := time.Duration(0); elapsed < 2*ackMapReapAfter; elapsed += 20 * time.Second {
+				clock.Advance(20 * time.Second)
+				if code := postResolve(t, ts, taskID, tc.body); code != http.StatusOK {
+					t.Fatalf("%s at %s: expected 200, got %d", tc.name, elapsed, code)
+				}
+			}
+			// Any other claim sweeps the ack map.
+			publishAndPollTask(t, nc, b, ts, "run-next", "step-next")
+
+			body := `{"action":"complete","output":{"result":"ok"}}`
+			if code := postResolve(t, ts, taskID, body); code != http.StatusOK {
+				t.Fatalf("complete after long %s: expected 200, got %d", tc.name, code)
+			}
+			consumeHistoryEvent(
+				t, nc, "run-long", protocol.EventStepCompleted, 2*time.Second,
+			)
+		})
+	}
+}
+
+// postResolve posts body to taskID's resolve endpoint and returns the
+// status code.
+func postResolve(t *testing.T, ts *httptest.Server, taskID, body string) int {
+	t.Helper()
+	resp, err := http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
 func TestResolveStreamPublishesData(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
