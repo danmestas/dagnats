@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	// Embedded so a named cron zone resolves the same on every host,
+	// including minimal images that ship no zoneinfo (alpine, scratch).
+	_ "time/tzdata"
 
 	"github.com/danmestas/dagnats/internal/cronexpr"
 )
@@ -52,6 +55,13 @@ func validateSleepStep(step StepDef) error {
 			return fmt.Errorf(
 				"step %q: invalid sleep cron: %w", step.ID, err)
 		}
+		// A static zone is knowable now; an input-path zone is not.
+		if cfg.CronTimezone != "" {
+			if _, err := time.LoadLocation(cfg.CronTimezone); err != nil {
+				return fmt.Errorf(
+					"step %q: invalid sleep cron_timezone: %w", step.ID, err)
+			}
+		}
 		return nil
 	case cfg.UntilInputPath != "":
 		// Non-emptiness is guaranteed by the parse-time form count; the
@@ -99,6 +109,9 @@ func ResolveSleepDuration(
 			"sleep config must set exactly one of duration, cron, "+
 				"until_input_path; got %d", n)
 	}
+	if err := cfg.checkCronZoneFields(); err != nil {
+		return 0, err
+	}
 
 	var (
 		resolved time.Duration
@@ -106,7 +119,14 @@ func ResolveSleepDuration(
 	)
 	switch {
 	case cfg.Cron != "":
-		resolved, err = resolveCronSleep(cfg.Cron, now)
+		// A zone that does not resolve falls back to UTC rather than
+		// failing the step; CronSleepLocation's error lets the caller
+		// report the fallback.
+		loc, zoneErr := CronSleepLocation(cfg, runInput)
+		if zoneErr != nil {
+			loc = time.UTC
+		}
+		resolved, err = resolveCronSleep(cfg.Cron, now, loc)
 	case cfg.UntilInputPath != "":
 		resolved, err = resolveUntilSleep(cfg.UntilInputPath, runInput, now)
 	default:
@@ -128,21 +148,89 @@ func ResolveSleepDuration(
 	return resolved, nil
 }
 
+// CronSleepLocation returns the zone a Cron sleep is evaluated in: the
+// static CronTimezone, the zone named at CronTimezoneInputPath in the
+// run input, or UTC when neither is set. The location is never nil.
+// When a named zone cannot be resolved it is UTC and the error says
+// why, so the caller can log the fallback: a recipient's bad timezone
+// should shift their delivery, not fail their run.
+func CronSleepLocation(
+	cfg SleepConfig, runInput json.RawMessage,
+) (*time.Location, error) {
+	if cfg.Cron == "" {
+		panic("CronSleepLocation: cfg must be a cron sleep")
+	}
+	if err := cfg.checkCronZoneFields(); err != nil {
+		return time.UTC, err
+	}
+
+	name := cfg.CronTimezone
+	if cfg.CronTimezoneInputPath != "" {
+		resolved, err := cronZoneFromInput(cfg.CronTimezoneInputPath, runInput)
+		if err != nil {
+			return time.UTC, err
+		}
+		name = resolved
+	}
+	if name == "" {
+		return time.UTC, nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC, fmt.Errorf("sleep cron zone %q: %w", name, err)
+	}
+	return loc, nil
+}
+
+// cronZoneFromInput reads a zone name from the run input. A missing
+// path is an error so the fallback to UTC is visible to the caller.
+func cronZoneFromInput(path string, runInput json.RawMessage) (string, error) {
+	if path == "" {
+		panic("cronZoneFromInput: path must not be empty")
+	}
+	// ExtractDotPath panics on nil data, but a run with no input is an
+	// ordinary runtime condition.
+	if len(runInput) == 0 {
+		return "", fmt.Errorf(
+			"sleep cron_timezone_input_path %q: run input is empty", path)
+	}
+	value, err := ExtractDotPath(path, runInput)
+	if err != nil {
+		return "", fmt.Errorf(
+			"sleep cron_timezone_input_path %q: %w", path, err)
+	}
+	name, ok := value.(string)
+	if !ok || name == "" {
+		return "", fmt.Errorf(
+			"sleep cron_timezone_input_path %q: want a zone name, got %v",
+			path, value)
+	}
+	return name, nil
+}
+
 // resolveCronSleep returns the delay until the next occurrence strictly
-// after now.
-func resolveCronSleep(expr string, now time.Time) (time.Duration, error) {
+// after now, matching the expression's fields against wall-clock time
+// in loc. The minute scan in NextN steps through absolute instants, so
+// a DST gap's missing times never match and a repeated hour matches at
+// its first occurrence, with no special cases here.
+func resolveCronSleep(
+	expr string, now time.Time, loc *time.Location,
+) (time.Duration, error) {
 	if expr == "" {
 		panic("resolveCronSleep: expr must not be empty")
 	}
 	if now.IsZero() {
 		panic("resolveCronSleep: now must not be zero")
 	}
+	if loc == nil {
+		panic("resolveCronSleep: loc must not be nil")
+	}
 
 	parsed, err := cronexpr.ParseCron(expr)
 	if err != nil {
 		return 0, fmt.Errorf("sleep cron %q: %w", expr, err)
 	}
-	next := parsed.NextN(now, 1)
+	next := parsed.NextN(now.In(loc), 1)
 	if len(next) == 0 {
 		return 0, fmt.Errorf(
 			"sleep cron %q: no next occurrence after %s",

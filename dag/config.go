@@ -14,10 +14,19 @@ import (
 // UntilInputPath defer it to dispatch: Cron sleeps until the next
 // occurrence strictly after dispatch, UntilInputPath reads a deadline
 // from the run input (an RFC3339 instant or integer milliseconds).
+//
+// CronTimezone and CronTimezoneInputPath name the zone a Cron sleep is
+// evaluated in, statically or from the run input. They modify the Cron
+// form rather than being forms of their own, so at most one may be set
+// and only alongside Cron. With neither, the zone is UTC: a host's
+// local zone would make the same def fire at different instants on
+// different machines.
 type SleepConfig struct {
-	Duration       time.Duration `json:"duration,omitempty"`
-	Cron           string        `json:"cron,omitempty"`
-	UntilInputPath string        `json:"until_input_path,omitempty"`
+	Duration              time.Duration `json:"duration,omitempty"`
+	Cron                  string        `json:"cron,omitempty"`
+	UntilInputPath        string        `json:"until_input_path,omitempty"`
+	CronTimezone          string        `json:"cron_timezone,omitempty"`
+	CronTimezoneInputPath string        `json:"cron_timezone_input_path,omitempty"`
 }
 
 // formCount reports how many of the three mutually-exclusive forms are
@@ -140,7 +149,31 @@ func ParseSleepConfig(step StepDef) (SleepConfig, error) {
 			step.ID, n,
 		)
 	}
+	if err := cfg.checkCronZoneFields(); err != nil {
+		return SleepConfig{}, fmt.Errorf("step %q: %w", step.ID, err)
+	}
 	return cfg, nil
+}
+
+// checkCronZoneFields rejects a zone modifier without the Cron form it
+// modifies, and a zone given both statically and by input path.
+func (c SleepConfig) checkCronZoneFields() error {
+	hasStatic := c.CronTimezone != ""
+	hasPath := c.CronTimezoneInputPath != ""
+	if !hasStatic && !hasPath {
+		return nil
+	}
+	if c.Cron == "" {
+		return fmt.Errorf(
+			"sleep cron_timezone and cron_timezone_input_path " +
+				"require cron")
+	}
+	if hasStatic && hasPath {
+		return fmt.Errorf(
+			"sleep config must set at most one of cron_timezone, " +
+				"cron_timezone_input_path")
+	}
+	return nil
 }
 
 // ParseSubWorkflowConfig extracts SubWorkflowConfig from a

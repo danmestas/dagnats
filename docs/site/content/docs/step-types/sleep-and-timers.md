@@ -60,8 +60,10 @@ Sleep configuration is stored in `StepDef.Config` as `SleepConfig`:
 | `duration` | `time.Duration` | How long to sleep. Must be positive. Fixed when the def is registered. |
 | `cron` | `string` | Sleep until the next occurrence of this 5-field cron expression, strictly after dispatch. |
 | `until_input_path` | `string` | Dot-path into the **run** input naming the deadline. Resolved at dispatch. |
+| `cron_timezone` | `string` | IANA zone the `cron` form is evaluated in, e.g. `America/Chicago`. Validated at registration. |
+| `cron_timezone_input_path` | `string` | Dot-path into the **run** input naming the zone for the `cron` form. Resolved at dispatch. |
 
-Exactly one of the three must be set; a config with zero or more than one is rejected when the workflow def is registered, as is a malformed `cron` expression.
+Exactly one of `duration`, `cron` and `until_input_path` must be set; a config with zero or more than one is rejected when the workflow def is registered, as is a malformed `cron` expression.
 
 `duration` fixes the delay at registration time. `cron` and `until_input_path` defer it to dispatch, which is what makes calendar waits and payload-carried deadlines expressible as sleep steps rather than as a worker that blocks on a task lease.
 
@@ -70,13 +72,24 @@ Exactly one of the three must be set; a config with zero or more than one is rej
 Uses the same 5-field grammar as cron triggers (`*`, `*/N`, `N-M`, comma lists; numeric day-of-week, no symbolic names). All five fields are ANDed, so day-of-month and day-of-week intersect rather than union.
 
 ```go
-// Next Monday at 09:00.
+// Next Monday at 09:00 UTC.
 Config: dag.MarshalConfig(&dag.SleepConfig{Cron: "0 9 * * 1"})
+
+// Next Monday at 09:00 in Chicago.
+Config: dag.MarshalConfig(&dag.SleepConfig{
+	Cron: "0 9 * * 1", CronTimezone: "America/Chicago",
+})
+
+// Next Monday at 09:00 in the zone the run input names, e.g.
+// {"subscriber": {"timezone": "Asia/Tokyo"}}.
+Config: dag.MarshalConfig(&dag.SleepConfig{
+	Cron: "0 9 * * 1", CronTimezoneInputPath: "subscriber.timezone",
+})
 ```
 
-{{< callout type="warning" >}}
-**Sleep cron has no timezone field.** Unlike cron *triggers*, which carry an explicit `Timezone`, a sleep step's cron expression is evaluated in the **orchestrator process's local zone**. `"0 9 * * 1"` means 09:00 wherever the engine runs, not 09:00 UTC. If you need a specific zone, use `until_input_path` with an RFC3339 instant, which carries its own offset.
-{{< /callout >}}
+A cron sleep is evaluated in UTC unless `cron_timezone` or `cron_timezone_input_path` names another zone; at most one of the two may be set, and only with `cron`. The host's local zone is never used, so a def fires at the same instant on every machine. An unknown static zone fails registration. A zone read from the run input can only be checked at dispatch: when the path is missing or names no known zone, the sleep falls back to UTC and the engine logs a warning, rather than failing the run.
+
+Daylight-saving transitions need no special handling: on spring-forward day a time that does not exist (02:30 in Chicago) does not match, and on fall-back day a repeated time matches at its first occurrence.
 
 **`until_input_path` form:**
 

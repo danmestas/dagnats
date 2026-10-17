@@ -16,6 +16,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 
 - [Constants](<#constants>)
 - [func CalculateDelay\(policy RetryPolicy, attempt int\) time.Duration](<#CalculateDelay>)
+- [func CronSleepLocation\(cfg SleepConfig, runInput json.RawMessage\) \(\*time.Location, error\)](<#CronSleepLocation>)
 - [func DefHash\(def WorkflowDef\) string](<#DefHash>)
 - [func DefHashFromVersionKey\(key, name string\) \(hash string, ok bool\)](<#DefHashFromVersionKey>)
 - [func DefVersionKey\(name, hash string\) string](<#DefVersionKey>)
@@ -199,6 +200,15 @@ func CalculateDelay(policy RetryPolicy, attempt int) time.Duration
 
 CalculateDelay returns the delay before the next retry attempt. Attempt is 1\-based \(first retry = attempt 1\).
 
+<a name="CronSleepLocation"></a>
+## func [CronSleepLocation](<https://github.com/danmestas/dagnats/blob/main/dag/sleep.go#L157-L159>)
+
+```go
+func CronSleepLocation(cfg SleepConfig, runInput json.RawMessage) (*time.Location, error)
+```
+
+CronSleepLocation returns the zone a Cron sleep is evaluated in: the static CronTimezone, the zone named at CronTimezoneInputPath in the run input, or UTC when neither is set. The location is never nil. When a named zone cannot be resolved it is UTC and the error says why, so the caller can log the fallback: a recipient's bad timezone should shift their delivery, not fail their run.
+
 <a name="DefHash"></a>
 ## func [DefHash](<https://github.com/danmestas/dagnats/blob/main/dag/hash.go#L31>)
 
@@ -280,7 +290,7 @@ LabelsMatch reports whether every key/value in want is present in have with an e
 want must already be a validated filter \(len\(want\) \<= LabelsCountMax\) \-\- callers run it through ValidateLabels before matching, the same way a run's own Labels are validated before being stored. have is a stored run's Labels and carries the same guarantee from run\-creation time. Both are true invariants by the time a run is filterable, not user input reachable from here, so violations panic rather than silently mismatching.
 
 <a name="MarshalConfig"></a>
-## func [MarshalConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L53>)
+## func [MarshalConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L62>)
 
 ```go
 func MarshalConfig(cfg interface{}) json.RawMessage
@@ -307,7 +317,7 @@ func ResolvePriority(cfg *PriorityConfig, input json.RawMessage) int
 ResolvePriority computes the priority offset from input data.
 
 <a name="ResolveSleepDuration"></a>
-## func [ResolveSleepDuration](<https://github.com/danmestas/dagnats/blob/main/dag/sleep.go#L84-L86>)
+## func [ResolveSleepDuration](<https://github.com/danmestas/dagnats/blob/main/dag/sleep.go#L94-L96>)
 
 ```go
 func ResolveSleepDuration(cfg SleepConfig, runInput json.RawMessage, now time.Time) (time.Duration, error)
@@ -400,7 +410,7 @@ type AgentLoopConfig struct {
 ```
 
 <a name="ParseAgentLoopConfig"></a>
-### func [ParseAgentLoopConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L67-L69>)
+### func [ParseAgentLoopConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L76-L78>)
 
 ```go
 func ParseAgentLoopConfig(step StepDef) (AgentLoopConfig, error)
@@ -482,7 +492,7 @@ type MapConfig struct {
 ```
 
 <a name="ParseMapConfig"></a>
-### func [ParseMapConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L92>)
+### func [ParseMapConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L101>)
 
 ```go
 func ParseMapConfig(step StepDef) (MapConfig, error)
@@ -586,7 +596,7 @@ type PlannerConfig struct {
 ```
 
 <a name="ParsePlannerConfig"></a>
-### func [ParsePlannerConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L201-L203>)
+### func [ParsePlannerConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L234-L236>)
 
 ```go
 func ParsePlannerConfig(step StepDef) (PlannerConfig, error)
@@ -846,22 +856,26 @@ const (
 ```
 
 <a name="SleepConfig"></a>
-## type [SleepConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L17-L21>)
+## type [SleepConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L24-L30>)
 
 SleepConfig holds configuration for sleep steps. Exactly one of the three forms must be set; ParseSleepConfig enforces that so no downstream caller can observe an ambiguous config.
 
 Duration fixes the delay at def\-registration time. Cron and UntilInputPath defer it to dispatch: Cron sleeps until the next occurrence strictly after dispatch, UntilInputPath reads a deadline from the run input \(an RFC3339 instant or integer milliseconds\).
 
+CronTimezone and CronTimezoneInputPath name the zone a Cron sleep is evaluated in, statically or from the run input. They modify the Cron form rather than being forms of their own, so at most one may be set and only alongside Cron. With neither, the zone is UTC: a host's local zone would make the same def fire at different instants on different machines.
+
 ```go
 type SleepConfig struct {
-    Duration       time.Duration `json:"duration,omitempty"`
-    Cron           string        `json:"cron,omitempty"`
-    UntilInputPath string        `json:"until_input_path,omitempty"`
+    Duration              time.Duration `json:"duration,omitempty"`
+    Cron                  string        `json:"cron,omitempty"`
+    UntilInputPath        string        `json:"until_input_path,omitempty"`
+    CronTimezone          string        `json:"cron_timezone,omitempty"`
+    CronTimezoneInputPath string        `json:"cron_timezone_input_path,omitempty"`
 }
 ```
 
 <a name="ParseSleepConfig"></a>
-### func [ParseSleepConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L115>)
+### func [ParseSleepConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L124>)
 
 ```go
 func ParseSleepConfig(step StepDef) (SleepConfig, error)
@@ -1271,7 +1285,7 @@ type SubWorkflowConfig struct {
 ```
 
 <a name="ParseSubWorkflowConfig"></a>
-### func [ParseSubWorkflowConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L148-L150>)
+### func [ParseSubWorkflowConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L181-L183>)
 
 ```go
 func ParseSubWorkflowConfig(step StepDef) (SubWorkflowConfig, error)
@@ -1293,7 +1307,7 @@ type WaitForEventOpts struct {
 ```
 
 <a name="ParseWaitForEventConfig"></a>
-### func [ParseWaitForEventConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L174-L176>)
+### func [ParseWaitForEventConfig](<https://github.com/danmestas/dagnats/blob/main/dag/config.go#L207-L209>)
 
 ```go
 func ParseWaitForEventConfig(step StepDef) (WaitForEventOpts, error)

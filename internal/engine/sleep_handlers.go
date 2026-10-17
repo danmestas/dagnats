@@ -79,6 +79,12 @@ func (sh *sleepHandler) enqueue(
 	// Cron and until_input_path forms are only knowable now; the run
 	// input (not the step's resolved input) is the deadline source.
 	now := time.Now()
+	if sleepCfg.Cron != "" {
+		if _, zoneErr := dag.CronSleepLocation(sleepCfg, run.Input); zoneErr != nil {
+			slog.WarnContext(ctx, "sleep: cron zone falls back to UTC",
+				"run_id", run.RunID, "step_id", step.ID, "error", zoneErr)
+		}
+	}
 	sleepFor, err := dag.ResolveSleepDuration(sleepCfg, run.Input, now)
 	if err != nil {
 		return sh.fail(ctx, run, step, err.Error())

@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Cron sleeps can name their timezone** (#750). `cron_timezone` sets
+  a fixed IANA zone, validated when the def is registered.
+  `cron_timezone_input_path` reads the zone from the run input at
+  dispatch, so one def can wake each run at 09:00 in its recipient's
+  zone; a missing or unknown zone there falls back to UTC with a
+  logged warning. Zone data is now built into the binary, so named
+  zones also resolve in minimal images (the Docker image ships no
+  zoneinfo), for cron triggers' `timezone` as well.
+
+### Changed
+
+- **A cron sleep with no zone is evaluated in UTC, not the server's
+  local zone** (#750). The same def used to fire at different instants
+  depending on the host's `TZ`. On a host not running in UTC, existing
+  cron sleeps now wake at a different wall-clock time: `0 9 * * 1` on
+  a server in US Central time used to mean 09:00 Central and now means
+  09:00 UTC. Set `cron_timezone` to keep the old wall-clock time.
+
+### Fixed
+
+- **A malformed cron expression is an error, not a crash** (#740). An
+  empty comma item (`0,,30 3 * * *`) or an expression over 256 bytes
+  panicked the cron parser, taking the server down when a trigger def
+  or cron sleep carrying it was validated, and again on every restart
+  that re-read it. Both now return an error.
+
 ## [0.0.24] - 2026-10-02
 
 ### Fixed

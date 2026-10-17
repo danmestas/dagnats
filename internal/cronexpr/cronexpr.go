@@ -40,9 +40,12 @@ type CronExpr struct {
 // ParseCron parses a 5-field cron expression into a CronExpr.
 // Supports *, */N, N-M, and comma-separated values.
 func ParseCron(expr string) (*CronExpr, error) {
-	// Bounded input prevents unbounded parsing work
-	if len(expr) > 256 {
-		panic("ParseCron: expr exceeds maximum length of 256")
+	// Bounded input prevents unbounded parsing work. An error, not a
+	// panic: the expression is user input (#740).
+	const exprLengthMax = 256
+	if len(expr) > exprLengthMax {
+		return nil, fmt.Errorf(
+			"cron expression is %d bytes; max %d", len(expr), exprLengthMax)
 	}
 
 	fields := strings.Fields(expr)
@@ -163,8 +166,11 @@ func contains(vals []int, target int) bool {
 // once and looping over the parts covers every expression a self-call could
 // (issue #554, and CLAUDE.md forbids recursion outright).
 func parseField(field string, min, max int) ([]int, error) {
+	// Input errors, not invariants: the field and its items come from
+	// user-supplied expressions, and a panic here takes the server down
+	// at validation and again on every restart that re-reads the def.
 	if field == "" {
-		panic("parseField: field must not be empty")
+		return nil, fmt.Errorf("empty field")
 	}
 	if min > max {
 		panic("parseField: min must not exceed max")
@@ -174,7 +180,7 @@ func parseField(field string, min, max int) ([]int, error) {
 	result := make([]int, 0, len(parts))
 	for _, part := range parts {
 		if part == "" {
-			panic("parseField: field must not be empty")
+			return nil, fmt.Errorf("empty item in %q", field)
 		}
 		values, err := parseFieldValue(part, min, max)
 		if err != nil {
