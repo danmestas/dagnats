@@ -341,6 +341,20 @@ type StepState struct {
 	// terminal status — no extra KV write. Additive: legacy snapshots
 	// deserialize to nil.
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	// AttemptStartedAt is when the current attempt first reported
+	// step.started; the step's timeout runs from it (#743). A NATS
+	// redelivery of the same attempt (a worker died or stopped extending
+	// its claim, or a pause resumed) keeps it, so redeliveries cannot
+	// restart the clock. Cleared when the engine dispatches the step
+	// afresh or schedules a retry, so a new attempt gets the full
+	// timeout. Additive: legacy snapshots deserialize to nil, which
+	// starts the clock at the next step.started.
+	AttemptStartedAt *time.Time `json:"attempt_started_at,omitempty"`
+	// RetryDispatchAt is when a scheduled retry's task is published. A
+	// step.started before it is a leftover redelivery of the failed
+	// attempt and does not start the retry's clock. Cleared once the
+	// retry's clock starts. Additive, like AttemptStartedAt.
+	RetryDispatchAt *time.Time `json:"retry_dispatch_at,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

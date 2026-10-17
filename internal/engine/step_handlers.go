@@ -382,6 +382,7 @@ func (o *Orchestrator) handleStepStarted(
 	if evt.AttemptNumber > state.Attempts {
 		state.Attempts = evt.AttemptNumber
 	}
+	elapsed := startAttemptClock(&state, time.Now().UTC())
 	// Postcondition: the max() rule above is what keeps per-attempt
 	// retry timer msg-ids distinct (#381) — a regression to "assign"
 	// would let out-of-order step.started decrement the counter.
@@ -392,16 +393,42 @@ func (o *Orchestrator) handleStepStarted(
 	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 		return err
 	}
-	return o.armStepWatchdog(ctx, run, evt.StepID, state.Attempts)
+	return o.armStepWatchdog(ctx, run, evt.StepID, state.Attempts, elapsed)
+}
+
+// startAttemptClock starts the step-timeout clock on an attempt's first
+// step.started and returns how long the attempt has been running, so a
+// redelivery re-arms the watchdog only for the time left (#743). While
+// a scheduled retry is still pending, a step.started is a leftover
+// redelivery of the failed attempt: the retry's clock stays unstarted
+// and the leftover gets a full timer of its own, as before.
+func startAttemptClock(state *dag.StepState, now time.Time) time.Duration {
+	if state == nil {
+		panic("startAttemptClock: state must not be nil")
+	}
+	if now.IsZero() {
+		panic("startAttemptClock: now must not be zero")
+	}
+	if state.AttemptStartedAt == nil {
+		if state.RetryDispatchAt != nil && now.Before(*state.RetryDispatchAt) {
+			return 0
+		}
+		started := now
+		state.AttemptStartedAt = &started
+		state.RetryDispatchAt = nil
+	}
+	return max(now.Sub(*state.AttemptStartedAt), 0)
 }
 
 // armStepWatchdog schedules the per-step watchdog (issue #140). Every
-// step.started arms a fresh timer; stale fires from prior attempts are
+// step.started arms a timer for what remains of the attempt's timeout
+// after elapsed; stale fires from prior attempts are
 // dropped by fireStepTimeout's staleness guard. Skipping the watchdog on
 // def-load failure is acceptable: the run is already saved as Running,
 // and the next step.started (e.g. on retry) will re-arm.
 func (o *Orchestrator) armStepWatchdog(
 	ctx context.Context, run dag.WorkflowRun, stepID string, attempts int,
+	elapsed time.Duration,
 ) error {
 	if stepID == "" {
 		panic("armStepWatchdog: stepID must not be empty")
@@ -417,7 +444,9 @@ func (o *Orchestrator) armStepWatchdog(
 	if !found || stepDef.Timeout <= 0 {
 		return nil
 	}
-	return o.scheduleStepTimeout(ctx, run.RunID, stepID, stepDef, attempts)
+	return o.scheduleStepTimeout(
+		ctx, run.RunID, stepID, stepDef, attempts, elapsed,
+	)
 }
 
 // lateEventForTerminalRun reports, and logs, a step lifecycle event that

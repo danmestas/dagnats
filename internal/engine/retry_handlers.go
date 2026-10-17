@@ -195,6 +195,8 @@ func (o *Orchestrator) dispatchRetriableFailure(
 	// fire fresh for the new attempt. Without this, attempts were
 	// recorded but never re-dispatched (issue #147).
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
+		markRetryPending(&state, time.Now().UTC(),
+			retryBackoffDelayMs(*policy, state.Attempts))
 		run.Steps[evt.StepID] = state
 		if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
 			return err
@@ -232,6 +234,8 @@ func (o *Orchestrator) handleRetryAfter(
 		panic("handleRetryAfter: RunID must not be empty")
 	}
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
+		markRetryPending(state, time.Now().UTC(),
+			retryAfterDelayMs(retryAfterMs))
 		run.Steps[stepID] = *state
 		if err := o.saveSnapshot(ctx, *run, stepID); err != nil {
 			return err
@@ -266,12 +270,7 @@ func (o *Orchestrator) scheduleRetryAfter(
 	if stepID == "" {
 		panic("scheduleRetryAfter: stepID must not be empty")
 	}
-	if retryAfterMs <= 0 {
-		retryAfterMs = 100
-	}
-	if retryAfterMs > 3_600_000 {
-		retryAfterMs = 3_600_000
-	}
+	retryAfterMs = retryAfterDelayMs(retryAfterMs)
 	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
 	if err != nil {
 		return fmt.Errorf(
@@ -333,14 +332,7 @@ func (o *Orchestrator) scheduleRetryBackoff(
 	if attempts > dag.RetryAttemptCountMax {
 		panic("scheduleRetryBackoff: attempts exceeds RetryAttemptCountMax")
 	}
-	delay := dag.CalculateDelay(*policy, attempts)
-	delayMs := delay.Milliseconds()
-	if delayMs < 1 {
-		delayMs = 1
-	}
-	if delayMs > 3_600_000 {
-		delayMs = 3_600_000
-	}
+	delayMs := retryBackoffDelayMs(*policy, attempts)
 	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
 	if err != nil {
 		return fmt.Errorf(
@@ -367,6 +359,10 @@ func (o *Orchestrator) scheduleRetryBackoff(
 // same attempt when stepDef.Timeout elapses (issue #140). Caller
 // gates on stepDef.Timeout > 0 — entering with zero is a bug.
 //
+// elapsed is how long the attempt has already been running: zero on
+// its first start, more when a redelivery re-arms the watchdog, which
+// then waits only for the rest of the timeout (#743).
+//
 // The Attempt field carries the attempt number that was current
 // when the timer was scheduled. fireStepTimeout drops the fire if
 // the step has since moved to a later attempt or terminal status.
@@ -377,9 +373,13 @@ func (o *Orchestrator) scheduleStepTimeout(
 	runID, stepID string,
 	stepDef dag.StepDef,
 	attempt int,
+	elapsed time.Duration,
 ) error {
 	if runID == "" {
 		panic("scheduleStepTimeout: runID must not be empty")
+	}
+	if elapsed < 0 {
+		panic("scheduleStepTimeout: elapsed must not be negative")
 	}
 	if stepID == "" {
 		panic("scheduleStepTimeout: stepID must not be empty")
@@ -390,7 +390,9 @@ func (o *Orchestrator) scheduleStepTimeout(
 	if attempt < 1 {
 		panic("scheduleStepTimeout: attempt must be >= 1")
 	}
-	delayMs := stepDef.Timeout.Milliseconds()
+	// A redelivery after the deadline already passed still arms a timer
+	// (1ms) rather than none, so the attempt is failed promptly.
+	delayMs := (stepDef.Timeout - elapsed).Milliseconds()
 	if delayMs < 1 {
 		delayMs = 1
 	}
@@ -447,7 +449,12 @@ func (o *Orchestrator) fireStepTimeout(tm TimerMessage) {
 	if state.Attempts != tm.Attempt {
 		return
 	}
+	// A re-armed timer's delay is only what remained of the timeout, so
+	// report how long the attempt ran when that is the longer figure.
 	dur := time.Duration(tm.DurationMs) * time.Millisecond
+	if state.AttemptStartedAt != nil {
+		dur = max(dur, time.Since(*state.AttemptStartedAt).Round(time.Millisecond))
+	}
 	payload := protocol.StepFailedPayload{
 		Error: fmt.Sprintf(
 			"step timeout exceeded (%s)", dur,
@@ -471,4 +478,45 @@ func (o *Orchestrator) fireStepTimeout(tm TimerMessage) {
 			"error", err,
 		)
 	}
+}
+
+// retryAfterDelayMs bounds a worker-requested retry-after delay to
+// [100ms, 1h].
+func retryAfterDelayMs(retryAfterMs int64) int64 {
+	const delayMsMin, delayMsMax = 100, 3_600_000
+	if retryAfterMs <= 0 {
+		return delayMsMin
+	}
+	if retryAfterMs > delayMsMax {
+		return delayMsMax
+	}
+	return retryAfterMs
+}
+
+// retryBackoffDelayMs is the policy-derived delay before the attempt
+// after attempts, bounded to [1ms, 1h].
+func retryBackoffDelayMs(policy dag.RetryPolicy, attempts int) int64 {
+	const delayMsMin, delayMsMax = 1, 3_600_000
+	if attempts < 1 {
+		panic("retryBackoffDelayMs: attempts must be >= 1")
+	}
+	delayMs := dag.CalculateDelay(policy, attempts).Milliseconds()
+	return min(max(delayMs, delayMsMin), delayMsMax)
+}
+
+// markRetryPending resets the step-timeout clock for the retry about to
+// be scheduled (#743): the retry is a new attempt and gets the whole
+// timeout. Until its task is published, delayMs from now, any
+// step.started is a leftover redelivery of the failed attempt and must
+// not start the retry's clock; see startAttemptClock.
+func markRetryPending(state *dag.StepState, now time.Time, delayMs int64) {
+	if state == nil {
+		panic("markRetryPending: state must not be nil")
+	}
+	if delayMs < 1 {
+		panic("markRetryPending: delayMs must be positive")
+	}
+	dispatchAt := now.Add(time.Duration(delayMs) * time.Millisecond)
+	state.AttemptStartedAt = nil
+	state.RetryDispatchAt = &dispatchAt
 }

@@ -35,6 +35,9 @@ func stampDispatch(state *dag.StepState, now time.Time) {
 	startedAt := now
 	state.StartedAt = &startedAt
 	state.CompletedAt = nil
+	// A fresh dispatch is a fresh attempt clock for the step timeout.
+	state.AttemptStartedAt = nil
+	state.RetryDispatchAt = nil
 	if state.DispatchNonce == "" {
 		panic("stampDispatch: nonce must be non-empty after stamping")
 	}

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **Time spent paused counts toward a step's timeout** (#743). `Pause`
+  keeps the step running, and a resumed task now continues the
+  attempt's timeout rather than starting a new one. Retried attempts
+  already behaved this way; a first attempt got a fresh timeout on each
+  resume only through the redelivery numbering fixed below. A step that
+  pauses repeatedly (a polling loop, say) needs a `Timeout` covering
+  its whole run, pauses included.
+
+### Fixed
+
+- **A step's timeout fires even when its task keeps being redelivered**
+  (#743). Each redelivery of a task (its worker died or stopped
+  extending its claim) reported a new attempt and restarted the step's
+  timeout, so such a step never timed out and its run read "running"
+  indefinitely. The timeout now runs from when the current attempt
+  first started: a redelivery, or a paused task resuming, re-arms it
+  only for the time left. A retry the engine schedules still gets the
+  full timeout.
+
 ## [0.0.25] - 2026-10-17
 
 ### Added

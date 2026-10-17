@@ -20,9 +20,11 @@ transform := wf.Task("transform", "process").
     WithTimeout(5 * time.Minute)
 ```
 
-If a worker does not resolve a task within the timeout, NATS **AckWait** expires and the message is redelivered (up to **MaxDeliver** times). This is the primary timeout enforcement mechanism -- no application-level timer is needed.
+The engine enforces the timeout itself. When an attempt starts, it arms a durable watchdog timer for that attempt. If the step is still running on the same attempt when the timer fires, the engine fails the attempt with a retriable `step timeout exceeded` error, which then goes through the step's [retry policy](/docs/reliability/retry-policies) like any other failure.
 
-### How AckWait Enforces Timeouts
+### Redelivery does not restart the clock
+
+A worker that dies, or stops extending its claim, loses the task, and NATS redelivers it to another worker. A redelivery does not restart the timeout: the clock keeps running from when the step's current attempt first started, so a step whose workers keep losing it fails at its timeout instead of running forever. Time spent in `Pause()` counts too: a resumed task continues the same clock, so a step that pauses repeatedly needs a timeout that covers its whole run. Only a retry the engine schedules starts with a fresh timeout.
 
 ```mermaid
 sequenceDiagram
@@ -30,24 +32,28 @@ sequenceDiagram
     participant NATS as TASK_QUEUES
     participant Worker
 
-    Engine->>NATS: publish task (AckWait = step timeout)
-    NATS->>Worker: deliver message
-    Note over Worker: processing...
+    Engine->>NATS: publish task
+    NATS->>Worker: deliver
+    Worker->>Engine: step.started
+    Note over Engine: watchdog armed for the full timeout
     alt completes in time
-        Worker->>NATS: Ack
-    else timeout expires
-        NATS->>NATS: AckWait expires
-        NATS->>Worker: redeliver (attempt 2)
+        Worker->>Engine: step.completed
+    else worker lost
+        NATS->>Worker: redeliver
+        Worker->>Engine: step.started
+        Note over Engine: watchdog re-armed for the time left
     end
+    Note over Engine: deadline passes
+    Engine->>Engine: step.failed (retriable): retry policy decides
 ```
 
-Workers can extend the deadline mid-execution by calling `Heartbeat()`, which sends an `InProgress()` signal to NATS to reset the AckWait timer:
+Workers hold their claim on a task by heartbeating. `Heartbeat()` sends an `InProgress()` signal to NATS so the message is not redelivered while the handler is still working. It does not extend the step timeout:
 
 ```go
 w.Handle("long-task", func(ctx worker.TaskContext) {
     for i := 0; i < 100; i++ {
         processChunk(i)
-        ctx.Heartbeat() // reset AckWait
+        ctx.Heartbeat() // keep the claim; the step timeout still applies
     }
     ctx.Complete(map[string]any{"chunks": 100})
 })

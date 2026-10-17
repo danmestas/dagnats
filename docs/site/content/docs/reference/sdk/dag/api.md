@@ -1109,7 +1109,7 @@ func (r StepRef) WithTimeout(d time.Duration) StepRef
 WithTimeout sets the per\-attempt timeout on this step.
 
 <a name="StepState"></a>
-## type [StepState](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L312-L344>)
+## type [StepState](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L312-L358>)
 
 StepState captures mutable runtime state for one step in a run. Output is kept as raw bytes to remain payload\-agnostic. Iterations tracks how many agent\-loop Continue cycles have completed; used to generate unique dedup IDs for each re\-enqueue. LoopStartedAt records when the first iteration began, for MaxDuration enforcement. MapInstances tracks state for each parallel map item when Type == StepTypeMap. WakeAt records when a sleep step should complete, for engine scheduling. ChildRunID links to the spawned child run for SubWorkflow steps.
 
@@ -1146,6 +1146,20 @@ type StepState struct {
     // terminal status — no extra KV write. Additive: legacy snapshots
     // deserialize to nil.
     CompletedAt *time.Time `json:"completed_at,omitempty"`
+    // AttemptStartedAt is when the current attempt first reported
+    // step.started; the step's timeout runs from it (#743). A NATS
+    // redelivery of the same attempt (a worker died or stopped extending
+    // its claim, or a pause resumed) keeps it, so redeliveries cannot
+    // restart the clock. Cleared when the engine dispatches the step
+    // afresh or schedules a retry, so a new attempt gets the full
+    // timeout. Additive: legacy snapshots deserialize to nil, which
+    // starts the clock at the next step.started.
+    AttemptStartedAt *time.Time `json:"attempt_started_at,omitempty"`
+    // RetryDispatchAt is when a scheduled retry's task is published. A
+    // step.started before it is a leftover redelivery of the failed
+    // attempt and does not start the retry's clock. Cleared once the
+    // retry's clock starts. Additive, like AttemptStartedAt.
+    RetryDispatchAt *time.Time `json:"retry_dispatch_at,omitempty"`
 }
 ```
 
@@ -1622,7 +1636,7 @@ func WithSchemas[I, O any](def WorkflowDef) WorkflowDef
 WithSchemas generates JSON schemas from Go types I \(input\) and O \(output\) and attaches them to the WorkflowDef. Applied after Build\(\). Supports flat structs with primitive fields, slices, and maps.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L349-L414>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L363-L428>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1696,7 +1710,7 @@ type WorkflowRun struct {
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L419>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L433>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1705,7 +1719,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L443>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L457>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time
