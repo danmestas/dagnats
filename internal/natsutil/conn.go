@@ -152,6 +152,15 @@ func proportionalMaxBytes(maxStoreBytes int64, fraction float64) int64 {
 func SetupStreams(
 	js jetstream.JetStream, replicas int, maxStoreBytes int64,
 ) error {
+	ctx, cancel := provisionContext(false)
+	defer cancel()
+	return setupStreams(ctx, js, replicas, maxStoreBytes)
+}
+
+func setupStreams(
+	ctx context.Context,
+	js jetstream.JetStream, replicas int, maxStoreBytes int64,
+) error {
 	if js == nil {
 		panic("SetupStreams: js must not be nil")
 	}
@@ -246,14 +255,13 @@ func SetupStreams(
 	if len(streams) == 0 {
 		panic("SetupStreams: streams config must not be empty")
 	}
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
-	defer cancel()
 	for _, cfg := range streams {
-		_, err := js.CreateOrUpdateStream(ctx, cfg)
-		if err != nil {
+		err := provisionWithRetry(ctx, func(c context.Context) error {
+			_, err := js.CreateOrUpdateStream(c, cfg)
 			return err
+		})
+		if err != nil {
+			return fmt.Errorf("create stream %s: %w", cfg.Name, err)
 		}
 	}
 	return nil
@@ -262,6 +270,14 @@ func SetupStreams(
 // SetupKVBuckets creates the KV buckets used to store workflow
 // definitions and runtime state for active workflow runs.
 func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
+	ctx, cancel := provisionContext(false)
+	defer cancel()
+	return setupKVBuckets(ctx, js, replicas)
+}
+
+func setupKVBuckets(
+	ctx context.Context, js jetstream.JetStream, replicas int,
+) error {
 	if js == nil {
 		panic("SetupKVBuckets: js must not be nil")
 	}
@@ -355,41 +371,46 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
 	}
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
-	defer cancel()
 	for _, cfg := range buckets {
-		_, err := js.CreateOrUpdateKeyValue(ctx, cfg)
-		if err != nil {
+		err := provisionWithRetry(ctx, func(c context.Context) error {
+			_, err := js.CreateOrUpdateKeyValue(c, cfg)
 			return err
+		})
+		if err != nil {
+			return fmt.Errorf("create kv bucket %s: %w", cfg.Bucket, err)
 		}
 	}
 	// leases (ADR-024) last and non-fatal: it needs nats-server >= 2.11.
-	return provisionLeasesBucket(ctx, js, replicas)
+	return provisionWithRetry(ctx, func(c context.Context) error {
+		return provisionLeasesBucket(c, js, replicas)
+	})
 }
 
 // SetupStickyStream creates the STICKY_TASKS stream for worker-
 // specific task routing. Separated from SetupStreams because it's
 // only needed when sticky workflows are in use.
-func SetupStickyStream(js jetstream.JetStream) error {
-	if js == nil {
-		panic("SetupStickyStream: js must not be nil")
-	}
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
+func SetupStickyStream(js jetstream.JetStream, replicas int) error {
+	ctx, cancel := provisionContext(false)
 	defer cancel()
-	_, err := js.CreateOrUpdateStream(
-		ctx,
-		jetstream.StreamConfig{
-			Name:     "STICKY_TASKS",
-			Subjects: []string{"sticky.>"},
-			Storage:  jetstream.MemoryStorage,
-			MaxAge:   30 * time.Minute,
-		},
-	)
-	return err
+	return setupStickyStream(ctx, js, replicas)
+}
+
+func setupStickyStream(
+	ctx context.Context, js jetstream.JetStream, replicas int,
+) error {
+	if js == nil {
+		panic("setupStickyStream: js must not be nil")
+	}
+	if replicas < 1 {
+		panic("setupStickyStream: replicas must be positive")
+	}
+	return createStreamWithRetry(ctx, js, jetstream.StreamConfig{
+		Name:     "STICKY_TASKS",
+		Subjects: []string{"sticky.>"},
+		Storage:  jetstream.MemoryStorage,
+		MaxAge:   30 * time.Minute,
+		Replicas: replicas,
+	})
 }
 
 // SetupTelemetryStream creates the TELEMETRY stream for all
@@ -399,10 +420,22 @@ func SetupStickyStream(js jetstream.JetStream) error {
 // absolute 1 GiB cap, which is 50% of the 2 GiB test cluster — folded into
 // the proportional scheme). A budget of 0 disables the ceiling.
 func SetupTelemetryStream(
-	js jetstream.JetStream, maxStoreBytes int64,
+	js jetstream.JetStream, maxStoreBytes int64, replicas int,
+) error {
+	ctx, cancel := provisionContext(false)
+	defer cancel()
+	return setupTelemetryStream(ctx, js, maxStoreBytes, replicas)
+}
+
+func setupTelemetryStream(
+	ctx context.Context,
+	js jetstream.JetStream, maxStoreBytes int64, replicas int,
 ) error {
 	if js == nil {
 		panic("SetupTelemetryStream: js must not be nil")
+	}
+	if replicas < 1 {
+		panic("SetupTelemetryStream: replicas must be positive")
 	}
 	cfg := jetstream.StreamConfig{
 		Name:      "TELEMETRY",
@@ -414,16 +447,12 @@ func SetupTelemetryStream(
 			maxStoreBytes, fractionTelemetry,
 		),
 		Duplicates: 5 * time.Second,
+		Replicas:   replicas,
 	}
 	if cfg.Name == "" {
 		panic("SetupTelemetryStream: stream name must not be empty")
 	}
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
-	defer cancel()
-	_, err := js.CreateOrUpdateStream(ctx, cfg)
-	return err
+	return createStreamWithRetry(ctx, js, cfg)
 }
 
 // SetupTriggerHistoryStream creates the TRIGGER_HISTORY stream
@@ -432,8 +461,20 @@ func SetupTelemetryStream(
 // maxStoreBytes is the JetStreamMaxStore budget; the byte ceiling is a
 // fraction of it. A budget of 0 disables the ceiling.
 func SetupTriggerHistoryStream(
-	js jetstream.JetStream, maxStoreBytes int64,
+	js jetstream.JetStream, maxStoreBytes int64, replicas int,
 ) error {
+	ctx, cancel := provisionContext(false)
+	defer cancel()
+	return setupTriggerHistoryStream(ctx, js, maxStoreBytes, replicas)
+}
+
+func setupTriggerHistoryStream(
+	ctx context.Context,
+	js jetstream.JetStream, maxStoreBytes int64, replicas int,
+) error {
+	if replicas < 1 {
+		panic("SetupTriggerHistoryStream: replicas must be positive")
+	}
 	if js == nil {
 		panic(
 			"SetupTriggerHistoryStream: js must not be nil",
@@ -448,17 +489,15 @@ func SetupTriggerHistoryStream(
 		MaxBytes: proportionalMaxBytes(
 			maxStoreBytes, fractionTriggerHistory,
 		),
-		Discard: jetstream.DiscardOld,
+		Discard:  jetstream.DiscardOld,
+		Replicas: replicas,
 	}
 	if cfg.Name == "" {
 		panic(
 			"SetupTriggerHistoryStream: name must not be empty",
 		)
 	}
-	_, err := js.CreateOrUpdateStream(
-		context.Background(), cfg,
-	)
-	return err
+	return createStreamWithRetry(ctx, js, cfg)
 }
 
 // StreamConfig defines an additional JetStream stream for SetupAll to provision.
@@ -580,9 +619,15 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		}
 	}
 
+	// ONE budget for the whole provisioning sweep, shared by every Setup*
+	// call below. Standalone keeps the short bound so a misconfigured
+	// server fails fast; a cluster gets longer for meta-leader elections.
+	setupCtx, setupCancel := provisionContext(len(options.cluster.Routes) > 0)
+	defer setupCancel()
+
 	if len(options.cluster.Routes) > 0 {
 		quorumCtx, quorumCancel := context.WithTimeout(
-			context.Background(), 60*time.Second,
+			setupCtx, 60*time.Second,
 		)
 		_, err := WaitForClusterQuorum(
 			quorumCtx, js, len(options.cluster.Routes)+1,
@@ -619,20 +664,24 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	replicas := DeriveReplicas(
 		options.cluster.Routes, options.cluster.ReplicasOverride,
 	)
-	if err := SetupStreams(js, replicas, options.maxStoreBytes); err != nil {
+	if err := setupStreams(
+		setupCtx, js, replicas, options.maxStoreBytes,
+	); err != nil {
 		return err
 	}
-	if err := SetupKVBuckets(js, replicas); err != nil {
+	if err := setupKVBuckets(setupCtx, js, replicas); err != nil {
 		return err
 	}
-	if err := SetupTelemetryStream(js, options.maxStoreBytes); err != nil {
+	if err := setupTelemetryStream(
+		setupCtx, js, options.maxStoreBytes, replicas,
+	); err != nil {
 		return err
 	}
-	if err := SetupStickyStream(js); err != nil {
+	if err := setupStickyStream(setupCtx, js, replicas); err != nil {
 		return err
 	}
-	if err := SetupTriggerHistoryStream(
-		js, options.maxStoreBytes,
+	if err := setupTriggerHistoryStream(
+		setupCtx, js, options.maxStoreBytes, replicas,
 	); err != nil {
 		return err
 	}
@@ -640,20 +689,17 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	if err != nil {
 		return err
 	}
-	if err := SetupBuildLogsStream(
-		js, options.maxStoreBytes, buildLogsTTL, replicas,
+	if err := setupBuildLogsStream(
+		setupCtx, js, options.maxStoreBytes, buildLogsTTL, replicas,
 	); err != nil {
 		return err
 	}
 
-	if err := enableAtomicPublish(js, "TASK_QUEUES"); err != nil {
+	if err := enableAtomicPublish(setupCtx, js, "TASK_QUEUES"); err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
-	defer cancel()
+	ctx := setupCtx
 	for _, sc := range options.streams {
 		_, err := js.CreateOrUpdateStream(
 			ctx, jetstream.StreamConfig{
@@ -685,7 +731,7 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 // enableAtomicPublish updates an existing stream to allow atomic
 // batch publishing. Requires NATS server >= 2.12.
 func enableAtomicPublish(
-	js jetstream.JetStream, streamName string,
+	ctx context.Context, js jetstream.JetStream, streamName string,
 ) error {
 	if js == nil {
 		panic("enableAtomicPublish: js must not be nil")
@@ -693,11 +739,6 @@ func enableAtomicPublish(
 	if streamName == "" {
 		panic("enableAtomicPublish: streamName must not be empty")
 	}
-
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 5*time.Second,
-	)
-	defer cancel()
 
 	stream, err := js.Stream(ctx, streamName)
 	if err != nil {
@@ -709,7 +750,10 @@ func enableAtomicPublish(
 	cfg := stream.CachedInfo().Config
 	cfg.AllowAtomicPublish = true
 
-	_, err = js.UpdateStream(ctx, cfg)
+	err = provisionWithRetry(ctx, func(c context.Context) error {
+		_, updateErr := js.UpdateStream(c, cfg)
+		return updateErr
+	})
 	if err != nil {
 		return fmt.Errorf(
 			"natsutil: update stream %q: %w", streamName, err,

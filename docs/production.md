@@ -37,14 +37,56 @@ Server keys in `dagnats.yaml` are read one `key: value` line at a time, so route
 
 **What you don't get (in v1):**
 - Dynamic membership. Adding or removing nodes requires planned reconfiguration on all nodes plus a rolling restart.
-- TLS for cluster routes. v1 uses token-based auth; TLS lands in v1.1.
+- TLS for cluster routes. Route TLS is not yet supported: routes use the shared token only, and traffic between nodes is unencrypted. Run the cluster on a private network or tailnet you trust; do not expose the route port (`nats_cluster_port`, default 6222) to the internet.
 - Multi-region. Use leaf → supercluster for that.
 
 **Migration from single-binary:** add the four cluster fields to each node's config, restart all nodes within the 60-second quorum-wait window. Streams auto-update from R=1 to R=3 in place via JetStream's `CreateOrUpdateStream` semantics. Reversible by removing the cluster fields and restarting.
 
 **Bound:** `nats_cluster_routes` cap is 10 entries (11-node maximum). Quorum-wait at startup is bounded at 60 seconds; if peers don't connect in time, `SetupAll` returns an error and the process exits.
 
-**v1 observability limitations:** the `/health/cluster` endpoint reports `connected_peers` as `len(nats_cluster_routes)` and per-stream `in_sync` as the configured `replicas` value — both are optimistic and not partition-aware. They reflect intent rather than runtime state. Don't wire them to alerting expecting "is the cluster healthy *right now*" semantics. v1.1 will replace the optimistic values with real partition-aware peer state via `nats-server`'s peer info APIs.
+**Route port:** nodes listen for routes on `nats_cluster_port` (default `6222`, env `DAGNATS_NATS_CLUSTER_PORT`). Give each node on the same host a distinct port; nodes on separate hosts can all use the default. The value must be 1-65535 and must differ from `nats_port`, `monitor_port`, `nats_ws_port` and the `http_addr` port; config load fails otherwise.
+
+**Observing the cluster.** `GET /health/cluster` reports live state read from the embedded server, not config intent:
+
+```json
+{
+  "mode": "cluster",
+  "ok": true,
+  "expected_peers": 2,
+  "connected_peers": 2,
+  "nodes_expected": 3,
+  "nodes_up": 3,
+  "node": "dagnats-prod-4021",
+  "leader": "dagnats-prod-4021",
+  "members": [
+    {"name": "dagnats-prod-4021", "self": true, "route_connected": true, "meta_leader": true, "current": true},
+    {"name": "dagnats-prod-4033", "route_connected": true, "current": true},
+    {"name": "dagnats-prod-4047", "route_connected": true, "current": true}
+  ],
+  "jetstream": {
+    "leader_elected": true,
+    "streams": {"TASK_QUEUES": {"replicas": 3, "in_sync": 3}},
+    "kv_buckets": {"workflow_runs": 3}
+  }
+}
+```
+
+- `node` is the server that answered; `members` lists every node the JetStream meta group knows, as seen from that node. `route_connected` is whether it has a live route to the member; `meta_leader` marks the JetStream meta leader (`leader` repeats its name); `offline` means the member has not been seen recently.
+- `current` and `lag_ops` (caught up, operations behind) are reported only when the answering node is the meta leader. A follower sees the other followers as not current, so it omits the fields rather than report them wrongly. To read them, ask the node named in `leader`.
+- `nodes_up` counts members that are route-connected and not offline (including the reporting node). A dead node drops `nodes_up` to 2 of 3 and `connected_peers` to 1 of 2.
+- `streams` and `kv_buckets` cover every stream and bucket `SetupAll` provisions (the list comes from `natsutil`, so it cannot drift). `in_sync` is the leader plus followers that are current.
+- Status is `200` while the cluster has quorum. `jetstream.unavailable` lists replicated streams or buckets that do not answer (quorum lost for them) and the response becomes `503`. `jetstream.degraded` lists unreachable single-replica assets (for example when `nats_jetstream_replicas: 1` is set on purpose); they are reported but stay `200`, so a per-node load-balancer check does not drain the survivors when one node goes down. Unavailable assets never hide the rest of the report.
+- Every node answers for itself, so poll each node (or a load balancer health check per node) rather than one address.
+
+The same report is served over NATS request/reply on the control API: send an empty request to `api.cluster.health` (service `dagnats-api`) and read the JSON body. The endpoint has no queue group, so every node is subscribed and you get whichever node replies first; read `node` in the body to see which one answered. Failure is `"ok": false` in the body; NATS replies carry no status code.
+
+```bash
+nats request api.cluster.health ''
+```
+
+**Known gap — assets outside `SetupAll`:** every stream and bucket `SetupAll` provisions uses the cluster's replication factor (including `TELEMETRY`, `STICKY_TASKS`, `TRIGGER_HISTORY` and `leases`; an existing deployment is upgraded in place on restart). A few buckets are created by individual components instead and are created at R=1 in a cluster. They are not in the health report, and losing the node that holds one makes that component's data unavailable until the node returns. Replicating them is not done yet.
+
+**Testing.** `make test-cluster-e2e` (`DAGNATS_E2E_CLUSTER=1 go test ./e2e/cluster/`) starts three `dagnats serve` processes on localhost, waits for `/health/cluster` to show three nodes, runs a workflow, kills one node, and checks that health stays `200` with 2 of 3 nodes up and that a second workflow completes. It runs in the dedicated `Cluster E2E` CI job. This proves process-level clustering on one host; it does not test cross-machine networking, partitions, or clock skew, which need real hosts.
 
 ### Leaf node — production
 

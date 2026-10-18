@@ -45,10 +45,10 @@ func streamConfigsWithBudget(
 	if err := SetupStreams(js, 1, budget); err != nil {
 		t.Fatalf("SetupStreams: %v", err)
 	}
-	if err := SetupTelemetryStream(js, budget); err != nil {
+	if err := SetupTelemetryStream(js, budget, 1); err != nil {
 		t.Fatalf("SetupTelemetryStream: %v", err)
 	}
-	if err := SetupTriggerHistoryStream(js, budget); err != nil {
+	if err := SetupTriggerHistoryStream(js, budget, 1); err != nil {
 		t.Fatalf("SetupTriggerHistoryStream: %v", err)
 	}
 	if err := SetupBuildLogsStream(

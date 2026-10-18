@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -89,10 +90,13 @@ type Config struct {
 	LeafRemotes     []string `json:"leaf_remotes"`
 	LeafCredentials string   `json:"leaf_credentials"`
 
-	NATSClusterName       string   `json:"nats_cluster_name"`
-	NATSClusterRoutes     []string `json:"nats_cluster_routes"`
-	NATSClusterAuthToken  string   `json:"nats_cluster_auth_token"`
-	NATSJetStreamReplicas int      `json:"nats_jetstream_replicas"`
+	NATSClusterName      string   `json:"nats_cluster_name"`
+	NATSClusterRoutes    []string `json:"nats_cluster_routes"`
+	NATSClusterAuthToken string   `json:"nats_cluster_auth_token"`
+	// NATSClusterPort is the route listener port; 0 means defaultClusterPort.
+	// Distinct ports let several nodes share one host (tests, dev).
+	NATSClusterPort       int `json:"nats_cluster_port"`
+	NATSJetStreamReplicas int `json:"nats_jetstream_replicas"`
 
 	MonitorPort   int   `json:"monitor_port"`
 	MaxStoreBytes int64 `json:"max_store_bytes"`
@@ -506,6 +510,11 @@ func applyEnvOverrides(cfg *Config) {
 		}
 		cfg.NATSClusterRoutes = routes
 	}
+	if val := os.Getenv("DAGNATS_NATS_CLUSTER_PORT"); val != "" {
+		if port, err := strconv.Atoi(val); err == nil {
+			cfg.NATSClusterPort = port
+		}
+	}
 	if val := os.Getenv("DAGNATS_NATS_CLUSTER_AUTH_TOKEN"); val != "" {
 		cfg.NATSClusterAuthToken = val
 	}
@@ -878,6 +887,12 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			routes = routes[:maxClusterRoutes]
 		}
 		cfg.NATSClusterRoutes = routes
+	case "nats_cluster_port":
+		port, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid nats_cluster_port: %w", err)
+		}
+		cfg.NATSClusterPort = port
 	case "nats_cluster_auth_token":
 		cfg.NATSClusterAuthToken = val
 	case "nats_jetstream_replicas":
@@ -1103,10 +1118,18 @@ func validateClusterConfig(cfg *Config) {
 		))
 	}
 
+	if cfg.NATSClusterPort < 0 || cfg.NATSClusterPort > 65535 {
+		panic(fmt.Sprintf(
+			"nats_cluster_port must be 0 (default) or 1-65535; got %d",
+			cfg.NATSClusterPort,
+		))
+	}
+
 	clustered := len(cfg.NATSClusterRoutes) > 0
 	if !clustered {
 		return
 	}
+	validateClusterPortCollisions(cfg)
 
 	if cfg.NATSClusterName == "" {
 		panic("nats_cluster_name is required when nats_cluster_routes is set")
@@ -1169,4 +1192,30 @@ func validateWorkerConfigs(
 		}
 	}
 	return nil
+}
+
+// validateClusterPortCollisions panics when the route listener port equals
+// another listener this node opens: two listeners on one port fail at bind
+// time with a message that never mentions the cluster setting.
+func validateClusterPortCollisions(cfg *Config) {
+	port := cfg.NATSClusterPort
+	if port == 0 {
+		port = defaultClusterPort
+	}
+	others := map[string]int{
+		"nats_port":    cfg.NATSPort,
+		"monitor_port": cfg.MonitorPort,
+		"nats_ws_port": cfg.NATSWebsocketPort,
+	}
+	if _, httpPort, err := net.SplitHostPort(cfg.HTTPAddr); err == nil {
+		if n, convErr := strconv.Atoi(httpPort); convErr == nil {
+			others["http_addr"] = n
+		}
+	}
+	for name, other := range others {
+		if other > 0 && other == port {
+			panic(fmt.Sprintf(
+				"nats_cluster_port %d collides with %s", port, name))
+		}
+	}
 }

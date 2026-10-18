@@ -171,10 +171,14 @@ func configureCluster(opts *natsserver.Options, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("parse cluster routes: %w", err)
 	}
+	clusterPort := cfg.NATSClusterPort
+	if clusterPort == 0 {
+		clusterPort = defaultClusterPort
+	}
 	opts.Cluster = natsserver.ClusterOpts{
 		Name: cfg.NATSClusterName,
 		Host: "0.0.0.0",
-		Port: defaultClusterPort,
+		Port: clusterPort,
 	}
 	opts.Routes = parsedRoutes
 	// JetStream clustering requires a unique server_name per node. Derive

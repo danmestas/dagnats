@@ -83,5 +83,22 @@ func (s *Server) startParentWatch() {
 	}
 
 	go watchParentDeath(
-		os.Getppid, startPpid, parentWatchInterval, s.Stop, s.stopCh)
+		os.Getppid, startPpid, parentWatchInterval, s.parentGone, s.stopCh)
+}
+
+// parentGone is the watcher's callback. Once serving, the graceful Stop
+// path drains everything. During startup (cluster provisioning can block
+// for minutes) nothing is serving and Stop alone cannot interrupt the
+// blocked call, so exit directly -- otherwise a killed spawner leaves this
+// process orphaned for the whole startup window.
+//
+// os.Exit(1) skips the JetStream shutdown. That is acceptable here: the
+// parent is gone, nothing is serving yet, and JetStream recovers from its
+// on-disk state on the next start, exactly as after any crash.
+func (s *Server) parentGone() {
+	s.Stop()
+	if !s.ready.Load() {
+		slog.Error("parent exited during startup; exiting")
+		os.Exit(1)
+	}
 }

@@ -970,6 +970,39 @@ The `percent` field shows telemetry stream storage usage as a percentage of `Max
 curl http://localhost:8080/health/telemetry
 ```
 
+### Cluster Health
+
+Report embedded-cluster health from the node you ask. Standalone nodes return `{"mode":"standalone","ok":true}`.
+
+```
+GET /health/cluster
+```
+
+**Response:** `200 OK` when healthy, `503` when degraded.
+
+```json
+{
+  "mode": "cluster",
+  "ok": true,
+  "expected_peers": 2,
+  "connected_peers": 2,
+  "nodes_expected": 3,
+  "nodes_up": 3,
+  "node": "dagnats-prod-4021",
+  "leader": "dagnats-prod-4021",
+  "members": [
+    {"name": "dagnats-prod-4021", "self": true, "route_connected": true, "meta_leader": true, "current": true}
+  ],
+  "jetstream": {
+    "leader_elected": true,
+    "streams": {"TASK_QUEUES": {"replicas": 3, "in_sync": 3}},
+    "kv_buckets": {"workflow_runs": 3}
+  }
+}
+```
+
+`node` is the server that answered. `members` lists each node with `route_connected`, `meta_leader` and `offline`; `current` and `lag_ops` appear only when the answering node is the meta leader. `jetstream.unavailable` names replicated streams or buckets that did not answer (the response is `503`); `jetstream.degraded` names unreachable single-replica assets and keeps `200`. The same JSON is returned over NATS request/reply on `api.cluster.health`. The production guide describes each field.
+
 ---
 
 ## Error Responses

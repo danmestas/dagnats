@@ -54,6 +54,7 @@ type NATSAPI struct {
 	leases  *lease.Store
 	// stopForwards cancels in-flight api.leases.forward calls on Stop.
 	stopForwards context.CancelFunc
+	cluster      *ClusterReporter
 }
 
 // NewNATSAPI constructs a NATSAPI bound to svc and nc. version is the
@@ -133,6 +134,7 @@ func (n *NATSAPI) Start() {
 				e.subject + ": " + err.Error())
 		}
 	}
+	n.addClusterEndpoint(srv)
 	n.micro = srv
 }
 

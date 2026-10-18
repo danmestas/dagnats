@@ -44,8 +44,10 @@ type Server struct {
 	orch    *engine.Orchestrator
 	svc     *api.Service
 	natsAPI *api.NATSAPI
-	trig    *trigger.TriggerService
-	bridge  *bridge.Bridge
+	// clusterReporter backs both GET /health/cluster and api.cluster.health.
+	clusterReporter *api.ClusterReporter
+	trig            *trigger.TriggerService
+	bridge          *bridge.Bridge
 	// tokenStore is the ONE workertoken.Store shared by the bridge (auth)
 	// and the api service (mint/list/revoke REST routes), matching #627's
 	// requirement that both see the same cache.
@@ -107,17 +109,17 @@ func (s *Server) Run() error {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 
-	if err := s.startComponents(); err != nil {
-		return err
-	}
-
-	// #476: when spawned as a sidecar with --die-with-parent, watch for
-	// the parent's death and self-terminate via the existing graceful
-	// shutdown so a SIGKILL'd / `go test -timeout`'d spawner doesn't
-	// orphan us. The watcher goroutine exits when stopCh closes, so a
-	// normal shutdown reaps it.
+	// #476: with --die-with-parent, watch for the parent's death and
+	// self-terminate so a killed spawner does not orphan us. Armed BEFORE
+	// startup because cluster provisioning can block for minutes. The
+	// watcher goroutine exits when stopCh closes, so a normal shutdown
+	// reaps it.
 	if s.cfg.DieWithParent {
 		s.startParentWatch()
+	}
+
+	if err := s.startComponents(); err != nil {
+		return err
 	}
 
 	httpErrCh, err := s.startHTTP()
@@ -242,6 +244,10 @@ func (s *Server) startComponents() error {
 		MaxRegistersPerMinutePerRoot: s.cfg.MaxRegistersPerMinutePerRoot,
 	}, api.WithGrantPolicyHolder(s.grantHolder), api.WithAuditKV(auditKV))
 	s.natsAPI = api.NewNATSAPI(s.svc, s.nc, s.cfg.Build)
+	s.clusterReporter = api.NewClusterReporter(
+		s.nc, s.cfg.NATSClusterRoutes, clusterMembershipFrom(s.ns),
+	)
+	s.natsAPI.SetClusterReporter(s.clusterReporter)
 	s.natsAPI.Start()
 	printStep(os.Stderr, "nats api started")
 
@@ -559,7 +565,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.Handle(
 		"/health/cluster",
-		api.NewClusterHealthHandler(s.nc, s.cfg.NATSClusterRoutes),
+		api.NewClusterHealthHandler(s.clusterReporter),
 	)
 	mux.HandleFunc("/ready", s.handleReady)
 	if s.trig != nil {

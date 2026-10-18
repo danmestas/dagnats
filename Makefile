@@ -28,7 +28,7 @@ help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: build test lint fmt vet serve clean
+.PHONY: build test test-cluster-e2e lint fmt vet serve clean
 .PHONY: docs-serve docs-build docs-gen-sdk docs-gen-llms
 .PHONY: build-release docker docker-push release release-preflight
 .PHONY: build-mcp-duckdb-linux-amd64 build-mcp-duckdb-linux-arm64
@@ -53,6 +53,9 @@ test: ## Run all tests with 600s timeout
 	# 4 concurrent packages keeps the gate deterministic; low-core CI
 	# runners were already effectively bounded, so this is a no-op there.
 	go test ./... -p 4 -timeout 600s -count=1
+
+test-cluster-e2e: ## Run the 3-process cluster failover test (opt-in, ~30s)
+	DAGNATS_E2E_CLUSTER=1 go test ./e2e/cluster/ -count=1 -timeout 600s -v
 
 lint: vet ## Run gofmt + vet + staticcheck (matches CI)
 	@out=$$(gofmt -l .); \

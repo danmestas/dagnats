@@ -158,7 +158,7 @@ func TestSetupTelemetryStream(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 	const budget = int64(2 * 1024 * 1024 * 1024)
-	err = SetupTelemetryStream(js, budget)
+	err = SetupTelemetryStream(js, budget, 1)
 	if err != nil {
 		t.Fatalf("SetupTelemetryStream: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestEnableAtomicPublish(t *testing.T) {
 	}
 
 	// Call the function under test.
-	err = enableAtomicPublish(js, "TASK_QUEUES")
+	err = enableAtomicPublish(context.Background(), js, "TASK_QUEUES")
 	if err != nil {
 		t.Fatalf("enableAtomicPublish: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestEnableAtomicPublish(t *testing.T) {
 		"AllowAtomicPublish should be true")
 
 	// Negative: non-existent stream should error.
-	err = enableAtomicPublish(js, "NONEXISTENT")
+	err = enableAtomicPublish(context.Background(), js, "NONEXISTENT")
 	assert(t, err != nil,
 		"expected error for nonexistent stream, got nil")
 }

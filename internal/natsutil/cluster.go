@@ -54,6 +54,12 @@ func DeriveReplicas(routes []string, override int) int {
 
 const quorumPollInterval = 500 * time.Millisecond
 
+// quorumProbeTimeout bounds one AccountInfo probe. A clustered server with
+// no meta leader yet may drop the request instead of answering, so an
+// unbounded probe would burn the whole quorum budget on its first attempt
+// and the poll loop would never retry.
+const quorumProbeTimeout = 2 * time.Second
+
 // WaitForClusterQuorum blocks until JetStream reports a healthy
 // cluster of expectedSize, or ctx is cancelled. Polls every 500ms.
 // expectedSize is the total node count (this node + peers); for a
@@ -106,7 +112,9 @@ func WaitForClusterQuorum(
 func jsClusterReady(
 	ctx context.Context, js jetstream.JetStream,
 ) (bool, error) {
-	info, err := js.AccountInfo(ctx)
+	probeCtx, cancel := context.WithTimeout(ctx, quorumProbeTimeout)
+	defer cancel()
+	info, err := js.AccountInfo(probeCtx)
 	if err != nil {
 		return false, err
 	}

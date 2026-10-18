@@ -30,10 +30,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `no_owner`, `owner_unavailable` and `busy` (the request was not
   processed), `owner_timeout` (it may have been), or `reply_too_large`
   (it was, but the reply does not fit). `timeout_ms` is 100 to 30000.
+- **`/health/cluster` reports real cluster state.** It now lists member
+  nodes (route connected, JetStream meta leader, caught up, lag), counts
+  live nodes (`nodes_up` of `nodes_expected`), and reports per-stream
+  `in_sync` from the replicas themselves. The stream and bucket lists
+  come from `natsutil`, so the nine provisioned streams and every bucket
+  are covered, and an unreachable one is named under
+  `jetstream.unavailable` instead of failing the whole report. Each
+  report names the answering node (`node`); caught-up and lag are
+  reported only by the meta leader.
+- **`api.cluster.health` on the NATS control API** returns the same
+  report, for callers that only talk to dagnats over NATS.
+- **`nats_cluster_port` / `DAGNATS_NATS_CLUSTER_PORT`** sets the route
+  listener port (default 6222), so several nodes can share a host.
+- A three-process cluster test (`make test-cluster-e2e`, CI job
+  `Cluster E2E`) kills a node and checks a second workflow completes.
+
+### Changed
+
+- **`/health/cluster` status semantics.** It used to report optimistic
+  numbers and could not go degraded from node loss. It now returns 503
+  when replicated streams or buckets lose quorum, and stays 200 (with the
+  names under `jetstream.degraded`) when only single-replica assets are
+  unreachable, so a per-node load-balancer check keeps the survivors in
+  rotation.
+- **`TELEMETRY`, `STICKY_TASKS` and `TRIGGER_HISTORY` use the cluster's
+  replication factor.** They were single-replica in a cluster, so losing
+  the node that held one made it unavailable. Existing deployments are
+  upgraded in place on restart.
+- **Startup provisioning shares one time budget** (30s standalone, 3
+  minutes in a cluster) instead of a fresh one per resource, and
+  `--die-with-parent` is armed before startup so a killed spawner cannot
+  leave a server stuck in startup.
+- **Config load rejects a bad `nats_cluster_port`** (out of range, or
+  equal to another listener's port).
 
 ### Fixed
 
 - An HTTP trigger request whose client hangs up while the run is still being started now answers 499 `client_closed`, the same as a hang-up while awaiting the response, instead of 500 "failed to publish trigger".
+- **Cluster start no longer stalls on a dropped JetStream request.**
+  The quorum wait gave its first `AccountInfo` probe the whole 60s
+  budget, so a probe sent before the meta leader was elected was never
+  retried; probes now time out after 2s and are retried. Stream and
+  bucket creation also retries on timeouts and "JetStream system
+  temporarily unavailable" (JetStream error 10008) instead of aborting
+  startup; other errors still fail at once.
+- **The `worker_tokens` bucket keeps its replication factor.** Starting
+  a node reset the bucket to a single replica; it now binds to the
+  bucket `SetupAll` provisioned.
+- Stream and bucket creation errors name the stream or bucket.
+
+### Documentation
+
+- Route TLS is not supported yet; `docs/production.md` says so and
+  recommends a private network or tailnet.
 
 ## [0.0.26] - 2026-10-17
 

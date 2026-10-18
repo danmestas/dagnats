@@ -18,6 +18,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `nats_cluster_name`       | string   | (none)                                             | (none)                                   |
 | `nats_cluster_routes`     | []string | (none)                                             | (none)                                   |
 | `nats_cluster_auth_token` | string   | (none)                                             | (none)                                   |
+| `nats_cluster_port`       | int      | `6222`                                             | `6222`                                   |
 | `nats_jetstream_replicas` | int      | `0` (auto-derive)                                  | `0` (auto-derive)                        |
 | `monitor_port`            | int      | (none)                                             | (none)                                   |
 | `max_store_bytes`         | int64    | half of free disk, capped at 10 GiB                | half of free disk, capped at 10 GiB      |
@@ -34,11 +35,12 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 
 ### Embedded cluster mode
 
-Four fields enable self-clustered topology (see [`production.md`](production.md#self-clustered--embedded-ha) for the deployment model):
+These fields enable self-clustered topology (see [`production.md`](production.md#self-clustered--embedded-ha) for the deployment model):
 
 - `nats_cluster_name` (string, default `""`) — Cluster name when running embedded cluster mode. Required when `nats_cluster_routes` is set.
 - `nats_cluster_routes` (string list, default `[]`) — Peer URLs (e.g. `nats://node-2:6222`) for embedded cluster mode. Mutually exclusive with `leaf_remotes`. Cap 10 entries.
 - `nats_cluster_auth_token` (string, default `""`) — Optional shared token for cluster route authentication. (Mapped to NATS `Cluster.Username` internally; functions as a shared secret across cluster peers.)
+- `nats_cluster_port` (int, default `6222`) — Port the node listens on for cluster routes. Set a distinct value per node when several nodes share a host. Route traffic is not TLS-encrypted; keep it on a private network.
 - `nats_jetstream_replicas` (int, default `0`) — JetStream replication factor override. Valid: `{0, 1, 3, 5}`. `0` means auto-derive from cluster size.
 
 ### Message size
@@ -65,6 +67,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_NATS_CLUSTER_NAME` | `nats_cluster_name` | Required with cluster routes |
 | `DAGNATS_NATS_CLUSTER_ROUTES` | `nats_cluster_routes` | Comma-separated, max 10 entries |
 | `DAGNATS_NATS_CLUSTER_AUTH_TOKEN` | `nats_cluster_auth_token` | Shared token across peers |
+| `DAGNATS_NATS_CLUSTER_PORT` | `nats_cluster_port` | Route listener port; default 6222 |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0`=auto |
 | `DAGNATS_MONITOR_PORT`    | `monitor_port`    | NATS monitoring HTTP port        |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |

@@ -112,3 +112,37 @@ func TestSetupAll_WithClusterOverrideHonored(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 }
+
+// hangOnceJS blocks its first AccountInfo until the caller's context ends,
+// like a clustered server that drops $JS.API.INFO before a meta leader is
+// elected; later calls succeed.
+type hangOnceJS struct {
+	jetstream.JetStream
+	calls int
+}
+
+func (h *hangOnceJS) AccountInfo(
+	ctx context.Context,
+) (*jetstream.AccountInfo, error) {
+	h.calls++
+	if h.calls == 1 {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return &jetstream.AccountInfo{}, nil
+}
+
+// TestWaitForClusterQuorum_RetriesHungProbe guards the root cause of
+// multi-process clusters never forming: one unanswered AccountInfo used the
+// whole quorum budget, so the poll loop never got a second attempt.
+func TestWaitForClusterQuorum_RetriesHungProbe(t *testing.T) {
+	js := &hangOnceJS{}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, err := WaitForClusterQuorum(ctx, js, 3); err != nil {
+		t.Fatalf("WaitForClusterQuorum: %v (calls=%d)", err, js.calls)
+	}
+	if js.calls < 2 {
+		t.Errorf("calls = %d, want a retry after the hung probe", js.calls)
+	}
+}

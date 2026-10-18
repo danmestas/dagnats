@@ -30,7 +30,7 @@ func streamConfigByName(
 	if err := SetupStreams(js, 1, 0); err != nil {
 		t.Fatalf("SetupStreams: %v", err)
 	}
-	if err := SetupTriggerHistoryStream(js, 0); err != nil {
+	if err := SetupTriggerHistoryStream(js, 0, 1); err != nil {
 		t.Fatalf("SetupTriggerHistoryStream: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(

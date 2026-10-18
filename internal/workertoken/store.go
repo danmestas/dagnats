@@ -75,6 +75,26 @@ type Store struct {
 	watchFailures metric.Int64Counter
 }
 
+// ensureBucket binds to the worker_tokens bucket if it exists and only
+// creates it when absent. natsutil.SetupAll provisions it at the
+// cluster's replication factor; a blind CreateOrUpdate here would reset
+// replicas to 1 on every node start, silently dropping HA for the bucket.
+func ensureBucket(
+	ctx context.Context, js jetstream.JetStream,
+) (jetstream.KeyValue, error) {
+	kv, err := js.KeyValue(ctx, bucketName)
+	if err == nil {
+		return kv, nil
+	}
+	if !errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, err
+	}
+	return js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:  bucketName,
+		History: 1,
+	})
+}
+
 // Open ensures the worker_tokens bucket exists, loads its current
 // contents into the cache, and starts the background watch that keeps
 // the cache current. ctx bounds only the initial ensure-bucket and
@@ -87,10 +107,7 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 	if js == nil {
 		panic("Open: js must not be nil")
 	}
-	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:  bucketName,
-		History: 1,
-	})
+	kv, err := ensureBucket(ctx, js)
 	if err != nil {
 		return nil, fmt.Errorf("ensure %s bucket: %w", bucketName, err)
 	}

@@ -44,6 +44,30 @@ func TestCluster_FreshClusterStreamsAtR3(t *testing.T) {
 	if got := s.CachedInfo().Config.Replicas; got != 3 {
 		t.Errorf("Replicas = %d, want 3", got)
 	}
+	assertAllProvisionedReplicated(t, ctx, js, 3)
+}
+
+// assertAllProvisionedReplicated fails for any stream or KV bucket SetupAll
+// provisions that is not at the wanted replica count: an R1 asset in a
+// cluster is a single point of failure for whatever depends on it.
+func assertAllProvisionedReplicated(
+	t *testing.T, ctx context.Context, js jetstream.JetStream, want int,
+) {
+	t.Helper()
+	names := natsutil.ProvisionedStreamNames()
+	for _, bucket := range natsutil.ProvisionedKVBucketNames() {
+		names = append(names, "KV_"+bucket)
+	}
+	for _, name := range names {
+		stream, err := js.Stream(ctx, name)
+		if err != nil {
+			t.Errorf("Stream %s: %v", name, err)
+			continue
+		}
+		if got := stream.CachedInfo().Config.Replicas; got != want {
+			t.Errorf("%s replicas = %d, want %d", name, got, want)
+		}
+	}
 }
 
 // TestCluster_MigrateR1ToR3 verifies that an existing R=1 stream
@@ -155,5 +179,59 @@ func TestCluster_HealthyClusterFastSetup(t *testing.T) {
 	if elapsed > setupSanityBudget {
 		t.Errorf("SetupAll took %v on healthy 3-node cluster; expected <%v",
 			elapsed, setupSanityBudget)
+	}
+}
+
+// TestCluster_MigrateSideStreamsR1ToR3 covers the streams SetupAll creates
+// outside SetupStreams (TELEMETRY, STICKY_TASKS, TRIGGER_HISTORY), which
+// used to stay single-replica in a cluster. Existing R=1 deployments must
+// upgrade in place on restart without losing messages.
+func TestCluster_MigrateSideStreamsR1ToR3(t *testing.T) {
+	nc := dagnatstest.StartTestCluster(t, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	if err := natsutil.SetupTelemetryStream(js, 0, 1); err != nil {
+		t.Fatalf("SetupTelemetryStream R=1: %v", err)
+	}
+	if err := natsutil.SetupStickyStream(js, 1); err != nil {
+		t.Fatalf("SetupStickyStream R=1: %v", err)
+	}
+	if err := natsutil.SetupTriggerHistoryStream(js, 0, 1); err != nil {
+		t.Fatalf("SetupTriggerHistoryStream R=1: %v", err)
+	}
+	subjects := map[string]string{
+		"TELEMETRY":       "telemetry.test",
+		"STICKY_TASKS":    "sticky.test",
+		"TRIGGER_HISTORY": "trigger.fire.test",
+	}
+	for name, subject := range subjects {
+		if _, err := js.Publish(ctx, subject, []byte("kept")); err != nil {
+			t.Fatalf("publish to %s: %v", name, err)
+		}
+	}
+
+	routes := []string{"a", "b"}
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithCluster(natsutil.ClusterOptions{Routes: routes}),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+
+	for name := range subjects {
+		stream, err := js.Stream(ctx, name)
+		if err != nil {
+			t.Fatalf("Stream %s: %v", name, err)
+		}
+		info := stream.CachedInfo()
+		if info.Config.Replicas != 3 {
+			t.Errorf("%s replicas = %d, want 3 after upgrade", name, info.Config.Replicas)
+		}
+		if info.State.Msgs != 1 {
+			t.Errorf("%s messages = %d, want 1 retained", name, info.State.Msgs)
+		}
 	}
 }

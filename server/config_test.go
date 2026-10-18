@@ -541,6 +541,31 @@ func TestValidateClusterConfig(t *testing.T) {
 			wantPanic: "leaf_remotes",
 		},
 		{
+			name: "cluster port out of range",
+			mut: func(c *Config) {
+				c.NATSClusterPort = 70000
+			},
+			wantPanic: "nats_cluster_port",
+		},
+		{
+			name: "cluster port collides with nats port",
+			mut: func(c *Config) {
+				c.NATSClusterName = "x"
+				c.NATSClusterRoutes = []string{"nats://a:6222", "nats://b:6222"}
+				c.NATSClusterPort = 4222
+			},
+			wantPanic: "collides with nats_port",
+		},
+		{
+			name: "default cluster port collides with http port",
+			mut: func(c *Config) {
+				c.NATSClusterName = "x"
+				c.NATSClusterRoutes = []string{"nats://a:6222", "nats://b:6222"}
+				c.HTTPAddr = "127.0.0.1:6222"
+			},
+			wantPanic: "collides with http_addr",
+		},
+		{
 			name: "valid clustered config",
 			mut: func(c *Config) {
 				c.NATSClusterName = "dagnats"

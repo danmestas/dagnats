@@ -1,0 +1,60 @@
+name: Cluster E2E
+
+# e2e/cluster starts three real `dagnats serve` processes on one host,
+# kills one, and proves the survivors keep completing workflows. It is
+# too heavy for ci.yml's `go test ./...` (three servers, ~30s), so that
+# job skips it (the test is opt-in via DAGNATS_E2E_CLUSTER=1) and this
+# dedicated job runs it, only when cluster-relevant code changes. It
+# proves process-level clustering, not cross-machine networking.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'e2e/cluster/**'
+      - 'server/**'
+      - 'internal/api/health_cluster*.go'
+      - 'internal/natsutil/**'
+      - 'internal/workertoken/**'
+      - 'internal/engine/**'
+      - 'internal/lease/**'
+      - 'worker/**'
+      - 'cmd/dagnats/**'
+      - go.mod
+      - go.sum
+      - '.github/workflows/cluster-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'e2e/cluster/**'
+      - 'server/**'
+      - 'internal/api/health_cluster*.go'
+      - 'internal/natsutil/**'
+      - 'internal/workertoken/**'
+      - 'internal/engine/**'
+      - 'internal/lease/**'
+      - 'worker/**'
+      - 'cmd/dagnats/**'
+      - go.mod
+      - go.sum
+      - '.github/workflows/cluster-e2e.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  cluster-e2e:
+    name: 3-process cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Multi-process cluster test
+        run: go test ./e2e/cluster/ -count=1 -timeout 600s -v
+        env:
+          DAGNATS_E2E_CLUSTER: "1"

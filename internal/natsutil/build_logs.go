@@ -79,6 +79,18 @@ func SetupBuildLogsStream(
 	ttl time.Duration,
 	replicas int,
 ) error {
+	ctx, cancel := provisionContext(false)
+	defer cancel()
+	return setupBuildLogsStream(ctx, js, maxStoreBytes, ttl, replicas)
+}
+
+func setupBuildLogsStream(
+	ctx context.Context,
+	js jetstream.JetStream,
+	maxStoreBytes int64,
+	ttl time.Duration,
+	replicas int,
+) error {
 	if js == nil {
 		panic("SetupBuildLogsStream: js must not be nil")
 	}
@@ -100,12 +112,7 @@ func SetupBuildLogsStream(
 	if cfg.Name == "" {
 		panic("SetupBuildLogsStream: stream name must not be empty")
 	}
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
-	defer cancel()
-	_, err := js.CreateOrUpdateStream(ctx, cfg)
-	return err
+	return createStreamWithRetry(ctx, js, cfg)
 }
 
 // LogSubject builds the BUILD_LOGS subject for one (attempt,
