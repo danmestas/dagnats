@@ -83,9 +83,11 @@ func (n *NATSAPI) leaseEndpoints() []endpointSpec {
 			n.leaseHandler(n.releaseLease), leaseQueueGroup},
 		{"leases-owner", "api.leases.owner",
 			n.leaseHandler(n.leaseOwner), leaseQueueGroup},
+		{"leases-forward", "api.leases.forward",
+			n.leaseForwardHandler(), leaseQueueGroup},
 	}
-	if len(specs) != 4 {
-		panic("leaseEndpoints: expected four lease subjects")
+	if len(specs) != 5 {
+		panic("leaseEndpoints: expected five lease subjects")
 	}
 	return specs
 }

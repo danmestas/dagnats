@@ -50,6 +50,9 @@ higher than the last holder's.
 | `api.leases.release` | `{key, holder, revision}` | `{granted:false, held:false, key}` |
 | `api.leases.owner` | `{key}` | the held shape, or `{held:false}` |
 
+A fifth subject, `api.leases.forward`, was added later. See "Forwarding to
+the owner" below.
+
 A failed call replies `{error, kind}`. `kind` is one of:
 
 - `invalid`: bad input.
@@ -131,6 +134,78 @@ stream directly. A stream-leader change during a write can, rarely, drop or
 repeat an event, so consumers should treat `Nats-Sequence` as the order and
 ignore any sequence they have already seen.
 
+### Forwarding to the owner: `api.leases.forward`
+
+*Added 2026-10-18.* A downstream service with several replicas (notify)
+needs to "send this request to whichever node owns key X". There were
+two options:
+
+- **(a)** A server endpoint, `api.leases.forward {key, payload,
+  timeout_ms}`. It looks up the owner and requests the owner's inbox
+  with the fence in a header.
+- **(b)** Documentation only: a subject convention plus "look up the
+  owner, then request it directly".
+
+**We chose (a), and (b)'s convention is its public half.** The question
+was whether the endpoint hides real complexity or is only an extra hop.
+Looking up the owner and sending one request is two calls. Doing that
+alone would be a pass-through. Forward is worth having because of what
+happens when the first attempt fails:
+
+- **Telling "not processed" from "maybe processed".** If nobody is
+  subscribed on the owner's inbox, or the owner rejects the fence, the
+  request was certainly not processed, so sending it again is safe. A
+  timeout is different: the owner may have done the work. Forward retries
+  only the first kind, and its error kinds tell the caller which one
+  happened (`no_owner` and `owner_unavailable` mean not processed;
+  `owner_timeout` means maybe). Each sender would otherwise have to get
+  this distinction right itself, and getting it wrong delivers a
+  non-idempotent request twice.
+- **A handoff in flight.** The lease can move between the lookup and the
+  delivery. Forward reads the lease again and retries only if the holder
+  or revision changed. That ends after 3 attempts at most, and it never
+  loops on an owner that keeps refusing.
+- **The fence stays out of the sender's hands.** dagnats stamps the
+  revision it read through the stream leader. The sender never handles a
+  fence, so it cannot send a stale one from a cache.
+- **A time budget.** `timeout_ms` (100 to 30000) bounds every lookup and
+  delivery together. Each forward runs on its own goroutine, because a
+  micro endpoint handles its requests on one goroutine. At most 256 run
+  at once on an instance; past that the caller gets `internal` right
+  away.
+
+The cost is an extra hop and a leader read for every forward, and dagnats
+now carries the payload. The convention is public for that reason: a
+sender that tracks the owner itself (from change events) can request the
+inbox directly with the fence header. The owner-side rule protects both
+paths.
+
+**Convention.**
+
+- The owner subscribes on `dagnats.lease.inbox.<holder>.>`. Holder IDs
+  are unique per process, so this needs no queue group.
+- A request for key `K` arrives on `dagnats.lease.inbox.<holder>.<K>`
+  with header `Dagnats-Lease-Fence: <revision>`.
+- Keys and holders are already single subject tokens, so the subject
+  needs no escaping.
+
+**Owner rule.** The owner remembers the revision its *acquire* returned,
+which is the start of its tenure. It rejects a request when:
+
+- it is not currently acting as owner;
+- the fence header is missing or malformed; or
+- the fence is lower than its tenure start.
+
+To reject, it replies with an empty body and `Dagnats-Lease-Reject:
+stale`. Comparing against the tenure start, not the latest revision,
+matters. Renew raises the revision on every call, so "reject anything
+below my latest revision" would refuse correct requests that were read
+just before a routine renew. Any fence read during an earlier tenure,
+this holder's or another's, is lower than the tenure start.
+
+**Degraded mode.** Without the `leases` bucket, forward replies
+`unsupported`, like the other lease subjects.
+
 ### Why request/reply and not a Go package
 
 The owner chose request/reply because it keeps the downstream boundary a wire
@@ -154,6 +229,12 @@ client for every language.
   neither call can stamp the event-kind header. Writes go through
   `TracingPublisher.JSPublishMsg` with `ExpectLastSequencePerSubject` and
   `Nats-TTL`, which is the same CAS that `kv.Update` performs.
+- **Forward that relays the client's reply subject** (dagnats publishes to
+  the owner's inbox with the caller's reply subject, so the owner answers
+  the caller directly). This saves a hop, but dagnats never sees the
+  outcome. It cannot retry after a handoff, and it cannot turn "no
+  responders" into an explicit error. Those two things are the reason to
+  have the endpoint at all.
 - **Sanitizing keys with `natsutil.SubjectToken`.** Rejected because of the
   collisions described above. Rejecting bad input defines the problem away.
 
@@ -174,5 +255,8 @@ client for every language.
   ID are, to this API, the same holder.
 - Renew events fire on every renewal. Consumers that only care about
   ownership changes should filter on `Dagnats-Lease-Event`.
+- An owner that accepts forwards must apply the owner rule itself.
+  dagnats only stamps the fence. It cannot know whether the owner process
+  still considers itself the owner.
 - The `leases` bucket is not part of `dagnats clean --type runs`. Leases
   belong to the downstream services, not to workflow runs.

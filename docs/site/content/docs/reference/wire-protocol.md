@@ -542,7 +542,8 @@ each lease's TTL, and the key's KV revision is the **fencing token**.
 
 ### Request/reply subjects
 
-All four subjects belong to the `dagnats-api` micro service and use queue
+These four subjects, and `api.leases.forward` below, belong to
+the `dagnats-api` micro service and use queue
 group `dagnats-leases`, so exactly one dagnats instance serves each request.
 Request and reply bodies are JSON.
 
@@ -618,6 +619,87 @@ Events are core NATS publishes, delivered at most once. A subscriber that
 reconnects should call `api.leases.owner` to resync. If you need durable
 delivery, consume the `KV_leases` stream directly. Use `Nats-Sequence` to
 order events and to drop duplicates.
+
+### Forwarding to the owner: `api.leases.forward`
+
+`api.leases.forward` sends a request to whichever process holds a key,
+without the sender knowing who that is. It is on the `dagnats-api`
+service with queue group `dagnats-leases`, like the other lease subjects.
+
+| Subject | Request | Success reply |
+|---|---|---|
+| `api.leases.forward` | `{"key","payload","timeout_ms"}` | `{"key","holder","revision","payload"}` |
+
+```json
+// request: payload is base64 (any bytes)
+{"key": "notify-shard-07", "payload": "aGVsbG8=", "timeout_ms": 2000}
+
+// reply: the owner's reply body, and the lease it was delivered under
+{"key": "notify-shard-07", "holder": "notify-7f3a", "revision": 42,
+ "payload": "b2s="}
+```
+
+dagnats reads the lease through the stream leader, then makes a NATS
+request to the owner's inbox. The request body is `payload` as raw bytes,
+and the request carries the lease revision as the fence. The owner's reply
+body comes back as `payload`. Owner reply headers are not relayed.
+`timeout_ms` must be 100 to 30000. It bounds the whole call, so set your
+own request timeout a little higher than `timeout_ms`.
+
+**Owner inbox convention.** A holder that accepts forwarded requests
+subscribes on `dagnats.lease.inbox.<holder>.>`. A request for key `K`
+arrives on `dagnats.lease.inbox.<holder>.<K>` with header
+`Dagnats-Lease-Fence: <revision>`. Use plain core NATS subscriptions and
+not a queue group: holder IDs are unique per process, so the subject
+already names exactly one process. Senders that track the owner
+themselves (for example from change events) may request this subject
+directly with the fence header and skip the dagnats hop. The owner rule
+below protects both paths.
+
+**Owner rule: when to reject a fence.** Remember the revision your
+**acquire** returned. That is the start of your tenure. Renew raises the
+revision, but the tenure stays the same. Reject a request when **any** of
+these is true:
+
+- you are not currently acting as owner of `K` (you never acquired it, you
+  released it, renew returned `lost`, or you are past `expires_at` without
+  a successful renew);
+- the `Dagnats-Lease-Fence` header is missing or is not an unsigned
+  integer;
+- the fence is lower than your tenure's acquire revision. A lower fence
+  was read during an earlier tenure, yours or another holder's.
+
+A fence that is equal to or higher than your tenure start is current.
+It can be higher than the last revision you have seen while your own
+renew reply is in flight. To reject, reply with an empty body and header
+`Dagnats-Lease-Reject: stale`. Do not process the request. Also send
+the fence on to any downstream writes you make while handling it (see
+"Fence downstream writes" below).
+
+**Retry rule.** dagnats re-sends only after an outcome that proves the
+owner did **not** process the request: nobody is subscribed on its inbox
+(no responders), or it replied with `Dagnats-Lease-Reject`. Then dagnats
+reads the lease again. If the holder or revision changed, it tries the new
+owner. That is how a handoff in flight succeeds. If nothing changed, it
+stops and reports `owner_unavailable`. A call makes at most 3 attempts.
+A timeout is never retried, because the owner may have processed the
+request.
+
+**Errors.** Forward uses the lease `{"error","kind"}` envelope. On an
+owner error, `holder` and `revision` name the owner it last tried.
+
+| `kind` | Meaning | Processed? |
+|---|---|---|
+| `no_owner` | Nobody holds the key. | No |
+| `owner_unavailable` | The holder had no inbox subscriber or refused the fence, and the lease did not move to anyone else. The holder probably died; its lease expires within `ttl_ms`. | No |
+| `owner_timeout` | The owner did not reply within `timeout_ms`. | **Maybe.** Retry only if the request is idempotent. |
+| `invalid` | Bad `key` or `timeout_ms`. | No |
+| `transport` | The request body is not valid JSON. | No |
+| `internal` | A NATS error, or this dagnats instance already has 256 forwards in flight. | Maybe |
+| `unsupported` | The `leases` bucket does not exist (nats-server older than 2.11). | No |
+
+The payload counts against the NATS `max_payload` on both hops, and base64
+adds a third to its size on the dagnats hop.
 
 ### Patterns and the fencing contract
 

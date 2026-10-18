@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mode. Leases need nats-server 2.11 or newer. On an older server dagnats
   still starts, and the lease subjects reply `kind: "unsupported"`. See
   "Coordination leases" in `docs/wire-protocol.md`.
+- **Forward a request to a lease's owner** (ADR-024). `api.leases.forward`
+  takes `{key, payload, timeout_ms}`, looks up the key's holder, and
+  requests `dagnats.lease.inbox.<holder>.<key>` with the lease revision in
+  the `Dagnats-Lease-Fence` header. Owners refuse a stale fence by
+  replying with `Dagnats-Lease-Reject: stale`; forward then re-reads the
+  lease and tries the new owner if it moved. Failures are explicit:
+  `no_owner` and `owner_unavailable` (the request was not processed) or
+  `owner_timeout` (it may have been). `timeout_ms` is 100 to 30000.
 
 ## [0.0.26] - 2026-10-17
 
