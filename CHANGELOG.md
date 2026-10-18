@@ -67,6 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A revoked worker token could briefly authorize again. If the token store's KV watch delivered the mint event after `Revoke` had already cached the revoked record, the older event overwrote it until the revoke event arrived. Cache updates now apply only when their KV revision is newer.
+
 - An HTTP trigger request whose client hangs up while the run is still being started now answers 499 `client_closed`, the same as a hang-up while awaiting the response, instead of 500 "failed to publish trigger".
 - **Cluster start no longer stalls on a dropped JetStream request.**
   The quorum wait gave its first `AccountInfo` probe the whole 60s

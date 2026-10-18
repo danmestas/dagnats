@@ -147,6 +147,44 @@ func TestRevokedTokenRejected(t *testing.T) {
 	}
 }
 
+// TestStaleWatchEventDoesNotUnrevoke pins the CI race behind a flaky
+// TestRevokedTokenRejected: the watch can deliver the mint event after
+// Revoke already cached the revoked record. Replaying that older entry
+// by hand makes the interleaving deterministic.
+func TestStaleWatchEventDoesNotUnrevoke(t *testing.T) {
+	store := newTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, bearer, err := store.Mint(ctx, "worker-a", []string{"echo"}, nil, "tester")
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	mintEntry, err := store.kv.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get mint entry: %v", err)
+	}
+	if err := store.Revoke(ctx, id); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	store.applyEntry(mintEntry)
+	// Positive: the late, older event left the token revoked.
+	if _, err := store.Authorize(bearer); err == nil {
+		t.Fatal("stale mint event un-revoked the token")
+	}
+	// Negative: a newer event still applies.
+	revokedEntry, err := store.kv.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get revoked entry: %v", err)
+	}
+	if revokedEntry.Revision() <= mintEntry.Revision() {
+		t.Fatalf("revisions not increasing: %d then %d",
+			mintEntry.Revision(), revokedEntry.Revision())
+	}
+	if tok, ok := store.Lookup(id); !ok || tok.RevokedAt == nil {
+		t.Fatalf("Lookup after revoke = %+v, %v", tok, ok)
+	}
+}
+
 func TestMintPrefixBounds(t *testing.T) {
 	store := newTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -63,6 +63,12 @@ type Store struct {
 
 	mu     sync.RWMutex
 	tokens map[string]Token // id -> Token, includes revoked (for List/audit)
+	// revisions holds the KV revision behind each cached entry. Mint and
+	// Revoke update the cache from their own write before the watch
+	// replays it, so a watch event older than the cached revision is
+	// stale and must not overwrite it -- applying the mint event after a
+	// local Revoke briefly un-revoked the token.
+	revisions map[string]uint64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -128,6 +134,7 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 		kv:            kv,
 		stream:        stream,
 		tokens:        make(map[string]Token),
+		revisions:     make(map[string]uint64),
 		ctx:           watchCtx,
 		cancel:        cancel,
 		watchFailures: watchFailures,
@@ -203,9 +210,25 @@ func (s *Store) loadAll(ctx context.Context) error {
 				"key", key, "error", err)
 			continue
 		}
-		s.tokens[key] = tok
+		s.storeLocked(key, tok, entry.Revision())
 	}
 	return nil
+}
+
+// storeLocked caches tok for key unless the cache already holds a newer
+// revision. Callers hold s.mu for writing.
+func (s *Store) storeLocked(key string, tok Token, revision uint64) {
+	if key == "" {
+		panic("storeLocked: key must not be empty")
+	}
+	if revision == 0 {
+		panic("storeLocked: revision must be positive")
+	}
+	if revision <= s.revisions[key] {
+		return
+	}
+	s.revisions[key] = revision
+	s.tokens[key] = tok
 }
 
 // watchLoop keeps the cache current for the life of the Store,
@@ -280,7 +303,10 @@ func (s *Store) applyEntry(entry jetstream.KeyValueEntry) {
 	defer s.mu.Unlock()
 	if entry.Operation() == jetstream.KeyValueDelete ||
 		entry.Operation() == jetstream.KeyValuePurge {
+		// The key's last event: dropping its revision too keeps the
+		// map bounded by the cache.
 		delete(s.tokens, entry.Key())
+		delete(s.revisions, entry.Key())
 		return
 	}
 	var tok Token
@@ -289,7 +315,7 @@ func (s *Store) applyEntry(entry jetstream.KeyValueEntry) {
 			"key", entry.Key(), "error", err)
 		return
 	}
-	s.tokens[entry.Key()] = tok
+	s.storeLocked(entry.Key(), tok, entry.Revision())
 }
 
 // sleep blocks for d or until the Store's context is cancelled,
@@ -394,11 +420,12 @@ func (s *Store) Mint(
 	// would mean two tokens overwriting each other's secret — Create
 	// turns that astronomically unlikely event into a loud error
 	// instead of silent data loss.
-	if _, err := s.kv.Create(ctx, id, data); err != nil {
+	revision, err := s.kv.Create(ctx, id, data)
+	if err != nil {
 		return "", "", fmt.Errorf("mint token: %w", err)
 	}
 	s.mu.Lock()
-	s.tokens[id] = tok
+	s.storeLocked(id, tok, revision)
 	s.mu.Unlock()
 	return id, "dgn_" + id + "_" + secret, nil
 }
@@ -573,11 +600,12 @@ func (s *Store) Revoke(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("marshal token: %w", err)
 	}
-	if _, err := s.kv.Put(ctx, id, data); err != nil {
+	revision, err := s.kv.Put(ctx, id, data)
+	if err != nil {
 		return fmt.Errorf("revoke token: %w", err)
 	}
 	s.mu.Lock()
-	s.tokens[id] = tok
+	s.storeLocked(id, tok, revision)
 	s.mu.Unlock()
 	s.pruneOldestRevoked(ctx)
 	return nil
