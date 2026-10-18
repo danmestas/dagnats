@@ -52,6 +52,9 @@ func TestHTTPTrigger_FailureModes(t *testing.T) {
 		t.Run("client_cancelled", func(t *testing.T) {
 			testFailureClientCancelled(t, nc)
 		})
+		t.Run("client_cancelled_before_publish", func(t *testing.T) {
+			testFailureClientCancelledBeforePublish(t, nc)
+		})
 		t.Run("no_respond", func(t *testing.T) {
 			testFailureNoRespond(t, nc)
 		})
@@ -348,6 +351,44 @@ func testFailureClientCancelled(
 		`"error":"client_closed"`) {
 		t.Fatalf("body = %q, want client_closed",
 			rec.Body.String())
+	}
+}
+
+// testFailureClientCancelledBeforePublish pins the race the timed
+// client_cancelled case could hit under load: a client gone before the
+// workflow.started publish completes must still read as 499, not 500.
+func testFailureClientCancelledBeforePublish(
+	t *testing.T, nc *nats.Conn,
+) {
+	t.Helper()
+	stack := startHTTPE2EStack(t, nc)
+	wfDef := dag.WorkflowDef{
+		Name: harness.UniqueName(t, "early-cancel-wf"), Version: "v1",
+		Steps: []dag.StepDef{
+			respondStepDef(t, "respond", nil,
+				dag.RespondConfig{Status: 200}),
+		},
+	}
+	_, path := stack.registerHTTPTrigger(t, wfDef,
+		&trigger.HTTPConfig{
+			Path:         "/" + harness.UniqueName(t, "early"),
+			Method:       http.MethodPost,
+			TimeoutMs:    10_000,
+			MaxBodyBytes: 1024,
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, path, nil).
+		WithContext(ctx)
+	rec := httptest.NewRecorder()
+	stack.router.ServeHTTP(rec, req)
+
+	if rec.Code != 499 {
+		t.Fatalf("status = %d, want 499; body=%s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"error":"client_closed"`) {
+		t.Fatalf("body = %q, want client_closed", rec.Body.String())
 	}
 }
 

@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still starts, and the lease subjects reply `kind: "unsupported"`. See
   "Coordination leases" in `docs/wire-protocol.md`.
 
+### Fixed
+
+- An HTTP trigger request whose client hangs up while the run is still being started now answers 499 `client_closed`, the same as a hang-up while awaiting the response, instead of 500 "failed to publish trigger".
+
 ## [0.0.26] - 2026-10-17
 
 ### Changed

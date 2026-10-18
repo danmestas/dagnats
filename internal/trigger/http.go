@@ -253,6 +253,13 @@ func (h *HTTPHandler) buildAndPublish(
 		ctx, envelope, runID, r,
 	); err != nil {
 		RecordFiring(ctx, TypeHTTP, OutcomeError)
+		// A client that hangs up mid-publish is the same 499 as one that
+		// hangs up while awaiting the response, not a server fault.
+		if r.Context().Err() != nil {
+			http.Error(w,
+				`{"error":"client_closed","run_id":"`+runID+`"}`, 499)
+			return false
+		}
 		http.Error(w, "failed to publish trigger",
 			http.StatusInternalServerError)
 		return false
