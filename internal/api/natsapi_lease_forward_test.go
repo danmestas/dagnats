@@ -12,6 +12,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -45,6 +46,7 @@ type testOwner struct {
 	onRequest   func(*nats.Msg) // optional hook run before the fence check
 	silent      bool            // never reply: a hung owner
 	replyBytes  int             // >0: reply with this many bytes instead of an echo
+	t           *testing.T      // set by start; callbacks report through it
 }
 
 func newOwner(holder string, tenure uint64) *testOwner {
@@ -62,6 +64,7 @@ func startOwner(t *testing.T, nc *nats.Conn, holder string, tenure uint64) *test
 // callback goroutine reads them without synchronization.
 func (o *testOwner) start(t *testing.T, nc *nats.Conn) *testOwner {
 	t.Helper()
+	o.t = t
 	subject := lease.InboxSubjectPrefix + "." + o.holder + ".>"
 	sub, err := nc.Subscribe(subject, o.handle)
 	if err != nil {
@@ -92,16 +95,37 @@ func (o *testOwner) handle(msg *nats.Msg) {
 		o.rejected.Add(1)
 		reject := nats.NewMsg(msg.Reply)
 		reject.Header.Set(lease.RejectHeader, lease.RejectStale)
-		_ = msg.RespondMsg(reject)
+		o.respondMsg(msg, reject)
 		return
 	}
 	o.lastFence.Store(fence)
 	o.processed.Add(1)
 	if o.replyBytes > 0 {
-		_ = msg.Respond(make([]byte, o.replyBytes))
+		o.respond(msg, make([]byte, o.replyBytes))
 		return
 	}
-	_ = msg.Respond(append([]byte(o.holder+":"), msg.Data...))
+	o.respond(msg, append([]byte(o.holder+":"), msg.Data...))
+}
+
+// respond replies with data, failing the test on any error but a closed
+// connection (a callback can outlive the test's server).
+func (o *testOwner) respond(msg *nats.Msg, data []byte) {
+	reply := nats.NewMsg(msg.Reply)
+	reply.Data = data
+	o.respondMsg(msg, reply)
+}
+
+func (o *testOwner) respondMsg(msg, reply *nats.Msg) {
+	if err := msg.RespondMsg(reply); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		o.t.Errorf("owner %s respond: %v", o.holder, err)
+	}
+}
+
+func unsubscribe(t *testing.T, sub *nats.Subscription) {
+	t.Helper()
+	if err := sub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		t.Errorf("unsubscribe: %v", err)
+	}
 }
 
 func forwardCall(t *testing.T, nc *nats.Conn, body any) forwardWireReply {
@@ -388,12 +412,18 @@ func TestLeaseForwardHungOwnerDoesNotBlockOthers(t *testing.T) {
 	hung.start(t, nc)
 	startOwner(t, nc, "notify-b", acquireFor(t, nc, "shard-2", "notify-b"))
 
+	data, err := json.Marshal(forwardBody("shard-1", "x", 3000))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 	first := make(chan forwardWireReply, 1)
 	go func() {
-		data, _ := json.Marshal(forwardBody("shard-1", "x", 3000))
 		var reply forwardWireReply
-		if msg, err := nc.Request("api.leases.forward", data, 10*time.Second); err == nil {
-			_ = json.Unmarshal(msg.Data, &reply)
+		msg, err := nc.Request("api.leases.forward", data, 10*time.Second)
+		if err != nil {
+			t.Errorf("hung forward request: %v", err)
+		} else if err := json.Unmarshal(msg.Data, &reply); err != nil {
+			t.Errorf("hung forward: unmarshal %q: %v", msg.Data, err)
 		}
 		first <- reply
 	}()
@@ -425,8 +455,8 @@ func TestLeaseForwardPastCapIsBusy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	parked, err := json.Marshal(forwardBody("shard-1", "x", 5000))
+	t.Cleanup(func() { unsubscribe(t, sub) })
+	parked, err := json.Marshal(forwardBody("shard-1", "x", 2000))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -441,6 +471,17 @@ func TestLeaseForwardPastCapIsBusy(t *testing.T) {
 	}
 	if early, err := sub.NextMsg(10 * time.Millisecond); err == nil {
 		t.Fatalf("a parked forward replied early: %s", early.Data)
+	}
+	// Every parked forward times out and must hand its slot back.
+	for i := 0; i < forwardInFlightMax; i++ {
+		if _, err := sub.NextMsg(10 * time.Second); err != nil {
+			t.Fatalf("parked forward %d never replied: %v", i, err)
+		}
+	}
+	after := forwardCall(t, nc, forwardBody("shard-1", "z", 200))
+	if after.Kind != leaseKindOwnerTimeout || after.Holder != "notify-a" {
+		t.Fatalf("forward after the parked ones finished = %+v, "+
+			"want owner_timeout (slots released), not busy", after)
 	}
 }
 
@@ -508,7 +549,7 @@ func TestLeaseForwardStopCancelsInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	t.Cleanup(func() { unsubscribe(t, sub) })
 	data, err := json.Marshal(forwardBody("shard-1", "x", 20000))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
