@@ -364,6 +364,30 @@ func (h *runTerminalTestHarness) countChainedRuns(
 	return count
 }
 
+// waitRunEventPublished blocks until the terminal RunEvent for runID is
+// on the EVENTS stream. finalizeRun persists the terminal snapshot BEFORE
+// it publishes the event, so waitRunStatus alone returns inside that gap;
+// a deliver-new consumer created there sees the event as new and fires.
+func (h *runTerminalTestHarness) waitRunEventPublished(
+	workflow, runID, status string,
+) {
+	h.t.Helper()
+	stream, err := h.jsv2.Stream(context.Background(), "EVENTS")
+	if err != nil {
+		h.t.Fatalf("EVENTS stream: %v", err)
+	}
+	subject := "event.run." + natsutil.SubjectToken(workflow) + "." +
+		runID + "." + status
+	for i := 0; i < runTerminalPollMax; i++ {
+		_, err := stream.GetLastMsgForSubject(context.Background(), subject)
+		if err == nil {
+			return
+		}
+		time.Sleep(runTerminalPollInterval)
+	}
+	h.t.Fatalf("RunEvent %q not published within timeout", subject)
+}
+
 // countTaskMessages counts every message ever published to subject on
 // TASK_QUEUES (#634 review round 3: dedup-by-run-count is not enough
 // to catch a healRun that double-DISPATCHES a single step's task --
@@ -602,6 +626,7 @@ func TestRunTerminalTrigger_DeliverNewPolicyIgnoresHistoricalEvents(t *testing.T
 		h.waitRunStatus(runID, dag.RunStatusRunning)
 		h.completeStep(runID, "a")
 		h.waitRunStatus(runID, dag.RunStatusCompleted)
+		h.waitRunEventPublished(wfA.Name, runID, "completed")
 	}
 
 	h.activateRunTerminal(TriggerDef{
