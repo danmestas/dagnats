@@ -73,7 +73,7 @@ w.Handle("send-email", func(ctx worker.TaskContext) error {
 })
 ```
 
-Call exactly one of `Complete`, `Fail`, `FailPermanent`, `FailRetryAfter`, or `Continue` per execution. Returning a non-nil error from the handler triggers a retry via `NakWithDelay(5s)`.
+Call exactly one of `Complete`, `Fail`, `FailPermanent`, `FailRetryAfter`, or `Continue` per execution. Returning a non-nil error from the handler reports a retriable failure, so the step's retry policy decides whether and when to retry (a `worker.NonRetryableError` fails permanently, a `worker.RateLimitError` retries after its delay).
 
 ## Lifecycle
 

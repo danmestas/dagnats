@@ -70,7 +70,7 @@ The engine resolves the effective retry policy for each step using this preceden
 
 ## NATS Implementation
 
-Retries use NATS **NakWithDelay** -- the engine NAKs the failed task message with the computed delay. NATS redelivers the message after the delay expires. This eliminates the need for a separate timer service or retry queue.
+The engine owns retries. The worker acks the failed task and reports `step.failed`; the engine computes the delay and schedules a durable `retry_backoff` timer on the `SLEEP_TIMERS` stream (itself a `NakWithDelay`). When the timer fires, the engine dispatches a fresh task for the next attempt, which gets the full step timeout. There is no separate timer service or retry queue.
 
 ```mermaid
 sequenceDiagram
@@ -78,11 +78,15 @@ sequenceDiagram
     participant NATS as TASK_QUEUES
     participant Engine
 
+    participant Timers as SLEEP_TIMERS
+
     Worker->>Engine: step.failed (retriable)
     Engine->>Engine: calculate delay (attempt 2)
-    Engine->>NATS: NakWithDelay(4s)
-    Note over NATS: waits 4 seconds
-    NATS->>Worker: redeliver task
+    Engine->>Timers: schedule retry_backoff (4s)
+    Note over Timers: waits 4 seconds
+    Timers->>Engine: timer fires
+    Engine->>NATS: dispatch attempt 2
+    NATS->>Worker: deliver task
 ```
 
 ## Non-Retryable Errors
@@ -90,13 +94,12 @@ sequenceDiagram
 Workers can signal that a failure should **not** be retried by calling `FailPermanent()`:
 
 ```go
-w.Handle("validate", func(ctx worker.TaskContext) {
+w.Handle("validate", func(ctx worker.TaskContext) error {
     input := ctx.Input()
     if !isValid(input) {
-        ctx.FailPermanent(fmt.Errorf("invalid input: %s", input))
-        return
+        return ctx.FailPermanent(fmt.Errorf("invalid input: %s", input))
     }
-    ctx.Complete(map[string]any{"valid": true})
+    return ctx.Complete([]byte(`{"valid":true}`))
 })
 ```
 

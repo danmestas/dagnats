@@ -4,7 +4,11 @@
   "title": "DagNats Workflow Definition",
   "description": "JSON Schema for DagNats workflow definitions",
   "type": "object",
-  "required": ["name", "version", "steps"],
+  "required": [
+    "name",
+    "version",
+    "steps"
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -38,7 +42,10 @@
       "description": "Workflow-level parallelism limits"
     },
     "timeout": {
-      "type": ["string", "number"],
+      "type": [
+        "string",
+        "number"
+      ],
       "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
       "description": "Overall workflow deadline (Go duration string or nanoseconds)"
     },
@@ -54,12 +61,51 @@
       "items": {
         "$ref": "#/$defs/TriggerDef"
       }
+    },
+    "aux_steps": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "description": "Steps whose outcome does not decide the run's status"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Input path whose value dedups run starts"
+    },
+    "sticky": {
+      "type": "string",
+      "enum": [
+        "",
+        "soft",
+        "hard"
+      ],
+      "description": "Worker affinity strategy"
+    },
+    "priority": {
+      "type": "object",
+      "description": "Input-driven dispatch priority (key, rules, default_offset)"
+    },
+    "cancel_on": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object"
+      },
+      "description": "Events that cancel the run"
+    },
+    "singleton": {
+      "type": "object",
+      "description": "One run at a time: mode (skip or cancel), optional key"
     }
   },
   "$defs": {
     "StepDef": {
       "type": "object",
-      "required": ["id", "task"],
+      "required": [
+        "id",
+        "task"
+      ],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -85,7 +131,10 @@
           "description": "Legacy retry count (prefer retry policy)"
         },
         "timeout": {
-          "type": ["string", "number"],
+          "type": [
+            "string",
+            "number"
+          ],
           "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
           "description": "Per-step execution deadline (Go duration string or nanoseconds)"
         },
@@ -98,15 +147,16 @@
             "agent",
             "map",
             "sleep",
+            "wait_for_event",
             "approval",
             "planner",
             "respond"
           ],
           "description": "Execution semantics"
         },
-        "loop": {
-          "$ref": "#/$defs/AgentLoopConfig",
-          "description": "Required when type is agent_loop"
+        "config": {
+          "type": "object",
+          "description": "Type-specific settings: AgentLoopConfig for agent_loop, sleep/map/approval/respond/wait_for_event/planner/sub_workflow settings for those types"
         },
         "skip_if": {
           "$ref": "#/$defs/ParentCond",
@@ -137,14 +187,35 @@
         },
         "required_capabilities": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "description": "Runtime capabilities the handler requires (e.g. 'control-plane'). Gates capability handles on TaskContext."
+        },
+        "rate_limit": {
+          "type": "object",
+          "description": "limit dispatches per period for this step's task"
+        },
+        "keyed_rate_limit": {
+          "type": "object",
+          "description": "Rate limit per input key (key, limit, period, units)"
+        },
+        "max_task_concurrency": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Max in-flight tasks of this step's task type; 0 = unlimited"
+        },
+        "singleton": {
+          "type": "boolean",
+          "description": "Only one instance of this step runs at a time"
         }
       }
     },
     "TriggerDef": {
       "type": "object",
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "additionalProperties": false,
       "description": "Trigger declaration: exactly one of cron, subject, webhook, or http must be present.",
       "properties": {
@@ -169,27 +240,43 @@
               "type": "string",
               "description": "5-field cron expression: minute hour day-of-month month day-of-week. Sub-minute scheduling is not supported (the trigger engine has minute-precision dedup). 6-field forms with a leading seconds field are rejected."
             },
-            "timezone": {"type": "string"},
-            "backfill": {"type": "boolean"}
+            "timezone": {
+              "type": "string"
+            },
+            "backfill": {
+              "type": "boolean"
+            }
           },
-          "required": ["expression"]
+          "required": [
+            "expression"
+          ]
         },
         "subject": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "subject": {"type": "string"}
+            "subject": {
+              "type": "string"
+            }
           },
-          "required": ["subject"]
+          "required": [
+            "subject"
+          ]
         },
         "webhook": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "path": {"type": "string"},
-            "secret": {"type": "string"}
+            "path": {
+              "type": "string"
+            },
+            "secret": {
+              "type": "string"
+            }
           },
-          "required": ["path"]
+          "required": [
+            "path"
+          ]
         },
         "http": {
           "type": "object",
@@ -202,7 +289,13 @@
             },
             "method": {
               "type": "string",
-              "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+              "enum": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE"
+              ]
             },
             "timeout_ms": {
               "type": "integer",
@@ -224,22 +317,43 @@
               "description": "Optional header name (e.g. Idempotency-Key) whose value replays the prior run's response from KV."
             }
           },
-          "required": ["path", "method", "timeout_ms", "max_body_bytes"]
+          "required": [
+            "path",
+            "method",
+            "timeout_ms",
+            "max_body_bytes"
+          ]
         },
         "debounce": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "period": {"type": ["string", "number"]},
-            "timeout": {"type": ["string", "number"]},
-            "key": {"type": "string"}
+            "period": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "timeout": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "key": {
+              "type": "string"
+            }
           }
         }
       }
     },
     "RetryPolicy": {
       "type": "object",
-      "required": ["max_attempts", "strategy", "initial_delay"],
+      "required": [
+        "max_attempts",
+        "strategy",
+        "initial_delay"
+      ],
       "additionalProperties": false,
       "properties": {
         "max_attempts": {
@@ -249,16 +363,26 @@
         },
         "strategy": {
           "type": "string",
-          "enum": ["fixed", "linear", "exponential"],
+          "enum": [
+            "fixed",
+            "linear",
+            "exponential"
+          ],
           "description": "Backoff algorithm"
         },
         "initial_delay": {
-          "type": ["string", "number"],
+          "type": [
+            "string",
+            "number"
+          ],
           "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
           "description": "Base delay between attempts (Go duration string or nanoseconds)"
         },
         "max_delay": {
-          "type": ["string", "number"],
+          "type": [
+            "string",
+            "number"
+          ],
           "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
           "description": "Delay cap; 0 means uncapped (Go duration string or nanoseconds)"
         },
@@ -270,7 +394,9 @@
     },
     "AgentLoopConfig": {
       "type": "object",
-      "required": ["max_iterations"],
+      "required": [
+        "max_iterations"
+      ],
       "additionalProperties": false,
       "properties": {
         "max_iterations": {
@@ -279,14 +405,30 @@
           "description": "Upper bound on loop cycles; must be > 0"
         },
         "max_duration": {
-          "type": ["string", "number"],
+          "type": [
+            "string",
+            "number"
+          ],
           "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
           "description": "Wall-clock limit (Go duration string or nanoseconds)"
         },
         "loop_delay": {
-          "type": ["string", "number"],
+          "type": [
+            "string",
+            "number"
+          ],
           "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)+$",
           "description": "Pause between iterations (Go duration string or nanoseconds)"
+        },
+        "budget_warn_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Advisory iteration to warn the model"
+        },
+        "budget_force_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Advisory iteration to force a wrap-up"
         }
       }
     },
@@ -308,7 +450,12 @@
     },
     "ParentCond": {
       "type": "object",
-      "required": ["step_id", "field", "op", "value"],
+      "required": [
+        "step_id",
+        "field",
+        "op",
+        "value"
+      ],
       "additionalProperties": false,
       "properties": {
         "step_id": {
@@ -323,7 +470,14 @@
         },
         "op": {
           "type": "string",
-          "enum": ["==", "!=", "<", ">", "<=", ">="],
+          "enum": [
+            "==",
+            "!=",
+            "<",
+            ">",
+            "<=",
+            ">="
+          ],
           "description": "Comparison operator"
         },
         "value": {

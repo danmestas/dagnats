@@ -16,7 +16,7 @@ DAG-based workflow engine built on NATS for autonomous LLM coding pipelines.
 
 ## Architecture
 
-Five components: `dag/` (pure DAG logic), `engine/` (orchestrator), `worker/` (task framework), `api/` (control plane), `cli/` (CLI client). `natsutil/` owns NATS resource setup; other packages may import `nats.go` for runtime operations.
+Five components: `dag/` (pure DAG logic), `internal/engine/` (orchestrator), `worker/` (task framework), `internal/api/` (control plane), `cli/` (CLI client). `internal/natsutil/` owns NATS resource setup; other packages may import `nats.go` for runtime operations.
 
 `docs/architecture/` contains two kinds of files:
 
@@ -25,6 +25,7 @@ Five components: `dag/` (pure DAG logic), `engine/` (orchestrator), `worker/` (t
   - `adr-002-durable-agent-loop.md` — durable agent loop via dagnats primitives
   - `adr-003-sidecar-dx-improvements.md` — sidecar DX improvements
   - `adr-004-lazy-orchestrator-subsystems.md` — lazy orchestrator subsystems
+  - `adr-005` … `adr-023` — cluster mode, consumers, retry authority, HTTP triggers, console, trigger registrar, services, `dagnats.yaml` hot reload, WebSocket, agent runtimes, gated writes, `dagnatstest` coupling. `docs/architecture/README.md` indexes all of them.
 - **Design notes** (everything else, e.g., `core-design.md`, `agent-system.md`) — background reading. May be superseded by later ADRs; check the file header for status.
 
 When adding a new decision, write a numbered ADR. When taking notes that don't represent a decision, use a descriptive filename without the `adr-` prefix.
@@ -46,7 +47,7 @@ When adding a new decision, write a numbered ADR. When taking notes that don't r
 
 - **Red-green TDD.** Write a failing test first, then the minimal code to pass it, then refactor.
 - `dag/` package: pure unit tests, no NATS
-- `engine/`, `worker/`: integration tests with real embedded NATS server
+- `internal/engine/`, `worker/`: integration tests with real embedded NATS server
 - E2E: full workflow lifecycle with real workers
 - Minimum 2 assertions per test (positive + negative space)
 - Bounded timeouts on all test waits
@@ -65,7 +66,7 @@ When adding a new decision, write a numbered ADR. When taking notes that don't r
 
 Use NATS primitives instead of custom infrastructure:
 - `NakWithDelay` for retries (no timer service)
-- `AckWait` + `MaxDeliver` for timeouts
+- `AckWait` for worker claims; step timeouts are engine watchdog timers in `SLEEP_TIMERS`
 - KV watches for cross-workflow signals (no bridge service)
 - `Nats-Msg-Id` for dedup
 - `micro` framework for internal API

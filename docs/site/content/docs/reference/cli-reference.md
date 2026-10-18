@@ -117,6 +117,14 @@ dagnats workflow validate workflow.json --json
 # {"valid":true,"name":"code-review","steps":5}
 ```
 
+### workflow delete
+
+Delete a registered workflow definition. Historical run records are not touched. The command refuses (exit code 2) while a trigger still references the workflow or a run of it has not finished; `--force` overrides both checks.
+
+```
+dagnats workflow delete <name> [--force] [--json]
+```
+
 ---
 
 ## run
@@ -352,21 +360,31 @@ dagnats run list [flags] [--json]
 
 | Flag | Description |
 |------|-------------|
-| `--workflow=ID` | Filter by workflow ID |
-| `--status=STATUS` | Filter by status (client-side) |
+| `--workflow=NAME` | Filter by workflow name |
+| `--state=STATE` | Filter by run state: `pending`, `running`, `completed`, `failed`, `cancelled`, `compensated`, `compensate_failed` (case-insensitive; `--status` is an alias) |
+| `--limit=N` | Max rows to fetch (default 1000, max 10000) |
+| `--since=WHEN` | Keep runs created since WHEN (a duration like `24h`, or RFC3339) |
 | `--scheduled` | List scheduled (pending) runs instead |
 
 **Output columns:** RUN_ID, WORKFLOW, STATUS, CREATED, STEPS
 
 **Example:**
 ```bash
-dagnats run list --workflow=deploy --status=failed
+dagnats run list --workflow=deploy --state=failed
 # RUN_ID     WORKFLOW  STATUS  CREATED              STEPS
 # a1b2c3d4   deploy    failed  2025-01-15 09:00:00  3
 
 dagnats run list --scheduled
 # RUN ID    WORKFLOW  RUN AT                    STATUS
 # a1b2c3d4  deploy    2025-01-16T09:00:00Z      scheduled
+```
+
+### run count
+
+Count runs matching the same filters as `run list` without fetching any rows. Prints a bare number, or `{"count":N}` with `--json`.
+
+```
+dagnats run count [--workflow=NAME] [--state=STATE] [--since=WHEN] [--json]
 ```
 
 ### run events
@@ -547,6 +565,14 @@ Disable a trigger without deleting it.
 
 ```
 dagnats trigger disable <trigger-id> [--json]
+```
+
+### trigger fire
+
+Fire a cron or webhook trigger now, outside its schedule. Prints the ID of the run it started.
+
+```
+dagnats trigger fire <trigger-id> [--json]
 ```
 
 ### trigger history
@@ -1037,6 +1063,145 @@ dagnats clean --type=runs --keep=30000 --dry-run
 
 dagnats clean --force --json
 # {"streams_purged":5,"buckets_cleared":10,"errors":0,"ceiling":{"targets_checked":13,"targets_exceeded":0,"targets_purged":0}}
+```
+
+---
+
+## trace
+
+View the span tree for a run, or search traces.
+
+```
+dagnats trace <run-id> [--json]
+dagnats trace search [flags] [--json]
+```
+
+| Flag (search) | Description |
+|------|-------------|
+| `--service=X` | Filter by service name |
+| `--status=S` | Filter by status: `ok` or `error` |
+| `--since=DUR` | Lookback duration (default `1h`) |
+| `--limit=N` | Max traces (default 100) |
+
+---
+
+## metrics
+
+Show recent snapshots of one metric.
+
+```
+dagnats metrics show --name=X [--since=DUR] [--service=X] [--json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--name=X` | Metric name (required) |
+| `--since=DUR` | Lookback duration (default `5m`) |
+| `--service=X` | Filter by service name |
+
+---
+
+## singleton
+
+List and release singleton locks.
+
+```
+dagnats singleton list [--workflow=X] [--json]
+dagnats singleton release <key> [--json]
+```
+
+`release` deletes the lock, so the next run of a singleton workflow can start. Use it to clear a lock left behind by a run that will not finish on its own.
+
+---
+
+## service
+
+List services registered through the NATS micro framework.
+
+```
+dagnats service list [--json]
+```
+
+---
+
+## trigger-type
+
+Inspect external trigger types registered with the server.
+
+```
+dagnats trigger-type list [--json]
+dagnats trigger-type describe <name> [--json]
+```
+
+`describe` prints the full trigger type definition.
+
+---
+
+## demo
+
+Seed demo data against a running server.
+
+```
+dagnats demo seed [flags]
+```
+
+Seeds runs and drives each to a terminal state using an in-process no-op worker (default mix: 70% completed, 20% failed, 10% cancelled).
+
+| Flag | Description |
+|------|-------------|
+| `--count=N` | Number of runs to seed (default 10, max 1000) |
+| `--include-failed` | Force at least one failed and one cancelled run |
+| `--timeout=DUR` | Max wait for all runs to finish (default 5s, max 60s) |
+| `--keep-alive` | Register several demo workflows and cron triggers, keep the worker running, and keep starting runs until `--max-runs` or Ctrl+C (`--rich` is an alias) |
+| `--max-runs=N` | Cap on total runs in keep-alive mode (default 300, max 100000) |
+| `--interval=DUR` | Delay between batches in keep-alive mode (default 3s, range 100ms to 60s) |
+| `--json` | Print terminal counts as JSON |
+
+---
+
+## observe
+
+Show the health of the observability pipeline.
+
+```
+dagnats observe status [--nats-url=URL] [--json]
+```
+
+---
+
+## sidecar
+
+Run the local observability sidecar.
+
+```
+dagnats sidecar [start] [--config=PATH]
+dagnats sidecar install
+dagnats sidecar status [--json]
+dagnats sidecar init
+```
+
+| Command | Description |
+|------|-------------|
+| `start` | Start the sidecar (the default). `--config` defaults to `dagnats.yaml` |
+| `install` | Install or update the external binaries it runs |
+| `status` | Show sidecar health |
+| `init` | Scaffold a `dagnats.yaml` config |
+
+---
+
+## completion
+
+Print a shell completion script.
+
+```
+dagnats completion <bash|zsh>
+```
+
+Add one of these to your shell profile:
+
+```bash
+eval "$(dagnats completion bash)"
+eval "$(dagnats completion zsh)"
 ```
 
 ---

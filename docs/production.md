@@ -24,11 +24,10 @@ Three or five dagnats instances each run their own embedded NATS server in clust
 **Config (each node):**
 ```yaml
 nats_cluster_name: dagnats-prod
-nats_cluster_routes:
-  - nats://node-1.dagnats.svc.cluster.local:6222
-  - nats://node-2.dagnats.svc.cluster.local:6222
-nats_cluster_auth_token: ${DAGNATS_CLUSTER_TOKEN}
+nats_cluster_routes: nats://node-1.dagnats.svc.cluster.local:6222, nats://node-2.dagnats.svc.cluster.local:6222
 ```
+
+Server keys in `dagnats.yaml` are read one `key: value` line at a time, so routes are comma-separated on one line, and values are not `${VAR}`-expanded. Keep the route token out of the file by setting `DAGNATS_NATS_CLUSTER_AUTH_TOKEN` in each node's environment.
 
 **What you get:**
 - No external NATS to operate.
@@ -290,13 +289,15 @@ DagNats creates JetStream consumers internally. The key knobs that
 affect throughput and reliability are configured through NATS-native
 patterns:
 
-- **Retry backoff:** workers call `NakWithDelay` to retry failed
-  tasks. Backoff policy (fixed, linear, exponential) is set per
-  workflow step or as a workflow default.
-- **Step timeouts:** controlled by `AckWait` on the consumer. If a
-  worker does not ack within the timeout, NATS redelivers.
-- **Max retries:** `MaxDeliver` on the consumer bounds redelivery
-  attempts. After exhaustion, messages go to the DEAD_LETTERS
+- **Retry backoff:** the engine schedules each retry as a durable
+  timer in `SLEEP_TIMERS`. Backoff policy (fixed, linear,
+  exponential) is set per workflow step or as a workflow default.
+- **Step timeouts:** the engine arms a watchdog timer per attempt.
+  A worker's `AckWait` (default 5 minutes, per handler via
+  `worker.WithAckWait`) only bounds how long it holds its claim;
+  redelivery does not restart the step timeout.
+- **Max retries:** the step's retry policy bounds attempts. After
+  exhaustion the run fails and the task goes to the DEAD_LETTERS
   stream.
 
 These are set through workflow definitions, not server config. See

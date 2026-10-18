@@ -42,14 +42,14 @@ Workflows are JSON files (the primary, registry-friendly format). The Go builder
 
 ```go
 // Define a workflow with the Go builder
-wf, _ := dag.NewWorkflow("code-review").
-    Task("plan", "llm-planner").
-    Task("code", "llm-coder").DependsOn("plan").
-    Task("test", "test-runner").DependsOn("code").
-    Task("review", "llm-reviewer").DependsOn("test").
-    AgentLoop("fix", "llm-fixer").DependsOn("review").
-        WithMaxIterations(10).
-    Build()
+b := dag.NewWorkflow("code-review")
+plan := b.Task("plan", "llm-planner").WithTimeout(5 * time.Minute)
+code := b.Task("code", "llm-coder").After(plan).WithTimeout(10 * time.Minute)
+test := b.Task("test", "test-runner").After(code).WithTimeout(10 * time.Minute)
+review := b.Task("review", "llm-reviewer").After(test).WithTimeout(5 * time.Minute)
+b.AgentLoop("fix", "llm-fixer").After(review).
+    WithMaxIterations(10).WithTimeout(30 * time.Minute)
+wf, err := b.Build()
 
 // Register a worker (variadic options: worker.WithGroups, worker.WithPartitions)
 w := worker.NewWorker(nc)
@@ -91,7 +91,7 @@ dagnats workflow register workflow.json             # Register a workflow
 dagnats run start <workflow> [input] [--watch]       # Start a run (--watch tails events)
 dagnats run status <run-id>                         # Check run status
 dagnats run inspect <run-id>                        # Status + errors + DLQ in one view
-dagnats run list [--workflow=X] [--status=running]  # List runs with filters
+dagnats run list [--workflow=X] [--state=running]   # List runs with filters
 dagnats run events <id> [--full] [--type=T] [--step=S]  # View event history
 dagnats run output <run-id>                         # Print final output of completed run
 dagnats run cancel <run-id>                         # Cancel a running workflow
@@ -134,7 +134,7 @@ POST   /hooks/{path}           Webhook trigger endpoint (fire-and-forget, 202)
 
 ## NATS Resources
 
-Created by `natsutil.SetupAll(nc)`:
+Created by `natsutil.SetupAll(nc)` and `dagnats serve` (main ones; the full list is in the [NATS infrastructure](docs/site/content/docs/operations/nats-infrastructure.md) page):
 
 | Type | Name | Purpose |
 |------|------|---------|
@@ -143,6 +143,10 @@ Created by `natsutil.SetupAll(nc)`:
 | Stream | EVENTS | External triggers |
 | Stream | DEAD_LETTERS | Permanent failures (30-day retention) |
 | Stream | TELEMETRY | Observability signals (7-day, 1GB cap) |
+| Stream | SLEEP_TIMERS | Durable timers: sleeps, retries, step timeouts, scheduled runs |
+| Stream | STICKY_TASKS | Worker-affinity task routing |
+| Stream | TRIGGER_HISTORY | Trigger fire records |
+| Stream | BUILD_LOGS | Task log lines |
 | KV | workflow_defs | Workflow definitions |
 | KV | workflow_runs | Run state snapshots |
 | KV | triggers | Trigger definitions |

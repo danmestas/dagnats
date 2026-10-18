@@ -63,19 +63,20 @@ After the 2-minute window, the same message ID can be published again. This is s
 While DagNats handles dedup at the platform level, workers should be idempotent at the application level when possible:
 
 ```go
-w.Handle("charge", func(ctx worker.TaskContext) {
+w.Handle("charge", func(ctx worker.TaskContext) error {
     var in ChargeInput
-    json.Unmarshal(ctx.Input(), &in)
+    if err := json.Unmarshal(ctx.Input(), &in); err != nil {
+        return ctx.FailPermanent(err)
+    }
 
     // Use the payment ID as an idempotency key with Stripe
     result, err := stripe.Charge(in.Amount, stripe.WithIdempotencyKey(
         fmt.Sprintf("%s.%s", ctx.RunID(), ctx.StepID()),
     ))
     if err != nil {
-        ctx.Fail(err)
-        return
+        return ctx.Fail(err)
     }
-    ctx.Complete(result)
+    return ctx.Complete(result)
 })
 ```
 

@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first started: a redelivery, or a paused task resuming, re-arms it
   only for the time left. A retry the engine schedules still gets the
   full timeout.
+- **Docs match the code again.** The CLI reference gains the nine
+  commands it was missing (`trace`, `metrics`, `singleton`, `service`,
+  `trigger-type`, `demo`, `observe`, `sidecar`, `completion`) plus
+  `workflow delete`, `run count` and `trigger fire`. The workflow
+  schema reference and `workflow-schema.json` now put agent-loop
+  settings under `config` (there is no `loop` key) and list the step
+  types and fields they were missing. The config pages show the real
+  `http_addr` default (`127.0.0.1:8080`) and document `max_memory_bytes`,
+  `nats_ws_port`, `nats_ws_no_tls` and the console, bridge and
+  build-log variables. Pages that described step timeouts as NATS
+  `AckWait`, or retries as a NAK of the task message, now describe the
+  engine's watchdog and retry timers. The README's builder sample and
+  several handler samples compile again.
 
 ## [0.0.25] - 2026-10-17
 

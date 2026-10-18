@@ -7,7 +7,7 @@ DagNats provisions all its NATS resources automatically on startup via `natsutil
 
 ## JetStream Streams
 
-Seven streams handle all durable messaging. `dagnats serve` creates these on first boot; distributed deployments must ensure they exist before components start.
+Nine streams handle all durable messaging. `dagnats serve` creates these on first boot; distributed deployments must ensure they exist before components start.
 
 | Stream | Subjects | Retention | Storage | Limits | Purpose |
 |--------|----------|-----------|---------|--------|---------|
@@ -18,10 +18,12 @@ Seven streams handle all durable messaging. `dagnats serve` creates these on fir
 | `TELEMETRY` | `telemetry.>` | Limits | File | 7-day, 1 GiB max, 5s dedup | Spans, metrics, logs |
 | `SLEEP_TIMERS` | `sleep.>`, `scheduled.>` | Limits | File | | Durable timers (sleep, timeout, rate-retry, scheduled runs) |
 | `STICKY_TASKS` | `sticky.>` | Limits | Memory | 30-minute max age | Worker-affinity task routing |
+| `TRIGGER_HISTORY` | `trigger.fire.>` | Limits | File | 30-day max age | Trigger fire records (`dagnats trigger history`) |
+| `BUILD_LOGS` | `logs.>` | Limits | File | `DAGNATS_BUILD_LOGS_TTL`, default 7 days (1h to 1y) | Task log lines (`logs.{run}.{step}.{attempt}.{iteration}`) |
 
 ### WORKFLOW_HISTORY
 
-The event log. Every state change for every workflow run is an immutable event published to `history.{runID}`. The 5-second dedup window (via `Nats-Msg-Id`) prevents duplicate events during retries. The orchestrator replays this stream on startup to rebuild in-memory actor state.
+The event log. Every state change for every workflow run is an immutable event published to `history.{runID}`. The 5-second dedup window (via `Nats-Msg-Id`) prevents duplicate events during retries. The orchestrator consumes it through a durable consumer; current run state is kept as snapshots in the `workflow_runs` KV bucket.
 
 ### TASK_QUEUES
 
@@ -36,15 +38,18 @@ A shared timer stream using an action discriminator in the message payload:
 | `sleep_complete` | Sleep duration | Publishes `step.sleep.completed` event |
 | `wait_timeout` | Wait-for-event timeout | Publishes `step.wait.timeout` event |
 | `rate_retry` | Rate limit refill delay | Re-publishes task to `task.>` |
+| `task_concurrency_retry` | Concurrency slot backoff | Re-publishes a task that found its concurrency limit full |
 | `debounce_fire` | Debounce window | Fires debounced trigger |
-| `batch_fire` | Batch timeout | Fires accumulated batch |
-| `retry_after` | Requested delay | Re-publishes task for retry |
+| `retry_after` | Delay a worker requested | Dispatches the next attempt |
+| `retry_backoff` | Retry policy backoff | Dispatches the next attempt |
+| `step_timeout` | Step timeout | Fails a still-running attempt as retriable (stale timers from an earlier attempt are ignored) |
+| `approval_timeout` | Approval gate timeout | Expires the approval |
 
 All timers use NATS `NakWithDelay` -- the message is negatively acknowledged with a delay, and NATS redelivers it after the specified duration. No external timer service needed.
 
 ## KV Buckets
 
-Fifteen KV buckets store workflow state, coordination data, and operational metadata.
+These KV buckets store workflow state, coordination data, and operational metadata.
 
 | Bucket | TTL | History | Purpose |
 |--------|-----|---------|---------|
@@ -64,6 +69,12 @@ Fifteen KV buckets store workflow state, coordination data, and operational meta
 | `signals` | -- | default | Cross-workflow KV-based signaling |
 | `triggers` | -- | default | Trigger definitions |
 | `trigger_state` | -- | default | Cron last-run timestamps |
+| `http_idempotency` | 1 hour | default | Cached responses for HTTP trigger idempotency keys |
+| `trigger_types` | -- | 1 | External trigger type schemas |
+| `services` | -- | 1 | Registered service metadata |
+| `worker_tokens` | -- | 1 | Minted worker tokens (revoked records kept for audit) |
+| `worker_status` | 120s | default | Per-worker counter snapshots for `dagnats status` |
+| `console_audit` | -- | default | Audit log of console write actions |
 
 ### Workers Bucket
 

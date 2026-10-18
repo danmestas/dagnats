@@ -16,15 +16,15 @@ Always run `make test` and `make lint` before opening a PR.
 
 ## Architecture
 
-Five Go packages under the repo root:
+Five core Go packages:
 
 - `dag/` — pure DAG logic (types, builder, validation, resolution). No NATS imports.
-- `engine/` — actor-based orchestrator. Consumes events, advances DAGs, manages concurrency.
+- `internal/engine/` — orchestrator. Consumes events, advances DAGs, manages concurrency, retries, and timeouts.
 - `worker/` — worker SDK. `TaskContext` is the deep interface (Input/Complete/Fail/Continue/Heartbeat/Checkpoint/WaitForSignal).
-- `api/` — REST + NATS micro control plane.
+- `internal/api/` — REST + NATS micro control plane.
 - `cli/` — command-line client.
 
-Plus `natsutil/` (NATS resource setup, owns embedded test server), `protocol/` (wire types), `observe/` (provider-agnostic telemetry interfaces).
+Plus `internal/natsutil/` (NATS resource setup, owns embedded test server), `server/` (embedded `dagnats serve`), `bridge/` (HTTP worker bridge), `protocol/` (wire types), `observe/` (provider-agnostic telemetry interfaces).
 
 All persistent state lives in NATS JetStream and KV. There is no external database.
 
@@ -45,7 +45,7 @@ All persistent state lives in NATS JetStream and KV. There is no external databa
 
 - Failing test first → minimal code to pass → refactor.
 - `dag/` is pure unit tests, no NATS.
-- `engine/`, `worker/` use a real embedded NATS server per test (`natsutil.StartTestServer(t)`).
+- `internal/engine/`, `worker/` use a real embedded NATS server per test (`natsutil.StartTestServer(t)`).
 - Min 2 assertions per test (positive + negative space).
 - Bounded timeouts on every wait. No `time.Sleep` without a deadline.
 - Each test file opens with a methodology comment.
@@ -63,7 +63,7 @@ Use NATS primitives instead of building infrastructure:
 | Need | Primitive |
 |---|---|
 | Retry with backoff | `NakWithDelay` |
-| Step timeout | `AckWait` + `MaxDeliver` |
+| Step timeout | engine watchdog timer in `SLEEP_TIMERS` (`AckWait` is only the worker's claim) |
 | Cross-workflow signal | KV watch |
 | Exactly-once delivery | `Nats-Msg-Id` dedup |
 | Internal API | `micro` framework |

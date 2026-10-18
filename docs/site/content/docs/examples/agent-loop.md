@@ -19,7 +19,7 @@ The workflow has a single step with `type: "agent_loop"`. The `loop` configurati
       "task": "counter",
       "type": "agent_loop",    // enables iterative execution
       "depends_on": [],
-      "loop": {
+      "config": {
         "max_iterations": 10,  // safety bound: never run more than 10 times
         "loop_delay": 1000000000  // 1 second between iterations (nanoseconds)
       }

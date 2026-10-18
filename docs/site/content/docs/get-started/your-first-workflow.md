@@ -186,7 +186,7 @@ Steps can declare a **timeout** (maximum execution duration) and a **retry polic
 }
 ```
 
-- **timeout** sets the per-step deadline. If the worker does not complete within this duration, the task is redelivered (up to `MaxDeliver`). Under the hood, this maps to NATS `AckWait`.
+- **timeout** sets the per-attempt deadline. If the attempt has not finished within this duration, the engine fails it as retriable and the step's retry policy decides what happens next. See [Timeouts](/docs/reliability/timeouts).
 - **retry.max_attempts** is the total number of retry attempts after the first failure.
 - **retry.strategy** controls backoff: `fixed` (constant delay), `linear` (delay * attempt), or `exponential` (delay * multiplier^attempt).
 - **retry.initial_delay** is the base delay between attempts.

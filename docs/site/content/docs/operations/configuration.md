@@ -18,12 +18,19 @@ Zero-config starts everything on defaults. Environment variables always win.
 | Key | Type | Default (macOS) | Default (Linux) |
 |-----|------|-----------------|-----------------|
 | `data_dir` | string | `~/Library/Application Support/dagnats` | `~/.local/share/dagnats` |
-| `http_addr` | string | `:8080` | `:8080` |
+| `http_addr` | string | `127.0.0.1:8080` | `127.0.0.1:8080` |
 | `nats_port` | int | `4222` | `4222` |
 | `leaf_remotes` | []string | (none) | (none) |
 | `leaf_credentials` | string | (none) | (none) |
+| `nats_cluster_name` | string | (none) | (none) |
+| `nats_cluster_routes` | []string | (none) | (none) |
+| `nats_cluster_auth_token` | string | (none) | (none) |
+| `nats_jetstream_replicas` | int | `0` (auto-derive) | `0` (auto-derive) |
 | `monitor_port` | int | (none) | (none) |
-| `max_store_bytes` | int64 | `10737418240` (10 GiB) | `10737418240` (10 GiB) |
+| `max_store_bytes` | int64 | half of free disk, capped at 10 GiB | half of free disk, capped at 10 GiB |
+| `max_memory_bytes` | int64 | `1073741824` (1 GiB) | `1073741824` (1 GiB) |
+| `nats_ws_port` | int | `0` (disabled) | `0` (disabled) |
+| `nats_ws_no_tls` | bool | `false` | `false` |
 | `max_payload` | int32 | unset (NATS default, 1 MiB) | unset (NATS default, 1 MiB) |
 
 `max_payload` sets the embedded NATS server's largest accepted message in bytes. Unset keeps the nats-server default of 1 MiB; raise it (for example to `4194304`, 4 MiB) when producers publish larger messages. Values must be between 1 and 8388608 (8 MiB). Clients learn the limit from the server's INFO. In a cluster or leaf topology, set the same value on every node.
@@ -43,6 +50,14 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_LEAF_CREDENTIALS` | `leaf_credentials` | Path to NATS credentials file |
 | `DAGNATS_MONITOR_PORT` | `monitor_port` | NATS monitoring HTTP port |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer |
+| `DAGNATS_MAX_MEMORY_BYTES` | `max_memory_bytes` | Bytes; also sets the Go soft memory limit; `0` or negative disables |
+| `DAGNATS_NATS_CLUSTER_NAME` | `nats_cluster_name` | Required with cluster routes |
+| `DAGNATS_NATS_CLUSTER_ROUTES` | `nats_cluster_routes` | Comma-separated, max 10 entries |
+| `DAGNATS_NATS_CLUSTER_AUTH_TOKEN` | `nats_cluster_auth_token` | Shared token across peers |
+| `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0` = auto |
+| `DAGNATS_NATS_WS_PORT` | `nats_ws_port` | Browser WebSocket listener; `0` disables |
+| `DAGNATS_NATS_WS_NO_TLS` | `nats_ws_no_tls` | Required with `nats_ws_port` until NATS TLS is wired |
+| `DAGNATS_QUEUE_SNAPSHOT_INTERVAL` | (env only) | Queue snapshot cadence; Go duration in [1s, 5m], default `5s` |
 | `DAGNATS_MAX_PAYLOAD` | `max_payload` | Bytes, 1 to 8388608 (8 MiB); 0, negative or larger is rejected at load |
 
 ### Triggers
@@ -52,6 +67,15 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_WEBHOOK_SECRET` | (none) | Default HMAC secret for webhook triggers |
 
 When `DAGNATS_WEBHOOK_SECRET` is set and no `--secret` flag is provided to `dagnats trigger create`, the env var value is used. The `--secret` flag always takes precedence. This keeps secrets out of shell history.
+
+### Console, bridge, and logs
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `DAGNATS_CONSOLE_PASSWORD` | (unset) | Enables HTTP Basic auth on the console. See the console auth docs |
+| `DAGNATS_CONSOLE_TRUST_FORWARDED_AUTH` | `false` | Trust `X-Forwarded-User` from a reverse proxy doing SSO |
+| `DAGNATS_BRIDGE_TOKEN` | (unset) | Admin bearer token for the HTTP worker bridge; unset leaves the bridge open (dev mode) |
+| `DAGNATS_BUILD_LOGS_TTL` | `168h` | Retention of the `BUILD_LOGS` stream; Go duration in [1h, 8760h] |
 
 ### Observability
 
@@ -176,7 +200,7 @@ Example output:
 
 ```
 data_dir:        /Users/you/Library/Application Support/dagnats
-http_addr:       :8080
+http_addr:       127.0.0.1:8080
 nats_port:       4222
 leaf_remotes:    (none)
 leaf_credentials:(none)

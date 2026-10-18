@@ -320,7 +320,7 @@ algorithms):
   "task": "agent-review",
   "type": "agent_loop",
   "depends_on": ["fetch"],
-  "loop": {
+  "config": {
     "max_iterations": 10,
     "max_duration": "10m",
     "loop_delay": "2s"
@@ -444,8 +444,9 @@ dagnats trigger create my-workflow \
 
 ### Heartbeats for Long Tasks
 
-For tasks that take longer than the JetStream AckWait window, send
-heartbeats to prevent redelivery:
+For tasks that take longer than the JetStream AckWait window (5 minutes
+by default), send heartbeats to keep the claim so the task is not
+redelivered. Heartbeats do not extend the step timeout:
 
 ```go
 w.Handle("long-task", func(ctx worker.TaskContext) error {

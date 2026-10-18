@@ -166,13 +166,13 @@ func handleReportError(ctx worker.TaskContext) error {
 
 If you change `counterTarget` so that all 3 attempts fail, the engine would route to `report-error` instead of `process`, because of the `on_failure` configuration.
 
-The retry mechanism uses NATS `NakWithDelay` under the hood -- there is no separate timer service. The message stays in the JetStream consumer and is redelivered after the computed delay.
+The engine schedules each retry as a durable timer on the `SLEEP_TIMERS` stream (a `NakWithDelay` under the hood) and dispatches a fresh task when it fires -- there is no separate timer service.
 
 Key concepts demonstrated:
 - **`RetryCount()`** -- lets the handler know which attempt it is on (0-based).
 - **Exponential backoff** -- delays grow as `initial_delay * multiplier^attempt`, capped at `max_delay`.
 - **`on_failure` routing** -- graceful degradation instead of workflow failure.
-- **NATS-native retries** -- uses `NakWithDelay` for retry scheduling, no external timer needed.
+- **NATS-native retries** -- retry delays are durable JetStream timers, no external timer needed.
 
 ## Related
 

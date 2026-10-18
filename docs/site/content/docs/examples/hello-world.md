@@ -142,5 +142,5 @@ Key concepts demonstrated:
 
 ## Related
 
-- [Workflow Definitions](/docs/getting-started/workflow-definitions) -- how to write workflow JSON
-- [Writing Workers](/docs/getting-started/writing-workers) -- worker patterns and `HandleTyped`
+- [Workflow Definitions](/docs/reference/workflow-schema) -- how to write workflow JSON
+- [Writing Workers](/docs/workers) -- worker patterns and `HandleTyped`

@@ -72,7 +72,7 @@ Steps can be conditionally skipped based on a parent step's output using `SkipIf
 fetch := wf.Task("fetch", "fetch")
 process := wf.Task("process", "process").
     After(fetch).
-    SkipIf(dag.ParentOutput("fetch", "skip", dag.OpEquals, true))
+    SkipIf(dag.SkipIfOutput(fetch, "skip", "==", true))
 ```
 
 ## Related pages

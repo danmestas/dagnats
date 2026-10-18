@@ -22,23 +22,22 @@ The default is `retriable` -- if a worker calls `Fail()` without specifying a ty
 Workers signal failures through three methods on `TaskContext`:
 
 ```go
-w.Handle("process", func(ctx worker.TaskContext) {
+w.Handle("process", func(ctx worker.TaskContext) error {
     result, err := doWork(ctx.Input())
     if err != nil {
         switch {
         case isInvalidInput(err):
             // No point retrying -- input won't change
-            ctx.FailPermanent(err)
+            return ctx.FailPermanent(err)
         case isRateLimited(err):
             // Provider said wait 30s
-            ctx.FailRetryAfter(err, 30*time.Second)
+            return ctx.FailRetryAfter(err, 30*time.Second)
         default:
             // Transient error -- use normal retry policy
-            ctx.Fail(err)
+            return ctx.Fail(err)
         }
-        return
     }
-    ctx.Complete(result)
+    return ctx.Complete(result)
 })
 ```
 
@@ -56,11 +55,11 @@ w.Handle("process", func(ctx worker.TaskContext) {
 flowchart TD
     F[Step Fails] --> T{FailureType?}
     T -->|retriable| R{Retries left?}
-    R -->|yes| RETRY[NakWithDelay]
+    R -->|yes| RETRY[SLEEP_TIMERS backoff timer]
     R -->|no| PERM[Permanent failure]
     T -->|non_retriable| PERM
     T -->|retry_after| TIMER[SLEEP_TIMERS delay]
-    TIMER --> RETRY2[Redeliver task]
+    TIMER --> RETRY2[Dispatch next attempt]
     PERM --> OF{on_failure set?}
     OF -->|yes| HANDLER[Run on_failure step]
     OF -->|no| COMP{compensate set?}

@@ -30,7 +30,7 @@ When a run is cancelled, the engine:
 3. Cancels all **queued** steps by letting their NATS messages expire (AckWait timeout)
 4. In-flight steps that are already running on a worker continue until the worker checks for cancellation or the step's AckWait expires
 
-Workers do not receive an explicit cancellation signal mid-execution. Instead, the next time the worker attempts to publish a result event, the engine ignores events for cancelled runs. This design avoids the complexity of distributed cancellation protocols.
+Workers do not receive an explicit cancellation signal mid-execution. A worker that picks up a task checks the run's state first and skips the task if the run is already cancelled. A task already running finishes, and the engine ignores result events for cancelled runs. This design avoids the complexity of distributed cancellation protocols.
 
 ## Event-Driven Cancellation
 

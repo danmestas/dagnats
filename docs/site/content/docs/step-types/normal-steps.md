@@ -77,7 +77,7 @@ Normal steps use the base `StepDef` fields -- no type-specific `Config` is requi
 | `ID` | `string` | Unique step identifier within the workflow |
 | `Task` | `string` | Task type that workers register handlers for |
 | `DependsOn` | `[]string` | Step IDs that must complete before this step runs |
-| `Timeout` | `time.Duration` | Per-attempt timeout (enforced via NATS AckWait) |
+| `Timeout` | `time.Duration` | Per-attempt timeout (enforced by an engine watchdog; redelivery does not restart it) |
 | `Retries` | `int` | Maximum retry attempts (0 = no retries) |
 | `WorkerGroup` | `string` | Route to a specific worker group |
 | `OnFailure` | `string` | Step ID to run on permanent failure |

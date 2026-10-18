@@ -21,7 +21,7 @@ The core execution model is **event sourcing**. Every state change is an immutab
 - **Single binary** -- `dagnats serve` starts an embedded NATS server, the workflow engine, the API, and an HTTP gateway. No external dependencies.
 - **No external database** -- JetStream provides streams, key-value stores, and object storage. All state lives in NATS.
 - **Event-sourced** -- Immutable event log is the source of truth. KV snapshots are a convenience, not authoritative.
-- **NATS-native** -- Retries use `NakWithDelay`, timeouts use `AckWait`, signals use KV watches, dedup uses `Nats-Msg-Id`.
+- **NATS-native** -- Retries and timeouts are durable timers on a JetStream stream, worker claims use `AckWait`, signals use KV watches, dedup uses `Nats-Msg-Id`.
 - **Agent loops as a primitive** -- Built-in `agent_loop` step type for iterative LLM agent execution with bounded iterations and duration.
 - **Durable Endpoints** -- Expose a workflow as a synchronous HTTP API: an [HTTP trigger](/docs/triggers/http) starts the run, a [`respond` step](/docs/step-types/respond-steps) returns the response, and everything in between gets retries, timeouts, and event-sourced state for free.
 

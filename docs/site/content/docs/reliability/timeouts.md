@@ -3,11 +3,11 @@ title: Timeouts
 weight: 2
 ---
 
-Every step in DagNats **requires** a timeout -- there are no unbounded executions.
+Give every step a timeout. A step without one (`timeout` unset or `0`) gets no watchdog and can run as long as its workers keep it alive.
 
 ## Per-Step Timeout
 
-The `Timeout` field on `StepDef` is mandatory. It sets the maximum wall-clock time a worker has to complete the step before the engine considers it failed.
+The `Timeout` field on `StepDef` sets the maximum wall-clock time an attempt has to complete before the engine considers it failed.
 
 ```go
 wf := dag.NewWorkflow("data-pipeline")
@@ -50,12 +50,12 @@ sequenceDiagram
 Workers hold their claim on a task by heartbeating. `Heartbeat()` sends an `InProgress()` signal to NATS so the message is not redelivered while the handler is still working. It does not extend the step timeout:
 
 ```go
-w.Handle("long-task", func(ctx worker.TaskContext) {
+w.Handle("long-task", func(ctx worker.TaskContext) error {
     for i := 0; i < 100; i++ {
         processChunk(i)
         ctx.Heartbeat() // keep the claim; the step timeout still applies
     }
-    ctx.Complete(map[string]any{"chunks": 100})
+    return ctx.Complete([]byte(`{"chunks":100}`))
 })
 ```
 
