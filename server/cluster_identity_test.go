@@ -51,3 +51,21 @@ func TestClusterServerName_UniquePerPortAndOverride(t *testing.T) {
 		}
 	}
 }
+
+func TestWithRouteCredentials_AddsTokenKeepsExplicit(t *testing.T) {
+	routes, err := parseClusterRoutes([]string{
+		"nats://10.0.0.2:6222", "nats://ops:pw@10.0.0.3:6222",
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	withRouteCredentials(routes, "tok")
+	// Positive: a bare route now authenticates with the token.
+	if got := routes[0].User.Username(); got != "tok" {
+		t.Fatalf("bare route user = %q, want tok", got)
+	}
+	// Negative: explicit userinfo on a route is left alone.
+	if pw, _ := routes[1].User.Password(); routes[1].User.Username() != "ops" || pw != "pw" {
+		t.Fatalf("explicit route credentials overwritten: %v", routes[1].User)
+	}
+}

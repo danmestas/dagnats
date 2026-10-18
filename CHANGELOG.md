@@ -69,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A cluster with `nats_cluster_auth_token` set never formed. Nodes required the token on routes they accepted but did not send it on routes they dialed, so every route was rejected and startup failed with "cluster quorum did not form". The token is now added to every route URL that has no credentials of its own.
+
 - A revoked worker token could briefly authorize again. If the token store's KV watch delivered the mint event after `Revoke` had already cached the revoked record, the older event overwrote it until the revoke event arrived. Cache updates now apply only when their KV revision is newer.
 
 - Clustered nodes now keep the same NATS server name across restarts. It was derived from the process ID, so every restart joined the cluster as a new JetStream peer and left the old name behind as a replica that never came back. The default is now `<cluster>-<hostname>-<cluster port>`, and `nats_server_name` (`DAGNATS_NATS_SERVER_NAME`) overrides it. Nodes upgrading from an earlier version change name once.

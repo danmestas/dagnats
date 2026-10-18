@@ -188,8 +188,28 @@ func configureCluster(opts *natsserver.Options, cfg Config) error {
 	opts.ServerName = clusterServerName(cfg, clusterPort)
 	if cfg.NATSClusterAuthToken != "" {
 		opts.Cluster.Username = cfg.NATSClusterAuthToken
+		withRouteCredentials(parsedRoutes, cfg.NATSClusterAuthToken)
 	}
 	return nil
+}
+
+// withRouteCredentials puts the cluster token on every route URL that
+// carries no credentials of its own. nats-server checks Cluster.Username
+// on routes it accepts but sends credentials on the routes it dials only
+// from the URL's userinfo, so without this every node rejected every
+// other node's routes and a token-protected cluster never formed.
+func withRouteCredentials(routes []*url.URL, token string) {
+	if token == "" {
+		panic("withRouteCredentials: token must not be empty")
+	}
+	if len(routes) == 0 {
+		panic("withRouteCredentials: routes must not be empty")
+	}
+	for _, route := range routes {
+		if route.User == nil {
+			route.User = url.User(token)
+		}
+	}
 }
 
 // configureWebsocket wires the embedded NATS WebSocket listener (ADR-020)

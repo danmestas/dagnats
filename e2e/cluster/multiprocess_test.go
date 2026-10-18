@@ -147,6 +147,9 @@ func startNode(t *testing.T, bin string, self node, all []node) *node {
 		fmt.Sprintf("DAGNATS_NATS_PORT=%d", self.natsPort),
 		fmt.Sprintf("DAGNATS_NATS_CLUSTER_PORT=%d", self.clusterPort),
 		"DAGNATS_NATS_CLUSTER_NAME=e2e-cluster",
+		// Production clusters set a token; without one this test could
+		// not see routes that never authenticate.
+		"DAGNATS_NATS_CLUSTER_AUTH_TOKEN=e2e-route-token",
 		"DAGNATS_NATS_CLUSTER_ROUTES="+routes,
 		"DAGNATS_MAX_STORE_BYTES=536870912",
 	)
