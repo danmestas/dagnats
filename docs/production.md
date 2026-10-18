@@ -46,6 +46,8 @@ Server keys in `dagnats.yaml` are read one `key: value` line at a time, so route
 
 **Route port:** nodes listen for routes on `nats_cluster_port` (default `6222`, env `DAGNATS_NATS_CLUSTER_PORT`). Give each node on the same host a distinct port; nodes on separate hosts can all use the default. The value must be 1-65535 and must differ from `nats_port`, `monitor_port`, `nats_ws_port` and the `http_addr` port; config load fails otherwise.
 
+**Bind address and identity:** set `nats_cluster_host` to the node's private or tailnet IP to keep the route listener off public interfaces. Each node's server name defaults to `<cluster>-<hostname>-<cluster port>`, which stays the same across restarts. JetStream records cluster peers by that name, so a node that came back under a new name would leave its old identity behind as a replica that never returns. Set `nats_server_name` explicitly if a host may be renamed.
+
 **Observing the cluster.** `GET /health/cluster` reports live state read from the embedded server, not config intent:
 
 ```json

@@ -175,21 +175,17 @@ func configureCluster(opts *natsserver.Options, cfg Config) error {
 	if clusterPort == 0 {
 		clusterPort = defaultClusterPort
 	}
+	clusterHost := cfg.NATSClusterHost
+	if clusterHost == "" {
+		clusterHost = "0.0.0.0"
+	}
 	opts.Cluster = natsserver.ClusterOpts{
 		Name: cfg.NATSClusterName,
-		Host: "0.0.0.0",
+		Host: clusterHost,
 		Port: clusterPort,
 	}
 	opts.Routes = parsedRoutes
-	// JetStream clustering requires a unique server_name per node. Derive
-	// a stable-but-unique name from the cluster name and pid so multi-node
-	// tests don't collide; operators can override later once a
-	// deployment-aware name source is wired in.
-	if opts.ServerName == "" {
-		opts.ServerName = fmt.Sprintf(
-			"%s-%d", cfg.NATSClusterName, os.Getpid(),
-		)
-	}
+	opts.ServerName = clusterServerName(cfg, clusterPort)
 	if cfg.NATSClusterAuthToken != "" {
 		opts.Cluster.Username = cfg.NATSClusterAuthToken
 	}
@@ -313,4 +309,33 @@ func resolveCredentials(value string) (string, error) {
 		return f.Name(), nil
 	}
 	return value, nil
+}
+
+// clusterServerName picks the node's JetStream server_name. JetStream
+// records stream and meta peers by this name, so it must be the same on
+// every restart: a pid-derived name made each restart look like a new
+// peer and left the old one behind as a permanently offline replica.
+// Hostname plus cluster port is stable and still unique when several
+// nodes share a host.
+func clusterServerName(cfg Config, clusterPort int) string {
+	if cfg.NATSClusterName == "" {
+		panic("clusterServerName: cluster name must not be empty")
+	}
+	if clusterPort <= 0 {
+		panic("clusterServerName: cluster port must be positive")
+	}
+	if cfg.NATSServerName != "" {
+		return cfg.NATSServerName
+	}
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "node"
+	}
+	hostname = strings.Map(func(r rune) rune {
+		if isServerNameRune(r) {
+			return r
+		}
+		return '-'
+	}, hostname)
+	return fmt.Sprintf("%s-%s-%d", cfg.NATSClusterName, hostname, clusterPort)
 }

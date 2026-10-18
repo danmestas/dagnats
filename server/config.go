@@ -97,6 +97,14 @@ type Config struct {
 	// Distinct ports let several nodes share one host (tests, dev).
 	NATSClusterPort       int `json:"nats_cluster_port"`
 	NATSJetStreamReplicas int `json:"nats_jetstream_replicas"`
+	// NATSClusterHost is the route listener's bind address; "" means
+	// 0.0.0.0. Set it to a private (e.g. tailnet) IP to keep routes off
+	// public interfaces.
+	NATSClusterHost string `json:"nats_cluster_host"`
+	// NATSServerName overrides the clustered server_name. JetStream tracks
+	// peers by this name, so it must survive restarts; "" derives
+	// <cluster>-<hostname>-<cluster port>.
+	NATSServerName string `json:"nats_server_name"`
 
 	MonitorPort   int   `json:"monitor_port"`
 	MaxStoreBytes int64 `json:"max_store_bytes"`
@@ -518,6 +526,12 @@ func applyEnvOverrides(cfg *Config) {
 	if val := os.Getenv("DAGNATS_NATS_CLUSTER_AUTH_TOKEN"); val != "" {
 		cfg.NATSClusterAuthToken = val
 	}
+	if val := os.Getenv("DAGNATS_NATS_CLUSTER_HOST"); val != "" {
+		cfg.NATSClusterHost = val
+	}
+	if val := os.Getenv("DAGNATS_NATS_SERVER_NAME"); val != "" {
+		cfg.NATSServerName = val
+	}
 	if val := os.Getenv("DAGNATS_NATS_JETSTREAM_REPLICAS"); val != "" {
 		if r, err := strconv.Atoi(val); err == nil {
 			cfg.NATSJetStreamReplicas = r
@@ -895,6 +909,10 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.NATSClusterPort = port
 	case "nats_cluster_auth_token":
 		cfg.NATSClusterAuthToken = val
+	case "nats_cluster_host":
+		cfg.NATSClusterHost = val
+	case "nats_server_name":
+		cfg.NATSServerName = val
 	case "nats_jetstream_replicas":
 		r, err := strconv.Atoi(val)
 		if err != nil {
@@ -1130,6 +1148,7 @@ func validateClusterConfig(cfg *Config) {
 		return
 	}
 	validateClusterPortCollisions(cfg)
+	validateClusterIdentity(cfg)
 
 	if cfg.NATSClusterName == "" {
 		panic("nats_cluster_name is required when nats_cluster_routes is set")
@@ -1218,4 +1237,40 @@ func validateClusterPortCollisions(cfg *Config) {
 				"nats_cluster_port %d collides with %s", port, name))
 		}
 	}
+}
+
+// serverNameMaxLength bounds nats_server_name; nats-server itself has no
+// limit, but the name appears in every route and JetStream peer record.
+const serverNameMaxLength = 64
+
+// validateClusterIdentity checks nats_cluster_host and nats_server_name.
+// Panics like the other cluster checks: config validation runs once at
+// startup and a bad value must stop the node before it joins.
+func validateClusterIdentity(cfg *Config) {
+	if cfg == nil {
+		panic("validateClusterIdentity: cfg must not be nil")
+	}
+	if cfg.NATSClusterHost != "" && net.ParseIP(cfg.NATSClusterHost) == nil {
+		panic(fmt.Sprintf(
+			"nats_cluster_host must be an IP address; got %q",
+			cfg.NATSClusterHost))
+	}
+	name := cfg.NATSServerName
+	if len(name) > serverNameMaxLength {
+		panic(fmt.Sprintf(
+			"nats_server_name is %d bytes; max %d", len(name), serverNameMaxLength))
+	}
+	if strings.IndexFunc(name, func(r rune) bool {
+		return !isServerNameRune(r)
+	}) >= 0 {
+		panic(fmt.Sprintf(
+			"nats_server_name may hold only A-Z a-z 0-9 _ - .; got %q", name))
+	}
+}
+
+// isServerNameRune reports whether r may appear in a server name.
+func isServerNameRune(r rune) bool {
+	return r == '_' || r == '-' || r == '.' ||
+		(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9')
 }

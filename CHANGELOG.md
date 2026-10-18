@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A three-process cluster test (`make test-cluster-e2e`, CI job
   `Cluster E2E`) kills a node and checks a second workflow completes.
 
+- `nats_cluster_host` (`DAGNATS_NATS_CLUSTER_HOST`) sets the route listener's bind address, which was always `0.0.0.0`. The default is unchanged.
+
 ### Changed
 
 - **`/health/cluster` status semantics.** It used to report optimistic
@@ -68,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A revoked worker token could briefly authorize again. If the token store's KV watch delivered the mint event after `Revoke` had already cached the revoked record, the older event overwrote it until the revoke event arrived. Cache updates now apply only when their KV revision is newer.
+
+- Clustered nodes now keep the same NATS server name across restarts. It was derived from the process ID, so every restart joined the cluster as a new JetStream peer and left the old name behind as a replica that never came back. The default is now `<cluster>-<hostname>-<cluster port>`, and `nats_server_name` (`DAGNATS_NATS_SERVER_NAME`) overrides it. Nodes upgrading from an earlier version change name once.
 
 - An HTTP trigger request whose client hangs up while the run is still being started now answers 499 `client_closed`, the same as a hang-up while awaiting the response, instead of 500 "failed to publish trigger".
 - **Cluster start no longer stalls on a dropped JetStream request.**

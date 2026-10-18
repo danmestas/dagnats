@@ -431,6 +431,8 @@ func TestApplyEnvOverrides_NATSCluster(t *testing.T) {
 	t.Setenv("DAGNATS_NATS_CLUSTER_ROUTES", "nats://node-1:6222,nats://node-2:6222")
 	t.Setenv("DAGNATS_NATS_CLUSTER_AUTH_TOKEN", "secret-tok")
 	t.Setenv("DAGNATS_NATS_JETSTREAM_REPLICAS", "3")
+	t.Setenv("DAGNATS_NATS_CLUSTER_HOST", "100.64.0.1")
+	t.Setenv("DAGNATS_NATS_SERVER_NAME", "eu-1")
 
 	cfg := DefaultConfig()
 	applyEnvOverrides(&cfg)
@@ -446,6 +448,9 @@ func TestApplyEnvOverrides_NATSCluster(t *testing.T) {
 	}
 	if cfg.NATSJetStreamReplicas != 3 {
 		t.Errorf("NATSJetStreamReplicas = %d, want 3", cfg.NATSJetStreamReplicas)
+	}
+	if cfg.NATSClusterHost != "100.64.0.1" || cfg.NATSServerName != "eu-1" {
+		t.Errorf("cluster host/name = %q/%q", cfg.NATSClusterHost, cfg.NATSServerName)
 	}
 }
 
@@ -468,6 +473,16 @@ func TestApplyConfigValue_NATSCluster(t *testing.T) {
 		{"nats_cluster_auth_token", "tok", func(t *testing.T, c *Config) {
 			if c.NATSClusterAuthToken != "tok" {
 				t.Errorf("token = %q", c.NATSClusterAuthToken)
+			}
+		}},
+		{"nats_cluster_host", "100.64.0.2", func(t *testing.T, c *Config) {
+			if c.NATSClusterHost != "100.64.0.2" {
+				t.Errorf("cluster host = %q", c.NATSClusterHost)
+			}
+		}},
+		{"nats_server_name", "us-1", func(t *testing.T, c *Config) {
+			if c.NATSServerName != "us-1" {
+				t.Errorf("server name = %q", c.NATSServerName)
 			}
 		}},
 		{"nats_jetstream_replicas", "5", func(t *testing.T, c *Config) {
@@ -539,6 +554,24 @@ func TestValidateClusterConfig(t *testing.T) {
 				c.LeafRemotes = []string{"nats://hub:7422"}
 			},
 			wantPanic: "leaf_remotes",
+		},
+		{
+			name: "cluster host must be an IP",
+			mut: func(c *Config) {
+				c.NATSClusterName = "x"
+				c.NATSClusterRoutes = []string{"nats://a:6222", "nats://b:6222"}
+				c.NATSClusterHost = "tailnet-host"
+			},
+			wantPanic: "nats_cluster_host",
+		},
+		{
+			name: "server name rejects spaces",
+			mut: func(c *Config) {
+				c.NATSClusterName = "x"
+				c.NATSClusterRoutes = []string{"nats://a:6222", "nats://b:6222"}
+				c.NATSServerName = "node one"
+			},
+			wantPanic: "nats_server_name",
 		},
 		{
 			name: "cluster port out of range",

@@ -26,6 +26,8 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_cluster_routes` | []string | (none) | (none) |
 | `nats_cluster_auth_token` | string | (none) | (none) |
 | `nats_cluster_port` | int | `6222` | `6222` |
+| `nats_cluster_host` | string | `0.0.0.0` | `0.0.0.0` |
+| `nats_server_name` | string | `<cluster>-<hostname>-<cluster port>` | `<cluster>-<hostname>-<cluster port>` |
 | `nats_jetstream_replicas` | int | `0` (auto-derive) | `0` (auto-derive) |
 | `monitor_port` | int | (none) | (none) |
 | `max_store_bytes` | int64 | half of free disk, capped at 10 GiB | half of free disk, capped at 10 GiB |
@@ -56,6 +58,8 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_NATS_CLUSTER_ROUTES` | `nats_cluster_routes` | Comma-separated, max 10 entries |
 | `DAGNATS_NATS_CLUSTER_AUTH_TOKEN` | `nats_cluster_auth_token` | Shared token across peers |
 | `DAGNATS_NATS_CLUSTER_PORT` | `nats_cluster_port` | Route listener port; default 6222 |
+| `DAGNATS_NATS_CLUSTER_HOST` | `nats_cluster_host` | Route listener bind IP; default 0.0.0.0 |
+| `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0` = auto |
 | `DAGNATS_NATS_WS_PORT` | `nats_ws_port` | Browser WebSocket listener; `0` disables |
 | `DAGNATS_NATS_WS_NO_TLS` | `nats_ws_no_tls` | Required with `nats_ws_port` until NATS TLS is wired |

@@ -89,7 +89,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L86-L198>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L86-L206>)
 
 Config holds all server configuration.
 
@@ -108,6 +108,14 @@ type Config struct {
     // Distinct ports let several nodes share one host (tests, dev).
     NATSClusterPort       int `json:"nats_cluster_port"`
     NATSJetStreamReplicas int `json:"nats_jetstream_replicas"`
+    // NATSClusterHost is the route listener's bind address; "" means
+    // 0.0.0.0. Set it to a private (e.g. tailnet) IP to keep routes off
+    // public interfaces.
+    NATSClusterHost string `json:"nats_cluster_host"`
+    // NATSServerName overrides the clustered server_name. JetStream tracks
+    // peers by this name, so it must survive restarts; "" derives
+    // <cluster>-<hostname>-<cluster port>.
+    NATSServerName string `json:"nats_server_name"`
 
     MonitorPort   int   `json:"monitor_port"`
     MaxStoreBytes int64 `json:"max_store_bytes"`
@@ -210,7 +218,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L272>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L280>)
 
 ```go
 func ConfigFromEnv() Config
@@ -219,7 +227,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty after resolution. Exits \(via log.Fatalf\) if MaxStoreBytes still resolves to \<= 0 \(e.g. the disk backing DataDir has no space left\) \-\- see ConfigWithPath.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L289-L291>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L297-L299>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -228,7 +236,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty after resolution. Returns an error if MaxStoreBytes still resolves to \<= 0 after the disk\-derived default is applied \(e.g. the disk backing DataDir has no space left\) \-\- that is operator/host state, not a programmer error, so it is reported rather than panicked on. See deriveMaxStoreBytes \(\#687\).
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L208>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L216>)
 
 ```go
 func DefaultConfig() Config
