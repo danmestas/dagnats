@@ -4,7 +4,7 @@ Reference for the JSON format used by `dagnats workflow register` and `dagnats w
 
 > **IDE support:** Point your editor at [`workflow-schema.json`](workflow-schema.json) for autocomplete and validation. Add `"$schema": "./path/to/workflow-schema.json"` to your workflow files.
 
-Durations are Go `time.Duration` strings: `"30s"`, `"5m"`, `"1h30m"`.
+Durations are Go duration strings (`"30s"`, `"5m"`, `"1h30m"`) or integer nanoseconds (`30000000000`). Definitions dagnats writes back, such as `dagnats workflow show --json`, use nanoseconds.
 
 ---
 
@@ -325,8 +325,7 @@ The following rules are enforced by `dag.Validate()`:
       "id": "notify-failure",
       "task": "notify.slack",
       "timeout": "30s",
-      "type": "normal",
-      "depends_on": ["fetch-diff"]
+      "type": "normal"
     }
   ]
 }

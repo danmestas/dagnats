@@ -19,6 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`dagnats init` scaffolds a workflow that validates.** The
+  `$schema` editor hint it writes was rejected as an unknown field by
+  `workflow validate` and `workflow register`, as were the
+  `agent-loop` and `log-offload` examples. `$schema` is now accepted
+  and ignored.
+- **Workflow JSON accepts duration strings** such as `"timeout": "30s"`
+  everywhere a duration appears: step and workflow timeouts, retry
+  delays, agent-loop, sleep, approval and wait-for-event settings,
+  `cancel_on`, rate limits and trigger debounce. Integer nanoseconds
+  still work and are what dagnats writes back. A Go type that embeds
+  `dag.WorkflowDef` (or another of these types) now inherits its
+  `UnmarshalJSON`, so it needs its own to decode its extra fields.
+- **An unknown step `type` is an error, not a crash.**
+  `workflow validate` and `workflow register` panicked on a typo such
+  as `"type": "agentloop"`; they now report `unknown step type`.
 - **A step's timeout fires even when its task keeps being redelivered**
   (#743). Each redelivery of a task (its worker died or stopped
   extending its claim) reported a new attempt and restarted the step's

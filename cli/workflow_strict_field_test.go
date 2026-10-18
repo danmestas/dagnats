@@ -121,3 +121,36 @@ func TestWorkflowValidate_RejectsSingularTrigger(t *testing.T) {
 		t.Fatalf("error should name the field, got: %v", err)
 	}
 }
+
+// The editor hint `dagnats init` writes, and the duration strings the
+// docs use, must both parse; the embedded WorkflowDef's decoder must
+// not swallow the file's own `triggers`.
+func TestParseWorkflowFile_AcceptsSchemaAndDurationStrings(t *testing.T) {
+	data := []byte(`{
+		"$schema": "https://example.com/workflow-schema.json",
+		"name": "wf", "version": "1.0", "timeout": "1h",
+		"steps": [{"id": "s", "task": "t", "timeout": "30s"}],
+		"triggers": [{"id": "c", "workflow_id": "wf",
+			"cron": {"expression": "0 * * * *"},
+			"debounce": {"period": "5s"}}]
+	}`)
+	wf, err := parseWorkflowFile(data)
+	if err != nil {
+		t.Fatalf("parseWorkflowFile: %v", err)
+	}
+	if wf.Steps[0].Timeout.String() != "30s" || wf.Timeout.String() != "1h0m0s" {
+		t.Fatalf("durations = %v, %v", wf.Steps[0].Timeout, wf.Timeout)
+	}
+	if len(wf.Triggers) != 1 || wf.Triggers[0].Debounce == nil {
+		t.Fatalf("triggers lost: %+v", wf.Triggers)
+	}
+	if wf.Triggers[0].Debounce.Period.String() != "5s" {
+		t.Fatalf("debounce period = %v, want 5s", wf.Triggers[0].Debounce.Period)
+	}
+	// Negative space: a misspelled key next to $schema still fails.
+	_, err = parseWorkflowFile([]byte(
+		`{"$schema": "x", "nmae": "wf", "version": "1.0", "steps": []}`))
+	if err == nil || !strings.Contains(err.Error(), "nmae") {
+		t.Fatalf("want unknown-field error naming nmae, got %v", err)
+	}
+}

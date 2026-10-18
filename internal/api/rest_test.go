@@ -756,10 +756,7 @@ func TestRESTListWorkflowsIncludesDefHash(t *testing.T) {
 		t.Fatalf("status = %d, want %d",
 			resp.StatusCode, http.StatusOK)
 	}
-	var entries []struct {
-		dag.WorkflowDef
-		DefHash string `json:"def_hash"`
-	}
+	var entries []workflowListEntry
 	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
 		t.Fatalf("Decode failed: %v", err)
 	}

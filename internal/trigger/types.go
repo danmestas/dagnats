@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dagnatsext"
+	"github.com/danmestas/dagnats/internal/durationjson"
 )
 
 // TriggerDef defines a single trigger. Exactly one of Cron, Subject,
@@ -110,4 +111,11 @@ type TriggerFire struct {
 	Input      []byte    `json:"input,omitempty"`
 	Skipped    bool      `json:"skipped,omitempty"`
 	SkipReason string    `json:"skip_reason,omitempty"`
+}
+
+// UnmarshalJSON accepts Go duration strings ("5s") as well as integer
+// nanoseconds for Period and Timeout.
+func (cfg *DebounceConfig) UnmarshalJSON(data []byte) error {
+	type plain DebounceConfig
+	return durationjson.Unmarshal(data, (*plain)(cfg))
 }

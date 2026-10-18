@@ -27,7 +27,29 @@ import (
 // workflow register without polluting the core domain (issue #171).
 type workflowFile struct {
 	dag.WorkflowDef
+	// Schema is the editor hint `dagnats init` writes; it is accepted
+	// and otherwise ignored.
+	Schema   string               `json:"$schema,omitempty"`
 	Triggers []trigger.TriggerDef `json:"triggers,omitempty"`
+}
+
+// UnmarshalJSON decodes the embedded WorkflowDef and the file's own
+// fields separately: WorkflowDef's UnmarshalJSON is promoted to this
+// type and would otherwise drop Schema and Triggers.
+func (wf *workflowFile) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &wf.WorkflowDef); err != nil {
+		return err
+	}
+	var own struct {
+		Schema   string               `json:"$schema"`
+		Triggers []trigger.TriggerDef `json:"triggers"`
+	}
+	if err := json.Unmarshal(data, &own); err != nil {
+		return err
+	}
+	wf.Schema = own.Schema
+	wf.Triggers = own.Triggers
+	return nil
 }
 
 // fileHasHTTPTrigger reports whether the workflow file declares at least

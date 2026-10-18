@@ -51,7 +51,7 @@ func (s *StepType) UnmarshalJSON(data []byte) error {
 			return nil
 		}
 	}
-	panic("unknown StepType string: " + str)
+	return fmt.Errorf("unknown step type: %q", str)
 }
 
 // RunStatus tracks the lifecycle of a workflow run. The zero value (pending)

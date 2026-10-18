@@ -8,6 +8,8 @@ import "github.com/danmestas/dagnats/dag"
 
 WorkflowBuilder provides a fluent DSL for constructing WorkflowDefs. Centralizing construction here lets callers express graph topology naturally without touching StepDef internals — the builder enforces invariants and delegates final structural validation to Validate.
 
+dag/duration\_json.go Duration fields decode from either integer nanoseconds \(what encoding/json writes for time.Duration, so every stored definition\) or a Go duration string such as "30s" \(what people write in workflow JSON\); see internal/durationjson. A type that embeds one of these inherits its UnmarshalJSON and needs its own to decode extra fields.
+
 Labels let external triggers stamp arbitrary key/value metadata on a WorkflowRun at start time \-\- an event source starts a run \*about\* something \(an order ID, a tenant, a region\) and needs to find or bulk cancel those runs later without standing up a shadow lookup table. The bounds here keep labels cheap to carry on every snapshot and cheap to scan when filtering.
 
 dag/priority.go Priority resolution for workflow run ordering.
@@ -38,11 +40,15 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func ValidateSchema\(schema json.RawMessage, data json.RawMessage\) error](<#ValidateSchema>)
 - [type AgentLoopConfig](<#AgentLoopConfig>)
   - [func ParseAgentLoopConfig\(step StepDef\) \(AgentLoopConfig, error\)](<#ParseAgentLoopConfig>)
+  - [func \(cfg \*AgentLoopConfig\) UnmarshalJSON\(data \[\]byte\) error](<#AgentLoopConfig.UnmarshalJSON>)
 - [type ApprovalConfig](<#ApprovalConfig>)
   - [func ParseApprovalConfig\(step StepDef\) \(ApprovalConfig, error\)](<#ParseApprovalConfig>)
+  - [func \(cfg \*ApprovalConfig\) UnmarshalJSON\(data \[\]byte\) error](<#ApprovalConfig.UnmarshalJSON>)
 - [type CancelOn](<#CancelOn>)
+  - [func \(cancel \*CancelOn\) UnmarshalJSON\(data \[\]byte\) error](<#CancelOn.UnmarshalJSON>)
 - [type ConcurrencyLimit](<#ConcurrencyLimit>)
 - [type KeyedRateLimit](<#KeyedRateLimit>)
+  - [func \(limit \*KeyedRateLimit\) UnmarshalJSON\(data \[\]byte\) error](<#KeyedRateLimit.UnmarshalJSON>)
 - [type MapConfig](<#MapConfig>)
   - [func ParseMapConfig\(step StepDef\) \(MapConfig, error\)](<#ParseMapConfig>)
 - [type MapInstanceState](<#MapInstanceState>)
@@ -56,6 +62,7 @@ dag/priority.go Priority resolution for workflow run ordering.
   - [func ParsePlannerConfig\(step StepDef\) \(PlannerConfig, error\)](<#ParsePlannerConfig>)
 - [type PriorityConfig](<#PriorityConfig>)
 - [type RateLimit](<#RateLimit>)
+  - [func \(limit \*RateLimit\) UnmarshalJSON\(data \[\]byte\) error](<#RateLimit.UnmarshalJSON>)
 - [type ResolvedMatch](<#ResolvedMatch>)
   - [func \(m ResolvedMatch\) Evaluate\(eventData \[\]byte\) \(bool, error\)](<#ResolvedMatch.Evaluate>)
 - [type RespondConfig](<#RespondConfig>)
@@ -63,6 +70,7 @@ dag/priority.go Priority resolution for workflow run ordering.
   - [func \(c RespondConfig\) Defaulted\(\) RespondConfig](<#RespondConfig.Defaulted>)
 - [type RetryPolicy](<#RetryPolicy>)
   - [func ResolveRetryPolicy\(wfDef WorkflowDef, stepDef StepDef\) \*RetryPolicy](<#ResolveRetryPolicy>)
+  - [func \(policy \*RetryPolicy\) UnmarshalJSON\(data \[\]byte\) error](<#RetryPolicy.UnmarshalJSON>)
 - [type RetryStrategy](<#RetryStrategy>)
   - [func \(s RetryStrategy\) MarshalJSON\(\) \(\[\]byte, error\)](<#RetryStrategy.MarshalJSON>)
   - [func \(s RetryStrategy\) String\(\) string](<#RetryStrategy.String>)
@@ -77,12 +85,14 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [type SingletonMode](<#SingletonMode>)
 - [type SleepConfig](<#SleepConfig>)
   - [func ParseSleepConfig\(step StepDef\) \(SleepConfig, error\)](<#ParseSleepConfig>)
+  - [func \(cfg \*SleepConfig\) UnmarshalJSON\(data \[\]byte\) error](<#SleepConfig.UnmarshalJSON>)
 - [type StepDef](<#StepDef>)
   - [func EffectiveSteps\(def WorkflowDef, run WorkflowRun\) \[\]StepDef](<#EffectiveSteps>)
   - [func NamespaceFragment\(plannerID string, fragment \[\]StepDef\) \[\]StepDef](<#NamespaceFragment>)
   - [func ResolveCompensateChain\(def WorkflowDef, completed map\[string\]bool, failedStepID string\) \[\]StepDef](<#ResolveCompensateChain>)
   - [func ResolveReady\(def WorkflowDef, completed map\[string\]bool, queued map\[string\]bool\) \[\]StepDef](<#ResolveReady>)
   - [func ResolveSkipped\(def WorkflowDef, completed map\[string\]bool, queued map\[string\]bool, steps map\[string\]StepState\) \[\]StepDef](<#ResolveSkipped>)
+  - [func \(step \*StepDef\) UnmarshalJSON\(data \[\]byte\) error](<#StepDef.UnmarshalJSON>)
 - [type StepRef](<#StepRef>)
   - [func \(r StepRef\) After\(refs ...StepRef\) StepRef](<#StepRef.After>)
   - [func \(r StepRef\) Compensate\(target StepRef\) StepRef](<#StepRef.Compensate>)
@@ -113,6 +123,7 @@ dag/priority.go Priority resolution for workflow run ordering.
   - [func ParseSubWorkflowConfig\(step StepDef\) \(SubWorkflowConfig, error\)](<#ParseSubWorkflowConfig>)
 - [type WaitForEventOpts](<#WaitForEventOpts>)
   - [func ParseWaitForEventConfig\(step StepDef\) \(WaitForEventOpts, error\)](<#ParseWaitForEventConfig>)
+  - [func \(opts \*WaitForEventOpts\) UnmarshalJSON\(data \[\]byte\) error](<#WaitForEventOpts.UnmarshalJSON>)
 - [type Warning](<#Warning>)
   - [func ValidateRespondReachability\(def WorkflowDef, hasHTTPTrigger bool\) \[\]Warning](<#ValidateRespondReachability>)
 - [type WorkflowBuilder](<#WorkflowBuilder>)
@@ -144,6 +155,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [type WorkflowDef](<#WorkflowDef>)
   - [func EffectiveDef\(def WorkflowDef, run WorkflowRun\) WorkflowDef](<#EffectiveDef>)
   - [func WithSchemas\[I, O any\]\(def WorkflowDef\) WorkflowDef](<#WithSchemas>)
+  - [func \(def \*WorkflowDef\) UnmarshalJSON\(data \[\]byte\) error](<#WorkflowDef.UnmarshalJSON>)
 - [type WorkflowRun](<#WorkflowRun>)
   - [func NewWorkflowRun\(def WorkflowDef, runID string\) WorkflowRun](<#NewWorkflowRun>)
   - [func \(r WorkflowRun\) EffectiveTime\(\) time.Time](<#WorkflowRun.EffectiveTime>)
@@ -418,6 +430,15 @@ func ParseAgentLoopConfig(step StepDef) (AgentLoopConfig, error)
 
 ParseAgentLoopConfig extracts AgentLoopConfig from a StepDef's Config field. Returns an error if the step type is wrong, Config is nil, or the JSON is malformed.
 
+<a name="AgentLoopConfig.UnmarshalJSON"></a>
+### func \(\*AgentLoopConfig\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L34>)
+
+```go
+func (cfg *AgentLoopConfig) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
+
 <a name="ApprovalConfig"></a>
 ## type [ApprovalConfig](<https://github.com/danmestas/dagnats/blob/main/dag/approval.go#L18-L23>)
 
@@ -441,6 +462,15 @@ func ParseApprovalConfig(step StepDef) (ApprovalConfig, error)
 
 ParseApprovalConfig extracts ApprovalConfig from a StepDef's Config field. Returns an error if the step type is wrong, Config is nil, or the JSON is malformed.
 
+<a name="ApprovalConfig.UnmarshalJSON"></a>
+### func \(\*ApprovalConfig\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L48>)
+
+```go
+func (cfg *ApprovalConfig) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
+
 <a name="CancelOn"></a>
 ## type [CancelOn](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L216-L220>)
 
@@ -453,6 +483,15 @@ type CancelOn struct {
     Timeout time.Duration `json:"timeout,omitempty"`
 }
 ```
+
+<a name="CancelOn.UnmarshalJSON"></a>
+### func \(\*CancelOn\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L62>)
+
+```go
+func (cancel *CancelOn) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="ConcurrencyLimit"></a>
 ## type [ConcurrencyLimit](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L210-L213>)
@@ -479,6 +518,15 @@ type KeyedRateLimit struct {
     Units  int           `json:"units"`
 }
 ```
+
+<a name="KeyedRateLimit.UnmarshalJSON"></a>
+### func \(\*KeyedRateLimit\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L76>)
+
+```go
+func (limit *KeyedRateLimit) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="MapConfig"></a>
 ## type [MapConfig](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L205-L207>)
@@ -629,6 +677,15 @@ type RateLimit struct {
 }
 ```
 
+<a name="RateLimit.UnmarshalJSON"></a>
+### func \(\*RateLimit\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L69>)
+
+```go
+func (limit *RateLimit) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
+
 <a name="ResolvedMatch"></a>
 ## type [ResolvedMatch](<https://github.com/danmestas/dagnats/blob/main/dag/waitforevent.go#L23-L27>)
 
@@ -708,6 +765,15 @@ func ResolveRetryPolicy(wfDef WorkflowDef, stepDef StepDef) *RetryPolicy
 ```
 
 ResolveRetryPolicy returns the effective retry policy for a step. Resolution order: step Retry → workflow DefaultRetry → legacy Retries field → nil \(no retries\).
+
+<a name="RetryPolicy.UnmarshalJSON"></a>
+### func \(\*RetryPolicy\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L27>)
+
+```go
+func (policy *RetryPolicy) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="RetryStrategy"></a>
 ## type [RetryStrategy](<https://github.com/danmestas/dagnats/blob/main/dag/retry.go#L11>)
@@ -883,6 +949,15 @@ func ParseSleepConfig(step StepDef) (SleepConfig, error)
 
 ParseSleepConfig extracts SleepConfig from a StepDef's Config field.
 
+<a name="SleepConfig.UnmarshalJSON"></a>
+### func \(\*SleepConfig\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L41>)
+
+```go
+func (cfg *SleepConfig) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
+
 <a name="StepDef"></a>
 ## type [StepDef](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L241-L266>)
 
@@ -961,6 +1036,15 @@ func ResolveSkipped(def WorkflowDef, completed map[string]bool, queued map[strin
 ```
 
 ResolveSkipped returns steps whose dependencies are satisfied AND whose SkipIf condition evaluates to true. These should be marked Skipped by the orchestrator instead of being enqueued. Steps without SkipIf are never returned here.
+
+<a name="StepDef.UnmarshalJSON"></a>
+### func \(\*StepDef\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L20>)
+
+```go
+func (step *StepDef) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="StepRef"></a>
 ## type [StepRef](<https://github.com/danmestas/dagnats/blob/main/dag/stepref.go#L9-L13>)
@@ -1329,6 +1413,15 @@ func ParseWaitForEventConfig(step StepDef) (WaitForEventOpts, error)
 
 ParseWaitForEventConfig extracts WaitForEventOpts from a StepDef's Config field.
 
+<a name="WaitForEventOpts.UnmarshalJSON"></a>
+### func \(\*WaitForEventOpts\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L55>)
+
+```go
+func (opts *WaitForEventOpts) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
+
 <a name="Warning"></a>
 ## type [Warning](<https://github.com/danmestas/dagnats/blob/main/dag/validate_respond.go#L9-L12>)
 
@@ -1634,6 +1727,15 @@ func WithSchemas[I, O any](def WorkflowDef) WorkflowDef
 ```
 
 WithSchemas generates JSON schemas from Go types I \(input\) and O \(output\) and attaches them to the WorkflowDef. Applied after Build\(\). Supports flat structs with primitive fields, slices, and maps.
+
+<a name="WorkflowDef.UnmarshalJSON"></a>
+### func \(\*WorkflowDef\) [UnmarshalJSON](<https://github.com/danmestas/dagnats/blob/main/dag/duration_json.go#L13>)
+
+```go
+func (def *WorkflowDef) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="WorkflowRun"></a>
 ## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L363-L428>)

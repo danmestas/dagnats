@@ -357,6 +357,22 @@ type workflowListEntry struct {
 	DefHash string `json:"def_hash"`
 }
 
+// UnmarshalJSON decodes DefHash alongside the embedded WorkflowDef,
+// whose own UnmarshalJSON is promoted to this type and would drop it.
+func (entry *workflowListEntry) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &entry.WorkflowDef); err != nil {
+		return err
+	}
+	var own struct {
+		DefHash string `json:"def_hash"`
+	}
+	if err := json.Unmarshal(data, &own); err != nil {
+		return err
+	}
+	entry.DefHash = own.DefHash
+	return nil
+}
+
 // handleListWorkflows returns all registered workflow definitions as
 // a JSON array. Returns 200 on success.
 func handleListWorkflows(
