@@ -8,12 +8,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func startLeaseAPI(t *testing.T) *nats.Conn {
@@ -112,6 +115,30 @@ func TestLeaseWireRejectsBadInput(t *testing.T) {
 		if got.Kind != leaseKindInvalid || got.Granted || got.Error == "" {
 			t.Errorf("acquire %v = %+v, want kind invalid", body, got)
 		}
+	}
+}
+
+// On a NATS server older than 2.11 SetupAll skips the leases bucket;
+// deleting it reproduces that state. Every lease call must then say
+// why, rather than time out or report a generic internal error.
+func TestLeaseWithoutBucketReportsUnsupported(t *testing.T) {
+	nc := startLeaseAPI(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := js.DeleteStream(ctx, "KV_"+natsutil.LeasesBucket); err != nil {
+		t.Fatalf("delete leases stream: %v", err)
+	}
+	acquire := map[string]any{"key": "leader", "holder": "notify-1", "ttl_ms": 10000}
+	got := leaseCall(t, nc, "api.leases.acquire", acquire)
+	if got.Kind != leaseKindUnsupported || got.Granted {
+		t.Fatalf("acquire without bucket = %+v, want kind unsupported", got)
+	}
+	if !strings.Contains(got.Error, "nats-server >= 2.11") {
+		t.Fatalf("error %q must name the server requirement", got.Error)
 	}
 }
 

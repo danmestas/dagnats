@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   return `kind: "lost"` when the caller's revision is no longer current.
   The server republishes every change on `dagnats.lease.changed.<key>`
   (acquired, renewed, released, expired), once per change even in cluster
-  mode. See "Coordination leases" in `docs/wire-protocol.md`.
+  mode. Leases need nats-server 2.11 or newer. On an older server dagnats
+  still starts, and the lease subjects reply `kind: "unsupported"`. See
+  "Coordination leases" in `docs/wire-protocol.md`.
 
 ## [0.0.26] - 2026-10-17
 

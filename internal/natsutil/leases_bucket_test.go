@@ -9,11 +9,38 @@ package natsutil
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// oldServerJS stands in for a pre-2.11 server: nats.go refuses a
+// LimitMarkerTTL bucket client-side with err. Only the one method the
+// provisioner calls is implemented; anything else panics (nil embed).
+type oldServerJS struct {
+	jetstream.JetStream
+	err error
+}
+
+func (f oldServerJS) CreateOrUpdateKeyValue(
+	context.Context, jetstream.KeyValueConfig,
+) (jetstream.KeyValue, error) {
+	return nil, f.err
+}
+
+func TestLeasesBucketSkippedOnServerWithoutTTL(t *testing.T) {
+	ctx := context.Background()
+	old := oldServerJS{err: jetstream.ErrLimitMarkerTTLNotSupported}
+	err := provisionLeasesBucket(ctx, old, 1)
+	assert(t, err == nil, "pre-2.11 server must not fail setup: %v", err)
+
+	other := errors.New("insufficient resources")
+	err = provisionLeasesBucket(ctx, oldServerJS{err: other}, 1)
+	assert(t, errors.Is(err, other),
+		"any other provisioning error must still fail setup, got %v", err)
+}
 
 func TestSetupAllCreatesLeasesBucket(t *testing.T) {
 	s, nc := StartTestServer(t)

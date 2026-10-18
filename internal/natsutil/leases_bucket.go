@@ -1,7 +1,10 @@
 package natsutil
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -25,6 +28,28 @@ const LeaseMarkerTTL = time.Minute
 // leaseValueSizeMax bounds one lease record. The value is a small JSON
 // object (holder, acquired_at, ttl_ms); anything larger is a bug.
 const leaseValueSizeMax = 1024
+
+// provisionLeasesBucket creates the leases bucket. A server too old for
+// per-key TTL (< 2.11) is not fatal: leases are an optional feature, so
+// dagnats starts without the bucket and the lease endpoints answer
+// "leases unsupported" instead of the whole server refusing to boot.
+func provisionLeasesBucket(
+	ctx context.Context, js jetstream.JetStream, replicas int,
+) error {
+	if ctx == nil {
+		panic("provisionLeasesBucket: ctx must not be nil")
+	}
+	if js == nil {
+		panic("provisionLeasesBucket: js must not be nil")
+	}
+	_, err := js.CreateOrUpdateKeyValue(ctx, leasesBucketConfig(replicas))
+	if errors.Is(err, jetstream.ErrLimitMarkerTTLNotSupported) {
+		slog.Warn("leases bucket skipped: coordination leases require "+
+			"nats-server >= 2.11 (per-key TTL)", "error", err)
+		return nil
+	}
+	return err
+}
 
 // leasesBucketConfig is the leases bucket definition. LimitMarkerTTL
 // turns on per-message TTL (so the server, not the holder's clock,

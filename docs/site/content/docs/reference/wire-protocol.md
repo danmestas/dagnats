@@ -577,6 +577,8 @@ Request and reply bodies are JSON.
   the new fence.
 - **release** frees the key. It uses the same fence check as renew.
 - **owner** is a read with no side effects.
+- Every call reads through the stream leader (a non-direct `STREAM.MSG.GET`), so a lagging replica in an R3 cluster cannot return a stale owner.
+- **Requires nats-server 2.11 or newer.**
 - `expires_at` is advisory (the server's TTL is authoritative). Times are
   RFC 3339 in UTC.
 
@@ -587,7 +589,8 @@ Request and reply bodies are JSON.
 | `invalid` | Bad input: key, holder, `ttl_ms`, or missing `revision`. |
 | `lost` | renew or release only. The caller does not hold the key at that revision, because it expired, was released, or now belongs to another holder. **Stop acting as owner now.** |
 | `transport` | The request body is not valid JSON. |
-| `internal` | A NATS error, such as a timeout or a missing bucket. Retry. |
+| `internal` | A NATS error, such as a timeout. Retry. |
+| `unsupported` | The `leases` bucket does not exist because the NATS server is older than 2.11, which lacks per-key TTL. dagnats skips the bucket and logs a warning. Retrying will not help; upgrade NATS. |
 
 **Input bounds:**
 

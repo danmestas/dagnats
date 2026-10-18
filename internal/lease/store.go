@@ -3,7 +3,6 @@ package lease
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -22,16 +21,15 @@ const (
 	// kvOperationHeader marks a KV delete/purge; kept literal because
 	// jetstream does not export it.
 	kvOperationHeader = "KV-Operation"
+	// msgGetSubject is the leader-answered (non-direct) message get.
+	msgGetSubject = "$JS.API.STREAM.MSG.GET." + streamName
 )
 
 // Store grants, renews, releases and reads leases. Safe for concurrent
-// use. It opens no NATS resources until the first call, so a server that
-// never serves a lease request pays nothing for it.
+// use. It holds no NATS resources of its own; every read goes to the
+// stream leader and every write is a CAS, so a Store is stateless.
 type Store struct {
 	tp *natsutil.TracingPublisher
-
-	mu     sync.Mutex
-	stream jetstream.Stream // resolved on first use, then cached
 }
 
 // NewStore binds a Store to nc. The leases bucket must already exist

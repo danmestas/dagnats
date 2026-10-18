@@ -30,10 +30,11 @@ const leaseRequestTimeout = 5 * time.Second
 // Error kinds in the {error, kind} reply. "lost" is the one a holder
 // must act on: stop writing as owner now.
 const (
-	leaseKindInvalid   = "invalid"
-	leaseKindLost      = "lost"
-	leaseKindTransport = "transport"
-	leaseKindInternal  = "internal"
+	leaseKindInvalid     = "invalid"
+	leaseKindLost        = "lost"
+	leaseKindTransport   = "transport"
+	leaseKindInternal    = "internal"
+	leaseKindUnsupported = "unsupported"
 )
 
 // endpointSpec is one micro endpoint. queueGroup "" means every
@@ -212,6 +213,8 @@ func leaseErrorReply(err error) leaseReply {
 		kind = leaseKindInvalid
 	case errors.Is(err, lease.ErrLost):
 		kind = leaseKindLost
+	case errors.Is(err, lease.ErrUnsupported):
+		kind = leaseKindUnsupported
 	}
 	if kind == "" {
 		panic("leaseErrorReply: kind must be set")

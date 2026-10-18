@@ -49,6 +49,14 @@ var ErrInvalid = errors.New("lease: invalid request")
 // holder that sees ErrLost must stop acting as owner immediately.
 var ErrLost = errors.New("lease: lost")
 
+// ErrUnsupported means the leases bucket does not exist. SetupAll skips
+// it (with a warning) on a NATS server older than 2.11, which lacks the
+// per-key TTL leases depend on.
+var ErrUnsupported = errors.New(
+	"leases unsupported: requires nats-server >= 2.11 " +
+		"(the leases bucket is not provisioned)",
+)
+
 // Lease is one key's current grant. Revision is the fencing token.
 // ExpiresAt is advisory (computed from a clock, not enforced by it); the
 // server-side TTL is what actually frees the key.

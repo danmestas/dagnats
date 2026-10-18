@@ -18,6 +18,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func newTestStore(t *testing.T) (*Store, *nats.Conn) {
@@ -282,6 +283,77 @@ func TestConcurrentAcquireGrantsExactlyOne(t *testing.T) {
 	owner, held, err := store.Owner(ctx, "leader")
 	if err != nil || !held || owner.Holder == "" {
 		t.Fatalf("owner after race: %+v held=%v err=%v", owner, held, err)
+	}
+}
+
+// A direct get may be answered by any replica, so a lagging one could
+// re-grant an expired lease. A deterministic lag is not reproducible in
+// a test, so this pins the routing instead: snoop both JetStream API
+// subjects and require every read to take the leader-answered one.
+func TestReadsAreLeaderRoutedNotDirect(t *testing.T) {
+	store, nc := newTestStore(t)
+	ctx := testContext(t)
+	direct := make(chan *nats.Msg, 64)
+	leader := make(chan *nats.Msg, 64)
+	for subject, ch := range map[string]chan *nats.Msg{
+		"$JS.API.DIRECT.GET." + streamName + ".>": direct,
+		"$JS.API.DIRECT.GET." + streamName:        direct,
+		msgGetSubject:                             leader,
+	} {
+		sub, err := nc.ChanSubscribe(subject, ch)
+		if err != nil {
+			t.Fatalf("snoop %s: %v", subject, err)
+		}
+		t.Cleanup(func() {
+			if err := sub.Unsubscribe(); err != nil {
+				t.Errorf("unsubscribe: %v", err)
+			}
+		})
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	held, _, err := store.Acquire(ctx, "leader", "node-a", 10*time.Second)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if _, _, err := store.Acquire(ctx, "leader", "node-a", 10*time.Second); err != nil {
+		t.Fatalf("idempotent acquire: %v", err)
+	}
+	if _, _, err := store.Owner(ctx, "leader"); err != nil {
+		t.Fatalf("owner: %v", err)
+	}
+	if _, err := store.Renew(ctx, "leader", "node-a", held.Revision, 10*time.Second); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if len(direct) != 0 {
+		t.Fatalf("%d reads used a direct get; all must be leader-routed", len(direct))
+	}
+	if len(leader) < 4 {
+		t.Fatalf("%d leader-routed reads, want one per call (4)", len(leader))
+	}
+}
+
+func TestMissingBucketReportsUnsupported(t *testing.T) {
+	store, nc := newTestStore(t)
+	ctx := testContext(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := js.DeleteStream(ctx, streamName); err != nil {
+		t.Fatalf("delete leases stream: %v", err)
+	}
+	_, granted, err := store.Acquire(ctx, "leader", "node-a", 10*time.Second)
+	if !errors.Is(err, ErrUnsupported) || granted {
+		t.Fatalf("acquire without bucket: granted=%v err=%v, want ErrUnsupported",
+			granted, err)
+	}
+	if _, _, err := store.Owner(ctx, "leader"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("owner without bucket: err=%v, want ErrUnsupported", err)
 	}
 }
 

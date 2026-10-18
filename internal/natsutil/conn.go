@@ -351,8 +351,6 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 			History:  1,
 			Replicas: replicas,
 		},
-		// leases: TTL leases with revision fencing (ADR-024).
-		leasesBucketConfig(replicas),
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
@@ -367,7 +365,8 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 			return err
 		}
 	}
-	return nil
+	// leases (ADR-024) last and non-fatal: it needs nats-server >= 2.11.
+	return provisionLeasesBucket(ctx, js, replicas)
 }
 
 // SetupStickyStream creates the STICKY_TASKS stream for worker-

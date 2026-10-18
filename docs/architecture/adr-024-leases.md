@@ -55,7 +55,8 @@ A failed call replies `{error, kind}`. `kind` is one of:
 - `invalid`: bad input.
 - `lost`: the fence check failed.
 - `transport`: the request body was not valid JSON.
-- `internal`: a NATS error (timeout, bucket missing).
+- `internal`: a NATS error, such as a timeout.
+- `unsupported`: the `leases` bucket does not exist. SetupAll skips it, logging a warning, on a NATS server older than 2.11, because per-key TTL needs 2.11. The error text names that requirement. The rest of dagnats starts normally.
 
 `docs/wire-protocol.md` has the full contract.
 
@@ -79,6 +80,7 @@ Semantics:
   expired returns `lost`, so the caller learns it was not the owner when it
   thought it was.
 - **owner.** Reads the key with no side effects.
+- **Every read goes to the stream leader.** acquire, renew, release and owner read with a non-direct `STREAM.MSG.GET`. jetstream's `GetLastMsgForSubject` would use a direct get, because KV buckets set `AllowDirect`, and at R3 any replica can answer a direct get. A lagging replica could then show an old holder its own expired lease, and the idempotent acquire path would answer `granted:true` while another holder owns a newer revision. Leader reads close that hole. They also make `owner` exact, not merely best-effort.
 - **Bounds.** Keys and holders must match `[A-Za-z0-9_-]` and be at most 128
   bytes. `ttl_ms` must be a whole number of seconds between 1000 and 600000.
   It must be whole seconds because the server truncates a message TTL to
@@ -157,6 +159,7 @@ client for every language.
 
 ## Consequences
 
+- **Leases require nats-server 2.11 or newer.** On an older external server (`DAGNATS_NATS_URL`), dagnats still starts without the bucket, and every lease call returns `kind: "unsupported"`.
 - **A lease is only as good as the holder's renew loop.** A holder should
   renew well before `expires_at`, for example every `ttl/3`. When renew
   returns `lost`, or the holder cannot reach dagnats before `expires_at`,

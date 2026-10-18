@@ -21,26 +21,61 @@ type current struct {
 	revision uint64
 }
 
-// leaseStream resolves the bucket's stream once and caches it. A failure
-// is not cached, so a bucket provisioned after startup is picked up.
-func (s *Store) leaseStream(ctx context.Context) (jetstream.Stream, error) {
-	if ctx == nil {
-		panic("leaseStream: ctx must not be nil")
+// storedMsg is the message half of a STREAM.MSG.GET reply. []byte
+// fields arrive base64-encoded, which encoding/json decodes.
+type storedMsg struct {
+	Sequence uint64    `json:"seq"`
+	Header   []byte    `json:"hdrs"`
+	Data     []byte    `json:"data"`
+	Time     time.Time `json:"time"`
+}
+
+// msgGetReply is the STREAM.MSG.GET reply envelope.
+type msgGetReply struct {
+	Error *struct {
+		ErrCode     int    `json:"err_code"`
+		Description string `json:"description"`
+	} `json:"error"`
+	Message *storedMsg `json:"message"`
+}
+
+// getLast fetches the last message on key's subject through the stream
+// LEADER. jetstream's Stream.GetLastMsgForSubject would use a direct get
+// (KV buckets set AllowDirect), which any replica may answer; a lagging
+// replica could then hand an old holder its own expired lease back as
+// "granted". Returns (nil, nil) when the key has never been written.
+func (s *Store) getLast(ctx context.Context, key string) (*storedMsg, error) {
+	if key == "" {
+		panic("getLast: key must not be empty")
 	}
 	if s.tp == nil {
-		panic("leaseStream: publisher must not be nil")
+		panic("getLast: publisher must not be nil")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.stream != nil {
-		return s.stream, nil
-	}
-	stream, err := s.tp.JS().Stream(ctx, streamName)
+	body, err := json.Marshal(map[string]string{"last_by_subj": subjectPrefix + key})
 	if err != nil {
-		return nil, fmt.Errorf("leases bucket not provisioned: %w", err)
+		return nil, fmt.Errorf("lease %q: encode read: %w", key, err)
 	}
-	s.stream = stream
-	return stream, nil
+	resp, err := s.tp.NC().RequestWithContext(ctx, msgGetSubject, body)
+	if err != nil {
+		return nil, fmt.Errorf("lease %q: read: %w", key, err)
+	}
+	var reply msgGetReply
+	if err := json.Unmarshal(resp.Data, &reply); err != nil {
+		return nil, fmt.Errorf("lease %q: decode read: %w", key, err)
+	}
+	if reply.Error != nil {
+		switch reply.Error.ErrCode {
+		case int(jetstream.JSErrCodeMessageNotFound):
+			return nil, nil
+		case int(jetstream.JSErrCodeStreamNotFound):
+			return nil, ErrUnsupported
+		}
+		return nil, fmt.Errorf("lease %q: read: %s", key, reply.Error.Description)
+	}
+	if reply.Message == nil {
+		return nil, fmt.Errorf("lease %q: read: empty reply", key)
+	}
+	return reply.Message, nil
 }
 
 // read loads the last message stored for key. Raw stream access (not
@@ -50,20 +85,23 @@ func (s *Store) read(ctx context.Context, key string) (current, error) {
 	if key == "" {
 		panic("read: key must not be empty")
 	}
-	stream, err := s.leaseStream(ctx)
-	if err != nil {
+	if ctx == nil {
+		panic("read: ctx must not be nil")
+	}
+	msg, err := s.getLast(ctx, key)
+	if err != nil || msg == nil {
 		return current{}, err
 	}
-	msg, err := stream.GetLastMsgForSubject(ctx, subjectPrefix+key)
-	if errors.Is(err, jetstream.ErrMsgNotFound) {
-		return current{}, nil
-	}
-	if err != nil {
-		return current{}, fmt.Errorf("lease %q: read: %w", key, err)
+	header := nats.Header{}
+	if len(msg.Header) > 0 {
+		header, err = nats.DecodeHeadersMsg(msg.Header)
+		if err != nil {
+			return current{}, fmt.Errorf("lease %q: decode headers: %w", key, err)
+		}
 	}
 	cur := current{revision: msg.Sequence}
-	if msg.Header.Get(kvOperationHeader) != "" ||
-		msg.Header.Get(MarkerReasonHeader) != "" {
+	if header.Get(kvOperationHeader) != "" ||
+		header.Get(MarkerReasonHeader) != "" {
 		return cur, nil
 	}
 	var rec record
