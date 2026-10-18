@@ -50,7 +50,7 @@ func TestMicroPingRespondsAfterStartTimesOutAfterStop(t *testing.T) {
 	}
 }
 
-func TestMicroInfoListsExactlySixEndpointSubjects(t *testing.T) {
+func TestMicroInfoListsExactlyTenEndpointSubjects(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
@@ -68,7 +68,7 @@ func TestMicroInfoListsExactlySixEndpointSubjects(t *testing.T) {
 	}
 
 	// The original three (#456), the two control-plane runtime endpoints
-	// (#376), plus the additive budget read (#378).
+	// (#376), the additive budget read (#378), and the four lease subjects.
 	want := map[string]bool{
 		"api.workflows.register": true,
 		"api.runs.start":         true,
@@ -76,6 +76,11 @@ func TestMicroInfoListsExactlySixEndpointSubjects(t *testing.T) {
 		"api.runtimes.register":  true,
 		"api.runs.spawn":         true,
 		"api.runtimes.budget":    true,
+		// Coordination leases (ADR-024).
+		"api.leases.acquire": true,
+		"api.leases.renew":   true,
+		"api.leases.release": true,
+		"api.leases.owner":   true,
 	}
 	got := make(map[string]bool, len(info.Endpoints))
 	for _, ep := range info.Endpoints {
@@ -88,7 +93,7 @@ func TestMicroInfoListsExactlySixEndpointSubjects(t *testing.T) {
 			t.Fatalf("INFO missing endpoint subject %q", subject)
 		}
 	}
-	// Negative: no unexpected subjects beyond the five.
+	// Negative: no unexpected subjects beyond the listed ones.
 	if len(info.Endpoints) != len(want) {
 		t.Fatalf(
 			"endpoint count = %d, want %d (subjects: %v)",

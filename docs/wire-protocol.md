@@ -1005,6 +1005,104 @@ store's steady-state repair cost stays proportional to its crash-gap
 and active-marker counts, never to how many runs it has accumulated
 over its lifetime.
 
+## Coordination leases (`api.leases.*`)
+
+TTL leases that let the replicas of a downstream service elect a leader and
+split shard ownership without importing dagnats code. ADR-024 records the
+design. Leases are stored in the `leases` KV bucket. The NATS server enforces
+each lease's TTL, and the key's KV revision is the **fencing token**.
+
+### Request/reply subjects
+
+All four subjects belong to the `dagnats-api` micro service and use queue
+group `dagnats-leases`, so exactly one dagnats instance serves each request.
+Request and reply bodies are JSON.
+
+| Subject | Request | Success reply |
+|---|---|---|
+| `api.leases.acquire` | `{"key","holder","ttl_ms"}` | `{"granted","held","key","holder","revision","acquired_at","expires_at","ttl_ms"}` |
+| `api.leases.renew` | `{"key","holder","revision","ttl_ms"}` | same shape as acquire, with a new `revision` |
+| `api.leases.release` | `{"key","holder","revision"}` | `{"granted":false,"held":false,"key"}` |
+| `api.leases.owner` | `{"key"}` | the acquire shape with `"held":true`, or `{"granted":false,"held":false,"key"}` |
+
+```json
+// api.leases.acquire request
+{"key": "notify-leader", "holder": "notify-7f3a", "ttl_ms": 15000}
+
+// reply: granted
+{"granted": true, "held": true, "key": "notify-leader", "holder": "notify-7f3a",
+ "revision": 42, "acquired_at": "2026-10-18T12:00:00Z",
+ "expires_at": "2026-10-18T12:00:15Z", "ttl_ms": 15000}
+
+// reply: someone else holds it (not an error)
+{"granted": false, "held": true, "key": "notify-leader", "holder": "notify-19bc",
+ "revision": 40, ...}
+```
+
+- **acquire** grants the key if nobody holds it. If another holder has it,
+  the reply is `granted:false` and names that holder. If the caller already
+  holds it, acquire is **idempotent**: it returns the existing lease with
+  `granted:true` and the same revision, and it does **not** extend the TTL.
+  To extend a lease, call renew.
+- **renew** extends the lease to `ttl_ms` from now. The holder must match,
+  and `revision` must be the current fence. The reply's `revision` becomes
+  the new fence.
+- **release** frees the key. It uses the same fence check as renew.
+- **owner** is a read with no side effects.
+- `expires_at` is advisory (the server's TTL is authoritative). Times are
+  RFC 3339 in UTC.
+
+**Errors** come back as `{"error": "...", "kind": "..."}`:
+
+| `kind` | Meaning |
+|---|---|
+| `invalid` | Bad input: key, holder, `ttl_ms`, or missing `revision`. |
+| `lost` | renew or release only. The caller does not hold the key at that revision, because it expired, was released, or now belongs to another holder. **Stop acting as owner now.** |
+| `transport` | The request body is not valid JSON. |
+| `internal` | A NATS error, such as a timeout or a missing bucket. Retry. |
+
+**Input bounds:**
+
+- `key` and `holder` must match `[A-Za-z0-9_-]` and be 1 to 128 bytes. No
+  dots, so a key is exactly one subject token.
+- `ttl_ms` must be a whole number of seconds from 1000 to 600000. The server
+  truncates a message TTL to whole seconds.
+
+### Change events: `dagnats.lease.changed.<key>`
+
+The NATS server republishes every write to the bucket onto
+`dagnats.lease.changed.<key>`. Only the stream leader republishes, so each
+change arrives once, however many dagnats nodes are running. Each event
+carries `Nats-Sequence` (the revision) and `Nats-Subject`
+(`$KV.leases.<key>`) headers.
+
+| Event | Identify by | Body |
+|---|---|---|
+| acquired | `Dagnats-Lease-Event: acquired` | `{"holder","acquired_at","ttl_ms"}` |
+| renewed | `Dagnats-Lease-Event: renewed` | same as acquired |
+| released | `Dagnats-Lease-Event: released` | empty |
+| expired | no `Dagnats-Lease-Event` header; `Nats-Marker-Reason: MaxAge` | empty |
+
+Events are core NATS publishes, delivered at most once. A subscriber that
+reconnects should call `api.leases.owner` to resync. If you need durable
+delivery, consume the `KV_leases` stream directly. Use `Nats-Sequence` to
+order events and to drop duplicates.
+
+### Patterns and the fencing contract
+
+- **Leader election:** every replica calls acquire on one well-known key.
+  The replica that is granted the lease is the leader. Everyone else
+  watches `dagnats.lease.changed.<key>` and retries acquire on `released` or
+  `expired`.
+- **Shard ownership:** use one lease per shard key, such as `notify-shard-07`.
+- **Renew loop:** renew about every `ttl_ms/3`. On `lost`, or if you cannot
+  reach dagnats before `expires_at`, stop acting as owner immediately.
+- **Fence downstream writes:** send the lease `revision` with every write
+  you make as owner, and have the downstream store reject any revision lower
+  than the highest it has seen. A paused holder that wakes up after its lease
+  expired has no other protection against writing as a stale owner.
+- `holder` IDs must be unique per process.
+
 ## Reference Implementations
 
 - **Go**: see `worker/` package for NATS transport

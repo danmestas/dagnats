@@ -50,3 +50,4 @@ This convention makes dependency between proposals explicit and prevents acciden
 - `adr-021-ad-hoc-agent-runtimes.md` — ad-hoc agent runtimes, a scoped generative control-plane capability.
 - `adr-022-gated-write-actions.md` — gated, operator-facing write actions.
 - `adr-023-accept-dagnatstest-internal-api-coupling.md` — accept the `dagnatstest` → `internal/api` coupling for now.
+- `adr-024-leases.md` — coordination leases (leader election, shard ownership) over `api.leases.*` request/reply, with revision fencing and server-republished change events.

@@ -351,6 +351,8 @@ func SetupKVBuckets(js jetstream.JetStream, replicas int) error {
 			History:  1,
 			Replicas: replicas,
 		},
+		// leases: TTL leases with revision fencing (ADR-024).
+		leasesBucketConfig(replicas),
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")

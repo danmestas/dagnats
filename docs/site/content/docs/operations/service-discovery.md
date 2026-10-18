@@ -17,7 +17,7 @@ discovery + per-endpoint statistics surface.
 
 | Service | Endpoints (subjects) |
 |---|---|
-| `dagnats-api` | `api.workflows.register`, `api.runs.start`, `api.runs.get`, `api.runtimes.register`, `api.runs.spawn`, `api.runtimes.budget` |
+| `dagnats-api` | `api.workflows.register`, `api.runs.start`, `api.runs.get`, `api.runtimes.register`, `api.runs.spawn`, `api.runtimes.budget`, `api.leases.acquire`, `api.leases.renew`, `api.leases.release`, `api.leases.owner` (the lease subjects use queue group `dagnats-leases`, so one instance serves each request) |
 | `dagnats-trigger` | the trigger-type registration ack (`_REGISTRY.trigger_types.ack`) — present only when external-trigger support is enabled |
 
 Each service reports the build version stamped into the binary (an un-stamped dev

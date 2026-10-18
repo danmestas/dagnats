@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Coordination leases over NATS request/reply** (ADR-024). Downstream
+  services can now elect a leader or split shard ownership through four
+  new subjects: `api.leases.acquire`, `api.leases.renew`,
+  `api.leases.release` and `api.leases.owner`. Leases live in a new
+  `leases` KV bucket. The NATS server enforces each lease's TTL (1s to
+  10m), and the key's KV revision is the fencing token. renew and release
+  return `kind: "lost"` when the caller's revision is no longer current.
+  The server republishes every change on `dagnats.lease.changed.<key>`
+  (acquired, renewed, released, expired), once per change even in cluster
+  mode. See "Coordination leases" in `docs/wire-protocol.md`.
+
 ## [0.0.26] - 2026-10-17
 
 ### Changed

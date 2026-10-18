@@ -75,6 +75,7 @@ These KV buckets store workflow state, coordination data, and operational metada
 | `worker_tokens` | -- | 1 | Minted worker tokens (revoked records kept for audit) |
 | `worker_status` | 120s | default | Per-worker counter snapshots for `dagnats status` |
 | `console_audit` | -- | default | Audit log of console write actions |
+| `leases` | per key (1s-10m) | 1 | Coordination leases with revision fencing ([ADR-024](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-024-leases.md)); changes republished on `dagnats.lease.changed.<key>` |
 
 ### Workers Bucket
 

@@ -14,6 +14,7 @@ import (
 	"regexp"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/lease"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
@@ -49,6 +50,7 @@ type NATSAPI struct {
 	nc      *nats.Conn
 	version string
 	micro   micro.Service
+	leases  *lease.Store
 }
 
 // NewNATSAPI constructs a NATSAPI bound to svc and nc. version is the
@@ -67,7 +69,9 @@ func NewNATSAPI(
 	// library embedder that never calls InitTelemetry would silently get
 	// no trace linkage. Idempotent and no-clobber.
 	observe.EnsureDefaultPropagator()
-	return &NATSAPI{svc: svc, nc: nc, version: version}
+	return &NATSAPI{
+		svc: svc, nc: nc, version: version, leases: lease.NewStore(nc),
+	}
 }
 
 // Start registers the micro service and its endpoints. Panics on
@@ -95,33 +99,32 @@ func (n *NATSAPI) Start() {
 	// auto-Stop the service on connection close. Safe here because our
 	// explicit Stop() is idempotent; but a caller that sets conn handlers
 	// AFTER Start() will find them chained, not replaced.
-	endpoints := []struct {
-		name    string
-		subject string
-		handler micro.HandlerFunc
-	}{
-		{"register", "api.workflows.register", n.handleRegister},
-		{"start", "api.runs.start", n.handleStartRun},
-		{"get", "api.runs.get", n.handleGetRun},
+	endpoints := append([]endpointSpec{
+		{"register", "api.workflows.register", n.handleRegister, ""},
+		{"start", "api.runs.start", n.handleStartRun, ""},
+		{"get", "api.runs.get", n.handleGetRun, ""},
 		// Additive control-plane endpoints (#376). Existing subjects
 		// above are unchanged.
 		{"runtimes-register", "api.runtimes.register",
-			n.handleRuntimeRegister},
-		{"runs-spawn", "api.runs.spawn", n.handleRunSpawn},
+			n.handleRuntimeRegister, ""},
+		{"runs-spawn", "api.runs.spawn", n.handleRunSpawn, ""},
 		// Budget read (#378): real scan-backed quota usage so a gated
 		// handler can self-throttle before tripping quota_exceeded.
 		{"runtimes-budget", "api.runtimes.budget",
-			n.handleRuntimesBudget},
-	}
+			n.handleRuntimesBudget, ""},
+	}, n.leaseEndpoints()...)
 	for _, e := range endpoints {
 		// Without a queue group, every running INSTANCE receives each
 		// message -- preserving pre-micro behavior (raw nc.Subscribe).
-		// micro's default queue group "q" would instead load-balance
-		// each message across instances.
+		// An endpoint that names a group is served by exactly one
+		// instance per request instead (leases: see leaseQueueGroup).
+		queue := micro.WithEndpointQueueGroupDisabled()
+		if e.queueGroup != "" {
+			queue = micro.WithEndpointQueueGroup(e.queueGroup)
+		}
 		if err := srv.AddEndpoint(
 			e.name, e.handler,
-			micro.WithEndpointSubject(e.subject),
-			micro.WithEndpointQueueGroupDisabled(),
+			micro.WithEndpointSubject(e.subject), queue,
 		); err != nil {
 			panic("NATSAPI.Start: AddEndpoint failed for " +
 				e.subject + ": " + err.Error())

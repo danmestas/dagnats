@@ -1621,6 +1621,7 @@ var kvBucketsKnown = []KVBucketInfo{
 	{Name: "trigger_types", Description: "external trigger type registry"},
 	{Name: "triggers", Description: "registered trigger definitions"},
 	{Name: "services", Description: "logical service metadata"},
+	{Name: "leases", Description: "coordination leases (ADR-024)"},
 	{Name: AuditBucket, Description: "console audit log"},
 }
 
