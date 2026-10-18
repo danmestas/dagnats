@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -61,11 +62,11 @@ func InboxSubject(holder, key string) string {
 	if holder == "" || key == "" {
 		panic("InboxSubject: holder and key must not be empty")
 	}
-	subject := InboxSubjectPrefix + "." + holder + "." + key
-	if len(subject) != len(InboxSubjectPrefix)+len(holder)+len(key)+2 {
-		panic("InboxSubject: subject must be prefix.holder.key")
+	// A dot or wildcard would make the subject address other tokens.
+	if strings.ContainsAny(holder, ".*> ") || strings.ContainsAny(key, ".*> ") {
+		panic("InboxSubject: holder and key must each be one subject token")
 	}
-	return subject
+	return InboxSubjectPrefix + "." + holder + "." + key
 }
 
 // Forward delivers payload to whoever holds key, stamped with the lease
@@ -99,6 +100,13 @@ func (s *Store) Forward(
 		}
 		if !cur.live {
 			return Forwarded{Key: key}, fmt.Errorf("%w: key %q is not held", ErrNoOwner, key)
+		}
+		// The record is data: a corrupt or foreign write must fail the
+		// call, not reach InboxSubject's assertion.
+		if err := validateToken("stored holder", cur.lease.Holder, HolderLengthMax); err != nil {
+			// %v, not %w: this is corrupt state (internal), not bad input.
+			return tried, fmt.Errorf("lease %q: corrupt record at revision %d: %v",
+				key, cur.lease.Revision, err)
 		}
 		moved := cur.lease.Holder != tried.Holder || cur.lease.Revision != tried.Revision
 		if attempt > 0 && !moved {

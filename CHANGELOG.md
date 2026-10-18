@@ -27,8 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `Dagnats-Lease-Fence` header. Owners refuse a stale fence by
   replying with `Dagnats-Lease-Reject: stale`; forward then re-reads the
   lease and tries the new owner if it moved. Failures are explicit:
-  `no_owner` and `owner_unavailable` (the request was not processed) or
-  `owner_timeout` (it may have been). `timeout_ms` is 100 to 30000.
+  `no_owner`, `owner_unavailable` and `busy` (the request was not
+  processed), `owner_timeout` (it may have been), or `reply_too_large`
+  (it was, but the reply does not fit). `timeout_ms` is 100 to 30000.
 
 ## [0.0.26] - 2026-10-17
 

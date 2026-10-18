@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/lease"
@@ -17,19 +19,21 @@ import (
 	"github.com/nats-io/nats.go/micro"
 )
 
-// Forward-only error kinds. Only owner_timeout (and internal) can mean
-// the owner processed the request; no_owner and owner_unavailable
-// guarantee it did not.
+// Forward-only error kinds. no_owner, owner_unavailable and busy
+// guarantee the owner did not process the request; owner_timeout and
+// reply_too_large mean it may have (reply_too_large: it did).
 const (
 	leaseKindNoOwner          = "no_owner"
 	leaseKindOwnerUnavailable = "owner_unavailable"
 	leaseKindOwnerTimeout     = "owner_timeout"
+	leaseKindBusy             = "busy"
+	leaseKindReplyTooLarge    = "reply_too_large"
 )
 
 // forwardInFlightMax bounds concurrent forwards per dagnats instance.
 // A micro endpoint runs its handler on one goroutine, so a forward
 // waiting on a slow owner would otherwise stall every other forward
-// behind it; past this bound the caller gets an explicit error instead.
+// behind it; past this bound the caller gets kind busy instead.
 const forwardInFlightMax = 256
 
 // forwardRequest is the api.leases.forward body. Payload is base64 in
@@ -53,7 +57,7 @@ type forwardReply struct {
 
 // leaseForwardHandler returns the api.leases.forward handler. Each
 // forward runs on its own goroutine, at most forwardInFlightMax at once,
-// and each is bounded by its own timeout_ms (<= lease.ForwardTimeoutMax).
+// bounded by its own timeout_ms and cancelled by Stop.
 func (n *NATSAPI) leaseForwardHandler() micro.HandlerFunc {
 	if n.leases == nil {
 		panic("leaseForwardHandler: lease store must not be nil")
@@ -62,25 +66,31 @@ func (n *NATSAPI) leaseForwardHandler() micro.HandlerFunc {
 	if cap(slots) != forwardInFlightMax {
 		panic("leaseForwardHandler: slot pool must hold the in-flight bound")
 	}
+	stopped, stop := context.WithCancel(context.Background())
+	n.stopForwards = stop
 	return func(req micro.Request) {
 		var r forwardRequest
 		if err := json.Unmarshal(req.Data(), &r); err != nil {
-			n.reply(req, forwardReply{Error: err.Error(), Kind: leaseKindTransport})
+			n.respondForward(req, forwardReply{Error: err.Error(), Kind: leaseKindTransport})
 			return
 		}
 		select {
 		case slots <- struct{}{}:
 		default:
-			n.reply(req, forwardReply{
-				Key: r.Key, Kind: leaseKindInternal,
-				Error: "forward capacity exhausted; retry shortly",
+			n.respondForward(req, forwardReply{
+				Key: r.Key, Kind: leaseKindBusy,
+				Error: fmt.Sprintf("%d forwards already in flight; retry shortly",
+					forwardInFlightMax),
 			})
 			return
 		}
 		base := observe.ExtractTraceContextHeader(nats.Header(req.Headers()))
 		go func() {
 			defer func() { <-slots }()
-			n.reply(req, n.forwardLease(base, r))
+			ctx, cancel := context.WithCancel(base)
+			defer context.AfterFunc(stopped, cancel)()
+			defer cancel()
+			n.respondForward(req, n.forwardLease(ctx, r))
 		}()
 	}
 }
@@ -103,6 +113,41 @@ func (n *NATSAPI) forwardLease(ctx context.Context, r forwardRequest) forwardRep
 		reply.Error, reply.Kind = err.Error(), forwardErrorKind(err)
 	}
 	return reply
+}
+
+// respondForward sends reply. An owner reply that fits the owner's hop
+// can still overflow this one (base64 grows it by a third); the caller
+// then gets reply_too_large instead of silence, because the owner has
+// already processed the request.
+func (n *NATSAPI) respondForward(req micro.Request, reply forwardReply) {
+	if req == nil {
+		panic("respondForward: req must not be nil")
+	}
+	if n.nc == nil {
+		panic("respondForward: connection must not be nil")
+	}
+	data, err := json.Marshal(reply)
+	if err != nil {
+		slog.Error("lease forward: marshal reply failed", "error", err)
+		return
+	}
+	if limit := n.nc.MaxPayload(); int64(len(data)) > limit {
+		data, err = json.Marshal(forwardReply{
+			Key: reply.Key, Holder: reply.Holder, Revision: reply.Revision,
+			Kind: leaseKindReplyTooLarge,
+			Error: fmt.Sprintf("owner processed the request, but its %d-byte reply "+
+				"is %d bytes base64-encoded, over max_payload %d",
+				len(reply.Payload), len(data), limit),
+		})
+		if err != nil {
+			slog.Error("lease forward: marshal reply failed", "error", err)
+			return
+		}
+	}
+	if err := req.Respond(data); err != nil {
+		slog.Warn("lease forward: reply failed", "key", reply.Key,
+			"holder", reply.Holder, "kind", reply.Kind, "error", err)
+	}
 }
 
 // forwardErrorKind maps a Forward error onto the wire kind.

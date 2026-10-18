@@ -695,11 +695,22 @@ owner error, `holder` and `revision` name the owner it last tried.
 | `owner_timeout` | The owner did not reply within `timeout_ms`. | **Maybe.** Retry only if the request is idempotent. |
 | `invalid` | Bad `key` or `timeout_ms`. | No |
 | `transport` | The request body is not valid JSON. | No |
-| `internal` | A NATS error, or this dagnats instance already has 256 forwards in flight. | Maybe |
+| `reply_too_large` | The owner processed the request, but its reply does not fit the dagnats hop once base64-encoded (see below). | **Yes** |
+| `busy` | This dagnats instance already has 256 forwards in flight. Retry shortly. | No |
+| `internal` | A NATS error, a corrupt lease record, or dagnats stopping mid-call. | Maybe |
 | `unsupported` | The `leases` bucket does not exist (nats-server older than 2.11). | No |
 
 The payload counts against the NATS `max_payload` on both hops, and base64
-adds a third to its size on the dagnats hop.
+adds a third to its size on the dagnats hop. An owner reply that fits its own
+hop but not the dagnats reply (about 750 KB at the default 1 MB) comes back
+as `reply_too_large`. Keep forwarded replies small, or reply with a
+reference to where the result is stored.
+
+**Do not add extra subscribers under `dagnats.lease.inbox.>`.** A
+monitoring tap or a second process on an owner's inbox counts as a
+responder. A dead owner then looks like a hung one: forward waits out
+`timeout_ms` and reports `owner_timeout` instead of failing fast with
+`owner_unavailable`.
 
 ### Patterns and the fencing contract
 

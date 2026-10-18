@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"regexp"
@@ -51,6 +52,8 @@ type NATSAPI struct {
 	version string
 	micro   micro.Service
 	leases  *lease.Store
+	// stopForwards cancels in-flight api.leases.forward calls on Stop.
+	stopForwards context.CancelFunc
 }
 
 // NewNATSAPI constructs a NATSAPI bound to svc and nc. version is the
@@ -142,6 +145,9 @@ func (n *NATSAPI) Stop() {
 	}
 	if err := n.micro.Stop(); err != nil {
 		slog.Warn("natsapi stop: micro drain failed", "error", err)
+	}
+	if n.stopForwards != nil {
+		n.stopForwards()
 	}
 	n.micro = nil
 }

@@ -171,8 +171,12 @@ happens when the first attempt fails:
 - **A time budget.** `timeout_ms` (100 to 30000) bounds every lookup and
   delivery together. Each forward runs on its own goroutine, because a
   micro endpoint handles its requests on one goroutine. At most 256 run
-  at once on an instance; past that the caller gets `internal` right
-  away.
+  at once on an instance; past that the caller gets `busy` right away.
+  Stopping the API service cancels forwards still in flight.
+- **A reply that does not fit.** The owner's reply can fit its own hop
+  but not dagnats' reply once base64-encoded. The owner has already
+  processed the request, so the caller gets `reply_too_large` rather
+  than a bare timeout.
 
 The cost is an extra hop and a leader read for every forward, and dagnats
 now carries the payload. The convention is public for that reason: a
@@ -255,6 +259,9 @@ client for every language.
   ID are, to this API, the same holder.
 - Renew events fire on every renewal. Consumers that only care about
   ownership changes should filter on `Dagnats-Lease-Event`.
+- Nothing else may subscribe under `dagnats.lease.inbox.>`. An extra
+  subscriber (a monitoring tap, say) answers for "no responders", so a
+  dead owner shows up as `owner_timeout` instead of `owner_unavailable`.
 - An owner that accepts forwards must apply the owner rule itself.
   dagnats only stamps the fence. It cannot know whether the owner process
   still considers itself the owner.

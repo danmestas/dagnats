@@ -44,6 +44,7 @@ type testOwner struct {
 	rejected    atomic.Int64
 	onRequest   func(*nats.Msg) // optional hook run before the fence check
 	silent      bool            // never reply: a hung owner
+	replyBytes  int             // >0: reply with this many bytes instead of an echo
 }
 
 func newOwner(holder string, tenure uint64) *testOwner {
@@ -96,6 +97,10 @@ func (o *testOwner) handle(msg *nats.Msg) {
 	}
 	o.lastFence.Store(fence)
 	o.processed.Add(1)
+	if o.replyBytes > 0 {
+		_ = msg.Respond(make([]byte, o.replyBytes))
+		return
+	}
 	_ = msg.Respond(append([]byte(o.holder+":"), msg.Data...))
 }
 
@@ -370,5 +375,155 @@ func TestLeaseForwardWithoutBucketReportsUnsupported(t *testing.T) {
 	got := forwardCall(t, nc, forwardBody("shard-1", "x", 1000))
 	if got.Kind != leaseKindUnsupported || got.Holder != "" {
 		t.Fatalf("forward without bucket = %+v, want kind unsupported", got)
+	}
+}
+
+// A hung owner on one key must not delay a forward to another key: each
+// forward runs on its own goroutine, not the endpoint's single one.
+func TestLeaseForwardHungOwnerDoesNotBlockOthers(t *testing.T) {
+	nc := startLeaseAPI(t)
+	hungRevision := acquireFor(t, nc, "shard-1", "notify-a")
+	hung := newOwner("notify-a", hungRevision)
+	hung.silent = true
+	hung.start(t, nc)
+	startOwner(t, nc, "notify-b", acquireFor(t, nc, "shard-2", "notify-b"))
+
+	first := make(chan forwardWireReply, 1)
+	go func() {
+		data, _ := json.Marshal(forwardBody("shard-1", "x", 3000))
+		var reply forwardWireReply
+		if msg, err := nc.Request("api.leases.forward", data, 10*time.Second); err == nil {
+			_ = json.Unmarshal(msg.Data, &reply)
+		}
+		first <- reply
+	}()
+	time.Sleep(100 * time.Millisecond) // let the hung forward reach the owner
+	start := time.Now()
+	got := forwardCall(t, nc, forwardBody("shard-2", "y", 2000))
+	if got.Holder != "notify-b" || got.Error != "" {
+		t.Fatalf("second forward = %+v, want served by notify-b", got)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("second forward took %v behind a hung owner, want well under 1s", elapsed)
+	}
+	if hungReply := <-first; hungReply.Kind != leaseKindOwnerTimeout {
+		t.Fatalf("hung forward = %+v, want owner_timeout", hungReply)
+	}
+}
+
+// With forwardInFlightMax forwards parked on a hung owner, the next one
+// is refused at once with busy: it reached nobody.
+func TestLeaseForwardPastCapIsBusy(t *testing.T) {
+	nc := startLeaseAPI(t)
+	revision := acquireFor(t, nc, "shard-1", "notify-a")
+	hung := newOwner("notify-a", revision)
+	hung.silent = true
+	hung.start(t, nc)
+
+	inbox := nc.NewRespInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	parked, err := json.Marshal(forwardBody("shard-1", "x", 5000))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for i := 0; i < forwardInFlightMax; i++ {
+		if err := nc.PublishRequest("api.leases.forward", inbox, parked); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	got := forwardCall(t, nc, forwardBody("shard-1", "y", 1000))
+	if got.Kind != leaseKindBusy || got.Holder != "" {
+		t.Fatalf("forward %d = %+v, want kind busy", forwardInFlightMax+1, got)
+	}
+	if early, err := sub.NextMsg(10 * time.Millisecond); err == nil {
+		t.Fatalf("a parked forward replied early: %s", early.Data)
+	}
+}
+
+// The owner processed the request, but its reply cannot fit the
+// dagnats hop once base64-encoded: the caller must hear that, not time out.
+func TestLeaseForwardOversizedReplyIsReplyTooLarge(t *testing.T) {
+	nc := startLeaseAPI(t)
+	revision := acquireFor(t, nc, "shard-1", "notify-a")
+	owner := newOwner("notify-a", revision)
+	owner.replyBytes = int(nc.MaxPayload()) * 9 / 10
+	owner.start(t, nc)
+
+	got := forwardCall(t, nc, forwardBody("shard-1", "x", 2000))
+	if got.Kind != leaseKindReplyTooLarge || len(got.Payload) != 0 {
+		t.Fatalf("oversized reply = kind %q (%d bytes), want reply_too_large",
+			got.Kind, len(got.Payload))
+	}
+	if owner.processed.Load() != 1 || got.Holder != "notify-a" {
+		t.Fatalf("processed=%d holder=%q, want 1 and notify-a",
+			owner.processed.Load(), got.Holder)
+	}
+}
+
+// A record that names no valid holder (corrupt, or written around the
+// API) fails the call; it must not crash the forward goroutine.
+func TestLeaseForwardCorruptHolderIsInternal(t *testing.T) {
+	nc := startLeaseAPI(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	record := []byte(`{"holder":"","acquired_at":"2026-10-18T12:00:00Z","ttl_ms":10000}`)
+	if _, err := js.Publish(ctx, "$KV."+natsutil.LeasesBucket+".shard-1", record); err != nil {
+		t.Fatalf("write corrupt record: %v", err)
+	}
+	got := forwardCall(t, nc, forwardBody("shard-1", "x", 1000))
+	if got.Kind != leaseKindInternal || got.Holder != "" {
+		t.Fatalf("forward on corrupt record = %+v, want kind internal", got)
+	}
+	again := forwardCall(t, nc, forwardBody("shard-1", "x", 1000))
+	if again.Kind != leaseKindInternal {
+		t.Fatalf("second forward = %+v, want the instance still serving", again)
+	}
+}
+
+// Stop cancels in-flight forwards instead of leaving them parked on a
+// hung owner for up to timeout_ms.
+func TestLeaseForwardStopCancelsInFlight(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	natsAPI := NewNATSAPI(NewService(nc), nc, "1.0.0")
+	natsAPI.Start()
+	t.Cleanup(natsAPI.Stop)
+	revision := acquireFor(t, nc, "shard-1", "notify-a")
+	hung := newOwner("notify-a", revision)
+	hung.silent = true
+	hung.start(t, nc)
+
+	inbox := nc.NewRespInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	data, err := json.Marshal(forwardBody("shard-1", "x", 20000))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := nc.PublishRequest("api.leases.forward", inbox, data); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond) // let the forward park on the owner
+	natsAPI.Stop()
+	msg, err := sub.NextMsg(3 * time.Second)
+	if err != nil {
+		t.Fatalf("no reply within 3s of Stop (timeout_ms is 20s): %v", err)
+	}
+	var reply forwardWireReply
+	if err := json.Unmarshal(msg.Data, &reply); err != nil || reply.Kind != leaseKindInternal {
+		t.Fatalf("reply after Stop = %s (%v), want kind internal", msg.Data, err)
 	}
 }
