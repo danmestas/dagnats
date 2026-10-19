@@ -21,9 +21,8 @@ func TestDebounceAbsorbsEvents(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := jetstream.New(nc)
-	st := engine.NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 
-	d, err := NewDebouncer(js, st)
+	d, err := NewDebouncer(js, natsutil.NewTracingPublisher(nc, js))
 	if err != nil {
 		t.Fatalf("NewDebouncer: %v", err)
 	}
@@ -75,9 +74,8 @@ func TestDebounceFiresOnHardTimeout(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := jetstream.New(nc)
-	st := engine.NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 
-	d, err := NewDebouncer(js, st)
+	d, err := NewDebouncer(js, natsutil.NewTracingPublisher(nc, js))
 	if err != nil {
 		t.Fatalf("NewDebouncer: %v", err)
 	}
@@ -127,9 +125,8 @@ func TestDebounceNoConfig(t *testing.T) {
 		t.Fatalf("SetupAll: %v", err)
 	}
 	js, _ := jetstream.New(nc)
-	st := engine.NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
 
-	d, err := NewDebouncer(js, st)
+	d, err := NewDebouncer(js, natsutil.NewTracingPublisher(nc, js))
 	if err != nil {
 		t.Fatalf("NewDebouncer: %v", err)
 	}
@@ -179,47 +176,104 @@ func TestHandleTimerFireStaleRejection(t *testing.T) {
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
-	js, _ := jetstream.New(nc)
-	st := engine.NewSleepTimer(nc, js, natsutil.NewTracingPublisher(nc, js))
-
-	d, err := NewDebouncer(js, st)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	d, err := NewDebouncer(js, natsutil.NewTracingPublisher(nc, js))
 	if err != nil {
 		t.Fatalf("NewDebouncer: %v", err)
 	}
-
-	var fired bool
-	d.SetOnFire(func(triggerID string, data json.RawMessage) {
-		fired = true
-	})
-
-	// Manually create an entry with TimerSeq=99
-	entry := debounceEntry{
+	ctx := context.Background()
+	def := TriggerDef{
+		ID: "t5", WorkflowID: "wf", Enabled: true,
+		Subject:  &SubjectConfig{Subject: "test.>"},
+		Debounce: &DebounceConfig{Period: time.Second},
+	}
+	defData, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal def: %v", err)
+	}
+	if _, err := d.triggerKV.Put(ctx, "t5", defData); err != nil {
+		t.Fatalf("put trigger: %v", err)
+	}
+	entry, err := json.Marshal(debounceEntry{
 		LastEvent:   json.RawMessage(`{"v":1}`),
 		FirstSeenNs: time.Now().UnixNano(),
 		TimerSeq:    99,
+	})
+	if err != nil {
+		t.Fatalf("marshal entry: %v", err)
 	}
-	data, _ := json.Marshal(entry)
-	d.stateKV.Create(context.Background(), "t5", data)
+	if _, err := d.stateKV.Create(ctx, "t5", entry); err != nil {
+		t.Fatalf("create entry: %v", err)
+	}
+	sub, err := nc.SubscribeSync("history.*")
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	timer := engine.TimerMessage{TriggerID: "t5", DebounceKey: "t5"}
 
-	// Fire with wrong sequence — should be rejected
-	d.HandleTimerFire(engine.TimerMessage{
-		TriggerID:   "t5",
-		DebounceKey: "t5",
-	}, 50) // seq 50 != 99
-
-	// Negative: not fired (stale timer)
-	if fired {
-		t.Fatal("stale timer should not fire")
+	// Negative: a superseded timer (seq 50 != 99) starts no run.
+	d.HandleTimerFire(timer, 50)
+	if msg, err := sub.NextMsg(300 * time.Millisecond); err == nil {
+		t.Fatalf("stale timer started a run: %s", msg.Data)
 	}
 
-	// Fire with correct sequence — should fire
-	d.HandleTimerFire(engine.TimerMessage{
-		TriggerID:   "t5",
-		DebounceKey: "t5",
-	}, 99)
+	// Positive: the current timer starts one and closes the window.
+	d.HandleTimerFire(timer, 99)
+	if _, err := sub.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("fresh timer started no run: %v", err)
+	}
+	if _, err := d.stateKV.Get(ctx, "t5"); err == nil {
+		t.Fatal("window entry should be deleted after firing")
+	}
+}
 
-	// Positive: fired
-	if !fired {
-		t.Fatal("fresh timer should fire")
+// TestHandleTimerFireSkipsDisabledTrigger: a trigger disabled while its
+// window was open starts no run, and the window is still closed.
+func TestHandleTimerFireSkipsDisabledTrigger(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	d, err := NewDebouncer(js, natsutil.NewTracingPublisher(nc, js))
+	if err != nil {
+		t.Fatalf("NewDebouncer: %v", err)
+	}
+	ctx := context.Background()
+	def := TriggerDef{
+		ID: "t6", WorkflowID: "wf", Enabled: false,
+		Subject:  &SubjectConfig{Subject: "test.>"},
+		Debounce: &DebounceConfig{Period: time.Second},
+	}
+	defData, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal def: %v", err)
+	}
+	if _, err := d.triggerKV.Put(ctx, "t6", defData); err != nil {
+		t.Fatalf("put trigger: %v", err)
+	}
+	entry, err := json.Marshal(debounceEntry{TimerSeq: 7})
+	if err != nil {
+		t.Fatalf("marshal entry: %v", err)
+	}
+	if _, err := d.stateKV.Create(ctx, "t6", entry); err != nil {
+		t.Fatalf("create entry: %v", err)
+	}
+	sub, err := nc.SubscribeSync("history.*")
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	d.HandleTimerFire(engine.TimerMessage{TriggerID: "t6", DebounceKey: "t6"}, 7)
+	if msg, err := sub.NextMsg(300 * time.Millisecond); err == nil {
+		t.Fatalf("disabled trigger started a run: %s", msg.Data)
+	}
+	if _, err := d.stateKV.Get(ctx, "t6"); err == nil {
+		t.Fatal("window entry should be deleted for a disabled trigger")
 	}
 }

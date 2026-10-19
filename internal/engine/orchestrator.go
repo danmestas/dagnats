@@ -101,6 +101,10 @@ type Orchestrator struct {
 	// terminal for longer than this grace.
 	defReaperGrace time.Duration
 
+	// debounceWired is set by WithDebounceHandler; Start then starts the
+	// sleep-timer consumer eagerly instead of on first Schedule.
+	debounceWired bool
+
 	// capHitPrev tracks whether the previous reconcile cycle hit
 	// reconcileActiveFetchMax. Used to suppress the steady-state
 	// scan-cap WARN (#260): emit only on the not-capped → capped
@@ -188,6 +192,24 @@ func WithHistoryRedeliverBackoff(schedule []time.Duration) OrchestratorOption {
 		if len(schedule) > 0 {
 			o.historyRedeliverSchedule = schedule
 		}
+	}
+}
+
+// WithDebounceHandler wires the handler for debounce_fire timers, which
+// subject-trigger debounce schedules (#784). Without one the sleep timer
+// acks and drops them. Start then starts the sleep-timer consumer eagerly:
+// a debounce window still open across a restart must fire even if nothing
+// else schedules a timer.
+func WithDebounceHandler(fn DebounceHandler) OrchestratorOption {
+	if fn == nil {
+		panic("WithDebounceHandler: fn must not be nil")
+	}
+	return func(o *Orchestrator) {
+		if o.sleepTimer == nil {
+			panic("WithDebounceHandler: sleepTimer must not be nil")
+		}
+		o.sleepTimer.OnDebounce(fn)
+		o.debounceWired = true
 	}
 }
 
@@ -324,6 +346,11 @@ func (o *Orchestrator) Start() error {
 	// non-fatal — see checkStrandedGroupSubjects.
 	o.checkStrandedGroupSubjects(context.Background())
 
+	if o.debounceWired {
+		if err := o.sleepTimer.Start(); err != nil {
+			return fmt.Errorf("start sleep timer: %w", err)
+		}
+	}
 	o.cc = o.startHistoryConsumer()
 
 	// Wire the periodic reconciliation janitor (#185). The

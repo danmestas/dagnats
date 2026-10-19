@@ -73,7 +73,14 @@ func NewSubjectTrigger(
 		done: make(chan struct{}),
 	}
 	for _, opt := range opts {
-		opt(trigger)
+		if opt != nil {
+			opt(trigger)
+		}
+	}
+	if def.Debounce != nil && trigger.debounce == nil {
+		return nil, fmt.Errorf(
+			"trigger %q has debounce config but no debouncer", def.ID,
+		)
 	}
 
 	if def.Enabled {
@@ -131,7 +138,7 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 	}
 
 	// Route through debounce if configured
-	if s.def.Debounce != nil && s.debounce != nil {
+	if s.def.Debounce != nil {
 		debounceCtx, debounceCancel := context.WithTimeout(
 			ctx, 5*time.Second,
 		)
@@ -153,8 +160,7 @@ func (s *SubjectTrigger) handleMessage(msg *nats.Msg) {
 	s.publishWorkflowStarted(ctx, data)
 }
 
-// publishWorkflowStarted wraps data in a TriggerEnvelope and publishes
-// it as a workflow.started event to JetStream.
+// publishWorkflowStarted starts a run of the trigger's workflow with data.
 func (s *SubjectTrigger) publishWorkflowStarted(
 	ctx context.Context, data json.RawMessage,
 ) {
@@ -164,52 +170,51 @@ func (s *SubjectTrigger) publishWorkflowStarted(
 	if s.js == nil {
 		panic("publishWorkflowStarted: js must not be nil")
 	}
+	if err := publishSubjectFire(ctx, s.tp, s.def, data); err != nil {
+		slog.Error("subject trigger fire failed",
+			"error", err, "trigger_id", s.def.ID)
+	}
+}
 
-	now := time.Now().UTC()
-	envelope := TriggerEnvelope{
+// publishSubjectFire wraps data in a subject TriggerEnvelope and publishes
+// it as a workflow.started event. Shared by the direct path and the
+// debounce timer path so a debounced run is wire-identical to a direct one.
+func publishSubjectFire(
+	ctx context.Context, tp *natsutil.TracingPublisher,
+	def TriggerDef, data json.RawMessage,
+) error {
+	if tp == nil {
+		panic("publishSubjectFire: tp must not be nil")
+	}
+	if def.ID == "" || def.WorkflowID == "" {
+		panic("publishSubjectFire: def.ID and def.WorkflowID must be set")
+	}
+	payloadBytes, err := json.Marshal(TriggerEnvelope{
 		Trigger:    "subject",
-		Source:     s.def.ID,
-		WorkflowID: s.def.WorkflowID,
-		Timestamp:  now,
+		Source:     def.ID,
+		WorkflowID: def.WorkflowID,
+		Timestamp:  time.Now().UTC(),
 		Data:       data,
-	}
-
-	payloadBytes, err := json.Marshal(envelope)
+	})
 	if err != nil {
-		slog.Error("marshal trigger envelope",
-			"error", err,
-			"trigger_id", s.def.ID)
-		return
+		return fmt.Errorf("marshal trigger envelope: %w", err)
 	}
-
 	runID := runid.New()
 	evt := protocol.NewWorkflowEvent(
-		protocol.EventWorkflowStarted,
-		runID,
-		payloadBytes,
+		protocol.EventWorkflowStarted, runID, payloadBytes,
 	)
-
 	evtBytes, err := evt.Marshal()
 	if err != nil {
-		slog.Error("marshal workflow event",
-			"error", err,
-			"trigger_id", s.def.ID)
-		return
+		return fmt.Errorf("marshal workflow event: %w", err)
 	}
-
 	// Derived from ctx so JSPublish's header injection carries the
 	// inbound message's trace onto workflow.started (#530).
 	pubCtx, pubCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer pubCancel()
-	if _, err := s.tp.JSPublish(
-		pubCtx, evt.NATSSubject(), evtBytes,
-	); err != nil {
-		slog.Error("publish workflow event",
-			"error", err,
-			"trigger_id", s.def.ID,
-			"run_id", runID)
+	if _, err := tp.JSPublish(pubCtx, evt.NATSSubject(), evtBytes); err != nil {
 		RecordFiring(pubCtx, TypeSubject, OutcomeError)
-		return
+		return fmt.Errorf("publish workflow.started (run %s): %w", runID, err)
 	}
 	RecordFiring(pubCtx, TypeSubject, OutcomeFired)
+	return nil
 }

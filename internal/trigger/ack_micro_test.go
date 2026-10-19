@@ -94,7 +94,7 @@ func provisionWithoutTriggerTypes(t *testing.T, nc *nats.Conn) {
 		context.Background(), 2*time.Second,
 	)
 	defer cancel()
-	for _, bucket := range []string{"triggers", "trigger_state"} {
+	for _, bucket := range []string{"triggers", "trigger_state", "debounce_state"} {
 		if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 			Bucket: bucket,
 		}); err != nil {

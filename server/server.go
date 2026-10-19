@@ -242,9 +242,18 @@ func (s *Server) startComponents() error {
 	s.natsAPI.Start()
 	printStep(os.Stderr, "nats api started")
 
+	debounceFire, err := trigger.NewDebounceTimerHandler(s.nc)
+	if err != nil {
+		s.natsAPI.Stop()
+		s.telShutdown(context.Background())
+		s.nc.Close()
+		s.ns.Shutdown()
+		return fmt.Errorf("debounce timer handler: %w", err)
+	}
 	s.orch = engine.NewOrchestrator(
 		s.nc, engine.WithRunsMaxAge(s.cfg.RunsMaxAge),
 		engine.WithGrantPolicyHolder(s.grantHolder),
+		engine.WithDebounceHandler(debounceFire),
 	)
 	if err := s.orch.Start(); err != nil {
 		s.natsAPI.Stop()

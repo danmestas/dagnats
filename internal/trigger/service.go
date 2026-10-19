@@ -175,7 +175,14 @@ func NewTriggerService(
 		cancel:         cancel,
 		build:          build,
 	}
-	ts.subjectReg = newSubjectRegistrar(nc, ts.subjects, &ts.mu)
+	// Debounced subject triggers schedule SLEEP_TIMERS messages; the
+	// orchestrator's sleep timer fires them (engine.WithDebounceHandler).
+	debouncer, err := NewDebouncer(js, natsutil.NewTracingPublisher(nc, js))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("NewDebouncer: %w", err)
+	}
+	ts.subjectReg = newSubjectRegistrar(nc, ts.subjects, &ts.mu, debouncer)
 	ts.webhookReg = newWebhookRegistrar(nc, ts.webhooks, &ts.mu)
 	ts.httpReg = newHTTPRegistrar(nc, ts.httpRoutes, &ts.mu)
 	ts.runTerminalReg = newRunTerminalRegistrar(

@@ -180,7 +180,6 @@ func TestConcurrencyReleaseDoesNotStealADifferentRunsSlot(t *testing.T) {
 
 func TestConcurrencyManagerSafeNoBucket(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
-	// Do NOT create concurrency_runs bucket.
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -188,6 +187,11 @@ func TestConcurrencyManagerSafeNoBucket(t *testing.T) {
 	jsNew, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
+	}
+	// SetupAll provisions concurrency_runs; remove it to model a server
+	// whose provisioning predates the bucket.
+	if err := jsNew.DeleteKeyValue(context.Background(), "concurrency_runs"); err != nil {
+		t.Fatalf("delete concurrency_runs: %v", err)
 	}
 
 	// Positive: NewConcurrencyManagerSafe returns nil, not panic.

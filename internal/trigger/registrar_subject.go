@@ -20,12 +20,15 @@ type subjectRegistrar struct {
 	nc       *nats.Conn
 	subjects map[string]*SubjectTrigger
 	mu       *sync.RWMutex // shared with TriggerService
+	// debouncer routes debounce-configured triggers (#784).
+	debouncer *Debouncer
 }
 
 func newSubjectRegistrar(
 	nc *nats.Conn,
 	subjects map[string]*SubjectTrigger,
 	mu *sync.RWMutex,
+	debouncer *Debouncer,
 ) *subjectRegistrar {
 	if nc == nil {
 		panic("newSubjectRegistrar: nc must not be nil")
@@ -36,7 +39,12 @@ func newSubjectRegistrar(
 	if mu == nil {
 		panic("newSubjectRegistrar: mu must not be nil")
 	}
-	return &subjectRegistrar{nc: nc, subjects: subjects, mu: mu}
+	if debouncer == nil {
+		panic("newSubjectRegistrar: debouncer must not be nil")
+	}
+	return &subjectRegistrar{
+		nc: nc, subjects: subjects, mu: mu, debouncer: debouncer,
+	}
 }
 
 // Activate subscribes to def.Subject.Subject and stores the trigger.
@@ -48,7 +56,7 @@ func (r *subjectRegistrar) Activate(_ context.Context, def TriggerDef) error {
 	if _, exists := r.subjects[def.ID]; exists {
 		return nil
 	}
-	trigger, err := NewSubjectTrigger(r.nc, def)
+	trigger, err := NewSubjectTrigger(r.nc, def, WithDebouncer(r.debouncer))
 	if err != nil {
 		return fmt.Errorf("NewSubjectTrigger: %w", err)
 	}

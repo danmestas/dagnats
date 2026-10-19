@@ -10,6 +10,7 @@ import (
 	"github.com/danmestas/dagnats/cli"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
 )
@@ -41,7 +42,14 @@ func main() {
 		os.Exit(1)
 	}
 	defer telShutdown(context.Background())
-	orch := engine.NewOrchestrator(nc)
+	// The sleep-timer consumer is shared with any `dagnats serve` nodes,
+	// so this engine may receive debounce timers too.
+	debounceFire, err := trigger.NewDebounceTimerHandler(nc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open debounce state: %v\n", err)
+		os.Exit(1)
+	}
+	orch := engine.NewOrchestrator(nc, engine.WithDebounceHandler(debounceFire))
 	if err := orch.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to start orchestrator: %v\n", err)
 		os.Exit(1)

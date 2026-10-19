@@ -310,20 +310,26 @@ func (st *SleepTimer) Schedule(ctx context.Context, msg TimerMessage) error {
 	return err
 }
 
-// ScheduleDebounce publishes a debounce timer. Returns the stream
-// sequence number for stale timer detection. Does not use dedup IDs
-// — each debounce reset publishes a new timer message.
-func (st *SleepTimer) ScheduleDebounce(
-	ctx context.Context, msg TimerMessage,
+// ScheduleDebounce publishes a debounce timer to SLEEP_TIMERS. Returns
+// the stream sequence number for stale timer detection. Does not use
+// dedup IDs — each debounce reset publishes a new timer message.
+//
+// A package function, not a SleepTimer method: the trigger service
+// schedules debounce timers but must not run a sleep-timer consumer of
+// its own (the durable is shared, so a second consumer would take step
+// timers it cannot handle). The orchestrator's SleepTimer, given a
+// handler via WithDebounceHandler, fires them.
+func ScheduleDebounce(
+	ctx context.Context, tp *natsutil.TracingPublisher, msg TimerMessage,
 ) (uint64, error) {
+	if tp == nil {
+		panic("ScheduleDebounce: tp must not be nil")
+	}
 	if msg.TriggerID == "" {
 		panic("ScheduleDebounce: TriggerID must not be empty")
 	}
 	if msg.Action != TimerActionDebounce {
 		panic("ScheduleDebounce: Action must be debounce_fire")
-	}
-	if err := st.Start(); err != nil {
-		return 0, fmt.Errorf("start sleep timer: %w", err)
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -332,7 +338,7 @@ func (st *SleepTimer) ScheduleDebounce(
 	subject := fmt.Sprintf(
 		"sleep.debounce.%s", msg.DebounceKey,
 	)
-	ack, err := st.tp.JSPublish(ctx, subject, data)
+	ack, err := tp.JSPublish(ctx, subject, data)
 	if err != nil {
 		return 0, err
 	}

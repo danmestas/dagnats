@@ -70,7 +70,9 @@ A trigger definition accepts a `debounce` block:
 
 Debounce cannot be combined with a cron trigger, and `trigger create` has no flag for it; it is set in a `dagnats.yaml` trigger or in the trigger JSON.
 
-**The server does not apply debounce to subject triggers today.** The definition is validated and stored, but no debouncer is attached when the trigger activates, so every message starts a run. Do not rely on it to collapse bursts.
+The first message opens a window and schedules a durable timer on `SLEEP_TIMERS`. Each later message in the window replaces the stored payload and restarts the `period` timer. When `period` passes with no new message, one run starts with the last message's payload. If `timeout` is set and a message arrives after the window has been open that long, that message starts the run at once. Window state lives in the `debounce_state` KV bucket and the timer is durable, so an open window survives a server restart. A trigger that is deleted or disabled while its window is open starts no run.
+
+The engine fires the timer, so every process that runs the orchestrator (`dagnats serve` and `dagnats-engine`) handles debounce timers.
 
 ## Event Correlation vs. Event Triggers
 
