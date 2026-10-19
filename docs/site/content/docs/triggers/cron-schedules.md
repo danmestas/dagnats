@@ -115,7 +115,9 @@ The scheduler runs inside the `dagnats serve` process and ticks every 30 seconds
 
 ### Missed fires
 
-If the server is down at a trigger's scheduled minute, that fire is skipped. The `--backfill` flag (and `backfill` in a `dagnats.yaml` trigger) is stored on the trigger, but the running server does not replay missed fires from it today. Do not rely on it to catch up after an outage.
+Each cron fire records its minute as `<trigger-id>.last_run_at` in the `trigger_state` KV bucket. By default, a minute missed while the server is down is skipped.
+
+A trigger with `--backfill` (or `backfill: true` in a `dagnats.yaml` trigger) catches up when the trigger service starts: it fires once for every matching minute between `last_run_at` and now, oldest first, up to 100 fires per trigger. A trigger that has never fired has no `last_run_at`, so it has nothing to replay. Replay runs only at startup; a trigger registered or updated on a running server is not backfilled. In a cluster the mark is shared, so a node that restarts does not replay minutes the other nodes already fired.
 
 ## Related Pages
 

@@ -452,7 +452,30 @@ func (s *Scheduler) fireWorkflow(
 	s.firedAtMu.Lock()
 	s.firedAt[def.ID] = now
 	s.firedAtMu.Unlock()
+	s.recordLastRun(ctx, def.ID, now)
 	return nil
+}
+
+// recordLastRun stores the fired minute as <id>.last_run_at, the mark
+// Backfill replays from after a restart. Shared KV, so in a cluster a
+// node coming back sees the fires the others made while it was down.
+// A failed write is logged, not returned: the run already started, and
+// failing the fire would only hide that.
+func (s *Scheduler) recordLastRun(
+	ctx context.Context, triggerID string, fired time.Time,
+) {
+	if triggerID == "" {
+		panic("recordLastRun: triggerID must not be empty")
+	}
+	if fired.IsZero() {
+		panic("recordLastRun: fired must not be zero")
+	}
+	key := triggerID + ".last_run_at"
+	stamp := fired.UTC().Truncate(time.Minute).Format(time.RFC3339)
+	if _, err := s.stateKV.Put(ctx, key, []byte(stamp)); err != nil {
+		slog.Warn("cron: record last_run_at failed",
+			"trigger_id", triggerID, "error", err)
+	}
 }
 
 // observeMetrics is the OTel callback body invoked on every collection

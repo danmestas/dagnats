@@ -148,10 +148,11 @@ type schedulerGauges struct {
 	// fires (which call Fire directly via api.Service, bypassing
 	// Scheduler.Tick) never move this gauge. In-process only: empty
 	// at boot, populated only by successful fires in the current
-	// process, with no seed from trigger_state KV on restart (no
-	// production writer of <id>.last_run_at exists today — seeding
-	// from it would be dead code; see trigger_next_fire_seconds for
-	// the restart-safe alerting signal instead). Omitted entirely
+	// process, with no seed from <id>.last_run_at in trigger_state on
+	// restart (that mark is shared across cluster nodes, so it would
+	// report other nodes' fires as this process's; see
+	// trigger_next_fire_seconds for the restart-safe alerting signal
+	// instead). Omitted entirely
 	// for a trigger that has never fired in this process, rather
 	// than emitted as 0/epoch.
 	lastFired metric.Int64ObservableGauge

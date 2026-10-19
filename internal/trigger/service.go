@@ -205,8 +205,7 @@ func (ts *TriggerService) Start() error {
 		return fmt.Errorf("loadAllTriggers: %w", err)
 	}
 
-	// Start scheduler in background
-	go ts.scheduler.Start(ts.ctx, 30*time.Second)
+	go ts.runScheduler(30 * time.Second)
 
 	if err := ts.startKVWatcher(); err != nil {
 		return fmt.Errorf("startKVWatcher: %w", err)
@@ -223,6 +222,23 @@ func (ts *TriggerService) Start() error {
 	}
 
 	return nil
+}
+
+// runScheduler replays the cron fires missed while the service was down
+// (backfill:true triggers only, capped per trigger by Backfill), then
+// ticks until Stop. One goroutine, so a replayed minute is claimed before
+// the first live tick can evaluate it.
+func (ts *TriggerService) runScheduler(interval time.Duration) {
+	if ts.scheduler == nil {
+		panic("runScheduler: scheduler must not be nil")
+	}
+	if interval <= 0 {
+		panic("runScheduler: interval must be positive")
+	}
+	if err := ts.scheduler.Backfill(); err != nil {
+		slog.Warn("cron backfill failed", "error", err)
+	}
+	ts.scheduler.Start(ts.ctx, interval)
 }
 
 // Stop terminates all triggers and the KV watcher.
