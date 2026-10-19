@@ -68,7 +68,7 @@ wf := dag.NewWorkflow("bounded-pipeline").
     WithTimeout(30 * time.Minute)
 ```
 
-If the run has not reached a terminal state by the deadline, the engine cancels all in-flight steps and marks the run as `failed`. The workflow timeout acts as a safety net -- individual step timeouts handle the common case, but the workflow timeout catches pathological scenarios like cascading retries.
+The deadline is checked when the engine handles the next event for the run, not by a timer of its own. If a run is still `running` past its deadline at that point, the engine cancels all in-flight steps and marks the run `cancelled`, not `failed`. Non-detached child workflows are cancelled with it. A run that produces no further events is not cancelled until one arrives, so set step timeouts too. The workflow timeout acts as a safety net: individual step timeouts handle the common case, and the workflow timeout catches pathological scenarios like cascading retries.
 
 ## Timeout Guidance
 
@@ -84,7 +84,7 @@ Set step timeouts based on the **worst-case expected duration** plus headroom fo
 
 ## Validation
 
-The workflow validator enforces that every step has a non-zero `Timeout`. Calling `Build()` on a workflow with a missing timeout returns an error. This is a deliberate design choice -- unbounded execution is a reliability hazard in production systems.
+The validator does not require a step `Timeout`, so a missing one is not an error: that step simply has no watchdog. Set one on every step anyway, since unbounded execution is a reliability hazard in production. The validator does require a workflow `Timeout` for hard-sticky workflows, and a positive timeout on approval and wait-for-event steps.
 
 ## Related Pages
 

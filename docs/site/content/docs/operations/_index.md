@@ -4,6 +4,7 @@ weight: 11
 ---
 
 {{< cards cols="3" >}}
+  {{< card link="clustering" title="Clustering" >}}
   {{< card link="configuration" title="Configuration" >}}
   {{< card link="deployment-models" title="Deployment Models" >}}
   {{< card link="nats-infrastructure" title="NATS Infrastructure" >}}

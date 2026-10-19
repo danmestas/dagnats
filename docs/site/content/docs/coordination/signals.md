@@ -78,6 +78,10 @@ def, _ := wf.Build()
 
 The steps run concurrently (no dependency edge). The `wait-for-review` handler blocks on `WaitForSignal`, and the `process-data` handler calls `SendSignal` when it needs the reviewer to unblock.
 
+## Persistence
+
+A signal is a KV value, not a message. The `signals` bucket has no TTL, and `WaitForSignal` starts its watch from the key's current value. A signal sent **before** the step starts waiting is therefore delivered at once, and so is a stale value left by an earlier wait for the same name in the same run. Use a distinct name for each wait. The bucket is created by `dagnats serve` as an extra bucket; in a cluster it is single-replica, see [Clustering]({{< ref "/docs/operations/clustering" >}}).
+
 ## Timeout Behavior
 
 | Condition | Result |
@@ -112,7 +116,14 @@ w.Handle("llm-agent", func(ctx worker.TaskContext) error {
 })
 ```
 
-An external system (CLI, API, UI) sends the feedback via the API, which internally calls `SendSignal(runID, "user-feedback", data)`.
+An external system sends the feedback with the CLI or the REST API, both of which write the signal to the same KV key:
+
+```bash
+dagnats run signal <run-id> user-feedback '{"approved":true}'
+curl -X POST --data '{"approved":true}' http://localhost:8080/runs/<run-id>/signal/user-feedback
+```
+
+The REST endpoint reads at most 1 MiB of body.
 
 ## Related
 

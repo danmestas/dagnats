@@ -13,7 +13,7 @@ The `PriorityConfig` on `WorkflowDef` maps input field values to priority offset
 |-------|----------|------|-------------|
 | **Key** | `key` | `string` | Dot-path into run input for value extraction |
 | **Rules** | `rules` | `map[string]int` | Value-to-offset mapping |
-| **DefaultOffset** | `default_offset` | `int` | Offset when key is missing or value has no rule |
+| **DefaultOffset** | `default_offset` | `int` | Offset when `key` is empty or the value has no rule |
 
 ```go
 wf := dag.NewWorkflow("deploy").
@@ -51,10 +51,10 @@ Priority offsets are **clamped to [-600, 600]** (plus or minus 10 minutes). This
 
 1. If no `PriorityConfig` is set, offset is 0
 2. If `Key` is empty, `DefaultOffset` is used
-3. Otherwise, extract the value at `Key` using dot-path, look up in `Rules`
-4. If the value has no matching rule, `DefaultOffset` is used
+3. Otherwise, extract the value at `Key` using dot-path. If the key is missing from the input, the offset is **0**, not `DefaultOffset`
+4. Look the value up in `Rules` (compared as a string). If it has no matching rule, `DefaultOffset` is used
 
-The resolved offset is stored on `WorkflowRun.PriorityOffset` and used by `EffectiveTime()` for queue ordering.
+The resolved offset is stored on `WorkflowRun.PriorityOffset` when the run is admitted and used by `EffectiveTime()` for queue ordering.
 
 ## JSON Schema Example
 
@@ -86,7 +86,7 @@ With `max_runs: 1`, only one deploy runs at a time. If a production deploy and a
 
 ## NATS Consumer Priority
 
-At the NATS transport layer, task message ordering is determined by JetStream consumer configuration. DagNats uses pull consumers with `AckWait`-based timeout, and the engine controls dispatch ordering through the `EffectiveTime()` calculation rather than NATS-level priority. This keeps priority logic in the application layer where it can be customized per-workflow.
+Priority applies only to choosing which **pending run** starts when a concurrency slot opens. It does not reorder tasks on `TASK_QUEUES`, which workers pull in stream order, and it has no effect on a workflow without `max_runs`, since no run waits there. The pending scan reads a bounded number of run snapshots, so a very large backlog is not fully ordered.
 
 ## Related Pages
 

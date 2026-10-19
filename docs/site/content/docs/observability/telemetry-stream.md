@@ -3,11 +3,11 @@ title: Telemetry Stream
 weight: 5
 ---
 
-The TELEMETRY JetStream stream is the NATS-native transport for all observability signals -- spans, metrics, and logs flow through a single durable stream.
+The `TELEMETRY` JetStream stream is the NATS-native store for all observability signals. Spans, metrics and logs flow through it as JSON, so you can read them with the `dagnats` CLI or any NATS client, with no external backend.
 
 ## Stream Configuration
 
-The stream is provisioned by `natsutil.SetupTelemetryStream()` (called automatically by `natsutil.SetupAll()`):
+The stream is provisioned by `natsutil.SetupAll()`:
 
 | Parameter | Value |
 |-----------|-------|
@@ -16,95 +16,96 @@ The stream is provisioned by `natsutil.SetupTelemetryStream()` (called automatic
 | **Retention** | Limits policy |
 | **Storage** | File |
 | **MaxAge** | 7 days |
-| **MaxBytes** | 1 GB |
+| **MaxBytes** | 10% of `max_store_bytes` |
 | **Dedup Window** | 5 seconds |
+| **Replicas** | The cluster's replication factor (1 standalone) |
 
-The 7-day retention and 1 GB cap ensure telemetry does not grow unbounded. Whichever limit is hit first triggers pruning.
+Whichever limit is hit first prunes the oldest messages. Before 0.0.27 the stream was single-replica in a cluster; an existing deployment is upgraded in place on restart.
 
 ## Subject Hierarchy
 
-All telemetry is published under `telemetry.>` with a structured subject hierarchy:
-
 | Subject Pattern | Signal Type | Example |
 |----------------|-------------|---------|
-| `telemetry.spans.{service}.{run_id}` | Trace spans | `telemetry.spans.worker.abc123` |
-| `telemetry.metrics.{service}.{name}` | Metric points | `telemetry.metrics.worker.step.duration_ms` |
-| `telemetry.logs.{service}.{level}` | Log records | `telemetry.logs.engine.info` |
+| `telemetry.spans.{service}.{run_id}` | Trace spans | `telemetry.spans.dagnats.abc123` |
+| `telemetry.metrics.{service}.{name}` | Metrics | `telemetry.metrics.my-worker.step.duration_ms` |
+| `telemetry.logs.{service}.{severity}` | Log records | `telemetry.logs.dagnats.error` |
 
-This hierarchy enables targeted subscriptions. Subscribe to `telemetry.logs.engine.error` to see only engine errors, or `telemetry.spans.worker.>` to see all worker traces.
+`{service}` is the process's `service.name`: `dagnats` for `dagnats serve` (which runs the engine, API and any embedded workers in one process), `dagnats-engine` and `dagnats-api` for the separate binaries, and whatever name your own worker passes to `InitTelemetry`. Spans that carry no run ID go to `telemetry.spans.{service}.no-run`. Metric names contain dots, so a metric subject has more than four tokens. Subscribe to `telemetry.logs.dagnats.error` to see only errors from a `dagnats serve` process, or to `telemetry.spans.my-worker.>` for all spans from one worker.
 
 ## Wire Formats
 
-### Span Records
+### Spans
+
+Each message is one span as OTLP proto-JSON (the `Span` message of the OpenTelemetry trace protocol). Binary IDs are base64 and 64-bit integers are strings, as protojson writes them.
 
 ```json
 {
-    "trace_id": "a1b2c3d4e5f6...",
-    "span_id": "f6e5d4c3b2a1...",
-    "parent_id": "1a2b3c4d5e6f...",
-    "name": "worker.executeTask",
-    "service": "worker",
-    "kind": "server",
-    "start_time": "2024-01-15T10:30:00Z",
-    "end_time": "2024-01-15T10:30:01.234Z",
-    "duration_ms": 1234,
-    "status": "ok",
-    "attributes": {"run_id": "abc123", "step_id": "build"},
-    "events": [],
-    "error": ""
+  "traceId": "obLUw9Xm...",
+  "spanId": "9uXUw7Kh...",
+  "parentSpanId": "GiwtPlZv...",
+  "name": "executeTask build",
+  "kind": "SPAN_KIND_SERVER",
+  "startTimeUnixNano": "1760869800000000000",
+  "endTimeUnixNano": "1760869801234000000",
+  "attributes": [
+    {"key": "run_id", "value": {"stringValue": "abc123"}},
+    {"key": "step_id", "value": {"stringValue": "build"}}
+  ],
+  "status": {"code": "STATUS_CODE_OK"}
 }
 ```
 
-Spans use `Nats-Msg-Id` (`{traceID}.{spanID}`) for deduplication. Duplicate spans from retried publishes are silently dropped.
+The `Nats-Msg-Id` is `{traceID}.{spanID}`, so a span published twice is stored once.
 
-### Metric Points
+### Metrics
+
+Each message is one metric with all its data points. `data` is the OpenTelemetry SDK's metric data (a histogram, sum or gauge with its points), serialized by `encoding/json`:
 
 ```json
 {
-    "name": "step.duration_ms",
-    "type": "histogram",
-    "value": 1234.0,
-    "tags": {"task_type": "build"},
-    "service": "worker",
-    "timestamp": "2024-01-15T10:30:01Z"
+  "name": "step.duration_ms",
+  "unit": "",
+  "serviceName": "my-worker",
+  "data": {"DataPoints": [], "Temporality": "CumulativeTemporality"},
+  "timestamp": "2026-10-19T10:30:01.5Z"
 }
 ```
 
-### Log Records
+`data` is abbreviated here. Points are cumulative since process start. The `Nats-Msg-Id` is `metric.{name}.{unix_nanos}.{sequence}`.
+
+### Logs
 
 ```json
 {
-    "level": "error",
-    "message": "task handler returned error, will retry",
-    "service": "engine",
-    "timestamp": "2024-01-15T10:30:01Z",
-    "fields": {"run_id": "abc123", "task_type": "build"},
-    "error": "connection refused"
+  "timestamp": "2026-10-19T10:30:01.123456789Z",
+  "severity": "error",
+  "body": "task handler returned error, will retry",
+  "attributes": {"run_id": "abc123", "task_type": "build"},
+  "traceId": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+  "spanId": "1a2b3c4d5e6f7081",
+  "serviceName": "dagnats"
 }
 ```
 
-## Tailing with the CLI
+The `Nats-Msg-Id` is `log.{unix_nanos}.{sequence}`.
 
-The `dagnats logs` command subscribes to the TELEMETRY stream for real-time observation:
+## Reading with the CLI
 
 ```bash
-# Tail all telemetry
-dagnats logs --tail
-
-# Filter by signal type
-dagnats logs --tail --subject "telemetry.logs.engine.error"
-
-# Filter by run
-dagnats logs --tail --subject "telemetry.spans.worker.abc123"
+dagnats logs --tail=100                         # last 100 log records
+dagnats trace <run-id>                          # span tree for a run
+dagnats metrics show --name=step.duration_ms    # one metric
+dagnats observe status                          # pipeline health
 ```
 
 ## External Collection
 
-The TELEMETRY stream is designed for consumption by external collectors. An OTel Collector, custom aggregator, or any NATS client can create a durable consumer on the stream and forward signals to a backend like SigNoz, Grafana, or Datadog.
+Any NATS client can create a durable consumer on the stream and forward signals to a backend such as SigNoz, Grafana or Datadog:
 
 ```go
-cons, _ := js.CreateOrUpdateConsumer(ctx, "TELEMETRY",
+cons, err := js.CreateOrUpdateConsumer(ctx, "TELEMETRY",
     jetstream.ConsumerConfig{
+        Durable:       "my-collector",
         FilterSubject: "telemetry.spans.>",
         AckPolicy:     jetstream.AckExplicitPolicy,
         DeliverPolicy: jetstream.DeliverAllPolicy,
@@ -112,10 +113,10 @@ cons, _ := js.CreateOrUpdateConsumer(ctx, "TELEMETRY",
 )
 ```
 
-The 5-second dedup window prevents duplicate signals when publishers retry, so consumers do not need their own deduplication logic.
+If you only need OTLP, you do not need a consumer: set `OTEL_EXPORTER_OTLP_ENDPOINT` and each process exports directly. See [Distributed Tracing]({{< ref "/docs/observability/distributed-tracing" >}}).
 
 ## Related
 
-- [Structured Logging](/docs/observability/structured-logging) -- the Logger interface
-- [Distributed Tracing](/docs/observability/distributed-tracing) -- the Tracer interface
-- [Metrics](/docs/observability/metrics) -- the Metrics interface
+- [Structured Logging](/docs/observability/structured-logging) -- log records
+- [Distributed Tracing](/docs/observability/distributed-tracing) -- spans
+- [Metrics](/docs/observability/metrics) -- metrics

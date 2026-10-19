@@ -9,7 +9,7 @@ A pre-launch checklist covering NATS tuning, monitoring, backup, scaling, and he
 
 ### JetStream Storage
 
-Set `max_store_bytes` based on your expected event volume. The default is 10 GiB. For high-throughput deployments, increase it:
+Set `max_store_bytes` based on your expected event volume. Left unset, it is half of the free disk, capped at 10 GiB. For high-throughput deployments, raise it:
 
 ```yaml
 # dagnats.yaml
@@ -20,13 +20,18 @@ JetStream data lives in `{data_dir}/jetstream/`. Use fast storage (SSD or NVMe) 
 
 ### Stream Retention
 
-- **WORKFLOW_HISTORY**: grows indefinitely by default. Set a `MaxAge` or `MaxBytes` on the stream if you have retention requirements. Events older than your recovery window are safe to discard.
-- **DEAD_LETTERS**: 30-day retention. Increase if you need longer post-mortem windows.
-- **TELEMETRY**: 7-day retention, 1 GiB cap. Increase `MaxBytes` if you export slowly or want deeper history.
+Each file-backed stream has a max age and a byte ceiling that is a share of `max_store_bytes` (see [NATS Infrastructure]({{< ref "/docs/operations/nats-infrastructure" >}})). Raising `max_store_bytes` raises every ceiling with it.
+
+- **WORKFLOW_HISTORY**: 30-day max age, 25% of the store budget. Events older than your recovery window are safe to discard.
+- **EVENTS**: 14-day max age, 15% of the budget.
+- **DEAD_LETTERS**: 30-day max age, 5% of the budget. Raise `max_store_bytes` if you need longer post-mortem windows.
+- **TELEMETRY**: 7-day max age, 10% of the budget. Raise `max_store_bytes` if you export slowly or want deeper history.
+- **BUILD_LOGS**: `DAGNATS_BUILD_LOGS_TTL`, default 7 days, 5% of the budget.
+- **TASK_QUEUES** and **SLEEP_TIMERS** have no max age, because their messages are pending work.
 
 ### Dedup Window
 
-`WORKFLOW_HISTORY` and `TELEMETRY` use a 5-second dedup window via `Nats-Msg-Id`. This prevents duplicate events during retries. Do not reduce this below 5 seconds unless you understand the implications for at-least-once delivery.
+`WORKFLOW_HISTORY` and `TELEMETRY` use a 5-second dedup window via `Nats-Msg-Id` (`DEAD_LETTERS` uses 24 hours and `BUILD_LOGS` 2 minutes). This prevents duplicate events during retries. Do not reduce this below 5 seconds unless you understand the implications for at-least-once delivery.
 
 ## Monitoring
 
@@ -36,8 +41,9 @@ JetStream data lives in `{data_dir}/jetstream/`. Use fast storage (SSD or NVMe) 
 |----------|-----|
 | `GET /health` | Liveness probe -- 200 if NATS connected and JetStream available |
 | `GET /ready` | Readiness probe -- 200 only after all components started |
+| `GET /health/cluster` | Cluster state -- 503 when replicated streams or buckets lose quorum |
 
-Wire `/health` to your container orchestrator's liveness check and `/ready` to the readiness check.
+Wire `/health` to your container orchestrator's liveness check and `/ready` to the readiness check. In a cluster, point each node's load-balancer check at that node's own `/health/cluster`. See [Clustering]({{< ref "/docs/operations/clustering" >}}).
 
 ### NATS Monitoring
 
@@ -84,7 +90,7 @@ nats stream backup TASK_QUEUES /backups/tasks-$(date +%Y%m%d).tar
 
 Back up at minimum:
 - `WORKFLOW_HISTORY` -- your source of truth for all workflow state
-- KV buckets (`workflow_defs`, `workflow_runs`) -- quick recovery without full replay
+- KV buckets (`workflow_defs`, `workflow_runs`) -- `workflow_runs` holds the current state of every run
 
 KV buckets are stored as JetStream streams internally (prefixed `KV_`), so you can back them up the same way:
 
@@ -101,7 +107,7 @@ Restore from snapshots:
 nats stream restore WORKFLOW_HISTORY /backups/history-20260401.tar
 ```
 
-After restoring `WORKFLOW_HISTORY`, the orchestrator replays the stream on next startup and rebuilds in-memory state. KV snapshots are a convenience -- the event log is the authoritative record.
+The orchestrator keeps no state of its own between events. Run state is the snapshot in `workflow_runs`, and the engine's durable `orchestrator` consumer on `WORKFLOW_HISTORY` remembers how far it has read. Restore `WORKFLOW_HISTORY` and `KV_workflow_runs` from the same point in time, or the snapshots and the event log will disagree.
 
 ## Scaling Workers
 
@@ -113,7 +119,6 @@ Workers scale horizontally. Each worker instance creates a pull consumer on the 
 - Each worker process handles one task at a time per task type by default
 - For CPU-bound tasks, match worker count to available cores
 - For I/O-bound tasks (API calls, LLM inference), run more workers than cores
-- Maximum `MaxAckPending` on the consumer limits in-flight parallelism
 
 ### Worker Affinity
 
@@ -131,7 +136,7 @@ For stateful workers (large model caches, local file context), use **sticky bind
 
 - **WORKFLOW_HISTORY**: ~500 bytes per event. A workflow with 10 steps generates ~12 events. 1 million completed workflows = ~6 GiB.
 - **TASK_QUEUES**: WorkQueue retention means completed tasks are deleted. Disk usage is proportional to in-flight tasks, not total tasks.
-- **TELEMETRY**: capped at 1 GiB by default with 7-day retention.
+- **TELEMETRY**: 7-day retention, capped at 10% of `max_store_bytes`.
 - **KV buckets**: typically small. `workflow_runs` is the largest, proportional to active + recently completed runs.
 
 ### Recommended Minimums
@@ -142,6 +147,10 @@ For stateful workers (large model caches, local file context), use **sticky bind
 | Small (< 100 concurrent runs) | 2 cores | 2 GiB | 20 GiB SSD |
 | Medium (< 10,000 concurrent runs) | 4 cores | 8 GiB | 100 GiB SSD |
 | Large (> 10,000 concurrent runs) | 8+ cores | 16+ GiB | 500+ GiB NVMe |
+
+## High Availability
+
+A single `dagnats serve` node is a single point of failure for its data. To survive losing a node, run three or five nodes as a self-contained cluster, or connect leaf nodes to an external NATS cluster. See [Clustering]({{< ref "/docs/operations/clustering" >}}) and [Deployment Models]({{< ref "/docs/operations/deployment-models" >}}).
 
 ## Security
 

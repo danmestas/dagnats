@@ -12,7 +12,7 @@ The `ConcurrencyLimit` struct on `WorkflowDef` provides two scopes:
 | Field | JSON Key | Type | Description |
 |-------|----------|------|-------------|
 | **MaxRuns** | `max_runs` | `int` | Max parallel runs of this workflow (0 = unlimited) |
-| **MaxSteps** | `max_steps` | `int` | Max parallel steps within a single run (0 = unlimited) |
+| **MaxSteps** | `max_steps` | `int` | Max parallel steps within a single run (0 = unlimited; 0 to 1000) |
 
 ```go
 wf := dag.NewWorkflow("code-review").
@@ -29,28 +29,28 @@ def, _ := wf.Build()
 
 ### Implementation
 
-Run counts are tracked in the `concurrency_runs` KV bucket using **compare-and-swap (CAS)** operations for atomic updates. The engine increments the counter when a run starts and decrements it when a run reaches a terminal state.
+Slots are tracked in the `concurrency_runs` KV bucket, one key per workflow (`workflow.<name>`), holding the set of run IDs that hold a slot. Updates use **compare-and-swap (CAS)**. A run adds itself to the set when it starts and is removed when it reaches a terminal state. Adding a run that is already in the set, or removing one that is not, does nothing, so a replayed event cannot free a slot that belongs to another run.
 
 ```mermaid
 flowchart LR
-    NEW[New run] --> CHECK{count < MaxRuns?}
-    CHECK -->|yes| INC[CAS increment] --> RUN[Run starts]
+    NEW[New run] --> CHECK{holders < MaxRuns?}
+    CHECK -->|yes| INC[CAS add run to set] --> RUN[Run starts]
     CHECK -->|no| WAIT[Stay pending]
-    DONE[Run completes] --> DEC[CAS decrement]
-    DEC --> WAKE[Evaluate pending runs]
+    DONE[Run completes] --> DEC[CAS remove run from set]
+    DEC --> WAKE[Start oldest pending run]
 ```
 
-CAS retries are bounded at **10 attempts** to prevent infinite loops under contention. If all attempts fail, the run stays pending and is re-evaluated on the next engine tick.
+CAS retries are bounded at **10 attempts** to prevent infinite loops under contention. If all attempts fail, the acquire returns an error and the engine handles the `workflow.started` event again on redelivery.
 
 ### Pending Run Priority
 
-When a slot opens, the engine selects the **oldest pending run** (by creation time) to maintain FIFO ordering. The `PriorityConfig` can adjust this ordering -- see [Priority](/docs/flow-control/priority).
+When a slot opens, the engine starts the pending run of that workflow with the earliest **effective time**: its creation time, moved earlier by its priority offset. With no `PriorityConfig` that is plain FIFO by creation time. See [Priority](/docs/flow-control/priority).
 
 ## Per-Run Step Limits (MaxSteps)
 
 `MaxSteps` limits how many steps within a single run execute concurrently. When the DAG has more ready steps than the limit allows, the engine queues the excess steps and dispatches them as running steps complete.
 
-This is enforced in the `enqueueReady` path -- the engine counts in-flight steps and only dispatches up to the remaining budget.
+This is enforced in the `enqueueReady` path -- the engine counts in-flight steps and only dispatches up to the remaining budget. The excess steps are not lost: the next step completion runs the same path again.
 
 ## Per-Task-Type Limits
 
@@ -62,9 +62,11 @@ callLLM := wf.Task("call-llm", "llm.chat").
     WithTaskConcurrency(5)
 ```
 
-This means at most 5 `llm.chat` tasks run across **all workflows** simultaneously. The slot holders live in the `concurrency_tasks` KV bucket. If the limit is reached, the task is retried via `SLEEP_TIMERS` with a 1-second delay.
+This means at most 5 `llm.chat` tasks run across **all workflows** simultaneously. The slot holders live in the `concurrency_tasks` KV bucket: each key holds the set of steps (`<run_id>/<step_id>`) that hold a slot of that task type. Taking a slot a step already holds, or freeing one it does not, does nothing, so a retried or redelivered step cannot drift the count. If the limit is reached, the task is retried via `SLEEP_TIMERS` with a 1-second delay.
 
-**Bounds:** 1-1000 per scope.
+Counters written by a version before 0.0.27 read as no holders, so a limit can over-admit once for tasks in flight across the upgrade.
+
+**Bounds:** 0 to 1000 for `max_task_concurrency` (0 = unlimited) and for `max_steps`.
 
 ## JSON Schema Example
 

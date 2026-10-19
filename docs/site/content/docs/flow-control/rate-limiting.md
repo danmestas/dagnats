@@ -62,25 +62,27 @@ The check happens in the **task dispatch path**. When a task is about to be publ
 
 1. Engine reads the token bucket from KV
 2. If tokens are available, decrement and dispatch
-3. If exhausted, NAK via `SLEEP_TIMERS` with a `rate_retry` action
+3. If exhausted, schedule a `rate_retry` timer on `SLEEP_TIMERS` for when the next token refills (at least 100ms)
 
-The `rate_retry` timer re-publishes the task after the refill delay, at which point the check runs again.
+The `rate_retry` timer re-publishes the task after the refill delay, at which point the check runs again. Tokens refill continuously at `Limit / Period`, not all at once at the end of the window.
 
 ```mermaid
 flowchart TD
     DISPATCH[Dispatch task] --> CHECK{Tokens available?}
     CHECK -->|yes| DEC[Decrement bucket via CAS] --> PUBLISH[Publish to TASK_QUEUES]
-    CHECK -->|no| NAK[NAK to SLEEP_TIMERS] --> WAIT[Wait for refill]
+    CHECK -->|no| NAK[rate_retry timer on SLEEP_TIMERS] --> WAIT[Wait for refill]
     WAIT --> DISPATCH
 ```
 
 ### CAS Contention
 
-Token bucket updates use **compare-and-swap** bounded at 10 retries. KV entries auto-expire at **2x the rate period** to prevent stale state accumulation.
+Token bucket updates use **compare-and-swap** bounded at 10 retries. If every attempt loses the race, the dispatch fails with `rate limit: CAS retries exhausted` instead of waiting. The `rate_limits` bucket has no TTL, so a bucket entry stays until you remove it. A keyed limit creates one entry per distinct key value, so use a key with bounded cardinality.
+
+If a keyed limit's `Key` path is missing from the task input, the dispatch fails with an `extract rate limit key` error.
 
 ## Validation Rules
 
-- A step cannot have both `RateLimit` and `KeyedRateLimit` set simultaneously
+- A step cannot have both `RateLimit` and `KeyedRateLimit` set; validation panics if both are present
 - `Limit` must be positive
 - `Period` must be positive
 - For keyed limits, `Key` must be non-empty and `Units` must be positive

@@ -17,9 +17,11 @@ wf := dag.NewWorkflow("payment").
 When a run starts with input `{"payment_id": "pay_123", "amount": 50}`, the engine:
 
 1. Extracts `"pay_123"` from the input via the `payment_id` dot-path
-2. Checks the `idempotency_keys` KV bucket for key `payment.pay_123`
+2. Checks the `idempotency_keys` KV bucket for the SHA-256 hash of `payment.pay_123` (workflow name, a dot, then the key value)
 3. If found, returns the existing run ID without creating a new run
 4. If not found, creates the run and stores the mapping
+
+The mapping is written with a create-if-absent after the run is published, and the check and the write are not one atomic step. Two requests with the same key that arrive at the same moment can both start a run; the first mapping stored is the one later requests see.
 
 ### Dot-Path Extraction
 
@@ -31,7 +33,7 @@ wf := dag.NewWorkflow("webhook-handler").
     WithIdempotencyKey("metadata.request_id")
 ```
 
-The `dag.ExtractDotPath()` function walks nested JSON objects using dot-separated segments. Missing keys produce an error, and the run proceeds without dedup protection.
+The `dag.ExtractDotPath()` function walks nested JSON objects using dot-separated segments. A missing key is logged as an error, and the run starts without dedup protection.
 
 ### TTL
 
@@ -45,18 +47,21 @@ At the transport layer, NATS JetStream provides automatic message deduplication 
 
 | Message Type | ID Format | Example |
 |-------------|-----------|---------|
+| Workflow events | `{run_id}.{event_type}` | `run-1.workflow.started` |
 | Step events | `{run_id}.{step_id}.{event_type}` | `run-1.fetch.step.completed` |
-| Rate retries | `{run_id}.{step_id}.rate_retry` | `run-1.call-llm.rate_retry` |
+| Step events with an attempt | `{run_id}.{step_id}.{event_type}.{attempt}` | `run-1.fetch.step.failed.2` |
+| Task messages | `{run_id}.{step_id}.queued` | `run-1.fetch.queued` |
+| Dead letters | `dlq:{run_id}:{step_id}:{attempts}` | `dlq:run-1:fetch:3` |
 
 ### Dedup Window
 
-The JetStream dedup window is **2 minutes** (stream-level configuration on `WORKFLOW_HISTORY`). Within this window, publishing a message with an already-seen `Nats-Msg-Id` is silently dropped. This handles scenarios like:
+The JetStream dedup window on `WORKFLOW_HISTORY` is **5 seconds** (stream-level configuration). `DEAD_LETTERS` uses 24 hours and `BUILD_LOGS` 2 minutes. Within the window, publishing a message with an already-seen `Nats-Msg-Id` is silently dropped. This handles scenarios like:
 
 - Engine crashes mid-publish and replays on restart
 - Network partitions causing duplicate deliveries
 - Worker publishing a completion event twice
 
-After the 2-minute window, the same message ID can be published again. This is safe because events are idempotent by design -- replaying a `step.completed` event for an already-completed step is a no-op in the orchestrator.
+After the window, the same message ID can be published again. This is safe because events are idempotent by design -- replaying a `step.completed` event for an already-completed step is a no-op in the orchestrator.
 
 ## Designing Idempotent Workers
 

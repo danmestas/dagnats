@@ -9,7 +9,7 @@ A **retry policy** defines how DagNats handles transient step failures -- how ma
 
 | Field | JSON Key | Type | Description |
 |-------|----------|------|-------------|
-| **MaxAttempts** | `max_attempts` | `int` | Total retry attempts; 0 means no retries |
+| **MaxAttempts** | `max_attempts` | `int` | Number of retries after the first attempt, so `3` allows up to 4 attempts in all; 0 means no retries |
 | **Strategy** | `strategy` | `RetryStrategy` | Backoff algorithm: `fixed`, `linear`, or `exponential` |
 | **InitialDelay** | `initial_delay` | `duration` | Base delay between attempts |
 | **MaxDelay** | `max_delay` | `duration` | Delay cap (0 = uncapped) |
@@ -29,34 +29,55 @@ All strategies respect **MaxDelay** -- if the computed delay exceeds the cap, Ma
 
 ## Setting Retry Policies
 
-### Per-Step (Builder API)
+### Per-Step
+
+The builder has no method for a full policy, so set the `Retry` field on the built step. `WithRetries(n)` on a step is the legacy shortcut: `n` retries at a fixed 5-second delay.
 
 ```go
 wf := dag.NewWorkflow("llm-pipeline")
+wf.Task("call-llm", "llm.chat").WithTimeout(60 * time.Second)
 
-callLLM := wf.Task("call-llm", "llm.chat").
-    WithTimeout(60 * time.Second).
-    WithRetryPolicy(dag.RetryPolicy{
-        MaxAttempts:  5,
-        Strategy:     dag.RetryExponential,
-        InitialDelay: 2 * time.Second,
-        MaxDelay:     30 * time.Second,
-        Multiplier:   2.0,
-    })
+def, err := wf.Build()
+if err != nil {
+    return err
+}
+def.Steps[0].Retry = &dag.RetryPolicy{
+    MaxAttempts:  5,
+    Strategy:     dag.RetryExponential,
+    InitialDelay: 2 * time.Second,
+    MaxDelay:     30 * time.Second,
+    Multiplier:   2.0,
+}
+```
+
+In a JSON workflow definition the same policy is the step's `retry` object, with durations as strings:
+
+```json
+{
+  "id": "call-llm",
+  "task": "llm.chat",
+  "timeout": "60s",
+  "retry": {
+    "max_attempts": 5,
+    "strategy": "exponential",
+    "initial_delay": "2s",
+    "max_delay": "30s",
+    "multiplier": 2.0
+  }
+}
 ```
 
 ### Workflow Default
 
-Set a default retry policy that applies to all steps unless overridden:
+Set `DefaultRetry` on the definition (`default_retry` in JSON) to apply a policy to all steps unless overridden:
 
 ```go
-wf := dag.NewWorkflow("data-pipeline").
-    WithDefaultRetry(dag.RetryPolicy{
-        MaxAttempts:  3,
-        Strategy:     dag.RetryFixed,
-        InitialDelay: 5 * time.Second,
-        MaxDelay:     5 * time.Second,
-    })
+def.DefaultRetry = &dag.RetryPolicy{
+    MaxAttempts:  3,
+    Strategy:     dag.RetryFixed,
+    InitialDelay: 5 * time.Second,
+    MaxDelay:     5 * time.Second,
+}
 ```
 
 ### Resolution Order

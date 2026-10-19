@@ -47,7 +47,7 @@ w.Handle("process", func(ctx worker.TaskContext) error {
 | `FailPermanent(err)` | `non_retriable` | Permanent errors (bad input, 4xx, business logic) |
 | `FailRetryAfter(err, d)` | `retry_after` | Caller-specified delay (rate limits, circuit breakers) |
 
-`FailRetryAfter` delay is clamped to [100ms, 1 hour]. The engine schedules the retry via `SLEEP_TIMERS` with a `TimerActionRetryAfter`, bypassing the normal backoff calculation entirely.
+`FailRetryAfter` panics if the delay is not positive, and clamps it to [100ms, 1 hour]. The engine schedules the retry via `SLEEP_TIMERS` with a `retry_after` timer, bypassing the normal backoff calculation. The retry still counts against the step's `MaxAttempts`, and a step with no retry policy fails permanently instead of retrying.
 
 ## Failure Flow
 
@@ -74,12 +74,12 @@ The `on_failure` field on a step definition names another step to run when the p
 ```go
 wf := dag.NewWorkflow("payment")
 
-charge := wf.Task("charge", "stripe.charge").
-    WithTimeout(30 * time.Second).
-    WithOnFailure("notify-failure")
-
 notify := wf.Task("notify-failure", "slack.post").
     WithTimeout(10 * time.Second)
+
+charge := wf.Task("charge", "stripe.charge").
+    WithTimeout(30 * time.Second).
+    OnFailure(notify)
 ```
 
 On-failure steps are declared as **auxiliary steps** -- they do not participate in the normal DAG flow and are only executed when their associated step fails.
@@ -91,15 +91,15 @@ The `compensate` field names a step that undoes the work of a completed step whe
 ```go
 wf := dag.NewWorkflow("order")
 
+release := wf.Task("release", "inventory.release").
+    WithTimeout(30 * time.Second)
+
 reserve := wf.Task("reserve", "inventory.reserve").
     WithTimeout(30 * time.Second).
-    WithCompensation("release")
+    Compensate(release)
 
 charge := wf.Task("charge", "payment.charge").
     After(reserve).
-    WithTimeout(30 * time.Second)
-
-release := wf.Task("release", "inventory.release").
     WithTimeout(30 * time.Second)
 ```
 

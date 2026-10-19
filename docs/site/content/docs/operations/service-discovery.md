@@ -59,9 +59,11 @@ in the KV bucket.
 
 ## Notes
 
-- **Fan-out preserved.** The endpoints run **without** a micro queue group, matching
+- **Fan-out preserved.** The original endpoints run **without** a micro queue group, matching
   the pre-micro plain-subscribe behavior — every instance receives each message
-  (no load-balancing was silently introduced).
+  (no load-balancing was silently introduced). The `api.leases.*` endpoints are the
+  exception: they use the queue group `dagnats-leases` so that exactly one instance
+  serves each request. See [Leases]({{< ref "/docs/coordination/leases" >}}).
 - **Error envelope unchanged.** Handlers reply with the same JSON error shape as
   before (they do not use `micro`'s `Nats-Service-Error` headers), so existing
   request/reply clients parse responses identically.

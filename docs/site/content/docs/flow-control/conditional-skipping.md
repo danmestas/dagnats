@@ -40,7 +40,7 @@ If the parent step has no output or the field is missing, the condition evaluate
 
 ## Builder API
 
-Use `SkipIf` with a `StepRef` for compile-time-safe references:
+Use `StepRef.SkipIf` with `dag.SkipIfOutput`, which takes the parent as a `StepRef` for a compile-time-safe reference:
 
 ```go
 wf := dag.NewWorkflow("review-pipeline")
@@ -51,10 +51,10 @@ lint := wf.Task("lint", "lint.run").
 postResults := wf.Task("post-results", "github.comment").
     After(lint).
     WithTimeout(30 * time.Second).
-    SkipIf(lint, "issues_found", "==", 0)
+    SkipIf(dag.SkipIfOutput(lint, "issues_found", "==", 0))
 ```
 
-If the `lint` step's output contains `{"issues_found": 0}`, `post-results` is skipped. The `SkipIfOutput` helper constructs the `ParentCond` internally.
+If the `lint` step's output contains `{"issues_found": 0}`, `post-results` is skipped. `SkipIfOutput` builds the `ParentCond` for you.
 
 ## JSON Schema
 

@@ -31,7 +31,7 @@ w.Handle("generate-text", func(ctx worker.TaskContext) error {
 })
 ```
 
-`PutStream` publishes to `stream.{runID}.{stepID}` via `nc.Publish` -- a plain NATS core publish. There is no ack, no persistence, no backpressure. If the publish buffer is full, it returns an error.
+`PutStream` publishes to `stream.{runID}.{stepID}` via `nc.Publish` -- a plain NATS core publish. There is no ack, no persistence, no backpressure. `PutStream` returns the publish error, such as a closed connection or a payload over the server's `max_payload`.
 
 ### Subscribing to Streams
 
@@ -59,14 +59,15 @@ sub, _ := nc.Subscribe(
 )
 ```
 
-### CLI: Tailing Logs
+### Watching from the command line
 
-The `dagnats logs --tail` command subscribes to the streaming subject for a run and prints output as it arrives:
+The `nats` CLI can subscribe to the same subjects:
 
 ```bash
-dagnats logs --tail <run-id>
-dagnats logs --tail <run-id> --step <step-id>
+nats sub 'stream.<run-id>.>'
 ```
+
+`dagnats logs` is a different feed: it tails the `telemetry.logs` records on the `TELEMETRY` stream (`dagnats logs --tail=N --level=... --service=...`), not `stream.{runID}.{stepID}`. For durable per-step log lines, see the `BUILD_LOGS` stream in [NATS Infrastructure]({{< ref "/docs/operations/nats-infrastructure" >}}).
 
 ## Streaming vs. Durable Output
 
@@ -82,7 +83,7 @@ Use both together: stream tokens as they arrive for live UX, then call `Complete
 
 ## Heartbeat During Streaming
 
-Long-running steps that stream data should call `Heartbeat()` periodically to prevent NATS message redelivery. The AckWait timer on the task message resets with each heartbeat:
+Long-running steps that stream data should call `Heartbeat()` periodically to prevent NATS message redelivery. The AckWait timer on the task message resets with each heartbeat. Heartbeats keep the claim only; the step's `Timeout` still applies:
 
 ```go
 w.Handle("long-stream", func(ctx worker.TaskContext) error {

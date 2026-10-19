@@ -45,6 +45,7 @@ w.Handle("agent-step", func(ctx worker.TaskContext) error {
         state = ctx.Input() // first execution
     }
     // ... continue from saved state
+    return ctx.Complete(state)
 })
 ```
 
@@ -67,6 +68,8 @@ w.Handle("rate-limited", func(ctx worker.TaskContext) error {
 ```
 
 Under the hood, `Pause()` writes a JSON checkpoint with a `{"pause_resume": "name"}` marker, then calls `msg.NakWithDelay(duration)`. On the next delivery, `LoadCheckpoint()` returns the marker so the handler knows it is resuming from a pause.
+
+The marker **replaces** any checkpoint the step saved earlier, because both live at the same key. If the handler needs its own state after a pause, it has to rebuild it, or keep it somewhere else. The step stays `Running` the whole time, and the paused time counts toward the step's timeout, so a step that pauses repeatedly needs a `Timeout` that covers its whole run.
 
 ## Persistence Across Retries
 
@@ -95,10 +98,10 @@ This is critical for idempotent processing. If a step processes 100 items and cr
 | KV bucket | `checkpoints` |
 | Key format | `{runID}.{stepID}` |
 | Value | arbitrary bytes (handler-defined) |
-| TTL | configured on the bucket (recommended: match run retention) |
-| Max value size | NATS KV default (typically 1MB) |
+| TTL | none: a checkpoint stays until it is overwritten or the bucket is purged |
+| Max value size | bounded by the server's `max_payload` (1 MiB by default) |
 
-The `checkpoints` bucket is optional. If it was not created during `natsutil.SetupAll`, `Checkpoint()` returns an error and `LoadCheckpoint()` returns `(nil, nil)`. This means handlers that do not need checkpoints work without any KV setup.
+`dagnats serve` creates the `checkpoints` bucket at startup, as an extra bucket beside the ones `natsutil.SetupAll` provisions. Where the bucket does not exist (for example a deployment that runs only `dagnats-engine`), `Checkpoint()` returns an error and `LoadCheckpoint()` returns `(nil, nil)`, so handlers that do not need checkpoints work without it. In a cluster the bucket is single-replica; see [Clustering]({{< ref "/docs/operations/clustering" >}}).
 
 ## LLM Pattern: Checkpointing Conversation History
 

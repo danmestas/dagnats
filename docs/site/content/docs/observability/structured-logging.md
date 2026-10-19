@@ -3,87 +3,66 @@ title: Structured Logging
 weight: 1
 ---
 
-The `observe.Logger` interface provides structured, leveled logging that is decoupled from any specific logging backend.
+DagNats components log with Go's `log/slog`. A separate OpenTelemetry log pipeline publishes records to the `TELEMETRY` stream, and `dagnats logs` reads them back.
 
-## Interface
+## What dagnats writes
+
+`dagnats serve` installs a text `slog` handler on stderr as the process default. Every record also goes through an in-memory ring (the last 10,000 entries, no older than 30 minutes) that backs the console's live log page. Nothing is written to disk by dagnats itself, so capture stderr with your process supervisor or container runtime.
+
+Use `slog` fields for context, as the codebase does:
 
 ```go
-type Logger interface {
-    Info(msg string, fields ...Field)
-    Error(msg string, err error, fields ...Field)
-    With(fields ...Field) Logger
+logger := slog.Default().With("run_id", runID, "workflow", "deploy")
+logger.Info("step started", "step_id", "build")
+logger.Error("task failed", "step_id", "build", "error", err)
+```
+
+## The OpenTelemetry log pipeline
+
+`observe.InitTelemetry` sets up an OpenTelemetry `LoggerProvider` next to the tracer and meter providers. Its records are exported two ways:
+
+- always, to NATS: each record is published as JSON on `telemetry.logs.{service}.{severity}` on the [TELEMETRY stream]({{< ref "/docs/observability/telemetry-stream" >}});
+- when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, also over OTLP/HTTP to that backend.
+
+The `dagnats serve` process, `dagnats-engine` and `dagnats-api` call `InitTelemetry` at startup. dagnats's own `slog` output is not forwarded into this provider, so records appear on `telemetry.logs.*` only when code in the process emits OpenTelemetry log records. If you run your own worker and want its logs on the stream, call `InitTelemetry` and emit records through an OpenTelemetry log bridge.
+
+A record looks like this:
+
+```json
+{
+  "timestamp": "2026-10-19T10:30:01.123456789Z",
+  "severity": "error",
+  "body": "task handler returned error, will retry",
+  "attributes": {"run_id": "abc123", "task_type": "build"},
+  "traceId": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+  "spanId": "1a2b3c4d5e6f7081",
+  "serviceName": "dagnats"
 }
 ```
 
-**Info** emits an informational log entry with optional structured fields. **Error** emits an error-level entry with the causing error and optional fields. **With** returns a new Logger that prepends the given fields to every subsequent call -- useful for adding context like `run_id` or `step_id` once and carrying it through a call chain.
+`severity` is the record's severity text in lowercase, or `info` when it has none. `attributes` holds string values only. `traceId` and `spanId` are present when the record was emitted inside a span, which is how you tie a log line to a trace. Each record is published with a unique `Nats-Msg-Id` of the form `log.{unix_nanos}.{sequence}`.
 
-## Fields
+## Reading logs
 
-`Field` is a typed key-value pair for structured context. Constructor helpers keep call sites concise:
+```bash
+# Follow all log records
+dagnats logs
 
-```go
-observe.String("run_id", runID)
-observe.Int("attempt", 3)
-observe.Err(err)
+# Show the last 100, then exit
+dagnats logs --tail=100
+
+# One service, one level
+dagnats logs --service=dagnats --level=error
+
+# Search history
+dagnats logs search --search="connection refused" --since=1h --level=error --limit=50
 ```
 
-| Constructor | Value Type |
-|-------------|-----------|
-| `String(key, val)` | `string` |
-| `Int(key, val)` | `int` |
-| `Err(err)` | `error` (key is always `"error"`) |
-
-## Levels
-
-The `Level` enum orders severity from least to most severe:
-
-| Level | Value | Use |
-|-------|-------|-----|
-| `LevelDebug` | 0 | Verbose diagnostic output |
-| `LevelInfo` | 1 | Normal operational events |
-| `LevelWarn` | 2 | Degraded but recoverable situations |
-| `LevelError` | 3 | Failures requiring attention |
-
-Levels are used by `ErrorReporter.CaptureMessage` to route messages to the appropriate severity. The Logger interface itself uses method names (`Info`, `Error`) rather than a level parameter.
-
-## Contextual Chaining
-
-`With` creates a child logger that inherits all parent fields. The parent's field slice is never mutated -- each `With` call copies the parent fields into a new slice.
-
-```go
-logger := tel.Logger.With(
-    observe.String("run_id", runID),
-    observe.String("workflow", "deploy"),
-)
-logger.Info("step started", observe.String("step_id", "build"))
-// Output includes: run_id, workflow, step_id
-logger.Info("step finished", observe.String("step_id", "test"))
-// Output includes: run_id, workflow, step_id
-```
-
-## Adapter Pattern
-
-DagNats ships with two Logger implementations:
-
-**NoopLogger** -- discards all output. Used as the default when no telemetry is configured. `With` returns the same instance (no allocation).
-
-**LogCollector** (internal) -- publishes log records as JSON to the NATS TELEMETRY stream on subject `telemetry.logs.{service}.{level}`. Each log call is independent and safe for concurrent use.
-
-To integrate with an external backend (e.g., structured JSON to stdout, or a third-party service), implement the `Logger` interface and pass it into the `observe.Telemetry` bundle:
-
-```go
-tel := &observe.Telemetry{
-    Logger:  myCustomLogger,
-    Tracer:  observe.NewNoopTracer(),
-    Metrics: observe.NewNoopMetrics(),
-    Errors:  observe.NewNoopErrorReporter(),
-}
-w := worker.NewWorker(nc, tel)
-```
+`--tail=N` takes a number from 1 to 10000. Without it the command follows the stream until interrupted. The same records are available to any NATS client on `telemetry.logs.>`.
 
 ## Related
 
-- [Distributed Tracing](/docs/observability/distributed-tracing) -- span-based tracing
-- [Metrics](/docs/observability/metrics) -- counters, histograms, gauges
-- [Error Reporting](/docs/observability/error-reporting) -- exception capture
+- [Distributed Tracing](/docs/observability/distributed-tracing) -- spans that logs link to
+- [Metrics](/docs/observability/metrics) -- counters and histograms
+- [Error Reporting](/docs/observability/error-reporting) -- how failures surface
 - [Telemetry Stream](/docs/observability/telemetry-stream) -- NATS-native telemetry transport

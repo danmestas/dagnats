@@ -3,121 +3,89 @@ title: Metrics
 weight: 3
 ---
 
-The `observe.Metrics` interface is a factory for named metric instruments that decouple measurement from the collection backend.
+DagNats records metrics with the OpenTelemetry metrics API. Each process exports them to the `TELEMETRY` stream every 10 seconds, and optionally over OTLP.
 
-## Interface
+## Pipeline
 
-```go
-type Metrics interface {
-    Counter(name string, tags map[string]string) Counter
-    Histogram(name string, tags map[string]string) Histogram
-    Gauge(name string, tags map[string]string) Gauge
-}
-```
+`observe.InitTelemetry` (see [Distributed Tracing]({{< ref "/docs/observability/distributed-tracing" >}})) registers a global meter provider with two readers:
 
-Each factory method returns a typed instrument. Tags are label key-value pairs that the backend attaches to every observation.
+- a NATS reader, which publishes each metric as JSON on `telemetry.metrics.{service}.{name}` every 10 seconds;
+- an OTLP/HTTP reader, added when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 
-## Instruments
+The NATS exporter uses cumulative temporality: each point carries the running total since the process started, not the change in the last interval. Counters therefore only go up until the process restarts.
 
-### Counter
-
-A monotonically increasing value. Use for request counts, error counts, retry counts.
+Create your own instruments with the standard API:
 
 ```go
-type Counter interface {
-    Inc()
-    Add(delta float64)
-}
+meter := otel.Meter("my-worker")
+processed, _ := meter.Int64Counter("documents.processed")
+latency, _ := meter.Float64Histogram("documents.latency_ms")
+
+processed.Add(ctx, 1, metric.WithAttributes(attribute.String("task_type", "ocr")))
+latency.Record(ctx, 123.4)
 ```
 
-### Histogram
+Instrument names are not prefixed, so pick names that will not collide with the ones below.
 
-Records observations in configurable buckets. Use for latencies, payload sizes, queue depths.
-
-```go
-type Histogram interface {
-    Observe(value float64)
-}
-```
-
-### Gauge
-
-A value that can go up or down. Use for active tasks, queue length, memory usage.
-
-```go
-type Gauge interface {
-    Set(value float64)
-    Inc()
-    Dec()
-}
-```
-
-## Standard Metrics
-
-DagNats components emit these metrics automatically:
+## Metrics DagNats emits
 
 | Metric | Type | Component | Description |
 |--------|------|-----------|-------------|
 | `step.duration_ms` | Histogram | Worker | Time to execute a task handler |
-| `step.retries` | Counter | Worker | Number of handler errors that triggered retry |
-| `worker.tasks.active` | Gauge | Worker | Number of tasks currently being processed |
-| `bridge.requests` | Counter | Bridge | Total HTTP bridge requests |
+| `step.retries` | Counter | Worker | Handler errors that led to a retry |
+| `worker.tasks.active` | UpDownCounter | Worker | Tasks currently being processed |
+| `worker.tasks.cancelled_skipped` | Counter | Worker | Tasks skipped because their run was already cancelled |
+| `worker.log_chunk.publish_failures` | Counter | Worker | Log chunks that failed to publish |
+| `workflow.runs.active` | UpDownCounter | Engine | Runs currently running |
+| `workflow.runs.completed` | Counter | Engine | Runs that completed |
+| `workflow.runs.failed` | Counter | Engine | Runs that failed |
+| `workflow.runs.reconciled` | Counter | Engine | Runs the reconciler repaired |
+| `workflow.runs.scan_degraded` | Counter | Engine | Bounded run scans that had to cap or skip keys; a signal to prune or tune retention |
+| `step.enqueue.count` | Counter | Engine | Tasks published to `TASK_QUEUES` |
+| `step.failure.non_retriable` | Counter | Engine | Non-retriable step failures |
+| `step.failure.retry_after` | Counter | Engine | Step failures with a requested retry delay |
+| `task.concurrency.acquired` | Counter | Engine | Task concurrency slots taken |
+| `task.concurrency.rejected` | Counter | Engine | Tasks held back by a full concurrency limit |
+| `snapshot.save.duration_ms` | Histogram | Engine | Time to save a run snapshot |
+| `dlq_entries_total` | Counter | Engine | Entries written to the dead letter queue |
+| `dlq_depth` | UpDownCounter | Engine | Current dead letter queue depth |
+| `api.requests` | Counter | API | Control-plane requests |
+| `api.errors` | Counter | API | Control-plane requests that failed |
+| `api.request.duration_ms` | Histogram | API | Control-plane request latency |
+| `bridge.requests` | Counter | Bridge | HTTP bridge requests |
 | `bridge.request.duration_ms` | Histogram | Bridge | HTTP bridge request latency |
-| `bridge.ackmap.size` | Gauge | Bridge | Number of unresolved tasks in the ack map |
-| `telemetry.spans.dropped` | Counter | TraceCollector | Spans dropped due to full buffer |
+| `trigger_firings_total` | Counter | Trigger | Trigger fires |
+| `trigger_last_fired_seconds` | Gauge | Trigger | Unix seconds of each cron trigger's last successful fire in this process |
+| `trigger_next_fire_seconds` | Gauge | Trigger | Unix seconds of each enabled cron trigger's next fire |
+| `console_audit_events_total` | Counter | Console | Console audit events written |
 
-## Usage
+The engine also emits repair and failure counters for its internal indexes and run finalization (names starting `engine.run_active.`, `engine.run_index.`, `engine.finalize.` and `engine.run_event.`), `engine.concurrency.legacy_reset`, `engine.def_pin.missing_version`, `trigger.run_terminal.depth_refusals`, `bridge.log_chunk.publish_failures` and `workertoken.watch_failures`. A non-zero value on any of those is worth a look.
 
-Instruments are created once at construction time and reused:
+## Reading metrics
 
-```go
-duration := tel.Metrics.Histogram("step.duration_ms", nil)
-retries := tel.Metrics.Counter("step.retries", nil)
-active := tel.Metrics.Gauge("worker.tasks.active", nil)
-
-// In the hot path
-active.Inc()
-start := time.Now()
-err := handler(ctx)
-duration.Observe(float64(time.Since(start).Milliseconds()))
-active.Dec()
-if err != nil {
-    retries.Inc()
-}
+```bash
+dagnats metrics show --name=step.duration_ms --since=5m --service=<service>
 ```
 
-Tags allow partitioning metrics by dimension:
+`--name` is required. `--since` defaults to 5 minutes, `--service` filters by the emitting process's service name, and `--json` gives machine-readable output.
 
-```go
-counter := tel.Metrics.Counter("requests", map[string]string{
-    "task_type": "send-email",
-    "status":    "success",
-})
-counter.Inc()
-```
+### Prometheus
 
-## Adapter Pattern
+`dagnats serve` aggregates the metrics it sees on the stream and serves them in Prometheus text format at `/metrics` on the HTTP port. Counters get a `_total` suffix and dots become underscores, so `workflow.runs.completed` is `workflow_runs_completed_total`. By default only loopback callers may scrape it. Set `METRICS_AUTH` to change that:
 
-The noop implementation discards all observations. Use it for tests and environments where metrics are not needed:
+| `METRICS_AUTH` | Behavior |
+|----------------|----------|
+| `loopback` (default) | Only `127.0.0.1` and `::1` |
+| `basic` | HTTP Basic auth with `METRICS_BASIC_USER` and `METRICS_BASIC_PASS` |
+| `forward` | Trust `X-Forwarded-User` from a reverse proxy |
+| `none` | Open to every caller; logs a warning at startup |
 
-```go
-metrics := observe.NewNoopMetrics()
-```
+An unknown value falls back to `loopback`.
 
-The internal `simple.MetricsCollector` publishes `MetricPoint` records as JSON to the NATS TELEMETRY stream at `telemetry.metrics.{service}.{name}`. For production, implement the `Metrics` interface with your preferred backend (Prometheus, OTel, StatsD):
-
-```go
-type PrometheusMetrics struct { /* ... */ }
-
-func (p *PrometheusMetrics) Counter(
-    name string, tags map[string]string,
-) observe.Counter {
-    // Return a Prometheus counter vec with the given labels
-}
-```
+`dagnats observe status` reports whether the telemetry pipeline is healthy.
 
 ## Related
 
-- [Structured Logging](/docs/observability/structured-logging) -- leveled structured logs
-- [Distributed Tracing](/docs/observability/distributed-tracing) -- span-based tracing
+- [Structured Logging](/docs/observability/structured-logging) -- log records
+- [Distributed Tracing](/docs/observability/distributed-tracing) -- spans
 - [Telemetry Stream](/docs/observability/telemetry-stream) -- NATS-native telemetry transport

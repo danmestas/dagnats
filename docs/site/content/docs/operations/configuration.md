@@ -8,7 +8,7 @@ DagNats uses a three-tier configuration system where each tier overrides the pre
 ## Resolution Order
 
 1. **Built-in defaults** -- hardcoded, platform-appropriate values
-2. **Config file** (`dagnats.yaml`) -- optional file in the working directory
+2. **Config file** (`dagnats.yaml`) -- optional; see [Config File](#config-file) for where it is searched for
 3. **Environment variables** (`DAGNATS_*`) -- highest priority
 
 Zero-config starts everything on defaults. Environment variables always win.
@@ -35,10 +35,13 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_ws_port` | int | `0` (disabled) | `0` (disabled) |
 | `nats_ws_no_tls` | bool | `false` | `false` |
 | `max_payload` | int32 | unset (NATS default, 1 MiB) | unset (NATS default, 1 MiB) |
+| `otlp_endpoint` | string | (none) | (none) |
 
 `max_payload` sets the embedded NATS server's largest accepted message in bytes. Unset keeps the nats-server default of 1 MiB; raise it (for example to `4194304`, 4 MiB) when producers publish larger messages. Values must be between 1 and 8388608 (8 MiB). Clients learn the limit from the server's INFO. In a cluster or leaf topology, set the same value on every node.
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
+
+The `nats_cluster_*`, `nats_server_name` and `nats_jetstream_replicas` keys are explained on the [Clustering]({{< ref "/docs/operations/clustering" >}}) page. `nats_cluster_routes` needs 2 to 10 entries, and `nats_cluster_name` is required whenever routes are set.
 
 ## Environment Variables
 
@@ -89,7 +92,7 @@ When `DAGNATS_WEBHOOK_SECRET` is set and no `--secret` flag is provided to `dagn
 |----------|---------|-------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (none) | OTLP/HTTP base URL for telemetry |
 
-When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, DagNats subscribes to the internal `TELEMETRY` span stream and batches spans to `{endpoint}/v1/traces` via OTLP/HTTP JSON. Works with any OTLP/HTTP-compatible backend (SigNoz, Grafana Tempo, Jaeger). When unset, spans are still written to the NATS `TELEMETRY` stream but not exported externally. Export failures never affect workflow execution.
+Spans, metrics and logs are always written to the NATS `TELEMETRY` stream. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set (a non-empty `otlp_endpoint` config key also switches the exporters on, but the SDK takes the target from the environment variable), each DagNats process also exports its traces, metrics and logs directly over OTLP/HTTP. Where they go is then read by the OpenTelemetry SDK from its standard variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_PROTOCOL` and the per-signal forms), so authentication headers and TLS settings come from those. This works with any OTLP/HTTP-compatible backend (SigNoz, Grafana Tempo, Jaeger). Export failures never affect workflow execution. See [Distributed Tracing]({{< ref "/docs/observability/distributed-tracing" >}}).
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 dagnats serve
@@ -118,7 +121,7 @@ The following environment variables still work but produce a warning on stderr. 
 
 ## Config File
 
-Place a `dagnats.yaml` file in the working directory. Format is simple `key: value` pairs, one per line. Lines starting with `#` are comments. Maximum 300 lines.
+`dagnats serve --config=PATH` reads that file. Without `--config`, it searches `./dagnats.yaml`, then `$XDG_CONFIG_HOME/dagnats/dagnats.yaml`, then (Linux only) `/etc/dagnats/dagnats.yaml`. Format is simple `key: value` pairs, one per line. Lines starting with `#` are comments. Maximum 300 lines.
 
 ```yaml
 # dagnats.yaml
@@ -200,17 +203,24 @@ dagnats config show
 dagnats config show --json
 ```
 
-The `config show` command loads the resolved configuration (all three tiers merged) and prints it. Use `--json` for machine-readable output. This is the fastest way to verify which values are active.
+The `config show` command loads the resolved configuration (all three tiers merged) and prints it. Use `--json` for machine-readable output. This is the fastest way to verify which values are active. It prints the core keys and the console variables; it does not print the cluster keys, so check those in your file or environment.
 
 Example output:
 
 ```
-data_dir:        /Users/you/Library/Application Support/dagnats
-http_addr:       127.0.0.1:8080
-nats_port:       4222
-leaf_remotes:    (none)
-leaf_credentials:(none)
-monitor_port:    (none)
-max_store_bytes: 10737418240
-otlp_endpoint:   (none)
+config_file:      (defaults)
+data_dir:         /Users/you/Library/Application Support/dagnats
+http_addr:        127.0.0.1:8080
+nats_port:        4222
+monitor_port:     (disabled)
+leaf_remotes:     (none)
+leaf_credentials: (none)
+max_store_bytes:  10737418240
+max_payload:      (nats default, 1048576)
+
+console env vars:
+  CONSOLE_CSRF_SECRET                    (random per-restart) (default)
+  CONSOLE_READ_ONLY                      false (default)
+  DAGNATS_CONSOLE_PASSWORD               (unset → basic-auth disabled) (default)
+  ...
 ```
