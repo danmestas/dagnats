@@ -57,9 +57,9 @@ When adding a new decision, write a numbered ADR. When taking notes that don't r
 
 ## Observability
 
-- All observability interfaces must be **provider-agnostic**. Define interfaces in-house, implement adapters separately.
-- Error reporting: interface now, Sentry adapter later. No direct Sentry imports outside the adapter.
-- Structured logging, tracing, and metrics should follow the same pattern: interface + adapter.
+- **OpenTelemetry is the abstraction.** Packages instrument with the OTel API (`go.opentelemetry.io/otel` tracer and meter) and `log/slog`; no in-house wrapper interfaces.
+- `observe/` owns the SDK setup (`InitTelemetry`): NATS-backed exporters by default (`observe/natsexporter`), OTLP when configured, and trace-context propagation through NATS headers and events.
+- Vendors stay provider-agnostic by plugging in as OTel exporters or behind an OTLP collector (Sentry, Honeycomb, Grafana). No vendor SDK imports outside an exporter package.
 - Observability is a first-class concern, not an afterthought.
 
 ## NATS-Native Patterns

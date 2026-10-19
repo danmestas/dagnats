@@ -56,9 +56,9 @@ All persistent state lives in NATS JetStream and KV. There is no external databa
 
 ## Observability rules
 
-- Interfaces in `observe/` are provider-agnostic.
-- Vendor adapters (Sentry, OTel exporters) live in separate packages. No vendor imports outside the adapter.
-- Logging, tracing, metrics, error reporting all follow the interface + adapter pattern.
+- OpenTelemetry is the abstraction: instrument with the OTel API (tracer, meter) and `log/slog`, not in-house wrapper interfaces.
+- `observe/` owns SDK setup (`InitTelemetry`), the NATS-backed exporters (`observe/natsexporter`), optional OTLP, and trace-context propagation over NATS.
+- Vendors (Sentry, Honeycomb, Grafana) plug in as OTel exporters or behind an OTLP collector. No vendor SDK imports outside an exporter package.
 
 ## NATS-native patterns
 
