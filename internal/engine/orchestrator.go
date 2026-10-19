@@ -1151,19 +1151,15 @@ func (o *Orchestrator) healRun(
 	)
 
 	// Re-increment runsActive (#634 review round 3; the only other
-	// increment site is dispatchNewRun above). runsActive is a purely
-	// in-process Int64UpDownCounter, not persisted -- a process
-	// restart resets it to 0 regardless of how many runs are actually
-	// still Running. healRun exists precisely for the "process
-	// crashed" case, so this delivery has no way to know whether the
-	// original winning delivery's own increment survived the crash;
-	// treating it as lost is the safer assumption (undercounting
-	// active runs after a crash is a silent, permanent drift with no
-	// other correction path; the reverse -- double-counting when heal
-	// runs without an intervening crash -- is the rarer case and
-	// still self-corrects to zero net drift once this run's own
-	// terminal -1 fires, just one run early).
-	o.metrics.runsActive.Add(ctx, 1)
+	// increment site is dispatchNewRun above) only for a run nothing
+	// was ever dispatched for -- the "process crashed before
+	// enqueueReady" case, where the original increment may have died
+	// with the process. Heal also re-drives a run mid-flight (ready
+	// Pending steps behind completed ones); that run was already
+	// counted, and adding again would leave it counted twice.
+	if noStepDispatched(run) {
+		o.metrics.runsActive.Add(ctx, 1)
+	}
 
 	// Heals EXACTLY ONE gap: the crash/error happened BEFORE
 	// enqueueReady ever ran, so entry steps are still Pending.
@@ -2779,4 +2775,21 @@ func (o *Orchestrator) loadDef(
 				workflowID, err)
 	}
 	return wfDef, nil
+}
+
+// noStepDispatched reports whether every step of run is still Pending,
+// i.e. no dispatch for it ever reached a save.
+func noStepDispatched(run dag.WorkflowRun) bool {
+	if run.RunID == "" {
+		panic("noStepDispatched: run.RunID must not be empty")
+	}
+	if run.Status != dag.RunStatusRunning {
+		panic("noStepDispatched: only a Running run is healed")
+	}
+	for _, state := range run.Steps {
+		if state.Status != dag.StepStatusPending {
+			return false
+		}
+	}
+	return true
 }
