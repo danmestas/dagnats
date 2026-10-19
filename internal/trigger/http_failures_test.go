@@ -309,3 +309,52 @@ func TestHTTPHandlerTimeoutReturns504(t *testing.T) {
 			rec.Body.String())
 	}
 }
+
+// TestHTTPHandlerSlowPublishReturns504: a workflow.started publish that
+// outlives timeout_ms is a timeout, not a server fault. The history
+// stream is replaced by a silent responder, so the publish deterministically
+// waits out the request's budget (the 500 seen on loaded CI hosts).
+func TestHTTPHandlerSlowPublishReturns504(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	if err := js.DeleteStream(context.Background(), "WORKFLOW_HISTORY"); err != nil {
+		t.Fatalf("delete stream: %v", err)
+	}
+	silent, err := nc.Subscribe("history.>", func(*nats.Msg) {})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		if err := silent.Unsubscribe(); err != nil {
+			t.Errorf("unsubscribe: %v", err)
+		}
+	}()
+	def := TriggerDef{
+		ID: "http-slow", WorkflowID: "wf-slow", Enabled: true,
+		HTTP: &HTTPConfig{
+			Path: "/api/slow", Method: http.MethodPost,
+			TimeoutMs: 200, MaxBodyBytes: 1024,
+		},
+	}
+	if err := Validate(def); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	req := httptest.NewRequest(
+		http.MethodPost, "/api/slow", bytes.NewReader([]byte(`{}`)),
+	)
+	rec := httptest.NewRecorder()
+	NewHTTPHandler(nc, def).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d (%q), want 504", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error":"workflow_timeout"`) {
+		t.Fatalf("body = %q, want workflow_timeout", rec.Body.String())
+	}
+}

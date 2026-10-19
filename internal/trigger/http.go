@@ -260,6 +260,15 @@ func (h *HTTPHandler) buildAndPublish(
 				`{"error":"client_closed","run_id":"`+runID+`"}`, 499)
 			return false
 		}
+		// The publish shares the trigger's timeout_ms budget. A slow
+		// publish that runs it out is the same 504 as a slow workflow,
+		// not a server fault (seen as a 500 on a loaded host).
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			http.Error(w,
+				`{"error":"workflow_timeout","run_id":"`+runID+`"}`,
+				http.StatusGatewayTimeout)
+			return false
+		}
 		http.Error(w, "failed to publish trigger",
 			http.StatusInternalServerError)
 		return false
