@@ -447,3 +447,30 @@ func TestEnableAtomicPublish(t *testing.T) {
 	assert(t, err != nil,
 		"expected error for nonexistent stream, got nil")
 }
+
+// TestSetupAllCreatesRuntimeBuckets guards split deployments (#784):
+// dagnats-engine and dagnats-api call SetupAll with no extras, and must
+// still get the buckets the engine, API, triggers and workers open.
+func TestSetupAllCreatesRuntimeBuckets(t *testing.T) {
+	_, nc := StartTestServer(t)
+	if err := SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx := context.Background()
+	runtime := []string{
+		"triggers", "trigger_state", "signals", "checkpoints",
+		"concurrency_runs",
+	}
+	for _, bucket := range runtime {
+		if _, err := js.KeyValue(ctx, bucket); err != nil {
+			t.Errorf("%s should exist after SetupAll: %v", bucket, err)
+		}
+	}
+	if _, err := js.KeyValue(ctx, "not_provisioned"); err == nil {
+		t.Error("an unprovisioned bucket must not exist")
+	}
+}

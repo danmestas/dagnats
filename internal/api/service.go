@@ -81,6 +81,16 @@ func WithAuditKV(kv jetstream.KeyValue) ServiceOption {
 	return func(s *Service) { s.auditKV = kv }
 }
 
+// AuditKV returns the console_audit bucket wired by WithAuditKV, or nil.
+// The console shares it so the bucket has one opener, which also owns its
+// replication factor.
+func (s *Service) AuditKV() jetstream.KeyValue {
+	if s == nil {
+		panic("Service.AuditKV: s is nil")
+	}
+	return s.auditKV
+}
+
 // RuntimeLimits carries the resolved per-runtime safety bounds the control
 // plane enforces (#378). Zero fields resolve to the default consts in
 // runtimes.go at construction, so an old caller (or a zero-value struct)

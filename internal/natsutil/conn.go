@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -364,6 +365,15 @@ func setupKVBuckets(
 			History:  1,
 			Replicas: replicas,
 		},
+		// Runtime state the trigger service, engine, API and workers
+		// open by name. Provisioned here, not by `dagnats serve`, so a
+		// split deployment (dagnats-engine, dagnats-api) gets them and
+		// a cluster gets them at its replication factor (#784).
+		{Bucket: "triggers", Replicas: replicas},
+		{Bucket: "trigger_state", Replicas: replicas},
+		{Bucket: "signals", Replicas: replicas},
+		{Bucket: "checkpoints", Replicas: replicas},
+		{Bucket: "concurrency_runs", Replicas: replicas},
 	}
 	if len(buckets) == 0 {
 		panic("SetupKVBuckets: buckets config must not be empty")
@@ -695,12 +705,13 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 
 	ctx := setupCtx
 	for _, sc := range options.streams {
-		err := ensureStream(
+		err := createStreamWithRetry(
 			ctx, js, jetstream.StreamConfig{
 				Name:      sc.Name,
 				Subjects:  sc.Subjects,
 				Retention: jetstream.WorkQueuePolicy,
 				Storage:   jetstream.FileStorage,
+				Replicas:  replicas,
 			},
 		)
 		if err != nil {
@@ -708,17 +719,33 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		}
 	}
 
-	for _, kc := range options.kvs {
-		err := ensureKeyValue(
-			ctx, js, jetstream.KeyValueConfig{
-				Bucket: kc.Bucket,
-			},
-		)
+	return setupExtraKVBuckets(ctx, js, options.kvs, replicas)
+}
+
+// setupExtraKVBuckets provisions WithKVBuckets extras at the cluster's
+// replication factor. An extra naming a bucket SetupAll already provisions
+// is skipped: re-asserting it with the extra's bare config would replace
+// that bucket's TTL and history settings.
+func setupExtraKVBuckets(
+	ctx context.Context, js jetstream.JetStream, kvs []KVConfig, replicas int,
+) error {
+	if js == nil {
+		panic("setupExtraKVBuckets: js must not be nil")
+	}
+	if replicas < 1 {
+		panic("setupExtraKVBuckets: replicas must be positive")
+	}
+	for _, kc := range kvs {
+		if slices.Contains(provisionedKVBuckets, kc.Bucket) {
+			continue
+		}
+		err := createKeyValueWithRetry(ctx, js, jetstream.KeyValueConfig{
+			Bucket: kc.Bucket, Replicas: replicas,
+		})
 		if err != nil {
-			return err
+			return fmt.Errorf("create kv bucket %s: %w", kc.Bucket, err)
 		}
 	}
-
 	return nil
 }
 

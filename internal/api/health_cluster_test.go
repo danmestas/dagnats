@@ -11,9 +11,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -148,6 +150,37 @@ func TestHealthCluster_ReportsEveryProvisionedStream(t *testing.T) {
 		if _, ok := body.JetStream.KVBuckets[name]; !ok {
 			t.Errorf("kv bucket %s missing from health report", name)
 		}
+	}
+}
+
+// TestHealthCluster_ReportsAuditBucket covers console_audit (#784): the
+// console creates it outside SetupAll, so the report lists it when it
+// exists and does not call it unavailable on a node that has none
+// (dagnats-api runs without a console).
+func TestHealthCluster_ReportsAuditBucket(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	routes := []string{"nats://peer-a:6222", "nats://peer-b:6222"}
+	reporter := NewClusterReporter(nc, routes, nil)
+	body, status := reporter.report(context.Background())
+	if status != http.StatusOK {
+		t.Fatalf("status without audit bucket = %d, want 200", status)
+	}
+	if slices.Contains(body.JetStream.Unavailable, auditkv.Bucket) {
+		t.Errorf("absent %s reported unavailable", auditkv.Bucket)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	if _, err := auditkv.NewKV(context.Background(), js, 1); err != nil {
+		t.Fatalf("auditkv.NewKV: %v", err)
+	}
+	body, _ = reporter.report(context.Background())
+	if got, ok := body.JetStream.KVBuckets[auditkv.Bucket]; !ok || got != 1 {
+		t.Errorf("%s in report = %d (present %v), want 1", auditkv.Bucket, got, ok)
 	}
 }
 

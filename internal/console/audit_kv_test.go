@@ -37,7 +37,7 @@ func newAuditTestKV(t *testing.T) (jetstream.JetStream, jetstream.KeyValue) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	kv, err := auditkv.NewKV(ctx, js)
+	kv, err := auditkv.NewKV(ctx, js, 1)
 	if err != nil {
 		t.Fatalf("auditkv.NewKV: %v", err)
 	}

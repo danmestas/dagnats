@@ -36,6 +36,11 @@ var provisionedKVBuckets = []string{
 	"singleton_locks",
 	"trigger_types",
 	"services",
+	"triggers",
+	"trigger_state",
+	"signals",
+	"checkpoints",
+	"concurrency_runs",
 	// Provisioned non-fatally (needs nats-server >= 2.11); the embedded
 	// server always satisfies that.
 	LeasesBucket,

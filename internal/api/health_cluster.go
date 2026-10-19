@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -288,13 +289,18 @@ type assetLookup struct {
 	label    string // name as reported: stream name or KV bucket name
 	stream   string // JetStream stream name to query
 	isBucket bool
+	// optional assets are created outside SetupAll and may legitimately
+	// not exist; absence is left out of the report, not called unavailable.
+	optional bool
 }
 
-// provisionedAssets lists every stream and KV bucket natsutil provisions.
+// provisionedAssets lists every stream and KV bucket natsutil provisions,
+// plus the console_audit bucket, which the console creates (auditkv.NewKV)
+// and a split dagnats-api deployment never has.
 func provisionedAssets() []assetLookup {
 	streams := natsutil.ProvisionedStreamNames()
 	buckets := natsutil.ProvisionedKVBucketNames()
-	out := make([]assetLookup, 0, len(streams)+len(buckets))
+	out := make([]assetLookup, 0, len(streams)+len(buckets)+1)
 	for _, name := range streams {
 		out = append(out, assetLookup{label: name, stream: name})
 	}
@@ -303,7 +309,10 @@ func provisionedAssets() []assetLookup {
 			label: name, stream: "KV_" + name, isBucket: true,
 		})
 	}
-	return out
+	return append(out, assetLookup{
+		label: auditkv.Bucket, stream: "KV_" + auditkv.Bucket,
+		isBucket: true, optional: true,
+	})
 }
 
 // collectAssets looks up every provisioned stream and bucket in parallel
@@ -336,6 +345,9 @@ func collectAssets(
 			// latency across routes.
 			mu.Lock()
 			defer mu.Unlock()
+			if a.optional && errors.Is(err, jetstream.ErrStreamNotFound) {
+				return
+			}
 			if err != nil || s.CachedInfo() == nil {
 				out.Unavailable = append(out.Unavailable, a.label)
 				return

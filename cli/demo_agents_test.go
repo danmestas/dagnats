@@ -46,7 +46,7 @@ func TestDemoSupervisorFormsRuntimeTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	auditKV, err := auditkv.NewKV(context.Background(), js)
+	auditKV, err := auditkv.NewKV(context.Background(), js, 1)
 	if err != nil {
 		t.Fatalf("audit KV: %v", err)
 	}

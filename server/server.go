@@ -182,13 +182,6 @@ func (s *Server) startComponents() error {
 	}
 
 	setupOpts := []natsutil.SetupOption{
-		natsutil.WithKVBuckets(
-			natsutil.KVConfig{Bucket: "triggers"},
-			natsutil.KVConfig{Bucket: "trigger_state"},
-			natsutil.KVConfig{Bucket: "signals"},
-			natsutil.KVConfig{Bucket: "checkpoints"},
-			natsutil.KVConfig{Bucket: "concurrency_runs"},
-		),
 		natsutil.WithCluster(natsutil.ClusterOptions{
 			Routes:           s.cfg.NATSClusterRoutes,
 			ReplicasOverride: s.cfg.NATSJetStreamReplicas,
@@ -231,11 +224,9 @@ func (s *Server) startComponents() error {
 
 	// Open the console_audit bucket (nil-tolerant) so the control plane can
 	// emit audit rows; a failure here must not block server startup.
-	auditJS, auditErr := jetstream.New(s.nc)
-	var auditKV jetstream.KeyValue
-	if auditErr == nil {
-		auditKV, _ = auditkv.NewKV(context.Background(), auditJS)
-	}
+	auditKV := openAuditKV(s.nc, natsutil.DeriveReplicas(
+		s.cfg.NATSClusterRoutes, s.cfg.NATSJetStreamReplicas,
+	))
 
 	s.svc = api.NewServiceWithLimits(s.nc, api.RuntimeLimits{
 		MaxActiveRunsPerRoot:         s.cfg.MaxActiveRunsPerRoot,
@@ -914,7 +905,7 @@ func buildConsoleConfig(
 	ring := logring.New(innerSlogHandler)
 	logger := slog.New(ring)
 	slog.SetDefault(logger)
-	auditKV := openConsoleAuditKV(nc, logger)
+	auditKV := svc.AuditKV()
 	readOnly := console.ReadOnlyFromEnv(os.Getenv("CONSOLE_READ_ONLY"))
 	if readOnly {
 		printStep(os.Stderr, "console: read-only mode active "+
@@ -1108,32 +1099,30 @@ func mountMetricsExporter(
 		))
 }
 
-// openConsoleAuditKV opens (or creates) the console_audit KV bucket on
-// the live JetStream connection. nil-tolerant: returns nil with a
-// slog.Warn when JetStream init or bucket creation fails so the
-// console mount path can still serve read-only pages without audit
-// support. The audit emitter logs and drops on a nil bucket.
-func openConsoleAuditKV(
-	nc *nats.Conn, logger *slog.Logger,
-) jetstream.KeyValue {
+// openAuditKV opens (or creates, at the cluster's replication factor) the
+// console_audit KV bucket the control plane and console share. The
+// server's only opener, so the bucket's replica count has one owner.
+// nil-tolerant: returns nil with a slog.Warn when JetStream init or bucket
+// creation fails, so startup continues and the console still serves
+// read-only pages. The audit emitter logs and drops on a nil bucket.
+func openAuditKV(nc *nats.Conn, replicas int) jetstream.KeyValue {
 	if nc == nil {
-		return nil
+		panic("openAuditKV: nc is nil")
 	}
-	if logger == nil {
-		logger = slog.Default()
+	if replicas < 1 {
+		panic("openAuditKV: replicas must be positive")
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
-		logger.Warn("console: jetstream for audit init failed",
-			"err", err)
+		slog.Warn("audit: jetstream init failed", "err", err)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(
-		context.Background(), 10*time.Second)
+		context.Background(), 30*time.Second)
 	defer cancel()
-	kv, err := console.NewAuditKV(ctx, js)
+	kv, err := auditkv.NewKV(ctx, js, replicas)
 	if err != nil {
-		logger.Warn("console: open audit bucket failed", "err", err)
+		slog.Warn("audit: open console_audit bucket failed", "err", err)
 		return nil
 	}
 	return kv

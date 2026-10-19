@@ -115,6 +115,25 @@ func createKeyValueWithRetry(
 	})
 }
 
+// EnsureKeyValue creates cfg, or upgrades an existing bucket to it in
+// place, with the create-first order and retry budget SetupAll uses. It is
+// for buckets owned outside SetupAll (the console's audit bucket), so they
+// reach the cluster's replication factor the same way.
+func EnsureKeyValue(
+	ctx context.Context, js jetstream.JetStream, cfg jetstream.KeyValueConfig,
+) (jetstream.KeyValue, error) {
+	if js == nil {
+		panic("EnsureKeyValue: js must not be nil")
+	}
+	if cfg.Replicas < 1 {
+		panic("EnsureKeyValue: cfg.Replicas must be positive")
+	}
+	if err := createKeyValueWithRetry(ctx, js, cfg); err != nil {
+		return nil, err
+	}
+	return js.KeyValue(ctx, cfg.Bucket)
+}
+
 // ensureStream creates or updates cfg. A replicated stream is created
 // first and updated only if it exists with a different config, instead
 // of CreateOrUpdateStream's update-first order: on nats-server 2.15 an

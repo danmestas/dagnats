@@ -31,13 +31,6 @@ const AuditBucket = auditkv.Bucket
 // AuditTTL is the KV bucket TTL (auditkv.TTL).
 const AuditTTL = auditkv.TTL
 
-// NewAuditKV opens the console_audit KV bucket, delegating to auditkv.
-func NewAuditKV(
-	ctx context.Context, js jetstream.JetStream,
-) (jetstream.KeyValue, error) {
-	return auditkv.NewKV(ctx, js)
-}
-
 // emitAuditEventInner writes evt into the console_audit bucket via the
 // shared auditkv emitter. Best-effort: nil kv warns and returns nil.
 func emitAuditEventInner(

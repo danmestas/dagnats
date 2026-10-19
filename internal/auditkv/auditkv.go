@@ -1,8 +1,8 @@
 // Package auditkv is the single source of truth for the operator-action
 // audit schema and its JetStream KV transport. It is a leaf: it imports
-// neither console, api, nor engine — those packages import it, which keeps
-// the schema in one place and avoids an import cycle. ADR-014 settled on a
-// KV bucket (console_audit) keyed by <RFC3339-nanos>-<random>; values are
+// neither console, api, nor engine (only natsutil, for provisioning) — those
+// packages import it, which keeps the schema in one place and avoids an
+// import cycle. ADR-014 settled on a KV bucket (console_audit) keyed by <RFC3339-nanos>-<random>; values are
 // JSON-serialised AuditEvent structs with a 90-day TTL.
 package auditkv
 
@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -42,10 +43,12 @@ const Bucket = "console_audit"
 const TTL = 90 * 24 * time.Hour
 
 // NewKV opens the console_audit KV bucket on the given JetStream handle,
-// creating it if missing. Idempotent — safe to call from any path holding a
-// JetStream connection.
+// creating it at replicas (the cluster's replication factor,
+// natsutil.DeriveReplicas) if missing and upgrading an existing bucket to it
+// in place. Idempotent — safe to call from any path holding a JetStream
+// connection.
 func NewKV(
-	ctx context.Context, js jetstream.JetStream,
+	ctx context.Context, js jetstream.JetStream, replicas int,
 ) (jetstream.KeyValue, error) {
 	if ctx == nil {
 		panic("auditkv.NewKV: ctx is nil")
@@ -53,9 +56,13 @@ func NewKV(
 	if js == nil {
 		panic("auditkv.NewKV: js is nil")
 	}
-	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket: Bucket,
-		TTL:    TTL,
+	if replicas < 1 {
+		panic("auditkv.NewKV: replicas must be positive")
+	}
+	kv, err := natsutil.EnsureKeyValue(ctx, js, jetstream.KeyValueConfig{
+		Bucket:   Bucket,
+		TTL:      TTL,
+		Replicas: replicas,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create audit bucket: %w", err)

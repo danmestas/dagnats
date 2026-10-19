@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/danmestas/dagnats/dagnatstest"
+	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
@@ -232,6 +233,72 @@ func TestCluster_MigrateSideStreamsR1ToR3(t *testing.T) {
 		}
 		if info.State.Msgs != 1 {
 			t.Errorf("%s messages = %d, want 1 retained", name, info.State.Msgs)
+		}
+	}
+}
+
+// runtimeBuckets are the KV buckets `dagnats serve` used to create itself,
+// outside SetupAll, with no replica count (#784), plus the console's audit
+// bucket. Each must reach the cluster's replication factor on restart.
+var runtimeBuckets = []string{
+	"triggers", "trigger_state", "signals", "checkpoints",
+	"concurrency_runs", auditkv.Bucket,
+}
+
+// TestCluster_MigrateRuntimeBucketsR1ToR3 creates every runtime bucket at
+// R=1 the way older releases did, then reruns provisioning in cluster mode:
+// each bucket must come back at R=3 with its contents kept.
+func TestCluster_MigrateRuntimeBucketsR1ToR3(t *testing.T) {
+	nc := dagnatstest.StartTestCluster(t, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	for _, bucket := range runtimeBuckets {
+		kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket})
+		if err != nil {
+			t.Fatalf("create %s at R=1: %v", bucket, err)
+		}
+		if _, err := kv.Put(ctx, "kept", []byte("v")); err != nil {
+			t.Fatalf("put %s: %v", bucket, err)
+		}
+	}
+
+	// A caller still naming a provisioned bucket as an extra must not
+	// pull it back to R=1, and a genuine extra gets the factor too.
+	if err := natsutil.SetupAll(nc,
+		natsutil.WithCluster(natsutil.ClusterOptions{Routes: []string{"a", "b"}}),
+		natsutil.WithKVBuckets(
+			natsutil.KVConfig{Bucket: "signals"},
+			natsutil.KVConfig{Bucket: "extra_roles"},
+		),
+	); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	if _, err := auditkv.NewKV(ctx, js, 3); err != nil {
+		t.Fatalf("auditkv.NewKV: %v", err)
+	}
+
+	extra, err := js.Stream(ctx, "KV_extra_roles")
+	if err != nil {
+		t.Fatalf("Stream KV_extra_roles: %v", err)
+	}
+	if got := extra.CachedInfo().Config.Replicas; got != 3 {
+		t.Errorf("extra_roles replicas = %d, want 3", got)
+	}
+	for _, bucket := range runtimeBuckets {
+		stream, err := js.Stream(ctx, "KV_"+bucket)
+		if err != nil {
+			t.Fatalf("Stream KV_%s: %v", bucket, err)
+		}
+		info := stream.CachedInfo()
+		if info.Config.Replicas != 3 {
+			t.Errorf("%s replicas = %d, want 3 after upgrade", bucket, info.Config.Replicas)
+		}
+		if info.State.Msgs != 1 {
+			t.Errorf("%s messages = %d, want 1 retained", bucket, info.State.Msgs)
 		}
 	}
 }
