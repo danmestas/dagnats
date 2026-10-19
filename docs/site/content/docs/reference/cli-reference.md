@@ -121,7 +121,7 @@ dagnats workflow validate workflow.json --json
 
 ### workflow delete
 
-Delete a registered workflow definition. Historical run records are not touched. The command refuses (exit code 2) while a trigger still references the workflow or a run of it has not finished; `--force` overrides both checks.
+Delete a registered workflow definition. Historical run records are not touched. The command refuses (exit code 2) while a trigger still references the workflow or a run of it has not finished; `--force` overrides both checks. Unfinished runs are found through both the active-run markers and the run index, so a run whose marker was lost still blocks the delete. The run-index check reads at most the newest 10,000 runs; when a store holds more, the delete is refused with the count reported as "at least N", and `--force` is needed.
 
 ```
 dagnats workflow delete <name> [--force] [--json]

@@ -153,6 +153,7 @@ func TestRESTDeleteWorkflow_ConflictOnNonTerminalRun(t *testing.T) {
 		Error            string   `json:"error"`
 		RunIDs           []string `json:"run_ids"`
 		TotalNonTerminal int      `json:"total_non_terminal"`
+		LowerBound       bool     `json:"total_is_lower_bound"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode 409 body: %v", err)
@@ -169,6 +170,9 @@ func TestRESTDeleteWorkflow_ConflictOnNonTerminalRun(t *testing.T) {
 	}
 	if body.TotalNonTerminal != 1 {
 		t.Fatalf("TotalNonTerminal = %d, want 1", body.TotalNonTerminal)
+	}
+	if body.LowerBound {
+		t.Fatal("a complete scan must not report a lower bound")
 	}
 }
 

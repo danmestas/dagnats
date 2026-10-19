@@ -48,7 +48,7 @@ func newNonTerminalGuardTestService(
 
 // seedRun persists a run snapshot via SaveInitial rather than Save so
 // a non-terminal run also gets the runactive.<runID> liveness marker
-// ListActive (and therefore nonTerminalRunIDsForWorkflow) reads --
+// ListActive (and therefore activeRunIDsForWorkflow) reads --
 // Save alone only writes the snapshot, not the active-run index.
 func seedRun(
 	t *testing.T, store *engine.SnapshotStore,

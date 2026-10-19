@@ -98,7 +98,7 @@ const registerRatePeriod = time.Minute
 // raising, or that the active-run population has grown large enough
 // to warrant investigation (#664 review round 2). Shared by
 // countActiveRunsForRoot and service_defs.go's
-// nonTerminalRunIDsForWorkflow (#682) -- both hit the exact same
+// activeRunIDsForWorkflow (#682) -- both hit the exact same
 // underlying truncation, just for different callers. Package-level
 // (not threaded through Service's constructor) following
 // internal/engine/run_event.go's runEventPublishFailures precedent for

@@ -310,10 +310,14 @@ func writeNonTerminalRunsError(
 		Error            string   `json:"error"`
 		RunIDs           []string `json:"run_ids"`
 		TotalNonTerminal int      `json:"total_non_terminal"`
+		// TotalIsLowerBound: the run-index scan hit its cap, so the
+		// real count may be higher (and total_non_terminal may be 0).
+		TotalIsLowerBound bool `json:"total_is_lower_bound"`
 	}{
-		Error:            "workflow has non-terminal runs",
-		RunIDs:           err.RunIDs,
-		TotalNonTerminal: err.Total,
+		Error:             "workflow has non-terminal runs",
+		RunIDs:            err.RunIDs,
+		TotalNonTerminal:  err.Total,
+		TotalIsLowerBound: err.AtLeast,
 	}
 	if encErr := json.NewEncoder(w).Encode(body); encErr != nil {
 		slog.Error("encode 409 response", "error", encErr)

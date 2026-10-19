@@ -104,14 +104,14 @@ Delete a workflow definition. Historical run records are not touched.
 DELETE /workflows/{name}[?force=true]
 ```
 
-The request is refused with `409` while a trigger still references the workflow or a run of it has not finished. `force=true` overrides both checks.
+The request is refused with `409` while a trigger still references the workflow or a run of it has not finished. `force=true` overrides both checks. Unfinished runs are found through both the active-run markers and the run index (the newest 10,000 runs); when the run index holds more runs than that, the delete is refused with `total_is_lower_bound: true`.
 
 | Status | Condition |
 |--------|-----------|
 | `204` | Workflow deleted |
 | `404` | Workflow not found, or `name` contains a `/` |
 | `405` | Method other than `DELETE` |
-| `409` | Non-terminal runs: `{"error":"workflow has non-terminal runs","run_ids":[...],"total_non_terminal":N}`. Referencing triggers: `{"error":"workflow has referencing triggers","trigger_ids":[...]}` |
+| `409` | Non-terminal runs: `{"error":"workflow has non-terminal runs","run_ids":[...],"total_non_terminal":N,"total_is_lower_bound":false}`. `total_is_lower_bound` is `true` when the run-index scan hit its cap before covering every run; `N` is then a lower bound and may be `0`. Referencing triggers: `{"error":"workflow has referencing triggers","trigger_ids":[...]}` |
 
 **curl:**
 ```bash

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -32,20 +33,35 @@ type ErrWorkflowHasNonTerminalRuns struct {
 	Name   string
 	RunIDs []string
 	Total  int
+	// AtLeast is true when the run-index scan hit its cap before covering
+	// every run: Total is then a lower bound (possibly 0), and the delete
+	// is refused because the guard could not prove there are none (#784).
+	AtLeast bool
 }
 
 func (e *ErrWorkflowHasNonTerminalRuns) Error() string {
 	if e == nil {
 		panic("ErrWorkflowHasNonTerminalRuns.Error: receiver is nil")
 	}
+	if e.Total == 0 {
+		return fmt.Sprintf(
+			"refused: could not confirm workflow %q has no non-terminal "+
+				"runs: the run index scan stopped at its cap. Cancel them "+
+				"or rerun with force.", e.Name,
+		)
+	}
 	suffix := ""
 	if e.Total > len(e.RunIDs) {
 		suffix = fmt.Sprintf(" (and %d more)", e.Total-len(e.RunIDs))
 	}
+	count := fmt.Sprintf("%d", e.Total)
+	if e.AtLeast {
+		count = "at least " + count
+	}
 	return fmt.Sprintf(
-		"refused: workflow %q has %d non-terminal run(s): %s%s."+
+		"refused: workflow %q has %s non-terminal run(s): %s%s."+
 			" Cancel them or rerun with force.",
-		e.Name, e.Total, strings.Join(e.RunIDs, ", "), suffix,
+		e.Name, count, strings.Join(e.RunIDs, ", "), suffix,
 	)
 }
 
@@ -53,18 +69,22 @@ func (e *ErrWorkflowHasNonTerminalRuns) Error() string {
 // Total==0 invariant belongs here, at construction, rather than in
 // Error() -- a Stringer/error's Error() method must never panic, since
 // fmt (and slog, when logging an error value) may call it at format
-// time on a code path the caller does not control.
+// time on a code path the caller does not control. A zero total is only
+// a refusal when it is a lower bound (atLeast).
 func newErrWorkflowHasNonTerminalRuns(
-	name string, runIDs []string, total int,
+	name string, runIDs []string, total int, atLeast bool,
 ) *ErrWorkflowHasNonTerminalRuns {
 	if name == "" {
 		panic("newErrWorkflowHasNonTerminalRuns: name must not be empty")
 	}
-	if total == 0 {
-		panic("newErrWorkflowHasNonTerminalRuns: total must not be zero")
+	if total == 0 && !atLeast {
+		panic("newErrWorkflowHasNonTerminalRuns: exact total must not be zero")
+	}
+	if len(runIDs) > total {
+		panic("newErrWorkflowHasNonTerminalRuns: more run IDs than total")
 	}
 	return &ErrWorkflowHasNonTerminalRuns{
-		Name: name, RunIDs: runIDs, Total: total,
+		Name: name, RunIDs: runIDs, Total: total, AtLeast: atLeast,
 	}
 }
 
@@ -309,12 +329,12 @@ func (s *Service) deleteWorkflowInner(
 		if len(triggerIDs) > 0 {
 			return newErrWorkflowHasTriggers(name, triggerIDs)
 		}
-		runIDs, total, err := s.nonTerminalRunIDsForWorkflow(ctx, name)
+		refusal, err := s.nonTerminalRunsForWorkflow(ctx, name)
 		if err != nil {
 			return err
 		}
-		if total > 0 {
-			return newErrWorkflowHasNonTerminalRuns(name, runIDs, total)
+		if refusal != nil {
+			return refusal
 		}
 	}
 	if err := s.deleteDefVersions(ctx, name); err != nil {
@@ -357,63 +377,153 @@ func (s *Service) referencingTriggerIDs(
 	return refs, nil
 }
 
-// nonTerminalRunIDsForWorkflow returns up to nonTerminalRunListCap run
-// IDs for name that are not yet terminal, plus the true total (#682).
-// Backed by the reconciler's active-run index (ListActive) rather than
-// a scan over all history, so this stays cheap even on a large
-// workflow_runs population -- mirrors countActiveRunsForRoot's pattern
+// deleteGuardIndexFetchMax bounds how many run snapshots the delete
+// guard's run-index scan fetches (#784). A var, not a const, so a test
+// can make the cap reachable with a handful of runs.
+var deleteGuardIndexFetchMax = engine.ScanFetchMax
+
+// deleteGuardIndexMatchMax bounds how many non-terminal runs the
+// run-index scan collects before it stops: past this the refusal is
+// certain and only the count is a lower bound.
+const deleteGuardIndexMatchMax = 1_000
+
+// nonTerminalRunsForWorkflow returns the refusal DeleteWorkflow should
+// give for name, or nil when no run for name is non-terminal (#682). It
+// consults BOTH run indexes: the reconciler's runactive markers
+// (ListActive) and the creation-ordered run index (a workflow-filtered
+// ScanNewestFirst). A run with a non-terminal snapshot but a missing
+// runactive marker -- which the pre-#768 lost-update bug produced --
+// is invisible to the first and caught by the second (#784). A run
+// either source calls non-terminal counts, once.
+//
+// Both scans are bounded. A run-index scan that hits its fetch cap
+// before covering every run cannot prove the workflow clean, so it
+// refuses with AtLeast set rather than under-count.
+func (s *Service) nonTerminalRunsForWorkflow(
+	ctx context.Context, name string,
+) (*ErrWorkflowHasNonTerminalRuns, error) {
+	if ctx == nil {
+		panic("nonTerminalRunsForWorkflow: ctx must not be nil")
+	}
+	if name == "" {
+		panic("nonTerminalRunsForWorkflow: name must not be empty")
+	}
+	activeIDs, err := s.activeRunIDsForWorkflow(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	indexedIDs, partial, err := s.indexedNonTerminalRunIDs(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	ids := mergeRunIDs(activeIDs, indexedIDs)
+	if len(ids) == 0 && !partial {
+		return nil, nil
+	}
+	listed := ids[:min(len(ids), nonTerminalRunListCap)]
+	return newErrWorkflowHasNonTerminalRuns(name, listed, len(ids), partial), nil
+}
+
+// indexedNonTerminalRunIDs scans the run index newest-first for runs of
+// name whose snapshot is not terminal. partial is true when the scan
+// stopped early (fetch cap or match cap), so the list may be incomplete.
+func (s *Service) indexedNonTerminalRunIDs(
+	ctx context.Context, name string,
+) ([]string, bool, error) {
+	if name == "" {
+		panic("indexedNonTerminalRunIDs: name must not be empty")
+	}
+	if deleteGuardIndexFetchMax <= 0 {
+		panic("indexedNonTerminalRunIDs: fetch cap must be positive")
+	}
+	match := func(run dag.WorkflowRun) bool {
+		return run.WorkflowID == name && !run.Status.IsTerminal()
+	}
+	limit := min(deleteGuardIndexMatchMax, deleteGuardIndexFetchMax)
+	runs, stats, err := s.store.ScanNewestFirst(
+		ctx, match, limit, deleteGuardIndexFetchMax,
+	)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("scan run index for %q: %w", name, err)
+	}
+	ids := make([]string, 0, len(runs))
+	for i := range runs {
+		ids = append(ids, runs[i].RunID)
+	}
+	return ids, stats.Truncated || len(runs) >= limit, nil
+}
+
+// mergeRunIDs returns first followed by the IDs of second it lacks, each
+// run once. Both inputs are already bounded by their scans.
+func mergeRunIDs(first, second []string) []string {
+	seen := make(map[string]bool, len(first)+len(second))
+	merged := make([]string, 0, len(first)+len(second))
+	for _, list := range [2][]string{first, second} {
+		for _, id := range list {
+			if !seen[id] {
+				seen[id] = true
+				merged = append(merged, id)
+			}
+		}
+	}
+	if len(merged) > len(first)+len(second) {
+		panic("mergeRunIDs: merged more IDs than its inputs hold")
+	}
+	return merged
+}
+
+// activeRunIDsForWorkflow returns every run ID for name the reconciler's
+// active-run index (ListActive) holds -- cheap even on a large
+// workflow_runs population, mirroring countActiveRunsForRoot's pattern
 // in runtimes.go.
 //
-// This is best-effort, not an absolute guarantee: ListActive's
-// underlying fetch can silently drop a run on a per-key timeout
-// (ScanStats.Skipped, via ParallelGetJSBestEffort) without that
+// ListActive's underlying fetch can silently drop a run on a per-key
+// timeout (ScanStats.Skipped, via ParallelGetJSBestEffort) without that
 // setting Truncated. What this function DOES fail closed on is the
 // cheaper, larger-blast-radius failure mode -- the active-ID list
 // itself coming back truncated -- which is treated as an error rather
 // than a silent under-count, same as countActiveRunsForRoot's own
 // truncation handling.
-func (s *Service) nonTerminalRunIDsForWorkflow(
+func (s *Service) activeRunIDsForWorkflow(
 	ctx context.Context, name string,
-) ([]string, int, error) {
+) ([]string, error) {
 	if ctx == nil {
-		panic("nonTerminalRunIDsForWorkflow: ctx must not be nil")
+		panic("activeRunIDsForWorkflow: ctx must not be nil")
 	}
 	if name == "" {
-		panic("nonTerminalRunIDsForWorkflow: name must not be empty")
+		panic("activeRunIDsForWorkflow: name must not be empty")
 	}
 	runs, stats, err := s.store.ListActive(ctx, runtimeRunScanMax)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, 0, nil
+			return nil, nil
 		}
-		return nil, 0, err
+		return nil, err
 	}
 	if stats.Truncated {
 		activeRunCountTruncated.Add(ctx, 1)
 		slog.ErrorContext(ctx,
-			"nonTerminalRunIDsForWorkflow: ListActive truncated; "+
+			"activeRunIDsForWorkflow: ListActive truncated; "+
 				"refusing to trust an under-count for delete safety",
 			"workflow", name,
 			"fetch_max", runtimeRunScanMax,
 		)
-		return nil, 0, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"non-terminal run scan for workflow %q truncated at %d -- "+
 				"refusing to under-count for delete safety",
 			name, runtimeRunScanMax,
 		)
 	}
-	ids := make([]string, 0, nonTerminalRunListCap)
-	total := 0
+	ids := make([]string, 0, len(runs))
 	for i := range runs {
-		if runs[i].WorkflowID != name {
-			continue
-		}
-		total++
-		if len(ids) < nonTerminalRunListCap {
+		if runs[i].WorkflowID == name {
 			ids = append(ids, runs[i].RunID)
 		}
 	}
-	return ids, total, nil
+	return ids, nil
 }
 
 // deleteDefVersions removes every immutable name.v.hash version key
