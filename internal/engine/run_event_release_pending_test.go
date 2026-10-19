@@ -238,3 +238,44 @@ func TestFinalizeRun_ReleaseDebtSavesBeforePublishing(t *testing.T) {
 		t.Fatalf("expected history.* after debt save: %v", subErr)
 	}
 }
+
+// TestFinalizeRun_DebtSaveConflictStillRecordsDebt: the terminal save
+// landed, then a rival wrote the run before the ReleasePending save. A
+// retried event would find the run terminal and never record the debt,
+// so the debt save itself must reload and save again.
+func TestFinalizeRun_DebtSaveConflictStillRecordsDebt(t *testing.T) {
+	tp, store, _ := newFinalizeRunTestDeps(t)
+	wrapped := &conflictOnceKV{KeyValue: store.kv, trigger: func(run dag.WorkflowRun) bool {
+		return run.ReleasePending
+	}}
+	store = &SnapshotStore{kv: wrapped, nc: store.nc}
+	ctx := context.Background()
+	initial := dag.WorkflowRun{
+		RunID: "run-debt-conflict", WorkflowID: "debt-wf",
+		Status: dag.RunStatusRunning, Steps: map[string]dag.StepState{},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := store.SaveInitial(ctx, initial); err != nil {
+		t.Fatalf("SaveInitial: %v", err)
+	}
+	run, err := store.Load(ctx, initial.RunID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	afterPersist := func(context.Context) error { return errors.New("release failed") }
+	if _, err := finalizeRun(ctx, tp, store, saveFn(store), run,
+		dag.RunStatusCompleted, "", afterPersist); err != nil {
+		t.Fatalf("finalizeRun: %v", err)
+	}
+	if wrapped.injected != 1 || wrapped.err != nil {
+		t.Fatalf("conflict injected %d times (err %v), want 1", wrapped.injected, wrapped.err)
+	}
+	got, err := store.Load(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !got.ReleasePending || got.Status != dag.RunStatusCompleted {
+		t.Fatalf("status=%v release_pending=%v, want completed with the debt recorded",
+			got.Status, got.ReleasePending)
+	}
+}

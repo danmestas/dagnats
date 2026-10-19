@@ -207,7 +207,8 @@ func TestReconciler_RecoversReleasePending_SingletonLock(t *testing.T) {
 	// deleted it via the same ReleaseSingletonLock the normal
 	// completion path uses, not merely a flag flip.
 	if _, getErr := singletonKV.Get(run1.SingletonKey); getErr == nil {
-		t.Fatal("lock still present after reconciler recovery -- releaseAdmission did not delete it")
+		t.Fatal("lock still present after reconciler recovery -- " +
+			"releaseAdmission did not delete it")
 	}
 }
 

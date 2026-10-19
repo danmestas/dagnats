@@ -13,6 +13,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -163,6 +164,92 @@ func TestWorkflowStarted_RedeliveryAfterLostDispatchSaveDispatches(t *testing.T)
 		t.Errorf("entry task published %d times, want 1 (all: %v)",
 			tasks["task.fan-a."+run.RunID], tasks)
 	}
+}
+
+// TestRunDispatchPlan_OneFailedEffectStillRunsTheRest: every ready
+// step is already saved queued or running when the effects run, and a
+// redelivery only dispatches pending steps, so an effect that stops
+// the loop strands every sibling after it. All effects and the task
+// batch must run, and the failure must still be reported.
+func TestRunDispatchPlan_OneFailedEffectStillRunsTheRest(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	def := fanOutDef()
+	orch := NewOrchestrator(nc)
+	run := dag.NewWorkflowRun(def, "run-effects")
+	run.Status = dag.RunStatusRunning
+
+	scheduleFailed := errors.New("schedule: no responders")
+	laterRan := false
+	t1, _ := findStepDef(def, "t1")
+	plan := dispatchPlan{
+		effects: []dispatchEffect{
+			func(context.Context) error { return scheduleFailed },
+			func(context.Context) error { laterRan = true; return nil },
+		},
+		normalSteps: []dag.StepDef{t1},
+	}
+	err = orch.runDispatchPlan(ctx, def, run, plan)
+	if !errors.Is(err, scheduleFailed) {
+		t.Fatalf("err = %v, want the failed effect reported", err)
+	}
+	if !laterRan {
+		t.Error("an effect after the failed one never ran")
+	}
+	tasks := streamSubjectCounts(t, ctx, js, "TASK_QUEUES", "task.>")
+	if tasks["task.fan-t1."+run.RunID] != 1 {
+		t.Errorf("t1 published %d times after a sibling's effect failed, want 1",
+			tasks["task.fan-t1."+run.RunID])
+	}
+}
+
+// TestWorkflowStarted_RedeliveryWithReadyPendingStepsHeals: the entry
+// step finished at dispatch (a detached sub-workflow) but the save that
+// would dispatch its successors lost a conflict. The run is running
+// with ready steps still pending, and workflow.started handled again
+// must dispatch them rather than skip a run that is not all-pending.
+func TestWorkflowStarted_RedeliveryWithReadyPendingStepsHeals(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	def := fanOutDef()
+	defKV, err := js.KeyValue(ctx, "workflow_defs")
+	if err != nil {
+		t.Fatalf("workflow_defs: %v", err)
+	}
+	mustPutJS(t, ctx, defKV, def.Name, mustMarshal(t, def))
+	mustPutJS(t, ctx, defKV, dag.DefVersionKey(def.Name, dag.DefHash(def)), mustMarshal(t, def))
+
+	orch := NewOrchestrator(nc)
+	run := dag.NewWorkflowRun(def, "run-ready-pending")
+	run.Status = dag.RunStatusRunning
+	run.DefHash = dag.DefHash(def)
+	run.Steps["a"] = dag.StepState{Status: dag.StepStatusCompleted}
+	if err := orch.store.SaveInitial(ctx, run); err != nil {
+		t.Fatalf("SaveInitial: %v", err)
+	}
+	evt := protocol.NewWorkflowEvent(
+		protocol.EventWorkflowStarted, run.RunID, mustMarshal(t, def),
+	)
+	if err := orch.handleEventWithConflictRetry(ctx, evt); err != nil {
+		t.Fatalf("handle workflow.started: %v", err)
+	}
+	assertFanOutDispatched(t, ctx, orch, js, run.RunID)
 }
 
 // assertFanOutDispatched checks the snapshot and the queues: the sleep

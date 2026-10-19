@@ -581,21 +581,31 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 	msg.Ack()
 }
 
-// neverDispatched reports a running run whose every step is still
-// pending: it was created but enqueueReady's save never landed.
-func neverDispatched(run dag.WorkflowRun) bool {
+// hasReadyPendingSteps reports a running run with a step whose
+// dependencies are done but which is still pending: a save that would
+// have dispatched it never landed (lost to a rival engine, or a crash
+// before it). Only enqueueReady moves a step off pending, so on a run
+// whose dispatch saves all landed this is false (or the step is held
+// back by the run's step cap, which enqueueReady re-applies).
+func (o *Orchestrator) hasReadyPendingSteps(
+	ctx context.Context, run dag.WorkflowRun,
+) (bool, error) {
 	if run.RunID == "" {
-		panic("neverDispatched: RunID must not be empty")
+		panic("hasReadyPendingSteps: RunID must not be empty")
 	}
-	if run.Status != dag.RunStatusRunning || len(run.Steps) == 0 {
-		return false
+	if ctx == nil {
+		panic("hasReadyPendingSteps: ctx must not be nil")
 	}
-	for _, state := range run.Steps {
-		if state.Status != dag.StepStatusPending {
-			return false
-		}
+	if run.Status != dag.RunStatusRunning {
+		return false, nil
 	}
-	return true
+	wfDef, err := o.loadPinnedOrLatestDef(ctx, run)
+	if err != nil {
+		return false, err
+	}
+	wfDef = dag.EffectiveDef(wfDef, run)
+	ready := dag.ResolveReady(wfDef, completedSet(run), queuedSet(run))
+	return len(ready) > 0, nil
 }
 
 // handleEventWithConflictRetry dispatches evt, handling it again from a
@@ -858,11 +868,15 @@ func (o *Orchestrator) startExistingRun(
 	if existing, loadErr := o.store.Load(
 		ctx, evt.RunID,
 	); loadErr == nil {
-		// A live run with nothing dispatched yet means the first
-		// delivery saved the run but not its dispatch (its dispatch
-		// save lost to a rival engine, or it crashed in between).
-		// Skipping would strand it; heal dispatches only pending steps.
-		if isRunTerminal || neverDispatched(existing) {
+		// A live run with ready steps still pending means a save that
+		// would have dispatched them never landed (lost to a rival
+		// engine, or a crash in between). Skipping would strand it;
+		// heal dispatches only pending steps.
+		stranded, err := o.hasReadyPendingSteps(ctx, existing)
+		if err != nil {
+			return true, err
+		}
+		if isRunTerminal || stranded {
 			return true, o.healRun(ctx, existing)
 		}
 		slog.InfoContext(ctx,
@@ -876,6 +890,60 @@ func (o *Orchestrator) startExistingRun(
 		return true, fmt.Errorf(
 			"load existing run %q: %w", evt.RunID, loadErr,
 		)
+	}
+	return false, nil
+}
+
+// rejectInvalidStart records a failed run for a workflow.started whose
+// def, labels or input is invalid, reporting handled=true when it did.
+func (o *Orchestrator) rejectInvalidStart(
+	ctx context.Context, evt protocol.Event, wfDef dag.WorkflowDef,
+	input json.RawMessage, labels map[string]string,
+) (bool, error) {
+	if evt.RunID == "" {
+		panic("rejectInvalidStart: RunID must not be empty")
+	}
+	if ctx == nil {
+		panic("rejectInvalidStart: ctx must not be nil")
+	}
+	// Validate the WorkflowDef itself before constructing a run.
+	// dag.NewWorkflowRun panics on invariant violations (e.g. empty
+	// Steps); validating here turns that panic into a recorded
+	// failure. A trigger publishing a malformed payload (see #167)
+	// must not crash the engine.
+	if validateErr := dag.Validate(wfDef); validateErr != nil {
+		o.persistFailedStartRun(ctx, evt, wfDef.Name, validateErr)
+		return true, nil
+	}
+
+	// Re-validate labels at the trust boundary (#629). The API service
+	// already rejects invalid labels with a 400, but any other producer
+	// of workflow.started (a direct engine caller, a future trigger
+	// type) gets the same guarantee here rather than a corrupt snapshot.
+	if labelErr := dag.ValidateLabels(labels); labelErr != nil {
+		o.persistFailedStartRun(ctx, evt, wfDef.Name, labelErr)
+		return true, nil
+	}
+
+	// Validate input against schema if configured.
+	if wfDef.InputSchema != nil {
+		if err := dag.ValidateSchema(wfDef.InputSchema, input); err != nil {
+			// Create a failed run for visibility
+			run := dag.NewWorkflowRun(wfDef, evt.RunID)
+			run.TraceParent = evt.TraceParent
+			run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
+			if _, finalizeErr := finalizeRun(
+				ctx, o.tp, o.store, o.saveSnapshot, run,
+				dag.RunStatusFailed, "", nil,
+			); finalizeErr != nil {
+				slog.ErrorContext(ctx,
+					"input validation: save failed-run snapshot",
+					"error", finalizeErr,
+					"run_id", evt.RunID,
+				)
+			}
+			return true, fmt.Errorf("input validation: %w", err)
+		}
 	}
 	return false, nil
 }
@@ -905,44 +973,10 @@ func (o *Orchestrator) handleWorkflowStarted(
 		return err
 	}
 
-	// Validate the WorkflowDef itself before constructing a run.
-	// dag.NewWorkflowRun panics on invariant violations (e.g. empty
-	// Steps); validating here turns that panic into a recorded
-	// failure. A trigger publishing a malformed payload (see #167)
-	// must not crash the engine.
-	if validateErr := dag.Validate(wfDef); validateErr != nil {
-		o.persistFailedStartRun(ctx, evt, wfDef.Name, validateErr)
-		return nil
-	}
-
-	// Re-validate labels at the trust boundary (#629). The API service
-	// already rejects invalid labels with a 400, but any other producer
-	// of workflow.started (a direct engine caller, a future trigger
-	// type) gets the same guarantee here rather than a corrupt snapshot.
-	if labelErr := dag.ValidateLabels(labels); labelErr != nil {
-		o.persistFailedStartRun(ctx, evt, wfDef.Name, labelErr)
-		return nil
-	}
-
-	// Validate input against schema if configured.
-	if wfDef.InputSchema != nil {
-		if err := dag.ValidateSchema(wfDef.InputSchema, input); err != nil {
-			// Create a failed run for visibility
-			run := dag.NewWorkflowRun(wfDef, evt.RunID)
-			run.TraceParent = evt.TraceParent
-			run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
-			if _, finalizeErr := finalizeRun(
-				ctx, o.tp, o.store, o.saveSnapshot, run,
-				dag.RunStatusFailed, "", nil,
-			); finalizeErr != nil {
-				slog.ErrorContext(ctx,
-					"input validation: save failed-run snapshot",
-					"error", finalizeErr,
-					"run_id", evt.RunID,
-				)
-			}
-			return fmt.Errorf("input validation: %w", err)
-		}
+	if handled, err := o.rejectInvalidStart(
+		ctx, evt, wfDef, input, labels,
+	); handled || err != nil {
+		return err
 	}
 
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
@@ -2294,7 +2328,7 @@ func (o *Orchestrator) planStep(
 	case dag.StepTypeWaitForEvent:
 		return o.planWaitForEventStep(run, step)
 	case dag.StepTypeApproval:
-		return o.approval.Plan(ctx, run, step)
+		return o.approval.Plan(run, step)
 	case dag.StepTypeRespond:
 		return o.planRespondStep(run, step)
 	}
@@ -2318,17 +2352,20 @@ func (o *Orchestrator) runDispatchPlan(
 	if ctx == nil {
 		panic("runDispatchPlan: ctx must not be nil")
 	}
+	// Every step is already saved queued or running, and a redelivery
+	// dispatches only pending ones: one failed effect must not keep its
+	// siblings from being dispatched, so all run and errors are joined.
+	errs := make([]error, 0, len(plan.effects)+1)
 	for _, effect := range plan.effects {
-		if err := effect(ctx); err != nil {
-			return err
-		}
+		errs = append(errs, effect(ctx))
 	}
 	if len(plan.normalSteps) > 0 {
-		if err := o.publisher.PublishBatch(
+		errs = append(errs, o.publisher.PublishBatch(
 			ctx, run.RunID, wfDef, run, plan.normalSteps,
-		); err != nil {
-			return err
-		}
+		))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
 	}
 	if !plan.continueRun {
 		return nil

@@ -437,7 +437,7 @@ func TestApprovalGateNilReceiverIsNoOp(t *testing.T) {
 			"gate": {Status: dag.StepStatusPending},
 		},
 	}
-	_, err := ag.Plan(context.Background(), &run, wfDef.Steps[0])
+	_, err := ag.Plan(&run, wfDef.Steps[0])
 	// Positive: Plan must return error from nil gate.
 	if err == nil {
 		t.Fatal("expected error from nil ApprovalGate")
@@ -651,7 +651,7 @@ func TestApprovalStep_ZeroTimeoutReturnsError(t *testing.T) {
 		},
 	}
 
-	_, err = ag.Plan(context.Background(), &run, step)
+	_, err = ag.Plan(&run, step)
 
 	// Positive: Plan must return an error for zero timeout.
 	if err == nil {

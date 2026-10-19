@@ -57,15 +57,14 @@ type SaveSnapshotFunc func(
 	ctx context.Context, run dag.WorkflowRun, stepID string,
 ) error
 
-// Plan activates an approval gate: generates and stores a token and
-// marks the step Running (the caller saves the run), returning the
-// effect that publishes the request and schedules the timeout. The
-// token is stored before the save so a granted approval can never
-// find a running step with no token; a save that then fails leaves
-// only a token for a step that will be planned again with a new one
-// under the same key.
+// Plan activates an approval gate: generates a token and marks the
+// step Running (the caller saves the run), returning the effect that
+// stores the token, publishes the request, and schedules the timeout.
+// The token is stored only after the save: a duplicate handler whose
+// save lost must not overwrite the token the winner published. Nobody
+// can present the token before the request carrying it is published,
+// which happens after the store.
 func (ag *ApprovalGate) Plan(
-	ctx context.Context,
 	run *dag.WorkflowRun,
 	step dag.StepDef,
 ) (dispatchEffect, error) {
@@ -96,13 +95,12 @@ func (ag *ApprovalGate) Plan(
 		return nil, err
 	}
 
-	return ag.activate(ctx, run, step, cfg, token)
+	return ag.activate(run, step, cfg, token)
 }
 
-// activate stores the token and marks the step running, returning the
-// effect that publishes events and schedules the timeout timer.
+// activate marks the step running, returning the effect that stores
+// the token, publishes events and schedules the timeout timer.
 func (ag *ApprovalGate) activate(
-	ctx context.Context,
 	run *dag.WorkflowRun,
 	step dag.StepDef,
 	cfg dag.ApprovalConfig,
@@ -117,18 +115,17 @@ func (ag *ApprovalGate) activate(
 	now := time.Now().UTC()
 	expiresAt := now.Add(cfg.Timeout)
 
-	if err := ag.storeToken(
-		ctx, run.RunID, step.ID, token, now, expiresAt,
-	); err != nil {
-		return nil, err
-	}
-
 	state := run.Steps[step.ID]
 	state.Status = dag.StepStatusRunning
 	run.Steps[step.ID] = state
 
 	runID, stepID := run.RunID, step.ID
 	return func(ctx context.Context) error {
+		if err := ag.storeToken(
+			ctx, runID, stepID, token, now, expiresAt,
+		); err != nil {
+			return err
+		}
 		ag.publishRequested(ctx, runID, stepID, cfg, token, expiresAt)
 		return ag.scheduleTimeout(ctx, runID, stepID, cfg.Timeout)
 	}, nil

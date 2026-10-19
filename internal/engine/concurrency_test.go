@@ -361,7 +361,8 @@ func TestConcurrencyLegacyValueWarnsOnceAndCounts(t *testing.T) {
 	occurrences := strings.Count(logs, "stored value was not a member set")
 	if occurrences != 1 {
 		t.Fatalf(
-			"legacy-reset WARN logged %d times for the same key, want exactly 1 (bounded dedup): %s",
+			"legacy-reset WARN logged %d times for the same key, "+
+				"want exactly 1 (bounded dedup): %s",
 			occurrences, logs,
 		)
 	}

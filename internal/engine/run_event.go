@@ -28,6 +28,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -364,6 +366,46 @@ func init() {
 	finalizeReleaseMalformedSkipped = ms
 }
 
+// releaseDebtSaveAttemptsMax bounds saveReleaseDebt's reload-and-retry.
+const releaseDebtSaveAttemptsMax = 3
+
+// saveReleaseDebt saves run with ReleasePending set. The terminal save
+// already landed, so if a rival engine wrote the run since, a retried
+// event would see it terminal and never record the debt: on a conflict
+// this reloads the run (still terminal) and sets the flag again,
+// a bounded number of times.
+func saveReleaseDebt(
+	ctx context.Context,
+	store *SnapshotStore,
+	saveFn SaveSnapshotFunc,
+	run dag.WorkflowRun,
+	stepID string,
+) (dag.WorkflowRun, error) {
+	if store == nil || saveFn == nil {
+		panic("saveReleaseDebt: store and saveFn must not be nil")
+	}
+	if !run.Status.IsTerminal() {
+		panic("saveReleaseDebt: run must already be terminal")
+	}
+	var err error
+	for attempt := 0; attempt < releaseDebtSaveAttemptsMax; attempt++ {
+		run.ReleasePending = true
+		err = saveFn(ctx, run, stepID)
+		if !errors.Is(err, ErrSnapshotConflict) {
+			return run, err
+		}
+		fresh, loadErr := store.Load(ctx, run.RunID)
+		if loadErr != nil {
+			return run, loadErr
+		}
+		if !fresh.Status.IsTerminal() {
+			return run, fmt.Errorf("run %q lost its terminal status", run.RunID)
+		}
+		run = fresh
+	}
+	return run, err
+}
+
 // finalizeWithReleaseDebt handles an afterPersist (admission release)
 // failure for an already-persisted terminal run (#648). Before this
 // fix, that error propagated straight to finalizeRun's caller, which
@@ -452,8 +494,8 @@ func finalizeWithReleaseDebt(
 	if finalizeReleaseFailures != nil {
 		finalizeReleaseFailures.Add(ctx, 1)
 	}
-	run.ReleasePending = true
-	if err := saveFn(ctx, run, stepID); err != nil {
+	run, err := saveReleaseDebt(ctx, store, saveFn, run, stepID)
+	if err != nil {
 		return run, err
 	}
 	// Defensive re-Create: closes the write side of the round-5 TOCTOU
