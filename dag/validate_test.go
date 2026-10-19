@@ -8,7 +8,6 @@ package dag
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -340,17 +339,18 @@ func TestValidateMapStepRequiresMapConfig(t *testing.T) {
 				Config: nil, DependsOn: []string{"input"}},
 		},
 	}
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for Map step without Config")
-		}
-	}()
-	Validate(def)
+	err := Validate(def)
+	if err == nil {
+		t.Fatal("expected an error for Map step without Config")
+	}
+	if !strings.Contains(err.Error(), "Config is nil for Map") {
+		t.Fatalf("error = %q", err)
+	}
 }
 
 func TestValidateEmptyTaskForTaskRequiringTypes(t *testing.T) {
-	// Test that step types requiring a Task field panic when Task is empty.
-	// This preserves existing behavior for Normal, AgentLoop, Agent, Map.
+	// Step types that need a Task report an empty one as an error: the def
+	// comes from user JSON, so it is bad input, not a broken invariant.
 	taskRequiringTypes := []struct {
 		name     string
 		stepType StepType
@@ -387,21 +387,13 @@ func TestValidateEmptyTaskForTaskRequiringTypes(t *testing.T) {
 
 			def := WorkflowDef{Name: "test", Version: "1", Steps: steps}
 
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatalf(
-						"expected panic for %s step with empty Task",
-						tc.name,
-					)
-				}
-				// Positive assertion: panic message contains expected content
-				panicMsg := fmt.Sprint(r)
-				if !strings.Contains(panicMsg, "task is empty") {
-					t.Fatalf("panic message = %q", panicMsg)
-				}
-			}()
-			Validate(def)
+			err := Validate(def)
+			if err == nil {
+				t.Fatalf("expected an error for %s step with empty Task", tc.name)
+			}
+			if !strings.Contains(err.Error(), "needs a task") {
+				t.Fatalf("error = %q", err)
+			}
 		})
 	}
 }

@@ -2,6 +2,7 @@ package dag
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Validate checks a WorkflowDef for structural correctness before any run
@@ -11,6 +12,10 @@ import (
 func Validate(def WorkflowDef) error {
 	if len(def.Steps) == 0 {
 		return fmt.Errorf("workflow %q has no steps", def.Name)
+	}
+
+	if err := validateRequiredFields(def); err != nil {
+		return err
 	}
 
 	ids, err := validateStepIDs(def)
@@ -300,6 +305,29 @@ func validateStepDispatch(step StepDef) error {
 // stepRequiresTask returns true for step types that must have a non-empty Task field.
 // SubWorkflow carries no task because it references a child workflow by name through
 // its config, so it joins the no-task types alongside Sleep, WaitForEvent, Approval.
+// validateRequiredFields reports the fields the per-step validators below
+// assert on. A def reaches Validate from user JSON, so a missing name, step
+// ID or task is bad input to report, not an invariant to panic on.
+func validateRequiredFields(def WorkflowDef) error {
+	if len(def.Steps) == 0 {
+		panic("validateRequiredFields: called with empty steps")
+	}
+	if def.Name == "" {
+		return fmt.Errorf("workflow name must not be empty")
+	}
+	for i, step := range def.Steps {
+		if step.ID == "" {
+			return fmt.Errorf("step %d: id must not be empty", i)
+		}
+		if step.Task == "" && stepRequiresTask(step.Type) {
+			return fmt.Errorf(
+				"step %q: a %s step needs a task", step.ID, step.Type,
+			)
+		}
+	}
+	return nil
+}
+
 func stepRequiresTask(t StepType) bool {
 	switch t {
 	case StepTypeNormal, StepTypeAgentLoop,
@@ -363,7 +391,7 @@ func validateMapConfig(step StepDef) error {
 	}
 	cfg, err := ParseMapConfig(step)
 	if err != nil {
-		panic("Map step must have Map config")
+		return err
 	}
 	if len(step.DependsOn) != 1 {
 		return fmt.Errorf(
@@ -656,11 +684,36 @@ func validateCancelOn(def WorkflowDef) error {
 		return fmt.Errorf("cancel_on: max 5 entries")
 	}
 	for i, co := range def.CancelOn {
-		if co.Event == "" {
-			return fmt.Errorf(
-				"cancel_on[%d]: event must not be empty", i,
-			)
+		if err := validateCancelOnEntry(co); err != nil {
+			return fmt.Errorf("cancel_on[%d]: %w", i, err)
 		}
+	}
+	return nil
+}
+
+// validateCancelOnEntry rejects an entry the engine cannot turn into a
+// waiter. Each entry's Match is resolved against the run input when a run
+// starts, and Match.Resolve panics on an empty Left or Right, so an
+// incomplete entry would otherwise crash every start of the workflow.
+func validateCancelOnEntry(co CancelOn) error {
+	if co.Event == "" {
+		return fmt.Errorf("event must not be empty")
+	}
+	if co.Match.Left == "" {
+		return fmt.Errorf("match.left must not be empty")
+	}
+	if co.Match.Op != MatchOpEq {
+		return fmt.Errorf("match.op must be %q, got %q", MatchOpEq, co.Match.Op)
+	}
+	if co.Match.Right == "" {
+		return fmt.Errorf("match.right must not be empty")
+	}
+	// No step has run when the waiter is created, so only the run input
+	// can supply the value.
+	if !strings.HasPrefix(co.Match.Right, "input.") {
+		return fmt.Errorf(
+			"match.right must start with input., got %q", co.Match.Right,
+		)
 	}
 	return nil
 }

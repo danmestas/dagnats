@@ -90,9 +90,26 @@
       "type": "array",
       "maxItems": 5,
       "items": {
-        "type": "object"
+        "type": "object",
+        "required": ["event", "match"],
+        "properties": {
+          "event": { "type": "string", "minLength": 1 },
+          "match": {
+            "type": "object",
+            "required": ["left", "op", "right"],
+            "properties": {
+              "left": { "type": "string", "minLength": 1 },
+              "op": { "type": "string", "enum": ["eq"] },
+              "right": { "type": "string", "pattern": "^input\\." }
+            }
+          },
+          "timeout": {
+            "type": ["string", "integer"],
+            "description": "Duration string such as \"1h\", or nanoseconds"
+          }
+        }
       },
-      "description": "Events that cancel the run"
+      "description": "Events that cancel the run. match.right is a path into the run input (input.<field>)."
     },
     "singleton": {
       "type": "object",
