@@ -18,10 +18,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// planWaitForEventStep resolves the match condition and marks the step
-// Running (the caller saves), returning the effect that publishes
-// WaitStarted, registers the waiter with the correlator, and schedules
-// the timeout timer.
+// planWaitForEventStep marks the step Running (the caller saves) and
+// returns its send: see waitForEventSend.
 func (o *Orchestrator) planWaitForEventStep(
 	run *dag.WorkflowRun,
 	step dag.StepDef,
@@ -32,26 +30,47 @@ func (o *Orchestrator) planWaitForEventStep(
 	if run.RunID == "" {
 		panic("planWaitForEventStep: RunID must not be empty")
 	}
+	effect, err := o.waitForEventSend(*run, step)
+	if err != nil {
+		return nil, err
+	}
+	state := run.Steps[step.ID]
+	state.Status = dag.StepStatusRunning
+	run.Steps[step.ID] = state
+	return effect, nil
+}
 
+// waitForEventSend resolves the match condition and returns the effect
+// that publishes WaitStarted, registers the waiter with the correlator,
+// and schedules the timeout timer. The timeout runs from the step's
+// dispatch stamp, so sending it again after a crash (resendUnsent)
+// keeps the original deadline. Every part is idempotent: the waiter is
+// keyed by run and step, the timer and event dedup on their msg-ids.
+func (o *Orchestrator) waitForEventSend(
+	run dag.WorkflowRun, step dag.StepDef,
+) (dispatchEffect, error) {
+	if step.Type != dag.StepTypeWaitForEvent {
+		panic("waitForEventSend: wrong step type")
+	}
+	if run.RunID == "" {
+		panic("waitForEventSend: RunID must not be empty")
+	}
 	opts, err := dag.ParseWaitForEventConfig(step)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"step %q: WaitForEvent config is nil", step.ID,
 		)
 	}
-
-	resolvedMatch, err := o.resolveWaitMatch(
-		opts.Match, run,
-	)
+	resolvedMatch, err := o.resolveWaitMatch(opts.Match, &run)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"resolve match for step %q: %w", step.ID, err,
 		)
 	}
-
-	state := run.Steps[step.ID]
-	state.Status = dag.StepStatusRunning
-	run.Steps[step.ID] = state
+	timeout := opts.Timeout
+	if dispatchedAt := run.Steps[step.ID].StartedAt; dispatchedAt != nil {
+		timeout -= time.Since(*dispatchedAt)
+	}
 	waiter := EventWaiter{
 		RunID:     run.RunID,
 		StepID:    step.ID,
@@ -59,7 +78,7 @@ func (o *Orchestrator) planWaitForEventStep(
 		Match:     resolvedMatch,
 	}
 	return func(ctx context.Context) error {
-		return o.startWaitForEvent(ctx, waiter, opts.Timeout)
+		return o.startWaitForEvent(ctx, waiter, timeout)
 	}, nil
 }
 

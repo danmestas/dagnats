@@ -355,6 +355,12 @@ type StepState struct {
 	// attempt and does not start the retry's clock. Cleared once the
 	// retry's clock starts. Additive, like AttemptStartedAt.
 	RetryDispatchAt *time.Time `json:"retry_dispatch_at,omitempty"`
+	// DispatchUnsent is set by the save that dispatches the step and
+	// cleared once its task, timer or waiter has been sent. A step
+	// still marked after that save is one whose send may never have
+	// happened (the engine died in between), so the engine sends it
+	// again. Additive: legacy snapshots deserialize to false.
+	DispatchUnsent bool `json:"dispatch_unsent,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.

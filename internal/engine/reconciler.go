@@ -867,6 +867,17 @@ func (o *Orchestrator) reconcileOneRun(
 	if run.Status != dag.RunStatusRunning {
 		return
 	}
+	// The backstop for a step saved as dispatched but never sent whose
+	// run gets no further event (its event dead-lettered, or nothing
+	// else is in flight): a queued step counts as in flight below, so
+	// without this the run would wait forever.
+	if hasUnsentStep(run) {
+		if err := o.resendUnsent(ctx, run); err != nil {
+			slog.ErrorContext(ctx, "reconciler: resend unsent steps",
+				"run_id", runID, "error", err)
+		}
+		return
+	}
 
 	if dag.IsComplete(wfDef, completedSet(run)) {
 		o.reconcileComplete(ctx, run)

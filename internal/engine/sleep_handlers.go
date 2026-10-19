@@ -99,7 +99,34 @@ func (sh *sleepHandler) plan(
 	state.WakeAt = &wakeAt
 	run.Steps[step.ID] = state
 
-	runID, stepID := run.RunID, step.ID
+	return sh.sendTimer(run.RunID, step.ID, sleepFor), nil
+}
+
+// resume rebuilds a planned sleep's effect from its saved wake time,
+// for a step whose send may never have happened (resendUnsent). The
+// timer is due at the same wake time; one already past fires at once.
+func (sh *sleepHandler) resume(run dag.WorkflowRun, step dag.StepDef) dispatchEffect {
+	if step.Type != dag.StepTypeSleep {
+		panic("sleepHandler.resume: step is not a Sleep step")
+	}
+	state := run.Steps[step.ID]
+	if state.WakeAt == nil {
+		panic("sleepHandler.resume: a planned sleep has a wake time")
+	}
+	return sh.sendTimer(run.RunID, step.ID, time.Until(*state.WakeAt))
+}
+
+// sendTimer returns the effect that publishes SleepStarted and
+// schedules the durable timer due after sleepFor (at least 1ms).
+func (sh *sleepHandler) sendTimer(
+	runID, stepID string, sleepFor time.Duration,
+) dispatchEffect {
+	if runID == "" {
+		panic("sleepHandler.sendTimer: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("sleepHandler.sendTimer: stepID must not be empty")
+	}
 	durationMs := max(sleepFor.Milliseconds(), 1)
 	return func(ctx context.Context) error {
 		// Publish sleep started event for observability.
@@ -111,7 +138,7 @@ func (sh *sleepHandler) plan(
 			StepID:     stepID,
 			DurationMs: durationMs,
 		})
-	}, nil
+	}
 }
 
 // failFinal fails the step and the run (see fail) and, when that

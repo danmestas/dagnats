@@ -124,6 +124,33 @@ type Orchestrator struct {
 	// var; overridable via WithHistoryRedeliverBackoff. len() becomes
 	// the consumer's MaxDeliver cap in Start().
 	historyRedeliverSchedule []time.Duration
+
+	// crashHook is a test-only seam, nil in production. A non-nil
+	// error from it at a dispatch checkpoint abandons the dispatch
+	// there, as if the engine process died at that point.
+	crashHook func(dispatchCheckpoint) error
+}
+
+// dispatchCheckpoint names a point in enqueueReady where a crash
+// leaves distinct durable state behind (see crashHook).
+type dispatchCheckpoint int
+
+const (
+	// checkpointSaved: the dispatch save landed, nothing was sent.
+	checkpointSaved dispatchCheckpoint = iota + 1
+	// checkpointSent: every effect ran, the sent marker is not saved.
+	checkpointSent
+)
+
+// atCheckpoint runs crashHook, when set, at checkpoint.
+func (o *Orchestrator) atCheckpoint(checkpoint dispatchCheckpoint) error {
+	if checkpoint != checkpointSaved && checkpoint != checkpointSent {
+		panic("atCheckpoint: unknown dispatch checkpoint")
+	}
+	if o.crashHook == nil {
+		return nil
+	}
+	return o.crashHook(checkpoint)
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -815,7 +842,30 @@ func (o *Orchestrator) dispatchEvent(
 		run.Status == dag.RunStatusRunning {
 		return o.handleWorkflowCancelled(ctx, evt)
 	}
+	// A step saved as dispatched but never sent (the engine died in
+	// between) is sent again once this event is handled: it is often
+	// the redelivery of the event whose dispatch died. After, not
+	// before: a step.started or step.completed for that step proves
+	// its send landed, and handling it first clears the mark.
+	resend := loadErr == nil && hasUnsentStep(run)
+	if err := o.routeEvent(ctx, evt); err != nil || !resend {
+		return err
+	}
+	run, loadErr = o.store.Load(ctx, evt.RunID)
+	if loadErr != nil {
+		return fmt.Errorf("reload run to resend unsent steps: %w", loadErr)
+	}
+	return o.resendUnsent(ctx, run)
+}
 
+// routeEvent calls evt's handler. The caller holds the run lock.
+func (o *Orchestrator) routeEvent(ctx context.Context, evt protocol.Event) error {
+	if ctx == nil {
+		panic("routeEvent: ctx must not be nil")
+	}
+	if evt.RunID == "" {
+		panic("routeEvent: RunID must not be empty")
+	}
 	switch evt.Type {
 	case protocol.EventWorkflowStarted:
 		return o.handleWorkflowStarted(ctx, evt)
@@ -2221,6 +2271,9 @@ func (o *Orchestrator) enqueueReady(
 		// mirrored onto the TaskPayload in PublishBatch so the worker can
 		// prove it received this dispatch.
 		stampDispatch(&state, time.Now().UTC())
+		// Cleared by markSent once the step's send lands; a crash in
+		// between leaves it set, and resendUnsent sends the step again.
+		state.DispatchUnsent = resendable(step.Type)
 		run.Steps[step.ID] = state
 	}
 	plan, err := o.planDispatch(ctx, wfDef, &run, ready)
@@ -2236,6 +2289,9 @@ func (o *Orchestrator) enqueueReady(
 	// pending again, so never dispatched. Every side effect runs after.
 	// Multi-step batch — no single owning step, so pass "".
 	if err := o.saveSnapshot(ctx, run, ""); err != nil {
+		return err
+	}
+	if err := o.atCheckpoint(checkpointSaved); err != nil {
 		return err
 	}
 	o.publishStepQueuedEvents(ctx, run, ready)
@@ -2354,10 +2410,20 @@ type dispatchEffect func(ctx context.Context) error
 // nothing left to save or dispatch.
 var errRunFinalized = errors.New("run finalized while planning dispatch")
 
+// stepEffect is one step's dispatchEffect.
+type stepEffect struct {
+	stepID string
+	send   dispatchEffect
+}
+
 // dispatchPlan is what enqueueReady saves once and then carries out.
 type dispatchPlan struct {
-	effects     []dispatchEffect
+	effects     []stepEffect
 	normalSteps []dag.StepDef
+	// alreadySent: steps marked unsent whose send is known to have
+	// landed (resendUnsent found the task still queued), so they are
+	// only marked sent.
+	alreadySent []string
 	// continueRun: a detached sub-workflow completed its step at
 	// dispatch, which may make more steps ready or finish the run.
 	continueRun bool
@@ -2389,7 +2455,7 @@ func (o *Orchestrator) planDispatch(
 			plan.normalSteps = append(plan.normalSteps, step)
 			continue
 		}
-		plan.effects = append(plan.effects, effect)
+		plan.effects = append(plan.effects, stepEffect{stepID: step.ID, send: effect})
 		if step.Type == dag.StepTypeSubWorkflow &&
 			run.Steps[step.ID].Status == dag.StepStatusCompleted {
 			plan.continueRun = true
@@ -2430,10 +2496,12 @@ func (o *Orchestrator) planStep(
 }
 
 // runDispatchPlan carries out a saved plan: each step's effects, the
-// normal-task batch, then -- last, because it can save again -- any
-// continuation a detached sub-workflow made possible. A failure in that
-// continuation is recoverable on redelivery: the steps it would
-// dispatch are still pending in the snapshot.
+// normal-task batch, the save marking them sent, then -- last, because
+// it can save again -- any continuation a detached sub-workflow made
+// possible. A failure in that continuation is recoverable on
+// redelivery: the steps it would dispatch are still pending in the
+// snapshot. A step whose send failed stays marked unsent, so the
+// redelivery sends it again (resendUnsent).
 func (o *Orchestrator) runDispatchPlan(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
@@ -2446,19 +2514,12 @@ func (o *Orchestrator) runDispatchPlan(
 	if ctx == nil {
 		panic("runDispatchPlan: ctx must not be nil")
 	}
-	// Every step is already saved queued or running, and a redelivery
-	// dispatches only pending ones: one failed effect must not keep its
-	// siblings from being dispatched, so all run and errors are joined.
-	errs := make([]error, 0, len(plan.effects)+1)
-	for _, effect := range plan.effects {
-		errs = append(errs, effect(ctx))
+	sent, sendErr := o.sendPlan(ctx, wfDef, run, plan)
+	if err := o.atCheckpoint(checkpointSent); err != nil {
+		return err
 	}
-	if len(plan.normalSteps) > 0 {
-		errs = append(errs, o.publisher.PublishBatch(
-			ctx, run.RunID, wfDef, run, plan.normalSteps,
-		))
-	}
-	if err := errors.Join(errs...); err != nil {
+	run, markErr := o.markSent(ctx, run, sent)
+	if err := errors.Join(sendErr, markErr); err != nil {
 		return err
 	}
 	if !plan.continueRun {
@@ -2468,6 +2529,49 @@ func (o *Orchestrator) runDispatchPlan(
 		return o.completeWorkflow(ctx, run)
 	}
 	return o.enqueueReady(ctx, wfDef, run)
+}
+
+// sendPlan runs every effect and the normal-task batch, returning the
+// IDs of the steps whose sends landed (plus plan.alreadySent) and the
+// joined errors of the rest. Every step is already saved queued or
+// running when this runs, and a redelivery dispatches only pending or
+// unsent ones: one failed effect must not keep its siblings from being
+// sent, so all run.
+func (o *Orchestrator) sendPlan(
+	ctx context.Context,
+	wfDef dag.WorkflowDef,
+	run dag.WorkflowRun,
+	plan dispatchPlan,
+) ([]string, error) {
+	if run.RunID == "" {
+		panic("sendPlan: RunID must not be empty")
+	}
+	if ctx == nil {
+		panic("sendPlan: ctx must not be nil")
+	}
+	sent := make([]string, 0, len(plan.effects)+len(plan.normalSteps)+
+		len(plan.alreadySent))
+	sent = append(sent, plan.alreadySent...)
+	errs := make([]error, 0, len(plan.effects)+1)
+	for _, effect := range plan.effects {
+		err := effect.send(ctx)
+		if err == nil {
+			sent = append(sent, effect.stepID)
+		}
+		errs = append(errs, err)
+	}
+	if len(plan.normalSteps) > 0 {
+		err := o.publisher.PublishBatch(
+			ctx, run.RunID, wfDef, run, plan.normalSteps,
+		)
+		if err == nil {
+			for _, step := range plan.normalSteps {
+				sent = append(sent, step.ID)
+			}
+		}
+		errs = append(errs, err)
+	}
+	return sent, errors.Join(errs...)
 }
 
 // saveSnapshot saves the run state to KV and records the duration.

@@ -379,6 +379,8 @@ func (o *Orchestrator) handleStepStarted(
 
 	attemptCountBefore := state.Attempts
 	state.Status = dag.StepStatusRunning
+	// A worker has the task, so its send landed: nothing to resend.
+	state.DispatchUnsent = false
 	if evt.AttemptNumber > state.Attempts {
 		state.Attempts = evt.AttemptNumber
 	}

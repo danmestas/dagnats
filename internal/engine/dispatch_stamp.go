@@ -38,6 +38,9 @@ func stampDispatch(state *dag.StepState, now time.Time) {
 	// A fresh dispatch is a fresh attempt clock for the step timeout.
 	state.AttemptStartedAt = nil
 	state.RetryDispatchAt = nil
+	// Only enqueueReady marks a dispatch unsent, after stamping; any
+	// other dispatch path sends on its own and must not be resent.
+	state.DispatchUnsent = false
 	if state.DispatchNonce == "" {
 		panic("stampDispatch: nonce must be non-empty after stamping")
 	}
