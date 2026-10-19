@@ -29,7 +29,7 @@ help: ## Show available targets
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: build test test-cluster-e2e lint fmt vet serve clean
-.PHONY: docs-serve docs-build docs-gen-sdk docs-gen-llms
+.PHONY: docs-serve docs-build docs-gen-sdk docs-gen-llms docs-check-llms
 .PHONY: build-release docker docker-push release release-preflight
 .PHONY: build-mcp-duckdb-linux-amd64 build-mcp-duckdb-linux-arm64
 .PHONY: build-mcp-duckdb-darwin-amd64 build-mcp-duckdb-darwin-arm64
@@ -110,8 +110,12 @@ docs-gen-sdk:
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/httpclient/api.md ./sdk/httpclient/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/dagnatstest/api.md ./dagnatstest/
 
-docs-gen-llms:  # Requires scripts/gen-llms-txt.sh (created later)
+# Writes docs/site/static/llms*.txt (git-ignored; the Cloudflare build regenerates them).
+docs-gen-llms:
 	./scripts/gen-llms-txt.sh
+
+docs-check-llms: ## Generate llms.txt into a scratch dir and validate it
+	./scripts/check-llms-txt.sh
 
 # ---------- Release targets ----------
 

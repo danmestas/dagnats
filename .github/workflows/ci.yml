@@ -28,6 +28,15 @@ jobs:
             exit 1
           fi
 
+      - name: llms.txt generation
+        # llms.txt / llms-full.txt are generated from docs/site/content by the
+        # Cloudflare docs build, not committed. Run the generator and validate its
+        # output here so a bad page (no title, unsupported shortcode, header drift)
+        # fails the PR instead of the deploy. Unconditional, like the lint above:
+        # doc-only PRs are exactly the ones that can break it. Run locally with
+        # `make docs-check-llms`.
+        run: ./scripts/check-llms-txt.sh
+
       - name: Detect code changes
         id: filter
         # On PR events, query the API for the changed files and decide

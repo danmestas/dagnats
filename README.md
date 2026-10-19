@@ -192,7 +192,7 @@ see [docs/console.md](docs/console.md).
 | [Agent Runtimes](docs/site/content/docs/ai-patterns/runtime-generated-workflows.md) | Runtime-generated workflows and agent runtime patterns |
 | [Service Discovery](docs/site/content/docs/operations/service-discovery.md) | nats-micro control plane endpoints |
 
-For coding agents and LLM tools: a curated [`llms.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms.txt) and a full-content [`llms-full.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms-full.txt) are regenerated on every commit.
+For coding agents and LLM tools: a curated [`llms.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms.txt) (an index of every docs page) and a full-content [`llms-full.txt`](https://dagnats-docs.daniel-mestas.workers.dev/llms-full.txt) are generated from `docs/site/content` on every docs deploy (`make docs-gen-llms` for a local copy). Repo conventions for coding agents are in [AGENTS.md](AGENTS.md).
 
 ## Acknowledgements
 
