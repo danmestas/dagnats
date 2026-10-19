@@ -1,8 +1,8 @@
 # Console
 
 The dagnats console is a server-rendered operator UI that mounts at
-`/console/` on the same HTTP listener as `/api` and `/metrics`. It
-ships with `dagnats serve` — no separate process, no extra port.
+`/console/` on the same HTTP listener as the REST API and `/metrics`.
+It ships with `dagnats serve` — no separate process, no extra port.
 
 ## Overview
 
@@ -13,23 +13,23 @@ and renders HTML. Mutations (retry a DLQ entry, toggle a trigger)
 publish through the same API the CLI uses. Server-Sent Events push
 row-level updates so list pages refresh without polling.
 
-Five top-level sections cover the operator's day:
+The sidebar groups the pages into four sets:
 
 - **Dashboard** — system overview, live tiles for runs / failures /
   latency, heartbeat indicator.
-- **Workflows** — registered workflow definitions, drilldown to a
-  per-workflow detail page with DAG visualisation.
-- **Runs** — every run with status / workflow / range filters, live
-  patch updates as runs complete, drilldown to a per-run detail page.
-- **Triggers** — cron, webhook, NATS subject, and HTTP triggers with
-  enable / disable toggles.
-- **DLQ** — dead-letter entries with retry, soft-discard
-  (5-second undo window), and hard-discard.
-- **Ops** — operator sub-surface: workers, leases, audit log, KV
-  inspector, metrics dashboard.
+- **Inventory** — Workflows (definitions, with the step list per
+  workflow), Functions (task types), Workers, and Triggers (every
+  trigger kind, with enable / disable toggles and fire).
+- **Activity** — Runs (status / workflow / range filters, live row
+  updates, per-run detail), Agent runtimes, DLQ (dead-letter entries
+  with retry, soft-discard with a 5-second undo window, and hard
+  discard), Traces, Logs, and Metrics.
+- **System** — Server, Services, Connections, Streams, Consumers,
+  Concurrency (including coordination leases), KV inspector, Audit,
+  and Config.
 
-A first-run banner on the dashboard introduces these layers; it
-dismisses to `localStorage` so repeat visits don't see it.
+The old `/console/ops/*` URLs permanently redirect to the matching
+page above.
 
 ## Deployment
 
@@ -43,7 +43,7 @@ dagnats serve
 The console mounts at `http://127.0.0.1:8080/console/` by default.
 This loopback bind is intentional: with no authentication configured,
 only processes on the host can reach the surface. The same listener
-serves `/api` and `/metrics`.
+serves the REST API, the webhook and HTTP trigger routes, and `/metrics`.
 
 ### Listener address
 
@@ -67,6 +67,11 @@ a credential is the most common operational footgun.
 | `forward`    | Behind a reverse proxy doing SSO           | `DAGNATS_CONSOLE_TRUST_FORWARDED_AUTH=true`    |
 | (disabled)   | Non-loopback bind without password / proxy | (the server refuses requests with 503)         |
 
+The mode follows the bind address. On a loopback bind the mode is
+always `loopback` and the two variables above are ignored. On any
+other bind, setting both is a configuration error: the console is
+disabled and the server logs the conflict.
+
 Forward-auth trusts the `X-Forwarded-User` header set by an upstream
 proxy. **Only enable forward-auth when the proxy strips this header
 on incoming requests** — otherwise any caller can spoof an identity.
@@ -86,7 +91,7 @@ read access without retry / discard capability.
 ### CSRF protection
 
 Forward-auth and basic-auth modes apply HMAC-SHA256 CSRF tokens to
-every mutation. The secret comes from `CONSOLE_CSRF_SECRET`:
+every mutation; a request without a valid token gets a 403. The secret comes from `CONSOLE_CSRF_SECRET`:
 
 ```bash
 CONSOLE_CSRF_SECRET=$(openssl rand -hex 32) dagnats serve
@@ -120,7 +125,7 @@ masked. The console-relevant rows:
 
 | Variable                                | Default              | What it does                                                       |
 |-----------------------------------------|----------------------|--------------------------------------------------------------------|
-| `DAGNATS_HTTP_ADDR`                     | `127.0.0.1:8080`     | TCP listener for `/console`, `/api`, `/metrics`.                   |
+| `DAGNATS_HTTP_ADDR`                     | `127.0.0.1:8080`     | TCP listener for `/console`, the REST API, and `/metrics`.         |
 | `DAGNATS_CONSOLE_PASSWORD`              | (unset)              | Basic-auth password. Setting this enables `basic` console auth.    |
 | `DAGNATS_CONSOLE_TRUST_FORWARDED_AUTH`  | `false`              | When `true`, trust `X-Forwarded-User` from upstream proxy.         |
 | `CONSOLE_READ_ONLY`                     | `false`              | When `true`, every console mutation returns 405.                   |
@@ -134,8 +139,8 @@ masked. The console-relevant rows:
 ### Finding a run
 
 Open `/console/runs`. Filter by workflow / status / time range. Each
-row links to a detail page with the DAG, step grid, event timeline,
-input, and output.
+row links to a detail page with the step list, event timeline,
+input and output, and trace tab.
 
 If you have a run id from a CLI invocation or a webhook response,
 paste it into the "Find run by id" lookup form — it redirects to the
@@ -147,7 +152,7 @@ From the runs list, filter `status=failed`. Open the run. The detail
 page shows:
 
 - the last-step error (alert at top),
-- step status grid with timings,
+- the step list with timings,
 - event timeline,
 - the run's input + output JSON.
 
@@ -165,7 +170,7 @@ Every retry / discard lands in the audit log within a second.
 
 ### Watching metrics
 
-`/console/ops/metrics` shows system-health tiles + throughput + latency
+`/console/metrics` shows system-health tiles + throughput + latency
 charts. Anomaly markers (open circles, muted-rust colour) appear where
 p99 latency exceeded the configured threshold of p50 — by default,
 3×. Click a marker to land on a runs-list filtered to that anomaly's
@@ -228,7 +233,8 @@ to confirm the resolved mode.
 
 ### Audit bucket fills up
 
-The console audit log is a JetStream KV bucket with a TTL. If the
+The console audit log is the `console_audit` JetStream KV bucket with
+a 90-day TTL. If the
 bucket fills before TTL expires, mutations may slow down or fail.
 
 Mitigations:
@@ -237,16 +243,8 @@ Mitigations:
   `server/server.go`).
 - Bump the bucket's `MaxBytes` if the operator team is
   high-throughput.
-- Filter the audit log page (`/console/ops/audit`) by date range to
+- Filter the audit log page (`/console/audit`) by date range to
   reduce render cost.
-
-### Onboarding banner doesn't dismiss
-
-The first-run banner gates on `localStorage` key
-`dagnats-console-onboarded`. If you're in Safari private mode, an
-embedded WebView, or have storage disabled, the banner re-appears
-every visit. The banner is editorial copy, not load-bearing UI —
-ignore it or whitelist storage for the origin.
 
 ## Architecture
 

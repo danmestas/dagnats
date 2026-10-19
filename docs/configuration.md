@@ -3,7 +3,7 @@
 DagNats uses a three-tier configuration system. Each tier overrides the previous:
 
 1. **Built-in defaults** -- hardcoded platform-appropriate values
-2. **Config file** (`dagnats.yaml`) -- optional file in the working directory
+2. **Config file** (`dagnats.yaml`) -- optional; found by `--config=PATH` or the search order under [Config File](#config-file)
 3. **Environment variables** (`DAGNATS_*`) -- highest priority
 
 ## Config Keys
@@ -30,7 +30,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `max_defs_per_root`       | int      | `500`                                              | `500`                                    |
 | `max_generation_depth`    | int      | `3`                                                | `3`                                      |
 | `max_registers_per_minute_per_root` | int | `60`                                         | `60`                                     |
-| `runs_max_age`            | string   | unset (disabled)                                   | unset (disabled)                         |
+| `runs_max_age`            | duration | `720h` (30 days)                                   | `720h` (30 days)                         |
 | `otlp_endpoint`           | string   | (none)                                             | (none)                                   |
 | `nats_ws_port`            | int      | `0` (disabled)                                     | `0` (disabled)                           |
 | `nats_ws_no_tls`          | bool     | `false`                                            | `false`                                  |
@@ -40,7 +40,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 These fields enable self-clustered topology (see [`production.md`](production.md#self-clustered--embedded-ha) for the deployment model):
 
 - `nats_cluster_name` (string, default `""`) — Cluster name when running embedded cluster mode. Required when `nats_cluster_routes` is set.
-- `nats_cluster_routes` (string list, default `[]`) — Peer URLs (e.g. `nats://node-2:6222`) for embedded cluster mode. Mutually exclusive with `leaf_remotes`. Cap 10 entries.
+- `nats_cluster_routes` (string list, default `[]`) — Peer URLs (e.g. `nats://node-2:6222`) for embedded cluster mode. Mutually exclusive with `leaf_remotes`. Between 2 and 10 entries.
 - `nats_cluster_auth_token` (string, default `""`) — Optional shared token for cluster route authentication. (Mapped to NATS `Cluster.Username` internally; functions as a shared secret across cluster peers.)
 - `nats_cluster_port` (int, default `6222`) — Port the node listens on for cluster routes. Set a distinct value per node when several nodes share a host. Route traffic is not TLS-encrypted; keep it on a private network.
 - `nats_cluster_host` (string, default `0.0.0.0`) — IP address the route listener binds to. Set it to the node's private or tailnet IP so routes are not reachable on public interfaces.
@@ -57,6 +57,10 @@ These fields enable self-clustered topology (see [`production.md`](production.md
 - `http_addr` binds to loopback by default, so the console and API are reachable only from the host. Set it to a non-loopback address such as `0.0.0.0:8080` for remote access.
 - `nats_ws_port` starts an embedded NATS WebSocket listener for browser clients when greater than `0`. Until NATS TLS is wired, it also requires `nats_ws_no_tls: true`, an explicit opt-in to cleartext.
 
+### Run retention
+
+`runs_max_age` is how long terminal runs stay in the `workflow_runs` bucket. The orchestrator's background sweeper deletes terminal runs whose completion time is older than this window; in-flight runs are never touched. The default is 30 days. Accepted values are a Go duration (`720h`), a day or week count (`30d`, `2w`), or `0`, `off` or `disabled` to turn pruning off.
+
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 
 ## Environment Variables
@@ -69,7 +73,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_LEAF_REMOTES`    | `leaf_remotes`    | Comma-separated, max 10 entries  |
 | `DAGNATS_LEAF_CREDENTIALS`| `leaf_credentials`| Path to creds file or inline PEM |
 | `DAGNATS_NATS_CLUSTER_NAME` | `nats_cluster_name` | Required with cluster routes |
-| `DAGNATS_NATS_CLUSTER_ROUTES` | `nats_cluster_routes` | Comma-separated, max 10 entries |
+| `DAGNATS_NATS_CLUSTER_ROUTES` | `nats_cluster_routes` | Comma-separated, 2 to 10 entries |
 | `DAGNATS_NATS_CLUSTER_AUTH_TOKEN` | `nats_cluster_auth_token` | Shared token across peers |
 | `DAGNATS_NATS_CLUSTER_PORT` | `nats_cluster_port` | Route listener port; default 6222 |
 | `DAGNATS_NATS_CLUSTER_HOST` | `nats_cluster_host` | Route listener bind IP; default 0.0.0.0 |
@@ -86,7 +90,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_MAX_DEFS_PER_ROOT` | `max_defs_per_root` | Must be a positive integer |
 | `DAGNATS_MAX_GENERATION_DEPTH` | `max_generation_depth` | Must be a positive integer; clamped to engine ceiling |
 | `DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT` | `max_registers_per_minute_per_root` | Must be a positive integer |
-| `DAGNATS_RUNS_MAX_AGE` | `runs_max_age` | Go duration format or unset; negatives rejected |
+| `DAGNATS_RUNS_MAX_AGE` | `runs_max_age` | Go duration, or `<n>d` / `<n>w`; `0`, `off` or `disabled` turns pruning off; negatives rejected |
 
 ### Triggers
 
@@ -158,9 +162,15 @@ They produce a warning on stderr when used. Migrate to the new names.
 
 ## Config File
 
-Place a `dagnats.yaml` file in the working directory. Format is simple
-`key: value` pairs, one per line. Lines starting with `#` are comments.
-Maximum 100 lines.
+`dagnats serve` loads the first `dagnats.yaml` it finds, searching in this order:
+
+1. `./dagnats.yaml` (working directory)
+2. `$XDG_CONFIG_HOME/dagnats/dagnats.yaml`, or `~/.config/dagnats/dagnats.yaml` when `XDG_CONFIG_HOME` is unset
+3. `/etc/dagnats/dagnats.yaml` (Linux only)
+
+`--config=PATH` skips the search and fails if the file does not exist.
+
+The server settings are simple `key: value` pairs, one per line. Lines starting with `#` are comments. Only the first 300 lines are read. The same file can also carry `workflows:`, `triggers:` and `policy:` sections, which are hot-reloaded on edit (ADR-018) and are not part of the settings parser.
 
 ```yaml
 # dagnats.yaml
@@ -171,7 +181,19 @@ leaf_remotes: nats://remote1:7422, nats://remote2:7422
 max_store_bytes: 5368709120
 ```
 
-Unknown keys produce a warning but do not cause an error.
+Unknown keys produce a warning but do not cause an error. A known key with an invalid value fails the load.
+
+### Config-driven workers
+
+`worker.<task>.<field>` keys declare an embedded worker for a task. Fields are `exec` (a command to run), `http` (a URL to call) and `http_method` (default `POST`). Set exactly one of `exec` or `http` per task; up to 50 tasks.
+
+```yaml
+worker.lint.exec: /usr/local/bin/lint
+worker.notify.http: https://example.com/hook
+worker.notify.http_method: PUT
+```
+
+`DAGNATS_WORKER_<TASK>_EXEC`, `DAGNATS_WORKER_<TASK>_HTTP` and `DAGNATS_WORKER_<TASK>_HTTP_METHOD` override a task that is already declared in the file. `<TASK>` is the task name upper-cased with `-` replaced by `_`.
 
 ### Inline Leaf Credentials
 
@@ -202,12 +224,19 @@ merged) and prints it. Use `--json` for machine-readable output.
 Example output:
 
 ```
-data_dir:        /Users/you/Library/Application Support/dagnats
-http_addr:       :8080
-nats_port:       4222
-leaf_remotes:    (none)
-leaf_credentials:(none)
-monitor_port:    (none)
-max_store_bytes: 10737418240
-otlp_endpoint:   (none)
+config_file:      (defaults)
+data_dir:         /Users/you/Library/Application Support/dagnats
+http_addr:        127.0.0.1:8080
+nats_port:        4222
+monitor_port:     (disabled)
+leaf_remotes:     (none)
+leaf_credentials: (none)
+max_store_bytes:  7265736704
+max_payload:      (nats default, 1048576)
+
+console env vars:
+  CONSOLE_CSRF_SECRET                    (random per-restart) (default)
+  ...
 ```
+
+`--json` prints every key in the table above, including `runs_max_age` and the cluster fields, with durations in nanoseconds.

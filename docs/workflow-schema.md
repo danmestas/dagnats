@@ -29,6 +29,8 @@ Top-level workflow definition object.
 | CancelOn | `cancel_on` | []CancelOn | No | nil | Events that cancel the run (`event`, `match`, `timeout`); max 5 |
 | Singleton | `singleton` | SingletonConfig | No | nil | One run at a time: `mode` (`skip` or `cancel`), optional `key` |
 
+A workflow file passed to `dagnats workflow register` or `validate` may also carry a top-level `triggers` array of trigger definitions and a `$schema` editor hint. They are not part of the stored workflow definition: `register` creates the triggers after it registers the workflow.
+
 **Minimal example:**
 
 ```json
@@ -113,11 +115,11 @@ Resolution order: step `retry` > workflow `default_retry` > legacy `retries` > n
 
 | Field | JSON Key | Type | Required | Default | Description |
 |-------|----------|------|----------|---------|-------------|
-| MaxAttempts | `max_attempts` | int | Yes | -- | Total retry attempts; 0 means no retries |
+| MaxAttempts | `max_attempts` | int | Yes | -- | Total retry attempts; 0 means no retries. Capped by validation |
 | Strategy | `strategy` | RetryStrategy | Yes | -- | Backoff algorithm |
 | InitialDelay | `initial_delay` | duration | Yes | -- | Base delay between attempts |
 | MaxDelay | `max_delay` | duration | Yes | -- | Delay cap (0 = uncapped) |
-| Multiplier | `multiplier` | float64 | No | 0 | Used by `exponential` strategy only |
+| Multiplier | `multiplier` | float64 | No | 0 | Used by `exponential` strategy only. `0` means 2.0; an explicit value must be in [1, 100] |
 
 ### RetryStrategy Values
 
@@ -239,17 +241,18 @@ The following rules are enforced by `dag.Validate()`:
 | 1 | Workflow must have a non-empty `name` |
 | 2 | Workflow must contain at least one step |
 | 3 | Every step must have a unique `id` |
-| 4 | Every step must have a non-empty `task` |
+| 4 | Steps of type `normal`, `agent_loop`, `agent`, `map` and `planner` must have a non-empty `task` of letters, digits, `_`, `-` and `.` (no leading, trailing or doubled dot); `sleep`, `wait_for_event`, `approval` and `sub_workflow` steps carry no task |
 | 5 | `depends_on` entries must reference existing step IDs |
-| 6 | `on_failure` must reference an existing step ID (if set) |
-| 7 | `compensate` must reference an existing step ID (if set) |
-| 8 | `retries` must not be negative |
+| 6 | `on_failure` must reference an existing step ID other than the step itself, and that target must have no `depends_on` |
+| 7 | `compensate` follows the same rules as `on_failure` |
+| 8 | `retries` must not be negative; `retries`, `retry.max_attempts` and `default_retry.max_attempts` are capped; an explicit `multiplier` must be in [1, 100] |
 | 9 | `agent_loop` steps must have a `config` with `max_iterations > 0` |
 | 10 | Each typed step's `config` must parse for its type (sleep, map, approval, respond, ...) |
 | 11 | `skip_if.step_id` must be in the step's `depends_on` list |
 | 12 | `skip_if.op` must be a valid operator |
 | 13 | The step dependency graph must be acyclic (Kahn's algorithm) |
 | 14 | `priority`, `cancel_on` (max 5), `sticky` and `singleton` are checked when set |
+| 15 | `max_task_concurrency` must be 0 to 1000; `concurrency.max_steps` must be 0 to 1000; `worker_group` follows the task charset without dots |
 
 ---
 

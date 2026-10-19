@@ -214,6 +214,11 @@ See `protocol.TaskPayload` in `protocol/protocol.go` for canonical schema.
 | `iteration` | int | No | Agent-loop iteration (0 for first execution) |
 | `attempt` | int | No | Retry attempt number (1-based) |
 | `input` | JSON | No | Step input data as raw JSON |
+| `metadata` | map[string]string | No | Static per-step config copied from the step's `metadata` |
+| `required_capabilities` | []string | No | Capabilities copied from the step's `required_capabilities` |
+| `dispatch_nonce` | string | No | Per-dispatch token a worker echoes on control-plane requests |
+| `workflow_name` | string | No | Name of the workflow definition, for span attributes |
+| `traceparent`, `tracestate` | string | No | W3C trace context; set on tasks polled through the HTTP bridge |
 
 ### Task Resolution
 
@@ -227,11 +232,11 @@ Use `protocol.NewStepEvent()` to construct events with correct subject and dedup
 
 ### Heartbeat
 
-Workers register in the `workers` KV bucket on startup via `worker.Directory`. The bucket has a 60s TTL, so workers must re-PUT their registration every 30s to remain visible. Deregistration happens automatically on TTL expiry or explicit DELETE.
+Workers register in the `workers` KV bucket on startup via `worker.Directory`. The bucket has a 60s TTL, and the worker SDK re-PUTs its registration every 30s to remain visible. Deregistration happens automatically on TTL expiry or explicit DELETE.
 
 ## HTTP Transport
 
-The bridge exposes three endpoints for HTTP workers. All requests require Bearer token authentication via `Authorization: Bearer {token}` header. Token is configured via `DAGNATS_BRIDGE_TOKEN` environment variable.
+The bridge exposes four endpoints for HTTP workers: connect, poll, resolve, and log ingest. When `DAGNATS_BRIDGE_TOKEN` is set, every request needs an `Authorization: Bearer {token}` header carrying that token or a minted worker token; when it is unset the bridge is open (dev mode). See [Authentication](#authentication).
 
 ### 1. POST /v1/workers/connect
 
@@ -325,11 +330,15 @@ Resolves a polled task by completing, failing, pausing, or checkpointing it.
 **Request**:
 ```json
 {
-  "action": "complete|fail|pause|checkpoint",
+  "action": "complete|fail|pause|checkpoint|continue|heartbeat|stream|send_signal|wait_signal",
   "output": {"result": "ok"},
   "error": "error message",
-  "name": "pause name",
+  "failure_type": "retriable",
+  "retry_after_ms": 0,
+  "name": "signal or pause name",
+  "run_id": "run to signal",
   "duration_ms": 5000,
+  "timeout_ms": 60000,
   "checkpoint": {"state": "..."},
   "data": {"incremental": "..."}
 }
@@ -340,13 +349,24 @@ Resolves a polled task by completing, failing, pausing, or checkpointing it.
 | Action | Fields | Behavior |
 |--------|--------|----------|
 | `complete` | `output` | Publishes `step.completed` event, ACKs message, removes from ack map |
-| `fail` | `error` | Publishes `step.failed` event, ACKs message, removes from ack map |
-| `pause` | `duration_ms`, `checkpoint` | Writes checkpoint to KV, NAKs with delay, removes from ack map |
+| `fail` | `error`, `failure_type`, `retry_after_ms` | Publishes `step.failed` event, ACKs message, removes from ack map. `failure_type` is `retriable` (default), `non_retriable` (no retries) or `retry_after` (with `retry_after_ms`) |
+| `pause` | `duration_ms`, `checkpoint` | Writes checkpoint to KV, NAKs with delay, removes from ack map. `duration_ms` must be in (0, 3600000] |
 | `checkpoint` | `data` | Writes incremental checkpoint to KV, extends ack deadline (InProgress) |
+| `continue` | `output` | Publishes `step.continue` event (agent loops), ACKs message, removes from ack map |
+| `heartbeat` | none | Extends the ack deadline; the task stays claimed |
+| `stream` | `data` | Publishes `data` to core NATS subject `stream.{runID}.{stepID}` and extends the ack deadline |
+| `send_signal` | `run_id`, `name`, `data` | Writes the signal to the `signals` KV bucket at `{run_id}.{name}` and extends the ack deadline |
+| `wait_signal` | `name`, `timeout_ms` | Blocks until the signal arrives, then answers 200 with the signal value as the body. `timeout_ms` must be in (0, 3600000]; on timeout the response is `408` |
 
-See `protocol.TaskResolution` in `protocol/protocol.go` for canonical schema.
+The request body is parsed into `bridge.resolveRequest` in `bridge/resolve.go`; `protocol.TaskResolution` in `protocol/protocol.go` is the shared subset.
 
-**Response**: `200 OK` on success, `404 Not Found` if task ID not in ack map.
+**Response**: `200 OK` on success. `404 Not Found` if the task ID is not in the ack map, `403` if the caller's token did not claim the task, `400` for a body that is not valid JSON or has a missing or unknown `action`, `500` when an action's own checks or publish fail (for example a `duration_ms` out of range), and `409 Conflict` if the task's run was cancelled (the claim is withdrawn and the worker should stop).
+
+### 4. POST /v1/tasks/{id}/logs
+
+Publishes captured stdout/stderr chunks for a claimed task to the `BUILD_LOGS` stream, the HTTP counterpart of `LogOut()` / `LogErr()` in the Go SDK. The task must have been claimed by the caller's token; a task that already resolved gets `409`.
+
+**Request**: `{"chunks": [{"stream": "out", "data": "<base64>"}]}` with at most 256 chunks and 1 MiB of body per request. The bridge assigns `seq` and reads the attempt and iteration from the claimed task, so the caller cannot choose them. See "`logs.{runID}.{stepID}.{attempt}.{iteration}`" below for chunk shape and bounds.
 
 ### WorkerRegistration Schema
 
@@ -359,11 +379,12 @@ Workers register their presence in the `workers` KV bucket:
   "language": "python",
   "transport": "bridge",
   "max_tasks": 2,
-  "metadata": {"version": "1.0.0"}
+  "metadata": {"version": "1.0.0"},
+  "worker_groups": ["gpu"]
 }
 ```
 
-See `worker.WorkerRegistration` in `worker/directory.go` for canonical schema.
+`worker_groups` is omitted for the ungrouped queue. The registration also carries identity fields (`pid`, hostname, version, last-seen time); see `worker.WorkerRegistration` in `worker/directory.go` for canonical schema.
 
 ## Task Lifecycle
 
@@ -382,9 +403,8 @@ Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}
 
 ## Idempotency & Deduplication
 
-- NATS message IDs (`Nats-Msg-Id` header) provide automatic deduplication within the JetStream stream's duplicate window (default 2 minutes)
-- Event message IDs are constructed from `{run_id}.{step_id}.{event_type}` to ensure replays don't create duplicate events
-- Task message IDs for rate retries use `{run_id}.{step_id}.rate_retry`
+- NATS message IDs (`Nats-Msg-Id` header) provide automatic deduplication within the JetStream stream's duplicate window. `WORKFLOW_HISTORY` and `TELEMETRY` use 5 seconds, `DEAD_LETTERS` 24 hours, `BUILD_LOGS` 2 minutes
+- Event message IDs are constructed from `{run_id}.{step_id}.{event_type}`, with `.{attempt}` appended when the event carries an attempt number, to ensure replays don't create duplicate events. Workflow-level events use `{run_id}.{event_type}`
 
 ## Authentication
 
@@ -684,7 +704,7 @@ verdict, before the TTL elapses (#624).
 - **Subject**: `logs.{runID}.{stepID}.{attempt}.{iteration}` — `stepID`
   is sanitized with `natsutil.SubjectToken` (any byte outside
   `[A-Za-z0-9_-]` becomes `_`, capped to 128 chars) before it goes into
-  the subject; `runID` is a `nuid` and is never sanitized. **Both
+  the subject; `runID` is a 32-char hex string and is never sanitized. **Both
   `attempt` and `iteration` are part of the subject, not just the
   payload** — two independent reasons a bare `logs.{runID}.{stepID}`
   subject would collide within BUILD_LOGS's 2-minute dedup window:
@@ -735,7 +755,7 @@ verdict, before the TTL elapses (#624).
     at whatever happens to be last.
   - `"continued"` — `Continue` / bridge `action: "continue"`
     (agent-loop iteration boundary); the next iteration gets a new
-    attempt-scoped subject.
+    iteration-scoped subject under the same attempt.
   - `"paused"` — `Pause` / bridge `action: "pause"`; a resumed step
     gets a new attempt-scoped subject.
   - `"truncated"` — emitted at most once, the moment `LogStepBytesMax`
@@ -1202,5 +1222,5 @@ responder. A dead owner then looks like a hung one: forward waits out
 ## Reference Implementations
 
 - **Go**: see `worker/` package for NATS transport
-- **HTTP SDKs**: implement against these JSON schemas and three HTTP endpoints
+- **HTTP SDKs**: implement against these JSON schemas and the four bridge endpoints
 - All Go types in this document are canonical — implement JSON serialization matching these types

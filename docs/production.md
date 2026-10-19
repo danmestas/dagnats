@@ -191,8 +191,8 @@ Run against an external cluster:
 
 ```bash
 nats-server -js
-NATS_URL=nats://cluster:4222 dagnats-engine
-NATS_URL=nats://cluster:4222 dagnats-api
+DAGNATS_NATS_URL=nats://cluster:4222 dagnats-engine
+DAGNATS_NATS_URL=nats://cluster:4222 dagnats-api
 ```
 
 ## Security
@@ -245,10 +245,11 @@ both the HTTP port and the NATS port.
 
 ### Webhook Secrets
 
-Webhook triggers use HMAC-SHA256 for request verification. Set a
-default secret via `DAGNATS_WEBHOOK_SECRET`. Per-trigger secrets
-can override this with the `--secret` flag on `dagnats trigger
-create`.
+Webhook triggers use HMAC-SHA256 for request verification. When you
+create a trigger with `dagnats trigger create`, the secret comes from
+`DAGNATS_WEBHOOK_SECRET`, unless you pass `--secret`, which takes
+precedence. The secret is stored with the trigger, so changing the
+environment variable later does not change existing triggers.
 
 Keep secrets out of shell history by using the environment variable
 rather than CLI flags.
@@ -273,17 +274,21 @@ data_dir: /var/lib/dagnats
 
 ### Sizing `max_store_bytes`
 
-The default is 10 GiB. This caps total JetStream storage across all
-streams (WORKFLOW_HISTORY, TASK_QUEUES, EVENTS, DEAD_LETTERS,
-TELEMETRY) and KV buckets.
+When `max_store_bytes` is unset, it defaults to half of the free disk
+under `data_dir`, capped at 10 GiB. This is the JetStream storage
+budget. Each stream gets a share of it (for example WORKFLOW_HISTORY
+25%, EVENTS 15%, TASK_QUEUES 12%, TELEMETRY 10%, DEAD_LETTERS 5%).
 
 Sizing depends on:
 
 - **Workflow volume:** each event is a small JSON message (typically
   1-10 KB). A workflow run with 10 steps generates roughly 20-40
   events.
-- **Retention:** DEAD_LETTERS retains for 30 days. TELEMETRY is
-  capped at 1 GB with 7-day retention.
+- **Retention:** DEAD_LETTERS retains for 30 days and TELEMETRY for
+  7 days, each also bounded by its share of the budget. Terminal runs
+  are pruned from the `workflow_runs` bucket after `runs_max_age`
+  (30 days by default). BUILD_LOGS keeps task log lines for
+  `DAGNATS_BUILD_LOGS_TTL` (168h by default).
 - **Checkpoint data:** workers can store checkpoint blobs in the
   `checkpoints` KV bucket. Large checkpoints consume storage fast.
 
@@ -387,7 +392,7 @@ Useful for Prometheus scraping or manual debugging.
 For deployment modes (embedded sidecar, distributed S3, external collector) and direct telemetry consumption (`nats sub "telemetry.spans.>"`), see [observability.md](observability.md). The two production-specific notes are:
 
 - **Export failures never affect workflow execution.** The internal `TELEMETRY` stream always receives data regardless of OTLP export status.
-- The `TELEMETRY` stream is capped at 7-day retention and 1 GB — size externals accordingly if you need longer history.
+- The `TELEMETRY` stream keeps 7 days and is bounded by its share of `max_store_bytes` — size externals accordingly if you need longer history.
 
 ### Instrumentation Points
 
@@ -395,9 +400,9 @@ DagNats instruments the following components:
 
 | Component | Spans |
 |-----------|-------|
-| Engine    | handleEvent, advanceDAG, enqueueTask, saveSnapshot |
-| Worker    | executeTask, complete, fail, continue |
-| API       | registerWorkflow, startRun, getRun |
+| Engine    | `dagnats.engine handleEvent`, `dagnats.engine enqueueReady`, `enqueueTask <task>` |
+| Worker    | `executeTask <task>`, `worker.complete`, `worker.fail`, `worker.failPermanent`, `worker.failRetryAfter`, `worker.continue` |
+| API       | `dagnats.api <call>` per service call, such as `registerWorkflow`, `listWorkflows`, `createTrigger` |
 
 Trace context propagates via W3C `traceparent` headers in NATS
 messages and is persisted in event payloads for correlation.
@@ -409,6 +414,7 @@ messages and is persisted in event payloads for correlation.
 | `GET /health`        | NATS + JetStream connectivity check |
 | `GET /ready`         | Server fully started                |
 | `GET /health/telemetry` | Telemetry stream usage stats     |
+| `GET /health/cluster` | Cluster membership and JetStream replica health (see above) |
 
 Use `/health` for load balancer health checks and `/ready` for
 deployment orchestrators (Kubernetes readiness probes, etc.).
@@ -419,16 +425,16 @@ The server shuts down cleanly on `SIGINT` or `SIGTERM`. Shutdown
 sequence (bounded at 15 seconds total):
 
 1. HTTP server graceful shutdown (5s timeout)
-2. Trigger service stops
+2. Config file watcher and trigger service stop
 3. Embedded workers stop (in-flight tasks complete)
 4. Orchestrator stops
-5. Telemetry flushes
+5. Metrics aggregator, queue snapshot publisher and telemetry stop
 6. NATS client drains
 7. Embedded NATS server stops
 8. Temp credential files cleaned up
 
-If any step hangs past the 15-second deadline, the process
-force-exits.
+If shutdown has not finished by the 15-second deadline, `serve`
+exits with a non-zero status and a shutdown timeout error.
 
 ## Startup Checklist
 

@@ -11,38 +11,40 @@ log for the arc).
 ```
 internal/console/
 ├── embed.go              # //go:embed roots for assets + templates
-├── handler.go            # Mount(), routes(), template loading
+├── handler.go            # Mount(), route table, template loading
 ├── auth.go               # AuthMode resolution + middleware
 ├── csrf.go               # CSRF token issue + verify
 ├── data_source.go        # DataSource interface + APIDataSource adapter
-├── pages.go              # GET pages: dashboard, workflows, runs
-├── extra_pages.go        # GET pages: triggers, dlq, audit
-├── ops_pages.go          # GET pages: ops index, workers, leases, kv
-├── metrics_page.go       # GET page: ops/metrics (dashboard view)
-├── metrics_source.go     # Aggregator → MetricsSource adapter
+├── ds_ports.go           # Narrow per-page data ports
+├── pages_shared.go       # renderPage, requireData, shared page data
+├── pages_*.go            # GET pages: workflows, runs, dlq, search
+├── dashboard.go          # GET page: dashboard
+├── extra_pages.go        # GET pages: triggers, audit
+├── ops_pages.go          # GET pages: workers, kv
+├── *_page.go             # GET pages: concurrency, config, connections,
+│                         #   consumers, logs, metrics, server, services, ...
+├── metrics_source.go     # MetricsSource interface (what the pages read)
+├── metrics_adapter.go    # AdaptAggregator: server → console binding
 ├── metrics_anomaly.go    # Pure anomaly detector + threshold constant
 ├── metrics_api.go        # JSON endpoint for chart refresh (Datastar)
-├── metrics_adapter.go    # AdaptAggregator: server → console binding
 ├── metrics_stream.go     # SSE stream: tile patches
-├── metrics_anomaly_*.go  # Pure unit tests for the detector
-├── actions.go            # POST mutation handlers (retry, toggle, …)
-├── audit.go              # Audit emitter + KV bucket
+├── actions*.go           # POST mutation handlers (retry, toggle, fire, ...)
+├── audit.go              # Audit emitter
 ├── audit_actions.go      # Action-name constants (single source of truth)
 ├── audit_metrics.go      # Audit-emitter Prometheus counters
 ├── dlq_tombstone.go      # Soft-discard tombstone store
 ├── event_bus_binding.go  # Mutation → SSE event bridge
-├── streams.go            # SSE streams (runs, triggers, dlq, heartbeat)
-├── streams_extra.go      # SSE streams: run detail, metrics
+├── streams*.go           # SSE streams (runs, triggers, dlq, heartbeat, ...)
 ├── fragments.go          # Datastar fragment endpoints (filter dropdowns)
+├── step_list.go          # Step list renderer (run + workflow detail)
 ├── assets/               # Bundled JS/CSS + sources/ for unbundled JS
 ├── templates/            # Go html/template files (layout + per-page + fragments)
 └── *_test.go             # Per-feature test files (red-green TDD)
 ```
 
-The split between `pages.go`, `extra_pages.go`, `ops_pages.go`, and
-`metrics_page.go` is purely a file-size discipline. Adding a new page
-goes wherever it fits topically — there's no DI / framework gating
-which file gets new code.
+The split across the `*_pages.go` files is purely a file-size
+discipline. Adding a new page goes wherever it fits topically — there's
+no DI / framework gating which file gets new code.
 
 ## Adding a new page route
 
@@ -64,7 +66,7 @@ Five touchpoints for a new `/console/foo` page:
        view, err := buildFooView(r.Context(), ds, r.URL.Query())
        if err != nil { /* http.Error 500 */ }
        renderPage(w, r, ts, cfg, "foo", pageData{
-           Title: "Foo", Section: "ops", Page: view,
+           Title: "Foo", Section: "foo", Page: view,
        })
    }
    ```
@@ -73,11 +75,14 @@ Five touchpoints for a new `/console/foo` page:
    expected markup) and the negative case (empty data, 503-when-no-DS,
    …).
 4. **Embed**: add `//go:embed templates/foo.html` to `embed.go`.
-5. **Routes + template map**: register the handler in `routes()` in
-   `handler.go`, and add the section key to the `pageContentFiles` map.
+5. **Routes + template map**: add the pattern and handler to the
+   table `consoleRoutes()` returns in `handler.go` (wrapped with
+   `withTemplateSet`), add the template key to the `pageContentFiles`
+   map, and add a sidebar link in `templates/layout.html`. The
+   `Section` value you pass to `renderPage` is what highlights that link.
 
-The TestEndOfArc smoke catches you if you forget any of these — it
-GETs every nav-reachable path and fails on a 500.
+`TestEndOfArc_everyPageReturnsValidHTML` catches you if you forget any
+of these — it GETs every nav-reachable path and fails on a 500.
 
 ## Adding a new fragment endpoint
 
@@ -101,11 +106,15 @@ a full layout.
 The metrics dashboard reads from a `MetricsSource` interface. To plumb a
 new metric all the way through:
 
-1. **Producer**: emit a counter / histogram from your subsystem via the
-   provider-agnostic `observe.Counter` / `observe.Histogram` interfaces.
-2. **Aggregator**: confirm the metric name is registered in
-   `internal/console/metrics_adapter.go`'s allowed-list. **Mind the
-   cardinality**: avoid label explosion (per-run-id labels are not OK).
+1. **Producer**: emit a counter / histogram from your subsystem with
+   an OpenTelemetry instrument (for example
+   `meter.Int64Counter("step.retries")` in `worker/worker.go`). The
+   metrics aggregator in `internal/observe/metrics` ingests what
+   arrives on `telemetry.metrics.>`.
+2. **Aggregator**: `AdaptAggregator` hands the aggregator's series to
+   the console as a `MetricsSource`; a new metric name appears there
+   without further wiring. **Mind the cardinality**: avoid label
+   explosion (per-run-id labels are not OK).
 3. **Tile / chart**: extend `buildMetricsTiles` (one-shot tile) or
    `buildMetricsCharts` (a chart) in `metrics_page.go`. Each tile must
    render an `Empty=true` placeholder when its underlying metric has
@@ -122,20 +131,19 @@ new metric all the way through:
 Action names are constants in `audit_actions.go`. To add one:
 
 1. Declare `const ActionFoo AuditAction = "foo.bar.baz"`.
-2. Register in `KnownActions` so the audit-log filter dropdown shows it.
-3. Emit from the mutation handler via the existing `audit.Emit(ctx, …)`
-   call site.
+2. Add it to `auditActionsAll` so the audit-log filter dropdown shows it.
+3. Emit it from the mutation handler through the same audit emitter
+   the other actions in `actions*.go` use.
 
 The shape is intentional: the constants file is the single source of
-truth, and the dropdown rendering reads from `KnownActions` so adding
-a constant is enough to surface it in the UI.
+truth, and the dropdown rendering reads from `auditActionsAll`.
 
-## Adding a new DAG step style
+## Step list
 
-DAG visualisation is in `internal/console/dagviz/`. Step shapes /
-colours / labels live in one place; adding a new step kind is one
-case in the layout switch + one `data-step-status` style in `app.css`.
-See `dagviz/README.md` for the layout invariants.
+Run and workflow detail pages render steps with one shared partial:
+`step_list.go` builds the rows and `templates/components/step_list.html`
+renders them. Extend the row builder there when a new step kind needs
+its own label or status style.
 
 ## The four-verifier discipline
 
@@ -177,5 +185,5 @@ human-in-the-loop perspective in the loop.
 - 100-column hard line limit.
 - Test files open with a methodology comment.
 - Min 2 assertions per test (positive + negative space).
-- Provider-agnostic observability: interfaces in-house, vendor
-  adapters separate.
+- Observability goes through OpenTelemetry instruments; no vendor
+  SDK imports in console code.

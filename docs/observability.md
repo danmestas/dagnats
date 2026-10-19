@@ -58,7 +58,7 @@ The sidecar supervises three child processes in dependency order:
 ### Quick Start
 
 ```bash
-# Install external binaries (otelcol, otlp2parquet)
+# Install external binaries (otelcol, otlp2parquet, dagnats-mcp-duckdb)
 dagnats sidecar install
 
 # Start the sidecar (zero-config defaults)
@@ -124,15 +124,25 @@ files to (default `./telemetry-data`).
 
 ### Sidecar Config
 
+`dagnats sidecar start` reads `dagnats.yaml` in the working directory
+unless you pass `--config=PATH`. A missing file means defaults. The
+file may only contain the keys below; an unknown key is an error.
+`dagnats sidecar init` scaffolds one.
+
 ```yaml
-# dagnats-sidecar.yaml (optional -- defaults work out of the box)
+# optional -- defaults work out of the box
 listen: "0.0.0.0:4318"
 storage:
   type: local
   local_path: ./telemetry-data
 mcp:
   listen: ""  # empty = stdio transport
+supervisor:
+  listen: "localhost:4320"  # health endpoint: /healthz
 ```
+
+`dagnats sidecar start --dry-run` prints the generated collector
+config and exits.
 
 ---
 
@@ -243,15 +253,16 @@ to both Parquet storage and the production backend.
 ```bash
 dagnats sidecar start              # Start with defaults
 dagnats sidecar start --config=X   # Start with config file
-dagnats sidecar install            # Download otelcol + otlp2parquet
-dagnats sidecar status             # Check binary availability
+dagnats sidecar install            # Download otelcol, otlp2parquet, dagnats-mcp-duckdb
+dagnats sidecar status             # Show sidecar health (--json for machine output)
+dagnats sidecar init               # Scaffold a dagnats.yaml config
 ```
 
 ## Internal Telemetry Stream
 
 Regardless of which mode you pick, all telemetry also flows
 through the NATS `TELEMETRY` JetStream stream (7-day retention,
-1 GB cap). You can always consume it directly:
+bounded by its share of `max_store_bytes`). You can always consume it directly:
 
 ```bash
 nats sub "telemetry.spans.>"

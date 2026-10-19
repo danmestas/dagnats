@@ -23,7 +23,7 @@ concurrently. `publish` waits for both.
 
 ## 1. Install
 
-From source (requires Go 1.21+):
+From source (requires Go 1.27 or later):
 
 ```bash
 go install github.com/danmestas/dagnats/cmd/dagnats@latest
@@ -189,8 +189,11 @@ w.Handle("my-task", func(ctx worker.TaskContext) error {
 Call exactly one of these per execution:
 
 - `ctx.Complete(output)` -- success, advance the DAG
-- `ctx.Fail(err)` -- permanent failure
+- `ctx.Fail(err)` -- failure; the engine applies the step's retry policy
+- `ctx.FailPermanent(err)` -- failure with no retries
 - `ctx.Continue(output)` -- loop again (agent-loop steps only)
+
+Returning an error from the handler has the same effect as `ctx.Fail`.
 
 ## 5. Register the Workflow
 
@@ -243,11 +246,11 @@ dagnats run output <run-id>
 
 ## What Happens Under the Hood
 
-1. The API publishes a `WorkflowStarted` event to the history stream
+1. The API publishes a `workflow.started` event to the history stream
 2. The engine picks it up, creates a run snapshot in KV, and enqueues
    entry-point steps (those with no dependencies)
 3. Workers receive task messages on `task.<taskType>.>` via JetStream
-4. On completion, a `StepCompleted` event is published
+4. On completion, a `step.completed` event is published
 5. The engine resolves the next ready steps and enqueues them
 6. When all steps complete, the run is marked complete
 
@@ -354,7 +357,7 @@ w.Handle("agent-review", func(ctx worker.TaskContext) error {
 
 ### Failure Handlers
 
-Route to a cleanup step when something fails:
+Route to a cleanup step when something fails. The `on_failure` target must not have `depends_on`:
 
 ```json
 {
@@ -365,8 +368,7 @@ Route to a cleanup step when something fails:
 },
 {
   "id": "rollback",
-  "task": "rollback",
-  "depends_on": ["build"]
+  "task": "rollback"
 }
 ```
 
@@ -437,10 +439,10 @@ Limit how many runs or steps execute in parallel:
 Schedule recurring workflow runs:
 
 ```bash
-dagnats trigger create my-workflow \
-  --cron="*/30 * * * *" \
-  --input='{"source":"cron"}'
+dagnats trigger create my-workflow --cron="*/30 * * * *" --tz=UTC
 ```
+
+Check the schedule first with `dagnats trigger test "*/30 * * * *" --count=5`.
 
 ### Heartbeats for Long Tasks
 
@@ -452,7 +454,9 @@ redelivered. Heartbeats do not extend the step timeout:
 w.Handle("long-task", func(ctx worker.TaskContext) error {
     for chunk := range chunks {
         process(chunk)
-        ctx.Heartbeat()
+        if err := ctx.Heartbeat(); err != nil {
+            return err
+        }
     }
     return ctx.Complete(result)
 })

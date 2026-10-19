@@ -20,8 +20,10 @@ Or run the official Docker image:
 
 ```bash
 docker build -t dagnats:latest .  # build locally; published image pending
-docker run --rm -p 4222:4222 -p 8080:8080 dagnats:latest
+docker run --rm -p 8080:8080 -e DAGNATS_HTTP_ADDR=0.0.0.0:8080 dagnats:latest
 ```
+
+The HTTP listener binds to loopback by default, so inside a container it needs `DAGNATS_HTTP_ADDR` before the published port reaches it. On a non-loopback bind the console refuses requests until you set an auth mode (see [docs/console.md](docs/console.md)). The embedded NATS server also binds to loopback unless leaf remotes are configured, so workers must share the container's network namespace.
 
 ### Run
 
@@ -71,14 +73,15 @@ Agent runtimes allow granted task handlers to access a `ControlPlane` capability
 
 ### Trigger kinds
 
-Workflows can fire on four event sources:
+Workflows can fire on five event sources:
 
 - **Cron** — time-based; `dagnats trigger create <wf> --cron="..."`.
-- **Webhook** — fire-and-forget at `POST /hooks/{path}`; 202 with no result.
+- **Webhook** — fire-and-forget at `POST /hooks/{path}`; answers 200 with the body `ok` and no run result.
 - **NATS subject** — subscribe to a JetStream subject filter; one message → one run.
 - **HTTP request/response** (**Durable Endpoints**) — synchronous endpoint at `/api/{path}` whose response comes from a `respond` step in the DAG. Use this when the workflow *is* an HTTP API. See [ADR-013](docs/architecture/adr-013-http-trigger-respond-step.md) and [`examples/http-respond/`](examples/http-respond/).
+- **Run terminal** — starts a workflow when another workflow's run completes, fails, or is cancelled. Written to the `triggers` KV bucket; `trigger create` has no flag for it.
 
-Cron triggers are CLI-created. The other three are declared inline in workflow JSON under the workflow's `triggers` array.
+Cron, webhook, and subject triggers can be created with `dagnats trigger create`. Any trigger can also be declared inline in the `triggers` array of the workflow JSON, and `dagnats workflow register` creates it after registering the workflow.
 
 ## CLI
 
@@ -115,22 +118,32 @@ editor autocomplete via `docs/workflow-schema.json` (add `"$schema"` reference).
 ### REST
 
 ```
-POST   /workflows              Register a workflow definition
-GET    /workflows               List all workflows
+POST   /workflows              Register a workflow definition (201)
+GET    /workflows              List all workflows
 DELETE /workflows/{name}       Delete a workflow definition (404 if unregistered,
                                409 if non-terminal runs exist unless ?force=true)
-POST   /runs                   Start a new run
+POST   /runs                   Start a new run (201; a future run_at schedules it)
+GET    /runs                   List runs
+POST   /runs/bulk              Start many runs of a workflow
+POST   /runs/cancel            Cancel runs in bulk
+POST   /runs/retry             Retry failed runs in bulk
 GET    /runs/{id}              Get run status
+GET    /runs/{id}/logs         Get a run's task log lines
 POST   /runs/{id}/cancel       Cancel a run
 POST   /runs/{id}/signal/{name}  Send signal
+POST   /runs/{id}/approval/{step}  Approve or reject an approval step
 GET    /health                 NATS + JetStream connectivity check
+GET    /health/cluster         Cluster membership and JetStream replica health
 GET    /health/telemetry       Telemetry stream usage stats
 GET    /ready                  Server readiness
-POST   /hooks/{path}           Webhook trigger endpoint (fire-and-forget, 202)
+GET    /openapi.json           OpenAPI spec (/docs renders it)
+POST   /hooks/{path}           Webhook trigger endpoint (fire-and-forget, 200)
 *      /api/{user-path}        HTTP trigger endpoints (synchronous; method + path
                                defined per workflow; response comes from the
                                workflow's respond step — see ADR-013)
 ```
+
+Token management and worker-runtime routes live under `/v1/`.
 
 ## NATS Resources
 
@@ -142,7 +155,7 @@ Created by `natsutil.SetupAll(nc)` and `dagnats serve` (main ones; the full list
 | Stream | TASK_QUEUES | Task distribution (work queue) |
 | Stream | EVENTS | External triggers |
 | Stream | DEAD_LETTERS | Permanent failures (30-day retention) |
-| Stream | TELEMETRY | Observability signals (7-day, 1GB cap) |
+| Stream | TELEMETRY | Observability signals (7-day retention) |
 | Stream | SLEEP_TIMERS | Durable timers: sleeps, retries, step timeouts, scheduled runs |
 | Stream | STICKY_TASKS | Worker-affinity task routing |
 | Stream | TRIGGER_HISTORY | Trigger fire records |
@@ -208,4 +221,4 @@ We are grateful for the public writing and code these projects have shared.
 
 Apache License 2.0. See [LICENSE](LICENSE) for the full text.
 
-The console bundles [IBM Plex](https://github.com/IBM/plex) fonts under the SIL Open Font License v1.1; see [`internal/console/assets/fonts/OFL.txt`](internal/console/assets/fonts/OFL.txt).
+The console bundles [IBM Plex](https://github.com/IBM/plex), Ioskeley Mono, and Datatype fonts under the SIL Open Font License v1.1; see the license files in [`internal/console/assets/fonts/`](internal/console/assets/fonts/) (`OFL.txt`, `OFL-IoskeleyMono.txt`, `OFL-Datatype.txt`).
