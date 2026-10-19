@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A step is no longer stranded when the engine dies while dispatching it.** The engine saves a step as queued before it publishes the step's task (or schedules a sleep timer or registers a wait-for-event waiter). If it died in between, the run stayed `running` with a step no worker would ever receive, and redelivering the event did not help because the step already looked dispatched. The dispatch save now marks the step as not yet sent and a second save clears the mark once the publish lands, so each dispatch costs one extra snapshot write. Any later event for the run, including the redelivered one, and the reconciler's periodic pass send every step still marked again. A task that is still queued from the first publish, or that a worker has already started, is not sent a second time.
+
 ## [0.0.29] - 2026-10-19
 
 ### Fixed

@@ -63,6 +63,12 @@ The JetStream dedup window on `WORKFLOW_HISTORY` is **5 seconds** (stream-level 
 
 After the window, the same message ID can be published again. This is safe because events are idempotent by design -- replaying a `step.completed` event for an already-completed step is a no-op in the orchestrator.
 
+### Engine Crash During Dispatch
+
+The engine records a step as dispatched in the run snapshot first, and only then publishes the step's task (or, for a sleep or wait-for-event step, schedules its timer and registers its waiter). An engine that dies between the two leaves a step the snapshot calls queued that no worker will ever receive. To close that gap, the dispatch save also marks the step as not yet sent, and a second save clears the mark once the publish lands. Whenever the engine later handles an event for that run, including the redelivery of the event whose dispatch died, and on the reconciler's periodic pass, it publishes every step still marked again.
+
+Sending again is safe when the first publish did land. A task still waiting in `TASK_QUEUES` under the same dispatch is found and not queued twice, even after the stream's two-minute dedup window has passed, and a step a worker has already started is not resent. Timers and waiters are keyed by run and step, so a repeated one changes nothing. The cost is one extra snapshot write per dispatch.
+
 ## Designing Idempotent Workers
 
 While DagNats handles dedup at the platform level, workers should be idempotent at the application level when possible:
