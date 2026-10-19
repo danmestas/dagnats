@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /v1/ci/validate` always includes `valid`, including `"valid": false`.
 - The bridge poll error no longer says grouped task types can't be polled; it names the overlapping work-queue consumer and points to `worker_group`.
 - Nil functional options no longer panic in `worker.NewWorker`, `Worker.Handle`, `worker.Typed` or `httpclient.New`; they are skipped.
+- An HTTP trigger whose `workflow.started` publish runs past `timeout_ms` now answers `504 workflow_timeout` instead of `500`.
 - `workflow-schema.json` no longer lists `version` as required. `Validate` never required it, and runs are pinned by definition hash, not by version.
 
 - **A malformed workflow definition is an error, not a crash.** `workflow validate`, `workflow register` and the API panicked on a def with no name, a step with no ID, a task-type step with no `task`, or a `map` step with no `config`. They now report what is missing.
