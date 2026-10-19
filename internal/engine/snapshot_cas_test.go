@@ -137,7 +137,7 @@ func TestSnapshotSave_DeletedRunIsAConflict(t *testing.T) {
 
 func TestRetrySnapshotConflict(t *testing.T) {
 	calls := 0
-	err := retrySnapshotConflict(func() error {
+	err := retrySnapshotConflict(context.Background(), func() error {
 		calls++
 		if calls < 3 {
 			return ErrSnapshotConflict
@@ -148,7 +148,7 @@ func TestRetrySnapshotConflict(t *testing.T) {
 		t.Fatalf("err=%v calls=%d, want nil after 3", err, calls)
 	}
 	calls = 0
-	err = retrySnapshotConflict(func() error {
+	err = retrySnapshotConflict(context.Background(), func() error {
 		calls++
 		return ErrSnapshotConflict
 	})
@@ -158,11 +158,42 @@ func TestRetrySnapshotConflict(t *testing.T) {
 	}
 	other := errors.New("boom")
 	calls = 0
-	err = retrySnapshotConflict(func() error {
+	err = retrySnapshotConflict(context.Background(), func() error {
 		calls++
 		return other
 	})
 	if !errors.Is(err, other) || calls != 1 {
 		t.Fatalf("err=%v calls=%d, want boom after 1", err, calls)
+	}
+}
+
+// TestRetrySnapshotConflict_BacksOffWithJitterAndStopsOnCancel: waits
+// stay inside [0.5, 1.5) of the doubling mean, are not all identical,
+// and a cancelled context ends the retries after the current attempt.
+func TestRetrySnapshotConflict_BacksOffWithJitterAndStopsOnCancel(t *testing.T) {
+	for attempt := 0; attempt < snapshotConflictAttemptsMax; attempt++ {
+		mean := snapshotConflictBackoffBase << attempt
+		seen := map[time.Duration]bool{}
+		for i := 0; i < 20; i++ {
+			wait := snapshotConflictBackoff(attempt)
+			if wait < mean/2 || wait >= mean*3/2 {
+				t.Fatalf("attempt %d wait %v outside [%v, %v)",
+					attempt, wait, mean/2, mean*3/2)
+			}
+			seen[wait] = true
+		}
+		if len(seen) < 2 {
+			t.Fatalf("attempt %d: 20 waits all equal, no jitter", attempt)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	err := retrySnapshotConflict(ctx, func() error {
+		calls++
+		return ErrSnapshotConflict
+	})
+	if !errors.Is(err, ErrSnapshotConflict) || calls != 1 {
+		t.Fatalf("cancelled: err=%v calls=%d, want conflict after 1", err, calls)
 	}
 }

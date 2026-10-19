@@ -158,6 +158,7 @@ func (tp *TaskPublisher) Publish(
 		tp.admission.HasConcurrency() {
 		acquired, err := tp.admission.AcquireTask(
 			ctx, step.Task, step.MaxTaskConcurrency,
+			taskSlotHolder(runID, step.ID),
 		)
 		if err != nil {
 			return err

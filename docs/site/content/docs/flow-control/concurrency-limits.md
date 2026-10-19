@@ -62,7 +62,7 @@ callLLM := wf.Task("call-llm", "llm.chat").
     WithTaskConcurrency(5)
 ```
 
-This means at most 5 `llm.chat` tasks run across **all workflows** simultaneously. The counter lives in the `concurrency_tasks` KV bucket. If the limit is reached, the task is retried via `SLEEP_TIMERS` with a 1-second delay.
+This means at most 5 `llm.chat` tasks run across **all workflows** simultaneously. The slot holders live in the `concurrency_tasks` KV bucket. If the limit is reached, the task is retried via `SLEEP_TIMERS` with a 1-second delay.
 
 **Bounds:** 1-1000 per scope.
 

@@ -65,7 +65,7 @@ func (o *Orchestrator) handleStepCompleted(
 		state.Status = dag.StepStatusCompleted
 		state.Output = evt.Payload
 		run.Steps[evt.StepID] = state
-		o.releaseTaskSlot(ctx, wfDef, evt.StepID)
+		o.releaseTaskSlot(ctx, wfDef, evt.RunID, evt.StepID)
 		return o.materializePlannerOutput(
 			ctx, wfDef, run, stepDef, evt.Payload,
 		)
@@ -80,7 +80,7 @@ func (o *Orchestrator) handleStepCompleted(
 	run, _ = Advance(wfDef, run, advEvt)
 
 	// Orchestrator-only I/O that Advance cannot handle.
-	o.releaseTaskSlot(ctx, wfDef, evt.StepID)
+	o.releaseTaskSlot(ctx, wfDef, evt.RunID, evt.StepID)
 	o.sticky.CreateBinding(ctx, wfDef, run, evt)
 	o.recovery.RecoverIfOnFailure(wfDef, &run, evt.StepID)
 

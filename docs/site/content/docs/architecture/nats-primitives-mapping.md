@@ -30,7 +30,7 @@ DagNats inverts this. NATS JetStream provides durable streams, key-value storage
 | **Internal API** | NATS micro framework | The API service uses `micro` for service discovery and load balancing over NATS request/reply. CLI and engine communicate via NATS subjects, not HTTP. |
 | **Real-time streaming** | Core pub/sub | Workers call `PutStream(data)` which publishes to `stream.{runID}.{stepID}`. Subscribers receive updates in real time. No persistence needed -- this is ephemeral output streaming. |
 | **Rate limiting** | KV CAS (compare-and-swap) | Token bucket state stored in the `rate_limits` KV bucket. CAS operations ensure atomic token acquisition. When exhausted, tasks retry via `SLEEP_TIMERS` with the refill delay. |
-| **Concurrency control** | KV CAS counters | Per-task-type and per-run counters in `concurrency_tasks` KV bucket. CAS increment/decrement prevents races. Bounded retry: 10 CAS attempts. |
+| **Concurrency control** | KV CAS member sets | Per-task-type slot holders in `concurrency_tasks` and per-workflow run holders in `concurrency_runs`. CAS writes prevent races, and adding or removing a holder twice is a no-op. Bounded retry: 10 CAS attempts. |
 | **Large payloads** | Object Store + event references | When payloads exceed message size limits, they are stored in NATS Object Store. Events reference them by key. |
 | **Worker affinity** | KV (sticky_bindings) + dedicated stream (STICKY_TASKS) | Bindings map runs to workers. Affinity tasks route to worker-specific subjects on the `STICKY_TASKS` memory stream. |
 | **Human approval** | KV (approval_tokens) with TTL | 256-bit tokens stored with 7-day TTL. Atomic consumption via CAS prevents double-approve. |

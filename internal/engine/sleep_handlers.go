@@ -51,19 +51,21 @@ func newSleepHandler(
 	}
 }
 
-// enqueue marks the step Running, publishes a SleepStarted event,
-// and schedules a durable timer. No worker is involved — the timer
-// fires the completion event directly.
-func (sh *sleepHandler) enqueue(
+// plan marks the step Running with its wake time (the caller saves)
+// and returns the effect that publishes SleepStarted and schedules the
+// durable timer. No worker is involved — the timer fires the
+// completion event directly. A deterministic config error fails the
+// run here, which saves on its own; plan then reports errRunFinalized.
+func (sh *sleepHandler) plan(
 	ctx context.Context,
 	run *dag.WorkflowRun,
 	step dag.StepDef,
-) error {
+) (dispatchEffect, error) {
 	if step.Type != dag.StepTypeSleep {
-		panic("sleepHandler.enqueue: step is not a Sleep step")
+		panic("sleepHandler.plan: step is not a Sleep step")
 	}
 	if run.RunID == "" {
-		panic("sleepHandler.enqueue: RunID must not be empty")
+		panic("sleepHandler.plan: RunID must not be empty")
 	}
 
 	// Both the config parse and the resolution below read only the def
@@ -73,7 +75,7 @@ func (sh *sleepHandler) enqueue(
 	// step instead of returning an error that leaves it queued forever.
 	sleepCfg, err := dag.ParseSleepConfig(step)
 	if err != nil {
-		return sh.fail(ctx, run, step, err.Error())
+		return nil, sh.failFinal(ctx, run, step, err.Error())
 	}
 
 	// Cron and until_input_path forms are only knowable now; the run
@@ -87,7 +89,7 @@ func (sh *sleepHandler) enqueue(
 	}
 	sleepFor, err := dag.ResolveSleepDuration(sleepCfg, run.Input, now)
 	if err != nil {
-		return sh.fail(ctx, run, step, err.Error())
+		return nil, sh.failFinal(ctx, run, step, err.Error())
 	}
 
 	// Mark step as Running and record wake time.
@@ -96,24 +98,40 @@ func (sh *sleepHandler) enqueue(
 	wakeAt := now.Add(sleepFor)
 	state.WakeAt = &wakeAt
 	run.Steps[step.ID] = state
-	if err := sh.mutator.saveSnapshot(ctx, *run, step.ID); err != nil {
+
+	runID, stepID := run.RunID, step.ID
+	durationMs := max(sleepFor.Milliseconds(), 1)
+	return func(ctx context.Context) error {
+		// Publish sleep started event for observability.
+		sh.publishStarted(ctx, runID, stepID)
+		// Schedule durable timer via NakWithDelay.
+		return sh.sleepTimer.Schedule(ctx, TimerMessage{
+			Action:     TimerActionSleepComplete,
+			RunID:      runID,
+			StepID:     stepID,
+			DurationMs: durationMs,
+		})
+	}, nil
+}
+
+// failFinal fails the step and the run (see fail) and, when that
+// succeeded, reports errRunFinalized so the dispatch stops.
+func (sh *sleepHandler) failFinal(
+	ctx context.Context,
+	run *dag.WorkflowRun,
+	step dag.StepDef,
+	reason string,
+) error {
+	if reason == "" {
+		panic("sleepHandler.failFinal: reason must not be empty")
+	}
+	if run == nil {
+		panic("sleepHandler.failFinal: run must not be nil")
+	}
+	if err := sh.fail(ctx, run, step, reason); err != nil {
 		return err
 	}
-
-	// Publish sleep started event for observability.
-	sh.publishStarted(ctx, run.RunID, step.ID)
-
-	// Schedule durable timer via NakWithDelay.
-	durationMs := sleepFor.Milliseconds()
-	if durationMs <= 0 {
-		durationMs = 1
-	}
-	return sh.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionSleepComplete,
-		RunID:      run.RunID,
-		StepID:     step.ID,
-		DurationMs: durationMs,
-	})
+	return errRunFinalized
 }
 
 // fail marks a sleep step Failed and fails the run. Used for

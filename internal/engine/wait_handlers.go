@@ -18,25 +18,24 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// enqueueWaitForEventStep marks the step as Running, resolves the
-// match condition, publishes a WaitStarted event, registers the
-// waiter with the correlator, and schedules a timeout timer.
-func (o *Orchestrator) enqueueWaitForEventStep(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
+// planWaitForEventStep resolves the match condition and marks the step
+// Running (the caller saves), returning the effect that publishes
+// WaitStarted, registers the waiter with the correlator, and schedules
+// the timeout timer.
+func (o *Orchestrator) planWaitForEventStep(
 	run *dag.WorkflowRun,
 	step dag.StepDef,
-) error {
+) (dispatchEffect, error) {
 	if step.Type != dag.StepTypeWaitForEvent {
-		panic("enqueueWaitForEventStep: wrong step type")
+		panic("planWaitForEventStep: wrong step type")
 	}
 	if run.RunID == "" {
-		panic("enqueueWaitForEventStep: RunID must not be empty")
+		panic("planWaitForEventStep: RunID must not be empty")
 	}
 
 	opts, err := dag.ParseWaitForEventConfig(step)
 	if err != nil {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"step %q: WaitForEvent config is nil", step.ID,
 		)
 	}
@@ -45,14 +44,23 @@ func (o *Orchestrator) enqueueWaitForEventStep(
 		opts.Match, run,
 	)
 	if err != nil {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"resolve match for step %q: %w", step.ID, err,
 		)
 	}
 
-	return o.startWaitForEvent(
-		ctx, run, step, &opts, resolvedMatch,
-	)
+	state := run.Steps[step.ID]
+	state.Status = dag.StepStatusRunning
+	run.Steps[step.ID] = state
+	waiter := EventWaiter{
+		RunID:     run.RunID,
+		StepID:    step.ID,
+		EventType: opts.Event,
+		Match:     resolvedMatch,
+	}
+	return func(ctx context.Context) error {
+		return o.startWaitForEvent(ctx, waiter, opts.Timeout)
+	}, nil
 }
 
 // resolveWaitMatch resolves a builder-time Match to a runtime
@@ -76,43 +84,23 @@ func (o *Orchestrator) resolveWaitMatch(
 	return match.Resolve(stepOutputs, run.Input)
 }
 
-// startWaitForEvent marks the step Running, publishes
-// WaitStarted, registers the correlator waiter, and schedules
-// the timeout timer. Extracted to keep parent under 70 lines.
+// startWaitForEvent is a wait step's post-save dispatch: publishes
+// WaitStarted, registers the correlator waiter, and schedules the
+// timeout timer.
 func (o *Orchestrator) startWaitForEvent(
-	ctx context.Context,
-	run *dag.WorkflowRun,
-	step dag.StepDef,
-	opts *dag.WaitForEventOpts,
-	resolvedMatch dag.ResolvedMatch,
+	ctx context.Context, waiter EventWaiter, timeout time.Duration,
 ) error {
-	if run.RunID == "" {
+	if waiter.RunID == "" {
 		panic("startWaitForEvent: RunID must not be empty")
 	}
-	if step.ID == "" {
-		panic("startWaitForEvent: step.ID must not be empty")
+	if waiter.StepID == "" {
+		panic("startWaitForEvent: StepID must not be empty")
 	}
-
-	state := run.Steps[step.ID]
-	state.Status = dag.StepStatusRunning
-	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
-		return err
-	}
-
-	o.publishWaitStarted(ctx, run.RunID, step.ID)
-
-	waiter := EventWaiter{
-		RunID:     run.RunID,
-		StepID:    step.ID,
-		EventType: opts.Event,
-		Match:     resolvedMatch,
-	}
+	o.publishWaitStarted(ctx, waiter.RunID, waiter.StepID)
 	if err := o.correlator.AddWaiter(ctx, waiter); err != nil {
 		return fmt.Errorf("add waiter: %w", err)
 	}
-
-	return o.scheduleWaitTimeout(ctx, run.RunID, step.ID, opts.Timeout)
+	return o.scheduleWaitTimeout(ctx, waiter.RunID, waiter.StepID, timeout)
 }
 
 // scheduleWaitTimeout schedules a timer for the wait-for-event

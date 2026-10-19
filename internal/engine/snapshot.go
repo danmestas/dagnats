@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"time"
@@ -30,9 +31,17 @@ var ErrSnapshotConflict = errors.New("workflow run snapshot changed since it was
 // snapshotConflictAttemptsMax bounds how many times one event is
 // handled in-process when it keeps hitting ErrSnapshotConflict, before
 // the error is left to the consumer's NAK/redelivery schedule. A
-// conflict means a rival engine just wrote this run; contention on one
-// run is a handful of events, so a few immediate retries clear it.
-const snapshotConflictAttemptsMax = 4
+// conflict means a rival engine just wrote this run. Every delivery
+// counts toward the consumer's MaxDeliver, after which a valid event is
+// dead-lettered, so a busy run is absorbed here with jittered backoff
+// (snapshotConflictBackoffBase doubling, about 0.3-0.9s in total)
+// rather than spending deliveries.
+const snapshotConflictAttemptsMax = 6
+
+// snapshotConflictBackoffBase is the mean wait after the first
+// conflict. Jitter keeps two engines that collided from re-colliding
+// in lockstep.
+const snapshotConflictBackoffBase = 10 * time.Millisecond
 
 // runsBucket names the KV bucket SnapshotStore owns.
 const runsBucket = "workflow_runs"
@@ -616,10 +625,17 @@ func (s *SnapshotStore) Load(ctx context.Context, runID string) (dag.WorkflowRun
 // retrySnapshotConflict runs handle until it returns anything other
 // than ErrSnapshotConflict, at most snapshotConflictAttemptsMax times.
 // handle must reload the run on every call: a conflict means the copy
-// it held is stale, and only a fresh Load sees the rival's write.
-func retrySnapshotConflict(handle func() error) error {
+// it held is stale, and only a fresh Load sees the rival's write. It
+// must also be safe to repeat: snapshot changes are saved once per
+// event (see enqueueReady) and side effects either follow that save or
+// are idempotent. Waits snapshotConflictBackoff between attempts and
+// stops early, returning the conflict, when ctx ends.
+func retrySnapshotConflict(ctx context.Context, handle func() error) error {
 	if handle == nil {
 		panic("retrySnapshotConflict: handle must not be nil")
+	}
+	if ctx == nil {
+		panic("retrySnapshotConflict: ctx must not be nil")
 	}
 	var err error
 	for attempt := 0; attempt < snapshotConflictAttemptsMax; attempt++ {
@@ -627,11 +643,27 @@ func retrySnapshotConflict(handle func() error) error {
 		if !errors.Is(err, ErrSnapshotConflict) {
 			return err
 		}
-	}
-	if !errors.Is(err, ErrSnapshotConflict) {
-		panic("retrySnapshotConflict: exhausted without a conflict")
+		if attempt == snapshotConflictAttemptsMax-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(snapshotConflictBackoff(attempt)):
+		}
 	}
 	return err
+}
+
+// snapshotConflictBackoff is the wait after conflict number attempt
+// (0-based): snapshotConflictBackoffBase doubled per attempt, jittered
+// uniformly to [0.5, 1.5) of that.
+func snapshotConflictBackoff(attempt int) time.Duration {
+	if attempt < 0 || attempt >= snapshotConflictAttemptsMax {
+		panic("snapshotConflictBackoff: attempt out of range")
+	}
+	mean := snapshotConflictBackoffBase << attempt
+	return mean/2 + rand.N(mean)
 }
 
 // ListActive returns every run the reconciler still owns (#664 review

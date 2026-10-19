@@ -59,7 +59,7 @@ These KV buckets store workflow state, coordination data, and operational metada
 | `workers` | 60s | default | Worker directory (heartbeat) |
 | `event_waiters` | -- | default | Wait-for-event correlation entries |
 | `rate_limits` | -- | default | Token bucket state per task type |
-| `concurrency_tasks` | -- | 1 | Per-task-type concurrency counters |
+| `concurrency_tasks` | -- | 1 | Per-task-type concurrency slot holders |
 | `approval_tokens` | 7 days | 1 | Human approval gate tokens |
 | `debounce_state` | 14 days | default | Subject trigger debounce windows |
 | `idempotency_keys` | 24 hours | default | Workflow dedup key-to-runID mapping |
@@ -83,7 +83,7 @@ The `workers` bucket has a 60-second TTL. Workers re-PUT their entry every 30 se
 
 ### Concurrency Buckets
 
-`concurrency_tasks` uses `History: 1` to minimize storage for CAS-based counters. The engine checks these counters before dispatching tasks. If a limit is exhausted, the task is retried via `SLEEP_TIMERS` with a 1-second delay.
+`concurrency_tasks` uses `History: 1` to minimize storage. Each key holds the set of steps (`<run_id>/<step_id>`) that hold a slot of one task type, written with CAS. Taking or freeing a slot twice for the same step is a no-op, so a redelivered event cannot drift the count. The engine checks these sets before dispatching tasks. If a limit is exhausted, the task is retried via `SLEEP_TIMERS` with a 1-second delay.
 
 ## Subject Hierarchy
 

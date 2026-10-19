@@ -66,13 +66,30 @@ func markTerminalWithDebt(run dag.WorkflowRun, status dag.RunStatus) dag.Workflo
 // terminal-with-debt does not touch that marker at all -- it is
 // already exactly correct for ReleasePending=true, so there is
 // nothing else to write here.
+//
+// The live orchestrator may still be writing the run (its own
+// step.queued handling) after the caller loaded it, and Save refuses
+// a stale copy, so a conflict reloads and re-marks (bounded).
 func saveWithReleaseDebt(
 	t *testing.T, store *SnapshotStore, run dag.WorkflowRun,
 ) {
 	t.Helper()
-	if err := store.Save(context.Background(), run); err != nil {
-		t.Fatalf("save release-pending run %s: %v", run.RunID, err)
+	ctx := context.Background()
+	for attempt := 0; attempt < 20; attempt++ {
+		err := store.Save(ctx, run)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, ErrSnapshotConflict) {
+			t.Fatalf("save release-pending run %s: %v", run.RunID, err)
+		}
+		fresh, loadErr := store.Load(ctx, run.RunID)
+		if loadErr != nil {
+			t.Fatalf("reload release-pending run %s: %v", run.RunID, loadErr)
+		}
+		run = markTerminalWithDebt(fresh, run.Status)
 	}
+	t.Fatalf("save release-pending run %s: still conflicting", run.RunID)
 }
 
 // seedTerminalNoiseForReleasePending seeds `total` ordinary terminal

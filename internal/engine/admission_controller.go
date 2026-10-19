@@ -89,22 +89,22 @@ func (ac *AdmissionController) ReleaseRun(
 // AcquireTask delegates to ConcurrencyManager if present.
 // Returns true (acquired) when concurrency is nil.
 func (ac *AdmissionController) AcquireTask(
-	ctx context.Context, taskType string, limit int,
+	ctx context.Context, taskType string, limit int, holder string,
 ) (bool, error) {
 	if ac.concurrency == nil {
 		return true, nil
 	}
-	return ac.concurrency.AcquireTask(ctx, taskType, limit)
+	return ac.concurrency.AcquireTask(ctx, taskType, limit, holder)
 }
 
 // ReleaseTask delegates to ConcurrencyManager if present.
 func (ac *AdmissionController) ReleaseTask(
-	ctx context.Context, taskType string,
+	ctx context.Context, taskType, holder string,
 ) error {
 	if ac.concurrency == nil {
 		return nil
 	}
-	return ac.concurrency.ReleaseTask(ctx, taskType)
+	return ac.concurrency.ReleaseTask(ctx, taskType, holder)
 }
 
 // HasConcurrency reports whether a ConcurrencyManager is

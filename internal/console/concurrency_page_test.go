@@ -320,6 +320,15 @@ func TestParseCounterValue(t *testing.T) {
 	if _, err := parseCounterValue([]byte("notanumber")); err == nil {
 		t.Errorf("parseCounterValue(non-numeric): want error, got nil")
 	}
+	// The engine stores slot holders, not a count; in flight is the
+	// number of holders.
+	held := []byte(`{"members":["run-1/a","run-2/a"]}`)
+	if got, err := parseCounterValue(held); err != nil || got != 2 {
+		t.Errorf("parseCounterValue(holders): got %d, err %v; want 2, nil", got, err)
+	}
+	if _, err := parseCounterValue([]byte(`{"members":`)); err == nil {
+		t.Errorf("parseCounterValue(truncated holders): want error, got nil")
+	}
 }
 
 func TestLockScopeOf(t *testing.T) {

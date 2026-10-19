@@ -49,45 +49,44 @@ func mapInstanceID(stepID string, index int) string {
 	return stepID + ".map." + strconv.Itoa(index)
 }
 
-// enqueueMapStep reads the upstream output as a JSON array and
-// publishes one task per element. MapInstances track each item's
-// state on the Map step's StepState.
-func (o *Orchestrator) enqueueMapStep(
-	ctx context.Context,
+// planMapStep reads the upstream output as a JSON array and
+// initializes one MapInstance per element on the Map step's StepState
+// (the caller saves), returning the effect that publishes one task per
+// element.
+func (o *Orchestrator) planMapStep(
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
 	step dag.StepDef,
-) error {
+) (dispatchEffect, error) {
 	if step.Type != dag.StepTypeMap {
-		panic("enqueueMapStep: step is not a Map step")
+		panic("planMapStep: step is not a Map step")
 	}
 	if len(step.DependsOn) != 1 {
-		panic("enqueueMapStep: Map step must have exactly one dep")
+		panic("planMapStep: Map step must have exactly one dep")
 	}
 
 	// Read upstream output as JSON array.
 	upstream := run.Steps[step.DependsOn[0]]
 	var items []json.RawMessage
 	if err := json.Unmarshal(upstream.Output, &items); err != nil {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"map step %q: upstream output is not a JSON array: %w",
 			step.ID, err,
 		)
 	}
 
-	if err := o.validateAndInitMapInstances(
-		ctx, run, step, items,
-	); err != nil {
-		return err
+	if err := validateAndInitMapInstances(run, step, items); err != nil {
+		return nil, err
 	}
 
-	return o.publishMapTasks(ctx, run, wfDef.Name, step, items)
+	return func(ctx context.Context) error {
+		return o.publishMapTasks(ctx, run, wfDef.Name, step, items)
+	}, nil
 }
 
 // validateAndInitMapInstances checks MaxItems and initializes
 // the MapInstances slice on the step state.
-func (o *Orchestrator) validateAndInitMapInstances(
-	ctx context.Context,
+func validateAndInitMapInstances(
 	run *dag.WorkflowRun,
 	step dag.StepDef,
 	items []json.RawMessage,
@@ -115,7 +114,7 @@ func (o *Orchestrator) validateAndInitMapInstances(
 		}
 	}
 	run.Steps[step.ID] = state
-	return o.saveSnapshot(ctx, *run, step.ID)
+	return nil
 }
 
 // publishMapTasks publishes one task per map item concurrently.

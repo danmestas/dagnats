@@ -25,18 +25,24 @@ type KVLeaderEntry struct {
 	Revision uint64
 }
 
-// kvMsgGetReply is the STREAM.MSG.GET reply envelope. []byte fields
-// arrive base64-encoded, which encoding/json decodes.
-type kvMsgGetReply struct {
+// StoredMsg is the message half of a STREAM.MSG.GET reply. []byte
+// fields arrive base64-encoded, which encoding/json decodes.
+type StoredMsg struct {
+	Sequence uint64    `json:"seq"`
+	Header   []byte    `json:"hdrs"`
+	Data     []byte    `json:"data"`
+	Time     time.Time `json:"time"`
+}
+
+// MsgGetReply is the STREAM.MSG.GET reply envelope. Shared with the
+// lease store, which reads through the stream leader for the same
+// reason KVGetLeader does.
+type MsgGetReply struct {
 	Error *struct {
 		ErrCode     int    `json:"err_code"`
 		Description string `json:"description"`
 	} `json:"error"`
-	Message *struct {
-		Sequence uint64 `json:"seq"`
-		Header   []byte `json:"hdrs"`
-		Data     []byte `json:"data"`
-	} `json:"message"`
+	Message *StoredMsg `json:"message"`
 }
 
 // KVGetLeader reads key's latest value in bucket through the stream
@@ -69,6 +75,9 @@ func KVGetLeader(
 	if err != nil {
 		return KVLeaderEntry{}, fmt.Errorf("kv %s/%s: encode read: %w", bucket, key, err)
 	}
+	// The default "$JS.API" prefix, hardcoded like the lease store's
+	// read: dagnats never runs JetStream under a domain or a custom API
+	// prefix. Supporting one means threading it through both readers.
 	resp, err := nc.RequestWithContext(
 		ctx, "$JS.API.STREAM.MSG.GET.KV_"+bucket, body,
 	)
@@ -84,7 +93,7 @@ func decodeKVLeaderReply(bucket, key string, data []byte) (KVLeaderEntry, error)
 	if bucket == "" || key == "" {
 		panic("decodeKVLeaderReply: bucket and key must not be empty")
 	}
-	var reply kvMsgGetReply
+	var reply MsgGetReply
 	if err := json.Unmarshal(data, &reply); err != nil {
 		return KVLeaderEntry{}, fmt.Errorf("kv %s/%s: decode read: %w", bucket, key, err)
 	}

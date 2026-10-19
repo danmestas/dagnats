@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"sync"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -170,29 +169,7 @@ func (cm *ConcurrencyManager) AcquireRun(
 		return true, nil // Unlimited
 	}
 
-	key := "workflow." + workflowID
-
-	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
-		members, rev, err := cm.readMembers(ctx, key)
-		if err != nil {
-			return false, err
-		}
-		if containsMember(members, runID) {
-			return true, nil // Already holds a slot -- idempotent.
-		}
-		if len(members) >= limit {
-			return false, nil
-		}
-		newMembers := append(append([]string{}, members...), runID)
-		if len(newMembers) > limit {
-			panic("AcquireRun: member set grew beyond limit")
-		}
-		if cm.casWriteMembers(ctx, key, newMembers, rev) {
-			return true, nil
-		}
-		// CAS failed — retry
-	}
-	return false, fmt.Errorf("acquire: too many CAS retries")
+	return cm.acquireMember(ctx, cm.runKV, "workflow."+workflowID, runID, limit)
 }
 
 // ReleaseRun releases runID's slot under workflowID, if held.
@@ -208,23 +185,7 @@ func (cm *ConcurrencyManager) ReleaseRun(
 	if runID == "" {
 		panic("ReleaseRun: runID must not be empty")
 	}
-	key := "workflow." + workflowID
-
-	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
-		members, rev, err := cm.readMembers(ctx, key)
-		if err != nil {
-			return err
-		}
-		if !containsMember(members, runID) {
-			return nil // Not held (or already released) -- no-op.
-		}
-		newMembers := removeMember(members, runID)
-		if cm.casWriteMembers(ctx, key, newMembers, rev) {
-			return nil
-		}
-		// CAS failed — retry
-	}
-	return fmt.Errorf("release: too many CAS retries")
+	return cm.releaseMember(ctx, cm.runKV, "workflow."+workflowID, runID)
 }
 
 // containsMember reports whether runID is present in members.
@@ -275,9 +236,12 @@ func removeMember(members []string, runID string) []string {
 // be visible, not just safely handled -- WARN once per key (bounded)
 // plus engine.concurrency.legacy_reset on every occurrence.
 func (cm *ConcurrencyManager) readMembers(
-	ctx context.Context, key string,
+	ctx context.Context, kv jetstream.KeyValue, key string,
 ) ([]string, uint64, error) {
-	entry, err := cm.runKV.Get(ctx, key)
+	if kv == nil {
+		panic("readMembers: kv must not be nil")
+	}
+	entry, err := kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, 0, nil
@@ -298,127 +262,136 @@ func (cm *ConcurrencyManager) readMembers(
 // migrated in place). Returns false on any CAS conflict so the
 // caller's bounded retry loop re-reads and retries.
 func (cm *ConcurrencyManager) casWriteMembers(
-	ctx context.Context, key string, members []string, rev uint64,
+	ctx context.Context, kv jetstream.KeyValue, key string,
+	members []string, rev uint64,
 ) bool {
+	if kv == nil {
+		panic("casWriteMembers: kv must not be nil")
+	}
 	data, err := json.Marshal(runMembership{Members: members})
 	if err != nil {
 		return false
 	}
-	if rev == 0 {
-		_, err = cm.runKV.Create(ctx, key, data)
-	} else {
-		_, err = cm.runKV.Update(ctx, key, data, rev)
-	}
-	return err == nil
-}
-
-// AcquireTask increments the counter for a task type. Returns false
-// if the limit is reached. Limit 0 means unlimited.
-func (cm *ConcurrencyManager) AcquireTask(
-	ctx context.Context, taskType string, limit int,
-) (bool, error) {
-	if taskType == "" {
-		panic("AcquireTask: taskType must not be empty")
-	}
-	if limit <= 0 {
-		return true, nil // Unlimited
-	}
-	if cm.taskKV == nil {
-		return true, nil // No bucket — allow
-	}
-
-	key := "task." + taskType
-	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
-		current, rev, err := cm.readKV(ctx, cm.taskKV, key)
-		if err != nil {
-			return false, err
-		}
-		if current >= limit {
-			return false, nil
-		}
-		if cm.casIncrementKV(ctx, cm.taskKV, key, current, rev) {
-			return true, nil
-		}
-	}
-	return false, fmt.Errorf("acquire task: too many CAS retries")
-}
-
-// ReleaseTask decrements the counter for a task type.
-func (cm *ConcurrencyManager) ReleaseTask(
-	ctx context.Context, taskType string,
-) error {
-	if taskType == "" {
-		panic("ReleaseTask: taskType must not be empty")
-	}
-	if cm.taskKV == nil {
-		return nil // No bucket — no-op
-	}
-
-	key := "task." + taskType
-	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
-		current, rev, err := cm.readKV(ctx, cm.taskKV, key)
-		if err != nil {
-			return err
-		}
-		if current <= 0 {
-			return nil // Already at zero
-		}
-		newVal := current - 1
-		data := []byte(strconv.Itoa(newVal))
-		if rev == 0 {
-			_, err = cm.taskKV.Create(ctx, key, data)
-		} else {
-			_, err = cm.taskKV.Update(ctx, key, data, rev)
-		}
-		if err == nil {
-			return nil
-		}
-	}
-	return fmt.Errorf("release task: too many CAS retries")
-}
-
-// readKV reads a counter from any KV bucket.
-func (cm *ConcurrencyManager) readKV(
-	ctx context.Context, kv jetstream.KeyValue, key string,
-) (int, uint64, error) {
-	if kv == nil {
-		panic("readKV: kv must not be nil")
-	}
-	if key == "" {
-		panic("readKV: key must not be empty")
-	}
-	entry, err := kv.Get(ctx, key)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return 0, 0, nil
-		}
-		return 0, 0, err
-	}
-	val, err := strconv.Atoi(string(entry.Value()))
-	if err != nil {
-		return 0, entry.Revision(), nil
-	}
-	return val, entry.Revision(), nil
-}
-
-// casIncrementKV performs a CAS increment on any KV bucket.
-func (cm *ConcurrencyManager) casIncrementKV(
-	ctx context.Context, kv jetstream.KeyValue, key string,
-	current int, rev uint64,
-) bool {
-	if kv == nil {
-		panic("casIncrementKV: kv must not be nil")
-	}
-	if key == "" {
-		panic("casIncrementKV: key must not be empty")
-	}
-	newVal := current + 1
-	data := []byte(strconv.Itoa(newVal))
-	var err error
 	if rev == 0 {
 		_, err = kv.Create(ctx, key, data)
 	} else {
 		_, err = kv.Update(ctx, key, data, rev)
 	}
 	return err == nil
+}
+
+// taskSlotHolder names the holder of a task concurrency slot: one step
+// of one run. A step holds at most one slot at a time, so repeating an
+// acquire or a release for the same step is a no-op.
+func taskSlotHolder(runID, stepID string) string {
+	if runID == "" {
+		panic("taskSlotHolder: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("taskSlotHolder: stepID must not be empty")
+	}
+	return runID + "/" + stepID
+}
+
+// AcquireTask claims a slot of taskType for holder (taskSlotHolder).
+// Returns false if limit other holders already hold one. Limit 0 means
+// unlimited. Re-acquiring a slot holder already has is a no-op success:
+// a retried step is published again without taking a second slot.
+//
+// The bucket value was a plain counter before; readMembers reads that
+// legacy form as an empty set (see its doc comment), so the limit may
+// over-admit once for tasks in flight across the upgrade.
+func (cm *ConcurrencyManager) AcquireTask(
+	ctx context.Context, taskType string, limit int, holder string,
+) (bool, error) {
+	if taskType == "" {
+		panic("AcquireTask: taskType must not be empty")
+	}
+	if holder == "" {
+		panic("AcquireTask: holder must not be empty")
+	}
+	if limit <= 0 || cm.taskKV == nil {
+		return true, nil // Unlimited, or no bucket — allow
+	}
+	return cm.acquireMember(ctx, cm.taskKV, "task."+taskType, holder, limit)
+}
+
+// ReleaseTask frees holder's slot of taskType, if held. Releasing a
+// slot that is not held is a no-op, so handling the same completion
+// twice (a snapshot conflict retry, a redelivery) frees one slot, not
+// two -- a plain decrement there over-admitted past the limit.
+func (cm *ConcurrencyManager) ReleaseTask(
+	ctx context.Context, taskType, holder string,
+) error {
+	if taskType == "" {
+		panic("ReleaseTask: taskType must not be empty")
+	}
+	if holder == "" {
+		panic("ReleaseTask: holder must not be empty")
+	}
+	if cm.taskKV == nil {
+		return nil // No bucket — no-op
+	}
+	return cm.releaseMember(ctx, cm.taskKV, "task."+taskType, holder)
+}
+
+// acquireMember adds member to the set at key unless limit members are
+// already present. Already a member is success. CAS with bounded retry.
+func (cm *ConcurrencyManager) acquireMember(
+	ctx context.Context, kv jetstream.KeyValue, key, member string, limit int,
+) (bool, error) {
+	if member == "" {
+		panic("acquireMember: member must not be empty")
+	}
+	if limit <= 0 {
+		panic("acquireMember: limit must be positive")
+	}
+	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
+		members, rev, err := cm.readMembers(ctx, kv, key)
+		if err != nil {
+			return false, err
+		}
+		if containsMember(members, member) {
+			return true, nil // Already holds a slot -- idempotent.
+		}
+		if len(members) >= limit {
+			return false, nil
+		}
+		newMembers := append(append([]string{}, members...), member)
+		if len(newMembers) > limit {
+			panic("acquireMember: member set grew beyond limit")
+		}
+		if cm.casWriteMembers(ctx, kv, key, newMembers, rev) {
+			return true, nil
+		}
+		// CAS failed — retry
+	}
+	return false, fmt.Errorf("acquire %s: too many CAS retries", key)
+}
+
+// releaseMember removes member from the set at key; absent is a no-op.
+// CAS with bounded retry.
+func (cm *ConcurrencyManager) releaseMember(
+	ctx context.Context, kv jetstream.KeyValue, key, member string,
+) error {
+	if member == "" {
+		panic("releaseMember: member must not be empty")
+	}
+	if key == "" {
+		panic("releaseMember: key must not be empty")
+	}
+	for attempt := 0; attempt < concurrencyCASRetriesMax; attempt++ {
+		members, rev, err := cm.readMembers(ctx, kv, key)
+		if err != nil {
+			return err
+		}
+		if !containsMember(members, member) {
+			return nil // Not held (or already released) -- no-op.
+		}
+		if cm.casWriteMembers(ctx, kv, key, removeMember(members, member), rev) {
+			return nil
+		}
+		// CAS failed — retry
+	}
+	return fmt.Errorf("release %s: too many CAS retries", key)
 }

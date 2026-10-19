@@ -42,51 +42,48 @@ type respondWirePayload struct {
 	Body        []byte            `json:"body,omitempty"`
 }
 
-// enqueueRespondStep executes a respond step end-to-end: resolves
-// the body, publishes the response envelope on the per-run subject,
-// marks the step Completed, persists the snapshot, and emits a
-// step.completed event so the normal DAG advance pipeline runs.
+// planRespondStep resolves the body and marks the step Completed (the
+// caller saves), returning the effect that publishes the response
+// envelope on the per-run subject and emits a step.completed event so
+// the normal DAG advance pipeline runs. The response is published only
+// after the save, so a save that loses to a rival engine sends nothing.
 //
 // Errors at any I/O stage propagate up; the orchestrator NAKs the
 // triggering event so a transient NATS hiccup is retried.
-func (o *Orchestrator) enqueueRespondStep(
-	ctx context.Context,
+func (o *Orchestrator) planRespondStep(
 	run *dag.WorkflowRun,
 	step dag.StepDef,
-) error {
+) (dispatchEffect, error) {
 	if step.Type != dag.StepTypeRespond {
-		panic("enqueueRespondStep: step is not a Respond step")
+		panic("planRespondStep: step is not a Respond step")
 	}
 	if run.RunID == "" {
-		panic("enqueueRespondStep: RunID must not be empty")
+		panic("planRespondStep: RunID must not be empty")
 	}
 
 	cfg, err := dag.ParseRespondConfig(step)
 	if err != nil {
-		return fmt.Errorf("enqueueRespondStep: %w", err)
+		return nil, fmt.Errorf("enqueueRespondStep: %w", err)
 	}
 	cfg = cfg.Defaulted()
 
 	body, err := resolveRespondBody(cfg, step, run)
 	if err != nil {
-		return fmt.Errorf("resolveRespondBody: %w", err)
-	}
-
-	if err := publishRespondPayload(
-		ctx, o.tp, run.RunID, cfg, body,
-	); err != nil {
-		return fmt.Errorf("publishRespondPayload: %w", err)
+		return nil, fmt.Errorf("resolveRespondBody: %w", err)
 	}
 
 	state := run.Steps[step.ID]
 	state.Status = dag.StepStatusCompleted
 	state.Output = body
 	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
-		return err
-	}
 
-	return publishRespondStepCompleted(ctx, o.tp, run.RunID, step.ID, body)
+	runID, stepID := run.RunID, step.ID
+	return func(ctx context.Context) error {
+		if err := publishRespondPayload(ctx, o.tp, runID, cfg, body); err != nil {
+			return fmt.Errorf("publishRespondPayload: %w", err)
+		}
+		return publishRespondStepCompleted(ctx, o.tp, runID, stepID, body)
+	}, nil
 }
 
 // resolveRespondBody picks the body bytes per RespondConfig.BodyFrom:

@@ -971,13 +971,25 @@ func parseLockRunID(b []byte) (string, error) {
 	return v.RunID, nil
 }
 
-// parseCounterValue parses a concurrency_tasks counter value: a raw
-// ASCII decimal string (e.g. "3"). Non-numeric input returns an error.
+// parseCounterValue returns the in-flight count of a concurrency_tasks
+// value: the number of slot holders ({"members":[...]}, what the engine
+// writes), or a raw ASCII decimal for a value still in the legacy
+// counter form (e.g. "3"). Anything else returns an error.
 func parseCounterValue(b []byte) (int, error) {
 	if b == nil {
 		panic("parseCounterValue: value is nil")
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	trimmed := strings.TrimSpace(string(b))
+	if strings.HasPrefix(trimmed, "{") {
+		var holders struct {
+			Members []string `json:"members"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &holders); err != nil {
+			return 0, fmt.Errorf("parse slot holders: %w", err)
+		}
+		return len(holders.Members), nil
+	}
+	n, err := strconv.Atoi(trimmed)
 	if err != nil {
 		return 0, fmt.Errorf("parse counter value: %w", err)
 	}

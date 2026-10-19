@@ -437,16 +437,8 @@ func TestApprovalGateNilReceiverIsNoOp(t *testing.T) {
 			"gate": {Status: dag.StepStatusPending},
 		},
 	}
-	saveFn := func(
-		ctx context.Context, r dag.WorkflowRun, stepID string,
-	) error {
-		return nil
-	}
-
-	err := ag.Enqueue(
-		context.Background(), wfDef, &run, wfDef.Steps[0], saveFn,
-	)
-	// Positive: Enqueue must return error from nil gate.
+	_, err := ag.Plan(context.Background(), &run, wfDef.Steps[0])
+	// Positive: Plan must return error from nil gate.
 	if err == nil {
 		t.Fatal("expected error from nil ApprovalGate")
 	}
@@ -650,10 +642,6 @@ func TestApprovalStep_ZeroTimeoutReturnsError(t *testing.T) {
 		Type:   dag.StepTypeApproval,
 		Config: cfgData,
 	}
-	wfDef := dag.WorkflowDef{
-		Name:  "zero-timeout-wf",
-		Steps: []dag.StepDef{step},
-	}
 
 	run := dag.WorkflowRun{
 		RunID:  "run-zero-timeout",
@@ -663,17 +651,9 @@ func TestApprovalStep_ZeroTimeoutReturnsError(t *testing.T) {
 		},
 	}
 
-	saveFn := func(
-		ctx context.Context, r dag.WorkflowRun, stepID string,
-	) error {
-		return nil
-	}
+	_, err = ag.Plan(context.Background(), &run, step)
 
-	err = ag.Enqueue(
-		context.Background(), wfDef, &run, step, saveFn,
-	)
-
-	// Positive: Enqueue must return an error for zero timeout.
+	// Positive: Plan must return an error for zero timeout.
 	if err == nil {
 		t.Fatal(
 			"expected error for zero timeout, got nil",

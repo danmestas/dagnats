@@ -187,7 +187,7 @@ type NotifyParentFunc func(
 type ReleaseTaskSlotFunc func(
 	ctx context.Context,
 	wfDef dag.WorkflowDef,
-	stepID string,
+	runID, stepID string,
 )
 
 // HandlePermanentFailure handles a step whose retries are
@@ -220,7 +220,7 @@ func (rm *RecoveryManager) HandlePermanentFailure(
 	}
 
 	// Release task concurrency slot if configured.
-	releaseSlotFn(ctx, wfDef, stepID)
+	releaseSlotFn(ctx, wfDef, run.RunID, stepID)
 
 	// If this is an auxiliary step (compensate target) failing,
 	// the compensation itself failed — critical state.

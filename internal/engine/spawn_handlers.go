@@ -153,71 +153,57 @@ func (o *Orchestrator) createChildRun(
 	return o.enqueueReady(ctx, childDef, childRun)
 }
 
-// enqueueSubWorkflow resolves input, generates a child run ID, and
-// publishes a spawn event. For detached sub-workflows the parent step
-// completes immediately; otherwise it stays Running until the child
+// planSubWorkflow resolves input, generates a child run ID, and marks
+// the parent step (the caller saves), returning the effect that
+// publishes the spawn event. For detached sub-workflows the parent step
+// completes immediately -- planDispatch then continues the run once
+// every effect has run; otherwise it stays Running until the child
 // finishes.
-func (o *Orchestrator) enqueueSubWorkflow(
-	ctx context.Context,
+func (o *Orchestrator) planSubWorkflow(
 	wfDef dag.WorkflowDef,
 	run *dag.WorkflowRun,
 	step dag.StepDef,
-) error {
+) (dispatchEffect, error) {
 	if step.Type != dag.StepTypeSubWorkflow {
-		panic("enqueueSubWorkflow: wrong step type")
+		panic("planSubWorkflow: wrong step type")
 	}
 	if run.RunID == "" {
-		panic("enqueueSubWorkflow: RunID must not be empty")
+		panic("planSubWorkflow: RunID must not be empty")
 	}
 
 	cfg, err := dag.ParseSubWorkflowConfig(step)
 	if err != nil {
-		return fmt.Errorf("parse sub-workflow config: %w", err)
+		return nil, fmt.Errorf("parse sub-workflow config: %w", err)
 	}
 
 	input, err := dag.ResolveInput(step, run.Steps, run.Input)
 	if err != nil {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"resolve input for step %q: %w", step.ID, err,
 		)
 	}
 	childRunID := nuid.Next()
+	markSpawnedStep(run, step, cfg, childRunID)
 
-	if err := o.spawnChild(
-		ctx, wfDef, run, step, cfg, input, childRunID,
-	); err != nil {
-		return err
-	}
-
-	// Detached sub-workflows complete the parent step immediately,
-	// which may unblock downstream steps or complete the workflow.
-	if cfg.Detach {
-		completed := completedSet(*run)
-		if dag.IsComplete(wfDef, completed) {
-			return o.completeWorkflow(ctx, *run)
-		}
-		return o.enqueueReady(ctx, wfDef, *run)
-	}
-	return nil
+	runID, stepID := run.RunID, step.ID
+	return func(ctx context.Context) error {
+		return o.publishSpawnEvent(ctx, runID, stepID, cfg, input, childRunID)
+	}, nil
 }
 
-// spawnChild marks the parent step state, saves the snapshot, and
-// publishes the spawn event. Extracted to keep enqueueSubWorkflow
-// within the 70-line limit.
-func (o *Orchestrator) spawnChild(
-	ctx context.Context,
-	wfDef dag.WorkflowDef,
+// markSpawnedStep records the child run on the parent step: completed
+// at once when detached, running until the child finishes otherwise.
+func markSpawnedStep(
 	run *dag.WorkflowRun,
 	step dag.StepDef,
 	cfg dag.SubWorkflowConfig,
-	input []byte,
 	childRunID string,
-) error {
+) {
 	if childRunID == "" {
-		panic("spawnChild: childRunID must not be empty")
+		panic("markSpawnedStep: childRunID must not be empty")
 	}
 	if step.ID == "" {
-		panic("spawnChild: step.ID must not be empty")
+		panic("markSpawnedStep: step.ID must not be empty")
 	}
 
 	state := run.Steps[step.ID]
@@ -232,13 +218,6 @@ func (o *Orchestrator) spawnChild(
 		state.ChildRunID = childRunID
 	}
 	run.Steps[step.ID] = state
-	if err := o.saveSnapshot(ctx, *run, step.ID); err != nil {
-		return err
-	}
-
-	return o.publishSpawnEvent(
-		ctx, run.RunID, step.ID, cfg, input, childRunID,
-	)
 }
 
 // publishSpawnEvent publishes EventWorkflowSpawn to the history

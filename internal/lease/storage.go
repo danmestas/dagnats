@@ -21,30 +21,12 @@ type current struct {
 	revision uint64
 }
 
-// storedMsg is the message half of a STREAM.MSG.GET reply. []byte
-// fields arrive base64-encoded, which encoding/json decodes.
-type storedMsg struct {
-	Sequence uint64    `json:"seq"`
-	Header   []byte    `json:"hdrs"`
-	Data     []byte    `json:"data"`
-	Time     time.Time `json:"time"`
-}
-
-// msgGetReply is the STREAM.MSG.GET reply envelope.
-type msgGetReply struct {
-	Error *struct {
-		ErrCode     int    `json:"err_code"`
-		Description string `json:"description"`
-	} `json:"error"`
-	Message *storedMsg `json:"message"`
-}
-
 // getLast fetches the last message on key's subject through the stream
 // LEADER. jetstream's Stream.GetLastMsgForSubject would use a direct get
 // (KV buckets set AllowDirect), which any replica may answer; a lagging
 // replica could then hand an old holder its own expired lease back as
 // "granted". Returns (nil, nil) when the key has never been written.
-func (s *Store) getLast(ctx context.Context, key string) (*storedMsg, error) {
+func (s *Store) getLast(ctx context.Context, key string) (*natsutil.StoredMsg, error) {
 	if key == "" {
 		panic("getLast: key must not be empty")
 	}
@@ -59,7 +41,7 @@ func (s *Store) getLast(ctx context.Context, key string) (*storedMsg, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lease %q: read: %w", key, err)
 	}
-	var reply msgGetReply
+	var reply natsutil.MsgGetReply
 	if err := json.Unmarshal(resp.Data, &reply); err != nil {
 		return nil, fmt.Errorf("lease %q: decode read: %w", key, err)
 	}
