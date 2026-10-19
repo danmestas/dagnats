@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -186,7 +187,7 @@ func (s *Service) defVersionKeysForName(
 	if name == "" {
 		panic("defVersionKeysForName: name must not be empty")
 	}
-	keys, err := s.defKV.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.defKV)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil

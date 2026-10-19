@@ -323,7 +323,7 @@ func (ts *TriggerService) loadAllTriggers() error {
 		context.Background(), 5*time.Second,
 	)
 	defer keysCancel()
-	keys, err := ts.triggerKV.Keys(keysCtx)
+	keys, err := natsutil.KVKeys(keysCtx, ts.triggerKV)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return fmt.Errorf("keys: %w", err)
 	}

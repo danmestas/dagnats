@@ -864,7 +864,7 @@ func (w *Worker) Stop()
 
 
 <a name="Worker.WatchTriggers"></a>
-### func \(\*Worker\) [WatchTriggers](<https://github.com/danmestas/dagnats/blob/main/worker/watch_triggers.go#L72-L77>)
+### func \(\*Worker\) [WatchTriggers](<https://github.com/danmestas/dagnats/blob/main/worker/watch_triggers.go#L73-L78>)
 
 ```go
 func (w *Worker) WatchTriggers(ctx context.Context, kind string, onActivate triggerHandler, onDeactivate triggerHandler) error

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dagnatsext"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -233,7 +234,7 @@ func (w *Worker) runCatchUp(
 			"kind", kind, "error", err)
 		return
 	}
-	keys, err := kv.Keys(listCtx)
+	keys, err := natsutil.KVKeys(listCtx, kv)
 	if err != nil {
 		if isNoKeysFound(err) {
 			return

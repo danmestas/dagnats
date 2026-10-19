@@ -1684,7 +1684,7 @@ func (o *Orchestrator) findOldestPendingRun(
 	if o.store == nil {
 		panic("findOldestPendingRun: store must not be nil")
 	}
-	keys, err := o.store.kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, o.store.kv)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return "", false, nil

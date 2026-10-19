@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 // singletonLock represents a lock entry from the KV bucket.
@@ -129,7 +131,7 @@ func listSingletonLocks(
 		return nil
 	}
 
-	keys, err := kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, kv)
 	if err != nil {
 		return nil
 	}

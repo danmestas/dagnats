@@ -525,7 +525,7 @@ func (s *SnapshotStore) collectPrunable(
 	if maxPrune <= 0 {
 		panic("SnapshotStore.collectPrunable: maxPrune must be positive")
 	}
-	keys, err := s.kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.kv)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
@@ -1039,7 +1039,7 @@ func (s *SnapshotStore) CountAll(ctx context.Context) (int, error) {
 	if s.kv == nil {
 		panic("SnapshotStore.CountAll: kv bucket must not be nil")
 	}
-	keys, err := s.kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.kv)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0, nil
@@ -1074,7 +1074,7 @@ func isRunIndexKey(key string) bool {
 // now holds two keys per run (run.<id> + runidx.<id>), so bounding a
 // raw len(keys) against runKeyScanMax would silently halve the run
 // population the bound was meant to cover -- every caller checking
-// runKeyScanMax against an UNFILTERED s.kv.Keys(ctx) result must
+// runKeyScanMax against an UNFILTERED natsutil.KVKeys(ctx, s.kv) result must
 // count through this first.
 func runKeyCountOf(keys []string) int {
 	count := 0
@@ -1246,7 +1246,7 @@ func (s *SnapshotStore) loadRunAndIndexIDSets(
 	if s.kv == nil {
 		panic("loadRunAndIndexIDSets: kv bucket must not be nil")
 	}
-	keys, err := s.kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.kv)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return map[string]bool{}, map[string]bool{}, nil
@@ -1586,7 +1586,7 @@ func (s *SnapshotStore) loadAllRunMetasForBuild(
 	if s.kv == nil {
 		panic("loadAllRunMetasForBuild: kv bucket must not be nil")
 	}
-	keys, err := s.kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.kv)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil

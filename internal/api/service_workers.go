@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -53,7 +54,7 @@ func (s *Service) listWorkersInner(
 			"listWorkersInner: kv must not be nil when err is nil",
 		)
 	}
-	keys, err := kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, kv)
 	if err != nil {
 		return []worker.WorkerRegistration{}, nil
 	}

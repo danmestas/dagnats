@@ -16,6 +16,7 @@ import (
 	"fmt"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -212,7 +213,7 @@ func readFileTriggers(
 ) (map[string]trigger.TriggerDef, error) {
 	keysCtx, cancel := contextWithTimeout(ctx)
 	defer cancel()
-	keys, err := kv.Keys(keysCtx)
+	keys, err := natsutil.KVKeys(keysCtx, kv)
 	if err != nil {
 		if isNoKeysFound(err) {
 			return map[string]trigger.TriggerDef{}, nil

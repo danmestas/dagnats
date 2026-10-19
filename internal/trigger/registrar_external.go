@@ -42,6 +42,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 // externalKindPrefix namespaces registrar map keys for externally-
@@ -276,7 +278,7 @@ func (r *externalRegistrar) fireExistingEntries(ctx context.Context) {
 	}
 	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	keys, err := r.triggerKV.Keys(listCtx)
+	keys, err := natsutil.KVKeys(listCtx, r.triggerKV)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return

@@ -32,6 +32,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
@@ -694,7 +695,7 @@ func (s *Service) countDefsForRoot(
 	if root == "" {
 		panic("countDefsForRoot: root must not be empty")
 	}
-	keys, err := s.defKV.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.defKV)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0, nil
@@ -842,7 +843,7 @@ func (s *Service) defCountsByRoot(
 		panic("defCountsByRoot: ctx must not be nil")
 	}
 	counts := make(map[string]int, len(roots))
-	keys, err := s.defKV.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.defKV)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return counts, nil

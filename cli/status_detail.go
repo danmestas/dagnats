@@ -15,6 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -117,7 +118,7 @@ func printWorkerStatus(js jetstream.JetStream) {
 		// nothing to display.
 		return
 	}
-	keys, err := kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, kv)
 	if err != nil {
 		// "no keys found" is the empty-bucket case; treat as silent.
 		return

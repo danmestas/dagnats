@@ -478,7 +478,7 @@ func (s *Service) listWorkflowsInner(
 	if s.js == nil {
 		panic("listWorkflowsInner: js must not be nil")
 	}
-	keys, err := s.defKV.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.defKV)
 	if err != nil {
 		// Empty bucket -- treat as the documented "no workflows
 		// registered" case so consumers (console, REST, NATS) get

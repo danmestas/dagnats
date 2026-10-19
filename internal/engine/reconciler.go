@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -467,7 +468,7 @@ func (o *Orchestrator) collectReapable(
 	if maxDelete <= 0 {
 		panic("collectReapable: maxDelete must be positive")
 	}
-	keys, err := o.defKV.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, o.defKV)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil // empty bucket → nothing to reap

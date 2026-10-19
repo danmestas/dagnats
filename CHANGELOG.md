@@ -71,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cluster nodes starting together no longer stall for up to minutes provisioning streams and KV buckets. On nats-server 2.15, an update of an R3 stream whose create is still electing a leader leaves both requests unanswered; replicated resources are now created first and updated only if they already exist.
 
+- KV key listings could hang forever if the nats.go watcher stalled. A listing now abandons a watcher that delivers nothing for 10 seconds and retries with a fresh one, up to three attempts.
+
 - A clustered node could exit at startup with "no suitable peers for placement" when the meta leader had not seen enough peers for an R3 stream yet. That error (10005) is now retried like a missing meta leader, and the pause between provisioning attempts backs off from 500ms to 4s.
 
 - `GET /runs/{id}/logs` with no `attempt` now resolves a step that hasn't started yet to attempt 1, the subject its first attempt writes to. A follow attached early used to wait on attempt 0, which nothing writes.

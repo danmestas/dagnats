@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/consumername"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -147,7 +148,7 @@ func logStrandedGroupSubjects(
 func (o *Orchestrator) collectGroupPairs(
 	ctx context.Context,
 ) ([]consumername.GroupPair, error) {
-	keys, err := o.defKV.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, o.defKV)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil

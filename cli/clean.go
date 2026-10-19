@@ -799,7 +799,7 @@ func purgeKVBucketBeforeCutoff(
 		panic("purgeKVBucketBeforeCutoff: cutoff must not be zero")
 	}
 
-	keys, err := kv.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, kv)
 	if err != nil {
 		return nil
 	}
@@ -1120,7 +1120,7 @@ func dryRunReport(
 		if err != nil {
 			continue
 		}
-		keys, err := kv.Keys(ctx)
+		keys, err := natsutil.KVKeys(ctx, kv)
 		if err != nil {
 			continue
 		}

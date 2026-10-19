@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -135,7 +136,7 @@ func (s *Service) scheduleRunInner(
 	}
 
 	// Enforce max scheduled runs bound.
-	keys, err := s.scheduledKV.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.scheduledKV)
 	if err == nil && len(keys) >= maxScheduledRuns {
 		return "", fmt.Errorf(
 			"maximum scheduled runs (%d) reached",
@@ -260,7 +261,7 @@ func (s *Service) ListScheduledRuns() ([]ScheduledRun, error) {
 			"scheduled_runs KV bucket not available",
 		)
 	}
-	keys, err := s.scheduledKV.Keys(context.Background())
+	keys, err := natsutil.KVKeys(context.Background(), s.scheduledKV)
 	if errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, nil
 	}

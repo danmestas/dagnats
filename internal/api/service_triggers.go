@@ -148,7 +148,7 @@ func (s *Service) listTriggersInner(
 	if s.triggerKV == nil {
 		return []trigger.TriggerDef{}, nil
 	}
-	keys, err := s.triggerKV.Keys(ctx)
+	keys, err := natsutil.KVKeys(ctx, s.triggerKV)
 	if err != nil {
 		// An empty bucket means "no triggers yet", not a failure. Every
 		// other KV read in this package treats the condition that way. The
