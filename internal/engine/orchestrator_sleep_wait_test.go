@@ -356,9 +356,13 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	mustPublish(t, js, compEvt.NATSSubject(), compData,
 		nats.MsgId(compEvt.NATSMsgID()))
 
-	// Wait for the wait step to register with the correlator.
+	// Wait for the waiter itself, not just Running: the engine saves the
+	// step Running before it registers the waiter, and an event published
+	// in between is never matched. Under load that gap was wide enough to
+	// make this test flaky.
 	waitForStepStatus(t, orch.store, "wait-run-1", "wait-step",
 		dag.StepStatusRunning, 5*time.Second)
+	waitForWaiter(t, jsNew, "payment.completed.wait-run-1.wait-step", 5*time.Second)
 
 	// Publish a matching event on the EVENTS stream.
 	eventPayload := []byte(
@@ -531,4 +535,24 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 		t.Fatalf("wait step output = %s, want timeout indicator",
 			string(waitState.Output))
 	}
+}
+
+// waitForWaiter polls event_waiters until key exists or timeout passes.
+func waitForWaiter(
+	t *testing.T, js jetstream.JetStream, key string, timeout time.Duration,
+) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	waiters, err := js.KeyValue(ctx, "event_waiters")
+	if err != nil {
+		t.Fatalf("event_waiters: %v", err)
+	}
+	for ctx.Err() == nil {
+		if _, err := waiters.Get(ctx, key); err == nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("waiter %s not registered within %v", key, timeout)
 }

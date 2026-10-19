@@ -717,7 +717,17 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 		t.Fatal("child run ID not set on parent step")
 	}
 
-	childRun, err := store.Load(context.Background(), childRunID)
+	// The parent records ChildRunID in its own save, before the child's
+	// workflow.started is handled and its snapshot written, so poll.
+	var childRun dag.WorkflowRun
+	childDeadline := time.Now().Add(5 * time.Second)
+	for {
+		childRun, err = store.Load(context.Background(), childRunID)
+		if err == nil || time.Now().After(childDeadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("load child run: %v", err)
 	}
