@@ -14,6 +14,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -391,21 +392,9 @@ func (s *Service) replayDeadLetterInner(
 	if s.js == nil {
 		panic("replayDeadLetterInner: js must not be nil")
 	}
-	views, err := s.listDeadLettersInner(100)
+	target, err := s.getDeadLetter(ctx, seq)
 	if err != nil {
 		return err
-	}
-	var target *DeadLetterView
-	for i := range views {
-		if views[i].Sequence == seq {
-			target = &views[i]
-			break
-		}
-	}
-	if target == nil {
-		return fmt.Errorf(
-			"dead letter with sequence %d not found", seq,
-		)
 	}
 	if len(target.Body) == 0 {
 		return fmt.Errorf("dlq sequence %d: %w",
@@ -475,4 +464,37 @@ func deriveTaskSubject(task string) string {
 // isTaskSubject checks if a subject starts with "task.".
 func isTaskSubject(subject string) bool {
 	return len(subject) >= 5 && subject[:5] == "task."
+}
+
+// getDeadLetter looks one DEAD_LETTERS entry up by stream sequence. A
+// direct GetMsg avoids scanning a bounded prefix, so every retained
+// entry is replayable no matter how many newer ones exist (#784).
+func (s *Service) getDeadLetter(
+	ctx context.Context, seq uint64,
+) (*DeadLetterView, error) {
+	if seq == 0 {
+		panic("getDeadLetter: seq must be positive")
+	}
+	if s.js == nil {
+		panic("getDeadLetter: js must not be nil")
+	}
+	stream, err := s.js.Stream(ctx, "DEAD_LETTERS")
+	if err != nil {
+		return nil, fmt.Errorf("dlq stream: %w", err)
+	}
+	raw, err := stream.GetMsg(ctx, seq)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			return nil, fmt.Errorf(
+				"dead letter with sequence %d not found", seq)
+		}
+		return nil, fmt.Errorf("dlq get seq %d: %w", seq, err)
+	}
+	msg := &nats.Msg{
+		Subject: raw.Subject, Data: raw.Data, Header: raw.Header,
+	}
+	meta := &nats.MsgMetadata{Timestamp: raw.Time}
+	meta.Sequence.Stream = raw.Sequence
+	view := newDeadLetterView(parseDLQMessage(msg, meta))
+	return &view, nil
 }
