@@ -59,9 +59,9 @@ func DeriveReplicas(routes []string, override int) int {
 // creates and deletes. Exported so tests can assert none is left behind.
 const ReplicaProbeStreamPrefix = "DAGNATS_REPLICA_PROBE_"
 
-// replicaProbeCandidates are the factors detectReplicas tries, largest
-// first, mirroring DeriveReplicas: 5+ nodes -> 5, 3-4 -> 3, else 1.
-var replicaProbeCandidates = [...]int{5, 3}
+// replicaProbeAttemptsMax bounds how often pickReplicas re-asks for three
+// replicas. With the provisioning backoff that is about 40s of waiting.
+const replicaProbeAttemptsMax = 12
 
 // replicaProbeMaxBytes keeps a probe's store reservation negligible.
 const replicaProbeMaxBytes = 64 << 10
@@ -72,8 +72,8 @@ const replicaProbeMaxBytes = 64 << 10
 // cluster gets 1 without a round trip. In a cluster, the meta leader is
 // the only authority on how many peers can hold a replica, and no
 // non-system API reports that count, so this asks it directly: a
-// throwaway stream is created at each candidate factor until one is
-// placed, then deleted.
+// throwaway stream is created at five, then at three (see pickReplicas
+// for why three is retried), and deleted once placed.
 func detectReplicas(ctx context.Context, nc *nats.Conn) (int, error) {
 	if ctx == nil {
 		panic("detectReplicas: ctx must not be nil")
@@ -88,19 +88,61 @@ func detectReplicas(ctx context.Context, nc *nats.Conn) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	for _, replicas := range replicaProbeCandidates {
-		placed, err := probeReplicaPlacement(ctx, js, replicas)
+	probe := func(ctx context.Context, replicas int) (bool, error) {
+		return probeReplicaPlacement(ctx, js, replicas)
+	}
+	replicas, err := pickReplicas(ctx, probe, provisionRetryPause)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"detect JetStream replicas (set "+
+				"DAGNATS_NATS_JETSTREAM_REPLICAS to skip): %w", err,
+		)
+	}
+	return replicas, nil
+}
+
+// pickReplicas chooses the factor for a server that belongs to a cluster,
+// mirroring DeriveReplicas (5+ nodes -> 5, 3-4 -> 3). A refusal at five is
+// an answer: three is still replicated. A refusal at three is retried with
+// pause between attempts, because a booting cluster's meta leader refuses
+// placement until it has seen enough peers (#772). Settling on one replica
+// there would create every new stream and bucket unreplicated for good, so
+// a refusal that never clears is an error instead.
+func pickReplicas(
+	ctx context.Context,
+	probe func(context.Context, int) (bool, error),
+	pause func(attempt int) time.Duration,
+) (int, error) {
+	if ctx == nil {
+		panic("pickReplicas: ctx must not be nil")
+	}
+	if probe == nil || pause == nil {
+		panic("pickReplicas: probe and pause must not be nil")
+	}
+	placed, err := probe(ctx, 5)
+	if err != nil {
+		return 0, err
+	}
+	if placed {
+		return 5, nil
+	}
+	for attempt := 0; attempt < replicaProbeAttemptsMax; attempt++ {
+		placed, err := probe(ctx, 3)
 		if err != nil {
-			return 0, fmt.Errorf(
-				"detect JetStream replicas (set "+
-					"DAGNATS_NATS_JETSTREAM_REPLICAS to skip): %w", err,
-			)
+			return 0, err
 		}
 		if placed {
-			return replicas, nil
+			return 3, nil
+		}
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("cluster refused 3 replicas: %w", ctx.Err())
+		case <-time.After(pause(attempt)):
 		}
 	}
-	return 1, nil
+	return 0, fmt.Errorf(
+		"cluster refused 3 replicas on %d attempts", replicaProbeAttemptsMax,
+	)
 }
 
 // probeReplicaPlacement reports whether the cluster can place a stream at

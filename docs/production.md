@@ -195,7 +195,7 @@ DAGNATS_NATS_URL=nats://cluster:4222 dagnats-engine
 DAGNATS_NATS_URL=nats://cluster:4222 dagnats-api
 ```
 
-Both binaries take the replication factor from `DAGNATS_NATS_JETSTREAM_REPLICAS` (`0`, `1`, `3` or `5`), the same variable `dagnats serve` reads. With `0` or unset they work it out from the cluster they reach: they create and delete a throwaway stream at five replicas, then three, and use the first that the cluster can place (one outside a cluster). That probe needs a formed cluster, so start the binaries after the cluster is up, or set the variable. An existing stream or bucket is never scaled down: a lower factor keeps the existing count and logs a warning. To reduce replicas on purpose, edit the stream with the `nats` CLI.
+Both binaries take the replication factor from `DAGNATS_NATS_JETSTREAM_REPLICAS` (`0`, `1`, `3` or `5`), the same variable `dagnats serve` reads. With `0` or unset they work it out from the cluster they reach: they create and delete a throwaway stream at five replicas, then three, and use the first that the cluster can place (one outside a cluster). A booting cluster refuses three replicas until its meta leader has seen enough peers, so a refusal at three is retried for about 40 seconds; if it never clears, the binary fails to start and names the variable rather than falling back to one replica. Setting the variable skips the probe. An existing stream or bucket is never scaled down: a lower factor keeps the existing count and logs a warning. To reduce replicas on purpose, edit the stream with the `nats` CLI.
 
 ## Security
 
