@@ -191,9 +191,9 @@ func TestRunDispatchPlan_OneFailedEffectStillRunsTheRest(t *testing.T) {
 	laterRan := false
 	t1, _ := findStepDef(def, "t1")
 	plan := dispatchPlan{
-		effects: []dispatchEffect{
-			func(context.Context) error { return scheduleFailed },
-			func(context.Context) error { laterRan = true; return nil },
+		effects: []stepEffect{
+			{stepID: "nap", send: func(context.Context) error { return scheduleFailed }},
+			{stepID: "t2", send: func(context.Context) error { laterRan = true; return nil }},
 		},
 		normalSteps: []dag.StepDef{t1},
 	}
