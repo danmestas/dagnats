@@ -69,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A clustered node could exit at startup with "no suitable peers for placement" when the meta leader had not seen enough peers for an R3 stream yet. That error (10005) is now retried like a missing meta leader, and the pause between provisioning attempts backs off from 500ms to 4s.
+
 - `GET /runs/{id}/logs` with no `attempt` now resolves a step that hasn't started yet to attempt 1, the subject its first attempt writes to. A follow attached early used to wait on attempt 0, which nothing writes.
 
 - A cluster with `nats_cluster_auth_token` set never formed. Nodes required the token on routes they accepted but did not send it on routes they dialed, so every route was rejected and startup failed with "cluster quorum did not form". The token is now added to every route URL that has no credentials of its own.

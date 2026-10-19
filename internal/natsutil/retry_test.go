@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -63,6 +64,8 @@ func TestProvisionWithRetry_OnlyTransient503Retried(t *testing.T) {
 	}{
 		{"temporarily unavailable 10008",
 			&jetstream.APIError{Code: 503, ErrorCode: 10008}, 2},
+		{"no suitable peers 10005",
+			&jetstream.APIError{Code: 400, ErrorCode: 10005}, 2},
 		{"insufficient storage 10047",
 			&jetstream.APIError{Code: 500, ErrorCode: 10047}, 1},
 		{"jetstream not enabled 10076",
@@ -94,5 +97,20 @@ func TestProvisionWithRetry_OnlyTransient503Retried(t *testing.T) {
 				t.Error("non-retryable error must be returned")
 			}
 		})
+	}
+}
+
+// TestProvisionRetryPause_GrowsAndCaps checks the pause between attempts
+// backs off: a peer that has not joined yet needs seconds, not the
+// 2.5s that five fixed 500ms pauses add up to.
+func TestProvisionRetryPause_GrowsAndCaps(t *testing.T) {
+	if got := provisionRetryPause(0); got != 500*time.Millisecond {
+		t.Fatalf("pause(0) = %v, want 500ms", got)
+	}
+	if got := provisionRetryPause(2); got != 2*time.Second {
+		t.Fatalf("pause(2) = %v, want 2s", got)
+	}
+	if got := provisionRetryPause(10); got != provisionRetryPauseMax {
+		t.Fatalf("pause(10) = %v, want cap %v", got, provisionRetryPauseMax)
 	}
 }

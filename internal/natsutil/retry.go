@@ -40,8 +40,28 @@ func provisionContext(clustered bool) (context.Context, context.CancelFunc) {
 // provisionAttemptsMax bounds retries per resource (fixed upper bound).
 const provisionAttemptsMax = 5
 
-// provisionRetryPause separates attempts so a re-election can finish.
-const provisionRetryPause = 500 * time.Millisecond
+// provisionRetryPauseBase and provisionRetryPauseMax shape the pause
+// between attempts. It doubles so a re-election or a peer still joining
+// gets seconds, not a fixed 500ms that five attempts spend in 2.5s.
+const (
+	provisionRetryPauseBase = 500 * time.Millisecond
+	provisionRetryPauseMax  = 4 * time.Second
+)
+
+// provisionRetryPause is the pause after attempt (0-based).
+func provisionRetryPause(attempt int) time.Duration {
+	if attempt < 0 {
+		panic("provisionRetryPause: attempt must not be negative")
+	}
+	pause := provisionRetryPauseBase
+	for step := 0; step < attempt && pause < provisionRetryPauseMax; step++ {
+		pause *= 2
+	}
+	if pause > provisionRetryPauseMax {
+		pause = provisionRetryPauseMax
+	}
+	return pause
+}
 
 // isRetryableProvisionError reports whether err is the "no answer in
 // time" class that a re-sent create/update can fix. Real configuration
@@ -51,17 +71,28 @@ func isRetryableProvisionError(err error) bool {
 		errors.Is(err, nats.ErrTimeout) {
 		return true
 	}
-	// Only 10008 "JetStream system temporarily unavailable" (no meta leader
-	// yet, or a re-election) is transient. Other 503s -- insufficient
-	// resources, JetStream not enabled -- will not fix themselves.
+	// 10008 "JetStream system temporarily unavailable" (no meta leader
+	// yet, or a re-election) and 10005 "no suitable peers for placement"
+	// (a meta leader exists but has not seen enough peers for R3 yet) are
+	// transient on a forming cluster. Other errors -- insufficient
+	// resources, JetStream not enabled -- will not fix themselves. A
+	// replica count the cluster can never meet still fails, just after
+	// the bounded attempts instead of at once.
 	var apiErr *jetstream.APIError
-	return errors.As(err, &apiErr) &&
-		apiErr.ErrorCode == jsErrCodeClusterNotAvailable
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.ErrorCode == jsErrCodeClusterNotAvailable ||
+		apiErr.ErrorCode == jsErrCodeNoSuitablePeers
 }
 
 // jsErrCodeClusterNotAvailable is JetStream error 10008, "JetStream system
 // temporarily unavailable"; nats.go does not export a constant for it.
 const jsErrCodeClusterNotAvailable jetstream.ErrorCode = 10008
+
+// jsErrCodeNoSuitablePeers is JetStream error 10005, "no suitable peers
+// for placement"; nats.go does not export a constant for it.
+const jsErrCodeNoSuitablePeers jetstream.ErrorCode = 10005
 
 // createStreamWithRetry is CreateOrUpdateStream under provisionWithRetry.
 func createStreamWithRetry(
@@ -102,7 +133,7 @@ func provisionWithRetry(
 		select {
 		case <-parent.Done():
 			return err
-		case <-time.After(provisionRetryPause):
+		case <-time.After(provisionRetryPause(attempt)):
 		}
 	}
 	return err
