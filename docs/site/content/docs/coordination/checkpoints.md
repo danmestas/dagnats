@@ -101,7 +101,7 @@ This is critical for idempotent processing. If a step processes 100 items and cr
 | TTL | none: a checkpoint stays until it is overwritten or the bucket is purged |
 | Max value size | bounded by the server's `max_payload` (1 MiB by default) |
 
-`dagnats serve` creates the `checkpoints` bucket at startup, as an extra bucket beside the ones `natsutil.SetupAll` provisions. Where the bucket does not exist (for example a deployment that runs only `dagnats-engine`), `Checkpoint()` returns an error and `LoadCheckpoint()` returns `(nil, nil)`, so handlers that do not need checkpoints work without it. In a cluster the bucket is single-replica; see [Clustering]({{< ref "/docs/operations/clustering" >}}).
+`natsutil.SetupAll` provisions the `checkpoints` bucket, so `dagnats serve`, `dagnats-engine` and `dagnats-api` all create it at startup. Where the bucket does not exist (a NATS server no dagnats binary has provisioned), `Checkpoint()` returns an error and `LoadCheckpoint()` returns `(nil, nil)`, so handlers that do not need checkpoints work without it. In a cluster the bucket uses the cluster's replication factor; see [Clustering]({{< ref "/docs/operations/clustering" >}}).
 
 ## LLM Pattern: Checkpointing Conversation History
 

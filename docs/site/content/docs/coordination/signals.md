@@ -80,7 +80,7 @@ The steps run concurrently (no dependency edge). The `wait-for-review` handler b
 
 ## Persistence
 
-A signal is a KV value, not a message. The `signals` bucket has no TTL, and `WaitForSignal` starts its watch from the key's current value. A signal sent **before** the step starts waiting is therefore delivered at once, and so is a stale value left by an earlier wait for the same name in the same run. Use a distinct name for each wait. The bucket is created by `dagnats serve` as an extra bucket; in a cluster it is single-replica, see [Clustering]({{< ref "/docs/operations/clustering" >}}).
+A signal is a KV value, not a message. The `signals` bucket has no TTL, and `WaitForSignal` starts its watch from the key's current value. A signal sent **before** the step starts waiting is therefore delivered at once, and so is a stale value left by an earlier wait for the same name in the same run. Use a distinct name for each wait. The bucket is provisioned by `natsutil.SetupAll`, so every dagnats binary creates it, and in a cluster it uses the cluster's replication factor; see [Clustering]({{< ref "/docs/operations/clustering" >}}).
 
 ## Timeout Behavior
 

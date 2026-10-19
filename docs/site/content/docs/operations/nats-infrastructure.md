@@ -80,11 +80,11 @@ These KV buckets store workflow state, coordination data, and operational metada
 | `console_audit` | 90 days | default | Audit log of console write actions |
 | `leases` | per key (1s-10m) | 1 | Coordination leases with revision fencing ([ADR-024](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-024-leases.md)); changes republished on `dagnats.lease.changed.<key>` |
 
-History `default` is the JetStream KV default of 1 revision. Of these, `triggers`, `trigger_state`, `signals`, `checkpoints` and `concurrency_runs` are added by `dagnats serve` through `WithKVBuckets`, and `console_audit` is created by the console. The rest come from `SetupAll` itself.
+History `default` is the JetStream KV default of 1 revision. `console_audit` is created by `dagnats serve` for the console and control-plane audit log; every other bucket comes from `SetupAll`, so `dagnats-engine` and `dagnats-api` create them too.
 
-### Buckets outside SetupAll
+### Replication
 
-The five `WithKVBuckets` buckets and `console_audit` are created without a replica count, so in a cluster they are single-replica (R1). Losing the node that holds one makes that bucket unavailable until the node returns. They are not in the `/health/cluster` report. See [Clustering]({{< ref "/docs/operations/clustering" >}}).
+Every bucket, `console_audit` included, uses the cluster's replication factor, and all of them appear in the `/health/cluster` report (`console_audit` only on a node that has created it). Through 0.0.27 `triggers`, `trigger_state`, `signals`, `checkpoints`, `concurrency_runs` and `console_audit` were single-replica in a cluster; an existing deployment is upgraded in place on restart. See [Clustering]({{< ref "/docs/operations/clustering" >}}).
 
 ### Workers Bucket
 

@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **`cron.backfill` now replays missed fires.** Each cron fire records `<trigger-id>.last_run_at` in `trigger_state`, and when the trigger service starts, a `backfill: true` trigger fires once for every matching minute since then, oldest first, up to 100 per trigger. The flag used to be stored and ignored.
+- **Subject-trigger `debounce` now takes effect.** A burst of messages inside `period` starts one run, with the last message's payload, once `period` passes quietly; `timeout` caps how long a window can keep extending. The block used to be validated and ignored, so every message started a run. The orchestrator fires the debounce timers, so `dagnats serve` and `dagnats-engine` both handle them.
+- **`triggers`, `trigger_state`, `signals`, `checkpoints` and `concurrency_runs` are provisioned by `SetupAll`.** `dagnats-engine` and `dagnats-api` now create them too, instead of depending on `dagnats serve` having run first.
+
 ### Fixed
+
+- **Buckets created outside `SetupAll` were single-replica in a cluster.** The five buckets above and `console_audit` now use the cluster's replication factor and appear in `/health/cluster` (`console_audit` on nodes that have created it). Existing deployments are upgraded in place on restart. Buckets passed to `SetupAll` through `WithKVBuckets` also get the replication factor, and one that names a bucket `SetupAll` already provisions is left as provisioned.
+- `dagnats dlq replay <seq>` looks the entry up directly, so sequences beyond the oldest 100 replay instead of being reported as not found.
+- `dagnats trigger test` accepts flags before or after the cron expression.
+- Top-level `dagnats --help` lists every command and its real subcommands.
+- `POST /v1/ci/validate` always includes `valid`, including `"valid": false`.
+- The bridge poll error no longer says grouped task types can't be polled; it names the overlapping work-queue consumer and points to `worker_group`.
+- Nil functional options no longer panic in `worker.NewWorker`, `Worker.Handle`, `worker.Typed` or `httpclient.New`; they are skipped.
+- `workflow-schema.json` no longer lists `version` as required. `Validate` never required it, and runs are pinned by definition hash, not by version.
 
 - **A malformed workflow definition is an error, not a crash.** `workflow validate`, `workflow register` and the API panicked on a def with no name, a step with no ID, a task-type step with no `task`, or a `map` step with no `config`. They now report what is missing.
 - **An incomplete `cancel_on` entry is rejected when the def is validated.** An entry with no `match`, or a match missing `left`, `op` or `right`, used to pass validation and then panic the engine every time a run of that workflow started. `match.op` must be `eq` and `match.right` must be an `input.` path, since cancel waiters are resolved against the run input; anything else could never match. The JSON schema now describes `cancel_on` entries.
