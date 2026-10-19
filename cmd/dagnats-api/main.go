@@ -23,7 +23,16 @@ func main() {
 		os.Exit(1)
 	}
 	defer nc.Close()
-	err = natsutil.SetupAll(nc)
+	replicas, err := cli.JetStreamReplicasFromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid configuration: %v\n", err)
+		os.Exit(1)
+	}
+	// 0 lets SetupAll derive the factor from the cluster nc reached, so a
+	// split binary never provisions a replicated cluster at one replica.
+	err = natsutil.SetupAll(nc, natsutil.WithCluster(
+		natsutil.ClusterOptions{ReplicasOverride: replicas},
+	))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to setup NATS resources: %v\n", err)
 		os.Exit(1)

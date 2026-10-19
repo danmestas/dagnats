@@ -123,3 +123,34 @@ func (lr *limitedReader) Read(p []byte) (int, error) {
 	lr.n -= int64(n)
 	return n, err
 }
+
+// TestJetStreamReplicasFromEnv covers the split binaries' replica setting:
+// unset is 0 (derive from the cluster), the serve-valid values pass, and
+// anything else is refused rather than silently ignored.
+func TestJetStreamReplicasFromEnv(t *testing.T) {
+	cases := []struct {
+		value   string
+		want    int
+		wantErr bool
+	}{
+		{"", 0, false}, {"0", 0, false}, {"1", 1, false},
+		{"3", 3, false}, {"5", 5, false},
+		{"2", 0, true}, {"-1", 0, true}, {"three", 0, true},
+	}
+	for _, tc := range cases {
+		t.Setenv("DAGNATS_NATS_JETSTREAM_REPLICAS", tc.value)
+		got, err := JetStreamReplicasFromEnv()
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%q: got %d, want an error", tc.value, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%q: unexpected error %v", tc.value, err)
+		}
+		if got != tc.want {
+			t.Errorf("%q: got %d, want %d", tc.value, got, tc.want)
+		}
+	}
+}

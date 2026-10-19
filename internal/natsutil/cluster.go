@@ -2,10 +2,13 @@ package natsutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nuid"
 )
 
 // ClusterOptions describes the NATS topology this dagnats instance
@@ -51,6 +54,110 @@ func DeriveReplicas(routes []string, override int) int {
 	}
 	return 1 // 2-node cluster falls back; validation should prevent this
 }
+
+// ReplicaProbeStreamPrefix names the throwaway streams detectReplicas
+// creates and deletes. Exported so tests can assert none is left behind.
+const ReplicaProbeStreamPrefix = "DAGNATS_REPLICA_PROBE_"
+
+// replicaProbeCandidates are the factors detectReplicas tries, largest
+// first, mirroring DeriveReplicas: 5+ nodes -> 5, 3-4 -> 3, else 1.
+var replicaProbeCandidates = [...]int{5, 3}
+
+// replicaProbeMaxBytes keeps a probe's store reservation negligible.
+const replicaProbeMaxBytes = 64 << 10
+
+// detectReplicas derives the replication factor from the JetStream the
+// connection is attached to, for a process that has no cluster routes of
+// its own to count (dagnats-engine, dagnats-api). A server outside any
+// cluster gets 1 without a round trip. In a cluster, the meta leader is
+// the only authority on how many peers can hold a replica, and no
+// non-system API reports that count, so this asks it directly: a
+// throwaway stream is created at each candidate factor until one is
+// placed, then deleted.
+func detectReplicas(ctx context.Context, nc *nats.Conn) (int, error) {
+	if ctx == nil {
+		panic("detectReplicas: ctx must not be nil")
+	}
+	if nc == nil {
+		panic("detectReplicas: nc must not be nil")
+	}
+	if nc.ConnectedClusterName() == "" {
+		return 1, nil
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return 0, err
+	}
+	for _, replicas := range replicaProbeCandidates {
+		placed, err := probeReplicaPlacement(ctx, js, replicas)
+		if err != nil {
+			return 0, fmt.Errorf(
+				"detect JetStream replicas (set "+
+					"DAGNATS_NATS_JETSTREAM_REPLICAS to skip): %w", err,
+			)
+		}
+		if placed {
+			return replicas, nil
+		}
+	}
+	return 1, nil
+}
+
+// probeReplicaPlacement reports whether the cluster can place a stream at
+// replicas. A refusal for lack of peers is an answer (false), not an
+// error; anything else (permissions, no reply) is returned.
+func probeReplicaPlacement(
+	ctx context.Context, js jetstream.JetStream, replicas int,
+) (bool, error) {
+	if js == nil {
+		panic("probeReplicaPlacement: js must not be nil")
+	}
+	if replicas < 2 {
+		panic("probeReplicaPlacement: replicas must be at least 2")
+	}
+	name := ReplicaProbeStreamPrefix + nuid.Next()
+	attemptCtx, cancel := context.WithTimeout(ctx, provisionAttemptTimeout)
+	defer cancel()
+	_, err := js.CreateStream(attemptCtx, jetstream.StreamConfig{
+		Name:     name,
+		Subjects: []string{"_dagnats.replica_probe." + name},
+		Storage:  jetstream.FileStorage,
+		MaxBytes: replicaProbeMaxBytes,
+		Replicas: replicas,
+	})
+	if isPlacementRefusal(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := js.DeleteStream(attemptCtx, name); err != nil {
+		return false, fmt.Errorf("delete probe stream %s: %w", name, err)
+	}
+	return true, nil
+}
+
+// isPlacementRefusal reports whether err says the cluster lacks the peers
+// (or the clustering) for the requested replica count.
+func isPlacementRefusal(err error) bool {
+	var apiErr *jetstream.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.ErrorCode {
+	case jsErrCodeNoSuitablePeers, jsErrCodeInsufficientResources,
+		jsErrCodeReplicasNotSupported:
+		return true
+	}
+	return false
+}
+
+// jsErrCodeInsufficientResources is JetStream error 10023.
+const jsErrCodeInsufficientResources jetstream.ErrorCode = 10023
+
+// jsErrCodeReplicasNotSupported is JetStream error 10074, "replicas > 1
+// not supported in non-clustered mode".
+const jsErrCodeReplicasNotSupported jetstream.ErrorCode = 10074
 
 const quorumPollInterval = 500 * time.Millisecond
 

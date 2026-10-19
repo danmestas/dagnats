@@ -3,6 +3,7 @@ package natsutil
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -143,6 +144,10 @@ func EnsureKeyValue(
 // identical replicated stream is answered at once. R1 keeps update-first:
 // it has no stream leader to wait for, and a standalone server counts an
 // existing stream's MaxBytes twice when it is "created" again.
+//
+// An update never lowers an existing stream's replica count (#784): a
+// process started without cluster settings asks for one replica, and
+// shrinking an R3 stream to R1 silently removes its failover.
 func ensureStream(
 	ctx context.Context, js jetstream.JetStream, cfg jetstream.StreamConfig,
 ) error {
@@ -153,11 +158,24 @@ func ensureStream(
 		panic("ensureStream: stream name must not be empty")
 	}
 	if cfg.Replicas <= 1 {
-		_, err := js.CreateOrUpdateStream(ctx, cfg)
+		replicas, err := keepExistingReplicas(ctx, js, cfg.Name, cfg.Replicas)
+		if err != nil {
+			return err
+		}
+		if replicas <= 1 {
+			_, err = js.CreateOrUpdateStream(ctx, cfg)
+			return err
+		}
+		cfg.Replicas = replicas
+		_, err = js.UpdateStream(ctx, cfg)
 		return err
 	}
 	_, err := js.CreateStream(ctx, cfg)
 	if !errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+		return err
+	}
+	cfg.Replicas, err = keepExistingReplicas(ctx, js, cfg.Name, cfg.Replicas)
+	if err != nil {
 		return err
 	}
 	_, err = js.UpdateStream(ctx, cfg)
@@ -165,7 +183,8 @@ func ensureStream(
 }
 
 // ensureKeyValue is ensureStream for a KV bucket (CreateOrUpdateKeyValue
-// is update-first too, and loses the same replies).
+// is update-first too, and loses the same replies). It keeps an existing
+// bucket's higher replica count the same way.
 func ensureKeyValue(
 	ctx context.Context, js jetstream.JetStream, cfg jetstream.KeyValueConfig,
 ) error {
@@ -175,16 +194,62 @@ func ensureKeyValue(
 	if cfg.Bucket == "" {
 		panic("ensureKeyValue: bucket must not be empty")
 	}
+	streamName := "KV_" + cfg.Bucket
 	if cfg.Replicas <= 1 {
-		_, err := js.CreateOrUpdateKeyValue(ctx, cfg)
+		replicas, err := keepExistingReplicas(ctx, js, streamName, cfg.Replicas)
+		if err != nil {
+			return err
+		}
+		if replicas <= 1 {
+			_, err = js.CreateOrUpdateKeyValue(ctx, cfg)
+			return err
+		}
+		cfg.Replicas = replicas
+		_, err = js.UpdateKeyValue(ctx, cfg)
 		return err
 	}
 	_, err := js.CreateKeyValue(ctx, cfg)
 	if !errors.Is(err, jetstream.ErrBucketExists) {
 		return err
 	}
+	cfg.Replicas, err = keepExistingReplicas(ctx, js, streamName, cfg.Replicas)
+	if err != nil {
+		return err
+	}
 	_, err = js.UpdateKeyValue(ctx, cfg)
 	return err
+}
+
+// keepExistingReplicas returns the replica count an update of streamName
+// should carry: requested, or the existing stream's count when that is
+// higher. Provisioning never scales a resource down; an operator who
+// wants fewer replicas edits the stream directly. A stream that does not
+// exist yet takes requested as-is.
+func keepExistingReplicas(
+	ctx context.Context, js jetstream.JetStream, streamName string, requested int,
+) (int, error) {
+	if streamName == "" {
+		panic("keepExistingReplicas: streamName must not be empty")
+	}
+	if requested < 0 {
+		panic("keepExistingReplicas: requested must not be negative")
+	}
+	stream, err := js.Stream(ctx, streamName)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return requested, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	existing := stream.CachedInfo().Config.Replicas
+	if existing <= max(requested, 1) {
+		return requested, nil
+	}
+	slog.Warn("natsutil: keeping existing replica count; provisioning "+
+		"never scales a stream down",
+		"stream", streamName, "existing_replicas", existing,
+		"requested_replicas", requested)
+	return existing, nil
 }
 
 // provisionWithRetry runs create with per-attempt timeouts inside parent,

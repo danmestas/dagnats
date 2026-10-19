@@ -589,9 +589,30 @@ func WithCluster(c ClusterOptions) SetupOption {
 	}
 }
 
+// resolveReplicas picks the replication factor for one SetupAll sweep: an
+// explicit override, else the count of declared routes, else what the
+// connected JetStream cluster can place (1 outside a cluster).
+func resolveReplicas(
+	ctx context.Context, nc *nats.Conn, cluster ClusterOptions,
+) (int, error) {
+	if ctx == nil {
+		panic("resolveReplicas: ctx must not be nil")
+	}
+	if cluster.ReplicasOverride < 0 {
+		panic("resolveReplicas: ReplicasOverride must not be negative")
+	}
+	if cluster.ReplicasOverride > 0 || len(cluster.Routes) > 0 {
+		return DeriveReplicas(cluster.Routes, cluster.ReplicasOverride), nil
+	}
+	return detectReplicas(ctx, nc)
+}
+
 // SetupAll creates all streams and KV buckets on the given
 // connection. Optional SetupOption args provision additional
-// streams and KV buckets for downstream packages.
+// streams and KV buckets for downstream packages. With no routes and no
+// override, the replication factor is derived from the cluster the
+// connection reached. An existing stream or bucket with more replicas than
+// the factor keeps its count: provisioning never scales anything down.
 func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	if nc == nil {
 		panic("natsutil: connection must not be nil")
@@ -626,10 +647,14 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	// ONE budget for the whole provisioning sweep, shared by every Setup*
 	// call below. Standalone keeps the short bound so a misconfigured
 	// server fails fast; a cluster gets longer for meta-leader elections.
-	setupCtx, setupCancel := provisionContext(len(options.cluster.Routes) > 0)
+	// A process with no routes of its own (dagnats-engine, dagnats-api)
+	// may still be attached to a cluster; the server it reached says so.
+	clustered := len(options.cluster.Routes) > 0 ||
+		nc.ConnectedClusterName() != ""
+	setupCtx, setupCancel := provisionContext(clustered)
 	defer setupCancel()
 
-	if len(options.cluster.Routes) > 0 {
+	if clustered {
 		quorumCtx, quorumCancel := context.WithTimeout(
 			setupCtx, 60*time.Second,
 		)
@@ -665,9 +690,10 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 		return err
 	}
 
-	replicas := DeriveReplicas(
-		options.cluster.Routes, options.cluster.ReplicasOverride,
-	)
+	replicas, err := resolveReplicas(setupCtx, nc, options.cluster)
+	if err != nil {
+		return err
+	}
 	if err := setupStreams(
 		setupCtx, js, replicas, options.maxStoreBytes,
 	); err != nil {
