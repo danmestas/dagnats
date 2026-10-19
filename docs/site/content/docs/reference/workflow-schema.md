@@ -28,7 +28,7 @@ Top-level workflow definition object.
 | Concurrency | `concurrency` | ConcurrencyLimit | No | nil | Workflow-level parallelism limits (`max_steps` 0 to 1000) |
 | Timeout | `timeout` | duration | No | 0 | Overall workflow deadline |
 | InputSchema | `input_schema` | JSON | No | nil | JSON Schema for workflow input validation |
-| OutputSchema | `output_schema` | JSON | No | nil | JSON Schema for workflow output validation |
+| OutputSchema | `output_schema` | JSON | No | nil | JSON Schema the final output (terminal step outputs) must match; a mismatch fails the run |
 | AuxSteps | `aux_steps` | map[string]bool | No | nil | Steps whose outcome does not decide the run's status (e.g. `on_failure` handlers) |
 | IdempotencyKey | `idempotency_key` | string | No | "" | Input path whose value dedups run starts |
 | Sticky | `sticky` | string | No | "" | Worker affinity: `soft` or `hard` (`hard` requires a workflow `timeout`) |

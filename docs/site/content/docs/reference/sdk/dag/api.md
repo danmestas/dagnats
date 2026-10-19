@@ -37,6 +37,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func Validate\(def WorkflowDef\) error](<#Validate>)
 - [func ValidateFragment\(fragment \[\]StepDef, cfg PlannerConfig, existingIDs map\[string\]bool\) error](<#ValidateFragment>)
 - [func ValidateLabels\(labels map\[string\]string\) error](<#ValidateLabels>)
+- [func ValidateRunOutput\(def WorkflowDef, steps map\[string\]StepState\) \(string, error\)](<#ValidateRunOutput>)
 - [func ValidateSchema\(schema json.RawMessage, data json.RawMessage\) error](<#ValidateSchema>)
 - [type AgentLoopConfig](<#AgentLoopConfig>)
   - [func ParseAgentLoopConfig\(step StepDef\) \(AgentLoopConfig, error\)](<#ParseAgentLoopConfig>)
@@ -400,6 +401,15 @@ func ValidateLabels(labels map[string]string) error
 ```
 
 ValidateLabels reports whether labels is a legal set of run labels. A nil or empty map is valid \-\- labels are optional. On the first violation it returns a descriptive error naming the offending key \(or the label count, when the count itself is the violation\). Keys are checked in sorted order so the reported "first violation" is deterministic across calls \-\- map iteration order is not, and two invalid keys in the same input must always name the same one.
+
+<a name="ValidateRunOutput"></a>
+## func [ValidateRunOutput](<https://github.com/danmestas/dagnats/blob/main/dag/output_schema.go#L36-L38>)
+
+```go
+func ValidateRunOutput(def WorkflowDef, steps map[string]StepState) (string, error)
+```
+
+ValidateRunOutput checks the run's final output against the workflow's OutputSchema. The final output is the output of every terminal step \(one no other step depends on\) that completed with a non\-empty output; each must match. Returns the offending step ID with the violation \(path \+ reason\). A def without a schema, or terminal steps that produced no output \(skipped, or void\), pass.
 
 <a name="ValidateSchema"></a>
 ## func [ValidateSchema](<https://github.com/danmestas/dagnats/blob/main/dag/schema.go#L11-L13>)

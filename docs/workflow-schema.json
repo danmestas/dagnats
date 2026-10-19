@@ -52,7 +52,7 @@
       "description": "JSON Schema for workflow input validation"
     },
     "output_schema": {
-      "description": "JSON Schema for workflow output validation"
+      "description": "JSON Schema the final output (terminal step outputs) must match; a mismatch fails the run"
     },
     "triggers": {
       "type": "array",

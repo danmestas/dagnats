@@ -55,6 +55,10 @@ func Validate(def WorkflowDef) error {
 		return err
 	}
 
+	if err := validateOutputSchema(def); err != nil {
+		return err
+	}
+
 	return detectCycle(def.Steps)
 }
 

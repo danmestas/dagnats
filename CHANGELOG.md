@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **A workflow's `OutputSchema` is now enforced.** When a run would complete, the output of each terminal step (one no other step depends on) that finished with output is validated against it; a mismatch fails the run with the violation (path and reason) as the failing step's error and a `workflow.failed` event. A schema that cannot be parsed is rejected at register time. Workflows without an `OutputSchema` behave as before.
+
 ### Fixed
 
 - **A step is no longer stranded when the engine dies while dispatching it.** The engine saves a step as queued before it publishes the step's task (or schedules a sleep timer or registers a wait-for-event waiter). If it died in between, the run stayed `running` with a step no worker would ever receive, and redelivering the event did not help because the step already looked dispatched. The dispatch save now marks the step as not yet sent and a second save clears the mark once the publish lands, so each dispatch costs one extra snapshot write. Any later event for the run, including the redelivered one, and the reconciler's periodic pass send every step still marked again. A task that is still queued from the first publish, or that a worker has already started, is not sent a second time.

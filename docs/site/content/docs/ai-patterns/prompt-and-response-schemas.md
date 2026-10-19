@@ -13,7 +13,7 @@ DagNats validates at two levels: a **workflow input schema** checks the input of
 
 ## Workflow Input/Output Schemas
 
-`WorkflowDef` has `InputSchema` and `OutputSchema` fields (`input_schema` and `output_schema` in JSON). The engine checks a run's input against `InputSchema` before the run starts. `OutputSchema` is not enforced: it describes the result, and the generated OpenAPI spec for HTTP-triggered workflows publishes it as the response body.
+`WorkflowDef` has `InputSchema` and `OutputSchema` fields (`input_schema` and `output_schema` in JSON). The engine checks a run's input against `InputSchema` before the run starts. `OutputSchema` is enforced when the run would complete: the output of each terminal step (a step no other step depends on) that finished with a non-empty output must match it, or the run fails and the violation (path and reason) becomes that step's error. A schema that cannot be parsed is rejected when the workflow is registered. The generated OpenAPI spec for HTTP-triggered workflows also publishes it as the response body.
 
 The builder has no schema methods. Set the fields on the built definition:
 

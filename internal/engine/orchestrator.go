@@ -1639,6 +1639,9 @@ func (o *Orchestrator) completeWorkflow(
 	if run.RunID == "" {
 		panic("completeWorkflow: RunID must not be empty")
 	}
+	if stepID, verr := o.outputSchemaViolation(ctx, run); verr != nil {
+		return o.failOnOutputSchema(ctx, run, stepID, verr)
+	}
 	run, err := finalizeRun(
 		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusCompleted, "",
 		func(ctx context.Context) error {
