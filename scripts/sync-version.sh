@@ -10,16 +10,30 @@ set -euo pipefail
 
 HUGO_YAML="docs/site/hugo.yaml"
 
-# Cloudflare Workers Builds does a shallow clone with no tags; pull just
-# the tag refs cheaply so 'git describe' below has something to look at.
-git fetch --tags --depth=1 >/dev/null 2>&1 || true
+# Cloudflare Workers Builds does a shallow clone with no tags, so
+# 'git describe' finds nothing: no tag is reachable from a single commit.
+# Take the highest release tag by version instead, from local tags if any,
+# else from the remote's tag list (the repo is public).
+latest_tag() {
+    git tag -l 'v*' | sort -V | tail -n 1
+}
+remote_latest_tag() {
+    git ls-remote --tags --refs "$1" 'v*' 2>/dev/null \
+        | sed 's#.*refs/tags/##' | sort -V | tail -n 1
+}
 
-if TAG=$(git describe --tags --abbrev=0 2>/dev/null); then
-    VERSION="${TAG#v}"
-else
-    echo "sync-version: no git tags reachable, leaving hugo.yaml untouched" >&2
+TAG=$(latest_tag)
+if [ -z "${TAG}" ]; then
+    TAG=$(remote_latest_tag origin)
+fi
+if [ -z "${TAG}" ]; then
+    TAG=$(remote_latest_tag https://github.com/danmestas/dagnats.git)
+fi
+if [ -z "${TAG}" ]; then
+    echo "sync-version: no release tags found, leaving hugo.yaml untouched" >&2
     exit 0
 fi
+VERSION="${TAG#v}"
 
 # Replace the version line. Use awk + temp file to stay portable across
 # GNU sed (Linux/CF) and BSD sed (macOS).
