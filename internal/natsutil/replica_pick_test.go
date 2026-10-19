@@ -6,7 +6,10 @@
 // matters is a booting cluster: its meta leader refuses three replicas
 // ("no suitable peers") until it has seen enough peers (#772), so a
 // refusal at three must be retried, and one that never clears must fail
-// loudly instead of settling on a single replica. Real-cluster detection
+// loudly instead of settling on a single replica. A cluster that knows of
+// fewer than three servers (a one- or two-node cluster, such as a member of
+// a supercluster) can never place three, so its first refusal is the
+// answer. Real-cluster detection
 // is covered in server/cluster_replicas_test.go.
 package natsutil
 
@@ -46,7 +49,7 @@ func noPause(int) time.Duration { return 0 }
 
 func TestPickReplicas_FivePlacedIsFive(t *testing.T) {
 	p := newScriptedProbe(map[int][]bool{5: {true}})
-	got, err := pickReplicas(context.Background(), p.probe, noPause)
+	got, err := pickReplicas(context.Background(), p.probe, noPause, true)
 	if err != nil || got != 5 {
 		t.Fatalf("pickReplicas = %d, %v; want 5, nil", got, err)
 	}
@@ -57,7 +60,7 @@ func TestPickReplicas_FivePlacedIsFive(t *testing.T) {
 
 func TestPickReplicas_RetriesThreeWhileClusterBoots(t *testing.T) {
 	p := newScriptedProbe(map[int][]bool{5: {false}, 3: {false, false, true}})
-	got, err := pickReplicas(context.Background(), p.probe, noPause)
+	got, err := pickReplicas(context.Background(), p.probe, noPause, true)
 	if err != nil || got != 3 {
 		t.Fatalf("pickReplicas = %d, %v; want 3, nil", got, err)
 	}
@@ -68,7 +71,7 @@ func TestPickReplicas_RetriesThreeWhileClusterBoots(t *testing.T) {
 
 func TestPickReplicas_NeverPlacedFailsInsteadOfOne(t *testing.T) {
 	p := newScriptedProbe(map[int][]bool{5: {false}, 3: {false}})
-	got, err := pickReplicas(context.Background(), p.probe, noPause)
+	got, err := pickReplicas(context.Background(), p.probe, noPause, true)
 	if err == nil {
 		t.Fatalf("pickReplicas = %d, nil; want an error, not a silent 1", got)
 	}
@@ -83,7 +86,18 @@ func TestPickReplicas_NeverPlacedFailsInsteadOfOne(t *testing.T) {
 func TestPickReplicas_ProbeErrorStops(t *testing.T) {
 	boom := errors.New("no reply")
 	probe := func(context.Context, int) (bool, error) { return false, boom }
-	if _, err := pickReplicas(context.Background(), probe, noPause); !errors.Is(err, boom) {
+	if _, err := pickReplicas(context.Background(), probe, noPause, true); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the probe's error", err)
+	}
+}
+
+func TestPickReplicas_SmallClusterAnswersOneAtOnce(t *testing.T) {
+	p := newScriptedProbe(map[int][]bool{5: {false}, 3: {false}})
+	got, err := pickReplicas(context.Background(), p.probe, noPause, false)
+	if err != nil || got != 1 {
+		t.Fatalf("pickReplicas = %d, %v; want 1, nil", got, err)
+	}
+	if p.calls[3] != 1 {
+		t.Fatalf("probed 3 replicas %d times in a small cluster, want 1", p.calls[3])
 	}
 }

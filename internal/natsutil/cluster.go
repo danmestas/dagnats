@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -91,12 +92,25 @@ func detectReplicas(ctx context.Context, nc *nats.Conn) (int, error) {
 	probe := func(ctx context.Context, replicas int) (bool, error) {
 		return probeReplicaPlacement(ctx, js, replicas)
 	}
-	replicas, err := pickReplicas(ctx, probe, provisionRetryPause)
+	// connect_urls name the other servers in the connected server's own
+	// cluster (not gateway peers, and placement stays in that cluster).
+	// Fewer than three known servers can never place three replicas, so
+	// a refusal there is final rather than a cluster still booting.
+	knownServers := len(nc.DiscoveredServers()) + 1
+	replicas, err := pickReplicas(
+		ctx, probe, provisionRetryPause, knownServers >= 3,
+	)
 	if err != nil {
 		return 0, fmt.Errorf(
 			"detect JetStream replicas (set "+
 				"DAGNATS_NATS_JETSTREAM_REPLICAS to skip): %w", err,
 		)
+	}
+	if replicas == 1 {
+		slog.Warn("natsutil: connected cluster cannot place 3 replicas; "+
+			"provisioning at 1. Set DAGNATS_NATS_JETSTREAM_REPLICAS=3 if "+
+			"more nodes are still joining",
+			"cluster", nc.ConnectedClusterName(), "known_servers", knownServers)
 	}
 	return replicas, nil
 }
@@ -107,11 +121,13 @@ func detectReplicas(ctx context.Context, nc *nats.Conn) (int, error) {
 // pause between attempts, because a booting cluster's meta leader refuses
 // placement until it has seen enough peers (#772). Settling on one replica
 // there would create every new stream and bucket unreplicated for good, so
-// a refusal that never clears is an error instead.
+// a refusal that never clears is an error instead. With fewer than three
+// known servers (canPlaceThree false) the first refusal answers one.
 func pickReplicas(
 	ctx context.Context,
 	probe func(context.Context, int) (bool, error),
 	pause func(attempt int) time.Duration,
+	canPlaceThree bool,
 ) (int, error) {
 	if ctx == nil {
 		panic("pickReplicas: ctx must not be nil")
@@ -133,6 +149,9 @@ func pickReplicas(
 		}
 		if placed {
 			return 3, nil
+		}
+		if !canPlaceThree {
+			return 1, nil
 		}
 		select {
 		case <-ctx.Done():
