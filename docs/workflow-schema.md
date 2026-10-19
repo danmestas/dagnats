@@ -15,7 +15,7 @@ Top-level workflow definition object.
 | Field | JSON Key | Type | Required | Default | Description |
 |-------|----------|------|----------|---------|-------------|
 | Name | `name` | string | Yes | -- | Unique workflow identifier |
-| Version | `version` | string | Yes | -- | Schema version for evolution |
+| Version | `version` | string | No | "" | Free-form version label; not validated |
 | Steps | `steps` | []StepDef | Yes | -- | At least one step required |
 | DefaultRetry | `default_retry` | RetryPolicy | No | nil | Fallback retry for all steps |
 | Concurrency | `concurrency` | ConcurrencyLimit | No | nil | Workflow-level parallelism limits |
