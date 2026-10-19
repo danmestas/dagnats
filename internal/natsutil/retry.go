@@ -13,6 +13,9 @@ import (
 // request sent while a clustered meta group is still settling can be
 // dropped without any reply, so a single call with the whole setup budget
 // would sit on it until the budget is gone. Short attempts get re-sent.
+// The most common silent drop, a concurrent update of a stream still
+// being created, is avoided altogether by ensureStream's create-first
+// order; this bound is for the rest.
 const provisionAttemptTimeout = 8 * time.Second
 
 // provisionBudget bounds a whole clustered provisioning sweep. A fixed
@@ -94,20 +97,81 @@ const jsErrCodeClusterNotAvailable jetstream.ErrorCode = 10008
 // for placement"; nats.go does not export a constant for it.
 const jsErrCodeNoSuitablePeers jetstream.ErrorCode = 10005
 
-// createStreamWithRetry is CreateOrUpdateStream under provisionWithRetry.
+// createStreamWithRetry is ensureStream under provisionWithRetry.
 func createStreamWithRetry(
 	parent context.Context, js jetstream.JetStream, cfg jetstream.StreamConfig,
 ) error {
 	return provisionWithRetry(parent, func(c context.Context) error {
-		_, err := js.CreateOrUpdateStream(c, cfg)
-		return err
+		return ensureStream(c, js, cfg)
 	})
+}
+
+// createKeyValueWithRetry is ensureKeyValue under provisionWithRetry.
+func createKeyValueWithRetry(
+	parent context.Context, js jetstream.JetStream, cfg jetstream.KeyValueConfig,
+) error {
+	return provisionWithRetry(parent, func(c context.Context) error {
+		return ensureKeyValue(c, js, cfg)
+	})
+}
+
+// ensureStream creates or updates cfg. A replicated stream is created
+// first and updated only if it exists with a different config, instead
+// of CreateOrUpdateStream's update-first order: on nats-server 2.15 an
+// update of an R3 stream whose create is still waiting for its stream
+// leader gets no reply, and neither does that create. Nodes booting
+// together hit that window on nearly every resource. A create of an
+// identical replicated stream is answered at once. R1 keeps update-first:
+// it has no stream leader to wait for, and a standalone server counts an
+// existing stream's MaxBytes twice when it is "created" again.
+func ensureStream(
+	ctx context.Context, js jetstream.JetStream, cfg jetstream.StreamConfig,
+) error {
+	if ctx == nil {
+		panic("ensureStream: ctx must not be nil")
+	}
+	if cfg.Name == "" {
+		panic("ensureStream: stream name must not be empty")
+	}
+	if cfg.Replicas <= 1 {
+		_, err := js.CreateOrUpdateStream(ctx, cfg)
+		return err
+	}
+	_, err := js.CreateStream(ctx, cfg)
+	if !errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+		return err
+	}
+	_, err = js.UpdateStream(ctx, cfg)
+	return err
+}
+
+// ensureKeyValue is ensureStream for a KV bucket (CreateOrUpdateKeyValue
+// is update-first too, and loses the same replies).
+func ensureKeyValue(
+	ctx context.Context, js jetstream.JetStream, cfg jetstream.KeyValueConfig,
+) error {
+	if ctx == nil {
+		panic("ensureKeyValue: ctx must not be nil")
+	}
+	if cfg.Bucket == "" {
+		panic("ensureKeyValue: bucket must not be empty")
+	}
+	if cfg.Replicas <= 1 {
+		_, err := js.CreateOrUpdateKeyValue(ctx, cfg)
+		return err
+	}
+	_, err := js.CreateKeyValue(ctx, cfg)
+	if !errors.Is(err, jetstream.ErrBucketExists) {
+		return err
+	}
+	_, err = js.UpdateKeyValue(ctx, cfg)
+	return err
 }
 
 // provisionWithRetry runs create with per-attempt timeouts inside parent,
 // retrying only no-answer errors. create must be idempotent
-// (CreateOrUpdate*). Returns the last error when attempts run out or
-// parent ends.
+// (ensureStream, ensureKeyValue). Returns the last error when attempts
+// run out or parent ends.
 func provisionWithRetry(
 	parent context.Context, create func(context.Context) error,
 ) error {

@@ -199,7 +199,7 @@ func setupStreams(
 			// AllowDirect enables Stream.GetMsg(WithGetMsgSubject),
 			// which the queue-depth API (#632) uses to read the
 			// oldest pending message per task-type subject without a
-			// consumer. CreateOrUpdateStream below applies this to an
+			// consumer. The update fallback below applies this to an
 			// already-existing TASK_QUEUES too, so operators upgrading
 			// from an older binary get direct-get without a manual
 			// stream edit.
@@ -256,10 +256,7 @@ func setupStreams(
 		panic("SetupStreams: streams config must not be empty")
 	}
 	for _, cfg := range streams {
-		err := provisionWithRetry(ctx, func(c context.Context) error {
-			_, err := js.CreateOrUpdateStream(c, cfg)
-			return err
-		})
+		err := createStreamWithRetry(ctx, js, cfg)
 		if err != nil {
 			return fmt.Errorf("create stream %s: %w", cfg.Name, err)
 		}
@@ -372,10 +369,7 @@ func setupKVBuckets(
 		panic("SetupKVBuckets: buckets config must not be empty")
 	}
 	for _, cfg := range buckets {
-		err := provisionWithRetry(ctx, func(c context.Context) error {
-			_, err := js.CreateOrUpdateKeyValue(c, cfg)
-			return err
-		})
+		err := createKeyValueWithRetry(ctx, js, cfg)
 		if err != nil {
 			return fmt.Errorf("create kv bucket %s: %w", cfg.Bucket, err)
 		}
@@ -701,8 +695,8 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 
 	ctx := setupCtx
 	for _, sc := range options.streams {
-		_, err := js.CreateOrUpdateStream(
-			ctx, jetstream.StreamConfig{
+		err := ensureStream(
+			ctx, js, jetstream.StreamConfig{
 				Name:      sc.Name,
 				Subjects:  sc.Subjects,
 				Retention: jetstream.WorkQueuePolicy,
@@ -715,8 +709,8 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	}
 
 	for _, kc := range options.kvs {
-		_, err := js.CreateOrUpdateKeyValue(
-			ctx, jetstream.KeyValueConfig{
+		err := ensureKeyValue(
+			ctx, js, jetstream.KeyValueConfig{
 				Bucket: kc.Bucket,
 			},
 		)

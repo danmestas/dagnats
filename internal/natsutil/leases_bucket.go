@@ -42,7 +42,7 @@ func provisionLeasesBucket(
 	if js == nil {
 		panic("provisionLeasesBucket: js must not be nil")
 	}
-	_, err := js.CreateOrUpdateKeyValue(ctx, leasesBucketConfig(replicas))
+	err := ensureKeyValue(ctx, js, leasesBucketConfig(replicas))
 	if errors.Is(err, jetstream.ErrLimitMarkerTTLNotSupported) {
 		slog.Warn("leases bucket skipped: coordination leases require "+
 			"nats-server >= 2.11 (per-key TTL)", "error", err)
