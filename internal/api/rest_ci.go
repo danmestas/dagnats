@@ -46,10 +46,18 @@ type ciCompileResponse struct {
 	On json.RawMessage `json:"on,omitempty"`
 }
 
-// ciDiagnosticsResponse is the 422 body for POST /v1/ci/compile and the
-// body for both branches of POST /v1/ci/validate (which is always 200).
+// ciCompileErrorResponse is the 422 body for POST /v1/ci/compile.
+type ciCompileErrorResponse struct {
+	Diagnostics []ci.Diagnostic `json:"diagnostics"`
+}
+
+// ciDiagnosticsResponse is the body for both branches of POST
+// /v1/ci/validate (which is always 200). Valid is deliberately not
+// omitempty: a client must see "valid":false, not an absent key (#784).
+// The 422 body of POST /v1/ci/compile has no verdict field; it uses
+// ciCompileErrorResponse.
 type ciDiagnosticsResponse struct {
-	Valid       bool            `json:"valid,omitempty"`
+	Valid       bool            `json:"valid"`
 	Diagnostics []ci.Diagnostic `json:"diagnostics"`
 	// On is present only for a valid jobs: spec (#728); a spec with
 	// diagnostics has no trustworthy on: to report.
@@ -146,7 +154,7 @@ func handleCICompile(svc *Service, w http.ResponseWriter, r *http.Request) {
 	}
 	if len(result.Diagnostics) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity,
-			ciDiagnosticsResponse{Diagnostics: result.Diagnostics})
+			ciCompileErrorResponse{Diagnostics: result.Diagnostics})
 		return
 	}
 	resp := ciCompileResponse{

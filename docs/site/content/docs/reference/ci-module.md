@@ -466,11 +466,11 @@ never registers, by design, regardless of what the body sends). Always
 { "valid": true, "diagnostics": [] }
 ```
 
-An invalid spec returns its diagnostics. The `valid` field is omitted when it
-is false, so test for `valid: true` rather than `valid: false`:
+An invalid spec returns `valid: false` with its diagnostics:
 
 ```json
 {
+  "valid": false,
   "diagnostics": [
     { "line": 2, "column": 12, "field": "defaults", "message": "..." }
   ]

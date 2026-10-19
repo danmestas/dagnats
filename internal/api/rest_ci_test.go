@@ -11,6 +11,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -265,8 +266,16 @@ func TestCIValidateInvalidSpecReturns200WithDiagnostics(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (validate is always 200)", resp.StatusCode)
 	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	// Positive: valid is present on the wire even when false (#784).
+	if !bytes.Contains(raw, []byte(`"valid":false`)) {
+		t.Errorf(`body lacks "valid":false: %s`, raw)
+	}
 	var out ciDiagnosticsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if out.Valid {
