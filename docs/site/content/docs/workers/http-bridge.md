@@ -235,7 +235,7 @@ A task whose step sets `worker_group` is published to a group-specific subject. 
 
 A bridge poll uses the same durable consumer a native Go worker would create for that task type and group, so bridge workers and native workers for the same group share one queue. A poll with no `worker_group` takes only the ungrouped queue.
 
-If creating the consumer fails because another consumer already covers an overlapping filter on the `TASK_QUEUES` work-queue stream, the poll returns an error naming both filters instead of an empty array. The error text says grouped task types are not pollable over the bridge; that wording is out of date, because polling a group works through `worker_group`.
+If creating the consumer fails because another consumer already covers an overlapping filter on the `TASK_QUEUES` work-queue stream, the poll returns an error naming both filters instead of an empty array. The error suggests naming the matching `worker_group` on the poll or stopping the other consumer.
 
 ## Examples
 

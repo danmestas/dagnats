@@ -442,8 +442,8 @@ func consumerFilterMismatchError(
 // consumerCreateError turns a consumer-create failure into a message
 // an operator can act on. The work-queue uniqueness rejection gets
 // named explicitly: it means someone else already holds an
-// overlapping filter — in practice a grouped worker durable, which
-// the bridge's ungrouped poll cannot share.
+// overlapping filter — in practice a worker durable on a different
+// group scope, which this poll's filter cannot share a work queue with.
 func consumerCreateError(
 	ctx context.Context, name, filter string, cause error,
 ) error {
@@ -461,9 +461,11 @@ func consumerCreateError(
 		return fmt.Errorf(
 			"cannot create consumer %q on filter %s: another consumer "+
 				"already covers an overlapping filter on the "+
-				"TASK_QUEUES work-queue stream. Grouped task types are "+
-				"not pollable over the bridge; see "+
-				"/docs/workers/http-bridge#limitations: %w",
+				"TASK_QUEUES work-queue stream (for example a native "+
+				"worker durable on a wider or narrower subject for "+
+				"this task type). Name the matching worker_group on "+
+				"the poll, or stop the other consumer; see "+
+				"/docs/workers/http-bridge#worker-groups: %w",
 			name, filter, cause,
 		)
 	}
