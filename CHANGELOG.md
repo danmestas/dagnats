@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.0.28] - 2026-10-19
 
 ### Changed
 
@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A malformed workflow definition is an error, not a crash.** `workflow validate`, `workflow register` and the API panicked on a def with no name, a step with no ID, a task-type step with no `task`, or a `map` step with no `config`. They now report what is missing.
 - **An incomplete `cancel_on` entry is rejected when the def is validated.** An entry with no `match`, or a match missing `left`, `op` or `right`, used to pass validation and then panic the engine every time a run of that workflow started. `match.op` must be `eq` and `match.right` must be an `input.` path, since cancel waiters are resolved against the run input; anything else could never match. The JSON schema now describes `cancel_on` entries.
+
+### Documentation
+
+- The docs site, README and engineering docs were audited against the code and corrected throughout. New pages: Clustering and Coordination Leases.
+- `llms.txt` is now generated from the docs site (an index of every page plus a curated header), `llms-full.txt` no longer drops text or leaks template markup, and CI validates both on every PR.
+- New docs site landing page. The site now shows the real release version.
 
 ## [0.0.27] - 2026-10-19
 
