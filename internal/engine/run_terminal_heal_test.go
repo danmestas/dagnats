@@ -127,7 +127,7 @@ func TestHandleWorkflowStarted_RunTerminal_SaveFailureThenRedeliveryStarts(t *te
 		t.Fatalf("workflow_runs KV: %v", err)
 	}
 	flaky := &flakyCreateKV{KeyValue: realKV, failN: 1}
-	orch.store = &SnapshotStore{kv: flaky}
+	orch.store = &SnapshotStore{kv: flaky, nc: nc}
 
 	evt := runTerminalChainEvent(t, "heal-save-fail-run", wfDef.Name, "src-1")
 

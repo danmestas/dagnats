@@ -425,6 +425,12 @@ type WorkflowRun struct {
 	// advance. Additive: legacy snapshots deserialize to "" and fall
 	// back to today's by-name read.
 	DefHash string `json:"def_hash,omitempty"`
+	// Revision is the snapshot store's optimistic-concurrency handle:
+	// the KV revision this run was loaded at. Never serialized. It is
+	// a pointer so every value copy made after one load shares it, and
+	// a save through any copy advances what the others expect. nil
+	// means the run was not loaded from the store. See SnapshotRevision.
+	Revision *SnapshotRevision `json:"-"`
 }
 
 // NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending.

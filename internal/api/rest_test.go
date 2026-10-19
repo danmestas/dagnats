@@ -1301,6 +1301,7 @@ func TestRESTBulkRetry(t *testing.T) {
 	// observation).
 	orch.Stop()
 
+	run = reloadRun(t, svc, run.RunID)
 	run.Status = dag.RunStatusFailed
 	if err := svc.store.Save(context.Background(), run); err != nil {
 		t.Fatalf("force state: %v", err)

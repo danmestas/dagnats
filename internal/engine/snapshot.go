@@ -12,12 +12,30 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ErrRunNotFound is returned by Load when no snapshot exists for the given run ID.
 // Callers can distinguish missing-run from other NATS errors with errors.Is.
 var ErrRunNotFound = errors.New("workflow run not found")
+
+// ErrSnapshotConflict is returned by Save when the stored snapshot is
+// no longer the revision the run was loaded at: another engine (one
+// per cluster node) advanced or deleted the run in between. The write
+// was NOT applied. The caller must reload and redo its transition;
+// retrySnapshotConflict does that for event handlers.
+var ErrSnapshotConflict = errors.New("workflow run snapshot changed since it was loaded")
+
+// snapshotConflictAttemptsMax bounds how many times one event is
+// handled in-process when it keeps hitting ErrSnapshotConflict, before
+// the error is left to the consumer's NAK/redelivery schedule. A
+// conflict means a rival engine just wrote this run; contention on one
+// run is a handful of events, so a few immediate retries clear it.
+const snapshotConflictAttemptsMax = 4
+
+// runsBucket names the KV bucket SnapshotStore owns.
+const runsBucket = "workflow_runs"
 
 // runKeyScanMax bounds the workflow_runs key set a single ListAll /
 // CountAll / RepairRunIndex scan will tolerate. A run population beyond
@@ -103,6 +121,8 @@ const repairPageMax = 1000
 // The workflow_runs bucket must exist before NewSnapshotStore is called.
 type SnapshotStore struct {
 	kv jetstream.KeyValue
+	// nc carries Load's leader-routed read (natsutil.KVGetLeader).
+	nc *nats.Conn
 }
 
 // NewSnapshotStore binds a SnapshotStore to the workflow_runs KV bucket.
@@ -112,17 +132,29 @@ func NewSnapshotStore(js jetstream.JetStream) *SnapshotStore {
 		panic("NewSnapshotStore: JetStream must not be nil")
 	}
 	kv, err := js.KeyValue(
-		context.Background(), "workflow_runs",
+		context.Background(), runsBucket,
 	)
 	if err != nil {
 		panic("NewSnapshotStore: workflow_runs bucket not found: " +
 			err.Error())
 	}
-	return &SnapshotStore{kv: kv}
+	return &SnapshotStore{kv: kv, nc: js.Conn()}
 }
 
-// Save serializes the WorkflowRun and writes it to the KV store under key "run.<RunID>".
-// Overwrites any existing entry — callers are responsible for optimistic concurrency if needed.
+// Save serializes the WorkflowRun and writes it to the KV store under
+// key "run.<RunID>".
+//
+// A run that came from Load carries the revision it was read at, and
+// Save is a compare-and-set against it: if any other writer (another
+// node's engine, a delete) touched the key since, nothing is written
+// and ErrSnapshotConflict is returned. A blind Put here is how a
+// cluster lost updates: an engine holding an older snapshot overwrote
+// a newer one, erasing a completed step or a completed run. On success
+// the shared revision advances, so a later Save through any copy of
+// the same loaded run expects the new revision.
+//
+// A run with no Revision was never loaded (a reconciler listing, a
+// test fixture) and is written unconditionally, as before.
 //
 // Save touches NEITHER derived index (#664 review round 2). Index
 // writes happen exactly once, at genuine creation -- SaveInitial or
@@ -144,10 +176,37 @@ func (s *SnapshotStore) Save(ctx context.Context, run dag.WorkflowRun) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.kv.Put(
-		ctx, "run."+run.RunID, data,
-	)
-	return err
+	key := "run." + run.RunID
+	if run.Revision == nil {
+		_, err = s.kv.Put(ctx, key, data)
+		return err
+	}
+	expected := run.Revision.Seq()
+	revision, err := s.kv.Update(ctx, key, data, expected)
+	if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		return fmt.Errorf("%w: run %q (loaded at revision %d)",
+			ErrSnapshotConflict, run.RunID, expected)
+	}
+	if err != nil {
+		return err
+	}
+	run.Revision.Advance(revision)
+	return nil
+}
+
+// advanceRevision records an unconditional write on run's revision
+// handle, when it has one, so the caller's next Save expects the
+// revision just written.
+func advanceRevision(run dag.WorkflowRun, revision uint64) {
+	if revision == 0 {
+		panic("advanceRevision: a written revision is never 0")
+	}
+	if run.RunID == "" {
+		panic("advanceRevision: RunID must not be empty")
+	}
+	if run.Revision != nil {
+		run.Revision.Advance(revision)
+	}
 }
 
 // SaveInitial is Save's counterpart for a run's GENUINE first
@@ -175,9 +234,11 @@ func (s *SnapshotStore) SaveInitial(ctx context.Context, run dag.WorkflowRun) er
 	if err != nil {
 		return err
 	}
-	if _, err := s.kv.Put(ctx, "run."+run.RunID, data); err != nil {
+	revision, err := s.kv.Put(ctx, "run."+run.RunID, data)
+	if err != nil {
 		return err
 	}
+	advanceRevision(run, revision)
 	return s.createEntryIndexes(ctx, run)
 }
 
@@ -356,8 +417,9 @@ func (s *SnapshotStore) CreateSnapshot(
 	if err != nil {
 		return false, err
 	}
-	_, err = s.kv.Create(ctx, "run."+run.RunID, data)
+	revision, err := s.kv.Create(ctx, "run."+run.RunID, data)
 	if err == nil {
+		advanceRevision(run, revision)
 		if idxErr := s.createEntryIndexes(ctx, run); idxErr != nil {
 			return false, idxErr
 		}
@@ -524,16 +586,19 @@ func (s *SnapshotStore) isPrunable(
 // Load retrieves and deserializes the WorkflowRun for the given run ID.
 // Returns ErrRunNotFound when no entry exists, allowing callers to handle
 // missing runs distinctly from NATS infrastructure errors.
+//
+// The read goes to the bucket's stream leader, not kv.Get's direct
+// get: on a replicated bucket a direct get may be answered by a
+// lagging replica, and every Load feeds a read-modify-Save. The
+// returned run carries the revision it was read at (see Save).
 func (s *SnapshotStore) Load(ctx context.Context, runID string) (dag.WorkflowRun, error) {
 	if runID == "" {
 		panic("SnapshotStore.Load: runID must not be empty")
 	}
-	if s.kv == nil {
-		panic("SnapshotStore.Load: kv bucket must not be nil")
+	if s.nc == nil {
+		panic("SnapshotStore.Load: nats connection must not be nil")
 	}
-	entry, err := s.kv.Get(
-		ctx, "run."+runID,
-	)
+	entry, err := natsutil.KVGetLeader(ctx, s.nc, runsBucket, "run."+runID)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return dag.WorkflowRun{}, ErrRunNotFound
@@ -541,8 +606,32 @@ func (s *SnapshotStore) Load(ctx context.Context, runID string) (dag.WorkflowRun
 		return dag.WorkflowRun{}, err
 	}
 	var run dag.WorkflowRun
-	err = json.Unmarshal(entry.Value(), &run)
-	return run, err
+	if err := json.Unmarshal(entry.Value, &run); err != nil {
+		return dag.WorkflowRun{}, err
+	}
+	run.Revision = dag.NewSnapshotRevision(entry.Revision)
+	return run, nil
+}
+
+// retrySnapshotConflict runs handle until it returns anything other
+// than ErrSnapshotConflict, at most snapshotConflictAttemptsMax times.
+// handle must reload the run on every call: a conflict means the copy
+// it held is stale, and only a fresh Load sees the rival's write.
+func retrySnapshotConflict(handle func() error) error {
+	if handle == nil {
+		panic("retrySnapshotConflict: handle must not be nil")
+	}
+	var err error
+	for attempt := 0; attempt < snapshotConflictAttemptsMax; attempt++ {
+		err = handle()
+		if !errors.Is(err, ErrSnapshotConflict) {
+			return err
+		}
+	}
+	if !errors.Is(err, ErrSnapshotConflict) {
+		panic("retrySnapshotConflict: exhausted without a conflict")
+	}
+	return err
 }
 
 // ListActive returns every run the reconciler still owns (#664 review

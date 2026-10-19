@@ -144,6 +144,7 @@ func (o *Orchestrator) createChildRun(
 	// different file. Must create both derived indexes so the child is
 	// immediately visible to runidx-based scans (ScanRuns) and
 	// runactive-based ones (the reconciler, the quota).
+	childRun.Revision = dag.NewSnapshotRevision(0)
 	if err := o.saveInitialSnapshot(ctx, childRun); err != nil {
 		return err
 	}

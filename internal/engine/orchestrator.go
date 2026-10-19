@@ -563,7 +563,13 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 		),
 	)
 	defer span.End()
-	err = o.dispatchEvent(ctx, evt)
+	// Engines on other nodes consume the same durable, so a rival may
+	// write this run between our Load and Save; Save then refuses
+	// (ErrSnapshotConflict) and the event is handled again from a
+	// fresh Load rather than waiting out a multi-second NAK delay.
+	err = retrySnapshotConflict(func() error {
+		return o.dispatchEvent(ctx, evt)
+	})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -954,6 +960,9 @@ func (o *Orchestrator) createOrHealRun(
 	if run.RunID == "" {
 		panic("createOrHealRun: run.RunID must not be empty")
 	}
+	// The key does not exist yet; the creating write advances this
+	// handle, so the dispatch saves below are revision-checked too.
+	run.Revision = dag.NewSnapshotRevision(0)
 
 	if !isRunTerminal {
 		// SaveInitial, not saveSnapshot/Save (#664 review round 2):

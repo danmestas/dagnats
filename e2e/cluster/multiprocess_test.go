@@ -2,7 +2,10 @@
 // binary and starts three `dagnats serve` processes on localhost with
 // distinct client/HTTP/route ports and data dirs, routed to each other.
 // The test waits for /health/cluster to report all three members, runs a
-// workflow through the cluster, SIGKILLs one node, then proves the
+// workflow through the cluster, runs several concurrent multi-step runs
+// (task, sleep, task, task) and requires each run's stored snapshot --
+// not just its history -- to reach completed, SIGKILLs one node, then
+// proves the
 // survivors still report healthy (HTTP 200, 2 of 3 nodes up) and complete
 // a second workflow.
 //
@@ -48,6 +51,11 @@ const (
 	runTimeout       = 60 * time.Second
 	failoverTimeout  = 60 * time.Second
 	healthPollPeriod = 500 * time.Millisecond
+	// chainRunCount concurrent multi-step runs, each sleeping
+	// chainSleep, must all finish within one shared chainTimeout.
+	chainRunCount = 8
+	chainSleep    = 2 * time.Second
+	chainTimeout  = 60 * time.Second
 	// startAttemptsMax bounds relaunches when a node dies right after
 	// start, which is how a port picked by freePort and taken before the
 	// node bound it shows up.
@@ -56,10 +64,11 @@ const (
 	// start failure (retry) rather than a crash (fail).
 	earlyExitWindow = 15 * time.Second
 	// totalBudget is the worst-case wall time: build, up to
-	// startAttemptsMax early-exit windows, formation, one run before the
-	// kill, degradation, one run after, plus slack. The test refuses to
-	// start if the go test deadline is closer than this.
-	totalBudget = 8 * time.Minute
+	// startAttemptsMax early-exit windows, formation, one run and the
+	// chain runs before the kill, degradation, one run after, plus
+	// slack. The test refuses to start if the go test deadline is closer
+	// than this.
+	totalBudget = 9 * time.Minute
 )
 
 // errEarlyExit marks a node that exited inside earlyExitWindow.
@@ -384,6 +393,93 @@ func runLinearWorkflow(
 	)
 }
 
+// runChainWorkflows starts chainRunCount concurrent runs of
+// task -> sleep -> task -> task and requires every run's SNAPSHOT to
+// reach completed with every step completed. One engine per node
+// shares the history consumer, so consecutive events of one run land
+// on different engines; a snapshot write that ignored a rival's newer
+// write left runs wedged at running even though history recorded
+// workflow.completed. A one-step run cannot show this: it has no
+// second event to race the first.
+func runChainWorkflows(t *testing.T, svc *api.Service) {
+	t.Helper()
+	wb := dag.NewWorkflow(harness.UniqueName(t, "chain"))
+	first := wb.Task("a", "cluster-task")
+	nap := wb.Sleep("nap", chainSleep).After(first)
+	second := wb.Task("b", "cluster-task").After(nap)
+	wb.Task("c", "cluster-task").After(second)
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("build chain workflow: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := svc.RegisterWorkflow(ctx, def); err != nil {
+		t.Fatalf("register chain workflow: %v", err)
+	}
+	runIDs := make([]string, 0, chainRunCount)
+	for i := 0; i < chainRunCount; i++ {
+		runID, err := svc.StartRun(ctx, def.Name, nil)
+		if err != nil {
+			t.Fatalf("start chain run %d: %v", i, err)
+		}
+		runIDs = append(runIDs, runID)
+	}
+	waitChainSnapshots(t, svc, runIDs)
+}
+
+// waitChainSnapshots polls (bounded by chainTimeout) until every run's
+// snapshot is completed with all four steps completed. On timeout it
+// reports each unfinished run's step states, which is what tells a
+// wedge (c completed, run still running) apart from a slow run.
+func waitChainSnapshots(t *testing.T, svc *api.Service, runIDs []string) {
+	t.Helper()
+	pending := map[string]string{}
+	for _, runID := range runIDs {
+		pending[runID] = "not read yet"
+	}
+	deadline := time.Now().Add(chainTimeout)
+	for len(pending) > 0 && time.Now().Before(deadline) {
+		for runID := range pending {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			run, err := svc.GetRun(ctx, runID)
+			cancel()
+			if err != nil {
+				pending[runID] = err.Error()
+				continue
+			}
+			if chainSnapshotDone(run) {
+				delete(pending, runID)
+				continue
+			}
+			pending[runID] = describeChainRun(run)
+		}
+		time.Sleep(healthPollPeriod)
+	}
+	for runID, state := range pending {
+		t.Errorf("run %s snapshot not completed within %s: %s",
+			runID, chainTimeout, state)
+	}
+}
+
+func chainSnapshotDone(run dag.WorkflowRun) bool {
+	if run.Status != dag.RunStatusCompleted {
+		return false
+	}
+	for _, stepID := range []string{"a", "nap", "b", "c"} {
+		if run.Steps[stepID].Status != dag.StepStatusCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+func describeChainRun(run dag.WorkflowRun) string {
+	return fmt.Sprintf("run=%v a=%v nap=%v b=%v c=%v", run.Status,
+		run.Steps["a"].Status, run.Steps["nap"].Status,
+		run.Steps["b"].Status, run.Steps["c"].Status)
+}
+
 func TestMultiProcessCluster_FailoverKeepsWorking(t *testing.T) {
 	if os.Getenv("DAGNATS_E2E_CLUSTER") != "1" {
 		t.Skip("set DAGNATS_E2E_CLUSTER=1 to run the 3-process cluster test")
@@ -417,6 +513,7 @@ func TestMultiProcessCluster_FailoverKeepsWorking(t *testing.T) {
 	// would race the post-kill re-election and is not what is under test.
 	svc := harness.NewTestService(t, nc)
 	runLinearWorkflow(t, svc, "before-kill", 10*time.Second)
+	runChainWorkflows(t, svc)
 
 	killNode(nodes[2])
 	// 200, not just a lower count: every provisioned asset is replicated,

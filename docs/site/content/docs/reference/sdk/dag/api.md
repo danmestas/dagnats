@@ -86,6 +86,10 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [type SleepConfig](<#SleepConfig>)
   - [func ParseSleepConfig\(step StepDef\) \(SleepConfig, error\)](<#ParseSleepConfig>)
   - [func \(cfg \*SleepConfig\) UnmarshalJSON\(data \[\]byte\) error](<#SleepConfig.UnmarshalJSON>)
+- [type SnapshotRevision](<#SnapshotRevision>)
+  - [func NewSnapshotRevision\(seq uint64\) \*SnapshotRevision](<#NewSnapshotRevision>)
+  - [func \(r \*SnapshotRevision\) Advance\(seq uint64\)](<#SnapshotRevision.Advance>)
+  - [func \(r \*SnapshotRevision\) Seq\(\) uint64](<#SnapshotRevision.Seq>)
 - [type StepDef](<#StepDef>)
   - [func EffectiveSteps\(def WorkflowDef, run WorkflowRun\) \[\]StepDef](<#EffectiveSteps>)
   - [func NamespaceFragment\(plannerID string, fragment \[\]StepDef\) \[\]StepDef](<#NamespaceFragment>)
@@ -958,6 +962,46 @@ func (cfg *SleepConfig) UnmarshalJSON(data []byte) error
 
 UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
+<a name="SnapshotRevision"></a>
+## type [SnapshotRevision](<https://github.com/danmestas/dagnats/blob/main/dag/revision.go#L15-L17>)
+
+SnapshotRevision records the stored revision a WorkflowRun was read at, so the next write of that run can be a compare\-and\-set against it. Several engines \(one per cluster node\) advance the same run; a write that does not prove it saw the latest snapshot would erase whatever another engine wrote in between.
+
+One SnapshotRevision belongs to one load: copies of the run share it by pointer, while a separate load gets its own. That is what lets one handler save the same run twice while two handlers that loaded the same revision still conflict.
+
+```go
+type SnapshotRevision struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewSnapshotRevision"></a>
+### func [NewSnapshotRevision](<https://github.com/danmestas/dagnats/blob/main/dag/revision.go#L21>)
+
+```go
+func NewSnapshotRevision(seq uint64) *SnapshotRevision
+```
+
+NewSnapshotRevision returns a handle at seq. seq 0 means the run's key does not exist yet.
+
+<a name="SnapshotRevision.Advance"></a>
+### func \(\*SnapshotRevision\) [Advance](<https://github.com/danmestas/dagnats/blob/main/dag/revision.go#L37>)
+
+```go
+func (r *SnapshotRevision) Advance(seq uint64)
+```
+
+Advance records a successful write at seq. Revisions only grow, so a seq at or below the current one is a programmer error.
+
+<a name="SnapshotRevision.Seq"></a>
+### func \(\*SnapshotRevision\) [Seq](<https://github.com/danmestas/dagnats/blob/main/dag/revision.go#L28>)
+
+```go
+func (r *SnapshotRevision) Seq() uint64
+```
+
+Seq returns the revision the next write must expect.
+
 <a name="StepDef"></a>
 ## type [StepDef](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L241-L266>)
 
@@ -1738,7 +1782,7 @@ func (def *WorkflowDef) UnmarshalJSON(data []byte) error
 UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L363-L428>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L363-L434>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1808,11 +1852,17 @@ type WorkflowRun struct {
     // advance. Additive: legacy snapshots deserialize to "" and fall
     // back to today's by-name read.
     DefHash string `json:"def_hash,omitempty"`
+    // Revision is the snapshot store's optimistic-concurrency handle:
+    // the KV revision this run was loaded at. Never serialized. It is
+    // a pointer so every value copy made after one load shares it, and
+    // a save through any copy advances what the others expect. nil
+    // means the run was not loaded from the store. See SnapshotRevision.
+    Revision *SnapshotRevision `json:"-"`
 }
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L433>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L439>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1821,7 +1871,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L457>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L463>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time

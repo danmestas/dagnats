@@ -602,9 +602,43 @@ func (o *Orchestrator) reconcileRunningRuns(ctx context.Context) {
 			o.reconcileOneRun(ctx, run.RunID)
 			continue
 		}
-		if run.Status.IsTerminal() && run.ReleasePending {
-			o.reconcileReleasePending(ctx, run)
+		if !run.Status.IsTerminal() || !run.ReleasePending {
+			continue
 		}
+		if run.RunID == "" {
+			// Malformed snapshot: nothing to reload by. The
+			// recovery path logs and skips it without saving.
+			o.reconcileReleasePending(ctx, run)
+			continue
+		}
+		o.reconcileReleasePendingRun(ctx, run.RunID)
+	}
+}
+
+// reconcileReleasePendingRun reloads runID under its run lock before
+// recovering its release. The listed copy is a replica-served read
+// with no revision, so saving it would be an unconditional write over
+// whatever the run's handlers wrote since; the reloaded copy's save is
+// revision-checked.
+func (o *Orchestrator) reconcileReleasePendingRun(ctx context.Context, runID string) {
+	if ctx == nil {
+		panic("reconcileReleasePendingRun: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("reconcileReleasePendingRun: runID must not be empty")
+	}
+	lock := o.getRunLock(runID)
+	lock.Lock()
+	defer lock.Unlock()
+	run, err := o.store.Load(ctx, runID)
+	if err != nil {
+		slog.ErrorContext(ctx,
+			"reconciler: reload release-pending run",
+			"run_id", runID, "error", err)
+		return
+	}
+	if run.Status.IsTerminal() && run.ReleasePending {
+		o.reconcileReleasePending(ctx, run)
 	}
 }
 

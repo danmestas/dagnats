@@ -63,6 +63,10 @@ func TestBulkRetryRerunMode(t *testing.T) {
 	// and leaving the test asserting against the wrong snapshot.
 	orch.Stop()
 
+	// Re-read after the fence: the copies above may predate writes the
+	// orchestrator made before it stopped, and Save refuses a stale copy.
+	run1 = reloadRun(t, svc, runID1)
+	run2 = reloadRun(t, svc, runID2)
 	run1.Status = dag.RunStatusFailed
 	if err := svc.store.Save(context.Background(), run1); err != nil {
 		t.Fatalf("force state run1: %v", err)
@@ -140,6 +144,7 @@ func TestBulkRetryDryRun(t *testing.T) {
 	// TestBulkRetryRerunMode for the race rationale.
 	orch.Stop()
 
+	run = reloadRun(t, svc, run.RunID)
 	run.Status = dag.RunStatusFailed
 	if err := svc.store.Save(context.Background(), run); err != nil {
 		t.Fatalf("force state: %v", err)
@@ -352,4 +357,19 @@ func TestBulkRetrySurfacesTruncatedScan(t *testing.T) {
 	if len(resp.Retried) != 0 {
 		t.Fatalf("Retried = %v, want empty", resp.Retried)
 	}
+}
+
+// reloadRun re-reads runID's snapshot so a test's forced write starts
+// from the latest revision rather than a copy the orchestrator has
+// since advanced (Save rejects such a copy with ErrSnapshotConflict).
+func reloadRun(t *testing.T, svc *Service, runID string) dag.WorkflowRun {
+	t.Helper()
+	if runID == "" {
+		t.Fatal("reloadRun: runID must not be empty")
+	}
+	run, err := svc.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("reload run %s: %v", runID, err)
+	}
+	return run
 }

@@ -73,6 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `GET /runs/{id}/logs` with no `attempt` now resolves a step that hasn't started yet to attempt 1, the subject its first attempt writes to. A follow attached early used to wait on attempt 0, which nothing writes.
 
+- Multi-step runs could wedge at `running` in cluster mode even though their history recorded every step, and sometimes `workflow.completed`. Each node's engine consumes the same history stream, so consecutive events of one run are handled on different nodes. Run snapshots were read with a KV direct get, which any replica may answer, possibly from before the last write, and saved with an unconditional put. An engine holding an older snapshot overwrote a newer one, erasing a finished sleep step (the run never completed) or a completed run. Snapshot reads now go to the stream leader, and every save of a loaded run is a compare-and-set on the revision it was read at. On a conflict the event is handled again from a fresh read.
+
 - A cluster with `nats_cluster_auth_token` set never formed. Nodes required the token on routes they accepted but did not send it on routes they dialed, so every route was rejected and startup failed with "cluster quorum did not form". The token is now added to every route URL that has no credentials of its own.
 
 - A revoked worker token could briefly authorize again. If the token store's KV watch delivered the mint event after `Revoke` had already cached the revoked record, the older event overwrote it until the revoke event arrived. Cache updates now apply only when their KV revision is newer.

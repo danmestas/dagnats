@@ -283,7 +283,7 @@ func TestSkipSnapshotWriteFailureNaksForRedelivery(t *testing.T) {
 		t.Fatalf("KeyValue(workflow_runs): %v", err)
 	}
 	orch.store = &SnapshotStore{
-		kv: failingPutKV{KeyValue: runsKV, failKey: "run.run-b"},
+		kv: failingPutKV{KeyValue: runsKV, failKey: "run.run-b"}, nc: nc,
 	}
 
 	evtB := skipVisibilityStartEvent(t, wfDef, "run-b")
@@ -309,7 +309,7 @@ func TestSkipSnapshotWriteFailureNaksForRedelivery(t *testing.T) {
 
 	// Redelivery: the transient failure has cleared, so a second
 	// delivery of the same event must succeed and persist the run.
-	orch.store = &SnapshotStore{kv: runsKV}
+	orch.store = &SnapshotStore{kv: runsKV, nc: nc}
 	if err := orch.handleWorkflowStarted(
 		context.Background(), evtB,
 	); err != nil {
