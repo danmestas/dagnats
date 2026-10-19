@@ -18,8 +18,8 @@ DagNats inverts this. NATS JetStream provides durable streams, key-value storage
 | **Event log** | JetStream stream (WORKFLOW_HISTORY) | Immutable, append-only event sourcing. Every workflow state change is a message on `history.{runID}`. Retention: limits policy, 5s dedup. |
 | **Task distribution** | JetStream stream (TASK_QUEUES) + pull consumers | WorkQueue retention ensures each task is delivered to exactly one worker. Workers create filtered pull consumers for their task types. `MaxAckPending` controls parallelism. |
 | **Atomic fan-out** | JetStream atomic batch publish | Map steps publish all instance tasks in a single atomic operation. Either all tasks publish or none do. Requires NATS >= 2.12. |
-| **Run state** | KV bucket (workflow_runs) | Snapshot of current run state for fast API reads. Optimistic locking via KV Revision prevents stale writes. |
-| **Workflow definitions** | KV bucket (workflow_defs) | Immutable after creation. KV revision history provides versioning. |
+| **Run state** | KV bucket (workflow_runs) | The engine's working state for each run: loaded for every event, saved with a revision check, and read directly by the API. Optimistic locking via KV Revision prevents stale writes. |
+| **Workflow definitions** | KV bucket (workflow_defs) | A mutable `name` pointer to the latest definition, plus immutable content-addressed versions (`name.v.<hash>`, at most 32 per name). A run is pinned to the version it started with. |
 | **Retries with backoff** | SLEEP_TIMERS | When a task fails with a retriable error, the engine schedules the retry as a durable timer (`retry_backoff`, or `retry_after` when the worker asked for a delay). When the timer fires, the engine dispatches the next attempt. |
 | **Durable sleep** | NakWithDelay via SLEEP_TIMERS | Sleep steps publish a message to the `SLEEP_TIMERS` stream, then NAK it with the sleep duration. On redeliver, the engine publishes a `step.sleep.completed` event. Sleeps up to 365 days. |
 | **Step timeouts** | SLEEP_TIMERS watchdog | When an attempt starts, the engine arms a durable timer for the step's timeout. If the attempt is still running when it fires, the engine fails it as retriable. `AckWait` only bounds a worker's claim: if a worker dies, NATS redelivers, and the redelivery continues the same timeout clock. |
@@ -31,22 +31,23 @@ DagNats inverts this. NATS JetStream provides durable streams, key-value storage
 | **Real-time streaming** | Core pub/sub | Workers call `PutStream(data)` which publishes to `stream.{runID}.{stepID}`. Subscribers receive updates in real time. No persistence needed -- this is ephemeral output streaming. |
 | **Rate limiting** | KV CAS (compare-and-swap) | Token bucket state stored in the `rate_limits` KV bucket. CAS operations ensure atomic token acquisition. When exhausted, tasks retry via `SLEEP_TIMERS` with the refill delay. |
 | **Concurrency control** | KV CAS member sets | Per-task-type slot holders in `concurrency_tasks` and per-workflow run holders in `concurrency_runs`. CAS writes prevent races, and adding or removing a holder twice is a no-op. Bounded retry: 10 CAS attempts. |
-| **Large payloads** | Object Store + event references | When payloads exceed message size limits, they are stored in NATS Object Store. Events reference them by key. |
 | **Worker affinity** | KV (sticky_bindings) + dedicated stream (STICKY_TASKS) | Bindings map runs to workers. Affinity tasks route to worker-specific subjects on the `STICKY_TASKS` memory stream. |
 | **Human approval** | KV (approval_tokens) with TTL | 256-bit tokens stored with 7-day TTL. Atomic consumption via CAS prevents double-approve. |
 | **Idempotency** | KV (idempotency_keys) with TTL | Dedup keys map to run IDs with 24-hour TTL. Prevents duplicate workflow starts from retry logic. |
+| **Coordination leases** | KV bucket (leases) with per-key TTL | Downstream services elect leaders and own shards through `api.leases.*`. The server enforces the TTL and the key's KV revision is the fencing token. Requires nats-server 2.11 or newer. |
 
 ## Key Patterns
 
 ### NakWithDelay as Universal Timer
 
-The most powerful pattern in the mapping. NATS `NakWithDelay` tells the server "redeliver this message after N duration." DagNats uses this for:
+The most powerful pattern in the mapping. NATS `NakWithDelay` tells the server "redeliver this message after N duration." The engine publishes a message to the `SLEEP_TIMERS` stream, NAKs it with the delay, and acts when it is redelivered. DagNats uses this for:
 
-- **Retry backoff**: failed tasks are NAK'd with exponentially increasing delays
-- **Durable sleep**: sleep steps NAK with the sleep duration (up to 365 days)
-- **Wait-for-event timeout**: NAK with the timeout duration, fires if no match arrives
-- **Rate limit retry**: NAK with the token refill delay
-- **Debounce**: NAK with the debounce window
+- **Retry backoff**: the engine arms a `SLEEP_TIMERS` timer for the retry delay
+- **Durable sleep**: a timer for the sleep duration (up to 365 days)
+- **Step timeouts**: a watchdog timer armed when an attempt starts
+- **Wait-for-event timeout**: a timer that fires if no match arrives
+- **Rate limit retry**: a timer set to the token refill delay
+- **Debounce**: a timer for the debounce window
 
 One primitive replaces what would otherwise require a timer service, a scheduler, a delay queue, and a cron system.
 

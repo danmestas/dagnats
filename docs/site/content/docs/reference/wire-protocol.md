@@ -11,15 +11,22 @@ Workers connect directly to NATS JetStream and subscribe to task subjects.
 
 ### Task Subjects
 
-Task subjects follow the pattern `task.{type}.{runID}`:
+Task subjects follow the pattern `task.{type}[.={workerGroup}].{runID}`. The run ID is always the last token. A run ID is a 32-character lowercase hex string, so it is exactly one subject token.
 
 | Subject | Matches |
 |---------|---------|
-| `task.llm.*` | All LLM tasks |
-| `task.http.*` | All HTTP tasks |
-| `task.llm.run-abc` | LLM tasks for run-abc only |
+| `task.llm.*` | All `llm` tasks, any run |
+| `task.llm.run-abc` | The `llm` task for run `run-abc` only |
+| `task.build.*` | All `build` tasks. Does **not** match `task.build.linux.*` |
+| `task.render.=gpu.*` | All `render` tasks in worker group `gpu`. Does **not** match `task.render.gpu.*` |
 
-Workers create durable pull consumers or ephemeral subscriptions with manual ACK.
+A step's `task` is published verbatim, so workflow registration rejects a value that could not dispatch correctly. It must be 1 to 128 bytes of `A-Za-z0-9_.-`, must not start or end with `.`, and must not contain an empty token (`a..b`). Dots are legal: `dagger.call` is a valid task type. A step's `worker_group` follows the same rule.
+
+The `=` before a group name keeps a grouped pair distinct from a dotted task type. Without it, task `render` in group `gpu` and the task type `render.gpu` would derive the same subject. `=` is rejected in both fields, so it cannot be forged.
+
+A consumer's filter is anchored on exactly one trailing `*` token, not `>`. An ungrouped worker and a grouped worker for the same task type therefore never see each other's work. Durable consumer names follow the same rule: `workers-render` for the ungrouped pair, `workers-render-=gpu` for the grouped one.
+
+Workers create durable pull consumers with manual ACK.
 
 ### TaskPayload Schema
 
@@ -43,9 +50,14 @@ Canonical Go type: `protocol.TaskPayload` in `protocol/protocol.go`.
 | `task_id` | string | Yes | Unique task identifier: `{run_id}.{step_id}` |
 | `run_id` | string | Yes | Workflow run identifier |
 | `step_id` | string | Yes | Step identifier from workflow DAG |
-| `iteration` | int | No | Agent-loop iteration (0 for first execution) |
+| `iteration` | int | No | Agent-loop iteration (omitted for the first execution) |
 | `attempt` | int | No | Retry attempt number (1-based) |
 | `input` | JSON | No | Step input data as raw JSON |
+| `metadata` | map[string]string | No | The step's static `metadata`, delivered to the worker as `TaskContext.Metadata()` |
+| `required_capabilities` | []string | No | Copied from the step's `required_capabilities` |
+| `dispatch_nonce` | string | No | Per-dispatch token a worker carries on control-plane requests so the server can verify it received this dispatch |
+| `workflow_name` | string | No | Workflow definition name, used for span attributes |
+| `traceparent`, `tracestate` | string | No | W3C trace context, so a worker's span parents onto the dispatch span |
 
 ### Task Resolution
 
@@ -54,8 +66,10 @@ Workers publish lifecycle events back to the history stream:
 | Action | Event Type | Subject | Description |
 |--------|-----------|---------|-------------|
 | Complete | `step.completed` | `history.{runID}` | Task finished successfully with output payload |
-| Fail | `step.failed` | `history.{runID}` | Task failed with error payload |
+| Fail | `step.failed` | `history.{runID}` | Task failed. The payload carries `error`, `failure_type` and, for `retry_after`, `retry_after_ms` |
 | Continue | `step.continue` | `history.{runID}` | Agent loop requesting next iteration |
+
+`failure_type` is `retriable` (the default), `non_retriable` or `retry_after`.
 
 Use `protocol.NewStepEvent()` to construct events with correct subject and dedup ID.
 
@@ -67,7 +81,7 @@ Workers register in the `workers` KV bucket on startup via `worker.Directory`. T
 
 ## HTTP Transport
 
-The bridge exposes three endpoints for HTTP workers. No env token = open bridge (dev mode); set `DAGNATS_BRIDGE_TOKEN` and every worker needs either the env token (admin/root) or a minted one. The admin token can mint scoped, revocable worker tokens (`dgn_{id}_{secret}`) via [`POST /v1/tokens`](../rest-api#tokens) for individual machines instead of distributing the admin credential itself.
+The bridge serves four endpoints for HTTP workers, under `/v1`. No env token = open bridge (dev mode); set `DAGNATS_BRIDGE_TOKEN` and every worker needs either the env token (admin/root) or a minted one. The admin token can mint scoped, revocable worker tokens (`dgn_{id}_{secret}`) via [`POST /v1/tokens`](../rest-api#tokens) for individual machines instead of distributing the admin credential itself.
 
 ### POST /v1/workers/connect
 
@@ -79,9 +93,12 @@ Registers a worker and maintains a Server-Sent Events (SSE) heartbeat stream. Th
 {
   "worker_id": "worker-123",
   "task_types": ["llm", "http"],
-  "max_tasks": 2
+  "max_tasks": 2,
+  "worker_group": "quarry"
 }
 ```
+
+`worker_group` is optional and names the group this worker drains, so `GET /v1/workers` can report who serves it. A group that is invalid is `400`; a group the token is not scoped to is `403`. When omitted, the registration records the token's own group scope: the group (or groups) of a group-scoped token, and none for an unscoped token.
 
 **Response:** SSE stream with `heartbeat` events every 25 seconds.
 
@@ -99,6 +116,7 @@ Long-polls for available tasks from the TASK_QUEUES stream.
 ```json
 {
   "task_types": ["llm"],
+  "worker_group": "repo-alpha",
   "max_tasks": 1,
   "timeout_ms": 30000
 }
@@ -107,6 +125,7 @@ Long-polls for available tasks from the TASK_QUEUES stream.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `task_types` | []string | Yes | Task types to poll for |
+| `worker_group` | string | No | Worker group to poll. Omit it to poll the ungrouped queue. A token scoped to specific groups can poll only those groups (`403` otherwise) |
 | `max_tasks` | int | Yes | Maximum tasks to return |
 | `timeout_ms` | int | Yes | Long-poll timeout in milliseconds (max 60000) |
 
@@ -125,11 +144,11 @@ Long-polls for available tasks from the TASK_QUEUES stream.
 ]
 ```
 
-Returns empty array `[]` on timeout. Each fetched message is stored in an in-memory ack map keyed by `task_id`.
+Each element has the `TaskPayload` fields `task_id`, `run_id`, `step_id`, `iteration`, `attempt`, `input` and `metadata`, plus `traceparent` and `tracestate` for trace propagation. Returns empty array `[]` on timeout. Each fetched message is stored in an in-memory ack map keyed by `task_id`. A poller shares one durable consumer per task type and worker group with every other poller of that pair, native workers included.
 
 ### POST /v1/tasks/{id}/resolve
 
-Resolves a polled task by completing, failing, pausing, or checkpointing it.
+Resolves a polled task. Only the token that claimed the task (or the admin token) may resolve it.
 
 **Request:**
 
@@ -138,10 +157,14 @@ Resolves a polled task by completing, failing, pausing, or checkpointing it.
   "action": "complete",
   "output": {"result": "ok"},
   "error": "error message",
+  "failure_type": "retriable",
+  "retry_after_ms": 5000,
   "name": "pause name",
   "duration_ms": 5000,
   "checkpoint": {"state": "..."},
-  "data": {"incremental": "..."}
+  "data": {"incremental": "..."},
+  "run_id": "run-1",
+  "timeout_ms": 30000
 }
 ```
 
@@ -150,11 +173,26 @@ Resolves a polled task by completing, failing, pausing, or checkpointing it.
 | Action | Fields Used | Behavior |
 |--------|------------|----------|
 | `complete` | `output` | Publishes `step.completed` event, ACKs message, removes from ack map |
-| `fail` | `error` | Publishes `step.failed` event, ACKs message, removes from ack map |
-| `pause` | `duration_ms`, `checkpoint` | Writes checkpoint to KV, NAKs with delay, removes from ack map |
+| `fail` | `error`, `failure_type`, `retry_after_ms` | Publishes `step.failed` event with the failure type (`retriable` by default), ACKs message, removes from ack map |
+| `continue` | `output` | Publishes `step.continue` event for an agent loop, ACKs message, removes from ack map |
+| `pause` | `duration_ms`, `checkpoint` | Writes checkpoint to KV, NAKs with delay (`duration_ms` in 1 to 3600000), removes from ack map |
 | `checkpoint` | `data` | Writes incremental checkpoint to KV, extends ack deadline (InProgress) |
+| `heartbeat` | none | Extends the ack deadline without resolving the task |
+| `stream` | `data` | Publishes `data` on core NATS subject `stream.{runID}.{stepID}` and extends the ack deadline |
+| `send_signal` | `run_id`, `name`, `data` | Writes a signal to the `signals` KV bucket under `{run_id}.{name}`, extends the ack deadline |
+| `wait_signal` | `name`, `timeout_ms` | Blocks until the named signal arrives and returns its data as the response body; `timeout_ms` in 1 to 3600000, `408` on timeout. Extends the ack deadline while waiting |
 
-**Response:** `200 OK` on success, `404 Not Found` if task ID not in ack map.
+**Response:** `200 OK` on success, `404 Not Found` if task ID not in ack map, `403` if the caller did not claim the task, `409` if the run was cancelled.
+
+### POST /v1/tasks/{id}/logs
+
+Publishes captured stdout and stderr for a claimed task to the BUILD_LOGS hot lane. See "Consumer contract" below for the subject and chunk shape.
+
+```json
+{"chunks": [{"stream": "out", "data": "aGVsbG8K"}]}
+```
+
+`stream` is `out` or `err`; `data` is base64. A request holds at most 256 chunks and 1 MiB. The bridge assigns `seq`, and takes `attempt` and `iteration` from the claimed task, never from the body. A post for a task that already resolved is `409`; for a task that was never claimed, `404`.
 
 ---
 
@@ -169,9 +207,16 @@ Workers register their presence in the `workers` KV bucket:
   "language": "python",
   "transport": "bridge",
   "max_tasks": 2,
-  "metadata": {"version": "1.0.0"}
+  "worker_groups": ["gpu"],
+  "pid": 4821,
+  "hostname": "build-01",
+  "version": "1.0.0",
+  "metadata": {"team": "ml"},
+  "last_seen": "2026-08-28T12:00:00Z"
 }
 ```
+
+`worker_groups`, `pid`, `hostname`, `version` and `metadata` are optional. `last_seen` is stamped on every write.
 
 Canonical Go type: `worker.WorkerRegistration` in `worker/directory.go`.
 
@@ -192,6 +237,8 @@ Canonical Go type: `worker.WorkerRegistration` in `worker/directory.go`.
 
 **Checkpoint** saves incremental state without suspending execution. The worker writes data to KV and calls `InProgress()` to extend the ack deadline. The task remains in-flight and the worker continues execution.
 
+Time spent paused counts toward the step's `timeout`: a resumed task continues the attempt's timeout rather than starting a new one, so a step that pauses repeatedly needs a `timeout` covering its whole run.
+
 Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}.{step_id}`.
 
 ---
@@ -200,7 +247,7 @@ Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}
 
 | Mechanism | ID Format | Scope |
 |-----------|----------|-------|
-| NATS message dedup | `Nats-Msg-Id` header | JetStream duplicate window (default 2 min) |
+| NATS message dedup | `Nats-Msg-Id` header | The receiving stream's duplicate window (set per stream) |
 | Event dedup | `{run_id}.{step_id}.{event_type}` | Prevents duplicate events on replay |
 | Rate retry dedup | `{run_id}.{step_id}.rate_retry` | Prevents duplicate retries |
 
@@ -210,7 +257,7 @@ Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}
 
 | Transport | Method |
 |-----------|--------|
-| HTTP bridge | Bearer token via `Authorization: Bearer {token}` header — the `DAGNATS_BRIDGE_TOKEN` admin bearer, or a minted worker token scoped to task-type prefixes ([`/v1/tokens`](../rest-api#tokens)). Missing or invalid tokens return `401 Unauthorized`; an out-of-scope worker token returns `403`. |
+| HTTP bridge | Bearer token via `Authorization: Bearer {token}` header — the `DAGNATS_BRIDGE_TOKEN` admin bearer, or a minted worker token scoped to task-type prefixes ([`/v1/tokens`](../rest-api#tokens)). Missing or invalid tokens return `401 Unauthorized`. A worker token polling a task type outside its `task_type_prefixes`, or a worker group outside its `worker_groups`, returns `403`. |
 | NATS native | NATS native authentication (user/password, tokens, NKey, JWT). |
 
 ---
@@ -389,6 +436,7 @@ before the TTL elapses.
   {
     "seq": 3,
     "attempt": 1,
+    "iteration": 0,
     "ts": "2026-08-28T12:00:00.125Z",
     "stream": "out",
     "data": "aGVsbG8gd29ybGQK"
@@ -397,7 +445,7 @@ before the TTL elapses.
 
   `seq` is monotonic per ATTEMPT, shared across `out`/`err`/`marker` --
   ordering by `seq` reconstructs write order even though stdout and
-  stderr buffer independently. `attempt` is the 1-based `AttemptNumber`
+  stderr buffer independently. `iteration` is the agent-loop iteration (0 for non-loop steps). `attempt` is the 1-based `AttemptNumber`
   this chunk belongs to -- the SAME numbering `step.started`'s
   `AttemptNumber` and `dag.StepState.Attempts` use. `stream` is `"out"`,
   `"err"`, or `"marker"`; for `"marker"`, `data` carries `"completed"`,
@@ -727,8 +775,23 @@ responder. A dead owner then looks like a hung one: forward waits out
   expired has no other protection against writing as a stale owner.
 - `holder` IDs must be unique per process.
 
+## Control-plane request/reply (`api.*`)
+
+The `dagnats-api` micro service answers these subjects for clients that talk to NATS instead of HTTP. Requests and replies are JSON unless noted. A failure replies with an `error` field.
+
+| Subject | Request | Reply |
+|---------|---------|-------|
+| `api.workflows.register` | A `WorkflowDef` | `{"status":"registered","name"}` |
+| `api.runs.start` | `{"workflow","input"}` | `{"run_id"}` |
+| `api.runs.get` | The run ID as plain text | The run snapshot |
+| `api.runtimes.register`, `api.runs.spawn`, `api.runtimes.budget` | Gated-write requests for agent runtimes (ADR-021). Used by the worker SDK's control-plane handle | Result, or `{"error","kind"}` |
+| `api.leases.*` | See [Coordination leases](#coordination-leases-apileases) | |
+| `api.cluster.health` | Empty | The same JSON as `GET /health/cluster` |
+
+The lease endpoints share the queue group `dagnats-leases`, so one instance serves each request. The others have no queue group, so every running instance receives the request.
+
 ## Reference Implementations
 
 - **Go (NATS):** `worker/` package
-- **HTTP SDKs:** Implement against the three HTTP endpoints and JSON schemas above
+- **HTTP SDKs:** Implement against the four HTTP endpoints and JSON schemas above
 - All Go types referenced in this document are canonical -- implement JSON serialization matching these types

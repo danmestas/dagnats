@@ -50,6 +50,8 @@ dagnats workflow list --json
 
 Register a workflow from a JSON file. Creates a new workflow or updates an existing one. Warns if no workers are active for the workflow's task types.
 
+The file may carry an optional `triggers` array alongside the workflow fields. Each trigger is validated first, then created after the workflow registers; a trigger whose `workflow_id` names a different workflow is an error. Re-running on the same file updates both in place. Unknown top-level fields are rejected, and `$schema` is accepted and ignored.
+
 ```
 dagnats workflow register <file> [--json]
 ```
@@ -95,7 +97,7 @@ dagnats workflow show code-review
 
 ### workflow validate
 
-Validate a workflow JSON file offline (no NATS connection required). Runs structural validation including cycle detection.
+Validate a workflow JSON file offline (no NATS connection required). Runs structural validation including cycle detection, and rejects unknown step types and unrecognized top-level fields. Exits non-zero when the file is invalid.
 
 ```
 dagnats workflow validate <file> [--json]
@@ -111,10 +113,10 @@ dagnats workflow validate workflow.json
 # Valid: code-review (5 steps)
 
 dagnats workflow validate bad.json
-# invalid: step "x" depends on non-existent step "y"
+# invalid: step "x" depends on "y" which does not exist
 
 dagnats workflow validate workflow.json --json
-# {"valid":true,"name":"code-review","steps":5}
+# {"valid":true,"name":"code-review","steps":5,"warnings":[]}
 ```
 
 ### workflow delete
@@ -148,7 +150,7 @@ dagnats run start <workflow> [input] [flags] [--json]
 |------|-------------|
 | `--watch` | Watch run events until completion |
 | `--output` | Print terminal step output on completion (implies `--watch`) |
-| `--at=TIME` | Schedule run at RFC3339 time instead of running immediately |
+| `--at=TIME` | Schedule run at RFC3339 time instead of running immediately. At most 8760h (one year) ahead |
 
 **Example:**
 ```bash
@@ -201,12 +203,13 @@ dagnats run status --last --json
 Unified debug view combining run status, failure events, and dead-letter entries for a single run. Replaces the three-command workflow of `run status` + `run events` + `dlq list`.
 
 ```
-dagnats run inspect <run-id> [--last] [--json]
+dagnats run inspect <run-id> [--last] [--trace] [--json]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--last` | Use the most recent run |
+| `--trace` | Include the span tree for the run |
 
 **Example:**
 ```bash
@@ -371,8 +374,10 @@ dagnats run list [flags] [--json]
 **Example:**
 ```bash
 dagnats run list --workflow=deploy --state=failed
-# RUN_ID     WORKFLOW  STATUS  CREATED              STEPS
-# a1b2c3d4   deploy    failed  2025-01-15 09:00:00  3
+# RUN_ID                            WORKFLOW  STATUS  CREATED              STEPS
+# a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6  deploy    failed  2025-01-15 09:00:00  3
+#
+# showing 1 of 1
 
 dagnats run list --scheduled
 # RUN ID    WORKFLOW  RUN AT                    STATUS
@@ -575,6 +580,12 @@ Fire a cron or webhook trigger now, outside its schedule. Prints the ID of the r
 dagnats trigger fire <trigger-id> [--json]
 ```
 
+**Example:**
+```bash
+dagnats trigger fire trig-a1b2c3d4e5f6a7b8
+# Trigger fired: trig-a1b2c3d4e5f6a7b8 (run 23e592ab16f5dfa4ec8a40d69c452303)
+```
+
 ### trigger history
 
 View fire history for a trigger, including timestamps, statuses, run IDs, and durations.
@@ -604,20 +615,21 @@ dagnats trigger history trig-a1b2c3d4e5f6a7b8 --limit=5 --json
 
 ### trigger test
 
-Validate a cron expression and show the next N fire times. Offline operation (no NATS required).
+Validate a cron expression and show the next N fire times. Offline operation (no NATS required). Put flags before the expression; flags placed after it are not read.
 
 ```
-dagnats trigger test <cron-expr> [flags] [--json]
+dagnats trigger test (<cron-expr> | --cron=EXPR) [flags] [--json]
 ```
 
 | Flag | Description |
 |------|-------------|
+| `--cron=EXPR` | Cron expression, as an alternative to the positional argument |
 | `--tz=TZ` | Timezone (default: `UTC`) |
 | `--count=N` | Number of fire times to show (default: 5, max: 100) |
 
 **Example:**
 ```bash
-dagnats trigger test "0 9 * * 1-5" --tz=America/Denver --count=3
+dagnats trigger test --tz=America/Denver --count=3 "0 9 * * 1-5"
 # Valid: 0 9 * * 1-5
 #
 # Next 3 fire times (America/Denver):
@@ -625,8 +637,8 @@ dagnats trigger test "0 9 * * 1-5" --tz=America/Denver --count=3
 #   2. 2025-01-21 09:00 MST
 #   3. 2025-01-22 09:00 MST
 
-dagnats trigger test "invalid" --json
-# {"expression":"invalid","valid":false,"error":"..."}
+dagnats trigger test --json "invalid"
+# {"expression":"invalid","valid":false,"timezone":"UTC","error":"..."}
 ```
 
 ---
@@ -646,7 +658,8 @@ dagnats dlq list [flags] [--json]
 | Flag | Description |
 |------|-------------|
 | `--run=RUN_ID` | Filter by run ID |
-| `--limit=N` | Max messages to fetch (default: 50) |
+| `--limit=N` | Max messages to fetch (default: up to 500; `0` is rejected) |
+| `--all` | Return every message, ignoring the default cap |
 
 **Output columns:** SEQ, SUBJECT, RUN_ID, STEP_ID, TASK, ERROR, TIMESTAMP
 
@@ -732,16 +745,39 @@ dagnats workers list
 Start the embedded NATS server with DagNats engine and API.
 
 ```
-dagnats serve
+dagnats serve [--config=PATH] [--dry-run] [--nats-ws-port=N] [--nats-ws-no-tls]
+              [--fail-on-port-conflict] [--die-with-parent]
 ```
 
-Reads configuration from `dagnats.yaml` (optional, in current directory) and environment variables.
+| Flag | Description |
+|------|-------------|
+| `--config=PATH` | Path to the config file |
+| `--dry-run` | Validate the config without starting the server |
+| `--nats-ws-port=N` | NATS WebSocket port for browser clients (`0` = off, the default) |
+| `--nats-ws-no-tls` | Run the WebSocket listener without TLS (dev only; ADR-020) |
+| `--fail-on-port-conflict` | Exit non-zero on a port conflict instead of falling back to a free port |
+| `--die-with-parent` | Shut down gracefully when the parent process dies, for sidecar spawners |
+
+When `--config` is not given, the config file is searched in this order:
+
+1. `./dagnats.yaml`
+2. `$XDG_CONFIG_HOME/dagnats/dagnats.yaml`
+3. `/etc/dagnats/dagnats.yaml` (Linux only)
+
+Workflows and triggers declared in the same `dagnats.yaml` are hot-reloaded when the file changes (ADR-018). Environment variables override the file. The most common ones:
 
 | Environment Variable | Description |
 |---------------------|-------------|
 | `DAGNATS_DATA_DIR` | JetStream data directory |
 | `DAGNATS_HTTP_ADDR` | HTTP API listen address |
 | `DAGNATS_NATS_PORT` | NATS client port |
+| `DAGNATS_MONITOR_PORT` | NATS monitoring port |
+| `DAGNATS_NATS_CLUSTER_NAME`, `DAGNATS_NATS_CLUSTER_ROUTES`, `DAGNATS_NATS_CLUSTER_PORT`, `DAGNATS_NATS_CLUSTER_HOST`, `DAGNATS_NATS_CLUSTER_AUTH_TOKEN` | Cluster mode: cluster name, route list, route listener port and bind address, shared route token |
+| `DAGNATS_NATS_SERVER_NAME` | Clustered `server_name`. JetStream tracks peers by this name, so keep it stable across restarts. Default: `<cluster>-<hostname>-<cluster port>` |
+| `DAGNATS_NATS_JETSTREAM_REPLICAS` | Replica count for JetStream resources |
+| `DAGNATS_MAX_STORE_BYTES`, `DAGNATS_MAX_MEMORY_BYTES`, `DAGNATS_MAX_PAYLOAD` | Disk and memory caps, and max message size (up to 8 MiB) |
+| `DAGNATS_RUNS_MAX_AGE` | Retention for terminal runs (default `30d`; `0` or `off` disables pruning) |
+| `DAGNATS_LEAF_REMOTES`, `DAGNATS_LEAF_CREDENTIALS` | Leaf node connections |
 
 Run `dagnats config show` to see the effective configuration.
 
@@ -764,7 +800,7 @@ dagnats init <name> [--json]
 |----------|----------|-------------|
 | `name` | Yes | Project name (alphanumeric and hyphens only) |
 
-Creates a directory with `workflow.json` and `main.go` (worker boilerplate).
+Creates a directory with `workflow.json` and `main.go` (worker boilerplate). The worker reads `NATS_URL` and falls back to `nats://127.0.0.1:4222`.
 
 **Example:**
 ```bash
@@ -793,7 +829,7 @@ dagnats init workflow <name> [--steps=a,b,c]
 |------|-------------|
 | `--steps=a,b,c` | Comma-separated step names (default: single `process` step, max: 20) |
 
-Steps are chained linearly -- each step depends on the previous one. The generated JSON file includes a `$schema` reference for editor validation.
+Steps are chained linearly -- each step depends on the previous one, and each step's task is named `<workflow>-<step>`. The generated JSON file includes a `$schema` reference for editor validation and a `triggers` array with one disabled example cron trigger (`*/5 * * * *`, UTC). Delete it or set `enabled` to `true`.
 
 **Example:**
 ```bash
@@ -835,17 +871,26 @@ dagnats config show [--json]
 **Example:**
 ```bash
 dagnats config show
-# data_dir:         /tmp/dagnats
-# http_addr:        :8080
+# config_file:      (defaults)
+# data_dir:         /home/you/.local/share/dagnats
+# http_addr:        127.0.0.1:8080
 # nats_port:        4222
 # monitor_port:     (disabled)
 # leaf_remotes:     (none)
 # leaf_credentials: (none)
-# max_store_bytes:  1073741824
+# max_store_bytes:  10737418240
+# max_payload:      (nats default, 1048576)
+#
+# console env vars:
+#   CONSOLE_CSRF_SECRET                    (random per-restart) (default)
+#   CONSOLE_READ_ONLY                      false (default)
+#   ...
 
 dagnats config show --json
-# {"data_dir":"/tmp/dagnats","http_addr":":8080",...}
+# {"data_dir":"...","http_addr":"127.0.0.1:8080",...}
 ```
+
+`config show` takes `--config=PATH` like `serve`. It prints the resolved config file path (or `(defaults)`), the core settings, and the console and metrics environment variables with their effective values. Secrets print as `(set)` or their placeholder, never the value. The JSON form is the full resolved config, including the cluster and retention fields.
 
 Running `dagnats config` without a subcommand defaults to `show`.
 
@@ -853,7 +898,7 @@ Running `dagnats config` without a subcommand defaults to `show`.
 
 ## status
 
-Show system health: NATS connection, JetStream availability, active run count, stream details, and per-workflow metrics.
+Show system health: NATS connection, JetStream availability, active run count, a table of streams, run totals by state, and per-workflow metrics.
 
 ```
 dagnats status [--detail] [--json]
@@ -863,36 +908,47 @@ dagnats status [--detail] [--json]
 |------|-------------|
 | `--detail` | Include queue health, dead-letter summary, and engine lag |
 
+When the server runs in cluster mode, `status` also probes `GET /health/cluster` (at `DAGNATS_HTTP_ADDR`, default `localhost:8080`) and prints the peer count and leader. A standalone server, an older server, or an unreachable HTTP port adds nothing.
+
 **Example:**
 ```bash
 dagnats status
 # NATS:        connected
-# JetStream:   available (5 streams)
-# Active runs: 2
+# JetStream:   available (33 streams)
+# Active runs: 0
+#
+# Streams:
+#   STREAM                MESSAGES  BYTES    CONSUMERS
+#   EVENTS                3         823 B    0
+#   WORKFLOW_HISTORY      8         3.6 KB   1
+#   ...
+# Runs:  1 completed, 0 failed, 0 running, 0 pending, 0 cancelled
+#
+# Workflows:
+#   WORKFLOW     TOTAL  RUNNING  FAILED  COMPLETED  LAST RUN
+#   hello-world  1      0        0       1          2026-10-19 13:09
 
 dagnats status --detail
-# NATS:        connected
-# JetStream:   available (5 streams)
-# Active runs: 2
+# ... the same, then:
 #
 # Task Queues:
-#   TASK        PENDING  IN-FLIGHT  REDELIVERED  ACK WAIT
-#   lint.run    3        1          0            30000ms
-#   llm.chat    0        2          1            60000ms
+#   TASK       PENDING  IN-FLIGHT  REDELIVERED  ACK WAIT
+#   greet      0        0          0            300000ms
+#   uppercase  0        0          0            300000ms
 #
-# Dead Letters: 1 total
-#   Oldest: 2025-01-15 09:05:00
-#   Newest: 2025-01-15 09:05:00
-#   TASK      COUNT
-#   lint.run  1
+# Dead Letters: none
 #
 # Engine:
-#   History lag:     0 messages (0.0s)
-#   Scheduled timers: 1
+#   History lag:     0 messages (17.6s)
+#   Scheduled timers: 0
+#   History dead-lettered: 0 (MaxDeliver exhausted, see dagnats dlq list)
 
 dagnats status --json
-# {"nats":"connected","jetstream":"available","stream_count":5,"active_runs":2,...}
+# {"nats":"connected","jetstream":"available","stream_count":33,"active_runs":0,
+#  "streams":[...],"runs":{...},"workflows":[...]}
 ```
+
+`--detail --json` adds `queues`, `dlq` and `engine`.
 
 ---
 
@@ -910,7 +966,23 @@ dagnats logs [flags]
 | `--service=NAME` | Filter by service name |
 | `--tail=N` | Show last N historical messages and exit (max: 10000) |
 
-**Example:**
+### logs search
+
+Replay historical logs from the `TELEMETRY` stream with a time window and text match, then exit. The scan is bounded to 30 seconds and 1000 results.
+
+```
+dagnats logs search [--level=LEVEL] [--service=NAME] [--search=TEXT] [--since=DUR] [--limit=N] [--json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--level=LEVEL` | Filter by log level |
+| `--service=NAME` | Filter by service name |
+| `--search=TEXT` | Only records whose message contains TEXT |
+| `--since=DUR` | Lookback duration (default `30m`) |
+| `--limit=N` | Max records (default 100, max 1000) |
+
+**Tail examples:**
 ```bash
 dagnats logs --level=ERROR
 # Tailing logs on telemetry.logs.*.ERROR ...
@@ -1203,6 +1275,17 @@ Add one of these to your shell profile:
 eval "$(dagnats completion bash)"
 eval "$(dagnats completion zsh)"
 ```
+
+---
+
+## Environment
+
+| Variable | Description |
+|----------|-------------|
+| `DAGNATS_NATS_URL` | NATS server the CLI connects to (default `nats://127.0.0.1:4222`). `NATS_URL` still works but prints a deprecation warning |
+| `DAGNATS_HTTP_ADDR` | HTTP address `status` probes for `/health/cluster` (default `localhost:8080`) |
+| `DAGNATS_WEBHOOK_SECRET` | Default for `trigger create --secret` |
+| `NO_COLOR` | Disable colored output when set |
 
 ---
 

@@ -14,11 +14,11 @@ Key fields on `WorkflowDef`:
 | Field | Type | Purpose |
 |-------|------|---------|
 | `Name` | `string` | Unique identifier for the workflow |
-| `Version` | `string` | Schema version (defaults to `"1"`) |
+| `Version` | `string` | Free-form version label (the builder defaults it to `"1"`; JSON leaves it empty if omitted) |
 | `Steps` | `[]StepDef` | Ordered list of step definitions |
 | `Concurrency` | `*ConcurrencyLimit` | Max parallel runs and steps |
 | `Timeout` | `time.Duration` | Workflow-level deadline |
-| `Sticky` | `StickyStrategy` | Worker affinity (`soft` or `hard`) |
+| `Sticky` | `StickyStrategy` | Worker affinity (`soft` or `hard`; `hard` requires a `Timeout`) |
 | `Singleton` | `*SingletonConfig` | One-at-a-time constraint |
 
 ## DAG Structure
@@ -80,10 +80,13 @@ Validate checks for:
 - **Type-specific config** -- AgentLoop has `MaxIterations > 0`, Map has exactly one dependency, etc.
 - **Concurrency bounds** -- `MaxSteps` in `[0, 1000]`
 - **Aux target constraints** -- OnFailure/Compensate targets have no dependencies and don't self-reference
+- **Dispatch safety** -- `task` and `worker_group` values that could not form a valid NATS subject are rejected
 
 ## Versioning
 
-The `Version` field on `WorkflowDef` enables schema evolution. Existing runs continue executing against the definition version they were started with. New runs pick up the latest version stored in KV. The `workflow_defs` KV bucket preserves revision history, so you can inspect previous versions.
+Registering a workflow under an existing name replaces the definition that new runs use. Runs already in flight keep the definition they started with: each run records the hash of its definition (`def_hash`), and the `workflow_defs` bucket keeps up to 32 immutable versions per name, keyed by that hash. Registration is refused with `409` if every retained version is still in use by a live run. See [Wire Protocol: Workflow Re-registration and def_hash](/docs/reference/wire-protocol#workflow-re-registration-and-def_hash).
+
+The `Version` string is a label for your own bookkeeping; the engine does not interpret it.
 
 ## Related pages
 

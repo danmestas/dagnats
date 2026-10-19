@@ -5,11 +5,11 @@ weight: 2
 
 Complete reference for the DagNats control-plane HTTP API.
 
-All endpoints return `application/json` responses. Error responses use plain text with the appropriate HTTP status code.
+Success responses are `application/json`. Most error responses are plain text with the appropriate HTTP status code; a few `409` and `503` responses carry a JSON body, noted where they occur.
 
 ## Base URL
 
-The API is served by `dagnats serve` at the configured HTTP address (default `:8080`).
+The API is served by `dagnats serve` at the configured HTTP address (default `127.0.0.1:8080`, loopback only). The routes below are served at the root of that address, alongside the operator console, the `/v1` worker bridge and the [probe endpoints](#probes).
 
 ---
 
@@ -96,6 +96,28 @@ curl -X POST http://localhost:8080/workflows \
   -d @workflow.json
 ```
 
+### Delete Workflow
+
+Delete a workflow definition. Historical run records are not touched.
+
+```
+DELETE /workflows/{name}[?force=true]
+```
+
+The request is refused with `409` while a trigger still references the workflow or a run of it has not finished. `force=true` overrides both checks.
+
+| Status | Condition |
+|--------|-----------|
+| `204` | Workflow deleted |
+| `404` | Workflow not found, or `name` contains a `/` |
+| `405` | Method other than `DELETE` |
+| `409` | Non-terminal runs: `{"error":"workflow has non-terminal runs","run_ids":[...],"total_non_terminal":N}`. Referencing triggers: `{"error":"workflow has referencing triggers","trigger_ids":[...]}` |
+
+**curl:**
+```bash
+curl -X DELETE http://localhost:8080/workflows/code-review
+```
+
 ---
 
 ## Runs
@@ -105,13 +127,14 @@ curl -X POST http://localhost:8080/workflows \
 Retrieve all workflow runs, optionally filtered by workflow, status, and/or labels. Returns runs sorted by creation time (newest first).
 
 ```
-GET /runs[?workflow=NAME][&status=STATUS][&label=KEY=VALUE...]
+GET /runs[?workflow=NAME][&status=STATUS][&label=KEY=VALUE...][&limit=N]
 ```
 
 | Query Parameter | Description |
 |----------------|-------------|
 | `workflow` | Filter by workflow name |
 | `status` | Filter by run status: `pending`, `running`, `completed`, `failed`, `cancelled`, `compensated`, or `compensate_failed`. An unrecognized value returns `400` listing the accepted set. |
+| `limit` | Max runs to scan and return. Default 1000, capped at 10000. An unparseable or negative value falls back to the default. |
 | `label` | Filter by a run label, `key=value`. Repeatable — every `label` param given must match (AND semantics). A param with no `=` returns `400`. |
 
 Filters compose: `workflow`, `status`, and `label` narrow the same query together, not as alternatives. The server scans runs newest-first (a creation-ordered index, #659) and applies the filter during that scan, so a filtered result (here, Count, and Bulk Cancel below) is exact for the newest runs and only ever misses matches OLDER than the scanned window — it never misses a run newer than one already found, the failure mode #659 fixed. Cursor-based pagination is not part of this change; the index position enables it later.
@@ -215,11 +238,13 @@ GET /runs/{id}
     "fetch-diff": {
       "status": "completed",
       "attempts": 1,
-      "output": {"files": 3}
+      "output": "eyJmaWxlcyI6IDN9"
     }
   }
 }
 ```
+
+A step's `output` is raw bytes, so JSON carries it as a base64 string (here, `{"files": 3}`). Each step state also has timing fields (`started_at`, `completed_at`, `attempt_started_at`) and a `dispatch_nonce`.
 
 The snapshot also carries `def_hash`: the definition version this run is pinned to (see [Wire Protocol: Workflow Re-registration and def_hash](../wire-protocol#workflow-re-registration-and-def_hash)). Empty for a run started before this field existed.
 
@@ -248,7 +273,7 @@ GET /runs/{id}/logs?step={stepID}&attempt={n}&iteration={n}&cursor={n}&follow={0
 | Query param | Required | Notes |
 |-------------|----------|-------|
 | `step` | yes | Step ID within the run. `400` if omitted. |
-| `attempt` | no | Which attempt's log lane to read (`logs.{runID}.{stepID}.{attempt}.{iteration}`, the same numbering as `step.started`'s `AttemptNumber`). Defaults to the step's current `Attempts` from the run snapshot -- omit it for "the live/most recent attempt". |
+| `attempt` | no | Which attempt's log lane to read (`logs.{runID}.{stepID}.{attempt}.{iteration}`, the same numbering as `step.started`'s `AttemptNumber`). Defaults to the step's current `Attempts` from the run snapshot, or 1 if the step has not started yet -- omit it for "the live/most recent attempt". |
 | `iteration` | no | Which agent-loop iteration's log lane to read within that attempt (0 for non-loop steps, bumped by each `Continue` without touching `attempt`). Defaults to the step's current `Iterations` from the run snapshot -- omit it for "the live/most recent iteration". |
 | `cursor` | no | Opaque paging token -- copy the previous response's `next_cursor` here to fetch the next page. Omit for the first page. It is a JetStream stream sequence number, not a chunk `seq`; treat it as opaque. |
 | `from` | no | `from=failure` starts the response at the attempt's recorded `"failed"` marker instead of `cursor`, resolved in O(1) (`GetLastMsgForSubject`), not by scanning. Strict: if the attempt's last message isn't a `"failed"` marker (it completed, or has no messages yet), this 404s -- see below. |
@@ -698,6 +723,8 @@ above.
 }
 ```
 
+`metadata` and `version` appear when the worker set them.
+
 `workers` is always an array (`[]` when none are registered or live),
 never `null`.
 
@@ -958,12 +985,14 @@ GET /health/telemetry
       "messages": 15432,
       "bytes": 2048576,
       "percent": 12.5
-    }
+    },
+    "consumers": 1,
+    "otlp": {"endpoint": "", "configured": false}
   }
 }
 ```
 
-The `percent` field shows telemetry stream storage usage as a percentage of `MaxBytes`.
+The `percent` field shows telemetry stream storage usage as a percentage of `MaxBytes`. `consumers` is the number of consumers on the stream, and `otlp` reports whether an OTLP export endpoint is configured.
 
 **curl:**
 ```bash
@@ -1005,6 +1034,21 @@ GET /health/cluster
 
 ---
 
+## Probes
+
+Liveness and readiness probes, served at the root of the HTTP address.
+
+| Route | Response |
+|-------|----------|
+| `GET /health` | `200` with body `ok` when NATS is connected and JetStream answers an account-info call; `503` with a plain-text reason otherwise |
+| `GET /ready` | `200` with body `ready` once startup has finished; `503` `not ready` before that |
+
+`/health` checks only the node you ask. For cluster-wide state use `GET /health/cluster` above.
+
+The server also serves its OpenAPI document at `GET /openapi.json` and an interactive explorer at `GET /docs`.
+
+---
+
 ## Error Responses
 
 Errors are returned as plain text with the appropriate HTTP status code:
@@ -1021,5 +1065,6 @@ invalid workflow: step "x" depends on non-existent step "y"
 | `401` | Unauthorized (invalid approval token) |
 | `404` | Resource not found |
 | `405` | Method not allowed |
-| `409` | Conflict (approval token already consumed) |
+| `409` | Conflict (approval token already consumed, workflow still in use, too many live workflow versions) |
 | `500` | Internal server error |
+| `503` | Service unavailable (probe failing, cluster degraded, token management disabled, log follow limit reached) |

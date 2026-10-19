@@ -23,10 +23,10 @@ stateDiagram-v2
 
 ## Creating a Worker
 
-`worker.NewWorker()` takes a NATS connection, an optional telemetry bundle, and variadic options:
+`worker.NewWorker()` takes a NATS connection and variadic options. Tracing and metrics use the global OpenTelemetry providers, which are no-ops unless you install your own.
 
 ```go
-w := worker.NewWorker(nc, nil) // nil tel = noop telemetry
+w := worker.NewWorker(nc)
 ```
 
 Options include:
@@ -35,6 +35,7 @@ Options include:
 |--------|---------|
 | `WithGroups(groups...)` | Subscribe only to specific worker groups |
 | `WithPartitions(n)` | Enable elastic consumer groups with n partitions |
+| `WithControlPlane(cp)` | Grant steps that declare the `control-plane` capability a handle for starting and registering workflows at run time |
 
 ## Registering Handlers
 
@@ -81,7 +82,9 @@ Every handler receives a `TaskContext` -- the deep interface that hides all NATS
 | `Input()` | `[]byte` | Raw task input payload |
 | `RunID()` | `string` | Workflow run identifier |
 | `StepID()` | `string` | Step identifier within the run |
-| `RetryCount()` | `int` | Current attempt number (0-based) |
+| `RetryCount()` | `int` | Retry attempt number the engine stamped on the task; 0 on the first dispatch |
+| `Metadata()` | `map[string]string` | The step's static `metadata` from the workflow definition; `nil` if none |
+| `Context()` | `context.Context` | The task's context, carrying its trace span |
 
 ### Step completion
 
@@ -102,6 +105,15 @@ Call exactly one of these per execution:
 | `PutStream(data)` | Publish data to `stream.{runID}.{stepID}` via core NATS (ephemeral, fire-and-forget) |
 | `Heartbeat()` | Extend the AckWait claim to prevent redelivery during long work (does not extend the step timeout) |
 
+### Logs
+
+| Method | Purpose |
+|--------|---------|
+| `LogOut()` | `io.Writer` that captures stdout-tagged output to the `BUILD_LOGS` hot lane. Hand it to `cmd.Stdout` |
+| `LogErr()` | The same for stderr |
+
+Every terminal method flushes buffered log bytes and writes an attempt-ending marker before it publishes the step result. Read the output with `GET /runs/{id}/logs`.
+
 ### Checkpointing
 
 | Method | Purpose |
@@ -117,9 +129,13 @@ Call exactly one of these per execution:
 | `WaitForSignal(name, timeout)` | Block until KV key `{runID}.{name}` is written (max 1 hour) |
 | `SendSignal(runID, name, data)` | Write to KV to wake a waiting step |
 
+### Control plane
+
+`ControlPlane()` returns a handle for starting runs and registering workflow definitions from inside a step, or `nil`. It is `nil` unless the step declares the `control-plane` capability in `required_capabilities` and the worker was built with `WithControlPlane`. Always nil-check it.
+
 ## Graceful Shutdown
 
-`Stop()` unsubscribes all JetStream consumers, stops the heartbeat goroutine, and deregisters from the worker directory KV bucket. In-flight tasks that have not yet called a terminal method will be redelivered by JetStream's `MaxDeliver` policy after `AckWait` expires.
+`Stop()` unsubscribes all JetStream consumers, stops the heartbeat goroutine, and deregisters from the worker directory KV bucket. In-flight tasks that have not yet called a terminal method are redelivered by JetStream after `AckWait` expires. A redelivery continues the attempt's step timeout; it does not restart it.
 
 ```go
 w.Start()

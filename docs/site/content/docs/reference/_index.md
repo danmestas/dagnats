@@ -8,5 +8,6 @@ weight: 13
   {{< card link="rest-api" title="REST API Reference" >}}
   {{< card link="wire-protocol" title="Wire Protocol" >}}
   {{< card link="workflow-schema" title="Workflow Schema" >}}
+  {{< card link="ci-module" title="CI Module" >}}
   {{< card link="sdk" title="Go SDK" >}}
 {{< /cards >}}

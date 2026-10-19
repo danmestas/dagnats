@@ -9,7 +9,9 @@ Reference for the JSON format used by `dagnats workflow register` and `dagnats w
 **IDE support:** Point your editor at [`workflow-schema.json`](https://github.com/danmestas/dagnats/blob/main/docs/workflow-schema.json) for autocomplete and validation. Add `"$schema": "./path/to/workflow-schema.json"` to your workflow files.
 {{< /callout >}}
 
-Durations are Go duration strings (`"30s"`, `"5m"`, `"1h30m"`) or integer nanoseconds (`30000000000`). Definitions dagnats writes back, such as `dagnats workflow show --json`, use nanoseconds.
+Durations are Go duration strings (`"30s"`, `"5m"`, `"1h30m"`) or integer nanoseconds (`30000000000`). Strings work in every duration field, including those inside a step's `config`. Definitions dagnats writes back, such as `dagnats workflow show --json`, use nanoseconds. Go duration strings have no day unit; write `"24h"`, not `"1d"`.
+
+A workflow file may also carry a top-level `$schema` key (ignored) and, for `dagnats workflow register`, a `triggers` array that registers triggers with the workflow. Other unknown top-level keys are rejected by both `register` and `validate`.
 
 ---
 
@@ -20,10 +22,10 @@ Top-level workflow definition object.
 | Field | JSON Key | Type | Required | Default | Description |
 |-------|----------|------|----------|---------|-------------|
 | Name | `name` | string | Yes | -- | Unique workflow identifier |
-| Version | `version` | string | Yes | -- | Schema version for evolution |
+| Version | `version` | string | No | "" | Free-form version label for your own bookkeeping; not validated |
 | Steps | `steps` | []StepDef | Yes | -- | At least one step required |
 | DefaultRetry | `default_retry` | RetryPolicy | No | nil | Fallback retry for all steps |
-| Concurrency | `concurrency` | ConcurrencyLimit | No | nil | Workflow-level parallelism limits |
+| Concurrency | `concurrency` | ConcurrencyLimit | No | nil | Workflow-level parallelism limits (`max_steps` 0 to 1000) |
 | Timeout | `timeout` | duration | No | 0 | Overall workflow deadline |
 | InputSchema | `input_schema` | JSON | No | nil | JSON Schema for workflow input validation |
 | OutputSchema | `output_schema` | JSON | No | nil | JSON Schema for workflow output validation |
@@ -55,21 +57,21 @@ Individual step within a workflow.
 | Field | JSON Key | Type | Required | Default | Description |
 |-------|----------|------|----------|---------|-------------|
 | ID | `id` | string | Yes | -- | Unique within the workflow |
-| Task | `task` | string | Yes | -- | Task name workers subscribe to |
+| Task | `task` | string | Yes | -- | Task name workers subscribe to: 1 to 128 bytes of `A-Za-z0-9_.-`, no leading or trailing `.`, no empty token |
 | DependsOn | `depends_on` | []string | No | [] | Step IDs that must complete first |
-| Retries | `retries` | int | No | 0 | Legacy retry count (prefer `retry`) |
-| Timeout | `timeout` | duration | No | 0 | Per-attempt deadline, enforced by the engine. `0` arms no timeout |
-| Type | `type` | StepType | No | `normal` | Execution semantics (see below) |
+| Retries | `retries` | int | No | 0 | Legacy retry count (prefer `retry`): a fixed 5s delay between attempts. 0 to 100000 |
+| Timeout | `timeout` | duration | No | 0 | Per-attempt deadline, enforced by the engine. `0` arms no timeout. It runs from when the current attempt first started: a redelivered or resumed task re-arms it only for the time left, so time spent paused counts. A retry gets the full timeout |
+| Type | `type` | StepType | No | `normal` | Execution semantics (see below). An unknown value is an error |
 | Config | `config` | object | Depends on type | nil | Type-specific settings, e.g. AgentLoopConfig for `agent_loop`, sleep settings for `sleep` |
 | SkipIf | `skip_if` | ParentCond | No | nil | Conditional skip based on parent output |
-| Metadata | `metadata` | map | No | nil | Arbitrary key-value pairs |
+| Metadata | `metadata` | map[string]string | No | nil | Static key-value pairs, delivered to the worker in the task payload |
 | Retry | `retry` | RetryPolicy | No | nil | Structured retry policy (overrides `retries`) |
-| WorkerGroup | `worker_group` | string | No | "" | Routes to a specific worker pool |
+| WorkerGroup | `worker_group` | string | No | "" | Routes to a specific worker pool. Same character rule as `task`, but no dots |
 | OnFailure | `on_failure` | string | No | "" | Step ID to run on failure |
 | Compensate | `compensate` | string | No | "" | Step ID for saga compensation |
 | RateLimit | `rate_limit` | RateLimit | No | nil | `limit` dispatches per `period` for this step's task |
 | KeyedRateLimit | `keyed_rate_limit` | KeyedRateLimit | No | nil | Rate limit per input key (`key`, `limit`, `period`, `units`) |
-| MaxTaskConcurrency | `max_task_concurrency` | int | No | 0 | Max in-flight tasks of this step's task type; 0 = unlimited |
+| MaxTaskConcurrency | `max_task_concurrency` | int | No | 0 | Max in-flight tasks of this step's task type; 0 = unlimited, max 1000 |
 | Singleton | `singleton` | bool | No | false | Only one instance of this step runs at a time |
 | RequiredCapabilities | `required_capabilities` | []string | No | nil | Capabilities the workflow must be granted, e.g. `control-plane` |
 
@@ -112,6 +114,79 @@ Individual step within a workflow.
 
 ---
 
+## Step config by type
+
+A step's `config` holds the settings for its `type`. A typed step whose config does not parse is rejected at registration.
+
+### sleep
+
+Exactly one of `duration`, `cron` or `until_input_path`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `duration` | duration | Fixed delay. Must be positive |
+| `cron` | string | Wake at the next occurrence of a cron expression, strictly after dispatch |
+| `until_input_path` | string | Input path holding a deadline: an RFC3339 instant or integer milliseconds |
+| `cron_timezone` | string | IANA zone the cron expression is evaluated in, e.g. `America/Denver` |
+| `cron_timezone_input_path` | string | Input path that supplies the zone at run time |
+
+`cron_timezone` is validated when the workflow is registered. `cron_timezone_input_path` is read at dispatch; a missing or unknown zone there falls back to UTC with a logged warning. Both apply only with `cron`, and at most one may be set. With neither, the cron expression is evaluated in UTC, not the host's local zone.
+
+```json
+{"id": "morning", "task": "sleep", "type": "sleep", "depends_on": ["prep"],
+ "config": {"cron": "0 9 * * 1-5", "cron_timezone": "America/Denver"}}
+```
+
+### map
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max_items` | int | Cap on the input array, 1 to 10000 |
+
+A map step must have exactly one dependency, and that dependency may not itself be a map step.
+
+### approval
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timeout` | duration | How long to wait. Positive, at most 168h |
+| `subject` | string | Required. Names the approval request |
+| `description` | string | Optional text shown to the approver |
+| `metadata` | map[string]string | Optional extra context |
+
+### wait_for_event
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | Event name to wait for |
+| `match` | object | `left` (a path into the event data), `op` (`eq`), `right` (`input.<path>` or `step.<id>.<path>`, resolved when the wait starts) |
+| `timeout` | duration | Required, positive |
+
+### sub_workflow
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workflow` | string | Name of the child workflow |
+| `detach` | bool | When true, the parent step completes as soon as the child is spawned |
+
+### planner
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max_steps` | int | Cap on generated steps, 1 to 100 |
+| `max_depth` | int | Nesting cap, 0 to 10 |
+| `allowed_tasks` | []string | Task types the planner may use |
+
+### respond
+
+`status` (default 200), `headers`, `body_from`, `content_type` (default `application/json`). See the HTTP trigger guide.
+
+### agent_loop
+
+See [AgentLoopConfig](#agentloopconfig) below.
+
+---
+
 ## RetryPolicy
 
 Resolution order: step `retry` > workflow `default_retry` > legacy `retries` > none.
@@ -122,7 +197,7 @@ Resolution order: step `retry` > workflow `default_retry` > legacy `retries` > n
 | Strategy | `strategy` | RetryStrategy | Yes | -- | Backoff algorithm |
 | InitialDelay | `initial_delay` | duration | Yes | -- | Base delay between attempts |
 | MaxDelay | `max_delay` | duration | Yes | -- | Delay cap (0 = uncapped) |
-| Multiplier | `multiplier` | float64 | No | 0 | Used by `exponential` strategy only |
+| Multiplier | `multiplier` | float64 | No | 0 | Used by `exponential` strategy only. 0 or omitted means 2 |
 
 ### RetryStrategy Values
 
@@ -248,13 +323,17 @@ The following rules are enforced by `dag.Validate()`:
 | 5 | `depends_on` entries must reference existing step IDs |
 | 6 | `on_failure` must reference an existing step ID (if set) |
 | 7 | `compensate` must reference an existing step ID (if set) |
-| 8 | `retries` must not be negative |
+| 8 | `retries` must be 0 to 100000, and `retry` / `default_retry` `max_attempts` at most 100000; an `exponential` `multiplier` must be between 1 and 100 |
 | 9 | `agent_loop` steps must have a `config` with `max_iterations > 0` |
 | 10 | Each typed step's `config` must parse for its type (sleep, map, approval, respond, ...) |
 | 11 | `skip_if.step_id` must be in the step's `depends_on` list |
 | 12 | `skip_if.op` must be a valid operator |
 | 13 | The step dependency graph must be acyclic (Kahn's algorithm) |
-| 14 | `priority`, `cancel_on` (max 5), `sticky` and `singleton` are checked when set |
+| 14 | `task` and `worker_group` follow the character rules above |
+| 15 | `on_failure` and `compensate` targets must not depend on other steps or reference themselves |
+| 16 | `idempotency_key` must not start or end with `.` or contain an empty segment |
+| 17 | `sticky` must be `soft` or `hard`; `hard` requires a workflow `timeout`, and `sticky` cannot be combined with a per-step `worker_group` |
+| 18 | `priority` needs a `key` and 1 to 20 `rules`, with offsets in [-600, 600]; `cancel_on` has at most 5 entries, each with an `event`; `singleton.mode` must be `skip` or `cancel` |
 
 ---
 

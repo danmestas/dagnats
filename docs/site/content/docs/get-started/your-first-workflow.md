@@ -129,11 +129,18 @@ dagnats run start hello-pipeline '"World"' --watch
 The `--watch` flag subscribes to the run's event stream and prints each event as it arrives:
 
 ```
-Run def456 started
-  step.greet: completed
-  step.uppercase: completed
-  step.reverse: completed
-Run def456 completed
+Started: 3c1f0a9e2b7d4c58a6e1f9d02b34c7a1
+
+  13:20:11  workflow.started -
+  13:20:11  step.queued greet
+  13:20:11  step.started greet
+  13:20:11  step.completed greet
+  13:20:11  step.queued uppercase
+  ...
+  13:20:11  step.completed reverse
+  13:20:11  workflow.completed -
+
+Run completed: 3c1f0a9e2b7d4c58a6e1f9d02b34c7a1
 ```
 
 Each line corresponds to an **event** written to the `WORKFLOW_HISTORY` JetStream stream. The engine processes these events to advance the DAG.
@@ -146,24 +153,28 @@ After a run completes, use the CLI to inspect its state:
 dagnats run status <run-id>
 ```
 
-This shows the current state of the run and each step, including outputs:
+This shows the current state of the run and each step:
 
 ```
-Run:    def456
-Status: completed
+Run:      3c1f0a9e2b7d4c58a6e1f9d02b34c7a1
+Workflow: hello-pipeline
+Status:   completed
+Created:  2026-10-19 13:20:11 UTC
+
 Steps:
-  greet:     completed  "Hello, World!"
-  uppercase: completed  "HELLO, WORLD!"
-  reverse:   completed  "!DLROW ,OLLEH"
+  greet                completed (attempts: 1)
+  uppercase            completed (attempts: 1)
+  reverse              completed (attempts: 1)
 ```
 
-To see the full event history:
+To print the final output, or the full event history:
 
 ```bash
+dagnats run output <run-id>      # "!DLROW ,OLLEH"
 dagnats run events <run-id>
 ```
 
-This prints every event in chronological order -- useful for debugging why a step failed or understanding execution timing.
+`run events` prints every event in chronological order, with each step's output in the data column -- useful for debugging why a step failed or understanding execution timing. `dagnats run inspect <run-id>` combines status, failures and dead letters in one view.
 
 ## Adding Timeout and Retry Policy
 
@@ -188,9 +199,10 @@ Steps can declare a **timeout** (maximum execution duration) and a **retry polic
 
 - **timeout** sets the per-attempt deadline. If the attempt has not finished within this duration, the engine fails it as retriable and the step's retry policy decides what happens next. See [Timeouts](/docs/reliability/timeouts).
 - **retry.max_attempts** is the total number of retry attempts after the first failure.
-- **retry.strategy** controls backoff: `fixed` (constant delay), `linear` (delay * attempt), or `exponential` (delay * multiplier^attempt).
+- **retry.strategy** controls backoff: `fixed` (constant delay), `linear` (delay * attempt), or `exponential` (delay * multiplier^(attempt-1)).
 - **retry.initial_delay** is the base delay between attempts.
 - **retry.max_delay** caps the delay to prevent unbounded waits.
+- **retry.multiplier** applies to `exponential` and defaults to 2 when omitted.
 
 You can also set a **default retry policy** at the workflow level that applies to all steps unless overridden:
 
@@ -212,19 +224,19 @@ You can also set a **default retry policy** at the workflow level that applies t
 
 When you call `dagnats run start`, here is what the system does:
 
-1. **API** receives the request and publishes a `workflow.started` event to the `WORKFLOW_HISTORY` JetStream stream at subject `history.<run-id>`.
+1. **API** validates the input, picks a run ID, and publishes a `workflow.started` event to the `WORKFLOW_HISTORY` JetStream stream at subject `history.<run-id>`. The event carries the workflow definition the run will use.
 
-2. **Engine** consumes the event. It calls `dag.Advance(def, run, event)` -- a pure function that takes the workflow definition, current run state, and new event, then returns a list of **actions** (e.g., `EnqueueTask`, `CompleteWorkflow`).
+2. **Engine** consumes the event through its durable `orchestrator` consumer and creates the run's snapshot in the `workflow_runs` KV bucket. It then calls `Advance(def, run, event)` -- a pure function that takes the workflow definition, the run state, and the event, and returns the updated run plus a list of **side effects** (for example `EnqueueTask`, `CompleteWorkflow`, `FailWorkflow`, `SkipStep`).
 
-3. For each `EnqueueTask` action, the engine publishes a task message to the `TASK_QUEUES` stream at subject `task.<task-name>`.
+3. For each `EnqueueTask`, the engine publishes a task message to the `TASK_QUEUES` stream at subject `task.<task-type>.<run-id>`.
 
 4. **Worker** pulls the task via a JetStream pull consumer. It executes the registered handler and publishes a `step.completed` or `step.failed` event back to `WORKFLOW_HISTORY`.
 
-5. The engine consumes the completion event, calls `dag.Advance` again, and dispatches the next ready steps. This loop continues until all steps complete or a terminal failure occurs.
+5. The engine consumes the completion event, loads the run snapshot, calls `Advance` again, and dispatches the next ready steps. This loop continues until all steps complete or a terminal failure occurs.
 
-6. When the final step completes, `dag.Advance` returns a `CompleteWorkflow` action. The engine writes `workflow.completed` to the history stream.
+6. When the final step completes, `Advance` returns a `CompleteWorkflow` effect. The engine saves the terminal snapshot and writes `workflow.completed` to the history stream.
 
-The engine is **stateless** -- it reconstructs run state by replaying the event stream. KV snapshots in the `workflow_runs` bucket are an optimization for fast reads, not the source of truth. If the engine crashes and restarts, it replays from the stream and resumes exactly where it left off.
+The engine keeps no per-run state in memory between events: each event loads the run's snapshot from the `workflow_runs` KV bucket and saves it back with a revision check, so two engines in a cluster cannot overwrite each other. The history stream records what happened and drives the engine; the snapshot is the current state. If the engine crashes, JetStream redelivers every event it had not acknowledged, and the engine ignores events it has already applied.
 
 ## Next Steps
 

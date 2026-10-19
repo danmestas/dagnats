@@ -21,6 +21,7 @@ Key fields:
 | `CreatedAt` | `time.Time` | When the run was created (UTC) |
 | `ParentRunID` | `string` | Set for child sub-workflow runs |
 | `Deadline` | `*time.Time` | Workflow-level timeout deadline |
+| `DefHash` | `string` | Hash of the definition version the run is pinned to |
 | `Labels` | `map[string]string` | Caller-supplied metadata set at start time; find or bulk-cancel runs by label via the REST API |
 
 ## Run Status State Machine
@@ -84,20 +85,25 @@ Via CLI:
 dagnats run start my-workflow '{"key": "value"}'
 ```
 
-Via API:
+Via HTTP:
 
-```go
-runID, err := svc.StartRun(ctx, "my-workflow", inputJSON)
+```bash
+curl -X POST http://localhost:8080/runs \
+  -H "Content-Type: application/json" \
+  -d '{"workflow":"my-workflow","input":{"key":"value"}}'
 ```
+
+Over NATS, send a request to `api.runs.start` with `{"workflow","input"}`; see the [Wire Protocol](/docs/reference/wire-protocol#control-plane-requestreply-api).
 
 ## Inspecting a Run
 
 ```bash
-dagnats run get <run-id>
-dagnats run list --workflow=my-workflow --status=running
+dagnats run status <run-id>
+dagnats run inspect <run-id>
+dagnats run list --workflow=my-workflow --state=running
 ```
 
-The `get` command shows the run status, each step's status, and timing information. The `list` command filters runs by workflow name, status, and time range.
+`run status` shows the run's status and each step's status and attempt count. `run inspect` adds failure events and dead letters. `run list` filters runs by workflow name, state, and how recently they were created.
 
 ## Cancelling a Run
 

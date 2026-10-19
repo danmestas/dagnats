@@ -7,7 +7,7 @@ Get DagNats running and execute your first workflow in under five minutes.
 
 ## Prerequisites
 
-- Go 1.22 or later
+- Go 1.27.1 or later (the version in `go.mod`)
 - No other dependencies (NATS is embedded)
 
 ## 1. Install DagNats
@@ -19,7 +19,7 @@ go install github.com/danmestas/dagnats/cmd/dagnats@latest
 Verify the installation:
 
 ```bash
-dagnats version
+dagnats --version
 ```
 
 ## 2. Start the Server
@@ -92,7 +92,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	worker.HandleTyped(w, "greet",
 		func(ctx worker.TaskContext, name string) (string, error) {
@@ -127,7 +127,7 @@ In a new terminal:
 go run main.go
 ```
 
-The worker connects to NATS, subscribes to the `greet` and `uppercase` task queues, and waits for work.
+The worker connects to NATS, creates a pull consumer for each of the `greet` and `uppercase` task types, and waits for work. It connects to `nats://127.0.0.1:4222`, the port `dagnats serve` uses by default.
 
 ## 7. Start a Workflow Run
 
@@ -140,31 +140,42 @@ dagnats run start hello-world '"World"' --watch
 The `--watch` flag streams events as they happen. You should see output like:
 
 ```
-Run abc123 started
-  step.greet: completed
-  step.uppercase: completed
-Run abc123 completed
+Started: 855c8b1dcca2a2d3ec13824d7e6f5953
+
+  13:09:34  workflow.started -
+  13:09:34  step.queued greet
+  13:09:34  step.started greet
+  13:09:34  step.completed greet
+  13:09:34  step.queued uppercase
+  13:09:34  step.started uppercase
+  13:09:34  step.completed uppercase
+  13:09:34  workflow.completed -
+
+Run completed: 855c8b1dcca2a2d3ec13824d7e6f5953
 ```
+
+Add `--output` to print the terminal step's output when the run completes.
 
 ## 8. Check the Result
 
 ```bash
-dagnats run status <run-id>
+dagnats run status --last
+dagnats run output --last
 ```
 
-This shows the final state of each step, including outputs. The `uppercase` step output should be `"HELLO, WORLD!"`.
+`run status` shows the state of each step and its attempt count. `run output` prints the output of the terminal step, which should be `"HELLO, WORLD!"`. `run events --last` shows each step's output in the event data.
 
 ## What Just Happened
 
 1. The CLI sent a `StartRun` request to the API over NATS
-2. The engine wrote a `workflow.started` event to the history stream
-3. The engine resolved the DAG and dispatched `greet` to the task queue
+2. The API created the run and published a `workflow.started` event to the history stream
+3. The engine consumed the event, resolved the DAG, and dispatched `greet` to the task queue
 4. Your worker pulled the task, executed the handler, and published the result
 5. The engine received `step.completed`, resolved the next ready step, and dispatched `uppercase`
 6. Your worker executed `uppercase` and published the result
 7. The engine saw all steps complete and wrote `workflow.completed`
 
-All of this happened through NATS JetStream -- no HTTP calls, no database writes, no polling.
+The CLI, engine and worker talk only through NATS JetStream -- the CLI makes no HTTP calls and there is no separate database or polling loop.
 
 ## Next Steps
 

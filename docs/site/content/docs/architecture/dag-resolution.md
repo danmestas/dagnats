@@ -43,14 +43,18 @@ flowchart TD
 
 ### No Recursion
 
-The algorithm iterates over the flat step list once. Dependency checking is a linear scan of each step's `DependsOn` slice against the `completed` map. There is no recursive graph traversal. The step list in `WorkflowDef` is topologically sorted at build time, so iteration order naturally respects the DAG structure.
+The algorithm iterates over the flat step list once. Dependency checking is a linear scan of each step's `DependsOn` slice against the `completed` map. There is no recursive graph traversal. Iteration order does not matter for correctness: a step becomes ready only when its dependencies are in `completed`, wherever they sit in the list.
 
 ## Related Functions
 
 ### ResolveSkipped
 
 ```go
-func ResolveSkipped(def, completed, queued, steps) []StepDef
+func ResolveSkipped(
+    def WorkflowDef,
+    completed, queued map[string]bool,
+    steps map[string]StepState,
+) []StepDef
 ```
 
 Returns steps whose dependencies are satisfied **and** whose `SkipIf` condition evaluates to true. The orchestrator marks these as `Skipped` instead of enqueuing them. Skipped steps count as completed for downstream resolution -- their dependents can proceed.
@@ -58,14 +62,18 @@ Returns steps whose dependencies are satisfied **and** whose `SkipIf` condition 
 ### ResolveInput
 
 ```go
-func ResolveInput(step StepDef, steps map[string]StepState) ([]byte, error)
+func ResolveInput(
+    step StepDef,
+    steps map[string]StepState,
+    runInput ...json.RawMessage,
+) ([]byte, error)
 ```
 
 Builds the input payload for a step from upstream outputs:
 
 | Upstream Count | Input |
 |---------------|-------|
-| 0 (entry step) | `nil` -- receives workflow-level input from the caller |
+| 0 (entry step) | The run input passed as `runInput`, or `nil` if there is none |
 | 1 | Pass-through -- the upstream step's output verbatim |
 | N (fan-in) | JSON map of `{depID: output}` so the handler can address each upstream |
 
@@ -80,38 +88,43 @@ Returns true when every non-auxiliary step is completed or skipped. Auxiliary st
 ### ResolveCompensateChain
 
 ```go
-func ResolveCompensateChain(def, completed, failedStepID) []StepDef
+func ResolveCompensateChain(
+    def WorkflowDef,
+    completed map[string]bool,
+    failedStepID string,
+) []StepDef
 ```
 
 When a step fails and the workflow has compensation steps defined, this function builds the compensation chain. It collects completed steps that have a `Compensate` target, reverses them (last completed first), and wires `DependsOn` between them for sequential execution.
 
 ## How the Engine Calls Resolution
 
-The `WorkflowActor` calls resolution functions after each event. The pattern repeats for every event type:
+The engine's pure `Advance(def, run, event)` function calls the resolution functions after each event. The pattern repeats for every event type:
 
 ```mermaid
 sequenceDiagram
     participant Stream as WORKFLOW_HISTORY
-    participant Actor as WorkflowActor
-    participant DAG as dag package
+    participant Engine as Orchestrator
+    participant Adv as Advance + dag package
     participant Tasks as TASK_QUEUES
+    participant KV as workflow_runs KV
 
-    Stream->>Actor: step.completed event
-    Actor->>Actor: update step state in memory
-    Actor->>DAG: ResolveReady(def, completed, queued)
-    DAG-->>Actor: []StepDef (ready steps)
-    Actor->>DAG: ResolveInput(step, states)
-    DAG-->>Actor: input payload
-    Actor->>Tasks: publish task for each ready step
-    Actor->>Actor: snapshot to KV
+    Stream->>Engine: step.completed event
+    Engine->>KV: load run snapshot
+    Engine->>Adv: Advance(def, run, event)
+    Adv->>Adv: update step state
+    Adv->>Adv: ResolveReady, ResolveInput
+    Adv-->>Engine: updated run + EnqueueTask effects
+    Engine->>Tasks: publish task for each ready step
+    Engine->>KV: save snapshot
 ```
 
-1. **Event arrives**: the actor updates the in-memory `WorkflowRun` struct
-2. **Resolve ready steps**: call `ResolveReady()` with current completed and queued sets
-3. **Resolve input**: for each ready step, call `ResolveInput()` to build its input from upstream outputs
-4. **Publish tasks**: publish task messages to `TASK_QUEUES` at subject `task.{taskType}`
-5. **Check completion**: call `IsComplete()` to see if the workflow is done
-6. **Snapshot**: save the updated run state to the `workflow_runs` KV bucket
+1. **Event arrives**: the engine loads the run's snapshot and `Advance` applies the event to it
+2. **Resolve ready steps**: `ResolveReady()` runs with the current completed and queued sets
+3. **Resolve input**: for each ready step, `ResolveInput()` builds its input from upstream outputs
+4. **Check completion**: `IsComplete()` decides whether the workflow is done, producing `CompleteWorkflow`
+5. **Execute effects**: the engine publishes a task message to `TASK_QUEUES` at `task.{taskType}.{runID}` for each `EnqueueTask`
+6. **Snapshot**: the engine saves the updated run to the `workflow_runs` KV bucket
 
 This cycle drives the entire workflow forward. Each event potentially unlocks new steps, which produce new events when they complete, which unlock more steps. The DAG structure ensures forward progress without cycles.
 
@@ -121,7 +134,7 @@ When the engine processes ready steps, it translates them into actions based on 
 
 | Step Type | Action |
 |-----------|--------|
-| Normal | Publish task to `task.{taskType}` |
+| Normal | Publish task to `task.{taskType}.{runID}` |
 | AgentLoop | Publish task with iteration metadata |
 | SubWorkflow | Publish `workflow.spawn` event |
 | Map | Publish one task per input item (atomic batch) |
@@ -137,7 +150,7 @@ Normal task dispatch is the common case. Special step types have dedicated handl
 The resolution algorithm is deterministic: same definition + same completed set + same queued set = same ready steps. This property is critical for:
 
 - **Testing**: pure functions are trivially unit-testable without NATS
-- **Replay**: rebuilding state from the event log produces identical results
+- **Redelivery**: handling the same event again produces the same result, so a redelivered event is harmless
 - **Debugging**: given the event history, you can reproduce the exact sequence of resolution decisions
 
 The `dag/` package has zero I/O dependencies. All NATS interaction happens in `engine/`, which calls into `dag/` for the pure computation and handles the I/O side effects itself.

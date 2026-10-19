@@ -7,7 +7,7 @@ A **step** is the smallest unit of work in a DagNats workflow -- one task dispat
 
 ## Step Types
 
-DagNats supports 9 step types. Each has distinct execution semantics:
+DagNats supports 10 step types. Each has distinct execution semantics:
 
 | Type | Purpose | When to use |
 |------|---------|-------------|
@@ -20,8 +20,9 @@ DagNats supports 9 step types. Each has distinct execution semantics:
 | `wait_for_event` | Block until an external event matches a condition | Webhooks, human triggers, cross-system coordination |
 | `approval` | Human approval gate with cryptographic token | Deploy approvals, sensitive operations |
 | `planner` | Generate DAG fragments at runtime | Dynamic pipelines, AI-planned workflows |
+| `respond` | Send the HTTP response for an HTTP-triggered run | Durable endpoints that answer a request mid-workflow |
 
-Steps that require a **worker** to execute: `normal`, `agent_loop`, `agent`, `map`, `planner`. Steps handled entirely by the **engine**: `sleep`, `wait_for_event`, `approval`, `sub_workflow`.
+Steps that require a **worker** to execute: `normal`, `agent_loop`, `agent`, `map`, `planner`. Steps handled entirely by the **engine**: `sleep`, `wait_for_event`, `approval`, `sub_workflow`, `respond`.
 
 ## StepDef Fields
 
@@ -32,17 +33,21 @@ Every step is declared as a `StepDef` in the workflow definition:
 | `ID` | `string` | Unique identifier within the workflow |
 | `Task` | `string` | Task type that workers register for |
 | `DependsOn` | `[]string` | Step IDs that must complete first |
-| `Type` | `StepType` | One of the 9 types above |
-| `Timeout` | `time.Duration` | Per-attempt timeout |
+| `Type` | `StepType` | One of the 10 types above |
+| `Timeout` | `time.Duration` | Per-attempt timeout, enforced by the engine (`0` arms none) |
 | `Retries` | `int` | Max retry attempts (0 = no retries) |
 | `Retry` | `*RetryPolicy` | Fine-grained retry config (backoff, etc.) |
 | `Config` | `json.RawMessage` | Type-specific configuration (AgentLoopConfig, MapConfig, etc.) |
 | `SkipIf` | `*ParentCond` | Conditional skip based on parent output |
-| `Metadata` | `map[string]string` | Opaque key-value pairs (used by agent steps) |
+| `Metadata` | `map[string]string` | Static key-value pairs, delivered to the worker with the task (used by agent steps) |
 | `WorkerGroup` | `string` | Route to specific worker group |
 | `OnFailure` | `string` | Step ID to run on permanent failure |
 | `Compensate` | `string` | Step ID for saga compensation |
 | `MaxTaskConcurrency` | `int` | Global per-task-type concurrency limit |
+| `RateLimit` | `*RateLimit` | At most `Limit` dispatches per `Period` for this step's task |
+| `KeyedRateLimit` | `*KeyedRateLimit` | The same, counted per key taken from the input |
+| `Singleton` | `bool` | Only one instance of this step runs at a time |
+| `RequiredCapabilities` | `[]string` | Capabilities the step needs, e.g. `control-plane` |
 
 ## Dependencies
 

@@ -44,6 +44,7 @@ on:
 
 defaults:
   module: "."          # Dagger module path in the repository
+  # engine: ...        # advisory only; accepted and not interpreted
 
 checks:
   test:  { call: "test" }
@@ -145,38 +146,24 @@ checks:
   test: { task: "go-test", worker_group: "repo-alpha" }
 ```
 
-**The constraint that traps first-time users: `worker_group:` cannot be
-combined with a dotted task type.** The wire subject a grouped step
-publishes to is `task.{type}.{group}.{runID}` — a dot inside `{type}` is
-indistinguishable from the separator between `{type}` and `{group}`, so a
-dotted task type plus a worker group can derive the exact same subject
-(and durable consumer name) as a different, unrelated undotted
-task/group pair. This is caught at compile time, not silently dispatched
-into a collision:
+`worker_group:` works with both `call:` and `task:`, including dotted task
+types. A grouped step publishes to `task.{type}.={group}.{runID}`; the `=`
+before the group keeps it distinct from a dotted task type with no group, so
+`call:` (which compiles to the dotted `dagger.call` task type) can carry a
+worker group:
 
 ```yaml
 checks:
-  # Rejected: call: always compiles to the dotted "dagger.call" task
-  # type, so this can never carry a worker_group.
   build: { call: "build", worker_group: "repo-alpha" }
-
-  # Also rejected: an author-supplied dotted task: hits the same rule.
-  scan: { task: "dagger.custom", worker_group: "repo-alpha" }
-
-  # Fine: an undotted task: with worker_group:.
-  test: { task: "go-test", worker_group: "repo-alpha" }
+  scan:  { task: "dagger.custom", worker_group: "repo-alpha" }
+  test:  { task: "go-test", worker_group: "repo-alpha" }
 ```
 
-In practice this means **`worker_group:` is only usable with `task:`,
-and only when that task type has no dots in it** — never with `call:`.
-If a check needs both Dagger and a worker group, register a plain,
-undotted task type for it (`task: "dagger-build"` rather than relying on
-`call:`'s `dagger.call` default) and have the worker dispatch into Dagger
-itself; `ci.yml` does not rewrite what `call:` compiles to just to make
-grouping possible.
+A worker or worker token must poll that exact group to receive the step. See
+[Wire Protocol: Task Subjects](../wire-protocol#task-subjects).
 
 `worker_group:` values follow the same charset rule task types do
-(`A-Za-z0-9_-`) but, unlike `task:`, may never contain a dot at all —
+(`A-Za-z0-9_-`) but, unlike `task:`, may never contain a dot or `=` —
 `dag.ValidWorkerGroup` enforces this identically whether the value came
 from `ci.yml` or a native `StepDef.WorkerGroup`.
 
@@ -473,17 +460,17 @@ short-circuit before registration is ever attempted.
 
 Same request body, minus `register` (it is accepted but ignored — validate
 never registers, by design, regardless of what the body sends). Always
-`200 OK`:
+`200 OK`. A valid spec returns `valid: true`:
 
 ```json
 { "valid": true, "diagnostics": [] }
 ```
 
-or
+An invalid spec returns its diagnostics. The `valid` field is omitted when it
+is false, so test for `valid: true` rather than `valid: false`:
 
 ```json
 {
-  "valid": false,
   "diagnostics": [
     { "line": 2, "column": 12, "field": "defaults", "message": "..." }
   ]

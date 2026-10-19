@@ -30,7 +30,7 @@ When a feature is hard, push the difficulty into the library -- not into every c
 
 ### Define Errors Out of Existence
 
-Where possible, DagNats eliminates error conditions rather than handling them. Running `natsutil.SetupAll()` uses `CreateOrUpdateStream`, which succeeds whether the stream already exists or not. The worker directory bucket is optional -- if it is missing, workers function normally. Unknown config file keys produce warnings, not errors.
+Where possible, DagNats eliminates error conditions rather than handling them. `natsutil.SetupAll()` creates each stream and bucket that is missing and updates the ones that exist, so it succeeds whether or not the server has run before. The worker directory bucket is optional -- if it is missing, workers function normally. Unknown config file keys produce warnings, not errors.
 
 ## TigerStyle: Safety-First Engineering
 
