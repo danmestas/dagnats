@@ -17,25 +17,19 @@ This example uses two workflow files. The parent workflow validates an order, sp
   "version": "1.0",
   "steps": [
     {
-      // Step 1: validate the incoming order.
       "id": "validate",
       "task": "validate-order",
       "type": "normal"
     },
     {
-      // Step 2: spawn the "payment-flow" child workflow.
-      // type: "sub_workflow" tells the engine to start a new
-      // workflow run and wait for it to complete.
       "id": "process-payment",
       "type": "sub_workflow",
       "config": {
-        "workflow": "payment-flow"   // name of the child workflow
+        "workflow": "payment-flow"
       },
       "depends_on": ["validate"]
     },
     {
-      // Step 3: runs after the child workflow completes.
-      // Input is the child workflow's final output.
       "id": "confirm",
       "task": "send-confirmation",
       "type": "normal",
@@ -105,7 +99,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	// Parent workflow step 1: validate the order.
 	worker.HandleTyped(w, "validate-order",

@@ -51,13 +51,24 @@ next := wf.Task("next-call", "api-call").
 def, err := wf.Build()
 ```
 
+In workflow JSON the same step reads:
+
+```json
+{
+  "id": "cooldown",
+  "type": "sleep",
+  "depends_on": ["call-api"],
+  "config": { "duration": "30s" }
+}
+```
+
 ## Configuration
 
 Sleep configuration is stored in `StepDef.Config` as `SleepConfig`:
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `duration` | `time.Duration` | How long to sleep. Must be positive. Fixed when the def is registered. |
+| `duration` | duration | How long to sleep. Must be positive. Fixed when the def is registered. In JSON it is a string such as `"30s"` or integer nanoseconds. |
 | `cron` | `string` | Sleep until the next occurrence of this 5-field cron expression, strictly after dispatch. |
 | `until_input_path` | `string` | Dot-path into the **run** input naming the deadline. Resolved at dispatch. |
 | `cron_timezone` | `string` | IANA zone the `cron` form is evaluated in, e.g. `America/Chicago`. Validated at registration. |
@@ -69,20 +80,22 @@ Exactly one of `duration`, `cron` and `until_input_path` must be set; a config w
 
 **`cron` form:**
 
-Uses the same 5-field grammar as cron triggers (`*`, `*/N`, `N-M`, comma lists; numeric day-of-week, no symbolic names). All five fields are ANDed, so day-of-month and day-of-week intersect rather than union.
+Uses the same 5-field grammar as cron triggers (`*`, `*/N`, `N-M`, comma lists; numeric day-of-week, no symbolic names). When both day-of-month and day-of-week are restricted, a day matches if either one matches (the POSIX rule), so `0 9 1 * 1` is the 1st or any Monday.
 
 ```go
+// Each value is what you put in StepDef.Config of a sleep step.
+
 // Next Monday at 09:00 UTC.
-Config: dag.MarshalConfig(&dag.SleepConfig{Cron: "0 9 * * 1"})
+utc := dag.MarshalConfig(&dag.SleepConfig{Cron: "0 9 * * 1"})
 
 // Next Monday at 09:00 in Chicago.
-Config: dag.MarshalConfig(&dag.SleepConfig{
+chicago := dag.MarshalConfig(&dag.SleepConfig{
 	Cron: "0 9 * * 1", CronTimezone: "America/Chicago",
 })
 
 // Next Monday at 09:00 in the zone the run input names, e.g.
 // {"subscriber": {"timezone": "Asia/Tokyo"}}.
-Config: dag.MarshalConfig(&dag.SleepConfig{
+fromInput := dag.MarshalConfig(&dag.SleepConfig{
 	Cron: "0 9 * * 1", CronTimezoneInputPath: "subscriber.timezone",
 })
 ```
@@ -97,7 +110,7 @@ The path resolves against the run input -- not the step's resolved input, which 
 
 ```go
 // Run input: {"deadline": "2026-08-01T12:00:00Z"}
-Config: dag.MarshalConfig(&dag.SleepConfig{UntilInputPath: "deadline"})
+cfg := dag.MarshalConfig(&dag.SleepConfig{UntilInputPath: "deadline"})
 ```
 
 An RFC3339 instant already in the past clamps to a zero-length sleep that completes normally. A missing path, an unparseable value, or a cron expression with no next occurrence fails the step at dispatch.
@@ -105,7 +118,7 @@ An RFC3339 instant already in the past clamps to a zero-length sleep that comple
 **Bounds:**
 
 - Maximum: **365 days**
-- A warning is logged for durations exceeding 30 days
+- The bound applies to the resolved delay of all three forms, so a cron or `until_input_path` wait longer than 365 days fails the step at dispatch
 - The engine sets `StepState.WakeAt` to `now + duration` when the sleep starts
 
 **Sleep vs Pause:**

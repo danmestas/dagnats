@@ -54,7 +54,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 	w.Handle("tick", handleTick)
 
 	fmt.Println("Worker ready. Waiting for tasks...")
@@ -91,9 +91,9 @@ func handleTick(ctx worker.TaskContext) error {
 3. In a third terminal, register the workflow and add a cron schedule:
    ```bash
    dagnats workflow register examples/cron-trigger/workflow.json
-   dagnats cron add cron-trigger "*/1 * * * *" '{}'
+   dagnats trigger create cron-trigger --cron "*/1 * * * *"
    ```
-   This schedules the workflow to run every minute with an empty JSON input.
+   This schedules the workflow to run every minute. The run input is a trigger envelope (`trigger`, `source`, `workflow_id`, `timestamp`), not custom JSON.
 
 4. Watch the worker print timestamps every minute:
    ```
@@ -104,13 +104,14 @@ func handleTick(ctx worker.TaskContext) error {
 
 5. Remove the schedule when done:
    ```bash
-   dagnats cron remove cron-trigger
+   dagnats trigger list
+dagnats trigger delete <trigger-id>
    ```
 
 ## What's Happening
 
-1. The `dagnats cron add` command registers a cron expression with the DagNats server.
-2. The server's cron scheduler evaluates the expression and starts a new workflow run at each matching time.
+1. The `dagnats trigger create` command stores a cron trigger in the `triggers` KV bucket.
+2. The server's scheduler, which ticks every 30 seconds, evaluates the expression and starts a new workflow run at each matching time.
 3. Each run is independent -- the engine creates a fresh run, dispatches the `tick` step, and the handler executes.
 4. The workflow definition stays simple. The scheduling concern is separate from the workflow logic.
 

@@ -9,48 +9,51 @@ Typed schemas enforce structured input and output at workflow and step boundarie
 
 LLM outputs are inherently unstructured. Even with structured output modes, models can produce unexpected formats, missing fields, or wrong types. Without validation, a malformed response from step 3 silently corrupts the input to step 7, and you debug for hours.
 
-DagNats validates data at two levels: **workflow-level schemas** validate the initial input and final output of a run, and **handler-level typing** validates data at each step boundary within Go code.
+DagNats validates at two levels: a **workflow input schema** checks the input of a run before it starts, and **handler-level typing** validates data at each step boundary within Go code. A workflow can also carry an output schema, but the engine does not check outputs against it.
 
 ## Workflow Input/Output Schemas
 
-`WorkflowDef` supports `InputSchema` and `OutputSchema` fields for validating run-level data. The engine checks the workflow input against `InputSchema` before starting the run, and checks the final output against `OutputSchema` before marking the run as completed.
+`WorkflowDef` has `InputSchema` and `OutputSchema` fields (`input_schema` and `output_schema` in JSON). The engine checks a run's input against `InputSchema` before the run starts. `OutputSchema` is not enforced: it describes the result, and the generated OpenAPI spec for HTTP-triggered workflows publishes it as the response body.
+
+The builder has no schema methods. Set the fields on the built definition:
 
 ```go
 wf := dag.NewWorkflow("code-review")
-
-wf.SetInputSchema(map[string]any{
-    "type": "object",
-    "required": []string{"repo", "branch"},
-    "properties": map[string]any{
-        "repo":   map[string]any{"type": "string"},
-        "branch": map[string]any{"type": "string"},
-        "files":  map[string]any{
-            "type":  "array",
-            "items": map[string]any{"type": "string"},
-        },
-    },
-})
-
-wf.SetOutputSchema(map[string]any{
-    "type": "object",
-    "required": []string{"summary", "issues"},
-    "properties": map[string]any{
-        "summary": map[string]any{"type": "string"},
-        "issues": map[string]any{
-            "type":  "array",
-            "items": map[string]any{"type": "object"},
-        },
-    },
-})
+wf.Task("review", "llm-review").WithTimeout(60 * time.Second)
 
 def, err := wf.Build()
+if err != nil {
+    log.Fatal(err)
+}
+
+def.InputSchema = json.RawMessage(`{
+  "type": "object",
+  "required": ["repo", "branch"],
+  "properties": {
+    "repo":   {"type": "string"},
+    "branch": {"type": "string"},
+    "files":  {"type": "array", "items": {"type": "string"}}
+  }
+}`)
+def.OutputSchema = json.RawMessage(`{
+  "type": "object",
+  "required": ["summary", "issues"],
+  "properties": {
+    "summary": {"type": "string"},
+    "issues":  {"type": "array"}
+  }
+}`)
 ```
 
-If the input fails validation, the run is rejected immediately. If the final output fails, the run fails with a schema validation error. This catches structural issues at the boundary, not deep in the pipeline.
+To generate both schemas from Go types instead, call `dag.WithSchemas[In, Out](def)` on the built definition. It supports flat structs, primitives, slices and maps, and takes field names from the `json` tags.
+
+The validator understands a subset of JSON Schema: `type` (`string`, `number`, `boolean`, `object`, `array`), `required`, and nested `properties`. Other keywords, including `items`, `enum`, `minimum` and `pattern`, are ignored.
+
+`dagnats run start` and `POST /runs` reject input that fails the schema, so no run is created. If the input reaches the engine some other way, the engine records a failed run with an `input validation` error. Either way the problem shows up at the boundary, not deep in the pipeline.
 
 ## Typed Handlers for Structured LLM I/O
 
-Within handlers, use Go structs to enforce types on step input and output:
+Within handlers, use Go structs to enforce types on step input and output. `worker.HandleTyped` does the decoding and encoding for you; the version below does it by hand so each failure mode can be chosen:
 
 ```go
 type ReviewInput struct {
@@ -135,10 +138,10 @@ graph LR
     I[Workflow Input] -->|InputSchema| S1[Step 1]
     S1 -->|json.Unmarshal| S2[Step 2: LLM]
     S2 -->|json.Unmarshal| S3[Step 3]
-    S3 -->|OutputSchema| O[Workflow Output]
+    S3 --> O[Workflow Output]
 ```
 
-Data flows through the DAG as `[]byte`. Each handler deserializes its input, validates the structure, does its work, and serializes its output. The next handler deserializes and validates again. Malformed data fails at the first handler that touches it, with a clear error message identifying the schema mismatch.
+Data flows through the DAG as `[]byte`. Only the workflow input has an engine-side check. Each handler deserializes its input, validates the structure, does its work, and serializes its output. The next handler deserializes and validates again. Malformed data fails at the first handler that touches it, with a clear error message identifying the schema mismatch.
 
 ## Related
 

@@ -15,7 +15,6 @@ graph TD
     P --> G1[Generated: code-edit]
     P --> G2[Generated: test-run]
     G1 --> G2
-    G2 --> R[Report Results]
 ```
 
 This is the core mechanism for AI-planned workflows. The LLM analyzes a problem, decides what subtasks are needed, and emits structured JSON. The engine handles execution, retries, and dependency resolution.
@@ -47,7 +46,7 @@ The LLM should produce output like:
 ```json
 {
   "steps": [
-    {"id": "search", "task": "search", "input": {"query": "auth handler"}},
+    {"id": "search", "task": "search"},
     {"id": "edit", "task": "code-edit", "depends_on": ["search"]},
     {"id": "test", "task": "test-run", "depends_on": ["edit"]},
     {"id": "lint", "task": "lint", "depends_on": ["edit"]}
@@ -67,7 +66,7 @@ The engine validates every fragment before materialization. This is your safety 
 | ID collision check | Conflicts with static steps |
 | `AllowedTasks` allowlist | Unauthorized task types |
 
-If validation fails, the planner step fails and the engine's retry policy applies. The LLM gets another chance to produce a valid plan (if retries are configured).
+If validation fails, the planner step fails and the run fails with the validation error. The engine does not retry the planner task, so validate the plan inside the handler if you want the model to get another try.
 
 ## Workflow Definition
 
@@ -88,6 +87,8 @@ report := wf.Task("report", "summarize-results").
 
 def, err := wf.Build()
 ```
+
+The generated steps are normal steps that depend on the planner step. The static `report` step also depends only on `plan`, so it becomes ready as soon as the planner step completes, not after the generated steps finish. To run something after them, have the planner emit it as part of the fragment.
 
 The `AllowedTasks` list is critical for safety. Without it, an LLM could generate steps referencing any registered task type. With it, the engine rejects fragments containing unauthorized tasks.
 

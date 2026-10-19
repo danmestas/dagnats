@@ -32,7 +32,7 @@ sequenceDiagram
     end
 ```
 
-When a normal step's dependencies are all satisfied, the engine publishes a `TaskPayload` containing the run ID, step ID, attempt number, and merged input from upstream outputs. The worker's handler receives this as a `TaskContext` with read-only accessors (`Input()`, `RunID()`, `StepID()`, `RetryCount()`) and terminal actions (`Complete()`, `Fail()`, `FailPermanent()`, `FailRetryAfter()`).
+When a normal step's dependencies are all satisfied, the engine publishes a `TaskPayload` containing the run ID, step ID, attempt number, and merged input from upstream outputs. The worker's handler receives this as a `TaskContext` with read-only accessors (`Input()`, `RunID()`, `StepID()`, `RetryCount()`, `Metadata()`) and terminal actions (`Complete()`, `Fail()`, `FailPermanent()`, `FailRetryAfter()`).
 
 ## Usage
 
@@ -55,7 +55,7 @@ def, err := wf.Build()
 Register a handler on a worker:
 
 ```go
-w := worker.New(nc, tel)
+w := worker.NewWorker(nc)
 w.Handle("http-fetch", func(ctx worker.TaskContext) error {
     url := gjson.GetBytes(ctx.Input(), "url").String()
     resp, err := http.Get(url)
@@ -77,8 +77,13 @@ Normal steps use the base `StepDef` fields -- no type-specific `Config` is requi
 | `ID` | `string` | Unique step identifier within the workflow |
 | `Task` | `string` | Task type that workers register handlers for |
 | `DependsOn` | `[]string` | Step IDs that must complete before this step runs |
-| `Timeout` | `time.Duration` | Per-attempt timeout (enforced by an engine watchdog; redelivery does not restart it) |
-| `Retries` | `int` | Maximum retry attempts (0 = no retries) |
+| `Timeout` | duration | Per-attempt timeout, enforced by an engine watchdog (0 = none). It runs from when the attempt first started. A redelivery does not restart it, and time spent in `Pause` counts toward it. A retry the engine schedules gets the full timeout again. |
+| `Retries` | `int` | Legacy retry count (0 = no retries). Prefer `Retry`. |
+| `Retry` | `RetryPolicy` | Per-step policy: `max_attempts`, `strategy` (`fixed`, `linear`, `exponential`), `initial_delay`, `max_delay`, `multiplier`. Overrides the workflow's `default_retry`. |
+| `SkipIf` | `ParentCond` | Skip the step when a parent's output field matches |
+| `RateLimit`, `KeyedRateLimit` | | Rate limits on the task type |
+| `MaxTaskConcurrency` | `int` | Cap on concurrent executions of this task type |
+| `Metadata` | `map[string]string` | Static values the handler reads with `ctx.Metadata()` |
 | `WorkerGroup` | `string` | Route to a specific worker group |
 | `OnFailure` | `string` | Step ID to run on permanent failure |
 | `Compensate` | `string` | Step ID for saga compensation |

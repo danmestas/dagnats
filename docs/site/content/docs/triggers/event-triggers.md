@@ -3,21 +3,35 @@ title: Event Triggers
 weight: 3
 ---
 
-Event triggers start workflow runs in response to messages published to the NATS `EVENTS` stream, enabling reactive workflows driven by external systems.
+Event triggers start workflow runs in response to messages published on a NATS subject, enabling reactive workflows driven by external systems.
 
 ## Overview
 
-Any system that can publish to NATS can trigger a DagNats workflow. The `EVENTS` stream accepts messages on `event.>` subjects. A trigger definition binds a subject pattern to a workflow, optionally filtering on message content.
+Any system that can publish to NATS can trigger a DagNats workflow. A trigger binds a subject pattern to a workflow. The server subscribes to that subject with a plain NATS subscription (not a JetStream consumer), so a message is delivered to the trigger only while the server is running. By convention events use the `event.>` subjects, which the `EVENTS` stream captures, but the trigger accepts any subject.
 
 ## Creating an Event Trigger
 
+Pass the workflow name, then `--subject`:
+
 ```bash
-dagnats trigger create on-deploy \
-  --workflow deploy-pipeline \
-  --subject "event.deploy.production"
+dagnats trigger create deploy-pipeline --subject "event.deploy.production"
 ```
 
-This fires a `deploy-pipeline` run whenever a message arrives on `event.deploy.production`. The event payload becomes the run's input.
+This starts a `deploy-pipeline` run for every message that arrives on `event.deploy.production`. The CLI prints the new trigger's ID.
+
+The run's input is a trigger envelope, and the message payload is its `data` field:
+
+```json
+{
+  "trigger": "subject",
+  "source": "trig-0123456789abcdef",
+  "workflow_id": "deploy-pipeline",
+  "timestamp": "2026-10-19T09:00:00Z",
+  "data": { "repo": "acme/api", "branch": "main" }
+}
+```
+
+`data` is the raw payload bytes; it is omitted when the message is empty. A worker handler that only wants `data` can use `worker.UnwrapTrigger()` (see [HTTP Trigger](/docs/triggers/http#reading-the-request-inside-a-worker)).
 
 ### Subject Wildcards
 
@@ -30,54 +44,39 @@ NATS subject wildcards work in trigger definitions:
 
 ## Publishing Events
 
-External systems publish events to the `EVENTS` stream using any NATS client:
+External systems publish with any NATS client:
 
 ```go
 nc, _ := nats.Connect("nats://localhost:4222")
-js, _ := nc.JetStream()
+js, _ := jetstream.New(nc)
 
 payload := []byte(`{"repo": "acme/api", "branch": "main"}`)
-js.Publish("event.deploy.production", payload)
+js.Publish(ctx, "event.deploy.production", payload)
 ```
 
 ## Filtering
 
-Triggers can filter events by content to avoid unnecessary runs. The filter evaluates fields in the event payload before starting a workflow.
-
-```bash
-dagnats trigger create on-main-push \
-  --workflow ci-pipeline \
-  --subject "event.git.push" \
-  --filter-field "branch" \
-  --filter-value "main"
-```
-
-Only events where `branch == "main"` will trigger a run.
+Event triggers have no payload filter. Every message on the subject starts a run. To start runs for only some messages, publish those messages on a narrower subject, or let the first step read `data` and complete early for the messages you want to ignore.
 
 ## Debounce
 
-High-frequency events can be debounced to collapse rapid-fire events into a single run. Debounce state is tracked in the `debounce_state` KV bucket.
+A trigger definition accepts a `debounce` block:
 
-```bash
-dagnats trigger create on-file-change \
-  --workflow rebuild \
-  --subject "event.fs.changed" \
-  --debounce "5s"
-```
+| Field | Meaning |
+|-------|---------|
+| `period` | Quiet time before the run starts. Required, up to 7 days. |
+| `timeout` | Hard cap on how long a window can keep extending. Optional. Must be at least `period` and at most 7 days. |
+| `key` | Dot-path into the event payload. Events with different values get separate windows. |
 
-When the first event arrives, a timer starts. Subsequent events within the 5-second window reset the timer. The run fires once the window expires with the **last** event's payload. The timer is implemented via `SLEEP_TIMERS` with a `debounce_fire` action.
+Debounce cannot be combined with a cron trigger, and `trigger create` has no flag for it; it is set in a `dagnats.yaml` trigger or in the trigger JSON.
 
-## Batching
-
-Batch mode accumulates events over a time window or until a count threshold is reached, then fires a single run with all accumulated payloads as an array input.
-
-State is tracked in the `batch_state` KV bucket (TTL: 2x max timeout). The timer uses `SLEEP_TIMERS` with a `batch_fire` action.
+**The server does not apply debounce to subject triggers today.** The definition is validated and stored, but no debouncer is attached when the trigger activates, so every message starts a run. Do not rely on it to collapse bursts.
 
 ## Event Correlation vs. Event Triggers
 
-**Event triggers** start new workflow runs. They live in the `triggers` KV bucket and are evaluated by the scheduler.
+**Event triggers** start new workflow runs. They live in the `triggers` KV bucket and are held by the trigger service inside `dagnats serve`.
 
-**Wait-for-event steps** pause an existing run until a matching event arrives. They use the `event_waiters` KV bucket and are evaluated by the correlator inside the orchestrator.
+**Wait-for-event steps** pause an existing run until a matching event arrives on the `EVENTS` stream. They use the `event_waiters` KV bucket and are evaluated by the correlator inside the orchestrator.
 
 These are distinct mechanisms. See [Wait for Event](/docs/step-types/wait-for-event) for the step-level pattern.
 
@@ -85,4 +84,5 @@ These are distinct mechanisms. See [Wait for Event](/docs/step-types/wait-for-ev
 
 - [Cron Schedules](/docs/triggers/cron-schedules) -- time-based triggers
 - [Webhooks](/docs/triggers/webhooks) -- HTTP-based event ingestion
+- [Run Terminal Trigger](/docs/triggers/run-terminal) -- start a run when another run finishes
 - [Wait for Event](/docs/step-types/wait-for-event) -- mid-workflow event correlation

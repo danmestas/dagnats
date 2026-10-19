@@ -19,50 +19,58 @@ Task execution framework for building DagNats workers. Handles NATS subscription
 
 ## Worker Lifecycle
 
-1. Create a worker with `NewWorker(nc, tel)`
-2. Register handlers with `Handle(taskType, fn)` or `HandleTyped(taskType, fn)`
-3. Call `Start()` to begin consuming tasks (blocks until shutdown)
+1. Create a worker with `NewWorker(nc, opts...)`. Options are `WithGroups`, `WithPartitions` and `WithControlPlane`.
+2. Register handlers with `Handle(taskType, fn, opts...)`, `HandleSingleton(taskType, fn)` or the generic `HandleTyped(w, taskType, fn)`.
+3. Call `Start()` to create the consumers. It returns once they are running, so keep the process alive yourself.
+4. Call `Stop()` to stop consuming and wait up to 30 seconds for running handlers.
 
 ## Handle vs HandleTyped
 
-| Method | Signature | Input Access |
-|--------|-----------|-------------|
-| `Handle` | `func(ctx TaskContext) error` | `ctx.Input()` returns raw `[]byte` |
+| Function | Signature | Input Access |
+|----------|-----------|-------------|
+| `(*Worker).Handle` | `func(ctx TaskContext) error` | `ctx.Input()` returns raw `[]byte` |
 | `HandleTyped[I, O]` | `func(ctx TaskContext, input I) (O, error)` | Automatic JSON unmarshal into `I`, marshal `O` on return |
 
-`HandleTyped` is a generic convenience wrapper. It unmarshals the input, calls your function, and auto-completes with the marshaled output on nil error.
+`HandleTyped` is a generic convenience wrapper. It unmarshals the input, calls your function, and completes with the marshaled output on a nil error. Pass `worker.UnwrapTrigger()` to receive the `data` of a trigger envelope instead of the envelope.
 
 ## TaskContext Methods
 
 | Method | Description |
 |--------|-------------|
 | `Input() []byte` | Raw input JSON |
-| `RunID() string` | Workflow run ID |
-| `StepID() string` | Step ID |
-| `Attempt() int` | Current retry attempt (1-based) |
-| `Complete(output []byte) error` | Mark task as successfully completed |
-| `Fail(err error) error` | Mark task as failed |
+| `RunID() string`, `StepID() string` | Run and step IDs |
+| `RetryCount() int` | 0 on the first dispatch, then the attempt number (2, 3, ...) on engine retries |
+| `Metadata() map[string]string` | The step's static metadata |
+| `Context() context.Context` | Context of the task |
+| `Complete(output []byte) error` | Finish the step |
+| `Fail(err error) error` | Fail the attempt; the retry policy applies |
+| `FailPermanent(err error) error` | Fail without retrying |
+| `FailRetryAfter(err error, d time.Duration) error` | Fail and retry after `d` |
 | `Continue(output []byte) error` | Request next agent-loop iteration |
-| `Checkpoint(data []byte) error` | Save incremental state without pausing |
-| `LoadCheckpoint() ([]byte, error)` | Load previously saved checkpoint |
-| `Pause(duration, checkpoint) error` | Suspend and redeliver after duration |
-| `WaitForSignal(name) ([]byte, error)` | Block until a named signal arrives |
+| `Heartbeat() error` | Extend the claim on the task |
+| `PutStream(data []byte) error` | Publish a live token to `stream.{run_id}.{step_id}` |
+| `LogOut() io.Writer`, `LogErr() io.Writer` | Stream stdout and stderr chunks into the run's logs |
+| `Checkpoint(state []byte) error` | Save state to the checkpoints KV |
+| `LoadCheckpoint() ([]byte, error)` | Load previously saved state |
+| `Pause(name string, d time.Duration) error` | Save a pause marker and run the handler again after `d` |
+| `WaitForSignal(name string, timeout time.Duration) ([]byte, error)` | Block until a named signal arrives |
+| `SendSignal(runID, name string, data []byte) error` | Send a signal |
+| `ControlPlane() ControlPlane` | Control-plane handle, or nil |
 
 ## Error Helpers
 
 | Function | Description |
 |----------|-------------|
-| `Retryable(err)` | Wraps an error to indicate it should be retried (NAK with delay) |
-| `IsRetryable(err) bool` | Checks if an error was marked retryable |
-| `Fatal(err)` | Wraps an error to indicate no retry (ACK + fail immediately) |
-| `IsFatal(err) bool` | Checks if an error was marked fatal |
+| `NewNonRetryableError(err)` | Return it from a handler to fail permanently with no retry |
+| `NewRateLimitError(err, d)` | Return it from a handler to retry after `d` |
+
+Both are detected with `errors.As`, so they can be wrapped.
 
 ## Usage
 
 ```go
 nc, _ := nats.Connect("nats://localhost:4222")
-tel := observe.NewNoopTelemetry()
-w := worker.NewWorker(nc, tel)
+w := worker.NewWorker(nc)
 
 w.Handle("process", func(ctx worker.TaskContext) error {
     input := ctx.Input()
@@ -70,5 +78,6 @@ w.Handle("process", func(ctx worker.TaskContext) error {
     return ctx.Complete(result)
 })
 
-w.Start() // blocks
+w.Start() // returns once consumers are running
+defer w.Stop()
 ```

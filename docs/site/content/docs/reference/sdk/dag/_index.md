@@ -7,7 +7,7 @@ weight: 1
 import "github.com/danmestas/dagnats/dag"
 ```
 
-Pure DAG logic with zero NATS dependencies. This package defines the workflow data model, validation rules, and state machine for advancing runs through their steps.
+Pure DAG logic with zero NATS dependencies. This package defines the workflow data model, the builder, and the validation rules. The engine that advances runs lives in an internal package.
 
 ## Key Types
 
@@ -27,9 +27,10 @@ Pure DAG logic with zero NATS dependencies. This package defines the workflow da
 | Function | Description |
 |----------|-------------|
 | `Validate(def)` | Validates a workflow definition: unique IDs, valid references, acyclic graph (Kahn's algorithm) |
-| `Advance(run, event)` | State machine: applies an event to a run snapshot and returns the next set of ready steps |
+| `ResolveReady(def, completed, queued)` | Returns the steps whose dependencies are all complete |
 | `ResolveRetryPolicy(def, step)` | Resolves the effective retry policy for a step (step > workflow default > legacy) |
-| `ValidateSchema(schema, data)` | Validates JSON data against a JSON Schema |
+| `ValidateSchema(schema, data)` | Validates JSON data against a JSON Schema subset: `type`, `required`, `properties` |
+| `WithSchemas[I, O](def)` | Fills `InputSchema` and `OutputSchema` from Go types |
 | `ExtractDotPath(path, data)` | Extracts a value from JSON data using dot-notation path |
 
 ## Step Types
@@ -44,9 +45,12 @@ The `StepType` enum controls execution semantics:
 | `agent` | `StepTypeAgent` | Single autonomous agent execution |
 | `map` | `StepTypeMap` | Fan-out over input collection |
 | `sleep` | `StepTypeSleep` | Pause for a duration |
-| `wait_for_event` | `StepTypeWaitForEvent` | Wait for an external signal |
+| `wait_for_event` | `StepTypeWaitForEvent` | Wait for a matching event |
 | `approval` | `StepTypeApproval` | Human-in-the-loop gate |
 | `planner` | `StepTypePlanner` | Dynamic step generation |
+| `respond` | `StepTypeRespond` | Publish the HTTP response for an HTTP trigger |
+
+An unknown `type` string is an error (`unknown step type`). In JSON, durations accept strings such as `"30s"` or integer nanoseconds, and a top-level `$schema` key is accepted and ignored.
 
 ## Run Status
 
@@ -57,6 +61,7 @@ The `StepType` enum controls execution semantics:
 | `completed` | Yes | All steps completed successfully |
 | `failed` | Yes | One or more steps failed |
 | `cancelled` | Yes | Cancelled by user or system |
+| `compensated` | Yes | Failed, and saga compensation finished |
 | `compensate_failed` | Yes | Saga compensation failed |
 
 ## Usage

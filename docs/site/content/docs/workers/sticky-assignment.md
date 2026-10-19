@@ -12,28 +12,28 @@ The `StickyStrategy` type is a string enum on `WorkflowDef` that controls worker
 | Strategy | Value | Behavior |
 |----------|-------|----------|
 | **None** | `""` | Default. Tasks are distributed across all workers via the TASK_QUEUES stream. |
-| **Soft** | `"soft"` | The engine attempts to route to the same worker. Falls back to any worker if the bound worker is unavailable. |
-| **Hard** | `"hard"` | The engine always routes to the bound worker. If that worker is down, the task waits until it returns. |
+| **Soft** | `"soft"` | The engine tries the bound worker first. If that worker has not claimed the task after 5 seconds, the engine republishes it to the normal queue. |
+| **Hard** | `"hard"` | The engine only routes to the bound worker. If that worker is down, the task waits for it. |
 
 ```go
-def := dag.WorkflowDef{
-    Name:   "gpu-pipeline",
-    Sticky: dag.StickySoft,
-    Steps:  []dag.StepDef{...},
-}
+wf := dag.NewWorkflow("gpu-pipeline").WithSticky(dag.StickySoft)
 ```
+
+In workflow JSON it is `"sticky": "soft"` on the workflow. `Build()` and `workflow validate` reject two combinations: `hard` without a workflow `timeout` (the wait has no other bound), and any sticky workflow with a step that sets `worker_group`.
 
 ## How It Works
 
-When a sticky workflow starts, the engine records the first worker that completes a step in the **sticky_bindings** KV bucket (key: `{runID}`, value: `{workerID}`). Subsequent steps are published to the `STICKY_TASKS` stream on subject `sticky.{taskType}.{workerID}.{runID}`, where only that specific worker is listening.
+A sticky workflow's first step goes through the normal queue, so any worker can take it. When that step completes, the engine records the worker that ran it in the **sticky_bindings** KV bucket (key: `{runID}`, value: `{workerID}`). Subsequent steps are published to the `STICKY_TASKS` stream on subject `sticky.{taskType}.{workerID}.{runID}`, where only that worker is listening. The engine deletes the binding when the run completes, fails or is cancelled.
 
-Workers automatically subscribe to their sticky subject on startup:
+A worker subscribes to its sticky subject for each task type it handles:
 
 ```
 sticky.{taskType}.{workerID}.>
 ```
 
-The `STICKY_TASKS` stream uses **memory storage** with a 30-minute MaxAge. The `sticky_bindings` KV bucket has a 25-hour TTL, ensuring bindings expire after the workflow completes.
+A worker built with `WithGroups` or `WithPartitions` does not subscribe to sticky subjects, so it can start a sticky run but never receives the later steps. Use sticky workflows with plain workers.
+
+The `STICKY_TASKS` stream uses **memory storage** with a 30-minute MaxAge, so a sticky task that nobody claims within 30 minutes is dropped from the stream. The `sticky_bindings` KV bucket has a 25-hour TTL as a backstop for bindings the engine did not delete.
 
 ## Use Cases
 
@@ -45,18 +45,13 @@ The `STICKY_TASKS` stream uses **memory storage** with a 30-minute MaxAge. The `
 
 ## Soft vs. Hard
 
-Choose **soft** for performance optimization where correctness does not depend on worker identity. The engine tries the sticky worker first but falls back to the normal TASK_QUEUES stream if delivery fails.
+Choose **soft** for performance optimization where correctness does not depend on worker identity. The engine tries the sticky worker first, and after 5 seconds without a claim it republishes the task to the normal TASK_QUEUES stream.
 
-Choose **hard** only when correctness requires the same worker -- for example, when local hardware resources are involved. Hard sticky tasks wait indefinitely for the bound worker to return, so pair with a workflow-level timeout to bound the wait.
+Choose **hard** only when correctness requires the same worker -- for example, when local hardware resources are involved. Hard sticky tasks never fall back to another worker, which is why the workflow must set a `timeout` to bound the wait.
 
 ## Infrastructure Requirements
 
-Sticky routing requires two NATS resources beyond the defaults:
-
-1. **STICKY_TASKS stream** -- provisioned by `natsutil.SetupStickyStream()`
-2. **sticky_bindings KV bucket** -- provisioned by `natsutil.SetupKVBuckets()`
-
-Both are created automatically by `natsutil.SetupAll()`. If the STICKY_TASKS stream does not exist, the worker silently skips sticky subscription -- sticky features degrade gracefully.
+Sticky routing uses two NATS resources: the **STICKY_TASKS** stream and the **sticky_bindings** KV bucket. `dagnats serve` creates both at startup. If the STICKY_TASKS stream does not exist, a worker silently skips the sticky subscription, and if the bucket is missing the engine records no bindings.
 
 ## Related
 

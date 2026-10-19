@@ -11,7 +11,7 @@ Static DAGs require you to know every step at definition time. Planner steps rem
 
 This is the primitive that makes AI-planned workflows possible. An LLM can analyze a task, decide what subtasks are needed, emit a plan as structured JSON, and the engine executes it. The planner does not need to know the full workflow graph -- it only produces its fragment, and the engine merges it with the static definition.
 
-Planner steps are bounded to prevent runaway generation: a single planner can emit at most **100 steps**, a single run can accumulate at most **500 dynamic steps** total, and the dependency chain depth within a fragment is capped at **10**. Generated step IDs are namespaced as `{plannerStepID}.{generatedID}` to prevent collisions with static steps or other planner fragments.
+Planner steps are bounded to prevent runaway generation: a single planner can emit at most **100 steps** (and no more than its `max_steps`), a single run can accumulate at most **500 dynamic steps** total, and the dependency chain depth within a fragment is capped at **10**. Generated step IDs are namespaced as `{plannerStepID}.{generatedID}` to prevent collisions with static steps or other planner fragments.
 
 ## How It Works
 
@@ -31,14 +31,14 @@ sequenceDiagram
 
 The engine performs several validation checks on the fragment before materialization:
 
-1. **Bounds check**: step count within [1, `MaxSteps`], depth within [0, `MaxDepth`]
+1. **Bounds check**: step count within [1, `MaxSteps`], and the longest chain no deeper than `MaxDepth` when `MaxDepth` is set
 2. **Cycle detection**: the generated fragment must be a DAG
 3. **ID collision check**: namespaced IDs must not collide with existing steps
 4. **Task allowlist**: if `AllowedTasks` is configured, generated steps may only reference listed task types
 
 After validation, the engine appends the fragment to `WorkflowRun.DynamicSteps` and publishes an `EventPlannerMaterialized` event for observability. The `EffectiveSteps()` method on the workflow run merges static steps from the definition with all dynamic steps, producing the complete step graph that the DAG resolver operates on.
 
-**Output aggregation**: if the planner fragment has a single terminal step (no downstream dependencies within the fragment), its output becomes the planner step's output. If there are multiple terminal steps, their outputs are collected into a map keyed by step ID.
+**Outputs**: the planner step is marked completed as soon as the worker returns, and its output is the fragment JSON the worker returned. The engine does not collect the generated steps' outputs back into it. Each generated step keeps its own output under its namespaced ID, and static steps that depend on the planner step become ready when the planner step completes. If the fragment fails validation, or would take the run past 500 dynamic steps, the planner step fails.
 
 ## Usage
 
@@ -60,7 +60,7 @@ report := wf.Task("report", "summarize").
 def, err := wf.Build()
 ```
 
-The planner worker returns a JSON fragment:
+The planner worker returns a JSON object with a `steps` array. Each generated step needs an `id` and a `task` (a valid task type), and `depends_on` may name only other steps in the same fragment. Generated steps always run as normal steps: whatever `type` the fragment names, the engine sets it to `normal`. A fragment with no steps is allowed and adds nothing. Steps with no `depends_on` start after the planner step.
 
 ```go
 w.Handle("generate-plan", func(ctx worker.TaskContext) error {
@@ -85,7 +85,7 @@ Planner configuration is stored in `StepDef.Config` as `PlannerConfig`:
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
 | `max_steps` | `int` | (required) | Maximum steps in the fragment. Range: 1-100. |
-| `max_depth` | `int` | 0 | Maximum dependency chain depth. Range: 0-10. |
+| `max_depth` | `int` | 0 (no depth check) | Maximum length of the longest dependency chain in the fragment, counted in steps (a single step has depth 1). Range: 0-10. |
 | `allowed_tasks` | `[]string` | (all allowed) | Restrict which task types may appear in the fragment |
 
 **Global bounds:**

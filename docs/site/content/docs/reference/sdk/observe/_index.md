@@ -7,79 +7,42 @@ weight: 4
 import "github.com/danmestas/dagnats/observe"
 ```
 
-Provider-agnostic telemetry interfaces for logging, tracing, metrics, and error reporting. DagNats defines interfaces in this package and ships adapter implementations separately, following the adapter pattern.
+OpenTelemetry setup and trace-context propagation for DagNats processes. The engine, workers and bridge use the global OpenTelemetry providers; this package installs real ones and carries trace context across NATS messages.
 
-## Key Interfaces
-
-| Interface | Description |
-|-----------|-------------|
-| `Logger` | Structured logging with level-based methods (`Info`, `Warn`, `Error`, `Debug`) |
-| `Tracer` | Distributed tracing: `Start(ctx, name)` returns a `(context.Context, Span)` |
-| `Span` | Individual trace span with `End()`, `RecordError()`, `SetStatus()`, `SetAttributes()` |
-| `SpanContext` | Optional interface on Span for extracting `TraceID()` and `SpanID()` |
-| `Metrics` | Instrument factory: `Counter(name)`, `Histogram(name)`, `Gauge(name)` |
-| `Counter` | Monotonic counter: `Inc()`, `Add(delta)` |
-| `Histogram` | Distribution recorder: `Observe(value)` |
-| `Gauge` | Point-in-time value: `Set(value)` |
-| `ErrorReporter` | Error reporting interface: `CaptureError(err)`, `CaptureMessage(msg)` |
-
-## Telemetry Bundle
-
-The `Telemetry` struct bundles all four concerns into a single value passed through the system:
-
-```go
-type Telemetry struct {
-    Logger        Logger
-    Tracer        Tracer
-    Metrics       Metrics
-    ErrorReporter ErrorReporter
-}
-```
-
-## No-op Implementations
-
-For testing and development, the package provides no-op implementations that satisfy all interfaces without producing output:
+## Key Functions
 
 | Function | Description |
 |----------|-------------|
-| `NewNoopTelemetry()` | Returns a `*Telemetry` with all no-op implementations |
-| `NewNoopLogger()` | Returns a `Logger` that discards all output |
-| `NewNoopTracer()` | Returns a `Tracer` with no-op spans |
-| `NewNoopMetrics()` | Returns a `Metrics` that discards all recordings |
+| `InitTelemetry(ctx, cfg)` | Creates and registers the tracer, meter and logger providers, exporting spans, metrics and logs to NATS JetStream and, when `OTLPEndpoint` is set, over OTLP/HTTP. Returns a shutdown function. |
+| `EnsureDefaultPropagator()` | Installs the W3C trace-context and baggage propagator unless one is already set |
+| `InjectTraceContext`, `InjectTraceContextHeader` | Write trace context into an event and NATS headers |
+| `ExtractTraceContext`, `ExtractTraceContextHeader`, `ExtractTraceContextRaw` | Rebuild a context from a NATS message or headers |
+| `TraceContextFromTask(task)` | Rebuild a context from a `protocol.TaskPayload` (its `traceparent` and `tracestate`) |
 
-## Attribute Helpers
+## Config
 
-Helper functions for creating span and log attributes:
+| Field | Description |
+|-------|-------------|
+| `ServiceName` | Required. Identifies the process in telemetry data. |
+| `NATSConn` | Required. Connection used for the NATS-backed exporters. The caller owns it. |
+| `OTLPEndpoint` | When non-empty, turns on OTLP export. The endpoint, headers and protocol come from the standard `OTEL_EXPORTER_OTLP_*` environment variables. |
+| `Resource` | Extra resource attributes |
 
-| Function | Returns |
-|----------|---------|
-| `String(key, value)` | Key-value string attribute |
-| `Int(key, value)` | Key-value int attribute |
-| `Bool(key, value)` | Key-value bool attribute |
-| `StringAttr(key, value)` | Span attribute (string) |
-| `Int64Attr(key, value)` | Span attribute (int64) |
-| `BoolAttr(key, value)` | Span attribute (bool) |
-
-## Adapter Pattern
-
-To integrate with a real telemetry backend (e.g., OpenTelemetry, Sentry):
-
-1. Implement the interfaces in this package
-2. Wire them into a `Telemetry` struct
-3. Pass to `server.New()`, `worker.NewWorker()`, or `api.NewService()`
-
-The `internal/observe/simple` package provides a NATS JetStream-backed implementation used by the embedded server.
+`InitTelemetry` panics if `NATSConn` is nil or `ServiceName` is empty.
 
 ## Usage
 
 ```go
-// Production: wire real implementations
-tel := &observe.Telemetry{
-    Logger:  myOtelLogger,
-    Tracer:  myOtelTracer,
-    Metrics: myOtelMetrics,
+shutdown, err := observe.InitTelemetry(ctx, observe.Config{
+    ServiceName: "my-worker",
+    NATSConn:    nc,
+})
+if err != nil {
+    log.Fatal(err)
 }
+defer shutdown(context.Background())
 
-// Testing: use no-ops
-tel := observe.NewNoopTelemetry()
+w := worker.NewWorker(nc)
 ```
+
+Workers need no telemetry argument. Once `InitTelemetry` has run, they pick up the global providers.

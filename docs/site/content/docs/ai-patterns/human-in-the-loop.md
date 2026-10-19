@@ -40,7 +40,7 @@ execute := wf.Task("execute", "apply-changes").
 def, _ := wf.Build()
 ```
 
-The agent loop reasons and produces a plan. The approval gate pauses until a human reviews it. Only after approval does execution proceed. If the human rejects, the workflow fails (or routes to an `OnFailure` handler for re-planning).
+The agent loop reasons and produces a plan. The approval gate pauses until a human reviews it. Only after approval does execution proceed. If the human rejects, the approval step fails and the run fails. There is no re-planning route, so to let a reviewer send work back, use a signal inside the agent loop instead.
 
 The approval notification publishes to the NATS subject `approval.agent.action`. External integrations (Slack, email, dashboard) subscribe and present the decision to the reviewer.
 
@@ -83,7 +83,7 @@ An external system sends the human's feedback:
 
 ```bash
 # Via CLI
-dagnats signal send <run-id> human-review '{"guidance": "Focus on auth module"}'
+dagnats run signal <run-id> human-review '{"guidance": "Focus on auth module"}'
 ```
 
 ## Combining Approval with Agent Loops
@@ -120,7 +120,7 @@ This three-phase pattern (reason, approve, execute) is the safest way to run LLM
 | Component | Recommended Timeout | Rationale |
 |-----------|-------------------|-----------|
 | `WaitForSignal` in agent loop | 30-60 minutes | Human may be away; heartbeat to prevent redelivery |
-| Approval gate | 4-24 hours | Async review; auto-reject on expiry |
+| Approval gate | 4-24 hours | Async review; the step fails on expiry |
 | Per-iteration timeout | 60-120 seconds | Prevent hung LLM calls |
 
 For `WaitForSignal`, remember to call `Heartbeat()` periodically if the wait exceeds the NATS AckWait period (5 minutes by default). Or use `Pause()` to NAK with delay and resume when the human responds. Either way the wait counts toward the step's timeout, so set one that covers the longest expected response.

@@ -78,14 +78,16 @@ Map configuration is stored in `StepDef.Config` as `MapConfig`:
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `max_items` | `int` | 1000 | Maximum array size. Capped at 10,000. |
+| `max_items` | `int` | 1000 from `wf.Map` (required in JSON) | Maximum array size. Must be between 1 and 10,000. |
 
 **Behavior:**
 
-- Input must be a JSON array. Non-array input causes the step to fail.
-- **Fail-fast**: any instance failure fails the entire map step.
+- A map step must have exactly one dependency, and that dependency's output is the array. A map step cannot depend on another map step; `Build()` and `workflow validate` reject both.
+- Input must be a JSON array. Non-array input, or an array longer than `max_items`, causes the step to fail when it is dispatched.
+- **Fail-fast**: any instance failure fails the entire map step. If the step sets `on_failure`, that handler runs.
+- Instances never receive the `control-plane` capability, even if the step declares it.
 - Outputs are collected in original array order.
-- Each instance gets its own retry budget (from the step's `Retries` field).
+- Each instance gets its own retry budget, from the step's retry settings.
 
 ## Related
 

@@ -45,10 +45,24 @@ If a worker stops sending heartbeats (crash, network partition, infinite loop wi
 
 1. **AckWait expires** -- NATS marks the message as unacknowledged
 2. **Redelivery** -- NATS delivers the message to another available consumer
-3. **RetryCount increments** -- the new worker sees `ctx.RetryCount()` incremented by 1
-4. **Step timeout still applies** -- redelivery does not restart the step's timeout. If the step is still unfinished when it passes, the engine fails the attempt and the [retry policy](/docs/reliability/retry-policies) decides what happens next (see [Timeouts](/docs/reliability/timeouts))
+3. **Same attempt** -- a redelivery is not an engine retry, so `ctx.RetryCount()` does not change. It is 0 on a step's first dispatch and 2, 3, ... on retries the engine schedules.
+4. **Step timeout still applies** -- redelivery does not restart the step's timeout, which runs from when the attempt first started. If the step is still unfinished when it passes, the engine fails the attempt and the [retry policy](/docs/reliability/retry-policies) decides what happens next (see [Timeouts](/docs/reliability/timeouts))
 
 The worker that crashed does not need to do anything. JetStream's redelivery mechanism handles the failover automatically.
+
+## Overriding AckWait
+
+`worker.WithAckWait` is a handler option that sets AckWait for one task type. It must be positive, and it applies to the consumer for that task type:
+
+```go
+w.Handle("render-video", renderHandler, worker.WithAckWait(30*time.Minute))
+```
+
+Use a short AckWait for sub-second tasks, so a crashed worker's task comes back quickly, and a longer one for tasks that cannot heartbeat. `HandleTyped` takes no handler options, so register a handler that needs one with `Handle(taskType, worker.Typed(fn), opts...)`.
+
+## Pause
+
+`ctx.Pause(name, duration)` is the other way to hold a task for a long time. It saves a checkpoint, then NAKs the message with a delay, so the handler runs again after `duration` and finds the pause marker with `LoadCheckpoint()`. It needs the `checkpoints` bucket. The step stays `running`, and paused time counts toward the step's timeout, so a step that pauses repeatedly needs a `Timeout` that covers its whole run.
 
 ## Streaming with Heartbeats
 
@@ -68,7 +82,7 @@ w.Handle("generate", func(ctx worker.TaskContext) error {
 
 ## Panics
 
-`Heartbeat()` panics if the underlying message is nil (already consumed or not initialized). This is a programmer error -- it means the handler called a completion method before calling Heartbeat, or the TaskContext was used outside its handler scope.
+`Heartbeat()` panics if the underlying message is nil, which means the TaskContext was not built by a worker. It returns the error from the NATS call, which a handler may ignore.
 
 ## Related
 

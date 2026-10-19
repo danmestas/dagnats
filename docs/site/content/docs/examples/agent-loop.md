@@ -7,7 +7,7 @@ A counter that increments through checkpointed iterations, demonstrating the age
 
 ## Workflow Definition
 
-The workflow has a single step with `type: "agent_loop"`. The `loop` configuration sets the maximum number of iterations and the delay between each iteration (in nanoseconds -- 1 second here).
+The workflow has a single step with `type: "agent_loop"`. The `config` object sets the maximum number of iterations and the delay between each iteration (integer nanoseconds here, 1 second; a string such as `"1s"` also works).
 
 ```json
 {
@@ -17,11 +17,11 @@ The workflow has a single step with `type: "agent_loop"`. The `loop` configurati
     {
       "id": "counter",
       "task": "counter",
-      "type": "agent_loop",    // enables iterative execution
+      "type": "agent_loop",
       "depends_on": [],
       "config": {
-        "max_iterations": 10,  // safety bound: never run more than 10 times
-        "loop_delay": 1000000000  // 1 second between iterations (nanoseconds)
+        "max_iterations": 10,
+        "loop_delay": 1000000000
       }
     }
   ]
@@ -58,7 +58,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 	w.Handle("counter", handleCounter)
 
 	fmt.Println("Worker ready. Waiting for tasks...")

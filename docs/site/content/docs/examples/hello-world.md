@@ -15,14 +15,11 @@ The workflow declares two steps in sequence: `greet` produces a greeting string,
   "version": "1.0",
   "steps": [
     {
-      // First step: no dependencies, runs immediately.
       "id": "greet",
-      "task": "greet",        // matches the handler name registered in the worker
+      "task": "greet",
       "depends_on": []
     },
     {
-      // Second step: waits for "greet" to complete.
-      // Its input is the JSON output of the greet step.
       "id": "uppercase",
       "task": "uppercase",
       "depends_on": ["greet"]
@@ -62,7 +59,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	// Step 1: produce a greeting from the input name.
 	// HandleTyped deserializes the JSON input into a string

@@ -19,42 +19,47 @@ Go HTTP reference client for the DagNats bridge. Implements the worker protocol 
 
 | Function | Description |
 |----------|-------------|
-| `Connect(baseURL, token, workerID, taskTypes, maxTasks)` | Creates a client and registers the worker via SSE connect |
+| `New(baseURL, opts...)` | Creates a client. `WithToken(token)` sets the bearer token. |
 
 ## Client Methods
 
 | Method | Description |
 |--------|-------------|
-| `Poll(ctx, taskTypes, maxTasks, timeoutMs)` | Long-polls for available tasks |
-| `Resolve(ctx, taskID, resolution)` | Resolves a task with complete/fail/pause/checkpoint |
-| `Close()` | Disconnects the worker |
+| `Connect(ctx, workerID, taskTypes, maxTasks)` | Registers the worker and opens the SSE heartbeat stream |
+| `Disconnect()` | Closes the heartbeat stream |
+| `Poll(ctx, taskTypes, maxTasks, timeout)` | Long-polls for tasks and returns `[]protocol.TaskPayload` |
+| `Complete(ctx, taskID, output)` | Finishes a task with output |
+| `Fail(ctx, taskID, errMsg)` | Fails a task |
+| `Pause(ctx, taskID, name, duration, checkpoint)` | Saves a checkpoint and has the task redelivered after `duration` |
+| `Checkpoint(ctx, taskID, data)` | Saves state and extends the claim |
+
+Resolving a task whose run was cancelled returns `ErrRunCancelled`.
 
 ## Usage
 
 ```go
-client, err := httpclient.Connect(
-    "http://localhost:8080",
-    "my-bridge-token",
-    "worker-1",
-    []string{"llm", "http"},
-    2,
-)
-if err != nil {
+client := httpclient.New("http://localhost:8080", httpclient.WithToken("my-bridge-token"))
+if err := client.Connect(ctx, "worker-1", []string{"llm", "http"}, 2); err != nil {
     log.Fatal(err)
 }
-defer client.Close()
+defer client.Disconnect()
 
 // Poll for tasks
-tasks, err := client.Poll(ctx, []string{"llm"}, 1, 30000)
+tasks, err := client.Poll(ctx, []string{"llm"}, 1, 30*time.Second)
 if err != nil {
     log.Fatal(err)
 }
 
 // Resolve a task
-err = client.Resolve(ctx, tasks[0].TaskID, protocol.TaskResolution{
-    Action: "complete",
-    Output: json.RawMessage(`{"result": "ok"}`),
-})
+for _, task := range tasks {
+    err = client.Complete(ctx, task.TaskID, json.RawMessage(`{"result": "ok"}`))
+    if errors.Is(err, httpclient.ErrRunCancelled) {
+        continue // the run was cancelled; nothing was recorded
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+}
 ```
 
 ## SDK Template

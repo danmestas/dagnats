@@ -42,7 +42,7 @@ agent := wf.AgentLoop("agent", "llm-task").
     WithLoopDelay(500 * time.Millisecond)
 ```
 
-`MaxDuration` is the hard ceiling. If the agent has done 5 iterations in 14 minutes, it will not start iteration 6 if `MaxDuration` is 15 minutes. `Timeout` catches individual LLM calls that hang (model provider issues, network problems).
+`MaxDuration` is the hard ceiling. The engine checks it each time the handler calls `Continue()`, measured from the first `Continue()`, and fails the loop once it has passed. `Timeout` catches individual LLM calls that hang (model provider issues, network problems). It runs from when the iteration first started, so a redelivery does not restart it.
 
 For normal (non-loop) steps that call LLMs, the step-level [timeout](/docs/reliability/timeouts) serves the same purpose.
 
@@ -56,10 +56,10 @@ wf := dag.NewWorkflow("rate-limited-pipeline")
 // Each step using the LLM gets rate-limited
 agent := wf.AgentLoop("agent", "llm-gpt4").
     WithMaxIterations(20).
-    WithRateLimit(10, time.Minute) // 10 calls per minute
+    WithRateLimit(dag.RateLimit{Limit: 10, Period: time.Minute}) // 10 calls per minute
 ```
 
-Rate limits are enforced at the engine level. If the limit is reached, tasks queue until the window resets. This prevents bursting through provider rate limits and incurring 429 errors.
+Rate limits are enforced at the engine level, per task type. If the limit is reached, the engine holds the task and retries it when the window resets. This prevents bursting through provider rate limits and incurring 429 errors.
 
 For different models with different rate limits, register separate task types:
 
@@ -76,10 +76,10 @@ w.Handle("llm-claude", claudeHandler)   // rate limited to 20/min
 tools := wf.Map("tools", "llm-tool-call").
     After(plan).
     WithMaxItems(20).
-    WithConcurrency(5) // at most 5 simultaneous API calls
+    WithTaskConcurrency(5) // at most 5 simultaneous API calls
 ```
 
-Without concurrency limits, a map step with 20 items dispatches all 20 tasks simultaneously. If each calls an LLM API, that is 20 concurrent requests. Concurrency limits cap the parallelism.
+Without a concurrency limit, a map step with 20 items dispatches all 20 tasks simultaneously. If each calls an LLM API, that is 20 concurrent requests. `WithTaskConcurrency(n)` caps how many tasks of that step's task type run at once, counted across every run of every workflow, not just this map step.
 
 ## Planner Step Bounds
 
@@ -112,7 +112,7 @@ agent := wf.AgentLoop("agent", "llm-task").
     WithMaxDuration(10 * time.Minute). // time cap
     WithTimeout(60 * time.Second).     // per-iteration timeout
     WithLoopDelay(1 * time.Second).    // spacing between iterations
-    WithRateLimit(10, time.Minute).    // provider rate limit
+    WithRateLimit(dag.RateLimit{Limit: 10, Period: time.Minute}). // provider rate limit
     WithRetries(2)                     // retry transient failures
 
 plan := wf.Planner("plan", "generate-plan", dag.PlannerConfig{

@@ -45,7 +45,7 @@ Match conditions use two types that split builder-time and runtime concerns:
 - **`Match`** (builder-time): both `Left` and `Right` are dot-path strings. `Left` references a field in the incoming event. `Right` references a value from `step.{id}.output.{field}` or `input.{field}`.
 - **`ResolvedMatch`** (runtime): `Right` is resolved to a concrete value when the waiter is created. This avoids re-resolving on every event.
 
-Timeouts are not failures. When a wait-for-event step times out, it completes with `{"timeout": true}` as output. Downstream steps can inspect this output to branch accordingly using `SkipIf`.
+When an event matches, the step completes with the matched event's payload as its output. Timeouts are not failures. When a wait-for-event step times out, it completes with `{"timeout":true}` as output. Downstream steps can inspect this output to branch accordingly using `SkipIf`.
 
 ## Usage
 
@@ -75,7 +75,7 @@ External systems publish events to the `EVENTS` stream:
 
 ```go
 eventData := `{"order_id": "ord_123", "amount": 99.99}`
-js.Publish("event.payment.received", []byte(eventData))
+_, err := js.Publish(ctx, "event.payment.received", []byte(eventData))
 ```
 
 ## Configuration
@@ -85,14 +85,29 @@ Wait-for-event configuration is stored in `StepDef.Config` as `WaitForEventOpts`
 | Field | Type | Purpose |
 |-------|------|---------|
 | `event` | `string` | Event type to listen for (e.g. `payment.received`) |
-| `match` | `Match` | Condition: `left` (event field) `op` `right` (resolved value) |
-| `timeout` | `time.Duration` | How long to wait before completing with timeout output |
+| `match` | `Match` | Condition: `left` (dot-path into the event payload), `op`, `right` (`step.<id>.output.<field>` or `input.<field>`). All three are required. |
+| `timeout` | duration | How long to wait before completing with timeout output. Required, must be positive. In JSON, a string such as `"1h"` or integer nanoseconds. |
 
 **Match operators:**
 
 | Operator | Meaning |
 |----------|---------|
 | `eq` | String equality after `fmt.Sprintf("%v", val)` |
+
+In workflow JSON the step from the example reads:
+
+```json
+{
+  "id": "payment",
+  "type": "wait_for_event",
+  "depends_on": ["create-order"],
+  "config": {
+    "event": "payment.received",
+    "match": { "left": "order_id", "op": "eq", "right": "step.create-order.output.id" },
+    "timeout": "1h"
+  }
+}
+```
 
 **Bounds:**
 

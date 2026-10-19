@@ -3,24 +3,34 @@ title: Cron Schedules
 weight: 2
 ---
 
-Cron triggers start workflow runs on a recurring schedule, managed entirely through the CLI and persisted in the `triggers` KV bucket.
+Cron triggers start workflow runs on a recurring schedule. They are managed with `dagnats trigger` and stored in the `triggers` KV bucket.
 
 ## Creating a Cron Trigger
 
-Use `dagnats trigger create` with the `--cron` flag to register a scheduled trigger:
+Pass the workflow name, then `--cron`. Flags go after the workflow name:
 
 ```bash
-dagnats trigger create daily-report \
-  --workflow report-pipeline \
-  --cron "0 9 * * *" \
-  --input '{"format": "pdf"}'
+dagnats trigger create report-pipeline --cron "0 9 * * *"
 ```
 
-This creates a trigger named `daily-report` that starts a `report-pipeline` run every day at 9:00 AM.
+This creates a trigger that starts a `report-pipeline` run every day at 09:00 UTC. The CLI prints the new trigger's ID (`trig-` plus 16 hex characters); there is no flag to choose it. A trigger has exactly one type, so `--cron`, `--subject` and `--webhook` are mutually exclusive.
+
+The run's input is a trigger envelope. A cron trigger has no input of its own:
+
+```json
+{
+  "trigger": "cron",
+  "source": "trig-0123456789abcdef",
+  "workflow_id": "report-pipeline",
+  "timestamp": "2026-10-19T09:00:00Z"
+}
+```
+
+`source` is the trigger ID, and `timestamp` is the moment the trigger fired, in UTC.
 
 ## Cron Syntax
 
-DagNats uses standard five-field cron syntax:
+DagNats uses five-field cron syntax. A six-field expression with seconds is an error, and so is an expression longer than 256 bytes.
 
 ```
 ┌───────────── minute (0-59)
@@ -32,6 +42,10 @@ DagNats uses standard five-field cron syntax:
 * * * * *
 ```
 
+Each field takes `*`, `*/N`, a range `N-M`, a number, or a comma list of those. Names such as `MON` and `JAN` are not supported, and Sunday is `0` only, not `7`.
+
+When both day-of-month and day-of-week are restricted (neither is a bare `*`), a day matches if **either** field matches, as in Vixie cron. `0 9 1 * 1` fires on the 1st of the month and on every Monday.
+
 | Expression | Schedule |
 |------------|----------|
 | `*/15 * * * *` | Every 15 minutes |
@@ -39,57 +53,69 @@ DagNats uses standard five-field cron syntax:
 | `0 0 1 * *` | First of every month at midnight |
 | `30 */2 * * *` | Every 2 hours at :30 |
 
-## Timezone
-
-By default, cron expressions are evaluated in UTC. Specify a timezone with `--timezone`:
+Check an expression and see its next fire times before you create the trigger. Put the flags before the expression:
 
 ```bash
-dagnats trigger create standup-reminder \
-  --workflow notify \
-  --cron "0 9 * * 1-5" \
-  --timezone "America/Denver"
+dagnats trigger test --tz America/Denver --count 3 "0 9 * * 1-5"
 ```
 
-## Trigger Lifecycle
+## Timezone
 
-Triggers are stored as JSON in the `triggers` KV bucket. The scheduler evaluates all active triggers on each tick, comparing the current time against each trigger's cron expression and its last-fire timestamp from the `trigger_state` KV bucket.
+By default, cron expressions are evaluated in UTC. Set an IANA zone with `--tz`:
 
-### Managing Triggers
+```bash
+dagnats trigger create notify --cron "0 9 * * 1-5" --tz "America/Denver"
+```
+
+The server does not check the zone when it creates the trigger. A bad name makes the trigger fail every time it is evaluated, so run `dagnats trigger test --tz ZONE` first. Zone data is built into the binary, so named zones work in minimal images that ship no zoneinfo.
+
+This `--tz` applies to cron triggers. A [cron sleep step](/docs/step-types/sleep-and-timers) uses `cron_timezone` instead, and it also defaults to UTC.
+
+## Managing Triggers
 
 ```bash
 # List all triggers
 dagnats trigger list
 
-# Inspect a trigger
-dagnats trigger get daily-report
+# Change a trigger
+dagnats trigger update trig-0123456789abcdef --cron "0 10 * * *" --tz UTC
+
+# Pause and resume
+dagnats trigger disable trig-0123456789abcdef
+dagnats trigger enable trig-0123456789abcdef
+
+# Fire it now, outside its schedule
+dagnats trigger fire trig-0123456789abcdef
+
+# Recent fires
+dagnats trigger history trig-0123456789abcdef --limit 5
 
 # Delete a trigger
-dagnats trigger delete daily-report
+dagnats trigger delete trig-0123456789abcdef
 ```
 
-### Trigger State
-
-The `trigger_state` KV bucket stores the last-run timestamp for each cron trigger. This prevents duplicate fires after a scheduler restart -- the scheduler compares "now" against the stored timestamp to determine whether a tick should fire.
-
-If the scheduler was down during a scheduled time, it performs a **backfill** on startup, evaluating missed windows and firing any triggers that should have run. Backfill evaluates triggers concurrently using `errgroup` for performance.
+`trigger fire` starts a run immediately with `"trigger": "manual"` in the envelope. Every fire, scheduled or manual, is recorded in the `TRIGGER_HISTORY` stream, which `trigger history` reads. A trigger created from a `dagnats.yaml` file is file-managed. `trigger delete` refuses to remove it unless you pass `--force`, because the file watcher would recreate it.
 
 ## How It Works
 
 ```mermaid
 sequenceDiagram
     participant Scheduler
-    participant KV as trigger_state KV
     participant Engine
 
-    Scheduler->>KV: read last-fire timestamp
-    Scheduler->>Scheduler: evaluate cron expression
-    alt should fire
-        Scheduler->>Engine: start workflow run
-        Scheduler->>KV: update last-fire timestamp
+    loop every 30 seconds
+        Scheduler->>Scheduler: evaluate each enabled cron trigger
+        alt expression matches this minute
+            Scheduler->>Engine: publish workflow.started
+        end
     end
 ```
 
-The scheduler runs inside the `dagnats serve` process. Each tick evaluates all triggers independently -- one failing trigger does not block the others.
+The scheduler runs inside the `dagnats serve` process and ticks every 30 seconds. Cron has one-minute resolution, so the scheduler remembers the last minute it fired for each trigger and ignores the second tick in the same minute. The `workflow.started` publish also carries a message ID built from the trigger and the minute, so a duplicate is dropped by JetStream. Each trigger is evaluated independently, so one failing trigger does not block the others.
+
+### Missed fires
+
+If the server is down at a trigger's scheduled minute, that fire is skipped. The `--backfill` flag (and `backfill` in a `dagnats.yaml` trigger) is stored on the trigger, but the running server does not replay missed fires from it today. Do not rely on it to catch up after an outage.
 
 ## Related Pages
 

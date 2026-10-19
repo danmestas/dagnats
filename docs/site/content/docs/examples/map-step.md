@@ -15,21 +15,18 @@ The `resize` step has `type: "map"`, which tells the engine to split its input a
   "version": "1.0",
   "steps": [
     {
-      // Step 1: produce a JSON array of image URLs.
       "id": "fetch-urls",
       "task": "fetch-urls",
       "type": "normal"
     },
     {
-      // Step 2: Map step -- runs once per element in the array.
-      // The engine fans out automatically.
       "id": "resize",
       "task": "resize-image",
       "type": "map",
-      "depends_on": ["fetch-urls"]
+      "depends_on": ["fetch-urls"],
+      "config": { "max_items": 10 }
     },
     {
-      // Step 3: receives all Map outputs collected into an array.
       "id": "build-gallery",
       "task": "build-gallery",
       "type": "normal",
@@ -38,6 +35,8 @@ The `resize` step has `type: "map"`, which tells the engine to split its input a
   ]
 }
 ```
+
+A map step must have a `config` with `max_items` (1 to 10000) in JSON. `workflow validate` panics on a map step without it. The Go builder sets 1000 for you.
 
 ## Worker Implementation
 
@@ -70,7 +69,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	// Step 1: Return a list of image URLs.
 	// The output must be a JSON array for the Map step to split.

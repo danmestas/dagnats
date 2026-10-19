@@ -11,7 +11,7 @@ Agent loops solve a fundamental problem in AI workflows: the number of iteration
 
 Each iteration is a full task dispatch cycle -- the engine re-enqueues the step with an incremented iteration counter, and the worker picks it up again. This means every iteration gets its own NATS message with dedup protection, its own timeout enforcement, and its own trace span. The conversation state persists across iterations via the `Checkpoint()` / `LoadCheckpoint()` API on the worker's `TaskContext`.
 
-Two hard bounds prevent runaway loops: **MaxIterations** caps the number of cycles, and **MaxDuration** caps wall-clock time from the first iteration. Whichever fires first terminates the loop. An optional **LoopDelay** adds spacing between iterations for rate-limited APIs.
+Two hard bounds prevent runaway loops: **MaxIterations** caps the number of cycles, and **MaxDuration** caps wall-clock time. `Build()` and `workflow validate` reject an agent loop without `max_iterations`. Whichever fires first terminates the loop. An optional **LoopDelay** adds spacing between iterations for rate-limited APIs.
 
 ## How It Works
 
@@ -30,7 +30,7 @@ stateDiagram-v2
 
 When the engine enqueues an agent loop step, it includes the current `Iteration` count in the `TaskPayload`. The worker handler loads any saved checkpoint (conversation history, tool results), performs one reasoning cycle, and decides:
 
-- **`Continue(output)`** -- publish a `step.continue` event. The engine increments the iteration counter, checks bounds, and re-enqueues the task. The output from `Continue()` becomes the input for the next iteration.
+- **`Continue(output)`** -- publish a `step.continue` event. The engine increments the iteration counter, checks bounds, and re-enqueues the task. The next iteration gets the same input as the first one (the step's upstream outputs, or the run input), not the output of `Continue()`. Carry state between iterations with `Checkpoint()` and `LoadCheckpoint()`. The `Continue()` output is kept only in the `step.continue` event in the run's history.
 - **`Complete(output)`** -- publish a `step.completed` event. The loop terminates successfully, and downstream steps receive the final output.
 - **`Fail(err)`** -- publish a `step.failed` event. Retry policy applies as normal.
 
@@ -77,8 +77,12 @@ Agent loop configuration is stored in `StepDef.Config` as `AgentLoopConfig`:
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
 | `max_iterations` | `int` | (required) | Maximum number of loop cycles. Must be > 0. |
-| `max_duration` | `time.Duration` | 0 (unlimited) | Wall-clock bound from first iteration start |
-| `loop_delay` | `time.Duration` | 0 (none) | Delay between re-enqueue cycles |
+| `max_duration` | duration | 0 (unlimited) | Wall-clock bound, measured from the first `Continue()`. Checked each time the handler calls `Continue()`. |
+| `loop_delay` | duration | 0 (none) | Delay between re-enqueue cycles |
+| `budget_warn_at` | `int` | 0 (off) | Advisory. The engine does not enforce it; workers read it to warn the model that iterations are running out. |
+| `budget_force_at` | `int` | 0 (off) | Advisory, like `budget_warn_at`. Workers read it to force a final answer. |
+
+In workflow JSON, durations accept strings such as `"5m"` or integer nanoseconds. A loop that reaches `max_iterations` fails when the handler calls `Continue()` for the `max_iterations`-th time, so a handler runs at most `max_iterations` times.
 
 The `StepDef.Timeout` field controls the per-iteration timeout, not the total loop duration. Set `max_duration` to bound total wall-clock time.
 

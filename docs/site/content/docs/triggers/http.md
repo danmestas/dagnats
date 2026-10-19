@@ -5,7 +5,7 @@ weight: 5
 
 The HTTP trigger turns a DagNats workflow into a synchronous HTTP endpoint. The caller waits for the workflow's response. The **respond step** is the explicit node in the DAG that publishes that response — analogous to a `return` statement, but a node because DAGs have no single return point.
 
-This pair is dagnats' version of what other workflow engines (e.g. Inngest) call **Durable Endpoints** — see [ADR-013](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-013-http-trigger-respond-step.md) for the design rationale. It is distinct from [webhooks](/docs/triggers/webhooks), which are fire-and-forget; webhook callers get a 202 immediately and never see the workflow's output.
+This pair is dagnats' version of what other workflow engines (e.g. Inngest) call **Durable Endpoints** — see [ADR-013](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-013-http-trigger-respond-step.md) for the design rationale. It is distinct from [webhooks](/docs/triggers/webhooks), which are fire-and-forget; webhook callers get a `200 ok` as soon as the run is published and never see the workflow's output.
 
 ## Mental model: `respond` is a side effect, not a return
 
@@ -22,7 +22,7 @@ http trigger → [step A] → [step B] → respond → [step C] → [step D]
 
 ## Defining an HTTP trigger
 
-Triggers ship inline with the workflow JSON; the dagnats CLI registers both in one call:
+Triggers can ship inline in the workflow JSON under a `triggers` key; `dagnats workflow register` registers both in one call:
 
 ```json
 {
@@ -61,10 +61,11 @@ Configuration fields:
 | `method`             | yes      | —       | One of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`.                       |
 | `timeout_ms`         | yes      | —       | Hard cap on the request; 504 if elapsed.                              |
 | `max_body_bytes`     | yes      | —       | 413 if exceeded.                                                      |
-| `secret`             | no       | —       | HMAC-SHA256 shared secret; signature read from `X-Signature-256`.     |
+| `secret`             | no       | —       | HMAC-SHA256 shared secret, at least 16 characters. The request carries `X-Signature-256: sha256=<hex>`; a bad or missing one answers 401. |
 | `idempotency_header` | no       | —       | If set, header value → run replay (see below).                        |
+| `authentication`     | no       | —       | Documents the endpoint's auth scheme in the generated OpenAPI spec; it does not enforce anything. Fields: `name`, `type` (`http`, `apiKey`, `oauth2`, `openIdConnect`), and `scheme`, `in`, `header_name`, `bearer_format`, `description` as the type requires. |
 
-Routes mount under `/api/` on the same HTTP listener as the control plane. Two HTTP triggers may not share the same `(method, path)` — registration of a colliding trigger returns a `route_conflict` error with the holder trigger's id.
+Routes mount under `/api/` on the same HTTP listener as the control plane, so a `path` has to start with `/api/` to be reachable. A request with the wrong method answers 405. Two HTTP triggers may not share the same `(method, path)` — registration of a colliding trigger returns a `route_conflict` error with the holder trigger's id.
 
 ## Reading the request inside a worker
 
@@ -139,7 +140,9 @@ Configuration fields:
 | `status`       | `200`                | HTTP status code.                                                         |
 | `content_type` | `application/json`   | `Content-Type` header.                                                    |
 | `headers`      | `null`               | Extra response headers.                                                   |
-| `body_from`    | `""` (upstream)      | Empty: use the upstream step's output. Dotpath like `result.value`: pluck. |
+| `body_from`    | `""` (upstream)      | Empty: use the upstream step's output (the run input if the step does not have exactly one dependency). Dotpath like `result.value`: pluck that value from it. |
+
+`config` itself is required on a respond step; write `"config": {}` to take all the defaults. See [Respond Steps](/docs/step-types/respond-steps).
 
 ## Response always carries `X-Dagnats-Run-Id`
 
@@ -167,7 +170,7 @@ The last case is the foot-gun the workflow validator warns about at registration
 }
 ```
 
-The other warning is `duplicate_respond` — two respond steps simultaneously reachable on the same run. Mutually-exclusive branches (happy-path + error-path each with their own `respond`) are not warned about.
+There are two more. `duplicate_respond` means two respond steps are simultaneously reachable on the same run; mutually-exclusive branches (happy-path + error-path each with their own `respond`) are not warned about. `missing_schemas` means the workflow sets neither `input_schema` nor `output_schema`, or only one of them, so the generated OpenAPI spec falls back to free-form objects.
 
 Warnings are surfaced; they do not block registration.
 
@@ -181,9 +184,9 @@ This is true replay — not just NATS dedup. The second request receives the **s
 
 | Capability               | HTTP trigger     | [Webhook](/docs/triggers/webhooks) |
 | ------------------------ | ---------------- | ---------------------------------- |
-| Caller waits for output  | yes              | no — 202 immediately               |
+| Caller waits for output  | yes              | no — `200 ok` immediately          |
 | Response from workflow   | `respond` step   | none                               |
-| Path                     | configurable     | `/hooks/{name}`                    |
+| Path                     | configurable, under `/api/` | configurable, under `/hooks/` |
 | HMAC validation          | optional         | optional                           |
 | Idempotency replay       | yes (`Idempotency-Key`) | no                          |
 

@@ -15,21 +15,18 @@ The `prepare` and `wait-for-approval` steps both have no dependencies, so they r
   "version": "1.0",
   "steps": [
     {
-      // Runs immediately: prepares resources.
       "id": "prepare",
       "task": "prepare",
       "type": "normal",
       "depends_on": []
     },
     {
-      // Also runs immediately: blocks waiting for an external signal.
       "id": "wait-for-approval",
       "task": "wait-for-approval",
       "type": "normal",
       "depends_on": []
     },
     {
-      // Runs only after BOTH prepare and wait-for-approval complete.
       "id": "finalize",
       "task": "finalize",
       "type": "normal",
@@ -69,7 +66,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	w.Handle("prepare", handlePrepare)
 	w.Handle("wait-for-approval", handleWaitForApproval)
@@ -141,7 +138,7 @@ func handleFinalize(ctx worker.TaskContext) error {
 
 4. The `prepare` step completes immediately. The `wait-for-approval` step blocks, waiting for a signal. Send it:
    ```bash
-   dagnats signal send <run-id> approval '{"approved":true}'
+   dagnats run signal <run-id> approval '{"approved":true}'
    ```
 
 5. Watch the workflow complete:

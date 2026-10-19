@@ -75,7 +75,7 @@ merge := wf.Task("merge", "merge-reviews").
 def, _ := wf.Build()
 ```
 
-Each map instance can itself be a sub-workflow if the per-item processing is complex enough to warrant its own agent loop. The map step collects all outputs in array order for the downstream merge step.
+Each map instance is a single task, not a sub-workflow, so keep per-item work to one handler call. The map step collects all outputs in array order for the downstream merge step.
 
 ## Signals for Inter-Agent Communication
 
@@ -124,16 +124,18 @@ report := wf.Task("report", "final-report").
 def, _ := wf.Build()
 ```
 
-The planner handler prompts the LLM to produce a DAG fragment that wires together the appropriate agents with dependencies. The engine validates and executes the generated plan.
+The planner handler prompts the LLM to produce a DAG fragment that wires together the appropriate agents with dependencies. Generated steps are always normal steps, so `AllowedTasks` here names worker task types (handlers that run an agent), not workflows; a fragment cannot contain `sub_workflow` steps. The engine validates and runs the plan, and the static `report` step becomes ready as soon as the planner step completes, without waiting for the generated steps.
 
 ## Nesting Limits
 
-Sub-workflow nesting is capped at **3 levels deep**. This means:
+A chain of blocking sub-workflows can be at most **3 runs deep**. This means:
 
 - Level 0: Orchestrator workflow
 - Level 1: Agent sub-workflows
 - Level 2: Agent-spawned sub-workflows
-- Level 3: Maximum depth (rejected if exceeded)
+- Level 3: Rejected
+
+A detached sub-workflow starts its own chain, so detaching resets the count.
 
 Design your agent hierarchy to fit within this bound. If you need deeper composition, flatten by having agents communicate results via step output rather than spawning nested sub-workflows.
 

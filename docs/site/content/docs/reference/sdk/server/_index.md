@@ -20,9 +20,12 @@ Embedded NATS server with the full DagNats stack: engine, API, bridge, and trigg
 
 | Function | Description |
 |----------|-------------|
-| `New(cfg)` | Creates a new server from configuration |
+| `New(cfg)` | Creates a new server from configuration. It does not start anything. |
+| `DefaultConfig()` | Built-in defaults |
 | `ConfigFromEnv()` | Loads configuration from `dagnats.yaml` and environment variables |
-| `EmbeddedWorker(srv)` | Returns a `*worker.Worker` connected to the embedded server's NATS |
+| `EmbeddedWorker(srv)` | Returns a `*WorkerShim` to register handlers on before `Run()` |
+| `(*Server).Run()` | Starts NATS, the engine, API, bridge and triggers, and blocks until shutdown |
+| `(*Server).HTTPAddr()` | The bound HTTP address once `Run` has finished starting |
 
 ## Configuration Sources
 
@@ -34,20 +37,23 @@ Configuration is resolved in order (later sources override):
 
 | Environment Variable | Config Field | Default |
 |---------------------|-------------|---------|
-| `DAGNATS_DATA_DIR` | `DataDir` | `/tmp/dagnats` |
-| `DAGNATS_HTTP_ADDR` | `HTTPAddr` | `:8080` |
+| `DAGNATS_DATA_DIR` | `DataDir` | `~/Library/Application Support/dagnats` on macOS, `$XDG_DATA_HOME/dagnats` or `~/.local/share/dagnats` on Linux |
+| `DAGNATS_HTTP_ADDR` | `HTTPAddr` | `127.0.0.1:8080` |
 | `DAGNATS_NATS_PORT` | `NATSPort` | `4222` |
 | `DAGNATS_LEAF_REMOTES` | `LeafRemotes` | (none) |
 | `DAGNATS_LEAF_CREDENTIALS` | `LeafCredentials` | (none) |
-| `DAGNATS_MAX_STORE_BYTES` | `MaxStoreBytes` | `1073741824` (1 GiB) |
+| `DAGNATS_MAX_STORE_BYTES` | `MaxStoreBytes` | derived from free disk space |
+| `DAGNATS_MAX_MEMORY_BYTES` | `MaxMemoryBytes` | 1 GiB |
 | `DAGNATS_MONITOR_PORT` | `MonitorPort` | (disabled) |
+
+The server has more settings (cluster, WebSocket, limits). See the configuration reference for the full list.
 
 ## Server Lifecycle
 
-1. `New(cfg)` creates the server and starts the embedded NATS instance
-2. Optionally attach embedded workers with `EmbeddedWorker(srv)`
-3. `Run()` starts the engine, API, bridge, and blocks until SIGINT/SIGTERM
-4. Graceful shutdown stops all components in reverse order
+1. `New(cfg)` builds the server object
+2. Optionally register embedded workers with `EmbeddedWorker(srv)`
+3. `Run()` starts embedded NATS, the engine, API, bridge, triggers and your workers, then blocks until SIGINT/SIGTERM
+4. Graceful shutdown stops all components
 
 ## Usage
 

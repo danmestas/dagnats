@@ -20,24 +20,21 @@ The `fetch` step configures an exponential retry policy and an `on_failure` fall
       "type": "normal",
       "depends_on": [],
       "retry": {
-        "max_attempts": 3,             // try up to 3 times total
-        "strategy": "exponential",     // exponential backoff
-        "initial_delay": 1000000000,   // 1 second initial delay (nanoseconds)
-        "max_delay": 10000000000,      // 10 second cap on delay
-        "multiplier": 2.0              // double the delay each retry
+        "max_attempts": 3,
+        "strategy": "exponential",
+        "initial_delay": 1000000000,
+        "max_delay": 10000000000,
+        "multiplier": 2.0
       },
-      "on_failure": "report-error"     // route here if all retries fail
+      "on_failure": "report-error"
     },
     {
-      // Happy path: runs after a successful fetch.
       "id": "process",
       "task": "process",
       "type": "normal",
       "depends_on": ["fetch"]
     },
     {
-      // Error path: runs only if fetch exhausts all retries.
-      // Receives the error details as input.
       "id": "report-error",
       "task": "report-error",
       "type": "normal",
@@ -77,7 +74,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	w := worker.NewWorker(nc, nil)
+	w := worker.NewWorker(nc)
 
 	w.Handle("fetch", handleFetch)
 	w.Handle("process", handleProcess)
@@ -94,14 +91,14 @@ func main() {
 }
 
 // handleFetch simulates a flaky HTTP fetch that fails twice
-// before succeeding. RetryCount is 0-based: 0 and 1 fail,
-// 2 succeeds.
+// before succeeding. RetryCount is 0 on the first dispatch
+// and 2, 3, ... on engine retries, so 0 and 2 fail and 3 succeeds.
 func handleFetch(ctx worker.TaskContext) error {
 	attempt := ctx.RetryCount()
 	fmt.Printf("[fetch] attempt %d\n", attempt)
 
-	// Simulate transient failures on first two attempts.
-	if attempt < 2 {
+	// Simulate transient failures on the first two attempts.
+	if attempt < 3 {
 		return fmt.Errorf(
 			"fetch failed (attempt %d)", attempt,
 		)
@@ -151,17 +148,17 @@ func handleReportError(ctx worker.TaskContext) error {
 4. Watch the retries and eventual success:
    ```
    [fetch] attempt 0
-   [fetch] attempt 1
    [fetch] attempt 2
+   [fetch] attempt 3
    [fetch] success: {"status":"ok","items":["a","b","c"]}
    [process] {"STATUS":"OK","ITEMS":["A","B","C"]}
    ```
 
 ## What's Happening
 
-1. The engine dispatches `fetch`. The handler returns an error on attempt 0.
-2. The engine applies the retry policy: waits 1 second (initial delay), then redispatches. Attempt 1 also fails.
-3. The engine waits 2 seconds (1s * 2.0 multiplier), then redispatches. Attempt 2 succeeds.
+1. The engine dispatches `fetch`. The handler sees `RetryCount()` 0 and returns an error.
+2. The engine applies the retry policy: waits 1 second (initial delay), then redispatches. `RetryCount()` is now 2, and the handler fails again.
+3. The engine waits 2 seconds (1s * 2.0 multiplier), then redispatches. `RetryCount()` is 3 and the handler succeeds.
 4. With `fetch` complete, the engine dispatches `process`, which transforms the data.
 
 If you change `counterTarget` so that all 3 attempts fail, the engine would route to `report-error` instead of `process`, because of the `on_failure` configuration.
@@ -169,7 +166,7 @@ If you change `counterTarget` so that all 3 attempts fail, the engine would rout
 The engine schedules each retry as a durable timer on the `SLEEP_TIMERS` stream (a `NakWithDelay` under the hood) and dispatches a fresh task when it fires -- there is no separate timer service.
 
 Key concepts demonstrated:
-- **`RetryCount()`** -- lets the handler know which attempt it is on (0-based).
+- **`RetryCount()`** -- lets the handler know which attempt it is on (0 on the first dispatch, then 2, 3, ... on engine retries; a redelivery of the same attempt keeps its number).
 - **Exponential backoff** -- delays grow as `initial_delay * multiplier^attempt`, capped at `max_delay`.
 - **`on_failure` routing** -- graceful degradation instead of workflow failure.
 - **NATS-native retries** -- retry delays are durable JetStream timers, no external timer needed.
