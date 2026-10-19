@@ -387,10 +387,7 @@ func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
 	if childRunID == "" {
 		t.Fatal("child run ID not set on parent step")
 	}
-	childRun, err := store.Load(context.Background(), childRunID)
-	if err != nil {
-		t.Fatalf("load child run: %v", err)
-	}
+	childRun := loadChildRun(t, store, childRunID)
 	// Detached child has no parent link.
 	if childRun.ParentRunID != "" {
 		t.Fatalf(
@@ -604,10 +601,7 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 
 	// Reload parent — it was already Completed, so cancel is
 	// a no-op (not Running). Load child to verify it survived.
-	childRun, err := store.Load(context.Background(), childRunID)
-	if err != nil {
-		t.Fatalf("load child run: %v", err)
-	}
+	childRun := loadChildRun(t, store, childRunID)
 
 	// Positive: child is NOT cancelled — still Running.
 	if childRun.Status != dag.RunStatusRunning {
@@ -717,20 +711,7 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 		t.Fatal("child run ID not set on parent step")
 	}
 
-	// The parent records ChildRunID in its own save, before the child's
-	// workflow.started is handled and its snapshot written, so poll.
-	var childRun dag.WorkflowRun
-	childDeadline := time.Now().Add(5 * time.Second)
-	for {
-		childRun, err = store.Load(context.Background(), childRunID)
-		if err == nil || time.Now().After(childDeadline) {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("load child run: %v", err)
-	}
+	childRun := loadChildRun(t, store, childRunID)
 
 	// Positive: child run input matches step A's output.
 	if string(childRun.Input) != string(stepAOutput) {
@@ -848,5 +829,23 @@ func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
 			"deep run status = %v, want Running",
 			deepRunAfter.Status,
 		)
+	}
+}
+
+// loadChildRun polls for a child run's snapshot. The parent records
+// ChildRunID in its own save, before the child's workflow.started is
+// handled and the child snapshot written, so an immediate Load can miss it.
+func loadChildRun(t *testing.T, store *SnapshotStore, runID string) dag.WorkflowRun {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		run, err := store.Load(context.Background(), runID)
+		if err == nil {
+			return run
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("load child run %s: %v", runID, err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
