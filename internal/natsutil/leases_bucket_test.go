@@ -17,11 +17,17 @@ import (
 )
 
 // oldServerJS stands in for a pre-2.11 server: nats.go refuses a
-// LimitMarkerTTL bucket client-side with err. Only the one method the
-// provisioner calls is implemented; anything else panics (nil embed).
+// LimitMarkerTTL bucket client-side with err. Only the methods the
+// provisioner calls are implemented; anything else panics (nil embed).
 type oldServerJS struct {
 	jetstream.JetStream
 	err error
+}
+
+// Stream reports no existing bucket stream, so the provisioner has no
+// replica count to keep and goes straight to the create.
+func (f oldServerJS) Stream(context.Context, string) (jetstream.Stream, error) {
+	return nil, jetstream.ErrStreamNotFound
 }
 
 func (f oldServerJS) CreateOrUpdateKeyValue(

@@ -589,6 +589,23 @@ func WithCluster(c ClusterOptions) SetupOption {
 	}
 }
 
+// awaitQuorum blocks (60s cap inside ctx) until the cluster's JetStream
+// answers, before SetupAll asserts anything against it.
+func awaitQuorum(ctx context.Context, js jetstream.JetStream, size int) error {
+	if ctx == nil {
+		panic("awaitQuorum: ctx must not be nil")
+	}
+	if size < 1 {
+		panic("awaitQuorum: size must be positive")
+	}
+	quorumCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	if _, err := WaitForClusterQuorum(quorumCtx, js, size); err != nil {
+		return fmt.Errorf("cluster quorum did not form: %w", err)
+	}
+	return nil
+}
+
 // resolveReplicas picks the replication factor for one SetupAll sweep: an
 // explicit override, else the count of declared routes, else what the
 // connected JetStream cluster can place (1 outside a cluster).
@@ -655,15 +672,8 @@ func SetupAll(nc *nats.Conn, opts ...SetupOption) error {
 	defer setupCancel()
 
 	if clustered {
-		quorumCtx, quorumCancel := context.WithTimeout(
-			setupCtx, 60*time.Second,
-		)
-		_, err := WaitForClusterQuorum(
-			quorumCtx, js, len(options.cluster.Routes)+1,
-		)
-		quorumCancel()
-		if err != nil {
-			return fmt.Errorf("cluster quorum did not form: %w", err)
+		if err := awaitQuorum(setupCtx, js, len(options.cluster.Routes)+1); err != nil {
+			return err
 		}
 	}
 
