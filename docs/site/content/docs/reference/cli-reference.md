@@ -615,7 +615,7 @@ dagnats trigger history trig-a1b2c3d4e5f6a7b8 --limit=5 --json
 
 ### trigger test
 
-Validate a cron expression and show the next N fire times. Offline operation (no NATS required). Put flags before the expression; flags placed after it are not read.
+Validate a cron expression and show the next N fire times. Offline operation (no NATS required). Flags may appear before or after the expression.
 
 ```
 dagnats trigger test (<cron-expr> | --cron=EXPR) [flags] [--json]
