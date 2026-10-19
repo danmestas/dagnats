@@ -72,7 +72,7 @@ DAGNATS_NATS_URL=nats://nats-host:4222 dagnats-api
 # Machine 3+: Workers (your own binaries, connecting with the worker SDK)
 ```
 
-In this model, you manage the NATS infrastructure yourself. Each component connects to the external NATS server. The engine, API, and workers can scale independently. `dagnats-api` listens on `DAGNATS_LISTEN_ADDR` (default `:8080`) and serves the REST API only: `/health`, `/ready` and `/health/cluster` belong to `dagnats serve`. `dagnats-engine` and `dagnats-api` run `SetupAll` on start, which creates every stream and bucket the engine, API, triggers and workers use. They take no cluster settings, so they provision at a single replica.
+In this model, you manage the NATS infrastructure yourself. Each component connects to the external NATS server. The engine, API, and workers can scale independently. `dagnats-api` listens on `DAGNATS_LISTEN_ADDR` (default `:8080`) and serves the REST API only: `/health`, `/ready` and `/health/cluster` belong to `dagnats serve`. `dagnats-engine` and `dagnats-api` run `SetupAll` on start, which creates every stream and bucket the engine, API, triggers and workers use. They take no cluster settings, so they provision at a single replica, and pointed at a replicated cluster they rewrite existing streams and buckets to one replica..
 
 ## Leaf Node Topology
 
