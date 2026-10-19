@@ -152,24 +152,45 @@ func startScanOrderOrchestrator(t *testing.T, nc *nats.Conn) {
 	t.Cleanup(orch.Stop)
 }
 
-// waitRunNonTerminal polls GetRun until the run exists and has left
-// its zero-value / not-found state, then returns it. Bounded by a 10s
-// deadline (Running/Pending is reached fast -- no worker is needed to
-// get this far, only to advance further).
+// waitRunNonTerminal polls until the run exists AND a workflow-filtered
+// ScanRuns lists it, then returns it. GetRun alone is not enough: the
+// snapshot is written before its runidx marker (createEntryIndexes
+// orders them on purpose), so a scan in that window misses a run
+// GetRun already sees. The scan here only checks membership; each test
+// still asserts position and filters itself. Bounded by a 10s deadline
+// (no worker is needed to reach Pending/Running).
 func waitRunNonTerminal(t *testing.T, svc *Service, runID string) dag.WorkflowRun {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
 	for {
 		run, err := svc.GetRun(context.Background(), runID)
-		if err == nil && run.RunID == runID {
+		if err == nil && run.RunID == runID && runListed(t, svc, run) {
 			return run
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("run %s not visible within 10s (last err %v)", runID, err)
+			t.Fatalf("run %s not listed within 10s (last err %v)", runID, err)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
+}
+
+// runListed reports whether a newest-first ScanRuns over run's workflow
+// includes it.
+func runListed(t *testing.T, svc *Service, run dag.WorkflowRun) bool {
+	t.Helper()
+	runs, err := svc.ScanRuns(
+		context.Background(), RunsFilter{Workflow: run.WorkflowID}, 0,
+	)
+	if err != nil {
+		return false
+	}
+	for _, listed := range runs {
+		if listed.RunID == run.RunID {
+			return true
+		}
+	}
+	return false
 }
 
 // TestScanRunsFindsNewLabeledRunAmongManyOldRuns reproduces #659's
