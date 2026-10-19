@@ -47,6 +47,27 @@ func TestResolveTriggerTestExpr_BothFormsRejected(t *testing.T) {
 	}
 }
 
+func TestParseTriggerTestArgs_FlagsAnyOrder(t *testing.T) {
+	orders := [][]string{
+		{"*/5 * * * *", "--count=3", "--tz=UTC"},
+		{"--count=3", "--tz=UTC", "*/5 * * * *"},
+		{"--count", "3", "*/5 * * * *", "--tz", "UTC"},
+	}
+	for _, args := range orders {
+		opts, err := parseTriggerTestArgs(args)
+		if err != nil {
+			t.Fatalf("%v: unexpected error %v", args, err)
+		}
+		if opts.expr != "*/5 * * * *" || opts.count != 3 ||
+			opts.tz != "UTC" {
+			t.Fatalf("%v: got %+v", args, opts)
+		}
+	}
+	if _, err := parseTriggerTestArgs([]string{"a", "b"}); err == nil {
+		t.Fatal("two positionals must be rejected")
+	}
+}
+
 func TestResolveTriggerTestExpr_NeitherFormRejected(t *testing.T) {
 	_, err := resolveTriggerTestExpr("", []string{})
 	// Positive: errors when nothing supplied

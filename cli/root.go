@@ -77,34 +77,47 @@ func Run(args []string) {
 	}
 }
 
+// usageEntry is one line of top-level help: command name plus summary.
+type usageEntry struct {
+	name    string
+	summary string
+}
+
+// usageCommands lists every dispatched top-level command (hidden
+// __complete excluded). root_test.go fails when Run gains a case that
+// is missing here.
+var usageCommands = []usageEntry{
+	{"workflow", "list, register, show, validate, delete workflows"},
+	{"run", "start, status, list, count, events, inspect, watch, output, " +
+		"retry, cancel, signal runs"},
+	{"trigger", "create, list, update, delete, enable, disable, fire, " +
+		"test, history triggers"},
+	{"trigger-type", "list, describe external trigger types"},
+	{"dlq", "list, replay, watch dead-letter messages"},
+	{"workers", "list registered workers"},
+	{"serve", "start embedded server"},
+	{"init", "scaffold a new workflow project"},
+	{"config", "show effective configuration"},
+	{"status", "show system health"},
+	{"logs", "tail or search telemetry log stream"},
+	{"dev", "watch mode: build and restart on changes"},
+	{"trace", "view and search trace spans"},
+	{"metrics", "view metric snapshots"},
+	{"observe", "observability pipeline health"},
+	{"sidecar", "local observability sidecar"},
+	{"singleton", "list and release singleton locks"},
+	{"service", "list registered services"},
+	{"clean", "purge run data (for testing)"},
+	{"demo", "seed runs and drive them to terminal states"},
+	{"completion", "generate shell completion scripts"},
+}
+
 func printUsage() {
 	fmt.Println("Usage: dagnats <command> [args]")
 	fmt.Println("Commands:")
-	fmt.Println("  workflow  list, register workflows")
-	fmt.Println(
-		"  run       start, status, list, events, cancel, signal runs")
-	fmt.Println(
-		"  trigger   create, list, delete, enable, disable triggers")
-	fmt.Println("  dlq       list, replay dead-letter messages")
-	fmt.Println("  workers   list registered workers")
-	fmt.Println("  serve     start embedded server")
-	fmt.Println("  init      scaffold a new workflow project")
-	fmt.Println("  config    show effective configuration")
-	fmt.Println("  status    show system health")
-	fmt.Println("  logs      tail or search telemetry log stream")
-	fmt.Println("  dev       watch mode: build and restart on changes")
-	fmt.Println("  trace     view and search trace spans")
-	fmt.Println("  metrics   view metric snapshots")
-	fmt.Println("  singleton list and release singleton locks")
-	fmt.Println("  service   list registered services")
-	fmt.Println(
-		"  trigger-type list, describe external trigger types")
-	fmt.Println("  clean     purge run data (for testing)")
-	fmt.Println("  demo      seed runs and drive them to terminal states")
-	fmt.Println("  observe   observability pipeline health")
-	fmt.Println("  sidecar   local observability sidecar")
-	fmt.Println(
-		"  completion  generate shell completion scripts")
+	for _, entry := range usageCommands {
+		fmt.Printf("  %-13s %s\n", entry.name, entry.summary)
+	}
 	fmt.Println("\nGlobal flags:")
 	fmt.Println("  --json    output in JSON format")
 }

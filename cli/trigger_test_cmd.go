@@ -33,14 +33,7 @@ func runTriggerTestCmd(args []string) {
 	jsonOutput := HasJSONFlag(args)
 	args = StripJSONFlag(args)
 
-	fs := flag.NewFlagSet("trigger test", flag.ExitOnError)
-	tz := fs.String("tz", "UTC", "Timezone")
-	count := fs.Int("count", 5, "Number of fire times to show")
-	cronFlag := fs.String("cron", "",
-		"Cron expression (alternative to positional argument)")
-	fs.Parse(args)
-
-	expr, err := resolveTriggerTestExpr(*cronFlag, fs.Args())
+	opts, err := parseTriggerTestArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprintln(os.Stderr,
@@ -51,10 +44,53 @@ func runTriggerTestCmd(args []string) {
 	}
 
 	if jsonOutput {
-		FormatCronTestJSON(os.Stdout, expr, *tz, *count)
+		FormatCronTestJSON(os.Stdout, opts.expr, opts.tz, opts.count)
 		return
 	}
-	fmt.Print(FormatCronTest(expr, *tz, *count))
+	fmt.Print(FormatCronTest(opts.expr, opts.tz, opts.count))
+}
+
+// triggerTestOptions is the parsed form of `trigger test` arguments.
+type triggerTestOptions struct {
+	expr  string
+	tz    string
+	count int
+}
+
+// parseTriggerTestArgs parses flags and the cron expression in any
+// order. The flag package stops at the first positional, so parse,
+// peel one positional off, and parse the remainder again (#784).
+func parseTriggerTestArgs(args []string) (triggerTestOptions, error) {
+	if args == nil {
+		panic("parseTriggerTestArgs: args must not be nil")
+	}
+	const maxArgs = 1000
+	if len(args) > maxArgs {
+		panic("parseTriggerTestArgs: args exceeds max bound")
+	}
+	fs := flag.NewFlagSet("trigger test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	tz := fs.String("tz", "UTC", "Timezone")
+	count := fs.Int("count", 5, "Number of fire times to show")
+	cronFlag := fs.String("cron", "",
+		"Cron expression (alternative to positional argument)")
+	positional := []string{}
+	rest := args
+	for i := 0; i <= maxArgs; i++ {
+		if err := fs.Parse(rest); err != nil {
+			return triggerTestOptions{}, err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		positional = append(positional, fs.Arg(0))
+		rest = fs.Args()[1:]
+	}
+	expr, err := resolveTriggerTestExpr(*cronFlag, positional)
+	if err != nil {
+		return triggerTestOptions{}, err
+	}
+	return triggerTestOptions{expr: expr, tz: *tz, count: *count}, nil
 }
 
 // resolveTriggerTestExpr picks the cron expression to test, accepting
