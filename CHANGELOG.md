@@ -69,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `GET /runs/{id}/logs` with no `attempt` now resolves a step that hasn't started yet to attempt 1, the subject its first attempt writes to. A follow attached early used to wait on attempt 0, which nothing writes.
+
 - A cluster with `nats_cluster_auth_token` set never formed. Nodes required the token on routes they accepted but did not send it on routes they dialed, so every route was rejected and startup failed with "cluster quorum did not form". The token is now added to every route URL that has no credentials of its own.
 
 - A revoked worker token could briefly authorize again. If the token store's KV watch delivered the mint event after `Revoke` had already cached the revoked record, the older event overwrote it until the revoke event arrived. Cache updates now apply only when their KV revision is newer.

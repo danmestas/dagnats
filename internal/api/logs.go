@@ -138,13 +138,28 @@ func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 func attemptParam(r *http.Request, stepState dag.StepState) int {
 	val := r.URL.Query().Get("attempt")
 	if val == "" {
-		return stepState.Attempts
+		return currentAttempt(stepState)
 	}
 	n, err := strconv.Atoi(val)
 	if err != nil || n < 0 {
-		return stepState.Attempts
+		return currentAttempt(stepState)
 	}
 	return n
+}
+
+// currentAttempt is the attempt whose subject a producer writes to now
+// or will write to next. Attempts stays 0 until step.started lands,
+// but the first attempt's logs go to attempt 1 (resolveAttemptNumber),
+// so a follow attached in that window would otherwise wait on a
+// subject nobody writes.
+func currentAttempt(stepState dag.StepState) int {
+	if stepState.Attempts < 0 {
+		panic("currentAttempt: Attempts must not be negative")
+	}
+	if stepState.Attempts == 0 {
+		return 1
+	}
+	return stepState.Attempts
 }
 
 // iterationParam parses "iteration"; absent/invalid resolves to the
@@ -280,10 +295,11 @@ func writeLogsReadError(w http.ResponseWriter, cause error) {
 //   - attempt and iteration both current — done only once the step
 //     status is terminal.
 func dispatchIsDone(attempt, iteration int, stepState dag.StepState) bool {
-	if attempt < stepState.Attempts {
+	current := currentAttempt(stepState)
+	if attempt < current {
 		return true
 	}
-	if attempt > stepState.Attempts {
+	if attempt > current {
 		return false
 	}
 	if iteration < stepState.Iterations {
