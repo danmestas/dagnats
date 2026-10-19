@@ -591,6 +591,13 @@ func (o *Orchestrator) handleEventJS(msg jetstream.Msg) {
 	)
 	defer span.End()
 	err = o.handleEventWithConflictRetry(ctx, evt)
+	if errors.Is(err, errTerminalRunDefGone) {
+		slog.InfoContext(ctx, "handleEvent: dropping event for a "+
+			"finished run whose def is gone",
+			"event_type", string(evt.Type), "run_id", evt.RunID)
+		msg.Ack()
+		return
+	}
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -1902,41 +1909,49 @@ func (o *Orchestrator) failWorkflow(
 
 // handleWorkflowCancelled marks the run and all in-flight steps as
 // cancelled, saves state, and adjusts metrics.
+//
+// Cancelling does not need the run's def (#784): a run whose pinned
+// version was deleted (`workflow delete --force`) would otherwise NAK
+// workflow.cancelled until it dead-lettered and stay running forever.
+// Everything below reads the snapshot, except the two releases keyed by
+// what the def says about a step (its task type, whether it is an
+// approval); releaseCancelledWithoutDef covers those from the snapshot.
+// A def that fails to load for any other reason (a timeout) is still
+// returned, so the event is retried.
 func (o *Orchestrator) handleWorkflowCancelled(
 	ctx context.Context, evt protocol.Event,
 ) error {
 	if evt.RunID == "" {
 		panic("handleWorkflowCancelled: RunID must not be empty")
 	}
-	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
+	run, err := o.store.Load(ctx, evt.RunID)
 	if err != nil {
-		return err
+		return fmt.Errorf("load run %q: %w", evt.RunID, err)
 	}
 	if run.Status != dag.RunStatusRunning {
 		return nil
 	}
-
-	for id, state := range run.Steps {
-		if state.Status == dag.StepStatusQueued ||
-			state.Status == dag.StepStatusRunning ||
-			state.Status == dag.StepStatusPending {
-			state.Status = dag.StepStatusCancelled
-			run.Steps[id] = state
-		}
+	wfDef, err := o.loadPinnedOrLatestDef(ctx, run)
+	defGone := isDefUnresolvable(err)
+	if err != nil && !defGone {
+		return err
 	}
-
-	// Release task concurrency slots for cancelled steps that
-	// were queued or running (they held a slot).
-	o.releaseCancelledTaskSlots(ctx, wfDef, run)
-
-	// Clean up approval tokens for cancelled approval steps.
-	o.approval.CleanupTokens(ctx, wfDef, run)
+	cancelUnfinishedSteps(run)
+	if defGone {
+		o.releaseCancelledWithoutDef(ctx, run)
+	} else {
+		wfDef = dag.EffectiveDef(wfDef, run)
+		// Task slots held by the steps just cancelled (queued or
+		// running), and approval tokens of cancelled approval steps.
+		o.releaseCancelledTaskSlots(ctx, wfDef, run)
+		o.approval.CleanupTokens(ctx, wfDef, run)
+	}
 
 	if o.correlator != nil {
 		o.correlator.RemoveWaitersForRun(ctx, run.RunID)
 	}
 
-	o.cascadeCancelChildren(ctx, wfDef, run)
+	o.cascadeCancelChildren(ctx, run)
 	o.sticky.DeleteBinding(ctx, run.RunID)
 
 	// finalizeRun stamps Status/CompletedAt (markTerminal), saves, and
@@ -1961,12 +1976,72 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	return o.notifyParentIfChild(ctx, run, fmt.Errorf("cancelled"))
 }
 
+// cancelUnfinishedSteps marks every queued, running or pending step of
+// run cancelled, in place (Steps is a map).
+func cancelUnfinishedSteps(run dag.WorkflowRun) {
+	if run.RunID == "" {
+		panic("cancelUnfinishedSteps: RunID must not be empty")
+	}
+	if run.Steps == nil {
+		panic("cancelUnfinishedSteps: Steps must not be nil")
+	}
+	for id, state := range run.Steps {
+		if state.Status == dag.StepStatusQueued ||
+			state.Status == dag.StepStatusRunning ||
+			state.Status == dag.StepStatusPending {
+			state.Status = dag.StepStatusCancelled
+			run.Steps[id] = state
+		}
+	}
+}
+
+// isDefUnresolvable reports whether err from loadPinnedOrLatestDef means
+// the def is gone for good -- the pinned version (and any self-heal) or,
+// for a legacy run, the pointer -- rather than briefly unreadable.
+func isDefUnresolvable(err error) bool {
+	return errors.Is(err, errPinnedDefMissing) ||
+		errors.Is(err, jetstream.ErrKeyNotFound)
+}
+
+// releaseCancelledWithoutDef releases, from the snapshot alone, what the
+// def-backed cancel path finds through the def: the task slots of the
+// cancelled steps (searched across task types, since the def is what
+// names each step's type) and the approval tokens they hold.
+func (o *Orchestrator) releaseCancelledWithoutDef(
+	ctx context.Context, run dag.WorkflowRun,
+) {
+	if run.RunID == "" {
+		panic("releaseCancelledWithoutDef: RunID must not be empty")
+	}
+	if run.Steps == nil {
+		panic("releaseCancelledWithoutDef: Steps must not be nil")
+	}
+	slog.WarnContext(ctx,
+		"cancelling run whose workflow def is gone; releasing from the "+
+			"snapshot alone",
+		"run_id", run.RunID, "workflow_id", run.WorkflowID,
+		"def_hash", run.DefHash,
+	)
+	holders := make([]string, 0, len(run.Steps))
+	for id, state := range run.Steps {
+		if state.Status == dag.StepStatusCancelled {
+			holders = append(holders, taskSlotHolder(run.RunID, id))
+		}
+	}
+	if err := o.admission.ReleaseTaskHolders(ctx, holders); err != nil {
+		slog.ErrorContext(ctx, "release cancelled task slots without def",
+			"error", err, "run_id", run.RunID)
+	}
+	o.approval.CleanupTokensWithoutDef(ctx, run)
+}
+
 // cascadeCancelChildren publishes cancellation events for all
 // non-detached child workflows that are still running. Detached
-// children have no ParentRunID so they are not cancelled.
+// children have no ParentRunID so they are not cancelled. Only
+// sub-workflow steps record a ChildRunID (markSpawnedStep), so the
+// snapshot alone finds them -- a run whose def is gone still cascades.
 func (o *Orchestrator) cascadeCancelChildren(
-	ctx context.Context,
-	wfDef dag.WorkflowDef, run dag.WorkflowRun,
+	ctx context.Context, run dag.WorkflowRun,
 ) {
 	if run.RunID == "" {
 		panic("cascadeCancelChildren: RunID must not be empty")
@@ -1975,11 +2050,7 @@ func (o *Orchestrator) cascadeCancelChildren(
 		panic("cascadeCancelChildren: Steps must not be nil")
 	}
 
-	for _, stepDef := range wfDef.Steps {
-		if stepDef.Type != dag.StepTypeSubWorkflow {
-			continue
-		}
-		state := run.Steps[stepDef.ID]
+	for _, state := range run.Steps {
 		if state.ChildRunID == "" {
 			continue
 		}
@@ -2481,11 +2552,21 @@ func (o *Orchestrator) loadRunAndDef(
 	}
 	wfDef, err := o.loadPinnedOrLatestDef(ctx, run)
 	if err != nil {
+		if run.Status.IsTerminal() && isDefUnresolvable(err) {
+			err = fmt.Errorf("%w: %w", errTerminalRunDefGone, err)
+		}
 		return dag.WorkflowDef{}, dag.WorkflowRun{}, err
 	}
 	wfDef = dag.EffectiveDef(wfDef, run)
 	return wfDef, run, nil
 }
+
+// errTerminalRunDefGone marks an event for a finished run whose def no
+// longer exists (#784): a late step.completed or sleep timer for a run
+// cancelled after `workflow delete --force`. No handler acts on a
+// terminal run, and the def will not come back, so handleEventJS acks
+// the event instead of redelivering it into DEAD_LETTERS.
+var errTerminalRunDefGone = errors.New("run is terminal and its def is gone")
 
 // loadPinnedOrLatestDef resolves the def a run should see on its next
 // advance (#637). When run.DefHash is set, it reads the immutable
@@ -2638,10 +2719,15 @@ func (o *Orchestrator) failMissingPinnedVersion(
 			"longer exists (def_hash %s) and could not be "+
 			"self-healed: retention may have evicted a version "+
 			"still in use, or the mutable pointer has moved on to "+
-			"different content",
-		run.RunID, versionKey, run.DefHash,
+			"different content: %w",
+		run.RunID, versionKey, run.DefHash, errPinnedDefMissing,
 	)
 }
+
+// errPinnedDefMissing marks failMissingPinnedVersion's error, so a caller
+// that can act without the def (cancellation, #784) tells it apart from
+// a def that is only briefly unreadable.
+var errPinnedDefMissing = errors.New("pinned def version missing")
 
 // parseTraceparent reads traceparent from *nats.Msg header first,
 // falling back to the event field. Used by tests.

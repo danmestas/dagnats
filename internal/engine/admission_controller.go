@@ -107,6 +107,16 @@ func (ac *AdmissionController) ReleaseTask(
 	return ac.concurrency.ReleaseTask(ctx, taskType, holder)
 }
 
+// ReleaseTaskHolders delegates to ConcurrencyManager if present.
+func (ac *AdmissionController) ReleaseTaskHolders(
+	ctx context.Context, holders []string,
+) error {
+	if ac.concurrency == nil {
+		return nil
+	}
+	return ac.concurrency.ReleaseTaskHolders(ctx, holders)
+}
+
 // HasConcurrency reports whether a ConcurrencyManager is
 // configured. Callers use this to skip concurrency-related
 // work entirely when no manager exists.

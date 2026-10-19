@@ -397,6 +397,36 @@ func (ag *ApprovalGate) CleanupTokens(
 	}
 }
 
+// CleanupTokensWithoutDef is CleanupTokens for a run whose def is gone
+// (#784): with no def to say which steps are approvals, it deletes the
+// token of each cancelled step that has one. The Get first keeps it from
+// writing a delete marker for every non-approval step.
+func (ag *ApprovalGate) CleanupTokensWithoutDef(
+	ctx context.Context, run dag.WorkflowRun,
+) {
+	if ag == nil {
+		return
+	}
+	if run.RunID == "" {
+		panic("CleanupTokensWithoutDef: RunID must not be empty")
+	}
+	if run.Steps == nil {
+		panic("CleanupTokensWithoutDef: Steps must not be nil")
+	}
+	kv, err := ag.js.KeyValue(ctx, "approval_tokens")
+	if err != nil {
+		return
+	}
+	for stepID, state := range run.Steps {
+		if state.Status != dag.StepStatusCancelled {
+			continue
+		}
+		if _, err := kv.Get(ctx, run.RunID+"."+stepID); err == nil {
+			ag.deleteToken(ctx, run.RunID, stepID)
+		}
+	}
+}
+
 // deleteToken removes a token from KV during cancellation
 // cleanup. Errors are logged but not fatal — the timeout timer
 // will fire and see the step is already cancelled.

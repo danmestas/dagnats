@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -95,6 +96,7 @@ func warnLegacyConcurrencyResetOnce(ctx context.Context, key string) {
 // not a specific run's admission, and are not subject to the
 // reconciler's ReleasePending replay path.
 type ConcurrencyManager struct {
+	js     jetstream.JetStream
 	runKV  jetstream.KeyValue
 	taskKV jetstream.KeyValue
 }
@@ -119,7 +121,7 @@ func NewConcurrencyManager(
 			err.Error())
 	}
 	return &ConcurrencyManager{
-		runKV: runKV, taskKV: taskKV,
+		js: js, runKV: runKV, taskKV: taskKV,
 	}
 }
 
@@ -139,7 +141,7 @@ func NewConcurrencyManagerSafe(
 	}
 	taskKV, _ := js.KeyValue(ctx, "concurrency_tasks")
 	return &ConcurrencyManager{
-		runKV: runKV, taskKV: taskKV,
+		js: js, runKV: runKV, taskKV: taskKV,
 	}, nil
 }
 
@@ -333,6 +335,51 @@ func (cm *ConcurrencyManager) ReleaseTask(
 		return nil // No bucket — no-op
 	}
 	return cm.releaseMember(ctx, cm.taskKV, "task."+taskType, holder)
+}
+
+// taskSlotKeysMax bounds ReleaseTaskHolders' walk over task-type keys.
+// One key exists per task type that ever had a concurrency limit.
+const taskSlotKeysMax = 10_000
+
+// ReleaseTaskHolders frees every slot the given holders hold, whatever
+// the task type. ReleaseTask needs the type, which only the workflow def
+// names; this is for the caller that no longer has the def (cancelling a
+// run whose pinned version was deleted, #784) and must not leak the
+// slots its queued and running steps took.
+func (cm *ConcurrencyManager) ReleaseTaskHolders(
+	ctx context.Context, holders []string,
+) error {
+	if ctx == nil {
+		panic("ReleaseTaskHolders: ctx must not be nil")
+	}
+	if cm.js == nil {
+		panic("ReleaseTaskHolders: js must not be nil")
+	}
+	if cm.taskKV == nil || len(holders) == 0 {
+		return nil
+	}
+	stream, err := cm.js.Stream(ctx, "KV_"+cm.taskKV.Bucket())
+	if err != nil {
+		return err
+	}
+	keys, err := natsutil.ListKeys(ctx, stream, cm.taskKV.Bucket())
+	if err != nil {
+		return err
+	}
+	if len(keys) > taskSlotKeysMax {
+		return fmt.Errorf("release task holders: %d task keys exceed bound %d",
+			len(keys), taskSlotKeysMax)
+	}
+	var firstErr error
+	for _, key := range keys {
+		for _, holder := range holders {
+			err := cm.releaseMember(ctx, cm.taskKV, key, holder)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // acquireMember adds member to the set at key unless limit members are
