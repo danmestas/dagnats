@@ -45,13 +45,14 @@ Notes:
 
 - **Routes list the other nodes.** The expected cluster size is `len(routes) + 1`. Route URLs are `nats://host:port`. Server keys in `dagnats.yaml` are read one `key: value` line at a time, so routes go on one line, and values are not `${VAR}`-expanded.
 - **The token** is added to every route URL that has no credentials of its own, so you only set it, not embed it in the URLs.
-- **Replicas.** With `0`, the factor is derived from the cluster size: 5 for five or more nodes, 3 for three or four. An explicit value overrides it. Every stream and bucket that `SetupAll` creates uses this factor.
+- **Replicas.** With `0`, the factor is derived from the cluster size: 5 for five or more nodes, 3 for three or four. An explicit value overrides it. Every stream and bucket that `SetupAll` creates uses this factor. Provisioning never lowers the replica count of a stream or bucket that already exists: if the factor is lower, the existing count is kept and a warning is logged. To scale one down on purpose, edit it with the `nats` CLI.
+- **`dagnats-engine` and `dagnats-api`** read `DAGNATS_NATS_JETSTREAM_REPLICAS` too. They have no routes to count, so with `0` they ask the cluster they connect to: a throwaway stream is created and deleted at five replicas, then three, and the first one placed sets the factor (one outside a cluster). Start them once the cluster has formed, or set the variable.
 - **Server name.** JetStream tracks peers by server name, so the name has to survive restarts. The default is stable: the cluster name, the hostname (characters outside the allowed set become `-`) and the route port. Two nodes on one host need different route ports, or different names. Set `nats_server_name` yourself if a host may be renamed.
 - **Route TLS is not supported.** Routes use the shared token only, and traffic between nodes is unencrypted. Run the cluster on a private network or tailnet, set `nats_cluster_host` to the node's private IP so the route listener stays off public interfaces, and never expose the route port to the internet.
 
 ### Moving to or from a cluster
 
-To move a single node to a cluster, add the cluster keys to each node and restart all of them within the 60-second quorum wait described below. Existing streams are updated in place from one replica to three.
+To move a single node to a cluster, add the cluster keys to each node and restart all of them within the 60-second quorum wait described below. Existing streams are updated in place from one replica to three. Moving back to fewer replicas is not automatic: provisioning keeps the higher count, so reduce it with the `nats` CLI.
 
 ## Startup
 

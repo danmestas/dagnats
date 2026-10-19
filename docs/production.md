@@ -33,7 +33,7 @@ Server keys in `dagnats.yaml` are read one `key: value` line at a time, so route
 - No external NATS to operate.
 - JetStream replicates at R=3 (auto-derived from a 3-node cluster). Streams and KV buckets survive any single-host failure.
 - Zero-downtime rolling upgrades: drain and restart nodes one at a time.
-- Explicit override available via `nats_jetstream_replicas` for the rare case of intentionally choosing R<cluster_size.
+- Explicit override available via `nats_jetstream_replicas` for the rare case of intentionally choosing R<cluster_size on a new deployment. It does not shrink streams and buckets that already exist; provisioning keeps their higher replica count.
 
 **What you don't get (in v1):**
 - Dynamic membership. Adding or removing nodes requires planned reconfiguration on all nodes plus a rolling restart.
@@ -194,6 +194,8 @@ nats-server -js
 DAGNATS_NATS_URL=nats://cluster:4222 dagnats-engine
 DAGNATS_NATS_URL=nats://cluster:4222 dagnats-api
 ```
+
+Both binaries take the replication factor from `DAGNATS_NATS_JETSTREAM_REPLICAS` (`0`, `1`, `3` or `5`), the same variable `dagnats serve` reads. With `0` or unset they work it out from the cluster they reach: they create and delete a throwaway stream at five replicas, then three, and use the first that the cluster can place (one outside a cluster). That probe needs a formed cluster, so start the binaries after the cluster is up, or set the variable. An existing stream or bucket is never scaled down: a lower factor keeps the existing count and logs a warning. To reduce replicas on purpose, edit the stream with the `nats` CLI.
 
 ## Security
 

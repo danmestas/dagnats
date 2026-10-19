@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **`dagnats-engine` and `dagnats-api` no longer scale a replicated cluster down to one replica.** They read `DAGNATS_NATS_JETSTREAM_REPLICAS` like `dagnats serve`, and with `0` or unset they derive the factor from the cluster they connect to (5, 3 or 1, by placing a throwaway stream). Separately, provisioning never lowers the replica count of an existing stream or bucket: a lower factor, from any binary or from `nats_jetstream_replicas`, keeps the existing count and logs a warning. Reduce replicas with the `nats` CLI if you mean to.
+- **`workflow delete` no longer misses a running run whose active-run marker is gone.** The guard now also scans the run index for the workflow's unfinished runs and counts a run that either source reports. The scan reads at most the newest 10,000 runs; past that the delete is refused with the count given as "at least N" (`total_is_lower_bound: true` in the REST 409 body), and `--force` / `force=true` is needed.
+- **A run whose pinned definition was deleted can be cancelled.** `workflow.cancelled` used to fail with "pinned to workflow def version ... which no longer exists", go to the dead-letter stream, and leave the run `running`. The run and its unfinished steps are now marked cancelled from the run snapshot, its event waiters, task and run concurrency slots, singleton lock, approval tokens and active-run marker are released as on a normal cancel, and its child runs are cancelled. Later events for that run (a sleep timer firing, a late step result) are dropped instead of dead-lettered.
+
 ## [0.0.28] - 2026-10-19
 
 ### Changed

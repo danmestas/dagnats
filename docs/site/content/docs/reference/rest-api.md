@@ -104,7 +104,7 @@ Delete a workflow definition. Historical run records are not touched.
 DELETE /workflows/{name}[?force=true]
 ```
 
-The request is refused with `409` while a trigger still references the workflow or a run of it has not finished. `force=true` overrides both checks. Unfinished runs are found through both the active-run markers and the run index (the newest 10,000 runs); when the run index holds more runs than that, the delete is refused with `total_is_lower_bound: true`.
+The request is refused with `409` while a trigger still references the workflow or a run of it has not finished. `force=true` overrides both checks. Unfinished runs are found through both the active-run markers and the run index (the newest 10,000 runs); when the run index holds more runs than that, the delete is refused with `total_is_lower_bound: true`. A run left unfinished by `force=true` cannot advance without its definition, but `POST /runs/{id}/cancel` still cancels it.
 
 | Status | Condition |
 |--------|-----------|
