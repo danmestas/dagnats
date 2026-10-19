@@ -28,7 +28,7 @@ Five core Go packages:
 - `internal/api/` — REST + NATS micro control plane.
 - `cli/` — command-line client.
 
-Plus `internal/natsutil/` (NATS resource setup, owns the embedded test server), `server/` (embedded `dagnats serve`), `bridge/` (HTTP worker bridge), `protocol/` (wire types), `observe/` (provider-agnostic telemetry interfaces), `internal/lease/` (coordination leases, ADR-024), `internal/trigger/` (cron, event, webhook, HTTP triggers), `internal/console/` (control-plane UI), `ci/` (`.dagnats/ci.yml` compiler), `sdk/httpclient/` (reference HTTP worker client), `dagnatstest/` (test harness for consumers), `dagnatsext/` (public types shared with the worker SDK), `cmd/` (the `dagnats`, `dagnats-api`, `dagnats-engine` binaries).
+Plus `internal/natsutil/` (NATS resource setup, owns the embedded test server), `server/` (embedded `dagnats serve`), `bridge/` (HTTP worker bridge), `protocol/` (wire types), `observe/` (OpenTelemetry setup and trace-context propagation over NATS), `internal/lease/` (coordination leases, ADR-024), `internal/trigger/` (cron, event, webhook, HTTP triggers), `internal/console/` (control-plane UI), `ci/` (`.dagnats/ci.yml` compiler), `sdk/httpclient/` (reference HTTP worker client), `dagnatstest/` (test harness for consumers), `dagnatsext/` (public types shared with the worker SDK), `cmd/` (the `dagnats`, `dagnats-api`, `dagnats-engine` binaries).
 
 All persistent state lives in NATS JetStream and KV. There is no external database.
 
