@@ -69,13 +69,16 @@ func testFailureTimeout(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 	stack := startHTTPE2EStack(t, nc)
 	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
 
 	harness.SubscribeWorker(t, nc, "blocker",
 		func(tc worker.TaskContext) error {
 			<-block
 			return tc.Complete([]byte(`"unreached"`))
 		})
+	// Registered after the worker so it runs first: cleanups are LIFO,
+	// and the worker's Stop waits out its drain timeout on a handler
+	// still blocked here.
+	t.Cleanup(func() { close(block) })
 
 	wfName := harness.UniqueName(t, "timeout-wf")
 	wfDef := dag.WorkflowDef{
@@ -179,7 +182,6 @@ func testFailureEngineCancelled(
 	t.Helper()
 	stack := startHTTPE2EStack(t, nc)
 	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
 
 	runIDCh := make(chan string, 1)
 	harness.SubscribeWorker(t, nc, "blocker-cancel",
@@ -191,6 +193,10 @@ func testFailureEngineCancelled(
 			<-block
 			return tc.Complete([]byte(`"unreached"`))
 		})
+	// Registered after the worker so it runs first: cleanups are LIFO,
+	// and the worker's Stop waits out its drain timeout on a handler
+	// still blocked here.
+	t.Cleanup(func() { close(block) })
 
 	wfName := harness.UniqueName(t, "cancel-wf")
 	wfDef := dag.WorkflowDef{
@@ -304,13 +310,16 @@ func testFailureClientCancelled(
 	t.Helper()
 	stack := startHTTPE2EStack(t, nc)
 	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
 
 	harness.SubscribeWorker(t, nc, "blocker-client",
 		func(tc worker.TaskContext) error {
 			<-block
 			return tc.Complete([]byte(`"unreached"`))
 		})
+	// Registered after the worker so it runs first: cleanups are LIFO,
+	// and the worker's Stop waits out its drain timeout on a handler
+	// still blocked here.
+	t.Cleanup(func() { close(block) })
 
 	wfName := harness.UniqueName(t, "client-wf")
 	wfDef := dag.WorkflowDef{
