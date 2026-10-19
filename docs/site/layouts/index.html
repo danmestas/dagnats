@@ -92,9 +92,11 @@ h1 .hl { background: linear-gradient(transparent 86%, var(--mark) 86%, var(--mar
 
 .stage { position: relative; }
 .graph-scroll { overflow-x: auto; }
+[hidden] { display: none !important; }
 .graph { display: block; width: 100%; min-width: 720px; height: auto; }
+.graph.tall { min-width: 0; max-width: 360px; margin: 0 auto; }
 .graph text { font-family: var(--mono); }
-.down-banner { position: absolute; left: 18px; top: 14px; right: 18px; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 14px; border-radius: 10px; background: var(--stop-soft); color: var(--stop); font: 500 12.5px/1.45 var(--mono); border: 1px solid var(--stop); }
+.down-banner { margin: 14px 18px 0; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 14px; border-radius: 10px; background: var(--stop-soft); color: var(--stop); font: 500 12.5px/1.45 var(--mono); border: 1px solid var(--stop); }
 .down-banner b { font-weight: 500; color: var(--ink); }
 
 .tape-wrap { border-top: 1px solid var(--rule); background: var(--ground); }
@@ -358,14 +360,22 @@ w.Start()</pre></div>
 (function () {
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const NODES = [
-    { id: "checkout", type: "normal", x: 20, y: 120 },
-    { id: "build", type: "normal", x: 180, y: 120 },
-    { id: "test", type: "map ×4", x: 340, y: 50 },
-    { id: "lint", type: "normal", x: 340, y: 190 },
-    { id: "approve", type: "approval", x: 500, y: 120 },
-    { id: "deploy", type: "normal", x: 660, y: 120 },
-    { id: "notify", type: "normal", x: 820, y: 120 }
+    { id: "checkout", type: "normal" }, { id: "build", type: "normal" },
+    { id: "test", type: "map ×4" }, { id: "lint", type: "normal" },
+    { id: "approve", type: "approval" }, { id: "deploy", type: "normal" },
+    { id: "notify", type: "normal" }
   ];
+  // Left to right on wide screens; top to bottom on phones, where a
+  // 1000-unit-wide graph would be cropped to one slice.
+  const LAYOUTS = {
+    wide: { view: "0 0 1000 300", across: true, pos: {
+      checkout: [20, 120], build: [180, 120], test: [340, 50], lint: [340, 190],
+      approve: [500, 120], deploy: [660, 120], notify: [820, 120] } },
+    tall: { view: "0 0 340 540", across: false, pos: {
+      checkout: [102, 10], build: [102, 100], test: [10, 190], lint: [194, 190],
+      approve: [102, 280], deploy: [102, 370], notify: [102, 460] } }
+  };
+  const narrow = window.matchMedia("(max-width: 640px)");
   const EDGES = [["checkout","build"],["build","test"],["build","lint"],
     ["test","approve"],["lint","approve"],["approve","deploy"],["deploy","notify"]];
   // by: e = engine, w = worker, h = a person via the API. Only the engine needs to be up for "e".
@@ -393,18 +403,33 @@ w.Start()</pre></div>
     return node;
   }
   const byId = {};
-  for (const [a, b] of EDGES) {
-    const A = NODES.find(n => n.id === a), B = NODES.find(n => n.id === b);
-    const x1 = A.x + W, y1 = A.y + H / 2, x2 = B.x, y2 = B.y + H / 2, mx = (x1 + x2) / 2;
-    byId[a + ">" + b] = el("path", { d: `M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`, fill: "none", "stroke-width": 2 });
+  function edgePath(A, B, across) {
+    if (across) {
+      const x1 = A.x + W, y1 = A.y + H / 2, x2 = B.x, y2 = B.y + H / 2, mx = (x1 + x2) / 2;
+      return `M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
+    }
+    const x1 = A.x + W / 2, y1 = A.y + H, x2 = B.x + W / 2, y2 = B.y, my = (y1 + y2) / 2;
+    return `M${x1} ${y1} C${x1} ${my} ${x2} ${my} ${x2} ${y2}`;
   }
-  for (const n of NODES) {
-    const g = el("g", {});
-    n.box = el("rect", { x: n.x, y: n.y, width: W, height: H, rx: 12, "stroke-width": 1.5 }, g);
-    n.label = el("text", { x: n.x + 14, y: n.y + 26, "font-size": 13 }, g); n.label.textContent = n.id;
-    n.sub = el("text", { x: n.x + 14, y: n.y + 46, "font-size": 10.5 }, g); n.sub.textContent = n.type;
-    n.dot = el("circle", { cx: n.x + W - 16, cy: n.y + 18, r: 5 }, g);
+  function build() {
+    const layout = narrow.matches ? LAYOUTS.tall : LAYOUTS.wide;
+    svg.textContent = "";
+    svg.setAttribute("viewBox", layout.view);
+    svg.classList.toggle("tall", !layout.across);
+    for (const n of NODES) { [n.x, n.y] = layout.pos[n.id]; }
+    for (const [a, b] of EDGES) {
+      const A = NODES.find(n => n.id === a), B = NODES.find(n => n.id === b);
+      byId[a + ">" + b] = el("path", { d: edgePath(A, B, layout.across), fill: "none", "stroke-width": 2 });
+    }
+    for (const n of NODES) {
+      const g = el("g", {});
+      n.box = el("rect", { x: n.x, y: n.y, width: W, height: H, rx: 12, "stroke-width": 1.5 }, g);
+      n.label = el("text", { x: n.x + 14, y: n.y + 26, "font-size": 13 }, g); n.label.textContent = n.id;
+      n.sub = el("text", { x: n.x + 14, y: n.y + 46, "font-size": 10.5 }, g); n.sub.textContent = n.type;
+      n.dot = el("circle", { cx: n.x + W - 16, cy: n.y + 18, r: 5 }, g);
+    }
   }
+  build();
 
   function stateFromEvents(count) {
     const st = {}, iter = {}, shards = {};
@@ -441,7 +466,7 @@ w.Start()</pre></div>
       n.dot.setAttribute("fill", look[3]);
       let sub = n.type;
       if (iter[n.id] && s !== "done") sub = "agent_loop · iteration " + iter[n.id];
-      if (n.id === "test" && s !== "pending") sub = "map · " + (shards.test || 0) + " of 4 shards";
+      if (n.id === "test" && s !== "pending") sub = "map · " + (shards.test || 0) + "/4 shards";
       if (s === "waiting") sub = "approval · waiting for a person";
       n.sub.textContent = sub;
       n.box.style.opacity = engineUp ? 1 : 0.55;
@@ -513,6 +538,8 @@ w.Start()</pre></div>
   if (!reduce) start();
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
   if (mq.addEventListener) mq.addEventListener("change", paint);
+  const relayout = () => { build(); paint(); };
+  if (narrow.addEventListener) narrow.addEventListener("change", relayout);
   new MutationObserver(paint).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
   document.getElementById("copy").addEventListener("click", e => {
