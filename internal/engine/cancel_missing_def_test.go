@@ -174,9 +174,18 @@ func assertRunNotActive(t *testing.T, js jetstream.JetStream, runID string) {
 	if err != nil {
 		t.Fatalf("KeyValue workflow_runs: %v", err)
 	}
-	_, err = kv.Get(context.Background(), runActivePrefix+runID)
-	if !errors.Is(err, jetstream.ErrKeyNotFound) {
-		t.Fatalf("runactive marker still present (err=%v)", err)
+	// The marker is removed just after the terminal save, so poll for it
+	// rather than reading once the run reports cancelled.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err = kv.Get(context.Background(), runActivePrefix+runID)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("runactive marker still present (err=%v)", err)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
