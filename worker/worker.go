@@ -360,6 +360,9 @@ func NewWorker(
 		drainTimeout:          defaultDrainTimeout,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			continue // a nil option is a no-op, not a crash (#784)
+		}
 		opt(w)
 	}
 	if w.publishMsg == nil {
@@ -428,7 +431,7 @@ func (w *Worker) Handle(
 	w.handlers[taskType] = handler
 	for _, opt := range opts {
 		if opt == nil {
-			panic("Worker.Handle: opt must not be nil")
+			continue
 		}
 		opt(w, taskType)
 	}

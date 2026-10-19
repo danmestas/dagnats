@@ -53,6 +53,9 @@ func New(baseURL string, opts ...Option) *Client {
 		},
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(c)
 	}
 	if c.httpClient == nil {

@@ -76,7 +76,7 @@ func Typed[I, O any](
 	cfg := typedConfig{}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("Typed: opt must not be nil")
+			continue
 		}
 		opt(&cfg)
 	}
