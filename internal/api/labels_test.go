@@ -230,9 +230,9 @@ func TestBulkCancelByLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRunWithLabels(other): %v", err)
 	}
-	// Give the orchestrator a moment to move runs to Pending/Running so
-	// bulk cancel has something non-terminal to act on.
-	time.Sleep(200 * time.Millisecond)
+	// Bulk cancel finds runs through the scan index, which lands just
+	// after the snapshot; wait until both are listed.
+	waitRunsListed(t, svc, "bulk-cancel-label-wf", []string{target, other})
 
 	// dry_run: reports the match without mutating state.
 	dry, err := svc.BulkCancelRuns(context.Background(), BulkCancelRequest{

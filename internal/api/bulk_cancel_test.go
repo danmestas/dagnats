@@ -1,7 +1,10 @@
 // api/bulk_cancel_test.go
 // Tests for BulkCancelRuns: verifies filtering by workflow, status,
 // time range, dry-run, and the 1000-run cap.
-// Uses real embedded NATS server.
+// Uses real embedded NATS server. Runs are started through the real
+// service and the tests wait until a scan lists them (startRunsListed)
+// rather than sleeping a fixed time: a run's snapshot lands before its
+// index entry, so a scan right after StartRun can miss it.
 package api
 
 import (
@@ -27,22 +30,10 @@ func TestBulkCancelByWorkflow(t *testing.T) {
 
 	svc := NewService(nc)
 
-	wb1 := dag.NewWorkflow("bulk-wf-a")
-	wb1.Task("step-a", "echo")
-	def1, _ := wb1.Build()
-	svc.RegisterWorkflow(context.Background(), def1)
-
-	wb2 := dag.NewWorkflow("bulk-wf-b")
-	wb2.Task("step-b", "echo")
-	def2, _ := wb2.Build()
-	svc.RegisterWorkflow(context.Background(), def2)
-
-	svc.StartRun(context.Background(), "bulk-wf-a", nil)
-	svc.StartRun(context.Background(), "bulk-wf-a", nil)
-	svc.StartRun(context.Background(), "bulk-wf-a", nil)
-	svc.StartRun(context.Background(), "bulk-wf-b", nil)
-
-	time.Sleep(200 * time.Millisecond)
+	registerEchoWorkflow(t, svc, "bulk-wf-a")
+	registerEchoWorkflow(t, svc, "bulk-wf-b")
+	startRunsListed(t, svc, "bulk-wf-a", 3)
+	startRunsListed(t, svc, "bulk-wf-b", 1)
 
 	resp, err := svc.BulkCancelRuns(context.Background(),
 		BulkCancelRequest{WorkflowID: "bulk-wf-a"},
@@ -80,13 +71,8 @@ func TestBulkCancelDryRun(t *testing.T) {
 	defer orch.Stop()
 
 	svc := NewService(nc)
-	wb := dag.NewWorkflow("dry-run-wf")
-	wb.Task("s", "echo")
-	def, _ := wb.Build()
-	svc.RegisterWorkflow(context.Background(), def)
-	svc.StartRun(context.Background(), "dry-run-wf", nil)
-	svc.StartRun(context.Background(), "dry-run-wf", nil)
-	time.Sleep(200 * time.Millisecond)
+	registerEchoWorkflow(t, svc, "dry-run-wf")
+	startRunsListed(t, svc, "dry-run-wf", 2)
 
 	resp, err := svc.BulkCancelRuns(context.Background(),
 		BulkCancelRequest{
@@ -146,14 +132,8 @@ func TestBulkCancelStatusFilter(t *testing.T) {
 	defer orch.Stop()
 
 	svc := NewService(nc)
-	wb := dag.NewWorkflow("status-filter-wf")
-	wb.Task("s", "echo")
-	def, _ := wb.Build()
-	svc.RegisterWorkflow(context.Background(), def)
-	svc.StartRun(
-		context.Background(), "status-filter-wf", nil,
-	)
-	time.Sleep(200 * time.Millisecond)
+	registerEchoWorkflow(t, svc, "status-filter-wf")
+	startRunsListed(t, svc, "status-filter-wf", 1)
 
 	resp, err := svc.BulkCancelRuns(context.Background(),
 		BulkCancelRequest{
@@ -254,4 +234,63 @@ func TestBulkCancelSurfacesTruncatedScan(t *testing.T) {
 	if len(resp.Cancelled) != 0 {
 		t.Fatalf("Cancelled = %v, want empty", resp.Cancelled)
 	}
+}
+
+// registerEchoWorkflow registers a one-step workflow named name.
+func registerEchoWorkflow(t *testing.T, svc *Service, name string) {
+	t.Helper()
+	wb := dag.NewWorkflow(name)
+	wb.Task("s", "echo")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build(%s): %v", name, err)
+	}
+	if err := svc.RegisterWorkflow(context.Background(), def); err != nil {
+		t.Fatalf("RegisterWorkflow(%s): %v", name, err)
+	}
+}
+
+// startRunsListed starts count runs of workflowID and waits, bounded by
+// 10s, until a workflow-filtered ScanRuns lists all of them.
+func startRunsListed(t *testing.T, svc *Service, workflowID string, count int) []string {
+	t.Helper()
+	runIDs := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		runID, err := svc.StartRun(context.Background(), workflowID, nil)
+		if err != nil {
+			t.Fatalf("StartRun(%s): %v", workflowID, err)
+		}
+		runIDs = append(runIDs, runID)
+	}
+	waitRunsListed(t, svc, workflowID, runIDs)
+	return runIDs
+}
+
+// waitRunsListed polls ScanRuns until every id in runIDs is listed.
+func waitRunsListed(t *testing.T, svc *Service, workflowID string, runIDs []string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, err := svc.ScanRuns(
+			context.Background(), RunsFilter{Workflow: workflowID}, 0,
+		)
+		if err == nil && allListed(runs, runIDs) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("runs %v of %s not listed within 10s", runIDs, workflowID)
+}
+
+func allListed(runs []dag.WorkflowRun, runIDs []string) bool {
+	listed := make(map[string]bool, len(runs))
+	for _, run := range runs {
+		listed[run.RunID] = true
+	}
+	for _, runID := range runIDs {
+		if !listed[runID] {
+			return false
+		}
+	}
+	return true
 }
