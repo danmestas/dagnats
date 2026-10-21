@@ -1,6 +1,6 @@
 # ADR-025: Fenced step events
 
-**Status:** Proposed (2026-10-21)
+**Status:** Accepted (2026-10-21)
 **Deciders:** Dan Mestas
 **Supersedes:** the checkpoint mechanics of ADR-002 (the per-iteration model stays)
 **Issue:** #801
@@ -94,9 +94,21 @@ an in-memory timer that an engine restart loses.
 
 ### Compatibility
 
-Enforcement is on by default. A configuration flag accepts events without
-identity fields from old workers and bridge clients. While the flag is set,
-bug 2 remains possible for those workers.
+Events that carry identity fields are always fenced. Events without them,
+from workers and bridge clients built before this change, are accepted by
+default: `legacy_step_events` defaults to true, and the engine logs a warning
+at startup while it is on. Downstream services pin older worker SDKs, and
+dropping their events would strand every run they work on. While the flag
+is on, bug 2 remains possible for those old workers. Operators set it to
+false once every worker is upgraded.
+
+Engines must be upgraded before workers. A new worker detects an old engine
+(its task payload carries no state cap) and also writes the legacy
+checkpoint key, so a mixed rollout keeps loop state either way.
+
+Map instances and `respond` steps are not fenced: a map instance has no
+per-instance dispatch state to compare against, and a `respond` step is
+resolved by the engine and saved before its event.
 
 ## Requirements
 
@@ -107,16 +119,17 @@ all capitals.
 | ID | Requirement | Proven by |
 |---|---|---|
 | R1 | A worker MUST include `iteration`, `attempt` and `dispatch_nonce` on every lifecycle event, and the engine MUST include them on the step timeout watchdog's synthetic `step.failed`. | `TestLifecycleEventsCarryIdentity` |
-| R2 | The engine MUST NOT apply a lifecycle event unless the step is Running and the event's iteration and attempt equal the step's. | `TestAcceptanceRule` (table) |
-| R3 | The engine MUST NOT apply a lifecycle event whose present dispatch nonce differs from the step's. | `TestAcceptanceRule` (table) |
+| R2 | The engine MUST NOT apply a lifecycle event unless the step is Running and the event's iteration and attempt equal the step's. | `TestAcceptStepEvent` (table) |
+| R3 | The engine MUST NOT apply a lifecycle event whose present dispatch nonce differs from the step's. | `TestAcceptStepEvent` (table) |
 | R4 | A duplicate `step.continue` for one iteration MUST advance the loop at most once. | `TestStepContinue_DuplicateForSameIterationAdvancesOnce` |
 | R5 | A stale worker's terminal event MUST NOT complete or fail a step that has moved on. | `TestAgentLoop_StaleWorkerCompleteAfterTakeoverIsRejected` |
 | R6 | A redelivered iteration MUST load the state committed before it, not state its crashed attempt wrote. | `TestAgentLoop_RedeliveredIterationSeesPreIterationCheckpoint` |
-| R6a | A retry of an iteration (same iteration, new attempt) MUST load the last state committed by `Continue`. | `TestAgentLoop_RetryResumesFromCommittedState` |
+| R6a | A retry of an iteration (same iteration, new attempt) MUST load the last state committed by `Continue`. | `TestStepContinue_RetryResumesFromCommittedState` |
 | R7 | An engine crash between the continue save and the next publish MUST NOT strand the loop. | `TestStepContinue_CrashBetweenSaveAndPublishRecovers` |
-| R8 | `Continue` with state over the cap MUST fail with an error naming the size and the cap. | `TestContinue_StateOverCapFails` |
-| R9 | A `loop_delay` MUST survive an engine restart. | `TestLoopDelay_SurvivesEngineRestart` |
-| R10 | With the compatibility flag unset, the engine MUST drop lifecycle events that lack identity fields. | `TestAcceptanceRule_IdentityRequired` |
+| R8 | `Continue` with state over the cap MUST fail with an error naming the size and the cap. | `TestContinue_OverCapStateFailsBeforePublishing`, `TestStepContinue_OverCapStateFailsLoop` |
+| R9 | A `loop_delay` MUST survive an engine restart. | `TestStepContinue_LoopDelaySurvivesEngineRestart` |
+| R10 | With `legacy_step_events` off, the engine MUST drop lifecycle events that lack identity fields. | `TestStepCompleted_LegacyEventAcceptedOnlyWithFlag` |
+| R11 | The step timeout watchdog MUST fire for an agent loop regardless of how many iterations have passed. | `TestStepTimeout_FiresForLoopAfterContinues` |
 
 ## Alternatives considered
 

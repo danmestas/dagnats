@@ -1,6 +1,6 @@
 # ADR-002: Durable Agent Loop via dagnats Primitives
 
-**Status:** Accepted; checkpoint mechanics superseded by ADR-025 (Proposed), and the rejection of per-tool-call durability reversed by ADR-026 (Proposed)  
+**Status:** Accepted; checkpoint mechanics superseded by ADR-025, and the rejection of per-tool-call durability reversed by ADR-026 (Proposed)  
 **Date:** 2026-04-08  
 **Context:** Choosing the durability model for auto-claude's agent harness  
 

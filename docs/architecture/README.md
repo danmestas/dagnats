@@ -51,7 +51,7 @@ This convention makes dependency between proposals explicit and prevents acciden
 - `adr-022-gated-write-actions.md` — gated, operator-facing write actions.
 - `adr-023-accept-dagnatstest-internal-api-coupling.md` — accept the `dagnatstest` → `internal/api` coupling for now.
 - `adr-024-leases.md` — coordination leases (leader election, shard ownership) over `api.leases.*` request/reply, with revision fencing and server-republished change events.
-- `adr-025-fenced-step-events.md` — lifecycle events carry iteration, attempt and dispatch nonce; the engine drops stale ones; agent state rides in `step.continue` (Proposed).
+- `adr-025-fenced-step-events.md` — lifecycle events carry iteration, attempt and dispatch nonce; the engine drops stale ones; agent state rides in `step.continue`.
 - `adr-026-agent-journal.md` — a fenced, append-only journal per agent step for per-call recovery and tool replay safety (Proposed).
 - `adr-027-agent-inputs-and-waits.md` — idempotent inputs with steering, and durable waits that hold no worker (Proposed).
 - `adr-028-cancellation-crash-loops-spawn.md` — cancel reaches running handlers, a crash-loop guard, idempotent child spawn (Proposed).
