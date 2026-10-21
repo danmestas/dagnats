@@ -74,13 +74,7 @@ func (o *Orchestrator) handleStepFailed(
 	// handleStepCompleted — a step.failed for a terminal run is a
 	// redelivery and re-running the failure path would double-fire
 	// failWorkflow + DLQ publish + runsFailed metric.
-	if run.Status.IsTerminal() {
-		slog.InfoContext(ctx,
-			"skipping step.failed for terminal run",
-			"run_id", evt.RunID,
-			"step_id", evt.StepID,
-			"run_status", run.Status.String(),
-		)
+	if lateEventForTerminalRun(ctx, run, evt) {
 		return nil
 	}
 
@@ -89,6 +83,13 @@ func (o *Orchestrator) handleStepFailed(
 		return o.handleMapInstanceFailed(
 			ctx, wfDef, run, evt,
 		)
+	}
+
+	// Fence (#801): a failure from a dispatch the step has left (a
+	// stale worker, a watchdog armed for an earlier attempt, a
+	// redelivery) must not schedule another retry.
+	if !o.fenceStepEvent(ctx, run, evt) {
+		return nil
 	}
 
 	// Attempts is owned by step.queued / step.started lifecycle events
@@ -195,6 +196,10 @@ func (o *Orchestrator) dispatchRetriableFailure(
 	// fire fresh for the new attempt. Without this, attempts were
 	// recorded but never re-dispatched (issue #147).
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
+		// A retry is a new dispatch: a fresh nonce (#801) fences off
+		// every event the failed attempt may still send, and the
+		// timer carries it so the retried task passes the fence.
+		stampDispatch(&state, time.Now().UTC())
 		markRetryPending(&state, time.Now().UTC(),
 			retryBackoffDelayMs(*policy, state.Attempts))
 		run.Steps[evt.StepID] = state
@@ -234,6 +239,8 @@ func (o *Orchestrator) handleRetryAfter(
 		panic("handleRetryAfter: RunID must not be empty")
 	}
 	if policy != nil && state.Attempts <= policy.MaxAttempts {
+		// A fresh nonce per retry, as in dispatchRetriableFailure (#801).
+		stampDispatch(state, time.Now().UTC())
 		markRetryPending(state, time.Now().UTC(),
 			retryAfterDelayMs(retryAfterMs))
 		run.Steps[stepID] = *state
@@ -279,16 +286,17 @@ func (o *Orchestrator) scheduleRetryAfter(
 		)
 	}
 	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:       TimerActionRetryAfter,
-		RunID:        runID,
-		StepID:       stepID,
-		DurationMs:   retryAfterMs,
-		TaskType:     stepDef.Task,
-		Subject:      o.publisher.StepSubject(stepDef, runID),
-		Metadata:     stepDef.Metadata,
-		Input:        input,
-		Attempt:      run.Steps[stepID].Attempts,
-		WorkflowName: workflowName,
+		Action:        TimerActionRetryAfter,
+		RunID:         runID,
+		StepID:        stepID,
+		DurationMs:    retryAfterMs,
+		TaskType:      stepDef.Task,
+		Subject:       o.publisher.StepSubject(stepDef, runID),
+		Metadata:      stepDef.Metadata,
+		Input:         input,
+		Attempt:       run.Steps[stepID].Attempts,
+		WorkflowName:  workflowName,
+		DispatchNonce: run.Steps[stepID].DispatchNonce,
 	})
 }
 
@@ -341,16 +349,17 @@ func (o *Orchestrator) scheduleRetryBackoff(
 		)
 	}
 	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:       TimerActionRetryBackoff,
-		RunID:        runID,
-		StepID:       stepID,
-		DurationMs:   delayMs,
-		TaskType:     stepDef.Task,
-		Subject:      o.publisher.StepSubject(stepDef, runID),
-		Metadata:     stepDef.Metadata,
-		Input:        input,
-		Attempt:      attempts,
-		WorkflowName: workflowName,
+		Action:        TimerActionRetryBackoff,
+		RunID:         runID,
+		StepID:        stepID,
+		DurationMs:    delayMs,
+		TaskType:      stepDef.Task,
+		Subject:       o.publisher.StepSubject(stepDef, runID),
+		Metadata:      stepDef.Metadata,
+		Input:         input,
+		Attempt:       attempts,
+		WorkflowName:  workflowName,
+		DispatchNonce: run.Steps[stepID].DispatchNonce,
 	})
 }
 
@@ -368,12 +377,17 @@ func (o *Orchestrator) scheduleRetryBackoff(
 // the step has since moved to a later attempt or terminal status.
 // MsgId encodes Attempt so a step that runs N attempts gets N
 // independent timers, none deduped against the others.
+//
+// state is the step's saved state at arm time: its iteration and
+// dispatch nonce ride the timer so the synthetic step.failed names
+// the dispatch it was armed for (#801) and is fenced like a worker's.
 func (o *Orchestrator) scheduleStepTimeout(
 	ctx context.Context,
 	runID, stepID string,
 	stepDef dag.StepDef,
 	attempt int,
 	elapsed time.Duration,
+	state dag.StepState,
 ) error {
 	if runID == "" {
 		panic("scheduleStepTimeout: runID must not be empty")
@@ -400,12 +414,14 @@ func (o *Orchestrator) scheduleStepTimeout(
 		delayMs = 24 * 60 * 60 * 1000
 	}
 	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:     TimerActionStepTimeout,
-		RunID:      runID,
-		StepID:     stepID,
-		DurationMs: delayMs,
-		TaskType:   stepDef.Task,
-		Attempt:    attempt,
+		Action:        TimerActionStepTimeout,
+		RunID:         runID,
+		StepID:        stepID,
+		DurationMs:    delayMs,
+		TaskType:      stepDef.Task,
+		Attempt:       attempt,
+		Iteration:     state.Iterations,
+		DispatchNonce: state.DispatchNonce,
 	})
 }
 
@@ -469,7 +485,9 @@ func (o *Orchestrator) fireStepTimeout(tm TimerMessage) {
 		protocol.EventStepFailed,
 		tm.RunID, tm.StepID, data,
 	)
-	evt.AttemptNumber = tm.Attempt
+	// The identity the timer was armed with, not the live state's: a
+	// later iteration or retry of the step then fences this fire off.
+	evt.SetIdentity(tm.Iteration, tm.Attempt, tm.DispatchNonce)
 	if err := publishLifecycleEvent(ctx, o.tp, evt); err != nil {
 		slog.WarnContext(ctx,
 			"step timeout: publish step.failed",

@@ -189,7 +189,14 @@ func (o *Orchestrator) planTaskResend(
 	if !resendable(step.Type) {
 		panic("planTaskResend: step type is never marked unsent")
 	}
-	if run.Steps[step.ID].Status != dag.StepStatusQueued {
+	state := run.Steps[step.ID]
+	// An agent loop stays Running between iterations: a mark on a
+	// Running loop past iteration 0 is a continue whose next task may
+	// never have been sent (#801). The resend carries the state the
+	// continue committed, straight from the snapshot.
+	loopIteration := step.Type == dag.StepTypeAgentLoop &&
+		state.Status == dag.StepStatusRunning && state.Iterations > 0
+	if state.Status != dag.StepStatusQueued && !loopIteration {
 		plan.alreadySent = append(plan.alreadySent, step.ID)
 		return nil
 	}
@@ -199,6 +206,15 @@ func (o *Orchestrator) planTaskResend(
 	}
 	if queued {
 		plan.alreadySent = append(plan.alreadySent, step.ID)
+		return nil
+	}
+	if loopIteration {
+		plan.effects = append(plan.effects, stepEffect{
+			stepID: step.ID,
+			send: func(ctx context.Context) error {
+				return o.publishContinueTask(ctx, run, step, state)
+			},
+		})
 		return nil
 	}
 	plan.normalSteps = append(plan.normalSteps, step)

@@ -129,6 +129,18 @@ type Orchestrator struct {
 	// error from it at a dispatch checkpoint abandons the dispatch
 	// there, as if the engine process died at that point.
 	crashHook func(dispatchCheckpoint) error
+
+	// legacyStepEvents accepts step.continue/completed/failed events
+	// that carry no dispatch identity (#801): workers and bridge
+	// clients older than the identity fields. On by default; while on,
+	// a duplicate step.continue from such a worker still advances the
+	// loop twice. Events that do carry identity are always fenced.
+	legacyStepEvents bool
+
+	// loopStateMaxBytes caps the state a step.continue may commit into
+	// the run snapshot (#801). Shared with every task-payload builder so
+	// workers learn the same number.
+	loopStateMaxBytes int
 }
 
 // dispatchCheckpoint names a point in enqueueReady where a crash
@@ -222,6 +234,35 @@ func WithHistoryRedeliverBackoff(schedule []time.Duration) OrchestratorOption {
 	}
 }
 
+// WithLegacyStepEvents sets whether step lifecycle events without a
+// dispatch identity are accepted (#801). The default is true, so
+// workers and bridge clients older than the identity fields keep
+// working; false drops and counts them, which closes the duplicate
+// step.continue window for every worker.
+func WithLegacyStepEvents(accept bool) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.legacyStepEvents = accept
+	}
+}
+
+// WithLoopStateMaxBytes caps the state an agent loop may commit per
+// iteration (#801). A zero or negative cap keeps the default
+// (protocol.LoopStateMaxBytesDefault). The server bounds it by
+// max_payload, since the whole run snapshot is one KV value.
+func WithLoopStateMaxBytes(maxBytes int) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if maxBytes <= 0 {
+			return
+		}
+		o.loopStateMaxBytes = maxBytes
+		o.publisher.loopStateMaxBytes = maxBytes
+		o.sleepTimer.loopStateMaxBytes = maxBytes
+		if o.sticky != nil {
+			o.sticky.loopStateMaxBytes = maxBytes
+		}
+	}
+}
+
 // WithDebounceHandler wires the handler for debounce_fire timers, which
 // subject-trigger debounce schedules (#784). Without one the sleep timer
 // acks and drops them. Start then starts the sleep-timer consumer eagerly:
@@ -297,6 +338,8 @@ func NewOrchestrator(
 		sticky:                   sticky,
 		metrics:                  om,
 		historyRedeliverSchedule: historyRedeliverSchedule,
+		legacyStepEvents:         true,
+		loopStateMaxBytes:        protocol.LoopStateMaxBytesDefault,
 	}
 	o.wireDependentSubsystems(rl, ac, pm, om)
 	for _, opt := range opts {

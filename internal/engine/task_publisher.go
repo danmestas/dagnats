@@ -70,6 +70,10 @@ type TaskPublisher struct {
 	// granted, so an ungranted step's task message never carries it and the
 	// worker withholds the handle. nil holder Loads nil → deny-by-default.
 	grantPolicy *GrantPolicyHolder
+
+	// loopStateMaxBytes is stamped on every TaskPayload (#801) so the
+	// worker refuses an oversized Continue with the engine's own cap.
+	loopStateMaxBytes int
 }
 
 // NewTaskPublisher creates a TaskPublisher with the given deps.
@@ -102,15 +106,16 @@ func NewTaskPublisher(
 		)
 	}
 	return &TaskPublisher{
-		js:            js,
-		pub:           pub,
-		rateLimiter:   rateLimiter,
-		admission:     admission,
-		sticky:        sticky,
-		sleepTimer:    sleepTimer,
-		tracer:        tracer,
-		metrics:       metrics,
-		loadRunAndDef: loadRunAndDef,
+		js:                js,
+		pub:               pub,
+		rateLimiter:       rateLimiter,
+		admission:         admission,
+		sticky:            sticky,
+		sleepTimer:        sleepTimer,
+		tracer:            tracer,
+		metrics:           metrics,
+		loadRunAndDef:     loadRunAndDef,
+		loopStateMaxBytes: protocol.LoopStateMaxBytesDefault,
 	}
 }
 
@@ -460,6 +465,8 @@ func (tp *TaskPublisher) doPublish(
 		// produce an unverifiable (always-denied) dispatch (#380).
 		DispatchNonce: nonceOrMint(dispatchNonce),
 		Metadata:      step.Metadata,
+		State:         run.Steps[step.ID].LoopState,
+		StateMaxBytes: tp.loopStateMaxBytes,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -477,7 +484,9 @@ func (tp *TaskPublisher) doPublish(
 }
 
 // PublishIteration publishes a TaskPayload for an agent-loop
-// re-enqueue. Each iteration's MsgId is distinct for dedup.
+// re-enqueue. Each iteration's MsgId is distinct for dedup. loopState
+// is the state the step committed with the continue that produced this
+// iteration (#801), read from the snapshot by every caller.
 func (tp *TaskPublisher) PublishIteration(
 	ctx context.Context,
 	runID string,
@@ -487,6 +496,7 @@ func (tp *TaskPublisher) PublishIteration(
 	iteration int,
 	workflowName string,
 	dispatchNonce string,
+	loopState []byte,
 ) error {
 	if runID == "" {
 		panic(
@@ -533,6 +543,8 @@ func (tp *TaskPublisher) PublishIteration(
 		),
 		DispatchNonce: nonceOrMint(dispatchNonce),
 		Metadata:      step.Metadata,
+		State:         loopState,
+		StateMaxBytes: tp.loopStateMaxBytes,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

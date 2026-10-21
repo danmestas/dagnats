@@ -19,7 +19,8 @@ import "go.opentelemetry.io/otel/metric"
 // asserts the recorded labels match this list exactly. Adding a
 // label without updating the allowlist fails the test.
 var metricLabelAllowlist = map[string][]string{
-	"snapshot.save.duration_ms": {"workflow", "step"},
+	"snapshot.save.duration_ms":   {"workflow", "step"},
+	"engine.step_events.rejected": {"event", "reason"},
 }
 
 // orchMetrics bundles the Orchestrator's pre-allocated metric
@@ -56,6 +57,12 @@ type orchMetrics struct {
 	runIndexOrphans      metric.Int64Counter
 	runActiveRepaired    metric.Int64Counter
 	runActiveOrphans     metric.Int64Counter
+	// stepEventsRejected counts step lifecycle events dropped by the
+	// dispatch-identity fence (#801), by event type and reason. A
+	// steady stream means stalled or duplicated workers; a burst of
+	// no_identity means a worker older than the fence with legacy
+	// events disabled.
+	stepEventsRejected metric.Int64Counter
 }
 
 // newOrchMetrics creates all orchestrator metric instruments.
@@ -120,7 +127,11 @@ func newOrchMetrics(m metric.Meter) orchMetrics {
 	runActiveOrphans, _ := m.Int64Counter(
 		"engine.run_active.orphans_removed",
 	)
+	stepEventsRejected, _ := m.Int64Counter(
+		"engine.step_events.rejected",
+	)
 	return orchMetrics{
+		stepEventsRejected:   stepEventsRejected,
 		runsActive:           runsActive,
 		runsCompleted:        runsCompleted,
 		runsFailed:           runsFailed,

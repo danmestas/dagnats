@@ -130,6 +130,8 @@ func (sr *StickyRouter) PublishTask(
 		WorkflowName:  workflowName,
 		DispatchNonce: dispatchNonce,
 		Metadata:      step.Metadata,
+		State:         run.Steps[step.ID].LoopState,
+		StateMaxBytes: sr.loopStateMaxBytes,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

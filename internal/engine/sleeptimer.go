@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -32,6 +33,10 @@ const (
 	TimerActionTaskConcurRetry TimerAction = "task_concurrency_retry"
 	TimerActionDebounce        TimerAction = "debounce_fire"
 	TimerActionStepTimeout     TimerAction = "step_timeout"
+	// TimerActionLoopDelay re-publishes the next agent-loop iteration
+	// after the step's loop_delay (#801), so the delay survives an
+	// engine restart like retry backoff does.
+	TimerActionLoopDelay TimerAction = "loop_delay"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
@@ -84,6 +89,11 @@ type TimerMessage struct {
 	// dispatch did (#732). omitempty: nil for steps without metadata and
 	// for timers that never re-dispatch.
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// Iteration is the agent-loop iteration a loop_delay timer
+	// re-publishes, and the iteration a step_timeout watchdog was armed
+	// for (#801). It scopes the timer's msg-id (every iteration of a
+	// loop shares one attempt) and the staleness check at fire time.
+	Iteration int `json:"iteration,omitempty"`
 }
 
 // dispatchSubject returns the subject a dispatch timer re-publishes
@@ -144,6 +154,9 @@ type SleepTimer struct {
 	// requires that (see the orchestrator.go comment above its own
 	// construction), so this adds no new precondition in practice.
 	store *SnapshotStore
+	// loopStateMaxBytes is stamped on every re-published TaskPayload
+	// (#801), mirroring TaskPublisher.
+	loopStateMaxBytes int
 }
 
 // NewSleepTimer creates a SleepTimer bound to the given connection.
@@ -162,7 +175,10 @@ func NewSleepTimer(
 	if tp == nil {
 		panic("NewSleepTimer: tp must not be nil")
 	}
-	return &SleepTimer{nc: nc, js: js, tp: tp, store: NewSnapshotStore(js)}
+	return &SleepTimer{
+		nc: nc, js: js, tp: tp, store: NewSnapshotStore(js),
+		loopStateMaxBytes: protocol.LoopStateMaxBytesDefault,
+	}
 }
 
 // identityForRedispatch loads the CURRENT run snapshot and returns
@@ -170,13 +186,14 @@ func NewSleepTimer(
 // (attempt, iteration) pair every fire-* re-dispatch path in this file
 // must use (#624 review round 4: renamed from attemptForRedispatch,
 // which returned only attempt and left every caller to set Iteration
-// by hand — the exact bug this round fixes). Falls back to (0, 0)
-// (fresh-dispatch numbering, matching a step that has never started)
-// on any lookup failure: a missing/unreadable snapshot must never
-// block a retry from firing.
+// by hand — the exact bug this round fixes) — and the step's committed
+// loop state (#801), so a retry resumes from the last iteration the
+// engine accepted. Falls back to (0, 0, nil) (fresh-dispatch numbering,
+// matching a step that has never started) on any lookup failure: a
+// missing/unreadable snapshot must never block a retry from firing.
 func (st *SleepTimer) identityForRedispatch(
 	ctx context.Context, runID, stepID string,
-) (attempt, iteration int) {
+) (attempt, iteration int, loopState []byte) {
 	if runID == "" {
 		panic("identityForRedispatch: runID must not be empty")
 	}
@@ -184,13 +201,14 @@ func (st *SleepTimer) identityForRedispatch(
 		panic("identityForRedispatch: stepID must not be empty")
 	}
 	if st.store == nil {
-		return 0, 0
+		return 0, 0, nil
 	}
 	run, err := st.store.Load(ctx, runID)
 	if err != nil {
-		return 0, 0
+		return 0, 0, nil
 	}
-	return dispatchIdentity(run, stepID, dispatchNewAttempt)
+	attempt, iteration = dispatchIdentity(run, stepID, dispatchNewAttempt)
+	return attempt, iteration, run.Steps[stepID].LoopState
 }
 
 // Start subscribes to sleep.> on the SLEEP_TIMERS stream.
@@ -301,6 +319,11 @@ func (st *SleepTimer) Schedule(ctx context.Context, msg TimerMessage) error {
 			msg.RunID, msg.StepID, action, msg.Attempt,
 		)
 	}
+	// Every iteration of a loop shares one attempt, so a timer armed
+	// per iteration (loop_delay, step_timeout) is keyed by it too.
+	if msg.Iteration > 0 {
+		msgID = fmt.Sprintf("%s.%d", msgID, msg.Iteration)
+	}
 	natsMsg := &nats.Msg{
 		Subject: subject,
 		Data:    data,
@@ -402,6 +425,8 @@ func (st *SleepTimer) handleTimerJS(msg jetstream.Msg) {
 		if st.onStepTimeout != nil {
 			st.onStepTimeout(tm)
 		}
+	case TimerActionLoopDelay:
+		st.fireLoopDelay(tm)
 	default:
 		// Unknown action — ack to prevent loop.
 	}
@@ -515,7 +540,9 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	// step's real attempt count; round 4 fixed the same gap for
 	// Iteration, which was still omitted even after round 2 — both
 	// now come from the live snapshot via dispatchIdentity.
-	attempt, iteration := st.identityForRedispatch(ctx, tm.RunID, tm.StepID)
+	attempt, iteration, loopState := st.identityForRedispatch(
+		ctx, tm.RunID, tm.StepID,
+	)
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
@@ -530,6 +557,8 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 		RequiredCapabilities: tm.RequiredCapabilities,
 		DispatchNonce:        nonceOrMint(tm.DispatchNonce),
 		Metadata:             tm.Metadata,
+		State:                loopState,
+		StateMaxBytes:        st.loopStateMaxBytes,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -610,7 +639,9 @@ func (st *SleepTimer) republishTask(
 	)
 	defer cancel()
 	subject := tm.dispatchSubject()
-	attempt, iteration := st.identityForRedispatch(ctx, tm.RunID, tm.StepID)
+	attempt, iteration, loopState := st.identityForRedispatch(
+		ctx, tm.RunID, tm.StepID,
+	)
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
@@ -624,6 +655,8 @@ func (st *SleepTimer) republishTask(
 		RequiredCapabilities: tm.RequiredCapabilities,
 		DispatchNonce:        nonceOrMint(tm.DispatchNonce),
 		Metadata:             tm.Metadata,
+		State:                loopState,
+		StateMaxBytes:        st.loopStateMaxBytes,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -635,6 +668,67 @@ func (st *SleepTimer) republishTask(
 	)
 	msg := &nats.Msg{
 		Subject: subject,
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
+	}
+	st.tp.JSPublishMsg(ctx, msg)
+}
+
+// fireLoopDelay publishes the agent-loop iteration a loop_delay timer
+// was scheduled for (#801). The iteration's identity (attempt, nonce)
+// and committed state come from the live snapshot, as a retry's do;
+// the timer is stale, and dropped, once the step left that dispatch:
+// it completed, failed or was cancelled, or a resend of the same
+// iteration already ran and the loop moved on. A step still Queued
+// (a legacy worker that continued without reporting step.started)
+// is on the same dispatch and gets its task.
+func (st *SleepTimer) fireLoopDelay(tm TimerMessage) {
+	if tm.RunID == "" {
+		panic("fireLoopDelay: RunID must not be empty")
+	}
+	if tm.StepID == "" {
+		panic("fireLoopDelay: StepID must not be empty")
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	run, err := st.store.Load(ctx, tm.RunID)
+	if err != nil {
+		return
+	}
+	state := run.Steps[tm.StepID]
+	inFlight := state.Status == dag.StepStatusRunning ||
+		state.Status == dag.StepStatusQueued
+	if !inFlight || state.Iterations != tm.Iteration ||
+		state.DispatchNonce != tm.DispatchNonce {
+		return
+	}
+	payload := protocol.TaskPayload{
+		TaskID:               tm.RunID + "." + tm.StepID,
+		RunID:                tm.RunID,
+		StepID:               tm.StepID,
+		Input:                tm.Input,
+		Attempt:              state.Attempts,
+		Iteration:            state.Iterations,
+		WorkflowName:         tm.WorkflowName,
+		RequiredCapabilities: tm.RequiredCapabilities,
+		DispatchNonce:        tm.DispatchNonce,
+		Metadata:             tm.Metadata,
+		State:                state.LoopState,
+		StateMaxBytes:        st.loopStateMaxBytes,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	// The same msg-id PublishIteration uses: a resend of this iteration
+	// that raced the timer is one task inside the dedup window.
+	msgID := fmt.Sprintf(
+		"%s.%s.continue.%d", tm.RunID, tm.StepID, state.Iterations,
+	)
+	msg := &nats.Msg{
+		Subject: tm.dispatchSubject(),
 		Data:    data,
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}

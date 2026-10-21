@@ -40,13 +40,7 @@ func (o *Orchestrator) handleStepCompleted(
 	// history replay. Without this guard, Advance would re-mark the
 	// step Completed and call completeWorkflow, double-decrementing
 	// runsActive and republishing workflow.completed.
-	if run.Status.IsTerminal() {
-		slog.InfoContext(ctx,
-			"skipping step.completed for terminal run",
-			"run_id", evt.RunID,
-			"step_id", evt.StepID,
-			"run_status", run.Status.String(),
-		)
+	if lateEventForTerminalRun(ctx, run, evt) {
 		return nil
 	}
 
@@ -57,18 +51,18 @@ func (o *Orchestrator) handleStepCompleted(
 		)
 	}
 
+	// A respond step is engine-resolved: its completion is the engine's
+	// own, saved before the event, so no dispatch identity fences it.
+	stepDef, foundStep := findStepDef(wfDef, evt.StepID)
+	engineResolved := foundStep && stepDef.Type == dag.StepTypeRespond
+	if !engineResolved && !o.fenceStepEvent(ctx, run, evt) {
+		return nil
+	}
+
 	// Planner steps must materialize output before DAG
 	// resolution — short-circuit before Advance.
-	stepDef, foundStep := findStepDef(wfDef, evt.StepID)
 	if foundStep && stepDef.Type == dag.StepTypePlanner {
-		state := run.Steps[evt.StepID]
-		state.Status = dag.StepStatusCompleted
-		state.Output = evt.Payload
-		run.Steps[evt.StepID] = state
-		o.releaseTaskSlot(ctx, wfDef, evt.RunID, evt.StepID)
-		return o.materializePlannerOutput(
-			ctx, wfDef, run, stepDef, evt.Payload,
-		)
+		return o.completePlannerStep(ctx, wfDef, run, stepDef, evt)
 	}
 
 	// Pure core: compute state transition and side effects.
@@ -103,6 +97,28 @@ func (o *Orchestrator) handleStepCompleted(
 	return o.enqueueReady(ctx, wfDef, run)
 }
 
+// completePlannerStep records a planner step's output and materializes
+// the steps it planned, ahead of ordinary DAG resolution.
+func (o *Orchestrator) completePlannerStep(
+	ctx context.Context, wfDef dag.WorkflowDef, run dag.WorkflowRun,
+	stepDef dag.StepDef, evt protocol.Event,
+) error {
+	if stepDef.Type != dag.StepTypePlanner {
+		panic("completePlannerStep: step is not a planner step")
+	}
+	if evt.StepID != stepDef.ID {
+		panic("completePlannerStep: event and step must match")
+	}
+	state := run.Steps[evt.StepID]
+	state.Status = dag.StepStatusCompleted
+	state.Output = evt.Payload
+	run.Steps[evt.StepID] = state
+	o.releaseTaskSlot(ctx, wfDef, evt.RunID, evt.StepID)
+	return o.materializePlannerOutput(
+		ctx, wfDef, run, stepDef, evt.Payload,
+	)
+}
+
 // handleStepContinue re-enqueues an agent-loop step for another iteration.
 // Uses Advance for iteration increment and MaxIterations check, then
 // applies LoopStartedAt tracking, MaxDuration enforcement, and
@@ -124,6 +140,20 @@ func (o *Orchestrator) handleStepContinue(
 	if !found {
 		return fmt.Errorf(
 			"step %q not found in workflow def", evt.StepID,
+		)
+	}
+	// Fence (#801): only the worker holding this exact dispatch may
+	// advance the loop, so a duplicate or stale continue is a no-op.
+	if !o.fenceStepEvent(ctx, run, evt) {
+		return nil
+	}
+	loopState, err := continueState(evt)
+	if err != nil {
+		return err
+	}
+	if capErr := loopStateOverCap(len(loopState), o.loopStateMaxBytes); capErr != nil {
+		return o.failLoopStep(
+			ctx, run, evt.StepID, run.Steps[evt.StepID], capErr.Error(),
 		)
 	}
 
@@ -156,23 +186,53 @@ func (o *Orchestrator) handleStepContinue(
 			ctx, run, evt.StepID, state, reason,
 		)
 	}
+	return o.dispatchNextIteration(ctx, run, stepDef, state, loopState)
+}
+
+// dispatchNextIteration saves the iteration Advance produced together
+// with the state the continue committed, then sends the next task.
+// The save marks the dispatch unsent and the send clears it, as
+// enqueueReady does (#794): an engine that dies in between leaves a
+// mark that resendUnsent acts on, instead of a loop that nothing will
+// ever continue (#801). A legacy continue carries no state and leaves
+// the saved state alone.
+func (o *Orchestrator) dispatchNextIteration(
+	ctx context.Context, run dag.WorkflowRun, stepDef dag.StepDef,
+	state dag.StepState, loopState []byte,
+) error {
+	if run.RunID == "" {
+		panic("dispatchNextIteration: RunID must not be empty")
+	}
+	if state.Iterations < 1 {
+		panic("dispatchNextIteration: Advance must have bumped Iterations")
+	}
 	// Re-stamp a fresh per-dispatch nonce and StartedAt for this iteration
 	// (#380, #626): both ride this snapshot save (no extra write); the
 	// nonce is threaded onto the PublishIteration payload so the
 	// iteration's control-plane calls bind to this dispatch.
 	stampDispatch(&state, time.Now().UTC())
-	run.Steps[evt.StepID] = state
-
-	if err := o.saveSnapshot(ctx, run, evt.StepID); err != nil {
+	state.DispatchUnsent = true
+	if loopState != nil {
+		state.LoopState = loopState
+	}
+	run.Steps[stepDef.ID] = state
+	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
 		return err
 	}
-	return o.publishContinueTask(
-		ctx, run, stepDef, state,
-	)
+	if err := o.atCheckpoint(checkpointSaved); err != nil {
+		return err
+	}
+	if err := o.publishContinueTask(ctx, run, stepDef, state); err != nil {
+		return err
+	}
+	_, err := o.markSent(ctx, run, []string{stepDef.ID})
+	return err
 }
 
 // publishContinueTask resolves input and publishes the next
-// iteration task, with optional LoopDelay scheduling.
+// iteration task, with optional LoopDelay scheduling. state is the
+// step's saved state for the iteration being sent; resendUnsent calls
+// this with the snapshot's, so a resend carries the committed state.
 func (o *Orchestrator) publishContinueTask(
 	ctx context.Context,
 	run dag.WorkflowRun,
@@ -205,30 +265,30 @@ func (o *Orchestrator) publishContinueTask(
 	// workflow name) through both the delayed and immediate re-enqueue (#380).
 	if loopCfg.LoopDelay > 0 {
 		return o.scheduleDelayedIteration(
-			ctx, run.RunID, run.WorkflowID, stepDef, input,
-			attempt, iteration, loopCfg.LoopDelay, state.DispatchNonce,
+			ctx, run, stepDef, input, attempt, iteration, loopCfg.LoopDelay,
 		)
 	}
 	return o.publisher.PublishIteration(
 		ctx, run.RunID, stepDef, input, attempt, iteration,
-		run.WorkflowID, state.DispatchNonce,
+		run.WorkflowID, state.DispatchNonce, state.LoopState,
 	)
 }
 
-// scheduleDelayedIteration defers re-enqueue via a context-aware
-// timer goroutine. Cancels cleanly if context expires.
+// scheduleDelayedIteration defers the next iteration through a
+// SLEEP_TIMERS loop_delay timer (#801), so the delay survives an
+// engine restart the way retry backoff does. The fire re-reads the
+// iteration's attempt and state from the snapshot and drops itself if
+// the loop has since moved on.
 func (o *Orchestrator) scheduleDelayedIteration(
 	ctx context.Context,
-	runID string,
-	workflowName string,
+	run dag.WorkflowRun,
 	stepDef dag.StepDef,
 	input []byte,
 	attempt int,
 	iteration int,
 	delay time.Duration,
-	dispatchNonce string,
 ) error {
-	if runID == "" {
+	if run.RunID == "" {
 		panic(
 			"scheduleDelayedIteration: runID must not be empty",
 		)
@@ -238,28 +298,24 @@ func (o *Orchestrator) scheduleDelayedIteration(
 			"scheduleDelayedIteration: delay must be positive",
 		)
 	}
-	go func() {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			pubErr := o.publisher.PublishIteration(
-				ctx, runID, stepDef, input, attempt, iteration,
-				workflowName, dispatchNonce,
-			)
-			if pubErr != nil {
-				slog.ErrorContext(ctx,
-					"delayed iteration publish failed",
-					"error", pubErr,
-					"run_id", runID,
-					"step_id", stepDef.ID,
-				)
-			}
-		}
-	}()
-	return nil
+	state := run.Steps[stepDef.ID]
+	return o.sleepTimer.Schedule(ctx, TimerMessage{
+		Action:        TimerActionLoopDelay,
+		RunID:         run.RunID,
+		StepID:        stepDef.ID,
+		DurationMs:    delay.Milliseconds(),
+		TaskType:      stepDef.Task,
+		Subject:       o.publisher.StepSubject(stepDef, run.RunID),
+		Metadata:      stepDef.Metadata,
+		Input:         input,
+		Attempt:       attempt,
+		Iteration:     iteration,
+		WorkflowName:  run.WorkflowID,
+		DispatchNonce: state.DispatchNonce,
+		RequiredCapabilities: effectiveCapabilities(
+			stepDef.RequiredCapabilities, run.WorkflowID, o.grantPolicy.Load(),
+		),
+	})
 }
 
 // checkLoopBounds returns (true, reason) when the step has hit its
@@ -447,7 +503,7 @@ func (o *Orchestrator) armStepWatchdog(
 		return nil
 	}
 	return o.scheduleStepTimeout(
-		ctx, run.RunID, stepID, stepDef, attempts, elapsed,
+		ctx, run.RunID, stepID, stepDef, attempts, elapsed, run.Steps[stepID],
 	)
 }
 
@@ -457,15 +513,16 @@ func (o *Orchestrator) armStepWatchdog(
 // or step.started that lands afterwards (the engine's own dispatch event
 // racing the cancel, or a task already handed out) used to flip the step
 // back to Queued or Running under the cancelled run (#737). The same rule
-// handleStepCompleted applies to completions.
+// guards completions and failures (#196): re-running those paths for a
+// finished run would double-count the run's terminal transition.
 func lateEventForTerminalRun(
 	ctx context.Context, run dag.WorkflowRun, evt protocol.Event,
 ) bool {
 	if run.RunID != evt.RunID {
 		panic("lateEventForTerminalRun: event and run must name the same run")
 	}
-	if evt.Type != protocol.EventStepQueued && evt.Type != protocol.EventStepStarted {
-		panic("lateEventForTerminalRun: only step.queued and step.started are guarded here")
+	if evt.StepID == "" {
+		panic("lateEventForTerminalRun: only step events are guarded here")
 	}
 	if !run.Status.IsTerminal() {
 		return false

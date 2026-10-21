@@ -8,6 +8,7 @@ package engine
 
 import (
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -23,6 +24,9 @@ type StickyRouter struct {
 	sleepTimer       *SleepTimer
 	tracer           trace.Tracer
 	stepEnqueueCount metric.Int64Counter
+	// loopStateMaxBytes is stamped on every sticky TaskPayload (#801),
+	// mirroring TaskPublisher.
+	loopStateMaxBytes int
 }
 
 // NewStickyRouter returns a StickyRouter for the given KV bucket.
@@ -48,11 +52,12 @@ func NewStickyRouter(
 		panic("NewStickyRouter: tracer must not be nil")
 	}
 	return &StickyRouter{
-		kv:               kv,
-		js:               js,
-		tp:               tp,
-		sleepTimer:       sleepTimer,
-		tracer:           tracer,
-		stepEnqueueCount: stepEnqueueCount,
+		kv:                kv,
+		js:                js,
+		tp:                tp,
+		sleepTimer:        sleepTimer,
+		tracer:            tracer,
+		stepEnqueueCount:  stepEnqueueCount,
+		loopStateMaxBytes: protocol.LoopStateMaxBytesDefault,
 	}
 }

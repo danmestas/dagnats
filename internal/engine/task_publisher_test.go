@@ -225,7 +225,7 @@ func TestPublishIterationMetricNotIncrementedOnFailure(
 	}
 
 	err := tp.PublishIteration(
-		context.Background(), "run-1", step, []byte(`{}`), 0, 1, "", "",
+		context.Background(), "run-1", step, []byte(`{}`), 0, 1, "", "", nil,
 	)
 	if err == nil {
 		t.Fatal(
@@ -382,7 +382,7 @@ func TestPublishIterationSpanNameAndWorkflowAttribute(t *testing.T) {
 
 	err := tp.PublishIteration(
 		context.Background(), "run-1", step, []byte(`{}`), 1, 2,
-		"deploy-pipeline", "",
+		"deploy-pipeline", "", nil,
 	)
 	if err != nil {
 		t.Fatalf("PublishIteration failed: %v", err)
@@ -464,7 +464,7 @@ func TestPublishIterationOmitsWorkflowNameAttributeWhenEmpty(t *testing.T) {
 
 	err := tp.PublishIteration(
 		context.Background(), "run-1", step, []byte(`{}`), 1, 2,
-		"", "",
+		"", "", nil,
 	)
 	if err != nil {
 		t.Fatalf("PublishIteration failed: %v", err)
