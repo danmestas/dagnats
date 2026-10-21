@@ -67,6 +67,13 @@ type ackEntry struct {
 	logSeq        uint64
 	logTotalBytes int64
 	logTruncated  bool
+
+	// pendingState buffers a `checkpoint` action until `continue`
+	// carries it in the step.continue event (#801), the same way the
+	// worker SDK's Checkpoint buffers for Continue. It lives and dies
+	// with the claim: a bridge restart loses the claim anyway.
+	pendingState    []byte
+	pendingStateSet bool
 }
 
 // AckMap tracks in-flight tasks for HTTP workers. Maps task_id
@@ -222,6 +229,45 @@ func (am *AckMap) WithLogState(
 	)
 	am.entries[taskID] = entry
 	return true
+}
+
+// SetPendingState buffers state for taskID's next `continue` (#801)
+// and reports whether the entry exists. Never creates an entry.
+func (am *AckMap) SetPendingState(taskID string, state []byte) bool {
+	if am == nil {
+		panic("AckMap.SetPendingState: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.SetPendingState: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok {
+		return false
+	}
+	entry.pendingState = state
+	entry.pendingStateSet = true
+	am.entries[taskID] = entry
+	return true
+}
+
+// PendingState returns the state buffered for taskID and whether a
+// `checkpoint` set one since the claim.
+func (am *AckMap) PendingState(taskID string) ([]byte, bool) {
+	if am == nil {
+		panic("AckMap.PendingState: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.PendingState: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok || !entry.pendingStateSet {
+		return nil, false
+	}
+	return entry.pendingState, true
 }
 
 // Touch restarts taskID's reap window and reports whether the entry

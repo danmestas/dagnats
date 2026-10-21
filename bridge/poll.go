@@ -50,6 +50,12 @@ type pollResponse struct {
 	// it. A jobs: workflow's job travels here under "ci.job" (#728).
 	// omitempty keeps the response unchanged for steps without it.
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// State is the loop state the engine committed with the step's last
+	// accepted continue (#801), as NATS workers receive it in
+	// TaskPayload.State; StateMaxBytes is the engine's cap on what a
+	// `continue` may carry back.
+	State         []byte `json:"state,omitempty"`
+	StateMaxBytes int    `json:"state_max_bytes,omitempty"`
 }
 
 // pollTimeoutMaxMs caps the maximum long-poll timeout at 60 seconds.
@@ -614,15 +620,17 @@ func (b *Bridge) processPolledMsg(
 	b.storeClaimedTask(ctx, taskID, msg)
 	traceHdr := dispatchTraceHeader(dispatchCtx)
 	resp := pollResponse{
-		TaskID:      taskID,
-		RunID:       payload.RunID,
-		StepID:      payload.StepID,
-		Iteration:   payload.Iteration,
-		Attempt:     attemptNumber,
-		Input:       payload.Input,
-		TraceParent: traceHdr.Get("traceparent"),
-		TraceState:  traceHdr.Get("tracestate"),
-		Metadata:    payload.Metadata,
+		TaskID:        taskID,
+		RunID:         payload.RunID,
+		StepID:        payload.StepID,
+		Iteration:     payload.Iteration,
+		Attempt:       attemptNumber,
+		Input:         payload.Input,
+		TraceParent:   traceHdr.Get("traceparent"),
+		TraceState:    traceHdr.Get("tracestate"),
+		Metadata:      payload.Metadata,
+		State:         payload.State,
+		StateMaxBytes: payload.StateMaxBytes,
 	}
 	return resp, true
 }

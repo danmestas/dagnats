@@ -389,32 +389,45 @@ func TestResolveCheckpoint(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	// Verify checkpoint was written to KV
-	js, err := jetstream.New(nc)
-	if err != nil {
-		t.Fatalf("jetstream.New failed: %v", err)
-	}
-	ctx := context.Background()
-	kv, err := js.KeyValue(ctx, "checkpoints")
-	if err != nil {
-		t.Fatalf("KeyValue failed: %v", err)
-	}
-	entry, err := kv.Get(ctx, taskID)
-	if err != nil {
-		t.Fatalf("Get checkpoint failed: %v", err)
-	}
-	if string(entry.Value()) != `{"progress":50}` {
-		t.Fatalf(
-			"unexpected checkpoint: %s", string(entry.Value()),
-		)
-	}
-
 	// Task should still be in ackMap (checkpoint extends deadline)
 	_, ok := b.ackMap.Load(taskID)
 	if !ok {
 		t.Fatal(
 			"expected task to remain in ackMap after checkpoint",
 		)
+	}
+
+	// The checkpoint is buffered, not written: the continue carries it
+	// (#801) with the dispatch identity under the stable msg-id.
+	resp, err = http.Post(
+		ts.URL+"/v1/tasks/"+taskID+"/resolve",
+		"application/json",
+		strings.NewReader(`{"action":"continue","output":{"next":true}}`),
+	)
+	if err != nil {
+		t.Fatalf("continue failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("continue: expected 200, got %d", resp.StatusCode)
+	}
+	evt := consumeHistoryEvent(
+		t, nc, "run-chk", protocol.EventStepContinue, 2*time.Second,
+	)
+	if !evt.HasIdentity() || *evt.Iteration != 0 || evt.AttemptNumber != 1 {
+		t.Fatalf("continue identity = (%v, %d), want iteration 0 attempt 1",
+			evt.Iteration, evt.AttemptNumber)
+	}
+	var payload protocol.StepContinuePayload
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		t.Fatalf("decode continue payload: %v", err)
+	}
+	if string(payload.State) != `{"progress":50}` || string(payload.Output) != `{"next":true}` {
+		t.Fatalf("continue payload = state %s output %s, want the checkpointed state and output",
+			payload.State, payload.Output)
+	}
+	if _, ok := b.ackMap.Load(taskID); ok {
+		t.Fatal("expected task to leave the ackMap after continue")
 	}
 }
 

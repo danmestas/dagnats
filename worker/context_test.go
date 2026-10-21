@@ -471,8 +471,21 @@ func TestTaskContextCheckpointNilKV(t *testing.T) {
 		},
 		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
-	// Positive: Checkpoint returns error with remediation guidance
-	err := tc.Checkpoint([]byte("state"))
+	// Positive: Checkpoint buffers for Continue and needs no KV (#801),
+	// and LoadCheckpoint reads the buffer back.
+	if err := tc.Checkpoint([]byte("state")); err != nil {
+		t.Fatalf("Checkpoint without KV: %v", err)
+	}
+	data, err := tc.LoadCheckpoint()
+	if err != nil || string(data) != "state" {
+		t.Fatalf(
+			"LoadCheckpoint = (%s, %v), want the buffered state",
+			data, err,
+		)
+	}
+	// Negative: Pause's durable marker still needs the bucket, with
+	// remediation guidance.
+	err = tc.Pause("wait", time.Second)
 	if err == nil {
 		t.Fatal("expected error for nil checkpointKV")
 	}
@@ -487,14 +500,6 @@ func TestTaskContextCheckpointNilKV(t *testing.T) {
 		t.Fatalf(
 			"error %q missing remediation %q",
 			err.Error(), wantSubstr,
-		)
-	}
-	// Negative: LoadCheckpoint returns nil,nil when KV is nil
-	data, err := tc.LoadCheckpoint()
-	if err != nil || data != nil {
-		t.Fatalf(
-			"LoadCheckpoint = (%v, %v), want (nil, nil)",
-			data, err,
 		)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -80,6 +81,27 @@ type taskContext struct {
 	// nil for a taskContext built directly in a test.
 	runCancelled  func() bool
 	releaseCancel func()
+
+	// dispatchNonce is the engine's per-dispatch token from the task
+	// payload; every lifecycle event echoes it with iteration and
+	// attempt so the engine can fence off a stale worker (#801).
+	dispatchNonce string
+	// loopState is the state the engine committed with the step's last
+	// accepted continue and delivered in the payload (#801).
+	loopState []byte
+	// loopStateMax is the engine's cap on the state a Continue may
+	// carry, from the payload; the protocol default when absent.
+	loopStateMax int
+	// pendingState buffers Checkpoint until Continue publishes it in
+	// the continue event (#801): checkpoint and continue are one write.
+	// pendingStateSet distinguishes Checkpoint(nil) from no checkpoint.
+	pendingState    []byte
+	pendingStateSet bool
+	// kvCheckpointSeen records that LoadCheckpoint returned a value from
+	// the checkpoints bucket (a pause marker, or a checkpoint from a
+	// worker older than #801), which Continue then deletes so it cannot
+	// shadow the committed state on the next iteration.
+	kvCheckpointSeen bool
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -115,22 +137,29 @@ func newTaskContext(
 	case js != nil:
 		tp = natsutil.NewTracingPublisherJSOnly(js)
 	}
+	loopStateMax := payload.StateMaxBytes
+	if loopStateMax <= 0 {
+		loopStateMax = protocol.LoopStateMaxBytesDefault
+	}
 	return &taskContext{
-		nc:           nc,
-		js:           js,
-		tp:           tp,
-		tracer:       tracer,
-		runID:        payload.RunID,
-		stepID:       payload.StepID,
-		iteration:    payload.Iteration,
-		attempt:      payload.Attempt,
-		input:        payload.Input,
-		metadata:     payload.Metadata,
-		ctx:          ctx,
-		span:         span,
-		msg:          msg,
-		checkpointKV: checkpointKV,
-		signalKV:     signalKV,
+		nc:            nc,
+		js:            js,
+		tp:            tp,
+		tracer:        tracer,
+		runID:         payload.RunID,
+		stepID:        payload.StepID,
+		iteration:     payload.Iteration,
+		attempt:       payload.Attempt,
+		input:         payload.Input,
+		metadata:      payload.Metadata,
+		ctx:           ctx,
+		span:          span,
+		msg:           msg,
+		checkpointKV:  checkpointKV,
+		signalKV:      signalKV,
+		dispatchNonce: payload.DispatchNonce,
+		loopState:     payload.State,
+		loopStateMax:  loopStateMax,
 	}
 }
 
@@ -193,6 +222,9 @@ func resolveAttemptNumber(payloadAttempt int, msg jetstream.Msg) (int, error) {
 	}
 	if payloadAttempt > 0 {
 		return payloadAttempt, nil
+	}
+	if meta == nil {
+		return 1, nil
 	}
 	n := int(meta.NumDelivered)
 	if n < 1 {
@@ -413,11 +445,16 @@ func (c *taskContext) publishFailedPayload(
 	return c.publishEvent(protocol.EventStepFailed, data)
 }
 
-// Continue publishes a step.continue event. The MsgId includes a
-// nonce (UnixNano timestamp) so that if a worker crashes after
-// Continue() but before acking the task message, the redelivered
-// task can publish a new continue event without JetStream dedup
-// swallowing it.
+// Continue publishes a step.continue event carrying the state the
+// handler checkpointed this iteration (#801), or the state this
+// iteration started from when it checkpointed nothing. The engine
+// commits that state in the same save that advances the iteration, so
+// checkpoint and continue are one write. The event names its dispatch
+// (iteration, attempt, nonce) and its MsgId is the stable
+// {run}.{step}.step.continue.{attempt}.{iteration}: a redelivered task
+// that continues again is deduplicated by JetStream inside the dedup
+// window and dropped by the engine outside it. Fails without
+// publishing when the state is over the engine's cap.
 func (c *taskContext) Continue(output []byte) error {
 	if c.msg == nil {
 		panic("Continue: msg already consumed or nil")
@@ -436,28 +473,57 @@ func (c *taskContext) Continue(output []byte) error {
 		),
 	)
 	defer span.End()
-	evt := protocol.NewStepEvent(
-		protocol.EventStepContinue,
-		c.runID, c.stepID, output,
-	)
-	nonce := fmt.Sprintf("%d", time.Now().UnixNano())
-	msgID := fmt.Sprintf(
-		"%s.%s.continue.%d.%s",
-		c.runID, c.stepID, c.iteration, nonce,
-	)
-	outMsg := &nats.Msg{
-		Subject: evt.NATSSubject(),
-		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
+	state := c.loopState
+	if c.pendingStateSet {
+		state = c.pendingState
+	}
+	if len(state) > c.loopStateMax {
+		return fmt.Errorf(
+			"Continue: state is %d bytes, over the %d byte cap (loop_state_max_bytes)",
+			len(state), c.loopStateMax,
+		)
+	}
+	payload, err := json.Marshal(protocol.StepContinuePayload{
+		Output: output, State: state,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal StepContinuePayload: %w", err)
 	}
 	// Drain-before-resolve invariant (#624): flush trailing log bytes
 	// and emit "continued" before the step.continue publish below —
 	// this attempt's subject is done; the next iteration gets a fresh
 	// attempt-scoped subject.
 	c.drainLogs(protocol.LogMarkerContinued)
-	// JSPublishMsgEvent injects trace context, then marshals evt
-	// internally so the persisted body carries TraceParent.
-	_, err := c.tp.JSPublishMsgEvent(c.ctx, outMsg, &evt)
-	return err
+	if err := c.publishEvent(protocol.EventStepContinue, payload); err != nil {
+		return err
+	}
+	c.clearShadowingCheckpoint()
+	return nil
+}
+
+// clearShadowingCheckpoint deletes the checkpoints-bucket entry that
+// LoadCheckpoint returned this delivery (a pause marker, or a
+// checkpoint left by a worker older than #801), once the continue it
+// fed has been published. Left in place it would shadow the committed
+// state on every later iteration. Best effort: the continue is already
+// committed, so a failed delete is logged, not returned.
+func (c *taskContext) clearShadowingCheckpoint() {
+	if c.runID == "" {
+		panic("clearShadowingCheckpoint: runID must not be empty")
+	}
+	if c.stepID == "" {
+		panic("clearShadowingCheckpoint: stepID must not be empty")
+	}
+	if !c.kvCheckpointSeen || c.checkpointKV == nil {
+		return
+	}
+	key := c.runID + "." + c.stepID
+	if err := c.checkpointKV.Delete(c.ctx, key); err != nil &&
+		!errors.Is(err, jetstream.ErrKeyNotFound) {
+		slog.WarnContext(c.ctx, "delete checkpoint after continue",
+			"run_id", c.runID, "step_id", c.stepID, "error", err)
+	}
+	c.kvCheckpointSeen = false
 }
 
 // PutStream publishes data to a streaming subject for real-time
@@ -478,10 +544,12 @@ func (c *taskContext) PutStream(data []byte) error {
 }
 
 // publishEvent creates, traces, and publishes a step lifecycle
-// event with trace context propagation. AttemptNumber is set from
-// c.attempt when known so each retry's MsgId is distinct — without
-// it, step.failed emitted on attempt 2..N would dedup to attempt 1
-// and the engine would never see the later failures.
+// event with trace context propagation. The event names the dispatch
+// it answers (#801): the iteration and nonce from the task payload and
+// the same 1-based attempt step.started reported, so the engine can
+// match it against the step's saved state and drop it when a later
+// dispatch has superseded this worker. That identity also makes each
+// retry's and iteration's MsgId distinct.
 func (c *taskContext) publishEvent(
 	eventType protocol.EventType, payload []byte,
 ) error {
@@ -495,9 +563,7 @@ func (c *taskContext) publishEvent(
 		eventType, c.runID, c.stepID, payload,
 	)
 	evt.WorkerID = c.workerID
-	if c.attempt > 0 {
-		evt.AttemptNumber = c.attempt
-	}
+	evt.SetIdentity(c.iteration, c.effectiveAttempt(), c.dispatchNonce)
 	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Header: nats.Header{
@@ -526,8 +592,12 @@ func (c *taskContext) Heartbeat() error {
 	return c.msg.InProgress()
 }
 
-// Checkpoint saves arbitrary state to KV at {runID}.{stepID}.
-// Returns error if checkpointKV is not configured.
+// Checkpoint records the state the next Continue commits (#801). It
+// writes nothing itself: the state rides the step.continue event and
+// the engine saves it with the iteration, so a crash between
+// Checkpoint and Continue leaves nothing behind and the redelivered
+// iteration starts from the state this one started from. Within the
+// same iteration LoadCheckpoint returns the checkpointed state.
 func (c *taskContext) Checkpoint(state []byte) error {
 	if c.msg == nil {
 		panic("Checkpoint: msg already consumed or nil")
@@ -535,18 +605,18 @@ func (c *taskContext) Checkpoint(state []byte) error {
 	if c.runID == "" {
 		panic("Checkpoint: runID must not be empty")
 	}
-	if c.checkpointKV == nil {
-		return errCheckpointKVNotConfigured
-	}
-	key := c.runID + "." + c.stepID
-	_, err := c.checkpointKV.Put(
-		c.ctx, key, state,
-	)
-	return err
+	c.pendingState = state
+	c.pendingStateSet = true
+	return nil
 }
 
-// LoadCheckpoint retrieves saved state from KV at {runID}.{stepID}.
-// Returns (nil, nil) if checkpoint does not exist or KV not configured.
+// LoadCheckpoint returns the state this iteration should start from:
+// the state checkpointed earlier in this same delivery, else the
+// checkpoints-bucket entry for {runID}.{stepID} when one exists (a
+// Pause marker, or a checkpoint written by a worker older than #801),
+// else the state the engine committed with the step's last accepted
+// continue and delivered in the task payload. (nil, nil) when none of
+// these exist.
 func (c *taskContext) LoadCheckpoint() ([]byte, error) {
 	if c.runID == "" {
 		panic("LoadCheckpoint: runID must not be empty")
@@ -554,20 +624,39 @@ func (c *taskContext) LoadCheckpoint() ([]byte, error) {
 	if c.stepID == "" {
 		panic("LoadCheckpoint: stepID must not be empty")
 	}
+	if c.pendingStateSet {
+		return c.pendingState, nil
+	}
+	if c.checkpointKV != nil {
+		key := c.runID + "." + c.stepID
+		entry, err := c.checkpointKV.Get(c.ctx, key)
+		if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			c.kvCheckpointSeen = true
+			return entry.Value(), nil
+		}
+	}
+	return c.loopState, nil
+}
+
+// writeCheckpointKV writes state to the checkpoints bucket at
+// {runID}.{stepID}: Pause's durable marker, the one checkpoint that
+// must outlive this delivery without an engine round trip.
+func (c *taskContext) writeCheckpointKV(state []byte) error {
+	if c.runID == "" {
+		panic("writeCheckpointKV: runID must not be empty")
+	}
+	if c.stepID == "" {
+		panic("writeCheckpointKV: stepID must not be empty")
+	}
 	if c.checkpointKV == nil {
-		return nil, nil
+		return errCheckpointKVNotConfigured
 	}
 	key := c.runID + "." + c.stepID
-	entry, err := c.checkpointKV.Get(
-		c.ctx, key,
-	)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return entry.Value(), nil
+	_, err := c.checkpointKV.Put(c.ctx, key, state)
+	return err
 }
 
 // WaitForSignal watches KV at {runID}.{name} until a value appears
@@ -627,7 +716,7 @@ func (c *taskContext) Pause(name string, duration time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("marshal pause checkpoint: %w", err)
 	}
-	if err := c.Checkpoint(data); err != nil {
+	if err := c.writeCheckpointKV(data); err != nil {
 		return fmt.Errorf("save pause checkpoint: %w", err)
 	}
 	c.paused = true

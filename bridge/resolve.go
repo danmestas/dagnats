@@ -240,9 +240,9 @@ func (b *Bridge) resolveComplete(
 	if msg == nil {
 		panic("resolveComplete: msg must not be nil")
 	}
-	attemptNumber, err := resolveAttemptNumber(msg)
+	dispatch, err := resolveDispatch(msg)
 	if err != nil {
-		return fmt.Errorf("derive attempt number: %w", err)
+		return err
 	}
 	runID, stepID := splitTaskID(taskID)
 	// #624 review round 2: emit the "completed" marker (using the
@@ -253,7 +253,7 @@ func (b *Bridge) resolveComplete(
 	evt := protocol.NewStepEvent(
 		protocol.EventStepCompleted, runID, stepID, req.Output,
 	)
-	evt.AttemptNumber = attemptNumber
+	evt.SetIdentity(dispatch.iteration, dispatch.attempt, dispatch.nonce)
 	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish complete event: %w", err)
 	}
@@ -280,9 +280,9 @@ func (b *Bridge) resolveFail(
 	if msg == nil {
 		panic("resolveFail: msg must not be nil")
 	}
-	attemptNumber, err := resolveAttemptNumber(msg)
+	dispatch, err := resolveDispatch(msg)
 	if err != nil {
-		return fmt.Errorf("derive attempt number: %w", err)
+		return err
 	}
 	runID, stepID := splitTaskID(taskID)
 	failureType := protocol.FailureType(req.FailureType)
@@ -308,7 +308,7 @@ func (b *Bridge) resolveFail(
 	evt := protocol.NewStepEvent(
 		protocol.EventStepFailed, runID, stepID, payloadData,
 	)
-	evt.AttemptNumber = attemptNumber
+	evt.SetIdentity(dispatch.iteration, dispatch.attempt, dispatch.nonce)
 	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish fail event: %w", err)
 	}
@@ -356,8 +356,10 @@ func (b *Bridge) resolvePause(
 	return nil
 }
 
-// resolveCheckpoint writes checkpoint data to KV and extends the
-// ack deadline so the task stays in-flight.
+// resolveCheckpoint buffers checkpoint data for the task's next
+// `continue` (#801) and extends the ack deadline so the task stays
+// in-flight. Nothing is written until the continue commits it, so a
+// worker that dies between the two leaves no state behind.
 func (b *Bridge) resolveCheckpoint(
 	ctx context.Context,
 	taskID string, msg jetstream.Msg, req resolveRequest,
@@ -371,8 +373,8 @@ func (b *Bridge) resolveCheckpoint(
 	if msg == nil {
 		panic("resolveCheckpoint: msg must not be nil")
 	}
-	if err := b.writeCheckpoint(ctx, taskID, req.Data); err != nil {
-		return err
+	if !b.ackMap.SetPendingState(taskID, req.Data) {
+		return fmt.Errorf("task %q is no longer claimed", taskID)
 	}
 	if err := b.extendClaim(taskID, msg); err != nil {
 		return fmt.Errorf("in-progress: %w", err)
@@ -382,7 +384,10 @@ func (b *Bridge) resolveCheckpoint(
 
 // resolveContinue publishes a step.continue event, acks the NATS
 // message, and removes the task from the ackMap. This enables
-// non-Go agents to implement agent loops via the HTTP bridge.
+// non-Go agents to implement agent loops via the HTTP bridge. The
+// event carries the state a `checkpoint` buffered (else the state the
+// task was polled with), the dispatch identity, and the stable msg-id
+// the worker SDK's Continue uses (#801).
 func (b *Bridge) resolveContinue(
 	ctx context.Context,
 	taskID string, claimingTokenID string, msg jetstream.Msg, req resolveRequest,
@@ -396,6 +401,26 @@ func (b *Bridge) resolveContinue(
 	if msg == nil {
 		panic("resolveContinue: msg must not be nil")
 	}
+	dispatch, err := resolveDispatch(msg)
+	if err != nil {
+		return err
+	}
+	state := dispatch.state
+	if pending, ok := b.ackMap.PendingState(taskID); ok {
+		state = pending
+	}
+	if len(state) > dispatch.stateMaxBytes {
+		return fmt.Errorf(
+			"continue: state is %d bytes, over the %d byte cap (loop_state_max_bytes)",
+			len(state), dispatch.stateMaxBytes,
+		)
+	}
+	payload, err := json.Marshal(protocol.StepContinuePayload{
+		Output: req.Output, State: state,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal continue payload: %w", err)
+	}
 	runID, stepID := splitTaskID(taskID)
 	// #624 review round 3: emit BEFORE the step.continue publish —
 	// this ITERATION's subject is done; the next iteration gets a
@@ -408,23 +433,10 @@ func (b *Bridge) resolveContinue(
 	// exists as its own dimension of subject identity.
 	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerContinued)
 	evt := protocol.NewStepEvent(
-		protocol.EventStepContinue, runID, stepID, req.Output,
+		protocol.EventStepContinue, runID, stepID, payload,
 	)
-	nonce := fmt.Sprintf("%d", time.Now().UnixNano())
-	msgID := fmt.Sprintf(
-		"%s.%s.continue.bridge.%s", runID, stepID, nonce,
-	)
-	outMsg := &nats.Msg{
-		Subject: evt.NATSSubject(),
-		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
-	}
-	data, err := evt.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal continue event: %w", err)
-	}
-	outMsg.Data = data
-	_, err = b.pub.JSPublishMsg(ctx, outMsg)
-	if err != nil {
+	evt.SetIdentity(dispatch.iteration, dispatch.attempt, dispatch.nonce)
+	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish continue event: %w", err)
 	}
 	if err := msg.Ack(); err != nil {
@@ -570,6 +582,47 @@ func resolveAttemptNumber(msg jetstream.Msg) (int, error) {
 		panic("resolveAttemptNumber: attempt must be >= 1")
 	}
 	return attemptNumber, nil
+}
+
+// taskDispatch is what a resolve needs from the polled task message:
+// the dispatch identity every lifecycle event echoes (#801) and the
+// loop state and cap the task was polled with.
+type taskDispatch struct {
+	iteration     int
+	attempt       int
+	nonce         string
+	state         []byte
+	stateMaxBytes int
+}
+
+// resolveDispatch reads the task's dispatch identity and loop state
+// from the polled message held in the ackMap.
+func resolveDispatch(msg jetstream.Msg) (taskDispatch, error) {
+	if msg == nil {
+		panic("resolveDispatch: msg must not be nil")
+	}
+	if len(msg.Data()) == 0 {
+		panic("resolveDispatch: msg.Data must not be empty")
+	}
+	var payload protocol.TaskPayload
+	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
+		return taskDispatch{}, fmt.Errorf("unmarshal task payload: %w", err)
+	}
+	attempt, err := resolveAttemptNumber(msg)
+	if err != nil {
+		return taskDispatch{}, fmt.Errorf("derive attempt number: %w", err)
+	}
+	stateMaxBytes := payload.StateMaxBytes
+	if stateMaxBytes <= 0 {
+		stateMaxBytes = protocol.LoopStateMaxBytesDefault
+	}
+	return taskDispatch{
+		iteration:     payload.Iteration,
+		attempt:       attempt,
+		nonce:         payload.DispatchNonce,
+		state:         payload.State,
+		stateMaxBytes: stateMaxBytes,
+	}, nil
 }
 
 // splitTaskID splits a task ID into runID and stepID.
