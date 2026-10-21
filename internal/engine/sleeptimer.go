@@ -186,29 +186,46 @@ func NewSleepTimer(
 // (attempt, iteration) pair every fire-* re-dispatch path in this file
 // must use (#624 review round 4: renamed from attemptForRedispatch,
 // which returned only attempt and left every caller to set Iteration
-// by hand — the exact bug this round fixes) — and the step's committed
-// loop state (#801), so a retry resumes from the last iteration the
-// engine accepted. Falls back to (0, 0, nil) (fresh-dispatch numbering,
-// matching a step that has never started) on any lookup failure: a
+// by hand — the exact bug this round fixes) — with the step's committed
+// loop state and dispatch nonce (#801), so a retry resumes from the
+// last iteration the engine accepted and answers under the nonce the
+// snapshot will check. Falls back to the timer's own nonce (minted if
+// empty) and (0, 0, nil) numbering on any lookup failure: a
 // missing/unreadable snapshot must never block a retry from firing.
 func (st *SleepTimer) identityForRedispatch(
-	ctx context.Context, runID, stepID string,
-) (attempt, iteration int, loopState []byte) {
-	if runID == "" {
+	ctx context.Context, tm TimerMessage,
+) redispatch {
+	if tm.RunID == "" {
 		panic("identityForRedispatch: runID must not be empty")
 	}
-	if stepID == "" {
+	if tm.StepID == "" {
 		panic("identityForRedispatch: stepID must not be empty")
 	}
+	fallback := redispatch{nonce: nonceOrMint(tm.DispatchNonce)}
 	if st.store == nil {
-		return 0, 0, nil
+		return fallback
 	}
-	run, err := st.store.Load(ctx, runID)
+	run, err := st.store.Load(ctx, tm.RunID)
 	if err != nil {
-		return 0, 0, nil
+		return fallback
 	}
-	attempt, iteration = dispatchIdentity(run, stepID, dispatchNewAttempt)
-	return attempt, iteration, run.Steps[stepID].LoopState
+	state := run.Steps[tm.StepID]
+	attempt, iteration := dispatchIdentity(run, tm.StepID, dispatchNewAttempt)
+	nonce := state.DispatchNonce
+	if nonce == "" {
+		nonce = fallback.nonce
+	}
+	return redispatch{
+		attempt: attempt, iteration: iteration, loopState: state.LoopState, nonce: nonce,
+	}
+}
+
+// redispatch is what a timer-fired re-publish stamps on its payload.
+type redispatch struct {
+	attempt   int
+	iteration int
+	loopState []byte
+	nonce     string
 }
 
 // Start subscribes to sleep.> on the SLEEP_TIMERS stream.
@@ -540,24 +557,22 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	// step's real attempt count; round 4 fixed the same gap for
 	// Iteration, which was still omitted even after round 2 — both
 	// now come from the live snapshot via dispatchIdentity.
-	attempt, iteration, loopState := st.identityForRedispatch(
-		ctx, tm.RunID, tm.StepID,
-	)
+	rd := st.identityForRedispatch(ctx, tm)
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
 		StepID:       tm.StepID,
-		Attempt:      attempt,
-		Iteration:    iteration,
+		Attempt:      rd.attempt,
+		Iteration:    rd.iteration,
 		Input:        tm.Input,
 		WorkflowName: tm.WorkflowName,
-		// Carry the grant decision + run-binding nonce stamped at scheduling
-		// time (#380) so a rate-retried granted step still passes
-		// VerifyDispatch and keeps its control-plane capability.
+		// Carry the grant decision (#380) so a rate-retried granted step
+		// keeps its control-plane capability; the nonce is the snapshot's
+		// so the dispatch passes VerifyDispatch and the event fence.
 		RequiredCapabilities: tm.RequiredCapabilities,
-		DispatchNonce:        nonceOrMint(tm.DispatchNonce),
+		DispatchNonce:        rd.nonce,
 		Metadata:             tm.Metadata,
-		State:                loopState,
+		State:                rd.loopState,
 		StateMaxBytes:        st.loopStateMaxBytes,
 	}
 	data, err := json.Marshal(payload)
@@ -639,23 +654,22 @@ func (st *SleepTimer) republishTask(
 	)
 	defer cancel()
 	subject := tm.dispatchSubject()
-	attempt, iteration, loopState := st.identityForRedispatch(
-		ctx, tm.RunID, tm.StepID,
-	)
+	rd := st.identityForRedispatch(ctx, tm)
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
 		StepID:       tm.StepID,
 		Input:        tm.Input,
-		Attempt:      attempt,
-		Iteration:    iteration,
+		Attempt:      rd.attempt,
+		Iteration:    rd.iteration,
 		WorkflowName: tm.WorkflowName,
-		// Carry the grant decision + run-binding nonce stamped at scheduling
-		// time (#380) so a retried granted step still passes VerifyDispatch.
+		// Carry the grant decision (#380); the nonce is the snapshot's
+		// (a timer scheduled before #801 carries none) so the retried
+		// task passes VerifyDispatch and the event fence.
 		RequiredCapabilities: tm.RequiredCapabilities,
-		DispatchNonce:        nonceOrMint(tm.DispatchNonce),
+		DispatchNonce:        rd.nonce,
 		Metadata:             tm.Metadata,
-		State:                loopState,
+		State:                rd.loopState,
 		StateMaxBytes:        st.loopStateMaxBytes,
 	}
 	data, err := json.Marshal(payload)
@@ -664,7 +678,7 @@ func (st *SleepTimer) republishTask(
 	}
 	msgID := fmt.Sprintf(
 		"%s.%s.%s.%d",
-		tm.RunID, tm.StepID, kind, attempt,
+		tm.RunID, tm.StepID, kind, rd.attempt,
 	)
 	msg := &nats.Msg{
 		Subject: subject,

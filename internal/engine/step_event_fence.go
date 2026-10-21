@@ -117,10 +117,11 @@ func (o *Orchestrator) fenceStepEvent(
 	return false
 }
 
-// continueState returns the state a step.continue carries (#801). A
-// legacy event (no identity) carries none: its worker checkpointed to
-// KV, and the engine leaves the saved state alone.
-func continueState(evt protocol.Event) ([]byte, error) {
+// continueState returns the state a step.continue carries (#801) and
+// whether it carries one at all. A legacy event (no identity) carries
+// none: its worker checkpointed to KV, and the engine leaves the saved
+// state alone. A set but empty state clears the saved state.
+func continueState(evt protocol.Event) (state []byte, set bool, err error) {
 	if evt.Type != protocol.EventStepContinue {
 		panic("continueState: event must be a step.continue")
 	}
@@ -128,13 +129,13 @@ func continueState(evt protocol.Event) ([]byte, error) {
 		panic("continueState: StepID must not be empty")
 	}
 	if !evt.HasIdentity() || len(evt.Payload) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	var payload protocol.StepContinuePayload
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-		return nil, fmt.Errorf("decode step.continue payload: %w", err)
+		return nil, false, fmt.Errorf("decode step.continue payload: %w", err)
 	}
-	return payload.State, nil
+	return payload.State, payload.StateSet || len(payload.State) > 0, nil
 }
 
 // loopStateOverCap returns the error that fails a loop whose committed

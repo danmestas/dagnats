@@ -147,7 +147,7 @@ func (o *Orchestrator) handleStepContinue(
 	if !o.fenceStepEvent(ctx, run, evt) {
 		return nil
 	}
-	loopState, err := continueState(evt)
+	loopState, stateSet, err := continueState(evt)
 	if err != nil {
 		return err
 	}
@@ -186,6 +186,9 @@ func (o *Orchestrator) handleStepContinue(
 			ctx, run, evt.StepID, state, reason,
 		)
 	}
+	if !stateSet {
+		loopState = state.LoopState
+	}
 	return o.dispatchNextIteration(ctx, run, stepDef, state, loopState)
 }
 
@@ -194,8 +197,8 @@ func (o *Orchestrator) handleStepContinue(
 // The save marks the dispatch unsent and the send clears it, as
 // enqueueReady does (#794): an engine that dies in between leaves a
 // mark that resendUnsent acts on, instead of a loop that nothing will
-// ever continue (#801). A legacy continue carries no state and leaves
-// the saved state alone.
+// ever continue (#801). loopState is the state to save: the continue's
+// own when it carried one, else the state already saved.
 func (o *Orchestrator) dispatchNextIteration(
 	ctx context.Context, run dag.WorkflowRun, stepDef dag.StepDef,
 	state dag.StepState, loopState []byte,
@@ -212,9 +215,7 @@ func (o *Orchestrator) dispatchNextIteration(
 	// iteration's control-plane calls bind to this dispatch.
 	stampDispatch(&state, time.Now().UTC())
 	state.DispatchUnsent = true
-	if loopState != nil {
-		state.LoopState = loopState
-	}
+	state.LoopState = loopState
 	run.Steps[stepDef.ID] = state
 	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
 		return err
@@ -503,7 +504,7 @@ func (o *Orchestrator) armStepWatchdog(
 		return nil
 	}
 	return o.scheduleStepTimeout(
-		ctx, run.RunID, stepID, stepDef, attempts, elapsed, run.Steps[stepID],
+		ctx, run.RunID, stepID, stepDef, attempts, elapsed,
 	)
 }
 

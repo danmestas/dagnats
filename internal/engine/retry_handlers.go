@@ -378,16 +378,18 @@ func (o *Orchestrator) scheduleRetryBackoff(
 // MsgId encodes Attempt so a step that runs N attempts gets N
 // independent timers, none deduped against the others.
 //
-// state is the step's saved state at arm time: its iteration and
-// dispatch nonce ride the timer so the synthetic step.failed names
-// the dispatch it was armed for (#801) and is fenced like a worker's.
+// The timer carries the attempt only. An agent loop keeps its attempt
+// across iterations but gets a fresh dispatch nonce on every continue,
+// and the watchdog is armed once per attempt (a later iteration's
+// step.started dedups against the first), so the fire stamps the
+// identity the snapshot holds at fire time, not the one at arm time
+// (#801).
 func (o *Orchestrator) scheduleStepTimeout(
 	ctx context.Context,
 	runID, stepID string,
 	stepDef dag.StepDef,
 	attempt int,
 	elapsed time.Duration,
-	state dag.StepState,
 ) error {
 	if runID == "" {
 		panic("scheduleStepTimeout: runID must not be empty")
@@ -414,14 +416,12 @@ func (o *Orchestrator) scheduleStepTimeout(
 		delayMs = 24 * 60 * 60 * 1000
 	}
 	return o.sleepTimer.Schedule(ctx, TimerMessage{
-		Action:        TimerActionStepTimeout,
-		RunID:         runID,
-		StepID:        stepID,
-		DurationMs:    delayMs,
-		TaskType:      stepDef.Task,
-		Attempt:       attempt,
-		Iteration:     state.Iterations,
-		DispatchNonce: state.DispatchNonce,
+		Action:     TimerActionStepTimeout,
+		RunID:      runID,
+		StepID:     stepID,
+		DurationMs: delayMs,
+		TaskType:   stepDef.Task,
+		Attempt:    attempt,
 	})
 }
 
@@ -485,9 +485,10 @@ func (o *Orchestrator) fireStepTimeout(tm TimerMessage) {
 		protocol.EventStepFailed,
 		tm.RunID, tm.StepID, data,
 	)
-	// The identity the timer was armed with, not the live state's: a
-	// later iteration or retry of the step then fences this fire off.
-	evt.SetIdentity(tm.Iteration, tm.Attempt, tm.DispatchNonce)
+	// The dispatch the step is on now (#801): the attempt check above
+	// proved it is the one the timer was armed for, and a loop's
+	// iteration and nonce have moved on since without ending the attempt.
+	evt.SetIdentity(state.Iterations, tm.Attempt, state.DispatchNonce)
 	if err := publishLifecycleEvent(ctx, o.tp, evt); err != nil {
 		slog.WarnContext(ctx,
 			"step timeout: publish step.failed",

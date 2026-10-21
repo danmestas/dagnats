@@ -408,6 +408,11 @@ func (o *Orchestrator) Start() error {
 	if err := o.convergeRunIndexesAtStartup(); err != nil {
 		return err
 	}
+	if o.legacyStepEvents {
+		slog.Warn("accepting step events without a dispatch identity " +
+			"(legacy_step_events=true): a duplicate step.continue from a " +
+			"worker older than the identity fields can advance a loop twice")
+	}
 
 	// #704 stranded-subject check (primary detector): the engine is the
 	// process guaranteed to restart under the supported engine-first

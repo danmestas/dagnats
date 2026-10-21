@@ -549,3 +549,99 @@ func TestAcceptStepEvent(t *testing.T) {
 		})
 	}
 }
+
+func TestStepTimeout_FiresForLoopAfterContinues(t *testing.T) {
+	wfDef := loopDef("timeout-wf", "timeout-task", dag.AgentLoopConfig{}, nil)
+	wfDef.Steps[0].Timeout = 800 * time.Millisecond
+	fx := newLoopFixture(t, wfDef)
+	orch := NewOrchestrator(fx.nc)
+	orch.Start()
+	defer orch.Stop()
+	const runID = "timeout-run"
+	fx.startRun(t, runID)
+	task := fx.takeTask(t, 5*time.Second)
+	attempt := fx.started(t, task)
+	// Two fast continues: the attempt's watchdog outlives both nonces.
+	fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task, attempt, continuePayload(t, nil)))
+	task1 := fx.takeTask(t, 5*time.Second)
+	fx.started(t, task1)
+	fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task1, attempt, continuePayload(t, nil)))
+	task2 := fx.takeTask(t, 5*time.Second)
+	fx.started(t, task2)
+
+	waitForRunStatus(t, fx.store, runID, dag.RunStatusFailed, 5*time.Second)
+	run, err := fx.store.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("Load run: %v", err)
+	}
+	step := run.Steps["agent"]
+	if step.Status != dag.StepStatusFailed || step.Iterations != 2 ||
+		!strings.Contains(step.Error, "step timeout") {
+		t.Fatalf("step = %v iterations=%d error=%q, want failed by the step timeout at iteration 2",
+			step.Status, step.Iterations, step.Error)
+	}
+}
+
+func TestRetryTimerWithoutNonceRedispatchesUnderSnapshotNonce(t *testing.T) {
+	fx := newLoopFixture(t, loopDef("oldtimer-wf", "oldtimer-task", dag.AgentLoopConfig{}, nil))
+	orch := NewOrchestrator(fx.nc)
+	orch.Start()
+	defer orch.Stop()
+	const runID = "oldtimer-run"
+	fx.startRun(t, runID)
+	task := fx.takeTask(t, 5*time.Second)
+	fx.started(t, task)
+	// A retry timer persisted before #801 carries no nonce.
+	stepDef := loopDef("oldtimer-wf", "oldtimer-task", dag.AgentLoopConfig{}, nil).Steps[0]
+	err := orch.sleepTimer.Schedule(context.Background(), TimerMessage{
+		Action: TimerActionRetryBackoff, RunID: runID, StepID: "agent", DurationMs: 50,
+		TaskType: stepDef.Task, Subject: orch.publisher.StepSubject(stepDef, runID), Attempt: 1,
+	})
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	retryTask := fx.takeTask(t, 5*time.Second)
+	if retryTask.DispatchNonce != task.DispatchNonce || retryTask.Attempt != 2 {
+		t.Fatalf("redispatch = nonce %q attempt %d, want the snapshot nonce %q and attempt 2",
+			retryTask.DispatchNonce, retryTask.Attempt, task.DispatchNonce)
+	}
+	attempt := fx.started(t, retryTask)
+	fx.publishEvent(t, identityEvent(protocol.EventStepCompleted, retryTask, attempt, []byte(`"done"`)))
+	run := fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
+		return s.Status == dag.StepStatusCompleted
+	})
+	if run.Steps["agent"].Status != dag.StepStatusCompleted {
+		t.Fatalf("completion under the redispatched nonce was not accepted: %v", run.Steps["agent"].Status)
+	}
+}
+
+func TestStepContinue_SetEmptyStateClearsSavedState(t *testing.T) {
+	fx := newLoopFixture(t, loopDef("clear-wf", "clear-task", dag.AgentLoopConfig{}, nil))
+	orch := NewOrchestrator(fx.nc)
+	orch.Start()
+	defer orch.Stop()
+	const runID = "clear-run"
+	fx.startRun(t, runID)
+	task0 := fx.takeTask(t, 5*time.Second)
+	attempt := fx.started(t, task0)
+	fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task0, attempt, continuePayload(t, []byte(`{"turn":1}`))))
+	task1 := fx.takeTask(t, 5*time.Second)
+	if string(task1.State) != `{"turn":1}` {
+		t.Fatalf("iteration 1 state = %s", task1.State)
+	}
+	// A continue with no state field leaves the saved state alone...
+	fx.started(t, task1)
+	fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task1, attempt, []byte(`{}`)))
+	task2 := fx.takeTask(t, 5*time.Second)
+	if string(task2.State) != `{"turn":1}` {
+		t.Fatalf("iteration 2 state = %s, want the kept state", task2.State)
+	}
+	// ...and one that marks an empty state as set clears it.
+	fx.started(t, task2)
+	cleared := mustMarshal(t, protocol.StepContinuePayload{StateSet: true})
+	fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task2, attempt, cleared))
+	task3 := fx.takeTask(t, 5*time.Second)
+	if len(task3.State) != 0 {
+		t.Fatalf("iteration 3 state = %s, want cleared", task3.State)
+	}
+}
