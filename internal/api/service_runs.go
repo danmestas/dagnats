@@ -226,9 +226,29 @@ func (s *Service) GetRunResponse(
 	}
 	traceID := s.fetchRunTraceID(runID)
 	return RunResponse{
-		WorkflowRun: run,
+		WorkflowRun: withoutLoopState(run),
 		TraceID:     traceID,
 	}, nil
+}
+
+// withoutLoopState returns run with every step's committed agent-loop
+// state (#801) removed, for API responses: the state is the handler's
+// private working memory, up to loop_state_max_bytes per step, not run
+// output. The snapshot's own map is left untouched.
+func withoutLoopState(run dag.WorkflowRun) dag.WorkflowRun {
+	if run.RunID == "" {
+		panic("withoutLoopState: RunID must not be empty")
+	}
+	if run.Steps == nil {
+		panic("withoutLoopState: Steps must not be nil")
+	}
+	steps := make(map[string]dag.StepState, len(run.Steps))
+	for id, state := range run.Steps {
+		state.LoopState = nil
+		steps[id] = state
+	}
+	run.Steps = steps
+	return run
 }
 
 // fetchRunTraceID reads the first history event for a run and
@@ -456,6 +476,9 @@ func (s *Service) ScanRuns(
 			return innerErr
 		},
 	)
+	for i := range runs {
+		runs[i] = withoutLoopState(runs[i])
+	}
 	return runs, err
 }
 
