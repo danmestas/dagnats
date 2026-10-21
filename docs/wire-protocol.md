@@ -260,8 +260,10 @@ nonce. Anything else — a worker whose claim lapsed and whose task another work
 took over, a redelivery of an event already applied, a duplicate continue, a
 watchdog armed for an earlier attempt — is dropped and counted in the
 `engine.step_events.rejected` metric (labels `event`, `reason`). The engine's own
-synthetic step-timeout `step.failed` carries the identity its watchdog was armed
-with, so a later attempt or iteration fences it off the same way.
+synthetic step-timeout `step.failed` is checked against the attempt its watchdog
+was armed for, then stamped with the step's current iteration and dispatch
+nonce, so a timeout still fires for an agent loop that has moved past the
+iteration it started on.
 
 An event with no `iteration` carries no identity. The engine accepts it as before
 this field existed only while `legacy_step_events` is on (the default); with it
