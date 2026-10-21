@@ -798,6 +798,9 @@ func (c *taskContext) publishStarted(msg jetstream.Msg) error {
 	)
 	evt.WorkerID = c.workerID
 	evt.AttemptNumber = attemptNumber
+	// The nonce alone, not a fenced identity: it lets the engine ignore
+	// a step.started for a dispatch the step has already left (#814).
+	evt.DispatchNonce = c.dispatchNonce
 	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Header: nats.Header{

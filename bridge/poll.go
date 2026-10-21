@@ -609,6 +609,7 @@ func (b *Bridge) processPolledMsg(
 	span.SetAttributes(attribute.Int("attempt", attemptNumber))
 	err = b.publishStepStarted(
 		dispatchCtx, payload.RunID, payload.StepID, attemptNumber,
+		payload.DispatchNonce,
 	)
 	if err != nil {
 		nakPolledMsg(
@@ -783,11 +784,14 @@ func taskAttemptNumber(
 // publishStepStarted publishes step.started carrying AttemptNumber —
 // the bridge-side mirror of the native worker's publishStarted. The
 // AttemptNumber rides into Event.NATSMsgID so each attempt's
-// lifecycle events stay distinct under JetStream dedup.
+// lifecycle events stay distinct under JetStream dedup. dispatchNonce
+// is the task's, so the engine can ignore the late start of a dispatch
+// the step has already left (#814); it may be empty for a legacy task.
 func (b *Bridge) publishStepStarted(
 	ctx context.Context,
 	runID, stepID string,
 	attemptNumber int,
+	dispatchNonce string,
 ) error {
 	if ctx == nil {
 		panic("publishStepStarted: ctx must not be nil")
@@ -805,6 +809,7 @@ func (b *Bridge) publishStepStarted(
 		protocol.EventStepStarted, runID, stepID, nil,
 	)
 	evt.AttemptNumber = attemptNumber
+	evt.DispatchNonce = dispatchNonce
 	return b.publishEvent(ctx, evt)
 }
 
