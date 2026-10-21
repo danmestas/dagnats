@@ -53,6 +53,35 @@ type TaskPayload struct {
 	// context rather than parsing them by hand.
 	TraceParent string `json:"traceparent,omitempty"`
 	TraceState  string `json:"tracestate,omitempty"`
+	// State is the agent-loop state the step last committed through a
+	// step.continue event (#801). The engine stores it in the run
+	// snapshot alongside the iteration it belongs to and hands it to
+	// every later dispatch of the step: the next iteration, a retry of
+	// the current one, and a dispatch sent again after an engine crash.
+	// Opaque bytes; TaskContext.LoadCheckpoint returns them. Additive:
+	// legacy payloads deserialize to nil.
+	State []byte `json:"state,omitempty"`
+	// StateMaxBytes is the engine's cap on State, stamped on every
+	// dispatch so a worker can refuse an oversized Continue before
+	// publishing it, with the same number the engine would enforce.
+	// Zero (a legacy payload) means LoopStateMaxBytesDefault.
+	StateMaxBytes int `json:"state_max_bytes,omitempty"`
+}
+
+// LoopStateMaxBytesDefault is the default cap on the state a
+// step.continue event may carry (#801). The whole run snapshot is one
+// KV value bounded by the server's max_payload, so the state a loop
+// commits per iteration must stay well inside it.
+const LoopStateMaxBytesDefault = 256 << 10
+
+// StepContinuePayload is the structured payload for EventStepContinue
+// (#801). Output is what the handler passed to Continue; State is the
+// state it checkpointed during the iteration, committed by the engine
+// in the same snapshot save that advances the iteration, so a crash
+// between checkpoint and continue cannot repeat a turn.
+type StepContinuePayload struct {
+	Output json.RawMessage `json:"output,omitempty"`
+	State  []byte          `json:"state,omitempty"`
 }
 
 // TaskResolution is the wire format for HTTP bridge resolve actions.
@@ -136,6 +165,38 @@ type Event struct {
 	TraceState    string          `json:"trace_state,omitempty"`
 	WorkerID      string          `json:"worker_id,omitempty"`
 	AttemptNumber int             `json:"attempt_number,omitempty"`
+	// Iteration and DispatchNonce, with AttemptNumber, identify the
+	// dispatch a step.continue, step.completed or step.failed answers
+	// (#801). The engine accepts such an event only while the step is
+	// Running on that iteration and attempt, with that nonce. Iteration
+	// is a pointer because iteration 0 must be distinguishable from an
+	// event an older worker sent without the field: an event without
+	// Iteration carries no identity (see HasIdentity), and the engine
+	// accepts it only while it is configured to accept legacy events.
+	Iteration     *int   `json:"iteration,omitempty"`
+	DispatchNonce string `json:"dispatch_nonce,omitempty"`
+}
+
+// HasIdentity reports whether the event names the dispatch it answers
+// (#801): Iteration is present and AttemptNumber is set. An event from
+// a worker predating the identity fields has neither.
+func (e Event) HasIdentity() bool {
+	return e.Iteration != nil && e.AttemptNumber > 0
+}
+
+// SetIdentity stamps the dispatch identity on the event (#801). nonce
+// may be empty when the dispatch carried none (a legacy task payload);
+// attempt must be the 1-based attempt the event belongs to.
+func (e *Event) SetIdentity(iteration, attempt int, nonce string) {
+	if e == nil {
+		panic("Event.SetIdentity: receiver must not be nil")
+	}
+	if iteration < 0 || attempt < 1 {
+		panic("Event.SetIdentity: iteration must be >= 0 and attempt >= 1")
+	}
+	e.Iteration = &iteration
+	e.AttemptNumber = attempt
+	e.DispatchNonce = nonce
 }
 
 // NewStepEvent constructs an Event for a step lifecycle transition.
@@ -189,13 +250,20 @@ func (e Event) NATSSubject() string {
 // NATSMsgID returns the deduplication ID for JetStream idempotent publishing.
 // Composed of run, step, and event type so replays are safe.
 // For workflow events (empty StepID), omits the step segment to avoid double dots.
+// An event that carries its dispatch identity (#801) gets the stable
+// {run}.{step}.{type}.{attempt}.{iteration}: a redelivery inside the
+// dedup window is dropped by JetStream, one outside it by the engine's
+// identity check, and no two iterations or attempts share an ID.
 func (e Event) NATSMsgID() string {
 	if e.StepID == "" {
 		return e.RunID + "." + string(e.Type)
 	}
 	base := e.RunID + "." + e.StepID + "." + string(e.Type)
 	if e.AttemptNumber > 0 {
-		return base + "." + strconv.Itoa(e.AttemptNumber)
+		base += "." + strconv.Itoa(e.AttemptNumber)
+	}
+	if e.HasIdentity() {
+		base += "." + strconv.Itoa(*e.Iteration)
 	}
 	return base
 }

@@ -448,3 +448,47 @@ func TestNATSMsgID_WorkflowEventIgnoresAttempt(t *testing.T) {
 		t.Fatalf("NATSMsgID() = %q, want %q (workflow event must not append attempt)", got, want)
 	}
 }
+
+func TestEvent_IdentityPresenceAndStableMsgID(t *testing.T) {
+	// Methodology: identity detection must survive a JSON round trip,
+	// iteration 0 must count as present, and the msg-id must carry
+	// attempt and iteration only when the event names its dispatch.
+	evt := NewStepEvent(EventStepContinue, "run-1", "s", nil)
+	if evt.HasIdentity() {
+		t.Fatal("fresh event reports an identity")
+	}
+	if got := evt.NATSMsgID(); got != "run-1.s.step.continue" {
+		t.Fatalf("legacy msg-id = %q", got)
+	}
+	evt.SetIdentity(0, 1, "n")
+	if !evt.HasIdentity() {
+		t.Fatal("iteration 0 with attempt 1 must count as an identity")
+	}
+	if got := evt.NATSMsgID(); got != "run-1.s.step.continue.1.0" {
+		t.Fatalf("stable msg-id = %q, want run-1.s.step.continue.1.0", got)
+	}
+	data, err := evt.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	back, err := UnmarshalEvent(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !back.HasIdentity() || *back.Iteration != 0 || back.DispatchNonce != "n" {
+		t.Fatalf("round trip lost identity: %+v", back)
+	}
+	// An older worker's event: attempt_number without iteration.
+	legacy, err := UnmarshalEvent([]byte(
+		`{"type":"step.completed","run_id":"run-1","step_id":"s","attempt_number":2}`,
+	))
+	if err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacy.HasIdentity() {
+		t.Fatal("event without iteration reports an identity")
+	}
+	if got := legacy.NATSMsgID(); got != "run-1.s.step.completed.2" {
+		t.Fatalf("legacy attempt msg-id = %q", got)
+	}
+}

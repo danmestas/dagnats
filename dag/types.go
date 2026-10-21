@@ -361,6 +361,14 @@ type StepState struct {
 	// happened (the engine died in between), so the engine sends it
 	// again. Additive: legacy snapshots deserialize to false.
 	DispatchUnsent bool `json:"dispatch_unsent,omitempty"`
+	// LoopState is the state an agent-loop step committed with its last
+	// accepted step.continue (#801), written in the same save that
+	// advanced Iterations. Every later dispatch of the step (the next
+	// iteration, a retry, a resend after an engine crash) carries it in
+	// the task payload, so a retry resumes from the last committed
+	// iteration. Opaque to the engine; bounded by the engine's loop
+	// state cap. Additive: legacy snapshots deserialize to nil.
+	LoopState []byte `json:"loop_state,omitempty"`
 }
 
 // WorkflowRun holds live state for a single execution of a WorkflowDef.
