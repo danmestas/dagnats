@@ -2,7 +2,7 @@
 
 **Status:** Proposed (2026-10-21)
 **Deciders:** Dan Mestas
-**Depends on:** ADR-025, ADR-026
+**Depends on:** ADR-025; ADR-026 for the crash-loop guard and the per-append cancel check
 **Issues:** #802, #803, #807
 
 ## Context
