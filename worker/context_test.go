@@ -471,21 +471,10 @@ func TestTaskContextCheckpointNilKV(t *testing.T) {
 		},
 		bgCtx, span, &testJetstreamMsg{}, nil, nil,
 	)
-	// Positive: Checkpoint buffers for Continue and needs no KV (#801),
-	// and LoadCheckpoint reads the buffer back.
-	if err := tc.Checkpoint([]byte("state")); err != nil {
-		t.Fatalf("Checkpoint without KV: %v", err)
-	}
-	data, err := tc.LoadCheckpoint()
-	if err != nil || string(data) != "state" {
-		t.Fatalf(
-			"LoadCheckpoint = (%s, %v), want the buffered state",
-			data, err,
-		)
-	}
-	// Negative: Pause's durable marker still needs the bucket, with
-	// remediation guidance.
-	err = tc.Pause("wait", time.Second)
+	// Positive: a payload without a state cap is an engine older than
+	// #801, so Checkpoint still needs the bucket, with remediation
+	// guidance.
+	err := tc.Checkpoint([]byte("state"))
 	if err == nil {
 		t.Fatal("expected error for nil checkpointKV")
 	}

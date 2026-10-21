@@ -416,7 +416,7 @@ func (b *Bridge) resolveContinue(
 		)
 	}
 	payload, err := json.Marshal(protocol.StepContinuePayload{
-		Output: req.Output, State: state,
+		Output: req.Output, State: state, StateSet: true,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal continue payload: %w", err)

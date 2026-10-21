@@ -92,6 +92,12 @@ type taskContext struct {
 	// loopStateMax is the engine's cap on the state a Continue may
 	// carry, from the payload; the protocol default when absent.
 	loopStateMax int
+	// legacyEngine is set when the payload carried no state cap: the
+	// engine predates #801 and ignores the state a continue carries, so
+	// Checkpoint also writes the checkpoints bucket as it used to and
+	// Continue leaves that entry alone, so a rollout that upgrades
+	// workers before engines loses no state.
+	legacyEngine bool
 	// pendingState buffers Checkpoint until Continue publishes it in
 	// the continue event (#801): checkpoint and continue are one write.
 	// pendingStateSet distinguishes Checkpoint(nil) from no checkpoint.
@@ -160,6 +166,7 @@ func newTaskContext(
 		dispatchNonce: payload.DispatchNonce,
 		loopState:     payload.State,
 		loopStateMax:  loopStateMax,
+		legacyEngine:  payload.StateMaxBytes <= 0,
 	}
 }
 
@@ -484,7 +491,7 @@ func (c *taskContext) Continue(output []byte) error {
 		)
 	}
 	payload, err := json.Marshal(protocol.StepContinuePayload{
-		Output: output, State: state,
+		Output: output, State: state, StateSet: true,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal StepContinuePayload: %w", err)
@@ -514,7 +521,7 @@ func (c *taskContext) clearShadowingCheckpoint() {
 	if c.stepID == "" {
 		panic("clearShadowingCheckpoint: stepID must not be empty")
 	}
-	if !c.kvCheckpointSeen || c.checkpointKV == nil {
+	if !c.kvCheckpointSeen || c.checkpointKV == nil || c.legacyEngine {
 		return
 	}
 	key := c.runID + "." + c.stepID
@@ -597,7 +604,10 @@ func (c *taskContext) Heartbeat() error {
 // the engine saves it with the iteration, so a crash between
 // Checkpoint and Continue leaves nothing behind and the redelivered
 // iteration starts from the state this one started from. Within the
-// same iteration LoadCheckpoint returns the checkpointed state.
+// same iteration LoadCheckpoint returns the checkpointed state. Under
+// an engine older than #801 (no state cap on the task) the state is
+// also written to the checkpoints bucket, as before, since that engine
+// will not commit it.
 func (c *taskContext) Checkpoint(state []byte) error {
 	if c.msg == nil {
 		panic("Checkpoint: msg already consumed or nil")
@@ -607,6 +617,9 @@ func (c *taskContext) Checkpoint(state []byte) error {
 	}
 	c.pendingState = state
 	c.pendingStateSet = true
+	if c.legacyEngine {
+		return c.writeCheckpointKV(state)
+	}
 	return nil
 }
 

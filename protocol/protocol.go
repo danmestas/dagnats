@@ -82,6 +82,10 @@ const LoopStateMaxBytesDefault = 256 << 10
 type StepContinuePayload struct {
 	Output json.RawMessage `json:"output,omitempty"`
 	State  []byte          `json:"state,omitempty"`
+	// StateSet marks State as the state to commit even when it is
+	// empty: a handler that checkpointed nil clears the saved state,
+	// where an absent State (an event without it) leaves it alone.
+	StateSet bool `json:"state_set,omitempty"`
 }
 
 // TaskResolution is the wire format for HTTP bridge resolve actions.
