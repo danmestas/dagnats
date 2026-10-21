@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="dagnats is a durable workflow engine on NATS JetStream for CI/CD pipelines, ETL jobs and notification automations. One Go binary, no database.">
-<meta name="color-scheme" content="light dark">
+<meta name="description" content="dagnats is a durable workflow engine on NATS JetStream. One Go binary, no database: graphs of tasks, agent loops and human approvals that survive a crash.">
+<meta name="color-scheme" content="dark light">
 <title>dagnats — durable workflows on NATS JetStream</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 {{- /* Follow the docs' theme toggle (Hextra keeps it in localStorage). */}}
@@ -16,543 +16,346 @@ try {
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=Source+Code+Pro:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap">
 <style>
-/* Layout: a single wide stage. The headline sits over a working instrument (the run graph above
-   its own event log), and everything below explains what the instrument just showed. */
+/* Layout: a dark-first operations console. Hero pairs the thesis with a live run panel; sections stack on a 1200px rail. */
 :root {
-  --ground: #FBFBFD;
-  --panel: #FFFFFF;
-  --ink: #12131A;
-  --ink-2: #565A69;
-  --rule: #E1E3EB;
-  --cobalt: #2B3FE8;
-  --cobalt-soft: #E7EAFF;
-  --mark: #FFD54A;
-  --mark-ink: #12131A;
-  --stop: #D23B3B;
-  --stop-soft: #FBE4E4;
-  --hatch: rgba(255, 213, 74, 0.55);
-  --display: "Source Sans 3", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --body: "Source Sans 3", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --mono: "Source Code Pro", ui-monospace, "SF Mono", Menlo, monospace;
-}
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --ground: #0B0C12; --panel: #12141C; --ink: #ECEDF4; --ink-2: #9B9FB0; --rule: #252836;
-  --cobalt: #8C98FF; --cobalt-soft: #1B2050; --mark: #FFD54A; --mark-ink: #12131A;
-  --stop: #FF7171; --stop-soft: #3A1717; --hatch: rgba(255, 213, 74, 0.35);
-  color-scheme: dark;
-} }
-:root[data-theme="dark"] {
-  --ground: #0B0C12; --panel: #12141C; --ink: #ECEDF4; --ink-2: #9B9FB0; --rule: #252836;
-  --cobalt: #8C98FF; --cobalt-soft: #1B2050; --mark: #FFD54A; --mark-ink: #12131A;
-  --stop: #FF7171; --stop-soft: #3A1717; --hatch: rgba(255, 213, 74, 0.35);
+  --bg: #101113; --surface: #16181B; --surface2: #1E2024; --term: #0B0C0E;
+  --line: #2A2D32; --text: #EDEAE3; --mute: #A29E94;
+  --run: #5FD4C4; --run-bg: rgba(95,212,196,0.12);
+  --accent: #F2B13B; --accent-text: var(--accent); --on-accent: #111214;
+  --display: 'Schibsted Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --display-weight: 800; --display-track: -0.045em;
   color-scheme: dark;
 }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #F2F0EC; --surface: #FAF9F6; --surface2: #E6E3DC; --term: #FAF9F6;
+    --line: #D3CFC6; --text: #16150F; --mute: #5A564D;
+    --run: #0F766E; --run-bg: rgba(15,118,110,0.10);
+    --accent-text: color-mix(in oklab, var(--accent) 68%, #000);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #F2F0EC; --surface: #FAF9F6; --surface2: #E6E3DC; --term: #FAF9F6;
+  --line: #D3CFC6; --text: #16150F; --mute: #5A564D;
+  --run: #0F766E; --run-bg: rgba(15,118,110,0.10);
+  --accent-text: color-mix(in oklab, var(--accent) 68%, #000);
+  color-scheme: light;
+}
+
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--ground); color: var(--ink); font: 400 17px/1.6 var(--body); -webkit-font-smoothing: antialiased; }
-a { color: inherit; text-underline-offset: 4px; }
-:focus-visible { outline: 2px solid var(--cobalt); outline-offset: 3px; border-radius: 4px; }
-code, pre, .mono { font-family: var(--mono); }
-.wrap { max-width: 1180px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+body { background: var(--bg); color: var(--text); font-family: var(--display); font-size: 17px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+a:hover { color: var(--accent-text); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--mono); }
+.wrap { max-width: 1200px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+@media (min-width: 720px) { .wrap { padding-left: max(40px, env(safe-area-inset-left, 0px)); padding-right: max(40px, env(safe-area-inset-right, 0px)); } }
+h1, h2, h3 { text-wrap: balance; font-weight: var(--display-weight); letter-spacing: var(--display-track); }
+.eyebrow { font-family: var(--mono); font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); }
 
-/* Masthead */
-.top .wrap { padding-block: 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.logo { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font: 700 22px/1 var(--display); letter-spacing: -0.01em; }
-.nav { display: flex; gap: 6px; flex-wrap: wrap; font-size: 15px; }
-.nav a { text-decoration: none; color: var(--ink-2); padding: 10px 12px; border-radius: 8px; min-height: 44px; display: inline-flex; align-items: center; }
-.nav a:hover { color: var(--ink); background: var(--cobalt-soft); }
-.nav .ver { font: 500 12px/1 var(--mono); color: var(--ink); border: 1px solid var(--rule); border-radius: 999px; padding: 10px 12px; }
 
-/* Hero */
-.hero .wrap { padding-block: 40px 28px; display: flex; flex-direction: column; gap: 22px; }
-h1 { margin: 0; font: 700 clamp(38px, 6vw, 72px)/1.05 var(--display); letter-spacing: -0.02em; text-wrap: balance; max-width: 14em; }
-h1 .hl { background: linear-gradient(transparent 86%, var(--mark) 86%, var(--mark) 93%, transparent 93%); padding: 0 0.02em; }
-.hero-row { display: flex; flex-wrap: wrap; gap: 24px 48px; align-items: end; justify-content: space-between; }
-.lede { margin: 0; max-width: 38em; font-size: clamp(18px, 1.6vw, 21px); color: var(--ink-2); }
-.lede b { color: var(--ink); font-weight: 600; }
-.ctas { display: flex; gap: 10px; flex-wrap: wrap; }
-.btn { display: inline-flex; align-items: center; gap: 10px; min-height: 50px; padding: 0 20px; border-radius: 10px; font: 600 16px/1 var(--body); text-decoration: none; border: 1.5px solid var(--ink); cursor: pointer; background: transparent; color: var(--ink); }
-.btn.primary { background: var(--ink); color: var(--ground); }
-.btn:hover { transform: translateY(-1px); }
-@media (prefers-reduced-motion: reduce) { .btn:hover { transform: none; } }
+header.site { border-bottom: 1px solid var(--line); }
+nav.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding-block: 18px; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.brand span { font-weight: 800; font-size: 19px; letter-spacing: -0.02em; }
+.links { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 15px; }
+.links a { text-decoration: none; padding: 10px 12px; min-height: 44px; display: inline-flex; align-items: center; color: var(--mute); }
+.links a.gh { margin-left: 8px; padding: 9px 14px; gap: 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); font-family: var(--mono); font-size: 13px; }
+.links a.gh em { font-style: normal; color: var(--mute); }
 
-/* The instrument */
-.instrument { border: 1.5px solid var(--ink); border-radius: 18px; background: var(--panel); overflow: hidden; }
-.inst-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--rule); }
-.run-id { font: 500 12.5px/1.4 var(--mono); color: var(--ink-2); }
-.run-id b { color: var(--ink); font-weight: 500; }
-.controls { display: flex; gap: 8px; flex-wrap: wrap; }
-.ctl { font: 500 12.5px/1 var(--mono); min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--rule); background: var(--ground); color: var(--ink); cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
-.ctl:hover { border-color: var(--ink); }
-.ctl.kill { border-color: var(--stop); color: var(--stop); }
-.ctl.kill[aria-pressed="true"] { background: var(--stop); color: var(--panel); }
-.ctl:disabled { opacity: 0.45; cursor: default; }
-.lamp { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.hero { display: flex; flex-wrap: wrap; gap: clamp(40px, 5vw, 72px); align-items: center; padding-block: clamp(48px, 8vw, 104px) clamp(56px, 8vw, 96px); }
+.hero-copy { flex: 1 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 28px; }
+.pill { display: inline-flex; align-self: flex-start; align-items: center; gap: 10px; padding: 6px 12px 6px 8px; border: 1px solid var(--line); border-radius: 999px; font-family: var(--mono); font-size: 13px; color: var(--mute); }
+.pill b { padding: 2px 8px; border-radius: 999px; background: var(--surface2); color: var(--accent-text); font-weight: 600; }
+.hero h1 { margin: 0; font-size: clamp(44px, 6.4vw, 84px); line-height: 0.98; letter-spacing: var(--display-track); }
+.hero h1 span { color: var(--accent-text); }
+.lede { margin: 0; max-width: 34em; font-size: clamp(17px, 1.5vw, 20px); color: var(--mute); }
+.ctas { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 22px; border-radius: 10px; background: var(--accent); color: var(--on-accent); font-weight: 700; font-size: 16px; }
+.btn:hover { color: var(--on-accent); filter: brightness(1.06); }
+.btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); font-weight: 600; }
+.btn.ghost:hover { color: var(--accent-text); filter: none; }
+.install { display: flex; align-items: center; gap: 4px; min-height: 52px; padding: 0 6px 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); font-family: var(--mono); font-size: 14px; max-width: 100%; min-width: 0; }
+.install > span { color: var(--accent-text); }
+.install code { font-family: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; padding-right: 8px; }
+.install button { flex-shrink: 0; min-width: 44px; min-height: 40px; border: 0; border-radius: 7px; background: var(--surface2); color: var(--text); font: 500 12px var(--mono); cursor: pointer; padding: 0 10px; }
+.fine { margin: 0; font-family: var(--mono); font-size: 13px; color: var(--mute); }
 
-.stage { position: relative; }
-.graph-scroll { overflow-x: auto; }
-[hidden] { display: none !important; }
-.graph { display: block; width: 100%; min-width: 720px; height: auto; }
-.graph.tall { min-width: 0; max-width: 360px; margin: 0 auto; }
-.graph text { font-family: var(--mono); }
-.down-banner { margin: 14px 18px 0; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 14px; border-radius: 10px; background: var(--stop-soft); color: var(--stop); font: 500 12.5px/1.45 var(--mono); border: 1px solid var(--stop); }
-.down-banner b { font-weight: 500; color: var(--ink); }
+.run { flex: 1 1 440px; min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); overflow: hidden; }
+.run-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 13px; flex-wrap: wrap; color: var(--mute); }
+.run-head b { color: var(--text); font-weight: 400; }
+.status { display: inline-flex; align-items: center; gap: 8px; padding: 3px 10px; border-radius: 999px; background: var(--run-bg); color: var(--run); }
+.status i { width: 7px; height: 7px; border-radius: 50%; background: var(--run); }
+@media (prefers-reduced-motion: no-preference) { .status i, .st-running .dot { animation: pulse 1.6s ease-in-out infinite; } }
+@keyframes pulse { 50% { opacity: 0.35; } }
+.steps { padding: 10px 18px 6px; display: flex; flex-direction: column; }
+.step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; column-gap: 14px; align-items: start; }
+.rail { display: flex; flex-direction: column; align-items: center; align-self: stretch; }
+.dot { margin-top: 15px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); }
+.wire { flex: 1; width: 2px; min-height: 14px; margin-top: 4px; background: var(--line); }
+.step:last-child .wire { background: transparent; }
+.body { padding: 10px 0 12px; min-width: 0; }
+.title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.title strong { font-weight: 700; font-size: 16px; }
+.type { font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 5px; border: 1px solid var(--line); color: var(--mute); }
+.detail { font-size: 14px; color: var(--mute); margin-top: 2px; }
+.state { padding-top: 12px; font-family: var(--mono); font-size: 12px; color: var(--mute); }
+.st-done .dot { border-color: var(--mute); background: var(--mute); }
+.st-done .wire { background: var(--mute); }
+.st-running .dot { border-color: var(--run); } .st-running .state { color: var(--run); }
+.st-waiting .dot { border-color: var(--accent-text); } .st-waiting .state { color: var(--accent-text); }
+.st-pending strong { color: var(--mute); }
+.shards { display: flex; gap: 4px; margin-top: 10px; flex-wrap: wrap; }
+.shards span { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--line); }
+.shards .d { background: var(--mute); border-color: var(--mute); }
+.shards .r { background: var(--run-bg); border-color: var(--run); }
+.log { border-top: 1px solid var(--line); background: var(--surface2); padding: 14px 18px; font-family: var(--mono); font-size: 12.5px; line-height: 1.85; color: var(--mute); overflow-x: auto; }
+.log div { white-space: pre; }
+.log b { font-weight: 400; color: var(--text); } .log i { font-style: normal; color: var(--run); }
 
-.tape-wrap { border-top: 1px solid var(--rule); background: var(--ground); }
-.tape-head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 18px 0; font: 500 11.5px/1.4 var(--mono); letter-spacing: 0.04em; color: var(--ink-2); text-transform: uppercase; }
-.tape { display: flex; gap: 6px; overflow-x: auto; padding: 12px 18px 16px; scroll-behavior: smooth; }
-@media (prefers-reduced-motion: reduce) { .tape { scroll-behavior: auto; } }
-.ev { flex: 0 0 auto; min-width: 150px; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; background: var(--panel); font: 400 11.5px/1.45 var(--mono); display: flex; flex-direction: column; gap: 2px; }
-.ev .seq { color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.ev .type { color: var(--ink); font-weight: 500; }
-.ev .step { color: var(--ink-2); }
-.ev.waiting { background: repeating-linear-gradient(-45deg, var(--hatch) 0 6px, transparent 6px 12px), var(--panel); border-color: var(--mark); }
-.ev.waiting .seq::after { content: " · not applied"; color: var(--ink); }
-.ev.fresh { border-color: var(--cobalt); }
-.inst-foot { padding: 12px 18px 14px; border-top: 1px solid var(--rule); font-size: 14.5px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 6px 18px; justify-content: space-between; }
-.inst-foot .status { font: 500 12.5px/1.5 var(--mono); color: var(--ink); }
+.glance { border-block: 1px solid var(--line); }
+.glance .wrap { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.glance .cell { padding: 26px 24px 26px 0; }
+.glance .eyebrow { font-size: 12px; }
+.glance .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
 
-/* Sections */
-section.block .wrap { padding-block: clamp(64px, 9vw, 112px) 0; display: flex; flex-direction: column; gap: 28px; }
-.kicker { font: 500 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--cobalt); }
-h2 { margin: 0; font: 700 clamp(28px, 3.6vw, 44px)/1.12 var(--display); letter-spacing: -0.015em; text-wrap: balance; max-width: 18em; }
-h3 { margin: 0; font: 600 21px/1.25 var(--display); }
-.intro { margin: 0; max-width: 40em; color: var(--ink-2); font-size: 18px; }
+section.block { padding-top: clamp(64px, 9vw, 120px); }
+.why-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 40px; }
+h2 { margin: 0; font-size: clamp(32px, 4vw, 52px); line-height: 1.04; }
+.why-head h2 { max-width: 14em; }
+.why-head p { margin: 0; max-width: 26em; color: var(--mute); }
+.features { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+.feature { background: var(--bg); padding: 32px 28px 34px; display: flex; flex-direction: column; gap: 12px; }
+.feature .k { font-family: var(--mono); font-size: 13px; color: var(--accent-text); }
+.feature h3 { margin: 0; font-size: 21px; letter-spacing: -0.015em; font-weight: 700; }
+.feature p { margin: 0; color: var(--mute); font-size: 16px; }
 
-.three { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 32px; }
-.three > div { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 3px solid var(--ink); }
-.three p { margin: 0; color: var(--ink-2); }
+.start { display: flex; flex-wrap: wrap; gap: clamp(32px, 5vw, 64px); align-items: center; }
+.start-copy { flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+.start-copy h2 { font-size: clamp(32px, 4vw, 48px); }
+.start-copy p { margin: 0; color: var(--mute); max-width: 30em; }
+.start-copy p code { font-family: var(--mono); font-size: 15px; color: var(--text); }
+.start-links { display: flex; gap: 20px; flex-wrap: wrap; }
+.start-links a { text-underline-offset: 4px; text-decoration-thickness: 1px; }
+.term { flex: 1.3 1 480px; min-width: 0; border-radius: 16px; border: 1px solid var(--line); background: var(--term); overflow: hidden; }
+.term-head { display: flex; align-items: center; gap: 8px; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+.term-head i { width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--line); }
+.term-head span { margin-left: 8px; font-family: var(--mono); font-size: 12px; color: var(--mute); }
+.term pre { margin: 0; padding: 22px 22px 26px; font-family: var(--mono); font-size: 14.5px; line-height: 1.9; overflow-x: auto; }
+.term .p { color: var(--accent-text); } .term .m { color: var(--mute); } .term .ok { color: var(--run); }
 
-.steps { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
-.stepcard { display: flex; flex-direction: column; gap: 8px; padding: 18px; border-radius: 14px; background: var(--panel); border: 1px solid var(--rule); text-decoration: none; }
-.stepcard:hover { border-color: var(--ink); }
-.stepcard .t { font: 500 13px/1 var(--mono); color: var(--cobalt); }
-.stepcard .n { font: 600 19px/1.25 var(--display); }
-.stepcard p { margin: 0; font-size: 15px; color: var(--ink-2); }
+.arch h2 { margin: 12px 0 36px; font-size: clamp(30px, 3.6vw, 44px); max-width: 18em; }
+.tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.tier { border: 1px solid var(--line); border-radius: 14px; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
+.tier.core { border-color: var(--accent); background: var(--surface); }
+.tier .k { font-family: var(--mono); font-size: 12px; color: var(--mute); }
+.tier.core .k { color: var(--accent-text); }
+.tier .h { font-size: 20px; font-weight: 700; line-height: 1.3; }
+.tier p { margin: 0; color: var(--mute); font-size: 15px; }
+.store { margin-top: 16px; border: 1px dashed var(--line); border-radius: 14px; padding: 18px 24px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; font-family: var(--mono); font-size: 13.5px; color: var(--mute); }
+.store b { font-weight: 400; color: var(--text); }
 
-.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
-.code { border-radius: 14px; overflow: hidden; border: 1px solid var(--rule); background: var(--panel); min-width: 0; }
-.code-head { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--rule); font: 500 12px/1.4 var(--mono); color: var(--ink-2); }
-.code pre { margin: 0; padding: 16px; overflow-x: auto; font-size: 12.8px; line-height: 1.75; color: var(--ink); }
-.code .k { color: var(--cobalt); }
-.code .c { color: var(--ink-2); }
-.code .s { color: var(--ink); background: var(--cobalt-soft); border-radius: 3px; }
+.cmp h2 { margin-bottom: 28px; font-size: clamp(30px, 3.6vw, 44px); }
+.table { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
+table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 15.5px; }
+thead tr { background: var(--surface); }
+th, td { text-align: left; padding: 15px 20px; }
+thead th { padding-block: 16px; }
+thead th:first-child { font-weight: 500; }
+thead th.self { color: var(--accent-text); }
+tbody th, tbody td { border-top: 1px solid var(--line); }
+tbody th { font-weight: 500; color: var(--mute); }
+tbody td:nth-child(2) { font-weight: 700; }
+.cmp .fine { margin-top: 14px; font-family: var(--display); font-size: 14px; }
 
-.flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0; border: 1.5px solid var(--ink); border-radius: 16px; overflow: hidden; background: var(--panel); }
-.flow > div { padding: 20px; display: flex; flex-direction: column; gap: 8px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
-.flow .who { font: 500 12px/1 var(--mono); color: var(--ink-2); }
-.flow p { margin: 0; font-size: 15.5px; color: var(--ink-2); }
-.flow code { font-size: 12.5px; color: var(--ink); background: var(--cobalt-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.limits { border-radius: 18px; background: var(--surface); border: 1px solid var(--line); padding: clamp(28px, 4vw, 48px); display: flex; flex-wrap: wrap; gap: 32px; }
+.limits h2 { flex: 1 1 260px; font-size: clamp(28px, 3vw, 38px); line-height: 1.08; }
+.limits div { flex: 2 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 14px; color: var(--mute); }
+.limits p { margin: 0; }
 
-.chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.chip { font: 500 13px/1 var(--mono); padding: 10px 14px; border-radius: 999px; border: 1px solid var(--rule); background: var(--panel); }
-.chip b { color: var(--cobalt); font-weight: 500; }
+.cta { padding-block: clamp(72px, 10vw, 136px); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 24px; }
+.cta h2 { font-size: clamp(36px, 5vw, 64px); line-height: 1; }
+.cta .ctas { justify-content: center; }
 
-.cluster { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 32px; align-items: center; }
-@media (max-width: 820px) { .cluster { grid-template-columns: minmax(0, 1fr); } }
-.cluster ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 14px; }
-.cluster li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 12px; color: var(--ink-2); }
-.cluster li::before { content: ""; width: 12px; height: 12px; margin-top: 7px; border-radius: 3px; background: var(--cobalt); }
-.cluster li b { color: var(--ink); font-weight: 600; }
-.nodes { display: block; width: 100%; height: auto; max-width: 100%; }
-.nodes text { font-family: var(--mono); }
-
-.not { border-radius: 18px; background: var(--ink); color: var(--ground); padding: clamp(24px, 4vw, 44px); display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 28px; }
-.not h2 { color: var(--ground); font-size: clamp(26px, 3vw, 36px); }
-.not ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; opacity: 0.86; }
-
-.end .wrap { padding-block: clamp(72px, 10vw, 128px); display: flex; flex-direction: column; gap: 24px; align-items: flex-start; }
-.install { display: flex; align-items: center; gap: 10px; max-width: 100%; min-width: 0; border: 1.5px solid var(--ink); border-radius: 10px; padding: 6px 6px 6px 16px; background: var(--panel); }
-.install code { font-size: 13px; overflow-x: auto; white-space: nowrap; min-width: 0; }
-.install button { flex-shrink: 0; min-height: 40px; min-width: 64px; border: 0; border-radius: 7px; background: var(--ink); color: var(--ground); font: 500 12px/1 var(--mono); cursor: pointer; }
-footer .wrap { border-top: 1px solid var(--rule); padding-block: 24px; display: flex; flex-wrap: wrap; gap: 12px 24px; justify-content: space-between; font: 400 12.5px/1.5 var(--mono); color: var(--ink-2); }
-footer a { color: var(--ink-2); }
+footer { border-top: 1px solid var(--line); }
+footer .wrap { padding-block: 28px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; font-family: var(--mono); font-size: 13px; color: var(--mute); }
+footer .wrap div { display: flex; gap: 20px; flex-wrap: wrap; }
+footer a { color: var(--mute); }
+body { margin: 0; }
 </style>
 </head>
 <body>
-<header class="top"><div class="wrap">
-  <a class="logo" href="#top" aria-label="dagnats home">
-    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
-      <rect x="1.5" y="10.5" width="7" height="7" rx="2" stroke="currentColor" stroke-width="2"/>
-      <rect x="19.5" y="2.5" width="7" height="7" rx="2" stroke="currentColor" stroke-width="2"/>
-      <rect x="19.5" y="18.5" width="7" height="7" rx="2" fill="var(--cobalt)" stroke="var(--cobalt)" stroke-width="2"/>
-      <path d="M8.5 13 19.5 6.5M8.5 15 19.5 21.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-    </svg>dagnats</a>
-  <nav class="nav" aria-label="Primary">
-    <a href="/docs/">Docs</a>
-    <a href="/docs/get-started/">Get started</a>
-    <a href="/docs/examples/">Examples</a>
-    <a href="/llms.txt">llms.txt</a>
-    <a class="ver" href="https://github.com/danmestas/dagnats/releases/tag/v{{ .Site.Params.version }}">GitHub · v{{ .Site.Params.version }}</a>
+<header class="site">
+  <nav class="top wrap" aria-label="Primary">
+    <a class="brand" href="#top">
+      <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true"><circle cx="5" cy="13" r="3.2" style="stroke: var(--accent)" stroke-width="1.8"/><circle cx="21" cy="5" r="3.2" stroke="currentColor" stroke-width="1.8"/><circle cx="21" cy="21" r="3.2" stroke="currentColor" stroke-width="1.8"/><path d="M8 11.6 18 6.4M8 14.4 18 19.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span>dagnats</span>
+    </a>
+    <div class="links">
+      <a href="/docs/">Docs</a>
+      <a href="/docs/get-started/">Get started</a>
+      <a href="https://github.com/danmestas/dagnats/blob/main/CHANGELOG.md">Changelog</a>
+      <a class="gh" href="https://github.com/danmestas/dagnats/releases/tag/v{{ .Site.Params.version }}">GitHub <em>v{{ .Site.Params.version }}</em></a>
+    </div>
   </nav>
-</div></header>
+</header>
 
 <main id="top">
-<section class="hero" aria-labelledby="hero-title"><div class="wrap">
-  <h1 id="hero-title">Workflows that pick up <span class="hl">exactly</span> where they stopped.</h1>
-  <div class="hero-row">
-    <p class="lede">dagnats is a workflow engine for work that has to finish: CI/CD pipelines, ETL jobs, notification automations, and agent loops when you need them. You describe the steps as a graph. Workers in any language do the work. The engine records every transition in <b>NATS JetStream</b>, so a crash, a deploy or a dead worker costs you nothing. It ships as <b>one Go binary</b> with no database to run.</p>
-    <div class="ctas">
-      <a class="btn primary" href="/docs/get-started/">Get started</a>
-      <a class="btn" href="https://github.com/danmestas/dagnats">Source on GitHub</a>
+  <section class="hero wrap" aria-labelledby="hero-title">
+    <div class="hero-copy">
+      <div class="pill"><b>new</b><span>Embedded clusters, leases and leader election</span></div>
+      <h1 id="hero-title">Durable workflows.<br>One binary.<br><span>Just NATS.</span></h1>
+      <p class="lede">dagnats runs graphs of tasks, agent loops and human approvals. It retries what fails and resumes after a crash, with NATS JetStream embedded in the same process. No Postgres, no Redis, no broker to run.</p>
+      <div class="ctas">
+        <a class="btn" href="/docs/get-started/">Get started
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="install"><span aria-hidden="true">$</span><code id="cmd">go install github.com/danmestas/dagnats/cmd/dagnats@latest</code><button type="button" id="copy" aria-label="Copy install command">copy</button></div>
+      </div>
+      <p class="fine">Apache-2.0 · Go · alpha, breaking changes possible</p>
     </div>
-  </div>
 
-  <div class="instrument" aria-labelledby="inst-title">
-    <div class="inst-head">
-      <span class="run-id" id="inst-title">run <b>0f3a…9c21</b> · ci-main · commit 3f9a2c1 · <span id="phase">running</span></span>
-      <div class="controls">
-        <button type="button" class="ctl kill" id="kill" aria-pressed="false"><span class="lamp"></span><span id="killLabel">Kill the engine</span></button>
-        <button type="button" class="ctl" id="replay">Run it again</button>
+    <figure class="run" aria-label="Illustration: a workflow run in progress">
+      <div class="run-head"><span>run <b>9e63…f0bf</b> · nightly-refactor</span><span class="status"><i></i>running</span></div>
+      <div class="steps">
+        <div class="step st-done"><div class="rail"><span class="dot"></span><span class="wire"></span></div><div class="body"><div class="title"><strong>trigger</strong><span class="type">cron</span></div><div class="detail">0 3 * * * · fired 03:00:00</div></div><span class="state">done</span></div>
+        <div class="step st-done"><div class="rail"><span class="dot"></span><span class="wire"></span></div><div class="body"><div class="title"><strong>plan</strong><span class="type">planner</span></div><div class="detail">Planned 4 tasks from the issue</div></div><span class="state">done</span></div>
+        <div class="step st-running"><div class="rail"><span class="dot"></span><span class="wire"></span></div><div class="body"><div class="title"><strong>build</strong><span class="type">agent_loop</span></div><div class="detail">Iteration 3 of 8 · checkpointed</div></div><span class="state">running</span></div>
+        <div class="step st-running"><div class="rail"><span class="dot"></span><span class="wire"></span></div><div class="body"><div class="title"><strong>test</strong><span class="type">map</span></div><div class="detail">12 shards in parallel</div><div class="shards" aria-hidden="true"><span class="d"></span><span class="d"></span><span class="d"></span><span class="d"></span><span class="d"></span><span class="d"></span><span class="d"></span><span class="d"></span><span class="r"></span><span class="r"></span><span class="r"></span><span class=""></span></div></div><span class="state">8 / 12</span></div>
+        <div class="step st-waiting"><div class="rail"><span class="dot"></span><span class="wire"></span></div><div class="body"><div class="title"><strong>review</strong><span class="type">approval</span></div><div class="detail">Waits for a human, times out in 24h</div></div><span class="state">waiting</span></div>
+        <div class="step st-pending"><div class="rail"><span class="dot"></span><span class="wire"></span></div><div class="body"><div class="title"><strong>ship</strong><span class="type">task</span></div><div class="detail">Open the pull request</div></div><span class="state">pending</span></div>
+      </div>
+      <div class="log">
+        <div>03:00:00  workflow.started   nightly-refactor</div>
+        <div>03:00:02  step.completed     plan        <b>4 tasks</b></div>
+        <div>03:04:41  step.started       build       <i>iter=3</i></div>
+        <div>03:04:41  step.queued        test[11]</div>
+      </div>
+    </figure>
+  </section>
+
+  <section class="glance" aria-label="At a glance">
+    <div class="wrap">
+      <div class="cell"><div class="eyebrow">Runtime deps</div><div class="v">NATS JetStream, embedded</div></div>
+      <div class="cell"><div class="eyebrow">Deploy artifact</div><div class="v">One Go binary</div></div>
+      <div class="cell"><div class="eyebrow">Scales to</div><div class="v">3 or 5 node clusters</div></div>
+      <div class="cell"><div class="eyebrow">SDKs</div><div class="v">Go, plus an HTTP bridge</div></div>
+    </div>
+  </section>
+
+  <section class="block wrap" aria-labelledby="why-title">
+    <div class="why-head">
+      <h2 id="why-title">Everything a workflow engine needs. Nothing it has to depend on.</h2>
+      <p>State is an event log in JetStream with snapshots in KV. Kill the process, start it again, and in-flight work picks up from the last event.</p>
+    </div>
+    <div class="features">
+      <div class="feature"><span class="k">01</span><h3>One binary, zero databases</h3><p>Deploy is scp and serve. No migrations, no Redis to operate, no broker to configure.</p></div>
+      <div class="feature"><span class="k">02</span><h3>Crash-safe by default</h3><p>Every transition is an event in JetStream. A restart replays to the last one and carries on.</p></div>
+      <div class="feature"><span class="k">03</span><h3>Agent steps are first-class</h3><p>AgentLoop, Planner, Approval and WaitForEvent are step types, not patterns you rebuild per project.</p></div>
+      <div class="feature"><span class="k">04</span><h3>Inspectable to the byte</h3><p>Every event is a JSON message on a subject. Tail any run live from any terminal.</p></div>
+      <div class="feature"><span class="k">05</span><h3>Bounded everywhere</h3><p>No unbounded queues, retries or recursion. Every loop has a fixed upper limit.</p></div>
+      <div class="feature"><span class="k">06</span><h3>Clusters when you need them</h3><p>Three or five nodes, every stream replicated, routes over your private network. Leases and leader election built in.</p></div>
+    </div>
+  </section>
+
+  <section class="block wrap start" aria-labelledby="start-title">
+    <div class="start-copy">
+      <span class="eyebrow">Quickstart</span>
+      <h2 id="start-title">From zero to a running workflow in four commands.</h2>
+      <p><code>dagnats serve</code> starts NATS, the orchestrator, the API, the console and the trigger system in one process. There is no step five.</p>
+      <div class="start-links">
+        <a href="/docs/get-started/">Walkthrough</a>
+        <a href="/docs/architecture/">Architecture</a>
+        <a href="/docs/reference/sdk/">SDK reference</a>
       </div>
     </div>
-    <div class="stage">
-      <div class="graph-scroll"><svg class="graph" id="graph" viewBox="0 0 1000 300" role="img" aria-label="Workflow graph: checkout, build, then tests across four shards and lint in parallel, a deploy approval, deploy, notify"></svg></div>
-      <div class="down-banner" id="down" hidden><span>Engine stopped.</span><b>Workers keep going: their results land in WORKFLOW_HISTORY and wait.</b><span id="downCount"></span></div>
+    <div class="term">
+      <div class="term-head" aria-hidden="true"><i></i><i></i><i></i><span>zsh</span></div>
+<pre><span class="p">$</span> go install github.com/danmestas/dagnats/cmd/dagnats@latest
+<span class="p">$</span> dagnats serve                  <span class="m"># one process, embedded NATS</span>
+<span class="p">$</span> dagnats workflow register hello.json
+<span class="p">$</span> dagnats run start hello --watch
+<span class="m">  ✓ greet      completed  12ms</span>
+<span class="m">  ✓ run        </span><span class="ok">completed</span></pre>
     </div>
-    <div class="tape-wrap">
-      <div class="tape-head"><span>WORKFLOW_HISTORY · this run</span><span id="tapeStat">0 events</span></div>
-      <div class="tape" id="tape" aria-live="polite"></div>
+  </section>
+
+  <section class="block wrap arch" aria-labelledby="arch-title">
+    <span class="eyebrow">How it fits together</span>
+    <h2 id="arch-title">All state lives in JetStream and KV. That is the whole system.</h2>
+    <div class="tiers">
+      <div class="tier"><span class="k">01 · triggers</span><div class="h">Cron, webhooks, subjects, run-terminal</div><p>Each fire becomes an event on the history stream, deduplicated by message ID.</p></div>
+      <div class="tier core"><span class="k">02 · orchestrator</span><div class="h">Consume event, advance the DAG, snapshot</div><p>Timeouts, sleeps and retries are timers on a stream, not a scheduler you run.</p></div>
+      <div class="tier"><span class="k">03 · workers</span><div class="h">Pull tasks, report results</div><p>Go workers in-process or anywhere on NATS; anything else over the HTTP bridge.</p></div>
     </div>
-    <div class="inst-foot"><span>A simulation. With the engine running apart from NATS (a cluster, or <code>dagnats-engine</code>), workers keep reporting while it is down. Under <code>dagnats serve</code> everything restarts together and resumes the same way.</span><span class="status" id="status">engine up</span></div>
-  </div>
-</div></section>
+    <div class="store"><span><b>JetStream</b> · WORKFLOW_HISTORY · TASK_QUEUES · SLEEP_TIMERS · EVENTS · +5</span><span><b>KV</b> · workflow_runs · leases · singleton_locks · +16</span></div>
+  </section>
 
-<section class="block" aria-labelledby="what-title"><div class="wrap">
-  <span class="kicker">What it does</span>
-  <h2 id="what-title">You write the steps. dagnats makes sure every one of them finishes, in order, through crashes and restarts.</h2>
-  <div class="three">
-    <div><h3>You describe the graph</h3><p>A workflow is a set of steps and their dependencies, written as JSON or with the Go builder. Steps fan out, join, loop, sleep, wait for a person, or wait for an event.</p></div>
-    <div><h3>Workers do the work</h3><p>A worker is any process that handles a task type. Go workers use the SDK; anything else talks to the HTTP bridge. Run one worker or a hundred, on one machine or many.</p></div>
-    <div><h3>The engine keeps the promises</h3><p>Ordering, retries with backoff, step timeouts, concurrency limits, rate limits, sleeps and approvals. All of it is durable: state survives restarts because none of it lives in memory.</p></div>
-  </div>
-</div></section>
-
-<section class="block" aria-labelledby="code-title"><div class="wrap">
-  <span class="kicker">Ten minutes in</span>
-  <h2 id="code-title">A workflow is a file. A worker is a function.</h2>
-  <div class="split">
-    <div class="code"><div class="code-head"><span>workflow.json</span><span>dagnats workflow register</span></div>
-<pre>{
-  <span class="k">"name"</span>: "hello-world",
-  <span class="k">"version"</span>: "1.0",
-  <span class="k">"steps"</span>: [
-    { <span class="k">"id"</span>: "greet", <span class="k">"task"</span>: "greet" },
-    { <span class="k">"id"</span>: "uppercase", <span class="k">"task"</span>: "uppercase",
-      <span class="k">"depends_on"</span>: ["greet"],
-      <span class="k">"timeout"</span>: <span class="s">"30s"</span> }
-  ]
-}</pre></div>
-    <div class="code"><div class="code-head"><span>main.go</span><span>go run .</span></div>
-<pre>w := worker.NewWorker(nc)
-
-worker.HandleTyped(w, <span class="s">"greet"</span>,
-  func(ctx worker.TaskContext, name string) (string, error) {
-    return "Hello, " + name + "!", nil
-  })
-
-worker.HandleTyped(w, <span class="s">"uppercase"</span>,
-  func(ctx worker.TaskContext, in string) (string, error) {
-    return strings.ToUpper(in), nil
-  })
-
-w.Start()</pre></div>
-  </div>
-  <div class="code"><div class="code-head"><span>terminal</span><span>one process: NATS, engine, API, console, triggers</span></div>
-<pre><span class="c">$</span> go install github.com/danmestas/dagnats/cmd/dagnats@latest
-<span class="c">$</span> dagnats serve
-<span class="c">$</span> dagnats workflow register workflow.json
-<span class="c">$</span> dagnats run start hello-world '"Ada"' --watch</pre></div>
-</div></section>
-
-<section class="block" aria-labelledby="steps-title"><div class="wrap">
-  <span class="kicker">Step types</span>
-  <h2 id="steps-title">The hard parts of long-running work, as building blocks.</h2>
-  <p class="intro">Each is a step type the engine understands, so you don't rebuild fan-out, waits, approvals and retries in every pipeline.</p>
-  <div class="steps">
-    <a class="stepcard" href="/docs/step-types/normal-steps/"><span class="t">normal</span><span class="n">Task</span><p>Runs a handler once, with retries, backoff and a timeout.</p></a>
-    <a class="stepcard" href="/docs/step-types/map-steps/"><span class="t">map</span><span class="n">Map</span><p>Fans a task out over a list and joins the results.</p></a>
-    <a class="stepcard" href="/docs/step-types/sleep-and-timers/"><span class="t">sleep</span><span class="n">Sleep</span><p>For a duration, or until the next cron time in a named timezone.</p></a>
-    <a class="stepcard" href="/docs/step-types/approval-gates/"><span class="t">approval</span><span class="n">Approval</span><p>Waits for a person to approve or reject, with an expiry.</p></a>
-    <a class="stepcard" href="/docs/step-types/wait-for-event/"><span class="t">wait_for_event</span><span class="n">Wait for event</span><p>Parks the run until a matching event arrives, or a timeout.</p></a>
-    <a class="stepcard" href="/docs/step-types/sub-workflows/"><span class="t">sub_workflow</span><span class="n">Sub-workflow</span><p>Starts another workflow as a step and waits for it.</p></a>
-    <a class="stepcard" href="/docs/step-types/respond-steps/"><span class="t">respond</span><span class="n">Respond</span><p>Answers an HTTP request from inside the graph, so a workflow can be an API.</p></a>
-    <a class="stepcard" href="/docs/step-types/planner-steps/"><span class="t">planner</span><span class="n">Planner</span><p>Lets a handler add steps to the running graph.</p></a>
-    <a class="stepcard" href="/docs/step-types/agent-loops/"><span class="t">agent_loop</span><span class="n">Agent loop</span><p>Repeats a handler until it says done, checkpointed between iterations.</p></a>
-  </div>
-</div></section>
-
-<section class="block" aria-labelledby="how-title"><div class="wrap">
-  <span class="kicker">How it works</span>
-  <h2 id="how-title">All state lives in JetStream. That is the whole architecture.</h2>
-  <div class="flow">
-    <div><span class="who">something happens</span><h3>A trigger fires</h3><p>Cron, a webhook, a NATS message, an HTTP request or another run finishing. It becomes an event on <code>WORKFLOW_HISTORY</code>.</p></div>
-    <div><span class="who">the engine</span><h3>The graph advances</h3><p>The engine applies each event, saves a snapshot to the <code>workflow_runs</code> bucket, and queues the steps that are now ready.</p></div>
-    <div><span class="who">your workers</span><h3>Tasks run</h3><p>Workers pull from <code>TASK_QUEUES</code> and publish the result back as an event. If a worker dies, its task is redelivered to another.</p></div>
-    <div><span class="who">the clock</span><h3>Time is a stream too</h3><p>Sleeps, timeouts and retry delays are messages on <code>SLEEP_TIMERS</code>, not a scheduler you have to keep alive.</p></div>
-  </div>
-  <div class="chips" aria-label="Trigger types">
-    <span class="chip"><b>cron</b> with timezones</span>
-    <span class="chip"><b>webhook</b> POST /hooks/…</span>
-    <span class="chip"><b>subject</b> any NATS subject</span>
-    <span class="chip"><b>http</b> request/response</span>
-    <span class="chip"><b>run_terminal</b> when a run ends</span>
-  </div>
-</div></section>
-
-<section class="block" aria-labelledby="cluster-title"><div class="wrap">
-  <span class="kicker">Clusters</span>
-  <div class="cluster">
-    <div style="display:flex;flex-direction:column;gap:22px;min-width:0">
-      <h2 id="cluster-title">One binary on a laptop. Three nodes across an ocean.</h2>
-      <ul>
-        <li><span><b>Clusters of three or five nodes.</b> Every stream and bucket is replicated. Lose a node and runs keep completing on the others; it rejoins under its own name.</span></li>
-        <li><span><b>Health you can route on.</b> <code>/health/cluster</code> reports members, quorum and per-stream sync, and returns 503 only when a replicated stream loses quorum.</span></li>
-        <li><span><b>Leases and leader election.</b> Your services can hold a lease with a fencing token and forward requests to whoever owns a key, over plain NATS request/reply.</span></li>
-      </ul>
+  <section class="block wrap cmp" aria-labelledby="cmp-title">
+    <h2 id="cmp-title">Compared to neighbors</h2>
+    <div class="table">
+      <table>
+        <thead><tr><th scope="col" class="eyebrow"></th><th scope="col" class="self">dagnats</th><th scope="col">Temporal</th><th scope="col">Hatchet</th><th scope="col">Inngest</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Stack</th><td>NATS only</td><td>Postgres + Cassandra</td><td>Postgres + RabbitMQ</td><td>Postgres + Redis</td></tr>
+          <tr><th scope="row">Binaries</th><td>1</td><td>~5</td><td>~3</td><td>hosted</td></tr>
+          <tr><th scope="row">Open source</th><td>yes</td><td>yes</td><td>yes</td><td>partial</td></tr>
+          <tr><th scope="row">Native agent steps</th><td>yes</td><td>no</td><td>yes</td><td>yes</td></tr>
+          <tr><th scope="row">SDKs</th><td>Go + HTTP bridge</td><td>many</td><td>3</td><td>3</td></tr>
+          <tr><th scope="row">Self-host</th><td>trivial</td><td>involved</td><td>moderate</td><td>n/a</td></tr>
+        </tbody>
+      </table>
     </div>
-    <svg class="nodes" viewBox="0 0 440 300" role="img" aria-label="Three dagnats nodes in different regions, connected by routes">
-      <g stroke="var(--rule)" stroke-width="2" fill="none">
-        <path d="M110 92 330 92"/><path d="M110 92 220 232"/><path d="M330 92 220 232"/>
-      </g>
-      <g stroke="var(--cobalt)" stroke-width="2" fill="none" stroke-dasharray="4 7">
-        <path d="M110 92 330 92"><animate attributeName="stroke-dashoffset" from="22" to="0" dur="1.4s" repeatCount="indefinite"/></path>
-        <path d="M330 92 220 232"><animate attributeName="stroke-dashoffset" from="22" to="0" dur="1.8s" repeatCount="indefinite"/></path>
-        <path d="M220 232 110 92"><animate attributeName="stroke-dashoffset" from="22" to="0" dur="2.2s" repeatCount="indefinite"/></path>
-      </g>
-      <g font-size="11.5">
-        <rect x="40" y="62" width="140" height="60" rx="12" fill="var(--panel)" stroke="var(--ink)" stroke-width="1.5"/>
-        <text x="58" y="88" fill="var(--ink)">node-a</text><text x="58" y="107" fill="var(--ink-2)">eu-central · leader</text>
-        <rect x="260" y="62" width="140" height="60" rx="12" fill="var(--panel)" stroke="var(--ink)" stroke-width="1.5"/>
-        <text x="278" y="88" fill="var(--ink)">node-b</text><text x="278" y="107" fill="var(--ink-2)">eu-north</text>
-        <rect x="150" y="202" width="140" height="60" rx="12" fill="var(--panel)" stroke="var(--ink)" stroke-width="1.5"/>
-        <text x="168" y="228" fill="var(--ink)">node-c</text><text x="168" y="247" fill="var(--ink-2)">us-central</text>
-        <text x="220" y="290" text-anchor="middle" fill="var(--ink-2)">nodes_up 3 of 3 · all streams in sync</text>
-      </g>
-    </svg>
-  </div>
-</div></section>
+    <p class="fine">Open-source distributions as of writing. Approximate; orientation only.</p>
+  </section>
 
-<section class="block" aria-labelledby="not-title"><div class="wrap">
-  <div class="not">
-    <h2 id="not-title">When to reach for something else</h2>
-    <ul>
-      <li>Sub-millisecond task routing: use a queue directly.</li>
-      <li>Independent batch jobs with no dependencies between them: a worker pool is simpler.</li>
-      <li>Multi-tenant hosting: dagnats is single-tenant by design.</li>
-      <li>SDKs: Go is native; other languages use the HTTP bridge for now.</li>
-      <li>dagnats is young (0.0.x). Expect breaking changes between releases.</li>
-    </ul>
-  </div>
-</div></section>
+  <section class="block wrap" aria-labelledby="limits-title">
+    <div class="limits">
+      <h2 id="limits-title">What it is not</h2>
+      <div>
+        <p>dagnats is young and single-tenant by design. There is one Go SDK plus an HTTP bridge; a native TypeScript or Python SDK is yours to write.</p>
+        <p>Skip it for sub-millisecond task routing (use a queue), for dependency-free batch jobs (use a worker pool), and where eventual consistency would surprise you (use a database with transactions).</p>
+      </div>
+    </div>
+  </section>
 
-<section class="end" aria-labelledby="end-title"><div class="wrap">
-  <h2 id="end-title">Start one process. Kill it whenever you like.</h2>
-  <div class="install"><code id="cmd">go install github.com/danmestas/dagnats/cmd/dagnats@latest</code><button type="button" id="copy">copy</button></div>
-  <div class="ctas"><a class="btn primary" href="/docs/get-started/">Read the walkthrough</a><a class="btn" href="/docs/examples/">Browse examples</a></div>
-</div></section>
+  <section class="wrap cta" aria-labelledby="cta-title">
+    <h2 id="cta-title">Run it before your coffee cools.</h2>
+    <div class="ctas">
+      <a class="btn" href="/docs/get-started/">Get started</a>
+      <a class="btn ghost" href="https://github.com/danmestas/dagnats">Star on GitHub</a>
+    </div>
+  </section>
 </main>
 
-<footer><div class="wrap"><span>dagnats · Apache-2.0 · built on NATS JetStream</span><span><a href="/docs/">docs</a> · <a href="/llms.txt">llms.txt</a> · <a href="https://github.com/danmestas/dagnats/blob/main/CHANGELOG.md">changelog</a></span></div></footer>
+<footer>
+  <div class="wrap">
+    <span>dagnats · Apache-2.0</span>
+    <div><a href="/docs/">docs</a><a href="https://github.com/danmestas/dagnats">github</a><span>no telemetry on this site</span></div>
+  </div>
+</footer>
 
 <script>
 (function () {
-  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const NODES = [
-    { id: "checkout", type: "normal" }, { id: "build", type: "normal" },
-    { id: "test", type: "map ×4" }, { id: "lint", type: "normal" },
-    { id: "approve", type: "approval" }, { id: "deploy", type: "normal" },
-    { id: "notify", type: "normal" }
-  ];
-  // Left to right on wide screens; top to bottom on phones, where a
-  // 1000-unit-wide graph would be cropped to one slice.
-  const LAYOUTS = {
-    wide: { view: "0 0 1000 300", across: true, pos: {
-      checkout: [20, 120], build: [180, 120], test: [340, 50], lint: [340, 190],
-      approve: [500, 120], deploy: [660, 120], notify: [820, 120] } },
-    tall: { view: "0 0 340 540", across: false, pos: {
-      checkout: [102, 10], build: [102, 100], test: [10, 190], lint: [194, 190],
-      approve: [102, 280], deploy: [102, 370], notify: [102, 460] } }
-  };
-  const narrow = window.matchMedia("(max-width: 640px)");
-  const EDGES = [["checkout","build"],["build","test"],["build","lint"],
-    ["test","approve"],["lint","approve"],["approve","deploy"],["deploy","notify"]];
-  // by: e = engine, w = worker, h = a person via the API. Only the engine needs to be up for "e".
-  const SCRIPT = [
-    ["e","workflow.started",""], ["e","step.queued","checkout"], ["w","step.started","checkout"],
-    ["w","step.completed","checkout"], ["e","step.queued","build"], ["w","step.started","build"],
-    ["w","step.completed","build"], ["e","step.map.started","test"], ["e","step.queued","lint"],
-    ["w","step.started","lint"], ["w","step.map.instance.completed","test[0]"],
-    ["w","step.completed","lint"], ["w","step.map.instance.completed","test[1]"],
-    ["w","step.map.instance.completed","test[2]"], ["w","step.map.instance.completed","test[3]"],
-    ["e","step.map.completed","test"], ["e","approval.requested","approve"],
-    ["e","approval.granted","approve"], ["e","step.queued","deploy"], ["w","step.started","deploy"],
-    ["w","step.completed","deploy"], ["e","step.queued","notify"], ["w","step.started","notify"],
-    ["w","step.completed","notify"], ["e","workflow.completed",""]
-  ];
-  const W = 160 - 24, H = 64;
-  const svg = document.getElementById("graph"), tape = document.getElementById("tape");
-  const ns = "http://www.w3.org/2000/svg";
-  let published = 0, applied = 0, engineUp = true, timer = null, catching = false;
-
-  function el(name, attrs, parent) {
-    const node = document.createElementNS(ns, name);
-    for (const k in attrs) node.setAttribute(k, attrs[k]);
-    (parent || svg).appendChild(node);
-    return node;
+  var copy = document.getElementById("copy");
+  var cmd = document.getElementById("cmd");
+  function selectCommand() {
+    var range = document.createRange();
+    range.selectNodeContents(cmd);
+    var selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
-  const byId = {};
-  function edgePath(A, B, across) {
-    if (across) {
-      const x1 = A.x + W, y1 = A.y + H / 2, x2 = B.x, y2 = B.y + H / 2, mx = (x1 + x2) / 2;
-      return `M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
-    }
-    const x1 = A.x + W / 2, y1 = A.y + H, x2 = B.x + W / 2, y2 = B.y, my = (y1 + y2) / 2;
-    return `M${x1} ${y1} C${x1} ${my} ${x2} ${my} ${x2} ${y2}`;
-  }
-  function build() {
-    const layout = narrow.matches ? LAYOUTS.tall : LAYOUTS.wide;
-    svg.textContent = "";
-    svg.setAttribute("viewBox", layout.view);
-    svg.classList.toggle("tall", !layout.across);
-    for (const n of NODES) { [n.x, n.y] = layout.pos[n.id]; }
-    for (const [a, b] of EDGES) {
-      const A = NODES.find(n => n.id === a), B = NODES.find(n => n.id === b);
-      byId[a + ">" + b] = el("path", { d: edgePath(A, B, layout.across), fill: "none", "stroke-width": 2 });
-    }
-    for (const n of NODES) {
-      const g = el("g", {});
-      n.box = el("rect", { x: n.x, y: n.y, width: W, height: H, rx: 12, "stroke-width": 1.5 }, g);
-      n.label = el("text", { x: n.x + 14, y: n.y + 26, "font-size": 13 }, g); n.label.textContent = n.id;
-      n.sub = el("text", { x: n.x + 14, y: n.y + 46, "font-size": 10.5 }, g); n.sub.textContent = n.type;
-      n.dot = el("circle", { cx: n.x + W - 16, cy: n.y + 18, r: 5 }, g);
-    }
-  }
-  build();
-
-  function stateFromEvents(count) {
-    const st = {}, iter = {}, shards = {};
-    for (const n of NODES) st[n.id] = "pending";
-    for (let i = 0; i < count; i++) {
-      const [, type, step] = SCRIPT[i];
-      const id = step.split(" ")[0].replace(/\[\d\]$/, "");
-      if (type === "step.queued" || type === "step.map.started") st[id] = "queued";
-      if (type === "step.started") st[id] = "running";
-      if (type === "agent.loop.iteration") { st[id] = "running"; iter[id] = step.split("· ")[1]; }
-      if (type === "step.map.instance.completed") { st[id] = "running"; shards[id] = (shards[id] || 0) + 1; }
-      if (type === "approval.requested") st[id] = "waiting";
-      if (type === "step.completed" || type === "step.map.completed" || type === "approval.granted") st[id] = "done";
-    }
-    return { st, iter, shards };
-  }
-  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-  function paint() {
-    const { st, iter, shards } = stateFromEvents(applied);
-    const ink = css("--ink"), ink2 = css("--ink-2"), rule = css("--rule"), cobalt = css("--cobalt"),
-      soft = css("--cobalt-soft"), panel = css("--panel"), mark = css("--mark"), ground = css("--ground");
-    for (const n of NODES) {
-      const s = st[n.id];
-      const look = {
-        pending: [panel, rule, ink2, "transparent", ""],
-        queued: [panel, cobalt, ink, "transparent", "4 4"],
-        running: [soft, cobalt, ink, cobalt, ""],
-        waiting: [mark, ink, css("--mark-ink"), ink, ""],
-        done: [ink, ink, ground, ground, ""]
-      }[s];
-      n.box.setAttribute("fill", look[0]); n.box.setAttribute("stroke", look[1]);
-      n.box.setAttribute("stroke-dasharray", look[4]);
-      n.label.setAttribute("fill", look[2]); n.sub.setAttribute("fill", s === "done" ? ground : (s === "waiting" ? css("--mark-ink") : ink2));
-      n.dot.setAttribute("fill", look[3]);
-      let sub = n.type;
-      if (iter[n.id] && s !== "done") sub = "agent_loop · iteration " + iter[n.id];
-      if (n.id === "test" && s !== "pending") sub = "map · " + (shards.test || 0) + "/4 shards";
-      if (s === "waiting") sub = "approval · waiting for a person";
-      n.sub.textContent = sub;
-      n.box.style.opacity = engineUp ? 1 : 0.55;
-    }
-    for (const [a, b] of EDGES) {
-      const done = st[a] === "done";
-      byId[a + ">" + b].setAttribute("stroke", done ? ink : rule);
-    }
-    const waiting = published - applied;
-    document.getElementById("tapeStat").textContent = published + " events" + (waiting ? " · " + waiting + " waiting" : "");
-    document.getElementById("downCount").textContent = waiting ? waiting + " waiting" : "nothing waiting yet";
-    const doneAll = applied === SCRIPT.length;
-    document.getElementById("phase").textContent = doneAll ? "completed" : (engineUp ? "running" : "running · engine stopped");
-    const status = document.getElementById("status");
-    status.textContent = !engineUp ? "engine stopped" : catching ? "engine restarted · loading snapshot, applying waiting events"
-      : doneAll ? "run completed · nothing lost, nothing redone" : "engine up";
-    const chips = tape.children;
-    for (let i = 0; i < chips.length; i++) {
-      chips[i].classList.toggle("waiting", i >= applied);
-    }
-  }
-  function addChip(i) {
-    const [, type, step] = SCRIPT[i];
-    const d = document.createElement("div");
-    d.className = "ev";
-    const seq = document.createElement("span"); seq.className = "seq"; seq.textContent = "#" + (i + 1);
-    const t = document.createElement("span"); t.className = "type"; t.textContent = type;
-    const s = document.createElement("span"); s.className = "step"; s.textContent = step || "ci-main";
-    d.append(seq, t, s);
-    tape.appendChild(d);
-    tape.scrollLeft = tape.scrollWidth;
-  }
-  function tick() {
-    if (published >= SCRIPT.length) { stop(); return; }
-    const by = SCRIPT[published][0];
-    if (by !== "w" && !engineUp) return; // only workers make progress while the engine is down
-    addChip(published); published++;
-    if (engineUp && !catching) applied = published;
-    paint();
-  }
-  function start() { if (!timer) timer = setInterval(tick, reduce ? 1400 : 750); }
-  function stop() { clearInterval(timer); timer = null; paint(); }
-  function catchUp() {
-    catching = true; paint();
-    const step = () => {
-      if (applied < published) { applied++; paint(); setTimeout(step, reduce ? 0 : 220); }
-      else { catching = false; paint(); start(); }
-    };
-    setTimeout(step, reduce ? 0 : 500);
-  }
-  const kill = document.getElementById("kill"), killLabel = document.getElementById("killLabel");
-  kill.addEventListener("click", () => {
-    if (applied === SCRIPT.length) return;
-    engineUp = !engineUp;
-    kill.setAttribute("aria-pressed", String(!engineUp));
-    killLabel.textContent = engineUp ? "Kill the engine" : "Restart the engine";
-    document.getElementById("down").hidden = engineUp;
-    if (engineUp) catchUp(); else { paint(); start(); }
+  copy.addEventListener("click", function () {
+    if (!navigator.clipboard) { selectCommand(); return; }
+    navigator.clipboard.writeText(cmd.textContent).then(function () {
+      copy.textContent = "copied";
+      setTimeout(function () { copy.textContent = "copy"; }, 1600);
+    }, selectCommand);
   });
-  document.getElementById("replay").addEventListener("click", () => {
-    stop(); tape.textContent = ""; published = 0; applied = 0; engineUp = true; catching = false;
-    kill.setAttribute("aria-pressed", "false"); killLabel.textContent = "Kill the engine";
-    document.getElementById("down").hidden = true; paint(); start();
-  });
-  // Open mid-run so the first frame already shows a graph in motion.
-  for (let i = 0; i < 11; i++) addChip(i);
-  published = applied = 11;
-  paint();
-  if (!reduce) start();
-  const mq = window.matchMedia("(prefers-color-scheme: dark)");
-  if (mq.addEventListener) mq.addEventListener("change", paint);
-  const relayout = () => { build(); paint(); };
-  if (narrow.addEventListener) narrow.addEventListener("change", relayout);
-  new MutationObserver(paint).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-
-  document.getElementById("copy").addEventListener("click", e => {
-    const btn = e.currentTarget, text = document.getElementById("cmd").textContent;
-    const done = () => { btn.textContent = "copied"; setTimeout(() => { btn.textContent = "copy"; }, 1500); };
-    try {
-      navigator.clipboard.writeText(text).then(done, () => { selectCmd(); });
-    } catch (err) { selectCmd(); }
-  });
-  function selectCmd() {
-    const r = document.createRange(); r.selectNodeContents(document.getElementById("cmd"));
-    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
-  }
 })();
 </script>
 </body>
