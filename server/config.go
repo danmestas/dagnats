@@ -770,7 +770,10 @@ func parseLoopStateMaxBytes(val string) (int, error) {
 
 // validateLoopStateMaxBytes rejects a loop state cap the run snapshot
 // could not hold: the snapshot is one KV value bounded by max_payload
-// (the NATS default when max_payload is unset).
+// (the NATS default when max_payload is unset). The cap is per step; a
+// run with several loop steps holds several states in that one value,
+// so an operator raising the cap towards max_payload must size for the
+// number of loop steps a workflow can run.
 func validateLoopStateMaxBytes(cfg Config) error {
 	if cfg.LoopStateMaxBytes <= 0 {
 		return fmt.Errorf(

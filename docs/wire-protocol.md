@@ -229,9 +229,11 @@ Workers publish lifecycle events back to the history stream:
 - **Complete**: publish `step.completed` event with output payload to `history.{runID}`
 - **Fail**: publish `step.failed` event with error payload to `history.{runID}`
 - **Continue**: publish `step.continue` event (for agent loops) to `history.{runID}`.
-  Its payload is `protocol.StepContinuePayload`: `{"output": ..., "state": <base64>}`,
+  Its payload is `protocol.StepContinuePayload`: `{"output": ..., "state": <base64>, "state_set": true}`,
   where `state` is the state the handler checkpointed during the iteration (else
-  the state the iteration started from). The engine stores it in the run snapshot
+  the state the iteration started from). `state_set` marks `state` as the state
+  to commit even when it is empty, so a handler can clear its state; a payload
+  without either leaves the saved state alone. The engine stores it in the run snapshot
   (`StepState.loop_state`) in the same compare-and-swap save that advances the
   iteration, so checkpoint and continue are one write. A `state` over the
   engine's cap fails the loop step, naming the size and the cap.
@@ -269,6 +271,17 @@ duplicate `step.continue` from such a worker can still advance a loop twice.
 The worker SDK and the HTTP bridge stamp these fields on every lifecycle event
 they publish. A client publishing events itself should copy them from the task
 payload and the attempt it reported on `step.started`.
+
+Not fenced: map instance events (`{step}.map.{i}` has no per-instance identity
+in the snapshot; they converge through the map step's own logic) and the
+`respond` step's `step.completed` (engine-resolved; the step is saved Completed
+before the event is published). Engine-generated `step.sleep.completed` and
+`step.wait.matched` are separate event types and pass through.
+
+Upgrade order: engines before workers. A worker that sends its state in
+`step.continue` relies on the engine handing it back as `TaskPayload.state`; it
+falls back to the `checkpoints` bucket only when the task carries no
+`state_max_bytes`, which is how it recognises an older engine.
 
 ### Heartbeat
 
