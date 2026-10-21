@@ -220,3 +220,18 @@ type WorkerStatusSnapshot struct {
 	WorkerID              string `json:"worker_id"`
 	CancelledTasksSkipped uint64 `json:"cancelled_tasks_skipped"`
 }
+
+// CancelSubjectPrefix is the core NATS subject family the engine
+// publishes on when a run is cancelled (#802). Core, not JetStream: it
+// is a best-effort nudge to workers holding a handler for the run, and
+// the durable truth stays the run state (workers re-check it on
+// Heartbeat).
+const CancelSubjectPrefix = "dagnats.cancel."
+
+// CancelSubject returns the cancel signal subject for runID.
+func CancelSubject(runID string) string {
+	if runID == "" {
+		panic("CancelSubject: runID must not be empty")
+	}
+	return CancelSubjectPrefix + runID
+}

@@ -59,6 +59,8 @@ type TaskContext interface {
 	// Metadata returns static per-step metadata from the workflow step
 	// definition; nil if the step declared none.
 	Metadata() map[string]string
+	// Context ends when the run is cancelled (#802). A handler must
+	// honour it: stop work and return, or the work is wasted.
 	Context() context.Context
 
 	// Step completion — call exactly one per execution
@@ -159,6 +161,11 @@ type Worker struct {
 	workerID      string
 	stopHeartbeat chan struct{}
 	stopOnce      sync.Once
+
+	// cancels ends in-flight handlers of a cancelled run (#802);
+	// cancelSub is the core NATS subscription feeding it.
+	cancels   cancelRegistry
+	cancelSub *nats.Subscription
 
 	// handlerWG tracks in-flight handleMessage calls so Stop() can drain
 	// them before returning (#498). Every Add happens through
@@ -503,6 +510,7 @@ func (w *Worker) Start() {
 
 	w.bindOptionalKV()
 	w.registerDirectory()
+	w.subscribeCancel()
 
 	for taskType, handler := range w.handlers {
 		w.subscribeTask(taskType, handler)
@@ -1016,6 +1024,11 @@ func (w *Worker) Stop() {
 		w.draining = true
 		w.drainMu.Unlock()
 
+		if w.cancelSub != nil {
+			if err := w.cancelSub.Unsubscribe(); err != nil {
+				slog.Warn("unsubscribe cancel signals failed", "error", err)
+			}
+		}
 		if w.stopHeartbeat != nil {
 			close(w.stopHeartbeat)
 		}
@@ -1120,6 +1133,7 @@ func (w *Worker) startTaskSpan(
 		w.nc, w.tracer, w.js, payload, ctx, span, msg,
 		w.checkpointKV, w.signalKV,
 	)
+	ctx, tc.releaseCancel = w.bindCancel(ctx, tc)
 	tc.workerID = w.workerID
 	tc.publishMsg = w.publishMsg
 	tc.logChunkFailures = w.logChunkFailures
@@ -1250,6 +1264,7 @@ func (w *Worker) handleMessage(
 		return
 	}
 	ctx, span, tc := w.startTaskSpan(payload, taskType, msg)
+	defer tc.releaseCancel()
 	defer span.End()
 	w.tasksActive.Add(ctx, 1)
 	start := time.Now()

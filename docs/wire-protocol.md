@@ -230,6 +230,10 @@ Workers publish lifecycle events back to the history stream:
 
 Use `protocol.NewStepEvent()` to construct events with correct subject and dedup ID.
 
+### Cancel signal: `dagnats.cancel.{runID}`
+
+When a run is cancelled the engine publishes an empty core NATS message on `dagnats.cancel.{runID}` after the run is saved as cancelled. It is at-most-once (core NATS, no replay), so it is a prompt, not a guarantee. The worker SDK subscribes to `dagnats.cancel.*` and ends the `Context()` of every in-flight handler of that run. A handler that holds a task must honour that context and return; one that ignores it still finishes, and its late events are dropped because the run is terminal. Because the signal can be missed, `Heartbeat()` also reads the run state and returns `worker.ErrRunCancelled` (after ending the context) when the run is cancelled; over HTTP the same condition is the `409 Conflict` on resolve and heartbeat.
+
 ### Heartbeat
 
 Workers register in the `workers` KV bucket on startup via `worker.Directory`. The bucket has a 60s TTL, and the worker SDK re-PUTs its registration every 30s to remain visible. Deregistration happens automatically on TTL expiry or explicit DELETE.

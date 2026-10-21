@@ -13,6 +13,7 @@ protocol/run\_event.go RunEvent is the payload for the run\-lifecycle consumer c
 ## Index
 
 - [Constants](<#constants>)
+- [func CancelSubject\(runID string\) string](<#CancelSubject>)
 - [type Annotation](<#Annotation>)
 - [type Annotations](<#Annotations>)
 - [type Event](<#Event>)
@@ -120,6 +121,21 @@ const (
 ```go
 const AnnotationsMax = 1000
 ```
+
+<a name="CancelSubjectPrefix"></a>CancelSubjectPrefix is the core NATS subject family the engine publishes on when a run is cancelled \(\#802\). Core, not JetStream: it is a best\-effort nudge to workers holding a handler for the run, and the durable truth stays the run state \(workers re\-check it on Heartbeat\).
+
+```go
+const CancelSubjectPrefix = "dagnats.cancel."
+```
+
+<a name="CancelSubject"></a>
+## func [CancelSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L232>)
+
+```go
+func CancelSubject(runID string) string
+```
+
+CancelSubject returns the cancel signal subject for runID.
 
 <a name="Annotation"></a>
 ## type [Annotation](<https://github.com/danmestas/dagnats/blob/main/protocol/annotation.go#L19-L25>)

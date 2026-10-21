@@ -2026,7 +2026,27 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if err != nil {
 		return err
 	}
+	o.signalCancelToWorkers(run.RunID)
 	return o.notifyParentIfChild(ctx, run, fmt.Errorf("cancelled"))
+}
+
+// signalCancelToWorkers tells workers still running a handler of runID
+// to stop (#802). Core NATS, at-most-once: a miss is covered by the
+// worker's run-state check on Heartbeat, and a failed publish is logged
+// rather than returned because redelivering workflow.cancelled would
+// find the run already terminal and do nothing.
+func (o *Orchestrator) signalCancelToWorkers(runID string) {
+	if runID == "" {
+		panic("signalCancelToWorkers: runID must not be empty")
+	}
+	if o.nc == nil {
+		panic("signalCancelToWorkers: nc must not be nil")
+	}
+	err := o.nc.Publish(protocol.CancelSubject(runID), nil)
+	if err != nil {
+		slog.Warn("publish run cancel signal failed",
+			"run_id", runID, "error", err)
+	}
 }
 
 // cancelUnfinishedSteps marks every queued, running or pending step of

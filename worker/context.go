@@ -74,6 +74,12 @@ type taskContext struct {
 	// background ticker goroutine.
 	logLane          *logLane
 	logChunkFailures metric.Int64Counter
+
+	// Cancellation (#802), set by Worker.bindCancel. runCancelled reads
+	// the run state; releaseCancel deregisters and ends ctx. Both are
+	// nil for a taskContext built directly in a test.
+	runCancelled  func() bool
+	releaseCancel func()
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -512,6 +518,10 @@ func (c *taskContext) Heartbeat() error {
 	}
 	if c.runID == "" {
 		panic("Heartbeat: runID must not be empty")
+	}
+	// The cancel signal is at-most-once; the run state is the truth.
+	if c.runCancelled != nil && c.runCancelled() {
+		return ErrRunCancelled
 	}
 	return c.msg.InProgress()
 }
