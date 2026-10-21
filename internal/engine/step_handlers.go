@@ -433,6 +433,9 @@ func (o *Orchestrator) handleStepStarted(
 	if lateEventForTerminalRun(ctx, run, evt) {
 		return nil
 	}
+	if o.startedForOtherDispatch(ctx, state, evt) {
+		return nil
+	}
 
 	attemptCountBefore := state.Attempts
 	state.Status = dag.StepStatusRunning
@@ -453,6 +456,40 @@ func (o *Orchestrator) handleStepStarted(
 		return err
 	}
 	return o.armStepWatchdog(ctx, run, evt.StepID, state.Attempts, elapsed)
+}
+
+// startedForOtherDispatch reports whether evt is a step.started for a
+// dispatch the step has already left, logging and counting it. The
+// worker stamps the task's dispatch nonce on step.started (#814); when
+// the step's own step.failed or step.continue was accepted while it was
+// still Queued, the step is already on a later dispatch (a restamped
+// nonce), and applying this step.started would mark that dispatch
+// Running and clear its pending retry (startAttemptClock), so the
+// retry timer would then drop as stale. A step.started without a nonce
+// (an older worker) or a step without one is applied as before.
+func (o *Orchestrator) startedForOtherDispatch(
+	ctx context.Context, state dag.StepState, evt protocol.Event,
+) bool {
+	if evt.Type != protocol.EventStepStarted {
+		panic("startedForOtherDispatch: event must be a step.started")
+	}
+	if evt.StepID == "" {
+		panic("startedForOtherDispatch: StepID must not be empty")
+	}
+	if evt.DispatchNonce == "" || state.DispatchNonce == "" ||
+		evt.DispatchNonce == state.DispatchNonce {
+		return false
+	}
+	o.metrics.stepEventsRejected.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("event", string(evt.Type)),
+		attribute.String("reason", rejectNonce),
+	))
+	slog.WarnContext(ctx, "ignoring step.started for another dispatch",
+		"run_id", evt.RunID, "step_id", evt.StepID,
+		"event_attempt", evt.AttemptNumber,
+		"step_status", state.Status.String(), "step_attempt", state.Attempts,
+	)
+	return true
 }
 
 // startAttemptClock starts the step-timeout clock on an attempt's first

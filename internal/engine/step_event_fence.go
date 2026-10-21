@@ -2,12 +2,16 @@
 // Fencing of step lifecycle events (#801). A step.continue,
 // step.completed or step.failed names the dispatch it answers
 // (iteration, attempt, dispatch nonce); the engine acts on it only
-// while the step is still Running on exactly that dispatch. Anything
-// else is a stale worker, a redelivery of an event already applied, or
-// a duplicate, and is dropped and counted. An event without identity
-// comes from a worker or bridge client that predates the fields; it is
-// accepted only while legacy events are enabled, with the pre-#801
-// behaviour (and the duplicate-continue bug that comes with it).
+// while the step is still on exactly that dispatch: Running, or Queued
+// with the event's nonce (#814). Queued happens in a cluster, where the
+// engines share one WORKFLOW_HISTORY consumer: the engine handling the
+// worker's event may load the step before another engine has applied
+// the worker's step.started. Anything else is a stale worker, a
+// redelivery of an event already applied, or a duplicate, and is
+// dropped and counted. An event without identity comes from a worker
+// or bridge client that predates the fields; it is accepted only while
+// legacy events are enabled, with the pre-#801 behaviour (and the
+// duplicate-continue bug that comes with it).
 package engine
 
 import (
@@ -51,11 +55,20 @@ func acceptStepEvent(
 		}
 		return false, rejectNoIdentity
 	}
-	if state.Status != dag.StepStatusRunning {
+	if state.Status != dag.StepStatusRunning && state.Status != dag.StepStatusQueued {
 		return false, rejectNotRunning
 	}
 	if *evt.Iteration != state.Iterations {
 		return false, rejectIteration
+	}
+	// A Queued step's step.started is not applied yet, so only the
+	// nonce identifies the dispatch: Attempts is owned by step.queued
+	// and step.started and still lags the worker's number.
+	if state.Status == dag.StepStatusQueued {
+		if evt.DispatchNonce == "" || evt.DispatchNonce != state.DispatchNonce {
+			return false, rejectNonce
+		}
+		return true, ""
 	}
 	if evt.AttemptNumber != state.Attempts {
 		return false, rejectAttempt
@@ -64,6 +77,27 @@ func acceptStepEvent(
 		return false, rejectNonce
 	}
 	return true, ""
+}
+
+// adoptDispatchAttempt is the one place an event accepted while its
+// step is Queued catches Attempts up to the worker's number, before
+// the handler acts: the handler's retry budget and per-attempt retry
+// timer msg-ids (#381) read Attempts, and the step.started that would
+// have set it has not been applied. The max() rule matches
+// handleStepStarted, so the late step.started is then a no-op on it.
+// run.Steps is a map, so the caller's run sees the update.
+func adoptDispatchAttempt(run dag.WorkflowRun, evt protocol.Event) {
+	state, ok := run.Steps[evt.StepID]
+	if !ok {
+		panic("adoptDispatchAttempt: step must exist in the run")
+	}
+	if state.Status != dag.StepStatusQueued {
+		panic("adoptDispatchAttempt: step must be Queued")
+	}
+	if evt.AttemptNumber > state.Attempts {
+		state.Attempts = evt.AttemptNumber
+		run.Steps[evt.StepID] = state
+	}
 }
 
 // fencedEventType reports whether t is one of the three worker-sent
@@ -79,9 +113,12 @@ func fencedEventType(t protocol.EventType) bool {
 
 // fenceStepEvent applies acceptStepEvent to evt against run and
 // reports whether the caller may proceed. A rejected event is logged
-// and counted; the caller acks it by returning nil. The engine's own
-// step.sleep.completed and step.wait.matched share handleStepCompleted
-// and pass through: no worker holds a dispatch for them.
+// and counted; the caller acks it by returning nil. An event accepted
+// while the step is Queued first adopts the worker's attempt into
+// run.Steps (adoptDispatchAttempt), so the caller reads the caught-up
+// Attempts. The engine's own step.sleep.completed and
+// step.wait.matched share handleStepCompleted and pass through: no
+// worker holds a dispatch for them.
 func (o *Orchestrator) fenceStepEvent(
 	ctx context.Context, run dag.WorkflowRun, evt protocol.Event,
 ) bool {
@@ -97,6 +134,9 @@ func (o *Orchestrator) fenceStepEvent(
 	state := run.Steps[evt.StepID]
 	accepted, reason := acceptStepEvent(state, evt, o.legacyStepEvents)
 	if accepted {
+		if state.Status == dag.StepStatusQueued && evt.HasIdentity() {
+			adoptDispatchAttempt(run, evt)
+		}
 		return true
 	}
 	o.metrics.stepEventsRejected.Add(ctx, 1, metric.WithAttributes(

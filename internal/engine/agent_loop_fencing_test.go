@@ -142,7 +142,8 @@ func (fx loopFixture) publishEvent(t *testing.T, evt protocol.Event) {
 }
 
 // started publishes the step.started a worker sends on claiming task,
-// with the attempt number it would resolve (payload attempt, else 1).
+// with the attempt number it would resolve (payload attempt, else 1)
+// and the task's dispatch nonce.
 func (fx loopFixture) started(t *testing.T, task protocol.TaskPayload) int {
 	t.Helper()
 	attempt := task.Attempt
@@ -151,6 +152,7 @@ func (fx loopFixture) started(t *testing.T, task protocol.TaskPayload) int {
 	}
 	evt := protocol.NewStepEvent(protocol.EventStepStarted, task.RunID, task.StepID, nil)
 	evt.AttemptNumber = attempt
+	evt.DispatchNonce = task.DispatchNonce
 	fx.publishEvent(t, evt)
 	return attempt
 }
@@ -534,7 +536,13 @@ func TestAcceptStepEvent(t *testing.T) {
 		{"future iteration", running, withIdentity(4, 2, "n"), true, false, rejectIteration},
 		{"stale attempt", running, withIdentity(3, 1, "n"), true, false, rejectAttempt},
 		{"wrong nonce", running, withIdentity(3, 2, "other"), true, false, rejectNonce},
-		{"queued step", queued, withIdentity(3, 2, "n"), true, false, rejectNotRunning},
+		// A Queued step is dispatched but its step.started is not applied
+		// yet: the nonce alone names the dispatch and Attempts may lag.
+		{"queued step", queued, withIdentity(3, 2, "n"), true, true, ""},
+		{"queued lagging attempt", queued, withIdentity(3, 3, "n"), true, true, ""},
+		{"queued stale iteration", queued, withIdentity(2, 2, "n"), true, false, rejectIteration},
+		{"queued without nonce", queued, withIdentity(3, 2, ""), true, false, rejectNonce},
+		{"queued wrong nonce", queued, withIdentity(3, 2, "other"), true, false, rejectNonce},
 		{"terminal step", done, withIdentity(3, 2, "n"), true, false, rejectNotRunning},
 		{"legacy accepted", done, legacy, true, true, ""},
 		{"legacy dropped", running, legacy, false, false, rejectNoIdentity},
