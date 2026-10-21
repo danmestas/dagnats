@@ -73,6 +73,16 @@ Workers publish lifecycle events back to the history stream:
 
 Use `protocol.NewStepEvent()` to construct events with correct subject and dedup ID.
 
+#### Dispatch identity
+
+`step.continue`, `step.completed` and `step.failed` carry the identity of the dispatch they answer: `iteration` (from the task payload), `attempt_number` (the attempt reported on `step.started`) and `dispatch_nonce` (from the task payload). The engine acts on such an event only while the step is Running on that iteration and attempt and, when a nonce is present, that nonce. Anything else (a worker whose claim lapsed and was taken over, a duplicate continue, a redelivered event) is dropped and counted in `engine.step_events.rejected`. Message IDs are `{run}.{step}.{type}.{attempt}.{iteration}`.
+
+The worker SDK and the HTTP bridge stamp these fields for you. Events without them, from workers built before this change, are accepted while the engine setting `legacy_step_events` is on, which is the default. Upgrade engines before workers. Map instances and `respond` steps are not fenced.
+
+#### Cancel signal
+
+When a run is cancelled, the engine publishes an empty core NATS message on `dagnats.cancel.{runID}`. The worker SDK ends the `Context()` of every in-flight handler of that run; handlers should pass that context to their model and tool calls and return when it ends. The signal is at-most-once, so `Heartbeat()` also checks the run state and returns `worker.ErrRunCancelled` when the run is cancelled. Over HTTP the same condition is a `409 Conflict` on resolve and heartbeat.
+
 ### Heartbeat
 
 Workers register in the `workers` KV bucket on startup via `worker.Directory`. The bucket has a **60s TTL**, so workers must re-PUT their registration every **30s** to remain visible. Deregistration happens automatically on TTL expiry or explicit DELETE.
@@ -233,13 +243,13 @@ Canonical Go type: `worker.WorkerRegistration` in `worker/directory.go`.
 
 ## Pause and Checkpoint Semantics
 
-**Pause** suspends task execution for a fixed duration. The worker writes checkpoint state to KV and NAKs the message with delay. After the delay expires, the task is redelivered to the same or another worker with the checkpoint data available in KV.
+**Pause** suspends task execution for a fixed duration. The worker writes a resume marker to the `checkpoints` KV bucket and NAKs the message with delay. After the delay expires, the task is redelivered to the same or another worker with the marker available through `LoadCheckpoint`.
 
-**Checkpoint** saves incremental state without suspending execution. The worker writes data to KV and calls `InProgress()` to extend the ack deadline. The task remains in-flight and the worker continues execution.
+**Checkpoint** in an agent loop records the state the next iteration starts from. The state is buffered and sent inside the `step.continue` event, so saving and continuing are one write: the engine stores it with the run in the same save that advances the iteration, and hands it to the next iteration and to any retry in the task payload. State is capped per step (`loop_state_max_bytes`, 256 KiB by default); `Continue` fails over the cap. `Checkpoint(nil)` clears the state. Against an engine older than this behaviour, the worker also writes the state to the `checkpoints` KV bucket.
 
 Time spent paused counts toward the step's `timeout`: a resumed task continues the attempt's timeout rather than starting a new one, so a step that pauses repeatedly needs a `timeout` covering its whole run.
 
-Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}.{step_id}`.
+The `checkpoints` KV bucket uses keys formatted as `{run_id}.{step_id}`.
 
 ---
 
