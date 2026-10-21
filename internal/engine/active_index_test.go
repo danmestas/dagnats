@@ -634,7 +634,7 @@ func TestActiveEntry_KVOpCountOverRunLifecycle(t *testing.T) {
 func seedTerminalNoise(t *testing.T, store *SnapshotStore, total int) {
 	t.Helper()
 	ctx := context.Background()
-	for i := 0; i < total; i++ {
+	seedConcurrently(t, total, func(i int) error {
 		run := dag.WorkflowRun{
 			RunID:      fmt.Sprintf("noise-%05d", i),
 			WorkflowID: "wf",
@@ -642,9 +642,55 @@ func seedTerminalNoise(t *testing.T, store *SnapshotStore, total int) {
 			Steps:      map[string]dag.StepState{},
 			CreatedAt:  time.Now().UTC(),
 		}
-		if err := store.SaveInitial(ctx, run); err != nil {
-			t.Fatalf("seed noise %d: %v", i, err)
+		return store.SaveInitial(ctx, run)
+	})
+}
+
+// seedWorkersMax bounds seedConcurrently. Seeding tens of thousands of
+// runs one KV round trip at a time dominated the engine race suite
+// (#815); the writes are independent, so a small pool does the same
+// writes in a fraction of the time.
+const seedWorkersMax = 32
+
+// seedConcurrently calls seed(i) for every i in [0, total) on at most
+// seedWorkersMax goroutines and fails the test on the first error.
+func seedConcurrently(t *testing.T, total int, seed func(i int) error) {
+	t.Helper()
+	if total <= 0 {
+		t.Fatalf("seedConcurrently: total = %d, want > 0", total)
+	}
+	if seed == nil {
+		t.Fatal("seedConcurrently: seed must not be nil")
+	}
+	indexes := make(chan int)
+	errs := make(chan error, seedWorkersMax)
+	var wg sync.WaitGroup
+	for w := 0; w < seedWorkersMax; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range indexes {
+				if err := seed(i); err != nil {
+					errs <- fmt.Errorf("seed %d: %w", i, err)
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < total; i++ {
+		select {
+		case indexes <- i:
+		case err := <-errs:
+			close(indexes)
+			wg.Wait()
+			t.Fatal(err)
 		}
+	}
+	close(indexes)
+	wg.Wait()
+	close(errs)
+	if err, failed := <-errs; failed {
+		t.Fatal(err)
 	}
 }
 
@@ -726,7 +772,7 @@ func TestBuildActiveIndexOnce_ReviewerRepro_ConvergesAndGatesOnMetaKey(t *testin
 
 	const terminalCount = 30_000
 	base := time.Now().Add(-24 * time.Hour)
-	for i := 0; i < terminalCount; i++ {
+	seedConcurrently(t, terminalCount, func(i int) error {
 		run := dag.WorkflowRun{
 			RunID: fmt.Sprintf("repro-terminal-%05d", i), WorkflowID: "wf",
 			Status: dag.RunStatusCompleted, Steps: map[string]dag.StepState{},
@@ -734,12 +780,11 @@ func TestBuildActiveIndexOnce_ReviewerRepro_ConvergesAndGatesOnMetaKey(t *testin
 		}
 		data, err := json.Marshal(run)
 		if err != nil {
-			t.Fatalf("marshal terminal %d: %v", i, err)
+			return fmt.Errorf("marshal terminal: %w", err)
 		}
-		if _, err := orch.store.kv.Put(ctx, "run."+run.RunID, data); err != nil {
-			t.Fatalf("seed terminal %d: %v", i, err)
-		}
-	}
+		_, err = orch.store.kv.Put(ctx, "run."+run.RunID, data)
+		return err
+	})
 	runningIDs := []string{"repro-run-a", "repro-run-b", "repro-run-c"}
 	for _, id := range runningIDs {
 		run := dag.WorkflowRun{

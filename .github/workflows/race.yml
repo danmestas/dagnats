@@ -7,11 +7,14 @@ name: Race
 # packages — bridge, worker, engine, api, workertoken, natsutil — where
 # heartbeat loops, ordered consumers, CAS retry loops, and SSE fan-out
 # make races most likely. The full embedded E2E suite is skipped here
-# (see ci.yml's Test step) to keep this job's runtime bounded; local
-# `-race` timing for the listed packages was ~124s wall (bridge 31.5s,
-# worker 92.8s, engine 79.9s, api 108.3s, workertoken 5.6s, natsutil
-# 6.4s, run concurrently), so -timeout below is ~2x that with headroom
-# for slower CI runners.
+# (see ci.yml's Test step) to keep this job's runtime bounded.
+#
+# Each package runs as its own matrix job (#815). In one `go test`
+# command the six packages shared one runner's cores, and the engine
+# package alone (365 tests, run serially, ~213s under -race on a quiet
+# laptop) left the whole job at 4m57s of its 300s budget. Separate
+# jobs give each package a full runner; the 300s per-package timeout
+# is unchanged.
 
 on:
   push:
@@ -34,8 +37,27 @@ permissions:
 
 jobs:
   race:
-    name: race detector
+    name: race detector (${{ matrix.pkg }}${{ matrix.shard != '' && format(' {0}/3', matrix.shard) || '' }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg:
+          - ./bridge/
+          - ./worker/
+          - ./internal/api/
+          - ./internal/workertoken/
+          - ./internal/natsutil/
+        shard: ['']
+        include:
+          # internal/engine runs its tests serially; three shards keep
+          # each job well inside the 300s timeout (scripts/race-shard.sh).
+          - pkg: ./internal/engine/
+            shard: '0'
+          - pkg: ./internal/engine/
+            shard: '1'
+          - pkg: ./internal/engine/
+            shard: '2'
     steps:
       - uses: actions/checkout@v7
 
@@ -45,8 +67,10 @@ jobs:
 
       - name: Race detector
         run: |
-          go test -race -count=1 -timeout 300s \
-            ./bridge/ ./worker/ ./internal/engine/ ./internal/api/ \
-            ./internal/workertoken/ ./internal/natsutil/
+          if [ -n "${{ matrix.shard }}" ]; then
+            ./scripts/race-shard.sh ${{ matrix.pkg }} ${{ matrix.shard }} 3
+          else
+            go test -race -count=1 -timeout 300s ${{ matrix.pkg }}
+          fi
         env:
           E2E_TOPOLOGY: embedded
