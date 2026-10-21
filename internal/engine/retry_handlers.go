@@ -94,8 +94,16 @@ func (o *Orchestrator) handleStepFailed(
 
 	// Attempts is owned by step.queued / step.started lifecycle events
 	// (max() rule in handleStepQueued/handleStepStarted). step.failed
-	// fires within an attempt and must not touch the counter.
+	// fires within an attempt and must not raise the counter, with one
+	// floor: a failure means at least one attempt ran. In a cluster the
+	// engine handling a legacy step.failed (no identity, possibly no
+	// attempt number) can load the step before step.queued is applied,
+	// with Attempts still 0; the retry backoff needs attempts >= 1.
 	state := run.Steps[evt.StepID]
+	if state.Attempts < 1 {
+		state.Attempts = 1
+		run.Steps[evt.StepID] = state
+	}
 
 	failPayload := parseFailPayload(evt.Payload)
 	state.Error = failPayload.Error

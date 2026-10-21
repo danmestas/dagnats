@@ -6,7 +6,11 @@
 // with the event's nonce (#814). Queued happens in a cluster, where the
 // engines share one WORKFLOW_HISTORY consumer: the engine handling the
 // worker's event may load the step before another engine has applied
-// the worker's step.started. Anything else is a stale worker, a
+// the worker's step.started. For a Queued step only the iteration and
+// the nonce are compared, never the attempt: Attempts lags until
+// step.started lands, so an event with a lower attempt and the matching
+// nonce is accepted, and the nonce alone identifies the dispatch.
+// Anything else is a stale worker, a
 // redelivery of an event already applied, or a duplicate, and is
 // dropped and counted. An event without identity comes from a worker
 // or bridge client that predates the fields; it is accepted only while
@@ -134,7 +138,7 @@ func (o *Orchestrator) fenceStepEvent(
 	state := run.Steps[evt.StepID]
 	accepted, reason := acceptStepEvent(state, evt, o.legacyStepEvents)
 	if accepted {
-		if state.Status == dag.StepStatusQueued && evt.HasIdentity() {
+		if state.Status == dag.StepStatusQueued && evt.AttemptNumber > 0 {
 			adoptDispatchAttempt(run, evt)
 		}
 		return true

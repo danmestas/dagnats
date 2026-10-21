@@ -191,3 +191,54 @@ func TestStepFailed_BeforeStartedApplied_RetriesOnce(t *testing.T) {
 		t.Fatalf("step = %v attempts=%d, want completed on attempt 2", step.Status, step.Attempts)
 	}
 }
+
+// TestStepFailed_LegacyBeforeStartedApplied_SchedulesRetry: a worker
+// older than the identity fields sends step.failed with no identity
+// and, on a first dispatch, no attempt number. Accepted while the step
+// is still Queued (step.queued/started not applied yet, likely in a
+// cluster), the step has Attempts 0; the retry path must still treat it
+// as one attempt run instead of panicking in the backoff and wedging.
+func TestStepFailed_LegacyBeforeStartedApplied_SchedulesRetry(t *testing.T) {
+	retry := &dag.RetryPolicy{MaxAttempts: 3, Strategy: dag.RetryFixed, InitialDelay: time.Minute}
+	wfDef := loopDef("legacy-fail-wf", "legacy-fail-task", dag.AgentLoopConfig{}, retry)
+	fx := newLoopFixture(t, wfDef)
+	orch := NewOrchestrator(fx.nc)
+	orch.Start()
+	defer orch.Stop()
+	const runID = "legacy-fail-run"
+	fx.startRun(t, runID)
+	task0 := fx.takeTask(t, 5*time.Second)
+	// Rewind the step to how another engine can still see it in a
+	// cluster: dispatched (Queued) with step.queued not yet applied.
+	ctx := t.Context()
+	// Let this engine's own step.queued land first so nothing raises
+	// the rewound count afterwards.
+	run := fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
+		return s.Attempts >= 1
+	})
+	queued := run.Steps["agent"]
+	if queued.Status != dag.StepStatusQueued {
+		t.Fatalf("step = %v, want queued", queued.Status)
+	}
+	queued.Attempts = 0
+	run.Steps["agent"] = queued
+	if err := orch.store.Save(ctx, run); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	legacy := protocol.NewStepEvent(protocol.EventStepFailed, runID, "agent", failedPayload(t))
+	if legacy.HasIdentity() || legacy.AttemptNumber != 0 {
+		t.Fatalf("event must be legacy with no attempt: %+v", legacy)
+	}
+	fx.publishEvent(t, legacy)
+	run = fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
+		return s.RetryDispatchAt != nil
+	})
+	step := run.Steps["agent"]
+	if step.Attempts != 1 {
+		t.Fatalf("attempts = %d after a legacy failure, want 1", step.Attempts)
+	}
+	if step.DispatchNonce == task0.DispatchNonce || step.Status != dag.StepStatusQueued {
+		t.Fatalf("retry not scheduled: status=%v nonce=%q", step.Status, step.DispatchNonce)
+	}
+}
