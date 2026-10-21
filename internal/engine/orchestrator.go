@@ -2026,7 +2026,7 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if err != nil {
 		return err
 	}
-	o.signalCancelToWorkers(run.RunID)
+	o.signalCancelToWorkers(ctx, run.RunID)
 	return o.notifyParentIfChild(ctx, run, fmt.Errorf("cancelled"))
 }
 
@@ -2035,14 +2035,14 @@ func (o *Orchestrator) handleWorkflowCancelled(
 // worker's run-state check on Heartbeat, and a failed publish is logged
 // rather than returned because redelivering workflow.cancelled would
 // find the run already terminal and do nothing.
-func (o *Orchestrator) signalCancelToWorkers(runID string) {
+func (o *Orchestrator) signalCancelToWorkers(ctx context.Context, runID string) {
 	if runID == "" {
 		panic("signalCancelToWorkers: runID must not be empty")
 	}
-	if o.nc == nil {
-		panic("signalCancelToWorkers: nc must not be nil")
+	if o.tp == nil {
+		panic("signalCancelToWorkers: tp must not be nil")
 	}
-	err := o.nc.Publish(protocol.CancelSubject(runID), nil)
+	err := o.tp.Publish(ctx, protocol.CancelSubject(runID), nil)
 	if err != nil {
 		slog.Warn("publish run cancel signal failed",
 			"run_id", runID, "error", err)
