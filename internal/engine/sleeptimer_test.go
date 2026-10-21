@@ -337,7 +337,7 @@ func TestSleepTimerRateRetryDerivesAttemptFromSnapshot(t *testing.T) {
 		RunID: "run-rate-attempt",
 		Steps: map[string]dag.StepState{
 			"step-rate-attempt": {
-				Status: dag.StepStatusRunning, Attempts: 3,
+				Status: dag.StepStatusQueued, Attempts: 3,
 			},
 		},
 	}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -217,15 +218,74 @@ func (st *SleepTimer) identityForRedispatch(
 	}
 	return redispatch{
 		attempt: attempt, iteration: iteration, loopState: state.LoopState, nonce: nonce,
+		stale: redispatchStale(tm, state),
 	}
 }
 
 // redispatch is what a timer-fired re-publish stamps on its payload.
+// stale names why the timer must not fire, or is empty.
 type redispatch struct {
 	attempt   int
 	iteration int
 	loopState []byte
 	nonce     string
+	stale     string
+}
+
+// redispatchStale reports why a dispatch timer no longer belongs to
+// the step's current state, or "" when it may fire (#801). A retry
+// timer belongs to a step still waiting on that retry: not terminal,
+// on the attempt the timer was scheduled for, with the retry's
+// dispatch time still pending (startAttemptClock clears it once the
+// retry starts). A rate, concurrency or sticky-fallback timer belongs
+// to a first send still waiting: the step not yet started (Queued, or
+// Pending for a map instance the snapshot has no entry for), on the
+// dispatch the timer was scheduled for. Firing a stale timer would
+// publish a second task whose events the live nonce from the snapshot
+// would let through the event fence.
+func redispatchStale(tm TimerMessage, state dag.StepState) string {
+	if tm.RunID == "" {
+		panic("redispatchStale: RunID must not be empty")
+	}
+	if tm.StepID == "" {
+		panic("redispatchStale: StepID must not be empty")
+	}
+	inFlight := state.Status == dag.StepStatusQueued ||
+		state.Status == dag.StepStatusRunning
+	switch tm.Action {
+	case TimerActionRetryAfter, TimerActionRetryBackoff:
+		if !inFlight {
+			return "step not in flight"
+		}
+		if state.RetryDispatchAt == nil {
+			return "no retry pending"
+		}
+		if tm.Attempt > 0 && tm.Attempt != state.Attempts {
+			return "attempt moved on"
+		}
+	case TimerActionRateRetry, TimerActionTaskConcurRetry:
+		if state.Status != dag.StepStatusPending &&
+			state.Status != dag.StepStatusQueued {
+			return "step already started"
+		}
+		if tm.DispatchNonce != "" && tm.DispatchNonce != state.DispatchNonce {
+			return "dispatch moved on"
+		}
+	}
+	return ""
+}
+
+// dropStaleTimer logs a timer that must not fire.
+func dropStaleTimer(ctx context.Context, tm TimerMessage, reason string) {
+	if reason == "" {
+		panic("dropStaleTimer: reason must not be empty")
+	}
+	if tm.RunID == "" {
+		panic("dropStaleTimer: RunID must not be empty")
+	}
+	slog.WarnContext(ctx, "dropping stale dispatch timer",
+		"action", string(tm.Action), "reason", reason,
+		"run_id", tm.RunID, "step_id", tm.StepID, "timer_attempt", tm.Attempt)
 }
 
 // Start subscribes to sleep.> on the SLEEP_TIMERS stream.
@@ -558,6 +618,10 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	// Iteration, which was still omitted even after round 2 — both
 	// now come from the live snapshot via dispatchIdentity.
 	rd := st.identityForRedispatch(ctx, tm)
+	if rd.stale != "" {
+		dropStaleTimer(ctx, tm, rd.stale)
+		return
+	}
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
@@ -655,6 +719,10 @@ func (st *SleepTimer) republishTask(
 	defer cancel()
 	subject := tm.dispatchSubject()
 	rd := st.identityForRedispatch(ctx, tm)
+	if rd.stale != "" {
+		dropStaleTimer(ctx, tm, rd.stale)
+		return
+	}
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,

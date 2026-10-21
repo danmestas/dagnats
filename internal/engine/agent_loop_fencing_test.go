@@ -583,31 +583,43 @@ func TestStepTimeout_FiresForLoopAfterContinues(t *testing.T) {
 }
 
 func TestRetryTimerWithoutNonceRedispatchesUnderSnapshotNonce(t *testing.T) {
-	fx := newLoopFixture(t, loopDef("oldtimer-wf", "oldtimer-task", dag.AgentLoopConfig{}, nil))
+	// The policy's own backoff is far longer than the test, so the only
+	// timer that fires is the one scheduled by hand below.
+	retry := &dag.RetryPolicy{MaxAttempts: 3, Strategy: dag.RetryFixed, InitialDelay: time.Minute}
+	wfDef := loopDef("oldtimer-wf", "oldtimer-task", dag.AgentLoopConfig{}, retry)
+	fx := newLoopFixture(t, wfDef)
 	orch := NewOrchestrator(fx.nc)
 	orch.Start()
 	defer orch.Stop()
 	const runID = "oldtimer-run"
 	fx.startRun(t, runID)
 	task := fx.takeTask(t, 5*time.Second)
-	fx.started(t, task)
+	attempt0 := fx.started(t, task)
+	fx.publishEvent(t, identityEvent(protocol.EventStepFailed, task, attempt0, failedPayload(t)))
+	run := fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
+		return s.RetryDispatchAt != nil
+	})
+	liveNonce := run.Steps["agent"].DispatchNonce
+	if liveNonce == "" || liveNonce == task.DispatchNonce {
+		t.Fatalf("retry did not restamp the nonce: %q", liveNonce)
+	}
 	// A retry timer persisted before #801 carries no nonce.
-	stepDef := loopDef("oldtimer-wf", "oldtimer-task", dag.AgentLoopConfig{}, nil).Steps[0]
+	stepDef := wfDef.Steps[0]
 	err := orch.sleepTimer.Schedule(context.Background(), TimerMessage{
-		Action: TimerActionRetryBackoff, RunID: runID, StepID: "agent", DurationMs: 50,
+		Action: TimerActionRetryAfter, RunID: runID, StepID: "agent", DurationMs: 50,
 		TaskType: stepDef.Task, Subject: orch.publisher.StepSubject(stepDef, runID), Attempt: 1,
 	})
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	retryTask := fx.takeTask(t, 5*time.Second)
-	if retryTask.DispatchNonce != task.DispatchNonce || retryTask.Attempt != 2 {
+	if retryTask.DispatchNonce != liveNonce || retryTask.Attempt != 2 {
 		t.Fatalf("redispatch = nonce %q attempt %d, want the snapshot nonce %q and attempt 2",
-			retryTask.DispatchNonce, retryTask.Attempt, task.DispatchNonce)
+			retryTask.DispatchNonce, retryTask.Attempt, liveNonce)
 	}
 	attempt := fx.started(t, retryTask)
 	fx.publishEvent(t, identityEvent(protocol.EventStepCompleted, retryTask, attempt, []byte(`"done"`)))
-	run := fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
+	run = fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
 		return s.Status == dag.StepStatusCompleted
 	})
 	if run.Steps["agent"].Status != dag.StepStatusCompleted {
@@ -643,5 +655,48 @@ func TestStepContinue_SetEmptyStateClearsSavedState(t *testing.T) {
 	task3 := fx.takeTask(t, 5*time.Second)
 	if len(task3.State) != 0 {
 		t.Fatalf("iteration 3 state = %s, want cleared", task3.State)
+	}
+}
+
+func TestStaleRetryTimerDispatchesNothing(t *testing.T) {
+	retry := &dag.RetryPolicy{MaxAttempts: 3, Strategy: dag.RetryFixed, InitialDelay: 100 * time.Millisecond}
+	wfDef := loopDef("stale-timer-wf", "stale-timer-task", dag.AgentLoopConfig{}, retry)
+	fx := newLoopFixture(t, wfDef)
+	orch := NewOrchestrator(fx.nc)
+	orch.Start()
+	defer orch.Stop()
+	const runID = "stale-timer-run"
+	fx.startRun(t, runID)
+	task0 := fx.takeTask(t, 5*time.Second)
+	attempt0 := fx.started(t, task0)
+	fx.publishEvent(t, identityEvent(protocol.EventStepFailed, task0, attempt0, failedPayload(t)))
+	retryTask := fx.takeTask(t, 5*time.Second)
+	attempt1 := fx.started(t, retryTask)
+	fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
+		return s.Attempts == 2 && s.RetryDispatchAt == nil
+	})
+
+	// A leftover timer for attempt 1: the step moved past it, so the
+	// fire must publish no task, whatever nonce it would have used.
+	stepDef := wfDef.Steps[0]
+	for _, action := range []TimerAction{TimerActionRetryBackoff, TimerActionRetryAfter, TimerActionRateRetry} {
+		err := orch.sleepTimer.Schedule(context.Background(), TimerMessage{
+			Action: action, RunID: runID, StepID: "agent", DurationMs: 50,
+			TaskType: stepDef.Task, Subject: orch.publisher.StepSubject(stepDef, runID),
+			Attempt: 1, DispatchNonce: task0.DispatchNonce,
+		})
+		if err != nil {
+			t.Fatalf("Schedule %s: %v", action, err)
+		}
+	}
+	fx.noTask(t, 1500*time.Millisecond)
+
+	// The live attempt still completes.
+	fx.publishEvent(t, identityEvent(protocol.EventStepCompleted, retryTask, attempt1, []byte(`"done"`)))
+	run := fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
+		return s.Status == dag.StepStatusCompleted
+	})
+	if run.Steps["agent"].Status != dag.StepStatusCompleted {
+		t.Fatalf("live attempt not completed: %v", run.Steps["agent"].Status)
 	}
 }
