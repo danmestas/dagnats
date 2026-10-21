@@ -25,7 +25,7 @@ Five components: `dag/` (pure DAG logic), `internal/engine/` (orchestrator), `wo
   - `adr-002-durable-agent-loop.md` — durable agent loop via dagnats primitives
   - `adr-003-sidecar-dx-improvements.md` — sidecar DX improvements
   - `adr-004-lazy-orchestrator-subsystems.md` — lazy orchestrator subsystems
-  - `adr-005` … `adr-024` — cluster mode, consumers, retry authority, HTTP triggers, console, trigger registrar, services, `dagnats.yaml` hot reload, WebSocket, agent runtimes, gated writes, `dagnatstest` coupling, coordination leases. `docs/architecture/README.md` indexes all of them.
+  - `adr-005` … `adr-029` — cluster mode, consumers, retry authority, HTTP triggers, console, trigger registrar, services, `dagnats.yaml` hot reload, WebSocket, agent runtimes, gated writes, `dagnatstest` coupling, coordination leases, fenced step events, agent journal, agent inputs and waits, cancellation and crash loops, hosting pi-durable. `docs/architecture/README.md` indexes all of them.
 - **Design notes** (everything else, e.g., `core-design.md`, `agent-system.md`) — background reading. May be superseded by later ADRs; check the file header for status.
 
 When adding a new decision, write a numbered ADR. When taking notes that don't represent a decision, use a descriptive filename without the `adr-` prefix.
