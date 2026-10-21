@@ -219,6 +219,8 @@ See `protocol.TaskPayload` in `protocol/protocol.go` for canonical schema.
 | `dispatch_nonce` | string | No | Per-dispatch token a worker echoes on control-plane requests |
 | `workflow_name` | string | No | Name of the workflow definition, for span attributes |
 | `traceparent`, `tracestate` | string | No | W3C trace context; set on tasks polled through the HTTP bridge |
+| `state` | bytes (base64) | No | Agent-loop state the step committed with its last accepted `step.continue` (#801). The next iteration, a retry of the current one, and a dispatch sent again after an engine crash all carry it; `TaskContext.LoadCheckpoint` returns it |
+| `state_max_bytes` | int | No | The engine's cap on the `state` a `step.continue` may carry back (`loop_state_max_bytes`, default 262144). Workers refuse a larger `Continue` before publishing it |
 
 ### Task Resolution
 
@@ -226,13 +228,47 @@ Workers publish lifecycle events back to the history stream:
 
 - **Complete**: publish `step.completed` event with output payload to `history.{runID}`
 - **Fail**: publish `step.failed` event with error payload to `history.{runID}`
-- **Continue**: publish `step.continue` event (for agent loops) to `history.{runID}`
+- **Continue**: publish `step.continue` event (for agent loops) to `history.{runID}`.
+  Its payload is `protocol.StepContinuePayload`: `{"output": ..., "state": <base64>}`,
+  where `state` is the state the handler checkpointed during the iteration (else
+  the state the iteration started from). The engine stores it in the run snapshot
+  (`StepState.loop_state`) in the same compare-and-swap save that advances the
+  iteration, so checkpoint and continue are one write. A `state` over the
+  engine's cap fails the loop step, naming the size and the cap.
 
 Use `protocol.NewStepEvent()` to construct events with correct subject and dedup ID.
 
 ### Cancel signal: `dagnats.cancel.{runID}`
 
 When a run is cancelled the engine publishes an empty core NATS message on `dagnats.cancel.{runID}` after the run is saved as cancelled. It is at-most-once (core NATS, no replay), so it is a prompt, not a guarantee. The worker SDK subscribes to `dagnats.cancel.*` and ends the `Context()` of every in-flight handler of that run. A handler that holds a task must honour that context and return; one that ignores it still finishes, and its late events are dropped because the run is terminal. Because the signal can be missed, `Heartbeat()` also reads the run state and returns `worker.ErrRunCancelled` (after ending the context) when the run is cancelled; over HTTP the same condition is the `409 Conflict` on resolve and heartbeat.
+
+#### Dispatch identity on lifecycle events (#801)
+
+`step.continue`, `step.completed` and `step.failed` name the dispatch they answer:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `iteration` | int | `TaskPayload.iteration` of the task being resolved. Present (possibly `0`) whenever the event carries an identity; absent on events from workers older than this field |
+| `attempt_number` | int | The 1-based attempt `step.started` reported for this delivery |
+| `dispatch_nonce` | string | `TaskPayload.dispatch_nonce` of the task being resolved; may be empty for a legacy task payload |
+
+The engine acts on such an event only while the step is **Running** on exactly
+that iteration and attempt, and (when the event carries a nonce) that dispatch
+nonce. Anything else — a worker whose claim lapsed and whose task another worker
+took over, a redelivery of an event already applied, a duplicate continue, a
+watchdog armed for an earlier attempt — is dropped and counted in the
+`engine.step_events.rejected` metric (labels `event`, `reason`). The engine's own
+synthetic step-timeout `step.failed` carries the identity its watchdog was armed
+with, so a later attempt or iteration fences it off the same way.
+
+An event with no `iteration` carries no identity. The engine accepts it as before
+this field existed only while `legacy_step_events` is on (the default); with it
+off, such events are dropped with reason `no_identity`. While it is on, a
+duplicate `step.continue` from such a worker can still advance a loop twice.
+
+The worker SDK and the HTTP bridge stamp these fields on every lifecycle event
+they publish. A client publishing events itself should copy them from the task
+payload and the attempt it reported on `step.started`.
 
 ### Heartbeat
 
@@ -355,8 +391,8 @@ Resolves a polled task by completing, failing, pausing, or checkpointing it.
 | `complete` | `output` | Publishes `step.completed` event, ACKs message, removes from ack map |
 | `fail` | `error`, `failure_type`, `retry_after_ms` | Publishes `step.failed` event, ACKs message, removes from ack map. `failure_type` is `retriable` (default), `non_retriable` (no retries) or `retry_after` (with `retry_after_ms`) |
 | `pause` | `duration_ms`, `checkpoint` | Writes checkpoint to KV, NAKs with delay, removes from ack map. `duration_ms` must be in (0, 3600000] |
-| `checkpoint` | `data` | Writes incremental checkpoint to KV, extends ack deadline (InProgress) |
-| `continue` | `output` | Publishes `step.continue` event (agent loops), ACKs message, removes from ack map |
+| `checkpoint` | `data` | Buffers `data` as the state the task's next `continue` commits (#801) and extends the ack deadline (InProgress). Nothing is written until the `continue`; the buffer lives with the claim |
+| `continue` | `output` | Publishes `step.continue` (agent loops) carrying `output` and the buffered checkpoint state (else the `state` the task was polled with), ACKs message, removes from ack map. Fails with `500` when the state is over `state_max_bytes` |
 | `heartbeat` | none | Extends the ack deadline; the task stays claimed |
 | `stream` | `data` | Publishes `data` to core NATS subject `stream.{runID}.{stepID}` and extends the ack deadline |
 | `send_signal` | `run_id`, `name`, `data` | Writes the signal to the `signals` KV bucket at `{run_id}.{name}` and extends the ack deadline |
@@ -399,16 +435,18 @@ Workers register their presence in the `workers` KV bucket:
 
 ## Pause & Checkpoint Semantics
 
-**Pause**: Suspends task execution for a fixed duration. Worker writes checkpoint state to KV and NAKs the message with delay. After the delay expires, the task is redelivered to the same or another worker with the checkpoint data available in KV.
+**Pause**: Suspends task execution for a fixed duration. Worker writes a pause marker to the `checkpoints` KV bucket at `{run_id}.{step_id}` and NAKs the message with delay. After the delay expires, the task is redelivered to the same or another worker, and `LoadCheckpoint` returns the marker until the next `Continue` consumes it.
 
-**Checkpoint**: Saves incremental state without suspending execution. Worker writes data to KV and calls `InProgress()` to extend the ack deadline. The task remains in-flight and the worker continues execution.
+**Checkpoint**: Records the state the next `Continue` commits (#801). Nothing is written at checkpoint time: the state rides the `step.continue` event and the engine saves it in the run snapshot in the same write that advances the iteration, then hands it to the next task as `TaskPayload.state`. A worker that dies between `Checkpoint` and `Continue` therefore leaves nothing behind, and the redelivered iteration starts from the state the crashed one started from. A retry of an iteration (same iteration, new attempt) also starts from the last committed state. `LoadCheckpoint` returns, in order: the state checkpointed earlier in the same delivery, a `checkpoints`-bucket entry when one exists (a pause marker, or a checkpoint from a worker older than #801), else `TaskPayload.state`.
 
-Both mechanisms use the `checkpoints` KV bucket with keys formatted as `{run_id}.{step_id}`.
+The state per step is capped by the engine's `loop_state_max_bytes` (default 256 KiB), carried to workers as `TaskPayload.state_max_bytes`; the whole run snapshot is one KV value bounded by `max_payload`. On-failure handlers and compensation steps resolve their own input and never see loop state.
 
 ## Idempotency & Deduplication
 
 - NATS message IDs (`Nats-Msg-Id` header) provide automatic deduplication within the JetStream stream's duplicate window. `WORKFLOW_HISTORY` and `TELEMETRY` use 5 seconds, `DEAD_LETTERS` 24 hours, `BUILD_LOGS` 2 minutes
 - Event message IDs are constructed from `{run_id}.{step_id}.{event_type}`, with `.{attempt}` appended when the event carries an attempt number, to ensure replays don't create duplicate events. Workflow-level events use `{run_id}.{event_type}`
+- `step.continue`, `step.completed` and `step.failed` that carry a dispatch identity (#801) use the stable `{run_id}.{step_id}.{event_type}.{attempt}.{iteration}` — the worker SDK's `Continue` no longer appends a timestamp. A redelivery inside the `WORKFLOW_HISTORY` dedup window is dropped by JetStream; one outside it is dropped by the engine's identity check (see "Dispatch identity on lifecycle events")
+- The next-iteration task an agent loop's `step.continue` produces is published with `{run_id}.{step_id}.continue.{iteration}`, whether it is sent immediately, by a `loop_delay` timer, or again by dispatch recovery after an engine crash
 
 ## Authentication
 

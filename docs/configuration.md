@@ -31,6 +31,8 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `max_generation_depth`    | int      | `3`                                                | `3`                                      |
 | `max_registers_per_minute_per_root` | int | `60`                                         | `60`                                     |
 | `runs_max_age`            | duration | `720h` (30 days)                                   | `720h` (30 days)                         |
+| `legacy_step_events`      | bool     | `true`                                             | `true`                                   |
+| `loop_state_max_bytes`    | int      | `262144` (256 KiB)                                 | `262144` (256 KiB)                       |
 | `otlp_endpoint`           | string   | (none)                                             | (none)                                   |
 | `nats_ws_port`            | int      | `0` (disabled)                                     | `0` (disabled)                           |
 | `nats_ws_no_tls`          | bool     | `false`                                            | `false`                                  |
@@ -60,6 +62,12 @@ These fields enable self-clustered topology (see [`production.md`](production.md
 ### Run retention
 
 `runs_max_age` is how long terminal runs stay in the `workflow_runs` bucket. The orchestrator's background sweeper deletes terminal runs whose completion time is older than this window; in-flight runs are never touched. The default is 30 days. Accepted values are a Go duration (`720h`), a day or week count (`30d`, `2w`), or `0`, `off` or `disabled` to turn pruning off.
+
+### Step event fencing and agent-loop state
+
+`legacy_step_events` is whether the engine accepts `step.continue`, `step.completed` and `step.failed` events that carry no dispatch identity (`iteration`, `attempt_number`, `dispatch_nonce`; see the wire protocol). Workers built from the Go SDK or the HTTP bridge stamp the identity; older workers and clients that publish events themselves may not. The default `true` keeps them working with the pre-fencing behaviour, which means a duplicate `step.continue` from such a worker can still advance a loop twice. Set it to `false` once every worker is upgraded: identity-less events are then dropped and counted in `engine.step_events.rejected`. Events that carry an identity are fenced either way.
+
+`loop_state_max_bytes` caps the state an agent loop commits per iteration through `step.continue`. The engine stores that state in the run snapshot, one KV value bounded by `max_payload`, so the cap must not exceed `max_payload` (1 MiB, the NATS default, when `max_payload` is unset). The default is 256 KiB. The engine stamps the cap on every task as `state_max_bytes`, so a worker refuses an oversized `Continue` with the same number; a loop whose continue arrives over the cap fails with an error naming the size and the cap.
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 
@@ -91,6 +99,8 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_MAX_GENERATION_DEPTH` | `max_generation_depth` | Must be a positive integer; clamped to engine ceiling |
 | `DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT` | `max_registers_per_minute_per_root` | Must be a positive integer |
 | `DAGNATS_RUNS_MAX_AGE` | `runs_max_age` | Go duration, or `<n>d` / `<n>w`; `0`, `off` or `disabled` turns pruning off; negatives rejected |
+| `DAGNATS_LEGACY_STEP_EVENTS` | `legacy_step_events` | `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; anything else is rejected at load |
+| `DAGNATS_LOOP_STATE_MAX_BYTES` | `loop_state_max_bytes` | Bytes; must be positive and at most `max_payload` |
 
 ### Triggers
 
