@@ -122,6 +122,26 @@ writing and reading the latest state. The `checkpoints` bucket gets a TTL
 and is retired once no worker writes it. The HTTP bridge gains
 `journal.append`, `journal.read` and `load_checkpoint` actions.
 
+### Checker
+
+`journal.Check` and the `dagnats journal check <run>` command audit a run.
+They read the journal, the run's history (for the attempt the engine
+accepted and its iteration count) and the `submissions` bucket (for input
+outcomes), and assert:
+
+1. Each iteration has exactly one `commit`, from the attempt the engine
+   accepted.
+2. No record from a fenced claim appears after the claim that fenced it.
+3. An unsafe tool's intent has at most one execution, counted by a
+   side-effect counter the test tools write outside the journal.
+4. Every `tool.intent` has exactly one `tool.result`, real or `interrupted`.
+5. Every placed input appears once, and every accepted `request_id` ends
+   done or unanswered.
+6. The engine's iteration count equals the number of commits.
+
+Invariant 3 needs the external counter, so it holds in tests only; the
+command checks the other five on any run.
+
 ## Requirements
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be interpreted as
@@ -138,7 +158,6 @@ all capitals.
 | R6 | Recovery MUST reuse recorded model responses and tool results. | Crash-point tests |
 | R7 | An unfinished tool call MUST NOT be rerun unless both declarations are `Safe`. | Tool replay matrix |
 | R8 | An unsafe tool's side effect MUST happen at most once across any crash schedule. | Crash-point tests, chaos soak |
-| R9 | `PutStream` output MUST be documented as non-durable. | Docs review |
 
 ## Alternatives considered
 
@@ -159,6 +178,7 @@ all capitals.
 - The engine and worker can tell a stalled worker from its replacement.
 - A new stream to operate and retain, and a protocol the bridge must expose.
 - The legacy `checkpoints` bucket can be retired.
+- `PutStream` output is documented as a non-durable preview.
 
 ## Security considerations
 

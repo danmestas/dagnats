@@ -29,8 +29,8 @@ endpoints.
 
 A submission is created with a KV `Create` on the `submissions` bucket,
 keyed `{run}.{step}.{request_id}`. A repeat with the same request ID returns
-the existing submission. This holds beyond JetStream's two-minute dedup
-window. The status moves from queued to placed to done or unanswered.
+the existing submission. This holds beyond a stream's deduplication window,
+which is seconds to minutes. The status moves from queued to placed to done or unanswered.
 
 ### Placing
 
@@ -82,8 +82,8 @@ all capitals.
 - **The events stream and `wait_for_event`.** Those are workflow-level and
   engine-resolved; inputs are addressed to one running step and must be
   placed by its handler.
-- **JetStream dedup alone for request IDs.** Its window is two minutes;
-  users retry later than that.
+- **JetStream dedup alone for request IDs.** A stream's dedup window is
+  seconds to minutes; users retry later than that.
 
 ## Consequences
 
@@ -97,5 +97,4 @@ all capitals.
 Submitting input to a step is a write into a running agent's context and
 MUST require the same authorization as signalling the run. Inputs are model
 input: a submission from an untrusted party is a prompt-injection vector,
-and the step's tools run with the step's permissions. The API records who
-submitted each input so handlers can treat sources differently.
+and the step's tools run with the step's permissions.

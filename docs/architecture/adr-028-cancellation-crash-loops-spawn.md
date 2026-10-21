@@ -26,8 +26,8 @@ Three gaps let an agent's work escape its run:
 `tc.Context()` is cancelled when the run is cancelled. On cancel the engine
 publishes `dagnats.cancel.{run}` on core NATS. Because that is at-most-once,
 the worker also checks run state on each heartbeat and, for journal-enabled
-steps, on each journal append. A cancelled handler writes an aborted commit.
-Events it publishes afterwards are dropped by the terminal-run guard. The
+steps, on each journal append. A plain handler returns when `ctx` is
+done; a journal-enabled handler also writes an aborted commit. Events it publishes afterwards are dropped by the terminal-run guard. The
 bridge reports cancellation on the next resolve or heartbeat.
 
 Abort order stays top-down: the parent run finalizes and its children are

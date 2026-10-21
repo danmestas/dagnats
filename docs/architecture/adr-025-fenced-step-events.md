@@ -106,12 +106,13 @@ all capitals.
 
 | ID | Requirement | Proven by |
 |---|---|---|
-| R1 | A worker MUST include `iteration`, `attempt` and `dispatch_nonce` on every lifecycle event. | `TestLifecycleEventsCarryIdentity` |
+| R1 | A worker MUST include `iteration`, `attempt` and `dispatch_nonce` on every lifecycle event, and the engine MUST include them on the step timeout watchdog's synthetic `step.failed`. | `TestLifecycleEventsCarryIdentity` |
 | R2 | The engine MUST NOT apply a lifecycle event unless the step is Running and the event's iteration and attempt equal the step's. | `TestAcceptanceRule` (table) |
 | R3 | The engine MUST NOT apply a lifecycle event whose present dispatch nonce differs from the step's. | `TestAcceptanceRule` (table) |
 | R4 | A duplicate `step.continue` for one iteration MUST advance the loop at most once. | `TestStepContinue_DuplicateForSameIterationAdvancesOnce` |
 | R5 | A stale worker's terminal event MUST NOT complete or fail a step that has moved on. | `TestAgentLoop_StaleWorkerCompleteAfterTakeoverIsRejected` |
-| R6 | The state committed by `Continue` MUST be the state the next iteration and any retry of it load. | `TestAgentLoop_RedeliveredIterationSeesPreIterationCheckpoint` |
+| R6 | A redelivered iteration MUST load the state committed before it, not state its crashed attempt wrote. | `TestAgentLoop_RedeliveredIterationSeesPreIterationCheckpoint` |
+| R6a | A retry of an iteration (same iteration, new attempt) MUST load the last state committed by `Continue`. | `TestAgentLoop_RetryResumesFromCommittedState` |
 | R7 | An engine crash between the continue save and the next publish MUST NOT strand the loop. | `TestStepContinue_CrashBetweenSaveAndPublishRecovers` |
 | R8 | `Continue` with state over the cap MUST fail with an error naming the size and the cap. | `TestContinue_StateOverCapFails` |
 | R9 | A `loop_delay` MUST survive an engine restart. | `TestLoopDelay_SurvivesEngineRestart` |
