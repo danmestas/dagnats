@@ -136,16 +136,20 @@ func (o *Orchestrator) createChildRun(
 		panic("createChildRun: childWorkflow must not be empty")
 	}
 
-	entry, err := o.defKV.Get(ctx, childWorkflow)
+	childDef, err := o.loadChildDef(ctx, childWorkflow)
 	if err != nil {
-		return fmt.Errorf(
-			"load child workflow def %q: %w",
-			childWorkflow, err,
-		)
+		return err
 	}
-	var childDef dag.WorkflowDef
-	if err := json.Unmarshal(entry.Value(), &childDef); err != nil {
-		return fmt.Errorf("unmarshal child def: %w", err)
+	// A redelivered spawn event (history redelivery after a crash, or a
+	// keyed spawn's republish outside the dedup window) must not reset a
+	// child that already exists and may have advanced (#803). Spawn events
+	// for one child are handled serially, so check-then-create is safe.
+	existing, loadErr := o.store.Load(ctx, childRunID)
+	if loadErr == nil {
+		return o.healExistingChild(ctx, childDef, existing)
+	}
+	if !errors.Is(loadErr, ErrRunNotFound) {
+		return fmt.Errorf("check existing child %q: %w", childRunID, loadErr)
 	}
 
 	childRun := dag.NewWorkflowRun(childDef, childRunID)
@@ -171,6 +175,46 @@ func (o *Orchestrator) createChildRun(
 
 	o.metrics.runsActive.Add(ctx, 1)
 	return o.enqueueReady(ctx, childDef, childRun)
+}
+
+// loadChildDef reads and decodes the child workflow definition.
+func (o *Orchestrator) loadChildDef(
+	ctx context.Context, childWorkflow string,
+) (dag.WorkflowDef, error) {
+	if childWorkflow == "" {
+		panic("loadChildDef: childWorkflow must not be empty")
+	}
+	entry, err := o.defKV.Get(ctx, childWorkflow)
+	if err != nil {
+		return dag.WorkflowDef{}, fmt.Errorf(
+			"load child workflow def %q: %w", childWorkflow, err)
+	}
+	var def dag.WorkflowDef
+	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		return dag.WorkflowDef{}, fmt.Errorf("unmarshal child def: %w", err)
+	}
+	return def, nil
+}
+
+// healExistingChild handles a spawn event for a child that already
+// exists, mirroring createOrHealRun's crash-gap heal: a Running child is
+// re-enqueued (enqueueReady only acts on Pending, ready steps, so an
+// advanced child is untouched and a saved-but-never-enqueued child gets
+// its first steps); a terminal child is left alone. The active-run gauge
+// is not bumped again; the original creation counted it.
+func (o *Orchestrator) healExistingChild(
+	ctx context.Context, childDef dag.WorkflowDef, existing dag.WorkflowRun,
+) error {
+	if existing.RunID == "" {
+		panic("healExistingChild: existing run must have a RunID")
+	}
+	if childDef.Name == "" {
+		panic("healExistingChild: childDef must have a name")
+	}
+	if existing.Status != dag.RunStatusRunning {
+		return nil
+	}
+	return o.enqueueReady(ctx, childDef, existing)
 }
 
 // planSubWorkflow resolves input, generates a child run ID, and marks
