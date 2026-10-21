@@ -89,7 +89,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L86-L206>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L87-L224>)
 
 Config holds all server configuration.
 
@@ -183,6 +183,23 @@ type Config struct {
     // production by accident.
     NATSWebsocketNoTLS bool `json:"nats_ws_no_tls"`
 
+    // LegacyStepEvents accepts step.continue/completed/failed events
+    // that carry no dispatch identity (#801), from workers and bridge
+    // clients older than the identity fields. Default true. While on,
+    // a duplicate step.continue from such a worker can still advance a
+    // loop twice; set false once every worker is upgraded. Events that
+    // carry identity are always fenced. Set via DAGNATS_LEGACY_STEP_EVENTS
+    // or the legacy_step_events config key.
+    LegacyStepEvents bool `json:"legacy_step_events"`
+
+    // LoopStateMaxBytes caps the state an agent loop commits per
+    // iteration through step.continue (#801). Default 256 KiB
+    // (protocol.LoopStateMaxBytesDefault). The whole run snapshot is
+    // one KV value, so the cap must stay under max_payload (the NATS
+    // default 1 MiB when max_payload is unset). Set via
+    // DAGNATS_LOOP_STATE_MAX_BYTES or the loop_state_max_bytes key.
+    LoopStateMaxBytes int `json:"loop_state_max_bytes"`
+
     // FailOnPortConflict makes startup return an error (non-zero exit)
     // instead of auto-falling-back to an ephemeral port when the default
     // NATS port or default HTTP address is already in use. Default false
@@ -218,7 +235,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L280>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L300>)
 
 ```go
 func ConfigFromEnv() Config
@@ -227,7 +244,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty after resolution. Exits \(via log.Fatalf\) if MaxStoreBytes still resolves to \<= 0 \(e.g. the disk backing DataDir has no space left\) \-\- see ConfigWithPath.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L297-L299>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L317-L319>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -236,7 +253,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty after resolution. Returns an error if MaxStoreBytes still resolves to \<= 0 after the disk\-derived default is applied \(e.g. the disk backing DataDir has no space left\) \-\- that is operator/host state, not a programmer error, so it is reported rather than panicked on. See deriveMaxStoreBytes \(\#687\).
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L216>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L234>)
 
 ```go
 func DefaultConfig() Config
@@ -363,7 +380,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L667>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L669>)
 
 ```go
 func (s *Server) Stop()
@@ -394,7 +411,7 @@ func DryRunValidate(cfg Config) ([]ValidationResult, bool)
 DryRunValidate checks prerequisites without starting components. Returns validation results and true if all passed.
 
 <a name="WorkerConfig"></a>
-## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L78-L83>)
+## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L79-L84>)
 
 WorkerConfig defines a config\-driven embedded worker handler.
 

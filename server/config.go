@@ -15,6 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/protocol"
 )
 
 // errUnknownConfigKey marks a config-file key the parser does not
@@ -172,6 +173,23 @@ type Config struct {
 	// production by accident.
 	NATSWebsocketNoTLS bool `json:"nats_ws_no_tls"`
 
+	// LegacyStepEvents accepts step.continue/completed/failed events
+	// that carry no dispatch identity (#801), from workers and bridge
+	// clients older than the identity fields. Default true. While on,
+	// a duplicate step.continue from such a worker can still advance a
+	// loop twice; set false once every worker is upgraded. Events that
+	// carry identity are always fenced. Set via DAGNATS_LEGACY_STEP_EVENTS
+	// or the legacy_step_events config key.
+	LegacyStepEvents bool `json:"legacy_step_events"`
+
+	// LoopStateMaxBytes caps the state an agent loop commits per
+	// iteration through step.continue (#801). Default 256 KiB
+	// (protocol.LoopStateMaxBytesDefault). The whole run snapshot is
+	// one KV value, so the cap must stay under max_payload (the NATS
+	// default 1 MiB when max_payload is unset). Set via
+	// DAGNATS_LOOP_STATE_MAX_BYTES or the loop_state_max_bytes key.
+	LoopStateMaxBytes int `json:"loop_state_max_bytes"`
+
 	// FailOnPortConflict makes startup return an error (non-zero exit)
 	// instead of auto-falling-back to an ephemeral port when the default
 	// NATS port or default HTTP address is already in use. Default false
@@ -269,6 +287,8 @@ func DefaultConfig() Config {
 		MaxDefsPerRoot:               defaultMaxDefsPerRoot,
 		MaxGenerationDepth:           engine.MaxNestingDepth,
 		MaxRegistersPerMinutePerRoot: defaultMaxRegistersPerMinutePerRoot,
+		LegacyStepEvents:             true,
+		LoopStateMaxBytes:            protocol.LoopStateMaxBytesDefault,
 	}
 }
 
@@ -329,6 +349,13 @@ func ConfigWithPath(
 	}
 
 	if err := applyRuntimeBoundsEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+
+	if err := applyStepEventsEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+	if err := validateLoopStateMaxBytes(cfg); err != nil {
 		return Config{}, "", err
 	}
 
@@ -681,6 +708,90 @@ func parseMaxPayload(val string) (int32, error) {
 	return int32(n), nil
 }
 
+// applyStepEventsEnv resolves DAGNATS_LEGACY_STEP_EVENTS into
+// cfg.LegacyStepEvents and DAGNATS_LOOP_STATE_MAX_BYTES into
+// cfg.LoopStateMaxBytes (#801). Unset leaves the file/default value; an
+// invalid value is a hard error so a typo fails at config load rather
+// than silently keeping the default.
+func applyStepEventsEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyStepEventsEnv: cfg is nil")
+	}
+	if val := os.Getenv("DAGNATS_LEGACY_STEP_EVENTS"); val != "" {
+		accept, err := parseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid DAGNATS_LEGACY_STEP_EVENTS %q", val)
+		}
+		cfg.LegacyStepEvents = accept
+	}
+	if val := os.Getenv("DAGNATS_LOOP_STATE_MAX_BYTES"); val != "" {
+		n, err := parseLoopStateMaxBytes(val)
+		if err != nil {
+			return fmt.Errorf("invalid DAGNATS_LOOP_STATE_MAX_BYTES %q: %w", val, err)
+		}
+		cfg.LoopStateMaxBytes = n
+	}
+	return nil
+}
+
+// parseBool reads the conventional truthy and falsy spellings a config
+// file or environment variable may use.
+func parseBool(val string) (bool, error) {
+	if val == "" {
+		panic("parseBool: val must not be empty")
+	}
+	switch strings.ToLower(val) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	}
+	if len(val) > 64 {
+		val = val[:64]
+	}
+	return false, fmt.Errorf("not a boolean: %q", val)
+}
+
+// parseLoopStateMaxBytes parses an explicit loop_state_max_bytes value:
+// a positive byte count.
+func parseLoopStateMaxBytes(val string) (int, error) {
+	if val == "" {
+		panic("parseLoopStateMaxBytes: val must not be empty")
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, err
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("must be positive, got %d", n)
+	}
+	return n, nil
+}
+
+// validateLoopStateMaxBytes rejects a loop state cap the run snapshot
+// could not hold: the snapshot is one KV value bounded by max_payload
+// (the NATS default when max_payload is unset).
+func validateLoopStateMaxBytes(cfg Config) error {
+	if cfg.LoopStateMaxBytes <= 0 {
+		return fmt.Errorf(
+			"invalid loop_state_max_bytes: must be positive, got %d",
+			cfg.LoopStateMaxBytes,
+		)
+	}
+	const natsDefaultMaxPayload = 1 << 20
+	maxPayload := int64(natsDefaultMaxPayload)
+	if cfg.MaxPayload > 0 {
+		maxPayload = int64(cfg.MaxPayload)
+	}
+	if int64(cfg.LoopStateMaxBytes) > maxPayload {
+		return fmt.Errorf(
+			"invalid loop_state_max_bytes: %d exceeds max_payload (%d bytes)",
+			cfg.LoopStateMaxBytes, maxPayload,
+		)
+	}
+	return nil
+}
+
 // validateMaxPayload checks an explicit max_payload byte count: it must be
 // positive and at most maxPayloadCeiling.
 func validateMaxPayload(n int64) error {
@@ -1000,6 +1111,18 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		}
 	case "otlp_endpoint":
 		cfg.OTLPEndpoint = val
+	case "legacy_step_events":
+		accept, err := parseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid legacy_step_events: %w", err)
+		}
+		cfg.LegacyStepEvents = accept
+	case "loop_state_max_bytes":
+		n, err := parseLoopStateMaxBytes(val)
+		if err != nil {
+			return fmt.Errorf("invalid loop_state_max_bytes: %w", err)
+		}
+		cfg.LoopStateMaxBytes = n
 	default:
 		if strings.HasPrefix(key, "worker.") {
 			return applyWorkerConfigValue(key, val, cfg)

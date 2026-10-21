@@ -254,6 +254,8 @@ func (s *Server) startComponents() error {
 		s.nc, engine.WithRunsMaxAge(s.cfg.RunsMaxAge),
 		engine.WithGrantPolicyHolder(s.grantHolder),
 		engine.WithDebounceHandler(debounceFire),
+		engine.WithLegacyStepEvents(s.cfg.LegacyStepEvents),
+		engine.WithLoopStateMaxBytes(s.cfg.LoopStateMaxBytes),
 	)
 	if err := s.orch.Start(); err != nil {
 		s.natsAPI.Stop()
