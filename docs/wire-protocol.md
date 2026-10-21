@@ -254,9 +254,16 @@ When a run is cancelled the engine publishes an empty core NATS message on `dagn
 | `attempt_number` | int | The 1-based attempt `step.started` reported for this delivery |
 | `dispatch_nonce` | string | `TaskPayload.dispatch_nonce` of the task being resolved; may be empty for a legacy task payload |
 
-The engine acts on such an event only while the step is **Running** on exactly
-that iteration and attempt, and (when the event carries a nonce) that dispatch
-nonce. Anything else — a worker whose claim lapsed and whose task another worker
+The engine acts on such an event only while the step is still on exactly that
+dispatch: **Running** on that iteration and attempt, and (when the event carries
+a nonce) that dispatch nonce; or **Queued** on that iteration with a nonce equal
+to the step's. The Queued case is a cluster: the engines share one
+`WORKFLOW_HISTORY` consumer, so the engine handling the event may load the step
+before another engine has applied the worker's `step.started`. The attempt is
+not compared then (it is owned by `step.queued`/`step.started` and still lags);
+the engine adopts the event's `attempt_number` before acting on it, and an event
+without a nonce is dropped with reason `nonce`. Anything else — a worker whose
+claim lapsed and whose task another worker
 took over, a redelivery of an event already applied, a duplicate continue, a
 watchdog armed for an earlier attempt — is dropped and counted in the
 `engine.step_events.rejected` metric (labels `event`, `reason`). The engine's own
@@ -273,6 +280,14 @@ duplicate `step.continue` from such a worker can still advance a loop twice.
 The worker SDK and the HTTP bridge stamp these fields on every lifecycle event
 they publish. A client publishing events itself should copy them from the task
 payload and the attempt it reported on `step.started`.
+
+`step.started` is not fenced, but it carries the task's `dispatch_nonce` too
+(the field alone, no `iteration`). The engine ignores a `step.started` whose
+nonce differs from the step's current one (counted with reason `nonce`): it is
+the late start of a dispatch the step has already left, for example an attempt
+whose `step.failed` was accepted while the step was Queued and whose retry is
+already pending under a fresh nonce. A `step.started` without a nonce is
+applied as before.
 
 Not fenced: map instance events (`{step}.map.{i}` has no per-instance identity
 in the snapshot; they converge through the map step's own logic) and the
