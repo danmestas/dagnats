@@ -69,7 +69,7 @@ type ControlPlane interface {
     // palette. Validated at the boundary; namespaced to the caller; counts to quota.
     RegisterWorkflow(ctx, def dag.WorkflowDef, opts RegisterOpts) (scopedName string, err error)
     // Start a run of a registered workflow (own namespace, or one granted).
-    StartRun(ctx, name string, input any) (runID string, err error)
+    StartRun(ctx, name string, input any, opts ...StartOpt) (runID string, err error) // WithSpawnKey: idempotent (#803)
     // Tier 2 only: ask the supervisor to provision a worker that serves new functions.
     ProvisionFunction(ctx, spec FunctionSpec) (handle WorkerHandle, err error)
     Budget() RuntimeBudget

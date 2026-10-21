@@ -790,6 +790,30 @@ The `dagnats-api` micro service answers these subjects for clients that talk to 
 
 The lease endpoints share the queue group `dagnats-leases`, so one instance serves each request. The others have no queue group, so every running instance receives the request.
 
+## Idempotent child-run spawn (`api.runs.spawn`)
+
+A gated handler spawns a child run with `api.runs.spawn`. The request is
+`{child_workflow, parent_run_id, parent_step_id, input, nonce, key}`; the
+reply is `{run_id}` or `{error, kind}`.
+
+`key` is optional and additive. Without it every request spawns a new child.
+With it, the server claims the child run ID with a KV `Create` in the
+`idempotency_keys` bucket, under a slot derived from SHA-256 of
+`(parent_run_id, parent_step_id, key)`. A repeat request with the same triple
+returns the original `run_id` and spawns nothing, even if the child has
+already finished or the tree is at its active-run quota.
+
+- The key is scoped to the calling step, so two steps can reuse a key.
+- The claim expires with the bucket TTL (24h); a repeat after that spawns a
+  new child.
+- Maximum key length is 256 bytes; longer keys get `kind: "invalid_def"`.
+- The claim is written before the spawn event is published, and the event's
+  `Nats-Msg-Id` includes the child run ID. If the server dies between the two,
+  the next request with the same key finds the claim, sees that the child run
+  does not exist, and republishes, so exactly one child results.
+
+In the Go SDK, pass `worker.WithSpawnKey(key)` to `ControlPlane.StartRun`.
+
 ## Reference Implementations
 
 - **Go (NATS):** `worker/` package

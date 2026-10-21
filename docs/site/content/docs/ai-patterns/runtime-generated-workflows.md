@@ -25,7 +25,8 @@ type ControlPlane interface {
     // Author an ephemeral workflow def; returns the server-scoped name.
     RegisterWorkflow(ctx context.Context, def dag.WorkflowDef, opts RegisterOpts) (scopedName string, err error)
     // Launch a child run of a (scoped) workflow; returns the child run ID.
-    StartRun(ctx context.Context, name string, input []byte) (runID string, err error)
+    // Pass worker.WithSpawnKey(k) to make a replayed call return the same child.
+    StartRun(ctx context.Context, name string, input []byte, opts ...StartOpt) (runID string, err error)
     // Current-vs-max quota usage, so a handler can self-throttle.
     Budget(ctx context.Context) (RuntimeBudget, error)
 }

@@ -33,7 +33,6 @@ import (
 	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
-	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -516,8 +515,21 @@ func (s *Service) SpawnChildRun(
 	childWorkflow, parentRunID, parentStepID string,
 	input []byte,
 ) (string, string, error) {
+	return s.SpawnChildRunKeyed(
+		ctx, childWorkflow, parentRunID, parentStepID, input, "")
+}
+
+// SpawnChildRunKeyed is SpawnChildRun with an optional idempotency key
+// (#803). A non-empty key claims the child run ID on (parent run, parent
+// step, key), so a replayed call returns the existing child and spawns no
+// second one. An empty key is exactly SpawnChildRun.
+func (s *Service) SpawnChildRunKeyed(
+	ctx context.Context,
+	childWorkflow, parentRunID, parentStepID string,
+	input []byte, key string,
+) (string, string, error) {
 	if ctx == nil {
-		panic("SpawnChildRun: ctx must not be nil")
+		panic("SpawnChildRunKeyed: ctx must not be nil")
 	}
 	var runID, kind string
 	err := s.observed(ctx, "spawnChildRun",
@@ -528,8 +540,18 @@ func (s *Service) SpawnChildRun(
 		},
 		func(ctx context.Context) error {
 			var innerErr error
+			if key != "" {
+				var hit bool
+				runID, kind, hit, innerErr = s.replayKeyedSpawn(
+					ctx, childWorkflow, parentRunID, parentStepID,
+					input, key)
+				if hit {
+					return innerErr
+				}
+			}
 			runID, kind, innerErr = s.spawnChildRun(
-				ctx, childWorkflow, parentRunID, parentStepID, input,
+				ctx, childWorkflow, parentRunID, parentStepID,
+				input, key,
 			)
 			return innerErr
 		},
@@ -542,7 +564,7 @@ func (s *Service) SpawnChildRun(
 func (s *Service) spawnChildRun(
 	ctx context.Context,
 	childWorkflow, parentRunID, parentStepID string,
-	input []byte,
+	input []byte, key string,
 ) (string, string, error) {
 	if ctx == nil {
 		panic("spawnChildRun: ctx must not be nil")
@@ -585,9 +607,14 @@ func (s *Service) spawnChildRun(
 			"active-run quota exceeded for root %q (%d >= %d)",
 			root, active, s.limits.MaxActiveRunsPerRoot)
 	}
-	childRunID := runid.New()
+	childRunID, kind, err := s.claimChildRunID(
+		ctx, parentRunID, parentStepID, key)
+	if err != nil {
+		return "", kind, err
+	}
 	if err := s.publishSpawn(
-		ctx, childWorkflow, parentRunID, parentStepID, input, childRunID,
+		ctx, childWorkflow, parentRunID, parentStepID, input,
+		childRunID, key != "",
 	); err != nil {
 		return "", cpKindTransport, err
 	}
@@ -904,7 +931,7 @@ func rootFromScopedKey(key string) (string, bool) {
 func (s *Service) publishSpawn(
 	ctx context.Context,
 	childWorkflow, parentRunID, parentStepID string,
-	input []byte, childRunID string,
+	input []byte, childRunID string, keyed bool,
 ) error {
 	if parentStepID == "" {
 		// NewStepEvent panics on empty stepID; a runtime spawn always
@@ -925,9 +952,10 @@ func (s *Service) publishSpawn(
 	evt := protocol.NewStepEvent(
 		protocol.EventWorkflowSpawn, parentRunID, parentStepID, payload,
 	)
+	msgID := spawnMsgID(evt, childRunID, keyed)
 	msg := &nats.Msg{
 		Subject: evt.NATSSubject(),
-		Header:  nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
+		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
 	if _, err := s.tp.JSPublishMsgEvent(ctx, msg, &evt); err != nil {
 		return fmt.Errorf("publish spawn event: %w", err)

@@ -55,9 +55,11 @@ type ControlPlane interface {
 
 	// StartRun launches a child run of the named (scoped) workflow with
 	// the given input, returning the child run ID. Lineage and the
-	// nesting-depth cap are enforced server-side.
+	// nesting-depth cap are enforced server-side. Pass WithSpawnKey to make
+	// the call idempotent: a repeat with the same key from the same step
+	// returns the existing child instead of spawning another (#803).
 	StartRun(
-		ctx context.Context, name string, input []byte,
+		ctx context.Context, name string, input []byte, opts ...StartOpt,
 	) (runID string, err error)
 
 	// Budget reports the owning tree's current-vs-max for the two quota
@@ -76,6 +78,23 @@ type RuntimeBudget struct {
 	MaxActiveRuns     int `json:"max_active_runs"`
 	RegisteredDefs    int `json:"registered_defs"`
 	MaxRegisteredDefs int `json:"max_registered_defs"`
+}
+
+// StartOpt configures one StartRun call.
+type StartOpt func(*startOpts)
+
+type startOpts struct{ key string }
+
+// SpawnKeyMaxBytes is the longest accepted spawn key.
+const SpawnKeyMaxBytes = 256
+
+// WithSpawnKey makes StartRun idempotent per (owning run, step, key): a
+// replayed tool call carrying the same key gets the original child run ID
+// and no second child is spawned (#803). The key is scoped to the calling
+// step and expires after 24h. Keys longer than SpawnKeyMaxBytes are rejected
+// with KindInvalidDef; an empty key means no idempotency.
+func WithSpawnKey(key string) StartOpt {
+	return func(o *startOpts) { o.key = key }
 }
 
 // RegisterOpts carries optional knobs for RegisterWorkflow. Promote
@@ -207,6 +226,9 @@ type runSpawnRequest struct {
 	// verifies it against the parent run's ParentStepID DispatchNonce.
 	// Additive, omitempty.
 	Nonce string `json:"nonce,omitempty"`
+	// Key makes the spawn idempotent per (parent run, parent step, key)
+	// (#803). Additive, omitempty; absent means every call spawns a child.
+	Key string `json:"key,omitempty"`
 }
 
 // runSpawnReply is the wire reply for api.runs.spawn.
@@ -317,7 +339,7 @@ func (c *workerControlPlane) RegisterWorkflow(
 // StartRun launches a child run of the scoped workflow. Lineage and the
 // nesting-depth cap are enforced by the server via the spawn-event path.
 func (c *workerControlPlane) StartRun(
-	ctx context.Context, name string, input []byte,
+	ctx context.Context, name string, input []byte, opts ...StartOpt,
 ) (string, error) {
 	if ctx == nil {
 		panic("StartRun: ctx must not be nil")
@@ -328,7 +350,12 @@ func (c *workerControlPlane) StartRun(
 	if err := validateScopedName(name); err != nil {
 		return "", err
 	}
+	var so startOpts
+	for _, opt := range opts {
+		opt(&so)
+	}
 	req := runSpawnRequest{
+		Key:           so.key,
 		ChildWorkflow: name,
 		ParentRunID:   c.ownerRunID,
 		ParentStepID:  c.stepID,

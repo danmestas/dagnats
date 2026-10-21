@@ -99,6 +99,8 @@ Catch\-up contract: on subscribe, the worker scans the \`triggers\` KV bucket an
   - [func ListServices\(js jetstream.JetStream\) \(\[\]ServiceDef, error\)](<#ListServices>)
 - [type SignalTask](<#SignalTask>)
 - [type SimpleTask](<#SimpleTask>)
+- [type StartOpt](<#StartOpt>)
+  - [func WithSpawnKey\(key string\) StartOpt](<#WithSpawnKey>)
 - [type StreamTask](<#StreamTask>)
 - [type TaskContext](<#TaskContext>)
 - [type TriggerEnvelope](<#TriggerEnvelope>)
@@ -127,6 +129,12 @@ Catch\-up contract: on subscribe, the worker scans the \`triggers\` KV bucket an
 
 ```go
 const AdminTokenID = workertoken.AdminTokenID
+```
+
+<a name="SpawnKeyMaxBytes"></a>SpawnKeyMaxBytes is the longest accepted spawn key.
+
+```go
+const SpawnKeyMaxBytes = 256
 ```
 
 ## Variables
@@ -241,7 +249,7 @@ type CheckpointTask interface {
 ```
 
 <a name="ControlPlane"></a>
-## type [ControlPlane](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L43-L68>)
+## type [ControlPlane](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L43-L70>)
 
 ControlPlane lets a gated handler author an ephemeral workflow def at runtime and launch a child run of it. nil unless the step declared the "control\-plane" capability AND the deployment granted it — always nil\-check before use.
 
@@ -263,9 +271,11 @@ type ControlPlane interface {
 
     // StartRun launches a child run of the named (scoped) workflow with
     // the given input, returning the child run ID. Lineage and the
-    // nesting-depth cap are enforced server-side.
+    // nesting-depth cap are enforced server-side. Pass WithSpawnKey to make
+    // the call idempotent: a repeat with the same key from the same step
+    // returns the existing child instead of spawning another (#803).
     StartRun(
-        ctx context.Context, name string, input []byte,
+        ctx context.Context, name string, input []byte, opts ...StartOpt,
     ) (runID string, err error)
 
     // Budget reports the owning tree's current-vs-max for the two quota
@@ -277,7 +287,7 @@ type ControlPlane interface {
 ```
 
 <a name="NewControlPlane"></a>
-### func [NewControlPlane](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L256>)
+### func [NewControlPlane](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L278>)
 
 ```go
 func NewControlPlane(nc *nats.Conn) ControlPlane
@@ -286,7 +296,7 @@ func NewControlPlane(nc *nats.Conn) ControlPlane
 NewControlPlane constructs a ControlPlane bound to nc. The owning run and step are bound later, at grant time, via newControlPlaneFor — this public constructor is what a deployment wires through WithControlPlane. Panics if nc is nil \(programmer error at startup\).
 
 <a name="ControlPlaneError"></a>
-## type [ControlPlaneError](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L117-L122>)
+## type [ControlPlaneError](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L136-L141>)
 
 ControlPlaneError is the single structured error type every boundary failure returns. Kind is the branch key; Op names the failing operation; Message is human\-readable; wrapped carries any underlying cause for errors.Is/As against the sentinels below.
 
@@ -300,7 +310,7 @@ type ControlPlaneError struct {
 ```
 
 <a name="ControlPlaneError.Error"></a>
-### func \(\*ControlPlaneError\) [Error](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L124>)
+### func \(\*ControlPlaneError\) [Error](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L143>)
 
 ```go
 func (e *ControlPlaneError) Error() string
@@ -309,7 +319,7 @@ func (e *ControlPlaneError) Error() string
 
 
 <a name="ControlPlaneError.Is"></a>
-### func \(\*ControlPlaneError\) [Is](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L153>)
+### func \(\*ControlPlaneError\) [Is](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L172>)
 
 ```go
 func (e *ControlPlaneError) Is(target error) bool
@@ -318,7 +328,7 @@ func (e *ControlPlaneError) Is(target error) bool
 Is lets errors.Is match by Kind, so callers can write errors.Is\(err, ErrPromotionUnsupported\) regardless of the concrete instance returned.
 
 <a name="ControlPlaneError.Unwrap"></a>
-### func \(\*ControlPlaneError\) [Unwrap](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L131>)
+### func \(\*ControlPlaneError\) [Unwrap](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L150>)
 
 ```go
 func (e *ControlPlaneError) Unwrap() error
@@ -327,7 +337,7 @@ func (e *ControlPlaneError) Unwrap() error
 
 
 <a name="ControlPlaneErrorKind"></a>
-## type [ControlPlaneErrorKind](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L96>)
+## type [ControlPlaneErrorKind](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L115>)
 
 ControlPlaneErrorKind is the small, closed set of failure categories a gated handler may branch on. Stable strings so they can also travel on the wire between the server endpoints and the worker handle.
 
@@ -559,7 +569,7 @@ func (e *RateLimitError) Unwrap() error
 
 
 <a name="RegisterOpts"></a>
-## type [RegisterOpts](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L89-L91>)
+## type [RegisterOpts](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L108-L110>)
 
 RegisterOpts carries optional knobs for RegisterWorkflow. Promote requests the def be registered under the reaper\-immune "promoted.\*" namespace instead of the ephemeral "agent.\<root\>.\*" namespace \(\#377\). The worker forwards the flag; the server owns the namespace shape. Authorization for promotion is GOVERNED by the grant policy's promote list \(\#380\): an unauthorized caller gets KindDenied. Promoted defs remain outside the \#378 root\-scoped quota / rate limits \(those bound only root\-scoped ephemeral defs\).
 
@@ -570,7 +580,7 @@ type RegisterOpts struct {
 ```
 
 <a name="RuntimeBudget"></a>
-## type [RuntimeBudget](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L74-L79>)
+## type [RuntimeBudget](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L76-L81>)
 
 RuntimeBudget is the server\-computed snapshot of a spawn tree's quota usage \(\#378\). It carries real, scan\-backed numbers — not a stub. Token / compute metering is deferred \(\#378 P3\), so no such field exists here; a zero\-valued field would lie about being tracked.
 
@@ -642,6 +652,24 @@ type SimpleTask interface {
     FailPermanent(err error) error
 }
 ```
+
+<a name="StartOpt"></a>
+## type [StartOpt](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L84>)
+
+StartOpt configures one StartRun call.
+
+```go
+type StartOpt func(*startOpts)
+```
+
+<a name="WithSpawnKey"></a>
+### func [WithSpawnKey](<https://github.com/danmestas/dagnats/blob/main/worker/controlplane.go#L96>)
+
+```go
+func WithSpawnKey(key string) StartOpt
+```
+
+WithSpawnKey makes StartRun idempotent per \(owning run, step, key\): a replayed tool call carrying the same key gets the original child run ID and no second child is spawned \(\#803\). The key is scoped to the calling step and expires after 24h. Keys longer than SpawnKeyMaxBytes are rejected with KindInvalidDef; an empty key means no idempotency.
 
 <a name="StreamTask"></a>
 ## type [StreamTask](<https://github.com/danmestas/dagnats/blob/main/worker/roles.go#L49-L53>)

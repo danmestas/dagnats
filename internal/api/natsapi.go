@@ -301,6 +301,7 @@ func (n *NATSAPI) handleRunSpawn(req micro.Request) {
 		ParentStepID  string          `json:"parent_step_id"`
 		Input         json.RawMessage `json:"input"`
 		Nonce         string          `json:"nonce"`
+		Key           string          `json:"key"`
 	}
 	if err := json.Unmarshal(req.Data(), &r); err != nil {
 		n.reply(req, map[string]string{
@@ -321,9 +322,9 @@ func (n *NATSAPI) handleRunSpawn(req micro.Request) {
 		})
 		return
 	}
-	runID, kind, err := n.svc.SpawnChildRun(
+	runID, kind, err := n.svc.SpawnChildRunKeyed(
 		ctx, r.ChildWorkflow,
-		r.ParentRunID, r.ParentStepID, r.Input,
+		r.ParentRunID, r.ParentStepID, r.Input, r.Key,
 	)
 	if err != nil {
 		n.reply(req, map[string]string{
