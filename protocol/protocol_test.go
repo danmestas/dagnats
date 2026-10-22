@@ -45,7 +45,7 @@ func TestEventTypeConstants(t *testing.T) {
 	types := []EventType{
 		EventWorkflowStarted, EventStepQueued, EventStepStarted,
 		EventStepCompleted, EventStepFailed, EventStepContinue,
-		EventAgentLoopIteration, EventWorkflowCompleted, EventWorkflowFailed,
+		EventWorkflowCompleted, EventWorkflowFailed,
 	}
 	seen := make(map[EventType]bool, len(types))
 	for _, et := range types {

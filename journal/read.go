@@ -183,3 +183,17 @@ func retryTransient(ctx context.Context, op func() error) error {
 	}
 	return err
 }
+
+// DecodeMsg reads one journal message, as delivered by a consumer on
+// the journal stream, into a Record. The record's Seq is the message's
+// stream sequence, the cursor clients resume from.
+func DecodeMsg(msg jetstream.Msg) (Record, error) {
+	if msg == nil {
+		panic("journal.DecodeMsg: msg must not be nil")
+	}
+	meta, err := msg.Metadata()
+	if err != nil {
+		return Record{}, fmt.Errorf("journal: message metadata: %w", err)
+	}
+	return decodeRecord(meta.Sequence.Stream, msg.Headers(), msg.Data(), meta.Timestamp), nil
+}

@@ -370,6 +370,58 @@ curl "http://localhost:8080/runs/a1b2c3d4.../logs?step=fetch-diff"
 curl -N "http://localhost:8080/runs/a1b2c3d4.../logs?step=fetch-diff&follow=1"
 ```
 
+### Step journal
+
+Read an agent step's journal (ADR-026): the records its handler and the
+SDK appended, in order. Authorization is that of run logs.
+
+```
+GET /runs/{id}/steps/{step}/journal?from={seq}&follow={0|1}
+```
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `from` | no | First journal sequence to return (inclusive). The sequence is the record's `seq`. Omit for the start of the journal. |
+| `follow` | no | `1` upgrades to Server-Sent Events. |
+
+Header `Last-Event-ID` (follow and page): the last `seq` the client
+received; the response resumes one past it. It wins over `from`, because
+an `EventSource` reconnect resends its original URL together with the
+header.
+
+**Page response (`200`):**
+
+```json
+{"records": [{"seq": 41, "type": "claim", "iteration": 0, "attempt": 1,
+  "delivered": 1, "index": 0, "time": "...", "data": {}}],
+ "next_from": 42, "eof": false}
+```
+
+`next_from` is the `from` for the next page. A page holds at most 1024
+records. `eof` is true once the step is terminal and the page reached
+the end. A step with no journal returns `{"records": [], "next_from": 0,
+"eof": false}`, not an error.
+
+**Follow (`follow=1`):** each record is an SSE frame
+`id: {seq}` / `event: record` / `data: {record}`. Idle connections get
+`: keepalive` comments. The stream ends with `event: eof` once the step
+is terminal and the journal is drained (up to a couple of seconds
+later), `event: error` if the journal stream fails, or when the
+connection reaches `LogFollowDurationMax`. Follows share
+`LogFollowConcurrentMax` with run-log follows.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Records (possibly empty) or an SSE stream |
+| `404` | Run not found, or `step` unknown |
+| `405` | Method other than `GET` |
+| `503` | `follow=1` at `LogFollowConcurrentMax`, or the journal stream is not available |
+
+**curl (follow):**
+```bash
+curl -N "http://localhost:8080/runs/a1b2c3d4.../steps/agent/journal?follow=1"
+```
+
 ### Cancel Run
 
 Cancel a running workflow by publishing a `workflow.cancelled` event.

@@ -28,7 +28,7 @@
 - **Source of truth:** Immutable event log on `WORKFLOW_HISTORY` stream (`history.{run_id}`)
 - **KV snapshots:** Recovery convenience, not authoritative
 - **Orchestrator:** Stateless — replays from stream on restart
-- **Event types:** `workflow.started`, `workflow.completed`, `workflow.failed`, `workflow.cancelled`, `workflow.spawn`, `workflow.child.completed`, `workflow.child.failed`, `step.completed`, `step.failed`, `step.cancelled`, `step.continue`, `agent.loop.iteration`, `step.sleep.started`, `step.sleep.completed`, `step.wait.started`, `step.wait.matched`, `step.wait.timeout`, `step.map.started`, `step.map.completed`, `step.map.instance.completed`, `compensate.started`, `compensate.step.completed`, `compensate.failed`, `compensate.completed`
+- **Event types:** `workflow.started`, `workflow.completed`, `workflow.failed`, `workflow.cancelled`, `workflow.spawn`, `workflow.child.completed`, `workflow.child.failed`, `step.completed`, `step.failed`, `step.cancelled`, `step.continue`, `step.sleep.started`, `step.sleep.completed`, `step.wait.started`, `step.wait.matched`, `step.wait.timeout`, `step.map.started`, `step.map.completed`, `step.map.instance.completed`, `compensate.started`, `compensate.step.completed`, `compensate.failed`, `compensate.completed`
 
 ## NATS Primitives (Instead of Custom Infrastructure)
 

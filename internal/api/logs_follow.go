@@ -90,20 +90,13 @@ func serveLogsFollow(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 	runID, stepID string, attempt, iteration int,
 ) {
-	if atomic.AddInt64(&logFollowActive, 1) > logFollowConcurrentMax {
-		atomic.AddInt64(&logFollowActive, -1)
-		http.Error(w, "too many concurrent log follows", http.StatusServiceUnavailable)
-		return
-	}
-	defer atomic.AddInt64(&logFollowActive, -1)
-
-	flusher, ok := w.(http.Flusher)
+	release, flusher, ok := beginFollow(w)
 	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+	defer release()
 
-	ctx, cancel := context.WithTimeout(r.Context(), protocol.LogFollowDurationMax)
+	ctx, cancel := context.WithTimeout(r.Context(), followDurationMax)
 	defer cancel()
 
 	cons, err := openLogsFollowConsumer(
@@ -114,13 +107,42 @@ func serveLogsFollow(
 		return
 	}
 
+	startSSE(w, flusher)
+
+	runLogsFollowLoop(ctx, svc, w, flusher, cons, runID, stepID, attempt, iteration)
+}
+
+// beginFollow admits one SSE follow connection, shared by the log and
+// journal streams: it takes a slot under logFollowConcurrentMax (503
+// when full) and checks the writer can stream. release gives the slot
+// back; ok is false when a response was already written.
+func beginFollow(w http.ResponseWriter) (release func(), flusher http.Flusher, ok bool) {
+	if w == nil {
+		panic("beginFollow: w must not be nil")
+	}
+	if atomic.AddInt64(&logFollowActive, 1) > logFollowConcurrentMax {
+		atomic.AddInt64(&logFollowActive, -1)
+		http.Error(w, "too many concurrent follows", http.StatusServiceUnavailable)
+		return nil, nil, false
+	}
+	release = func() { atomic.AddInt64(&logFollowActive, -1) }
+	flusher, canFlush := w.(http.Flusher)
+	if !canFlush {
+		release()
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return release, flusher, true
+}
+
+// startSSE writes the event-stream headers and flushes them, so the
+// client sees the connection open before the first event.
+func startSSE(w http.ResponseWriter, flusher http.Flusher) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	runLogsFollowLoop(ctx, svc, w, flusher, cons, runID, stepID, attempt, iteration)
 }
 
 // openLogsFollowConsumer opens the single ordered consumer a follow
@@ -185,7 +207,7 @@ func runLogsFollowLoop(
 			// the stream is deleted simply expires). Confirm it
 			// ourselves rather than waiting for the consumer to
 			// report a loss it may never report.
-			if logsStreamMissing(ctx, svc.js) {
+			if streamMissing(ctx, svc.js, "BUILD_LOGS") {
 				writeLogsErrorEvent(w, flusher, errLogStreamUnavailable)
 				return
 			}
@@ -222,21 +244,21 @@ func runLogsFollowLoop(
 // transport-level error the JS API happened to return.
 var errLogStreamUnavailable = errors.New("log stream unavailable")
 
-// logsStreamMissing reports whether BUILD_LOGS has gone away. Only a
+// streamMissing reports whether the named stream has gone away. Only a
 // definite ErrStreamNotFound counts: a timed-out or otherwise failed
 // check must not end a healthy follow, so every other outcome
 // (including an error) reports "still there" and the next tick
 // retries.
-func logsStreamMissing(ctx context.Context, js jetstream.JetStream) bool {
+func streamMissing(ctx context.Context, js jetstream.JetStream, name string) bool {
 	if js == nil {
-		panic("logsStreamMissing: js must not be nil")
+		panic("streamMissing: js must not be nil")
 	}
 	if ctx == nil {
-		panic("logsStreamMissing: ctx must not be nil")
+		panic("streamMissing: ctx must not be nil")
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, logsFollowStreamCheckTimeout)
 	defer cancel()
-	_, err := js.Stream(checkCtx, "BUILD_LOGS")
+	_, err := js.Stream(checkCtx, name)
 	return errors.Is(err, jetstream.ErrStreamNotFound)
 }
 

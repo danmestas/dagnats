@@ -47,6 +47,10 @@ const logsFetchIdleWait = 200 * time.Millisecond
 // real connections.
 var logFollowConcurrentMax int64 = protocol.LogFollowConcurrentMax
 
+// followDurationMax bounds one SSE follow connection, for the log and
+// journal streams alike. A var so tests can shorten it.
+var followDurationMax = protocol.LogFollowDurationMax
+
 // logFollowActive counts in-flight SSE follow connections across this
 // server process.
 var logFollowActive int64

@@ -130,7 +130,6 @@ const (
 	EventStepCompleted            EventType = "step.completed"
 	EventStepFailed               EventType = "step.failed"
 	EventStepContinue             EventType = "step.continue"
-	EventAgentLoopIteration       EventType = "agent.loop.iteration"
 	EventStepMapStarted           EventType = "step.map.started"
 	EventStepMapCompleted         EventType = "step.map.completed"
 	EventStepMapInstanceCompleted EventType = "step.map.instance.completed"

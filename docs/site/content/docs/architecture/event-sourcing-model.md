@@ -63,7 +63,6 @@ The system defines these event types, each carrying a typed payload:
 | `step.map.started` | Map fan-out begins |
 | `step.map.completed` | All map instances done |
 | `step.map.instance.completed` | One map instance done |
-| `agent.loop.iteration` | Agent loop progress |
 | `approval.requested` | Approval gate opened |
 | `approval.granted` | Approval accepted |
 | `approval.rejected` | Approval rejected |

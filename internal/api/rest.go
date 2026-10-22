@@ -106,6 +106,7 @@ func (s *Service) routeRuns(
 //	GET  /runs/{id}              → handleGetRun
 //	POST /runs/{id}/cancel       → handleCancelRun
 //	POST /runs/{id}/signal/{name} → handleSendSignal
+//	GET  /runs/{id}/steps/{step}/journal → handleGetStepJournal
 func (s *Service) routeRunByID(
 	w http.ResponseWriter, r *http.Request,
 ) {
@@ -135,6 +136,14 @@ func (s *Service) routeRunByID(
 			return
 		}
 		handleApproval(s, w, r)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "steps" && parts[3] == "journal" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		handleGetStepJournal(s, w, r)
 		return
 	}
 	if len(parts) >= 2 && parts[1] == "logs" {

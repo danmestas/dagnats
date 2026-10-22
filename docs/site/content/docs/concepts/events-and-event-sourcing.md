@@ -42,7 +42,6 @@ Events are categorized by lifecycle scope:
 
 | Event | When published |
 |-------|---------------|
-| `agent.loop.iteration` | Engine processes a Continue event |
 
 ### Sleep and wait
 
