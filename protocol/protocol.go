@@ -277,6 +277,21 @@ func NewStepEvent(eventType EventType, runID string, stepID string, payload []by
 	}
 }
 
+// NewInputQueuedEvent constructs the step.input.queued event the API
+// publishes after creating a submission (ADR-027). Its msg-id names the
+// request, so a resubmission is one event.
+func NewInputQueuedEvent(runID, stepID, requestID string) Event {
+	if requestID == "" {
+		panic("NewInputQueuedEvent: requestID must not be empty")
+	}
+	evt := NewStepEvent(EventStepInputQueued, runID, stepID, nil)
+	evt.InputRequestID = requestID
+	if evt.NATSMsgID() == runID+"."+stepID+"."+string(EventStepInputQueued) {
+		panic("NewInputQueuedEvent: msg-id must carry the request id")
+	}
+	return evt
+}
+
 // NewWorkflowEvent constructs an Event for a workflow lifecycle transition.
 // Panics on empty runID — programmer error.
 func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event {

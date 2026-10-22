@@ -151,6 +151,10 @@ func (o *Orchestrator) handleStepContinue(
 	if err != nil {
 		return err
 	}
+	wait, err := continueWait(evt)
+	if err != nil {
+		return err
+	}
 	if capErr := loopStateOverCap(len(loopState), o.loopStateMaxBytes); capErr != nil {
 		return o.failLoopStep(
 			ctx, run, evt.StepID, run.Steps[evt.StepID], capErr.Error(),
@@ -189,7 +193,7 @@ func (o *Orchestrator) handleStepContinue(
 	if !stateSet {
 		loopState = state.LoopState
 	}
-	return o.dispatchNextIteration(ctx, run, stepDef, state, loopState)
+	return o.dispatchNextIteration(ctx, run, stepDef, state, loopState, wait)
 }
 
 // dispatchNextIteration saves the iteration Advance produced together
@@ -198,10 +202,13 @@ func (o *Orchestrator) handleStepContinue(
 // enqueueReady does (#794): an engine that dies in between leaves a
 // mark that resendUnsent acts on, instead of a loop that nothing will
 // ever continue (#801). loopState is the state to save: the continue's
-// own when it carried one, else the state already saved.
+// own when it carried one, else the state already saved. wait is the
+// durable wait the continue asked for (ADR-027), saved with the
+// iteration so the send is the wait's timer, or nothing at all for an
+// input-only wait, and a resend after a crash rebuilds the same wait.
 func (o *Orchestrator) dispatchNextIteration(
 	ctx context.Context, run dag.WorkflowRun, stepDef dag.StepDef,
-	state dag.StepState, loopState []byte,
+	state dag.StepState, loopState []byte, wait *protocol.ContinueWait,
 ) error {
 	if run.RunID == "" {
 		panic("dispatchNextIteration: RunID must not be empty")
@@ -216,6 +223,7 @@ func (o *Orchestrator) dispatchNextIteration(
 	stampDispatch(&state, time.Now().UTC())
 	state.DispatchUnsent = true
 	state.LoopState = loopState
+	o.applyWait(ctx, run, stepDef.ID, &state, wait)
 	run.Steps[stepDef.ID] = state
 	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
 		return err
@@ -233,7 +241,9 @@ func (o *Orchestrator) dispatchNextIteration(
 // publishContinueTask resolves input and publishes the next
 // iteration task, with optional LoopDelay scheduling. state is the
 // step's saved state for the iteration being sent; resendUnsent calls
-// this with the snapshot's, so a resend carries the committed state.
+// this with the snapshot's, so a resend carries the committed state. A
+// state saved waiting (ADR-027) sends its wait instead: the step's
+// loop_delay does not apply to it, the wait replaces it.
 func (o *Orchestrator) publishContinueTask(
 	ctx context.Context,
 	run dag.WorkflowRun,
@@ -245,6 +255,9 @@ func (o *Orchestrator) publishContinueTask(
 	}
 	if run.RunID == "" {
 		panic("publishContinueTask: RunID must not be empty")
+	}
+	if waiting(state) {
+		return o.sendWait(ctx, run, stepDef, state)
 	}
 	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
 	if err != nil {

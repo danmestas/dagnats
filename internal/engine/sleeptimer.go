@@ -38,6 +38,12 @@ const (
 	// after the step's loop_delay (#801), so the delay survives an
 	// engine restart like retry backoff does.
 	TimerActionLoopDelay TimerAction = "loop_delay"
+	// TimerActionLoopWait fires the step.wait.elapsed event for an
+	// agent-loop iteration whose continue asked for a delay or a
+	// deadline (ADR-027). The engine, not the timer, sends the task:
+	// the step may have been woken by an input first, and only the
+	// engine's saved wait flags under the run lock can tell.
+	TimerActionLoopWait TimerAction = "loop_wait"
 )
 
 // TimerMessage is the payload published to the SLEEP_TIMERS stream.
@@ -504,6 +510,8 @@ func (st *SleepTimer) handleTimerJS(msg jetstream.Msg) {
 		}
 	case TimerActionLoopDelay:
 		st.fireLoopDelay(tm)
+	case TimerActionLoopWait:
+		st.fireLoopWait(tm)
 	default:
 		// Unknown action — ack to prevent loop.
 	}
@@ -815,4 +823,25 @@ func (st *SleepTimer) fireLoopDelay(tm TimerMessage) {
 		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
 	}
 	st.tp.JSPublishMsg(ctx, msg)
+}
+
+// fireLoopWait publishes step.wait.elapsed for the iteration a
+// loop_wait timer was armed for (ADR-027), naming that dispatch so the
+// engine can tell a late fire from a live one. The msg-id is stable
+// per attempt and iteration, so a redelivered timer is one event.
+func (st *SleepTimer) fireLoopWait(tm TimerMessage) {
+	if tm.RunID == "" || tm.StepID == "" {
+		panic("fireLoopWait: run and step must not be empty")
+	}
+	if tm.Attempt < 1 {
+		panic("fireLoopWait: a waiting iteration has an attempt")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	evt := protocol.NewStepEvent(protocol.EventStepWaitElapsed, tm.RunID, tm.StepID, nil)
+	evt.SetIdentity(tm.Iteration, tm.Attempt, tm.DispatchNonce)
+	if err := publishLifecycleEvent(ctx, st.tp, evt); err != nil {
+		slog.WarnContext(ctx, "loop wait: publish step.wait.elapsed",
+			"run_id", tm.RunID, "step_id", tm.StepID, "error", err)
+	}
 }
