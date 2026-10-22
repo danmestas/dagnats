@@ -45,6 +45,8 @@ var provisionedKVBuckets = []string{
 	// Provisioned non-fatally (needs nats-server >= 2.11); the embedded
 	// server always satisfies that.
 	LeasesBucket,
+	// Sized against the store budget like the streams (ADR-027).
+	SubmissionsBucket,
 }
 
 // ProvisionedStreamNames returns a copy of the stream names SetupAll
