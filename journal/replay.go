@@ -3,7 +3,6 @@ package journal
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 )
@@ -320,6 +319,3 @@ func (j *Journal) resync(ctx context.Context) error {
 	j.fenced = true
 	return ErrFenced
 }
-
-// errNoResponse is what ScriptedModel returns past its script.
-var errNoResponse = errors.New("scripted model: no response left")

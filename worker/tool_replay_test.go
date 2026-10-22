@@ -24,6 +24,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/journal"
+	"github.com/nats-io/nats.go"
 )
 
 func TestToolReplay_StalledUnsafeToolIsInterruptedNotRerun(t *testing.T) {
@@ -92,9 +93,16 @@ func TestToolReplay_StalledUnsafeToolIsInterruptedNotRerun(t *testing.T) {
 	if n := effects.Load(); n != 1 {
 		t.Errorf("unsafe tool ran %d times, want exactly once", n)
 	}
+	assertJournalClean(t, nc, "run-tool-replay")
+}
+
+// assertJournalClean runs the journal audit on runID and fails the
+// test on a violation.
+func assertJournalClean(t *testing.T, nc *nats.Conn, runID string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
 	defer cancel()
-	report, err := journal.Check(ctx, nc, "run-tool-replay")
+	report, err := journal.Check(ctx, nc, runID)
 	if err != nil || !report.OK() {
 		t.Errorf("Check = %+v, %v; want no violations", report, err)
 	}

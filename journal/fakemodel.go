@@ -3,8 +3,12 @@ package journal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 )
+
+// errNoResponse is what ScriptedModel returns past its script.
+var errNoResponse = errors.New("scripted model: no response left")
 
 // ScriptedModel is a fake model for tests: it answers Model calls
 // with its scripted responses in order and counts the requests it

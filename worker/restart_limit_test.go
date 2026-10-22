@@ -16,7 +16,6 @@
 package worker
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -205,12 +204,7 @@ func TestRestartLimit_RealCrashLoopFailsThenRetryResumesFromJournal(t *testing.T
 			t.Fatal("a stalled delivery never resumed")
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
-	defer cancel()
-	report, err := journal.Check(ctx, nc, "run-crashloop")
-	if err != nil || !report.OK() {
-		t.Errorf("Check = %+v, %v; want no violations", report, err)
-	}
+	assertJournalClean(t, nc, "run-crashloop")
 }
 
 // loopDefWithRetry is the agent-loop def of startLoopEngine with one
