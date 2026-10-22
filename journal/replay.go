@@ -103,7 +103,8 @@ type ModelFunc func(ctx context.Context) ([]byte, error)
 // the call as interrupted; the key is what an external system
 // deduplicates on. The returned error is the journal's (ErrFenced,
 // ErrCommitted, transport), never the tool's own, which is in the
-// result.
+// result. Tool must be called from the goroutine that owns the
+// handle; a model's parallel tool calls are issued one at a time.
 func (j *Journal) Tool(
 	ctx context.Context, call ToolCall, replay Replay, fn ToolFunc,
 ) (ToolResult, error) {
@@ -113,6 +114,7 @@ func (j *Journal) Tool(
 	if fn == nil || call.Name == "" {
 		panic("journal.Tool: fn and call.Name must not be empty")
 	}
+	defer j.enter("Tool")()
 	if j.toolCalls >= callsMax {
 		return ToolResult{}, fmt.Errorf("journal: more than %d tool calls in one iteration", callsMax)
 	}
@@ -388,7 +390,8 @@ func (j *Journal) partialOutput(intent Record) json.RawMessage {
 // and leaves the position free, and a new attempt of the iteration
 // requests afresh. Streaming tokens are not the journal's business:
 // PutStream is a non-durable preview, and a crash mid-stream
-// re-sends the request on the next delivery.
+// re-sends the request on the next delivery. Model must be called
+// from the goroutine that owns the handle.
 func (j *Journal) Model(ctx context.Context, fn ModelFunc) ([]byte, error) {
 	if fn == nil {
 		panic("journal.Model: fn must not be nil")
@@ -396,6 +399,7 @@ func (j *Journal) Model(ctx context.Context, fn ModelFunc) ([]byte, error) {
 	if ctx == nil {
 		panic("journal.Model: ctx must not be nil")
 	}
+	defer j.enter("Model")()
 	if j.modelCalls >= callsMax {
 		return nil, fmt.Errorf("journal: more than %d model calls in one iteration", callsMax)
 	}

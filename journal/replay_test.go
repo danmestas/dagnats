@@ -443,10 +443,12 @@ func TestReplay_IdempotencyKeyIsStableAcrossDeliveriesAndAttempts(t *testing.T) 
 }
 
 // TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes:
-// after attempt 1 commits a failure, attempt 2 of the same iteration
-// is the engine saying "do it again": safe calls and model requests
-// run afresh, while an unsafe call's recorded outcome stands and an
-// unsafe call left unfinished is reported interrupted.
+// attempt 1's worker dies inside an unsafe call and the engine times
+// the attempt out; attempt 2 of the same iteration is the engine
+// saying "do it again": safe calls and model requests run afresh,
+// while an unsafe call's recorded outcome stands and the unsafe call
+// left unfinished is reported interrupted. The dead worker is its own
+// handle, blocked in its tool, and is fenced when it resumes.
 func TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes(t *testing.T) {
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
@@ -474,9 +476,6 @@ func TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes(t *testi
 		t.Fatalf("Model: %v", err)
 	}
 	stalled := startBlockedTool(t, first, "send", Unsafe, false, 6)
-	if _, err := first.Commit(ctx, Commit{Action: ActionFail, Error: "boom"}); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
 	retry := open(t, c, task("run-attempts", 1, 2, 2))
 	res, err := retry.Tool(ctx, ToolCall{Name: "read"}, Safe, safe)
 	if err != nil || string(res.Output) != "2" {
@@ -495,8 +494,8 @@ func TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes(t *testi
 		t.Errorf("unfinished unsafe Tool on attempt 2 = %+v, %v; want interrupted with its key",
 			res, err)
 	}
-	if err := stalled.resume(t); !errors.Is(err, ErrCommitted) && !errors.Is(err, ErrFenced) {
-		t.Errorf("stalled tool err = %v, want ErrCommitted or ErrFenced", err)
+	if err := stalled.resume(t); !errors.Is(err, ErrFenced) {
+		t.Errorf("stalled tool err = %v, want ErrFenced", err)
 	}
 	if v := checkToolPairs(readRecords(t, c, "run-attempts"), false); len(v) != 0 {
 		t.Errorf("checker violations: %v", v)
@@ -577,7 +576,8 @@ func TestReplay_FailedModelRequestKeepsItsPosition(t *testing.T) {
 }
 
 // TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition: a
-// retry that issues the same unsafe call at another position is
+// retry (after a timeout, attempt 1's worker dead inside its last
+// call) that issues the same unsafe call at another position is
 // answered from the prior attempt's intent, with its key, so external
 // deduplication keeps working; a different call at that position is
 // a fresh one.
@@ -603,9 +603,6 @@ func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.
 		t.Fatalf("charge: %v", err)
 	}
 	stalled := startBlockedTool(t, first, "send", Unsafe, false, 6)
-	if _, err := first.Commit(ctx, Commit{Action: ActionFail, Error: "boom"}); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
 	retry := open(t, c, task("run-content", 1, 2, 2))
 	// The retry sends first, then charges another amount (a fresh
 	// call: same name, other input), then the same amount (answered
@@ -648,8 +645,8 @@ func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.
 	if err != nil || res.Key != "run-content.s.1.1" || runs.Load() != 4 {
 		t.Errorf("charge on the redelivery = %+v, %v after %d runs; want reuse", res, err, runs.Load())
 	}
-	if err := stalled.resume(t); !errors.Is(err, ErrCommitted) && !errors.Is(err, ErrFenced) {
-		t.Errorf("stalled tool err = %v, want ErrCommitted or ErrFenced", err)
+	if err := stalled.resume(t); !errors.Is(err, ErrFenced) {
+		t.Errorf("stalled tool err = %v, want ErrFenced", err)
 	}
 	if v := checkToolPairs(readRecords(t, c, "run-content"), false); len(v) != 0 {
 		t.Errorf("checker violations: %v", v)

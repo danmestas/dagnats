@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -173,7 +174,12 @@ type Commit struct {
 	RetryAfterMs int64           `json:"retry_after_ms,omitempty"`
 }
 
-// Journal is one claim on one dispatch of a step.
+// Journal is one claim on one dispatch of a step. A handle belongs to
+// one goroutine: replay matches tool and model calls by position, so
+// calls issued from several goroutines would replay in another order.
+// A handler running a model's parallel tool calls issues them through
+// the journal one at a time. Concurrent use panics; a tool function
+// may call back into the journal from the goroutine that owns it.
 type Journal struct {
 	js     jetstream.JetStream
 	pub    *natsutil.TracingPublisher
@@ -207,6 +213,10 @@ type Journal struct {
 	// honoured holds the sequences of prior-attempt unsafe intents
 	// this attempt has already answered.
 	honoured map[uint64]bool
+	// owner is the goroutine inside a public method, 0 when none;
+	// depth counts its nested calls (owner.go).
+	owner atomic.Uint64
+	depth int
 }
 
 // MsgID is the stable dedup key of a record:
@@ -369,6 +379,7 @@ func (j *Journal) Append(
 	if recordType == TypeClaim || recordType == TypeCommit {
 		panic("journal.Append: claim and commit are written by Open and Commit")
 	}
+	defer j.enter("Append")()
 	return j.append(ctx, recordType, data)
 }
 
@@ -383,6 +394,7 @@ func (j *Journal) Pause(
 	if duration <= 0 {
 		panic("journal.Pause: duration must be positive")
 	}
+	defer j.enter("Pause")()
 	data, err := json.Marshal(Pause{Name: name, DurationMs: duration.Milliseconds()})
 	if err != nil {
 		return 0, fmt.Errorf("marshal pause: %w", err)
@@ -403,6 +415,7 @@ func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error) {
 	if ctx == nil {
 		panic("journal.Commit: ctx must not be nil")
 	}
+	defer j.enter("Commit")()
 	data, err := json.Marshal(c)
 	if err != nil {
 		return 0, fmt.Errorf("marshal commit: %w", err)

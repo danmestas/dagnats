@@ -204,6 +204,16 @@ its intent and the tool's effect may complete that effect after the
 successor recorded `interrupted`. The result carries the call's key so
 the handler, or the external system, can deduplicate on it.
 
+A journal handle belongs to one goroutine. Replay matches calls by
+position, so calls issued from several goroutines would take positions
+in one order and replay in another; a mutex alone would not fix that. A
+handler that runs a model's parallel tool calls issues them through the
+journal one at a time for now, and the handle panics on concurrent use
+(a re-entrant owner check, so a tool function may call back into the
+journal from the owning goroutine for partial-output entries).
+Concurrent tool calls, keyed by the model's call ids rather than by
+position, are future work.
+
 The successor writes no second intent for a call it answers, so each
 call has one intent answered by one result, in order (checker invariant
 4, keyed by iteration and call rather than by claim; an intent left
