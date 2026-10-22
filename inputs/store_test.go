@@ -200,7 +200,7 @@ func TestSettleUnanswered_SweepsQueuedOnly(t *testing.T) {
 	if _, err := store.Transition(ctx, p1, StatusPlaced, 1); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
-	n, err := store.SettleUnanswered(ctx, "run-1", "agent")
+	n, err := store.SettleUnanswered(ctx, "run-1", "agent", nil)
 	if err != nil || n != 2 {
 		t.Fatalf("SettleUnanswered = %d, %v; want 2", n, err)
 	}
@@ -213,7 +213,7 @@ func TestSettleUnanswered_SweepsQueuedOnly(t *testing.T) {
 			t.Errorf("%s status = %s, want %s", id, e.Status, want)
 		}
 	}
-	again, err := store.SettleUnanswered(ctx, "run-1", "agent")
+	again, err := store.SettleUnanswered(ctx, "run-1", "agent", nil)
 	if err != nil || again != 0 {
 		t.Errorf("second sweep settled %d, %v; want 0", again, err)
 	}
@@ -322,5 +322,36 @@ func TestAwait_UnknownKeyFailsAtOnce(t *testing.T) {
 	}
 	if time.Since(start) > time.Second {
 		t.Errorf("Await waited %s for a key that does not exist", time.Since(start))
+	}
+}
+
+func TestSettleUnanswered_SettlesUnrecordedClaims(t *testing.T) {
+	store, ctx := openStore(t)
+	for _, id := range []string{"dead", "live"} {
+		if _, _, err := store.Submit(ctx, submission(id, ModeSteer, `1`)); err != nil {
+			t.Fatalf("Submit %s: %v", id, err)
+		}
+		entry, err := store.Get(ctx, "run-1", "agent", id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if _, err := store.Claim(ctx, entry, 1); err != nil {
+			t.Fatalf("Claim %s: %v", id, err)
+		}
+	}
+	recorded := func(id string) bool { return id == "live" }
+	n, err := store.SettleUnanswered(ctx, "run-1", "agent", recorded)
+	if err != nil || n != 1 {
+		t.Fatalf("SettleUnanswered = %d, %v; want 1", n, err)
+	}
+	for id, want := range map[string]Status{"dead": StatusUnanswered, "live": StatusPlaced} {
+		e, err := store.Get(ctx, "run-1", "agent", id)
+		if err != nil || e.Status != want {
+			t.Errorf("%s = %s (%v), want %s", id, e.Status, err, want)
+		}
+	}
+	// Without a record set only queued inputs are settled.
+	if n, err := store.SettleUnanswered(ctx, "run-1", "agent", nil); err != nil || n != 0 {
+		t.Errorf("nil recorded settled %d, %v; want 0", n, err)
 	}
 }

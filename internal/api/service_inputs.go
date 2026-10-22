@@ -132,7 +132,7 @@ func (s *Service) submitInput(
 	// The step may have finished between the pre-check and the create,
 	// after the engine's own sweep ran; the leader's copy says so.
 	if _, err := s.stepOpenForInput(ctx, runID, stepID, true); errors.Is(err, ErrStepFinished) {
-		if _, settleErr := store.SettleUnanswered(ctx, runID, stepID); settleErr != nil {
+		if _, settleErr := store.SettleUnanswered(ctx, runID, stepID, nil); settleErr != nil {
 			return inputs.Submission{}, false, settleErr
 		}
 		stored.Status = inputs.StatusUnanswered

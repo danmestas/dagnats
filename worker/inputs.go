@@ -163,9 +163,9 @@ func (c *taskContext) PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, erro
 	}
 	var placed []journal.InputPlaced
 	for _, entry := range candidates {
-		claimed, err := store.Claim(c.ctx, entry, c.iteration)
+		claimed, err := c.claimInput(store, entry)
 		if errors.Is(err, inputs.ErrConflict) || errors.Is(err, inputs.ErrNotFound) {
-			continue // withdrawn, or claimed by a rival whose append will fence one of us
+			continue // withdrawn, or placed by a rival this journal already knows
 		}
 		if err != nil {
 			return placed, err
@@ -182,6 +182,32 @@ func (c *taskContext) PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, erro
 		panic("PlaceInputs: placed more than were claimable")
 	}
 	return placed, nil
+}
+
+// claimInput claims entry, re-reading it once when the claim is lost:
+// a stale holder that claimed it between this read and this claim will
+// be fenced on its append, which would leave the input placed with no
+// record and nothing to reclaim it, so a placed input this journal has
+// no record of is claimed again, as a dead claim is on redelivery.
+func (c *taskContext) claimInput(store *inputs.Store, entry inputs.Entry) (inputs.Entry, error) {
+	if store == nil {
+		panic("claimInput: store must not be nil")
+	}
+	if c.journal == nil {
+		panic("claimInput: journal must be open")
+	}
+	claimed, err := store.Claim(c.ctx, entry, c.iteration)
+	if !errors.Is(err, inputs.ErrConflict) {
+		return claimed, err
+	}
+	current, err := store.Get(c.ctx, c.runID, c.stepID, entry.RequestID)
+	if err != nil {
+		return inputs.Entry{}, err
+	}
+	if current.Status != inputs.StatusPlaced || c.journal.InputPlaced(entry.RequestID) {
+		return inputs.Entry{}, inputs.ErrConflict
+	}
+	return store.Claim(c.ctx, current, c.iteration)
 }
 
 // placeable lists the step's inputs of mode this claim may place:

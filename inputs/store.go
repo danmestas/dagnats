@@ -495,14 +495,27 @@ func (s *Store) Queued(ctx context.Context, runID, stepID string) ([]Entry, erro
 }
 
 // SettleUnanswered is the completion sweep: every queued submission of
-// the step becomes unanswered. Returns how many it settled.
-func (s *Store) SettleUnanswered(ctx context.Context, runID, stepID string) (int, error) {
+// the step becomes unanswered, and so does every placed one that
+// recorded reports no input.placed record for (a claim whose writer
+// was fenced or died before appending; nothing will reclaim it once
+// the step has finished). nil recorded settles queued ones only.
+// Returns how many it settled.
+func (s *Store) SettleUnanswered(
+	ctx context.Context, runID, stepID string, recorded func(requestID string) bool,
+) (int, error) {
 	if runID == "" || stepID == "" {
 		panic("inputs.SettleUnanswered: run and step must not be empty")
 	}
-	queued, err := s.Queued(ctx, runID, stepID)
+	all, err := s.List(ctx, runID, stepID)
 	if err != nil {
 		return 0, err
+	}
+	queued := all[:0]
+	for _, entry := range all {
+		unrecorded := entry.Status == StatusPlaced && recorded != nil && !recorded(entry.RequestID)
+		if entry.Status == StatusQueued || unrecorded {
+			queued = append(queued, entry)
+		}
 	}
 	settled := 0
 	for _, entry := range queued {

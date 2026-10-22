@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -361,15 +362,26 @@ func TestContinueWait_TwoEnginesOneTaskPerRound(t *testing.T) {
 	for round := 0; round < 20; round++ {
 		attempt := fx.started(t, task)
 		requestID := fmt.Sprintf("round-%d", round)
-		if _, _, err := store.Submit(ctx, inputs.Submission{
-			RunID: runID, StepID: "agent", RequestID: requestID, Mode: inputs.ModeSteer,
-			Content: json.RawMessage(`1`),
-		}); err != nil {
-			t.Fatalf("Submit: %v", err)
-		}
+		// The submission races the continue: in some rounds the step
+		// enters its wait before the input exists and its event wakes
+		// it; in others the input is there when the wait is entered and
+		// the re-check sends the task. Exactly one task either way.
+		var submitted sync.WaitGroup
+		submitted.Add(1)
+		go func() {
+			defer submitted.Done()
+			if _, _, err := store.Submit(ctx, inputs.Submission{
+				RunID: runID, StepID: "agent", RequestID: requestID, Mode: inputs.ModeSteer,
+				Content: json.RawMessage(`1`),
+			}); err != nil {
+				t.Errorf("Submit: %v", err)
+				return
+			}
+			fx.publishEvent(t, protocol.NewInputQueuedEvent(runID, "agent", requestID))
+		}()
 		fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task, attempt,
 			waitPayload(t, protocol.ContinueWait{Input: true})))
-		fx.publishEvent(t, protocol.NewInputQueuedEvent(runID, "agent", requestID))
+		submitted.Wait()
 		task = fx.takeTask(t, 5*time.Second)
 		if task.Iteration != round+1 {
 			t.Fatalf("round %d: task iteration = %d, want %d", round, task.Iteration, round+1)
@@ -380,5 +392,35 @@ func TestContinueWait_TwoEnginesOneTaskPerRound(t *testing.T) {
 		if err := store.Withdraw(ctx, runID, "agent", requestID); err != nil {
 			t.Fatalf("Withdraw: %v", err)
 		}
+	}
+}
+
+func TestContinueWait_SweepSettlesAClaimWithoutARecord(t *testing.T) {
+	fx := newLoopFixture(t, loopDef("sweep-claim-wf", "sweep-claim-task", dag.AgentLoopConfig{}, nil))
+	orch := NewOrchestrator(fx.nc)
+	orch.Start()
+	defer orch.Stop()
+	const runID = "sweep-claim-run"
+	fx.startRun(t, runID)
+	task := fx.takeTask(t, 5*time.Second)
+	attempt := fx.started(t, task)
+	store := fx.submitInput(t, runID, "claimed")
+	fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool { return s.HasInputs })
+	// A worker claimed it and died before appending the record.
+	ctx, cancel := context.WithTimeout(context.Background(), inputsTestTimeout)
+	defer cancel()
+	entry, err := store.Get(ctx, runID, "agent", "claimed")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if _, err := store.Claim(ctx, entry, 0); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	fx.publishEvent(t, identityEvent(protocol.EventStepCompleted, task, attempt, []byte(`{}`)))
+	fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool {
+		return s.Status == dag.StepStatusCompleted && !s.HasInputs
+	})
+	if got := fx.inputStatus(t, store, runID, "claimed"); got != inputs.StatusUnanswered {
+		t.Errorf("unrecorded claim after completion = %s, want unanswered", got)
 	}
 }

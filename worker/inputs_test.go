@@ -326,3 +326,38 @@ func TestInputs_RepublishedCommitCarriesWait(t *testing.T) {
 		t.Errorf("republished wait = %+v, want delay 60000", payload.Wait)
 	}
 }
+
+func TestInputs_ClaimLostToStaleHolderIsReclaimed(t *testing.T) {
+	nc, js := journalServer(t)
+	store := inputsStore(t, js)
+	submit(t, store, "run-sh", "x", inputs.ModeSteer)
+	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
+	defer cancel()
+	successor := delivery(t, nc, journalPayload("run-sh", 0), 2)
+	if _, err := successor.Journal(); err != nil {
+		t.Fatalf("Journal: %v", err)
+	}
+	// A stale holder claims x between the successor's read and its
+	// claim; its append will be fenced, so x would stay placed with no
+	// record unless the successor reclaims it.
+	successor.beforeClaim = func() {
+		entry, err := store.Get(ctx, "run-sh", "s", "x")
+		if err != nil {
+			t.Errorf("Get: %v", err)
+			return
+		}
+		if _, err := store.Claim(ctx, entry, 0); err != nil {
+			t.Errorf("stale Claim: %v", err)
+		}
+	}
+	placed, err := successor.PlaceInputs(inputs.ModeSteer)
+	if err != nil {
+		t.Fatalf("PlaceInputs: %v", err)
+	}
+	if len(placed) != 1 || placed[0].RequestID != "x" {
+		t.Fatalf("placed = %+v, want x reclaimed from the stale holder", placed)
+	}
+	if n := countPlaced(readJournal(t, js, "run-sh"), "x"); n != 1 {
+		t.Errorf("x has %d input.placed records, want 1", n)
+	}
+}

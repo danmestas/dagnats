@@ -29,6 +29,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/protocol"
 )
 
@@ -286,7 +287,13 @@ func (o *Orchestrator) settleInputs(ctx context.Context, runID, stepID string) b
 	if store == nil {
 		return false // keep the mark; the next save retries
 	}
-	settled, err := store.SettleUnanswered(ctx, runID, stepID)
+	recorded, err := o.recordedInputs(ctx, runID, stepID)
+	if err != nil {
+		slog.WarnContext(ctx, "read journal to settle inputs; keeping the mark",
+			"run_id", runID, "step_id", stepID, "error", err)
+		return false
+	}
+	settled, err := store.SettleUnanswered(ctx, runID, stepID, recorded)
 	if err != nil {
 		slog.WarnContext(ctx, "settle inputs of finished step",
 			"run_id", runID, "step_id", stepID, "error", err)
@@ -297,6 +304,36 @@ func (o *Orchestrator) settleInputs(ctx context.Context, runID, stepID string) b
 			"run_id", runID, "step_id", stepID, "count", settled)
 	}
 	return true
+}
+
+// recordedInputs reads the step's journal and reports which request
+// ids have an input.placed record, so the sweep can tell a placement
+// from a claim whose writer never appended. A step without a journal
+// has no records.
+func (o *Orchestrator) recordedInputs(
+	ctx context.Context, runID, stepID string,
+) (func(string) bool, error) {
+	if runID == "" || stepID == "" {
+		panic("recordedInputs: run and step must not be empty")
+	}
+	if o.js == nil {
+		panic("recordedInputs: js must not be nil")
+	}
+	records, err := journal.Read(ctx, o.js, runID, stepID)
+	if err != nil && !errors.Is(err, journal.ErrNotProvisioned) {
+		return nil, err
+	}
+	placed := make(map[string]bool, len(records))
+	for _, r := range records {
+		if r.Type != journal.TypeInputPlaced {
+			continue
+		}
+		var p journal.InputPlaced
+		if json.Unmarshal(r.Data, &p) == nil && p.RequestID != "" {
+			placed[p.RequestID] = true
+		}
+	}
+	return func(requestID string) bool { return placed[requestID] }, nil
 }
 
 // settleFinishedSteps runs after a save: each step with inputs to
