@@ -114,11 +114,12 @@ type Task struct {
 	Attempt       int
 	DispatchNonce string
 	// Delivered is the delivery count of the task message. It is part
-	// of the claim identity: from iteration 1 the engine stamps the
-	// attempt, so a stalled worker and the AckWait redelivery that
+	// of the claim identity: the engine stamps the attempt on every
+	// dispatch, so a stalled worker and the AckWait redelivery that
 	// replaces it share run, step, iteration, attempt and nonce, and
-	// only the delivery count tells their claims apart. It also feeds
-	// the crash-loop guard (#807).
+	// only the delivery count tells their claims apart. It also orders
+	// the deliveries of one message (a newer one fences an older one
+	// opening after it) and feeds the crash-loop guard (#807).
 	Delivered int
 	// StreamSeq is the task message's sequence in the task stream.
 	// Redeliveries share it; a dispatch resend is a fresh message with
@@ -290,6 +291,10 @@ func Open(
 		j.done = true
 		return j, nil
 	}
+	if j.supersededDelivery() {
+		j.fenced = true
+		return nil, ErrFenced
+	}
 	claim, err := json.Marshal(Claim{
 		Iteration: task.Iteration, Attempt: task.Attempt,
 		DispatchNonce: task.DispatchNonce, Delivered: task.Delivered,
@@ -302,6 +307,32 @@ func Open(
 		return nil, err
 	}
 	return j, nil
+}
+
+// supersededDelivery reports whether a newer delivery of the task's
+// own message (the same stream sequence, a higher delivery count) has
+// already claimed this iteration. Deliveries of one message are
+// ordered by their count, so an older one held in a stalled consumer's
+// prefetch buffer must not claim back over its successor and fence a
+// turn in progress. A resend is another message and keeps journal
+// order; an unknown sequence (0) is never compared.
+func (j *Journal) supersededDelivery() bool {
+	if j.task.Delivered < 1 {
+		panic("supersededDelivery: delivered must be >= 1")
+	}
+	if len(j.records) > recordsMax {
+		panic("supersededDelivery: records exceed the read bound")
+	}
+	if j.task.StreamSeq == 0 {
+		return false
+	}
+	for _, r := range j.records {
+		if r.Type == TypeClaim && r.StreamSeq == j.task.StreamSeq &&
+			r.Delivered > j.task.Delivered {
+			return true
+		}
+	}
+	return false
 }
 
 // attach sets the connections. Separate from Open so a test can build

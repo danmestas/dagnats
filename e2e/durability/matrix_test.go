@@ -10,11 +10,13 @@
 // AckWait is 30s and not configurable, so a stall there is a delay,
 // not a takeover.
 //
-// Methodology: the shared fixture of harness_test.go with one engine
-// (two with DAGNATS_DURABILITY_ENGINES=2); one baseline run, then one subtest per cell
-// running in parallel against it, each on its own agent (task type and workers) so a stall in
-// one cell cannot age another cell's prefetched deliveries, and each
-// routed its own crash by run ID. Every wait is bounded.
+// Methodology: the shared fixture of harness_test.go with two engines
+// sharing the history durable (DAGNATS_DURABILITY_ENGINES overrides,
+// 1..4); one baseline run, then one subtest per cell running in
+// parallel against it, each on its own agent (task type and workers)
+// so a stall in one cell cannot age another cell's prefetched
+// deliveries, and each routed its own crash by run ID. Every wait is
+// bounded.
 package durability
 
 import (
@@ -67,21 +69,13 @@ func (c matrixCase) String() string {
 }
 
 // matrixCases lists every cell: worker points killed and stalled on
-// the unsafe iteration and on the safe iteration after it (both with
-// the attempt stamped by the engine), and, with
-// DAGNATS_DURABILITY_ITERATION0=1, on iteration 0 (where the attempt
-// follows the delivery count); engine points killed on their first
-// reach. The safe iteration proves a safe call interrupted by a crash
-// is rerun, never answered as interrupted. Iteration 0 is opt-in because the crash-point harness found
-// that a redelivery there is a new attempt by construction, so the
-// engine's attempt fence can reject the journal winner's commit and
-// wedge the run (see "How durability is verified" in ADR-026); those
-// cells fail until that is fixed, and the soak covers them meanwhile.
+// iteration 0 (the first dispatch, whose stamped attempt ADR-026's
+// finding 1 added), on the unsafe iteration and on the safe iteration
+// after it; engine points killed on their first reach. The safe
+// iteration proves a safe call interrupted by a crash is rerun, never
+// answered as interrupted.
 func matrixCases() []matrixCase {
-	iterations := []int{unsafeIteration, safeIteration}
-	if os.Getenv("DAGNATS_DURABILITY_ITERATION0") == "1" {
-		iterations = []int{0, unsafeIteration, safeIteration}
-	}
+	iterations := []int{0, unsafeIteration, safeIteration}
 	cases := make([]matrixCase, 0, len(chaos.Points())*2*len(iterations))
 	for _, point := range chaos.Points() {
 		if point >= chaos.EngineEnqueueSaved {
@@ -100,14 +94,14 @@ func matrixCases() []matrixCase {
 	return cases
 }
 
-// matrixEngines is how many orchestrators the matrix runs: one by
-// default, two with DAGNATS_DURABILITY_ENGINES=2 (off until the
-// two-engine findings in ADR-026 are fixed; the fix PR turns it on).
+// matrixEngines is how many orchestrators the matrix runs: two by
+// default, as a cluster shares the history durable;
+// DAGNATS_DURABILITY_ENGINES=1..4 overrides it when bisecting.
 func matrixEngines(t *testing.T) int {
 	t.Helper()
 	raw := os.Getenv("DAGNATS_DURABILITY_ENGINES")
 	if raw == "" {
-		return 1
+		return 2
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 1 || n > 4 {

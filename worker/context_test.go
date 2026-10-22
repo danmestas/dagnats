@@ -351,6 +351,18 @@ func TestTaskContextRetryCount(t *testing.T) {
 			"RetryCount() = %d, want 0", tc2.RetryCount(),
 		)
 	}
+	// The first dispatch is stamped attempt 1 (ADR-026, finding 1);
+	// RetryCount keeps its documented 0 for it.
+	tc3 := newTaskContext(
+		nil, tr, nil,
+		protocol.TaskPayload{RunID: "r", StepID: "s", Attempt: 1},
+		bgCtx, span, nil, nil, nil,
+	)
+	if tc3.RetryCount() != 0 {
+		t.Fatalf(
+			"RetryCount() on attempt 1 = %d, want 0", tc3.RetryCount(),
+		)
+	}
 }
 
 func TestTaskContextPutStream(t *testing.T) {

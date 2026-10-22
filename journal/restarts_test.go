@@ -5,9 +5,9 @@
 // record, a commit, or an iteration boundary resets it.
 //
 // Methodology: one embedded server, the public Open surface, modelled
-// as the engine delivers: on iteration 0 the attempt follows the
-// delivery count, from iteration 1 the attempt is stamped and only the
-// delivery count moves. Every wait is bounded.
+// as the engine delivers: the attempt is stamped on every dispatch and
+// only the delivery count moves between deliveries. Every wait is
+// bounded.
 package journal
 
 import (
@@ -20,12 +20,8 @@ func TestRestarts_CountsClaimsWithoutProgress(t *testing.T) {
 	forEachDispatchSingle(t, func(t *testing.T, c client, runID string, d dispatch) {
 		ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
 		defer cancel()
-		attempt := func(delivered int) int {
-			if d.iteration == 0 {
-				return delivered
-			}
-			return d.first
-		}
+		// The attempt is the stamped one on every delivery.
+		attempt := func(int) int { return d.first }
 		var j *Journal
 		for delivered := 1; delivered <= 4; delivered++ {
 			j = open(t, c, task(runID, d.iteration, attempt(delivered), delivered))

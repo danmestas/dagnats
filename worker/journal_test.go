@@ -48,16 +48,12 @@ func journalServer(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	return nc, js
 }
 
-// journalPayload is the engine's payload for one dispatch: iteration 0
-// carries no attempt (the worker derives it from the delivery count),
-// later iterations carry attempt 1.
+// journalPayload is the engine's payload for one dispatch: attempt 1
+// stamped on every iteration (ADR-026), so a redelivery of the
+// message keeps it and differs only in delivery count.
 func journalPayload(runID string, iteration int) protocol.TaskPayload {
-	attempt := 0
-	if iteration > 0 {
-		attempt = 1
-	}
 	return protocol.TaskPayload{
-		RunID: runID, StepID: "s", Iteration: iteration, Attempt: attempt,
+		RunID: runID, StepID: "s", Iteration: iteration, Attempt: 1,
 		DispatchNonce: "nonce", StateMaxBytes: protocol.LoopStateMaxBytesDefault,
 	}
 }

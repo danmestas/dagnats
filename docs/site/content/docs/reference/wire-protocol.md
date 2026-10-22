@@ -99,7 +99,7 @@ A step may keep a journal: one append-only subject `journal.{run_id}.{step_id}` 
 | `Nats-Expected-Last-Subject-Sequence` | the journal sequence the writer last saw (`0` on an empty journal) |
 | `Dagnats-Journal-Type` | `claim`, `pause`, `commit`, `entry`, `model.response`, `tool.intent`, `tool.result`, `input.placed` |
 | `Dagnats-Journal-Iteration`, `Dagnats-Journal-Attempt` | the writer's claim: the task's iteration and 1-based attempt |
-| `Dagnats-Journal-Delivered` | the task message's delivery count. From iteration 1 the engine stamps the attempt, so a stalled worker and its AckWait redelivery share every other field; the delivery count is what tells their claims apart |
+| `Dagnats-Journal-Delivered` | the task message's delivery count. The engine stamps the attempt on every dispatch, so a stalled worker and its AckWait redelivery share every other field; the delivery count is what tells their claims apart, and a newer delivery of the same message fences an older one that claims after it |
 | `Dagnats-Journal-Stream-Seq` | the task message's sequence in the task stream (`0` when unknown). Redeliveries of a message share it; a dispatch resend is a fresh message with a new one and delivery count `1` again, so this is what tells a resend's claim from the original's while that is still in flight |
 | `Dagnats-Journal-Index` | the record's position within its claim; the claim is `0` |
 | `Dagnats-Dispatch-Nonce` | `TaskPayload.dispatch_nonce` |

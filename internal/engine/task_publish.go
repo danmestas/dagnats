@@ -46,8 +46,9 @@ const (
 	// dispatchNewAttempt is for every re-dispatch that starts a
 	// genuinely NEW attempt: initial dispatch, retry (rate/concurrency/
 	// backoff/retry-after), DLQ replay, on-fail compensation, a map
-	// instance's own dispatch. Attempt is projected as Attempts + 1
-	// (or 0 for a never-started step) — see dispatchIdentity.
+	// instance's own dispatch. Attempt is projected as Attempts + 1,
+	// so a never-started step dispatches attempt 1 — see
+	// dispatchIdentity.
 	dispatchNewAttempt dispatchIdentityMode = iota
 	// dispatchSameAttempt is for the agent-loop Continue re-enqueue
 	// ONLY: it is NOT a new attempt and must not consume retry budget
@@ -92,6 +93,19 @@ const (
 // dispatch belongs to and must NOT be bumped again. The mode
 // parameter carries that caller-known distinction explicitly rather
 // than dispatchIdentity guessing at it.
+//
+// The first dispatch is stamped attempt 1 like every later one
+// (ADR-026, finding 1). It used to carry 0, leaving the worker to
+// number each delivery by its delivery count, so an AckWait
+// redelivery of the first task was a new attempt by construction: the
+// journal could not recognise the previous delivery's work as its
+// own, each delivery's step.started raised Attempts by the max rule,
+// and the journal winner's step.continue could then carry a lower
+// attempt than the step and be dropped, wedging the run. With the
+// stamp a redelivery is a recovery of the same attempt everywhere: a
+// crash redelivery no longer spends retry budget, the watchdog keeps
+// the attempt's clock, and only the engine's own retries number a new
+// attempt.
 func dispatchIdentity(
 	run dag.WorkflowRun, stepID string, mode dispatchIdentityMode,
 ) (attempt, iteration int) {
@@ -101,10 +115,7 @@ func dispatchIdentity(
 	state := run.Steps[stepID]
 	switch mode {
 	case dispatchNewAttempt:
-		attempt = state.Attempts
-		if attempt > 0 {
-			attempt++
-		}
+		attempt = state.Attempts + 1
 	case dispatchSameAttempt:
 		attempt = state.Attempts
 	default:

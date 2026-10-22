@@ -125,12 +125,11 @@ type agent struct {
 
 // fixtureOptions is what newFixture starts: a standalone server or an
 // in-process three-node cluster, and how many orchestrators share the
-// history durable. The soak runs two, as a cluster does; the matrix
-// and the crash-loop test run one, because with two the harness found
-// that a continue can be handled before the other engine applied the
-// same delivery's step.started, which drops the continue or (after an
-// engine kill between its save and its publish) deduplicates the
-// resend; see "How durability is verified" in ADR-026.
+// history durable. Every test runs two, as a cluster does: the engine
+// handling a worker's event may then load the step before the other
+// engine has applied the same delivery's step.started, which is the
+// ordering findings 2 and 3 of ADR-026 ("How durability is verified")
+// needed.
 type fixtureOptions struct {
 	cluster bool
 	engines int

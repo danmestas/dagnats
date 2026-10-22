@@ -190,12 +190,15 @@ func (o *Orchestrator) planTaskResend(
 		panic("planTaskResend: step type is never marked unsent")
 	}
 	state := run.Steps[step.ID]
-	// An agent loop stays Running between iterations: a mark on a
-	// Running loop past iteration 0 is a continue whose next task may
-	// never have been sent (#801). The resend carries the state the
-	// continue committed, straight from the snapshot.
-	loopIteration := step.Type == dag.StepTypeAgentLoop &&
-		state.Status == dag.StepStatusRunning && state.Iterations > 0
+	// A mark on an agent loop past iteration 0 is a continue whose
+	// next task may never have been sent (#801), whatever the step's
+	// status: the loop stays Running between iterations, and it is
+	// still Queued when the continue was accepted before the
+	// delivery's step.started was applied (#814). Planning that resend
+	// as a first dispatch gave it the first dispatch's msg-id, which
+	// TASK_QUEUES deduplicated (ADR-026, finding 3). The resend carries
+	// the state the continue committed, straight from the snapshot.
+	loopIteration := step.Type == dag.StepTypeAgentLoop && state.Iterations > 0
 	if state.Status != dag.StepStatusQueued && !loopIteration {
 		plan.alreadySent = append(plan.alreadySent, step.ID)
 		return nil

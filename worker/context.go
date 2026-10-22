@@ -196,9 +196,22 @@ func newTaskContext(
 func (c *taskContext) Input() []byte               { return c.input }
 func (c *taskContext) RunID() string               { return c.runID }
 func (c *taskContext) StepID() string              { return c.stepID }
-func (c *taskContext) RetryCount() int             { return c.attempt }
 func (c *taskContext) Metadata() map[string]string { return c.metadata }
 func (c *taskContext) Context() context.Context    { return c.ctx }
+
+// RetryCount is 0 on a step's first dispatch and the attempt number
+// (2, 3, ...) on the engine's retries. The engine stamps attempt 1 on
+// the first dispatch too (ADR-026), so that a redelivery keeps its
+// number; the documented 0 for it is kept here.
+func (c *taskContext) RetryCount() int {
+	if c.attempt < 0 {
+		panic("RetryCount: attempt must not be negative")
+	}
+	if c.attempt <= 1 {
+		return 0
+	}
+	return c.attempt
+}
 
 // ControlPlane returns the per-step control-plane handle, or nil when
 // the step was not gated. nil is the deny-by-default zero value.
@@ -220,8 +233,9 @@ func (w *logWriter) Write(p []byte) (int, error) {
 
 // resolveAttemptNumber derives the 1-based AttemptNumber for a
 // dispatched task — the SAME resolution publishStarted's inline logic
-// already used (payload.Attempt when the engine set one explicitly,
-// else NATS NumDelivered), extracted here so BUILD_LOGS's attempt-
+// already used (payload.Attempt, which the engine stamps on every
+// dispatch; else NATS NumDelivered, for an engine that predates the
+// stamp), extracted here so BUILD_LOGS's attempt-
 // scoped subject (#624 review) and step.started/step.failed's
 // AttemptNumber field are computed by ONE function and can never drift
 // apart. That agreement matters beyond consistency: GET .../logs
@@ -850,13 +864,13 @@ func (c *taskContext) SendSignal(
 
 // publishStarted publishes step.started for the current attempt.
 // AttemptNumber preference order:
-//  1. payload.Attempt (c.attempt > 0) — set explicitly by the engine
-//     when re-publishing via SLEEP_TIMERS (retry_after / retry_backoff).
-//     The fresh NATS message has NumDelivered=1 so deriving from
-//     metadata would lose the attempt count across timer-driven retries.
-//  2. meta.NumDelivered — increments on NATS redelivery (NAK retries,
-//     AckWait expiry) and is correct for in-place retries that share
-//     the original message.
+//  1. payload.Attempt (c.attempt > 0) — stamped by the engine on every
+//     dispatch, the first one included (ADR-026): a redelivery of the
+//     message (AckWait expiry, a NAK) keeps the attempt, and a retry
+//     re-published via SLEEP_TIMERS carries its new number even though
+//     the fresh message has NumDelivered=1.
+//  2. meta.NumDelivered — only for a task from an engine that predates
+//     the stamp, where each redelivery was numbered as a new attempt.
 //
 // Returns error if metadata read or publish fails. The caller (worker
 // dispatch loop) NAKs the original message on error so the engine

@@ -50,8 +50,8 @@ journal sequence its writer saw, and `Nats-Msg-Id` set to
 where `stream_seq` is the task message's sequence in the task stream,
 `delivered` its delivery count and `index` the record's position within
 its claim (the claim is 0). The delivery count is part of
-the claim identity because from iteration 1 the engine stamps the attempt
-on the payload (`dispatchIdentity`), so a stalled worker and the AckWait
+the claim identity because the engine stamps the attempt on every
+dispatch (`dispatchIdentity`), so a stalled worker and the AckWait
 redelivery that replaces it hold the same run, step, iteration, attempt
 and nonce; without it their records would share msg-ids, the successor's
 claim would be answered with the stalled claim's sequence inside the
@@ -142,11 +142,10 @@ commit:
   the previous holder crashed between committing and publishing. The
   worker republishes that commit's lifecycle event (its message ID is
   stable) and acknowledges the task. The turn is not repeated. Recovery
-  matches on attempt and iteration, not on delivery; on iteration 0 the
-  attempt follows the delivery count, so there a crash between commit and
-  publish still repeats the turn under the next attempt. The fix belongs
-  in the engine: `dispatchIdentity` stamping the attempt on iteration 0
-  as it does from iteration 1, deferred from this ADR.
+  matches on attempt and iteration, not on delivery: the engine stamps
+  the attempt on every dispatch, iteration 0 included (finding 1 below),
+  so a redelivery of any iteration finds the previous delivery's commit
+  as its own.
 - Otherwise it rebuilds from the last committed state plus the records of
   iteration N so far. Recorded model responses and tool results are reused,
   not redone.
@@ -177,9 +176,8 @@ of one dispatch, before any commit), a successor walks the same calls:
   (the `entry` records the previous holder appended after the intent,
   as a JSON array) and the call's key. The model sees it.
 
-A new attempt of the iteration (after a fail commit, or a higher attempt
-from iteration 1; on iteration 0 the attempt follows the delivery
-count, so there only the commit marks the boundary) is the engine saying
+A new attempt of the iteration (after a fail commit, or a higher
+stamped attempt, on any iteration) is the engine saying
 "do it again": safe calls and model requests run afresh, with a new
 intent, and only unsafe intents from the prior attempt are honoured,
 matched by content rather than position because the new attempt's model
@@ -191,11 +189,12 @@ results across attempts would turn every retry into a replay of the
 failure.
 
 A retry at iteration 0 without a commit (the engine timed the attempt
-out) cannot be told from a redelivery, because there the attempt follows
-the delivery count: its safe results and model responses are reused as
-a redelivery's would be, and the turn is not repeated from scratch. This
-is the same iteration-0 gap as the commit-and-crash case above, and it
-closes with the deferred `dispatchIdentity` change.
+out, or the restart limit failed it) is told from a redelivery by the
+stamped attempt, as on every other iteration: the retry carries a
+higher attempt and repeats the turn from scratch. Before finding 1 the
+attempt followed the delivery count there, so such a retry reused the
+failed attempt's safe results and model responses as a redelivery
+would.
 
 The guarantee is that the SDK starts an unsafe call at most once per
 position: a successor never starts a call whose intent is recorded. It
@@ -322,14 +321,14 @@ be fenced.
 unsafe tool, a safe tool, an answer) whose tools count starts and
 effects in a KV bucket outside the journal:
 
-- `TestCrashPointMatrix`, in the normal suite (and the race job): one
-  run per crash point, killed and stalled, on the unsafe iteration and
-  on the safe iteration after it; the run must finish with the
-  crash-free answer, exactly, except that the unsafe call is
+- `TestCrashPointMatrix`, in the normal suite (and the race job), on
+  two engines sharing the history durable as a cluster does: one run
+  per crash point, killed and stalled, on iteration 0, on the unsafe
+  iteration and on the safe iteration after it; the run must finish
+  with the crash-free answer, exactly, except that the unsafe call is
   `interrupted` when the crash hit `after_tool_intent` or `inside_tool`
   on its iteration (a safe call there must be rerun), `Check` must
   pass, and the unsafe tool must have started at most once.
-  `DAGNATS_DURABILITY_ITERATION0=1` adds iteration 0 (below).
 - `TestCrashLoop_RestartLimitFailsThenRetries`: a kill after every claim
   until the restart limit fails the step, which the retry resumes.
 - `TestChaosSoak`, opt-in (`DAGNATS_CHAOS=1`, `make test-chaos`, the
@@ -354,41 +353,41 @@ crash-loop test:
 | safe intents never rerun (answered interrupted) | the four `after_tool_intent`/`inside_tool` cells on the safe iteration: the answer carries `interrupted` for a safe call |
 
 What the harness found, and the fixes that follow #809 in their own
-PRs. Until all four land, `TestChaosSoak` is expected red, so the
-`Chaos soak` workflow runs only on the `chaos` label and by hand; its
-nightly schedule is commented out and is enabled when the soak is
-green. The iteration-0 matrix cells
-(`DAGNATS_DURABILITY_ITERATION0=1`) and the two-engine matrix
-(`DAGNATS_DURABILITY_ENGINES=2`) are off by default and are the red
-tests those fix PRs turn on:
+PRs. Until finding 4 lands, `TestChaosSoak` is expected to hit the
+consumer cap after about 300 runs, so the `Chaos soak` workflow runs
+only on the `chaos` label and by hand; its nightly schedule is
+commented out and is enabled when the soak is green. The iteration-0
+cells and the two engines are in the default matrix since findings
+1 to 3 were fixed (they were the red tests of that fix).
 
-1. On iteration 0 the attempt follows the delivery count, so every
-   redelivery is a new attempt by construction: `Open` cannot recognise
-   the previous delivery's commit as its own and reruns the iteration,
-   a late redelivery after the engine has moved on reruns it again until
-   the next iteration's claim fences it (an intent without a result),
-   and, worse, each delivery's `step.started` raises `Attempts` by the
-   max rule while the journal picks its winner by journal order, so the
-   winner's `step.continue` can carry a lower attempt than the engine
-   holds, be dropped by the acceptance rule, and the winner's ack then
-   ends redelivery: the run wedges. Fix shape: stamp the attempt on the
-   iteration-0 dispatch as the engine does from iteration 1, so a
-   redelivery is a recovery of the same attempt.
-2. Two engines: a `step.continue` can be handled by one engine before
-   the other has applied the same delivery's `step.started`; for a
-   Running step the attempt is compared and the continue is dropped.
-   ADR-025's Queued rule (#814) covers the Queued case only.
-3. An engine that dies between a continue's save and its publish while
-   the step is still Queued (the previous iteration's `step.started`
-   overtaken, as in 2) has its resend planned as a first dispatch, whose
-   msg-id `{run}.{step}.queued` is deduplicated by `TASK_QUEUES`: the
-   iteration is never sent. Fix shape: `planTaskResend` treats a loop
-   past iteration 0 as a continue resend regardless of status.
-4. Journal reader consumers leak: `journal.Open` and `journal.Read` each
-   leave an ordered consumer on `AGENT_JOURNAL` that is never deleted
-   (measured: 110 after 20 runs and 50 reads, unchanged after 16s), so
-   a soak hits nats-server's default of 1000 consumers per stream
-   after about 300 runs and every claim fails with error 10026.
+| # | Finding | Status |
+|---|---|---|
+| 1 | On iteration 0 the attempt followed the delivery count, so every redelivery was a new attempt by construction: `Open` could not recognise the previous delivery's commit as its own and reran the iteration, a late redelivery after the engine had moved on reran it again until the next iteration's claim fenced it (an intent without a result), and, worse, each delivery's `step.started` raised `Attempts` by the max rule while the journal picked its winner by journal order, so the winner's `step.continue` could carry a lower attempt than the engine held, be dropped by the acceptance rule, and the winner's ack then ended redelivery: the run wedged (`reason=attempt` with `event_attempt=2 step_attempt=3`). | Fixed: `dispatchIdentity` stamps `Attempts + 1` on every new dispatch, so the first dispatch is attempt 1 and a redelivery is a recovery of the same attempt; `priorAttempt` lost its iteration-0 clause. `TestDispatchIdentity_NewAttempt`, `TestFirstDispatch_CarriesAttemptOne`, `TestReplay_Iteration0RetryRerunsSafeCalls`, the iteration-0 matrix cells. |
+| 2 | Two engines: a `step.continue` handled by one engine before the other has applied the same delivery's `step.started` was dropped for a Running step by the attempt comparison. | Same root as 1, seen through the two-engine window: the dropped continue was a redelivery's, numbered higher than the first delivery's `step.started` the step still held; with the attempt stamped, every delivery of a dispatch carries the step's attempt and the Running rule accepts it. The two-engine matrix at iterations 1 and 2 was green on the unfixed code (3 runs of 32 cells); every drop in the failing runs was `reason=attempt` on iteration 0. `TestStepContinue_RedeliveryContinueBeforeItsStarted_Advances` replays the order. The acceptance rule of ADR-025 is unchanged. |
+| 3 | An engine that died between a continue's save and its publish while the step was still Queued (the previous iteration's `step.started` overtaken, as in 2) had its resend planned as a first dispatch, whose msg-id `{run}.{step}.queued` `TASK_QUEUES` deduplicated: the iteration was never sent (`engine.continue_saved/kill` with two engines: `Queued, Iterations:1, DispatchUnsent`, resend `tasks=1`, nothing delivered). | Fixed: `planTaskResend` treats a loop past iteration 0 as a continue resend whatever the status. With it, `journal.Open` fences an older delivery of the same task message (same `stream_seq`, lower delivery count) that opens after a newer one, so a delivery held in a stalled consumer's prefetch buffer cannot take the iteration back. `TestStepContinue_CrashBetweenSaveAndPublishWhileQueued_Resends`, `TestOpen_NewerDeliveryOfSameMessageFencesOlder`, `TestOpen_ResendAndUnknownSequenceClaimInJournalOrder`. |
+| 4 | Journal reader consumers leak: `journal.Open` and `journal.Read` each leave an ordered consumer on `AGENT_JOURNAL` that is never deleted (measured: 110 after 20 runs and 50 reads, unchanged after 16s), so a soak hits nats-server's default of 1000 consumers per stream after about 300 runs and every claim fails with error 10026. | Open; fixed in its own PR. |
+
+Consequences of stamping the first attempt, weighed when fixing 1:
+
+- A crash redelivery (AckWait expiry, a NAK after a failed
+  `step.started` publish, a `Pause` resume) no longer spends retry
+  budget: `Attempts` counts the engine's own dispatches, which is what
+  `max_attempts` was written against. A crash loop is bounded in
+  deliveries by the restart limit for journal steps (ADR-028) and in
+  time by the step timeout otherwise, both of which fail the attempt
+  and retry it as a new one. A step with neither was unbounded before
+  as well (the task consumer has no `MaxDeliver`); only its `Attempts`
+  grew.
+- The step-timeout watchdog already re-armed a redelivery for the
+  attempt's remaining time from iteration 1 (#743); it now does so on
+  iteration 0 too.
+- Workers that predate the stamp already preferred `TaskPayload.attempt`
+  when set, so they follow it; the `NumDelivered` fallback stays in the
+  worker SDK and the bridge for engines that predate it, with the old
+  behaviour. `RetryCount()` keeps its documented 0 on the first dispatch
+  and the bridge's `attempt` was already 1 there.
+- Map instances, retries, DLQ replays and on-fail compensation go
+  through the same builder and are unchanged past the first dispatch.
 
 ## Requirements
 
@@ -407,6 +406,9 @@ all capitals.
 | R7 | An unfinished tool call MUST NOT be rerun unless both declarations are `Safe`. | `TestReplay_Matrix` (result absent) |
 | R8 | The SDK MUST NOT start an unsafe call more than once per position across any crash schedule, and MUST report it interrupted with its key. | `TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints` (four crash points, each with a redelivery of the same task and the stalled worker resuming), `TestToolReplay_StalledUnsafeToolIsInterruptedNotRerun` (real Workers), `TestCrashPointMatrix` and `TestChaosSoak` (e2e/durability) |
 | R9 | A recorded call at a position MUST match the current call, else `ErrReplayMismatch`. | `TestReplay_MismatchedCallOnRecoveryIsAnError` |
+| R10 | The engine MUST stamp the attempt on every dispatch, the first included, so a redelivery of a task message carries the same attempt as its first delivery. | `TestDispatchIdentity_NewAttempt`, `TestFirstDispatch_CarriesAttemptOne`, `TestStepContinue_RedeliveryContinueBeforeItsStarted_Advances`, the iteration-0 cells of `TestCrashPointMatrix` |
+| R11 | A resend of an unsent continue MUST be sent as a continue (its own msg-id) whatever the step's status. | `TestStepContinue_CrashBetweenSaveAndPublishWhileQueued_Resends`, `engine.continue_saved/kill` in `TestCrashPointMatrix` with two engines |
+| R12 | An older delivery of a task message MUST NOT claim over a newer delivery of the same message. | `TestOpen_NewerDeliveryOfSameMessageFencesOlder`, `TestOpen_ResendAndUnknownSequenceClaimInJournalOrder` |
 
 ## Alternatives considered
 
@@ -430,17 +432,18 @@ all capitals.
 
 - Recovery granularity becomes one model response or tool call.
 - An unsafe tool runs at most once, and the model is told when it was
-  interrupted. After a prefetched older delivery resumes, the claim can
-  move back to it: single-writer still holds, but a tool already
-  mid-flight on the successor completes its side effect.
+  interrupted. A tool already mid-flight on a worker the successor
+  fenced completes its side effect.
 - The engine and worker can tell a stalled worker from its replacement.
 - A new stream to operate and retain, and a protocol the bridge must expose.
-- Claims are ordered by journal order, not by delivery count. A consumer
-  stalled past AckWait can hold an older delivery in its prefetch buffer;
-  processed after the consumer resumes, that delivery claims over a newer
-  one. Ordering by delivery count would be unsafe: the dispatch resend
+- Claims are ordered by journal order across messages, and by delivery
+  count within one message. A consumer stalled past AckWait can hold an
+  older delivery in its prefetch buffer; processed after the consumer
+  resumes, that delivery finds the newer delivery's claim (same
+  `stream_seq`, higher count) and is fenced without writing. Ordering by
+  delivery count across messages would be unsafe: the dispatch resend
   republishes the same dispatch as a fresh message whose count restarts
-  at 1.
+  at 1, so a resend claims in journal order.
 - The legacy `checkpoints` bucket can be retired.
 - `PutStream` output is documented as a non-durable preview.
 - A retry (new attempt) repeats the iteration's safe calls and model

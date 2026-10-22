@@ -750,10 +750,10 @@ func decodePolledTask(
 
 // taskAttemptNumber derives the 1-based attempt number for a polled
 // task message. Preference order mirrors the native worker's
-// publishStarted (worker/context.go): payload.Attempt when set — the
-// engine's SLEEP_TIMERS re-publish carries it, and the fresh message's
-// NumDelivered=1 would lose the count — else NATS NumDelivered, which
-// is correct for in-place redelivery of the original dispatch.
+// publishStarted (worker/context.go): payload.Attempt, which the
+// engine stamps on every dispatch (ADR-026), so a redelivery keeps the
+// attempt and a SLEEP_TIMERS re-publish carries its new number; else
+// NATS NumDelivered, for a task from an engine that predates the stamp.
 func taskAttemptNumber(
 	msg jetstream.Msg, payloadAttempt int,
 ) (int, error) {

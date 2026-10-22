@@ -264,9 +264,10 @@ func canonicalJSON(input json.RawMessage) string {
 
 // priorAttempt reports whether r was written by an attempt the engine
 // has since retried: it sits before the iteration's last commit, or
-// carries a lower attempt than the task's. On iteration 0 the attempt
-// follows the delivery count, so there only the commit marks the
-// boundary (ADR-026).
+// carries a lower attempt than the task's. The engine stamps the
+// attempt on every dispatch, iteration 0 included (ADR-026), so a
+// lower attempt is always a retried one, never an earlier delivery
+// of the same dispatch.
 func (j *Journal) priorAttempt(r Record) bool {
 	if r.Seq == 0 {
 		panic("priorAttempt: record must have a sequence")
@@ -277,7 +278,7 @@ func (j *Journal) priorAttempt(r Record) bool {
 	if r.Seq <= j.lastCommitSeq {
 		return true
 	}
-	return j.task.Iteration > 0 && r.Attempt < j.task.Attempt
+	return r.Attempt < j.task.Attempt
 }
 
 // runTool runs fn and records what it returned.

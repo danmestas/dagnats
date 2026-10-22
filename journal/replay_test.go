@@ -9,8 +9,9 @@
 //
 // Methodology: one embedded server per case, through the public
 // Open/Tool/Model surface, modelling dispatch as the engine does it:
-// the redelivery of a task keeps its nonce, attempt (from iteration 1)
-// and iteration and differs only in delivery count. A crash inside a
+// the redelivery of a task keeps its nonce, attempt (stamped by the
+// engine on every dispatch, ADR-026) and iteration and differs only in
+// delivery count. A crash inside a
 // tool is a claim whose tool function blocks on a channel while the
 // redelivery takes over; releasing it afterwards is the stalled worker
 // resuming. The side-effect counter lives outside the journal. Every
@@ -300,8 +301,9 @@ func TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints(t *testing.T) {
 type unsafeCounters struct{ starts, effects *atomic.Int32 }
 
 // testUnsafeCrashPoint: the first delivery crashes at p; the
-// redelivery (same nonce, attempt from iteration 1, higher delivery
-// count) runs the handler again. The guarantee under test is the
+// redelivery (same nonce and stamped attempt, higher delivery count)
+// runs the handler again, or finds its own commit when the crash was
+// after it. The guarantee under test is the
 // documented one: the SDK starts an unsafe call at most once per
 // position, so a successor never starts it again and is told it was
 // interrupted, with the call's key; a holder stalled between its
@@ -349,7 +351,7 @@ func testUnsafeCrashPoint(t *testing.T, c client, runID string, d dispatch, p cr
 		if settled == res.Interrupted {
 			t.Errorf("redelivery result = %+v at %s; interrupted should be %v", res, p, !settled)
 		}
-	} else if p != crashAfterCommitBeforeEvent || d.iteration == 0 {
+	} else if p != crashAfterCommitBeforeEvent {
 		t.Fatalf("redelivery found a commit at %s on iteration %d", p, d.iteration)
 	}
 	if stalled != nil {
@@ -650,5 +652,45 @@ func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.
 	}
 	if v := checkToolPairs(readRecords(t, c, "run-content"), false); len(v) != 0 {
 		t.Errorf("checker violations: %v", v)
+	}
+}
+
+// TestReplay_Iteration0RetryRerunsSafeCalls: with the attempt stamped
+// on the first dispatch (ADR-026, finding 1), a retry of iteration 0
+// is a new attempt like any other: safe calls run afresh and prior
+// unsafe outcomes are honoured, instead of the retry replaying the
+// failed attempt's results as a redelivery would.
+func TestReplay_Iteration0RetryRerunsSafeCalls(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
+	safeRuns, unsafeRuns := &atomic.Int32{}, &atomic.Int32{}
+	safe := func(context.Context, ToolCall) ([]byte, error) {
+		return []byte(strconv.Itoa(int(safeRuns.Add(1)))), nil
+	}
+	unsafe := func(context.Context, ToolCall) ([]byte, error) {
+		return []byte(strconv.Itoa(int(unsafeRuns.Add(1)))), nil
+	}
+	first := open(t, c, task("run-attempt0", 0, 1, 1))
+	if _, err := first.Tool(ctx, ToolCall{Name: "read"}, Safe, safe); err != nil {
+		t.Fatalf("safe Tool: %v", err)
+	}
+	if _, err := first.Tool(ctx, ToolCall{Name: "charge"}, Unsafe, unsafe); err != nil {
+		t.Fatalf("unsafe Tool: %v", err)
+	}
+	retry := open(t, c, task("run-attempt0", 0, 2, 1))
+	res, err := retry.Tool(ctx, ToolCall{Name: "read"}, Safe, safe)
+	if err != nil || string(res.Output) != "2" || safeRuns.Load() != 2 {
+		t.Errorf("safe Tool on attempt 2 of iteration 0 = %+v, %v after %d runs; want a fresh run",
+			res, err, safeRuns.Load())
+	}
+	res, err = retry.Tool(ctx, ToolCall{Name: "charge"}, Unsafe, unsafe)
+	if err != nil || string(res.Output) != "1" || unsafeRuns.Load() != 1 {
+		t.Errorf("unsafe Tool on attempt 2 of iteration 0 = %+v, %v after %d runs; want the recorded outcome",
+			res, err, unsafeRuns.Load())
 	}
 }

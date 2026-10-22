@@ -1,0 +1,74 @@
+// journal/delivery_order_test.go
+// Claim order between deliveries of one task message (ADR-026,
+// finding 3): a claim by a newer delivery of the same message (same
+// stream sequence, higher delivery count) fences an older delivery
+// that opens after it, so a delivery held in a stalled consumer's
+// prefetch buffer cannot take the iteration back from its successor.
+// A resend is a fresh message (another stream sequence, count 1
+// again) and still claims in journal order, and a message of unknown
+// sequence (0) is never compared.
+//
+// Methodology: one embedded server per case, through the public Open
+// surface, with the task shapes the engine and worker produce. Every
+// wait is bounded; each case asserts the fenced and the unfenced side.
+package journal
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/danmestas/dagnats/internal/natsutil"
+)
+
+func TestOpen_NewerDeliveryOfSameMessageFencesOlder(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+	defer cancel()
+	newer := open(t, c, task("r-order", 0, 1, 2))
+	older := task("r-order", 0, 1, 1)
+	if _, err := Open(ctx, c.js, c.pub, older); !errors.Is(err, ErrFenced) {
+		t.Fatalf("Open of delivery 1 after delivery 2 claimed: err = %v, want ErrFenced", err)
+	}
+	if _, err := newer.Append(ctx, TypeEntry, []byte(`1`)); err != nil || newer.Fenced() {
+		t.Fatalf("delivery 2 after the older open: err = %v fenced = %v, want to keep writing",
+			err, newer.Fenced())
+	}
+	if n := countRecords(t, c, "r-order"); n != 2 {
+		t.Fatalf("records = %d, want the claim and the entry only (no older claim)", n)
+	}
+}
+
+func TestOpen_ResendAndUnknownSequenceClaimInJournalOrder(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+	defer cancel()
+	live := open(t, c, task("r-resend", 0, 1, 2))
+	// A dispatch resend: a fresh message whose count restarts at 1.
+	resend := task("r-resend", 0, 1, 1)
+	resend.StreamSeq = live.Task().StreamSeq + 1
+	if _, err := Open(ctx, c.js, c.pub, resend); err != nil {
+		t.Fatalf("Open of a resend: %v, want a claim in journal order", err)
+	}
+	if _, err := live.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrFenced) {
+		t.Fatalf("live append after the resend's claim: err = %v, want ErrFenced", err)
+	}
+	// A message of unknown sequence is not compared to anything.
+	unknown := task("r-unknown", 0, 1, 1)
+	unknown.StreamSeq = 0
+	first := open(t, c, task("r-unknown", 0, 1, 2))
+	if _, err := Open(ctx, c.js, c.pub, unknown); err != nil {
+		t.Fatalf("Open with stream seq 0: %v, want a claim", err)
+	}
+	if _, err := first.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrFenced) {
+		t.Fatalf("append after a later claim of unknown sequence: err = %v, want ErrFenced", err)
+	}
+}

@@ -12,10 +12,10 @@
 // Methodology: every case runs against one embedded server and an
 // in-process three-node cluster with R3 streams, through the public
 // Open/Append/Commit surface, and models production dispatch: the
-// engine stamps the attempt from iteration 1 on, so a stalled worker
-// and the AckWait redelivery that replaces it hold the same run, step,
-// iteration, attempt and nonce and differ only in delivery count; on
-// iteration 0 the attempt follows the delivery count. Forged records
+// engine stamps the attempt on every dispatch, iteration 0 included
+// (ADR-026), so a stalled worker and the AckWait redelivery that
+// replaces it hold the same run, step, iteration, attempt and nonce
+// and differ only in delivery count. Forged records
 // are published raw to stand in for a writer the protocol would
 // otherwise prevent. Every wait is bounded. Each case has at least one
 // positive and one negative assertion.
@@ -79,15 +79,16 @@ func forEachTopology(t *testing.T, fn func(t *testing.T, nc *nats.Conn)) {
 type dispatch struct {
 	name      string
 	iteration int
-	// attempt of the first delivery and of its AckWait redelivery: on
-	// iteration 0 the payload carries no attempt and the worker uses
-	// the delivery count; from iteration 1 the engine stamps it.
+	// attempt of the first delivery and of its AckWait redelivery: the
+	// engine stamps it on every dispatch, so the two are equal on
+	// every iteration (the shapes stay distinct: iteration 0 starts a
+	// journal, iteration 1 follows a commit).
 	first, redelivered int
 }
 
 func dispatches() []dispatch {
 	return []dispatch{
-		{name: "iteration0", iteration: 0, first: 1, redelivered: 2},
+		{name: "iteration0", iteration: 0, first: 1, redelivered: 1},
 		{name: "iteration1", iteration: 1, first: 1, redelivered: 1},
 	}
 }
@@ -337,15 +338,11 @@ func TestConformance_TwoDeliveriesLeaveExactlyOneWriter(t *testing.T) {
 					c := newClient(t, nc)
 					ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 					defer cancel()
-					// Delivery counts only grow on one message; on
-					// iteration 0 the attempt follows them.
+					// Delivery counts only grow on one message; the
+					// attempt is the stamped one on every delivery.
 					delivered := 2*round + i + 1
-					attempt := d.first
-					if d.iteration == 0 {
-						attempt = delivered
-					}
 					journals[i], openErrs[i] = Open(ctx, c.js, c.pub,
-						task(runID, d.iteration, attempt, delivered))
+						task(runID, d.iteration, d.first, delivered))
 				}(i)
 			}
 			wg.Wait()

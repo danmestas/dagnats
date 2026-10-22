@@ -39,9 +39,10 @@ func TestDispatchIdentity_NewAttempt(t *testing.T) {
 		wantAttempt   int
 		wantIteration int
 	}{
-		// Positive: a step that never started dispatches at attempt 0
-		// (the worker/bridge NumDelivered-fallback signal), iteration 0.
-		{"never-started", 0, 0},
+		// Positive: a step that never started dispatches at attempt 1,
+		// stamped (ADR-026, finding 1): a redelivery of the first task
+		// keeps the number instead of taking it from the delivery count.
+		{"never-started", 1, 0},
 		// Positive: a step that already started once dispatches its
 		// NEXT attempt (Attempts + 1), not the same AttemptNumber again.
 		{"started-once", 2, 0},
@@ -51,8 +52,8 @@ func TestDispatchIdentity_NewAttempt(t *testing.T) {
 		{"loop-retry", 2, 3},
 		{"fanout#2", 2, 0},
 		// Negative: an unknown stepID (zero-value StepState) behaves
-		// like never-started — no panic, no bogus attempt.
-		{"unknown-step", 0, 0},
+		// like never-started — no panic, attempt 1.
+		{"unknown-step", 1, 0},
 	}
 	for _, tc := range cases {
 		attempt, iteration := dispatchIdentity(run, tc.stepID, dispatchNewAttempt)
