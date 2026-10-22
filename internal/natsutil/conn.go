@@ -29,6 +29,11 @@ const (
 	// deadLettersMaxAge bounds DEAD_LETTERS. 30d gives operators a month to
 	// triage a failed run before its dead-letter record ages out.
 	deadLettersMaxAge = 30 * 24 * time.Hour
+	// checkpointsTTL bounds the checkpoints bucket. A Pause marker or
+	// bridge checkpoint is read again within the hour; nothing deletes
+	// one once its run ends, so without a TTL they pile up forever.
+	// Matches history: a checkpoint never outlives the events of its run.
+	checkpointsTTL = historyMaxAge
 )
 
 // Proportional per-stream byte ceilings (#441 follow-up). Each file-based
@@ -382,7 +387,7 @@ func setupKVBuckets(
 		{Bucket: "triggers", Replicas: replicas},
 		{Bucket: "trigger_state", Replicas: replicas},
 		{Bucket: "signals", Replicas: replicas},
-		{Bucket: "checkpoints", Replicas: replicas},
+		{Bucket: "checkpoints", TTL: checkpointsTTL, Replicas: replicas},
 		{Bucket: "concurrency_runs", Replicas: replicas},
 	}
 	if len(buckets) == 0 {
