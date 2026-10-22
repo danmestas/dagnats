@@ -77,7 +77,7 @@ func Check(ctx context.Context, nc *nats.Conn, runID string) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("journal: jetstream: %w", err)
 	}
-	startedByStep, err := readStarted(ctx, js, runID)
+	historyByStep, err := readHistory(ctx, js, runID)
 	if err != nil {
 		return Report{}, err
 	}
@@ -105,7 +105,7 @@ func Check(ctx context.Context, nc *nats.Conn, runID string) (Report, error) {
 			continue
 		}
 		report.Steps = append(report.Steps,
-			checkStep(stepID, run.Steps[stepID], records, startedByStep[stepID]))
+			checkStep(stepID, run.Steps[stepID], records, historyByStep[stepID]))
 	}
 	return report, nil
 }
@@ -129,16 +129,17 @@ func loadRun(ctx context.Context, nc *nats.Conn, runID string) (dag.WorkflowRun,
 	return run, nil
 }
 
-// readStarted reads the run's step.started events, keyed by step: the
-// attempt the engine adopted for each dispatch nonce.
-func readStarted(
+// readHistory reads the run's step events, keyed by step: step.started
+// (the attempt the engine adopted per dispatch nonce) and the lifecycle
+// events, which name the commit they carried.
+func readHistory(
 	ctx context.Context, js jetstream.JetStream, runID string,
 ) (map[string][]protocol.Event, error) {
 	if js == nil {
-		panic("readStarted: js must not be nil")
+		panic("readHistory: js must not be nil")
 	}
 	if runID == "" {
-		panic("readStarted: runID must not be empty")
+		panic("readHistory: runID must not be empty")
 	}
 	stream, err := js.Stream(ctx, historyStream)
 	if err != nil {
@@ -159,7 +160,9 @@ func readStarted(
 			if err != nil {
 				return fmt.Errorf("journal: decode history: %w", err)
 			}
-			if evt.Type == protocol.EventStepStarted {
+			switch evt.Type {
+			case protocol.EventStepStarted, protocol.EventStepContinue,
+				protocol.EventStepCompleted, protocol.EventStepFailed:
 				out[evt.StepID] = append(out[evt.StepID], evt)
 			}
 			return nil
@@ -170,9 +173,10 @@ func readStarted(
 	return out, nil
 }
 
-// checkStep applies the invariants to one step's journal.
+// checkStep applies the invariants to one step's journal. history is
+// the step's step.started and lifecycle events.
 func checkStep(
-	stepID string, state dag.StepState, records []Record, started []protocol.Event,
+	stepID string, state dag.StepState, records []Record, history []protocol.Event,
 ) StepReport {
 	if stepID == "" {
 		panic("checkStep: stepID must not be empty")
@@ -186,7 +190,7 @@ func checkStep(
 		report.Commits += len(iterationCommits)
 	}
 	report.Violations = append(report.Violations,
-		checkCommits(state, records, commits, started)...)
+		checkCommits(state, records, commits, history)...)
 	report.Violations = append(report.Violations, checkFencing(records)...)
 	report.Violations = append(report.Violations, checkToolPairs(records)...)
 	report.Violations = append(report.Violations, checkPlacedInputs(records)...)
@@ -216,7 +220,7 @@ func commitsByIteration(records []Record) map[int][]Record {
 // accepted continue commits number the engine's iterations.
 func checkCommits(
 	state dag.StepState, records []Record, commits map[int][]Record,
-	started []protocol.Event,
+	history []protocol.Event,
 ) []string {
 	if commits == nil {
 		panic("checkCommits: commits must not be nil")
@@ -231,11 +235,11 @@ func checkCommits(
 		last = state.Iterations - 1
 	}
 	for iteration := 0; iteration <= last; iteration++ {
-		accepted := acceptedCommits(iteration, records, commits, started)
+		accepted := acceptedCommits(iteration, records, commits, history)
 		if len(accepted) != 1 {
 			violations = append(violations, fmt.Sprintf(
-				"iteration %d has %d commits from accepted attempt %d, want 1",
-				iteration, len(accepted), acceptedAttempt(iteration, records, started)))
+				"iteration %d has %d commits accepted by the engine, want 1",
+				iteration, len(accepted)))
 			continue
 		}
 		want := ActionContinue
@@ -252,7 +256,7 @@ func checkCommits(
 	}
 	continues := 0
 	for iteration := range commits {
-		for _, c := range acceptedCommits(iteration, records, commits, started) {
+		for _, c := range acceptedCommits(iteration, records, commits, history) {
 			if commitAction(c) == ActionContinue {
 				continues++
 			}
@@ -265,10 +269,13 @@ func checkCommits(
 	return violations
 }
 
-// acceptedCommits returns the iteration's commits from the attempt the
-// engine adopted.
+// acceptedCommits returns the iteration's commits the engine accepted:
+// those a lifecycle event for the iteration names by journal_seq. When
+// history carries no such event for the iteration (events from a
+// worker without journal_seq), it falls back to the commits of the
+// attempt the engine adopted.
 func acceptedCommits(
-	iteration int, records []Record, commits map[int][]Record, started []protocol.Event,
+	iteration int, records []Record, commits map[int][]Record, history []protocol.Event,
 ) []Record {
 	if commits == nil {
 		panic("acceptedCommits: commits must not be nil")
@@ -276,8 +283,23 @@ func acceptedCommits(
 	if iteration < 0 {
 		panic("acceptedCommits: iteration must not be negative")
 	}
-	attempt := acceptedAttempt(iteration, records, started)
+	named := map[uint64]bool{}
+	for _, evt := range history {
+		if evt.JournalSeq > 0 && evt.Iteration != nil && *evt.Iteration == iteration &&
+			fencedLifecycle(evt.Type) {
+			named[evt.JournalSeq] = true
+		}
+	}
 	var accepted []Record
+	if len(named) > 0 {
+		for _, c := range commits[iteration] {
+			if named[c.Seq] {
+				accepted = append(accepted, c)
+			}
+		}
+		return accepted
+	}
+	attempt := acceptedAttempt(iteration, records, history)
 	for _, c := range commits[iteration] {
 		if c.Attempt == attempt {
 			accepted = append(accepted, c)
@@ -286,11 +308,20 @@ func acceptedCommits(
 	return accepted
 }
 
-// acceptedAttempt is the attempt the engine adopted for iteration: the
-// highest step.started attempt among the dispatch nonces that claimed
-// the iteration, else the highest claim attempt when history carries
-// no matching step.started.
-func acceptedAttempt(iteration int, records []Record, started []protocol.Event) int {
+// fencedLifecycle reports whether t is a lifecycle event a commit
+// precedes.
+func fencedLifecycle(t protocol.EventType) bool {
+	switch t {
+	case protocol.EventStepContinue, protocol.EventStepCompleted, protocol.EventStepFailed:
+		return true
+	}
+	return false
+}
+
+// acceptedAttempt is the fallback when no lifecycle event names a
+// commit: the highest step.started attempt among the dispatch nonces
+// that claimed the iteration, else the highest claim attempt.
+func acceptedAttempt(iteration int, records []Record, history []protocol.Event) int {
 	if iteration < 0 {
 		panic("acceptedAttempt: iteration must not be negative")
 	}
@@ -306,8 +337,9 @@ func acceptedAttempt(iteration int, records []Record, started []protocol.Event) 
 		}
 	}
 	startedMax := 0
-	for _, evt := range started {
-		if evt.DispatchNonce != "" && nonces[evt.DispatchNonce] {
+	for _, evt := range history {
+		if evt.Type == protocol.EventStepStarted && nonces[evt.DispatchNonce] &&
+			evt.DispatchNonce != "" {
 			startedMax = max(startedMax, evt.AttemptNumber)
 		}
 	}
@@ -375,7 +407,7 @@ func taskOf(r Record) Task {
 	}
 	return Task{
 		RunID: "-", StepID: "-", Iteration: r.Iteration, Attempt: r.Attempt,
-		DispatchNonce: r.DispatchNonce,
+		DispatchNonce: r.DispatchNonce, Delivered: r.Delivered,
 	}
 }
 

@@ -23,10 +23,19 @@ import (
 
 func rec(seq uint64, typ string, iteration, attempt int, data string) Record {
 	return Record{
-		Seq: seq, Type: typ, Iteration: iteration, Attempt: attempt,
+		Seq: seq, Type: typ, Iteration: iteration, Attempt: attempt, Delivered: attempt,
 		DispatchNonce: "n" + string(rune('0'+iteration)) + "-" + string(rune('0'+attempt)),
 		Data:          json.RawMessage(data),
 	}
+}
+
+// applied is a lifecycle event the engine saw, naming the commit it
+// carried.
+func applied(typ protocol.EventType, iteration, attempt int, journalSeq uint64) protocol.Event {
+	evt := protocol.NewStepEvent(typ, "r", "s", nil)
+	evt.SetIdentity(iteration, attempt, "n")
+	evt.JournalSeq = journalSeq
+	return evt
 }
 
 func commitRec(seq uint64, iteration, attempt int, action string) Record {
@@ -92,6 +101,33 @@ func TestCheckStep_OneCommitPerIterationFromAcceptedAttempt(t *testing.T) {
 	v = checkStep("s", state, missing, events).Violations
 	if !hasViolation(v, "iteration 0") || !hasViolation(v, "0 commits") {
 		t.Errorf("violations = %v, want iteration 0 with 0 commits", v)
+	}
+}
+
+func TestCheckStep_AcceptedCommitIsTheOneHistoryNames(t *testing.T) {
+	// Attempt 1 committed and published iteration 0's continue, which the
+	// engine applied, then crashed before acking; the redelivery's
+	// step.started(2) landed after. The started heuristic would pick
+	// attempt 2 and flag a missing commit; the continue's journal_seq
+	// names attempt 1's commit.
+	records := []Record{
+		rec(1, TypeClaim, 0, 1, `{}`), commitRec(2, 0, 1, ActionContinue),
+		rec(3, TypeClaim, 0, 2, `{}`),
+		rec(4, TypeClaim, 1, 1, `{}`), commitRec(5, 1, 1, ActionComplete),
+	}
+	state := dag.StepState{Status: dag.StepStatusCompleted, Iterations: 1, Attempts: 1}
+	history := []protocol.Event{
+		started(0, 1), applied(protocol.EventStepContinue, 0, 1, 2), started(0, 2),
+		started(1, 1), applied(protocol.EventStepCompleted, 1, 1, 5),
+	}
+	if v := checkStep("s", state, records, history).Violations; len(v) != 0 {
+		t.Fatalf("violations = %v, want none: history names attempt 1's commit", v)
+	}
+	// A commit history never named is not the accepted one.
+	history[1] = applied(protocol.EventStepContinue, 0, 2, 99)
+	v := checkStep("s", state, records, history).Violations
+	if !hasViolation(v, "iteration 0") || !hasViolation(v, "0 commits") {
+		t.Errorf("violations = %v, want iteration 0 without its named commit", v)
 	}
 }
 
