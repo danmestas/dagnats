@@ -445,3 +445,33 @@ func TestJournal_ResendClaimFencesOriginalWithSameDelivery(t *testing.T) {
 		t.Fatalf("original append err = %v, want ErrFenced", err)
 	}
 }
+
+// A Complete retried after its commit landed but its publish failed
+// must republish the stored commit's event and settle the task for ack,
+// not surface the wrapped ErrCommitted as a failure.
+func TestJournal_RetriedCompleteRepublishesStoredCommit(t *testing.T) {
+	nc, _ := journalServer(t)
+	const runID = "run-retried-complete"
+	tc := delivery(t, nc, journalPayload(runID, 0), 1)
+	if _, err := tc.Journal(); err != nil {
+		t.Fatalf("Journal: %v", err)
+	}
+	// The first Complete: its commit lands, its publish "fails".
+	if err := tc.commitJournal(journal.Commit{
+		Action: journal.ActionComplete, Output: json.RawMessage(`{"r":1}`),
+	}); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	seq := tc.journalSeq
+	err := tc.Complete([]byte(`{"r":1}`))
+	if !errors.Is(err, journal.ErrCommitted) {
+		t.Fatalf("retried Complete err = %v, want ErrCommitted", err)
+	}
+	evt := nextHistory(t, nc, runID, protocol.EventStepCompleted)
+	if string(evt.Payload) != `{"r":1}` || evt.JournalSeq != seq || seq == 0 {
+		t.Fatalf("republished event = %+v, want payload {\"r\":1} and journal_seq %d", evt, seq)
+	}
+	if done, ack := tc.journalOutcome(err); !done || !ack {
+		t.Fatalf("journalOutcome = done %v ack %v, want both", done, ack)
+	}
+}

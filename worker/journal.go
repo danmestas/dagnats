@@ -144,6 +144,15 @@ func (c *taskContext) commitJournal(commit journal.Commit) error {
 			"iteration", c.iteration, "attempt", c.effectiveAttempt())
 		return err
 	}
+	if errors.Is(err, journal.ErrCommitted) {
+		// A retry after the commit landed but its event did not: the
+		// stored commit's event is republished and the task settles.
+		stored, ok := c.journal.Committed()
+		if !ok {
+			panic("commitJournal: journal reports committed without a commit")
+		}
+		return c.republishCommitted(stored, c.journal.CommittedSeq())
+	}
 	if err != nil {
 		return fmt.Errorf("journal commit: %w", err)
 	}
