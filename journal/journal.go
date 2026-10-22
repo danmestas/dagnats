@@ -151,6 +151,20 @@ func (r Record) sameClaim(task Task) bool {
 		r.StreamSeq == task.StreamSeq
 }
 
+// olderDeliveryClaim reports whether r is the claim of an older
+// delivery of task's own message: the same stream sequence (known) and
+// a lower delivery count.
+func (r Record) olderDeliveryClaim(task Task) bool {
+	if task.Delivered < 1 {
+		panic("olderDeliveryClaim: delivered must be >= 1")
+	}
+	if r.Seq == 0 {
+		panic("olderDeliveryClaim: record must have a sequence")
+	}
+	return r.Type == TypeClaim && task.StreamSeq != 0 &&
+		r.StreamSeq == task.StreamSeq && r.Delivered < task.Delivered
+}
+
 // Claim is the body of a claim record.
 type Claim struct {
 	Iteration     int    `json:"iteration"`
@@ -539,6 +553,13 @@ func (j *Journal) append(
 		case tail.sameClaim(j.task), tail.Iteration < j.task.Iteration:
 			// Own earlier record, or a late claim for an earlier
 			// iteration: resync, never fence.
+			expected = tail.Seq
+		case tail.olderDeliveryClaim(j.task):
+			// The claim of an older delivery of this same message,
+			// published between this writer's tail read and its
+			// own claim: this delivery is the newer one, so it lands
+			// behind that claim and wins by order (supersededDelivery
+			// is the same rule for a claim already at the tail).
 			expected = tail.Seq
 		default:
 			j.fenced = true

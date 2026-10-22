@@ -337,14 +337,15 @@ effects in a KV bucket outside the journal:
   parallel under a seeded random schedule of kills, stalls drawn
   around AckWait, the duplicate deliveries those cause (AckWait
   redelivery, a `DispatchUnsent` resend) and, in cluster mode,
-  stream-leader step-downs; the crash-free answer (a stall at an
-  interrupting point may or may not become a takeover, so the unsafe
-  call may be either interrupted or complete there), `Check` and the
+  stream-leader step-downs; the crash-free answer (the unsafe call
+  interrupted exactly when the run's journal shows a takeover found
+  its intent unanswered: a stall is drawn around AckWait, so the
+  schedule alone does not say whether one happened), `Check` and the
   counters after every run; the seed is printed and
   `DAGNATS_CHAOS_SEED` reproduces the schedules. Making it green after
-  findings 1 to 4 took two harness corrections: that stall expectation
-  (the harness had required `interrupted` for every stall, which a
-  stall shorter than AckWait cannot produce), and `journal.Read`
+  findings 1 to 4 took two harness corrections: that expectation (the
+  harness had required `interrupted` for every scheduled stall, which
+  a stall shorter than AckWait cannot produce), and `journal.Read`
   retrying the server's "JetStream system temporarily unavailable"
   (10008), which a leader step-down answers with, as it already
   retried no-responders and timeouts.
@@ -394,6 +395,11 @@ Consequences of stamping the first attempt, weighed when fixing 1:
   and the bridge's `attempt` was already 1 there.
 - Map instances, retries, DLQ replays and on-fail compensation go
   through the same builder and are unchanged past the first dispatch.
+- Iteration-0 durability needs the engine upgraded before the workers.
+  A task from an engine that predates the stamp carries attempt 0, so
+  a new worker falls back to the delivery count and a redelivery on
+  iteration 0 regresses to finding 1 until that engine is upgraded.
+  From iteration 1 nothing changes, since every engine stamped those.
 
 ## Requirements
 

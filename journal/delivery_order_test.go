@@ -15,6 +15,7 @@ package journal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -70,5 +71,50 @@ func TestOpen_ResendAndUnknownSequenceClaimInJournalOrder(t *testing.T) {
 	}
 	if _, err := first.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrFenced) {
 		t.Fatalf("append after a later claim of unknown sequence: err = %v, want ErrFenced", err)
+	}
+}
+
+// TestOpen_RacingClaimsOfSameMessageNewerWins: both deliveries read
+// the tail before either claim lands, and the older one (held in a
+// stalled consumer's prefetch buffer) publishes first. The newer
+// delivery's claim is rejected on the sequence fence and must resync
+// behind the older claim, not be fenced by it: it then wins by order
+// and the older delivery is the one fenced.
+func TestOpen_RacingClaimsOfSameMessageNewerWins(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+	defer cancel()
+	newer := task("r-race", 0, 1, 2)
+	j := &Journal{task: newer, honoured: map[uint64]bool{}}
+	j.attach(c.js, c.pub)
+	if err := j.bind(ctx); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	tail, err := j.readTail(ctx)
+	if err != nil || tail.Seq != 0 {
+		t.Fatalf("readTail = %+v, %v; want an empty subject", tail, err)
+	}
+	j.seq = tail.Seq
+	older := open(t, c, task("r-race", 0, 1, 1))
+	claim, err := json.Marshal(Claim{
+		Iteration: newer.Iteration, Attempt: newer.Attempt, DispatchNonce: newer.DispatchNonce,
+		Delivered: newer.Delivered, StreamSeq: newer.StreamSeq,
+	})
+	if err != nil {
+		t.Fatalf("marshal claim: %v", err)
+	}
+	if _, err := j.append(ctx, TypeClaim, claim); err != nil || j.Fenced() {
+		t.Fatalf("newer claim after the older landed: err = %v fenced = %v; want it to resync and land",
+			err, j.Fenced())
+	}
+	if _, err := older.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrFenced) {
+		t.Fatalf("older delivery's append: err = %v, want ErrFenced", err)
+	}
+	if _, err := j.Append(ctx, TypeEntry, []byte(`2`)); err != nil {
+		t.Fatalf("newer delivery's append: %v, want it to keep writing", err)
 	}
 }

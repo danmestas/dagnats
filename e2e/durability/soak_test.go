@@ -6,10 +6,10 @@
 // engine kill between publish and sent marker), and, in cluster mode,
 // stream-leader step-downs on the journal, task and history streams
 // while runs are in flight. After every run: the crash-free answer
-// (after a stall at an interrupting point, with or without the unsafe
-// call interrupted: a stall is drawn around AckWait, so the stalled
-// worker may resume before any takeover), the journal audit and the
-// side-effect counters. The seed is printed
+// (with the unsafe call interrupted exactly when the journal shows a
+// takeover found its intent unanswered: a stall is drawn around
+// AckWait, so the schedule alone does not say), the journal audit and
+// the side-effect counters. The seed is printed
 // up front and on failure; DAGNATS_CHAOS_SEED reproduces the
 // schedules (the interleaving across runs is not reproducible, so a
 // failure may need several runs of the same seed).
@@ -40,6 +40,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/journal"
 )
 
 const (
@@ -186,18 +187,18 @@ func soakRun(
 	defer r.remove(runID)
 	got, ok := f.waitCompletedOK(runID)
 	failed := !ok
-	// A kill at an interrupting point always interrupts the unsafe
-	// call; a stall there interrupts it only when it outlasts AckWait
-	// and the redelivery claims before the stalled worker resumes
-	// (its length is drawn around AckWait), so either answer is the
-	// crash-free one for a stall. The audit below holds the invariant
-	// that matters: the call started at most once.
-	killed := expectedAnswer(baseline, schedule.crashed(true))
-	stalled := expectedAnswer(baseline, schedule.crashed(false))
-	if ok && !sameAnswer(killed, got) && !sameAnswer(stalled, got) {
-		t.Errorf("run %d (%s): answer %+v, want %+v (or %+v after a stall); seed=%d schedule=%s",
-			index, runID, got, killed, stalled, cfg.seed, schedule)
-		failed = true
+	// The unsafe call is interrupted exactly when a takeover found its
+	// intent without a result, which the journal records; a stall is
+	// drawn around AckWait, so whether it became a takeover is not
+	// known from the schedule. The audit below holds the invariant
+	// that matters either way: the call started at most once.
+	if ok {
+		want := expectedAnswer(baseline, f.takeoverOnUnsafe(t, runID))
+		if !sameAnswer(want, got) {
+			t.Errorf("run %d (%s): answer %+v, want %+v; seed=%d schedule=%s",
+				index, runID, got, want, cfg.seed, schedule)
+			failed = true
+		}
 	}
 	if !ok {
 		t.Errorf("run %d (%s) did not complete within %s; seed=%d schedule=%s",
@@ -247,23 +248,45 @@ func (s soakSchedule) String() string {
 	return out + " }"
 }
 
-// crashed is the schedule as point -> iteration, for expectedAnswer:
-// its kills only, or every action.
-func (s soakSchedule) crashed(killsOnly bool) map[chaos.Point]int {
-	if len(s) > len(chaos.Points()) {
-		panic("soakSchedule.crashed: more actions than points")
+// takeoverOnUnsafe reads the run's journal and reports, as the
+// crashed map expectedAnswer takes, whether a takeover interrupted
+// the unsafe call: a claim on the unsafe iteration landed after the
+// call's intent and before its result (if any). A successor that
+// found the result reused it, and a holder that resumed before any
+// takeover finished the call itself; neither interrupts.
+func (f *fixture) takeoverOnUnsafe(t *testing.T, runID string) map[chaos.Point]int {
+	t.Helper()
+	if runID == "" {
+		panic("takeoverOnUnsafe: runID must not be empty")
 	}
-	crashed := make(map[chaos.Point]int, len(s))
-	for p, a := range s {
-		if a.iteration < 0 {
-			panic("soakSchedule.crashed: negative iteration")
-		}
-		if killsOnly && !a.kill {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	records, err := journal.Read(ctx, f.js, runID, stepID)
+	if err != nil {
+		t.Errorf("run %s: journal.Read: %v", runID, err)
+		return map[chaos.Point]int{}
+	}
+	if len(records) > historyReadMax {
+		panic("takeoverOnUnsafe: journal longer than the read bound")
+	}
+	var intentSeq, claimSeq, resultSeq uint64
+	for _, rec := range records {
+		if rec.Iteration != unsafeIteration {
 			continue
 		}
-		crashed[p] = a.iteration
+		switch {
+		case rec.Type == journal.TypeToolIntent && intentSeq == 0:
+			intentSeq = rec.Seq
+		case rec.Type == journal.TypeClaim && intentSeq > 0 && claimSeq == 0:
+			claimSeq = rec.Seq
+		case rec.Type == journal.TypeToolResult && intentSeq > 0 && resultSeq == 0:
+			resultSeq = rec.Seq
+		}
 	}
-	return crashed
+	if claimSeq == 0 || (resultSeq > 0 && resultSeq < claimSeq) {
+		return map[chaos.Point]int{}
+	}
+	return map[chaos.Point]int{chaos.WorkerAfterToolIntent: unsafeIteration}
 }
 
 // drawSchedule draws a run's schedule from rng: each point crashes
