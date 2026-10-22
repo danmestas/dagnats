@@ -17,4 +17,5 @@ Each package section includes a hand-written overview and auto-generated API doc
 | [bridge](bridge/) | HTTP-to-NATS gateway for non-Go workers |
 | [httpclient](httpclient/) | Go HTTP reference client for the bridge |
 | [dagnatstest](dagnatstest/) | Test helpers for one-call test setup |
+| [journal](journal/) | Fenced per-step agent journal: claims, appends, commits, recovery and the invariant checker (ADR-026) |
 | [ci](ci/) | `.dagnats/ci.yml` CI-spec compiler (`Parse`/`Compile`/`CompileYAML`), consumed by both the `dagnats-ci` add-on module and the `/v1/ci/{compile,validate}` control-plane endpoints |

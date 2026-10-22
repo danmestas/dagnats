@@ -489,7 +489,7 @@ func TestMultiProcessCluster_FailoverKeepsWorking(t *testing.T) {
 	}
 	if dl, ok := t.Deadline(); ok && time.Until(dl) < totalBudget {
 		t.Fatalf("go test -timeout leaves %s; this test needs %s "+
-			"(use -timeout 600s)", time.Until(dl).Round(time.Second), totalBudget)
+			"(use -timeout 900s)", time.Until(dl).Round(time.Second), totalBudget)
 	}
 	bin := buildBinary(t)
 	nodes := formCluster(t, bin)

@@ -4,7 +4,7 @@ name: Race
 # only surfaces if a human happens to run the detector locally (#667:
 # a race in connect_owned_race_test.go merged silently and was only
 # caught by a reviewer). This job runs -race over the concurrency-heavy
-# packages — bridge, worker, engine, api, workertoken, natsutil — where
+# packages — bridge, worker, engine, api, workertoken, natsutil, journal — where
 # heartbeat loops, ordered consumers, CAS retry loops, and SSE fan-out
 # make races most likely. The full embedded E2E suite is skipped here
 # (see ci.yml's Test step) to keep this job's runtime bounded.
@@ -48,6 +48,7 @@ jobs:
           - ./internal/api/
           - ./internal/workertoken/
           - ./internal/natsutil/
+          - ./journal/
         shard: ['']
         include:
           # internal/engine runs its tests serially; three shards keep

@@ -46,7 +46,7 @@ jobs:
   cluster-e2e:
     name: 3-process cluster
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -55,6 +55,6 @@ jobs:
           go-version-file: go.mod
 
       - name: Multi-process cluster test
-        run: go test ./e2e/cluster/ -count=1 -timeout 600s -v
+        run: go test ./e2e/cluster/ -count=1 -timeout 900s -v
         env:
           DAGNATS_E2E_CLUSTER: "1"

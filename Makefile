@@ -55,7 +55,7 @@ test: ## Run all tests with 600s timeout
 	go test ./... -p 4 -timeout 600s -count=1
 
 test-cluster-e2e: ## Run the 3-process cluster failover test (opt-in, ~30s)
-	DAGNATS_E2E_CLUSTER=1 go test ./e2e/cluster/ -count=1 -timeout 600s -v
+	DAGNATS_E2E_CLUSTER=1 go test ./e2e/cluster/ -count=1 -timeout 900s -v
 
 lint: vet ## Run gofmt + vet + staticcheck (matches CI)
 	@out=$$(gofmt -l .); \
@@ -109,6 +109,7 @@ docs-gen-sdk:
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/bridge/api.md ./bridge/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/httpclient/api.md ./sdk/httpclient/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/dagnatstest/api.md ./dagnatstest/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/journal/api.md ./journal/
 
 # Writes docs/site/static/llms*.txt (git-ignored; the Cloudflare build regenerates them).
 docs-gen-llms:

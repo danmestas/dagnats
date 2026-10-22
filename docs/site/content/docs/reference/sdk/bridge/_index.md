@@ -21,7 +21,7 @@ HTTP-to-NATS gateway that lets non-Go workers interact with DagNats over HTTP. T
 |--------|------|-------------|
 | `POST` | `/v1/workers/connect` | Register worker and maintain SSE heartbeat |
 | `POST` | `/v1/tasks/poll` | Long-poll for available tasks |
-| `POST` | `/v1/tasks/{id}/resolve` | `complete`, `fail`, `continue`, `pause`, `checkpoint`, `heartbeat`, `stream`, `send_signal` or `wait_signal` |
+| `POST` | `/v1/tasks/{id}/resolve` | `complete`, `fail`, `continue`, `pause`, `checkpoint`, `heartbeat`, `stream`, `send_signal`, `wait_signal`, `journal.append`, `journal.read` or `load_checkpoint` |
 | `POST` | `/v1/tasks/{id}/logs` | Upload stdout and stderr chunks for a task |
 
 See [HTTP Bridge](/docs/workers/http-bridge) for request and response details.
