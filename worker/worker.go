@@ -71,7 +71,9 @@ type TaskContext interface {
 	FailRetryAfter(err error, after time.Duration) error
 	Continue(output []byte) error
 
-	// Streaming and heartbeat
+	// Streaming and heartbeat. PutStream is a non-durable preview
+	// (ADR-026): a journal step that crashes mid-stream re-sends the
+	// request; Journal().Model holds the durable response.
 	PutStream(data []byte) error
 	Heartbeat() error
 
@@ -106,10 +108,12 @@ type TaskContext interface {
 	// returns the handle for appending records. Call it first: from
 	// then on Continue, Complete and Fail* commit a journal record
 	// before their event, Checkpoint and LoadCheckpoint use the
-	// journal's state, and Pause writes a pause record. Return its
-	// error unchanged: journal.ErrStale, ErrFenced and ErrCommitted
-	// mean this delivery must do nothing more, and the Worker settles
-	// the task accordingly.
+	// journal's state, and Pause writes a pause record. The handle's
+	// Tool and Model run tool calls and model requests durably, reused
+	// on recovery. Return its error unchanged: journal.ErrStale,
+	// ErrFenced, ErrCommitted and ErrRestartLimit mean this delivery
+	// must do nothing more, and the Worker settles the task
+	// accordingly.
 	Journal() (*journal.Journal, error)
 
 	// Signals — coordinate between steps

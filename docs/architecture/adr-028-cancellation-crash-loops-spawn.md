@@ -44,6 +44,23 @@ else between them (default 5). A `pause` record counts as progress, so
 pausing never trips the guard. The existing run retry resumes from the
 journal.
 
+As built (#807): `journal.Open` reports the count as `Restarts`, and the
+worker's `Journal()` fails the step through the ordinary `Fail` path when
+the count reaches the limit, so the failure is committed to the journal
+(`commit` with action `fail` and error `restart_limit: ...`), published
+as a retriable `step.failed`, and retried by the step's retry policy; the
+retry is a new attempt of the same iteration and resumes from the
+journal's records, its own count starting at 0 because the commit sits
+between. The handler gets `journal.ErrRestartLimit` from `Journal()` and
+returns it; the worker acknowledges the task. The limit is a Worker
+option, `worker.WithRestartLimit(n)` (default `RestartLimitDefault`, 5),
+not step configuration: the guard runs where the journal is read, in
+the SDK, and a schema field would need engine, payload and bridge
+plumbing for a bit the handler's fleet already owns, as ADR-026 argued
+for opting in through `Journal()`. Racing claimers for one delivery may
+each land a claim, so the count can overstate crashes by one; the limit
+is a backstop, not an exact budget.
+
 JetStream's delivery count cannot stand in for this: `Pause` is a delayed
 negative acknowledgement, so it redelivers too. Steps without a journal keep
 the step timeout as their backstop.
@@ -66,8 +83,8 @@ all capitals.
 |---|---|---|
 | R1 | A running handler's context MUST be cancelled within a bounded time of its run being cancelled. | Cancel test, #802 |
 | R2 | A worker MUST NOT rely on the core cancel signal alone. | Missed-signal test, #802 |
-| R3 | A journal step MUST fail with `restart_limit` after the configured number of claims without progress. | Crash-loop test, #807 |
-| R4 | Pausing MUST NOT count toward `restart_limit`. | Pause test, #807 |
+| R3 | A journal step MUST fail with `restart_limit` after the configured number of claims without progress. | `TestRestartLimit_RedeliveriesWithoutProgressTripIt`, `TestRestartLimit_RealCrashLoopFailsThenRetryResumesFromJournal` (real Workers; the retry resumes from the journal), `TestRestartLimit_BelowTheLimitRunsAndIsConfigurable` |
+| R4 | Pausing MUST NOT count toward `restart_limit`. | `TestRestartLimit_PausesAreProgress`, `TestRestarts_CountsClaimsWithoutProgress` |
 | R5 | Two spawns with the same key MUST produce one child run. | Spawn tests, #803 |
 | R6 | A spawn that claimed its child ID but failed to publish MUST produce exactly one child when retried. | Spawn tests, #803 |
 

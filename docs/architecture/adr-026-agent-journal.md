@@ -4,7 +4,7 @@
 **Deciders:** Dan Mestas
 **Depends on:** ADR-025
 **Reverses:** ADR-002's rejection of per-tool-call durability
-**Issues:** #804, #805
+**Issues:** #804, #805, #807
 
 ## Context
 
@@ -101,7 +101,7 @@ holds is that afterwards exactly one of them can still write.
 
 | Type | Written by | Purpose |
 |---|---|---|
-| `claim` | SDK | Takes ownership; feeds the crash-loop guard (ADR-028) |
+| `claim` | SDK | Takes ownership; counted by the crash-loop guard (ADR-028) |
 | `pause` | SDK | Written by `Pause` before its delayed redelivery |
 | `model.response` | SDK | A completed model response, reused on recovery |
 | `tool.intent` | SDK | A tool call about to run, with its replay declaration |
@@ -114,9 +114,9 @@ Each record is a JSON body. Its identity is in headers so a tail read can
 classify it without decoding the body: `Dagnats-Journal-Type`,
 `Dagnats-Journal-Iteration`, `Dagnats-Journal-Attempt`,
 `Dagnats-Journal-Index` and `Dagnats-Dispatch-Nonce`. The model, tool and
-input types are reserved here and written by the helpers of #805 and
-ADR-027; this ADR's implementation writes `claim`, `pause`, `commit` and
-the handler's `entry`.
+input types are written by `Tool` and `Model` (below) and by the input
+helpers of ADR-027; `claim`, `pause`, `commit` and the handler's `entry`
+by #804.
 
 ### Commits and recovery
 
@@ -153,20 +153,49 @@ commit:
 
 ### Tools and model calls
 
-Deferred to #805; this ADR records the shape they build on. `tc.Tool(call,
-Safe|Unsafe, fn)` appends `tool.intent`, runs the tool and appends
-`tool.result`. On recovery:
+Both helpers live on the journal handle, not on `TaskContext`: adding
+methods to that interface breaks every out-of-repo implementation of it
+(see the `LogOut` note on the interface), and the handle already owns the
+records a recovery reuses.
 
-- a recorded result is reused;
+`j.Tool(ctx, call, Safe|Unsafe, fn)` appends `tool.intent` carrying the
+call (name, input), its position in the iteration, its idempotency key
+and the replay declaration; runs `fn`; and appends `tool.result` with the
+output or the tool's own error. Calls are matched by position within the
+iteration, across claims and attempts, so a recovering claim walks the
+same sequence of calls. On recovery:
+
+- a recorded result is reused, whatever either declaration says;
 - an intent without a result is rerun only if both the recorded and the
   current declaration say `Safe`;
-- otherwise an `interrupted` error result is recorded with any partial
-  output, and the model sees it.
+- otherwise an `interrupted` result is recorded with any partial output:
+  the `entry` records the previous holder appended after the intent,
+  as a JSON array. The model sees it.
+
+The successor writes no second intent for a call it answers, so each
+call has exactly one intent and one result (checker invariant 4, now
+keyed by iteration and call rather than by claim). A tool's own error is
+part of its result, not a reason to stop the step; the error `Tool`
+returns is the journal's (`ErrFenced`, `ErrCommitted`, transport).
 
 Each call has a stable idempotency key, `{run}.{step}.{iteration}.{call}`,
-for tools to pass to external systems. `tc.Model` records each completed
-model response. Streaming tokens stay on `PutStream`, which is documented as
-a non-durable preview: a crash mid-stream re-sends the request.
+the same on every delivery and attempt, for tools to pass to external
+systems that deduplicate (ADR-028's spawn key defaults to it).
+
+`j.Model(ctx, fn)` returns the `model.response` recorded for the call at
+this position, and otherwise reads the tail first (a holder already
+fenced must not spend a model call), requests, and records the response.
+A request that fails records nothing. `journal.ScriptedModel` is the fake
+for tests: scripted responses in order, and a count of requests served,
+so a test can tell a reused response from a re-requested one. Streaming
+tokens stay on `PutStream`, which is a non-durable preview: a crash
+mid-stream re-sends the request on the next delivery.
+
+### Crash-loop guard
+
+`Open` counts the claims on the task's iteration at the tail with
+nothing between them (`Restarts`); the worker fails the step when the
+count reaches its restart limit. ADR-028 has the decision.
 
 ### Compatibility
 
@@ -238,9 +267,9 @@ all capitals.
 | R3 | A worker MUST NOT treat a rejection as fencing before re-reading the tail from the leader. | `TestConformance_FalseRejectionLostAck`, `TestConformance_FalseRejectionOwnRecordAtTailViaOtherNode`, `TestConformance_RacingClaimsLeaveExactlyOneWriter` (in-process rival, three nodes) |
 | R4 | A claim MUST NOT fence a worker on a later iteration. | `TestConformance_EarlierIterationClaimNeverFencesLater`, `TestConformance_StaleIterationStopsWithoutWriting` |
 | R5 | An iteration MUST end with exactly one commit for its attempt. | `TestConformance_OwnAttemptCommitIsHonoured`, `TestCheckStep_OneCommitPerIterationFromAcceptedAttempt`, chaos soak |
-| R6 | Recovery MUST reuse recorded model responses and tool results. | Crash-point tests |
-| R7 | An unfinished tool call MUST NOT be rerun unless both declarations are `Safe`. | Tool replay matrix |
-| R8 | An unsafe tool's side effect MUST happen at most once across any crash schedule. | Crash-point tests, chaos soak |
+| R6 | Recovery MUST reuse recorded model responses and tool results. | `TestReplay_Matrix` (result present), `TestReplay_ModelResponseReusedNotReRequested`, `TestReplay_IdempotencyKeyIsStableAcrossDeliveriesAndAttempts` |
+| R7 | An unfinished tool call MUST NOT be rerun unless both declarations are `Safe`. | `TestReplay_Matrix` (result absent) |
+| R8 | An unsafe tool's side effect MUST happen at most once across any crash schedule. | `TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints` (four crash points, each with a redelivery of the same task and the stalled worker resuming), `TestToolReplay_StalledUnsafeToolIsInterruptedNotRerun` (real Workers), chaos soak |
 
 ## Alternatives considered
 
@@ -277,6 +306,9 @@ all capitals.
   at 1.
 - The legacy `checkpoints` bucket can be retired.
 - `PutStream` output is documented as a non-durable preview.
+- Tool results are reused across attempts of an iteration: a retry
+  resumes the iteration's calls, it does not repeat them. A handler that
+  wants a tool called again after an error makes a new call.
 
 ## Security considerations
 

@@ -402,7 +402,8 @@ func TestReplay_IdempotencyKeyIsStableAcrossDeliveriesAndAttempts(t *testing.T) 
 		return nil, errors.New("boom")
 	}
 	first := open(t, c, task("run-key", 1, 1, 1))
-	res, err := first.Tool(ctx, ToolCall{Name: "post", Input: json.RawMessage(`{"n":1}`)}, Safe, record)
+	post := ToolCall{Name: "post", Input: json.RawMessage(`{"n":1}`)}
+	res, err := first.Tool(ctx, post, Safe, record)
 	if err != nil || res.Error != "boom" || res.Interrupted {
 		t.Fatalf("Tool = %+v, %v; want the tool's error recorded, not interrupted", res, err)
 	}
@@ -414,7 +415,8 @@ func TestReplay_IdempotencyKeyIsStableAcrossDeliveriesAndAttempts(t *testing.T) 
 	retry := open(t, c, task("run-key", 1, 2, 3))
 	res, err = retry.Tool(ctx, ToolCall{Name: "post"}, Safe, record)
 	if err != nil || res.Error != "boom" || len(keys) != 1 {
-		t.Errorf("retry Tool = %+v, %v after %d runs; want the recorded error reused", res, err, len(keys))
+		t.Errorf("retry Tool = %+v, %v after %d runs; want the recorded error reused",
+			res, err, len(keys))
 	}
 	if _, err := retry.Tool(ctx, ToolCall{Name: "post"}, Safe, record); err != nil {
 		t.Fatalf("retry second Tool: %v", err)
