@@ -46,8 +46,15 @@ Provisioned by `natsutil.SetupAll` with the other streams.
 
 Every append carries `Nats-Expected-Last-Subject-Sequence` set to the last
 journal sequence its writer saw, and `Nats-Msg-Id` set to
-`{run}.{step}.{attempt}.{iteration}.{index}`, where `index` is the record's
-position within its claim (the claim is 0). JetStream rejects an append
+`{run}.{step}.{attempt}.{iteration}.{delivered}.{index}`, where
+`delivered` is the task message's delivery count and `index` the record's
+position within its claim (the claim is 0). The delivery count is part of
+the claim identity because from iteration 1 the engine stamps the attempt
+on the payload (`dispatchIdentity`), so a stalled worker and the AckWait
+redelivery that replaces it hold the same run, step, iteration, attempt
+and nonce; without it their records would share msg-ids, the successor's
+claim would be answered with the stalled claim's sequence inside the
+dedup window, and nothing would ever fence. JetStream rejects an append
 whose expected sequence is stale (error 10071, naming the real tail), and,
 on a clustered stream, one that arrives while another expected-sequence
 publish on the subject is still in process (10164, found while running the
@@ -69,7 +76,11 @@ writer is fenced.
 
 A step opts in when its handler calls `TaskContext.Journal()`; nothing in
 the workflow definition or the task payload changes, and a handler that
-never calls it runs exactly as before. The worker then reads the tail from
+never calls it runs exactly as before. Opt-in is per task type and must be
+fleet-wide: a journal step's `step.continue` carries no state, so an older
+handler build picking up iteration N+1 would read a stale
+`TaskPayload.state`. Roll a handler's journal use out to every worker of
+that task type together. The worker then reads the tail from
 the stream leader. If the tail belongs to a later iteration than the task's,
 the task is a late redelivery: the worker stops without writing and
 acknowledges the message. Otherwise it reads the journal back, and appends
@@ -122,10 +133,13 @@ engine is unchanged.
 A worker that claims iteration N reads the journal back from the last
 commit:
 
-- If a commit exists for this attempt and iteration, the previous holder
-  crashed between committing and publishing. The worker republishes that
-  commit's lifecycle event (its message ID is stable) and acknowledges the
-  task. The turn is not repeated.
+- If a commit exists for this attempt and iteration, from any delivery,
+  the previous holder crashed between committing and publishing. The
+  worker republishes that commit's lifecycle event (its message ID is
+  stable) and acknowledges the task. The turn is not repeated. Recovery
+  matches on attempt and iteration, not on delivery; on iteration 0 the
+  attempt follows the delivery count, so there a crash between commit and
+  publish still repeats the turn under the next attempt.
 - Otherwise it rebuilds from the last committed state plus the records of
   iteration N so far. Recorded model responses and tool results are reused,
   not redone.
@@ -179,9 +193,16 @@ outcomes), and assert:
 Invariant 3 needs the external counter, so it holds in tests only; the
 command reports it as skipped and checks the other five on any run, and
 reports invariant 5 as skipped while the `submissions` bucket does not
-exist. The accepted attempt of an iteration is the highest `step.started`
-attempt among the dispatch nonces that claimed it. The command exits 1 on a
+exist. The accepted commit of an iteration is the one a lifecycle event in
+history names by `journal_seq`; only for events without it does the
+checker fall back to the highest `step.started` attempt among the
+dispatch nonces that claimed the iteration. The command exits 1 on a
 violation so it can gate a soak.
+
+A gap inherited from ADR-025, not closed here: the worker publishes
+`step.started` before the handler can call `Journal()`, so a late stale
+redelivery raises the step's `Attempts` through `handleStepStarted`'s max
+rule before `ErrStale` acknowledges it.
 
 ## Requirements
 

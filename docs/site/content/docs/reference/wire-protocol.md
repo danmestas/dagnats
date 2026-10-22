@@ -87,16 +87,17 @@ When a run is cancelled, the engine publishes an empty core NATS message on `dag
 
 #### Agent journal (ADR-026)
 
-A step may keep a journal: one append-only subject `journal.{run_id}.{step_id}` on the `AGENT_JOURNAL` stream (file storage, the cluster's replica count, 30-day max age, a two-minute dedup window, direct get disabled so a tail read is answered by the stream leader, purged with the run by `dagnats clean`). The worker SDK opts a step in when its handler calls `Journal()`; a handler that never calls it runs as before. The HTTP bridge actions `journal.append`, `journal.read` and `load_checkpoint` are the follow-up to #804.
+A step may keep a journal: one append-only subject `journal.{run_id}.{step_id}` on the `AGENT_JOURNAL` stream (file storage, the cluster's replica count, 30-day max age, a two-minute dedup window, direct get disabled so a tail read is answered by the stream leader, purged with the run by `dagnats clean`). The worker SDK opts a step in when its handler calls `Journal()`; a handler that never calls it runs as before. Opt-in must be rolled out to every worker of a task type together: a journal step's `step.continue` carries no state, so an older handler build on the next iteration would read a stale `TaskPayload.state`. The HTTP bridge actions `journal.append`, `journal.read` and `load_checkpoint` are the follow-up to #804.
 
 **Record envelope.** Each record is one JetStream message. Identity lives in headers; the body is the record's JSON.
 
 | Header | Value |
 |--------|-------|
-| `Nats-Msg-Id` | `{run_id}.{step_id}.{attempt}.{iteration}.{index}` — stable, so a resent append is deduplicated |
+| `Nats-Msg-Id` | `{run_id}.{step_id}.{attempt}.{iteration}.{delivered}.{index}` — stable, so a resent append is deduplicated |
 | `Nats-Expected-Last-Subject-Sequence` | the journal sequence the writer last saw (`0` on an empty journal) |
 | `Dagnats-Journal-Type` | `claim`, `pause`, `commit`, `entry`, `model.response`, `tool.intent`, `tool.result`, `input.placed` |
 | `Dagnats-Journal-Iteration`, `Dagnats-Journal-Attempt` | the writer's claim: the task's iteration and 1-based attempt |
+| `Dagnats-Journal-Delivered` | the task message's delivery count. From iteration 1 the engine stamps the attempt, so a stalled worker and its AckWait redelivery share every other field; the delivery count is what tells their claims apart |
 | `Dagnats-Journal-Index` | the record's position within its claim; the claim is `0` |
 | `Dagnats-Dispatch-Nonce` | `TaskPayload.dispatch_nonce` |
 
