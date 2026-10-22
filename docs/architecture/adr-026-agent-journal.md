@@ -352,20 +352,17 @@ crash-loop test:
 | tool replay safety (unsafe intents rerun) | `after_tool_intent/stall`, `inside_tool/kill`, `inside_tool/stall`: the unsafe tool starts twice |
 | safe intents never rerun (answered interrupted) | the four `after_tool_intent`/`inside_tool` cells on the safe iteration: the answer carries `interrupted` for a safe call |
 
-What the harness found, and the fixes that follow #809 in their own
-PRs. Until finding 4 lands, `TestChaosSoak` is expected to hit the
-consumer cap after about 300 runs, so the `Chaos soak` workflow runs
-only on the `chaos` label and by hand; its nightly schedule is
-commented out and is enabled when the soak is green. The iteration-0
-cells and the two engines are in the default matrix since findings
-1 to 3 were fixed (they were the red tests of that fix).
+What the harness found, and the fixes that followed #809 in their own
+PRs. The iteration-0 cells and the two engines are in the default
+matrix since findings 1 to 3 were fixed (they were the red tests of
+that fix).
 
 | # | Finding | Status |
 |---|---|---|
 | 1 | On iteration 0 the attempt followed the delivery count, so every redelivery was a new attempt by construction: `Open` could not recognise the previous delivery's commit as its own and reran the iteration, a late redelivery after the engine had moved on reran it again until the next iteration's claim fenced it (an intent without a result), and, worse, each delivery's `step.started` raised `Attempts` by the max rule while the journal picked its winner by journal order, so the winner's `step.continue` could carry a lower attempt than the engine held, be dropped by the acceptance rule, and the winner's ack then ended redelivery: the run wedged (`reason=attempt` with `event_attempt=2 step_attempt=3`). | Fixed: `dispatchIdentity` stamps `Attempts + 1` on every new dispatch, so the first dispatch is attempt 1 and a redelivery is a recovery of the same attempt; `priorAttempt` lost its iteration-0 clause. `TestDispatchIdentity_NewAttempt`, `TestFirstDispatch_CarriesAttemptOne`, `TestReplay_Iteration0RetryRerunsSafeCalls`, the iteration-0 matrix cells. |
 | 2 | Two engines: a `step.continue` handled by one engine before the other has applied the same delivery's `step.started` was dropped for a Running step by the attempt comparison. | Same root as 1, seen through the two-engine window: the dropped continue was a redelivery's, numbered higher than the first delivery's `step.started` the step still held; with the attempt stamped, every delivery of a dispatch carries the step's attempt and the Running rule accepts it. The two-engine matrix at iterations 1 and 2 was green on the unfixed code (3 runs of 32 cells); every drop in the failing runs was `reason=attempt` on iteration 0. `TestStepContinue_RedeliveryContinueBeforeItsStarted_Advances` replays the order. The acceptance rule of ADR-025 is unchanged. |
 | 3 | An engine that died between a continue's save and its publish while the step was still Queued (the previous iteration's `step.started` overtaken, as in 2) had its resend planned as a first dispatch, whose msg-id `{run}.{step}.queued` `TASK_QUEUES` deduplicated: the iteration was never sent (`engine.continue_saved/kill` with two engines: `Queued, Iterations:1, DispatchUnsent`, resend `tasks=1`, nothing delivered). | Fixed: `planTaskResend` treats a loop past iteration 0 as a continue resend whatever the status. With it, `journal.Open` fences an older delivery of the same task message (same `stream_seq`, lower delivery count) that opens after a newer one, so a delivery held in a stalled consumer's prefetch buffer cannot take the iteration back. `TestStepContinue_CrashBetweenSaveAndPublishWhileQueued_Resends`, `TestOpen_NewerDeliveryOfSameMessageFencesOlder`, `TestOpen_ResendAndUnknownSequenceClaimInJournalOrder`. |
-| 4 | Journal reader consumers leak: `journal.Open` and `journal.Read` each leave an ordered consumer on `AGENT_JOURNAL` that is never deleted (measured: 110 after 20 runs and 50 reads, unchanged after 16s), so a soak hits nats-server's default of 1000 consumers per stream after about 300 runs and every claim fails with error 10026. | Open; fixed in its own PR. |
+| 4 | Journal reader consumers leak: `journal.Open` and `journal.Read` each leave an ordered consumer on `AGENT_JOURNAL` that is never deleted (measured: 110 after 20 runs and 50 reads, unchanged after 16s), so a soak hits nats-server's default of 1000 consumers per stream after about 300 runs and every claim fails with error 10026. | Fixed (#827): `natsutil.OpenConsumer` and `OpenStreamConsumer` return an `*OrderedConsumer` whose `Close` every caller defers, and journal reads close theirs on each retry. `TestConsumerLeak_OpenAndReadReleaseTheirConsumer`, `TestConsumerLeak_FailedReadReleasesItsConsumer`, `TestConsumerLeak_HistoryReadReleasesItsConsumer`. |
 
 Consequences of stamping the first attempt, weighed when fixing 1:
 
