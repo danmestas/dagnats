@@ -42,6 +42,9 @@ func (fx loopFixture) startedAs(t *testing.T, task protocol.TaskPayload, attempt
 	if attempt < 1 {
 		panic("startedAs: attempt must be >= 1")
 	}
+	if task.DispatchNonce == "" {
+		panic("startedAs: task must carry its dispatch nonce")
+	}
 	evt := protocol.NewStepEvent(protocol.EventStepStarted, task.RunID, task.StepID, nil)
 	evt.AttemptNumber = attempt
 	evt.DispatchNonce = task.DispatchNonce

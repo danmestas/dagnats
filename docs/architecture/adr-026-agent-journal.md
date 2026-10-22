@@ -332,13 +332,22 @@ effects in a KV bucket outside the journal:
 - `TestCrashLoop_RestartLimitFailsThenRetries`: a kill after every claim
   until the restart limit fails the step, which the retry resumes.
 - `TestChaosSoak`, opt-in (`DAGNATS_CHAOS=1`, `make test-chaos`, the
-  `Chaos soak` workflow on the `chaos` PR label, nightly once green): two
+  `Chaos soak` workflow on the `chaos` PR label and nightly): two
   orchestrators sharing the history durable as a cluster does, runs in
-  parallel under a seeded random schedule of kills, stalls past
-  AckWait, the duplicate deliveries those cause (AckWait redelivery, a
-  `DispatchUnsent` resend) and, in cluster mode, stream-leader
-  step-downs; `Check` and the counters after every run; the seed is
-  printed and `DAGNATS_CHAOS_SEED` reproduces the schedules.
+  parallel under a seeded random schedule of kills, stalls drawn
+  around AckWait, the duplicate deliveries those cause (AckWait
+  redelivery, a `DispatchUnsent` resend) and, in cluster mode,
+  stream-leader step-downs; the crash-free answer (a stall at an
+  interrupting point may or may not become a takeover, so the unsafe
+  call may be either interrupted or complete there), `Check` and the
+  counters after every run; the seed is printed and
+  `DAGNATS_CHAOS_SEED` reproduces the schedules. Making it green after
+  findings 1 to 4 took two harness corrections: that stall expectation
+  (the harness had required `interrupted` for every stall, which a
+  stall shorter than AckWait cannot produce), and `journal.Read`
+  retrying the server's "JetStream system temporarily unavailable"
+  (10008), which a leader step-down answers with, as it already
+  retried no-responders and timeouts.
 
 Mutation checks, each guard deleted once against the matrix and the
 crash-loop test:

@@ -10,19 +10,13 @@ name: Chaos soak
 # runs on a pull request labelled `chaos` and by hand. The seed is in
 # the log; rerun the failing job's seed with DAGNATS_CHAOS_SEED.
 #
-# Of the four findings of ADR-026 ("How durability is verified"),
-# 1 to 3 are fixed (the first dispatch's attempt is stamped, a continue
-# resend from a Queued step keeps its own msg-id); (4) journal reader
-# consumers leak until the stream's consumer cap, so a soak longer than
-# about 300 runs still fails with error 10026 until that fix lands.
-# When it has and the soak is green, remove this note and enable the
-# schedule.
+# The four findings of ADR-026 ("How durability is verified") are
+# fixed and the soak is green on several seeds in both modes, so it
+# runs nightly as well.
 
 on:
-  # The nightly schedule stays off while finding 4 is open (above);
-  # enable it when the soak is green:
-  # schedule:
-  #   - cron: '17 4 * * *'
+  schedule:
+    - cron: '17 4 * * *'
   pull_request:
     types: [labeled, synchronize, reopened]
   workflow_dispatch:

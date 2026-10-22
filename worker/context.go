@@ -207,6 +207,9 @@ func (c *taskContext) RetryCount() int {
 	if c.attempt < 0 {
 		panic("RetryCount: attempt must not be negative")
 	}
+	if c.runID == "" {
+		panic("RetryCount: runID must not be empty")
+	}
 	if c.attempt <= 1 {
 		return 0
 	}

@@ -155,10 +155,23 @@ const transientReadMax = 6
 const transientReadBackoff = 250 * time.Millisecond
 
 // isTransientRead reports whether err means the stream had no leader to
-// answer, as opposed to a real failure.
+// answer, as opposed to a real failure: no responders, a timeout, or
+// the server's own "JetStream system temporarily unavailable" (10008),
+// which a meta or stream leader election answers with.
 func isTransientRead(err error) bool {
-	return errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrTimeout)
+	if err == nil {
+		panic("isTransientRead: err must not be nil")
+	}
+	if errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrTimeout) {
+		return true
+	}
+	var apiErr *jetstream.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode == errCodeJetStreamUnavailable
 }
+
+// errCodeJetStreamUnavailable is nats-server's JSClusterNotAvailErr,
+// which nats.go does not name.
+const errCodeJetStreamUnavailable jetstream.ErrorCode = 10008
 
 // retryTransient runs op until it succeeds, fails with a non-transient
 // error, ctx ends, or transientReadMax attempts are spent. op must be

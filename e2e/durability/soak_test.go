@@ -5,8 +5,11 @@
 // redelivery after a kill or stall, a DispatchUnsent resend after an
 // engine kill between publish and sent marker), and, in cluster mode,
 // stream-leader step-downs on the journal, task and history streams
-// while runs are in flight. After every run: the crash-free answer,
-// the journal audit and the side-effect counters. The seed is printed
+// while runs are in flight. After every run: the crash-free answer
+// (after a stall at an interrupting point, with or without the unsafe
+// call interrupted: a stall is drawn around AckWait, so the stalled
+// worker may resume before any takeover), the journal audit and the
+// side-effect counters. The seed is printed
 // up front and on failure; DAGNATS_CHAOS_SEED reproduces the
 // schedules (the interleaving across runs is not reproducible, so a
 // failure may need several runs of the same seed).
@@ -183,9 +186,17 @@ func soakRun(
 	defer r.remove(runID)
 	got, ok := f.waitCompletedOK(runID)
 	failed := !ok
-	if want := expectedAnswer(baseline, schedule.crashed()); ok && !sameAnswer(want, got) {
-		t.Errorf("run %d (%s): answer %+v, want %+v; seed=%d schedule=%s",
-			index, runID, got, want, cfg.seed, schedule)
+	// A kill at an interrupting point always interrupts the unsafe
+	// call; a stall there interrupts it only when it outlasts AckWait
+	// and the redelivery claims before the stalled worker resumes
+	// (its length is drawn around AckWait), so either answer is the
+	// crash-free one for a stall. The audit below holds the invariant
+	// that matters: the call started at most once.
+	killed := expectedAnswer(baseline, schedule.crashed(true))
+	stalled := expectedAnswer(baseline, schedule.crashed(false))
+	if ok && !sameAnswer(killed, got) && !sameAnswer(stalled, got) {
+		t.Errorf("run %d (%s): answer %+v, want %+v (or %+v after a stall); seed=%d schedule=%s",
+			index, runID, got, killed, stalled, cfg.seed, schedule)
 		failed = true
 	}
 	if !ok {
@@ -236,8 +247,9 @@ func (s soakSchedule) String() string {
 	return out + " }"
 }
 
-// crashed is the schedule as point -> iteration, for expectedAnswer.
-func (s soakSchedule) crashed() map[chaos.Point]int {
+// crashed is the schedule as point -> iteration, for expectedAnswer:
+// its kills only, or every action.
+func (s soakSchedule) crashed(killsOnly bool) map[chaos.Point]int {
 	if len(s) > len(chaos.Points()) {
 		panic("soakSchedule.crashed: more actions than points")
 	}
@@ -245,6 +257,9 @@ func (s soakSchedule) crashed() map[chaos.Point]int {
 	for p, a := range s {
 		if a.iteration < 0 {
 			panic("soakSchedule.crashed: negative iteration")
+		}
+		if killsOnly && !a.kill {
+			continue
 		}
 		crashed[p] = a.iteration
 	}
