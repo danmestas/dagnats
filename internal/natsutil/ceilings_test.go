@@ -29,6 +29,7 @@ var fileStreamFractions = map[string]float64{
 	"DEAD_LETTERS":     fractionDeadLetters,
 	"TRIGGER_HISTORY":  fractionTriggerHistory,
 	"SLEEP_TIMERS":     fractionSleepTimers,
+	AgentJournalStream: fractionAgentJournal,
 }
 
 // streamConfigsWithBudget provisions all file streams against a budget and

@@ -14,6 +14,7 @@ var provisionedStreams = []string{
 	"STICKY_TASKS",
 	"TRIGGER_HISTORY",
 	"BUILD_LOGS",
+	AgentJournalStream,
 }
 
 // provisionedKVBuckets names every KV bucket SetupAll creates, guarded by

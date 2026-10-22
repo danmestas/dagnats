@@ -32,6 +32,7 @@ var categoryMap = map[string]cleanCategory{
 			"TASK_QUEUES",
 			"EVENTS",
 			"SLEEP_TIMERS",
+			"AGENT_JOURNAL",
 		},
 		Buckets: []string{
 			"workflow_runs",
