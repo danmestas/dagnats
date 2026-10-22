@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/runstate"
+	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -36,6 +37,8 @@ type resolveRequest struct {
 	Data         json.RawMessage `json:"data,omitempty"`
 	RunID        string          `json:"run_id,omitempty"`
 	TimeoutMs    int64           `json:"timeout_ms,omitempty"`
+	// Type is the journal.append record type; "entry" when empty.
+	Type string `json:"type,omitempty"`
 }
 
 // pauseDurationMaxMs caps the maximum pause at 1 hour.
@@ -83,6 +86,10 @@ func (b *Bridge) handleResolve(
 		return
 	}
 
+	if stop := b.ackMap.JournalStop(taskID); stop != nil {
+		writeJournalOutcome(w, stop)
+		return
+	}
 	req, err := parseResolveRequest(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -102,6 +109,14 @@ func (b *Bridge) handleResolve(
 	err = b.dispatchAction(ctx, taskID, claimingTokenID, msg, req, w, r)
 	if err != nil {
 		if errors.Is(err, errResponseAlreadyWritten) {
+			return
+		}
+		var badRequest *badRequestError
+		if errors.As(err, &badRequest) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if writeJournalOutcome(w, err) {
 			return
 		}
 		http.Error(
@@ -175,6 +190,10 @@ func parseResolveRequest(
 		"continue":    true,
 		"heartbeat":   true,
 		"stream":      true,
+		// Agent journal (ADR-026), see journal.go.
+		"journal.append":  true,
+		"journal.read":    true,
+		"load_checkpoint": true,
 	}
 	if !validActions[req.Action] {
 		return req, fmt.Errorf("invalid action: %s", req.Action)
@@ -220,6 +239,12 @@ func (b *Bridge) dispatchAction(
 		return b.resolveHeartbeat(ctx, taskID, msg)
 	case "stream":
 		return b.resolveStream(ctx, taskID, msg, req)
+	case "journal.append":
+		return b.resolveJournalAppend(ctx, taskID, claimingTokenID, msg, req, w)
+	case "journal.read":
+		return b.resolveJournalRead(ctx, taskID, claimingTokenID, msg, w)
+	case "load_checkpoint":
+		return b.resolveLoadCheckpoint(ctx, taskID, msg, w)
 	default:
 		return fmt.Errorf("unhandled action: %s", req.Action)
 	}
@@ -245,6 +270,12 @@ func (b *Bridge) resolveComplete(
 		return err
 	}
 	runID, stepID := splitTaskID(taskID)
+	journalSeq, err := b.commitJournal(ctx, taskID, claimingTokenID, msg, journal.Commit{
+		Action: journal.ActionComplete, Output: req.Output,
+	})
+	if err != nil {
+		return err
+	}
 	// #624 review round 2: emit the "completed" marker (using the
 	// AckMap's own seq/attempt state) BEFORE the resolution publish and
 	// BEFORE the task leaves the AckMap — the drain-before-resolve
@@ -254,6 +285,7 @@ func (b *Bridge) resolveComplete(
 		protocol.EventStepCompleted, runID, stepID, req.Output,
 	)
 	evt.SetIdentity(dispatch.iteration, dispatch.attempt, dispatch.nonce)
+	evt.JournalSeq = journalSeq
 	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish complete event: %w", err)
 	}
@@ -298,6 +330,13 @@ func (b *Bridge) resolveFail(
 	if err != nil {
 		return fmt.Errorf("marshal fail payload: %w", err)
 	}
+	journalSeq, err := b.commitJournal(ctx, taskID, claimingTokenID, msg, journal.Commit{
+		Action: journal.ActionFail, Error: req.Error,
+		FailureType: string(failureType), RetryAfterMs: req.RetryAfterMs,
+	})
+	if err != nil {
+		return err
+	}
 	// #624 review round 2: "failed" covers fail/fail_permanent/
 	// fail_retry_after alike — bridge represents all three as one
 	// "fail" action distinguished only by FailureType, and every one
@@ -309,6 +348,7 @@ func (b *Bridge) resolveFail(
 		protocol.EventStepFailed, runID, stepID, payloadData,
 	)
 	evt.SetIdentity(dispatch.iteration, dispatch.attempt, dispatch.nonce)
+	evt.JournalSeq = journalSeq
 	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish fail event: %w", err)
 	}
@@ -339,7 +379,7 @@ func (b *Bridge) resolvePause(
 			"duration_ms must be in (0, %d]", pauseDurationMaxMs,
 		)
 	}
-	if err := b.writeCheckpoint(ctx, taskID, req.Checkpoint); err != nil {
+	if err := b.pauseMarker(ctx, taskID, claimingTokenID, msg, req); err != nil {
 		return err
 	}
 	// #624 review round 2: emit BEFORE the NAK — the NAK is this
@@ -353,6 +393,38 @@ func (b *Bridge) resolvePause(
 	}
 	b.ackMap.Delete(taskID)
 	b.ackMap.MarkResolved(taskID, claimingTokenID)
+	return nil
+}
+
+// pauseMarker records that the task is pausing: a pause record for a
+// journal step, whose next claim reads it as the resume marker, else
+// the checkpoint in the checkpoints bucket.
+func (b *Bridge) pauseMarker(
+	ctx context.Context, taskID, tokenID string, msg jetstream.Msg, req resolveRequest,
+) error {
+	if taskID == "" {
+		panic("pauseMarker: taskID must not be empty")
+	}
+	mu := b.ackMap.JournalLock(taskID)
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	j, ok := b.ackMap.Journal(taskID)
+	if !ok {
+		return b.writeCheckpoint(ctx, taskID, req.Checkpoint)
+	}
+	name := req.Name
+	if name == "" {
+		name = "pause"
+	}
+	duration := time.Duration(req.DurationMs) * time.Millisecond
+	if _, err := j.Pause(ctx, name, duration); err != nil {
+		if errors.Is(err, journal.ErrFenced) {
+			return b.settleJournalStop(ctx, taskID, tokenID, msg, err)
+		}
+		return fmt.Errorf("journal pause: %w", err)
+	}
 	return nil
 }
 
@@ -405,21 +477,11 @@ func (b *Bridge) resolveContinue(
 	if err != nil {
 		return err
 	}
-	state := dispatch.state
-	if pending, ok := b.ackMap.PendingState(taskID); ok {
-		state = pending
-	}
-	if len(state) > dispatch.stateMaxBytes {
-		return fmt.Errorf(
-			"continue: state is %d bytes, over the %d byte cap (loop_state_max_bytes)",
-			len(state), dispatch.stateMaxBytes,
-		)
-	}
-	payload, err := json.Marshal(protocol.StepContinuePayload{
-		Output: req.Output, State: state, StateSet: true,
-	})
+	payload, journalSeq, err := b.continuePayload(
+		ctx, taskID, claimingTokenID, msg, dispatch, req,
+	)
 	if err != nil {
-		return fmt.Errorf("marshal continue payload: %w", err)
+		return err
 	}
 	runID, stepID := splitTaskID(taskID)
 	// #624 review round 3: emit BEFORE the step.continue publish —
@@ -436,6 +498,7 @@ func (b *Bridge) resolveContinue(
 		protocol.EventStepContinue, runID, stepID, payload,
 	)
 	evt.SetIdentity(dispatch.iteration, dispatch.attempt, dispatch.nonce)
+	evt.JournalSeq = journalSeq
 	if err := b.publishEvent(ctx, evt); err != nil {
 		return fmt.Errorf("publish continue event: %w", err)
 	}
@@ -445,6 +508,51 @@ func (b *Bridge) resolveContinue(
 	b.ackMap.Delete(taskID)
 	b.ackMap.MarkResolved(taskID, claimingTokenID)
 	return nil
+}
+
+// continuePayload builds the step.continue payload and, for a journal
+// step, commits the iteration first. A journal step carries no state
+// in the event: the commit record is the state of record (ADR-026).
+// Otherwise the state is the one a `checkpoint` buffered, else the
+// state the task was polled with, under the engine's cap.
+func (b *Bridge) continuePayload(
+	ctx context.Context, taskID, tokenID string, msg jetstream.Msg,
+	dispatch taskDispatch, req resolveRequest,
+) ([]byte, uint64, error) {
+	if taskID == "" {
+		panic("continuePayload: taskID must not be empty")
+	}
+	state := dispatch.state
+	pending, pendingSet := b.ackMap.PendingState(taskID)
+	if pendingSet {
+		state = pending
+	}
+	if j, ok := b.ackMap.Journal(taskID); ok {
+		if !pendingSet {
+			state = j.State()
+		}
+		seq, err := b.commitJournal(ctx, taskID, tokenID, msg, journal.Commit{
+			Action: journal.ActionContinue, Output: req.Output, State: state,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		payload, err := json.Marshal(protocol.StepContinuePayload{Output: req.Output})
+		return payload, seq, err
+	}
+	if len(state) > dispatch.stateMaxBytes {
+		return nil, 0, fmt.Errorf(
+			"continue: state is %d bytes, over the %d byte cap (loop_state_max_bytes)",
+			len(state), dispatch.stateMaxBytes,
+		)
+	}
+	payload, err := json.Marshal(protocol.StepContinuePayload{
+		Output: req.Output, State: state, StateSet: true,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal continue payload: %w", err)
+	}
+	return payload, 0, nil
 }
 
 // resolveHeartbeat extends the ack deadline without completing

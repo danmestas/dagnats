@@ -7,6 +7,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/danmestas/dagnats/internal/workertoken"
+	"github.com/danmestas/dagnats/journal"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -74,6 +75,18 @@ type ackEntry struct {
 	// with the claim: a bridge restart loses the claim anyway.
 	pendingState    []byte
 	pendingStateSet bool
+
+	// journal is the claim a journal.* action opened for this delivery
+	// (ADR-026). It lives and dies with the entry: a redelivery stores a
+	// fresh entry and claims again, which is what fences this one.
+	// journalMu serializes the actions on it, because a journal.Journal
+	// is one writer's cursor and not safe for concurrent use.
+	journal   *journal.Journal
+	journalMu *sync.Mutex
+	// journalStop is set once another claim fences this delivery. The
+	// entry stays so every later action on it gets the same answer
+	// instead of a "not found" or, worse, a fresh claim.
+	journalStop error
 }
 
 // AckMap tracks in-flight tasks for HTTP workers. Maps task_id
@@ -158,7 +171,9 @@ func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string) {
 	if len(am.entries) >= ackMapMaxEntries {
 		am.evictOldestLocked()
 	}
-	am.entries[taskID] = ackEntry{msg: msg, storedAt: now, tokenID: tokenID}
+	am.entries[taskID] = ackEntry{
+		msg: msg, storedAt: now, tokenID: tokenID, journalMu: &sync.Mutex{},
+	}
 }
 
 // Load retrieves the NATS message for the given task ID.
@@ -423,4 +438,88 @@ func (am *AckMap) evictOldestLocked() {
 		"stored_at", oldestAt,
 		"max_entries", ackMapMaxEntries,
 	)
+}
+
+// JournalLock returns the mutex that serializes journal actions on
+// taskID's claim, or nil when the task is not claimed.
+func (am *AckMap) JournalLock(taskID string) *sync.Mutex {
+	if am == nil {
+		panic("AckMap.JournalLock: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.JournalLock: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.entries[taskID].journalMu
+}
+
+// Journal returns the journal claim opened for taskID's delivery.
+func (am *AckMap) Journal(taskID string) (*journal.Journal, bool) {
+	if am == nil {
+		panic("AckMap.Journal: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.Journal: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	return entry.journal, ok && entry.journal != nil
+}
+
+// SetJournal records the journal claim for taskID and reports whether
+// the entry exists. Never creates an entry.
+func (am *AckMap) SetJournal(taskID string, j *journal.Journal) bool {
+	if am == nil {
+		panic("AckMap.SetJournal: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.SetJournal: taskID must not be empty")
+	}
+	if j == nil {
+		panic("AckMap.SetJournal: journal must not be nil")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok {
+		return false
+	}
+	entry.journal = j
+	am.entries[taskID] = entry
+	return true
+}
+
+// SetJournalStop records that taskID's delivery was fenced, so every
+// later action on it reports err. It reports whether the entry exists.
+func (am *AckMap) SetJournalStop(taskID string, err error) bool {
+	if am == nil {
+		panic("AckMap.SetJournalStop: nil receiver")
+	}
+	if taskID == "" || err == nil {
+		panic("AckMap.SetJournalStop: taskID and err must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok {
+		return false
+	}
+	entry.journalStop = err
+	am.entries[taskID] = entry
+	return true
+}
+
+// JournalStop returns the fence recorded for taskID, or nil.
+func (am *AckMap) JournalStop(taskID string) error {
+	if am == nil {
+		panic("AckMap.JournalStop: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.JournalStop: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.entries[taskID].journalStop
 }
