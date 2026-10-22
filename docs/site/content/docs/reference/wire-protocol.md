@@ -71,7 +71,7 @@ Workers publish lifecycle events back to the history stream:
 
 `failure_type` is `retriable` (the default), `non_retriable` or `retry_after`.
 
-Two engine-facing events belong to inputs and waits (ADR-027): `step.input.queued` is published by the API after creating a submission (msg-id `{run}.{step}.step.input.queued.{request_id}`, field `input_request_id`) and wakes a step saved as waiting for input; `step.wait.elapsed` is published by the `loop_wait` timer when a `delay_ms`/`until` wait is over, naming the dispatch it was armed for (`iteration`, `attempt_number`, `dispatch_nonce`) so a late fire cannot wake a later wait.
+Two engine-facing events belong to inputs and waits (ADR-027): `step.input.queued` is published by the API after creating a submission (msg-id `{run}.{step}.step.input.queued.{request_id}`, field `input_request_id`) and wakes a step saved as waiting for input; `step.wait.elapsed` is published by the `loop_wait` timer when a `delay_ms`/`until` wait is over, naming the dispatch it was armed for (`iteration`, `attempt_number`, `dispatch_nonce`) so a late fire cannot wake a later wait. Engine-first upgrade: an engine older than `wait` ignores it and sends the next iteration at once, so a worker asking for `UntilInput()` hot-loops until `max_iterations`; roll engines out before workers that use waits. A handler woken by an input must tolerate finding nothing queued (a redelivered `step.input.queued`, or a withdrawal that landed in between).
 
 Use `protocol.NewStepEvent()` to construct events with correct subject and dedup ID.
 

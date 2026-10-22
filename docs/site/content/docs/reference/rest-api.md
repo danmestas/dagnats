@@ -499,7 +499,7 @@ DELETE /runs/{id}/steps/{step}/inputs/{request_id}
 |-------|------|----------|-------------|
 | `request_id` | string | Yes | Caller-chosen idempotency key, 1-128 characters of `[A-Za-z0-9_-]`. A repeat returns the original submission, whatever its content |
 | `mode` | string | Yes | `steer` or `follow_up` |
-| `content` | JSON | Yes | The input, at most 1 MiB |
+| `content` | JSON | Yes | The input, at most 256 KiB (it is copied into the step's journal with its envelope, and that record must fit the server's 1 MiB `max_payload`) |
 
 **Response:** `201 Created` for a new submission, `200 OK` for a repeat of the same `request_id`.
 
@@ -518,13 +518,15 @@ DELETE /runs/{id}/steps/{step}/inputs/{request_id}
 
 `status` is `queued` (waiting for the step's next turn boundary), `placed` (in the conversation; `iteration` says which), `done` (the iteration that placed it committed) or `unanswered` (the step finished first). The journal's `input.placed` record is the record of placement; a status that disagrees with it is repaired when read.
 
-`GET` with `wait` (at most `60s`) returns as soon as the status is no longer `after` (default `queued`), or the current status at the deadline. `DELETE` withdraws a submission that is still `queued` and answers `204`; the same `request_id` may then be submitted again.
+`GET` with `wait` (at most `60s`) returns as soon as the status is no longer `after` (default `queued`), or the current status at the deadline; an unknown or withdrawn `request_id` is `404` at once.
+
+A handler woken by an input must tolerate finding nothing to place: `step.input.queued` can be redelivered, and a withdrawal can land between the wake and the handler's `PlaceInputs`. Upgrade engines before workers: the `wait` on `step.continue` is new, and a worker that asks an older engine for `UntilInput()` is sent its next iteration at once, which hot-loops the agent until `max_iterations`. `DELETE` withdraws a submission that is still `queued` and answers `204`; the same `request_id` may then be submitted again.
 
 | Status | Condition |
 |--------|-----------|
 | `200` / `201` | Submission read, or created (`201`) |
 | `204` | Withdrawn |
-| `400` | Invalid `request_id`, `mode`, `content` or `wait` |
+| `400` | Invalid `request_id`, `mode`, `content` (including over 256 KiB) or `wait` |
 | `404` | Unknown run, step or submission (including a withdrawn one) |
 | `409` | The step has finished (POST); the submission is no longer queued (DELETE) |
 | `503` | The `submissions` bucket is not provisioned |

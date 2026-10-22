@@ -151,6 +151,11 @@ func TestRESTInputs_SubmitOnceAndRepeatReturnsOriginal(t *testing.T) {
 			t.Errorf("POST %s = %d, want 400", bad, code)
 		}
 	}
+	big := `{"request_id":"big","mode":"steer","content":"` + strings.Repeat("x", inputs.ContentMaxBytes) + `"}`
+	code, _ = fx.do(t, http.MethodPost, path, big)
+	if code != http.StatusBadRequest {
+		t.Errorf("POST over the content cap = %d, want 400", code)
+	}
 	if code, _ := fx.do(t, http.MethodPost, "/runs/no-run/steps/agent/inputs",
 		`{"request_id":"r1","mode":"steer","content":1}`); code != http.StatusNotFound {
 		t.Errorf("POST to an unknown run = %d, want 404", code)

@@ -30,9 +30,10 @@ const submissionValueSizeMax = 1 << 20
 
 // fractionSubmissions is the bucket's share of the store budget, taken
 // from the headroom under the 85% guard like AGENT_JOURNAL's was
-// (conn.go's table). One percent holds hundreds of thousands of
-// kilobyte-sized inputs within their TTL.
-const fractionSubmissions = 0.01
+// (conn.go's table), and small enough to leave headroom under it: half
+// a percent of a 10 GiB store is 50 MiB, two hundred 256 KiB inputs
+// or tens of thousands of ordinary ones within their TTL.
+const fractionSubmissions = 0.005
 
 // submissionsBucketConfig is the bucket definition. History 1: a
 // submission's status is replaced in place and read by revision, and

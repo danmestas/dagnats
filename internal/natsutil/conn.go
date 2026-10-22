@@ -60,19 +60,19 @@ const (
 //	AGENT_JOURNAL     0.04   per-step agent journal (ADR-026)
 //	TRIGGER_HISTORY   0.04   trigger fire log
 //	SLEEP_TIMERS      0.04   pending timer backstop
-//	KV submissions    0.01   agent inputs awaiting placement (ADR-027)
+//	KV submissions    0.005  agent inputs awaiting placement (ADR-027)
 //	------------------------
-//	total             0.85
+//	total             0.845
 //
 // ADR-026 added AGENT_JOURNAL out of the headroom, not out of any
 // stream: every existing ceiling keeps its as-shipped size, so an
 // upgrade's shrink pass touches nothing, and the journal is small (one
 // record per claim, pause, entry and commit, aged out at 30 days like
 // history) next to history's lifecycle traffic. ADR-027 took the
-// submissions bucket's one percent from the headroom the same way; it
+// submissions bucket's half percent from the headroom the same way; it
 // is the only KV bucket with an explicit ceiling, because its values
 // are caller-supplied model input rather than engine state. The sum
-// stays at the 85% guard TestMaxBytesSumUnderBudget enforces.
+// stays under the 85% guard TestMaxBytesSumUnderBudget enforces.
 //
 // #624 added BUILD_LOGS by trimming WORKFLOW_HISTORY from 0.30 to 0.25
 // rather than adding on top of 0.80: WORKFLOW_HISTORY is bounded by

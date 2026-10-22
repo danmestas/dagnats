@@ -22,7 +22,9 @@ run after a final answer.
 ### Submitting
 
 `POST /runs/{run}/steps/{step}/inputs` takes a required `request_id`, the
-content (JSON), and a mode of `steer` or `follow_up`. `GET` on the same path
+content (JSON, at most 256 KiB: it is copied into an `input.placed` record
+whose envelope must fit the server's 1 MiB `max_payload`), and a mode of
+`steer` or `follow_up`. `GET` on the same path
 plus the request ID returns its status, with an optional long-poll (`wait`,
 and `after`, the status the caller last saw). `DELETE` withdraws it while
 still queued. The same operations exist as NATS micro endpoints
@@ -33,8 +35,9 @@ keyed `{run}.{step}.{request_id}`. A repeat with the same request ID returns
 the existing submission, whatever its content. This holds beyond a stream's
 deduplication window, which is seconds to minutes; the bucket's TTL is seven
 days. The bucket is provisioned by `natsutil.SetupAll` at the cluster's
-replica count, with a one-percent share of the store budget taken from the
-headroom under the 85% guard, as `AGENT_JOURNAL`'s was. The status moves
+replica count, with a half-percent share of the store budget taken from the
+headroom under the 85% guard, as `AGENT_JOURNAL`'s was, leaving the sum
+below the guard. The status moves
 from queued to placed to done, or from queued to unanswered.
 
 After creating the submission the API publishes `step.input.queued` on the
@@ -45,12 +48,22 @@ the one consumer it already has.
 
 The SDK reads queued inputs at turn boundaries: `PlaceInputs(ModeSteer)`
 after a tool round, `PlaceInputs(ModeFollowUp)` after a final answer. It
-needs the step's journal. Placement is an `input.placed` record in the
-journal (ADR-026), carrying the content, so the journal is the source of
-truth and the KV status a projection. The journal knows every request ID
-placed in any iteration, so a redelivery, or the next iteration, never
-places one twice: one found placed is skipped and its status repaired.
-When the iteration commits, the inputs it placed are projected to done.
+needs the step's journal. Each input is claimed before it is recorded: a
+compare-and-swap of its status from queued to placed at the revision it
+was read at, then the `input.placed` record in the journal (ADR-026),
+carrying the content. A withdrawal that lands in between wins the swap, so
+a `204` never precedes a placement. The journal is the source of truth
+about placement and the KV status a projection: the journal knows every
+request ID placed in any iteration, so a redelivery, or the next
+iteration, never places one twice. A claim whose writer died before
+appending leaves placed with no record; only a claim of this step writes
+that state, so a later delivery reclaims it, and the checker allows it
+while the step is unfinished. An input whose record cannot be appended for
+a reason other than fencing is settled unanswered rather than blocking
+every later turn. When the iteration commits, the inputs it placed are
+projected to done. Inputs are listed from the bucket's stream and read
+through its leader, so the engine's check on entering a wait cannot miss
+a submission a lagging replica has not seen.
 
 A status that disagrees with the journal is repaired from it on read: a
 queued or placed submission whose journal holds an `input.placed` record is
@@ -112,11 +125,12 @@ all capitals.
 |---|---|---|
 | R1 | A submission MUST be created at most once per `request_id` per step. | `TestSubmit_CreatesOnceAndRepeatReturnsOriginal`, `TestRESTInputs_SubmitOnceAndRepeatReturnsOriginal` |
 | R2 | An input MUST be placed at most once, across any crash schedule. | `TestInputs_ExactlyOnceAcrossCrashAndRedelivery`, `TestPlaceInput_ReopenedJournalKnowsPlacements`, journal checker invariant 5 |
-| R3 | Every accepted submission MUST end done or unanswered. | `TestContinueWait_CompletionSweepSettlesQueuedInputs`, `TestRESTInputs_FinishedStepRefusesAndSettles`, `TestCheckInputs_FinishedStepLeavesNothingQueued` |
-| R4 | A step waiting for input MUST wake when an input is queued, including one queued while the wait was being committed. | `TestContinueWait_UntilInputWakesOnSubmission`, `TestContinueWait_InputQueuedDuringCommitWakesTheStep`, `TestInputs_ContinueUntilInputRefusesWhileQueued` |
+| R3 | Every accepted submission MUST end done or unanswered. | `TestContinueWait_CompletionSweepSettlesQueuedInputs`, `TestContinueWait_RunFailureSettlesAWaitingStepsInputs`, `TestInputsStore_TransientOpenFailureRecovers`, `TestRESTInputs_FinishedStepRefusesAndSettles`, `TestCheckInputs_FinishedStepLeavesNothingQueued`, `TestInputs_UnplaceableInputIsSettledUnanswered` |
+| R4 | A step waiting for input MUST wake when an input is queued, including one queued while the wait was being committed. | `TestContinueWait_UntilInputWakesOnSubmission`, `TestContinueWait_InputQueuedBeforeTheWaitIsFoundOnEntry`, `TestContinueWait_TwoEnginesOneTaskPerRound`, `TestContinueWait_WakeDoesNotApplyLoopDelay`, `TestInputs_ContinueUntilInputRefusesWhileQueued` |
 | R5 | A waiting step MUST NOT hold a worker claim. | The wait tests: the task is acknowledged before the wait, no task is in flight until the wake |
 | R6 | Delays and deadlines MUST survive an engine restart. | `TestContinueWait_DelaySurvivesEngineRestart` |
-| R7 | A withdrawn submission MUST NOT be placed, and a placed one MUST NOT be withdrawn. | `TestWithdraw_OnlyWhileQueued`, `TestRESTInputs_WithdrawOnlyWhileQueued` |
+| R7 | A withdrawn submission MUST NOT be placed, and a placed one MUST NOT be withdrawn. | `TestInputs_WithdrawRacingPlacementNeverPlaces`, `TestClaim_IsAStrictCompareAndSwap`, `TestWithdraw_OnlyWhileQueued`, `TestRESTInputs_WithdrawOnlyWhileQueued` |
+| R8 | Two engines sharing the history consumer MUST wake a waiting step exactly once per input. | `TestContinueWait_TwoEnginesOneTaskPerRound` |
 
 ## Alternatives considered
 
@@ -147,6 +161,15 @@ all capitals.
 - A step's `timeout` and a loop's `max_duration` keep counting while the
   step waits: a step that waits for a person should carry neither, or a
   bound that allows for the wait.
+- Engine-first upgrade: an engine older than the `wait` field ignores it
+  and sends the next iteration at once, so a worker asking for
+  `UntilInput()` on an old engine hot-loops until `max_iterations`. Roll
+  engines out before workers that use waits.
+- A handler woken by an input must tolerate finding nothing to place: a
+  `step.input.queued` can be redelivered, and a withdrawal can land between
+  the wake and `PlaceInputs`.
+- A run that ends while the step still waits (a sibling failed it, a
+  cancel) settles the step's queued inputs like a finished step would.
 - Signals stay as they are.
 
 ## Security considerations

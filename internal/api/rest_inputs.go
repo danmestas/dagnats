@@ -144,7 +144,7 @@ func writeInputError(w http.ResponseWriter, err error) {
 func inputErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, inputs.ErrInvalidRequestID), errors.Is(err, inputs.ErrInvalidMode),
-		errors.Is(err, inputs.ErrInvalidContent):
+		errors.Is(err, inputs.ErrInvalidContent), errors.Is(err, inputs.ErrContentTooLarge):
 		return http.StatusBadRequest
 	case errors.Is(err, engine.ErrRunNotFound), errors.Is(err, ErrStepNotFound),
 		errors.Is(err, inputs.ErrNotFound):

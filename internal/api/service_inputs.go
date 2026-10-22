@@ -52,7 +52,9 @@ type InputRequest struct {
 	Content   json.RawMessage `json:"content"`
 }
 
-// inputsStore binds the submissions bucket once per service.
+// inputsStore binds the submissions bucket, caching only success so a
+// bucket provisioned (or reachable) after the service started is
+// picked up on the next request instead of never.
 func (s *Service) inputsStore(ctx context.Context) (*inputs.Store, error) {
 	if s.js == nil {
 		panic("inputsStore: js must not be nil")
@@ -60,15 +62,17 @@ func (s *Service) inputsStore(ctx context.Context) (*inputs.Store, error) {
 	if ctx == nil {
 		panic("inputsStore: ctx must not be nil")
 	}
-	s.inputsOnce.Do(func() {
-		store, err := inputs.Open(ctx, s.js)
-		if err != nil {
-			s.inputsErr = err
-			return
-		}
-		s.inputs = store
-	})
-	return s.inputs, s.inputsErr
+	s.inputsMu.Lock()
+	defer s.inputsMu.Unlock()
+	if s.inputs != nil {
+		return s.inputs, nil
+	}
+	store, err := inputs.Open(ctx, s.js)
+	if err != nil {
+		return nil, err
+	}
+	s.inputs = store
+	return store, nil
 }
 
 // SubmitInput creates the submission (once per request_id), announces

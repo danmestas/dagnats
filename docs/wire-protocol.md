@@ -243,6 +243,9 @@ Workers publish lifecycle events back to the history stream:
   publishes `step.wait.elapsed` naming the dispatch; `input` is a flag on the
   step woken by `step.input.queued`, which the API publishes after creating a
   submission (msg-id `{run}.{step}.step.input.queued.{request_id}`).
+  Engine-first upgrade: an engine older than `wait` ignores it and sends the
+  next iteration at once, so a worker asking for `UntilInput()` hot-loops
+  until `max_iterations`; roll engines out before workers that use waits.
 
 Use `protocol.NewStepEvent()` to construct events with correct subject and dedup ID.
 
