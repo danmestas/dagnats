@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runstate"
 	"github.com/danmestas/dagnats/journal"
@@ -69,7 +70,16 @@ type TaskContext interface {
 	Fail(err error) error
 	FailPermanent(err error) error
 	FailRetryAfter(err error, after time.Duration) error
-	Continue(output []byte) error
+	// Continue asks for another iteration. opts (Delay, Until,
+	// UntilInput) make the engine wait first, durably, with no worker
+	// claim held (ADR-027).
+	Continue(output []byte, opts ...ContinueOption) error
+
+	// PlaceInputs moves the queued inputs of mode into the
+	// conversation, exactly once each, and returns them (ADR-027).
+	// Call it at a turn boundary: steers after a tool round,
+	// follow-ups after a final answer. Needs Journal() first.
+	PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, error)
 
 	// Streaming and heartbeat. PutStream is a non-durable preview
 	// (ADR-026): a journal step that crashes mid-stream re-sends the

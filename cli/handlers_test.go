@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/server"
 	"github.com/danmestas/dagnats/worker"
@@ -71,9 +72,13 @@ func (f *fakeTaskContext) FailRetryAfter(
 }
 
 func (f *fakeTaskContext) Continue(
-	_ []byte,
+	_ []byte, _ ...worker.ContinueOption,
 ) error {
 	return fmt.Errorf("Continue not expected")
+}
+
+func (f *fakeTaskContext) PlaceInputs(_ inputs.Mode) ([]journal.InputPlaced, error) {
+	return nil, fmt.Errorf("PlaceInputs not expected")
 }
 
 func (f *fakeTaskContext) PutStream(_ []byte) error {

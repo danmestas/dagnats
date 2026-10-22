@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/observe"
@@ -119,6 +120,12 @@ type taskContext struct {
 	// restartLimit is the Worker's crash-loop guard (ADR-028);
 	// RestartLimitDefault when 0.
 	restartLimit int
+
+	// inputs is the submissions bucket, bound on first use;
+	// placedEntries are the inputs this claim placed, settled to done
+	// when the iteration commits (ADR-027).
+	inputs        *inputs.Store
+	placedEntries []inputs.Entry
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -483,13 +490,19 @@ func (c *taskContext) publishFailedPayload(
 // {run}.{step}.step.continue.{attempt}.{iteration}: a redelivered task
 // that continues again is deduplicated by JetStream inside the dedup
 // window and dropped by the engine outside it. Fails without
-// publishing when the state is over the engine's cap.
-func (c *taskContext) Continue(output []byte) error {
+// publishing when the state is over the engine's cap. opts ask the
+// engine for a durable wait before the next iteration (ADR-027):
+// Delay, Until, UntilInput; see ContinueOption.
+func (c *taskContext) Continue(output []byte, opts ...ContinueOption) error {
 	if c.msg == nil {
 		panic("Continue: msg already consumed or nil")
 	}
 	if c.runID == "" {
 		panic("Continue: runID must not be empty")
+	}
+	wait, err := c.continueWait(opts)
+	if err != nil {
+		return err
 	}
 	_, span := c.tracer.Start(c.ctx,
 		"worker.continue",
@@ -502,7 +515,7 @@ func (c *taskContext) Continue(output []byte) error {
 		),
 	)
 	defer span.End()
-	payload, err := c.continuePayload(output)
+	payload, err := c.continuePayload(output, wait)
 	if err != nil {
 		return err
 	}
@@ -517,7 +530,7 @@ func (c *taskContext) Continue(output []byte) error {
 			state = c.pendingState
 		}
 		if err := c.commitJournal(journal.Commit{
-			Action: journal.ActionContinue, Output: output, State: state,
+			Action: journal.ActionContinue, Output: output, State: state, Wait: wait,
 		}); err != nil {
 			return err
 		}
@@ -534,7 +547,9 @@ func (c *taskContext) Continue(output []byte) error {
 // step, no state at all — the commit record is the state of record,
 // the engine keeps whatever it had, and the next delivery reads the
 // journal (ADR-026).
-func (c *taskContext) continuePayload(output []byte) ([]byte, error) {
+func (c *taskContext) continuePayload(
+	output []byte, wait *protocol.ContinueWait,
+) ([]byte, error) {
 	if c.runID == "" {
 		panic("continuePayload: runID must not be empty")
 	}
@@ -542,7 +557,7 @@ func (c *taskContext) continuePayload(output []byte) ([]byte, error) {
 		panic("continuePayload: loopStateMax must be positive")
 	}
 	if c.journal != nil || c.journalStop != journalLive {
-		return json.Marshal(protocol.StepContinuePayload{Output: output})
+		return json.Marshal(protocol.StepContinuePayload{Output: output, Wait: wait})
 	}
 	state := c.loopState
 	if c.pendingStateSet {
@@ -555,7 +570,7 @@ func (c *taskContext) continuePayload(output []byte) ([]byte, error) {
 		)
 	}
 	return json.Marshal(protocol.StepContinuePayload{
-		Output: output, State: state, StateSet: true,
+		Output: output, State: state, StateSet: true, Wait: wait,
 	})
 }
 

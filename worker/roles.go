@@ -38,7 +38,7 @@ type CheckpointTask interface {
 // Includes streaming and heartbeat for long-running iterations.
 type LoopTask interface {
 	CheckpointTask
-	Continue(output []byte) error
+	Continue(output []byte, opts ...ContinueOption) error
 	FailRetryAfter(err error, after time.Duration) error
 	PutStream(data []byte) error
 	Heartbeat() error

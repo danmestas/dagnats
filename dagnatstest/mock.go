@@ -6,7 +6,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/journal"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -34,13 +36,19 @@ type MockTaskContext struct {
 	FailErr        error  // if set, Complete/Fail/Continue return this
 
 	// Recorded calls
-	Completed           bool
-	CompletedOutput     []byte
-	Failed              bool
-	FailedErr           error
-	FailedPermanent     bool
-	Continued           bool
-	ContinuedOutput     []byte
+	Completed       bool
+	CompletedOutput []byte
+	Failed          bool
+	FailedErr       error
+	FailedPermanent bool
+	Continued       bool
+	ContinuedOutput []byte
+	// ContinueWait is the wait the last Continue asked for (ADR-027),
+	// nil when none. QueuedInputs feeds PlaceInputs; PlacedInputs is
+	// what it has handed out.
+	ContinueWait        *protocol.ContinueWait
+	QueuedInputs        []journal.InputPlaced
+	PlacedInputs        []journal.InputPlaced
 	Checkpoints         [][]byte
 	Streams             [][]byte
 	HeartbeatCount      int
@@ -137,12 +145,40 @@ func (m *MockTaskContext) FailRetryAfter(err error, after time.Duration) error {
 	return m.FailErr
 }
 
-func (m *MockTaskContext) Continue(output []byte) error {
+func (m *MockTaskContext) Continue(output []byte, opts ...worker.ContinueOption) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Continued = true
 	m.ContinuedOutput = output
+	m.ContinueWait = nil
+	if len(opts) > 0 {
+		wait := &protocol.ContinueWait{}
+		for _, opt := range opts {
+			opt(wait)
+		}
+		m.ContinueWait = wait
+	}
 	return m.FailErr
+}
+
+// PlaceInputs returns, and clears, the inputs of mode queued on the
+// mock (QueuedInputs). A real step needs Journal() first; the mock
+// does not, so a handler's placement logic can be tested alone.
+func (m *MockTaskContext) PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var placed []journal.InputPlaced
+	kept := m.QueuedInputs[:0]
+	for _, in := range m.QueuedInputs {
+		if in.Mode == string(mode) {
+			placed = append(placed, in)
+			continue
+		}
+		kept = append(kept, in)
+	}
+	m.QueuedInputs = kept
+	m.PlacedInputs = append(m.PlacedInputs, placed...)
+	return placed, m.FailErr
 }
 
 func (m *MockTaskContext) Checkpoint(state []byte) error {

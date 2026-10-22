@@ -165,6 +165,7 @@ func (c *taskContext) commitJournal(commit journal.Commit) error {
 		return fmt.Errorf("journal commit: %w", err)
 	}
 	c.journalSeq = seq
+	c.settlePlacedInputs()
 	return nil
 }
 
@@ -184,7 +185,9 @@ func (c *taskContext) republishCommitted(commit journal.Commit, seq uint64) erro
 	switch commit.Action {
 	case journal.ActionContinue:
 		var payload []byte
-		payload, err = json.Marshal(protocol.StepContinuePayload{Output: commit.Output})
+		payload, err = json.Marshal(protocol.StepContinuePayload{
+			Output: commit.Output, Wait: commit.Wait,
+		})
 		if err == nil {
 			err = c.publishEvent(protocol.EventStepContinue, payload)
 		}

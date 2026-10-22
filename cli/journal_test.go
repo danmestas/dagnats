@@ -77,8 +77,8 @@ func TestJournalCheck_CleanRunExitsZero(t *testing.T) {
 	if !strings.Contains(text, "OK") || !strings.Contains(text, "s: 2 records, 1 commits, ok") {
 		t.Errorf("output = %q, want OK and the step line", text)
 	}
-	if !strings.Contains(text, "submissions bucket absent") {
-		t.Errorf("output = %q, want invariant 5 reported as skipped", text)
+	if strings.Contains(text, "submissions bucket absent") {
+		t.Errorf("output = %q, want invariant 5 checked now that the bucket exists", text)
 	}
 	out.Reset()
 	if code := checkJournal(ctx, nc, "run-ok", true, &out); code != 0 {

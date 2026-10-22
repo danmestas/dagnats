@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/journal"
 )
@@ -35,7 +36,12 @@ func (m *mockTaskContext) LogOut() io.Writer           { return io.Discard }
 func (m *mockTaskContext) LogErr() io.Writer           { return io.Discard }
 func (m *mockTaskContext) PutStream([]byte) error      { return nil }
 func (m *mockTaskContext) Checkpoint([]byte) error     { return nil }
-func (m *mockTaskContext) Continue([]byte) error       { return nil }
+func (m *mockTaskContext) Continue([]byte, ...ContinueOption) error {
+	return nil
+}
+func (m *mockTaskContext) PlaceInputs(inputs.Mode) ([]journal.InputPlaced, error) {
+	return nil, nil
+}
 
 func (m *mockTaskContext) LoadCheckpoint() ([]byte, error) {
 	return nil, nil

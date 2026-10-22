@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/worker"
 )
@@ -336,9 +337,13 @@ func (s *stubTaskContext) FailRetryAfter(
 }
 
 func (s *stubTaskContext) Continue(
-	out []byte,
+	out []byte, _ ...worker.ContinueOption,
 ) error {
 	return nil
+}
+
+func (s *stubTaskContext) PlaceInputs(_ inputs.Mode) ([]journal.InputPlaced, error) {
+	return nil, nil
 }
 
 func (s *stubTaskContext) PutStream(
