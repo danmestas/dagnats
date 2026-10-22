@@ -31,6 +31,7 @@ func (j *Journal) PlaceInput(ctx context.Context, p InputPlaced) (uint64, error)
 	if p.RequestID == "" {
 		panic("journal.PlaceInput: request id must not be empty")
 	}
+	defer j.enter("PlaceInput")()
 	if j.InputPlaced(p.RequestID) {
 		panic("journal.PlaceInput: " + p.RequestID + " is already placed")
 	}
