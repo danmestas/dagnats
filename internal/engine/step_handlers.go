@@ -282,6 +282,26 @@ func (o *Orchestrator) publishContinueTask(
 			ctx, run, stepDef, input, attempt, iteration, loopCfg.LoopDelay,
 		)
 	}
+	return o.publishIterationNow(ctx, run, stepDef, state)
+}
+
+// publishIterationNow sends the step's current iteration to the task
+// queue with no delay or wait: the immediate branch of
+// publishContinueTask, and what a wake sends (ADR-027).
+func (o *Orchestrator) publishIterationNow(
+	ctx context.Context, run dag.WorkflowRun, stepDef dag.StepDef, state dag.StepState,
+) error {
+	if stepDef.ID == "" || run.RunID == "" {
+		panic("publishIterationNow: run and step must not be empty")
+	}
+	if waiting(state) {
+		panic("publishIterationNow: step is still waiting")
+	}
+	input, err := dag.ResolveInput(stepDef, run.Steps, run.Input)
+	if err != nil {
+		return fmt.Errorf("resolve input for step %q: %w", stepDef.ID, err)
+	}
+	attempt, iteration := dispatchIdentity(run, stepDef.ID, dispatchSameAttempt)
 	return o.publisher.PublishIteration(
 		ctx, run.RunID, stepDef, input, attempt, iteration,
 		run.WorkflowID, state.DispatchNonce, state.LoopState,

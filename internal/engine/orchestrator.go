@@ -78,7 +78,7 @@ type Orchestrator struct {
 	// inputs is the submissions bucket (ADR-027), bound on first use;
 	// nil when the bucket is not provisioned.
 	inputs     *inputs.Store
-	inputsOnce sync.Once
+	inputsMu   sync.Mutex
 	correlator *Correlator      // event wait-for-event matching
 	sticky     *StickyRouter    // worker affinity bindings
 	publisher  *TaskPublisher   // task dispatch pipeline
@@ -413,6 +413,9 @@ func (o *Orchestrator) Start() error {
 	if err := o.convergeRunIndexesAtStartup(); err != nil {
 		return err
 	}
+	// Probe the submissions bucket so a missing one is logged at start;
+	// a failure here is retried on use, never cached (ADR-027).
+	o.inputsStore(context.Background())
 	if o.legacyStepEvents {
 		slog.Warn("accepting step events without a dispatch identity " +
 			"(legacy_step_events=true): a duplicate step.continue from a " +

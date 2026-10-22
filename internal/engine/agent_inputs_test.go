@@ -18,11 +18,13 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -156,7 +158,7 @@ func TestContinueWait_UntilInputWakesOnSubmission(t *testing.T) {
 	fx.noTask(t, time.Second)
 }
 
-func TestContinueWait_InputQueuedDuringCommitWakesTheStep(t *testing.T) {
+func TestContinueWait_InputQueuedBeforeTheWaitIsFoundOnEntry(t *testing.T) {
 	fx := newLoopFixture(t, loopDef("wait-race-wf", "wait-race-task", dag.AgentLoopConfig{}, nil))
 	orch := NewOrchestrator(fx.nc)
 	orch.Start()
@@ -166,9 +168,9 @@ func TestContinueWait_InputQueuedDuringCommitWakesTheStep(t *testing.T) {
 	task := fx.takeTask(t, 5*time.Second)
 	attempt := fx.started(t, task)
 
-	// The input lands, and its event is handled, while the worker is
-	// still running the turn that will commit UntilInput: the SDK's
-	// own check ran before the input existed.
+	// The input lands, and its event is handled, before the continue
+	// that commits UntilInput: no event will follow the wait, so the
+	// engine's check on entering it (rule 2) is what sends the task.
 	fx.submitInput(t, runID, "early")
 	fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool { return s.HasInputs })
 	fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task, attempt,
@@ -215,5 +217,168 @@ func TestContinueWait_CompletionSweepSettlesQueuedInputs(t *testing.T) {
 	msgs, err := fx.taskSub.Fetch(1, nats.MaxWait(300*time.Millisecond))
 	if err == nil && len(msgs) > 0 {
 		t.Fatalf("a finished step was dispatched again: %s", msgs[0].Data)
+	}
+}
+
+func TestContinueWait_RunFailureSettlesAWaitingStepsInputs(t *testing.T) {
+	wfDef := dag.WorkflowDef{Name: "sweep-run-wf", Version: "1", Steps: []dag.StepDef{
+		{ID: "agent", Task: "sweep-run-agent", Type: dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 10})},
+		{ID: "other", Task: "sweep-run-other"},
+	}}
+	fx := newLoopFixture(t, wfDef)
+	otherSub, err := fx.js.PullSubscribe("task.sweep-run-other.*", "", nats.BindStream("TASK_QUEUES"))
+	if err != nil {
+		t.Fatalf("PullSubscribe: %v", err)
+	}
+	orch := NewOrchestrator(fx.nc)
+	orch.Start()
+	defer orch.Stop()
+	const runID = "sweep-run-run"
+	fx.startRun(t, runID)
+	agent := fx.takeTask(t, 5*time.Second)
+	agentAttempt := fx.started(t, agent)
+	fx.publishEvent(t, identityEvent(protocol.EventStepContinue, agent, agentAttempt,
+		waitPayload(t, protocol.ContinueWait{Input: true})))
+	fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool { return s.WaitInput })
+	// An input wakes the agent; the worker takes the task and leaves
+	// the step Running with the input still queued.
+	store := fx.submitInput(t, runID, "pending")
+	fx.takeTask(t, 5*time.Second)
+	fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool { return s.HasInputs && !s.WaitInput })
+
+	// A sibling fails the run while the agent step is still Running.
+	msgs, err := otherSub.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("Fetch other: %v", err)
+	}
+	var other protocol.TaskPayload
+	if err := json.Unmarshal(msgs[0].Data, &other); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if err := msgs[0].Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	otherAttempt := fx.started(t, other)
+	fx.publishEvent(t, identityEvent(protocol.EventStepFailed, other, otherAttempt, mustMarshal(t,
+		protocol.StepFailedPayload{Error: "boom", FailureType: protocol.FailureTypeNonRetriable})))
+	deadline := time.Now().Add(5 * time.Second)
+	for fx.inputStatus(t, store, runID, "pending") != inputs.StatusUnanswered {
+		if time.Now().After(deadline) {
+			run, _ := fx.store.Load(context.Background(), runID)
+			t.Fatalf("input of a step on a failed run never settled; run=%s agent=%+v",
+				run.Status, run.Steps["agent"])
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	run := fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool { return !s.HasInputs })
+	if !run.Status.IsTerminal() {
+		t.Errorf("run status = %s, want terminal", run.Status)
+	}
+}
+
+func TestInputsStore_TransientOpenFailureRecovers(t *testing.T) {
+	fx := newLoopFixture(t, loopDef("store-wf", "store-task", dag.AgentLoopConfig{}, nil))
+	ctx, cancel := context.WithTimeout(context.Background(), inputsTestTimeout)
+	defer cancel()
+	if err := fx.jsNew.DeleteKeyValue(ctx, "submissions"); err != nil {
+		t.Fatalf("DeleteKeyValue: %v", err)
+	}
+	orch := NewOrchestrator(fx.nc)
+	if orch.inputsStore(ctx) != nil {
+		t.Fatal("store opened without a bucket")
+	}
+	wfDef := loopDef("store-wf", "store-task", dag.AgentLoopConfig{}, nil)
+	run := dag.NewWorkflowRun(wfDef, "store-run")
+	run.Status = dag.RunStatusCompleted
+	run.Steps["agent"] = dag.StepState{Status: dag.StepStatusCompleted, Attempts: 1, HasInputs: true}
+	if err := orch.store.SaveInitial(ctx, run); err != nil {
+		t.Fatalf("SaveInitial: %v", err)
+	}
+	if err := orch.saveSnapshot(ctx, run, "agent"); err != nil {
+		t.Fatalf("saveSnapshot: %v", err)
+	}
+	saved, err := fx.store.Load(ctx, "store-run")
+	if err != nil || !saved.Steps["agent"].HasInputs {
+		t.Fatalf("HasInputs cleared while the store was unavailable (err=%v)", err)
+	}
+	// The bucket comes back; the next save settles and clears the mark.
+	if err := natsutil.SetupAll(fx.nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	if orch.inputsStore(ctx) == nil {
+		t.Fatal("store not reopened after the bucket returned")
+	}
+	if err := orch.saveSnapshot(ctx, saved, "agent"); err != nil {
+		t.Fatalf("saveSnapshot: %v", err)
+	}
+	if again, err := fx.store.Load(ctx, "store-run"); err != nil || again.Steps["agent"].HasInputs {
+		t.Fatalf("HasInputs still set after the store recovered (err=%v)", err)
+	}
+}
+
+func TestContinueWait_WakeDoesNotApplyLoopDelay(t *testing.T) {
+	cfg := dag.AgentLoopConfig{LoopDelay: 10 * time.Second}
+	fx := newLoopFixture(t, loopDef("wake-delay-wf", "wake-delay-task", cfg, nil))
+	orch := NewOrchestrator(fx.nc)
+	orch.Start()
+	defer orch.Stop()
+	const runID = "wake-delay-run"
+	fx.startRun(t, runID)
+	task := fx.takeTask(t, 5*time.Second)
+	attempt := fx.started(t, task)
+	fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task, attempt,
+		waitPayload(t, protocol.ContinueWait{Input: true})))
+	fx.waitStep(t, runID, 5*time.Second, func(s dag.StepState) bool { return s.WaitInput })
+	fx.submitInput(t, runID, "now")
+	if next := fx.takeTask(t, 2*time.Second); next.Iteration != 1 {
+		t.Fatalf("woken task iteration = %d, want 1", next.Iteration)
+	}
+}
+
+// TestContinueWait_TwoEnginesOneTaskPerRound is the shared-consumer
+// case: two engines on one WORKFLOW_HISTORY consumer, and in every
+// round the continue that asks to wait for input and the input's own
+// event are published back to back, so either engine may handle either
+// first. Whichever interleaving happens, the step wakes exactly once.
+func TestContinueWait_TwoEnginesOneTaskPerRound(t *testing.T) {
+	fx := newLoopFixture(t, loopDef("two-eng-wf", "two-eng-task", dag.AgentLoopConfig{MaxIterations: 50}, nil))
+	first := NewOrchestrator(fx.nc)
+	first.Start()
+	defer first.Stop()
+	second := NewOrchestrator(fx.nc)
+	second.Start()
+	defer second.Stop()
+	const runID = "two-eng-run"
+	fx.startRun(t, runID)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	store, err := inputs.Open(ctx, fx.jsNew)
+	if err != nil {
+		t.Fatalf("inputs.Open: %v", err)
+	}
+	task := fx.takeTask(t, 5*time.Second)
+	for round := 0; round < 20; round++ {
+		attempt := fx.started(t, task)
+		requestID := fmt.Sprintf("round-%d", round)
+		if _, _, err := store.Submit(ctx, inputs.Submission{
+			RunID: runID, StepID: "agent", RequestID: requestID, Mode: inputs.ModeSteer,
+			Content: json.RawMessage(`1`),
+		}); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		fx.publishEvent(t, identityEvent(protocol.EventStepContinue, task, attempt,
+			waitPayload(t, protocol.ContinueWait{Input: true})))
+		fx.publishEvent(t, protocol.NewInputQueuedEvent(runID, "agent", requestID))
+		task = fx.takeTask(t, 5*time.Second)
+		if task.Iteration != round+1 {
+			t.Fatalf("round %d: task iteration = %d, want %d", round, task.Iteration, round+1)
+		}
+		fx.noTask(t, 300*time.Millisecond)
+		// The worker would place it; here it is withdrawn so the next
+		// round's wait is real.
+		if err := store.Withdraw(ctx, runID, "agent", requestID); err != nil {
+			t.Fatalf("Withdraw: %v", err)
+		}
 	}
 }

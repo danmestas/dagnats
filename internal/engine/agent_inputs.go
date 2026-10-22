@@ -60,9 +60,13 @@ func continueWait(evt protocol.Event) (*protocol.ContinueWait, error) {
 	return payload.Wait, nil
 }
 
-// inputsStore binds the submissions bucket once. nil when the bucket
-// is not provisioned (an older deployment): waits for input then wake
-// only on their time component, and nothing is swept.
+// inputsStore binds the submissions bucket, caching only success: a
+// failed open (the bucket not provisioned yet, a transient error) is
+// retried on the next call, so an outage at start never disables
+// inputs for the life of the process. nil means unavailable now:
+// nothing is swept (the HasInputs mark stays for a later save) and a
+// wait for input wakes only on its time component. Start probes it
+// once so a missing bucket is logged where an operator looks.
 func (o *Orchestrator) inputsStore(ctx context.Context) *inputs.Store {
 	if o.js == nil {
 		panic("inputsStore: js must not be nil")
@@ -70,14 +74,19 @@ func (o *Orchestrator) inputsStore(ctx context.Context) *inputs.Store {
 	if ctx == nil {
 		panic("inputsStore: ctx must not be nil")
 	}
-	o.inputsOnce.Do(func() {
-		store, err := inputs.Open(ctx, o.js)
-		if err != nil && !errors.Is(err, inputs.ErrNotProvisioned) {
-			slog.WarnContext(ctx, "open submissions bucket; inputs disabled", "error", err)
-		}
-		o.inputs = store
-	})
-	return o.inputs
+	o.inputsMu.Lock()
+	defer o.inputsMu.Unlock()
+	if o.inputs != nil {
+		return o.inputs
+	}
+	store, err := inputs.Open(ctx, o.js)
+	if err != nil {
+		slog.WarnContext(ctx, "submissions bucket unavailable; agent inputs disabled until it is",
+			"error", err)
+		return nil
+	}
+	o.inputs = store
+	return store
 }
 
 // applyWait records wait on the step about to be dispatched, after the
@@ -203,7 +212,11 @@ func (o *Orchestrator) handleWaitElapsed(ctx context.Context, evt protocol.Event
 	}
 	wfDef, run, err := o.loadRunAndDef(ctx, evt.RunID)
 	if err != nil {
-		return err
+		// A run pruned or never known: nothing to wake, and a NAK would
+		// only send the event to the dead-letter path.
+		slog.WarnContext(ctx, "wait.elapsed for an unknown run; ignoring",
+			"run_id", evt.RunID, "step_id", evt.StepID, "error", err)
+		return nil
 	}
 	state := run.Steps[evt.StepID]
 	stepDef, found := findStepDef(wfDef, evt.StepID)
@@ -240,7 +253,9 @@ func (o *Orchestrator) wakeStep(
 	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
 		return err
 	}
-	if err := o.publishContinueTask(ctx, run, stepDef, state); err != nil {
+	// Straight to the queue: the wait replaced the step's loop_delay
+	// (ADR-027), so the wake must not add it on top.
+	if err := o.publishIterationNow(ctx, run, stepDef, state); err != nil {
 		return err
 	}
 	_, err := o.markSent(ctx, run, []string{stepDef.ID})
@@ -250,7 +265,8 @@ func (o *Orchestrator) wakeStep(
 // stepFinished reports a step no input can reach any more.
 func stepFinished(state dag.StepState) bool {
 	switch state.Status {
-	case dag.StepStatusCompleted, dag.StepStatusFailed, dag.StepStatusCancelled:
+	case dag.StepStatusCompleted, dag.StepStatusFailed, dag.StepStatusCancelled,
+		dag.StepStatusSkipped:
 		return true
 	}
 	return false
@@ -268,7 +284,7 @@ func (o *Orchestrator) settleInputs(ctx context.Context, runID, stepID string) b
 	}
 	store := o.inputsStore(ctx)
 	if store == nil {
-		return true
+		return false // keep the mark; the next save retries
 	}
 	settled, err := store.SettleUnanswered(ctx, runID, stepID)
 	if err != nil {
@@ -283,12 +299,13 @@ func (o *Orchestrator) settleInputs(ctx context.Context, runID, stepID string) b
 	return true
 }
 
-// settleFinishedSteps runs after a save: each step that has finished
-// with inputs to settle is swept, and the mark cleared in a second,
-// revision-checked save so later saves do not sweep it again. The
-// sweep follows the save that ends the step, so a submission created
-// after that save is found either here or by the API's own check
-// against the saved step.
+// settleFinishedSteps runs after a save: each step with inputs to
+// settle that has finished, or whose run has (a run failed by a
+// sibling or cancelled leaves its other steps as they were), is swept,
+// and the mark cleared in a second, revision-checked save so later
+// saves do not sweep it again. The sweep follows the save that ends
+// the step, so a submission created after that save is found either
+// here or by the API's own check against the saved step.
 func (o *Orchestrator) settleFinishedSteps(ctx context.Context, run dag.WorkflowRun) {
 	if run.RunID == "" {
 		panic("settleFinishedSteps: RunID must not be empty")
@@ -298,7 +315,8 @@ func (o *Orchestrator) settleFinishedSteps(ctx context.Context, run dag.Workflow
 	}
 	var swept []string
 	for id, state := range run.Steps {
-		if state.HasInputs && stepFinished(state) && o.settleInputs(ctx, run.RunID, id) {
+		unreachable := stepFinished(state) || run.Status.IsTerminal()
+		if state.HasInputs && unreachable && o.settleInputs(ctx, run.RunID, id) {
 			swept = append(swept, id)
 		}
 	}
