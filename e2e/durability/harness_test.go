@@ -1,17 +1,23 @@
 // e2e/durability/harness_test.go
-// Shared fixture for the crash-point matrix and the chaos soak (#809).
+// Shared fixture for the crash-point matrix, the crash-loop test and
+// the chaos soak (#809).
 //
 // Methodology: one embedded NATS server (or an in-process three-node
-// cluster), two real orchestrators sharing the WORKFLOW_HISTORY
-// durable as a cluster does, and two real Workers with a short AckWait
-// running one scripted agent: a deterministic model script of safe and
-// unsafe tool calls ending in a final answer. Tools count their starts
-// and effects in a KV bucket outside the journal, so the audit can
-// prove an unsafe tool ran at most once per position. Crashes are
-// injected through internal/chaos; the hook routes by run so parallel
-// runs do not interfere. After every run the engine's snapshot, the
-// journal audit and the counters are checked against a crash-free
-// baseline. Every wait is bounded.
+// cluster) with two real orchestrators sharing the WORKFLOW_HISTORY
+// durable as a cluster does, and, per agent, a one-step agent-loop
+// workflow on its own task type with two real Workers and a short
+// AckWait. A Worker handles its deliveries one at a time, so a stalled
+// handler holds that worker's prefetched deliveries past their
+// AckWait: a task type per agent keeps the matrix's parallel cells
+// from stalling each other, while the soak shares one agent across
+// its runs on purpose. The scripted agent is a deterministic model
+// script of safe and unsafe tool calls ending in a final answer. Tools
+// count their starts and effects in a KV bucket outside the journal,
+// so the audit can prove an unsafe tool ran at most once per position.
+// Crashes are injected through internal/chaos; the hook routes by run
+// so parallel runs do not interfere. After every run the engine's
+// snapshot, the journal audit and the counters are checked against a
+// crash-free baseline. Every wait is bounded.
 package durability
 
 import (
@@ -39,12 +45,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// debugHooks prints every routed hook call.
-const debugHooks = false
-
 const (
-	taskType = "durability-agent"
-	stepID   = "s"
+	stepID = "s"
 	// ackWait is short so a stalled delivery is redelivered quickly;
 	// stallFor is the stall that outlives it.
 	ackWait  = 500 * time.Millisecond
@@ -62,6 +64,8 @@ const (
 	// killed dispatch is retried within it instead of the 5s default.
 	engineBackoff    = 200 * time.Millisecond
 	engineBackoffLen = 8
+	// workersPerAgent is how many Workers consume an agent's task type.
+	workersPerAgent = 2
 	// toolCharge is the unsafe tool, toolLookup the safe one.
 	toolCharge = "charge"
 	toolLookup = "lookup"
@@ -94,20 +98,28 @@ type answer struct {
 	Final string   `json:"final"`
 }
 
-// fixture is one server, two engines, two workers and the counters.
+// fixture is one server, two engines, the API service and the
+// counters; agents are started on it.
 type fixture struct {
 	nc       *nats.Conn
 	js       jetstream.JetStream
 	svc      *api.Service
 	effects  jetstream.KeyValue
-	def      dag.WorkflowDef
 	cluster  bool
 	mu       sync.Mutex
 	requests map[string]int
+	agents   int
 }
 
-// newFixture starts everything on a standalone server, or on an
-// in-process three-node cluster when cluster is set.
+// agent is one workflow def on its own task type with its workers.
+type agent struct {
+	f        *fixture
+	def      dag.WorkflowDef
+	taskType string
+}
+
+// newFixture starts the server (standalone, or an in-process
+// three-node cluster when cluster is set), the engines and the service.
 func newFixture(t *testing.T, cluster bool) *fixture {
 	t.Helper()
 	var nc *nats.Conn
@@ -135,36 +147,16 @@ func newFixture(t *testing.T, cluster bool) *fixture {
 		nc: nc, js: js, effects: effects, cluster: cluster,
 		svc: harness.NewTestService(t, nc), requests: map[string]int{},
 	}
-	f.def = f.registerDef(t, ctx)
 	f.startEngines(t)
-	f.startWorkers(t)
 	return f
-}
-
-// registerDef registers the one-step agent-loop workflow with a retry
-// policy, so a restart_limit failure is retried as ADR-028 describes.
-func (f *fixture) registerDef(t *testing.T, ctx context.Context) dag.WorkflowDef {
-	t.Helper()
-	def := dag.WorkflowDef{
-		Name: harness.UniqueName(t, "durability"), Version: "1",
-		Steps: []dag.StepDef{{
-			ID: stepID, Task: taskType, Type: dag.StepTypeAgentLoop,
-			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 10}),
-			Retry: &dag.RetryPolicy{
-				MaxAttempts: 3, Strategy: dag.RetryFixed,
-				InitialDelay: 100 * time.Millisecond, MaxDelay: 100 * time.Millisecond,
-			},
-		}},
-	}
-	if err := f.svc.RegisterWorkflow(ctx, def); err != nil {
-		t.Fatalf("RegisterWorkflow: %v", err)
-	}
-	return def
 }
 
 // startEngines starts two orchestrators on the shared history durable.
 func (f *fixture) startEngines(t *testing.T) {
 	t.Helper()
+	if f.nc == nil {
+		panic("startEngines: fixture has no connection")
+	}
 	schedule := make([]time.Duration, engineBackoffLen)
 	for i := range schedule {
 		schedule[i] = engineBackoff
@@ -176,15 +168,39 @@ func (f *fixture) startEngines(t *testing.T) {
 	}
 }
 
-// startWorkers starts two workers with the short AckWait.
-func (f *fixture) startWorkers(t *testing.T) {
+// newAgent registers a one-step agent-loop workflow on a fresh task
+// type, with a retry policy so a restart_limit failure is retried as
+// ADR-028 describes, and starts its workers.
+func (f *fixture) newAgent(t *testing.T) *agent {
 	t.Helper()
-	for i := 0; i < 2; i++ {
+	f.mu.Lock()
+	f.agents++
+	n := f.agents
+	f.mu.Unlock()
+	a := &agent{f: f, taskType: fmt.Sprintf("durability-agent-%d", n)}
+	a.def = dag.WorkflowDef{
+		Name: harness.UniqueName(t, "durability"), Version: "1",
+		Steps: []dag.StepDef{{
+			ID: stepID, Task: a.taskType, Type: dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 10}),
+			Retry: &dag.RetryPolicy{
+				MaxAttempts: 3, Strategy: dag.RetryFixed,
+				InitialDelay: 100 * time.Millisecond, MaxDelay: 100 * time.Millisecond,
+			},
+		}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := f.svc.RegisterWorkflow(ctx, a.def); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+	for i := 0; i < workersPerAgent; i++ {
 		w := worker.NewWorker(f.nc)
-		w.Handle(taskType, f.handle, worker.WithAckWait(ackWait))
+		w.Handle(a.taskType, f.handle, worker.WithAckWait(ackWait))
 		w.Start()
 		t.Cleanup(w.Stop)
 	}
+	return a
 }
 
 // handle is the scripted agent: one model turn per iteration.
@@ -364,39 +380,51 @@ func (f *fixture) counters(t *testing.T, runID string) map[string]int {
 	return counts
 }
 
-// startRun starts one run without a crash and returns its ID.
-func (f *fixture) startRun(t *testing.T) string {
+// newRunID is a fresh run ID, as the API assigns one.
+func newRunID() string {
+	id := runid.New()
+	if id == "" {
+		panic("newRunID: empty id")
+	}
+	if len(id) < 8 {
+		panic("newRunID: id too short")
+	}
+	return id
+}
+
+// startRun starts one run of the agent without a crash and returns
+// its ID.
+func (a *agent) startRun(t *testing.T) string {
 	t.Helper()
 	runID := newRunID()
-	f.publishStart(t, runID)
+	a.publishStart(t, runID)
 	return runID
 }
 
-// startRunRouted registers hook for a fresh run ID and then starts the
-// run, so the hook is in place before the engine's first dispatch
-// reaches a point. It publishes workflow.started the way the API does
-// (a run ID is assigned at publish time, which is why the service's
-// StartRun cannot be used here).
-func (f *fixture) startRunRouted(t *testing.T, r *router, hook *crashHook) string {
+// startRunRouted registers hook for a fresh run ID with r and then
+// starts the run, so the hook is in place before the engine's first
+// dispatch reaches a point. It publishes workflow.started the way the
+// API does (a run ID is assigned at publish time, which is why the
+// service's StartRun cannot be used here).
+func (a *agent) startRunRouted(t *testing.T, r *router, hook chaos.Hook) string {
 	t.Helper()
 	if hook == nil || r == nil {
 		panic("startRunRouted: router and hook are required")
 	}
 	runID := newRunID()
-	hook.runID = runID
-	r.add(runID, hook.fire)
-	f.publishStart(t, runID)
+	r.add(runID, hook)
+	a.publishStart(t, runID)
 	return runID
 }
 
-// publishStart publishes workflow.started for runID with the fixture's
+// publishStart publishes workflow.started for runID with the agent's
 // def, as api.Service.StartRun does with no input and no labels.
-func (f *fixture) publishStart(t *testing.T, runID string) {
+func (a *agent) publishStart(t *testing.T, runID string) {
 	t.Helper()
 	if runID == "" {
 		panic("publishStart: runID must not be empty")
 	}
-	defData, err := json.Marshal(f.def)
+	defData, err := json.Marshal(a.def)
 	if err != nil {
 		t.Fatalf("marshal def: %v", err)
 	}
@@ -413,7 +441,7 @@ func (f *fixture) publishStart(t *testing.T, runID string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := f.js.PublishMsg(ctx, &nats.Msg{
+	if _, err := a.f.js.PublishMsg(ctx, &nats.Msg{
 		Subject: evt.NATSSubject(), Data: data,
 		Header: nats.Header{"Nats-Msg-Id": {evt.NATSMsgID()}},
 	}); err != nil {
@@ -421,62 +449,104 @@ func (f *fixture) publishStart(t *testing.T, runID string) {
 	}
 }
 
-// waitCompleted waits for the run to complete and returns its answer.
+// waitCompleted waits for the run to complete and returns its answer,
+// failing the test when it does not.
 func (f *fixture) waitCompleted(t *testing.T, runID string) answer {
 	t.Helper()
-	run := harness.WaitForRunStatus(t, f.svc, runID, dag.RunStatusCompleted, runTimeout)
-	step := run.Steps[stepID]
-	if step.Status != dag.StepStatusCompleted {
-		t.Fatalf("step %s = %+v, want completed", stepID, step)
-	}
-	var got answer
-	if err := json.Unmarshal(step.Output, &got); err != nil {
-		t.Fatalf("decode answer %s: %v", step.Output, err)
+	got, ok := f.waitCompletedOK(runID)
+	if !ok {
+		f.dumpRun(t, runID)
+		t.Fatalf("run %s did not complete within %s", runID, runTimeout)
 	}
 	return got
 }
 
-// audit runs the journal checker and the counter invariant for runID:
-// the unsafe tool started and took effect at most once per key.
+// waitCompletedOK polls the run until it completes with a decodable
+// answer or runTimeout passes.
+func (f *fixture) waitCompletedOK(runID string) (answer, bool) {
+	if runID == "" {
+		panic("waitCompletedOK: runID must not be empty")
+	}
+	if f.svc == nil {
+		panic("waitCompletedOK: service must be bound")
+	}
+	deadline := time.Now().Add(runTimeout)
+	for time.Now().Before(deadline) {
+		run, err := f.svc.GetRun(context.Background(), runID)
+		if err == nil && run.Status == dag.RunStatusCompleted {
+			var got answer
+			step := run.Steps[stepID]
+			if step.Status == dag.StepStatusCompleted &&
+				json.Unmarshal(step.Output, &got) == nil {
+				return got, true
+			}
+			return answer{}, false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return answer{}, false
+}
+
+// audit runs the journal checker and the counter invariant for runID
+// and fails the test on a violation.
 func (f *fixture) audit(t *testing.T, runID string) {
 	t.Helper()
+	if !f.auditOK(t, runID, "run "+runID) {
+		f.dumpRun(t, runID)
+	}
+}
+
+// auditOK runs the journal checker and the counter invariant for
+// runID: the unsafe tool started and took effect at most once per key.
+// Violations are reported with label and make it return false.
+func (f *fixture) auditOK(t *testing.T, runID, label string) bool {
+	t.Helper()
+	if runID == "" || label == "" {
+		panic("auditOK: runID and label are required")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	report, err := journal.Check(ctx, f.nc, runID)
 	if err != nil {
-		t.Fatalf("journal.Check: %v", err)
+		t.Errorf("%s: journal.Check: %v", label, err)
+		return false
 	}
+	ok := true
 	if !report.OK() {
-		t.Errorf("journal.Check violations: %s", violations(report))
+		t.Errorf("%s: journal.Check violations: %s", label, violations(report))
+		ok = false
 	}
 	counts := f.counters(t, runID)
 	if len(counts) == 0 {
-		t.Errorf("no side-effect counters for run %s", runID)
+		t.Errorf("%s: no side-effect counters", label)
+		ok = false
 	}
 	for key, count := range counts {
 		if !strings.HasPrefix(key, "start.") {
 			continue
 		}
 		callKey := strings.TrimPrefix(key, "start.")
-		effect := counts["effect."+callKey]
-		if effect > count {
-			t.Errorf("%s: %d effects for %d starts", callKey, effect, count)
+		if effect := counts["effect."+callKey]; effect > count {
+			t.Errorf("%s: %s: %d effects for %d starts", label, callKey, effect, count)
+			ok = false
 		}
-		if f.unsafeKey(callKey) && count > 1 {
-			t.Errorf("unsafe tool %s started %d times, want at most once", callKey, count)
+		if unsafeKey(callKey) && count > 1 {
+			t.Errorf("%s: unsafe tool %s started %d times, want at most once", label, callKey, count)
+			ok = false
 		}
 	}
+	return ok
 }
 
 // unsafeKey reports whether the call key belongs to the unsafe
 // iteration: {run}.{step}.{iteration}.{call}.
-func (f *fixture) unsafeKey(callKey string) bool {
+func unsafeKey(callKey string) bool {
 	parts := strings.Split(callKey, ".")
 	if len(parts) < 4 {
 		panic("unsafeKey: malformed call key " + callKey)
 	}
-	if f.def.Name == "" {
-		panic("unsafeKey: fixture has no def")
+	if parts[len(parts)-3] != stepID {
+		panic("unsafeKey: call key is not this step's: " + callKey)
 	}
 	return parts[len(parts)-2] == fmt.Sprint(unsafeIteration)
 }
@@ -515,23 +585,24 @@ func sameAnswer(want, got answer) bool {
 	return true
 }
 
-// crashHook routes a crash to one site. once makes it fire a single
-// time; a kill returns chaos.ErrKilled, a stall blocks for stallFor
-// (or until the holder's context ends) and proceeds.
+// crashHook crashes one site of its run, once (the router already
+// routes by run): a kill returns
+// chaos.ErrKilled, a stall blocks for stallFor (or until the holder's
+// context ends) and proceeds.
 type crashHook struct {
-	runID string
-	point chaos.Point
-	kill  bool
-	fired sync.Once
-	count int
+	point     chaos.Point
+	kill      bool
+	iteration int
+	fired     sync.Once
+	count     int
 }
 
 // fire runs the hook for a site, once.
 func (h *crashHook) fire(ctx context.Context, p chaos.Point, site chaos.Site) error {
-	if h.runID == "" {
-		panic("crashHook: runID must not be empty")
+	if site.RunID == "" {
+		panic("crashHook: site must name a run")
 	}
-	if site.RunID != h.runID || p != h.point || !h.targets(site) {
+	if p != h.point || !h.targets(site) {
 		return nil
 	}
 	err := error(nil)
@@ -549,12 +620,12 @@ func (h *crashHook) fire(ctx context.Context, p chaos.Point, site chaos.Site) er
 	return err
 }
 
-// targets is which site the hook aims at: the unsafe iteration for
-// worker points, any dispatch for engine points; fired once, so the
-// first handling that reaches the point is the one crashed. It is the
-// first handling, not delivery 1: a worker stalled by another run
-// holds prefetched deliveries past their AckWait, so a run's first
-// handled delivery can already be its second.
+// targets is which site the hook aims at: its iteration for worker
+// points, any dispatch for engine points; fired once, so the first
+// handling that reaches the point is the one crashed. It is the first
+// handling, not delivery 1: a worker stalled by another run holds
+// prefetched deliveries past their AckWait, so a run's first handled
+// delivery can already be its second.
 func (h *crashHook) targets(site chaos.Site) bool {
 	if h.point <= 0 {
 		panic("crashHook: point must be set")
@@ -562,7 +633,7 @@ func (h *crashHook) targets(site chaos.Site) bool {
 	if h.point >= chaos.EngineEnqueueSaved {
 		return true
 	}
-	return site.Iteration == unsafeIteration
+	return site.Iteration == h.iteration
 }
 
 // router dispatches to the hook registered for a site's run, so
@@ -595,6 +666,19 @@ func (r *router) add(runID string, hook chaos.Hook) {
 	r.hooks[runID] = hook
 }
 
+// remove drops runID's hook once its run is audited.
+func (r *router) remove(runID string) {
+	if runID == "" {
+		panic("router.remove: runID must not be empty")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.hooks[runID]; !ok {
+		panic("router.remove: no hook for " + runID)
+	}
+	delete(r.hooks, runID)
+}
+
 // route is the chaos.Hook.
 func (r *router) route(ctx context.Context, p chaos.Point, site chaos.Site) error {
 	if site.RunID == "" {
@@ -606,20 +690,82 @@ func (r *router) route(ctx context.Context, p chaos.Point, site chaos.Site) erro
 	if hook == nil {
 		return nil
 	}
-	if debugHooks {
-		fmt.Printf("chaos: %s at %+v\n", p, site)
-	}
 	return hook(ctx, p, site)
 }
 
-// newRunID is a fresh run ID, as the API assigns one.
-func newRunID() string {
-	id := runid.New()
-	if id == "" {
-		panic("newRunID: empty id")
+// dumpRun logs the run's step state, journal records and history
+// events, for a run that failed an invariant.
+func (f *fixture) dumpRun(t *testing.T, runID string) {
+	t.Helper()
+	if runID == "" {
+		panic("dumpRun: runID must not be empty")
 	}
-	if len(id) < 8 {
-		panic("newRunID: id too short")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	run, err := f.svc.GetRun(ctx, runID)
+	if err != nil {
+		t.Logf("dump %s: GetRun: %v", runID, err)
+	} else {
+		t.Logf("dump %s: run %s step %+v", runID, run.Status, run.Steps[stepID])
 	}
-	return id
+	records, err := journal.Read(ctx, f.js, runID, stepID)
+	if err != nil {
+		t.Logf("dump %s: journal.Read: %v", runID, err)
+	}
+	for _, rec := range records {
+		t.Logf("dump %s: journal %d %s it=%d att=%d del=%d seq=%d nonce=%s %s", runID,
+			rec.Seq, rec.Type, rec.Iteration, rec.Attempt, rec.Delivered, rec.StreamSeq,
+			rec.DispatchNonce, rec.Data)
+	}
+	for _, line := range historyLines(t, f.nc, runID) {
+		t.Logf("dump %s: history %s", runID, line)
+	}
+}
+
+// historyLines reads the run's history and renders each event's type
+// and identity.
+func historyLines(t *testing.T, nc *nats.Conn, runID string) []string {
+	t.Helper()
+	if runID == "" {
+		panic("historyLines: runID must not be empty")
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	sub, err := js.SubscribeSync("history."+runID, nats.DeliverAll(), nats.OrderedConsumer())
+	if err != nil {
+		t.Fatalf("subscribe history: %v", err)
+	}
+	defer func() {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Logf("unsubscribe: %v", err)
+		}
+	}()
+	var lines []string
+	for i := 0; i < historyReadMax; i++ {
+		msg, err := sub.NextMsg(time.Second)
+		if err != nil {
+			break
+		}
+		evt, err := protocol.UnmarshalEvent(msg.Data)
+		if err != nil {
+			t.Fatalf("decode history event: %v", err)
+		}
+		lines = append(lines, fmt.Sprintf("%s step=%s it=%s att=%d nonce=%s jseq=%d %s",
+			evt.Type, evt.StepID, iterationOf(evt), evt.AttemptNumber, evt.DispatchNonce,
+			evt.JournalSeq, evt.Payload))
+	}
+	return lines
+}
+
+// iterationOf renders an event's iteration, "-" when it carries none.
+func iterationOf(evt protocol.Event) string {
+	if evt.RunID == "" {
+		panic("iterationOf: event must name a run")
+	}
+	if evt.Iteration == nil {
+		return "-"
+	}
+	return fmt.Sprint(*evt.Iteration)
 }

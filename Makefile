@@ -57,6 +57,9 @@ test: ## Run all tests with 600s timeout
 test-cluster-e2e: ## Run the 3-process cluster failover test (opt-in, ~30s)
 	DAGNATS_E2E_CLUSTER=1 go test ./e2e/cluster/ -count=1 -timeout 900s -v
 
+test-chaos: ## Run the seeded chaos soak (opt-in; DAGNATS_CHAOS_SEED, _DURATION, _RUNS, _CLUSTER)
+	DAGNATS_CHAOS=1 go test ./e2e/durability -run 'TestChaosSoak$$' -count=1 -timeout 30m -v
+
 lint: vet ## Run gofmt + vet + staticcheck (matches CI)
 	@out=$$(gofmt -l .); \
 		if [ -n "$$out" ]; then \

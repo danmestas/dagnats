@@ -33,9 +33,10 @@ func TestCrashLoop_RestartLimitFailsThenRetries(t *testing.T) {
 	f := newFixture(t, false)
 	r := &router{}
 	r.install(t)
-	baseline := f.waitCompleted(t, f.startRun(t))
+	a := f.newAgent(t)
+	baseline := f.waitCompleted(t, a.startRun(t))
 	hook := &crashLoopHook{kills: worker.RestartLimitDefault}
-	runID := f.startRunLoop(t, r, hook)
+	runID := a.startRunRouted(t, r, hook.fire)
 	got := f.waitCompleted(t, runID)
 	if killed := hook.killed(); killed != worker.RestartLimitDefault {
 		t.Errorf("killed %d deliveries, want %d", killed, worker.RestartLimitDefault)
@@ -51,9 +52,8 @@ func TestCrashLoop_RestartLimitFailsThenRetries(t *testing.T) {
 }
 
 // crashLoopHook kills the first kills handlings of the unsafe
-// iteration after their claim.
+// iteration after their claim (the router already routes by run).
 type crashLoopHook struct {
-	runID string
 	kills int
 	mu    sync.Mutex
 	count int
@@ -61,13 +61,13 @@ type crashLoopHook struct {
 
 // fire is the chaos.Hook.
 func (h *crashLoopHook) fire(_ context.Context, p chaos.Point, site chaos.Site) error {
-	if h.runID == "" {
-		panic("crashLoopHook: runID must not be empty")
+	if site.RunID == "" {
+		panic("crashLoopHook: site must name a run")
 	}
 	if h.kills < 1 {
 		panic("crashLoopHook: kills must be positive")
 	}
-	if site.RunID != h.runID || p != chaos.WorkerAfterClaim || site.Iteration != unsafeIteration {
+	if p != chaos.WorkerAfterClaim || site.Iteration != unsafeIteration {
 		return nil
 	}
 	h.mu.Lock()
@@ -84,19 +84,6 @@ func (h *crashLoopHook) killed() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.count
-}
-
-// startRunLoop registers hook for a fresh run and starts it.
-func (f *fixture) startRunLoop(t *testing.T, r *router, hook *crashLoopHook) string {
-	t.Helper()
-	if hook == nil || r == nil {
-		panic("startRunLoop: router and hook are required")
-	}
-	runID := newRunID()
-	hook.runID = runID
-	r.add(runID, hook.fire)
-	f.publishStart(t, runID)
-	return runID
 }
 
 // stepFailures reads the run's history and returns every step.failed

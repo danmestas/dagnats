@@ -1,0 +1,60 @@
+name: Chaos soak
+
+# The seeded chaos soak of e2e/durability (#809): many agent runs in
+# parallel under a random schedule of worker kills and stalls past
+# AckWait, engine kills between a dispatch save and its publish, the
+# duplicate deliveries those cause, and, on the cluster job, stream
+# leader step-downs; journal.Check and the side-effect counters after
+# every run. It is long and opt-in (DAGNATS_CHAOS=1), so it is not in
+# ci.yml's required `test` check or in race.yml's 15-minute budget: it
+# runs nightly, and on a pull request labelled `chaos`. The seed is in
+# the log; rerun the failing job's seed with DAGNATS_CHAOS_SEED.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: DAGNATS_CHAOS_SEED (empty for a fresh one)
+        required: false
+        default: ''
+      duration:
+        description: DAGNATS_CHAOS_DURATION
+        required: false
+        default: 10m
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: ${{ matrix.mode }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'chaos')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [standalone, cluster]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Chaos soak (${{ matrix.mode }})
+        run: >-
+          go test ./e2e/durability -run 'TestChaosSoak$' -count=1
+          -timeout 30m -v 2>&1 | grep -v ' INFO '
+        env:
+          DAGNATS_CHAOS: "1"
+          DAGNATS_CHAOS_CLUSTER: ${{ matrix.mode == 'cluster' && '1' || '0' }}
+          DAGNATS_CHAOS_DURATION: ${{ github.event.inputs.duration || '10m' }}
+          DAGNATS_CHAOS_SEED: ${{ github.event.inputs.seed }}
+          DAGNATS_CHAOS_RUNS: "8"
