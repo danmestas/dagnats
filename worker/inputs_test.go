@@ -119,19 +119,21 @@ func TestInputs_ExactlyOnceAcrossCrashAndRedelivery(t *testing.T) {
 	submit(t, store, "run-xo", "q1", inputs.ModeSteer)
 	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
 	defer cancel()
-	// Delivery 1 appends the placement and dies before projecting it.
+	// Delivery 1 claims q1 in the bucket and dies before appending the
+	// record: a dead claim, which only a claim of this step can leave.
 	first := delivery(t, nc, journalPayload("run-xo", 0), 1)
-	j, err := first.Journal()
-	if err != nil {
+	if _, err := first.Journal(); err != nil {
 		t.Fatalf("Journal: %v", err)
 	}
-	if _, err := j.PlaceInput(ctx, journal.InputPlaced{
-		RequestID: "q1", Mode: string(inputs.ModeSteer), Content: json.RawMessage(`"q1"`),
-	}); err != nil {
-		t.Fatalf("PlaceInput: %v", err)
+	entry, err := store.Get(ctx, "run-xo", "s", "q1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
 	}
-	// Delivery 2 of the same dispatch finds q1 queued in the bucket but
-	// placed in the journal: it repairs the projection and places nothing.
+	if _, err := store.Claim(ctx, entry, 0); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	// Delivery 2 of the same dispatch reclaims it: placed in the bucket
+	// but absent from the journal means the claim died.
 	second := delivery(t, nc, journalPayload("run-xo", 0), 2)
 	if _, err := second.Journal(); err != nil {
 		t.Fatalf("Journal (redelivery): %v", err)
@@ -140,25 +142,96 @@ func TestInputs_ExactlyOnceAcrossCrashAndRedelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlaceInputs (redelivery): %v", err)
 	}
-	if len(placed) != 0 {
-		t.Fatalf("redelivery placed %+v again", placed)
-	}
-	if e := status(t, store, "run-xo", "q1"); e.Status != inputs.StatusPlaced {
-		t.Errorf("q1 status = %s, want repaired to placed", e.Status)
+	if len(placed) != 1 || placed[0].RequestID != "q1" {
+		t.Fatalf("redelivery placed %+v, want the dead claim's q1", placed)
 	}
 	if err := second.Continue(nil); err != nil {
 		t.Fatalf("Continue: %v", err)
 	}
-	// The next iteration does not place it either.
-	next := delivery(t, nc, journalPayload("run-xo", 1), 1)
-	if _, err := next.Journal(); err != nil {
-		t.Fatalf("Journal (iteration 1): %v", err)
+	if e := status(t, store, "run-xo", "q1"); e.Status != inputs.StatusDone {
+		t.Errorf("q1 status = %s, want done", e.Status)
 	}
-	if placed, err := next.PlaceInputs(inputs.ModeSteer); err != nil || len(placed) != 0 {
-		t.Fatalf("iteration 1 PlaceInputs = %+v, %v; want nothing", placed, err)
+	// The next iteration, and a redelivery of it, do not place it again.
+	for delivered := 1; delivered <= 2; delivered++ {
+		next := delivery(t, nc, journalPayload("run-xo", 1), delivered)
+		if _, err := next.Journal(); err != nil {
+			t.Fatalf("Journal (iteration 1, delivery %d): %v", delivered, err)
+		}
+		if placed, err := next.PlaceInputs(inputs.ModeSteer); err != nil || len(placed) != 0 {
+			t.Fatalf("iteration 1 PlaceInputs = %+v, %v; want nothing", placed, err)
+		}
 	}
 	if n := countPlaced(readJournal(t, js, "run-xo"), "q1"); n != 1 {
 		t.Errorf("q1 has %d input.placed records, want exactly 1", n)
+	}
+}
+
+func TestInputs_WithdrawRacingPlacementNeverPlaces(t *testing.T) {
+	nc, js := journalServer(t)
+	store := inputsStore(t, js)
+	submit(t, store, "run-wr", "w1", inputs.ModeSteer)
+	tc := delivery(t, nc, journalPayload("run-wr", 0), 1)
+	if _, err := tc.Journal(); err != nil {
+		t.Fatalf("Journal: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
+	defer cancel()
+	// The withdrawal lands after PlaceInputs read w1 as queued and
+	// before it claims it: the API answered 204, so w1 must not be placed.
+	withdrawn := false
+	tc.beforeClaim = func() {
+		if err := store.Withdraw(ctx, "run-wr", "s", "w1"); err != nil {
+			t.Errorf("Withdraw: %v", err)
+			return
+		}
+		withdrawn = true
+	}
+	placed, err := tc.PlaceInputs(inputs.ModeSteer)
+	if err != nil {
+		t.Fatalf("PlaceInputs: %v", err)
+	}
+	if !withdrawn {
+		t.Fatal("the withdrawal did not happen inside the placement window")
+	}
+	if len(placed) != 0 {
+		t.Fatalf("placed %+v after the withdrawal was acknowledged", placed)
+	}
+	if n := countPlaced(readJournal(t, js, "run-wr"), "w1"); n != 0 {
+		t.Errorf("journal holds %d input.placed for a withdrawn input", n)
+	}
+	if _, err := store.Get(ctx, "run-wr", "s", "w1"); !errors.Is(err, inputs.ErrNotFound) {
+		t.Errorf("w1 after withdraw = %v, want ErrNotFound", err)
+	}
+}
+
+func TestInputs_UnplaceableInputIsSettledUnanswered(t *testing.T) {
+	nc, js := journalServer(t)
+	store := inputsStore(t, js)
+	submit(t, store, "run-up", "ok-1", inputs.ModeSteer)
+	submit(t, store, "run-up", "huge", inputs.ModeSteer)
+	tc := delivery(t, nc, journalPayload("run-up", 0), 1)
+	if _, err := tc.Journal(); err != nil {
+		t.Fatalf("Journal: %v", err)
+	}
+	// The append of "huge" fails for a reason that is not fencing.
+	tc.placeFault = func(requestID string) error {
+		if requestID == "huge" {
+			return errors.New("nats: maximum payload exceeded")
+		}
+		return nil
+	}
+	placed, err := tc.PlaceInputs(inputs.ModeSteer)
+	if err != nil {
+		t.Fatalf("PlaceInputs: %v", err)
+	}
+	if len(placed) != 1 || placed[0].RequestID != "ok-1" {
+		t.Fatalf("placed = %+v, want ok-1 only", placed)
+	}
+	if e := status(t, store, "run-up", "huge"); e.Status != inputs.StatusUnanswered {
+		t.Errorf("huge status = %s, want unanswered", e.Status)
+	}
+	if n := countPlaced(readJournal(t, js, "run-up"), "huge"); n != 0 {
+		t.Errorf("journal holds %d records for the unplaceable input", n)
 	}
 }
 

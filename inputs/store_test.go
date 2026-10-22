@@ -248,3 +248,79 @@ func TestAwait_ReturnsOnChangeOrDeadline(t *testing.T) {
 		t.Fatalf("Await = %+v, %v; want placed", changed, err)
 	}
 }
+
+func TestClaim_IsAStrictCompareAndSwap(t *testing.T) {
+	store, ctx := openStore(t)
+	if _, _, err := store.Submit(ctx, submission("c1", ModeSteer, `1`)); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	stale, err := store.Get(ctx, "run-1", "agent", "c1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	claimed, err := store.Claim(ctx, stale, 2)
+	if err != nil || claimed.Status != StatusPlaced || claimed.Iteration != 2 {
+		t.Fatalf("Claim = %+v, %v; want placed at iteration 2", claimed, err)
+	}
+	// A rival holding the stale revision is refused even though the
+	// stored status is the one it asks for: two claimers must not both
+	// believe they own the input.
+	if _, err := store.Claim(ctx, stale, 2); !errors.Is(err, ErrConflict) {
+		t.Errorf("stale Claim = %v, want ErrConflict", err)
+	}
+	if err := store.Withdraw(ctx, "run-1", "agent", "c1"); !errors.Is(err, ErrNotQueued) {
+		t.Errorf("Withdraw after Claim = %v, want ErrNotQueued", err)
+	}
+	// A withdrawn input cannot be claimed.
+	if _, _, err := store.Submit(ctx, submission("c2", ModeSteer, `1`)); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	read, err := store.Get(ctx, "run-1", "agent", "c2")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := store.Withdraw(ctx, "run-1", "agent", "c2"); err != nil {
+		t.Fatalf("Withdraw: %v", err)
+	}
+	if _, err := store.Claim(ctx, read, 1); !errors.Is(err, ErrConflict) && !errors.Is(err, ErrNotFound) {
+		t.Errorf("Claim of a withdrawn input = %v, want a refusal", err)
+	}
+}
+
+func TestSubmit_CapsContent(t *testing.T) {
+	store, ctx := openStore(t)
+	big := submission("big", ModeSteer, `"`+string(make([]byte, ContentMaxBytes))+`"`)
+	for i := range big.Content {
+		if big.Content[i] == 0 {
+			big.Content[i] = 'x'
+		}
+	}
+	_, _, err := store.Submit(ctx, big)
+	if !errors.Is(err, ErrContentTooLarge) {
+		t.Fatalf("Submit over the cap = %v, want ErrContentTooLarge", err)
+	}
+	fits := submission("fits", ModeSteer, `"`+string(bytesOf('y', ContentMaxBytes-2))+`"`)
+	if _, created, err := store.Submit(ctx, fits); err != nil || !created {
+		t.Fatalf("Submit at the cap: created=%v err=%v", created, err)
+	}
+}
+
+func bytesOf(b byte, n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+	return out
+}
+
+func TestAwait_UnknownKeyFailsAtOnce(t *testing.T) {
+	store, ctx := openStore(t)
+	start := time.Now()
+	_, err := store.Await(ctx, "run-1", "agent", "never", StatusQueued, 5*time.Second)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Await of an unknown key = %v, want ErrNotFound", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Errorf("Await waited %s for a key that does not exist", time.Since(start))
+	}
+}

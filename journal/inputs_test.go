@@ -115,6 +115,13 @@ func TestCheckInputs_PlacedSubmissionsHaveOneRecord(t *testing.T) {
 	if !hasViolation(v, "q3") {
 		t.Errorf("placed submission without a record not flagged: %v", v)
 	}
+	// A placed status without a record is a claim whose writer has not
+	// appended yet (or died): fine while the step runs, not once done.
+	live := checkInputs(dag.StepState{Status: dag.StepStatusRunning}, records,
+		[]inputs.Entry{sub("q3", inputs.StatusPlaced)})
+	if len(live) != 0 {
+		t.Errorf("live claim on a running step flagged: %v", live)
+	}
 	v = checkInputs(done, records, []inputs.Entry{sub("q1", inputs.StatusUnanswered)})
 	if !hasViolation(v, "q1") {
 		t.Errorf("unanswered submission with a placement record not flagged: %v", v)

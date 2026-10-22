@@ -113,6 +113,12 @@ func checkInputs(state dag.StepState, records []Record, subs []inputs.Entry) []s
 		n := placed[s.RequestID]
 		switch s.Status {
 		case inputs.StatusPlaced, inputs.StatusDone:
+			// placed is claimed before the record is appended
+			// (worker.PlaceInputs), so a live step may hold a claim
+			// with no record yet; a finished one may not.
+			if n == 0 && s.Status == inputs.StatusPlaced && !finished {
+				continue
+			}
 			if n != 1 {
 				violations = append(violations, fmt.Sprintf(
 					"input %s is %s with %d input.placed records, want 1", s.RequestID, s.Status, n))

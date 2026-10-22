@@ -126,6 +126,10 @@ type taskContext struct {
 	// when the iteration commits (ADR-027).
 	inputs        *inputs.Store
 	placedEntries []inputs.Entry
+	// Test seams: beforeClaim runs between reading the inputs and
+	// claiming them; placeFault fails an append by request id.
+	beforeClaim func()
+	placeFault  func(requestID string) error
 }
 
 // newTaskContext constructs a taskContext from a dispatched

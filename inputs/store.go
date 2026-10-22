@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -50,6 +51,11 @@ const (
 	// RequestIDMaxLen bounds a request_id; it is part of a KV key and
 	// of event msg-ids.
 	RequestIDMaxLen = 128
+	// ContentMaxBytes bounds a submission's content. The input is
+	// copied into an input.placed journal record with its envelope,
+	// and that message must fit the server's 1 MiB max_payload with
+	// room to spare; a quarter of it is more than a model turn needs.
+	ContentMaxBytes = 256 << 10
 	// perStepMax bounds one step's submissions. A step with more has
 	// outgrown a per-step inbox.
 	perStepMax = 10_000
@@ -78,6 +84,8 @@ var (
 	ErrInvalidMode = errors.New("inputs: mode must be steer or follow_up")
 	// ErrInvalidContent: content is not JSON.
 	ErrInvalidContent = errors.New("inputs: content must be JSON")
+	// ErrContentTooLarge: content is over ContentMaxBytes.
+	ErrContentTooLarge = fmt.Errorf("inputs: content must be at most %d bytes", ContentMaxBytes)
 )
 
 // Submission is one input, as stored.
@@ -104,6 +112,7 @@ type Entry struct {
 
 // Store is the bucket handle.
 type Store struct {
+	nc     *nats.Conn
 	kv     jetstream.KeyValue
 	stream jetstream.Stream
 }
@@ -127,7 +136,10 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inputs: bucket stream: %w", err)
 	}
-	return &Store{kv: kv, stream: stream}, nil
+	if js.Conn() == nil {
+		return nil, errors.New("inputs: jetstream context has no connection")
+	}
+	return &Store{nc: js.Conn(), kv: kv, stream: stream}, nil
 }
 
 // ValidateRequestID reports whether id can key a submission.
@@ -151,6 +163,9 @@ func (s Submission) Validate() error {
 	}
 	if !json.Valid(s.Content) {
 		return ErrInvalidContent
+	}
+	if len(s.Content) > ContentMaxBytes {
+		return ErrContentTooLarge
 	}
 	return nil
 }
@@ -230,6 +245,9 @@ func (s *Store) Await(
 		panic("inputs.Await: timeout must be positive")
 	}
 	key := natsutil.SubmissionKey(runID, stepID, requestID)
+	if _, err := s.Get(ctx, runID, stepID, requestID); err != nil {
+		return Entry{}, err // unknown or withdrawn: nothing to wait for
+	}
 	watchCtx, cancel := context.WithTimeout(ctx, min(timeout, awaitMax))
 	defer cancel()
 	watcher, err := s.kv.Watch(watchCtx, key)
@@ -346,6 +364,39 @@ func (s *Store) Transition(
 	return Entry{}, ErrConflict
 }
 
+// Claim is the strict form of Transition the placer uses: queued (or a
+// dead claim's placed, see worker.PlaceInputs) to placed, succeeding
+// only when the submission is exactly as entry read it. Any change
+// since, a withdrawal included, is ErrConflict (ErrNotFound when the
+// key is gone), never "already placed": two claimers must not both
+// believe they own the input.
+func (s *Store) Claim(ctx context.Context, entry Entry, iteration int) (Entry, error) {
+	if s.kv == nil {
+		panic("inputs.Claim: store must be open")
+	}
+	if entry.Revision == 0 || entry.RequestID == "" {
+		panic("inputs.Claim: entry must have been read from the store")
+	}
+	claimed := entry.Submission
+	claimed.Status, claimed.UpdatedAt, claimed.Iteration = StatusPlaced, time.Now().UTC(), iteration
+	data, err := json.Marshal(claimed)
+	if err != nil {
+		return Entry{}, fmt.Errorf("inputs: marshal: %w", err)
+	}
+	key := natsutil.SubmissionKey(entry.RunID, entry.StepID, entry.RequestID)
+	rev, err := s.kv.Update(ctx, key, data, entry.Revision)
+	if err == nil {
+		return Entry{Submission: claimed, Revision: rev}, nil
+	}
+	if errors.Is(err, jetstream.ErrKeyExists) || isWrongLastSequence(err) {
+		if _, getErr := s.Get(ctx, entry.RunID, entry.StepID, entry.RequestID); getErr != nil {
+			return Entry{}, getErr
+		}
+		return Entry{}, ErrConflict
+	}
+	return Entry{}, fmt.Errorf("inputs: claim %s: %w", key, err)
+}
+
 // Project writes status unconditionally: the journal has recorded the
 // placement, so whatever the bucket says (a withdrawal that raced the
 // placement included) is overwritten.
@@ -394,17 +445,23 @@ func (s *Store) List(ctx context.Context, runID, stepID string) ([]Entry, error)
 	}
 	entries := make([]Entry, 0, len(keys))
 	for _, key := range keys {
-		kvEntry, err := s.kv.Get(ctx, key)
+		// Through the leader, like the keys: a direct get that a lagging
+		// replica answers can miss a submission that was just created,
+		// and the engine's check on entering a wait must not (ADR-027,
+		// no lost wakeup). The leader also tells a withdrawal (a delete
+		// marker, skipped) from a value it has not seen yet.
+		leaderEntry, err := natsutil.KVGetLeader(ctx, s.nc, natsutil.SubmissionsBucket, key)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("inputs: get %s: %w", key, err)
 		}
-		entry, err := decodeEntry(kvEntry)
-		if err != nil {
-			return nil, err
+		var entry Entry
+		if err := json.Unmarshal(leaderEntry.Value, &entry.Submission); err != nil {
+			return nil, fmt.Errorf("inputs: decode %s: %w", key, err)
 		}
+		entry.Revision = leaderEntry.Revision
 		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool {

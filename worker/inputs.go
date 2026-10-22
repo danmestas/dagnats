@@ -124,11 +124,19 @@ func (c *taskContext) inputsStore() (*inputs.Store, error) {
 // PlaceInputs moves every queued input of mode into the conversation
 // and returns them in submission order. Call it at a turn boundary:
 // ModeSteer after a tool round, ModeFollowUp after a final answer.
-// Each input is placed at most once across any crash or redelivery:
-// one the journal already holds (a previous delivery placed it and
-// died before projecting the status) is skipped and its status
-// repaired. Needs a journal (ErrNoJournal). A fenced journal stops the
-// task like any other journal write.
+// Needs a journal (ErrNoJournal). A fenced journal stops the task like
+// any other journal write.
+//
+// Each input is claimed before it is recorded: a compare-and-swap of
+// its status to placed at the revision it was read at, then the
+// input.placed append. A withdrawal that lands in between wins the
+// swap, so a 204 never precedes a placement (ADR-027 R7). A claim
+// whose writer died before appending leaves placed with no record;
+// only a claim of this step writes that state, so a later delivery
+// reclaims it, and the journal (which knows every record) is what
+// keeps any input from being placed twice. An input whose record
+// cannot be appended for a reason other than fencing is settled
+// unanswered rather than blocking every later turn.
 func (c *taskContext) PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, error) {
 	if c.runID == "" {
 		panic("PlaceInputs: runID must not be empty")
@@ -146,44 +154,117 @@ func (c *taskContext) PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, erro
 	if err != nil {
 		return nil, err
 	}
-	queued, err := store.Queued(c.ctx, c.runID, c.stepID)
+	candidates, err := c.placeable(store, mode)
 	if err != nil {
 		return nil, err
 	}
+	if c.beforeClaim != nil {
+		c.beforeClaim()
+	}
 	var placed []journal.InputPlaced
-	for _, entry := range queued {
-		if entry.Mode != mode {
-			continue
+	for _, entry := range candidates {
+		claimed, err := store.Claim(c.ctx, entry, c.iteration)
+		if errors.Is(err, inputs.ErrConflict) || errors.Is(err, inputs.ErrNotFound) {
+			continue // withdrawn, or claimed by a rival whose append will fence one of us
 		}
-		if c.journal.InputPlaced(entry.RequestID) {
-			c.projectInput(store, entry, inputs.StatusPlaced)
-			continue
-		}
-		record := journal.InputPlaced{
-			RequestID: entry.RequestID, Mode: string(entry.Mode), Content: entry.Content,
-		}
-		if _, err := c.journal.PlaceInput(c.ctx, record); err != nil {
-			if errors.Is(err, journal.ErrFenced) {
-				c.journalStop = journalFenced
-			}
+		if err != nil {
 			return placed, err
 		}
-		record.Iteration = c.iteration
-		placed = append(placed, record)
-		c.projectInput(store, entry, inputs.StatusPlaced)
-		c.placedEntries = append(c.placedEntries, entry)
+		record, err := c.recordPlacement(store, claimed)
+		if err != nil {
+			return placed, err
+		}
+		if record != nil {
+			placed = append(placed, *record)
+		}
 	}
-	if len(placed) > len(queued) {
-		panic("PlaceInputs: placed more than were queued")
+	if len(placed) > len(candidates) {
+		panic("PlaceInputs: placed more than were claimable")
 	}
 	return placed, nil
 }
 
-// projectInput writes a submission's status after the journal has
-// recorded the fact. Best effort and journal-wins: a compare-and-swap
-// that loses (a withdrawal or another projection raced it) is
-// overwritten, and a failure is logged, because the next PlaceInputs or
-// status read repairs the projection from the journal.
+// placeable lists the step's inputs of mode this claim may place:
+// queued ones, and placed ones the journal has no record of (a dead
+// claim). One the journal already holds is never a candidate.
+func (c *taskContext) placeable(store *inputs.Store, mode inputs.Mode) ([]inputs.Entry, error) {
+	if store == nil {
+		panic("placeable: store must not be nil")
+	}
+	if c.journal == nil {
+		panic("placeable: journal must be open")
+	}
+	all, err := store.List(c.ctx, c.runID, c.stepID)
+	if err != nil {
+		return nil, err
+	}
+	candidates := all[:0]
+	for _, entry := range all {
+		if entry.Mode != mode || c.journal.InputPlaced(entry.RequestID) {
+			continue
+		}
+		if entry.Status == inputs.StatusQueued || entry.Status == inputs.StatusPlaced {
+			candidates = append(candidates, entry)
+		}
+	}
+	return candidates, nil
+}
+
+// recordPlacement appends the input.placed record for a claimed input.
+// nil without error means the input was settled unanswered instead.
+func (c *taskContext) recordPlacement(
+	store *inputs.Store, claimed inputs.Entry,
+) (*journal.InputPlaced, error) {
+	if claimed.Status != inputs.StatusPlaced {
+		panic("recordPlacement: input must be claimed")
+	}
+	if c.journal == nil {
+		panic("recordPlacement: journal must be open")
+	}
+	record := journal.InputPlaced{
+		RequestID: claimed.RequestID, Mode: string(claimed.Mode), Content: claimed.Content,
+	}
+	err := c.placeFaultOrAppend(record)
+	switch {
+	case err == nil:
+		record.Iteration = c.iteration
+		c.placedEntries = append(c.placedEntries, claimed)
+		return &record, nil
+	case errors.Is(err, journal.ErrFenced):
+		c.journalStop = journalFenced
+		return nil, err
+	case errors.Is(err, journal.ErrCommitted):
+		return nil, err
+	}
+	slog.WarnContext(c.ctx, "input cannot be journaled; settling it unanswered",
+		"run_id", c.runID, "step_id", c.stepID, "request_id", claimed.RequestID, "error", err)
+	if _, err := store.Transition(c.ctx, claimed, inputs.StatusUnanswered, 0); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// placeFaultOrAppend appends record, or fails it through the test
+// seam that stands in for a server rejection.
+func (c *taskContext) placeFaultOrAppend(record journal.InputPlaced) error {
+	if record.RequestID == "" {
+		panic("placeFaultOrAppend: record must name its request")
+	}
+	if c.journal == nil {
+		panic("placeFaultOrAppend: journal must be open")
+	}
+	if c.placeFault != nil {
+		if err := c.placeFault(record.RequestID); err != nil {
+			return err
+		}
+	}
+	_, err := c.journal.PlaceInput(c.ctx, record)
+	return err
+}
+
+// projectInput moves a submission this claim holds to a later status.
+// Best effort: the journal is the record, and a status read repairs
+// the projection from it, so a lost swap is logged, not retried.
 func (c *taskContext) projectInput(store *inputs.Store, entry inputs.Entry, to inputs.Status) {
 	if store == nil {
 		panic("projectInput: store must not be nil")
@@ -191,11 +272,7 @@ func (c *taskContext) projectInput(store *inputs.Store, entry inputs.Entry, to i
 	if entry.RequestID == "" {
 		panic("projectInput: entry must name its request")
 	}
-	_, err := store.Transition(c.ctx, entry, to, c.iteration)
-	if errors.Is(err, inputs.ErrConflict) || errors.Is(err, inputs.ErrNotFound) {
-		err = store.Project(c.ctx, entry.Submission, to, c.iteration)
-	}
-	if err != nil {
+	if _, err := store.Transition(c.ctx, entry, to, c.iteration); err != nil {
 		slog.WarnContext(c.ctx, "project input status; the journal is the record",
 			"run_id", c.runID, "step_id", c.stepID,
 			"request_id", entry.RequestID, "status", string(to), "error", err)
