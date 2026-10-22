@@ -139,7 +139,9 @@ commit:
   stable) and acknowledges the task. The turn is not repeated. Recovery
   matches on attempt and iteration, not on delivery; on iteration 0 the
   attempt follows the delivery count, so there a crash between commit and
-  publish still repeats the turn under the next attempt.
+  publish still repeats the turn under the next attempt. The fix belongs
+  in the engine: `dispatchIdentity` stamping the attempt on iteration 0
+  as it does from iteration 1, deferred from this ADR.
 - Otherwise it rebuilds from the last committed state plus the records of
   iteration N so far. Recorded model responses and tool results are reused,
   not redone.
@@ -171,7 +173,9 @@ record is a `pause`, else the last committed state. `Pause` writes the
 `pause` record instead of the `checkpoints` marker. A step without a
 journal is untouched. The `checkpoints` bucket TTL and the HTTP bridge
 actions (`journal.append`, `journal.read`, `load_checkpoint`) are the
-follow-up to #804.
+follow-up to #804; the bridge's claim must carry the task message's
+delivery count, which the bridge already derives from `NumDelivered` for
+the attempt.
 
 ### Checker
 
@@ -193,10 +197,14 @@ outcomes), and assert:
 Invariant 3 needs the external counter, so it holds in tests only; the
 command reports it as skipped and checks the other five on any run, and
 reports invariant 5 as skipped while the `submissions` bucket does not
-exist. The accepted commit of an iteration is the one a lifecycle event in
-history names by `journal_seq`; only for events without it does the
-checker fall back to the highest `step.started` attempt among the
-dispatch nonces that claimed the iteration. The command exits 1 on a
+exist. The accepted commit of an iteration is the one the latest
+lifecycle event for that iteration in history names by `journal_seq`:
+history records what workers published, not what the engine applied, and
+a retry's `step.continue` after an attempt's `step.failed` names a second
+commit for the same iteration, which supersedes the first. Only for
+events without `journal_seq` does the checker fall back to the highest
+`step.started` attempt among the dispatch nonces that claimed the
+iteration. The command exits 1 on a
 violation so it can gate a soak.
 
 A gap inherited from ADR-025, not closed here: the worker publishes
