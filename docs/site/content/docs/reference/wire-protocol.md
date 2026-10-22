@@ -87,7 +87,7 @@ When a run is cancelled, the engine publishes an empty core NATS message on `dag
 
 #### Agent journal (ADR-026)
 
-A step may keep a journal: one append-only subject `journal.{run_id}.{step_id}` on the `AGENT_JOURNAL` stream (file storage, the cluster's replica count, 30-day max age, a two-minute dedup window, direct get disabled so a tail read is answered by the stream leader, purged with the run by `dagnats clean`). The worker SDK opts a step in when its handler calls `Journal()`; a handler that never calls it runs as before. Opt-in must be rolled out to every worker of a task type together: a journal step's `step.continue` carries no state, so an older handler build on the next iteration would read a stale `TaskPayload.state`. The HTTP bridge actions `journal.append`, `journal.read` and `load_checkpoint` are the follow-up to #804; the bridge's claim must carry the task message's delivery count (`NumDelivered`, which the bridge already derives for the attempt).
+A step may keep a journal: one append-only subject `journal.{run_id}.{step_id}` on the `AGENT_JOURNAL` stream (file storage, the cluster's replica count, 30-day max age, a two-minute dedup window, direct get disabled so a tail read is answered by the stream leader, purged with the run by `dagnats clean`). The worker SDK opts a step in when its handler calls `Journal()`; a handler that never calls it runs as before. Opt-in must be rolled out to every worker of a task type together: a journal step's `step.continue` carries no state, so an older handler build on the next iteration would read a stale `TaskPayload.state`. HTTP workers reach the same journal through the bridge actions `journal.append`, `journal.read` and `load_checkpoint` (see `POST /v1/tasks/{id}/resolve`); the bridge's claim carries the task message's delivery count (`NumDelivered`), so a redelivered bridge task fences the stalled bridge worker exactly as it fences a Go worker. The legacy `checkpoints` bucket expires its entries after 30 days.
 
 **Record envelope.** Each record is one JetStream message. Identity lives in headers; the body is the record's JSON.
 
@@ -205,6 +205,7 @@ Resolves a polled task. Only the token that claimed the task (or the admin token
   "duration_ms": 5000,
   "checkpoint": {"state": "..."},
   "data": {"incremental": "..."},
+  "type": "journal.append record type",
   "run_id": "run-1",
   "timeout_ms": 30000
 }
@@ -223,6 +224,20 @@ Resolves a polled task. Only the token that claimed the task (or the admin token
 | `stream` | `data` | Publishes `data` on core NATS subject `stream.{runID}.{stepID}` and extends the ack deadline |
 | `send_signal` | `run_id`, `name`, `data` | Writes a signal to the `signals` KV bucket under `{run_id}.{name}`, extends the ack deadline |
 | `wait_signal` | `name`, `timeout_ms` | Blocks until the named signal arrives and returns its data as the response body; `timeout_ms` in 1 to 3600000, `408` on timeout. Extends the ack deadline while waiting |
+| `journal.append` | `type` (default `entry`), `data` | Claims the task's journal on first use, then appends a `type` record with `data` as its body; answers `{"seq": N}`. `type` must not be `claim` or `commit`, and `data` is required (`400`). Extends the ack deadline |
+| `journal.read` | none | Claims the journal on first use and answers `{"records": [...]}`, every record of the step in order |
+| `load_checkpoint` | none | Answers `{"source", "state"}` like the SDK's `LoadCheckpoint`: the state a `checkpoint` buffered this claim (`source` `checkpoint`), else the journal's (`journal`: `{"pause_resume": name}` on a resumed pause, else the last committed state) when this claim has opened the journal, else the `checkpoints` bucket entry (`checkpoint`), else the state the task was polled with (`payload`). `state` is JSON; state that is not JSON comes back as `state_base64`. Extends the ack deadline |
+
+**Journal steps** (ADR-026). The first `journal.append` or `journal.read` claims the task's journal through the same `journal` package the Go SDK uses, with the polled message's delivery count (`NumDelivered`) in the claim, so a redelivery to another poller claims with a higher count and fences this one. From then on `complete`, `fail`, `continue` and `pause` commit before they publish (a `pause` appends a `pause` record instead of writing the `checkpoints` marker) and the event carries the commit's `journal_seq`; a `continue` carries no state, because the commit is the state of record. Every action answers one of these outcomes with a JSON body `{"error": "...", "code": "..."}`, and the worker must stop on all of them:
+
+| Status | `code` | Meaning | Bridge side effect |
+|--------|--------|---------|--------------------|
+| `409` | `fenced` | Another claim follows this worker's. The task is the successor's | Nothing is published or acknowledged; every later action on the task answers `409 fenced` |
+| `410` | `stale` | A later iteration holds the step, so this is a late redelivery | Acknowledged and removed; nothing written |
+| `410` | `committed` | This attempt already committed (the previous holder crashed before publishing) | The commit's lifecycle event is republished, the task acknowledged and removed |
+| `503` | `not_provisioned` | The `AGENT_JOURNAL` stream is missing | None |
+
+A `409` with a plain-text body `run cancelled` is the unrelated cancellation signal described below.
 
 **Response:** `200 OK` on success, `404 Not Found` if task ID not in ack map, `403` if the caller did not claim the task, `409` if the run was cancelled.
 

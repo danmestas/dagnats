@@ -123,6 +123,11 @@ Resolves a polled task. The `action` field determines behavior:
 | `stream` | Publishes `data` to `stream.{run_id}.{step_id}` for live consumers and extends the claim |
 | `send_signal` | Writes `data` to the signal `name` of run `run_id` |
 | `wait_signal` | Blocks until signal `name` arrives, or answers `408` after `timeout_ms` (1 to 3,600,000) |
+| `journal.append` | Claims the task's agent journal on first use and appends a record (`type`, default `entry`; `data`); answers `{"seq": N}` |
+| `journal.read` | Claims the journal on first use and answers every record of the step |
+| `load_checkpoint` | Answers the task's state and where it came from (`journal`, `checkpoint` or `payload`) |
+
+A journal step can be fenced: when the task is redelivered to another poller, the first worker's next action answers `409` with `"code":"fenced"` and it must stop. `410` (`stale` or `committed`) means the task is finished. See the [wire protocol](/docs/reference/wire-protocol).
 
 `complete`, `fail`, `continue` and `pause` end the claim. The other actions leave the task in flight and restart its claim window.
 
